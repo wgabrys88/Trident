@@ -22,7 +22,20 @@ from copy import deepcopy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
-from log import clear as reset_log, error, info, warn
+from log import (
+    clear as reset_log,
+    debug,
+    error,
+    info,
+    ingest as ingest_trace,
+    new_id as new_trace_id,
+    read as read_trace,
+    record as trace,
+    run_id as trace_run_id,
+    scope as trace_scope,
+    set_listener as set_trace_listener,
+    warn,
+)
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
 ASSETS = ROOT / "assets"
@@ -64,6 +77,11 @@ ASR_LANGUAGES = {"bg": "Bulgarian", "hr": "Croatian", "cs": "Czech", "da": "Dani
 CONVERSATION_LANGUAGES = {code: TTS_LANGUAGES[code] for code in TTS_LANGUAGES if code in ASR_LANGUAGES}
 ENGINE_LOG_TOKENS = ("vulkan", "uma", "model loaded", "listening", "server is listening", "n_ctx_slot", "prompt eval time", "eval time", "total time", "voiceencoder", "s3tokenizer", "prompt_feat", "t3 stop", "t3 done", "s3gen:", "bench", "metric")
 BUILD_LOG_TOKENS = ("compiler identification", "found vulkan:", "build files have been written")
+NATIVE_EVENT_PREFIX = "TRIDENT_EVENT "
+T3_STOP_RE = re.compile(r"T3 stop reason=(\w+) prompt=(\d+) n_past=(\d+) speech_position=(\d+) generated=(\d+)(?: final_token=(-?\d+))?", re.I)
+T3_DONE_RE = re.compile(r"T3 done tokens=(\d+)(?: segment=(\d+)/(\d+))?", re.I)
+S3GEN_RE = re.compile(r"s3gen: tokens=(\d+) meanflow=(\d+) model_steps=(\d+)", re.I)
+BENCH_RE = re.compile(r"BENCH:\s*([A-Z0-9_]+)=([0-9.]+)(?:\s+([A-Z0-9_]+)=([0-9.]+))?", re.I)
 def field(label: str, kind: str, default: Any, minimum: float | None = None, maximum: float | None = None, options: list[str] | None = None, multiline: bool = False) -> dict:
     return {key: value for key, value in {"label": label, "type": kind, "default": default, "min": minimum, "max": maximum, "options": options, "multiline": multiline}.items() if value is not None}
 TTS_RUNTIME = {"gpu_layers": 99, "context": 512, "sessions": 1, "threads": 4}
@@ -155,18 +173,28 @@ BRAIN_FILE = DATA / "brains.json"
 LOCK = threading.RLock()
 SUBSCRIBERS: set[queue.Queue] = set()
 PROCESSES: dict[str, subprocess.Popen] = {}
+PROCESS_TRACES: dict[str, dict[str, str]] = {}
 RUNTIME = {
     "jobs": {},
     "engines": {name: {"status": "stopped", "error": "", "pid": None, "applied": {}} for name in ENGINE_MODELS},
-    "lanes": {"a": {"status": "closed", "session": "", "request": "", "samples": 0, "error": ""}},
+    "lanes": {"a": {"status": "closed", "session": "", "request": "", "config_id": "", "trace_id": "", "turn_id": "", "source": "", "language": "", "style": "", "reference": {}, "samples": 0, "chunks": 0, "error": ""}},
     "results": {"asr": None, "brain": None, "turn": None},
-    "flow": {"stage": "idle", "transcript": "", "answer": "", "error": "", "language": "en", "started": 0.0},
+    "flow": {"stage": "idle", "transcript": "", "answer": "", "error": "", "language": "en", "started": 0.0, "trace_id": "", "turn_id": ""},
+    "trace": {"run_id": trace_run_id(), "latest": "", "latest_turn": ""},
     "reference_generation": 0,
 }
 class ApiError(RuntimeError):
     def __init__(self, code: int, message: str):
         super().__init__(message)
         self.code = code
+IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
+def identifier(value: Any, field: str, *, required: bool = False) -> str:
+    text = str(value or "").strip()
+    if not text and not required:
+        return ""
+    if not IDENTIFIER_RE.fullmatch(text):
+        raise ApiError(400, f"{field} is not a valid trace identifier")
+    return text
 def client_gone(exception: BaseException) -> bool:
     if isinstance(exception, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
         return True
@@ -314,6 +342,19 @@ def reference_state() -> dict:
     except (wave.Error, OSError):
         return {"status": "invalid", "path": str(path), "duration": 0.0, "custom": path == custom}
     return {"status": "ready", "path": str(path), "duration": duration, "custom": path == custom}
+def reference_evidence() -> dict:
+    state = reference_state()
+    if state["status"] != "ready":
+        return {**state, "generation": RUNTIME.get("reference_generation", 0), "sha256": "", "bytes": 0}
+    path = Path(state["path"])
+    audio = path.read_bytes()
+    return {
+        **state,
+        "generation": RUNTIME.get("reference_generation", 0),
+        "sha256": hashlib.sha256(audio).hexdigest(),
+        "bytes": len(audio),
+        "metrics": wav_metrics(audio),
+    }
 def custom_brain_ready() -> bool:
     custom = BRAIN_STATE["custom"]
     path = Path(custom["path"]) if custom.get("path") else CUSTOM_BRAIN
@@ -381,17 +422,20 @@ def snapshot() -> dict:
             "lanes": deepcopy(RUNTIME["lanes"]),
             "results": deepcopy(RUNTIME["results"]),
             "flow": deepcopy(RUNTIME["flow"]),
+            "trace": deepcopy(RUNTIME["trace"]),
             "jobs": deepcopy(RUNTIME["jobs"]),
         }
 def emit(event: str, data: dict):
     with LOCK:
         for subscriber in SUBSCRIBERS:
             subscriber.put((event, data))
+set_trace_listener(lambda entry: emit("trace", entry))
 def emit_state():
     emit("state", snapshot())
-def set_flow(stage: str, *, transcript: str | None = None, answer: str | None = None, failure: str | None = None, language: str | None = None):
+def set_flow(stage: str, *, transcript: str | None = None, answer: str | None = None, failure: str | None = None, language: str | None = None, trace_id: str | None = None, turn_id: str | None = None):
     with LOCK:
         flow = RUNTIME["flow"]
+        previous = flow["stage"]
         flow["stage"] = stage
         if transcript is not None:
             flow["transcript"] = transcript
@@ -401,33 +445,50 @@ def set_flow(stage: str, *, transcript: str | None = None, answer: str | None = 
             flow["error"] = failure
         if language is not None:
             flow["language"] = language
+        if trace_id is not None:
+            flow["trace_id"] = trace_id
+            RUNTIME["trace"]["latest"] = trace_id
+        if turn_id is not None:
+            flow["turn_id"] = turn_id
+            RUNTIME["trace"]["latest_turn"] = turn_id
         if stage == "listening":
             flow["started"] = time.time()
             flow["transcript"] = ""
             flow["answer"] = ""
             flow["error"] = ""
+        current_trace = flow.get("trace_id", "")
+        current_turn = flow.get("turn_id", "")
+    info("pipeline", "pipeline.stage", {"from": previous, "to": stage, "language": language or flow.get("language", ""), "transcript_chars": len(transcript or "") if transcript is not None else None, "answer_chars": len(answer or "") if answer is not None else None, "error": failure or ""}, trace_id=current_trace, turn_id=current_turn)
     emit_state()
-def set_job(key: str, status: str, stage: str, progress: int, message: str, failure: str = ""):
+def set_job(key: str, status: str, stage: str, progress: int, message: str, failure: str = "", job_id: str = ""):
     with LOCK:
-        RUNTIME["jobs"][key] = {"status": status, "stage": stage, "progress": progress, "message": message, "error": failure}
+        previous = RUNTIME["jobs"].get(key, {})
+        job_id = job_id or str(previous.get("job_id") or new_trace_id("job"))
+        RUNTIME["jobs"][key] = {"status": status, "stage": stage, "progress": progress, "message": message, "error": failure, "job_id": job_id}
         current = deepcopy(RUNTIME["jobs"][key])
+    important = status != previous.get("status") or stage != previous.get("stage") or progress == 100 or progress // 10 != int(previous.get("progress") or 0) // 10
+    if important:
+        (error if status == "error" else info)("job", "job.progress", {"key": key, **current}, job_id=job_id)
     emit("job", {"key": key, **current})
 def start_job(kind: str, name: str, work: Callable[[str], None]):
     key = f"{kind}:{name}"
     with LOCK:
         if RUNTIME["jobs"].get(key, {}).get("status") == "running":
             raise ApiError(409, f"{key} is already running")
-    set_job(key, "running", "start", 0, f"starting {name}")
+    job_id = new_trace_id("job")
+    set_job(key, "running", "start", 0, f"starting {name}", job_id=job_id)
     def worker():
-        try:
-            work(key)
-            set_job(key, "done", "done", 100, f"{name} complete")
-        except Exception as exception:
-            message = str(exception)
-            error(key, "failed", {"error": message})
-            set_job(key, "error", "error", 0, message, message)
-        emit_state()
+        with trace_scope(job_id=job_id):
+            try:
+                work(key)
+                set_job(key, "done", "done", 100, f"{name} complete", job_id=job_id)
+            except Exception as exception:
+                message = str(exception)
+                error("job", "job.failed", {"key": key, "error": message}, job_id=job_id)
+                set_job(key, "error", "error", 0, message, message, job_id=job_id)
+            emit_state()
     threading.Thread(target=worker, daemon=True).start()
+    return job_id
 def build_env() -> dict:
     env = os.environ.copy()
     sdk = vulkan_path()
@@ -674,24 +735,115 @@ def download_model(name: str, key: str):
         atomic_json(RECEIPTS_FILE, RECEIPTS)
     if name == "reference":
         bump_reference()
+def parsed_value(value: str) -> Any:
+    try:
+        return float(value) if "." in value else int(value)
+    except ValueError:
+        return value
+def native_key_values(message: str) -> dict:
+    return {key.lower(): parsed_value(value) for key, value in re.findall(r"([A-Za-z][A-Za-z0-9_]*)=([^\s]+)", message)}
+def log_native_line(name: str, message: str):
+    with LOCK:
+        active = deepcopy(PROCESS_TRACES.get(name, {}))
+    if message.startswith(NATIVE_EVENT_PREFIX):
+        try:
+            payload = json.loads(message[len(NATIVE_EVENT_PREFIX):])
+            if type(payload) is not dict:
+                raise ValueError("native event must be an object")
+        except (json.JSONDecodeError, ValueError) as exception:
+            error(name, "native.event.invalid", {"raw": message, "error": str(exception)}, source=f"{name}-process", **active)
+            return
+        for field in ("trace_id", "turn_id", "config_id", "session_id", "request_id", "lane", "client_id"):
+            if payload.get(field):
+                active[field] = str(payload[field])
+        event_name = str(payload.get("event") or "")
+        with LOCK:
+            if active:
+                PROCESS_TRACES[name] = active
+        ingest_trace(name, payload, source=f"{name}-native", **active)
+        if event_name in ("tts.synthesis.completed", "tts.synthesis.failed", "tts.synthesis.cancelled"):
+            with LOCK:
+                current = PROCESS_TRACES.get(name, {})
+                for field in ("trace_id", "turn_id", "request_id"):
+                    current.pop(field, None)
+        return
+    level = line_level(message)
+    event_name = f"{name}.stdout"
+    data: dict[str, Any] = {}
+    match = T3_STOP_RE.search(message)
+    if match:
+        event_name = "tts.t3.stopped"
+        reason, prompt, n_past, speech_position, generated, final_token = match.groups()
+        data = {"reason": reason, "prompt_tokens": int(prompt), "global_position": int(n_past), "speech_position": int(speech_position), "generated_tokens": int(generated)}
+        if final_token is not None:
+            data["final_token"] = int(final_token)
+        level = "warn" if reason in ("context_limit", "max_tokens", "repetition_guard", "step_error") else "info"
+    elif (match := T3_DONE_RE.search(message)):
+        event_name = "tts.t3.generated"
+        tokens, segment, segments = match.groups()
+        data = {"speech_tokens": int(tokens), "segment": int(segment or 1), "segments": int(segments or 1)}
+    elif (match := S3GEN_RE.search(message)):
+        event_name = "tts.s3gen.started"
+        data = {"speech_tokens": int(match.group(1)), "meanflow": bool(int(match.group(2))), "model_steps": int(match.group(3))}
+    elif (match := BENCH_RE.search(message)):
+        event_name = "tts.native.benchmark"
+        data = {match.group(1).lower(): float(match.group(2))}
+        if match.group(3):
+            data[match.group(3).lower()] = float(match.group(4))
+    elif "speaker_emb from VoiceEncoder" in message:
+        event_name = "tts.reference.t3_speaker_embedding"
+        data = {"origin": "reference_voice_encoder", **native_key_values(message)}
+    elif "prompt_token from S3TokenizerV2" in message:
+        event_name = "tts.reference.prompt_tokens"
+        counts = [int(value) for value in re.findall(r"\((\d+),\)", message)]
+        data = {"origin": "reference_s3tokenizer", "s3gen_prompt_tokens": counts[0] if counts else 0, "t3_conditioning_tokens": counts[1] if len(counts) > 1 else 0}
+    elif "prompt_feat from reference_audio" in message:
+        event_name = "tts.reference.s3gen_prompt_features"
+        match = re.search(r"\((\d+),\s*80\)", message)
+        data = {"origin": "reference_audio", "mel_frames": int(match.group(1)) if match else 0, "mel_bins": 80}
+    elif "voice conditioning" in message.lower():
+        event_name = "tts.reference.conditioning_summary"
+        data = native_key_values(message)
+    elif "T3 prompt ok" in message:
+        event_name = "tts.t3.prompt_ready"
+        data = native_key_values(message)
+    elif "T3 first token" in message:
+        event_name = "tts.t3.first_token"
+        data = native_key_values(message)
+    elif "auto-split:" in message:
+        event_name = "tts.text.segmented"
+        data = native_key_values(message)
+        match = re.search(r"auto-split:\s*(\d+) segments", message)
+        if match:
+            data["segments"] = int(match.group(1))
+    elif message.startswith("METRIC "):
+        event_name = "tts.audio.native_metrics"
+        data = native_key_values(message)
+    elif "listening on" in message.lower() or "server is listening" in message.lower():
+        event_name = f"{name}.listening"
+        data = {"raw": message}
+    important = level != "info" or any(token in message.lower() for token in ENGINE_LOG_TOKENS)
+    trace(level if important else "debug", name, event_name, data, message=message, source=f"{name}-process", **active)
 def log_process(name: str, process: subprocess.Popen):
     message = ""
     if not process.stdout:
         raise RuntimeError(f"{name} has no output pipe")
     for raw in process.stdout:
         message = raw.rstrip()
-        level = line_level(message)
-        lower = message.lower()
-        if level != "info" or any(token in lower for token in ENGINE_LOG_TOKENS):
-            {"info": info, "warn": warn, "error": error}[level](name, message)
+        if message:
+            log_native_line(name, message)
         with LOCK:
             if PROCESSES.get(name) is process:
                 RUNTIME["engines"][name]["message"] = message
     code = process.wait()
+    expected = True
     with LOCK:
         if PROCESSES.get(name) is process:
+            expected = False
             PROCESSES.pop(name)
+            PROCESS_TRACES.pop(name, None)
             RUNTIME["engines"][name].update(status="error", error=f"process exited {code}: {message}", pid=None)
+    (info if expected and code == 0 else error)(name, "engine.process_exited", {"code": code, "last_message": message, "expected": expected}, source=f"{name}-process")
     emit_state()
 def remote(url: str, body: bytes | None = None, content_type: str = "application/json", timeout: int = 600) -> bytes:
     request = urllib.request.Request(url, data=body, headers={"Content-Type": content_type} if body is not None else {})
@@ -715,7 +867,9 @@ def wait_ready(name: str, process: subprocess.Popen, url: str):
 def stop_engine(name: str):
     with LOCK:
         process = PROCESSES.pop(name, None)
+        PROCESS_TRACES.pop(name, None)
         RUNTIME["engines"][name].update(status="stopping", error="")
+    info("engine", "engine.stop_requested", {"engine": name, "pid": process.pid if process else None})
     if process and process.poll() is None:
         process.terminate()
         try:
@@ -728,9 +882,9 @@ def stop_engine(name: str):
         RUNTIME["engines"][name].update(status="stopped", error="", pid=None, applied={})
         if name == "tts":
             for lane in RUNTIME["lanes"].values():
-                lane.update(status="closed", session="", request="", samples=0, error="")
+                lane.update(status="closed", session="", request="", config_id="", trace_id="", turn_id="", source="", language="", style="", reference={}, samples=0, chunks=0, error="")
     if process:
-        info(name, "stopped", {"pid": process.pid})
+        info("engine", "engine.stopped", {"engine": name, "pid": process.pid})
 def load_engine(name: str, key: str):
     stop_engine(name)
     if name == "brain":
@@ -759,15 +913,17 @@ def load_engine(name: str, key: str):
         command = [str(executable_path), "-m", str(paths[0]), "--host", "127.0.0.1", "--port", "8098", "--device", "Vulkan0", "--n-gpu-layers", "all", "--ctx-size", str(runtime["context"]), "--parallel", "1", "--no-mmproj", "--load-mode", "auto", "--flash-attn", "on", "--repack", "--fit", "on", "--fit-target", str(runtime["fit_target"]), "--fit-ctx", "2048"]
         cwd, health, env = executable_path.parent, "http://127.0.0.1:8098/health", os.environ.copy()
     set_job(key, "running", "load", 20, f"loading {name}")
-    info(name, "launch", {"command": command, "cwd": str(cwd)})
+    info("engine", "engine.launch", {"engine": name, "command": command, "cwd": str(cwd), "applied": applied})
     process = subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
     with LOCK:
         PROCESSES[name] = process
+        PROCESS_TRACES[name] = {}
         RUNTIME["engines"][name].update(status="loading", error="", pid=process.pid, applied=applied)
     threading.Thread(target=log_process, args=(name, process), daemon=True).start()
     wait_ready(name, process, health)
     with LOCK:
         RUNTIME["engines"][name]["status"] = "running"
+    info("engine", "engine.ready", {"engine": name, "pid": process.pid, "health": health, "applied": applied})
     set_job(key, "running", "ready", 95, f"{name} ready")
 def multipart(audio: bytes) -> tuple[bytes, str]:
     boundary = "trident-" + uuid.uuid4().hex
@@ -787,15 +943,24 @@ def require_engine(name: str):
         raise ApiError(400, f"unknown engine: {name}")
     if RUNTIME["engines"][name]["status"] != "running":
         raise ApiError(409, f"{name} is not running")
-def transcribe(audio: bytes) -> dict:
+def transcribe(audio: bytes, *, trace_id: str = "", turn_id: str = "") -> dict:
     require_engine("asr")
+    started = time.monotonic()
+    audio_data = {"bytes": len(audio), "sha256": hashlib.sha256(audio).hexdigest()}
+    try:
+        audio_data["metrics"] = wav_metrics(audio)
+    except (wave.Error, EOFError):
+        pass
+    info("asr", "asr.requested", audio_data, trace_id=trace_id, turn_id=turn_id)
     body, content_type = multipart(audio)
     result = json.loads(remote("http://127.0.0.1:8097/v1/audio/transcriptions", body, content_type))
     with LOCK:
         RUNTIME["results"]["asr"] = result
+    transcript = str(result.get("text") or "")
+    info("asr", "asr.completed", {"duration_ms": round((time.monotonic() - started) * 1000, 3), "transcript": transcript, "characters": len(transcript), "result": result}, trace_id=trace_id, turn_id=turn_id)
     emit_state()
     return result
-def brain(prompt: str, language: str) -> dict:
+def brain(prompt: str, language: str, *, trace_id: str = "", turn_id: str = "") -> dict:
     require_engine("brain")
     if language not in CONVERSATION_LANGUAGES:
         raise ApiError(400, f"unsupported conversation language: {language}")
@@ -811,9 +976,13 @@ def brain(prompt: str, language: str) -> dict:
         "stream": False,
         **BRAIN_FAMILIES[active_brain_family()],
     }
+    started = time.monotonic()
+    info("brain", "brain.requested", {"language": language, "language_name": language_name, "brain": active_brain_id(), "family": active_brain_family(), "system": system, "prompt": prompt, "sampling": {key: request[key] for key in ("temperature", "top_p", "top_k", "min_p", "repeat_penalty", "seed", "max_tokens")}}, trace_id=trace_id, turn_id=turn_id)
     result = json.loads(remote("http://127.0.0.1:8098/v1/chat/completions", json.dumps(request, separators=(",", ":")).encode()))
     with LOCK:
         RUNTIME["results"]["brain"] = result
+    response = brain_reply_text(result)
+    info("brain", "brain.completed", {"duration_ms": round((time.monotonic() - started) * 1000, 3), "language": language, "response": response, "characters": len(response), "finish_reason": ((result.get("choices") or [{}])[0]).get("finish_reason"), "usage": result.get("usage", {}), "timings": result.get("timings", {})}, trace_id=trace_id, turn_id=turn_id)
     emit_state()
     return result
 def validate_wav(data: bytes):
@@ -832,13 +1001,16 @@ def validate_wav(data: bytes):
         raise
     os.replace(partial, DATA / "reference.wav")
     bump_reference()
+    info("reference", "reference.updated", {"path": str(DATA / "reference.wav"), "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(), "generation": RUNTIME.get("reference_generation", 0), "metrics": wav_metrics(data)})
 def set_config(values: dict):
     if type(values) is not dict or not values:
         raise ApiError(400, "values must be a non-empty object")
     checked = {path: validate(path, value) for path, value in values.items()}
     with LOCK:
+        previous = {path: CONFIG.get(path) for path in checked}
         CONFIG.update(checked)
         atomic_json(CONFIG_FILE, CONFIG)
+    info("config", "config.changed", {"before": previous, "after": checked})
     emit_state()
 def voice_options(language: str, style: str) -> dict:
     if language not in TTS_LANGUAGES or style not in VOICE_STYLES:
@@ -846,13 +1018,17 @@ def voice_options(language: str, style: str) -> dict:
     voice = {key: CONFIG[f"tts.sample.{key}"] for key in ("seed", "max_tokens", "top_k", "top_p", "min_p", "temperature", "repeat_penalty", "cfm_steps")}
     voice.update(first_chunk=CONFIG["tts.stream.first_chunk"], chunk=CONFIG["tts.stream.chunk"], max_sentence_chars=CONFIG["tts.stream.max_sentence_chars"], cfg_weight=CONFIG[f"tts.style.{style}.cfg_weight"], exaggeration=CONFIG[f"tts.style.{style}.exaggeration"] )
     return voice
-def tts_session(lane: str, language: str, style: str) -> dict:
+def tts_session(lane: str, language: str, style: str, *, trace_id: str = "", turn_id: str = "", source: str = "api", client_id: str = "") -> dict:
     if lane not in RUNTIME["lanes"]:
         raise ApiError(400, f"unknown lane: {lane}")
     require_engine("tts")
     voice = voice_options(language, style)
+    config_id = new_trace_id("tts-config")
+    reference = reference_evidence()
     init = {
         "type": "init", "reference_audio": str(reference_path()), "language": language,
+        "config_id": config_id, "trace_id": trace_id, "turn_id": turn_id, "lane": lane,
+        "source": source, "client_id": client_id,
         "seed": voice["seed"], "max_tokens": voice["max_tokens"], "top_k": voice["top_k"],
         "top_p": voice["top_p"], "min_p": voice["min_p"], "temperature": voice["temperature"],
         "repeat_penalty": voice["repeat_penalty"], "cfg_weight": voice["cfg_weight"],
@@ -860,11 +1036,26 @@ def tts_session(lane: str, language: str, style: str) -> dict:
         "stream_first_chunk_tokens": voice["first_chunk"], "stream_chunk_tokens": voice["chunk"],
         "max_sentence_chars": voice["max_sentence_chars"],
     }
+    context = {key: value for key, value in {"trace_id": trace_id, "turn_id": turn_id, "config_id": config_id, "lane": lane, "client_id": client_id}.items() if value}
     with LOCK:
-        RUNTIME["lanes"][lane].update(status="connecting", session="", request="", samples=0, error="")
-    info("tts", "session", {"language": language, "style": style, "cfm_steps": voice["cfm_steps"], "reference": str(reference_path())})
-    return {"url": "ws://127.0.0.1:8095/tts", "message": init, "language": language, "style": style}
-def tts_request(lane: str, text: str) -> dict:
+        RUNTIME["lanes"][lane].update(status="connecting", session="", request="", config_id=config_id, trace_id=trace_id, turn_id=turn_id, source=source, language=language, style=style, reference=reference, samples=0, chunks=0, error="")
+        PROCESS_TRACES["tts"] = context
+    info("tts", "tts.session.configured", {
+        "language": language,
+        "style": style,
+        "voice": voice,
+        "reference": reference,
+        "conditioning_contract": {
+            "t3_speaker_embedding": "reference_voice_encoder",
+            "t3_conditioning_tokens": "reference_s3tokenizer",
+            "s3gen_prompt_tokens": "reference_s3tokenizer",
+            "s3gen_prompt_features": "reference_audio",
+            "s3gen_speaker_embedding": "builtin_fallback_no_campplus",
+        },
+    }, source="controller", **context)
+    emit_state()
+    return {"url": "ws://127.0.0.1:8095/tts", "message": init, "language": language, "style": style, "config_id": config_id, **context}
+def tts_request(lane: str, text: str, *, trace_id: str = "", turn_id: str = "", source: str = "api", client_id: str = "") -> dict:
     if lane not in RUNTIME["lanes"]:
         raise ApiError(400, f"unknown lane: {lane}")
     require_engine("tts")
@@ -873,38 +1064,79 @@ def tts_request(lane: str, text: str) -> dict:
     text = str(text or "").strip()
     if not text:
         raise ApiError(400, "speech text is empty")
-    request_id = uuid.uuid4().hex
+    trace_id = trace_id or new_trace_id("trace")
+    request_id = new_trace_id("tts-request")
     with LOCK:
-        RUNTIME["lanes"][lane].update(status="queued", request=request_id, samples=0, error="")
+        current = RUNTIME["lanes"][lane]
+        config_id = str(current.get("config_id") or "")
+        session_id = str(current.get("session") or "")
+        language = str(current.get("language") or "")
+        style = str(current.get("style") or "")
+        reference = deepcopy(current.get("reference") or {})
+        current.update(status="queued", request=request_id, trace_id=trace_id, turn_id=turn_id, source=source, samples=0, chunks=0, error="")
+        RUNTIME["trace"].update(latest=trace_id, latest_turn=turn_id or RUNTIME["trace"].get("latest_turn", ""))
+        context = {key: value for key, value in {"trace_id": trace_id, "turn_id": turn_id, "config_id": config_id, "session_id": session_id, "request_id": request_id, "lane": lane, "client_id": client_id}.items() if value}
+        PROCESS_TRACES["tts"] = context
+    info("tts", "tts.request.created", {"source": source, "text": text, "characters": len(text), "language": language, "style": style, "reference": reference}, **context)
     emit_state()
-    return {"message": {"type": "synthesize", "text": text, "request_id": request_id}}
+    message = {"type": "synthesize", "text": text, "source": source, **context}
+    return {"message": message, **context}
 def tts_event(data: dict):
     lane = data.get("lane")
     event = data.get("event")
-    if lane not in RUNTIME["lanes"] or event not in ("ready", "synthesize_started", "chunk_done", "cancelled", "error", "closed"):
+    allowed = ("ready", "synthesize_started", "audio_received", "chunk_done", "playback_started", "playback_complete", "cancelled", "error", "closed")
+    if lane not in RUNTIME["lanes"] or event not in allowed:
         raise ApiError(400, "invalid TTS event")
     with LOCK:
         state = RUNTIME["lanes"][lane]
-        state["status"] = {"ready": "ready", "synthesize_started": "streaming", "chunk_done": "ready", "cancelled": "cancelled", "error": "error", "closed": "closed"}[event]
+        previous_request = str(state.get("request") or "")
+        if event in ("ready", "synthesize_started", "chunk_done", "cancelled", "error", "closed"):
+            state["status"] = {"ready": "ready", "synthesize_started": "streaming", "chunk_done": "ready", "cancelled": "cancelled", "error": "error", "closed": "closed"}[event]
         if "session_id" in data:
             state["session"] = str(data["session_id"])
         if "request_id" in data:
             state["request"] = str(data["request_id"])
         if "samples" in data:
             state["samples"] = int(data["samples"])
+        if "chunks" in data:
+            state["chunks"] = int(data["chunks"])
         state["error"] = str(data.get("message", "")) if event == "error" else ""
+        context = {key: str(data.get(key) or state.get(key) or "") for key in ("trace_id", "turn_id", "config_id", "session_id", "request_id", "lane", "client_id") if data.get(key) or state.get(key)}
+    request_mismatch = bool(data.get("request_id") and previous_request and str(data["request_id"]) != previous_request)
+    event_data = {key: value for key, value in data.items() if key not in {"op", "lane", "event", "trace_id", "turn_id", "config_id", "session_id", "request_id", "client_id"}}
+    event_data["request_mismatch"] = request_mismatch
+    (warn if request_mismatch or event == "error" else info)("browser", f"browser.tts.{event}", event_data, source="browser", **context)
     emit_state()
+def browser_trace(data: dict) -> dict:
+    event = str(data.get("event") or "").strip().lower()
+    if not re.fullmatch(r"browser\.[a-z0-9_.-]{1,80}", event):
+        raise ApiError(400, "browser trace event must start with browser.")
+    level = str(data.get("level") or "info").lower()
+    if level not in ("debug", "info", "warn", "error"):
+        raise ApiError(400, "browser trace level is invalid")
+    context = {field: identifier(data.get(field), field) for field in ("trace_id", "turn_id", "config_id", "session_id", "request_id", "lane", "client_id") if data.get(field)}
+    details = data.get("data") if type(data.get("data")) is dict else {}
+    message = str(data.get("message") or "")
+    entry = trace(level, "browser", event, details, message=message, source="browser", **context)
+    with LOCK:
+        if context.get("trace_id"):
+            RUNTIME["trace"]["latest"] = context["trace_id"]
+        if context.get("turn_id"):
+            RUNTIME["trace"]["latest_turn"] = context["turn_id"]
+    emit_state()
+    return entry
 def tts_cancel(session_id: str) -> dict:
     if not session_id:
         raise ApiError(400, "session_id is required")
+    info("tts", "tts.cancel.requested", {"session_id": session_id}, session_id=session_id)
     payload = json.dumps({"session_id": session_id}, separators=(",", ":")).encode()
     return json.loads(remote("http://127.0.0.1:8095/cancel", payload))
-def read_log(limit: int = 200) -> list:
-    limit = max(1, min(int(limit), 2000))
-    log_file = ROOT / "install.log.jsonl"
-    if not log_file.is_file():
-        return []
-    return [json.loads(line) for line in log_file.read_text(encoding="utf-8").splitlines()[-limit:]]
+def read_log(options: dict | int | None = None) -> list:
+    if isinstance(options, int):
+        return read_trace(options)
+    options = options if type(options) is dict else {}
+    filters = {key: value for key, value in options.items() if key != "limit"}
+    return read_trace(options.get("limit", 200), **filters)
 def brain_reply_text(result: dict | None) -> str:
     if not result:
         return ""
@@ -939,50 +1171,60 @@ def wav_body(raw: bytes | None) -> bytes:
     return raw
 def run_turn(payload: dict, raw: bytes | None = None) -> dict:
     audio = wav_body(raw)
-    atomic_bytes(DATA / "last-input.wav", audio)
     language = str(payload.get("language") or "")
     if language not in CONVERSATION_LANGUAGES:
         raise ApiError(400, f"conversation language must be one of {list(CONVERSATION_LANGUAGES)}")
+    trace_id = identifier(payload.get("trace_id"), "trace_id") or new_trace_id("trace")
+    turn_id = identifier(payload.get("turn_id"), "turn_id") or new_trace_id("turn")
+    client_id = identifier(payload.get("client_id"), "client_id")
     require_engine("asr")
     require_engine("brain")
     require_engine("tts")
     clone = bool(CONFIG["conversation.clone_voice"])
     results: dict[str, Any] = {}
-    report = {"ok": False, "clone": clone, "cloned": False, "language": language, "text": "", "results": results, "error": ""}
-    try:
-        metrics = wav_metrics(audio)
-        seconds = metrics["seconds"]
-        info("audio", "input", metrics)
-        if clone and seconds >= 10:
-            validate_wav(audio)
-            report["cloned"] = True
-            info("turn", "clone reference accepted", metrics)
-        elif clone:
-            warn("turn", "clone reference skipped; 10 seconds required", metrics)
-        set_flow("transcribing", language=language)
-        results["asr"] = transcribe(audio)
-        transcript = str(results["asr"].get("text") or "").strip()
-        if not transcript:
-            raise ApiError(422, "speech was not recognized")
-        set_flow("thinking", transcript=transcript, language=language)
-        results["brain"] = brain(f"Respond naturally to this speech transcript:\n\n{transcript}", language)
-        speak = brain_reply_text(results["brain"]) or transcript
-        report["text"] = speak
-        set_flow("ready_to_speak", transcript=transcript, answer=speak, language=language)
-        report.update(ok=True, results=results)
-        return report
-    except Exception as exception:
-        report["error"] = str(exception)
-        report["results"] = results
-        set_flow("error", failure=report["error"], language=language)
-        error("turn", "failed", {"error": report["error"]})
-        if isinstance(exception, ApiError):
-            raise
-        raise ApiError(500, report["error"]) from exception
-    finally:
-        with LOCK:
-            RUNTIME["results"]["turn"] = report
-        emit_state()
+    report = {"ok": False, "clone": clone, "cloned": False, "language": language, "text": "", "trace_id": trace_id, "turn_id": turn_id, "client_id": client_id, "results": results, "error": ""}
+    started = time.monotonic()
+    with trace_scope(trace_id=trace_id, turn_id=turn_id, client_id=client_id):
+        try:
+            atomic_bytes(DATA / "last-input.wav", audio)
+            metrics = wav_metrics(audio)
+            input_evidence = {"path": str(DATA / "last-input.wav"), "bytes": len(audio), "sha256": hashlib.sha256(audio).hexdigest(), "metrics": metrics}
+            with LOCK:
+                RUNTIME["trace"].update(latest=trace_id, latest_turn=turn_id)
+            info("turn", "turn.started", {"language": language, "clone_requested": clone, "vad": bool(CONFIG["conversation.vad"]), "input": input_evidence, "reference_before": reference_evidence(), "engines": {name: {"status": value["status"], "applied": value.get("applied", {})} for name, value in RUNTIME["engines"].items()}})
+            if clone and metrics["seconds"] >= 10:
+                validate_wav(audio)
+                report["cloned"] = True
+                info("turn", "turn.clone.accepted", {"minimum_seconds": 10, "input": input_evidence, "reference_after": reference_evidence()})
+            elif clone:
+                warn("turn", "turn.clone.skipped", {"reason": "recording_too_short", "minimum_seconds": 10, "actual_seconds": metrics["seconds"], "reference_retained": reference_evidence()})
+            else:
+                info("turn", "turn.clone.disabled", {"reference_used": reference_evidence()})
+            set_flow("transcribing", language=language, trace_id=trace_id, turn_id=turn_id)
+            results["asr"] = transcribe(audio, trace_id=trace_id, turn_id=turn_id)
+            transcript = str(results["asr"].get("text") or "").strip()
+            if not transcript:
+                raise ApiError(422, "speech was not recognized")
+            set_flow("thinking", transcript=transcript, language=language, trace_id=trace_id, turn_id=turn_id)
+            results["brain"] = brain(f"Respond naturally to this speech transcript:\n\n{transcript}", language, trace_id=trace_id, turn_id=turn_id)
+            speak = brain_reply_text(results["brain"]) or transcript
+            report["text"] = speak
+            set_flow("ready_to_speak", transcript=transcript, answer=speak, language=language, trace_id=trace_id, turn_id=turn_id)
+            report.update(ok=True, results=results, reference=reference_evidence())
+            info("turn", "turn.response_ready", {"duration_ms": round((time.monotonic() - started) * 1000, 3), "language": language, "transcript": transcript, "response": speak, "clone_requested": clone, "cloned": report["cloned"], "reference": report["reference"]})
+            return report
+        except Exception as exception:
+            report["error"] = str(exception)
+            report["results"] = results
+            set_flow("error", failure=report["error"], language=language, trace_id=trace_id, turn_id=turn_id)
+            error("turn", "turn.failed", {"duration_ms": round((time.monotonic() - started) * 1000, 3), "stage": RUNTIME["flow"].get("stage"), "error": report["error"], "partial_results": results})
+            if isinstance(exception, ApiError):
+                raise
+            raise ApiError(500, report["error"]) from exception
+        finally:
+            with LOCK:
+                RUNTIME["results"]["turn"] = report
+            emit_state()
 def resolve_brain_url(spec: str) -> str:
     spec = spec.strip()
     if not spec:
@@ -1053,9 +1295,10 @@ OPS = {
     "inspect": {"doc": "schema + snapshot + op catalog", "fields": []},
     "schema": {"doc": "field and install catalog", "fields": []},
     "state": {"doc": "live snapshot", "fields": []},
-    "log": {"doc": "install.log.jsonl tail", "fields": ["limit"]},
-    "clear_log": {"doc": "erase install.log.jsonl and the panel log pane", "fields": []},
-    "note": {"doc": "append structured diagnostics to the log", "fields": ["component", "msg", "data"]},
+    "log": {"doc": "query the canonical correlated event stream", "fields": ["limit", "since_seq", "trace_id", "turn_id", "config_id", "session_id", "request_id", "source", "component", "level", "event"]},
+    "clear_log": {"doc": "erase the canonical event stream and panel trace pane", "fields": []},
+    "note": {"doc": "append a compatibility diagnostic event", "fields": ["component", "msg", "data"]},
+    "trace": {"doc": "append a correlated browser lifecycle event", "fields": ["event", "level", "trace_id", "turn_id", "config_id", "session_id", "request_id", "lane", "client_id", "data"]},
     "set": {"doc": "write user-facing configuration", "fields": ["values"]},
     "install_prerequisite": {"doc": "install a host prerequisite", "fields": ["name"]},
     "install_component": {"doc": "install a pinned runtime component; only Chatterbox TTS builds locally", "fields": ["name"]},
@@ -1073,7 +1316,7 @@ OPS = {
     "turn": {"doc": "WAV input -> Parakeet -> brain; browser streams Chatterbox audio", "fields": ["language"], "body": "audio/wav"},
 }
 def inspect() -> dict:
-    return {"ok": True, "version": 4, "control": "/api", "ops": OPS, "schema": SCHEMA, "state": snapshot()}
+    return {"ok": True, "version": 5, "control": "/api", "ops": OPS, "schema": SCHEMA, "state": snapshot()}
 def dispatch(op: str, payload: dict | None = None, raw: bytes | None = None) -> tuple[dict, int]:
     payload = payload or {}
     if not op:
@@ -1087,7 +1330,7 @@ def dispatch(op: str, payload: dict | None = None, raw: bytes | None = None) -> 
     if op == "state":
         return snapshot(), 200
     if op == "log":
-        return {"ok": True, "lines": read_log(payload.get("limit", 120))}, 200
+        return {"ok": True, "run_id": trace_run_id(), "lines": read_log(payload)}, 200
     if op == "clear_log":
         reset_log()
         emit("log", {"lines": []})
@@ -1098,10 +1341,12 @@ def dispatch(op: str, payload: dict | None = None, raw: bytes | None = None) -> 
             raise ApiError(400, "msg is required")
         data = payload.get("data") if type(payload.get("data")) is dict else {}
         component = str(payload.get("component") or "api").strip()[:32] or "api"
-        info(component, msg.strip(), data)
-        lines = read_log(payload.get("limit", 120))
+        info(component, "compatibility.note", data, message=msg.strip(), source="api")
+        lines = read_log({"limit": payload.get("limit", 120)})
         emit("log", {"lines": lines})
         return {"ok": True, "lines": lines}, 200
+    if op == "trace":
+        return {"ok": True, "event": browser_trace(payload)}, 200
     if op == "set":
         set_config(payload.get("values"))
         return {"ok": True, "state": snapshot()}, 200
@@ -1109,20 +1354,20 @@ def dispatch(op: str, payload: dict | None = None, raw: bytes | None = None) -> 
         name = payload.get("name")
         if name not in SCHEMA["prerequisites"]:
             raise ApiError(404, f"unknown prerequisite: {name}")
-        start_job("prerequisite", name, lambda key: install_prerequisite(name, key))
-        return {"ok": True, "accepted": True, "op": op, "name": name}, 202
+        job_id = start_job("prerequisite", name, lambda key: install_prerequisite(name, key))
+        return {"ok": True, "accepted": True, "op": op, "name": name, "job_id": job_id}, 202
     if op == "install_component":
         name = payload.get("name")
         if name not in ("tts", *BINARIES):
             raise ApiError(404, f"unknown component: {name}")
-        start_job("component", name, lambda key: install_component(name, key))
-        return {"ok": True, "accepted": True, "op": op, "name": name}, 202
+        job_id = start_job("component", name, lambda key: install_component(name, key))
+        return {"ok": True, "accepted": True, "op": op, "name": name, "job_id": job_id}, 202
     if op == "download_model":
         name = payload.get("name")
         if name not in MODELS:
             raise ApiError(404, f"unknown model: {name}")
-        start_job("model", name, lambda key: download_model(name, key))
-        return {"ok": True, "accepted": True, "op": op, "name": name}, 202
+        job_id = start_job("model", name, lambda key: download_model(name, key))
+        return {"ok": True, "accepted": True, "op": op, "name": name, "job_id": job_id}, 202
     if op == "set_brain":
         name = str(payload.get("name") or "custom")
         family = str(payload.get("family") or ("generic" if name == "custom" else BRAINS.get(name, {}).get("family") or "generic"))
@@ -1131,38 +1376,38 @@ def dispatch(op: str, payload: dict | None = None, raw: bytes | None = None) -> 
             resolve_brain_url(url)
             if family not in BRAIN_FAMILIES:
                 raise ApiError(400, f"family must be one of {list(BRAIN_FAMILIES)}")
-            start_job("brain", "custom", lambda key: install_custom_brain(url, family, key))
-            return {"ok": True, "accepted": True, "op": op, "name": name}, 202
+            job_id = start_job("brain", "custom", lambda key: install_custom_brain(url, family, key))
+            return {"ok": True, "accepted": True, "op": op, "name": name, "job_id": job_id}, 202
         apply_brain(name, family if name == "custom" else None)
         return {"ok": True, "brain": brain_snapshot(), "state": snapshot()}, 200
     if op == "load_engine":
         name = payload.get("name")
         if name not in ENGINE_MODELS:
             raise ApiError(404, f"unknown engine: {name}")
-        start_job("engine", name, lambda key: load_engine(name, key))
-        return {"ok": True, "accepted": True, "op": op, "name": name}, 202
+        job_id = start_job("engine", name, lambda key: load_engine(name, key))
+        return {"ok": True, "accepted": True, "op": op, "name": name, "job_id": job_id}, 202
     if op == "unload_engine":
         name = payload.get("name")
         if name not in ENGINE_MODELS:
             raise ApiError(404, f"unknown engine: {name}")
-        start_job("engine", name, lambda key: stop_engine(name))
-        return {"ok": True, "accepted": True, "op": op, "name": name}, 202
+        job_id = start_job("engine", name, lambda key: stop_engine(name))
+        return {"ok": True, "accepted": True, "op": op, "name": name, "job_id": job_id}, 202
     if op == "upload_reference":
         validate_wav(wav_body(raw))
         emit_state()
         return {"ok": True, "reference": reference_state()}, 200
     if op == "asr":
-        return {"ok": True, "result": transcribe(wav_body(raw))}, 200
+        return {"ok": True, "result": transcribe(wav_body(raw), trace_id=identifier(payload.get("trace_id"), "trace_id"), turn_id=identifier(payload.get("turn_id"), "turn_id"))}, 200
     if op == "brain":
         prompt = str(payload.get("prompt") or "").strip()
         language = str(payload.get("language") or "")
         if not prompt:
             raise ApiError(400, "prompt is required")
-        return {"ok": True, "result": brain(prompt, language)}, 200
+        return {"ok": True, "result": brain(prompt, language, trace_id=identifier(payload.get("trace_id"), "trace_id"), turn_id=identifier(payload.get("turn_id"), "turn_id"))}, 200
     if op == "tts_session":
-        return tts_session(payload["lane"], payload["language"], payload["style"]), 200
+        return tts_session(payload["lane"], payload["language"], payload["style"], trace_id=identifier(payload.get("trace_id"), "trace_id"), turn_id=identifier(payload.get("turn_id"), "turn_id"), source=str(payload.get("source") or "api")[:32], client_id=identifier(payload.get("client_id"), "client_id")), 200
     if op == "tts_request":
-        return tts_request(payload["lane"], payload["text"]), 200
+        return tts_request(payload["lane"], payload["text"], trace_id=identifier(payload.get("trace_id"), "trace_id"), turn_id=identifier(payload.get("turn_id"), "turn_id"), source=str(payload.get("source") or "api")[:32], client_id=identifier(payload.get("client_id"), "client_id")), 200
     if op == "tts_event":
         tts_event(payload)
         return {"ok": True}, 200
@@ -1172,7 +1417,7 @@ def dispatch(op: str, payload: dict | None = None, raw: bytes | None = None) -> 
         return run_turn(payload, raw), 200
     raise ApiError(400, f"unhandled op: {op}")
 SCHEMA = {
-    "version": 4,
+    "version": 5,
     "control": "/api",
     "fields": FIELDS,
     "languages": {"conversation": CONVERSATION_LANGUAGES, "speech": TTS_LANGUAGES, "asr": ASR_LANGUAGES},
@@ -1189,8 +1434,37 @@ SCHEMA = {
     "brain_families": list(BRAIN_FAMILIES),
     "engines": {name: {"load_op": "load_engine", "unload_op": "unload_engine", "name": name} for name in ENGINE_MODELS},
     "defaults": {"tts_runtime": TTS_RUNTIME, "voice": VOICE_DEFAULTS, "asr": ASR_RUNTIME, "brain_runtime": BRAIN_RUNTIME, "brain_generation": BRAIN_GENERATION},
-    "tts": {"url": "ws://127.0.0.1:8095/tts", "text": "JSON", "audio": "binary PCM16LE mono 24000 Hz", "messages": ["init", "synthesize", "cancel", "close"], "events": ["ready", "synthesize_started", "audio", "chunk_done", "cancelled", "error"]},
+    "trace": {"schema": "trident.event", "version": 1, "run_id": trace_run_id(), "identifiers": ["trace_id", "turn_id", "http_id", "job_id", "config_id", "session_id", "request_id", "lane", "client_id"]},
+    "tts": {"url": "ws://127.0.0.1:8095/tts", "text": "JSON with trace identifiers", "audio": "binary PCM16LE mono 24000 Hz", "messages": ["init", "synthesize", "cancel", "close"], "events": ["ready", "synthesize_started", "audio", "chunk_done", "cancelled", "error"]},
 }
+def api_payload_evidence(payload: dict) -> dict:
+    """Keep request routing evidence without duplicating prompts, URLs, or secrets."""
+    evidence: dict[str, Any] = {}
+    safe_fields = (
+        "op", "name", "lane", "language", "style", "event", "level", "source", "family",
+        "trace_id", "turn_id", "config_id", "session_id", "request_id", "client_id",
+    )
+    for field in safe_fields:
+        if field in payload and payload[field] not in (None, ""):
+            evidence[field] = payload[field]
+    for field in ("text", "prompt", "msg", "message"):
+        value = payload.get(field)
+        if isinstance(value, str):
+            evidence[f"{field}_evidence"] = {
+                "characters": len(value),
+                "sha256": hashlib.sha256(value.encode("utf-8")).hexdigest(),
+            }
+    values = payload.get("values")
+    if isinstance(values, dict):
+        evidence["configuration_fields"] = sorted(str(field) for field in values)
+    details = payload.get("data")
+    if isinstance(details, dict):
+        evidence["data_fields"] = sorted(str(field) for field in details)
+    url = payload.get("url")
+    if isinstance(url, str) and url:
+        parsed = urllib.parse.urlsplit(url)
+        evidence["url"] = {"scheme": parsed.scheme, "host": parsed.hostname or "", "path_name": Path(parsed.path).name}
+    return evidence
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
@@ -1220,6 +1494,9 @@ class Handler(BaseHTTPRequestHandler):
     def send_json(self, value: Any, code: int = 200):
         self.send_bytes(json.dumps(value, separators=(",", ":"), ensure_ascii=True).encode("ascii"), "application/json", code)
     def do_GET(self):
+        http_id = new_trace_id("http")
+        started = time.monotonic()
+        op = ""
         try:
             parsed = urllib.parse.urlparse(self.path)
             path = parsed.path
@@ -1239,23 +1516,27 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(404, f"unknown endpoint: {path}")
             op = query.get("op") or "inspect"
             if op == "events":
-                self.events()
+                self.events(http_id)
                 return
             if op not in ("inspect", "schema", "state", "log"):
                 raise ApiError(404, f"GET /api accepts op=inspect, schema, state, log, or events")
-            body, code = dispatch(op, query)
-            self.send_json(body, code)
+            debug("api", "api.request", {"method": "GET", "op": op, "query": query}, http_id=http_id)
+            response_body, code = dispatch(op, query)
+            debug("api", "api.response", {"method": "GET", "op": op, "status": code, "duration_ms": round((time.monotonic() - started) * 1000, 3)}, http_id=http_id)
+            self.send_json(response_body, code)
         except ApiError as exception:
+            warn("api", "api.rejected", {"method": "GET", "op": op, "path": self.path, "status": exception.code, "error": str(exception), "duration_ms": round((time.monotonic() - started) * 1000, 3)}, http_id=http_id)
             self.send_json({"error": str(exception)}, exception.code)
         except Exception as exception:
             if client_gone(exception):
                 return
-            error("api", "GET failed", {"path": self.path, "error": str(exception)})
+            error("api", "api.failed", {"method": "GET", "op": op, "path": self.path, "error": str(exception), "duration_ms": round((time.monotonic() - started) * 1000, 3)}, http_id=http_id)
             self.send_json({"error": str(exception)}, 500)
-    def events(self):
+    def events(self, http_id: str):
         subscriber: queue.Queue = queue.Queue()
         with LOCK:
             SUBSCRIBERS.add(subscriber)
+        info("api", "api.events.connected", {"subscribers": len(SUBSCRIBERS)}, http_id=http_id)
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
@@ -1277,7 +1558,13 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             with LOCK:
                 SUBSCRIBERS.discard(subscriber)
+                subscribers = len(SUBSCRIBERS)
+            info("api", "api.events.disconnected", {"subscribers": subscribers}, http_id=http_id)
     def do_POST(self):
+        http_id = new_trace_id("http")
+        started = time.monotonic()
+        op = ""
+        trace_id = turn_id = client_id = ""
         try:
             parsed = urllib.parse.urlparse(self.path)
             if parsed.path != "/api":
@@ -1288,24 +1575,37 @@ class Handler(BaseHTTPRequestHandler):
                 op = query.get("op")
                 if op not in ("turn", "asr", "upload_reference"):
                     raise ApiError(400, "WAV body requires op=turn, op=asr, or op=upload_reference")
-                body, code = dispatch(op, query, self.body())
+                payload = query
+                request_body = self.body()
             else:
                 payload = self.request_json(True)
-                body, code = dispatch(payload.get("op") or query.get("op") or "inspect", payload)
-            self.send_json(body, code)
+                op = payload.get("op") or query.get("op") or "inspect"
+                request_body = None
+            trace_id = identifier(payload.get("trace_id"), "trace_id")
+            turn_id = identifier(payload.get("turn_id"), "turn_id")
+            client_id = identifier(payload.get("client_id"), "client_id")
+            context = {key: value for key, value in {"http_id": http_id, "trace_id": trace_id, "turn_id": turn_id, "client_id": client_id}.items() if value}
+            with trace_scope(**context):
+                info("api", "api.request", {"method": "POST", "op": op, "content_type": content_type, "content_length": int(self.headers.get("Content-Length", "0") or 0), "fields": sorted(payload), "request": api_payload_evidence(payload), **({"audio_bytes": len(request_body or b"")} if content_type == "audio/wav" else {})})
+                response_body, code = dispatch(op, payload, request_body)
+                info("api", "api.response", {"method": "POST", "op": op, "status": code, "duration_ms": round((time.monotonic() - started) * 1000, 3), "accepted": response_body.get("accepted") if type(response_body) is dict else None})
+            self.send_json(response_body, code)
         except ApiError as exception:
+            warn("api", "api.rejected", {"method": "POST", "op": op, "path": self.path, "status": exception.code, "error": str(exception), "duration_ms": round((time.monotonic() - started) * 1000, 3)}, http_id=http_id, trace_id=trace_id, turn_id=turn_id, client_id=client_id)
             self.send_json({"error": str(exception)}, exception.code)
         except (KeyError, TypeError, ValueError) as exception:
+            warn("api", "api.rejected", {"method": "POST", "op": op, "path": self.path, "status": 400, "error": str(exception), "duration_ms": round((time.monotonic() - started) * 1000, 3)}, http_id=http_id, trace_id=trace_id, turn_id=turn_id, client_id=client_id)
             self.send_json({"error": f"invalid request: {exception}"}, 400)
         except Exception as exception:
             if client_gone(exception):
                 return
-            error("api", "POST failed", {"path": self.path, "error": str(exception)})
+            error("api", "api.failed", {"method": "POST", "op": op, "path": self.path, "error": str(exception), "duration_ms": round((time.monotonic() - started) * 1000, 3)}, http_id=http_id, trace_id=trace_id, turn_id=turn_id, client_id=client_id)
             self.send_json({"error": str(exception)}, 500)
 class Server(ThreadingHTTPServer):
     daemon_threads = True
 def main() -> int:
     server = Server(("127.0.0.1", 8765), Handler)
+    info("controller", "controller.started", {"host": "127.0.0.1", "port": 8765, "api_version": 5, "trace_run_id": trace_run_id(), "canonical_log": str(ROOT / "trident.log.jsonl"), "legacy_log": str(ROOT / "install.log.jsonl"), "pid": os.getpid()})
     timer = threading.Timer(.4, webbrowser.open, args=("http://127.0.0.1:8765/",))
     timer.daemon = True
     timer.start()
@@ -1313,11 +1613,13 @@ def main() -> int:
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        pass
+        info("controller", "controller.interrupted", {})
     finally:
+        info("controller", "controller.stopping", {"engines": list(PROCESSES)})
         server.server_close()
         for name in list(PROCESSES):
             stop_engine(name)
+        info("controller", "controller.stopped", {})
     return 0
 if __name__ == "__main__":
     raise SystemExit(main())
