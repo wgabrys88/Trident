@@ -369,7 +369,7 @@ index b361766..56a7b24 100644
                  }
                  s3gen_prompt_feat_rows = rows;
              }
-@@ -337,28 +332,80 @@ struct Engine::Impl {
+@@ -337,28 +332,88 @@ struct Engine::Impl {
      }
  
      std::vector<int32_t> run_t3(const std::string & text) {
@@ -409,6 +409,14 @@ index b361766..56a7b24 100644
 +                throw std::runtime_error("Engine: MTL tokenizer json failed to load");
 +            }
 +            text_tokens = tok.encode(text, opts.language);
++            // Match ChatterboxMultilingualTTS.generate and the upstream CLI:
++            // the MTL transformer expects explicit text boundary tokens.
++            std::vector<int32_t> padded;
++            padded.reserve(text_tokens.size() + 2);
++            padded.push_back(model.hparams.start_text_token);
++            padded.insert(padded.end(), text_tokens.begin(), text_tokens.end());
++            padded.push_back(model.hparams.stop_text_token);
++            text_tokens = std::move(padded);
 +        } else {
 +            if (model.tok_tokens.empty()) {
 +                throw std::runtime_error(
@@ -466,7 +474,7 @@ index b361766..56a7b24 100644
  
          std::vector<float> logits;
          int prompt_len = 0;
-@@ -547,6 +594,8 @@ struct Engine::Impl {
+@@ -547,6 +602,8 @@ struct Engine::Impl {
          const auto t3_t1 = std::chrono::steady_clock::now();
  
          wait_for_preload(s3gen_preload_thread);
