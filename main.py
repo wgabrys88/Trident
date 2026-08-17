@@ -74,14 +74,6 @@ def field(label: str, kind: str, default: Any, minimum: float | None = None, max
     return {key: value for key, value in {"label": label, "type": kind, "default": default, "min": minimum, "max": maximum, "options": options, "multiline": multiline}.items() if value is not None}
 
 
-FIELDS = {
-    "conversation.language": field("Conversation language", "string", "en", options=list(CONVERSATION_LANGUAGES)),
-    "conversation.clone_voice": field("Use my recording as the voice", "bool", False),
-    "speech.language": field("Speech language", "string", "en", options=list(TTS_LANGUAGES)),
-    "speech.style": field("Voice style", "string", "natural", options=["natural", "expressive", "cross-language"]),
-    "speech.text": field("Text to speak", "string", "This is a multilingual voice synthesis test.", multiline=True),
-}
-
 TTS_RUNTIME = {"gpu_layers": 99, "context": 512, "sessions": 1, "threads": 4}
 VOICE_DEFAULTS = {
     "seed": 42, "max_tokens": 1000, "top_k": 0, "top_p": 0.95, "min_p": 0.05,
@@ -97,6 +89,56 @@ VOICE_STYLES = {
 ASR_RUNTIME = {"threads": 4, "response_format": "json"}
 BRAIN_RUNTIME = {"context": 2048, "parallel": 1}
 BRAIN_GENERATION = {"temperature": 0.2, "top_p": 0.9, "top_k": 40, "min_p": 0.0, "repeat_penalty": 1.05, "seed": 42, "max_tokens": 160}
+
+FIELDS = {
+    "conversation.language": field("Conversation language", "string", "en", options=list(CONVERSATION_LANGUAGES)),
+    "conversation.clone_voice": field("Use my recording as the voice", "bool", False),
+    "speech.language": field("Speech language", "string", "en", options=list(TTS_LANGUAGES)),
+    "speech.style": field("Voice style", "string", "natural", options=list(VOICE_STYLES)),
+    "speech.text": field("Text to speak", "string", "This is a multilingual voice synthesis test.", multiline=True),
+    "tts.engine.gpu_layers": field("TTS GPU layers", "int", TTS_RUNTIME["gpu_layers"], 0, 999),
+    "tts.engine.context": field("TTS context tokens", "int", TTS_RUNTIME["context"], 64, 8192),
+    "tts.engine.sessions": field("TTS max sessions", "int", TTS_RUNTIME["sessions"], 1, 8),
+    "tts.engine.threads": field("TTS CPU threads", "int", TTS_RUNTIME["threads"], 1, 64),
+    "tts.sample.seed": field("TTS seed", "int", VOICE_DEFAULTS["seed"], 0, 2147483647),
+    "tts.sample.max_tokens": field("TTS max tokens", "int", VOICE_DEFAULTS["max_tokens"], 16, 4096),
+    "tts.sample.top_k": field("TTS top-k", "int", VOICE_DEFAULTS["top_k"], 0, 200),
+    "tts.sample.top_p": field("TTS top-p", "float", VOICE_DEFAULTS["top_p"], 0.0, 1.0),
+    "tts.sample.min_p": field("TTS min-p", "float", VOICE_DEFAULTS["min_p"], 0.0, 1.0),
+    "tts.sample.temperature": field("TTS temperature", "float", VOICE_DEFAULTS["temperature"], 0.01, 5.0),
+    "tts.sample.repeat_penalty": field("TTS repeat penalty", "float", VOICE_DEFAULTS["repeat_penalty"], 0.5, 2.0),
+    "tts.sample.cfm_steps": field("TTS CFM steps", "int", VOICE_DEFAULTS["cfm_steps"], 1, 50),
+    "tts.stream.first_chunk": field("TTS first chunk tokens", "int", VOICE_DEFAULTS["first_chunk"], 8, 1000),
+    "tts.stream.chunk": field("TTS later chunk tokens", "int", VOICE_DEFAULTS["chunk"], 8, 1000),
+    "tts.stream.max_sentence_chars": field("TTS max sentence chars", "int", VOICE_DEFAULTS["max_sentence_chars"], 16, 2000),
+    "tts.style.natural.cfg_weight": field("Natural CFG weight", "float", VOICE_STYLES["natural"]["cfg_weight"], 0.0, 2.0),
+    "tts.style.natural.exaggeration": field("Natural exaggeration", "float", VOICE_STYLES["natural"]["exaggeration"], 0.0, 2.0),
+    "tts.style.expressive.cfg_weight": field("Expressive CFG weight", "float", VOICE_STYLES["expressive"]["cfg_weight"], 0.0, 2.0),
+    "tts.style.expressive.exaggeration": field("Expressive exaggeration", "float", VOICE_STYLES["expressive"]["exaggeration"], 0.0, 2.0),
+    "tts.style.cross-language.cfg_weight": field("Less-accent CFG weight", "float", VOICE_STYLES["cross-language"]["cfg_weight"], 0.0, 2.0),
+    "tts.style.cross-language.exaggeration": field("Less-accent exaggeration", "float", VOICE_STYLES["cross-language"]["exaggeration"], 0.0, 2.0),
+    "asr.threads": field("ASR CPU threads", "int", ASR_RUNTIME["threads"], 1, 64),
+    "brain.engine.context": field("Brain context tokens", "int", BRAIN_RUNTIME["context"], 256, 32768),
+    "brain.engine.parallel": field("Brain parallel slots", "int", BRAIN_RUNTIME["parallel"], 1, 8),
+    "brain.sample.temperature": field("Brain temperature", "float", BRAIN_GENERATION["temperature"], 0.0, 2.0),
+    "brain.sample.top_p": field("Brain top-p", "float", BRAIN_GENERATION["top_p"], 0.0, 1.0),
+    "brain.sample.top_k": field("Brain top-k", "int", BRAIN_GENERATION["top_k"], 0, 200),
+    "brain.sample.min_p": field("Brain min-p", "float", BRAIN_GENERATION["min_p"], 0.0, 1.0),
+    "brain.sample.repeat_penalty": field("Brain repeat penalty", "float", BRAIN_GENERATION["repeat_penalty"], 0.5, 2.0),
+    "brain.sample.seed": field("Brain seed", "int", BRAIN_GENERATION["seed"], 0, 2147483647),
+    "brain.sample.max_tokens": field("Brain max tokens", "int", BRAIN_GENERATION["max_tokens"], 8, 2048),
+}
+
+PARAM_GROUPS = [
+    {"id": "tts-engine", "title": "TTS engine", "apply": "Restart the TTS engine to apply GPU layers, context, sessions, and threads.", "fields": ["tts.engine.gpu_layers", "tts.engine.context", "tts.engine.sessions", "tts.engine.threads"]},
+    {"id": "tts-sample", "title": "TTS sampling", "apply": "Applied on the next TTS WebSocket init.", "fields": ["tts.sample.seed", "tts.sample.max_tokens", "tts.sample.top_k", "tts.sample.top_p", "tts.sample.min_p", "tts.sample.temperature", "tts.sample.repeat_penalty", "tts.sample.cfm_steps"]},
+    {"id": "tts-stream", "title": "TTS streaming and chunking", "apply": "Applied on the next TTS WebSocket init. C++ VoiceConfig already reads these fields.", "fields": ["tts.stream.first_chunk", "tts.stream.chunk", "tts.stream.max_sentence_chars"]},
+    {"id": "tts-style", "title": "TTS style overlays", "apply": "Overlay cfg_weight and exaggeration for the selected Speech-lab style. Conversation uses the natural overlay.", "fields": ["tts.style.natural.cfg_weight", "tts.style.natural.exaggeration", "tts.style.expressive.cfg_weight", "tts.style.expressive.exaggeration", "tts.style.cross-language.cfg_weight", "tts.style.cross-language.exaggeration"]},
+    {"id": "asr-engine", "title": "ASR engine", "apply": "Restart the ASR engine to apply thread count.", "fields": ["asr.threads"]},
+    {"id": "brain-engine", "title": "Brain engine", "apply": "Restart the brain engine to apply context and parallel slots.", "fields": ["brain.engine.context", "brain.engine.parallel"]},
+    {"id": "brain-sample", "title": "Brain sampling", "apply": "Applied on the next /v1/chat/completions request.", "fields": ["brain.sample.temperature", "brain.sample.top_p", "brain.sample.top_k", "brain.sample.min_p", "brain.sample.repeat_penalty", "brain.sample.seed", "brain.sample.max_tokens"]},
+]
+
 BRAIN_FAMILIES = {
     "gemma4": {"reasoning_format": "none", "chat_template_kwargs": {"enable_thinking": False}},
     "qwen35": {"reasoning_format": "none", "chat_template_kwargs": {"enable_thinking": False}},
@@ -537,7 +579,7 @@ def github_release_asset(spec: dict) -> tuple[str, int, str]:
     repo = urllib.parse.quote(spec["repo"], safe="/")
     tag = urllib.parse.quote(spec["tag"], safe="")
     url = f"https://api.github.com/repos/{repo}/releases/tags/{tag}"
-    request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "clone-reliable/3", "X-GitHub-Api-Version": "2026-03-10"})
+    request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "trident/1", "X-GitHub-Api-Version": "2026-03-10"})
     with urllib.request.urlopen(request, timeout=30) as response:
         release = json.load(response)
     if release.get("tag_name") != spec["tag"] or release.get("draft"):
@@ -635,7 +677,7 @@ def fetch(url: str, destination: Path, size: int, digest: str, key: str):
     if destination.is_file() and destination.stat().st_size == size and sha256(destination) == digest:
         return
     partial = destination.with_suffix(destination.suffix + ".part")
-    request = urllib.request.Request(url, headers={"User-Agent": "clone-reliable/2"})
+    request = urllib.request.Request(url, headers={"User-Agent": "trident/1"})
     hasher = hashlib.sha256()
     done = 0
     with urllib.request.urlopen(request, timeout=60) as response, partial.open("wb") as output:
@@ -776,17 +818,19 @@ def load_engine(name: str, key: str):
     if not executable_path.is_file():
         raise RuntimeError(f"component is missing: {executable_path}")
     if name == "tts":
-        applied = {"runtime": deepcopy(TTS_RUNTIME), "voice": deepcopy(VOICE_DEFAULTS)}
-        command = [str(executable_path), "--port", "8095", "--model", str(paths[0]), "--s3gen-gguf", str(paths[1]), "--n-gpu-layers", str(TTS_RUNTIME["gpu_layers"]), "--context", str(TTS_RUNTIME["context"]), "--max-sessions", str(TTS_RUNTIME["sessions"]), "--threads", str(TTS_RUNTIME["threads"])]
+        runtime = tts_runtime()
+        applied = {"runtime": runtime, "voice": voice_base()}
+        command = [str(executable_path), "--port", "8095", "--model", str(paths[0]), "--s3gen-gguf", str(paths[1]), "--n-gpu-layers", str(runtime["gpu_layers"]), "--context", str(runtime["context"]), "--max-sessions", str(runtime["sessions"]), "--threads", str(runtime["threads"])]
         cwd, health, env = executable_path.parent, "http://127.0.0.1:8095/health", os.environ.copy()
     elif name == "asr":
-        applied = deepcopy(ASR_RUNTIME)
-        command = [str(executable_path), "--model", str(paths[0]), "--host", "127.0.0.1", "--port", "8097", "--threads", str(ASR_RUNTIME["threads"])]
+        applied = asr_runtime()
+        command = [str(executable_path), "--model", str(paths[0]), "--host", "127.0.0.1", "--port", "8097", "--threads", str(applied["threads"])]
         cwd, health, env = executable_path.parent, "http://127.0.0.1:8097/health", os.environ.copy()
         env["PARAKEET_DEVICE"] = "Vulkan0"
     else:
-        applied = {**deepcopy(BRAIN_RUNTIME), "id": active_brain_id(), "family": active_brain_family(), "path": str(paths[0])}
-        command = [str(executable_path), "-m", str(paths[0]), "--host", "127.0.0.1", "--port", "8098", "--device", "Vulkan0", "--n-gpu-layers", "all", "--ctx-size", str(BRAIN_RUNTIME["context"]), "--parallel", str(BRAIN_RUNTIME["parallel"]), "--fit", "off", "--no-mmproj"]
+        runtime = brain_runtime()
+        applied = {**runtime, "id": active_brain_id(), "family": active_brain_family(), "path": str(paths[0])}
+        command = [str(executable_path), "-m", str(paths[0]), "--host", "127.0.0.1", "--port", "8098", "--device", "Vulkan0", "--n-gpu-layers", "all", "--ctx-size", str(runtime["context"]), "--parallel", str(runtime["parallel"]), "--fit", "off", "--no-mmproj"]
         cwd, health, env = executable_path.parent, "http://127.0.0.1:8098/health", os.environ.copy()
     set_job(key, "running", "load", 20, f"loading {name}")
     process = subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8")
@@ -801,7 +845,7 @@ def load_engine(name: str, key: str):
 
 
 def multipart(audio: bytes) -> tuple[bytes, str]:
-    boundary = "clone-reliable-" + uuid.uuid4().hex
+    boundary = "trident-" + uuid.uuid4().hex
     fields = [("file", "speech.wav", "audio/wav", audio), ("response_format", "", "text/plain", b"json")]
     body = bytearray()
     for name, filename, kind, value in fields:
@@ -835,7 +879,7 @@ def brain(prompt: str, language: str = "en") -> dict:
     request = {
         "model": active_brain_id(),
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-        **BRAIN_GENERATION,
+        **brain_generation(),
         "stream": False,
         **BRAIN_FAMILIES[active_brain_family()],
     }
@@ -874,12 +918,64 @@ def set_config(values: dict):
     emit_state()
 
 
+def tts_runtime() -> dict:
+    return {
+        "gpu_layers": CONFIG["tts.engine.gpu_layers"],
+        "context": CONFIG["tts.engine.context"],
+        "sessions": CONFIG["tts.engine.sessions"],
+        "threads": CONFIG["tts.engine.threads"],
+    }
+
+
+def voice_base() -> dict:
+    return {
+        "seed": CONFIG["tts.sample.seed"],
+        "max_tokens": CONFIG["tts.sample.max_tokens"],
+        "top_k": CONFIG["tts.sample.top_k"],
+        "top_p": CONFIG["tts.sample.top_p"],
+        "min_p": CONFIG["tts.sample.min_p"],
+        "temperature": CONFIG["tts.sample.temperature"],
+        "repeat_penalty": CONFIG["tts.sample.repeat_penalty"],
+        "cfm_steps": CONFIG["tts.sample.cfm_steps"],
+        "first_chunk": CONFIG["tts.stream.first_chunk"],
+        "chunk": CONFIG["tts.stream.chunk"],
+        "max_sentence_chars": CONFIG["tts.stream.max_sentence_chars"],
+    }
+
+
+def style_overlay(style: str) -> dict:
+    return {
+        "cfg_weight": CONFIG[f"tts.style.{style}.cfg_weight"],
+        "exaggeration": CONFIG[f"tts.style.{style}.exaggeration"],
+    }
+
+
+def asr_runtime() -> dict:
+    return {"threads": CONFIG["asr.threads"], "response_format": ASR_RUNTIME["response_format"]}
+
+
+def brain_runtime() -> dict:
+    return {"context": CONFIG["brain.engine.context"], "parallel": CONFIG["brain.engine.parallel"]}
+
+
+def brain_generation() -> dict:
+    return {
+        "temperature": CONFIG["brain.sample.temperature"],
+        "top_p": CONFIG["brain.sample.top_p"],
+        "top_k": CONFIG["brain.sample.top_k"],
+        "min_p": CONFIG["brain.sample.min_p"],
+        "repeat_penalty": CONFIG["brain.sample.repeat_penalty"],
+        "seed": CONFIG["brain.sample.seed"],
+        "max_tokens": CONFIG["brain.sample.max_tokens"],
+    }
+
+
 def voice_options(language: str, style: str) -> dict:
     if language not in TTS_LANGUAGES:
         raise ApiError(400, f"unsupported speech language: {language}")
     if style not in VOICE_STYLES:
         raise ApiError(400, f"unsupported voice style: {style}")
-    return {**VOICE_DEFAULTS, **VOICE_STYLES[style]}
+    return {**voice_base(), **style_overlay(style)}
 
 
 def tts_session(lane: str, language: str | None = None, style: str | None = None) -> dict:
@@ -1083,7 +1179,7 @@ def resolve_brain_url(spec: str) -> str:
 def fetch_any(url: str, destination: Path, key: str) -> tuple[int, str]:
     destination.parent.mkdir(parents=True, exist_ok=True)
     partial = destination.with_suffix(destination.suffix + ".part")
-    request = urllib.request.Request(url, headers={"User-Agent": "clone-reliable/2"})
+    request = urllib.request.Request(url, headers={"User-Agent": "trident/1"})
     hasher = hashlib.sha256()
     done = 0
     with urllib.request.urlopen(request, timeout=60) as response, partial.open("wb") as output:
@@ -1288,6 +1384,7 @@ SCHEMA = {
     "fields": FIELDS,
     "languages": {"conversation": CONVERSATION_LANGUAGES, "speech": TTS_LANGUAGES, "asr": ASR_LANGUAGES},
     "voice_styles": VOICE_STYLES,
+    "param_groups": PARAM_GROUPS,
     "ops": OPS,
     "prerequisites": {name: {"label": label, "install": f"/api/prerequisites/{name}/install", "op": "install_prerequisite", "name": name} for name, label in {"python": "PYTHON 3.11+", "git": "GIT (TTS BUILD)", "cmake": "CMAKE (TTS BUILD)", "msvc": "MSVC (TTS BUILD)", "vulkan": "VULKAN SDK (TTS BUILD)"}.items()},
     "components": {
@@ -1476,7 +1573,7 @@ def main() -> int:
     timer = threading.Timer(.4, webbrowser.open, args=("http://127.0.0.1:8765/",))
     timer.daemon = True
     timer.start()
-    print("CLONE RELIABLE  http://127.0.0.1:8765/")
+    print("TRIDENT  http://127.0.0.1:8765/")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

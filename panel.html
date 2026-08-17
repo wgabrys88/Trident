@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Clone Reliable</title>
+<title>Trident</title>
 <link rel="stylesheet" href="/panel.css">
 </head>
 <body>
@@ -11,7 +11,7 @@
   <header class="hero">
     <div>
       <p class="eyebrow">Windows · Vulkan · local only</p>
-      <h1>Clone Reliable</h1>
+      <h1>Trident</h1>
       <p class="intro">Speak naturally. The app listens, transcribes, thinks, and streams the answer through your default Windows speakers.</p>
     </div>
     <div class="hero-actions">
@@ -102,7 +102,13 @@
         <span id="setup-summary" class="summary-help">Checking installation</span>
       </summary>
       <div class="details-body">
-        <p class="explain">Parakeet and llama.cpp are downloaded as pinned Vulkan releases. Only the customized Chatterbox server is built locally. The default voice is Resemble’s official Chatterbox demo prompt. Switch the brain GGUF below if you want a smaller multilingual model.</p>
+        <p class="explain">Parakeet and llama.cpp are pinned Vulkan releases. Only the Chatterbox server is built locally. The default voice is the bundled Resemble demo prompt. Optional Qwen GGUFs are not part of Install all.</p>
+        <div class="setup-actions">
+          <button id="install-all" class="primary" type="button">Install all</button>
+          <button id="start-all" type="button">Start engines</button>
+          <button id="stop-all" type="button">Stop engines</button>
+        </div>
+        <p id="install-all-state" class="microcopy">Install all runs missing prerequisites, components, and required models one after another. It waits for each job to finish, then waits five seconds before the next.</p>
         <div class="setup-section">
           <h3>Active brain</h3>
           <div class="brain-row">
@@ -123,14 +129,21 @@
           </div>
           <p id="brain-state" class="microcopy"></p>
         </div>
-        <div class="setup-actions">
-          <button id="start-all" class="primary" type="button">Start all engines</button>
-          <button id="stop-all" type="button">Stop all engines</button>
-        </div>
         <div class="setup-section"><h3>Build prerequisites</h3><div id="prerequisites" class="setup-grid"></div></div>
         <div class="setup-section"><h3>Runtime components</h3><div id="components" class="setup-grid"></div></div>
         <div class="setup-section"><h3>Models and default voice</h3><div id="models" class="setup-grid"></div></div>
         <div class="setup-section"><h3>Engine status</h3><div id="engines" class="setup-grid"></div></div>
+      </div>
+    </details>
+
+    <details class="card params">
+      <summary>
+        <span><span class="eyebrow">Optional</span><strong>Runtime parameters</strong></span>
+        <span class="summary-help">TTS, ASR, and brain values from config.json</span>
+      </summary>
+      <div class="details-body">
+        <p class="explain">These fields write the same config keys the engines read. Engine-process fields need a restart of that engine. Sampling, style, and stream fields apply on the next request or TTS session.</p>
+        <div id="param-groups"></div>
       </div>
     </details>
 
