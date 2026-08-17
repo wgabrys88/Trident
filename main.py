@@ -68,7 +68,7 @@ def field(label: str, kind: str, default: Any, minimum: float | None = None, max
     return {key: value for key, value in {"label": label, "type": kind, "default": default, "min": minimum, "max": maximum, "options": options, "multiline": multiline}.items() if value is not None}
 TTS_RUNTIME = {"gpu_layers": 99, "context": 512, "sessions": 1, "threads": 4}
 VOICE_DEFAULTS = {
-    "seed": 42, "max_tokens": 1000, "top_k": 0, "top_p": 0.95, "min_p": 0.05,
+    "seed": 42, "max_tokens": 1000, "top_k": 0, "top_p": 1.0, "min_p": 0.05,
     "temperature": 0.8, "repeat_penalty": 1.2, "cfg_weight": 0.5,
     "exaggeration": 0.5, "cfm_steps": 5, "first_chunk": 75,
     "chunk": 150, "max_sentence_chars": 180,
@@ -204,6 +204,11 @@ def atomic_json(path: Path, value: dict):
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_suffix(path.suffix + ".part")
     partial.write_text(json.dumps(value, separators=(",", ":"), ensure_ascii=True), encoding="ascii")
+    os.replace(partial, path)
+def atomic_bytes(path: Path, value: bytes):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_suffix(path.suffix + ".part")
+    partial.write_bytes(value)
     os.replace(partial, path)
 def load_config() -> dict:
     defaults = {path: spec["default"] for path, spec in FIELDS.items()}
@@ -934,6 +939,7 @@ def wav_body(raw: bytes | None) -> bytes:
     return raw
 def run_turn(payload: dict, raw: bytes | None = None) -> dict:
     audio = wav_body(raw)
+    atomic_bytes(DATA / "last-input.wav", audio)
     language = str(payload.get("language") or "")
     if language not in CONVERSATION_LANGUAGES:
         raise ApiError(400, f"conversation language must be one of {list(CONVERSATION_LANGUAGES)}")

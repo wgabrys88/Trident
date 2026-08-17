@@ -2,7 +2,9 @@
 #include <algorithm>
 #include <nlohmann/json.hpp>
 #include <chrono>
+#include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <future>
 #include <iostream>
 #include <cmath>
@@ -11,6 +13,31 @@
 #include <thread>
 #include <vector>
 using json = nlohmann::json;
+namespace {
+void write_pcm16_wav(const std::string& path, const std::vector<int16_t>& samples, uint32_t sample_rate) {
+    const std::filesystem::path target(path);
+    if (!target.parent_path().empty()) std::filesystem::create_directories(target.parent_path());
+    std::ofstream output(target, std::ios::binary | std::ios::trunc);
+    if (!output) throw std::runtime_error("cannot open diagnostic WAV: " + path);
+    const uint32_t data_size = static_cast<uint32_t>(samples.size() * sizeof(int16_t));
+    const uint32_t riff_size = 36 + data_size;
+    const uint32_t byte_rate = sample_rate * sizeof(int16_t);
+    const uint16_t format = 1, channels = 1, block_align = sizeof(int16_t), bits = 16;
+    output.write("RIFF", 4); output.write(reinterpret_cast<const char*>(&riff_size), 4);
+    output.write("WAVEfmt ", 8);
+    const uint32_t fmt_size = 16;
+    output.write(reinterpret_cast<const char*>(&fmt_size), 4);
+    output.write(reinterpret_cast<const char*>(&format), 2);
+    output.write(reinterpret_cast<const char*>(&channels), 2);
+    output.write(reinterpret_cast<const char*>(&sample_rate), 4);
+    output.write(reinterpret_cast<const char*>(&byte_rate), 4);
+    output.write(reinterpret_cast<const char*>(&block_align), 2);
+    output.write(reinterpret_cast<const char*>(&bits), 2);
+    output.write("data", 4); output.write(reinterpret_cast<const char*>(&data_size), 4);
+    output.write(reinterpret_cast<const char*>(samples.data()), data_size);
+    if (!output) throw std::runtime_error("cannot write diagnostic WAV: " + path);
+}
+}
 namespace tts {
 TTSServer::TTSServer(int port) : port_(port) {}
 TTSServer::~TTSServer() { stop(); }
@@ -51,6 +78,7 @@ void TTSServer::stop() {
 }
 void TTSServer::connect(httplib::ws::WebSocket& socket) {
     std::string session;
+    std::string capture_audio;
     std::future<void> work;
     bool open = true;
     auto finish = [&] {
@@ -67,6 +95,7 @@ void TTSServer::connect(httplib::ws::WebSocket& socket) {
                 finish();
                 if (!session.empty()) engine_->destroy_session(session);
                 VoiceConfig config{message.at("reference_audio").get<std::string>(), message.at("language").get<std::string>(), message.at("seed").get<int>(), message.at("max_tokens").get<int>(), message.at("top_k").get<int>(), message.at("cfm_steps").get<int>(), message.at("stream_first_chunk_tokens").get<int>(), message.at("stream_chunk_tokens").get<int>(), message.value("max_sentence_chars", 180), message.at("exaggeration").get<float>(), message.at("cfg_weight").get<float>(), message.at("temperature").get<float>(), message.at("repeat_penalty").get<float>(), message.at("min_p").get<float>(), message.at("top_p").get<float>()};
+                capture_audio = (std::filesystem::path(config.reference).parent_path() / "last-output.wav").string();
                 if (!std::filesystem::is_regular_file(config.reference)) throw std::runtime_error("reference audio not found: " + config.reference);
                 session = engine_->create_session(config);
                 socket.send(json{{"type", "ready"}, {"session_id", session}, {"language", config.language}, {"sample_rate", 24000}, {"format", "pcm_s16le"}}.dump());
@@ -76,10 +105,11 @@ void TTSServer::connect(httplib::ws::WebSocket& socket) {
                 const auto text = message.at("text").get<std::string>();
                 const auto request = message.at("request_id").get<std::string>();
                 socket.send(json{{"type", "synthesize_started"}, {"request_id", request}}.dump());
-                work = std::async(std::launch::async, [this, &socket, session, text, request] {
+                work = std::async(std::launch::async, [this, &socket, session, text, request, capture_audio] {
                     std::size_t total = 0, clipped = 0, chunks = 0;
                     double sumsq = 0;
                     float peak = 0;
+                    std::vector<int16_t> captured;
                     try {
                         engine_->synthesize(session, text, [&](const float* pcm, std::size_t samples, int index, bool last) {
                             std::vector<char> bytes(samples * 2);
@@ -89,6 +119,7 @@ void TTSServer::connect(httplib::ws::WebSocket& socket) {
                                 sumsq += static_cast<double>(pcm[i]) * pcm[i];
                                 clipped += std::abs(pcm[i]) >= 0.999f;
                                 const auto value = static_cast<int16_t>(sample * 32767);
+                                captured.push_back(value);
                                 bytes[i * 2] = static_cast<char>(value & 255);
                                 bytes[i * 2 + 1] = static_cast<char>((value >> 8) & 255);
                             }
@@ -101,7 +132,11 @@ void TTSServer::connect(httplib::ws::WebSocket& socket) {
                                 const double rms_dbfs = 20.0 * std::log10(std::max(rms, 1e-9));
                                 const double peak_dbfs = 20.0 * std::log10(std::max(static_cast<double>(peak), 1e-9));
                                 const double clip_pct = total ? 100.0 * clipped / total : 0.0;
-                                std::cout << "METRIC tts_audio samples=" << total << " chunks=" << chunks << " seconds=" << total / 24000.0 << " rms_dbfs=" << rms_dbfs << " peak_dbfs=" << peak_dbfs << " clip_pct=" << clip_pct << std::endl;
+                                if (!capture_audio.empty()) {
+                                    try { write_pcm16_wav(capture_audio, captured, 24000); }
+                                    catch (const std::exception& exception) { std::cerr << "TTS diagnostic capture failed: " << exception.what() << std::endl; }
+                                }
+                                std::cout << "METRIC tts_audio samples=" << total << " chunks=" << chunks << " seconds=" << total / 24000.0 << " rms_dbfs=" << rms_dbfs << " peak_dbfs=" << peak_dbfs << " clip_pct=" << clip_pct << " capture=" << capture_audio << std::endl;
                             }
                         });
                     } catch (const std::exception& exception) {
