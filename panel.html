@@ -7,43 +7,187 @@
 <link rel="stylesheet" href="/panel.css">
 </head>
 <body>
-<header class="topbar">
-  <div class="brand"><strong>Trident</strong><span id="connection" class="badge bad">Connecting</span><span id="flow-badge" class="badge">Idle</span></div>
-  <div class="top-actions"><button id="install-all" type="button">Install missing</button><button id="engines-toggle" class="primary" type="button">Start engines</button></div>
-  <div id="install-strip" class="install-strip" aria-label="Installation status"></div>
-  <div id="engine-strip" class="engine-strip"></div>
-  <span id="install-all-state" class="status-line">Checking installation</span>
-</header>
-<p id="fault" class="fault" hidden></p>
-<main>
-<section class="card conversation" aria-labelledby="conversation-title">
-  <div class="heading"><h1 id="conversation-title">Voice conversation</h1><span id="recording-time" class="microcopy">Start engines to talk.</span></div>
-  <div class="controls compact">
-    <label>Language<select id="conversation-language" data-path="conversation.language"></select></label>
-    <label class="check"><input id="clone-voice" type="checkbox" data-path="conversation.clone_voice"> Experimental mic clone</label>
-    <label class="check"><input id="vad" type="checkbox" data-path="conversation.vad"> Auto-send on pause</label>
+<header class="app-header">
+  <div class="header-shell">
+    <div class="header-row">
+      <div class="brand-block">
+        <div class="brand-mark" aria-hidden="true">T</div>
+        <div>
+          <p class="eyebrow">Local voice workspace</p>
+          <h1>Trident</h1>
+        </div>
+      </div>
+      <div class="connection-cluster" aria-label="Application status">
+        <span id="connection" class="badge bad">Connecting</span>
+        <span id="flow-badge" class="badge">Idle</span>
+      </div>
+      <div class="header-actions">
+        <button id="install-all" type="button">Install missing</button>
+        <button id="engines-toggle" class="primary" type="button">Start engines</button>
+      </div>
+    </div>
+
+    <div class="readiness-panel" aria-label="Installation and engine status">
+      <span class="readiness-label">System readiness</span>
+      <span id="install-all-state" class="status-line">Checking installation</span>
+      <div id="install-strip" class="install-strip" aria-label="Required installation items"></div>
+      <div id="engine-strip" class="engine-strip" aria-label="Engine status"></div>
+    </div>
   </div>
-  <div class="talk-actions"><button id="record" class="primary" type="button">Start listening</button><button id="pick-audio" type="button">Use WAV</button><button id="cancel-speech" type="button" disabled>Stop voice</button><input id="audio-file" type="file" accept="audio/wav" hidden></div>
-  <ol class="pipeline"><li data-stage="listening"><b>1</b> Listen</li><li data-stage="transcribing"><b>2</b> ASR 0.6B</li><li data-stage="thinking"><b>3</b> Brain</li><li data-stage="speaking"><b>4</b> TTS</li></ol>
-  <div class="outputs"><article><header><h2>Heard</h2><span id="asr-state">Waiting</span></header><p id="transcript" class="output-text muted">Transcript appears here.</p></article><article><header><h2>Answer</h2><span id="speech-state">Waiting</span></header><p id="answer" class="output-text muted">Reply appears here.</p></article></div>
-</section>
-<details class="card diagnostics" open>
-  <summary><strong>Audio diagnostic</strong><span class="summary-help">Input vs exact streamed output</span></summary>
-  <div class="details-body"><canvas id="audio-diagnostic" width="720" height="500"></canvas><div class="row"><span id="audio-metrics" class="microcopy">Run one conversation turn to populate signal metrics.</span><button id="save-diagnostic" type="button" disabled>Save PNG</button></div></div>
-</details>
-<details class="card lab">
-  <summary><strong>Speech lab</strong><span class="summary-help">TTS only</span></summary>
-  <div class="details-body"><div class="controls"><label>Language<select id="speech-language" data-path="speech.language"></select></label><label>Style<select id="speech-style" data-path="speech.style"><option value="natural">Natural</option><option value="expressive">Expressive</option><option value="cross-language">Less reference accent</option></select></label><label class="wide">Text<textarea id="speech-text" data-path="speech.text" rows="3"></textarea></label></div><div class="talk-actions"><button id="speak-text" class="primary" type="button">Speak text</button><button id="upload-reference" type="button">Voice reference</button><input id="reference-file" type="file" accept="audio/wav" hidden></div><p id="reference-state" class="microcopy"></p></div>
-</details>
-<details class="card setup">
-  <summary><strong>Setup, brain and parameters</strong><span id="setup-summary" class="summary-help">Checking</span></summary>
-  <div class="details-body"><div class="brain-row"><label>Brain<select id="brain-select"></select></label><label id="brain-family-wrap" hidden>Family<select id="brain-family"><option value="generic">Generic</option><option value="gemma4">Gemma 4</option><option value="qwen35">Qwen 3.5</option></select></label><label id="brain-url-wrap" class="wide" hidden>Custom GGUF URL<input id="brain-url" type="text" placeholder="https://huggingface.co/.../model.gguf"></label><button id="brain-download" type="button" hidden>Download selected</button><button id="brain-apply" type="button" hidden>Apply custom</button></div><p id="brain-state" class="microcopy"></p><div id="param-groups"></div></div>
-</details>
-<details class="card logs">
-  <summary><strong>Diagnostic log</strong><span class="summary-help">Warnings, milestones and metrics</span></summary>
-  <div class="details-body"><div class="row"><button id="refresh-log" type="button">Refresh</button><button id="clear-log" type="button">Clear</button></div><div id="log-output" class="log-box" role="log"></div></div>
-</details>
+</header>
+
+<p id="fault" class="fault" role="alert" hidden></p>
+
+<main class="page-shell">
+  <section class="card conversation" aria-labelledby="conversation-title">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">Conversation</p>
+        <h2 id="conversation-title">Talk with Trident</h2>
+      </div>
+      <p id="recording-time" class="microcopy">Start engines to talk.</p>
+    </div>
+
+    <div class="conversation-controls">
+      <label>Conversation language
+        <select id="conversation-language" data-path="conversation.language"></select>
+      </label>
+      <label class="check">
+        <input id="clone-voice" type="checkbox" data-path="conversation.clone_voice">
+        Use this recording as the reply voice
+      </label>
+      <label class="check">
+        <input id="vad" type="checkbox" data-path="conversation.vad">
+        Send automatically after a pause
+      </label>
+    </div>
+
+    <div class="io-note">
+      <span><strong>Input</strong> Windows microphone or WAV file</span>
+      <span><strong>Output</strong> Windows speakers</span>
+      <span><strong>Privacy</strong> Processing stays on this computer</span>
+    </div>
+
+    <div class="talk-actions">
+      <button id="record" class="primary" type="button">Start listening</button>
+      <button id="pick-audio" type="button">Use WAV file</button>
+      <button id="cancel-speech" type="button" disabled>Stop voice</button>
+      <input id="audio-file" type="file" accept="audio/wav" hidden>
+    </div>
+
+    <ol class="pipeline" aria-label="Conversation stages">
+      <li data-stage="listening"><span>1</span><strong>Listen</strong><small>Capture speech</small></li>
+      <li data-stage="transcribing"><span>2</span><strong>Transcribe</strong><small>Parakeet ASR</small></li>
+      <li data-stage="thinking"><span>3</span><strong>Think</strong><small>Local brain</small></li>
+      <li data-stage="speaking"><span>4</span><strong>Speak</strong><small>Chatterbox V3</small></li>
+    </ol>
+
+    <div class="outputs">
+      <article>
+        <div class="output-title">
+          <h3>Heard</h3>
+          <span id="asr-state">Waiting</span>
+        </div>
+        <p id="transcript" class="output-text muted">Your transcript appears here.</p>
+      </article>
+      <article>
+        <div class="output-title">
+          <h3>Answer</h3>
+          <span id="speech-state">Waiting</span>
+        </div>
+        <p id="answer" class="output-text muted">The reply appears here and highlights as audio plays.</p>
+      </article>
+    </div>
+  </section>
+
+  <details class="card diagnostics">
+    <summary>
+      <span class="summary-copy"><span class="eyebrow">Signal check</span><strong>Audio diagnostic</strong></span>
+      <span class="summary-help">Compare the recorded input with streamed output</span>
+    </summary>
+    <div class="details-body">
+      <canvas id="audio-diagnostic" class="diagnostic-canvas" width="720" height="500"></canvas>
+      <div class="row diagnostic-footer">
+        <span id="audio-metrics" class="microcopy">Run one conversation turn to populate signal metrics.</span>
+        <button id="save-diagnostic" type="button" disabled>Save PNG</button>
+      </div>
+    </div>
+  </details>
+
+  <details class="card lab">
+    <summary>
+      <span class="summary-copy"><span class="eyebrow">Optional</span><strong>Speech lab</strong></span>
+      <span class="summary-help">Speak text directly in any Chatterbox language</span>
+    </summary>
+    <div class="details-body">
+      <div class="lab-grid">
+        <label>Speech language
+          <select id="speech-language" data-path="speech.language"></select>
+        </label>
+        <label>Voice style
+          <select id="speech-style" data-path="speech.style">
+            <option value="natural">Natural</option>
+            <option value="expressive">Expressive</option>
+            <option value="cross-language">Less reference accent</option>
+          </select>
+        </label>
+        <label class="wide">Text
+          <textarea id="speech-text" data-path="speech.text" rows="4"></textarea>
+        </label>
+      </div>
+      <div class="talk-actions">
+        <button id="speak-text" class="primary" type="button">Speak text</button>
+        <button id="upload-reference" type="button">Choose voice reference</button>
+        <input id="reference-file" type="file" accept="audio/wav" hidden>
+      </div>
+      <p id="reference-state" class="microcopy"></p>
+    </div>
+  </details>
+
+  <details class="card setup">
+    <summary>
+      <span class="summary-copy"><span class="eyebrow">Configuration</span><strong>Brain and runtime parameters</strong></span>
+      <span id="setup-summary" class="summary-help">Checking installation</span>
+    </summary>
+    <div class="details-body">
+      <p class="microcopy setup-copy">Choose the local response model and adjust advanced engine values. Engine-process changes apply after restarting the affected engine.</p>
+      <div class="brain-row">
+        <label>Brain
+          <select id="brain-select"></select>
+        </label>
+        <label id="brain-family-wrap" hidden>Model family
+          <select id="brain-family">
+            <option value="generic">Generic</option>
+            <option value="gemma4">Gemma 4</option>
+            <option value="qwen35">Qwen 3.5</option>
+          </select>
+        </label>
+        <label id="brain-url-wrap" class="wide" hidden>Custom GGUF URL
+          <input id="brain-url" type="text" placeholder="https://huggingface.co/.../model.gguf">
+        </label>
+        <button id="brain-download" type="button" hidden>Download selected</button>
+        <button id="brain-apply" type="button" hidden>Apply custom model</button>
+      </div>
+      <p id="brain-state" class="microcopy"></p>
+      <div id="param-groups"></div>
+    </div>
+  </details>
+
+  <details class="card logs">
+    <summary>
+      <span class="summary-copy"><span class="eyebrow">Diagnostics</span><strong>Installation and runtime log</strong></span>
+      <span class="summary-help">Warnings, milestones, and measurements</span>
+    </summary>
+    <div class="details-body">
+      <div class="row log-actions">
+        <button id="refresh-log" type="button">Refresh</button>
+        <button id="clear-log" type="button">Clear</button>
+      </div>
+      <div id="log-output" class="log-box" role="log" aria-live="polite"></div>
+    </div>
+  </details>
 </main>
+
 <script src="/panel.js"></script>
 </body>
 </html>

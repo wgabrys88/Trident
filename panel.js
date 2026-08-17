@@ -96,8 +96,9 @@ function installEntries() {
 async function installEntry(entry) { if (entry.kind === "prerequisite" && entry.name === "python") throw Error("Python 3.11 is a host prerequisite"); await command(entry.op, {name: entry.name}); await waitForJob(entry.kind, entry.name); }
 function renderInstallStrip() {
   const root = $("install-strip");
+  const entries = installEntries();
   root.replaceChildren();
-  for (const entry of installEntries()) {
+  for (const entry of entries) {
     const job = jobFor(entry.kind, entry.name);
     const status = job && job.status === "running" ? "running" : entry.value.status;
     const label = document.createElement("label");
@@ -118,7 +119,23 @@ function renderInstallStrip() {
     span.textContent = `${name.toUpperCase()}: ${value.status}`;
     engines.append(span);
   }
-  $("setup-summary").textContent = `${installEntries().filter(x => isReady(x.value)).length}/${installEntries().length} required ready`;
+  const readyCount = entries.filter(entry => isReady(entry.value)).length;
+  const activeEntry = entries.find(entry => {
+    const job = jobFor(entry.kind, entry.name);
+    return job && job.status === "running";
+  });
+  $("setup-summary").textContent = `${readyCount}/${entries.length} required ready`;
+  if (!installingAll) {
+    const statusLine = $("install-all-state");
+    if (activeEntry) {
+      const job = jobFor(activeEntry.kind, activeEntry.name);
+      statusLine.textContent = `${job.message} - ${job.progress}%`;
+    } else if (readyCount === entries.length) {
+      statusLine.textContent = "All required items are verified";
+    } else {
+      statusLine.textContent = `${entries.length - readyCount} required item${entries.length - readyCount === 1 ? " is" : "s are"} missing`;
+    }
+  }
   renderBrain();
 }
 function renderBrain() {
