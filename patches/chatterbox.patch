@@ -221,7 +221,7 @@ index e39d04b..73ae4bf 100644
 -if (TTS_CPP_INSTALL AND TTS_CPP_BUILD_LIBRARY)
 -    if (TTS_CPP_USE_SYSTEM_GGML)
 -        # Full install(EXPORT) flow.  Only reachable when `ggml` is an
--        # imported target from `find_package(ggml CONFIG REQUIRED)` -- the
+-        # imported target from `find_package(ggml CONFIG REQUIRED)` __EM_DASH__ the
 -        # standalone `add_subdirectory(ggml)` path would fail
 -        # install(EXPORT) because its ggml target isn't in an export set.
 -        include(CMakePackageConfigHelpers)
@@ -1656,7 +1656,7 @@ index 746de95..bf7dbcb 100644
 +            m.cfg_rate    = (k_cf >= 0) ? gguf_get_val_f32(g, k_cf) : (m.meanflow ? 0.0f : 0.7f);
 +        }
          if (k_mf < 0 && k_ts < 0 && k_cf < 0) {
-             // Pre-section3.19 GGUFs lack the variant keys.  Defaults match the
+             // Pre-__SECTION_SIGN__3.19 GGUFs lack the variant keys.  Defaults match the
              // historical Turbo behaviour, so legacy chatterbox-s3gen.gguf
 @@ -317,6 +597,9 @@ static ggml_tensor * conv1d_f32_b(ggml_context * ctx, ggml_tensor * kernel, ggml
  
@@ -2343,7 +2343,7 @@ index bf7dbcb..be1e124 100644
 -    // If neither --ref-dir nor any C++ override populated the three
 -    // conditioning tensors above, pull the built-in voice from the GGUF.
 -    //
--    // NB: `ref_dir.empty()` alone is NOT a valid check here -- --reference-audio
+-    // NB: `ref_dir.empty()` alone is NOT a valid check here __EM_DASH__ --reference-audio
 -    // by itself (no --ref-dir) legitimately fills all three via the C++
 -    // override path, and we must not overwrite those.
 -    if (pt_data.empty() && emb_data.empty() && pf_data.empty()) {
@@ -2584,12 +2584,13 @@ diff --git a/src/voice_features.cpp b/src/voice_features.cpp
 index 0ff3541..5e3cce0 100644
 --- a/src/voice_features.cpp
 +++ b/src/voice_features.cpp
-@@ -62,13 +62,7 @@ static double bessel_i0(double x) {
+@@ -69,15 +69,9 @@ static double bessel_i0(double x) {
 -// Greatest common divisor.
 -static int gcd_int(int a, int b) {
 -    while (b) { int t = a % b; a = b; b = t; }
 -    return a;
 -}
+ __BLANK_CONTEXT__
  std::vector<float> resample_sinc(const std::vector<float> & in,
                                   int sr_in, int sr_out,
                                   int taps_half)
@@ -2597,8 +2598,9 @@ index 0ff3541..5e3cce0 100644
      if (sr_in == sr_out) return in;
      if (in.empty()) return {};
 -    (void)gcd_int;  // historical helper, no longer needed
+ __BLANK_CONTEXT__
      // Straight sinc interpolation: for each output sample at fractional input
-@@ -245,6 +245,43 @@ std::vector<float> mel_extract_stft_hann_ggml(
+@@ -245,6 +239,43 @@ std::vector<float> mel_extract_stft_hann_ggml(
  std::vector<float> fbank_kaldi_80_ggml(const std::vector<float> & wav_16k,
                                         const std::vector<float> & mel_fb);
  
