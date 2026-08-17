@@ -491,7 +491,7 @@ def apply_chatterbox_patch(cwd: Path):
     if not git:
         raise RuntimeError("git is missing")
     patch_text = (PATCHES / "chatterbox.patch").read_text(encoding="ascii")
-    patch_text = patch_text.replace("` -- the", "` \u2014 the", 1).replace("Pre-section3.19", "Pre-\u00a73.19", 1)
+    patch_text = patch_text.replace("__EM_DASH__", "\u2014").replace("__SECTION_SIGN__", "\u00a7").replace("__BLANK_CONTEXT__", "")
     tmp = cwd / ".apply-chatterbox.patch"
     tmp.write_text(patch_text, encoding="utf-8", newline="\n")
     try:
