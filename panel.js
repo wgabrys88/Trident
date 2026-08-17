@@ -15,6 +15,7 @@ let ttsStyle = "";
 let ttsReferenceGeneration = -1;
 let playback = {received: 0, played: 0, expected: 0, text: "", done: false, timer: 0};
 let clientStage = "";
+let installingAll = false;
 
 async function api(path, body, raw = false) {
   const options = body === undefined ? {} : {
@@ -50,17 +51,85 @@ async function save(path, value) {
   await command("set", {values: {[path]: value}});
 }
 
+function coerceField(path, raw) {
+  const spec = schema.fields[path] || {};
+  if (spec.type === "bool") return Boolean(raw);
+  if (spec.type === "int") {
+    const value = Number.parseInt(raw, 10);
+    if (!Number.isFinite(value)) throw Error(`${path} must be an integer`);
+    return value;
+  }
+  if (spec.type === "float") {
+    const value = Number.parseFloat(raw);
+    if (!Number.isFinite(value)) throw Error(`${path} must be a number`);
+    return value;
+  }
+  return raw;
+}
+
+function bindField(element) {
+  const path = element.dataset.path;
+  if (!path || element.dataset.bound) return;
+  element.dataset.bound = "1";
+  if (element.type === "checkbox") element.checked = Boolean(state.config[path]);
+  else if (state.config[path] !== undefined) element.value = state.config[path];
+  element.addEventListener("change", () => {
+    try {
+      const value = element.type === "checkbox" ? element.checked : coerceField(path, element.value);
+      save(path, value).catch(fail);
+    } catch (error) { fail(error); }
+  });
+}
+
 function bindConfig() {
   fillLanguages($("conversation-language"), schema.languages.conversation);
   fillLanguages($("speech-language"), schema.languages.speech);
-  for (const element of document.querySelectorAll("[data-path]")) {
-    const path = element.dataset.path;
-    if (element.type === "checkbox") element.checked = Boolean(state.config[path]);
-    else element.value = state.config[path];
-    element.addEventListener("change", () => {
-      const value = element.type === "checkbox" ? element.checked : element.value;
-      save(path, value).catch(fail);
-    });
+  for (const element of document.querySelectorAll("[data-path]")) bindField(element);
+}
+
+function buildParamGroups() {
+  const root = $("param-groups");
+  if (!root || !schema.param_groups) return;
+  root.replaceChildren();
+  for (const group of schema.param_groups) {
+    const block = document.createElement("details");
+    block.className = "param-group";
+    const summary = document.createElement("summary");
+    summary.innerHTML = `<strong>${group.title}</strong>`;
+    const body = document.createElement("div");
+    body.className = "param-body";
+    const note = document.createElement("p");
+    note.className = "microcopy";
+    note.textContent = group.apply || "";
+    const grid = document.createElement("div");
+    grid.className = "param-grid";
+    for (const path of group.fields || []) {
+      const spec = schema.fields[path];
+      if (!spec) continue;
+      const label = document.createElement("label");
+      label.textContent = spec.label;
+      const input = document.createElement("input");
+      input.type = "number";
+      input.dataset.path = path;
+      if (spec.min !== undefined) input.min = spec.min;
+      if (spec.max !== undefined) input.max = spec.max;
+      input.step = spec.type === "int" ? "1" : "any";
+      if (state.config[path] !== undefined) input.value = state.config[path];
+      label.append(input);
+      grid.append(label);
+    }
+    body.append(note, grid);
+    block.append(summary, body);
+    root.append(block);
+  }
+  for (const element of root.querySelectorAll("[data-path]")) bindField(element);
+}
+
+function syncParamFields() {
+  for (const element of document.querySelectorAll("#param-groups [data-path]")) {
+    if (document.activeElement === element) continue;
+    const value = state.config[element.dataset.path];
+    if (value !== undefined && String(element.value) !== String(value)) element.value = value;
   }
 }
 
@@ -272,11 +341,79 @@ function render(next) {
   const ready = conversationReady();
   $("engines-toggle").textContent = running === 3 ? "Stop engines" : "Start engines";
   $("engines-toggle").disabled = running === 0 && !ready;
-  $("start-all").disabled = !ready;
+  $("start-all").disabled = !ready || installingAll;
+  $("install-all").disabled = installingAll;
   $("record").disabled = !recording && !ready;
+  syncParamFields();
   $("pick-audio").disabled = !ready;
   $("speak-text").disabled = !engineCanStart("tts");
   if (!recording && !ready) $("recording-time").textContent = "Complete Setup before starting a conversation. Missing components or assets are shown below.";
+}
+
+function sleep(ms) {
+  return new Promise(resolve => window.setTimeout(resolve, ms));
+}
+
+async function waitForJob(kind, name, timeout = 3600000) {
+  const key = `${kind}:${name}`;
+  await waitFor(next => {
+    const job = next.jobs[key];
+    return Boolean(job) && ["running", "done", "error"].includes(job.status);
+  }, timeout);
+  await waitFor(next => {
+    const job = next.jobs[key];
+    if (job && job.status === "error") throw Error(job.error || `${key} failed`);
+    return Boolean(job) && job.status === "done";
+  }, timeout);
+}
+
+function requiredInstallSteps() {
+  const steps = [];
+  for (const name of Object.keys(schema.prerequisites)) {
+    if (name === "python") continue;
+    if (!isReady(state.prerequisites[name])) steps.push({kind: "prerequisite", name, op: "install_prerequisite", label: schema.prerequisites[name].label});
+  }
+  for (const name of Object.keys(schema.components)) {
+    if (!isReady(state.components[name])) steps.push({kind: "component", name, op: "install_component", label: schema.components[name].label});
+  }
+  const models = ["chatterbox-t3", "chatterbox-codec", "chatterbox-s3t", "parakeet", "gemma", "reference"];
+  const extra = state.brain && state.brain.model && state.brain.model !== "custom" ? state.brain.model : "";
+  if (extra && !models.includes(extra)) models.push(extra);
+  for (const name of models) {
+    if (state.models[name] && !isReady(state.models[name])) steps.push({kind: "model", name, op: "download_model", label: schema.models[name].label});
+  }
+  return steps;
+}
+
+async function installAll() {
+  if (installingAll) return;
+  if (state.prerequisites.python && !isReady(state.prerequisites.python)) {
+    throw Error("Python is a host prerequisite and cannot be installed from this panel");
+  }
+  const steps = requiredInstallSteps();
+  const status = $("install-all-state");
+  if (!steps.length) {
+    status.textContent = "Nothing is missing. Start engines when you want the servers running.";
+    return;
+  }
+  installingAll = true;
+  $("install-all").disabled = true;
+  try {
+    for (let index = 0; index < steps.length; index += 1) {
+      const step = steps[index];
+      status.textContent = `Installing ${index + 1}/${steps.length}: ${step.label}`;
+      await command(step.op, {name: step.name});
+      await waitForJob(step.kind, step.name);
+      if (index < steps.length - 1) {
+        status.textContent = `${step.label} done. Waiting 5 seconds before the next item.`;
+        await sleep(5000);
+      }
+    }
+    status.textContent = "Install all finished. Start engines when the required items show ready.";
+  } finally {
+    installingAll = false;
+    render(state);
+  }
 }
 
 async function waitFor(test, timeout = 180000) {
@@ -567,6 +704,7 @@ $("reference-file").onchange = async () => {
   } catch (error) { fail(error); }
   $("reference-file").value = "";
 };
+$("install-all").onclick = () => installAll().catch(error => { installingAll = false; $("install-all").disabled = false; fail(error); });
 $("start-all").onclick = () => startAll().catch(fail);
 $("stop-all").onclick = () => stopAll().catch(fail);
 $("engines-toggle").onclick = () => (Object.values(state.engines).every(engine => engine.status === "running") ? stopAll() : startAll()).catch(fail);
@@ -591,6 +729,7 @@ api("/api").then(boot => {
   schema = boot.schema;
   state = boot.state;
   bindConfig();
+  buildParamGroups();
   render(state);
   refreshLogs().catch(() => {});
   openEvents();

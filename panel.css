@@ -128,6 +128,10 @@ details > summary strong { display: block; font-size: 1rem; }
 .brain-row { display: grid; grid-template-columns: minmax(12rem, 1fr) minmax(8rem, .7fr) auto; gap: .65rem; align-items: end; }
 .brain-row .wide { grid-column: 1 / -1; }
 .brain-row button { min-height: 44px; }
+.param-group { margin-top: .85rem; border: 1px solid var(--line); border-radius: 11px; background: #0c1217; }
+.param-group > summary { padding: .8rem 1rem; }
+.param-body { padding: 0 1rem 1rem; border-top: 1px solid var(--line); }
+.param-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr)); gap: .75rem; padding-top: .75rem; }
 .state-ready { color: var(--accent) !important; }
 .state-error { color: var(--danger) !important; }
 .log-actions { padding-top: 1rem; justify-content: flex-end; }
