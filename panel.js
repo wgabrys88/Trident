@@ -1,23 +1,10 @@
 "use strict";
-
 const $ = id => document.getElementById(id);
-let schema;
-let state;
-let events;
-let lastEvent = 0;
-let recording = null;
-let playbackContext = null;
-let playbackNode = null;
-let ttsSocket = null;
-let ttsSession = "";
-let ttsLanguage = "";
-let ttsStyle = "";
-let ttsReferenceGeneration = -1;
+let schema, state, events, recording = null, playbackContext = null, playbackNode = null, ttsSocket = null;
+let lastEvent = 0, ttsSession = "", ttsLanguage = "", ttsStyle = "", ttsReferenceGeneration = -1;
 let playback = {received: 0, played: 0, expected: 0, text: "", done: false, timer: 0};
-let playbackWait = null;
-let clientStage = "";
-let installingAll = false;
-
+let playbackWait = null, clientStage = "", installingAll = false;
+let diagnostic = {input: null, output: [], outputRate: 24000, transcript: "", answer: "", source: "turn"};
 async function api(path, body, raw = false) {
   const options = body === undefined ? {} : {
     method: "POST",
@@ -29,45 +16,22 @@ async function api(path, body, raw = false) {
   if (!response.ok) throw Error(result.error || `${response.status} ${response.statusText}`);
   return result;
 }
-
 const command = (op, values = {}) => api("/api", {op, ...values});
-
 function fail(error) {
   const fault = $("fault");
   fault.textContent = error && error.message ? error.message : String(error);
   fault.hidden = false;
   window.setTimeout(() => { if (fault.textContent) fault.hidden = true; }, 9000);
 }
-
-function fillLanguages(select, languages) {
-  select.replaceChildren(...Object.entries(languages).map(([code, name]) => {
-    const option = document.createElement("option");
-    option.value = code;
-    option.textContent = `${name} (${code})`;
-    return option;
-  }));
-}
-
-async function save(path, value) {
-  await command("set", {values: {[path]: value}});
-}
-
+function fillLanguages(select, languages) { select.replaceChildren(...Object.entries(languages).map(([code, name]) => { const option = document.createElement("option"); option.value = code; option.textContent = `${name} (${code})`; return option; })); }
+async function save(path, value) { await command("set", {values: {[path]: value}}); }
 function coerceField(path, raw) {
   const spec = schema.fields[path] || {};
   if (spec.type === "bool") return Boolean(raw);
-  if (spec.type === "int") {
-    const value = Number.parseInt(raw, 10);
-    if (!Number.isFinite(value)) throw Error(`${path} must be an integer`);
-    return value;
-  }
-  if (spec.type === "float") {
-    const value = Number.parseFloat(raw);
-    if (!Number.isFinite(value)) throw Error(`${path} must be a number`);
-    return value;
-  }
+  if (spec.type === "int") { const value = Number.parseInt(raw, 10); if (!Number.isFinite(value)) throw Error(`${path} must be an integer`); return value; }
+  if (spec.type === "float") { const value = Number.parseFloat(raw); if (!Number.isFinite(value)) throw Error(`${path} must be a number`); return value; }
   return raw;
 }
-
 function bindField(element) {
   const path = element.dataset.path;
   if (!path || element.dataset.bound) return;
@@ -81,51 +45,29 @@ function bindField(element) {
     } catch (error) { fail(error); }
   });
 }
-
-function bindConfig() {
-  fillLanguages($("conversation-language"), schema.languages.conversation);
-  fillLanguages($("speech-language"), schema.languages.speech);
-  for (const element of document.querySelectorAll("[data-path]")) bindField(element);
-}
-
+function bindConfig() { fillLanguages($("conversation-language"), schema.languages.conversation); fillLanguages($("speech-language"), schema.languages.speech); for (const element of document.querySelectorAll("[data-path]")) bindField(element); }
 function buildParamGroups() {
   const root = $("param-groups");
   if (!root || !schema.param_groups) return;
   root.replaceChildren();
   for (const group of schema.param_groups) {
-    const block = document.createElement("details");
-    block.className = "param-group";
-    const summary = document.createElement("summary");
-    summary.innerHTML = `<strong>${group.title}</strong>`;
-    const body = document.createElement("div");
-    body.className = "param-body";
-    const note = document.createElement("p");
-    note.className = "microcopy";
-    note.textContent = group.apply || "";
-    const grid = document.createElement("div");
-    grid.className = "param-grid";
+    const block = document.createElement("details"), summary = document.createElement("summary"), body = document.createElement("div"), note = document.createElement("p"), grid = document.createElement("div");
+    block.className = "param-group"; summary.innerHTML = `<strong>${group.title}</strong>`; body.className = "param-body"; note.className = "microcopy"; note.textContent = group.apply || ""; grid.className = "param-grid";
     for (const path of group.fields || []) {
       const spec = schema.fields[path];
       if (!spec) continue;
-      const label = document.createElement("label");
-      label.textContent = spec.label;
-      const input = document.createElement("input");
-      input.type = "number";
-      input.dataset.path = path;
+      const label = document.createElement("label"), input = document.createElement("input");
+      label.textContent = spec.label; input.type = "number"; input.dataset.path = path;
       if (spec.min !== undefined) input.min = spec.min;
       if (spec.max !== undefined) input.max = spec.max;
       input.step = spec.type === "int" ? "1" : "any";
       if (state.config[path] !== undefined) input.value = state.config[path];
-      label.append(input);
-      grid.append(label);
+      label.append(input); grid.append(label);
     }
-    body.append(note, grid);
-    block.append(summary, body);
-    root.append(block);
+    body.append(note, grid); block.append(summary, body); root.append(block);
   }
   for (const element of root.querySelectorAll("[data-path]")) bindField(element);
 }
-
 function syncParamFields() {
   for (const element of document.querySelectorAll("#param-groups [data-path]")) {
     if (document.activeElement === element) continue;
@@ -133,112 +75,54 @@ function syncParamFields() {
     if (value !== undefined && String(element.value) !== String(value)) element.value = value;
   }
 }
-
-function stateClass(status) {
-  return ["ready", "running", "done"].includes(status) ? "state-ready" : ["missing", "unverified", "invalid", "error"].includes(status) ? "state-error" : "";
-}
-
-function jobFor(kind, name) {
-  return state.jobs[`${kind}:${name}`] || null;
-}
-
-function isReady(value) {
-  return Boolean(value) && value.status === "ready";
-}
-
-function activeBrainReady() {
-  const brain = state.brain || {};
-  if (brain.active === "custom") return Boolean(brain.custom && brain.custom.status === "ready");
-  return isReady(state.models[brain.model || "gemma"]);
-}
-
+function jobFor(kind, name) { return state.jobs[`${kind}:${name}`] || null; }
+function isReady(value) { return Boolean(value) && value.status === "ready"; }
+function activeBrainReady() { const brain = state.brain || {}; return brain.active === "custom" ? Boolean(brain.custom && brain.custom.status === "ready") : isReady(state.models[brain.model || "gemma"]); }
 function engineCanStart(name) {
-  const components = {asr: "parakeet", brain: "gemma", tts: "tts"};
   if (name === "brain") return isReady(state.components.gemma) && activeBrainReady();
-  const models = {asr: ["parakeet"], tts: ["chatterbox-t3", "chatterbox-codec", "chatterbox-s3t", "reference"]};
-  return isReady(state.components[components[name]]) && models[name].every(model => isReady(state.models[model]));
+  const component = name === "asr" ? "parakeet" : "tts";
+  const models = name === "asr" ? ["parakeet"] : ["chatterbox-t3", "chatterbox-codec", "chatterbox-s3t", "reference"];
+  return isReady(state.components[component]) && models.every(model => isReady(state.models[model]));
 }
-
-function conversationReady() {
-  return ["asr", "brain", "tts"].every(engineCanStart);
+function conversationReady() { return ["asr", "brain", "tts"].every(engineCanStart); }
+function enginesRunning() { return ["asr", "brain", "tts"].every(name => state.engines[name].status === "running"); }
+function installEntries() {
+  const out = [];
+  for (const [name, spec] of Object.entries(schema.prerequisites)) out.push({kind: "prerequisite", name, label: spec.label, value: state.prerequisites[name], op: "install_prerequisite"});
+  for (const [name, spec] of Object.entries(schema.components)) out.push({kind: "component", name, label: spec.label, value: state.components[name], op: "install_component"});
+  for (const name of ["chatterbox-t3", "chatterbox-codec", "chatterbox-s3t", "parakeet", "gemma", "reference"]) out.push({kind: "model", name, label: schema.models[name].label, value: state.models[name], op: "download_model"});
+  return out;
 }
-
-function enginesRunning() {
-  return ["asr", "brain", "tts"].every(name => state.engines[name].status === "running");
-}
-
-function setupItem(label, status, action, actionLabel, detail = "", blocked = false, allowWhileRunning = false) {
-  const item = document.createElement("div");
-  item.className = "setup-item";
-  const copy = document.createElement("div");
-  const strong = document.createElement("strong");
-  const small = document.createElement("small");
-  strong.textContent = label;
-  small.textContent = detail || status;
-  small.className = stateClass(status);
-  copy.append(strong, small);
-  item.append(copy);
-  if (action) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = actionLabel;
-    button.disabled = blocked || status === "ready" || (status === "running" && !allowWhileRunning);
-    button.onclick = () => action().catch(fail);
-    item.append(button);
+async function installEntry(entry) { if (entry.kind === "prerequisite" && entry.name === "python") throw Error("Python 3.11 is a host prerequisite"); await command(entry.op, {name: entry.name}); await waitForJob(entry.kind, entry.name); }
+function renderInstallStrip() {
+  const root = $("install-strip");
+  root.replaceChildren();
+  for (const entry of installEntries()) {
+    const job = jobFor(entry.kind, entry.name);
+    const status = job && job.status === "running" ? "running" : entry.value.status;
+    const label = document.createElement("label");
+    label.className = `install-chip ${status === "ready" ? "ready" : status === "running" ? "busy" : "bad"}`;
+    label.title = job && job.status === "running" ? `${job.message} ${job.progress}%` : `${entry.label}: ${status}`;
+    const input = document.createElement("input");
+    input.type = "checkbox"; input.checked = status === "ready"; input.indeterminate = status === "running";
+    input.disabled = status === "running" || (entry.kind === "prerequisite" && entry.name === "python");
+    input.onchange = () => { if (!input.checked) input.checked = true; else installEntry(entry).catch(fail); };
+    label.append(input, document.createTextNode(entry.label.replace(" VULKAN", "").replace("CHATTERBOX V3 ", "")));
+    root.append(label);
   }
-  return item;
-}
-
-function renderSetup() {
-  const prereqs = $("prerequisites");
-  prereqs.replaceChildren();
-  for (const [name, spec] of Object.entries(schema.prerequisites)) {
-    const value = state.prerequisites[name];
-    const job = jobFor("prerequisite", name);
-    const status = job && job.status === "running" ? "running" : value.status;
-    const detail = job && job.status === "running" ? `${job.message} · ${job.progress}%` : value.path || value.status;
-    prereqs.append(setupItem(spec.label, status, () => command("install_prerequisite", {name}), "Install", detail));
-  }
-  const components = $("components");
-  components.replaceChildren();
-  for (const [name, spec] of Object.entries(schema.components)) {
-    const value = state.components[name];
-    const job = jobFor("component", name);
-    const status = job && job.status === "running" ? "running" : value.status;
-    const detail = job && job.status === "running" ? `${job.message} · ${job.progress}%` : value.revision;
-    components.append(setupItem(spec.label, status, () => command("install_component", {name}), name === "tts" ? "Build" : "Download", detail));
-  }
-  const models = $("models");
-  models.replaceChildren();
-  for (const [name, spec] of Object.entries(schema.models)) {
-    const value = state.models[name];
-    const job = jobFor("model", name);
-    const status = job && job.status === "running" ? "running" : value.status;
-    const detail = job && job.status === "running" ? `${job.message} · ${job.progress}%` : `${status} · ${(spec.size / 1048576).toFixed(0)} MiB`;
-    models.append(setupItem(spec.label, status, () => command("download_model", {name}), "Download", detail));
-  }
-  const engines = $("engines");
-  engines.replaceChildren();
+  const engines = $("engine-strip"); engines.replaceChildren();
   for (const name of ["asr", "brain", "tts"]) {
     const value = state.engines[name];
-    const job = jobFor("engine", name);
-    const status = job && job.status === "running" ? "running" : value.status;
-    const label = {asr: "Parakeet ear", brain: `Brain · ${(state.brain && state.brain.label) || "llama.cpp"}`, tts: "Chatterbox voice"}[name];
-    const stopping = value.status === "running";
-    const action = status === "loading" ? null : () => command(stopping ? "unload_engine" : "load_engine", {name});
-    engines.append(setupItem(label, status, action, stopping ? "Stop" : "Start", value.error || status, !stopping && !engineCanStart(name), stopping));
+    const span = document.createElement("span");
+    span.className = `engine-pill ${value.status}`;
+    span.textContent = `${name.toUpperCase()}: ${value.status}`;
+    engines.append(span);
   }
-  const readyComponents = Object.values(state.components).filter(value => value.status === "ready").length;
-  const readyModels = Object.values(state.models).filter(value => value.status === "ready").length;
-  $("setup-summary").textContent = `${readyComponents}/${Object.keys(state.components).length} components · ${readyModels}/${Object.keys(state.models).length} assets`;
+  $("setup-summary").textContent = `${installEntries().filter(x => isReady(x.value)).length}/${installEntries().length} required ready`;
   renderBrain();
 }
-
 function renderBrain() {
-  const select = $("brain-select");
-  const familyWrap = $("brain-family-wrap");
-  const urlWrap = $("brain-url-wrap");
-  const apply = $("brain-apply");
+  const select = $("brain-select"), familyWrap = $("brain-family-wrap"), urlWrap = $("brain-url-wrap"), apply = $("brain-apply");
   if (!select || !state.brain) return;
   const catalog = state.brain.catalog || schema.brains || {};
   if (!select.dataset.bound) {
@@ -252,27 +136,21 @@ function renderBrain() {
   }
   select.value = state.brain.active || "gemma";
   const custom = select.value === "custom";
-  familyWrap.hidden = !custom;
-  urlWrap.hidden = !custom;
-  apply.hidden = !custom;
+  familyWrap.hidden = !custom; urlWrap.hidden = !custom; apply.hidden = !custom;
+  const download = $("brain-download");
+  const selected = catalog[select.value] && catalog[select.value].model;
+  download.hidden = custom || !selected || isReady(state.models[selected]);
+  download.onclick = () => installEntry({kind: "model", name: selected, label: schema.models[selected].label, value: state.models[selected], op: "download_model"}).catch(fail);
   if (custom) {
     $("brain-family").value = (state.brain.custom && state.brain.custom.family) || "generic";
     if (!$("brain-url").value) $("brain-url").value = (state.brain.custom && state.brain.custom.url) || "";
   }
   const job = jobFor("brain", "custom");
   $("brain-state").textContent = job && job.status === "running"
-    ? `${job.message} · ${job.progress}%`
-    : `${state.brain.label} · ${state.brain.ready ? "ready" : "download this GGUF in Models first"}`;
+    ? `${job.message} - ${job.progress}%`
+    : `${state.brain.label} - ${state.brain.ready ? "ready" : "use Download selected"}`;
 }
-
-function renderReference() {
-  const ref = state.reference;
-  const source = ref.custom ? "Custom voice reference" : "Official Chatterbox demo voice";
-  $("reference-state").textContent = ref.status === "ready"
-    ? `${source} · ${ref.duration.toFixed(1)} seconds. Identity only — clip language does not have to match the spoken language. Use “Less reference accent” if you want less of the speaker’s accent.`
-    : `Voice reference: ${ref.status}.`;
-}
-
+function renderReference() { const ref = state.reference, source = ref.custom ? "Custom voice reference" : "Official Chatterbox demo voice"; $("reference-state").textContent = ref.status === "ready" ? `${source} - ${ref.duration.toFixed(1)} seconds. Identity only -- clip language does not have to match the spoken language. Use "Less reference accent" if you want less of the speaker's accent.` : `Voice reference: ${ref.status}.`; }
 function renderFlow() {
   const flow = state.flow || {stage: "idle", transcript: "", answer: "", error: ""};
   const localStage = recording ? "listening" : clientStage || flow.stage;
@@ -293,7 +171,7 @@ function renderFlow() {
     $("transcript").classList.remove("muted");
     $("asr-state").textContent = "Complete";
   } else if (localStage === "transcribing") {
-    $("transcript").textContent = "Recognizing speech…";
+    $("transcript").textContent = "Recognizing speech...";
     $("asr-state").textContent = "Working";
   }
   if (flow.answer && playback.text !== flow.answer && !["speaking", "complete"].includes(localStage)) renderAnswerWords(flow.answer);
@@ -301,7 +179,6 @@ function renderFlow() {
   if (localStage === "ready_to_speak") $("speech-state").textContent = "Voice ready";
   if (localStage === "error") fail(Error(flow.error || "Pipeline failed"));
 }
-
 function renderAnswerWords(text) {
   playback.text = text;
   const answer = $("answer");
@@ -315,7 +192,6 @@ function renderAnswerWords(text) {
     answer.append(span);
   }
 }
-
 function highlightSpoken() {
   const words = [...$("answer").querySelectorAll(".word")];
   if (!words.length) return;
@@ -337,31 +213,18 @@ function highlightSpoken() {
     finishPlayback();
   }
 }
-
 function render(next) {
-  state = next;
-  renderSetup();
-  renderReference();
-  renderFlow();
+  state = next; renderInstallStrip(); renderReference(); renderFlow();
   const running = Object.values(state.engines).filter(engine => engine.status === "running").length;
-  const ready = conversationReady();
+  const ready = conversationReady(), live = enginesRunning();
   $("engines-toggle").textContent = running === 3 ? "Stop engines" : "Start engines";
   $("engines-toggle").disabled = running === 0 && !ready;
-  $("start-all").disabled = !ready || installingAll;
   $("install-all").disabled = installingAll;
-  const live = enginesRunning();
-  $("record").disabled = !recording && !live;
-  syncParamFields();
-  $("pick-audio").disabled = !live || Boolean(recording);
-  $("speak-text").disabled = state.engines.tts.status !== "running";
+  $("record").disabled = !recording && !live; $("pick-audio").disabled = !live || Boolean(recording);
+  $("speak-text").disabled = state.engines.tts.status !== "running"; syncParamFields();
   if (recording) paintMic();
-  else if (!live) $("recording-time").textContent = ready ? "Start engines, then open the microphone." : "Complete Setup before starting a conversation. Missing components or assets are shown below.";
+  else if (!live) $("recording-time").textContent = ready ? "Start engines, then open the microphone." : "Install the missing checked items first.";
 }
-
-function sleep(ms) {
-  return new Promise(resolve => window.setTimeout(resolve, ms));
-}
-
 async function waitForJob(kind, name, timeout = 3600000) {
   const key = `${kind}:${name}`;
   await waitFor(next => {
@@ -374,7 +237,6 @@ async function waitForJob(kind, name, timeout = 3600000) {
     return Boolean(job) && job.status === "done";
   }, timeout);
 }
-
 function requiredInstallSteps() {
   const steps = [];
   for (const name of Object.keys(schema.prerequisites)) {
@@ -392,7 +254,6 @@ function requiredInstallSteps() {
   }
   return steps;
 }
-
 async function installAll() {
   if (installingAll) return;
   if (state.prerequisites.python && !isReady(state.prerequisites.python)) {
@@ -412,18 +273,13 @@ async function installAll() {
       status.textContent = `Installing ${index + 1}/${steps.length}: ${step.label}`;
       await command(step.op, {name: step.name});
       await waitForJob(step.kind, step.name);
-      if (index < steps.length - 1) {
-        status.textContent = `${step.label} done. Waiting 5 seconds before the next item.`;
-        await sleep(5000);
-      }
     }
-    status.textContent = "Install all finished. Start engines when the required items show ready.";
+    status.textContent = "Install complete. Required items are verified.";
   } finally {
     installingAll = false;
     render(state);
   }
 }
-
 async function waitFor(test, timeout = 180000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
@@ -434,18 +290,15 @@ async function waitFor(test, timeout = 180000) {
   }
   throw Error("Operation timed out");
 }
-
 async function ensureEngine(name) {
   if (state.engines[name].status === "running") return;
   await command("load_engine", {name});
   await waitFor(next => next.engines[name].status === "running" || next.engines[name].status === "error");
   if (state.engines[name].status !== "running") throw Error(state.engines[name].error || `${name} failed to start`);
 }
-
 async function startAll() {
   for (const name of ["asr", "brain", "tts"]) await ensureEngine(name);
 }
-
 async function stopAll() {
   await closeTts();
   for (const name of ["tts", "brain", "asr"]) {
@@ -455,7 +308,6 @@ async function stopAll() {
     }
   }
 }
-
 async function ensurePlayback() {
   if (!playbackContext) {
     playbackContext = new AudioContext({sampleRate: 24000});
@@ -471,17 +323,10 @@ async function ensurePlayback() {
   }
   if (playbackContext.state !== "running") await playbackContext.resume();
 }
-
 function reportTts(event, data = {}) {
   command("tts_event", {lane: "a", event, ...data}).catch(fail);
 }
-
-function finishPlayback() {
-  const done = playbackWait;
-  playbackWait = null;
-  if (done) done();
-}
-
+function finishPlayback() { const done = playbackWait; playbackWait = null; if (done) done(); }
 async function closeTts() {
   const socket = ttsSocket;
   ttsSocket = null;
@@ -499,7 +344,6 @@ async function closeTts() {
     window.setTimeout(done, 750);
   });
 }
-
 async function openTts(language, style) {
   const generation = Number(state.reference_generation || 0);
   if (ttsSocket && ttsSocket.readyState === WebSocket.OPEN && ttsSession && ttsLanguage === language && ttsStyle === style && ttsReferenceGeneration === generation) return ttsSocket;
@@ -528,6 +372,7 @@ async function openTts(language, style) {
         const pcm = new Float32Array(event.data.byteLength / 2);
         for (let i = 0; i < pcm.length; i++) pcm[i] = view.getInt16(i * 2, true) / 32768;
         playback.received += pcm.length;
+        diagnostic.output.push(pcm);
         playbackNode.port.postMessage(pcm);
         return;
       }
@@ -548,6 +393,7 @@ async function openTts(language, style) {
         playback.done = true;
         playback.expected = playback.received;
         reportTts("chunk_done", {session_id: ttsSession, request_id: message.request_id, samples: playback.received});
+        renderDiagnostic(true);
         highlightSpoken();
       } else if (message.type === "cancelled") {
         playback.done = true;
@@ -564,8 +410,7 @@ async function openTts(language, style) {
     };
   });
 }
-
-async function speak(text, language, style = "natural") {
+async function speak(text, language, style = "natural", source = "lab") {
   text = String(text || "").trim();
   if (!text) throw Error("There is no text to speak");
   const held = Boolean(recording && recording.busy);
@@ -574,7 +419,9 @@ async function speak(text, language, style = "natural") {
   renderAnswerWords(text);
   clientStage = "speaking";
   playback = {received: 0, played: 0, expected: 0, text, done: false, timer: 0};
-  renderFlow();
+  diagnostic.output = []; diagnostic.answer = text; diagnostic.source = source;
+  if (source !== "turn") { diagnostic.input = null; diagnostic.transcript = ""; }
+  renderFlow(); renderDiagnostic(false);
   try {
     await ensurePlayback();
     playbackNode.port.postMessage({type: "clear"});
@@ -588,7 +435,6 @@ async function speak(text, language, style = "natural") {
     if (recording && !held) recording.busy = false;
   }
 }
-
 async function cancelSpeech() {
   if (ttsSession) await command("tts_cancel", {session_id: ttsSession});
   clientStage = "idle";
@@ -596,7 +442,6 @@ async function cancelSpeech() {
   $("cancel-speech").disabled = true;
   finishPlayback();
 }
-
 function makeWav(parts, rate) {
   const length = parts.reduce((sum, part) => sum + part.length, 0);
   const data = new ArrayBuffer(44 + length * 2);
@@ -610,34 +455,25 @@ function makeWav(parts, rate) {
   for (const part of parts) for (let i = 0; i < part.length; i++, offset += 2) view.setInt16(offset, Math.max(-1, Math.min(1, part[i])) * 32767, true);
   return data;
 }
-
 function rms(frame) {
   let sum = 0;
   for (let i = 0; i < frame.length; i++) sum += frame[i] * frame[i];
   return Math.sqrt(sum / frame.length);
 }
-
 function trimPreRoll(parts, rate) {
   const limit = Math.floor(rate * 0.3);
   let total = parts.reduce((sum, part) => sum + part.length, 0);
   while (parts.length && total - parts[0].length >= limit) total -= parts.shift().length;
 }
-
-function paintMic() {
-  const on = Boolean(state.config["conversation.vad"]);
-  $("record").textContent = recording ? (on ? "Stop listening" : "Stop and ask") : "Start listening";
-  $("record").classList.toggle("danger", Boolean(recording));
-}
-
+function paintMic() { const on = Boolean(state.config["conversation.vad"]); $("record").textContent = recording ? (on ? "Stop listening" : "Stop and ask") : "Start listening"; $("record").classList.toggle("danger", Boolean(recording)); }
 function paintMicLevel() {
   if (!recording) return;
   const seconds = ((performance.now() - recording.started) / 1000).toFixed(1);
   const level = recording.lastRms.toFixed(3);
   $("recording-time").textContent = recording.busy
-    ? `Microphone open · waiting for the reply · RMS ${level}`
-    : `Listening · ${seconds} s · RMS ${level}${recording.speaking ? " · speech" : ""}`;
+    ? `Microphone open - waiting for the reply - RMS ${level}`
+    : `Listening - ${seconds} s - RMS ${level}${recording.speaking ? " - speech" : ""}`;
 }
-
 function onCapture(frame) {
   if (!recording || !frame || !frame.length || recording.busy) return;
   const rec = recording;
@@ -676,7 +512,6 @@ function onCapture(frame) {
   rec.silenceMs = 0;
   if (ready) submitUtterance(makeWav(parts, rate)).catch(fail);
 }
-
 async function submitUtterance(wav) {
   if (!recording) return;
   recording.busy = true;
@@ -686,7 +521,6 @@ async function submitUtterance(wav) {
     if (recording) recording.busy = false;
   }
 }
-
 async function startRecording() {
   const stream = await navigator.mediaDevices.getUserMedia({audio: {channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false}, video: false});
   const context = new AudioContext({sampleRate: 16000});
@@ -701,7 +535,6 @@ async function startRecording() {
   renderFlow();
   recording.timer = window.setInterval(paintMicLevel, 100);
 }
-
 async function stopRecording() {
   const current = recording;
   recording = null;
@@ -716,32 +549,91 @@ async function stopRecording() {
     $("recording-time").textContent = "Microphone closed.";
     return;
   }
-  $("recording-time").textContent = "Processing the recording…";
+  $("recording-time").textContent = "Processing the recording...";
   if (!current.parts.length) throw Error("No microphone audio was captured");
   await runTurn(makeWav(current.parts, rate));
 }
-
 async function runTurn(wav) {
+  diagnostic.input = decodeWav(wav); diagnostic.output = []; diagnostic.transcript = ""; diagnostic.answer = ""; diagnostic.source = "turn"; renderDiagnostic(false);
   clientStage = "transcribing";
-  $("transcript").textContent = "Recognizing speech…";
+  $("transcript").textContent = "Recognizing speech...";
   $("transcript").classList.remove("muted");
-  $("answer").textContent = "Waiting for the assistant…";
+  $("answer").textContent = "Waiting for the assistant...";
   $("answer").classList.add("muted");
   $("asr-state").textContent = "Working";
   $("speech-state").textContent = "Waiting";
   const language = $("conversation-language").value;
   const result = await api(`/api?op=turn&language=${encodeURIComponent(language)}`, wav, true);
   if (!result.text) throw Error("The assistant returned no reply");
-  await speak(result.text, language, "natural");
+  diagnostic.transcript = (result.results && result.results.asr && result.results.asr.text) || (state.flow && state.flow.transcript) || "";
+  await speak(result.text, language, "natural", "turn");
   $("recording-time").textContent = recording && state.config["conversation.vad"]
     ? "Listening for the next utterance."
     : "Ready for another question.";
 }
-
+function decodeWav(buffer) {
+  const view = new DataView(buffer), ascii = (o, n) => String.fromCharCode(...new Uint8Array(buffer, o, n));
+  if (view.byteLength < 44 || ascii(0, 4) !== "RIFF" || ascii(8, 4) !== "WAVE") throw Error("Audio diagnostic requires a PCM WAV file");
+  let offset = 12, format = null, dataOffset = 0, dataSize = 0;
+  while (offset + 8 <= view.byteLength) {
+    const id = ascii(offset, 4), size = view.getUint32(offset + 4, true), body = offset + 8;
+    if (id === "fmt " && size >= 16) format = {codec: view.getUint16(body, true), channels: view.getUint16(body + 2, true), rate: view.getUint32(body + 4, true), bits: view.getUint16(body + 14, true)};
+    if (id === "data") { dataOffset = body; dataSize = Math.min(size, view.byteLength - body); break; }
+    offset = body + size + (size & 1);
+  }
+  if (!format || format.codec !== 1 || format.bits !== 16 || !dataOffset) throw Error("Audio diagnostic supports PCM16 WAV only");
+  const frames = Math.floor(dataSize / 2 / format.channels), samples = new Float32Array(frames);
+  for (let i = 0; i < frames; i++) {
+    let value = 0;
+    for (let c = 0; c < format.channels; c++) value += view.getInt16(dataOffset + (i * format.channels + c) * 2, true) / 32768;
+    samples[i] = value / format.channels;
+  }
+  return {samples, rate: format.rate};
+}
+function joinOutput() {
+  const length = diagnostic.output.reduce((sum, chunk) => sum + chunk.length, 0), samples = new Float32Array(length);
+  let offset = 0; for (const chunk of diagnostic.output) { samples.set(chunk, offset); offset += chunk.length; }
+  return {samples, rate: diagnostic.outputRate};
+}
+function signalMetrics(signal, seams = []) {
+  const {samples, rate} = signal || {}; if (!samples || !samples.length) return null;
+  let sum = 0, sumsq = 0, peak = 0, clipped = 0, crossings = 0;
+  for (let i = 0; i < samples.length; i++) { const x = samples[i]; sum += x; sumsq += x * x; peak = Math.max(peak, Math.abs(x)); clipped += Math.abs(x) >= .999; if (i && (x >= 0) !== (samples[i - 1] >= 0)) crossings++; }
+  const size = Math.min(1024, samples.length), start = Math.max(0, Math.floor((samples.length - size) / 2));
+  let weighted = 0, energy = 0;
+  for (let k = 1; k < Math.floor(size / 2); k += 2) { let re = 0, im = 0; for (let n = 0; n < size; n++) { const a = 2 * Math.PI * k * n / size, x = samples[start + n]; re += x * Math.cos(a); im -= x * Math.sin(a); } const m = re * re + im * im; energy += m; weighted += m * k * rate / size; }
+  const jumps = seams.map(i => i > 0 && i < samples.length ? Math.abs(samples[i] - samples[i - 1]) : 0);
+  return {seconds: samples.length / rate, rms_dbfs: 20 * Math.log10(Math.max(1e-9, Math.sqrt(sumsq / samples.length))), peak_dbfs: 20 * Math.log10(Math.max(1e-9, peak)), clip_pct: 100 * clipped / samples.length, dc: sum / samples.length, zcr_hz: crossings * rate / (2 * samples.length), centroid_hz: energy ? weighted / energy : 0, seam_peak: jumps.length ? Math.max(...jumps) : 0};
+}
+function outputSeams() { let total = 0; const seams = []; for (let i = 0; i < diagnostic.output.length - 1; i++) { total += diagnostic.output[i].length; seams.push(total); } return seams; }
+function drawSpectrogram(ctx, signal, y, height, label, metrics) {
+  const {samples, rate} = signal || {}; ctx.fillStyle = "#070a0c"; ctx.fillRect(8, y, 704, height);
+  ctx.fillStyle = "#dbe5ea"; ctx.font = "12px ui-monospace,Consolas,monospace";
+  if (!samples || !samples.length) { ctx.fillText(`${label}: no audio`, 18, y + 22); return; }
+  const n = 256, frames = Math.min(88, Math.max(1, Math.floor(samples.length / n))), maxBin = Math.max(2, Math.min(n / 2, Math.floor(8000 * n / rate))), top = y + 28, h = height - 38, w = 684 / frames;
+  for (let frame = 0; frame < frames; frame++) {
+    const start = Math.floor(frame * Math.max(0, samples.length - n) / Math.max(1, frames - 1));
+    for (let k = 0; k < maxBin; k++) { let re = 0, im = 0; for (let i = 0; i < n; i++) { const x = (samples[start + i] || 0) * (.5 - .5 * Math.cos(2 * Math.PI * i / (n - 1))), a = 2 * Math.PI * k * i / n; re += x * Math.cos(a); im -= x * Math.sin(a); } const db = 20 * Math.log10(Math.max(1e-7, Math.hypot(re, im) / n)); const v = Math.round(255 * Math.max(0, Math.min(1, (db + 80) / 70))); ctx.fillStyle = `rgb(${v},${v},${v})`; ctx.fillRect(18 + frame * w, top + h - (k + 1) * h / maxBin, Math.ceil(w), Math.ceil(h / maxBin)); }
+  }
+  ctx.fillStyle = "#dbe5ea"; ctx.fillText(`${label} ${rate} Hz | ${metrics.seconds.toFixed(2)} s | RMS ${metrics.rms_dbfs.toFixed(1)} dBFS | peak ${metrics.peak_dbfs.toFixed(1)} | clip ${metrics.clip_pct.toFixed(3)}% | centroid ${metrics.centroid_hz.toFixed(0)} Hz`, 18, y + 17);
+}
+function renderDiagnostic(logMetric = false) {
+  const canvas = $("audio-diagnostic"), ctx = canvas.getContext("2d"), input = diagnostic.input, output = joinOutput();
+  const im = signalMetrics(input), om = signalMetrics(output, outputSeams());
+  ctx.fillStyle = "#050708"; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.fillStyle = "#f1f5f7"; ctx.font = "bold 15px system-ui"; ctx.fillText("TRIDENT AUDIO SIGNAL REPORT", 12, 20);
+  drawSpectrogram(ctx, input, 32, 190, "INPUT", im || {}); drawSpectrogram(ctx, output, 228, 190, "OUTPUT", om || {});
+  ctx.font = "11px ui-monospace,Consolas,monospace"; ctx.fillStyle = "#9caab4";
+  const clean = value => String(value || "").replace(/\s+/g, " ").slice(0, 100);
+  ctx.fillText(`ASR: ${clean(diagnostic.transcript)}`, 12, 442); ctx.fillText(`TTS: ${clean(diagnostic.answer)}`, 12, 460);
+  if (om) ctx.fillText(`OUTPUT dc=${om.dc.toFixed(5)} zcr=${om.zcr_hz.toFixed(0)}Hz seam_peak=${om.seam_peak.toFixed(5)} chunks=${diagnostic.output.length}`, 12, 478);
+  $("audio-metrics").textContent = om ? `Output: ${om.seconds.toFixed(2)} s, RMS ${om.rms_dbfs.toFixed(1)} dBFS, peak ${om.peak_dbfs.toFixed(1)} dBFS, clipped ${om.clip_pct.toFixed(3)}%, seam jump ${om.seam_peak.toFixed(5)}.` : im ? `Input: ${im.seconds.toFixed(2)} s, RMS ${im.rms_dbfs.toFixed(1)} dBFS, peak ${im.peak_dbfs.toFixed(1)} dBFS.` : "Run one conversation turn to populate signal metrics.";
+  $("save-diagnostic").disabled = !im && !om;
+  if (logMetric && om) command("note", {component: "audio", msg: "output", data: om}).catch(() => {});
+}
+function saveDiagnostic() { const canvas = $("audio-diagnostic"); canvas.toBlob(blob => { if (!blob) return; const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "trident-audio-diagnostic.png"; a.click(); window.setTimeout(() => URL.revokeObjectURL(a.href), 1000); }, "image/png"); }
 function formatLogTime(ts) {
   return typeof ts === "number" ? new Date(ts * 1000).toLocaleTimeString() : "--:--:--";
 }
-
 function paintLogs(lines) {
   const box = $("log-output");
   box.replaceChildren();
@@ -750,17 +642,15 @@ function paintLogs(lines) {
     const level = String(line.level || "").toLowerCase();
     div.className = `log-entry ${level === "error" ? "log-error" : level === "warn" ? "log-warn" : ""}`;
     const data = line.data && Object.keys(line.data).length ? ` ${JSON.stringify(line.data)}` : "";
-    div.textContent = `[${formatLogTime(line.ts)}] ${line.component || "-"} · ${line.msg || ""}${data}`;
+    div.textContent = `[${formatLogTime(line.ts)}] ${line.component || "-"} - ${line.msg || ""}${data}`;
     box.append(div);
   }
   box.scrollTop = box.scrollHeight;
 }
-
 async function refreshLogs() {
   const result = await command("log", {limit: 120});
   paintLogs(result.lines || []);
 }
-
 function openEvents() {
   events = new EventSource("/api?op=events");
   const connection = $("connection");
@@ -785,7 +675,6 @@ function openEvents() {
     if (lastEvent && Date.now() - lastEvent > 22000) events.onerror();
   }, 3000);
 }
-
 $("record").onclick = () => (recording ? stopRecording() : startRecording()).catch(fail);
 $("pick-audio").onclick = () => $("audio-file").click();
 $("audio-file").onchange = async () => {
@@ -796,7 +685,7 @@ $("audio-file").onchange = async () => {
   $("audio-file").value = "";
 };
 $("cancel-speech").onclick = () => cancelSpeech().catch(fail);
-$("speak-text").onclick = () => speak($("speech-text").value, $("speech-language").value, $("speech-style").value).catch(fail);
+$("speak-text").onclick = () => speak($("speech-text").value, $("speech-language").value, $("speech-style").value, "lab").catch(fail);
 $("upload-reference").onclick = () => $("reference-file").click();
 $("reference-file").onchange = async () => {
   try {
@@ -806,9 +695,8 @@ $("reference-file").onchange = async () => {
   $("reference-file").value = "";
 };
 $("install-all").onclick = () => installAll().catch(error => { installingAll = false; $("install-all").disabled = false; fail(error); });
-$("start-all").onclick = () => startAll().catch(fail);
-$("stop-all").onclick = () => stopAll().catch(fail);
 $("engines-toggle").onclick = () => (Object.values(state.engines).every(engine => engine.status === "running") ? stopAll() : startAll()).catch(fail);
+$("save-diagnostic").onclick = saveDiagnostic;
 $("refresh-log").onclick = () => refreshLogs().catch(fail);
 $("clear-log").onclick = () => command("clear_log").then(result => paintLogs(result.lines || [])).catch(fail);
 $("brain-select").onchange = () => {
@@ -825,7 +713,6 @@ $("brain-apply").onclick = async () => {
     if (result.accepted) await waitFor(next => next.brain && next.brain.active === "custom" && next.brain.ready);
   } catch (error) { fail(error); }
 };
-
 api("/api").then(boot => {
   schema = boot.schema;
   state = boot.state;

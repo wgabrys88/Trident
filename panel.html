@@ -2,164 +2,48 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Trident</title>
 <link rel="stylesheet" href="/panel.css">
 </head>
 <body>
-<div class="page">
-  <header class="hero">
-    <div>
-      <p class="eyebrow">Windows · Vulkan · local only</p>
-      <h1>Trident</h1>
-      <p class="intro">Speak naturally. The app listens, transcribes, thinks, and streams the answer through your default Windows speakers.</p>
-    </div>
-    <div class="hero-actions">
-      <span id="connection" class="badge bad">Connecting</span>
-      <button id="engines-toggle" type="button">Start engines</button>
-    </div>
-  </header>
-
-  <p id="fault" class="fault" hidden></p>
-
-  <main>
-    <section class="conversation card" aria-labelledby="conversation-title">
-      <div class="section-heading">
-        <div>
-          <p class="eyebrow">Main task</p>
-          <h2 id="conversation-title">Voice conversation</h2>
-        </div>
-        <span id="flow-badge" class="badge">Idle</span>
-      </div>
-
-      <div class="conversation-controls">
-        <label>Language
-          <select id="conversation-language" data-path="conversation.language"></select>
-        </label>
-        <label class="check"><input id="clone-voice" type="checkbox" data-path="conversation.clone_voice"> Use this recording as the reply voice</label>
-        <label class="check"><input id="vad" type="checkbox" data-path="conversation.vad"> Voice activity detection</label>
-      </div>
-      <p class="microcopy">Conversation lists only languages supported by both Parakeet ASR and Chatterbox TTS. Arabic and other TTS-only languages remain available in Speech lab. The reference clip is speaker identity only — its language does not need to match the reply. Clone with at least five seconds of clear speech; ten seconds is better. The microphone button opens and closes the mic. Voice activity detection sends each utterance after a pause so you do not click Stop between sentences.</p>
-
-      <div class="io-note">
-        <span><strong>Input</strong> Windows default microphone</span>
-        <span><strong>Output</strong> Windows default speakers</span>
-      </div>
-
-      <div class="talk-actions">
-        <button id="record" class="primary big" type="button">Start listening</button>
-        <button id="pick-audio" type="button">Use WAV file</button>
-        <button id="cancel-speech" type="button" disabled>Stop speaking</button>
-        <input id="audio-file" type="file" accept="audio/wav" hidden>
-      </div>
-      <p id="recording-time" class="microcopy">Start engines, then open the microphone. Camera access is never requested.</p>
-
-      <ol class="pipeline" aria-label="Processing stages">
-        <li data-stage="listening"><span>1</span><strong>Listen</strong><small>Capture speech</small></li>
-        <li data-stage="transcribing"><span>2</span><strong>Transcribe</strong><small>Parakeet ASR</small></li>
-        <li data-stage="thinking"><span>3</span><strong>Think</strong><small>Brain reply</small></li>
-        <li data-stage="speaking"><span>4</span><strong>Speak</strong><small>Chatterbox stream</small></li>
-      </ol>
-
-      <div class="outputs">
-        <article>
-          <div class="output-title"><h3>Heard</h3><span id="asr-state">Waiting</span></div>
-          <p id="transcript" class="output-text muted">Your transcript appears here.</p>
-        </article>
-        <article>
-          <div class="output-title"><h3>Answer</h3><span id="speech-state">Waiting</span></div>
-          <p id="answer" class="output-text muted">The generated reply appears here. Spoken words turn green as playback advances.</p>
-        </article>
-      </div>
-    </section>
-
-    <details class="card lab">
-      <summary>
-        <span><span class="eyebrow">Optional</span><strong>Speech lab</strong></span>
-        <span class="summary-help">Speak text directly in any Chatterbox language</span>
-      </summary>
-      <div class="details-body">
-        <div class="lab-grid">
-          <label>Speech language<select id="speech-language" data-path="speech.language"></select></label>
-          <label>Voice style<select id="speech-style" data-path="speech.style">
-            <option value="natural">Natural</option>
-            <option value="expressive">Expressive</option>
-            <option value="cross-language">Less reference accent</option>
-          </select></label>
-          <label class="wide">Text<textarea id="speech-text" data-path="speech.text" rows="4"></textarea></label>
-        </div>
-        <div class="talk-actions">
-          <button id="speak-text" class="primary" type="button">Speak text</button>
-          <button id="upload-reference" type="button">Choose voice reference</button>
-          <input id="reference-file" type="file" accept="audio/wav" hidden>
-        </div>
-        <p id="reference-state" class="microcopy"></p>
-      </div>
-    </details>
-
-    <details class="card setup">
-      <summary>
-        <span><span class="eyebrow">First run</span><strong>Setup and engines</strong></span>
-        <span id="setup-summary" class="summary-help">Checking installation</span>
-      </summary>
-      <div class="details-body">
-        <p class="explain">Parakeet and llama.cpp are pinned Vulkan releases. Only the Chatterbox server is built locally. The default voice is the bundled Resemble demo prompt. Optional Qwen GGUFs are not part of Install all.</p>
-        <div class="setup-actions">
-          <button id="install-all" class="primary" type="button">Install all</button>
-          <button id="start-all" type="button">Start engines</button>
-          <button id="stop-all" type="button">Stop engines</button>
-        </div>
-        <p id="install-all-state" class="microcopy">Install all runs missing prerequisites, components, and required models one after another. It waits for each job to finish, then waits five seconds before the next.</p>
-        <div class="setup-section">
-          <h3>Active brain</h3>
-          <div class="brain-row">
-            <label>Model
-              <select id="brain-select"></select>
-            </label>
-            <label id="brain-family-wrap" hidden>Family
-              <select id="brain-family">
-                <option value="generic">Generic</option>
-                <option value="gemma4">Gemma 4</option>
-                <option value="qwen35">Qwen 3.5</option>
-              </select>
-            </label>
-            <label id="brain-url-wrap" class="wide" hidden>Custom GGUF URL
-              <input id="brain-url" type="text" placeholder="https://huggingface.co/owner/repo/resolve/main/model.gguf">
-            </label>
-            <button id="brain-apply" type="button">Apply brain</button>
-          </div>
-          <p id="brain-state" class="microcopy"></p>
-        </div>
-        <div class="setup-section"><h3>Build prerequisites</h3><div id="prerequisites" class="setup-grid"></div></div>
-        <div class="setup-section"><h3>Runtime components</h3><div id="components" class="setup-grid"></div></div>
-        <div class="setup-section"><h3>Models and default voice</h3><div id="models" class="setup-grid"></div></div>
-        <div class="setup-section"><h3>Engine status</h3><div id="engines" class="setup-grid"></div></div>
-      </div>
-    </details>
-
-    <details class="card params">
-      <summary>
-        <span><span class="eyebrow">Optional</span><strong>Runtime parameters</strong></span>
-        <span class="summary-help">TTS, ASR, and brain values from config.json</span>
-      </summary>
-      <div class="details-body">
-        <p class="explain">These fields write the same config keys the engines read. Engine-process fields need a restart of that engine. Sampling, style, and stream fields apply on the next request or TTS session.</p>
-        <div id="param-groups"></div>
-      </div>
-    </details>
-
-    <details class="card logs">
-      <summary>
-        <span><span class="eyebrow">Diagnostics</span><strong>Installation and runtime log</strong></span>
-        <span class="summary-help">Routine compiler lines are collapsed</span>
-      </summary>
-      <div class="details-body">
-        <div class="log-actions"><button id="refresh-log" type="button">Refresh</button><button id="clear-log" type="button">Clear</button></div>
-        <div id="log-output" class="log-box" role="log" aria-live="polite"></div>
-      </div>
-    </details>
-  </main>
-</div>
+<header class="topbar">
+  <div class="brand"><strong>Trident</strong><span id="connection" class="badge bad">Connecting</span><span id="flow-badge" class="badge">Idle</span></div>
+  <div class="top-actions"><button id="install-all" type="button">Install missing</button><button id="engines-toggle" class="primary" type="button">Start engines</button></div>
+  <div id="install-strip" class="install-strip" aria-label="Installation status"></div>
+  <div id="engine-strip" class="engine-strip"></div>
+  <span id="install-all-state" class="status-line">Checking installation</span>
+</header>
+<p id="fault" class="fault" hidden></p>
+<main>
+<section class="card conversation" aria-labelledby="conversation-title">
+  <div class="heading"><h1 id="conversation-title">Voice conversation</h1><span id="recording-time" class="microcopy">Start engines to talk.</span></div>
+  <div class="controls compact">
+    <label>Language<select id="conversation-language" data-path="conversation.language"></select></label>
+    <label class="check"><input id="clone-voice" type="checkbox" data-path="conversation.clone_voice"> Experimental mic clone</label>
+    <label class="check"><input id="vad" type="checkbox" data-path="conversation.vad"> Auto-send on pause</label>
+  </div>
+  <div class="talk-actions"><button id="record" class="primary" type="button">Start listening</button><button id="pick-audio" type="button">Use WAV</button><button id="cancel-speech" type="button" disabled>Stop voice</button><input id="audio-file" type="file" accept="audio/wav" hidden></div>
+  <ol class="pipeline"><li data-stage="listening"><b>1</b> Listen</li><li data-stage="transcribing"><b>2</b> ASR 0.6B</li><li data-stage="thinking"><b>3</b> Brain</li><li data-stage="speaking"><b>4</b> TTS</li></ol>
+  <div class="outputs"><article><header><h2>Heard</h2><span id="asr-state">Waiting</span></header><p id="transcript" class="output-text muted">Transcript appears here.</p></article><article><header><h2>Answer</h2><span id="speech-state">Waiting</span></header><p id="answer" class="output-text muted">Reply appears here.</p></article></div>
+</section>
+<details class="card diagnostics" open>
+  <summary><strong>Audio diagnostic</strong><span class="summary-help">Input vs exact streamed output</span></summary>
+  <div class="details-body"><canvas id="audio-diagnostic" width="720" height="500"></canvas><div class="row"><span id="audio-metrics" class="microcopy">Run one conversation turn to populate signal metrics.</span><button id="save-diagnostic" type="button" disabled>Save PNG</button></div></div>
+</details>
+<details class="card lab">
+  <summary><strong>Speech lab</strong><span class="summary-help">TTS only</span></summary>
+  <div class="details-body"><div class="controls"><label>Language<select id="speech-language" data-path="speech.language"></select></label><label>Style<select id="speech-style" data-path="speech.style"><option value="natural">Natural</option><option value="expressive">Expressive</option><option value="cross-language">Less reference accent</option></select></label><label class="wide">Text<textarea id="speech-text" data-path="speech.text" rows="3"></textarea></label></div><div class="talk-actions"><button id="speak-text" class="primary" type="button">Speak text</button><button id="upload-reference" type="button">Voice reference</button><input id="reference-file" type="file" accept="audio/wav" hidden></div><p id="reference-state" class="microcopy"></p></div>
+</details>
+<details class="card setup">
+  <summary><strong>Setup, brain and parameters</strong><span id="setup-summary" class="summary-help">Checking</span></summary>
+  <div class="details-body"><div class="brain-row"><label>Brain<select id="brain-select"></select></label><label id="brain-family-wrap" hidden>Family<select id="brain-family"><option value="generic">Generic</option><option value="gemma4">Gemma 4</option><option value="qwen35">Qwen 3.5</option></select></label><label id="brain-url-wrap" class="wide" hidden>Custom GGUF URL<input id="brain-url" type="text" placeholder="https://huggingface.co/.../model.gguf"></label><button id="brain-download" type="button" hidden>Download selected</button><button id="brain-apply" type="button" hidden>Apply custom</button></div><p id="brain-state" class="microcopy"></p><div id="param-groups"></div></div>
+</details>
+<details class="card logs">
+  <summary><strong>Diagnostic log</strong><span class="summary-help">Warnings, milestones and metrics</span></summary>
+  <div class="details-body"><div class="row"><button id="refresh-log" type="button">Refresh</button><button id="clear-log" type="button">Clear</button></div><div id="log-output" class="log-box" role="log"></div></div>
+</details>
+</main>
 <script src="/panel.js"></script>
 </body>
 </html>
