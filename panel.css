@@ -273,17 +273,17 @@ input[type="checkbox"] {
 .install-strip {
   display: flex;
   grid-column: 1 / -1;
+  flex-wrap: wrap;
   min-width: 0;
   gap: .38rem;
   padding: .08rem 0;
-  overflow-x: auto;
-  scrollbar-width: thin;
 }
 
 .install-chip {
   display: inline-flex;
   align-items: center;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  max-width: 100%;
   min-height: 29px;
   gap: .34rem;
   padding: .22rem .52rem;
@@ -293,7 +293,7 @@ input[type="checkbox"] {
   color: var(--muted);
   font-size: .68rem;
   font-weight: 720;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
   cursor: pointer;
 }
 
