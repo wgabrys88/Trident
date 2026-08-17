@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import hashlib
 import io
 import json
@@ -93,6 +92,7 @@ BRAIN_GENERATION = {"temperature": 0.2, "top_p": 0.9, "top_k": 40, "min_p": 0.0,
 FIELDS = {
     "conversation.language": field("Conversation language", "string", "en", options=list(CONVERSATION_LANGUAGES)),
     "conversation.clone_voice": field("Use my recording as the voice", "bool", False),
+    "conversation.vad": field("Voice activity detection", "bool", False),
     "speech.language": field("Speech language", "string", "en", options=list(TTS_LANGUAGES)),
     "speech.style": field("Voice style", "string", "natural", options=list(VOICE_STYLES)),
     "speech.text": field("Text to speak", "string", "This is a multilingual voice synthesis test.", multiline=True),
@@ -118,6 +118,9 @@ FIELDS = {
     "tts.style.cross-language.cfg_weight": field("Less-accent CFG weight", "float", VOICE_STYLES["cross-language"]["cfg_weight"], 0.0, 2.0),
     "tts.style.cross-language.exaggeration": field("Less-accent exaggeration", "float", VOICE_STYLES["cross-language"]["exaggeration"], 0.0, 2.0),
     "asr.threads": field("ASR CPU threads", "int", ASR_RUNTIME["threads"], 1, 64),
+    "asr.vad.threshold": field("VAD RMS start", "float", 0.02, 0.001, 0.5),
+    "asr.vad.silence_ms": field("VAD silence to end utterance", "int", 700, 200, 3000),
+    "asr.vad.min_speech_ms": field("VAD minimum speech", "int", 400, 100, 5000),
     "brain.engine.context": field("Brain context tokens", "int", BRAIN_RUNTIME["context"], 256, 32768),
     "brain.engine.parallel": field("Brain parallel slots", "int", BRAIN_RUNTIME["parallel"], 1, 8),
     "brain.sample.temperature": field("Brain temperature", "float", BRAIN_GENERATION["temperature"], 0.0, 2.0),
@@ -135,6 +138,7 @@ PARAM_GROUPS = [
     {"id": "tts-stream", "title": "TTS streaming and chunking", "apply": "Applied on the next TTS WebSocket init. C++ VoiceConfig already reads these fields.", "fields": ["tts.stream.first_chunk", "tts.stream.chunk", "tts.stream.max_sentence_chars"]},
     {"id": "tts-style", "title": "TTS style overlays", "apply": "Overlay cfg_weight and exaggeration for the selected Speech-lab style. Conversation uses the natural overlay.", "fields": ["tts.style.natural.cfg_weight", "tts.style.natural.exaggeration", "tts.style.expressive.cfg_weight", "tts.style.expressive.exaggeration", "tts.style.cross-language.cfg_weight", "tts.style.cross-language.exaggeration"]},
     {"id": "asr-engine", "title": "ASR engine", "apply": "Restart the ASR engine to apply thread count.", "fields": ["asr.threads"]},
+    {"id": "asr-vad", "title": "ASR voice activity", "apply": "Applied on the next captured frame. No engine restart.", "fields": ["asr.vad.threshold", "asr.vad.silence_ms", "asr.vad.min_speech_ms"]},
     {"id": "brain-engine", "title": "Brain engine", "apply": "Restart the brain engine to apply context and parallel slots.", "fields": ["brain.engine.context", "brain.engine.parallel"]},
     {"id": "brain-sample", "title": "Brain sampling", "apply": "Applied on the next /v1/chat/completions request.", "fields": ["brain.sample.temperature", "brain.sample.top_p", "brain.sample.top_k", "brain.sample.min_p", "brain.sample.repeat_penalty", "brain.sample.seed", "brain.sample.max_tokens"]},
 ]
@@ -859,7 +863,15 @@ def multipart(audio: bytes) -> tuple[bytes, str]:
     return bytes(body), f"multipart/form-data; boundary={boundary}"
 
 
+def require_engine(name: str):
+    if name not in ENGINE_MODELS:
+        raise ApiError(400, f"unknown engine: {name}")
+    if RUNTIME["engines"][name]["status"] != "running":
+        raise ApiError(409, f"{name} is not running")
+
+
 def transcribe(audio: bytes) -> dict:
+    require_engine("asr")
     body, content_type = multipart(audio)
     result = json.loads(remote("http://127.0.0.1:8097/v1/audio/transcriptions", body, content_type))
     with LOCK:
@@ -868,7 +880,8 @@ def transcribe(audio: bytes) -> dict:
     return result
 
 
-def brain(prompt: str, language: str = "en") -> dict:
+def brain(prompt: str, language: str) -> dict:
+    require_engine("brain")
     if language not in CONVERSATION_LANGUAGES:
         raise ApiError(400, f"unsupported conversation language: {language}")
     language_name = CONVERSATION_LANGUAGES[language]
@@ -978,13 +991,10 @@ def voice_options(language: str, style: str) -> dict:
     return {**voice_base(), **style_overlay(style)}
 
 
-def tts_session(lane: str, language: str | None = None, style: str | None = None) -> dict:
+def tts_session(lane: str, language: str, style: str) -> dict:
     if lane not in RUNTIME["lanes"]:
         raise ApiError(400, f"unknown lane: {lane}")
-    if RUNTIME["engines"]["tts"]["status"] != "running":
-        raise ApiError(409, "tts is not running")
-    language = language or CONFIG["speech.language"]
-    style = style or CONFIG["speech.style"]
+    require_engine("tts")
     voice = voice_options(language, style)
     init = {
         "type": "init", "reference_audio": str(reference_path()), "language": language,
@@ -1000,14 +1010,13 @@ def tts_session(lane: str, language: str | None = None, style: str | None = None
     return {"url": "ws://127.0.0.1:8095/tts", "message": init, "language": language, "style": style}
 
 
-def tts_request(lane: str, text: str | None = None) -> dict:
+def tts_request(lane: str, text: str) -> dict:
     if lane not in RUNTIME["lanes"]:
         raise ApiError(400, f"unknown lane: {lane}")
-    if RUNTIME["engines"]["tts"]["status"] != "running":
-        raise ApiError(409, "tts is not running")
+    require_engine("tts")
     if RUNTIME["lanes"][lane]["status"] != "ready" or not RUNTIME["lanes"][lane]["session"]:
         raise ApiError(409, f"lane {lane} has no ready session")
-    text = str(text if text is not None else CONFIG["speech.text"]).strip()
+    text = str(text or "").strip()
     if not text:
         raise ApiError(400, "speech text is empty")
     request_id = uuid.uuid4().hex
@@ -1067,84 +1076,43 @@ def brain_reply_text(result: dict | None) -> str:
     return spoken[-1] if spoken else ""
 
 
-def wait_job(key: str, timeout: float = 600) -> dict:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        with LOCK:
-            job = deepcopy(RUNTIME["jobs"].get(key, {}))
-        status = job.get("status")
-        if status == "done":
-            return job
-        if status == "error":
-            raise ApiError(500, job.get("error") or f"{key} failed")
-        time.sleep(0.25)
-    raise ApiError(504, f"{key} timed out")
-
-
-def ensure_engine(name: str, load: bool):
-    if name not in ENGINE_MODELS:
-        raise ApiError(400, f"unknown engine: {name}")
-    if RUNTIME["engines"][name]["status"] == "running":
-        return
-    if not load:
-        raise ApiError(409, f"{name} is not running")
-    start_job("engine", name, lambda key: load_engine(name, key))
-    wait_job(f"engine:{name}")
-
-
 def wav_duration(data: bytes) -> float:
     with wave.open(io.BytesIO(data), "rb") as audio:
         return audio.getnframes() / float(audio.getframerate() or 1)
 
 
-def turn_audio(payload: dict, raw: bytes | None) -> bytes:
-    source = payload.get("source", "upload" if raw or payload.get("audio_base64") else "reference")
-    if source == "reference":
-        return reference_path().read_bytes()
-    if source == "upload":
-        data = raw
-        if data is None and payload.get("audio_base64"):
-            data = base64.b64decode(payload["audio_base64"])
-        if not data:
-            raise ApiError(400, "turn WAV body is required")
-        return data
-    raise ApiError(400, "turn source must be reference or a WAV body")
+def wav_body(raw: bytes | None) -> bytes:
+    if not raw:
+        raise ApiError(400, "WAV body is required")
+    return raw
 
 
 def run_turn(payload: dict, raw: bytes | None = None) -> dict:
-    audio = turn_audio(payload, raw)
-    language = str(payload.get("language") or CONFIG["conversation.language"])
+    audio = wav_body(raw)
+    language = str(payload.get("language") or "")
     if language not in CONVERSATION_LANGUAGES:
         raise ApiError(400, f"conversation language must be one of {list(CONVERSATION_LANGUAGES)}")
-    clone = payload.get("clone", CONFIG["conversation.clone_voice"])
-    if type(clone) is str:
-        clone = clone.strip().lower() in ("1", "true", "yes", "on")
-    else:
-        clone = bool(clone)
+    require_engine("asr")
+    require_engine("brain")
+    require_engine("tts")
+    clone = bool(CONFIG["conversation.clone_voice"])
     results: dict[str, Any] = {}
     report = {"ok": False, "clone": clone, "cloned": False, "language": language, "text": "", "results": results, "error": ""}
     try:
-        if clone:
-            try:
-                validate_wav(audio)
-                report["cloned"] = True
-                info("turn", "clone reference from ask audio", {"seconds": round(wav_duration(audio), 2)})
-            except ApiError as exception:
-                info("turn", "clone skipped", {"error": str(exception)})
-                report["clone_error"] = str(exception)
+        seconds = wav_duration(audio)
+        if clone and seconds >= 5:
+            validate_wav(audio)
+            report["cloned"] = True
+            info("turn", "clone reference from ask audio", {"seconds": round(seconds, 2)})
         set_flow("transcribing", language=language)
-        ensure_engine("asr", payload.get("load", True) is not False)
         results["asr"] = transcribe(audio)
         transcript = str(results["asr"].get("text") or "").strip()
         if not transcript:
             raise ApiError(422, "speech was not recognized")
         set_flow("thinking", transcript=transcript, language=language)
-        ensure_engine("brain", payload.get("load", True) is not False)
-        prompt = str(payload.get("prompt") or f"Respond naturally to this speech transcript:\n\n{transcript}")
-        results["brain"] = brain(prompt, language)
+        results["brain"] = brain(f"Respond naturally to this speech transcript:\n\n{transcript}", language)
         speak = brain_reply_text(results["brain"]) or transcript
         report["text"] = speak
-        ensure_engine("tts", payload.get("load", True) is not False)
         set_flow("ready_to_speak", transcript=transcript, answer=speak, language=language)
         report.update(ok=True, results=results)
         return report
@@ -1250,19 +1218,19 @@ OPS = {
     "set_brain": {"doc": "select a catalog brain or download a custom GGUF URL", "fields": ["name", "url", "family"]},
     "load_engine": {"doc": "load tts, asr, or brain", "fields": ["name"]},
     "unload_engine": {"doc": "unload tts, asr, or brain", "fields": ["name"]},
-    "upload_reference": {"doc": "replace reference.wav", "fields": ["audio_base64"], "body": "audio/wav"},
-    "asr": {"doc": "transcribe WAV via Parakeet", "fields": ["source", "audio_base64"], "source": ["reference", "upload"]},
+    "upload_reference": {"doc": "replace reference.wav", "fields": [], "body": "audio/wav"},
+    "asr": {"doc": "transcribe WAV via Parakeet", "fields": [], "body": "audio/wav"},
     "brain": {"doc": "ask the active brain", "fields": ["prompt", "language"]},
     "tts_session": {"doc": "open a Chatterbox V3 session", "fields": ["lane", "language", "style"]},
     "tts_request": {"doc": "queue a synthesize message", "fields": ["lane", "text"]},
     "tts_event": {"doc": "report a lane websocket event", "fields": ["lane", "event"]},
     "tts_cancel": {"doc": "cancel a TTS session", "fields": ["session_id"]},
-    "turn": {"doc": "WAV input -> Parakeet -> brain; browser streams Chatterbox audio", "fields": ["source", "clone", "language", "audio_base64", "load", "prompt"], "source": ["reference", "upload"], "body": "audio/wav"},
+    "turn": {"doc": "WAV input -> Parakeet -> brain; browser streams Chatterbox audio", "fields": ["language"], "body": "audio/wav"},
 }
 
 
 def inspect() -> dict:
-    return {"ok": True, "version": 3, "control": "/api", "ops": OPS, "schema": SCHEMA, "state": snapshot()}
+    return {"ok": True, "version": 4, "control": "/api", "ops": OPS, "schema": SCHEMA, "state": snapshot()}
 
 
 def dispatch(op: str, payload: dict | None = None, raw: bytes | None = None) -> tuple[dict, int]:
@@ -1338,36 +1306,21 @@ def dispatch(op: str, payload: dict | None = None, raw: bytes | None = None) -> 
         start_job("engine", name, lambda key: stop_engine(name))
         return {"ok": True, "accepted": True, "op": op, "name": name}, 202
     if op == "upload_reference":
-        data = raw
-        if data is None and payload.get("audio_base64"):
-            data = base64.b64decode(payload["audio_base64"])
-        if not data:
-            raise ApiError(400, "reference WAV body is required")
-        validate_wav(data)
+        validate_wav(wav_body(raw))
         emit_state()
         return {"ok": True, "reference": reference_state()}, 200
     if op == "asr":
-        source = payload.get("source", "upload" if raw or payload.get("audio_base64") else "reference")
-        if source == "reference":
-            data = reference_path().read_bytes()
-        elif source == "upload":
-            data = raw
-            if data is None and payload.get("audio_base64"):
-                data = base64.b64decode(payload["audio_base64"])
-            if not data:
-                raise ApiError(400, "asr WAV body is required")
-        else:
-            raise ApiError(400, "asr source must be reference or upload")
-        return {"ok": True, "result": transcribe(data)}, 200
+        return {"ok": True, "result": transcribe(wav_body(raw))}, 200
     if op == "brain":
         prompt = str(payload.get("prompt") or "").strip()
+        language = str(payload.get("language") or "")
         if not prompt:
             raise ApiError(400, "prompt is required")
-        return {"ok": True, "result": brain(prompt, str(payload.get("language") or CONFIG["conversation.language"]))}, 200
+        return {"ok": True, "result": brain(prompt, language)}, 200
     if op == "tts_session":
-        return tts_session(payload["lane"], payload.get("language"), payload.get("style")), 200
+        return tts_session(payload["lane"], payload["language"], payload["style"]), 200
     if op == "tts_request":
-        return tts_request(payload["lane"], payload.get("text")), 200
+        return tts_request(payload["lane"], payload["text"]), 200
     if op == "tts_event":
         tts_event(payload)
         return {"ok": True}, 200
@@ -1379,23 +1332,22 @@ def dispatch(op: str, payload: dict | None = None, raw: bytes | None = None) -> 
 
 
 SCHEMA = {
-    "version": 3,
+    "version": 4,
     "control": "/api",
     "fields": FIELDS,
     "languages": {"conversation": CONVERSATION_LANGUAGES, "speech": TTS_LANGUAGES, "asr": ASR_LANGUAGES},
     "voice_styles": VOICE_STYLES,
     "param_groups": PARAM_GROUPS,
     "ops": OPS,
-    "prerequisites": {name: {"label": label, "install": f"/api/prerequisites/{name}/install", "op": "install_prerequisite", "name": name} for name, label in {"python": "PYTHON 3.11+", "git": "GIT (TTS BUILD)", "cmake": "CMAKE (TTS BUILD)", "msvc": "MSVC (TTS BUILD)", "vulkan": "VULKAN SDK (TTS BUILD)"}.items()},
+    "prerequisites": {name: {"label": label, "op": "install_prerequisite", "name": name} for name, label in {"python": "PYTHON 3.11+", "git": "GIT (TTS BUILD)", "cmake": "CMAKE (TTS BUILD)", "msvc": "MSVC (TTS BUILD)", "vulkan": "VULKAN SDK (TTS BUILD)"}.items()},
     "components": {
-        "tts": {"label": "CHATTERBOX TTS (BUILD)", "install": "/api/components/tts/install", "op": "install_component", "name": "tts"},
-        **{name: {"label": spec["label"], "install": f"/api/components/{name}/install", "op": "install_component", "name": name, "tag": spec["tag"]} for name, spec in BINARIES.items()},
+        "tts": {"label": "CHATTERBOX TTS (BUILD)", "op": "install_component", "name": "tts"},
+        **{name: {"label": spec["label"], "op": "install_component", "name": name, "tag": spec["tag"]} for name, spec in BINARIES.items()},
     },
-    "models": {name: {"label": spec["label"], "download": f"/api/models/{name}/download", "op": "download_model", "name": name, "revision": spec.get("revision", ""), "size": spec["size"], "sha256": spec["sha256"], **({"license": spec["license"]} if spec.get("license") else {})} for name, spec in MODELS.items()},
+    "models": {name: {"label": spec["label"], "op": "download_model", "name": name, "revision": spec.get("revision", ""), "size": spec["size"], "sha256": spec["sha256"], **({"license": spec["license"]} if spec.get("license") else {})} for name, spec in MODELS.items()},
     "brains": {name: {"label": spec["label"], "model": spec["model"], "family": spec["family"]} for name, spec in BRAINS.items()},
     "brain_families": list(BRAIN_FAMILIES),
-    "engines": {name: {"load": f"/api/engines/{name}/load", "unload": f"/api/engines/{name}/unload", "load_op": "load_engine", "unload_op": "unload_engine", "name": name} for name in ENGINE_MODELS},
-    "endpoints": {"control": "/api", "events": "/api/events", "state": "/api/state", "reference": "/api/reference", "asr": "/api/asr", "brain": "/api/brain", "tts_session": "/api/tts/session", "tts_request": "/api/tts/request", "tts_cancel": "/api/tts/cancel", "tts_event": "/api/tts/event", "turn": "/api?op=turn", "log": "/api/log", "set_brain": "/api?op=set_brain"},
+    "engines": {name: {"load_op": "load_engine", "unload_op": "unload_engine", "name": name} for name in ENGINE_MODELS},
     "defaults": {"tts_runtime": TTS_RUNTIME, "voice": VOICE_DEFAULTS, "asr": ASR_RUNTIME, "brain_runtime": BRAIN_RUNTIME, "brain_generation": BRAIN_GENERATION},
     "tts": {"url": "ws://127.0.0.1:8095/tts", "text": "JSON", "audio": "binary PCM16LE mono 24000 Hz", "messages": ["init", "synthesize", "cancel", "close"], "events": ["ready", "synthesize_started", "audio", "chunk_done", "cancelled", "error"]},
 }
@@ -1439,33 +1391,27 @@ class Handler(BaseHTTPRequestHandler):
             parsed = urllib.parse.urlparse(self.path)
             path = parsed.path
             query = {key: values[0] for key, values in urllib.parse.parse_qs(parsed.query).items() if values}
-            if path in ("/", "/panel.html"):
-                self.send_bytes((ROOT / "panel.html").read_bytes(), "text/html; charset=utf-8")
-            elif path == "/panel.css":
-                self.send_bytes((ROOT / "panel.css").read_bytes(), "text/css; charset=utf-8")
-            elif path == "/panel.js":
-                self.send_bytes((ROOT / "panel.js").read_bytes(), "text/javascript; charset=utf-8")
-            elif path == "/audio-processor.js":
-                self.send_bytes((ROOT / "audio-processor.js").read_bytes(), "text/javascript; charset=utf-8")
-            elif path == "/api/events":
-                self.events()
-            elif path == "/api" or path.startswith("/api/"):
-                op = query.get("op")
-                if path == "/api/schema" or op == "schema":
-                    self.send_json(SCHEMA)
-                elif path == "/api/state" or op == "state":
-                    self.send_json(snapshot())
-                elif path == "/api/reference" or op == "reference":
-                    self.send_bytes(reference_path().read_bytes(), "audio/wav")
-                elif path == "/api/log" or op == "log":
-                    self.send_json(read_log(query.get("limit", 200)))
-                elif path == "/api":
-                    body, code = dispatch(op or "inspect", query)
-                    self.send_json(body, code)
-                else:
-                    raise ApiError(404, f"unknown endpoint: {path}")
-            else:
+            files = {
+                "/": (ROOT / "panel.html", "text/html; charset=utf-8"),
+                "/panel.html": (ROOT / "panel.html", "text/html; charset=utf-8"),
+                "/panel.css": (ROOT / "panel.css", "text/css; charset=utf-8"),
+                "/panel.js": (ROOT / "panel.js", "text/javascript; charset=utf-8"),
+                "/audio-processor.js": (ROOT / "audio-processor.js", "text/javascript; charset=utf-8"),
+            }
+            if path in files:
+                target, content_type = files[path]
+                self.send_bytes(target.read_bytes(), content_type)
+                return
+            if path != "/api":
                 raise ApiError(404, f"unknown endpoint: {path}")
+            op = query.get("op") or "inspect"
+            if op == "events":
+                self.events()
+                return
+            if op not in ("inspect", "schema", "state", "log"):
+                raise ApiError(404, f"GET /api accepts op=inspect, schema, state, log, or events")
+            body, code = dispatch(op, query)
+            self.send_json(body, code)
         except ApiError as exception:
             self.send_json({"error": str(exception)}, exception.code)
         except Exception as exception:
@@ -1503,56 +1449,19 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
             parsed = urllib.parse.urlparse(self.path)
-            path = parsed.path
+            if parsed.path != "/api":
+                raise ApiError(404, f"unknown endpoint: {parsed.path}")
             query = {key: values[0] for key, values in urllib.parse.parse_qs(parsed.query).items() if values}
-            parts = path.strip("/").split("/")
             content_type = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-            if path == "/api":
-                raw_ops = {"asr", "upload_reference", "turn"}
-                if content_type in ("audio/wav", "application/octet-stream") or query.get("op") in raw_ops and content_type != "application/json":
-                    body, code = dispatch(query.get("op") or "asr", query, self.body())
-                else:
-                    payload = self.request_json(True)
-                    body, code = dispatch(payload.get("op") or query.get("op") or "inspect", payload)
-                self.send_json(body, code)
-            elif path == "/api/state":
-                body, code = dispatch("set", self.request_json())
-                self.send_json(body.get("state", body), code)
-            elif len(parts) == 4 and parts[:2] == ["api", "prerequisites"] and parts[3] == "install":
-                body, code = dispatch("install_prerequisite", {"name": parts[2]})
-                self.send_json(body, code)
-            elif len(parts) == 4 and parts[:2] == ["api", "components"] and parts[3] == "install":
-                body, code = dispatch("install_component", {"name": parts[2]})
-                self.send_json(body, code)
-            elif len(parts) == 4 and parts[:2] == ["api", "models"] and parts[3] == "download":
-                body, code = dispatch("download_model", {"name": parts[2]})
-                self.send_json(body, code)
-            elif len(parts) == 4 and parts[:2] == ["api", "engines"] and parts[3] in ("load", "unload"):
-                body, code = dispatch("load_engine" if parts[3] == "load" else "unload_engine", {"name": parts[2]})
-                self.send_json(body, code)
-            elif path == "/api/reference":
-                body, code = dispatch("upload_reference", {}, self.body())
-                self.send_json(body.get("reference", body), code)
-            elif path == "/api/asr":
-                body, code = dispatch("asr", {"source": "upload"}, self.body())
-                self.send_json(body.get("result", body), code)
-            elif path == "/api/brain":
-                body, code = dispatch("brain", self.request_json(True))
-                self.send_json(body.get("result", body), code)
-            elif path == "/api/tts/session":
-                body, code = dispatch("tts_session", self.request_json())
-                self.send_json(body, code)
-            elif path == "/api/tts/request":
-                body, code = dispatch("tts_request", self.request_json())
-                self.send_json(body, code)
-            elif path == "/api/tts/event":
-                body, code = dispatch("tts_event", self.request_json())
-                self.send_json(body, code)
-            elif path == "/api/tts/cancel":
-                body, code = dispatch("tts_cancel", self.request_json())
-                self.send_json(body.get("result", body), code)
+            if content_type == "audio/wav":
+                op = query.get("op")
+                if op not in ("turn", "asr", "upload_reference"):
+                    raise ApiError(400, "WAV body requires op=turn, op=asr, or op=upload_reference")
+                body, code = dispatch(op, query, self.body())
             else:
-                raise ApiError(404, f"unknown endpoint: {path}")
+                payload = self.request_json(True)
+                body, code = dispatch(payload.get("op") or query.get("op") or "inspect", payload)
+            self.send_json(body, code)
         except ApiError as exception:
             self.send_json({"error": str(exception)}, exception.code)
         except (KeyError, TypeError, ValueError) as exception:

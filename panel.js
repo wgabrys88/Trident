@@ -14,6 +14,7 @@ let ttsLanguage = "";
 let ttsStyle = "";
 let ttsReferenceGeneration = -1;
 let playback = {received: 0, played: 0, expected: 0, text: "", done: false, timer: 0};
+let playbackWait = null;
 let clientStage = "";
 let installingAll = false;
 
@@ -160,6 +161,10 @@ function engineCanStart(name) {
 
 function conversationReady() {
   return ["asr", "brain", "tts"].every(engineCanStart);
+}
+
+function enginesRunning() {
+  return ["asr", "brain", "tts"].every(name => state.engines[name].status === "running");
 }
 
 function setupItem(label, status, action, actionLabel, detail = "", blocked = false, allowWhileRunning = false) {
@@ -329,6 +334,7 @@ function highlightSpoken() {
     window.clearInterval(playback.timer);
     playback.timer = 0;
     $("cancel-speech").disabled = true;
+    finishPlayback();
   }
 }
 
@@ -343,11 +349,13 @@ function render(next) {
   $("engines-toggle").disabled = running === 0 && !ready;
   $("start-all").disabled = !ready || installingAll;
   $("install-all").disabled = installingAll;
-  $("record").disabled = !recording && !ready;
+  const live = enginesRunning();
+  $("record").disabled = !recording && !live;
   syncParamFields();
-  $("pick-audio").disabled = !ready;
-  $("speak-text").disabled = !engineCanStart("tts");
-  if (!recording && !ready) $("recording-time").textContent = "Complete Setup before starting a conversation. Missing components or assets are shown below.";
+  $("pick-audio").disabled = !live || Boolean(recording);
+  $("speak-text").disabled = state.engines.tts.status !== "running";
+  if (recording) paintMic();
+  else if (!live) $("recording-time").textContent = ready ? "Start engines, then open the microphone." : "Complete Setup before starting a conversation. Missing components or assets are shown below.";
 }
 
 function sleep(ms) {
@@ -419,7 +427,7 @@ async function installAll() {
 async function waitFor(test, timeout = 180000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
-    const next = await api("/api/state");
+    const next = await command("state");
     render(next);
     if (test(next)) return next;
     await new Promise(resolve => setTimeout(resolve, 500));
@@ -465,7 +473,13 @@ async function ensurePlayback() {
 }
 
 function reportTts(event, data = {}) {
-  return command("tts_event", {lane: "a", event, ...data}).catch(() => {});
+  command("tts_event", {lane: "a", event, ...data}).catch(fail);
+}
+
+function finishPlayback() {
+  const done = playbackWait;
+  playbackWait = null;
+  if (done) done();
 }
 
 async function closeTts() {
@@ -505,6 +519,7 @@ async function openTts(language, style) {
         ttsSocket = null;
         ttsSession = "";
         reportTts("closed");
+        finishPlayback();
       }
     };
     socket.onmessage = event => {
@@ -523,8 +538,7 @@ async function openTts(language, style) {
         ttsLanguage = language;
         ttsStyle = style;
         ttsReferenceGeneration = Number(state.reference_generation || 0);
-        reportTts("ready", {session_id: ttsSession});
-        resolve(socket);
+        command("tts_event", {lane: "a", event: "ready", session_id: ttsSession}).then(() => resolve(socket)).catch(reject);
       } else if (message.type === "synthesize_started") {
         clientStage = "speaking";
         $("speech-state").textContent = "Streaming audio";
@@ -540,9 +554,12 @@ async function openTts(language, style) {
         playback.expected = playback.played;
         reportTts("cancelled", {session_id: ttsSession, request_id: message.request_id, samples: playback.received});
         $("speech-state").textContent = "Stopped";
+        finishPlayback();
       } else if (message.type === "error") {
+        playback.done = true;
         reportTts("error", {message: message.message || "Voice error", request_id: message.request_id});
         fail(Error(message.message || "Voice error"));
+        finishPlayback();
       }
     };
   });
@@ -551,17 +568,25 @@ async function openTts(language, style) {
 async function speak(text, language, style = "natural") {
   text = String(text || "").trim();
   if (!text) throw Error("There is no text to speak");
+  const held = Boolean(recording && recording.busy);
+  if (recording) recording.busy = true;
+  finishPlayback();
   renderAnswerWords(text);
   clientStage = "speaking";
   playback = {received: 0, played: 0, expected: 0, text, done: false, timer: 0};
   renderFlow();
-  await ensurePlayback();
-  playbackNode.port.postMessage({type: "clear"});
-  const socket = await openTts(language, style);
-  const request = await command("tts_request", {lane: "a", text});
-  $("cancel-speech").disabled = false;
-  playback.timer = window.setInterval(highlightSpoken, 100);
-  socket.send(JSON.stringify(request.message));
+  try {
+    await ensurePlayback();
+    playbackNode.port.postMessage({type: "clear"});
+    const socket = await openTts(language, style);
+    const request = await command("tts_request", {lane: "a", text});
+    $("cancel-speech").disabled = false;
+    playback.timer = window.setInterval(highlightSpoken, 100);
+    socket.send(JSON.stringify(request.message));
+    await new Promise(resolve => { playbackWait = resolve; });
+  } finally {
+    if (recording && !held) recording.busy = false;
+  }
 }
 
 async function cancelSpeech() {
@@ -569,6 +594,7 @@ async function cancelSpeech() {
   clientStage = "idle";
   if (playbackNode) playbackNode.port.postMessage({type: "clear"});
   $("cancel-speech").disabled = true;
+  finishPlayback();
 }
 
 function makeWav(parts, rate) {
@@ -585,24 +611,95 @@ function makeWav(parts, rate) {
   return data;
 }
 
+function rms(frame) {
+  let sum = 0;
+  for (let i = 0; i < frame.length; i++) sum += frame[i] * frame[i];
+  return Math.sqrt(sum / frame.length);
+}
+
+function trimPreRoll(parts, rate) {
+  const limit = Math.floor(rate * 0.3);
+  let total = parts.reduce((sum, part) => sum + part.length, 0);
+  while (parts.length && total - parts[0].length >= limit) total -= parts.shift().length;
+}
+
+function paintMic() {
+  const on = Boolean(state.config["conversation.vad"]);
+  $("record").textContent = recording ? (on ? "Stop listening" : "Stop and ask") : "Start listening";
+  $("record").classList.toggle("danger", Boolean(recording));
+}
+
+function paintMicLevel() {
+  if (!recording) return;
+  const seconds = ((performance.now() - recording.started) / 1000).toFixed(1);
+  const level = recording.lastRms.toFixed(3);
+  $("recording-time").textContent = recording.busy
+    ? `Microphone open · waiting for the reply · RMS ${level}`
+    : `Listening · ${seconds} s · RMS ${level}${recording.speaking ? " · speech" : ""}`;
+}
+
+function onCapture(frame) {
+  if (!recording || !frame || !frame.length || recording.busy) return;
+  const rec = recording;
+  const level = rms(frame);
+  rec.lastRms = level;
+  if (!state.config["conversation.vad"]) {
+    rec.parts.push(frame);
+    return;
+  }
+  const rate = rec.context.sampleRate;
+  const ms = frame.length / rate * 1000;
+  if (level >= Number(state.config["asr.vad.threshold"])) {
+    if (!rec.speaking) {
+      rec.speaking = true;
+      rec.speechMs = 0;
+      rec.silenceMs = 0;
+    }
+    rec.speechMs += ms;
+    rec.silenceMs = 0;
+    rec.parts.push(frame);
+    return;
+  }
+  if (!rec.speaking) {
+    rec.parts.push(frame);
+    trimPreRoll(rec.parts, rate);
+    return;
+  }
+  rec.parts.push(frame);
+  rec.silenceMs += ms;
+  if (rec.silenceMs < Number(state.config["asr.vad.silence_ms"])) return;
+  const ready = rec.speechMs >= Number(state.config["asr.vad.min_speech_ms"]);
+  const parts = rec.parts;
+  rec.parts = [];
+  rec.speaking = false;
+  rec.speechMs = 0;
+  rec.silenceMs = 0;
+  if (ready) submitUtterance(makeWav(parts, rate)).catch(fail);
+}
+
+async function submitUtterance(wav) {
+  if (!recording) return;
+  recording.busy = true;
+  try {
+    await runTurn(wav);
+  } finally {
+    if (recording) recording.busy = false;
+  }
+}
+
 async function startRecording() {
   const stream = await navigator.mediaDevices.getUserMedia({audio: {channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false}, video: false});
   const context = new AudioContext({sampleRate: 16000});
   await context.audioWorklet.addModule("/audio-processor.js");
   const source = context.createMediaStreamSource(stream);
   const node = new AudioWorkletNode(context, "pcm-capture", {numberOfInputs: 1, numberOfOutputs: 0});
-  const parts = [];
-  node.port.onmessage = event => { if (event.data && event.data.length) parts.push(event.data); };
+  node.port.onmessage = event => onCapture(event.data);
   source.connect(node);
-  recording = {stream, context, source, node, parts, started: performance.now(), timer: 0};
-  $("record").textContent = "Stop and ask";
-  $("record").classList.add("danger");
+  recording = {stream, context, source, node, parts: [], started: performance.now(), timer: 0, speaking: false, speechMs: 0, silenceMs: 0, lastRms: 0, busy: false};
+  paintMic();
   state.flow.stage = "listening";
   renderFlow();
-  recording.timer = window.setInterval(() => {
-    const seconds = (performance.now() - recording.started) / 1000;
-    $("recording-time").textContent = `Listening through the Windows default microphone · ${seconds.toFixed(1)} seconds`;
-  }, 100);
+  recording.timer = window.setInterval(paintMicLevel, 100);
 }
 
 async function stopRecording() {
@@ -614,15 +711,18 @@ async function stopRecording() {
   current.stream.getTracks().forEach(track => track.stop());
   const rate = current.context.sampleRate;
   await current.context.close();
-  $("record").textContent = "Start listening";
-  $("record").classList.remove("danger");
+  paintMic();
+  if (state.config["conversation.vad"]) {
+    $("recording-time").textContent = "Microphone closed.";
+    return;
+  }
   $("recording-time").textContent = "Processing the recording…";
   if (!current.parts.length) throw Error("No microphone audio was captured");
   await runTurn(makeWav(current.parts, rate));
 }
 
 async function runTurn(wav) {
-  clientStage = "";
+  clientStage = "transcribing";
   $("transcript").textContent = "Recognizing speech…";
   $("transcript").classList.remove("muted");
   $("answer").textContent = "Waiting for the assistant…";
@@ -630,11 +730,12 @@ async function runTurn(wav) {
   $("asr-state").textContent = "Working";
   $("speech-state").textContent = "Waiting";
   const language = $("conversation-language").value;
-  const clone = $("clone-voice").checked;
-  const result = await api(`/api?op=turn&source=upload&language=${encodeURIComponent(language)}&clone=${clone ? "true" : "false"}`, wav, true);
+  const result = await api(`/api?op=turn&language=${encodeURIComponent(language)}`, wav, true);
   if (!result.text) throw Error("The assistant returned no reply");
   await speak(result.text, language, "natural");
-  $("recording-time").textContent = "Ready for another question.";
+  $("recording-time").textContent = recording && state.config["conversation.vad"]
+    ? "Listening for the next utterance."
+    : "Ready for another question.";
 }
 
 function formatLogTime(ts) {
@@ -661,7 +762,7 @@ async function refreshLogs() {
 }
 
 function openEvents() {
-  events = new EventSource("/api/events");
+  events = new EventSource("/api?op=events");
   const connection = $("connection");
   const touch = () => {
     lastEvent = Date.now();
@@ -700,7 +801,7 @@ $("upload-reference").onclick = () => $("reference-file").click();
 $("reference-file").onchange = async () => {
   try {
     const file = $("reference-file").files[0];
-    if (file) await api("/api/reference", await file.arrayBuffer(), true);
+    if (file) await api("/api?op=upload_reference", await file.arrayBuffer(), true);
   } catch (error) { fail(error); }
   $("reference-file").value = "";
 };
