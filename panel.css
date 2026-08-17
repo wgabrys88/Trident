@@ -704,7 +704,13 @@ details > summary strong {
 }
 
 .log-actions {
+  flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.log-actions label {
+  min-width: min(100%, 15rem);
+  margin-right: auto;
 }
 
 .log-box {

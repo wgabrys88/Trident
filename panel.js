@@ -1,10 +1,15 @@
 "use strict";
 const $ = id => document.getElementById(id);
 let schema, state, events, recording = null, playbackContext = null, playbackNode = null, ttsSocket = null;
-let lastEvent = 0, ttsSession = "", ttsLanguage = "", ttsStyle = "", ttsReferenceGeneration = -1;
-let playback = {received: 0, played: 0, expected: 0, text: "", done: false, timer: 0};
+let lastEvent = 0, ttsSession = "", ttsConfigId = "", ttsLanguage = "", ttsStyle = "", ttsReferenceGeneration = -1;
+let playback = {received: 0, played: 0, expected: 0, text: "", done: false, timer: 0, chunks: 0, serverChunks: 0, reported: false, traceId: "", turnId: "", requestId: "", source: "", started: 0, firstAudio: 0};
 let playbackWait = null, clientStage = "", installingAll = false;
-let diagnostic = {input: null, output: [], outputRate: 24000, transcript: "", answer: "", source: "turn"};
+let diagnostic = {input: null, output: [], outputRate: 24000, transcript: "", answer: "", source: "turn", traceId: "", turnId: ""};
+let visibleLogs = [];
+let browserSequence = 0;
+const makeId = kind => `${kind}-${crypto.randomUUID()}`;
+const clientId = sessionStorage.getItem("trident.client_id") || makeId("browser");
+sessionStorage.setItem("trident.client_id", clientId);
 async function api(path, body, raw = false) {
   const options = body === undefined ? {} : {
     method: "POST",
@@ -17,6 +22,23 @@ async function api(path, body, raw = false) {
   return result;
 }
 const command = (op, values = {}) => api("/api", {op, ...values});
+function traceContext(extra = {}) {
+  return {
+    trace_id: extra.trace_id || playback.traceId || diagnostic.traceId || "",
+    turn_id: extra.turn_id || playback.turnId || diagnostic.turnId || "",
+    config_id: extra.config_id || ttsConfigId || "",
+    session_id: extra.session_id || ttsSession || "",
+    request_id: extra.request_id || playback.requestId || "",
+    lane: "a",
+    client_id: clientId,
+  };
+}
+function browserTrace(event, data = {}, extra = {}, level = "info") {
+  const context = Object.fromEntries(Object.entries(traceContext(extra)).filter(([, value]) => value));
+  const evidence = {client_seq: ++browserSequence, client_time: new Date().toISOString(), performance_ms: performance.now(), ...data};
+  if (state && state.trace && context.trace_id) state.trace.latest = context.trace_id;
+  return command("trace", {event, level, data: evidence, ...context}).catch(() => null);
+}
 function fail(error) {
   const fault = $("fault");
   fault.textContent = error && error.message ? error.message : String(error);
@@ -226,6 +248,13 @@ function highlightSpoken() {
   if (playback.done && playback.played >= playback.expected) {
     clientStage = "complete";
     $("speech-state").textContent = "Playback complete";
+    if (!playback.reported) {
+      playback.reported = true;
+      const metrics = signalMetrics(joinOutput(), outputSeams()) || {};
+      const evidence = {received_samples: playback.received, played_samples: playback.played, expected_samples: playback.expected, binary_chunks: playback.chunks, server_chunks: playback.serverChunks, sample_rate: diagnostic.outputRate, audio_context_rate: playbackContext ? playbackContext.sampleRate : 0, audio_context_state: playbackContext ? playbackContext.state : "missing", wall_ms: playback.started ? performance.now() - playback.started : 0, first_audio_ms: playback.firstAudio && playback.started ? playback.firstAudio - playback.started : 0, metrics};
+      reportTts("playback_complete", {samples: playback.played, chunks: playback.chunks, ...evidence});
+      browserTrace("browser.playback.completed", evidence);
+    }
     renderFlow();
     window.clearInterval(playback.timer);
     playback.timer = 0;
@@ -334,27 +363,29 @@ async function ensurePlayback() {
     await playbackContext.audioWorklet.addModule("/audio-processor.js");
     playbackNode = new AudioWorkletNode(playbackContext, "pcm-ring");
     playbackNode.connect(playbackContext.destination);
+    browserTrace("browser.playback.context_created", {requested_rate: 24000, actual_rate: playbackContext.sampleRate, state: playbackContext.state});
     playbackNode.port.onmessage = event => {
       if (event.data && ["played", "drained"].includes(event.data.type)) {
         playback.played = event.data.samples;
+        if (event.data.type === "drained") browserTrace("browser.playback.drained", {played_samples: playback.played, received_samples: playback.received, worklet: event.data});
         highlightSpoken();
       }
     };
   }
-  if (playbackContext.state !== "running") await playbackContext.resume();
+  if (playbackContext.state !== "running") {
+    await playbackContext.resume();
+    browserTrace("browser.playback.resumed", {state: playbackContext.state, sample_rate: playbackContext.sampleRate});
+  }
 }
 function reportTts(event, data = {}) {
-  command("tts_event", {lane: "a", event, ...data}).catch(fail);
+  command("tts_event", {lane: "a", event, ...traceContext(data), ...data}).catch(fail);
 }
 function finishPlayback() { const done = playbackWait; playbackWait = null; if (done) done(); }
 async function closeTts() {
   const socket = ttsSocket;
-  ttsSocket = null;
-  ttsSession = "";
-  ttsLanguage = "";
-  ttsStyle = "";
-  ttsReferenceGeneration = -1;
   if (!socket) return;
+  const closing = traceContext({config_id: ttsConfigId, session_id: ttsSession});
+  browserTrace("browser.tts.socket_closing", {ready_state: socket.readyState}, closing);
   await new Promise(resolve => {
     let settled = false;
     const done = () => { if (!settled) { settled = true; resolve(); } };
@@ -363,26 +394,46 @@ async function closeTts() {
     try { socket.close(); } catch (_) {}
     window.setTimeout(done, 750);
   });
+  if (ttsSocket === socket) ttsSocket = null;
+  ttsSession = "";
+  ttsConfigId = "";
+  ttsLanguage = "";
+  ttsStyle = "";
+  ttsReferenceGeneration = -1;
 }
-async function openTts(language, style) {
+async function openTts(language, style, context = {}) {
   const generation = Number(state.reference_generation || 0);
   if (ttsSocket && ttsSocket.readyState === WebSocket.OPEN && ttsSession && ttsLanguage === language && ttsStyle === style && ttsReferenceGeneration === generation) return ttsSocket;
   await closeTts();
   await ensureEngine("tts");
   await ensurePlayback();
-  const setup = await command("tts_session", {lane: "a", language, style});
+  const setup = await command("tts_session", {lane: "a", language, style, source: context.source || "speech_lab", trace_id: context.trace_id || "", turn_id: context.turn_id || "", client_id: clientId});
+  browserTrace("browser.tts.socket_connecting", {url: setup.url, language, style, reference_generation: generation}, {...context, config_id: setup.config_id});
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(setup.url);
     ttsSocket = socket;
     socket.binaryType = "arraybuffer";
-    const timeout = window.setTimeout(() => reject(Error("Voice connection timed out")), 30000);
-    socket.onopen = () => socket.send(JSON.stringify(setup.message));
-    socket.onerror = () => reject(Error("Voice WebSocket failed"));
-    socket.onclose = () => {
+    const timeout = window.setTimeout(() => {
+      browserTrace("browser.tts.socket_failed", {reason: "timeout", timeout_ms: 30000}, {...context, config_id: setup.config_id}, "error");
+      reject(Error("Voice connection timed out"));
+    }, 30000);
+    socket.onopen = () => {
+      browserTrace("browser.tts.socket_opened", {ready_state: socket.readyState}, {...context, config_id: setup.config_id});
+      socket.send(JSON.stringify(setup.message));
+    };
+    socket.onerror = () => {
+      browserTrace("browser.tts.socket_failed", {reason: "websocket_error"}, {...context, config_id: setup.config_id}, "error");
+      reject(Error("Voice WebSocket failed"));
+    };
+    socket.onclose = event => {
+      window.clearTimeout(timeout);
+      const closed = {...context, config_id: ttsConfigId || setup.config_id, session_id: ttsSession};
+      reportTts("closed", closed);
+      browserTrace("browser.tts.socket_closed", {code: event && event.code, reason: event && event.reason, clean: event && event.wasClean}, closed);
       if (ttsSocket === socket) {
         ttsSocket = null;
         ttsSession = "";
-        reportTts("closed");
+        ttsConfigId = "";
         finishPlayback();
       }
     };
@@ -391,7 +442,12 @@ async function openTts(language, style) {
         const view = new DataView(event.data);
         const pcm = new Float32Array(event.data.byteLength / 2);
         for (let i = 0; i < pcm.length; i++) pcm[i] = view.getInt16(i * 2, true) / 32768;
+        if (!playback.firstAudio) {
+          playback.firstAudio = performance.now();
+          browserTrace("browser.tts.first_audio", {bytes: event.data.byteLength, samples: pcm.length, latency_ms: playback.started ? playback.firstAudio - playback.started : 0});
+        }
         playback.received += pcm.length;
+        playback.chunks += 1;
         diagnostic.output.push(pcm);
         playbackNode.port.postMessage(pcm);
         return;
@@ -400,20 +456,30 @@ async function openTts(language, style) {
       if (message.type === "ready") {
         window.clearTimeout(timeout);
         ttsSession = message.session_id || "";
+        ttsConfigId = message.config_id || setup.config_id || "";
         ttsLanguage = language;
         ttsStyle = style;
         ttsReferenceGeneration = Number(state.reference_generation || 0);
-        command("tts_event", {lane: "a", event: "ready", session_id: ttsSession}).then(() => resolve(socket)).catch(reject);
+        const ready = {...context, config_id: ttsConfigId, session_id: ttsSession};
+        browserTrace("browser.tts.session_ready", {language: message.language, format: message.format, sample_rate: message.sample_rate}, ready);
+        command("tts_event", {lane: "a", event: "ready", ...traceContext(ready)}).then(() => resolve(socket)).catch(reject);
       } else if (message.type === "synthesize_started") {
         clientStage = "speaking";
         $("speech-state").textContent = "Streaming audio";
-        reportTts("synthesize_started", {session_id: ttsSession, request_id: message.request_id});
+        reportTts("synthesize_started", {session_id: ttsSession, config_id: message.config_id || ttsConfigId, request_id: message.request_id, trace_id: message.trace_id || playback.traceId, turn_id: message.turn_id || playback.turnId});
+        browserTrace("browser.tts.synthesis_acknowledged", {language, style}, message);
         renderFlow();
+      } else if (message.type === "audio") {
+        playback.serverChunks += 1;
+        playback.expected = Math.max(playback.expected, playback.received + Number(message.samples || 0));
       } else if (message.type === "chunk_done") {
         playback.done = true;
-        playback.expected = playback.received;
-        reportTts("chunk_done", {session_id: ttsSession, request_id: message.request_id, samples: playback.received});
-        renderDiagnostic(true);
+        playback.expected = Number(message.samples || playback.received);
+        const metrics = signalMetrics(joinOutput(), outputSeams()) || {};
+        reportTts("audio_received", {session_id: ttsSession, request_id: message.request_id, samples: playback.received, chunks: playback.chunks, metrics});
+        reportTts("chunk_done", {session_id: ttsSession, request_id: message.request_id, samples: playback.received, chunks: playback.chunks});
+        browserTrace("browser.tts.audio_received", {received_samples: playback.received, expected_samples: playback.expected, binary_chunks: playback.chunks, server_chunks: playback.serverChunks, metrics}, message);
+        renderDiagnostic(false);
         highlightSpoken();
       } else if (message.type === "cancelled") {
         playback.done = true;
@@ -424,38 +490,53 @@ async function openTts(language, style) {
       } else if (message.type === "error") {
         playback.done = true;
         reportTts("error", {message: message.message || "Voice error", request_id: message.request_id});
+        browserTrace("browser.tts.synthesis_failed", {error: message.message || "Voice error", received_samples: playback.received}, message, "error");
         fail(Error(message.message || "Voice error"));
         finishPlayback();
       }
     };
   });
 }
-async function speak(text, language, style = "natural", source = "lab") {
+async function speak(text, language, style = "natural", source = "lab", context = {}) {
   text = String(text || "").trim();
   if (!text) throw Error("There is no text to speak");
+  const traceId = context.trace_id || makeId("trace");
+  const turnId = context.turn_id || "";
+  const sourceName = source === "turn" ? "conversation" : "speech_lab";
   const held = Boolean(recording && recording.busy);
   if (recording) recording.busy = true;
   finishPlayback();
   renderAnswerWords(text);
   clientStage = "speaking";
-  playback = {received: 0, played: 0, expected: 0, text, done: false, timer: 0};
-  diagnostic.output = []; diagnostic.answer = text; diagnostic.source = source;
+  playback = {received: 0, played: 0, expected: 0, text, done: false, timer: 0, chunks: 0, serverChunks: 0, reported: false, traceId, turnId, requestId: "", source: sourceName, started: performance.now(), firstAudio: 0};
+  diagnostic.output = []; diagnostic.answer = text; diagnostic.source = source; diagnostic.traceId = traceId; diagnostic.turnId = turnId;
   if (source !== "turn") { diagnostic.input = null; diagnostic.transcript = ""; }
   renderFlow(); renderDiagnostic(false);
   try {
+    browserTrace("browser.synthesis.requested", {source: sourceName, language, style, text, characters: text.length}, {trace_id: traceId, turn_id: turnId});
     await ensurePlayback();
     playbackNode.port.postMessage({type: "clear"});
-    const socket = await openTts(language, style);
-    const request = await command("tts_request", {lane: "a", text});
+    const socket = await openTts(language, style, {source: sourceName, trace_id: traceId, turn_id: turnId});
+    const request = await command("tts_request", {lane: "a", text, source: sourceName, trace_id: traceId, turn_id: turnId, client_id: clientId});
+    playback.traceId = request.trace_id || traceId;
+    playback.turnId = request.turn_id || turnId;
+    playback.requestId = request.request_id || (request.message && request.message.request_id) || "";
+    ttsConfigId = request.config_id || ttsConfigId;
     $("cancel-speech").disabled = false;
     playback.timer = window.setInterval(highlightSpoken, 100);
     socket.send(JSON.stringify(request.message));
+    reportTts("playback_started", {samples: 0, chunks: 0});
+    browserTrace("browser.tts.request_sent", {socket_state: socket.readyState, text_characters: text.length, language, style});
     await new Promise(resolve => { playbackWait = resolve; });
+  } catch (error) {
+    browserTrace("browser.synthesis.failed", {error: error && error.message ? error.message : String(error), received_samples: playback.received, played_samples: playback.played}, {}, "error");
+    throw error;
   } finally {
     if (recording && !held) recording.busy = false;
   }
 }
 async function cancelSpeech() {
+  browserTrace("browser.playback.cancel_requested", {received_samples: playback.received, played_samples: playback.played});
   if (ttsSession) await command("tts_cancel", {session_id: ttsSession});
   clientStage = "idle";
   if (playbackNode) playbackNode.port.postMessage({type: "clear"});
@@ -534,22 +615,37 @@ function onCapture(frame) {
 }
 async function submitUtterance(wav) {
   if (!recording) return;
+  const traceId = recording.traceId || makeId("trace");
   recording.busy = true;
   try {
-    await runTurn(wav);
+    await runTurn(wav, traceId);
   } finally {
-    if (recording) recording.busy = false;
+    if (recording) {
+      recording.busy = false;
+      recording.traceId = makeId("trace");
+    }
   }
 }
 async function startRecording() {
-  const stream = await navigator.mediaDevices.getUserMedia({audio: {channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false}, video: false});
+  const traceId = makeId("trace");
+  const constraints = {channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false};
+  await browserTrace("browser.capture.permission_requested", {constraints}, {trace_id: traceId});
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({audio: constraints, video: false});
+  } catch (error) {
+    await browserTrace("browser.capture.permission_failed", {error: error && error.message ? error.message : String(error)}, {trace_id: traceId}, "error");
+    throw error;
+  }
   const context = new AudioContext({sampleRate: 16000});
   await context.audioWorklet.addModule("/audio-processor.js");
   const source = context.createMediaStreamSource(stream);
   const node = new AudioWorkletNode(context, "pcm-capture", {numberOfInputs: 1, numberOfOutputs: 0});
   node.port.onmessage = event => onCapture(event.data);
   source.connect(node);
-  recording = {stream, context, source, node, parts: [], started: performance.now(), timer: 0, speaking: false, speechMs: 0, silenceMs: 0, lastRms: 0, busy: false};
+  recording = {stream, context, source, node, parts: [], started: performance.now(), timer: 0, speaking: false, speechMs: 0, silenceMs: 0, lastRms: 0, busy: false, traceId};
+  const track = stream.getAudioTracks()[0];
+  browserTrace("browser.capture.started", {requested_rate: 16000, actual_rate: context.sampleRate, constraints, settings: track && track.getSettings ? track.getSettings() : {}}, {trace_id: traceId});
   paintMic();
   state.flow.stage = "listening";
   renderFlow();
@@ -564,6 +660,8 @@ async function stopRecording() {
   current.stream.getTracks().forEach(track => track.stop());
   const rate = current.context.sampleRate;
   await current.context.close();
+  const samples = current.parts.reduce((sum, part) => sum + part.length, 0);
+  browserTrace("browser.capture.stopped", {sample_rate: rate, samples, seconds: samples / rate, frames: current.parts.length, vad: Boolean(state.config["conversation.vad"])}, {trace_id: current.traceId});
   paintMic();
   if (state.config["conversation.vad"]) {
     $("recording-time").textContent = "Microphone closed.";
@@ -571,10 +669,10 @@ async function stopRecording() {
   }
   $("recording-time").textContent = "Processing the recording...";
   if (!current.parts.length) throw Error("No microphone audio was captured");
-  await runTurn(makeWav(current.parts, rate));
+  await runTurn(makeWav(current.parts, rate), current.traceId);
 }
-async function runTurn(wav) {
-  diagnostic.input = decodeWav(wav); diagnostic.output = []; diagnostic.transcript = ""; diagnostic.answer = ""; diagnostic.source = "turn"; renderDiagnostic(false);
+async function runTurn(wav, traceId = makeId("trace")) {
+  diagnostic.input = decodeWav(wav); diagnostic.output = []; diagnostic.transcript = ""; diagnostic.answer = ""; diagnostic.source = "turn"; diagnostic.traceId = traceId; diagnostic.turnId = ""; renderDiagnostic(false);
   clientStage = "transcribing";
   $("transcript").textContent = "Recognizing speech...";
   $("transcript").classList.remove("muted");
@@ -584,11 +682,22 @@ async function runTurn(wav) {
   $("speech-state").textContent = "Waiting";
   const language = $("conversation-language").value;
   await save("conversation.clone_voice", $("clone-voice").checked);
-  const result = await api(`/api?op=turn&language=${encodeURIComponent(language)}`, wav, true);
+  const inputMetrics = signalMetrics(diagnostic.input) || {};
+  browserTrace("browser.turn.submitted", {language, clone_requested: $("clone-voice").checked, vad: Boolean(state.config["conversation.vad"]), wav_bytes: wav.byteLength, input: inputMetrics}, {trace_id: traceId});
+  let result;
+  try {
+    result = await api(`/api?op=turn&language=${encodeURIComponent(language)}&trace_id=${encodeURIComponent(traceId)}&client_id=${encodeURIComponent(clientId)}`, wav, true);
+  } catch (error) {
+    browserTrace("browser.turn.failed", {language, error: error && error.message ? error.message : String(error)}, {trace_id: traceId}, "error");
+    throw error;
+  }
   if (!result.text) throw Error("The assistant returned no reply");
+  diagnostic.traceId = result.trace_id || traceId;
+  diagnostic.turnId = result.turn_id || "";
   diagnostic.transcript = (result.results && result.results.asr && result.results.asr.text) || (state.flow && state.flow.transcript) || "";
+  browserTrace("browser.turn.response_received", {language: result.language, clone_requested: result.clone, cloned: result.cloned, transcript: diagnostic.transcript, response: result.text, reference: result.reference || {}}, {trace_id: diagnostic.traceId, turn_id: diagnostic.turnId});
   if (result.cloned) await closeTts();
-  await speak(result.text, language, "natural", "turn");
+  await speak(result.text, language, "natural", "turn", {trace_id: diagnostic.traceId, turn_id: diagnostic.turnId});
   $("recording-time").textContent = recording && state.config["conversation.vad"]
     ? "Listening for the next utterance."
     : "Ready for another question.";
@@ -639,7 +748,7 @@ function drawSpectrogram(ctx, signal, y, height, label, metrics) {
   }
   ctx.fillStyle = "#dbe5ea"; ctx.fillText(`${label} ${rate} Hz | ${metrics.seconds.toFixed(2)} s | RMS ${metrics.rms_dbfs.toFixed(1)} dBFS | peak ${metrics.peak_dbfs.toFixed(1)} | clip ${metrics.clip_pct.toFixed(3)}% | centroid ${metrics.centroid_hz.toFixed(0)} Hz`, 18, y + 17);
 }
-function renderDiagnostic(logMetric = false) {
+function renderDiagnostic() {
   const canvas = $("audio-diagnostic"), ctx = canvas.getContext("2d"), input = diagnostic.input, output = joinOutput();
   const im = signalMetrics(input), om = signalMetrics(output, outputSeams());
   ctx.fillStyle = "#050708"; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.fillStyle = "#f1f5f7"; ctx.font = "bold 15px system-ui"; ctx.fillText("TRIDENT AUDIO SIGNAL REPORT", 12, 20);
@@ -650,13 +759,13 @@ function renderDiagnostic(logMetric = false) {
   if (om) ctx.fillText(`OUTPUT dc=${om.dc.toFixed(5)} zcr=${om.zcr_hz.toFixed(0)}Hz seam_peak=${om.seam_peak.toFixed(5)} chunks=${diagnostic.output.length}`, 12, 478);
   $("audio-metrics").textContent = om ? `Output: ${om.seconds.toFixed(2)} s, RMS ${om.rms_dbfs.toFixed(1)} dBFS, peak ${om.peak_dbfs.toFixed(1)} dBFS, clipped ${om.clip_pct.toFixed(3)}%, seam jump ${om.seam_peak.toFixed(5)}.` : im ? `Input: ${im.seconds.toFixed(2)} s, RMS ${im.rms_dbfs.toFixed(1)} dBFS, peak ${im.peak_dbfs.toFixed(1)} dBFS.` : "Run one conversation turn to populate signal metrics.";
   $("save-diagnostic").disabled = !im && !om;
-  if (logMetric && om) command("note", {component: "audio", msg: "output", data: om}).catch(() => {});
 }
 function saveDiagnostic() { const canvas = $("audio-diagnostic"); canvas.toBlob(blob => { if (!blob) return; const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = "trident-audio-diagnostic.png"; a.click(); window.setTimeout(() => URL.revokeObjectURL(a.href), 1000); }, "image/png"); }
 function formatLogTime(ts) {
   return typeof ts === "number" ? new Date(ts * 1000).toLocaleTimeString() : "--:--:--";
 }
 function paintLogs(lines) {
+  visibleLogs = [...lines];
   const box = $("log-output");
   box.replaceChildren();
   for (const line of lines) {
@@ -664,13 +773,22 @@ function paintLogs(lines) {
     const level = String(line.level || "").toLowerCase();
     div.className = `log-entry ${level === "error" ? "log-error" : level === "warn" ? "log-warn" : ""}`;
     const data = line.data && Object.keys(line.data).length ? ` ${JSON.stringify(line.data)}` : "";
-    div.textContent = `[${formatLogTime(line.ts)}] ${line.component || "-"} - ${line.msg || ""}${data}`;
+    const ids = [["trace", line.trace_id], ["turn", line.turn_id], ["cfg", line.config_id], ["session", line.session_id], ["request", line.request_id], ["job", line.job_id]].filter(([, value]) => value).map(([name, value]) => `${name}=${String(value).slice(0, 18)}`).join(" ");
+    const message = line.message ? ` - ${line.message}` : "";
+    div.textContent = `[${formatLogTime(line.ts)} #${line.seq || "-"}] ${line.source || "-"}/${line.component || "-"} ${line.event || line.msg || "event"}${ids ? ` [${ids}]` : ""}${message}${data}`;
     box.append(div);
   }
   box.scrollTop = box.scrollHeight;
 }
 async function refreshLogs() {
-  const result = await command("log", {limit: 120});
+  const latest = state && state.trace ? state.trace.latest : "";
+  const scoped = $("log-scope") && $("log-scope").value === "latest";
+  const query = {limit: 500};
+  if (scoped && latest) query.trace_id = latest;
+  const result = await command("log", query);
+  $("log-context").textContent = scoped && latest
+    ? `Showing the latest trace ${latest}. Every layer uses this same identifier.`
+    : `Showing all events from controller run ${(result.run_id || (state.trace && state.trace.run_id) || "unknown")}.`;
   paintLogs(result.lines || []);
 }
 function openEvents() {
@@ -687,6 +805,16 @@ function openEvents() {
     const value = JSON.parse(event.data);
     state.jobs[value.key] = value;
     render(state);
+  });
+  events.addEventListener("trace", event => {
+    touch();
+    const value = JSON.parse(event.data);
+    const latest = state && state.trace ? state.trace.latest : "";
+    const scoped = $("log-scope") && $("log-scope").value === "latest";
+    if (!scoped || !latest || value.trace_id === latest) {
+      visibleLogs.push(value);
+      paintLogs(visibleLogs.slice(-500));
+    }
   });
   events.addEventListener("ping", touch);
   events.onerror = () => {
@@ -721,6 +849,7 @@ $("engines-toggle").onclick = () => (Object.values(state.engines).every(engine =
 $("save-diagnostic").onclick = saveDiagnostic;
 $("refresh-log").onclick = () => refreshLogs().catch(fail);
 $("clear-log").onclick = () => command("clear_log").then(result => paintLogs(result.lines || [])).catch(fail);
+$("log-scope").onchange = () => refreshLogs().catch(fail);
 $("brain-select").onchange = () => {
   const name = $("brain-select").value;
   if (name === "custom") {

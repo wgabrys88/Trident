@@ -2831,3 +2831,21 @@ __BLANK_CONTEXT__
                         logits_uncond_out)) return false;
      return true;
  }
+diff --git a/src/chatterbox_engine.cpp b/src/chatterbox_engine.cpp
+--- a/src/chatterbox_engine.cpp
++++ b/src/chatterbox_engine.cpp
+@@ -331,6 +331,14 @@ struct Engine::Impl {
+                 s3gen_prompt_token = std::move(prompt_token_from_ref);
+             }
+             if (s3gen_prompt_token.empty()) throw std::runtime_error("Engine: prompt_token unavailable");
+             if (s3gen_prompt_feat.empty()) throw std::runtime_error("Engine: prompt_feat unavailable");
++            fprintf(stderr,
++                    "Engine: voice conditioning t3_speaker=%s t3_prompt=%s "
++                    "s3gen_prompt_token=%s s3gen_prompt_feat=%s s3gen_embedding=%s\n",
++                    voice_overridden ? "reference" : "builtin",
++                    voice_overridden ? "reference" : "builtin",
++                    s3gen_prompt_token.empty() ? "builtin" : "reference",
++                    s3gen_prompt_feat.empty() ? "builtin" : "reference",
++                    s3gen_embedding.empty() ? "builtin_fallback" : "reference_override");
+         }
+     }

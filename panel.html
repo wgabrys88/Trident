@@ -175,14 +175,21 @@
 
   <details class="card logs">
     <summary>
-      <span class="summary-copy"><span class="eyebrow">Diagnostics</span><strong>Installation and runtime log</strong></span>
-      <span class="summary-help">Warnings, milestones, and measurements</span>
+      <span class="summary-copy"><span class="eyebrow">Diagnostics</span><strong>Correlated pipeline trace</strong></span>
+      <span class="summary-help">Follow one turn through browser, REST, engines, and playback</span>
     </summary>
     <div class="details-body">
       <div class="row log-actions">
+        <label>Trace scope
+          <select id="log-scope">
+            <option value="latest">Latest pipeline trace</option>
+            <option value="all">All current-run events</option>
+          </select>
+        </label>
         <button id="refresh-log" type="button">Refresh</button>
         <button id="clear-log" type="button">Clear</button>
       </div>
+      <p id="log-context" class="microcopy">Events are correlated after the next pipeline action.</p>
       <div id="log-output" class="log-box" role="log" aria-live="polite"></div>
     </div>
   </details>
