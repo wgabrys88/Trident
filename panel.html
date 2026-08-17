@@ -37,8 +37,9 @@
           <select id="conversation-language" data-path="conversation.language"></select>
         </label>
         <label class="check"><input id="clone-voice" type="checkbox" data-path="conversation.clone_voice"> Use this recording as the reply voice</label>
+        <label class="check"><input id="vad" type="checkbox" data-path="conversation.vad"> Voice activity detection</label>
       </div>
-      <p class="microcopy">Conversation lists only languages supported by both Parakeet ASR and Chatterbox TTS. Arabic and other TTS-only languages remain available in Speech lab. The reference clip is speaker identity only — its language does not need to match the reply. Clone with at least five seconds of clear speech; ten seconds is better.</p>
+      <p class="microcopy">Conversation lists only languages supported by both Parakeet ASR and Chatterbox TTS. Arabic and other TTS-only languages remain available in Speech lab. The reference clip is speaker identity only — its language does not need to match the reply. Clone with at least five seconds of clear speech; ten seconds is better. The microphone button opens and closes the mic. Voice activity detection sends each utterance after a pause so you do not click Stop between sentences.</p>
 
       <div class="io-note">
         <span><strong>Input</strong> Windows default microphone</span>
@@ -51,7 +52,7 @@
         <button id="cancel-speech" type="button" disabled>Stop speaking</button>
         <input id="audio-file" type="file" accept="audio/wav" hidden>
       </div>
-      <p id="recording-time" class="microcopy">The microphone is opened only while recording. Camera access is never requested.</p>
+      <p id="recording-time" class="microcopy">Start engines, then open the microphone. Camera access is never requested.</p>
 
       <ol class="pipeline" aria-label="Processing stages">
         <li data-stage="listening"><span>1</span><strong>Listen</strong><small>Capture speech</small></li>
