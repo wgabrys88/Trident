@@ -1,0 +1,17 @@
+*
+!/.gitignore
+!/.gitattributes
+!/log.py
+!/main.py
+!/panel.html
+!/panel.css
+!/panel.js
+!/audio-processor.js
+!/patches/
+!/patches/*.patch
+!/server/
+!/server/CMakeLists.txt
+!/server/include/
+!/server/include/*.hpp
+!/server/src/
+!/server/src/*.cpp

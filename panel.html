@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Clone Reliable</title>
+<link rel="stylesheet" href="/panel.css">
+</head>
+<body>
+<div class="page">
+  <header class="hero">
+    <div>
+      <p class="eyebrow">Windows · Vulkan · local only</p>
+      <h1>Clone Reliable</h1>
+      <p class="intro">Speak naturally. The app listens, transcribes, thinks, and streams the answer through your default Windows speakers.</p>
+    </div>
+    <div class="hero-actions">
+      <span id="connection" class="badge bad">Connecting</span>
+      <button id="engines-toggle" type="button">Start engines</button>
+    </div>
+  </header>
+
+  <p id="fault" class="fault" hidden></p>
+
+  <main>
+    <section class="conversation card" aria-labelledby="conversation-title">
+      <div class="section-heading">
+        <div>
+          <p class="eyebrow">Main task</p>
+          <h2 id="conversation-title">Voice conversation</h2>
+        </div>
+        <span id="flow-badge" class="badge">Idle</span>
+      </div>
+
+      <div class="conversation-controls">
+        <label>Language
+          <select id="conversation-language" data-path="conversation.language"></select>
+        </label>
+        <label class="check"><input id="clone-voice" type="checkbox" data-path="conversation.clone_voice"> Use this recording as the reply voice</label>
+      </div>
+      <p class="microcopy">Conversation lists only languages supported by both Parakeet ASR and Chatterbox TTS. Arabic and other TTS-only languages remain available in Speech lab. Voice cloning needs at least five seconds of clear speech.</p>
+
+      <div class="io-note">
+        <span><strong>Input</strong> Windows default microphone</span>
+        <span><strong>Output</strong> Windows default speakers</span>
+      </div>
+
+      <div class="talk-actions">
+        <button id="record" class="primary big" type="button">Start listening</button>
+        <button id="pick-audio" type="button">Use WAV file</button>
+        <button id="cancel-speech" type="button" disabled>Stop speaking</button>
+        <input id="audio-file" type="file" accept="audio/wav" hidden>
+      </div>
+      <p id="recording-time" class="microcopy">The microphone is opened only while recording. Camera access is never requested.</p>
+
+      <ol class="pipeline" aria-label="Processing stages">
+        <li data-stage="listening"><span>1</span><strong>Listen</strong><small>Capture speech</small></li>
+        <li data-stage="transcribing"><span>2</span><strong>Transcribe</strong><small>Parakeet ASR</small></li>
+        <li data-stage="thinking"><span>3</span><strong>Think</strong><small>Gemma reply</small></li>
+        <li data-stage="speaking"><span>4</span><strong>Speak</strong><small>Chatterbox stream</small></li>
+      </ol>
+
+      <div class="outputs">
+        <article>
+          <div class="output-title"><h3>Heard</h3><span id="asr-state">Waiting</span></div>
+          <p id="transcript" class="output-text muted">Your transcript appears here.</p>
+        </article>
+        <article>
+          <div class="output-title"><h3>Answer</h3><span id="speech-state">Waiting</span></div>
+          <p id="answer" class="output-text muted">The generated reply appears here. Spoken words turn green as playback advances.</p>
+        </article>
+      </div>
+    </section>
+
+    <details class="card lab">
+      <summary>
+        <span><span class="eyebrow">Optional</span><strong>Speech lab</strong></span>
+        <span class="summary-help">Speak text directly in any Chatterbox language</span>
+      </summary>
+      <div class="details-body">
+        <div class="lab-grid">
+          <label>Speech language<select id="speech-language" data-path="speech.language"></select></label>
+          <label>Voice style<select id="speech-style" data-path="speech.style">
+            <option value="natural">Natural</option>
+            <option value="expressive">Expressive</option>
+            <option value="cross-language">Cross-language reference</option>
+          </select></label>
+          <label class="wide">Text<textarea id="speech-text" data-path="speech.text" rows="4"></textarea></label>
+        </div>
+        <div class="talk-actions">
+          <button id="speak-text" class="primary" type="button">Speak text</button>
+          <button id="upload-reference" type="button">Choose voice reference</button>
+          <input id="reference-file" type="file" accept="audio/wav" hidden>
+        </div>
+        <p id="reference-state" class="microcopy"></p>
+      </div>
+    </details>
+
+    <details class="card setup">
+      <summary>
+        <span><span class="eyebrow">First run</span><strong>Setup and engines</strong></span>
+        <span id="setup-summary" class="summary-help">Checking installation</span>
+      </summary>
+      <div class="details-body">
+        <p class="explain">Parakeet and llama.cpp are downloaded as pinned Vulkan releases. Only the customized Chatterbox server is built locally.</p>
+        <div class="setup-actions">
+          <button id="start-all" class="primary" type="button">Start all engines</button>
+          <button id="stop-all" type="button">Stop all engines</button>
+        </div>
+        <div class="setup-section"><h3>Build prerequisites</h3><div id="prerequisites" class="setup-grid"></div></div>
+        <div class="setup-section"><h3>Runtime components</h3><div id="components" class="setup-grid"></div></div>
+        <div class="setup-section"><h3>Models and default voice</h3><div id="models" class="setup-grid"></div></div>
+        <div class="setup-section"><h3>Engine status</h3><div id="engines" class="setup-grid"></div></div>
+      </div>
+    </details>
+
+    <details class="card logs">
+      <summary>
+        <span><span class="eyebrow">Diagnostics</span><strong>Installation and runtime log</strong></span>
+        <span class="summary-help">Routine compiler lines are collapsed</span>
+      </summary>
+      <div class="details-body">
+        <div class="log-actions"><button id="refresh-log" type="button">Refresh</button><button id="clear-log" type="button">Clear</button></div>
+        <div id="log-output" class="log-box" role="log" aria-live="polite"></div>
+      </div>
+    </details>
+  </main>
+</div>
+<script src="/panel.js"></script>
+</body>
+</html>
