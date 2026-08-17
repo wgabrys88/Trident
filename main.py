@@ -86,7 +86,7 @@ VOICE_STYLES = {
     "cross-language": {"cfg_weight": 0.0, "exaggeration": 0.5},
 }
 ASR_RUNTIME = {"threads": 4, "response_format": "json"}
-BRAIN_RUNTIME = {"context": 2048, "parallel": 1}
+BRAIN_RUNTIME = {"context": 2048, "parallel": 1, "fit_target": 3072}
 BRAIN_GENERATION = {"temperature": 0.2, "top_p": 0.9, "top_k": 40, "min_p": 0.0, "repeat_penalty": 1.05, "seed": 42, "max_tokens": 160}
 
 FIELDS = {
@@ -122,7 +122,8 @@ FIELDS = {
     "asr.vad.silence_ms": field("VAD silence to end utterance", "int", 700, 200, 3000),
     "asr.vad.min_speech_ms": field("VAD minimum speech", "int", 400, 100, 5000),
     "brain.engine.context": field("Brain context tokens", "int", BRAIN_RUNTIME["context"], 256, 32768),
-    "brain.engine.parallel": field("Brain parallel slots", "int", BRAIN_RUNTIME["parallel"], 1, 8),
+    "brain.engine.parallel": field("Brain parallel slots", "int", BRAIN_RUNTIME["parallel"], 1, 1),
+    "brain.engine.fit_target": field("Brain GPU headroom MiB", "int", BRAIN_RUNTIME["fit_target"], 2048, 4096),
     "brain.sample.temperature": field("Brain temperature", "float", BRAIN_GENERATION["temperature"], 0.0, 2.0),
     "brain.sample.top_p": field("Brain top-p", "float", BRAIN_GENERATION["top_p"], 0.0, 1.0),
     "brain.sample.top_k": field("Brain top-k", "int", BRAIN_GENERATION["top_k"], 0, 200),
@@ -139,7 +140,7 @@ PARAM_GROUPS = [
     {"id": "tts-style", "title": "TTS style overlays", "apply": "Overlay cfg_weight and exaggeration for the selected Speech-lab style. Conversation uses the natural overlay.", "fields": ["tts.style.natural.cfg_weight", "tts.style.natural.exaggeration", "tts.style.expressive.cfg_weight", "tts.style.expressive.exaggeration", "tts.style.cross-language.cfg_weight", "tts.style.cross-language.exaggeration"]},
     {"id": "asr-engine", "title": "ASR engine", "apply": "Restart the ASR engine to apply thread count.", "fields": ["asr.threads"]},
     {"id": "asr-vad", "title": "ASR voice activity", "apply": "Applied on the next captured frame. No engine restart.", "fields": ["asr.vad.threshold", "asr.vad.silence_ms", "asr.vad.min_speech_ms"]},
-    {"id": "brain-engine", "title": "Brain engine", "apply": "Restart the brain engine to apply context and parallel slots.", "fields": ["brain.engine.context", "brain.engine.parallel"]},
+    {"id": "brain-engine", "title": "Brain engine", "apply": "Restart the brain engine to apply context and GPU headroom. Parallel slots stay at 1.", "fields": ["brain.engine.context", "brain.engine.parallel", "brain.engine.fit_target"]},
     {"id": "brain-sample", "title": "Brain sampling", "apply": "Applied on the next /v1/chat/completions request.", "fields": ["brain.sample.temperature", "brain.sample.top_p", "brain.sample.top_k", "brain.sample.min_p", "brain.sample.repeat_penalty", "brain.sample.seed", "brain.sample.max_tokens"]},
 ]
 
@@ -834,9 +835,11 @@ def load_engine(name: str, key: str):
     else:
         runtime = brain_runtime()
         applied = {**runtime, "id": active_brain_id(), "family": active_brain_family(), "path": str(paths[0])}
-        command = [str(executable_path), "-m", str(paths[0]), "--host", "127.0.0.1", "--port", "8098", "--device", "Vulkan0", "--n-gpu-layers", "all", "--ctx-size", str(runtime["context"]), "--parallel", str(runtime["parallel"]), "--fit", "off", "--no-mmproj"]
+        command = [str(executable_path), "-m", str(paths[0]), "--host", "127.0.0.1", "--port", "8098", "--device", "Vulkan0", "--n-gpu-layers", "all", "--ctx-size", str(runtime["context"]), "--parallel", "1", "--no-mmproj", "--load-mode", "auto", "--flash-attn", "on", "--repack", "--fit", "on", "--fit-target", str(runtime["fit_target"]), "--fit-ctx", "2048"]
         cwd, health, env = executable_path.parent, "http://127.0.0.1:8098/health", os.environ.copy()
     set_job(key, "running", "load", 20, f"loading {name}")
+    if name == "brain":
+        info("brain", "launch", {"command": command, "cwd": str(cwd)})
     process = subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8")
     with LOCK:
         PROCESSES[name] = process
@@ -968,7 +971,7 @@ def asr_runtime() -> dict:
 
 
 def brain_runtime() -> dict:
-    return {"context": CONFIG["brain.engine.context"], "parallel": CONFIG["brain.engine.parallel"]}
+    return {"context": CONFIG["brain.engine.context"], "parallel": CONFIG["brain.engine.parallel"], "fit_target": CONFIG["brain.engine.fit_target"]}
 
 
 def brain_generation() -> dict:
