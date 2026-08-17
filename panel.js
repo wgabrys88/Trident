@@ -12,6 +12,7 @@ let ttsSocket = null;
 let ttsSession = "";
 let ttsLanguage = "";
 let ttsStyle = "";
+let ttsReferenceGeneration = -1;
 let playback = {received: 0, played: 0, expected: 0, text: "", done: false, timer: 0};
 let clientStage = "";
 
@@ -75,9 +76,16 @@ function isReady(value) {
   return Boolean(value) && value.status === "ready";
 }
 
+function activeBrainReady() {
+  const brain = state.brain || {};
+  if (brain.active === "custom") return Boolean(brain.custom && brain.custom.status === "ready");
+  return isReady(state.models[brain.model || "gemma"]);
+}
+
 function engineCanStart(name) {
   const components = {asr: "parakeet", brain: "gemma", tts: "tts"};
-  const models = {asr: ["parakeet"], brain: ["gemma"], tts: ["chatterbox-t3", "chatterbox-codec", "chatterbox-s3t", "reference"]};
+  if (name === "brain") return isReady(state.components.gemma) && activeBrainReady();
+  const models = {asr: ["parakeet"], tts: ["chatterbox-t3", "chatterbox-codec", "chatterbox-s3t", "reference"]};
   return isReady(state.components[components[name]]) && models[name].every(model => isReady(state.models[model]));
 }
 
@@ -141,7 +149,7 @@ function renderSetup() {
     const value = state.engines[name];
     const job = jobFor("engine", name);
     const status = job && job.status === "running" ? "running" : value.status;
-    const label = {asr: "Parakeet ear", brain: "Gemma brain", tts: "Chatterbox voice"}[name];
+    const label = {asr: "Parakeet ear", brain: `Brain · ${(state.brain && state.brain.label) || "llama.cpp"}`, tts: "Chatterbox voice"}[name];
     const stopping = value.status === "running";
     const action = status === "loading" ? null : () => command(stopping ? "unload_engine" : "load_engine", {name});
     engines.append(setupItem(label, status, action, stopping ? "Stop" : "Start", value.error || status, !stopping && !engineCanStart(name), stopping));
@@ -149,13 +157,45 @@ function renderSetup() {
   const readyComponents = Object.values(state.components).filter(value => value.status === "ready").length;
   const readyModels = Object.values(state.models).filter(value => value.status === "ready").length;
   $("setup-summary").textContent = `${readyComponents}/${Object.keys(state.components).length} components · ${readyModels}/${Object.keys(state.models).length} assets`;
+  renderBrain();
+}
+
+function renderBrain() {
+  const select = $("brain-select");
+  const familyWrap = $("brain-family-wrap");
+  const urlWrap = $("brain-url-wrap");
+  const apply = $("brain-apply");
+  if (!select || !state.brain) return;
+  const catalog = state.brain.catalog || schema.brains || {};
+  if (!select.dataset.bound) {
+    select.replaceChildren(...Object.entries(catalog).map(([id, spec]) => {
+      const option = document.createElement("option");
+      option.value = id;
+      option.textContent = spec.label || id;
+      return option;
+    }));
+    select.dataset.bound = "1";
+  }
+  select.value = state.brain.active || "gemma";
+  const custom = select.value === "custom";
+  familyWrap.hidden = !custom;
+  urlWrap.hidden = !custom;
+  apply.hidden = !custom;
+  if (custom) {
+    $("brain-family").value = (state.brain.custom && state.brain.custom.family) || "generic";
+    if (!$("brain-url").value) $("brain-url").value = (state.brain.custom && state.brain.custom.url) || "";
+  }
+  const job = jobFor("brain", "custom");
+  $("brain-state").textContent = job && job.status === "running"
+    ? `${job.message} · ${job.progress}%`
+    : `${state.brain.label} · ${state.brain.ready ? "ready" : "download this GGUF in Models first"}`;
 }
 
 function renderReference() {
   const ref = state.reference;
-  const source = ref.custom ? "Custom voice reference" : "Downloaded CC0 Arabic reference";
+  const source = ref.custom ? "Custom voice reference" : "Official Chatterbox demo voice";
   $("reference-state").textContent = ref.status === "ready"
-    ? `${source} · ${ref.duration.toFixed(1)} seconds. Cross-language mode disables CFG when appropriate.`
+    ? `${source} · ${ref.duration.toFixed(1)} seconds. Identity only — clip language does not have to match the spoken language. Use “Less reference accent” if you want less of the speaker’s accent.`
     : `Voice reference: ${ref.status}.`;
 }
 
@@ -297,6 +337,7 @@ async function closeTts() {
   ttsSession = "";
   ttsLanguage = "";
   ttsStyle = "";
+  ttsReferenceGeneration = -1;
   if (!socket) return;
   await new Promise(resolve => {
     let settled = false;
@@ -309,7 +350,8 @@ async function closeTts() {
 }
 
 async function openTts(language, style) {
-  if (ttsSocket && ttsSocket.readyState === WebSocket.OPEN && ttsSession && ttsLanguage === language && ttsStyle === style) return ttsSocket;
+  const generation = Number(state.reference_generation || 0);
+  if (ttsSocket && ttsSocket.readyState === WebSocket.OPEN && ttsSession && ttsLanguage === language && ttsStyle === style && ttsReferenceGeneration === generation) return ttsSocket;
   await closeTts();
   await ensureEngine("tts");
   await ensurePlayback();
@@ -343,6 +385,7 @@ async function openTts(language, style) {
         ttsSession = message.session_id || "";
         ttsLanguage = language;
         ttsStyle = style;
+        ttsReferenceGeneration = Number(state.reference_generation || 0);
         reportTts("ready", {session_id: ttsSession});
         resolve(socket);
       } else if (message.type === "synthesize_started") {
@@ -529,6 +572,20 @@ $("stop-all").onclick = () => stopAll().catch(fail);
 $("engines-toggle").onclick = () => (Object.values(state.engines).every(engine => engine.status === "running") ? stopAll() : startAll()).catch(fail);
 $("refresh-log").onclick = () => refreshLogs().catch(fail);
 $("clear-log").onclick = () => command("clear_log").then(result => paintLogs(result.lines || [])).catch(fail);
+$("brain-select").onchange = () => {
+  const name = $("brain-select").value;
+  if (name === "custom") {
+    renderBrain();
+    return;
+  }
+  command("set_brain", {name}).catch(fail);
+};
+$("brain-apply").onclick = async () => {
+  try {
+    const result = await command("set_brain", {name: "custom", url: $("brain-url").value, family: $("brain-family").value});
+    if (result.accepted) await waitFor(next => next.brain && next.brain.active === "custom" && next.brain.ready);
+  } catch (error) { fail(error); }
+};
 
 api("/api").then(boot => {
   schema = boot.schema;

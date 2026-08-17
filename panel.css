@@ -49,7 +49,7 @@ button.primary:hover { background: #69e8c0; }
 button.big { min-height: 54px; padding-inline: 1.4rem; font-size: 1.04rem; }
 button.danger { border-color: #713c42; background: #3a2024; }
 button:disabled { opacity: .45; cursor: not-allowed; }
-select, textarea {
+select, textarea, input[type="text"] {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -125,6 +125,9 @@ details > summary strong { display: block; font-size: 1rem; }
 .setup-item strong, .setup-item small { display: block; overflow-wrap: anywhere; }
 .setup-item small { color: var(--muted); font-size: .72rem; }
 .setup-item button { width: auto; min-height: 36px; padding: .45rem .65rem; font-size: .76rem; }
+.brain-row { display: grid; grid-template-columns: minmax(12rem, 1fr) minmax(8rem, .7fr) auto; gap: .65rem; align-items: end; }
+.brain-row .wide { grid-column: 1 / -1; }
+.brain-row button { min-height: 44px; }
 .state-ready { color: var(--accent) !important; }
 .state-error { color: var(--danger) !important; }
 .log-actions { padding-top: 1rem; justify-content: flex-end; }
@@ -136,7 +139,7 @@ details > summary strong { display: block; font-size: 1rem; }
   .page { padding: .75rem; }
   .hero { display: grid; }
   .hero-actions { justify-content: flex-start; }
-  .conversation-controls, .outputs, .lab-grid { grid-template-columns: 1fr; }
+  .conversation-controls, .outputs, .lab-grid, .brain-row { grid-template-columns: 1fr; }
   .pipeline { grid-template-columns: 1fr 1fr; }
   .summary-help { display: none; }
 }
