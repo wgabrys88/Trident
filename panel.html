@@ -38,7 +38,7 @@
         </label>
         <label class="check"><input id="clone-voice" type="checkbox" data-path="conversation.clone_voice"> Use this recording as the reply voice</label>
       </div>
-      <p class="microcopy">Conversation lists only languages supported by both Parakeet ASR and Chatterbox TTS. Arabic and other TTS-only languages remain available in Speech lab. Voice cloning needs at least five seconds of clear speech.</p>
+      <p class="microcopy">Conversation lists only languages supported by both Parakeet ASR and Chatterbox TTS. Arabic and other TTS-only languages remain available in Speech lab. The reference clip is speaker identity only — its language does not need to match the reply. Clone with at least five seconds of clear speech; ten seconds is better.</p>
 
       <div class="io-note">
         <span><strong>Input</strong> Windows default microphone</span>
@@ -56,7 +56,7 @@
       <ol class="pipeline" aria-label="Processing stages">
         <li data-stage="listening"><span>1</span><strong>Listen</strong><small>Capture speech</small></li>
         <li data-stage="transcribing"><span>2</span><strong>Transcribe</strong><small>Parakeet ASR</small></li>
-        <li data-stage="thinking"><span>3</span><strong>Think</strong><small>Gemma reply</small></li>
+        <li data-stage="thinking"><span>3</span><strong>Think</strong><small>Brain reply</small></li>
         <li data-stage="speaking"><span>4</span><strong>Speak</strong><small>Chatterbox stream</small></li>
       </ol>
 
@@ -83,7 +83,7 @@
           <label>Voice style<select id="speech-style" data-path="speech.style">
             <option value="natural">Natural</option>
             <option value="expressive">Expressive</option>
-            <option value="cross-language">Cross-language reference</option>
+            <option value="cross-language">Less reference accent</option>
           </select></label>
           <label class="wide">Text<textarea id="speech-text" data-path="speech.text" rows="4"></textarea></label>
         </div>
@@ -102,7 +102,27 @@
         <span id="setup-summary" class="summary-help">Checking installation</span>
       </summary>
       <div class="details-body">
-        <p class="explain">Parakeet and llama.cpp are downloaded as pinned Vulkan releases. Only the customized Chatterbox server is built locally.</p>
+        <p class="explain">Parakeet and llama.cpp are downloaded as pinned Vulkan releases. Only the customized Chatterbox server is built locally. The default voice is Resemble’s official Chatterbox demo prompt. Switch the brain GGUF below if you want a smaller multilingual model.</p>
+        <div class="setup-section">
+          <h3>Active brain</h3>
+          <div class="brain-row">
+            <label>Model
+              <select id="brain-select"></select>
+            </label>
+            <label id="brain-family-wrap" hidden>Family
+              <select id="brain-family">
+                <option value="generic">Generic</option>
+                <option value="gemma4">Gemma 4</option>
+                <option value="qwen35">Qwen 3.5</option>
+              </select>
+            </label>
+            <label id="brain-url-wrap" class="wide" hidden>Custom GGUF URL
+              <input id="brain-url" type="text" placeholder="https://huggingface.co/owner/repo/resolve/main/model.gguf">
+            </label>
+            <button id="brain-apply" type="button">Apply brain</button>
+          </div>
+          <p id="brain-state" class="microcopy"></p>
+        </div>
         <div class="setup-actions">
           <button id="start-all" class="primary" type="button">Start all engines</button>
           <button id="stop-all" type="button">Stop all engines</button>

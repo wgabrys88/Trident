@@ -7,6 +7,8 @@
 !/panel.css
 !/panel.js
 !/audio-processor.js
+!/assets/
+!/assets/default-reference.wav
 !/patches/
 !/patches/*.patch
 !/server/

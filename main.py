@@ -27,6 +27,7 @@ from log import clear as reset_log, error, info
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
+ASSETS = ROOT / "assets"
 MODELS_DIR = ROOT / "models"
 THIRD_PARTY = ROOT / "third_party"
 TOOLS = ROOT / "tools"
@@ -52,7 +53,9 @@ MODELS = {
     "chatterbox-s3t": {"label": "CHATTERBOX V3 S3T", "repo": "BricksDisplay/Chatterbox-Multilingual-TTS-GGUF", "revision": "37277eeb9e26da8e3fba65b52727cb30b0bc5ae8", "file": "chatterbox-mtl-s3t.gguf", "size": 247487280, "sha256": "26592ce171dd40bb54468a32dd9a3b697e15bfc23ebc8f8d218e34c3962e69c4"},
     "parakeet": {"label": "PARAKEET TDT", "repo": "mudler/parakeet-cpp-gguf", "revision": "bf0af9f425fa01809cadec671b3cb672709d13e9", "file": "tdt-0.6b-v3-q4_k.gguf", "size": 675200864, "sha256": "993d73feb4206dadda865ab25bd64b50c48dc4d013c3bf6126a721f28b1d5ee8"},
     "gemma": {"label": "GEMMA 4 E2B", "repo": "google/gemma-4-E2B-it-qat-q4_0-gguf", "revision": "675cff42a74c774d6cb76f76d8eacb49b48c9b93", "file": "gemma-4-E2B_q4_0-it.gguf", "size": 3349516256, "sha256": "fa401b55b07ee70a54c6dae3903c783a6e65064312529ea57175cb5f8dec6634"},
-    "reference": {"label": "DEFAULT VOICE (CC0)", "url": "https://huggingface.co/datasets/NightPrince/Arabic-professional-voice/resolve/9aa662ed95d53a3ae4aabfabc3470bfa63a2ce8a/wavs_wav16k/001.wav", "revision": "9aa662ed95d53a3ae4aabfabc3470bfa63a2ce8a", "file": "default-reference.wav", "directory": "data", "size": 256044, "sha256": "27ea5debd7adeea286080dd5fa08887997c9b57261189d5289c131fd81e46ca0", "license": "CC0-1.0"},
+    "qwen35-0.8b": {"label": "QWEN3.5 0.8B", "repo": "unsloth/Qwen3.5-0.8B-GGUF", "revision": "6ab461498e2023f6e3c1baea90a8f0fe38ab64d0", "file": "Qwen3.5-0.8B-Q4_K_M.gguf", "size": 532517120, "sha256": "bd258782e35f7f458f8aced1adc053e6e92e89bc735ba3be89d38a06121dc517"},
+    "qwen35-4b": {"label": "QWEN3.5 4B", "repo": "unsloth/Qwen3.5-4B-GGUF", "revision": "e87f176479d0855a907a41277aca2f8ee7a09523", "file": "Qwen3.5-4B-Q4_K_M.gguf", "size": 2740937888, "sha256": "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4"},
+    "reference": {"label": "DEFAULT VOICE", "source": "assets/default-reference.wav", "file": "default-reference.wav", "directory": "data", "size": 1012558, "sha256": "de2579b22226261784d6a944c07b9c1fba7fdd0c7e8c9e90da6bc581c78171a9", "license": "Resemble demo prompt"},
 }
 
 PACKAGES = {
@@ -94,6 +97,18 @@ VOICE_STYLES = {
 ASR_RUNTIME = {"threads": 4, "response_format": "json"}
 BRAIN_RUNTIME = {"context": 2048, "parallel": 1}
 BRAIN_GENERATION = {"temperature": 0.2, "top_p": 0.9, "top_k": 40, "min_p": 0.0, "repeat_penalty": 1.05, "seed": 42, "max_tokens": 160}
+BRAIN_FAMILIES = {
+    "gemma4": {"reasoning_format": "none", "chat_template_kwargs": {"enable_thinking": False}},
+    "qwen35": {"reasoning_format": "none", "chat_template_kwargs": {"enable_thinking": False}},
+    "generic": {},
+}
+BRAINS = {
+    "gemma": {"label": "GEMMA 4 E2B", "model": "gemma", "family": "gemma4"},
+    "qwen35-0.8b": {"label": "QWEN3.5 0.8B", "model": "qwen35-0.8b", "family": "qwen35"},
+    "qwen35-4b": {"label": "QWEN3.5 4B", "model": "qwen35-4b", "family": "qwen35"},
+    "custom": {"label": "CUSTOM GGUF", "model": None, "family": "generic"},
+}
+CUSTOM_BRAIN = MODELS_DIR / "custom-brain.gguf"
 
 
 CHATTERBOX_LIBRARY = CHATTERBOX / "build" / "Release" / "tts-cpp.lib"
@@ -101,6 +116,7 @@ TTS_SERVER = SERVER / "build" / "Release" / "tts-server.exe"
 ENGINE_MODELS = {"tts": ("chatterbox-t3", "chatterbox-codec", "chatterbox-s3t"), "asr": ("parakeet",), "brain": ("gemma",)}
 CONFIG_FILE = DATA / "config.json"
 RECEIPTS_FILE = DATA / "models.json"
+BRAIN_FILE = DATA / "brains.json"
 LOCK = threading.RLock()
 SUBSCRIBERS: set[queue.Queue] = set()
 PROCESSES: dict[str, subprocess.Popen] = {}
@@ -110,6 +126,7 @@ RUNTIME = {
     "lanes": {"a": {"status": "closed", "session": "", "request": "", "samples": 0, "error": ""}},
     "results": {"asr": None, "brain": None, "turn": None},
     "flow": {"stage": "idle", "transcript": "", "answer": "", "error": "", "language": "en", "started": 0.0},
+    "reference_generation": 0,
 }
 
 
@@ -177,8 +194,33 @@ def load_config() -> dict:
     return checked
 
 
+def default_brains() -> dict:
+    return {"active": "gemma", "custom": {"url": "", "path": "", "sha256": "", "size": 0, "family": "generic"}}
+
+
+def load_brains() -> dict:
+    defaults = default_brains()
+    stored = load_json(BRAIN_FILE, defaults)
+    if type(stored) is not dict:
+        raise RuntimeError(f"{BRAIN_FILE} must contain an object")
+    active = stored.get("active") if stored.get("active") in BRAINS else defaults["active"]
+    custom_in = stored.get("custom") if type(stored.get("custom")) is dict else {}
+    custom = defaults["custom"] | {key: custom_in[key] for key in defaults["custom"] if key in custom_in}
+    if custom.get("family") not in BRAIN_FAMILIES:
+        custom["family"] = "generic"
+    checked = {"active": active, "custom": custom}
+    if stored != checked:
+        atomic_json(BRAIN_FILE, checked)
+    return checked
+
+
+def save_brains():
+    atomic_json(BRAIN_FILE, BRAIN_STATE)
+
+
 CONFIG = load_config()
 RECEIPTS = load_json(RECEIPTS_FILE, {})
+BRAIN_STATE = load_brains()
 
 
 def executable(name: str) -> str | None:
@@ -215,7 +257,7 @@ def model_status(name: str) -> dict:
     path = model_path(name)
     size = path.stat().st_size if path.is_file() else 0
     verified = size == spec["size"] and RECEIPTS.get(name) == spec["sha256"]
-    return {"status": "ready" if verified else "unverified" if size == spec["size"] else "missing", "path": str(path), "bytes": size, "size": spec["size"], "sha256": spec["sha256"], "revision": spec["revision"]}
+    return {"status": "ready" if verified else "unverified" if size == spec["size"] else "missing", "path": str(path), "bytes": size, "size": spec["size"], "sha256": spec["sha256"], "revision": spec.get("revision", "")}
 
 
 def component_artifact(name: str) -> Path:
@@ -241,26 +283,91 @@ def reference_path() -> Path:
     if model_status("reference")["status"] == "ready":
         return default
     if default.is_file():
-        raise ApiError(409, "default reference is present but not verified; download DEFAULT VOICE (CC0) again")
-    raise ApiError(409, "default reference is missing; download DEFAULT VOICE (CC0)")
+        raise ApiError(409, "default reference is present but not verified; download DEFAULT VOICE again")
+    raise ApiError(409, "default reference is missing; download DEFAULT VOICE")
+
+
+def bump_reference():
+    with LOCK:
+        RUNTIME["reference_generation"] = int(RUNTIME.get("reference_generation", 0)) + 1
 
 
 def reference_state() -> dict:
     custom = DATA / "reference.wav"
     path = custom if custom.is_file() else model_path("reference")
     if not path.is_file():
-        return {"status": "missing", "path": str(path), "duration": 0.0, "custom": False, "language": "ar"}
+        return {"status": "missing", "path": str(path), "duration": 0.0, "custom": False}
     if path != custom and model_status("reference")["status"] != "ready":
-        return {"status": "unverified", "path": str(path), "duration": 0.0, "custom": False, "language": "ar"}
+        return {"status": "unverified", "path": str(path), "duration": 0.0, "custom": False}
     try:
         with wave.open(str(path), "rb") as audio:
             valid = audio.getnchannels() == 1 and audio.getsampwidth() == 2 and audio.getcomptype() == "NONE"
             duration = audio.getnframes() / float(audio.getframerate() or 1)
         if not valid or duration < 5:
-            return {"status": "invalid", "path": str(path), "duration": duration, "custom": path == custom, "language": "unknown" if path == custom else "ar"}
+            return {"status": "invalid", "path": str(path), "duration": duration, "custom": path == custom}
     except (wave.Error, OSError):
-        return {"status": "invalid", "path": str(path), "duration": 0.0, "custom": path == custom, "language": "unknown" if path == custom else "ar"}
-    return {"status": "ready", "path": str(path), "duration": duration, "custom": path == custom, "language": "unknown" if path == custom else "ar"}
+        return {"status": "invalid", "path": str(path), "duration": 0.0, "custom": path == custom}
+    return {"status": "ready", "path": str(path), "duration": duration, "custom": path == custom}
+
+
+def custom_brain_ready() -> bool:
+    custom = BRAIN_STATE["custom"]
+    path = Path(custom["path"]) if custom.get("path") else CUSTOM_BRAIN
+    return path.is_file() and custom.get("sha256") and sha256(path) == custom["sha256"] and path.stat().st_size == int(custom.get("size") or 0)
+
+
+def active_brain_id() -> str:
+    active = BRAIN_STATE.get("active")
+    return active if active in BRAINS else "gemma"
+
+
+def active_brain_family() -> str:
+    active = active_brain_id()
+    if active == "custom":
+        family = BRAIN_STATE["custom"].get("family") or "generic"
+        return family if family in BRAIN_FAMILIES else "generic"
+    return BRAINS[active]["family"]
+
+
+def active_brain_path() -> Path:
+    active = active_brain_id()
+    if active == "custom":
+        custom = BRAIN_STATE["custom"]
+        path = Path(custom["path"]) if custom.get("path") else CUSTOM_BRAIN
+        if not custom_brain_ready():
+            raise ApiError(409, "custom brain GGUF is missing or unverified")
+        return path
+    name = BRAINS[active]["model"]
+    if model_status(name)["status"] != "ready":
+        raise ApiError(409, f"brain model is not verified: {model_path(name)}")
+    return model_path(name)
+
+
+def brain_snapshot() -> dict:
+    active = active_brain_id()
+    spec = BRAINS[active]
+    custom = deepcopy(BRAIN_STATE["custom"])
+    custom_path = Path(custom["path"]) if custom.get("path") else CUSTOM_BRAIN
+    custom.update({"status": "ready" if custom_brain_ready() else "missing", "path": str(custom_path)})
+    if active == "custom":
+        ready = custom["status"] == "ready"
+        path = str(custom_path)
+        model = "custom"
+    else:
+        model = spec["model"]
+        status = model_status(model)
+        ready = status["status"] == "ready"
+        path = status["path"]
+    return {
+        "active": active,
+        "model": model,
+        "label": spec["label"],
+        "family": active_brain_family(),
+        "path": path,
+        "ready": ready,
+        "catalog": {name: {"label": value["label"], "model": value["model"], "family": value["family"]} for name, value in BRAINS.items()},
+        "custom": custom,
+    }
 
 
 def snapshot() -> dict:
@@ -275,6 +382,8 @@ def snapshot() -> dict:
             "engines": engines,
             "config": deepcopy(CONFIG),
             "reference": reference_state(),
+            "reference_generation": RUNTIME.get("reference_generation", 0),
+            "brain": brain_snapshot(),
             "lanes": deepcopy(RUNTIME["lanes"]),
             "results": deepcopy(RUNTIME["results"]),
             "flow": deepcopy(RUNTIME["flow"]),
@@ -580,11 +689,23 @@ def install_prerequisite(name: str, key: str):
 def download_model(name: str, key: str):
     spec = MODELS[name]
     destination = model_path(name)
-    url = spec.get("url") or f"https://huggingface.co/{spec['repo']}/resolve/{spec['revision']}/{spec['file']}"
-    fetch(url, destination, spec["size"], spec["sha256"], key)
+    if spec.get("source"):
+        source = ROOT / spec["source"]
+        if not source.is_file():
+            raise RuntimeError(f"bundled asset missing: {source}")
+        if source.stat().st_size != spec["size"] or sha256(source) != spec["sha256"]:
+            raise RuntimeError("bundled default voice does not match its pin")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+        set_job(key, "running", "copy", 90, f"installed {spec['file']}")
+    else:
+        url = spec.get("url") or f"https://huggingface.co/{spec['repo']}/resolve/{spec['revision']}/{spec['file']}"
+        fetch(url, destination, spec["size"], spec["sha256"], key)
     with LOCK:
         RECEIPTS[name] = spec["sha256"]
         atomic_json(RECEIPTS_FILE, RECEIPTS)
+    if name == "reference":
+        bump_reference()
 
 
 def log_process(name: str, process: subprocess.Popen):
@@ -644,10 +765,13 @@ def stop_engine(name: str):
 
 def load_engine(name: str, key: str):
     stop_engine(name)
-    paths = [model_path(model) for model in ENGINE_MODELS[name]]
-    for model, model_file in zip(ENGINE_MODELS[name], paths):
-        if model_status(model)["status"] != "ready":
-            raise RuntimeError(f"model is not verified: {model_file}")
+    if name == "brain":
+        paths = [active_brain_path()]
+    else:
+        paths = [model_path(model) for model in ENGINE_MODELS[name]]
+        for model, model_file in zip(ENGINE_MODELS[name], paths):
+            if model_status(model)["status"] != "ready":
+                raise RuntimeError(f"model is not verified: {model_file}")
     executable_path = component_artifact("tts" if name == "tts" else "parakeet" if name == "asr" else "gemma")
     if not executable_path.is_file():
         raise RuntimeError(f"component is missing: {executable_path}")
@@ -661,8 +785,8 @@ def load_engine(name: str, key: str):
         cwd, health, env = executable_path.parent, "http://127.0.0.1:8097/health", os.environ.copy()
         env["PARAKEET_DEVICE"] = "Vulkan0"
     else:
-        applied = deepcopy(BRAIN_RUNTIME)
-        command = [str(executable_path), "-m", str(paths[0]), "--host", "127.0.0.1", "--port", "8098", "--device", "Vulkan0", "--n-gpu-layers", "all", "--ctx-size", str(BRAIN_RUNTIME["context"]), "--parallel", str(BRAIN_RUNTIME["parallel"]), "--fit", "off"]
+        applied = {**deepcopy(BRAIN_RUNTIME), "id": active_brain_id(), "family": active_brain_family(), "path": str(paths[0])}
+        command = [str(executable_path), "-m", str(paths[0]), "--host", "127.0.0.1", "--port", "8098", "--device", "Vulkan0", "--n-gpu-layers", "all", "--ctx-size", str(BRAIN_RUNTIME["context"]), "--parallel", str(BRAIN_RUNTIME["parallel"]), "--fit", "off", "--no-mmproj"]
         cwd, health, env = executable_path.parent, "http://127.0.0.1:8098/health", os.environ.copy()
     set_job(key, "running", "load", 20, f"loading {name}")
     process = subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8")
@@ -709,12 +833,11 @@ def brain(prompt: str, language: str = "en") -> dict:
         "Do not analyze, list options, add a preamble, or mention transcription."
     )
     request = {
-        "model": "gemma-4-E2B",
+        "model": active_brain_id(),
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
         **BRAIN_GENERATION,
         "stream": False,
-        "reasoning_format": "none",
-        "chat_template_kwargs": {"enable_thinking": False},
+        **BRAIN_FAMILIES[active_brain_family()],
     }
     result = json.loads(remote("http://127.0.0.1:8098/v1/chat/completions", json.dumps(request, separators=(",", ":")).encode()))
     with LOCK:
@@ -738,6 +861,7 @@ def validate_wav(data: bytes):
         partial.unlink(missing_ok=True)
         raise
     os.replace(partial, DATA / "reference.wav")
+    bump_reference()
 
 
 def set_config(values: dict):
@@ -755,11 +879,7 @@ def voice_options(language: str, style: str) -> dict:
         raise ApiError(400, f"unsupported speech language: {language}")
     if style not in VOICE_STYLES:
         raise ApiError(400, f"unsupported voice style: {style}")
-    options = {**VOICE_DEFAULTS, **VOICE_STYLES[style]}
-    reference = reference_state()
-    if not reference["custom"] and reference.get("language") not in (language, "unknown"):
-        options["cfg_weight"] = 0.0
-    return options
+    return {**VOICE_DEFAULTS, **VOICE_STYLES[style]}
 
 
 def tts_session(lane: str, language: str | None = None, style: str | None = None) -> dict:
@@ -946,6 +1066,80 @@ def run_turn(payload: dict, raw: bytes | None = None) -> dict:
         emit_state()
 
 
+def resolve_brain_url(spec: str) -> str:
+    spec = spec.strip()
+    if not spec:
+        raise ApiError(400, "brain URL is required")
+    if spec.startswith("https://") or spec.startswith("http://"):
+        if not spec.lower().split("?", 1)[0].endswith(".gguf"):
+            raise ApiError(400, "brain URL must point to a .gguf file")
+        return spec
+    parts = [part for part in spec.replace("\\", "/").split("/") if part]
+    if len(parts) >= 3 and parts[-1].lower().endswith(".gguf"):
+        return f"https://huggingface.co/{parts[0]}/{parts[1]}/resolve/main/{'/'.join(parts[2:])}"
+    raise ApiError(400, "brain URL must be an https GGUF link or owner/repo/file.gguf")
+
+
+def fetch_any(url: str, destination: Path, key: str) -> tuple[int, str]:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    partial = destination.with_suffix(destination.suffix + ".part")
+    request = urllib.request.Request(url, headers={"User-Agent": "clone-reliable/2"})
+    hasher = hashlib.sha256()
+    done = 0
+    with urllib.request.urlopen(request, timeout=60) as response, partial.open("wb") as output:
+        if response.status != 200:
+            raise RuntimeError(f"download returned HTTP {response.status}: {url}")
+        for block in iter(lambda: response.read(1024 * 1024), b""):
+            output.write(block)
+            hasher.update(block)
+            done += len(block)
+            set_job(key, "running", "download", min(89, done // (1024 * 1024)), f"{done} bytes")
+    if done < 64:
+        partial.unlink(missing_ok=True)
+        raise RuntimeError("download was too small to be a GGUF")
+    digest = hasher.hexdigest()
+    os.replace(partial, destination)
+    return done, digest
+
+
+def install_custom_brain(url: str, family: str, key: str):
+    if family not in BRAIN_FAMILIES:
+        raise RuntimeError(f"unsupported brain family: {family}")
+    resolved = resolve_brain_url(url)
+    set_job(key, "running", "download", 5, "downloading custom brain")
+    size, digest = fetch_any(resolved, CUSTOM_BRAIN, key)
+    header = CUSTOM_BRAIN.read_bytes()[:4]
+    if header != b"GGUF":
+        CUSTOM_BRAIN.unlink(missing_ok=True)
+        raise RuntimeError("downloaded file is not a GGUF")
+    with LOCK:
+        BRAIN_STATE["active"] = "custom"
+        BRAIN_STATE["custom"] = {"url": resolved, "path": str(CUSTOM_BRAIN), "sha256": digest, "size": size, "family": family}
+        save_brains()
+    if RUNTIME["engines"]["brain"]["status"] in ("running", "loading", "error"):
+        load_engine("brain", key)
+
+
+def apply_brain(name: str, family: str | None = None):
+    if name not in BRAINS:
+        raise ApiError(404, f"unknown brain: {name}")
+    if name == "custom" and not custom_brain_ready():
+        raise ApiError(409, "custom brain GGUF is missing; provide a URL to download one")
+    with LOCK:
+        BRAIN_STATE["active"] = name
+        if name == "custom" and family:
+            if family not in BRAIN_FAMILIES:
+                raise ApiError(400, f"family must be one of {list(BRAIN_FAMILIES)}")
+            BRAIN_STATE["custom"]["family"] = family
+        save_brains()
+    running = RUNTIME["engines"]["brain"]["status"] == "running"
+    ready = name == "custom" or model_status(BRAINS[name]["model"])["status"] == "ready"
+    if running and ready:
+        start_job("engine", "brain", lambda key: load_engine("brain", key))
+    elif running:
+        stop_engine("brain")
+
+
 OPS = {
     "inspect": {"doc": "schema + snapshot + op catalog", "fields": []},
     "schema": {"doc": "field and install catalog", "fields": []},
@@ -957,16 +1151,17 @@ OPS = {
     "install_prerequisite": {"doc": "install a host prerequisite", "fields": ["name"]},
     "install_component": {"doc": "install a pinned runtime component; only Chatterbox TTS builds locally", "fields": ["name"]},
     "download_model": {"doc": "download a pinned model or default reference asset", "fields": ["name"]},
+    "set_brain": {"doc": "select a catalog brain or download a custom GGUF URL", "fields": ["name", "url", "family"]},
     "load_engine": {"doc": "load tts, asr, or brain", "fields": ["name"]},
     "unload_engine": {"doc": "unload tts, asr, or brain", "fields": ["name"]},
     "upload_reference": {"doc": "replace reference.wav", "fields": ["audio_base64"], "body": "audio/wav"},
     "asr": {"doc": "transcribe WAV via Parakeet", "fields": ["source", "audio_base64"], "source": ["reference", "upload"]},
-    "brain": {"doc": "ask Gemma", "fields": ["prompt", "language"]},
+    "brain": {"doc": "ask the active brain", "fields": ["prompt", "language"]},
     "tts_session": {"doc": "open a Chatterbox V3 session", "fields": ["lane", "language", "style"]},
     "tts_request": {"doc": "queue a synthesize message", "fields": ["lane", "text"]},
     "tts_event": {"doc": "report a lane websocket event", "fields": ["lane", "event"]},
     "tts_cancel": {"doc": "cancel a TTS session", "fields": ["session_id"]},
-    "turn": {"doc": "WAV input -> Parakeet -> Gemma; browser streams Chatterbox audio", "fields": ["source", "clone", "language", "audio_base64", "load", "prompt"], "source": ["reference", "upload"], "body": "audio/wav"},
+    "turn": {"doc": "WAV input -> Parakeet -> brain; browser streams Chatterbox audio", "fields": ["source", "clone", "language", "audio_base64", "load", "prompt"], "source": ["reference", "upload"], "body": "audio/wav"},
 }
 
 
@@ -1022,6 +1217,18 @@ def dispatch(op: str, payload: dict | None = None, raw: bytes | None = None) -> 
             raise ApiError(404, f"unknown model: {name}")
         start_job("model", name, lambda key: download_model(name, key))
         return {"ok": True, "accepted": True, "op": op, "name": name}, 202
+    if op == "set_brain":
+        name = str(payload.get("name") or "custom")
+        family = str(payload.get("family") or ("generic" if name == "custom" else BRAINS.get(name, {}).get("family") or "generic"))
+        url = str(payload.get("url") or "").strip()
+        if name == "custom" and url:
+            resolve_brain_url(url)
+            if family not in BRAIN_FAMILIES:
+                raise ApiError(400, f"family must be one of {list(BRAIN_FAMILIES)}")
+            start_job("brain", "custom", lambda key: install_custom_brain(url, family, key))
+            return {"ok": True, "accepted": True, "op": op, "name": name}, 202
+        apply_brain(name, family if name == "custom" else None)
+        return {"ok": True, "brain": brain_snapshot(), "state": snapshot()}, 200
     if op == "load_engine":
         name = payload.get("name")
         if name not in ENGINE_MODELS:
@@ -1087,9 +1294,11 @@ SCHEMA = {
         "tts": {"label": "CHATTERBOX TTS (BUILD)", "install": "/api/components/tts/install", "op": "install_component", "name": "tts"},
         **{name: {"label": spec["label"], "install": f"/api/components/{name}/install", "op": "install_component", "name": name, "tag": spec["tag"]} for name, spec in BINARIES.items()},
     },
-    "models": {name: {"label": spec["label"], "download": f"/api/models/{name}/download", "op": "download_model", "name": name, "revision": spec["revision"], "size": spec["size"], "sha256": spec["sha256"], **({"license": spec["license"]} if spec.get("license") else {})} for name, spec in MODELS.items()},
+    "models": {name: {"label": spec["label"], "download": f"/api/models/{name}/download", "op": "download_model", "name": name, "revision": spec.get("revision", ""), "size": spec["size"], "sha256": spec["sha256"], **({"license": spec["license"]} if spec.get("license") else {})} for name, spec in MODELS.items()},
+    "brains": {name: {"label": spec["label"], "model": spec["model"], "family": spec["family"]} for name, spec in BRAINS.items()},
+    "brain_families": list(BRAIN_FAMILIES),
     "engines": {name: {"load": f"/api/engines/{name}/load", "unload": f"/api/engines/{name}/unload", "load_op": "load_engine", "unload_op": "unload_engine", "name": name} for name in ENGINE_MODELS},
-    "endpoints": {"control": "/api", "events": "/api/events", "state": "/api/state", "reference": "/api/reference", "asr": "/api/asr", "brain": "/api/brain", "tts_session": "/api/tts/session", "tts_request": "/api/tts/request", "tts_cancel": "/api/tts/cancel", "tts_event": "/api/tts/event", "turn": "/api?op=turn", "log": "/api/log"},
+    "endpoints": {"control": "/api", "events": "/api/events", "state": "/api/state", "reference": "/api/reference", "asr": "/api/asr", "brain": "/api/brain", "tts_session": "/api/tts/session", "tts_request": "/api/tts/request", "tts_cancel": "/api/tts/cancel", "tts_event": "/api/tts/event", "turn": "/api?op=turn", "log": "/api/log", "set_brain": "/api?op=set_brain"},
     "defaults": {"tts_runtime": TTS_RUNTIME, "voice": VOICE_DEFAULTS, "asr": ASR_RUNTIME, "brain_runtime": BRAIN_RUNTIME, "brain_generation": BRAIN_GENERATION},
     "tts": {"url": "ws://127.0.0.1:8095/tts", "text": "JSON", "audio": "binary PCM16LE mono 24000 Hz", "messages": ["init", "synthesize", "cancel", "close"], "events": ["ready", "synthesize_started", "audio", "chunk_done", "cancelled", "error"]},
 }
