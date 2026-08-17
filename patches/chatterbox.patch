@@ -2669,3 +2669,165 @@ index 9e33d33..dd46f98 100644
  std::vector<float> mel_extract_24k_80(const std::vector<float> & wav_24k,
                                        const std::vector<float> & mel_filterbank);
  
+diff --git a/src/chatterbox_engine.cpp b/src/chatterbox_engine.cpp
+index 78c324e..636d62c 100644
+--- a/src/chatterbox_engine.cpp
++++ b/src/chatterbox_engine.cpp
+@@ -393,15 +393,31 @@ struct Engine::Impl {
+             generated.reserve((size_t) opts.n_predict + 1);
+             int32_t current = sample_next_token_mtl(
+                 logits_c, logits_u, generated, sp, rng, model.hparams.stop_speech_token);
+-            fprintf(stderr, "Engine: T3 first token=%d n_past=%d\n", (int) current, n_past);
++            fprintf(stderr, "Engine: T3 first token=%d n_past=%d speech_position=1\n",
++                    (int) current, n_past);
+             generated.push_back(current);
++            std::string stop_reason = "max_tokens";
+             for (int i = 0; i < opts.n_predict; ++i) {
+                 if (cancel_flag.load(std::memory_order_relaxed)) {
++                    fprintf(stderr,
++                            "Engine: T3 stop reason=cancellation prompt=%d n_past=%d speech_position=%zu generated=%zu\n",
++                            prompt_len, n_past, generated.size(), generated.size());
+                     throw std::runtime_error("Engine: synthesis cancelled during T3 decode");
+                 }
+-                if (current == model.hparams.stop_speech_token) break;
+-                if (n_past + 1 > model.hparams.n_ctx) break;
+-                if (!eval_step_mtl(model, allocr, n_threads, n_past, current, logits_c, logits_u)) {
++                if (current == model.hparams.stop_speech_token) {
++                    stop_reason = "eos";
++                    break;
++                }
++                if (n_past + 1 > model.hparams.n_ctx) {
++                    stop_reason = "context_limit";
++                    break;
++                }
++                const int speech_position = static_cast<int>(generated.size());
++                if (!eval_step_mtl(model, allocr, n_threads, n_past, speech_position,
++                                   current, logits_c, logits_u)) {
++                    fprintf(stderr,
++                            "Engine: T3 stop reason=step_error prompt=%d n_past=%d speech_position=%d generated=%zu\n",
++                            prompt_len, n_past, speech_position, generated.size());
+                     throw std::runtime_error("Engine: T3 MTL step eval failed");
+                 }
+                 ++n_past;
+@@ -411,9 +427,17 @@ struct Engine::Impl {
+                 if (generated.size() >= 3 &&
+                     generated[generated.size() - 1] == generated[generated.size() - 2] &&
+                     generated[generated.size() - 2] == generated[generated.size() - 3]) {
++                    stop_reason = "repetition_guard";
+                     break;
+                 }
+             }
++            if (stop_reason == "max_tokens" && current == model.hparams.stop_speech_token) {
++                stop_reason = "eos";
++            }
++            fprintf(stderr,
++                    "Engine: T3 stop reason=%s prompt=%d n_past=%d speech_position=%zu generated=%zu final_token=%d\n",
++                    stop_reason.c_str(), prompt_len, n_past, generated.size(), generated.size(),
++                    (int) current);
+             if (!generated.empty() && generated.back() == model.hparams.stop_speech_token) {
+                 generated.pop_back();
+             }
+diff --git a/src/chatterbox_t3_internal.h b/src/chatterbox_t3_internal.h
+index e5426dd..d3e1151 100644
+--- a/src/chatterbox_t3_internal.h
++++ b/src/chatterbox_t3_internal.h
+@@ -350,6 +350,7 @@ bool eval_step_mtl(
+     ggml_gallocr_t           allocr,
+     int                      n_threads,
+     int                      n_past,
++    int                      speech_position,
+     int32_t                  token,
+     std::vector<float> &     logits_cond_out,
+     std::vector<float> &     logits_uncond_out);
+diff --git a/src/t3_mtl.cpp b/src/t3_mtl.cpp
+index c6e5941..6fcc11a 100644
+--- a/src/t3_mtl.cpp
++++ b/src/t3_mtl.cpp
+@@ -1000,13 +1000,15 @@ bool run_step_pass_b2(const chatterbox_model & model,
+                       ggml_gallocr_t allocr,
+                       int n_threads,
+                       int n_past,
++                      int speech_position,
+                       int32_t token,
+                       std::vector<float> & logits_cond_out,
+                       std::vector<float> & logits_uncond_out) {
+     const auto & hp = model.hparams;
+__BLANK_CONTEXT__
+-    if (n_past < 4 || (n_past % 50) == 0) {
+-        fprintf(stderr, "run_step_pass_b2: n_past=%d token=%d\n", n_past, (int) token);
++    if (speech_position <= 3 || (speech_position % 50) == 0) {
++        fprintf(stderr, "run_step_pass_b2: n_past=%d speech_position=%d token=%d\n",
++                n_past, speech_position, (int) token);
+     }
+     ggml_cgraph * gf = build_step_graph_mtl_b2(model, n_past);
+     // Skip the explicit ggml_gallocr_reserve(allocr, gf) call here:
+@@ -1030,7 +1032,7 @@ bool run_step_pass_b2(const chatterbox_model & model,
+         return false;
+     }
+     ggml_backend_tensor_set(t_tok, &token, 0, sizeof(token));
+-    int32_t sp = n_past;
++    int32_t sp = speech_position;
+     ggml_backend_tensor_set(t_spos, &sp, 0, sizeof(sp));
+     int32_t pos = n_past;
+     ggml_backend_tensor_set(t_pos, &pos, 0, sizeof(pos));
+@@ -1069,6 +1071,7 @@ bool run_step_pass(const chatterbox_model & model,
+                    ggml_gallocr_t allocr,
+                    int n_threads,
+                    int n_past,
++                   int speech_position,
+                    int32_t token,
+                    bool is_uncond,
+                    std::vector<float> & logits_out) {
+@@ -1080,7 +1083,7 @@ bool run_step_pass(const chatterbox_model & model,
+     }
+__BLANK_CONTEXT__
+     ggml_backend_tensor_set(ggml_graph_get_tensor(gf, "speech_token"), &token, 0, sizeof(token));
+-    int32_t sp = n_past;
++    int32_t sp = speech_position;
+     ggml_backend_tensor_set(ggml_graph_get_tensor(gf, "speech_pos"), &sp, 0, sizeof(sp));
+     int32_t pos = n_past;
+     ggml_backend_tensor_set(ggml_graph_get_tensor(gf, "pos_ids"), &pos, 0, sizeof(pos));
+@@ -1627,31 +1630,29 @@ bool eval_step_mtl(const chatterbox_model & model,
+                    ggml_gallocr_t allocr,
+                    int n_threads,
+                    int n_past,
++                   int speech_position,
+                    int32_t token,
+                    std::vector<float> & logits_cond_out,
+                    std::vector<float> & logits_uncond_out) {
+-    // The step graph indexes `speech_pos_emb` directly with `n_past`.
+-    // `speech_pos_emb` only has `max_speech_tokens` rows (see
+-    // scripts/convert-t3-mtl-to-gguf.py: MAX_SPEECH_TOKENS=4096), so we have
+-    // to refuse the step before `ggml_get_rows` reads past the embedding
+-    // table.  In practice n_past starts at len_cond + n_text_tokens + 2
+-    // (~2084 with max text), so this only fires on very long generations.
+-    if (model.hparams.max_speech_tokens > 0 &&
+-        n_past >= model.hparams.max_speech_tokens) {
+-        fprintf(stderr, "eval_step_mtl: n_past=%d exceeds max_speech_tokens=%d; "
+-                        "stopping generation to avoid out-of-range speech_pos_emb lookup\n",
+-                n_past, model.hparams.max_speech_tokens);
++    // The transformer RoPE/KV position continues after the full prompt, while
++    // the learned speech position starts at 1 for the first generated token.
++    // Keep these positions independent, matching multilingual V3 t3.py.
++    if (speech_position <= 0 ||
++        (model.hparams.max_speech_tokens > 0 &&
++         speech_position >= model.hparams.max_speech_tokens)) {
++        fprintf(stderr, "eval_step_mtl: speech_position=%d outside [1,%d); n_past=%d\n",
++                speech_position, model.hparams.max_speech_tokens, n_past);
+         return false;
+     }
+     // Metal: cond+uncond batched into a single forward.  See eval_prompt_mtl.
+     const bool use_b2 = !ggml_backend_is_cpu(model.backend);
+     if (use_b2) {
+-        return run_step_pass_b2(model, allocr, n_threads, n_past, token,
++        return run_step_pass_b2(model, allocr, n_threads, n_past, speech_position, token,
+                                 logits_cond_out, logits_uncond_out);
+     }
+-    if (!run_step_pass(model, allocr, n_threads, n_past, token, /*uncond=*/false,
++    if (!run_step_pass(model, allocr, n_threads, n_past, speech_position, token, /*uncond=*/false,
+                        logits_cond_out)) return false;
+-    if (!run_step_pass(model, allocr, n_threads, n_past, token, /*uncond=*/true,
++    if (!run_step_pass(model, allocr, n_threads, n_past, speech_position, token, /*uncond=*/true,
+                        logits_uncond_out)) return false;
+     return true;
+ }
