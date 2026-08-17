@@ -24,7 +24,10 @@ function fail(error) {
   window.setTimeout(() => { if (fault.textContent) fault.hidden = true; }, 9000);
 }
 function fillLanguages(select, languages) { select.replaceChildren(...Object.entries(languages).map(([code, name]) => { const option = document.createElement("option"); option.value = code; option.textContent = `${name} (${code})`; return option; })); }
-async function save(path, value) { await command("set", {values: {[path]: value}}); }
+async function save(path, value) {
+  await command("set", {values: {[path]: value}});
+  if (["tts.sample.", "tts.stream.", "tts.style."].some(prefix => path.startsWith(prefix))) await closeTts();
+}
 function coerceField(path, raw) {
   const spec = schema.fields[path] || {};
   if (spec.type === "bool") return Boolean(raw);
@@ -580,9 +583,11 @@ async function runTurn(wav) {
   $("asr-state").textContent = "Working";
   $("speech-state").textContent = "Waiting";
   const language = $("conversation-language").value;
+  await save("conversation.clone_voice", $("clone-voice").checked);
   const result = await api(`/api?op=turn&language=${encodeURIComponent(language)}`, wav, true);
   if (!result.text) throw Error("The assistant returned no reply");
   diagnostic.transcript = (result.results && result.results.asr && result.results.asr.text) || (state.flow && state.flow.transcript) || "";
+  if (result.cloned) await closeTts();
   await speak(result.text, language, "natural", "turn");
   $("recording-time").textContent = recording && state.config["conversation.vad"]
     ? "Listening for the next utterance."
