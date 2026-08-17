@@ -1,20 +1,19 @@
 #include "server.hpp"
+#include <algorithm>
 #include <nlohmann/json.hpp>
 #include <chrono>
 #include <filesystem>
 #include <future>
 #include <iostream>
+#include <cmath>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
-
 using json = nlohmann::json;
-
 namespace tts {
 TTSServer::TTSServer(int port) : port_(port) {}
 TTSServer::~TTSServer() { stop(); }
-
 void TTSServer::initialize(const std::string& t3, const std::string& s3, int gpu, int threads, int context, int sessions) {
     engine_ = std::make_unique<EngineWrapper>();
     engine_->initialize(t3, s3, gpu, threads, context, sessions);
@@ -36,7 +35,6 @@ void TTSServer::initialize(const std::string& t3, const std::string& s3, int gpu
     });
     http_.WebSocket("/tts", [this](const httplib::Request&, httplib::ws::WebSocket& socket) { connect(socket); });
 }
-
 void TTSServer::start() {
     running_ = true;
     thread_ = std::thread([this] {
@@ -46,13 +44,11 @@ void TTSServer::start() {
     });
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
 }
-
 void TTSServer::stop() {
     if (!running_.exchange(false)) return;
     http_.stop();
     if (thread_.joinable()) thread_.join();
 }
-
 void TTSServer::connect(httplib::ws::WebSocket& socket) {
     std::string session;
     std::future<void> work;
@@ -81,20 +77,32 @@ void TTSServer::connect(httplib::ws::WebSocket& socket) {
                 const auto request = message.at("request_id").get<std::string>();
                 socket.send(json{{"type", "synthesize_started"}, {"request_id", request}}.dump());
                 work = std::async(std::launch::async, [this, &socket, session, text, request] {
-                    std::size_t total = 0;
+                    std::size_t total = 0, clipped = 0, chunks = 0;
+                    double sumsq = 0;
+                    float peak = 0;
                     try {
                         engine_->synthesize(session, text, [&](const float* pcm, std::size_t samples, int index, bool last) {
                             std::vector<char> bytes(samples * 2);
                             for (std::size_t i = 0; i < samples; ++i) {
-                                const float sample = pcm[i] > 1 ? 1 : pcm[i] < -1 ? -1 : pcm[i];
+                                const float sample = std::max(-1.0f, std::min(1.0f, pcm[i]));
+                                peak = std::max(peak, std::abs(pcm[i]));
+                                sumsq += static_cast<double>(pcm[i]) * pcm[i];
+                                clipped += std::abs(pcm[i]) >= 0.999f;
                                 const auto value = static_cast<int16_t>(sample * 32767);
                                 bytes[i * 2] = static_cast<char>(value & 255);
                                 bytes[i * 2 + 1] = static_cast<char>((value >> 8) & 255);
                             }
-                            total += samples;
+                            total += samples; ++chunks;
                             socket.send(json{{"type", "audio"}, {"request_id", request}, {"chunk_index", index}, {"samples", samples}, {"sample_rate", 24000}}.dump());
                             socket.send(bytes.data(), bytes.size());
-                            if (last) socket.send(json{{"type", "chunk_done"}, {"request_id", request}, {"chunk_index", index}, {"samples", total}}.dump());
+                            if (last) {
+                                socket.send(json{{"type", "chunk_done"}, {"request_id", request}, {"chunk_index", index}, {"samples", total}}.dump());
+                                const double rms = total ? std::sqrt(sumsq / total) : 0;
+                                const double rms_dbfs = 20.0 * std::log10(std::max(rms, 1e-9));
+                                const double peak_dbfs = 20.0 * std::log10(std::max(static_cast<double>(peak), 1e-9));
+                                const double clip_pct = total ? 100.0 * clipped / total : 0.0;
+                                std::cout << "METRIC tts_audio samples=" << total << " chunks=" << chunks << " seconds=" << total / 24000.0 << " rms_dbfs=" << rms_dbfs << " peak_dbfs=" << peak_dbfs << " clip_pct=" << clip_pct << std::endl;
+                            }
                         });
                     } catch (const std::exception& exception) {
                         const std::string detail = exception.what();
