@@ -1,8 +1,8 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index e39d04b..73ae4bf 100644
+index e39d04b..684e9e0 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -1,255 +1,45 @@
+@@ -1,40 +1,19 @@
  cmake_minimum_required(VERSION 3.14)
 -project(tts-cpp LANGUAGES C CXX VERSION 0.1.0)
 -
@@ -50,13 +50,12 @@ index e39d04b..73ae4bf 100644
      src/gpt2_bpe.cpp
      src/chatterbox_tts.cpp
      src/chatterbox_engine.cpp
-     src/voice_features.cpp
-     src/mel_extract_stft.cpp
-     src/voice_encoder.cpp
+@@ -44,212 +23,24 @@ set(TTS_CPP_LIB_SOURCES
      src/campplus.cpp
      src/s3tokenizer.cpp
      src/t3_mtl.cpp
 +    src/gguf_split_mtl.cpp
++    src/text_split.cpp
  )
  
 -add_library(mtl_tokenizer STATIC src/mtl_tokenizer.cpp)
@@ -275,23 +274,130 @@ index e39d04b..73ae4bf 100644
 -    endif()
 +if(GGML_VULKAN)
 +    target_compile_definitions(tts-cpp PRIVATE GGML_USE_VULKAN)
- endif()
++endif()
 +if(MSVC)
 +    target_compile_definitions(tts-cpp PRIVATE _USE_MATH_DEFINES)
-+endif()
+ endif()
+diff --git a/include/tts-cpp/chatterbox/engine.h b/include/tts-cpp/chatterbox/engine.h
+index 189740e..57ac18d 100644
+--- a/include/tts-cpp/chatterbox/engine.h
++++ b/include/tts-cpp/chatterbox/engine.h
+@@ -45,6 +45,8 @@
+ #include <string>
+ #include <vector>
+ 
++#include "tts-cpp/chatterbox/v3_defaults.h"
++
+ namespace tts_cpp::chatterbox {
+ 
+ struct EngineOptions {
+@@ -86,21 +88,27 @@ struct EngineOptions {
+     // different "take" of the same line.
+     int seed = 42;
+ 
+-    // Maximum speech tokens to decode per synthesize() call.
+-    int n_predict = 1000;
++    // Maximum speech tokens to decode per synthesize() call / segment.
++    int n_predict = v3::n_predict;
+ 
+     // Optional T3 context-size cap (0 = use the GGUF's value).
+-    int n_ctx = 0;
+-
+-    // Sampling knobs (mirrors the CLI defaults, which match Python's
+-    // ChatterboxTurboTTS.generate()).
+-    int   top_k          = 1000;
+-    float top_p          = 0.95f;
+-    float temperature    = 0.8f;
+-    float repeat_penalty = 1.2f;
+-
+-    // S3Gen side.  0 = library default (2-step meanflow).
+-    int cfm_steps = 0;
++    int n_ctx = v3::n_ctx;
++
++    // V3 multilingual generate() sampling. Turbo ignores language / cfg / min_p.
++    int   top_k          = v3::top_k;
++    float top_p          = v3::top_p;
++    float temperature    = v3::temperature;
++    float repeat_penalty = v3::repeat_penalty;
++    std::string language;
++    float exaggeration   = v3::exaggeration;
++    float cfg_weight     = v3::cfg_weight;
++    float min_p          = v3::min_p;
++
++    // S3Gen. 0 = GGUF n_timesteps (10 on V3). MIL20 streaming uses 5.
++    int cfm_steps = v3::cfm_steps;
++
++    // Split long text so each T3 prompt fits the KV cache. 0 = disabled.
++    int max_sentence_chars = v3::max_sentence_chars;
+ 
+     // ---------------- Streaming synthesis ----------------------------
+     //
+diff --git a/include/tts-cpp/chatterbox/v3_defaults.h b/include/tts-cpp/chatterbox/v3_defaults.h
+new file mode 100644
+index 0000000..6778be7
+--- /dev/null
++++ b/include/tts-cpp/chatterbox/v3_defaults.h
+@@ -0,0 +1,24 @@
++#pragma once
++
++namespace tts_cpp::chatterbox::v3 {
++
++constexpr int   n_predict                 = 1000;
++constexpr int   n_ctx                     = 512;
++constexpr int   n_gpu_layers              = 99;
++constexpr int   n_threads                 = 4;
++constexpr int   n_sessions                = 1;
++constexpr int   top_k                     = 0;
++constexpr float top_p                     = 1.0f;
++constexpr float min_p                     = 0.05f;
++constexpr float temperature               = 0.8f;
++constexpr float repeat_penalty            = 1.2f;
++constexpr float cfg_weight                = 0.5f;
++constexpr float exaggeration              = 0.5f;
++constexpr int   cfm_steps                 = 5;
++constexpr int   stream_first_chunk_tokens = 75;
++constexpr int   stream_chunk_tokens       = 150;
++constexpr int   max_sentence_chars        = 180;
++constexpr int   max_text_tokens           = 2048;
++constexpr int   max_speech_tokens         = 4096;
++
++}
 diff --git a/src/chatterbox_engine.cpp b/src/chatterbox_engine.cpp
-index b361766..56a7b24 100644
+index b361766..17ac457 100644
 --- a/src/chatterbox_engine.cpp
 +++ b/src/chatterbox_engine.cpp
-@@ -11,6 +11,7 @@
+@@ -11,8 +11,10 @@
  
  #include "chatterbox_t3_internal.h"
  #include "gpt2_bpe.h"
 +#include "mtl_tokenizer.h"
  #include "npy.h"
  #include "t3_mtl.h"
++#include "text_split.h"
  #include "tts-cpp/chatterbox/s3gen_pipeline.h"
-@@ -90,26 +91,11 @@ struct Engine::Impl {
+ #include "voice_encoder.h"
+ #include "voice_features.h"
+@@ -33,6 +35,19 @@ void wait_for_preload(std::thread & t) {
+     if (t.joinable()) t.join();
+ }
+ 
++// BricksDisplay split layout keeps the S3TokenizerV2 weights in their own
++// GGUF (chatterbox-mtl-s3t.gguf) next to the T3 / codec files.
++std::string find_s3t_gguf(const std::string & any_model_path) {
++    const std::filesystem::path dir = std::filesystem::path(any_model_path).parent_path();
++    std::error_code ec;
++    for (const auto & e : std::filesystem::directory_iterator(dir, ec)) {
++        const std::string fn = e.path().filename().string();
++        if (e.path().extension() == ".gguf" && fn.find("s3t") != std::string::npos)
++            return e.path().string();
++    }
++    return "";
++}
++
+ } // namespace
+ 
+ struct Engine::Impl {
+@@ -90,26 +105,11 @@ struct Engine::Impl {
              throw std::runtime_error("Engine: failed to load T3 GGUF: " + opts.t3_gguf_path);
          }
  
@@ -321,7 +427,7 @@ index b361766..56a7b24 100644
          }
  
          s3gen_preload_thread = std::thread([path = opts.s3gen_gguf_path,
-@@ -134,6 +120,9 @@ struct Engine::Impl {
+@@ -134,6 +134,9 @@ struct Engine::Impl {
              free_model();
              throw;
          }
@@ -331,45 +437,109 @@ index b361766..56a7b24 100644
      }
  
      ~Impl() {
-@@ -236,7 +225,10 @@ struct Engine::Impl {
+@@ -236,34 +239,44 @@ struct Engine::Impl {
  
          if (!have_se && !opts.reference_audio.empty()) {
              voice_encoder_weights vew;
 -            if (voice_encoder_load(opts.t3_gguf_path, vew)) {
-+            const bool ve_ok = voice_encoder_load(opts.t3_gguf_path, vew) ||
-+                               (!opts.s3gen_gguf_path.empty() &&
-+                                voice_encoder_load(opts.s3gen_gguf_path, vew));
-+            if (ve_ok) {
-                 std::vector<float> wav;
-                 int sr = 0;
-                 if (!wav_load(opts.reference_audio, wav, sr)) {
-@@ -245,9 +237,11 @@ struct Engine::Impl {
-                 normalise_lufs(wav, sr, -27.0);
-                 if (sr != 16000) wav = resample_sinc(wav, sr, 16000);
-                 if (!voice_encoder_embed(wav, vew, model.backend, se_data)) {
+-                std::vector<float> wav;
+-                int sr = 0;
+-                if (!wav_load(opts.reference_audio, wav, sr)) {
+-                    throw std::runtime_error("Engine: failed to load reference_audio");
+-                }
+-                normalise_lufs(wav, sr, -27.0);
+-                if (sr != 16000) wav = resample_sinc(wav, sr, 16000);
+-                if (!voice_encoder_embed(wav, vew, model.backend, se_data)) {
 -                    throw std::runtime_error("Engine: VoiceEncoder forward failed");
-+                    fprintf(stderr, "Engine: VoiceEncoder forward failed; will try CAMPPlus / builtin\n");
-+                } else {
-+                    fprintf(stderr, "Engine: speaker_emb from VoiceEncoder (%zu,)\n", se_data.size());
-+                    have_se = true;
-                 }
+-                }
 -                have_se = true;
++            if (!voice_encoder_load(opts.s3gen_gguf_path, vew)) {
++                throw std::runtime_error("Engine: VoiceEncoder weights unavailable");
++            }
++            std::vector<float> wav;
++            int sr = 0;
++            if (!wav_load(opts.reference_audio, wav, sr)) {
++                throw std::runtime_error("Engine: failed to load reference_audio");
              }
++            normalise_lufs(wav, sr, -27.0);
++            if (sr != 16000) wav = resample_sinc(wav, sr, 16000);
++            if (!voice_encoder_embed(wav, vew, model.backend, se_data)) {
++                throw std::runtime_error("Engine: VoiceEncoder forward failed");
++            }
++            fprintf(stderr, "Engine: speaker_emb from VoiceEncoder (%zu,)\n", se_data.size());
++            have_se = true;
          }
  
-@@ -309,8 +303,9 @@ struct Engine::Impl {
+         std::vector<int32_t> prompt_token_from_ref;
+         if (!have_ct && !opts.reference_audio.empty()) {
+             std::vector<int32_t> cond_tokens;
+-            if (compute_speech_tokens_native(
+-                    opts.reference_audio, opts.s3gen_gguf_path,
++            if (!compute_speech_tokens_native(
++                    opts.reference_audio, find_s3t_gguf(opts.s3gen_gguf_path),
+                     /*max_cond_tokens=*/ model.hparams.cond_prompt_len,
+                     prompt_token_from_ref, cond_tokens,
+                     n_threads, /*backend=*/ model.backend, opts.verbose)) {
+-                ct_data = std::move(cond_tokens);
+-                have_ct = true;
++                throw std::runtime_error("Engine: S3TokenizerV2 reference tokens failed");
+             }
++            ct_data = std::move(cond_tokens);
++            have_ct = true;
++            if (prompt_token_from_ref.empty() || ct_data.empty()) {
++                throw std::runtime_error("Engine: S3TokenizerV2 returned empty conditioning");
++            }
++            fprintf(stderr, "Engine: prompt_token from S3TokenizerV2 (%zu,), cond_prompt_speech_tokens (%zu,)\n", prompt_token_from_ref.size(), ct_data.size());
+         }
+ 
++        if (!have_se) throw std::runtime_error("Engine: speaker_emb unavailable");
++        if (!have_ct) throw std::runtime_error("Engine: cond_prompt_speech_tokens unavailable");
++
+         if (have_se) {
+             if ((int64_t) se_data.size() != ggml_nelements(model.builtin_speaker_emb)) {
+                 throw std::runtime_error(
+@@ -309,56 +322,135 @@ struct Engine::Impl {
                  if (!compute_prompt_feat_native(
                          opts.reference_audio, opts.s3gen_gguf_path,
                          s3gen_prompt_feat, rows, opts.verbose)) {
 -                    throw std::runtime_error(
 -                        "Engine: failed to compute prompt_feat from reference_audio");
-+                    fprintf(stderr,
-+                            "Engine: prompt_feat from reference_audio failed; "
-+                            "S3Gen will use built-in prompt_feat\n");
++                    throw std::runtime_error("Engine: prompt_feat from reference_audio failed");
                  }
++                if (rows < 1 || s3gen_prompt_feat.empty()) throw std::runtime_error("Engine: prompt_feat is empty");
                  s3gen_prompt_feat_rows = rows;
+-            }
+-            if (s3gen_embedding.empty()) {
+-                if (!compute_embedding_native(
+-                        opts.reference_audio, opts.s3gen_gguf_path,
+-                        s3gen_embedding,
+-                        /*backend=*/ model.backend, opts.verbose)) {
+-                    // CAMPPlus tensors predate Phase 2d-a in this GGUF.
+-                    // `compute_embedding_native` already logged the concrete
+-                    // error to stderr; callers that want a hard failure can
+-                    // re-run after re-exporting the S3Gen GGUF with a
+-                    // current scripts/convert-s3gen-to-gguf.py.
+-                    fprintf(stderr,
+-                            "Engine: voice-cloning embedding unavailable; "
+-                            "falling back to built-in speaker embedding for %s\n",
+-                            opts.reference_audio.c_str());
+-                }
++                fprintf(stderr, "Engine: prompt_feat from reference_audio (%d,80)\n", rows);
              }
-@@ -337,28 +332,88 @@ struct Engine::Impl {
+             if (s3gen_prompt_token.empty() && !prompt_token_from_ref.empty()) {
+                 s3gen_prompt_token = std::move(prompt_token_from_ref);
+             }
++            if (s3gen_prompt_token.empty()) throw std::runtime_error("Engine: prompt_token unavailable");
++            if (s3gen_prompt_feat.empty()) throw std::runtime_error("Engine: prompt_feat unavailable");
++            fprintf(stderr,
++                    "Engine: voice conditioning t3_speaker=%s t3_prompt=%s "
++                    "s3gen_prompt_token=%s s3gen_prompt_feat=%s s3gen_embedding=%s\n",
++                    voice_overridden ? "reference" : "builtin",
++                    voice_overridden ? "reference" : "builtin",
++                    s3gen_prompt_token.empty() ? "builtin" : "reference",
++                    s3gen_prompt_feat.empty() ? "builtin" : "reference",
++                    s3gen_embedding.empty() ? "builtin_fallback" : "reference_override");
+         }
      }
  
      std::vector<int32_t> run_t3(const std::string & text) {
@@ -408,7 +578,7 @@ index b361766..56a7b24 100644
 +            if (!tok.load_from_json(model.mtl_tokenizer_json)) {
 +                throw std::runtime_error("Engine: MTL tokenizer json failed to load");
 +            }
-+            text_tokens = tok.encode(text, opts.language);
++            text_tokens = tok.encode(gpt2_bpe::punc_norm(text), opts.language);
 +            // Match ChatterboxMultilingualTTS.generate and the upstream CLI:
 +            // the MTL transformer expects explicit text boundary tokens.
 +            std::vector<int32_t> padded;
@@ -445,15 +615,31 @@ index b361766..56a7b24 100644
 +            generated.reserve((size_t) opts.n_predict + 1);
 +            int32_t current = sample_next_token_mtl(
 +                logits_c, logits_u, generated, sp, rng, model.hparams.stop_speech_token);
-+            fprintf(stderr, "Engine: T3 first token=%d n_past=%d\n", (int) current, n_past);
++            fprintf(stderr, "Engine: T3 first token=%d n_past=%d speech_position=1\n",
++                    (int) current, n_past);
 +            generated.push_back(current);
++            std::string stop_reason = "max_tokens";
 +            for (int i = 0; i < opts.n_predict; ++i) {
 +                if (cancel_flag.load(std::memory_order_relaxed)) {
++                    fprintf(stderr,
++                            "Engine: T3 stop reason=cancellation prompt=%d n_past=%d speech_position=%zu generated=%zu\n",
++                            prompt_len, n_past, generated.size(), generated.size());
 +                    throw std::runtime_error("Engine: synthesis cancelled during T3 decode");
 +                }
-+                if (current == model.hparams.stop_speech_token) break;
-+                if (n_past + 1 > model.hparams.n_ctx) break;
-+                if (!eval_step_mtl(model, allocr, n_threads, n_past, current, logits_c, logits_u)) {
++                if (current == model.hparams.stop_speech_token) {
++                    stop_reason = "eos";
++                    break;
++                }
++                if (n_past + 1 > model.hparams.n_ctx) {
++                    stop_reason = "context_limit";
++                    break;
++                }
++                const int speech_position = static_cast<int>(generated.size());
++                if (!eval_step_mtl(model, allocr, n_threads, n_past, speech_position,
++                                   current, logits_c, logits_u)) {
++                    fprintf(stderr,
++                            "Engine: T3 stop reason=step_error prompt=%d n_past=%d speech_position=%d generated=%zu\n",
++                            prompt_len, n_past, speech_position, generated.size());
 +                    throw std::runtime_error("Engine: T3 MTL step eval failed");
 +                }
 +                ++n_past;
@@ -463,9 +649,17 @@ index b361766..56a7b24 100644
 +                if (generated.size() >= 3 &&
 +                    generated[generated.size() - 1] == generated[generated.size() - 2] &&
 +                    generated[generated.size() - 2] == generated[generated.size() - 3]) {
++                    stop_reason = "repetition_guard";
 +                    break;
 +                }
 +            }
++            if (stop_reason == "max_tokens" && current == model.hparams.stop_speech_token) {
++                stop_reason = "eos";
++            }
++            fprintf(stderr,
++                    "Engine: T3 stop reason=%s prompt=%d n_past=%d speech_position=%zu generated=%zu final_token=%d\n",
++                    stop_reason.c_str(), prompt_len, n_past, generated.size(), generated.size(),
++                    (int) current);
 +            if (!generated.empty() && generated.back() == model.hparams.stop_speech_token) {
 +                generated.pop_back();
 +            }
@@ -474,38 +668,649 @@ index b361766..56a7b24 100644
  
          std::vector<float> logits;
          int prompt_len = 0;
-@@ -547,6 +602,8 @@ struct Engine::Impl {
-         const auto t3_t1 = std::chrono::steady_clock::now();
+@@ -542,19 +634,55 @@ struct Engine::Impl {
+         }
+         cancel_flag.store(false, std::memory_order_relaxed);
  
-         wait_for_preload(s3gen_preload_thread);
-+        fprintf(stderr, "Engine: T3 done tokens=%zu -- starting S3Gen\n",
-+                speech_tokens.size());
+-        const auto t3_t0 = std::chrono::steady_clock::now();
+-        std::vector<int32_t> speech_tokens = run_t3(text);
+-        const auto t3_t1 = std::chrono::steady_clock::now();
+-
+-        wait_for_preload(s3gen_preload_thread);
+-
+-        SynthesisResult partial;
+-        partial.t3_ms = std::chrono::duration<double, std::milli>(t3_t1 - t3_t0).count();
++        std::vector<std::string> segs;
++        if (opts.max_sentence_chars > 0) {
++            segs = split_text_for_tts(text, opts.max_sentence_chars);
++        }
++        if (segs.empty()) segs.push_back(text);
++        if (segs.size() > 1) {
++            fprintf(stderr, "Engine: auto-split: %zu segments (max-sentence-chars=%d)\n",
++                    segs.size(), opts.max_sentence_chars);
++        }
  
-         SynthesisResult partial;
-         partial.t3_ms = std::chrono::duration<double, std::milli>(t3_t1 - t3_t0).count();
-diff --git a/include/tts-cpp/chatterbox/engine.h b/include/tts-cpp/chatterbox/engine.h
-index 189740e..0013eff 100644
---- a/include/tts-cpp/chatterbox/engine.h
-+++ b/include/tts-cpp/chatterbox/engine.h
-@@ -99,6 +99,12 @@ struct EngineOptions {
-     float temperature    = 0.8f;
-     float repeat_penalty = 1.2f;
- 
-+    // MTL (t3_mtl) sampling.  Turbo ignores these.
-+    std::string language;
-+    float exaggeration   = 0.5f;
-+    float cfg_weight     = 0.5f;
-+    float min_p          = 0.05f;
++        SynthesisResult total;
++        total.sample_rate = 24000;
+         const bool use_streaming = on_chunk && opts.stream_chunk_tokens > 0;
+-        return use_streaming
+-            ? synthesize_streaming(speech_tokens, on_chunk, std::move(partial))
+-            : synthesize_batch(speech_tokens, std::move(partial));
++        int chunk_index = 0;
 +
-     // S3Gen side.  0 = library default (2-step meanflow).
-     int cfm_steps = 0;
++        for (size_t si = 0; si < segs.size(); ++si) {
++            if (cancel_flag.load(std::memory_order_relaxed)) {
++                throw std::runtime_error("Engine: synthesis cancelled");
++            }
++            const auto t3_t0 = std::chrono::steady_clock::now();
++            std::vector<int32_t> speech_tokens = run_t3(segs[si]);
++            const auto t3_t1 = std::chrono::steady_clock::now();
++            wait_for_preload(s3gen_preload_thread);
++            fprintf(stderr, "Engine: T3 done tokens=%zu segment=%zu/%zu -- starting S3Gen\n",
++                    speech_tokens.size(), si + 1, segs.size());
++
++            SynthesisResult partial;
++            partial.t3_ms = std::chrono::duration<double, std::milli>(t3_t1 - t3_t0).count();
++            const bool last_seg = (si + 1 == segs.size());
++
++            SynthesisResult part;
++            if (use_streaming) {
++                StreamCallback wrapped = [&](const float * pcm, std::size_t samples, int, bool last_in_seg) {
++                    on_chunk(pcm, samples, chunk_index++, last_seg && last_in_seg);
++                };
++                part = synthesize_streaming(speech_tokens, wrapped, std::move(partial));
++            } else {
++                part = synthesize_batch(speech_tokens, std::move(partial));
++                if (on_chunk) {
++                    on_chunk(part.pcm.data(), part.pcm.size(), chunk_index++, last_seg);
++                }
++            }
++            total.pcm.insert(total.pcm.end(), part.pcm.begin(), part.pcm.end());
++            total.t3_ms += part.t3_ms;
++            total.s3gen_ms += part.s3gen_ms;
++            total.t3_tokens += part.t3_tokens;
++        }
++        total.audio_samples = (int) total.pcm.size();
++        return total;
+     }
+ 
+     SynthesisResult synthesize(const std::string & text) {
+diff --git a/src/chatterbox_t3_internal.h b/src/chatterbox_t3_internal.h
+index ab68cd2..d3e1151 100644
+--- a/src/chatterbox_t3_internal.h
++++ b/src/chatterbox_t3_internal.h
+@@ -328,6 +328,13 @@ bool load_model_gguf_mtl(
+     int                 requested_ctx,
+     int                 n_gpu_layers);
+ 
++// llama-arch T3 + sibling *codec*.gguf (codec.lm.chatterbox.* keys).
++bool load_model_gguf_mtl_split(
++    const std::string & t3_path,
++    chatterbox_model &  model,
++    int                 requested_ctx,
++    int                 n_gpu_layers);
++
+ bool eval_prompt_mtl(
+     const chatterbox_model &     model,
+     ggml_gallocr_t               allocr,
+@@ -343,6 +350,7 @@ bool eval_step_mtl(
+     ggml_gallocr_t           allocr,
+     int                      n_threads,
+     int                      n_past,
++    int                      speech_position,
+     int32_t                  token,
+     std::vector<float> &     logits_cond_out,
+     std::vector<float> &     logits_uncond_out);
+diff --git a/src/chatterbox_tts.cpp b/src/chatterbox_tts.cpp
+index 746de95..756be3a 100644
+--- a/src/chatterbox_tts.cpp
++++ b/src/chatterbox_tts.cpp
+@@ -71,6 +71,34 @@ static void compute(ggml_backend_t backend, ggml_cgraph * gf) {
+     if (ggml_backend_is_cpu(backend)) ggml_backend_cpu_set_n_threads(backend, g_n_threads);
+     ggml_backend_graph_compute(backend, gf);
+ }
++
++// Host-side F16/F32 weight read. Vulkan ADD/MUL of F32 activations against
++// an F16 1-D bias reads 4 bytes per element and trips
++// ggml-backend.cpp:307 (nbytes is only 2 bytes/el).
++static void tensor_get_f32(const ggml_tensor * t, std::vector<float> & out) {
++    const size_t n = (size_t) ggml_nelements(t);
++    out.resize(n);
++    if (t->type == GGML_TYPE_F32) {
++        ggml_backend_tensor_get(t, out.data(), 0, ggml_nbytes(t));
++        return;
++    }
++    if (t->type == GGML_TYPE_F16) {
++        std::vector<ggml_fp16_t> tmp(n);
++        ggml_backend_tensor_get(t, tmp.data(), 0, ggml_nbytes(t));
++        for (size_t i = 0; i < n; ++i) out[i] = ggml_fp16_to_fp32(tmp[i]);
++        return;
++    }
++    throw std::runtime_error(std::string("tensor_get_f32: unsupported type ") +
++                             std::to_string((int) t->type) + " for " + ggml_get_name(t));
++}
++
++static void copy_f16_to_f32_tensor(ggml_tensor * dst, const ggml_tensor * src) {
++    const size_t n = (size_t) ggml_nelements(src);
++    std::vector<float> tmp(n);
++    const ggml_fp16_t * in = (const ggml_fp16_t *) ggml_get_data(src);
++    for (size_t i = 0; i < n; ++i) tmp[i] = ggml_fp16_to_fp32(in[i]);
++    ggml_backend_tensor_set(dst, tmp.data(), 0, tmp.size() * sizeof(float));
++}
+ struct scoped_timer {
+     const char * label;
+     double t0;
+@@ -221,6 +249,213 @@ static model_ctx * s3gen_model_cache_get(const std::string & path, int n_gpu_lay
+ 
+ static double s3gen_model_cache_last_load_ms() { return g_s3gen_cache_last_load_ms; }
+ 
++// BricksDisplay s3g.* short names -> chatterbox.cpp flow/cfm/hift names.
++static std::string s3g_official_name(const std::string & n) {
++    if (n.rfind("s3g.", 0) != 0) return n;
++    if (n == "s3g.flow.input_emb.w") return "flow/input_embedding";
++    if (n == "s3g.flow.spk_aff.w") return "flow/spk_embed_affine/w";
++    if (n == "s3g.flow.spk_aff.b") return "flow/spk_embed_affine/b";
++    if (n == "s3g.flow.proj.w") return "flow/encoder_proj/w";
++    if (n == "s3g.flow.proj.b") return "flow/encoder_proj/b";
++    if (n == "s3g.cond.prompt_feat") return "s3gen/builtin/prompt_feat";
++    if (n == "s3g.cond.embedding") return "s3gen/builtin/embedding";
++    if (n == "s3g.cfm.t.l1.w") return "cfm/time_mlp/linear_1/weight";
++    if (n == "s3g.cfm.t.l1.b") return "cfm/time_mlp/linear_1/bias";
++    if (n == "s3g.cfm.t.l2.w") return "cfm/time_mlp/linear_2/weight";
++    if (n == "s3g.cfm.t.l2.b") return "cfm/time_mlp/linear_2/bias";
++    if (n == "s3g.cfm.proj.w") return "cfm/final_proj/weight";
++    if (n == "s3g.cfm.proj.b") return "cfm/final_proj/bias";
++    if (n == "s3g.cfm.final.cv.w") return "cfm/final_block/block/0/weight";
++    if (n == "s3g.cfm.final.cv.b") return "cfm/final_block/block/0/bias";
++    if (n == "s3g.cfm.final.ln.w") return "cfm/final_block/block/2/weight";
++    if (n == "s3g.cfm.final.ln.b") return "cfm/final_block/block/2/bias";
++    if (n == "s3g.hift.conv_pre.w") return "hift/conv_pre/weight";
++    if (n == "s3g.hift.conv_pre.b") return "hift/conv_pre/bias";
++    if (n == "s3g.hift.conv_post.w") return "hift/conv_post/weight";
++    if (n == "s3g.hift.conv_post.b") return "hift/conv_post/bias";
++    if (n == "s3g.hift.src.lin.w") return "hift/m_source/l_linear/weight";
++    if (n == "s3g.hift.src.lin.b") return "hift/m_source/l_linear/bias";
++    if (n == "s3g.hift.f0.cls.w") return "hift/f0_predictor/classifier/weight";
++    if (n == "s3g.hift.f0.cls.b") return "hift/f0_predictor/classifier/bias";
++
++    auto suf = [&](const std::string & pfx, const char * mapped_pfx) -> std::string {
++        if (n.rfind(pfx, 0) != 0) return {};
++        return std::string(mapped_pfx) + n.substr(pfx.size());
++    };
++    if (auto s = suf("s3g.flow.enc.embed.lin.", "flow/encoder/embed/linear/"); !s.empty())
++        return s.back() == 'w' ? "flow/encoder/embed/linear/w" : "flow/encoder/embed/linear/b";
++    if (n == "s3g.flow.enc.embed.ln.w") return "flow/encoder/embed/norm/w";
++    if (n == "s3g.flow.enc.embed.ln.b") return "flow/encoder/embed/norm/b";
++    if (n == "s3g.flow.enc.up_embed.lin.w") return "flow/encoder/up_embed/linear/w";
++    if (n == "s3g.flow.enc.up_embed.lin.b") return "flow/encoder/up_embed/linear/b";
++    if (n == "s3g.flow.enc.up_embed.ln.w") return "flow/encoder/up_embed/norm/w";
++    if (n == "s3g.flow.enc.up_embed.ln.b") return "flow/encoder/up_embed/norm/b";
++    if (n == "s3g.flow.enc.after_norm.w") return "flow/encoder/after_norm/w";
++    if (n == "s3g.flow.enc.after_norm.b") return "flow/encoder/after_norm/b";
++    if (n == "s3g.flow.enc.pre.cv1.w") return "flow/encoder/pre_lookahead/conv1/w";
++    if (n == "s3g.flow.enc.pre.cv1.b") return "flow/encoder/pre_lookahead/conv1/b";
++    if (n == "s3g.flow.enc.pre.cv2.w") return "flow/encoder/pre_lookahead/conv2/w";
++    if (n == "s3g.flow.enc.pre.cv2.b") return "flow/encoder/pre_lookahead/conv2/b";
++    if (n == "s3g.flow.enc.up.w") return "flow/encoder/up_layer/conv/w";
++    if (n == "s3g.flow.enc.up.b") return "flow/encoder/up_layer/conv/b";
++
++    auto conformer = [](const std::string & rest) -> std::string {
++        if (rest == "norm_mha.w") return "norm_mha/w";
++        if (rest == "norm_mha.b") return "norm_mha/b";
++        if (rest == "norm_ff.w") return "norm_ff/w";
++        if (rest == "norm_ff.b") return "norm_ff/b";
++        if (rest == "attn.q.w") return "attn/q/w";
++        if (rest == "attn.q.b") return "attn/q/b";
++        if (rest == "attn.k.w") return "attn/k/w";
++        if (rest == "attn.k.b") return "attn/k/b";
++        if (rest == "attn.v.w") return "attn/v/w";
++        if (rest == "attn.v.b") return "attn/v/b";
++        if (rest == "attn.o.w") return "attn/o/w";
++        if (rest == "attn.o.b") return "attn/o/b";
++        if (rest == "attn.pos.w") return "attn/pos/w";
++        if (rest == "attn.pbu") return "attn/pos_bias_u";
++        if (rest == "attn.pbv") return "attn/pos_bias_v";
++        if (rest == "ff.w1.w") return "ff/w1/w";
++        if (rest == "ff.w1.b") return "ff/w1/b";
++        if (rest == "ff.w2.w") return "ff/w2/w";
++        if (rest == "ff.w2.b") return "ff/w2/b";
++        return {};
++    };
++    if (n.rfind("s3g.flow.enc.blk.", 0) == 0 || n.rfind("s3g.flow.enc.up_blk.", 0) == 0) {
++        const bool up = n.rfind("s3g.flow.enc.up_blk.", 0) == 0;
++        const size_t off = up ? std::string("s3g.flow.enc.up_blk.").size()
++                              : std::string("s3g.flow.enc.blk.").size();
++        const size_t dot = n.find('.', off);
++        if (dot != std::string::npos) {
++            const std::string idx = n.substr(off, dot - off);
++            const std::string rest = n.substr(dot + 1);
++            const std::string cr = conformer(rest);
++            if (!cr.empty()) {
++                return std::string("flow/encoder/") + (up ? "up_block" : "block") + idx + "/" + cr;
++            }
++        }
++    }
++
++    auto cfm_resnet = [](const std::string & rest) -> std::string {
++        if (rest == "b1.cv.w") return "block1/block/0/weight";
++        if (rest == "b1.cv.b") return "block1/block/0/bias";
++        if (rest == "b1.ln.w") return "block1/block/2/weight";
++        if (rest == "b1.ln.b") return "block1/block/2/bias";
++        if (rest == "b2.cv.w") return "block2/block/0/weight";
++        if (rest == "b2.cv.b") return "block2/block/0/bias";
++        if (rest == "b2.ln.w") return "block2/block/2/weight";
++        if (rest == "b2.ln.b") return "block2/block/2/bias";
++        if (rest == "mlp.w") return "mlp/1/weight";
++        if (rest == "mlp.b") return "mlp/1/bias";
++        if (rest == "res.w") return "res_conv/weight";
++        if (rest == "res.b") return "res_conv/bias";
++        return {};
++    };
++    auto cfm_tfm = [](const std::string & rest) -> std::string {
++        if (rest == "norm1.w") return "norm1/weight";
++        if (rest == "norm1.b") return "norm1/bias";
++        if (rest == "norm3.w") return "norm3/weight";
++        if (rest == "norm3.b") return "norm3/bias";
++        if (rest == "attn.q.w") return "attn1/to_q/weight";
++        if (rest == "attn.k.w") return "attn1/to_k/weight";
++        if (rest == "attn.v.w") return "attn1/to_v/weight";
++        if (rest == "attn.o.w") return "attn1/to_out/0/weight";
++        if (rest == "attn.o.b") return "attn1/to_out/0/bias";
++        if (rest == "ff.w1.w") return "ff/net/0/proj/weight";
++        if (rest == "ff.w1.b") return "ff/net/0/proj/bias";
++        if (rest == "ff.w2.w") return "ff/net/2/weight";
++        if (rest == "ff.w2.b") return "ff/net/2/bias";
++        return {};
++    };
++    auto map_cfm_block = [&](const std::string & prefix, const std::string & official_base) -> std::string {
++        if (n.rfind(prefix, 0) != 0) return {};
++        const std::string rest = n.substr(prefix.size());
++        if (rest.rfind("r.", 0) == 0) {
++            const std::string rr = cfm_resnet(rest.substr(2));
++            if (!rr.empty()) return official_base + "/0/" + rr;
++        }
++        if (rest.rfind("t.", 0) == 0) {
++            const size_t d = rest.find('.', 2);
++            if (d != std::string::npos) {
++                const std::string ti = rest.substr(2, d - 2);
++                const std::string tr = cfm_tfm(rest.substr(d + 1));
++                if (!tr.empty()) return official_base + "/1/" + ti + "/" + tr;
++            }
++        }
++        if (rest == "x.w") return official_base + "/2/weight";
++        if (rest == "x.b") return official_base + "/2/bias";
++        return {};
++    };
++    if (auto s = map_cfm_block("s3g.cfm.dn.0.", "cfm/down_blocks/0"); !s.empty()) return s;
++    if (auto s = map_cfm_block("s3g.cfm.up.0.", "cfm/up_blocks/0"); !s.empty()) return s;
++    if (n.rfind("s3g.cfm.md.", 0) == 0) {
++        const size_t d = n.find('.', std::string("s3g.cfm.md.").size());
++        if (d != std::string::npos) {
++            const std::string mi = n.substr(std::string("s3g.cfm.md.").size(),
++                                            d - std::string("s3g.cfm.md.").size());
++            if (auto s = map_cfm_block(n.substr(0, d + 1), "cfm/mid_blocks/" + mi); !s.empty()) return s;
++        }
++    }
++
++    if (n.rfind("s3g.hift.up.", 0) == 0) {
++        const size_t d = n.find('.', std::string("s3g.hift.up.").size());
++        if (d != std::string::npos) {
++            const std::string i = n.substr(std::string("s3g.hift.up.").size(),
++                                           d - std::string("s3g.hift.up.").size());
++            if (n.back() == 'w') return "hift/ups/" + i + "/weight";
++            if (n.back() == 'b') return "hift/ups/" + i + "/bias";
++        }
++    }
++    if (n.rfind("s3g.hift.src_dn.", 0) == 0) {
++        const size_t d = n.find('.', std::string("s3g.hift.src_dn.").size());
++        if (d != std::string::npos) {
++            const std::string i = n.substr(std::string("s3g.hift.src_dn.").size(),
++                                           d - std::string("s3g.hift.src_dn.").size());
++            if (n.back() == 'w') return "hift/source_downs/" + i + "/weight";
++            if (n.back() == 'b') return "hift/source_downs/" + i + "/bias";
++        }
++    }
++    if (n.rfind("s3g.hift.f0.cn.", 0) == 0) {
++        const size_t d = n.find('.', std::string("s3g.hift.f0.cn.").size());
++        if (d != std::string::npos) {
++            const int i = std::atoi(n.c_str() + std::string("s3g.hift.f0.cn.").size());
++            const std::string idx = std::to_string(i * 2);
++            if (n.back() == 'w') return "hift/f0_predictor/condnet/" + idx + "/weight";
++            if (n.back() == 'b') return "hift/f0_predictor/condnet/" + idx + "/bias";
++        }
++    }
++    // resblocks: s3g.hift.rb.N.cv1.M.w / a1.M
++    auto map_rb = [](const std::string & n, const char * kind, const char * official) -> std::string {
++        const std::string pfx = std::string("s3g.hift.") + kind + ".";
++        if (n.rfind(pfx, 0) != 0) return {};
++        const size_t d = n.find('.', pfx.size());
++        if (d == std::string::npos) return {};
++        const std::string bi = n.substr(pfx.size(), d - pfx.size());
++        const std::string rest = n.substr(d + 1);
++        const std::string base = std::string(official) + "/" + bi;
++        if (rest.rfind("a1.", 0) == 0) return base + "/activations1/" + rest.substr(3) + "/alpha";
++        if (rest.rfind("a2.", 0) == 0) return base + "/activations2/" + rest.substr(3) + "/alpha";
++        if (rest.rfind("cv1.", 0) == 0) {
++            const size_t d2 = rest.find('.', 4);
++            if (d2 == std::string::npos) return {};
++            const std::string j = rest.substr(4, d2 - 4);
++            if (rest.back() == 'w') return base + "/convs1/" + j + "/weight";
++            if (rest.back() == 'b') return base + "/convs1/" + j + "/bias";
++        }
++        if (rest.rfind("cv2.", 0) == 0) {
++            const size_t d2 = rest.find('.', 4);
++            if (d2 == std::string::npos) return {};
++            const std::string j = rest.substr(4, d2 - 4);
++            if (rest.back() == 'w') return base + "/convs2/" + j + "/weight";
++            if (rest.back() == 'b') return base + "/convs2/" + j + "/bias";
++        }
++        return {};
++    };
++    if (auto s = map_rb(n, "rb", "hift/resblocks"); !s.empty()) return s;
++    if (auto s = map_rb(n, "src_rb", "hift/source_resblocks"); !s.empty()) return s;
++    return n;
++}
++
+ static model_ctx load_s3gen_gguf(const std::string & path, int n_gpu_layers, bool verbose) {
+     model_ctx m;
+     ggml_context * tmp_ctx = nullptr;
+@@ -229,28 +464,73 @@ static model_ctx load_s3gen_gguf(const std::string & path, int n_gpu_layers, boo
+     if (!g) throw std::runtime_error("gguf_init_from_file failed: " + path);
+     m.backend = s3gen_init_backend(n_gpu_layers, verbose);
+     int64_t n_tensors = gguf_get_n_tensors(g);
+-    ggml_init_params p = { ggml_tensor_overhead() * (size_t)n_tensors, nullptr, true };
++    ggml_init_params p = { ggml_tensor_overhead() * (size_t)(n_tensors + 4), nullptr, true };
+     m.ctx_w = ggml_init(p);
+     for (int64_t i = 0; i < n_tensors; ++i) {
+         const char * name = gguf_get_tensor_name(g, i);
+         ggml_tensor * src = ggml_get_tensor(tmp_ctx, name);
+-        ggml_tensor * dst = ggml_dup_tensor(m.ctx_w, src);
++        // 1-D F16 (bias / LN / Snake alpha) must be F32: ggml_add/mul
++        // with F32 activations does not cast, and Vulkan then reads
++        // 4 bytes from a 2-byte element (backend.cpp:307).
++        ggml_tensor * dst = (src->type == GGML_TYPE_F16 && ggml_n_dims(src) == 1)
++            ? ggml_new_tensor_1d(m.ctx_w, GGML_TYPE_F32, src->ne[0])
++            : ggml_dup_tensor(m.ctx_w, src);
+         ggml_set_name(dst, name);
+         m.tensors[name] = dst;
++        const std::string mapped = s3g_official_name(name);
++        if (mapped != name) m.tensors[mapped] = dst;
++    }
++    if (m.tensors.find("s3gen/builtin/prompt_token") == m.tensors.end()) {
++        int64_t id = gguf_find_key(g, "chatterbox_s3g.cond.prompt_token");
++        if (id < 0) id = gguf_find_key(g, "codec.lm.chatterbox.builtin.cond_prompt_speech_tokens");
++        if (id >= 0) {
++            const size_t n = gguf_get_arr_n(g, id);
++            ggml_tensor * t = ggml_new_tensor_1d(m.ctx_w, GGML_TYPE_I32, (int64_t) n);
++            ggml_set_name(t, "s3gen/builtin/prompt_token");
++            m.tensors["s3gen/builtin/prompt_token"] = t;
++        }
+     }
++
+     m.buffer_w = ggml_backend_alloc_ctx_tensors(m.ctx_w, m.backend);
+     for (ggml_tensor * cur = ggml_get_first_tensor(m.ctx_w); cur; cur = ggml_get_next_tensor(m.ctx_w, cur)) {
+         ggml_tensor * src = ggml_get_tensor(tmp_ctx, ggml_get_name(cur));
+-        ggml_backend_tensor_set(cur, ggml_get_data(src), 0, ggml_nbytes(src));
++        if (!src) continue;
++        if (cur->type == GGML_TYPE_F32 && src->type == GGML_TYPE_F16) {
++            copy_f16_to_f32_tensor(cur, src);
++        } else {
++            ggml_backend_tensor_set(cur, ggml_get_data(src), 0, ggml_nbytes(src));
++        }
++    }
++    {
++        auto it = m.tensors.find("s3gen/builtin/prompt_token");
++        if (it != m.tensors.end()) {
++            int64_t id = gguf_find_key(g, "chatterbox_s3g.cond.prompt_token");
++            if (id < 0) id = gguf_find_key(g, "codec.lm.chatterbox.builtin.cond_prompt_speech_tokens");
++            if (id >= 0) {
++                const size_t n = gguf_get_arr_n(g, id);
++                const uint32_t * d = (const uint32_t *) gguf_get_arr_data(g, id);
++                std::vector<int32_t> tmp(n);
++                if (d) {
++                    for (size_t i = 0; i < n; ++i) tmp[i] = (int32_t) d[i];
++                }
++                ggml_backend_tensor_set(it->second, tmp.data(), 0, tmp.size() * sizeof(int32_t));
++            }
++        }
+     }
+ 
+     {
+         int64_t k_mf = gguf_find_key(g, "s3gen.meanflow");
++        if (k_mf < 0) k_mf = gguf_find_key(g, "chatterbox_s3g.meanflow");
+         int64_t k_ts = gguf_find_key(g, "s3gen.n_timesteps");
+         int64_t k_cf = gguf_find_key(g, "s3gen.cfg_rate");
+         m.meanflow    = (k_mf >= 0) ? gguf_get_val_bool(g, k_mf) : true;
+-        m.n_timesteps = (k_ts >= 0) ? (int) gguf_get_val_u32(g, k_ts) : (m.meanflow ? 2 : 10);
+-        m.cfg_rate    = (k_cf >= 0) ? gguf_get_val_f32(g, k_cf) : (m.meanflow ? 0.0f : 0.7f);
++        if (k_mf >= 0 && !m.meanflow && k_ts < 0) {
++            m.n_timesteps = 10;
++            m.cfg_rate = 0.7f;
++        } else {
++            m.n_timesteps = (k_ts >= 0) ? (int) gguf_get_val_u32(g, k_ts) : (m.meanflow ? 2 : 10);
++            m.cfg_rate    = (k_cf >= 0) ? gguf_get_val_f32(g, k_cf) : (m.meanflow ? 0.0f : 0.7f);
++        }
+         if (k_mf < 0 && k_ts < 0 && k_cf < 0) {
+             // Pre-__SECTION_SIGN__3.19 GGUFs lack the variant keys.  Defaults match the
+             // historical Turbo behaviour, so legacy chatterbox-s3gen.gguf
+@@ -317,6 +597,9 @@ static ggml_tensor * conv1d_f32_b(ggml_context * ctx, ggml_tensor * kernel, ggml
+ 
+ static ggml_tensor * conv_transpose_1d_f32(ggml_context * ctx, ggml_tensor * kernel,
+                                            ggml_tensor * input, int stride, int padding) {
++    // Vulkan conv_transpose_1d is F32-only (ggml-vulkan.cpp:11706).
++    if (kernel->type != GGML_TYPE_F32) kernel = ggml_cast(ctx, kernel, GGML_TYPE_F32);
++    if (input->type != GGML_TYPE_F32)  input  = ggml_cast(ctx, input,  GGML_TYPE_F32);
+     ggml_tensor * out = ggml_conv_transpose_1d(ctx, kernel, input, stride, 0, 1);
+     if (padding == 0) return out;
+     int64_t L_new = out->ne[0] - 2 * padding;
+@@ -1237,12 +1520,15 @@ static void cfm_estimator_forward_b2(
+     compute(m.backend, gf);
+ 
+     ggml_tensor * out_t = ggml_graph_get_tensor(gf, "out");
+-    // out_t ne=[T, MEL, B=2], contiguous.  Read cond/uncond halves separately.
+-    const size_t half_bytes = (size_t) T * MEL * sizeof(float);
+-    out_c.resize(T * MEL);
+-    out_u.resize(T * MEL);
+-    ggml_backend_tensor_get(out_t, out_c.data(), 0,           half_bytes);
+-    ggml_backend_tensor_get(out_t, out_u.data(), half_bytes,  half_bytes);
++    const size_t half = (size_t) T * MEL;
++    std::vector<float> both((size_t) ggml_nelements(out_t));
++    const size_t want = both.size() * sizeof(float);
++    if (want > ggml_nbytes(out_t) || both.size() < 2 * half) {
++        throw std::runtime_error("cfm b2 out size mismatch");
++    }
++    ggml_backend_tensor_get(out_t, both.data(), 0, want);
++    out_c.assign(both.begin(), both.begin() + (std::ptrdiff_t) half);
++    out_u.assign(both.begin() + (std::ptrdiff_t) half, both.begin() + (std::ptrdiff_t) (2 * half));
+ }
+ 
+ // ============================================================================
+@@ -1313,8 +1599,8 @@ static ggml_tensor * snake(ggml_context * ctx, ggml_tensor * x,
+ 
+ static std::vector<float> invert_alpha_cpu(const model_ctx & m, const std::string & name) {
+     ggml_tensor * t = find_tensor(m, name);
+-    std::vector<float> a(ggml_nelements(t));
+-    ggml_backend_tensor_get(t, a.data(), 0, ggml_nbytes(t));
++    std::vector<float> a;
++    tensor_get_f32(t, a);
+     std::vector<float> inv(a.size());
+     for (size_t i = 0; i < a.size(); ++i) inv[i] = 1.0f / (a[i] + 1e-9f);
+     return inv;
+@@ -1712,11 +1998,13 @@ int s3gen_synthesize_to_wav(
+     } else {
+         if (!ref_dir.empty()) vlog("Loading ref dict from %s\n", ref_dir.c_str());
+ 
++        // Anything not given by override (or --ref-dir npy) stays empty here
++        // and is filled from the built-in voice in the GGUF below.
+         if (!opts.prompt_token_override.empty()) {
+             pt_data = opts.prompt_token_override;
+             vlog("  prompt_token: using C++ override (S3TokenizerV2, %zu tokens)\n",
+                     pt_data.size());
+-        } else {
++        } else if (!ref_dir.empty()) {
+             npy_array pt_npy = npy_load(ref_dir + "/prompt_token.npy");
+             pt_data.assign((const int32_t*)pt_npy.data.data(),
+                            (const int32_t*)pt_npy.data.data() + pt_npy.n_elements());
+@@ -1724,8 +2012,8 @@ int s3gen_synthesize_to_wav(
+ 
+         if (!opts.embedding_override.empty()) {
+             emb_data = opts.embedding_override;
+-            vlog("  embedding: using C++ override (CAMPPlus, %zu dims)\n", emb_data.size());
+-        } else {
++            vlog("  embedding: using C++ override (%zu dims)\n", emb_data.size());
++        } else if (!ref_dir.empty()) {
+             npy_array emb_npy = npy_load(ref_dir + "/embedding.npy");
+             emb_data.assign((const float*)emb_npy.data.data(),
+                             (const float*)emb_npy.data.data() + emb_npy.n_elements());
+@@ -1735,7 +2023,7 @@ int s3gen_synthesize_to_wav(
+             pf_data = opts.prompt_feat_override;
+             pf_rows = opts.prompt_feat_rows_override;
+             vlog("  prompt_feat: using C++ override (%d mel frames)\n", pf_rows);
+-        } else {
++        } else if (!ref_dir.empty()) {
+             npy_array pf_npy = npy_load(ref_dir + "/prompt_feat.npy");
+             pf_data.assign((const float*)pf_npy.data.data(),
+                            (const float*)pf_npy.data.data() + pf_npy.n_elements());
+@@ -1782,26 +2070,26 @@ int s3gen_synthesize_to_wav(
+     // on the main backend directly on every platform.
+     const model_ctx & m_hift = m;
+ 
+-    // If neither --ref-dir nor any C++ override populated the three
+-    // conditioning tensors above, pull the built-in voice from the GGUF.
+-    //
+-    // NB: `ref_dir.empty()` alone is NOT a valid check here __EM_DASH__ --reference-audio
+-    // by itself (no --ref-dir) legitimately fills all three via the C++
+-    // override path, and we must not overwrite those.
+-    if (pt_data.empty() && emb_data.empty() && pf_data.empty()) {
+-        ggml_tensor * t_emb = find_tensor(m, "s3gen/builtin/embedding");
+-        ggml_tensor * t_pt  = find_tensor(m, "s3gen/builtin/prompt_token");
+-        ggml_tensor * t_pf  = find_tensor(m, "s3gen/builtin/prompt_feat");
++    // Fill each conditioning piece the --ref-dir / C++ override path did not
++    // provide from the built-in voice in the GGUF.  Per-tensor (not all-or-
++    // nothing): the BricksDisplay codec carries no CAMPPlus encoder, so the
++    // 192-d s3gen embedding is always the built-in one even when cloning.
++    ggml_tensor * t_emb = find_tensor(m, "s3gen/builtin/embedding");
++    ggml_tensor * t_pt  = find_tensor(m, "s3gen/builtin/prompt_token");
++    ggml_tensor * t_pf  = find_tensor(m, "s3gen/builtin/prompt_feat");
++    if (emb_data.empty()) {
+         emb_data.resize(ggml_nelements(t_emb));
++        ggml_backend_tensor_get(t_emb, emb_data.data(), 0, ggml_nbytes(t_emb));
++    }
++    if (pt_data.empty()) {
+         pt_data.resize(ggml_nelements(t_pt));
++        ggml_backend_tensor_get(t_pt, pt_data.data(), 0, ggml_nbytes(t_pt));
++    }
++    if (pf_data.empty()) {
+         pf_data.resize(ggml_nelements(t_pf));
+-        ggml_backend_tensor_get(t_emb, emb_data.data(), 0, ggml_nbytes(t_emb));
+-        ggml_backend_tensor_get(t_pt,  pt_data.data(),  0, ggml_nbytes(t_pt));
+-        ggml_backend_tensor_get(t_pf,  pf_data.data(),  0, ggml_nbytes(t_pf));
++        ggml_backend_tensor_get(t_pf, pf_data.data(), 0, ggml_nbytes(t_pf));
+         // prompt_feat is stored ggml ne=[80, 500] = numpy (500, 80).
+         pf_rows = (int)t_pf->ne[1];
+-        vlog("  built-in voice: embedding=(%zu,) prompt_token=(%zu,) prompt_feat=(%d, %lld)\n",
+-                emb_data.size(), pt_data.size(), pf_rows, (long long)t_pf->ne[0]);
+     }
+     double pipeline_t0 = now_ms();
+ 
+@@ -1818,10 +2106,12 @@ int s3gen_synthesize_to_wav(
+     std::memcpy(flow_tokens.data() + n_prompt, padded.data(), padded.size() * sizeof(int32_t));
+ 
+     // 2) input_embedding lookup + multiply by mask
++    fprintf(stderr, "s3gen: tokens=%zu meanflow=%d model_steps=%d\n",
++            speech_tokens.size(), (int) m.meanflow, m.n_timesteps);
+     vlog("Running input_embedding...\n");
+     ggml_tensor * emb_w = find_tensor(m, "flow/input_embedding");
+-    std::vector<float> emb_w_data(ggml_nelements(emb_w));
+-    ggml_backend_tensor_get(emb_w, emb_w_data.data(), 0, ggml_nbytes(emb_w));
++    std::vector<float> emb_w_data;
++    tensor_get_f32(emb_w, emb_w_data);
+     vlog("  emb_w ne=[%lld, %lld]\n", (long long)emb_w->ne[0], (long long)emb_w->ne[1]);
+     int vocab_size = (int)emb_w->ne[1];
+     std::vector<float> input_embed(n_total * D);
+@@ -1846,6 +2136,7 @@ int s3gen_synthesize_to_wav(
+     std::vector<float> mu_T = run_encoder(m, input_embed, n_total, D);
+     vlog("  [encoder] %.1f ms\n", now_ms() - encoder_t0);
+     int T_mu = 2 * n_total;
++    fprintf(stderr, "s3gen: encoder ok T_mu=%d\n", T_mu);
+     vlog("  encoder output: (%d, 80) = %zu floats\n", T_mu, mu_T.size());
+ 
+     // Streaming: trim the last `pre_lookahead_len * token_mel_ratio = 6`
+@@ -1919,9 +2210,9 @@ int s3gen_synthesize_to_wav(
+ 
+     ggml_tensor * saw = find_tensor(m, "flow/spk_embed_affine/w");  // (80, 192) numpy -> ne=[192, 80]
+     ggml_tensor * sab = find_tensor(m, "flow/spk_embed_affine/b");  // (80,)
+-    std::vector<float> saw_data(ggml_nelements(saw)), sab_data(ggml_nelements(sab));
+-    ggml_backend_tensor_get(saw, saw_data.data(), 0, ggml_nbytes(saw));
+-    ggml_backend_tensor_get(sab, sab_data.data(), 0, ggml_nbytes(sab));
++    std::vector<float> saw_data, sab_data;
++    tensor_get_f32(saw, saw_data);
++    tensor_get_f32(sab, sab_data);
+     std::vector<float> spks(MEL, 0.0f);
+     for (int o = 0; o < MEL; ++o) {
+         float acc = sab_data[o];
+@@ -1992,6 +2283,7 @@ int s3gen_synthesize_to_wav(
+     //                        region is implicitly conditioned through `cond`
+     //                        instead of via an extra noise tensor.
+     const bool meanflow = m.meanflow;
++    fprintf(stderr, "s3gen: CFM start meanflow=%d T_mu=%d\n", (int) meanflow, T_mu);
+     vlog("Initializing CFM noise (seed=%d, %s)...\n", seed,
+             meanflow ? "meanflow" : "standard CFM + CFG");
+     std::vector<float> z(T_mu * MEL);
+@@ -2040,8 +2332,16 @@ int s3gen_synthesize_to_wav(
+     //                   estimator calls per step (cond + uncond with zeroed
+     //                   mu/spks/cond) combined via cfg_rate.
+     std::vector<float> t_span;
+-    const int cfm_steps = opts.cfm_steps > 0 ? opts.cfm_steps :
+-                          (meanflow ? 2 : m.n_timesteps);
++    int cfm_steps = opts.cfm_steps > 0 ? opts.cfm_steps :
++                    (meanflow ? 2 : m.n_timesteps);
++    // Old Turbo clients may send cfm_steps=2. MTL meanflow=false
++    // must stay on the 10-step solver or HiFT emits a 6 kHz whistle.
++    if (!meanflow && cfm_steps > 0 && cfm_steps < 5) {
++        fprintf(stderr, "s3gen: ignoring cfm_steps=%d on non-meanflow GGUF; using %d\n",
++                cfm_steps, m.n_timesteps);
++        cfm_steps = m.n_timesteps;
++    }
++    fprintf(stderr, "s3gen: cfm_steps=%d\n", cfm_steps);
+     t_span.reserve(cfm_steps + 1);
+     for (int i = 0; i <= cfm_steps; ++i) {
+         float tau = (float)i / (float)cfm_steps;
+@@ -2208,6 +2508,7 @@ int s3gen_synthesize_to_wav(
+ 
+     // 9) HiFT
+     double hift_t0 = now_ms();
++    fprintf(stderr, "s3gen: HiFT start T_mel=%d\n", T_mel);
+     vlog("Running f0_predictor...\n");
+     double t0 = now_ms();
+     auto f0 = run_f0_predictor(m_hift, mel, T_mel);
+@@ -2220,12 +2521,16 @@ int s3gen_synthesize_to_wav(
+ 
+     vlog("Running SineGen...\n");
+     t0 = now_ms();
+-    std::vector<float> l_linear_w(9);
+     ggml_tensor * llw = find_tensor(m_hift, "hift/m_source/l_linear/weight");
+     ggml_tensor * llb = find_tensor(m_hift, "hift/m_source/l_linear/bias");
+-    ggml_backend_tensor_get(llw, l_linear_w.data(), 0, 9 * sizeof(float));
+-    float l_linear_b;
+-    ggml_backend_tensor_get(llb, &l_linear_b, 0, sizeof(float));
++    std::vector<float> l_linear_w, l_linear_b_v;
++    tensor_get_f32(llw, l_linear_w);
++    tensor_get_f32(llb, l_linear_b_v);
++    if (l_linear_w.size() < 9 || l_linear_b_v.empty()) {
++        throw std::runtime_error("hift l_linear: expected 9+1 F32 values");
++    }
++    l_linear_w.resize(9);
++    const float l_linear_b = l_linear_b_v[0];
+     auto src = sinegen_source(f0_up, sr, 8, 0.1f, 0.003f, 10.0f, l_linear_w, l_linear_b, (uint32_t)(seed + 1));
+     vlog("  [sinegen] %.1f ms\n", now_ms() - t0);
  
 diff --git a/src/gguf_split_mtl.cpp b/src/gguf_split_mtl.cpp
 new file mode 100644
-index 0000000..d3d9c96
+index 0000000..e9bfd70
 --- /dev/null
 +++ b/src/gguf_split_mtl.cpp
-@@ -0,0 +1,554 @@
+@@ -0,0 +1,568 @@
 +// Load BricksDisplay split MTL GGUFs (llama T3 backbone + chatterbox_s3g codec)
 +// under chatterbox.cpp tensor / KV names. Used by Engine / tts-server.
 +
@@ -515,6 +1320,9 @@ index 0000000..d3d9c96
 +#include "ggml-alloc.h"
 +#include "ggml-backend.h"
 +#include "ggml-cpu.h"
++#ifdef GGML_USE_VULKAN
++#include "ggml-vulkan.h"
++#endif
 +#include "gguf.h"
 +
 +#include <algorithm>
@@ -538,6 +1346,13 @@ index 0000000..d3d9c96
 +void t3_stack_register(ggml_backend_buffer_t buf, ggml_context * ctx);
 +
 +namespace {
++
++bool use_optimized_mtl_backend(ggml_backend_t backend) {
++#ifdef GGML_USE_VULKAN
++    if (ggml_backend_is_vk(backend)) return false;
++#endif
++    return !ggml_backend_is_cpu(backend);
++}
 +
 +std::vector<float> rope_freq_factors(int head_dim, float theta,
 +                                     float factor, float low_freq,
@@ -985,7 +1800,7 @@ index 0000000..d3d9c96
 +        model.buffer_kv = ggml_backend_alloc_ctx_tensors(model.ctx_kv, model.backend);
 +        if (!model.buffer_kv) throw std::runtime_error("split-mtl KV alloc failed");
 +
-+        if (!ggml_backend_is_cpu(model.backend)) {
++        if (use_optimized_mtl_backend(model.backend)) {
 +            const int n_embd = hp.n_embd;
 +            ggml_init_params sp = { ggml_tensor_overhead() * (size_t) (2 * hp.n_layer + 4), nullptr, true };
 +            model.ctx_stack = ggml_init(sp);
@@ -1022,6 +1837,10 @@ index 0000000..d3d9c96
 +                copy_into(l.wk, l.wqkv);
 +                copy_into(l.wv, l.wqkv);
 +            }
++        } else if (!ggml_backend_is_cpu(model.backend)) {
++            fprintf(stderr,
++                    "load_model_gguf_mtl_split: Vulkan correctness path "
++                    "(sequential CFG, separate Q/K/V, softmax attention)\n");
 +        }
 +
 +        auto dump_t = [](const char * tag, const ggml_tensor * t) {
@@ -1060,1334 +1879,8 @@ index 0000000..d3d9c96
 +}
 +
 +} // namespace tts_cpp::chatterbox::detail
-diff --git a/src/chatterbox_engine.cpp b/src/chatterbox_engine.cpp
---- a/src/chatterbox_engine.cpp
-+++ b/src/chatterbox_engine.cpp
-@@ -228,18 +228,15 @@
--            const bool ve_ok = voice_encoder_load(opts.t3_gguf_path, vew) ||
--                               (!opts.s3gen_gguf_path.empty() &&
--                                voice_encoder_load(opts.s3gen_gguf_path, vew));
--            if (ve_ok) {
--                std::vector<float> wav;
--                int sr = 0;
--                if (!wav_load(opts.reference_audio, wav, sr)) {
--                    throw std::runtime_error("Engine: failed to load reference_audio");
--                }
--                normalise_lufs(wav, sr, -27.0);
--                if (sr != 16000) wav = resample_sinc(wav, sr, 16000);
--                if (!voice_encoder_embed(wav, vew, model.backend, se_data)) {
--                    fprintf(stderr, "Engine: VoiceEncoder forward failed; will try CAMPPlus / builtin\n");
--                } else {
--                    fprintf(stderr, "Engine: speaker_emb from VoiceEncoder (%zu,)\n", se_data.size());
--                    have_se = true;
--                }
-+            if (!voice_encoder_load(opts.s3gen_gguf_path, vew)) {
-+                throw std::runtime_error("Engine: VoiceEncoder weights unavailable");
-             }
-+            std::vector<float> wav;
-+            int sr = 0;
-+            if (!wav_load(opts.reference_audio, wav, sr)) {
-+                throw std::runtime_error("Engine: failed to load reference_audio");
-+            }
-+            normalise_lufs(wav, sr, -27.0);
-+            if (sr != 16000) wav = resample_sinc(wav, sr, 16000);
-+            if (!voice_encoder_embed(wav, vew, model.backend, se_data)) {
-+                throw std::runtime_error("Engine: VoiceEncoder forward failed");
-+            }
-+            fprintf(stderr, "Engine: speaker_emb from VoiceEncoder (%zu,)\n", se_data.size());
-+            have_se = true;
-@@ -251,8 +248,13 @@
--            if (compute_speech_tokens_native(
-+            if (!compute_speech_tokens_native(
-                     opts.reference_audio, opts.s3gen_gguf_path,
-                     /*max_cond_tokens=*/ model.hparams.cond_prompt_len,
-                     prompt_token_from_ref, cond_tokens,
-                     n_threads, /*backend=*/ model.backend, opts.verbose)) {
--                ct_data = std::move(cond_tokens);
--                have_ct = true;
-+                throw std::runtime_error("Engine: S3TokenizerV2 reference tokens failed");
-+            }
-+            ct_data = std::move(cond_tokens);
-+            have_ct = true;
-+            if (prompt_token_from_ref.empty() || ct_data.empty()) {
-+                throw std::runtime_error("Engine: S3TokenizerV2 returned empty conditioning");
-             }
-+            fprintf(stderr, "Engine: prompt_token from S3TokenizerV2 (%zu,), cond_prompt_speech_tokens (%zu,)\n", prompt_token_from_ref.size(), ct_data.size());
-@@ -260,0 +263,3 @@
-+        if (!have_se) throw std::runtime_error("Engine: speaker_emb unavailable");
-+        if (!have_ct) throw std::runtime_error("Engine: cond_prompt_speech_tokens unavailable");
-+
-@@ -303,8 +309,8 @@
-                 if (!compute_prompt_feat_native(
-                         opts.reference_audio, opts.s3gen_gguf_path,
-                         s3gen_prompt_feat, rows, opts.verbose)) {
--                    fprintf(stderr,
--                            "Engine: prompt_feat from reference_audio failed; "
--                            "S3Gen will use built-in prompt_feat\n");
-+                    throw std::runtime_error("Engine: prompt_feat from reference_audio failed");
-                 }
-+                if (rows < 1 || s3gen_prompt_feat.empty()) throw std::runtime_error("Engine: prompt_feat is empty");
-                 s3gen_prompt_feat_rows = rows;
-+                fprintf(stderr, "Engine: prompt_feat from reference_audio (%d,80)\n", rows);
-@@ -313,15 +319,9 @@
-                 if (!compute_embedding_native(
-                         opts.reference_audio, opts.s3gen_gguf_path,
-                         s3gen_embedding,
-                         /*backend=*/ model.backend, opts.verbose)) {
--                    // CAMPPlus tensors predate Phase 2d-a in this GGUF.
--                    // `compute_embedding_native` already logged the concrete
--                    // error to stderr; callers that want a hard failure can
--                    // re-run after re-exporting the S3Gen GGUF with a
--                    // current scripts/convert-s3gen-to-gguf.py.
--                    fprintf(stderr,
--                            "Engine: voice-cloning embedding unavailable; "
--                            "falling back to built-in speaker embedding for %s\n",
--                            opts.reference_audio.c_str());
-+                    throw std::runtime_error("Engine: CAMPPlus embedding failed");
-                 }
-+                if (s3gen_embedding.empty()) throw std::runtime_error("Engine: CAMPPlus embedding is empty");
-+                fprintf(stderr, "Engine: embedding from CAMPPlus (%zu,)\n", s3gen_embedding.size());
-             }
-@@ -330,0 +330,3 @@
-+            if (s3gen_prompt_token.empty()) throw std::runtime_error("Engine: prompt_token unavailable");
-+            if (s3gen_prompt_feat.empty()) throw std::runtime_error("Engine: prompt_feat unavailable");
-+            if (s3gen_embedding.empty()) throw std::runtime_error("Engine: embedding unavailable");
 diff --git a/src/main.cpp b/src/main.cpp
-index aa87cc7..70844ef 100644
---- a/src/main.cpp
-+++ b/src/main.cpp
-@@ -362,10 +362,19 @@ bool load_model_gguf(const std::string & path, chatterbox_model & model, int req
-                 gguf_free(peek_ctx);
-                 return false;
-             }
-+            const int64_t ak = gguf_find_key(peek_ctx, "general.architecture");
-+            std::string arch;
-+            if (ak >= 0 && gguf_get_kv_type(peek_ctx, ak) == GGUF_TYPE_STRING) {
-+                const char * a = gguf_get_val_str(peek_ctx, ak);
-+                if (a) arch = a;
-+            }
-             gguf_free(peek_ctx);
-             if (variant == "t3_mtl") {
-                 return load_model_gguf_mtl(path, model, requested_ctx, n_gpu_layers);
-             }
-+            if (arch == "llama") {
-+                return load_model_gguf_mtl_split(path, model, requested_ctx, n_gpu_layers);
-+            }
-         }
-     }
-     ggml_context * tmp_ctx = nullptr;
-diff --git a/src/chatterbox_t3_internal.h b/src/chatterbox_t3_internal.h
-index ab68cd2..e5426dd 100644
---- a/src/chatterbox_t3_internal.h
-+++ b/src/chatterbox_t3_internal.h
-@@ -328,6 +328,13 @@ bool load_model_gguf_mtl(
-     int                 requested_ctx,
-     int                 n_gpu_layers);
- 
-+// llama-arch T3 + sibling *codec*.gguf (codec.lm.chatterbox.* keys).
-+bool load_model_gguf_mtl_split(
-+    const std::string & t3_path,
-+    chatterbox_model &  model,
-+    int                 requested_ctx,
-+    int                 n_gpu_layers);
-+
- bool eval_prompt_mtl(
-     const chatterbox_model &     model,
-     ggml_gallocr_t               allocr,
-diff --git a/src/t3_mtl.cpp b/src/t3_mtl.cpp
-index 0fc730e..662f91d 100644
---- a/src/t3_mtl.cpp
-+++ b/src/t3_mtl.cpp
-@@ -888,7 +888,10 @@ bool run_prompt_pass_b2(const chatterbox_model & model,
-     const int N = len_cond + (int) text_tokens.size() + 2;
-     prompt_len_out = N;
- 
-+    fprintf(stderr, "run_prompt_pass_b2: n_text=%d N=%d speech_vocab=%d\n",
-+            (int) text_tokens.size(), N, hp.n_speech_vocab);
-     ggml_cgraph * gf = build_prompt_graph_mtl_b2(model, (int) text_tokens.size());
-+    fprintf(stderr, "run_prompt_pass_b2: graph built\n");
-     // alloc_graph below already reserves lazily via ggml_gallocr_needs_realloc;
-     // see run_step_pass_b2 for the rationale on dropping the explicit
-     // ggml_gallocr_reserve(allocr, gf) call here.
-@@ -896,6 +899,7 @@ bool run_prompt_pass_b2(const chatterbox_model & model,
-         fprintf(stderr, "run_prompt_pass_b2: gallocr_alloc_graph failed (graph topology exceeded reserved budget?)\n");
-         return false;
-     }
-+    fprintf(stderr, "run_prompt_pass_b2: graph allocated\n");
- 
-     auto set_in = [&](const char * name, const void * data, size_t bytes) {
-         ggml_tensor * t = ggml_graph_get_tensor(gf, name);
-@@ -931,15 +935,43 @@ bool run_prompt_pass_b2(const chatterbox_model & model,
-     if (ggml_backend_is_cpu(model.backend)) {
-         ggml_backend_cpu_set_n_threads(model.backend, n_threads);
-     }
-+    fprintf(stderr, "run_prompt_pass_b2: compute start\n");
-     ggml_backend_graph_compute(model.backend, gf);
-+    fprintf(stderr, "run_prompt_pass_b2: compute done\n");
- 
-     ggml_tensor * logits = ggml_graph_get_tensor(gf, "logits");
--    // logits ne=[n_speech_vocab, 1, 2], contiguous.  Cond at b=0, uncond at b=1.
--    const size_t per_batch_bytes = (size_t) hp.n_speech_vocab * sizeof(float);
--    logits_cond_out.resize(hp.n_speech_vocab);
--    logits_uncond_out.resize(hp.n_speech_vocab);
--    ggml_backend_tensor_get(logits, logits_cond_out.data(),   0,                per_batch_bytes);
--    ggml_backend_tensor_get(logits, logits_uncond_out.data(), per_batch_bytes, per_batch_bytes);
-+    if (!logits) {
-+        fprintf(stderr, "run_prompt_pass_b2: logits tensor missing\n");
-+        return false;
-+    }
-+    // logits ne=[n_speech_vocab, 1, 2]. One host read: a split get of the
-+    // uncond half (offset=vocab*4) tripped ggml-backend.cpp:307 on Vulkan
-+    // even when nbytes==2*vocab*4.
-+    const size_t nb = ggml_nbytes(logits);
-+    fprintf(stderr,
-+            "run_prompt_pass_b2: logits type=%d n_dims=%d ne=[%lld,%lld,%lld,%lld] "
-+            "nb=[%zu,%zu,%zu,%zu] nbytes=%zu view=%p voff=%zu\n",
-+            (int) logits->type, ggml_n_dims(logits),
-+            (long long) logits->ne[0], (long long) logits->ne[1],
-+            (long long) logits->ne[2], (long long) logits->ne[3],
-+            logits->nb[0], logits->nb[1], logits->nb[2], logits->nb[3],
-+            nb, (void *) logits->view_src, logits->view_offs);
-+    std::vector<float> both((size_t) ggml_nelements(logits));
-+    const size_t want = both.size() * sizeof(float);
-+    fprintf(stderr, "run_prompt_pass_b2: get all want=%zu nbytes=%zu\n", want, nb);
-+    if (want > nb) {
-+        fprintf(stderr, "run_prompt_pass_b2: host buffer larger than logits nbytes\n");
-+        return false;
-+    }
-+    ggml_backend_tensor_get(logits, both.data(), 0, want);
-+    fprintf(stderr, "run_prompt_pass_b2: get all ok\n");
-+    const size_t V = (size_t) hp.n_speech_vocab;
-+    if (both.size() < 2 * V) {
-+        fprintf(stderr, "run_prompt_pass_b2: logits elems=%zu < 2*vocab\n", both.size());
-+        return false;
-+    }
-+    logits_cond_out.assign(both.begin(), both.begin() + (std::ptrdiff_t) V);
-+    logits_uncond_out.assign(both.begin() + (std::ptrdiff_t) V, both.begin() + (std::ptrdiff_t) (2 * V));
-     return true;
- }
- 
-@@ -953,6 +985,9 @@ bool run_step_pass_b2(const chatterbox_model & model,
-                       std::vector<float> & logits_uncond_out) {
-     const auto & hp = model.hparams;
- 
-+    if (n_past < 4 || (n_past % 50) == 0) {
-+        fprintf(stderr, "run_step_pass_b2: n_past=%d token=%d\n", n_past, (int) token);
-+    }
-     ggml_cgraph * gf = build_step_graph_mtl_b2(model, n_past);
-     // Skip the explicit ggml_gallocr_reserve(allocr, gf) call here:
-     // alloc_graph below already calls ggml_gallocr_needs_realloc, and
-@@ -966,12 +1001,19 @@ bool run_step_pass_b2(const chatterbox_model & model,
-         fprintf(stderr, "run_step_pass_b2: gallocr_alloc_graph failed (n_past=%d)\n", n_past);
-         return false;
-     }
--
--    ggml_backend_tensor_set(ggml_graph_get_tensor(gf, "speech_token"), &token, 0, sizeof(token));
-+    ggml_tensor * t_tok = ggml_graph_get_tensor(gf, "speech_token");
-+    ggml_tensor * t_spos = ggml_graph_get_tensor(gf, "speech_pos");
-+    ggml_tensor * t_pos = ggml_graph_get_tensor(gf, "pos_ids");
-+    if (!t_tok || !t_spos || !t_pos) {
-+        fprintf(stderr, "run_step_pass_b2: missing input tensor tok=%p spos=%p pos=%p\n",
-+                (void *) t_tok, (void *) t_spos, (void *) t_pos);
-+        return false;
-+    }
-+    ggml_backend_tensor_set(t_tok, &token, 0, sizeof(token));
-     int32_t sp = n_past;
--    ggml_backend_tensor_set(ggml_graph_get_tensor(gf, "speech_pos"), &sp, 0, sizeof(sp));
-+    ggml_backend_tensor_set(t_spos, &sp, 0, sizeof(sp));
-     int32_t pos = n_past;
--    ggml_backend_tensor_set(ggml_graph_get_tensor(gf, "pos_ids"), &pos, 0, sizeof(pos));
-+    ggml_backend_tensor_set(t_pos, &pos, 0, sizeof(pos));
- 
-     if (ggml_backend_is_cpu(model.backend)) {
-         ggml_backend_cpu_set_n_threads(model.backend, n_threads);
-@@ -979,11 +1021,27 @@ bool run_step_pass_b2(const chatterbox_model & model,
-     ggml_backend_graph_compute(model.backend, gf);
- 
-     ggml_tensor * logits = ggml_graph_get_tensor(gf, "logits");
--    const size_t per_batch_bytes = (size_t) hp.n_speech_vocab * sizeof(float);
--    logits_cond_out.resize(hp.n_speech_vocab);
--    logits_uncond_out.resize(hp.n_speech_vocab);
--    ggml_backend_tensor_get(logits, logits_cond_out.data(),   0,                per_batch_bytes);
--    ggml_backend_tensor_get(logits, logits_uncond_out.data(), per_batch_bytes, per_batch_bytes);
-+    if (!logits) {
-+        fprintf(stderr, "run_step_pass_b2: logits tensor missing (n_past=%d)\n", n_past);
-+        return false;
-+    }
-+    std::vector<float> both((size_t) ggml_nelements(logits));
-+    const size_t want = both.size() * sizeof(float);
-+    const size_t nb = ggml_nbytes(logits);
-+    if (want > nb) {
-+        fprintf(stderr, "run_step_pass_b2: logits elems=%zu nbytes=%zu n_past=%d\n",
-+                both.size(), nb, n_past);
-+        return false;
-+    }
-+    ggml_backend_tensor_get(logits, both.data(), 0, want);
-+    const size_t V = (size_t) hp.n_speech_vocab;
-+    if (both.size() < 2 * V) {
-+        fprintf(stderr, "run_step_pass_b2: logits elems=%zu < 2*vocab n_past=%d\n",
-+                both.size(), n_past);
-+        return false;
-+    }
-+    logits_cond_out.assign(both.begin(), both.begin() + (std::ptrdiff_t) V);
-+    logits_uncond_out.assign(both.begin() + (std::ptrdiff_t) V, both.begin() + (std::ptrdiff_t) (2 * V));
-     return true;
- }
- 
-diff --git a/src/chatterbox_tts.cpp b/src/chatterbox_tts.cpp
-index 746de95..bf7dbcb 100644
---- a/src/chatterbox_tts.cpp
-+++ b/src/chatterbox_tts.cpp
-@@ -71,6 +71,34 @@ static void compute(ggml_backend_t backend, ggml_cgraph * gf) {
-     if (ggml_backend_is_cpu(backend)) ggml_backend_cpu_set_n_threads(backend, g_n_threads);
-     ggml_backend_graph_compute(backend, gf);
- }
-+
-+// Host-side F16/F32 weight read. Vulkan ADD/MUL of F32 activations against
-+// an F16 1-D bias reads 4 bytes per element and trips
-+// ggml-backend.cpp:307 (nbytes is only 2 bytes/el).
-+static void tensor_get_f32(const ggml_tensor * t, std::vector<float> & out) {
-+    const size_t n = (size_t) ggml_nelements(t);
-+    out.resize(n);
-+    if (t->type == GGML_TYPE_F32) {
-+        ggml_backend_tensor_get(t, out.data(), 0, ggml_nbytes(t));
-+        return;
-+    }
-+    if (t->type == GGML_TYPE_F16) {
-+        std::vector<ggml_fp16_t> tmp(n);
-+        ggml_backend_tensor_get(t, tmp.data(), 0, ggml_nbytes(t));
-+        for (size_t i = 0; i < n; ++i) out[i] = ggml_fp16_to_fp32(tmp[i]);
-+        return;
-+    }
-+    throw std::runtime_error(std::string("tensor_get_f32: unsupported type ") +
-+                             std::to_string((int) t->type) + " for " + ggml_get_name(t));
-+}
-+
-+static void copy_f16_to_f32_tensor(ggml_tensor * dst, const ggml_tensor * src) {
-+    const size_t n = (size_t) ggml_nelements(src);
-+    std::vector<float> tmp(n);
-+    const ggml_fp16_t * in = (const ggml_fp16_t *) ggml_get_data(src);
-+    for (size_t i = 0; i < n; ++i) tmp[i] = ggml_fp16_to_fp32(in[i]);
-+    ggml_backend_tensor_set(dst, tmp.data(), 0, tmp.size() * sizeof(float));
-+}
- struct scoped_timer {
-     const char * label;
-     double t0;
-@@ -221,6 +249,213 @@ static model_ctx * s3gen_model_cache_get(const std::string & path, int n_gpu_lay
- 
- static double s3gen_model_cache_last_load_ms() { return g_s3gen_cache_last_load_ms; }
- 
-+// BricksDisplay s3g.* short names -> chatterbox.cpp flow/cfm/hift names.
-+static std::string s3g_official_name(const std::string & n) {
-+    if (n.rfind("s3g.", 0) != 0) return n;
-+    if (n == "s3g.flow.input_emb.w") return "flow/input_embedding";
-+    if (n == "s3g.flow.spk_aff.w") return "flow/spk_embed_affine/w";
-+    if (n == "s3g.flow.spk_aff.b") return "flow/spk_embed_affine/b";
-+    if (n == "s3g.flow.proj.w") return "flow/encoder_proj/w";
-+    if (n == "s3g.flow.proj.b") return "flow/encoder_proj/b";
-+    if (n == "s3g.cond.prompt_feat") return "s3gen/builtin/prompt_feat";
-+    if (n == "s3g.cond.embedding") return "s3gen/builtin/embedding";
-+    if (n == "s3g.cfm.t.l1.w") return "cfm/time_mlp/linear_1/weight";
-+    if (n == "s3g.cfm.t.l1.b") return "cfm/time_mlp/linear_1/bias";
-+    if (n == "s3g.cfm.t.l2.w") return "cfm/time_mlp/linear_2/weight";
-+    if (n == "s3g.cfm.t.l2.b") return "cfm/time_mlp/linear_2/bias";
-+    if (n == "s3g.cfm.proj.w") return "cfm/final_proj/weight";
-+    if (n == "s3g.cfm.proj.b") return "cfm/final_proj/bias";
-+    if (n == "s3g.cfm.final.cv.w") return "cfm/final_block/block/0/weight";
-+    if (n == "s3g.cfm.final.cv.b") return "cfm/final_block/block/0/bias";
-+    if (n == "s3g.cfm.final.ln.w") return "cfm/final_block/block/2/weight";
-+    if (n == "s3g.cfm.final.ln.b") return "cfm/final_block/block/2/bias";
-+    if (n == "s3g.hift.conv_pre.w") return "hift/conv_pre/weight";
-+    if (n == "s3g.hift.conv_pre.b") return "hift/conv_pre/bias";
-+    if (n == "s3g.hift.conv_post.w") return "hift/conv_post/weight";
-+    if (n == "s3g.hift.conv_post.b") return "hift/conv_post/bias";
-+    if (n == "s3g.hift.src.lin.w") return "hift/m_source/l_linear/weight";
-+    if (n == "s3g.hift.src.lin.b") return "hift/m_source/l_linear/bias";
-+    if (n == "s3g.hift.f0.cls.w") return "hift/f0_predictor/classifier/weight";
-+    if (n == "s3g.hift.f0.cls.b") return "hift/f0_predictor/classifier/bias";
-+
-+    auto suf = [&](const std::string & pfx, const char * mapped_pfx) -> std::string {
-+        if (n.rfind(pfx, 0) != 0) return {};
-+        return std::string(mapped_pfx) + n.substr(pfx.size());
-+    };
-+    if (auto s = suf("s3g.flow.enc.embed.lin.", "flow/encoder/embed/linear/"); !s.empty())
-+        return s.back() == 'w' ? "flow/encoder/embed/linear/w" : "flow/encoder/embed/linear/b";
-+    if (n == "s3g.flow.enc.embed.ln.w") return "flow/encoder/embed/norm/w";
-+    if (n == "s3g.flow.enc.embed.ln.b") return "flow/encoder/embed/norm/b";
-+    if (n == "s3g.flow.enc.up_embed.lin.w") return "flow/encoder/up_embed/linear/w";
-+    if (n == "s3g.flow.enc.up_embed.lin.b") return "flow/encoder/up_embed/linear/b";
-+    if (n == "s3g.flow.enc.up_embed.ln.w") return "flow/encoder/up_embed/norm/w";
-+    if (n == "s3g.flow.enc.up_embed.ln.b") return "flow/encoder/up_embed/norm/b";
-+    if (n == "s3g.flow.enc.after_norm.w") return "flow/encoder/after_norm/w";
-+    if (n == "s3g.flow.enc.after_norm.b") return "flow/encoder/after_norm/b";
-+    if (n == "s3g.flow.enc.pre.cv1.w") return "flow/encoder/pre_lookahead/conv1/w";
-+    if (n == "s3g.flow.enc.pre.cv1.b") return "flow/encoder/pre_lookahead/conv1/b";
-+    if (n == "s3g.flow.enc.pre.cv2.w") return "flow/encoder/pre_lookahead/conv2/w";
-+    if (n == "s3g.flow.enc.pre.cv2.b") return "flow/encoder/pre_lookahead/conv2/b";
-+    if (n == "s3g.flow.enc.up.w") return "flow/encoder/up_layer/conv/w";
-+    if (n == "s3g.flow.enc.up.b") return "flow/encoder/up_layer/conv/b";
-+
-+    auto conformer = [](const std::string & rest) -> std::string {
-+        if (rest == "norm_mha.w") return "norm_mha/w";
-+        if (rest == "norm_mha.b") return "norm_mha/b";
-+        if (rest == "norm_ff.w") return "norm_ff/w";
-+        if (rest == "norm_ff.b") return "norm_ff/b";
-+        if (rest == "attn.q.w") return "attn/q/w";
-+        if (rest == "attn.q.b") return "attn/q/b";
-+        if (rest == "attn.k.w") return "attn/k/w";
-+        if (rest == "attn.k.b") return "attn/k/b";
-+        if (rest == "attn.v.w") return "attn/v/w";
-+        if (rest == "attn.v.b") return "attn/v/b";
-+        if (rest == "attn.o.w") return "attn/o/w";
-+        if (rest == "attn.o.b") return "attn/o/b";
-+        if (rest == "attn.pos.w") return "attn/pos/w";
-+        if (rest == "attn.pbu") return "attn/pos_bias_u";
-+        if (rest == "attn.pbv") return "attn/pos_bias_v";
-+        if (rest == "ff.w1.w") return "ff/w1/w";
-+        if (rest == "ff.w1.b") return "ff/w1/b";
-+        if (rest == "ff.w2.w") return "ff/w2/w";
-+        if (rest == "ff.w2.b") return "ff/w2/b";
-+        return {};
-+    };
-+    if (n.rfind("s3g.flow.enc.blk.", 0) == 0 || n.rfind("s3g.flow.enc.up_blk.", 0) == 0) {
-+        const bool up = n.rfind("s3g.flow.enc.up_blk.", 0) == 0;
-+        const size_t off = up ? std::string("s3g.flow.enc.up_blk.").size()
-+                              : std::string("s3g.flow.enc.blk.").size();
-+        const size_t dot = n.find('.', off);
-+        if (dot != std::string::npos) {
-+            const std::string idx = n.substr(off, dot - off);
-+            const std::string rest = n.substr(dot + 1);
-+            const std::string cr = conformer(rest);
-+            if (!cr.empty()) {
-+                return std::string("flow/encoder/") + (up ? "up_block" : "block") + idx + "/" + cr;
-+            }
-+        }
-+    }
-+
-+    auto cfm_resnet = [](const std::string & rest) -> std::string {
-+        if (rest == "b1.cv.w") return "block1/block/0/weight";
-+        if (rest == "b1.cv.b") return "block1/block/0/bias";
-+        if (rest == "b1.ln.w") return "block1/block/2/weight";
-+        if (rest == "b1.ln.b") return "block1/block/2/bias";
-+        if (rest == "b2.cv.w") return "block2/block/0/weight";
-+        if (rest == "b2.cv.b") return "block2/block/0/bias";
-+        if (rest == "b2.ln.w") return "block2/block/2/weight";
-+        if (rest == "b2.ln.b") return "block2/block/2/bias";
-+        if (rest == "mlp.w") return "mlp/1/weight";
-+        if (rest == "mlp.b") return "mlp/1/bias";
-+        if (rest == "res.w") return "res_conv/weight";
-+        if (rest == "res.b") return "res_conv/bias";
-+        return {};
-+    };
-+    auto cfm_tfm = [](const std::string & rest) -> std::string {
-+        if (rest == "norm1.w") return "norm1/weight";
-+        if (rest == "norm1.b") return "norm1/bias";
-+        if (rest == "norm3.w") return "norm3/weight";
-+        if (rest == "norm3.b") return "norm3/bias";
-+        if (rest == "attn.q.w") return "attn1/to_q/weight";
-+        if (rest == "attn.k.w") return "attn1/to_k/weight";
-+        if (rest == "attn.v.w") return "attn1/to_v/weight";
-+        if (rest == "attn.o.w") return "attn1/to_out/0/weight";
-+        if (rest == "attn.o.b") return "attn1/to_out/0/bias";
-+        if (rest == "ff.w1.w") return "ff/net/0/proj/weight";
-+        if (rest == "ff.w1.b") return "ff/net/0/proj/bias";
-+        if (rest == "ff.w2.w") return "ff/net/2/weight";
-+        if (rest == "ff.w2.b") return "ff/net/2/bias";
-+        return {};
-+    };
-+    auto map_cfm_block = [&](const std::string & prefix, const std::string & official_base) -> std::string {
-+        if (n.rfind(prefix, 0) != 0) return {};
-+        const std::string rest = n.substr(prefix.size());
-+        if (rest.rfind("r.", 0) == 0) {
-+            const std::string rr = cfm_resnet(rest.substr(2));
-+            if (!rr.empty()) return official_base + "/0/" + rr;
-+        }
-+        if (rest.rfind("t.", 0) == 0) {
-+            const size_t d = rest.find('.', 2);
-+            if (d != std::string::npos) {
-+                const std::string ti = rest.substr(2, d - 2);
-+                const std::string tr = cfm_tfm(rest.substr(d + 1));
-+                if (!tr.empty()) return official_base + "/1/" + ti + "/" + tr;
-+            }
-+        }
-+        if (rest == "x.w") return official_base + "/2/weight";
-+        if (rest == "x.b") return official_base + "/2/bias";
-+        return {};
-+    };
-+    if (auto s = map_cfm_block("s3g.cfm.dn.0.", "cfm/down_blocks/0"); !s.empty()) return s;
-+    if (auto s = map_cfm_block("s3g.cfm.up.0.", "cfm/up_blocks/0"); !s.empty()) return s;
-+    if (n.rfind("s3g.cfm.md.", 0) == 0) {
-+        const size_t d = n.find('.', std::string("s3g.cfm.md.").size());
-+        if (d != std::string::npos) {
-+            const std::string mi = n.substr(std::string("s3g.cfm.md.").size(),
-+                                            d - std::string("s3g.cfm.md.").size());
-+            if (auto s = map_cfm_block(n.substr(0, d + 1), "cfm/mid_blocks/" + mi); !s.empty()) return s;
-+        }
-+    }
-+
-+    if (n.rfind("s3g.hift.up.", 0) == 0) {
-+        const size_t d = n.find('.', std::string("s3g.hift.up.").size());
-+        if (d != std::string::npos) {
-+            const std::string i = n.substr(std::string("s3g.hift.up.").size(),
-+                                           d - std::string("s3g.hift.up.").size());
-+            if (n.back() == 'w') return "hift/ups/" + i + "/weight";
-+            if (n.back() == 'b') return "hift/ups/" + i + "/bias";
-+        }
-+    }
-+    if (n.rfind("s3g.hift.src_dn.", 0) == 0) {
-+        const size_t d = n.find('.', std::string("s3g.hift.src_dn.").size());
-+        if (d != std::string::npos) {
-+            const std::string i = n.substr(std::string("s3g.hift.src_dn.").size(),
-+                                           d - std::string("s3g.hift.src_dn.").size());
-+            if (n.back() == 'w') return "hift/source_downs/" + i + "/weight";
-+            if (n.back() == 'b') return "hift/source_downs/" + i + "/bias";
-+        }
-+    }
-+    if (n.rfind("s3g.hift.f0.cn.", 0) == 0) {
-+        const size_t d = n.find('.', std::string("s3g.hift.f0.cn.").size());
-+        if (d != std::string::npos) {
-+            const int i = std::atoi(n.c_str() + std::string("s3g.hift.f0.cn.").size());
-+            const std::string idx = std::to_string(i * 2);
-+            if (n.back() == 'w') return "hift/f0_predictor/condnet/" + idx + "/weight";
-+            if (n.back() == 'b') return "hift/f0_predictor/condnet/" + idx + "/bias";
-+        }
-+    }
-+    // resblocks: s3g.hift.rb.N.cv1.M.w / a1.M
-+    auto map_rb = [](const std::string & n, const char * kind, const char * official) -> std::string {
-+        const std::string pfx = std::string("s3g.hift.") + kind + ".";
-+        if (n.rfind(pfx, 0) != 0) return {};
-+        const size_t d = n.find('.', pfx.size());
-+        if (d == std::string::npos) return {};
-+        const std::string bi = n.substr(pfx.size(), d - pfx.size());
-+        const std::string rest = n.substr(d + 1);
-+        const std::string base = std::string(official) + "/" + bi;
-+        if (rest.rfind("a1.", 0) == 0) return base + "/activations1/" + rest.substr(3) + "/alpha";
-+        if (rest.rfind("a2.", 0) == 0) return base + "/activations2/" + rest.substr(3) + "/alpha";
-+        if (rest.rfind("cv1.", 0) == 0) {
-+            const size_t d2 = rest.find('.', 4);
-+            if (d2 == std::string::npos) return {};
-+            const std::string j = rest.substr(4, d2 - 4);
-+            if (rest.back() == 'w') return base + "/convs1/" + j + "/weight";
-+            if (rest.back() == 'b') return base + "/convs1/" + j + "/bias";
-+        }
-+        if (rest.rfind("cv2.", 0) == 0) {
-+            const size_t d2 = rest.find('.', 4);
-+            if (d2 == std::string::npos) return {};
-+            const std::string j = rest.substr(4, d2 - 4);
-+            if (rest.back() == 'w') return base + "/convs2/" + j + "/weight";
-+            if (rest.back() == 'b') return base + "/convs2/" + j + "/bias";
-+        }
-+        return {};
-+    };
-+    if (auto s = map_rb(n, "rb", "hift/resblocks"); !s.empty()) return s;
-+    if (auto s = map_rb(n, "src_rb", "hift/source_resblocks"); !s.empty()) return s;
-+    return n;
-+}
-+
- static model_ctx load_s3gen_gguf(const std::string & path, int n_gpu_layers, bool verbose) {
-     model_ctx m;
-     ggml_context * tmp_ctx = nullptr;
-@@ -229,28 +464,73 @@ static model_ctx load_s3gen_gguf(const std::string & path, int n_gpu_layers, boo
-     if (!g) throw std::runtime_error("gguf_init_from_file failed: " + path);
-     m.backend = s3gen_init_backend(n_gpu_layers, verbose);
-     int64_t n_tensors = gguf_get_n_tensors(g);
--    ggml_init_params p = { ggml_tensor_overhead() * (size_t)n_tensors, nullptr, true };
-+    ggml_init_params p = { ggml_tensor_overhead() * (size_t)(n_tensors + 4), nullptr, true };
-     m.ctx_w = ggml_init(p);
-     for (int64_t i = 0; i < n_tensors; ++i) {
-         const char * name = gguf_get_tensor_name(g, i);
-         ggml_tensor * src = ggml_get_tensor(tmp_ctx, name);
--        ggml_tensor * dst = ggml_dup_tensor(m.ctx_w, src);
-+        // 1-D F16 (bias / LN / Snake alpha) must be F32: ggml_add/mul
-+        // with F32 activations does not cast, and Vulkan then reads
-+        // 4 bytes from a 2-byte element (backend.cpp:307).
-+        ggml_tensor * dst = (src->type == GGML_TYPE_F16 && ggml_n_dims(src) == 1)
-+            ? ggml_new_tensor_1d(m.ctx_w, GGML_TYPE_F32, src->ne[0])
-+            : ggml_dup_tensor(m.ctx_w, src);
-         ggml_set_name(dst, name);
-         m.tensors[name] = dst;
-+        const std::string mapped = s3g_official_name(name);
-+        if (mapped != name) m.tensors[mapped] = dst;
-+    }
-+    if (m.tensors.find("s3gen/builtin/prompt_token") == m.tensors.end()) {
-+        int64_t id = gguf_find_key(g, "chatterbox_s3g.cond.prompt_token");
-+        if (id < 0) id = gguf_find_key(g, "codec.lm.chatterbox.builtin.cond_prompt_speech_tokens");
-+        if (id >= 0) {
-+            const size_t n = gguf_get_arr_n(g, id);
-+            ggml_tensor * t = ggml_new_tensor_1d(m.ctx_w, GGML_TYPE_I32, (int64_t) n);
-+            ggml_set_name(t, "s3gen/builtin/prompt_token");
-+            m.tensors["s3gen/builtin/prompt_token"] = t;
-+        }
-     }
-+
-     m.buffer_w = ggml_backend_alloc_ctx_tensors(m.ctx_w, m.backend);
-     for (ggml_tensor * cur = ggml_get_first_tensor(m.ctx_w); cur; cur = ggml_get_next_tensor(m.ctx_w, cur)) {
-         ggml_tensor * src = ggml_get_tensor(tmp_ctx, ggml_get_name(cur));
--        ggml_backend_tensor_set(cur, ggml_get_data(src), 0, ggml_nbytes(src));
-+        if (!src) continue;
-+        if (cur->type == GGML_TYPE_F32 && src->type == GGML_TYPE_F16) {
-+            copy_f16_to_f32_tensor(cur, src);
-+        } else {
-+            ggml_backend_tensor_set(cur, ggml_get_data(src), 0, ggml_nbytes(src));
-+        }
-+    }
-+    {
-+        auto it = m.tensors.find("s3gen/builtin/prompt_token");
-+        if (it != m.tensors.end()) {
-+            int64_t id = gguf_find_key(g, "chatterbox_s3g.cond.prompt_token");
-+            if (id < 0) id = gguf_find_key(g, "codec.lm.chatterbox.builtin.cond_prompt_speech_tokens");
-+            if (id >= 0) {
-+                const size_t n = gguf_get_arr_n(g, id);
-+                const uint32_t * d = (const uint32_t *) gguf_get_arr_data(g, id);
-+                std::vector<int32_t> tmp(n);
-+                if (d) {
-+                    for (size_t i = 0; i < n; ++i) tmp[i] = (int32_t) d[i];
-+                }
-+                ggml_backend_tensor_set(it->second, tmp.data(), 0, tmp.size() * sizeof(int32_t));
-+            }
-+        }
-     }
- 
-     {
-         int64_t k_mf = gguf_find_key(g, "s3gen.meanflow");
-+        if (k_mf < 0) k_mf = gguf_find_key(g, "chatterbox_s3g.meanflow");
-         int64_t k_ts = gguf_find_key(g, "s3gen.n_timesteps");
-         int64_t k_cf = gguf_find_key(g, "s3gen.cfg_rate");
-         m.meanflow    = (k_mf >= 0) ? gguf_get_val_bool(g, k_mf) : true;
--        m.n_timesteps = (k_ts >= 0) ? (int) gguf_get_val_u32(g, k_ts) : (m.meanflow ? 2 : 10);
--        m.cfg_rate    = (k_cf >= 0) ? gguf_get_val_f32(g, k_cf) : (m.meanflow ? 0.0f : 0.7f);
-+        if (k_mf >= 0 && !m.meanflow && k_ts < 0) {
-+            m.n_timesteps = 10;
-+            m.cfg_rate = 0.7f;
-+        } else {
-+            m.n_timesteps = (k_ts >= 0) ? (int) gguf_get_val_u32(g, k_ts) : (m.meanflow ? 2 : 10);
-+            m.cfg_rate    = (k_cf >= 0) ? gguf_get_val_f32(g, k_cf) : (m.meanflow ? 0.0f : 0.7f);
-+        }
-         if (k_mf < 0 && k_ts < 0 && k_cf < 0) {
-             // Pre-__SECTION_SIGN__3.19 GGUFs lack the variant keys.  Defaults match the
-             // historical Turbo behaviour, so legacy chatterbox-s3gen.gguf
-@@ -317,6 +597,9 @@ static ggml_tensor * conv1d_f32_b(ggml_context * ctx, ggml_tensor * kernel, ggml
- 
- static ggml_tensor * conv_transpose_1d_f32(ggml_context * ctx, ggml_tensor * kernel,
-                                            ggml_tensor * input, int stride, int padding) {
-+    // Vulkan conv_transpose_1d is F32-only (ggml-vulkan.cpp:11706).
-+    if (kernel->type != GGML_TYPE_F32) kernel = ggml_cast(ctx, kernel, GGML_TYPE_F32);
-+    if (input->type != GGML_TYPE_F32)  input  = ggml_cast(ctx, input,  GGML_TYPE_F32);
-     ggml_tensor * out = ggml_conv_transpose_1d(ctx, kernel, input, stride, 0, 1);
-     if (padding == 0) return out;
-     int64_t L_new = out->ne[0] - 2 * padding;
-@@ -1237,12 +1520,15 @@ static void cfm_estimator_forward_b2(
-     compute(m.backend, gf);
- 
-     ggml_tensor * out_t = ggml_graph_get_tensor(gf, "out");
--    // out_t ne=[T, MEL, B=2], contiguous.  Read cond/uncond halves separately.
--    const size_t half_bytes = (size_t) T * MEL * sizeof(float);
--    out_c.resize(T * MEL);
--    out_u.resize(T * MEL);
--    ggml_backend_tensor_get(out_t, out_c.data(), 0,           half_bytes);
--    ggml_backend_tensor_get(out_t, out_u.data(), half_bytes,  half_bytes);
-+    const size_t half = (size_t) T * MEL;
-+    std::vector<float> both((size_t) ggml_nelements(out_t));
-+    const size_t want = both.size() * sizeof(float);
-+    if (want > ggml_nbytes(out_t) || both.size() < 2 * half) {
-+        throw std::runtime_error("cfm b2 out size mismatch");
-+    }
-+    ggml_backend_tensor_get(out_t, both.data(), 0, want);
-+    out_c.assign(both.begin(), both.begin() + (std::ptrdiff_t) half);
-+    out_u.assign(both.begin() + (std::ptrdiff_t) half, both.begin() + (std::ptrdiff_t) (2 * half));
- }
- 
- // ============================================================================
-@@ -1313,8 +1599,8 @@ static ggml_tensor * snake(ggml_context * ctx, ggml_tensor * x,
- 
- static std::vector<float> invert_alpha_cpu(const model_ctx & m, const std::string & name) {
-     ggml_tensor * t = find_tensor(m, name);
--    std::vector<float> a(ggml_nelements(t));
--    ggml_backend_tensor_get(t, a.data(), 0, ggml_nbytes(t));
-+    std::vector<float> a;
-+    tensor_get_f32(t, a);
-     std::vector<float> inv(a.size());
-     for (size_t i = 0; i < a.size(); ++i) inv[i] = 1.0f / (a[i] + 1e-9f);
-     return inv;
-@@ -1818,10 +2104,12 @@ int s3gen_synthesize_to_wav(
-     std::memcpy(flow_tokens.data() + n_prompt, padded.data(), padded.size() * sizeof(int32_t));
- 
-     // 2) input_embedding lookup + multiply by mask
-+    fprintf(stderr, "s3gen: tokens=%zu meanflow=%d model_steps=%d\n",
-+            speech_tokens.size(), (int) m.meanflow, m.n_timesteps);
-     vlog("Running input_embedding...\n");
-     ggml_tensor * emb_w = find_tensor(m, "flow/input_embedding");
--    std::vector<float> emb_w_data(ggml_nelements(emb_w));
--    ggml_backend_tensor_get(emb_w, emb_w_data.data(), 0, ggml_nbytes(emb_w));
-+    std::vector<float> emb_w_data;
-+    tensor_get_f32(emb_w, emb_w_data);
-     vlog("  emb_w ne=[%lld, %lld]\n", (long long)emb_w->ne[0], (long long)emb_w->ne[1]);
-     int vocab_size = (int)emb_w->ne[1];
-     std::vector<float> input_embed(n_total * D);
-@@ -1846,6 +2134,7 @@ int s3gen_synthesize_to_wav(
-     std::vector<float> mu_T = run_encoder(m, input_embed, n_total, D);
-     vlog("  [encoder] %.1f ms\n", now_ms() - encoder_t0);
-     int T_mu = 2 * n_total;
-+    fprintf(stderr, "s3gen: encoder ok T_mu=%d\n", T_mu);
-     vlog("  encoder output: (%d, 80) = %zu floats\n", T_mu, mu_T.size());
- 
-     // Streaming: trim the last `pre_lookahead_len * token_mel_ratio = 6`
-@@ -1919,9 +2208,9 @@ int s3gen_synthesize_to_wav(
- 
-     ggml_tensor * saw = find_tensor(m, "flow/spk_embed_affine/w");  // (80, 192) numpy -> ne=[192, 80]
-     ggml_tensor * sab = find_tensor(m, "flow/spk_embed_affine/b");  // (80,)
--    std::vector<float> saw_data(ggml_nelements(saw)), sab_data(ggml_nelements(sab));
--    ggml_backend_tensor_get(saw, saw_data.data(), 0, ggml_nbytes(saw));
--    ggml_backend_tensor_get(sab, sab_data.data(), 0, ggml_nbytes(sab));
-+    std::vector<float> saw_data, sab_data;
-+    tensor_get_f32(saw, saw_data);
-+    tensor_get_f32(sab, sab_data);
-     std::vector<float> spks(MEL, 0.0f);
-     for (int o = 0; o < MEL; ++o) {
-         float acc = sab_data[o];
-@@ -1992,6 +2281,7 @@ int s3gen_synthesize_to_wav(
-     //                        region is implicitly conditioned through `cond`
-     //                        instead of via an extra noise tensor.
-     const bool meanflow = m.meanflow;
-+    fprintf(stderr, "s3gen: CFM start meanflow=%d T_mu=%d\n", (int) meanflow, T_mu);
-     vlog("Initializing CFM noise (seed=%d, %s)...\n", seed,
-             meanflow ? "meanflow" : "standard CFM + CFG");
-     std::vector<float> z(T_mu * MEL);
-@@ -2040,8 +2330,16 @@ int s3gen_synthesize_to_wav(
-     //                   estimator calls per step (cond + uncond with zeroed
-     //                   mu/spks/cond) combined via cfg_rate.
-     std::vector<float> t_span;
--    const int cfm_steps = opts.cfm_steps > 0 ? opts.cfm_steps :
--                          (meanflow ? 2 : m.n_timesteps);
-+    int cfm_steps = opts.cfm_steps > 0 ? opts.cfm_steps :
-+                    (meanflow ? 2 : m.n_timesteps);
-+    // Old Turbo clients may send cfm_steps=2. MTL meanflow=false
-+    // must stay on the 10-step solver or HiFT emits a 6 kHz whistle.
-+    if (!meanflow && cfm_steps > 0 && cfm_steps < 5) {
-+        fprintf(stderr, "s3gen: ignoring cfm_steps=%d on non-meanflow GGUF; using %d\n",
-+                cfm_steps, m.n_timesteps);
-+        cfm_steps = m.n_timesteps;
-+    }
-+    fprintf(stderr, "s3gen: cfm_steps=%d\n", cfm_steps);
-     t_span.reserve(cfm_steps + 1);
-     for (int i = 0; i <= cfm_steps; ++i) {
-         float tau = (float)i / (float)cfm_steps;
-@@ -2208,6 +2505,7 @@ int s3gen_synthesize_to_wav(
- 
-     // 9) HiFT
-     double hift_t0 = now_ms();
-+    fprintf(stderr, "s3gen: HiFT start T_mel=%d\n", T_mel);
-     vlog("Running f0_predictor...\n");
-     double t0 = now_ms();
-     auto f0 = run_f0_predictor(m_hift, mel, T_mel);
-@@ -2220,12 +2518,16 @@ int s3gen_synthesize_to_wav(
- 
-     vlog("Running SineGen...\n");
-     t0 = now_ms();
--    std::vector<float> l_linear_w(9);
-     ggml_tensor * llw = find_tensor(m_hift, "hift/m_source/l_linear/weight");
-     ggml_tensor * llb = find_tensor(m_hift, "hift/m_source/l_linear/bias");
--    ggml_backend_tensor_get(llw, l_linear_w.data(), 0, 9 * sizeof(float));
--    float l_linear_b;
--    ggml_backend_tensor_get(llb, &l_linear_b, 0, sizeof(float));
-+    std::vector<float> l_linear_w, l_linear_b_v;
-+    tensor_get_f32(llw, l_linear_w);
-+    tensor_get_f32(llb, l_linear_b_v);
-+    if (l_linear_w.size() < 9 || l_linear_b_v.empty()) {
-+        throw std::runtime_error("hift l_linear: expected 9+1 F32 values");
-+    }
-+    l_linear_w.resize(9);
-+    const float l_linear_b = l_linear_b_v[0];
-     auto src = sinegen_source(f0_up, sr, 8, 0.1f, 0.003f, 10.0f, l_linear_w, l_linear_b, (uint32_t)(seed + 1));
-     vlog("  [sinegen] %.1f ms\n", now_ms() - t0);
- 
-diff --git a/src/voice_encoder.cpp b/src/voice_encoder.cpp
-index da3fe39..cb343fc 100644
---- a/src/voice_encoder.cpp
-+++ b/src/voice_encoder.cpp
-@@ -21,9 +21,18 @@ static bool copy_tensor_f32(ggml_context * ctx, const char * name,
- {
-     ggml_tensor * t = ggml_get_tensor(ctx, name);
-     if (!t) return false;
--    out.resize(ggml_nelements(t));
--    std::memcpy(out.data(), ggml_get_data(t), ggml_nbytes(t));
--    return true;
-+    const size_t n = (size_t) ggml_nelements(t);
-+    out.resize(n);
-+    if (t->type == GGML_TYPE_F32) {
-+        std::memcpy(out.data(), ggml_get_data(t), ggml_nbytes(t));
-+        return true;
-+    }
-+    if (t->type == GGML_TYPE_F16) {
-+        const ggml_fp16_t * in = (const ggml_fp16_t *) ggml_get_data(t);
-+        for (size_t i = 0; i < n; ++i) out[i] = ggml_fp16_to_fp32(in[i]);
-+        return true;
-+    }
-+    return false;
- }
- 
- bool voice_encoder_load(const std::string & t3_gguf_path,
-@@ -43,32 +52,37 @@ bool voice_encoder_load(const std::string & t3_gguf_path,
-         return ok;
-     };
- 
--    // Presence check: the VE weights landed in Phase 2c of the A1 plan, so a
--    // pre-A1 GGUF won't have them.  Bail cleanly.
--    if (gguf_find_key(g, "voice_encoder.hidden_size") < 0) {
-+    // Official T3 GGUF: voice_encoder.hidden_size.
-+    // BricksDisplay codec GGUF: codec.speaker.ve.hidden_size + speaker.voice_encoder.*.
-+    const bool official = gguf_find_key(g, "voice_encoder.hidden_size") >= 0;
-+    const bool codec_ve = gguf_find_key(g, "codec.speaker.ve.hidden_size") >= 0;
-+    if (!official && !codec_ve) {
-         return cleanup(false);
-     }
- 
--    auto get_u32 = [&](const char * k, uint32_t fallback) -> uint32_t {
-+    auto get_u32 = [&](const char * k, const char * k2, uint32_t fallback) -> uint32_t {
-         int64_t id = gguf_find_key(g, k);
-+        if (id < 0 && k2) id = gguf_find_key(g, k2);
-         return id < 0 ? fallback : gguf_get_val_u32(g, id);
-     };
--    auto get_f32 = [&](const char * k, float fallback) -> float {
-+    auto get_f32 = [&](const char * k, const char * k2, float fallback) -> float {
-         int64_t id = gguf_find_key(g, k);
-+        if (id < 0 && k2) id = gguf_find_key(g, k2);
-         return id < 0 ? fallback : gguf_get_val_f32(g, id);
-     };
- 
--    out.n_layers       = (int)get_u32("voice_encoder.num_layers",    3);
--    out.n_mels         = (int)get_u32("voice_encoder.n_mels",       40);
--    out.hidden         = (int)get_u32("voice_encoder.hidden_size",  256);
--    out.embedding      = (int)get_u32("voice_encoder.embedding_size", out.hidden);
--    out.partial_frames = (int)get_u32("voice_encoder.partial_frames", 160);
--    out.overlap        = get_f32("voice_encoder.overlap",            0.5f);
--    out.rate           = get_f32("voice_encoder.rate",               1.3f);
--    out.min_coverage   = get_f32("voice_encoder.min_coverage",       0.8f);
-+    out.n_layers       = (int)get_u32("voice_encoder.num_layers", "codec.speaker.ve.num_layers", 3);
-+    out.n_mels         = (int)get_u32("voice_encoder.n_mels", "codec.speaker.ve.num_mels", 40);
-+    out.hidden         = (int)get_u32("voice_encoder.hidden_size", "codec.speaker.ve.hidden_size", 256);
-+    out.embedding      = (int)get_u32("voice_encoder.embedding_size", "codec.speaker.ve.speaker_embed_dim", out.hidden);
-+    out.partial_frames = (int)get_u32("voice_encoder.partial_frames", "codec.speaker.ve.partial_frames", 160);
-+    out.overlap        = get_f32("voice_encoder.overlap", "codec.speaker.ve.overlap", 0.5f);
-+    out.rate           = get_f32("voice_encoder.rate", "codec.speaker.ve.rate", 1.3f);
-+    out.min_coverage   = get_f32("voice_encoder.min_coverage", "codec.speaker.ve.min_coverage", 0.8f);
- 
--    auto load_or_fail = [&](const char * name, std::vector<float> & dst) {
-+    auto load_or_fail = [&](const char * name, const char * alt, std::vector<float> & dst) {
-         if (copy_tensor_f32(tmp_ctx, name, dst)) return true;
-+        if (alt && copy_tensor_f32(tmp_ctx, alt, dst)) return true;
-         fprintf(stderr, "voice_encoder_load: missing expected tensor '%s' in %s\n",
-                 name, t3_gguf_path.c_str());
-         return false;
-@@ -80,19 +94,23 @@ bool voice_encoder_load(const std::string & t3_gguf_path,
-         auto & L = out.lstm[l];
-         L.H = out.hidden;
-         L.I = (l == 0) ? out.n_mels : out.hidden;
--        char name[128];
-+        char name[128], alt[128];
-         std::snprintf(name, sizeof(name), "voice_encoder/lstm/weight_ih_l%d", l);
--        if (!load_or_fail(name, L.w_ih)) return cleanup(false);
-+        std::snprintf(alt, sizeof(alt), "speaker.voice_encoder.lstm_%d.W_ih", l);
-+        if (!load_or_fail(name, alt, L.w_ih)) return cleanup(false);
-         std::snprintf(name, sizeof(name), "voice_encoder/lstm/weight_hh_l%d", l);
--        if (!load_or_fail(name, L.w_hh)) return cleanup(false);
-+        std::snprintf(alt, sizeof(alt), "speaker.voice_encoder.lstm_%d.W_hh", l);
-+        if (!load_or_fail(name, alt, L.w_hh)) return cleanup(false);
-         std::snprintf(name, sizeof(name), "voice_encoder/lstm/bias_ih_l%d", l);
--        if (!load_or_fail(name, L.b_ih)) return cleanup(false);
-+        std::snprintf(alt, sizeof(alt), "speaker.voice_encoder.lstm_%d.b_ih", l);
-+        if (!load_or_fail(name, alt, L.b_ih)) return cleanup(false);
-         std::snprintf(name, sizeof(name), "voice_encoder/lstm/bias_hh_l%d", l);
--        if (!load_or_fail(name, L.b_hh)) return cleanup(false);
-+        std::snprintf(alt, sizeof(alt), "speaker.voice_encoder.lstm_%d.b_hh", l);
-+        if (!load_or_fail(name, alt, L.b_hh)) return cleanup(false);
-     }
--    if (!load_or_fail("voice_encoder/proj/weight", out.proj_w)) return cleanup(false);
--    if (!load_or_fail("voice_encoder/proj/bias",   out.proj_b)) return cleanup(false);
--    if (!load_or_fail("voice_encoder/mel_fb",      out.mel_fb)) return cleanup(false);
-+    if (!load_or_fail("voice_encoder/proj/weight", "speaker.voice_encoder.proj.weight", out.proj_w)) return cleanup(false);
-+    if (!load_or_fail("voice_encoder/proj/bias",   "speaker.voice_encoder.proj.bias",   out.proj_b)) return cleanup(false);
-+    if (!load_or_fail("voice_encoder/mel_fb",      "speaker.voice_encoder.mel_basis",   out.mel_fb)) return cleanup(false);
- 
-     return cleanup(true);
- }
-diff --git a/CMakeLists.txt b/CMakeLists.txt
-index fe86e6a..684e9e0 100644
---- a/CMakeLists.txt
-+++ b/CMakeLists.txt
-@@ -24,6 +24,7 @@ add_library(tts-cpp STATIC
-     src/s3tokenizer.cpp
-     src/t3_mtl.cpp
-     src/gguf_split_mtl.cpp
-+    src/text_split.cpp
- )
- 
- target_include_directories(tts-cpp PUBLIC include PRIVATE src ggml/include)
-diff --git a/include/tts-cpp/chatterbox/engine.h b/include/tts-cpp/chatterbox/engine.h
-index 0013eff..57ac18d 100644
---- a/include/tts-cpp/chatterbox/engine.h
-+++ b/include/tts-cpp/chatterbox/engine.h
-@@ -45,6 +45,8 @@
- #include <string>
- #include <vector>
- 
-+#include "tts-cpp/chatterbox/v3_defaults.h"
-+
- namespace tts_cpp::chatterbox {
- 
- struct EngineOptions {
-@@ -86,27 +88,27 @@ struct EngineOptions {
-     // different "take" of the same line.
-     int seed = 42;
- 
--    // Maximum speech tokens to decode per synthesize() call.
--    int n_predict = 1000;
-+    // Maximum speech tokens to decode per synthesize() call / segment.
-+    int n_predict = v3::n_predict;
- 
-     // Optional T3 context-size cap (0 = use the GGUF's value).
--    int n_ctx = 0;
--
--    // Sampling knobs (mirrors the CLI defaults, which match Python's
--    // ChatterboxTurboTTS.generate()).
--    int   top_k          = 1000;
--    float top_p          = 0.95f;
--    float temperature    = 0.8f;
--    float repeat_penalty = 1.2f;
-+    int n_ctx = v3::n_ctx;
- 
--    // MTL (t3_mtl) sampling.  Turbo ignores these.
-+    // V3 multilingual generate() sampling. Turbo ignores language / cfg / min_p.
-+    int   top_k          = v3::top_k;
-+    float top_p          = v3::top_p;
-+    float temperature    = v3::temperature;
-+    float repeat_penalty = v3::repeat_penalty;
-     std::string language;
--    float exaggeration   = 0.5f;
--    float cfg_weight     = 0.5f;
--    float min_p          = 0.05f;
-+    float exaggeration   = v3::exaggeration;
-+    float cfg_weight     = v3::cfg_weight;
-+    float min_p          = v3::min_p;
-+
-+    // S3Gen. 0 = GGUF n_timesteps (10 on V3). MIL20 streaming uses 5.
-+    int cfm_steps = v3::cfm_steps;
- 
--    // S3Gen side.  0 = library default (2-step meanflow).
--    int cfm_steps = 0;
-+    // Split long text so each T3 prompt fits the KV cache. 0 = disabled.
-+    int max_sentence_chars = v3::max_sentence_chars;
- 
-     // ---------------- Streaming synthesis ----------------------------
-     //
-diff --git a/include/tts-cpp/chatterbox/v3_defaults.h b/include/tts-cpp/chatterbox/v3_defaults.h
-new file mode 100644
-index 0000000..6778be7
---- /dev/null
-+++ b/include/tts-cpp/chatterbox/v3_defaults.h
-@@ -0,0 +1,24 @@
-+#pragma once
-+
-+namespace tts_cpp::chatterbox::v3 {
-+
-+constexpr int   n_predict                 = 1000;
-+constexpr int   n_ctx                     = 512;
-+constexpr int   n_gpu_layers              = 99;
-+constexpr int   n_threads                 = 4;
-+constexpr int   n_sessions                = 1;
-+constexpr int   top_k                     = 0;
-+constexpr float top_p                     = 1.0f;
-+constexpr float min_p                     = 0.05f;
-+constexpr float temperature               = 0.8f;
-+constexpr float repeat_penalty            = 1.2f;
-+constexpr float cfg_weight                = 0.5f;
-+constexpr float exaggeration              = 0.5f;
-+constexpr int   cfm_steps                 = 5;
-+constexpr int   stream_first_chunk_tokens = 75;
-+constexpr int   stream_chunk_tokens       = 150;
-+constexpr int   max_sentence_chars        = 180;
-+constexpr int   max_text_tokens           = 2048;
-+constexpr int   max_speech_tokens         = 4096;
-+
-+}
-diff --git a/src/chatterbox_engine.cpp b/src/chatterbox_engine.cpp
-index 935bd12..dce82d3 100644
---- a/src/chatterbox_engine.cpp
-+++ b/src/chatterbox_engine.cpp
-@@ -14,6 +14,7 @@
- #include "mtl_tokenizer.h"
- #include "npy.h"
- #include "t3_mtl.h"
-+#include "text_split.h"
- #include "tts-cpp/chatterbox/s3gen_pipeline.h"
- #include "voice_encoder.h"
- #include "voice_features.h"
-@@ -591,21 +592,55 @@ struct Engine::Impl {
-         }
-         cancel_flag.store(false, std::memory_order_relaxed);
- 
--        const auto t3_t0 = std::chrono::steady_clock::now();
--        std::vector<int32_t> speech_tokens = run_t3(text);
--        const auto t3_t1 = std::chrono::steady_clock::now();
--
--        wait_for_preload(s3gen_preload_thread);
--        fprintf(stderr, "Engine: T3 done tokens=%zu -- starting S3Gen\n",
--                speech_tokens.size());
--
--        SynthesisResult partial;
--        partial.t3_ms = std::chrono::duration<double, std::milli>(t3_t1 - t3_t0).count();
-+        std::vector<std::string> segs;
-+        if (opts.max_sentence_chars > 0) {
-+            segs = split_text_for_tts(text, opts.max_sentence_chars);
-+        }
-+        if (segs.empty()) segs.push_back(text);
-+        if (segs.size() > 1) {
-+            fprintf(stderr, "Engine: auto-split: %zu segments (max-sentence-chars=%d)\n",
-+                    segs.size(), opts.max_sentence_chars);
-+        }
- 
-+        SynthesisResult total;
-+        total.sample_rate = 24000;
-         const bool use_streaming = on_chunk && opts.stream_chunk_tokens > 0;
--        return use_streaming
--            ? synthesize_streaming(speech_tokens, on_chunk, std::move(partial))
--            : synthesize_batch(speech_tokens, std::move(partial));
-+        int chunk_index = 0;
-+
-+        for (size_t si = 0; si < segs.size(); ++si) {
-+            if (cancel_flag.load(std::memory_order_relaxed)) {
-+                throw std::runtime_error("Engine: synthesis cancelled");
-+            }
-+            const auto t3_t0 = std::chrono::steady_clock::now();
-+            std::vector<int32_t> speech_tokens = run_t3(segs[si]);
-+            const auto t3_t1 = std::chrono::steady_clock::now();
-+            wait_for_preload(s3gen_preload_thread);
-+            fprintf(stderr, "Engine: T3 done tokens=%zu segment=%zu/%zu -- starting S3Gen\n",
-+                    speech_tokens.size(), si + 1, segs.size());
-+
-+            SynthesisResult partial;
-+            partial.t3_ms = std::chrono::duration<double, std::milli>(t3_t1 - t3_t0).count();
-+            const bool last_seg = (si + 1 == segs.size());
-+
-+            SynthesisResult part;
-+            if (use_streaming) {
-+                StreamCallback wrapped = [&](const float * pcm, std::size_t samples, int, bool last_in_seg) {
-+                    on_chunk(pcm, samples, chunk_index++, last_seg && last_in_seg);
-+                };
-+                part = synthesize_streaming(speech_tokens, wrapped, std::move(partial));
-+            } else {
-+                part = synthesize_batch(speech_tokens, std::move(partial));
-+                if (on_chunk) {
-+                    on_chunk(part.pcm.data(), part.pcm.size(), chunk_index++, last_seg);
-+                }
-+            }
-+            total.pcm.insert(total.pcm.end(), part.pcm.begin(), part.pcm.end());
-+            total.t3_ms += part.t3_ms;
-+            total.s3gen_ms += part.s3gen_ms;
-+            total.t3_tokens += part.t3_tokens;
-+        }
-+        total.audio_samples = (int) total.pcm.size();
-+        return total;
-     }
- 
-     SynthesisResult synthesize(const std::string & text) {
-diff --git a/src/t3_mtl.cpp b/src/t3_mtl.cpp
-index 662f91d..c6e5941 100644
---- a/src/t3_mtl.cpp
-+++ b/src/t3_mtl.cpp
-@@ -818,6 +818,16 @@ bool run_prompt_pass(const chatterbox_model & model,
-     const int len_cond = 1 + hp.perceiver_queries + (hp.emotion_adv ? 1 : 0);
-     const int N = len_cond + (int) text_tokens.size() + 2;
-     prompt_len_out = N;
-+    if (hp.max_text_tokens > 0 && (int) text_tokens.size() > hp.max_text_tokens) {
-+        fprintf(stderr, "run_prompt_pass: n_text=%d exceeds max_text_tokens=%d\n",
-+                (int) text_tokens.size(), hp.max_text_tokens);
-+        return false;
-+    }
-+    if (N > hp.n_ctx) {
-+        fprintf(stderr, "run_prompt_pass: prompt N=%d exceeds T3 context %d (shorten/split text or raise tts.context)\n",
-+                N, hp.n_ctx);
-+        return false;
-+    }
- 
-     ggml_cgraph * gf = build_prompt_graph_mtl(model, (int) text_tokens.size(), is_uncond);
-     // alloc_graph reserves lazily; see run_step_pass_b2 comment.
-@@ -887,6 +897,16 @@ bool run_prompt_pass_b2(const chatterbox_model & model,
-     const int len_cond = 1 + hp.perceiver_queries + (hp.emotion_adv ? 1 : 0);
-     const int N = len_cond + (int) text_tokens.size() + 2;
-     prompt_len_out = N;
-+    if (hp.max_text_tokens > 0 && (int) text_tokens.size() > hp.max_text_tokens) {
-+        fprintf(stderr, "run_prompt_pass_b2: n_text=%d exceeds max_text_tokens=%d\n",
-+                (int) text_tokens.size(), hp.max_text_tokens);
-+        return false;
-+    }
-+    if (N > hp.n_ctx) {
-+        fprintf(stderr, "run_prompt_pass_b2: prompt N=%d exceeds T3 context %d (shorten/split text or raise tts.context)\n",
-+                N, hp.n_ctx);
-+        return false;
-+    }
- 
-     fprintf(stderr, "run_prompt_pass_b2: n_text=%d N=%d speech_vocab=%d\n",
-             (int) text_tokens.size(), N, hp.n_speech_vocab);
-diff --git a/src/text_split.cpp b/src/text_split.cpp
-new file mode 100644
-index 0000000..f50f379
---- /dev/null
-+++ b/src/text_split.cpp
-@@ -0,0 +1,98 @@
-+#include "text_split.h"
-+
-+#include <algorithm>
-+#include <cctype>
-+
-+namespace tts_cpp::chatterbox {
-+
-+std::vector<std::string> split_text_for_tts(const std::string & text, int max_chars) {
-+    std::vector<std::string> out;
-+    if (text.empty() || max_chars <= 0) {
-+        out.push_back(text);
-+        return out;
-+    }
-+
-+    auto is_ws = [](unsigned char c) { return std::isspace(c) != 0; };
-+
-+    std::vector<std::string> sentences;
-+    {
-+        std::string cur;
-+        size_t i = 0;
-+        while (i < text.size()) {
-+            cur += text[i];
-+            const char c = text[i];
-+            const bool at_end = (i + 1 == text.size());
-+            const bool nx_ws = !at_end && is_ws((unsigned char)text[i + 1]);
-+            if ((c == '.' || c == '?' || c == '!') && (at_end || nx_ws)) {
-+                size_t j = i + 1;
-+                while (j < text.size() && is_ws((unsigned char)text[j])) {
-+                    cur += text[j];
-+                    ++j;
-+                }
-+                sentences.push_back(cur);
-+                cur.clear();
-+                i = j;
-+            } else {
-+                ++i;
-+            }
-+        }
-+        if (!cur.empty()) sentences.push_back(cur);
-+    }
-+
-+    std::vector<std::string> refined;
-+    refined.reserve(sentences.size());
-+    for (auto & s : sentences) {
-+        if ((int)s.size() <= max_chars) {
-+            refined.push_back(std::move(s));
-+            continue;
-+        }
-+        std::string acc;
-+        size_t k = 0;
-+        while (k < s.size()) {
-+            acc += s[k];
-+            const char c = s[k];
-+            const bool nx_ws = (k + 1 < s.size()) && is_ws((unsigned char)s[k + 1]);
-+            const bool soft_break = (c == ',' || c == ':' || c == ';') && nx_ws &&
-+                                    (int)acc.size() > max_chars / 2;
-+            if (soft_break) {
-+                size_t j = k + 1;
-+                while (j < s.size() && is_ws((unsigned char)s[j])) {
-+                    acc += s[j];
-+                    ++j;
-+                }
-+                refined.push_back(acc);
-+                acc.clear();
-+                k = j;
-+                continue;
-+            }
-+            if ((int)acc.size() >= max_chars) {
-+                size_t back = acc.size();
-+                while (back > (size_t)(max_chars * 3 / 4) && !is_ws((unsigned char)acc[back - 1])) --back;
-+                if (back <= (size_t)(max_chars / 2)) back = acc.size();
-+                refined.push_back(acc.substr(0, back));
-+                acc.erase(0, back);
-+            }
-+            ++k;
-+        }
-+        if (!acc.empty()) refined.push_back(acc);
-+    }
-+
-+    for (auto & s : refined) {
-+        if (!out.empty() && (int)(out.back().size() + s.size()) <= max_chars) {
-+            out.back() += s;
-+        } else {
-+            out.push_back(std::move(s));
-+        }
-+    }
-+
-+    for (auto & s : out) {
-+        while (!s.empty() && is_ws((unsigned char)s.back())) s.pop_back();
-+    }
-+    out.erase(std::remove_if(out.begin(), out.end(),
-+                             [](const std::string & s) { return s.empty(); }),
-+              out.end());
-+    if (out.empty()) out.push_back(text);
-+    return out;
-+}
-+
-+}
-diff --git a/src/text_split.h b/src/text_split.h
-new file mode 100644
-index 0000000..852b596
---- /dev/null
-+++ b/src/text_split.h
-@@ -0,0 +1,10 @@
-+#pragma once
-+
-+#include <string>
-+#include <vector>
-+
-+namespace tts_cpp::chatterbox {
-+
-+std::vector<std::string> split_text_for_tts(const std::string & text, int max_chars);
-+
-+}
-diff --git a/src/chatterbox_engine.cpp b/src/chatterbox_engine.cpp
-index 1f195cc..01ec256 100644
---- a/src/chatterbox_engine.cpp
-+++ b/src/chatterbox_engine.cpp
-@@ -35,6 +35,19 @@ void wait_for_preload(std::thread & t) {
-     if (t.joinable()) t.join();
- }
- 
-+// BricksDisplay split layout keeps the S3TokenizerV2 weights in their own
-+// GGUF (chatterbox-mtl-s3t.gguf) next to the T3 / codec files.
-+std::string find_s3t_gguf(const std::string & any_model_path) {
-+    const std::filesystem::path dir = std::filesystem::path(any_model_path).parent_path();
-+    std::error_code ec;
-+    for (const auto & e : std::filesystem::directory_iterator(dir, ec)) {
-+        const std::string fn = e.path().filename().string();
-+        if (e.path().extension() == ".gguf" && fn.find("s3t") != std::string::npos)
-+            return e.path().string();
-+    }
-+    return "";
-+}
-+
- } // namespace
- 
- struct Engine::Impl {
-@@ -247,7 +260,7 @@ struct Engine::Impl {
-         if (!have_ct && !opts.reference_audio.empty()) {
-             std::vector<int32_t> cond_tokens;
-             if (!compute_speech_tokens_native(
--                    opts.reference_audio, opts.s3gen_gguf_path,
-+                    opts.reference_audio, find_s3t_gguf(opts.s3gen_gguf_path),
-                     /*max_cond_tokens=*/ model.hparams.cond_prompt_len,
-                     prompt_token_from_ref, cond_tokens,
-                     n_threads, /*backend=*/ model.backend, opts.verbose)) {
-@@ -315,22 +328,11 @@ struct Engine::Impl {
-                 s3gen_prompt_feat_rows = rows;
-                 fprintf(stderr, "Engine: prompt_feat from reference_audio (%d,80)\n", rows);
-             }
--            if (s3gen_embedding.empty()) {
--                if (!compute_embedding_native(
--                        opts.reference_audio, opts.s3gen_gguf_path,
--                        s3gen_embedding,
--                        /*backend=*/ model.backend, opts.verbose)) {
--                    throw std::runtime_error("Engine: CAMPPlus embedding failed");
--                }
--                if (s3gen_embedding.empty()) throw std::runtime_error("Engine: CAMPPlus embedding is empty");
--                fprintf(stderr, "Engine: embedding from CAMPPlus (%zu,)\n", s3gen_embedding.size());
--            }
-             if (s3gen_prompt_token.empty() && !prompt_token_from_ref.empty()) {
-                 s3gen_prompt_token = std::move(prompt_token_from_ref);
-             }
-             if (s3gen_prompt_token.empty()) throw std::runtime_error("Engine: prompt_token unavailable");
-             if (s3gen_prompt_feat.empty()) throw std::runtime_error("Engine: prompt_feat unavailable");
--            if (s3gen_embedding.empty()) throw std::runtime_error("Engine: embedding unavailable");
-         }
-     }
- 
-diff --git a/src/chatterbox_tts.cpp b/src/chatterbox_tts.cpp
-index bf7dbcb..be1e124 100644
---- a/src/chatterbox_tts.cpp
-+++ b/src/chatterbox_tts.cpp
-@@ -1998,11 +1998,13 @@ int s3gen_synthesize_to_wav(
-     } else {
-         if (!ref_dir.empty()) vlog("Loading ref dict from %s\n", ref_dir.c_str());
- 
-+        // Anything not given by override (or --ref-dir npy) stays empty here
-+        // and is filled from the built-in voice in the GGUF below.
-         if (!opts.prompt_token_override.empty()) {
-             pt_data = opts.prompt_token_override;
-             vlog("  prompt_token: using C++ override (S3TokenizerV2, %zu tokens)\n",
-                     pt_data.size());
--        } else {
-+        } else if (!ref_dir.empty()) {
-             npy_array pt_npy = npy_load(ref_dir + "/prompt_token.npy");
-             pt_data.assign((const int32_t*)pt_npy.data.data(),
-                            (const int32_t*)pt_npy.data.data() + pt_npy.n_elements());
-@@ -2010,8 +2012,8 @@ int s3gen_synthesize_to_wav(
- 
-         if (!opts.embedding_override.empty()) {
-             emb_data = opts.embedding_override;
--            vlog("  embedding: using C++ override (CAMPPlus, %zu dims)\n", emb_data.size());
--        } else {
-+            vlog("  embedding: using C++ override (%zu dims)\n", emb_data.size());
-+        } else if (!ref_dir.empty()) {
-             npy_array emb_npy = npy_load(ref_dir + "/embedding.npy");
-             emb_data.assign((const float*)emb_npy.data.data(),
-                             (const float*)emb_npy.data.data() + emb_npy.n_elements());
-@@ -2021,7 +2023,7 @@ int s3gen_synthesize_to_wav(
-             pf_data = opts.prompt_feat_override;
-             pf_rows = opts.prompt_feat_rows_override;
-             vlog("  prompt_feat: using C++ override (%d mel frames)\n", pf_rows);
--        } else {
-+        } else if (!ref_dir.empty()) {
-             npy_array pf_npy = npy_load(ref_dir + "/prompt_feat.npy");
-             pf_data.assign((const float*)pf_npy.data.data(),
-                            (const float*)pf_npy.data.data() + pf_npy.n_elements());
-@@ -2068,26 +2070,26 @@ int s3gen_synthesize_to_wav(
-     // on the main backend directly on every platform.
-     const model_ctx & m_hift = m;
- 
--    // If neither --ref-dir nor any C++ override populated the three
--    // conditioning tensors above, pull the built-in voice from the GGUF.
--    //
--    // NB: `ref_dir.empty()` alone is NOT a valid check here __EM_DASH__ --reference-audio
--    // by itself (no --ref-dir) legitimately fills all three via the C++
--    // override path, and we must not overwrite those.
--    if (pt_data.empty() && emb_data.empty() && pf_data.empty()) {
--        ggml_tensor * t_emb = find_tensor(m, "s3gen/builtin/embedding");
--        ggml_tensor * t_pt  = find_tensor(m, "s3gen/builtin/prompt_token");
--        ggml_tensor * t_pf  = find_tensor(m, "s3gen/builtin/prompt_feat");
-+    // Fill each conditioning piece the --ref-dir / C++ override path did not
-+    // provide from the built-in voice in the GGUF.  Per-tensor (not all-or-
-+    // nothing): the BricksDisplay codec carries no CAMPPlus encoder, so the
-+    // 192-d s3gen embedding is always the built-in one even when cloning.
-+    ggml_tensor * t_emb = find_tensor(m, "s3gen/builtin/embedding");
-+    ggml_tensor * t_pt  = find_tensor(m, "s3gen/builtin/prompt_token");
-+    ggml_tensor * t_pf  = find_tensor(m, "s3gen/builtin/prompt_feat");
-+    if (emb_data.empty()) {
-         emb_data.resize(ggml_nelements(t_emb));
-+        ggml_backend_tensor_get(t_emb, emb_data.data(), 0, ggml_nbytes(t_emb));
-+    }
-+    if (pt_data.empty()) {
-         pt_data.resize(ggml_nelements(t_pt));
-+        ggml_backend_tensor_get(t_pt, pt_data.data(), 0, ggml_nbytes(t_pt));
-+    }
-+    if (pf_data.empty()) {
-         pf_data.resize(ggml_nelements(t_pf));
--        ggml_backend_tensor_get(t_emb, emb_data.data(), 0, ggml_nbytes(t_emb));
--        ggml_backend_tensor_get(t_pt,  pt_data.data(),  0, ggml_nbytes(t_pt));
--        ggml_backend_tensor_get(t_pf,  pf_data.data(),  0, ggml_nbytes(t_pf));
-+        ggml_backend_tensor_get(t_pf, pf_data.data(), 0, ggml_nbytes(t_pf));
-         // prompt_feat is stored ggml ne=[80, 500] = numpy (500, 80).
-         pf_rows = (int)t_pf->ne[1];
--        vlog("  built-in voice: embedding=(%zu,) prompt_token=(%zu,) prompt_feat=(%d, %lld)\n",
--                emb_data.size(), pt_data.size(), pf_rows, (long long)t_pf->ne[0]);
-     }
-     double pipeline_t0 = now_ms();
- 
-diff --git a/src/main.cpp b/src/main.cpp
-index 70844ef..6c438a8 100644
+index aa87cc7..6c438a8 100644
 --- a/src/main.cpp
 +++ b/src/main.cpp
 @@ -121,24 +121,10 @@ bool compute_prompt_feat_native(const std::string & wav_path,
@@ -2419,6 +1912,26 @@ index 70844ef..6c438a8 100644
  
      out_feat = mel_extract_24k_80(wav, mel_fb);
      if (out_feat.empty()) return false;
+@@ -362,10 +348,19 @@ bool load_model_gguf(const std::string & path, chatterbox_model & model, int req
+                 gguf_free(peek_ctx);
+                 return false;
+             }
++            const int64_t ak = gguf_find_key(peek_ctx, "general.architecture");
++            std::string arch;
++            if (ak >= 0 && gguf_get_kv_type(peek_ctx, ak) == GGUF_TYPE_STRING) {
++                const char * a = gguf_get_val_str(peek_ctx, ak);
++                if (a) arch = a;
++            }
+             gguf_free(peek_ctx);
+             if (variant == "t3_mtl") {
+                 return load_model_gguf_mtl(path, model, requested_ctx, n_gpu_layers);
+             }
++            if (arch == "llama") {
++                return load_model_gguf_mtl_split(path, model, requested_ctx, n_gpu_layers);
++            }
+         }
+     }
+     ggml_context * tmp_ctx = nullptr;
 diff --git a/src/s3tokenizer.cpp b/src/s3tokenizer.cpp
 index a6d1a12..e53abe3 100644
 --- a/src/s3tokenizer.cpp
@@ -2588,26 +2101,569 @@ index a6d1a12..e53abe3 100644
      return ok;
  }
  
+diff --git a/src/t3_mtl.cpp b/src/t3_mtl.cpp
+index 0fc730e..d007d85 100644
+--- a/src/t3_mtl.cpp
++++ b/src/t3_mtl.cpp
+@@ -28,6 +28,9 @@
+ #include "ggml-alloc.h"
+ #include "ggml-backend.h"
+ #include "ggml-cpu.h"
++#ifdef GGML_USE_VULKAN
++#include "ggml-vulkan.h"
++#endif
+ #include "gguf.h"
+ 
+ #include <algorithm>
+@@ -45,6 +48,22 @@ namespace tts_cpp::chatterbox::detail {
+ 
+ namespace {
+ 
++bool is_vulkan_backend(ggml_backend_t backend) {
++#ifdef GGML_USE_VULKAN
++    return ggml_backend_is_vk(backend);
++#else
++    (void) backend;
++    return false;
++#endif
++}
++
++bool use_optimized_mtl_backend(ggml_backend_t backend) {
++    // The B=2 CFG and stacked-QKV path was designed and parity-validated on
++    // Metal. Vulkan must use contiguous Q/K/V tensors and sequential CFG;
++    // its kernels do not share Metal's validated strided-view contract.
++    return !ggml_backend_is_cpu(backend) && !is_vulkan_backend(backend);
++}
++
+ // Process-wide registry of the Phase-15 stacked-weight buffers, with an
+ // atexit hook that frees them before Metal's static device destructors
+ // run. Without this Metal asserts on `[rsets->data count] == 0` because
+@@ -425,9 +444,16 @@ ggml_tensor * build_llama_block(ggml_context * ctx, ggml_cgraph * gf,
+     }
+ 
+     const float scale = 1.0f / std::sqrt((float) HD);
+-    ggml_tensor * attn = ggml_flash_attn_ext(ctx, Q, Kfull, Vfull, kq_mask,
+-                                             scale, 0.0f, 0.0f);
+-    // attn ne=[HD, NH, N, B].  Reshape back to (n_embd, N[, B]).
++    ggml_tensor * attn;
++    if (is_vulkan_backend(m.backend)) {
++        ggml_tensor * kq = ggml_mul_mat(ctx, Kfull, Q);
++        kq = ggml_soft_max_ext(ctx, kq, kq_mask, scale, 0.0f);
++        attn = ggml_mul_mat(ctx, Vfull, kq);
++        attn = ggml_cont(ctx, ggml_permute(ctx, attn, 0, 2, 1, 3));
++    } else {
++        attn = ggml_flash_attn_ext(ctx, Q, Kfull, Vfull, kq_mask,
++                                   scale, 0.0f, 0.0f);
++    }
+     if (B == 1) {
+         cur = ggml_reshape_2d(ctx, attn, hp.n_embd, N);
+     } else {
+@@ -818,6 +844,16 @@ bool run_prompt_pass(const chatterbox_model & model,
+     const int len_cond = 1 + hp.perceiver_queries + (hp.emotion_adv ? 1 : 0);
+     const int N = len_cond + (int) text_tokens.size() + 2;
+     prompt_len_out = N;
++    if (hp.max_text_tokens > 0 && (int) text_tokens.size() > hp.max_text_tokens) {
++        fprintf(stderr, "run_prompt_pass: n_text=%d exceeds max_text_tokens=%d\n",
++                (int) text_tokens.size(), hp.max_text_tokens);
++        return false;
++    }
++    if (N > hp.n_ctx) {
++        fprintf(stderr, "run_prompt_pass: prompt N=%d exceeds T3 context %d (shorten/split text or raise tts.context)\n",
++                N, hp.n_ctx);
++        return false;
++    }
+ 
+     ggml_cgraph * gf = build_prompt_graph_mtl(model, (int) text_tokens.size(), is_uncond);
+     // alloc_graph reserves lazily; see run_step_pass_b2 comment.
+@@ -887,8 +923,21 @@ bool run_prompt_pass_b2(const chatterbox_model & model,
+     const int len_cond = 1 + hp.perceiver_queries + (hp.emotion_adv ? 1 : 0);
+     const int N = len_cond + (int) text_tokens.size() + 2;
+     prompt_len_out = N;
++    if (hp.max_text_tokens > 0 && (int) text_tokens.size() > hp.max_text_tokens) {
++        fprintf(stderr, "run_prompt_pass_b2: n_text=%d exceeds max_text_tokens=%d\n",
++                (int) text_tokens.size(), hp.max_text_tokens);
++        return false;
++    }
++    if (N > hp.n_ctx) {
++        fprintf(stderr, "run_prompt_pass_b2: prompt N=%d exceeds T3 context %d (shorten/split text or raise tts.context)\n",
++                N, hp.n_ctx);
++        return false;
++    }
+ 
++    fprintf(stderr, "run_prompt_pass_b2: n_text=%d N=%d speech_vocab=%d\n",
++            (int) text_tokens.size(), N, hp.n_speech_vocab);
+     ggml_cgraph * gf = build_prompt_graph_mtl_b2(model, (int) text_tokens.size());
++    fprintf(stderr, "run_prompt_pass_b2: graph built\n");
+     // alloc_graph below already reserves lazily via ggml_gallocr_needs_realloc;
+     // see run_step_pass_b2 for the rationale on dropping the explicit
+     // ggml_gallocr_reserve(allocr, gf) call here.
+@@ -896,6 +945,7 @@ bool run_prompt_pass_b2(const chatterbox_model & model,
+         fprintf(stderr, "run_prompt_pass_b2: gallocr_alloc_graph failed (graph topology exceeded reserved budget?)\n");
+         return false;
+     }
++    fprintf(stderr, "run_prompt_pass_b2: graph allocated\n");
+ 
+     auto set_in = [&](const char * name, const void * data, size_t bytes) {
+         ggml_tensor * t = ggml_graph_get_tensor(gf, name);
+@@ -931,15 +981,43 @@ bool run_prompt_pass_b2(const chatterbox_model & model,
+     if (ggml_backend_is_cpu(model.backend)) {
+         ggml_backend_cpu_set_n_threads(model.backend, n_threads);
+     }
++    fprintf(stderr, "run_prompt_pass_b2: compute start\n");
+     ggml_backend_graph_compute(model.backend, gf);
++    fprintf(stderr, "run_prompt_pass_b2: compute done\n");
+ 
+     ggml_tensor * logits = ggml_graph_get_tensor(gf, "logits");
+-    // logits ne=[n_speech_vocab, 1, 2], contiguous.  Cond at b=0, uncond at b=1.
+-    const size_t per_batch_bytes = (size_t) hp.n_speech_vocab * sizeof(float);
+-    logits_cond_out.resize(hp.n_speech_vocab);
+-    logits_uncond_out.resize(hp.n_speech_vocab);
+-    ggml_backend_tensor_get(logits, logits_cond_out.data(),   0,                per_batch_bytes);
+-    ggml_backend_tensor_get(logits, logits_uncond_out.data(), per_batch_bytes, per_batch_bytes);
++    if (!logits) {
++        fprintf(stderr, "run_prompt_pass_b2: logits tensor missing\n");
++        return false;
++    }
++    // logits ne=[n_speech_vocab, 1, 2]. One host read: a split get of the
++    // uncond half (offset=vocab*4) tripped ggml-backend.cpp:307 on Vulkan
++    // even when nbytes==2*vocab*4.
++    const size_t nb = ggml_nbytes(logits);
++    fprintf(stderr,
++            "run_prompt_pass_b2: logits type=%d n_dims=%d ne=[%lld,%lld,%lld,%lld] "
++            "nb=[%zu,%zu,%zu,%zu] nbytes=%zu view=%p voff=%zu\n",
++            (int) logits->type, ggml_n_dims(logits),
++            (long long) logits->ne[0], (long long) logits->ne[1],
++            (long long) logits->ne[2], (long long) logits->ne[3],
++            logits->nb[0], logits->nb[1], logits->nb[2], logits->nb[3],
++            nb, (void *) logits->view_src, logits->view_offs);
++    std::vector<float> both((size_t) ggml_nelements(logits));
++    const size_t want = both.size() * sizeof(float);
++    fprintf(stderr, "run_prompt_pass_b2: get all want=%zu nbytes=%zu\n", want, nb);
++    if (want > nb) {
++        fprintf(stderr, "run_prompt_pass_b2: host buffer larger than logits nbytes\n");
++        return false;
++    }
++    ggml_backend_tensor_get(logits, both.data(), 0, want);
++    fprintf(stderr, "run_prompt_pass_b2: get all ok\n");
++    const size_t V = (size_t) hp.n_speech_vocab;
++    if (both.size() < 2 * V) {
++        fprintf(stderr, "run_prompt_pass_b2: logits elems=%zu < 2*vocab\n", both.size());
++        return false;
++    }
++    logits_cond_out.assign(both.begin(), both.begin() + (std::ptrdiff_t) V);
++    logits_uncond_out.assign(both.begin() + (std::ptrdiff_t) V, both.begin() + (std::ptrdiff_t) (2 * V));
+     return true;
+ }
+ 
+@@ -948,11 +1026,16 @@ bool run_step_pass_b2(const chatterbox_model & model,
+                       ggml_gallocr_t allocr,
+                       int n_threads,
+                       int n_past,
++                      int speech_position,
+                       int32_t token,
+                       std::vector<float> & logits_cond_out,
+                       std::vector<float> & logits_uncond_out) {
+     const auto & hp = model.hparams;
+ 
++    if (speech_position <= 3 || (speech_position % 50) == 0) {
++        fprintf(stderr, "run_step_pass_b2: n_past=%d speech_position=%d token=%d\n",
++                n_past, speech_position, (int) token);
++    }
+     ggml_cgraph * gf = build_step_graph_mtl_b2(model, n_past);
+     // Skip the explicit ggml_gallocr_reserve(allocr, gf) call here:
+     // alloc_graph below already calls ggml_gallocr_needs_realloc, and
+@@ -966,12 +1049,19 @@ bool run_step_pass_b2(const chatterbox_model & model,
+         fprintf(stderr, "run_step_pass_b2: gallocr_alloc_graph failed (n_past=%d)\n", n_past);
+         return false;
+     }
+-
+-    ggml_backend_tensor_set(ggml_graph_get_tensor(gf, "speech_token"), &token, 0, sizeof(token));
+-    int32_t sp = n_past;
+-    ggml_backend_tensor_set(ggml_graph_get_tensor(gf, "speech_pos"), &sp, 0, sizeof(sp));
++    ggml_tensor * t_tok = ggml_graph_get_tensor(gf, "speech_token");
++    ggml_tensor * t_spos = ggml_graph_get_tensor(gf, "speech_pos");
++    ggml_tensor * t_pos = ggml_graph_get_tensor(gf, "pos_ids");
++    if (!t_tok || !t_spos || !t_pos) {
++        fprintf(stderr, "run_step_pass_b2: missing input tensor tok=%p spos=%p pos=%p\n",
++                (void *) t_tok, (void *) t_spos, (void *) t_pos);
++        return false;
++    }
++    ggml_backend_tensor_set(t_tok, &token, 0, sizeof(token));
++    int32_t sp = speech_position;
++    ggml_backend_tensor_set(t_spos, &sp, 0, sizeof(sp));
+     int32_t pos = n_past;
+-    ggml_backend_tensor_set(ggml_graph_get_tensor(gf, "pos_ids"), &pos, 0, sizeof(pos));
++    ggml_backend_tensor_set(t_pos, &pos, 0, sizeof(pos));
+ 
+     if (ggml_backend_is_cpu(model.backend)) {
+         ggml_backend_cpu_set_n_threads(model.backend, n_threads);
+@@ -979,11 +1069,27 @@ bool run_step_pass_b2(const chatterbox_model & model,
+     ggml_backend_graph_compute(model.backend, gf);
+ 
+     ggml_tensor * logits = ggml_graph_get_tensor(gf, "logits");
+-    const size_t per_batch_bytes = (size_t) hp.n_speech_vocab * sizeof(float);
+-    logits_cond_out.resize(hp.n_speech_vocab);
+-    logits_uncond_out.resize(hp.n_speech_vocab);
+-    ggml_backend_tensor_get(logits, logits_cond_out.data(),   0,                per_batch_bytes);
+-    ggml_backend_tensor_get(logits, logits_uncond_out.data(), per_batch_bytes, per_batch_bytes);
++    if (!logits) {
++        fprintf(stderr, "run_step_pass_b2: logits tensor missing (n_past=%d)\n", n_past);
++        return false;
++    }
++    std::vector<float> both((size_t) ggml_nelements(logits));
++    const size_t want = both.size() * sizeof(float);
++    const size_t nb = ggml_nbytes(logits);
++    if (want > nb) {
++        fprintf(stderr, "run_step_pass_b2: logits elems=%zu nbytes=%zu n_past=%d\n",
++                both.size(), nb, n_past);
++        return false;
++    }
++    ggml_backend_tensor_get(logits, both.data(), 0, want);
++    const size_t V = (size_t) hp.n_speech_vocab;
++    if (both.size() < 2 * V) {
++        fprintf(stderr, "run_step_pass_b2: logits elems=%zu < 2*vocab n_past=%d\n",
++                both.size(), n_past);
++        return false;
++    }
++    logits_cond_out.assign(both.begin(), both.begin() + (std::ptrdiff_t) V);
++    logits_uncond_out.assign(both.begin() + (std::ptrdiff_t) V, both.begin() + (std::ptrdiff_t) (2 * V));
+     return true;
+ }
+ 
+@@ -991,6 +1097,7 @@ bool run_step_pass(const chatterbox_model & model,
+                    ggml_gallocr_t allocr,
+                    int n_threads,
+                    int n_past,
++                   int speech_position,
+                    int32_t token,
+                    bool is_uncond,
+                    std::vector<float> & logits_out) {
+@@ -1002,7 +1109,7 @@ bool run_step_pass(const chatterbox_model & model,
+     }
+ 
+     ggml_backend_tensor_set(ggml_graph_get_tensor(gf, "speech_token"), &token, 0, sizeof(token));
+-    int32_t sp = n_past;
++    int32_t sp = speech_position;
+     ggml_backend_tensor_set(ggml_graph_get_tensor(gf, "speech_pos"), &sp, 0, sizeof(sp));
+     int32_t pos = n_past;
+     ggml_backend_tensor_set(ggml_graph_get_tensor(gf, "pos_ids"), &pos, 0, sizeof(pos));
+@@ -1379,7 +1486,7 @@ bool load_model_gguf_mtl(const std::string & path,
+         // ggml-cpu's per-kernel overhead is already negligible and the
+         // extra weight memory footprint (~75 MB for the multilingual
+         // T3) trades unfavourably with thread-cache locality there.
+-        if (!ggml_backend_is_cpu(model.backend)) {
++        if (use_optimized_mtl_backend(model.backend)) {
+             const int n_embd = hp.n_embd;
+             const int n_ff   = hp.intermediate_size;
+ 
+@@ -1520,7 +1627,7 @@ bool eval_prompt_mtl(const chatterbox_model & model,
+     // op processes B=2 in a tight loop, so batching just doubles the
+     // per-op work without saving ops; mirrors __SECTION_SIGN__3.20's S3Gen B=2 finding
+     // that on CPU the two-call path stayed the winner).
+-    const bool use_b2 = !ggml_backend_is_cpu(model.backend);
++    const bool use_b2 = use_optimized_mtl_backend(model.backend);
+     if (use_b2) {
+         return run_prompt_pass_b2(model, allocr, n_threads, text_tokens,
+                                   exaggeration, logits_cond_out,
+@@ -1549,31 +1656,29 @@ bool eval_step_mtl(const chatterbox_model & model,
+                    ggml_gallocr_t allocr,
+                    int n_threads,
+                    int n_past,
++                   int speech_position,
+                    int32_t token,
+                    std::vector<float> & logits_cond_out,
+                    std::vector<float> & logits_uncond_out) {
+-    // The step graph indexes `speech_pos_emb` directly with `n_past`.
+-    // `speech_pos_emb` only has `max_speech_tokens` rows (see
+-    // scripts/convert-t3-mtl-to-gguf.py: MAX_SPEECH_TOKENS=4096), so we have
+-    // to refuse the step before `ggml_get_rows` reads past the embedding
+-    // table.  In practice n_past starts at len_cond + n_text_tokens + 2
+-    // (~2084 with max text), so this only fires on very long generations.
+-    if (model.hparams.max_speech_tokens > 0 &&
+-        n_past >= model.hparams.max_speech_tokens) {
+-        fprintf(stderr, "eval_step_mtl: n_past=%d exceeds max_speech_tokens=%d; "
+-                        "stopping generation to avoid out-of-range speech_pos_emb lookup\n",
+-                n_past, model.hparams.max_speech_tokens);
++    // The transformer RoPE/KV position continues after the full prompt, while
++    // the learned speech position starts at 1 for the first generated token.
++    // Keep these positions independent, matching multilingual V3 t3.py.
++    if (speech_position <= 0 ||
++        (model.hparams.max_speech_tokens > 0 &&
++         speech_position >= model.hparams.max_speech_tokens)) {
++        fprintf(stderr, "eval_step_mtl: speech_position=%d outside [1,%d); n_past=%d\n",
++                speech_position, model.hparams.max_speech_tokens, n_past);
+         return false;
+     }
+     // Metal: cond+uncond batched into a single forward.  See eval_prompt_mtl.
+-    const bool use_b2 = !ggml_backend_is_cpu(model.backend);
++    const bool use_b2 = use_optimized_mtl_backend(model.backend);
+     if (use_b2) {
+-        return run_step_pass_b2(model, allocr, n_threads, n_past, token,
++        return run_step_pass_b2(model, allocr, n_threads, n_past, speech_position, token,
+                                 logits_cond_out, logits_uncond_out);
+     }
+-    if (!run_step_pass(model, allocr, n_threads, n_past, token, /*uncond=*/false,
++    if (!run_step_pass(model, allocr, n_threads, n_past, speech_position, token, /*uncond=*/false,
+                        logits_cond_out)) return false;
+-    if (!run_step_pass(model, allocr, n_threads, n_past, token, /*uncond=*/true,
++    if (!run_step_pass(model, allocr, n_threads, n_past, speech_position, token, /*uncond=*/true,
+                        logits_uncond_out)) return false;
+     return true;
+ }
+diff --git a/src/text_split.cpp b/src/text_split.cpp
+new file mode 100644
+index 0000000..f50f379
+--- /dev/null
++++ b/src/text_split.cpp
+@@ -0,0 +1,98 @@
++#include "text_split.h"
++
++#include <algorithm>
++#include <cctype>
++
++namespace tts_cpp::chatterbox {
++
++std::vector<std::string> split_text_for_tts(const std::string & text, int max_chars) {
++    std::vector<std::string> out;
++    if (text.empty() || max_chars <= 0) {
++        out.push_back(text);
++        return out;
++    }
++
++    auto is_ws = [](unsigned char c) { return std::isspace(c) != 0; };
++
++    std::vector<std::string> sentences;
++    {
++        std::string cur;
++        size_t i = 0;
++        while (i < text.size()) {
++            cur += text[i];
++            const char c = text[i];
++            const bool at_end = (i + 1 == text.size());
++            const bool nx_ws = !at_end && is_ws((unsigned char)text[i + 1]);
++            if ((c == '.' || c == '?' || c == '!') && (at_end || nx_ws)) {
++                size_t j = i + 1;
++                while (j < text.size() && is_ws((unsigned char)text[j])) {
++                    cur += text[j];
++                    ++j;
++                }
++                sentences.push_back(cur);
++                cur.clear();
++                i = j;
++            } else {
++                ++i;
++            }
++        }
++        if (!cur.empty()) sentences.push_back(cur);
++    }
++
++    std::vector<std::string> refined;
++    refined.reserve(sentences.size());
++    for (auto & s : sentences) {
++        if ((int)s.size() <= max_chars) {
++            refined.push_back(std::move(s));
++            continue;
++        }
++        std::string acc;
++        size_t k = 0;
++        while (k < s.size()) {
++            acc += s[k];
++            const char c = s[k];
++            const bool nx_ws = (k + 1 < s.size()) && is_ws((unsigned char)s[k + 1]);
++            const bool soft_break = (c == ',' || c == ':' || c == ';') && nx_ws &&
++                                    (int)acc.size() > max_chars / 2;
++            if (soft_break) {
++                size_t j = k + 1;
++                while (j < s.size() && is_ws((unsigned char)s[j])) {
++                    acc += s[j];
++                    ++j;
++                }
++                refined.push_back(acc);
++                acc.clear();
++                k = j;
++                continue;
++            }
++            if ((int)acc.size() >= max_chars) {
++                size_t back = acc.size();
++                while (back > (size_t)(max_chars * 3 / 4) && !is_ws((unsigned char)acc[back - 1])) --back;
++                if (back <= (size_t)(max_chars / 2)) back = acc.size();
++                refined.push_back(acc.substr(0, back));
++                acc.erase(0, back);
++            }
++            ++k;
++        }
++        if (!acc.empty()) refined.push_back(acc);
++    }
++
++    for (auto & s : refined) {
++        if (!out.empty() && (int)(out.back().size() + s.size()) <= max_chars) {
++            out.back() += s;
++        } else {
++            out.push_back(std::move(s));
++        }
++    }
++
++    for (auto & s : out) {
++        while (!s.empty() && is_ws((unsigned char)s.back())) s.pop_back();
++    }
++    out.erase(std::remove_if(out.begin(), out.end(),
++                             [](const std::string & s) { return s.empty(); }),
++              out.end());
++    if (out.empty()) out.push_back(text);
++    return out;
++}
++
++}
+diff --git a/src/text_split.h b/src/text_split.h
+new file mode 100644
+index 0000000..852b596
+--- /dev/null
++++ b/src/text_split.h
+@@ -0,0 +1,10 @@
++#pragma once
++
++#include <string>
++#include <vector>
++
++namespace tts_cpp::chatterbox {
++
++std::vector<std::string> split_text_for_tts(const std::string & text, int max_chars);
++
++}
+diff --git a/src/voice_encoder.cpp b/src/voice_encoder.cpp
+index da3fe39..cb343fc 100644
+--- a/src/voice_encoder.cpp
++++ b/src/voice_encoder.cpp
+@@ -21,9 +21,18 @@ static bool copy_tensor_f32(ggml_context * ctx, const char * name,
+ {
+     ggml_tensor * t = ggml_get_tensor(ctx, name);
+     if (!t) return false;
+-    out.resize(ggml_nelements(t));
+-    std::memcpy(out.data(), ggml_get_data(t), ggml_nbytes(t));
+-    return true;
++    const size_t n = (size_t) ggml_nelements(t);
++    out.resize(n);
++    if (t->type == GGML_TYPE_F32) {
++        std::memcpy(out.data(), ggml_get_data(t), ggml_nbytes(t));
++        return true;
++    }
++    if (t->type == GGML_TYPE_F16) {
++        const ggml_fp16_t * in = (const ggml_fp16_t *) ggml_get_data(t);
++        for (size_t i = 0; i < n; ++i) out[i] = ggml_fp16_to_fp32(in[i]);
++        return true;
++    }
++    return false;
+ }
+ 
+ bool voice_encoder_load(const std::string & t3_gguf_path,
+@@ -43,32 +52,37 @@ bool voice_encoder_load(const std::string & t3_gguf_path,
+         return ok;
+     };
+ 
+-    // Presence check: the VE weights landed in Phase 2c of the A1 plan, so a
+-    // pre-A1 GGUF won't have them.  Bail cleanly.
+-    if (gguf_find_key(g, "voice_encoder.hidden_size") < 0) {
++    // Official T3 GGUF: voice_encoder.hidden_size.
++    // BricksDisplay codec GGUF: codec.speaker.ve.hidden_size + speaker.voice_encoder.*.
++    const bool official = gguf_find_key(g, "voice_encoder.hidden_size") >= 0;
++    const bool codec_ve = gguf_find_key(g, "codec.speaker.ve.hidden_size") >= 0;
++    if (!official && !codec_ve) {
+         return cleanup(false);
+     }
+ 
+-    auto get_u32 = [&](const char * k, uint32_t fallback) -> uint32_t {
++    auto get_u32 = [&](const char * k, const char * k2, uint32_t fallback) -> uint32_t {
+         int64_t id = gguf_find_key(g, k);
++        if (id < 0 && k2) id = gguf_find_key(g, k2);
+         return id < 0 ? fallback : gguf_get_val_u32(g, id);
+     };
+-    auto get_f32 = [&](const char * k, float fallback) -> float {
++    auto get_f32 = [&](const char * k, const char * k2, float fallback) -> float {
+         int64_t id = gguf_find_key(g, k);
++        if (id < 0 && k2) id = gguf_find_key(g, k2);
+         return id < 0 ? fallback : gguf_get_val_f32(g, id);
+     };
+ 
+-    out.n_layers       = (int)get_u32("voice_encoder.num_layers",    3);
+-    out.n_mels         = (int)get_u32("voice_encoder.n_mels",       40);
+-    out.hidden         = (int)get_u32("voice_encoder.hidden_size",  256);
+-    out.embedding      = (int)get_u32("voice_encoder.embedding_size", out.hidden);
+-    out.partial_frames = (int)get_u32("voice_encoder.partial_frames", 160);
+-    out.overlap        = get_f32("voice_encoder.overlap",            0.5f);
+-    out.rate           = get_f32("voice_encoder.rate",               1.3f);
+-    out.min_coverage   = get_f32("voice_encoder.min_coverage",       0.8f);
++    out.n_layers       = (int)get_u32("voice_encoder.num_layers", "codec.speaker.ve.num_layers", 3);
++    out.n_mels         = (int)get_u32("voice_encoder.n_mels", "codec.speaker.ve.num_mels", 40);
++    out.hidden         = (int)get_u32("voice_encoder.hidden_size", "codec.speaker.ve.hidden_size", 256);
++    out.embedding      = (int)get_u32("voice_encoder.embedding_size", "codec.speaker.ve.speaker_embed_dim", out.hidden);
++    out.partial_frames = (int)get_u32("voice_encoder.partial_frames", "codec.speaker.ve.partial_frames", 160);
++    out.overlap        = get_f32("voice_encoder.overlap", "codec.speaker.ve.overlap", 0.5f);
++    out.rate           = get_f32("voice_encoder.rate", "codec.speaker.ve.rate", 1.3f);
++    out.min_coverage   = get_f32("voice_encoder.min_coverage", "codec.speaker.ve.min_coverage", 0.8f);
+ 
+-    auto load_or_fail = [&](const char * name, std::vector<float> & dst) {
++    auto load_or_fail = [&](const char * name, const char * alt, std::vector<float> & dst) {
+         if (copy_tensor_f32(tmp_ctx, name, dst)) return true;
++        if (alt && copy_tensor_f32(tmp_ctx, alt, dst)) return true;
+         fprintf(stderr, "voice_encoder_load: missing expected tensor '%s' in %s\n",
+                 name, t3_gguf_path.c_str());
+         return false;
+@@ -80,19 +94,23 @@ bool voice_encoder_load(const std::string & t3_gguf_path,
+         auto & L = out.lstm[l];
+         L.H = out.hidden;
+         L.I = (l == 0) ? out.n_mels : out.hidden;
+-        char name[128];
++        char name[128], alt[128];
+         std::snprintf(name, sizeof(name), "voice_encoder/lstm/weight_ih_l%d", l);
+-        if (!load_or_fail(name, L.w_ih)) return cleanup(false);
++        std::snprintf(alt, sizeof(alt), "speaker.voice_encoder.lstm_%d.W_ih", l);
++        if (!load_or_fail(name, alt, L.w_ih)) return cleanup(false);
+         std::snprintf(name, sizeof(name), "voice_encoder/lstm/weight_hh_l%d", l);
+-        if (!load_or_fail(name, L.w_hh)) return cleanup(false);
++        std::snprintf(alt, sizeof(alt), "speaker.voice_encoder.lstm_%d.W_hh", l);
++        if (!load_or_fail(name, alt, L.w_hh)) return cleanup(false);
+         std::snprintf(name, sizeof(name), "voice_encoder/lstm/bias_ih_l%d", l);
+-        if (!load_or_fail(name, L.b_ih)) return cleanup(false);
++        std::snprintf(alt, sizeof(alt), "speaker.voice_encoder.lstm_%d.b_ih", l);
++        if (!load_or_fail(name, alt, L.b_ih)) return cleanup(false);
+         std::snprintf(name, sizeof(name), "voice_encoder/lstm/bias_hh_l%d", l);
+-        if (!load_or_fail(name, L.b_hh)) return cleanup(false);
++        std::snprintf(alt, sizeof(alt), "speaker.voice_encoder.lstm_%d.b_hh", l);
++        if (!load_or_fail(name, alt, L.b_hh)) return cleanup(false);
+     }
+-    if (!load_or_fail("voice_encoder/proj/weight", out.proj_w)) return cleanup(false);
+-    if (!load_or_fail("voice_encoder/proj/bias",   out.proj_b)) return cleanup(false);
+-    if (!load_or_fail("voice_encoder/mel_fb",      out.mel_fb)) return cleanup(false);
++    if (!load_or_fail("voice_encoder/proj/weight", "speaker.voice_encoder.proj.weight", out.proj_w)) return cleanup(false);
++    if (!load_or_fail("voice_encoder/proj/bias",   "speaker.voice_encoder.proj.bias",   out.proj_b)) return cleanup(false);
++    if (!load_or_fail("voice_encoder/mel_fb",      "speaker.voice_encoder.mel_basis",   out.mel_fb)) return cleanup(false);
+ 
+     return cleanup(true);
+ }
 diff --git a/src/voice_features.cpp b/src/voice_features.cpp
-index 0ff3541..5e3cce0 100644
+index 0ff3541..8e01445 100644
 --- a/src/voice_features.cpp
 +++ b/src/voice_features.cpp
-@@ -69,15 +69,9 @@ static double bessel_i0(double x) {
+@@ -66,11 +66,6 @@ static double bessel_i0(double x) {
+     return sum;
+ }
+ 
 -// Greatest common divisor.
 -static int gcd_int(int a, int b) {
 -    while (b) { int t = a % b; a = b; b = t; }
 -    return a;
 -}
- __BLANK_CONTEXT__
+ 
  std::vector<float> resample_sinc(const std::vector<float> & in,
                                   int sr_in, int sr_out,
-                                  int taps_half)
+@@ -78,7 +73,6 @@ std::vector<float> resample_sinc(const std::vector<float> & in,
  {
      if (sr_in == sr_out) return in;
      if (in.empty()) return {};
 -    (void)gcd_int;  // historical helper, no longer needed
- __BLANK_CONTEXT__
+ 
      // Straight sinc interpolation: for each output sample at fractional input
+     // position t, accumulate h((t - k)) * x[k] over a window of 2*taps_half+1
 @@ -245,6 +239,43 @@ std::vector<float> mel_extract_stft_hann_ggml(
  std::vector<float> fbank_kaldi_80_ggml(const std::vector<float> & wav_16k,
                                         const std::vector<float> & mel_fb);
@@ -2669,242 +2725,3 @@ index 9e33d33..dd46f98 100644
  std::vector<float> mel_extract_24k_80(const std::vector<float> & wav_24k,
                                        const std::vector<float> & mel_filterbank);
  
-diff --git a/src/chatterbox_engine.cpp b/src/chatterbox_engine.cpp
-index 78c324e..636d62c 100644
---- a/src/chatterbox_engine.cpp
-+++ b/src/chatterbox_engine.cpp
-@@ -393,15 +393,31 @@ struct Engine::Impl {
-             generated.reserve((size_t) opts.n_predict + 1);
-             int32_t current = sample_next_token_mtl(
-                 logits_c, logits_u, generated, sp, rng, model.hparams.stop_speech_token);
--            fprintf(stderr, "Engine: T3 first token=%d n_past=%d\n", (int) current, n_past);
-+            fprintf(stderr, "Engine: T3 first token=%d n_past=%d speech_position=1\n",
-+                    (int) current, n_past);
-             generated.push_back(current);
-+            std::string stop_reason = "max_tokens";
-             for (int i = 0; i < opts.n_predict; ++i) {
-                 if (cancel_flag.load(std::memory_order_relaxed)) {
-+                    fprintf(stderr,
-+                            "Engine: T3 stop reason=cancellation prompt=%d n_past=%d speech_position=%zu generated=%zu\n",
-+                            prompt_len, n_past, generated.size(), generated.size());
-                     throw std::runtime_error("Engine: synthesis cancelled during T3 decode");
-                 }
--                if (current == model.hparams.stop_speech_token) break;
--                if (n_past + 1 > model.hparams.n_ctx) break;
--                if (!eval_step_mtl(model, allocr, n_threads, n_past, current, logits_c, logits_u)) {
-+                if (current == model.hparams.stop_speech_token) {
-+                    stop_reason = "eos";
-+                    break;
-+                }
-+                if (n_past + 1 > model.hparams.n_ctx) {
-+                    stop_reason = "context_limit";
-+                    break;
-+                }
-+                const int speech_position = static_cast<int>(generated.size());
-+                if (!eval_step_mtl(model, allocr, n_threads, n_past, speech_position,
-+                                   current, logits_c, logits_u)) {
-+                    fprintf(stderr,
-+                            "Engine: T3 stop reason=step_error prompt=%d n_past=%d speech_position=%d generated=%zu\n",
-+                            prompt_len, n_past, speech_position, generated.size());
-                     throw std::runtime_error("Engine: T3 MTL step eval failed");
-                 }
-                 ++n_past;
-@@ -411,9 +427,17 @@ struct Engine::Impl {
-                 if (generated.size() >= 3 &&
-                     generated[generated.size() - 1] == generated[generated.size() - 2] &&
-                     generated[generated.size() - 2] == generated[generated.size() - 3]) {
-+                    stop_reason = "repetition_guard";
-                     break;
-                 }
-             }
-+            if (stop_reason == "max_tokens" && current == model.hparams.stop_speech_token) {
-+                stop_reason = "eos";
-+            }
-+            fprintf(stderr,
-+                    "Engine: T3 stop reason=%s prompt=%d n_past=%d speech_position=%zu generated=%zu final_token=%d\n",
-+                    stop_reason.c_str(), prompt_len, n_past, generated.size(), generated.size(),
-+                    (int) current);
-             if (!generated.empty() && generated.back() == model.hparams.stop_speech_token) {
-                 generated.pop_back();
-             }
-diff --git a/src/chatterbox_t3_internal.h b/src/chatterbox_t3_internal.h
-index e5426dd..d3e1151 100644
---- a/src/chatterbox_t3_internal.h
-+++ b/src/chatterbox_t3_internal.h
-@@ -350,6 +350,7 @@ bool eval_step_mtl(
-     ggml_gallocr_t           allocr,
-     int                      n_threads,
-     int                      n_past,
-+    int                      speech_position,
-     int32_t                  token,
-     std::vector<float> &     logits_cond_out,
-     std::vector<float> &     logits_uncond_out);
-diff --git a/src/t3_mtl.cpp b/src/t3_mtl.cpp
-index c6e5941..6fcc11a 100644
---- a/src/t3_mtl.cpp
-+++ b/src/t3_mtl.cpp
-@@ -1000,13 +1000,15 @@ bool run_step_pass_b2(const chatterbox_model & model,
-                       ggml_gallocr_t allocr,
-                       int n_threads,
-                       int n_past,
-+                      int speech_position,
-                       int32_t token,
-                       std::vector<float> & logits_cond_out,
-                       std::vector<float> & logits_uncond_out) {
-     const auto & hp = model.hparams;
-__BLANK_CONTEXT__
--    if (n_past < 4 || (n_past % 50) == 0) {
--        fprintf(stderr, "run_step_pass_b2: n_past=%d token=%d\n", n_past, (int) token);
-+    if (speech_position <= 3 || (speech_position % 50) == 0) {
-+        fprintf(stderr, "run_step_pass_b2: n_past=%d speech_position=%d token=%d\n",
-+                n_past, speech_position, (int) token);
-     }
-     ggml_cgraph * gf = build_step_graph_mtl_b2(model, n_past);
-     // Skip the explicit ggml_gallocr_reserve(allocr, gf) call here:
-@@ -1030,7 +1032,7 @@ bool run_step_pass_b2(const chatterbox_model & model,
-         return false;
-     }
-     ggml_backend_tensor_set(t_tok, &token, 0, sizeof(token));
--    int32_t sp = n_past;
-+    int32_t sp = speech_position;
-     ggml_backend_tensor_set(t_spos, &sp, 0, sizeof(sp));
-     int32_t pos = n_past;
-     ggml_backend_tensor_set(t_pos, &pos, 0, sizeof(pos));
-@@ -1069,6 +1071,7 @@ bool run_step_pass(const chatterbox_model & model,
-                    ggml_gallocr_t allocr,
-                    int n_threads,
-                    int n_past,
-+                   int speech_position,
-                    int32_t token,
-                    bool is_uncond,
-                    std::vector<float> & logits_out) {
-@@ -1080,7 +1083,7 @@ bool run_step_pass(const chatterbox_model & model,
-     }
-__BLANK_CONTEXT__
-     ggml_backend_tensor_set(ggml_graph_get_tensor(gf, "speech_token"), &token, 0, sizeof(token));
--    int32_t sp = n_past;
-+    int32_t sp = speech_position;
-     ggml_backend_tensor_set(ggml_graph_get_tensor(gf, "speech_pos"), &sp, 0, sizeof(sp));
-     int32_t pos = n_past;
-     ggml_backend_tensor_set(ggml_graph_get_tensor(gf, "pos_ids"), &pos, 0, sizeof(pos));
-@@ -1627,31 +1630,29 @@ bool eval_step_mtl(const chatterbox_model & model,
-                    ggml_gallocr_t allocr,
-                    int n_threads,
-                    int n_past,
-+                   int speech_position,
-                    int32_t token,
-                    std::vector<float> & logits_cond_out,
-                    std::vector<float> & logits_uncond_out) {
--    // The step graph indexes `speech_pos_emb` directly with `n_past`.
--    // `speech_pos_emb` only has `max_speech_tokens` rows (see
--    // scripts/convert-t3-mtl-to-gguf.py: MAX_SPEECH_TOKENS=4096), so we have
--    // to refuse the step before `ggml_get_rows` reads past the embedding
--    // table.  In practice n_past starts at len_cond + n_text_tokens + 2
--    // (~2084 with max text), so this only fires on very long generations.
--    if (model.hparams.max_speech_tokens > 0 &&
--        n_past >= model.hparams.max_speech_tokens) {
--        fprintf(stderr, "eval_step_mtl: n_past=%d exceeds max_speech_tokens=%d; "
--                        "stopping generation to avoid out-of-range speech_pos_emb lookup\n",
--                n_past, model.hparams.max_speech_tokens);
-+    // The transformer RoPE/KV position continues after the full prompt, while
-+    // the learned speech position starts at 1 for the first generated token.
-+    // Keep these positions independent, matching multilingual V3 t3.py.
-+    if (speech_position <= 0 ||
-+        (model.hparams.max_speech_tokens > 0 &&
-+         speech_position >= model.hparams.max_speech_tokens)) {
-+        fprintf(stderr, "eval_step_mtl: speech_position=%d outside [1,%d); n_past=%d\n",
-+                speech_position, model.hparams.max_speech_tokens, n_past);
-         return false;
-     }
-     // Metal: cond+uncond batched into a single forward.  See eval_prompt_mtl.
-     const bool use_b2 = !ggml_backend_is_cpu(model.backend);
-     if (use_b2) {
--        return run_step_pass_b2(model, allocr, n_threads, n_past, token,
-+        return run_step_pass_b2(model, allocr, n_threads, n_past, speech_position, token,
-                                 logits_cond_out, logits_uncond_out);
-     }
--    if (!run_step_pass(model, allocr, n_threads, n_past, token, /*uncond=*/false,
-+    if (!run_step_pass(model, allocr, n_threads, n_past, speech_position, token, /*uncond=*/false,
-                        logits_cond_out)) return false;
--    if (!run_step_pass(model, allocr, n_threads, n_past, token, /*uncond=*/true,
-+    if (!run_step_pass(model, allocr, n_threads, n_past, speech_position, token, /*uncond=*/true,
-                        logits_uncond_out)) return false;
-     return true;
- }
-diff --git a/src/gguf_split_mtl.cpp b/src/gguf_split_mtl.cpp
---- a/src/gguf_split_mtl.cpp
-+++ b/src/gguf_split_mtl.cpp
-@@ -9,0 +10,3 @@
-+#ifdef GGML_USE_VULKAN
-+#include "ggml-vulkan.h"
-+#endif
-@@ -33,0 +37,7 @@
-+bool use_optimized_mtl_backend(ggml_backend_t backend) {
-+#ifdef GGML_USE_VULKAN
-+    if (ggml_backend_is_vk(backend)) return false;
-+#endif
-+    return !ggml_backend_is_cpu(backend);
-+}
-+
-@@ -480 +490 @@
--        if (!ggml_backend_is_cpu(model.backend)) {
-+        if (use_optimized_mtl_backend(model.backend)) {
-@@ -516,2 +527,6 @@
-             }
--        }
-+        } else if (!ggml_backend_is_cpu(model.backend)) {
-+            fprintf(stderr,
-+                    "load_model_gguf_mtl_split: Vulkan correctness path "
-+                    "(sequential CFG, separate Q/K/V)\n");
-+        }
-diff --git a/src/t3_mtl.cpp b/src/t3_mtl.cpp
---- a/src/t3_mtl.cpp
-+++ b/src/t3_mtl.cpp
-@@ -30,0 +31,3 @@
-+#ifdef GGML_USE_VULKAN
-+#include "ggml-vulkan.h"
-+#endif
-@@ -47,0 +51,16 @@
-+bool is_vulkan_backend(ggml_backend_t backend) {
-+#ifdef GGML_USE_VULKAN
-+    return ggml_backend_is_vk(backend);
-+#else
-+    (void) backend;
-+    return false;
-+#endif
-+}
-+
-+bool use_optimized_mtl_backend(ggml_backend_t backend) {
-+    // The B=2 CFG and stacked-QKV path was designed and parity-validated on
-+    // Metal. Vulkan must use contiguous Q/K/V tensors and sequential CFG;
-+    // its kernels do not share Metal's validated strided-view contract.
-+    return !ggml_backend_is_cpu(backend) && !is_vulkan_backend(backend);
-+}
-+
-@@ -1463 +1482 @@
--        if (!ggml_backend_is_cpu(model.backend)) {
-+        if (use_optimized_mtl_backend(model.backend)) {
-@@ -1604 +1623 @@
--    const bool use_b2 = !ggml_backend_is_cpu(model.backend);
-+    const bool use_b2 = use_optimized_mtl_backend(model.backend);
-@@ -1648 +1667 @@
--    const bool use_b2 = !ggml_backend_is_cpu(model.backend);
-+    const bool use_b2 = use_optimized_mtl_backend(model.backend);
-diff --git a/src/chatterbox_engine.cpp b/src/chatterbox_engine.cpp
---- a/src/chatterbox_engine.cpp
-+++ b/src/chatterbox_engine.cpp
-@@ -331,6 +331,14 @@ struct Engine::Impl {
-                 s3gen_prompt_token = std::move(prompt_token_from_ref);
-             }
-             if (s3gen_prompt_token.empty()) throw std::runtime_error("Engine: prompt_token unavailable");
-             if (s3gen_prompt_feat.empty()) throw std::runtime_error("Engine: prompt_feat unavailable");
-+            fprintf(stderr,
-+                    "Engine: voice conditioning t3_speaker=%s t3_prompt=%s "
-+                    "s3gen_prompt_token=%s s3gen_prompt_feat=%s s3gen_embedding=%s\n",
-+                    voice_overridden ? "reference" : "builtin",
-+                    voice_overridden ? "reference" : "builtin",
-+                    s3gen_prompt_token.empty() ? "builtin" : "reference",
-+                    s3gen_prompt_feat.empty() ? "builtin" : "reference",
-+                    s3gen_embedding.empty() ? "builtin_fallback" : "reference_override");
-         }
-     }
