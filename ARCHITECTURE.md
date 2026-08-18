@@ -2,10 +2,10 @@
 
 Document type: system specification  
 Audience: human operator + next coding agent  
-Source revision: `runner-x` @ `236a80d` (`Fix Vulkan patch brace placement`)  
+Source revision: `runner-x` @ `31ba93d` (`Checkpoint CAMPPlus restore after speech-lab mixed-language measurement`)  
 Schema: `SCHEMA.version = 5`  
 Trace schema: `trident.event` v1  
-Generated from: first-party source, `patches/chatterbox.patch`, pinned revisions, `data/config.json`, `data/models.json`, `tools/runtime/tts/build.json`, sampled `trident.log.jsonl`
+Generated from: first-party source, live `third_party/chatterbox.cpp` after apply, `patches/chatterbox.patch`, pinned revisions, `data/config.json`, `data/models.json`, `tools/runtime/tts/build.json`, full `trident.log.jsonl` run `run-c8d39587d774477fa076544cf945751e`, and clone-reliable `3e88ec2`
 
 ## Evidence legend
 
@@ -15,10 +15,15 @@ Generated from: first-party source, `patches/chatterbox.patch`, pinned revisions
 | LOG | Statement is a field in `trident.log.jsonl` read this session. |
 | COMMIT | Statement is recorded in a git commit body on this branch. Not re-measured this session. |
 | UNTESTED-PRIOR | Behavioral inference from source or prior commits. Not executed this session. Minimal falsifier follows the claim. |
+| CLONE | Statement is the applied result of `C:\Users\eb-wjt\Downloads\clone-reliable` @ `3e88ec2` (`chatgpt v3 and previous golden`). That tree is the last known-working TTS. |
 
 `Chatterbox_V3_Diagnostic_Report.md` is a PyTorch-harness analysis. It is not a source of truth for this C++/GGUF/Vulkan stack.
 
 Root `1.patch`, `2.patch`, `3.patch` are not referenced by `apply_chatterbox_patch()`. Live apply path is only `patches/chatterbox.patch`. SOURCE: `main.py:apply_chatterbox_patch`.
+
+clone-reliable is an older checkout of this project. Its `patches/chatterbox.patch` is one cumulative file with **two** bake hunks on `chatterbox_engine.cpp`. The later hunk is the golden: it **removes** the CAMPPlus call and the empty-embedding throw. The earlier hunk that adds `throw ... CAMPPlus embedding failed` is not the working end state. Trident `31ba93d` copied the earlier hunk. That is why live Speak now dies. CLONE + SOURCE.
+
+---
 
 ---
 
@@ -73,7 +78,7 @@ Conversation path: microphone or WAV → Parakeet → active brain → Chatterbo
 
 `data/models.json` receipts match the five installed model SHA-256 values plus the default-voice SHA-256. SOURCE.
 
-`tools/runtime/tts/build.json`: `build_id=f980efdd…bb2ee`, chatterbox `ddca05f…`, ggml `58c3805…`. SOURCE. Whether that `build_id` still equals live `tts_build_id()` is UNTESTED-PRIOR. Falsifier: compute `tts_build_id()` and compare to `build.json`.
+`tools/runtime/tts/build.json` after the 2026-08-18 panel `install_component tts`: `build_id=f245cf4eae407508196498b333d15bed13079495e6f7599fe667dcf948917e6f`, chatterbox `ddca05f…`, ggml `58c3805…`. SOURCE. That rebuild installed `tts-server.exe` at 10:37:44 (1207296 bytes) from the `31ba93d` patch (CAMPPlus required). `tts` component ready means exe exists AND `build.json.build_id == tts_build_id()`. SOURCE: `main.py` verification predicates.
 
 ### 1.4 Language sets
 
@@ -293,13 +298,12 @@ Listener exceptions are swallowed. SOURCE: `log.py:record`.
 | T3 speaker embedding | `voice_encoder.*` | 16 kHz wav + weights from codec GGUF | 256-d `speaker_emb` |
 | Speech tokens | `s3tokenizer.*` via `find_s3t_gguf` | sibling `*s3t*.gguf` | S3Gen prompt tokens + T3 cond tokens |
 | Prompt features | `compute_prompt_feat_native` | reference + codec GGUF | mel `(T,80)` |
-| S3Gen speaker 192-d | CAMPPlus | not present in this codec GGUF | stays empty → builtin embedding |
-| Text tokenize | `mtl_tokenizer` | text + language tag | text token ids + explicit boundary tokens (patch) |
+| S3Gen speaker 192-d | CAMPPlus or builtin | BricksDisplay codec has no `campplus/*` tensors | clone-reliable leaves this empty; S3Gen copies `s3gen/builtin/embedding`. Live `31ba93d` throws instead. |
+| Text tokenize | `mtl_tokenizer` | text + `opts.language` | `tok.encode(text, language)` only. No `punc_norm`, no extra start/stop text tokens on the MTL Engine path. |
 | Text split | `max_sentence_chars` | long string | N segments; log `auto-split:` |
-| T3 decode | `t3_mtl.cpp` | cond + text + speech BOS | speech tokens; `speech_position` independent of `n_past` |
-| Vulkan step | `use_optimized_mtl_backend==false` | — | sequential cond then uncond; separate Q/K/V |
-| Metal/other GPU | `use_optimized_mtl_backend==true` | — | batched B=2 CFG + stacked QKV |
-| S3Gen + HiFT | codec GGUF | speech tokens + prompt feat/token | float32 24 kHz chunks |
+| T3 decode | `t3_mtl.cpp` | cond + text + speech BOS | speech tokens; `speech_position = n_past` (clone-reliable / pin). Not `generated.size()`. |
+| GPU step | `use_optimized_mtl_backend` = `!ggml_backend_is_cpu` | Vulkan and Metal | B=2 stacked QKV + `ggml_flash_attn_ext`. Sequential-softmax was tried in `dd13afe` and crashed. |
+| S3Gen + HiFT | codec GGUF | speech tokens + prompt feat/token + 192-d speaker | float32 24 kHz chunks. Empty speaker → builtin Iracema embedding. |
 
 ### 3.7 Class / ownership graph
 
@@ -392,17 +396,19 @@ Clone: `conversation.clone_voice` and `wav_metrics.seconds >= 10` → `validate_
 
 After clone, C-UI `closeTts()` so the next session rereads the new file. SOURCE: `panel.js:runTurn`.
 
-Conditioning contract logged by C-CTRL (`tts.session.configured`) and by native (`Engine: voice conditioning ...`):
+Conditioning contract: C-CTRL `tts.session.configured.conditioning_contract` is an advertisement. Native `Engine: voice conditioning ...` is the measured bake.
 
-| Tensor | Origin when reference present |
-|---|---|
-| T3 speaker 256-d | VoiceEncoder on reference |
-| T3 cond speech tokens | S3TokenizerV2 on reference |
-| S3Gen prompt tokens | S3TokenizerV2 on reference |
-| S3Gen prompt feat | reference mel |
-| S3Gen speaker 192-d | `builtin_fallback` unless `s3gen_embedding` filled |
+| Tensor | Origin when reference present | Advertised at `31ba93d` | What actually happens |
+|---|---|---|---|
+| T3 speaker 256-d | VoiceEncoder on reference @16 kHz | `reference_voice_encoder` | succeeds. LOG + SOURCE |
+| T3 cond speech tokens | S3TokenizerV2 on sibling `*s3t*.gguf` | `reference_s3tokenizer` | 150 cond tokens. LOG |
+| S3Gen prompt tokens | same S3TokenizerV2 | `reference_s3tokenizer` | 250 prompt tokens. LOG |
+| S3Gen prompt feat | `compute_prompt_feat_native` @24 kHz after resample+trim | `reference_audio` | `(500,80)` when bake reaches it. LOG prior turn |
+| S3Gen speaker 192-d | CAMPPlus if `campplus/*` in codec GGUF, else builtin | `reference_campplus` (lie) | `campplus_load` fails; `31ba93d` throws `Engine: CAMPPlus embedding failed`. clone-reliable leaves empty and S3Gen copies `s3gen/builtin/embedding`. |
 
-SOURCE: `main.py:tts_session`, `chatterbox_engine.cpp` fprintf. CAMPPlus fill of `s3gen_embedding` is absent in this codec GGUF. COMMIT: `e9695a5`, `967f95c`.
+SOURCE: `main.py:tts_session` (advertises `reference_campplus`), `chatterbox_engine.cpp:bake_voice_conditioning` (throws), `chatterbox_tts.cpp` (per-tensor builtin fill), `main.cpp:compute_embedding_native` (returns false and logs `s3gen GGUF has no CAMPPlus weights`). LOG: seq 1027–1032 of `run-c8d39587…`. CLONE: later bake hunk deletes the CAMPPlus block.
+
+`wav_load` already downmixes stereo→mono. Mono/stereo is not a clone defect. SOURCE: `voice_features.cpp`.
 
 S3T GGUF is not a tts-server argv. `find_s3t_gguf(s3gen_path)` scans the codec's parent directory for `*.gguf` whose filename contains `s3t`. Trident places all three files in `models/`. SOURCE.
 
@@ -416,7 +422,7 @@ S3T GGUF is not a tts-server argv. `find_s3t_gguf(s3gen_path)` scans the codec's
 | C-UI | `op=trace` | `browser_trace` |
 | C-CTRL jobs/state | in-process `emit` | SSE `job` / `state` / 15 s `ping` |
 
-LOG sample this session: `controller.started` then GET `inspect` 200 in 16 ms. Engines were not observed running in the three-line sample.
+LOG this session (`run-c8d39587…`, 1042 events): controller started; panel rebuilt TTS (`install_component`, build 217 s + server 2.4 s); ASR/Brain/TTS all `engine.ready`; one conversation turn (see §4.5 and Appendix B).
 
 ### 4.7 Static HTTP
 
@@ -610,33 +616,33 @@ Custom URL must be `http(s)://...gguf` or `owner/repo/file.gguf` (resolved to Hu
 | Split | `max_sentence_chars=180` |
 | Languages | 23 codes in T3 MTL table (same as `TTS_LANGUAGES`) |
 
-#### 6.3.1 Vulkan generation path
+#### 6.3.1 GPU generation path (live)
 
-`use_optimized_mtl_backend(backend)` = not CPU and not Vulkan. SOURCE: `patches/chatterbox.patch` → `t3_mtl.cpp`, `gguf_split_mtl.cpp`.
+`use_optimized_mtl_backend(backend)` = `!ggml_backend_is_cpu(backend)`. SOURCE: live `t3_mtl.cpp:48`, `gguf_split_mtl.cpp:34`. Vulkan therefore takes B=2 stacked QKV and `ggml_flash_attn_ext`.
 
-On Vulkan:
+`dd13afe` inverted that on Vulkan (sequential CFG + `ggml_soft_max_ext`). Measured crash: `GGML_ASSERT(ggml_can_mul_mat)` because eager `ggml_mul_mat(Vfull, kq)` had `V.ne[0]=64` vs `kq.ne[0]=L`. COMMIT `dd13afe` + prior session. `31ba93d` restored flash_attn. Do not re-introduce the softmax path.
 
-- log line `load_model_gguf_mtl_split: Vulkan correctness path (sequential CFG, separate Q/K/V)`
-- `eval_step_mtl` runs `run_step_pass` twice (cond, then uncond), not `run_step_pass_b2`
-- Q/K/V stay separate contiguous tensors
-
-On Metal-compatible non-CPU backends the B=2 stacked path remains.
-
-UNTESTED-PRIOR this session: that log line appears on this GPU. Falsifier: load TTS and grep `trident.log.jsonl` for `Vulkan correctness path`.
+LOG this load: `TTS Vulkan ws://127.0.0.1:8095/tts`. No `Vulkan correctness path` line (that string is gone).
 
 #### 6.3.2 Speech position
 
-Official multilingual generate uses RoPE/`n_past` continuing after the prompt, and learned speech-position embedding `1,2,3,...`. COMMIT: `12ddb94`.
+Live Engine MTL loop: `const int speech_position = n_past`. SOURCE: `chatterbox_engine.cpp:425`. Bounds still `1 <= speech_position < max_speech_tokens` inside `eval_step_mtl`.
 
-Patch: `eval_step_mtl(..., n_past, speech_position, ...)`; `speech_position = generated.size()` (1 for first token). Bounds: `1 <= speech_position < max_speech_tokens`. Stop log:
+`12ddb94` / `2d2807d` / `dd13afe` set `speech_position = generated.size()` (first token at 1). That is not the clone-reliable generate path and is not live.
+
+Stop log:
 
 `T3 stop reason={reason} prompt={n} n_past={n} speech_position={n} generated={n} [final_token=]`
 
 Reasons parsed by C-CTRL: `cancellation`, `step_error`, plus whatever string the engine prints for EOS / repetition / context / max. `context_limit|max_tokens|repetition_guard|step_error` → warn. SOURCE: `T3_STOP_RE`, `log_native_line`.
 
+Speech-lab turn before CAMPPlus throw (trace `f85bcfb0`, COMMIT `31ba93d` body): prompt=84, first token=7838, stop=`repetition_guard`, generated=89, never EOS. Token 7838 is outside S3 codebook 6561 (T3 speech vocab 8194, EOS 6562). That is a T3 distribution failure, not a missing 192-d speaker.
+
 #### 6.3.3 Prompt / text boundaries
 
-Patch + `chatterbox_engine.cpp` comment: MTL encode uses language and explicit text boundary tokens to match `ChatterboxMultilingualTTS.generate`. COMMIT: `14bc791`.
+Live MTL Engine path: `text_tokens = tok.encode(text, opts.language)`. SOURCE: `chatterbox_engine.cpp:378`. `mtl_tokenizer::encode` prepends the language tag. No `punc_norm`, no extra start_text/stop_text padding. CLONE matches. `dd13afe` tried punc_norm + BOS/EOS; that ride crashed before a new WAV.
+
+`14bc791` comment about explicit boundary tokens is stale for the live Engine path.
 
 ### 6.4 Hyperparameter strategy as implemented
 
@@ -645,7 +651,7 @@ Patch + `chatterbox_engine.cpp` comment: MTL encode uses language and explicit t
 | Small E2B / 0.8B–4B brains on one iGPU with TTS+ASR | `max_tokens=160`, temp `0.2`, `parallel=1`, `fit_target=3072`, `fit-ctx=2048` | `BRAIN_*`, `load_engine` |
 | Spoken reply not analysis | system prompt + `enable_thinking=false` | `brain()`, `BRAIN_FAMILIES` |
 | T3 1000 predict vs old 512 ctx | migrate ctx to 1536, min 1280 | `load_config`, `967f95c` |
-| Intel Vulkan ≠ Metal CFG contract | sequential CFG | `967f95c`, `236a80d` |
+| Intel Vulkan + flash_attn | B=2 + `ggml_flash_attn_ext` (clone-reliable). Sequential softmax crashed. | `31ba93d`; do not restore `dd13afe` |
 | Clone accent vs language | `cross-language` cfg_weight `0.0`; conversation uses `natural` | `VOICE_STYLES`, `runTurn` style hardcode |
 | First audio latency vs RTF | `first_chunk=75`, `chunk=150` | `VOICE_DEFAULTS` |
 
@@ -662,13 +668,14 @@ Patch + `chatterbox_engine.cpp` comment: MTL encode uses language and explicit t
 | D5 | Depth-1 pin checkout + hard reset + clean | Reproducible tree before patch | `checkout` | Untracked third_party edits are destroyed on next install |
 | D6 | Cumulative ASCII patch + placeholders | Patch must stay 7-bit for `encoding=ascii` read then utf-8 apply | `apply_chatterbox_patch` | `__EM_DASH__` `__SECTION_SIGN__` `__BLANK_CONTEXT__` |
 | D7 | `tts.engine.context` min 1280 default 1536 | Session may request 1000 speech tokens after 100–250 prompt; 512 exhausted without EOS | `967f95c`; `load_config` comment+migrate | Header `v3::n_ctx=512` is not the live Trident value |
-| D8 | Vulkan sequential CFG + split Q/K/V | Metal B=2/stacked-QKV not validated on Intel Vulkan | `967f95c`; `use_optimized_mtl_backend` | Higher step cost; intended correctness |
-| D9 | Patch brace consumes outer close | Zero-context hunk previously inserted extra `}`; MSVC C2143 | `236a80d` | Sequential CFG compile on MSVC |
-| D10 | `speech_position != n_past` | Learned speech table vs RoPE cache | `12ddb94`, `2d2807d` | First token at speech pos 1 |
+| D8 | Vulkan uses the optimized MTL backend | clone-reliable + pin: `use_optimized_mtl_backend = !cpu`. Sequential softmax (`dd13afe`) crashed `ggml_can_mul_mat` on this Iris Xe | live `t3_mtl.cpp`; LOG crash in prior session | B=2 + `ggml_flash_attn_ext` on Vulkan. Softmax path is forbidden. |
+| D9 | Patch brace consumes outer close | Zero-context hunk previously inserted extra `}`; MSVC C2143 | `236a80d` | Historical compile fix. Softmax hunk itself is no longer live. |
+| D10 | `speech_position = n_past` | clone-reliable / pin RoPE alignment. Independent `generated.size()` was a later Trident experiment | live `chatterbox_engine.cpp:425`; CLONE | First eval uses `n_past == prompt_len`, not 1. |
 | D11 | Trace IDs on every hop | Flat logs could not attribute duplicate audio | `e9695a5` | `trident.event` + native prefix + panel filter |
 | D12 | Clone copies last input; language unlocked | Clip language ≠ spoken language | `cd40457`; UI copy in `renderReference` | Identity-only reference |
 | D13 | Swappable brains + family | One llama-server, multiple GGUF chat templates | `cd40457`; `BRAIN_FAMILIES` | Same argv; extra JSON kwargs |
-| D14 | No CAMPPlus in codec GGUF | BricksDisplay codec lacks 192-d encoder | COMMIT `e9695a5` | S3Gen speaker builtin while T3 cond is reference |
+| D14 | BricksDisplay codec has no CAMPPlus. That is accepted. | `campplus_load` fails on `chatterbox-mtl-codec-f16.gguf`. clone-reliable comment: "the 192-d s3gen embedding is always the built-in one even when cloning." | SOURCE `main.cpp:147`; `chatterbox_tts.cpp:2073`; CLONE; LOG seq 1027 | S3Gen speaker is builtin Iracema. T3 speaker + prompt tokens/feat stay from the reference. Do not re-export the GGUF. |
+| D23 | Missing CAMPPlus is not fatal | clone-reliable later bake hunk deletes the CAMPPlus call and the empty-embedding throw. `31ba93d` copied the earlier throw hunk. Live Speak then dies before PCM. | CLONE later hunk; LOG `Engine: CAMPPlus embedding failed`; `received_samples=0` | Next source change: delete the `compute_embedding_native` block and the `s3gen_embedding.empty()` throw. Leave embedding empty. Restore advertised contract to `builtin_fallback`. |
 | D15 | Brain `parallel=1`, `fit on` | Shared Vulkan device with TTS+ASR | `load_engine` | One slot; llama shrinks layers to `fit_target` MiB |
 | D16 | C-CTRL does not proxy PCM | Large 24 kHz stream | C-UI WS direct to :8095 | Controller crash does not copy audio; browser must reach 8095 |
 | D17 | Lane `a` only | `tts.engine.sessions` default 1; one tab | `RUNTIME["lanes"]` | No second concurrent voice |
@@ -677,6 +684,33 @@ Patch + `chatterbox_engine.cpp` comment: MTL encode uses language and explicit t
 | D20 | SHA-256 + size receipts | Hugging Face/GitHub bytes must match pins | `fetch`, `model_status` | `unverified` if size matches but receipt missing |
 | D21 | `atomic_json` / `atomic_bytes` | Windows replace of live config | `os.replace` | Readers see old or new file, not partial |
 | D22 | S3T sidecar by filename | EngineOptions has no s3t path | `find_s3t_gguf` | All three GGUFs must share a directory; Trident still requires S3T receipt before load |
+| D24 | C-CTRL never opens the TTS WebSocket | PCM is 24 kHz; browser already has the socket | `tts_session` returns init JSON; `panel.js:openTts` connects `ws://127.0.0.1:8095/tts` | Do not invent a Python/PowerShell WS client. |
+| D25 | Do not start `main.py` from the agent Job Object | Agent-launched controller then `load_engine` exited `3221225794` (`STATUS_DLL_INIT_FAILED`) with empty `last_message`. Same exe `--help` works from the runtime dir. Duplicate listeners (pids 3932 and 9384) followed an in-agent restart. | prior session; this session Start-Process detach succeeded and all three engines loaded | Operator or detached `Start-Process` only. |
+
+### 7.1 Decision: do not put CAMPPlus in the GGUF
+
+Confidence: 100. This is not a product preference. It is what the working tree already does.
+
+| Option | Reject / accept | Why |
+|---|---|---|
+| Re-run `scripts/convert-s3gen-to-gguf.py` and replace `chatterbox-mtl-codec-f16.gguf` | **Reject** | Converter needs official PyTorch `speaker_encoder` weights. That is a new model pin, new SHA, new receipt. Pins stay `BricksDisplay` rev `37277eeb`. User rule: do not reinstall models. clone-reliable never did this and TTS worked. |
+| Treat missing CAMPPlus as fatal (`31ba93d` throw) | **Reject** | Measured: bake dies, `last-output.wav` not rewritten, panel spinner until 30 s timeout. clone-reliable's **later** hunk removes this throw. The throw is an intermediate mis-copy. |
+| Leave `s3gen_embedding` empty; S3Gen fills `s3gen/builtin/embedding` | **Accept** | Live `chatterbox_tts.cpp` already does per-tensor builtin fill and documents the BricksDisplay gap. clone-reliable bake stops before CAMPPlus so that fill runs. T3 language is VoiceEncoder + S3Tokenizer + `[lang]` + T3 tokens, not the 192-d S3Gen speaker. |
+
+What CAMPPlus is and is not:
+
+- CAMPPlus is the 192-d **S3Gen speaker identity** (timbre / clone color). SOURCE: `convert-s3gen-to-gguf.py` comment at the `campplus/` write; `campplus.embedding_size=192`.
+- Language of the utterance is **T3** (`tok.encode` language tag + generated speech tokens). S3 codebook is 6561; T3 speech vocab is 8194; EOS is 6562.
+- Mixing a custom English `prompt_feat`/`prompt_token` with builtin Portuguese Iracema speaker can color the vocoder. It cannot be the whole "language is Chinese / Na forma" story when T3 also emitted token 7838 and stopped on `repetition_guard`.
+- Default reference `data/default-reference.wav` **is** the official Iracema demo (Parakeet: Portuguese Iracema excerpt). Builtin speaker matches that file. Custom `data/reference.wav` does not.
+
+Implementation remaining (not in this document commit):
+
+1. In `bake_voice_conditioning`, delete the `if (s3gen_embedding.empty()) { compute_embedding_native ... throw }` block and the later `if (s3gen_embedding.empty()) throw ... embedding unavailable`.
+2. Keep required VoiceEncoder, S3Tokenizer, and prompt_feat throws. Those succeeded on the failed turn.
+3. Set `tts_session` `conditioning_contract.s3gen_speaker_embedding` back to `builtin_fallback`.
+4. Keep `s3gen_embedding.empty() ? "builtin_fallback" : "reference_campplus"` in the native summary line.
+5. Do not touch T3 flash_attn, `speech_position = n_past`, or `tok.encode(text)`.
 
 ---
 
@@ -852,9 +886,11 @@ ASR, Brain, and TTS all target Vulkan. No Trident mutex across the three process
 
 ### 9.5 Files the next agent must treat as first-party
 
-`main.py`, `log.py`, `panel.html`, `panel.css`, `panel.js`, `audio-processor.js`, `server/CMakeLists.txt`, `server/include/engine_wrapper.hpp`, `server/include/server.hpp`, `server/src/main.cpp`, `server/src/server.cpp`, `server/src/engine_wrapper.cpp`, `patches/chatterbox.patch`, `data/config.json`, `data/models.json`, `assets/default-reference.wav`.
+`ARCHITECTURE.md`, `main.py`, `log.py`, `panel.html`, `panel.css`, `panel.js`, `audio-processor.js`, `server/CMakeLists.txt`, `server/include/engine_wrapper.hpp`, `server/include/server.hpp`, `server/src/main.cpp`, `server/src/server.cpp`, `server/src/engine_wrapper.cpp`, `patches/chatterbox.patch`, `data/config.json`, `data/models.json`, `assets/default-reference.wav`.
 
 Third-party trees are disposable: next `install_component tts` resets them to pins and reapplies the tracked patch.
+
+External working reference (not first-party, do not merge blindly): `C:\Users\eb-wjt\Downloads\clone-reliable` @ `3e88ec2`. Use its **later** `chatterbox_engine.cpp` bake hunk and its generate path. Ignore its earlier CAMPPlus-throw hunk.
 
 ---
 
@@ -862,10 +898,10 @@ Third-party trees are disposable: next `install_component tts` resets them to pi
 
 | ID | Limitation | Evidence | Workaround in tree | Absent |
 |---|---|---|---|---|
-| L1 | Codec GGUF has no CAMPPlus; S3Gen 192-d speaker is builtin | COMMIT `e9695a5`, `967f95c`; native log `s3gen_embedding=builtin_fallback` | T3 256-d + prompt tokens/feat still from reference; UI discloses identity-only clone | No CAMPPlus encoder added |
+| L1 | Codec GGUF has no CAMPPlus; S3Gen 192-d speaker is builtin | LOG `s3gen GGUF has no CAMPPlus weights`; SOURCE `chatterbox_tts.cpp:2073`; CLONE later bake hunk | T3 256-d + prompt tokens/feat from reference; S3Gen speaker = GGUF builtin | Do not add CAMPPlus to this GGUF. Fatal throw at `31ba93d` is a defect, not the workaround. |
 | L2 | Header `v3::n_ctx=512` vs Trident 1536 | SOURCE both | Python migrate + `--context` | Header default not updated to 1536 |
 | L3 | `max_tokens` default 1000 still requires ctx ≥ prompt+generate | COMMIT `967f95c` | ctx 1536 / min 1280 | No automatic clamp of `max_tokens` to remaining ctx |
-| L4 | Vulkan path is sequential CFG | SOURCE `use_optimized_mtl_backend` | Metal path kept for non-Vulkan GPU | No Vulkan batched CFG |
+| L4 | Vulkan uses B=2 flash_attn, not sequential CFG | live `use_optimized_mtl_backend = !cpu` | Softmax path deleted after crash | No validated Vulkan softmax |
 | L5 | TTS `sessions` default 1, one lane `a` | SOURCE | raise `tts.engine.sessions` and restart (UI still one lane) | Second lane key not implemented |
 | L6 | Brain `parallel` locked at 1 | SOURCE argv + field max | none | Multi-slot brain |
 | L7 | Conversation cannot select Speech Lab style | `runTurn` hardcodes `natural` | user can use Speech Lab | No conversation style field |
@@ -877,7 +913,7 @@ Third-party trees are disposable: next `install_component tts` resets them to pi
 | L13 | S3T discovered by substring `s3t` in the codec directory | `find_s3t_gguf` | Trident keeps the three GGUFs together | No explicit `--s3t` flag |
 | L14 | `ENGINE_MODELS["brain"]=("gemma",)` unused on load | `load_engine` special-cases brain | `active_brain_path()` | Catalog pin of unused brains not required to start |
 | L15 | llama-server binary always from `tools/runtime/gemma` | `component_artifact("gemma")` | works for Qwen/custom GGUF | No per-brain llama build |
-| L16 | Intelligibility/fidelity residual after position+Vulkan fixes | COMMIT `967f95c` next-action still pending a real cloned turn at that commit; later commits are patch-compile | speech_position + ctx + sequential CFG | This session did not play audio. UNTESTED-PRIOR: current HEAD audible quality. Falsifier: one user Chrome cloned turn; inspect `T3 stop reason`, `data/last-output.wav`, Parakeet back-transcript |
+| L16 | T3 still off-distribution on this Iris Xe after generate-path restore | Speech-lab LOG (trace `f85bcfb0`): first=7838, `repetition_guard` @89, Parakeet on output `"Na forma sieć the paktoput."`, centroid 456 Hz, 3.640 s, SHA `30412783…`. Prior flash_attn turn `aa20c24b`: first=7839, 433 tokens, `"I'm shh I'm sh uh hash problems."`, centroid 4003 Hz. | flash_attn + `encode(text)` + `speech_position=n_past` + ctx 1536 | CAMPPlus will not be the next T3 lever. After bake is unblocked, re-measure T3 stop / first token / Parakeet. |
 | L17 | `log.record` listener errors discarded | `except Exception: pass` | file still written | No listener-fault event |
 | L18 | `browserTrace` network errors discarded | `.catch(() => null)` | server-side native/controller events remain | Dropped browser spans |
 | L19 | Build log suppression | non-matching stdout counted `suppressed` | `BUILD_LOG_TOKENS` + first unique MSVC `C####` | Full MSVC log not in JSONL |
@@ -887,6 +923,10 @@ Third-party trees are disposable: next `install_component tts` resets them to pi
 | L23 | `stop_engine` terminate 10 s then kill | SOURCE | lanes reset if name==tts | In-flight WS clients see close |
 | L24 | Reference must be ≥5 s; clone replace requires ≥10 s | `reference_state`, `run_turn` | skip clone, keep previous | No automatic pad |
 | L25 | Shared Vulkan device, no admission control | three processes | brain `--fit` | No explicit VRAM budget split |
+| L26 | `openTts` waits 30 s for WS `ready` then reports timeout even if native already sent `{type:error}` | `panel.js` `timeout_ms: 30000`; LOG seq 1031 error then seq 1037 timeout | native error is traced as `browser.tts.error` / `browser.tts.synthesis_failed` | Spinner can outlive the real failure by ~24 s |
+| L27 | Agent Job Object + `load_engine` → `3221225794` | prior session | Detached `Start-Process` this session loaded all three engines | Do not relaunch `main.py` from the agent job |
+| L28 | Advertised bake contract can lie | `tts_session` says `reference_campplus` while codec has no CAMPPlus | native summary line is authoritative | After the throw is removed, advertisement must say `builtin_fallback` |
+| L29 | clone-reliable `chatterbox.patch` contains two bake hunks | earlier hunk adds CAMPPlus throw; later hunk deletes it | later hunk is golden | Never copy the earlier hunk alone |
 
 ### 10.1 Error handling map
 
@@ -908,7 +948,7 @@ Third-party trees are disposable: next `install_component tts` resets them to pi
 | Later chunks 150 tokens | same |
 | S3Gen preload thread during T3 load | `Engine::Impl` |
 | llama `--flash-attn on --repack --fit` | `load_engine` |
-| TTS Vulkan sequential (latency cost accepted) | patch |
+| TTS Vulkan B=2 + flash_attn | live `t3_mtl.cpp` |
 | AudioWorklet not main-thread render | `audio-processor.js` |
 | Log rotate 20 MiB | `log.py` |
 | Build stdout filter | `run()` |
@@ -940,10 +980,50 @@ UNTESTED-PRIOR: RTF, VRAM, or token/s on this host. Falsifier: one loaded turn a
 
 ## Appendix B — Handover for next agent
 
-HEAD at document write: `236a80d`. Working tree was clean before this file.
+HEAD of this document commit is the next session start. Source at write: `31ba93d` plus this file only.
 
-Implemented but not re-measured here: Vulkan sequential CFG, speech_position split, 1536 context, correlated traces.
+### Decision already taken
 
-Still open per last synthesis commits: rebuild/load TTS if `build.json` `build_id` ≠ live `tts_build_id()`; one real Chrome multilingual cloned turn; inspect T3 stop reason, last-output intelligibility, CAMPPlus-less speaker mix.
+Do **not** put CAMPPlus weights in `chatterbox-mtl-codec-f16.gguf`. Do **not** keep the fatal CAMPPlus throw. Match clone-reliable `3e88ec2` later bake hunk: leave `s3gen_embedding` empty; S3Gen copies `s3gen/builtin/embedding`. See §7.1.
 
-Do not treat `Chatterbox_V3_Diagnostic_Report.md` or root `1.patch`/`2.patch`/`3.patch` as the live contract.
+### Measured this session (LOG `run-c8d39587d774477fa076544cf945751e`)
+
+Conversation turn `trace-6031f6bf` / `turn-8567386dfc5041f2b7aaa3984550d70c` at 08:38:39 UTC:
+
+- User 18.072 s mono PCM16 16 kHz, 578348 bytes, SHA `022411f98b84f06b0d35edbbb7fbb45af1bbe9e5a59d73611c81fa68c48b25f2`, RMS −35.78, peak −19.11, clip 0. Cloned to `data/reference.wav` generation 1.
+- Parakeet 829 ms: `Hello, I want you to recite every number from zero to ten using Polish language. Write every number in separated by the comma.`
+- Gemma 2281 ms: `Zero, jeden, dwa, trzy, cztery, pięć, sześć, siedem, osiem, dziewięć, dziesięć.`
+- TTS session init started. S3Tokenizer 250/150 ok. Then `voice: s3gen GGUF has no CAMPPlus weights` and `Engine: CAMPPlus embedding failed`. `received_samples=0`. `data/last-output.wav` still the 10:13:46 file (174764 bytes, SHA `30412783…`, prior speech-lab `"Na forma sieć the paktoput."`).
+- Browser then `Voice connection timed out` at 30 s. Panel looked like synthesis was running.
+
+Config: `conversation.clone_voice=true`, language `en`, style `natural`, seed 42, gpu_layers 99, context 1536.
+
+Engines that loaded: ASR pid 7908 `:8097`, brain pid 12500 `:8098` (Gemma 4 E2B), TTS pid 7740 `:8095`. Controller python 12248. Started via detached `Start-Process`, not the agent job.
+
+Panel also ran `install_component tts` this run. New `build.json` `f245cf4e…`. Same required-CAMPPlus source.
+
+### Earlier speech-lab (COMMIT `31ba93d` body, pre-throw)
+
+Text `This is a multilingual voice synthesis test.` Conditioning `s3gen_embedding=builtin_fallback`. T3 first=7838, `repetition_guard` 89 tokens. Output 3.640 s 24 kHz mono. That WAV is still on disk because bake never completed again.
+
+### Next implementation (source only, then one Speak)
+
+1. Edit bake in `third_party/chatterbox.cpp/src/chatterbox_engine.cpp` and regenerate `patches/chatterbox.patch` from pin `ddca05f` the same way as `31ba93d` (placeholders `__EM_DASH__` / `__SECTION_SIGN__`). Delete CAMPPlus call + empty-embedding throw. Keep VoiceEncoder / S3Tok / prompt_feat required.
+2. `main.py` `tts_session` contract: `s3gen_speaker_embedding` = `builtin_fallback`.
+3. Do not change flash_attn, `speech_position = n_past`, `tok.encode(text)`, or models.
+4. Operator or detached process: if `:8765` is already up with engines, unload/reload **only TTS** through panel REST so the new exe is picked up after install. If you rebuild, `install_component tts` then `load_engine tts`.
+5. User Speaks the same sentence (Speech Lab or conversation). Do not invent a WS client.
+6. Success of **this** change: session init reaches `s3gen_embedding=builtin_fallback`, PCM arrives, `last-output.wav` mtime updates. Failure: still CAMPPlus throw.
+7. After a new WAV exists, Parakeet `POST /api?op=asr` on it. That is the T3 intelligibility measurement, not a CAMPPlus measurement. Expect possible `repetition_guard` / off-codebook first token. That is L16, next T3 hypothesis.
+
+### Do not do
+
+- Do not invent a Python/PowerShell WebSocket client.
+- Do not reinstall Parakeet, Gemma, or model GGUFs. Do not run `convert-s3gen-to-gguf.py` against the pinned codec.
+- Do not re-introduce Vulkan softmax / sequential CFG.
+- Do not pad start_text/stop_text or wrap `punc_norm` on the MTL Engine path.
+- Do not start `main.py` from the agent Job Object.
+- Do not treat `Chatterbox_V3_Diagnostic_Report.md` or root `1.patch`/`2.patch`/`3.patch` as the live contract.
+- Do not treat builtin S3Gen speaker as a language-tag bug. It is identity-only (D14).
+
+Pins unchanged: chatterbox `ddca05f`, ggml `58c3805`, branch `runner-x`. clone-reliable remains at `C:\Users\eb-wjt\Downloads\clone-reliable` @ `3e88ec2`.
