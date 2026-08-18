@@ -35,9 +35,6 @@ function status(values) {
   if (list.every(x => x.status === "ready" || x.status === "running")) return "ready";
   return "missing";
 }
-function card(label, value, detail) {
-  return `<div class="status-item ${value}"><b>${label}</b><span>${detail}</span></div>`;
-}
 function coreReady() {
   if (!state || !schema) return false;
   return ["python", "git", "cmake", "msvc", "vulkan"].every(n => state.prerequisites[n]?.status === "ready")
@@ -49,22 +46,22 @@ function enginesRunning() {
 }
 function render() {
   if (!state || !schema) return;
-  $("connection").textContent = "Controller online";
+  $("connection").textContent = "online";
   $("connection").className = "pill good";
   const pre = status(state.prerequisites);
   const comp = status({tts: state.components.tts, parakeet: state.components.parakeet, gemma: state.components.gemma});
   const modelStatus = status(Object.fromEntries(schema.required_models.map(n => [n, state.models[n]])));
-  $("system-grid").innerHTML = [
-    card("Prerequisites", pre, pre === "ready" ? "ready" : "installation required"),
-    card("Runtimes", comp, comp === "ready" ? "ready" : "installation required"),
-    card("Models", modelStatus, modelStatus === "ready" ? "ready" : "download/conversion required"),
-    card("Engines", status(state.engines), enginesRunning() ? "running" : "stopped"),
-  ].join("");
+  const eng = status(state.engines);
+  $("dots").innerHTML = [
+    ["pre", pre],
+    ["runtimes", comp],
+    ["models", modelStatus],
+    ["engines", enginesRunning() ? "running" : eng],
+  ].map(([label, value]) => `<span class="dot ${value}" title="${label}: ${value}"></span>`).join("");
   const ready = coreReady();
-  $("system-status").textContent = ready ? "Installation complete." : "Install missing prerequisites, runtimes, and pinned models.";
   $("install").disabled = ready;
   $("engines").disabled = !ready;
-  $("engines").textContent = enginesRunning() ? "Stop engines" : "Start engines";
+  $("engines").textContent = enginesRunning() ? "Stop" : "Start";
   const live = enginesRunning();
   $("record").disabled = !live;
   $("speak-run").disabled = !live;
@@ -103,7 +100,7 @@ async function installMissing() {
     }
     await refresh();
   } catch (e) {
-    $("job-status").textContent = `Installation failed: ${e.message}`;
+    $("job-status").textContent = `Install failed: ${e.message}`;
     fault(e.message);
   }
 }
@@ -177,7 +174,7 @@ async function startMic() {
   recording = {stream, context, source, node, rate: context.sampleRate, parts: [], speaking: false, speechMs: 0, silenceMs: 0, busy: false};
   node.port.onmessage = e => capture(e.data);
   source.connect(node);
-  $("record").textContent = "Stop microphone";
+  $("record").textContent = "Stop mic";
   $("record").classList.add("live-mic");
   $("mic-status").textContent = "Listening…";
 }
@@ -187,7 +184,7 @@ async function stopMic(send = true) {
   rec.node.disconnect(); rec.source.disconnect();
   rec.stream.getTracks().forEach(t => t.stop());
   await rec.context.close();
-  $("record").textContent = "Start microphone";
+  $("record").textContent = "Mic";
   $("record").classList.remove("live-mic");
   const duration = sampleCount(rec.parts) / rec.rate;
   if (send && duration >= schema.mic.vad_min_speech_ms / 1000) await processUtterance(makeWav(rec.parts, rec.rate), duration, null);
@@ -302,6 +299,9 @@ $("audio-file").onchange = ev => {
     return processUtterance(wav, seconds, null);
   }).catch(showError);
 };
+window.addEventListener("pagehide", () => {
+  navigator.sendBeacon("/api", new Blob([JSON.stringify({op: "goodbye"})], {type: "application/json"}));
+});
 refresh().then(() => {
   fillLanguages($("reply-language"));
   fillLanguages($("input-language"));

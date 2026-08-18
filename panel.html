@@ -8,75 +8,37 @@
 </head>
 <body>
 <main class="shell">
-  <header>
-    <div>
-      <p class="eyebrow">LOCAL VOICE</p>
-      <h1>Trident</h1>
-      <p class="sub">Microphone or file → Parakeet → local brain → Chatterbox.</p>
-    </div>
-    <span id="connection" class="pill bad">Connecting</span>
-  </header>
-
-  <section class="card setup">
-    <div class="row between">
-      <div>
-        <h2>System</h2>
-        <p id="system-status" class="muted">Checking installation…</p>
-      </div>
-      <div class="actions">
-        <button id="install">Install missing</button>
-        <button id="engines" class="primary">Start engines</button>
-      </div>
-    </div>
-    <div id="system-grid" class="status-grid"></div>
-    <p id="job-status" class="job"></p>
-  </section>
-
-  <section class="card talk">
-    <div class="row between top">
-      <div>
-        <p class="eyebrow">CONVERSATION</p>
-        <h2>Talk</h2>
-        <p class="muted">Parakeet auto-detects its 25 languages. Reply language sets Gemma and Chatterbox.</p>
-      </div>
-      <label class="select">Reply voice
-        <select id="reply-language"></select>
-      </label>
-    </div>
-
-    <div class="controls">
-      <button id="record" class="mic" disabled>Start microphone</button>
-      <button id="stop-voice" disabled>Stop voice</button>
-      <label class="file">Audio file<input id="audio-file" type="file" accept="audio/*" disabled></label>
-      <label class="check"><input id="clone" type="checkbox"> Clone this voice from a long utterance</label>
-    </div>
-    <div class="controls">
-      <label class="select grow">Speak
-        <textarea id="speak-text" rows="2" placeholder="Type text for Chatterbox."></textarea>
-      </label>
-      <label class="select">Spoken language
-        <select id="input-language"></select>
-      </label>
-      <button id="speak-run" disabled>Speak</button>
-    </div>
-    <p id="mic-status" class="live">Start the engines, then speak, upload a file, or type text.</p>
-
-    <div class="conversation-grid">
-      <article>
-        <div class="label"><span>Heard</span><small id="asr-state">idle</small></div>
-        <p id="transcript" class="text muted">Transcription appears here.</p>
-      </article>
-      <article>
-        <div class="label"><span>Answer</span><small id="brain-state">idle</small></div>
-        <p id="answer" class="text muted">The local response appears here.</p>
-      </article>
-    </div>
-  </section>
-
-  <section class="card note">
-    <strong>Settings live in <code>cfg.py</code>.</strong>
-    <span>ASR/VAD, Gemma, TTS sampling, context, threads, and GPU.</span>
-  </section>
+  <div class="bar">
+    <div id="dots" class="dots"></div>
+    <b>Trident</b>
+    <span id="connection" class="pill bad">offline</span>
+    <button id="install">Install</button>
+    <button id="engines" class="primary">Start</button>
+    <span id="job-status" class="job"></span>
+  </div>
+  <div class="bar">
+    <button id="record" class="mic" disabled>Mic</button>
+    <label class="file">File<input id="audio-file" type="file" accept="audio/*" disabled></label>
+    <label class="check"><input id="clone" type="checkbox"> Clone</label>
+    <label>Reply <select id="reply-language"></select></label>
+    <button id="stop-voice" disabled>Stop</button>
+  </div>
+  <div class="bar">
+    <textarea id="speak-text" rows="2" placeholder="Type text for Chatterbox."></textarea>
+    <label>Speak <select id="input-language"></select></label>
+    <button id="speak-run" disabled>Speak</button>
+  </div>
+  <p id="mic-status" class="live">Start engines, then speak, upload, or type.</p>
+  <div class="conversation">
+    <article>
+      <div class="label"><span>Heard</span><small id="asr-state">idle</small></div>
+      <p id="transcript" class="text muted">Transcription appears here.</p>
+    </article>
+    <article>
+      <div class="label"><span>Answer</span><small id="brain-state">idle</small></div>
+      <p id="answer" class="text muted">The local response appears here.</p>
+    </article>
+  </div>
   <p id="fault" class="fault" hidden></p>
 </main>
 <script src="/panel.js"></script>

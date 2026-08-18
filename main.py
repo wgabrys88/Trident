@@ -19,7 +19,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 from cfg import (
-    ASR_CHUNK, ASR_LANGUAGES, ASR_RUNTIME, BRAIN_FAMILY, BRAIN_GENERATION,
+    ASR_CHUNK, ASR_RUNTIME, BRAIN_FAMILY, BRAIN_GENERATION,
     BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_SYSTEM, CONTROLLER, DEFAULT_REPLY_LANGUAGE,
     MIC, PORTS, TTS_CHUNK, TTS_LANGUAGES, TTS_RUNTIME, TTS_SAMPLE, TTS_VOICE,
 )
@@ -290,12 +290,16 @@ def rmtree_retry(path: Path, attempts: int = 10):
             time.sleep(0.3)
     if last:
         raise last
+def _ps(script: str):
+    flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+    subprocess.run(["powershell", "-NoProfile", "-Command", script], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags)
+
 def terminate_executable(path: Path):
     if os.name != "nt":
         return
     target = os.path.normcase(str(path.resolve()) if path.exists() else str(path))
     escaped = target.replace("'", "''")
-    script = (
+    _ps(
         "$ErrorActionPreference = 'SilentlyContinue'; "
         f"$target = [IO.Path]::GetFullPath('{escaped}'); "
         "Get-CimInstance Win32_Process | Where-Object { "
@@ -307,8 +311,16 @@ def terminate_executable(path: Path):
         "Start-Sleep -Milliseconds 200 "
         "}"
     )
-    flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
-    subprocess.run(["powershell", "-NoProfile", "-Command", script], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags)
+
+def kill_port(port: int):
+    if os.name != "nt":
+        return
+    _ps(
+        "$ErrorActionPreference = 'SilentlyContinue'; "
+        f"Get-NetTCPConnection -LocalPort {int(port)} -State Listen | "
+        "Select-Object -ExpandProperty OwningProcess -Unique | "
+        "ForEach-Object { if ($_ -and $_ -ne $PID) { Stop-Process -Id $_ -Force } }"
+    )
 def install_component(name: str, key: str):
     if name in BINARIES:
         install_release_binary(name, key)
@@ -515,10 +527,29 @@ def stop_engine(name: str):
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(5)
+    exe = component_artifact("tts" if name == "tts" else "parakeet" if name == "asr" else "gemma")
+    terminate_executable(exe)
     with LOCK:
         RUNTIME["engines"][name].update(status="stopped", error="", pid=None, applied={})
     if process:
         log("engine", "stopped", name=name, pid=process.pid)
+
+def stop_all():
+    for name in list(ENGINE_MODELS):
+        stop_engine(name)
+
+def die():
+    try:
+        stop_all()
+    finally:
+        os._exit(0)
+
+def already_running() -> bool:
+    try:
+        remote(f"http://127.0.0.1:{CONTROLLER['port']}/api?op=inspect", timeout=1)
+        return True
+    except Exception:
+        return False
 def load_engine(name: str, key: str):
     stop_engine(name)
     if name == "brain":
@@ -731,20 +762,18 @@ OPS = {
     "inspect": {}, "schema": {}, "state": {},
     "install_prerequisite": {}, "install_component": {}, "download_model": {},
     "load_engine": {}, "unload_engine": {}, "upload_reference": {},
-    "asr": {}, "brain": {}, "tts": {}, "tts_cancel": {},
+    "asr": {}, "brain": {}, "tts": {}, "tts_cancel": {}, "goodbye": {},
 }
 SCHEMA = {
-    "version": 7,
-    "languages": {"reply": TTS_LANGUAGES, "asr": ASR_LANGUAGES, "default_reply": DEFAULT_REPLY_LANGUAGE},
+    "version": 8,
+    "languages": {"reply": TTS_LANGUAGES, "default_reply": DEFAULT_REPLY_LANGUAGE},
     "mic": MIC,
-    "brain": {**BRAIN, "generation": BRAIN_GENERATION, "runtime": BRAIN_RUNTIME},
     "prerequisites": {name: {"label": label} for name, label in {"python": "PYTHON 3.11+", "git": "GIT", "cmake": "CMAKE", "msvc": "MSVC BUILD TOOLS", "vulkan": "VULKAN SDK"}.items()},
     "components": {"tts": {"label": "CHATTERBOX TTS V3"}, "parakeet": {"label": BINARIES["parakeet"]["label"]}, "gemma": {"label": BINARIES["gemma"]["label"]}},
     "required_models": REQUIRED_MODELS,
-    "models": {name: {"label": MODELS[name]["label"], "size": MODELS[name]["size"]} for name in REQUIRED_MODELS},
 }
 def inspect() -> dict:
-    return {"ok": True, "version": 7, "schema": SCHEMA, "state": snapshot()}
+    return {"ok": True, "version": 8, "schema": SCHEMA, "state": snapshot()}
 def dispatch(op: str, payload: dict | None = None, raw: bytes | None = None) -> tuple[dict, int]:
     payload = payload or {}
     if op not in OPS:
@@ -792,6 +821,8 @@ def dispatch(op: str, payload: dict | None = None, raw: bytes | None = None) -> 
         return {"ok": True, **synthesize(str(payload.get("text") or ""), str(payload.get("language") or DEFAULT_REPLY_LANGUAGE))}, 200
     if op == "tts_cancel":
         return cancel_tts(), 200
+    if op == "goodbye":
+        return {"ok": True}, 200
     raise ApiError(400, f"unhandled op: {op}")
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
@@ -877,6 +908,8 @@ class Handler(BaseHTTPRequestHandler):
                 request_body = None
             response_body, code = dispatch(op, payload, request_body)
             self.send_json(response_body, code)
+            if op == "goodbye":
+                die()
         except ApiError as exception:
             self.send_json({"error": str(exception)}, exception.code)
         except (KeyError, TypeError, ValueError) as exception:
@@ -888,6 +921,13 @@ class Handler(BaseHTTPRequestHandler):
 class Server(ThreadingHTTPServer):
     daemon_threads = True
 def main() -> int:
+    if already_running():
+        print(f"TRIDENT already http://{CONTROLLER['host']}:{CONTROLLER['port']}/")
+        return 0
+    kill_port(CONTROLLER["port"])
+    for port in PORTS.values():
+        kill_port(port)
+    stop_all()
     server = Server((CONTROLLER["host"], CONTROLLER["port"]), Handler)
     log("controller", "start", port=CONTROLLER["port"], pid=os.getpid())
     timer = threading.Timer(.4, webbrowser.open, args=(f"http://{CONTROLLER['host']}:{CONTROLLER['port']}/",))
@@ -900,8 +940,7 @@ def main() -> int:
         pass
     finally:
         server.server_close()
-        for name in list(PROCESSES):
-            stop_engine(name)
+        stop_all()
         log("controller", "stop")
     return 0
 if __name__ == "__main__":
