@@ -1,6 +1,45 @@
 const $ = id => document.getElementById(id);
-let schema = null, state = null, recording = null, playContext = null, playing = null, lastTts = 0, rmsText = "";
+let schema = null, state = null, recording = null, playContext = null, playing = null;
+let lastTts = 0, lastHeard = "", lastAnswer = "", rmsText = "", primed = false, padTarget = "answer";
 const pending = new Map();
+
+const TIMIT_SA1 = "She had your dark suit in greasy wash water all year.";
+const TIMIT_SA2 = "Don't ask me to carry an oily rag like that.";
+const HARVARD_1 = [
+  "The birch canoe slid on the smooth planks.",
+  "Glue the sheet to the dark blue background.",
+  "It's easy to tell the depth of a well.",
+  "These days a chicken leg is a rare dish.",
+  "Rice is often served in round bowls.",
+  "The juice of lemons makes fine punch.",
+  "The box was thrown beside the parked truck.",
+  "The hogs were fed chopped corn and garbage.",
+  "Four hours of steady work faced us.",
+  "A large size in stockings is hard to sell.",
+].join(" ");
+const RAINBOW = "When the sunlight strikes raindrops in the air, they act as a prism and form a rainbow. The rainbow is a division of white light into many beautiful colors. These take the shape of a long round arch, with its path high above, and its two ends apparently beyond the horizon. There is, according to legend, a boiling pot of gold at one end. People look, but no one ever finds it. When a man looks for something beyond his reach, his friends say he is looking for the pot of gold at the end of the rainbow. Throughout the centuries people have explained the rainbow in various ways. Some have accepted it as a miracle without physical explanation. To the Hebrews it was a token that there would be no more universal floods. The Greeks used to imagine that it was a sign from the gods to foretell war or heavy rain. The Norsemen considered the rainbow as a bridge over which the gods passed from earth to their home in the sky. Others have tried to explain the phenomenon physically. Aristotle thought that the rainbow was caused by reflection of the sun's rays by the rain. Since then physicists have found that it is not reflection, but refraction by the raindrops which causes the rainbows. Many complicated ideas about the rainbow have been formed. The difference in the rainbow depends considerably upon the size of the drops, and the width of the colored band increases as the size of the drops increases. The actual primary rainbow observed is said to be the effect of super-imposition of a number of bows. If the red of the second bow falls upon the green of the first, the result is to give a bow with an abnormally wide yellow band, since red and green light when mixed form yellow. This is a very common type of bow, one showing mainly red and yellow, with little or no green or blue.";
+const GRANDFATHER = "You wished to know all about my grandfather. Well, he is nearly ninety-three years old. He dresses himself in an ancient black frock coat, usually minus several buttons; yet he still thinks as swiftly as ever. A long, flowing beard clings to his chin, giving those who observe him a pronounced feeling of the utmost respect. When he speaks his voice is just a bit cracked and quivers a trifle. Twice each day he plays skillfully and with zest upon our small organ. Except in the winter when the ooze or snow or ice prevents, he slowly takes a short walk in the open air each day. We have often urged him to walk more and smoke less, but he always answers, Banana Oil! Grandfather likes to be modern in his language.";
+const WIND_EN = "The North Wind and the Sun were disputing which was the stronger, when a traveler came along wrapped in a warm cloak. They agreed that the one who first succeeded in making the traveler take his cloak off should be considered stronger than the other. Then the North Wind blew as hard as he could, but the more he blew the more closely did the traveler fold his cloak around him; and at last the North Wind gave up the attempt. Then the Sun shone out warmly, and immediately the traveler took off his cloak. And so the North Wind was obliged to confess that the Sun was the stronger of the two.";
+const WIND_DE = "Einst stritten sich Nordwind und Sonne, wer von ihnen beiden wohl der Stärkere wäre, als ein Wanderer, der in einen warmen Mantel gehüllt war, des Weges daherkam. Sie wurden einig, daß derjenige für den Stärkeren gelten sollte, der den Wanderer zwingen würde, seinen Mantel abzunehmen. Der Nordwind blies mit aller Macht, aber je mehr er blies, desto fester hüllte sich der Wanderer in seinen Mantel ein. Endlich gab der Nordwind den Kampf auf. Nun erwärmte die Sonne die Luft mit ihren freundlichen Strahlen, und schon nach wenigen Augenblicken zog der Wanderer seinen Mantel aus. Da mußte der Nordwind zugeben, daß die Sonne von ihnen beiden der Stärkere war.";
+const WIND_PL = "Wiatr i Słońce sprzeczali się, który z nich jest silniejszy. Wtem ujrzeli podróżnego, który zbliżał się owinięty w ciepły płaszcz. Umówili się, że ten będzie uznany za silniejszego, kto pierwszy zmusi podróżnego, by zdjął płaszcz. Wiatr zaczął dąć z całej siły, ale im bardziej wiał, tym ciaśniej podróżny owinął się w płaszcz. Wreszcie Wiatr zrezygnował. Wtedy Słońce zaczęło przygrzewać i podróżny natychmiast zdjął płaszcz. Wiatr musiał uznać, że Słońce jest silniejsze.";
+const HARVARD_2_6 = [
+  "The boy was there when the sun rose. A rod is used to catch pink salmon. The source of the huge river is the clear spring. Kick the ball straight and follow through. Help the woman get back to her feet. A pot of tea helps to pass the evening. Smoky fires lack flame and heat. The soft cushion broke the man's fall. The salt breeze came across from the sea. The girl at the booth sold fifty bonds.",
+  "The small pup gnawed a hole in the sock. The fish twisted and turned on the bent hook. Press the pants and sew a button on the vest. The swan dive was far short of perfect. The beauty of the view stunned the young boy. Two blue fish swam in the tank. Her purse was full of useless trash. The colt reared and threw the tall rider. It snowed, rained, and hailed the same morning. Read verse out loud for pleasure.",
+  "Hoist the load to your left shoulder. Take the winding path to reach the lake. Note closely the size of the gas tank. Wipe the grease off his dirty face. Mend the coat before you go out. The wrist was badly strained and hung limp. The stray cat gave birth to kittens. The young girl gave no clear response. The meal was cooked before the bell rang. What joy there is in living.",
+  "A king ruled the state in the early days. The ship was torn apart on the sharp reef. Sickness kept him home the third week. The wide road shimmered in the hot sun. The lazy cow lay in the cool grass. Lift the square stone over the fence. The rope will bind the seven books at once. Hop over the fence and plunge in. The friendly gang left the drug store. Mesh wire keeps chicks inside.",
+  "The frosty air passed through the coat. The crooked maze failed to fool the mouse. Adding fast leads to wrong sums. The show was a flop from the very start. A saw is a tool used for making boards. The wagon moved on well oiled wheels. March the soldiers past the next hill. A cup of sugar makes sweet fudge. Place a rosebush near the porch steps. Both lost their lives in the raging storm.",
+].join(" ");
+const PAD = {
+  short: TIMIT_SA1,
+  mid: RAINBOW,
+  long: [RAINBOW, GRANDFATHER, HARVARD_1, HARVARD_2_6].join(" "),
+  sa2: TIMIT_SA2,
+  harvard: HARVARD_1,
+  grandfather: GRANDFATHER,
+  "wind-en": WIND_EN,
+  "wind-de": WIND_DE,
+  "wind-pl": WIND_PL,
+};
 
 function fault(message = "") {
   $("fault").hidden = !message;
@@ -42,6 +81,13 @@ function fillLanguages(select) {
   for (const [code, name] of Object.entries(schema.languages.reply)) select.add(new Option(`${name} (${code})`, code));
   select.value = schema.languages.default_reply;
 }
+function replyLanguage() {
+  return $("reply-language").value;
+}
+function paintField(el, autoEl, text) {
+  if (document.activeElement === el || !autoEl.checked) return;
+  el.value = text;
+}
 
 function render() {
   if (!state || !schema) return;
@@ -63,18 +109,16 @@ function render() {
   $("engines").textContent = enginesRunning() ? "Stop" : "Start";
   const liveEngines = enginesRunning();
   $("record").disabled = !liveEngines;
-  $("speak-run").disabled = !liveEngines;
   $("audio-file").disabled = !liveEngines;
+  $("heard-send").disabled = !liveEngines;
+  $("answer-send").disabled = !liveEngines;
   const view = state.live || {};
   const asr = view.asr || {}, brain = view.brain || {};
   $("asr-state").textContent = asr.status || "idle";
   $("brain-state").textContent = brain.status || "idle";
-  const heard = (asr.text || "").trim();
-  $("transcript").textContent = heard || "Transcription appears here.";
-  $("transcript").classList.toggle("muted", !heard);
-  const answer = (brain.text || "").trim();
-  $("answer").textContent = answer || "The local response appears here.";
-  $("answer").classList.toggle("muted", !answer);
+  paintField($("transcript"), $("heard-auto"), (asr.text || "").trim());
+  paintField($("answer"), $("answer-auto"), (brain.text || "").trim());
+  $("pad-target").textContent = padTarget === "transcript" ? "Heard" : "Answer";
   fault(view.error || "");
   const jobs = Object.values(state.jobs || {}).filter(j => j.status === "running");
   const dirty = Object.entries(state.dirty || {}).filter(([, v]) => v).map(([n]) => n);
@@ -89,12 +133,32 @@ function render() {
   renderKnobs();
 }
 
+function advance() {
+  const view = state?.live || {};
+  const asr = view.asr || {}, brain = view.brain || {};
+  const heard = (asr.text || "").trim();
+  const answer = (brain.text || "").trim();
+  if ($("heard-auto").checked && asr.status === "done" && heard && heard !== lastHeard && brain.status !== "running") {
+    lastHeard = heard;
+    post("brain", {prompt: heard, language: replyLanguage()}).catch(showError);
+  }
+  if ($("answer-auto").checked && brain.status === "done" && answer && answer !== lastAnswer && view.tts?.status !== "running") {
+    lastAnswer = answer;
+    post("tts", {text: answer, language: replyLanguage()}).catch(showError);
+  }
+}
+
 function settle(inspect) {
   schema = inspect.schema;
   state = inspect.state;
-  if (schema && !$("reply-language").options.length) {
-    fillLanguages($("reply-language"));
-    fillLanguages($("input-language"));
+  if (schema && !$("reply-language").options.length) fillLanguages($("reply-language"));
+  if (!primed) {
+    lastHeard = (state.live?.asr?.text || "").trim();
+    lastAnswer = (state.live?.brain?.text || "").trim();
+    primed = true;
+    render();
+    playLive();
+    return;
   }
   render();
   for (const [key, wait] of [...pending]) {
@@ -102,7 +166,31 @@ function settle(inspect) {
     if (job?.status === "done") { pending.delete(key); wait.resolve(); }
     else if (job?.status === "error") { pending.delete(key); wait.reject(Error(job.error || job.message || key)); }
   }
+  advance();
   playLive();
+}
+
+async function sendHeard() {
+  const text = $("transcript").value.trim();
+  if (!text) return showError(Error("Heard is empty"));
+  lastHeard = text;
+  await post("brain", {prompt: text, language: replyLanguage()});
+}
+async function sendAnswer() {
+  const text = $("answer").value.trim();
+  if (!text) return showError(Error("Answer is empty"));
+  lastAnswer = text;
+  await post("tts", {text, language: replyLanguage()});
+}
+function onAuto(kind) {
+  if (kind === "heard" && $("heard-auto").checked) {
+    const text = $("transcript").value.trim();
+    if (text && text !== lastHeard) sendHeard().catch(showError);
+  }
+  if (kind === "answer" && $("answer-auto").checked) {
+    const text = $("answer").value.trim();
+    if (text && text !== lastAnswer) sendAnswer().catch(showError);
+  }
 }
 
 async function runJob(op, name, kind) {
@@ -222,13 +310,7 @@ async function processUtterance(buffer, seconds, rec) {
   try {
     if ($("clone").checked && seconds >= schema.mic.clone_reference_seconds) await wav("upload_reference", buffer);
     const asr = await wav("asr", buffer);
-    const transcript = String(asr.result?.text || "").trim();
-    if (!transcript) throw Error("Parakeet returned no transcript");
-    const lang = $("reply-language").value;
-    const brain = await post("brain", {prompt: transcript, language: lang});
-    const answer = String(brain.text || "").trim();
-    if (!answer) throw Error("Brain returned no answer");
-    await post("tts", {text: answer, language: lang});
+    if (!String(asr.result?.text || "").trim()) throw Error("Parakeet returned no transcript");
   } finally {
     if (rec) { rec.busy = false; rec.parts = []; rec.speaking = false; rec.speechMs = rec.silenceMs = 0; }
   }
@@ -350,11 +432,21 @@ $("install").onclick = installMissing;
 $("engines").onclick = toggleEngines;
 $("record").onclick = () => (recording ? stopMic(true) : startMic()).catch(showError);
 $("stop-voice").onclick = stopVoice;
-$("speak-run").onclick = () => {
-  const text = $("speak-text").value.trim();
-  if (!text) return showError(Error("Type text to speak"));
-  post("tts", {text, language: $("input-language").value}).catch(showError);
-};
+$("heard-send").onclick = () => sendHeard().catch(showError);
+$("answer-send").onclick = () => sendAnswer().catch(showError);
+$("heard-auto").onchange = () => onAuto("heard");
+$("answer-auto").onchange = () => onAuto("answer");
+$("transcript").addEventListener("focus", () => { padTarget = "transcript"; $("pad-target").textContent = "Heard"; });
+$("answer").addEventListener("focus", () => { padTarget = "answer"; $("pad-target").textContent = "Answer"; });
+$("pad").addEventListener("click", ev => {
+  const btn = ev.target.closest("[data-pad]");
+  if (!btn) return;
+  const text = PAD[btn.dataset.pad];
+  if (!text) return;
+  const field = $(padTarget);
+  field.value = text;
+  field.focus();
+});
 $("audio-file").onchange = ev => {
   const file = ev.target.files && ev.target.files[0];
   ev.target.value = "";
