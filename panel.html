@@ -12,7 +12,7 @@
     <div>
       <p class="eyebrow">LOCAL VOICE</p>
       <h1>Trident</h1>
-      <p class="sub">Microphone → Parakeet auto-detect → local brain → streamed Chatterbox voice.</p>
+      <p class="sub">Microphone or file → Parakeet → local brain → Chatterbox.</p>
     </div>
     <span id="connection" class="pill bad">Connecting</span>
   </header>
@@ -37,7 +37,7 @@
       <div>
         <p class="eyebrow">CONVERSATION</p>
         <h2>Talk</h2>
-        <p class="muted">Input language: <strong>Auto-detect</strong> across Parakeet V3's 25 supported European languages.</p>
+        <p class="muted">Parakeet auto-detects its 25 languages. Reply language sets Gemma and Chatterbox.</p>
       </div>
       <label class="select">Reply voice
         <select id="reply-language"></select>
@@ -47,27 +47,36 @@
     <div class="controls">
       <button id="record" class="mic" disabled>Start microphone</button>
       <button id="stop-voice" disabled>Stop voice</button>
+      <label class="file">Audio file<input id="audio-file" type="file" accept="audio/*" disabled></label>
       <label class="check"><input id="clone" type="checkbox"> Clone this voice from a long utterance</label>
     </div>
-    <p id="mic-status" class="live">Start the engines, then start the microphone.</p>
+    <div class="controls">
+      <label class="select grow">Speak
+        <textarea id="speak-text" rows="2" placeholder="Type text for Chatterbox."></textarea>
+      </label>
+      <label class="select">Spoken language
+        <select id="input-language"></select>
+      </label>
+      <button id="speak-run" disabled>Speak</button>
+    </div>
+    <p id="mic-status" class="live">Start the engines, then speak, upload a file, or type text.</p>
 
     <div class="conversation-grid">
       <article>
         <div class="label"><span>Heard</span><small id="asr-state">idle</small></div>
-        <p id="transcript" class="text muted">Live buffered transcription appears here while you speak.</p>
+        <p id="transcript" class="text muted">Transcription appears here.</p>
       </article>
       <article>
         <div class="label"><span>Answer</span><small id="brain-state">idle</small></div>
-        <p id="answer" class="text muted">The complete local response appears here while streamed speech plays.</p>
+        <p id="answer" class="text muted">The local response appears here.</p>
       </article>
     </div>
   </section>
 
   <section class="card note">
-    <strong>Advanced settings are intentionally not duplicated in this page.</strong>
-    <span>Edit <code>cfg.py</code> for ASR/VAD, Gemma generation, TTS sampling, streaming chunk sizes, context, threads, and GPU settings.</span>
+    <strong>Settings live in <code>cfg.py</code>.</strong>
+    <span>ASR/VAD, Gemma, TTS sampling, context, threads, and GPU.</span>
   </section>
-
   <p id="fault" class="fault" hidden></p>
 </main>
 <script src="/panel.js"></script>

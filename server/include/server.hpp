@@ -10,7 +10,7 @@ class TTSServer {
 public:
     explicit TTSServer(int);
     ~TTSServer();
-    void initialize(const std::string&, const std::string&, int, int, int, int);
+    void initialize(const std::string&, const std::string&, int, int, int);
     void start();
     void stop();
 private:
@@ -19,6 +19,5 @@ private:
     std::unique_ptr<EngineWrapper> engine_;
     httplib::Server http_;
     std::thread thread_;
-    void connect(httplib::ws::WebSocket&);
 };
 }
