@@ -72,9 +72,15 @@ PACKAGES = {
     "msvc": {"url": "https://download.visualstudio.microsoft.com/download/pr/00d9d26c-2727-42c2-aa9e-eda63b03e1ee/15df9d3b4c2b2eaf44704d5e938c895341b9cd8ba40a9a18610f8d18cbe01b53/vs_BuildTools.exe", "file": "vs_BuildTools.exe", "size": 4458736, "sha256": "15df9d3b4c2b2eaf44704d5e938c895341b9cd8ba40a9a18610f8d18cbe01b53"},
     "vulkan": {"url": f"https://sdk.lunarg.com/sdk/download/{VULKAN_VERSION}/windows/vulkansdk-windows-X64-{VULKAN_VERSION}.exe", "file": f"vulkansdk-windows-X64-{VULKAN_VERSION}.exe", "size": 0, "sha256": "81f474711e9042f4cd22b31b2f7a8870db2e428b21586fb43dd80150be97310d"},
 }
-TTS_LANGUAGES = {"pt": "Portuguese"}
+TTS_LANGUAGES = {
+    "en": "English", "pt": "Portuguese", "ar": "Arabic", "zh": "Chinese", "da": "Danish",
+    "nl": "Dutch", "fi": "Finnish", "fr": "French", "de": "German", "el": "Greek",
+    "he": "Hebrew", "hi": "Hindi", "it": "Italian", "ja": "Japanese", "ko": "Korean",
+    "ms": "Malay", "no": "Norwegian", "pl": "Polish", "ru": "Russian", "es": "Spanish",
+    "sw": "Swahili", "sv": "Swedish", "tr": "Turkish",
+}
 ASR_LANGUAGES = {"bg": "Bulgarian", "hr": "Croatian", "cs": "Czech", "da": "Danish", "nl": "Dutch", "en": "English", "et": "Estonian", "fi": "Finnish", "fr": "French", "de": "German", "el": "Greek", "hu": "Hungarian", "it": "Italian", "lv": "Latvian", "lt": "Lithuanian", "mt": "Maltese", "pl": "Polish", "pt": "Portuguese", "ro": "Romanian", "sk": "Slovak", "sl": "Slovenian", "es": "Spanish", "sv": "Swedish", "ru": "Russian", "uk": "Ukrainian"}
-CONVERSATION_LANGUAGES = {code: TTS_LANGUAGES[code] for code in TTS_LANGUAGES if code in ASR_LANGUAGES}
+CONVERSATION_LANGUAGES = {"pt": "Portuguese"}
 ENGINE_LOG_TOKENS = ("vulkan", "uma", "model loaded", "listening", "server is listening", "n_ctx_slot", "prompt eval time", "eval time", "total time", "voiceencoder", "s3tokenizer", "prompt_feat", "t3 stop", "t3 done", "s3gen:", "bench", "metric")
 BUILD_LOG_TOKENS = ("compiler identification", "found vulkan:", "build files have been written")
 NATIVE_EVENT_PREFIX = "TRIDENT_EVENT "
@@ -105,12 +111,13 @@ ASR_RUNTIME = {"threads": 4, "response_format": "json"}
 BRAIN_RUNTIME = {"context": 2048, "parallel": 1, "fit_target": 3072}
 BRAIN_GENERATION = {"temperature": 0.2, "top_p": 0.9, "top_k": 40, "min_p": 0.0, "repeat_penalty": 1.05, "seed": 42, "max_tokens": 160}
 FIELDS = {
-    "conversation.language": field("Conversation language", "string", "pt", options=list(CONVERSATION_LANGUAGES)),
+    "conversation.language": field("Heard language", "string", "pt", options=list(CONVERSATION_LANGUAGES)),
+    "conversation.reply_language": field("Reply language", "string", "en", options=list(TTS_LANGUAGES)),
     "conversation.clone_voice": field("Experimental mic voice clone", "bool", False),
     "conversation.vad": field("Voice activity detection", "bool", False),
-    "speech.language": field("Speech language", "string", "pt", options=list(TTS_LANGUAGES)),
+    "speech.language": field("Speech language", "string", "en", options=list(TTS_LANGUAGES)),
     "speech.style": field("Voice style", "string", "natural", options=list(VOICE_STYLES)),
-    "speech.text": field("Text to speak", "string", "Um, dois, tres.", multiline=True),
+    "speech.text": field("Text to speak", "string", "Good morning. The sky is clear and the wind is calm.", multiline=True),
     "tts.engine.gpu_layers": field("TTS GPU layers", "int", TTS_RUNTIME["gpu_layers"], 0, 999),
     "tts.engine.context": field("TTS context tokens", "int", TTS_RUNTIME["context"], TTS_MIN_CONTEXT, 8192),
     "tts.engine.sessions": field("TTS max sessions", "int", TTS_RUNTIME["sessions"], 1, 8),
@@ -265,9 +272,13 @@ def load_config() -> dict:
     if type(stored_context) is int and stored_context < TTS_MIN_CONTEXT:
         stored = stored | {"tts.engine.context": TTS_RUNTIME["context"]}
     if stored.get("speech.language") not in TTS_LANGUAGES:
-        stored = stored | {"speech.language": "pt"}
+        stored = stored | {"speech.language": "en"}
+    elif stored.get("speech.language") == "pt" and stored.get("speech.text") in (None, "Um, dois, tres."):
+        stored = stored | {"speech.language": "en", "speech.text": "Good morning. The sky is clear and the wind is calm."}
     if stored.get("conversation.language") not in CONVERSATION_LANGUAGES:
         stored = stored | {"conversation.language": "pt"}
+    if stored.get("conversation.reply_language") not in TTS_LANGUAGES:
+        stored = stored | {"conversation.reply_language": "en"}
     if stored.get("speech.style") not in VOICE_STYLES:
         stored = stored | {"speech.style": "natural"}
     merged = {path: stored[path] if path in stored else default for path, default in defaults.items()}
@@ -1095,9 +1106,9 @@ def transcribe(audio: bytes, *, trace_id: str = "", turn_id: str = "") -> dict:
     return result
 def brain(prompt: str, language: str, *, trace_id: str = "", turn_id: str = "") -> dict:
     require_engine("brain")
-    if language not in CONVERSATION_LANGUAGES:
-        raise ApiError(400, f"unsupported conversation language: {language}")
-    language_name = CONVERSATION_LANGUAGES[language]
+    if language not in TTS_LANGUAGES:
+        raise ApiError(400, f"unsupported reply language: {language}")
+    language_name = TTS_LANGUAGES[language]
     system = (
         f"Reply in {language_name} ({language}). Give one or two short, natural spoken sentences. "
         "Do not analyze, list options, add a preamble, or mention transcription."
@@ -1307,6 +1318,9 @@ def run_turn(payload: dict, raw: bytes | None = None) -> dict:
     language = str(payload.get("language") or "")
     if language not in CONVERSATION_LANGUAGES:
         raise ApiError(400, f"conversation language must be one of {list(CONVERSATION_LANGUAGES)}")
+    reply_language = str(payload.get("reply_language") or CONFIG.get("conversation.reply_language") or "en")
+    if reply_language not in TTS_LANGUAGES:
+        raise ApiError(400, f"reply language must be one of {list(TTS_LANGUAGES)}")
     trace_id = identifier(payload.get("trace_id"), "trace_id") or new_trace_id("trace")
     turn_id = identifier(payload.get("turn_id"), "turn_id") or new_trace_id("turn")
     client_id = identifier(payload.get("client_id"), "client_id")
@@ -1315,7 +1329,7 @@ def run_turn(payload: dict, raw: bytes | None = None) -> dict:
     require_engine("tts")
     clone = bool(CONFIG["conversation.clone_voice"])
     results: dict[str, Any] = {}
-    report = {"ok": False, "clone": clone, "cloned": False, "language": language, "text": "", "trace_id": trace_id, "turn_id": turn_id, "client_id": client_id, "results": results, "error": ""}
+    report = {"ok": False, "clone": clone, "cloned": False, "language": language, "reply_language": reply_language, "text": "", "trace_id": trace_id, "turn_id": turn_id, "client_id": client_id, "results": results, "error": ""}
     started = time.monotonic()
     with trace_scope(trace_id=trace_id, turn_id=turn_id, client_id=client_id):
         try:
@@ -1324,7 +1338,7 @@ def run_turn(payload: dict, raw: bytes | None = None) -> dict:
             input_evidence = {"path": str(DATA / "last-input.wav"), "bytes": len(audio), "sha256": hashlib.sha256(audio).hexdigest(), "metrics": metrics}
             with LOCK:
                 RUNTIME["trace"].update(latest=trace_id, latest_turn=turn_id)
-            info("turn", "turn.started", {"language": language, "clone_requested": clone, "vad": bool(CONFIG["conversation.vad"]), "input": input_evidence, "reference_before": reference_evidence(), "engines": {name: {"status": value["status"], "applied": value.get("applied", {})} for name, value in RUNTIME["engines"].items()}})
+            info("turn", "turn.started", {"language": language, "reply_language": reply_language, "clone_requested": clone, "vad": bool(CONFIG["conversation.vad"]), "input": input_evidence, "reference_before": reference_evidence(), "engines": {name: {"status": value["status"], "applied": value.get("applied", {})} for name, value in RUNTIME["engines"].items()}})
             if clone and metrics["seconds"] >= 10:
                 validate_wav(audio)
                 report["cloned"] = True
@@ -1338,13 +1352,13 @@ def run_turn(payload: dict, raw: bytes | None = None) -> dict:
             transcript = str(results["asr"].get("text") or "").strip()
             if not transcript:
                 raise ApiError(422, "speech was not recognized")
-            set_flow("thinking", transcript=transcript, language=language, trace_id=trace_id, turn_id=turn_id)
-            results["brain"] = brain(f"Respond naturally to this speech transcript:\n\n{transcript}", language, trace_id=trace_id, turn_id=turn_id)
+            set_flow("thinking", transcript=transcript, language=reply_language, trace_id=trace_id, turn_id=turn_id)
+            results["brain"] = brain(f"Respond naturally to this speech transcript:\n\n{transcript}", reply_language, trace_id=trace_id, turn_id=turn_id)
             speak = brain_reply_text(results["brain"]) or transcript
             report["text"] = speak
-            set_flow("ready_to_speak", transcript=transcript, answer=speak, language=language, trace_id=trace_id, turn_id=turn_id)
+            set_flow("ready_to_speak", transcript=transcript, answer=speak, language=reply_language, trace_id=trace_id, turn_id=turn_id)
             report.update(ok=True, results=results, reference=reference_evidence())
-            info("turn", "turn.response_ready", {"duration_ms": round((time.monotonic() - started) * 1000, 3), "language": language, "transcript": transcript, "response": speak, "clone_requested": clone, "cloned": report["cloned"], "reference": report["reference"]})
+            info("turn", "turn.response_ready", {"duration_ms": round((time.monotonic() - started) * 1000, 3), "language": language, "reply_language": reply_language, "transcript": transcript, "response": speak, "clone_requested": clone, "cloned": report["cloned"], "reference": report["reference"]})
             return report
         except Exception as exception:
             report["error"] = str(exception)
@@ -1446,7 +1460,7 @@ OPS = {
     "tts_request": {"doc": "queue a synthesize message", "fields": ["lane", "text"]},
     "tts_event": {"doc": "report a lane websocket event", "fields": ["lane", "event"]},
     "tts_cancel": {"doc": "cancel a TTS session", "fields": ["session_id"]},
-    "turn": {"doc": "WAV input -> Parakeet -> brain; browser streams Chatterbox audio", "fields": ["language"], "body": "audio/wav"},
+    "turn": {"doc": "WAV input -> Parakeet -> brain; browser streams Chatterbox audio", "fields": ["language", "reply_language"], "body": "audio/wav"},
 }
 def inspect() -> dict:
     return {"ok": True, "version": 5, "control": "/api", "ops": OPS, "schema": SCHEMA, "state": snapshot()}
@@ -1553,7 +1567,7 @@ SCHEMA = {
     "version": 5,
     "control": "/api",
     "fields": FIELDS,
-    "languages": {"conversation": CONVERSATION_LANGUAGES, "speech": TTS_LANGUAGES, "asr": ASR_LANGUAGES},
+    "languages": {"conversation": CONVERSATION_LANGUAGES, "reply": TTS_LANGUAGES, "speech": TTS_LANGUAGES, "asr": ASR_LANGUAGES},
     "voice_styles": VOICE_STYLES,
     "param_groups": PARAM_GROUPS,
     "ops": OPS,
@@ -1574,7 +1588,7 @@ def api_payload_evidence(payload: dict) -> dict:
     """Keep request routing evidence without duplicating prompts, URLs, or secrets."""
     evidence: dict[str, Any] = {}
     safe_fields = (
-        "op", "name", "lane", "language", "style", "event", "level", "source", "family",
+        "op", "name", "lane", "language", "reply_language", "style", "event", "level", "source", "family",
         "trace_id", "turn_id", "config_id", "session_id", "request_id", "client_id",
     )
     for field in safe_fields:
