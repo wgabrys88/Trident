@@ -1,8 +1,6 @@
 *
 !/.gitignore
 !/.gitattributes
-!/ARCHITECTURE.md
-!/HANDOVER.md
 !/log.py
 !/main.py
 !/panel.html

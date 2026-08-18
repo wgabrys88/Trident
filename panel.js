@@ -48,7 +48,7 @@ function fail(error) {
 function fillLanguages(select, languages) { select.replaceChildren(...Object.entries(languages).map(([code, name]) => { const option = document.createElement("option"); option.value = code; option.textContent = `${name} (${code})`; return option; })); }
 async function save(path, value) {
   await command("set", {values: {[path]: value}});
-  if (["tts.sample.", "tts.stream.", "tts.style."].some(prefix => path.startsWith(prefix))) await closeTts();
+  if (["tts.sample.", "tts.stream.", "tts.style.", "speech.language", "conversation.reply_language"].some(prefix => path.startsWith(prefix))) await closeTts();
 }
 function coerceField(path, raw) {
   const spec = schema.fields[path] || {};
@@ -70,7 +70,12 @@ function bindField(element) {
     } catch (error) { fail(error); }
   });
 }
-function bindConfig() { fillLanguages($("conversation-language"), schema.languages.conversation); fillLanguages($("speech-language"), schema.languages.speech); for (const element of document.querySelectorAll("[data-path]")) bindField(element); }
+function bindConfig() {
+  fillLanguages($("conversation-language"), schema.languages.conversation);
+  fillLanguages($("reply-language"), schema.languages.reply || schema.languages.speech);
+  fillLanguages($("speech-language"), schema.languages.speech);
+  for (const element of document.querySelectorAll("[data-path]")) bindField(element);
+}
 function buildParamGroups() {
   const root = $("param-groups");
   if (!root || !schema.param_groups) return;
@@ -242,7 +247,15 @@ function renderBrain() {
     ? `${job.message} - ${job.progress}%`
     : `${catalogLabel(state.brain, state.brain.active || "brain")} - ${state.brain.ready ? "ready" : "use Download selected"}`;
 }
-function renderReference() { const ref = state.reference, source = ref.custom ? "Custom voice reference" : "Official Iracema voice"; $("reference-state").textContent = ref.status === "ready" ? `${source} - ${ref.duration.toFixed(1)} seconds. Speech language is Portuguese.` : `Voice reference: ${ref.status}.`; }
+function renderReference() {
+  const ref = state.reference, source = ref.custom ? "Custom voice reference" : "Official Iracema voice";
+  const spoken = schema && schema.languages && schema.languages.speech || {};
+  const speechCode = state.config && state.config["speech.language"];
+  const speechName = spoken[speechCode] || speechCode || "the selected language";
+  $("reference-state").textContent = ref.status === "ready"
+    ? `${source} - ${ref.duration.toFixed(1)} seconds. Speech Lab speaks ${speechName}. Conversation replies in ${spoken[state.config && state.config["conversation.reply_language"]] || "the selected reply language"}.`
+    : `Voice reference: ${ref.status}.`;
+}
 function renderFlow() {
   const flow = state.flow || {stage: "idle", transcript: "", answer: "", error: ""};
   const localStage = recording ? "listening" : clientStage || flow.stage;
@@ -740,23 +753,25 @@ async function runTurn(wav, traceId = makeId("trace")) {
   $("asr-state").textContent = "Working";
   $("speech-state").textContent = "Waiting";
   const language = $("conversation-language").value;
+  const replyLanguage = $("reply-language").value || "en";
   await save("conversation.clone_voice", $("clone-voice").checked);
   const inputMetrics = signalMetrics(diagnostic.input) || {};
-  browserTrace("browser.turn.submitted", {language, clone_requested: $("clone-voice").checked, vad: Boolean(state.config["conversation.vad"]), wav_bytes: wav.byteLength, input: inputMetrics}, {trace_id: traceId});
+  browserTrace("browser.turn.submitted", {language, reply_language: replyLanguage, clone_requested: $("clone-voice").checked, vad: Boolean(state.config["conversation.vad"]), wav_bytes: wav.byteLength, input: inputMetrics}, {trace_id: traceId});
   let result;
   try {
-    result = await api(`/api?op=turn&language=${encodeURIComponent(language)}&trace_id=${encodeURIComponent(traceId)}&client_id=${encodeURIComponent(clientId)}`, wav, true);
+    result = await api(`/api?op=turn&language=${encodeURIComponent(language)}&reply_language=${encodeURIComponent(replyLanguage)}&trace_id=${encodeURIComponent(traceId)}&client_id=${encodeURIComponent(clientId)}`, wav, true);
   } catch (error) {
-    browserTrace("browser.turn.failed", {language, error: error && error.message ? error.message : String(error)}, {trace_id: traceId}, "error");
+    browserTrace("browser.turn.failed", {language, reply_language: replyLanguage, error: error && error.message ? error.message : String(error)}, {trace_id: traceId}, "error");
     throw error;
   }
   if (!result.text) throw Error("The assistant returned no reply");
   diagnostic.traceId = result.trace_id || traceId;
   diagnostic.turnId = result.turn_id || "";
   diagnostic.transcript = (result.results && result.results.asr && result.results.asr.text) || (state.flow && state.flow.transcript) || "";
-  browserTrace("browser.turn.response_received", {language: result.language, clone_requested: result.clone, cloned: result.cloned, transcript: diagnostic.transcript, response: result.text, reference: result.reference || {}}, {trace_id: diagnostic.traceId, turn_id: diagnostic.turnId});
+  const spokenLanguage = result.reply_language || replyLanguage;
+  browserTrace("browser.turn.response_received", {language: result.language, reply_language: spokenLanguage, clone_requested: result.clone, cloned: result.cloned, transcript: diagnostic.transcript, response: result.text, reference: result.reference || {}}, {trace_id: diagnostic.traceId, turn_id: diagnostic.turnId});
   if (result.cloned) await closeTts();
-  await speak(result.text, language, "natural", "turn", {trace_id: diagnostic.traceId, turn_id: diagnostic.turnId});
+  await speak(result.text, spokenLanguage, "natural", "turn", {trace_id: diagnostic.traceId, turn_id: diagnostic.turnId});
   $("recording-time").textContent = recording && state.config["conversation.vad"]
     ? "Listening for the next utterance."
     : "Ready for another question.";

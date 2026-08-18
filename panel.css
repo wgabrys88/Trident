@@ -466,7 +466,7 @@ input[type="checkbox"] {
 }
 
 .conversation-controls {
-  grid-template-columns: minmax(12rem, .9fr) minmax(14rem, 1fr) minmax(14rem, 1fr);
+  grid-template-columns: minmax(11rem, 1fr) minmax(11rem, 1fr) minmax(14rem, 1fr) minmax(14rem, 1fr);
   align-items: end;
 }
 
@@ -801,10 +801,6 @@ details > summary strong {
 
   .conversation-controls {
     grid-template-columns: 1fr 1fr;
-  }
-
-  .conversation-controls label:first-child {
-    grid-column: 1 / -1;
   }
 
   .brain-row,
