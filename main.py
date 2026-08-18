@@ -19,9 +19,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 from cfg import (
-    ASR_CHUNK, ASR_RUNTIME, BRAIN_FAMILY, BRAIN_GENERATION,
-    BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_SYSTEM, CONTROLLER, DEFAULT_REPLY_LANGUAGE,
-    MIC, PORTS, TTS_CHUNK, TTS_LANGUAGES, TTS_RUNTIME, TTS_SAMPLE, TTS_VOICE,
+    ASR_CHUNK, ASR_RUNTIME, BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME,
+    BRAIN_SYSTEM, BRAIN_THINKING, CONTROLLER, DEFAULT_REPLY_LANGUAGE, KNOB_ENGINE,
+    KNOBS, MIC, PORTS, TTS_CHUNK, TTS_LANGUAGES, TTS_RUNTIME, TTS_SAMPLE, TTS_VOICE,
 )
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -48,7 +48,7 @@ MODELS = {
     "chatterbox-codec": {"label": "CHATTERBOX V3 S3GEN", "repo": "ResembleAI/chatterbox", "revision": "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18", "file": "chatterbox-s3gen-mtl-v3-f16.gguf", "size": 1056431360},
     "parakeet": {"label": "PARAKEET TDT 0.6B V3 Q4_K", "repo": "mudler/parakeet-cpp-gguf", "revision": "bf0af9f425fa01809cadec671b3cb672709d13e9", "file": "tdt-0.6b-v3-q4_k.gguf", "size": 675200864},
     "gemma": {"label": "GEMMA 4 E2B", "repo": "google/gemma-4-E2B-it-qat-q4_0-gguf", "revision": "675cff42a74c774d6cb76f76d8eacb49b48c9b93", "file": "gemma-4-E2B_q4_0-it.gguf", "size": 3349516256},
-    "reference": {"label": "DEFAULT VOICE", "source": "assets/default-reference.wav", "file": "default-reference.wav", "directory": "data", "size": 1012558},
+    "reference": {"label": "DEFAULT VOICE", "source": "assets/default-reference.wav", "file": "default-reference.wav", "directory": "data", "size": 1440078},
 }
 VULKAN_VERSION = "1.4.357.0"
 PACKAGES = {
@@ -72,11 +72,33 @@ def log(component: str, event: str, **data: Any):
     with LOCK:
         with LOG.open("a", encoding="utf-8") as out:
             out.write(line + "\n")
+SCHEMA_VERSION = 9
+
+def default_settings() -> dict:
+    return {
+        "mic": deepcopy(MIC),
+        "asr_runtime": deepcopy(ASR_RUNTIME),
+        "asr_chunk": deepcopy(ASR_CHUNK),
+        "tts_runtime": deepcopy(TTS_RUNTIME),
+        "tts_sample": deepcopy(TTS_SAMPLE),
+        "tts_voice": deepcopy(TTS_VOICE),
+        "tts_chunk": deepcopy(TTS_CHUNK),
+        "brain_runtime": deepcopy(BRAIN_RUNTIME),
+        "brain_generation": deepcopy(BRAIN_GENERATION),
+        "brain_thinking": BRAIN_THINKING,
+        "brain_system": BRAIN_SYSTEM,
+    }
+
 RUNTIME = {
     "jobs": {},
     "engines": {name: {"status": "stopped", "error": "", "pid": None, "applied": {}} for name in ENGINE_MODELS},
     "results": {"asr": None, "brain": None},
+    "settings": default_settings(),
+    "dirty": {name: False for name in ENGINE_MODELS},
 }
+
+def live(group: str):
+    return RUNTIME["settings"][group]
 class ApiError(RuntimeError):
     def __init__(self, code: int, message: str):
         super().__init__(message)
@@ -155,6 +177,8 @@ def snapshot() -> dict:
             "reference": reference_state(),
             "brain": dict(BRAIN),
             "jobs": deepcopy(RUNTIME["jobs"]),
+            "settings": deepcopy(RUNTIME["settings"]),
+            "dirty": dict(RUNTIME["dirty"]),
         }
 def set_job(key: str, status: str, stage: str, progress: int, message: str, failure: str = ""):
     with LOCK:
@@ -565,17 +589,17 @@ def load_engine(name: str, key: str):
     if not executable_path.is_file():
         raise RuntimeError(f"component is missing: {executable_path}")
     if name == "tts":
-        runtime = dict(TTS_RUNTIME)
+        runtime = dict(live("tts_runtime"))
         applied = {"runtime": runtime}
         command = [str(executable_path), "--port", str(PORTS["tts"]), "--model", str(paths[0]), "--s3gen-gguf", str(paths[1]), "--n-gpu-layers", str(runtime["gpu_layers"]), "--context", str(runtime["context"]), "--threads", str(runtime["threads"])]
         cwd, health, env = executable_path.parent, f"http://127.0.0.1:{PORTS['tts']}/health", os.environ.copy()
     elif name == "asr":
-        applied = dict(ASR_RUNTIME)
+        applied = dict(live("asr_runtime"))
         command = [str(executable_path), "--model", str(paths[0]), "--host", "127.0.0.1", "--port", str(PORTS["asr"]), "--threads", str(applied["threads"])]
         cwd, health, env = executable_path.parent, f"http://127.0.0.1:{PORTS['asr']}/health", os.environ.copy()
         env["PARAKEET_DEVICE"] = str(applied["device"])
     else:
-        runtime = dict(BRAIN_RUNTIME)
+        runtime = dict(live("brain_runtime"))
         applied = {**runtime, "id": BRAIN["id"], "family": BRAIN["family"], "path": str(paths[0])}
         command = [str(executable_path), "-m", str(paths[0]), "--host", "127.0.0.1", "--port", str(PORTS["brain"]), "--device", str(runtime["device"]), "--n-gpu-layers", str(runtime["gpu_layers"]), "--ctx-size", str(runtime["context"]), "--parallel", str(runtime["parallel"]), "--no-mmproj", "--load-mode", "auto", "--flash-attn", str(runtime["flash_attn"]), "--repack", "--fit", str(runtime["fit"]), "--fit-target", str(runtime["fit_target"]), "--fit-ctx", str(runtime["fit_ctx"])]
         cwd, health, env = executable_path.parent, f"http://127.0.0.1:{PORTS['brain']}/health", os.environ.copy()
@@ -589,11 +613,12 @@ def load_engine(name: str, key: str):
     wait_ready(name, process, health)
     with LOCK:
         RUNTIME["engines"][name]["status"] = "running"
+        RUNTIME["dirty"][name] = False
     log("engine", "ready", name=name, pid=process.pid)
     set_job(key, "running", "ready", 95, f"{name} ready")
 def multipart(audio: bytes, response_format: str | None = None) -> tuple[bytes, str]:
     boundary = "trident-" + uuid.uuid4().hex
-    fmt = (response_format or str(ASR_RUNTIME["response_format"])).encode()
+    fmt = (response_format or str(live("asr_runtime")["response_format"])).encode()
     fields = [("file", "speech.wav", "audio/wav", audio), ("response_format", "", "text/plain", fmt)]
     body = bytearray()
     for name, filename, kind, value in fields:
@@ -666,8 +691,9 @@ def transcribe(audio: bytes) -> dict:
         seconds = len(pcm) / float(rate * width * max(channels, 1))
     except (wave.Error, EOFError):
         rate, pcm, seconds = 16000, b"", 0.0
-    window = float(ASR_CHUNK["seconds"])
-    overlap = float(ASR_CHUNK["overlap"])
+    with LOCK:
+        window = float(live("asr_chunk")["seconds"])
+        overlap = float(live("asr_chunk")["overlap"])
     if seconds <= window or not pcm:
         body, content_type = multipart(audio)
         result = json.loads(remote(f"http://127.0.0.1:{PORTS['asr']}/v1/audio/transcriptions", body, content_type))
@@ -694,13 +720,16 @@ def brain(prompt: str, language: str) -> dict:
     if language not in TTS_LANGUAGES:
         raise ApiError(400, f"unsupported reply language: {language}")
     language_name = TTS_LANGUAGES[language]
-    system = BRAIN_SYSTEM.format(language_name=language_name, language=language)
+    with LOCK:
+        system = str(live("brain_system")).format(language_name=language_name, language=language)
+        generation = dict(live("brain_generation"))
+        thinking = bool(live("brain_thinking"))
     request = {
         "model": BRAIN["id"],
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-        **BRAIN_GENERATION,
+        **generation,
         "stream": False,
-        **BRAIN_FAMILY,
+        "chat_template_kwargs": {"enable_thinking": thinking},
     }
     started = time.monotonic()
     result = json.loads(remote(f"http://127.0.0.1:{PORTS['brain']}/v1/chat/completions", json.dumps(request, separators=(",", ":")).encode()))
@@ -733,16 +762,17 @@ def synthesize(text: str, language: str) -> dict:
         raise ApiError(400, f"unsupported speech language: {language}")
     require_engine("tts")
     ref = reference_path()
-    payload = {
-        "text": text, "language": language, "reference": str(ref),
-        "reference_mtime": ref.stat().st_mtime, "chunk_chars": TTS_CHUNK["chars"],
-        **TTS_SAMPLE, **TTS_VOICE,
-    }
+    with LOCK:
+        payload = {
+            "text": text, "language": language, "reference": str(ref),
+            "reference_mtime": ref.stat().st_mtime, "chunk_chars": live("tts_chunk")["chars"],
+            **live("tts_sample"), **live("tts_voice"),
+        }
     started = time.monotonic()
     result = json.loads(remote(f"http://127.0.0.1:{PORTS['tts']}/tts", json.dumps(payload, separators=(",", ":")).encode()))
     if result.get("error"):
         raise RuntimeError(result["error"])
-    log("tts", "done", ms=round((time.monotonic() - started) * 1000, 1), lang=language, seconds=result.get("seconds"), t3_ms=result.get("t3_ms"), s3gen_ms=result.get("s3gen_ms"), chunks=result.get("chunks"), cfm_steps=TTS_SAMPLE["cfm_steps"])
+    log("tts", "done", ms=round((time.monotonic() - started) * 1000, 1), lang=language, seconds=result.get("seconds"), t3_ms=result.get("t3_ms"), s3gen_ms=result.get("s3gen_ms"), chunks=result.get("chunks"), cfm_steps=payload["cfm_steps"])
     return result
 def cancel_tts() -> dict:
     require_engine("tts")
@@ -762,18 +792,106 @@ OPS = {
     "inspect": {}, "schema": {}, "state": {},
     "install_prerequisite": {}, "install_component": {}, "download_model": {},
     "load_engine": {}, "unload_engine": {}, "upload_reference": {},
-    "asr": {}, "brain": {}, "tts": {}, "tts_cancel": {}, "goodbye": {},
+    "asr": {}, "brain": {}, "tts": {}, "tts_cancel": {}, "configure": {}, "goodbye": {},
 }
-SCHEMA = {
-    "version": 8,
-    "languages": {"reply": TTS_LANGUAGES, "default_reply": DEFAULT_REPLY_LANGUAGE},
-    "mic": MIC,
-    "prerequisites": {name: {"label": label} for name, label in {"python": "PYTHON 3.11+", "git": "GIT", "cmake": "CMAKE", "msvc": "MSVC BUILD TOOLS", "vulkan": "VULKAN SDK"}.items()},
-    "components": {"tts": {"label": "CHATTERBOX TTS V3"}, "parakeet": {"label": BINARIES["parakeet"]["label"]}, "gemma": {"label": BINARIES["gemma"]["label"]}},
-    "required_models": REQUIRED_MODELS,
-}
+
+def coerce_setting(current, spec: dict, value):
+    if isinstance(current, bool) or spec.get("type") == "bool":
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str) and value.strip().lower() in ("true", "false", "1", "0"):
+            return value.strip().lower() in ("true", "1")
+        raise ApiError(400, "expected boolean")
+    if isinstance(current, str) and not isinstance(current, bool):
+        text = str(value)
+        choices = spec.get("choices")
+        if choices and text not in choices:
+            raise ApiError(400, f"expected one of {choices}")
+        return text
+    if isinstance(current, int) and not isinstance(current, bool):
+        number = int(value)
+    elif isinstance(current, float):
+        number = float(value)
+    else:
+        raise ApiError(400, "unsupported setting type")
+    if "min" in spec:
+        number = max(spec["min"], number)
+    if "max" in spec:
+        number = min(spec["max"], number)
+    return type(current)(number)
+
+def settings_schema() -> dict:
+    with LOCK:
+        values = deepcopy(RUNTIME["settings"])
+    groups = {}
+    for group, fields in KNOBS.items():
+        if group in ("brain_system", "brain_thinking"):
+            spec = fields
+            current = values[group]
+            item = {"value": current, "apply": spec.get("apply", "request"), "type": "text" if group == "brain_system" else "bool"}
+            groups[group] = item
+            continue
+        entry = {}
+        for name, spec in fields.items():
+            current = values[group][name]
+            meta = {"value": current, "apply": spec.get("apply", "request")}
+            if "choices" in spec:
+                meta["choices"] = spec["choices"]
+                meta["type"] = "choice"
+            elif isinstance(current, bool):
+                meta["type"] = "bool"
+            else:
+                meta["type"] = "number"
+                for key in ("min", "max", "step"):
+                    if key in spec:
+                        meta[key] = spec[key]
+            entry[name] = meta
+        groups[group] = entry
+    return groups
+
+def configure(payload: dict) -> dict:
+    patch = payload.get("patch")
+    if type(patch) is not dict or not patch:
+        raise ApiError(400, "patch object is required")
+    dirty = []
+    with LOCK:
+        for group, fields in patch.items():
+            if group not in KNOBS:
+                raise ApiError(400, f"unknown setting group: {group}")
+            spec_group = KNOBS[group]
+            if group in ("brain_system", "brain_thinking"):
+                RUNTIME["settings"][group] = coerce_setting(RUNTIME["settings"][group], spec_group, fields)
+                continue
+            if type(fields) is not dict:
+                raise ApiError(400, f"{group} must be an object")
+            current = RUNTIME["settings"][group]
+            for name, value in fields.items():
+                if name not in spec_group:
+                    raise ApiError(400, f"unknown setting: {group}.{name}")
+                spec = spec_group[name]
+                current[name] = coerce_setting(current[name], spec, value)
+                if spec.get("apply") == "load" and group in KNOB_ENGINE:
+                    engine = KNOB_ENGINE[group]
+                    if RUNTIME["engines"][engine]["status"] == "running":
+                        RUNTIME["dirty"][engine] = True
+                        dirty.append(engine)
+    return {"ok": True, "settings": deepcopy(RUNTIME["settings"]), "dirty": list(dict.fromkeys(dirty))}
+
+def schema() -> dict:
+    with LOCK:
+        mic = deepcopy(RUNTIME["settings"]["mic"])
+    return {
+        "version": SCHEMA_VERSION,
+        "languages": {"reply": TTS_LANGUAGES, "default_reply": DEFAULT_REPLY_LANGUAGE},
+        "mic": mic,
+        "settings": settings_schema(),
+        "prerequisites": {name: {"label": label} for name, label in {"python": "PYTHON 3.11+", "git": "GIT", "cmake": "CMAKE", "msvc": "MSVC BUILD TOOLS", "vulkan": "VULKAN SDK"}.items()},
+        "components": {"tts": {"label": "CHATTERBOX TTS V3"}, "parakeet": {"label": BINARIES["parakeet"]["label"]}, "gemma": {"label": BINARIES["gemma"]["label"]}},
+        "required_models": REQUIRED_MODELS,
+    }
+
 def inspect() -> dict:
-    return {"ok": True, "version": 8, "schema": SCHEMA, "state": snapshot()}
+    return {"ok": True, "version": SCHEMA_VERSION, "schema": schema(), "state": snapshot()}
 def dispatch(op: str, payload: dict | None = None, raw: bytes | None = None) -> tuple[dict, int]:
     payload = payload or {}
     if op not in OPS:
@@ -781,12 +899,14 @@ def dispatch(op: str, payload: dict | None = None, raw: bytes | None = None) -> 
     if op == "inspect":
         return inspect(), 200
     if op == "schema":
-        return SCHEMA, 200
+        return schema(), 200
     if op == "state":
         return snapshot(), 200
+    if op == "configure":
+        return configure(payload), 200
     if op == "install_prerequisite":
         name = str(payload.get("name") or "")
-        if name not in SCHEMA["prerequisites"]:
+        if name not in schema()["prerequisites"]:
             raise ApiError(404, f"unknown prerequisite: {name}")
         return {"ok": True, "accepted": True, "job_id": start_job("prerequisite", name, lambda key: install_prerequisite(name, key))}, 202
     if op == "install_component":

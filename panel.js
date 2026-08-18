@@ -67,7 +67,14 @@ function render() {
   $("speak-run").disabled = !live;
   $("audio-file").disabled = !live;
   const jobs = Object.values(state.jobs || {}).filter(j => j.status === "running");
-  $("job-status").textContent = jobs.length ? jobs.map(j => `${j.stage}: ${j.message}${j.progress ? ` (${j.progress}%)` : ""}`).join(" · ") : "";
+  const dirty = Object.entries(state.dirty || {}).filter(([, v]) => v).map(([n]) => n);
+  $("job-status").textContent = [
+    dirty.length ? `restart ${dirty.join(", ")}` : "",
+    jobs.length ? jobs.map(j => `${j.stage}: ${j.message}${j.progress ? ` (${j.progress}%)` : ""}`).join(" · ") : "",
+  ].filter(Boolean).join(" · ");
+  if (dirty.length) $("job-status").classList.add("dirty");
+  else $("job-status").classList.remove("dirty");
+  renderKnobs();
 }
 async function waitJob(key) {
   for (;;) {
@@ -209,7 +216,7 @@ async function processUtterance(buffer, seconds, rec) {
     $("answer").textContent = "Thinking locally…";
     $("answer").classList.add("muted");
     const lang = $("reply-language").value;
-    const brain = await post("brain", {prompt: `Respond naturally to this speech transcript:\n\n${transcript}`, language: lang});
+    const brain = await post("brain", {prompt: transcript, language: lang});
     const answer = String(brain.text || "").trim();
     if (!answer) throw Error("Brain returned no answer");
     $("answer").textContent = answer;
@@ -280,6 +287,70 @@ function fillLanguages(select) {
   select.innerHTML = "";
   for (const [code, name] of Object.entries(schema.languages.reply)) select.add(new Option(`${name} (${code})`, code));
   select.value = schema.languages.default_reply;
+}
+const KNOB_LABEL = {
+  mic: "Mic", asr_runtime: "Parakeet", asr_chunk: "Parakeet chunk",
+  tts_runtime: "Chatterbox load", tts_sample: "Chatterbox", tts_voice: "Clone / emotion",
+  tts_chunk: "Chatterbox pack", brain_runtime: "Gemma load", brain_generation: "Gemma",
+  brain_thinking: "Gemma thinking", brain_system: "Gemma prompt",
+};
+function knobControl(group, name, spec) {
+  const id = `knob-${group}-${name || "value"}`;
+  if (spec.type === "text") return `<textarea id="${id}" data-group="${group}">${spec.value}</textarea>`;
+  if (spec.type === "bool") return `<input id="${id}" data-group="${group}" data-key="${name || ""}" type="checkbox"${spec.value ? " checked" : ""}>`;
+  if (spec.type === "choice") {
+    return `<select id="${id}" data-group="${group}" data-key="${name}">${spec.choices.map(c => `<option${c === String(spec.value) ? " selected" : ""}>${c}</option>`).join("")}</select>`;
+  }
+  return `<input id="${id}" data-group="${group}" data-key="${name}" type="number" value="${spec.value}" min="${spec.min}" max="${spec.max}" step="${spec.step}">`;
+}
+function renderKnobs() {
+  const root = $("knobs");
+  if (!root || !schema?.settings) return;
+  if (root.dataset.ready === "1") {
+    for (const [group, spec] of Object.entries(schema.settings)) {
+      if (spec && spec.type) {
+        const el = $(`knob-${group}-value`);
+        if (!el || document.activeElement === el) continue;
+        if (spec.type === "bool") el.checked = !!spec.value;
+        else el.value = spec.value;
+        continue;
+      }
+      for (const [name, field] of Object.entries(spec)) {
+        const el = $(`knob-${group}-${name}`);
+        if (!el || document.activeElement === el) continue;
+        if (field.type === "bool") el.checked = !!field.value;
+        else el.value = field.value;
+      }
+    }
+    return;
+  }
+  const bits = [];
+  for (const [group, spec] of Object.entries(schema.settings)) {
+    bits.push(`<div class="knob-group">${KNOB_LABEL[group] || group}</div>`);
+    if (spec && spec.type) {
+      bits.push(`<label>${KNOB_LABEL[group] || group}${knobControl(group, "", spec)}</label>`);
+      continue;
+    }
+    for (const [name, field] of Object.entries(spec)) {
+      bits.push(`<label>${name}${knobControl(group, name, field)}</label>`);
+    }
+  }
+  root.innerHTML = `<div class="knob-grid">${bits.join("")}</div>`;
+  root.querySelectorAll("input,select,textarea").forEach(el => {
+    const ev = el.type === "text" || el.tagName === "TEXTAREA" ? "change" : "change";
+    el.addEventListener(ev, () => applyKnob(el).catch(showError));
+  });
+  root.dataset.ready = "1";
+}
+async function applyKnob(el) {
+  const group = el.dataset.group;
+  const value = el.type === "checkbox" ? el.checked : el.type === "number" ? Number(el.value) : el.value;
+  const patch = group === "brain_system" || group === "brain_thinking" ? {[group]: value} : {[group]: {[el.dataset.key]: value}};
+  const result = await post("configure", {patch});
+  const next = await json("/api?op=schema");
+  schema.settings = next.settings;
+  schema.mic = next.mic;
+  if (result.dirty?.length) $("job-status").textContent = `restart ${result.dirty.join(", ")}`;
 }
 $("install").onclick = installMissing;
 $("engines").onclick = toggleEngines;

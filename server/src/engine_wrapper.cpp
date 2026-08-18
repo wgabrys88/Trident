@@ -65,10 +65,21 @@ Speech EngineWrapper::speak(const Voice& voice, const std::string& text) {
     std::shared_ptr<tts_cpp::chatterbox::Engine> engine;
     {
         std::lock_guard<std::mutex> lock(impl_->state);
+        const Voice& have = impl_->voice;
         const bool same = impl_->engine
-            && impl_->voice.reference == voice.reference
-            && impl_->voice.language == voice.language
-            && impl_->voice.reference_mtime == voice.reference_mtime;
+            && have.reference == voice.reference
+            && have.language == voice.language
+            && have.reference_mtime == voice.reference_mtime
+            && have.seed == voice.seed
+            && have.max_tokens == voice.max_tokens
+            && have.top_k == voice.top_k
+            && have.cfm_steps == voice.cfm_steps
+            && have.exaggeration == voice.exaggeration
+            && have.cfg == voice.cfg
+            && have.temperature == voice.temperature
+            && have.repeat == voice.repeat
+            && have.min_p == voice.min_p
+            && have.top_p == voice.top_p;
         if (!same) {
             if (!std::filesystem::is_regular_file(voice.reference))
                 throw std::runtime_error("reference audio not found: " + voice.reference);
