@@ -2831,6 +2831,63 @@ __BLANK_CONTEXT__
                         logits_uncond_out)) return false;
      return true;
  }
+diff --git a/src/gguf_split_mtl.cpp b/src/gguf_split_mtl.cpp
+--- a/src/gguf_split_mtl.cpp
++++ b/src/gguf_split_mtl.cpp
+@@ -9,0 +10,3 @@
++#ifdef GGML_USE_VULKAN
++#include "ggml-vulkan.h"
++#endif
+@@ -33,0 +37,7 @@
++bool use_optimized_mtl_backend(ggml_backend_t backend) {
++#ifdef GGML_USE_VULKAN
++    if (ggml_backend_is_vk(backend)) return false;
++#endif
++    return !ggml_backend_is_cpu(backend);
++}
++
+@@ -480 +490 @@
+-        if (!ggml_backend_is_cpu(model.backend)) {
++        if (use_optimized_mtl_backend(model.backend)) {
+@@ -516,0 +527,5 @@
++        } else if (!ggml_backend_is_cpu(model.backend)) {
++            fprintf(stderr,
++                    "load_model_gguf_mtl_split: Vulkan correctness path "
++                    "(sequential CFG, separate Q/K/V)\n");
++        }
+diff --git a/src/t3_mtl.cpp b/src/t3_mtl.cpp
+--- a/src/t3_mtl.cpp
++++ b/src/t3_mtl.cpp
+@@ -30,0 +31,3 @@
++#ifdef GGML_USE_VULKAN
++#include "ggml-vulkan.h"
++#endif
+@@ -47,0 +51,16 @@
++bool is_vulkan_backend(ggml_backend_t backend) {
++#ifdef GGML_USE_VULKAN
++    return ggml_backend_is_vk(backend);
++#else
++    (void) backend;
++    return false;
++#endif
++}
++
++bool use_optimized_mtl_backend(ggml_backend_t backend) {
++    // The B=2 CFG and stacked-QKV path was designed and parity-validated on
++    // Metal. Vulkan must use contiguous Q/K/V tensors and sequential CFG;
++    // its kernels do not share Metal's validated strided-view contract.
++    return !ggml_backend_is_cpu(backend) && !is_vulkan_backend(backend);
++}
++
+@@ -1463 +1482 @@
+-        if (!ggml_backend_is_cpu(model.backend)) {
++        if (use_optimized_mtl_backend(model.backend)) {
+@@ -1604 +1623 @@
+-    const bool use_b2 = !ggml_backend_is_cpu(model.backend);
++    const bool use_b2 = use_optimized_mtl_backend(model.backend);
+@@ -1648 +1667 @@
+-    const bool use_b2 = !ggml_backend_is_cpu(model.backend);
++    const bool use_b2 = use_optimized_mtl_backend(model.backend);
 diff --git a/src/chatterbox_engine.cpp b/src/chatterbox_engine.cpp
 --- a/src/chatterbox_engine.cpp
 +++ b/src/chatterbox_engine.cpp
