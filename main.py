@@ -84,7 +84,8 @@ S3GEN_RE = re.compile(r"s3gen: tokens=(\d+) meanflow=(\d+) model_steps=(\d+)", r
 BENCH_RE = re.compile(r"BENCH:\s*([A-Z0-9_]+)=([0-9.]+)(?:\s+([A-Z0-9_]+)=([0-9.]+))?", re.I)
 def field(label: str, kind: str, default: Any, minimum: float | None = None, maximum: float | None = None, options: list[str] | None = None, multiline: bool = False) -> dict:
     return {key: value for key, value in {"label": label, "type": kind, "default": default, "min": minimum, "max": maximum, "options": options, "multiline": multiline}.items() if value is not None}
-TTS_RUNTIME = {"gpu_layers": 99, "context": 512, "sessions": 1, "threads": 4}
+TTS_MIN_CONTEXT = 1280
+TTS_RUNTIME = {"gpu_layers": 99, "context": 1536, "sessions": 1, "threads": 4}
 VOICE_DEFAULTS = {
     "seed": 42, "max_tokens": 1000, "top_k": 0, "top_p": 1.0, "min_p": 0.05,
     "temperature": 0.8, "repeat_penalty": 1.2, "cfg_weight": 0.5,
@@ -107,7 +108,7 @@ FIELDS = {
     "speech.style": field("Voice style", "string", "natural", options=list(VOICE_STYLES)),
     "speech.text": field("Text to speak", "string", "This is a multilingual voice synthesis test.", multiline=True),
     "tts.engine.gpu_layers": field("TTS GPU layers", "int", TTS_RUNTIME["gpu_layers"], 0, 999),
-    "tts.engine.context": field("TTS context tokens", "int", TTS_RUNTIME["context"], 64, 8192),
+    "tts.engine.context": field("TTS context tokens", "int", TTS_RUNTIME["context"], TTS_MIN_CONTEXT, 8192),
     "tts.engine.sessions": field("TTS max sessions", "int", TTS_RUNTIME["sessions"], 1, 8),
     "tts.engine.threads": field("TTS CPU threads", "int", TTS_RUNTIME["threads"], 1, 64),
     "tts.sample.seed": field("TTS seed", "int", VOICE_DEFAULTS["seed"], 0, 2147483647),
@@ -243,9 +244,15 @@ def load_config() -> dict:
     stored = load_json(CONFIG_FILE, defaults)
     if type(stored) is not dict:
         raise RuntimeError(f"{CONFIG_FILE} must contain an object")
+    # Older Trident releases defaulted T3 to 512 context tokens even though a
+    # session may generate 1,000 speech tokens after a 100-250 token prompt.
+    # Migrate that impossible configuration before applying the new range.
+    stored_context = stored.get("tts.engine.context")
+    if type(stored_context) is int and stored_context < TTS_MIN_CONTEXT:
+        stored = stored | {"tts.engine.context": TTS_RUNTIME["context"]}
     merged = {path: stored[path] if path in stored else default for path, default in defaults.items()}
     checked = {path: validate(path, value) for path, value in merged.items()}
-    if set(stored) != set(checked):
+    if stored != checked:
         atomic_json(CONFIG_FILE, checked)
     return checked
 def default_brains() -> dict:
