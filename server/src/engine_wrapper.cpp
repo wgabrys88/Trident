@@ -1,5 +1,7 @@
 #include "engine_wrapper.hpp"
 #include <tts-cpp/chatterbox/engine.h>
+#include <algorithm>
+#include <cmath>
 #include <filesystem>
 #include <memory>
 #include <mutex>
@@ -13,6 +15,11 @@ struct EngineWrapper::Impl {
     std::mutex state, synth;
     std::shared_ptr<tts_cpp::chatterbox::Engine> engine;
     Voice voice;
+    std::unique_lock<std::mutex> job;
+    std::vector<std::string> pieces;
+    Speech speech;
+    int index = 0;
+    int handed = 0;
 };
 
 EngineWrapper::EngineWrapper() : impl_(std::make_unique<Impl>()) {}
@@ -60,9 +67,21 @@ static std::vector<std::string> pack_text(const std::string& text, int limit) {
     return packed;
 }
 
-Speech EngineWrapper::speak(const Voice& voice, const std::string& text) {
-    std::lock_guard<std::mutex> synth(impl_->synth);
-    std::shared_ptr<tts_cpp::chatterbox::Engine> engine;
+static void glue(std::vector<float>& dst, const std::vector<float>& src) {
+    if (dst.empty()) { dst = src; return; }
+    if (src.empty()) return;
+    const int n = std::min(kGlue, static_cast<int>(std::min(dst.size(), src.size())));
+    const float step = 1.5707963267948966f / static_cast<float>(std::max(n, 1));
+    for (int i = 0; i < n; ++i) {
+        const float w = static_cast<float>(i) * step;
+        dst[dst.size() - n + i] = dst[dst.size() - n + i] * std::cos(w) + src[i] * std::sin(w);
+    }
+    dst.insert(dst.end(), src.begin() + n, src.end());
+}
+
+void EngineWrapper::prepare(const Voice& voice, const std::string& text) {
+    finish();
+    impl_->job = std::unique_lock<std::mutex>(impl_->synth);
     {
         std::lock_guard<std::mutex> lock(impl_->state);
         const Voice& have = impl_->voice;
@@ -104,18 +123,52 @@ Speech EngineWrapper::speak(const Voice& voice, const std::string& text) {
             impl_->engine = std::make_shared<tts_cpp::chatterbox::Engine>(options);
             impl_->voice = voice;
         }
+    }
+    impl_->pieces = pack_text(text, voice.chunk_chars);
+    impl_->speech = {};
+    impl_->speech.chunks = static_cast<int>(impl_->pieces.size());
+    impl_->index = 0;
+    impl_->handed = 0;
+}
+
+bool EngineWrapper::busy() const {
+    return impl_->index < static_cast<int>(impl_->pieces.size());
+}
+
+bool EngineWrapper::step(const std::function<void(int, int, const std::vector<float>&, const std::vector<float>&)>& on_pack) {
+    if (!busy()) return false;
+    std::shared_ptr<tts_cpp::chatterbox::Engine> engine;
+    {
+        std::lock_guard<std::mutex> lock(impl_->state);
         engine = impl_->engine;
     }
-    Speech out;
-    const auto pieces = pack_text(text, voice.chunk_chars);
-    out.chunks = static_cast<int>(pieces.size());
-    for (size_t i = 0; i < pieces.size(); ++i) {
-        auto result = engine->synthesize(pieces[i]);
-        if (i) out.pcm.insert(out.pcm.end(), 2880, 0.f);
-        out.pcm.insert(out.pcm.end(), result.pcm.begin(), result.pcm.end());
-        out.t3_ms += result.t3_ms;
-        out.s3gen_ms += result.s3gen_ms;
-    }
+    if (!engine) throw std::runtime_error("tts engine is not loaded");
+    auto result = engine->synthesize(impl_->pieces[impl_->index]);
+    glue(impl_->speech.pcm, result.pcm);
+    impl_->speech.t3_ms += result.t3_ms;
+    impl_->speech.s3gen_ms += result.s3gen_ms;
+    const bool last = impl_->index + 1 == static_cast<int>(impl_->pieces.size());
+    const int hold = last ? 0 : std::min(kGlue, static_cast<int>(impl_->speech.pcm.size()));
+    const int from = impl_->handed;
+    const int to = static_cast<int>(impl_->speech.pcm.size()) - hold;
+    std::vector<float> playable;
+    if (to > from) playable.assign(impl_->speech.pcm.begin() + from, impl_->speech.pcm.begin() + to);
+    else if (last && static_cast<int>(impl_->speech.pcm.size()) > from)
+        playable.assign(impl_->speech.pcm.begin() + from, impl_->speech.pcm.end());
+    impl_->handed = from + static_cast<int>(playable.size());
+    if (on_pack && !playable.empty())
+        on_pack(impl_->index, impl_->speech.chunks, impl_->speech.pcm, playable);
+    impl_->index++;
+    return busy();
+}
+
+Speech EngineWrapper::finish() {
+    Speech out = impl_->speech;
+    impl_->pieces.clear();
+    impl_->index = 0;
+    impl_->handed = 0;
+    impl_->speech = {};
+    if (impl_->job.owns_lock()) impl_->job.unlock();
     return out;
 }
 

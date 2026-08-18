@@ -1,9 +1,12 @@
 #pragma once
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 
 namespace tts {
+
+constexpr int kGlue = 2880;
 
 struct Voice {
     std::string reference, language;
@@ -23,7 +26,10 @@ public:
     EngineWrapper();
     ~EngineWrapper();
     void initialize(const std::string& t3, const std::string& s3, int gpu, int threads, int context);
-    Speech speak(const Voice&, const std::string& text);
+    void prepare(const Voice&, const std::string& text);
+    bool step(const std::function<void(int, int, const std::vector<float>&, const std::vector<float>&)>& on_pack);
+    bool busy() const;
+    Speech finish();
     void cancel();
 private:
     struct Impl;
