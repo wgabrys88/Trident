@@ -28,6 +28,38 @@ void EngineWrapper::initialize(const std::string& t3, const std::string& s3, int
     impl_->context = context;
 }
 
+static std::vector<std::string> pack_text(const std::string& text, int limit) {
+    if (limit < 40) limit = 40;
+    std::vector<std::string> bits;
+    std::string cur;
+    auto flush = [&] {
+        while (!cur.empty() && cur.back() == ' ') cur.pop_back();
+        if (!cur.empty()) bits.push_back(cur);
+        cur.clear();
+    };
+    for (size_t i = 0; i < text.size(); ++i) {
+        cur.push_back(text[i]);
+        const unsigned char c = static_cast<unsigned char>(text[i]);
+        if ((c == '.' || c == '!' || c == '?' || c == ';') &&
+            (i + 1 == text.size() || text[i + 1] == ' ' || text[i + 1] == '\n'))
+            flush();
+    }
+    flush();
+    if (bits.empty()) return {text};
+    std::vector<std::string> packed;
+    std::string buf = bits[0];
+    for (size_t i = 1; i < bits.size(); ++i) {
+        if (static_cast<int>(buf.size() + 1 + bits[i].size()) > limit) {
+            packed.push_back(buf);
+            buf = bits[i];
+        } else {
+            buf += " " + bits[i];
+        }
+    }
+    packed.push_back(buf);
+    return packed;
+}
+
 Speech EngineWrapper::speak(const Voice& voice, const std::string& text) {
     std::lock_guard<std::mutex> synth(impl_->synth);
     std::shared_ptr<tts_cpp::chatterbox::Engine> engine;
@@ -63,8 +95,17 @@ Speech EngineWrapper::speak(const Voice& voice, const std::string& text) {
         }
         engine = impl_->engine;
     }
-    auto result = engine->synthesize(text);
-    return {std::move(result.pcm), result.t3_ms, result.s3gen_ms};
+    Speech out;
+    const auto pieces = pack_text(text, voice.chunk_chars);
+    out.chunks = static_cast<int>(pieces.size());
+    for (size_t i = 0; i < pieces.size(); ++i) {
+        auto result = engine->synthesize(pieces[i]);
+        if (i) out.pcm.insert(out.pcm.end(), 2880, 0.f);
+        out.pcm.insert(out.pcm.end(), result.pcm.begin(), result.pcm.end());
+        out.t3_ms += result.t3_ms;
+        out.s3gen_ms += result.s3gen_ms;
+    }
+    return out;
 }
 
 void EngineWrapper::cancel() {

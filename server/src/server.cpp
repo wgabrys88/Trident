@@ -55,6 +55,7 @@ tts::Voice voice_from(const json& body) {
     voice.max_tokens = body.at("max_tokens").get<int>();
     voice.top_k = body.at("top_k").get<int>();
     voice.cfm_steps = body.at("cfm_steps").get<int>();
+    voice.chunk_chars = body.value("chunk_chars", 300);
     voice.exaggeration = body.at("exaggeration").get<float>();
     voice.cfg = body.at("cfg_weight").get<float>();
     voice.temperature = body.at("temperature").get<float>();
@@ -103,7 +104,9 @@ void TTSServer::initialize(
                       << " t3_ms=" << speech.t3_ms
                       << " s3gen_ms=" << speech.s3gen_ms
                       << " ms=" << ms
-                      << " cfm_steps=" << voice.cfm_steps << std::endl;
+                      << " cfm_steps=" << voice.cfm_steps
+                      << " chunks=" << speech.chunks
+                      << " lang=" << voice.language << std::endl;
             response.set_content(json{
                 {"ok", true},
                 {"samples", speech.pcm.size()},
@@ -112,6 +115,8 @@ void TTSServer::initialize(
                 {"t3_ms", speech.t3_ms},
                 {"s3gen_ms", speech.s3gen_ms},
                 {"cfm_steps", voice.cfm_steps},
+                {"chunks", speech.chunks},
+                {"language", voice.language},
                 {"path", wav},
             }.dump(), "application/json");
         } catch (const std::exception& exception) {

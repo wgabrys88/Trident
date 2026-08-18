@@ -1,16 +1,6 @@
-"""Trident runtime configuration.
-
-Edit this file for engine/sampling/VAD behavior. The browser intentionally exposes
-only conversation controls; advanced parameters live here so there is one source
-of truth and no duplicated UI schema.
-"""
-
 CONTROLLER = {"host": "127.0.0.1", "port": 8765}
 PORTS = {"tts": 8095, "asr": 8097, "brain": 8098}
 
-# NVIDIA Parakeet-TDT 0.6B v3 auto-detects these 25 languages. Trident does not
-# force an input language because this Parakeet model/runtime does not expose a
-# per-request language selector.
 ASR_LANGUAGES = {
     "bg": "Bulgarian", "hr": "Croatian", "cs": "Czech", "da": "Danish",
     "nl": "Dutch", "en": "English", "et": "Estonian", "fi": "Finnish",
@@ -22,87 +12,48 @@ ASR_LANGUAGES = {
 }
 
 TTS_LANGUAGES = {
-    "en": "English", "pt": "Portuguese", "ar": "Arabic", "zh": "Chinese",
-    "da": "Danish", "nl": "Dutch", "fi": "Finnish", "fr": "French",
-    "de": "German", "el": "Greek", "he": "Hebrew", "hi": "Hindi",
-    "it": "Italian", "ja": "Japanese", "ko": "Korean", "ms": "Malay",
-    "no": "Norwegian", "pl": "Polish", "ru": "Russian", "es": "Spanish",
-    "sw": "Swahili", "sv": "Swedish", "tr": "Turkish",
+    "en": "English", "es": "Spanish", "fr": "French", "de": "German",
+    "it": "Italian", "pt": "Portuguese", "nl": "Dutch", "pl": "Polish",
+    "tr": "Turkish", "sv": "Swedish", "da": "Danish", "fi": "Finnish",
+    "no": "Norwegian", "el": "Greek", "ms": "Malay", "sw": "Swahili",
+    "ar": "Arabic", "ko": "Korean",
 }
 DEFAULT_REPLY_LANGUAGE = "en"
 
-# Browser microphone. Final utterance is uploaded as WAV because parakeet-server
-# v0.5 has no streaming socket for this model.
 MIC = {
     "sample_rate": 16000,
     "vad_threshold": 0.020,
     "vad_silence_ms": 700,
     "vad_min_speech_ms": 400,
     "pre_roll_ms": 300,
-    "partial_asr_ms": 1500,
-    "partial_min_ms": 700,
     "clone_reference_seconds": 10,
     "auto_send": True,
 }
 
-ASR_RUNTIME = {
-    "threads": 4,
-    "device": "Vulkan0",
-    "response_format": "json",
-}
+ASR_RUNTIME = {"threads": 4, "device": "Vulkan0", "response_format": "json"}
+ASR_CHUNK = {"seconds": 20.0, "overlap": 1.0}
 
-# Chatterbox on Vulkan. gpu_layers > 0 offloads the whole graph (this build
-# has CUDA off). MTL S3Gen is standard CFM, not Turbo meanflow: cfm_steps=7
-# is a real speed knob (0 would fall back to the GGUF default of 10).
-# Batch HTTP /tts reuses one Engine; clone updates data/reference.wav and
-# the next /tts rebuilds VoiceEncoder from that file.
-TTS_RUNTIME = {
-    "gpu_layers": 99,
-    "context": 512,
-    "threads": 4,
-}
+TTS_RUNTIME = {"gpu_layers": 99, "context": 512, "threads": 4}
 TTS_SAMPLE = {
-    "seed": 42,
-    "max_tokens": 1000,
-    "top_k": 1000,
-    "top_p": 0.95,
-    "min_p": 0.05,
-    "temperature": 0.8,
-    "repeat_penalty": 1.2,
-    "cfm_steps": 7,
+    "seed": 42, "max_tokens": 1000, "top_k": 1000, "top_p": 0.95,
+    "min_p": 0.05, "temperature": 0.8, "repeat_penalty": 1.2, "cfm_steps": 5,
 }
-TTS_VOICE = {
-    "cfg_weight": 0.5,
-    "exaggeration": 0.5,
-}
+TTS_VOICE = {"cfg_weight": 0.5, "exaggeration": 0.5}
+TTS_CHUNK = {"chars": 120}
 
-# Brain. MILESTONE-3 forced replies to one/two sentences and max_tokens=160;
-# both constraints are removed here. The model can answer normally while still
-# producing speech-friendly prose.
 BRAIN_MODEL = "gemma"
 BRAIN_RUNTIME = {
-    "device": "Vulkan0",
-    "gpu_layers": "all",
-    "context": 4096,
-    "parallel": 1,
-    "flash_attn": "on",
-    "fit": "on",
-    "fit_target": 3072,
-    "fit_ctx": 4096,
+    "device": "Vulkan0", "gpu_layers": "all", "context": 4096, "parallel": 1,
+    "flash_attn": "on", "fit": "on", "fit_target": 3072, "fit_ctx": 4096,
 }
 BRAIN_GENERATION = {
-    "temperature": 0.3,
-    "top_p": 0.90,
-    "top_k": 40,
-    "min_p": 0.0,
-    "repeat_penalty": 1.05,
-    "seed": 42,
-    "max_tokens": 1024,
+    "temperature": 0.3, "top_p": 0.90, "top_k": 40, "min_p": 0.0,
+    "repeat_penalty": 1.05, "seed": 42, "max_tokens": 1024,
 }
-BRAIN_FAMILIES = {
-    "gemma4": {"reasoning_effort": "none", "reasoning_format": "none", "chat_template_kwargs": {"enable_thinking": False}},
-    "qwen35": {"reasoning_effort": "none", "reasoning_format": "none", "chat_template_kwargs": {"enable_thinking": False}},
-    "generic": {},
+BRAIN_FAMILY = {
+    "reasoning_effort": "none",
+    "reasoning_format": "none",
+    "chat_template_kwargs": {"enable_thinking": False},
 }
 BRAIN_SYSTEM = (
     "Reply in {language_name} ({language}). Answer naturally and completely. "
