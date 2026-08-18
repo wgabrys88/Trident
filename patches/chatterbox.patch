@@ -363,7 +363,7 @@ index 0000000..6778be7
 +
 +}
 diff --git a/src/chatterbox_engine.cpp b/src/chatterbox_engine.cpp
-index b361766..17ac457 100644
+index b361766..8b4d226 100644
 --- a/src/chatterbox_engine.cpp
 +++ b/src/chatterbox_engine.cpp
 @@ -11,8 +11,10 @@
@@ -460,12 +460,12 @@ index b361766..17ac457 100644
 +            int sr = 0;
 +            if (!wav_load(opts.reference_audio, wav, sr)) {
 +                throw std::runtime_error("Engine: failed to load reference_audio");
-             }
++            }
 +            normalise_lufs(wav, sr, -27.0);
 +            if (sr != 16000) wav = resample_sinc(wav, sr, 16000);
 +            if (!voice_encoder_embed(wav, vew, model.backend, se_data)) {
 +                throw std::runtime_error("Engine: VoiceEncoder forward failed");
-+            }
+             }
 +            fprintf(stderr, "Engine: speaker_emb from VoiceEncoder (%zu,)\n", se_data.size());
 +            have_se = true;
          }
@@ -483,12 +483,12 @@ index b361766..17ac457 100644
 -                ct_data = std::move(cond_tokens);
 -                have_ct = true;
 +                throw std::runtime_error("Engine: S3TokenizerV2 reference tokens failed");
-             }
++            }
 +            ct_data = std::move(cond_tokens);
 +            have_ct = true;
 +            if (prompt_token_from_ref.empty() || ct_data.empty()) {
 +                throw std::runtime_error("Engine: S3TokenizerV2 returned empty conditioning");
-+            }
+             }
 +            fprintf(stderr, "Engine: prompt_token from S3TokenizerV2 (%zu,), cond_prompt_speech_tokens (%zu,)\n", prompt_token_from_ref.size(), ct_data.size());
          }
  
@@ -498,7 +498,7 @@ index b361766..17ac457 100644
          if (have_se) {
              if ((int64_t) se_data.size() != ggml_nelements(model.builtin_speaker_emb)) {
                  throw std::runtime_error(
-@@ -309,56 +322,135 @@ struct Engine::Impl {
+@@ -309,56 +322,137 @@ struct Engine::Impl {
                  if (!compute_prompt_feat_native(
                          opts.reference_audio, opts.s3gen_gguf_path,
                          s3gen_prompt_feat, rows, opts.verbose)) {
@@ -508,12 +508,16 @@ index b361766..17ac457 100644
                  }
 +                if (rows < 1 || s3gen_prompt_feat.empty()) throw std::runtime_error("Engine: prompt_feat is empty");
                  s3gen_prompt_feat_rows = rows;
--            }
--            if (s3gen_embedding.empty()) {
--                if (!compute_embedding_native(
--                        opts.reference_audio, opts.s3gen_gguf_path,
--                        s3gen_embedding,
--                        /*backend=*/ model.backend, opts.verbose)) {
++                fprintf(stderr, "Engine: prompt_feat from reference_audio (%d,80)\n", rows);
++            }
++            if (s3gen_prompt_token.empty() && !prompt_token_from_ref.empty()) {
++                s3gen_prompt_token = std::move(prompt_token_from_ref);
+             }
+             if (s3gen_embedding.empty()) {
+                 if (!compute_embedding_native(
+                         opts.reference_audio, opts.s3gen_gguf_path,
+                         s3gen_embedding,
+                         /*backend=*/ model.backend, opts.verbose)) {
 -                    // CAMPPlus tensors predate Phase 2d-a in this GGUF.
 -                    // `compute_embedding_native` already logged the concrete
 -                    // error to stderr; callers that want a hard failure can
@@ -523,14 +527,17 @@ index b361766..17ac457 100644
 -                            "Engine: voice-cloning embedding unavailable; "
 -                            "falling back to built-in speaker embedding for %s\n",
 -                            opts.reference_audio.c_str());
--                }
-+                fprintf(stderr, "Engine: prompt_feat from reference_audio (%d,80)\n", rows);
++                    throw std::runtime_error("Engine: CAMPPlus embedding failed");
+                 }
++                if (s3gen_embedding.empty()) throw std::runtime_error("Engine: CAMPPlus embedding is empty");
++                fprintf(stderr, "Engine: embedding from CAMPPlus (%zu,)\n", s3gen_embedding.size());
              }
-             if (s3gen_prompt_token.empty() && !prompt_token_from_ref.empty()) {
-                 s3gen_prompt_token = std::move(prompt_token_from_ref);
-             }
+-            if (s3gen_prompt_token.empty() && !prompt_token_from_ref.empty()) {
+-                s3gen_prompt_token = std::move(prompt_token_from_ref);
+-            }
 +            if (s3gen_prompt_token.empty()) throw std::runtime_error("Engine: prompt_token unavailable");
 +            if (s3gen_prompt_feat.empty()) throw std::runtime_error("Engine: prompt_feat unavailable");
++            if (s3gen_embedding.empty()) throw std::runtime_error("Engine: embedding unavailable");
 +            fprintf(stderr,
 +                    "Engine: voice conditioning t3_speaker=%s t3_prompt=%s "
 +                    "s3gen_prompt_token=%s s3gen_prompt_feat=%s s3gen_embedding=%s\n",
@@ -538,7 +545,7 @@ index b361766..17ac457 100644
 +                    voice_overridden ? "reference" : "builtin",
 +                    s3gen_prompt_token.empty() ? "builtin" : "reference",
 +                    s3gen_prompt_feat.empty() ? "builtin" : "reference",
-+                    s3gen_embedding.empty() ? "builtin_fallback" : "reference_override");
++                    s3gen_embedding.empty() ? "builtin_fallback" : "reference_campplus");
          }
      }
  
@@ -578,15 +585,7 @@ index b361766..17ac457 100644
 +            if (!tok.load_from_json(model.mtl_tokenizer_json)) {
 +                throw std::runtime_error("Engine: MTL tokenizer json failed to load");
 +            }
-+            text_tokens = tok.encode(gpt2_bpe::punc_norm(text), opts.language);
-+            // Match ChatterboxMultilingualTTS.generate and the upstream CLI:
-+            // the MTL transformer expects explicit text boundary tokens.
-+            std::vector<int32_t> padded;
-+            padded.reserve(text_tokens.size() + 2);
-+            padded.push_back(model.hparams.start_text_token);
-+            padded.insert(padded.end(), text_tokens.begin(), text_tokens.end());
-+            padded.push_back(model.hparams.stop_text_token);
-+            text_tokens = std::move(padded);
++            text_tokens = tok.encode(text, opts.language);
 +        } else {
 +            if (model.tok_tokens.empty()) {
 +                throw std::runtime_error(
@@ -615,8 +614,7 @@ index b361766..17ac457 100644
 +            generated.reserve((size_t) opts.n_predict + 1);
 +            int32_t current = sample_next_token_mtl(
 +                logits_c, logits_u, generated, sp, rng, model.hparams.stop_speech_token);
-+            fprintf(stderr, "Engine: T3 first token=%d n_past=%d speech_position=1\n",
-+                    (int) current, n_past);
++            fprintf(stderr, "Engine: T3 first token=%d n_past=%d\n", (int) current, n_past);
 +            generated.push_back(current);
 +            std::string stop_reason = "max_tokens";
 +            for (int i = 0; i < opts.n_predict; ++i) {
@@ -634,7 +632,7 @@ index b361766..17ac457 100644
 +                    stop_reason = "context_limit";
 +                    break;
 +                }
-+                const int speech_position = static_cast<int>(generated.size());
++                const int speech_position = n_past;
 +                if (!eval_step_mtl(model, allocr, n_threads, n_past, speech_position,
 +                                   current, logits_c, logits_u)) {
 +                    fprintf(stderr,
@@ -668,7 +666,7 @@ index b361766..17ac457 100644
  
          std::vector<float> logits;
          int prompt_len = 0;
-@@ -542,19 +634,55 @@ struct Engine::Impl {
+@@ -542,19 +636,55 @@ struct Engine::Impl {
          }
          cancel_flag.store(false, std::memory_order_relaxed);
  
@@ -1307,10 +1305,10 @@ index 746de95..756be3a 100644
  
 diff --git a/src/gguf_split_mtl.cpp b/src/gguf_split_mtl.cpp
 new file mode 100644
-index 0000000..e9bfd70
+index 0000000..add365a
 --- /dev/null
 +++ b/src/gguf_split_mtl.cpp
-@@ -0,0 +1,568 @@
+@@ -0,0 +1,558 @@
 +// Load BricksDisplay split MTL GGUFs (llama T3 backbone + chatterbox_s3g codec)
 +// under chatterbox.cpp tensor / KV names. Used by Engine / tts-server.
 +
@@ -1320,9 +1318,6 @@ index 0000000..e9bfd70
 +#include "ggml-alloc.h"
 +#include "ggml-backend.h"
 +#include "ggml-cpu.h"
-+#ifdef GGML_USE_VULKAN
-+#include "ggml-vulkan.h"
-+#endif
 +#include "gguf.h"
 +
 +#include <algorithm>
@@ -1348,9 +1343,6 @@ index 0000000..e9bfd70
 +namespace {
 +
 +bool use_optimized_mtl_backend(ggml_backend_t backend) {
-+#ifdef GGML_USE_VULKAN
-+    if (ggml_backend_is_vk(backend)) return false;
-+#endif
 +    return !ggml_backend_is_cpu(backend);
 +}
 +
@@ -1837,10 +1829,6 @@ index 0000000..e9bfd70
 +                copy_into(l.wk, l.wqkv);
 +                copy_into(l.wv, l.wqkv);
 +            }
-+        } else if (!ggml_backend_is_cpu(model.backend)) {
-+            fprintf(stderr,
-+                    "load_model_gguf_mtl_split: Vulkan correctness path "
-+                    "(sequential CFG, separate Q/K/V, softmax attention)\n");
 +        }
 +
 +        auto dump_t = [](const char * tag, const ggml_tensor * t) {
@@ -2102,63 +2090,29 @@ index a6d1a12..e53abe3 100644
  }
  
 diff --git a/src/t3_mtl.cpp b/src/t3_mtl.cpp
-index 0fc730e..d007d85 100644
+index 0fc730e..e3d366e 100644
 --- a/src/t3_mtl.cpp
 +++ b/src/t3_mtl.cpp
-@@ -28,6 +28,9 @@
- #include "ggml-alloc.h"
- #include "ggml-backend.h"
- #include "ggml-cpu.h"
-+#ifdef GGML_USE_VULKAN
-+#include "ggml-vulkan.h"
-+#endif
- #include "gguf.h"
- 
- #include <algorithm>
-@@ -45,6 +48,22 @@ namespace tts_cpp::chatterbox::detail {
+@@ -45,6 +45,10 @@ namespace tts_cpp::chatterbox::detail {
  
  namespace {
  
-+bool is_vulkan_backend(ggml_backend_t backend) {
-+#ifdef GGML_USE_VULKAN
-+    return ggml_backend_is_vk(backend);
-+#else
-+    (void) backend;
-+    return false;
-+#endif
-+}
-+
 +bool use_optimized_mtl_backend(ggml_backend_t backend) {
-+    // The B=2 CFG and stacked-QKV path was designed and parity-validated on
-+    // Metal. Vulkan must use contiguous Q/K/V tensors and sequential CFG;
-+    // its kernels do not share Metal's validated strided-view contract.
-+    return !ggml_backend_is_cpu(backend) && !is_vulkan_backend(backend);
++    return !ggml_backend_is_cpu(backend);
 +}
 +
  // Process-wide registry of the Phase-15 stacked-weight buffers, with an
  // atexit hook that frees them before Metal's static device destructors
  // run. Without this Metal asserts on `[rsets->data count] == 0` because
-@@ -425,9 +444,16 @@ ggml_tensor * build_llama_block(ggml_context * ctx, ggml_cgraph * gf,
-     }
- 
+@@ -427,7 +431,6 @@ ggml_tensor * build_llama_block(ggml_context * ctx, ggml_cgraph * gf,
      const float scale = 1.0f / std::sqrt((float) HD);
--    ggml_tensor * attn = ggml_flash_attn_ext(ctx, Q, Kfull, Vfull, kq_mask,
--                                             scale, 0.0f, 0.0f);
+     ggml_tensor * attn = ggml_flash_attn_ext(ctx, Q, Kfull, Vfull, kq_mask,
+                                              scale, 0.0f, 0.0f);
 -    // attn ne=[HD, NH, N, B].  Reshape back to (n_embd, N[, B]).
-+    ggml_tensor * attn;
-+    if (is_vulkan_backend(m.backend)) {
-+        ggml_tensor * kq = ggml_mul_mat(ctx, Kfull, Q);
-+        kq = ggml_soft_max_ext(ctx, kq, kq_mask, scale, 0.0f);
-+        attn = ggml_mul_mat(ctx, Vfull, kq);
-+        attn = ggml_cont(ctx, ggml_permute(ctx, attn, 0, 2, 1, 3));
-+    } else {
-+        attn = ggml_flash_attn_ext(ctx, Q, Kfull, Vfull, kq_mask,
-+                                   scale, 0.0f, 0.0f);
-+    }
      if (B == 1) {
          cur = ggml_reshape_2d(ctx, attn, hp.n_embd, N);
      } else {
-@@ -818,6 +844,16 @@ bool run_prompt_pass(const chatterbox_model & model,
+@@ -818,6 +821,16 @@ bool run_prompt_pass(const chatterbox_model & model,
      const int len_cond = 1 + hp.perceiver_queries + (hp.emotion_adv ? 1 : 0);
      const int N = len_cond + (int) text_tokens.size() + 2;
      prompt_len_out = N;
@@ -2175,7 +2129,7 @@ index 0fc730e..d007d85 100644
  
      ggml_cgraph * gf = build_prompt_graph_mtl(model, (int) text_tokens.size(), is_uncond);
      // alloc_graph reserves lazily; see run_step_pass_b2 comment.
-@@ -887,8 +923,21 @@ bool run_prompt_pass_b2(const chatterbox_model & model,
+@@ -887,8 +900,21 @@ bool run_prompt_pass_b2(const chatterbox_model & model,
      const int len_cond = 1 + hp.perceiver_queries + (hp.emotion_adv ? 1 : 0);
      const int N = len_cond + (int) text_tokens.size() + 2;
      prompt_len_out = N;
@@ -2197,7 +2151,7 @@ index 0fc730e..d007d85 100644
      // alloc_graph below already reserves lazily via ggml_gallocr_needs_realloc;
      // see run_step_pass_b2 for the rationale on dropping the explicit
      // ggml_gallocr_reserve(allocr, gf) call here.
-@@ -896,6 +945,7 @@ bool run_prompt_pass_b2(const chatterbox_model & model,
+@@ -896,6 +922,7 @@ bool run_prompt_pass_b2(const chatterbox_model & model,
          fprintf(stderr, "run_prompt_pass_b2: gallocr_alloc_graph failed (graph topology exceeded reserved budget?)\n");
          return false;
      }
@@ -2205,7 +2159,7 @@ index 0fc730e..d007d85 100644
  
      auto set_in = [&](const char * name, const void * data, size_t bytes) {
          ggml_tensor * t = ggml_graph_get_tensor(gf, name);
-@@ -931,15 +981,43 @@ bool run_prompt_pass_b2(const chatterbox_model & model,
+@@ -931,15 +958,43 @@ bool run_prompt_pass_b2(const chatterbox_model & model,
      if (ggml_backend_is_cpu(model.backend)) {
          ggml_backend_cpu_set_n_threads(model.backend, n_threads);
      }
@@ -2255,7 +2209,7 @@ index 0fc730e..d007d85 100644
      return true;
  }
  
-@@ -948,11 +1026,16 @@ bool run_step_pass_b2(const chatterbox_model & model,
+@@ -948,11 +1003,16 @@ bool run_step_pass_b2(const chatterbox_model & model,
                        ggml_gallocr_t allocr,
                        int n_threads,
                        int n_past,
@@ -2272,7 +2226,7 @@ index 0fc730e..d007d85 100644
      ggml_cgraph * gf = build_step_graph_mtl_b2(model, n_past);
      // Skip the explicit ggml_gallocr_reserve(allocr, gf) call here:
      // alloc_graph below already calls ggml_gallocr_needs_realloc, and
-@@ -966,12 +1049,19 @@ bool run_step_pass_b2(const chatterbox_model & model,
+@@ -966,12 +1026,19 @@ bool run_step_pass_b2(const chatterbox_model & model,
          fprintf(stderr, "run_step_pass_b2: gallocr_alloc_graph failed (n_past=%d)\n", n_past);
          return false;
      }
@@ -2297,7 +2251,7 @@ index 0fc730e..d007d85 100644
  
      if (ggml_backend_is_cpu(model.backend)) {
          ggml_backend_cpu_set_n_threads(model.backend, n_threads);
-@@ -979,11 +1069,27 @@ bool run_step_pass_b2(const chatterbox_model & model,
+@@ -979,11 +1046,27 @@ bool run_step_pass_b2(const chatterbox_model & model,
      ggml_backend_graph_compute(model.backend, gf);
  
      ggml_tensor * logits = ggml_graph_get_tensor(gf, "logits");
@@ -2330,7 +2284,7 @@ index 0fc730e..d007d85 100644
      return true;
  }
  
-@@ -991,6 +1097,7 @@ bool run_step_pass(const chatterbox_model & model,
+@@ -991,6 +1074,7 @@ bool run_step_pass(const chatterbox_model & model,
                     ggml_gallocr_t allocr,
                     int n_threads,
                     int n_past,
@@ -2338,7 +2292,7 @@ index 0fc730e..d007d85 100644
                     int32_t token,
                     bool is_uncond,
                     std::vector<float> & logits_out) {
-@@ -1002,7 +1109,7 @@ bool run_step_pass(const chatterbox_model & model,
+@@ -1002,7 +1086,7 @@ bool run_step_pass(const chatterbox_model & model,
      }
  
      ggml_backend_tensor_set(ggml_graph_get_tensor(gf, "speech_token"), &token, 0, sizeof(token));
@@ -2347,7 +2301,7 @@ index 0fc730e..d007d85 100644
      ggml_backend_tensor_set(ggml_graph_get_tensor(gf, "speech_pos"), &sp, 0, sizeof(sp));
      int32_t pos = n_past;
      ggml_backend_tensor_set(ggml_graph_get_tensor(gf, "pos_ids"), &pos, 0, sizeof(pos));
-@@ -1379,7 +1486,7 @@ bool load_model_gguf_mtl(const std::string & path,
+@@ -1379,7 +1463,7 @@ bool load_model_gguf_mtl(const std::string & path,
          // ggml-cpu's per-kernel overhead is already negligible and the
          // extra weight memory footprint (~75 MB for the multilingual
          // T3) trades unfavourably with thread-cache locality there.
@@ -2356,7 +2310,7 @@ index 0fc730e..d007d85 100644
              const int n_embd = hp.n_embd;
              const int n_ff   = hp.intermediate_size;
  
-@@ -1520,7 +1627,7 @@ bool eval_prompt_mtl(const chatterbox_model & model,
+@@ -1520,7 +1604,7 @@ bool eval_prompt_mtl(const chatterbox_model & model,
      // op processes B=2 in a tight loop, so batching just doubles the
      // per-op work without saving ops; mirrors __SECTION_SIGN__3.20's S3Gen B=2 finding
      // that on CPU the two-call path stayed the winner).
@@ -2365,7 +2319,7 @@ index 0fc730e..d007d85 100644
      if (use_b2) {
          return run_prompt_pass_b2(model, allocr, n_threads, text_tokens,
                                    exaggeration, logits_cond_out,
-@@ -1549,31 +1656,29 @@ bool eval_step_mtl(const chatterbox_model & model,
+@@ -1549,31 +1633,29 @@ bool eval_step_mtl(const chatterbox_model & model,
                     ggml_gallocr_t allocr,
                     int n_threads,
                     int n_past,

@@ -808,6 +808,9 @@ def log_native_line(name: str, message: str):
         event_name = "tts.reference.s3gen_prompt_features"
         match = re.search(r"\((\d+),\s*80\)", message)
         data = {"origin": "reference_audio", "mel_frames": int(match.group(1)) if match else 0, "mel_bins": 80}
+    elif "embedding from CAMPPlus" in message:
+        event_name = "tts.reference.s3gen_speaker_embedding"
+        data = {"origin": "reference_campplus", **native_key_values(message)}
     elif "voice conditioning" in message.lower():
         event_name = "tts.reference.conditioning_summary"
         data = native_key_values(message)
@@ -1057,7 +1060,7 @@ def tts_session(lane: str, language: str, style: str, *, trace_id: str = "", tur
             "t3_conditioning_tokens": "reference_s3tokenizer",
             "s3gen_prompt_tokens": "reference_s3tokenizer",
             "s3gen_prompt_features": "reference_audio",
-            "s3gen_speaker_embedding": "builtin_fallback_no_campplus",
+            "s3gen_speaker_embedding": "reference_campplus",
         },
     }, source="controller", **context)
     emit_state()
