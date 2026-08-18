@@ -295,7 +295,7 @@ function requiredInstallSteps() {
   for (const name of Object.keys(schema.components)) {
     if (!isReady(state.components[name])) steps.push({kind: "component", name, op: "install_component", label: schema.components[name].label});
   }
-  const models = ["chatterbox-t3", "chatterbox-codec", "chatterbox-s3t", "parakeet", "gemma", "reference"];
+  const models = ["chatterbox-t3", "chatterbox-codec", "parakeet", "gemma", "reference"];
   const extra = state.brain && state.brain.model && state.brain.model !== "custom" ? state.brain.model : "";
   if (extra && !models.includes(extra)) models.push(extra);
   for (const name of models) {
@@ -413,9 +413,17 @@ async function openTts(language, style, context = {}) {
     const socket = new WebSocket(setup.url);
     ttsSocket = socket;
     socket.binaryType = "arraybuffer";
+    let settled = false;
+    const rejectSetup = error => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) socket.close();
+      reject(error);
+    };
     const timeout = window.setTimeout(() => {
       browserTrace("browser.tts.socket_failed", {reason: "timeout", timeout_ms: 30000}, {...context, config_id: setup.config_id}, "error");
-      reject(Error("Voice connection timed out"));
+      rejectSetup(Error("Voice connection timed out"));
     }, 30000);
     socket.onopen = () => {
       browserTrace("browser.tts.socket_opened", {ready_state: socket.readyState}, {...context, config_id: setup.config_id});
@@ -423,7 +431,7 @@ async function openTts(language, style, context = {}) {
     };
     socket.onerror = () => {
       browserTrace("browser.tts.socket_failed", {reason: "websocket_error"}, {...context, config_id: setup.config_id}, "error");
-      reject(Error("Voice WebSocket failed"));
+      rejectSetup(Error("Voice WebSocket failed"));
     };
     socket.onclose = event => {
       window.clearTimeout(timeout);
@@ -454,6 +462,8 @@ async function openTts(language, style, context = {}) {
       }
       const message = JSON.parse(event.data);
       if (message.type === "ready") {
+        if (settled) return;
+        settled = true;
         window.clearTimeout(timeout);
         ttsSession = message.session_id || "";
         ttsConfigId = message.config_id || setup.config_id || "";
@@ -489,9 +499,11 @@ async function openTts(language, style, context = {}) {
         finishPlayback();
       } else if (message.type === "error") {
         playback.done = true;
-        reportTts("error", {message: message.message || "Voice error", request_id: message.request_id});
-        browserTrace("browser.tts.synthesis_failed", {error: message.message || "Voice error", received_samples: playback.received}, message, "error");
-        fail(Error(message.message || "Voice error"));
+        const error = Error(message.message || "Voice error");
+        reportTts("error", {message: error.message, request_id: message.request_id});
+        browserTrace("browser.tts.synthesis_failed", {error: error.message, received_samples: playback.received}, message, "error");
+        if (!ttsSession) rejectSetup(error);
+        else fail(error);
         finishPlayback();
       }
     };

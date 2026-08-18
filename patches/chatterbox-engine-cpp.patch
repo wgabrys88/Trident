@@ -1,0 +1,196 @@
+diff --git a/src/chatterbox_engine.cpp b/src/chatterbox_engine.cpp
+index b361766..56a7b24 100644
+--- a/src/chatterbox_engine.cpp
++++ b/src/chatterbox_engine.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include "chatterbox_t3_internal.h"
+ #include "gpt2_bpe.h"
++#include "mtl_tokenizer.h"
+ #include "npy.h"
+ #include "t3_mtl.h"
+ #include "tts-cpp/chatterbox/s3gen_pipeline.h"
+@@ -90,26 +91,11 @@ struct Engine::Impl {
+             throw std::runtime_error("Engine: failed to load T3 GGUF: " + opts.t3_gguf_path);
+         }
+ 
+-        // Engine currently only wires the Turbo (GPT-2 Medium) variant.  An
+-        // MTL (Llama-520M multilingual) GGUF loads cleanly via load_model_gguf
+-        // -> load_model_gguf_mtl (populating model.layers_mtl, leaving
+-        // model.layers empty), but synthesize() unconditionally calls
+-        // eval_prompt() -> build_prompt_graph() -> build_transformer_core(),
+-        // which iterates model.layers[il] and would index into an empty
+-        // vector (UB / crash).  Reject up front with a clear error until
+-        // the public Engine API is extended with language / cfg_weight /
+-        // min_p / exaggeration and synthesize() learns to dispatch on
+-        // model.hparams.variant.  The CLI (tts-cli / chatterbox) uses the
+-        // lower-level eval_prompt_mtl / eval_step_mtl / sample_next_token_mtl
+-        // helpers directly and is unaffected.
+-        if (model.hparams.variant != CHBX_VARIANT_TURBO) {
++        if (model.hparams.variant != CHBX_VARIANT_TURBO &&
++            model.hparams.variant != CHBX_VARIANT_MTL) {
+             free_model();
+             throw std::runtime_error(
+-                "Engine: T3 GGUF reports chatterbox.variant != t3_turbo "
+-                "(multilingual / t3_mtl is not yet supported through the "
+-                "public Engine API).  Use the tts-cli binary or the "
+-                "internal eval_*_mtl helpers in chatterbox_t3_internal.h "
+-                "for now.  Path: " + opts.t3_gguf_path);
++                "Engine: unknown chatterbox.variant in " + opts.t3_gguf_path);
+         }
+ 
+         s3gen_preload_thread = std::thread([path = opts.s3gen_gguf_path,
+@@ -134,6 +120,9 @@ struct Engine::Impl {
+             free_model();
+             throw;
+         }
++        // Do not start T3 while the preload thread is still uploading
++        // S3Gen F16 weights onto the same 6GB Vulkan device.
++        wait_for_preload(s3gen_preload_thread);
+     }
+ 
+     ~Impl() {
+@@ -236,7 +225,10 @@ struct Engine::Impl {
+ 
+         if (!have_se && !opts.reference_audio.empty()) {
+             voice_encoder_weights vew;
+-            if (voice_encoder_load(opts.t3_gguf_path, vew)) {
++            const bool ve_ok = voice_encoder_load(opts.t3_gguf_path, vew) ||
++                               (!opts.s3gen_gguf_path.empty() &&
++                                voice_encoder_load(opts.s3gen_gguf_path, vew));
++            if (ve_ok) {
+                 std::vector<float> wav;
+                 int sr = 0;
+                 if (!wav_load(opts.reference_audio, wav, sr)) {
+@@ -245,9 +237,11 @@ struct Engine::Impl {
+                 normalise_lufs(wav, sr, -27.0);
+                 if (sr != 16000) wav = resample_sinc(wav, sr, 16000);
+                 if (!voice_encoder_embed(wav, vew, model.backend, se_data)) {
+-                    throw std::runtime_error("Engine: VoiceEncoder forward failed");
++                    fprintf(stderr, "Engine: VoiceEncoder forward failed; will try CAMPPlus / builtin\n");
++                } else {
++                    fprintf(stderr, "Engine: speaker_emb from VoiceEncoder (%zu,)\n", se_data.size());
++                    have_se = true;
+                 }
+-                have_se = true;
+             }
+         }
+ 
+@@ -309,8 +303,9 @@ struct Engine::Impl {
+                 if (!compute_prompt_feat_native(
+                         opts.reference_audio, opts.s3gen_gguf_path,
+                         s3gen_prompt_feat, rows, opts.verbose)) {
+-                    throw std::runtime_error(
+-                        "Engine: failed to compute prompt_feat from reference_audio");
++                    fprintf(stderr,
++                            "Engine: prompt_feat from reference_audio failed; "
++                            "S3Gen will use built-in prompt_feat\n");
+                 }
+                 s3gen_prompt_feat_rows = rows;
+             }
+@@ -337,28 +332,80 @@ struct Engine::Impl {
+     }
+ 
+     std::vector<int32_t> run_t3(const std::string & text) {
+-        if (model.tok_tokens.empty()) {
+-            throw std::runtime_error(
+-                "Engine: T3 GGUF has no embedded tokenizer; "
+-                "re-run scripts/convert-t3-turbo-to-gguf.py");
+-        }
+-
+-        gpt2_bpe bpe;
+-        bpe.load_from_arrays(model.tok_tokens, model.tok_merges);
+-        const std::string normalised = gpt2_bpe::punc_norm(text);
+-        const std::vector<int32_t> text_tokens = bpe.tokenize(normalised);
+-        if (text_tokens.empty()) {
+-            throw std::runtime_error("Engine: text tokenised to empty sequence");
+-        }
+-
++        const int n_threads = resolve_thread_count(opts.n_threads);
++        std::mt19937 rng(opts.seed);
+         chatterbox_sampling_params sp;
+         sp.top_k          = opts.top_k;
+         sp.top_p          = opts.top_p;
+         sp.temp           = opts.temperature;
+         sp.repeat_penalty = opts.repeat_penalty;
++        sp.min_p          = opts.min_p;
++        sp.cfg_weight     = opts.cfg_weight;
+ 
+-        const int n_threads = resolve_thread_count(opts.n_threads);
+-        std::mt19937 rng(opts.seed);
++        std::vector<int32_t> text_tokens;
++        if (model.hparams.variant == CHBX_VARIANT_MTL) {
++            if (model.mtl_tokenizer_json.empty()) {
++                throw std::runtime_error("Engine: MTL GGUF has no tokenizer json");
++            }
++            mtl_tokenizer tok;
++            if (!tok.load_from_json(model.mtl_tokenizer_json)) {
++                throw std::runtime_error("Engine: MTL tokenizer json failed to load");
++            }
++            text_tokens = tok.encode(text, opts.language);
++        } else {
++            if (model.tok_tokens.empty()) {
++                throw std::runtime_error(
++                    "Engine: T3 GGUF has no embedded tokenizer; "
++                    "re-run scripts/convert-t3-turbo-to-gguf.py");
++            }
++            gpt2_bpe bpe;
++            bpe.load_from_arrays(model.tok_tokens, model.tok_merges);
++            text_tokens = bpe.tokenize(gpt2_bpe::punc_norm(text));
++        }
++        if (text_tokens.empty()) {
++            throw std::runtime_error("Engine: text tokenised to empty sequence");
++        }
++
++        if (model.hparams.variant == CHBX_VARIANT_MTL) {
++            std::vector<float> logits_c, logits_u;
++            int prompt_len = 0;
++            if (!eval_prompt_mtl(model, allocr, n_threads, text_tokens,
++                                 opts.exaggeration, logits_c, logits_u, prompt_len)) {
++                throw std::runtime_error("Engine: T3 MTL prompt eval failed");
++            }
++            fprintf(stderr, "Engine: T3 prompt ok len=%d logits=%zu/%zu\n",
++                    prompt_len, logits_c.size(), logits_u.size());
++            int n_past = prompt_len;
++            std::vector<int32_t> generated;
++            generated.reserve((size_t) opts.n_predict + 1);
++            int32_t current = sample_next_token_mtl(
++                logits_c, logits_u, generated, sp, rng, model.hparams.stop_speech_token);
++            fprintf(stderr, "Engine: T3 first token=%d n_past=%d\n", (int) current, n_past);
++            generated.push_back(current);
++            for (int i = 0; i < opts.n_predict; ++i) {
++                if (cancel_flag.load(std::memory_order_relaxed)) {
++                    throw std::runtime_error("Engine: synthesis cancelled during T3 decode");
++                }
++                if (current == model.hparams.stop_speech_token) break;
++                if (n_past + 1 > model.hparams.n_ctx) break;
++                if (!eval_step_mtl(model, allocr, n_threads, n_past, current, logits_c, logits_u)) {
++                    throw std::runtime_error("Engine: T3 MTL step eval failed");
++                }
++                ++n_past;
++                current = sample_next_token_mtl(
++                    logits_c, logits_u, generated, sp, rng, model.hparams.stop_speech_token);
++                generated.push_back(current);
++                if (generated.size() >= 3 &&
++                    generated[generated.size() - 1] == generated[generated.size() - 2] &&
++                    generated[generated.size() - 2] == generated[generated.size() - 3]) {
++                    break;
++                }
++            }
++            if (!generated.empty() && generated.back() == model.hparams.stop_speech_token) {
++                generated.pop_back();
++            }
++            return generated;
++        }
+ 
+         std::vector<float> logits;
+         int prompt_len = 0;
+@@ -547,6 +594,8 @@ struct Engine::Impl {
+         const auto t3_t1 = std::chrono::steady_clock::now();
+ 
+         wait_for_preload(s3gen_preload_thread);
++        fprintf(stderr, "Engine: T3 done tokens=%zu — starting S3Gen\n",
++                speech_tokens.size());
+ 
+         SynthesisResult partial;
+         partial.t3_ms = std::chrono::duration<double, std::milli>(t3_t1 - t3_t0).count();
