@@ -192,7 +192,7 @@ function renderBrain() {
     ? `${job.message} - ${job.progress}%`
     : `${state.brain.label} - ${state.brain.ready ? "ready" : "use Download selected"}`;
 }
-function renderReference() { const ref = state.reference, source = ref.custom ? "Custom voice reference" : "Official Chatterbox demo voice"; $("reference-state").textContent = ref.status === "ready" ? `${source} - ${ref.duration.toFixed(1)} seconds. Identity only -- clip language does not have to match the spoken language. Use "Less reference accent" if you want less of the speaker's accent.` : `Voice reference: ${ref.status}.`; }
+function renderReference() { const ref = state.reference, source = ref.custom ? "Custom voice reference" : "Official Iracema voice"; $("reference-state").textContent = ref.status === "ready" ? `${source} - ${ref.duration.toFixed(1)} seconds. Speech language is Portuguese.` : `Voice reference: ${ref.status}.`; }
 function renderFlow() {
   const flow = state.flow || {stage: "idle", transcript: "", answer: "", error: ""};
   const localStage = recording ? "listening" : clientStage || flow.stage;
