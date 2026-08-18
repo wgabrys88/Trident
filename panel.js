@@ -1,6 +1,8 @@
 const $ = id => document.getElementById(id);
 let schema = null, state = null, recording = null, playContext = null, playing = null;
-let lastTts = 0, lastHeard = "", lastAnswer = "", rmsText = "", primed = false, padTarget = "answer";
+let playNext = 0, playAt = 0, lastHeard = "", lastAnswer = "", rmsText = "", primed = false, padTarget = "answer";
+const voices = [];
+let playTail = Promise.resolve();
 const pending = new Map();
 
 const TIMIT_SA1 = "She had your dark suit in greasy wash water all year.";
@@ -254,31 +256,55 @@ async function processUtterance(buffer, seconds, rec) {
     if (rec) { rec.busy = false; rec.parts = []; rec.speaking = false; rec.speechMs = rec.silenceMs = 0; }
   }
 }
+function hush() {
+  for (const src of voices) { try { src.stop(); } catch {} }
+  voices.length = 0;
+  playing = null;
+  playAt = 0;
+  playNext = 0;
+}
 function stopVoice() {
-  if (playing) { playing.stop(); playing = null; }
+  hush();
   post("tts_cancel");
   $("stop-voice").disabled = true;
 }
-async function playLive() {
-  const tts = live().tts;
-  if (!tts || tts.status !== "done" || !tts.mtime || tts.mtime === lastTts) return;
-  const text = (tts.text || "").trim();
-  if (!$("answer-auto").checked && text !== $("answer").value.trim()) return;
-  lastTts = tts.mtime;
-  if (playing) { playing.stop(); playing = null; }
+function playLive() {
+  playTail = playTail.then(drainPacks).catch(showError);
+}
+async function enqueuePack(index) {
   const ctx = await ensurePlaybackContext();
-  const response = await fetch("/last-output.wav", {cache: "no-store"});
+  const response = await fetch(`/last-chunk.wav?c=${index}`, {cache: "no-store"});
   if (!response.ok) return;
   const audio = await ctx.decodeAudioData((await response.arrayBuffer()).slice(0));
-  await new Promise(resolve => {
-    const src = ctx.createBufferSource();
-    playing = src;
-    src.buffer = audio;
-    src.connect(ctx.destination);
-    src.onended = () => { if (playing === src) playing = null; $("stop-voice").disabled = true; resolve(); };
-    src.start();
-    $("stop-voice").disabled = false;
-  });
+  const src = ctx.createBufferSource();
+  src.buffer = audio;
+  src.connect(ctx.destination);
+  const when = Math.max(playAt, ctx.currentTime);
+  src.onended = () => {
+    const at = voices.indexOf(src);
+    if (at >= 0) voices.splice(at, 1);
+    if (playing === src) playing = null;
+    if (!voices.length) $("stop-voice").disabled = true;
+  };
+  src.start(when);
+  playAt = when + audio.duration;
+  playing = src;
+  voices.push(src);
+  $("stop-voice").disabled = false;
+}
+async function drainPacks() {
+  const tts = live().tts;
+  if (!tts || (tts.status !== "running" && tts.status !== "done")) return;
+  const text = (tts.text || "").trim();
+  if (!$("answer-auto").checked && text !== $("answer").value.trim()) return;
+  const ready = tts.status === "done" ? Number(tts.chunks || 0) : Number(tts.chunk) + 1;
+  if (!Number.isFinite(ready) || ready <= 0) return;
+  if (tts.status === "running" && Number(tts.chunk) === 0 && playNext > 0) hush();
+  while (playNext < ready) {
+    const index = playNext;
+    playNext += 1;
+    await enqueuePack(index);
+  }
 }
 async function audioFileToWav(file) {
   const ctx = new AudioContext({sampleRate: schema.mic.sample_rate});

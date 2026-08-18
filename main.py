@@ -1,4 +1,5 @@
 from __future__ import annotations
+import http.client
 import io
 import json
 import os
@@ -97,7 +98,7 @@ def default_view() -> dict:
         "error": "",
         "asr": {"text": "", "status": "idle"},
         "brain": {"text": "", "language": "", "status": "idle"},
-        "tts": {"text": "", "language": "", "seconds": 0.0, "mtime": 0.0, "status": "idle"},
+        "tts": {"text": "", "language": "", "seconds": 0.0, "mtime": 0.0, "chunk": 0, "chunks": 0, "status": "idle"},
     }
 
 RUNTIME = {
@@ -567,6 +568,29 @@ def remote(url: str, body: bytes | None = None, content_type: str = "application
     except urllib.error.HTTPError as exception:
         detail = exception.read().decode("utf-8")
         raise RuntimeError(f"HTTP {exception.code} from {url}: {detail}") from exception
+
+def remote_lines(url: str, body: bytes, timeout: int = 600):
+    parsed = urllib.parse.urlparse(url)
+    conn = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=timeout)
+    try:
+        conn.request("POST", parsed.path or "/tts", body, {"Content-Type": "application/json"})
+        response = conn.getresponse()
+        if response.status >= 400:
+            raise RuntimeError(f"HTTP {response.status} from {url}: {response.read().decode('utf-8', 'replace')}")
+        buf = b""
+        while True:
+            piece = response.read(256)
+            if not piece:
+                break
+            buf += piece
+            while b"\n" in buf:
+                raw, buf = buf.split(b"\n", 1)
+                if raw.strip():
+                    yield json.loads(raw)
+        if buf.strip():
+            yield json.loads(buf)
+    finally:
+        conn.close()
 def wait_ready(name: str, process: subprocess.Popen, url: str):
     deadline = time.monotonic() + 600
     while time.monotonic() < deadline:
@@ -822,15 +846,33 @@ def synthesize(text: str, language: str) -> dict:
         }
     started = time.monotonic()
     try:
-        result = json.loads(remote(f"http://127.0.0.1:{PORTS['tts']}/tts", json.dumps(payload, separators=(",", ":")).encode()))
-        if result.get("error"):
-            raise RuntimeError(result["error"])
+        result: dict = {}
+        part = DATA / "last-chunk.wav"
         wav = DATA / "last-output.wav"
-        set_view(stage="idle", tts={
-            "text": text, "language": language, "status": "done",
-            "seconds": float(result.get("seconds") or 0),
-            "mtime": wav.stat().st_mtime if wav.is_file() else 0.0,
-        })
+        for old in DATA.glob("pack-*.wav"):
+            old.unlink(missing_ok=True)
+        for line in remote_lines(f"http://127.0.0.1:{PORTS['tts']}/tts", json.dumps(payload, separators=(",", ":")).encode()):
+            if line.get("error"):
+                raise RuntimeError(line["error"])
+            if not line.get("done"):
+                set_view(stage="speaking", tts={
+                    "text": text, "language": language, "status": "running",
+                    "chunk": int(line.get("chunk") or 0),
+                    "chunks": int(line.get("chunks") or 1),
+                    "seconds": float(line.get("seconds") or 0),
+                    "mtime": part.stat().st_mtime if part.is_file() else 0.0,
+                })
+                continue
+            result = line
+            set_view(stage="idle", tts={
+                "text": text, "language": language, "status": "done",
+                "chunk": int(line.get("chunks") or 1) - 1,
+                "chunks": int(line.get("chunks") or 1),
+                "seconds": float(line.get("seconds") or 0),
+                "mtime": wav.stat().st_mtime if wav.is_file() else 0.0,
+            })
+        if not result:
+            raise RuntimeError("tts stream ended without a result")
         log("tts", "done", ms=round((time.monotonic() - started) * 1000, 1), lang=language, seconds=result.get("seconds"), t3_ms=result.get("t3_ms"), s3gen_ms=result.get("s3gen_ms"), chunks=result.get("chunks"), cfm_steps=payload["cfm_steps"])
         return result
     except Exception as exception:
@@ -1076,8 +1118,11 @@ class Handler(BaseHTTPRequestHandler):
                         if inbox in SUBS:
                             SUBS.remove(inbox)
                 return
-            if path == "/last-output.wav":
-                target = DATA / "last-output.wav"
+            if path == "/last-output.wav" or path == "/last-chunk.wav":
+                name = path.lstrip("/")
+                if path == "/last-chunk.wav" and query.get("c", "").isdigit():
+                    name = f"pack-{int(query['c'])}.wav"
+                target = DATA / name
                 if not target.is_file():
                     raise ApiError(404, "no speech yet")
                 self.send_bytes(target.read_bytes(), "audio/wav")

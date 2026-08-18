@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <string>
@@ -89,40 +90,88 @@ void TTSServer::initialize(
         response.set_content("{\"cancelled\":true}", "application/json");
     });
     http_.Post("/tts", [this](const httplib::Request& request, httplib::Response& response) {
+        json body;
         try {
-            const auto body = json::parse(request.body);
-            const auto text = body.at("text").get<std::string>();
-            if (text.empty()) throw std::runtime_error("text is empty");
-            const auto voice = voice_from(body);
-            const auto started = std::chrono::steady_clock::now();
-            const auto speech = engine_->speak(voice, text);
-            const double ms = std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - started).count();
-            const auto wav = (std::filesystem::path(voice.reference).parent_path() / "last-output.wav").string();
-            write_wav(wav, speech.pcm, 24000);
-            std::cerr << "tts done samples=" << speech.pcm.size()
-                      << " t3_ms=" << speech.t3_ms
-                      << " s3gen_ms=" << speech.s3gen_ms
-                      << " ms=" << ms
-                      << " cfm_steps=" << voice.cfm_steps
-                      << " chunks=" << speech.chunks
-                      << " lang=" << voice.language << std::endl;
-            response.set_content(json{
-                {"ok", true},
-                {"samples", speech.pcm.size()},
-                {"seconds", speech.pcm.size() / 24000.0},
-                {"ms", ms},
-                {"t3_ms", speech.t3_ms},
-                {"s3gen_ms", speech.s3gen_ms},
-                {"cfm_steps", voice.cfm_steps},
-                {"chunks", speech.chunks},
-                {"language", voice.language},
-                {"path", wav},
-            }.dump(), "application/json");
+            body = json::parse(request.body);
+            if (body.at("text").get<std::string>().empty()) throw std::runtime_error("text is empty");
+        } catch (const std::exception& exception) {
+            response.status = 400;
+            response.set_content(json{{"error", exception.what()}}.dump(), "application/json");
+            return;
+        }
+        const auto text = body.at("text").get<std::string>();
+        tts::Voice voice;
+        try {
+            voice = voice_from(body);
+            engine_->prepare(voice, text);
         } catch (const std::exception& exception) {
             response.status = 500;
             response.set_content(json{{"error", exception.what()}}.dump(), "application/json");
+            return;
         }
+        const auto dir = std::filesystem::path(voice.reference).parent_path();
+        const auto wav = (dir / "last-output.wav").string();
+        const auto part = (dir / "last-chunk.wav").string();
+        response.set_header("Cache-Control", "no-store");
+        auto started = std::make_shared<std::chrono::steady_clock::time_point>(std::chrono::steady_clock::now());
+        auto closed = std::make_shared<bool>(false);
+        response.set_chunked_content_provider("application/x-ndjson",
+            [this, voice, wav, part, dir, started, closed](size_t, httplib::DataSink& sink) {
+                if (*closed) return false;
+                auto emit = [&](const json& line) {
+                    const auto blob = line.dump() + "\n";
+                    sink.write(blob.data(), blob.size());
+                };
+                try {
+                    if (engine_->busy()) {
+                        engine_->step([&](int index, int total, const std::vector<float>& all, const std::vector<float>& playable) {
+                            write_wav(wav, all, 24000);
+                            write_wav(part, playable, 24000);
+                            write_wav((dir / ("pack-" + std::to_string(index) + ".wav")).string(), playable, 24000);
+                            emit({
+                                {"ok", true}, {"done", false},
+                                {"chunk", index}, {"chunks", total},
+                                {"samples", all.size()},
+                                {"seconds", all.size() / 24000.0},
+                                {"playable", playable.size()},
+                            });
+                            std::cerr << "tts pack chunk=" << index + 1 << "/" << total
+                                      << " playable=" << playable.size()
+                                      << " samples=" << all.size() << std::endl;
+                        });
+                    }
+                    if (engine_->busy()) return true;
+                    const auto speech = engine_->finish();
+                    const double ms = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - *started).count();
+                    write_wav(wav, speech.pcm, 24000);
+                    emit({
+                        {"ok", true}, {"done", true},
+                        {"samples", speech.pcm.size()},
+                        {"seconds", speech.pcm.size() / 24000.0},
+                        {"ms", ms},
+                        {"t3_ms", speech.t3_ms},
+                        {"s3gen_ms", speech.s3gen_ms},
+                        {"cfm_steps", voice.cfm_steps},
+                        {"chunks", speech.chunks},
+                        {"language", voice.language},
+                        {"path", wav},
+                    });
+                    std::cerr << "tts done samples=" << speech.pcm.size()
+                              << " t3_ms=" << speech.t3_ms
+                              << " s3gen_ms=" << speech.s3gen_ms
+                              << " ms=" << ms
+                              << " cfm_steps=" << voice.cfm_steps
+                              << " chunks=" << speech.chunks
+                              << " lang=" << voice.language << std::endl;
+                } catch (const std::exception& exception) {
+                    emit({{"error", exception.what()}});
+                    engine_->finish();
+                }
+                *closed = true;
+                sink.done();
+                return false;
+            });
     });
 }
 
