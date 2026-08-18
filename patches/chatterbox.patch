@@ -2357,6 +2357,18 @@ index 0fc730e..e3d366e 100644
                         logits_uncond_out)) return false;
      return true;
  }
+@@ -1671,6 +1720,11 @@ int32_t sample_next_token_mtl(const std::vector<float> & logits_cond,
+     for (size_t i = 0; i < V; ++i) {
+         l[i] = logits_cond[i] + p.cfg_weight * (logits_cond[i] - logits_uncond[i]);
+     }
++    // S3 codebook is [0, stop_token). stop_token is EOS. start_speech and
++    // ids above EOS cannot decode (S3Gen drops t >= 6561).
++    for (size_t i = 0; i < V; ++i) {
++        if ((int32_t)i != stop_token && (int32_t)i >= stop_token - 1) l[i] = -INFINITY;
++    }
+ 
+     if (p.repeat_penalty != 1.0f) {
+         for (int32_t t : generated) {
 diff --git a/src/text_split.cpp b/src/text_split.cpp
 new file mode 100644
 index 0000000..f50f379

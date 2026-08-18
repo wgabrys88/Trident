@@ -72,7 +72,7 @@ PACKAGES = {
     "msvc": {"url": "https://download.visualstudio.microsoft.com/download/pr/00d9d26c-2727-42c2-aa9e-eda63b03e1ee/15df9d3b4c2b2eaf44704d5e938c895341b9cd8ba40a9a18610f8d18cbe01b53/vs_BuildTools.exe", "file": "vs_BuildTools.exe", "size": 4458736, "sha256": "15df9d3b4c2b2eaf44704d5e938c895341b9cd8ba40a9a18610f8d18cbe01b53"},
     "vulkan": {"url": f"https://sdk.lunarg.com/sdk/download/{VULKAN_VERSION}/windows/vulkansdk-windows-X64-{VULKAN_VERSION}.exe", "file": f"vulkansdk-windows-X64-{VULKAN_VERSION}.exe", "size": 0, "sha256": "81f474711e9042f4cd22b31b2f7a8870db2e428b21586fb43dd80150be97310d"},
 }
-TTS_LANGUAGES = {"ar": "Arabic", "da": "Danish", "de": "German", "el": "Greek", "en": "English", "es": "Spanish", "fi": "Finnish", "fr": "French", "he": "Hebrew", "hi": "Hindi", "it": "Italian", "ja": "Japanese", "ko": "Korean", "ms": "Malay", "nl": "Dutch", "no": "Norwegian", "pl": "Polish", "pt": "Portuguese", "ru": "Russian", "sv": "Swedish", "sw": "Swahili", "tr": "Turkish", "zh": "Chinese"}
+TTS_LANGUAGES = {"pt": "Portuguese"}
 ASR_LANGUAGES = {"bg": "Bulgarian", "hr": "Croatian", "cs": "Czech", "da": "Danish", "nl": "Dutch", "en": "English", "et": "Estonian", "fi": "Finnish", "fr": "French", "de": "German", "el": "Greek", "hu": "Hungarian", "it": "Italian", "lv": "Latvian", "lt": "Lithuanian", "mt": "Maltese", "pl": "Polish", "pt": "Portuguese", "ro": "Romanian", "sk": "Slovak", "sl": "Slovenian", "es": "Spanish", "sv": "Swedish", "ru": "Russian", "uk": "Ukrainian"}
 CONVERSATION_LANGUAGES = {code: TTS_LANGUAGES[code] for code in TTS_LANGUAGES if code in ASR_LANGUAGES}
 ENGINE_LOG_TOKENS = ("vulkan", "uma", "model loaded", "listening", "server is listening", "n_ctx_slot", "prompt eval time", "eval time", "total time", "voiceencoder", "s3tokenizer", "prompt_feat", "t3 stop", "t3 done", "s3gen:", "bench", "metric")
@@ -95,18 +95,17 @@ VOICE_DEFAULTS = {
 VOICE_STYLES = {
     "natural": {"cfg_weight": 0.5, "exaggeration": 0.5},
     "expressive": {"cfg_weight": 0.3, "exaggeration": 0.7},
-    "cross-language": {"cfg_weight": 0.0, "exaggeration": 0.5},
 }
 ASR_RUNTIME = {"threads": 4, "response_format": "json"}
 BRAIN_RUNTIME = {"context": 2048, "parallel": 1, "fit_target": 3072}
 BRAIN_GENERATION = {"temperature": 0.2, "top_p": 0.9, "top_k": 40, "min_p": 0.0, "repeat_penalty": 1.05, "seed": 42, "max_tokens": 160}
 FIELDS = {
-    "conversation.language": field("Conversation language", "string", "en", options=list(CONVERSATION_LANGUAGES)),
+    "conversation.language": field("Conversation language", "string", "pt", options=list(CONVERSATION_LANGUAGES)),
     "conversation.clone_voice": field("Experimental mic voice clone", "bool", False),
     "conversation.vad": field("Voice activity detection", "bool", False),
-    "speech.language": field("Speech language", "string", "en", options=list(TTS_LANGUAGES)),
+    "speech.language": field("Speech language", "string", "pt", options=list(TTS_LANGUAGES)),
     "speech.style": field("Voice style", "string", "natural", options=list(VOICE_STYLES)),
-    "speech.text": field("Text to speak", "string", "This is a multilingual voice synthesis test.", multiline=True),
+    "speech.text": field("Text to speak", "string", "Um, dois, tres.", multiline=True),
     "tts.engine.gpu_layers": field("TTS GPU layers", "int", TTS_RUNTIME["gpu_layers"], 0, 999),
     "tts.engine.context": field("TTS context tokens", "int", TTS_RUNTIME["context"], TTS_MIN_CONTEXT, 8192),
     "tts.engine.sessions": field("TTS max sessions", "int", TTS_RUNTIME["sessions"], 1, 8),
@@ -126,8 +125,6 @@ FIELDS = {
     "tts.style.natural.exaggeration": field("Natural exaggeration", "float", VOICE_STYLES["natural"]["exaggeration"], 0.0, 2.0),
     "tts.style.expressive.cfg_weight": field("Expressive CFG weight", "float", VOICE_STYLES["expressive"]["cfg_weight"], 0.0, 2.0),
     "tts.style.expressive.exaggeration": field("Expressive exaggeration", "float", VOICE_STYLES["expressive"]["exaggeration"], 0.0, 2.0),
-    "tts.style.cross-language.cfg_weight": field("Less-accent CFG weight", "float", VOICE_STYLES["cross-language"]["cfg_weight"], 0.0, 2.0),
-    "tts.style.cross-language.exaggeration": field("Less-accent exaggeration", "float", VOICE_STYLES["cross-language"]["exaggeration"], 0.0, 2.0),
     "asr.threads": field("ASR CPU threads", "int", ASR_RUNTIME["threads"], 1, 64),
     "asr.vad.threshold": field("VAD RMS start", "float", 0.02, 0.001, 0.5),
     "asr.vad.silence_ms": field("VAD silence to end utterance", "int", 700, 200, 3000),
@@ -147,7 +144,7 @@ PARAM_GROUPS = [
     {"id": "tts-engine", "title": "TTS engine", "apply": "Restart the TTS engine to apply GPU layers, context, sessions, and threads.", "fields": ["tts.engine.gpu_layers", "tts.engine.context", "tts.engine.sessions", "tts.engine.threads"]},
     {"id": "tts-sample", "title": "TTS sampling", "apply": "Applied on the next TTS WebSocket init.", "fields": ["tts.sample.seed", "tts.sample.max_tokens", "tts.sample.top_k", "tts.sample.top_p", "tts.sample.min_p", "tts.sample.temperature", "tts.sample.repeat_penalty", "tts.sample.cfm_steps"]},
     {"id": "tts-stream", "title": "TTS streaming and chunking", "apply": "Applied on the next TTS WebSocket init. C++ VoiceConfig already reads these fields.", "fields": ["tts.stream.first_chunk", "tts.stream.chunk", "tts.stream.max_sentence_chars"]},
-    {"id": "tts-style", "title": "TTS style overlays", "apply": "Overlay cfg_weight and exaggeration for the selected Speech-lab style. Conversation uses the natural overlay.", "fields": ["tts.style.natural.cfg_weight", "tts.style.natural.exaggeration", "tts.style.expressive.cfg_weight", "tts.style.expressive.exaggeration", "tts.style.cross-language.cfg_weight", "tts.style.cross-language.exaggeration"]},
+    {"id": "tts-style", "title": "TTS style overlays", "apply": "Overlay cfg_weight and exaggeration for the selected Speech-lab style. Conversation uses the natural overlay.", "fields": ["tts.style.natural.cfg_weight", "tts.style.natural.exaggeration", "tts.style.expressive.cfg_weight", "tts.style.expressive.exaggeration"]},
     {"id": "asr-engine", "title": "ASR engine", "apply": "Restart the ASR engine to apply thread count.", "fields": ["asr.threads"]},
     {"id": "asr-vad", "title": "ASR voice activity", "apply": "Applied on the next captured frame. No engine restart.", "fields": ["asr.vad.threshold", "asr.vad.silence_ms", "asr.vad.min_speech_ms"]},
     {"id": "brain-engine", "title": "Brain engine", "apply": "Restart the brain engine to apply context and GPU headroom. Parallel slots stay at 1.", "fields": ["brain.engine.context", "brain.engine.parallel", "brain.engine.fit_target"]},
@@ -250,6 +247,12 @@ def load_config() -> dict:
     stored_context = stored.get("tts.engine.context")
     if type(stored_context) is int and stored_context < TTS_MIN_CONTEXT:
         stored = stored | {"tts.engine.context": TTS_RUNTIME["context"]}
+    if stored.get("speech.language") not in TTS_LANGUAGES:
+        stored = stored | {"speech.language": "pt"}
+    if stored.get("conversation.language") not in CONVERSATION_LANGUAGES:
+        stored = stored | {"conversation.language": "pt"}
+    if stored.get("speech.style") not in VOICE_STYLES:
+        stored = stored | {"speech.style": "natural"}
     merged = {path: stored[path] if path in stored else default for path, default in defaults.items()}
     checked = {path: validate(path, value) for path, value in merged.items()}
     if stored != checked:

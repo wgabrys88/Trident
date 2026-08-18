@@ -84,11 +84,11 @@ Conversation path: microphone or WAV → Parakeet → active brain → Chatterbo
 
 | Set | Codes | Use |
 |---|---|---|
-| `TTS_LANGUAGES` | ar da de el en es fi fr he hi it ja ko ms nl no pl pt ru sv sw tr zh | Speech Lab + native `VoiceConfig.language` |
+| `TTS_LANGUAGES` | pt | Speech Lab + native `VoiceConfig.language`. Single-language lock to Iracema. |
 | `ASR_LANGUAGES` | bg hr cs da nl en et fi fr de el hu it lv lt mt pl pt ro sk sl es sv ru uk | Catalog only; Parakeet is not passed a language flag by `transcribe()` |
-| `CONVERSATION_LANGUAGES` | intersection of the two | `conversation.language`, `brain()`, `run_turn()` |
+| `CONVERSATION_LANGUAGES` | pt | `conversation.language`, `brain()`, `run_turn()` |
 
-Intersection (SOURCE, computed from the two dicts): da de el en es fi fr it nl pl pt ru sv.
+Intersection is `pt`. Multilingual catalogs return after one-language T3 is verified.
 
 ### 1.5 Control surface
 
@@ -513,8 +513,8 @@ Session reuse: same socket OPEN, same session id, same language, same style, sam
 | `conversation.language` | string | `en` | — | `CONVERSATION_LANGUAGES` | next turn / brain call |
 | `conversation.clone_voice` | bool | `false` (live file currently `true`) | — | — | next turn |
 | `conversation.vad` | bool | `false` | — | — | next captured frame |
-| `speech.language` | string | `en` | — | `TTS_LANGUAGES` | next Speech Lab session |
-| `speech.style` | string | `natural` | — | `natural\|expressive\|cross-language` | next Speech Lab session |
+| `speech.language` | string | `pt` | — | `TTS_LANGUAGES` (`pt`) | next Speech Lab session |
+| `speech.style` | string | `natural` | — | `natural\|expressive` | next Speech Lab session |
 | `speech.text` | string | `This is a multilingual voice synthesis test.` | — | multiline | next Speak text |
 | `tts.engine.gpu_layers` | int | 99 | 0 | 999 | TTS process restart |
 | `tts.engine.context` | int | 1536 | 1280 | 8192 | TTS process restart; stored values `<1280` rewritten to 1536 |
@@ -641,9 +641,7 @@ Speech-lab turn before CAMPPlus throw (trace `f85bcfb0`, COMMIT `31ba93d` body):
 
 #### 6.3.3 Prompt / text boundaries
 
-Live MTL Engine path: `text_tokens = tok.encode(text, opts.language)`. SOURCE: `chatterbox_engine.cpp:378`. `mtl_tokenizer::encode` prepends the language tag. No `punc_norm`, no extra start_text/stop_text padding. CLONE matches. `dd13afe` tried punc_norm + BOS/EOS; that ride crashed before a new WAV.
-
-`14bc791` comment about explicit boundary tokens is stale for the live Engine path.
+Live MTL Engine path: `text_tokens = tok.encode(text, opts.language)`. SOURCE: `chatterbox_engine.cpp` `run_t3`. `mtl_tokenizer::encode` prepends `[lang]`. No `punc_norm`. CLI/Python also pad `start_text_token`+`stop_text_token`; live Engine pad of those two tokens was measured this session to move T3 first token from in-codebook 5075 to off-codebook 7840–7844 and is not used.
 
 ### 6.4 Hyperparameter strategy as implemented
 
@@ -653,7 +651,8 @@ Live MTL Engine path: `text_tokens = tok.encode(text, opts.language)`. SOURCE: `
 | Spoken reply not analysis | system prompt + `enable_thinking=false` | `brain()`, `BRAIN_FAMILIES` |
 | T3 1000 predict vs old 512 ctx | migrate ctx to 1536, min 1280 | `load_config`, `967f95c` |
 | Intel Vulkan + flash_attn | B=2 + `ggml_flash_attn_ext` (clone-reliable). Sequential softmax crashed. | `31ba93d`; do not restore `dd13afe` |
-| Clone accent vs language | `cross-language` cfg_weight `0.0`; conversation uses `natural` | `VOICE_STYLES`, `runTurn` style hardcode |
+| T3 speech ids | Sampler keeps `[0, EOS)` plus EOS only. S3Gen cannot decode start_speech or 6563+ | `sample_next_token_mtl` |
+| Single spoken language | Portuguese only; Iracema reference | `TTS_LANGUAGES`, `VOICE_STYLES` |
 | First audio latency vs RTF | `first_chunk=75`, `chunk=150` | `VOICE_DEFAULTS` |
 
 ---
@@ -1016,7 +1015,7 @@ Text `This is a multilingual voice synthesis test.` Conditioning `s3gen_embeddin
 
 1. Edit bake in `third_party/chatterbox.cpp/src/chatterbox_engine.cpp` and regenerate `patches/chatterbox.patch` from pin `ddca05f` the same way as `31ba93d` (placeholders `__EM_DASH__` / `__SECTION_SIGN__`). Delete CAMPPlus call + empty-embedding throw. Keep VoiceEncoder / S3Tok / prompt_feat required.
 2. `main.py` `tts_session` contract: `s3gen_speaker_embedding` = `builtin_fallback`.
-3. Do not change flash_attn, `speech_position = n_past`, `tok.encode(text)`, or models.
+3. Do not change flash_attn, `speech_position = n_past`, `tok.encode(text, language)`, or models.
 4. Operator or detached process: if `:8765` is already up with engines, unload/reload **only TTS** through panel REST so the new exe is picked up after install. If you rebuild, `install_component tts` (now unloads TTS before copy) then `load_engine tts`. Do not start a second `main.py`.
 5. User Speaks the same sentence (Speech Lab or conversation). Do not invent a WS client.
 6. Success of **this** change: session init reaches `s3gen_embedding=builtin_fallback`, PCM arrives, `last-output.wav` mtime updates. Failure: still CAMPPlus throw.
@@ -1027,7 +1026,7 @@ Text `This is a multilingual voice synthesis test.` Conditioning `s3gen_embeddin
 - Do not invent a Python/PowerShell WebSocket client.
 - Do not reinstall Parakeet, Gemma, or model GGUFs. Do not run `convert-s3gen-to-gguf.py` against the pinned codec.
 - Do not re-introduce Vulkan softmax / sequential CFG.
-- Do not pad start_text/stop_text or wrap `punc_norm` on the MTL Engine path.
+- Do not pad start_text/stop_text or wrap `punc_norm` on the MTL Engine path. Measured: those two pads moved first token into 7840–7844 unless the sampler also drops ids above EOS.
 - Do not start `main.py` from the agent Job Object.
 - Do not treat `Chatterbox_V3_Diagnostic_Report.md` or root `1.patch`/`2.patch`/`3.patch` as the live contract.
 - Do not treat builtin S3Gen speaker as a language-tag bug. It is identity-only (D14).
