@@ -58,7 +58,7 @@ BINARIES = {
 }
 MODELS = {
     "chatterbox-t3": {"label": "CHATTERBOX V3 T3", "repo": "ResembleAI/chatterbox", "revision": "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18", "file": "chatterbox-t3-mtl-v3-q4_0.gguf", "size": 344985408, "sha256": "d886fba27183c3000becb096b1a16526fafb67fe7abd541d7901040931524d16"},
-    "chatterbox-codec": {"label": "CHATTERBOX V3 S3GEN", "repo": "ResembleAI/chatterbox", "revision": "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18", "file": "chatterbox-s3gen-mtl-v3-f16.gguf", "size": 1056431360, "sha256": "1856e341c4da688adc5f2bbcd94f86a692cb11d3cc111ef9352f9422c78d85a3"},
+    "chatterbox-codec": {"label": "CHATTERBOX V3 S3GEN", "repo": "ResembleAI/chatterbox", "revision": "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18", "file": "chatterbox-s3gen-mtl-v3-f16.gguf", "size": 1056431360, "sha256": "81f8f1a6164b97f71691f4954773dbf5af64f39efd008c7c24967259e1cbf445"},
     "parakeet": {"label": "PARAKEET TDT 0.6B V3 Q4_K", "repo": "mudler/parakeet-cpp-gguf", "revision": "bf0af9f425fa01809cadec671b3cb672709d13e9", "file": "tdt-0.6b-v3-q4_k.gguf", "size": 675200864, "sha256": "993d73feb4206dadda865ab25bd64b50c48dc4d013c3bf6126a721f28b1d5ee8"},
     "gemma": {"label": "GEMMA 4 E2B", "repo": "google/gemma-4-E2B-it-qat-q4_0-gguf", "revision": "675cff42a74c774d6cb76f76d8eacb49b48c9b93", "file": "gemma-4-E2B_q4_0-it.gguf", "size": 3349516256, "sha256": "fa401b55b07ee70a54c6dae3903c783a6e65064312529ea57175cb5f8dec6634"},
     "qwen35-0.8b": {"label": "QWEN3.5 0.8B", "repo": "unsloth/Qwen3.5-0.8B-GGUF", "revision": "6ab461498e2023f6e3c1baea90a8f0fe38ab64d0", "file": "Qwen3.5-0.8B-Q4_K_M.gguf", "size": 532517120, "sha256": "bd258782e35f7f458f8aced1adc053e6e92e89bc735ba3be89d38a06121dc517"},
@@ -831,7 +831,7 @@ def download_model(name: str, key: str):
             code = (
                 "from huggingface_hub import snapshot_download; "
                 f"snapshot_download(repo_id={spec['repo']!r}, revision={spec['revision']!r}, "
-                "allow_patterns=['ve.pt','t3_mtl23ls_v2.safetensors','s3gen.pt','grapheme_mtl_merged_expanded_v1.json','conds.pt','Cangjie5_TC.json'], "
+                "allow_patterns=['ve.pt','t3_mtl23ls_v3.safetensors','s3gen_v3.pt','grapheme_mtl_merged_expanded_v1.json','conds.pt','Cangjie5_TC.json'], "
                 f"local_dir={str(checkpoint)!r})"
             )
             env = os.environ.copy()
@@ -846,7 +846,7 @@ def download_model(name: str, key: str):
         if name != "chatterbox-t3":
             command += ["--variant", "mtl"]
         command += ["--ckpt-dir", str(checkpoint), "--out", str(partial), "--quant", "q4_0" if name == "chatterbox-t3" else "f16"]
-        env = command_env()
+        env = build_env()
         env["HF_HOME"] = str(TOOLS / "huggingface")
         set_job(key, "running", "convert", 20, f"converting {spec['label']}")
         run(name, "convert", command, ROOT, env)

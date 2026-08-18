@@ -243,31 +243,78 @@ input[type="checkbox"] {
   background: var(--warn-soft);
 }
 
-.readiness-panel {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: .38rem .85rem;
-  margin-top: .65rem;
-  padding-top: .62rem;
-  border-top: 1px solid rgba(58, 78, 93, .62);
-}
-
-.readiness-label {
-  color: var(--muted);
-  font-size: .69rem;
-  font-weight: 850;
-  letter-spacing: .08em;
-  text-transform: uppercase;
-}
-
+.controller-state,
 .status-line {
   min-width: 0;
+  margin: .55rem 0 0;
   overflow: hidden;
   color: var(--muted);
   font-size: .72rem;
-  text-align: right;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.status-line {
+  margin-top: .2rem;
+  color: var(--text);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.system {
+  padding: clamp(1rem, 2.7vw, 1.75rem);
+}
+
+.system-copy {
+  margin: 0 0 1rem;
+  color: var(--muted);
+  font-size: .82rem;
+}
+
+.system-copy code {
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: .78rem;
+}
+
+.system-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .75rem;
+}
+
+.system-group {
+  min-width: 0;
+  padding: .85rem .9rem;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: #0a1117;
+}
+
+.system-group h3 {
+  margin: 0 0 .2rem;
+  color: var(--text);
+  font-size: .82rem;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.group-help {
+  margin: 0 0 .65rem;
+  color: var(--muted);
+  font-size: .72rem;
+}
+
+#engine-detail {
+  margin: .55rem 0 0;
 }
 
 .install-strip {
@@ -328,6 +375,13 @@ input[type="checkbox"] {
 }
 
 .engine-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.7rem;
+  padding: .15rem .45rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #0b1218;
   color: var(--muted);
   font-size: .67rem;
   font-weight: 850;
@@ -780,12 +834,13 @@ details > summary strong {
     width: 100%;
   }
 
-  .readiness-panel {
-    grid-template-columns: minmax(0, 1fr);
+  .controller-state,
+  .status-line {
+    white-space: normal;
   }
 
-  .status-line {
-    text-align: left;
+  .system-grid {
+    grid-template-columns: 1fr;
   }
 
   .conversation-controls,

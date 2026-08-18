@@ -102,63 +102,113 @@ function syncParamFields() {
 }
 function jobFor(kind, name) { return state.jobs[`${kind}:${name}`] || null; }
 function isReady(value) { return Boolean(value) && value.status === "ready"; }
+function catalogLabel(spec, name) { return spec && spec.label ? spec.label : name; }
+function requiredModelNames() {
+  const names = ["chatterbox-t3", "chatterbox-codec", "parakeet", "gemma", "reference"];
+  const extra = state.brain && state.brain.model && state.brain.model !== "custom" ? state.brain.model : "";
+  if (extra && !names.includes(extra)) names.push(extra);
+  return names.filter(name => schema.models && schema.models[name]);
+}
 function activeBrainReady() { const brain = state.brain || {}; return brain.active === "custom" ? Boolean(brain.custom && brain.custom.status === "ready") : isReady(state.models[brain.model || "gemma"]); }
 function engineCanStart(name) {
   if (name === "brain") return isReady(state.components.gemma) && activeBrainReady();
-  const component = name === "asr" ? "parakeet" : "tts";
-  const models = name === "asr" ? ["parakeet"] : ["chatterbox-t3", "chatterbox-codec", "chatterbox-s3t", "reference"];
-  return isReady(state.components[component]) && models.every(model => isReady(state.models[model]));
+  if (name === "asr") return isReady(state.components.parakeet) && isReady(state.models.parakeet);
+  return isReady(state.components.tts) && ["chatterbox-t3", "chatterbox-codec", "reference"].every(model => isReady(state.models[model]));
 }
 function conversationReady() { return ["asr", "brain", "tts"].every(engineCanStart); }
 function enginesRunning() { return ["asr", "brain", "tts"].every(name => state.engines[name].status === "running"); }
 function installEntries() {
   const out = [];
-  for (const [name, spec] of Object.entries(schema.prerequisites)) out.push({kind: "prerequisite", name, label: spec.label, value: state.prerequisites[name], op: "install_prerequisite"});
-  for (const [name, spec] of Object.entries(schema.components)) out.push({kind: "component", name, label: spec.label, value: state.components[name], op: "install_component"});
-  for (const name of ["chatterbox-t3", "chatterbox-codec", "chatterbox-s3t", "parakeet", "gemma", "reference"]) out.push({kind: "model", name, label: schema.models[name].label, value: state.models[name], op: "download_model"});
+  for (const [name, spec] of Object.entries(schema.prerequisites || {})) out.push({kind: "prerequisite", name, label: catalogLabel(spec, name), value: (state.prerequisites || {})[name], op: "install_prerequisite"});
+  for (const [name, spec] of Object.entries(schema.components || {})) out.push({kind: "component", name, label: catalogLabel(spec, name), value: (state.components || {})[name], op: "install_component"});
+  for (const name of requiredModelNames()) out.push({kind: "model", name, label: catalogLabel(schema.models[name], name), value: (state.models || {})[name], op: "download_model"});
   return out;
+}
+function chipCaption(entry) {
+  return String(entry.label || entry.name || "unlabeled")
+    .replace(" VULKAN", "")
+    .replace("CHATTERBOX V3 ", "")
+    .replace(" (TTS BUILD)", "")
+    .replace(" SDK", "");
+}
+function renderChip(root, entry) {
+  const job = jobFor(entry.kind, entry.name);
+  const status = job && job.status === "running" ? "running" : (entry.value && entry.value.status) || "missing";
+  const label = document.createElement("label");
+  label.className = `install-chip ${status === "ready" ? "ready" : status === "running" ? "busy" : "bad"}`;
+  label.title = job && job.status === "running" ? `${entry.label}: ${job.message} ${job.progress}%` : `${entry.label}: ${status}`;
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = status === "ready";
+  input.indeterminate = status === "running";
+  input.disabled = status === "running" || (entry.kind === "prerequisite" && entry.name === "python");
+  input.setAttribute("aria-label", entry.label || entry.name);
+  input.onchange = () => { if (!input.checked) input.checked = true; else installEntry(entry).catch(fail); };
+  label.append(input, document.createTextNode(chipCaption(entry)));
+  root.append(label);
 }
 async function installEntry(entry) { if (entry.kind === "prerequisite" && entry.name === "python") throw Error("Python 3.11 is a host prerequisite"); await command(entry.op, {name: entry.name}); await waitForJob(entry.kind, entry.name); }
 function renderInstallStrip() {
-  const root = $("install-strip");
   const entries = installEntries();
-  root.replaceChildren();
+  const groups = {
+    prerequisite: $("prerequisite-strip"),
+    component: $("component-strip"),
+    model: $("model-strip"),
+  };
+  for (const root of Object.values(groups)) if (root) root.replaceChildren();
+  const fallback = $("install-strip");
+  if (fallback) fallback.replaceChildren();
   for (const entry of entries) {
-    const job = jobFor(entry.kind, entry.name);
-    const status = job && job.status === "running" ? "running" : entry.value.status;
-    const label = document.createElement("label");
-    label.className = `install-chip ${status === "ready" ? "ready" : status === "running" ? "busy" : "bad"}`;
-    label.title = job && job.status === "running" ? `${job.message} ${job.progress}%` : `${entry.label}: ${status}`;
-    const input = document.createElement("input");
-    input.type = "checkbox"; input.checked = status === "ready"; input.indeterminate = status === "running";
-    input.disabled = status === "running" || (entry.kind === "prerequisite" && entry.name === "python");
-    input.onchange = () => { if (!input.checked) input.checked = true; else installEntry(entry).catch(fail); };
-    label.append(input, document.createTextNode(entry.label.replace(" VULKAN", "").replace("CHATTERBOX V3 ", "")));
-    root.append(label);
+    const root = groups[entry.kind] || fallback;
+    if (root) renderChip(root, entry);
   }
-  const engines = $("engine-strip"); engines.replaceChildren();
-  for (const name of ["asr", "brain", "tts"]) {
-    const value = state.engines[name];
-    const span = document.createElement("span");
-    span.className = `engine-pill ${value.status}`;
-    span.textContent = `${name.toUpperCase()}: ${value.status}`;
-    engines.append(span);
+  const engines = $("engine-strip");
+  if (engines) {
+    engines.replaceChildren();
+    const titles = {asr: "ASR :8097", brain: "Brain :8098", tts: "TTS :8095"};
+    for (const name of ["asr", "brain", "tts"]) {
+      const value = (state.engines || {})[name] || {status: "stopped"};
+      const span = document.createElement("span");
+      span.className = `engine-pill ${value.status || "stopped"}`;
+      span.textContent = `${titles[name]} · ${value.status || "stopped"}${value.pid ? ` · pid ${value.pid}` : ""}`;
+      span.title = value.message || value.error || `${name} ${value.status || "stopped"}`;
+      engines.append(span);
+    }
+  }
+  const detail = $("engine-detail");
+  if (detail) {
+    const lines = ["asr", "brain", "tts"].map(name => {
+      const value = (state.engines || {})[name] || {};
+      if (value.error) return `${name.toUpperCase()} error: ${value.error}`;
+      if (value.message) return `${name.toUpperCase()}: ${value.message}`;
+      return `${name.toUpperCase()} is ${value.status || "stopped"}`;
+    });
+    detail.textContent = lines.join(" · ");
+  }
+  const controller = $("controller-state");
+  if (controller) {
+    const run = state.trace && state.trace.run_id ? state.trace.run_id : "no run id";
+    controller.textContent = `Controller API v${(schema && schema.version) || 5} at 127.0.0.1:8765 · ${run}`;
   }
   const readyCount = entries.filter(entry => isReady(entry.value)).length;
   const activeEntry = entries.find(entry => {
     const job = jobFor(entry.kind, entry.name);
     return job && job.status === "running";
   });
-  $("setup-summary").textContent = `${readyCount}/${entries.length} required ready`;
+  const summary = $("setup-summary");
+  if (summary) summary.textContent = `${readyCount}/${entries.length} required ready`;
   if (!installingAll) {
     const statusLine = $("install-all-state");
-    if (activeEntry) {
-      const job = jobFor(activeEntry.kind, activeEntry.name);
-      statusLine.textContent = `${job.message} - ${job.progress}%`;
-    } else if (readyCount === entries.length) {
-      statusLine.textContent = "All required items are verified";
-    } else {
-      statusLine.textContent = `${entries.length - readyCount} required item${entries.length - readyCount === 1 ? " is" : "s are"} missing`;
+    if (statusLine) {
+      if (activeEntry) {
+        const job = jobFor(activeEntry.kind, activeEntry.name);
+        statusLine.textContent = `${catalogLabel(activeEntry, activeEntry.name)}: ${job.message} - ${job.progress}%`;
+      } else if (readyCount === entries.length) {
+        statusLine.textContent = "All required items are verified";
+      } else {
+        const missing = entries.filter(entry => !isReady(entry.value)).map(entry => chipCaption(entry));
+        statusLine.textContent = `${missing.length} missing: ${missing.join(", ")}`;
+      }
     }
   }
   renderBrain();
@@ -171,7 +221,7 @@ function renderBrain() {
     select.replaceChildren(...Object.entries(catalog).map(([id, spec]) => {
       const option = document.createElement("option");
       option.value = id;
-      option.textContent = spec.label || id;
+      option.textContent = catalogLabel(spec, id);
       return option;
     }));
     select.dataset.bound = "1";
@@ -182,7 +232,7 @@ function renderBrain() {
   const download = $("brain-download");
   const selected = catalog[select.value] && catalog[select.value].model;
   download.hidden = custom || !selected || isReady(state.models[selected]);
-  download.onclick = () => installEntry({kind: "model", name: selected, label: schema.models[selected].label, value: state.models[selected], op: "download_model"}).catch(fail);
+  download.onclick = () => installEntry({kind: "model", name: selected, label: catalogLabel(schema.models[selected], selected), value: state.models[selected], op: "download_model"}).catch(fail);
   if (custom) {
     $("brain-family").value = (state.brain.custom && state.brain.custom.family) || "generic";
     if (!$("brain-url").value) $("brain-url").value = (state.brain.custom && state.brain.custom.url) || "";
@@ -190,7 +240,7 @@ function renderBrain() {
   const job = jobFor("brain", "custom");
   $("brain-state").textContent = job && job.status === "running"
     ? `${job.message} - ${job.progress}%`
-    : `${state.brain.label} - ${state.brain.ready ? "ready" : "use Download selected"}`;
+    : `${catalogLabel(state.brain, state.brain.active || "brain")} - ${state.brain.ready ? "ready" : "use Download selected"}`;
 }
 function renderReference() { const ref = state.reference, source = ref.custom ? "Custom voice reference" : "Official Iracema voice"; $("reference-state").textContent = ref.status === "ready" ? `${source} - ${ref.duration.toFixed(1)} seconds. Speech language is Portuguese.` : `Voice reference: ${ref.status}.`; }
 function renderFlow() {
@@ -288,18 +338,15 @@ async function waitForJob(kind, name, timeout = 3600000) {
 }
 function requiredInstallSteps() {
   const steps = [];
-  for (const name of Object.keys(schema.prerequisites)) {
+  for (const name of Object.keys(schema.prerequisites || {})) {
     if (name === "python") continue;
-    if (!isReady(state.prerequisites[name])) steps.push({kind: "prerequisite", name, op: "install_prerequisite", label: schema.prerequisites[name].label});
+    if (!isReady(state.prerequisites[name])) steps.push({kind: "prerequisite", name, op: "install_prerequisite", label: catalogLabel(schema.prerequisites[name], name)});
   }
-  for (const name of Object.keys(schema.components)) {
-    if (!isReady(state.components[name])) steps.push({kind: "component", name, op: "install_component", label: schema.components[name].label});
+  for (const name of Object.keys(schema.components || {})) {
+    if (!isReady(state.components[name])) steps.push({kind: "component", name, op: "install_component", label: catalogLabel(schema.components[name], name)});
   }
-  const models = ["chatterbox-t3", "chatterbox-codec", "parakeet", "gemma", "reference"];
-  const extra = state.brain && state.brain.model && state.brain.model !== "custom" ? state.brain.model : "";
-  if (extra && !models.includes(extra)) models.push(extra);
-  for (const name of models) {
-    if (state.models[name] && !isReady(state.models[name])) steps.push({kind: "model", name, op: "download_model", label: schema.models[name].label});
+  for (const name of requiredModelNames()) {
+    if (state.models[name] && !isReady(state.models[name])) steps.push({kind: "model", name, op: "download_model", label: catalogLabel(schema.models[name], name)});
   }
   return steps;
 }
@@ -879,9 +926,22 @@ $("brain-apply").onclick = async () => {
 api("/api").then(boot => {
   schema = boot.schema;
   state = boot.state;
-  bindConfig();
-  buildParamGroups();
-  render(state);
-  refreshLogs().catch(() => {});
+  try {
+    bindConfig();
+    buildParamGroups();
+    render(state);
+    refreshLogs().catch(() => {});
+  } catch (error) {
+    fail(error);
+  }
   openEvents();
-}).catch(fail);
+}).catch(error => {
+  const connection = $("connection");
+  if (connection) {
+    connection.textContent = "Controller unreachable";
+    connection.className = "badge bad";
+  }
+  const controller = $("controller-state");
+  if (controller) controller.textContent = "The panel could not reach GET /api on 127.0.0.1:8765.";
+  fail(error);
+});
