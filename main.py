@@ -1060,7 +1060,7 @@ def tts_session(lane: str, language: str, style: str, *, trace_id: str = "", tur
             "t3_conditioning_tokens": "reference_s3tokenizer",
             "s3gen_prompt_tokens": "reference_s3tokenizer",
             "s3gen_prompt_features": "reference_audio",
-            "s3gen_speaker_embedding": "reference_campplus",
+            "s3gen_speaker_embedding": "builtin_fallback",
         },
     }, source="controller", **context)
     emit_state()
