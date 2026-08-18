@@ -852,7 +852,7 @@ def wav_body(raw: bytes | None) -> bytes:
     return raw
 REQUIRED_MODELS = ["chatterbox-t3", "chatterbox-codec", "parakeet", BRAIN["model"], "reference"]
 OPS = {
-    "inspect": {}, "schema": {}, "state": {},
+    "inspect": {},
     "install_prerequisite": {}, "install_component": {}, "download_model": {},
     "load_engine": {}, "unload_engine": {}, "upload_reference": {},
     "asr": {}, "brain": {}, "tts": {}, "tts_cancel": {}, "configure": {}, "goodbye": {},
@@ -962,10 +962,6 @@ def dispatch(op: str, payload: dict | None = None, raw: bytes | None = None) -> 
         raise ApiError(400, f"unknown op: {op}")
     if op == "inspect":
         return inspect(), 200
-    if op == "schema":
-        return schema(), 200
-    if op == "state":
-        return snapshot(), 200
     if op == "configure":
         return configure(payload), 200
     if op == "install_prerequisite":
@@ -1093,8 +1089,8 @@ class Handler(BaseHTTPRequestHandler):
             if path != "/api":
                 raise ApiError(404, f"unknown endpoint: {path}")
             op = query.get("op") or "inspect"
-            if op not in ("inspect", "schema", "state"):
-                raise ApiError(404, "GET /api accepts op=inspect, schema, or state")
+            if op != "inspect":
+                raise ApiError(404, "GET /api accepts op=inspect")
             response_body, code = dispatch(op, query)
             self.send_json(response_body, code)
         except ApiError as exception:

@@ -23,23 +23,38 @@
     <label>Reply <select id="reply-language"></select></label>
     <button id="stop-voice" disabled>Stop</button>
   </div>
-  <div class="bar">
-    <textarea id="speak-text" rows="2" placeholder="Type text for Chatterbox."></textarea>
-    <label>Speak <select id="input-language"></select></label>
-    <button id="speak-run" disabled>Speak</button>
-  </div>
-  <details class="knobs">
-    <summary>Knobs</summary>
+  <details class="knobs" open>
+    <summary>Knobs — system prompt and hyperparameters</summary>
     <div id="knobs"></div>
   </details>
+  <div class="pad" id="pad">
+    <span class="pad-label">Fill <b id="pad-target">Answer</b></span>
+    <button type="button" data-pad="short" title="TIMIT SA1. Spectrograms in every TIMIT paper.">Short</button>
+    <button type="button" data-pad="mid" title="Rainbow Passage (Fairbanks). Standard connected-speech spectrograms.">Mid</button>
+    <button type="button" data-pad="long" title="Rainbow + Grandfather + Harvard 1–6. About five minutes of speech. Chunk and memory.">5 min</button>
+    <button type="button" data-pad="sa2" title="TIMIT SA2. The other dialect-independent TIMIT spectrogram sentence.">SA2</button>
+    <button type="button" data-pad="harvard" title="IEEE Harvard list 1. Phonetically balanced; speech-quality spectrograms.">Harvard</button>
+    <button type="button" data-pad="grandfather" title="Grandfather Passage. Clinical speech sample with published spectrograms.">Grandfather</button>
+    <button type="button" data-pad="wind-en" title="IPA Handbook English: The North Wind and the Sun. Official IPA spectrograms.">Wind EN</button>
+    <button type="button" data-pad="wind-de" title="IPA Handbook German: Der Nordwind und die Sonne. Official IPA spectrograms.">Wind DE</button>
+    <button type="button" data-pad="wind-pl" title="JIPA Polish illustration (Jassem 2003): Wiatr i Słońce. Official IPA spectrograms.">Wind PL</button>
+  </div>
   <div class="conversation">
     <article>
       <div class="label"><span>Heard</span><small id="asr-state">idle</small></div>
-      <p id="transcript" class="text muted">Transcription appears here.</p>
+      <textarea id="transcript" placeholder="Parakeet text. Type to simulate, or use the pad."></textarea>
+      <div class="toolbar">
+        <label class="check"><input id="heard-auto" type="checkbox" checked> Auto</label>
+        <button id="heard-send" disabled>Send</button>
+      </div>
     </article>
     <article>
       <div class="label"><span>Answer</span><small id="brain-state">idle</small></div>
-      <p id="answer" class="text muted">The local response appears here.</p>
+      <textarea id="answer" placeholder="Gemma text. Freeze with Auto off, edit, then Send."></textarea>
+      <div class="toolbar">
+        <label class="check"><input id="answer-auto" type="checkbox" checked> Auto</label>
+        <button id="answer-send" disabled>Send</button>
+      </div>
     </article>
   </div>
   <p id="fault" class="fault" hidden></p>
