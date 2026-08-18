@@ -1,0 +1,18 @@
+diff --git a/src/chatterbox_t3_internal.h b/src/chatterbox_t3_internal.h
+index ab68cd2..e5426dd 100644
+--- a/src/chatterbox_t3_internal.h
++++ b/src/chatterbox_t3_internal.h
+@@ -328,6 +328,13 @@ bool load_model_gguf_mtl(
+     int                 requested_ctx,
+     int                 n_gpu_layers);
+ 
++// llama-arch T3 + sibling *codec*.gguf (codec.lm.chatterbox.* keys).
++bool load_model_gguf_mtl_split(
++    const std::string & t3_path,
++    chatterbox_model &  model,
++    int                 requested_ctx,
++    int                 n_gpu_layers);
++
+ bool eval_prompt_mtl(
+     const chatterbox_model &     model,
+     ggml_gallocr_t               allocr,

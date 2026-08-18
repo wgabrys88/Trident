@@ -47,6 +47,7 @@ SERVER = ROOT / "server"
 CHATTERBOX = THIRD_PARTY / "chatterbox.cpp"
 GGML = CHATTERBOX / "ggml"
 RUNTIMES = TOOLS / "runtime"
+CONVERTER = TOOLS / "convert"
 SOURCES = {
     "chatterbox": ("https://github.com/gianni-cor/chatterbox.cpp", "ddca05fb69c2910b0d7b5eae420d360ed98c067b"),
     "ggml": ("https://github.com/ggml-org/ggml.git", "58c3805840b516b2a88ff867ccf7bb41dba79951"),
@@ -56,9 +57,8 @@ BINARIES = {
     "gemma": {"label": "LLAMA.CPP B10453 VULKAN", "repo": "ggml-org/llama.cpp", "tag": "b10453", "asset": "llama-b10453-bin-win-vulkan-x64.zip", "exe": "llama-server.exe"},
 }
 MODELS = {
-    "chatterbox-t3": {"label": "CHATTERBOX V3 T3", "repo": "BricksDisplay/Chatterbox-Multilingual-TTS-GGUF", "revision": "37277eeb9e26da8e3fba65b52727cb30b0bc5ae8", "file": "chatterbox-mtl-t3-q4_0.gguf", "size": 283389248, "sha256": "9a5b5e863d05da00f57ffb7d157f4135231ae17c926f97deb0070f9361205c30"},
-    "chatterbox-codec": {"label": "CHATTERBOX V3 S3GEN", "repo": "BricksDisplay/Chatterbox-Multilingual-TTS-GGUF", "revision": "37277eeb9e26da8e3fba65b52727cb30b0bc5ae8", "file": "chatterbox-mtl-codec-f16.gguf", "size": 335027072, "sha256": "dce996594a43bcdb665b7a3f2b8e73b58ddca13eeb736f512ba0572d4e64954a"},
-    "chatterbox-s3t": {"label": "CHATTERBOX V3 S3T", "repo": "BricksDisplay/Chatterbox-Multilingual-TTS-GGUF", "revision": "37277eeb9e26da8e3fba65b52727cb30b0bc5ae8", "file": "chatterbox-mtl-s3t.gguf", "size": 247487280, "sha256": "26592ce171dd40bb54468a32dd9a3b697e15bfc23ebc8f8d218e34c3962e69c4"},
+    "chatterbox-t3": {"label": "CHATTERBOX V3 T3", "repo": "ResembleAI/chatterbox", "revision": "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18", "file": "chatterbox-t3-mtl-v3-q4_0.gguf", "size": 344985408, "sha256": "d886fba27183c3000becb096b1a16526fafb67fe7abd541d7901040931524d16"},
+    "chatterbox-codec": {"label": "CHATTERBOX V3 S3GEN", "repo": "ResembleAI/chatterbox", "revision": "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18", "file": "chatterbox-s3gen-mtl-v3-f16.gguf", "size": 1056431360, "sha256": "1856e341c4da688adc5f2bbcd94f86a692cb11d3cc111ef9352f9422c78d85a3"},
     "parakeet": {"label": "PARAKEET TDT 0.6B V3 Q4_K", "repo": "mudler/parakeet-cpp-gguf", "revision": "bf0af9f425fa01809cadec671b3cb672709d13e9", "file": "tdt-0.6b-v3-q4_k.gguf", "size": 675200864, "sha256": "993d73feb4206dadda865ab25bd64b50c48dc4d013c3bf6126a721f28b1d5ee8"},
     "gemma": {"label": "GEMMA 4 E2B", "repo": "google/gemma-4-E2B-it-qat-q4_0-gguf", "revision": "675cff42a74c774d6cb76f76d8eacb49b48c9b93", "file": "gemma-4-E2B_q4_0-it.gguf", "size": 3349516256, "sha256": "fa401b55b07ee70a54c6dae3903c783a6e65064312529ea57175cb5f8dec6634"},
     "qwen35-0.8b": {"label": "QWEN3.5 0.8B", "repo": "unsloth/Qwen3.5-0.8B-GGUF", "revision": "6ab461498e2023f6e3c1baea90a8f0fe38ab64d0", "file": "Qwen3.5-0.8B-Q4_K_M.gguf", "size": 532517120, "sha256": "bd258782e35f7f458f8aced1adc053e6e92e89bc735ba3be89d38a06121dc517"},
@@ -84,13 +84,18 @@ S3GEN_RE = re.compile(r"s3gen: tokens=(\d+) meanflow=(\d+) model_steps=(\d+)", r
 BENCH_RE = re.compile(r"BENCH:\s*([A-Z0-9_]+)=([0-9.]+)(?:\s+([A-Z0-9_]+)=([0-9.]+))?", re.I)
 def field(label: str, kind: str, default: Any, minimum: float | None = None, maximum: float | None = None, options: list[str] | None = None, multiline: bool = False) -> dict:
     return {key: value for key, value in {"label": label, "type": kind, "default": default, "min": minimum, "max": maximum, "options": options, "multiline": multiline}.items() if value is not None}
-TTS_MIN_CONTEXT = 1280
-TTS_RUNTIME = {"gpu_layers": 99, "context": 1536, "sessions": 1, "threads": 4}
+TTS_MIN_CONTEXT = 64
+TTS_RUNTIME = {"gpu_layers": 99, "context": 512, "sessions": 2, "threads": 4}
 VOICE_DEFAULTS = {
-    "seed": 42, "max_tokens": 1000, "top_k": 0, "top_p": 1.0, "min_p": 0.05,
+    "seed": 42, "max_tokens": 1000, "top_k": 1000, "top_p": 0.95, "min_p": 0.05,
     "temperature": 0.8, "repeat_penalty": 1.2, "cfg_weight": 0.5,
-    "exaggeration": 0.5, "cfm_steps": 5, "first_chunk": 75,
-    "chunk": 150, "max_sentence_chars": 180,
+    "exaggeration": 0.5, "cfm_steps": 7, "first_chunk": 12,
+    "chunk": 25, "max_sentence_chars": 180,
+}
+TTS_BROKEN_DEFAULTS = {
+    "tts.engine.context": 1536, "tts.engine.sessions": 1,
+    "tts.sample.top_k": 0, "tts.sample.top_p": 1.0, "tts.sample.cfm_steps": 5,
+    "tts.stream.first_chunk": 75, "tts.stream.chunk": 150,
 }
 VOICE_STYLES = {
     "natural": {"cfg_weight": 0.5, "exaggeration": 0.5},
@@ -112,7 +117,7 @@ FIELDS = {
     "tts.engine.threads": field("TTS CPU threads", "int", TTS_RUNTIME["threads"], 1, 64),
     "tts.sample.seed": field("TTS seed", "int", VOICE_DEFAULTS["seed"], 0, 2147483647),
     "tts.sample.max_tokens": field("TTS max tokens", "int", VOICE_DEFAULTS["max_tokens"], 16, 4096),
-    "tts.sample.top_k": field("TTS top-k", "int", VOICE_DEFAULTS["top_k"], 0, 200),
+    "tts.sample.top_k": field("TTS top-k", "int", VOICE_DEFAULTS["top_k"], 0, 4096),
     "tts.sample.top_p": field("TTS top-p", "float", VOICE_DEFAULTS["top_p"], 0.0, 1.0),
     "tts.sample.min_p": field("TTS min-p", "float", VOICE_DEFAULTS["min_p"], 0.0, 1.0),
     "tts.sample.temperature": field("TTS temperature", "float", VOICE_DEFAULTS["temperature"], 0.01, 5.0),
@@ -143,7 +148,7 @@ FIELDS = {
 PARAM_GROUPS = [
     {"id": "tts-engine", "title": "TTS engine", "apply": "Restart the TTS engine to apply GPU layers, context, sessions, and threads.", "fields": ["tts.engine.gpu_layers", "tts.engine.context", "tts.engine.sessions", "tts.engine.threads"]},
     {"id": "tts-sample", "title": "TTS sampling", "apply": "Applied on the next TTS WebSocket init.", "fields": ["tts.sample.seed", "tts.sample.max_tokens", "tts.sample.top_k", "tts.sample.top_p", "tts.sample.min_p", "tts.sample.temperature", "tts.sample.repeat_penalty", "tts.sample.cfm_steps"]},
-    {"id": "tts-stream", "title": "TTS streaming and chunking", "apply": "Applied on the next TTS WebSocket init. C++ VoiceConfig already reads these fields.", "fields": ["tts.stream.first_chunk", "tts.stream.chunk", "tts.stream.max_sentence_chars"]},
+    {"id": "tts-stream", "title": "TTS streaming and chunking", "apply": "Chunk sizes are applied on the next TTS WebSocket init. Max sentence chars is retained for UI compatibility; the restored MILESTONE-20 native engine does not auto-split text.", "fields": ["tts.stream.first_chunk", "tts.stream.chunk", "tts.stream.max_sentence_chars"]},
     {"id": "tts-style", "title": "TTS style overlays", "apply": "Overlay cfg_weight and exaggeration for the selected Speech-lab style. Conversation uses the natural overlay.", "fields": ["tts.style.natural.cfg_weight", "tts.style.natural.exaggeration", "tts.style.expressive.cfg_weight", "tts.style.expressive.exaggeration"]},
     {"id": "asr-engine", "title": "ASR engine", "apply": "Restart the ASR engine to apply thread count.", "fields": ["asr.threads"]},
     {"id": "asr-vad", "title": "ASR voice activity", "apply": "Applied on the next captured frame. No engine restart.", "fields": ["asr.vad.threshold", "asr.vad.silence_ms", "asr.vad.min_speech_ms"]},
@@ -164,7 +169,7 @@ BRAINS = {
 CUSTOM_BRAIN = MODELS_DIR / "custom-brain.gguf"
 CHATTERBOX_LIBRARY = CHATTERBOX / "build" / "Release" / "tts-cpp.lib"
 TTS_SERVER = SERVER / "build" / "Release" / "tts-server.exe"
-ENGINE_MODELS = {"tts": ("chatterbox-t3", "chatterbox-codec", "chatterbox-s3t"), "asr": ("parakeet",), "brain": ("gemma",)}
+ENGINE_MODELS = {"tts": ("chatterbox-t3", "chatterbox-codec"), "asr": ("parakeet",), "brain": ("gemma",)}
 CONFIG_FILE = DATA / "config.json"
 RECEIPTS_FILE = DATA / "models.json"
 BRAIN_FILE = DATA / "brains.json"
@@ -241,9 +246,21 @@ def load_config() -> dict:
     stored = load_json(CONFIG_FILE, defaults)
     if type(stored) is not dict:
         raise RuntimeError(f"{CONFIG_FILE} must contain an object")
-    # Older Trident releases defaulted T3 to 512 context tokens even though a
-    # session may generate 1,000 speech tokens after a 100-250 token prompt.
-    # Migrate that impossible configuration before applying the new range.
+    # Rollout migration: only rewrite values that exactly match the broken
+    # Trident defaults. Explicit user tuning is preserved. These values restore
+    # the sampling/streaming profile of the certified MILESTONE-20 TTS path.
+    golden = {
+        "tts.engine.context": TTS_RUNTIME["context"],
+        "tts.engine.sessions": TTS_RUNTIME["sessions"],
+        "tts.sample.top_k": VOICE_DEFAULTS["top_k"],
+        "tts.sample.top_p": VOICE_DEFAULTS["top_p"],
+        "tts.sample.cfm_steps": VOICE_DEFAULTS["cfm_steps"],
+        "tts.stream.first_chunk": VOICE_DEFAULTS["first_chunk"],
+        "tts.stream.chunk": VOICE_DEFAULTS["chunk"],
+    }
+    for path, broken in TTS_BROKEN_DEFAULTS.items():
+        if stored.get(path) == broken:
+            stored = stored | {path: golden[path]}
     stored_context = stored.get("tts.engine.context")
     if type(stored_context) is int and stored_context < TTS_MIN_CONTEXT:
         stored = stored | {"tts.engine.context": TTS_RUNTIME["context"]}
@@ -306,7 +323,8 @@ def model_status(name: str) -> dict:
     return {"status": "ready" if verified else "unverified" if size == spec["size"] else "missing", "path": str(path), "bytes": size, "size": spec["size"], "sha256": spec["sha256"], "revision": spec.get("revision", "")}
 def tts_build_id() -> str:
     digest = hashlib.sha256((SOURCES["chatterbox"][1] + SOURCES["ggml"][1]).encode())
-    for path in [PATCHES / "chatterbox.patch", SERVER / "CMakeLists.txt", *sorted((SERVER / "include").glob("*.hpp")), *sorted((SERVER / "src").glob("*.cpp"))]:
+    paths = [*sorted(PATCHES.glob("chatterbox-*.patch")), SERVER / "CMakeLists.txt", *sorted((SERVER / "include").glob("*.hpp")), *sorted((SERVER / "src").glob("*.cpp"))]
+    for path in paths:
         digest.update(path.relative_to(ROOT).as_posix().encode())
         digest.update(path.read_bytes())
     return digest.hexdigest()
@@ -562,18 +580,16 @@ def checkout(component: str, path: Path, source: str):
     run(component, f"checkout-{source}", [git, "checkout", "--detach", revision], path)
     run(component, f"reset-{source}", [git, "reset", "--hard", revision], path)
     run(component, f"clean-{source}", [git, "clean", "-fdx"], path)
-def apply_chatterbox_patch(cwd: Path):
+def apply_chatterbox_patches(cwd: Path):
     git = executable("git")
     if not git:
         raise RuntimeError("git is missing")
-    patch_text = (PATCHES / "chatterbox.patch").read_text(encoding="ascii")
-    patch_text = patch_text.replace("__EM_DASH__", "\u2014").replace("__SECTION_SIGN__", "\u00a7").replace("__BLANK_CONTEXT__", "")
-    tmp = cwd / ".apply-chatterbox.patch"
-    tmp.write_text(patch_text, encoding="utf-8", newline="\n")
-    try:
-        run("tts", "patch", [git, "apply", "--unidiff-zero", str(tmp)], cwd)
-    finally:
-        tmp.unlink(missing_ok=True)
+    names = [path.name for path in sorted(PATCHES.glob("chatterbox-*.patch"))]
+    if not names:
+        raise RuntimeError("Chatterbox patch set is missing")
+    for name in names:
+        run("tts", f"patch-{name}", [git, "apply", "--unidiff-zero", str(PATCHES / name)], cwd)
+
 def require_build_tools():
     missing = [name for name, value in prerequisites().items() if name in ("git", "cmake", "msvc", "vulkan") and value["status"] != "ready"]
     if missing:
@@ -677,7 +693,7 @@ def install_component(name: str, key: str):
         raise RuntimeError("cmake is missing")
     set_job(key, "running", "source", 5, "checking out Chatterbox")
     checkout(name, CHATTERBOX, "chatterbox")
-    apply_chatterbox_patch(CHATTERBOX)
+    apply_chatterbox_patches(CHATTERBOX)
     set_job(key, "running", "ggml", 18, "checking out ggml")
     checkout(name, GGML, "ggml")
     set_job(key, "running", "configure", 30, "configuring Chatterbox Vulkan")
@@ -773,6 +789,13 @@ def install_prerequisite(name: str, key: str):
 def download_model(name: str, key: str):
     spec = MODELS[name]
     destination = model_path(name)
+    if destination.is_file() and destination.stat().st_size == spec["size"] and sha256(destination) == spec["sha256"]:
+        with LOCK:
+            RECEIPTS[name] = spec["sha256"]
+            atomic_json(RECEIPTS_FILE, RECEIPTS)
+        if name == "reference":
+            bump_reference()
+        return
     if spec.get("source"):
         source = ROOT / spec["source"]
         if not source.is_file():
@@ -781,15 +804,67 @@ def download_model(name: str, key: str):
             raise RuntimeError("bundled default voice does not match its pin")
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, destination)
+        digest = spec["sha256"]
         set_job(key, "running", "copy", 90, f"installed {spec['file']}")
+    elif name.startswith("chatterbox"):
+        converter_script = CHATTERBOX / "scripts" / ("convert-t3-mtl-to-gguf.py" if name == "chatterbox-t3" else "convert-s3gen-to-gguf.py")
+        if not CHATTERBOX_LIBRARY.is_file() or not converter_script.is_file():
+            raise RuntimeError("install Chatterbox TTS before converting its models")
+        python = CONVERTER / "Scripts" / "python.exe"
+        lock = "numpy==1.26.4 torch==2.6.0 gguf==0.19.0 safetensors==0.5.3 scipy==1.15.3 librosa==0.11.0 resampy==0.4.3 huggingface-hub==0.34.4"
+        stamp = CONVERTER / ".packages"
+        if not python.is_file():
+            set_job(key, "running", "environment", 5, "creating converter environment")
+            run(name, "venv", [sys.executable, "-m", "venv", str(CONVERTER)], ROOT, os.environ.copy())
+        if not stamp.is_file() or stamp.read_text(encoding="ascii") != lock:
+            run(name, "torch", [str(python), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "torch==2.6.0", "--index-url", "https://download.pytorch.org/whl/cpu"], ROOT, os.environ.copy())
+            run(name, "converter-dependencies", [str(python), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", *lock.split()], ROOT, os.environ.copy())
+            stamp.parent.mkdir(parents=True, exist_ok=True)
+            stamp.write_text(lock, encoding="ascii")
+        checkpoint = CONVERTER / "checkpoints" / spec["revision"]
+        marker = checkpoint / ".revision"
+        if not marker.is_file() or marker.read_text(encoding="ascii") != spec["revision"]:
+            if checkpoint.exists():
+                shutil.rmtree(checkpoint)
+            checkpoint.mkdir(parents=True, exist_ok=True)
+            set_job(key, "running", "checkpoint", 12, "downloading pinned Chatterbox checkpoint")
+            code = (
+                "from huggingface_hub import snapshot_download; "
+                f"snapshot_download(repo_id={spec['repo']!r}, revision={spec['revision']!r}, "
+                "allow_patterns=['ve.pt','t3_mtl23ls_v2.safetensors','s3gen.pt','grapheme_mtl_merged_expanded_v1.json','conds.pt','Cangjie5_TC.json'], "
+                f"local_dir={str(checkpoint)!r})"
+            )
+            env = os.environ.copy()
+            env["HF_HOME"] = str(TOOLS / "huggingface")
+            run(name, "checkpoint", [str(python), "-c", code], ROOT, env)
+            marker.write_text(spec["revision"], encoding="ascii")
+        partial = destination.with_suffix(destination.suffix + ".part")
+        partial.unlink(missing_ok=True)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        script = "convert-t3-mtl-to-gguf.py" if name == "chatterbox-t3" else "convert-s3gen-to-gguf.py"
+        command = [str(python), str(CHATTERBOX / "scripts" / script)]
+        if name != "chatterbox-t3":
+            command += ["--variant", "mtl"]
+        command += ["--ckpt-dir", str(checkpoint), "--out", str(partial), "--quant", "q4_0" if name == "chatterbox-t3" else "f16"]
+        env = command_env()
+        env["HF_HOME"] = str(TOOLS / "huggingface")
+        set_job(key, "running", "convert", 20, f"converting {spec['label']}")
+        run(name, "convert", command, ROOT, env)
+        size, digest = partial.stat().st_size, sha256(partial)
+        if size != spec["size"] or digest != spec["sha256"]:
+            partial.unlink(missing_ok=True)
+            raise RuntimeError(f"converted model mismatch: {size} bytes, SHA-256 {digest}; expected {spec['size']} bytes, {spec['sha256']}")
+        os.replace(partial, destination)
     else:
         url = spec.get("url") or f"https://huggingface.co/{spec['repo']}/resolve/{spec['revision']}/{spec['file']}"
         fetch(url, destination, spec["size"], spec["sha256"], key)
+        digest = spec["sha256"]
     with LOCK:
-        RECEIPTS[name] = spec["sha256"]
+        RECEIPTS[name] = digest
         atomic_json(RECEIPTS_FILE, RECEIPTS)
     if name == "reference":
         bump_reference()
+
 def parsed_value(value: str) -> Any:
     try:
         return float(value) if "." in value else int(value)
@@ -1108,7 +1183,7 @@ def tts_session(lane: str, language: str, style: str, *, trace_id: str = "", tur
             "t3_conditioning_tokens": "reference_s3tokenizer",
             "s3gen_prompt_tokens": "reference_s3tokenizer",
             "s3gen_prompt_features": "reference_audio",
-            "s3gen_speaker_embedding": "builtin_fallback",
+            "s3gen_speaker_embedding": "reference_campplus",
         },
     }, source="controller", **context)
     emit_state()

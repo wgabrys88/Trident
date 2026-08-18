@@ -1,5 +1,8 @@
 # Trident Technical Architecture
 
+> **Rollout supersession — 2026-08-18:** The TTS implementation described below is retained as forensic history for the broken `runner-x` build. The rollout in this archive supersedes its TTS model/runtime contract. See `ROLLOUT-TTS-FIX.md`. The active TTS path now uses the attached MILESTONE-20 native patch set and its two locally converted ResembleAI GGUFs; `patches/chatterbox.patch`, the BricksDisplay three-file runtime, and the `builtin_fallback` conditioning contract are no longer active.
+
+
 Document type: system specification  
 Audience: human operator + next coding agent  
 Source revision: `runner-x` @ `0eb4f4d` plus TTS runtime install that unloads before replace  

@@ -1,0 +1,24 @@
+diff --git a/src/main.cpp b/src/main.cpp
+index aa87cc7..70844ef 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -362,10 +362,19 @@ bool load_model_gguf(const std::string & path, chatterbox_model & model, int req
+                 gguf_free(peek_ctx);
+                 return false;
+             }
++            const int64_t ak = gguf_find_key(peek_ctx, "general.architecture");
++            std::string arch;
++            if (ak >= 0 && gguf_get_kv_type(peek_ctx, ak) == GGUF_TYPE_STRING) {
++                const char * a = gguf_get_val_str(peek_ctx, ak);
++                if (a) arch = a;
++            }
+             gguf_free(peek_ctx);
+             if (variant == "t3_mtl") {
+                 return load_model_gguf_mtl(path, model, requested_ctx, n_gpu_layers);
+             }
++            if (arch == "llama") {
++                return load_model_gguf_mtl_split(path, model, requested_ctx, n_gpu_layers);
++            }
+         }
+     }
+     ggml_context * tmp_ctx = nullptr;
