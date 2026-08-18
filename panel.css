@@ -16,7 +16,8 @@ button:disabled{opacity:.45;cursor:not-allowed}
 .pill{padding:.15rem .45rem;border-radius:999px;font-size:.72rem;border:1px solid #39445a}
 .pill.good{color:#9ff0c4;border-color:#286f4b}
 .pill.bad{color:#ffb0b0;border-color:#704040}
-.job,.live,.muted{color:#98a4b6;font-size:.78rem;margin:0}
+.live,.muted{color:#98a4b6;font-size:.78rem;margin:0}
+.live{flex:1;min-width:8rem}
 .file{display:flex;gap:.3rem;align-items:center;color:#9ba8ba;font-size:.78rem}
 .file input{max-width:11rem}
 .check{display:flex;gap:.3rem;align-items:center;color:#b2bdca;font-size:.78rem}

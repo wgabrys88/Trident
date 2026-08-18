@@ -2,6 +2,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import queue
 import shutil
 import subprocess
 import sys
@@ -62,6 +63,7 @@ CHATTERBOX_LIBRARY = CHATTERBOX / "build" / "Release" / "tts-cpp.lib"
 TTS_SERVER = SERVER / "build" / "Release" / "tts-server.exe"
 LOCK = threading.RLock()
 PROCESSES: dict[str, subprocess.Popen] = {}
+SUBS: list[queue.Queue] = []
 ENGINE_MODELS = {"tts": ("chatterbox-t3", "chatterbox-codec"), "asr": ("parakeet",), "brain": (BRAIN["model"],)}
 LOG = ROOT / "trident.log"
 def log(component: str, event: str, **data: Any):
@@ -72,7 +74,7 @@ def log(component: str, event: str, **data: Any):
     with LOCK:
         with LOG.open("a", encoding="utf-8") as out:
             out.write(line + "\n")
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 def default_settings() -> dict:
     return {
@@ -89,13 +91,46 @@ def default_settings() -> dict:
         "brain_system": BRAIN_SYSTEM,
     }
 
+def default_view() -> dict:
+    return {
+        "stage": "idle",
+        "error": "",
+        "asr": {"text": "", "status": "idle"},
+        "brain": {"text": "", "language": "", "status": "idle"},
+        "tts": {"text": "", "language": "", "seconds": 0.0, "mtime": 0.0, "status": "idle"},
+    }
+
 RUNTIME = {
     "jobs": {},
     "engines": {name: {"status": "stopped", "error": "", "pid": None, "applied": {}} for name in ENGINE_MODELS},
-    "results": {"asr": None, "brain": None},
+    "live": default_view(),
     "settings": default_settings(),
     "dirty": {name: False for name in ENGINE_MODELS},
 }
+
+def publish():
+    payload = inspect()
+    with LOCK:
+        targets = list(SUBS)
+    for inbox in targets:
+        inbox.put(payload)
+
+def close_subs():
+    with LOCK:
+        targets = list(SUBS)
+        SUBS.clear()
+    for inbox in targets:
+        inbox.put(None)
+
+def set_view(**fields):
+    with LOCK:
+        view = RUNTIME["live"]
+        for key, value in fields.items():
+            if key in ("asr", "brain", "tts") and isinstance(value, dict):
+                view[key].update(value)
+            else:
+                view[key] = value
+    publish()
 
 def live(group: str):
     return RUNTIME["settings"][group]
@@ -179,10 +214,12 @@ def snapshot() -> dict:
             "jobs": deepcopy(RUNTIME["jobs"]),
             "settings": deepcopy(RUNTIME["settings"]),
             "dirty": dict(RUNTIME["dirty"]),
+            "live": deepcopy(RUNTIME["live"]),
         }
 def set_job(key: str, status: str, stage: str, progress: int, message: str, failure: str = ""):
     with LOCK:
         RUNTIME["jobs"][key] = {"status": status, "stage": stage, "progress": progress, "message": message, "error": failure}
+    publish()
 def start_job(kind: str, name: str, work: Callable[[str], None]):
     key = f"{kind}:{name}"
     with LOCK:
@@ -521,6 +558,7 @@ def log_process(name: str, process: subprocess.Popen):
             PROCESSES.pop(name)
             RUNTIME["engines"][name].update(status="error", error=f"process exited {code}: {message}", pid=None)
             log(name, "exited", code=code, last=message)
+    publish()
 def remote(url: str, body: bytes | None = None, content_type: str = "application/json", timeout: int = 600) -> bytes:
     request = urllib.request.Request(url, data=body, headers={"Content-Type": content_type} if body is not None else {})
     try:
@@ -555,6 +593,7 @@ def stop_engine(name: str):
     terminate_executable(exe)
     with LOCK:
         RUNTIME["engines"][name].update(status="stopped", error="", pid=None, applied={})
+    publish()
     if process:
         log("engine", "stopped", name=name, pid=process.pid)
 
@@ -564,6 +603,7 @@ def stop_all():
 
 def die():
     try:
+        close_subs()
         stop_all()
     finally:
         os._exit(0)
@@ -609,11 +649,13 @@ def load_engine(name: str, key: str):
     with LOCK:
         PROCESSES[name] = process
         RUNTIME["engines"][name].update(status="loading", error="", pid=process.pid, applied=applied)
+    publish()
     threading.Thread(target=log_process, args=(name, process), daemon=True).start()
     wait_ready(name, process, health)
     with LOCK:
         RUNTIME["engines"][name]["status"] = "running"
         RUNTIME["dirty"][name] = False
+    publish()
     log("engine", "ready", name=name, pid=process.pid)
     set_job(key, "running", "ready", 95, f"{name} ready")
 def multipart(audio: bytes, response_format: str | None = None) -> tuple[bytes, str]:
@@ -685,41 +727,46 @@ def stitch_asr(parts: list[dict], window: float, overlap: float) -> dict:
     return {"text": " ".join(kept)}
 def transcribe(audio: bytes) -> dict:
     require_engine("asr")
+    set_view(stage="heard", error="", asr={"status": "running"})
     started = time.monotonic()
     try:
-        rate, channels, width, pcm = wav_meta(audio)
-        seconds = len(pcm) / float(rate * width * max(channels, 1))
-    except (wave.Error, EOFError):
-        rate, pcm, seconds = 16000, b"", 0.0
-    with LOCK:
-        window = float(live("asr_chunk")["seconds"])
-        overlap = float(live("asr_chunk")["overlap"])
-    if seconds <= window or not pcm:
-        body, content_type = multipart(audio)
-        result = json.loads(remote(f"http://127.0.0.1:{PORTS['asr']}/v1/audio/transcriptions", body, content_type))
-    else:
-        step = max(window - overlap, 1.0)
-        frame = width * max(channels, 1)
-        parts, cursor = [], 0.0
-        while cursor < seconds:
-            start = int(cursor * rate) * frame
-            stop = int(min(seconds, cursor + window) * rate) * frame
-            body, content_type = multipart(pcm_wav(rate, pcm[start:stop]), "verbose_json")
-            parts.append(json.loads(remote(f"http://127.0.0.1:{PORTS['asr']}/v1/audio/transcriptions", body, content_type)))
-            if cursor + window >= seconds:
-                break
-            cursor += step
-        result = stitch_asr(parts, window, overlap)
-    with LOCK:
-        RUNTIME["results"]["asr"] = result
-    text = str(result.get("text") or "")
-    log("asr", "done", ms=round((time.monotonic() - started) * 1000, 1), text=text)
-    return result
+        try:
+            rate, channels, width, pcm = wav_meta(audio)
+            seconds = len(pcm) / float(rate * width * max(channels, 1))
+        except (wave.Error, EOFError):
+            rate, pcm, seconds = 16000, b"", 0.0
+        with LOCK:
+            window = float(live("asr_chunk")["seconds"])
+            overlap = float(live("asr_chunk")["overlap"])
+        if seconds <= window or not pcm:
+            body, content_type = multipart(audio)
+            result = json.loads(remote(f"http://127.0.0.1:{PORTS['asr']}/v1/audio/transcriptions", body, content_type))
+        else:
+            step = max(window - overlap, 1.0)
+            frame = width * max(channels, 1)
+            parts, cursor = [], 0.0
+            while cursor < seconds:
+                start = int(cursor * rate) * frame
+                stop = int(min(seconds, cursor + window) * rate) * frame
+                body, content_type = multipart(pcm_wav(rate, pcm[start:stop]), "verbose_json")
+                parts.append(json.loads(remote(f"http://127.0.0.1:{PORTS['asr']}/v1/audio/transcriptions", body, content_type)))
+                if cursor + window >= seconds:
+                    break
+                cursor += step
+            result = stitch_asr(parts, window, overlap)
+        text = str(result.get("text") or "")
+        set_view(asr={"text": text, "status": "done"})
+        log("asr", "done", ms=round((time.monotonic() - started) * 1000, 1), text=text)
+        return result
+    except Exception as exception:
+        set_view(stage="idle", error=str(exception), asr={"status": "error"})
+        raise
 def brain(prompt: str, language: str) -> dict:
     require_engine("brain")
     if language not in TTS_LANGUAGES:
         raise ApiError(400, f"unsupported reply language: {language}")
     language_name = TTS_LANGUAGES[language]
+    set_view(stage="thinking", error="", brain={"status": "running", "language": language})
     with LOCK:
         system = str(live("brain_system")).format(language_name=language_name, language=language)
         generation = dict(live("brain_generation"))
@@ -732,12 +779,15 @@ def brain(prompt: str, language: str) -> dict:
         "chat_template_kwargs": {"enable_thinking": thinking},
     }
     started = time.monotonic()
-    result = json.loads(remote(f"http://127.0.0.1:{PORTS['brain']}/v1/chat/completions", json.dumps(request, separators=(",", ":")).encode()))
-    with LOCK:
-        RUNTIME["results"]["brain"] = result
-    text = brain_reply_text(result)
-    log("brain", "done", ms=round((time.monotonic() - started) * 1000, 1), lang=language, text=text)
-    return result
+    try:
+        result = json.loads(remote(f"http://127.0.0.1:{PORTS['brain']}/v1/chat/completions", json.dumps(request, separators=(",", ":")).encode()))
+        text = brain_reply_text(result)
+        set_view(brain={"text": text, "language": language, "status": "done"})
+        log("brain", "done", ms=round((time.monotonic() - started) * 1000, 1), lang=language, text=text)
+        return result
+    except Exception as exception:
+        set_view(stage="idle", error=str(exception), brain={"status": "error"})
+        raise
 def validate_wav(data: bytes):
     partial = DATA / "reference.wav.part"
     DATA.mkdir(parents=True, exist_ok=True)
@@ -754,6 +804,7 @@ def validate_wav(data: bytes):
         raise
     os.replace(partial, DATA / "reference.wav")
     log("reference", "updated", bytes=len(data))
+    publish()
 def synthesize(text: str, language: str) -> dict:
     text = text.strip()
     if not text:
@@ -761,6 +812,7 @@ def synthesize(text: str, language: str) -> dict:
     if language not in TTS_LANGUAGES:
         raise ApiError(400, f"unsupported speech language: {language}")
     require_engine("tts")
+    set_view(stage="speaking", error="", tts={"text": text, "language": language, "status": "running"})
     ref = reference_path()
     with LOCK:
         payload = {
@@ -769,14 +821,25 @@ def synthesize(text: str, language: str) -> dict:
             **live("tts_sample"), **live("tts_voice"),
         }
     started = time.monotonic()
-    result = json.loads(remote(f"http://127.0.0.1:{PORTS['tts']}/tts", json.dumps(payload, separators=(",", ":")).encode()))
-    if result.get("error"):
-        raise RuntimeError(result["error"])
-    log("tts", "done", ms=round((time.monotonic() - started) * 1000, 1), lang=language, seconds=result.get("seconds"), t3_ms=result.get("t3_ms"), s3gen_ms=result.get("s3gen_ms"), chunks=result.get("chunks"), cfm_steps=payload["cfm_steps"])
-    return result
+    try:
+        result = json.loads(remote(f"http://127.0.0.1:{PORTS['tts']}/tts", json.dumps(payload, separators=(",", ":")).encode()))
+        if result.get("error"):
+            raise RuntimeError(result["error"])
+        wav = DATA / "last-output.wav"
+        set_view(stage="idle", tts={
+            "text": text, "language": language, "status": "done",
+            "seconds": float(result.get("seconds") or 0),
+            "mtime": wav.stat().st_mtime if wav.is_file() else 0.0,
+        })
+        log("tts", "done", ms=round((time.monotonic() - started) * 1000, 1), lang=language, seconds=result.get("seconds"), t3_ms=result.get("t3_ms"), s3gen_ms=result.get("s3gen_ms"), chunks=result.get("chunks"), cfm_steps=payload["cfm_steps"])
+        return result
+    except Exception as exception:
+        set_view(stage="idle", error=str(exception), tts={"status": "error"})
+        raise
 def cancel_tts() -> dict:
     require_engine("tts")
     remote(f"http://127.0.0.1:{PORTS['tts']}/cancel", b"{}", timeout=5)
+    set_view(stage="idle", tts={"status": "idle"})
     return {"ok": True}
 def brain_reply_text(result: dict | None) -> str:
     if not result:
@@ -875,6 +938,7 @@ def configure(payload: dict) -> dict:
                     if RUNTIME["engines"][engine]["status"] == "running":
                         RUNTIME["dirty"][engine] = True
                         dirty.append(engine)
+    publish()
     return {"ok": True, "settings": deepcopy(RUNTIME["settings"]), "dirty": list(dict.fromkeys(dirty))}
 
 def schema() -> dict:
@@ -985,6 +1049,37 @@ class Handler(BaseHTTPRequestHandler):
                 "/panel.js": (ROOT / "panel.js", "text/javascript; charset=utf-8"),
                 "/audio-processor.js": (ROOT / "audio-processor.js", "text/javascript; charset=utf-8"),
             }
+            if path == "/events":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Connection", "keep-alive")
+                self.end_headers()
+                inbox = queue.Queue()
+                with LOCK:
+                    SUBS.append(inbox)
+                inbox.put(inspect())
+                try:
+                    while True:
+                        try:
+                            item = inbox.get(timeout=25)
+                        except queue.Empty:
+                            self.wfile.write(b":\n\n")
+                            self.wfile.flush()
+                            continue
+                        if item is None:
+                            break
+                        blob = json.dumps(item, separators=(",", ":"), ensure_ascii=True).encode("ascii")
+                        self.wfile.write(b"event: update\ndata: " + blob + b"\n\n")
+                        self.wfile.flush()
+                except Exception as exception:
+                    if not client_gone(exception):
+                        log("sse", "fail", error=str(exception))
+                finally:
+                    with LOCK:
+                        if inbox in SUBS:
+                            SUBS.remove(inbox)
+                return
             if path == "/last-output.wav":
                 target = DATA / "last-output.wav"
                 if not target.is_file():
@@ -1060,6 +1155,7 @@ def main() -> int:
         pass
     finally:
         server.server_close()
+        close_subs()
         stop_all()
         log("controller", "stop")
     return 0
