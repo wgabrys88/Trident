@@ -630,6 +630,38 @@ def install_release_binary(name: str, key: str):
     archive.unlink(missing_ok=True)
     if not component_artifact(name).is_file():
         raise RuntimeError(f"release did not create {spec['exe']}")
+def rmtree_retry(path: Path, attempts: int = 10):
+    last = None
+    for _ in range(attempts):
+        if not path.exists():
+            return
+        try:
+            shutil.rmtree(path)
+            return
+        except OSError as exc:
+            last = exc
+            time.sleep(0.3)
+    if last:
+        raise last
+def terminate_executable(path: Path):
+    if os.name != "nt":
+        return
+    target = os.path.normcase(str(path.resolve()) if path.exists() else str(path))
+    escaped = target.replace("'", "''")
+    script = (
+        "$ErrorActionPreference = 'SilentlyContinue'; "
+        f"$target = [IO.Path]::GetFullPath('{escaped}'); "
+        "Get-CimInstance Win32_Process | Where-Object { "
+        "$_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -eq $target) "
+        "} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; "
+        "$deadline = (Get-Date).AddSeconds(8); "
+        "while ((Get-Date) -lt $deadline) { "
+        "if (-not (Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -eq $target) })) { break }; "
+        "Start-Sleep -Milliseconds 200 "
+        "}"
+    )
+    flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+    subprocess.run(["powershell", "-NoProfile", "-Command", script], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags)
 def install_component(name: str, key: str):
     if name in BINARIES:
         install_release_binary(name, key)
@@ -657,13 +689,26 @@ def install_component(name: str, key: str):
     run(name, "server-build", [cmake, "--build", "build", "--config", "Release", "--parallel"], SERVER)
     if not TTS_SERVER.is_file():
         raise RuntimeError(f"TTS build did not create {TTS_SERVER}")
+    stop_engine("tts")
+    terminate_executable(RUNTIMES / "tts" / TTS_SERVER.name)
+    set_job(key, "running", "install", 90, "installing TTS runtime")
     runtime = RUNTIMES / "tts"
-    shutil.rmtree(runtime, ignore_errors=True)
-    runtime.mkdir(parents=True)
-    for artifact in TTS_SERVER.parent.iterdir():
-        if artifact.is_file() and (artifact.name == TTS_SERVER.name or artifact.suffix.lower() == ".dll"):
-            shutil.copy2(artifact, runtime / artifact.name)
-    atomic_json(runtime / "build.json", {"build_id": tts_build_id(), "chatterbox": SOURCES["chatterbox"][1], "ggml": SOURCES["ggml"][1]})
+    partial = runtime.with_name(runtime.name + ".part")
+    if partial.exists():
+        rmtree_retry(partial)
+    partial.mkdir(parents=True)
+    try:
+        for artifact in TTS_SERVER.parent.iterdir():
+            if artifact.is_file() and (artifact.name == TTS_SERVER.name or artifact.suffix.lower() == ".dll"):
+                shutil.copy2(artifact, partial / artifact.name)
+        atomic_json(partial / "build.json", {"build_id": tts_build_id(), "chatterbox": SOURCES["chatterbox"][1], "ggml": SOURCES["ggml"][1]})
+        if runtime.exists():
+            rmtree_retry(runtime)
+        partial.rename(runtime)
+    except Exception:
+        if partial.exists():
+            rmtree_retry(partial)
+        raise
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:

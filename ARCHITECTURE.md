@@ -2,10 +2,10 @@
 
 Document type: system specification  
 Audience: human operator + next coding agent  
-Source revision: `runner-x` @ `28fe488` plus this bake revert (`s3gen_embedding` left empty; advertised `builtin_fallback`)  
+Source revision: `runner-x` @ `0eb4f4d` plus TTS runtime install that unloads before replace  
 Schema: `SCHEMA.version = 5`  
 Trace schema: `trident.event` v1  
-Generated from: first-party source, live `third_party/chatterbox.cpp` after apply, `patches/chatterbox.patch`, pinned revisions, `data/config.json`, `data/models.json`, `tools/runtime/tts/build.json`, full `trident.log.jsonl` run `run-c8d39587d774477fa076544cf945751e`, and clone-reliable `3e88ec2`
+Generated from: first-party source, live `third_party/chatterbox.cpp` after apply, `patches/chatterbox.patch`, pinned revisions, `data/config.json`, `data/models.json`, `tools/runtime/tts/build.json`, `trident.log.jsonl` runs `run-c8d39587d774477fa076544cf945751e` and `run-359ca74de66a4ec796775238c0740faf`, and clone-reliable `3e88ec2` / tag `MILESTONE-21`
 
 ## Evidence legend
 
@@ -78,7 +78,7 @@ Conversation path: microphone or WAV → Parakeet → active brain → Chatterbo
 
 `data/models.json` receipts match the five installed model SHA-256 values plus the default-voice SHA-256. SOURCE.
 
-`tools/runtime/tts/build.json` after the 2026-08-18 panel `install_component tts`: `build_id=f245cf4eae407508196498b333d15bed13079495e6f7599fe667dcf948917e6f`, chatterbox `ddca05f…`, ggml `58c3805…`. SOURCE. That rebuild installed `tts-server.exe` at 10:37:44 (1207296 bytes) from the `31ba93d` patch (CAMPPlus required). `tts` component ready means exe exists AND `build.json.build_id == tts_build_id()`. SOURCE: `main.py` verification predicates.
+`tools/runtime/tts` after the 2026-08-18 11:05 panel `install_component tts` (LOG `run-359ca74d…`): Chatterbox build 239.8 s code 0, server-configure 3.2 s code 0, server-build 2.3 s code 0, then `job.failed` `[WinError 183] Cannot create a file when that file already exists: tools\runtime\tts`. Cause: `shutil.rmtree(..., ignore_errors=True)` left the directory because `tts-server.exe` pid 7740 still held it; `mkdir` then collided. `build.json` was absent after that failure. The new exe sat at `server/build/Release/tts-server.exe` 11:05:22 (1140224 bytes). The running binary stayed the 10:37:44 CAMPPlus-throw build (1207296 bytes). `tts` component ready means exe exists AND `build.json.build_id == tts_build_id()`. SOURCE: `main.py` verification predicates. LOG: `job.failed` seq 300.
 
 ### 1.4 Language sets
 
@@ -180,7 +180,8 @@ tts install_component:
   build tts-cpp mtl_tokenizer
   cmake server -DCHATTERBOX_CPP_ROOT=...
   build tts-server
-  copy exe+dll -> tools/runtime/tts + build.json{build_id,chatterbox,ggml}
+  stop_engine(tts)   # Windows cannot rmtree a running tts-server.exe
+  atomic copy exe+dll+build.json -> tools/runtime/tts  (write .part, rmtree dest, rename)
 
 load_engine:
   stop_engine(name)
@@ -886,7 +887,9 @@ ASR, Brain, and TTS all target Vulkan. No Trident mutex across the three process
 
 ### 9.5 Files the next agent must treat as first-party
 
-`ARCHITECTURE.md`, `main.py`, `log.py`, `panel.html`, `panel.css`, `panel.js`, `audio-processor.js`, `server/CMakeLists.txt`, `server/include/engine_wrapper.hpp`, `server/include/server.hpp`, `server/src/main.cpp`, `server/src/server.cpp`, `server/src/engine_wrapper.cpp`, `patches/chatterbox.patch`, `data/config.json`, `data/models.json`, `assets/default-reference.wav`.
+`ARCHITECTURE.md`, `main.py`, `log.py`, `panel.html`, `panel.css`, `panel.js`, `audio-processor.js`, `server/CMakeLists.txt`, `server/include/engine_wrapper.hpp`, `server/include/server.hpp`, `server/src/main.cpp`, `server/src/server.cpp`, `server/src/engine_wrapper.cpp`, `patches/chatterbox.patch`, `.gitattributes`, `.gitignore`, `data/config.json`, `data/models.json`, `assets/default-reference.wav`.
+
+`.gitattributes` sets `text eol=lf` on first-party text so Windows `core.autocrlf=true` cannot turn a one-line edit into a whole-file CRLF rewrite. SOURCE.
 
 Third-party trees are disposable: next `install_component tts` resets them to pins and reapplies the tracked patch.
 
@@ -927,6 +930,7 @@ External working reference (not first-party, do not merge blindly): `C:\Users\eb
 | L27 | Agent Job Object + `load_engine` → `3221225794` | prior session | Detached `Start-Process` this session loaded all three engines | Do not relaunch `main.py` from the agent job |
 | L28 | Advertised bake contract can lie | was `reference_campplus` while codec has no CAMPPlus | `tts_session` now advertises `builtin_fallback`; native summary remains authoritative | — |
 | L29 | clone-reliable `chatterbox.patch` contains two bake hunks | earlier hunk adds CAMPPlus throw; later hunk deletes it | later hunk is golden | Never copy the earlier hunk alone |
+| L30 | Windows cannot replace `tools/runtime/tts` while `tts-server.exe` is loaded | LOG `run-359ca74d…` seq 300 `WinError 183` after a successful 239 s Chatterbox + 2 s server build | `install_component` now `stop_engine("tts")` then atomic `.part` replace | clone-reliable never copied: `component_artifact("tts")` is `server/build/Release/tts-server.exe`. Trident keeps the runtime copy (D4). |
 
 ### 10.1 Error handling map
 
@@ -980,13 +984,13 @@ UNTESTED-PRIOR: RTF, VRAM, or token/s on this host. Falsifier: one loaded turn a
 
 ## Appendix B — Handover for next agent
 
-HEAD of this document commit is the next session start. Source at write: `31ba93d` plus this file only.
+HEAD of this document commit is the next session start. Source at write: `0eb4f4d` plus the TTS install unload/atomic-copy fix.
 
 ### Decision already taken
 
-Do **not** put CAMPPlus weights in `chatterbox-mtl-codec-f16.gguf`. Do **not** keep the fatal CAMPPlus throw. Match clone-reliable `3e88ec2` later bake hunk: leave `s3gen_embedding` empty; S3Gen copies `s3gen/builtin/embedding`. See §7.1.
+Do **not** put CAMPPlus weights in `chatterbox-mtl-codec-f16.gguf`. Do **not** keep the fatal CAMPPlus throw. Match clone-reliable `3e88ec2` / tag `MILESTONE-21` (`chatgpt v3 golden`) later bake hunk: leave `s3gen_embedding` empty; S3Gen copies `s3gen/builtin/embedding`. See §7.1. Do **not** merge clone-reliable's engine_wrapper OLA crossfade or its in-place `server/build/Release` load path; Trident keeps `tools/runtime/tts` + native_event server.cpp.
 
-### Measured this session (LOG `run-c8d39587d774477fa076544cf945751e`)
+### Measured this session (LOG `run-359ca74de66a4ec796775238c0740faf` + prior `run-c8d39587d774477fa076544cf945751e`)
 
 Conversation turn `trace-6031f6bf` / `turn-8567386dfc5041f2b7aaa3984550d70c` at 08:38:39 UTC:
 
@@ -1002,6 +1006,8 @@ Engines that loaded: ASR pid 7908 `:8097`, brain pid 12500 `:8098` (Gemma 4 E2B)
 
 Panel also ran `install_component tts` this run. New `build.json` `f245cf4e…`. Same required-CAMPPlus source.
 
+Later panel rebuild (LOG `run-359ca74d…`, controller pid 12788): Chatterbox 239.8 s + server 2.3 s both code 0. Applied live bake already matches `0eb4f4d` (`s3gen_embedding=builtin_fallback`, no CAMPPlus throw). Install then failed `WinError 183` on `tools\runtime\tts` because pid 7740 still held the 10:37:44 exe. New bits: `server/build/Release/tts-server.exe` 11:05:22, 1140224 bytes. Speak not re-measured.
+
 ### Earlier speech-lab (COMMIT `31ba93d` body, pre-throw)
 
 Text `This is a multilingual voice synthesis test.` Conditioning `s3gen_embedding=builtin_fallback`. T3 first=7838, `repetition_guard` 89 tokens. Output 3.640 s 24 kHz mono. That WAV is still on disk because bake never completed again.
@@ -1011,7 +1017,7 @@ Text `This is a multilingual voice synthesis test.` Conditioning `s3gen_embeddin
 1. Edit bake in `third_party/chatterbox.cpp/src/chatterbox_engine.cpp` and regenerate `patches/chatterbox.patch` from pin `ddca05f` the same way as `31ba93d` (placeholders `__EM_DASH__` / `__SECTION_SIGN__`). Delete CAMPPlus call + empty-embedding throw. Keep VoiceEncoder / S3Tok / prompt_feat required.
 2. `main.py` `tts_session` contract: `s3gen_speaker_embedding` = `builtin_fallback`.
 3. Do not change flash_attn, `speech_position = n_past`, `tok.encode(text)`, or models.
-4. Operator or detached process: if `:8765` is already up with engines, unload/reload **only TTS** through panel REST so the new exe is picked up after install. If you rebuild, `install_component tts` then `load_engine tts`.
+4. Operator or detached process: if `:8765` is already up with engines, unload/reload **only TTS** through panel REST so the new exe is picked up after install. If you rebuild, `install_component tts` (now unloads TTS before copy) then `load_engine tts`. Do not start a second `main.py`.
 5. User Speaks the same sentence (Speech Lab or conversation). Do not invent a WS client.
 6. Success of **this** change: session init reaches `s3gen_embedding=builtin_fallback`, PCM arrives, `last-output.wav` mtime updates. Failure: still CAMPPlus throw.
 7. After a new WAV exists, Parakeet `POST /api?op=asr` on it. That is the T3 intelligibility measurement, not a CAMPPlus measurement. Expect possible `repetition_guard` / off-codebook first token. That is L16, next T3 hypothesis.

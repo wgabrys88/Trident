@@ -1,1 +1,24 @@
+# First-party text is LF in the object store and in the working tree.
+# eol=lf overrides Windows core.autocrlf=true so editors and tools cannot
+# turn a one-line edit into a whole-file CRLF rewrite.
+* text=auto eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.js text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.json text eol=lf
 *.patch text eol=lf
+*.hpp text eol=lf
+*.h text eol=lf
+*.cpp text eol=lf
+*.c text eol=lf
+*.txt text eol=lf
+.gitattributes text eol=lf
+.gitignore text eol=lf
+*.wav binary
+*.png binary
+*.jpg binary
+*.exe binary
+*.dll binary
+*.gguf binary
