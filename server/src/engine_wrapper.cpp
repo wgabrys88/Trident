@@ -1,7 +1,5 @@
 #include "engine_wrapper.hpp"
 #include <tts-cpp/chatterbox/engine.h>
-#include <algorithm>
-#include <cmath>
 #include <filesystem>
 #include <memory>
 #include <mutex>
@@ -62,19 +60,6 @@ static std::vector<std::string> pack_text(const std::string& text, int limit) {
     return packed;
 }
 
-static void glue(std::vector<float>& dst, const std::vector<float>& src) {
-    constexpr int fade = 2880;
-    if (dst.empty()) { dst = src; return; }
-    if (src.empty()) return;
-    const int n = std::min(fade, static_cast<int>(std::min(dst.size(), src.size())));
-    const float step = 1.5707963267948966f / static_cast<float>(n);
-    for (int i = 0; i < n; ++i) {
-        const float w = static_cast<float>(i) * step;
-        dst[dst.size() - n + i] = dst[dst.size() - n + i] * std::cos(w) + src[i] * std::sin(w);
-    }
-    dst.insert(dst.end(), src.begin() + n, src.end());
-}
-
 Speech EngineWrapper::speak(const Voice& voice, const std::string& text) {
     std::lock_guard<std::mutex> synth(impl_->synth);
     std::shared_ptr<tts_cpp::chatterbox::Engine> engine;
@@ -126,7 +111,8 @@ Speech EngineWrapper::speak(const Voice& voice, const std::string& text) {
     out.chunks = static_cast<int>(pieces.size());
     for (size_t i = 0; i < pieces.size(); ++i) {
         auto result = engine->synthesize(pieces[i]);
-        glue(out.pcm, result.pcm);
+        if (i) out.pcm.insert(out.pcm.end(), 2880, 0.f);
+        out.pcm.insert(out.pcm.end(), result.pcm.begin(), result.pcm.end());
         out.t3_ms += result.t3_ms;
         out.s3gen_ms += result.s3gen_ms;
     }
