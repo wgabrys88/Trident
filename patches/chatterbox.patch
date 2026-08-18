@@ -2849,7 +2849,9 @@ diff --git a/src/gguf_split_mtl.cpp b/src/gguf_split_mtl.cpp
 @@ -480 +490 @@
 -        if (!ggml_backend_is_cpu(model.backend)) {
 +        if (use_optimized_mtl_backend(model.backend)) {
-@@ -516,0 +527,5 @@
+@@ -516,2 +527,6 @@
+             }
+-        }
 +        } else if (!ggml_backend_is_cpu(model.backend)) {
 +            fprintf(stderr,
 +                    "load_model_gguf_mtl_split: Vulkan correctness path "
