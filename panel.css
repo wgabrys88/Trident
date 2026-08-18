@@ -23,6 +23,11 @@ h2{margin:.1rem 0 .35rem;font-size:1.15rem}
 .actions,.controls{display:flex;gap:.65rem;align-items:center;flex-wrap:wrap}
 .select{display:grid;gap:.35rem;color:#9ba8ba;font-size:.82rem}
 .select select{min-width:180px}
+.select.grow{flex:1;min-width:16rem}
+.select textarea{min-height:4.2rem;resize:vertical;border:1px solid #30394a;background:#151b25;color:#eef2f7;border-radius:10px;padding:.7rem .9rem}
+.file{display:grid;gap:.35rem;color:#9ba8ba;font-size:.82rem}
+.file input{max-width:18rem;color:#c5d2e3}
+
 .pill{padding:.38rem .65rem;border-radius:999px;font-size:.76rem;border:1px solid #39445a}
 .pill.good{color:#9ff0c4;border-color:#286f4b;background:#112b20}
 .pill.bad{color:#ffb0b0;border-color:#704040;background:#2a1717}

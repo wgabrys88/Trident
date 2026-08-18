@@ -31,9 +31,8 @@ TTS_LANGUAGES = {
 }
 DEFAULT_REPLY_LANGUAGE = "en"
 
-# Browser microphone / buffered-live ASR. Live partials repeatedly transcribe
-# the growing utterance because parakeet-server v0.5 accepts WAV uploads rather
-# than exposing a streaming socket for this model.
+# Browser microphone. Final utterance is uploaded as WAV because parakeet-server
+# v0.5 has no streaming socket for this model.
 MIC = {
     "sample_rate": 16000,
     "vad_threshold": 0.020,
@@ -52,11 +51,14 @@ ASR_RUNTIME = {
     "response_format": "json",
 }
 
-# Certified MILESTONE native Chatterbox profile.
+# Chatterbox on Vulkan. gpu_layers > 0 offloads the whole graph (this build
+# has CUDA off). MTL S3Gen is standard CFM, not Turbo meanflow: cfm_steps=7
+# is a real speed knob (0 would fall back to the GGUF default of 10).
+# Batch HTTP /tts reuses one Engine; clone updates data/reference.wav and
+# the next /tts rebuilds VoiceEncoder from that file.
 TTS_RUNTIME = {
     "gpu_layers": 99,
     "context": 512,
-    "sessions": 2,
     "threads": 4,
 }
 TTS_SAMPLE = {
@@ -69,16 +71,10 @@ TTS_SAMPLE = {
     "repeat_penalty": 1.2,
     "cfm_steps": 7,
 }
-TTS_STREAM = {
-    "first_chunk_tokens": 12,
-    "chunk_tokens": 25,
-    "max_sentence_chars": 180,
-}
 TTS_VOICE = {
     "cfg_weight": 0.5,
     "exaggeration": 0.5,
 }
-TTS_SAMPLE_RATE = 24000
 
 # Brain. MILESTONE-3 forced replies to one/two sentences and max_tokens=160;
 # both constraints are removed here. The model can answer normally while still

@@ -1,7 +1,6 @@
 *
 !/.gitignore
 !/.gitattributes
-!/log.py
 !/main.py
 !/cfg.py
 !/panel.html
