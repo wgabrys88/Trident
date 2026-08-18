@@ -13,11 +13,11 @@
       <div class="brand-block">
         <div class="brand-mark" aria-hidden="true">T</div>
         <div>
-          <p class="eyebrow">Local voice workspace</p>
+          <p class="eyebrow">Local voice stack</p>
           <h1>Trident</h1>
         </div>
       </div>
-      <div class="connection-cluster" aria-label="Application status">
+      <div class="connection-cluster" aria-label="Controller and pipeline status">
         <span id="connection" class="badge bad">Connecting</span>
         <span id="flow-badge" class="badge">Idle</span>
       </div>
@@ -26,19 +26,49 @@
         <button id="engines-toggle" class="primary" type="button">Start engines</button>
       </div>
     </div>
-
-    <div class="readiness-panel" aria-label="Installation and engine status">
-      <span class="readiness-label">System readiness</span>
-      <span id="install-all-state" class="status-line">Checking installation</span>
-      <div id="install-strip" class="install-strip" aria-label="Required installation items"></div>
-      <div id="engine-strip" class="engine-strip" aria-label="Engine status"></div>
-    </div>
+    <p id="controller-state" class="controller-state">Waiting for GET /api from the local controller.</p>
+    <p id="install-all-state" class="status-line">Checking installation</p>
   </div>
 </header>
 
 <p id="fault" class="fault" role="alert" hidden></p>
 
 <main class="page-shell">
+  <section class="card system" aria-labelledby="system-title">
+    <div class="section-heading">
+      <div>
+        <p class="eyebrow">System</p>
+        <h2 id="system-title">What is installed and running</h2>
+      </div>
+      <p id="setup-summary" class="microcopy">Checking installation</p>
+    </div>
+    <p class="system-copy">This panel talks only to the local controller at <code>127.0.0.1:8765</code>. Host tools, runtime binaries, pinned models, and the three engines below are the live snapshot from that API.</p>
+    <div class="system-grid">
+      <article class="system-group">
+        <h3>Host tools</h3>
+        <p class="group-help">Required to build Chatterbox TTS. Python is provided by the machine, not this panel.</p>
+        <div id="prerequisite-strip" class="install-strip" aria-label="Host prerequisites"></div>
+      </article>
+      <article class="system-group">
+        <h3>Runtime binaries</h3>
+        <p class="group-help">TTS is built here. Parakeet and llama.cpp are pinned GitHub release zips.</p>
+        <div id="component-strip" class="install-strip" aria-label="Runtime components"></div>
+      </article>
+      <article class="system-group">
+        <h3>Models</h3>
+        <p class="group-help">T3 and S3Gen come from Chatterbox conversion. Parakeet, Gemma, and the Iracema voice are verified downloads.</p>
+        <div id="model-strip" class="install-strip" aria-label="Pinned models"></div>
+      </article>
+      <article class="system-group">
+        <h3>Engines</h3>
+        <p class="group-help">ASR :8097 · Brain :8098 · TTS WebSocket :8095</p>
+        <div id="engine-strip" class="engine-strip" aria-label="Engine status"></div>
+        <p id="engine-detail" class="microcopy">Engines start after their binary and models are verified.</p>
+      </article>
+    </div>
+    <div id="install-strip" class="install-strip visually-hidden" aria-hidden="true"></div>
+  </section>
+
   <section class="card conversation" aria-labelledby="conversation-title">
     <div class="section-heading">
       <div>
@@ -49,7 +79,7 @@
     </div>
 
     <div class="conversation-controls">
-      <label>Reply and speech language
+      <label for="conversation-language">Reply and speech language
         <select id="conversation-language" data-path="conversation.language"></select>
       </label>
       <label class="check">
@@ -121,16 +151,16 @@
     </summary>
     <div class="details-body">
       <div class="lab-grid">
-        <label>Speech language
+        <label for="speech-language">Speech language
           <select id="speech-language" data-path="speech.language"></select>
         </label>
-        <label>Voice style
+        <label for="speech-style">Voice style
           <select id="speech-style" data-path="speech.style">
             <option value="natural">Natural</option>
             <option value="expressive">Expressive</option>
           </select>
         </label>
-        <label class="wide">Text
+        <label class="wide" for="speech-text">Text
           <textarea id="speech-text" data-path="speech.text" rows="4"></textarea>
         </label>
       </div>
@@ -146,22 +176,22 @@
   <details class="card setup">
     <summary>
       <span class="summary-copy"><span class="eyebrow">Configuration</span><strong>Brain and runtime parameters</strong></span>
-      <span id="setup-summary" class="summary-help">Checking installation</span>
+      <span class="summary-help">Engine values apply after a restart of that engine</span>
     </summary>
     <div class="details-body">
-      <p class="microcopy setup-copy">Choose the local response model and adjust advanced engine values. Engine-process changes apply after restarting the affected engine.</p>
+      <p class="microcopy setup-copy">Choose the local response model and adjust advanced engine values. Process settings take effect after restarting the affected engine.</p>
       <div class="brain-row">
-        <label>Brain
+        <label for="brain-select">Brain
           <select id="brain-select"></select>
         </label>
-        <label id="brain-family-wrap" hidden>Model family
+        <label id="brain-family-wrap" for="brain-family" hidden>Model family
           <select id="brain-family">
             <option value="generic">Generic</option>
             <option value="gemma4">Gemma 4</option>
             <option value="qwen35">Qwen 3.5</option>
           </select>
         </label>
-        <label id="brain-url-wrap" class="wide" hidden>Custom GGUF URL
+        <label id="brain-url-wrap" class="wide" for="brain-url" hidden>Custom GGUF URL
           <input id="brain-url" type="text" placeholder="https://huggingface.co/.../model.gguf">
         </label>
         <button id="brain-download" type="button" hidden>Download selected</button>
@@ -179,7 +209,7 @@
     </summary>
     <div class="details-body">
       <div class="row log-actions">
-        <label>Trace scope
+        <label for="log-scope">Trace scope
           <select id="log-scope">
             <option value="latest">Latest pipeline trace</option>
             <option value="all">All current-run events</option>
