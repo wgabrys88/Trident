@@ -1,4 +1,5 @@
 from __future__ import annotations
+import io
 import json
 import os
 import shutil
@@ -18,9 +19,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 from cfg import (
-    ASR_LANGUAGES, ASR_RUNTIME, BRAIN_FAMILIES, BRAIN_GENERATION, BRAIN_MODEL,
-    BRAIN_RUNTIME, BRAIN_SYSTEM, CONTROLLER, DEFAULT_REPLY_LANGUAGE, MIC, PORTS,
-    TTS_LANGUAGES, TTS_RUNTIME, TTS_SAMPLE, TTS_VOICE,
+    ASR_CHUNK, ASR_LANGUAGES, ASR_RUNTIME, BRAIN_FAMILY, BRAIN_GENERATION,
+    BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_SYSTEM, CONTROLLER, DEFAULT_REPLY_LANGUAGE,
+    MIC, PORTS, TTS_CHUNK, TTS_LANGUAGES, TTS_RUNTIME, TTS_SAMPLE, TTS_VOICE,
 )
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -47,8 +48,6 @@ MODELS = {
     "chatterbox-codec": {"label": "CHATTERBOX V3 S3GEN", "repo": "ResembleAI/chatterbox", "revision": "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18", "file": "chatterbox-s3gen-mtl-v3-f16.gguf", "size": 1056431360},
     "parakeet": {"label": "PARAKEET TDT 0.6B V3 Q4_K", "repo": "mudler/parakeet-cpp-gguf", "revision": "bf0af9f425fa01809cadec671b3cb672709d13e9", "file": "tdt-0.6b-v3-q4_k.gguf", "size": 675200864},
     "gemma": {"label": "GEMMA 4 E2B", "repo": "google/gemma-4-E2B-it-qat-q4_0-gguf", "revision": "675cff42a74c774d6cb76f76d8eacb49b48c9b93", "file": "gemma-4-E2B_q4_0-it.gguf", "size": 3349516256},
-    "qwen35-0.8b": {"label": "QWEN3.5 0.8B", "repo": "unsloth/Qwen3.5-0.8B-GGUF", "revision": "6ab461498e2023f6e3c1baea90a8f0fe38ab64d0", "file": "Qwen3.5-0.8B-Q4_K_M.gguf", "size": 532517120},
-    "qwen35-4b": {"label": "QWEN3.5 4B", "repo": "unsloth/Qwen3.5-4B-GGUF", "revision": "e87f176479d0855a907a41277aca2f8ee7a09523", "file": "Qwen3.5-4B-Q4_K_M.gguf", "size": 2740937888},
     "reference": {"label": "DEFAULT VOICE", "source": "assets/default-reference.wav", "file": "default-reference.wav", "directory": "data", "size": 1012558},
 }
 VULKAN_VERSION = "1.4.357.0"
@@ -58,18 +57,12 @@ PACKAGES = {
     "msvc": {"url": "https://download.visualstudio.microsoft.com/download/pr/00d9d26c-2727-42c2-aa9e-eda63b03e1ee/15df9d3b4c2b2eaf44704d5e938c895341b9cd8ba40a9a18610f8d18cbe01b53/vs_BuildTools.exe", "file": "vs_BuildTools.exe", "size": 4458736},
     "vulkan": {"url": f"https://sdk.lunarg.com/sdk/download/{VULKAN_VERSION}/windows/vulkansdk-windows-X64-{VULKAN_VERSION}.exe", "file": f"vulkansdk-windows-X64-{VULKAN_VERSION}.exe", "size": 0},
 }
-BRAINS = {
-    "gemma": {"label": "GEMMA 4 E2B", "model": "gemma", "family": "gemma4"},
-    "qwen35-0.8b": {"label": "QWEN3.5 0.8B", "model": "qwen35-0.8b", "family": "qwen35"},
-    "qwen35-4b": {"label": "QWEN3.5 4B", "model": "qwen35-4b", "family": "qwen35"},
-}
-if BRAIN_MODEL not in BRAINS:
-    raise RuntimeError(f"cfg.BRAIN_MODEL must be one of {list(BRAINS)}")
+BRAIN = {"id": BRAIN_MODEL, "label": "GEMMA 4 E2B", "model": "gemma", "family": "gemma4"}
 CHATTERBOX_LIBRARY = CHATTERBOX / "build" / "Release" / "tts-cpp.lib"
 TTS_SERVER = SERVER / "build" / "Release" / "tts-server.exe"
 LOCK = threading.RLock()
 PROCESSES: dict[str, subprocess.Popen] = {}
-ENGINE_MODELS = {"tts": ("chatterbox-t3", "chatterbox-codec"), "asr": ("parakeet",), "brain": (BRAINS[BRAIN_MODEL]["model"],)}
+ENGINE_MODELS = {"tts": ("chatterbox-t3", "chatterbox-codec"), "asr": ("parakeet",), "brain": (BRAIN["model"],)}
 LOG = ROOT / "trident.log"
 def log(component: str, event: str, **data: Any):
     line = component + " " + event
@@ -149,15 +142,6 @@ def reference_state() -> dict:
     except (wave.Error, OSError):
         return {"status": "invalid", "path": str(path), "duration": 0.0, "custom": path == custom}
     return {"status": "ready", "path": str(path), "duration": duration, "custom": path == custom}
-def active_brain_id() -> str:
-    return BRAIN_MODEL
-def active_brain_family() -> str:
-    return BRAINS[BRAIN_MODEL]["family"]
-def active_brain_path() -> Path:
-    name = BRAINS[BRAIN_MODEL]["model"]
-    if model_status(name)["status"] != "ready":
-        raise ApiError(409, f"brain model is missing: {model_path(name)}")
-    return model_path(name)
 def snapshot() -> dict:
     with LOCK:
         engines = deepcopy(RUNTIME["engines"])
@@ -169,7 +153,7 @@ def snapshot() -> dict:
             "models": {name: model_status(name) for name in MODELS},
             "engines": engines,
             "reference": reference_state(),
-            "brain": {"id": BRAIN_MODEL, **BRAINS[BRAIN_MODEL]},
+            "brain": dict(BRAIN),
             "jobs": deepcopy(RUNTIME["jobs"]),
         }
 def set_job(key: str, status: str, stage: str, progress: int, message: str, failure: str = ""):
@@ -538,7 +522,9 @@ def stop_engine(name: str):
 def load_engine(name: str, key: str):
     stop_engine(name)
     if name == "brain":
-        paths = [active_brain_path()]
+        if model_status(BRAIN["model"])["status"] != "ready":
+            raise RuntimeError(f"brain model is missing: {model_path(BRAIN['model'])}")
+        paths = [model_path(BRAIN["model"])]
     else:
         paths = [model_path(model) for model in ENGINE_MODELS[name]]
         for model, model_file in zip(ENGINE_MODELS[name], paths):
@@ -559,7 +545,7 @@ def load_engine(name: str, key: str):
         env["PARAKEET_DEVICE"] = str(applied["device"])
     else:
         runtime = dict(BRAIN_RUNTIME)
-        applied = {**runtime, "id": active_brain_id(), "family": active_brain_family(), "path": str(paths[0])}
+        applied = {**runtime, "id": BRAIN["id"], "family": BRAIN["family"], "path": str(paths[0])}
         command = [str(executable_path), "-m", str(paths[0]), "--host", "127.0.0.1", "--port", str(PORTS["brain"]), "--device", str(runtime["device"]), "--n-gpu-layers", str(runtime["gpu_layers"]), "--ctx-size", str(runtime["context"]), "--parallel", str(runtime["parallel"]), "--no-mmproj", "--load-mode", "auto", "--flash-attn", str(runtime["flash_attn"]), "--repack", "--fit", str(runtime["fit"]), "--fit-target", str(runtime["fit_target"]), "--fit-ctx", str(runtime["fit_ctx"])]
         cwd, health, env = executable_path.parent, f"http://127.0.0.1:{PORTS['brain']}/health", os.environ.copy()
     set_job(key, "running", "load", 20, f"loading {name}")
@@ -574,9 +560,10 @@ def load_engine(name: str, key: str):
         RUNTIME["engines"][name]["status"] = "running"
     log("engine", "ready", name=name, pid=process.pid)
     set_job(key, "running", "ready", 95, f"{name} ready")
-def multipart(audio: bytes) -> tuple[bytes, str]:
+def multipart(audio: bytes, response_format: str | None = None) -> tuple[bytes, str]:
     boundary = "trident-" + uuid.uuid4().hex
-    fields = [("file", "speech.wav", "audio/wav", audio), ("response_format", "", "text/plain", str(ASR_RUNTIME["response_format"]).encode())]
+    fmt = (response_format or str(ASR_RUNTIME["response_format"])).encode()
+    fields = [("file", "speech.wav", "audio/wav", audio), ("response_format", "", "text/plain", fmt)]
     body = bytearray()
     for name, filename, kind, value in fields:
         body.extend(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"".encode())
@@ -592,11 +579,80 @@ def require_engine(name: str):
         raise ApiError(400, f"unknown engine: {name}")
     if RUNTIME["engines"][name]["status"] != "running":
         raise ApiError(409, f"{name} is not running")
+def wav_meta(data: bytes) -> tuple[int, int, int, bytes]:
+    with wave.open(io.BytesIO(data), "rb") as audio:
+        return audio.getframerate(), audio.getnchannels(), audio.getsampwidth(), audio.readframes(audio.getnframes())
+def pcm_wav(rate: int, pcm: bytes) -> bytes:
+    out = io.BytesIO()
+    with wave.open(out, "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(rate)
+        audio.writeframes(pcm)
+    return out.getvalue()
+def lcs_join(left: list[str], right: list[str]) -> list[str]:
+    if not left:
+        return right
+    cap = min(len(left), len(right), 48)
+    best = 0
+    for size in range(1, cap + 1):
+        if [token.casefold() for token in left[-size:]] == [token.casefold() for token in right[:size]]:
+            best = size
+    return left + right[best:]
+def asr_words(result: dict) -> list[dict]:
+    words = result.get("words")
+    if isinstance(words, list) and words:
+        return words
+    tokens = result.get("tokens")
+    if isinstance(tokens, list):
+        return [{"w": str(item.get("t") or item.get("token") or ""), "start": float(item.get("start") or 0), "end": float(item.get("end") or 0)} for item in tokens]
+    return [{"w": token, "start": 0.0, "end": 0.0} for token in str(result.get("text") or "").split()]
+def stitch_asr(parts: list[dict], window: float, overlap: float) -> dict:
+    if not parts:
+        return {"text": ""}
+    if len(parts) == 1:
+        return parts[0]
+    kept: list[str] = []
+    for index, part in enumerate(parts):
+        words = asr_words(part)
+        timed = any(float(word.get("end") or 0) > 0 for word in words)
+        piece = []
+        for word in words:
+            token = str(word.get("w") or word.get("word") or "").strip()
+            start = float(word.get("start") or 0)
+            if not token or (index and timed and start < overlap):
+                continue
+            piece.append(token)
+        if not piece:
+            piece = str(part.get("text") or "").split()
+        kept = piece if index == 0 else lcs_join(kept, piece)
+    return {"text": " ".join(kept)}
 def transcribe(audio: bytes) -> dict:
     require_engine("asr")
     started = time.monotonic()
-    body, content_type = multipart(audio)
-    result = json.loads(remote(f"http://127.0.0.1:{PORTS['asr']}/v1/audio/transcriptions", body, content_type))
+    try:
+        rate, channels, width, pcm = wav_meta(audio)
+        seconds = len(pcm) / float(rate * width * max(channels, 1))
+    except (wave.Error, EOFError):
+        rate, pcm, seconds = 16000, b"", 0.0
+    window = float(ASR_CHUNK["seconds"])
+    overlap = float(ASR_CHUNK["overlap"])
+    if seconds <= window or not pcm:
+        body, content_type = multipart(audio)
+        result = json.loads(remote(f"http://127.0.0.1:{PORTS['asr']}/v1/audio/transcriptions", body, content_type))
+    else:
+        step = max(window - overlap, 1.0)
+        frame = width * max(channels, 1)
+        parts, cursor = [], 0.0
+        while cursor < seconds:
+            start = int(cursor * rate) * frame
+            stop = int(min(seconds, cursor + window) * rate) * frame
+            body, content_type = multipart(pcm_wav(rate, pcm[start:stop]), "verbose_json")
+            parts.append(json.loads(remote(f"http://127.0.0.1:{PORTS['asr']}/v1/audio/transcriptions", body, content_type)))
+            if cursor + window >= seconds:
+                break
+            cursor += step
+        result = stitch_asr(parts, window, overlap)
     with LOCK:
         RUNTIME["results"]["asr"] = result
     text = str(result.get("text") or "")
@@ -609,11 +665,11 @@ def brain(prompt: str, language: str) -> dict:
     language_name = TTS_LANGUAGES[language]
     system = BRAIN_SYSTEM.format(language_name=language_name, language=language)
     request = {
-        "model": active_brain_id(),
+        "model": BRAIN["id"],
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
         **BRAIN_GENERATION,
         "stream": False,
-        **BRAIN_FAMILIES[active_brain_family()],
+        **BRAIN_FAMILY,
     }
     started = time.monotonic()
     result = json.loads(remote(f"http://127.0.0.1:{PORTS['brain']}/v1/chat/completions", json.dumps(request, separators=(",", ":")).encode()))
@@ -647,18 +703,15 @@ def synthesize(text: str, language: str) -> dict:
     require_engine("tts")
     ref = reference_path()
     payload = {
-        "text": text,
-        "language": language,
-        "reference": str(ref),
-        "reference_mtime": ref.stat().st_mtime,
-        **TTS_SAMPLE,
-        **TTS_VOICE,
+        "text": text, "language": language, "reference": str(ref),
+        "reference_mtime": ref.stat().st_mtime, "chunk_chars": TTS_CHUNK["chars"],
+        **TTS_SAMPLE, **TTS_VOICE,
     }
     started = time.monotonic()
     result = json.loads(remote(f"http://127.0.0.1:{PORTS['tts']}/tts", json.dumps(payload, separators=(",", ":")).encode()))
     if result.get("error"):
         raise RuntimeError(result["error"])
-    log("tts", "done", ms=round((time.monotonic() - started) * 1000, 1), lang=language, seconds=result.get("seconds"), t3_ms=result.get("t3_ms"), s3gen_ms=result.get("s3gen_ms"), cfm_steps=TTS_SAMPLE["cfm_steps"])
+    log("tts", "done", ms=round((time.monotonic() - started) * 1000, 1), lang=language, seconds=result.get("seconds"), t3_ms=result.get("t3_ms"), s3gen_ms=result.get("s3gen_ms"), chunks=result.get("chunks"), cfm_steps=TTS_SAMPLE["cfm_steps"])
     return result
 def cancel_tts() -> dict:
     require_engine("tts")
@@ -673,7 +726,7 @@ def wav_body(raw: bytes | None) -> bytes:
     if not raw:
         raise ApiError(400, "WAV body is required")
     return raw
-REQUIRED_MODELS = list(dict.fromkeys(["chatterbox-t3", "chatterbox-codec", "parakeet", BRAINS[BRAIN_MODEL]["model"], "reference"]))
+REQUIRED_MODELS = ["chatterbox-t3", "chatterbox-codec", "parakeet", BRAIN["model"], "reference"]
 OPS = {
     "inspect": {}, "schema": {}, "state": {},
     "install_prerequisite": {}, "install_component": {}, "download_model": {},
@@ -684,7 +737,7 @@ SCHEMA = {
     "version": 7,
     "languages": {"reply": TTS_LANGUAGES, "asr": ASR_LANGUAGES, "default_reply": DEFAULT_REPLY_LANGUAGE},
     "mic": MIC,
-    "brain": {"id": BRAIN_MODEL, **BRAINS[BRAIN_MODEL], "generation": BRAIN_GENERATION, "runtime": BRAIN_RUNTIME},
+    "brain": {**BRAIN, "generation": BRAIN_GENERATION, "runtime": BRAIN_RUNTIME},
     "prerequisites": {name: {"label": label} for name, label in {"python": "PYTHON 3.11+", "git": "GIT", "cmake": "CMAKE", "msvc": "MSVC BUILD TOOLS", "vulkan": "VULKAN SDK"}.items()},
     "components": {"tts": {"label": "CHATTERBOX TTS V3"}, "parakeet": {"label": BINARIES["parakeet"]["label"]}, "gemma": {"label": BINARIES["gemma"]["label"]}},
     "required_models": REQUIRED_MODELS,
