@@ -16,33 +16,10 @@
     <button id="engines" class="primary">Start</button>
     <span id="live" class="live">Start engines, then speak, upload, or type.</span>
   </div>
-  <div class="bar">
-    <button id="record" class="mic" disabled>Mic</button>
-    <label class="file">File<input id="audio-file" type="file" accept="audio/*" disabled></label>
-    <label class="check"><input id="clone" type="checkbox"> Clone</label>
-    <label>Reply <select id="reply-language"></select></label>
-    <button id="stop-voice" disabled>Stop</button>
-  </div>
-  <details class="knobs" open>
-    <summary>Knobs — system prompt and hyperparameters</summary>
-    <div id="knobs"></div>
-  </details>
-  <div class="pad" id="pad">
-    <span class="pad-label">Fill <b id="pad-target">Answer</b></span>
-    <button type="button" data-pad="short" title="TIMIT SA1. Spectrograms in every TIMIT paper.">Short</button>
-    <button type="button" data-pad="mid" title="Rainbow Passage (Fairbanks). Standard connected-speech spectrograms.">Mid</button>
-    <button type="button" data-pad="long" title="Rainbow + Grandfather + Harvard 1–6. About five minutes of speech. Chunk and memory.">5 min</button>
-    <button type="button" data-pad="sa2" title="TIMIT SA2. The other dialect-independent TIMIT spectrogram sentence.">SA2</button>
-    <button type="button" data-pad="harvard" title="IEEE Harvard list 1. Phonetically balanced; speech-quality spectrograms.">Harvard</button>
-    <button type="button" data-pad="grandfather" title="Grandfather Passage. Clinical speech sample with published spectrograms.">Grandfather</button>
-    <button type="button" data-pad="wind-en" title="IPA Handbook English: The North Wind and the Sun. Official IPA spectrograms.">Wind EN</button>
-    <button type="button" data-pad="wind-de" title="IPA Handbook German: Der Nordwind und die Sonne. Official IPA spectrograms.">Wind DE</button>
-    <button type="button" data-pad="wind-pl" title="JIPA Polish illustration (Jassem 2003): Wiatr i Słońce. Official IPA spectrograms.">Wind PL</button>
-  </div>
   <div class="conversation">
     <article>
       <div class="label"><span>Heard</span><small id="asr-state">idle</small></div>
-      <textarea id="transcript" placeholder="Parakeet text. Type to simulate, or use the pad."></textarea>
+      <textarea id="transcript" placeholder="Parakeet. Type, pad, or speak."></textarea>
       <div class="toolbar">
         <label class="check"><input id="heard-auto" type="checkbox" checked> Auto</label>
         <button id="heard-send" disabled>Send</button>
@@ -50,7 +27,7 @@
     </article>
     <article>
       <div class="label"><span>Answer</span><small id="brain-state">idle</small></div>
-      <textarea id="answer" placeholder="Gemma text. Freeze with Auto off, edit, then Send."></textarea>
+      <textarea id="answer" placeholder="Spoken text. Auto off freezes."></textarea>
       <div class="toolbar">
         <label class="check"><input id="answer-auto" type="checkbox" checked> Auto</label>
         <button id="answer-send" disabled>Send</button>
@@ -58,6 +35,26 @@
     </article>
   </div>
   <p id="fault" class="fault" hidden></p>
+  <div class="bar" id="pad">
+    <button id="record" class="mic" disabled>Mic</button>
+    <label class="file">File<input id="audio-file" type="file" accept="audio/*" disabled></label>
+    <label class="check"><input id="clone" type="checkbox"> Clone</label>
+    <label>Reply <select id="reply-language"></select></label>
+    <button id="stop-voice" disabled>Stop</button>
+    <button type="button" data-pad="short" title="TIMIT SA1. Spectrograms in every TIMIT paper.">Short</button>
+    <button type="button" data-pad="mid" title="Rainbow Passage. Connected-speech spectrograms.">Mid</button>
+    <button type="button" data-pad="long" title="Rainbow + Grandfather + Harvard + North Wind en/de/pl. Chunk join.">5 min</button>
+    <button type="button" data-pad="sa2" title="TIMIT SA2.">SA2</button>
+    <button type="button" data-pad="harvard" title="IEEE Harvard list 1.">Harvard</button>
+    <button type="button" data-pad="grandfather" title="Grandfather Passage.">Grandfather</button>
+    <button type="button" data-pad="wind-en" title="IPA Handbook English.">Wind EN</button>
+    <button type="button" data-pad="wind-de" title="IPA Handbook German.">Wind DE</button>
+    <button type="button" data-pad="wind-pl" title="JIPA Polish (Jassem 2003).">Wind PL</button>
+  </div>
+  <details class="knobs">
+    <summary>Knobs — Gemma prompt, Parakeet and Chatterbox have none</summary>
+    <div id="knobs"></div>
+  </details>
 </main>
 <script src="/panel.js"></script>
 </body>
