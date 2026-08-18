@@ -1,13 +1,12 @@
 const $ = id => document.getElementById(id);
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-let schema = null, state = null, recording = null, playContext = null, playing = null, ttsAbort = null;
+let schema = null, state = null, recording = null, playContext = null, playing = null, lastTts = 0, rmsText = "";
+const pending = new Map();
 
 function fault(message = "") {
-  const box = $("fault");
-  box.hidden = !message;
-  box.textContent = message;
+  $("fault").hidden = !message;
+  $("fault").textContent = message;
 }
-function showError(e) { fault(e?.message || String(e)); $("mic-status").textContent = "Error."; }
+function showError(e) { fault(e?.message || String(e)); }
 
 async function json(url, options = {}) {
   const response = await fetch(url, {cache: "no-store", ...options});
@@ -15,19 +14,13 @@ async function json(url, options = {}) {
   if (!response.ok) throw Error(body.error || `HTTP ${response.status}`);
   return body;
 }
-async function post(op, data = {}, signal) {
-  return json("/api", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({op, ...data}), signal});
+async function post(op, data = {}) {
+  return json("/api", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({op, ...data})});
 }
 async function wav(op, buffer) {
   return json(`/api?op=${encodeURIComponent(op)}`, {method: "POST", headers: {"Content-Type": "audio/wav"}, body: buffer});
 }
-async function refresh() {
-  const result = await json("/api?op=inspect");
-  schema = result.schema;
-  state = result.state;
-  render();
-  return state;
-}
+
 function status(values) {
   const list = Object.values(values || {});
   if (!list.length) return "missing";
@@ -44,6 +37,12 @@ function coreReady() {
 function enginesRunning() {
   return state && ["asr", "brain", "tts"].every(n => state.engines[n]?.status === "running");
 }
+function fillLanguages(select) {
+  select.innerHTML = "";
+  for (const [code, name] of Object.entries(schema.languages.reply)) select.add(new Option(`${name} (${code})`, code));
+  select.value = schema.languages.default_reply;
+}
+
 function render() {
   if (!state || !schema) return;
   $("connection").textContent = "online";
@@ -62,70 +61,90 @@ function render() {
   $("install").disabled = ready;
   $("engines").disabled = !ready;
   $("engines").textContent = enginesRunning() ? "Stop" : "Start";
-  const live = enginesRunning();
-  $("record").disabled = !live;
-  $("speak-run").disabled = !live;
-  $("audio-file").disabled = !live;
+  const liveEngines = enginesRunning();
+  $("record").disabled = !liveEngines;
+  $("speak-run").disabled = !liveEngines;
+  $("audio-file").disabled = !liveEngines;
+  const view = state.live || {};
+  const asr = view.asr || {}, brain = view.brain || {};
+  $("asr-state").textContent = asr.status || "idle";
+  $("brain-state").textContent = brain.status || "idle";
+  const heard = (asr.text || "").trim();
+  $("transcript").textContent = heard || "Transcription appears here.";
+  $("transcript").classList.toggle("muted", !heard);
+  const answer = (brain.text || "").trim();
+  $("answer").textContent = answer || "The local response appears here.";
+  $("answer").classList.toggle("muted", !answer);
+  fault(view.error || "");
   const jobs = Object.values(state.jobs || {}).filter(j => j.status === "running");
   const dirty = Object.entries(state.dirty || {}).filter(([, v]) => v).map(([n]) => n);
-  $("job-status").textContent = [
+  $("live").textContent = [
     dirty.length ? `restart ${dirty.join(", ")}` : "",
     jobs.length ? jobs.map(j => `${j.stage}: ${j.message}${j.progress ? ` (${j.progress}%)` : ""}`).join(" · ") : "",
-  ].filter(Boolean).join(" · ");
-  if (dirty.length) $("job-status").classList.add("dirty");
-  else $("job-status").classList.remove("dirty");
+    view.stage && view.stage !== "idle" ? view.stage : "",
+    rmsText,
+  ].filter(Boolean).join(" · ") || "Start engines, then speak, upload, or type.";
+  $("live").classList.toggle("dirty", dirty.length > 0);
+  $("stop-voice").disabled = !(playing || view.tts?.status === "running");
   renderKnobs();
 }
-async function waitJob(key) {
-  for (;;) {
-    state = await json("/api?op=state");
-    render();
+
+function settle(inspect) {
+  schema = inspect.schema;
+  state = inspect.state;
+  if (schema && !$("reply-language").options.length) {
+    fillLanguages($("reply-language"));
+    fillLanguages($("input-language"));
+  }
+  render();
+  for (const [key, wait] of [...pending]) {
     const job = state.jobs?.[key];
-    if (job && job.status === "error") throw Error(job.error || job.message || `${key} failed`);
-    if (job && job.status === "done") return;
-    await sleep(650);
+    if (job?.status === "done") { pending.delete(key); wait.resolve(); }
+    else if (job?.status === "error") { pending.delete(key); wait.reject(Error(job.error || job.message || key)); }
+  }
+  playLive();
+}
+
+async function runJob(op, name, kind) {
+  const key = `${kind}:${name}`;
+  const p = new Promise((resolve, reject) => pending.set(key, {resolve, reject}));
+  try {
+    await post(op, {name});
+    const job = state?.jobs?.[key];
+    if (job?.status === "done") return;
+    if (job?.status === "error") throw Error(job.error || job.message || key);
+    await p;
+  } finally {
+    pending.delete(key);
   }
 }
-async function runJob(op, name, kind) {
-  await post(op, {name});
-  await waitJob(`${kind}:${name}`);
-}
+
 async function installMissing() {
   fault(); $("install").disabled = true;
   try {
-    await refresh();
     for (const name of ["git", "cmake", "msvc", "vulkan"]) {
       if (state.prerequisites[name]?.status !== "ready") await runJob("install_prerequisite", name, "prerequisite");
     }
     for (const name of ["tts", "parakeet", "gemma"]) {
-      await refresh();
       if (state.components[name]?.status !== "ready") await runJob("install_component", name, "component");
     }
     for (const name of schema.required_models) {
-      await refresh();
       if (state.models[name]?.status !== "ready") await runJob("download_model", name, "model");
     }
-    await refresh();
-  } catch (e) {
-    $("job-status").textContent = `Install failed: ${e.message}`;
-    fault(e.message);
-  }
+  } catch (e) { showError(e); }
 }
+
 async function toggleEngines() {
   fault(); $("engines").disabled = true;
   try {
-    await refresh();
     if (enginesRunning()) {
       for (const name of ["tts", "brain", "asr"]) await runJob("unload_engine", name, "engine");
     } else {
       for (const name of ["asr", "brain", "tts"]) {
-        await refresh();
         if (state.engines[name]?.status !== "running") await runJob("load_engine", name, "engine");
       }
     }
-    await refresh();
-  } catch (e) { fault(e.message); }
-  finally { $("engines").disabled = false; }
+  } catch (e) { showError(e); }
 }
 
 function makeWav(parts, rate) {
@@ -163,7 +182,8 @@ function capture(frame) {
   } else {
     rec.parts.push(frame); trimPreRoll(rec);
   }
-  $("mic-status").textContent = rec.busy ? "Processing…" : `Listening · RMS ${level.toFixed(3)}${rec.speaking ? " · speech" : ""}`;
+  rmsText = rec.busy ? "" : `RMS ${level.toFixed(3)}${rec.speaking ? " · speech" : ""}`;
+  render();
 }
 async function ensurePlaybackContext() {
   if (!playContext || playContext.state === "closed") playContext = new AudioContext();
@@ -183,11 +203,11 @@ async function startMic() {
   source.connect(node);
   $("record").textContent = "Stop mic";
   $("record").classList.add("live-mic");
-  $("mic-status").textContent = "Listening…";
 }
 async function stopMic(send = true) {
   const rec = recording; if (!rec) return;
   recording = null;
+  rmsText = "";
   rec.node.disconnect(); rec.source.disconnect();
   rec.stream.getTracks().forEach(t => t.stop());
   await rec.context.close();
@@ -195,69 +215,47 @@ async function stopMic(send = true) {
   $("record").classList.remove("live-mic");
   const duration = sampleCount(rec.parts) / rec.rate;
   if (send && duration >= schema.mic.vad_min_speech_ms / 1000) await processUtterance(makeWav(rec.parts, rec.rate), duration, null);
-  else $("mic-status").textContent = "Microphone stopped.";
+  else render();
 }
 async function processUtterance(buffer, seconds, rec) {
   if (rec) rec.busy = true;
   try {
-    $("asr-state").textContent = "final"; $("brain-state").textContent = "waiting";
-    $("mic-status").textContent = "Transcribing…";
-    if ($("clone").checked && seconds >= schema.mic.clone_reference_seconds) {
-      await wav("upload_reference", buffer);
-      $("mic-status").textContent = "Voice reference updated. Transcribing…";
-    }
+    if ($("clone").checked && seconds >= schema.mic.clone_reference_seconds) await wav("upload_reference", buffer);
     const asr = await wav("asr", buffer);
     const transcript = String(asr.result?.text || "").trim();
     if (!transcript) throw Error("Parakeet returned no transcript");
-    $("transcript").textContent = transcript;
-    $("transcript").classList.remove("muted");
-    $("asr-state").textContent = "done";
-    $("brain-state").textContent = "thinking";
-    $("answer").textContent = "Thinking locally…";
-    $("answer").classList.add("muted");
     const lang = $("reply-language").value;
     const brain = await post("brain", {prompt: transcript, language: lang});
     const answer = String(brain.text || "").trim();
     if (!answer) throw Error("Brain returned no answer");
-    $("answer").textContent = answer;
-    $("answer").classList.remove("muted");
-    $("brain-state").textContent = "speaking";
-    await speak(answer, lang);
-    $("brain-state").textContent = "done";
-    $("mic-status").textContent = recording ? "Listening for the next utterance…" : "Ready.";
+    await post("tts", {text: answer, language: lang});
   } finally {
     if (rec) { rec.busy = false; rec.parts = []; rec.speaking = false; rec.speechMs = rec.silenceMs = 0; }
   }
 }
 function stopVoice() {
-  if (ttsAbort) ttsAbort.abort();
-  ttsAbort = null;
   if (playing) { playing.stop(); playing = null; }
   post("tts_cancel");
   $("stop-voice").disabled = true;
 }
-async function speak(text, language) {
-  stopVoice();
+async function playLive() {
+  const tts = state?.live?.tts;
+  if (!tts || tts.status !== "done" || !tts.mtime || tts.mtime === lastTts) return;
+  lastTts = tts.mtime;
+  if (playing) { playing.stop(); playing = null; }
   const ctx = await ensurePlaybackContext();
-  ttsAbort = new AbortController();
-  $("stop-voice").disabled = false;
-  try {
-    await post("tts", {text, language}, ttsAbort.signal);
-    const response = await fetch("/last-output.wav", {cache: "no-store", signal: ttsAbort.signal});
-    if (!response.ok) throw Error("TTS produced no audio");
-    const audio = await ctx.decodeAudioData((await response.arrayBuffer()).slice(0));
-    await new Promise(resolve => {
-      const src = ctx.createBufferSource();
-      playing = src;
-      src.buffer = audio;
-      src.connect(ctx.destination);
-      src.onended = () => { if (playing === src) playing = null; resolve(); };
-      src.start();
-    });
-  } finally {
-    $("stop-voice").disabled = true;
-    ttsAbort = null;
-  }
+  const response = await fetch("/last-output.wav", {cache: "no-store"});
+  if (!response.ok) return;
+  const audio = await ctx.decodeAudioData((await response.arrayBuffer()).slice(0));
+  await new Promise(resolve => {
+    const src = ctx.createBufferSource();
+    playing = src;
+    src.buffer = audio;
+    src.connect(ctx.destination);
+    src.onended = () => { if (playing === src) playing = null; $("stop-voice").disabled = true; resolve(); };
+    src.start();
+    $("stop-voice").disabled = false;
+  });
 }
 async function resampleMono(samples, from, to) {
   if (from === to) return samples;
@@ -282,11 +280,6 @@ async function audioFileToWav(file) {
     const pcm = await resampleMono(mono, decoded.sampleRate, schema.mic.sample_rate);
     return {wav: makeWav([pcm], schema.mic.sample_rate), seconds: pcm.length / schema.mic.sample_rate};
   } finally { await ctx.close(); }
-}
-function fillLanguages(select) {
-  select.innerHTML = "";
-  for (const [code, name] of Object.entries(schema.languages.reply)) select.add(new Option(`${name} (${code})`, code));
-  select.value = schema.languages.default_reply;
 }
 const KNOB_LABEL = {
   mic: "Mic", asr_runtime: "Parakeet", asr_chunk: "Parakeet chunk",
@@ -337,8 +330,7 @@ function renderKnobs() {
   }
   root.innerHTML = `<div class="knob-grid">${bits.join("")}</div>`;
   root.querySelectorAll("input,select,textarea").forEach(el => {
-    const ev = el.type === "text" || el.tagName === "TEXTAREA" ? "change" : "change";
-    el.addEventListener(ev, () => applyKnob(el).catch(showError));
+    el.addEventListener("change", () => applyKnob(el).catch(showError));
   });
   root.dataset.ready = "1";
 }
@@ -346,12 +338,14 @@ async function applyKnob(el) {
   const group = el.dataset.group;
   const value = el.type === "checkbox" ? el.checked : el.type === "number" ? Number(el.value) : el.value;
   const patch = group === "brain_system" || group === "brain_thinking" ? {[group]: value} : {[group]: {[el.dataset.key]: value}};
-  const result = await post("configure", {patch});
-  const next = await json("/api?op=schema");
-  schema.settings = next.settings;
-  schema.mic = next.mic;
-  if (result.dirty?.length) $("job-status").textContent = `restart ${result.dirty.join(", ")}`;
+  await post("configure", {patch});
 }
+
+const events = new EventSource("/events");
+events.addEventListener("update", e => settle(JSON.parse(e.data)));
+events.onerror = () => { $("connection").textContent = "offline"; $("connection").className = "pill bad"; };
+
+document.addEventListener("pointerdown", () => ensurePlaybackContext(), {once: true});
 $("install").onclick = installMissing;
 $("engines").onclick = toggleEngines;
 $("record").onclick = () => (recording ? stopMic(true) : startMic()).catch(showError);
@@ -359,21 +353,14 @@ $("stop-voice").onclick = stopVoice;
 $("speak-run").onclick = () => {
   const text = $("speak-text").value.trim();
   if (!text) return showError(Error("Type text to speak"));
-  speak(text, $("input-language").value).catch(showError);
+  post("tts", {text, language: $("input-language").value}).catch(showError);
 };
 $("audio-file").onchange = ev => {
   const file = ev.target.files && ev.target.files[0];
   ev.target.value = "";
   if (!file) return;
-  audioFileToWav(file).then(({wav, seconds}) => {
-    $("mic-status").textContent = `${file.name} · ${seconds.toFixed(2)}s`;
-    return processUtterance(wav, seconds, null);
-  }).catch(showError);
+  audioFileToWav(file).then(({wav, seconds}) => processUtterance(wav, seconds, null)).catch(showError);
 };
 window.addEventListener("pagehide", () => {
   navigator.sendBeacon("/api", new Blob([JSON.stringify({op: "goodbye"})], {type: "application/json"}));
 });
-refresh().then(() => {
-  fillLanguages($("reply-language"));
-  fillLanguages($("input-language"));
-}).catch(showError);
