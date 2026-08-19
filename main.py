@@ -861,6 +861,7 @@ def synthesize(text: str, language: str) -> dict:
                 "chunks": int(line.get("chunks") or 1),
                 "seconds": float(line.get("seconds") or 0),
                 "mtime": wav.stat().st_mtime if wav.is_file() else 0.0,
+                "applied": line.get("applied") or {},
             })
         if not result:
             raise RuntimeError("tts stream ended without a result")

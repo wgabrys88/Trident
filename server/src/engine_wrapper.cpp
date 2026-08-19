@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cmath>
 #include <filesystem>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -137,7 +138,7 @@ void EngineWrapper::prepare(const Voice& voice, const std::string& text) {
         const Voice& have = impl_->voice;
         auto key = [](const Voice& v) {
             return std::tie(v.reference, v.language, v.reference_mtime, v.seed, v.max_tokens,
-                v.top_k, v.cfm_steps, v.exaggeration, v.cfg, v.temperature, v.repeat, v.min_p, v.top_p);
+                v.top_k, v.cfm_steps, v.exaggeration, v.cfg_weight, v.temperature, v.repeat_penalty, v.min_p, v.top_p);
         };
         if (!impl_->engine || key(have) != key(voice)) {
             if (!std::filesystem::is_regular_file(voice.reference))
@@ -156,12 +157,30 @@ void EngineWrapper::prepare(const Voice& voice, const std::string& text) {
             options.top_p = voice.top_p;
             options.min_p = voice.min_p;
             options.temperature = voice.temperature;
-            options.repeat_penalty = voice.repeat;
-            options.cfg_weight = voice.cfg;
+            options.repeat_penalty = voice.repeat_penalty;
+            options.cfg_weight = voice.cfg_weight;
             options.exaggeration = voice.exaggeration;
             options.cfm_steps = voice.cfm_steps;
             impl_->engine = std::make_shared<tts_cpp::chatterbox::Engine>(options);
             impl_->voice = voice;
+            std::cerr << "tts engine t3=" << impl_->t3
+                      << " s3=" << impl_->s3
+                      << " gpu=" << impl_->gpu
+                      << " threads=" << impl_->threads
+                      << " n_ctx=" << impl_->context
+                      << " lang=" << voice.language
+                      << " seed=" << voice.seed
+                      << " max_tokens=" << voice.max_tokens
+                      << " top_k=" << voice.top_k
+                      << " top_p=" << voice.top_p
+                      << " min_p=" << voice.min_p
+                      << " temp=" << voice.temperature
+                      << " repeat=" << voice.repeat_penalty
+                      << " cfg=" << voice.cfg_weight
+                      << " exag=" << voice.exaggeration
+                      << " cfm=" << voice.cfm_steps
+                      << " chunk=" << voice.chunk_chars
+                      << std::endl;
         }
     }
     impl_->pieces = pack_text(text, voice.chunk_chars);

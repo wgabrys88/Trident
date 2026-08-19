@@ -35,6 +35,26 @@ void write_wav(const std::string& path, const std::vector<float>& pcm, uint32_t 
     out.write(reinterpret_cast<const char*>(samples.data()), data_size);
 }
 
+json applied_from(const tts::Voice& voice, int gpu, int threads, int context) {
+    return {
+        {"language", voice.language},
+        {"seed", voice.seed},
+        {"max_tokens", voice.max_tokens},
+        {"top_k", voice.top_k},
+        {"top_p", voice.top_p},
+        {"min_p", voice.min_p},
+        {"temperature", voice.temperature},
+        {"repeat_penalty", voice.repeat_penalty},
+        {"cfg_weight", voice.cfg_weight},
+        {"exaggeration", voice.exaggeration},
+        {"cfm_steps", voice.cfm_steps},
+        {"chunk_chars", voice.chunk_chars},
+        {"n_gpu_layers", gpu},
+        {"n_threads", threads},
+        {"n_ctx", context},
+    };
+}
+
 tts::Voice voice_from(const json& body) {
     tts::Voice voice;
     voice.reference = body.at("reference").get<std::string>();
@@ -44,11 +64,11 @@ tts::Voice voice_from(const json& body) {
     voice.max_tokens = body.at("max_tokens").get<int>();
     voice.top_k = body.at("top_k").get<int>();
     voice.cfm_steps = body.at("cfm_steps").get<int>();
-    voice.chunk_chars = body.value("chunk_chars", 300);
+    voice.chunk_chars = body.at("chunk_chars").get<int>();
     voice.exaggeration = body.at("exaggeration").get<float>();
-    voice.cfg = body.at("cfg_weight").get<float>();
+    voice.cfg_weight = body.at("cfg_weight").get<float>();
     voice.temperature = body.at("temperature").get<float>();
-    voice.repeat = body.at("repeat_penalty").get<float>();
+    voice.repeat_penalty = body.at("repeat_penalty").get<float>();
     voice.min_p = body.at("min_p").get<float>();
     voice.top_p = body.at("top_p").get<float>();
     return voice;
@@ -85,8 +105,15 @@ int main(int argc, char** argv) {
         engine.initialize(t3, s3, gpu, threads, context);
         httplib::Server http;
         http.set_tcp_nodelay(true);
-        http.Get("/health", [](const httplib::Request&, httplib::Response& response) {
-            response.set_content("{\"status\":\"ok\"}", "application/json");
+        http.Get("/health", [&](const httplib::Request&, httplib::Response& response) {
+            response.set_content(json{
+                {"status", "ok"},
+                {"n_gpu_layers", gpu},
+                {"n_threads", threads},
+                {"n_ctx", context},
+                {"t3", t3},
+                {"s3gen", s3},
+            }.dump(), "application/json");
         });
         http.Post("/cancel", [&](const httplib::Request&, httplib::Response& response) {
             engine.cancel();
@@ -119,7 +146,7 @@ int main(int argc, char** argv) {
             auto started = std::make_shared<std::chrono::steady_clock::time_point>(std::chrono::steady_clock::now());
             auto closed = std::make_shared<bool>(false);
             response.set_chunked_content_provider("application/x-ndjson",
-                [&engine, voice, wav, part, dir, started, closed](size_t, httplib::DataSink& sink) {
+                [&engine, voice, wav, part, dir, started, closed, gpu, threads, context](size_t, httplib::DataSink& sink) {
                     if (*closed) return false;
                     auto emit = [&](const json& line) {
                         const auto blob = line.dump() + "\n";
@@ -148,6 +175,7 @@ int main(int argc, char** argv) {
                         const double ms = std::chrono::duration<double, std::milli>(
                             std::chrono::steady_clock::now() - *started).count();
                         write_wav(wav, speech.pcm, 24000);
+                        const json applied = applied_from(voice, gpu, threads, context);
                         emit({
                             {"ok", true}, {"done", true},
                             {"samples", speech.pcm.size()},
@@ -159,14 +187,14 @@ int main(int argc, char** argv) {
                             {"chunks", speech.chunks},
                             {"language", voice.language},
                             {"path", wav},
+                            {"applied", applied},
                         });
                         std::cerr << "tts done samples=" << speech.pcm.size()
                                   << " t3_ms=" << speech.t3_ms
                                   << " s3gen_ms=" << speech.s3gen_ms
                                   << " ms=" << ms
-                                  << " cfm_steps=" << voice.cfm_steps
                                   << " chunks=" << speech.chunks
-                                  << " lang=" << voice.language << std::endl;
+                                  << " applied=" << applied.dump() << std::endl;
                     } catch (const std::exception& exception) {
                         emit({{"error", exception.what()}});
                         engine.finish();
