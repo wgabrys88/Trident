@@ -77,7 +77,7 @@ def _family(label, languages, context, chars, cfm, min_p, cfg, exaggeration, mod
 FAMILIES = {
     "v3": _family(
         "CHATTERBOX TTS V3", {"en": "English", "pl": "Polish", "de": "German"},
-        512, 120, 10, 0.05, 0.5, 0.5,
+        2048, 120, 10, 0.05, 0.5, 0.5,
         {
             "chatterbox-t3": _gguf(
                 "CHATTERBOX V3 T3", "ResembleAI/chatterbox",
@@ -97,7 +97,7 @@ FAMILIES = {
     ),
     "turbo": _family(
         "CHATTERBOX TTS TURBO", dict(_EN),
-        512, 120, 2, 0.0, 0.0, 0.5,
+        2048, 120, 2, 0.0, 0.0, 0.0,
         {
             "chatterbox-t3": _gguf(
                 "CHATTERBOX TURBO T3", "ResembleAI/chatterbox-turbo",

@@ -89,14 +89,6 @@ static std::vector<std::string> pack_text(const std::string& text, int limit) {
                 k = j;
                 continue;
             }
-            if (static_cast<int>(acc.size()) >= limit) {
-                size_t back = acc.size();
-                while (back > static_cast<size_t>(limit * 3 / 4) && !is_ws(static_cast<unsigned char>(acc[back - 1])))
-                    --back;
-                if (back <= static_cast<size_t>(limit / 2)) back = acc.size();
-                refined.push_back(acc.substr(0, back));
-                acc.erase(0, back);
-            }
             ++k;
         }
         if (!acc.empty()) refined.push_back(acc);
@@ -118,10 +110,23 @@ static std::vector<std::string> pack_text(const std::string& text, int limit) {
     return packed.empty() ? std::vector<std::string>{text} : packed;
 }
 
+static int quiet_edge(const std::vector<float>& x, bool tail) {
+    const int n = static_cast<int>(x.size());
+    int i = 0;
+    while (i < n) {
+        const float s = tail ? x[n - 1 - i] : x[i];
+        if (s * s >= 0.0004f) break;
+        ++i;
+    }
+    return i;
+}
+
 static void glue(std::vector<float>& dst, const std::vector<float>& src) {
     if (dst.empty()) { dst = src; return; }
     if (src.empty()) return;
-    const int n = std::min(kGlue, static_cast<int>(std::min(dst.size(), src.size())));
+    const int cap = std::min(kGlue, static_cast<int>(std::min(dst.size(), src.size())));
+    int n = std::min(quiet_edge(dst, true), quiet_edge(src, false));
+    n = std::min(cap, std::max(n, std::min(480, cap)));
     const float step = 1.5707963267948966f / static_cast<float>(std::max(n, 1));
     for (int i = 0; i < n; ++i) {
         const float w = static_cast<float>(i) * step;
@@ -207,9 +212,13 @@ bool EngineWrapper::step(const std::function<void(int, int, const std::vector<fl
     impl_->speech.t3_ms += result.t3_ms;
     impl_->speech.s3gen_ms += result.s3gen_ms;
     const bool last = impl_->index + 1 == static_cast<int>(impl_->pieces.size());
-    const int hold = last ? 0 : std::min(kGlue, static_cast<int>(impl_->speech.pcm.size()));
     const int from = impl_->handed;
-    const int to = static_cast<int>(impl_->speech.pcm.size()) - hold;
+    int hold = last ? 0 : std::min(kGlue, static_cast<int>(impl_->speech.pcm.size()));
+    int to = static_cast<int>(impl_->speech.pcm.size()) - hold;
+    if (to <= from) {
+        hold = 0;
+        to = static_cast<int>(impl_->speech.pcm.size());
+    }
     std::vector<float> playable;
     if (to > from)
         playable.assign(impl_->speech.pcm.begin() + from, impl_->speech.pcm.begin() + to);

@@ -89,7 +89,7 @@ async function send(kind) {
   const text = $(heard ? "transcript" : "answer").value.trim();
   if (!text) return showError(Error(heard ? "Heard is empty" : "Answer is empty"));
   if (heard) { lastHeard = text; await post("brain", {prompt: text, language: lang()}); }
-  else { lastAnswer = text; await post("tts", {text, language: lang()}); }
+  else { lastAnswer = text; hush(); await post("tts", {text, language: lang()}); }
 }
 function advance() {
   const v = live(), asr = v.asr || {}, brain = v.brain || {};
@@ -100,6 +100,7 @@ function advance() {
   }
   if ($("answer-auto").checked && brain.status === "done" && answer && answer !== lastAnswer && v.tts?.status !== "running") {
     lastAnswer = answer;
+    hush();
     post("tts", {text: answer, language: lang()}).catch(showError);
   }
 }
@@ -292,7 +293,7 @@ async function drainPacks() {
   if (!tts || (tts.status !== "running" && tts.status !== "done")) return;
   const text = (tts.text || "").trim();
   if (!$("answer-auto").checked && text !== $("answer").value.trim()) return;
-  const ready = tts.status === "done" ? Number(tts.chunks || 0) : Number(tts.chunk) + 1;
+  const ready = tts.status === "done" ? Number(tts.chunks || 0) : (Number(tts.chunks) > 0 ? Number(tts.chunk) + 1 : 0);
   if (!Number.isFinite(ready) || ready <= 0) return;
   if (tts.status === "running" && Number(tts.chunk) === 0 && playNext > 0) hush();
   while (playNext < ready) {

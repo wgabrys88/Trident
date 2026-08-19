@@ -74,6 +74,7 @@ BRAIN = {"id": BRAIN_MODEL, "label": "GEMMA 4 E2B", "model": "gemma", "family": 
 CHATTERBOX_LIBRARY = CHATTERBOX / "build" / "Release" / "tts-cpp.lib"
 TTS_SERVER = SERVER / "build" / "Release" / "tts-server.exe"
 LOCK = threading.RLock()
+CONVERT_LOCK = threading.Lock()
 SESSION = uuid.uuid4().hex
 PROCESSES: dict[str, subprocess.Popen] = {}
 SUBS: list[queue.Queue] = []
@@ -487,54 +488,55 @@ def download_model(name: str, key: str):
         python = CONVERTER / "Scripts" / "python.exe"
         lock = "numpy==1.26.4 torch==2.6.0 gguf==0.19.0 safetensors==0.5.3 scipy==1.15.3 librosa==0.11.0 resampy==0.4.3 huggingface-hub==0.34.4"
         stamp = CONVERTER / ".packages"
-        if not python.is_file():
-            set_job(key, "running", "environment", 5, "creating converter environment")
-            run(name, "venv", [sys.executable, "-m", "venv", str(CONVERTER)], ROOT, os.environ.copy())
-        if not stamp.is_file() or stamp.read_text(encoding="ascii") != lock:
-            run(name, "torch", [str(python), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "torch==2.6.0", "--index-url", "https://download.pytorch.org/whl/cpu"], ROOT, os.environ.copy())
-            run(name, "converter-dependencies", [str(python), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", *lock.split()], ROOT, os.environ.copy())
-            stamp.parent.mkdir(parents=True, exist_ok=True)
-            stamp.write_text(lock, encoding="ascii")
-        required = tuple(recipe["files"])
-        checkpoint = CONVERTER / "checkpoints" / spec["revision"]
-        marker = checkpoint / ".revision"
-        stamp_id = spec["repo"] + ":" + spec["revision"] + ":" + ",".join(required)
-        cache_ok = marker.is_file() and marker.read_text(encoding="ascii") == stamp_id and all((checkpoint / item).is_file() for item in required)
-        if not cache_ok:
-            if checkpoint.exists():
-                shutil.rmtree(checkpoint)
-            checkpoint.mkdir(parents=True, exist_ok=True)
-            set_job(key, "running", "checkpoint", 12, f"downloading {spec['label']} checkpoint")
-            code = (
-                "from huggingface_hub import snapshot_download; "
-                f"snapshot_download(repo_id={spec['repo']!r}, revision={spec['revision']!r}, "
-                f"allow_patterns={list(required)!r}, local_dir={str(checkpoint)!r})"
-            )
-            env = os.environ.copy()
-            env["HF_HOME"] = str(TOOLS / "huggingface")
-            run(name, "checkpoint", [str(python), "-c", code], ROOT, env)
-            missing = [item for item in required if not (checkpoint / item).is_file()]
-            if missing:
-                raise RuntimeError(f"checkpoint download incomplete: {missing}")
-            marker.write_text(stamp_id, encoding="ascii")
-        for src, dst in recipe.get("copy", {}).items():
-            shutil.copyfile(checkpoint / src, checkpoint / dst)
-        partial = destination.with_suffix(destination.suffix + ".part")
-        partial.unlink(missing_ok=True)
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        command = [str(python), str(script)]
-        if recipe.get("variant"):
-            command += ["--variant", recipe["variant"]]
-        command += ["--ckpt-dir", str(checkpoint), "--out", str(partial), "--quant", recipe["quant"]]
-        env = build_env()
-        env["HF_HOME"] = str(TOOLS / "huggingface")
-        set_job(key, "running", "convert", 20, f"converting {spec['label']}")
-        run(name, "convert", command, ROOT, env)
-        ready = present(partial, spec["size"]) if spec["size"] else partial.is_file() and partial.stat().st_size > 0
-        if not ready:
+        with CONVERT_LOCK:
+            if not python.is_file():
+                set_job(key, "running", "environment", 5, "creating converter environment")
+                run(name, "venv", [sys.executable, "-m", "venv", str(CONVERTER)], ROOT, os.environ.copy())
+            if not stamp.is_file() or stamp.read_text(encoding="ascii") != lock:
+                run(name, "torch", [str(python), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "torch==2.6.0", "--index-url", "https://download.pytorch.org/whl/cpu"], ROOT, os.environ.copy())
+                run(name, "converter-dependencies", [str(python), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", *lock.split()], ROOT, os.environ.copy())
+                stamp.parent.mkdir(parents=True, exist_ok=True)
+                stamp.write_text(lock, encoding="ascii")
+            required = tuple(recipe["files"])
+            checkpoint = CONVERTER / "checkpoints" / spec["revision"]
+            marker = checkpoint / ".revision"
+            stamp_id = spec["repo"] + ":" + spec["revision"] + ":" + ",".join(required)
+            cache_ok = marker.is_file() and marker.read_text(encoding="ascii") == stamp_id and all((checkpoint / item).is_file() for item in required)
+            if not cache_ok:
+                if checkpoint.exists():
+                    shutil.rmtree(checkpoint)
+                checkpoint.mkdir(parents=True, exist_ok=True)
+                set_job(key, "running", "checkpoint", 12, f"downloading {spec['label']} checkpoint")
+                code = (
+                    "from huggingface_hub import snapshot_download; "
+                    f"snapshot_download(repo_id={spec['repo']!r}, revision={spec['revision']!r}, "
+                    f"allow_patterns={list(required)!r}, local_dir={str(checkpoint)!r})"
+                )
+                env = os.environ.copy()
+                env["HF_HOME"] = str(TOOLS / "huggingface")
+                run(name, "checkpoint", [str(python), "-c", code], ROOT, env)
+                missing = [item for item in required if not (checkpoint / item).is_file()]
+                if missing:
+                    raise RuntimeError(f"checkpoint download incomplete: {missing}")
+                marker.write_text(stamp_id, encoding="ascii")
+            for src, dst in recipe.get("copy", {}).items():
+                shutil.copyfile(checkpoint / src, checkpoint / dst)
+            partial = destination.with_suffix(destination.suffix + ".part")
             partial.unlink(missing_ok=True)
-            raise RuntimeError(f"converted model missing or truncated: {partial}")
-        os.replace(partial, destination)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            command = [str(python), str(script)]
+            if recipe.get("variant"):
+                command += ["--variant", recipe["variant"]]
+            command += ["--ckpt-dir", str(checkpoint), "--out", str(partial), "--quant", recipe["quant"]]
+            env = build_env()
+            env["HF_HOME"] = str(TOOLS / "huggingface")
+            set_job(key, "running", "convert", 20, f"converting {spec['label']}")
+            run(name, "convert", command, ROOT, env)
+            ready = present(partial, spec["size"]) if spec["size"] else partial.is_file() and partial.stat().st_size > 0
+            if not ready:
+                partial.unlink(missing_ok=True)
+                raise RuntimeError(f"converted model missing or truncated: {partial}")
+            os.replace(partial, destination)
     else:
         url = spec.get("url") or f"https://huggingface.co/{spec['repo']}/resolve/{spec['revision']}/{spec['file']}"
         fetch(url, destination, spec["size"], key)
@@ -828,7 +830,7 @@ def synthesize(text: str, language: str) -> dict:
     if language not in TTS_LANGUAGES:
         raise ApiError(400, f"unsupported speech language: {language}")
     require_engine("tts")
-    set_view(stage="speaking", error="", tts={"text": text, "language": language, "status": "running"}, played={"text": "", "status": "idle"})
+    set_view(stage="speaking", error="", tts={"text": text, "language": language, "status": "running", "chunk": 0, "chunks": 0, "seconds": 0.0, "mtime": 0.0}, played={"text": "", "status": "idle"})
     ref = reference_path()
     payload = {
         "text": text, "language": language, "reference": str(ref),
