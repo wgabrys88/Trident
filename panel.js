@@ -1,11 +1,8 @@
 const $ = id => document.getElementById(id);
 let schema = null, state = null, recording = null, playContext = null, playing = null;
 let playNext = 0, playAt = 0, lastHeard = "", lastAnswer = "", rmsText = "", primed = false;
-const voices = [];
-let playTail = Promise.resolve();
-const pending = new Map();
-let packBytes = [];
-let playedKey = "";
+let session = "", playTail = Promise.resolve(), playedKey = "";
+const voices = [], pending = new Map();
 
 function fault(message = "") {
   $("fault").hidden = !message;
@@ -18,10 +15,10 @@ async function json(url, options = {}) {
   if (!response.ok) throw Error(body.error || `HTTP ${response.status}`);
   return body;
 }
-async function post(op, data = {}) {
+function post(op, data = {}) {
   return json("/api", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({op, ...data})});
 }
-async function wav(op, buffer) {
+function wav(op, buffer) {
   return json(`/api?op=${encodeURIComponent(op)}`, {method: "POST", headers: {"Content-Type": "audio/wav"}, body: buffer});
 }
 function status(values) {
@@ -33,6 +30,8 @@ function status(values) {
 }
 function names(obj) { return Object.keys(obj || {}); }
 function mic() { return schema.mic; }
+function live() { return state?.live || {}; }
+function lang() { return $("reply-language").value; }
 function coreReady() {
   return state && schema
     && names(schema.prerequisites).every(n => state.prerequisites[n]?.status === "ready")
@@ -42,8 +41,6 @@ function coreReady() {
 function enginesRunning() {
   return state && names(state.engines).every(n => state.engines[n]?.status === "running");
 }
-function lang() { return $("reply-language").value; }
-function live() { return state?.live || {}; }
 function spoken() {
   const v = live(), tts = v.tts || {}, brain = v.brain || {};
   if (tts.status === "running") return (tts.text || "").trim();
@@ -57,16 +54,19 @@ function paintField(el, auto, text) {
 function render() {
   if (!state || !schema) return;
   $("connection").textContent = "online";
+  const v = live();
   const pre = status(state.prerequisites);
   const comp = status(state.components);
   const models = status(Object.fromEntries(schema.required_models.map(n => [n, state.models[n]])));
   const on = enginesRunning();
-  $("dots").textContent = `pre ${pre} · runtimes ${comp} · models ${models} · engines ${on ? "running" : status(state.engines)}`;
+  const fam = schema.tts?.family || "";
+  const packs = (v.tts?.status === "running" || v.tts?.status === "done")
+    ? `pack ${(Number(v.tts.chunk) || 0) + (v.tts.status === "done" ? 0 : 1)}/${v.tts.chunks || "?"}` : "";
+  $("dots").textContent = [fam, schema.tts?.label || "", `pre ${pre}`, `runtimes ${comp}`, `models ${models}`, `engines ${on ? "running" : status(state.engines)}`, packs].filter(Boolean).join(" · ");
   $("install").disabled = coreReady();
   $("engines").disabled = !coreReady();
   $("engines").textContent = on ? "Stop" : "Start";
   $("record").disabled = $("audio-file").disabled = $("heard-send").disabled = $("answer-send").disabled = !on;
-  const v = live();
   $("asr-state").textContent = v.asr?.status || "idle";
   $("brain-state").textContent = v.tts?.status === "running" ? "speaking" : (v.brain?.status || "idle");
   $("played-state").textContent = v.played?.status || "idle";
@@ -102,14 +102,23 @@ function advance() {
     post("tts", {text: answer, language: lang()}).catch(showError);
   }
 }
+function fillSelect(el, entries, fallback) {
+  const keep = el.value;
+  el.innerHTML = "";
+  for (const [code, name] of entries) el.add(new Option(name, code));
+  const codes = [...el.options].map(o => o.value);
+  el.value = codes.includes(keep) ? keep : (codes.includes(fallback) ? fallback : (codes[0] || ""));
+}
 function settle(inspect) {
+  if (!session && inspect.session) session = inspect.session;
   schema = inspect.schema;
   state = inspect.state;
-  if (schema && !$("reply-language").options.length) {
-    const sel = $("reply-language");
-    sel.innerHTML = "";
-    for (const [code, name] of Object.entries(schema.languages.reply)) sel.add(new Option(`${name} (${code})`, code));
-    sel.value = schema.languages.default_reply;
+  if (schema?.tts?.families) {
+    fillSelect($("tts-family"), Object.entries(schema.tts.families), schema.tts.family);
+    if (schema.tts.family) $("tts-family").value = schema.tts.family;
+  }
+  if (schema?.languages?.reply) {
+    fillSelect($("reply-language"), Object.entries(schema.languages.reply).map(([code, name]) => [code, `${name} (${code})`]), schema.languages.default_reply);
   }
   const tts = live().tts || {};
   if (tts.status === "done" && tts.text) lastAnswer = tts.text.trim();
@@ -246,7 +255,6 @@ function hush() {
   playing = null;
   playAt = 0;
   playNext = 0;
-  packBytes = [];
   playedKey = "";
 }
 function stopVoice() {
@@ -257,50 +265,11 @@ function stopVoice() {
 function playLive() {
   playTail = playTail.then(drainPacks).catch(showError);
 }
-function wavData(buf) {
-  const v = new DataView(buf), u8 = new Uint8Array(buf);
-  const tag = o => String.fromCharCode(u8[o], u8[o + 1], u8[o + 2], u8[o + 3]);
-  if (tag(0) !== "RIFF" || tag(8) !== "WAVE") throw Error("pack is not a WAV");
-  let o = 12, rate = 0, pcm = null, channels = 1, bits = 16;
-  while (o + 8 <= buf.byteLength) {
-    const id = tag(o), size = v.getUint32(o + 4, true), body = o + 8;
-    if (id === "fmt ") {
-      channels = v.getUint16(body + 2, true);
-      rate = v.getUint32(body + 4, true);
-      bits = v.getUint16(body + 14, true);
-    } else if (id === "data") pcm = buf.slice(body, body + size);
-    o = body + size + (size & 1);
-  }
-  if (!pcm || bits !== 16 || channels !== 1 || !rate) throw Error("packs must be mono PCM16");
-  return {rate, pcm};
-}
-function mergePackWavs(buffers) {
-  const parts = buffers.map(wavData);
-  const rate = parts[0].rate;
-  const n = parts.reduce((sum, part) => sum + part.pcm.byteLength, 0);
-  const pcm = new Uint8Array(n);
-  let o = 0;
-  for (const part of parts) {
-    if (part.rate !== rate) throw Error("pack sample rate mismatch");
-    pcm.set(new Uint8Array(part.pcm), o);
-    o += part.pcm.byteLength;
-  }
-  const out = new ArrayBuffer(44 + n), v = new DataView(out), u8 = new Uint8Array(out);
-  const put = (at, s) => { for (let i = 0; i < s.length; i++) u8[at + i] = s.charCodeAt(i); };
-  put(0, "RIFF"); v.setUint32(4, 36 + n, true); put(8, "WAVEfmt ");
-  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
-  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
-  put(36, "data"); v.setUint32(40, n, true);
-  u8.set(pcm, 44);
-  return out;
-}
 async function enqueuePack(index) {
   const ctx = await ensurePlaybackContext();
   const response = await fetch(`/last-chunk.wav?c=${index}`, {cache: "no-store"});
   if (!response.ok) throw Error(`pack ${index} HTTP ${response.status}`);
-  const bytes = await response.arrayBuffer();
-  packBytes[index] = bytes.slice(0);
-  const audio = await ctx.decodeAudioData(bytes.slice(0));
+  const audio = await ctx.decodeAudioData(await response.arrayBuffer());
   const src = ctx.createBufferSource();
   src.buffer = audio;
   src.connect(ctx.destination);
@@ -316,16 +285,6 @@ async function enqueuePack(index) {
   playing = src;
   voices.push(src);
   $("stop-voice").disabled = false;
-}
-async function hearPlayed(chunks) {
-  const missing = [];
-  const parts = [];
-  for (let i = 0; i < chunks; i++) {
-    if (!packBytes[i]) missing.push(i);
-    else parts.push(packBytes[i]);
-  }
-  if (missing.length) throw Error(`missing packs: ${missing.join(",")}`);
-  await wav("played", mergePackWavs(parts));
 }
 async function drainPacks() {
   const tts = live().tts;
@@ -344,7 +303,7 @@ async function drainPacks() {
   const key = `${text}\0${chunks}\0${tts.mtime || 0}`;
   if (tts.status === "done" && chunks > 0 && playNext >= chunks && playedKey !== key) {
     playedKey = key;
-    await hearPlayed(chunks);
+    await post("played");
   }
 }
 async function audioFileToWav(file) {
@@ -376,6 +335,12 @@ events.onerror = () => { $("connection").textContent = "offline"; };
 document.addEventListener("pointerdown", () => ensurePlaybackContext(), {once: true});
 $("install").onclick = installMissing;
 $("engines").onclick = toggleEngines;
+$("tts-family").onchange = () => {
+  const name = $("tts-family").value;
+  if (!name || name === schema?.tts?.family) return;
+  fault();
+  post("set_family", {name}).then(() => hush()).catch(showError);
+};
 $("record").onclick = () => (recording ? stopMic(true) : startMic()).catch(showError);
 $("stop-voice").onclick = stopVoice;
 $("heard-send").onclick = () => send("heard").catch(showError);
@@ -394,5 +359,5 @@ $("audio-file").onchange = ev => {
   if (file) audioFileToWav(file).then(({wav, seconds}) => processUtterance(wav, seconds, null)).catch(showError);
 };
 window.addEventListener("pagehide", () => {
-  navigator.sendBeacon("/api", new Blob([JSON.stringify({op: "goodbye"})], {type: "application/json"}));
+  navigator.sendBeacon("/api", new Blob([JSON.stringify({op: "goodbye", session})], {type: "application/json"}));
 });

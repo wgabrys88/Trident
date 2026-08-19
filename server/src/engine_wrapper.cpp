@@ -37,8 +37,6 @@ void EngineWrapper::initialize(const std::string& t3, const std::string& s3, int
     impl_->context = context;
 }
 
-// Dot-first pack, same shape as chatterbox.cpp split_text_for_tts:
-// split on .!? , refine oversized sentences at ,:; , then merge up to limit.
 static std::vector<std::string> pack_text(const std::string& text, int limit) {
     if (limit < 40) limit = 40;
     if (text.empty()) return {text};
@@ -119,7 +117,6 @@ static std::vector<std::string> pack_text(const std::string& text, int limit) {
     return packed.empty() ? std::vector<std::string>{text} : packed;
 }
 
-// Equal-power seam: outgoing pack fades on cos, incoming on sin.
 static void glue(std::vector<float>& dst, const std::vector<float>& src) {
     if (dst.empty()) { dst = src; return; }
     if (src.empty()) return;

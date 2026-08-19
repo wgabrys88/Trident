@@ -1,7 +1,4 @@
-# Trident patch for chatterbox.cpp @ ddca05fb69c2910b0d7b5eae420d360ed98c067b
-# Wires official t3_mtl GGUFs through Engine, Vulkan whole-tensor reads,
-# voice-clone hard-fail, and MSVC library build. Not a BricksDisplay remap.
-#
+# chatterbox.cpp @ ddca05fb69c2910b0d7b5eae420d360ed98c067b
 diff --git a/CMakeLists.txt b/CMakeLists.txt
 index e39d04b..bc3502c 100644
 --- a/CMakeLists.txt
@@ -28,11 +25,10 @@ diff --git a/include/tts-cpp/chatterbox/engine.h b/include/tts-cpp/chatterbox/en
 index 189740e..f539ec0 100644
 --- a/include/tts-cpp/chatterbox/engine.h
 +++ b/include/tts-cpp/chatterbox/engine.h
-@@ -99,6 +99,12 @@ struct EngineOptions {
+@@ -99,6 +99,11 @@ struct EngineOptions {
      float temperature    = 0.8f;
      float repeat_penalty = 1.2f;
  
-+    // MTL (t3_mtl) sampling. Turbo ignores these.
 +    std::string language;
 +    float exaggeration   = 0.5f;
 +    float cfg_weight     = 0.5f;
@@ -119,11 +115,10 @@ index b361766..60fe293 100644
          }
  
          s3gen_preload_thread = std::thread([path = opts.s3gen_gguf_path,
-@@ -134,6 +120,8 @@ struct Engine::Impl {
+@@ -134,6 +120,7 @@ struct Engine::Impl {
              free_model();
              throw;
          }
-+        // Finish S3Gen upload before T3 decode shares the same Vulkan device.
 +        wait_for_preload(s3gen_preload_thread);
      }
  
@@ -344,7 +339,7 @@ index 746de95..2b5adf1 100644
  }
  
  // ============================================================================
-@@ -2040,8 +2043,13 @@ int s3gen_synthesize_to_wav(
+@@ -2040,8 +2043,11 @@ int s3gen_synthesize_to_wav(
      //                   estimator calls per step (cond + uncond with zeroed
      //                   mu/spks/cond) combined via cfg_rate.
      std::vector<float> t_span;
@@ -352,8 +347,6 @@ index 746de95..2b5adf1 100644
 -                          (meanflow ? 2 : m.n_timesteps);
 +    int cfm_steps = opts.cfm_steps > 0 ? opts.cfm_steps :
 +                    (meanflow ? 2 : m.n_timesteps);
-+    // MTL meanflow=false must stay on the 10-step solver; 2-step Turbo
-+    // clients otherwise produce a 6 kHz HiFT whistle.
 +    if (!meanflow && cfm_steps > 0 && cfm_steps < 5) {
 +        cfm_steps = m.n_timesteps;
 +    }
@@ -364,12 +357,10 @@ diff --git a/src/t3_mtl.cpp b/src/t3_mtl.cpp
 index 0fc730e..1c7cb7c 100644
 --- a/src/t3_mtl.cpp
 +++ b/src/t3_mtl.cpp
-@@ -872,6 +872,22 @@ bool run_prompt_pass(const chatterbox_model & model,
+@@ -872,6 +872,20 @@ bool run_prompt_pass(const chatterbox_model & model,
      return true;
  }
  
-+// Vulkan rejects a mid-tensor ggml_backend_tensor_get of the uncond half
-+// (ggml-backend.cpp:307). Read the whole [vocab,1,2] buffer once.
 +static bool copy_b2_logits(ggml_tensor * logits, int vocab,
 +                           std::vector<float> & cond, std::vector<float> & uncond) {
 +    if (!logits) return false;
@@ -438,3 +429,22 @@ index 0fc730e..1c7cb7c 100644
  }
  
  bool run_step_pass(const chatterbox_model & model,
+diff --git a/scripts/convert-s3gen-to-gguf.py b/scripts/convert-s3gen-to-gguf.py
+index 3b0be79..25e784b 100644
+--- a/scripts/convert-s3gen-to-gguf.py
++++ b/scripts/convert-s3gen-to-gguf.py
+@@ -526,6 +526,14 @@ def main():
+             add_tensor_maybe_q(writer, gguf_name, as_numpy(state[k], dtype=torch.float32), args.quant, stats=qstats)
+             n_tok += 1
+ 
++        if "tokenizer._mel_filters" not in state:
++            fb = librosa.filters.mel(
++                sr=16000, n_fft=400, n_mels=128, fmin=0, fmax=8000,
++            ).astype(np.float32)
++            add_tensor_maybe_q(writer, "s3tokv2/mel_fb", np.ascontiguousarray(fb), args.quant, stats=qstats)
++            n_tok += 1
++            print(f"Synthesized s3tokv2/mel_fb {fb.shape} (checkpoint has no tokenizer._mel_filters)")
++
+         writer.add_uint32("s3tokv2.n_mels",        128)
+         writer.add_uint32("s3tokv2.n_audio_state", 1280)
+         writer.add_uint32("s3tokv2.n_audio_head",  20)
