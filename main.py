@@ -25,7 +25,7 @@ from cfg import (
     BRAIN_SYSTEM, BRAIN_THINKING, CONTROLLER, MIC, PORTS,
 )
 import cfg, cfg_turbo, cfg_nano
-TTS_FAMILY = "v3"
+TTS_FAMILY = "nano"
 _tts = {"v3": cfg, "turbo": cfg_turbo, "nano": cfg_nano}[TTS_FAMILY]
 DEFAULT_REPLY_LANGUAGE, TTS_CHUNK, TTS_LABEL, TTS_LANGUAGES, TTS_MODELS, TTS_RUNTIME, TTS_SAMPLE, TTS_VOICE = (
     _tts.DEFAULT_REPLY_LANGUAGE, _tts.TTS_CHUNK, _tts.TTS_LABEL, _tts.TTS_LANGUAGES,
