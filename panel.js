@@ -62,7 +62,8 @@ function render() {
   const fam = schema.tts?.family || "";
   const packs = (v.tts?.status === "running" || v.tts?.status === "done")
     ? `pack ${(Number(v.tts.chunk) || 0) + (v.tts.status === "done" ? 0 : 1)}/${v.tts.chunks || "?"}` : "";
-  $("dots").textContent = [fam, schema.tts?.label || "", `pre ${pre}`, `runtimes ${comp}`, `models ${models}`, `engines ${on ? "running" : status(state.engines)}`, packs].filter(Boolean).join(" · ");
+  const knobs = schema.tts || {};
+  $("dots").textContent = [fam, knobs.label || "", knobs.sample ? `cfm ${knobs.sample.cfm_steps}` : "", knobs.runtime ? `ctx ${knobs.runtime.context}` : "", knobs.chunk ? `chunk ${knobs.chunk.chars}` : "", `pre ${pre}`, `runtimes ${comp}`, `models ${models}`, `engines ${on ? "running" : status(state.engines)}`, packs].filter(Boolean).join(" · ");
   $("install").disabled = coreReady();
   $("engines").disabled = !coreReady();
   $("engines").textContent = on ? "Stop" : "Start";
