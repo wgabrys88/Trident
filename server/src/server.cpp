@@ -84,6 +84,7 @@ int main(int argc, char** argv) {
         tts::EngineWrapper engine;
         engine.initialize(t3, s3, gpu, threads, context);
         httplib::Server http;
+        http.set_tcp_nodelay(true);
         http.Get("/health", [](const httplib::Request&, httplib::Response& response) {
             response.set_content("{\"status\":\"ok\"}", "application/json");
         });

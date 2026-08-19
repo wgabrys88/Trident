@@ -563,7 +563,9 @@ def remote_lines(url: str, body: bytes, timeout: int = 600):
             raise RuntimeError(f"HTTP {response.status} from {url}: {response.read().decode('utf-8', 'replace')}")
         buf = b""
         while True:
-            piece = response.read(256)
+            # read(n) on a chunked body waits until n decoded bytes arrive, so a
+            # 256-byte pull spans packs and blocks SSE until the next synthesize.
+            piece = response.read1(256)
             if not piece:
                 break
             buf += piece
