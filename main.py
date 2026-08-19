@@ -284,6 +284,9 @@ def apply_chatterbox_patches(cwd: Path):
         raise RuntimeError("Chatterbox patch set is missing")
     for name in names:
         run("tts", f"patch-{name}", [git, "apply", "--unidiff-zero", str(PATCHES / name)], cwd)
+    if os.environ.get("TRIDENT_INSPECT_PATCHES"):
+        run("tts", "patch-diff", [git, "--no-pager", "diff", "--stat"], cwd)
+        raise SystemExit("TRIDENT_INSPECT_PATCHES: leaving patched tree at " + str(cwd))
 
 def require_build_tools():
     missing = [name for name, value in prerequisites().items() if name in ("git", "cmake", "msvc", "vulkan") and value["status"] != "ready"]
@@ -399,7 +402,7 @@ def install_component(name: str, key: str):
     set_job(key, "running", "ggml", 18, "checking out ggml")
     checkout(name, GGML, "ggml")
     set_job(key, "running", "configure", 30, "configuring Chatterbox Vulkan")
-    run(name, "configure", [cmake, "-S", ".", "-B", "build", "-A", "x64", "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_NATIVE=OFF"], CHATTERBOX)
+    run(name, "configure", [cmake, "-S", ".", "-B", "build", "-A", "x64", "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_NATIVE=OFF", "-DTTS_CPP_BUILD_EXECUTABLES=OFF", "-DTTS_CPP_BUILD_TESTS=OFF"], CHATTERBOX)
     set_job(key, "running", "build", 48, "building Chatterbox")
     run(name, "build", [cmake, "--build", "build", "--config", "Release", "--target", "tts-cpp", "mtl_tokenizer", "--parallel"], CHATTERBOX)
     if not CHATTERBOX_LIBRARY.is_file():
