@@ -41,8 +41,44 @@ index 189740e..f539ec0 100644
      // S3Gen side.  0 = library default (2-step meanflow).
      int cfm_steps = 0;
  
+diff --git a/scripts/convert-t3-turbo-to-gguf.py b/scripts/convert-t3-turbo-to-gguf.py
+index 578dc5c..9c4c0f9 100644
+--- a/scripts/convert-t3-turbo-to-gguf.py
++++ b/scripts/convert-t3-turbo-to-gguf.py
+@@ -205,19 +205,25 @@ def main() -> None:
+     print(f"Loading checkpoint from {ckpt_dir}")
+     state = load_file(ckpt_dir / "t3_turbo_v1.safetensors")
+     conds = torch.load(ckpt_dir / "conds.pt", map_location="cpu", weights_only=True)
++    layer_ids = {int(m.group(1)) for name in state if (m := LAYER_RE.match(name))}
++    n_embd = int(state["tfmr.ln_f.weight"].shape[0])
++    n_layer = max(layer_ids) + 1 if layer_ids else N_LAYER
++    if n_embd % 64:
++        raise SystemExit(f"n_embd {n_embd} is not divisible by head dim 64")
++    n_head = n_embd // 64
+ 
+     writer = gguf.GGUFWriter(str(args.out), "chatterbox")
+     writer.add_name("Chatterbox Turbo T3")
+     writer.add_description("Chatterbox Turbo text-to-speech token generator for ggml.")
+     writer.add_context_length(N_CTX)
+-    writer.add_embedding_length(N_EMBD)
+-    writer.add_block_count(N_LAYER)
+-    writer.add_head_count(N_HEAD)
++    writer.add_embedding_length(n_embd)
++    writer.add_block_count(n_layer)
++    writer.add_head_count(n_head)
+     writer.add_vocab_size(TEXT_VOCAB_SIZE)
+     writer.add_uint32("chatterbox.n_ctx", N_CTX)
+-    writer.add_uint32("chatterbox.n_embd", N_EMBD)
+-    writer.add_uint32("chatterbox.n_head", N_HEAD)
+-    writer.add_uint32("chatterbox.n_layer", N_LAYER)
++    writer.add_uint32("chatterbox.n_embd", n_embd)
++    writer.add_uint32("chatterbox.n_head", n_head)
++    writer.add_uint32("chatterbox.n_layer", n_layer)
+     writer.add_uint32("chatterbox.text_vocab_size", TEXT_VOCAB_SIZE)
+     writer.add_uint32("chatterbox.speech_vocab_size", SPEECH_VOCAB_SIZE)
+     writer.add_uint32("chatterbox.start_speech_token", START_SPEECH_TOKEN)
 diff --git a/src/chatterbox_engine.cpp b/src/chatterbox_engine.cpp
-index b361766..d4f0c82 100644
+index b361766..60fe293 100644
 --- a/src/chatterbox_engine.cpp
 +++ b/src/chatterbox_engine.cpp
 @@ -11,6 +11,7 @@
@@ -92,7 +128,7 @@ index b361766..d4f0c82 100644
      }
  
      ~Impl() {
-@@ -236,34 +224,39 @@ struct Engine::Impl {
+@@ -236,31 +224,36 @@ struct Engine::Impl {
  
          if (!have_se && !opts.reference_audio.empty()) {
              voice_encoder_weights vew;
@@ -144,9 +180,6 @@ index b361766..d4f0c82 100644
              }
          }
  
-         if (have_se) {
-             if ((int64_t) se_data.size() != ggml_nelements(model.builtin_speaker_emb)) {
-                 throw std::runtime_error(
 @@ -309,8 +302,10 @@ struct Engine::Impl {
                  if (!compute_prompt_feat_native(
                          opts.reference_audio, opts.s3gen_gguf_path,
@@ -160,7 +193,7 @@ index b361766..d4f0c82 100644
                  }
                  s3gen_prompt_feat_rows = rows;
              }
-@@ -319,46 +313,99 @@ struct Engine::Impl {
+@@ -319,46 +314,99 @@ struct Engine::Impl {
                          opts.reference_audio, opts.s3gen_gguf_path,
                          s3gen_embedding,
                          /*backend=*/ model.backend, opts.verbose)) {

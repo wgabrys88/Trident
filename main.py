@@ -22,9 +22,14 @@ from pathlib import Path
 from typing import Any, Callable
 from cfg import (
     ASR_CHUNK, ASR_RUNTIME, BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME,
-    BRAIN_SYSTEM, BRAIN_THINKING, CONTROLLER, DEFAULT_REPLY_LANGUAGE, MIC, PORTS,
-    TTS_CHUNK, TTS_LANGUAGES, TTS_RUNTIME, TTS_SAMPLE, TTS_VOICE,
+    BRAIN_SYSTEM, BRAIN_THINKING, CONTROLLER, MIC, PORTS,
 )
+import cfg, cfg_turbo, cfg_nano
+TTS_FAMILY = "v3"
+_tts = {"v3": cfg, "turbo": cfg_turbo, "nano": cfg_nano}[TTS_FAMILY]
+DEFAULT_REPLY_LANGUAGE, TTS_CHUNK, TTS_LABEL, TTS_LANGUAGES, TTS_MODELS, TTS_RUNTIME, TTS_SAMPLE, TTS_VOICE = (
+    _tts.DEFAULT_REPLY_LANGUAGE, _tts.TTS_CHUNK, _tts.TTS_LABEL, _tts.TTS_LANGUAGES,
+    _tts.TTS_MODELS, _tts.TTS_RUNTIME, _tts.TTS_SAMPLE, _tts.TTS_VOICE)
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
 MODELS_DIR = ROOT / "models"
@@ -45,8 +50,7 @@ BINARIES = {
     "gemma": {"label": "LLAMA.CPP B10453 VULKAN", "repo": "ggml-org/llama.cpp", "tag": "b10453", "asset": "llama-b10453-bin-win-vulkan-x64.zip", "exe": "llama-server.exe"},
 }
 MODELS = {
-    "chatterbox-t3": {"label": "CHATTERBOX V3 T3", "repo": "ResembleAI/chatterbox", "revision": "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18", "file": "chatterbox-t3-mtl-v3-q4_0.gguf", "size": 344985408},
-    "chatterbox-codec": {"label": "CHATTERBOX V3 S3GEN", "repo": "ResembleAI/chatterbox", "revision": "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18", "file": "chatterbox-s3gen-mtl-v3-f16.gguf", "size": 1056431360},
+    **TTS_MODELS,
     "parakeet": {"label": "PARAKEET TDT 0.6B V3 Q4_K", "repo": "mudler/parakeet-cpp-gguf", "revision": "bf0af9f425fa01809cadec671b3cb672709d13e9", "file": "tdt-0.6b-v3-q4_k.gguf", "size": 675200864},
     "gemma": {"label": "GEMMA 4 E2B", "repo": "google/gemma-4-E2B-it-qat-q4_0-gguf", "revision": "675cff42a74c774d6cb76f76d8eacb49b48c9b93", "file": "gemma-4-E2B_q4_0-it.gguf", "size": 3349516256},
     "reference": {"label": "DEFAULT VOICE", "source": "assets/default-reference.wav", "file": "default-reference.wav", "directory": "data", "size": 1440078},
@@ -464,9 +468,10 @@ def download_model(name: str, key: str):
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, destination)
         set_job(key, "running", "copy", 90, f"installed {spec['file']}")
-    elif name.startswith("chatterbox"):
-        converter_script = CHATTERBOX / "scripts" / ("convert-t3-mtl-to-gguf.py" if name == "chatterbox-t3" else "convert-s3gen-to-gguf.py")
-        if not CHATTERBOX_LIBRARY.is_file() or not converter_script.is_file():
+    elif spec.get("convert"):
+        recipe = spec["convert"]
+        script = CHATTERBOX / "scripts" / recipe["script"]
+        if not CHATTERBOX_LIBRARY.is_file() or not script.is_file():
             raise RuntimeError("install Chatterbox TTS before converting its models")
         python = CONVERTER / "Scripts" / "python.exe"
         lock = "numpy==1.26.4 torch==2.6.0 gguf==0.19.0 safetensors==0.5.3 scipy==1.15.3 librosa==0.11.0 resampy==0.4.3 huggingface-hub==0.34.4"
@@ -479,16 +484,16 @@ def download_model(name: str, key: str):
             run(name, "converter-dependencies", [str(python), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", *lock.split()], ROOT, os.environ.copy())
             stamp.parent.mkdir(parents=True, exist_ok=True)
             stamp.write_text(lock, encoding="ascii")
+        required = tuple(recipe["files"])
         checkpoint = CONVERTER / "checkpoints" / spec["revision"]
         marker = checkpoint / ".revision"
-        required = ("ve.pt", "t3_mtl23ls_v3.safetensors", "s3gen_v3.pt", "grapheme_mtl_merged_expanded_v1.json", "conds.pt", "Cangjie5_TC.json")
-        recipe = "trident-v3-checkpoints:" + spec["revision"] + ":" + ",".join(required)
-        cache_ok = marker.is_file() and marker.read_text(encoding="ascii") == recipe and all((checkpoint / item).is_file() for item in required)
+        stamp_id = spec["repo"] + ":" + spec["revision"] + ":" + ",".join(required)
+        cache_ok = marker.is_file() and marker.read_text(encoding="ascii") == stamp_id and all((checkpoint / item).is_file() for item in required)
         if not cache_ok:
             if checkpoint.exists():
                 shutil.rmtree(checkpoint)
             checkpoint.mkdir(parents=True, exist_ok=True)
-            set_job(key, "running", "checkpoint", 12, "downloading pinned Chatterbox V3 checkpoint")
+            set_job(key, "running", "checkpoint", 12, f"downloading {spec['label']} checkpoint")
             code = (
                 "from huggingface_hub import snapshot_download; "
                 f"snapshot_download(repo_id={spec['repo']!r}, revision={spec['revision']!r}, "
@@ -500,19 +505,22 @@ def download_model(name: str, key: str):
             missing = [item for item in required if not (checkpoint / item).is_file()]
             if missing:
                 raise RuntimeError(f"checkpoint download incomplete: {missing}")
-            marker.write_text(recipe, encoding="ascii")
+            marker.write_text(stamp_id, encoding="ascii")
+        for src, dst in recipe.get("copy", {}).items():
+            shutil.copyfile(checkpoint / src, checkpoint / dst)
         partial = destination.with_suffix(destination.suffix + ".part")
         partial.unlink(missing_ok=True)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        command = [str(python), str(converter_script)]
-        if name != "chatterbox-t3":
-            command += ["--variant", "mtl"]
-        command += ["--ckpt-dir", str(checkpoint), "--out", str(partial), "--quant", "q4_0" if name == "chatterbox-t3" else "f16"]
+        command = [str(python), str(script)]
+        if recipe.get("variant"):
+            command += ["--variant", recipe["variant"]]
+        command += ["--ckpt-dir", str(checkpoint), "--out", str(partial), "--quant", recipe["quant"]]
         env = build_env()
         env["HF_HOME"] = str(TOOLS / "huggingface")
         set_job(key, "running", "convert", 20, f"converting {spec['label']}")
         run(name, "convert", command, ROOT, env)
-        if not present(partial, spec["size"]):
+        ready = present(partial, spec["size"]) if spec["size"] else partial.is_file() and partial.stat().st_size > 0
+        if not ready:
             partial.unlink(missing_ok=True)
             raise RuntimeError(f"converted model missing or truncated: {partial}")
         os.replace(partial, destination)
@@ -861,7 +869,7 @@ def schema() -> dict:
         "languages": {"reply": TTS_LANGUAGES, "default_reply": DEFAULT_REPLY_LANGUAGE},
         "mic": dict(MIC),
         "prerequisites": {name: {"label": label} for name, label in PREREQ_LABELS.items()},
-        "components": {name: {"label": "CHATTERBOX TTS V3" if name == "tts" else BINARIES[name]["label"]} for name in COMPONENTS},
+        "components": {name: {"label": TTS_LABEL if name == "tts" else BINARIES[name]["label"]} for name in COMPONENTS},
         "required_models": REQUIRED_MODELS,
     }
 

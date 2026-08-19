@@ -30,6 +30,25 @@ TTS_SAMPLE = {
 }
 TTS_VOICE = {"cfg_weight": 0.5, "exaggeration": 0.5}
 TTS_CHUNK = {"chars": 120}
+TTS_LABEL = "CHATTERBOX TTS V3"
+_V3_CKPT = (
+    "ve.pt", "t3_mtl23ls_v3.safetensors", "s3gen_v3.pt",
+    "grapheme_mtl_merged_expanded_v1.json", "conds.pt", "Cangjie5_TC.json",
+)
+TTS_MODELS = {
+    "chatterbox-t3": {
+        "label": "CHATTERBOX V3 T3", "repo": "ResembleAI/chatterbox",
+        "revision": "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18",
+        "file": "chatterbox-t3-mtl-v3-q4_0.gguf", "size": 344985408,
+        "convert": {"script": "convert-t3-mtl-to-gguf.py", "quant": "q4_0", "files": _V3_CKPT},
+    },
+    "chatterbox-codec": {
+        "label": "CHATTERBOX V3 S3GEN", "repo": "ResembleAI/chatterbox",
+        "revision": "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18",
+        "file": "chatterbox-s3gen-mtl-v3-f16.gguf", "size": 1056431360,
+        "convert": {"script": "convert-s3gen-to-gguf.py", "quant": "f16", "variant": "mtl", "files": _V3_CKPT},
+    },
+}
 
 BRAIN_MODEL = "gemma"
 BRAIN_RUNTIME = {
