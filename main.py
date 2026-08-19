@@ -14,7 +14,6 @@ import urllib.parse
 import urllib.request
 import uuid
 import wave
-import webbrowser
 import zipfile
 from copy import deepcopy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -22,14 +21,22 @@ from pathlib import Path
 from typing import Any, Callable
 from cfg import (
     ASR_CHUNK, ASR_RUNTIME, BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME,
-    BRAIN_SYSTEM, BRAIN_THINKING, CONTROLLER, MIC, PORTS,
+    BRAIN_SYSTEM, BRAIN_THINKING, CONTROLLER, FAMILIES, MIC, PORTS,
 )
-import cfg, cfg_turbo, cfg_nano
-TTS_FAMILY = "nano"
-_tts = {"v3": cfg, "turbo": cfg_turbo, "nano": cfg_nano}[TTS_FAMILY]
-DEFAULT_REPLY_LANGUAGE, TTS_CHUNK, TTS_LABEL, TTS_LANGUAGES, TTS_MODELS, TTS_RUNTIME, TTS_SAMPLE, TTS_VOICE = (
-    _tts.DEFAULT_REPLY_LANGUAGE, _tts.TTS_CHUNK, _tts.TTS_LABEL, _tts.TTS_LANGUAGES,
-    _tts.TTS_MODELS, _tts.TTS_RUNTIME, _tts.TTS_SAMPLE, _tts.TTS_VOICE)
+TTS_FAMILY = "turbo"
+DEFAULT_REPLY_LANGUAGE = TTS_CHUNK = TTS_LABEL = TTS_LANGUAGES = TTS_MODELS = TTS_RUNTIME = TTS_SAMPLE = TTS_VOICE = None
+
+def apply_family(name: str):
+    global TTS_FAMILY, DEFAULT_REPLY_LANGUAGE, TTS_CHUNK, TTS_LABEL, TTS_LANGUAGES
+    global TTS_MODELS, TTS_RUNTIME, TTS_SAMPLE, TTS_VOICE, MODELS
+    if name not in FAMILIES:
+        raise ValueError(f"unknown TTS family: {name}")
+    spec = FAMILIES[name]
+    TTS_FAMILY = name
+    DEFAULT_REPLY_LANGUAGE = spec["DEFAULT_REPLY_LANGUAGE"]
+    TTS_CHUNK, TTS_LABEL, TTS_LANGUAGES = spec["TTS_CHUNK"], spec["TTS_LABEL"], spec["TTS_LANGUAGES"]
+    TTS_MODELS, TTS_RUNTIME, TTS_SAMPLE, TTS_VOICE = spec["TTS_MODELS"], spec["TTS_RUNTIME"], spec["TTS_SAMPLE"], spec["TTS_VOICE"]
+    MODELS = {**TTS_MODELS, **SHARED_MODELS}
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
 MODELS_DIR = ROOT / "models"
@@ -49,12 +56,13 @@ BINARIES = {
     "parakeet": {"label": "PARAKEET.CPP V0.5 VULKAN", "repo": "mudler/parakeet.cpp", "tag": "v0.5.0", "asset": "parakeet-v0.5.0-bin-win-vulkan-x64.zip", "exe": "parakeet-server.exe"},
     "gemma": {"label": "LLAMA.CPP B10453 VULKAN", "repo": "ggml-org/llama.cpp", "tag": "b10453", "asset": "llama-b10453-bin-win-vulkan-x64.zip", "exe": "llama-server.exe"},
 }
-MODELS = {
-    **TTS_MODELS,
+SHARED_MODELS = {
     "parakeet": {"label": "PARAKEET TDT 0.6B V3 Q4_K", "repo": "mudler/parakeet-cpp-gguf", "revision": "bf0af9f425fa01809cadec671b3cb672709d13e9", "file": "tdt-0.6b-v3-q4_k.gguf", "size": 675200864},
     "gemma": {"label": "GEMMA 4 E2B", "repo": "google/gemma-4-E2B-it-qat-q4_0-gguf", "revision": "675cff42a74c774d6cb76f76d8eacb49b48c9b93", "file": "gemma-4-E2B_q4_0-it.gguf", "size": 3349516256},
     "reference": {"label": "DEFAULT VOICE", "source": "assets/default-reference.wav", "file": "default-reference.wav", "directory": "data", "size": 1440078},
 }
+MODELS: dict = {}
+apply_family(TTS_FAMILY)
 VULKAN_VERSION = "1.4.357.0"
 PACKAGES = {
     "git": {"url": "https://github.com/git-for-windows/git/releases/download/v2.54.0.windows.1/MinGit-2.54.0-64-bit.zip", "file": "MinGit-2.54.0-64-bit.zip", "size": 39989839},
@@ -66,6 +74,7 @@ BRAIN = {"id": BRAIN_MODEL, "label": "GEMMA 4 E2B", "model": "gemma", "family": 
 CHATTERBOX_LIBRARY = CHATTERBOX / "build" / "Release" / "tts-cpp.lib"
 TTS_SERVER = SERVER / "build" / "Release" / "tts-server.exe"
 LOCK = threading.RLock()
+SESSION = uuid.uuid4().hex
 PROCESSES: dict[str, subprocess.Popen] = {}
 SUBS: list[queue.Queue] = []
 ENGINE_MODELS = {"tts": ("chatterbox-t3", "chatterbox-codec"), "asr": ("parakeet",), "brain": (BRAIN["model"],)}
@@ -209,6 +218,7 @@ def snapshot() -> dict:
             "engines": engines,
             "reference": reference_state(),
             "brain": dict(BRAIN),
+            "tts_family": TTS_FAMILY,
             "jobs": deepcopy(RUNTIME["jobs"]),
             "live": deepcopy(RUNTIME["live"]),
         }
@@ -564,8 +574,6 @@ def remote_lines(url: str, body: bytes, timeout: int = 600):
             raise RuntimeError(f"HTTP {response.status} from {url}: {response.read().decode('utf-8', 'replace')}")
         buf = b""
         while True:
-            # read(n) on a chunked body waits until n decoded bytes arrive, so a
-            # 256-byte pull spans packs and blocks SSE until the next synthesize.
             piece = response.read1(256)
             if not piece:
                 break
@@ -741,8 +749,6 @@ def transcribe(audio: bytes, slot: str = "asr") -> dict:
             rate, pcm, seconds = 16000, b"", 0.0
         window = float(ASR_CHUNK["seconds"])
         overlap = float(ASR_CHUNK["overlap"])
-        # Played speech is one glued utterance. Do not slice it into 20 s ASR
-        # windows — stitch artifacts would look like glue errors.
         if slot == "played" or seconds <= window or not pcm:
             body, content_type = multipart(audio)
             result = json.loads(remote(f"http://127.0.0.1:{PORTS['asr']}/v1/audio/transcriptions", body, content_type))
@@ -877,7 +883,7 @@ REQUIRED_MODELS = ["chatterbox-t3", "chatterbox-codec", "parakeet", BRAIN["model
 OPS = {
     "inspect", "install_prerequisite", "install_component", "download_model",
     "load_engine", "unload_engine", "upload_reference",
-    "asr", "played", "brain", "tts", "tts_cancel", "goodbye",
+    "asr", "played", "brain", "tts", "tts_cancel", "set_family", "goodbye",
 }
 
 def schema() -> dict:
@@ -887,10 +893,33 @@ def schema() -> dict:
         "prerequisites": {name: {"label": label} for name, label in PREREQ_LABELS.items()},
         "components": {name: {"label": TTS_LABEL if name == "tts" else BINARIES[name]["label"]} for name in COMPONENTS},
         "required_models": REQUIRED_MODELS,
+        "tts": {
+            "family": TTS_FAMILY,
+            "families": {name: spec["TTS_LABEL"] for name, spec in FAMILIES.items()},
+            "label": TTS_LABEL,
+            "chunk": dict(TTS_CHUNK),
+            "runtime": dict(TTS_RUNTIME),
+            "sample": dict(TTS_SAMPLE),
+            "voice": dict(TTS_VOICE),
+        },
     }
 
 def inspect() -> dict:
-    return {"ok": True, "schema": schema(), "state": snapshot()}
+    return {"ok": True, "session": SESSION, "schema": schema(), "state": snapshot()}
+
+def set_family(name: str):
+    if name == TTS_FAMILY:
+        return inspect(), 200
+    try:
+        apply_family(name)
+    except ValueError as exception:
+        raise ApiError(400, str(exception)) from exception
+    stop_engine("tts")
+    running = all(RUNTIME["engines"][item]["status"] == "running" for item in ("asr", "brain"))
+    if running:
+        return accept_job("engine", "tts", lambda key: load_engine("tts", key))
+    publish()
+    return inspect(), 200
 def accept_job(kind: str, name: str, work: Callable[[str], None]):
     return {"ok": True, "accepted": True, "job_id": start_job(kind, name, work)}, 202
 def require_wav(raw: bytes | None) -> bytes:
@@ -927,7 +956,13 @@ def dispatch(op: str, payload: dict | None = None, raw: bytes | None = None) -> 
     if op == "asr":
         return {"ok": True, "result": transcribe(require_wav(raw))}, 200
     if op == "played":
-        return {"ok": True, "result": transcribe(require_wav(raw), slot="played")}, 200
+        audio = raw if raw else None
+        if not audio:
+            path = DATA / "last-output.wav"
+            if not path.is_file():
+                raise ApiError(409, "no speech yet")
+            audio = path.read_bytes()
+        return {"ok": True, "result": transcribe(audio, slot="played")}, 200
     if op == "brain":
         prompt = str(payload.get("prompt") or "").strip()
         language = str(payload.get("language") or DEFAULT_REPLY_LANGUAGE)
@@ -939,8 +974,10 @@ def dispatch(op: str, payload: dict | None = None, raw: bytes | None = None) -> 
         return {"ok": True, **synthesize(str(payload.get("text") or ""), str(payload.get("language") or DEFAULT_REPLY_LANGUAGE))}, 200
     if op == "tts_cancel":
         return cancel_tts(), 200
+    if op == "set_family":
+        return set_family(str(payload.get("name") or payload.get("family") or ""))
     if op == "goodbye":
-        return {"ok": True}, 200
+        return {"ok": True, "die": str(payload.get("session") or "") == SESSION}, 200
     raise ApiError(400, f"unhandled op: {op}")
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
@@ -1050,7 +1087,7 @@ class Handler(BaseHTTPRequestHandler):
                 request_body = None
             response_body, code = dispatch(op, payload, request_body)
             self.send_json(response_body, code)
-            if op == "goodbye":
+            if op == "goodbye" and response_body.get("die"):
                 die()
         except ApiError as exception:
             self.send_json({"error": str(exception)}, exception.code)
@@ -1071,10 +1108,7 @@ def main() -> int:
         kill_port(port)
     stop_all()
     server = Server((CONTROLLER["host"], CONTROLLER["port"]), Handler)
-    log("controller", "start", port=CONTROLLER["port"], pid=os.getpid())
-    timer = threading.Timer(.4, webbrowser.open, args=(f"http://{CONTROLLER['host']}:{CONTROLLER['port']}/",))
-    timer.daemon = True
-    timer.start()
+    log("controller", "start", port=CONTROLLER["port"], pid=os.getpid(), family=TTS_FAMILY)
     print(f"TRIDENT  http://{CONTROLLER['host']}:{CONTROLLER['port']}/")
     try:
         server.serve_forever()
