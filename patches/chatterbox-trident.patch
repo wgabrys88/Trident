@@ -188,7 +188,7 @@ index b361766..60fe293 100644
                  }
                  s3gen_prompt_feat_rows = rows;
              }
-@@ -319,46 +314,99 @@ struct Engine::Impl {
+@@ -319,46 +314,96 @@ struct Engine::Impl {
                          opts.reference_audio, opts.s3gen_gguf_path,
                          s3gen_embedding,
                          /*backend=*/ model.backend, opts.verbose)) {
@@ -299,20 +299,29 @@ index b361766..60fe293 100644
 +                current = sample_next_token_mtl(
 +                    logits_c, logits_u, generated, sp, rng, model.hparams.stop_speech_token);
 +                generated.push_back(current);
-+                if (generated.size() >= 3 &&
-+                    generated[generated.size() - 1] == generated[generated.size() - 2] &&
-+                    generated[generated.size() - 2] == generated[generated.size() - 3]) {
-+                    break;
-+                }
 +            }
 +            if (!generated.empty() && generated.back() == model.hparams.stop_speech_token) {
 +                generated.pop_back();
 +            }
++            // Official MTL: the token just before EOS decodes to ~40 ms of noise.
++            if (generated.size() > 1) generated.pop_back();
 +            return generated;
 +        }
  
          std::vector<float> logits;
          int prompt_len = 0;
+@@ -390,4 +442,11 @@ struct Engine::Impl {
+         if (!generated.empty() && generated.back() == model.hparams.stop_speech_token) {
+             generated.pop_back();
+         }
++        {
++            const int32_t oov = model.hparams.start_speech_token;
++            size_t w = 0;
++            for (size_t r = 0; r < generated.size(); ++r)
++                if (generated[r] >= 0 && generated[r] < oov) generated[w++] = generated[r];
++            generated.resize(w);
++        }
+         return generated;
 diff --git a/src/chatterbox_tts.cpp b/src/chatterbox_tts.cpp
 index 746de95..2b5adf1 100644
 --- a/src/chatterbox_tts.cpp
