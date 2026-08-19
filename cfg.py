@@ -40,13 +40,19 @@ TTS_MODELS = {
         "label": "CHATTERBOX V3 T3", "repo": "ResembleAI/chatterbox",
         "revision": "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18",
         "file": "chatterbox-t3-mtl-v3-q4_0.gguf", "size": 344985408,
-        "convert": {"script": "convert-t3-mtl-to-gguf.py", "quant": "q4_0", "files": _V3_CKPT},
+        "convert": {
+            "script": "convert-t3-mtl-to-gguf.py", "quant": "q4_0", "files": _V3_CKPT,
+            "copy": {"t3_mtl23ls_v3.safetensors": "t3_mtl23ls_v2.safetensors"},
+        },
     },
     "chatterbox-codec": {
         "label": "CHATTERBOX V3 S3GEN", "repo": "ResembleAI/chatterbox",
         "revision": "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18",
-        "file": "chatterbox-s3gen-mtl-v3-f16.gguf", "size": 1056431360,
-        "convert": {"script": "convert-s3gen-to-gguf.py", "quant": "f16", "variant": "mtl", "files": _V3_CKPT},
+        "file": "chatterbox-s3gen-mtl-v3-f16.gguf", "size": 1056328416,
+        "convert": {
+            "script": "convert-s3gen-to-gguf.py", "quant": "f16", "variant": "mtl", "files": _V3_CKPT,
+            "copy": {"s3gen_v3.pt": "s3gen.pt"},
+        },
     },
 }
 
