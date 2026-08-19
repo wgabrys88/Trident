@@ -1,6 +1,7 @@
 #include "engine_wrapper.hpp"
 #include <tts-cpp/chatterbox/engine.h>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <memory>
@@ -36,38 +37,89 @@ void EngineWrapper::initialize(const std::string& t3, const std::string& s3, int
     impl_->context = context;
 }
 
+// Dot-first pack, same shape as chatterbox.cpp split_text_for_tts:
+// split on .!? , refine oversized sentences at ,:; , then merge up to limit.
 static std::vector<std::string> pack_text(const std::string& text, int limit) {
     if (limit < 40) limit = 40;
-    std::vector<std::string> bits;
+    if (text.empty()) return {text};
+    auto is_ws = [](unsigned char c) { return std::isspace(c) != 0; };
+
+    std::vector<std::string> sentences;
     std::string cur;
-    auto flush = [&] {
-        while (!cur.empty() && cur.back() == ' ') cur.pop_back();
-        if (!cur.empty()) bits.push_back(cur);
-        cur.clear();
-    };
-    for (size_t i = 0; i < text.size(); ++i) {
-        cur.push_back(text[i]);
-        const unsigned char c = static_cast<unsigned char>(text[i]);
-        if ((c == '.' || c == '!' || c == '?' || c == ';') &&
-            (i + 1 == text.size() || text[i + 1] == ' ' || text[i + 1] == '\n'))
-            flush();
-    }
-    flush();
-    if (bits.empty()) return {text};
-    std::vector<std::string> packed;
-    std::string buf = bits[0];
-    for (size_t i = 1; i < bits.size(); ++i) {
-        if (static_cast<int>(buf.size() + 1 + bits[i].size()) > limit) {
-            packed.push_back(buf);
-            buf = bits[i];
+    size_t i = 0;
+    while (i < text.size()) {
+        cur += text[i];
+        const char c = text[i];
+        const bool at_end = (i + 1 == text.size());
+        const bool nx_ws = !at_end && is_ws(static_cast<unsigned char>(text[i + 1]));
+        if ((c == '.' || c == '?' || c == '!') && (at_end || nx_ws)) {
+            size_t j = i + 1;
+            while (j < text.size() && is_ws(static_cast<unsigned char>(text[j]))) {
+                cur += text[j];
+                ++j;
+            }
+            sentences.push_back(cur);
+            cur.clear();
+            i = j;
         } else {
-            buf += " " + bits[i];
+            ++i;
         }
     }
-    packed.push_back(buf);
-    return packed;
+    if (!cur.empty()) sentences.push_back(cur);
+
+    std::vector<std::string> refined;
+    for (auto& sentence : sentences) {
+        if (static_cast<int>(sentence.size()) <= limit) {
+            refined.push_back(std::move(sentence));
+            continue;
+        }
+        std::string acc;
+        size_t k = 0;
+        while (k < sentence.size()) {
+            acc += sentence[k];
+            const char c = sentence[k];
+            const bool nx_ws = (k + 1 < sentence.size()) && is_ws(static_cast<unsigned char>(sentence[k + 1]));
+            if ((c == ',' || c == ':' || c == ';') && nx_ws && static_cast<int>(acc.size()) > limit / 2) {
+                size_t j = k + 1;
+                while (j < sentence.size() && is_ws(static_cast<unsigned char>(sentence[j]))) {
+                    acc += sentence[j];
+                    ++j;
+                }
+                refined.push_back(acc);
+                acc.clear();
+                k = j;
+                continue;
+            }
+            if (static_cast<int>(acc.size()) >= limit) {
+                size_t back = acc.size();
+                while (back > static_cast<size_t>(limit * 3 / 4) && !is_ws(static_cast<unsigned char>(acc[back - 1])))
+                    --back;
+                if (back <= static_cast<size_t>(limit / 2)) back = acc.size();
+                refined.push_back(acc.substr(0, back));
+                acc.erase(0, back);
+            }
+            ++k;
+        }
+        if (!acc.empty()) refined.push_back(acc);
+    }
+
+    std::vector<std::string> packed;
+    for (auto& sentence : refined) {
+        if (!packed.empty() && static_cast<int>(packed.back().size() + sentence.size()) <= limit)
+            packed.back() += sentence;
+        else
+            packed.push_back(std::move(sentence));
+    }
+    for (auto& sentence : packed) {
+        while (!sentence.empty() && is_ws(static_cast<unsigned char>(sentence.back())))
+            sentence.pop_back();
+    }
+    packed.erase(std::remove_if(packed.begin(), packed.end(),
+        [](const std::string& sentence) { return sentence.empty(); }), packed.end());
+    return packed.empty() ? std::vector<std::string>{text} : packed;
 }
 
+// Equal-power seam: outgoing pack fades on cos, incoming on sin.
 static void glue(std::vector<float>& dst, const std::vector<float>& src) {
     if (dst.empty()) { dst = src; return; }
     if (src.empty()) return;
