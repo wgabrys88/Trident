@@ -94,6 +94,7 @@ def default_view() -> dict:
         "asr": {"text": "", "status": "idle"},
         "brain": {"text": "", "language": "", "status": "idle"},
         "tts": {"text": "", "language": "", "seconds": 0.0, "mtime": 0.0, "chunk": 0, "chunks": 0, "status": "idle"},
+        "played": {"text": "", "status": "idle"},
     }
 
 RUNTIME = {
@@ -120,7 +121,7 @@ def set_view(**fields):
     with LOCK:
         view = RUNTIME["live"]
         for key, value in fields.items():
-            if key in ("asr", "brain", "tts") and isinstance(value, dict):
+            if key in ("asr", "brain", "tts", "played") and isinstance(value, dict):
                 view[key].update(value)
             else:
                 view[key] = value
@@ -723,9 +724,14 @@ def stitch_asr(parts: list[dict], overlap: float) -> dict:
             piece = str(part.get("text") or "").split()
         kept = piece if index == 0 else lcs_join(kept, piece)
     return {"text": " ".join(kept)}
-def transcribe(audio: bytes) -> dict:
+def transcribe(audio: bytes, slot: str = "asr") -> dict:
     require_engine("asr")
-    set_view(stage="heard", error="", asr={"status": "running"})
+    if slot == "played":
+        DATA.mkdir(parents=True, exist_ok=True)
+        (DATA / "played.wav").write_bytes(audio)
+        set_view(played={"text": "", "status": "running"})
+    else:
+        set_view(stage="heard", error="", asr={"status": "running"})
     started = time.monotonic()
     try:
         try:
@@ -735,7 +741,9 @@ def transcribe(audio: bytes) -> dict:
             rate, pcm, seconds = 16000, b"", 0.0
         window = float(ASR_CHUNK["seconds"])
         overlap = float(ASR_CHUNK["overlap"])
-        if seconds <= window or not pcm:
+        # Played speech is one glued utterance. Do not slice it into 20 s ASR
+        # windows — stitch artifacts would look like glue errors.
+        if slot == "played" or seconds <= window or not pcm:
             body, content_type = multipart(audio)
             result = json.loads(remote(f"http://127.0.0.1:{PORTS['asr']}/v1/audio/transcriptions", body, content_type))
         else:
@@ -752,11 +760,17 @@ def transcribe(audio: bytes) -> dict:
                 cursor += step
             result = stitch_asr(parts, overlap)
         text = str(result.get("text") or "")
-        set_view(asr={"text": text, "status": "done"})
-        log("asr", "done", ms=round((time.monotonic() - started) * 1000, 1), text=text)
+        if slot == "played":
+            set_view(played={"text": text, "status": "done"})
+        else:
+            set_view(asr={"text": text, "status": "done"})
+        log(slot, "done", ms=round((time.monotonic() - started) * 1000, 1), text=text)
         return result
     except Exception as exception:
-        set_view(stage="idle", error=str(exception), asr={"status": "error"})
+        if slot == "played":
+            set_view(played={"status": "error"})
+        else:
+            set_view(stage="idle", error=str(exception), asr={"status": "error"})
         raise
 def brain(prompt: str, language: str) -> dict:
     require_engine("brain")
@@ -808,7 +822,7 @@ def synthesize(text: str, language: str) -> dict:
     if language not in TTS_LANGUAGES:
         raise ApiError(400, f"unsupported speech language: {language}")
     require_engine("tts")
-    set_view(stage="speaking", error="", tts={"text": text, "language": language, "status": "running"})
+    set_view(stage="speaking", error="", tts={"text": text, "language": language, "status": "running"}, played={"text": "", "status": "idle"})
     ref = reference_path()
     payload = {
         "text": text, "language": language, "reference": str(ref),
@@ -863,7 +877,7 @@ REQUIRED_MODELS = ["chatterbox-t3", "chatterbox-codec", "parakeet", BRAIN["model
 OPS = {
     "inspect", "install_prerequisite", "install_component", "download_model",
     "load_engine", "unload_engine", "upload_reference",
-    "asr", "brain", "tts", "tts_cancel", "goodbye",
+    "asr", "played", "brain", "tts", "tts_cancel", "goodbye",
 }
 
 def schema() -> dict:
@@ -912,6 +926,8 @@ def dispatch(op: str, payload: dict | None = None, raw: bytes | None = None) -> 
         return {"ok": True, "reference": reference_state()}, 200
     if op == "asr":
         return {"ok": True, "result": transcribe(require_wav(raw))}, 200
+    if op == "played":
+        return {"ok": True, "result": transcribe(require_wav(raw), slot="played")}, 200
     if op == "brain":
         prompt = str(payload.get("prompt") or "").strip()
         language = str(payload.get("language") or DEFAULT_REPLY_LANGUAGE)
@@ -990,7 +1006,7 @@ class Handler(BaseHTTPRequestHandler):
                         if inbox in SUBS:
                             SUBS.remove(inbox)
                 return
-            if path == "/last-output.wav" or path == "/last-chunk.wav":
+            if path == "/last-output.wav" or path == "/last-chunk.wav" or path == "/played.wav":
                 name = path.lstrip("/")
                 if path == "/last-chunk.wav" and query.get("c", "").isdigit():
                     name = f"pack-{int(query['c'])}.wav"
@@ -1025,8 +1041,8 @@ class Handler(BaseHTTPRequestHandler):
             content_type = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
             if content_type == "audio/wav":
                 op = query.get("op") or ""
-                if op not in ("asr", "upload_reference"):
-                    raise ApiError(400, "WAV body requires op=asr or op=upload_reference")
+                if op not in ("asr", "upload_reference", "played"):
+                    raise ApiError(400, "WAV body requires op=asr, op=upload_reference, or op=played")
                 payload, request_body = query, self.body()
             else:
                 payload = self.request_json(True)

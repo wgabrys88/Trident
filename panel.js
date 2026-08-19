@@ -4,6 +4,8 @@ let playNext = 0, playAt = 0, lastHeard = "", lastAnswer = "", rmsText = "", pri
 const voices = [];
 let playTail = Promise.resolve();
 const pending = new Map();
+let packBytes = [];
+let playedKey = "";
 
 function fault(message = "") {
   $("fault").hidden = !message;
@@ -67,8 +69,10 @@ function render() {
   const v = live();
   $("asr-state").textContent = v.asr?.status || "idle";
   $("brain-state").textContent = v.tts?.status === "running" ? "speaking" : (v.brain?.status || "idle");
+  $("played-state").textContent = v.played?.status || "idle";
   paintField($("transcript"), $("heard-auto"), (v.asr?.text || "").trim());
   paintField($("answer"), $("answer-auto"), spoken());
+  $("played").value = (v.played?.text || "").trim();
   fault(v.error || "");
   const jobs = Object.values(state.jobs || {}).filter(j => j.status === "running");
   $("live").textContent = [
@@ -242,6 +246,8 @@ function hush() {
   playing = null;
   playAt = 0;
   playNext = 0;
+  packBytes = [];
+  playedKey = "";
 }
 function stopVoice() {
   hush();
@@ -251,11 +257,50 @@ function stopVoice() {
 function playLive() {
   playTail = playTail.then(drainPacks).catch(showError);
 }
+function wavData(buf) {
+  const v = new DataView(buf), u8 = new Uint8Array(buf);
+  const tag = o => String.fromCharCode(u8[o], u8[o + 1], u8[o + 2], u8[o + 3]);
+  if (tag(0) !== "RIFF" || tag(8) !== "WAVE") throw Error("pack is not a WAV");
+  let o = 12, rate = 0, pcm = null, channels = 1, bits = 16;
+  while (o + 8 <= buf.byteLength) {
+    const id = tag(o), size = v.getUint32(o + 4, true), body = o + 8;
+    if (id === "fmt ") {
+      channels = v.getUint16(body + 2, true);
+      rate = v.getUint32(body + 4, true);
+      bits = v.getUint16(body + 14, true);
+    } else if (id === "data") pcm = buf.slice(body, body + size);
+    o = body + size + (size & 1);
+  }
+  if (!pcm || bits !== 16 || channels !== 1 || !rate) throw Error("packs must be mono PCM16");
+  return {rate, pcm};
+}
+function mergePackWavs(buffers) {
+  const parts = buffers.map(wavData);
+  const rate = parts[0].rate;
+  const n = parts.reduce((sum, part) => sum + part.pcm.byteLength, 0);
+  const pcm = new Uint8Array(n);
+  let o = 0;
+  for (const part of parts) {
+    if (part.rate !== rate) throw Error("pack sample rate mismatch");
+    pcm.set(new Uint8Array(part.pcm), o);
+    o += part.pcm.byteLength;
+  }
+  const out = new ArrayBuffer(44 + n), v = new DataView(out), u8 = new Uint8Array(out);
+  const put = (at, s) => { for (let i = 0; i < s.length; i++) u8[at + i] = s.charCodeAt(i); };
+  put(0, "RIFF"); v.setUint32(4, 36 + n, true); put(8, "WAVEfmt ");
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  put(36, "data"); v.setUint32(40, n, true);
+  u8.set(pcm, 44);
+  return out;
+}
 async function enqueuePack(index) {
   const ctx = await ensurePlaybackContext();
   const response = await fetch(`/last-chunk.wav?c=${index}`, {cache: "no-store"});
-  if (!response.ok) return;
-  const audio = await ctx.decodeAudioData((await response.arrayBuffer()).slice(0));
+  if (!response.ok) throw Error(`pack ${index} HTTP ${response.status}`);
+  const bytes = await response.arrayBuffer();
+  packBytes[index] = bytes.slice(0);
+  const audio = await ctx.decodeAudioData(bytes.slice(0));
   const src = ctx.createBufferSource();
   src.buffer = audio;
   src.connect(ctx.destination);
@@ -272,6 +317,16 @@ async function enqueuePack(index) {
   voices.push(src);
   $("stop-voice").disabled = false;
 }
+async function hearPlayed(chunks) {
+  const missing = [];
+  const parts = [];
+  for (let i = 0; i < chunks; i++) {
+    if (!packBytes[i]) missing.push(i);
+    else parts.push(packBytes[i]);
+  }
+  if (missing.length) throw Error(`missing packs: ${missing.join(",")}`);
+  await wav("played", mergePackWavs(parts));
+}
 async function drainPacks() {
   const tts = live().tts;
   if (!tts || (tts.status !== "running" && tts.status !== "done")) return;
@@ -284,6 +339,12 @@ async function drainPacks() {
     const index = playNext;
     playNext += 1;
     await enqueuePack(index);
+  }
+  const chunks = Number(tts.chunks || 0);
+  const key = `${text}\0${chunks}\0${tts.mtime || 0}`;
+  if (tts.status === "done" && chunks > 0 && playNext >= chunks && playedKey !== key) {
+    playedKey = key;
+    await hearPlayed(chunks);
   }
 }
 async function audioFileToWav(file) {
