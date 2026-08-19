@@ -92,7 +92,7 @@ index b361766..d4f0c82 100644
      }
  
      ~Impl() {
-@@ -236,34 +224,44 @@ struct Engine::Impl {
+@@ -236,34 +224,39 @@ struct Engine::Impl {
  
          if (!have_se && !opts.reference_audio.empty()) {
              voice_encoder_weights vew;
@@ -144,15 +144,10 @@ index b361766..d4f0c82 100644
              }
          }
  
-+        if (!opts.reference_audio.empty()) {
-+            if (!have_se) throw std::runtime_error("Engine: speaker_emb unavailable");
-+            if (!have_ct) throw std::runtime_error("Engine: cond_prompt_speech_tokens unavailable");
-+        }
-+
          if (have_se) {
              if ((int64_t) se_data.size() != ggml_nelements(model.builtin_speaker_emb)) {
                  throw std::runtime_error(
-@@ -309,8 +307,10 @@ struct Engine::Impl {
+@@ -309,8 +302,10 @@ struct Engine::Impl {
                  if (!compute_prompt_feat_native(
                          opts.reference_audio, opts.s3gen_gguf_path,
                          s3gen_prompt_feat, rows, opts.verbose)) {
@@ -165,7 +160,7 @@ index b361766..d4f0c82 100644
                  }
                  s3gen_prompt_feat_rows = rows;
              }
-@@ -319,46 +319,99 @@ struct Engine::Impl {
+@@ -319,46 +313,99 @@ struct Engine::Impl {
                          opts.reference_audio, opts.s3gen_gguf_path,
                          s3gen_embedding,
                          /*backend=*/ model.backend, opts.verbose)) {

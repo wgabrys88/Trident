@@ -11,7 +11,7 @@ constexpr int kGlue = 2880;
 struct Voice {
     std::string reference, language;
     double reference_mtime = 0;
-    int seed = 42, max_tokens = 1000, top_k = 1000, cfm_steps = 5, chunk_chars = 300;
+    int seed = 42, max_tokens = 1000, top_k = 1000, cfm_steps = 10, chunk_chars = 300;
     float exaggeration = 0.5f, cfg = 0.5f, temperature = 0.8f, repeat = 1.2f, min_p = 0.05f, top_p = 0.95f;
 };
 
