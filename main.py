@@ -22,8 +22,8 @@ from pathlib import Path
 from typing import Any, Callable
 from cfg import (
     ASR_CHUNK, ASR_RUNTIME, BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME,
-    BRAIN_SYSTEM, BRAIN_THINKING, CONTROLLER, DEFAULT_REPLY_LANGUAGE, KNOB_ENGINE,
-    KNOBS, MIC, PORTS, TTS_CHUNK, TTS_LANGUAGES, TTS_RUNTIME, TTS_SAMPLE, TTS_VOICE,
+    BRAIN_SYSTEM, BRAIN_THINKING, CONTROLLER, DEFAULT_REPLY_LANGUAGE, MIC, PORTS,
+    TTS_CHUNK, TTS_LANGUAGES, TTS_RUNTIME, TTS_SAMPLE, TTS_VOICE,
 )
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -71,7 +71,6 @@ PREREQ_LABELS = {"python": "PYTHON 3.11+", "git": "GIT", "cmake": "CMAKE", "msvc
 PANEL_FILES = {
     "/": (ROOT / "panel.html", "text/html; charset=utf-8"),
     "/panel.html": (ROOT / "panel.html", "text/html; charset=utf-8"),
-    "/panel.css": (ROOT / "panel.css", "text/css; charset=utf-8"),
     "/panel.js": (ROOT / "panel.js", "text/javascript; charset=utf-8"),
     "/audio-processor.js": (ROOT / "audio-processor.js", "text/javascript; charset=utf-8"),
 }
@@ -84,23 +83,6 @@ def log(component: str, event: str, **data: Any):
     with LOCK:
         with LOG.open("a", encoding="utf-8") as out:
             out.write(line + "\n")
-SCHEMA_VERSION = 11
-
-def default_settings() -> dict:
-    return {
-        "mic": deepcopy(MIC),
-        "asr_runtime": deepcopy(ASR_RUNTIME),
-        "asr_chunk": deepcopy(ASR_CHUNK),
-        "tts_runtime": deepcopy(TTS_RUNTIME),
-        "tts_sample": deepcopy(TTS_SAMPLE),
-        "tts_voice": deepcopy(TTS_VOICE),
-        "tts_chunk": deepcopy(TTS_CHUNK),
-        "brain_runtime": deepcopy(BRAIN_RUNTIME),
-        "brain_generation": deepcopy(BRAIN_GENERATION),
-        "brain_thinking": BRAIN_THINKING,
-        "brain_system": BRAIN_SYSTEM,
-    }
-
 def default_view() -> dict:
     return {
         "stage": "idle",
@@ -112,10 +94,8 @@ def default_view() -> dict:
 
 RUNTIME = {
     "jobs": {},
-    "engines": {name: {"status": "stopped", "error": "", "pid": None, "applied": {}} for name in ENGINE_MODELS},
+    "engines": {name: {"status": "stopped", "error": "", "pid": None} for name in ENGINE_MODELS},
     "live": default_view(),
-    "settings": default_settings(),
-    "dirty": {name: False for name in ENGINE_MODELS},
 }
 
 def publish():
@@ -142,8 +122,6 @@ def set_view(**fields):
                 view[key] = value
     publish()
 
-def live(group: str):
-    return RUNTIME["settings"][group]
 class ApiError(RuntimeError):
     def __init__(self, code: int, message: str):
         super().__init__(message)
@@ -227,8 +205,6 @@ def snapshot() -> dict:
             "reference": reference_state(),
             "brain": dict(BRAIN),
             "jobs": deepcopy(RUNTIME["jobs"]),
-            "settings": deepcopy(RUNTIME["settings"]),
-            "dirty": dict(RUNTIME["dirty"]),
             "live": deepcopy(RUNTIME["live"]),
         }
 def set_job(key: str, status: str, stage: str, progress: int, message: str, failure: str = ""):
@@ -615,7 +591,7 @@ def stop_engine(name: str):
             process.wait(5)
     terminate_executable(component_artifact(ENGINE_BIN[name]))
     with LOCK:
-        RUNTIME["engines"][name].update(status="stopped", error="", pid=None, applied={})
+        RUNTIME["engines"][name].update(status="stopped", error="", pid=None)
     publish()
     if process:
         log("engine", "stopped", name=name, pid=process.pid)
@@ -650,35 +626,29 @@ def load_engine(name: str, key: str):
         raise RuntimeError(f"component is missing: {executable_path}")
     env = os.environ.copy()
     if name == "tts":
-        runtime = dict(live("tts_runtime"))
-        applied = {"runtime": runtime}
-        command = [str(executable_path), "--port", str(PORTS["tts"]), "--model", str(paths[0]), "--s3gen-gguf", str(paths[1]), "--n-gpu-layers", str(runtime["gpu_layers"]), "--context", str(runtime["context"]), "--threads", str(runtime["threads"])]
+        command = [str(executable_path), "--port", str(PORTS["tts"]), "--model", str(paths[0]), "--s3gen-gguf", str(paths[1]), "--n-gpu-layers", str(TTS_RUNTIME["gpu_layers"]), "--context", str(TTS_RUNTIME["context"]), "--threads", str(TTS_RUNTIME["threads"])]
     elif name == "asr":
-        applied = dict(live("asr_runtime"))
-        command = [str(executable_path), "--model", str(paths[0]), "--host", "127.0.0.1", "--port", str(PORTS["asr"]), "--threads", str(applied["threads"])]
-        env["PARAKEET_DEVICE"] = str(applied["device"])
+        command = [str(executable_path), "--model", str(paths[0]), "--host", "127.0.0.1", "--port", str(PORTS["asr"]), "--threads", str(ASR_RUNTIME["threads"])]
+        env["PARAKEET_DEVICE"] = str(ASR_RUNTIME["device"])
     else:
-        runtime = dict(live("brain_runtime"))
-        applied = {**runtime, "id": BRAIN["id"], "family": BRAIN["family"], "path": str(paths[0])}
-        command = [str(executable_path), "-m", str(paths[0]), "--host", "127.0.0.1", "--port", str(PORTS["brain"]), "--device", str(runtime["device"]), "--n-gpu-layers", str(runtime["gpu_layers"]), "--ctx-size", str(runtime["context"]), "--parallel", str(runtime["parallel"]), "--no-mmproj", "--load-mode", "auto", "--flash-attn", str(runtime["flash_attn"]), "--repack", "--fit", str(runtime["fit"]), "--fit-target", str(runtime["fit_target"]), "--fit-ctx", str(runtime["fit_ctx"])]
+        command = [str(executable_path), "-m", str(paths[0]), "--host", "127.0.0.1", "--port", str(PORTS["brain"]), "--device", str(BRAIN_RUNTIME["device"]), "--n-gpu-layers", str(BRAIN_RUNTIME["gpu_layers"]), "--ctx-size", str(BRAIN_RUNTIME["context"]), "--parallel", str(BRAIN_RUNTIME["parallel"]), "--no-mmproj", "--load-mode", "auto", "--flash-attn", str(BRAIN_RUNTIME["flash_attn"]), "--repack", "--fit", str(BRAIN_RUNTIME["fit"]), "--fit-target", str(BRAIN_RUNTIME["fit_target"]), "--fit-ctx", str(BRAIN_RUNTIME["fit_ctx"])]
     set_job(key, "running", "load", 20, f"loading {name}")
     log("engine", "launch", name=name, cmd=" ".join(command))
     process = subprocess.Popen(command, cwd=executable_path.parent, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
     with LOCK:
         PROCESSES[name] = process
-        RUNTIME["engines"][name].update(status="loading", error="", pid=process.pid, applied=applied)
+        RUNTIME["engines"][name].update(status="loading", error="", pid=process.pid)
     publish()
     threading.Thread(target=log_process, args=(name, process), daemon=True).start()
     wait_ready(name, process, f"http://127.0.0.1:{PORTS[name]}/health")
     with LOCK:
         RUNTIME["engines"][name]["status"] = "running"
-        RUNTIME["dirty"][name] = False
     publish()
     log("engine", "ready", name=name, pid=process.pid)
     set_job(key, "running", "ready", 95, f"{name} ready")
 def multipart(audio: bytes, response_format: str | None = None) -> tuple[bytes, str]:
     boundary = "trident-" + uuid.uuid4().hex
-    fmt = (response_format or str(live("asr_runtime")["response_format"])).encode()
+    fmt = (response_format or str(ASR_RUNTIME["response_format"])).encode()
     fields = [("file", "speech.wav", "audio/wav", audio), ("response_format", "", "text/plain", fmt)]
     body = bytearray()
     for name, filename, kind, value in fields:
@@ -753,9 +723,8 @@ def transcribe(audio: bytes) -> dict:
             seconds = len(pcm) / float(rate * width * max(channels, 1))
         except (wave.Error, EOFError):
             rate, pcm, seconds = 16000, b"", 0.0
-        with LOCK:
-            window = float(live("asr_chunk")["seconds"])
-            overlap = float(live("asr_chunk")["overlap"])
+        window = float(ASR_CHUNK["seconds"])
+        overlap = float(ASR_CHUNK["overlap"])
         if seconds <= window or not pcm:
             body, content_type = multipart(audio)
             result = json.loads(remote(f"http://127.0.0.1:{PORTS['asr']}/v1/audio/transcriptions", body, content_type))
@@ -785,10 +754,9 @@ def brain(prompt: str, language: str) -> dict:
         raise ApiError(400, f"unsupported reply language: {language}")
     language_name = TTS_LANGUAGES[language]
     set_view(stage="thinking", error="", brain={"status": "running", "language": language})
-    with LOCK:
-        system = str(live("brain_system")).format(language_name=language_name, language=language)
-        generation = dict(live("brain_generation"))
-        thinking = bool(live("brain_thinking"))
+    system = BRAIN_SYSTEM.format(language_name=language_name, language=language)
+    generation = dict(BRAIN_GENERATION)
+    thinking = bool(BRAIN_THINKING)
     request = {
         "model": BRAIN["id"],
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
@@ -832,12 +800,11 @@ def synthesize(text: str, language: str) -> dict:
     require_engine("tts")
     set_view(stage="speaking", error="", tts={"text": text, "language": language, "status": "running"})
     ref = reference_path()
-    with LOCK:
-        payload = {
-            "text": text, "language": language, "reference": str(ref),
-            "reference_mtime": ref.stat().st_mtime, "chunk_chars": live("tts_chunk")["chars"],
-            **live("tts_sample"), **live("tts_voice"),
-        }
+    payload = {
+        "text": text, "language": language, "reference": str(ref),
+        "reference_mtime": ref.stat().st_mtime, "chunk_chars": TTS_CHUNK["chars"],
+        **TTS_SAMPLE, **TTS_VOICE,
+    }
     started = time.monotonic()
     try:
         result: dict = {}
@@ -886,106 +853,20 @@ REQUIRED_MODELS = ["chatterbox-t3", "chatterbox-codec", "parakeet", BRAIN["model
 OPS = {
     "inspect", "install_prerequisite", "install_component", "download_model",
     "load_engine", "unload_engine", "upload_reference",
-    "asr", "brain", "tts", "tts_cancel", "configure", "goodbye",
+    "asr", "brain", "tts", "tts_cancel", "goodbye",
 }
-
-def coerce_setting(current, spec: dict, value):
-    if isinstance(current, bool) or spec.get("type") == "bool":
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str) and value.strip().lower() in ("true", "false", "1", "0"):
-            return value.strip().lower() in ("true", "1")
-        raise ApiError(400, "expected boolean")
-    if isinstance(current, str):
-        text = str(value)
-        choices = spec.get("choices")
-        if choices and text not in choices:
-            raise ApiError(400, f"expected one of {choices}")
-        return text
-    if isinstance(current, int) and not isinstance(current, bool):
-        number = int(value)
-    elif isinstance(current, float):
-        number = float(value)
-    else:
-        raise ApiError(400, "unsupported setting type")
-    if "min" in spec:
-        number = max(spec["min"], number)
-    if "max" in spec:
-        number = min(spec["max"], number)
-    return type(current)(number)
-
-def settings_schema() -> dict:
-    with LOCK:
-        values = deepcopy(RUNTIME["settings"])
-    groups = {}
-    for group, fields in KNOBS.items():
-        current = values[group]
-        if not isinstance(current, dict):
-            groups[group] = {
-                "value": current,
-                "apply": fields.get("apply", "request"),
-                "type": "text" if isinstance(current, str) else "bool",
-            }
-            continue
-        entry = {}
-        for name, spec in fields.items():
-            current = values[group][name]
-            meta = {"value": current, "apply": spec.get("apply", "request")}
-            if "choices" in spec:
-                meta["choices"] = spec["choices"]
-                meta["type"] = "choice"
-            elif isinstance(current, bool):
-                meta["type"] = "bool"
-            else:
-                meta["type"] = "number"
-                for key in ("min", "max", "step"):
-                    if key in spec:
-                        meta[key] = spec[key]
-            entry[name] = meta
-        groups[group] = entry
-    return groups
-
-def configure(payload: dict) -> dict:
-    patch = payload.get("patch")
-    if type(patch) is not dict or not patch:
-        raise ApiError(400, "patch object is required")
-    dirty = []
-    with LOCK:
-        for group, fields in patch.items():
-            if group not in KNOBS:
-                raise ApiError(400, f"unknown setting group: {group}")
-            spec_group = KNOBS[group]
-            current = RUNTIME["settings"][group]
-            if not isinstance(current, dict):
-                RUNTIME["settings"][group] = coerce_setting(current, spec_group, fields)
-                continue
-            if type(fields) is not dict:
-                raise ApiError(400, f"{group} must be an object")
-            for name, value in fields.items():
-                if name not in spec_group:
-                    raise ApiError(400, f"unknown setting: {group}.{name}")
-                spec = spec_group[name]
-                current[name] = coerce_setting(current[name], spec, value)
-                if spec.get("apply") == "load" and group in KNOB_ENGINE:
-                    engine = KNOB_ENGINE[group]
-                    if RUNTIME["engines"][engine]["status"] == "running":
-                        RUNTIME["dirty"][engine] = True
-                        dirty.append(engine)
-    publish()
-    return {"ok": True, "settings": deepcopy(RUNTIME["settings"]), "dirty": list(dict.fromkeys(dirty))}
 
 def schema() -> dict:
     return {
-        "version": SCHEMA_VERSION,
         "languages": {"reply": TTS_LANGUAGES, "default_reply": DEFAULT_REPLY_LANGUAGE},
-        "settings": settings_schema(),
+        "mic": dict(MIC),
         "prerequisites": {name: {"label": label} for name, label in PREREQ_LABELS.items()},
         "components": {name: {"label": "CHATTERBOX TTS V3" if name == "tts" else BINARIES[name]["label"]} for name in COMPONENTS},
         "required_models": REQUIRED_MODELS,
     }
 
 def inspect() -> dict:
-    return {"ok": True, "version": SCHEMA_VERSION, "schema": schema(), "state": snapshot()}
+    return {"ok": True, "schema": schema(), "state": snapshot()}
 def accept_job(kind: str, name: str, work: Callable[[str], None]):
     return {"ok": True, "accepted": True, "job_id": start_job(kind, name, work)}, 202
 def require_wav(raw: bytes | None) -> bytes:
@@ -998,8 +879,6 @@ def dispatch(op: str, payload: dict | None = None, raw: bytes | None = None) -> 
         raise ApiError(400, f"unknown op: {op}")
     if op == "inspect":
         return inspect(), 200
-    if op == "configure":
-        return configure(payload), 200
     name = str(payload.get("name") or "")
     if op == "install_prerequisite":
         if name not in PREREQ_LABELS:
