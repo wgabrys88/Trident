@@ -3,6 +3,8 @@
 !/.gitattributes
 !/main.py
 !/cfg.py
+!/cfg_turbo.py
+!/cfg_nano.py
 !/panel.html
 !/panel.js
 !/audio-processor.js
