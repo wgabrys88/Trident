@@ -6,6 +6,7 @@
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <tuple>
 
 namespace tts {
 
@@ -85,21 +86,11 @@ void EngineWrapper::prepare(const Voice& voice, const std::string& text) {
     {
         std::lock_guard<std::mutex> lock(impl_->state);
         const Voice& have = impl_->voice;
-        const bool same = impl_->engine
-            && have.reference == voice.reference
-            && have.language == voice.language
-            && have.reference_mtime == voice.reference_mtime
-            && have.seed == voice.seed
-            && have.max_tokens == voice.max_tokens
-            && have.top_k == voice.top_k
-            && have.cfm_steps == voice.cfm_steps
-            && have.exaggeration == voice.exaggeration
-            && have.cfg == voice.cfg
-            && have.temperature == voice.temperature
-            && have.repeat == voice.repeat
-            && have.min_p == voice.min_p
-            && have.top_p == voice.top_p;
-        if (!same) {
+        auto key = [](const Voice& v) {
+            return std::tie(v.reference, v.language, v.reference_mtime, v.seed, v.max_tokens,
+                v.top_k, v.cfm_steps, v.exaggeration, v.cfg, v.temperature, v.repeat, v.min_p, v.top_p);
+        };
+        if (!impl_->engine || key(have) != key(voice)) {
             if (!std::filesystem::is_regular_file(voice.reference))
                 throw std::runtime_error("reference audio not found: " + voice.reference);
             tts_cpp::chatterbox::EngineOptions options;
@@ -152,9 +143,8 @@ bool EngineWrapper::step(const std::function<void(int, int, const std::vector<fl
     const int from = impl_->handed;
     const int to = static_cast<int>(impl_->speech.pcm.size()) - hold;
     std::vector<float> playable;
-    if (to > from) playable.assign(impl_->speech.pcm.begin() + from, impl_->speech.pcm.begin() + to);
-    else if (last && static_cast<int>(impl_->speech.pcm.size()) > from)
-        playable.assign(impl_->speech.pcm.begin() + from, impl_->speech.pcm.end());
+    if (to > from)
+        playable.assign(impl_->speech.pcm.begin() + from, impl_->speech.pcm.begin() + to);
     impl_->handed = from + static_cast<int>(playable.size());
     if (on_pack && !playable.empty())
         on_pack(impl_->index, impl_->speech.chunks, impl_->speech.pcm, playable);

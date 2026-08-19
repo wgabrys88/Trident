@@ -43,14 +43,16 @@ function status(values) {
   if (list.every(x => x.status === "ready" || x.status === "running")) return "ready";
   return "missing";
 }
+function names(obj) { return Object.keys(obj || {}); }
+function mic() { return state.settings.mic; }
 function coreReady() {
   return state && schema
-    && ["python", "git", "cmake", "msvc", "vulkan"].every(n => state.prerequisites[n]?.status === "ready")
-    && ["tts", "parakeet", "gemma"].every(n => state.components[n]?.status === "ready")
+    && names(schema.prerequisites).every(n => state.prerequisites[n]?.status === "ready")
+    && names(schema.components).every(n => state.components[n]?.status === "ready")
     && schema.required_models.every(n => state.models[n]?.status === "ready");
 }
 function enginesRunning() {
-  return state && ["asr", "brain", "tts"].every(n => state.engines[n]?.status === "running");
+  return state && names(state.engines).every(n => state.engines[n]?.status === "running");
 }
 function lang() { return $("reply-language").value; }
 function live() { return state?.live || {}; }
@@ -69,7 +71,7 @@ function render() {
   $("connection").textContent = "online";
   $("connection").className = "pill good";
   const pre = status(state.prerequisites);
-  const comp = status({tts: state.components.tts, parakeet: state.components.parakeet, gemma: state.components.gemma});
+  const comp = status(state.components);
   const models = status(Object.fromEntries(schema.required_models.map(n => [n, state.models[n]])));
   const on = enginesRunning();
   $("dots").innerHTML = [["pre", pre], ["runtimes", comp], ["models", models], ["engines", on ? "running" : status(state.engines)]]
@@ -157,10 +159,10 @@ async function runJob(op, name, kind) {
 async function installMissing() {
   fault(); $("install").disabled = true;
   try {
-    for (const name of ["git", "cmake", "msvc", "vulkan"]) {
+    for (const name of names(schema.prerequisites)) {
       if (state.prerequisites[name]?.status !== "ready") await runJob("install_prerequisite", name, "prerequisite");
     }
-    for (const name of ["tts", "parakeet", "gemma"]) {
+    for (const name of names(schema.components)) {
       if (state.components[name]?.status !== "ready") await runJob("install_component", name, "component");
     }
     for (const name of schema.required_models) {
@@ -197,18 +199,18 @@ function sampleCount(parts) { return parts.reduce((n, p) => n + p.length, 0); }
 function capture(frame) {
   const rec = recording;
   if (!rec || rec.busy || !frame?.length) return;
-  const level = rms(frame), ms = frame.length * 1000 / rec.rate;
-  if (level >= schema.mic.vad_threshold) {
+  const m = mic(), level = rms(frame), ms = frame.length * 1000 / rec.rate;
+  if (level >= m.vad_threshold) {
     rec.speaking = true; rec.speechMs += ms; rec.silenceMs = 0; rec.parts.push(frame);
   } else if (rec.speaking) {
     rec.parts.push(frame); rec.silenceMs += ms;
-    if (schema.mic.auto_send && rec.silenceMs >= schema.mic.vad_silence_ms && rec.speechMs >= schema.mic.vad_min_speech_ms) {
+    if (m.auto_send && rec.silenceMs >= m.vad_silence_ms && rec.speechMs >= m.vad_min_speech_ms) {
       const parts = rec.parts; rec.parts = []; rec.speaking = false; rec.speechMs = rec.silenceMs = 0;
       processUtterance(makeWav(parts, rec.rate), sampleCount(parts) / rec.rate, rec).catch(showError);
     }
   } else {
     rec.parts.push(frame);
-    const limit = Math.floor(rec.rate * schema.mic.pre_roll_ms / 1000);
+    const limit = Math.floor(rec.rate * m.pre_roll_ms / 1000);
     while (rec.parts.length > 1 && sampleCount(rec.parts) - rec.parts[0].length > limit) rec.parts.shift();
   }
   rmsText = rec.busy ? "" : `RMS ${level.toFixed(3)}${rec.speaking ? " · speech" : ""}`;
@@ -223,7 +225,7 @@ async function startMic() {
   fault();
   await ensurePlaybackContext();
   const stream = await navigator.mediaDevices.getUserMedia({audio: {channelCount: 1, echoCancellation: true, noiseSuppression: true}, video: false});
-  const context = new AudioContext({sampleRate: schema.mic.sample_rate});
+  const context = new AudioContext({sampleRate: mic().sample_rate});
   await context.audioWorklet.addModule("/audio-processor.js");
   const source = context.createMediaStreamSource(stream);
   const node = new AudioWorkletNode(context, "pcm-capture", {numberOfInputs: 1, numberOfOutputs: 0});
@@ -243,13 +245,13 @@ async function stopMic(send = true) {
   $("record").textContent = "Mic";
   $("record").classList.remove("live-mic");
   const duration = sampleCount(rec.parts) / rec.rate;
-  if (send && duration >= schema.mic.vad_min_speech_ms / 1000) await processUtterance(makeWav(rec.parts, rec.rate), duration, null);
+  if (send && duration >= mic().vad_min_speech_ms / 1000) await processUtterance(makeWav(rec.parts, rec.rate), duration, null);
   else render();
 }
 async function processUtterance(buffer, seconds, rec) {
   if (rec) rec.busy = true;
   try {
-    if ($("clone").checked && seconds >= schema.mic.clone_reference_seconds) await wav("upload_reference", buffer);
+    if ($("clone").checked && seconds >= mic().clone_reference_seconds) await wav("upload_reference", buffer);
     const asr = await wav("asr", buffer);
     if (!String(asr.result?.text || "").trim()) throw Error("Parakeet returned no transcript");
   } finally {
@@ -307,7 +309,8 @@ async function drainPacks() {
   }
 }
 async function audioFileToWav(file) {
-  const ctx = new AudioContext({sampleRate: schema.mic.sample_rate});
+  const rate = mic().sample_rate;
+  const ctx = new AudioContext({sampleRate: rate});
   try {
     const decoded = await ctx.decodeAudioData((await file.arrayBuffer()).slice(0));
     const n = decoded.length, chs = decoded.numberOfChannels, mono = new Float32Array(n);
@@ -316,15 +319,15 @@ async function audioFileToWav(file) {
       for (let i = 0; i < n; i++) mono[i] += ch[i] / chs;
     }
     let pcm = mono;
-    if (decoded.sampleRate !== schema.mic.sample_rate) {
-      const offline = new OfflineAudioContext(1, Math.max(1, Math.ceil(mono.length * schema.mic.sample_rate / decoded.sampleRate)), schema.mic.sample_rate);
+    if (decoded.sampleRate !== rate) {
+      const offline = new OfflineAudioContext(1, Math.max(1, Math.ceil(mono.length * rate / decoded.sampleRate)), rate);
       const buf = offline.createBuffer(1, mono.length, decoded.sampleRate);
       buf.getChannelData(0).set(mono);
       const src = offline.createBufferSource();
       src.buffer = buf; src.connect(offline.destination); src.start();
       pcm = (await offline.startRendering()).getChannelData(0);
     }
-    return {wav: makeWav([pcm], schema.mic.sample_rate), seconds: pcm.length / schema.mic.sample_rate};
+    return {wav: makeWav([pcm], rate), seconds: pcm.length / rate};
   } finally { await ctx.close(); }
 }
 

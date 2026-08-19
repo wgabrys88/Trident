@@ -27,7 +27,6 @@ from cfg import (
 )
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
-ASSETS = ROOT / "assets"
 MODELS_DIR = ROOT / "models"
 THIRD_PARTY = ROOT / "third_party"
 TOOLS = ROOT / "tools"
@@ -66,6 +65,16 @@ LOCK = threading.RLock()
 PROCESSES: dict[str, subprocess.Popen] = {}
 SUBS: list[queue.Queue] = []
 ENGINE_MODELS = {"tts": ("chatterbox-t3", "chatterbox-codec"), "asr": ("parakeet",), "brain": (BRAIN["model"],)}
+ENGINE_BIN = {"tts": "tts", "asr": "parakeet", "brain": "gemma"}
+COMPONENTS = ("tts", *BINARIES)
+PREREQ_LABELS = {"python": "PYTHON 3.11+", "git": "GIT", "cmake": "CMAKE", "msvc": "MSVC BUILD TOOLS", "vulkan": "VULKAN SDK"}
+PANEL_FILES = {
+    "/": (ROOT / "panel.html", "text/html; charset=utf-8"),
+    "/panel.html": (ROOT / "panel.html", "text/html; charset=utf-8"),
+    "/panel.css": (ROOT / "panel.css", "text/css; charset=utf-8"),
+    "/panel.js": (ROOT / "panel.js", "text/javascript; charset=utf-8"),
+    "/audio-processor.js": (ROOT / "audio-processor.js", "text/javascript; charset=utf-8"),
+}
 LOG = ROOT / "trident.log"
 def log(component: str, event: str, **data: Any):
     line = component + " " + event
@@ -75,7 +84,7 @@ def log(component: str, event: str, **data: Any):
     with LOCK:
         with LOG.open("a", encoding="utf-8") as out:
             out.write(line + "\n")
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 def default_settings() -> dict:
     return {
@@ -148,6 +157,11 @@ def present(path: Path, size: int = 0) -> bool:
 def executable(name: str) -> str | None:
     local = {"git": TOOLS / "git" / "cmd" / "git.exe", "cmake": TOOLS / "cmake-4.4.2-windows-x86_64" / "bin" / "cmake.exe"}.get(name)
     return str(local) if local and local.is_file() else shutil.which(name)
+def need(name: str) -> str:
+    path = executable(name)
+    if not path:
+        raise RuntimeError(f"{name} is missing")
+    return path
 def msvc_path() -> Path | None:
     root = Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Microsoft Visual Studio"
     matches = sorted(root.glob("*/BuildTools/VC/Tools/MSVC/*/bin/Hostx64/x64/cl.exe"), reverse=True)
@@ -178,17 +192,17 @@ def component_status(name: str) -> dict:
     path = component_artifact(name)
     revision = SOURCES["chatterbox"][1] if name == "tts" else BINARIES[name]["tag"]
     return {"status": "ready" if path.is_file() else "missing", "path": str(path), "revision": revision}
-def reference_path() -> Path:
+def reference_file() -> Path:
     custom = DATA / "reference.wav"
-    if custom.is_file():
-        return custom
-    default = model_path("reference")
-    if default.is_file():
-        return default
+    return custom if custom.is_file() else model_path("reference")
+def reference_path() -> Path:
+    path = reference_file()
+    if path.is_file():
+        return path
     raise ApiError(409, "default reference is missing; download DEFAULT VOICE")
 def reference_state() -> dict:
-    custom = DATA / "reference.wav"
-    path = custom if custom.is_file() else model_path("reference")
+    path = reference_file()
+    custom = path == DATA / "reference.wav"
     if not path.is_file():
         return {"status": "missing", "path": str(path), "duration": 0.0, "custom": False}
     try:
@@ -196,10 +210,10 @@ def reference_state() -> dict:
             valid = audio.getnchannels() == 1 and audio.getsampwidth() == 2 and audio.getcomptype() == "NONE"
             duration = audio.getnframes() / float(audio.getframerate() or 1)
         if not valid or duration < 5:
-            return {"status": "invalid", "path": str(path), "duration": duration, "custom": path == custom}
+            return {"status": "invalid", "path": str(path), "duration": duration, "custom": custom}
     except (wave.Error, OSError):
-        return {"status": "invalid", "path": str(path), "duration": 0.0, "custom": path == custom}
-    return {"status": "ready", "path": str(path), "duration": duration, "custom": path == custom}
+        return {"status": "invalid", "path": str(path), "duration": 0.0, "custom": custom}
+    return {"status": "ready", "path": str(path), "duration": duration, "custom": custom}
 def snapshot() -> dict:
     with LOCK:
         engines = deepcopy(RUNTIME["engines"])
@@ -207,7 +221,7 @@ def snapshot() -> dict:
             engines[name]["pid"] = process.pid
         return {
             "prerequisites": prerequisites(),
-            "components": {name: component_status(name) for name in ("tts", "parakeet", "gemma")},
+            "components": {name: component_status(name) for name in COMPONENTS},
             "models": {name: model_status(name) for name in MODELS},
             "engines": engines,
             "reference": reference_state(),
@@ -244,10 +258,7 @@ def build_env() -> dict:
     env["VULKAN_SDK"] = str(sdk)
     paths = [str(sdk / "Bin")]
     for name in ("git", "cmake"):
-        path = executable(name)
-        if not path:
-            raise RuntimeError(f"{name} is missing")
-        paths.append(str(Path(path).parent))
+        paths.append(str(Path(need(name)).parent))
     env["PATH"] = os.pathsep.join(paths + [env.get("PATH", "")])
     return env
 def run(component: str, stage: str, command: list[str], cwd: Path, env: dict | None = None):
@@ -263,9 +274,7 @@ def run(component: str, stage: str, command: list[str], cwd: Path, env: dict | N
         raise RuntimeError(f"{component} {stage} exited {code}: {tail}")
 def checkout(component: str, path: Path, source: str):
     url, revision = SOURCES[source]
-    git = executable("git")
-    if not git:
-        raise RuntimeError("git is missing")
+    git = need("git")
     if path.exists() and not (path / ".git").is_dir():
         raise RuntimeError(f"non-git path blocks checkout: {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -276,9 +285,7 @@ def checkout(component: str, path: Path, source: str):
     run(component, f"reset-{source}", [git, "reset", "--hard", revision], path)
     run(component, f"clean-{source}", [git, "clean", "-fdx"], path)
 def apply_chatterbox_patches(cwd: Path):
-    git = executable("git")
-    if not git:
-        raise RuntimeError("git is missing")
+    git = need("git")
     names = [path.name for path in sorted(PATCHES.glob("chatterbox-*.patch"))]
     if not names:
         raise RuntimeError("Chatterbox patch set is missing")
@@ -289,7 +296,7 @@ def apply_chatterbox_patches(cwd: Path):
         raise SystemExit("TRIDENT_INSPECT_PATCHES: leaving patched tree at " + str(cwd))
 
 def require_build_tools():
-    missing = [name for name, value in prerequisites().items() if name in ("git", "cmake", "msvc", "vulkan") and value["status"] != "ready"]
+    missing = [name for name in ("git", "cmake", "msvc", "vulkan") if prerequisites()[name]["status"] != "ready"]
     if missing:
         raise RuntimeError("missing TTS build prerequisites: " + ", ".join(missing))
 def github_release_asset(spec: dict) -> tuple[str, int]:
@@ -310,8 +317,7 @@ def github_release_asset(spec: dict) -> tuple[str, int]:
     return download, size
 def extract_release_bundle(archive: Path, destination: Path, executable_name: str):
     partial = destination.with_name(destination.name + ".part")
-    if partial.exists():
-        shutil.rmtree(partial)
+    rmtree_retry(partial)
     partial.mkdir(parents=True)
     root = partial.resolve()
     try:
@@ -324,12 +330,10 @@ def extract_release_bundle(archive: Path, destination: Path, executable_name: st
         matches = [path for path in partial.rglob("*") if path.is_file() and path.name.lower() == executable_name.lower()]
         if len(matches) != 1:
             raise RuntimeError(f"release bundle must contain exactly one {executable_name}; found {len(matches)}")
-        if destination.exists():
-            shutil.rmtree(destination)
+        rmtree_retry(destination)
         partial.rename(destination)
     except Exception:
-        if partial.exists():
-            shutil.rmtree(partial)
+        rmtree_retry(partial)
         raise
 def install_release_binary(name: str, key: str):
     spec = BINARIES[name]
@@ -393,9 +397,7 @@ def install_component(name: str, key: str):
     if name != "tts":
         raise RuntimeError(f"unknown component: {name}")
     require_build_tools()
-    cmake = executable("cmake")
-    if not cmake:
-        raise RuntimeError("cmake is missing")
+    cmake = need("cmake")
     set_job(key, "running", "source", 5, "checking out Chatterbox")
     checkout(name, CHATTERBOX, "chatterbox")
     apply_chatterbox_patches(CHATTERBOX)
@@ -414,7 +416,6 @@ def install_component(name: str, key: str):
     if not TTS_SERVER.is_file():
         raise RuntimeError(f"TTS build did not create {TTS_SERVER}")
     stop_engine("tts")
-    terminate_executable(RUNTIMES / "tts" / TTS_SERVER.name)
     set_job(key, "running", "install", 90, "installing TTS runtime")
     runtime = RUNTIMES / "tts"
     partial = runtime.with_name(runtime.name + ".part")
@@ -429,8 +430,7 @@ def install_component(name: str, key: str):
             rmtree_retry(runtime)
         partial.rename(runtime)
     except Exception:
-        if partial.exists():
-            rmtree_retry(partial)
+        rmtree_retry(partial)
         raise
 def fetch(url: str, destination: Path, size: int, key: str):
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -461,14 +461,12 @@ def install_prerequisite(name: str, key: str):
     set_job(key, "running", "install", 92, f"installing {name}")
     if name == "git":
         destination = TOOLS / "git"
-        if destination.exists():
-            shutil.rmtree(destination)
+        rmtree_retry(destination)
         with zipfile.ZipFile(archive) as package:
             package.extractall(destination)
     elif name == "cmake":
         destination = TOOLS / "cmake-4.4.2-windows-x86_64"
-        if destination.exists():
-            shutil.rmtree(destination)
+        rmtree_retry(destination)
         with zipfile.ZipFile(archive) as package:
             package.extractall(TOOLS)
     elif name == "msvc":
@@ -530,8 +528,7 @@ def download_model(name: str, key: str):
         partial = destination.with_suffix(destination.suffix + ".part")
         partial.unlink(missing_ok=True)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        script = "convert-t3-mtl-to-gguf.py" if name == "chatterbox-t3" else "convert-s3gen-to-gguf.py"
-        command = [str(python), str(CHATTERBOX / "scripts" / script)]
+        command = [str(python), str(converter_script)]
         if name != "chatterbox-t3":
             command += ["--variant", "mtl"]
         command += ["--ckpt-dir", str(checkpoint), "--out", str(partial), "--quant", "q4_0" if name == "chatterbox-t3" else "f16"]
@@ -616,8 +613,7 @@ def stop_engine(name: str):
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(5)
-    exe = component_artifact("tts" if name == "tts" else "parakeet" if name == "asr" else "gemma")
-    terminate_executable(exe)
+    terminate_executable(component_artifact(ENGINE_BIN[name]))
     with LOCK:
         RUNTIME["engines"][name].update(status="stopped", error="", pid=None, applied={})
     publish()
@@ -643,42 +639,37 @@ def already_running() -> bool:
         return False
 def load_engine(name: str, key: str):
     stop_engine(name)
-    if name == "brain":
-        if model_status(BRAIN["model"])["status"] != "ready":
-            raise RuntimeError(f"brain model is missing: {model_path(BRAIN['model'])}")
-        paths = [model_path(BRAIN["model"])]
-    else:
-        paths = [model_path(model) for model in ENGINE_MODELS[name]]
-        for model, model_file in zip(ENGINE_MODELS[name], paths):
-            if model_status(model)["status"] != "ready":
-                raise RuntimeError(f"model is missing: {model_file}")
-    executable_path = component_artifact("tts" if name == "tts" else "parakeet" if name == "asr" else "gemma")
+    paths = []
+    for model in ENGINE_MODELS[name]:
+        path = model_path(model)
+        if model_status(model)["status"] != "ready":
+            raise RuntimeError(f"model is missing: {path}")
+        paths.append(path)
+    executable_path = component_artifact(ENGINE_BIN[name])
     if not executable_path.is_file():
         raise RuntimeError(f"component is missing: {executable_path}")
+    env = os.environ.copy()
     if name == "tts":
         runtime = dict(live("tts_runtime"))
         applied = {"runtime": runtime}
         command = [str(executable_path), "--port", str(PORTS["tts"]), "--model", str(paths[0]), "--s3gen-gguf", str(paths[1]), "--n-gpu-layers", str(runtime["gpu_layers"]), "--context", str(runtime["context"]), "--threads", str(runtime["threads"])]
-        cwd, health, env = executable_path.parent, f"http://127.0.0.1:{PORTS['tts']}/health", os.environ.copy()
     elif name == "asr":
         applied = dict(live("asr_runtime"))
         command = [str(executable_path), "--model", str(paths[0]), "--host", "127.0.0.1", "--port", str(PORTS["asr"]), "--threads", str(applied["threads"])]
-        cwd, health, env = executable_path.parent, f"http://127.0.0.1:{PORTS['asr']}/health", os.environ.copy()
         env["PARAKEET_DEVICE"] = str(applied["device"])
     else:
         runtime = dict(live("brain_runtime"))
         applied = {**runtime, "id": BRAIN["id"], "family": BRAIN["family"], "path": str(paths[0])}
         command = [str(executable_path), "-m", str(paths[0]), "--host", "127.0.0.1", "--port", str(PORTS["brain"]), "--device", str(runtime["device"]), "--n-gpu-layers", str(runtime["gpu_layers"]), "--ctx-size", str(runtime["context"]), "--parallel", str(runtime["parallel"]), "--no-mmproj", "--load-mode", "auto", "--flash-attn", str(runtime["flash_attn"]), "--repack", "--fit", str(runtime["fit"]), "--fit-target", str(runtime["fit_target"]), "--fit-ctx", str(runtime["fit_ctx"])]
-        cwd, health, env = executable_path.parent, f"http://127.0.0.1:{PORTS['brain']}/health", os.environ.copy()
     set_job(key, "running", "load", 20, f"loading {name}")
     log("engine", "launch", name=name, cmd=" ".join(command))
-    process = subprocess.Popen(command, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+    process = subprocess.Popen(command, cwd=executable_path.parent, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
     with LOCK:
         PROCESSES[name] = process
         RUNTIME["engines"][name].update(status="loading", error="", pid=process.pid, applied=applied)
     publish()
     threading.Thread(target=log_process, args=(name, process), daemon=True).start()
-    wait_ready(name, process, health)
+    wait_ready(name, process, f"http://127.0.0.1:{PORTS[name]}/health")
     with LOCK:
         RUNTIME["engines"][name]["status"] = "running"
         RUNTIME["dirty"][name] = False
@@ -732,7 +723,7 @@ def asr_words(result: dict) -> list[dict]:
     if isinstance(tokens, list):
         return [{"w": str(item.get("t") or item.get("token") or ""), "start": float(item.get("start") or 0), "end": float(item.get("end") or 0)} for item in tokens]
     return [{"w": token, "start": 0.0, "end": 0.0} for token in str(result.get("text") or "").split()]
-def stitch_asr(parts: list[dict], window: float, overlap: float) -> dict:
+def stitch_asr(parts: list[dict], overlap: float) -> dict:
     if not parts:
         return {"text": ""}
     if len(parts) == 1:
@@ -780,7 +771,7 @@ def transcribe(audio: bytes) -> dict:
                 if cursor + window >= seconds:
                     break
                 cursor += step
-            result = stitch_asr(parts, window, overlap)
+            result = stitch_asr(parts, overlap)
         text = str(result.get("text") or "")
         set_view(asr={"text": text, "status": "done"})
         log("asr", "done", ms=round((time.monotonic() - started) * 1000, 1), text=text)
@@ -891,16 +882,11 @@ def brain_reply_text(result: dict | None) -> str:
         return ""
     message = ((result.get("choices") or [{}])[0].get("message") or {})
     return str(message.get("content") or "").strip()
-def wav_body(raw: bytes | None) -> bytes:
-    if not raw:
-        raise ApiError(400, "WAV body is required")
-    return raw
 REQUIRED_MODELS = ["chatterbox-t3", "chatterbox-codec", "parakeet", BRAIN["model"], "reference"]
 OPS = {
-    "inspect": {},
-    "install_prerequisite": {}, "install_component": {}, "download_model": {},
-    "load_engine": {}, "unload_engine": {}, "upload_reference": {},
-    "asr": {}, "brain": {}, "tts": {}, "tts_cancel": {}, "configure": {}, "goodbye": {},
+    "inspect", "install_prerequisite", "install_component", "download_model",
+    "load_engine", "unload_engine", "upload_reference",
+    "asr", "brain", "tts", "tts_cancel", "configure", "goodbye",
 }
 
 def coerce_setting(current, spec: dict, value):
@@ -910,7 +896,7 @@ def coerce_setting(current, spec: dict, value):
         if isinstance(value, str) and value.strip().lower() in ("true", "false", "1", "0"):
             return value.strip().lower() in ("true", "1")
         raise ApiError(400, "expected boolean")
-    if isinstance(current, str) and not isinstance(current, bool):
+    if isinstance(current, str):
         text = str(value)
         choices = spec.get("choices")
         if choices and text not in choices:
@@ -933,11 +919,13 @@ def settings_schema() -> dict:
         values = deepcopy(RUNTIME["settings"])
     groups = {}
     for group, fields in KNOBS.items():
-        if group in ("brain_system", "brain_thinking"):
-            spec = fields
-            current = values[group]
-            item = {"value": current, "apply": spec.get("apply", "request"), "type": "text" if group == "brain_system" else "bool"}
-            groups[group] = item
+        current = values[group]
+        if not isinstance(current, dict):
+            groups[group] = {
+                "value": current,
+                "apply": fields.get("apply", "request"),
+                "type": "text" if isinstance(current, str) else "bool",
+            }
             continue
         entry = {}
         for name, spec in fields.items():
@@ -967,12 +955,12 @@ def configure(payload: dict) -> dict:
             if group not in KNOBS:
                 raise ApiError(400, f"unknown setting group: {group}")
             spec_group = KNOBS[group]
-            if group in ("brain_system", "brain_thinking"):
-                RUNTIME["settings"][group] = coerce_setting(RUNTIME["settings"][group], spec_group, fields)
+            current = RUNTIME["settings"][group]
+            if not isinstance(current, dict):
+                RUNTIME["settings"][group] = coerce_setting(current, spec_group, fields)
                 continue
             if type(fields) is not dict:
                 raise ApiError(400, f"{group} must be an object")
-            current = RUNTIME["settings"][group]
             for name, value in fields.items():
                 if name not in spec_group:
                     raise ApiError(400, f"unknown setting: {group}.{name}")
@@ -987,20 +975,23 @@ def configure(payload: dict) -> dict:
     return {"ok": True, "settings": deepcopy(RUNTIME["settings"]), "dirty": list(dict.fromkeys(dirty))}
 
 def schema() -> dict:
-    with LOCK:
-        mic = deepcopy(RUNTIME["settings"]["mic"])
     return {
         "version": SCHEMA_VERSION,
         "languages": {"reply": TTS_LANGUAGES, "default_reply": DEFAULT_REPLY_LANGUAGE},
-        "mic": mic,
         "settings": settings_schema(),
-        "prerequisites": {name: {"label": label} for name, label in {"python": "PYTHON 3.11+", "git": "GIT", "cmake": "CMAKE", "msvc": "MSVC BUILD TOOLS", "vulkan": "VULKAN SDK"}.items()},
-        "components": {"tts": {"label": "CHATTERBOX TTS V3"}, "parakeet": {"label": BINARIES["parakeet"]["label"]}, "gemma": {"label": BINARIES["gemma"]["label"]}},
+        "prerequisites": {name: {"label": label} for name, label in PREREQ_LABELS.items()},
+        "components": {name: {"label": "CHATTERBOX TTS V3" if name == "tts" else BINARIES[name]["label"]} for name in COMPONENTS},
         "required_models": REQUIRED_MODELS,
     }
 
 def inspect() -> dict:
     return {"ok": True, "version": SCHEMA_VERSION, "schema": schema(), "state": snapshot()}
+def accept_job(kind: str, name: str, work: Callable[[str], None]):
+    return {"ok": True, "accepted": True, "job_id": start_job(kind, name, work)}, 202
+def require_wav(raw: bytes | None) -> bytes:
+    if not raw:
+        raise ApiError(400, "WAV body is required")
+    return raw
 def dispatch(op: str, payload: dict | None = None, raw: bytes | None = None) -> tuple[dict, int]:
     payload = payload or {}
     if op not in OPS:
@@ -1009,32 +1000,29 @@ def dispatch(op: str, payload: dict | None = None, raw: bytes | None = None) -> 
         return inspect(), 200
     if op == "configure":
         return configure(payload), 200
+    name = str(payload.get("name") or "")
     if op == "install_prerequisite":
-        name = str(payload.get("name") or "")
-        if name not in schema()["prerequisites"]:
+        if name not in PREREQ_LABELS:
             raise ApiError(404, f"unknown prerequisite: {name}")
-        return {"ok": True, "accepted": True, "job_id": start_job("prerequisite", name, lambda key: install_prerequisite(name, key))}, 202
+        return accept_job("prerequisite", name, lambda key: install_prerequisite(name, key))
     if op == "install_component":
-        name = str(payload.get("name") or "")
-        if name not in ("tts", *BINARIES):
+        if name not in COMPONENTS:
             raise ApiError(404, f"unknown component: {name}")
-        return {"ok": True, "accepted": True, "job_id": start_job("component", name, lambda key: install_component(name, key))}, 202
+        return accept_job("component", name, lambda key: install_component(name, key))
     if op == "download_model":
-        name = str(payload.get("name") or "")
         if name not in MODELS:
             raise ApiError(404, f"unknown model: {name}")
-        return {"ok": True, "accepted": True, "job_id": start_job("model", name, lambda key: download_model(name, key))}, 202
+        return accept_job("model", name, lambda key: download_model(name, key))
     if op in ("load_engine", "unload_engine"):
-        name = str(payload.get("name") or "")
         if name not in ENGINE_MODELS:
             raise ApiError(404, f"unknown engine: {name}")
         work = (lambda key: load_engine(name, key)) if op == "load_engine" else (lambda key: stop_engine(name))
-        return {"ok": True, "accepted": True, "job_id": start_job("engine", name, work)}, 202
+        return accept_job("engine", name, work)
     if op == "upload_reference":
-        validate_wav(wav_body(raw))
+        validate_wav(require_wav(raw))
         return {"ok": True, "reference": reference_state()}, 200
     if op == "asr":
-        return {"ok": True, "result": transcribe(wav_body(raw))}, 200
+        return {"ok": True, "result": transcribe(require_wav(raw))}, 200
     if op == "brain":
         prompt = str(payload.get("prompt") or "").strip()
         language = str(payload.get("language") or DEFAULT_REPLY_LANGUAGE)
@@ -1078,18 +1066,10 @@ class Handler(BaseHTTPRequestHandler):
     def send_json(self, value: Any, code: int = 200):
         self.send_bytes(json.dumps(value, separators=(",", ":"), ensure_ascii=True).encode("ascii"), "application/json", code)
     def do_GET(self):
-        op = ""
         try:
             parsed = urllib.parse.urlparse(self.path)
             path = parsed.path
             query = {key: values[0] for key, values in urllib.parse.parse_qs(parsed.query).items() if values}
-            files = {
-                "/": (ROOT / "panel.html", "text/html; charset=utf-8"),
-                "/panel.html": (ROOT / "panel.html", "text/html; charset=utf-8"),
-                "/panel.css": (ROOT / "panel.css", "text/css; charset=utf-8"),
-                "/panel.js": (ROOT / "panel.js", "text/javascript; charset=utf-8"),
-                "/audio-processor.js": (ROOT / "audio-processor.js", "text/javascript; charset=utf-8"),
-            }
             if path == "/events":
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
@@ -1130,17 +1110,15 @@ class Handler(BaseHTTPRequestHandler):
                     raise ApiError(404, "no speech yet")
                 self.send_bytes(target.read_bytes(), "audio/wav")
                 return
-            if path in files:
-                target, content_type = files[path]
+            if path in PANEL_FILES:
+                target, content_type = PANEL_FILES[path]
                 self.send_bytes(target.read_bytes(), content_type)
                 return
             if path != "/api":
                 raise ApiError(404, f"unknown endpoint: {path}")
-            op = query.get("op") or "inspect"
-            if op != "inspect":
+            if (query.get("op") or "inspect") != "inspect":
                 raise ApiError(404, "GET /api accepts op=inspect")
-            response_body, code = dispatch(op, query)
-            self.send_json(response_body, code)
+            self.send_json(inspect())
         except ApiError as exception:
             self.send_json({"error": str(exception)}, exception.code)
         except Exception as exception:

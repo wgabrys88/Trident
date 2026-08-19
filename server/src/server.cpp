@@ -19,31 +19,19 @@ namespace {
 
 void write_wav(const std::string& path, const std::vector<float>& pcm, uint32_t rate) {
     std::vector<int16_t> samples(pcm.size());
-    for (size_t i = 0; i < pcm.size(); ++i) {
-        const float s = std::max(-1.0f, std::min(1.0f, pcm[i]));
-        samples[i] = static_cast<int16_t>(s * 32767);
-    }
+    for (size_t i = 0; i < pcm.size(); ++i)
+        samples[i] = static_cast<int16_t>(std::max(-1.0f, std::min(1.0f, pcm[i])) * 32767);
     const auto target = std::filesystem::path(path);
     if (!target.parent_path().empty()) std::filesystem::create_directories(target.parent_path());
     std::ofstream out(target, std::ios::binary | std::ios::trunc);
     if (!out) throw std::runtime_error("cannot open WAV: " + path);
     const uint32_t data_size = static_cast<uint32_t>(samples.size() * 2);
-    const uint32_t riff_size = 36 + data_size;
-    const uint32_t byte_rate = rate * 2;
-    const uint32_t fmt_size = 16;
+    const uint32_t riff_size = 36 + data_size, byte_rate = rate * 2, fmt_size = 16;
     const uint16_t format = 1, channels = 1, block_align = 2, bits = 16;
-    out.write("RIFF", 4);
-    out.write(reinterpret_cast<const char*>(&riff_size), 4);
-    out.write("WAVEfmt ", 8);
-    out.write(reinterpret_cast<const char*>(&fmt_size), 4);
-    out.write(reinterpret_cast<const char*>(&format), 2);
-    out.write(reinterpret_cast<const char*>(&channels), 2);
-    out.write(reinterpret_cast<const char*>(&rate), 4);
-    out.write(reinterpret_cast<const char*>(&byte_rate), 4);
-    out.write(reinterpret_cast<const char*>(&block_align), 2);
-    out.write(reinterpret_cast<const char*>(&bits), 2);
-    out.write("data", 4);
-    out.write(reinterpret_cast<const char*>(&data_size), 4);
+    auto put = [&](const auto& v) { out.write(reinterpret_cast<const char*>(&v), sizeof(v)); };
+    out.write("RIFF", 4); put(riff_size); out.write("WAVEfmt ", 8);
+    put(fmt_size); put(format); put(channels); put(rate); put(byte_rate); put(block_align); put(bits);
+    out.write("data", 4); put(data_size);
     out.write(reinterpret_cast<const char*>(samples.data()), data_size);
 }
 
