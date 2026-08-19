@@ -21,7 +21,7 @@ FetchContent_Declare(nlohmann_json GIT_REPOSITORY https://github.com/nlohmann/js
 FetchContent_MakeAvailable(cpp_httplib nlohmann_json)
 set(CHATTERBOX_BUILD "${CHATTERBOX_CPP_ROOT}/build")
 set(GGML_BUILD "${CHATTERBOX_BUILD}/ggml/src")
-add_executable(tts-server src/server.cpp src/engine_wrapper.cpp src/main.cpp)
+add_executable(tts-server src/server.cpp src/engine_wrapper.cpp)
 target_include_directories(tts-server PRIVATE include "${CHATTERBOX_CPP_ROOT}/include" "${CHATTERBOX_CPP_ROOT}/ggml/include" ${Vulkan_INCLUDE_DIRS})
 target_link_libraries(tts-server PRIVATE
     "${CHATTERBOX_BUILD}/Release/tts-cpp.lib"
