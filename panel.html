@@ -4,58 +4,35 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Trident</title>
-<link rel="stylesheet" href="/panel.css">
 </head>
 <body>
-<main class="shell">
-  <div class="bar">
-    <div id="dots" class="dots"></div>
-    <b>Trident</b>
-    <span id="connection" class="pill bad">offline</span>
-    <button id="install">Install</button>
-    <button id="engines" class="primary">Start</button>
-    <span id="live" class="live">Start engines, then speak, upload, or type.</span>
-  </div>
-  <div class="conversation">
-    <article>
-      <div class="label"><span>Heard</span><small id="asr-state">idle</small></div>
-      <textarea id="transcript" placeholder="Parakeet. Type, pad, or speak."></textarea>
-      <div class="toolbar">
-        <label class="check"><input id="heard-auto" type="checkbox" checked> Auto</label>
-        <button id="heard-send" disabled>Send</button>
-      </div>
-    </article>
-    <article>
-      <div class="label"><span>Answer</span><small id="brain-state">idle</small></div>
-      <textarea id="answer" placeholder="Spoken text. Auto off freezes."></textarea>
-      <div class="toolbar">
-        <label class="check"><input id="answer-auto" type="checkbox" checked> Auto</label>
-        <button id="answer-send" disabled>Send</button>
-      </div>
-    </article>
-  </div>
-  <p id="fault" class="fault" hidden></p>
-  <div class="bar" id="pad">
-    <button id="record" class="mic" disabled>Mic</button>
-    <label class="file">File<input id="audio-file" type="file" accept="audio/*" disabled></label>
-    <label class="check"><input id="clone" type="checkbox"> Clone</label>
-    <label>Reply <select id="reply-language"></select></label>
-    <button id="stop-voice" disabled>Stop</button>
-    <button type="button" data-pad="short" title="TIMIT SA1. Spectrograms in every TIMIT paper.">Short</button>
-    <button type="button" data-pad="mid" title="Rainbow Passage. Connected-speech spectrograms.">Mid</button>
-    <button type="button" data-pad="long" title="Rainbow + Grandfather + Harvard + North Wind en/de/pl. Chunk join.">5 min</button>
-    <button type="button" data-pad="sa2" title="TIMIT SA2.">SA2</button>
-    <button type="button" data-pad="harvard" title="IEEE Harvard list 1.">Harvard</button>
-    <button type="button" data-pad="grandfather" title="Grandfather Passage.">Grandfather</button>
-    <button type="button" data-pad="wind-en" title="IPA Handbook English.">Wind EN</button>
-    <button type="button" data-pad="wind-de" title="IPA Handbook German.">Wind DE</button>
-    <button type="button" data-pad="wind-pl" title="JIPA Polish (Jassem 2003).">Wind PL</button>
-  </div>
-  <details class="knobs">
-    <summary>Knobs — Gemma prompt, Parakeet and Chatterbox have none</summary>
-    <div id="knobs"></div>
-  </details>
-</main>
+<p>
+  <span id="connection">offline</span>
+  <button id="install">Install</button>
+  <button id="engines">Start</button>
+  <span id="live">Start engines, then speak, upload, or type.</span>
+</p>
+<p id="dots"></p>
+<p>
+  Heard <span id="asr-state">idle</span><br>
+  <textarea id="transcript" rows="8" cols="60" placeholder="Parakeet. Type or speak."></textarea><br>
+  <label><input id="heard-auto" type="checkbox" checked> Auto</label>
+  <button id="heard-send" disabled>Send</button>
+</p>
+<p>
+  Answer <span id="brain-state">idle</span><br>
+  <textarea id="answer" rows="8" cols="60" placeholder="Spoken text. Auto off freezes."></textarea><br>
+  <label><input id="answer-auto" type="checkbox" checked> Auto</label>
+  <button id="answer-send" disabled>Send</button>
+</p>
+<p id="fault" hidden></p>
+<p>
+  <button id="record" disabled>Mic</button>
+  <input id="audio-file" type="file" accept="audio/*" disabled>
+  <label><input id="clone" type="checkbox"> Clone</label>
+  Reply <select id="reply-language"></select>
+  <button id="stop-voice" disabled>Stop</button>
+</p>
 <script src="/panel.js"></script>
 </body>
 </html>
