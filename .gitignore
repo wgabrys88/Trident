@@ -1,9 +1,10 @@
 *
 !/.gitignore
 !/.gitattributes
-!/README.md
 !/main.py
-!/cfg.py
+!/config.py
+!/installer.py
+!/paths.py
 !/assets/
 !/assets/default-reference.wav
 !/patches/
