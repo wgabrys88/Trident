@@ -7,16 +7,53 @@ if(WIN32)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
     add_compile_options(/MP /bigobj)
 endif()
-find_package(Vulkan REQUIRED)
+
+option(TRIDENT_AVX512 "Enable AVX-512 kernels for PCM convert / glue" OFF)
+if(TRIDENT_AVX512)
+    if(MSVC)
+        add_compile_options(/arch:AVX512)
+    else()
+        add_compile_options(-mavx512f -mavx512dq -mfma)
+    endif()
+    add_compile_definitions(TRIDENT_AVX512=1)
+endif()
+
 if(NOT CHATTERBOX_CPP_ROOT)
     get_filename_component(CHATTERBOX_CPP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/chatterbox.cpp" ABSOLUTE)
 endif()
-if(NOT EXISTS "${CHATTERBOX_CPP_ROOT}/include/tts-cpp/chatterbox/engine.h")
-    message(FATAL_ERROR "chatterbox.cpp missing at ${CHATTERBOX_CPP_ROOT}")
+set(CHATTERBOX_HEADER "${CHATTERBOX_CPP_ROOT}/include/tts-cpp/chatterbox/engine.h")
+set(HAVE_CHATTERBOX OFF)
+if(EXISTS "${CHATTERBOX_HEADER}")
+    set(HAVE_CHATTERBOX ON)
 endif()
+
+add_executable(trident-tts-tests
+    tests/test_runtime.cpp
+    src/family.cpp
+    src/speaker_cache.cpp
+    src/kv_cache.cpp
+)
+target_include_directories(trident-tts-tests PRIVATE include)
+target_compile_definitions(trident-tts-tests PRIVATE _USE_MATH_DEFINES)
+
+if(NOT HAVE_CHATTERBOX)
+    message(WARNING "chatterbox.cpp missing at ${CHATTERBOX_CPP_ROOT}; building tests only")
+    return()
+endif()
+
+find_package(Vulkan REQUIRED)
 set(CHATTERBOX_BUILD "${CHATTERBOX_CPP_ROOT}/build")
 set(GGML_BUILD "${CHATTERBOX_BUILD}/ggml/src")
-set(TTS_COMMON src/audio.cpp src/cli.cpp)
+
+set(TTS_COMMON
+    src/audio.cpp
+    src/cli.cpp
+    src/family.cpp
+    src/speaker_cache.cpp
+    src/kv_cache.cpp
+    src/engine_wrapper.cpp
+)
+
 function(trident_tts_bin name src)
     add_executable(${name} ${src} ${TTS_COMMON})
     target_include_directories(${name} PRIVATE include "${CHATTERBOX_CPP_ROOT}/include" "${CHATTERBOX_CPP_ROOT}/ggml/include" ${Vulkan_INCLUDE_DIRS})
@@ -38,6 +75,7 @@ function(trident_tts_bin name src)
             $<TARGET_FILE_DIR:${name}>)
     endif()
 endfunction()
+
 trident_tts_bin(trident-tts-v3 src/main_v3.cpp)
 trident_tts_bin(trident-tts-turbo src/main_turbo.cpp)
 trident_tts_bin(trident-tts-nano src/main_nano.cpp)
