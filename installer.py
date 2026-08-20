@@ -4,7 +4,6 @@ import argparse
 import json
 import os
 import platform
-import re
 import shutil
 import subprocess
 import sys
@@ -16,20 +15,18 @@ import zipfile
 from pathlib import Path
 
 from config import (
-    ASR_RUNTIME, BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_GENERATION, BRAIN_THINKING, BRAIN_SYSTEM,
     FAMILIES, SHARED_MODELS, VULKAN_VERSION, PACKAGES, SOURCES, BINARIES,
-    CHATTERBOX_LIBRARY, TTS_BUILD, TTS_FAMILY_EXES, PROBE_EN,
+    CHATTERBOX_LIBRARY, TTS_BUILD, default_family,
     CHATTERBOX, GGML, RUNTIMES, CONVERTER, TOOLS, PATCHES, ROOT,
-    REFERENCE_VOICES, DEFAULT_MODELS_DIR, DEFAULT_DATA_DIR,
+    REFERENCE_VOICES, REFERENCE_MIN_SECONDS, Paths,
 )
-from paths import TRANSCRIPT, ANSWER, SYSTEM_PROMPT, DEFAULT_REFERENCE, ASSETS_REFERENCE
 
 
 def note(message: str) -> None:
     print(message, file=sys.stderr, flush=True)
 
 
-def validate_wav(path: Path, rate: int | None, minimum_seconds: float = 0.0) -> None:
+def validate_wav(path: Path, rate: int | None = None, minimum_seconds: float = 0.0, channels: int | None = None) -> None:
     if not path.is_file():
         raise RuntimeError(f"WAV file is missing: {path}")
     try:
@@ -38,8 +35,10 @@ def validate_wav(path: Path, rate: int | None, minimum_seconds: float = 0.0) -> 
         if len(header) != 12 or header[:4] != b"RIFF" or header[8:] != b"WAVE":
             raise RuntimeError("not a RIFF/WAVE file")
         with wave.open(str(path), "rb") as audio:
-            if audio.getnchannels() != 1 or audio.getsampwidth() != 2 or audio.getcomptype() != "NONE":
-                raise RuntimeError("must be mono PCM16 WAV")
+            if audio.getsampwidth() != 2 or audio.getcomptype() != "NONE":
+                raise RuntimeError("must be PCM16 WAV")
+            if channels is not None and audio.getnchannels() != channels:
+                raise RuntimeError(f"must be {channels}-channel WAV")
             if rate is not None and audio.getframerate() != rate:
                 raise RuntimeError(f"must be {rate} Hz")
             if audio.getframerate() <= 0 or audio.getnframes() <= 0:
@@ -247,11 +246,10 @@ def runtime_tts(family_name: str, required: bool = True) -> Path | None:
     return None
 
 
-def tts_runtime_ready() -> bool:
-    root = RUNTIMES / "tts"
-    if not root.is_dir() or not CHATTERBOX_LIBRARY.is_file():
+def tts_runtime_ready(family_name: str) -> bool:
+    if family_name not in FAMILIES or not CHATTERBOX_LIBRARY.is_file():
         return False
-    return all(any(p.is_file() and p.name.lower() == exe.lower() for p in root.rglob("*") if p.is_file()) for exe in TTS_FAMILY_EXES)
+    return runtime_tts(family_name, required=False) is not None
 
 
 def install_release_binary(name: str) -> None:
@@ -297,40 +295,34 @@ def install_prerequisite(name: str) -> None:
         raise RuntimeError(f"{name} installer completed but prerequisite is still missing")
 
 
-def install_tts() -> None:
-    if tts_runtime_ready():
-        note("trident-tts: ready")
+def install_tts(family_name: str) -> None:
+    family = FAMILIES[family_name]
+    if tts_runtime_ready(family_name):
+        note(f"{family['TTS_LABEL']}: ready")
         return
     cmake = need("cmake")
-    checkout("tts", CHATTERBOX, "chatterbox")
-    apply_chatterbox_patches()
-    checkout("tts", GGML, "ggml")
-    run_process("tts", "configure-chatterbox", [cmake, "-S", ".", "-B", "build", "-A", "x64", "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_NATIVE=OFF", "-DTTS_CPP_BUILD_EXECUTABLES=OFF", "-DTTS_CPP_BUILD_TESTS=OFF"], CHATTERBOX)
-    run_process("tts", "build-chatterbox", [cmake, "--build", "build", "--config", "Release", "--target", "tts-cpp", "mtl_tokenizer", "--parallel"], CHATTERBOX)
     if not CHATTERBOX_LIBRARY.is_file():
-        raise RuntimeError(f"Chatterbox build did not create {CHATTERBOX_LIBRARY}")
+        checkout("tts", CHATTERBOX, "chatterbox")
+        apply_chatterbox_patches()
+        checkout("tts", GGML, "ggml")
+        run_process("tts", "configure-chatterbox", [cmake, "-S", ".", "-B", "build", "-A", "x64", "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_NATIVE=OFF", "-DTTS_CPP_BUILD_EXECUTABLES=OFF", "-DTTS_CPP_BUILD_TESTS=OFF"], CHATTERBOX)
+        run_process("tts", "build-chatterbox", [cmake, "--build", "build", "--config", "Release", "--target", "tts-cpp", "mtl_tokenizer", "--parallel"], CHATTERBOX)
+        if not CHATTERBOX_LIBRARY.is_file():
+            raise RuntimeError(f"Chatterbox build did not create {CHATTERBOX_LIBRARY}")
     run_process("tts", "configure-trident-tts", [cmake, "-S", ".", "-B", "build", "-A", "x64", f"-DCHATTERBOX_CPP_ROOT={CHATTERBOX}"], TTS)
-    run_process("tts", "build-trident-tts", [cmake, "--build", "build", "--config", "Release", "--target", "trident-tts-v3", "--target", "trident-tts-turbo", "--target", "trident-tts-nano", "--parallel"], TTS)
-    built = [TTS_BUILD / exe for exe in TTS_FAMILY_EXES]
-    missing = [p for p in built if not p.is_file()]
-    if missing:
-        raise RuntimeError(f"TTS build did not create {missing}")
+    target = family["TTS_EXE"][:-4] if family["TTS_EXE"].lower().endswith(".exe") else family["TTS_EXE"]
+    run_process("tts", f"build-{family_name}", [cmake, "--build", "build", "--config", "Release", "--target", target, "--parallel"], TTS)
+    built = TTS_BUILD / family["TTS_EXE"]
+    if not built.is_file():
+        raise RuntimeError(f"TTS build did not create {built}")
     runtime = RUNTIMES / "tts"
-    partial = runtime.with_name(runtime.name + ".part")
-    rmtree_retry(partial)
-    partial.mkdir(parents=True)
-    try:
-        names = {exe.lower() for exe in TTS_FAMILY_EXES}
-        for artifact in TTS_BUILD.iterdir():
-            if artifact.is_file() and (artifact.name.lower() in names or artifact.suffix.lower() == ".dll"):
-                shutil.copy2(artifact, partial / artifact.name)
-        rmtree_retry(runtime)
-        partial.rename(runtime)
-    except Exception:
-        rmtree_retry(partial)
-        raise
-    if not tts_runtime_ready():
-        raise RuntimeError("TTS runtime is missing family binaries")
+    runtime.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(built, runtime / built.name)
+    for artifact in TTS_BUILD.iterdir():
+        if artifact.is_file() and artifact.suffix.lower() == ".dll":
+            shutil.copy2(artifact, runtime / artifact.name)
+    if not tts_runtime_ready(family_name):
+        raise RuntimeError(f"TTS runtime is missing {family['TTS_EXE']}")
 
 
 def models_for(family: str) -> dict:
@@ -342,21 +334,20 @@ def model_path(spec: dict, models_dir: Path, data_dir: Path) -> Path:
     return root / spec["file"]
 
 
+def require_model(spec: dict, models_dir: Path, data_dir: Path) -> Path:
+    path = model_path(spec, models_dir, data_dir)
+    if not path.is_file() or path.stat().st_size != spec["size"]:
+        actual = path.stat().st_size if path.is_file() else 0
+        raise RuntimeError(f"model missing or wrong size: {path} (expected {spec['size']}, got {actual})")
+    return path
+
+
 def download_model(spec: dict, models_dir: Path, data_dir: Path) -> None:
     destination = model_path(spec, models_dir, data_dir)
     if present(destination, spec["size"]):
         note(f"{spec['label']}: ready")
         return
     note(f"{spec['label']}: installing")
-    if spec.get("source"):
-        source = ROOT / spec["source"]
-        if not present(source, spec["size"]):
-            raise RuntimeError(f"bundled asset missing or wrong size: {source}")
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        partial = destination.with_suffix(destination.suffix + ".part")
-        shutil.copyfile(source, partial)
-        os.replace(partial, destination)
-        return
     if not spec.get("convert"):
         url = spec.get("url") or f"https://huggingface.co/{spec['repo']}/resolve/{spec['revision']}/{spec['file']}"
         fetch(url, destination, spec["size"])
@@ -415,50 +406,39 @@ def download_model(spec: dict, models_dir: Path, data_dir: Path) -> None:
 
 
 def download_reference_voices(data_dir: Path) -> None:
-    note("Downloading reference voices from HuggingFace...")
-    try:
-        from huggingface_hub import hf_hub_download
-    except ImportError:
-        note("huggingface_hub not available, skipping reference voice download")
-        return
-
-    for key, info in REFERENCE_VOICES.items():
-        dest = data_dir / f"ref-{key}.wav"
-        if dest.is_file():
-            note(f"  {info['name']}: already present")
+    for spec in REFERENCE_VOICES.values():
+        dest = data_dir / spec["file"]
+        if present(dest, spec["size"]):
+            note(f"{spec['label']}: ready")
             continue
-        try:
-            note(f"  {info['name']}: downloading from {info['repo']}...")
-            path = hf_hub_download(repo_id=info["repo"], filename=info["file"], repo_type="dataset")
-            shutil.copy2(path, dest)
-            note(f"  {info['name']}: saved to {dest}")
-        except Exception as e:
-            note(f"  {info['name']}: download failed ({e})")
+        note(f"{spec['label']}: installing")
+        url = f"https://huggingface.co/datasets/{spec['repo']}/resolve/{spec['revision']}/{spec['source']}"
+        fetch(url, dest, spec["size"])
+        validate_wav(dest, minimum_seconds=REFERENCE_MIN_SECONDS)
 
 
 def install(family: str, models_dir: Path | None = None, data_dir: Path | None = None) -> None:
     if os.name != "nt" or platform.machine().lower() not in {"amd64", "x86_64"}:
         raise RuntimeError("Trident installation requires Windows x64")
-    models_dir = (models_dir or DEFAULT_MODELS_DIR).resolve()
-    data_dir = (data_dir or DEFAULT_DATA_DIR).resolve()
-    models_dir.mkdir(parents=True, exist_ok=True)
-    data_dir.mkdir(parents=True, exist_ok=True)
+    paths = Paths(models_dir, data_dir)
+    paths.models_dir.mkdir(parents=True, exist_ok=True)
+    paths.data_dir.mkdir(parents=True, exist_ok=True)
     for name in ("python", "git", "cmake", "msvc", "vulkan"):
         install_prerequisite(name)
     install_release_binary("parakeet")
     install_release_binary("gemma")
     selected = models_for(family)
-    if not tts_runtime_ready():
-        install_tts()
+    if not tts_runtime_ready(family):
+        install_tts(family)
     for spec in selected.values():
-        download_model(spec, models_dir, data_dir)
-    download_reference_voices(data_dir)
-    note(f"install complete: family={family} models={models_dir} data={data_dir}")
+        download_model(spec, paths.models_dir, paths.data_dir)
+    download_reference_voices(paths.data_dir)
+    note(f"install complete: family={family} models={paths.models_dir} data={paths.data_dir}")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(prog="python -m installer")
-    parser.add_argument("--family", choices=tuple(FAMILIES), default="v3")
+    parser.add_argument("--family", choices=tuple(FAMILIES), default=default_family())
     parser.add_argument("--models-dir", type=Path, help="Override models directory")
     parser.add_argument("--data-dir", type=Path, help="Override data directory")
     args = parser.parse_args()

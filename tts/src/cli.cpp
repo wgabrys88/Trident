@@ -112,10 +112,10 @@ Runtime runtime_from(const Args& args) {
 }
 
 void print_done(const Speech& speech, double total_ms, const Runtime& runtime, const EngineKnobs& knobs, int chunk_chars) {
-    const double audio_ms = speech.pcm.size() / 24.0;
+    const double audio_ms = speech.pcm.size() * 1000.0 / kRate;
     const double rtf = audio_ms > 0 ? (speech.t3_ms + speech.s3gen_ms) / audio_ms : 0;
     std::cerr << "tts done samples=" << speech.pcm.size()
-              << " seconds=" << speech.pcm.size() / 24000.0 << " chunks=" << speech.chunks
+              << " seconds=" << speech.pcm.size() / static_cast<double>(kRate) << " chunks=" << speech.chunks
               << " t3_tokens=" << speech.t3_tokens
               << " total_ms=" << total_ms << " t3_ms=" << speech.t3_ms << " s3gen_ms=" << speech.s3gen_ms
               << " rtf=" << rtf
