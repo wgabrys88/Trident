@@ -5,7 +5,16 @@
 
 namespace tts {
 
+constexpr int kRate = 24000;
 constexpr int kGlue = 2880;
+constexpr float kQuietAmp2 = 0.0004f;
+
+inline int utf8_chars(const std::string& s) {
+    int n = 0;
+    for (unsigned char c : s)
+        if ((c & 0xc0) != 0x80) ++n;
+    return n;
+}
 
 struct Runtime {
     std::string t3, s3;

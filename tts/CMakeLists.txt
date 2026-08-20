@@ -8,16 +8,6 @@ if(WIN32)
     add_compile_options(/MP /bigobj)
 endif()
 
-option(TRIDENT_AVX512 "Enable AVX-512 kernels for PCM convert / glue" OFF)
-if(TRIDENT_AVX512)
-    if(MSVC)
-        add_compile_options(/arch:AVX512)
-    else()
-        add_compile_options(-mavx512f -mavx512dq -mfma)
-    endif()
-    add_compile_definitions(TRIDENT_AVX512=1)
-endif()
-
 if(NOT CHATTERBOX_CPP_ROOT)
     get_filename_component(CHATTERBOX_CPP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/chatterbox.cpp" ABSOLUTE)
 endif()
@@ -27,17 +17,8 @@ if(EXISTS "${CHATTERBOX_HEADER}")
     set(HAVE_CHATTERBOX ON)
 endif()
 
-add_executable(trident-tts-tests
-    tests/test_runtime.cpp
-    src/family.cpp
-    src/speaker_cache.cpp
-    src/kv_cache.cpp
-)
-target_include_directories(trident-tts-tests PRIVATE include)
-target_compile_definitions(trident-tts-tests PRIVATE _USE_MATH_DEFINES)
-
 if(NOT HAVE_CHATTERBOX)
-    message(WARNING "chatterbox.cpp missing at ${CHATTERBOX_CPP_ROOT}; building tests only")
+    message(WARNING "chatterbox.cpp missing at ${CHATTERBOX_CPP_ROOT}; nothing to build")
     return()
 endif()
 
@@ -48,10 +29,7 @@ set(GGML_BUILD "${CHATTERBOX_BUILD}/ggml/src")
 set(TTS_COMMON
     src/audio.cpp
     src/cli.cpp
-    src/family.cpp
-    src/speaker_cache.cpp
-    src/kv_cache.cpp
-    src/engine_wrapper.cpp
+    src/synthesize.cpp
 )
 
 function(trident_tts_bin name src)
@@ -76,6 +54,9 @@ function(trident_tts_bin name src)
     endif()
 endfunction()
 
-trident_tts_bin(trident-tts-v3 src/main_v3.cpp)
-trident_tts_bin(trident-tts-turbo src/main_turbo.cpp)
-trident_tts_bin(trident-tts-nano src/main_nano.cpp)
+file(GLOB FAMILY_MAINS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/main_*.cpp")
+foreach(src ${FAMILY_MAINS})
+    get_filename_component(stem ${src} NAME_WE)
+    string(REGEX REPLACE "^main_" "trident-tts-" target "${stem}")
+    trident_tts_bin(${target} ${src})
+endforeach()

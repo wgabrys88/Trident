@@ -3,10 +3,9 @@
 !/.gitattributes
 !/main.py
 !/config.py
+!/family_*.py
 !/installer.py
-!/paths.py
-!/assets/
-!/assets/default-reference.wav
+!/SESSION_PROMPT.md
 !/patches/
 !/patches/*.patch
 !/tts/

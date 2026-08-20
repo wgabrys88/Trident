@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -15,6 +16,10 @@ CHATTERBOX = THIRD_PARTY / "chatterbox.cpp"
 GGML = CHATTERBOX / "ggml"
 RUNTIMES = TOOLS / "runtime"
 CONVERTER = TOOLS / "convert"
+
+ASR_RATE = 16000
+TTS_RATE = 24000
+REFERENCE_MIN_SECONDS = 5.0
 
 ASR_RUNTIME = {"threads": 4, "device": "Vulkan0"}
 
@@ -37,138 +42,32 @@ BRAIN_SYSTEM = (
     "mention transcription, models, or reasoning."
 )
 
-_EN = {"en": "English"}
-
-V3_SAMPLE = {
-    "seed": 42, "max_tokens": 768, "top_p": 1.0,
-    "temperature": 0.8, "repeat_penalty": 1.2,
-    "min_p": 0.05, "cfm_steps": 7,
-}
-
-TURBO_SAMPLE = {
-    "seed": 42, "max_tokens": 768, "top_k": 1000, "top_p": 0.99,
-    "temperature": 0.6, "repeat_penalty": 1.3,
-    "cfm_steps": 2,
-}
-
-NANO_SAMPLE = {
-    "seed": 42, "max_tokens": 768, "top_k": 1000, "top_p": 0.95,
-    "temperature": 0.8, "repeat_penalty": 1.2,
-    "cfm_steps": 2,
-}
-
-V3_CKPT = (
-    "ve.pt", "t3_mtl23ls_v3.safetensors", "s3gen_v3.pt",
-    "grapheme_mtl_merged_expanded_v1.json", "conds.pt", "Cangjie5_TC.json",
-)
-
-TURBO_CKPT = (
-    "t3_turbo_v1.safetensors", "s3gen_meanflow.safetensors", "conds.pt",
-    "ve.safetensors", "vocab.json", "merges.txt", "added_tokens.json",
-)
-
-NANO_CKPT = (
-    "t3_nano_v1.safetensors", "s3gen_meanflow.safetensors", "conds.pt",
-    "ve.safetensors", "vocab.json", "merges.txt", "added_tokens.json",
-)
+LANGUAGES = {"en": "English", "pl": "Polish", "de": "German"}
 
 
-def _gguf(label, repo, revision, file, size, script, files, quant="q4_0", variant=None, copy=None):
-    convert = {"script": script, "quant": quant, "files": files}
-    if variant:
-        convert["variant"] = variant
-    if copy:
-        convert["copy"] = copy
-    return {"label": label, "repo": repo, "revision": revision, "file": file, "size": size, "convert": convert}
+def discover_families() -> dict:
+    found = {}
+    for path in ROOT.glob("family_*.py"):
+        spec = getattr(importlib.import_module(path.stem), "FAMILY", None)
+        if spec and spec.get("name"):
+            found[spec["name"]] = spec
+    order = [name for name in ("v3", "turbo", "nano") if name in found]
+    order += sorted(name for name in found if name not in {"v3", "turbo", "nano"})
+    return {name: found[name] for name in order}
 
 
-def _family(label, languages, context, chars, sample_cfg, voice_cfg, models, exe):
-    return {
-        "TTS_LANGUAGES": languages,
-        "DEFAULT_REPLY_LANGUAGE": "en",
-        "TTS_LABEL": label,
-        "TTS_EXE": exe,
-        "TTS_RUNTIME": {"gpu_layers": 99, "context": context, "threads": 4},
-        "TTS_SAMPLE": sample_cfg,
-        "TTS_VOICE": voice_cfg,
-        "TTS_CHUNK": {"chars": chars},
-        "TTS_MODELS": models,
-    }
+FAMILIES = discover_families()
 
 
-FAMILIES = {
-    "v3": _family(
-        "CHATTERBOX TTS V3", {"en": "English", "pl": "Polish", "de": "German"},
-        2048, 180,
-        V3_SAMPLE,
-        {"cfg_weight": 0.5, "exaggeration": 0.3},
-        {
-            "chatterbox-t3": _gguf(
-                "CHATTERBOX V3 T3", "ResembleAI/chatterbox",
-                "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18",
-                "chatterbox-t3-mtl-v3-q4_0.gguf", 344985408,
-                "convert-t3-mtl-to-gguf.py", V3_CKPT,
-                copy={"t3_mtl23ls_v3.safetensors": "t3_mtl23ls_v2.safetensors"},
-            ),
-            "chatterbox-codec": _gguf(
-                "CHATTERBOX V3 S3GEN", "ResembleAI/chatterbox",
-                "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18",
-                "chatterbox-s3gen-mtl-v3-f16.gguf", 1056431360,
-                "convert-s3gen-to-gguf.py", V3_CKPT, quant="f16", variant="mtl",
-                copy={"s3gen_v3.pt": "s3gen.pt"},
-            ),
-        },
-        "trident-tts-v3.exe",
-    ),
-    "turbo": _family(
-        "CHATTERBOX TTS TURBO", dict(_EN),
-        2048, 120,
-        TURBO_SAMPLE,
-        {"cfg_weight": 0.0, "exaggeration": 0.0},
-        {
-            "chatterbox-t3": _gguf(
-                "CHATTERBOX TURBO T3", "ResembleAI/chatterbox-turbo",
-                "749d1c1a46eb10492095d68fbcf55691ccf137cd",
-                "chatterbox-t3-turbo-q4_0.gguf", 333506240,
-                "convert-t3-turbo-to-gguf.py", TURBO_CKPT,
-            ),
-            "chatterbox-codec": _gguf(
-                "CHATTERBOX TURBO S3GEN", "ResembleAI/chatterbox-turbo",
-                "749d1c1a46eb10492095d68fbcf55691ccf137cd",
-                "chatterbox-s3gen-turbo-f16.gguf", 1064879936,
-                "convert-s3gen-to-gguf.py", TURBO_CKPT, quant="f16", variant="turbo",
-            ),
-        },
-        "trident-tts-turbo.exe",
-    ),
-    "nano": _family(
-        "CHATTERBOX TTS NANO", dict(_EN),
-        2048, 180,
-        NANO_SAMPLE,
-        {"cfg_weight": 0.0, "exaggeration": 0.0},
-        {
-            "chatterbox-t3": _gguf(
-                "CHATTERBOX NANO T3", "ResembleAI/chatterbox-nano",
-                "71ccd1d0081b430592cea481f4307e764e07bc64",
-                "chatterbox-t3-nano-q4_0.gguf", 171901536,
-                "convert-t3-turbo-to-gguf.py", NANO_CKPT,
-                copy={"t3_nano_v1.safetensors": "t3_turbo_v1.safetensors"},
-            ),
-            "chatterbox-codec": _gguf(
-                "CHATTERBOX NANO S3GEN", "ResembleAI/chatterbox-nano",
-                "71ccd1d0081b430592cea481f4307e764e07bc64",
-                "chatterbox-s3gen-nano-f16.gguf", 1064879936,
-                "convert-s3gen-to-gguf.py", NANO_CKPT, quant="f16", variant="turbo",
-            ),
-        },
-        "trident-tts-nano.exe",
-    ),
-}
+def default_family() -> str:
+    if not FAMILIES:
+        raise RuntimeError("no TTS families found")
+    return next(iter(FAMILIES))
+
 
 SHARED_MODELS = {
     "parakeet": {"label": "PARAKEET TDT 0.6B V3 Q4_K", "repo": "mudler/parakeet-cpp-gguf", "revision": "bf0af9f425fa01809cadec671b3cb672709d13e9", "file": "tdt-0.6b-v3-q4_k.gguf", "size": 675200864},
     "gemma": {"label": "GEMMA 4 E2B", "repo": "google/gemma-4-E2B-it-qat-q4_0-gguf", "revision": "675cff42a74c774d6cb76f76d8eacb49b48c9b93", "file": "gemma-4-E2B_q4_0-it.gguf", "size": 3349516256},
-    "reference": {"label": "DEFAULT VOICE", "source": "assets/default-reference.wav", "file": "default-reference.wav", "directory": "data", "size": 1440078},
 }
 
 VULKAN_VERSION = "1.4.357.0"
@@ -192,12 +91,32 @@ BINARIES = {
 
 CHATTERBOX_LIBRARY = CHATTERBOX / "build" / "Release" / "tts-cpp.lib"
 TTS_BUILD = TTS / "build" / "Release"
-TTS_FAMILY_EXES = tuple(family["TTS_EXE"] for family in FAMILIES.values())
-
-PROBE_EN = "When the sunlight strikes raindrops in the air, they act as a prism and form a rainbow."
 
 REFERENCE_VOICES = {
-    "trump": {"repo": "sdialog/voices-celebrities", "file": "audio/donald-trump.wav", "name": "Donald Trump"},
-    "mj": {"repo": "amphion/singing_voice_conversion", "file": "michael-jackson.wav", "name": "Michael Jackson"},
-    "shakira": {"repo": "QuickWick/Music-AI-Voices", "file": "shakira.wav", "name": "Shakira"},
+    "trump": {
+        "label": "VOICE TRUMP", "name": "Donald Trump",
+        "repo": "sdialog/voices-celebrities", "revision": "57746b866d470be717097b87ba0428f8dd73e4f4",
+        "source": "audio/donald-trump.wav", "file": "ref-trump.wav", "size": 4210766,
+    },
+    "obama": {
+        "label": "VOICE OBAMA", "name": "Barack Obama",
+        "repo": "sdialog/voices-celebrities", "revision": "57746b866d470be717097b87ba0428f8dd73e4f4",
+        "source": "audio/barack-obama.wav", "file": "ref-obama.wav", "size": 8454222,
+    },
+    "oprah": {
+        "label": "VOICE OPRAH", "name": "Oprah Winfrey",
+        "repo": "sdialog/voices-celebrities", "revision": "57746b866d470be717097b87ba0428f8dd73e4f4",
+        "source": "audio/oprah_winfrey.wav", "file": "ref-oprah.wav", "size": 16891982,
+    },
 }
+DEFAULT_VOICE = "trump"
+
+
+class Paths:
+    def __init__(self, models_dir: Path | None = None, data_dir: Path | None = None) -> None:
+        self.models_dir = (models_dir or DEFAULT_MODELS_DIR).resolve()
+        self.data_dir = (data_dir or DEFAULT_DATA_DIR).resolve()
+        self.transcript = self.data_dir / "transcript.txt"
+        self.answer = self.data_dir / "answer.txt"
+        self.system = self.data_dir / "system.txt"
+        self.reference = self.data_dir / REFERENCE_VOICES[DEFAULT_VOICE]["file"]

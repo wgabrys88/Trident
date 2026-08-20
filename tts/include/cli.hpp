@@ -18,5 +18,6 @@ void require_file(const Args& args, const std::string& key);
 Runtime runtime_from(const Args& args);
 void log(const std::string& line);
 void print_done(const Speech& speech, double total_ms, const Runtime& runtime, const EngineKnobs& knobs, int chunk_chars);
+int run_job(const Args& args, const EngineKnobs& knobs, int chunk_chars);
 
 }
