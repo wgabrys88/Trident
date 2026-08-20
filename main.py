@@ -466,6 +466,22 @@ def transcribe(exe: Path, model: Path, input_wav: Path) -> str:
     return text
 
 
+def spoken_reply(raw: str) -> str:
+    # llama-cli --output-file in conversation mode writes the session transcript:
+    #   User:\n{prompt}\n\nAssistant:\n{reply}\n
+    # optionally wrapping reasoning in [Start thinking]...[End thinking].
+    # TTS reads answer.txt as spoken prose, so keep only the assistant reply.
+    text = raw.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if "\nAssistant:\n" in text:
+        text = text.rsplit("\nAssistant:\n", 1)[1].strip()
+    elif text.startswith("Assistant:\n"):
+        text = text[len("Assistant:\n"):].strip()
+    start, end = "[Start thinking]", "[End thinking]"
+    if start in text and end in text:
+        text = text.split(end, 1)[1].strip()
+    return text
+
+
 def brain(exe: Path, model: Path, language: str, language_name: str) -> str:
     system = BRAIN_SYSTEM.format(language_name=language_name, language=language)
     write_text_atomic(SYSTEM_PROMPT, system + "\n")
@@ -489,12 +505,12 @@ def brain(exe: Path, model: Path, language: str, language_name: str) -> str:
     if not ANSWER.is_file():
         raise RuntimeError("llama-cli did not create answer.txt")
     try:
-        text = ANSWER.read_text(encoding="utf-8").strip()
+        text = spoken_reply(ANSWER.read_text(encoding="utf-8"))
     except UnicodeError as exc:
         raise RuntimeError("llama-cli answer is not valid UTF-8") from exc
     if not text:
         raise RuntimeError("llama-cli returned an empty answer")
-    ANSWER.write_text(text + "\n", encoding="utf-8", newline="\n")
+    write_text_atomic(ANSWER, text + "\n")
     return text
 
 

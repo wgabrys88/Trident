@@ -33,6 +33,16 @@ static std::vector<std::string> pack_text(const std::string& text, int limit) {
     if (limit < 40) limit = 40;
     if (text.empty()) return {text};
     auto is_ws = [](unsigned char c) { return std::isspace(c) != 0; };
+    auto trim_right = [&](std::string& s) {
+        while (!s.empty() && is_ws(static_cast<unsigned char>(s.back()))) s.pop_back();
+    };
+    auto glue = [&](std::string& dst, const std::string& src) {
+        if (src.empty()) return;
+        if (!dst.empty() && !is_ws(static_cast<unsigned char>(dst.back())) &&
+            !is_ws(static_cast<unsigned char>(src.front())))
+            dst += ' ';
+        dst += src;
+    };
 
     std::vector<std::string> sentences;
     std::string cur;
@@ -81,14 +91,22 @@ static std::vector<std::string> pack_text(const std::string& text, int limit) {
 
     std::vector<std::string> packed;
     for (auto& sentence : refined) {
-        while (!sentence.empty() && is_ws(static_cast<unsigned char>(sentence.back()))) sentence.pop_back();
+        trim_right(sentence);
         if (sentence.empty()) continue;
-        const int have = packed.empty() ? 0 : static_cast<int>(packed.back().size());
-        const int next = static_cast<int>(sentence.size());
-        if (!packed.empty() && (have + next <= limit || have * 2 < limit || next * 2 < limit))
-            packed.back() += sentence;
+        if (packed.empty()) {
+            packed.push_back(std::move(sentence));
+            continue;
+        }
+        const int extra = (!is_ws(static_cast<unsigned char>(packed.back().back())) &&
+                           !is_ws(static_cast<unsigned char>(sentence.front()))) ? 1 : 0;
+        if (static_cast<int>(packed.back().size()) + extra + static_cast<int>(sentence.size()) <= limit)
+            glue(packed.back(), sentence);
         else
             packed.push_back(std::move(sentence));
+    }
+    if (packed.size() >= 2 && static_cast<int>(packed.back().size()) * 2 < limit) {
+        glue(packed[packed.size() - 2], packed.back());
+        packed.pop_back();
     }
     return packed.empty() ? std::vector<std::string>{text} : packed;
 }
