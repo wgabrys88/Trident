@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 import argparse
-import array
 import json
-import math
 import os
 import platform
 import re
 import shutil
-import string
 import subprocess
 import sys
 import time
@@ -18,7 +15,7 @@ import wave
 import zipfile
 from pathlib import Path
 
-from cfg import ASR_RUNTIME, BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_SYSTEM, BRAIN_THINKING, FAMILIES, RAINBOW
+from cfg import ASR_RUNTIME, BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_SYSTEM, BRAIN_THINKING, FAMILIES
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -474,7 +471,7 @@ def write_text_atomic(path: Path, text: str) -> None:
     os.replace(partial, path)
 
 
-def transcribe(exe: Path, model: Path, input_wav: Path, out: Path = TRANSCRIPT) -> str:
+def transcribe(exe: Path, model: Path, input_wav: Path) -> str:
     env = os.environ.copy()
     env["PARAKEET_DEVICE"] = str(ASR_RUNTIME["device"])
     command = [str(exe), "transcribe", "--model", str(model), "--input", str(input_wav), "--decoder", "tdt", "--threads", str(ASR_RUNTIME["threads"]), "--json"]
@@ -489,7 +486,7 @@ def transcribe(exe: Path, model: Path, input_wav: Path, out: Path = TRANSCRIPT) 
     text = str(payload.get("text") or "").strip()
     if not text:
         raise RuntimeError("Parakeet returned an empty transcript")
-    write_text_atomic(out, text + "\n")
+    write_text_atomic(TRANSCRIPT, text + "\n")
     return text
 
 
@@ -579,134 +576,6 @@ def synthesize(exe: Path, t3: Path, codec: Path, reference: Path, output: Path, 
     return metrics
 
 
-def resample_16k(src: Path, dst: Path) -> None:
-    validate_wav(src, 24000)
-    with wave.open(str(src), "rb") as audio:
-        pcm = array.array("h")
-        pcm.frombytes(audio.readframes(audio.getnframes()))
-    cutoff, taps = 2.0 / 3.0, 8  # 24k -> 16k anti-alias cutoff; sinc crossings per side
-    kernels = []
-    for phase in (0.0, 0.5):  # stride 3/2 alternates between two fractional phases
-        kernel = []
-        for i in range(-12, 13):  # taps/cutoff = 12 input samples per side
-            d = i - phase
-            h = math.sin(math.pi * cutoff * d) / (math.pi * d) if d else cutoff
-            kernel.append(h * 0.5 * (1.0 + math.cos(math.pi * d / 12.0)))
-        kernels.append(kernel)
-    out = array.array("h")
-    for j in range(len(pcm) * 2 // 3):
-        center = 1.5 * j
-        base = math.floor(center) - 12
-        kernel = kernels[j % 2]
-        total = weight = 0.0
-        for t, h in enumerate(kernel):
-            i = base + t
-            if 0 <= i < len(pcm):
-                total += h * pcm[i]
-                weight += h
-        out.append(max(-32768, min(32767, round(total / weight))))
-    with wave.open(str(dst), "wb") as audio:
-        audio.setnchannels(1)
-        audio.setsampwidth(2)
-        audio.setframerate(16000)
-        audio.writeframes(out.tobytes())
-
-
-def audio_metrics(path: Path) -> dict:
-    validate_wav(path, 24000)
-    with wave.open(str(path), "rb") as audio:
-        pcm = array.array("h")
-        pcm.frombytes(audio.readframes(audio.getnframes()))
-        rate = audio.getframerate()
-    n = len(pcm)
-    if n == 0:
-        raise RuntimeError(f"WAV contains no samples: {path}")
-    duration = n / rate
-    peak = max(abs(s) for s in pcm) / 32768.0
-    mean_sq = sum((s / 32768.0) ** 2 for s in pcm) / n
-    rms = math.sqrt(mean_sq)
-    step = max(1, rate // 200)
-    silent = 0
-    longest = 0
-    run = 0
-    counted = 0
-    for i in range(0, n, step):
-        counted += 1
-        if abs(pcm[i]) < 655:
-            silent += 1
-            run += 1
-            if run > longest:
-                longest = run
-        else:
-            run = 0
-    return {
-        "duration": duration,
-        "peak": peak,
-        "rms": rms,
-        "silence": silent / max(counted, 1),
-        "longest_silence": longest * step / rate,
-    }
-
-
-def score(reference: str, hypothesis: str) -> tuple[float, float]:
-    def norm(text: str) -> list[str]:
-        table = str.maketrans({c: " " for c in string.punctuation + "„""‚''«»‹›—–"})
-        return " ".join(text.casefold().translate(table).split()).split()
-
-    def distance(a: list, b: list) -> int:
-        row = list(range(len(b) + 1))
-        for i, x in enumerate(a, 1):
-            prev, row[0] = row[0], i
-            for j, y in enumerate(b, 1):
-                prev, row[j] = row[j], min(row[j] + 1, row[j - 1] + 1, prev + (x != y))
-        return row[-1]
-
-    ref_words, hyp_words = norm(reference), norm(hypothesis)
-    wer = distance(ref_words, hyp_words) / max(len(ref_words), 1)
-    ref_chars, hyp_chars = list(" ".join(ref_words)), list(" ".join(hyp_words))
-    cer = distance(ref_chars, hyp_chars) / max(len(ref_chars), 1)
-    return wer, cer
-
-
-def run_rainbow(output_name: str, family_name: str, language: str | None, reference_name: str | None, text_name: str | None) -> None:
-    family = FAMILIES[family_name]
-    language = language or family["DEFAULT_REPLY_LANGUAGE"]
-    if language not in family["TTS_LANGUAGES"]:
-        raise RuntimeError(f"language {language!r} is not supported by family {family_name}; choose from {', '.join(family['TTS_LANGUAGES'])}")
-    if text_name:
-        text = Path(text_name).expanduser().resolve().read_text(encoding="utf-8").strip()
-    elif language in RAINBOW:
-        text = RAINBOW[language]
-    else:
-        raise RuntimeError(f"no embedded rainbow text for {language!r}; pass --text")
-    default_reference = DATA / "reference.wav" if (DATA / "reference.wav").is_file() else DATA / "default-reference.wav"
-    reference = Path(reference_name).expanduser().resolve() if reference_name else default_reference.resolve()
-    output_wav = Path(output_name).expanduser().resolve()
-    if len({reference, output_wav}) != 2:
-        raise RuntimeError("reference and output must resolve to different paths")
-    validate_wav(reference, None, 5.0)
-    models = models_for(family_name)
-    tts_exe = runtime_tts(family_name)
-    output_wav.parent.mkdir(parents=True, exist_ok=True)
-    text_path = output_wav.with_suffix(".txt")
-    write_text_atomic(text_path, text + "\n")
-    started = time.perf_counter()
-    metrics = synthesize(tts_exe, require_model(models["chatterbox-t3"]), require_model(models["chatterbox-codec"]),
-                         reference, output_wav, language, family, text_file=text_path, capture=True)
-    wall = time.perf_counter() - started
-    heard = audio_metrics(output_wav)
-    sys.stdout.reconfigure(errors="replace")  # Windows console code pages can't print pl/de text
-    audio_ms = metrics.get("seconds", 0.0) * 1000.0
-    gen_rtf = (metrics.get("t3_ms", 0.0) + metrics.get("s3gen_ms", 0.0)) / audio_ms if audio_ms else 0.0
-    print(f"rainbow family={family_name} lang={language} ref={reference.name} exe={family['TTS_EXE']}")
-    print(f"audio_s={metrics.get('seconds', 0.0):.2f} chunks={int(metrics.get('chunks', 0))} "
-          f"total_ms={metrics.get('total_ms', 0.0):.0f} t3_ms={metrics.get('t3_ms', 0.0):.0f} "
-          f"s3gen_ms={metrics.get('s3gen_ms', 0.0):.0f} gen_RTF={gen_rtf:.3f} wall_s={wall:.1f}")
-    print(f"peak={heard['peak']:.3f} rms={heard['rms']:.4f} silence={heard['silence']*100:.1f}% "
-          f"longest_sil={heard['longest_silence']:.2f}s")
-    print(f"Source: {text}")
-
-
 def run_pipeline(input_name: str, output_name: str, family_name: str, language: str | None, reference_name: str | None) -> None:
     family = FAMILIES[family_name]
     language = language or family["DEFAULT_REPLY_LANGUAGE"]
@@ -750,10 +619,8 @@ def run_probe(family_name: str, language: str | None, reference_name: str | None
         text = Path(text_name).expanduser().resolve().read_text(encoding="utf-8").strip()
     elif language == "en":
         text = PROBE_EN
-    elif language in RAINBOW:
-        text = RAINBOW[language].split(". ")[0] + "."
     else:
-        raise RuntimeError(f"no probe text for {language!r}; pass --text")
+        raise RuntimeError(f"no built-in probe sentence for {language!r}; pass --text")
     default_reference = DATA / "reference.wav" if (DATA / "reference.wav").is_file() else DATA / "default-reference.wav"
     reference = Path(reference_name).expanduser().resolve() if reference_name else default_reference.resolve()
     output_wav = DATA / f"probe-{family_name}-{language}.wav"
@@ -796,12 +663,6 @@ def parser() -> argparse.ArgumentParser:
     run_cmd.add_argument("--family", choices=tuple(FAMILIES), default="turbo")
     run_cmd.add_argument("--language")
     run_cmd.add_argument("--reference")
-    rainbow_cmd = commands.add_parser("rainbow")
-    rainbow_cmd.add_argument("output")
-    rainbow_cmd.add_argument("--family", choices=tuple(FAMILIES), required=True)
-    rainbow_cmd.add_argument("--language")
-    rainbow_cmd.add_argument("--reference")
-    rainbow_cmd.add_argument("--text")
     probe_cmd = commands.add_parser("probe")
     probe_cmd.add_argument("--family", choices=tuple(FAMILIES), required=True)
     probe_cmd.add_argument("--language")
@@ -815,8 +676,6 @@ def main() -> int:
     try:
         if args.command == "install":
             install(args.family)
-        elif args.command == "rainbow":
-            run_rainbow(args.output, args.family, args.language, args.reference, args.text)
         elif args.command == "probe":
             run_probe(args.family, args.language, args.reference, args.text)
         else:
