@@ -63,6 +63,11 @@ FAMILIES = discover_families()
 def default_family() -> str:
     if not FAMILIES:
         raise RuntimeError("no TTS families found")
+    runtime = RUNTIMES / "tts"
+    if runtime.is_dir():
+        present = [name for name, spec in FAMILIES.items() if (runtime / spec["TTS_EXE"]).is_file()]
+        if present:
+            return present[0]
     return next(iter(FAMILIES))
 
 
@@ -104,13 +109,20 @@ REFERENCE_VOICES = {
         "repo": "sdialog/voices-celebrities", "revision": "57746b866d470be717097b87ba0428f8dd73e4f4",
         "source": "audio/barack-obama.wav", "file": "ref-obama.wav", "size": 8454222,
     },
-    "oprah": {
-        "label": "VOICE OPRAH", "name": "Oprah Winfrey",
+    "kamala": {
+        "label": "VOICE KAMALA", "name": "Kamala Harris",
         "repo": "sdialog/voices-celebrities", "revision": "57746b866d470be717097b87ba0428f8dd73e4f4",
-        "source": "audio/oprah_winfrey.wav", "file": "ref-oprah.wav", "size": 16891982,
+        "source": "audio/kamala_harris.wav", "file": "ref-kamala.wav", "size": 7487566,
     },
 }
 DEFAULT_VOICE = "trump"
+
+
+def resolve_voice(data_dir: Path, value: str | None = None) -> Path:
+    key = None if value is None else value.lower()
+    if key is None or key in REFERENCE_VOICES:
+        return (data_dir / REFERENCE_VOICES[key or DEFAULT_VOICE]["file"]).resolve()
+    return Path(value).expanduser().resolve()
 
 
 class Paths:
