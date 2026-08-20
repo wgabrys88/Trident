@@ -521,11 +521,14 @@ def brain(exe: Path, model: Path, language: str, language_name: str) -> str:
 def synthesize(exe: Path, t3: Path, codec: Path, reference: Path, output: Path, language: str, family: dict,
                text_file: Path = ANSWER, capture: bool = False) -> dict:
     runtime, sample, voice = family["TTS_RUNTIME"], family["TTS_SAMPLE"], family["TTS_VOICE"]
+    # top_k and min_p are required by binary but only used by specific variants; pass defaults
+    top_k = sample.get("top_k", 1000)
+    min_p = sample.get("min_p", 0.0)
     command = [
         str(exe), "--model", str(t3), "--s3gen-gguf", str(codec), "--reference", str(reference), "--text-file", str(text_file),
         "--output", str(output), "--language", language, "--n-gpu-layers", str(runtime["gpu_layers"]), "--context", str(runtime["context"]),
         "--threads", str(runtime["threads"]), "--seed", str(sample["seed"]), "--max-tokens", str(sample["max_tokens"]),
-        "--top-k", str(sample["top_k"]), "--top-p", str(sample["top_p"]), "--min-p", str(sample["min_p"]),
+        "--top-k", str(top_k), "--top-p", str(sample["top_p"]), "--min-p", str(min_p),
         "--temperature", str(sample["temperature"]), "--repeat-penalty", str(sample["repeat_penalty"]),
         "--cfg-weight", str(voice["cfg_weight"]), "--exaggeration", str(voice["exaggeration"]),
         "--cfm-steps", str(sample["cfm_steps"]), "--chunk-chars", str(family["TTS_CHUNK"]["chars"]),

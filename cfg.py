@@ -20,9 +20,22 @@ BRAIN_SYSTEM = (
 )
 
 _EN = {"en": "English"}
-_SAMPLE = {
-    "seed": 42, "max_tokens": 1000, "top_k": 1000, "top_p": 0.95,
+_V3_SAMPLE = {
+    "seed": 42, "max_tokens": 768, "top_p": 0.95,
     "temperature": 0.8, "repeat_penalty": 1.2,
+    "min_p": 0.05, "cfm_steps": 7,
+}
+
+_TURBO_SAMPLE = {
+    "seed": 42, "max_tokens": 768, "top_k": 1000, "top_p": 0.95,
+    "temperature": 0.8, "repeat_penalty": 1.2,
+    "cfm_steps": 2,
+}
+
+_NANO_SAMPLE = {
+    "seed": 42, "max_tokens": 768, "top_k": 1000, "top_p": 0.95,
+    "temperature": 0.8, "repeat_penalty": 1.2,
+    "cfm_steps": 2,
 }
 _V3_CKPT = (
     "ve.pt", "t3_mtl23ls_v3.safetensors", "s3gen_v3.pt",
@@ -116,14 +129,14 @@ def _gguf(label, repo, revision, file, size, script, files, quant="q4_0", varian
     return {"label": label, "repo": repo, "revision": revision, "file": file, "size": size, "convert": convert}
 
 
-def _family(label, languages, context, chars, cfm, min_p, cfg, exaggeration, models):
+def _family(label, languages, context, chars, sample_cfg, voice_cfg, models):
     return {
         "TTS_LANGUAGES": languages,
         "DEFAULT_REPLY_LANGUAGE": "en",
         "TTS_LABEL": label,
         "TTS_RUNTIME": {"gpu_layers": 99, "context": context, "threads": 4},
-        "TTS_SAMPLE": {**_SAMPLE, "min_p": min_p, "cfm_steps": cfm},
-        "TTS_VOICE": {"cfg_weight": cfg, "exaggeration": exaggeration},
+        "TTS_SAMPLE": sample_cfg,
+        "TTS_VOICE": voice_cfg,
         "TTS_CHUNK": {"chars": chars},
         "TTS_MODELS": models,
     }
@@ -132,7 +145,9 @@ def _family(label, languages, context, chars, cfm, min_p, cfg, exaggeration, mod
 FAMILIES = {
     "v3": _family(
         "CHATTERBOX TTS V3", {"en": "English", "pl": "Polish", "de": "German"},
-        2048, 120, 10, 0.05, 0.5, 0.5,
+        2048, 180,
+        _V3_SAMPLE,
+        {"cfg_weight": 0.5, "exaggeration": 0.3},
         {
             "chatterbox-t3": _gguf(
                 "CHATTERBOX V3 T3", "ResembleAI/chatterbox",
@@ -152,7 +167,9 @@ FAMILIES = {
     ),
     "turbo": _family(
         "CHATTERBOX TTS TURBO", dict(_EN),
-        2048, 120, 2, 0.0, 0.0, 0.0,
+        2048, 120,
+        _TURBO_SAMPLE,
+        {"cfg_weight": 0.0, "exaggeration": 0.0},
         {
             "chatterbox-t3": _gguf(
                 "CHATTERBOX TURBO T3", "ResembleAI/chatterbox-turbo",
@@ -170,7 +187,9 @@ FAMILIES = {
     ),
     "nano": _family(
         "CHATTERBOX TTS NANO", dict(_EN),
-        2048, 180, 2, 0.0, 0.0, 0.0,
+        2048, 180,
+        _NANO_SAMPLE,
+        {"cfg_weight": 0.0, "exaggeration": 0.0},
         {
             "chatterbox-t3": _gguf(
                 "CHATTERBOX NANO T3", "ResembleAI/chatterbox-nano",
