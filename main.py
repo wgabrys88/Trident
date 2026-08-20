@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import array
 import json
+import math
 import os
 import platform
+import re
 import shutil
+import string
 import subprocess
 import sys
 import time
@@ -14,7 +18,7 @@ import wave
 import zipfile
 from pathlib import Path
 
-from cfg import ASR_RUNTIME, BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_SYSTEM, BRAIN_THINKING, FAMILIES
+from cfg import ASR_RUNTIME, BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_SYSTEM, BRAIN_THINKING, FAMILIES, RAINBOW
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
@@ -447,7 +451,7 @@ def write_text_atomic(path: Path, text: str) -> None:
     os.replace(partial, path)
 
 
-def transcribe(exe: Path, model: Path, input_wav: Path) -> str:
+def transcribe(exe: Path, model: Path, input_wav: Path, out: Path = TRANSCRIPT) -> str:
     env = os.environ.copy()
     env["PARAKEET_DEVICE"] = str(ASR_RUNTIME["device"])
     command = [str(exe), "transcribe", "--model", str(model), "--input", str(input_wav), "--decoder", "tdt", "--threads", str(ASR_RUNTIME["threads"]), "--json"]
@@ -462,7 +466,7 @@ def transcribe(exe: Path, model: Path, input_wav: Path) -> str:
     text = str(payload.get("text") or "").strip()
     if not text:
         raise RuntimeError("Parakeet returned an empty transcript")
-    write_text_atomic(TRANSCRIPT, text + "\n")
+    write_text_atomic(out, text + "\n")
     return text
 
 
@@ -514,10 +518,11 @@ def brain(exe: Path, model: Path, language: str, language_name: str) -> str:
     return text
 
 
-def synthesize(exe: Path, t3: Path, codec: Path, reference: Path, output: Path, language: str, family: dict) -> None:
+def synthesize(exe: Path, t3: Path, codec: Path, reference: Path, output: Path, language: str, family: dict,
+               text_file: Path = ANSWER, capture: bool = False) -> dict:
     runtime, sample, voice = family["TTS_RUNTIME"], family["TTS_SAMPLE"], family["TTS_VOICE"]
     command = [
-        str(exe), "--model", str(t3), "--s3gen-gguf", str(codec), "--reference", str(reference), "--text-file", str(ANSWER),
+        str(exe), "--model", str(t3), "--s3gen-gguf", str(codec), "--reference", str(reference), "--text-file", str(text_file),
         "--output", str(output), "--language", language, "--n-gpu-layers", str(runtime["gpu_layers"]), "--context", str(runtime["context"]),
         "--threads", str(runtime["threads"]), "--seed", str(sample["seed"]), "--max-tokens", str(sample["max_tokens"]),
         "--top-k", str(sample["top_k"]), "--top-p", str(sample["top_p"]), "--min-p", str(sample["min_p"]),
@@ -527,8 +532,117 @@ def synthesize(exe: Path, t3: Path, codec: Path, reference: Path, output: Path, 
     ]
     output.unlink(missing_ok=True)
     note("tts: " + " ".join(command))
-    subprocess.run(command, cwd=exe.parent, stdout=sys.stderr, stderr=sys.stderr, check=True)
+    result = subprocess.run(command, cwd=exe.parent, stdout=sys.stderr, check=True,
+                            stderr=subprocess.PIPE if capture else sys.stderr, text=capture, encoding="utf-8" if capture else None,
+                            errors="replace" if capture else None)
     validate_wav(output, 24000)
+    metrics = {}
+    if capture:
+        match = re.search(r"samples=(\d+) seconds=([\d.]+) chunks=(\d+) total_ms=([\d.]+) t3_ms=([\d.]+) s3gen_ms=([\d.]+)",
+                          result.stderr or "")
+        if match:
+            metrics = {key: float(value) for key, value in
+                       zip(("samples", "seconds", "chunks", "total_ms", "t3_ms", "s3gen_ms"), match.groups())}
+    return metrics
+
+
+def resample_16k(src: Path, dst: Path) -> None:
+    validate_wav(src, 24000)
+    with wave.open(str(src), "rb") as audio:
+        pcm = array.array("h")
+        pcm.frombytes(audio.readframes(audio.getnframes()))
+    cutoff, taps = 2.0 / 3.0, 8  # 24k -> 16k anti-alias cutoff; sinc crossings per side
+    kernels = []
+    for phase in (0.0, 0.5):  # stride 3/2 alternates between two fractional phases
+        kernel = []
+        for i in range(-12, 13):  # taps/cutoff = 12 input samples per side
+            d = i - phase
+            h = math.sin(math.pi * cutoff * d) / (math.pi * d) if d else cutoff
+            kernel.append(h * 0.5 * (1.0 + math.cos(math.pi * d / 12.0)))
+        kernels.append(kernel)
+    out = array.array("h")
+    for j in range(len(pcm) * 2 // 3):
+        center = 1.5 * j
+        base = math.floor(center) - 12
+        kernel = kernels[j % 2]
+        total = weight = 0.0
+        for t, h in enumerate(kernel):
+            i = base + t
+            if 0 <= i < len(pcm):
+                total += h * pcm[i]
+                weight += h
+        out.append(max(-32768, min(32767, round(total / weight))))
+    with wave.open(str(dst), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(16000)
+        audio.writeframes(out.tobytes())
+
+
+def score(reference: str, hypothesis: str) -> tuple[float, float]:
+    def norm(text: str) -> list[str]:
+        table = str.maketrans({c: " " for c in string.punctuation + "„""‚''«»‹›—–"})
+        return " ".join(text.casefold().translate(table).split()).split()
+
+    def distance(a: list, b: list) -> int:
+        row = list(range(len(b) + 1))
+        for i, x in enumerate(a, 1):
+            prev, row[0] = row[0], i
+            for j, y in enumerate(b, 1):
+                prev, row[j] = row[j], min(row[j] + 1, row[j - 1] + 1, prev + (x != y))
+        return row[-1]
+
+    ref_words, hyp_words = norm(reference), norm(hypothesis)
+    wer = distance(ref_words, hyp_words) / max(len(ref_words), 1)
+    ref_chars, hyp_chars = list(" ".join(ref_words)), list(" ".join(hyp_words))
+    cer = distance(ref_chars, hyp_chars) / max(len(ref_chars), 1)
+    return wer, cer
+
+
+def run_rainbow(output_name: str, family_name: str, language: str | None, reference_name: str | None, text_name: str | None) -> None:
+    family = FAMILIES[family_name]
+    language = language or family["DEFAULT_REPLY_LANGUAGE"]
+    if language not in family["TTS_LANGUAGES"]:
+        raise RuntimeError(f"language {language!r} is not supported by family {family_name}; choose from {', '.join(family['TTS_LANGUAGES'])}")
+    if text_name:
+        text = Path(text_name).expanduser().resolve().read_text(encoding="utf-8").strip()
+    elif language in RAINBOW:
+        text = RAINBOW[language]
+    else:
+        raise RuntimeError(f"no embedded rainbow text for {language!r}; pass --text")
+    default_reference = DATA / "reference.wav" if (DATA / "reference.wav").is_file() else DATA / "default-reference.wav"
+    reference = Path(reference_name).expanduser().resolve() if reference_name else default_reference.resolve()
+    output_wav = Path(output_name).expanduser().resolve()
+    if len({reference, output_wav}) != 2:
+        raise RuntimeError("reference and output must resolve to different paths")
+    validate_wav(reference, None, 5.0)
+    models = models_for(family_name)
+    asr_exe, tts_exe = runtime_executable("parakeet"), runtime_executable("tts")
+    assert asr_exe and tts_exe
+    output_wav.parent.mkdir(parents=True, exist_ok=True)
+    text_path = output_wav.with_suffix(".txt")
+    write_text_atomic(text_path, text + "\n")
+    asr_wav = output_wav.with_suffix(".16k.wav")
+    asr_wav.unlink(missing_ok=True)
+    started = time.perf_counter()
+    metrics = synthesize(tts_exe, require_model(models["chatterbox-t3"]), require_model(models["chatterbox-codec"]),
+                         reference, output_wav, language, family, text_file=text_path, capture=True)
+    wall = time.perf_counter() - started
+    resample_16k(output_wav, asr_wav)
+    started = time.perf_counter()
+    hypothesis = transcribe(asr_exe, require_model(models["parakeet"]), asr_wav, out=output_wav.with_suffix(".transcript.txt"))
+    stt_wall = time.perf_counter() - started
+    wer, cer = score(text, hypothesis)
+    sys.stdout.reconfigure(errors="replace")  # Windows console code pages can't print pl/de text
+    audio_ms = metrics.get("seconds", 0.0) * 1000.0
+    gen_rtf = (metrics.get("t3_ms", 0.0) + metrics.get("s3gen_ms", 0.0)) / audio_ms if audio_ms else 0.0
+    print(f"rainbow family={family_name} lang={language} ref={reference.name}")
+    print(f"audio_s={metrics.get('seconds', 0.0):.2f} chunks={int(metrics.get('chunks', 0))} "
+          f"total_ms={metrics.get('total_ms', 0.0):.0f} t3_ms={metrics.get('t3_ms', 0.0):.0f} "
+          f"s3gen_ms={metrics.get('s3gen_ms', 0.0):.0f} gen_RTF={gen_rtf:.3f} wall_s={wall:.1f} stt_s={stt_wall:.1f}")
+    print(f"WER={wer * 100:.2f}% CER={cer * 100:.2f}%")
+    print(f"Source: {text}")
+    print(f"Heard: {hypothesis}")
 
 
 def run_pipeline(input_name: str, output_name: str, family_name: str, language: str | None, reference_name: str | None) -> None:
@@ -576,6 +690,12 @@ def parser() -> argparse.ArgumentParser:
     run_cmd.add_argument("--family", choices=tuple(FAMILIES), default="turbo")
     run_cmd.add_argument("--language")
     run_cmd.add_argument("--reference")
+    rainbow_cmd = commands.add_parser("rainbow")
+    rainbow_cmd.add_argument("output")
+    rainbow_cmd.add_argument("--family", choices=tuple(FAMILIES), required=True)
+    rainbow_cmd.add_argument("--language")
+    rainbow_cmd.add_argument("--reference")
+    rainbow_cmd.add_argument("--text")
     return p
 
 
@@ -584,6 +704,8 @@ def main() -> int:
     try:
         if args.command == "install":
             install(args.family)
+        elif args.command == "rainbow":
+            run_rainbow(args.output, args.family, args.language, args.reference, args.text)
         else:
             run_pipeline(args.input, args.output, args.family, args.language, args.reference)
         return 0
