@@ -3,9 +3,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
-import wave
 from pathlib import Path
 
 from config import (
@@ -14,7 +14,7 @@ from config import (
 )
 from installer import (
     install, runtime_executable, runtime_tts, models_for, require_model,
-    validate_wav, write_text_atomic, note,
+    validate_wav, write_text_atomic, note, set_log,
 )
 
 
@@ -47,7 +47,6 @@ def spoken_reply(raw: str) -> str:
 def brain(exe: Path, model: Path, language: str, language_name: str, prompt: Path, paths: Paths) -> str:
     system = BRAIN_SYSTEM.format(language_name=language_name, language=language)
     write_text_atomic(paths.system, system + "\n")
-    paths.answer.unlink(missing_ok=True)
     g = BRAIN_GENERATION
     r = BRAIN_RUNTIME
     thinking = "on" if BRAIN_THINKING else "off"
@@ -89,122 +88,204 @@ def synthesize(exe: Path, t3: Path, codec: Path, reference: Path, output: Path, 
         command += ["--min-p", str(sample["min_p"])]
     if family["TTS_MULTILINGUAL"]:
         command += ["--language", language, "--cfg-weight", str(voice["cfg_weight"]), "--exaggeration", str(voice["exaggeration"])]
-    output.unlink(missing_ok=True)
     note("tts: " + " ".join(command))
     subprocess.run(command, cwd=exe.parent, stdout=sys.stderr, stderr=sys.stderr, check=True)
     validate_wav(output, TTS_RATE, channels=1)
 
 
+def resolve_language(family: dict, language: str | None) -> str:
+    code = language or family["DEFAULT_REPLY_LANGUAGE"]
+    if code not in family["TTS_LANGUAGES"]:
+        raise RuntimeError(f"language {code!r} not supported by {family['name']}; choose from {', '.join(family['TTS_LANGUAGES'])}")
+    return code
+
+
+def extra_copy(src: Path, dest: Path | None) -> None:
+    if dest is None or src.resolve() == dest.resolve():
+        return
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dest)
+
+
+def write_meta(paths: Paths, rows: dict[str, str]) -> None:
+    body = "".join(f"{key}={value}\n" for key, value in rows.items())
+    write_text_atomic(paths.run_dir / "meta.txt", body)
+
+
+def start_run(command: str, args) -> Paths:
+    paths = Paths(args.models_dir, args.data_dir, command)
+    set_log(paths.log)
+    note(f"run dir {paths.run_dir}")
+    return paths
+
+
 def run_asr(input_wav: Path, output: Path | None, paths: Paths) -> None:
-    asr_exe = runtime_executable("parakeet")
-    asr_model = require_model(SHARED_MODELS["parakeet"], paths.models_dir, paths.data_dir)
     validate_wav(input_wav, ASR_RATE, channels=1)
-    text = transcribe(asr_exe, asr_model, input_wav, paths)
-    if output:
-        write_text_atomic(output, text + "\n")
-    else:
-        print(text)
+    shutil.copy2(input_wav, paths.run_dir / "input.wav")
+    text = transcribe(runtime_executable("parakeet"), require_model(SHARED_MODELS["parakeet"], paths.models_dir), input_wav, paths)
+    extra_copy(paths.transcript, output)
+    write_meta(paths, {"command": "asr", "input": str(input_wav), "transcript": str(paths.transcript)})
+    print(text)
+    print(f"Run: {paths.run_dir}")
 
 
 def run_brain(prompt: Path, output: Path | None, language: str, paths: Paths) -> None:
-    brain_exe = runtime_executable("gemma")
-    brain_model = require_model(SHARED_MODELS[BRAIN_MODEL], paths.models_dir, paths.data_dir)
-    language_name = LANGUAGES.get(language, "English")
-    text = brain(brain_exe, brain_model, language, language_name, prompt, paths)
-    if output:
-        write_text_atomic(output, text + "\n")
-    else:
-        print(text)
+    if language not in LANGUAGES:
+        raise RuntimeError(f"language {language!r} not supported; choose from {', '.join(LANGUAGES)}")
+    shutil.copy2(prompt, paths.run_dir / "prompt.txt")
+    text = brain(
+        runtime_executable("gemma"),
+        require_model(SHARED_MODELS[BRAIN_MODEL], paths.models_dir),
+        language,
+        LANGUAGES[language],
+        prompt,
+        paths,
+    )
+    extra_copy(paths.answer, output)
+    write_meta(paths, {"command": "brain", "language": language, "prompt": str(prompt), "answer": str(paths.answer)})
+    print(text)
+    print(f"Run: {paths.run_dir}")
 
 
-def run_tts(text_file: Path, reference: Path, output: Path, family_name: str, language: str, paths: Paths) -> None:
+def run_tts(text_file: Path, reference: Path, output: Path | None, family_name: str, language: str | None, paths: Paths) -> None:
     family = FAMILIES[family_name]
-    if language not in family["TTS_LANGUAGES"]:
-        raise RuntimeError(f"language {language!r} not supported by family {family_name}; choose from {', '.join(family['TTS_LANGUAGES'])}")
-    models = models_for(family_name)
-    tts_exe = runtime_tts(family_name)
-    t3_model = require_model(models["chatterbox-t3"], paths.models_dir, paths.data_dir)
-    codec_model = require_model(models["chatterbox-codec"], paths.models_dir, paths.data_dir)
+    language = resolve_language(family, language)
     validate_wav(reference, minimum_seconds=REFERENCE_MIN_SECONDS)
-    synthesize(tts_exe, t3_model, codec_model, reference, output, language, family, text_file)
+    models = models_for(family_name)
+    shutil.copy2(text_file, paths.run_dir / "text.txt")
+    synthesize(
+        runtime_tts(family_name),
+        require_model(models["chatterbox-t3"], paths.models_dir),
+        require_model(models["chatterbox-codec"], paths.models_dir),
+        reference,
+        paths.output,
+        language,
+        family,
+        text_file,
+    )
+    extra_copy(paths.output, output)
+    write_meta(paths, {
+        "command": "tts", "family": family_name, "language": language,
+        "text": str(text_file), "reference": str(reference), "output": str(paths.output),
+    })
+    print(f"Output: {paths.output}")
+    print(f"Run: {paths.run_dir}")
 
 
-def run_pipeline(input_wav: Path, output_wav: Path, family_name: str, language: str | None, reference: Path | None, paths: Paths) -> None:
+def run_pipeline(input_wav: Path, output: Path | None, family_name: str, language: str | None, reference: Path, paths: Paths) -> None:
     family = FAMILIES[family_name]
-    language = language or family["DEFAULT_REPLY_LANGUAGE"]
-    if language not in family["TTS_LANGUAGES"]:
-        raise RuntimeError(f"language {language!r} not supported by family {family_name}; choose from {', '.join(family['TTS_LANGUAGES'])}")
-    reference = reference or paths.reference
-    if len({input_wav.resolve(), reference.resolve(), output_wav.resolve()}) != 3:
-        raise RuntimeError("input, reference, and output must be different paths")
+    language = resolve_language(family, language)
     validate_wav(input_wav, ASR_RATE, channels=1)
     validate_wav(reference, minimum_seconds=REFERENCE_MIN_SECONDS)
     models = models_for(family_name)
-    asr_model = require_model(models["parakeet"], paths.models_dir, paths.data_dir)
-    brain_model = require_model(models[BRAIN_MODEL], paths.models_dir, paths.data_dir)
-    t3_model = require_model(models["chatterbox-t3"], paths.models_dir, paths.data_dir)
-    codec_model = require_model(models["chatterbox-codec"], paths.models_dir, paths.data_dir)
-    asr_exe = runtime_executable("parakeet")
-    brain_exe = runtime_executable("gemma")
-    tts_exe = runtime_tts(family_name)
-    transcript = transcribe(asr_exe, asr_model, input_wav, paths)
-    answer = brain(brain_exe, brain_model, language, family["TTS_LANGUAGES"][language], paths.transcript, paths)
-    synthesize(tts_exe, t3_model, codec_model, reference, output_wav, language, family, paths.answer)
+    shutil.copy2(input_wav, paths.run_dir / "input.wav")
+    transcript = transcribe(runtime_executable("parakeet"), require_model(models["parakeet"], paths.models_dir), input_wav, paths)
+    answer = brain(
+        runtime_executable("gemma"),
+        require_model(models[BRAIN_MODEL], paths.models_dir),
+        language,
+        family["TTS_LANGUAGES"][language],
+        paths.transcript,
+        paths,
+    )
+    synthesize(
+        runtime_tts(family_name),
+        require_model(models["chatterbox-t3"], paths.models_dir),
+        require_model(models["chatterbox-codec"], paths.models_dir),
+        reference,
+        paths.output,
+        language,
+        family,
+        paths.answer,
+    )
+    extra_copy(paths.output, output)
+    write_meta(paths, {
+        "command": "run", "family": family_name, "language": language,
+        "input": str(input_wav), "reference": str(reference), "output": str(paths.output),
+    })
     print(f"Transcript: {transcript}")
     print(f"Answer: {answer}")
-    print(f"Output: {output_wav}")
+    print(f"Output: {paths.output}")
+    print(f"Run: {paths.run_dir}")
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="python main.py")
-    p.add_argument("--models-dir", type=Path, help="Override models directory")
-    p.add_argument("--data-dir", type=Path, help="Override data directory")
-    sub = p.add_subparsers(dest="command", required=True)
+    families = tuple(FAMILIES)
+    p = argparse.ArgumentParser(
+        prog="python main.py",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Windows listen-think-speak box. Parakeet hears, Gemma answers, Chatterbox speaks.",
+        epilog=(
+            "commands:\n"
+            "  install [--family v3|turbo|nano]   tools, one family, models, celebrity voices\n"
+            "  asr IN.wav [-o text]               16 kHz mono PCM16 -> transcript\n"
+            "  brain IN.txt [--language] [-o text]  spoken reply\n"
+            "  tts IN.txt [--family] [--language] [-r wav] [-o wav]  24 kHz speech\n"
+            "  run IN.wav [--family] [--language] [-r wav] [-o wav]  listen, think, speak\n"
+            "\n"
+            "asr/brain/tts/run write a new timestamped folder and never overwrite an older run.\n"
+            "-o is an extra copy. -r defaults to the Trump celebrity voice.\n"
+            "\n"
+            "  python main.py install --family v3\n"
+            "  python main.py run rec.wav --language pl\n"
+            "  python main.py tts line.txt --family turbo\n"
+        ),
+    )
+    p.add_argument("--models-dir", type=Path, help="models directory")
+    p.add_argument("--data-dir", type=Path, help="data directory")
+    sub = p.add_subparsers(dest="command")
 
-    install_cmd = sub.add_parser("install")
-    install_cmd.add_argument("--family", choices=tuple(FAMILIES), default=default_family())
+    install_cmd = sub.add_parser("install", help="tools, one family, models, celebrity voices")
+    install_cmd.add_argument("--family", choices=families, default=default_family())
 
-    asr_cmd = sub.add_parser("asr")
+    asr_cmd = sub.add_parser("asr", help="transcribe 16 kHz mono WAV")
     asr_cmd.add_argument("input")
     asr_cmd.add_argument("-o", "--output")
 
-    brain_cmd = sub.add_parser("brain")
+    brain_cmd = sub.add_parser("brain", help="spoken reply to a text file")
     brain_cmd.add_argument("input")
     brain_cmd.add_argument("-o", "--output")
     brain_cmd.add_argument("--language", default="en")
 
-    tts_cmd = sub.add_parser("tts")
+    tts_cmd = sub.add_parser("tts", help="speak a text file")
     tts_cmd.add_argument("input")
-    tts_cmd.add_argument("-r", "--reference", required=True)
-    tts_cmd.add_argument("-o", "--output", required=True)
-    tts_cmd.add_argument("--family", choices=tuple(FAMILIES), default=default_family())
-    tts_cmd.add_argument("--language", default="en")
+    tts_cmd.add_argument("-r", "--reference")
+    tts_cmd.add_argument("-o", "--output")
+    tts_cmd.add_argument("--family", choices=families, default=default_family())
+    tts_cmd.add_argument("--language")
 
-    run_cmd = sub.add_parser("run")
+    run_cmd = sub.add_parser("run", help="listen, think, speak")
     run_cmd.add_argument("input")
-    run_cmd.add_argument("output")
-    run_cmd.add_argument("--family", choices=tuple(FAMILIES), default=default_family())
+    run_cmd.add_argument("-o", "--output")
+    run_cmd.add_argument("--family", choices=families, default=default_family())
     run_cmd.add_argument("--language")
-    run_cmd.add_argument("--reference")
-
+    run_cmd.add_argument("-r", "--reference")
     return p
 
 
 def main() -> int:
-    args = build_parser().parse_args()
-    paths = Paths(args.models_dir, args.data_dir)
+    parser = build_parser()
+    if len(sys.argv) == 1:
+        parser.print_help()
+        return 2
+    args = parser.parse_args()
+    if not args.command:
+        parser.print_help()
+        return 2
     try:
         if args.command == "install":
-            install(args.family, paths.models_dir, paths.data_dir)
-        elif args.command == "asr":
+            install(args.family, (args.models_dir.resolve() if args.models_dir else None), (args.data_dir.resolve() if args.data_dir else None))
+            return 0
+        paths = start_run(args.command, args)
+        if args.command == "asr":
             run_asr(Path(args.input).expanduser().resolve(), Path(args.output).expanduser().resolve() if args.output else None, paths)
         elif args.command == "brain":
             run_brain(Path(args.input).expanduser().resolve(), Path(args.output).expanduser().resolve() if args.output else None, args.language, paths)
         elif args.command == "tts":
             run_tts(
                 Path(args.input).expanduser().resolve(),
-                Path(args.reference).expanduser().resolve(),
-                Path(args.output).expanduser().resolve(),
+                Path(args.reference).expanduser().resolve() if args.reference else paths.reference,
+                Path(args.output).expanduser().resolve() if args.output else None,
                 args.family,
                 args.language,
                 paths,
@@ -212,14 +293,14 @@ def main() -> int:
         else:
             run_pipeline(
                 Path(args.input).expanduser().resolve(),
-                Path(args.output).expanduser().resolve(),
+                Path(args.output).expanduser().resolve() if args.output else None,
                 args.family,
                 args.language,
-                Path(args.reference).expanduser().resolve() if args.reference else None,
+                Path(args.reference).expanduser().resolve() if args.reference else paths.reference,
                 paths,
             )
         return 0
-    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError, json.JSONDecodeError, wave.Error, UnicodeError) as exc:
+    except Exception as exc:
         note(f"error: {exc}")
         return 1
 
