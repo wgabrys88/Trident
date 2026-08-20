@@ -22,31 +22,41 @@ from config import (
 )
 
 
+_log = None
+
+
+def set_log(path: Path | None) -> None:
+    global _log
+    _log = path
+    if path:
+        path.write_text("", encoding="utf-8")
+
+
 def note(message: str) -> None:
     print(message, file=sys.stderr, flush=True)
+    if _log:
+        with _log.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(message + "\n")
 
 
 def validate_wav(path: Path, rate: int | None = None, minimum_seconds: float = 0.0, channels: int | None = None) -> None:
     if not path.is_file():
         raise RuntimeError(f"WAV file is missing: {path}")
-    try:
-        with path.open("rb") as raw:
-            header = raw.read(12)
-        if len(header) != 12 or header[:4] != b"RIFF" or header[8:] != b"WAVE":
-            raise RuntimeError("not a RIFF/WAVE file")
-        with wave.open(str(path), "rb") as audio:
-            if audio.getsampwidth() != 2 or audio.getcomptype() != "NONE":
-                raise RuntimeError("must be PCM16 WAV")
-            if channels is not None and audio.getnchannels() != channels:
-                raise RuntimeError(f"must be {channels}-channel WAV")
-            if rate is not None and audio.getframerate() != rate:
-                raise RuntimeError(f"must be {rate} Hz")
-            if audio.getframerate() <= 0 or audio.getnframes() <= 0:
-                raise RuntimeError("WAV contains no audio frames")
-            if audio.getnframes() / audio.getframerate() < minimum_seconds:
-                raise RuntimeError(f"WAV must be at least {minimum_seconds:g} seconds long")
-    except (wave.Error, EOFError, OSError, RuntimeError) as exc:
-        raise RuntimeError(f"invalid WAV {path}: {exc}") from exc
+    with path.open("rb") as raw:
+        header = raw.read(12)
+    if len(header) != 12 or header[:4] != b"RIFF" or header[8:] != b"WAVE":
+        raise RuntimeError(f"invalid WAV {path}: not a RIFF/WAVE file")
+    with wave.open(str(path), "rb") as audio:
+        if audio.getsampwidth() != 2 or audio.getcomptype() != "NONE":
+            raise RuntimeError(f"invalid WAV {path}: must be PCM16")
+        if channels is not None and audio.getnchannels() != channels:
+            raise RuntimeError(f"invalid WAV {path}: must be {channels}-channel")
+        if rate is not None and audio.getframerate() != rate:
+            raise RuntimeError(f"invalid WAV {path}: must be {rate} Hz")
+        if audio.getframerate() <= 0 or audio.getnframes() <= 0:
+            raise RuntimeError(f"invalid WAV {path}: no audio frames")
+        if audio.getnframes() / audio.getframerate() < minimum_seconds:
+            raise RuntimeError(f"invalid WAV {path}: must be at least {minimum_seconds:g} seconds")
 
 
 def write_text_atomic(path: Path, text: str) -> None:
@@ -187,8 +197,6 @@ def fetch(url: str, destination: Path, size: int) -> None:
     done = 0
     try:
         with urllib.request.urlopen(request, timeout=60) as response, partial.open("wb") as output:
-            if response.status != 200:
-                raise RuntimeError(f"download returned HTTP {response.status}: {url}")
             for block in iter(lambda: response.read(1024 * 1024), b""):
                 output.write(block)
                 done += len(block)
@@ -329,21 +337,26 @@ def models_for(family: str) -> dict:
     return {**FAMILIES[family]["TTS_MODELS"], **SHARED_MODELS}
 
 
-def model_path(spec: dict, models_dir: Path, data_dir: Path) -> Path:
-    root = data_dir if spec.get("directory") == "data" else models_dir
-    return root / spec["file"]
+def model_path(spec: dict, models_dir: Path) -> Path:
+    return models_dir / spec["file"]
 
 
-def require_model(spec: dict, models_dir: Path, data_dir: Path) -> Path:
-    path = model_path(spec, models_dir, data_dir)
+def require_model(spec: dict, models_dir: Path) -> Path:
+    path = model_path(spec, models_dir)
     if not path.is_file() or path.stat().st_size != spec["size"]:
         actual = path.stat().st_size if path.is_file() else 0
         raise RuntimeError(f"model missing or wrong size: {path} (expected {spec['size']}, got {actual})")
     return path
 
 
-def download_model(spec: dict, models_dir: Path, data_dir: Path) -> None:
-    destination = model_path(spec, models_dir, data_dir)
+def prune_convert_cache() -> None:
+    rmtree_retry(CONVERTER / "checkpoints")
+    rmtree_retry(TOOLS / "huggingface")
+    note("convert cache: pruned")
+
+
+def download_model(spec: dict, models_dir: Path) -> None:
+    destination = model_path(spec, models_dir)
     if present(destination, spec["size"]):
         note(f"{spec['label']}: ready")
         return
@@ -431,8 +444,9 @@ def install(family: str, models_dir: Path | None = None, data_dir: Path | None =
     if not tts_runtime_ready(family):
         install_tts(family)
     for spec in selected.values():
-        download_model(spec, paths.models_dir, paths.data_dir)
+        download_model(spec, paths.models_dir)
     download_reference_voices(paths.data_dir)
+    prune_convert_cache()
     note(f"install complete: family={family} models={paths.models_dir} data={paths.data_dir}")
 
 
@@ -445,7 +459,7 @@ def main() -> int:
     try:
         install(args.family, args.models_dir, args.data_dir)
         return 0
-    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError, zipfile.BadZipFile) as exc:
+    except Exception as exc:
         note(f"error: {exc}")
         return 1
 

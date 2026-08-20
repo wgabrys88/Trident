@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -113,10 +114,22 @@ DEFAULT_VOICE = "trump"
 
 
 class Paths:
-    def __init__(self, models_dir: Path | None = None, data_dir: Path | None = None) -> None:
+    def __init__(self, models_dir: Path | None = None, data_dir: Path | None = None, command: str | None = None) -> None:
         self.models_dir = (models_dir or DEFAULT_MODELS_DIR).resolve()
         self.data_dir = (data_dir or DEFAULT_DATA_DIR).resolve()
-        self.transcript = self.data_dir / "transcript.txt"
-        self.answer = self.data_dir / "answer.txt"
-        self.system = self.data_dir / "system.txt"
         self.reference = self.data_dir / REFERENCE_VOICES[DEFAULT_VOICE]["file"]
+        self.run_dir = None
+        self.transcript = None
+        self.answer = None
+        self.system = None
+        self.output = None
+        self.log = None
+        if command:
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            self.run_dir = self.data_dir / "runs" / f"{stamp}-{command}"
+            self.run_dir.mkdir(parents=True)
+            self.transcript = self.run_dir / "transcript.txt"
+            self.answer = self.run_dir / "answer.txt"
+            self.system = self.run_dir / "system.txt"
+            self.output = self.run_dir / "output.wav"
+            self.log = self.run_dir / "log.txt"
