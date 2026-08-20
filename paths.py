@@ -2,17 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
-DATA = ROOT / "data"
-MODELS_DIR = ROOT / "models"
-THIRD_PARTY = ROOT / "third_party"
-TOOLS = ROOT / "tools"
-PATCHES = ROOT / "patches"
-TTS = ROOT / "tts"
-CHATTERBOX = THIRD_PARTY / "chatterbox.cpp"
-GGML = CHATTERBOX / "ggml"
-RUNTIMES = TOOLS / "runtime"
-CONVERTER = TOOLS / "convert"
+from config import DEFAULT_MODELS_DIR, DEFAULT_DATA_DIR, ROOT, THIRD_PARTY, TOOLS, PATCHES, TTS, CHATTERBOX, GGML, RUNTIMES, CONVERTER
+
+MODELS_DIR = DEFAULT_MODELS_DIR
+DATA = DEFAULT_DATA_DIR
 
 TRANSCRIPT = DATA / "transcript.txt"
 ANSWER = DATA / "answer.txt"

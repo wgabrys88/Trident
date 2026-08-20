@@ -1,6 +1,20 @@
 from __future__ import annotations
 
-from paths import DATA, MODELS_DIR, ROOT, THIRD_PARTY, TOOLS, PATCHES, TTS, CHATTERBOX, GGML, RUNTIMES, CONVERTER
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+
+DEFAULT_MODELS_DIR = ROOT / "models"
+DEFAULT_DATA_DIR = ROOT / "data"
+
+THIRD_PARTY = ROOT / "third_party"
+TOOLS = ROOT / "tools"
+PATCHES = ROOT / "patches"
+TTS = ROOT / "tts"
+CHATTERBOX = THIRD_PARTY / "chatterbox.cpp"
+GGML = CHATTERBOX / "ggml"
+RUNTIMES = TOOLS / "runtime"
+CONVERTER = TOOLS / "convert"
 
 ASR_RUNTIME = {"threads": 4, "device": "Vulkan0"}
 

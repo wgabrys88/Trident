@@ -19,8 +19,8 @@ from config import (
     ASR_RUNTIME, BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_GENERATION, BRAIN_THINKING, BRAIN_SYSTEM,
     FAMILIES, SHARED_MODELS, VULKAN_VERSION, PACKAGES, SOURCES, BINARIES,
     CHATTERBOX_LIBRARY, TTS_BUILD, TTS_FAMILY_EXES, PROBE_EN,
-    CHATTERBOX, GGML, RUNTIMES, CONVERTER, TOOLS, PATCHES, MODELS_DIR, DATA, ROOT,
-    REFERENCE_VOICES,
+    CHATTERBOX, GGML, RUNTIMES, CONVERTER, TOOLS, PATCHES, ROOT,
+    REFERENCE_VOICES, DEFAULT_MODELS_DIR, DEFAULT_DATA_DIR,
 )
 from paths import TRANSCRIPT, ANSWER, SYSTEM_PROMPT, DEFAULT_REFERENCE, ASSETS_REFERENCE
 
@@ -55,23 +55,6 @@ def write_text_atomic(path: Path, text: str) -> None:
     partial = path.with_suffix(path.suffix + ".part")
     partial.write_text(text, encoding="utf-8", newline="\n")
     os.replace(partial, path)
-
-
-def require_model(spec: dict) -> Path:
-    path = model_path(spec)
-    if not present(path, spec["size"]):
-        actual = path.stat().st_size if path.is_file() else 0
-        raise RuntimeError(f"model missing or wrong size: {path} (expected {spec['size']}, got {actual})")
-    return path
-
-
-def models_for(family: str) -> dict:
-    return {**FAMILIES[family]["TTS_MODELS"], **SHARED_MODELS}
-
-
-def model_path(spec: dict) -> Path:
-    root = DATA if spec.get("directory") == "data" else MODELS_DIR
-    return root / spec["file"]
 
 
 def present(path: Path, size: int = 0) -> bool:
@@ -354,13 +337,13 @@ def models_for(family: str) -> dict:
     return {**FAMILIES[family]["TTS_MODELS"], **SHARED_MODELS}
 
 
-def model_path(spec: dict) -> Path:
-    root = DATA if spec.get("directory") == "data" else MODELS_DIR
+def model_path(spec: dict, models_dir: Path, data_dir: Path) -> Path:
+    root = data_dir if spec.get("directory") == "data" else models_dir
     return root / spec["file"]
 
 
-def download_model(spec: dict) -> None:
-    destination = model_path(spec)
+def download_model(spec: dict, models_dir: Path, data_dir: Path) -> None:
+    destination = model_path(spec, models_dir, data_dir)
     if present(destination, spec["size"]):
         note(f"{spec['label']}: ready")
         return
@@ -431,7 +414,7 @@ def download_model(spec: dict) -> None:
     rmtree_retry(checkpoint)
 
 
-def download_reference_voices() -> None:
+def download_reference_voices(data_dir: Path) -> None:
     note("Downloading reference voices from HuggingFace...")
     try:
         from huggingface_hub import hf_hub_download
@@ -440,7 +423,7 @@ def download_reference_voices() -> None:
         return
 
     for key, info in REFERENCE_VOICES.items():
-        dest = DATA / f"ref-{key}.wav"
+        dest = data_dir / f"ref-{key}.wav"
         if dest.is_file():
             note(f"  {info['name']}: already present")
             continue
@@ -453,9 +436,13 @@ def download_reference_voices() -> None:
             note(f"  {info['name']}: download failed ({e})")
 
 
-def install(family: str) -> None:
+def install(family: str, models_dir: Path | None = None, data_dir: Path | None = None) -> None:
     if os.name != "nt" or platform.machine().lower() not in {"amd64", "x86_64"}:
         raise RuntimeError("Trident installation requires Windows x64")
+    models_dir = (models_dir or DEFAULT_MODELS_DIR).resolve()
+    data_dir = (data_dir or DEFAULT_DATA_DIR).resolve()
+    models_dir.mkdir(parents=True, exist_ok=True)
+    data_dir.mkdir(parents=True, exist_ok=True)
     for name in ("python", "git", "cmake", "msvc", "vulkan"):
         install_prerequisite(name)
     install_release_binary("parakeet")
@@ -464,17 +451,19 @@ def install(family: str) -> None:
     if not tts_runtime_ready():
         install_tts()
     for spec in selected.values():
-        download_model(spec)
-    download_reference_voices()
-    note(f"install complete: family={family}")
+        download_model(spec, models_dir, data_dir)
+    download_reference_voices(data_dir)
+    note(f"install complete: family={family} models={models_dir} data={data_dir}")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(prog="python -m installer")
     parser.add_argument("--family", choices=tuple(FAMILIES), default="v3")
+    parser.add_argument("--models-dir", type=Path, help="Override models directory")
+    parser.add_argument("--data-dir", type=Path, help="Override data directory")
     args = parser.parse_args()
     try:
-        install(args.family)
+        install(args.family, args.models_dir, args.data_dir)
         return 0
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError, zipfile.BadZipFile) as exc:
         note(f"error: {exc}")
