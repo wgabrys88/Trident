@@ -1,68 +1,49 @@
 from __future__ import annotations
-import http.client
-import io
+
+import argparse
 import json
 import os
-import queue
+import platform
 import shutil
 import subprocess
 import sys
-import threading
 import time
-import urllib.error
 import urllib.parse
 import urllib.request
-import uuid
 import wave
 import zipfile
-from copy import deepcopy
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable
-from cfg import (
-    ASR_CHUNK, ASR_RUNTIME, BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME,
-    BRAIN_SYSTEM, BRAIN_THINKING, CONTROLLER, FAMILIES, MIC, PORTS,
-)
-TTS_FAMILY = "turbo"
-DEFAULT_REPLY_LANGUAGE = TTS_CHUNK = TTS_LABEL = TTS_LANGUAGES = TTS_MODELS = TTS_RUNTIME = TTS_SAMPLE = TTS_VOICE = None
 
-def apply_family(name: str):
-    global TTS_FAMILY, DEFAULT_REPLY_LANGUAGE, TTS_CHUNK, TTS_LABEL, TTS_LANGUAGES
-    global TTS_MODELS, TTS_RUNTIME, TTS_SAMPLE, TTS_VOICE, MODELS
-    if name not in FAMILIES:
-        raise ValueError(f"unknown TTS family: {name}")
-    spec = FAMILIES[name]
-    TTS_FAMILY = name
-    DEFAULT_REPLY_LANGUAGE = spec["DEFAULT_REPLY_LANGUAGE"]
-    TTS_CHUNK, TTS_LABEL, TTS_LANGUAGES = spec["TTS_CHUNK"], spec["TTS_LABEL"], spec["TTS_LANGUAGES"]
-    TTS_MODELS, TTS_RUNTIME, TTS_SAMPLE, TTS_VOICE = spec["TTS_MODELS"], spec["TTS_RUNTIME"], spec["TTS_SAMPLE"], spec["TTS_VOICE"]
-    MODELS = {**TTS_MODELS, **SHARED_MODELS}
+from cfg import ASR_RUNTIME, BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_SYSTEM, BRAIN_THINKING, FAMILIES
+
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
 MODELS_DIR = ROOT / "models"
 THIRD_PARTY = ROOT / "third_party"
 TOOLS = ROOT / "tools"
 PATCHES = ROOT / "patches"
-SERVER = ROOT / "server"
+TTS = ROOT / "tts"
 CHATTERBOX = THIRD_PARTY / "chatterbox.cpp"
 GGML = CHATTERBOX / "ggml"
 RUNTIMES = TOOLS / "runtime"
 CONVERTER = TOOLS / "convert"
+TRANSCRIPT = DATA / "transcript.txt"
+ANSWER = DATA / "answer.txt"
+SYSTEM_PROMPT = DATA / "system.txt"
+
 SOURCES = {
     "chatterbox": ("https://github.com/gianni-cor/chatterbox.cpp", "ddca05fb69c2910b0d7b5eae420d360ed98c067b"),
     "ggml": ("https://github.com/ggml-org/ggml.git", "58c3805840b516b2a88ff867ccf7bb41dba79951"),
 }
 BINARIES = {
-    "parakeet": {"label": "PARAKEET.CPP V0.5 VULKAN", "repo": "mudler/parakeet.cpp", "tag": "v0.5.0", "asset": "parakeet-v0.5.0-bin-win-vulkan-x64.zip", "exe": "parakeet-server.exe"},
-    "gemma": {"label": "LLAMA.CPP B10453 VULKAN", "repo": "ggml-org/llama.cpp", "tag": "b10453", "asset": "llama-b10453-bin-win-vulkan-x64.zip", "exe": "llama-server.exe"},
+    "parakeet": {"label": "PARAKEET.CPP V0.5 VULKAN", "repo": "mudler/parakeet.cpp", "tag": "v0.5.0", "asset": "parakeet-v0.5.0-bin-win-vulkan-x64.zip", "exe": "parakeet-cli.exe"},
+    "gemma": {"label": "LLAMA.CPP B10453 VULKAN", "repo": "ggml-org/llama.cpp", "tag": "b10453", "asset": "llama-b10453-bin-win-vulkan-x64.zip", "exe": "llama-cli.exe"},
 }
 SHARED_MODELS = {
     "parakeet": {"label": "PARAKEET TDT 0.6B V3 Q4_K", "repo": "mudler/parakeet-cpp-gguf", "revision": "bf0af9f425fa01809cadec671b3cb672709d13e9", "file": "tdt-0.6b-v3-q4_k.gguf", "size": 675200864},
     "gemma": {"label": "GEMMA 4 E2B", "repo": "google/gemma-4-E2B-it-qat-q4_0-gguf", "revision": "675cff42a74c774d6cb76f76d8eacb49b48c9b93", "file": "gemma-4-E2B_q4_0-it.gguf", "size": 3349516256},
     "reference": {"label": "DEFAULT VOICE", "source": "assets/default-reference.wav", "file": "default-reference.wav", "directory": "data", "size": 1440078},
 }
-MODELS: dict = {}
-apply_family(TTS_FAMILY)
 VULKAN_VERSION = "1.4.357.0"
 PACKAGES = {
     "git": {"url": "https://github.com/git-for-windows/git/releases/download/v2.54.0.windows.1/MinGit-2.54.0-64-bit.zip", "file": "MinGit-2.54.0-64-bit.zip", "size": 39989839},
@@ -70,276 +51,77 @@ PACKAGES = {
     "msvc": {"url": "https://download.visualstudio.microsoft.com/download/pr/00d9d26c-2727-42c2-aa9e-eda63b03e1ee/15df9d3b4c2b2eaf44704d5e938c895341b9cd8ba40a9a18610f8d18cbe01b53/vs_BuildTools.exe", "file": "vs_BuildTools.exe", "size": 4458736},
     "vulkan": {"url": f"https://sdk.lunarg.com/sdk/download/{VULKAN_VERSION}/windows/vulkansdk-windows-X64-{VULKAN_VERSION}.exe", "file": f"vulkansdk-windows-X64-{VULKAN_VERSION}.exe", "size": 0},
 }
-BRAIN = {"id": BRAIN_MODEL, "label": "GEMMA 4 E2B", "model": "gemma", "family": "gemma4"}
 CHATTERBOX_LIBRARY = CHATTERBOX / "build" / "Release" / "tts-cpp.lib"
-TTS_SERVER = SERVER / "build" / "Release" / "tts-server.exe"
-LOCK = threading.RLock()
-CONVERT_LOCK = threading.Lock()
-SESSION = uuid.uuid4().hex
-PROCESSES: dict[str, subprocess.Popen] = {}
-SUBS: list[queue.Queue] = []
-ENGINE_MODELS = {"tts": ("chatterbox-t3", "chatterbox-codec"), "asr": ("parakeet",), "brain": (BRAIN["model"],)}
-ENGINE_BIN = {"tts": "tts", "asr": "parakeet", "brain": "gemma"}
-COMPONENTS = ("tts", *BINARIES)
-PREREQ_LABELS = {"python": "PYTHON 3.11+", "git": "GIT", "cmake": "CMAKE", "msvc": "MSVC BUILD TOOLS", "vulkan": "VULKAN SDK"}
-PANEL_FILES = {
-    "/": (ROOT / "panel.html", "text/html; charset=utf-8"),
-    "/panel.html": (ROOT / "panel.html", "text/html; charset=utf-8"),
-    "/panel.js": (ROOT / "panel.js", "text/javascript; charset=utf-8"),
-    "/audio-processor.js": (ROOT / "audio-processor.js", "text/javascript; charset=utf-8"),
-}
-LOG = ROOT / "trident.log"
-def log(component: str, event: str, **data: Any):
-    line = component + " " + event
-    if data:
-        line += " " + " ".join(f"{k}={data[k]}" for k in data)
-    print(line, flush=True)
-    with LOCK:
-        with LOG.open("a", encoding="utf-8") as out:
-            out.write(line + "\n")
-def default_view() -> dict:
-    return {
-        "stage": "idle",
-        "error": "",
-        "asr": {"text": "", "status": "idle"},
-        "brain": {"text": "", "language": "", "status": "idle"},
-        "tts": {"text": "", "language": "", "seconds": 0.0, "mtime": 0.0, "chunk": 0, "chunks": 0, "status": "idle"},
-        "played": {"text": "", "status": "idle"},
-    }
+TTS_BINARY = TTS / "build" / "Release" / "trident-tts.exe"
+TTS_EXE = "trident-tts.exe"
 
-RUNTIME = {
-    "jobs": {},
-    "engines": {name: {"status": "stopped", "error": "", "pid": None} for name in ENGINE_MODELS},
-    "live": default_view(),
-}
 
-def publish():
-    payload = inspect()
-    with LOCK:
-        targets = list(SUBS)
-    for inbox in targets:
-        inbox.put(payload)
+def note(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
 
-def close_subs():
-    with LOCK:
-        targets = list(SUBS)
-        SUBS.clear()
-    for inbox in targets:
-        inbox.put(None)
 
-def set_view(**fields):
-    with LOCK:
-        view = RUNTIME["live"]
-        for key, value in fields.items():
-            if key in ("asr", "brain", "tts", "played") and isinstance(value, dict):
-                view[key].update(value)
-            else:
-                view[key] = value
-    publish()
-
-class ApiError(RuntimeError):
-    def __init__(self, code: int, message: str):
-        super().__init__(message)
-        self.code = code
-def client_gone(exception: BaseException) -> bool:
-    if isinstance(exception, (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
-        return True
-    return getattr(exception, "winerror", None) in (10053, 10054)
 def present(path: Path, size: int = 0) -> bool:
     return path.is_file() and (not size or path.stat().st_size == size)
+
+
 def executable(name: str) -> str | None:
-    local = {"git": TOOLS / "git" / "cmd" / "git.exe", "cmake": TOOLS / "cmake-4.4.2-windows-x86_64" / "bin" / "cmake.exe"}.get(name)
+    local = {
+        "git": TOOLS / "git" / "cmd" / "git.exe",
+        "cmake": TOOLS / "cmake-4.4.2-windows-x86_64" / "bin" / "cmake.exe",
+    }.get(name)
     return str(local) if local and local.is_file() else shutil.which(name)
+
+
 def need(name: str) -> str:
-    path = executable(name)
-    if not path:
+    value = executable(name)
+    if not value:
         raise RuntimeError(f"{name} is missing")
-    return path
+    return value
+
+
 def msvc_path() -> Path | None:
     root = Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Microsoft Visual Studio"
     matches = sorted(root.glob("*/BuildTools/VC/Tools/MSVC/*/bin/Hostx64/x64/cl.exe"), reverse=True)
     return matches[0] if matches else None
+
+
 def vulkan_path() -> Path | None:
     roots = [Path(os.environ["VULKAN_SDK"])] if os.environ.get("VULKAN_SDK") else []
     roots += [TOOLS / "VulkanSDK" / VULKAN_VERSION]
     roots += sorted(Path("C:/VulkanSDK").glob("*"), reverse=True)
-    return next((path for path in roots if (path / "Include/vulkan/vulkan.h").is_file() and (path / "Lib/vulkan-1.lib").is_file()), None)
-def prerequisites() -> dict:
-    paths = {"python": Path(sys.executable), "git": executable("git"), "cmake": executable("cmake"), "msvc": msvc_path(), "vulkan": vulkan_path()}
-    return {name: {"status": "ready" if path else "missing", "path": str(path or "")} for name, path in paths.items()}
-def model_path(name: str) -> Path:
-    spec = MODELS[name]
-    root = DATA if spec.get("directory") == "data" else MODELS_DIR
-    return root / spec["file"]
-def model_status(name: str) -> dict:
-    spec = MODELS[name]
-    path = model_path(name)
-    size = path.stat().st_size if path.is_file() else 0
-    return {"status": "ready" if size else "missing", "path": str(path), "bytes": size, "size": spec["size"], "revision": spec.get("revision", "")}
-def component_artifact(name: str) -> Path:
-    spec = {"tts": {"exe": "tts-server.exe"}, **BINARIES}[name]
-    root = RUNTIMES / name
-    matches = [path for path in root.rglob("*") if path.is_file() and path.name.lower() == spec["exe"].lower()] if root.is_dir() else []
-    return matches[0] if len(matches) == 1 else root / spec["exe"]
-def component_status(name: str) -> dict:
-    path = component_artifact(name)
-    revision = SOURCES["chatterbox"][1] if name == "tts" else BINARIES[name]["tag"]
-    return {"status": "ready" if path.is_file() else "missing", "path": str(path), "revision": revision}
-def reference_file() -> Path:
-    custom = DATA / "reference.wav"
-    return custom if custom.is_file() else model_path("reference")
-def reference_path() -> Path:
-    path = reference_file()
-    if path.is_file():
-        return path
-    raise ApiError(409, "default reference is missing; download DEFAULT VOICE")
-def reference_state() -> dict:
-    path = reference_file()
-    custom = path == DATA / "reference.wav"
-    if not path.is_file():
-        return {"status": "missing", "path": str(path), "duration": 0.0, "custom": False}
-    try:
-        with wave.open(str(path), "rb") as audio:
-            valid = audio.getnchannels() == 1 and audio.getsampwidth() == 2 and audio.getcomptype() == "NONE"
-            duration = audio.getnframes() / float(audio.getframerate() or 1)
-        if not valid or duration < 5:
-            return {"status": "invalid", "path": str(path), "duration": duration, "custom": custom}
-    except (wave.Error, OSError):
-        return {"status": "invalid", "path": str(path), "duration": 0.0, "custom": custom}
-    return {"status": "ready", "path": str(path), "duration": duration, "custom": custom}
-def snapshot() -> dict:
-    with LOCK:
-        engines = deepcopy(RUNTIME["engines"])
-        for name, process in PROCESSES.items():
-            engines[name]["pid"] = process.pid
-        return {
-            "prerequisites": prerequisites(),
-            "components": {name: component_status(name) for name in COMPONENTS},
-            "models": {name: model_status(name) for name in MODELS},
-            "engines": engines,
-            "reference": reference_state(),
-            "brain": dict(BRAIN),
-            "tts_family": TTS_FAMILY,
-            "jobs": deepcopy(RUNTIME["jobs"]),
-            "live": deepcopy(RUNTIME["live"]),
-        }
-def set_job(key: str, status: str, stage: str, progress: int, message: str, failure: str = ""):
-    with LOCK:
-        RUNTIME["jobs"][key] = {"status": status, "stage": stage, "progress": progress, "message": message, "error": failure}
-    publish()
-def start_job(kind: str, name: str, work: Callable[[str], None]):
-    key = f"{kind}:{name}"
-    with LOCK:
-        if RUNTIME["jobs"].get(key, {}).get("status") == "running":
-            raise ApiError(409, f"{key} is already running")
-    set_job(key, "running", "start", 0, f"starting {name}")
-    def worker():
-        try:
-            work(key)
-            set_job(key, "done", "done", 100, f"{name} complete")
-        except Exception as exception:
-            log("job", "failed", key=key, error=str(exception))
-            set_job(key, "error", "error", 0, str(exception), str(exception))
-    threading.Thread(target=worker, daemon=True).start()
-    return key
-def build_env() -> dict:
-    env = os.environ.copy()
+    return next((p for p in roots if (p / "Include/vulkan/vulkan.h").is_file() and (p / "Lib/vulkan-1.lib").is_file()), None)
+
+
+def prerequisite_ready(name: str) -> bool:
+    if name == "python":
+        return sys.version_info >= (3, 11)
+    if name == "git" or name == "cmake":
+        return executable(name) is not None
+    if name == "msvc":
+        return msvc_path() is not None
+    if name == "vulkan":
+        return vulkan_path() is not None
+    raise ValueError(name)
+
+
+def build_env() -> dict[str, str]:
     sdk = vulkan_path()
     if not sdk:
         raise RuntimeError("Vulkan SDK is missing")
+    env = os.environ.copy()
     env["VULKAN_SDK"] = str(sdk)
-    paths = [str(sdk / "Bin")]
-    for name in ("git", "cmake"):
-        paths.append(str(Path(need(name)).parent))
+    paths = [str(sdk / "Bin"), str(Path(need("git")).parent), str(Path(need("cmake")).parent)]
     env["PATH"] = os.pathsep.join(paths + [env.get("PATH", "")])
     return env
-def run(component: str, stage: str, command: list[str], cwd: Path, env: dict | None = None):
-    log(component, stage, cmd=" ".join(command))
-    process = subprocess.Popen(command, cwd=cwd, env=env or build_env(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
-    tail = ""
-    for raw in process.stdout or []:
-        tail = raw.rstrip()
-        if tail:
-            print(tail, flush=True)
-    code = process.wait()
-    if code:
-        raise RuntimeError(f"{component} {stage} exited {code}: {tail}")
-def checkout(component: str, path: Path, source: str):
-    url, revision = SOURCES[source]
-    git = need("git")
-    if path.exists() and not (path / ".git").is_dir():
-        raise RuntimeError(f"non-git path blocks checkout: {path}")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not path.exists():
-        run(component, f"clone-{source}", [git, "clone", "--filter=blob:none", "--no-checkout", url, str(path)], path.parent)
-    run(component, f"fetch-{source}", [git, "fetch", "--depth", "1", "origin", revision], path)
-    run(component, f"checkout-{source}", [git, "checkout", "--detach", revision], path)
-    run(component, f"reset-{source}", [git, "reset", "--hard", revision], path)
-    run(component, f"clean-{source}", [git, "clean", "-fdx"], path)
-def apply_chatterbox_patches(cwd: Path):
-    git = need("git")
-    names = [path.name for path in sorted(PATCHES.glob("chatterbox-*.patch"))]
-    if not names:
-        raise RuntimeError("Chatterbox patch set is missing")
-    for name in names:
-        run("tts", f"patch-{name}", [git, "apply", "--unidiff-zero", str(PATCHES / name)], cwd)
-    if os.environ.get("TRIDENT_INSPECT_PATCHES"):
-        run("tts", "patch-diff", [git, "--no-pager", "diff", "--stat"], cwd)
-        raise SystemExit("TRIDENT_INSPECT_PATCHES: leaving patched tree at " + str(cwd))
 
-def require_build_tools():
-    missing = [name for name in ("git", "cmake", "msvc", "vulkan") if prerequisites()[name]["status"] != "ready"]
-    if missing:
-        raise RuntimeError("missing TTS build prerequisites: " + ", ".join(missing))
-def github_release_asset(spec: dict) -> tuple[str, int]:
-    repo = urllib.parse.quote(spec["repo"], safe="/")
-    tag = urllib.parse.quote(spec["tag"], safe="")
-    url = f"https://api.github.com/repos/{repo}/releases/tags/{tag}"
-    request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "trident/1", "X-GitHub-Api-Version": "2026-03-10"})
-    with urllib.request.urlopen(request, timeout=30) as response:
-        release = json.load(response)
-    matches = [asset for asset in release.get("assets", []) if asset.get("name") == spec["asset"]]
-    if len(matches) != 1:
-        raise RuntimeError(f"GitHub release asset not found exactly once: {spec['asset']}")
-    asset = matches[0]
-    size = int(asset.get("size") or 0)
-    download = str(asset.get("browser_download_url") or "")
-    if size <= 0 or not download.startswith("https://github.com/"):
-        raise RuntimeError(f"invalid GitHub release metadata for {spec['asset']}")
-    return download, size
-def extract_release_bundle(archive: Path, destination: Path, executable_name: str):
-    partial = destination.with_name(destination.name + ".part")
-    rmtree_retry(partial)
-    partial.mkdir(parents=True)
-    root = partial.resolve()
-    try:
-        with zipfile.ZipFile(archive) as package:
-            for member in package.infolist():
-                target = (partial / member.filename).resolve()
-                if target != root and root not in target.parents:
-                    raise RuntimeError(f"unsafe ZIP member: {member.filename}")
-            package.extractall(partial)
-        matches = [path for path in partial.rglob("*") if path.is_file() and path.name.lower() == executable_name.lower()]
-        if len(matches) != 1:
-            raise RuntimeError(f"release bundle must contain exactly one {executable_name}; found {len(matches)}")
-        rmtree_retry(destination)
-        partial.rename(destination)
-    except Exception:
-        rmtree_retry(partial)
-        raise
-def install_release_binary(name: str, key: str):
-    spec = BINARIES[name]
-    set_job(key, "running", "metadata", 5, f"checking pinned {spec['tag']} release")
-    url, size = github_release_asset(spec)
-    archive = TOOLS / "downloads" / spec["asset"]
-    fetch(url, archive, size, key)
-    set_job(key, "running", "extract", 92, f"extracting {name} Vulkan bundle")
-    extract_release_bundle(archive, RUNTIMES / name, spec["exe"])
-    archive.unlink(missing_ok=True)
-    if not component_artifact(name).is_file():
-        raise RuntimeError(f"release did not create {spec['exe']}")
-def rmtree_retry(path: Path, attempts: int = 10):
-    last = None
+
+def run_process(component: str, stage: str, command: list[str], cwd: Path, env: dict[str, str] | None = None) -> None:
+    note(f"{component} {stage}: {' '.join(command)}")
+    subprocess.run(command, cwd=cwd, env=env or build_env(), stdout=sys.stderr, stderr=sys.stderr, check=True)
+
+
+def rmtree_retry(path: Path, attempts: int = 10) -> None:
+    last: OSError | None = None
     for _ in range(attempts):
         if not path.exists():
             return
@@ -351,106 +133,136 @@ def rmtree_retry(path: Path, attempts: int = 10):
             time.sleep(0.3)
     if last:
         raise last
-def _ps(script: str):
-    flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
-    subprocess.run(["powershell", "-NoProfile", "-Command", script], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags)
 
-def terminate_executable(path: Path):
-    if os.name != "nt":
-        return
-    target = os.path.normcase(str(path.resolve()) if path.exists() else str(path))
-    escaped = target.replace("'", "''")
-    _ps(
-        "$ErrorActionPreference = 'SilentlyContinue'; "
-        f"$target = [IO.Path]::GetFullPath('{escaped}'); "
-        "Get-CimInstance Win32_Process | Where-Object { "
-        "$_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -eq $target) "
-        "} | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }; "
-        "$deadline = (Get-Date).AddSeconds(8); "
-        "while ((Get-Date) -lt $deadline) { "
-        "if (-not (Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and ([IO.Path]::GetFullPath($_.ExecutablePath) -eq $target) })) { break }; "
-        "Start-Sleep -Milliseconds 200 "
-        "}"
-    )
 
-def kill_port(port: int):
-    if os.name != "nt":
-        return
-    _ps(
-        "$ErrorActionPreference = 'SilentlyContinue'; "
-        f"Get-NetTCPConnection -LocalPort {int(port)} -State Listen | "
-        "Select-Object -ExpandProperty OwningProcess -Unique | "
-        "ForEach-Object { if ($_ -and $_ -ne $PID) { Stop-Process -Id $_ -Force } }"
+def checkout(component: str, path: Path, source: str) -> None:
+    url, revision = SOURCES[source]
+    git = need("git")
+    if path.exists() and not (path / ".git").is_dir():
+        raise RuntimeError(f"non-git path blocks checkout: {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        run_process(component, f"clone-{source}", [git, "clone", "--filter=blob:none", "--no-checkout", url, str(path)], path.parent)
+    for stage, args in (
+        (f"fetch-{source}", [git, "fetch", "--depth", "1", "origin", revision]),
+        (f"checkout-{source}", [git, "checkout", "--detach", revision]),
+        (f"reset-{source}", [git, "reset", "--hard", revision]),
+        (f"clean-{source}", [git, "clean", "-fdx"]),
+    ):
+        run_process(component, stage, args, path)
+
+
+def apply_chatterbox_patches() -> None:
+    git = need("git")
+    patches = sorted(PATCHES.glob("chatterbox-*.patch"))
+    if not patches:
+        raise RuntimeError("Chatterbox patch set is missing")
+    for patch in patches:
+        run_process("tts", f"patch-{patch.name}", [git, "apply", "--unidiff-zero", str(patch)], CHATTERBOX)
+
+
+def github_release_asset(spec: dict) -> tuple[str, int]:
+    repo = urllib.parse.quote(spec["repo"], safe="/")
+    tag = urllib.parse.quote(spec["tag"], safe="")
+    request = urllib.request.Request(
+        f"https://api.github.com/repos/{repo}/releases/tags/{tag}",
+        headers={"Accept": "application/vnd.github+json", "User-Agent": "trident/1", "X-GitHub-Api-Version": "2026-03-10"},
     )
-def install_component(name: str, key: str):
-    if name in BINARIES:
-        install_release_binary(name, key)
-        return
-    if name != "tts":
-        raise RuntimeError(f"unknown component: {name}")
-    require_build_tools()
-    cmake = need("cmake")
-    set_job(key, "running", "source", 5, "checking out Chatterbox")
-    checkout(name, CHATTERBOX, "chatterbox")
-    apply_chatterbox_patches(CHATTERBOX)
-    set_job(key, "running", "ggml", 18, "checking out ggml")
-    checkout(name, GGML, "ggml")
-    set_job(key, "running", "configure", 30, "configuring Chatterbox Vulkan")
-    run(name, "configure", [cmake, "-S", ".", "-B", "build", "-A", "x64", "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_NATIVE=OFF", "-DTTS_CPP_BUILD_EXECUTABLES=OFF", "-DTTS_CPP_BUILD_TESTS=OFF"], CHATTERBOX)
-    set_job(key, "running", "build", 48, "building Chatterbox")
-    run(name, "build", [cmake, "--build", "build", "--config", "Release", "--target", "tts-cpp", "mtl_tokenizer", "--parallel"], CHATTERBOX)
-    if not CHATTERBOX_LIBRARY.is_file():
-        raise RuntimeError(f"Chatterbox build did not create {CHATTERBOX_LIBRARY}")
-    set_job(key, "running", "server-configure", 70, "configuring TTS server")
-    run(name, "server-configure", [cmake, "-S", ".", "-B", "build", "-A", "x64", f"-DCHATTERBOX_CPP_ROOT={CHATTERBOX}"], SERVER)
-    set_job(key, "running", "server-build", 82, "building TTS server")
-    run(name, "server-build", [cmake, "--build", "build", "--config", "Release", "--parallel"], SERVER)
-    if not TTS_SERVER.is_file():
-        raise RuntimeError(f"TTS build did not create {TTS_SERVER}")
-    stop_engine("tts")
-    set_job(key, "running", "install", 90, "installing TTS runtime")
-    runtime = RUNTIMES / "tts"
-    partial = runtime.with_name(runtime.name + ".part")
-    if partial.exists():
-        rmtree_retry(partial)
-    partial.mkdir(parents=True)
-    try:
-        for artifact in TTS_SERVER.parent.iterdir():
-            if artifact.is_file() and (artifact.name == TTS_SERVER.name or artifact.suffix.lower() == ".dll"):
-                shutil.copy2(artifact, partial / artifact.name)
-        if runtime.exists():
-            rmtree_retry(runtime)
-        partial.rename(runtime)
-    except Exception:
-        rmtree_retry(partial)
-        raise
-def fetch(url: str, destination: Path, size: int, key: str):
+    with urllib.request.urlopen(request, timeout=30) as response:
+        release = json.load(response)
+    matches = [a for a in release.get("assets", []) if a.get("name") == spec["asset"]]
+    if len(matches) != 1:
+        raise RuntimeError(f"GitHub release asset not found exactly once: {spec['asset']}")
+    asset = matches[0]
+    size = int(asset.get("size") or 0)
+    url = str(asset.get("browser_download_url") or "")
+    if size <= 0 or not url.startswith("https://github.com/"):
+        raise RuntimeError(f"invalid GitHub release metadata for {spec['asset']}")
+    return url, size
+
+
+def fetch(url: str, destination: Path, size: int) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     if present(destination, size):
         return
     partial = destination.with_suffix(destination.suffix + ".part")
+    partial.unlink(missing_ok=True)
     request = urllib.request.Request(url, headers={"User-Agent": "trident/1"})
     done = 0
-    with urllib.request.urlopen(request, timeout=60) as response, partial.open("wb") as output:
-        if response.status != 200:
-            raise RuntimeError(f"download returned HTTP {response.status}: {url}")
-        for block in iter(lambda: response.read(1024 * 1024), b""):
-            output.write(block)
-            done += len(block)
-            set_job(key, "running", "download", done * 90 // size if size else min(89, done // (4 * 1024 * 1024)), f"{done} / {size} bytes" if size else f"{done} bytes")
-    if size and done != size:
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response, partial.open("wb") as output:
+            if response.status != 200:
+                raise RuntimeError(f"download returned HTTP {response.status}: {url}")
+            for block in iter(lambda: response.read(1024 * 1024), b""):
+                output.write(block)
+                done += len(block)
+                if size:
+                    note(f"download {destination.name}: {done}/{size}")
+        if size and done != size:
+            raise RuntimeError(f"download size mismatch for {destination.name}: expected {size}, got {done}")
+        os.replace(partial, destination)
+    except Exception:
         partial.unlink(missing_ok=True)
-        raise RuntimeError(f"download size mismatch: expected {size}, got {done}")
-    os.replace(partial, destination)
-def install_prerequisite(name: str, key: str):
-    if prerequisites()[name]["status"] == "ready":
+        raise
+
+
+def extract_release_bundle(archive: Path, destination: Path, executable_name: str) -> None:
+    partial = destination.with_name(destination.name + ".part")
+    rmtree_retry(partial)
+    partial.mkdir(parents=True)
+    root = partial.resolve()
+    try:
+        with zipfile.ZipFile(archive) as package:
+            for member in package.infolist():
+                target = (partial / member.filename).resolve()
+                if target != root and root not in target.parents:
+                    raise RuntimeError(f"unsafe ZIP member: {member.filename}")
+            package.extractall(partial)
+        matches = [p for p in partial.rglob("*") if p.is_file() and p.name.lower() == executable_name.lower()]
+        if len(matches) != 1:
+            raise RuntimeError(f"release bundle must contain exactly one {executable_name}; found {len(matches)}")
+        rmtree_retry(destination)
+        partial.rename(destination)
+    except Exception:
+        rmtree_retry(partial)
+        raise
+
+
+def runtime_executable(name: str, required: bool = True) -> Path | None:
+    exe = TTS_EXE if name == "tts" else BINARIES[name]["exe"]
+    root = RUNTIMES / name
+    matches = [p for p in root.rglob("*") if p.is_file() and p.name.lower() == exe.lower()] if root.exists() else []
+    if len(matches) == 1:
+        return matches[0]
+    if required:
+        raise RuntimeError(f"runtime must contain exactly one {exe}; found {len(matches)}")
+    return None
+
+
+def install_release_binary(name: str) -> None:
+    spec = BINARIES[name]
+    if runtime_executable(name, required=False):
+        note(f"{spec['label']}: ready")
+        return
+    note(f"{spec['label']}: installing pinned {spec['tag']} release")
+    url, size = github_release_asset(spec)
+    archive = TOOLS / "downloads" / spec["asset"]
+    fetch(url, archive, size)
+    extract_release_bundle(archive, RUNTIMES / name, spec["exe"])
+    archive.unlink(missing_ok=True)
+    runtime_executable(name)
+
+
+def install_prerequisite(name: str) -> None:
+    if prerequisite_ready(name):
+        note(f"{name}: ready")
         return
     if name == "python":
-        raise RuntimeError("Python must be installed before running main.py")
+        raise RuntimeError("Python 3.11+ must be installed before running main.py")
     spec = PACKAGES[name]
     archive = TOOLS / "downloads" / spec["file"]
-    fetch(spec["url"], archive, spec["size"], key)
-    set_job(key, "running", "install", 92, f"installing {name}")
+    note(f"{name}: installing")
+    fetch(spec["url"], archive, spec["size"])
     if name == "git":
         destination = TOOLS / "git"
         rmtree_retry(destination)
@@ -462,680 +274,307 @@ def install_prerequisite(name: str, key: str):
         with zipfile.ZipFile(archive) as package:
             package.extractall(TOOLS)
     elif name == "msvc":
-        run(name, "install", [str(archive), "--quiet", "--wait", "--norestart", "--nocache", "--add", "Microsoft.VisualStudio.Workload.VCTools", "--includeRecommended"], ROOT, os.environ.copy())
-    else:
+        run_process(name, "install", [str(archive), "--quiet", "--wait", "--norestart", "--nocache", "--add", "Microsoft.VisualStudio.Workload.VCTools", "--includeRecommended"], ROOT, os.environ.copy())
+    elif name == "vulkan":
         destination = TOOLS / "VulkanSDK" / VULKAN_VERSION
-        run(name, "install", [str(archive), "--root", str(destination), "--accept-licenses", "--default-answer", "--confirm-command", "install"], ROOT, os.environ.copy())
-    if prerequisites()[name]["status"] != "ready":
+        run_process(name, "install", [str(archive), "--root", str(destination), "--accept-licenses", "--default-answer", "--confirm-command", "install"], ROOT, os.environ.copy())
+    if not prerequisite_ready(name):
         raise RuntimeError(f"{name} installer completed but prerequisite is still missing")
-def download_model(name: str, key: str):
-    spec = MODELS[name]
-    destination = model_path(name)
-    if present(destination, spec["size"]):
+
+
+def install_tts() -> None:
+    if runtime_executable("tts", required=False) and CHATTERBOX_LIBRARY.is_file():
+        note("trident-tts: ready")
         return
+    cmake = need("cmake")
+    checkout("tts", CHATTERBOX, "chatterbox")
+    apply_chatterbox_patches()
+    checkout("tts", GGML, "ggml")
+    run_process("tts", "configure-chatterbox", [cmake, "-S", ".", "-B", "build", "-A", "x64", "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_NATIVE=OFF", "-DTTS_CPP_BUILD_EXECUTABLES=OFF", "-DTTS_CPP_BUILD_TESTS=OFF"], CHATTERBOX)
+    run_process("tts", "build-chatterbox", [cmake, "--build", "build", "--config", "Release", "--target", "tts-cpp", "mtl_tokenizer", "--parallel"], CHATTERBOX)
+    if not CHATTERBOX_LIBRARY.is_file():
+        raise RuntimeError(f"Chatterbox build did not create {CHATTERBOX_LIBRARY}")
+    run_process("tts", "configure-trident-tts", [cmake, "-S", ".", "-B", "build", "-A", "x64", f"-DCHATTERBOX_CPP_ROOT={CHATTERBOX}"], TTS)
+    run_process("tts", "build-trident-tts", [cmake, "--build", "build", "--config", "Release", "--target", "trident-tts", "--parallel"], TTS)
+    if not TTS_BINARY.is_file():
+        raise RuntimeError(f"TTS build did not create {TTS_BINARY}")
+    runtime = RUNTIMES / "tts"
+    partial = runtime.with_name(runtime.name + ".part")
+    rmtree_retry(partial)
+    partial.mkdir(parents=True)
+    try:
+        for artifact in TTS_BINARY.parent.iterdir():
+            if artifact.is_file() and (artifact.name == TTS_BINARY.name or artifact.suffix.lower() == ".dll"):
+                shutil.copy2(artifact, partial / artifact.name)
+        rmtree_retry(runtime)
+        partial.rename(runtime)
+    except Exception:
+        rmtree_retry(partial)
+        raise
+    runtime_executable("tts")
+
+
+def models_for(family: str) -> dict:
+    return {**FAMILIES[family]["TTS_MODELS"], **SHARED_MODELS}
+
+
+def model_path(spec: dict) -> Path:
+    root = DATA if spec.get("directory") == "data" else MODELS_DIR
+    return root / spec["file"]
+
+
+def download_model(spec: dict) -> None:
+    destination = model_path(spec)
+    if present(destination, spec["size"]):
+        note(f"{spec['label']}: ready")
+        return
+    note(f"{spec['label']}: installing")
     if spec.get("source"):
         source = ROOT / spec["source"]
-        if not source.is_file():
-            raise RuntimeError(f"bundled asset missing: {source}")
+        if not present(source, spec["size"]):
+            raise RuntimeError(f"bundled asset missing or wrong size: {source}")
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, destination)
-        set_job(key, "running", "copy", 90, f"installed {spec['file']}")
-    elif spec.get("convert"):
-        recipe = spec["convert"]
-        script = CHATTERBOX / "scripts" / recipe["script"]
-        if not CHATTERBOX_LIBRARY.is_file() or not script.is_file():
-            raise RuntimeError("install Chatterbox TTS before converting its models")
-        python = CONVERTER / "Scripts" / "python.exe"
-        lock = "numpy==1.26.4 torch==2.6.0 gguf==0.19.0 safetensors==0.5.3 scipy==1.15.3 librosa==0.11.0 resampy==0.4.3 huggingface-hub==0.34.4"
-        stamp = CONVERTER / ".packages"
-        with CONVERT_LOCK:
-            if not python.is_file():
-                set_job(key, "running", "environment", 5, "creating converter environment")
-                run(name, "venv", [sys.executable, "-m", "venv", str(CONVERTER)], ROOT, os.environ.copy())
-            if not stamp.is_file() or stamp.read_text(encoding="ascii") != lock:
-                run(name, "torch", [str(python), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "torch==2.6.0", "--index-url", "https://download.pytorch.org/whl/cpu"], ROOT, os.environ.copy())
-                run(name, "converter-dependencies", [str(python), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", *lock.split()], ROOT, os.environ.copy())
-                stamp.parent.mkdir(parents=True, exist_ok=True)
-                stamp.write_text(lock, encoding="ascii")
-            required = tuple(recipe["files"])
-            checkpoint = CONVERTER / "checkpoints" / spec["revision"]
-            marker = checkpoint / ".revision"
-            stamp_id = spec["repo"] + ":" + spec["revision"] + ":" + ",".join(required)
-            cache_ok = marker.is_file() and marker.read_text(encoding="ascii") == stamp_id and all((checkpoint / item).is_file() for item in required)
-            if not cache_ok:
-                if checkpoint.exists():
-                    shutil.rmtree(checkpoint)
-                checkpoint.mkdir(parents=True, exist_ok=True)
-                set_job(key, "running", "checkpoint", 12, f"downloading {spec['label']} checkpoint")
-                code = (
-                    "from huggingface_hub import snapshot_download; "
-                    f"snapshot_download(repo_id={spec['repo']!r}, revision={spec['revision']!r}, "
-                    f"allow_patterns={list(required)!r}, local_dir={str(checkpoint)!r})"
-                )
-                env = os.environ.copy()
-                env["HF_HOME"] = str(TOOLS / "huggingface")
-                run(name, "checkpoint", [str(python), "-c", code], ROOT, env)
-                missing = [item for item in required if not (checkpoint / item).is_file()]
-                if missing:
-                    raise RuntimeError(f"checkpoint download incomplete: {missing}")
-                marker.write_text(stamp_id, encoding="ascii")
-            for src, dst in recipe.get("copy", {}).items():
-                shutil.copyfile(checkpoint / src, checkpoint / dst)
-            partial = destination.with_suffix(destination.suffix + ".part")
-            partial.unlink(missing_ok=True)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            command = [str(python), str(script)]
-            if recipe.get("variant"):
-                command += ["--variant", recipe["variant"]]
-            command += ["--ckpt-dir", str(checkpoint), "--out", str(partial), "--quant", recipe["quant"]]
-            env = build_env()
-            env["HF_HOME"] = str(TOOLS / "huggingface")
-            set_job(key, "running", "convert", 20, f"converting {spec['label']}")
-            run(name, "convert", command, ROOT, env)
-            ready = present(partial, spec["size"]) if spec["size"] else partial.is_file() and partial.stat().st_size > 0
-            if not ready:
-                partial.unlink(missing_ok=True)
-                raise RuntimeError(f"converted model missing or truncated: {partial}")
-            os.replace(partial, destination)
-    else:
+        partial = destination.with_suffix(destination.suffix + ".part")
+        shutil.copyfile(source, partial)
+        os.replace(partial, destination)
+        return
+    if not spec.get("convert"):
         url = spec.get("url") or f"https://huggingface.co/{spec['repo']}/resolve/{spec['revision']}/{spec['file']}"
-        fetch(url, destination, spec["size"], key)
+        fetch(url, destination, spec["size"])
+        return
+    recipe = spec["convert"]
+    script = CHATTERBOX / "scripts" / recipe["script"]
+    if not CHATTERBOX_LIBRARY.is_file() or not script.is_file():
+        raise RuntimeError("install Chatterbox TTS before converting its models")
+    python = CONVERTER / "Scripts" / "python.exe"
+    lock = "numpy==1.26.4 torch==2.6.0 gguf==0.19.0 safetensors==0.5.3 scipy==1.15.3 librosa==0.11.0 resampy==0.4.3 huggingface-hub==0.34.4"
+    stamp = CONVERTER / ".packages"
+    if not python.is_file():
+        run_process(spec["label"], "venv", [sys.executable, "-m", "venv", str(CONVERTER)], ROOT, os.environ.copy())
+    if not stamp.is_file() or stamp.read_text(encoding="ascii") != lock:
+        run_process(spec["label"], "torch", [str(python), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "torch==2.6.0", "--index-url", "https://download.pytorch.org/whl/cpu"], ROOT, os.environ.copy())
+        run_process(spec["label"], "dependencies", [str(python), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", *lock.split()], ROOT, os.environ.copy())
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.write_text(lock, encoding="ascii")
+    required = tuple(recipe["files"])
+    checkpoint = CONVERTER / "checkpoints" / spec["revision"]
+    marker = checkpoint / ".revision"
+    stamp_id = spec["repo"] + ":" + spec["revision"] + ":" + ",".join(required)
+    cache_ok = marker.is_file() and marker.read_text(encoding="ascii") == stamp_id and all((checkpoint / f).is_file() for f in required)
+    if not cache_ok:
+        rmtree_retry(checkpoint)
+        checkpoint.mkdir(parents=True, exist_ok=True)
+        code = (
+            "from huggingface_hub import snapshot_download; "
+            f"snapshot_download(repo_id={spec['repo']!r}, revision={spec['revision']!r}, "
+            f"allow_patterns={list(required)!r}, local_dir={str(checkpoint)!r})"
+        )
+        env = os.environ.copy()
+        env["HF_HOME"] = str(TOOLS / "huggingface")
+        run_process(spec["label"], "checkpoint", [str(python), "-c", code], ROOT, env)
+        missing = [f for f in required if not (checkpoint / f).is_file()]
+        if missing:
+            raise RuntimeError(f"checkpoint download incomplete: {missing}")
+        marker.write_text(stamp_id, encoding="ascii")
+    for src, dst in recipe.get("copy", {}).items():
+        shutil.copyfile(checkpoint / src, checkpoint / dst)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    partial = destination.with_suffix(destination.suffix + ".part")
+    partial.unlink(missing_ok=True)
+    command = [str(python), str(script)]
+    if recipe.get("variant"):
+        command += ["--variant", recipe["variant"]]
+    command += ["--ckpt-dir", str(checkpoint), "--out", str(partial), "--quant", recipe["quant"]]
+    env = build_env()
+    env["HF_HOME"] = str(TOOLS / "huggingface")
+    run_process(spec["label"], "convert", command, ROOT, env)
+    if not present(partial, spec["size"]):
+        partial.unlink(missing_ok=True)
+        raise RuntimeError(f"converted model missing or wrong size: {partial}")
+    os.replace(partial, destination)
 
-def log_process(name: str, process: subprocess.Popen):
-    message = ""
-    for raw in process.stdout or []:
-        message = raw.rstrip()
-        if message:
-            print(f"{name}: {message}", flush=True)
-        with LOCK:
-            if PROCESSES.get(name) is process:
-                RUNTIME["engines"][name]["message"] = message
-    code = process.wait()
-    with LOCK:
-        if PROCESSES.get(name) is process:
-            PROCESSES.pop(name)
-            RUNTIME["engines"][name].update(status="error", error=f"process exited {code}: {message}", pid=None)
-            log(name, "exited", code=code, last=message)
-    publish()
-def remote(url: str, body: bytes | None = None, content_type: str = "application/json", timeout: int = 600) -> bytes:
-    request = urllib.request.Request(url, data=body, headers={"Content-Type": content_type} if body is not None else {})
+
+def install(family: str) -> None:
+    if os.name != "nt" or platform.machine().lower() not in {"amd64", "x86_64"}:
+        raise RuntimeError("Trident installation requires Windows x64")
+    for name in ("python", "git", "cmake", "msvc", "vulkan"):
+        install_prerequisite(name)
+    install_release_binary("parakeet")
+    install_release_binary("gemma")
+    selected = models_for(family)
+    if any(not present(model_path(spec), spec["size"]) for spec in FAMILIES[family]["TTS_MODELS"].values()):
+        install_tts()
+    elif not runtime_executable("tts", required=False):
+        install_tts()
+    for spec in selected.values():
+        download_model(spec)
+    note(f"install complete: family={family}")
+
+
+def validate_wav(path: Path, rate: int | None, minimum_seconds: float = 0.0) -> None:
+    if not path.is_file():
+        raise RuntimeError(f"WAV file is missing: {path}")
     try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return response.read()
-    except urllib.error.HTTPError as exception:
-        detail = exception.read().decode("utf-8")
-        raise RuntimeError(f"HTTP {exception.code} from {url}: {detail}") from exception
+        with path.open("rb") as raw:
+            header = raw.read(12)
+        if len(header) != 12 or header[:4] != b"RIFF" or header[8:] != b"WAVE":
+            raise RuntimeError("not a RIFF/WAVE file")
+        with wave.open(str(path), "rb") as audio:
+            if audio.getnchannels() != 1 or audio.getsampwidth() != 2 or audio.getcomptype() != "NONE":
+                raise RuntimeError("must be mono PCM16 WAV")
+            if rate is not None and audio.getframerate() != rate:
+                raise RuntimeError(f"must be {rate} Hz")
+            if audio.getframerate() <= 0 or audio.getnframes() <= 0:
+                raise RuntimeError("WAV contains no audio frames")
+            if audio.getnframes() / audio.getframerate() < minimum_seconds:
+                raise RuntimeError(f"WAV must be at least {minimum_seconds:g} seconds long")
+    except (wave.Error, EOFError, OSError, RuntimeError) as exc:
+        raise RuntimeError(f"invalid WAV {path}: {exc}") from exc
 
-def remote_lines(url: str, body: bytes, timeout: int = 600):
-    parsed = urllib.parse.urlparse(url)
-    conn = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=timeout)
-    try:
-        conn.request("POST", parsed.path or "/tts", body, {"Content-Type": "application/json"})
-        response = conn.getresponse()
-        if response.status >= 400:
-            raise RuntimeError(f"HTTP {response.status} from {url}: {response.read().decode('utf-8', 'replace')}")
-        buf = b""
-        while True:
-            piece = response.read1(256)
-            if not piece:
-                break
-            buf += piece
-            while b"\n" in buf:
-                raw, buf = buf.split(b"\n", 1)
-                if raw.strip():
-                    yield json.loads(raw)
-        if buf.strip():
-            yield json.loads(buf)
-    finally:
-        conn.close()
-def wait_ready(name: str, process: subprocess.Popen, url: str):
-    deadline = time.monotonic() + 600
-    while time.monotonic() < deadline:
-        if process.poll() is not None:
-            raise RuntimeError(f"{name} exited {process.returncode} during load")
-        try:
-            remote(url, timeout=1)
-            return
-        except (urllib.error.URLError, TimeoutError, RuntimeError):
-            time.sleep(.25)
-    raise RuntimeError(f"{name} did not become ready within 600 seconds")
-def stop_engine(name: str):
-    with LOCK:
-        process = PROCESSES.pop(name, None)
-        RUNTIME["engines"][name].update(status="stopping", error="")
-    if process and process.poll() is None:
-        process.terminate()
-        try:
-            process.wait(10)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(5)
-    terminate_executable(component_artifact(ENGINE_BIN[name]))
-    with LOCK:
-        RUNTIME["engines"][name].update(status="stopped", error="", pid=None)
-    publish()
-    if process:
-        log("engine", "stopped", name=name, pid=process.pid)
 
-def stop_all():
-    for name in list(ENGINE_MODELS):
-        stop_engine(name)
+def require_model(spec: dict) -> Path:
+    path = model_path(spec)
+    if not present(path, spec["size"]):
+        actual = path.stat().st_size if path.is_file() else 0
+        raise RuntimeError(f"model missing or wrong size: {path} (expected {spec['size']}, got {actual})")
+    return path
 
-def die():
-    try:
-        close_subs()
-        stop_all()
-    finally:
-        os._exit(0)
 
-def already_running() -> bool:
-    try:
-        remote(f"http://127.0.0.1:{CONTROLLER['port']}/api?op=inspect", timeout=1)
-        return True
-    except Exception:
-        return False
-def load_engine(name: str, key: str):
-    stop_engine(name)
-    paths = []
-    for model in ENGINE_MODELS[name]:
-        path = model_path(model)
-        if model_status(model)["status"] != "ready":
-            raise RuntimeError(f"model is missing: {path}")
-        paths.append(path)
-    executable_path = component_artifact(ENGINE_BIN[name])
-    if not executable_path.is_file():
-        raise RuntimeError(f"component is missing: {executable_path}")
+def write_text_atomic(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_suffix(path.suffix + ".part")
+    partial.write_text(text, encoding="utf-8", newline="\n")
+    os.replace(partial, path)
+
+
+def transcribe(exe: Path, model: Path, input_wav: Path) -> str:
     env = os.environ.copy()
-    if name == "tts":
-        command = [str(executable_path), "--port", str(PORTS["tts"]), "--model", str(paths[0]), "--s3gen-gguf", str(paths[1]), "--n-gpu-layers", str(TTS_RUNTIME["gpu_layers"]), "--context", str(TTS_RUNTIME["context"]), "--threads", str(TTS_RUNTIME["threads"])]
-    elif name == "asr":
-        command = [str(executable_path), "--model", str(paths[0]), "--host", "127.0.0.1", "--port", str(PORTS["asr"]), "--threads", str(ASR_RUNTIME["threads"])]
-        env["PARAKEET_DEVICE"] = str(ASR_RUNTIME["device"])
-    else:
-        command = [str(executable_path), "-m", str(paths[0]), "--host", "127.0.0.1", "--port", str(PORTS["brain"]), "--device", str(BRAIN_RUNTIME["device"]), "--n-gpu-layers", str(BRAIN_RUNTIME["gpu_layers"]), "--ctx-size", str(BRAIN_RUNTIME["context"]), "--parallel", str(BRAIN_RUNTIME["parallel"]), "--no-mmproj", "--load-mode", "auto", "--flash-attn", str(BRAIN_RUNTIME["flash_attn"]), "--repack", "--fit", str(BRAIN_RUNTIME["fit"]), "--fit-target", str(BRAIN_RUNTIME["fit_target"]), "--fit-ctx", str(BRAIN_RUNTIME["fit_ctx"])]
-    set_job(key, "running", "load", 20, f"loading {name}")
-    log("engine", "launch", name=name, cmd=" ".join(command))
-    process = subprocess.Popen(command, cwd=executable_path.parent, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
-    with LOCK:
-        PROCESSES[name] = process
-        RUNTIME["engines"][name].update(status="loading", error="", pid=process.pid)
-    publish()
-    threading.Thread(target=log_process, args=(name, process), daemon=True).start()
-    wait_ready(name, process, f"http://127.0.0.1:{PORTS[name]}/health")
-    with LOCK:
-        RUNTIME["engines"][name]["status"] = "running"
-    publish()
-    log("engine", "ready", name=name, pid=process.pid)
-    set_job(key, "running", "ready", 95, f"{name} ready")
-def multipart(audio: bytes, response_format: str | None = None) -> tuple[bytes, str]:
-    boundary = "trident-" + uuid.uuid4().hex
-    fmt = (response_format or str(ASR_RUNTIME["response_format"])).encode()
-    fields = [("file", "speech.wav", "audio/wav", audio), ("response_format", "", "text/plain", fmt)]
-    body = bytearray()
-    for name, filename, kind, value in fields:
-        body.extend(f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"".encode())
-        if filename:
-            body.extend(f"; filename=\"{filename}\"".encode())
-        body.extend(f"\r\nContent-Type: {kind}\r\n\r\n".encode())
-        body.extend(value)
-        body.extend(b"\r\n")
-    body.extend(f"--{boundary}--\r\n".encode())
-    return bytes(body), f"multipart/form-data; boundary={boundary}"
-def require_engine(name: str):
-    if name not in ENGINE_MODELS:
-        raise ApiError(400, f"unknown engine: {name}")
-    if RUNTIME["engines"][name]["status"] != "running":
-        raise ApiError(409, f"{name} is not running")
-def wav_meta(data: bytes) -> tuple[int, int, int, bytes]:
-    with wave.open(io.BytesIO(data), "rb") as audio:
-        return audio.getframerate(), audio.getnchannels(), audio.getsampwidth(), audio.readframes(audio.getnframes())
-def pcm_wav(rate: int, pcm: bytes) -> bytes:
-    out = io.BytesIO()
-    with wave.open(out, "wb") as audio:
-        audio.setnchannels(1)
-        audio.setsampwidth(2)
-        audio.setframerate(rate)
-        audio.writeframes(pcm)
-    return out.getvalue()
-def lcs_join(left: list[str], right: list[str]) -> list[str]:
-    if not left:
-        return right
-    cap = min(len(left), len(right), 48)
-    best = 0
-    for size in range(1, cap + 1):
-        if [token.casefold() for token in left[-size:]] == [token.casefold() for token in right[:size]]:
-            best = size
-    return left + right[best:]
-def asr_words(result: dict) -> list[dict]:
-    words = result.get("words")
-    if isinstance(words, list) and words:
-        return words
-    tokens = result.get("tokens")
-    if isinstance(tokens, list):
-        return [{"w": str(item.get("t") or item.get("token") or ""), "start": float(item.get("start") or 0), "end": float(item.get("end") or 0)} for item in tokens]
-    return [{"w": token, "start": 0.0, "end": 0.0} for token in str(result.get("text") or "").split()]
-def stitch_asr(parts: list[dict], overlap: float) -> dict:
-    if not parts:
-        return {"text": ""}
-    if len(parts) == 1:
-        return parts[0]
-    kept: list[str] = []
-    for index, part in enumerate(parts):
-        words = asr_words(part)
-        timed = any(float(word.get("end") or 0) > 0 for word in words)
-        piece = []
-        for word in words:
-            token = str(word.get("w") or word.get("word") or "").strip()
-            start = float(word.get("start") or 0)
-            if not token or (index and timed and start < overlap):
-                continue
-            piece.append(token)
-        if not piece:
-            piece = str(part.get("text") or "").split()
-        kept = piece if index == 0 else lcs_join(kept, piece)
-    return {"text": " ".join(kept)}
-def asr_request(audio: bytes, response_format: str | None = None) -> dict:
-    body, content_type = multipart(audio, response_format)
-    return json.loads(remote(f"http://127.0.0.1:{PORTS['asr']}/v1/audio/transcriptions", body, content_type))
-
-def played_clips(audio: bytes) -> list[bytes]:
-    clips, index = [], 0
-    while True:
-        path = DATA / f"pack-{index}.wav"
-        if not path.is_file():
-            return clips or [audio]
-        clips.append(path.read_bytes())
-        index += 1
-
-def transcribe(audio: bytes, slot: str = "asr") -> dict:
-    require_engine("asr")
-    if slot == "played":
-        DATA.mkdir(parents=True, exist_ok=True)
-        (DATA / "played.wav").write_bytes(audio)
-        set_view(played={"text": "", "status": "running"})
-    else:
-        set_view(stage="heard", error="", asr={"status": "running"})
-    started = time.monotonic()
+    env["PARAKEET_DEVICE"] = str(ASR_RUNTIME["device"])
+    command = [str(exe), "transcribe", "--model", str(model), "--input", str(input_wav), "--decoder", "tdt", "--threads", str(ASR_RUNTIME["threads"]), "--json"]
+    note("asr: " + " ".join(command))
+    result = subprocess.run(command, cwd=exe.parent, env=env, stdout=subprocess.PIPE, stderr=None, text=True, encoding="utf-8", errors="strict", check=True)
     try:
-        try:
-            rate, channels, width, pcm = wav_meta(audio)
-            seconds = len(pcm) / float(rate * width * max(channels, 1))
-        except (wave.Error, EOFError):
-            rate, pcm, seconds = 16000, b"", 0.0
-        window = float(ASR_CHUNK["seconds"])
-        overlap = float(ASR_CHUNK["overlap"])
-        if slot == "played":
-            parts = [asr_request(clip) for clip in played_clips(audio)]
-            result = {"text": " ".join(str(part.get("text") or "").strip() for part in parts if str(part.get("text") or "").strip())}
-        elif seconds <= window or not pcm:
-            result = asr_request(audio)
-        else:
-            step = max(window - overlap, 1.0)
-            frame = width * max(channels, 1)
-            parts, cursor = [], 0.0
-            while cursor < seconds:
-                start = int(cursor * rate) * frame
-                stop = int(min(seconds, cursor + window) * rate) * frame
-                parts.append(asr_request(pcm_wav(rate, pcm[start:stop]), "verbose_json"))
-                if cursor + window >= seconds:
-                    break
-                cursor += step
-            result = stitch_asr(parts, overlap)
-        text = str(result.get("text") or "")
-        if slot == "played":
-            set_view(played={"text": text, "status": "done"})
-        else:
-            set_view(asr={"text": text, "status": "done"})
-        log(slot, "done", ms=round((time.monotonic() - started) * 1000, 1), text=text)
-        return result
-    except Exception as exception:
-        if slot == "played":
-            set_view(played={"status": "error"})
-        else:
-            set_view(stage="idle", error=str(exception), asr={"status": "error"})
-        raise
-def brain(prompt: str, language: str) -> dict:
-    require_engine("brain")
-    if language not in TTS_LANGUAGES:
-        raise ApiError(400, f"unsupported reply language: {language}")
-    language_name = TTS_LANGUAGES[language]
-    set_view(stage="thinking", error="", brain={"status": "running", "language": language})
-    system = BRAIN_SYSTEM.format(language_name=language_name, language=language)
-    generation = dict(BRAIN_GENERATION)
-    thinking = bool(BRAIN_THINKING)
-    request = {
-        "model": BRAIN["id"],
-        "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-        **generation,
-        "stream": False,
-        "chat_template_kwargs": {"enable_thinking": thinking},
-    }
-    started = time.monotonic()
-    try:
-        result = json.loads(remote(f"http://127.0.0.1:{PORTS['brain']}/v1/chat/completions", json.dumps(request, separators=(",", ":")).encode()))
-        text = brain_reply_text(result)
-        set_view(brain={"text": text, "language": language, "status": "done"})
-        log("brain", "done", ms=round((time.monotonic() - started) * 1000, 1), lang=language, text=text)
-        return result
-    except Exception as exception:
-        set_view(stage="idle", error=str(exception), brain={"status": "error"})
-        raise
-def validate_wav(data: bytes):
-    partial = DATA / "reference.wav.part"
-    DATA.mkdir(parents=True, exist_ok=True)
-    partial.write_bytes(data)
-    try:
-        with wave.open(str(partial), "rb") as audio:
-            if audio.getnchannels() != 1 or audio.getsampwidth() != 2 or audio.getcomptype() != "NONE" or audio.getnframes() / audio.getframerate() < 5:
-                raise ApiError(400, "reference must be mono PCM16 WAV at least 5 seconds long")
-    except (EOFError, wave.Error) as exception:
-        partial.unlink(missing_ok=True)
-        raise ApiError(400, f"invalid WAV: {str(exception) or 'truncated header'}") from exception
-    except Exception:
-        partial.unlink(missing_ok=True)
-        raise
-    os.replace(partial, DATA / "reference.wav")
-    log("reference", "updated", bytes=len(data))
-    publish()
-def synthesize(text: str, language: str) -> dict:
-    text = text.strip()
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Parakeet returned malformed JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("Parakeet JSON output is not an object")
+    text = str(payload.get("text") or "").strip()
     if not text:
-        raise ApiError(400, "text is required")
-    if language not in TTS_LANGUAGES:
-        raise ApiError(400, f"unsupported speech language: {language}")
-    require_engine("tts")
-    set_view(stage="speaking", error="", tts={"text": text, "language": language, "status": "running", "chunk": 0, "chunks": 0, "seconds": 0.0, "mtime": 0.0}, played={"text": "", "status": "idle"})
-    ref = reference_path()
-    payload = {
-        "text": text, "language": language, "reference": str(ref),
-        "reference_mtime": ref.stat().st_mtime, "chunk_chars": TTS_CHUNK["chars"],
-        **TTS_SAMPLE, **TTS_VOICE,
-    }
-    started = time.monotonic()
+        raise RuntimeError("Parakeet returned an empty transcript")
+    write_text_atomic(TRANSCRIPT, text + "\n")
+    return text
+
+
+def brain(exe: Path, model: Path, language: str, language_name: str) -> str:
+    system = BRAIN_SYSTEM.format(language_name=language_name, language=language)
+    write_text_atomic(SYSTEM_PROMPT, system + "\n")
+    ANSWER.unlink(missing_ok=True)
+    g = BRAIN_GENERATION
+    r = BRAIN_RUNTIME
+    thinking = "on" if BRAIN_THINKING else "off"
+    template_kwargs = json.dumps({"enable_thinking": bool(BRAIN_THINKING)}, separators=(",", ":"))
+    command = [
+        str(exe), "-m", str(model), "--system-prompt-file", str(SYSTEM_PROMPT), "--file", str(TRANSCRIPT),
+        "--conversation", "--single-turn", "--output-file", str(ANSWER), "--no-display-prompt", "--no-show-timings",
+        "--offline", "--device", str(r["device"]), "--n-gpu-layers", str(r["gpu_layers"]), "--ctx-size", str(r["context"]),
+        "--no-mmproj", "--load-mode", "auto", "--flash-attn", str(r["flash_attn"]), "--repack", "--fit", str(r["fit"]),
+        "--fit-target", str(r["fit_target"]), "--fit-ctx", str(r["fit_ctx"]), "--seed", str(g["seed"]),
+        "--n-predict", str(g["max_tokens"]), "--temperature", str(g["temperature"]), "--top-p", str(g["top_p"]),
+        "--top-k", str(g["top_k"]), "--min-p", str(g["min_p"]), "--repeat-penalty", str(g["repeat_penalty"]),
+        "--reasoning", thinking, "--chat-template-kwargs", template_kwargs,
+    ]
+    note("brain: " + " ".join(command))
+    subprocess.run(command, cwd=exe.parent, stdout=sys.stderr, stderr=sys.stderr, check=True)
+    if not ANSWER.is_file():
+        raise RuntimeError("llama-cli did not create answer.txt")
     try:
-        result: dict = {}
-        part = DATA / "last-chunk.wav"
-        wav = DATA / "last-output.wav"
-        for old in DATA.glob("pack-*.wav"):
-            old.unlink(missing_ok=True)
-        for line in remote_lines(f"http://127.0.0.1:{PORTS['tts']}/tts", json.dumps(payload, separators=(",", ":")).encode()):
-            if line.get("error"):
-                raise RuntimeError(line["error"])
-            if not line.get("done"):
-                set_view(stage="speaking", tts={
-                    "text": text, "language": language, "status": "running",
-                    "chunk": int(line.get("chunk") or 0),
-                    "chunks": int(line.get("chunks") or 1),
-                    "seconds": float(line.get("seconds") or 0),
-                    "mtime": part.stat().st_mtime if part.is_file() else 0.0,
-                })
-                continue
-            result = line
-            set_view(stage="idle", tts={
-                "text": text, "language": language, "status": "done",
-                "chunk": int(line.get("chunks") or 1) - 1,
-                "chunks": int(line.get("chunks") or 1),
-                "seconds": float(line.get("seconds") or 0),
-                "mtime": wav.stat().st_mtime if wav.is_file() else 0.0,
-                "applied": line.get("applied") or {},
-            })
-        if not result:
-            raise RuntimeError("tts stream ended without a result")
-        log("tts", "done", ms=round((time.monotonic() - started) * 1000, 1), lang=language, seconds=result.get("seconds"), t3_ms=result.get("t3_ms"), s3gen_ms=result.get("s3gen_ms"), chunks=result.get("chunks"), cfm_steps=payload["cfm_steps"])
-        return result
-    except Exception as exception:
-        set_view(stage="idle", error=str(exception), tts={"status": "error"})
-        raise
-def cancel_tts() -> dict:
-    require_engine("tts")
-    remote(f"http://127.0.0.1:{PORTS['tts']}/cancel", b"{}", timeout=5)
-    set_view(stage="idle", tts={"status": "idle"})
-    return {"ok": True}
-def brain_reply_text(result: dict | None) -> str:
-    if not result:
-        return ""
-    message = ((result.get("choices") or [{}])[0].get("message") or {})
-    return str(message.get("content") or "").strip()
-REQUIRED_MODELS = ["chatterbox-t3", "chatterbox-codec", "parakeet", BRAIN["model"], "reference"]
-OPS = {
-    "inspect", "install_prerequisite", "install_component", "download_model",
-    "load_engine", "unload_engine", "upload_reference",
-    "asr", "played", "brain", "tts", "tts_cancel", "set_family", "goodbye",
-}
+        text = ANSWER.read_text(encoding="utf-8").strip()
+    except UnicodeError as exc:
+        raise RuntimeError("llama-cli answer is not valid UTF-8") from exc
+    if not text:
+        raise RuntimeError("llama-cli returned an empty answer")
+    ANSWER.write_text(text + "\n", encoding="utf-8", newline="\n")
+    return text
 
-def schema() -> dict:
-    return {
-        "languages": {"reply": TTS_LANGUAGES, "default_reply": DEFAULT_REPLY_LANGUAGE},
-        "mic": dict(MIC),
-        "prerequisites": {name: {"label": label} for name, label in PREREQ_LABELS.items()},
-        "components": {name: {"label": TTS_LABEL if name == "tts" else BINARIES[name]["label"]} for name in COMPONENTS},
-        "required_models": REQUIRED_MODELS,
-        "tts": {
-            "family": TTS_FAMILY,
-            "families": {name: spec["TTS_LABEL"] for name, spec in FAMILIES.items()},
-            "label": TTS_LABEL,
-            "chunk": dict(TTS_CHUNK),
-            "runtime": dict(TTS_RUNTIME),
-            "sample": dict(TTS_SAMPLE),
-            "voice": dict(TTS_VOICE),
-        },
-    }
 
-def inspect() -> dict:
-    return {"ok": True, "session": SESSION, "schema": schema(), "state": snapshot()}
+def synthesize(exe: Path, t3: Path, codec: Path, reference: Path, output: Path, language: str, family: dict) -> None:
+    runtime, sample, voice = family["TTS_RUNTIME"], family["TTS_SAMPLE"], family["TTS_VOICE"]
+    command = [
+        str(exe), "--model", str(t3), "--s3gen-gguf", str(codec), "--reference", str(reference), "--text-file", str(ANSWER),
+        "--output", str(output), "--language", language, "--n-gpu-layers", str(runtime["gpu_layers"]), "--context", str(runtime["context"]),
+        "--threads", str(runtime["threads"]), "--seed", str(sample["seed"]), "--max-tokens", str(sample["max_tokens"]),
+        "--top-k", str(sample["top_k"]), "--top-p", str(sample["top_p"]), "--min-p", str(sample["min_p"]),
+        "--temperature", str(sample["temperature"]), "--repeat-penalty", str(sample["repeat_penalty"]),
+        "--cfg-weight", str(voice["cfg_weight"]), "--exaggeration", str(voice["exaggeration"]),
+        "--cfm-steps", str(sample["cfm_steps"]), "--chunk-chars", str(family["TTS_CHUNK"]["chars"]),
+    ]
+    output.unlink(missing_ok=True)
+    note("tts: " + " ".join(command))
+    subprocess.run(command, cwd=exe.parent, stdout=sys.stderr, stderr=sys.stderr, check=True)
+    validate_wav(output, 24000)
 
-def set_family(name: str):
-    if name == TTS_FAMILY:
-        return inspect(), 200
-    try:
-        apply_family(name)
-    except ValueError as exception:
-        raise ApiError(400, str(exception)) from exception
-    stop_engine("tts")
-    running = all(RUNTIME["engines"][item]["status"] == "running" for item in ("asr", "brain"))
-    if running:
-        return accept_job("engine", "tts", lambda key: load_engine("tts", key))
-    publish()
-    return inspect(), 200
-def accept_job(kind: str, name: str, work: Callable[[str], None]):
-    return {"ok": True, "accepted": True, "job_id": start_job(kind, name, work)}, 202
-def require_wav(raw: bytes | None) -> bytes:
-    if not raw:
-        raise ApiError(400, "WAV body is required")
-    return raw
-def dispatch(op: str, payload: dict | None = None, raw: bytes | None = None) -> tuple[dict, int]:
-    payload = payload or {}
-    if op not in OPS:
-        raise ApiError(400, f"unknown op: {op}")
-    if op == "inspect":
-        return inspect(), 200
-    name = str(payload.get("name") or "")
-    if op == "install_prerequisite":
-        if name not in PREREQ_LABELS:
-            raise ApiError(404, f"unknown prerequisite: {name}")
-        return accept_job("prerequisite", name, lambda key: install_prerequisite(name, key))
-    if op == "install_component":
-        if name not in COMPONENTS:
-            raise ApiError(404, f"unknown component: {name}")
-        return accept_job("component", name, lambda key: install_component(name, key))
-    if op == "download_model":
-        if name not in MODELS:
-            raise ApiError(404, f"unknown model: {name}")
-        return accept_job("model", name, lambda key: download_model(name, key))
-    if op in ("load_engine", "unload_engine"):
-        if name not in ENGINE_MODELS:
-            raise ApiError(404, f"unknown engine: {name}")
-        work = (lambda key: load_engine(name, key)) if op == "load_engine" else (lambda key: stop_engine(name))
-        return accept_job("engine", name, work)
-    if op == "upload_reference":
-        validate_wav(require_wav(raw))
-        return {"ok": True, "reference": reference_state()}, 200
-    if op == "asr":
-        return {"ok": True, "result": transcribe(require_wav(raw))}, 200
-    if op == "played":
-        audio = raw if raw else None
-        if not audio:
-            path = DATA / "last-output.wav"
-            if not path.is_file():
-                raise ApiError(409, "no speech yet")
-            audio = path.read_bytes()
-        return {"ok": True, "result": transcribe(audio, slot="played")}, 200
-    if op == "brain":
-        prompt = str(payload.get("prompt") or "").strip()
-        language = str(payload.get("language") or DEFAULT_REPLY_LANGUAGE)
-        if not prompt:
-            raise ApiError(400, "prompt is required")
-        result = brain(prompt, language)
-        return {"ok": True, "result": result, "text": brain_reply_text(result)}, 200
-    if op == "tts":
-        return {"ok": True, **synthesize(str(payload.get("text") or ""), str(payload.get("language") or DEFAULT_REPLY_LANGUAGE))}, 200
-    if op == "tts_cancel":
-        return cancel_tts(), 200
-    if op == "set_family":
-        return set_family(str(payload.get("name") or payload.get("family") or ""))
-    if op == "goodbye":
-        return {"ok": True, "die": str(payload.get("session") or "") == SESSION}, 200
-    raise ApiError(400, f"unhandled op: {op}")
-class Handler(BaseHTTPRequestHandler):
-    def log_message(self, *_):
-        pass
-    def body(self, limit: int = 50 * 1024 * 1024) -> bytes:
-        length = int(self.headers.get("Content-Length", "0"))
-        if length <= 0 or length > limit:
-            raise ApiError(400, f"body length must be between 1 and {limit}")
-        return self.rfile.read(length)
-    def request_json(self, optional: bool = False) -> dict:
-        length = int(self.headers.get("Content-Length", "0"))
-        if optional and not length:
-            return {}
-        try:
-            value = json.loads(self.body(1024 * 1024))
-        except (json.JSONDecodeError, UnicodeDecodeError) as exception:
-            raise ApiError(400, f"invalid JSON: {exception}") from exception
-        if type(value) is not dict:
-            raise ApiError(400, "JSON body must be an object")
-        return value
-    def send_bytes(self, data: bytes, content_type: str, code: int = 200):
-        self.send_response(code)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(data)
-    def send_json(self, value: Any, code: int = 200):
-        self.send_bytes(json.dumps(value, separators=(",", ":"), ensure_ascii=True).encode("ascii"), "application/json", code)
-    def do_GET(self):
-        try:
-            parsed = urllib.parse.urlparse(self.path)
-            path = parsed.path
-            query = {key: values[0] for key, values in urllib.parse.parse_qs(parsed.query).items() if values}
-            if path == "/events":
-                self.send_response(200)
-                self.send_header("Content-Type", "text/event-stream")
-                self.send_header("Cache-Control", "no-store")
-                self.send_header("Connection", "keep-alive")
-                self.end_headers()
-                inbox = queue.Queue()
-                with LOCK:
-                    SUBS.append(inbox)
-                inbox.put(inspect())
-                try:
-                    while True:
-                        try:
-                            item = inbox.get(timeout=25)
-                        except queue.Empty:
-                            self.wfile.write(b":\n\n")
-                            self.wfile.flush()
-                            continue
-                        if item is None:
-                            break
-                        blob = json.dumps(item, separators=(",", ":"), ensure_ascii=True).encode("ascii")
-                        self.wfile.write(b"event: update\ndata: " + blob + b"\n\n")
-                        self.wfile.flush()
-                except Exception as exception:
-                    if not client_gone(exception):
-                        log("sse", "fail", error=str(exception))
-                finally:
-                    with LOCK:
-                        if inbox in SUBS:
-                            SUBS.remove(inbox)
-                return
-            if path == "/last-output.wav" or path == "/last-chunk.wav" or path == "/played.wav":
-                name = path.lstrip("/")
-                if path == "/last-chunk.wav" and query.get("c", "").isdigit():
-                    name = f"pack-{int(query['c'])}.wav"
-                target = DATA / name
-                if not target.is_file():
-                    raise ApiError(404, "no speech yet")
-                self.send_bytes(target.read_bytes(), "audio/wav")
-                return
-            if path in PANEL_FILES:
-                target, content_type = PANEL_FILES[path]
-                self.send_bytes(target.read_bytes(), content_type)
-                return
-            if path != "/api":
-                raise ApiError(404, f"unknown endpoint: {path}")
-            if (query.get("op") or "inspect") != "inspect":
-                raise ApiError(404, "GET /api accepts op=inspect")
-            self.send_json(inspect())
-        except ApiError as exception:
-            self.send_json({"error": str(exception)}, exception.code)
-        except Exception as exception:
-            if client_gone(exception):
-                return
-            log("api", "fail", path=self.path, error=str(exception))
-            self.send_json({"error": str(exception)}, 500)
-    def do_POST(self):
-        op = ""
-        try:
-            parsed = urllib.parse.urlparse(self.path)
-            if parsed.path != "/api":
-                raise ApiError(404, f"unknown endpoint: {parsed.path}")
-            query = {key: values[0] for key, values in urllib.parse.parse_qs(parsed.query).items() if values}
-            content_type = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-            if content_type == "audio/wav":
-                op = query.get("op") or ""
-                if op not in ("asr", "upload_reference", "played"):
-                    raise ApiError(400, "WAV body requires op=asr, op=upload_reference, or op=played")
-                payload, request_body = query, self.body()
-            else:
-                payload = self.request_json(True)
-                op = str(payload.get("op") or query.get("op") or "inspect")
-                request_body = None
-            response_body, code = dispatch(op, payload, request_body)
-            self.send_json(response_body, code)
-            if op == "goodbye" and response_body.get("die"):
-                die()
-        except ApiError as exception:
-            self.send_json({"error": str(exception)}, exception.code)
-        except (KeyError, TypeError, ValueError) as exception:
-            self.send_json({"error": f"invalid request: {exception}"}, 400)
-        except Exception as exception:
-            if not client_gone(exception):
-                log("api", "fail", op=op, error=str(exception))
-                self.send_json({"error": str(exception)}, 500)
-class Server(ThreadingHTTPServer):
-    daemon_threads = True
+
+def run_pipeline(input_name: str, output_name: str, family_name: str, language: str | None, reference_name: str | None) -> None:
+    family = FAMILIES[family_name]
+    language = language or family["DEFAULT_REPLY_LANGUAGE"]
+    if language not in family["TTS_LANGUAGES"]:
+        raise RuntimeError(f"language {language!r} is not supported by family {family_name}; choose from {', '.join(family['TTS_LANGUAGES'])}")
+    input_wav = Path(input_name).expanduser().resolve()
+    output_wav = Path(output_name).expanduser().resolve()
+    default_reference = DATA / "reference.wav" if (DATA / "reference.wav").is_file() else DATA / "default-reference.wav"
+    reference = Path(reference_name).expanduser().resolve() if reference_name else default_reference.resolve()
+    if len({input_wav, reference, output_wav}) != 3:
+        raise RuntimeError("input, reference, and output must resolve to three different paths")
+    if output_wav in {TRANSCRIPT.resolve(), ANSWER.resolve(), SYSTEM_PROMPT.resolve()}:
+        raise RuntimeError("output path conflicts with Trident intermediate files")
+    validate_wav(input_wav, 16000)
+    validate_wav(reference, None, 5.0)
+    models = models_for(family_name)
+    asr_model = require_model(models["parakeet"])
+    brain_model = require_model(models[BRAIN_MODEL])
+    t3_model = require_model(models["chatterbox-t3"])
+    codec_model = require_model(models["chatterbox-codec"])
+    asr_exe = runtime_executable("parakeet")
+    brain_exe = runtime_executable("gemma")
+    tts_exe = runtime_executable("tts")
+    assert asr_exe and brain_exe and tts_exe
+    output_wav.parent.mkdir(parents=True, exist_ok=True)
+    DATA.mkdir(parents=True, exist_ok=True)
+    transcript = transcribe(asr_exe, asr_model, input_wav)
+    answer = brain(brain_exe, brain_model, language, family["TTS_LANGUAGES"][language])
+    synthesize(tts_exe, t3_model, codec_model, reference, output_wav, language, family)
+    print(f"Transcript: {transcript}")
+    print(f"Answer: {answer}")
+    print(f"Output: {output_wav}")
+
+
+def parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(prog="python main.py")
+    commands = p.add_subparsers(dest="command", required=True)
+    install_cmd = commands.add_parser("install")
+    install_cmd.add_argument("--family", choices=tuple(FAMILIES), default="turbo")
+    run_cmd = commands.add_parser("run")
+    run_cmd.add_argument("input")
+    run_cmd.add_argument("output")
+    run_cmd.add_argument("--family", choices=tuple(FAMILIES), default="turbo")
+    run_cmd.add_argument("--language")
+    run_cmd.add_argument("--reference")
+    return p
+
+
 def main() -> int:
-    if already_running():
-        print(f"TRIDENT already http://{CONTROLLER['host']}:{CONTROLLER['port']}/")
-        return 0
-    kill_port(CONTROLLER["port"])
-    for port in PORTS.values():
-        kill_port(port)
-    stop_all()
-    server = Server((CONTROLLER["host"], CONTROLLER["port"]), Handler)
-    log("controller", "start", port=CONTROLLER["port"], pid=os.getpid(), family=TTS_FAMILY)
-    print(f"TRIDENT  http://{CONTROLLER['host']}:{CONTROLLER['port']}/")
+    args = parser().parse_args()
     try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.server_close()
-        close_subs()
-        stop_all()
-        log("controller", "stop")
-    return 0
+        if args.command == "install":
+            install(args.family)
+        else:
+            run_pipeline(args.input, args.output, args.family, args.language, args.reference)
+        return 0
+    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError, zipfile.BadZipFile) as exc:
+        note(f"error: {exc}")
+        return 1
+
+
 if __name__ == "__main__":
     raise SystemExit(main())
