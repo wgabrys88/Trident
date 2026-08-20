@@ -1,4 +1,5 @@
 #include "cli.hpp"
+#include "engine_wrapper.hpp"
 
 #include <chrono>
 #include <iostream>
@@ -13,8 +14,6 @@ const std::vector<std::string> kRequired = {
     "--n-gpu-layers", "--context", "--threads", "--seed", "--max-tokens",
     "--top-k", "--top-p", "--temperature", "--repeat-penalty", "--cfm-steps", "--chunk-chars",
 };
-
-constexpr float kQuietAmp2 = 0.0004f;
 
 } // namespace
 
@@ -44,10 +43,26 @@ int main(int argc, char** argv) {
             throw std::invalid_argument("sampling values are out of range");
 
         tts::log("family=nano");
+        tts::EngineWrapper engine;
+        engine.LoadChatterboxModel("nano", runtime.t3, runtime.s3);
+        engine.initialize(runtime.t3, runtime.s3, runtime.gpu, runtime.threads, runtime.context);
+        engine.set_params(knobs);
         const auto started = std::chrono::steady_clock::now();
-        const tts::Speech speech = tts::run(runtime, knobs, text, chunk_chars, kQuietAmp2);
+        double ttfa_ms = -1;
+        engine.prepare(tts::knobs_to_voice(knobs, chunk_chars), text);
+        while (engine.busy()) {
+            engine.step([&](int, int, const std::vector<float>&, const std::vector<float>& playable) {
+                if (ttfa_ms < 0 && !playable.empty())
+                    ttfa_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+            });
+        }
+        const tts::Speech speech = engine.finish();
         tts::write_wav(args.at("--output"), speech.pcm);
         const double total_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+        const auto stats = engine.stats();
+        tts::log("ttfa_ms=" + std::to_string(ttfa_ms) +
+                 " speaker_hits=" + std::to_string(stats.speaker_hits) +
+                 " kv_hits=" + std::to_string(stats.kv_hits));
         std::cerr << "family=nano ";
         tts::print_done(speech, total_ms, runtime, knobs, chunk_chars);
         return 0;
