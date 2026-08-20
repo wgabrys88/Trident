@@ -56,8 +56,8 @@ PACKAGES = {
     "vulkan": {"url": f"https://sdk.lunarg.com/sdk/download/{VULKAN_VERSION}/windows/vulkansdk-windows-X64-{VULKAN_VERSION}.exe", "file": f"vulkansdk-windows-X64-{VULKAN_VERSION}.exe", "size": 0},
 }
 CHATTERBOX_LIBRARY = CHATTERBOX / "build" / "Release" / "tts-cpp.lib"
-TTS_BINARY = TTS / "build" / "Release" / "trident-tts.exe"
-TTS_EXE = "trident-tts.exe"
+TTS_BUILD = TTS / "build" / "Release"
+TTS_FAMILY_EXES = tuple(family["TTS_EXE"] for family in FAMILIES.values())
 
 
 def note(message: str) -> None:
@@ -233,7 +233,7 @@ def extract_release_bundle(archive: Path, destination: Path, executable_name: st
 
 
 def runtime_executable(name: str, required: bool = True) -> Path | None:
-    exe = TTS_EXE if name == "tts" else BINARIES[name]["exe"]
+    exe = BINARIES[name]["exe"]
     root = RUNTIMES / name
     matches = [p for p in root.rglob("*") if p.is_file() and p.name.lower() == exe.lower()] if root.exists() else []
     if len(matches) == 1:
@@ -241,6 +241,24 @@ def runtime_executable(name: str, required: bool = True) -> Path | None:
     if required:
         raise RuntimeError(f"runtime must contain exactly one {exe}; found {len(matches)}")
     return None
+
+
+def runtime_tts(family_name: str, required: bool = True) -> Path | None:
+    exe = FAMILIES[family_name]["TTS_EXE"]
+    root = RUNTIMES / "tts"
+    matches = [p for p in root.rglob("*") if p.is_file() and p.name.lower() == exe.lower()] if root.exists() else []
+    if len(matches) == 1:
+        return matches[0]
+    if required:
+        raise RuntimeError(f"runtime must contain exactly one {exe}; found {len(matches)}")
+    return None
+
+
+def tts_runtime_ready() -> bool:
+    root = RUNTIMES / "tts"
+    if not root.is_dir() or not CHATTERBOX_LIBRARY.is_file():
+        return False
+    return all(any(p.is_file() and p.name.lower() == exe.lower() for p in root.rglob("*") if p.is_file()) for exe in TTS_FAMILY_EXES)
 
 
 def install_release_binary(name: str) -> None:
@@ -287,7 +305,7 @@ def install_prerequisite(name: str) -> None:
 
 
 def install_tts() -> None:
-    if runtime_executable("tts", required=False) and CHATTERBOX_LIBRARY.is_file():
+    if tts_runtime_ready():
         note("trident-tts: ready")
         return
     cmake = need("cmake")
@@ -299,23 +317,27 @@ def install_tts() -> None:
     if not CHATTERBOX_LIBRARY.is_file():
         raise RuntimeError(f"Chatterbox build did not create {CHATTERBOX_LIBRARY}")
     run_process("tts", "configure-trident-tts", [cmake, "-S", ".", "-B", "build", "-A", "x64", f"-DCHATTERBOX_CPP_ROOT={CHATTERBOX}"], TTS)
-    run_process("tts", "build-trident-tts", [cmake, "--build", "build", "--config", "Release", "--target", "trident-tts", "--parallel"], TTS)
-    if not TTS_BINARY.is_file():
-        raise RuntimeError(f"TTS build did not create {TTS_BINARY}")
+    run_process("tts", "build-trident-tts", [cmake, "--build", "build", "--config", "Release", "--target", "trident-tts-v3", "--target", "trident-tts-turbo", "--target", "trident-tts-nano", "--parallel"], TTS)
+    built = [TTS_BUILD / exe for exe in TTS_FAMILY_EXES]
+    missing = [p for p in built if not p.is_file()]
+    if missing:
+        raise RuntimeError(f"TTS build did not create {missing}")
     runtime = RUNTIMES / "tts"
     partial = runtime.with_name(runtime.name + ".part")
     rmtree_retry(partial)
     partial.mkdir(parents=True)
     try:
-        for artifact in TTS_BINARY.parent.iterdir():
-            if artifact.is_file() and (artifact.name == TTS_BINARY.name or artifact.suffix.lower() == ".dll"):
+        names = {exe.lower() for exe in TTS_FAMILY_EXES}
+        for artifact in TTS_BUILD.iterdir():
+            if artifact.is_file() and (artifact.name.lower() in names or artifact.suffix.lower() == ".dll"):
                 shutil.copy2(artifact, partial / artifact.name)
         rmtree_retry(runtime)
         partial.rename(runtime)
     except Exception:
         rmtree_retry(partial)
         raise
-    runtime_executable("tts")
+    if not tts_runtime_ready():
+        raise RuntimeError("TTS runtime is missing family binaries")
 
 
 def models_for(family: str) -> dict:
@@ -408,7 +430,7 @@ def install(family: str) -> None:
     selected = models_for(family)
     if any(not present(model_path(spec), spec["size"]) for spec in FAMILIES[family]["TTS_MODELS"].values()):
         install_tts()
-    elif not runtime_executable("tts", required=False):
+    elif not tts_runtime_ready():
         install_tts()
     for spec in selected.values():
         download_model(spec)
@@ -521,18 +543,19 @@ def brain(exe: Path, model: Path, language: str, language_name: str) -> str:
 def synthesize(exe: Path, t3: Path, codec: Path, reference: Path, output: Path, language: str, family: dict,
                text_file: Path = ANSWER, capture: bool = False) -> dict:
     runtime, sample, voice = family["TTS_RUNTIME"], family["TTS_SAMPLE"], family["TTS_VOICE"]
-    # top_k and min_p are required by binary but only used by specific variants; pass defaults
-    top_k = sample.get("top_k", 1000)
-    min_p = sample.get("min_p", 0.0)
     command = [
         str(exe), "--model", str(t3), "--s3gen-gguf", str(codec), "--reference", str(reference), "--text-file", str(text_file),
-        "--output", str(output), "--language", language, "--n-gpu-layers", str(runtime["gpu_layers"]), "--context", str(runtime["context"]),
+        "--output", str(output), "--n-gpu-layers", str(runtime["gpu_layers"]), "--context", str(runtime["context"]),
         "--threads", str(runtime["threads"]), "--seed", str(sample["seed"]), "--max-tokens", str(sample["max_tokens"]),
-        "--top-k", str(top_k), "--top-p", str(sample["top_p"]), "--min-p", str(min_p),
-        "--temperature", str(sample["temperature"]), "--repeat-penalty", str(sample["repeat_penalty"]),
-        "--cfg-weight", str(voice["cfg_weight"]), "--exaggeration", str(voice["exaggeration"]),
+        "--top-p", str(sample["top_p"]), "--temperature", str(sample["temperature"]), "--repeat-penalty", str(sample["repeat_penalty"]),
         "--cfm-steps", str(sample["cfm_steps"]), "--chunk-chars", str(family["TTS_CHUNK"]["chars"]),
     ]
+    if "top_k" in sample:
+        command += ["--top-k", str(sample["top_k"])]
+    if "min_p" in sample:
+        command += ["--min-p", str(sample["min_p"])]
+    if family.get("TTS_EXE") == "trident-tts-v3.exe":
+        command += ["--language", language, "--cfg-weight", str(voice["cfg_weight"]), "--exaggeration", str(voice["exaggeration"])]
     output.unlink(missing_ok=True)
     note("tts: " + " ".join(command))
     result = subprocess.run(command, cwd=exe.parent, stdout=sys.stderr, check=True,
@@ -541,8 +564,12 @@ def synthesize(exe: Path, t3: Path, codec: Path, reference: Path, output: Path, 
     validate_wav(output, 24000)
     metrics = {}
     if capture:
+        err = result.stderr or ""
+        for line in err.splitlines():
+            if line.startswith("mtl encode") or line.startswith("family="):
+                note(line)
         match = re.search(r"samples=(\d+) seconds=([\d.]+) chunks=(\d+) total_ms=([\d.]+) t3_ms=([\d.]+) s3gen_ms=([\d.]+)",
-                          result.stderr or "")
+                          err)
         if match:
             metrics = {key: float(value) for key, value in
                        zip(("samples", "seconds", "chunks", "total_ms", "t3_ms", "s3gen_ms"), match.groups())}
@@ -580,6 +607,42 @@ def resample_16k(src: Path, dst: Path) -> None:
         audio.setsampwidth(2)
         audio.setframerate(16000)
         audio.writeframes(out.tobytes())
+
+
+def audio_metrics(path: Path) -> dict:
+    validate_wav(path, 24000)
+    with wave.open(str(path), "rb") as audio:
+        pcm = array.array("h")
+        pcm.frombytes(audio.readframes(audio.getnframes()))
+        rate = audio.getframerate()
+    n = len(pcm)
+    if n == 0:
+        raise RuntimeError(f"WAV contains no samples: {path}")
+    duration = n / rate
+    peak = max(abs(s) for s in pcm) / 32768.0
+    mean_sq = sum((s / 32768.0) ** 2 for s in pcm) / n
+    rms = math.sqrt(mean_sq)
+    step = max(1, rate // 200)
+    silent = 0
+    longest = 0
+    run = 0
+    counted = 0
+    for i in range(0, n, step):
+        counted += 1
+        if abs(pcm[i]) < 655:
+            silent += 1
+            run += 1
+            if run > longest:
+                longest = run
+        else:
+            run = 0
+    return {
+        "duration": duration,
+        "peak": peak,
+        "rms": rms,
+        "silence": silent / max(counted, 1),
+        "longest_silence": longest * step / rate,
+    }
 
 
 def score(reference: str, hypothesis: str) -> tuple[float, float]:
@@ -620,32 +683,25 @@ def run_rainbow(output_name: str, family_name: str, language: str | None, refere
         raise RuntimeError("reference and output must resolve to different paths")
     validate_wav(reference, None, 5.0)
     models = models_for(family_name)
-    asr_exe, tts_exe = runtime_executable("parakeet"), runtime_executable("tts")
-    assert asr_exe and tts_exe
+    tts_exe = runtime_tts(family_name)
     output_wav.parent.mkdir(parents=True, exist_ok=True)
     text_path = output_wav.with_suffix(".txt")
     write_text_atomic(text_path, text + "\n")
-    asr_wav = output_wav.with_suffix(".16k.wav")
-    asr_wav.unlink(missing_ok=True)
     started = time.perf_counter()
     metrics = synthesize(tts_exe, require_model(models["chatterbox-t3"]), require_model(models["chatterbox-codec"]),
                          reference, output_wav, language, family, text_file=text_path, capture=True)
     wall = time.perf_counter() - started
-    resample_16k(output_wav, asr_wav)
-    started = time.perf_counter()
-    hypothesis = transcribe(asr_exe, require_model(models["parakeet"]), asr_wav, out=output_wav.with_suffix(".transcript.txt"))
-    stt_wall = time.perf_counter() - started
-    wer, cer = score(text, hypothesis)
+    heard = audio_metrics(output_wav)
     sys.stdout.reconfigure(errors="replace")  # Windows console code pages can't print pl/de text
     audio_ms = metrics.get("seconds", 0.0) * 1000.0
     gen_rtf = (metrics.get("t3_ms", 0.0) + metrics.get("s3gen_ms", 0.0)) / audio_ms if audio_ms else 0.0
-    print(f"rainbow family={family_name} lang={language} ref={reference.name}")
+    print(f"rainbow family={family_name} lang={language} ref={reference.name} exe={family['TTS_EXE']}")
     print(f"audio_s={metrics.get('seconds', 0.0):.2f} chunks={int(metrics.get('chunks', 0))} "
           f"total_ms={metrics.get('total_ms', 0.0):.0f} t3_ms={metrics.get('t3_ms', 0.0):.0f} "
-          f"s3gen_ms={metrics.get('s3gen_ms', 0.0):.0f} gen_RTF={gen_rtf:.3f} wall_s={wall:.1f} stt_s={stt_wall:.1f}")
-    print(f"WER={wer * 100:.2f}% CER={cer * 100:.2f}%")
+          f"s3gen_ms={metrics.get('s3gen_ms', 0.0):.0f} gen_RTF={gen_rtf:.3f} wall_s={wall:.1f}")
+    print(f"peak={heard['peak']:.3f} rms={heard['rms']:.4f} silence={heard['silence']*100:.1f}% "
+          f"longest_sil={heard['longest_silence']:.2f}s")
     print(f"Source: {text}")
-    print(f"Heard: {hypothesis}")
 
 
 def run_pipeline(input_name: str, output_name: str, family_name: str, language: str | None, reference_name: str | None) -> None:
@@ -670,7 +726,7 @@ def run_pipeline(input_name: str, output_name: str, family_name: str, language: 
     codec_model = require_model(models["chatterbox-codec"])
     asr_exe = runtime_executable("parakeet")
     brain_exe = runtime_executable("gemma")
-    tts_exe = runtime_executable("tts")
+    tts_exe = runtime_tts(family_name)
     assert asr_exe and brain_exe and tts_exe
     output_wav.parent.mkdir(parents=True, exist_ok=True)
     DATA.mkdir(parents=True, exist_ok=True)

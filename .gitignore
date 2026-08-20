@@ -13,3 +13,6 @@
 !/tts/include/*.hpp
 !/tts/src/
 !/tts/src/*.cpp
+!/rainbow/
+!/rainbow/*.md
+!/rainbow/*.py

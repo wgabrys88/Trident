@@ -21,14 +21,14 @@ BRAIN_SYSTEM = (
 
 _EN = {"en": "English"}
 _V3_SAMPLE = {
-    "seed": 42, "max_tokens": 768, "top_p": 0.95,
+    "seed": 42, "max_tokens": 768, "top_p": 1.0,
     "temperature": 0.8, "repeat_penalty": 1.2,
     "min_p": 0.05, "cfm_steps": 7,
 }
 
 _TURBO_SAMPLE = {
-    "seed": 42, "max_tokens": 768, "top_k": 1000, "top_p": 0.95,
-    "temperature": 0.8, "repeat_penalty": 1.2,
+    "seed": 42, "max_tokens": 768, "top_k": 1000, "top_p": 0.99,
+    "temperature": 0.6, "repeat_penalty": 1.3,
     "cfm_steps": 2,
 }
 
@@ -129,11 +129,12 @@ def _gguf(label, repo, revision, file, size, script, files, quant="q4_0", varian
     return {"label": label, "repo": repo, "revision": revision, "file": file, "size": size, "convert": convert}
 
 
-def _family(label, languages, context, chars, sample_cfg, voice_cfg, models):
+def _family(label, languages, context, chars, sample_cfg, voice_cfg, models, exe):
     return {
         "TTS_LANGUAGES": languages,
         "DEFAULT_REPLY_LANGUAGE": "en",
         "TTS_LABEL": label,
+        "TTS_EXE": exe,
         "TTS_RUNTIME": {"gpu_layers": 99, "context": context, "threads": 4},
         "TTS_SAMPLE": sample_cfg,
         "TTS_VOICE": voice_cfg,
@@ -164,6 +165,7 @@ FAMILIES = {
                 copy={"s3gen_v3.pt": "s3gen.pt"},
             ),
         },
+        "trident-tts-v3.exe",
     ),
     "turbo": _family(
         "CHATTERBOX TTS TURBO", dict(_EN),
@@ -184,6 +186,7 @@ FAMILIES = {
                 "convert-s3gen-to-gguf.py", _TURBO_CKPT, quant="f16", variant="turbo",
             ),
         },
+        "trident-tts-turbo.exe",
     ),
     "nano": _family(
         "CHATTERBOX TTS NANO", dict(_EN),
@@ -205,5 +208,6 @@ FAMILIES = {
                 "convert-s3gen-to-gguf.py", _NANO_CKPT, quant="f16", variant="turbo",
             ),
         },
+        "trident-tts-nano.exe",
     ),
 }

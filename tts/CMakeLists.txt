@@ -16,22 +16,28 @@ if(NOT EXISTS "${CHATTERBOX_CPP_ROOT}/include/tts-cpp/chatterbox/engine.h")
 endif()
 set(CHATTERBOX_BUILD "${CHATTERBOX_CPP_ROOT}/build")
 set(GGML_BUILD "${CHATTERBOX_BUILD}/ggml/src")
-add_executable(trident-tts src/main.cpp src/engine_wrapper.cpp)
-target_include_directories(trident-tts PRIVATE include "${CHATTERBOX_CPP_ROOT}/include" "${CHATTERBOX_CPP_ROOT}/ggml/include" ${Vulkan_INCLUDE_DIRS})
-target_link_libraries(trident-tts PRIVATE
-    "${CHATTERBOX_BUILD}/Release/tts-cpp.lib"
-    "${CHATTERBOX_BUILD}/Release/mtl_tokenizer.lib"
-    "${GGML_BUILD}/Release/ggml.lib"
-    "${GGML_BUILD}/Release/ggml-cpu.lib"
-    "${GGML_BUILD}/ggml-vulkan/Release/ggml-vulkan.lib"
-    "${GGML_BUILD}/Release/ggml-base.lib"
-    ${Vulkan_LIBRARIES})
-target_compile_definitions(trident-tts PRIVATE GGML_USE_VULKAN _USE_MATH_DEFINES)
-if(WIN32)
-    add_custom_command(TARGET trident-tts POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CHATTERBOX_BUILD}/bin/Release/ggml.dll"
-        "${CHATTERBOX_BUILD}/bin/Release/ggml-cpu.dll"
-        "${CHATTERBOX_BUILD}/bin/Release/ggml-vulkan.dll"
-        "${CHATTERBOX_BUILD}/bin/Release/ggml-base.dll"
-        $<TARGET_FILE_DIR:trident-tts>)
-endif()
+set(TTS_COMMON src/audio.cpp src/cli.cpp)
+function(trident_tts_bin name src)
+    add_executable(${name} ${src} ${TTS_COMMON})
+    target_include_directories(${name} PRIVATE include "${CHATTERBOX_CPP_ROOT}/include" "${CHATTERBOX_CPP_ROOT}/ggml/include" ${Vulkan_INCLUDE_DIRS})
+    target_link_libraries(${name} PRIVATE
+        "${CHATTERBOX_BUILD}/Release/tts-cpp.lib"
+        "${CHATTERBOX_BUILD}/Release/mtl_tokenizer.lib"
+        "${GGML_BUILD}/Release/ggml.lib"
+        "${GGML_BUILD}/Release/ggml-cpu.lib"
+        "${GGML_BUILD}/ggml-vulkan/Release/ggml-vulkan.lib"
+        "${GGML_BUILD}/Release/ggml-base.lib"
+        ${Vulkan_LIBRARIES})
+    target_compile_definitions(${name} PRIVATE GGML_USE_VULKAN _USE_MATH_DEFINES)
+    if(WIN32)
+        add_custom_command(TARGET ${name} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CHATTERBOX_BUILD}/bin/Release/ggml.dll"
+            "${CHATTERBOX_BUILD}/bin/Release/ggml-cpu.dll"
+            "${CHATTERBOX_BUILD}/bin/Release/ggml-vulkan.dll"
+            "${CHATTERBOX_BUILD}/bin/Release/ggml-base.dll"
+            $<TARGET_FILE_DIR:${name}>)
+    endif()
+endfunction()
+trident_tts_bin(trident-tts-v3 src/main_v3.cpp)
+trident_tts_bin(trident-tts-turbo src/main_turbo.cpp)
+trident_tts_bin(trident-tts-nano src/main_nano.cpp)
