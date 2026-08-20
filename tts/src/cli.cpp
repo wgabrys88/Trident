@@ -73,13 +73,25 @@ static bool valid_utf8(const std::string& text) {
     return true;
 }
 
+void log(const std::string& line) {
+    std::cerr << "tts " << line << std::endl;
+}
+
 std::string read_text(const std::string& path) {
     std::ifstream in(path, std::ios::binary);
     if (!in) throw std::runtime_error("cannot open text file: " + path);
     std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    const bool bom = text.size() >= 3 && static_cast<unsigned char>(text[0]) == 0xef &&
+                     static_cast<unsigned char>(text[1]) == 0xbb && static_cast<unsigned char>(text[2]) == 0xbf;
+    if (bom) text.erase(0, 3);
     if (!valid_utf8(text)) throw std::runtime_error("text file is not valid UTF-8: " + path);
     if (std::all_of(text.begin(), text.end(), [](unsigned char c) { return std::isspace(c) != 0; }))
         throw std::runtime_error("text file is empty: " + path);
+    int chars = 0;
+    for (unsigned char c : text)
+        if ((c & 0xc0) != 0x80) ++chars;
+    log("text path=" + path + " bytes=" + std::to_string(text.size()) + " chars=" + std::to_string(chars) +
+        " bom=" + (bom ? "1" : "0"));
     return text;
 }
 
@@ -100,9 +112,13 @@ Runtime runtime_from(const Args& args) {
 }
 
 void print_done(const Speech& speech, double total_ms, const Runtime& runtime, const EngineKnobs& knobs, int chunk_chars) {
+    const double audio_ms = speech.pcm.size() / 24.0;
+    const double rtf = audio_ms > 0 ? (speech.t3_ms + speech.s3gen_ms) / audio_ms : 0;
     std::cerr << "tts done samples=" << speech.pcm.size()
               << " seconds=" << speech.pcm.size() / 24000.0 << " chunks=" << speech.chunks
+              << " t3_tokens=" << speech.t3_tokens
               << " total_ms=" << total_ms << " t3_ms=" << speech.t3_ms << " s3gen_ms=" << speech.s3gen_ms
+              << " rtf=" << rtf
               << " gpu=" << runtime.gpu << " threads=" << runtime.threads << " ctx=" << runtime.context
               << " lang=" << knobs.language
               << " seed=" << knobs.seed << " max_tokens=" << knobs.max_tokens << " top_k=" << knobs.top_k

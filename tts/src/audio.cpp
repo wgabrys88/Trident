@@ -1,4 +1,5 @@
 #include "audio.hpp"
+#include "cli.hpp"
 #include <tts-cpp/chatterbox/engine.h>
 
 #include <algorithm>
@@ -113,7 +114,11 @@ static int quiet_edge(const std::vector<float>& x, bool tail, float amp2) {
 }
 
 void glue(std::vector<float>& dst, const std::vector<float>& src, float quiet_amp2) {
-    if (dst.empty()) { dst = src; return; }
+    if (dst.empty()) {
+        dst = src;
+        log("glue first samples=" + std::to_string(src.size()));
+        return;
+    }
     if (src.empty()) return;
     const int cap = std::min(kGlue, static_cast<int>(std::min(dst.size(), src.size())));
     int n = std::min(quiet_edge(dst, true, quiet_amp2), quiet_edge(src, false, quiet_amp2));
@@ -124,6 +129,8 @@ void glue(std::vector<float>& dst, const std::vector<float>& src, float quiet_am
         dst[dst.size() - n + i] = dst[dst.size() - n + i] * std::cos(w) + src[i] * std::sin(w);
     }
     dst.insert(dst.end(), src.begin() + n, src.end());
+    log("glue overlap=" + std::to_string(n) + " src=" + std::to_string(src.size()) +
+        " dst=" + std::to_string(dst.size()));
 }
 
 void write_wav(const std::string& path, const std::vector<float>& pcm) {
@@ -148,6 +155,8 @@ void write_wav(const std::string& path, const std::vector<float>& pcm) {
     out.write("data", 4); put(data_size);
     out.write(reinterpret_cast<const char*>(samples.data()), static_cast<std::streamsize>(data_size));
     if (!out) throw std::runtime_error("failed while writing WAV output: " + path);
+    log("wav path=" + path + " samples=" + std::to_string(pcm.size()) +
+        " seconds=" + std::to_string(pcm.size() / 24000.0));
 }
 
 Speech run(const Runtime& runtime, const EngineKnobs& knobs, const std::string& text, int chunk_chars, float quiet_amp2) {
@@ -156,6 +165,18 @@ Speech run(const Runtime& runtime, const EngineKnobs& knobs, const std::string& 
     if (!std::filesystem::is_regular_file(knobs.reference))
         throw std::runtime_error("reference audio not found: " + knobs.reference);
     if (text.empty()) throw std::runtime_error("text is empty");
+
+    log("load t3=" + runtime.t3);
+    log("load s3=" + runtime.s3);
+    log("load ref=" + knobs.reference);
+    log("knobs lang=" + knobs.language + " gpu=" + std::to_string(runtime.gpu) +
+        " ctx=" + std::to_string(runtime.context) + " threads=" + std::to_string(runtime.threads) +
+        " seed=" + std::to_string(knobs.seed) + " max_tokens=" + std::to_string(knobs.max_tokens) +
+        " top_k=" + std::to_string(knobs.top_k) + " top_p=" + std::to_string(knobs.top_p) +
+        " min_p=" + std::to_string(knobs.min_p) + " temp=" + std::to_string(knobs.temperature) +
+        " repeat=" + std::to_string(knobs.repeat_penalty) + " cfg=" + std::to_string(knobs.cfg_weight) +
+        " exag=" + std::to_string(knobs.exaggeration) + " cfm=" + std::to_string(knobs.cfm_steps) +
+        " chunk=" + std::to_string(chunk_chars));
 
     tts_cpp::chatterbox::EngineOptions options;
     options.t3_gguf_path = runtime.t3;
@@ -178,15 +199,36 @@ Speech run(const Runtime& runtime, const EngineKnobs& knobs, const std::string& 
 
     tts_cpp::chatterbox::Engine engine(options);
     const auto pieces = pack_text(text, chunk_chars);
+    log("pack chunks=" + std::to_string(pieces.size()) + " limit=" + std::to_string(chunk_chars));
+    for (size_t i = 0; i < pieces.size(); ++i) {
+        const std::string& piece = pieces[i];
+        const std::string head = piece.size() > 48 ? piece.substr(0, 48) + "..." : piece;
+        log("pack[" + std::to_string(i) + "] chars=" + std::to_string(utf8_chars(piece)) +
+            " bytes=" + std::to_string(piece.size()) + " text=" + head);
+    }
     Speech speech;
     speech.chunks = static_cast<int>(pieces.size());
-    for (const auto& piece : pieces) {
-        auto result = engine.synthesize(piece);
+    for (int i = 0; i < speech.chunks; ++i) {
+        auto result = engine.synthesize(pieces[static_cast<size_t>(i)]);
+        float peak = 0;
+        for (float s : result.pcm) peak = std::max(peak, std::abs(s));
+        log("chunk[" + std::to_string(i) + "] t3_tokens=" + std::to_string(result.t3_tokens) +
+            " samples=" + std::to_string(result.pcm.size()) +
+            " seconds=" + std::to_string(result.pcm.size() / 24000.0) +
+            " t3_ms=" + std::to_string(result.t3_ms) + " s3gen_ms=" + std::to_string(result.s3gen_ms) +
+            " peak=" + std::to_string(peak) +
+            " cap=" + (result.t3_tokens >= knobs.max_tokens ? "1" : "0"));
         glue(speech.pcm, result.pcm, quiet_amp2);
         speech.t3_ms += result.t3_ms;
         speech.s3gen_ms += result.s3gen_ms;
+        speech.t3_tokens += result.t3_tokens;
     }
     if (speech.pcm.empty()) throw std::runtime_error("synthesis returned no audio");
+    float peak = 0;
+    for (float s : speech.pcm) peak = std::max(peak, std::abs(s));
+    log("pcm samples=" + std::to_string(speech.pcm.size()) +
+        " seconds=" + std::to_string(speech.pcm.size() / 24000.0) + " peak=" + std::to_string(peak) +
+        " t3_tokens=" + std::to_string(speech.t3_tokens));
     return speech;
 }
 

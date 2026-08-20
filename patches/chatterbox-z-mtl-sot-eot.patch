@@ -1,9 +1,8 @@
 # chatterbox.cpp Engine MTL SOT/EOT pad (matches tts-cli + Python generate)
 diff --git a/src/chatterbox_engine.cpp b/src/chatterbox_engine.cpp
-index 60fe293..b7e1c0d 100644
 --- a/src/chatterbox_engine.cpp
 +++ b/src/chatterbox_engine.cpp
-@@ -1,6 +1,7 @@
+@@ -1,10 +1,11 @@
  #include "tts-cpp/chatterbox/engine.h"
  
  #include <atomic>
@@ -12,15 +11,16 @@ index 60fe293..b7e1c0d 100644
  #include <cstring>
  #include <filesystem>
  #include <stdexcept>
-@@ -355,6 +356,24 @@ struct Engine::Impl {
+ #include <string>
+ #include <thread>
+ #include <vector>
+@@ -352,12 +353,24 @@
+             }
+             mtl_tokenizer tok;
+             if (!tok.load_from_json(model.mtl_tokenizer_json)) {
                  throw std::runtime_error("Engine: MTL tokenizer json failed to load");
              }
              text_tokens = tok.encode(text, opts.language);
-+            // Python ChatterboxMultilingualTTS.generate and tts-cli pad
-+            // start_text_token (255) + ids + stop_text_token (0). The Engine
-+            // path used by Trident omitted this; German/Polish then start on
-+            // the [de]/[pl] language token with no SOT, which collapses the
-+            // decode into English-accented garbage.
 +            std::vector<int32_t> padded;
 +            padded.reserve(text_tokens.size() + 2);
 +            padded.push_back(model.hparams.start_text_token);
@@ -36,3 +36,6 @@ index 60fe293..b7e1c0d 100644
          } else {
              if (model.tok_tokens.empty()) {
                  throw std::runtime_error(
+                     "Engine: T3 GGUF has no embedded tokenizer; "
+                     "re-run scripts/convert-t3-turbo-to-gguf.py");
+             }

@@ -1,6 +1,7 @@
 *
 !/.gitignore
 !/.gitattributes
+!/README.md
 !/main.py
 !/cfg.py
 !/assets/

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import array
+import hashlib
 import json
 import math
 import os
@@ -58,6 +59,10 @@ PACKAGES = {
 CHATTERBOX_LIBRARY = CHATTERBOX / "build" / "Release" / "tts-cpp.lib"
 TTS_BUILD = TTS / "build" / "Release"
 TTS_FAMILY_EXES = tuple(family["TTS_EXE"] for family in FAMILIES.values())
+TTS_STAMP = RUNTIMES / "tts" / ".build-stamp"
+PROBE_EN = (
+    "When the sunlight strikes raindrops in the air, they act as a prism and form a rainbow."
+)
 
 
 def note(message: str) -> None:
@@ -254,9 +259,29 @@ def runtime_tts(family_name: str, required: bool = True) -> Path | None:
     return None
 
 
+def tts_source_stamp() -> str:
+    digest = hashlib.sha256()
+    digest.update(SOURCES["chatterbox"][1].encode("ascii"))
+    digest.update(b"\n")
+    digest.update(SOURCES["ggml"][1].encode("ascii"))
+    for path in sorted(PATCHES.glob("chatterbox-*.patch")):
+        digest.update(path.name.encode("ascii"))
+        digest.update(path.read_bytes())
+    for path in sorted(TTS.rglob("*")):
+        if not path.is_file() or "build" in path.parts:
+            continue
+        if path.suffix.lower() not in {".cpp", ".hpp", ".txt"}:
+            continue
+        digest.update(str(path.relative_to(TTS)).encode("utf-8"))
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
 def tts_runtime_ready() -> bool:
     root = RUNTIMES / "tts"
     if not root.is_dir() or not CHATTERBOX_LIBRARY.is_file():
+        return False
+    if not TTS_STAMP.is_file() or TTS_STAMP.read_text(encoding="ascii").strip() != tts_source_stamp():
         return False
     return all(any(p.is_file() and p.name.lower() == exe.lower() for p in root.rglob("*") if p.is_file()) for exe in TTS_FAMILY_EXES)
 
@@ -336,6 +361,7 @@ def install_tts() -> None:
     except Exception:
         rmtree_retry(partial)
         raise
+    TTS_STAMP.write_text(tts_source_stamp() + "\n", encoding="ascii")
     if not tts_runtime_ready():
         raise RuntimeError("TTS runtime is missing family binaries")
 
@@ -428,9 +454,7 @@ def install(family: str) -> None:
     install_release_binary("parakeet")
     install_release_binary("gemma")
     selected = models_for(family)
-    if any(not present(model_path(spec), spec["size"]) for spec in FAMILIES[family]["TTS_MODELS"].values()):
-        install_tts()
-    elif not tts_runtime_ready():
+    if not tts_runtime_ready():
         install_tts()
     for spec in selected.values():
         download_model(spec)
@@ -518,7 +542,8 @@ def brain(exe: Path, model: Path, language: str, language_name: str) -> str:
     template_kwargs = json.dumps({"enable_thinking": bool(BRAIN_THINKING)}, separators=(",", ":"))
     command = [
         str(exe), "-m", str(model), "--system-prompt-file", str(SYSTEM_PROMPT), "--file", str(TRANSCRIPT),
-        "--conversation", "--single-turn", "--output-file", str(ANSWER), "--no-display-prompt", "--no-show-timings",
+        "--conversation", "--single-turn", "--output-file", str(ANSWER), "--no-display-prompt",
+        "--show-timings", "--perf", "--log-prefix", "--log-timestamps", "--verbosity", "0",
         "--offline", "--device", str(r["device"]), "--n-gpu-layers", str(r["gpu_layers"]), "--ctx-size", str(r["context"]),
         "--no-mmproj", "--load-mode", "auto", "--flash-attn", str(r["flash_attn"]), "--repack", "--fit", str(r["fit"]),
         "--fit-target", str(r["fit_target"]), "--fit-ctx", str(r["fit_ctx"]), "--seed", str(g["seed"]),
@@ -565,14 +590,15 @@ def synthesize(exe: Path, t3: Path, codec: Path, reference: Path, output: Path, 
     metrics = {}
     if capture:
         err = result.stderr or ""
-        for line in err.splitlines():
-            if line.startswith("mtl encode") or line.startswith("family="):
-                note(line)
+        if err:
+            sys.stderr.write(err if err.endswith("\n") else err + "\n")
+            sys.stderr.flush()
         match = re.search(r"samples=(\d+) seconds=([\d.]+) chunks=(\d+) total_ms=([\d.]+) t3_ms=([\d.]+) s3gen_ms=([\d.]+)",
                           err)
         if match:
             metrics = {key: float(value) for key, value in
                        zip(("samples", "seconds", "chunks", "total_ms", "t3_ms", "s3gen_ms"), match.groups())}
+        metrics["stderr"] = err
     return metrics
 
 
@@ -738,6 +764,50 @@ def run_pipeline(input_name: str, output_name: str, family_name: str, language: 
     print(f"Output: {output_wav}")
 
 
+def run_probe(family_name: str, language: str | None, reference_name: str | None, text_name: str | None) -> None:
+    family = FAMILIES[family_name]
+    language = language or family["DEFAULT_REPLY_LANGUAGE"]
+    if language not in family["TTS_LANGUAGES"]:
+        raise RuntimeError(f"language {language!r} is not supported by family {family_name}; choose from {', '.join(family['TTS_LANGUAGES'])}")
+    if text_name:
+        text = Path(text_name).expanduser().resolve().read_text(encoding="utf-8").strip()
+    elif language == "en":
+        text = PROBE_EN
+    elif language in RAINBOW:
+        text = RAINBOW[language].split(". ")[0] + "."
+    else:
+        raise RuntimeError(f"no probe text for {language!r}; pass --text")
+    default_reference = DATA / "reference.wav" if (DATA / "reference.wav").is_file() else DATA / "default-reference.wav"
+    reference = Path(reference_name).expanduser().resolve() if reference_name else default_reference.resolve()
+    output_wav = DATA / f"probe-{family_name}-{language}.wav"
+    if reference.resolve() == output_wav.resolve():
+        raise RuntimeError("reference and probe output must be different paths")
+    validate_wav(reference, None, 5.0)
+    models = models_for(family_name)
+    tts_exe = runtime_tts(family_name)
+    DATA.mkdir(parents=True, exist_ok=True)
+    text_path = output_wav.with_suffix(".txt")
+    write_text_atomic(text_path, text + "\n")
+    metrics = synthesize(tts_exe, require_model(models["chatterbox-t3"]), require_model(models["chatterbox-codec"]),
+                         reference, output_wav, language, family, text_file=text_path, capture=True)
+    err = metrics.get("stderr") or ""
+    required = ["tts backend=", "voice_overridden=1", "tts done"]
+    if family_name == "v3":
+        required.append("tts mtl encode")
+        if language == "en":
+            required.append("255 708")
+    missing = [item for item in required if item not in err]
+    if missing:
+        raise RuntimeError(f"probe log missing {missing}")
+    if "tts backend=CPU fallback" in err:
+        raise RuntimeError("probe ran on CPU fallback; Vulkan did not take the T3 model")
+    if "cap=1" in err:
+        raise RuntimeError("probe hit max_tokens cap; T3 did not stop on EOS")
+    print(f"probe family={family_name} lang={language} seconds={metrics.get('seconds', 0):.2f} "
+          f"chunks={int(metrics.get('chunks', 0))} t3_ms={metrics.get('t3_ms', 0):.0f} "
+          f"s3gen_ms={metrics.get('s3gen_ms', 0):.0f} wav={output_wav.name}")
+
+
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="python main.py")
     commands = p.add_subparsers(dest="command", required=True)
@@ -755,6 +825,11 @@ def parser() -> argparse.ArgumentParser:
     rainbow_cmd.add_argument("--language")
     rainbow_cmd.add_argument("--reference")
     rainbow_cmd.add_argument("--text")
+    probe_cmd = commands.add_parser("probe")
+    probe_cmd.add_argument("--family", choices=tuple(FAMILIES), required=True)
+    probe_cmd.add_argument("--language")
+    probe_cmd.add_argument("--reference")
+    probe_cmd.add_argument("--text")
     return p
 
 
@@ -765,6 +840,8 @@ def main() -> int:
             install(args.family)
         elif args.command == "rainbow":
             run_rainbow(args.output, args.family, args.language, args.reference, args.text)
+        elif args.command == "probe":
+            run_probe(args.family, args.language, args.reference, args.text)
         else:
             run_pipeline(args.input, args.output, args.family, args.language, args.reference)
         return 0
