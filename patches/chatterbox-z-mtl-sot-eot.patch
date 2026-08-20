@@ -1,0 +1,38 @@
+# chatterbox.cpp Engine MTL SOT/EOT pad (matches tts-cli + Python generate)
+diff --git a/src/chatterbox_engine.cpp b/src/chatterbox_engine.cpp
+index 60fe293..b7e1c0d 100644
+--- a/src/chatterbox_engine.cpp
++++ b/src/chatterbox_engine.cpp
+@@ -1,6 +1,7 @@
+ #include "tts-cpp/chatterbox/engine.h"
+ 
+ #include <atomic>
+ #include <chrono>
++#include <cstdio>
+ #include <cstring>
+ #include <filesystem>
+ #include <stdexcept>
+@@ -355,6 +356,24 @@ struct Engine::Impl {
+                 throw std::runtime_error("Engine: MTL tokenizer json failed to load");
+             }
+             text_tokens = tok.encode(text, opts.language);
++            // Python ChatterboxMultilingualTTS.generate and tts-cli pad
++            // start_text_token (255) + ids + stop_text_token (0). The Engine
++            // path used by Trident omitted this; German/Polish then start on
++            // the [de]/[pl] language token with no SOT, which collapses the
++            // decode into English-accented garbage.
++            std::vector<int32_t> padded;
++            padded.reserve(text_tokens.size() + 2);
++            padded.push_back(model.hparams.start_text_token);
++            padded.insert(padded.end(), text_tokens.begin(), text_tokens.end());
++            padded.push_back(model.hparams.stop_text_token);
++            fprintf(stderr, "mtl encode lang=%s raw=%zu padded=%zu sot=%d eot=%d ids=",
++                    opts.language.c_str(), text_tokens.size(), padded.size(),
++                    model.hparams.start_text_token, model.hparams.stop_text_token);
++            const size_t show = padded.size() < 12 ? padded.size() : 12;
++            for (size_t i = 0; i < show; ++i) fprintf(stderr, "%d ", padded[i]);
++            fprintf(stderr, "%s\n", padded.size() > show ? "..." : "");
++            text_tokens = std::move(padded);
+         } else {
+             if (model.tok_tokens.empty()) {
+                 throw std::runtime_error(

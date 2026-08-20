@@ -1,42 +1,32 @@
-#include "engine_wrapper.hpp"
+#include "audio.hpp"
 #include <tts-cpp/chatterbox/engine.h>
 
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
+#include <fstream>
+#include <limits>
 #include <stdexcept>
 
 namespace tts {
 
-struct EngineWrapper::Impl {
-    std::string t3, s3;
-    int gpu = 0, threads = 0, context = 0;
-};
-
-EngineWrapper::EngineWrapper(const std::string& t3, const std::string& s3, int gpu, int threads, int context)
-    : impl_(std::make_unique<Impl>()) {
-    if (!std::filesystem::is_regular_file(t3) || !std::filesystem::is_regular_file(s3))
-        throw std::runtime_error("model file missing");
-    if (gpu < 0 || threads < 1 || context < 1)
-        throw std::runtime_error("invalid engine runtime configuration");
-    impl_->t3 = t3;
-    impl_->s3 = s3;
-    impl_->gpu = gpu;
-    impl_->threads = threads;
-    impl_->context = context;
+static int utf8_chars(const std::string& s) {
+    int n = 0;
+    for (unsigned char c : s)
+        if ((c & 0xc0) != 0x80) ++n;
+    return n;
 }
 
-EngineWrapper::~EngineWrapper() = default;
-
-static std::vector<std::string> pack_text(const std::string& text, int limit) {
+std::vector<std::string> pack_text(const std::string& text, int limit) {
     if (limit < 40) limit = 40;
     if (text.empty()) return {text};
     auto is_ws = [](unsigned char c) { return std::isspace(c) != 0; };
     auto trim_right = [&](std::string& s) {
         while (!s.empty() && is_ws(static_cast<unsigned char>(s.back()))) s.pop_back();
     };
-    auto glue = [&](std::string& dst, const std::string& src) {
+    auto glue_text = [&](std::string& dst, const std::string& src) {
         if (src.empty()) return;
         if (!dst.empty() && !is_ws(static_cast<unsigned char>(dst.back())) &&
             !is_ws(static_cast<unsigned char>(src.front())))
@@ -66,7 +56,7 @@ static std::vector<std::string> pack_text(const std::string& text, int limit) {
 
     std::vector<std::string> refined;
     for (auto& sentence : sentences) {
-        if (static_cast<int>(sentence.size()) <= limit) {
+        if (utf8_chars(sentence) <= limit) {
             refined.push_back(std::move(sentence));
             continue;
         }
@@ -76,7 +66,7 @@ static std::vector<std::string> pack_text(const std::string& text, int limit) {
             acc += sentence[k];
             const char c = sentence[k];
             const bool next_ws = k + 1 < sentence.size() && is_ws(static_cast<unsigned char>(sentence[k + 1]));
-            if ((c == ',' || c == ':' || c == ';') && next_ws && static_cast<int>(acc.size()) > limit / 2) {
+            if ((c == ',' || c == ':' || c == ';') && next_ws && utf8_chars(acc) > limit / 2) {
                 size_t j = k + 1;
                 while (j < sentence.size() && is_ws(static_cast<unsigned char>(sentence[j]))) acc += sentence[j++];
                 refined.push_back(acc);
@@ -99,34 +89,34 @@ static std::vector<std::string> pack_text(const std::string& text, int limit) {
         }
         const int extra = (!is_ws(static_cast<unsigned char>(packed.back().back())) &&
                            !is_ws(static_cast<unsigned char>(sentence.front()))) ? 1 : 0;
-        if (static_cast<int>(packed.back().size()) + extra + static_cast<int>(sentence.size()) <= limit)
-            glue(packed.back(), sentence);
+        if (utf8_chars(packed.back()) + extra + utf8_chars(sentence) <= limit)
+            glue_text(packed.back(), sentence);
         else
             packed.push_back(std::move(sentence));
     }
-    if (packed.size() >= 2 && static_cast<int>(packed.back().size()) * 2 < limit) {
-        glue(packed[packed.size() - 2], packed.back());
+    if (packed.size() >= 2 && utf8_chars(packed.back()) * 2 < limit) {
+        glue_text(packed[packed.size() - 2], packed.back());
         packed.pop_back();
     }
     return packed.empty() ? std::vector<std::string>{text} : packed;
 }
 
-static int quiet_edge(const std::vector<float>& x, bool tail) {
+static int quiet_edge(const std::vector<float>& x, bool tail, float amp2) {
     const int n = static_cast<int>(x.size());
     int i = 0;
     while (i < n) {
         const float sample = tail ? x[n - 1 - i] : x[i];
-        if (sample * sample >= 0.0004f) break;
+        if (sample * sample >= amp2) break;
         ++i;
     }
     return i;
 }
 
-static void glue(std::vector<float>& dst, const std::vector<float>& src) {
+void glue(std::vector<float>& dst, const std::vector<float>& src, float quiet_amp2) {
     if (dst.empty()) { dst = src; return; }
     if (src.empty()) return;
     const int cap = std::min(kGlue, static_cast<int>(std::min(dst.size(), src.size())));
-    int n = std::min(quiet_edge(dst, true), quiet_edge(src, false));
+    int n = std::min(quiet_edge(dst, true, quiet_amp2), quiet_edge(src, false, quiet_amp2));
     n = std::min(cap, std::max(n, std::min(480, cap)));
     const float step = 1.5707963267948966f / static_cast<float>(std::max(n, 1));
     for (int i = 0; i < n; ++i) {
@@ -136,37 +126,63 @@ static void glue(std::vector<float>& dst, const std::vector<float>& src) {
     dst.insert(dst.end(), src.begin() + n, src.end());
 }
 
-Speech EngineWrapper::synthesize(const Voice& voice, const std::string& text) {
-    if (!std::filesystem::is_regular_file(voice.reference))
-        throw std::runtime_error("reference audio not found: " + voice.reference);
+void write_wav(const std::string& path, const std::vector<float>& pcm) {
+    if (pcm.empty()) throw std::runtime_error("cannot write empty WAV");
+    if (pcm.size() > (std::numeric_limits<uint32_t>::max() - 36u) / 2u)
+        throw std::runtime_error("WAV output is too large");
+    std::vector<int16_t> samples(pcm.size());
+    for (size_t i = 0; i < pcm.size(); ++i) {
+        const float clipped = std::max(-1.0f, std::min(1.0f, pcm[i]));
+        samples[i] = static_cast<int16_t>(clipped * 32767.0f);
+    }
+    const std::filesystem::path target(path);
+    if (!target.parent_path().empty()) std::filesystem::create_directories(target.parent_path());
+    std::ofstream out(target, std::ios::binary | std::ios::trunc);
+    if (!out) throw std::runtime_error("cannot open WAV output: " + path);
+    const uint32_t rate = 24000, data_size = static_cast<uint32_t>(samples.size() * 2u);
+    const uint32_t riff_size = 36u + data_size, byte_rate = rate * 2u, fmt_size = 16u;
+    const uint16_t format = 1u, channels = 1u, block_align = 2u, bits = 16u;
+    auto put = [&](const auto& value) { out.write(reinterpret_cast<const char*>(&value), sizeof(value)); };
+    out.write("RIFF", 4); put(riff_size); out.write("WAVEfmt ", 8);
+    put(fmt_size); put(format); put(channels); put(rate); put(byte_rate); put(block_align); put(bits);
+    out.write("data", 4); put(data_size);
+    out.write(reinterpret_cast<const char*>(samples.data()), static_cast<std::streamsize>(data_size));
+    if (!out) throw std::runtime_error("failed while writing WAV output: " + path);
+}
+
+Speech run(const Runtime& runtime, const EngineKnobs& knobs, const std::string& text, int chunk_chars, float quiet_amp2) {
+    if (!std::filesystem::is_regular_file(runtime.t3) || !std::filesystem::is_regular_file(runtime.s3))
+        throw std::runtime_error("model file missing");
+    if (!std::filesystem::is_regular_file(knobs.reference))
+        throw std::runtime_error("reference audio not found: " + knobs.reference);
     if (text.empty()) throw std::runtime_error("text is empty");
 
     tts_cpp::chatterbox::EngineOptions options;
-    options.t3_gguf_path = impl_->t3;
-    options.s3gen_gguf_path = impl_->s3;
-    options.n_gpu_layers = impl_->gpu;
-    options.n_threads = impl_->threads;
-    options.n_ctx = impl_->context;
-    options.reference_audio = voice.reference;
-    options.language = voice.language;
-    options.seed = voice.seed;
-    options.n_predict = voice.max_tokens;
-    options.top_k = voice.top_k;
-    options.top_p = voice.top_p;
-    options.min_p = voice.min_p;
-    options.temperature = voice.temperature;
-    options.repeat_penalty = voice.repeat_penalty;
-    options.cfg_weight = voice.cfg_weight;
-    options.exaggeration = voice.exaggeration;
-    options.cfm_steps = voice.cfm_steps;
+    options.t3_gguf_path = runtime.t3;
+    options.s3gen_gguf_path = runtime.s3;
+    options.n_gpu_layers = runtime.gpu;
+    options.n_threads = runtime.threads;
+    options.n_ctx = runtime.context;
+    options.reference_audio = knobs.reference;
+    options.language = knobs.language;
+    options.seed = knobs.seed;
+    options.n_predict = knobs.max_tokens;
+    options.top_k = knobs.top_k;
+    options.top_p = knobs.top_p;
+    options.min_p = knobs.min_p;
+    options.temperature = knobs.temperature;
+    options.repeat_penalty = knobs.repeat_penalty;
+    options.cfg_weight = knobs.cfg_weight;
+    options.exaggeration = knobs.exaggeration;
+    options.cfm_steps = knobs.cfm_steps;
 
     tts_cpp::chatterbox::Engine engine(options);
-    const auto pieces = pack_text(text, voice.chunk_chars);
+    const auto pieces = pack_text(text, chunk_chars);
     Speech speech;
     speech.chunks = static_cast<int>(pieces.size());
     for (const auto& piece : pieces) {
         auto result = engine.synthesize(piece);
-        glue(speech.pcm, result.pcm);
+        glue(speech.pcm, result.pcm, quiet_amp2);
         speech.t3_ms += result.t3_ms;
         speech.s3gen_ms += result.s3gen_ms;
     }
