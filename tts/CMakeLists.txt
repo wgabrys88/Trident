@@ -27,7 +27,6 @@ if(EXISTS "${CHATTERBOX_HEADER}")
     set(HAVE_CHATTERBOX ON)
 endif()
 
-# Runtime tests do not need GGUF, Vulkan, or the chatterbox tree.
 add_executable(trident-tts-tests
     tests/test_runtime.cpp
     src/family.cpp
@@ -80,4 +79,3 @@ endfunction()
 trident_tts_bin(trident-tts-v3 src/main_v3.cpp)
 trident_tts_bin(trident-tts-turbo src/main_turbo.cpp)
 trident_tts_bin(trident-tts-nano src/main_nano.cpp)
-trident_tts_bin(trident-tts-server src/server.cpp)
