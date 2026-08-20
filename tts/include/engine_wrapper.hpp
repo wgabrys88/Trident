@@ -48,7 +48,7 @@ public:
     PrefixKVCache& prefixes() { return prefixes_; }
     CacheStats stats() const;
     Family family() const { return family_; }
-    const FamilyPolicy& policy() const;
+    const FamilyPolicy& policy() const { return tts::policy(family_); }
 
 private:
     struct Impl;

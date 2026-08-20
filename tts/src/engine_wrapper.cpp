@@ -5,7 +5,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cmath>
 #include <filesystem>
 #include <mutex>
 #include <stdexcept>
@@ -78,6 +77,20 @@ EngineKnobs voice_to_knobs(const Voice& voice) {
     return k;
 }
 
+namespace {
+
+bool constrain_voice(Family family, Voice& voice) {
+    EngineKnobs knobs = voice_to_knobs(voice);
+    const bool forced = apply_family_policy(family, knobs);
+    voice.cfg = knobs.cfg_weight;
+    voice.exaggeration = knobs.exaggeration;
+    voice.language = knobs.language;
+    voice.top_k = knobs.top_k;
+    return forced;
+}
+
+} // namespace
+
 struct EngineWrapper::Impl {
     std::string t3, s3, model_name;
     int gpu = 0, threads = 0, context = 0;
@@ -113,7 +126,7 @@ void EngineWrapper::initialize(const std::string& t3, const std::string& s3, int
 void EngineWrapper::LoadChatterboxModel(const std::string& name, const std::string& t3_path, const std::string& s3_path) {
     family_ = parse_family(name);
     impl_->model_name = name;
-    const FamilyPolicy& p = policy(family_);
+    const FamilyPolicy& p = policy();
     initialize(t3_path, s3_path, 99, 4, p.context);
     log(std::string("load family=") + p.name + " params_m=" + std::to_string(p.params_m) +
         " multilingual=" + (p.multilingual ? "1" : "0") +
@@ -124,19 +137,12 @@ void EngineWrapper::LoadChatterboxModel(const std::string& name, const std::stri
 void EngineWrapper::set_family(Family family) { family_ = family; }
 
 void EngineWrapper::set_params(const EngineKnobs& knobs) {
-    Voice v = knobs_to_voice(knobs, policy(family_).chunk_chars);
-    EngineKnobs adjusted = knobs;
-    const bool forced = apply_family_policy(family_, adjusted);
-    v.cfg = adjusted.cfg_weight;
-    v.exaggeration = adjusted.exaggeration;
-    v.language = adjusted.language;
-    v.top_k = adjusted.top_k;
+    Voice v = knobs_to_voice(knobs, policy().chunk_chars);
+    const bool forced = constrain_voice(family_, v);
     impl_->voice = v;
     if (forced)
-        log("family " + std::string(policy(family_).name) + " ignored cfg/exaggeration (no-op)");
+        log("family " + std::string(policy().name) + " ignored cfg/exaggeration (no-op)");
 }
-
-const FamilyPolicy& EngineWrapper::policy() const { return tts::policy(family_); }
 
 CacheStats EngineWrapper::stats() const {
     CacheStats s = last_stats_;
@@ -153,14 +159,8 @@ void EngineWrapper::prepare(const Voice& voice_in, const std::string& text) {
     finish();
     impl_->job = std::unique_lock<std::mutex>(impl_->synth);
     Voice voice = voice_in;
-    EngineKnobs knobs = voice_to_knobs(voice);
-    const bool forced = apply_family_policy(family_, knobs);
-    voice.cfg = knobs.cfg_weight;
-    voice.exaggeration = knobs.exaggeration;
-    voice.language = knobs.language;
-    voice.top_k = knobs.top_k;
-    if (forced)
-        log("family " + std::string(policy(family_).name) + " cfg/exag no-op cfg=0 exag=0");
+    if (constrain_voice(family_, voice))
+        log("family " + std::string(policy().name) + " cfg/exag no-op cfg=0 exag=0");
 
     const std::string spk_key = SpeakerCache::make_key(voice.reference, voice.reference_mtime, voice.language);
     SpeakerEmbedding cached;
@@ -169,7 +169,7 @@ void EngineWrapper::prepare(const Voice& voice_in, const std::string& text) {
 
     const auto tokens = fake_prefix_tokens(text, family_, voice.language);
     const int prefix_n = std::min(32, static_cast<int>(tokens.size()));
-    const std::string kv_key = PrefixKVCache::make_key(policy(family_).name, voice.language, tokens, prefix_n);
+    const std::string kv_key = PrefixKVCache::make_key(policy().name, voice.language, tokens, prefix_n);
     PrefixKV kv;
     impl_->kv_hit = prefixes_.get(kv_key, kv);
     impl_->kv_saved_ms = impl_->kv_hit ? kv.saved_ms : 0;
