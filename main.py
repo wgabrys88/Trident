@@ -10,7 +10,8 @@ from pathlib import Path
 
 from config import (
     ASR_RUNTIME, ASR_RATE, TTS_RATE, REFERENCE_MIN_SECONDS, BRAIN_MODEL, BRAIN_RUNTIME,
-    BRAIN_GENERATION, BRAIN_THINKING, BRAIN_SYSTEM, FAMILIES, SHARED_MODELS, LANGUAGES, Paths, default_family,
+    BRAIN_GENERATION, BRAIN_THINKING, BRAIN_SYSTEM, FAMILIES, SHARED_MODELS, LANGUAGES, Paths,
+    default_family, resolve_voice,
 )
 from installer import (
     install, runtime_executable, runtime_tts, models_for, require_model,
@@ -209,52 +210,48 @@ def run_pipeline(input_wav: Path, output: Path | None, family_name: str, languag
     print(f"Run: {paths.run_dir}")
 
 
+EXAMPLES = """\
+python main.py install --family nano
+python main.py tts line.txt --family nano
+python main.py tts line.txt --family nano -r obama
+python main.py tts line.txt --family nano -r kamala
+python main.py tts line.txt --family nano -r myvoice.wav
+python main.py asr rec.wav
+python main.py brain prompt.txt
+python main.py run rec.wav --family nano
+"""
+
+
+class Cli(argparse.ArgumentParser):
+    def format_help(self) -> str:
+        return EXAMPLES
+
+    def error(self, message: str) -> None:
+        self.exit(2, f"{message}\n\n{EXAMPLES}")
+
+
 def build_parser() -> argparse.ArgumentParser:
     families = tuple(FAMILIES)
-    p = argparse.ArgumentParser(
-        prog="python main.py",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        description="Windows listen-think-speak box. Parakeet hears, Gemma answers, Chatterbox speaks.",
-        epilog=(
-            "commands:\n"
-            "  install [--family v3|turbo|nano]   tools, one family, models, celebrity voices\n"
-            "  asr IN.wav [-o text]               16 kHz mono PCM16 -> transcript\n"
-            "  brain IN.txt [--language] [-o text]  spoken reply\n"
-            "  tts IN.txt [--family] [--language] [-r wav] [-o wav]  24 kHz speech\n"
-            "  run IN.wav [--family] [--language] [-r wav] [-o wav]  listen, think, speak\n"
-            "\n"
-            "asr/brain/tts/run write a new timestamped folder and never overwrite an older run.\n"
-            "-o is an extra copy. -r defaults to the Trump celebrity voice.\n"
-            "\n"
-            "  python main.py install --family v3\n"
-            "  python main.py run rec.wav --language pl\n"
-            "  python main.py tts line.txt --family turbo\n"
-        ),
-    )
-    p.add_argument("--models-dir", type=Path, help="models directory")
-    p.add_argument("--data-dir", type=Path, help="data directory")
-    sub = p.add_subparsers(dest="command")
-
-    install_cmd = sub.add_parser("install", help="tools, one family, models, celebrity voices")
-    install_cmd.add_argument("--family", choices=families, default=default_family())
-
-    asr_cmd = sub.add_parser("asr", help="transcribe 16 kHz mono WAV")
+    p = Cli(prog="python main.py")
+    p.add_argument("--models-dir", type=Path)
+    p.add_argument("--data-dir", type=Path)
+    sub = p.add_subparsers(dest="command", parser_class=Cli)
+    install_cmd = sub.add_parser("install")
+    install_cmd.add_argument("--family", choices=families, required=True)
+    asr_cmd = sub.add_parser("asr")
     asr_cmd.add_argument("input")
     asr_cmd.add_argument("-o", "--output")
-
-    brain_cmd = sub.add_parser("brain", help="spoken reply to a text file")
+    brain_cmd = sub.add_parser("brain")
     brain_cmd.add_argument("input")
     brain_cmd.add_argument("-o", "--output")
     brain_cmd.add_argument("--language", default="en")
-
-    tts_cmd = sub.add_parser("tts", help="speak a text file")
+    tts_cmd = sub.add_parser("tts")
     tts_cmd.add_argument("input")
     tts_cmd.add_argument("-r", "--reference")
     tts_cmd.add_argument("-o", "--output")
     tts_cmd.add_argument("--family", choices=families, default=default_family())
     tts_cmd.add_argument("--language")
-
-    run_cmd = sub.add_parser("run", help="listen, think, speak")
+    run_cmd = sub.add_parser("run")
     run_cmd.add_argument("input")
     run_cmd.add_argument("-o", "--output")
     run_cmd.add_argument("--family", choices=families, default=default_family())
@@ -276,29 +273,25 @@ def main() -> int:
         if args.command == "install":
             install(args.family, (args.models_dir.resolve() if args.models_dir else None), (args.data_dir.resolve() if args.data_dir else None))
             return 0
+        source = Path(args.input).expanduser().resolve()
+        if not source.is_file():
+            raise RuntimeError(f"missing file: {source}")
+        output = Path(args.output).expanduser().resolve() if getattr(args, "output", None) else None
+        reference = None
+        if args.command in {"tts", "run"}:
+            data_dir = (args.data_dir.resolve() if args.data_dir else Paths().data_dir)
+            reference = resolve_voice(data_dir, args.reference)
+            if not reference.is_file():
+                raise RuntimeError(f"missing {reference.name}; python main.py install --family {args.family}")
         paths = start_run(args.command, args)
         if args.command == "asr":
-            run_asr(Path(args.input).expanduser().resolve(), Path(args.output).expanduser().resolve() if args.output else None, paths)
+            run_asr(source, output, paths)
         elif args.command == "brain":
-            run_brain(Path(args.input).expanduser().resolve(), Path(args.output).expanduser().resolve() if args.output else None, args.language, paths)
+            run_brain(source, output, args.language, paths)
         elif args.command == "tts":
-            run_tts(
-                Path(args.input).expanduser().resolve(),
-                Path(args.reference).expanduser().resolve() if args.reference else paths.reference,
-                Path(args.output).expanduser().resolve() if args.output else None,
-                args.family,
-                args.language,
-                paths,
-            )
+            run_tts(source, reference, output, args.family, args.language, paths)
         else:
-            run_pipeline(
-                Path(args.input).expanduser().resolve(),
-                Path(args.output).expanduser().resolve() if args.output else None,
-                args.family,
-                args.language,
-                Path(args.reference).expanduser().resolve() if args.reference else paths.reference,
-                paths,
-            )
+            run_pipeline(source, output, args.family, args.language, reference, paths)
         return 0
     except Exception as exc:
         note(f"error: {exc}")

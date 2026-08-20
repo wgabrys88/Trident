@@ -16,7 +16,7 @@ from pathlib import Path
 
 from config import (
     FAMILIES, SHARED_MODELS, VULKAN_VERSION, PACKAGES, SOURCES, BINARIES,
-    CHATTERBOX_LIBRARY, TTS_BUILD, default_family,
+    CHATTERBOX_LIBRARY, TTS_BUILD, TTS, default_family,
     CHATTERBOX, GGML, RUNTIMES, CONVERTER, TOOLS, PATCHES, ROOT,
     REFERENCE_VOICES, REFERENCE_MIN_SECONDS, Paths,
 )
@@ -41,7 +41,7 @@ def note(message: str) -> None:
 
 def validate_wav(path: Path, rate: int | None = None, minimum_seconds: float = 0.0, channels: int | None = None) -> None:
     if not path.is_file():
-        raise RuntimeError(f"WAV file is missing: {path}")
+        raise RuntimeError(f"missing {path}; python main.py install --family nano")
     with path.open("rb") as raw:
         header = raw.read(12)
     if len(header) != 12 or header[:4] != b"RIFF" or header[8:] != b"WAVE":
@@ -250,7 +250,7 @@ def runtime_tts(family_name: str, required: bool = True) -> Path | None:
     if len(matches) == 1:
         return matches[0]
     if required:
-        raise RuntimeError(f"runtime must contain exactly one {exe}; found {len(matches)}")
+        raise RuntimeError(f"{exe} is not installed; python main.py install --family {family_name}")
     return None
 
 
@@ -345,7 +345,7 @@ def require_model(spec: dict, models_dir: Path) -> Path:
     path = model_path(spec, models_dir)
     if not path.is_file() or path.stat().st_size != spec["size"]:
         actual = path.stat().st_size if path.is_file() else 0
-        raise RuntimeError(f"model missing or wrong size: {path} (expected {spec['size']}, got {actual})")
+        raise RuntimeError(f"missing {path.name} (expected {spec['size']} bytes, got {actual}); python main.py install --family nano")
     return path
 
 
@@ -440,14 +440,15 @@ def install(family: str, models_dir: Path | None = None, data_dir: Path | None =
         install_prerequisite(name)
     install_release_binary("parakeet")
     install_release_binary("gemma")
-    selected = models_for(family)
+    download_reference_voices(paths.data_dir)
     if not tts_runtime_ready(family):
         install_tts(family)
-    for spec in selected.values():
+    for spec in models_for(family).values():
         download_model(spec, paths.models_dir)
-    download_reference_voices(paths.data_dir)
     prune_convert_cache()
-    note(f"install complete: family={family} models={paths.models_dir} data={paths.data_dir}")
+    note("install complete")
+    note(f"python main.py tts line.txt --family {family}")
+    note(f"python main.py tts line.txt --family {family} -r obama")
 
 
 def main() -> int:

@@ -18,8 +18,7 @@ if(EXISTS "${CHATTERBOX_HEADER}")
 endif()
 
 if(NOT HAVE_CHATTERBOX)
-    message(WARNING "chatterbox.cpp missing at ${CHATTERBOX_CPP_ROOT}; nothing to build")
-    return()
+    message(FATAL_ERROR "chatterbox.cpp missing at ${CHATTERBOX_CPP_ROOT}")
 endif()
 
 find_package(Vulkan REQUIRED)

@@ -5,7 +5,6 @@
 !/config.py
 !/family_*.py
 !/installer.py
-!/SESSION_PROMPT.md
 !/patches/
 !/patches/*.patch
 !/tts/
