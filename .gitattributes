@@ -4,10 +4,6 @@
 * text=auto eol=lf
 *.py text eol=lf
 *.md text eol=lf
-*.js text eol=lf
-*.css text eol=lf
-*.html text eol=lf
-*.json text eol=lf
 *.patch text eol=lf
 *.hpp text eol=lf
 *.h text eol=lf

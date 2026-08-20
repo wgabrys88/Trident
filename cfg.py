@@ -1,22 +1,8 @@
-CONTROLLER = {"host": "127.0.0.1", "port": 8765}
-PORTS = {"tts": 8095, "asr": 8097, "brain": 8098}
-
-MIC = {
-    "sample_rate": 16000,
-    "vad_threshold": 0.020,
-    "vad_silence_ms": 700,
-    "vad_min_speech_ms": 400,
-    "pre_roll_ms": 300,
-    "clone_reference_seconds": 15,
-    "auto_send": True,
-}
-
-ASR_RUNTIME = {"threads": 4, "device": "Vulkan0", "response_format": "json"}
-ASR_CHUNK = {"seconds": 20.0, "overlap": 1.0}
+ASR_RUNTIME = {"threads": 4, "device": "Vulkan0"}
 
 BRAIN_MODEL = "gemma"
 BRAIN_RUNTIME = {
-    "device": "Vulkan0", "gpu_layers": "all", "context": 4096, "parallel": 1,
+    "device": "Vulkan0", "gpu_layers": "all", "context": 4096,
     "flash_attn": "on", "fit": "on", "fit_target": 1024, "fit_ctx": 4096,
 }
 BRAIN_GENERATION = {
