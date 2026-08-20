@@ -16,6 +16,7 @@ float parse_float(const Args& args, const std::string& key);
 std::string read_text(const std::string& path);
 void require_file(const Args& args, const std::string& key);
 Runtime runtime_from(const Args& args);
+void log(const std::string& line);
 void print_done(const Speech& speech, double total_ms, const Runtime& runtime, const EngineKnobs& knobs, int chunk_chars);
 
 }

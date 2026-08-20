@@ -47,6 +47,7 @@ int main(int argc, char** argv) {
         if (knobs.language.size() != 2)
             throw std::invalid_argument("v3 --language must be a 2-letter code");
 
+        tts::log("family=v3");
         const auto started = std::chrono::steady_clock::now();
         const tts::Speech speech = tts::run(runtime, knobs, text, chunk_chars, kQuietAmp2);
         tts::write_wav(args.at("--output"), speech.pcm);

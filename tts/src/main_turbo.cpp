@@ -43,6 +43,7 @@ int main(int argc, char** argv) {
         if (knobs.top_p < 0 || knobs.top_p > 1 || knobs.temperature < 0 || knobs.repeat_penalty <= 0)
             throw std::invalid_argument("sampling values are out of range");
 
+        tts::log("family=turbo");
         const auto started = std::chrono::steady_clock::now();
         const tts::Speech speech = tts::run(runtime, knobs, text, chunk_chars, kQuietAmp2);
         tts::write_wav(args.at("--output"), speech.pcm);

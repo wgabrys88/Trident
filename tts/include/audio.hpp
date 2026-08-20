@@ -15,7 +15,7 @@ struct Runtime {
 struct Speech {
     std::vector<float> pcm;
     double t3_ms = 0, s3gen_ms = 0;
-    int chunks = 0;
+    int chunks = 0, t3_tokens = 0;
 };
 
 std::vector<std::string> pack_text(const std::string& text, int limit);
