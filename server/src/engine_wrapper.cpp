@@ -96,17 +96,16 @@ static std::vector<std::string> pack_text(const std::string& text, int limit) {
 
     std::vector<std::string> packed;
     for (auto& sentence : refined) {
-        if (!packed.empty() && static_cast<int>(packed.back().size() + sentence.size()) <= limit)
+        while (!sentence.empty() && is_ws(static_cast<unsigned char>(sentence.back())))
+            sentence.pop_back();
+        if (sentence.empty()) continue;
+        const int have = packed.empty() ? 0 : static_cast<int>(packed.back().size());
+        const int next = static_cast<int>(sentence.size());
+        if (!packed.empty() && (have + next <= limit || have * 2 < limit || next * 2 < limit))
             packed.back() += sentence;
         else
             packed.push_back(std::move(sentence));
     }
-    for (auto& sentence : packed) {
-        while (!sentence.empty() && is_ws(static_cast<unsigned char>(sentence.back())))
-            sentence.pop_back();
-    }
-    packed.erase(std::remove_if(packed.begin(), packed.end(),
-        [](const std::string& sentence) { return sentence.empty(); }), packed.end());
     return packed.empty() ? std::vector<std::string>{text} : packed;
 }
 

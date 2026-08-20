@@ -734,6 +734,19 @@ def stitch_asr(parts: list[dict], overlap: float) -> dict:
             piece = str(part.get("text") or "").split()
         kept = piece if index == 0 else lcs_join(kept, piece)
     return {"text": " ".join(kept)}
+def asr_request(audio: bytes, response_format: str | None = None) -> dict:
+    body, content_type = multipart(audio, response_format)
+    return json.loads(remote(f"http://127.0.0.1:{PORTS['asr']}/v1/audio/transcriptions", body, content_type))
+
+def played_clips(audio: bytes) -> list[bytes]:
+    clips, index = [], 0
+    while True:
+        path = DATA / f"pack-{index}.wav"
+        if not path.is_file():
+            return clips or [audio]
+        clips.append(path.read_bytes())
+        index += 1
+
 def transcribe(audio: bytes, slot: str = "asr") -> dict:
     require_engine("asr")
     if slot == "played":
@@ -751,9 +764,11 @@ def transcribe(audio: bytes, slot: str = "asr") -> dict:
             rate, pcm, seconds = 16000, b"", 0.0
         window = float(ASR_CHUNK["seconds"])
         overlap = float(ASR_CHUNK["overlap"])
-        if slot == "played" or seconds <= window or not pcm:
-            body, content_type = multipart(audio)
-            result = json.loads(remote(f"http://127.0.0.1:{PORTS['asr']}/v1/audio/transcriptions", body, content_type))
+        if slot == "played":
+            parts = [asr_request(clip) for clip in played_clips(audio)]
+            result = {"text": " ".join(str(part.get("text") or "").strip() for part in parts if str(part.get("text") or "").strip())}
+        elif seconds <= window or not pcm:
+            result = asr_request(audio)
         else:
             step = max(window - overlap, 1.0)
             frame = width * max(channels, 1)
@@ -761,8 +776,7 @@ def transcribe(audio: bytes, slot: str = "asr") -> dict:
             while cursor < seconds:
                 start = int(cursor * rate) * frame
                 stop = int(min(seconds, cursor + window) * rate) * frame
-                body, content_type = multipart(pcm_wav(rate, pcm[start:stop]), "verbose_json")
-                parts.append(json.loads(remote(f"http://127.0.0.1:{PORTS['asr']}/v1/audio/transcriptions", body, content_type)))
+                parts.append(asr_request(pcm_wav(rate, pcm[start:stop]), "verbose_json"))
                 if cursor + window >= seconds:
                     break
                 cursor += step
