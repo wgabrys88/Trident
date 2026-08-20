@@ -1,4 +1,5 @@
 #include "cli.hpp"
+#include "engine_wrapper.hpp"
 
 #include <chrono>
 #include <iostream>
@@ -48,10 +49,27 @@ int main(int argc, char** argv) {
             throw std::invalid_argument("v3 --language must be a 2-letter code");
 
         tts::log("family=v3");
+        tts::EngineWrapper engine;
+        engine.LoadChatterboxModel("v3", runtime.t3, runtime.s3);
+        engine.initialize(runtime.t3, runtime.s3, runtime.gpu, runtime.threads, runtime.context);
+        engine.set_params(knobs);
         const auto started = std::chrono::steady_clock::now();
-        const tts::Speech speech = tts::run(runtime, knobs, text, chunk_chars, kQuietAmp2);
+        double ttfa_ms = -1;
+        engine.prepare(tts::knobs_to_voice(knobs, chunk_chars), text);
+        while (engine.busy()) {
+            engine.step([&](int, int, const std::vector<float>&, const std::vector<float>& playable) {
+                if (ttfa_ms < 0 && !playable.empty())
+                    ttfa_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+            });
+        }
+        const tts::Speech speech = engine.finish();
+        (void)kQuietAmp2;
         tts::write_wav(args.at("--output"), speech.pcm);
         const double total_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+        const auto stats = engine.stats();
+        tts::log("ttfa_ms=" + std::to_string(ttfa_ms) +
+                 " speaker_hits=" + std::to_string(stats.speaker_hits) +
+                 " kv_hits=" + std::to_string(stats.kv_hits));
         std::cerr << "family=v3 ";
         tts::print_done(speech, total_ms, runtime, knobs, chunk_chars);
         return 0;
