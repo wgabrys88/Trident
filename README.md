@@ -22,9 +22,9 @@ python main.py install --family v3
 python main.py probe --family v3 --language en
 ```
 
-Install clones pinned `chatterbox.cpp` + ggml, applies `patches/chatterbox-*.patch` in sorted order, builds `tts-cpp` and the three family CLIs (`trident-tts-v3`, `trident-tts-turbo`, `trident-tts-nano`), fetches GGUFs (v3 T3 is a convert: v3 weights copied onto v2 filenames because the converter still looks for `t3_mtl23ls_v2.safetensors`), copies runtime binaries to `tools/runtime/tts/`, and writes `tools/runtime/tts/.build-stamp`.
+Install clones pinned `chatterbox.cpp` + ggml, applies `patches/chatterbox-*.patch` in sorted order, builds `tts-cpp` and the three family CLIs (`trident-tts-v3`, `trident-tts-turbo`, `trident-tts-nano`), fetches GGUFs (v3 T3 is a convert: v3 weights copied onto v2 filenames because the converter still looks for `t3_mtl23ls_v2.safetensors`), and copies runtime binaries to `tools/runtime/tts/`.
 
-That stamp is a hash of the chatterbox revision, ggml revision, every `patches/chatterbox-*.patch`, and every `tts/` `.cpp`/`.hpp`/`CMakeLists.txt`. If you change a patch or wrapper, the next `install` rebuilds even if the old `.exe` is sitting there. Stale-binary skip is a past bug.
+A empty clone has no `tools/runtime/tts/*.exe`, so install compiles. A second install on the same tree skips the compile if those three family binaries already exist, and skips any GGUF that is already the expected size. There is no content hash. If you change a patch or wrapper on a machine that already has binaries, delete `tools/runtime/tts` (and usually `third_party/chatterbox.cpp/build`) so the next install actually rebuilds.
 
 Do not run leftover `tools/runtime/tts/trident-tts.exe`. That is the old unified binary. Family isolation is three names.
 
@@ -37,7 +37,7 @@ What got **correct**:
 - Language IDs. v3 encode is now `255 708 … 0` for English (`[de]=636`, `[pl]=717`). Engine used to skip SOT/EOT that Python and tts-cli pad. German without that pad was English-accented mush.
 - v3 `top_k=0`. Passing `top_k=1000` into MTL sampling is a bug. The v3 CLI rejects `--top-k`.
 - Logging. Stderr now tells the pipeline from text file to last sample. Rainbow capture reprints the whole log, not two prefixes.
-- Install stamp. A clone plus `install` is supposed to compile the wrappers and patches you actually have.
+- Fresh clone. `install` compiles because the family binaries are absent, then downloads models. No extra stamp file.
 
 What got **worse or not recovered**:
 

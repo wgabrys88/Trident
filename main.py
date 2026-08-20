@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import array
-import hashlib
 import json
 import math
 import os
@@ -59,7 +58,6 @@ PACKAGES = {
 CHATTERBOX_LIBRARY = CHATTERBOX / "build" / "Release" / "tts-cpp.lib"
 TTS_BUILD = TTS / "build" / "Release"
 TTS_FAMILY_EXES = tuple(family["TTS_EXE"] for family in FAMILIES.values())
-TTS_STAMP = RUNTIMES / "tts" / ".build-stamp"
 PROBE_EN = (
     "When the sunlight strikes raindrops in the air, they act as a prism and form a rainbow."
 )
@@ -259,29 +257,9 @@ def runtime_tts(family_name: str, required: bool = True) -> Path | None:
     return None
 
 
-def tts_source_stamp() -> str:
-    digest = hashlib.sha256()
-    digest.update(SOURCES["chatterbox"][1].encode("ascii"))
-    digest.update(b"\n")
-    digest.update(SOURCES["ggml"][1].encode("ascii"))
-    for path in sorted(PATCHES.glob("chatterbox-*.patch")):
-        digest.update(path.name.encode("ascii"))
-        digest.update(path.read_bytes())
-    for path in sorted(TTS.rglob("*")):
-        if not path.is_file() or "build" in path.parts:
-            continue
-        if path.suffix.lower() not in {".cpp", ".hpp", ".txt"}:
-            continue
-        digest.update(str(path.relative_to(TTS)).encode("utf-8"))
-        digest.update(path.read_bytes())
-    return digest.hexdigest()
-
-
 def tts_runtime_ready() -> bool:
     root = RUNTIMES / "tts"
     if not root.is_dir() or not CHATTERBOX_LIBRARY.is_file():
-        return False
-    if not TTS_STAMP.is_file() or TTS_STAMP.read_text(encoding="ascii").strip() != tts_source_stamp():
         return False
     return all(any(p.is_file() and p.name.lower() == exe.lower() for p in root.rglob("*") if p.is_file()) for exe in TTS_FAMILY_EXES)
 
@@ -361,7 +339,6 @@ def install_tts() -> None:
     except Exception:
         rmtree_retry(partial)
         raise
-    TTS_STAMP.write_text(tts_source_stamp() + "\n", encoding="ascii")
     if not tts_runtime_ready():
         raise RuntimeError("TTS runtime is missing family binaries")
 
