@@ -18,6 +18,7 @@ from installer import (
     validate_wav, write_text_atomic, note, set_log,
 )
 from local_api import chatterbox_synthesize, gemma_chat, parakeet_transcribe
+from media import chatterbox_wav, compatible_mp4, parakeet_wav, publish_outputs
 from resident import (
     ensure_chatterbox, ensure_gemma, ensure_parakeet,
     load_pipeline_profile, save_pipeline_profile,
@@ -255,6 +256,20 @@ def extra_copy(src: Path, dest: Path | None) -> None:
     shutil.copy2(src, dest)
 
 
+def prepared_reference(reference: Path, data_dir: Path) -> Path:
+    if not reference.is_file():
+        raise RuntimeError(f"missing {reference.name}; python main.py install")
+    wav = chatterbox_wav(reference, data_dir / "prepared", note)
+    validate_wav(wav, TTS_RATE, minimum_seconds=REFERENCE_MIN_SECONDS, channels=1)
+    return wav
+
+
+def publish_speech(paths: Paths, dest: Path | None) -> Path:
+    mp4 = compatible_mp4(paths.output, paths.output_mp4, note)
+    publish_outputs(paths.output, mp4, dest)
+    return mp4
+
+
 def write_meta(paths: Paths, rows: dict[str, str]) -> None:
     body = "".join(f"{key}={value}\n" for key, value in rows.items())
     write_text_atomic(paths.run_dir / "meta.txt", body)
@@ -268,15 +283,14 @@ def start_run(command: str, args) -> Paths:
 
 
 def run_asr(input_wav: Path, output: Path | None, paths: Paths, asr_language: str = "auto") -> None:
-    validate_wav(input_wav, pcm16=False)
-    shutil.copy2(input_wav, paths.run_dir / "input.wav")
+    wav = parakeet_wav(input_wav, paths.run_dir / "input.wav", note)
     text = transcribe(
         runtime_server("parakeet"), require_model(SHARED_MODELS["parakeet"], paths.models_dir),
-        input_wav, paths, asr_language,
+        wav, paths, asr_language,
     )
     extra_copy(paths.transcript, output)
     write_meta(paths, {
-        "command": "asr", "input": str(input_wav), "transcript": str(paths.transcript),
+        "command": "asr", "input": str(input_wav), "wav": str(wav), "transcript": str(paths.transcript),
         "asr_language": asr_language, "asr_language_mode": "auto-detect",
     })
     print(text)
@@ -317,7 +331,6 @@ def run_tts(
 ) -> None:
     family_name = family["name"]
     language = resolve_language(family, language)
-    validate_wav(reference, minimum_seconds=REFERENCE_MIN_SECONDS)
     models = models_for(family_name)
     shutil.copy2(text_file, paths.run_dir / "text.txt")
     synthesize(
@@ -326,13 +339,15 @@ def run_tts(
         require_model(models["chatterbox-codec"], paths.models_dir),
         reference, paths.output, language, family, text_file,
     )
-    extra_copy(paths.output, output)
+    mp4 = publish_speech(paths, output)
     write_meta(paths, {
         "command": "tts", "family": family_name, "language": language,
-        "text": str(text_file), "reference": str(reference), "output": str(paths.output),
+        "text": str(text_file), "reference": str(reference),
+        "output": str(paths.output), "output_mp4": str(mp4),
         "resident": "1", "reference_conditioning": "precomputed-once-at-resident-start",
     })
     print(f"Output: {paths.output}")
+    print(f"Video: {mp4}")
     print(f"Run: {paths.run_dir}")
 
 
@@ -350,14 +365,12 @@ def run_pipeline(
     family_name = family["name"]
     asr_language = validate_asr_language(asr_language)
     tts_language = resolve_language(family, tts_language)
-    validate_wav(input_wav, pcm16=False)
-    validate_wav(reference, minimum_seconds=REFERENCE_MIN_SECONDS)
+    wav = parakeet_wav(input_wav, paths.run_dir / "input.wav", note)
     models = models_for(family_name)
-    shutil.copy2(input_wav, paths.run_dir / "input.wav")
 
     transcript = transcribe(
         runtime_server("parakeet"), require_model(models["parakeet"], paths.models_dir),
-        input_wav, paths, asr_language,
+        wav, paths, asr_language,
     )
     answer = brain(
         runtime_server("gemma"), require_model(models[BRAIN_MODEL], paths.models_dir),
@@ -370,18 +383,20 @@ def run_pipeline(
         require_model(models["chatterbox-codec"], paths.models_dir),
         reference, paths.output, tts_language, family, paths.answer,
     )
-    extra_copy(paths.output, output)
+    mp4 = publish_speech(paths, output)
     write_meta(paths, {
         "command": "run", "family": family_name,
         "asr_language": asr_language, "asr_language_mode": "auto-detect",
-        "tts_language": tts_language, "input": str(input_wav),
-        "reference": str(reference), "output": str(paths.output), "system": str(paths.system),
+        "tts_language": tts_language, "input": str(input_wav), "wav": str(wav),
+        "reference": str(reference), "output": str(paths.output),
+        "output_mp4": str(mp4), "system": str(paths.system),
         "resident_chain": "parakeet->gemma->chatterbox",
     })
     note(f"component=pipeline event=done family={family_name} total_ms={(time.perf_counter() - pipeline_started) * 1000.0:.3f}")
     print(f"Transcript: {transcript}")
     print(f"Answer: {answer}")
     print(f"Output: {paths.output}")
+    print(f"Video: {mp4}")
     print(f"Run: {paths.run_dir}")
 
 
@@ -405,11 +420,16 @@ python main.py run input-2.wav
 python main.py resident warm --family turbo --asr-language en --tts-language en -r obama
 
 # Direct independent pipelines still work and remain resident after first use.
-python main.py parakeet rec.wav --language pl
+# Any audio/video input is converted to the WAV each model expects.
+python main.py parakeet rec.mp3 --language pl
+python main.py parakeet rec.mp4 --language pl
 python main.py gemma prompt.txt --language en
 python main.py nano line.txt -r obama
 python main.py turbo line.txt -r trump
-python main.py v3 line.txt --language pl -r myvoice.wav
+python main.py v3 line.txt --language pl -r myvoice.mp3
+
+# Chatterbox also writes a baseline H.264/AAC MP4 next to output.wav.
+python main.py run interview.m4a -o reply.mp4
 
 python main.py resident status
 python main.py resident stop
@@ -567,10 +587,7 @@ def warm_resident(args) -> None:
     explicit_prompt = read_system_prompt_arg(args)
     system_prompt = explicit_prompt if explicit_prompt is not None else (previous.get("system_prompt") or None)
     reference_value = args.reference if args.reference is not None else previous.get("reference")
-    reference = resolve_voice(paths.data_dir, reference_value)
-    if not reference.is_file():
-        raise RuntimeError(f"missing reference voice: {reference}")
-    validate_wav(reference, minimum_seconds=REFERENCE_MIN_SECONDS)
+    reference = prepared_reference(resolve_voice(paths.data_dir, reference_value), paths.data_dir)
 
     ensure_parakeet(
         runtime_server("parakeet"), require_model(SHARED_MODELS["parakeet"], paths.models_dir),
@@ -619,7 +636,7 @@ def _resolve_pipeline_settings(args, data_dir: Path) -> tuple[dict, str, str, Pa
     ref_value = getattr(args, "reference", None)
     if ref_value is None and profile.get("family") == family_name:
         ref_value = profile.get("reference")
-    reference = resolve_voice(data_dir, ref_value)
+    reference = prepared_reference(resolve_voice(data_dir, ref_value), data_dir)
     return family, asr_language, tts_language, reference, system_prompt
 
 
@@ -677,9 +694,7 @@ def main() -> int:
             run_brain(source, output, args.language, args.asr_language, paths, read_system_prompt_arg(args))
         elif operation == "tts":
             family = effective_family(args.family, args)
-            reference = resolve_voice(data_dir, args.reference)
-            if not reference.is_file():
-                raise RuntimeError(f"missing {reference.name}; python main.py install --family {args.family}")
+            reference = prepared_reference(resolve_voice(data_dir, args.reference), data_dir)
             run_tts(source, reference, output, family, args.language, paths)
         else:
             raise RuntimeError(f"unknown operation: {operation}")
