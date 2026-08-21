@@ -1,6 +1,5 @@
 #include "audio.hpp"
 #include "cli.hpp"
-#include "simd.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -147,7 +146,7 @@ static int quiet_edge(const std::vector<float>& x, bool tail, float amp2) {
 void glue(std::vector<float>& dst, const std::vector<float>& src, float quiet_amp2) {
     if (dst.empty()) {
         dst = src;
-        log("glue first samples=" + std::to_string(src.size()));
+        log("event=glue mode=first samples=" + std::to_string(src.size()));
         return;
     }
     if (src.empty()) return;
@@ -160,7 +159,7 @@ void glue(std::vector<float>& dst, const std::vector<float>& src, float quiet_am
         dst[dst.size() - n + i] = dst[dst.size() - n + i] * std::cos(w) + src[i] * std::sin(w);
     }
     dst.insert(dst.end(), src.begin() + n, src.end());
-    log("glue overlap=" + std::to_string(n) + " src=" + std::to_string(src.size()) +
+    log("event=glue mode=overlap overlap=" + std::to_string(n) + " src=" + std::to_string(src.size()) +
         " dst=" + std::to_string(dst.size()));
 }
 
@@ -169,7 +168,10 @@ void write_wav(const std::string& path, const std::vector<float>& pcm) {
     if (pcm.size() > (std::numeric_limits<uint32_t>::max() - 36u) / 2u)
         throw std::runtime_error("WAV output is too large");
     std::vector<int16_t> samples(pcm.size());
-    pcm_f32_to_i16(pcm.data(), samples.data(), pcm.size());
+    for (std::size_t i = 0; i < pcm.size(); ++i) {
+        const float clipped = std::max(-1.0f, std::min(1.0f, pcm[i]));
+        samples[i] = static_cast<int16_t>(clipped * 32767.0f);
+    }
     const std::filesystem::path target(path);
     if (!target.parent_path().empty()) std::filesystem::create_directories(target.parent_path());
     std::ofstream out(target, std::ios::binary | std::ios::trunc);
@@ -183,9 +185,8 @@ void write_wav(const std::string& path, const std::vector<float>& pcm) {
     out.write("data", 4); put(data_size);
     out.write(reinterpret_cast<const char*>(samples.data()), static_cast<std::streamsize>(data_size));
     if (!out) throw std::runtime_error("failed while writing WAV output: " + path);
-    log("wav path=" + path + " samples=" + std::to_string(pcm.size()) +
-        " seconds=" + std::to_string(pcm.size() / static_cast<double>(kRate)) +
-        " simd=" + pcm_simd_backend());
+    log("event=wav path=" + path + " samples=" + std::to_string(pcm.size()) +
+        " seconds=" + std::to_string(pcm.size() / static_cast<double>(kRate)));
 }
 
 }

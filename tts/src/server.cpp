@@ -1,6 +1,5 @@
 #include "cli.hpp"
 #include "session.hpp"
-#include "stream_writer.hpp"
 
 #include <algorithm>
 #include <array>
@@ -160,7 +159,7 @@ int main(int argc, char** argv) {
         validate_knobs(family, knobs, first_chunk_chars, chunk_chars);
 
         const tts::Runtime runtime = tts::runtime_from(args);
-        tts::log("resident family=" + family + " preload=begin language=" + knobs.language +
+        tts::log("event=resident_start family=" + family + " preload=begin language=" + knobs.language +
                  " reference=" + knobs.reference);
         // Model weights, backend buffers, and every reference-dependent voice
         // conditional are built before the listening socket exists. A successful
@@ -187,9 +186,10 @@ int main(int argc, char** argv) {
         if (bind(listener.value, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0)
             throw std::runtime_error("resident TTS bind failed on 127.0.0.1:" + std::to_string(port));
         if (listen(listener.value, 8) != 0) throw std::runtime_error("resident TTS listen failed");
-        tts::log("resident ready=1 family=" + family + " host=127.0.0.1 port=" + std::to_string(port) +
+        tts::log("event=resident_ready ready=1 family=" + family + " host=127.0.0.1 port=" + std::to_string(port) +
                  " model_resident=1 reference_conditioning_resident=1 language=" + knobs.language);
 
+        std::uint64_t request_seq = 0;
         for (;;) {
             SocketGuard client(accept(listener.value, nullptr, nullptr));
             if (client.value == kInvalidSocket) continue;
@@ -208,26 +208,29 @@ int main(int argc, char** argv) {
                 continue;
 
             try {
+                const std::uint64_t request_id = ++request_seq;
+                tts::set_request_id(request_id);
+                tts::log("event=request_start text_bytes=" + std::to_string(text.size()) + " output=" + output);
                 const auto started = std::chrono::steady_clock::now();
-                tts::StreamingWavWriter writer(output);
-                const tts::Speech speech = session.synthesize(text,
-                    [&](const float* samples, std::size_t count) { writer.push(samples, count); });
-                writer.finish();
+                const tts::Speech speech = session.synthesize(text);
+                tts::write_wav(output, speech.pcm);
                 const double total_ms = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - started).count();
                 tts::print_done(speech, total_ms, session.runtime(), session.knobs(), session.chunk_chars());
                 const double audio_ms = speech.pcm.size() * 1000.0 / tts::kRate;
                 const double wall_rtf = audio_ms > 0 ? total_ms / audio_ms : 0.0;
-                const std::string result = "samples=" + std::to_string(speech.pcm.size()) +
+                const std::string result = "request_id=" + std::to_string(request_id) +
+                    " samples=" + std::to_string(speech.pcm.size()) +
                     " chunks=" + std::to_string(speech.chunks) +
                     " t3_ms=" + std::to_string(speech.t3_ms) +
                     " s3gen_ms=" + std::to_string(speech.s3gen_ms) +
                     " ttfa_ms=" + std::to_string(speech.ttfa_ms) +
                     " total_ms=" + std::to_string(total_ms) +
-                    " wall_rtf=" + std::to_string(wall_rtf);
+                    " wall_rtf=" + std::to_string(wall_rtf) +
+                    " ttfa_scope=server-internal-whole-s3gen-chunk client_streaming=0";
                 send_response(client.value, 0, result);
             } catch (const std::exception& error) {
-                tts::log(std::string("resident request error: ") + error.what());
+                tts::log(std::string("event=request_error message=") + error.what());
                 send_response(client.value, 1, error.what());
             }
         }

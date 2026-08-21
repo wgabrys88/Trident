@@ -1,9 +1,12 @@
 FAMILY = {
     "name": "v3",
-    "TTS_LABEL": "CHATTERBOX TTS V3",
-    "TTS_EXE": "trident-tts-v3.exe",
-    "TTS_MULTILINGUAL": True,
-    "TTS_LANGUAGES": {"en": "English", "pl": "Polish", "de": "German"},
+    "TTS_LANGUAGES": {
+        "en": "English", "es": "Spanish", "fr": "French", "de": "German",
+        "it": "Italian", "pt": "Portuguese", "nl": "Dutch", "pl": "Polish",
+        "tr": "Turkish", "sv": "Swedish", "da": "Danish", "fi": "Finnish",
+        "no": "Norwegian", "el": "Greek", "ms": "Malay", "sw": "Swahili",
+        "ar": "Arabic", "ko": "Korean",
+    },
     "DEFAULT_REPLY_LANGUAGE": "en",
     "TTS_RUNTIME": {"gpu_layers": 99, "context": 2048, "threads": 4},
     "TTS_SAMPLE": {

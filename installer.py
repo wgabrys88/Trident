@@ -13,11 +13,12 @@ import urllib.parse
 import urllib.request
 import wave
 import zipfile
+from datetime import datetime
 from pathlib import Path
 
 from config import (
     FAMILIES, SHARED_MODELS, VULKAN_VERSION, PACKAGES, SOURCES, BINARIES,
-    CHATTERBOX_LIBRARY, TTS_BUILD, TTS_BUILD_REVISION, TTS_SERVER_EXE, TTS, default_family,
+    CHATTERBOX_LIBRARY, TTS_BUILD, TTS_SERVER_EXE, TTS,
     CHATTERBOX, GGML, RUNTIMES, CONVERTER, TOOLS, PATCHES, ROOT,
     REFERENCE_VOICES, REFERENCE_MIN_SECONDS, Paths,
 )
@@ -34,19 +35,25 @@ def set_log(path: Path | None) -> None:
 
 
 def note(message: str) -> None:
-    print(message, file=sys.stderr, flush=True)
+    line = f"ts={datetime.now().astimezone().isoformat(timespec='milliseconds')} {message}"
+    print(line, file=sys.stderr, flush=True)
     if _log:
         with _log.open("a", encoding="utf-8", newline="\n") as handle:
-            handle.write(message + "\n")
+            handle.write(line + "\n")
 
 
-def validate_wav(path: Path, rate: int | None = None, minimum_seconds: float = 0.0, channels: int | None = None) -> None:
+def validate_wav(path: Path, rate: int | None = None, minimum_seconds: float = 0.0, channels: int | None = None, *, pcm16: bool = True) -> None:
     if not path.is_file():
         raise RuntimeError(f"missing {path}; python main.py install --family nano")
     with path.open("rb") as raw:
         header = raw.read(12)
     if len(header) != 12 or header[:4] != b"RIFF" or header[8:] != b"WAVE":
         raise RuntimeError(f"invalid WAV {path}: not a RIFF/WAVE file")
+    # Parakeet.cpp v0.5.0 uses dr_wav, downmixes every channel to mono and
+    # resamples to 16 kHz internally. For ASR, the RIFF/WAVE container is the
+    # contract; strict PCM16 checks remain for Trident-owned TTS/reference WAVs.
+    if not pcm16:
+        return
     with wave.open(str(path), "rb") as audio:
         if audio.getsampwidth() != 2 or audio.getcomptype() != "NONE":
             raise RuntimeError(f"invalid WAV {path}: must be PCM16")
@@ -68,7 +75,7 @@ def write_text_atomic(path: Path, text: str) -> None:
 
 
 def present(path: Path, size: int = 0) -> bool:
-    return path.is_file() and (not size or path.stat().st_size == size)
+    return path.is_file() and path.stat().st_size > 0 and (not size or path.stat().st_size == size)
 
 
 def executable(name: str) -> str | None:
@@ -123,8 +130,10 @@ def build_env() -> dict[str, str]:
 
 
 def run_process(component: str, stage: str, command: list[str], cwd: Path, env: dict[str, str] | None = None) -> None:
-    note(f"{component} {stage}: {' '.join(command)}")
+    note(f"component={component} stage={stage} event=start command={' '.join(command)}")
+    started = time.perf_counter()
     subprocess.run(command, cwd=cwd, env=env or build_env(), stdout=sys.stderr, stderr=sys.stderr, check=True)
+    note(f"component={component} stage={stage} event=done elapsed_ms={(time.perf_counter() - started) * 1000.0:.3f}")
 
 
 def rmtree_retry(path: Path, attempts: int = 10) -> None:
@@ -180,7 +189,7 @@ def chatterbox_native_revision() -> str:
     parts = [
         repr(SOURCES["chatterbox"]).encode("utf-8"),
         repr(SOURCES["ggml"]).encode("utf-8"),
-        b"-DGGML_VULKAN=ON|-DGGML_CUDA=OFF|-DGGML_NATIVE=OFF|-DTTS_CPP_BUILD_EXECUTABLES=OFF|-DTTS_CPP_BUILD_TESTS=OFF",
+        b"-DGGML_VULKAN=ON|-DGGML_CUDA=OFF|-DGGML_NATIVE=OFF|-DGGML_CCACHE=OFF|-DTTS_CPP_BUILD_EXECUTABLES=OFF|-DTTS_CPP_BUILD_TESTS=OFF",
     ]
     patches = sorted(PATCHES.glob("chatterbox-*.patch"))
     if not patches:
@@ -205,7 +214,7 @@ def _native_build_ready() -> bool:
 
 
 def trident_tts_revision() -> str:
-    parts = [TTS_BUILD_REVISION.encode("utf-8"), chatterbox_native_revision().encode("ascii")]
+    parts = [chatterbox_native_revision().encode("ascii")]
     for path in sorted(p for p in TTS.rglob("*") if p.is_file() and "build" not in p.parts):
         rel = path.relative_to(TTS).as_posix().encode("utf-8")
         parts.append(rel)
@@ -229,7 +238,7 @@ def _stop_owned_chatterbox_before_replace() -> None:
     stop_owned("chatterbox", note)
 
 
-def github_release_asset(spec: dict) -> tuple[str, int]:
+def github_release_asset(spec: dict) -> tuple[str, int, str | None]:
     repo = urllib.parse.quote(spec["repo"], safe="/")
     tag = urllib.parse.quote(spec["tag"], safe="")
     request = urllib.request.Request(
@@ -246,13 +255,22 @@ def github_release_asset(spec: dict) -> tuple[str, int]:
     url = str(asset.get("browser_download_url") or "")
     if size <= 0 or not url.startswith("https://github.com/"):
         raise RuntimeError(f"invalid GitHub release metadata for {spec['asset']}")
-    return url, size
+    digest = str(asset.get("digest") or "")
+    sha256 = digest.removeprefix("sha256:") if digest.startswith("sha256:") else None
+    if sha256 is not None and (len(sha256) != 64 or any(c not in "0123456789abcdefABCDEF" for c in sha256)):
+        raise RuntimeError(f"invalid GitHub SHA-256 metadata for {spec['asset']}")
+    return url, size, sha256.lower() if sha256 else None
 
 
-def fetch(url: str, destination: Path, size: int) -> None:
+def fetch(url: str, destination: Path, size: int, sha256: str | None = None) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     if present(destination, size):
-        return
+        if not sha256:
+            return
+        with destination.open("rb") as cached:
+            if hashlib.file_digest(cached, "sha256").hexdigest() == sha256:
+                return
+        destination.unlink()
     partial = destination.with_suffix(destination.suffix + ".part")
     partial.unlink(missing_ok=True)
     request = urllib.request.Request(url, headers={"User-Agent": "trident/1"})
@@ -266,6 +284,11 @@ def fetch(url: str, destination: Path, size: int) -> None:
                     note(f"download {destination.name}: {done}/{size}")
         if size and done != size:
             raise RuntimeError(f"download size mismatch for {destination.name}: expected {size}, got {done}")
+        if sha256:
+            with partial.open("rb") as downloaded:
+                actual = hashlib.file_digest(downloaded, "sha256").hexdigest()
+            if actual != sha256:
+                raise RuntimeError(f"download SHA-256 mismatch for {destination.name}: expected {sha256}, got {actual}")
         os.replace(partial, destination)
     except Exception:
         partial.unlink(missing_ok=True)
@@ -306,23 +329,17 @@ def _runtime_binary(name: str, key: str, required: bool = True) -> Path | None:
     return None
 
 
-def runtime_executable(name: str, required: bool = True) -> Path | None:
-    return _runtime_binary(name, "exe", required)
-
-
 def runtime_server(name: str, required: bool = True) -> Path | None:
     return _runtime_binary(name, "server_exe", required)
 
 
-def runtime_tts(family_name: str, required: bool = True) -> Path | None:
-    exe = FAMILIES[family_name]["TTS_EXE"]
-    root = RUNTIMES / "tts"
-    matches = [p for p in root.rglob("*") if p.is_file() and p.name.lower() == exe.lower()] if root.exists() else []
-    if len(matches) == 1:
-        return matches[0]
-    if required:
-        raise RuntimeError(f"{exe} is not installed; python main.py install --family {family_name}")
-    return None
+def _release_marker(name: str) -> Path:
+    return RUNTIMES / name / ".trident-release"
+
+
+def _release_identity(name: str) -> str:
+    spec = BINARIES[name]
+    return f"{spec['repo']}@{spec['tag']}:{spec['asset']}"
 
 
 def runtime_tts_server(required: bool = True) -> Path | None:
@@ -335,31 +352,29 @@ def runtime_tts_server(required: bool = True) -> Path | None:
     return None
 
 
-def tts_runtime_ready(family_name: str) -> bool:
-    if family_name not in FAMILIES or not _native_build_ready():
+def tts_runtime_ready() -> bool:
+    if not _native_build_ready():
         return False
     revision = trident_tts_revision()
-    return (
-        _runtime_marker_matches(family_name, revision)
-        and _runtime_marker_matches("server", revision)
-        and runtime_tts(family_name, required=False) is not None
-        and runtime_tts_server(required=False) is not None
-    )
+    return _runtime_marker_matches("server", revision) and runtime_tts_server(required=False) is not None
 
 
 def install_release_binary(name: str) -> None:
     spec = BINARIES[name]
-    if runtime_executable(name, required=False) and runtime_server(name, required=False):
-        note(f"{spec['label']}: ready (cli + resident server)")
+    marker = _release_marker(name)
+    identity = _release_identity(name)
+    installed = runtime_server(name, required=False)
+    if installed and marker.is_file() and marker.read_text(encoding="ascii", errors="ignore").strip() == identity:
+        note(f"{spec['label']}: ready (pinned resident server)")
         return
     note(f"{spec['label']}: installing pinned {spec['tag']} release")
-    url, size = github_release_asset(spec)
+    url, size, sha256 = github_release_asset(spec)
     archive = TOOLS / "downloads" / spec["asset"]
-    fetch(url, archive, size)
-    extract_release_bundle(archive, RUNTIMES / name, (spec["exe"], spec["server_exe"]))
+    fetch(url, archive, size, sha256)
+    extract_release_bundle(archive, RUNTIMES / name, (spec["server_exe"],))
     archive.unlink(missing_ok=True)
-    runtime_executable(name)
     runtime_server(name)
+    marker.write_text(identity + "\n", encoding="ascii")
 
 
 def install_prerequisite(name: str) -> None:
@@ -391,10 +406,9 @@ def install_prerequisite(name: str) -> None:
         raise RuntimeError(f"{name} installer completed but prerequisite is still missing")
 
 
-def install_tts(family_name: str) -> None:
-    family = FAMILIES[family_name]
-    if tts_runtime_ready(family_name):
-        note(f"{family['TTS_LABEL']}: ready")
+def install_tts() -> None:
+    if tts_runtime_ready():
+        note("CHATTERBOX TTS RUNTIME: ready")
         return
     cmake = need("cmake")
 
@@ -404,7 +418,7 @@ def install_tts(family_name: str) -> None:
         checkout("tts", CHATTERBOX, "chatterbox")
         apply_chatterbox_patches()
         checkout("tts", GGML, "ggml")
-        run_process("tts", "configure-chatterbox", [cmake, "-S", ".", "-B", "build", "-A", "x64", "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_NATIVE=OFF", "-DTTS_CPP_BUILD_EXECUTABLES=OFF", "-DTTS_CPP_BUILD_TESTS=OFF"], CHATTERBOX)
+        run_process("tts", "configure-chatterbox", [cmake, "-S", ".", "-B", "build", "-A", "x64", "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_NATIVE=OFF", "-DGGML_CCACHE=OFF", "-DTTS_CPP_BUILD_EXECUTABLES=OFF", "-DTTS_CPP_BUILD_TESTS=OFF"], CHATTERBOX)
         run_process("tts", "build-chatterbox", [cmake, "--build", "build", "--config", "Release", "--target", "tts-cpp", "mtl_tokenizer", "--parallel"], CHATTERBOX)
         if not CHATTERBOX_LIBRARY.is_file():
             raise RuntimeError(f"Chatterbox build did not create {CHATTERBOX_LIBRARY}")
@@ -413,43 +427,36 @@ def install_tts(family_name: str) -> None:
         marker.write_text(native_revision + "\n", encoding="ascii")
 
     revision = trident_tts_revision()
-    # A ZIP can be extracted over a previously built tree with older source
-    # mtimes. Delete the wrapper build directory when its content identity
-    # changed so CMake cannot incorrectly reuse stale objects.
     runtime = RUNTIMES / "tts"
-    family_marker = _runtime_build_marker(family_name)
-    server_marker = _runtime_build_marker("server")
     source_changed = (
         (runtime_tts_server(required=False) is not None and not _runtime_marker_matches("server", revision))
-        or (family_marker.is_file() and not _runtime_marker_matches(family_name, revision))
-        or ((runtime / ".build-revision").is_file())
+        or (runtime / ".build-revision").is_file()
     )
     if source_changed:
         rmtree_retry(TTS / "build")
 
-    run_process("tts", "configure-trident-tts", [cmake, "-S", ".", "-B", "build", "-A", "x64", f"-DCHATTERBOX_CPP_ROOT={CHATTERBOX}", "-DTRIDENT_AVX512_DISPATCH=ON"], TTS)
-    target = family["TTS_EXE"][:-4] if family["TTS_EXE"].lower().endswith(".exe") else family["TTS_EXE"]
-    run_process("tts", f"build-{family_name}", [cmake, "--build", "build", "--config", "Release", "--target", target, "trident-tts-server", "--parallel"], TTS)
-    built = TTS_BUILD / family["TTS_EXE"]
+    run_process("tts", "configure-trident-tts", [cmake, "-S", ".", "-B", "build", "-A", "x64", f"-DCHATTERBOX_CPP_ROOT={CHATTERBOX}"], TTS)
+    run_process("tts", "build-server", [cmake, "--build", "build", "--config", "Release", "--target", "trident-tts-server", "--parallel"], TTS)
     built_server = TTS_BUILD / TTS_SERVER_EXE
-    if not built.is_file():
-        raise RuntimeError(f"TTS build did not create {built}")
     if not built_server.is_file():
         raise RuntimeError(f"TTS build did not create {built_server}")
 
     _stop_owned_chatterbox_before_replace()
     runtime.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(built, runtime / built.name)
+    # Remove obsolete per-family launchers/markers from pre-server-only builds.
+    for obsolete in (
+        "trident-tts-nano.exe", "trident-tts-turbo.exe", "trident-tts-v3.exe",
+        ".build-nano.revision", ".build-turbo.revision", ".build-v3.revision",
+    ):
+        (runtime / obsolete).unlink(missing_ok=True)
     shutil.copy2(built_server, runtime / built_server.name)
     for artifact in TTS_BUILD.iterdir():
         if artifact.is_file() and artifact.suffix.lower() == ".dll":
             shutil.copy2(artifact, runtime / artifact.name)
-    _runtime_build_marker(family_name).write_text(revision + "\n", encoding="ascii")
     _runtime_build_marker("server").write_text(revision + "\n", encoding="ascii")
     (runtime / ".build-revision").unlink(missing_ok=True)
-    if not tts_runtime_ready(family_name):
-        raise RuntimeError(f"TTS runtime verification failed for {family['TTS_EXE']}")
-
+    if not tts_runtime_ready():
+        raise RuntimeError(f"TTS runtime verification failed for {TTS_SERVER_EXE}")
 
 def models_for(family: str) -> dict:
     return {**FAMILIES[family]["TTS_MODELS"], **SHARED_MODELS}
@@ -461,9 +468,8 @@ def model_path(spec: dict, models_dir: Path) -> Path:
 
 def require_model(spec: dict, models_dir: Path) -> Path:
     path = model_path(spec, models_dir)
-    if not path.is_file() or path.stat().st_size != spec["size"]:
-        actual = path.stat().st_size if path.is_file() else 0
-        raise RuntimeError(f"missing {path.name} (expected {spec['size']} bytes, got {actual}); python main.py install --family all")
+    if not present(path, spec["size"]):
+        raise RuntimeError(f"missing model {path}; python main.py install --family all")
     return path
 
 
@@ -488,13 +494,15 @@ def download_model(spec: dict, models_dir: Path) -> None:
     if not CHATTERBOX_LIBRARY.is_file() or not script.is_file():
         raise RuntimeError("install Chatterbox TTS before converting its models")
     python = CONVERTER / "Scripts" / "python.exe"
-    lock = "numpy==1.26.4 torch==2.6.0 gguf==0.19.0 safetensors==0.5.3 scipy==1.15.3 librosa==0.11.0 resampy==0.4.3 huggingface-hub==0.34.4"
+    torch_pin = "torch==2.6.0"
+    packages = "numpy==1.26.4 gguf==0.19.0 safetensors==0.5.3 scipy==1.15.3 librosa==0.11.0 resampy==0.4.3 huggingface-hub==0.34.4"
+    lock = torch_pin + " " + packages
     stamp = CONVERTER / ".packages"
     if not python.is_file():
         run_process(spec["label"], "venv", [sys.executable, "-m", "venv", str(CONVERTER)], ROOT, os.environ.copy())
     if not stamp.is_file() or stamp.read_text(encoding="ascii") != lock:
-        run_process(spec["label"], "torch", [str(python), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "torch==2.6.0", "--index-url", "https://download.pytorch.org/whl/cpu"], ROOT, os.environ.copy())
-        run_process(spec["label"], "dependencies", [str(python), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", *lock.split()], ROOT, os.environ.copy())
+        run_process(spec["label"], "torch", [str(python), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", torch_pin, "--index-url", "https://download.pytorch.org/whl/cpu"], ROOT, os.environ.copy())
+        run_process(spec["label"], "dependencies", [str(python), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", *packages.split()], ROOT, os.environ.copy())
         stamp.parent.mkdir(parents=True, exist_ok=True)
         stamp.write_text(lock, encoding="ascii")
     required = tuple(recipe["files"])
@@ -533,7 +541,6 @@ def download_model(spec: dict, models_dir: Path) -> None:
         partial.unlink(missing_ok=True)
         raise RuntimeError(f"converted model missing or wrong size: {partial}")
     os.replace(partial, destination)
-    rmtree_retry(checkpoint)
 
 
 def download_reference_voices(data_dir: Path) -> None:
@@ -562,9 +569,8 @@ def install(family: str, models_dir: Path | None = None, data_dir: Path | None =
     install_release_binary("parakeet")
     install_release_binary("gemma")
     download_reference_voices(paths.data_dir)
-    for family_name in selected:
-        if not tts_runtime_ready(family_name):
-            install_tts(family_name)
+    if not tts_runtime_ready():
+        install_tts()
 
     # De-duplicate shared/model-family downloads by output filename while still
     # installing every selected Chatterbox family when --family all is used.

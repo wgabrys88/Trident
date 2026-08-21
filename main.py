@@ -5,10 +5,11 @@ import copy
 import json
 import shutil
 import sys
+import time
 from pathlib import Path
 
 from config import (
-    ASR_RUNTIME, ASR_RATE, TTS_RATE, REFERENCE_MIN_SECONDS, BRAIN_MODEL, BRAIN_RUNTIME,
+    ASR_RUNTIME, TTS_RATE, REFERENCE_MIN_SECONDS, BRAIN_MODEL, BRAIN_RUNTIME,
     BRAIN_GENERATION, BRAIN_THINKING, BRAIN_SYSTEM, FAMILIES, SHARED_MODELS, LANGUAGES,
     ASR_LANGUAGES, Paths, default_family, resolve_voice,
 )
@@ -42,11 +43,10 @@ def transcribe(server: Path, model: Path, input_wav: Path, paths: Paths, expecte
     base_url = ensure_parakeet(server, model, ASR_RUNTIME, note)
     # NVIDIA Parakeet TDT 0.6B v3 performs language identification internally.
     # The v0.5 parakeet-server exposes no language selector for this checkpoint.
-    note(
-        f"asr resident request: {base_url}/v1/audio/transcriptions input={input_wav} "
-        f"language_mode=auto-detect expected={expected_language}"
-    )
+    note(f"component=asr event=request endpoint={base_url}/v1/audio/transcriptions input={input_wav} language_mode=auto expected={expected_language}")
+    started = time.perf_counter()
     payload = parakeet_transcribe(base_url, input_wav)
+    note(f"component=asr event=done request_ms={(time.perf_counter() - started) * 1000.0:.3f}")
     text = str(payload.get("text") or "").strip()
     if not text:
         raise RuntimeError("Parakeet returned an empty transcript")
@@ -125,11 +125,10 @@ def brain(
         "max_tokens": g["max_tokens"],
         "chat_template_kwargs": {"enable_thinking": bool(BRAIN_THINKING)},
     }
-    note(
-        f"brain resident request: {base_url}/v1/chat/completions model=gemma cache_prompt=0 "
-        f"asr_language={asr_language} output_language={tts_language}"
-    )
+    note(f"component=gemma event=request endpoint={base_url}/v1/chat/completions cache_prompt=0 asr_language={asr_language} output_language={tts_language}")
+    started = time.perf_counter()
     payload = gemma_chat(base_url, request)
+    note(f"component=gemma event=done request_ms={(time.perf_counter() - started) * 1000.0:.3f} response_id={payload.get('id', '-')}")
     choices = payload.get("choices")
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
         raise RuntimeError("llama-server returned no choices")
@@ -141,7 +140,7 @@ def brain(
     write_text_atomic(paths.answer, text + "\n")
     timings = payload.get("timings")
     if isinstance(timings, dict):
-        note("brain timings: " + json.dumps(timings, separators=(",", ":"), sort_keys=True))
+        note("component=gemma event=timings payload=" + json.dumps(timings, separators=(",", ":"), sort_keys=True))
     return text
 
 
@@ -165,12 +164,9 @@ def synthesize(
         server, t3, codec, reference, family["name"], language,
         runtime, sample, voice, chunk, note,
     )
-    note(
-        f"tts resident request: {base_url} family={family['name']} language={language} "
-        f"reference={reference} model_resident=1 voice_conditioning_resident=1"
-    )
+    note(f"component=tts event=request endpoint={base_url} family={family['name']} language={language} reference={reference} model_resident=1 voice_resident=1")
     result = chatterbox_synthesize(base_url, text, output)
-    note("tts resident result: " + result)
+    note("component=tts event=done " + result)
     validate_wav(output, TTS_RATE, channels=1)
 
 
@@ -267,12 +263,12 @@ def write_meta(paths: Paths, rows: dict[str, str]) -> None:
 def start_run(command: str, args) -> Paths:
     paths = Paths(args.models_dir, args.data_dir, command)
     set_log(paths.log)
-    note(f"run dir {paths.run_dir}")
+    note(f"component=pipeline event=start run_dir={paths.run_dir}")
     return paths
 
 
 def run_asr(input_wav: Path, output: Path | None, paths: Paths, asr_language: str = "auto") -> None:
-    validate_wav(input_wav, ASR_RATE, channels=1)
+    validate_wav(input_wav, pcm16=False)
     shutil.copy2(input_wav, paths.run_dir / "input.wav")
     text = transcribe(
         runtime_server("parakeet"), require_model(SHARED_MODELS["parakeet"], paths.models_dir),
@@ -350,10 +346,11 @@ def run_pipeline(
     paths: Paths,
     system_prompt: str | None = None,
 ) -> None:
+    pipeline_started = time.perf_counter()
     family_name = family["name"]
     asr_language = validate_asr_language(asr_language)
     tts_language = resolve_language(family, tts_language)
-    validate_wav(input_wav, ASR_RATE, channels=1)
+    validate_wav(input_wav, pcm16=False)
     validate_wav(reference, minimum_seconds=REFERENCE_MIN_SECONDS)
     models = models_for(family_name)
     shutil.copy2(input_wav, paths.run_dir / "input.wav")
@@ -381,6 +378,7 @@ def run_pipeline(
         "reference": str(reference), "output": str(paths.output), "system": str(paths.system),
         "resident_chain": "parakeet->gemma->chatterbox",
     })
+    note(f"component=pipeline event=done family={family_name} total_ms={(time.perf_counter() - pipeline_started) * 1000.0:.3f}")
     print(f"Transcript: {transcript}")
     print(f"Answer: {answer}")
     print(f"Output: {paths.output}")

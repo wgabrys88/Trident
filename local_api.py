@@ -10,10 +10,7 @@ from pathlib import Path
 
 def _connection(base_url: str, timeout: float):
     parsed = urllib.parse.urlsplit(base_url)
-    if parsed.scheme != "http" or not parsed.hostname:
-        raise RuntimeError(f"resident endpoint must be local http: {base_url}")
-    conn = http.client.HTTPConnection(parsed.hostname, parsed.port or 80, timeout=timeout)
-    return conn, parsed
+    return http.client.HTTPConnection(parsed.hostname, parsed.port or 80, timeout=timeout), parsed
 
 
 def parakeet_transcribe(base_url: str, wav: Path, timeout: float = 3600.0) -> dict:
@@ -56,13 +53,7 @@ def parakeet_transcribe(base_url: str, wav: Path, timeout: float = 3600.0) -> di
                 f"Parakeet server HTTP {response.status}: "
                 + body.decode("utf-8", errors="replace")[:1000]
             )
-        try:
-            payload = json.loads(body.decode("utf-8"))
-        except (UnicodeDecodeError, ValueError) as exc:
-            raise RuntimeError("Parakeet server returned invalid JSON") from exc
-        if not isinstance(payload, dict):
-            raise RuntimeError("Parakeet server returned non-object JSON")
-        return payload
+        return json.loads(body.decode("utf-8"))
     finally:
         conn.close()
 
@@ -81,41 +72,19 @@ def gemma_chat(base_url: str, payload: dict, timeout: float = 3600.0) -> dict:
             "User-Agent": "trident/1",
         },
     )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            body = response.read()
-    except Exception as exc:
-        raise RuntimeError(f"Gemma resident request failed: {exc}") from exc
-    try:
-        value = json.loads(body.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as exc:
-        raise RuntimeError("Gemma server returned invalid JSON") from exc
-    if not isinstance(value, dict):
-        raise RuntimeError("Gemma server returned non-object JSON")
-    return value
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        body = response.read()
+    return json.loads(body.decode("utf-8"))
 
 
 def chatterbox_synthesize(base_url: str, text: str, output: Path, timeout: float = 3600.0) -> str:
-    """Ask the resident native TTS process to synthesize directly to *output*.
-
-    The process-local Engine owns all model/backend/reference-conditioning state;
-    only UTF-8 text and the destination path cross the localhost socket.
-    """
     import socket
     import struct
 
     parsed = urllib.parse.urlsplit(base_url)
-    if parsed.scheme != "tcp" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
-        raise RuntimeError(f"resident TTS endpoint must be local tcp: {base_url}")
     port = parsed.port
-    if port is None:
-        raise RuntimeError(f"resident TTS endpoint has no port: {base_url}")
     text_bytes = text.encode("utf-8")
     output_bytes = str(output.resolve()).encode("utf-8")
-    if not text_bytes:
-        raise RuntimeError("resident TTS text is empty")
-    if len(text_bytes) > 4 * 1024 * 1024 or len(output_bytes) > 32768:
-        raise RuntimeError("resident TTS request is too large")
     output.parent.mkdir(parents=True, exist_ok=True)
 
     def recv_exact(sock: socket.socket, count: int) -> bytes:
@@ -134,8 +103,6 @@ def chatterbox_synthesize(base_url: str, text: str, output: Path, timeout: float
             sock.sendall(text_bytes)
             sock.sendall(output_bytes)
             status, length = struct.unpack("<II", recv_exact(sock, 8))
-            if length > 1024 * 1024:
-                raise RuntimeError("resident TTS returned an oversized status message")
             message = recv_exact(sock, length).decode("utf-8", errors="replace") if length else ""
     except OSError as exc:
         raise RuntimeError(f"Chatterbox resident request failed: {exc}") from exc
