@@ -326,7 +326,7 @@ diff --git a/src/chatterbox_tts.cpp b/src/chatterbox_tts.cpp
 index 746de95..2b5adf1 100644
 --- a/src/chatterbox_tts.cpp
 +++ b/src/chatterbox_tts.cpp
-@@ -1237,12 +1237,15 @@ static void cfm_estimator_forward_b2(
+@@ -1237,12 +1237,19 @@ static void cfm_estimator_forward_b2(
      compute(m.backend, gf);
  
      ggml_tensor * out_t = ggml_graph_get_tensor(gf, "out");
@@ -337,7 +337,11 @@ index 746de95..2b5adf1 100644
 -    ggml_backend_tensor_get(out_t, out_c.data(), 0,           half_bytes);
 -    ggml_backend_tensor_get(out_t, out_u.data(), half_bytes,  half_bytes);
 +    const size_t half = (size_t) T * MEL;
-+    std::vector<float> both((size_t) ggml_nelements(out_t));
++    // Reuse the host readback arena across CFM steps.  On Vulkan this does
++    // not remove the required backend synchronization, but it eliminates a
++    // large malloc/free from the critical CFG path.
++    thread_local std::vector<float> both;
++    both.resize((size_t) ggml_nelements(out_t));
 +    const size_t want = both.size() * sizeof(float);
 +    if (want > ggml_nbytes(out_t) || both.size() < 2 * half) {
 +        throw std::runtime_error("cfm b2 out size mismatch");
@@ -357,7 +361,7 @@ index 746de95..2b5adf1 100644
 +    int cfm_steps = opts.cfm_steps > 0 ? opts.cfm_steps :
 +                    (meanflow ? 2 : m.n_timesteps);
 +    if (!meanflow && cfm_steps > 0 && cfm_steps < 5) {
-+        cfm_steps = m.n_timesteps;
++        throw std::runtime_error("non-meanflow CFM below 5 is unsupported by Trident");
 +    }
      t_span.reserve(cfm_steps + 1);
      for (int i = 0; i <= cfm_steps; ++i) {
@@ -366,14 +370,18 @@ diff --git a/src/t3_mtl.cpp b/src/t3_mtl.cpp
 index 0fc730e..1c7cb7c 100644
 --- a/src/t3_mtl.cpp
 +++ b/src/t3_mtl.cpp
-@@ -872,6 +872,20 @@ bool run_prompt_pass(const chatterbox_model & model,
+@@ -872,6 +872,24 @@ bool run_prompt_pass(const chatterbox_model & model,
      return true;
  }
  
 +static bool copy_b2_logits(ggml_tensor * logits, int vocab,
 +                           std::vector<float> & cond, std::vector<float> & uncond) {
 +    if (!logits) return false;
-+    std::vector<float> both((size_t) ggml_nelements(logits));
++    // The sampler is CPU-side, so one logits readback per generated token is
++    // still required.  Keep the B=2 CFG transfer to one readback and reuse
++    // its storage rather than allocating on every autoregressive step.
++    thread_local std::vector<float> both;
++    both.resize((size_t) ggml_nelements(logits));
 +    const size_t want = both.size() * sizeof(float);
 +    if (want > ggml_nbytes(logits) || both.size() < (size_t) 2 * (size_t) vocab) {
 +        return false;

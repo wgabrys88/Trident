@@ -1,5 +1,6 @@
 #include "audio.hpp"
 #include "cli.hpp"
+#include "simd.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -88,10 +89,48 @@ std::vector<std::string> pack_text(const std::string& text, int limit) {
             packed.push_back(std::move(sentence));
     }
     if (packed.size() >= 2 && utf8_chars(packed.back()) * 2 < limit) {
-        glue_text(packed[packed.size() - 2], packed.back());
-        packed.pop_back();
+        const int extra = (!is_ws(static_cast<unsigned char>(packed[packed.size() - 2].back())) &&
+                           !is_ws(static_cast<unsigned char>(packed.back().front()))) ? 1 : 0;
+        if (utf8_chars(packed[packed.size() - 2]) + extra + utf8_chars(packed.back()) <= limit) {
+            glue_text(packed[packed.size() - 2], packed.back());
+            packed.pop_back();
+        }
     }
     return packed.empty() ? std::vector<std::string>{text} : packed;
+}
+
+std::vector<std::string> pack_text_staged(const std::string& text, int first_limit, int later_limit) {
+    if (first_limit < 1 || later_limit < 1) throw std::invalid_argument("chunk limit must be positive");
+    if (later_limit <= first_limit) return pack_text(text, later_limit);
+    auto base = pack_text(text, first_limit);
+    if (base.size() <= 1) return base;
+
+    auto is_ws = [](unsigned char c) { return std::isspace(c) != 0; };
+    auto glue_text = [&](std::string& dst, const std::string& src) {
+        if (!dst.empty() && !src.empty() &&
+            !is_ws(static_cast<unsigned char>(dst.back())) &&
+            !is_ws(static_cast<unsigned char>(src.front())))
+            dst += ' ';
+        dst += src;
+    };
+
+    std::vector<std::string> out;
+    out.reserve(base.size());
+    out.push_back(std::move(base[0]));
+    for (size_t i = 1; i < base.size(); ++i) {
+        std::string piece = std::move(base[i]);
+        if (out.size() == 1) {
+            out.push_back(std::move(piece));
+            continue;
+        }
+        const int extra = (!is_ws(static_cast<unsigned char>(out.back().back())) &&
+                           !is_ws(static_cast<unsigned char>(piece.front()))) ? 1 : 0;
+        if (utf8_chars(out.back()) + extra + utf8_chars(piece) <= later_limit)
+            glue_text(out.back(), piece);
+        else
+            out.push_back(std::move(piece));
+    }
+    return out;
 }
 
 static int quiet_edge(const std::vector<float>& x, bool tail, float amp2) {
@@ -130,10 +169,7 @@ void write_wav(const std::string& path, const std::vector<float>& pcm) {
     if (pcm.size() > (std::numeric_limits<uint32_t>::max() - 36u) / 2u)
         throw std::runtime_error("WAV output is too large");
     std::vector<int16_t> samples(pcm.size());
-    for (size_t i = 0; i < pcm.size(); ++i) {
-        const float clipped = std::max(-1.0f, std::min(1.0f, pcm[i]));
-        samples[i] = static_cast<int16_t>(clipped * 32767.0f);
-    }
+    pcm_f32_to_i16(pcm.data(), samples.data(), pcm.size());
     const std::filesystem::path target(path);
     if (!target.parent_path().empty()) std::filesystem::create_directories(target.parent_path());
     std::ofstream out(target, std::ios::binary | std::ios::trunc);
@@ -148,7 +184,8 @@ void write_wav(const std::string& path, const std::vector<float>& pcm) {
     out.write(reinterpret_cast<const char*>(samples.data()), static_cast<std::streamsize>(data_size));
     if (!out) throw std::runtime_error("failed while writing WAV output: " + path);
     log("wav path=" + path + " samples=" + std::to_string(pcm.size()) +
-        " seconds=" + std::to_string(pcm.size() / static_cast<double>(kRate)));
+        " seconds=" + std::to_string(pcm.size() / static_cast<double>(kRate)) +
+        " simd=" + pcm_simd_backend());
 }
 
 }

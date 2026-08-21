@@ -113,12 +113,18 @@ Runtime runtime_from(const Args& args) {
 
 void print_done(const Speech& speech, double total_ms, const Runtime& runtime, const EngineKnobs& knobs, int chunk_chars) {
     const double audio_ms = speech.pcm.size() * 1000.0 / kRate;
-    const double rtf = audio_ms > 0 ? (speech.t3_ms + speech.s3gen_ms) / audio_ms : 0;
+    const double compute_ms = speech.t3_ms + speech.s3gen_ms;
+    const double rtf = audio_ms > 0 ? compute_ms / audio_ms : 0;
+    const double wall_rtf = audio_ms > 0 ? total_ms / audio_ms : 0;
+    const double overhead_ms = std::max(0.0, total_ms - compute_ms);
+    const char* bottleneck = speech.s3gen_ms >= speech.t3_ms && speech.s3gen_ms >= overhead_ms ? "s3gen-cfm" :
+                             (speech.t3_ms >= overhead_ms ? "t3-decode" : "host-overhead");
     std::cerr << "tts done samples=" << speech.pcm.size()
               << " seconds=" << speech.pcm.size() / static_cast<double>(kRate) << " chunks=" << speech.chunks
               << " t3_tokens=" << speech.t3_tokens
               << " total_ms=" << total_ms << " t3_ms=" << speech.t3_ms << " s3gen_ms=" << speech.s3gen_ms
-              << " rtf=" << rtf
+              << " ttfa_ms=" << speech.ttfa_ms << " rtf=" << rtf << " wall_rtf=" << wall_rtf
+              << " overhead_ms=" << overhead_ms << " bottleneck=" << bottleneck
               << " gpu=" << runtime.gpu << " threads=" << runtime.threads << " ctx=" << runtime.context
               << " lang=" << knobs.language
               << " seed=" << knobs.seed << " max_tokens=" << knobs.max_tokens << " top_k=" << knobs.top_k
