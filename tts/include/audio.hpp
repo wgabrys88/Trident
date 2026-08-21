@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -23,11 +25,12 @@ struct Runtime {
 
 struct Speech {
     std::vector<float> pcm;
-    double t3_ms = 0, s3gen_ms = 0;
+    double t3_ms = 0, s3gen_ms = 0, ttfa_ms = 0;
     int chunks = 0, t3_tokens = 0;
 };
 
 std::vector<std::string> pack_text(const std::string& text, int limit);
+std::vector<std::string> pack_text_staged(const std::string& text, int first_limit, int later_limit);
 void glue(std::vector<float>& dst, const std::vector<float>& src, float quiet_amp2);
 void write_wav(const std::string& path, const std::vector<float>& pcm);
 
@@ -37,6 +40,7 @@ struct EngineKnobs {
     float exaggeration = 0, cfg_weight = 0, temperature = 0, repeat_penalty = 0, min_p = 0, top_p = 0;
 };
 
-Speech run(const Runtime& runtime, const EngineKnobs& knobs, const std::string& text, int chunk_chars, float quiet_amp2);
+using AudioSink = std::function<void(const float*, std::size_t)>;
+Speech run(const Runtime& runtime, const EngineKnobs& knobs, const std::string& text, int chunk_chars, float quiet_amp2, const AudioSink& sink = {});
 
 }

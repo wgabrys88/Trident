@@ -28,8 +28,33 @@ set(GGML_BUILD "${CHATTERBOX_BUILD}/ggml/src")
 set(TTS_COMMON
     src/audio.cpp
     src/cli.cpp
+    src/simd.cpp
+    src/stream_writer.cpp
+    src/session.cpp
     src/synthesize.cpp
 )
+
+option(TRIDENT_AVX512_DISPATCH "Build a runtime-dispatched AVX-512 PCM conversion kernel" ON)
+set(TRIDENT_HAVE_AVX512 OFF)
+if(TRIDENT_AVX512_DISPATCH)
+    include(CheckCXXCompilerFlag)
+    if(MSVC)
+        check_cxx_compiler_flag("/arch:AVX512" TRIDENT_COMPILER_HAS_AVX512)
+        if(TRIDENT_COMPILER_HAS_AVX512)
+            list(APPEND TTS_COMMON src/simd_avx512.cpp)
+            set_source_files_properties(src/simd_avx512.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX512")
+            set(TRIDENT_HAVE_AVX512 ON)
+        endif()
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        check_cxx_compiler_flag("-mavx512f" TRIDENT_COMPILER_HAS_AVX512F)
+        check_cxx_compiler_flag("-mavx512bw" TRIDENT_COMPILER_HAS_AVX512BW)
+        if(TRIDENT_COMPILER_HAS_AVX512F AND TRIDENT_COMPILER_HAS_AVX512BW)
+            list(APPEND TTS_COMMON src/simd_avx512.cpp)
+            set_source_files_properties(src/simd_avx512.cpp PROPERTIES COMPILE_OPTIONS "-mavx512f;-mavx512bw")
+            set(TRIDENT_HAVE_AVX512 ON)
+        endif()
+    endif()
+endif()
 
 function(trident_tts_bin name src)
     add_executable(${name} ${src} ${TTS_COMMON})
@@ -43,7 +68,11 @@ function(trident_tts_bin name src)
         "${GGML_BUILD}/Release/ggml-base.lib"
         ${Vulkan_LIBRARIES})
     target_compile_definitions(${name} PRIVATE GGML_USE_VULKAN _USE_MATH_DEFINES)
+    if(TRIDENT_HAVE_AVX512)
+        target_compile_definitions(${name} PRIVATE TRIDENT_HAVE_AVX512_IMPL=1)
+    endif()
     if(WIN32)
+        target_link_libraries(${name} PRIVATE ws2_32)
         add_custom_command(TARGET ${name} POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CHATTERBOX_BUILD}/bin/Release/ggml.dll"
             "${CHATTERBOX_BUILD}/bin/Release/ggml-cpu.dll"
@@ -59,3 +88,8 @@ foreach(src ${FAMILY_MAINS})
     string(REGEX REPLACE "^main_" "trident-tts-" target "${stem}")
     trident_tts_bin(${target} ${src})
 endforeach()
+
+# One generic long-lived Chatterbox server. The selected family, language,
+# reference voice and sampling knobs are fixed at process start, so the model
+# and voice conditionals stay resident between independent Python requests.
+trident_tts_bin(trident-tts-server src/server.cpp)

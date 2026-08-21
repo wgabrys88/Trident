@@ -5,6 +5,8 @@
 !/config.py
 !/family_*.py
 !/installer.py
+!/resident.py
+!/local_api.py
 !/patches/
 !/patches/*.patch
 !/tts/

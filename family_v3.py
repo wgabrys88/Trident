@@ -7,12 +7,12 @@ FAMILY = {
     "DEFAULT_REPLY_LANGUAGE": "en",
     "TTS_RUNTIME": {"gpu_layers": 99, "context": 2048, "threads": 4},
     "TTS_SAMPLE": {
-        "seed": 42, "max_tokens": 768, "top_p": 1.0,
+        "seed": 42, "max_tokens": 768, "top_k": 0, "top_p": 1.0,
         "temperature": 0.8, "repeat_penalty": 1.2,
         "min_p": 0.05, "cfm_steps": 7,
     },
     "TTS_VOICE": {"cfg_weight": 0.5, "exaggeration": 0.3},
-    "TTS_CHUNK": {"chars": 180},
+    "TTS_CHUNK": {"first_chars": 180, "chars": 300},
     "TTS_MODELS": {
         "chatterbox-t3": {
             "label": "CHATTERBOX V3 T3", "repo": "ResembleAI/chatterbox",

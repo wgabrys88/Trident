@@ -8,11 +8,11 @@ FAMILY = {
     "TTS_RUNTIME": {"gpu_layers": 99, "context": 2048, "threads": 4},
     "TTS_SAMPLE": {
         "seed": 42, "max_tokens": 768, "top_k": 1000, "top_p": 0.99,
-        "temperature": 0.6, "repeat_penalty": 1.3,
+        "min_p": 0.0, "temperature": 0.6, "repeat_penalty": 1.3,
         "cfm_steps": 2,
     },
     "TTS_VOICE": {"cfg_weight": 0.0, "exaggeration": 0.0},
-    "TTS_CHUNK": {"chars": 120},
+    "TTS_CHUNK": {"first_chars": 120, "chars": 280},
     "TTS_MODELS": {
         "chatterbox-t3": {
             "label": "CHATTERBOX TURBO T3", "repo": "ResembleAI/chatterbox-turbo",
