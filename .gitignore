@@ -7,6 +7,7 @@
 !/installer.py
 !/resident.py
 !/local_api.py
+!/media.py
 !/patches/
 !/patches/*.patch
 !/tts/
