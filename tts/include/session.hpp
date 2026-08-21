@@ -18,12 +18,11 @@ public:
     Session(const Session&) = delete;
     Session& operator=(const Session&) = delete;
 
-    Speech synthesize(const std::string& text, const AudioSink& sink = {});
+    Speech synthesize(const std::string& text);
 
     const Runtime& runtime() const noexcept;
     const EngineKnobs& knobs() const noexcept;
     int chunk_chars() const noexcept;
-    int first_chunk_chars() const noexcept;
 
 private:
     struct Impl;

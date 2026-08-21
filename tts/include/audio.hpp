@@ -1,7 +1,5 @@
 #pragma once
 
-#include <cstddef>
-#include <functional>
 #include <string>
 #include <vector>
 
@@ -40,7 +38,5 @@ struct EngineKnobs {
     float exaggeration = 0, cfg_weight = 0, temperature = 0, repeat_penalty = 0, min_p = 0, top_p = 0;
 };
 
-using AudioSink = std::function<void(const float*, std::size_t)>;
-Speech run(const Runtime& runtime, const EngineKnobs& knobs, const std::string& text, int chunk_chars, float quiet_amp2, const AudioSink& sink = {});
 
 }

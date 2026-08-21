@@ -18,16 +18,13 @@ GGML = CHATTERBOX / "ggml"
 RUNTIMES = TOOLS / "runtime"
 CONVERTER = TOOLS / "convert"
 
-ASR_RATE = 16000
 TTS_RATE = 24000
 REFERENCE_MIN_SECONDS = 5.0
 
 ASR_RUNTIME = {
-    "threads": 4,
-    "device": "Vulkan0",
     # Parakeet v0.5 server keeps one pk::Model/ggml context resident. The
     # selected backend is forced by PARAKEET_DEVICE for every request.
-    "resident": True,
+    "device": "Vulkan0",
 }
 
 # Localhost-only persistent inference services. They are deliberately on
@@ -65,7 +62,6 @@ BRAIN_RUNTIME = {
     "threads": 2,
     "threads_batch": 2,
     "threads_http": 1,
-    "resident": True,
 }
 BRAIN_GENERATION = {
     "temperature": 0.3, "top_p": 0.90, "top_k": 40, "min_p": 0.0,
@@ -82,7 +78,13 @@ BRAIN_SYSTEM = (
     "transcription, models, or reasoning."
 )
 
-LANGUAGES = {"en": "English", "pl": "Polish", "de": "German"}
+LANGUAGES = {
+    "en": "English", "es": "Spanish", "fr": "French", "de": "German",
+    "it": "Italian", "pt": "Portuguese", "nl": "Dutch", "pl": "Polish",
+    "tr": "Turkish", "sv": "Swedish", "da": "Danish", "fi": "Finnish",
+    "no": "Norwegian", "el": "Greek", "ms": "Malay", "sw": "Swahili",
+    "ar": "Arabic", "ko": "Korean",
+}
 
 # NVIDIA Parakeet TDT 0.6B v3 detects these languages automatically; the
 # parakeet.cpp v0.5 server has no language-selection flag for this checkpoint.
@@ -115,11 +117,6 @@ FAMILIES = discover_families()
 def default_family() -> str:
     if not FAMILIES:
         raise RuntimeError("no TTS families found")
-    runtime = RUNTIMES / "tts"
-    if runtime.is_dir():
-        present = [name for name, spec in FAMILIES.items() if (runtime / spec["TTS_EXE"]).is_file()]
-        if present:
-            return present[0]
     return next(iter(FAMILIES))
 
 
@@ -146,19 +143,18 @@ BINARIES = {
     "parakeet": {
         "label": "PARAKEET.CPP V0.5 VULKAN", "repo": "mudler/parakeet.cpp", "tag": "v0.5.0",
         "asset": "parakeet-v0.5.0-bin-win-vulkan-x64.zip",
-        "exe": "parakeet-cli.exe", "server_exe": "parakeet-server.exe",
+        "server_exe": "parakeet-server.exe",
     },
     "gemma": {
         "label": "LLAMA.CPP B10453 VULKAN", "repo": "ggml-org/llama.cpp", "tag": "b10453",
         "asset": "llama-b10453-bin-win-vulkan-x64.zip",
-        "exe": "llama-cli.exe", "server_exe": "llama-server.exe",
+        "server_exe": "llama-server.exe",
     },
 }
 
 CHATTERBOX_LIBRARY = CHATTERBOX / "build" / "Release" / "tts-cpp.lib"
 TTS_BUILD = TTS / "build" / "Release"
 TTS_SERVER_EXE = "trident-tts-server.exe"
-TTS_BUILD_REVISION = "20260821-synthesis-performance-2"
 
 REFERENCE_VOICES = {
     "trump": {
@@ -191,7 +187,6 @@ class Paths:
     def __init__(self, models_dir: Path | None = None, data_dir: Path | None = None, command: str | None = None) -> None:
         self.models_dir = (models_dir or DEFAULT_MODELS_DIR).resolve()
         self.data_dir = (data_dir or DEFAULT_DATA_DIR).resolve()
-        self.reference = self.data_dir / REFERENCE_VOICES[DEFAULT_VOICE]["file"]
         self.run_dir = None
         self.transcript = None
         self.answer = None

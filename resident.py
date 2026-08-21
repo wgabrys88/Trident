@@ -40,11 +40,10 @@ def _read_state(name: str) -> dict:
     path = _state_path(name)
     if not path.is_file():
         return {}
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-        return value if isinstance(value, dict) else {}
-    except (OSError, ValueError):
-        return {}
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise RuntimeError(f"invalid resident state: {path}")
+    return value
 
 
 def _write_state(name: str, state: dict) -> None:
@@ -58,11 +57,10 @@ def load_pipeline_profile() -> dict:
     path = _profile_path()
     if not path.is_file():
         return {}
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-        return value if isinstance(value, dict) else {}
-    except (OSError, ValueError):
-        return {}
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise RuntimeError(f"invalid resident profile: {path}")
+    return value
 
 
 def save_pipeline_profile(profile: dict) -> None:
@@ -109,11 +107,7 @@ def _http_status(url: str, timeout: float = 1.0) -> int | None:
 
 
 def _read_log(name: str) -> str:
-    path = _log_path(name)
-    try:
-        return path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return ""
+    return _log_path(name).read_text(encoding="utf-8", errors="replace")
 
 
 def _validate_gemma_gpu_residency(runtime: dict, timeout_s: float = 5.0) -> None:
@@ -154,26 +148,30 @@ def _validate_gemma_gpu_residency(runtime: dict, timeout_s: float = 5.0) -> None
         )
 
 
-def _validate_chatterbox_gpu_residency(timeout_s: float = 5.0) -> None:
-    """Require the patched native engine to report Vulkan instead of CPU fallback."""
+def _validate_chatterbox_backend(runtime: dict, timeout_s: float = 5.0) -> str:
+    expected = "Vulkan" if int(runtime["gpu_layers"]) > 0 else "CPU"
     deadline = time.monotonic() + timeout_s
-    text = ""
+    roles = {}
     while time.monotonic() < deadline:
         text = _read_log("chatterbox")
-        if re.search(r"tts backend=Vulkan\b", text):
-            return
-        if re.search(r"tts backend=CPU(?:\s|$)|CPU fallback", text):
+        roles = dict(re.findall(
+            r"tts\b[^\n]*\bevent=backend\s+role=(t3|s3gen)\s+backend=(Vulkan|CPU)\b", text
+        ))
+        if roles.get("t3") == expected and roles.get("s3gen") == expected:
+            return expected
+        if roles and any(backend != expected for backend in roles.values()):
             break
         time.sleep(0.05)
     raise RuntimeError(
-        "Chatterbox strict GPU residency failed: the native engine did not report the Vulkan backend; "
-        f"inspect {_log_path('chatterbox')}"
+        f"Chatterbox backend validation failed: gpu_layers={runtime['gpu_layers']} requires "
+        f"T3+S3Gen={expected}, reported={roles or 'none'}; inspect {_log_path('chatterbox')}"
     )
 
 
 def _spawn_detached(command: list[str], cwd: Path, env: dict[str, str], log_path: Path) -> int:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log = log_path.open("wb", buffering=0)
+    log.write((f"trident ts_unix_ns={time.time_ns()} event=spawn command=" + json.dumps(command, separators=(",", ":")) + "\n").encode())
     try:
         kwargs: dict = {
             "cwd": str(cwd),
@@ -286,7 +284,7 @@ def _ensure(
         state_path.unlink(missing_ok=True)
     _log_path(name).unlink(missing_ok=True)
 
-    note(f"{name} resident: starting persistent GPU server")
+    note(f"{name} resident: starting persistent server")
     note(f"{name} resident command: " + " ".join(command))
     pid = _spawn_detached(command, server.parent, env, _log_path(name))
     state_value = {
@@ -296,6 +294,9 @@ def _ensure(
         "url": str(cfg["url"]),
         "server": str(server),
         "model": str(model),
+        "command": command,
+        "identity_inputs": identity_extra,
+        "log": str(_log_path(name)),
         "started_unix": time.time(),
     }
     if state_extra:
@@ -350,6 +351,14 @@ def ensure_gemma(server: Path, model: Path, runtime: dict, note: LogFn) -> str:
         "--threads", str(runtime["threads"]), "--threads-batch", str(runtime["threads_batch"]),
         "--poll", str(runtime["poll"]), "--poll-batch", str(runtime["poll_batch"]),
         "--threads-http", str(runtime["threads_http"]),
+        # Trident has no browser client. Restrict CORS to loopback origins so a
+        # remote web page cannot drive the unauthenticated localhost API.
+        "--cors-origins", "localhost",
+        # llama.cpp b10453 moved tensor/KV residency details above the default
+        # info threshold. Keep trace logging so the fail-closed residency check
+        # can verify what actually landed on Vulkan instead of rejecting a
+        # healthy fully-offloaded server because those lines were suppressed.
+        "--log-verbosity", "4", "--log-prefix", "--log-timestamps",
         # Gemma 4 shared-KV/SWA blocks the cache-reuse path in current llama.cpp.
         # Keep the model/KV resident, but do not spend host RAM on unusable prefix snapshots.
         "--no-cache-prompt", "--no-ui", "--reasoning", "off",
@@ -368,6 +377,7 @@ def ensure_gemma(server: Path, model: Path, runtime: dict, note: LogFn) -> str:
             "parallel": int(runtime["parallel"]), "threads": int(runtime["threads"]),
             "threads_batch": int(runtime["threads_batch"]),
             "poll": int(runtime["poll"]), "poll_batch": int(runtime["poll_batch"]),
+            "log_verbosity": 4, "log_prefix": True, "log_timestamps": True, "cors_origins": "localhost",
             "cache_prompt": False, "ui": False, "alias": "gemma", "port": port,
         },
         probe, note,
@@ -434,9 +444,9 @@ def ensure_chatterbox(
             "codec": str(codec_model.resolve()),
         },
     )
-    _validate_chatterbox_gpu_residency()
+    backend = _validate_chatterbox_backend(runtime)
     note(
-        f"chatterbox resident: strict Vulkan backend verified family={family_name} language={language} "
+        f"chatterbox resident: backend={backend} verified family={family_name} language={language} "
         "model-resident=1 reference-conditionals-resident=1 watermark=absent"
     )
     return url

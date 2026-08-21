@@ -1,8 +1,5 @@
 FAMILY = {
     "name": "nano",
-    "TTS_LABEL": "CHATTERBOX TTS NANO",
-    "TTS_EXE": "trident-tts-nano.exe",
-    "TTS_MULTILINGUAL": False,
     "TTS_LANGUAGES": {"en": "English"},
     "DEFAULT_REPLY_LANGUAGE": "en",
     "TTS_RUNTIME": {"gpu_layers": 99, "context": 2048, "threads": 4},

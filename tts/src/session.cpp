@@ -30,10 +30,10 @@ struct Session::Impl {
             throw std::runtime_error("reference audio not found: " + knobs.reference);
         if (chunk_chars < 1 || first_chunk_chars < 1) throw std::invalid_argument("chunk chars must be positive");
 
-        log("load t3=" + runtime.t3);
-        log("load s3=" + runtime.s3);
-        log("load ref=" + knobs.reference);
-        log("knobs lang=" + knobs.language + " gpu=" + std::to_string(runtime.gpu) +
+        log("event=model role=t3 path=" + runtime.t3);
+        log("event=model role=s3gen path=" + runtime.s3);
+        log("event=model role=reference path=" + knobs.reference);
+        log("event=config lang=" + knobs.language + " gpu=" + std::to_string(runtime.gpu) +
             " ctx=" + std::to_string(runtime.context) + " threads=" + std::to_string(runtime.threads) +
             " seed=" + std::to_string(knobs.seed) + " max_tokens=" + std::to_string(knobs.max_tokens) +
             " top_k=" + std::to_string(knobs.top_k) + " top_p=" + std::to_string(knobs.top_p) +
@@ -65,65 +65,52 @@ struct Session::Impl {
         engine = std::make_unique<tts_cpp::chatterbox::Engine>(options);
         const double engine_init_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - engine_init_started).count();
-        log("engine-ready init_ms=" + std::to_string(engine_init_ms) +
+        log("event=engine_ready init_ms=" + std::to_string(engine_init_ms) +
             " model_scope=once-per-process reference_conditioning=precomputed-once "
             "t3_kv=incremental-per-utterance");
     }
 
-    Speech synthesize(const std::string& text, const AudioSink& sink) {
+    Speech synthesize(const std::string& text) {
         if (text.empty()) throw std::runtime_error("text is empty");
         const auto synthesis_started = std::chrono::steady_clock::now();
         const auto pieces = pack_text_staged(text, first_chunk_chars, chunk_chars);
-        log("pack chunks=" + std::to_string(pieces.size()) + " first_limit=" +
+        log("event=pack chunks=" + std::to_string(pieces.size()) + " first_limit=" +
             std::to_string(first_chunk_chars) + " later_limit=" + std::to_string(chunk_chars));
         for (size_t i = 0; i < pieces.size(); ++i) {
             const std::string& piece = pieces[i];
             const std::string head = piece.size() > 48 ? piece.substr(0, 48) + "..." : piece;
-            log("pack[" + std::to_string(i) + "] chars=" + std::to_string(utf8_chars(piece)) +
+            log("event=pack_chunk index=" + std::to_string(i) + " chars=" + std::to_string(utf8_chars(piece)) +
                 " bytes=" + std::to_string(piece.size()) + " text=" + head);
         }
 
         Speech speech;
         speech.chunks = static_cast<int>(pieces.size());
         speech.pcm.reserve(static_cast<size_t>(std::max(1, speech.chunks)) * static_cast<size_t>(kRate) * 8u);
-        size_t emitted = 0;
-        auto emit_stable = [&](bool final) {
-            if (!sink) return;
-            const size_t stable = final ? speech.pcm.size() :
-                (speech.pcm.size() > static_cast<size_t>(kGlue) ? speech.pcm.size() - static_cast<size_t>(kGlue) : 0u);
-            if (stable > emitted) {
-                sink(speech.pcm.data() + emitted, stable - emitted);
-                emitted = stable;
-            }
-        };
-
         for (int i = 0; i < speech.chunks; ++i) {
+            log("event=chunk_start index=" + std::to_string(i));
             auto result = engine->synthesize(pieces[static_cast<size_t>(i)]);
             if (i == 0) {
                 speech.ttfa_ms = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - synthesis_started).count();
-                log("first-audio-ready ms=" + std::to_string(speech.ttfa_ms) +
-                    " granularity=whole-s3gen-chunk warm_model=1 warm_voice=1");
+                log("event=first_audio ttfa_ms=" + std::to_string(speech.ttfa_ms) +
+                    " granularity=whole-s3gen-chunk scope=server-internal client_streaming=0 warm_model=1 warm_voice=1");
             }
             float peak = 0;
             for (float s : result.pcm) peak = std::max(peak, std::abs(s));
-            log("chunk[" + std::to_string(i) + "] t3_tokens=" + std::to_string(result.t3_tokens) +
+            log("event=chunk index=" + std::to_string(i) + " t3_tokens=" + std::to_string(result.t3_tokens) +
                 " samples=" + std::to_string(result.pcm.size()) +
                 " seconds=" + std::to_string(result.pcm.size() / static_cast<double>(kRate)) +
                 " t3_ms=" + std::to_string(result.t3_ms) + " s3gen_ms=" + std::to_string(result.s3gen_ms) +
-                " peak=" + std::to_string(peak) +
-                " cap=" + (result.t3_tokens >= knobs.max_tokens ? "1" : "0"));
+                " peak=" + std::to_string(peak));
             glue(speech.pcm, result.pcm, quiet_amp2);
-            emit_stable(false);
             speech.t3_ms += result.t3_ms;
             speech.s3gen_ms += result.s3gen_ms;
             speech.t3_tokens += result.t3_tokens;
         }
         if (speech.pcm.empty()) throw std::runtime_error("synthesis returned no audio");
-        emit_stable(true);
         float peak = 0;
         for (float s : speech.pcm) peak = std::max(peak, std::abs(s));
-        log("pcm samples=" + std::to_string(speech.pcm.size()) +
+        log("event=pcm samples=" + std::to_string(speech.pcm.size()) +
             " seconds=" + std::to_string(speech.pcm.size() / static_cast<double>(kRate)) +
             " peak=" + std::to_string(peak) + " t3_tokens=" + std::to_string(speech.t3_tokens));
         return speech;
@@ -133,10 +120,9 @@ struct Session::Impl {
 Session::Session(const Runtime& runtime, const EngineKnobs& knobs, int chunk_chars, float quiet_amp2, int first_chunk_chars)
     : impl_(std::make_unique<Impl>(runtime, knobs, chunk_chars, quiet_amp2, first_chunk_chars)) {}
 Session::~Session() = default;
-Speech Session::synthesize(const std::string& text, const AudioSink& sink) { return impl_->synthesize(text, sink); }
+Speech Session::synthesize(const std::string& text) { return impl_->synthesize(text); }
 const Runtime& Session::runtime() const noexcept { return impl_->runtime; }
 const EngineKnobs& Session::knobs() const noexcept { return impl_->knobs; }
 int Session::chunk_chars() const noexcept { return impl_->chunk_chars; }
-int Session::first_chunk_chars() const noexcept { return impl_->first_chunk_chars; }
 
 } // namespace tts
