@@ -209,7 +209,9 @@ def _validate_chatterbox_backend(runtime: dict, timeout_s: float = 5.0) -> str:
     )
 
 
-def _spawn_detached(command: list[str], cwd: Path, env: dict[str, str]) -> tuple[int, str, int]:
+def _spawn_detached(
+    command: list[str], cwd: Path, env: dict[str, str]
+) -> tuple[subprocess.Popen, str, int]:
     chunk_name, offset, log = open_sink()
     runtime_env = {
         key: env.get(key, "")
@@ -240,20 +242,31 @@ def _spawn_detached(command: list[str], cwd: Path, env: dict[str, str]) -> tuple
         else:
             kwargs["start_new_session"] = True
         process = subprocess.Popen(command, **kwargs)
-        return int(process.pid), chunk_name, offset
+        return process, chunk_name, offset
     finally:
         log.close()
 
 
-def _wait_ready(name: str, pid: int, probe: Callable[[], bool], timeout_s: float) -> None:
+def _wait_ready(
+    name: str, process: subprocess.Popen, probe: Callable[[], bool], timeout_s: float
+) -> None:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if probe():
             return
+        returncode = process.poll()
+        if returncode is not None:
+            text = _read_log(name).replace("\r\n", "\n").rstrip()
+            tail = "\n".join(text.splitlines()[-20:])
+            detail = f"\nLast native output:\n{tail}" if tail else ""
+            raise RuntimeError(
+                f"{name} resident exited before becoming ready "
+                f"(pid {process.pid}, exit code {returncode}){detail}"
+            )
         time.sleep(0.25)
     raise RuntimeError(
         f"{name} resident server did not become ready within {timeout_s:g}s; "
-        f"inspect {LOG_HINT} (pid {pid})"
+        f"inspect {LOG_HINT} (pid {process.pid})"
     )
 
 
@@ -338,7 +351,8 @@ def _ensure(
 
     note(f"{name} resident: starting persistent server")
     note(f"{name} resident command: " + " ".join(command))
-    pid, log_chunk, log_offset = _spawn_detached(command, server.parent, env)
+    process, log_chunk, log_offset = _spawn_detached(command, server.parent, env)
+    pid = int(process.pid)
     state_value = {
         "identity": ident,
         "pid": pid,
@@ -357,7 +371,7 @@ def _ensure(
         state_value.update(state_extra)
     _write_state(name, state_value)
     try:
-        _wait_ready(name, pid, ready_probe, float(cfg["startup_timeout_s"]))
+        _wait_ready(name, process, ready_probe, float(cfg["startup_timeout_s"]))
     except Exception:
         _state_path(name).unlink(missing_ok=True)
         raise
