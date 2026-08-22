@@ -14,8 +14,7 @@ from pathlib import Path
 from typing import Callable
 
 from config import RESIDENT_SERVERS, RUNTIMES
-
-LogFn = Callable[[str], None]
+from log import PATH as LOG_PATH, note, read_from, sink, size
 
 
 def _state_dir() -> Path:
@@ -26,10 +25,6 @@ def _state_dir() -> Path:
 
 def _state_path(name: str) -> Path:
     return _state_dir() / f"{name}.json"
-
-
-def _log_path(name: str) -> Path:
-    return _state_dir() / f"{name}.log"
 
 
 def _profile_path() -> Path:
@@ -107,7 +102,7 @@ def _http_status(url: str, timeout: float = 1.0) -> int | None:
 
 
 def _read_log(name: str) -> str:
-    return _log_path(name).read_text(encoding="utf-8", errors="replace")
+    return read_from(int(_read_state(name).get("log_offset") or 0))
 
 
 def _gemma_cpu(runtime: dict) -> bool:
@@ -135,31 +130,31 @@ def _validate_gemma_residency(runtime: dict, timeout_s: float = 5.0) -> str:
 
     if cpu:
         if any(int(m.group(1)) > 0 for m in matches) or re.search(r"\b(?:Vulkan|CUDA|Metal)\d*\s+KV buffer size\s*=", text, flags=re.IGNORECASE):
-            raise RuntimeError(f"Gemma strict CPU residency failed: GPU allocation was reported; inspect {_log_path('gemma')}")
+            raise RuntimeError(f"Gemma strict CPU residency failed: GPU allocation was reported; inspect {LOG_PATH}")
         if not kv_ok:
-            raise RuntimeError(f"Gemma strict CPU residency failed: no CPU KV buffer was reported; inspect {_log_path('gemma')}")
+            raise RuntimeError(f"Gemma strict CPU residency failed: no CPU KV buffer was reported; inspect {LOG_PATH}")
         return "CPU"
 
     if not matches:
         raise RuntimeError(
             "Gemma server became healthy but its log did not report full layer offload; "
-            f"inspect {_log_path('gemma')}"
+            f"inspect {LOG_PATH}"
         )
     loaded, total = map(int, matches[-1].groups())
     if loaded != total or total <= 0:
         raise RuntimeError(
             f"Gemma strict GPU residency failed: llama.cpp offloaded {loaded}/{total} layers; "
-            f"inspect {_log_path('gemma')}"
+            f"inspect {LOG_PATH}"
         )
     if re.search(r"\bCPU(?:_\w+)?\s+KV buffer size\s*=", text, flags=re.IGNORECASE):
         raise RuntimeError(
             "Gemma strict GPU residency failed: llama.cpp allocated a CPU KV buffer; "
-            f"inspect {_log_path('gemma')}"
+            f"inspect {LOG_PATH}"
         )
     if not kv_ok:
         raise RuntimeError(
             f"Gemma strict GPU residency failed: no {device} KV buffer was reported; "
-            f"inspect {_log_path('gemma')}"
+            f"inspect {LOG_PATH}"
         )
     return device
 
@@ -179,11 +174,11 @@ def _validate_parakeet_backend(runtime: dict, timeout_s: float = 5.0) -> str:
             actual = matches[-1].strip()
             if actual.lower() == expected.lower():
                 return actual
-            raise RuntimeError(f"Parakeet selected {actual!r}, expected {expected!r}; inspect {_log_path('parakeet')}")
+            raise RuntimeError(f"Parakeet selected {actual!r}, expected {expected!r}; inspect {LOG_PATH}")
         if "falling back to CPU" in text:
-            raise RuntimeError(f"Parakeet could not select {expected!r} and fell back to CPU; inspect {_log_path('parakeet')}")
+            raise RuntimeError(f"Parakeet could not select {expected!r} and fell back to CPU; inspect {LOG_PATH}")
         time.sleep(0.05)
-    raise RuntimeError(f"Parakeet did not report requested primary backend {expected!r}; inspect {_log_path('parakeet')}")
+    raise RuntimeError(f"Parakeet did not report requested primary backend {expected!r}; inspect {LOG_PATH}")
 
 
 def _validate_chatterbox_backend(runtime: dict, timeout_s: float = 5.0) -> str:
@@ -202,13 +197,13 @@ def _validate_chatterbox_backend(runtime: dict, timeout_s: float = 5.0) -> str:
         time.sleep(0.05)
     raise RuntimeError(
         f"Chatterbox backend validation failed: gpu_layers={runtime['gpu_layers']} requires "
-        f"T3+S3Gen={expected}, reported={roles or 'none'}; inspect {_log_path('chatterbox')}"
+        f"T3+S3Gen={expected}, reported={roles or 'none'}; inspect {LOG_PATH}"
     )
 
 
-def _spawn_detached(command: list[str], cwd: Path, env: dict[str, str], log_path: Path) -> int:
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    log = log_path.open("wb", buffering=0)
+def _spawn_detached(command: list[str], cwd: Path, env: dict[str, str]) -> tuple[int, int]:
+    offset = size()
+    log = sink()
     log.write((f"trident ts_unix_ns={time.time_ns()} event=spawn command=" + json.dumps(command, separators=(",", ":")) + "\n").encode())
     try:
         kwargs: dict = {
@@ -224,7 +219,7 @@ def _spawn_detached(command: list[str], cwd: Path, env: dict[str, str], log_path
         else:
             kwargs["start_new_session"] = True
         process = subprocess.Popen(command, **kwargs)
-        return int(process.pid)
+        return int(process.pid), offset
     finally:
         log.close()
 
@@ -237,11 +232,11 @@ def _wait_ready(name: str, pid: int, probe: Callable[[], bool], timeout_s: float
         time.sleep(0.25)
     raise RuntimeError(
         f"{name} resident server did not become ready within {timeout_s:g}s; "
-        f"inspect {_log_path(name)} (pid {pid})"
+        f"inspect {LOG_PATH} (pid {pid})"
     )
 
 
-def _terminate(name: str, note: LogFn) -> None:
+def _terminate(name: str) -> None:
     state = _read_state(name)
     pid = int(state.get("pid") or 0)
     if pid > 0:
@@ -269,7 +264,7 @@ def _wait_port_closed(name: str, timeout_s: float = 10.0) -> None:
     raise RuntimeError(f"{name} resident port {cfg['port']} did not close after restart request")
 
 
-def stop_owned(name: str, note: LogFn) -> None:
+def stop_owned(name: str) -> None:
     """Stop one resident process only when it is owned by this Trident state directory."""
     if name not in RESIDENT_SERVERS:
         raise ValueError(f"unknown resident component: {name}")
@@ -282,7 +277,7 @@ def stop_owned(name: str, note: LogFn) -> None:
                 "stop that process before installation"
             )
         return
-    _terminate(name, note)
+    _terminate(name)
     _wait_port_closed(name)
 
 
@@ -294,7 +289,6 @@ def _ensure(
     env: dict[str, str],
     identity_extra: dict,
     ready_probe: Callable[[], bool],
-    note: LogFn,
     *,
     replace_owned_mismatch: bool = False,
     state_extra: dict | None = None,
@@ -308,7 +302,7 @@ def _ensure(
             return str(cfg["url"])
         if replace_owned_mismatch and int(state.get("pid") or 0) > 0:
             note(f"{name} resident: configuration changed; replacing the owned warm process")
-            _terminate(name, note)
+            _terminate(name)
             _wait_port_closed(name)
             state = {}
         else:
@@ -320,11 +314,10 @@ def _ensure(
     state_path = _state_path(name)
     if state_path.exists():
         state_path.unlink(missing_ok=True)
-    _log_path(name).unlink(missing_ok=True)
 
     note(f"{name} resident: starting persistent server")
     note(f"{name} resident command: " + " ".join(command))
-    pid = _spawn_detached(command, server.parent, env, _log_path(name))
+    pid, log_offset = _spawn_detached(command, server.parent, env)
     state_value = {
         "identity": ident,
         "pid": pid,
@@ -334,7 +327,8 @@ def _ensure(
         "model": str(model),
         "command": command,
         "identity_inputs": identity_extra,
-        "log": str(_log_path(name)),
+        "log": str(LOG_PATH),
+        "log_offset": log_offset,
         "started_unix": time.time(),
     }
     if state_extra:
@@ -349,7 +343,7 @@ def _ensure(
     return str(cfg["url"])
 
 
-def ensure_parakeet(server: Path, model: Path, runtime: dict, note: LogFn) -> str:
+def ensure_parakeet(server: Path, model: Path, runtime: dict) -> str:
     cfg = RESIDENT_SERVERS["parakeet"]
     host, port = str(cfg["host"]), int(cfg["port"])
     env = os.environ.copy()
@@ -359,7 +353,7 @@ def ensure_parakeet(server: Path, model: Path, runtime: dict, note: LogFn) -> st
     url = _ensure(
         "parakeet", server, model, command, env,
         {"device": str(runtime["device"]), "decoder": "tdt", "port": port},
-        probe, note,
+        probe,
     )
     backend = _validate_parakeet_backend(runtime)
     note(
@@ -369,7 +363,7 @@ def ensure_parakeet(server: Path, model: Path, runtime: dict, note: LogFn) -> st
     return url
 
 
-def ensure_gemma(server: Path, model: Path, runtime: dict, note: LogFn) -> str:
+def ensure_gemma(server: Path, model: Path, runtime: dict) -> str:
     cfg = RESIDENT_SERVERS["gemma"]
     host, port = str(cfg["host"]), int(cfg["port"])
     cpu = _gemma_cpu(runtime)
@@ -422,7 +416,7 @@ def ensure_gemma(server: Path, model: Path, runtime: dict, note: LogFn) -> str:
             "log_verbosity": 4, "log_prefix": True, "log_timestamps": True, "cors_origins": "localhost",
             "cache_prompt": False, "ui": False, "alias": "gemma", "port": port,
         },
-        probe, note,
+        probe,
     )
     backend = _validate_gemma_residency({**runtime, "device": device, "gpu_layers": 0 if cpu else runtime["gpu_layers"]})
     note(
@@ -443,7 +437,6 @@ def ensure_chatterbox(
     sample: dict,
     voice: dict,
     chunk: dict,
-    note: LogFn,
 ) -> str:
     cfg = RESIDENT_SERVERS["chatterbox"]
     host, port = str(cfg["host"]), int(cfg["port"])
@@ -478,7 +471,7 @@ def ensure_chatterbox(
         "port": port,
     }
     url = _ensure(
-        "chatterbox", server, t3_model, command, env, identity_extra, probe, note,
+        "chatterbox", server, t3_model, command, env, identity_extra, probe,
         replace_owned_mismatch=True,
         state_extra={
             "family": family_name,
@@ -495,9 +488,9 @@ def ensure_chatterbox(
     return url
 
 
-def stop_all(note: LogFn) -> None:
+def stop_all() -> None:
     for name in ("parakeet", "gemma", "chatterbox"):
-        _terminate(name, note)
+        _terminate(name)
 
 
 def status() -> list[dict]:
@@ -509,7 +502,7 @@ def status() -> list[dict]:
         identity = state.get("identity_inputs") or {}
         runtime = identity.get("runtime") or {}
         rows.append({
-            "name": name, "ready": ready, "pid": state.get("pid"), "url": cfg["url"], "log": str(_log_path(name)),
+            "name": name, "ready": ready, "pid": state.get("pid"), "url": cfg["url"], "log": str(LOG_PATH),
             "family": state.get("family"), "language": state.get("language"), "reference": state.get("reference"),
             "device": identity.get("device"), "gpu_layers": identity.get("gpu_layers", runtime.get("gpu_layers")),
         })

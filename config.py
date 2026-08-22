@@ -227,7 +227,6 @@ class Paths:
         self.system = None
         self.output = None
         self.output_mp4 = None
-        self.log = None
         if command:
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
             self.run_dir = self.data_dir / "runs" / f"{stamp}-{command}"
@@ -237,4 +236,3 @@ class Paths:
             self.system = self.run_dir / "system.txt"
             self.output = self.run_dir / "output.wav"
             self.output_mp4 = self.run_dir / "output.mp4"
-            self.log = self.run_dir / "log.txt"

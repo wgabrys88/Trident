@@ -15,8 +15,9 @@ from config import (
 )
 from installer import (
     install, runtime_server, runtime_tts_server, models_for, require_model,
-    validate_wav, write_text_atomic, note, set_log,
+    validate_wav, write_text_atomic,
 )
+from log import fail, note
 from local_api import chatterbox_synthesize, gemma_chat, parakeet_transcribe
 from media import chatterbox_wav, compatible_mp4, parakeet_wav, publish_outputs
 from resident import (
@@ -42,7 +43,7 @@ def validate_asr_language(language: str) -> str:
 def transcribe(server: Path, model: Path, input_wav: Path, paths: Paths, expected_language: str = "auto", runtime: dict | None = None) -> str:
     expected_language = validate_asr_language(expected_language)
     runtime = runtime or ASR_RUNTIME
-    base_url = ensure_parakeet(server, model, runtime, note)
+    base_url = ensure_parakeet(server, model, runtime)
     # NVIDIA Parakeet TDT 0.6B v3 performs language identification internally.
     # The v0.5 parakeet-server exposes no language selector for this checkpoint.
     note(f"component=asr event=request endpoint={base_url}/v1/audio/transcriptions input={input_wav} language_mode=auto expected={expected_language}")
@@ -109,7 +110,7 @@ def brain(
         raise RuntimeError("Gemma prompt is empty")
     g = BRAIN_GENERATION
     runtime = runtime or BRAIN_RUNTIME
-    base_url = ensure_gemma(server, model, runtime, note)
+    base_url = ensure_gemma(server, model, runtime)
     request = {
         "model": "gemma",
         "messages": [
@@ -166,7 +167,7 @@ def synthesize(
         raise RuntimeError("TTS text is empty")
     base_url = ensure_chatterbox(
         server, t3, codec, reference, family["name"], language,
-        runtime, sample, voice, chunk, note,
+        runtime, sample, voice, chunk,
     )
     note(f"component=tts event=request endpoint={base_url} family={family['name']} language={language} reference={reference} model_resident=1 voice_resident=1")
     result = chatterbox_synthesize(base_url, text, output)
@@ -286,13 +287,13 @@ def extra_copy(src: Path, dest: Path | None) -> None:
 def prepared_reference(reference: Path, data_dir: Path) -> Path:
     if not reference.is_file():
         raise RuntimeError(f"missing {reference.name}; python main.py install")
-    wav = chatterbox_wav(reference, data_dir / "prepared", note)
+    wav = chatterbox_wav(reference, data_dir / "prepared")
     validate_wav(wav, TTS_RATE, minimum_seconds=REFERENCE_MIN_SECONDS, channels=1)
     return wav
 
 
 def publish_speech(paths: Paths, dest: Path | None) -> Path:
-    mp4 = compatible_mp4(paths.output, paths.output_mp4, note)
+    mp4 = compatible_mp4(paths.output, paths.output_mp4)
     publish_outputs(paths.output, mp4, dest)
     return mp4
 
@@ -304,14 +305,13 @@ def write_meta(paths: Paths, rows: dict[str, str]) -> None:
 
 def start_run(command: str, args) -> Paths:
     paths = Paths(args.models_dir, args.data_dir, command)
-    set_log(paths.log)
     note(f"component=pipeline event=start run_dir={paths.run_dir}")
     return paths
 
 
 def run_asr(input_wav: Path, output: Path | None, paths: Paths, asr_language: str = "auto", asr_runtime: dict | None = None) -> None:
     asr_runtime = asr_runtime or ASR_RUNTIME
-    wav = parakeet_wav(input_wav, paths.run_dir / "input.wav", note)
+    wav = parakeet_wav(input_wav, paths.run_dir / "input.wav")
     text = transcribe(
         runtime_server("parakeet"), require_model(SHARED_MODELS["parakeet"], paths.models_dir),
         wav, paths, asr_language, asr_runtime,
@@ -402,7 +402,7 @@ def run_pipeline(
     asr_language = validate_asr_language(asr_language)
     tts_language = resolve_language(family, tts_language)
     models = models_for(family_name)
-    wav = parakeet_wav(input_wav, paths.run_dir / "input.wav", note)
+    wav = parakeet_wav(input_wav, paths.run_dir / "input.wav")
 
     transcript = transcribe(
         runtime_server("parakeet"), require_model(models["parakeet"], paths.models_dir),
@@ -650,11 +650,11 @@ def warm_resident(args) -> None:
 
     ensure_parakeet(
         runtime_server("parakeet"), require_model(SHARED_MODELS["parakeet"], paths.models_dir),
-        asr_runtime, note,
+        asr_runtime,
     )
     ensure_gemma(
         runtime_server("gemma"), require_model(SHARED_MODELS[BRAIN_MODEL], paths.models_dir),
-        brain_runtime, note,
+        brain_runtime,
     )
     models = models_for(family_name)
     ensure_chatterbox(
@@ -662,7 +662,7 @@ def warm_resident(args) -> None:
         require_model(models["chatterbox-t3"], paths.models_dir),
         require_model(models["chatterbox-codec"], paths.models_dir),
         reference, family_name, tts_language,
-        family["TTS_RUNTIME"], family["TTS_SAMPLE"], family["TTS_VOICE"], family["TTS_CHUNK"], note,
+        family["TTS_RUNTIME"], family["TTS_SAMPLE"], family["TTS_VOICE"], family["TTS_CHUNK"],
     )
     profile = _make_profile(family, asr_language, tts_language, reference, system_prompt, asr_runtime, brain_runtime)
     save_pipeline_profile(profile)
@@ -720,7 +720,7 @@ def main() -> int:
             return 0
         if args.command == "resident":
             if args.action == "stop":
-                resident_stop_all(note)
+                resident_stop_all()
             elif args.action == "warm":
                 warm_resident(args)
             print_resident_status()
@@ -761,7 +761,7 @@ def main() -> int:
             raise RuntimeError(f"unknown operation: {operation}")
         return 0
     except Exception as exc:
-        note(f"error: {exc}")
+        fail(f"error: {exc}")
         return 1
 
 

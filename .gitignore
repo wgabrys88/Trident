@@ -2,6 +2,7 @@
 !/.gitignore
 !/.gitattributes
 !/main.py
+!/log.py
 !/config.py
 !/family_*.py
 !/installer.py
