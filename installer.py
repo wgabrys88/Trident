@@ -189,8 +189,7 @@ def chatterbox_native_revision() -> str:
     parts = [
         repr(SOURCES["chatterbox"]).encode("utf-8"),
         repr(SOURCES["ggml"]).encode("utf-8"),
-        os.environ.get("PROCESSOR_IDENTIFIER", platform.processor()).encode("utf-8"),
-        b"-DGGML_VULKAN=ON|-DGGML_CUDA=OFF|-DGGML_NATIVE=ON|-DGGML_CCACHE=OFF|-DTTS_CPP_BUILD_EXECUTABLES=OFF|-DTTS_CPP_BUILD_TESTS=OFF",
+        b"-DGGML_VULKAN=ON|-DGGML_CUDA=OFF|-DGGML_NATIVE=OFF|-DGGML_CCACHE=OFF|-DTTS_CPP_BUILD_EXECUTABLES=OFF|-DTTS_CPP_BUILD_TESTS=OFF",
     ]
     patches = sorted(PATCHES.glob("chatterbox-*.patch"))
     if not patches:
@@ -387,7 +386,7 @@ def install_prerequisite(name: str) -> None:
     spec = PACKAGES[name]
     archive = TOOLS / "downloads" / spec["file"]
     note(f"{name}: installing")
-    fetch(spec["url"], archive, spec["size"], spec.get("sha256"))
+    fetch(spec["url"], archive, spec["size"])
     if name == "git":
         destination = TOOLS / "git"
         rmtree_retry(destination)
@@ -419,7 +418,7 @@ def install_tts() -> None:
         checkout("tts", CHATTERBOX, "chatterbox")
         apply_chatterbox_patches()
         checkout("tts", GGML, "ggml")
-        run_process("tts", "configure-chatterbox", [cmake, "-S", ".", "-B", "build", "-A", "x64", "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_NATIVE=ON", "-DGGML_CCACHE=OFF", "-DTTS_CPP_BUILD_EXECUTABLES=OFF", "-DTTS_CPP_BUILD_TESTS=OFF"], CHATTERBOX)
+        run_process("tts", "configure-chatterbox", [cmake, "-S", ".", "-B", "build", "-A", "x64", "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_NATIVE=OFF", "-DGGML_CCACHE=OFF", "-DTTS_CPP_BUILD_EXECUTABLES=OFF", "-DTTS_CPP_BUILD_TESTS=OFF"], CHATTERBOX)
         run_process("tts", "build-chatterbox", [cmake, "--build", "build", "--config", "Release", "--target", "tts-cpp", "mtl_tokenizer", "--parallel"], CHATTERBOX)
         if not CHATTERBOX_LIBRARY.is_file():
             raise RuntimeError(f"Chatterbox build did not create {CHATTERBOX_LIBRARY}")
