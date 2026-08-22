@@ -386,7 +386,7 @@ def install_prerequisite(name: str) -> None:
     spec = PACKAGES[name]
     archive = TOOLS / "downloads" / spec["file"]
     note(f"{name}: installing")
-    fetch(spec["url"], archive, spec["size"])
+    fetch(spec["url"], archive, spec["size"], spec.get("sha256"))
     if name == "git":
         destination = TOOLS / "git"
         rmtree_retry(destination)
@@ -566,8 +566,6 @@ def install(family: str, models_dir: Path | None = None, data_dir: Path | None =
     paths.data_dir.mkdir(parents=True, exist_ok=True)
     for name in ("python", "git", "cmake", "msvc", "vulkan"):
         install_prerequisite(name)
-    from media import ensure_ffmpeg
-    ensure_ffmpeg(note)
     install_release_binary("parakeet")
     install_release_binary("gemma")
     download_reference_voices(paths.data_dir)
