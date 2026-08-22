@@ -112,6 +112,7 @@ def read_from(offset: int = 0, start: str | None = None) -> str:
 
 
 def end_run(dest: Path) -> bool:
+    global _run_mark
     with _lock:
         mark = _run_mark
         _run_mark = None

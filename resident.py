@@ -490,8 +490,6 @@ def ensure_chatterbox(
     ]
     env = _vulkan_env()
     env["TRIDENT_FASTCONV"] = "1" if runtime.get("fastconv") else "0"
-    for key in ("GGML_VK_MEMORY_LOGGER", "GGML_VK_PERF_LOGGER", "GGML_VK_SYNC_LOGGER"):
-        env.setdefault(key, "1")
     probe = lambda: _port_open(host, port)
     identity_extra = {
         "codec": _file_signature(codec_model),

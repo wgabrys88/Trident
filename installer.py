@@ -147,12 +147,14 @@ def checkout(component: str, path: Path, source: str) -> None:
 
 
 def apply_chatterbox_patches() -> None:
-    git = need("git")
-    patches = sorted(PATCHES.glob("chatterbox-*.patch"))
-    if not patches:
-        raise RuntimeError("Chatterbox patch set is missing")
-    for patch in patches:
-        run_process("tts", f"patch-{patch.name}", [git, "apply", "--unidiff-zero", str(patch)], CHATTERBOX)
+    patcher = PATCHES / "apply_native_patch.py"
+    if not patcher.is_file():
+        raise RuntimeError(f"native patcher is missing: {patcher}")
+    run_process(
+        "tts", "apply-native-patch",
+        [sys.executable, str(patcher), str(CHATTERBOX)],
+        ROOT,
+    )
 
 
 def _hash_identity(parts: list[bytes]) -> str:
@@ -170,12 +172,12 @@ def chatterbox_native_revision() -> str:
         os.environ.get("PROCESSOR_IDENTIFIER", platform.processor()).encode("utf-8"),
         b"-DGGML_VULKAN=ON|-DGGML_CUDA=OFF|-DGGML_NATIVE=ON|-DGGML_CCACHE=OFF|-DTTS_CPP_BUILD_EXECUTABLES=OFF|-DTTS_CPP_BUILD_TESTS=OFF",
     ]
-    patches = sorted(PATCHES.glob("chatterbox-*.patch"))
-    if not patches:
-        raise RuntimeError("Chatterbox patch set is missing")
-    for patch in patches:
-        parts.append(patch.name.encode("utf-8"))
-        parts.append(patch.read_bytes())
+    for name in ("native_patch.py", "apply_native_patch.py"):
+        path = PATCHES / name
+        if not path.is_file():
+            raise RuntimeError(f"native patch input is missing: {path}")
+        parts.append(name.encode("utf-8"))
+        parts.append(path.read_bytes())
     return _hash_identity(parts)
 
 
