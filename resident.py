@@ -110,35 +110,20 @@ def _read_log(name: str) -> str:
     return _log_path(name).read_text(encoding="utf-8", errors="replace")
 
 
-def _gemma_cpu(runtime: dict) -> bool:
-    return str(runtime.get("device", "")).lower() in {"cpu", "none"} or str(runtime.get("gpu_layers")) == "0"
-
-
-def _validate_gemma_residency(runtime: dict, timeout_s: float = 5.0) -> str:
-    """Fail closed unless llama.cpp residency matches the explicitly requested CPU/GPU mode."""
-    cpu = _gemma_cpu(runtime)
-    device = "none" if cpu else str(runtime["device"])
+def _validate_gemma_gpu_residency(runtime: dict, timeout_s: float = 5.0) -> None:
+    """Fail closed when llama.cpp did not offload all model layers/KV to the requested GPU."""
+    device = str(runtime["device"])
     deadline = time.monotonic() + timeout_s
     text = ""
     matches = []
-    kv_ok = False
+    gpu_kv = False
     while time.monotonic() < deadline:
         text = _read_log("gemma")
         matches = list(re.finditer(r"offloaded\s+(\d+)/(\d+)\s+layers to GPU", text, flags=re.IGNORECASE))
-        kv_ok = bool(re.search(
-            r"\bCPU(?:_\w+)?\s+KV buffer size\s*=" if cpu else rf"\b{re.escape(device)}\s+KV buffer size\s*=",
-            text, flags=re.IGNORECASE,
-        ))
-        if kv_ok and (cpu or matches):
+        gpu_kv = bool(re.search(rf"\b{re.escape(device)}\s+KV buffer size\s*=", text, flags=re.IGNORECASE))
+        if matches and gpu_kv:
             break
         time.sleep(0.05)
-
-    if cpu:
-        if any(int(m.group(1)) > 0 for m in matches) or re.search(r"\b(?:Vulkan|CUDA|Metal)\d*\s+KV buffer size\s*=", text, flags=re.IGNORECASE):
-            raise RuntimeError(f"Gemma strict CPU residency failed: GPU allocation was reported; inspect {_log_path('gemma')}")
-        if not kv_ok:
-            raise RuntimeError(f"Gemma strict CPU residency failed: no CPU KV buffer was reported; inspect {_log_path('gemma')}")
-        return "CPU"
 
     if not matches:
         raise RuntimeError(
@@ -156,34 +141,11 @@ def _validate_gemma_residency(runtime: dict, timeout_s: float = 5.0) -> str:
             "Gemma strict GPU residency failed: llama.cpp allocated a CPU KV buffer; "
             f"inspect {_log_path('gemma')}"
         )
-    if not kv_ok:
+    if not gpu_kv:
         raise RuntimeError(
             f"Gemma strict GPU residency failed: no {device} KV buffer was reported; "
             f"inspect {_log_path('gemma')}"
         )
-    return device
-
-
-def _validate_parakeet_backend(runtime: dict, timeout_s: float = 5.0) -> str:
-    """Verify the selected primary backend; upstream may still schedule unsupported individual ops on CPU."""
-    expected = str(runtime["device"])
-    if expected.lower() == "cpu":
-        # v0.5.0 force_cpu bypasses device enumeration and directly initializes CPU;
-        # unlike GPU selection it emits no positive device log line.
-        return "cpu"
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        text = _read_log("parakeet")
-        matches = re.findall(r"pk::Backend using device:\s*([^\r\n]+)", text)
-        if matches:
-            actual = matches[-1].strip()
-            if actual.lower() == expected.lower():
-                return actual
-            raise RuntimeError(f"Parakeet selected {actual!r}, expected {expected!r}; inspect {_log_path('parakeet')}")
-        if "falling back to CPU" in text:
-            raise RuntimeError(f"Parakeet could not select {expected!r} and fell back to CPU; inspect {_log_path('parakeet')}")
-        time.sleep(0.05)
-    raise RuntimeError(f"Parakeet did not report requested primary backend {expected!r}; inspect {_log_path('parakeet')}")
 
 
 def _validate_chatterbox_backend(runtime: dict, timeout_s: float = 5.0) -> str:
@@ -361,10 +323,9 @@ def ensure_parakeet(server: Path, model: Path, runtime: dict, note: LogFn) -> st
         {"device": str(runtime["device"]), "decoder": "tdt", "port": port},
         probe, note,
     )
-    backend = _validate_parakeet_backend(runtime)
     note(
-        f"parakeet resident: primary_backend={backend} verified model-resident=1 "
-        "language=auto-detect(v3); unsupported individual ops may scheduler-fallback to CPU"
+        f"parakeet resident: backend requested={runtime['device']} model-resident=1 "
+        "language=auto-detect(v3); upstream ggml may CPU-fallback only for unsupported backend ops"
     )
     return url
 
@@ -372,21 +333,18 @@ def ensure_parakeet(server: Path, model: Path, runtime: dict, note: LogFn) -> st
 def ensure_gemma(server: Path, model: Path, runtime: dict, note: LogFn) -> str:
     cfg = RESIDENT_SERVERS["gemma"]
     host, port = str(cfg["host"]), int(cfg["port"])
-    cpu = _gemma_cpu(runtime)
-    device = "none" if cpu else str(runtime["device"])
     command = [
         str(server), "-m", str(model), "--alias", "gemma",
         "--host", host, "--port", str(port), "--offline",
-        "--device", device,
-        "--n-gpu-layers", "0" if cpu else str(runtime["gpu_layers"]),
+        "--device", str(runtime["device"]),
+        "--n-gpu-layers", str(runtime["gpu_layers"]),
         "--split-mode", str(runtime["split_mode"]),
         "--main-gpu", str(runtime["main_gpu"]),
         "--ctx-size", str(runtime["context"]),
         "--no-mmproj", "--load-mode", str(runtime["load_mode"]),
         "--flash-attn", str(runtime["flash_attn"]), "--repack",
         "--fit", str(runtime["fit"]),
-        "--no-kv-offload" if cpu else "--kv-offload",
-        "--no-op-offload" if cpu else "--op-offload",
+        "--kv-offload", "--op-offload",
         "--cache-type-k", str(runtime["cache_type_k"]),
         "--cache-type-v", str(runtime["cache_type_v"]),
         "--parallel", str(runtime["parallel"]),
@@ -411,7 +369,7 @@ def ensure_gemma(server: Path, model: Path, runtime: dict, note: LogFn) -> str:
     url = _ensure(
         "gemma", server, model, command, env,
         {
-            "device": device, "gpu_layers": "0" if cpu else str(runtime["gpu_layers"]),
+            "device": str(runtime["device"]), "gpu_layers": str(runtime["gpu_layers"]),
             "split_mode": str(runtime["split_mode"]), "main_gpu": int(runtime["main_gpu"]),
             "context": int(runtime["context"]), "load_mode": str(runtime["load_mode"]),
             "flash_attn": str(runtime["flash_attn"]), "fit": str(runtime["fit"]),
@@ -424,9 +382,9 @@ def ensure_gemma(server: Path, model: Path, runtime: dict, note: LogFn) -> str:
         },
         probe, note,
     )
-    backend = _validate_gemma_residency({**runtime, "device": device, "gpu_layers": 0 if cpu else runtime["gpu_layers"]})
+    _validate_gemma_gpu_residency(runtime)
     note(
-        f"gemma resident: backend={backend} strict residency verified "
+        f"gemma resident: strict GPU residency verified device={runtime['device']} "
         f"kv={runtime['cache_type_k']}/{runtime['cache_type_v']} flash_attn={runtime['flash_attn']}"
     )
     return url
@@ -464,7 +422,6 @@ def ensure_chatterbox(
         "--chunk-chars", str(chunk["chars"]),
     ]
     env = os.environ.copy()
-    env["TRIDENT_FASTCONV"] = "1" if runtime.get("fastconv") else "0"
     probe = lambda: _port_open(host, port)
     identity_extra = {
         "codec": _file_signature(codec_model),
@@ -506,11 +463,14 @@ def status() -> list[dict]:
         cfg = RESIDENT_SERVERS[name]
         state = _read_state(name)
         ready = _port_open(str(cfg["host"]), int(cfg["port"]))
-        identity = state.get("identity_inputs") or {}
-        runtime = identity.get("runtime") or {}
         rows.append({
-            "name": name, "ready": ready, "pid": state.get("pid"), "url": cfg["url"], "log": str(_log_path(name)),
-            "family": state.get("family"), "language": state.get("language"), "reference": state.get("reference"),
-            "device": identity.get("device"), "gpu_layers": identity.get("gpu_layers", runtime.get("gpu_layers")),
+            "name": name,
+            "ready": ready,
+            "pid": state.get("pid"),
+            "url": cfg["url"],
+            "log": str(_log_path(name)),
+            "family": state.get("family"),
+            "language": state.get("language"),
+            "reference": state.get("reference"),
         })
     return rows
