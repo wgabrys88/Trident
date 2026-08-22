@@ -8,7 +8,7 @@
 diff --git a/scripts/requantize-gguf.py b/scripts/requantize-gguf.py
 --- a/scripts/requantize-gguf.py
 +++ b/scripts/requantize-gguf.py
-@@ -62,5 +62,6 @@ _DENY_SUBSTRINGS = (
+@@ -70,5 +70,6 @@ _DENY_SUBSTRINGS = (
      # Raw-F32 access in the C++ loader
      "flow/input_embedding",     # S3Gen speech embedding table (read as F32 for CPU-side lookup)
 +    "flow/spk_embed_affine/w",  # S3Gen speaker affine: fetched as bytes into std::vector<float>
@@ -18,19 +18,7 @@ diff --git a/scripts/requantize-gguf.py b/scripts/requantize-gguf.py
 diff --git a/scripts/convert-s3gen-to-gguf.py b/scripts/convert-s3gen-to-gguf.py
 --- a/scripts/convert-s3gen-to-gguf.py
 +++ b/scripts/convert-s3gen-to-gguf.py
-@@ -104,8 +104,9 @@ def parse_args() -> argparse.Namespace:
-              "of 32) transparently fall back to F16 so conv kernels still "
-              "benefit even at q8_0/q5_0/q4_0. q8_0/q5_0/q4_0 follow the same "
-              "deny-list as scripts/requantize-gguf.py (no quant on "
--             "flow/input_embedding, campplus, s3tokv2, builtins, mel "
--             "filterbanks, norms/biases). Default f16 stores all float "
-+             "flow/input_embedding, flow/spk_embed_affine/w, campplus, "
-+             "s3tokv2, builtins, mel filterbanks, norms/biases). Default "
-+             "f16 stores all float "
-              "weights as F32 in GGUF (the pre-multilingual baseline)."
-          ),
-      )
-@@ -189,7 +190,10 @@ def add_tensor_maybe_q(
+@@ -189,7 +189,10 @@ def add_tensor_maybe_q(
  
      qtype = _RQ_QUANT_TYPE[quant]
      if not _SHOULD_QUANTIZE(name, arr.shape, qtype):

@@ -439,35 +439,29 @@ def run_pipeline(
 
 
 EXAMPLES = """\
-# Install all five independent pipelines.
+# Install Parakeet, Gemma, and every Chatterbox family (nano, turbo, v3).
 python main.py install --family all
 
-# Preload the complete repeated voice-agent chain. Parakeet v3 auto-detects
-# Polish; Gemma receives that expectation in its system prompt; V3 speaks English.
+# Preload the voice-agent chain. Parakeet auto-detects Polish; V3 replies in English.
+# Voices shipped by install: trump, obama, kamala. Or pass a WAV/MP3/MP4 path to -r.
 python main.py resident warm --family v3 --asr-language pl --tts-language en -r trump
 
-# Optional translation-only behavior. Placeholders are expanded per request.
-python main.py resident warm --family v3 --asr-language pl --tts-language en -r trump \\
-  --system-prompt "Translate {asr_language_name} to {tts_language_name}. Return only natural spoken translation."
+# Optional custom Gemma prompt. {asr_language_name} and {tts_language_name} expand per request.
+python main.py resident warm --family v3 --asr-language pl --tts-language en -r trump --system-prompt "Translate {asr_language_name} to {tts_language_name}. Return only natural spoken translation."
 
-# Every later call reuses all three warm processes and the same precomputed voice.
-python main.py run input-1.wav
-python main.py run input-2.wav
+# Later calls reuse the three warm processes and the same precomputed voice.
+python main.py run input.wav
+python main.py run interview.m4a -o reply.mp4
 
-# English-only low-latency Chatterbox resident profile.
+# English-only low-latency Chatterbox profile.
 python main.py resident warm --family turbo --asr-language en --tts-language en -r obama
 
-# Direct independent pipelines still work and remain resident after first use.
-# Any audio/video input is converted to the WAV each model expects.
+# Independent pipelines. Audio or video is converted to the WAV each model expects.
 python main.py parakeet rec.mp3 --language pl
-python main.py parakeet rec.mp4 --language pl
 python main.py gemma prompt.txt --language en
 python main.py nano line.txt -r obama
 python main.py turbo line.txt -r trump
-python main.py v3 line.txt --language pl -r myvoice.mp3
-
-# Chatterbox also writes a baseline H.264/AAC MP4 next to output.wav.
-python main.py run interview.m4a -o reply.mp4
+python main.py v3 line.txt --language pl -r kamala
 
 python main.py resident status
 python main.py resident stop

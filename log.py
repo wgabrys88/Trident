@@ -43,5 +43,13 @@ def run(command: list[str], cwd: Path, env: dict[str, str] | None = None) -> Non
     env = dict(env or {})
     env.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
     env.setdefault("TQDM_DISABLE", "1")
+    result = subprocess.run(command, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
+    output = result.stdout or b""
     with sink() as out:
-        subprocess.run(command, cwd=cwd, env=env, stdout=out, stderr=subprocess.STDOUT, check=True)
+        out.write(output)
+    if result.returncode != 0:
+        tail = "\n".join(output.decode("utf-8", "replace").replace("\r\n", "\n").strip().splitlines()[-20:])
+        raise RuntimeError(
+            f"command {command} returned non-zero exit status {result.returncode}"
+            + (f"\n{tail}" if tail else "")
+        )
