@@ -386,7 +386,7 @@ def install_prerequisite(name: str) -> None:
     spec = PACKAGES[name]
     archive = TOOLS / "downloads" / spec["file"]
     note(f"{name}: installing")
-    fetch(spec["url"], archive, spec["size"])
+    fetch(spec["url"], archive, spec["size"], spec.get("sha256"))
     if name == "git":
         destination = TOOLS / "git"
         rmtree_retry(destination)
