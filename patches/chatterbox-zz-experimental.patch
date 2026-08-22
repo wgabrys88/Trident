@@ -1,5 +1,7 @@
-# chatterbox.cpp experimental: F16 convs + Pascal FASTCONV bake
+# chatterbox.cpp experimental: F16 convs + FASTCONV F32 bake
 # Applies last, after chatterbox-trident / sot-eot / pipeline-log.
+# Vulkan CONV_TRANSPOSE_1D is F32-only. Rank-3 kernels stay F16 on disk
+# and must be baked to F32 at load (TRIDENT_FASTCONV=1) on every profile.
 diff --git a/scripts/convert-s3gen-to-gguf.py b/scripts/convert-s3gen-to-gguf.py
 --- a/scripts/convert-s3gen-to-gguf.py
 +++ b/scripts/convert-s3gen-to-gguf.py
@@ -8,9 +10,9 @@ diff --git a/scripts/convert-s3gen-to-gguf.py b/scripts/convert-s3gen-to-gguf.py
      qtype = _RQ_QUANT_TYPE[quant]
      if not _SHOULD_QUANTIZE(name, arr.shape, qtype):
 -        writer.add_tensor(name, arr)
-+        # Quantized S3Gen keeps rank-3 convolution kernels in F16.  They are
-+        # either consumed directly (Xe-LP) or baked once to F32 at load
-+        # (Pascal FASTCONV), instead of storing every conv as F32.
++        # Quantized S3Gen keeps rank-3 convolution kernels in F16.  Bake
++        # them to F32 at load (TRIDENT_FASTCONV).  Vulkan CONV_TRANSPOSE_1D
++        # is F32-only, so this is required on Xe-LP as well as Pascal.
 +        writer.add_tensor(name, np.ascontiguousarray(arr.astype(np.float16)) if arr.ndim == 3 else arr)
          return
  
