@@ -18,7 +18,6 @@ from installer import (
     validate_wav, write_text_atomic, note, set_log,
 )
 from local_api import chatterbox_synthesize, gemma_chat, parakeet_transcribe
-from media import chatterbox_wav, compatible_mp4, parakeet_wav, publish_outputs
 from resident import (
     ensure_chatterbox, ensure_gemma, ensure_parakeet,
     load_pipeline_profile, save_pipeline_profile,
@@ -26,7 +25,7 @@ from resident import (
 )
 
 
-PIPELINE_PROFILE_VERSION = 3
+PIPELINE_PROFILE_VERSION = 4
 
 
 def validate_asr_language(language: str) -> str:
@@ -39,9 +38,10 @@ def validate_asr_language(language: str) -> str:
     return code
 
 
-def transcribe(server: Path, model: Path, input_wav: Path, paths: Paths, expected_language: str = "auto") -> str:
+def transcribe(server: Path, model: Path, input_wav: Path, paths: Paths, expected_language: str = "auto", runtime: dict | None = None) -> str:
     expected_language = validate_asr_language(expected_language)
-    base_url = ensure_parakeet(server, model, ASR_RUNTIME, note)
+    runtime = runtime or ASR_RUNTIME
+    base_url = ensure_parakeet(server, model, runtime, note)
     # NVIDIA Parakeet TDT 0.6B v3 performs language identification internally.
     # The v0.5 parakeet-server exposes no language selector for this checkpoint.
     note(f"component=asr event=request endpoint={base_url}/v1/audio/transcriptions input={input_wav} language_mode=auto expected={expected_language}")
@@ -96,6 +96,7 @@ def brain(
     prompt: Path,
     paths: Paths,
     system_prompt: str | None = None,
+    runtime: dict | None = None,
 ) -> str:
     asr_language = validate_asr_language(asr_language)
     system = render_system_prompt(system_prompt, asr_language, tts_language, tts_language_name)
@@ -106,7 +107,8 @@ def brain(
     if not prompt_text:
         raise RuntimeError("Gemma prompt is empty")
     g = BRAIN_GENERATION
-    base_url = ensure_gemma(server, model, BRAIN_RUNTIME, note)
+    runtime = runtime or BRAIN_RUNTIME
+    base_url = ensure_gemma(server, model, runtime, note)
     request = {
         "model": "gemma",
         "messages": [
@@ -218,6 +220,27 @@ def effective_family(family_name: str, args, profile: dict | None = None) -> dic
     return family
 
 
+def effective_asr_runtime(args, profile: dict | None = None) -> dict:
+    runtime = copy.deepcopy(ASR_RUNTIME)
+    if profile and isinstance(profile.get("asr_runtime"), dict):
+        runtime.update(profile["asr_runtime"])
+    value = getattr(args, "asr_device", None)
+    if value:
+        runtime["device"] = value
+    return runtime
+
+
+def effective_brain_runtime(args, profile: dict | None = None) -> dict:
+    runtime = copy.deepcopy(BRAIN_RUNTIME)
+    if profile and isinstance(profile.get("brain_runtime"), dict):
+        runtime.update(profile["brain_runtime"])
+    value = getattr(args, "brain_device", None)
+    if value:
+        runtime["device"] = "none" if value.lower() in {"cpu", "none"} else value
+        runtime["gpu_layers"] = 0 if runtime["device"] == "none" else "all"
+    return runtime
+
+
 def resolve_language(family: dict, language: str | None) -> str:
     code = language or family["DEFAULT_REPLY_LANGUAGE"]
     if code not in family["TTS_LANGUAGES"]:
@@ -256,20 +279,6 @@ def extra_copy(src: Path, dest: Path | None) -> None:
     shutil.copy2(src, dest)
 
 
-def prepared_reference(reference: Path, data_dir: Path) -> Path:
-    if not reference.is_file():
-        raise RuntimeError(f"missing {reference.name}; python main.py install")
-    wav = chatterbox_wav(reference, data_dir / "prepared", note)
-    validate_wav(wav, TTS_RATE, minimum_seconds=REFERENCE_MIN_SECONDS, channels=1)
-    return wav
-
-
-def publish_speech(paths: Paths, dest: Path | None) -> Path:
-    mp4 = compatible_mp4(paths.output, paths.output_mp4, note)
-    publish_outputs(paths.output, mp4, dest)
-    return mp4
-
-
 def write_meta(paths: Paths, rows: dict[str, str]) -> None:
     body = "".join(f"{key}={value}\n" for key, value in rows.items())
     write_text_atomic(paths.run_dir / "meta.txt", body)
@@ -282,16 +291,19 @@ def start_run(command: str, args) -> Paths:
     return paths
 
 
-def run_asr(input_wav: Path, output: Path | None, paths: Paths, asr_language: str = "auto") -> None:
-    wav = parakeet_wav(input_wav, paths.run_dir / "input.wav", note)
+def run_asr(input_wav: Path, output: Path | None, paths: Paths, asr_language: str = "auto", asr_runtime: dict | None = None) -> None:
+    asr_runtime = asr_runtime or ASR_RUNTIME
+    validate_wav(input_wav, pcm16=False)
+    shutil.copy2(input_wav, paths.run_dir / "input.wav")
     text = transcribe(
         runtime_server("parakeet"), require_model(SHARED_MODELS["parakeet"], paths.models_dir),
-        wav, paths, asr_language,
+        input_wav, paths, asr_language, asr_runtime,
     )
     extra_copy(paths.transcript, output)
     write_meta(paths, {
-        "command": "asr", "input": str(input_wav), "wav": str(wav), "transcript": str(paths.transcript),
+        "command": "asr", "input": str(input_wav), "transcript": str(paths.transcript),
         "asr_language": asr_language, "asr_language_mode": "auto-detect",
+        "device": str(asr_runtime["device"]),
     })
     print(text)
     print(f"Run: {paths.run_dir}")
@@ -304,18 +316,21 @@ def run_brain(
     asr_language: str,
     paths: Paths,
     system_prompt: str | None = None,
+    brain_runtime: dict | None = None,
 ) -> None:
+    brain_runtime = brain_runtime or BRAIN_RUNTIME
     if tts_language not in LANGUAGES:
         raise RuntimeError(f"language {tts_language!r} not supported; choose from {', '.join(LANGUAGES)}")
     shutil.copy2(prompt, paths.run_dir / "prompt.txt")
     text = brain(
         runtime_server("gemma"), require_model(SHARED_MODELS[BRAIN_MODEL], paths.models_dir),
-        asr_language, tts_language, LANGUAGES[tts_language], prompt, paths, system_prompt,
+        asr_language, tts_language, LANGUAGES[tts_language], prompt, paths, system_prompt, brain_runtime,
     )
     extra_copy(paths.answer, output)
     write_meta(paths, {
         "command": "brain", "asr_language": asr_language, "tts_language": tts_language,
-        "prompt": str(prompt), "answer": str(paths.answer), "system": str(paths.system),
+        "device": str(brain_runtime["device"]), "prompt": str(prompt),
+        "answer": str(paths.answer), "system": str(paths.system),
     })
     print(text)
     print(f"Run: {paths.run_dir}")
@@ -331,6 +346,7 @@ def run_tts(
 ) -> None:
     family_name = family["name"]
     language = resolve_language(family, language)
+    validate_wav(reference, minimum_seconds=REFERENCE_MIN_SECONDS)
     models = models_for(family_name)
     shutil.copy2(text_file, paths.run_dir / "text.txt")
     synthesize(
@@ -339,15 +355,13 @@ def run_tts(
         require_model(models["chatterbox-codec"], paths.models_dir),
         reference, paths.output, language, family, text_file,
     )
-    mp4 = publish_speech(paths, output)
+    extra_copy(paths.output, output)
     write_meta(paths, {
-        "command": "tts", "family": family_name, "language": language,
-        "text": str(text_file), "reference": str(reference),
-        "output": str(paths.output), "output_mp4": str(mp4),
+        "command": "tts", "family": family_name, "language": language, "gpu_layers": str(family["TTS_RUNTIME"]["gpu_layers"]),
+        "text": str(text_file), "reference": str(reference), "output": str(paths.output),
         "resident": "1", "reference_conditioning": "precomputed-once-at-resident-start",
     })
     print(f"Output: {paths.output}")
-    print(f"Video: {mp4}")
     print(f"Run: {paths.run_dir}")
 
 
@@ -360,22 +374,28 @@ def run_pipeline(
     reference: Path,
     paths: Paths,
     system_prompt: str | None = None,
+    asr_runtime: dict | None = None,
+    brain_runtime: dict | None = None,
 ) -> None:
     pipeline_started = time.perf_counter()
+    asr_runtime = asr_runtime or ASR_RUNTIME
+    brain_runtime = brain_runtime or BRAIN_RUNTIME
     family_name = family["name"]
     asr_language = validate_asr_language(asr_language)
     tts_language = resolve_language(family, tts_language)
-    wav = parakeet_wav(input_wav, paths.run_dir / "input.wav", note)
+    validate_wav(input_wav, pcm16=False)
+    validate_wav(reference, minimum_seconds=REFERENCE_MIN_SECONDS)
     models = models_for(family_name)
+    shutil.copy2(input_wav, paths.run_dir / "input.wav")
 
     transcript = transcribe(
         runtime_server("parakeet"), require_model(models["parakeet"], paths.models_dir),
-        wav, paths, asr_language,
+        input_wav, paths, asr_language, asr_runtime,
     )
     answer = brain(
         runtime_server("gemma"), require_model(models[BRAIN_MODEL], paths.models_dir),
         asr_language, tts_language, family["TTS_LANGUAGES"][tts_language],
-        paths.transcript, paths, system_prompt,
+        paths.transcript, paths, system_prompt, brain_runtime,
     )
     synthesize(
         runtime_tts_server(),
@@ -383,20 +403,20 @@ def run_pipeline(
         require_model(models["chatterbox-codec"], paths.models_dir),
         reference, paths.output, tts_language, family, paths.answer,
     )
-    mp4 = publish_speech(paths, output)
+    extra_copy(paths.output, output)
     write_meta(paths, {
         "command": "run", "family": family_name,
         "asr_language": asr_language, "asr_language_mode": "auto-detect",
-        "tts_language": tts_language, "input": str(input_wav), "wav": str(wav),
-        "reference": str(reference), "output": str(paths.output),
-        "output_mp4": str(mp4), "system": str(paths.system),
+        "tts_language": tts_language, "input": str(input_wav),
+        "asr_device": str(asr_runtime["device"]), "brain_device": str(brain_runtime["device"]),
+        "tts_gpu_layers": str(family["TTS_RUNTIME"]["gpu_layers"]),
+        "reference": str(reference), "output": str(paths.output), "system": str(paths.system),
         "resident_chain": "parakeet->gemma->chatterbox",
     })
     note(f"component=pipeline event=done family={family_name} total_ms={(time.perf_counter() - pipeline_started) * 1000.0:.3f}")
     print(f"Transcript: {transcript}")
     print(f"Answer: {answer}")
     print(f"Output: {paths.output}")
-    print(f"Video: {mp4}")
     print(f"Run: {paths.run_dir}")
 
 
@@ -420,16 +440,11 @@ python main.py run input-2.wav
 python main.py resident warm --family turbo --asr-language en --tts-language en -r obama
 
 # Direct independent pipelines still work and remain resident after first use.
-# Any audio/video input is converted to the WAV each model expects.
-python main.py parakeet rec.mp3 --language pl
-python main.py parakeet rec.mp4 --language pl
+python main.py parakeet rec.wav --language pl
 python main.py gemma prompt.txt --language en
 python main.py nano line.txt -r obama
 python main.py turbo line.txt -r trump
-python main.py v3 line.txt --language pl -r myvoice.mp3
-
-# Chatterbox also writes a baseline H.264/AAC MP4 next to output.wav.
-python main.py run interview.m4a -o reply.mp4
+python main.py v3 line.txt --language pl -r myvoice.wav
 
 python main.py resident status
 python main.py resident stop
@@ -489,6 +504,7 @@ def build_parser() -> argparse.ArgumentParser:
         cmd.add_argument("input")
         cmd.add_argument("-o", "--output")
         cmd.add_argument("--language", choices=("auto", *tuple(ASR_LANGUAGES)), default="auto")
+        cmd.add_argument("--device", "--asr-device", dest="asr_device", help="Parakeet primary device, e.g. Vulkan0 or cpu")
 
     for name in ("brain", "gemma"):
         cmd = sub.add_parser(name)
@@ -496,6 +512,7 @@ def build_parser() -> argparse.ArgumentParser:
         cmd.add_argument("-o", "--output")
         cmd.add_argument("--language", choices=tuple(LANGUAGES), default="en")
         cmd.add_argument("--asr-language", choices=("auto", *tuple(ASR_LANGUAGES)), default="auto")
+        cmd.add_argument("--device", "--brain-device", dest="brain_device", help="Gemma device: Vulkan0 or cpu/none")
         add_system_prompt_args(cmd)
 
     tts_cmd = sub.add_parser("tts")
@@ -513,6 +530,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_cmd.add_argument("--language", help="Legacy alias for --tts-language")
     run_cmd.add_argument("--tts-language")
     run_cmd.add_argument("--asr-language", choices=("auto", *tuple(ASR_LANGUAGES)))
+    run_cmd.add_argument("--asr-device", help="Parakeet primary device, e.g. Vulkan0 or cpu")
+    run_cmd.add_argument("--brain-device", help="Gemma device: Vulkan0 or cpu/none")
     run_cmd.add_argument("-r", "--reference")
     add_system_prompt_args(run_cmd)
     add_tts_tuning_args(run_cmd)
@@ -522,6 +541,8 @@ def build_parser() -> argparse.ArgumentParser:
     resident_cmd.add_argument("--family", choices=families)
     resident_cmd.add_argument("--tts-language")
     resident_cmd.add_argument("--asr-language", choices=("auto", *tuple(ASR_LANGUAGES)))
+    resident_cmd.add_argument("--asr-device", help="Parakeet primary device, e.g. Vulkan0 or cpu")
+    resident_cmd.add_argument("--brain-device", help="Gemma device: Vulkan0 or cpu/none")
     resident_cmd.add_argument("-r", "--reference")
     add_system_prompt_args(resident_cmd)
     add_tts_tuning_args(resident_cmd)
@@ -533,14 +554,20 @@ def print_resident_status() -> None:
     for row in resident_status():
         state = "ready" if row["ready"] else "stopped"
         extra = ""
+        if row.get("device"):
+            extra += f" device={row['device']}"
+        if row.get("gpu_layers") is not None:
+            extra += f" gpu_layers={row['gpu_layers']}"
         if row["name"] == "chatterbox" and row.get("family"):
-            extra = f" family={row['family']} language={row.get('language') or '-'} reference={row.get('reference') or '-'}"
+            extra += f" family={row['family']} language={row.get('language') or '-'} reference={row.get('reference') or '-'}"
         print(f"{row['name']}: {state} pid={row['pid'] or '-'} url={row['url']} log={row['log']}{extra}")
     if profile:
         print(
             "profile: "
             f"family={profile.get('family', '-')} asr_language={profile.get('asr_language', 'auto')} "
             f"tts_language={profile.get('tts_language', '-')} reference={profile.get('reference', '-')} "
+            f"asr_device={profile.get('asr_runtime', {}).get('device', ASR_RUNTIME['device'])} "
+            f"brain_device={profile.get('brain_runtime', {}).get('device', BRAIN_RUNTIME['device'])} "
             f"system_prompt={'custom' if profile.get('system_prompt') else 'default'}"
         )
 
@@ -557,6 +584,8 @@ def _make_profile(
     tts_language: str,
     reference: Path,
     system_prompt: str | None,
+    asr_runtime: dict,
+    brain_runtime: dict,
 ) -> dict:
     return {
         "version": PIPELINE_PROFILE_VERSION,
@@ -565,6 +594,8 @@ def _make_profile(
         "tts_language": tts_language,
         "reference": str(reference.resolve()),
         "system_prompt": system_prompt or "",
+        "asr_runtime": copy.deepcopy(asr_runtime),
+        "brain_runtime": copy.deepcopy(brain_runtime),
         "tts_runtime": copy.deepcopy(family["TTS_RUNTIME"]),
         "tts_sample": copy.deepcopy(family["TTS_SAMPLE"]),
         "tts_voice": copy.deepcopy(family["TTS_VOICE"]),
@@ -580,6 +611,8 @@ def warm_resident(args) -> None:
     previous = load_pipeline_profile()
     family_name = args.family or previous.get("family") or default_family()
     family = effective_family(family_name, args, _profile_family_settings(previous))
+    asr_runtime = effective_asr_runtime(args, previous)
+    brain_runtime = effective_brain_runtime(args, previous)
     asr_language = validate_asr_language(args.asr_language or previous.get("asr_language") or "auto")
     previous_tts_language = previous.get("tts_language") if previous.get("family") == family_name else None
     tts_language = resolve_language(family, args.tts_language or previous_tts_language)
@@ -587,15 +620,18 @@ def warm_resident(args) -> None:
     explicit_prompt = read_system_prompt_arg(args)
     system_prompt = explicit_prompt if explicit_prompt is not None else (previous.get("system_prompt") or None)
     reference_value = args.reference if args.reference is not None else previous.get("reference")
-    reference = prepared_reference(resolve_voice(paths.data_dir, reference_value), paths.data_dir)
+    reference = resolve_voice(paths.data_dir, reference_value)
+    if not reference.is_file():
+        raise RuntimeError(f"missing reference voice: {reference}")
+    validate_wav(reference, minimum_seconds=REFERENCE_MIN_SECONDS)
 
     ensure_parakeet(
         runtime_server("parakeet"), require_model(SHARED_MODELS["parakeet"], paths.models_dir),
-        ASR_RUNTIME, note,
+        asr_runtime, note,
     )
     ensure_gemma(
         runtime_server("gemma"), require_model(SHARED_MODELS[BRAIN_MODEL], paths.models_dir),
-        BRAIN_RUNTIME, note,
+        brain_runtime, note,
     )
     models = models_for(family_name)
     ensure_chatterbox(
@@ -605,15 +641,16 @@ def warm_resident(args) -> None:
         reference, family_name, tts_language,
         family["TTS_RUNTIME"], family["TTS_SAMPLE"], family["TTS_VOICE"], family["TTS_CHUNK"], note,
     )
-    profile = _make_profile(family, asr_language, tts_language, reference, system_prompt)
+    profile = _make_profile(family, asr_language, tts_language, reference, system_prompt, asr_runtime, brain_runtime)
     save_pipeline_profile(profile)
     note(
         f"resident profile saved family={family_name} asr_language={asr_language} "
-        f"tts_language={tts_language} reference={reference} system_prompt={'custom' if system_prompt else 'default'}"
+        f"tts_language={tts_language} reference={reference} asr_device={asr_runtime['device']} "
+        f"brain_device={brain_runtime['device']} system_prompt={'custom' if system_prompt else 'default'}"
     )
 
 
-def _resolve_pipeline_settings(args, data_dir: Path) -> tuple[dict, str, str, Path, str | None]:
+def _resolve_pipeline_settings(args, data_dir: Path) -> tuple[dict, str, str, Path, str | None, dict, dict]:
     profile = load_pipeline_profile()
     family_name = args.family or profile.get("family") or default_family()
     family = effective_family(family_name, args, profile)
@@ -636,8 +673,8 @@ def _resolve_pipeline_settings(args, data_dir: Path) -> tuple[dict, str, str, Pa
     ref_value = getattr(args, "reference", None)
     if ref_value is None and profile.get("family") == family_name:
         ref_value = profile.get("reference")
-    reference = prepared_reference(resolve_voice(data_dir, ref_value), data_dir)
-    return family, asr_language, tts_language, reference, system_prompt
+    reference = resolve_voice(data_dir, ref_value)
+    return family, asr_language, tts_language, reference, system_prompt, effective_asr_runtime(args, profile), effective_brain_runtime(args, profile)
 
 
 def main() -> int:
@@ -680,21 +717,23 @@ def main() -> int:
         data_dir = args.data_dir.resolve() if args.data_dir else Paths().data_dir
 
         if operation == "run":
-            family, asr_language, tts_language, reference, system_prompt = _resolve_pipeline_settings(args, data_dir)
+            family, asr_language, tts_language, reference, system_prompt, asr_runtime, brain_runtime = _resolve_pipeline_settings(args, data_dir)
             if not reference.is_file():
                 raise RuntimeError(f"missing {reference.name}; python main.py install --family {family['name']}")
             paths = start_run(args.command, args)
-            run_pipeline(source, output, family, asr_language, tts_language, reference, paths, system_prompt)
+            run_pipeline(source, output, family, asr_language, tts_language, reference, paths, system_prompt, asr_runtime, brain_runtime)
             return 0
 
         paths = start_run(args.command, args)
         if operation == "asr":
-            run_asr(source, output, paths, args.language)
+            run_asr(source, output, paths, args.language, effective_asr_runtime(args))
         elif operation == "brain":
-            run_brain(source, output, args.language, args.asr_language, paths, read_system_prompt_arg(args))
+            run_brain(source, output, args.language, args.asr_language, paths, read_system_prompt_arg(args), effective_brain_runtime(args))
         elif operation == "tts":
             family = effective_family(args.family, args)
-            reference = prepared_reference(resolve_voice(data_dir, args.reference), data_dir)
+            reference = resolve_voice(data_dir, args.reference)
+            if not reference.is_file():
+                raise RuntimeError(f"missing {reference.name}; python main.py install --family {args.family}")
             run_tts(source, reference, output, family, args.language, paths)
         else:
             raise RuntimeError(f"unknown operation: {operation}")
