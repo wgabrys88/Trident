@@ -11,7 +11,7 @@ from pathlib import Path
 from config import (
     ASR_RUNTIME, TTS_RATE, REFERENCE_MIN_SECONDS, BRAIN_MODEL, BRAIN_RUNTIME,
     BRAIN_GENERATION, BRAIN_THINKING, BRAIN_SYSTEM, FAMILIES, SHARED_MODELS, LANGUAGES,
-    ASR_LANGUAGES, Paths, default_family, resolve_voice,
+    ASR_LANGUAGES, HARDWARE_PROFILE, Paths, default_family, resolve_voice,
 )
 from installer import (
     install, runtime_server, runtime_tts_server, models_for, require_model,
@@ -238,6 +238,9 @@ def effective_brain_runtime(args, profile: dict | None = None) -> dict:
     if value:
         runtime["device"] = "none" if value.lower() in {"cpu", "none"} else value
         runtime["gpu_layers"] = 0 if runtime["device"] == "none" else "all"
+    value = getattr(args, "flash_attn", None)
+    if value:
+        runtime["flash_attn"] = value
     return runtime
 
 
@@ -513,6 +516,7 @@ def build_parser() -> argparse.ArgumentParser:
         cmd.add_argument("--language", choices=tuple(LANGUAGES), default="en")
         cmd.add_argument("--asr-language", choices=("auto", *tuple(ASR_LANGUAGES)), default="auto")
         cmd.add_argument("--device", "--brain-device", dest="brain_device", help="Gemma device: Vulkan0 or cpu/none")
+        cmd.add_argument("--flash-attn", choices=("on", "off", "auto"))
         add_system_prompt_args(cmd)
 
     tts_cmd = sub.add_parser("tts")
@@ -532,6 +536,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_cmd.add_argument("--asr-language", choices=("auto", *tuple(ASR_LANGUAGES)))
     run_cmd.add_argument("--asr-device", help="Parakeet primary device, e.g. Vulkan0 or cpu")
     run_cmd.add_argument("--brain-device", help="Gemma device: Vulkan0 or cpu/none")
+    run_cmd.add_argument("--flash-attn", choices=("on", "off", "auto"))
     run_cmd.add_argument("-r", "--reference")
     add_system_prompt_args(run_cmd)
     add_tts_tuning_args(run_cmd)
@@ -543,6 +548,7 @@ def build_parser() -> argparse.ArgumentParser:
     resident_cmd.add_argument("--asr-language", choices=("auto", *tuple(ASR_LANGUAGES)))
     resident_cmd.add_argument("--asr-device", help="Parakeet primary device, e.g. Vulkan0 or cpu")
     resident_cmd.add_argument("--brain-device", help="Gemma device: Vulkan0 or cpu/none")
+    resident_cmd.add_argument("--flash-attn", choices=("on", "off", "auto"))
     resident_cmd.add_argument("-r", "--reference")
     add_system_prompt_args(resident_cmd)
     add_tts_tuning_args(resident_cmd)
@@ -683,6 +689,7 @@ def main() -> int:
         parser.print_help()
         return 2
     args = parser.parse_args()
+    note(f"component=runtime event=profile hardware={HARDWARE_PROFILE}")
     if not args.command:
         parser.print_help()
         return 2
