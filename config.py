@@ -130,7 +130,11 @@ def discover_families() -> dict:
 
 FAMILIES = discover_families()
 
-_s3_quant, _fastconv = ("q8_0", True) if HARDWARE_PROFILE == "pascal" else ("q4_0", False)
+# Quantized S3Gen keeps rank-3 conv kernels as F16. Vulkan CONV_TRANSPOSE_1D
+# is F32-only, so both profiles bake those kernels to F32 at load. Leaving
+# FASTCONV off on irisxe aborted the resident process mid-request (WinError 10054).
+_s3_quant = "q8_0" if HARDWARE_PROFILE == "pascal" else "q4_0"
+_fastconv = True
 for _family in FAMILIES.values():
     _family["TTS_RUNTIME"]["fastconv"] = _fastconv
     _codec = _family["TTS_MODELS"]["chatterbox-codec"]
