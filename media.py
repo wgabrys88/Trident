@@ -192,9 +192,6 @@ def compatible_mp4(src: Path, dest: Path) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
     partial = dest.with_name(dest.name + ".part")
     partial.unlink(missing_ok=True)
-    # H.264 Baseline + AAC-LC + yuv420p + faststart is the widest MP4 profile:
-    # phones, browsers, TVs, and game consoles all play it. A still frame is
-    # required because many of those players reject audio-only MP4.
     _run_ffmpeg(
         [
             "-f", "lavfi", "-i", f"color=c=black:s={PLAYBACK_SIZE}:r={PLAYBACK_FPS}",

@@ -42,13 +42,9 @@ TTS_RATE = 24000
 REFERENCE_MIN_SECONDS = 5.0
 
 ASR_RUNTIME = {
-    # Parakeet v0.5 server keeps one pk::Model/ggml context resident. The
-    # selected backend is forced by PARAKEET_DEVICE for every request.
     "device": "Vulkan0",
 }
 
-# Localhost-only persistent inference services. They are deliberately on
-# separate ports/processes so Parakeet and Gemma remain independent pipelines.
 RESIDENT_SERVERS = {
     "parakeet": {"host": "127.0.0.1", "port": 17931, "url": "http://127.0.0.1:17931", "startup_timeout_s": 120},
     "gemma": {"host": "127.0.0.1", "port": 17932, "url": "http://127.0.0.1:17932", "startup_timeout_s": 180},
@@ -61,8 +57,6 @@ BRAIN_RUNTIME = {
     "gpu_layers": "all",
     "context": 4096,
     "flash_attn": "on" if HARDWARE_PROFILE == "pascal" else "off",
-    # Do not let llama.cpp silently shrink GPU placement to satisfy a margin.
-    # If full offload cannot be allocated, startup should fail visibly instead.
     "fit": "off",
     "split_mode": "none",
     "main_gpu": 0,
@@ -70,12 +64,8 @@ BRAIN_RUNTIME = {
     "parallel": 1,
     "cache_type_k": "f16",
     "cache_type_v": "f16",
-    # Full-GPU inference still needs a host control thread for tokenization,
-    # sampling and dispatch. Avoid ggml thread-pool busy-spin while the GPU runs.
     "poll": 0,
     "poll_batch": 0,
-    # Keep host scheduling/tokenization lean. Model layers and KV are still
-    # explicitly offloaded; these threads are for unavoidable host control work.
     "threads": 2,
     "threads_batch": 2,
     "threads_http": 1,
@@ -103,9 +93,6 @@ LANGUAGES = {
     "ar": "Arabic", "ko": "Korean",
 }
 
-# NVIDIA Parakeet TDT 0.6B v3 detects these languages automatically; the
-# parakeet.cpp v0.5 server has no language-selection flag for this checkpoint.
-# Trident records an expected input language for validation/prompt context only.
 ASR_LANGUAGES = {
     "bg": "Bulgarian", "hr": "Croatian", "cs": "Czech", "da": "Danish",
     "nl": "Dutch", "en": "English", "et": "Estonian", "fi": "Finnish",
@@ -130,10 +117,6 @@ def discover_families() -> dict:
 
 FAMILIES = discover_families()
 
-# Quantized S3Gen keeps rank-3 conv kernels as F16. Vulkan CONV_TRANSPOSE_1D
-# is F32-only, so both profiles bake those kernels to F32 at load. The
-# `spkf32` recipe tag also prevents reuse of the pre-fix q4/q8 artifacts whose
-# speaker-affine matrix was incorrectly block-quantized.
 _s3_quant = "q8_0" if HARDWARE_PROFILE == "pascal" else "q4_0"
 for _family in FAMILIES.values():
     _family["TTS_RUNTIME"]["fastconv"] = True

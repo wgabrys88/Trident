@@ -13,8 +13,10 @@ import urllib.request
 from pathlib import Path
 from typing import Callable
 
-from config import RESIDENT_SERVERS, RUNTIMES
-from log import PATH as LOG_PATH, note, read_from, sink, size
+from config import RESIDENT_SERVERS, ROOT, RUNTIMES
+from log import note, open_sink, read_from
+
+LOG_HINT = str(ROOT / "trident*.log")
 
 
 def _state_dir() -> Path:
@@ -102,7 +104,8 @@ def _http_status(url: str, timeout: float = 1.0) -> int | None:
 
 
 def _read_log(name: str) -> str:
-    return read_from(int(_read_state(name).get("log_offset") or 0))
+    state = _read_state(name)
+    return read_from(int(state.get("log_offset") or 0), state.get("log_chunk"))
 
 
 def _gemma_cpu(runtime: dict) -> bool:
@@ -130,31 +133,31 @@ def _validate_gemma_residency(runtime: dict, timeout_s: float = 5.0) -> str:
 
     if cpu:
         if any(int(m.group(1)) > 0 for m in matches) or re.search(r"\b(?:Vulkan|CUDA|Metal)\d*\s+KV buffer size\s*=", text, flags=re.IGNORECASE):
-            raise RuntimeError(f"Gemma strict CPU residency failed: GPU allocation was reported; inspect {LOG_PATH}")
+            raise RuntimeError(f"Gemma strict CPU residency failed: GPU allocation was reported; inspect {LOG_HINT}")
         if not kv_ok:
-            raise RuntimeError(f"Gemma strict CPU residency failed: no CPU KV buffer was reported; inspect {LOG_PATH}")
+            raise RuntimeError(f"Gemma strict CPU residency failed: no CPU KV buffer was reported; inspect {LOG_HINT}")
         return "CPU"
 
     if not matches:
         raise RuntimeError(
             "Gemma server became healthy but its log did not report full layer offload; "
-            f"inspect {LOG_PATH}"
+            f"inspect {LOG_HINT}"
         )
     loaded, total = map(int, matches[-1].groups())
     if loaded != total or total <= 0:
         raise RuntimeError(
             f"Gemma strict GPU residency failed: llama.cpp offloaded {loaded}/{total} layers; "
-            f"inspect {LOG_PATH}"
+            f"inspect {LOG_HINT}"
         )
     if re.search(r"\bCPU(?:_\w+)?\s+KV buffer size\s*=", text, flags=re.IGNORECASE):
         raise RuntimeError(
             "Gemma strict GPU residency failed: llama.cpp allocated a CPU KV buffer; "
-            f"inspect {LOG_PATH}"
+            f"inspect {LOG_HINT}"
         )
     if not kv_ok:
         raise RuntimeError(
             f"Gemma strict GPU residency failed: no {device} KV buffer was reported; "
-            f"inspect {LOG_PATH}"
+            f"inspect {LOG_HINT}"
         )
     return device
 
@@ -163,8 +166,6 @@ def _validate_parakeet_backend(runtime: dict, timeout_s: float = 5.0) -> str:
     """Verify the selected primary backend; upstream may still schedule unsupported individual ops on CPU."""
     expected = str(runtime["device"])
     if expected.lower() == "cpu":
-        # v0.5.0 force_cpu bypasses device enumeration and directly initializes CPU;
-        # unlike GPU selection it emits no positive device log line.
         return "cpu"
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
@@ -174,11 +175,11 @@ def _validate_parakeet_backend(runtime: dict, timeout_s: float = 5.0) -> str:
             actual = matches[-1].strip()
             if actual.lower() == expected.lower():
                 return actual
-            raise RuntimeError(f"Parakeet selected {actual!r}, expected {expected!r}; inspect {LOG_PATH}")
+            raise RuntimeError(f"Parakeet selected {actual!r}, expected {expected!r}; inspect {LOG_HINT}")
         if "falling back to CPU" in text:
-            raise RuntimeError(f"Parakeet could not select {expected!r} and fell back to CPU; inspect {LOG_PATH}")
+            raise RuntimeError(f"Parakeet could not select {expected!r} and fell back to CPU; inspect {LOG_HINT}")
         time.sleep(0.05)
-    raise RuntimeError(f"Parakeet did not report requested primary backend {expected!r}; inspect {LOG_PATH}")
+    raise RuntimeError(f"Parakeet did not report requested primary backend {expected!r}; inspect {LOG_HINT}")
 
 
 def _validate_chatterbox_backend(runtime: dict, timeout_s: float = 5.0) -> str:
@@ -197,13 +198,12 @@ def _validate_chatterbox_backend(runtime: dict, timeout_s: float = 5.0) -> str:
         time.sleep(0.05)
     raise RuntimeError(
         f"Chatterbox backend validation failed: gpu_layers={runtime['gpu_layers']} requires "
-        f"T3+S3Gen={expected}, reported={roles or 'none'}; inspect {LOG_PATH}"
+        f"T3+S3Gen={expected}, reported={roles or 'none'}; inspect {LOG_HINT}"
     )
 
 
-def _spawn_detached(command: list[str], cwd: Path, env: dict[str, str]) -> tuple[int, int]:
-    offset = size()
-    log = sink()
+def _spawn_detached(command: list[str], cwd: Path, env: dict[str, str]) -> tuple[int, str, int]:
+    chunk_name, offset, log = open_sink()
     log.write((f"trident ts_unix_ns={time.time_ns()} event=spawn command=" + json.dumps(command, separators=(",", ":")) + "\n").encode())
     try:
         kwargs: dict = {
@@ -219,7 +219,7 @@ def _spawn_detached(command: list[str], cwd: Path, env: dict[str, str]) -> tuple
         else:
             kwargs["start_new_session"] = True
         process = subprocess.Popen(command, **kwargs)
-        return int(process.pid), offset
+        return int(process.pid), chunk_name, offset
     finally:
         log.close()
 
@@ -232,7 +232,7 @@ def _wait_ready(name: str, pid: int, probe: Callable[[], bool], timeout_s: float
         time.sleep(0.25)
     raise RuntimeError(
         f"{name} resident server did not become ready within {timeout_s:g}s; "
-        f"inspect {LOG_PATH} (pid {pid})"
+        f"inspect {LOG_HINT} (pid {pid})"
     )
 
 
@@ -317,7 +317,7 @@ def _ensure(
 
     note(f"{name} resident: starting persistent server")
     note(f"{name} resident command: " + " ".join(command))
-    pid, log_offset = _spawn_detached(command, server.parent, env)
+    pid, log_chunk, log_offset = _spawn_detached(command, server.parent, env)
     state_value = {
         "identity": ident,
         "pid": pid,
@@ -327,7 +327,8 @@ def _ensure(
         "model": str(model),
         "command": command,
         "identity_inputs": identity_extra,
-        "log": str(LOG_PATH),
+        "log": str(LOG_HINT),
+        "log_chunk": log_chunk,
         "log_offset": log_offset,
         "started_unix": time.time(),
     }
@@ -387,16 +388,8 @@ def ensure_gemma(server: Path, model: Path, runtime: dict) -> str:
         "--threads", str(runtime["threads"]), "--threads-batch", str(runtime["threads_batch"]),
         "--poll", str(runtime["poll"]), "--poll-batch", str(runtime["poll_batch"]),
         "--threads-http", str(runtime["threads_http"]),
-        # Trident has no browser client. Restrict CORS to loopback origins so a
-        # remote web page cannot drive the unauthenticated localhost API.
         "--cors-origins", "localhost",
-        # llama.cpp b10453 moved tensor/KV residency details above the default
-        # info threshold. Keep trace logging so the fail-closed residency check
-        # can verify what actually landed on Vulkan instead of rejecting a
-        # healthy fully-offloaded server because those lines were suppressed.
         "--log-verbosity", "4", "--log-prefix", "--log-timestamps",
-        # Gemma 4 shared-KV/SWA blocks the cache-reuse path in current llama.cpp.
-        # Keep the model/KV resident, but do not spend host RAM on unusable prefix snapshots.
         "--no-cache-prompt", "--no-ui", "--reasoning", "off",
     ]
     env = os.environ.copy()
@@ -458,6 +451,8 @@ def ensure_chatterbox(
     ]
     env = os.environ.copy()
     env["TRIDENT_FASTCONV"] = "1" if runtime.get("fastconv") else "0"
+    for key in ("GGML_VK_MEMORY_LOGGER", "GGML_VK_PERF_LOGGER", "GGML_VK_SYNC_LOGGER"):
+        env.setdefault(key, "1")
     probe = lambda: _port_open(host, port)
     identity_extra = {
         "codec": _file_signature(codec_model),
@@ -502,7 +497,7 @@ def status() -> list[dict]:
         identity = state.get("identity_inputs") or {}
         runtime = identity.get("runtime") or {}
         rows.append({
-            "name": name, "ready": ready, "pid": state.get("pid"), "url": cfg["url"], "log": str(LOG_PATH),
+            "name": name, "ready": ready, "pid": state.get("pid"), "url": cfg["url"], "log": LOG_HINT,
             "family": state.get("family"), "language": state.get("language"), "reference": state.get("reference"),
             "device": identity.get("device"), "gpu_layers": identity.get("gpu_layers", runtime.get("gpu_layers")),
         })
