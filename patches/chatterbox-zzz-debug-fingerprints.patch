@@ -172,7 +172,7 @@ index a6c9299..91eddc7 100644
 +        std::vector<float> got, want;
 +        for (int side = 0; side < 2; ++side) {
 +            ggml_context * ctx = ggml_init(ip);
-+            ggml_tensor * W = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, K, Cin, Cout);
++            ggml_tensor * W = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, K, Cout, Cin);
 +            ggml_tensor * X = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, T, Cin);
 +            ggml_tensor * Y = ggml_conv_transpose_1d(ctx, W, X, S, P, D);
 +            ggml_cgraph * gf = ggml_new_graph_custom(ctx, 128, false);
