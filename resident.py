@@ -19,6 +19,13 @@ from log import note, open_sink, read_from
 LOG_HINT = str(ROOT / "trident*.log")
 
 
+def _vulkan_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["GGML_VK_DISABLE_COOPMAT"] = "1"
+    env["GGML_VK_DISABLE_COOPMAT2"] = "1"
+    return env
+
+
 def _state_dir() -> Path:
     path = RUNTIMES / ".resident"
     path.mkdir(parents=True, exist_ok=True)
@@ -202,9 +209,25 @@ def _validate_chatterbox_backend(runtime: dict, timeout_s: float = 5.0) -> str:
     )
 
 
-def _spawn_detached(command: list[str], cwd: Path, env: dict[str, str]) -> tuple[int, str, int]:
+def _spawn_detached(
+    command: list[str], cwd: Path, env: dict[str, str]
+) -> tuple[subprocess.Popen, str, int]:
     chunk_name, offset, log = open_sink()
-    log.write((f"trident ts_unix_ns={time.time_ns()} event=spawn command=" + json.dumps(command, separators=(",", ":")) + "\n").encode())
+    runtime_env = {
+        key: env.get(key, "")
+        for key in (
+            "GGML_VK_DISABLE_COOPMAT", "GGML_VK_DISABLE_COOPMAT2",
+            "GGML_VK_MEMORY_LOGGER", "GGML_VK_PERF_LOGGER", "GGML_VK_SYNC_LOGGER",
+            "PARAKEET_DEVICE", "TRIDENT_FASTCONV",
+        )
+        if key in env
+    }
+    line = (
+        f"trident ts_unix_ns={time.time_ns()} event=spawn command="
+        + json.dumps(command, separators=(",", ":"))
+        + " env=" + json.dumps(runtime_env, sort_keys=True, separators=(",", ":")) + "\n"
+    )
+    log.write(line.encode("utf-8"))
     try:
         kwargs: dict = {
             "cwd": str(cwd),
@@ -219,20 +242,31 @@ def _spawn_detached(command: list[str], cwd: Path, env: dict[str, str]) -> tuple
         else:
             kwargs["start_new_session"] = True
         process = subprocess.Popen(command, **kwargs)
-        return int(process.pid), chunk_name, offset
+        return process, chunk_name, offset
     finally:
         log.close()
 
 
-def _wait_ready(name: str, pid: int, probe: Callable[[], bool], timeout_s: float) -> None:
+def _wait_ready(
+    name: str, process: subprocess.Popen, probe: Callable[[], bool], timeout_s: float
+) -> None:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if probe():
             return
+        returncode = process.poll()
+        if returncode is not None:
+            text = _read_log(name).replace("\r\n", "\n").rstrip()
+            tail = "\n".join(text.splitlines()[-20:])
+            detail = f"\nLast native output:\n{tail}" if tail else ""
+            raise RuntimeError(
+                f"{name} resident exited before becoming ready "
+                f"(pid {process.pid}, exit code {returncode}){detail}"
+            )
         time.sleep(0.25)
     raise RuntimeError(
         f"{name} resident server did not become ready within {timeout_s:g}s; "
-        f"inspect {LOG_HINT} (pid {pid})"
+        f"inspect {LOG_HINT} (pid {process.pid})"
     )
 
 
@@ -317,7 +351,8 @@ def _ensure(
 
     note(f"{name} resident: starting persistent server")
     note(f"{name} resident command: " + " ".join(command))
-    pid, log_chunk, log_offset = _spawn_detached(command, server.parent, env)
+    process, log_chunk, log_offset = _spawn_detached(command, server.parent, env)
+    pid = int(process.pid)
     state_value = {
         "identity": ident,
         "pid": pid,
@@ -336,7 +371,7 @@ def _ensure(
         state_value.update(state_extra)
     _write_state(name, state_value)
     try:
-        _wait_ready(name, pid, ready_probe, float(cfg["startup_timeout_s"]))
+        _wait_ready(name, process, ready_probe, float(cfg["startup_timeout_s"]))
     except Exception:
         _state_path(name).unlink(missing_ok=True)
         raise
@@ -347,13 +382,16 @@ def _ensure(
 def ensure_parakeet(server: Path, model: Path, runtime: dict) -> str:
     cfg = RESIDENT_SERVERS["parakeet"]
     host, port = str(cfg["host"]), int(cfg["port"])
-    env = os.environ.copy()
+    env = _vulkan_env()
     env["PARAKEET_DEVICE"] = str(runtime["device"])
     command = [str(server), "--model", str(model), "--port", str(port)]
     probe = lambda: _port_open(host, port)
     url = _ensure(
         "parakeet", server, model, command, env,
-        {"device": str(runtime["device"]), "decoder": "tdt", "port": port},
+        {
+            "device": str(runtime["device"]), "decoder": "tdt", "port": port,
+            "disable_coopmat": True, "disable_coopmat2": True,
+        },
         probe,
     )
     backend = _validate_parakeet_backend(runtime)
@@ -392,7 +430,7 @@ def ensure_gemma(server: Path, model: Path, runtime: dict) -> str:
         "--log-verbosity", "4", "--log-prefix", "--log-timestamps",
         "--no-cache-prompt", "--no-ui", "--reasoning", "off",
     ]
-    env = os.environ.copy()
+    env = _vulkan_env()
     probe_url = f"http://{host}:{port}/health"
     probe = lambda: _http_status(probe_url, timeout=1.0) == 200
     url = _ensure(
@@ -408,6 +446,7 @@ def ensure_gemma(server: Path, model: Path, runtime: dict) -> str:
             "poll": int(runtime["poll"]), "poll_batch": int(runtime["poll_batch"]),
             "log_verbosity": 4, "log_prefix": True, "log_timestamps": True, "cors_origins": "localhost",
             "cache_prompt": False, "ui": False, "alias": "gemma", "port": port,
+            "disable_coopmat": True, "disable_coopmat2": True,
         },
         probe,
     )
@@ -449,7 +488,7 @@ def ensure_chatterbox(
         "--first-chunk-chars", str(chunk.get("first_chars", chunk["chars"])),
         "--chunk-chars", str(chunk["chars"]),
     ]
-    env = os.environ.copy()
+    env = _vulkan_env()
     env["TRIDENT_FASTCONV"] = "1" if runtime.get("fastconv") else "0"
     for key in ("GGML_VK_MEMORY_LOGGER", "GGML_VK_PERF_LOGGER", "GGML_VK_SYNC_LOGGER"):
         env.setdefault(key, "1")
@@ -463,6 +502,7 @@ def ensure_chatterbox(
         "sample": sample,
         "voice": voice,
         "chunk": chunk,
+        "vulkan": {"disable_coopmat": True, "disable_coopmat2": True},
         "port": port,
     }
     url = _ensure(
