@@ -6,8 +6,10 @@ import shutil
 import subprocess
 import sys
 import wave
-from collections.abc import Callable
 from pathlib import Path
+
+from config import ROOT
+from log import note, run as run_logged
 
 
 PARAKEET_RATE = 16000
@@ -16,15 +18,7 @@ PLAYBACK_RATE = 44100
 PLAYBACK_SIZE = "640x360"
 PLAYBACK_FPS = 30
 
-LogFn = Callable[[str], None]
 _ffmpeg: Path | None = None
-
-
-def _emit(log: LogFn | None, message: str) -> None:
-    if log:
-        log(message)
-        return
-    print(message, file=sys.stderr, flush=True)
 
 
 def _winget_ffmpeg() -> Path | None:
@@ -63,7 +57,7 @@ def _popen_kwargs() -> dict:
     return extra
 
 
-def ensure_ffmpeg(log: LogFn | None = None) -> Path:
+def ensure_ffmpeg() -> Path:
     global _ffmpeg
     if _ffmpeg is not None:
         return _ffmpeg
@@ -77,25 +71,26 @@ def ensure_ffmpeg(log: LogFn | None = None) -> Path:
             raise RuntimeError(
                 "ffmpeg is missing and winget is unavailable; install Gyan.FFmpeg globally"
             )
-        _emit(log, "component=ffmpeg event=install id=Gyan.FFmpeg source=winget")
-        subprocess.run(
+        note("component=ffmpeg event=install id=Gyan.FFmpeg source=winget")
+        run_logged(
             [
                 winget, "install", "-e", "--id", "Gyan.FFmpeg", "--source", "winget",
                 "--accept-package-agreements", "--accept-source-agreements",
                 "--disable-interactivity",
             ],
-            check=True,
+            ROOT,
+            os.environ.copy(),
         )
         path = ffmpeg_bin()
     _ffmpeg = path
-    _emit(log, f"component=ffmpeg event=ready path={path} version={_ffmpeg_version(path)}")
+    note(f"component=ffmpeg event=ready path={path} version={_ffmpeg_version(path)}")
     return path
 
 
-def _run_ffmpeg(args: list[str], log: LogFn | None = None) -> None:
-    binary = ensure_ffmpeg(log)
+def _run_ffmpeg(args: list[str]) -> None:
+    binary = ensure_ffmpeg()
     command = [str(binary), "-hide_banner", "-nostdin", "-loglevel", "error", "-y", *args]
-    _emit(log, "component=ffmpeg event=start command=" + " ".join(command))
+    note("component=ffmpeg event=start command=" + " ".join(command))
     result = subprocess.run(
         command,
         capture_output=True,
@@ -139,7 +134,7 @@ def _fresh(src: Path, dest: Path) -> bool:
     return dest.is_file() and dest.stat().st_size > 0 and dest.stat().st_mtime_ns >= src.stat().st_mtime_ns
 
 
-def encode_wav(src: Path, dest: Path, rate: int, log: LogFn | None = None, *, reuse: bool = True) -> Path:
+def encode_wav(src: Path, dest: Path, rate: int, *, reuse: bool = True) -> Path:
     src = src.expanduser().resolve()
     dest = dest.expanduser().resolve()
     if not src.is_file():
@@ -156,16 +151,15 @@ def encode_wav(src: Path, dest: Path, rate: int, log: LogFn | None = None, *, re
             "-i", str(src), "-vn", "-ac", "1", "-ar", str(rate),
             "-c:a", "pcm_s16le", "-f", "wav", str(partial),
         ],
-        log,
     )
     wav = _replace(partial, dest)
     if not _canonical_wav(wav, rate):
         raise RuntimeError(f"ffmpeg did not produce PCM16 {rate} Hz mono WAV: {wav}")
-    _emit(log, f"component=ffmpeg event=wav path={wav} rate={rate} channels=1 codec=pcm_s16le")
+    note(f"component=ffmpeg event=wav path={wav} rate={rate} channels=1 codec=pcm_s16le")
     return wav
 
 
-def parakeet_wav(src: Path, dest: Path, log: LogFn | None = None) -> Path:
+def parakeet_wav(src: Path, dest: Path) -> Path:
     src = src.expanduser().resolve()
     dest = dest.expanduser().resolve()
     if _canonical_wav(src, PARAKEET_RATE):
@@ -173,10 +167,10 @@ def parakeet_wav(src: Path, dest: Path, log: LogFn | None = None) -> Path:
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dest)
         return dest
-    return encode_wav(src, dest, PARAKEET_RATE, log, reuse=False)
+    return encode_wav(src, dest, PARAKEET_RATE, reuse=False)
 
 
-def chatterbox_wav(src: Path, cache_dir: Path, log: LogFn | None = None) -> Path:
+def chatterbox_wav(src: Path, cache_dir: Path) -> Path:
     src = src.expanduser().resolve()
     if not src.is_file():
         raise RuntimeError(f"missing media: {src}")
@@ -185,10 +179,10 @@ def chatterbox_wav(src: Path, cache_dir: Path, log: LogFn | None = None) -> Path
     cache_dir.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha1(os.fsencode(str(src))).hexdigest()[:12]
     dest = cache_dir / f"{src.stem}-{digest}.wav"
-    return encode_wav(src, dest, CHATTERBOX_RATE, log, reuse=True)
+    return encode_wav(src, dest, CHATTERBOX_RATE, reuse=True)
 
 
-def compatible_mp4(src: Path, dest: Path, log: LogFn | None = None) -> Path:
+def compatible_mp4(src: Path, dest: Path) -> Path:
     src = src.expanduser().resolve()
     dest = dest.expanduser().resolve()
     if not src.is_file():
@@ -214,10 +208,9 @@ def compatible_mp4(src: Path, dest: Path, log: LogFn | None = None) -> Path:
             "-shortest", "-movflags", "+faststart",
             "-brand", "mp42", "-f", "mp4", str(partial),
         ],
-        log,
     )
     mp4 = _replace(partial, dest)
-    _emit(log, f"component=ffmpeg event=mp4 path={mp4} video=h264-baseline audio=aac-lc faststart=1")
+    note(f"component=ffmpeg event=mp4 path={mp4} video=h264-baseline audio=aac-lc faststart=1")
     return mp4
 
 

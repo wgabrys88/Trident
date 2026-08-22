@@ -6,14 +6,12 @@ import json
 import os
 import platform
 import shutil
-import subprocess
 import sys
 import time
 import urllib.parse
 import urllib.request
 import wave
 import zipfile
-from datetime import datetime
 from pathlib import Path
 
 from config import (
@@ -22,24 +20,7 @@ from config import (
     CHATTERBOX, GGML, RUNTIMES, CONVERTER, TOOLS, PATCHES, ROOT,
     REFERENCE_VOICES, REFERENCE_MIN_SECONDS, Paths,
 )
-
-
-_log = None
-
-
-def set_log(path: Path | None) -> None:
-    global _log
-    _log = path
-    if path:
-        path.write_text("", encoding="utf-8")
-
-
-def note(message: str) -> None:
-    line = f"ts={datetime.now().astimezone().isoformat(timespec='milliseconds')} {message}"
-    print(line, file=sys.stderr, flush=True)
-    if _log:
-        with _log.open("a", encoding="utf-8", newline="\n") as handle:
-            handle.write(line + "\n")
+from log import fail, note, run as run_logged
 
 
 def validate_wav(path: Path, rate: int | None = None, minimum_seconds: float = 0.0, channels: int | None = None, *, pcm16: bool = True) -> None:
@@ -132,7 +113,7 @@ def build_env() -> dict[str, str]:
 def run_process(component: str, stage: str, command: list[str], cwd: Path, env: dict[str, str] | None = None) -> None:
     note(f"component={component} stage={stage} event=start command={' '.join(command)}")
     started = time.perf_counter()
-    subprocess.run(command, cwd=cwd, env=env or build_env(), stdout=sys.stderr, stderr=sys.stderr, check=True)
+    run_logged(command, cwd, env or build_env())
     note(f"component={component} stage={stage} event=done elapsed_ms={(time.perf_counter() - started) * 1000.0:.3f}")
 
 
@@ -236,7 +217,7 @@ def _stop_owned_chatterbox_before_replace() -> None:
     # Windows keeps a running executable locked. Stop only the process owned by
     # Trident; foreign processes using the port remain untouched/fail closed.
     from resident import stop_owned
-    stop_owned("chatterbox", note)
+    stop_owned("chatterbox")
 
 
 def github_release_asset(spec: dict) -> tuple[str, int, str | None]:
@@ -276,13 +257,13 @@ def fetch(url: str, destination: Path, size: int, sha256: str | None = None) -> 
     partial.unlink(missing_ok=True)
     request = urllib.request.Request(url, headers={"User-Agent": "trident/1"})
     done = 0
+    note(f"download start file={destination.name} size={size}")
     try:
         with urllib.request.urlopen(request, timeout=60) as response, partial.open("wb") as output:
             for block in iter(lambda: response.read(1024 * 1024), b""):
                 output.write(block)
                 done += len(block)
-                if size:
-                    note(f"download {destination.name}: {done}/{size}")
+        note(f"download done file={destination.name} bytes={done}")
         if size and done != size:
             raise RuntimeError(f"download size mismatch for {destination.name}: expected {size}, got {done}")
         if sha256:
@@ -502,8 +483,8 @@ def download_model(spec: dict, models_dir: Path) -> None:
     if not python.is_file():
         run_process(spec["label"], "venv", [sys.executable, "-m", "venv", str(CONVERTER)], ROOT, os.environ.copy())
     if not stamp.is_file() or stamp.read_text(encoding="ascii") != lock:
-        run_process(spec["label"], "torch", [str(python), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", torch_pin, "--index-url", "https://download.pytorch.org/whl/cpu"], ROOT, os.environ.copy())
-        run_process(spec["label"], "dependencies", [str(python), "-m", "pip", "install", "--disable-pip-version-check", "--no-input", *packages.split()], ROOT, os.environ.copy())
+        run_process(spec["label"], "torch", [str(python), "-m", "pip", "install", "--disable-pip-version-check", "--progress-bar", "off", "--no-input", torch_pin, "--index-url", "https://download.pytorch.org/whl/cpu"], ROOT, os.environ.copy())
+        run_process(spec["label"], "dependencies", [str(python), "-m", "pip", "install", "--disable-pip-version-check", "--progress-bar", "off", "--no-input", *packages.split()], ROOT, os.environ.copy())
         stamp.parent.mkdir(parents=True, exist_ok=True)
         stamp.write_text(lock, encoding="ascii")
     required = tuple(recipe["files"])
@@ -568,7 +549,7 @@ def install(family: str, models_dir: Path | None = None, data_dir: Path | None =
     for name in ("python", "git", "cmake", "msvc", "vulkan"):
         install_prerequisite(name)
     from media import ensure_ffmpeg
-    ensure_ffmpeg(note)
+    ensure_ffmpeg()
     install_release_binary("parakeet")
     install_release_binary("gemma")
     download_reference_voices(paths.data_dir)
@@ -599,7 +580,7 @@ def main() -> int:
         install(args.family, args.models_dir, args.data_dir)
         return 0
     except Exception as exc:
-        note(f"error: {exc}")
+        fail(f"error: {exc}")
         return 1
 
 
