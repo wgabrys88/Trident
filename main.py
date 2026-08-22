@@ -466,9 +466,11 @@ python main.py resident warm --family turbo --asr-language en --tts-language en 
 # Independent pipelines. Audio or video is converted to the WAV each model expects.
 python main.py parakeet rec.mp3 --language pl
 python main.py gemma prompt.txt --language en
+python main.py gemma --text "Explain why the sky is blue." --language en
 python main.py nano line.txt -r obama
-python main.py turbo line.txt -r trump
+python main.py turbo --text "This text is spoken directly from the command line." -r trump
 python main.py v3 line.txt --language pl -r kamala
+python main.py v3 --text "Dzien dobry. To jest tekst z linii polecen." --language pl -r kamala
 
 python main.py resident status
 python main.py resident stop
@@ -506,7 +508,8 @@ def add_system_prompt_args(cmd: argparse.ArgumentParser) -> None:
 
 
 def add_tts_io_args(cmd: argparse.ArgumentParser) -> None:
-    cmd.add_argument("input")
+    cmd.add_argument("input", nargs="?")
+    cmd.add_argument("-t", "--text")
     cmd.add_argument("-r", "--reference")
     cmd.add_argument("-o", "--output")
     cmd.add_argument("--language")
@@ -532,7 +535,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     for name in ("brain", "gemma"):
         cmd = sub.add_parser(name)
-        cmd.add_argument("input")
+        cmd.add_argument("input", nargs="?")
+        cmd.add_argument("-t", "--text")
         cmd.add_argument("-o", "--output")
         cmd.add_argument("--language", choices=tuple(LANGUAGES), default="en")
         cmd.add_argument("--asr-language", choices=("auto", *tuple(ASR_LANGUAGES)), default="auto")
@@ -735,9 +739,21 @@ def main() -> int:
         elif operation in FAMILIES:
             operation = "tts"
 
-        source = Path(args.input).expanduser().resolve()
-        if not source.is_file():
-            raise RuntimeError(f"missing file: {source}")
+        input_value = getattr(args, "input", None)
+        text_value = getattr(args, "text", None)
+        if operation in {"brain", "tts"}:
+            if input_value is not None and text_value is not None:
+                raise RuntimeError("specify either an input text file or --text, not both")
+            if input_value is None and text_value is None:
+                raise RuntimeError("provide an input text file or --text")
+        elif input_value is None:
+            raise RuntimeError("input file is required")
+
+        source = None
+        if input_value is not None:
+            source = Path(input_value).expanduser().resolve()
+            if not source.is_file():
+                raise RuntimeError(f"missing file: {source}")
         output = Path(args.output).expanduser().resolve() if getattr(args, "output", None) else None
         data_dir = args.data_dir.resolve() if args.data_dir else Paths().data_dir
 
@@ -750,6 +766,12 @@ def main() -> int:
             return finish(paths)
 
         paths = start_run(args.command, args)
+        if text_value is not None:
+            text = text_value.strip()
+            if not text:
+                raise RuntimeError("--text is empty")
+            source = paths.run_dir / "literal.txt"
+            write_text_atomic(source, text + "\n")
         if operation == "asr":
             run_asr(source, output, paths, args.language, effective_asr_runtime(args))
         elif operation == "brain":
