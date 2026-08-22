@@ -7,9 +7,9 @@
 
 namespace tts {
 
-// A long-lived Chatterbox synthesis context. Construction loads T3 + S3Gen and
-// computes all reference-dependent voice conditioning once. Every subsequent
-// synthesize() call reuses the same Engine/model/backend allocations.
+
+
+
 class Session {
 public:
     Session(const Runtime& runtime, const EngineKnobs& knobs, int chunk_chars, float quiet_amp2 = kQuietAmp2, int first_chunk_chars = 0);
@@ -29,4 +29,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-} // namespace tts
+} 

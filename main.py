@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import shutil
 import sys
 import time
+import wave
 from pathlib import Path
 
 from config import (
@@ -17,7 +19,7 @@ from installer import (
     install, runtime_server, runtime_tts_server, models_for, require_model,
     validate_wav, write_text_atomic,
 )
-from log import fail, note
+from log import end_run, fail, note, set_run_log
 from local_api import chatterbox_synthesize, gemma_chat, parakeet_transcribe
 from media import chatterbox_wav, compatible_mp4, parakeet_wav, publish_outputs
 from resident import (
@@ -44,8 +46,6 @@ def transcribe(server: Path, model: Path, input_wav: Path, paths: Paths, expecte
     expected_language = validate_asr_language(expected_language)
     runtime = runtime or ASR_RUNTIME
     base_url = ensure_parakeet(server, model, runtime)
-    # NVIDIA Parakeet TDT 0.6B v3 performs language identification internally.
-    # The v0.5 parakeet-server exposes no language selector for this checkpoint.
     note(f"component=asr event=request endpoint={base_url}/v1/audio/transcriptions input={input_wav} language_mode=auto expected={expected_language}")
     started = time.perf_counter()
     payload = parakeet_transcribe(base_url, input_wav)
@@ -80,7 +80,6 @@ def render_system_prompt(template: str | None, asr_language: str, tts_language: 
         "{asr_language_name}": _language_name(asr_language, ASR_LANGUAGES),
         "{tts_language}": tts_language,
         "{tts_language_name}": tts_language_name,
-        # Backward-compatible placeholders from the earlier repository.
         "{language}": tts_language,
         "{language_name}": tts_language_name,
     }
@@ -118,8 +117,6 @@ def brain(
             {"role": "user", "content": prompt_text},
         ],
         "stream": False,
-        # Gemma 4 shared-KV/SWA currently blocks the useful cross-request prefix
-        # reuse path. Keep the model/KV resident but avoid host prompt-cache work.
         "cache_prompt": False,
         "temperature": g["temperature"],
         "top_p": g["top_p"],
@@ -289,6 +286,10 @@ def prepared_reference(reference: Path, data_dir: Path) -> Path:
         raise RuntimeError(f"missing {reference.name}; python main.py install")
     wav = chatterbox_wav(reference, data_dir / "prepared")
     validate_wav(wav, TTS_RATE, minimum_seconds=REFERENCE_MIN_SECONDS, channels=1)
+    with wave.open(str(wav), "rb") as handle:
+        seconds = handle.getnframes() / float(handle.getframerate() or TTS_RATE)
+    digest = hashlib.sha256(wav.read_bytes()).hexdigest()
+    note(f"component=tts event=reference_prepared wav={wav} sha256={digest} duration_s={seconds:.3f}")
     return wav
 
 
@@ -305,8 +306,14 @@ def write_meta(paths: Paths, rows: dict[str, str]) -> None:
 
 def start_run(command: str, args) -> Paths:
     paths = Paths(args.models_dir, args.data_dir, command)
-    note(f"component=pipeline event=start run_dir={paths.run_dir}")
+    mark = set_run_log(paths.run_dir / "trident.log")
+    note(f"component=pipeline event=start run_dir={paths.run_dir} log_chunk={mark[0]} log_offset={mark[1]}")
     return paths
+
+
+def finish(paths: Paths) -> int:
+    end_run(paths.run_dir / "server.log")
+    return 0
 
 
 def run_asr(input_wav: Path, output: Path | None, paths: Paths, asr_language: str = "auto", asr_runtime: dict | None = None) -> None:
@@ -740,7 +747,7 @@ def main() -> int:
                 raise RuntimeError(f"missing {reference.name}; python main.py install --family {family['name']}")
             paths = start_run(args.command, args)
             run_pipeline(source, output, family, asr_language, tts_language, reference, paths, system_prompt, asr_runtime, brain_runtime)
-            return 0
+            return finish(paths)
 
         paths = start_run(args.command, args)
         if operation == "asr":
@@ -753,7 +760,7 @@ def main() -> int:
             run_tts(source, reference, output, family, args.language, paths)
         else:
             raise RuntimeError(f"unknown operation: {operation}")
-        return 0
+        return finish(paths)
     except Exception as exc:
         fail(f"error: {exc}")
         return 1

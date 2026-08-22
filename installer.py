@@ -30,9 +30,6 @@ def validate_wav(path: Path, rate: int | None = None, minimum_seconds: float = 0
         header = raw.read(12)
     if len(header) != 12 or header[:4] != b"RIFF" or header[8:] != b"WAVE":
         raise RuntimeError(f"invalid WAV {path}: not a RIFF/WAVE file")
-    # Parakeet.cpp v0.5.0 uses dr_wav, downmixes every channel to mono and
-    # resamples to 16 kHz internally. For ASR, the RIFF/WAVE container is the
-    # contract; strict PCM16 checks remain for Trident-owned TTS/reference WAVs.
     if not pcm16:
         return
     with wave.open(str(path), "rb") as audio:
@@ -214,8 +211,6 @@ def _runtime_marker_matches(component: str, revision: str) -> bool:
 
 
 def _stop_owned_chatterbox_before_replace() -> None:
-    # Windows keeps a running executable locked. Stop only the process owned by
-    # Trident; foreign processes using the port remain untouched/fail closed.
     from resident import stop_owned
     stop_owned("chatterbox")
 
@@ -425,7 +420,6 @@ def install_tts() -> None:
 
     _stop_owned_chatterbox_before_replace()
     runtime.mkdir(parents=True, exist_ok=True)
-    # Remove obsolete per-family launchers/markers from pre-server-only builds.
     for obsolete in (
         "trident-tts-nano.exe", "trident-tts-turbo.exe", "trident-tts-v3.exe",
         ".build-nano.revision", ".build-turbo.revision", ".build-v3.revision",
@@ -556,8 +550,6 @@ def install(family: str, models_dir: Path | None = None, data_dir: Path | None =
     if not tts_runtime_ready():
         install_tts()
 
-    # De-duplicate shared/model-family downloads by output filename while still
-    # installing every selected Chatterbox family when --family all is used.
     specs: dict[str, dict] = {spec["file"]: spec for spec in SHARED_MODELS.values()}
     for family_name in selected:
         for spec in FAMILIES[family_name]["TTS_MODELS"].values():
