@@ -131,17 +131,19 @@ def discover_families() -> dict:
 FAMILIES = discover_families()
 
 # Quantized S3Gen keeps rank-3 conv kernels as F16. Vulkan CONV_TRANSPOSE_1D
-# is F32-only, so both profiles bake those kernels to F32 at load. Leaving
-# FASTCONV off on irisxe aborted the resident process mid-request (WinError 10054).
+# is F32-only, so both profiles bake those kernels to F32 at load. The
+# `spkf32` recipe tag also prevents reuse of the pre-fix q4/q8 artifacts whose
+# speaker-affine matrix was incorrectly block-quantized.
 _s3_quant = "q8_0" if HARDWARE_PROFILE == "pascal" else "q4_0"
-_fastconv = True
 for _family in FAMILIES.values():
-    _family["TTS_RUNTIME"]["fastconv"] = _fastconv
+    _family["TTS_RUNTIME"]["fastconv"] = True
     _codec = _family["TTS_MODELS"]["chatterbox-codec"]
     _codec["convert"]["quant"], _codec["size"] = _s3_quant, 0
-    _codec["file"] = _codec["file"].replace("-f16.gguf", f"-{HARDWARE_PROFILE}-{_s3_quant}.gguf")
+    _codec["file"] = _codec["file"].replace(
+        "-f16.gguf", f"-{HARDWARE_PROFILE}-{_s3_quant}-spkf32.gguf"
+    )
 for _name in ("nano", "turbo"):
-    FAMILIES[_name]["TTS_SAMPLE"].update(cfm_steps=1, temperature=0.8, top_p=0.95, top_k=1000, repeat_penalty=1.2)
+    FAMILIES[_name]["TTS_SAMPLE"].update(cfm_steps=2, temperature=0.8, top_p=0.95, top_k=1000, repeat_penalty=1.2)
 FAMILIES["v3"]["TTS_SAMPLE"]["cfm_steps"] = 5
 FAMILIES["v3"]["TTS_VOICE"]["exaggeration"] = 0.5
 
