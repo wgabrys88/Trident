@@ -464,6 +464,7 @@ def ensure_chatterbox(
         "--chunk-chars", str(chunk["chars"]),
     ]
     env = os.environ.copy()
+    env["TRIDENT_FASTCONV"] = "1" if runtime.get("fastconv") else "0"
     probe = lambda: _port_open(host, port)
     identity_extra = {
         "codec": _file_signature(codec_model),
