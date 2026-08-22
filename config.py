@@ -1,10 +1,30 @@
 from __future__ import annotations
 
 import importlib
+import os
+import subprocess
 from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+
+
+def detect_hardware_profile() -> str:
+    profile = os.environ.get("TRIDENT_PROFILE", "").strip().lower()
+    if profile in {"pascal", "irisxe"}:
+        return profile
+    if profile or os.name != "nt":
+        raise RuntimeError("TRIDENT_PROFILE must be pascal or irisxe")
+    gpu = subprocess.check_output(
+        ["powershell.exe", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name -join ';'"],
+        text=True, encoding="utf-8", errors="replace", timeout=15,
+    ).lower()
+    if "gtx 1060" in gpu: return "pascal"
+    if "iris" in gpu and "xe" in gpu: return "irisxe"
+    raise RuntimeError(f"unsupported experimental GPU: {gpu.strip()}")
+
+
+HARDWARE_PROFILE = detect_hardware_profile()
 
 DEFAULT_MODELS_DIR = ROOT / "models"
 DEFAULT_DATA_DIR = ROOT / "data"
@@ -40,10 +60,7 @@ BRAIN_RUNTIME = {
     "device": "Vulkan0",
     "gpu_layers": "all",
     "context": 4096,
-    # Gemma 4 + the pinned llama.cpp Vulkan generation is kept on standard
-    # attention: recent Vulkan FA auto/on paths have shown severe decode
-    # regressions, while F16 KV does not require Flash Attention.
-    "flash_attn": "off",
+    "flash_attn": "on" if HARDWARE_PROFILE == "pascal" else "off",
     # Do not let llama.cpp silently shrink GPU placement to satisfy a margin.
     # If full offload cannot be allocated, startup should fail visibly instead.
     "fit": "off",
@@ -64,8 +81,8 @@ BRAIN_RUNTIME = {
     "threads_http": 1,
 }
 BRAIN_GENERATION = {
-    "temperature": 0.3, "top_p": 0.90, "top_k": 40, "min_p": 0.0,
-    "repeat_penalty": 1.05, "seed": 42, "max_tokens": 1024,
+    "temperature": 1.0, "top_p": 0.95, "top_k": 64, "min_p": 0.0,
+    "repeat_penalty": 1.0, "seed": 42, "max_tokens": 1024,
 }
 BRAIN_THINKING = False
 BRAIN_SYSTEM = (
@@ -113,6 +130,17 @@ def discover_families() -> dict:
 
 FAMILIES = discover_families()
 
+_s3_quant, _fastconv = ("q8_0", True) if HARDWARE_PROFILE == "pascal" else ("q4_0", False)
+for _family in FAMILIES.values():
+    _family["TTS_RUNTIME"]["fastconv"] = _fastconv
+    _codec = _family["TTS_MODELS"]["chatterbox-codec"]
+    _codec["convert"]["quant"], _codec["size"] = _s3_quant, 0
+    _codec["file"] = _codec["file"].replace("-f16.gguf", f"-{HARDWARE_PROFILE}-{_s3_quant}.gguf")
+for _name in ("nano", "turbo"):
+    FAMILIES[_name]["TTS_SAMPLE"].update(cfm_steps=1, temperature=0.8, top_p=0.95, top_k=1000, repeat_penalty=1.2)
+FAMILIES["v3"]["TTS_SAMPLE"]["cfm_steps"] = 5
+FAMILIES["v3"]["TTS_VOICE"]["exaggeration"] = 0.5
+
 
 def default_family() -> str:
     if not FAMILIES:
@@ -124,6 +152,8 @@ SHARED_MODELS = {
     "parakeet": {"label": "PARAKEET TDT 0.6B V3 Q4_K", "repo": "mudler/parakeet-cpp-gguf", "revision": "bf0af9f425fa01809cadec671b3cb672709d13e9", "file": "tdt-0.6b-v3-q4_k.gguf", "size": 675200864},
     "gemma": {"label": "GEMMA 4 E2B", "repo": "google/gemma-4-E2B-it-qat-q4_0-gguf", "revision": "675cff42a74c774d6cb76f76d8eacb49b48c9b93", "file": "gemma-4-E2B_q4_0-it.gguf", "size": 3349516256},
 }
+if HARDWARE_PROFILE == "pascal":
+    SHARED_MODELS["parakeet"].update(label="PARAKEET TDT 0.6B V3 Q8_0", file="tdt-0.6b-v3-q8_0.gguf", size=0)
 
 VULKAN_VERSION = "1.4.357.0"
 
