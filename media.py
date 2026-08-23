@@ -4,7 +4,6 @@ import hashlib
 import os
 import shutil
 import subprocess
-import sys
 import wave
 from pathlib import Path
 
@@ -14,10 +13,6 @@ from log import note, run as run_logged
 
 PARAKEET_RATE = 16000
 CHATTERBOX_RATE = 24000
-PLAYBACK_RATE = 44100
-PLAYBACK_SIZE = "640x360"
-PLAYBACK_FPS = 30
-
 _ffmpeg: Path | None = None
 
 
@@ -180,79 +175,3 @@ def chatterbox_wav(src: Path, cache_dir: Path) -> Path:
     digest = hashlib.sha1(os.fsencode(str(src))).hexdigest()[:12]
     dest = cache_dir / f"{src.stem}-{digest}.wav"
     return encode_wav(src, dest, CHATTERBOX_RATE, reuse=True)
-
-
-def compatible_mp4(src: Path, dest: Path) -> Path:
-    src = src.expanduser().resolve()
-    dest = dest.expanduser().resolve()
-    if not src.is_file():
-        raise RuntimeError(f"missing media: {src}")
-    if _fresh(src, dest) and dest.stat().st_size > 32:
-        return dest
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    partial = dest.with_name(dest.name + ".part")
-    partial.unlink(missing_ok=True)
-    _run_ffmpeg(
-        [
-            "-f", "lavfi", "-i", f"color=c=black:s={PLAYBACK_SIZE}:r={PLAYBACK_FPS}",
-            "-i", str(src),
-            "-map", "0:v:0", "-map", "1:a:0",
-            "-c:v", "libx264", "-profile:v", "baseline", "-level", "3.0",
-            "-pix_fmt", "yuv420p", "-preset", "veryfast", "-tune", "stillimage",
-            "-crf", "28", "-g", str(PLAYBACK_FPS), "-keyint_min", str(PLAYBACK_FPS),
-            "-c:a", "aac", "-profile:a", "aac_low", "-b:a", "128k",
-            "-ac", "2", "-ar", str(PLAYBACK_RATE),
-            "-shortest", "-movflags", "+faststart",
-            "-brand", "mp42", "-f", "mp4", str(partial),
-        ],
-    )
-    mp4 = _replace(partial, dest)
-    note(f"component=ffmpeg event=mp4 path={mp4} video=h264-baseline audio=aac-lc faststart=1")
-    return mp4
-
-
-def publish_outputs(wav: Path, mp4: Path, dest: Path | None) -> None:
-    if dest is None:
-        return
-    dest = dest.expanduser().resolve()
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if dest.suffix.lower() == ".mp4":
-        shutil.copy2(mp4, dest)
-        shutil.copy2(wav, dest.with_suffix(".wav"))
-        return
-    shutil.copy2(wav, dest)
-    shutil.copy2(mp4, dest.with_suffix(".mp4"))
-
-
-def main() -> int:
-    if len(sys.argv) < 3:
-        print(
-            "usage: python media.py {parakeet|chatterbox|mp4} INPUT [OUTPUT]",
-            file=sys.stderr,
-        )
-        return 2
-    kind = sys.argv[1].lower()
-    src = Path(sys.argv[2])
-    dest = Path(sys.argv[3]).expanduser().resolve() if len(sys.argv) > 3 else None
-    try:
-        if kind == "parakeet":
-            out = parakeet_wav(src, dest or src.with_name(src.stem + ".parakeet.wav"))
-        elif kind == "chatterbox":
-            out = chatterbox_wav(src, dest.parent if dest else src.parent)
-            if dest and out != dest:
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(out, dest)
-                out = dest
-        elif kind == "mp4":
-            out = compatible_mp4(src, dest or src.with_suffix(".mp4"))
-        else:
-            raise RuntimeError(f"unknown media action: {kind}")
-        print(out)
-        return 0
-    except Exception as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        return 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

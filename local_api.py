@@ -14,7 +14,6 @@ def _connection(base_url: str, timeout: float):
 
 
 def parakeet_transcribe(base_url: str, wav: Path, timeout: float = 3600.0) -> dict:
-    """POST a WAV without copying the whole file into a Python bytes object."""
     boundary = "----------------trident" + secrets.token_hex(12)
     filename = wav.name.replace('"', "_")
     head = (

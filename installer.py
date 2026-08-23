@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import hashlib
 import json
 import os
@@ -20,7 +19,7 @@ from config import (
     CHATTERBOX, GGML, RUNTIMES, CONVERTER, TOOLS, ROOT,
     REFERENCE_VOICES, REFERENCE_MIN_SECONDS, Paths,
 )
-from log import fail, note, run as run_logged
+from log import note, run as run_logged
 
 
 def validate_wav(path: Path, rate: int | None = None, minimum_seconds: float = 0.0, channels: int | None = None, *, pcm16: bool = True) -> None:
@@ -544,21 +543,3 @@ def install(family: str, models_dir: Path | None = None, data_dir: Path | None =
     note("install complete")
     note("five pipelines: parakeet, gemma, nano, turbo, v3" if family == "all" else f"installed TTS family: {family}")
     note("python main.py resident warm --family v3 --tts-language en -r trump  # preload Parakeet + Gemma + one Chatterbox voice")
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(prog="python -m installer")
-    parser.add_argument("--family", choices=("all", *tuple(FAMILIES)), default="all")
-    parser.add_argument("--models-dir", type=Path, help="Override models directory")
-    parser.add_argument("--data-dir", type=Path, help="Override data directory")
-    args = parser.parse_args()
-    try:
-        install(args.family, args.models_dir, args.data_dir)
-        return 0
-    except Exception as exc:
-        fail(f"error: {exc}")
-        return 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

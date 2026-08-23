@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import signal
 import socket
 import subprocess
@@ -14,16 +13,9 @@ from pathlib import Path
 from typing import Callable
 
 from config import RESIDENT_SERVERS, ROOT, RUNTIMES
-from log import note, open_sink, read_from
+from log import note, open_sink
 
 LOG_HINT = str(ROOT / "trident*.log")
-
-
-def _vulkan_env() -> dict[str, str]:
-    env = os.environ.copy()
-    env["GGML_VK_DISABLE_COOPMAT"] = "1"
-    env["GGML_VK_DISABLE_COOPMAT2"] = "1"
-    return env
 
 
 def _state_dir() -> Path:
@@ -36,41 +28,17 @@ def _state_path(name: str) -> Path:
     return _state_dir() / f"{name}.json"
 
 
-def _profile_path() -> Path:
-    return _state_dir() / "pipeline-profile.json"
-
-
 def _read_state(name: str) -> dict:
     path = _state_path(name)
     if not path.is_file():
         return {}
-    value = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(value, dict):
-        raise RuntimeError(f"invalid resident state: {path}")
-    return value
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _write_state(name: str, state: dict) -> None:
     path = _state_path(name)
     partial = path.with_suffix(".json.part")
     partial.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(partial, path)
-
-
-def load_pipeline_profile() -> dict:
-    path = _profile_path()
-    if not path.is_file():
-        return {}
-    value = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(value, dict):
-        raise RuntimeError(f"invalid resident profile: {path}")
-    return value
-
-
-def save_pipeline_profile(profile: dict) -> None:
-    path = _profile_path()
-    partial = path.with_suffix(".json.part")
-    partial.write_text(json.dumps(profile, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     os.replace(partial, path)
 
 
@@ -110,105 +78,6 @@ def _http_status(url: str, timeout: float = 1.0) -> int | None:
         return None
 
 
-def _read_log(name: str) -> str:
-    state = _read_state(name)
-    return read_from(int(state.get("log_offset") or 0), state.get("log_chunk"))
-
-
-def _gemma_cpu(runtime: dict) -> bool:
-    return str(runtime.get("device", "")).lower() in {"cpu", "none"} or str(runtime.get("gpu_layers")) == "0"
-
-
-def _validate_gemma_residency(runtime: dict, timeout_s: float = 5.0) -> str:
-    """Fail closed unless llama.cpp residency matches the explicitly requested CPU/GPU mode."""
-    cpu = _gemma_cpu(runtime)
-    device = "none" if cpu else str(runtime["device"])
-    deadline = time.monotonic() + timeout_s
-    text = ""
-    matches = []
-    kv_ok = False
-    while time.monotonic() < deadline:
-        text = _read_log("gemma")
-        matches = list(re.finditer(r"offloaded\s+(\d+)/(\d+)\s+layers to GPU", text, flags=re.IGNORECASE))
-        kv_ok = bool(re.search(
-            r"\bCPU(?:_\w+)?\s+KV buffer size\s*=" if cpu else rf"\b{re.escape(device)}\s+KV buffer size\s*=",
-            text, flags=re.IGNORECASE,
-        ))
-        if kv_ok and (cpu or matches):
-            break
-        time.sleep(0.05)
-
-    if cpu:
-        if any(int(m.group(1)) > 0 for m in matches) or re.search(r"\b(?:Vulkan|CUDA|Metal)\d*\s+KV buffer size\s*=", text, flags=re.IGNORECASE):
-            raise RuntimeError(f"Gemma strict CPU residency failed: GPU allocation was reported; inspect {LOG_HINT}")
-        if not kv_ok:
-            raise RuntimeError(f"Gemma strict CPU residency failed: no CPU KV buffer was reported; inspect {LOG_HINT}")
-        return "CPU"
-
-    if not matches:
-        raise RuntimeError(
-            "Gemma server became healthy but its log did not report full layer offload; "
-            f"inspect {LOG_HINT}"
-        )
-    loaded, total = map(int, matches[-1].groups())
-    if loaded != total or total <= 0:
-        raise RuntimeError(
-            f"Gemma strict GPU residency failed: llama.cpp offloaded {loaded}/{total} layers; "
-            f"inspect {LOG_HINT}"
-        )
-    if re.search(r"\bCPU(?:_\w+)?\s+KV buffer size\s*=", text, flags=re.IGNORECASE):
-        raise RuntimeError(
-            "Gemma strict GPU residency failed: llama.cpp allocated a CPU KV buffer; "
-            f"inspect {LOG_HINT}"
-        )
-    if not kv_ok:
-        raise RuntimeError(
-            f"Gemma strict GPU residency failed: no {device} KV buffer was reported; "
-            f"inspect {LOG_HINT}"
-        )
-    return device
-
-
-def _validate_parakeet_backend(runtime: dict, timeout_s: float = 5.0) -> str:
-    """Verify the selected primary backend; upstream may still schedule unsupported individual ops on CPU."""
-    expected = str(runtime["device"])
-    if expected.lower() == "cpu":
-        return "cpu"
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        text = _read_log("parakeet")
-        matches = re.findall(r"pk::Backend using device:\s*([^\r\n]+)", text)
-        if matches:
-            actual = matches[-1].strip()
-            if actual.lower() == expected.lower():
-                return actual
-            raise RuntimeError(f"Parakeet selected {actual!r}, expected {expected!r}; inspect {LOG_HINT}")
-        if "falling back to CPU" in text:
-            raise RuntimeError(f"Parakeet could not select {expected!r} and fell back to CPU; inspect {LOG_HINT}")
-        time.sleep(0.05)
-    raise RuntimeError(f"Parakeet did not report requested primary backend {expected!r}; inspect {LOG_HINT}")
-
-
-def _validate_chatterbox_backend(runtime: dict, timeout_s: float = 5.0) -> str:
-    expected = "Vulkan" if int(runtime["gpu_layers"]) > 0 else "CPU"
-    deadline = time.monotonic() + timeout_s
-    roles = {}
-    while time.monotonic() < deadline:
-        text = _read_log("chatterbox")
-        roles = dict(re.findall(
-            r"tts\b[^\n]*\bevent=backend\s+role=(t3|s3gen)\s+backend=(Vulkan|CPU)\b", text
-        ))
-        if roles.get("t3") == expected and roles.get("s3gen") == expected:
-            return expected
-        if roles and any(backend != expected for backend in roles.values()):
-            break
-        time.sleep(0.05)
-    raise RuntimeError(
-        f"Chatterbox backend validation failed: gpu_layers={runtime['gpu_layers']} requires "
-        f"T3+S3Gen={expected}, reported={roles or 'none'}; inspect {LOG_HINT}"
-    )
-
-
 def _spawn_detached(
     command: list[str], cwd: Path, env: dict[str, str]
 ) -> tuple[subprocess.Popen, str, int]:
@@ -216,9 +85,8 @@ def _spawn_detached(
     runtime_env = {
         key: env.get(key, "")
         for key in (
-            "GGML_VK_DISABLE_COOPMAT", "GGML_VK_DISABLE_COOPMAT2",
             "GGML_VK_MEMORY_LOGGER", "GGML_VK_PERF_LOGGER", "GGML_VK_SYNC_LOGGER",
-            "PARAKEET_DEVICE", "TRIDENT_FASTCONV",
+            "GGML_VK_DISABLE_F16", "PARAKEET_DEVICE", "TRIDENT_FASTCONV",
         )
         if key in env
     }
@@ -256,13 +124,7 @@ def _wait_ready(
             return
         returncode = process.poll()
         if returncode is not None:
-            text = _read_log(name).replace("\r\n", "\n").rstrip()
-            tail = "\n".join(text.splitlines()[-20:])
-            detail = f"\nLast native output:\n{tail}" if tail else ""
-            raise RuntimeError(
-                f"{name} resident exited before becoming ready "
-                f"(pid {process.pid}, exit code {returncode}){detail}"
-            )
+            raise RuntimeError(f"{name} resident exited before ready: pid={process.pid} exit={returncode}")
         time.sleep(0.25)
     raise RuntimeError(
         f"{name} resident server did not become ready within {timeout_s:g}s; "
@@ -299,7 +161,6 @@ def _wait_port_closed(name: str, timeout_s: float = 10.0) -> None:
 
 
 def stop_owned(name: str) -> None:
-    """Stop one resident process only when it is owned by this Trident state directory."""
     if name not in RESIDENT_SERVERS:
         raise ValueError(f"unknown resident component: {name}")
     state = _read_state(name)
@@ -324,7 +185,6 @@ def _ensure(
     identity_extra: dict,
     ready_probe: Callable[[], bool],
     *,
-    replace_owned_mismatch: bool = False,
     state_extra: dict | None = None,
 ) -> str:
     cfg = RESIDENT_SERVERS[name]
@@ -334,11 +194,10 @@ def _ensure(
         if state.get("identity") == ident:
             note(f"{name} resident: reuse pid={state.get('pid', '?')} url={cfg['url']}")
             return str(cfg["url"])
-        if replace_owned_mismatch and int(state.get("pid") or 0) > 0:
-            note(f"{name} resident: configuration changed; replacing the owned warm process")
+        if int(state.get("pid") or 0) > 0:
+            note(f"{name} resident: configuration changed; restarting")
             _terminate(name)
             _wait_port_closed(name)
-            state = {}
         else:
             raise RuntimeError(
                 f"{name} resident port {cfg['port']} is already in use by a different configuration; "
@@ -382,7 +241,7 @@ def _ensure(
 def ensure_parakeet(server: Path, model: Path, runtime: dict) -> str:
     cfg = RESIDENT_SERVERS["parakeet"]
     host, port = str(cfg["host"]), int(cfg["port"])
-    env = _vulkan_env()
+    env = os.environ.copy()
     env["PARAKEET_DEVICE"] = str(runtime["device"])
     command = [str(server), "--model", str(model), "--port", str(port)]
     probe = lambda: _port_open(host, port)
@@ -390,22 +249,17 @@ def ensure_parakeet(server: Path, model: Path, runtime: dict) -> str:
         "parakeet", server, model, command, env,
         {
             "device": str(runtime["device"]), "decoder": "tdt", "port": port,
-            "disable_coopmat": True, "disable_coopmat2": True,
         },
         probe,
     )
-    backend = _validate_parakeet_backend(runtime)
-    note(
-        f"parakeet resident: primary_backend={backend} verified model-resident=1 "
-        "language=auto-detect(v3); unsupported individual ops may scheduler-fallback to CPU"
-    )
+    note(f"parakeet resident: device={runtime['device']} model-resident=1")
     return url
 
 
 def ensure_gemma(server: Path, model: Path, runtime: dict) -> str:
     cfg = RESIDENT_SERVERS["gemma"]
     host, port = str(cfg["host"]), int(cfg["port"])
-    cpu = _gemma_cpu(runtime)
+    cpu = str(runtime.get("device", "")).lower() in {"cpu", "none"} or str(runtime.get("gpu_layers")) == "0"
     device = "none" if cpu else str(runtime["device"])
     command = [
         str(server), "-m", str(model), "--alias", "gemma",
@@ -428,9 +282,9 @@ def ensure_gemma(server: Path, model: Path, runtime: dict) -> str:
         "--threads-http", str(runtime["threads_http"]),
         "--cors-origins", "localhost",
         "--log-verbosity", "4", "--log-prefix", "--log-timestamps",
-        "--no-cache-prompt", "--no-ui", "--reasoning", "off",
+        "--cache-prompt", "--no-ui", "--reasoning", "off",
     ]
-    env = _vulkan_env()
+    env = os.environ.copy()
     probe_url = f"http://{host}:{port}/health"
     probe = lambda: _http_status(probe_url, timeout=1.0) == 200
     url = _ensure(
@@ -445,16 +299,11 @@ def ensure_gemma(server: Path, model: Path, runtime: dict) -> str:
             "threads_batch": int(runtime["threads_batch"]),
             "poll": int(runtime["poll"]), "poll_batch": int(runtime["poll_batch"]),
             "log_verbosity": 4, "log_prefix": True, "log_timestamps": True, "cors_origins": "localhost",
-            "cache_prompt": False, "ui": False, "alias": "gemma", "port": port,
-            "disable_coopmat": True, "disable_coopmat2": True,
+            "cache_prompt": True, "ui": False, "alias": "gemma", "port": port,
         },
         probe,
     )
-    backend = _validate_gemma_residency({**runtime, "device": device, "gpu_layers": 0 if cpu else runtime["gpu_layers"]})
-    note(
-        f"gemma resident: backend={backend} strict residency verified "
-        f"kv={runtime['cache_type_k']}/{runtime['cache_type_v']} flash_attn={runtime['flash_attn']}"
-    )
+    note(f"gemma resident: device={device} kv={runtime['cache_type_k']}/{runtime['cache_type_v']} flash_attn={runtime['flash_attn']}")
     return url
 
 
@@ -488,8 +337,14 @@ def ensure_chatterbox(
         "--first-chunk-chars", str(chunk.get("first_chars", chunk["chars"])),
         "--chunk-chars", str(chunk["chars"]),
     ]
-    env = _vulkan_env()
+    env = os.environ.copy()
     env["TRIDENT_FASTCONV"] = "1" if runtime.get("fastconv") else "0"
+    if runtime.get("vulkan_disable_f16"):
+
+        env["GGML_VK_DISABLE_F16"] = "1"
+    else:
+
+        env.pop("GGML_VK_DISABLE_F16", None)
     probe = lambda: _port_open(host, port)
     identity_extra = {
         "codec": _file_signature(codec_model),
@@ -500,12 +355,11 @@ def ensure_chatterbox(
         "sample": sample,
         "voice": voice,
         "chunk": chunk,
-        "vulkan": {"disable_coopmat": True, "disable_coopmat2": True},
+        "vulkan": {"disable_f16": bool(runtime.get("vulkan_disable_f16"))},
         "port": port,
     }
     url = _ensure(
         "chatterbox", server, t3_model, command, env, identity_extra, probe,
-        replace_owned_mismatch=True,
         state_extra={
             "family": family_name,
             "language": language,
@@ -513,11 +367,7 @@ def ensure_chatterbox(
             "codec": str(codec_model.resolve()),
         },
     )
-    backend = _validate_chatterbox_backend(runtime)
-    note(
-        f"chatterbox resident: backend={backend} verified family={family_name} language={language} "
-        "model-resident=1 reference-conditionals-resident=1 watermark=absent"
-    )
+    note(f"chatterbox resident: gpu_layers={runtime['gpu_layers']} family={family_name} language={language} model-resident=1 voice-resident=1")
     return url
 
 
