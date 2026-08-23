@@ -32,6 +32,7 @@ const std::vector<std::string> kRequired = {
     "--n-gpu-layers", "--context", "--threads", "--seed", "--max-tokens",
     "--top-k", "--top-p", "--min-p", "--temperature", "--repeat-penalty", "--cfg-weight",
     "--exaggeration", "--cfm-steps", "--first-chunk-chars", "--chunk-chars",
+    "--stream-first-chunk-tokens", "--stream-chunk-tokens",
 };
 
 void close_socket(socket_t sock) noexcept {
@@ -104,29 +105,35 @@ std::array<unsigned char, 8> response_header(std::uint32_t status, std::uint32_t
     return out;
 }
 
-void send_response(socket_t sock, std::uint32_t status, const std::string& message) {
-    if (message.size() > std::numeric_limits<std::uint32_t>::max())
-        throw std::runtime_error("resident TTS response too large");
-    const auto header = response_header(status, static_cast<std::uint32_t>(message.size()));
+void send_frame(socket_t sock, std::uint32_t kind, const void* data, std::size_t size) {
+    if (size > std::numeric_limits<std::uint32_t>::max())
+        throw std::runtime_error("resident TTS frame too large");
+    const auto header = response_header(kind, static_cast<std::uint32_t>(size));
     send_all(sock, header.data(), header.size());
-    if (!message.empty()) send_all(sock, message.data(), message.size());
+    if (size) send_all(sock, data, size);
 }
 
-void validate_knobs(const std::string& family, tts::EngineKnobs& knobs, int first_chunk_chars, int chunk_chars) {
-    if (knobs.max_tokens < 1 || knobs.top_k < 0 || knobs.cfm_steps < 1 || first_chunk_chars < 1 || chunk_chars < 1)
+void send_response(socket_t sock, std::uint32_t kind, const std::string& message) {
+    send_frame(sock, kind, message.data(), message.size());
+}
+
+void send_pcm(socket_t sock, const float* pcm, std::size_t count) {
+    const auto samples = tts::pcm16(pcm, count);
+    send_frame(sock, 2, samples.data(), samples.size() * sizeof(samples[0]));
+}
+
+void validate_knobs(const std::string& family, const tts::EngineKnobs& knobs, int first_chunk_chars, int chunk_chars,
+                    int stream_first_chunk_tokens, int stream_chunk_tokens) {
+    if (knobs.max_tokens < 1 || knobs.top_k < 0 || knobs.cfm_steps < 1 || first_chunk_chars < 1 || chunk_chars < 1 ||
+        stream_first_chunk_tokens < 1 || stream_chunk_tokens < 1)
         throw std::invalid_argument("integer sampling values are out of range");
     if (knobs.top_p < 0 || knobs.top_p > 1 || knobs.min_p < 0 || knobs.min_p > 1 || knobs.temperature < 0 ||
         knobs.repeat_penalty <= 0 || knobs.cfg_weight < 0 || knobs.exaggeration < 0)
         throw std::invalid_argument("sampling or voice values are out of range");
     if (family == "turbo" || family == "nano") {
         if (knobs.language != "en") throw std::invalid_argument("Turbo/Nano resident TTS supports language en only");
-        knobs.min_p = 0.0f;
-        knobs.cfg_weight = 0.0f;
-        knobs.exaggeration = 0.0f;
     } else if (family == "v3") {
         if (knobs.language.size() != 2) throw std::invalid_argument("v3 resident TTS language must be a 2-letter code");
-        if (knobs.cfm_steps < 5)
-            throw std::invalid_argument("v3 CFM below 5 is unsupported by this quality-preserving runtime; use 5 or more");
     } else {
         throw std::invalid_argument("unknown resident TTS family: " + family);
     }
@@ -156,14 +163,17 @@ int main(int argc, char** argv) {
         knobs.cfm_steps = tts::parse_int(args, "--cfm-steps");
         const int first_chunk_chars = tts::parse_int(args, "--first-chunk-chars");
         const int chunk_chars = tts::parse_int(args, "--chunk-chars");
-        validate_knobs(family, knobs, first_chunk_chars, chunk_chars);
+        const int stream_first_chunk_tokens = tts::parse_int(args, "--stream-first-chunk-tokens");
+        const int stream_chunk_tokens = tts::parse_int(args, "--stream-chunk-tokens");
+        validate_knobs(family, knobs, first_chunk_chars, chunk_chars, stream_first_chunk_tokens, stream_chunk_tokens);
 
         const tts::Runtime runtime = tts::runtime_from(args);
         tts::log("event=resident_start family=" + family + " preload=begin language=" + knobs.language +
                  " reference=" + knobs.reference);
 
 
-        tts::Session session(runtime, knobs, chunk_chars, tts::kQuietAmp2, first_chunk_chars);
+        tts::Session session(runtime, knobs, chunk_chars, stream_chunk_tokens, stream_first_chunk_tokens,
+                             tts::kQuietAmp2, first_chunk_chars);
 
 #ifdef _WIN32
         WSADATA wsa{};
@@ -211,7 +221,7 @@ int main(int argc, char** argv) {
                 tts::set_request_id(request_id);
                 tts::log("event=request_start text_bytes=" + std::to_string(text.size()) + " output=" + output);
                 const auto started = std::chrono::steady_clock::now();
-                const tts::Speech speech = session.synthesize(text);
+                const tts::Speech speech = session.synthesize(text, [&](const float* pcm, std::size_t count) { send_pcm(client.value, pcm, count); });
                 tts::write_wav(output, speech.pcm);
                 const double total_ms = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - started).count();
@@ -226,11 +236,11 @@ int main(int argc, char** argv) {
                     " ttfa_ms=" + std::to_string(speech.ttfa_ms) +
                     " total_ms=" + std::to_string(total_ms) +
                     " wall_rtf=" + std::to_string(wall_rtf) +
-                    " ttfa_scope=server-internal-whole-s3gen-chunk client_streaming=0";
+                    " ttfa_scope=client-pcm-s3gen-token-stream client_streaming=1";
                 send_response(client.value, 0, result);
             } catch (const std::exception& error) {
                 tts::log(std::string("event=request_error message=") + error.what());
-                send_response(client.value, 1, error.what());
+                try { send_response(client.value, 1, error.what()); } catch (...) {}
             }
         }
     } catch (const std::invalid_argument& error) {

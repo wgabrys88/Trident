@@ -74,8 +74,7 @@ BRAIN_GENERATION = {
 }
 BRAIN_THINKING = False
 BRAIN_SYSTEM = (
-    "The incoming speech transcript is expected to be {asr_language_name} ({asr_language}), "
-    "or auto-detected when the expected language is auto. Produce the final spoken response "
+    "The incoming speech transcript is auto-detected by ASR. Produce the final spoken response "
     "only in {tts_language_name} ({tts_language}). If the input language differs, preserve its "
     "meaning while translating or answering in the output language. Spoken prose only: short "
     "sentences ending with a period, question mark, or exclamation. No markdown, lists, code, "
@@ -89,16 +88,6 @@ LANGUAGES = {
     "tr": "Turkish", "sv": "Swedish", "da": "Danish", "fi": "Finnish",
     "no": "Norwegian", "el": "Greek", "ms": "Malay", "sw": "Swahili",
     "ar": "Arabic", "ko": "Korean",
-}
-
-ASR_LANGUAGES = {
-    "bg": "Bulgarian", "hr": "Croatian", "cs": "Czech", "da": "Danish",
-    "nl": "Dutch", "en": "English", "et": "Estonian", "fi": "Finnish",
-    "fr": "French", "de": "German", "el": "Greek", "hu": "Hungarian",
-    "it": "Italian", "lv": "Latvian", "lt": "Lithuanian", "mt": "Maltese",
-    "pl": "Polish", "pt": "Portuguese", "ro": "Romanian", "sk": "Slovak",
-    "sl": "Slovenian", "es": "Spanish", "sv": "Swedish", "ru": "Russian",
-    "uk": "Ukrainian",
 }
 
 
@@ -117,6 +106,7 @@ def _family(name, languages, sample, voice, chunk, t3, codec):
             "vulkan_disable_f16": HARDWARE_PROFILE == "pascal",
         },
         "TTS_SAMPLE": sample, "TTS_VOICE": voice, "TTS_CHUNK": chunk,
+        "TTS_STREAM": {"first_tokens": 12, "tokens": 25},
         "TTS_MODELS": {"chatterbox-t3": t3, "chatterbox-codec": codec},
     }
 

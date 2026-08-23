@@ -163,15 +163,20 @@ void glue(std::vector<float>& dst, const std::vector<float>& src, float quiet_am
         " dst=" + std::to_string(dst.size()));
 }
 
+std::vector<std::int16_t> pcm16(const float* pcm, std::size_t count) {
+    std::vector<std::int16_t> samples(count);
+    for (std::size_t i = 0; i < count; ++i) {
+        const float clipped = std::max(-1.0f, std::min(1.0f, pcm[i]));
+        samples[i] = static_cast<std::int16_t>(clipped * 32767.0f);
+    }
+    return samples;
+}
+
 void write_wav(const std::string& path, const std::vector<float>& pcm) {
     if (pcm.empty()) throw std::runtime_error("cannot write empty WAV");
     if (pcm.size() > (std::numeric_limits<uint32_t>::max() - 36u) / 2u)
         throw std::runtime_error("WAV output is too large");
-    std::vector<int16_t> samples(pcm.size());
-    for (std::size_t i = 0; i < pcm.size(); ++i) {
-        const float clipped = std::max(-1.0f, std::min(1.0f, pcm[i]));
-        samples[i] = static_cast<int16_t>(clipped * 32767.0f);
-    }
+    const auto samples = pcm16(pcm.data(), pcm.size());
     const std::filesystem::path target(path);
     if (!target.parent_path().empty()) std::filesystem::create_directories(target.parent_path());
     std::ofstream out(target, std::ios::binary | std::ios::trunc);
