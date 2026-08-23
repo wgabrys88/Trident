@@ -161,7 +161,7 @@ def tune_ggml_vulkan() -> None:
     lines[direct[0]] = "    const bool force_disable_f16 = device->vendor_id == VK_VENDOR_ID_NVIDIA && device->architecture == vk_device_architecture::NVIDIA_PRE_TURING;"
     i = staged[0]
     lines[i] = ""
-    lines[i + 1] = "    bool force_disable_f16 = props2.properties.vendorID == VK_VENDOR_ID_NVIDIA && device_architecture == vk_device_architecture::NVIDIA_PRE_TURING;"
+    lines[i + 1] = "    bool force_disable_f16 = physical_device.getProperties().vendorID == VK_VENDOR_ID_NVIDIA && device_architecture == vk_device_architecture::NVIDIA_PRE_TURING;"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -178,7 +178,7 @@ def chatterbox_native_revision() -> str:
         repr(SOURCES["chatterbox"]).encode("utf-8"),
         repr(SOURCES["ggml"]).encode("utf-8"),
         platform.processor().encode("utf-8"), HARDWARE_PROFILE.encode("ascii"),
-        b"ggml-vulkan:auto-disable-f16-nvidia-pre-turing-v1", CHATTERBOX_PATCH.read_bytes(),
+        b"ggml-vulkan:auto-disable-f16-nvidia-pre-turing-v2", CHATTERBOX_PATCH.read_bytes(),
         b"-DGGML_VULKAN=ON|-DGGML_CUDA=OFF|-DGGML_NATIVE=ON|-DGGML_CCACHE=OFF|-DTTS_CPP_BUILD_EXECUTABLES=OFF|-DTTS_CPP_BUILD_TESTS=OFF",
     ]
     return _hash_identity(parts)
