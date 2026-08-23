@@ -9,9 +9,6 @@
 !/resident.py
 !/local_api.py
 !/media.py
-!/patches/
-!/patches/*.patch
-!/patches/*.py
 !/tts/
 !/tts/CMakeLists.txt
 !/tts/include/

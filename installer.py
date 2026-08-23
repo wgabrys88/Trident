@@ -17,7 +17,7 @@ from pathlib import Path
 from config import (
     FAMILIES, SHARED_MODELS, VULKAN_VERSION, PACKAGES, SOURCES, BINARIES,
     CHATTERBOX_LIBRARY, TTS_BUILD, TTS_SERVER_EXE, TTS,
-    CHATTERBOX, GGML, RUNTIMES, CONVERTER, TOOLS, PATCHES, ROOT,
+    CHATTERBOX, GGML, RUNTIMES, CONVERTER, TOOLS, ROOT,
     REFERENCE_VOICES, REFERENCE_MIN_SECONDS, Paths,
 )
 from log import fail, note, run as run_logged
@@ -146,17 +146,6 @@ def checkout(component: str, path: Path, source: str) -> None:
         run_process(component, stage, args, path)
 
 
-def apply_chatterbox_patches() -> None:
-    patcher = PATCHES / "apply_native_patch.py"
-    if not patcher.is_file():
-        raise RuntimeError(f"native patcher is missing: {patcher}")
-    run_process(
-        "tts", "apply-native-patch",
-        [sys.executable, str(patcher), str(CHATTERBOX)],
-        ROOT,
-    )
-
-
 def _hash_identity(parts: list[bytes]) -> str:
     digest = hashlib.sha256()
     for part in parts:
@@ -172,12 +161,6 @@ def chatterbox_native_revision() -> str:
         os.environ.get("PROCESSOR_IDENTIFIER", platform.processor()).encode("utf-8"),
         b"-DGGML_VULKAN=ON|-DGGML_CUDA=OFF|-DGGML_NATIVE=ON|-DGGML_CCACHE=OFF|-DTTS_CPP_BUILD_EXECUTABLES=OFF|-DTTS_CPP_BUILD_TESTS=OFF",
     ]
-    for name in ("native_patch.py", "apply_native_patch.py"):
-        path = PATCHES / name
-        if not path.is_file():
-            raise RuntimeError(f"native patch input is missing: {path}")
-        parts.append(name.encode("utf-8"))
-        parts.append(path.read_bytes())
     return _hash_identity(parts)
 
 
@@ -393,9 +376,8 @@ def install_tts() -> None:
 
     native_revision = chatterbox_native_revision()
     if not _native_build_ready():
-        note(f"tts native revision changed: rebuilding patched chatterbox.cpp {native_revision[:12]}")
+        note(f"tts native revision changed: rebuilding chatterbox.cpp {native_revision[:12]}")
         checkout("tts", CHATTERBOX, "chatterbox")
-        apply_chatterbox_patches()
         checkout("tts", GGML, "ggml")
         run_process("tts", "configure-chatterbox", [cmake, "-S", ".", "-B", "build", "-A", "x64", "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_NATIVE=ON", "-DGGML_CCACHE=OFF", "-DTTS_CPP_BUILD_EXECUTABLES=OFF", "-DTTS_CPP_BUILD_TESTS=OFF"], CHATTERBOX)
         run_process("tts", "build-chatterbox", [cmake, "--build", "build", "--config", "Release", "--target", "tts-cpp", "mtl_tokenizer", "--parallel"], CHATTERBOX)
