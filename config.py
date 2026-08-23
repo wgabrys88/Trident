@@ -193,7 +193,7 @@ PACKAGES = {
 }
 
 SOURCES = {
-    "chatterbox": ("https://github.com/wgabrys88/chatterbox.cpp", "a1dda6f5ee98f5c7cee9d69e0e532e65c4138665"),
+    "chatterbox": ("https://github.com/wgabrys88/chatterbox.cpp", "fad8838bd7cda385b5743b36c40a8cea0a8f9b94"),
     "ggml": ("https://github.com/ggml-org/ggml.git", "58c3805840b516b2a88ff867ccf7bb41dba79951"),
 }
 
@@ -201,7 +201,8 @@ BINARIES = {
     "parakeet": {
         "label": "PARAKEET.CPP V0.5 VULKAN", "repo": "mudler/parakeet.cpp", "tag": "v0.5.0",
         "asset": "parakeet-v0.5.0-bin-win-vulkan-x64.zip",
-        "server_exe": "parakeet-server.exe",
+        "lib_asset": "parakeet-v0.5.0-lib-win-vulkan-x64.zip",
+        "server_exe": "parakeet-server.exe", "library": "parakeet.dll",
     },
     "gemma": {
         "label": "LLAMA.CPP B10453 VULKAN", "repo": "ggml-org/llama.cpp", "tag": "b10453",

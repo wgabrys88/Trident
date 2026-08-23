@@ -220,7 +220,7 @@ def _stop_owned_chatterbox_before_replace() -> None:
     stop_owned("chatterbox")
 
 
-def github_release_asset(spec: dict) -> tuple[str, int, str | None]:
+def github_release_asset(spec: dict, asset_name: str | None = None) -> tuple[str, int, str | None]:
     repo = urllib.parse.quote(spec["repo"], safe="/")
     tag = urllib.parse.quote(spec["tag"], safe="")
     request = urllib.request.Request(
@@ -229,18 +229,19 @@ def github_release_asset(spec: dict) -> tuple[str, int, str | None]:
     )
     with urllib.request.urlopen(request, timeout=30) as response:
         release = json.load(response)
-    matches = [a for a in release.get("assets", []) if a.get("name") == spec["asset"]]
+    asset_name = asset_name or spec["asset"]
+    matches = [a for a in release.get("assets", []) if a.get("name") == asset_name]
     if len(matches) != 1:
-        raise RuntimeError(f"GitHub release asset not found exactly once: {spec['asset']}")
+        raise RuntimeError(f"GitHub release asset not found exactly once: {asset_name}")
     asset = matches[0]
     size = int(asset.get("size") or 0)
     url = str(asset.get("browser_download_url") or "")
     if size <= 0 or not url.startswith("https://github.com/"):
-        raise RuntimeError(f"invalid GitHub release metadata for {spec['asset']}")
+        raise RuntimeError(f"invalid GitHub release metadata for {asset_name}")
     digest = str(asset.get("digest") or "")
     sha256 = digest.removeprefix("sha256:") if digest.startswith("sha256:") else None
     if sha256 is not None and (len(sha256) != 64 or any(c not in "0123456789abcdefABCDEF" for c in sha256)):
-        raise RuntimeError(f"invalid GitHub SHA-256 metadata for {spec['asset']}")
+        raise RuntimeError(f"invalid GitHub SHA-256 metadata for {asset_name}")
     return url, size, sha256.lower() if sha256 else None
 
 
@@ -277,22 +278,23 @@ def fetch(url: str, destination: Path, size: int, sha256: str | None = None) -> 
         raise
 
 
-def extract_release_bundle(archive: Path, destination: Path, executable_names: tuple[str, ...]) -> None:
+def extract_release_bundle(archives: tuple[Path, ...], destination: Path, required_names: tuple[str, ...]) -> None:
     partial = destination.with_name(destination.name + ".part")
     rmtree_retry(partial)
     partial.mkdir(parents=True)
     root = partial.resolve()
     try:
-        with zipfile.ZipFile(archive) as package:
-            for member in package.infolist():
-                target = (partial / member.filename).resolve()
-                if target != root and root not in target.parents:
-                    raise RuntimeError(f"unsafe ZIP member: {member.filename}")
-            package.extractall(partial)
-        for executable_name in executable_names:
-            matches = [p for p in partial.rglob("*") if p.is_file() and p.name.lower() == executable_name.lower()]
+        for archive in archives:
+            with zipfile.ZipFile(archive) as package:
+                for member in package.infolist():
+                    target = (partial / member.filename).resolve()
+                    if target != root and root not in target.parents:
+                        raise RuntimeError(f"unsafe ZIP member: {member.filename}")
+                package.extractall(partial)
+        for name in required_names:
+            matches = [p for p in partial.rglob("*") if p.is_file() and p.name.lower() == name.lower()]
             if len(matches) != 1:
-                raise RuntimeError(f"release bundle must contain exactly one {executable_name}; found {len(matches)}")
+                raise RuntimeError(f"release bundle must contain exactly one {name}; found {len(matches)}")
         rmtree_retry(destination)
         partial.rename(destination)
     except Exception:
@@ -321,15 +323,13 @@ def _release_marker(name: str) -> Path:
 
 def _release_identity(name: str) -> str:
     spec = BINARIES[name]
-    return f"{spec['repo']}@{spec['tag']}:{spec['asset']}"
+    assets = [spec["asset"]]
+    if spec.get("lib_asset"): assets.append(spec["lib_asset"])
+    return f"{spec['repo']}@{spec['tag']}:" + "+".join(assets)
 
 
 def runtime_parakeet_library(required: bool = True) -> Path | None:
-    root = RUNTIMES / "parakeet"
-    matches = [p for p in root.rglob("*.dll") if "parakeet" in p.name.lower()] if root.exists() else []
-    if len(matches) == 1: return matches[0]
-    if required: raise RuntimeError(f"Parakeet C API DLL not found exactly once; found {len(matches)}")
-    return None
+    return _runtime_binary("parakeet", "library", required)
 
 
 def ensure_ui() -> None:
@@ -375,11 +375,16 @@ def install_release_binary(name: str) -> None:
         note(f"{spec['label']}: ready (pinned resident server)")
         return
     note(f"{spec['label']}: installing pinned {spec['tag']} release")
-    url, size, sha256 = github_release_asset(spec)
-    archive = TOOLS / "downloads" / spec["asset"]
-    fetch(url, archive, size, sha256)
-    extract_release_bundle(archive, RUNTIMES / name, (spec["server_exe"],))
-    archive.unlink(missing_ok=True)
+    asset_names = [spec["asset"]] + ([spec["lib_asset"]] if spec.get("lib_asset") else [])
+    archives = []
+    for asset_name in asset_names:
+        url, size, sha256 = github_release_asset(spec, asset_name)
+        archive = TOOLS / "downloads" / asset_name
+        fetch(url, archive, size, sha256)
+        archives.append(archive)
+    required = [spec["server_exe"]] + ([spec["library"]] if spec.get("library") else [])
+    extract_release_bundle(tuple(archives), RUNTIMES / name, tuple(required))
+    for archive in archives: archive.unlink(missing_ok=True)
     runtime_server(name)
     if name == "parakeet": runtime_parakeet_library()
     marker.write_text(identity + "\n", encoding="ascii")
