@@ -318,6 +318,7 @@ def ensure_chatterbox(
     sample: dict,
     voice: dict,
     chunk: dict,
+    stream: dict,
 ) -> str:
     cfg = RESIDENT_SERVERS["chatterbox"]
     host, port = str(cfg["host"]), int(cfg["port"])
@@ -336,6 +337,8 @@ def ensure_chatterbox(
         "--cfm-steps", str(sample["cfm_steps"]),
         "--first-chunk-chars", str(chunk.get("first_chars", chunk["chars"])),
         "--chunk-chars", str(chunk["chars"]),
+        "--stream-first-chunk-tokens", str(stream["first_tokens"]),
+        "--stream-chunk-tokens", str(stream["tokens"]),
     ]
     env = os.environ.copy()
     env["TRIDENT_FASTCONV"] = "1" if runtime.get("fastconv") else "0"
@@ -355,6 +358,7 @@ def ensure_chatterbox(
         "sample": sample,
         "voice": voice,
         "chunk": chunk,
+        "stream": stream,
         "vulkan": {"disable_f16": bool(runtime.get("vulkan_disable_f16"))},
         "port": port,
     }

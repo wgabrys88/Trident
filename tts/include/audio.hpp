@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -30,6 +32,7 @@ struct Speech {
 std::vector<std::string> pack_text(const std::string& text, int limit);
 std::vector<std::string> pack_text_staged(const std::string& text, int first_limit, int later_limit);
 void glue(std::vector<float>& dst, const std::vector<float>& src, float quiet_amp2);
+std::vector<std::int16_t> pcm16(const float* pcm, std::size_t count);
 void write_wav(const std::string& path, const std::vector<float>& pcm);
 
 struct EngineKnobs {

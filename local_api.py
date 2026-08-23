@@ -76,35 +76,48 @@ def gemma_chat(base_url: str, payload: dict, timeout: float = 3600.0) -> dict:
     return json.loads(body.decode("utf-8"))
 
 
-def chatterbox_synthesize(base_url: str, text: str, output: Path, timeout: float = 3600.0) -> str:
+def chatterbox_stream(base_url: str, text: str, output: Path, timeout: float = 3600.0):
     import socket
     import struct
 
     parsed = urllib.parse.urlsplit(base_url)
-    port = parsed.port
     text_bytes = text.encode("utf-8")
     output_bytes = str(output.resolve()).encode("utf-8")
     output.parent.mkdir(parents=True, exist_ok=True)
 
     def recv_exact(sock: socket.socket, count: int) -> bytes:
-        chunks = bytearray()
-        while len(chunks) < count:
-            part = sock.recv(count - len(chunks))
+        data = bytearray()
+        while len(data) < count:
+            part = sock.recv(count - len(data))
             if not part:
                 raise RuntimeError("resident TTS closed the connection early")
-            chunks.extend(part)
-        return bytes(chunks)
+            data.extend(part)
+        return bytes(data)
 
     try:
-        with socket.create_connection((parsed.hostname, port), timeout=timeout) as sock:
+        with socket.create_connection((parsed.hostname, parsed.port), timeout=timeout) as sock:
             sock.settimeout(timeout)
             sock.sendall(struct.pack("<II", len(text_bytes), len(output_bytes)))
             sock.sendall(text_bytes)
             sock.sendall(output_bytes)
-            status, length = struct.unpack("<II", recv_exact(sock, 8))
-            message = recv_exact(sock, length).decode("utf-8", errors="replace") if length else ""
+            while True:
+                kind, length = struct.unpack("<II", recv_exact(sock, 8))
+                payload = recv_exact(sock, length) if length else b""
+                if kind == 2:
+                    yield payload
+                    continue
+                message = payload.decode("utf-8", errors="replace")
+                if kind == 0:
+                    return message
+                raise RuntimeError(f"Chatterbox resident synthesis failed: {message or 'unknown error'}")
     except OSError as exc:
         raise RuntimeError(f"Chatterbox resident request failed: {exc}") from exc
-    if status != 0:
-        raise RuntimeError(f"Chatterbox resident synthesis failed: {message or 'unknown error'}")
-    return message
+
+
+def chatterbox_synthesize(base_url: str, text: str, output: Path, timeout: float = 3600.0) -> str:
+    stream = chatterbox_stream(base_url, text, output, timeout)
+    while True:
+        try:
+            next(stream)
+        except StopIteration as done:
+            return str(done.value or "")
