@@ -31,7 +31,6 @@ DEFAULT_DATA_DIR = ROOT / "data"
 
 THIRD_PARTY = ROOT / "third_party"
 TOOLS = ROOT / "tools"
-PATCHES = ROOT / "patches"
 TTS = ROOT / "tts"
 CHATTERBOX = THIRD_PARTY / "chatterbox.cpp"
 GGML = CHATTERBOX / "ggml"
@@ -155,7 +154,7 @@ PACKAGES = {
 }
 
 SOURCES = {
-    "chatterbox": ("https://github.com/gianni-cor/chatterbox.cpp", "ddca05fb69c2910b0d7b5eae420d360ed98c067b"),
+    "chatterbox": ("https://github.com/wgabrys88/chatterbox.cpp", "7f0569f2f01b8b53ec1466df4e2dfd016fbc3f25"),
     "ggml": ("https://github.com/ggml-org/ggml.git", "58c3805840b516b2a88ff867ccf7bb41dba79951"),
 }
 
