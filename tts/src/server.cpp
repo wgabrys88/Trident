@@ -32,7 +32,7 @@ const std::vector<std::string> kRequired = {
     "--n-gpu-layers", "--context", "--threads", "--seed", "--max-tokens",
     "--top-k", "--top-p", "--min-p", "--temperature", "--repeat-penalty", "--cfg-weight",
     "--exaggeration", "--cfm-steps", "--first-chunk-chars", "--chunk-chars",
-    "--stream-first-chunk-tokens", "--stream-chunk-tokens",
+    "--stream-first-chunk-tokens", "--stream-chunk-tokens", "--fastconv",
 };
 
 void close_socket(socket_t sock) noexcept {
@@ -202,13 +202,14 @@ int main(int argc, char** argv) {
         for (;;) {
             SocketGuard client(accept(listener.value, nullptr, nullptr));
             if (client.value == kInvalidSocket) continue;
-            std::array<unsigned char, 8> header{};
-
+            std::array<unsigned char, 16> header{};
             if (!recv_all(client.value, header.data(), header.size())) continue;
             const std::uint32_t text_len = decode_u32_le(header.data());
             const std::uint32_t path_len = decode_u32_le(header.data() + 4);
-            if (text_len == 0 || text_len > 4u * 1024u * 1024u || path_len == 0 || path_len > 32768u) {
-                send_response(client.value, 1, "invalid request lengths");
+            const std::uint32_t streaming = decode_u32_le(header.data() + 8);
+            const std::uint32_t join = decode_u32_le(header.data() + 12);
+            if (!text_len || text_len > 4u * 1024u * 1024u || !path_len || path_len > 32768u || streaming > 1 || join > 1) {
+                send_response(client.value, 1, "invalid request header");
                 continue;
             }
             std::string text(text_len, '\0');
@@ -219,9 +220,13 @@ int main(int argc, char** argv) {
             try {
                 const std::uint64_t request_id = ++request_seq;
                 tts::set_request_id(request_id);
-                tts::log("event=request_start text_bytes=" + std::to_string(text.size()) + " output=" + output);
+                const bool stream_client = streaming != 0;
+                const auto join_mode = join ? tts::JoinMode::Crossfade : tts::JoinMode::Chunks;
+                tts::log("event=request_start text_bytes=" + std::to_string(text.size()) + " output=" + output +
+                         " client_streaming=" + (stream_client ? "1" : "0") + " join=" + (join ? "crossfade" : "chunks"));
                 const auto started = std::chrono::steady_clock::now();
-                const tts::Speech speech = session.synthesize(text, [&](const float* pcm, std::size_t count) { send_pcm(client.value, pcm, count); });
+                const tts::AudioSink sink = stream_client ? tts::AudioSink([&](const float* pcm, std::size_t count) { send_pcm(client.value, pcm, count); }) : tts::AudioSink{};
+                const tts::Speech speech = session.synthesize(text, sink, stream_client, join_mode);
                 tts::write_wav(output, speech.pcm);
                 const double total_ms = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - started).count();
@@ -236,7 +241,8 @@ int main(int argc, char** argv) {
                     " ttfa_ms=" + std::to_string(speech.ttfa_ms) +
                     " total_ms=" + std::to_string(total_ms) +
                     " wall_rtf=" + std::to_string(wall_rtf) +
-                    " ttfa_scope=client-pcm-s3gen-token-stream client_streaming=1";
+                    " client_streaming=" + (stream_client ? "1" : "0") +
+                    " join=" + (join ? "crossfade" : "chunks");
                 send_response(client.value, 0, result);
             } catch (const std::exception& error) {
                 tts::log(std::string("event=request_error message=") + error.what());

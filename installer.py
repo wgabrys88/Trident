@@ -5,7 +5,10 @@ import json
 import os
 import platform
 import shutil
+import site
+import subprocess
 import sys
+import venv
 import time
 import urllib.parse
 import urllib.request
@@ -17,9 +20,11 @@ from config import (
     FAMILIES, SHARED_MODELS, VULKAN_VERSION, PACKAGES, SOURCES, BINARIES,
     CHATTERBOX_LIBRARY, TTS_BUILD, TTS_SERVER_EXE, TTS,
     CHATTERBOX, GGML, RUNTIMES, CONVERTER, TOOLS, ROOT,
-    REFERENCE_VOICES, REFERENCE_MIN_SECONDS, Paths,
+    REFERENCE_VOICES, REFERENCE_MIN_SECONDS, Paths, HARDWARE_PROFILE,
 )
 from log import note, run as run_logged
+
+CHATTERBOX_PATCH = ROOT / "patches" / "chatterbox-fastconv.patch"
 
 
 def validate_wav(path: Path, rate: int | None = None, minimum_seconds: float = 0.0, channels: int | None = None, *, pcm16: bool = True) -> None:
@@ -145,6 +150,21 @@ def checkout(component: str, path: Path, source: str) -> None:
         run_process(component, stage, args, path)
 
 
+
+def tune_ggml_vulkan() -> None:
+    path = GGML / "src" / "ggml-vulkan" / "ggml-vulkan.cpp"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    direct = [i for i, line in enumerate(lines) if "force_disable_f16" in line and "getenv(" in line]
+    staged = [i for i, line in enumerate(lines[:-1]) if "getenv(" in line and "force_disable_f16" in lines[i + 1]]
+    if len(direct) != 1 or len(staged) != 1:
+        raise RuntimeError("pinned ggml Vulkan FP16 policy no longer matches")
+    lines[direct[0]] = "    const bool force_disable_f16 = device->vendor_id == VK_VENDOR_ID_NVIDIA && device->architecture == vk_device_architecture::NVIDIA_PRE_TURING;"
+    i = staged[0]
+    lines[i] = ""
+    lines[i + 1] = "    bool force_disable_f16 = props2.properties.vendorID == VK_VENDOR_ID_NVIDIA && device_architecture == vk_device_architecture::NVIDIA_PRE_TURING;"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def _hash_identity(parts: list[bytes]) -> str:
     digest = hashlib.sha256()
     for part in parts:
@@ -157,7 +177,8 @@ def chatterbox_native_revision() -> str:
     parts = [
         repr(SOURCES["chatterbox"]).encode("utf-8"),
         repr(SOURCES["ggml"]).encode("utf-8"),
-        os.environ.get("PROCESSOR_IDENTIFIER", platform.processor()).encode("utf-8"),
+        platform.processor().encode("utf-8"), HARDWARE_PROFILE.encode("ascii"),
+        b"ggml-vulkan:auto-disable-f16-nvidia-pre-turing-v1", CHATTERBOX_PATCH.read_bytes(),
         b"-DGGML_VULKAN=ON|-DGGML_CUDA=OFF|-DGGML_NATIVE=ON|-DGGML_CCACHE=OFF|-DTTS_CPP_BUILD_EXECUTABLES=OFF|-DTTS_CPP_BUILD_TESTS=OFF",
     ]
     return _hash_identity(parts)
@@ -303,6 +324,31 @@ def _release_identity(name: str) -> str:
     return f"{spec['repo']}@{spec['tag']}:{spec['asset']}"
 
 
+def runtime_parakeet_library(required: bool = True) -> Path | None:
+    root = RUNTIMES / "parakeet"
+    matches = [p for p in root.rglob("*.dll") if "parakeet" in p.name.lower()] if root.exists() else []
+    if len(matches) == 1: return matches[0]
+    if required: raise RuntimeError(f"Parakeet C API DLL not found exactly once; found {len(matches)}")
+    return None
+
+
+def ensure_ui() -> None:
+    env = ROOT / ".venv"
+    python = env / "Scripts" / "python.exe"
+    requirements = ROOT / "requirements-ui.txt"
+    digest = hashlib.sha256(requirements.read_bytes()).hexdigest()
+    marker = env / ".trident-ui"
+    if not python.is_file(): venv.EnvBuilder(with_pip=True).create(env)
+    if not marker.is_file() or marker.read_text(encoding="ascii").strip() != digest:
+        subprocess.run([str(python), "-m", "pip", "install", "--disable-pip-version-check", "-r", str(requirements)], check=True)
+        marker.write_text(digest + "\n", encoding="ascii")
+    packages = env / "Lib" / "site-packages"
+    site.addsitedir(str(packages))
+    value = str(packages)
+    if value in sys.path: sys.path.remove(value)
+    sys.path.insert(0, value)
+
+
 def runtime_tts_server(required: bool = True) -> Path | None:
     root = RUNTIMES / "tts"
     matches = [p for p in root.rglob("*") if p.is_file() and p.name.lower() == TTS_SERVER_EXE.lower()] if root.exists() else []
@@ -325,7 +371,7 @@ def install_release_binary(name: str) -> None:
     marker = _release_marker(name)
     identity = _release_identity(name)
     installed = runtime_server(name, required=False)
-    if installed and marker.is_file() and marker.read_text(encoding="ascii", errors="ignore").strip() == identity:
+    if installed and marker.is_file() and marker.read_text(encoding="ascii", errors="ignore").strip() == identity and (name != "parakeet" or runtime_parakeet_library(False)):
         note(f"{spec['label']}: ready (pinned resident server)")
         return
     note(f"{spec['label']}: installing pinned {spec['tag']} release")
@@ -335,6 +381,7 @@ def install_release_binary(name: str) -> None:
     extract_release_bundle(archive, RUNTIMES / name, (spec["server_exe"],))
     archive.unlink(missing_ok=True)
     runtime_server(name)
+    if name == "parakeet": runtime_parakeet_library()
     marker.write_text(identity + "\n", encoding="ascii")
 
 
@@ -377,7 +424,9 @@ def install_tts() -> None:
     if not _native_build_ready():
         note(f"tts native revision changed: rebuilding chatterbox.cpp {native_revision[:12]}")
         checkout("tts", CHATTERBOX, "chatterbox")
+        run_process("tts", "patch-chatterbox", [need("git"), "apply", "--unidiff-zero", "--whitespace=error-all", str(CHATTERBOX_PATCH)], CHATTERBOX)
         checkout("tts", GGML, "ggml")
+        tune_ggml_vulkan()
         run_process("tts", "configure-chatterbox", [cmake, "-S", ".", "-B", "build", "-A", "x64", "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_NATIVE=ON", "-DGGML_CCACHE=OFF", "-DTTS_CPP_BUILD_EXECUTABLES=OFF", "-DTTS_CPP_BUILD_TESTS=OFF"], CHATTERBOX)
         run_process("tts", "build-chatterbox", [cmake, "--build", "build", "--config", "Release", "--target", "tts-cpp", "mtl_tokenizer", "--parallel"], CHATTERBOX)
         if not CHATTERBOX_LIBRARY.is_file():

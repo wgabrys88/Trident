@@ -78,39 +78,14 @@ def _http_status(url: str, timeout: float = 1.0) -> int | None:
         return None
 
 
-def _spawn_detached(
-    command: list[str], cwd: Path, env: dict[str, str]
-) -> tuple[subprocess.Popen, str, int]:
+def _spawn_detached(command: list[str], cwd: Path) -> tuple[subprocess.Popen, str, int]:
     chunk_name, offset, log = open_sink()
-    runtime_env = {
-        key: env.get(key, "")
-        for key in (
-            "GGML_VK_MEMORY_LOGGER", "GGML_VK_PERF_LOGGER", "GGML_VK_SYNC_LOGGER",
-            "GGML_VK_DISABLE_F16", "PARAKEET_DEVICE", "TRIDENT_FASTCONV",
-        )
-        if key in env
-    }
-    line = (
-        f"trident ts_unix_ns={time.time_ns()} event=spawn command="
-        + json.dumps(command, separators=(",", ":"))
-        + " env=" + json.dumps(runtime_env, sort_keys=True, separators=(",", ":")) + "\n"
-    )
-    log.write(line.encode("utf-8"))
+    log.write((f"trident ts_unix_ns={time.time_ns()} event=spawn command=" + json.dumps(command, separators=(",", ":")) + "\n").encode())
+    kwargs = {"cwd": str(cwd), "stdin": subprocess.DEVNULL, "stdout": log, "stderr": subprocess.STDOUT, "close_fds": True}
+    if os.name == "nt": kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    else: kwargs["start_new_session"] = True
     try:
-        kwargs: dict = {
-            "cwd": str(cwd),
-            "env": env,
-            "stdin": subprocess.DEVNULL,
-            "stdout": log,
-            "stderr": subprocess.STDOUT,
-            "close_fds": True,
-        }
-        if os.name == "nt":
-            kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-        else:
-            kwargs["start_new_session"] = True
-        process = subprocess.Popen(command, **kwargs)
-        return process, chunk_name, offset
+        return subprocess.Popen(command, **kwargs), chunk_name, offset
     finally:
         log.close()
 
@@ -181,7 +156,6 @@ def _ensure(
     server: Path,
     model: Path,
     command: list[str],
-    env: dict[str, str],
     identity_extra: dict,
     ready_probe: Callable[[], bool],
     *,
@@ -210,7 +184,7 @@ def _ensure(
 
     note(f"{name} resident: starting persistent server")
     note(f"{name} resident command: " + " ".join(command))
-    process, log_chunk, log_offset = _spawn_detached(command, server.parent, env)
+    process, log_chunk, log_offset = _spawn_detached(command, server.parent)
     pid = int(process.pid)
     state_value = {
         "identity": ident,
@@ -238,42 +212,26 @@ def _ensure(
     return str(cfg["url"])
 
 
-def ensure_parakeet(server: Path, model: Path, runtime: dict) -> str:
+def ensure_parakeet(server: Path, model: Path) -> str:
     cfg = RESIDENT_SERVERS["parakeet"]
     host, port = str(cfg["host"]), int(cfg["port"])
-    env = os.environ.copy()
-    env["PARAKEET_DEVICE"] = str(runtime["device"])
     command = [str(server), "--model", str(model), "--port", str(port)]
-    probe = lambda: _port_open(host, port)
-    url = _ensure(
-        "parakeet", server, model, command, env,
-        {
-            "device": str(runtime["device"]), "decoder": "tdt", "port": port,
-        },
-        probe,
-    )
-    note(f"parakeet resident: device={runtime['device']} model-resident=1")
+    url = _ensure("parakeet", server, model, command, {"model_mode": "nemotron-streaming", "device": "auto", "port": port}, lambda: _port_open(host, port))
+    note("parakeet resident: device=auto model-resident=1")
     return url
 
 
 def ensure_gemma(server: Path, model: Path, runtime: dict) -> str:
     cfg = RESIDENT_SERVERS["gemma"]
     host, port = str(cfg["host"]), int(cfg["port"])
-    cpu = str(runtime.get("device", "")).lower() in {"cpu", "none"} or str(runtime.get("gpu_layers")) == "0"
-    device = "none" if cpu else str(runtime["device"])
     command = [
         str(server), "-m", str(model), "--alias", "gemma",
         "--host", host, "--port", str(port), "--offline",
-        "--device", device,
-        "--n-gpu-layers", "0" if cpu else str(runtime["gpu_layers"]),
-        "--split-mode", str(runtime["split_mode"]),
-        "--main-gpu", str(runtime["main_gpu"]),
+        "--n-gpu-layers", str(runtime["gpu_layers"]),
         "--ctx-size", str(runtime["context"]),
         "--no-mmproj", "--load-mode", str(runtime["load_mode"]),
         "--flash-attn", str(runtime["flash_attn"]), "--repack",
-        "--fit", str(runtime["fit"]),
-        "--no-kv-offload" if cpu else "--kv-offload",
-        "--no-op-offload" if cpu else "--op-offload",
+        "--fit", str(runtime["fit"]), "--kv-offload", "--op-offload",
         "--cache-type-k", str(runtime["cache_type_k"]),
         "--cache-type-v", str(runtime["cache_type_v"]),
         "--parallel", str(runtime["parallel"]),
@@ -284,26 +242,21 @@ def ensure_gemma(server: Path, model: Path, runtime: dict) -> str:
         "--log-verbosity", "4", "--log-prefix", "--log-timestamps",
         "--cache-prompt", "--no-ui", "--reasoning", "off",
     ]
-    env = os.environ.copy()
     probe_url = f"http://{host}:{port}/health"
     probe = lambda: _http_status(probe_url, timeout=1.0) == 200
-    url = _ensure(
-        "gemma", server, model, command, env,
-        {
-            "device": device, "gpu_layers": "0" if cpu else str(runtime["gpu_layers"]),
-            "split_mode": str(runtime["split_mode"]), "main_gpu": int(runtime["main_gpu"]),
-            "context": int(runtime["context"]), "load_mode": str(runtime["load_mode"]),
-            "flash_attn": str(runtime["flash_attn"]), "fit": str(runtime["fit"]),
-            "cache_type_k": str(runtime["cache_type_k"]), "cache_type_v": str(runtime["cache_type_v"]),
-            "parallel": int(runtime["parallel"]), "threads": int(runtime["threads"]),
-            "threads_batch": int(runtime["threads_batch"]),
-            "poll": int(runtime["poll"]), "poll_batch": int(runtime["poll_batch"]),
-            "log_verbosity": 4, "log_prefix": True, "log_timestamps": True, "cors_origins": "localhost",
-            "cache_prompt": True, "ui": False, "alias": "gemma", "port": port,
-        },
-        probe,
-    )
-    note(f"gemma resident: device={device} kv={runtime['cache_type_k']}/{runtime['cache_type_v']} flash_attn={runtime['flash_attn']}")
+    identity = {
+        "gpu_layers": str(runtime["gpu_layers"]), "context": int(runtime["context"]),
+        "load_mode": str(runtime["load_mode"]), "flash_attn": str(runtime["flash_attn"]),
+        "fit": str(runtime["fit"]), "cache_type_k": str(runtime["cache_type_k"]),
+        "cache_type_v": str(runtime["cache_type_v"]), "parallel": int(runtime["parallel"]),
+        "threads": int(runtime["threads"]), "threads_batch": int(runtime["threads_batch"]),
+        "poll": int(runtime["poll"]), "poll_batch": int(runtime["poll_batch"]),
+        "log_verbosity": 4, "log_prefix": True, "log_timestamps": True,
+        "cors_origins": "localhost", "cache_prompt": True, "ui": False,
+        "alias": "gemma", "port": port,
+    }
+    url = _ensure("gemma", server, model, command, identity, probe)
+    note(f"gemma resident: device=auto kv={runtime['cache_type_k']}/{runtime['cache_type_v']} flash_attn={runtime['flash_attn']}")
     return url
 
 
@@ -339,15 +292,8 @@ def ensure_chatterbox(
         "--chunk-chars", str(chunk["chars"]),
         "--stream-first-chunk-tokens", str(stream["first_tokens"]),
         "--stream-chunk-tokens", str(stream["tokens"]),
+        "--fastconv", "1" if runtime.get("fastconv") else "0",
     ]
-    env = os.environ.copy()
-    env["TRIDENT_FASTCONV"] = "1" if runtime.get("fastconv") else "0"
-    if runtime.get("vulkan_disable_f16"):
-
-        env["GGML_VK_DISABLE_F16"] = "1"
-    else:
-
-        env.pop("GGML_VK_DISABLE_F16", None)
     probe = lambda: _port_open(host, port)
     identity_extra = {
         "codec": _file_signature(codec_model),
@@ -358,12 +304,11 @@ def ensure_chatterbox(
         "sample": sample,
         "voice": voice,
         "chunk": chunk,
-        "stream": stream,
-        "vulkan": {"disable_f16": bool(runtime.get("vulkan_disable_f16"))},
+        "stream_tokens": {"first": stream["first_tokens"], "next": stream["tokens"]},
         "port": port,
     }
     url = _ensure(
-        "chatterbox", server, t3_model, command, env, identity_extra, probe,
+        "chatterbox", server, t3_model, command, identity_extra, probe,
         state_extra={
             "family": family_name,
             "language": language,
@@ -391,6 +336,12 @@ def status() -> list[dict]:
         rows.append({
             "name": name, "ready": ready, "pid": state.get("pid"), "url": cfg["url"], "log": LOG_HINT,
             "family": state.get("family"), "language": state.get("language"), "reference": state.get("reference"),
-            "device": identity.get("device"), "gpu_layers": identity.get("gpu_layers", runtime.get("gpu_layers")),
+            "device": "auto", "gpu_layers": identity.get("gpu_layers", runtime.get("gpu_layers")),
         })
     return rows
+
+
+def stop(name: str) -> None:
+    if name not in RESIDENT_SERVERS:
+        raise RuntimeError(f"unknown resident: {name}")
+    _terminate(name)

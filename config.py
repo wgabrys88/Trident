@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import os
 import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -9,11 +9,8 @@ ROOT = Path(__file__).resolve().parent
 
 
 def detect_hardware_profile() -> str:
-    profile = os.environ.get("TRIDENT_PROFILE", "").strip().lower()
-    if profile in {"pascal", "irisxe"}:
-        return profile
-    if profile or os.name != "nt":
-        raise RuntimeError("TRIDENT_PROFILE must be pascal or irisxe")
+    if not sys.platform.startswith("win"):
+        raise RuntimeError("Trident requires Windows for GPU auto-discovery")
     gpu = subprocess.check_output(
         ["powershell.exe", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name -join ';'"],
         text=True, encoding="utf-8", errors="replace", timeout=15,
@@ -39,10 +36,6 @@ CONVERTER = TOOLS / "convert"
 TTS_RATE = 24000
 REFERENCE_MIN_SECONDS = 5.0
 
-ASR_RUNTIME = {
-    "device": "Vulkan0",
-}
-
 RESIDENT_SERVERS = {
     "parakeet": {"host": "127.0.0.1", "port": 17931, "url": "http://127.0.0.1:17931", "startup_timeout_s": 120},
     "gemma": {"host": "127.0.0.1", "port": 17932, "url": "http://127.0.0.1:17932", "startup_timeout_s": 180},
@@ -51,13 +44,10 @@ RESIDENT_SERVERS = {
 
 BRAIN_MODEL = "gemma"
 BRAIN_RUNTIME = {
-    "device": "Vulkan0",
     "gpu_layers": "all",
     "context": 4096,
     "flash_attn": "on" if HARDWARE_PROFILE == "pascal" else "off",
     "fit": "off",
-    "split_mode": "none",
-    "main_gpu": 0,
     "load_mode": "mmap",
     "parallel": 1,
     "cache_type_k": "f16",
@@ -103,10 +93,9 @@ def _family(name, languages, sample, voice, chunk, t3, codec):
         "name": name, "TTS_LANGUAGES": languages, "DEFAULT_REPLY_LANGUAGE": "en",
         "TTS_RUNTIME": {
             "gpu_layers": 99, "context": 2048, "threads": 4, "fastconv": True,
-            "vulkan_disable_f16": HARDWARE_PROFILE == "pascal",
         },
         "TTS_SAMPLE": sample, "TTS_VOICE": voice, "TTS_CHUNK": chunk,
-        "TTS_STREAM": {"first_tokens": 12, "tokens": 25},
+        "TTS_STREAM": {"enabled": True, "join": "crossfade", "first_tokens": 12, "tokens": 25},
         "TTS_MODELS": {"chatterbox-t3": t3, "chatterbox-codec": codec},
     }
 
@@ -169,18 +158,12 @@ FAMILIES = {
 
 
 
-_s3_default_quant = "q4_0" if HARDWARE_PROFILE == "irisxe" else "f16"
-_s3_quant = os.environ.get("TRIDENT_S3GEN_QUANT", _s3_default_quant).strip().lower()
-if _s3_quant not in {"f16", "q8_0", "q5_0", "q4_0"}:
-    raise RuntimeError("TRIDENT_S3GEN_QUANT must be f16, q8_0, q5_0, or q4_0")
-if _s3_quant != "f16":
+if HARDWARE_PROFILE == "irisxe":
     for _family_spec in FAMILIES.values():
         _codec = _family_spec["TTS_MODELS"]["chatterbox-codec"]
-        _codec["convert"]["quant"] = _s3_quant
+        _codec["convert"]["quant"] = "q4_0"
         _codec["size"] = 0
-        _codec["file"] = _codec["file"].replace(
-            "-f16.gguf", f"-{HARDWARE_PROFILE}-{_s3_quant}-rawf32-v1.gguf"
-        )
+        _codec["file"] = _codec["file"].replace("-f16.gguf", "-irisxe-q4_0-rawf32-v1.gguf")
 
 
 def default_family() -> str:
@@ -190,11 +173,15 @@ def default_family() -> str:
 
 
 SHARED_MODELS = {
-    "parakeet": {"label": "PARAKEET TDT 0.6B V3 Q4_K", "repo": "mudler/parakeet-cpp-gguf", "revision": "bf0af9f425fa01809cadec671b3cb672709d13e9", "file": "tdt-0.6b-v3-q4_k.gguf", "size": 675200864},
+    "parakeet": {
+        "label": "PARAKEET NEMOTRON 3.5 STREAMING 0.6B Q4_K",
+        "repo": "mudler/parakeet-cpp-gguf", "revision": "bf0af9f425fa01809cadec671b3cb672709d13e9",
+        "file": "nemotron-3.5-asr-streaming-0.6b-q4_k.gguf", "size": 0,
+    },
     "gemma": {"label": "GEMMA 4 E2B", "repo": "google/gemma-4-E2B-it-qat-q4_0-gguf", "revision": "675cff42a74c774d6cb76f76d8eacb49b48c9b93", "file": "gemma-4-E2B_q4_0-it.gguf", "size": 3349516256},
 }
 if HARDWARE_PROFILE == "pascal":
-    SHARED_MODELS["parakeet"].update(label="PARAKEET TDT 0.6B V3 Q8_0", file="tdt-0.6b-v3-q8_0.gguf", size=0)
+    SHARED_MODELS["parakeet"].update(label="PARAKEET NEMOTRON 3.5 STREAMING 0.6B Q8_0", file="nemotron-3.5-asr-streaming-0.6b-q8_0.gguf")
 
 VULKAN_VERSION = "1.4.357.0"
 
@@ -206,7 +193,7 @@ PACKAGES = {
 }
 
 SOURCES = {
-    "chatterbox": ("https://github.com/wgabrys88/chatterbox.cpp", "fad8838bd7cda385b5743b36c40a8cea0a8f9b94"),
+    "chatterbox": ("https://github.com/wgabrys88/chatterbox.cpp", "a1dda6f5ee98f5c7cee9d69e0e532e65c4138665"),
     "ggml": ("https://github.com/ggml-org/ggml.git", "58c3805840b516b2a88ff867ccf7bb41dba79951"),
 }
 
@@ -258,16 +245,18 @@ class Paths:
     def __init__(self, models_dir: Path | None = None, data_dir: Path | None = None, command: str | None = None) -> None:
         self.models_dir = (models_dir or DEFAULT_MODELS_DIR).resolve()
         self.data_dir = (data_dir or DEFAULT_DATA_DIR).resolve()
-        self.run_dir = None
-        self.transcript = None
-        self.answer = None
-        self.system = None
-        self.output = None
-        if command:
-            stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-            self.run_dir = self.data_dir / "runs" / f"{stamp}-{command}"
+        self.stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f") if command else None
+        self.run_dir = self.data_dir / "runs" / f"{self.stamp}-{command}" if command else None
+        if self.run_dir:
             self.run_dir.mkdir(parents=True)
-            self.transcript = self.run_dir / "transcript.txt"
-            self.answer = self.run_dir / "answer.txt"
-            self.system = self.run_dir / "system.txt"
-            self.output = self.run_dir / "output.wav"
+        def artifact(name: str):
+            return self.run_dir / f"{self.stamp}-{name}" if self.run_dir else None
+        self.transcript = artifact("transcript.txt")
+        self.answer = artifact("answer.txt")
+        self.system = artifact("system.txt")
+        self.output = artifact("output.wav")
+        self.input = artifact("input.wav")
+        self.literal = artifact("literal.txt")
+        self.log = artifact("trident.log")
+        self.server_log = artifact("server.log")
+        self.meta = artifact("meta.txt")
