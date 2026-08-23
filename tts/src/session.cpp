@@ -6,9 +6,6 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cmath>
-#include <filesystem>
-#include <stdexcept>
 #include <utility>
 
 namespace tts {
@@ -24,12 +21,6 @@ struct Session::Impl {
     Impl(Runtime runtime_in, EngineKnobs knobs_in, int chunk_chars_in, float quiet_amp2_in, int first_chunk_chars_in)
         : runtime(std::move(runtime_in)), knobs(std::move(knobs_in)), chunk_chars(chunk_chars_in),
           first_chunk_chars(first_chunk_chars_in > 0 ? first_chunk_chars_in : chunk_chars_in), quiet_amp2(quiet_amp2_in) {
-        if (!std::filesystem::is_regular_file(runtime.t3) || !std::filesystem::is_regular_file(runtime.s3))
-            throw std::runtime_error("model file missing");
-        if (!std::filesystem::is_regular_file(knobs.reference))
-            throw std::runtime_error("reference audio not found: " + knobs.reference);
-        if (chunk_chars < 1 || first_chunk_chars < 1) throw std::invalid_argument("chunk chars must be positive");
-
         log("event=model role=t3 path=" + runtime.t3);
         log("event=model role=s3gen path=" + runtime.s3);
         log("event=model role=reference path=" + knobs.reference);
@@ -71,39 +62,10 @@ struct Session::Impl {
     }
 
     Speech synthesize(const std::string& text) {
-        if (text.empty()) throw std::runtime_error("text is empty");
         const auto synthesis_started = std::chrono::steady_clock::now();
-        auto pcm_stats = [](const std::vector<float>& pcm) {
-            float peak = 0, mn = 0, mx = 0, mean = 0;
-            size_t zeros = 0;
-            for (float s : pcm) {
-                peak = std::max(peak, std::abs(s));
-                mn = std::min(mn, s);
-                mx = std::max(mx, s);
-                mean += s;
-                if (s == 0.0f) ++zeros;
-            }
-            const double inv = pcm.empty() ? 0.0 : 1.0 / static_cast<double>(pcm.size());
-            double rms = 0;
-            for (float s : pcm) rms += static_cast<double>(s) * s;
-            rms = std::sqrt(rms * inv);
-            unsigned long long h = 1469598103934665603ull;
-            const auto* p = reinterpret_cast<const unsigned char*>(pcm.data());
-            const size_t bytes = pcm.size() * sizeof(float);
-            for (size_t i = 0; i < bytes; ++i) { h ^= p[i]; h *= 1099511628211ull; }
-            struct R { float peak, mn, mx, mean; double rms; size_t zeros; unsigned long long fnv; };
-            return R{ peak, mn, mx, static_cast<float>(mean * inv), rms, zeros, h };
-        };
         const auto pieces = pack_text_staged(text, first_chunk_chars, chunk_chars);
         log("event=pack chunks=" + std::to_string(pieces.size()) + " first_limit=" +
             std::to_string(first_chunk_chars) + " later_limit=" + std::to_string(chunk_chars));
-        for (size_t i = 0; i < pieces.size(); ++i) {
-            const std::string& piece = pieces[i];
-            const std::string head = piece.size() > 48 ? piece.substr(0, 48) + "..." : piece;
-            log("event=pack_chunk index=" + std::to_string(i) + " chars=" + std::to_string(utf8_chars(piece)) +
-                " bytes=" + std::to_string(piece.size()) + " text=" + head);
-        }
-
         Speech speech;
         speech.chunks = static_cast<int>(pieces.size());
         speech.pcm.reserve(static_cast<size_t>(std::max(1, speech.chunks)) * static_cast<size_t>(kRate) * 8u);
@@ -116,28 +78,15 @@ struct Session::Impl {
                 log("event=first_audio ttfa_ms=" + std::to_string(speech.ttfa_ms) +
                     " granularity=whole-s3gen-chunk scope=server-internal client_streaming=0 warm_model=1 warm_voice=1");
             }
-            const auto cs = pcm_stats(result.pcm);
             log("event=chunk index=" + std::to_string(i) + " t3_tokens=" + std::to_string(result.t3_tokens) +
                 " samples=" + std::to_string(result.pcm.size()) +
                 " seconds=" + std::to_string(result.pcm.size() / static_cast<double>(kRate)) +
-                " t3_ms=" + std::to_string(result.t3_ms) + " s3gen_ms=" + std::to_string(result.s3gen_ms) +
-                " peak=" + std::to_string(cs.peak) + " rms=" + std::to_string(cs.rms) +
-                " mean=" + std::to_string(cs.mean) + " min=" + std::to_string(cs.mn) +
-                " max=" + std::to_string(cs.mx) + " zeros=" + std::to_string(cs.zeros) +
-                " fnv=" + std::to_string(cs.fnv));
+                " t3_ms=" + std::to_string(result.t3_ms) + " s3gen_ms=" + std::to_string(result.s3gen_ms));
             glue(speech.pcm, result.pcm, quiet_amp2);
             speech.t3_ms += result.t3_ms;
             speech.s3gen_ms += result.s3gen_ms;
             speech.t3_tokens += result.t3_tokens;
         }
-        if (speech.pcm.empty()) throw std::runtime_error("synthesis returned no audio");
-        const auto ps = pcm_stats(speech.pcm);
-        log("event=pcm samples=" + std::to_string(speech.pcm.size()) +
-            " seconds=" + std::to_string(speech.pcm.size() / static_cast<double>(kRate)) +
-            " peak=" + std::to_string(ps.peak) + " rms=" + std::to_string(ps.rms) +
-            " mean=" + std::to_string(ps.mean) + " min=" + std::to_string(ps.mn) +
-            " max=" + std::to_string(ps.mx) + " zeros=" + std::to_string(ps.zeros) +
-            " fnv=" + std::to_string(ps.fnv) + " t3_tokens=" + std::to_string(speech.t3_tokens));
         return speech;
     }
 };
@@ -150,4 +99,4 @@ const Runtime& Session::runtime() const noexcept { return impl_->runtime; }
 const EngineKnobs& Session::knobs() const noexcept { return impl_->knobs; }
 int Session::chunk_chars() const noexcept { return impl_->chunk_chars; }
 
-} 
+}

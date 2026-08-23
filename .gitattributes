@@ -1,6 +1,3 @@
-# First-party text is LF in the object store and in the working tree.
-# eol=lf overrides Windows core.autocrlf=true so editors and tools cannot
-# turn a one-line edit into a whole-file CRLF rewrite.
 * text=auto eol=lf
 *.py text eol=lf
 *.md text eol=lf

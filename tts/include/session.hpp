@@ -8,8 +8,6 @@
 namespace tts {
 
 
-
-
 class Session {
 public:
     Session(const Runtime& runtime, const EngineKnobs& knobs, int chunk_chars, float quiet_amp2 = kQuietAmp2, int first_chunk_chars = 0);
@@ -29,4 +27,4 @@ private:
     std::unique_ptr<Impl> impl_;
 };
 
-} 
+}

@@ -75,11 +75,6 @@ def fail(message: str) -> None:
     print(message, file=sys.stderr, flush=True)
 
 
-def size() -> int:
-    target = active()
-    return target.stat().st_size if target.exists() else 0
-
-
 def open_sink() -> tuple[str, int, object]:
     with _lock:
         target = active()
@@ -105,10 +100,6 @@ def _chain(offset: int, start: str | None):
         if path.name == start and offset:
             data = data[offset:] if len(data) > offset else b""
         yield data
-
-
-def read_from(offset: int = 0, start: str | None = None) -> str:
-    return b"".join(_chain(offset, start)).decode("utf-8", "replace")
 
 
 def end_run(dest: Path) -> bool:

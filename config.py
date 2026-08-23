@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib
 import os
 import subprocess
 from datetime import datetime
@@ -103,25 +102,95 @@ ASR_LANGUAGES = {
 }
 
 
-def discover_families() -> dict:
-    found = {}
-    for path in ROOT.glob("family_*.py"):
-        spec = getattr(importlib.import_module(path.stem), "FAMILY", None)
-        if spec and spec.get("name"):
-            found[spec["name"]] = spec
-    order = [name for name in ("v3", "turbo", "nano") if name in found]
-    order += sorted(name for name in found if name not in {"v3", "turbo", "nano"})
-    return {name: found[name] for name in order}
+def _model(label, repo, revision, file, size, script, quant, files, *, variant=None, copy=None):
+    recipe = {"script": script, "quant": quant, "files": files}
+    if variant: recipe["variant"] = variant
+    if copy: recipe["copy"] = copy
+    return {"label": label, "repo": repo, "revision": revision, "file": file, "size": size, "convert": recipe}
 
 
-FAMILIES = discover_families()
+def _family(name, languages, sample, voice, chunk, t3, codec):
+    return {
+        "name": name, "TTS_LANGUAGES": languages, "DEFAULT_REPLY_LANGUAGE": "en",
+        "TTS_RUNTIME": {
+            "gpu_layers": 99, "context": 2048, "threads": 4, "fastconv": True,
+            "vulkan_disable_f16": HARDWARE_PROFILE == "pascal",
+        },
+        "TTS_SAMPLE": sample, "TTS_VOICE": voice, "TTS_CHUNK": chunk,
+        "TTS_MODELS": {"chatterbox-t3": t3, "chatterbox-codec": codec},
+    }
 
-for _family in FAMILIES.values():
-    _family["TTS_RUNTIME"]["fastconv"] = True
-for _name in ("nano", "turbo"):
-    FAMILIES[_name]["TTS_SAMPLE"].update(cfm_steps=2, temperature=0.8, top_p=0.95, top_k=1000, repeat_penalty=1.2)
-FAMILIES["v3"]["TTS_SAMPLE"]["cfm_steps"] = 5
-FAMILIES["v3"]["TTS_VOICE"]["exaggeration"] = 0.5
+
+_TURBO_FILES = (
+    "t3_turbo_v1.safetensors", "s3gen_meanflow.safetensors", "conds.pt",
+    "ve.safetensors", "vocab.json", "merges.txt", "added_tokens.json",
+)
+_NANO_FILES = ("t3_nano_v1.safetensors", *_TURBO_FILES[1:])
+_MTL_FILES = (
+    "ve.pt", "t3_mtl23ls_v3.safetensors", "s3gen_v3.pt",
+    "grapheme_mtl_merged_expanded_v1.json", "conds.pt", "Cangjie5_TC.json",
+)
+
+
+def _english_family(name, repo, revision, t3_source, t3_file, t3_size, first_chars):
+    files = _NANO_FILES if name == "nano" else _TURBO_FILES
+    copy = {t3_source: "t3_turbo_v1.safetensors"} if name == "nano" else None
+    t3 = _model(f"CHATTERBOX {name.upper()} T3", repo, revision, t3_file, t3_size,
+                "convert-t3-turbo-to-gguf.py", "q4_0", files, copy=copy)
+    codec = _model(f"CHATTERBOX {name.upper()} S3GEN", repo, revision,
+                   f"chatterbox-s3gen-{name}-f16.gguf", 1064879936,
+                   "convert-s3gen-to-gguf.py", "f16", files, variant="turbo")
+    return _family(
+        name, {"en": "English"},
+        {"seed": 42, "max_tokens": 768, "top_k": 1000, "top_p": 0.95,
+         "min_p": 0.0, "temperature": 0.8, "repeat_penalty": 1.2, "cfm_steps": 2},
+        {"cfg_weight": 0.0, "exaggeration": 0.0},
+        {"first_chars": first_chars, "chars": 280}, t3, codec,
+    )
+
+
+_v3_t3 = _model(
+    "CHATTERBOX V3 T3", "ResembleAI/chatterbox", "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18",
+    "chatterbox-t3-mtl-v3-q4_0.gguf", 344985408, "convert-t3-mtl-to-gguf.py", "q4_0", _MTL_FILES,
+    copy={"t3_mtl23ls_v3.safetensors": "t3_mtl23ls_v2.safetensors"},
+)
+_v3_codec = _model(
+    "CHATTERBOX V3 S3GEN", "ResembleAI/chatterbox", "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18",
+    "chatterbox-s3gen-mtl-v3-f16.gguf", 1056431360, "convert-s3gen-to-gguf.py", "f16", _MTL_FILES,
+    variant="mtl", copy={"s3gen_v3.pt": "s3gen.pt"},
+)
+FAMILIES = {
+    "v3": _family(
+        "v3", LANGUAGES,
+        {"seed": 42, "max_tokens": 768, "top_k": 0, "top_p": 1.0,
+         "min_p": 0.05, "temperature": 0.8, "repeat_penalty": 1.2, "cfm_steps": 5},
+        {"cfg_weight": 0.5, "exaggeration": 0.5}, {"first_chars": 180, "chars": 300},
+        _v3_t3, _v3_codec,
+    ),
+    "turbo": _english_family(
+        "turbo", "ResembleAI/chatterbox-turbo", "749d1c1a46eb10492095d68fbcf55691ccf137cd",
+        "t3_turbo_v1.safetensors", "chatterbox-t3-turbo-q4_0.gguf", 333506240, 120,
+    ),
+    "nano": _english_family(
+        "nano", "ResembleAI/chatterbox-nano", "71ccd1d0081b430592cea481f4307e764e07bc64",
+        "t3_nano_v1.safetensors", "chatterbox-t3-nano-q4_0.gguf", 171901536, 180,
+    ),
+}
+
+
+
+_s3_default_quant = "q4_0" if HARDWARE_PROFILE == "irisxe" else "f16"
+_s3_quant = os.environ.get("TRIDENT_S3GEN_QUANT", _s3_default_quant).strip().lower()
+if _s3_quant not in {"f16", "q8_0", "q5_0", "q4_0"}:
+    raise RuntimeError("TRIDENT_S3GEN_QUANT must be f16, q8_0, q5_0, or q4_0")
+if _s3_quant != "f16":
+    for _family_spec in FAMILIES.values():
+        _codec = _family_spec["TTS_MODELS"]["chatterbox-codec"]
+        _codec["convert"]["quant"] = _s3_quant
+        _codec["size"] = 0
+        _codec["file"] = _codec["file"].replace(
+            "-f16.gguf", f"-{HARDWARE_PROFILE}-{_s3_quant}-rawf32-v1.gguf"
+        )
 
 
 def default_family() -> str:
@@ -147,7 +216,7 @@ PACKAGES = {
 }
 
 SOURCES = {
-    "chatterbox": ("https://github.com/wgabrys88/chatterbox.cpp", "7f0569f2f01b8b53ec1466df4e2dfd016fbc3f25"),
+    "chatterbox": ("https://github.com/wgabrys88/chatterbox.cpp", "fad8838bd7cda385b5743b36c40a8cea0a8f9b94"),
     "ggml": ("https://github.com/ggml-org/ggml.git", "58c3805840b516b2a88ff867ccf7bb41dba79951"),
 }
 
@@ -204,7 +273,6 @@ class Paths:
         self.answer = None
         self.system = None
         self.output = None
-        self.output_mp4 = None
         if command:
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
             self.run_dir = self.data_dir / "runs" / f"{stamp}-{command}"
@@ -213,4 +281,3 @@ class Paths:
             self.answer = self.run_dir / "answer.txt"
             self.system = self.run_dir / "system.txt"
             self.output = self.run_dir / "output.wav"
-            self.output_mp4 = self.run_dir / "output.mp4"

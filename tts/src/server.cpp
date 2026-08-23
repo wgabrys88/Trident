@@ -132,7 +132,7 @@ void validate_knobs(const std::string& family, tts::EngineKnobs& knobs, int firs
     }
 }
 
-} 
+}
 
 int main(int argc, char** argv) {
     try {
@@ -161,9 +161,8 @@ int main(int argc, char** argv) {
         const tts::Runtime runtime = tts::runtime_from(args);
         tts::log("event=resident_start family=" + family + " preload=begin language=" + knobs.language +
                  " reference=" + knobs.reference);
-        
-        
-        
+
+
         tts::Session session(runtime, knobs, chunk_chars, tts::kQuietAmp2, first_chunk_chars);
 
 #ifdef _WIN32
@@ -194,7 +193,7 @@ int main(int argc, char** argv) {
             SocketGuard client(accept(listener.value, nullptr, nullptr));
             if (client.value == kInvalidSocket) continue;
             std::array<unsigned char, 8> header{};
-            
+
             if (!recv_all(client.value, header.data(), header.size())) continue;
             const std::uint32_t text_len = decode_u32_le(header.data());
             const std::uint32_t path_len = decode_u32_le(header.data() + 4);
