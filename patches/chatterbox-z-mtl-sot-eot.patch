@@ -1,0 +1,41 @@
+# chatterbox.cpp Engine MTL SOT/EOT pad (matches tts-cli + Python generate)
+diff --git a/src/chatterbox_engine.cpp b/src/chatterbox_engine.cpp
+--- a/src/chatterbox_engine.cpp
++++ b/src/chatterbox_engine.cpp
+@@ -1,10 +1,11 @@
+ #include "tts-cpp/chatterbox/engine.h"
+ 
+ #include <atomic>
+ #include <chrono>
++#include <cstdio>
+ #include <cstring>
+ #include <filesystem>
+ #include <stdexcept>
+ #include <string>
+ #include <thread>
+ #include <vector>
+@@ -352,12 +353,24 @@
+             }
+             mtl_tokenizer tok;
+             if (!tok.load_from_json(model.mtl_tokenizer_json)) {
+                 throw std::runtime_error("Engine: MTL tokenizer json failed to load");
+             }
+             text_tokens = tok.encode(text, opts.language);
++            std::vector<int32_t> padded;
++            padded.reserve(text_tokens.size() + 2);
++            padded.push_back(model.hparams.start_text_token);
++            padded.insert(padded.end(), text_tokens.begin(), text_tokens.end());
++            padded.push_back(model.hparams.stop_text_token);
++            fprintf(stderr, "mtl encode lang=%s raw=%zu padded=%zu sot=%d eot=%d ids=",
++                    opts.language.c_str(), text_tokens.size(), padded.size(),
++                    model.hparams.start_text_token, model.hparams.stop_text_token);
++            const size_t show = padded.size() < 12 ? padded.size() : 12;
++            for (size_t i = 0; i < show; ++i) fprintf(stderr, "%d ", padded[i]);
++            fprintf(stderr, "%s\n", padded.size() > show ? "..." : "");
++            text_tokens = std::move(padded);
+         } else {
+             if (model.tok_tokens.empty()) {
+                 throw std::runtime_error(
+                     "Engine: T3 GGUF has no embedded tokenizer; "
+                     "re-run scripts/convert-t3-turbo-to-gguf.py");
+             }
