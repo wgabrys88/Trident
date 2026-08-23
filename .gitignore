@@ -4,7 +4,6 @@
 !/main.py
 !/log.py
 !/config.py
-!/family_*.py
 !/installer.py
 !/resident.py
 !/local_api.py
@@ -15,3 +14,8 @@
 !/tts/include/*.hpp
 !/tts/src/
 !/tts/src/*.cpp
+!/ui.py
+!/asr_live.py
+!/requirements-ui.txt
+!/patches/
+!/patches/*.patch

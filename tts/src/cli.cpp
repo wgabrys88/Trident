@@ -67,6 +67,7 @@ Runtime runtime_from(const Args& args) {
     runtime.gpu = parse_int(args, "--n-gpu-layers");
     runtime.context = parse_int(args, "--context");
     runtime.threads = parse_int(args, "--threads");
+    runtime.fastconv = parse_int(args, "--fastconv") != 0;
     if (runtime.gpu < 0 || runtime.context < 1 || runtime.threads < 1)
         throw std::invalid_argument("integer runtime values are out of range");
     return runtime;

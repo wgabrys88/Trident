@@ -76,7 +76,7 @@ def gemma_chat(base_url: str, payload: dict, timeout: float = 3600.0) -> dict:
     return json.loads(body.decode("utf-8"))
 
 
-def chatterbox_stream(base_url: str, text: str, output: Path, timeout: float = 3600.0):
+def chatterbox_stream(base_url: str, text: str, output: Path, streaming: bool = True, join: str = "crossfade", timeout: float = 3600.0):
     import socket
     import struct
 
@@ -97,7 +97,7 @@ def chatterbox_stream(base_url: str, text: str, output: Path, timeout: float = 3
     try:
         with socket.create_connection((parsed.hostname, parsed.port), timeout=timeout) as sock:
             sock.settimeout(timeout)
-            sock.sendall(struct.pack("<II", len(text_bytes), len(output_bytes)))
+            sock.sendall(struct.pack("<IIII", len(text_bytes), len(output_bytes), int(streaming), {"chunks": 0, "crossfade": 1}[join]))
             sock.sendall(text_bytes)
             sock.sendall(output_bytes)
             while True:
@@ -114,8 +114,8 @@ def chatterbox_stream(base_url: str, text: str, output: Path, timeout: float = 3
         raise RuntimeError(f"Chatterbox resident request failed: {exc}") from exc
 
 
-def chatterbox_synthesize(base_url: str, text: str, output: Path, timeout: float = 3600.0) -> str:
-    stream = chatterbox_stream(base_url, text, output, timeout)
+def chatterbox_synthesize(base_url: str, text: str, output: Path, streaming: bool = True, join: str = "crossfade", timeout: float = 3600.0) -> str:
+    stream = chatterbox_stream(base_url, text, output, streaming, join, timeout)
     while True:
         try:
             next(stream)
