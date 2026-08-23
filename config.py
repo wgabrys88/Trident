@@ -116,15 +116,8 @@ def discover_families() -> dict:
 
 FAMILIES = discover_families()
 
-_s3_quant = "q4_0" if HARDWARE_PROFILE == "irisxe" else None
 for _family in FAMILIES.values():
     _family["TTS_RUNTIME"]["fastconv"] = True
-    if _s3_quant:
-        _codec = _family["TTS_MODELS"]["chatterbox-codec"]
-        _codec["convert"]["quant"], _codec["size"] = _s3_quant, 0
-        _codec["file"] = _codec["file"].replace(
-            "-f16.gguf", f"-{HARDWARE_PROFILE}-{_s3_quant}-spkf32.gguf"
-        )
 for _name in ("nano", "turbo"):
     FAMILIES[_name]["TTS_SAMPLE"].update(cfm_steps=2, temperature=0.8, top_p=0.95, top_k=1000, repeat_penalty=1.2)
 FAMILIES["v3"]["TTS_SAMPLE"]["cfm_steps"] = 5
