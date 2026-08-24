@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import signal
 import socket
 import subprocess
 import time
@@ -12,7 +11,7 @@ import urllib.request
 from pathlib import Path
 from typing import Callable
 
-from config import RESIDENT_SERVERS, ROOT, RUNTIMES
+from config import GGML_VULKAN_ENV, RESIDENT_SERVERS, ROOT, RUNTIMES, ggml_vulkan_environment
 from log import note, open_sink
 
 LOG_HINT = str(ROOT / "trident*.log")
@@ -78,12 +77,14 @@ def _http_status(url: str, timeout: float = 1.0) -> int | None:
         return None
 
 
-def _spawn_detached(command: list[str], cwd: Path) -> tuple[subprocess.Popen, str, int]:
+def _spawn_detached(command: list[str], cwd: Path, env: dict[str, str] | None) -> tuple[subprocess.Popen, str, int]:
     chunk_name, offset, log = open_sink()
     log.write((f"trident ts_unix_ns={time.time_ns()} event=spawn command=" + json.dumps(command, separators=(",", ":")) + "\n").encode())
-    kwargs = {"cwd": str(cwd), "stdin": subprocess.DEVNULL, "stdout": log, "stderr": subprocess.STDOUT, "close_fds": True}
-    if os.name == "nt": kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
-    else: kwargs["start_new_session"] = True
+    kwargs = {
+        "cwd": str(cwd), "env": env, "stdin": subprocess.DEVNULL, "stdout": log,
+        "stderr": subprocess.STDOUT, "close_fds": True,
+        "creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+    }
     try:
         return subprocess.Popen(command, **kwargs), chunk_name, offset
     finally:
@@ -112,16 +113,10 @@ def _terminate(name: str) -> None:
     pid = int(state.get("pid") or 0)
     if pid > 0:
         note(f"{name} resident: stopping pid={pid}")
-        try:
-            if os.name == "nt":
-                subprocess.run(
-                    ["taskkill", "/PID", str(pid), "/T", "/F"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
-                )
-            else:
-                os.kill(pid, signal.SIGTERM)
-        except OSError:
-            pass
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+        )
     _state_path(name).unlink(missing_ok=True)
 
 
@@ -159,6 +154,7 @@ def _ensure(
     identity_extra: dict,
     ready_probe: Callable[[], bool],
     *,
+    env: dict[str, str] | None = None,
     state_extra: dict | None = None,
 ) -> str:
     cfg = RESIDENT_SERVERS[name]
@@ -184,7 +180,9 @@ def _ensure(
 
     note(f"{name} resident: starting persistent server")
     note(f"{name} resident command: " + " ".join(command))
-    process, log_chunk, log_offset = _spawn_detached(command, server.parent)
+    if env is not None:
+        note(f"{name} resident: GGML_VK_DISABLE_F16={env.get('GGML_VK_DISABLE_F16', 'unset')}")
+    process, log_chunk, log_offset = _spawn_detached(command, server.parent, env)
     pid = int(process.pid)
     state_value = {
         "identity": ident,
@@ -216,7 +214,14 @@ def ensure_parakeet(server: Path, model: Path) -> str:
     cfg = RESIDENT_SERVERS["parakeet"]
     host, port = str(cfg["host"]), int(cfg["port"])
     command = [str(server), "--model", str(model), "--port", str(port)]
-    url = _ensure("parakeet", server, model, command, {"model_mode": "nemotron-streaming", "device": "auto", "port": port}, lambda: _port_open(host, port))
+    identity = {
+        "model_mode": "nemotron-streaming", "device": "auto", "port": port,
+        "vulkan_env": GGML_VULKAN_ENV,
+    }
+    url = _ensure(
+        "parakeet", server, model, command, identity, lambda: _port_open(host, port),
+        env=ggml_vulkan_environment(),
+    )
     note("parakeet resident: device=auto model-resident=1")
     return url
 
@@ -253,9 +258,9 @@ def ensure_gemma(server: Path, model: Path, runtime: dict) -> str:
         "poll": int(runtime["poll"]), "poll_batch": int(runtime["poll_batch"]),
         "log_verbosity": 4, "log_prefix": True, "log_timestamps": True,
         "cors_origins": "localhost", "cache_prompt": True, "ui": False,
-        "alias": "gemma", "port": port,
+        "alias": "gemma", "port": port, "vulkan_env": GGML_VULKAN_ENV,
     }
-    url = _ensure("gemma", server, model, command, identity, probe)
+    url = _ensure("gemma", server, model, command, identity, probe, env=ggml_vulkan_environment())
     note(f"gemma resident: device=auto kv={runtime['cache_type_k']}/{runtime['cache_type_v']} flash_attn={runtime['flash_attn']}")
     return url
 

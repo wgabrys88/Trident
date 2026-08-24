@@ -146,7 +146,6 @@ static int quiet_edge(const std::vector<float>& x, bool tail, float amp2) {
 void glue(std::vector<float>& dst, const std::vector<float>& src, float quiet_amp2) {
     if (dst.empty()) {
         dst = src;
-        log("event=glue mode=first samples=" + std::to_string(src.size()));
         return;
     }
     if (src.empty()) return;
@@ -159,8 +158,6 @@ void glue(std::vector<float>& dst, const std::vector<float>& src, float quiet_am
         dst[dst.size() - n + i] = dst[dst.size() - n + i] * std::cos(w) + src[i] * std::sin(w);
     }
     dst.insert(dst.end(), src.begin() + n, src.end());
-    log("event=glue mode=overlap overlap=" + std::to_string(n) + " src=" + std::to_string(src.size()) +
-        " dst=" + std::to_string(dst.size()));
 }
 
 std::vector<std::int16_t> pcm16(const float* pcm, std::size_t count) {

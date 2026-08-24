@@ -380,7 +380,7 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
                 with gr.Column(elem_classes="trident-deck"):
                     gr.Markdown("### Dialogue behavior")
                     system_prompt = gr.Textbox(value=LIVE_SETTINGS["system_prompt"], label="Dynamic system prompt", lines=7)
-                    tts_mode = gr.Radio([("Native stream", "real"), ("Buffered WAV · five native chunks/request", "buffered")], value=LIVE_SETTINGS["tts_mode"], label="Conversation TTS delivery")
+                    tts_mode = gr.Radio([("Native stream", "real"), ("Buffered WAV · one speech unit/request", "buffered")], value=LIVE_SETTINGS["tts_mode"], label="Conversation TTS delivery")
                     manual_text = gr.Textbox(label="Manual prompt", placeholder="Enter text, or leave blank to flush current ASR")
                     with gr.Row():
                         submit_button = gr.Button("Submit now")

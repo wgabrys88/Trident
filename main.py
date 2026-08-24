@@ -9,7 +9,7 @@ import time
 import wave
 from pathlib import Path
 
-from config import BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_SYSTEM, BRAIN_THINKING, FAMILIES, HARDWARE_PROFILE, LANGUAGES, REFERENCE_MIN_SECONDS, SHARED_MODELS, TTS_RATE, Paths, default_family, resolve_voice
+from config import BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_THINKING, FAMILIES, HARDWARE_PROFILE, LANGUAGES, LIVE_SETTINGS, REFERENCE_MIN_SECONDS, SHARED_MODELS, TTS_RATE, Paths, default_family, resolve_voice
 from installer import ensure_ui, install, models_for, require_model, runtime_server, runtime_tts_server, validate_wav, write_text_atomic
 from local_api import chatterbox_stream, chatterbox_synthesize, gemma_chat, parakeet_transcribe
 from log import end_run, note, set_run_log
@@ -24,16 +24,18 @@ def resolve_language(family: dict, language: str | None) -> str:
 
 
 def render_system_prompt(template: str | None, code: str, name: str) -> str:
-    text = template or BRAIN_SYSTEM
+    text = LIVE_SETTINGS["system_prompt"] if template is None else template
     for key, value in {"{tts_language}": code, "{tts_language_name}": name, "{language}": code, "{language_name}": name}.items(): text = text.replace(key, value)
     return text.strip()
 
 
-def spoken_reply(raw: str) -> str:
+def spoken_reply(raw: str, streaming: bool = False) -> str:
     text = raw.replace("\r\n", "\n").replace("\r", "\n").strip()
     if "\nAssistant:\n" in text: text = text.rsplit("\nAssistant:\n", 1)[1].strip()
     elif text.startswith("Assistant:\n"): text = text[11:].strip()
-    if "[Start thinking]" in text and "[End thinking]" in text: text = text.split("[End thinking]", 1)[1].strip()
+    if "[Start thinking]" in text:
+        if "[End thinking]" in text: text = text.split("[End thinking]", 1)[1].strip()
+        elif streaming: return ""
     return text
 
 

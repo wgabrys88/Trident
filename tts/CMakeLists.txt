@@ -3,10 +3,8 @@ project(trident_tts LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-if(WIN32)
-    add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
-    add_compile_options(/MP /bigobj)
-endif()
+add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
+add_compile_options(/MP /bigobj)
 
 if(NOT CHATTERBOX_CPP_ROOT)
     get_filename_component(CHATTERBOX_CPP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/chatterbox.cpp" ABSOLUTE)
@@ -36,12 +34,10 @@ target_link_libraries(trident-tts-server PRIVATE
     "${GGML_BUILD}/Release/ggml-base.lib"
     ${Vulkan_LIBRARIES})
 target_compile_definitions(trident-tts-server PRIVATE GGML_USE_VULKAN _USE_MATH_DEFINES)
-if(WIN32)
-    target_link_libraries(trident-tts-server PRIVATE ws2_32)
-    add_custom_command(TARGET trident-tts-server POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CHATTERBOX_BUILD}/bin/Release/ggml.dll"
-        "${CHATTERBOX_BUILD}/bin/Release/ggml-cpu.dll"
-        "${CHATTERBOX_BUILD}/bin/Release/ggml-vulkan.dll"
-        "${CHATTERBOX_BUILD}/bin/Release/ggml-base.dll"
-        $<TARGET_FILE_DIR:trident-tts-server>)
-endif()
+target_link_libraries(trident-tts-server PRIVATE ws2_32)
+add_custom_command(TARGET trident-tts-server POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CHATTERBOX_BUILD}/bin/Release/ggml.dll"
+    "${CHATTERBOX_BUILD}/bin/Release/ggml-cpu.dll"
+    "${CHATTERBOX_BUILD}/bin/Release/ggml-vulkan.dll"
+    "${CHATTERBOX_BUILD}/bin/Release/ggml-base.dll"
+    $<TARGET_FILE_DIR:trident-tts-server>)
