@@ -9,6 +9,9 @@ from config import ASR_RATE, LIVE_AUDIO
 class SileroEndpoint:
     def __init__(self, threshold: float, silence_ms: int) -> None:
         self.model = load_silero_vad(onnx=True)
+        self.configure(threshold, silence_ms)
+
+    def configure(self, threshold: float, silence_ms: int) -> None:
         self.iterator = VADIterator(
             self.model,
             threshold=float(threshold),

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 import subprocess
-import sys
 import threading
 from datetime import datetime
 from pathlib import Path
@@ -68,11 +67,6 @@ def note(message: str) -> None:
     line = f"ts={datetime.now().astimezone().isoformat(timespec='milliseconds')} {message}\n"
     with _lock:
         _write(line)
-
-
-def fail(message: str) -> None:
-    note(message)
-    print(message, file=sys.stderr, flush=True)
 
 
 def open_sink() -> tuple[str, int, object]:

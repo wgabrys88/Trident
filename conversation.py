@@ -11,7 +11,7 @@ from installer import require_model, runtime_parakeet_library, runtime_server
 from local_api import chatterbox_synthesize, gemma_chat_stream
 from main import effective_family, finish, prepared_reference, render_system_prompt, spoken_reply, start_run, stream_synthesize, tts_endpoint, write_meta
 from resident import ensure_gemma, stop as resident_stop
-from ui_streaming import highlighted_progress, pcm16_lookahead, text_batches
+from ui_streaming import SpeechSegmenter, highlighted_progress, pcm16_lookahead
 from vad import SileroEndpoint
 
 
@@ -151,7 +151,7 @@ class Conversation:
                     self._apply_asr(self.asr.cut("manual"))
             elif op == "vad-config":
                 threshold, silence_ms = payload
-                self.vad = SileroEndpoint(threshold, silence_ms)
+                self.vad.configure(threshold, silence_ms)
             elif op == "finish":
                 for event in self.asr.finish():
                     self._apply_asr(event)
@@ -218,24 +218,43 @@ class Conversation:
             self.answer = ""
             self._state(f"LLM {turn} · generating")
             raw = ""
+            segmenter = SpeechSegmenter(
+                int(LIVE_AUDIO["tts_speech_min_chars"]),
+                int(LIVE_AUDIO["tts_speech_hard_chars"]),
+            )
+            speech_started = False
+
+            def enqueue(units: list[str]) -> None:
+                nonlocal speech_started
+                for unit in units:
+                    if speech_started:
+                        self.tts_queue.put(("unit", turn, unit))
+                    else:
+                        self.tts_queue.put(("start", turn, unit, settings))
+                        speech_started = True
+
             for delta in gemma_chat_stream(base, self._llm_payload(prompt, settings)):
                 raw += delta
                 self.answer = raw
                 self._state(f"LLM {turn} · streaming")
+                enqueue(segmenter.update(spoken_reply(raw, streaming=True)))
             answer = spoken_reply(raw)
             if not answer:
                 raise RuntimeError("Gemma returned an empty answer")
+            enqueue(segmenter.update(answer, flush=True))
             self.answer = answer
             self.history.extend(({"role": "user", "content": prompt}, {"role": "assistant", "content": answer}))
-            self.tts_queue.put((turn, answer, settings))
-            self._state(f"LLM {turn} · complete · TTS queued")
+            self.tts_queue.put(("end", turn, answer))
+            self._state(f"LLM {turn} · complete · TTS finishing")
 
     def _tts_loop(self) -> None:
         while True:
             item = self.tts_queue.get()
             if item is None:
                 return
-            turn, text, settings = item
+            op, turn, text, settings = item
+            if op != "start":
+                raise RuntimeError(f"unexpected TTS queue operation: {op}")
             family = self._family(settings, settings["tts_mode"] == "real")
             language = settings["tts_language"]
             reference = self._reference(settings["tts_voice"])
@@ -244,39 +263,74 @@ class Conversation:
             else:
                 self._tts_buffered(turn, text, family, language, reference)
 
-    def _tts_real(self, turn: int, text: str, family: dict, language: str, reference: Path) -> None:
-        output = self.paths.run_dir / f"tts-turn-{turn:04d}.wav"
-        self.progress = highlighted_progress(text, 0, len(text))
+    def _next_tts(self, turn: int) -> tuple[str | None, str | None]:
+        item = self.tts_queue.get()
+        if item is None:
+            raise RuntimeError(f"TTS turn {turn} ended without its marker")
+        op, item_turn, text = item
+        if item_turn != turn:
+            raise RuntimeError(f"TTS turn {item_turn} interleaved with turn {turn}")
+        if op == "unit":
+            return text, None
+        if op == "end":
+            return None, text
+        raise RuntimeError(f"unexpected TTS queue operation: {op}")
+
+    def _tts_real(self, turn: int, first: str, family: dict, language: str, reference: Path) -> None:
+        final_answer = ""
+        spoken = ""
+
+        def native_chunks():
+            nonlocal final_answer, spoken
+            unit = first
+            index = 0
+            while unit is not None:
+                index += 1
+                spoken = (spoken.rstrip() + " " + unit).strip()
+                self.progress = highlighted_progress(spoken, 0, len(spoken))
+                output = self.paths.run_dir / f"tts-turn-{turn:04d}-{index:03d}.wav"
+                yield from stream_synthesize(unit, reference, output, language, family, self.paths)
+                unit, completed = self._next_tts(turn)
+                if completed is not None:
+                    final_answer = completed
+
+        self.progress = highlighted_progress(first, 0, len(first))
         self._state(f"TTS {turn} · native stream")
-        chunks = stream_synthesize(text, reference, output, language, family, self.paths)
-        chunks = pcm16_lookahead(chunks, TTS_RATE, float(LIVE_AUDIO["tts_gradio_min_seconds"]))
-        count = 0
+        chunks = pcm16_lookahead(native_chunks(), TTS_RATE, float(LIVE_AUDIO["tts_gradio_min_seconds"]))
         for raw in chunks:
-            count += 1
+            self.status = f"TTS {turn} · native stream · one ahead"
             self._emit("audio-pcm", raw)
-            self._state(f"TTS {turn} · native chunk {count} · one ahead")
-        self.progress = highlighted_progress(text, len(text), len(text))
+        self.progress = highlighted_progress(final_answer, len(final_answer), len(final_answer))
         self._state(f"TTS {turn} · complete")
 
-    def _tts_buffered(self, turn: int, text: str, family: dict, language: str, reference: Path) -> None:
-        chunk = family["TTS_CHUNK"]
-        batches = text_batches(text, chunk.get("first_chars", chunk["chars"]), chunk["chars"], int(LIVE_AUDIO["tts_fake_group_chunks"]))
+    def _tts_buffered(self, turn: int, first: str, family: dict, language: str, reference: Path) -> None:
         base = tts_endpoint(reference, language, family, self.paths)
         pending_path = None
         pending_end = 0
-        for index, (part, end) in enumerate(batches, 1):
+        spoken = ""
+        final_answer = ""
+        unit = first
+        index = 0
+        self._state(f"TTS {turn} · buffered")
+        while unit is not None:
+            index += 1
+            spoken = (spoken.rstrip() + " " + unit).strip()
+            end = len(spoken)
             path = self.paths.run_dir / f"tts-turn-{turn:04d}-{index:03d}.wav"
-            result = chatterbox_synthesize(base, part, path, False, family["TTS_STREAM"]["join"])
+            result = chatterbox_synthesize(base, unit, path, False, family["TTS_STREAM"]["join"])
             if not path.is_file():
                 raise RuntimeError(f"Chatterbox did not create {path}: {result}")
             if pending_path is not None:
+                self.status = f"TTS {turn} · buffered · one ahead"
+                self.progress = highlighted_progress(spoken, pending_end, end)
                 self._emit("audio-file", str(pending_path))
-                self.progress = highlighted_progress(text, pending_end, end)
-                self._state(f"TTS {turn} · buffered {index - 1}/{len(batches)} sent · one ahead")
             pending_path, pending_end = path, end
+            unit, completed = self._next_tts(turn)
+            if completed is not None:
+                final_answer = completed
         if pending_path is not None:
             self._emit("audio-file", str(pending_path))
-        self.progress = highlighted_progress(text, len(text), len(text))
+        self.progress = highlighted_progress(final_answer, len(final_answer), len(final_answer))
         self._state(f"TTS {turn} · complete")
 
     def stop(self) -> None:

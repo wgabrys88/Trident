@@ -7,12 +7,10 @@ import subprocess
 import wave
 from pathlib import Path
 
-from config import ROOT
+from config import ASR_RATE, ROOT, TTS_RATE
 from log import note, run as run_logged
 
 
-PARAKEET_RATE = 16000
-CHATTERBOX_RATE = 24000
 _ffmpeg: Path | None = None
 
 
@@ -46,10 +44,7 @@ def _ffmpeg_version(path: Path) -> str:
 
 
 def _popen_kwargs() -> dict:
-    extra: dict = {}
-    if os.name == "nt":
-        extra["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    return extra
+    return {"creationflags": subprocess.CREATE_NO_WINDOW}
 
 
 def ensure_ffmpeg() -> Path:
@@ -157,21 +152,21 @@ def encode_wav(src: Path, dest: Path, rate: int, *, reuse: bool = True) -> Path:
 def parakeet_wav(src: Path, dest: Path) -> Path:
     src = src.expanduser().resolve()
     dest = dest.expanduser().resolve()
-    if _canonical_wav(src, PARAKEET_RATE):
+    if _canonical_wav(src, ASR_RATE):
         if src != dest:
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dest)
         return dest
-    return encode_wav(src, dest, PARAKEET_RATE, reuse=False)
+    return encode_wav(src, dest, ASR_RATE, reuse=False)
 
 
 def chatterbox_wav(src: Path, cache_dir: Path) -> Path:
     src = src.expanduser().resolve()
     if not src.is_file():
         raise RuntimeError(f"missing media: {src}")
-    if _canonical_wav(src, CHATTERBOX_RATE):
+    if _canonical_wav(src, TTS_RATE):
         return src
     cache_dir.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha1(os.fsencode(str(src))).hexdigest()[:12]
     dest = cache_dir / f"{src.stem}-{digest}.wav"
-    return encode_wav(src, dest, CHATTERBOX_RATE, reuse=True)
+    return encode_wav(src, dest, TTS_RATE, reuse=True)

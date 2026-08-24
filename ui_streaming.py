@@ -1,6 +1,34 @@
 from __future__ import annotations
 
 
+class SpeechSegmenter:
+    def __init__(self, minimum: int, hard_limit: int) -> None:
+        self.minimum = minimum
+        self.hard_limit = hard_limit
+        self.sent = 0
+
+    def update(self, text: str, flush: bool = False) -> list[str]:
+        units = []
+        while self.sent < len(text):
+            pending = text[self.sent:]
+            stop = min(len(pending), self.hard_limit)
+            cut = next((i + 1 for i in range(self.minimum - 1, stop) if pending[i] in ".?!"), 0)
+            if not cut and len(pending) >= self.hard_limit:
+                split = max(pending.rfind(" ", self.minimum, self.hard_limit), pending.rfind("\n", self.minimum, self.hard_limit))
+                cut = split + 1 if split >= self.minimum else self.hard_limit
+            if not cut and flush:
+                cut = len(pending)
+            if not cut:
+                break
+            unit = pending[:cut].strip()
+            self.sent += cut
+            while self.sent < len(text) and text[self.sent].isspace():
+                self.sent += 1
+            if unit:
+                units.append(unit)
+        return units
+
+
 def _cut(text: str, start: int, limit: int) -> int:
     end = min(len(text), start + limit)
     if end < len(text):

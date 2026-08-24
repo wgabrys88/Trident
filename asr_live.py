@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 def _api(dll: str):
-    directory = os.add_dll_directory(str(Path(dll).parent)) if hasattr(os, "add_dll_directory") else None
+    directory = os.add_dll_directory(str(Path(dll).parent))
     lib = ctypes.CDLL(dll)
     lib.parakeet_capi_abi_version.restype = ctypes.c_int
     lib.parakeet_capi_load.argtypes = [ctypes.c_char_p]
@@ -43,9 +43,11 @@ def _begin(lib, ctx):
     return stream
 
 
-def _worker(conn, dll: str, model: str):
+def _worker(conn, dll: str, model: str, environment: dict[str, str]):
     lib = ctx = stream = directory = None
     try:
+        os.environ.clear()
+        os.environ.update(environment)
         lib, directory = _api(dll)
         abi = lib.parakeet_capi_abi_version()
         if abi < 5:
@@ -54,7 +56,7 @@ def _worker(conn, dll: str, model: str):
         if not ctx:
             raise RuntimeError("Parakeet model load failed")
         stream = _begin(lib, ctx)
-        conn.send(("ready", {"abi": abi}))
+        conn.send(("ready", {"abi": abi, "vulkan_f16": os.environ.get("GGML_VK_DISABLE_F16", "unset")}))
         while True:
             op, payload = conn.recv()
             if op == "feed":
@@ -101,9 +103,16 @@ class LiveASR:
         self.text = ""
 
     def start(self) -> None:
+        from config import ggml_vulkan_environment
+        from log import note
+
         self.close()
         parent, child = mp.Pipe()
-        process = mp.Process(target=_worker, args=(child, str(self.dll), str(self.model)), daemon=True)
+        process = mp.Process(
+            target=_worker,
+            args=(child, str(self.dll), str(self.model), ggml_vulkan_environment()),
+            daemon=True,
+        )
         process.start()
         child.close()
         kind, payload = parent.recv()
@@ -114,6 +123,7 @@ class LiveASR:
             raise RuntimeError(payload if kind == "error" else "live ASR failed to start")
         self.process, self.conn = process, parent
         self.text = ""
+        note(f"component=parakeet-live event=start GGML_VK_DISABLE_F16={payload['vulkan_f16']}")
 
     def _event(self, source: str, payload: dict, tag: str | None = None) -> dict:
         fragment = str(payload.get("text") or "").strip()

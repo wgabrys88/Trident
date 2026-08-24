@@ -19,7 +19,7 @@ from pathlib import Path
 from config import (
     FAMILIES, SHARED_MODELS, VULKAN_VERSION, PACKAGES, SOURCES, BINARIES,
     CHATTERBOX_LIBRARY, TTS_BUILD, TTS_SERVER_EXE, TTS,
-    CHATTERBOX, GGML, RUNTIMES, CONVERTER, TOOLS, ROOT,
+    CHATTERBOX, GGML, RUNTIMES, CONVERTER, THIRD_PARTY, TOOLS, ROOT,
     REFERENCE_VOICES, REFERENCE_MIN_SECONDS, Paths, HARDWARE_PROFILE,
 )
 from log import note, run as run_logged
@@ -486,10 +486,19 @@ def require_model(spec: dict, models_dir: Path) -> Path:
     return path
 
 
-def prune_convert_cache() -> None:
-    rmtree_retry(CONVERTER / "checkpoints")
-    rmtree_retry(TOOLS / "huggingface")
-    note("convert cache: pruned")
+def clean_install_artifacts() -> None:
+    for path in (
+        THIRD_PARTY,
+        TTS / "build",
+        CONVERTER,
+        TOOLS / "huggingface",
+        TOOLS / "downloads",
+        TOOLS / "git",
+        TOOLS / "cmake-4.4.2-windows-x86_64",
+        TOOLS / "VulkanSDK",
+    ):
+        rmtree_retry(path)
+    note("install build artifacts: pruned")
 
 
 def download_model(spec: dict, models_dir: Path) -> None:
@@ -593,7 +602,7 @@ def install(family: str, models_dir: Path | None = None, data_dir: Path | None =
             specs[spec["file"]] = spec
     for spec in specs.values():
         download_model(spec, paths.models_dir)
-    prune_convert_cache()
+    clean_install_artifacts()
     note("install complete")
     note("models ready: parakeet, parakeet-eou, gemma, nano, turbo, v3" if family == "all" else f"models ready: parakeet, parakeet-eou, gemma, {family}")
     note("python main.py resident warm --family v3 --tts-language en -r trump")

@@ -24,6 +24,23 @@ def detect_hardware_profile() -> str:
 
 HARDWARE_PROFILE = detect_hardware_profile()
 
+
+def ggml_vulkan_policy(profile: str) -> dict[str, str]:
+    return {
+        "pascal": {"GGML_VK_DISABLE_F16": "1"},
+        "irisxe": {},
+    }[profile]
+
+
+GGML_VULKAN_ENV = ggml_vulkan_policy(HARDWARE_PROFILE)
+
+
+def ggml_vulkan_environment() -> dict[str, str]:
+    env = os.environ.copy()
+    env.pop("GGML_VK_DISABLE_F16", None)
+    env.update(GGML_VULKAN_ENV)
+    return env
+
 DEFAULT_MODELS_DIR = ROOT / "models"
 DEFAULT_DATA_DIR = ROOT / "data"
 
@@ -68,13 +85,14 @@ BRAIN_GENERATION = {
 BRAIN_THINKING = False
 LIVE_SETTINGS_JSON = '{"char_trigger":240,"eou_trigger":true,"ingestion_mode":"continuous","system_prompt":"The incoming speech transcript is auto-detected by ASR. Produce the final spoken response only in {tts_language_name} ({tts_language}). If the input language differs, preserve its meaning while translating or answering in the output language. Spoken prose only: short sentences ending with a period, question mark, or exclamation. No markdown, lists, code, URLs, emoji, or square-bracket tags. Expand numbers and abbreviations. Do not mention transcription, models, or reasoning.","tts_family":"v3","tts_join":"crossfade","tts_language":"en","tts_mode":"real","tts_voice":"trump","vad_silence_ms":560,"vad_threshold":0.5,"vad_trigger":true}'
 LIVE_SETTINGS = json.loads(LIVE_SETTINGS_JSON)
-BRAIN_SYSTEM = LIVE_SETTINGS["system_prompt"]
 LIVE_AUDIO = {
     "asr_feed_seconds": 0.16,
     "vad_frame_samples": 512,
     "mic_time_limit_seconds": 86400,
     "tts_fake_group_chunks": 5,
     "tts_gradio_min_seconds": 1.25,
+    "tts_speech_min_chars": 180,
+    "tts_speech_hard_chars": 300,
     "llm_history_turns": 6,
 }
 
