@@ -118,19 +118,12 @@ def run_process(component: str, stage: str, command: list[str], cwd: Path, env: 
     note(f"component={component} stage={stage} event=done elapsed_ms={(time.perf_counter() - started) * 1000.0:.3f}")
 
 
-def rmtree_retry(path: Path, attempts: int = 10) -> None:
-    last: OSError | None = None
-    for _ in range(attempts):
-        if not path.exists():
-            return
-        try:
-            shutil.rmtree(path)
-            return
-        except OSError as exc:
-            last = exc
-            time.sleep(0.3)
-    if last:
-        raise last
+def remove_tree(path: Path) -> None:
+    if not path.exists():
+        return
+    attrib = Path(os.environ["SystemRoot"]) / "System32" / "attrib.exe"
+    subprocess.run([str(attrib), "-R", str(path / "*"), "/S", "/D"], check=True)
+    shutil.rmtree(path)
 
 
 def checkout(component: str, path: Path, source: str) -> None:
@@ -280,7 +273,7 @@ def fetch(url: str, destination: Path, size: int, sha256: str | None = None) -> 
 
 def extract_release_bundle(archives: tuple[Path, ...], destination: Path, required_names: tuple[str, ...]) -> None:
     partial = destination.with_name(destination.name + ".part")
-    rmtree_retry(partial)
+    remove_tree(partial)
     partial.mkdir(parents=True)
     root = partial.resolve()
     try:
@@ -295,10 +288,10 @@ def extract_release_bundle(archives: tuple[Path, ...], destination: Path, requir
             matches = [p for p in partial.rglob("*") if p.is_file() and p.name.lower() == name.lower()]
             if len(matches) != 1:
                 raise RuntimeError(f"release bundle must contain exactly one {name}; found {len(matches)}")
-        rmtree_retry(destination)
+        remove_tree(destination)
         partial.rename(destination)
     except Exception:
-        rmtree_retry(partial)
+        remove_tree(partial)
         raise
 
 
@@ -402,12 +395,12 @@ def install_prerequisite(name: str) -> None:
     fetch(spec["url"], archive, spec["size"], spec.get("sha256"))
     if name == "git":
         destination = TOOLS / "git"
-        rmtree_retry(destination)
+        remove_tree(destination)
         with zipfile.ZipFile(archive) as package:
             package.extractall(destination)
     elif name == "cmake":
         destination = TOOLS / "cmake-4.4.2-windows-x86_64"
-        rmtree_retry(destination)
+        remove_tree(destination)
         with zipfile.ZipFile(archive) as package:
             package.extractall(TOOLS)
     elif name == "msvc":
@@ -447,7 +440,7 @@ def install_tts() -> None:
         or (runtime / ".build-revision").is_file()
     )
     if source_changed:
-        rmtree_retry(TTS / "build")
+        remove_tree(TTS / "build")
 
     run_process("tts", "configure-trident-tts", [cmake, "-S", ".", "-B", "build", "-A", "x64", f"-DCHATTERBOX_CPP_ROOT={CHATTERBOX}"], TTS)
     run_process("tts", "build-server", [cmake, "--build", "build", "--config", "Release", "--target", "trident-tts-server", "--parallel"], TTS)
@@ -497,7 +490,7 @@ def clean_install_artifacts() -> None:
         TOOLS / "cmake-4.4.2-windows-x86_64",
         TOOLS / "VulkanSDK",
     ):
-        rmtree_retry(path)
+        remove_tree(path)
     note("install build artifacts: pruned")
 
 
@@ -533,7 +526,7 @@ def download_model(spec: dict, models_dir: Path) -> None:
     stamp_id = spec["repo"] + ":" + spec["revision"] + ":" + ",".join(required)
     cache_ok = marker.is_file() and marker.read_text(encoding="ascii") == stamp_id and all((checkpoint / f).is_file() for f in required)
     if not cache_ok:
-        rmtree_retry(checkpoint)
+        remove_tree(checkpoint)
         checkpoint.mkdir(parents=True, exist_ok=True)
         code = (
             "from huggingface_hub import snapshot_download; "
