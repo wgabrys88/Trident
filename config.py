@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 import sys
 from datetime import datetime
@@ -15,7 +17,7 @@ def detect_hardware_profile() -> str:
         ["powershell.exe", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name -join ';'"],
         text=True, encoding="utf-8", errors="replace", timeout=15,
     ).lower()
-    if "gtx 1060" in gpu: return "pascal"
+    if any(name in gpu for name in ("gtx 1050", "gtx 1060", "gtx 1070", "gtx 1080", "titan x (pascal)", "titan xp", "quadro p")): return "pascal"
     if "iris" in gpu and "xe" in gpu: return "irisxe"
     raise RuntimeError(f"unsupported experimental GPU: {gpu.strip()}")
 
@@ -33,6 +35,7 @@ GGML = CHATTERBOX / "ggml"
 RUNTIMES = TOOLS / "runtime"
 CONVERTER = TOOLS / "convert"
 
+ASR_RATE = 16000
 TTS_RATE = 24000
 REFERENCE_MIN_SECONDS = 5.0
 
@@ -63,14 +66,34 @@ BRAIN_GENERATION = {
     "repeat_penalty": 1.0, "seed": 42, "max_tokens": 1024,
 }
 BRAIN_THINKING = False
-BRAIN_SYSTEM = (
-    "The incoming speech transcript is auto-detected by ASR. Produce the final spoken response "
-    "only in {tts_language_name} ({tts_language}). If the input language differs, preserve its "
-    "meaning while translating or answering in the output language. Spoken prose only: short "
-    "sentences ending with a period, question mark, or exclamation. No markdown, lists, code, "
-    "URLs, emoji, or square-bracket tags. Expand numbers and abbreviations. Do not mention "
-    "transcription, models, or reasoning."
-)
+LIVE_SETTINGS_JSON = '{"char_trigger":240,"eou_trigger":true,"ingestion_mode":"continuous","system_prompt":"The incoming speech transcript is auto-detected by ASR. Produce the final spoken response only in {tts_language_name} ({tts_language}). If the input language differs, preserve its meaning while translating or answering in the output language. Spoken prose only: short sentences ending with a period, question mark, or exclamation. No markdown, lists, code, URLs, emoji, or square-bracket tags. Expand numbers and abbreviations. Do not mention transcription, models, or reasoning.","tts_family":"v3","tts_join":"crossfade","tts_language":"en","tts_mode":"real","tts_voice":"trump","vad_silence_ms":560,"vad_threshold":0.5,"vad_trigger":true}'
+LIVE_SETTINGS = json.loads(LIVE_SETTINGS_JSON)
+BRAIN_SYSTEM = LIVE_SETTINGS["system_prompt"]
+LIVE_AUDIO = {
+    "asr_feed_seconds": 0.16,
+    "vad_frame_samples": 512,
+    "mic_time_limit_seconds": 86400,
+    "tts_fake_group_chunks": 5,
+    "tts_gradio_min_seconds": 1.25,
+    "llm_history_turns": 6,
+}
+
+
+def save_live_settings(settings: dict) -> None:
+    global LIVE_SETTINGS_JSON
+    payload = json.dumps(settings, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    path = Path(__file__).resolve()
+    source = path.read_text(encoding="utf-8")
+    marker = "LIVE_SETTINGS_JSON = "
+    line_start = source.index(marker)
+    line_end = source.index("\n", line_start)
+    updated = source[:line_start] + marker + repr(payload) + source[line_end:]
+    temporary = path.with_suffix(".py.tmp")
+    temporary.write_text(updated, encoding="utf-8", newline="\n")
+    os.replace(temporary, path)
+    LIVE_SETTINGS_JSON = payload
+    LIVE_SETTINGS.clear()
+    LIVE_SETTINGS.update(settings)
 
 LANGUAGES = {
     "en": "English", "es": "Spanish", "fr": "French", "de": "German",
@@ -178,10 +201,16 @@ SHARED_MODELS = {
         "repo": "mudler/parakeet-cpp-gguf", "revision": "bf0af9f425fa01809cadec671b3cb672709d13e9",
         "file": "nemotron-3.5-asr-streaming-0.6b-q4_k.gguf", "size": 0,
     },
+    "parakeet-eou": {
+        "label": "PARAKEET REALTIME EOU 120M Q4_K",
+        "repo": "mudler/parakeet-cpp-gguf", "revision": "bf0af9f425fa01809cadec671b3cb672709d13e9",
+        "file": "realtime_eou_120m-v1-q4_k.gguf", "size": 0,
+    },
     "gemma": {"label": "GEMMA 4 E2B", "repo": "google/gemma-4-E2B-it-qat-q4_0-gguf", "revision": "675cff42a74c774d6cb76f76d8eacb49b48c9b93", "file": "gemma-4-E2B_q4_0-it.gguf", "size": 3349516256},
 }
 if HARDWARE_PROFILE == "pascal":
     SHARED_MODELS["parakeet"].update(label="PARAKEET NEMOTRON 3.5 STREAMING 0.6B Q8_0", file="nemotron-3.5-asr-streaming-0.6b-q8_0.gguf")
+    SHARED_MODELS["parakeet-eou"].update(label="PARAKEET REALTIME EOU 120M Q8_0", file="realtime_eou_120m-v1-q8_0.gguf", size=0)
 
 VULKAN_VERSION = "1.4.357.0"
 

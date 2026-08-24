@@ -12,7 +12,7 @@ from pathlib import Path
 from config import BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_SYSTEM, BRAIN_THINKING, FAMILIES, HARDWARE_PROFILE, LANGUAGES, REFERENCE_MIN_SECONDS, SHARED_MODELS, TTS_RATE, Paths, default_family, resolve_voice
 from installer import ensure_ui, install, models_for, require_model, runtime_server, runtime_tts_server, validate_wav, write_text_atomic
 from local_api import chatterbox_stream, chatterbox_synthesize, gemma_chat, parakeet_transcribe
-from log import end_run, fail, note, set_run_log
+from log import end_run, note, set_run_log
 from media import chatterbox_wav, parakeet_wav
 from resident import ensure_chatterbox, ensure_gemma, ensure_parakeet, status as resident_status, stop_all as resident_stop_all
 
@@ -125,18 +125,18 @@ def brain(prompt: Path, paths: Paths, language: str, language_name: str, templat
     return text
 
 
-def _tts_endpoint(reference: Path, language: str, family: dict, paths: Paths) -> str:
+def tts_endpoint(reference: Path, language: str, family: dict, paths: Paths) -> str:
     models = models_for(family["name"]); note("component=config event=tts_resolved payload=" + resolved_tts(family))
     return ensure_chatterbox(runtime_tts_server(), require_model(models["chatterbox-t3"], paths.models_dir), require_model(models["chatterbox-codec"], paths.models_dir), reference, family["name"], language, family["TTS_RUNTIME"], family["TTS_SAMPLE"], family["TTS_VOICE"], family["TTS_CHUNK"], family["TTS_STREAM"])
 
 
 def stream_synthesize(text: str, reference: Path, output: Path, language: str, family: dict, paths: Paths):
-    base = _tts_endpoint(reference, language, family, paths); stream = family["TTS_STREAM"]
+    base = tts_endpoint(reference, language, family, paths); stream = family["TTS_STREAM"]
     yield from chatterbox_stream(base, text.strip(), output, stream["enabled"], stream["join"])
 
 
 def synthesize(text_file: Path, reference: Path, output: Path, language: str, family: dict, paths: Paths) -> None:
-    text = text_file.read_text(encoding="utf-8").strip(); base = _tts_endpoint(reference, language, family, paths); stream = family["TTS_STREAM"]
+    text = text_file.read_text(encoding="utf-8").strip(); base = tts_endpoint(reference, language, family, paths); stream = family["TTS_STREAM"]
     result = chatterbox_synthesize(base, text, output, stream["enabled"], stream["join"]); note("component=tts event=done " + result)
     validate_wav(output, TTS_RATE, channels=1)
 
@@ -221,17 +221,15 @@ def launch_ui(args) -> int:
 
 def main() -> int:
     args = build_parser().parse_args(); note(f"component=runtime event=profile hardware={HARDWARE_PROFILE}")
-    try:
-        if args.command == "install": install(args.family, args.models_dir, args.data_dir)
-        elif args.command == "resident":
-            if args.action == "stop": resident_stop_all()
-            elif args.action == "warm": warm_resident(args)
-            print_resident_status()
-        elif args.command: return {"asr": run_asr, "brain": run_brain, "tts": run_tts, "run": run_pipeline}[args.command](args)
-        if args.ui: return launch_ui(args)
-        if not args.command: raise RuntimeError("choose a command or --ui")
-        return 0
-    except Exception as exc: fail(f"error: {exc}"); return 1
+    if args.command == "install": install(args.family, args.models_dir, args.data_dir)
+    elif args.command == "resident":
+        if args.action == "stop": resident_stop_all()
+        elif args.action == "warm": warm_resident(args)
+        print_resident_status()
+    elif args.command: return {"asr": run_asr, "brain": run_brain, "tts": run_tts, "run": run_pipeline}[args.command](args)
+    if args.ui: return launch_ui(args)
+    if not args.command: raise RuntimeError("choose a command or --ui")
+    return 0
 
 
 if __name__ == "__main__": raise SystemExit(main())

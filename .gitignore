@@ -19,3 +19,8 @@
 !/requirements-ui.txt
 !/patches/
 !/patches/*.patch
+!/conversation.py
+!/vad.py
+!/GRADIO.md
+!/tests/
+!/tests/*.py
