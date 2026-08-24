@@ -76,6 +76,38 @@ def gemma_chat(base_url: str, payload: dict, timeout: float = 3600.0) -> dict:
     return json.loads(body.decode("utf-8"))
 
 
+def gemma_chat_stream(base_url: str, payload: dict, timeout: float = 3600.0):
+    body = dict(payload)
+    body["stream"] = True
+    data = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    conn, parsed = _connection(base_url, timeout)
+    try:
+        path = (parsed.path.rstrip("/") if parsed.path else "") + "/v1/chat/completions"
+        conn.putrequest("POST", path)
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("Accept", "text/event-stream")
+        conn.putheader("Content-Length", str(len(data)))
+        conn.putheader("Connection", "close")
+        conn.endheaders()
+        conn.send(data)
+        response = conn.getresponse()
+        if not 200 <= response.status < 300:
+            raise RuntimeError(f"Gemma server HTTP {response.status}: " + response.read().decode("utf-8", errors="replace")[:1000])
+        while line := response.readline():
+            line = line.strip()
+            if not line.startswith(b"data:"):
+                continue
+            data_line = line[5:].strip()
+            if data_line == b"[DONE]":
+                break
+            event = json.loads(data_line.decode("utf-8"))
+            text = str((event.get("choices") or [{}])[0].get("delta", {}).get("content") or "")
+            if text:
+                yield text
+    finally:
+        conn.close()
+
+
 def chatterbox_stream(base_url: str, text: str, output: Path, streaming: bool = True, join: str = "crossfade", timeout: float = 3600.0):
     import socket
     import struct

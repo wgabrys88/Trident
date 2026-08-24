@@ -14,8 +14,8 @@ def _api(dll: str):
     lib.parakeet_capi_load.argtypes = [ctypes.c_char_p]
     lib.parakeet_capi_load.restype = ctypes.c_void_p
     lib.parakeet_capi_free.argtypes = [ctypes.c_void_p]
-    lib.parakeet_capi_stream_begin_lang.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
-    lib.parakeet_capi_stream_begin_lang.restype = ctypes.c_void_p
+    lib.parakeet_capi_stream_begin.argtypes = [ctypes.c_void_p]
+    lib.parakeet_capi_stream_begin.restype = ctypes.c_void_p
     lib.parakeet_capi_stream_feed_json.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_float), ctypes.c_int]
     lib.parakeet_capi_stream_feed_json.restype = ctypes.c_void_p
     lib.parakeet_capi_stream_finalize_json.argtypes = [ctypes.c_void_p]
@@ -36,6 +36,13 @@ def _json_result(lib, ptr):
         lib.parakeet_capi_free_string(ptr)
 
 
+def _begin(lib, ctx):
+    stream = lib.parakeet_capi_stream_begin(ctx)
+    if not stream:
+        raise RuntimeError((lib.parakeet_capi_last_error(ctx) or b"stream begin failed").decode("utf-8", "replace"))
+    return stream
+
+
 def _worker(conn, dll: str, model: str):
     lib = ctx = stream = directory = None
     try:
@@ -46,9 +53,7 @@ def _worker(conn, dll: str, model: str):
         ctx = lib.parakeet_capi_load(os.fsencode(model))
         if not ctx:
             raise RuntimeError("Parakeet model load failed")
-        stream = lib.parakeet_capi_stream_begin_lang(ctx, b"auto")
-        if not stream:
-            raise RuntimeError((lib.parakeet_capi_last_error(ctx) or b"stream begin failed").decode("utf-8", "replace"))
+        stream = _begin(lib, ctx)
         conn.send(("ready", {"abi": abi}))
         while True:
             op, payload = conn.recv()
@@ -58,21 +63,25 @@ def _worker(conn, dll: str, model: str):
                 result = _json_result(lib, lib.parakeet_capi_stream_feed_json(stream, pcm, count))
                 if result is None:
                     raise RuntimeError((lib.parakeet_capi_last_error(ctx) or b"stream feed failed").decode("utf-8", "replace"))
-                conn.send(("data", result))
+                conn.send(("feed", result))
+            elif op == "cut":
+                result = _json_result(lib, lib.parakeet_capi_stream_finalize_json(stream))
+                if result is None:
+                    raise RuntimeError((lib.parakeet_capi_last_error(ctx) or b"stream finalize failed").decode("utf-8", "replace"))
+                conn.send(("cut", {"tag": payload, "payload": result}))
+                lib.parakeet_capi_stream_free(stream)
+                stream = _begin(lib, ctx)
             elif op == "finish":
                 result = _json_result(lib, lib.parakeet_capi_stream_finalize_json(stream))
                 if result is None:
                     raise RuntimeError((lib.parakeet_capi_last_error(ctx) or b"stream finalize failed").decode("utf-8", "replace"))
-                conn.send(("data", result))
+                conn.send(("finish", result))
                 conn.send(("done", None))
                 break
             else:
                 raise RuntimeError(f"unknown live ASR operation: {op}")
     except BaseException as exc:
-        try:
-            conn.send(("error", str(exc)))
-        except Exception:
-            pass
+        conn.send(("error", str(exc)))
     finally:
         if lib and stream:
             lib.parakeet_capi_stream_free(stream)
@@ -90,8 +99,6 @@ class LiveASR:
         self.process = None
         self.conn = None
         self.text = ""
-        self.eou = False
-        self.eob = False
 
     def start(self) -> None:
         self.close()
@@ -107,44 +114,61 @@ class LiveASR:
             raise RuntimeError(payload if kind == "error" else "live ASR failed to start")
         self.process, self.conn = process, parent
         self.text = ""
-        self.eou = self.eob = False
 
-    def _apply(self, payload: dict) -> str:
-        fragment = str(payload.get("text") or "")
+    def _event(self, source: str, payload: dict, tag: str | None = None) -> dict:
+        fragment = str(payload.get("text") or "").strip()
         if fragment:
-            self.text = (self.text + " " + fragment).strip()
-        self.eou = bool(payload.get("eou"))
-        self.eob = bool(payload.get("eob"))
-        return self.text
+            self.text = (self.text.rstrip() + " " + fragment).strip()
+        return {
+            "source": source,
+            "tag": tag,
+            "fragment": fragment,
+            "text": self.text,
+            "eou": bool(payload.get("eou")),
+            "eob": bool(payload.get("eob")),
+            "events": list(payload.get("events") or []),
+        }
 
-    def feed(self, pcm_f32: bytes) -> str:
-        if not self.conn:
-            raise RuntimeError("live ASR is not running")
-        if not pcm_f32:
-            return self.text
-        self.conn.send(("feed", pcm_f32))
+    def _recv(self, expected: str):
         kind, payload = self.conn.recv()
         if kind == "error":
             raise RuntimeError(payload)
-        if kind != "data":
+        if kind != expected:
             raise RuntimeError(f"unexpected live ASR response: {kind}")
-        return self._apply(payload)
+        return payload
 
-    def finish(self) -> str:
+    def feed(self, pcm_f32: bytes) -> dict | None:
         if not self.conn:
-            return self.text
+            raise RuntimeError("live ASR is not running")
+        if not pcm_f32:
+            return None
+        self.conn.send(("feed", pcm_f32))
+        return self._event("feed", self._recv("feed"))
+
+    def cut(self, tag: str) -> dict:
+        if not self.conn:
+            raise RuntimeError("live ASR is not running")
+        self.conn.send(("cut", tag))
+        payload = self._recv("cut")
+        return self._event("cut", payload["payload"], payload["tag"])
+
+    def finish(self) -> list[dict]:
+        if not self.conn:
+            return []
         self.conn.send(("finish", None))
+        events = []
         while True:
             kind, payload = self.conn.recv()
-            if kind == "data":
-                self._apply(payload)
+            if kind == "finish":
+                events.append(self._event(kind, payload))
             elif kind == "done":
                 break
             elif kind == "error":
                 raise RuntimeError(payload)
-        text = self.text
+            else:
+                raise RuntimeError(f"unexpected live ASR response: {kind}")
         self.close()
-        return text
+        return events
 
     def close(self) -> None:
         conn, process = self.conn, self.process

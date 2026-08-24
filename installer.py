@@ -595,5 +595,5 @@ def install(family: str, models_dir: Path | None = None, data_dir: Path | None =
         download_model(spec, paths.models_dir)
     prune_convert_cache()
     note("install complete")
-    note("five pipelines: parakeet, gemma, nano, turbo, v3" if family == "all" else f"installed TTS family: {family}")
-    note("python main.py resident warm --family v3 --tts-language en -r trump  # preload Parakeet + Gemma + one Chatterbox voice")
+    note("models ready: parakeet, parakeet-eou, gemma, nano, turbo, v3" if family == "all" else f"models ready: parakeet, parakeet-eou, gemma, {family}")
+    note("python main.py resident warm --family v3 --tts-language en -r trump")
