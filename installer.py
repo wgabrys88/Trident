@@ -24,8 +24,6 @@ from config import (
 )
 from log import note, run as run_logged
 
-CHATTERBOX_PATCH = ROOT / "patches" / "chatterbox-fastconv.patch"
-
 
 def validate_wav(path: Path, rate: int | None = None, minimum_seconds: float = 0.0, channels: int | None = None, *, pcm16: bool = True) -> None:
     if not path.is_file():
@@ -171,7 +169,7 @@ def chatterbox_native_revision() -> str:
         repr(SOURCES["chatterbox"]).encode("utf-8"),
         repr(SOURCES["ggml"]).encode("utf-8"),
         platform.processor().encode("utf-8"), HARDWARE_PROFILE.encode("ascii"),
-        b"ggml-vulkan:auto-disable-f16-nvidia-pre-turing-v2", CHATTERBOX_PATCH.read_bytes(),
+        b"ggml-vulkan:auto-disable-f16-nvidia-pre-turing-v2",
         b"-DGGML_VULKAN=ON|-DGGML_CUDA=OFF|-DGGML_NATIVE=ON|-DGGML_CCACHE=OFF|-DTTS_CPP_BUILD_EXECUTABLES=OFF|-DTTS_CPP_BUILD_TESTS=OFF",
     ]
     return _hash_identity(parts)
@@ -422,7 +420,6 @@ def install_tts() -> None:
     if not _native_build_ready():
         note(f"tts native revision changed: rebuilding chatterbox.cpp {native_revision[:12]}")
         checkout("tts", CHATTERBOX, "chatterbox")
-        run_process("tts", "patch-chatterbox", [need("git"), "apply", "--unidiff-zero", "--whitespace=error-all", str(CHATTERBOX_PATCH)], CHATTERBOX)
         checkout("tts", GGML, "ggml")
         tune_ggml_vulkan()
         run_process("tts", "configure-chatterbox", [cmake, "-S", ".", "-B", "build", "-A", "x64", "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_NATIVE=ON", "-DGGML_CCACHE=OFF", "-DTTS_CPP_BUILD_EXECUTABLES=OFF", "-DTTS_CPP_BUILD_TESTS=OFF"], CHATTERBOX)

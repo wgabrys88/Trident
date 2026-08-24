@@ -240,7 +240,7 @@ PACKAGES = {
 }
 
 SOURCES = {
-    "chatterbox": ("https://github.com/wgabrys88/chatterbox.cpp", "fad8838bd7cda385b5743b36c40a8cea0a8f9b94"),
+    "chatterbox": ("https://github.com/wgabrys88/chatterbox.cpp", "8cbc8ba77229b12dc2af83cbe6b550724edb4e69"),
     "ggml": ("https://github.com/ggml-org/ggml.git", "58c3805840b516b2a88ff867ccf7bb41dba79951"),
 }
 
