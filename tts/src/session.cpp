@@ -3,6 +3,7 @@
 #include <tts-cpp/chatterbox/engine.h>
 #include <algorithm>
 #include <chrono>
+#include <stdexcept>
 #include <utility>
 
 namespace tts {
@@ -38,50 +39,62 @@ struct Session::Impl {
 
     Speech synthesize(const std::string& text, const AudioSink& sink, bool streaming, JoinMode join) {
         const auto started = std::chrono::steady_clock::now();
-        const auto pieces = pack_text_staged(text, first_chunk_chars, chunk_chars);
+        const auto pieces = streaming ? pack_text_staged(text, first_chunk_chars, chunk_chars) : pack_text(text, chunk_chars);
         Speech speech; speech.chunks = static_cast<int>(pieces.size());
         bool first_audio = true;
         auto first = [&] {
             if (!first_audio) return;
             first_audio = false;
             speech.ttfa_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
-            log("event=first_audio ttfa_ms=" + std::to_string(speech.ttfa_ms) + " client_streaming=" + (streaming ? "1" : "0"));
         };
 
         if (!streaming) {
-            for (const auto& piece : pieces) {
-                auto r = engine->synthesize(piece); first(); metrics(speech, r);
-                if (join == JoinMode::Crossfade) glue(speech.pcm, r.pcm, quiet_amp2);
-                else speech.pcm.insert(speech.pcm.end(), r.pcm.begin(), r.pcm.end());
+            for (int i = 0; i < speech.chunks; ++i) {
+                try {
+                    auto r = engine->synthesize(pieces[static_cast<std::size_t>(i)]);
+                    first(); metrics(speech, r);
+                    if (join == JoinMode::Crossfade) glue(speech.pcm, r.pcm, quiet_amp2);
+                    else speech.pcm.insert(speech.pcm.end(), r.pcm.begin(), r.pcm.end());
+                } catch (const std::exception& error) {
+                    throw std::runtime_error("speech unit " + std::to_string(i + 1) + "/" + std::to_string(speech.chunks) + " failed: " + error.what());
+                }
             }
             return speech;
         }
 
         if (join == JoinMode::Chunks) {
-            for (const auto& piece : pieces) {
-                auto r = engine->synthesize(piece, [&](const float* pcm, std::size_t n, int, bool) {
-                    first(); if (sink) sink(pcm, n); speech.pcm.insert(speech.pcm.end(), pcm, pcm + n);
-                });
-                metrics(speech, r);
+            for (int i = 0; i < speech.chunks; ++i) {
+                try {
+                    auto r = engine->synthesize(pieces[static_cast<std::size_t>(i)], [&](const float* pcm, std::size_t n, int, bool) {
+                        first(); if (sink) sink(pcm, n); speech.pcm.insert(speech.pcm.end(), pcm, pcm + n);
+                    });
+                    metrics(speech, r);
+                } catch (const std::exception& error) {
+                    throw std::runtime_error("speech unit " + std::to_string(i + 1) + "/" + std::to_string(speech.chunks) + " failed: " + error.what());
+                }
             }
             return speech;
         }
 
         std::vector<float> pending;
         for (int i = 0; i < speech.chunks; ++i) {
-            auto r = engine->synthesize(pieces[static_cast<std::size_t>(i)], [&](const float* pcm, std::size_t n, int stream_index, bool last) {
-                first();
-                if (i > 0 && stream_index == 0) glue(pending, std::vector<float>(pcm, pcm + n), quiet_amp2);
-                else pending.insert(pending.end(), pcm, pcm + n);
-                const bool utterance_last = i + 1 == speech.chunks && last;
-                const std::size_t keep = utterance_last ? 0 : std::min<std::size_t>(pending.size(), kGlue);
-                const std::size_t stable = pending.size() - keep;
-                if (!stable) return;
-                if (sink) sink(pending.data(), stable);
-                speech.pcm.insert(speech.pcm.end(), pending.begin(), pending.begin() + static_cast<std::ptrdiff_t>(stable));
-                pending.erase(pending.begin(), pending.begin() + static_cast<std::ptrdiff_t>(stable));
-            });
-            metrics(speech, r);
+            try {
+                auto r = engine->synthesize(pieces[static_cast<std::size_t>(i)], [&](const float* pcm, std::size_t n, int stream_index, bool last) {
+                    first();
+                    if (i > 0 && stream_index == 0) glue(pending, std::vector<float>(pcm, pcm + n), quiet_amp2);
+                    else pending.insert(pending.end(), pcm, pcm + n);
+                    const bool utterance_last = i + 1 == speech.chunks && last;
+                    const std::size_t keep = utterance_last ? 0 : std::min<std::size_t>(pending.size(), kGlue);
+                    const std::size_t stable = pending.size() - keep;
+                    if (!stable) return;
+                    if (sink) sink(pending.data(), stable);
+                    speech.pcm.insert(speech.pcm.end(), pending.begin(), pending.begin() + static_cast<std::ptrdiff_t>(stable));
+                    pending.erase(pending.begin(), pending.begin() + static_cast<std::ptrdiff_t>(stable));
+                });
+                metrics(speech, r);
+            } catch (const std::exception& error) {
+                throw std::runtime_error("speech unit " + std::to_string(i + 1) + "/" + std::to_string(speech.chunks) + " failed: " + error.what());
+            }
         }
         if (!pending.empty()) { if (sink) sink(pending.data(), pending.size()); speech.pcm.insert(speech.pcm.end(), pending.begin(), pending.end()); }
         return speech;

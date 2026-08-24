@@ -11,10 +11,8 @@ import urllib.request
 from pathlib import Path
 from typing import Callable
 
-from config import GGML_VULKAN_ENV, RESIDENT_SERVERS, ROOT, RUNTIMES, ggml_vulkan_environment
-from log import note, open_sink
-
-LOG_HINT = str(ROOT / "trident*.log")
+from config import GGML_VULKAN_ENV, RESIDENT_SERVERS, RUNTIMES, ggml_vulkan_environment
+from log import note
 
 
 def _state_dir() -> Path:
@@ -77,18 +75,12 @@ def _http_status(url: str, timeout: float = 1.0) -> int | None:
         return None
 
 
-def _spawn_detached(command: list[str], cwd: Path, env: dict[str, str] | None) -> tuple[subprocess.Popen, str, int]:
-    chunk_name, offset, log = open_sink()
-    log.write((f"trident ts_unix_ns={time.time_ns()} event=spawn command=" + json.dumps(command, separators=(",", ":")) + "\n").encode())
-    kwargs = {
-        "cwd": str(cwd), "env": env, "stdin": subprocess.DEVNULL, "stdout": log,
-        "stderr": subprocess.STDOUT, "close_fds": True,
-        "creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-    }
-    try:
-        return subprocess.Popen(command, **kwargs), chunk_name, offset
-    finally:
-        log.close()
+def _spawn_detached(command: list[str], cwd: Path, env: dict[str, str] | None) -> subprocess.Popen:
+    return subprocess.Popen(
+        command, cwd=str(cwd), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.STDOUT, close_fds=True,
+        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+    )
 
 
 def _wait_ready(
@@ -102,17 +94,14 @@ def _wait_ready(
         if returncode is not None:
             raise RuntimeError(f"{name} resident exited before ready: pid={process.pid} exit={returncode}")
         time.sleep(0.25)
-    raise RuntimeError(
-        f"{name} resident server did not become ready within {timeout_s:g}s; "
-        f"inspect {LOG_HINT} (pid {process.pid})"
-    )
+    raise RuntimeError(f"{name} resident server did not become ready within {timeout_s:g}s (pid {process.pid})")
 
 
 def _terminate(name: str) -> None:
     state = _read_state(name)
     pid = int(state.get("pid") or 0)
     if pid > 0:
-        note(f"{name} resident: stopping pid={pid}")
+        note(f"component=resident event=stop name={name} pid={pid}")
         subprocess.run(
             ["taskkill", "/PID", str(pid), "/T", "/F"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
@@ -162,10 +151,9 @@ def _ensure(
     state = _read_state(name)
     if ready_probe():
         if state.get("identity") == ident:
-            note(f"{name} resident: reuse pid={state.get('pid', '?')} url={cfg['url']}")
             return str(cfg["url"])
         if int(state.get("pid") or 0) > 0:
-            note(f"{name} resident: configuration changed; restarting")
+            note(f"component=resident event=restart name={name} reason=identity_changed")
             _terminate(name)
             _wait_port_closed(name)
         else:
@@ -178,11 +166,9 @@ def _ensure(
     if state_path.exists():
         state_path.unlink(missing_ok=True)
 
-    note(f"{name} resident: starting persistent server")
-    note(f"{name} resident command: " + " ".join(command))
-    if env is not None:
-        note(f"{name} resident: GGML_VK_DISABLE_F16={env.get('GGML_VK_DISABLE_F16', 'unset')}")
-    process, log_chunk, log_offset = _spawn_detached(command, server.parent, env)
+    policy = "vulkan_f16=disabled" if env and env.get("GGML_VK_DISABLE_F16") == "1" else "vulkan_f16=default"
+    note(f"component=resident event=start name={name} policy={policy}")
+    process = _spawn_detached(command, server.parent, env)
     pid = int(process.pid)
     state_value = {
         "identity": ident,
@@ -191,11 +177,7 @@ def _ensure(
         "url": str(cfg["url"]),
         "server": str(server),
         "model": str(model),
-        "command": command,
         "identity_inputs": identity_extra,
-        "log": str(LOG_HINT),
-        "log_chunk": log_chunk,
-        "log_offset": log_offset,
         "started_unix": time.time(),
     }
     if state_extra:
@@ -203,10 +185,12 @@ def _ensure(
     _write_state(name, state_value)
     try:
         _wait_ready(name, process, ready_probe, float(cfg["startup_timeout_s"]))
-    except Exception:
+    except Exception as exc:
+        message = " ".join(str(exc).split())
+        note(f"component=resident event=failed name={name} message={message}")
         _state_path(name).unlink(missing_ok=True)
         raise
-    note(f"{name} resident: ready pid={pid} url={cfg['url']}")
+    note(f"component=resident event=ready name={name} pid={pid}")
     return str(cfg["url"])
 
 
@@ -215,15 +199,13 @@ def ensure_parakeet(server: Path, model: Path) -> str:
     host, port = str(cfg["host"]), int(cfg["port"])
     command = [str(server), "--model", str(model), "--port", str(port)]
     identity = {
-        "model_mode": "nemotron-streaming", "device": "auto", "port": port,
+        "model_mode": "parakeet-tdt-v3", "device": "auto", "port": port,
         "vulkan_env": GGML_VULKAN_ENV,
     }
-    url = _ensure(
+    return _ensure(
         "parakeet", server, model, command, identity, lambda: _port_open(host, port),
         env=ggml_vulkan_environment(),
     )
-    note("parakeet resident: device=auto model-resident=1")
-    return url
 
 
 def ensure_gemma(server: Path, model: Path, runtime: dict) -> str:
@@ -260,9 +242,7 @@ def ensure_gemma(server: Path, model: Path, runtime: dict) -> str:
         "cors_origins": "localhost", "cache_prompt": True, "ui": False,
         "alias": "gemma", "port": port, "vulkan_env": GGML_VULKAN_ENV,
     }
-    url = _ensure("gemma", server, model, command, identity, probe, env=ggml_vulkan_environment())
-    note(f"gemma resident: device=auto kv={runtime['cache_type_k']}/{runtime['cache_type_v']} flash_attn={runtime['flash_attn']}")
-    return url
+    return _ensure("gemma", server, model, command, identity, probe, env=ggml_vulkan_environment())
 
 
 def ensure_chatterbox(
@@ -312,7 +292,7 @@ def ensure_chatterbox(
         "stream_tokens": {"first": stream["first_tokens"], "next": stream["tokens"]},
         "port": port,
     }
-    url = _ensure(
+    return _ensure(
         "chatterbox", server, t3_model, command, identity_extra, probe,
         state_extra={
             "family": family_name,
@@ -321,8 +301,6 @@ def ensure_chatterbox(
             "codec": str(codec_model.resolve()),
         },
     )
-    note(f"chatterbox resident: gpu_layers={runtime['gpu_layers']} family={family_name} language={language} model-resident=1 voice-resident=1")
-    return url
 
 
 def stop_all() -> None:
@@ -339,7 +317,7 @@ def status() -> list[dict]:
         identity = state.get("identity_inputs") or {}
         runtime = identity.get("runtime") or {}
         rows.append({
-            "name": name, "ready": ready, "pid": state.get("pid"), "url": cfg["url"], "log": LOG_HINT,
+            "name": name, "ready": ready, "pid": state.get("pid"), "url": cfg["url"],
             "family": state.get("family"), "language": state.get("language"), "reference": state.get("reference"),
             "device": "auto", "gpu_layers": identity.get("gpu_layers", runtime.get("gpu_layers")),
         })

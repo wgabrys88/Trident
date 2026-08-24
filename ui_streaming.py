@@ -1,20 +1,38 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class SpeechUnit:
+    text: str
+    end: int
+
 
 class SpeechSegmenter:
     def __init__(self, minimum: int, hard_limit: int) -> None:
+        if minimum < 1 or hard_limit < 1 or minimum > hard_limit:
+            raise ValueError("speech segmentation limits are invalid")
         self.minimum = minimum
         self.hard_limit = hard_limit
         self.sent = 0
 
-    def update(self, text: str, flush: bool = False) -> list[str]:
-        units = []
+    def update(self, text: str, flush: bool = False) -> list[SpeechUnit]:
+        units: list[SpeechUnit] = []
         while self.sent < len(text):
             pending = text[self.sent:]
             stop = min(len(pending), self.hard_limit)
-            cut = next((i + 1 for i in range(self.minimum - 1, stop) if pending[i] in ".?!"), 0)
+            cut = 0
+            for i in range(self.minimum - 1, stop):
+                if pending[i] in ".?!" and (i + 1 == len(pending) or pending[i + 1].isspace()):
+                    cut = i + 1
+                    break
             if not cut and len(pending) >= self.hard_limit:
-                split = max(pending.rfind(" ", self.minimum, self.hard_limit), pending.rfind("\n", self.minimum, self.hard_limit))
+                split = max(
+                    pending.rfind(" ", self.minimum, self.hard_limit),
+                    pending.rfind("\n", self.minimum, self.hard_limit),
+                    pending.rfind("\t", self.minimum, self.hard_limit),
+                )
                 cut = split + 1 if split >= self.minimum else self.hard_limit
             if not cut and flush:
                 cut = len(pending)
@@ -25,38 +43,15 @@ class SpeechSegmenter:
             while self.sent < len(text) and text[self.sent].isspace():
                 self.sent += 1
             if unit:
-                units.append(unit)
+                units.append(SpeechUnit(unit, self.sent))
         return units
 
 
-def _cut(text: str, start: int, limit: int) -> int:
-    end = min(len(text), start + limit)
-    if end < len(text):
-        split = max(text.rfind(" ", start + limit // 2, end), text.rfind("\n", start + limit // 2, end))
-        if split > start:
-            end = split + 1
-    return end
-
-
-def text_batches(text: str, first_chars: int, chunk_chars: int, group_chunks: int) -> list[tuple[str, int]]:
+def speech_units(text: str, minimum: int, hard_limit: int) -> list[SpeechUnit]:
     text = text.strip()
     if not text:
         return []
-    first_limit = first_chars + max(0, group_chunks - 1) * chunk_chars
-    later_limit = group_chunks * chunk_chars
-    out: list[tuple[str, int]] = []
-    start = 0
-    limit = first_limit
-    while start < len(text):
-        end = _cut(text, start, limit)
-        piece = text[start:end].strip()
-        if piece:
-            out.append((piece, end))
-        start = end
-        while start < len(text) and text[start].isspace():
-            start += 1
-        limit = later_limit
-    return out
+    return SpeechSegmenter(minimum, hard_limit).update(text, flush=True)
 
 
 def highlighted_progress(text: str, sent_end: int, buffered_end: int | None = None):

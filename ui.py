@@ -11,8 +11,8 @@ import numpy as np
 
 from config import ASR_RATE, FAMILIES, LANGUAGES, LIVE_AUDIO, LIVE_SETTINGS, REFERENCE_VOICES, TTS_RATE, Paths, resolve_voice, save_live_settings
 from conversation import Conversation
-from main import effective_family, finish, prepared_reference, resolved_tts, start_run, stream_synthesize, write_meta
-from ui_streaming import highlighted_progress, pcm16_lookahead, text_batches
+from main import effective_family, finish, prepared_reference, resolved_tts, start_run, stream_synthesize, synthesize_text, tts_endpoint, write_meta
+from ui_streaming import highlighted_progress, pcm16_lookahead, speech_units
 
 ROOT = Path(__file__).resolve().parent
 INT_FLAGS = {
@@ -27,7 +27,7 @@ FLOAT_FLAGS = {
 }
 TTS_SETTING_KEYS = ["family", "language", "voice", "reference", "join", *INT_FLAGS, *FLOAT_FLAGS]
 LIVE_SETTING_KEYS = [
-    "ingestion_mode", "eou_trigger", "vad_trigger", "vad_threshold", "vad_silence_ms", "char_trigger",
+    "ingestion_mode", "vad_threshold", "vad_silence_ms",
     "system_prompt", "tts_mode", "tts_family", "tts_language", "tts_voice", "tts_join",
 ]
 CSS = """
@@ -134,7 +134,6 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
         settings = dict(zip(LIVE_SETTING_KEYS, values, strict=True))
         settings["vad_threshold"] = float(settings["vad_threshold"])
         settings["vad_silence_ms"] = int(settings["vad_silence_ms"])
-        settings["char_trigger"] = int(settings["char_trigger"])
         if settings["tts_language"] not in FAMILIES[settings["tts_family"]]["TTS_LANGUAGES"]:
             raise RuntimeError(f"language {settings['tts_language']!r} is not wired in {settings['tts_family']}")
         return settings
@@ -206,38 +205,52 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
         language = settings["language"]
         if language not in family["TTS_LANGUAGES"]:
             raise RuntimeError(f"language {language!r} is not wired in {family['name']}")
-        if mode == "buffered":
-            chunk = family["TTS_CHUNK"]
-            batches = text_batches(text, chunk.get("first_chars", chunk["chars"]), chunk["chars"], int(LIVE_AUDIO["tts_fake_group_chunks"]))
-            if not batches:
-                raise RuntimeError("text is empty")
+        hard_limit = int(family["TTS_CHUNK"]["chars"])
+        units = speech_units(text, min(int(LIVE_AUDIO["tts_speech_min_chars"]), hard_limit), hard_limit)
+        if not units:
+            raise RuntimeError("text is empty")
 
-            def render(index: int) -> str:
-                part, _ = batches[index]
-                return _output_path(_cli(root, ["tts", "-t", part, *_tts_cli_args(root, settings, streaming=False)]))
-
-            pending = render(0)
-            if len(batches) == 1:
-                yield pending, highlighted_progress(text, len(text), len(text)), "Buffered WAV · complete"
+        paths = start_run("ui-tts", root.models_dir, root.data_dir)
+        outcome = "aborted"
+        try:
+            reference = prepared_reference(_reference(root, settings), root.data_dir)
+            base = tts_endpoint(reference, language, family, paths)
+            write_meta(
+                paths, command="ui-tts", family=family["name"], language=language,
+                resolved_tts=resolved_tts(family), streaming=int(mode == "real"),
+                join=settings["join"], speech_units=len(units),
+            )
+            if mode == "buffered":
+                for index, unit in enumerate(units, 1):
+                    path = paths.run_dir / f"tts-unit-{index:03d}.wav"
+                    result = synthesize_text(unit.text, reference, path, language, family, paths, base=base, streaming=False, unit=index)
+                    if not path.is_file():
+                        raise RuntimeError(f"Chatterbox did not create buffered unit {index}: {result}")
+                    yield str(path), highlighted_progress(text, unit.end, unit.end), f"Buffered WAV · unit {index}/{len(units)}"
+                outcome = "ok"
+                yield gr.skip(), highlighted_progress(text, len(text), len(text)), "Buffered WAV · complete"
                 return
-            next_path = render(1)
-            yield pending, highlighted_progress(text, batches[0][1], batches[1][1]), f"Buffered WAV · 1/{len(batches)} sent · one ahead"
-            pending = next_path
-            for index in range(2, len(batches)):
-                next_path = render(index)
-                yield pending, highlighted_progress(text, batches[index - 1][1], batches[index][1]), f"Buffered WAV · {index}/{len(batches)} sent · one ahead"
-                pending = next_path
-            yield pending, highlighted_progress(text, len(text), len(text)), "Buffered WAV · complete"
-            return
-        paths = start_run("ui-tts-stream", root.models_dir, root.data_dir)
-        reference = prepared_reference(_reference(root, settings), root.data_dir)
-        count = 0
-        for raw in pcm16_lookahead(stream_synthesize(text, reference, paths.output, language, family, paths), TTS_RATE, float(LIVE_AUDIO["tts_gradio_min_seconds"])):
-            count += 1
-            yield (TTS_RATE, np.frombuffer(raw, dtype="<i2").copy()), highlighted_progress(text, 0, len(text)), f"Native stream · chunk {count} · one ahead"
-        write_meta(paths, command="ui-tts", family=family["name"], language=language, output=paths.output, resolved_tts=resolved_tts(family), streaming=1, join=settings["join"], gradio_lookahead=1)
-        finish(paths)
-        yield gr.skip(), highlighted_progress(text, len(text), len(text)), "Native stream · complete"
+
+            count = 0
+            delivered_end = 0
+            for index, unit in enumerate(units, 1):
+                path = paths.run_dir / f"tts-unit-{index:03d}.wav"
+                chunks = pcm16_lookahead(
+                    stream_synthesize(unit.text, reference, path, language, family, paths, base=base, unit=index),
+                    TTS_RATE,
+                    float(LIVE_AUDIO["tts_gradio_min_seconds"]),
+                )
+                for raw in chunks:
+                    count += 1
+                    yield (TTS_RATE, np.frombuffer(raw, dtype="<i2").copy()), highlighted_progress(text, delivered_end, unit.end), f"Native stream · unit {index}/{len(units)} · chunk {count}"
+                delivered_end = unit.end
+            outcome = "ok"
+            yield gr.skip(), highlighted_progress(text, len(text), len(text)), "Native stream · complete"
+        except Exception:
+            outcome = "error"
+            raise
+        finally:
+            finish(paths, outcome)
 
     def cli_tts(text: str, text_file: str | None, output_file: str, cli_streaming: bool, *values):
         text = str(text or "").strip()
@@ -312,7 +325,7 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
 
     with gr.Blocks(fill_width=True, title="Trident", delete_cache=(86400, 86400)) as demo:
         session_id = gr.State(value=lambda: uuid4().hex, time_to_live=3600, delete_callback=_cleanup_session)
-        gr.HTML("<div class='trident-hero'><h1>Trident Full-Duplex Console</h1><p>Persistent Parakeet EOU ASR · resident Gemma · resident Chatterbox. Streaming stages run independently; CLI operations remain available below.</p></div>")
+        gr.HTML("<div class='trident-hero'><h1>Trident Full-Duplex Console</h1><p>Parakeet TDT 0.6B v3 multilingual ASR on Vulkan · Smart Turn v3.2 multilingual endpointing on CPU · resident Gemma · resident Chatterbox.</p></div>")
 
         with gr.Accordion("Shared TTS deck", open=False):
             with gr.Row():
@@ -363,20 +376,16 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
                         ptt_send = gr.Button("PTT SEND")
                     live_status = gr.Textbox(value="Stopped", label="Pipeline status", interactive=False, elem_classes="trident-status")
                 with gr.Column(scale=2, min_width=480, elem_classes="trident-deck"):
-                    transcript = gr.Textbox(label="Parakeet partial transcript", lines=6, interactive=False)
+                    transcript = gr.Textbox(label="Parakeet TDT multilingual transcript", lines=6, interactive=False)
                     answer = gr.Textbox(label="Gemma streaming response", lines=7, interactive=False)
                     progress = gr.HighlightedText(label="TTS progress", show_legend=True, show_inline_category=False, combine_adjacent=True, color_map={"sent": "#22c55e", "buffered": "#f59e0b", "pending": "#64748b"})
                     live_audio = gr.Audio(label="Spoken response", streaming=True, autoplay=True)
 
             with gr.Row(equal_height=False):
                 with gr.Column(elem_classes="trident-deck"):
-                    gr.Markdown("### Turn triggers")
-                    with gr.Row():
-                        eou_trigger = gr.Checkbox(value=LIVE_SETTINGS["eou_trigger"], label="Parakeet native EOU")
-                        vad_trigger = gr.Checkbox(value=LIVE_SETTINGS["vad_trigger"], label="Silero VAD silence")
+                    gr.Markdown("### Turn detection · Silero candidate silence → Smart Turn v3.2 multilingual CPU decision")
                     vad_threshold = gr.Slider(0.1, 0.9, value=LIVE_SETTINGS["vad_threshold"], step=0.05, label="Silero speech threshold")
-                    vad_silence = gr.Slider(100, 1500, value=LIVE_SETTINGS["vad_silence_ms"], step=20, label="Silence offset · ms")
-                    char_trigger = gr.Slider(40, 1200, value=LIVE_SETTINGS["char_trigger"], step=20, label="Secondary transcript character trigger")
+                    vad_silence = gr.Slider(100, 1500, value=LIVE_SETTINGS["vad_silence_ms"], step=20, label="Candidate silence · ms")
                 with gr.Column(elem_classes="trident-deck"):
                     gr.Markdown("### Dialogue behavior")
                     system_prompt = gr.Textbox(value=LIVE_SETTINGS["system_prompt"], label="Dynamic system prompt", lines=7)
@@ -387,7 +396,7 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
                         save_button = gr.Button("Apply config")
                     config_status = gr.Textbox(value="", label="Config", interactive=False, elem_classes="trident-status")
 
-            live_inputs = [ingestion, eou_trigger, vad_trigger, vad_threshold, vad_silence, char_trigger, system_prompt, tts_mode, family, language, voice, join]
+            live_inputs = [ingestion, vad_threshold, vad_silence, system_prompt, tts_mode, family, language, voice, join]
             start_event = start_button.click(start_conversation, [session_id, *live_inputs], [transcript, answer, progress, live_status], concurrency_limit=None, show_progress="minimal")
             start_event.then(lambda mode: microphone_recording(mode == "continuous"), ingestion, mic, queue=False).then(conversation_pump, session_id, [transcript, answer, progress, live_audio, live_status], concurrency_limit=None, show_progress="hidden")
             mic.stream(feed_conversation, [mic, session_id], outputs=None, time_limit=LIVE_AUDIO["mic_time_limit_seconds"], stream_every=LIVE_AUDIO["asr_feed_seconds"], concurrency_limit=1, show_progress="hidden")
@@ -402,7 +411,7 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
             with gr.Row(equal_height=False):
                 with gr.Column(elem_classes="trident-deck"):
                     manual_tts_text = gr.Textbox(label="Text", lines=9)
-                    manual_tts_mode = gr.Radio([("Native real stream", "real"), ("Buffered WAV · five chunks/request", "buffered")], value="real", label="Delivery")
+                    manual_tts_mode = gr.Radio([("Native real stream", "real"), ("Buffered WAV · one speech unit/request", "buffered")], value="real", label="Delivery")
                     with gr.Row():
                         speak_button = gr.Button("Speak", variant="primary")
                         stop_speak = gr.Button("Stop after current chunk")
