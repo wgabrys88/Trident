@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
-from silero_vad import VADIterator, load_silero_vad
+from silero_vad_notorch import VADIterator, load_silero_vad
 
 from config import ASR_RATE, LIVE_AUDIO
 
