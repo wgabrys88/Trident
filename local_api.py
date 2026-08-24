@@ -27,7 +27,10 @@ def parakeet_transcribe(base_url: str, wav: Path, timeout: float = 3600.0) -> di
         "parakeet\r\n"
         f"--{boundary}\r\n"
         'Content-Disposition: form-data; name="response_format"\r\n\r\n'
-        "json\r\n"
+        "verbose_json\r\n"
+        f"--{boundary}\r\n"
+        'Content-Disposition: form-data; name="timestamp_granularities[]"\r\n\r\n'
+        "word\r\n"
         f"--{boundary}--\r\n"
     ).encode("ascii")
     content_length = len(head) + wav.stat().st_size + len(fields)

@@ -16,7 +16,6 @@
 !/tts/src/*.cpp
 !/ui.py
 !/ui_streaming.py
-!/asr_live.py
 !/requirements-ui.txt
 !/patches/
 !/patches/*.patch

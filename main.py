@@ -2,18 +2,17 @@ from __future__ import annotations
 
 import argparse
 import copy
-import hashlib
 import json
 import shutil
 import time
 import wave
 from pathlib import Path
 
-from config import BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_THINKING, FAMILIES, HARDWARE_PROFILE, LANGUAGES, LIVE_SETTINGS, REFERENCE_MIN_SECONDS, SHARED_MODELS, TTS_RATE, Paths, default_family, resolve_voice
+from config import ASR_CHUNK_OVERLAP_SECONDS, ASR_CHUNK_SECONDS, BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_THINKING, FAMILIES, HARDWARE_PROFILE, LANGUAGES, LIVE_SETTINGS, REFERENCE_MIN_SECONDS, SHARED_MODELS, TTS_RATE, Paths, default_family, resolve_voice
 from installer import ensure_ui, install, models_for, require_model, runtime_server, runtime_tts_server, validate_wav, write_text_atomic
-from local_api import chatterbox_stream, chatterbox_synthesize, gemma_chat, parakeet_transcribe
-from log import end_run, note, set_run_log
-from media import chatterbox_wav, parakeet_wav
+from local_api import chatterbox_stream as _chatterbox_stream, chatterbox_synthesize as _chatterbox_synthesize, gemma_chat, parakeet_transcribe
+from log import clear_run_log, note, set_run_log
+from media import chatterbox_wav, parakeet_chunks, parakeet_wav
 from resident import ensure_chatterbox, ensure_gemma, ensure_parakeet, status as resident_status, stop_all as resident_stop_all
 
 
@@ -64,7 +63,7 @@ def prepared_reference(reference: Path, data_dir: Path) -> Path:
     wav = chatterbox_wav(reference, data_dir / "prepared")
     validate_wav(wav, TTS_RATE, minimum_seconds=REFERENCE_MIN_SECONDS, channels=1)
     with wave.open(str(wav), "rb") as audio: seconds = audio.getnframes() / audio.getframerate()
-    note(f"component=tts event=reference_prepared wav={wav} sha256={hashlib.sha256(wav.read_bytes()).hexdigest()} duration_s={seconds:.3f}")
+    note(f"component=tts event=reference_ready duration_s={seconds:.3f}")
     return wav
 
 
@@ -90,13 +89,14 @@ def resolved_tts(family: dict) -> str:
 
 def start_run(command: str, models_dir=None, data_dir=None) -> Paths:
     paths = Paths(models_dir, data_dir, command)
-    mark = set_run_log(paths.log)
-    note(f"component=pipeline event=start run_dir={paths.run_dir} log_chunk={mark[0]} log_offset={mark[1]}")
+    set_run_log(paths.log)
+    note(f"component=pipeline event=start command={command} hardware={HARDWARE_PROFILE}")
     return paths
 
 
-def finish(paths: Paths) -> int:
-    end_run(paths.server_log)
+def finish(paths: Paths, outcome: str = "ok") -> int:
+    note(f"component=pipeline event=finish outcome={outcome}")
+    clear_run_log(paths.log)
     return 0
 
 
@@ -104,13 +104,42 @@ def write_meta(paths: Paths, **rows) -> None:
     write_text_atomic(paths.meta, "".join(f"{k}={v}\n" for k, v in rows.items()))
 
 
+def transcribe_wav(wav: Path, base: str, chunk_dir: Path) -> str:
+    with wave.open(str(wav), "rb") as audio:
+        duration = audio.getnframes() / audio.getframerate()
+    started = time.perf_counter(); words = []; chunks = 0
+    for chunk, offset, chunk_seconds, final in parakeet_chunks(
+        wav, chunk_dir, ASR_CHUNK_SECONDS, ASR_CHUNK_OVERLAP_SECONDS
+    ):
+        payload = parakeet_transcribe(base, chunk); chunks += 1
+        rows = payload.get("words")
+        if duration <= ASR_CHUNK_SECONDS and not rows:
+            text = str(payload.get("text") or "").strip()
+            if not text:
+                raise RuntimeError("Parakeet returned an empty transcript")
+            words = [text]
+            break
+        if not isinstance(rows, list):
+            raise RuntimeError("Parakeet verbose transcript did not include word timestamps")
+        left = 0.0 if offset == 0 else ASR_CHUNK_OVERLAP_SECONDS / 2
+        right = chunk_seconds if final else chunk_seconds - ASR_CHUNK_OVERLAP_SECONDS / 2
+        for row in rows:
+            midpoint = (float(row["start"]) + float(row["end"])) / 2
+            if left <= midpoint < right or (final and midpoint == right):
+                word = str(row.get("word", row.get("w", ""))).strip()
+                if word:
+                    words.append(word)
+    text = " ".join(words).strip()
+    if not text:
+        raise RuntimeError("Parakeet returned an empty transcript")
+    note(f"component=asr event=done duration_s={duration:.3f} chunks={chunks} request_ms={(time.perf_counter() - started) * 1000:.3f}")
+    return text
+
+
 def transcribe(source: Path, paths: Paths) -> str:
     wav = parakeet_wav(source, paths.input)
     base = ensure_parakeet(runtime_server("parakeet"), require_model(SHARED_MODELS["parakeet"], paths.models_dir))
-    started = time.perf_counter(); payload = parakeet_transcribe(base, wav)
-    note(f"component=asr event=done request_ms={(time.perf_counter() - started) * 1000:.3f}")
-    text = str(payload.get("text") or "").strip()
-    if not text: raise RuntimeError("Parakeet returned an empty transcript")
+    text = transcribe_wav(wav, base, paths.run_dir / ".asr-chunks")
     write_text_atomic(paths.transcript, text + "\n")
     return text
 
@@ -128,18 +157,68 @@ def brain(prompt: Path, paths: Paths, language: str, language_name: str, templat
 
 
 def tts_endpoint(reference: Path, language: str, family: dict, paths: Paths) -> str:
-    models = models_for(family["name"]); note("component=config event=tts_resolved payload=" + resolved_tts(family))
+    models = models_for(family["name"])
     return ensure_chatterbox(runtime_tts_server(), require_model(models["chatterbox-t3"], paths.models_dir), require_model(models["chatterbox-codec"], paths.models_dir), reference, family["name"], language, family["TTS_RUNTIME"], family["TTS_SAMPLE"], family["TTS_VOICE"], family["TTS_CHUNK"], family["TTS_STREAM"])
 
 
-def stream_synthesize(text: str, reference: Path, output: Path, language: str, family: dict, paths: Paths):
-    base = tts_endpoint(reference, language, family, paths); stream = family["TTS_STREAM"]
-    yield from chatterbox_stream(base, text.strip(), output, stream["enabled"], stream["join"])
+def _result_fields(result: str) -> dict[str, str]:
+    return {key: value for item in result.split() if "=" in item for key, value in [item.split("=", 1)]}
+
+
+def _tts_complete(result: str, unit: int | None = None) -> None:
+    fields = _result_fields(result)
+    samples = int(fields.get("samples", "0"))
+    prefix = f" unit={unit}" if unit is not None else ""
+    note(
+        "component=tts event=complete outcome=ok" + prefix +
+        f" audio_s={samples / TTS_RATE:.3f} chunks={fields.get('chunks', '?')}" +
+        f" total_ms={fields.get('total_ms', '?')} t3_ms={fields.get('t3_ms', '?')}" +
+        f" s3gen_ms={fields.get('s3gen_ms', '?')} ttfa_ms={fields.get('ttfa_ms', '?')}"
+    )
+
+
+def _tts_failure(exc: Exception, unit: int | None = None, max_tokens: int | None = None) -> None:
+    message = " ".join(str(exc).split())
+    reason = "missing_eos" if "without EOS" in message else "request_error"
+    prefix = f" unit={unit}" if unit is not None else ""
+    ceiling = f" configured_max_tokens={max_tokens}" if reason == "missing_eos" and max_tokens is not None else ""
+    note(f"component=tts event=failed outcome=error reason={reason}{prefix}{ceiling} message={message}")
+
+
+def stream_synthesize(text: str, reference: Path, output: Path, language: str, family: dict, paths: Paths, *, base: str | None = None, unit: int | None = None):
+    endpoint = base or tts_endpoint(reference, language, family, paths)
+    stream = family["TTS_STREAM"]
+    try:
+        generator = _chatterbox_stream(endpoint, text.strip(), output, stream["enabled"], stream["join"])
+        while True:
+            try:
+                chunk = next(generator)
+            except StopIteration as done:
+                if done.value:
+                    _tts_complete(str(done.value), unit)
+                return
+            yield chunk
+    except Exception as exc:
+        _tts_failure(exc, unit, int(family["TTS_SAMPLE"]["max_tokens"]))
+        raise
+
+
+def synthesize_text(text: str, reference: Path, output: Path, language: str, family: dict, paths: Paths, *, base: str | None = None, streaming: bool | None = None, unit: int | None = None) -> str:
+    endpoint = base or tts_endpoint(reference, language, family, paths)
+    stream = family["TTS_STREAM"]
+    enabled = stream["enabled"] if streaming is None else streaming
+    try:
+        result = _chatterbox_synthesize(endpoint, text.strip(), output, enabled, stream["join"])
+        _tts_complete(result, unit)
+        return result
+    except Exception as exc:
+        _tts_failure(exc, unit, int(family["TTS_SAMPLE"]["max_tokens"]))
+        raise
 
 
 def synthesize(text_file: Path, reference: Path, output: Path, language: str, family: dict, paths: Paths) -> None:
-    text = text_file.read_text(encoding="utf-8").strip(); base = tts_endpoint(reference, language, family, paths); stream = family["TTS_STREAM"]
-    result = chatterbox_synthesize(base, text, output, stream["enabled"], stream["join"]); note("component=tts event=done " + result)
+    text = text_file.read_text(encoding="utf-8").strip()
+    synthesize_text(text, reference, output, language, family, paths)
     validate_wav(output, TTS_RATE, channels=1)
 
 
@@ -207,6 +286,17 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+
+def run_install(args) -> int:
+    paths = start_run("install", args.models_dir, args.data_dir)
+    try:
+        install(args.family, paths.models_dir, paths.data_dir)
+        write_meta(paths, command="install", family=args.family, hardware=HARDWARE_PROFILE)
+    except Exception:
+        finish(paths, "error")
+        raise
+    return finish(paths)
+
 def warm_resident(args) -> None:
     paths = Paths(args.models_dir, args.data_dir); family = effective_family(args.family, args); language = resolve_language(family, args.tts_language); reference = prepared_reference(resolve_voice(paths.data_dir, args.reference), paths.data_dir)
     ensure_parakeet(runtime_server("parakeet"), require_model(SHARED_MODELS["parakeet"], paths.models_dir)); ensure_gemma(runtime_server("gemma"), require_model(SHARED_MODELS[BRAIN_MODEL], paths.models_dir), BRAIN_RUNTIME)
@@ -214,7 +304,9 @@ def warm_resident(args) -> None:
 
 
 def print_resident_status() -> None:
-    for row in resident_status(): print(f"{row['name']}: {'ready' if row['ready'] else 'stopped'} pid={row['pid'] or '-'} url={row['url']} family={row.get('family') or '-'}")
+    for row in resident_status():
+        role = " runtime=Parakeet.cpp model=Parakeet-TDT-0.6B-v3" if row["name"] == "parakeet" else ""
+        print(f"{row['name']}: {'ready' if row['ready'] else 'stopped'} pid={row['pid'] or '-'} url={row['url']} family={row.get('family') or '-'}{role}")
 
 
 def launch_ui(args) -> int:
@@ -222,8 +314,8 @@ def launch_ui(args) -> int:
 
 
 def main() -> int:
-    args = build_parser().parse_args(); note(f"component=runtime event=profile hardware={HARDWARE_PROFILE}")
-    if args.command == "install": install(args.family, args.models_dir, args.data_dir)
+    args = build_parser().parse_args()
+    if args.command == "install": run_install(args)
     elif args.command == "resident":
         if args.action == "stop": resident_stop_all()
         elif args.action == "warm": warm_resident(args)

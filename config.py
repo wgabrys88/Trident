@@ -53,6 +53,9 @@ RUNTIMES = TOOLS / "runtime"
 CONVERTER = TOOLS / "convert"
 
 ASR_RATE = 16000
+ASR_CHUNK_SECONDS = 30
+ASR_CHUNK_OVERLAP_SECONDS = 4
+SMART_TURN_SECONDS = 8
 TTS_RATE = 24000
 REFERENCE_MIN_SECONDS = 5.0
 
@@ -83,16 +86,14 @@ BRAIN_GENERATION = {
     "repeat_penalty": 1.0, "seed": 42, "max_tokens": 1024,
 }
 BRAIN_THINKING = False
-LIVE_SETTINGS_JSON = '{"char_trigger":240,"eou_trigger":true,"ingestion_mode":"continuous","system_prompt":"The incoming speech transcript is auto-detected by ASR. Produce the final spoken response only in {tts_language_name} ({tts_language}). If the input language differs, preserve its meaning while translating or answering in the output language. Spoken prose only: short sentences ending with a period, question mark, or exclamation. No markdown, lists, code, URLs, emoji, or square-bracket tags. Expand numbers and abbreviations. Do not mention transcription, models, or reasoning.","tts_family":"v3","tts_join":"crossfade","tts_language":"en","tts_mode":"real","tts_voice":"trump","vad_silence_ms":560,"vad_threshold":0.5,"vad_trigger":true}'
+LIVE_SETTINGS_JSON = '{"ingestion_mode":"continuous","system_prompt":"The incoming speech transcript is auto-detected by ASR. Produce the final spoken response only in {tts_language_name} ({tts_language}). If the input language differs, preserve its meaning while translating or answering in the output language. Spoken prose only: short sentences ending with a period, question mark, or exclamation. No markdown, lists, code, URLs, emoji, or square-bracket tags. Expand numbers and abbreviations. Do not mention transcription, models, or reasoning.","tts_family":"v3","tts_join":"crossfade","tts_language":"en","tts_mode":"real","tts_voice":"trump","vad_silence_ms":560,"vad_threshold":0.5}'
 LIVE_SETTINGS = json.loads(LIVE_SETTINGS_JSON)
 LIVE_AUDIO = {
     "asr_feed_seconds": 0.16,
     "vad_frame_samples": 512,
     "mic_time_limit_seconds": 86400,
-    "tts_fake_group_chunks": 5,
     "tts_gradio_min_seconds": 1.25,
     "tts_speech_min_chars": 180,
-    "tts_speech_hard_chars": 300,
     "llm_history_turns": 6,
 }
 
@@ -215,20 +216,18 @@ def default_family() -> str:
 
 SHARED_MODELS = {
     "parakeet": {
-        "label": "PARAKEET NEMOTRON 3.5 STREAMING 0.6B Q4_K",
+        "label": "PARAKEET TDT 0.6B V3 Q4_K",
         "repo": "mudler/parakeet-cpp-gguf", "revision": "bf0af9f425fa01809cadec671b3cb672709d13e9",
-        "file": "nemotron-3.5-asr-streaming-0.6b-q4_k.gguf", "size": 0,
+        "file": "tdt-0.6b-v3-q4_k.gguf", "size": 675200864,
     },
-    "parakeet-eou": {
-        "label": "PARAKEET REALTIME EOU 120M Q4_K",
-        "repo": "mudler/parakeet-cpp-gguf", "revision": "bf0af9f425fa01809cadec671b3cb672709d13e9",
-        "file": "realtime_eou_120m-v1-q4_k.gguf", "size": 0,
+    "smart-turn": {
+        "label": "SMART TURN V3.2 MULTILINGUAL CPU INT8",
+        "repo": "pipecat-ai/smart-turn-v3", "revision": "f766f81d3cfdf7737ac64aad813d91bbfd56bf93",
+        "file": "smart-turn-v3.2-cpu.onnx", "size": 8679182,
+        "sha256": "2bb026316b14a660486a75b1733cd3fbab8c2fd0314dc9af7be49f8cca967e4f",
     },
     "gemma": {"label": "GEMMA 4 E2B", "repo": "google/gemma-4-E2B-it-qat-q4_0-gguf", "revision": "675cff42a74c774d6cb76f76d8eacb49b48c9b93", "file": "gemma-4-E2B_q4_0-it.gguf", "size": 3349516256},
 }
-if HARDWARE_PROFILE == "pascal":
-    SHARED_MODELS["parakeet"].update(label="PARAKEET NEMOTRON 3.5 STREAMING 0.6B Q8_0", file="nemotron-3.5-asr-streaming-0.6b-q8_0.gguf")
-    SHARED_MODELS["parakeet-eou"].update(label="PARAKEET REALTIME EOU 120M Q8_0", file="realtime_eou_120m-v1-q8_0.gguf", size=0)
 
 VULKAN_VERSION = "1.4.357.0"
 
@@ -248,8 +247,7 @@ BINARIES = {
     "parakeet": {
         "label": "PARAKEET.CPP V0.5 VULKAN", "repo": "mudler/parakeet.cpp", "tag": "v0.5.0",
         "asset": "parakeet-v0.5.0-bin-win-vulkan-x64.zip",
-        "lib_asset": "parakeet-v0.5.0-lib-win-vulkan-x64.zip",
-        "server_exe": "parakeet-server.exe", "library": "parakeet.dll",
+        "server_exe": "parakeet-server.exe",
     },
     "gemma": {
         "label": "LLAMA.CPP B10453 VULKAN", "repo": "ggml-org/llama.cpp", "tag": "b10453",
@@ -306,5 +304,4 @@ class Paths:
         self.input = artifact("input.wav")
         self.literal = artifact("literal.txt")
         self.log = artifact("trident.log")
-        self.server_log = artifact("server.log")
         self.meta = artifact("meta.txt")

@@ -110,9 +110,14 @@ def build_env() -> dict[str, str]:
 
 
 def run_process(component: str, stage: str, command: list[str], cwd: Path, env: dict[str, str] | None = None) -> None:
-    note(f"component={component} stage={stage} event=start command={' '.join(command)}")
+    note(f"component={component} stage={stage} event=start")
     started = time.perf_counter()
-    run_logged(command, cwd, env or build_env())
+    try:
+        run_logged(command, cwd, env or build_env())
+    except Exception as exc:
+        message = str(exc).splitlines()[0].strip() or type(exc).__name__
+        note(f"component={component} stage={stage} event=failed message={message}")
+        raise
     note(f"component={component} stage={stage} event=done elapsed_ms={(time.perf_counter() - started) * 1000.0:.3f}")
 
 
@@ -314,13 +319,7 @@ def _release_marker(name: str) -> Path:
 
 def _release_identity(name: str) -> str:
     spec = BINARIES[name]
-    assets = [spec["asset"]]
-    if spec.get("lib_asset"): assets.append(spec["lib_asset"])
-    return f"{spec['repo']}@{spec['tag']}:" + "+".join(assets)
-
-
-def runtime_parakeet_library(required: bool = True) -> Path | None:
-    return _runtime_binary("parakeet", "library", required)
+    return f"{spec['repo']}@{spec['tag']}:{spec['asset']}"
 
 
 def ensure_ui() -> None:
@@ -362,22 +361,16 @@ def install_release_binary(name: str) -> None:
     marker = _release_marker(name)
     identity = _release_identity(name)
     installed = runtime_server(name, required=False)
-    if installed and marker.is_file() and marker.read_text(encoding="ascii", errors="ignore").strip() == identity and (name != "parakeet" or runtime_parakeet_library(False)):
+    if installed and marker.is_file() and marker.read_text(encoding="ascii", errors="ignore").strip() == identity:
         note(f"{spec['label']}: ready (pinned resident server)")
         return
     note(f"{spec['label']}: installing pinned {spec['tag']} release")
-    asset_names = [spec["asset"]] + ([spec["lib_asset"]] if spec.get("lib_asset") else [])
-    archives = []
-    for asset_name in asset_names:
-        url, size, sha256 = github_release_asset(spec, asset_name)
-        archive = TOOLS / "downloads" / asset_name
-        fetch(url, archive, size, sha256)
-        archives.append(archive)
-    required = [spec["server_exe"]] + ([spec["library"]] if spec.get("library") else [])
-    extract_release_bundle(tuple(archives), RUNTIMES / name, tuple(required))
-    for archive in archives: archive.unlink(missing_ok=True)
+    url, size, sha256 = github_release_asset(spec)
+    archive = TOOLS / "downloads" / spec["asset"]
+    fetch(url, archive, size, sha256)
+    extract_release_bundle((archive,), RUNTIMES / name, (spec["server_exe"],))
+    archive.unlink(missing_ok=True)
     runtime_server(name)
-    if name == "parakeet": runtime_parakeet_library()
     marker.write_text(identity + "\n", encoding="ascii")
 
 
@@ -418,7 +411,7 @@ def install_tts() -> None:
 
     native_revision = chatterbox_native_revision()
     if not _native_build_ready():
-        note(f"tts native revision changed: rebuilding chatterbox.cpp {native_revision[:12]}")
+        note("component=tts stage=native event=rebuild reason=source_changed")
         checkout("tts", CHATTERBOX, "chatterbox")
         checkout("tts", GGML, "ggml")
         tune_ggml_vulkan()
@@ -499,7 +492,7 @@ def download_model(spec: dict, models_dir: Path) -> None:
     note(f"{spec['label']}: installing")
     if not spec.get("convert"):
         url = spec.get("url") or f"https://huggingface.co/{spec['repo']}/resolve/{spec['revision']}/{spec['file']}"
-        fetch(url, destination, spec["size"])
+        fetch(url, destination, spec["size"], spec.get("sha256"))
         return
     recipe = spec["convert"]
     script = CHATTERBOX / "scripts" / recipe["script"]
@@ -593,6 +586,4 @@ def install(family: str, models_dir: Path | None = None, data_dir: Path | None =
     for spec in specs.values():
         download_model(spec, paths.models_dir)
     clean_install_artifacts()
-    note("install complete")
-    note("models ready: parakeet, parakeet-eou, gemma, nano, turbo, v3" if family == "all" else f"models ready: parakeet, parakeet-eou, gemma, {family}")
-    note("python main.py resident warm --family v3 --tts-language en -r trump")
+    note(f"component=install event=complete family={family}")

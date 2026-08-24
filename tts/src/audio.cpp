@@ -1,6 +1,4 @@
 #include "audio.hpp"
-#include "cli.hpp"
-
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -13,7 +11,7 @@
 namespace tts {
 
 std::vector<std::string> pack_text(const std::string& text, int limit) {
-    if (limit < 40) limit = 40;
+    if (limit < 1) throw std::invalid_argument("chunk limit must be positive");
     if (text.empty()) return {text};
     auto is_ws = [](unsigned char c) { return std::isspace(c) != 0; };
     auto trim_right = [&](std::string& s) {
@@ -71,6 +69,34 @@ std::vector<std::string> pack_text(const std::string& text, int limit) {
         }
         if (!acc.empty()) refined.push_back(acc);
     }
+
+    auto byte_after_chars = [](const std::string& value, int chars) {
+        size_t pos = 0;
+        for (int count = 0; pos < value.size() && count < chars; ++count) {
+            const unsigned char c = static_cast<unsigned char>(value[pos]);
+            size_t width = c < 0x80 ? 1 : (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : (c & 0xF8) == 0xF0 ? 4 : 1;
+            pos = std::min(value.size(), pos + width);
+        }
+        return pos;
+    };
+    std::vector<std::string> bounded;
+    for (auto sentence : refined) {
+        while (utf8_chars(sentence) > limit) {
+            const size_t hard = byte_after_chars(sentence, limit);
+            size_t cut = hard;
+            const std::string prefix = sentence.substr(0, hard);
+            const size_t ws = prefix.find_last_of(" \t\r\n");
+            if (ws != std::string::npos && utf8_chars(prefix.substr(0, ws)) >= std::max(1, limit / 2)) cut = ws + 1;
+            std::string piece = sentence.substr(0, cut);
+            trim_right(piece);
+            if (!piece.empty()) bounded.push_back(std::move(piece));
+            sentence.erase(0, cut);
+            while (!sentence.empty() && is_ws(static_cast<unsigned char>(sentence.front()))) sentence.erase(sentence.begin());
+        }
+        trim_right(sentence);
+        if (!sentence.empty()) bounded.push_back(std::move(sentence));
+    }
+    refined = std::move(bounded);
 
     std::vector<std::string> packed;
     for (auto& sentence : refined) {
@@ -187,8 +213,6 @@ void write_wav(const std::string& path, const std::vector<float>& pcm) {
     out.write("data", 4); put(data_size);
     out.write(reinterpret_cast<const char*>(samples.data()), static_cast<std::streamsize>(data_size));
     if (!out) throw std::runtime_error("failed while writing WAV output: " + path);
-    log("event=wav path=" + path + " samples=" + std::to_string(pcm.size()) +
-        " seconds=" + std::to_string(pcm.size() / static_cast<double>(kRate)));
 }
 
 }

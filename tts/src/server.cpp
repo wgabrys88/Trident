@@ -147,9 +147,7 @@ int main(int argc, char** argv) {
         validate_knobs(family, knobs, first_chunk_chars, chunk_chars, stream_first_chunk_tokens, stream_chunk_tokens);
 
         const tts::Runtime runtime = tts::runtime_from(args);
-        tts::log("event=resident_start family=" + family + " preload=begin language=" + knobs.language +
-                 " reference=" + knobs.reference);
-
+        tts::log("event=resident_start family=" + family + " preload=begin language=" + knobs.language);
 
         tts::Session session(runtime, knobs, chunk_chars, stream_chunk_tokens, stream_first_chunk_tokens,
                              tts::kQuietAmp2, first_chunk_chars);
@@ -195,15 +193,12 @@ int main(int argc, char** argv) {
                 tts::set_request_id(request_id);
                 const bool stream_client = streaming != 0;
                 const auto join_mode = join ? tts::JoinMode::Crossfade : tts::JoinMode::Chunks;
-                tts::log("event=request_start text_bytes=" + std::to_string(text.size()) + " output=" + output +
-                         " client_streaming=" + (stream_client ? "1" : "0") + " join=" + (join ? "crossfade" : "chunks"));
                 const auto started = std::chrono::steady_clock::now();
                 const tts::AudioSink sink = stream_client ? tts::AudioSink([&](const float* pcm, std::size_t count) { send_pcm(client.value, pcm, count); }) : tts::AudioSink{};
                 const tts::Speech speech = session.synthesize(text, sink, stream_client, join_mode);
                 tts::write_wav(output, speech.pcm);
                 const double total_ms = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - started).count();
-                tts::print_done(speech, total_ms, session.runtime(), session.knobs(), session.chunk_chars());
                 const double audio_ms = speech.pcm.size() * 1000.0 / tts::kRate;
                 const double wall_rtf = audio_ms > 0 ? total_ms / audio_ms : 0.0;
                 const std::string result = "request_id=" + std::to_string(request_id) +
@@ -218,7 +213,6 @@ int main(int argc, char** argv) {
                     " join=" + (join ? "crossfade" : "chunks");
                 send_response(client.value, 0, result);
             } catch (const std::exception& error) {
-                tts::log(std::string("event=request_error message=") + error.what());
                 try { send_response(client.value, 1, error.what()); } catch (...) {}
             }
         }
