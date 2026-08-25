@@ -14,7 +14,7 @@ enum class JoinMode { Chunks = 0, Crossfade = 1 };
 
 class Session {
 public:
-    Session(const Runtime& runtime, const EngineKnobs& knobs, int chunk_chars, int stream_chunk_tokens, int stream_first_chunk_tokens, float quiet_amp2 = kQuietAmp2, int first_chunk_chars = 0);
+    Session(const Runtime& runtime, const EngineKnobs& knobs, int chunk_chars, float quiet_amp2 = kQuietAmp2, int first_chunk_chars = 0);
     ~Session();
     Session(const Session&) = delete;
     Session& operator=(const Session&) = delete;

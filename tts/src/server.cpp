@@ -22,8 +22,7 @@ const std::vector<std::string> kRequired = {
     "--family", "--model", "--s3gen-gguf", "--reference", "--language", "--port",
     "--n-gpu-layers", "--context", "--threads", "--seed", "--max-tokens",
     "--top-k", "--top-p", "--min-p", "--temperature", "--repeat-penalty", "--cfg-weight",
-    "--exaggeration", "--cfm-steps", "--first-chunk-chars", "--chunk-chars",
-    "--stream-first-chunk-tokens", "--stream-chunk-tokens", "--fastconv",
+    "--exaggeration", "--cfm-steps", "--first-chunk-chars", "--chunk-chars", "--fastconv",
 };
 
 void close_socket(socket_t sock) noexcept {
@@ -101,16 +100,16 @@ void send_pcm(socket_t sock, const float* pcm, std::size_t count) {
     send_frame(sock, 2, samples.data(), samples.size() * sizeof(samples[0]));
 }
 
-void validate_knobs(const std::string& family, const tts::EngineKnobs& knobs, int first_chunk_chars, int chunk_chars,
-                    int stream_first_chunk_tokens, int stream_chunk_tokens) {
-    if (knobs.max_tokens < 1 || knobs.top_k < 0 || knobs.cfm_steps < 1 || first_chunk_chars < 1 || chunk_chars < 1 ||
-        stream_first_chunk_tokens < 1 || stream_chunk_tokens < 1)
+void validate_knobs(const std::string& family, const tts::EngineKnobs& knobs, int first_chunk_chars, int chunk_chars) {
+    if (knobs.max_tokens < 1 || knobs.top_k < 0 || knobs.cfm_steps < 1 || first_chunk_chars < 1 || chunk_chars < 1)
         throw std::invalid_argument("integer sampling values are out of range");
     if (knobs.top_p < 0 || knobs.top_p > 1 || knobs.min_p < 0 || knobs.min_p > 1 || knobs.temperature < 0 ||
         knobs.repeat_penalty <= 0 || knobs.cfg_weight < 0 || knobs.exaggeration < 0)
         throw std::invalid_argument("sampling or voice values are out of range");
     if (family == "turbo" || family == "nano") {
         if (knobs.language != "en") throw std::invalid_argument("Turbo/Nano resident TTS supports language en only");
+        if (knobs.min_p != 0.0f || knobs.cfg_weight != 0.0f || knobs.exaggeration != 0.0f)
+            throw std::invalid_argument("Turbo/Nano do not support min-p, CFG weight, or exaggeration");
     } else if (family == "v3") {
         if (knobs.language.size() != 2) throw std::invalid_argument("v3 resident TTS language must be a 2-letter code");
     } else {
@@ -142,15 +141,12 @@ int main(int argc, char** argv) {
         knobs.cfm_steps = tts::parse_int(args, "--cfm-steps");
         const int first_chunk_chars = tts::parse_int(args, "--first-chunk-chars");
         const int chunk_chars = tts::parse_int(args, "--chunk-chars");
-        const int stream_first_chunk_tokens = tts::parse_int(args, "--stream-first-chunk-tokens");
-        const int stream_chunk_tokens = tts::parse_int(args, "--stream-chunk-tokens");
-        validate_knobs(family, knobs, first_chunk_chars, chunk_chars, stream_first_chunk_tokens, stream_chunk_tokens);
+        validate_knobs(family, knobs, first_chunk_chars, chunk_chars);
 
         const tts::Runtime runtime = tts::runtime_from(args);
         tts::log("event=resident_start family=" + family + " preload=begin language=" + knobs.language);
 
-        tts::Session session(runtime, knobs, chunk_chars, stream_chunk_tokens, stream_first_chunk_tokens,
-                             tts::kQuietAmp2, first_chunk_chars);
+        tts::Session session(runtime, knobs, chunk_chars, tts::kQuietAmp2, first_chunk_chars);
 
         WSADATA wsa{};
         if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) throw std::runtime_error("WSAStartup failed");
