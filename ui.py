@@ -169,8 +169,7 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
         note = (
             "**Multilingual V3:** Min P, CFG weight, and exaggeration are active model controls."
             if multilingual else
-            "**Turbo / Nano:** upstream uses Temperature, Top K, Top P, and repetition penalty. Min P, CFG weight, and exaggeration are unsupported and are hidden here." +
-            (" Nano uses one CFM step on this machine." if name == "nano" and family["TTS_SAMPLE"]["cfm_steps"] == 1 else "")
+            "**Turbo / Nano:** upstream uses Temperature, Top K, Top P, and repetition penalty. Min P, CFG weight, and exaggeration are unsupported and are hidden here."
         )
         return (
             gr.Dropdown(choices=list(family["TTS_LANGUAGES"]), value=family["DEFAULT_REPLY_LANGUAGE"]),
@@ -451,8 +450,7 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
                 family_note = gr.Markdown(
                     "**Multilingual V3:** Min P, CFG weight, and exaggeration are active model controls."
                     if family_default == "v3" else
-                    "**Turbo / Nano:** upstream uses Temperature, Top K, Top P, and repetition penalty. Min P, CFG weight, and exaggeration are unsupported and are hidden here." +
-                    (" Nano uses one CFM step on this machine." if family_default == "nano" and FAMILIES["nano"]["TTS_SAMPLE"]["cfm_steps"] == 1 else "")
+                    "**Turbo / Nano:** upstream uses Temperature, Top K, Top P, and repetition penalty. Min P, CFG weight, and exaggeration are unsupported and are hidden here."
                 )
                 n_gpu_layers = gr.Number(value=None, precision=0, label="GPU layers")
                 context = gr.Number(value=None, precision=0, label="Context")

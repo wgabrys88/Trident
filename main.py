@@ -181,8 +181,6 @@ def tts_metrics(result: str) -> dict[str, float | str]:
         "audio_s": samples / TTS_RATE,
         "rtf": rtf,
         "x_realtime": 1.0 / rtf if rtf > 0 else 0.0,
-        "t3_rtf": float(fields["t3_ms"]) / (samples * 1000.0 / TTS_RATE),
-        "s3gen_rtf": float(fields["s3gen_ms"]) / (samples * 1000.0 / TTS_RATE),
     }
 
 
@@ -194,8 +192,7 @@ def _tts_complete(result: str, unit: int | None = None) -> None:
         f" audio_s={fields['audio_s']:.3f} chunks={fields.get('chunks', '?')}" +
         f" total_ms={fields.get('total_ms', '?')} t3_ms={fields.get('t3_ms', '?')}" +
         f" s3gen_ms={fields.get('s3gen_ms', '?')} ttfa_ms={fields.get('ttfa_ms', '?')}" +
-        f" rtf={fields['rtf']:.4f} x_realtime={fields['x_realtime']:.2f}" +
-        f" t3_rtf={fields['t3_rtf']:.4f} s3gen_rtf={fields['s3gen_rtf']:.4f}"
+        f" rtf={fields['rtf']:.4f} x_realtime={fields['x_realtime']:.2f}"
     )
 
 
