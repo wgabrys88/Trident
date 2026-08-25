@@ -3,8 +3,8 @@ from __future__ import annotations
 import argparse
 import subprocess
 import sys
+import threading
 from pathlib import Path
-from uuid import uuid4
 
 import gradio as gr
 import numpy as np
@@ -12,7 +12,7 @@ import numpy as np
 from config import ASR_RATE, FAMILIES, LANGUAGES, LIVE_AUDIO, LIVE_SETTINGS, REFERENCE_VOICES, TTS_RATE, Paths, resolve_voice, save_live_settings
 from conversation import Conversation
 from main import effective_family, finish, prepared_reference, resolved_tts, start_run, stream_synthesize, synthesize_text, tts_endpoint, write_meta
-from ui_streaming import highlighted_progress, pcm16_lookahead, speech_units
+from ui_streaming import highlighted_progress, pcm16_lookahead
 
 ROOT = Path(__file__).resolve().parent
 INT_FLAGS = {
@@ -40,6 +40,7 @@ CSS = """
 """
 
 _sessions: dict[str, Conversation] = {}
+_sessions_lock = threading.Lock()
 
 
 def _pcm16k(audio) -> bytes:
@@ -117,8 +118,15 @@ def _output_path(stdout: str) -> str:
     raise RuntimeError("CLI did not report an output WAV")
 
 
+def _session_id(request: gr.Request) -> str:
+    if not request.session_hash:
+        raise RuntimeError("Gradio session is unavailable")
+    return request.session_hash
+
+
 def _cleanup_session(session_id: str) -> None:
-    engine = _sessions.pop(session_id, None)
+    with _sessions_lock:
+        engine = _sessions.pop(session_id, None)
     if engine:
         engine.close()
 
@@ -138,25 +146,31 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
             raise RuntimeError(f"language {settings['tts_language']!r} is not wired in {settings['tts_family']}")
         return settings
 
-    def save_config(session_id: str, *values):
+    def save_config(request: gr.Request, *values):
         settings = live_settings(values)
         save_live_settings(settings)
-        engine = _sessions.get(session_id)
-        if engine and engine.active:
-            engine.configure(settings)
+        with _sessions_lock:
+            engine = _sessions.get(_session_id(request))
+            if engine and engine.active:
+                engine.configure(settings)
         return "Configuration written to config.py"
 
-    def start_conversation(session_id: str, *values):
-        _cleanup_session(session_id)
+    def start_conversation(request: gr.Request, *values):
+        session_id = _session_id(request)
         settings = live_settings(values)
         save_live_settings(settings)
         engine = Conversation(root.models_dir, root.data_dir, settings)
         engine.start()
-        _sessions[session_id] = engine
+        with _sessions_lock:
+            previous = _sessions.get(session_id)
+            _sessions[session_id] = engine
+        if previous:
+            previous.close()
         return engine.transcript, engine.answer, engine.progress, engine.status
 
-    def conversation_pump(session_id: str):
-        engine = _sessions[session_id]
+    def conversation_pump(request: gr.Request):
+        with _sessions_lock:
+            engine = _sessions[_session_id(request)]
         while True:
             kind, payload = engine.next_output()
             audio = gr.skip()
@@ -170,31 +184,42 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
             if kind == "closed":
                 return
 
-    def feed_conversation(audio, session_id: str):
-        _sessions[session_id].feed_audio(_pcm16k(audio))
+    def feed_conversation(audio, request: gr.Request):
+        pcm_f32 = _pcm16k(audio)
+        with _sessions_lock:
+            engine = _sessions.get(_session_id(request))
+            if engine is not None:
+                engine.feed_audio(pcm_f32)
 
-    def ptt_start(session_id: str):
-        engine = _sessions[session_id]
-        engine.ptt_start()
-        return engine.status
+    def ptt_start(request: gr.Request):
+        with _sessions_lock:
+            engine = _sessions[_session_id(request)]
+            engine.ptt_start()
+            return engine.status
 
-    def ptt_stop(session_id: str):
-        engine = _sessions[session_id]
-        engine.ptt_stop()
-        return engine.status
+    def ptt_stop(request: gr.Request):
+        with _sessions_lock:
+            engine = _sessions[_session_id(request)]
+            engine.ptt_stop()
+            return engine.status
 
     def microphone_recording(enabled: bool):
         return gr.Audio(recording=enabled)
 
-    def manual_submit(text: str, session_id: str):
-        engine = _sessions[session_id]
-        engine.submit(str(text or ""))
+    def manual_submit(text: str, request: gr.Request):
+        with _sessions_lock:
+            engine = _sessions[_session_id(request)]
+            engine.submit(str(text or ""))
         return ""
 
-    def stop_conversation(session_id: str):
-        engine = _sessions[session_id]
+    def stop_conversation(request: gr.Request):
+        with _sessions_lock:
+            engine = _sessions.pop(_session_id(request))
         engine.stop()
         return engine.status
+
+    def cleanup_session(request: gr.Request):
+        _cleanup_session(_session_id(request))
 
     def speak(text: str, mode: str, *values):
         text = str(text or "").strip()
@@ -205,11 +230,6 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
         language = settings["language"]
         if language not in family["TTS_LANGUAGES"]:
             raise RuntimeError(f"language {language!r} is not wired in {family['name']}")
-        hard_limit = int(family["TTS_CHUNK"]["chars"])
-        units = speech_units(text, min(int(LIVE_AUDIO["tts_speech_min_chars"]), hard_limit), hard_limit)
-        if not units:
-            raise RuntimeError("text is empty")
-
         paths = start_run("ui-tts", root.models_dir, root.data_dir)
         outcome = "aborted"
         try:
@@ -218,32 +238,25 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
             write_meta(
                 paths, command="ui-tts", family=family["name"], language=language,
                 resolved_tts=resolved_tts(family), streaming=int(mode == "real"),
-                join=settings["join"], speech_units=len(units),
+                join=settings["join"], output=paths.output,
             )
             if mode == "buffered":
-                for index, unit in enumerate(units, 1):
-                    path = paths.run_dir / f"tts-unit-{index:03d}.wav"
-                    result = synthesize_text(unit.text, reference, path, language, family, paths, base=base, streaming=False, unit=index)
-                    if not path.is_file():
-                        raise RuntimeError(f"Chatterbox did not create buffered unit {index}: {result}")
-                    yield str(path), highlighted_progress(text, unit.end, unit.end), f"Buffered WAV · unit {index}/{len(units)}"
+                result = synthesize_text(text, reference, paths.output, language, family, paths, base=base, streaming=False)
+                if not paths.output.is_file():
+                    raise RuntimeError(f"Chatterbox did not create buffered output: {result}")
                 outcome = "ok"
-                yield gr.skip(), highlighted_progress(text, len(text), len(text)), "Buffered WAV · complete"
+                yield str(paths.output), highlighted_progress(text, len(text), len(text)), "Buffered WAV · complete"
                 return
 
             count = 0
-            delivered_end = 0
-            for index, unit in enumerate(units, 1):
-                path = paths.run_dir / f"tts-unit-{index:03d}.wav"
-                chunks = pcm16_lookahead(
-                    stream_synthesize(unit.text, reference, path, language, family, paths, base=base, unit=index),
-                    TTS_RATE,
-                    float(LIVE_AUDIO["tts_gradio_min_seconds"]),
-                )
-                for raw in chunks:
-                    count += 1
-                    yield (TTS_RATE, np.frombuffer(raw, dtype="<i2").copy()), highlighted_progress(text, delivered_end, unit.end), f"Native stream · unit {index}/{len(units)} · chunk {count}"
-                delivered_end = unit.end
+            chunks = pcm16_lookahead(
+                stream_synthesize(text, reference, paths.output, language, family, paths, base=base),
+                TTS_RATE,
+                float(LIVE_AUDIO["tts_gradio_min_seconds"]),
+            )
+            for raw in chunks:
+                count += 1
+                yield (TTS_RATE, np.frombuffer(raw, dtype="<i2").copy()), highlighted_progress(text, 0, len(text)), f"Native stream · chunk {count} · one ahead"
             outcome = "ok"
             yield gr.skip(), highlighted_progress(text, len(text), len(text)), "Native stream · complete"
         except Exception:
@@ -324,7 +337,6 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
     live_language_default = LIVE_SETTINGS["tts_language"]
 
     with gr.Blocks(fill_width=True, title="Trident", delete_cache=(86400, 86400)) as demo:
-        session_id = gr.State(value=lambda: uuid4().hex, time_to_live=3600, delete_callback=_cleanup_session)
         gr.HTML("<div class='trident-hero'><h1>Trident Full-Duplex Console</h1><p>Parakeet TDT 0.6B v3 multilingual ASR on Vulkan · Smart Turn v3.2 multilingual endpointing on CPU · resident Gemma · resident Chatterbox.</p></div>")
 
         with gr.Accordion("Shared TTS deck", open=False):
@@ -397,21 +409,21 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
                     config_status = gr.Textbox(value="", label="Config", interactive=False, elem_classes="trident-status")
 
             live_inputs = [ingestion, vad_threshold, vad_silence, system_prompt, tts_mode, family, language, voice, join]
-            start_event = start_button.click(start_conversation, [session_id, *live_inputs], [transcript, answer, progress, live_status], concurrency_limit=None, show_progress="minimal")
-            start_event.then(lambda mode: microphone_recording(mode == "continuous"), ingestion, mic, queue=False).then(conversation_pump, session_id, [transcript, answer, progress, live_audio, live_status], concurrency_limit=None, show_progress="hidden")
-            mic.stream(feed_conversation, [mic, session_id], outputs=None, time_limit=LIVE_AUDIO["mic_time_limit_seconds"], stream_every=LIVE_AUDIO["asr_feed_seconds"], concurrency_limit=1, show_progress="hidden")
-            ptt_on_event = ptt_on.click(ptt_start, session_id, live_status, concurrency_limit=None)
+            start_event = start_button.click(start_conversation, live_inputs, [transcript, answer, progress, live_status], concurrency_limit=None, show_progress="minimal")
+            start_event.then(lambda mode: microphone_recording(mode == "continuous"), ingestion, mic, queue=False).then(conversation_pump, outputs=[transcript, answer, progress, live_audio, live_status], concurrency_limit=None, show_progress="hidden")
+            mic.stream(feed_conversation, mic, outputs=None, time_limit=LIVE_AUDIO["mic_time_limit_seconds"], stream_every=LIVE_AUDIO["asr_feed_seconds"], concurrency_limit=1, show_progress="hidden")
+            ptt_on_event = ptt_on.click(ptt_start, outputs=live_status, concurrency_limit=None)
             ptt_on_event.then(lambda: microphone_recording(True), outputs=mic, queue=False)
-            ptt_send.click(lambda: microphone_recording(False), outputs=mic, queue=False).then(ptt_stop, session_id, live_status, concurrency_limit=None)
-            submit_button.click(manual_submit, [manual_text, session_id], manual_text, concurrency_limit=None)
-            save_button.click(save_config, [session_id, *live_inputs], config_status, concurrency_limit=None)
-            stop_button.click(lambda: microphone_recording(False), outputs=mic, queue=False).then(stop_conversation, session_id, live_status, concurrency_limit=None, show_progress="minimal")
+            ptt_send.click(lambda: microphone_recording(False), outputs=mic, queue=False).then(ptt_stop, outputs=live_status, concurrency_limit=None)
+            submit_button.click(manual_submit, manual_text, manual_text, concurrency_limit=None)
+            save_button.click(save_config, live_inputs, config_status, concurrency_limit=None)
+            stop_button.click(lambda: microphone_recording(False), outputs=mic, queue=False).then(stop_conversation, outputs=live_status, concurrency_limit=None, show_progress="minimal")
 
         with gr.Tab("Manual TTS"):
             with gr.Row(equal_height=False):
                 with gr.Column(elem_classes="trident-deck"):
                     manual_tts_text = gr.Textbox(label="Text", lines=9)
-                    manual_tts_mode = gr.Radio([("Native real stream", "real"), ("Buffered WAV · one speech unit/request", "buffered")], value="real", label="Delivery")
+                    manual_tts_mode = gr.Radio([("Native real stream", "real"), ("Buffered WAV · one native request", "buffered")], value="real", label="Delivery")
                     with gr.Row():
                         speak_button = gr.Button("Speak", variant="primary")
                         stop_speak = gr.Button("Stop after current chunk")
@@ -487,6 +499,8 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
                     install_button = gr.Button("Install / repair")
                     install_output = gr.Textbox(label="Installer output", lines=8, interactive=False, elem_classes="trident-status")
                     install_button.click(cli_install, install_family, install_output, concurrency_limit=None, show_progress="minimal")
+
+        demo.unload(cleanup_session)
 
     return demo.queue(default_concurrency_limit=None, max_size=32)
 
