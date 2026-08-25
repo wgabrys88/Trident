@@ -162,7 +162,7 @@ def _english_family(name, repo, revision, t3_source, t3_file, t3_size, first_cha
     return _family(
         name, {"en": "English"},
         {"seed": 42, "max_tokens": 768, "top_k": 1000, "top_p": 0.95,
-         "min_p": 0.0, "temperature": 0.8, "repeat_penalty": 1.2, "cfm_steps": 2},
+         "min_p": 0.0, "temperature": 0.8, "repeat_penalty": 1.2, "cfm_steps": 1 if name == "nano" and HARDWARE_PROFILE == "irisxe" else 2},
         {"cfg_weight": 0.0, "exaggeration": 0.0},
         {"first_chars": first_chars, "chars": 280}, t3, codec,
     )
