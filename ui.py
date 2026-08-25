@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import io
 import subprocess
 import sys
 import threading
+import wave
 from pathlib import Path
 
 import gradio as gr
@@ -11,36 +13,46 @@ import numpy as np
 
 from config import ASR_RATE, FAMILIES, LANGUAGES, LIVE_AUDIO, LIVE_SETTINGS, REFERENCE_VOICES, TTS_RATE, Paths, resolve_voice, save_live_settings
 from conversation import Conversation
-from main import effective_family, finish, prepared_reference, resolved_tts, start_run, stream_synthesize, synthesize_text, tts_endpoint, write_meta
-from ui_streaming import highlighted_progress, pcm16_lookahead
+from main import effective_family, finish, prepared_reference, resolved_tts, start_run, stream_synthesize, synthesize_text, tts_endpoint, tts_metrics, write_meta
 
 ROOT = Path(__file__).resolve().parent
 INT_FLAGS = {
     "n_gpu_layers": "--n-gpu-layers", "context": "--context", "threads": "--threads", "seed": "--seed",
     "max_tokens": "--max-tokens", "top_k": "--top-k", "cfm_steps": "--cfm-steps",
     "first_chunk_chars": "--first-chunk-chars", "chunk_chars": "--chunk-chars",
-    "stream_first_chunk_tokens": "--stream-first-chunk-tokens", "stream_chunk_tokens": "--stream-chunk-tokens",
 }
 FLOAT_FLAGS = {
     "top_p": "--top-p", "min_p": "--min-p", "temperature": "--temperature",
     "repeat_penalty": "--repeat-penalty", "cfg_weight": "--cfg-weight", "exaggeration": "--exaggeration",
 }
-TTS_SETTING_KEYS = ["family", "language", "voice", "reference", "join", *INT_FLAGS, *FLOAT_FLAGS]
+TTS_SETTING_KEYS = ["family", "language", "voice", "reference_mode", "reference", "join", *INT_FLAGS, *FLOAT_FLAGS]
 LIVE_SETTING_KEYS = [
     "ingestion_mode", "vad_threshold", "vad_silence_ms",
     "system_prompt", "tts_mode", "tts_family", "tts_language", "tts_voice", "tts_join",
 ]
 CSS = """
-.gradio-container {max-width: 1560px !important;}
-.trident-hero {padding: 14px 18px; border: 1px solid var(--border-color-primary); border-radius: 14px; margin-bottom: 10px;}
-.trident-hero h1 {margin: 0 0 4px 0; font-size: 1.55rem;}
-.trident-hero p {margin: 0; opacity: .72;}
-.trident-deck {border: 1px solid var(--border-color-primary); border-radius: 14px; padding: 10px;}
+.gradio-container {max-width: 1480px !important;}
+.trident-hero {padding: 12px 2px 18px 2px;}
+.trident-hero h1 {margin: 0; font-size: 1.55rem;}
+.trident-hero p {margin: 4px 0 0 0; opacity: .70;}
+.trident-card {border: 1px solid var(--border-color-primary); border-radius: 12px; padding: 10px;}
 .trident-status textarea {font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;}
 """
 
 _sessions: dict[str, Conversation] = {}
 _sessions_lock = threading.Lock()
+
+
+def _wav_bytes(pcm16: bytes) -> bytes:
+    if not pcm16:
+        return b""
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(TTS_RATE)
+        output.writeframes(pcm16)
+    return buffer.getvalue()
 
 
 def _pcm16k(audio) -> bytes:
@@ -72,8 +84,12 @@ def _namespace(settings: dict, streaming: bool) -> argparse.Namespace:
 
 
 def _reference(root: Paths, settings: dict) -> Path:
-    custom = settings.get("reference")
-    return Path(custom).resolve() if custom else resolve_voice(root.data_dir, settings["voice"])
+    if settings["reference_mode"] == "custom":
+        custom = settings.get("reference")
+        if not custom:
+            raise RuntimeError("record or upload a custom reference first")
+        return Path(custom).resolve()
+    return resolve_voice(root.data_dir, settings["voice"])
 
 
 def _cli(root: Paths, parts: list[str]) -> str:
@@ -84,13 +100,13 @@ def _cli(root: Paths, parts: list[str]) -> str:
     return result.stdout.strip()
 
 
-def _tts_cli_args(root: Paths, settings: dict, streaming: bool, language_flag: str = "--language") -> list[str]:
+def _tts_cli_args(root: Paths, settings: dict, streaming: bool | None, language_flag: str = "--language") -> list[str]:
     args = [
         "--family", settings["family"], language_flag, settings["language"],
         "-r", str(_reference(root, settings)),
-        "--streaming" if streaming else "--no-streaming",
-        "--stream-join", settings["join"],
     ]
+    if streaming is not None:
+        args += ["--streaming" if streaming else "--no-streaming", "--stream-join", settings["join"]]
     for key, flag in INT_FLAGS.items():
         value = settings.get(key)
         if value is not None:
@@ -131,12 +147,40 @@ def _cleanup_session(session_id: str) -> None:
         engine.close()
 
 
+def _mode_help(mode: str) -> str:
+    if mode == "ptt":
+        return "**Push to talk:** start the engine, record one complete utterance, then press **Stop** on the microphone. That recording is sent as one turn."
+    return "**Hands-free:** the microphone stays open. Silero finds candidate pauses and Smart Turn decides whether the utterance is complete before ASR is dispatched."
+
+
+def _tts_status(label: str, result: str) -> str:
+    metrics = tts_metrics(result)
+    return f"{label} · {metrics['audio_s']:.1f}s audio · RTF {metrics['rtf']:.3f} · {metrics['x_realtime']:.2f}× realtime"
+
+
 def build(models_dir: Path | None = None, data_dir: Path | None = None):
     root = Paths(models_dir, data_dir)
+    runs_dir = root.data_dir / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
 
     def family_changed(name):
         family = FAMILIES[name]
-        return gr.Dropdown(choices=list(family["TTS_LANGUAGES"]), value=family["DEFAULT_REPLY_LANGUAGE"])
+        multilingual = name == "v3"
+        note = (
+            "**Multilingual V3:** Min P, CFG weight, and exaggeration are active model controls."
+            if multilingual else
+            "**Turbo / Nano:** upstream uses Temperature, Top K, Top P, and repetition penalty. Min P, CFG weight, and exaggeration are unsupported and are hidden here."
+        )
+        return (
+            gr.Dropdown(choices=list(family["TTS_LANGUAGES"]), value=family["DEFAULT_REPLY_LANGUAGE"]),
+            gr.Number(value=None, visible=multilingual),
+            gr.Number(value=None, visible=multilingual),
+            gr.Number(value=None, visible=multilingual),
+            note,
+        )
+
+    def custom_reference_changed(mode: str):
+        return gr.Audio(value=None, visible=mode == "custom")
 
     def live_settings(values) -> dict:
         settings = dict(zip(LIVE_SETTING_KEYS, values, strict=True))
@@ -153,7 +197,7 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
             engine = _sessions.get(_session_id(request))
             if engine and engine.active:
                 engine.configure(settings)
-        return "Configuration written to config.py"
+        return "Saved to config.py"
 
     def start_conversation(request: gr.Request, *values):
         session_id = _session_id(request)
@@ -166,23 +210,43 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
             _sessions[session_id] = engine
         if previous:
             previous.close()
-        return engine.transcript, engine.answer, engine.progress, engine.status
+        continuous = settings["ingestion_mode"] == "continuous"
+        return (
+            engine.transcript, engine.answer, engine.status,
+            gr.Audio(value=None, visible=continuous, interactive=continuous, recording=continuous),
+            gr.Audio(value=None, visible=not continuous, interactive=not continuous, recording=False),
+            gr.Button(interactive=False), gr.Button(interactive=True),
+            gr.Radio(interactive=False), gr.Button(interactive=True),
+        )
 
     def conversation_pump(request: gr.Request):
+        session_id = _session_id(request)
         with _sessions_lock:
-            engine = _sessions[_session_id(request)]
+            engine = _sessions.get(session_id)
+        if engine is None:
+            return
+        unchanged_controls = (gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip(), gr.skip())
+        stopped_controls = (
+            gr.Audio(value=None, interactive=False, recording=False),
+            gr.Audio(value=None, interactive=False, recording=False),
+            gr.Button(interactive=True), gr.Button(interactive=False),
+            gr.Radio(interactive=True), gr.Button(interactive=False),
+        )
         while True:
             kind, payload = engine.next_output()
             audio = gr.skip()
             if kind == "audio-pcm":
-                audio = (TTS_RATE, np.frombuffer(payload, dtype="<i2").copy())
+                audio = _wav_bytes(payload)
             elif kind == "audio-file":
                 audio = payload
-            yield engine.transcript, engine.answer, engine.progress, audio, engine.status
             if kind == "error":
+                _cleanup_session(session_id)
+                yield engine.transcript, engine.answer, audio, engine.status, *stopped_controls
                 raise RuntimeError(str(payload))
             if kind == "closed":
+                yield engine.transcript, engine.answer, audio, engine.status, *stopped_controls
                 return
+            yield engine.transcript, engine.answer, audio, engine.status, *unchanged_controls
 
     def feed_conversation(audio, request: gr.Request):
         pcm_f32 = _pcm16k(audio)
@@ -191,32 +255,36 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
             if engine is not None:
                 engine.feed_audio(pcm_f32)
 
-    def ptt_start(request: gr.Request):
+    def ptt_submit(audio, request: gr.Request):
+        pcm_f32 = _pcm16k(audio)
         with _sessions_lock:
-            engine = _sessions[_session_id(request)]
-            engine.ptt_start()
-            return engine.status
-
-    def ptt_stop(request: gr.Request):
-        with _sessions_lock:
-            engine = _sessions[_session_id(request)]
-            engine.ptt_stop()
-            return engine.status
-
-    def microphone_recording(enabled: bool):
-        return gr.Audio(recording=enabled)
+            engine = _sessions.get(_session_id(request))
+            if engine is None:
+                return gr.Audio(value=None, interactive=False, recording=False), "Stopped"
+            engine.submit_audio(pcm_f32)
+            return gr.Audio(value=None, interactive=True, recording=False), engine.status
 
     def manual_submit(text: str, request: gr.Request):
         with _sessions_lock:
-            engine = _sessions[_session_id(request)]
+            engine = _sessions.get(_session_id(request))
+            if engine is None:
+                raise RuntimeError("start the conversation engine before submitting a turn")
             engine.submit(str(text or ""))
         return ""
 
+    def prepare_stop():
+        return (
+            gr.Audio(value=None, interactive=False, recording=False),
+            gr.Audio(value=None, interactive=False, recording=False),
+            gr.Button(interactive=False), gr.Button(interactive=False),
+        )
+
     def stop_conversation(request: gr.Request):
         with _sessions_lock:
-            engine = _sessions.pop(_session_id(request))
-        engine.stop()
-        return engine.status
+            engine = _sessions.pop(_session_id(request), None)
+        if engine is not None:
+            engine.stop()
+        return "Stopped", gr.Button(interactive=True), gr.Radio(interactive=True)
 
     def cleanup_session(request: gr.Request):
         _cleanup_session(_session_id(request))
@@ -233,6 +301,7 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
         paths = start_run("ui-tts", root.models_dir, root.data_dir)
         outcome = "aborted"
         try:
+            yield gr.skip(), "Preparing synthesis"
             reference = prepared_reference(_reference(root, settings), root.data_dir)
             base = tts_endpoint(reference, language, family, paths)
             write_meta(
@@ -241,24 +310,31 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
                 join=settings["join"], output=paths.output,
             )
             if mode == "buffered":
+                yield gr.skip(), "Buffered · synthesizing"
                 result = synthesize_text(text, reference, paths.output, language, family, paths, base=base, streaming=False)
                 if not paths.output.is_file():
                     raise RuntimeError(f"Chatterbox did not create buffered output: {result}")
                 outcome = "ok"
-                yield str(paths.output), highlighted_progress(text, len(text), len(text)), "Buffered WAV · complete"
+                yield str(paths.output), _tts_status("Buffered · complete", result)
                 return
 
-            count = 0
-            chunks = pcm16_lookahead(
-                stream_synthesize(text, reference, paths.output, language, family, paths, base=base),
-                TTS_RATE,
-                float(LIVE_AUDIO["tts_gradio_min_seconds"]),
-            )
-            for raw in chunks:
-                count += 1
-                yield (TTS_RATE, np.frombuffer(raw, dtype="<i2").copy()), highlighted_progress(text, 0, len(text)), f"Native stream · chunk {count} · one ahead"
-            outcome = "ok"
-            yield gr.skip(), highlighted_progress(text, len(text), len(text)), "Native stream · complete"
+            yield gr.skip(), "Streaming · waiting for first speech unit"
+            generator = stream_synthesize(text, reference, paths.output, language, family, paths, base=base)
+            units = 0
+            audio_samples = 0
+            while True:
+                try:
+                    raw = next(generator)
+                except StopIteration as done:
+                    result = str(done.value or "")
+                    if not result:
+                        raise RuntimeError("resident TTS stream ended without a completion result")
+                    outcome = "ok"
+                    yield gr.skip(), _tts_status("Streaming · complete", result)
+                    return
+                units += 1
+                audio_samples += len(raw) // 2
+                yield _wav_bytes(raw), f"Streaming · speech unit {units} · {audio_samples / TTS_RATE:.1f}s audio ready"
         except Exception:
             outcome = "error"
             raise
@@ -325,184 +401,240 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
     def cli_resident_stop():
         return _cli(root, ["resident", "stop"])
 
-    def cli_resident_warm(cli_streaming: bool, *values):
+    def cli_resident_warm(*values):
         settings = _settings(values)
-        return _cli(root, ["resident", "warm", *_tts_cli_args(root, settings, streaming=bool(cli_streaming), language_flag="--tts-language")])
+        return _cli(root, ["resident", "warm", *_tts_cli_args(root, settings, streaming=None, language_flag="--tts-language")])
 
     def cli_install(family_name: str):
         return _cli(root, ["install", "--family", family_name]) or "Install complete"
+
+    def selected_log(value) -> Path | None:
+        if isinstance(value, list):
+            value = value[0] if value else None
+        if value:
+            candidate = Path(value)
+            if not candidate.is_absolute():
+                candidate = runs_dir / candidate
+            candidate = candidate.resolve()
+            try:
+                candidate.relative_to(runs_dir.resolve())
+            except ValueError as exc:
+                raise RuntimeError("selected log is outside the run directory") from exc
+            if candidate.is_file():
+                return candidate
+        files = [path for path in runs_dir.glob("*/*-trident.log") if path.is_file()]
+        return max(files, key=lambda path: path.stat().st_mtime_ns) if files else None
+
+    def read_log(value=None) -> str:
+        path = selected_log(value)
+        return path.read_text(encoding="utf-8", errors="replace") if path else "No Trident run logs yet."
 
     voices = list(REFERENCE_VOICES)
     family_default = LIVE_SETTINGS["tts_family"]
     live_language_default = LIVE_SETTINGS["tts_language"]
 
     with gr.Blocks(fill_width=True, title="Trident", delete_cache=(86400, 86400)) as demo:
-        gr.HTML("<div class='trident-hero'><h1>Trident Full-Duplex Console</h1><p>Parakeet TDT 0.6B v3 multilingual ASR on Vulkan · Smart Turn v3.2 multilingual endpointing on CPU · resident Gemma · resident Chatterbox.</p></div>")
+        gr.HTML("<div class='trident-hero'><h1>Trident</h1><p>Local multilingual speech pipeline · Parakeet TDT · Smart Turn · Gemma · Chatterbox.</p></div>")
 
-        with gr.Accordion("Shared TTS deck", open=False):
-            with gr.Row():
-                family = gr.Dropdown(list(FAMILIES), value=family_default, label="Family")
-                language = gr.Dropdown(list(FAMILIES[family_default]["TTS_LANGUAGES"]), value=live_language_default, label="Language")
-                voice = gr.Dropdown(voices, value=LIVE_SETTINGS["tts_voice"], label="Voice")
-                reference = gr.Audio(sources=["upload", "microphone"], type="filepath", label="Custom reference · manual/CLI")
-                join = gr.Radio([("Chunks", "chunks"), ("Crossfade", "crossfade")], value=LIVE_SETTINGS["tts_join"], label="Join")
-            with gr.Accordion("Engine overrides · blank means family default", open=False):
-                with gr.Row():
-                    n_gpu_layers = gr.Number(value=None, precision=0, label="GPU layers")
-                    context = gr.Number(value=None, precision=0, label="Context")
-                    threads = gr.Number(value=None, precision=0, label="Threads")
-                    seed = gr.Number(value=None, precision=0, label="Seed")
-                    max_tokens = gr.Number(value=None, precision=0, label="Max tokens")
-                    top_k = gr.Number(value=None, precision=0, label="Top K")
-                with gr.Row():
-                    top_p = gr.Number(value=None, label="Top P")
-                    min_p = gr.Number(value=None, label="Min P")
-                    temperature = gr.Number(value=None, label="Temperature")
-                    repeat_penalty = gr.Number(value=None, label="Repeat penalty")
-                    cfm_steps = gr.Number(value=None, precision=0, label="CFM steps")
-                    cfg_weight = gr.Number(value=None, label="CFG weight")
-                    exaggeration = gr.Number(value=None, label="Exaggeration")
-                with gr.Row():
-                    first_chunk_chars = gr.Number(value=None, precision=0, label="First text chunk chars")
-                    chunk_chars = gr.Number(value=None, precision=0, label="Text chunk chars")
-                    stream_first_chunk_tokens = gr.Number(value=None, precision=0, label="First stream tokens")
-                    stream_chunk_tokens = gr.Number(value=None, precision=0, label="Stream tokens")
+        with gr.Sidebar(label="Speech settings", open=False, width=340):
+            gr.Markdown("### Speech output")
+            family = gr.Dropdown(list(FAMILIES), value=family_default, label="Chatterbox family")
+            language = gr.Dropdown(list(FAMILIES[family_default]["TTS_LANGUAGES"]), value=live_language_default, label="Spoken language")
+            voice = gr.Dropdown(voices, value=LIVE_SETTINGS["tts_voice"], label="Preset voice")
+            join = gr.Radio([("Crossfade", "crossfade"), ("Separate chunks", "chunks")], value=LIVE_SETTINGS["tts_join"], label="Speech-unit join")
+            gr.Markdown("Preset voice is used by Conversation. Manual TTS and CLI can instead use a temporary reference; recording one does not create a new preset.")
+            reference_mode = gr.Radio([("Use preset", "preset"), ("Use custom reference", "custom")], value="preset", label="Manual / CLI voice source")
+            reference = gr.Audio(sources=["upload", "microphone"], type="filepath", label="Custom voice reference", visible=False)
+            with gr.Accordion("Manual / CLI engine overrides", open=False):
+                gr.Markdown("Conversation uses the selected family defaults. These overrides apply to Manual TTS, CLI actions, and Runtime Warm. Blank values use family defaults; changing resident settings can restart Chatterbox.")
+                family_note = gr.Markdown(
+                    "**Multilingual V3:** Min P, CFG weight, and exaggeration are active model controls."
+                    if family_default == "v3" else
+                    "**Turbo / Nano:** upstream uses Temperature, Top K, Top P, and repetition penalty. Min P, CFG weight, and exaggeration are unsupported and are hidden here."
+                )
+                n_gpu_layers = gr.Number(value=None, precision=0, label="GPU layers")
+                context = gr.Number(value=None, precision=0, label="Context")
+                threads = gr.Number(value=None, precision=0, label="Threads")
+                seed = gr.Number(value=None, precision=0, label="Seed")
+                max_tokens = gr.Number(value=None, precision=0, label="Max T3 tokens")
+                top_k = gr.Number(value=None, precision=0, label="Top K")
+                top_p = gr.Number(value=None, label="Top P")
+                min_p = gr.Number(value=None, label="Min P", visible=family_default == "v3")
+                temperature = gr.Number(value=None, label="Temperature")
+                repeat_penalty = gr.Number(value=None, label="Repeat penalty")
+                cfm_steps = gr.Number(value=None, precision=0, label="CFM steps")
+                cfg_weight = gr.Number(value=None, label="CFG weight", visible=family_default == "v3")
+                exaggeration = gr.Number(value=None, label="Exaggeration", visible=family_default == "v3")
+                first_chunk_chars = gr.Number(value=None, precision=0, label="First streaming text-unit chars")
+                chunk_chars = gr.Number(value=None, precision=0, label="Text-unit chars")
+
         tts_inputs = [
-            family, language, voice, reference, join,
+            family, language, voice, reference_mode, reference, join,
             n_gpu_layers, context, threads, seed, max_tokens, top_k, cfm_steps,
-            first_chunk_chars, chunk_chars, stream_first_chunk_tokens, stream_chunk_tokens,
+            first_chunk_chars, chunk_chars,
             top_p, min_p, temperature, repeat_penalty, cfg_weight, exaggeration,
         ]
-        family.change(family_changed, family, language, queue=False)
+        family.change(family_changed, family, [language, min_p, cfg_weight, exaggeration, family_note], queue=False)
+        reference_mode.change(custom_reference_changed, reference_mode, reference, queue=False)
 
-        with gr.Tab("Conversation"):
-            with gr.Row(equal_height=False):
-                with gr.Column(scale=1, min_width=340, elem_classes="trident-deck"):
-                    ingestion = gr.Radio([("Continuous", "continuous"), ("Push-to-talk gate", "ptt")], value=LIVE_SETTINGS["ingestion_mode"], label="Microphone mode")
-                    mic = gr.Audio(sources=["microphone"], type="numpy", streaming=True, label=f"Microphone · {LIVE_AUDIO['asr_feed_seconds'] * 1000:.0f} ms transport")
-                    with gr.Row():
-                        start_button = gr.Button("Start engine", variant="primary")
-                        stop_button = gr.Button("Stop engine")
-                    with gr.Row():
-                        ptt_on = gr.Button("PTT ON")
-                        ptt_send = gr.Button("PTT SEND")
-                    live_status = gr.Textbox(value="Stopped", label="Pipeline status", interactive=False, elem_classes="trident-status")
-                with gr.Column(scale=2, min_width=480, elem_classes="trident-deck"):
-                    transcript = gr.Textbox(label="Parakeet TDT multilingual transcript", lines=6, interactive=False)
-                    answer = gr.Textbox(label="Gemma streaming response", lines=7, interactive=False)
-                    progress = gr.HighlightedText(label="TTS progress", show_legend=True, show_inline_category=False, combine_adjacent=True, color_map={"sent": "#22c55e", "buffered": "#f59e0b", "pending": "#64748b"})
-                    live_audio = gr.Audio(label="Spoken response", streaming=True, autoplay=True)
+        with gr.Tabs():
+            with gr.Tab("Conversation"):
+                with gr.Row(equal_height=False):
+                    with gr.Column(scale=1, min_width=340, elem_classes="trident-card"):
+                        ingestion = gr.Radio(
+                            [("Hands-free · automatic turns", "continuous"), ("Push to talk · Record / Stop", "ptt")],
+                            value=LIVE_SETTINGS["ingestion_mode"], label="Microphone mode",
+                        )
+                        mode_help = gr.Markdown(_mode_help(LIVE_SETTINGS["ingestion_mode"]))
+                        handsfree_mic = gr.Audio(
+                            sources=["microphone"], type="numpy", streaming=True, interactive=False,
+                            visible=LIVE_SETTINGS["ingestion_mode"] == "continuous", label="Hands-free microphone",
+                        )
+                        ptt_mic = gr.Audio(
+                            sources=["microphone"], type="numpy", streaming=False, interactive=False,
+                            visible=LIVE_SETTINGS["ingestion_mode"] == "ptt", label="Push-to-talk microphone",
+                        )
+                        with gr.Row():
+                            start_button = gr.Button("Start", variant="primary")
+                            stop_button = gr.Button("Stop", interactive=False)
+                        live_status = gr.Textbox(value="Stopped", label="Pipeline status", interactive=False, elem_classes="trident-status")
+                    with gr.Column(scale=2, min_width=480, elem_classes="trident-card"):
+                        transcript = gr.Textbox(label="Transcript", lines=6, interactive=False)
+                        answer = gr.Textbox(label="Response", lines=7, interactive=False)
+                        live_audio = gr.Audio(label="Spoken response", streaming=True, autoplay=True)
 
-            with gr.Row(equal_height=False):
-                with gr.Column(elem_classes="trident-deck"):
-                    gr.Markdown("### Turn detection · Silero candidate silence → Smart Turn v3.2 multilingual CPU decision")
-                    vad_threshold = gr.Slider(0.1, 0.9, value=LIVE_SETTINGS["vad_threshold"], step=0.05, label="Silero speech threshold")
-                    vad_silence = gr.Slider(100, 1500, value=LIVE_SETTINGS["vad_silence_ms"], step=20, label="Candidate silence · ms")
-                with gr.Column(elem_classes="trident-deck"):
-                    gr.Markdown("### Dialogue behavior")
-                    system_prompt = gr.Textbox(value=LIVE_SETTINGS["system_prompt"], label="Dynamic system prompt", lines=7)
-                    tts_mode = gr.Radio([("Native stream", "real"), ("Buffered WAV · one speech unit/request", "buffered")], value=LIVE_SETTINGS["tts_mode"], label="Conversation TTS delivery")
-                    manual_text = gr.Textbox(label="Manual prompt", placeholder="Enter text, or leave blank to flush current ASR")
-                    with gr.Row():
-                        submit_button = gr.Button("Submit now")
-                        save_button = gr.Button("Apply config")
-                    config_status = gr.Textbox(value="", label="Config", interactive=False, elem_classes="trident-status")
+                with gr.Accordion("Conversation settings", open=False):
+                    with gr.Row(equal_height=False):
+                        with gr.Column():
+                            with gr.Column(visible=LIVE_SETTINGS["ingestion_mode"] == "continuous") as vad_group:
+                                gr.Markdown("**Hands-free turn detection.** Silero only proposes a pause; Smart Turn v3.2 makes the multilingual complete/incomplete decision on CPU. The default candidate pause matches Smart Turn's intended VAD handoff.")
+                                vad_threshold = gr.Slider(0.1, 0.9, value=LIVE_SETTINGS["vad_threshold"], step=0.05, label="Silero speech threshold")
+                                vad_silence = gr.Slider(100, 1500, value=LIVE_SETTINGS["vad_silence_ms"], step=20, label="Candidate silence · ms")
+                        with gr.Column():
+                            system_prompt = gr.Textbox(value=LIVE_SETTINGS["system_prompt"], label="System prompt", lines=7)
+                            tts_mode = gr.Radio([("Stream speech units", "real"), ("Buffered WAV units", "buffered")], value=LIVE_SETTINGS["tts_mode"], label="Conversation TTS delivery")
+                            manual_text = gr.Textbox(label="Manual turn", placeholder="Send text directly, or leave empty to finalize captured speech")
+                            with gr.Row():
+                                submit_button = gr.Button("Send turn", interactive=False)
+                                save_button = gr.Button("Save settings")
+                            config_status = gr.Textbox(value="", label="Configuration", interactive=False, elem_classes="trident-status")
 
-            live_inputs = [ingestion, vad_threshold, vad_silence, system_prompt, tts_mode, family, language, voice, join]
-            start_event = start_button.click(start_conversation, live_inputs, [transcript, answer, progress, live_status], concurrency_limit=None, show_progress="minimal")
-            start_event.then(lambda mode: microphone_recording(mode == "continuous"), ingestion, mic, queue=False).then(conversation_pump, outputs=[transcript, answer, progress, live_audio, live_status], concurrency_limit=None, show_progress="hidden")
-            mic.stream(feed_conversation, mic, outputs=None, time_limit=LIVE_AUDIO["mic_time_limit_seconds"], stream_every=LIVE_AUDIO["asr_feed_seconds"], concurrency_limit=1, show_progress="hidden")
-            ptt_on_event = ptt_on.click(ptt_start, outputs=live_status, concurrency_limit=None)
-            ptt_on_event.then(lambda: microphone_recording(True), outputs=mic, queue=False)
-            ptt_send.click(lambda: microphone_recording(False), outputs=mic, queue=False).then(ptt_stop, outputs=live_status, concurrency_limit=None)
-            submit_button.click(manual_submit, manual_text, manual_text, concurrency_limit=None)
-            save_button.click(save_config, live_inputs, config_status, concurrency_limit=None)
-            stop_button.click(lambda: microphone_recording(False), outputs=mic, queue=False).then(stop_conversation, outputs=live_status, concurrency_limit=None, show_progress="minimal")
+                live_inputs = [ingestion, vad_threshold, vad_silence, system_prompt, tts_mode, family, language, voice, join]
+                def mode_changed(mode: str):
+                    return (
+                        _mode_help(mode), gr.Column(visible=mode == "continuous"),
+                        gr.Audio(visible=mode == "continuous", interactive=False, recording=False),
+                        gr.Audio(visible=mode == "ptt", interactive=False, recording=False),
+                    )
 
-        with gr.Tab("Manual TTS"):
-            with gr.Row(equal_height=False):
-                with gr.Column(elem_classes="trident-deck"):
-                    manual_tts_text = gr.Textbox(label="Text", lines=9)
-                    manual_tts_mode = gr.Radio([("Native real stream", "real"), ("Buffered WAV · one native request", "buffered")], value="real", label="Delivery")
-                    with gr.Row():
+                ingestion.change(mode_changed, ingestion, [mode_help, vad_group, handsfree_mic, ptt_mic], queue=False)
+                start_event = start_button.click(
+                    start_conversation, live_inputs,
+                    [transcript, answer, live_status, handsfree_mic, ptt_mic, start_button, stop_button, ingestion, submit_button],
+                    concurrency_limit=None, show_progress="minimal",
+                )
+                start_event.then(
+                    conversation_pump,
+                    outputs=[transcript, answer, live_audio, live_status, handsfree_mic, ptt_mic, start_button, stop_button, ingestion, submit_button],
+                    concurrency_limit=None, show_progress="hidden",
+                )
+                handsfree_mic.stream(feed_conversation, handsfree_mic, outputs=None, time_limit=LIVE_AUDIO["mic_time_limit_seconds"], stream_every=LIVE_AUDIO["asr_feed_seconds"], concurrency_limit=1, show_progress="hidden")
+                ptt_mic.stop_recording(ptt_submit, ptt_mic, [ptt_mic, live_status], concurrency_limit=None, show_progress="minimal")
+                submit_button.click(manual_submit, manual_text, manual_text, concurrency_limit=None, show_progress="minimal")
+                save_button.click(save_config, live_inputs, config_status, concurrency_limit=None, show_progress="minimal")
+                stop_button.click(prepare_stop, outputs=[handsfree_mic, ptt_mic, stop_button, submit_button], queue=False).then(
+                    stop_conversation, outputs=[live_status, start_button, ingestion], concurrency_limit=None, show_progress="minimal"
+                )
+
+            with gr.Tab("TTS"):
+                with gr.Row(equal_height=False):
+                    with gr.Column(elem_classes="trident-card"):
+                        manual_tts_text = gr.Textbox(label="Text", lines=10)
+                        manual_tts_mode = gr.Radio([("Stream speech units", "real"), ("Buffered WAV", "buffered")], value="real", label="Delivery")
                         speak_button = gr.Button("Speak", variant="primary")
-                        stop_speak = gr.Button("Stop after current chunk")
-                with gr.Column(elem_classes="trident-deck"):
-                    manual_output = gr.Audio(label="Output", streaming=True, autoplay=True)
-                    manual_progress = gr.HighlightedText(label="Synthesis progress", show_legend=True, show_inline_category=False, combine_adjacent=True, color_map={"sent": "#22c55e", "buffered": "#f59e0b", "pending": "#64748b"})
-                    manual_status = gr.Textbox(value="Idle", label="TTS status", interactive=False, elem_classes="trident-status")
-            speak_event = speak_button.click(speak, [manual_tts_text, manual_tts_mode, *tts_inputs], [manual_output, manual_progress, manual_status], concurrency_limit=None, show_progress="minimal")
-            stop_speak.click(None, cancels=[speak_event], queue=False)
+                    with gr.Column(elem_classes="trident-card"):
+                        manual_output = gr.Audio(label="Output", streaming=True, autoplay=True)
+                        manual_status = gr.Textbox(value="Idle", label="Synthesis status", interactive=False, elem_classes="trident-status")
+                speak_button.click(speak, [manual_tts_text, manual_tts_mode, *tts_inputs], [manual_output, manual_status], concurrency_limit=None, show_progress="minimal")
 
-        with gr.Tab("CLI parity"):
-            gr.Markdown("Every control in this tab invokes `main.py` directly. Shared TTS deck values above map one-for-one to the corresponding CLI flags.")
-            with gr.Row(equal_height=False):
-                with gr.Column(elem_classes="trident-deck"):
-                    gr.Markdown("### `asr`")
-                    asr_file = gr.Audio(sources=["upload", "microphone"], type="filepath", label="Input audio")
-                    asr_output_file = gr.Textbox(label="Optional output path (`-o`)")
-                    asr_file_button = gr.Button("Transcribe file")
-                    asr_file_text = gr.Textbox(label="Transcript", lines=6)
-                    asr_file_button.click(cli_asr, [asr_file, asr_output_file], asr_file_text, concurrency_limit=None)
-                with gr.Column(elem_classes="trident-deck"):
-                    gr.Markdown("### `brain`")
-                    brain_text = gr.Textbox(label="Text (`-t`)", lines=4)
-                    brain_file = gr.File(label="Text file", file_types=[".txt"], type="filepath")
-                    brain_output_file = gr.Textbox(label="Optional output path (`-o`)")
-                    brain_language = gr.Dropdown(list(LANGUAGES), value="en", label="Language")
-                    brain_system = gr.Textbox(label="System prompt", lines=3)
-                    brain_system_file = gr.File(label="System prompt file", file_types=[".txt"], type="filepath")
-                    brain_button = gr.Button("Run Brain")
-                    brain_output = gr.Textbox(label="Answer", lines=7)
-                    brain_button.click(cli_brain, [brain_text, brain_file, brain_output_file, brain_language, brain_system, brain_system_file], brain_output, concurrency_limit=None)
-            with gr.Row(equal_height=False):
-                with gr.Column(elem_classes="trident-deck"):
-                    gr.Markdown("### `tts`")
-                    cli_tts_text = gr.Textbox(label="Text (`-t`)", lines=5)
-                    cli_tts_file = gr.File(label="Text file", file_types=[".txt"], type="filepath")
-                    cli_tts_output_file = gr.Textbox(label="Optional output WAV path (`-o`)")
-                    cli_tts_streaming = gr.Checkbox(value=False, label="CLI `--streaming`")
-                    cli_tts_button = gr.Button("Render WAV")
-                    cli_tts_audio = gr.Audio(label="Rendered WAV")
-                    cli_tts_log = gr.Textbox(label="CLI output", lines=4, interactive=False, elem_classes="trident-status")
-                    cli_tts_button.click(cli_tts, [cli_tts_text, cli_tts_file, cli_tts_output_file, cli_tts_streaming, *tts_inputs], [cli_tts_audio, cli_tts_log], concurrency_limit=None)
-                with gr.Column(elem_classes="trident-deck"):
-                    gr.Markdown("### `run` ASR → Brain → TTS")
-                    run_audio = gr.Audio(sources=["upload", "microphone"], type="filepath", label="Input audio")
-                    run_output_file = gr.Textbox(label="Optional output WAV path (`-o`)")
-                    run_streaming = gr.Checkbox(value=False, label="CLI `--streaming` for TTS")
-                    run_system = gr.Textbox(label="System prompt", lines=3)
-                    run_system_file = gr.File(label="System prompt file", file_types=[".txt"], type="filepath")
-                    run_button = gr.Button("Run pipeline", variant="primary")
-                    run_transcript = gr.Textbox(label="Transcript", lines=3)
-                    run_answer = gr.Textbox(label="Answer", lines=5)
-                    run_output = gr.Audio(label="Response WAV")
-                    run_log = gr.Textbox(label="CLI output", lines=5, interactive=False, elem_classes="trident-status")
-                    run_button.click(cli_run, [run_audio, run_output_file, run_streaming, run_system, run_system_file, *tts_inputs], [run_transcript, run_answer, run_output, run_log], concurrency_limit=None)
+            with gr.Tab("CLI"):
+                gr.Markdown("This tab intentionally executes `main.py` so command-line behavior can be checked from the same interface. Manual TTS above uses the resident Python path directly.")
+                with gr.Row(equal_height=False):
+                    with gr.Column(elem_classes="trident-card"):
+                        gr.Markdown("### ASR")
+                        asr_file = gr.Audio(sources=["upload", "microphone"], type="filepath", label="Input audio")
+                        asr_output_file = gr.Textbox(label="Optional transcript output path")
+                        asr_file_button = gr.Button("Transcribe")
+                        asr_file_text = gr.Textbox(label="Transcript", lines=6)
+                        asr_file_button.click(cli_asr, [asr_file, asr_output_file], asr_file_text, concurrency_limit=None, show_progress="minimal")
+                    with gr.Column(elem_classes="trident-card"):
+                        gr.Markdown("### Brain")
+                        brain_text = gr.Textbox(label="Text", lines=4)
+                        brain_file = gr.File(label="Text file", file_types=[".txt"], type="filepath")
+                        brain_output_file = gr.Textbox(label="Optional answer output path")
+                        brain_language = gr.Dropdown(list(LANGUAGES), value="en", label="Language")
+                        brain_system = gr.Textbox(label="System prompt", lines=3)
+                        brain_system_file = gr.File(label="System prompt file", file_types=[".txt"], type="filepath")
+                        brain_button = gr.Button("Run Brain")
+                        brain_output = gr.Textbox(label="Answer", lines=7)
+                        brain_button.click(cli_brain, [brain_text, brain_file, brain_output_file, brain_language, brain_system, brain_system_file], brain_output, concurrency_limit=None, show_progress="minimal")
+                with gr.Row(equal_height=False):
+                    with gr.Column(elem_classes="trident-card"):
+                        gr.Markdown("### TTS")
+                        cli_tts_text = gr.Textbox(label="Text", lines=5)
+                        cli_tts_file = gr.File(label="Text file", file_types=[".txt"], type="filepath")
+                        cli_tts_output_file = gr.Textbox(label="Optional WAV output path")
+                        cli_tts_streaming = gr.Checkbox(value=False, label="Streaming delivery")
+                        cli_tts_button = gr.Button("Render WAV")
+                        cli_tts_audio = gr.Audio(label="Rendered WAV")
+                        cli_tts_log = gr.Textbox(label="CLI output", lines=4, interactive=False, elem_classes="trident-status")
+                        cli_tts_button.click(cli_tts, [cli_tts_text, cli_tts_file, cli_tts_output_file, cli_tts_streaming, *tts_inputs], [cli_tts_audio, cli_tts_log], concurrency_limit=None, show_progress="minimal")
+                    with gr.Column(elem_classes="trident-card"):
+                        gr.Markdown("### Full pipeline")
+                        run_audio = gr.Audio(sources=["upload", "microphone"], type="filepath", label="Input audio")
+                        run_output_file = gr.Textbox(label="Optional WAV output path")
+                        run_streaming = gr.Checkbox(value=False, label="Streaming TTS delivery")
+                        run_system = gr.Textbox(label="System prompt", lines=3)
+                        run_system_file = gr.File(label="System prompt file", file_types=[".txt"], type="filepath")
+                        run_button = gr.Button("Run ASR → Brain → TTS", variant="primary")
+                        run_transcript = gr.Textbox(label="Transcript", lines=3)
+                        run_answer = gr.Textbox(label="Answer", lines=5)
+                        run_output = gr.Audio(label="Response WAV")
+                        run_log = gr.Textbox(label="CLI output", lines=5, interactive=False, elem_classes="trident-status")
+                        run_button.click(cli_run, [run_audio, run_output_file, run_streaming, run_system, run_system_file, *tts_inputs], [run_transcript, run_answer, run_output, run_log], concurrency_limit=None, show_progress="minimal")
 
-        with gr.Tab("Runtime"):
-            with gr.Row(equal_height=False):
-                with gr.Column(elem_classes="trident-deck"):
-                    gr.Markdown("### `resident`")
-                    resident_warm_streaming = gr.Checkbox(value=True, label="Warm streaming TTS configuration")
-                    with gr.Row():
-                        resident_status_button = gr.Button("Status")
-                        resident_warm_button = gr.Button("Warm")
-                        resident_stop_button = gr.Button("Stop all")
-                    resident_output = gr.Textbox(label="Resident state", lines=8, interactive=False, elem_classes="trident-status")
-                    resident_status_button.click(cli_resident_status, outputs=resident_output, concurrency_limit=None)
-                    resident_warm_button.click(cli_resident_warm, [resident_warm_streaming, *tts_inputs], resident_output, concurrency_limit=None)
-                    resident_stop_button.click(cli_resident_stop, outputs=resident_output, concurrency_limit=None)
-                with gr.Column(elem_classes="trident-deck"):
-                    gr.Markdown("### `install`")
-                    install_family = gr.Dropdown(["all", *FAMILIES], value="all", label="Family")
-                    install_button = gr.Button("Install / repair")
-                    install_output = gr.Textbox(label="Installer output", lines=8, interactive=False, elem_classes="trident-status")
-                    install_button.click(cli_install, install_family, install_output, concurrency_limit=None, show_progress="minimal")
+            with gr.Tab("Runtime"):
+                with gr.Row(equal_height=False):
+                    with gr.Column(elem_classes="trident-card"):
+                        gr.Markdown("### Resident models")
+                        with gr.Row():
+                            resident_status_button = gr.Button("Status")
+                            resident_warm_button = gr.Button("Warm")
+                            resident_stop_button = gr.Button("Stop all")
+                        resident_output = gr.Textbox(label="Resident state", lines=8, interactive=False, elem_classes="trident-status")
+                        resident_status_button.click(cli_resident_status, outputs=resident_output, concurrency_limit=None, show_progress="minimal")
+                        resident_warm_button.click(cli_resident_warm, tts_inputs, resident_output, concurrency_limit=None, show_progress="minimal")
+                        resident_stop_button.click(cli_resident_stop, outputs=resident_output, concurrency_limit=None, show_progress="minimal")
+                    with gr.Column(elem_classes="trident-card"):
+                        gr.Markdown("### Installation")
+                        gr.Markdown("Existing validated model files are reused. Install/repair only downloads or converts a model when its expected artifact is missing or invalid.")
+                        install_family = gr.Dropdown(["all", *FAMILIES], value="all", label="Family")
+                        install_button = gr.Button("Install / repair")
+                        install_output = gr.Textbox(label="Installer output", lines=8, interactive=False, elem_classes="trident-status")
+                        install_button.click(cli_install, install_family, install_output, concurrency_limit=None, show_progress="minimal")
+
+            with gr.Tab("Logs"):
+                gr.Markdown("Run-owned logs stay on disk and are shown here directly. Leave the selector empty to follow the newest run; choose a file to inspect an older run.")
+                with gr.Row(equal_height=False):
+                    log_file = gr.FileExplorer(glob="**/*-trident.log", root_dir=runs_dir, file_count="single", label="Run logs", max_height=520)
+                    log_view = gr.Code(value=read_log, language=None, label="Log", lines=28, max_lines=40, interactive=False, wrap_lines=True, show_line_numbers=False, buttons=["copy", "download"])
+                log_timer = gr.Timer(1.0)
+                log_timer.tick(read_log, log_file, log_view, queue=False, show_progress="hidden")
+                log_file.change(read_log, log_file, log_view, queue=False, show_progress="hidden")
 
         demo.unload(cleanup_session)
 
-    return demo.queue(default_concurrency_limit=None, max_size=32)
+    return demo.queue(default_concurrency_limit=None)
 
 
 def launch(models_dir: Path | None = None, data_dir: Path | None = None) -> None:

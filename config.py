@@ -86,14 +86,12 @@ BRAIN_GENERATION = {
     "repeat_penalty": 1.0, "seed": 42, "max_tokens": 1024,
 }
 BRAIN_THINKING = False
-LIVE_SETTINGS_JSON = '{"ingestion_mode":"continuous","system_prompt":"The incoming speech transcript is auto-detected by ASR. Produce the final spoken response only in {tts_language_name} ({tts_language}). If the input language differs, preserve its meaning while translating or answering in the output language. Spoken prose only: short sentences ending with a period, question mark, or exclamation. No markdown, lists, code, URLs, emoji, or square-bracket tags. Expand numbers and abbreviations. Do not mention transcription, models, or reasoning.","tts_family":"v3","tts_join":"crossfade","tts_language":"en","tts_mode":"real","tts_voice":"trump","vad_silence_ms":560,"vad_threshold":0.5}'
+LIVE_SETTINGS_JSON = '{"ingestion_mode":"continuous","system_prompt":"The incoming speech transcript is auto-detected by ASR. Produce the final spoken response only in {tts_language_name} ({tts_language}). If the input language differs, preserve its meaning while translating or answering in the output language. Spoken prose only: short sentences ending with a period, question mark, or exclamation. No markdown, lists, code, URLs, emoji, or square-bracket tags. Expand numbers and abbreviations. Do not mention transcription, models, or reasoning.","tts_family":"v3","tts_join":"crossfade","tts_language":"en","tts_mode":"real","tts_voice":"trump","vad_silence_ms":200,"vad_threshold":0.5}'
 LIVE_SETTINGS = json.loads(LIVE_SETTINGS_JSON)
 LIVE_AUDIO = {
     "asr_feed_seconds": 0.16,
     "vad_frame_samples": 512,
     "mic_time_limit_seconds": 86400,
-    "tts_gradio_min_seconds": 1.25,
-    "tts_speech_min_chars": 180,
     "llm_history_turns": 6,
 }
 
@@ -137,7 +135,7 @@ def _family(name, languages, sample, voice, chunk, t3, codec):
             "gpu_layers": 99, "context": 2048, "threads": 4, "fastconv": True,
         },
         "TTS_SAMPLE": sample, "TTS_VOICE": voice, "TTS_CHUNK": chunk,
-        "TTS_STREAM": {"enabled": True, "join": "crossfade", "first_tokens": 12, "tokens": 25},
+        "TTS_STREAM": {"enabled": True, "join": "crossfade"},
         "TTS_MODELS": {"chatterbox-t3": t3, "chatterbox-codec": codec},
     }
 

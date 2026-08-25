@@ -8,13 +8,13 @@ from pathlib import Path
 
 import numpy as np
 
-from config import ASR_RATE, BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_THINKING, LANGUAGES, LIVE_AUDIO, SHARED_MODELS, SMART_TURN_SECONDS, TTS_RATE, resolve_voice
+from config import ASR_RATE, BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_THINKING, LANGUAGES, LIVE_AUDIO, SHARED_MODELS, SMART_TURN_SECONDS, resolve_voice
 from installer import require_model, runtime_server
 from local_api import gemma_chat_stream
 from main import effective_family, finish, prepared_reference, render_system_prompt, resolved_tts, spoken_reply, start_run, stream_synthesize, synthesize_text, transcribe_wav, tts_endpoint, write_meta
 from log import clear_run_log, set_run_log
 from resident import ensure_gemma, ensure_parakeet
-from ui_streaming import SpeechSegmenter, highlighted_progress, pcm16_lookahead
+from ui_streaming import SpeechSegmenter
 from vad import SileroEndpoint, SmartTurnEndpoint
 
 
@@ -40,12 +40,10 @@ class Conversation:
         self.tts_thread = None
         self.active = False
         self.failure = None
-        self.ptt_open = False
         self.turn = 0
         self.transcript = ""
         self.answer = ""
         self.status = "Stopped"
-        self.progress = []
         self.history = []
         self.references: dict[str, Path] = {}
 
@@ -98,7 +96,6 @@ class Conversation:
             self.smart_turn = SmartTurnEndpoint(require_model(SHARED_MODELS["smart-turn"], self.models_dir))
             self.vad = SileroEndpoint(settings["vad_threshold"], settings["vad_silence_ms"])
             self.active = True
-            self.ptt_open = settings["ingestion_mode"] == "continuous"
             self.asr_thread = self._worker(self._asr_loop, "trident-asr")
             self.llm_thread = self._worker(self._llm_loop, "trident-llm")
             self.tts_thread = self._worker(self._tts_loop, "trident-tts")
@@ -113,35 +110,33 @@ class Conversation:
     def configure(self, settings: dict) -> None:
         vad_changed = settings["vad_threshold"] != self.settings["vad_threshold"] or settings["vad_silence_ms"] != self.settings["vad_silence_ms"]
         self.settings = dict(settings)
-        self.ptt_open = self.settings["ingestion_mode"] == "continuous"
         if vad_changed:
             self.asr_queue.put(("vad-config", (self.settings["vad_threshold"], self.settings["vad_silence_ms"])))
         self._state("Configuration applied")
-
-    def ptt_start(self) -> None:
-        if not self.active:
-            raise RuntimeError("conversation is not active")
-        self.ptt_open = True
-        self._state("Push-to-talk · open")
-
-    def ptt_stop(self) -> None:
-        if not self.active:
-            raise RuntimeError("conversation is not active")
-        self.ptt_open = False
-        self.asr_queue.put(("cut", "PTT"))
-        self._state("Push-to-talk · finalizing")
 
     def submit(self, text: str) -> None:
         if not self.active:
             raise RuntimeError("conversation is not active")
         self.asr_queue.put(("manual", text.strip()))
 
+    def submit_audio(self, pcm_f32: bytes) -> None:
+        if self.failure:
+            raise RuntimeError(str(self.failure))
+        if not self.active:
+            raise RuntimeError("conversation is not active")
+        if not pcm_f32:
+            self._state("Push-to-talk · no audio")
+            return
+        self.asr_queue.put(("feed", pcm_f32))
+        self.asr_queue.put(("cut", "PTT"))
+        self._state("Push-to-talk · finalizing")
+
     def feed_audio(self, pcm_f32: bytes) -> None:
         if self.failure:
             raise RuntimeError(str(self.failure))
         if not self.active:
             raise RuntimeError("conversation is not active")
-        if self.settings["ingestion_mode"] == "ptt" and not self.ptt_open:
+        if self.settings["ingestion_mode"] != "continuous":
             return
         if pcm_f32:
             self.asr_queue.put(("feed", pcm_f32))
@@ -185,6 +180,9 @@ class Conversation:
             text = transcribe_wav(path, self.parakeet, self.paths.run_dir / ".asr-chunks")
         finally:
             path.unlink(missing_ok=True)
+        if not text:
+            self._state(f"Parakeet · no speech · {reason}")
+            return
         self.transcript = (self.transcript.rstrip() + " " + text).strip()
         self._dispatch(reason, text)
 
@@ -257,7 +255,7 @@ class Conversation:
             raw = ""
             family = self._family(settings, settings["tts_mode"] == "real")
             hard_limit = int(family["TTS_CHUNK"]["chars"])
-            segmenter = SpeechSegmenter(min(int(LIVE_AUDIO["tts_speech_min_chars"]), hard_limit), hard_limit)
+            segmenter = SpeechSegmenter(min(int(family["TTS_CHUNK"]["first_chars"]), hard_limit), hard_limit)
             speech_started = False
 
             def enqueue(units) -> None:
@@ -272,8 +270,10 @@ class Conversation:
             for delta in gemma_chat_stream(base, self._llm_payload(prompt, settings)):
                 raw += delta
                 self.answer = raw
-                self._state(f"LLM {turn} · streaming")
-                enqueue(segmenter.update(spoken_reply(raw, streaming=True)))
+                units = segmenter.update(spoken_reply(raw, streaming=True))
+                enqueue(units)
+                if units:
+                    self._state(f"LLM {turn} · speech ready")
             answer = spoken_reply(raw)
             if not answer:
                 raise RuntimeError("Gemma returned an empty answer")
@@ -314,51 +314,30 @@ class Conversation:
 
     def _tts_real(self, turn: int, first: str, family: dict, language: str, reference: Path) -> None:
         base = tts_endpoint(reference, language, family, self.paths)
-        final_answer = ""
-        spoken = ""
         unit = first
         index = 0
-        self._state(f"TTS {turn} · native stream")
         while unit is not None:
             index += 1
-            spoken = (spoken.rstrip() + " " + unit).strip()
-            self.progress = highlighted_progress(spoken, 0, len(spoken))
+            self._state(f"TTS {turn} · streaming · speech unit {index}")
             output = self.paths.run_dir / f"tts-turn-{turn:04d}-{index:03d}.wav"
-            chunks = pcm16_lookahead(
-                stream_synthesize(unit, reference, output, language, family, self.paths, base=base, unit=index),
-                TTS_RATE,
-                float(LIVE_AUDIO["tts_gradio_min_seconds"]),
-            )
-            for raw in chunks:
-                self.status = f"TTS {turn} · native stream · unit {index}"
+            for raw in stream_synthesize(unit, reference, output, language, family, self.paths, base=base, unit=index):
                 self._emit("audio-pcm", raw)
-            unit, completed = self._next_tts(turn)
-            if completed is not None:
-                final_answer = completed
-        self.progress = highlighted_progress(final_answer, len(final_answer), len(final_answer))
+            unit, _ = self._next_tts(turn)
         self._state(f"TTS {turn} · complete")
 
     def _tts_buffered(self, turn: int, first: str, family: dict, language: str, reference: Path) -> None:
         base = tts_endpoint(reference, language, family, self.paths)
-        spoken = ""
-        final_answer = ""
         unit = first
         index = 0
-        self._state(f"TTS {turn} · buffered")
         while unit is not None:
             index += 1
-            spoken = (spoken.rstrip() + " " + unit).strip()
+            self._state(f"TTS {turn} · buffered · speech unit {index}")
             path = self.paths.run_dir / f"tts-turn-{turn:04d}-{index:03d}.wav"
             result = synthesize_text(unit, reference, path, language, family, self.paths, base=base, streaming=False, unit=index)
             if not path.is_file():
                 raise RuntimeError(f"Chatterbox did not create buffered unit {index}: {result}")
-            self.progress = highlighted_progress(spoken, 0, len(spoken))
-            self.status = f"TTS {turn} · buffered · unit {index}"
             self._emit("audio-file", str(path))
-            unit, completed = self._next_tts(turn)
-            if completed is not None:
-                final_answer = completed
-        self.progress = highlighted_progress(final_answer, len(final_answer), len(final_answer))
+            unit, _ = self._next_tts(turn)
         self._state(f"TTS {turn} · complete")
 
     def stop(self) -> None:

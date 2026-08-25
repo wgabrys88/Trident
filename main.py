@@ -79,7 +79,13 @@ def effective_family(name: str, args) -> dict:
     _apply(args, family["TTS_SAMPLE"], {"seed": "seed", "max_tokens": "max_tokens", "top_k": "top_k", "top_p": "top_p", "min_p": "min_p", "temperature": "temperature", "repeat_penalty": "repeat_penalty", "cfm_steps": "cfm_steps"})
     _apply(args, family["TTS_VOICE"], {"cfg_weight": "cfg_weight", "exaggeration": "exaggeration"})
     _apply(args, family["TTS_CHUNK"], {"first_chunk_chars": "first_chars", "chunk_chars": "chars"})
-    _apply(args, family["TTS_STREAM"], {"streaming": "enabled", "stream_join": "join", "stream_first_chunk_tokens": "first_tokens", "stream_chunk_tokens": "tokens"})
+    _apply(args, family["TTS_STREAM"], {"streaming": "enabled", "stream_join": "join"})
+    if name in {"turbo", "nano"} and (
+        family["TTS_SAMPLE"]["min_p"] != 0.0
+        or family["TTS_VOICE"]["cfg_weight"] != 0.0
+        or family["TTS_VOICE"]["exaggeration"] != 0.0
+    ):
+        raise RuntimeError(f"{name} does not support min-p, CFG weight, or exaggeration")
     return family
 
 
@@ -115,9 +121,7 @@ def transcribe_wav(wav: Path, base: str, chunk_dir: Path) -> str:
         rows = payload.get("words")
         if duration <= ASR_CHUNK_SECONDS and not rows:
             text = str(payload.get("text") or "").strip()
-            if not text:
-                raise RuntimeError("Parakeet returned an empty transcript")
-            words = [text]
+            words = [text] if text else []
             break
         if not isinstance(rows, list):
             raise RuntimeError("Parakeet verbose transcript did not include word timestamps")
@@ -130,9 +134,10 @@ def transcribe_wav(wav: Path, base: str, chunk_dir: Path) -> str:
                 if word:
                     words.append(word)
     text = " ".join(words).strip()
-    if not text:
-        raise RuntimeError("Parakeet returned an empty transcript")
-    note(f"component=asr event=done duration_s={duration:.3f} chunks={chunks} request_ms={(time.perf_counter() - started) * 1000:.3f}")
+    elapsed = time.perf_counter() - started
+    rtf = elapsed / duration if duration > 0 else 0.0
+    speed = 1.0 / rtf if rtf > 0 else 0.0
+    note(f"component=asr event=done duration_s={duration:.3f} chunks={chunks} request_ms={elapsed * 1000:.3f} rtf={rtf:.4f} x_realtime={speed:.2f}")
     return text
 
 
@@ -140,6 +145,8 @@ def transcribe(source: Path, paths: Paths) -> str:
     wav = parakeet_wav(source, paths.input)
     base = ensure_parakeet(runtime_server("parakeet"), require_model(SHARED_MODELS["parakeet"], paths.models_dir))
     text = transcribe_wav(wav, base, paths.run_dir / ".asr-chunks")
+    if not text:
+        raise RuntimeError("Parakeet returned an empty transcript")
     write_text_atomic(paths.transcript, text + "\n")
     return text
 
@@ -158,22 +165,34 @@ def brain(prompt: Path, paths: Paths, language: str, language_name: str, templat
 
 def tts_endpoint(reference: Path, language: str, family: dict, paths: Paths) -> str:
     models = models_for(family["name"])
-    return ensure_chatterbox(runtime_tts_server(), require_model(models["chatterbox-t3"], paths.models_dir), require_model(models["chatterbox-codec"], paths.models_dir), reference, family["name"], language, family["TTS_RUNTIME"], family["TTS_SAMPLE"], family["TTS_VOICE"], family["TTS_CHUNK"], family["TTS_STREAM"])
+    return ensure_chatterbox(runtime_tts_server(), require_model(models["chatterbox-t3"], paths.models_dir), require_model(models["chatterbox-codec"], paths.models_dir), reference, family["name"], language, family["TTS_RUNTIME"], family["TTS_SAMPLE"], family["TTS_VOICE"], family["TTS_CHUNK"])
 
 
 def _result_fields(result: str) -> dict[str, str]:
     return {key: value for item in result.split() if "=" in item for key, value in [item.split("=", 1)]}
 
 
-def _tts_complete(result: str, unit: int | None = None) -> None:
+def tts_metrics(result: str) -> dict[str, float | str]:
     fields = _result_fields(result)
-    samples = int(fields.get("samples", "0"))
+    samples = int(fields["samples"])
+    rtf = float(fields["wall_rtf"])
+    return {
+        **fields,
+        "audio_s": samples / TTS_RATE,
+        "rtf": rtf,
+        "x_realtime": 1.0 / rtf if rtf > 0 else 0.0,
+    }
+
+
+def _tts_complete(result: str, unit: int | None = None) -> None:
+    fields = tts_metrics(result)
     prefix = f" unit={unit}" if unit is not None else ""
     note(
         "component=tts event=complete outcome=ok" + prefix +
-        f" audio_s={samples / TTS_RATE:.3f} chunks={fields.get('chunks', '?')}" +
+        f" audio_s={fields['audio_s']:.3f} chunks={fields.get('chunks', '?')}" +
         f" total_ms={fields.get('total_ms', '?')} t3_ms={fields.get('t3_ms', '?')}" +
-        f" s3gen_ms={fields.get('s3gen_ms', '?')} ttfa_ms={fields.get('ttfa_ms', '?')}"
+        f" s3gen_ms={fields.get('s3gen_ms', '?')} ttfa_ms={fields.get('ttfa_ms', '?')}" +
+        f" rtf={fields['rtf']:.4f} x_realtime={fields['x_realtime']:.2f}"
     )
 
 
@@ -194,9 +213,10 @@ def stream_synthesize(text: str, reference: Path, output: Path, language: str, f
             try:
                 chunk = next(generator)
             except StopIteration as done:
-                if done.value:
-                    _tts_complete(str(done.value), unit)
-                return
+                result = str(done.value or "")
+                if result:
+                    _tts_complete(result, unit)
+                return result
             yield chunk
     except Exception as exc:
         _tts_failure(exc, unit, int(family["TTS_SAMPLE"]["max_tokens"]))
@@ -261,7 +281,7 @@ def run_pipeline(args) -> int:
 
 def add_tts_options(cmd, language_flag="--language") -> None:
     cmd.add_argument("-r", "--reference"); cmd.add_argument(language_flag, dest=language_flag[2:].replace("-", "_"))
-    ints = "n-gpu-layers context threads seed max-tokens top-k cfm-steps first-chunk-chars chunk-chars stream-first-chunk-tokens stream-chunk-tokens".split()
+    ints = "n-gpu-layers context threads seed max-tokens top-k cfm-steps first-chunk-chars chunk-chars".split()
     floats = "top-p min-p temperature repeat-penalty cfg-weight exaggeration".split()
     for flag in ints: cmd.add_argument("--" + flag, type=int)
     for flag in floats: cmd.add_argument("--" + flag, type=float)
@@ -300,7 +320,7 @@ def run_install(args) -> int:
 def warm_resident(args) -> None:
     paths = Paths(args.models_dir, args.data_dir); family = effective_family(args.family, args); language = resolve_language(family, args.tts_language); reference = prepared_reference(resolve_voice(paths.data_dir, args.reference), paths.data_dir)
     ensure_parakeet(runtime_server("parakeet"), require_model(SHARED_MODELS["parakeet"], paths.models_dir)); ensure_gemma(runtime_server("gemma"), require_model(SHARED_MODELS[BRAIN_MODEL], paths.models_dir), BRAIN_RUNTIME)
-    models = models_for(family["name"]); ensure_chatterbox(runtime_tts_server(), require_model(models["chatterbox-t3"], paths.models_dir), require_model(models["chatterbox-codec"], paths.models_dir), reference, family["name"], language, family["TTS_RUNTIME"], family["TTS_SAMPLE"], family["TTS_VOICE"], family["TTS_CHUNK"], family["TTS_STREAM"])
+    models = models_for(family["name"]); ensure_chatterbox(runtime_tts_server(), require_model(models["chatterbox-t3"], paths.models_dir), require_model(models["chatterbox-codec"], paths.models_dir), reference, family["name"], language, family["TTS_RUNTIME"], family["TTS_SAMPLE"], family["TTS_VOICE"], family["TTS_CHUNK"])
 
 
 def print_resident_status() -> None:
