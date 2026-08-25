@@ -47,13 +47,6 @@ class SpeechSegmenter:
         return units
 
 
-def speech_units(text: str, minimum: int, hard_limit: int) -> list[SpeechUnit]:
-    text = text.strip()
-    if not text:
-        return []
-    return SpeechSegmenter(minimum, hard_limit).update(text, flush=True)
-
-
 def highlighted_progress(text: str, sent_end: int, buffered_end: int | None = None):
     text = text.strip()
     sent_end = max(0, min(len(text), sent_end))
