@@ -11,14 +11,14 @@ from pathlib import Path
 def _bootstrap() -> None:
     if sys.version_info < (3, 11):
         raise RuntimeError("Trident requires Python 3.11 or newer")
-    if os.name != "nt" and not sys.platform.startswith("linux"):
-        raise RuntimeError(f"Trident supports Windows and Linux, not {sys.platform}")
+    if os.name != "nt" or os.environ.get("PROCESSOR_ARCHITECTURE", "").lower() != "amd64":
+        raise RuntimeError("Trident requires Windows x64")
     if sys.argv[1:]:
         raise RuntimeError("Trident takes no command-line arguments; run: python main.py")
     root = Path(__file__).resolve().parent
     env = root / ".venv"
     builder = venv.EnvBuilder(with_pip=True)
-    python = env / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    python = env / "Scripts/python.exe"
     requirements = root / "requirements.txt"
     digest = hashlib.sha256(requirements.read_bytes()).hexdigest()
     marker = env / ".trident-runtime"

@@ -28,7 +28,7 @@ def _ffmpeg_version(path: Path) -> str:
         text=True,
         encoding="utf-8",
         errors="replace",
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        creationflags=subprocess.CREATE_NO_WINDOW,
     )
     line = (result.stdout or result.stderr).splitlines()[0] if result.returncode == 0 else ""
     return line.replace("ffmpeg version ", "", 1).split(" ", 1)[0] if line else "unknown"
@@ -52,7 +52,7 @@ def _run_ffmpeg(args: list[str]) -> None:
         text=True,
         encoding="utf-8",
         errors="replace",
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        creationflags=subprocess.CREATE_NO_WINDOW,
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "ffmpeg failed").strip()

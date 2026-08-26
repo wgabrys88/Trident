@@ -4,45 +4,24 @@ import copy
 import json
 import os
 import subprocess
-import sys
 from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 
 
-def platform_id() -> str:
-    if os.name == "nt": return "windows"
-    if sys.platform.startswith("linux"): return "linux"
-    raise RuntimeError(f"unsupported operating system: {sys.platform}")
-
-
-def architecture_id() -> str:
-    import platform
-    machine = platform.machine().lower()
-    if machine in {"amd64", "x86_64"}: return "x64"
-    raise RuntimeError(f"unsupported architecture: {machine}")
-
-
 def detect_hardware_profile() -> str:
-    if PLATFORM == "windows":
-        gpu = subprocess.check_output(
-            ["powershell.exe", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name -join ';'"],
-            text=True, encoding="utf-8", errors="replace", timeout=15,
-        ).lower()
-        if any(name in gpu for name in ("gtx 1050", "gtx 1060", "gtx 1070", "gtx 1080", "titan x (pascal)", "titan xp", "quadro p")): return "pascal"
-        if "iris" in gpu and "xe" in gpu: return "irisxe"
-        return "generic"
-    nvidia = Path("/proc/driver/nvidia/gpus")
-    if nvidia.is_dir():
-        gpu = " ".join(path.read_text(encoding="utf-8", errors="replace").lower() for path in nvidia.glob("*/information"))
-        if any(name in gpu for name in ("gtx 1050", "gtx 1060", "gtx 1070", "gtx 1080", "titan x", "titan xp", "quadro p")): return "pascal"
-    vendors = {path.read_text(encoding="ascii").strip().lower() for path in Path("/sys/class/drm").glob("card*/device/vendor") if path.is_file()}
-    return "intel" if "0x8086" in vendors else "generic"
+    gpu = subprocess.check_output(
+        ["powershell.exe", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name -join ';'"],
+        text=True, encoding="utf-8", errors="replace", timeout=15,
+    ).lower()
+    if any(name in gpu for name in ("gtx 1050", "gtx 1060", "gtx 1070", "gtx 1080", "titan x (pascal)", "titan xp", "quadro p")):
+        return "pascal"
+    if "iris" in gpu and "xe" in gpu:
+        return "irisxe"
+    return "generic"
 
 
-PLATFORM = platform_id()
-ARCHITECTURE = architecture_id()
 HARDWARE_PROFILE = detect_hardware_profile()
 GGML_VULKAN_ENV = {"GGML_VK_DISABLE_F16": "1"} if HARDWARE_PROFILE == "pascal" else {}
 
@@ -211,11 +190,11 @@ FAMILIES = {
     ),
     "nano": _english_family(
         "nano", "ResembleAI/chatterbox-nano", "71ccd1d0081b430592cea481f4307e764e07bc64",
-        "t3_nano_v1.safetensors", "chatterbox-t3-nano-q4_0.gguf", 171901536, 80,
+        "t3_nano_v1.safetensors", "chatterbox-t3-nano-q4_0.gguf", 171901536, 180,
     ),
 }
 
-if HARDWARE_PROFILE in {"irisxe", "intel"}:
+if HARDWARE_PROFILE == "irisxe":
     for _family_spec in FAMILIES.values():
         _codec = _family_spec["TTS_MODELS"]["chatterbox-codec"]
         _codec["convert"]["quant"] = "q4_0"
@@ -241,41 +220,30 @@ SHARED_MODELS = {
 VULKAN_VERSION = "1.4.357.0"
 
 PACKAGES = {
-    "vulkan": {
-        "windows": {"url": f"https://sdk.lunarg.com/sdk/download/{VULKAN_VERSION}/windows/vulkansdk-windows-X64-{VULKAN_VERSION}.exe", "file": f"vulkansdk-windows-X64-{VULKAN_VERSION}.exe", "sha256": "81f474711e9042f4cd22b31b2f7a8870db2e428b21586fb43dd80150be97310d"},
-        "linux": {"url": f"https://sdk.lunarg.com/sdk/download/{VULKAN_VERSION}/linux/vulkansdk-linux-x86_64-{VULKAN_VERSION}.tar.xz", "file": f"vulkansdk-linux-x86_64-{VULKAN_VERSION}.tar.xz", "sha256": "0f09bf6a0625e346bf004be70b92907e934a4c76606b323441b2baf3a5a0e66d"},
-    }[PLATFORM],
+    "vulkan": {"url": f"https://sdk.lunarg.com/sdk/download/{VULKAN_VERSION}/windows/vulkansdk-windows-X64-{VULKAN_VERSION}.exe", "file": f"vulkansdk-windows-X64-{VULKAN_VERSION}.exe", "sha256": "81f474711e9042f4cd22b31b2f7a8870db2e428b21586fb43dd80150be97310d"},
+    "compiler": {"url": "https://download.visualstudio.microsoft.com/download/pr/00d9d26c-2727-42c2-aa9e-eda63b03e1ee/15df9d3b4c2b2eaf44704d5e938c895341b9cd8ba40a9a18610f8d18cbe01b53/vs_BuildTools.exe", "file": "vs_BuildTools.exe", "size": 4458736, "sha256": "15df9d3b4c2b2eaf44704d5e938c895341b9cd8ba40a9a18610f8d18cbe01b53"},
 }
-if PLATFORM == "windows":
-    PACKAGES["compiler"] = {"url": "https://download.visualstudio.microsoft.com/download/pr/00d9d26c-2727-42c2-aa9e-eda63b03e1ee/15df9d3b4c2b2eaf44704d5e938c895341b9cd8ba40a9a18610f8d18cbe01b53/vs_BuildTools.exe", "file": "vs_BuildTools.exe", "size": 4458736, "sha256": "15df9d3b4c2b2eaf44704d5e938c895341b9cd8ba40a9a18610f8d18cbe01b53"}
 
 SOURCES = {
     "chatterbox": ("https://github.com/wgabrys88/chatterbox.cpp", "77e9b0501aa76a46845d8b13cf956c21d060b593"),
     "ggml": ("https://github.com/ggml-org/ggml.git", "58c3805840b516b2a88ff867ccf7bb41dba79951"),
 }
 
-_BINARY_SUFFIX = ".exe" if PLATFORM == "windows" else ""
 _BINARY_ASSETS = {
-    "windows": {
-        "parakeet": "parakeet-v0.5.0-bin-win-vulkan-x64.zip",
-        "gemma": "llama-b10453-bin-win-vulkan-x64.zip",
-    },
-    "linux": {
-        "parakeet": "parakeet-v0.5.0-bin-linux-vulkan-x64.tar.gz",
-        "gemma": "llama-b10453-bin-ubuntu-vulkan-x64.tar.gz",
-    },
-}[PLATFORM]
+    "parakeet": "parakeet-v0.5.0-bin-win-vulkan-x64.zip",
+    "gemma": "llama-b10453-bin-win-vulkan-x64.zip",
+}
 BINARIES = {
     "parakeet": {
         "label": "PARAKEET.CPP V0.5 VULKAN", "repo": "mudler/parakeet.cpp", "tag": "v0.5.0",
-        "asset": _BINARY_ASSETS["parakeet"], "server_exe": "parakeet-server" + _BINARY_SUFFIX,
+        "asset": _BINARY_ASSETS["parakeet"], "server_exe": "parakeet-server.exe",
     },
     "gemma": {
         "label": "LLAMA.CPP B10453 VULKAN", "repo": "ggml-org/llama.cpp", "tag": "b10453",
-        "asset": _BINARY_ASSETS["gemma"], "server_exe": "llama-server" + _BINARY_SUFFIX,
+        "asset": _BINARY_ASSETS["gemma"], "server_exe": "llama-server.exe",
     },
 }
-TTS_SERVER_EXE = "trident-tts-server" + _BINARY_SUFFIX
+TTS_SERVER_EXE = "trident-tts-server.exe"
 
 REFERENCE_VOICES = {
     "trump": {

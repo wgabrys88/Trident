@@ -11,21 +11,11 @@
 #include <string>
 #include <vector>
 
-#ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
 using socket_t = SOCKET;
 static constexpr socket_t kInvalidSocket = INVALID_SOCKET;
 static constexpr int kSendFlags = 0;
-#else
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
-using socket_t = int;
-static constexpr socket_t kInvalidSocket = -1;
-static constexpr int kSendFlags = MSG_NOSIGNAL;
-#endif
 
 namespace {
 
@@ -37,12 +27,7 @@ const std::vector<std::string> kRequired = {
 };
 
 void close_socket(socket_t sock) noexcept {
-    if (sock == kInvalidSocket) return;
-#ifdef _WIN32
-    closesocket(sock);
-#else
-    close(sock);
-#endif
+    if (sock != kInvalidSocket) closesocket(sock);
 }
 
 struct SocketGuard {
@@ -163,19 +148,13 @@ int main(int argc, char** argv) {
 
         tts::Session session(runtime, knobs, chunk_chars, tts::kQuietAmp2, first_chunk_chars);
 
-#ifdef _WIN32
         WSADATA wsa{};
         if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) throw std::runtime_error("WSAStartup failed");
         struct WsaGuard { ~WsaGuard() { WSACleanup(); } } wsa_guard;
-#endif
         SocketGuard listener(socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
         if (listener.value == kInvalidSocket) throw std::runtime_error("resident TTS socket creation failed");
         int reuse = 1;
-#ifdef _WIN32
         setsockopt(listener.value, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse), sizeof(reuse));
-#else
-        setsockopt(listener.value, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
-#endif
         sockaddr_in address{};
         address.sin_family = AF_INET;
         address.sin_port = htons(static_cast<unsigned short>(port));
