@@ -9,7 +9,7 @@ from pathlib import Path
 import gradio as gr
 import numpy as np
 
-from config import ASR_RATE, FAMILIES, LANGUAGES, LIVE_AUDIO, LIVE_SETTINGS, REFERENCE_VOICES, TTS_FIELDS, TTS_RATE, Paths, live_settings_path, load_live_settings, resolve_voice, save_live_settings
+from config import ASR_RATE, FAMILIES, LANGUAGES, LIVE_AUDIO, REFERENCE_VOICES, TTS_FIELDS, TTS_RATE, Paths, live_settings_path, load_live_settings, resolve_voice, save_live_settings
 from conversation import Conversation
 from main import effective_family, finish, prepared_reference, resident_report, resolved_tts, run_asr, run_brain, run_install, run_pipeline, run_tts, start_run, stream_synthesize, synthesize_text, tts_endpoint, tts_metrics, warm_resident, write_meta
 from resident import stop_all as resident_stop_all
@@ -107,7 +107,7 @@ def _tts_status(label: str, result: str) -> str:
 
 def build(models_dir: Path | None = None, data_dir: Path | None = None):
     root = Paths(models_dir, data_dir)
-    load_live_settings(root.data_dir)
+    live = load_live_settings(root.data_dir)
     runs_dir = root.data_dir / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -138,16 +138,10 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
         return gr.Audio(value=None, visible=mode == "custom")
 
     def live_settings(values) -> dict:
-        settings = dict(zip(LIVE_SETTING_KEYS, values, strict=True))
-        settings["vad_threshold"] = float(settings["vad_threshold"])
-        settings["vad_silence_ms"] = int(settings["vad_silence_ms"])
-        if settings["tts_language"] not in FAMILIES[settings["tts_family"]]["TTS_LANGUAGES"]:
-            raise RuntimeError(f"language {settings['tts_language']!r} is not wired in {settings['tts_family']}")
-        return settings
+        return dict(zip(LIVE_SETTING_KEYS, values, strict=True))
 
     def save_config(request: gr.Request, *values):
-        settings = live_settings(values)
-        save_live_settings(root.data_dir, settings)
+        settings = save_live_settings(root.data_dir, live_settings(values))
         with _sessions_lock:
             engine = _sessions.get(_session_id(request))
             if engine and engine.active:
@@ -156,8 +150,7 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
 
     def start_conversation(request: gr.Request, *values):
         session_id = _session_id(request)
-        settings = live_settings(values)
-        save_live_settings(root.data_dir, settings)
+        settings = save_live_settings(root.data_dir, live_settings(values))
         with _sessions_lock:
             previous = _sessions.pop(session_id, None)
         if previous:
@@ -195,6 +188,8 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
                 audio = _wav_bytes(payload)
             elif kind == "audio-file":
                 audio = payload
+            elif kind == "audio-reset":
+                audio = None
             if kind == "error":
                 _cleanup_session(session_id)
                 yield engine.transcript, engine.answer, audio, engine.status, *stopped_controls
@@ -255,7 +250,7 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
         if language not in family["TTS_LANGUAGES"]:
             raise RuntimeError(f"language {language!r} is not wired in {family['name']}")
         paths = start_run("ui-tts", root.models_dir, root.data_dir)
-        outcome = "aborted"
+        outcome = "error"
         try:
             yield gr.skip(), "Preparing synthesis"
             reference = prepared_reference(_reference(root, settings), root.data_dir)
@@ -291,9 +286,6 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
                 units += 1
                 audio_samples += len(raw) // 2
                 yield _wav_bytes(raw), f"Streaming · speech unit {units} · {audio_samples / TTS_RATE:.1f}s audio ready"
-        except Exception:
-            outcome = "error"
-            raise
         finally:
             finish(paths, outcome)
 
@@ -368,7 +360,7 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
                 raise RuntimeError("selected log is outside the run directory") from exc
             if candidate.is_file():
                 return candidate
-        files = [path for path in runs_dir.glob("*/*-trident.log") if path.is_file()]
+        files = [path for path in runs_dir.glob("*/trident.log") if path.is_file()]
         return max(files, key=lambda path: path.stat().st_mtime_ns) if files else None
 
     def read_log(value=None) -> str:
@@ -376,8 +368,8 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
         return path.read_text(encoding="utf-8", errors="replace") if path else "No Trident run logs yet."
 
     voices = list(REFERENCE_VOICES)
-    family_default = LIVE_SETTINGS["tts_family"]
-    live_language_default = LIVE_SETTINGS["tts_language"]
+    family_default = live["tts_family"]
+    live_language_default = live["tts_language"]
 
     with gr.Blocks(fill_width=True, title="Trident", delete_cache=(86400, 86400)) as demo:
         gr.HTML("<div class='trident-hero'><h1>Trident</h1><p>Local multilingual speech pipeline · Parakeet TDT · Smart Turn · Gemma · Chatterbox.</p></div>")
@@ -386,9 +378,9 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
             gr.Markdown("### Speech output")
             family = gr.Dropdown(list(FAMILIES), value=family_default, label="Chatterbox family")
             language = gr.Dropdown(list(FAMILIES[family_default]["TTS_LANGUAGES"]), value=live_language_default, label="Spoken language")
-            voice = gr.Dropdown(voices, value=LIVE_SETTINGS["tts_voice"], label="Preset voice")
-            join = gr.Radio([("Crossfade", "crossfade"), ("Separate chunks", "chunks")], value=LIVE_SETTINGS["tts_join"], label="Speech-unit join")
-            gr.Markdown("Preset voice is used by Conversation. Manual TTS and CLI can instead use a temporary reference; recording one does not create a new preset.")
+            voice = gr.Dropdown(voices, value=live["tts_voice"], allow_custom_value=True, label="Voice preset or WAV path")
+            join = gr.Radio([("Crossfade", "crossfade"), ("Separate chunks", "chunks")], value=live["tts_join"], label="Speech-unit join")
+            gr.Markdown("Conversation accepts a preset or WAV path. Manual TTS and CLI can also use a temporary reference without changing the saved conversation voice.")
             reference_mode = gr.Radio([("Use preset", "preset"), ("Use custom reference", "custom")], value="preset", label="Manual / CLI voice source")
             reference = gr.Audio(sources=["upload", "microphone"], type="filepath", label="Custom voice reference", visible=False)
             with gr.Accordion("Manual / CLI engine overrides", open=False):
@@ -409,16 +401,16 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
                     with gr.Column(scale=1, min_width=340, elem_classes="trident-card"):
                         ingestion = gr.Radio(
                             [("Hands-free · automatic turns", "continuous"), ("Push to talk · Record / Stop", "ptt")],
-                            value=LIVE_SETTINGS["ingestion_mode"], label="Microphone mode",
+                            value=live["ingestion_mode"], label="Microphone mode",
                         )
-                        mode_help = gr.Markdown(_mode_help(LIVE_SETTINGS["ingestion_mode"]))
+                        mode_help = gr.Markdown(_mode_help(live["ingestion_mode"]))
                         handsfree_mic = gr.Audio(
                             sources=["microphone"], type="numpy", streaming=True, interactive=False,
-                            visible=LIVE_SETTINGS["ingestion_mode"] == "continuous", label="Hands-free microphone",
+                            visible=live["ingestion_mode"] == "continuous", label="Hands-free microphone",
                         )
                         ptt_mic = gr.Audio(
                             sources=["microphone"], type="numpy", streaming=False, interactive=False,
-                            visible=LIVE_SETTINGS["ingestion_mode"] == "ptt", label="Push-to-talk microphone",
+                            visible=live["ingestion_mode"] == "ptt", label="Push-to-talk microphone",
                         )
                         with gr.Row():
                             start_button = gr.Button("Start", variant="primary")
@@ -432,13 +424,13 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
                 with gr.Accordion("Conversation settings", open=False):
                     with gr.Row(equal_height=False):
                         with gr.Column():
-                            with gr.Column(visible=LIVE_SETTINGS["ingestion_mode"] == "continuous") as vad_group:
+                            with gr.Column(visible=live["ingestion_mode"] == "continuous") as vad_group:
                                 gr.Markdown("**Hands-free turn detection.** Silero only proposes a pause; Smart Turn v3.2 makes the multilingual complete/incomplete decision on CPU. The default candidate pause matches Smart Turn's intended VAD handoff.")
-                                vad_threshold = gr.Slider(0.1, 0.9, value=LIVE_SETTINGS["vad_threshold"], step=0.05, label="Silero speech threshold")
-                                vad_silence = gr.Slider(100, 1500, value=LIVE_SETTINGS["vad_silence_ms"], step=20, label="Candidate silence · ms")
+                                vad_threshold = gr.Slider(0.1, 0.9, value=live["vad_threshold"], step=0.05, label="Silero speech threshold")
+                                vad_silence = gr.Slider(100, 1500, value=live["vad_silence_ms"], step=20, label="Candidate silence · ms")
                         with gr.Column():
-                            system_prompt = gr.Textbox(value=LIVE_SETTINGS["system_prompt"], label="System prompt", lines=7)
-                            tts_mode = gr.Radio([("Stream speech units", "real"), ("Buffered WAV units", "buffered")], value=LIVE_SETTINGS["tts_mode"], label="Conversation TTS delivery")
+                            system_prompt = gr.Textbox(value=live["system_prompt"], label="System prompt", lines=7)
+                            tts_mode = gr.Radio([("Stream speech units", "real"), ("Buffered WAV units", "buffered")], value=live["tts_mode"], label="Conversation TTS delivery")
                             manual_text = gr.Textbox(label="Manual turn", placeholder="Send text directly, or leave empty to finalize captured speech")
                             with gr.Row():
                                 submit_button = gr.Button("Send turn", interactive=False)
@@ -552,7 +544,7 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
             with gr.Tab("Logs"):
                 gr.Markdown("Run-owned logs stay on disk and are shown here directly. Leave the selector empty to follow the newest run; choose a file to inspect an older run.")
                 with gr.Row(equal_height=False):
-                    log_file = gr.FileExplorer(glob="**/*-trident.log", root_dir=runs_dir, file_count="single", label="Run logs", max_height=520)
+                    log_file = gr.FileExplorer(glob="**/trident.log", root_dir=runs_dir, file_count="single", label="Run logs", max_height=520)
                     log_view = gr.Code(value=read_log, language=None, label="Log", lines=28, max_lines=40, interactive=False, wrap_lines=True, show_line_numbers=False, buttons=["copy", "download"])
                 log_timer = gr.Timer(1.0)
                 log_timer.tick(read_log, log_file, log_view, queue=False, show_progress="hidden")

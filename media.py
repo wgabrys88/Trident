@@ -7,27 +7,18 @@ import subprocess
 import wave
 from pathlib import Path
 
-from config import ASR_RATE, ROOT, TTS_RATE
-from log import note, run as run_logged
+import imageio_ffmpeg
+import numpy as np
+
+from config import ASR_RATE, TTS_RATE
+from log import note
 
 
 _ffmpeg: Path | None = None
 
 
-def _winget_ffmpeg() -> Path | None:
-    root = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Packages"
-    matches = sorted(root.glob("Gyan.FFmpeg*/ffmpeg-*/bin/ffmpeg.exe"), reverse=True)
-    return next((path for path in matches if path.is_file()), None)
-
-
 def ffmpeg_bin() -> Path:
-    found = shutil.which("ffmpeg")
-    if found:
-        return Path(found)
-    packed = _winget_ffmpeg()
-    if packed:
-        return packed
-    raise RuntimeError("ffmpeg is not installed")
+    return Path(imageio_ffmpeg.get_ffmpeg_exe())
 
 
 def _ffmpeg_version(path: Path) -> str:
@@ -44,37 +35,15 @@ def _ffmpeg_version(path: Path) -> str:
 
 
 def _popen_kwargs() -> dict:
-    return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    return {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
 
 
 def ensure_ffmpeg() -> Path:
     global _ffmpeg
-    if _ffmpeg is not None:
-        return _ffmpeg
-    try:
-        path = ffmpeg_bin()
-    except RuntimeError:
-        path = None
-    if path is None:
-        winget = shutil.which("winget")
-        if not winget:
-            raise RuntimeError(
-                "ffmpeg is missing and winget is unavailable; install Gyan.FFmpeg globally"
-            )
-        note("component=ffmpeg event=install id=Gyan.FFmpeg source=winget")
-        run_logged(
-            [
-                winget, "install", "-e", "--id", "Gyan.FFmpeg", "--source", "winget",
-                "--accept-package-agreements", "--accept-source-agreements",
-                "--disable-interactivity",
-            ],
-            ROOT,
-            os.environ.copy(),
-        )
-        path = ffmpeg_bin()
-    _ffmpeg = path
-    note(f"component=ffmpeg event=ready version={_ffmpeg_version(path)}")
-    return path
+    if _ffmpeg is None:
+        _ffmpeg = ffmpeg_bin()
+        note(f"component=ffmpeg event=ready version={_ffmpeg_version(_ffmpeg)}")
+    return _ffmpeg
 
 
 def _run_ffmpeg(args: list[str]) -> None:
@@ -190,10 +159,8 @@ def parakeet_chunks(wav: Path, directory: Path, seconds: int, overlap_seconds: i
                 start = end - overlap
                 index += 1
         finally:
-            try:
+            if directory.exists():
                 directory.rmdir()
-            except OSError:
-                pass
 
 def chatterbox_wav(src: Path, cache_dir: Path) -> Path:
     src = src.expanduser().resolve()
@@ -205,3 +172,15 @@ def chatterbox_wav(src: Path, cache_dir: Path) -> Path:
     digest = hashlib.sha1(os.fsencode(str(src))).hexdigest()[:12]
     dest = cache_dir / f"{src.stem}-{digest}.wav"
     return encode_wav(src, dest, TTS_RATE, reuse=True)
+
+
+def wav_pcm(path: Path, rate: int) -> bytes:
+    with wave.open(str(path), "rb") as audio:
+        if audio.getnchannels() != 1 or audio.getsampwidth() != 2:
+            raise RuntimeError(f"expected mono PCM16 WAV: {path}")
+        samples = np.frombuffer(audio.readframes(audio.getnframes()), dtype="<i2").astype(np.float32) / 32768.0
+        source_rate = audio.getframerate()
+    if rate != source_rate and samples.size:
+        count = max(1, round(samples.size * rate / source_rate))
+        samples = np.interp(np.linspace(0, samples.size - 1, count), np.arange(samples.size), samples)
+    return samples.astype(np.float32, copy=False).tobytes()

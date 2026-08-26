@@ -25,11 +25,11 @@ class SileroEndpoint:
         self.buffer = np.empty(0, dtype=np.float32)
         self.speech = False
 
-    def feed(self, pcm_f32: bytes) -> bool:
+    def feed(self, pcm_f32: bytes) -> tuple[bool, bool]:
         if not pcm_f32:
-            return False
+            return False, False
         self.buffer = np.concatenate((self.buffer, np.frombuffer(pcm_f32, dtype="<f4")))
-        ended = False
+        started = ended = False
         frame = int(LIVE_AUDIO["vad_frame_samples"])
         while self.buffer.size >= frame:
             event = self.iterator(self.buffer[:frame])
@@ -37,9 +37,10 @@ class SileroEndpoint:
             if event:
                 if "start" in event:
                     self.speech = True
+                    started = True
                 if "end" in event:
                     ended = True
-        return ended
+        return started, ended
 
     def reset(self) -> None:
         self.iterator.reset_states()
