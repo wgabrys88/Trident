@@ -201,7 +201,12 @@ class Conversation:
             if op == "feed":
                 self._append_turn(payload)
                 if self.settings["ingestion_mode"] == "continuous" and self.vad.feed(payload):
+                    started = time.perf_counter()
                     complete, probability = self.smart_turn.complete(bytes(self.turn_tail))
+                    note(
+                        f"component=vad event=smart_turn complete={int(complete)}"
+                        f" p={probability:.3f} elapsed_ms={(time.perf_counter() - started) * 1000:.3f}"
+                    )
                     self._state(f"Smart Turn · {'complete' if complete else 'continue'} · p={probability:.3f}")
                     if complete:
                         self.vad.reset()
