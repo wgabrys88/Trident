@@ -147,12 +147,3 @@ def chatterbox_stream(base_url: str, text: str, output: Path, streaming: bool = 
                 raise RuntimeError(f"Chatterbox resident synthesis failed: {message or 'unknown error'}")
     except OSError as exc:
         raise RuntimeError(f"Chatterbox resident request failed: {exc}") from exc
-
-
-def chatterbox_synthesize(base_url: str, text: str, output: Path, streaming: bool = True, join: str = "crossfade", timeout: float = 3600.0) -> str:
-    stream = chatterbox_stream(base_url, text, output, streaming, join, timeout)
-    while True:
-        try:
-            next(stream)
-        except StopIteration as done:
-            return str(done.value or "")

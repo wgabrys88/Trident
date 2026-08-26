@@ -25,14 +25,10 @@ def detect_hardware_profile() -> str:
 HARDWARE_PROFILE = detect_hardware_profile()
 
 
-def ggml_vulkan_policy(profile: str) -> dict[str, str]:
-    return {
-        "pascal": {"GGML_VK_DISABLE_F16": "1"},
-        "irisxe": {},
-    }[profile]
-
-
-GGML_VULKAN_ENV = ggml_vulkan_policy(HARDWARE_PROFILE)
+GGML_VULKAN_ENV = {
+    "pascal": {"GGML_VK_DISABLE_F16": "1"},
+    "irisxe": {},
+}[HARDWARE_PROFILE]
 
 
 def ggml_vulkan_environment() -> dict[str, str]:
@@ -95,20 +91,44 @@ LIVE_AUDIO = {
     "llm_history_turns": 6,
 }
 
+TTS_FIELDS = (
+    ("n_gpu_layers", "TTS_RUNTIME", "gpu_layers", int, "--n-gpu-layers", "GPU layers", False),
+    ("context", "TTS_RUNTIME", "context", int, "--context", "Context", False),
+    ("threads", "TTS_RUNTIME", "threads", int, "--threads", "Threads", False),
+    ("seed", "TTS_SAMPLE", "seed", int, "--seed", "Seed", False),
+    ("max_tokens", "TTS_SAMPLE", "max_tokens", int, "--max-tokens", "Max T3 tokens", False),
+    ("top_k", "TTS_SAMPLE", "top_k", int, "--top-k", "Top K", False),
+    ("cfm_steps", "TTS_SAMPLE", "cfm_steps", int, "--cfm-steps", "CFM steps", False),
+    ("first_chunk_chars", "TTS_CHUNK", "first_chars", int, "--first-chunk-chars", "First streaming text-unit chars", False),
+    ("chunk_chars", "TTS_CHUNK", "chars", int, "--chunk-chars", "Text-unit chars", False),
+    ("top_p", "TTS_SAMPLE", "top_p", float, "--top-p", "Top P", False),
+    ("min_p", "TTS_SAMPLE", "min_p", float, "--min-p", "Min P", True),
+    ("temperature", "TTS_SAMPLE", "temperature", float, "--temperature", "Temperature", False),
+    ("repeat_penalty", "TTS_SAMPLE", "repeat_penalty", float, "--repeat-penalty", "Repeat penalty", False),
+    ("cfg_weight", "TTS_VOICE", "cfg_weight", float, "--cfg-weight", "CFG weight", True),
+    ("exaggeration", "TTS_VOICE", "exaggeration", float, "--exaggeration", "Exaggeration", True),
+)
 
-def save_live_settings(settings: dict) -> None:
-    global LIVE_SETTINGS_JSON
-    payload = json.dumps(settings, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    path = Path(__file__).resolve()
-    source = path.read_text(encoding="utf-8")
-    marker = "LIVE_SETTINGS_JSON = "
-    line_start = source.index(marker)
-    line_end = source.index("\n", line_start)
-    updated = source[:line_start] + marker + repr(payload) + source[line_end:]
-    temporary = path.with_suffix(".py.tmp")
-    temporary.write_text(updated, encoding="utf-8", newline="\n")
+
+def live_settings_path(data_dir: Path) -> Path:
+    return Path(data_dir) / "live-settings.json"
+
+
+def load_live_settings(data_dir: Path) -> dict:
+    path = live_settings_path(data_dir)
+    settings = json.loads(path.read_text(encoding="utf-8") if path.is_file() else LIVE_SETTINGS_JSON)
+    LIVE_SETTINGS.clear()
+    LIVE_SETTINGS.update(settings)
+    return LIVE_SETTINGS
+
+
+def save_live_settings(data_dir: Path, settings: dict) -> None:
+    path = live_settings_path(data_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(settings, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(payload, encoding="utf-8", newline="\n")
     os.replace(temporary, path)
-    LIVE_SETTINGS_JSON = payload
     LIVE_SETTINGS.clear()
     LIVE_SETTINGS.update(settings)
 
@@ -196,8 +216,6 @@ FAMILIES = {
     ),
 }
 
-
-
 if HARDWARE_PROFILE == "irisxe":
     for _family_spec in FAMILIES.values():
         _codec = _family_spec["TTS_MODELS"]["chatterbox-codec"]
@@ -207,8 +225,6 @@ if HARDWARE_PROFILE == "irisxe":
 
 
 def default_family() -> str:
-    if not FAMILIES:
-        raise RuntimeError("no TTS families found")
     return next(iter(FAMILIES))
 
 
