@@ -21,3 +21,7 @@
 !/patches/*.patch
 !/conversation.py
 !/vad.py
+!/cable.py
+!/tools/
+/tools/*
+!/tools/cable.ps1
