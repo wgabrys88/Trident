@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 import wave
 from pathlib import Path
 
@@ -222,6 +223,7 @@ class Conversation:
         if not text:
             return
         self.turn += 1
+        note(f'component=conversation event=dispatch turn={self.turn} reason={reason} text="{text}"')
         self.llm_queue.put((self.turn, text, dict(self.settings)))
         self._state(f"Dispatch {self.turn} · {reason} · {len(text)} chars")
 
@@ -244,6 +246,8 @@ class Conversation:
             self.answer = ""
             self._state(f"LLM {turn} · generating")
             raw = ""
+            started = time.perf_counter()
+            ttfa = None
             family = self._family(settings, settings["tts_mode"] == "real")
             hard_limit = int(family["TTS_CHUNK"]["chars"])
             segmenter = SpeechSegmenter(min(int(family["TTS_CHUNK"]["first_chars"]), hard_limit), hard_limit)
@@ -259,6 +263,8 @@ class Conversation:
                         speech_started = True
 
             for delta in gemma_chat_stream(base, self._llm_payload(prompt, settings)):
+                if ttfa is None:
+                    ttfa = time.perf_counter() - started
                 raw += delta
                 self.answer = raw
                 units = segmenter.update(spoken_reply(raw, streaming=True))
@@ -272,6 +278,11 @@ class Conversation:
             self.answer = answer
             self.history.extend(({"role": "user", "content": prompt}, {"role": "assistant", "content": answer}))
             self.tts_queue.put(("end", turn, answer))
+            note(
+                f"component=llm event=complete turn={turn} ttfa_ms={(ttfa or time.perf_counter() - started) * 1000:.3f}"
+                f" total_ms={(time.perf_counter() - started) * 1000:.3f} chars={len(answer)}"
+            )
+            note(f'component=llm event=answer turn={turn} text="{answer}"')
             self._state(f"LLM {turn} · complete · TTS finishing")
 
     def _tts_loop(self) -> None:
