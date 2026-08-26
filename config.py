@@ -216,7 +216,7 @@ FAMILIES = {
     ),
     "nano": _english_family(
         "nano", "ResembleAI/chatterbox-nano", "71ccd1d0081b430592cea481f4307e764e07bc64",
-        "t3_nano_v1.safetensors", "chatterbox-t3-nano-q4_0.gguf", 171901536, 180,
+        "t3_nano_v1.safetensors", "chatterbox-t3-nano-q4_0.gguf", 171901536, 80,
     ),
 }
 
