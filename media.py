@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import os
-import shutil
 import subprocess
 import wave
 from pathlib import Path
@@ -28,14 +28,10 @@ def _ffmpeg_version(path: Path) -> str:
         text=True,
         encoding="utf-8",
         errors="replace",
-        **_popen_kwargs(),
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     line = (result.stdout or result.stderr).splitlines()[0] if result.returncode == 0 else ""
     return line.replace("ffmpeg version ", "", 1).split(" ", 1)[0] if line else "unknown"
-
-
-def _popen_kwargs() -> dict:
-    return {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}
 
 
 def ensure_ffmpeg() -> Path:
@@ -56,7 +52,7 @@ def _run_ffmpeg(args: list[str]) -> None:
         text=True,
         encoding="utf-8",
         errors="replace",
-        **_popen_kwargs(),
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "ffmpeg failed").strip()
@@ -118,18 +114,6 @@ def encode_wav(src: Path, dest: Path, rate: int, *, reuse: bool = True) -> Path:
     return wav
 
 
-def parakeet_wav(src: Path, dest: Path) -> Path:
-    src = src.expanduser().resolve()
-    dest = dest.expanduser().resolve()
-    if _canonical_wav(src, ASR_RATE):
-        if src != dest:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dest)
-        return dest
-    return encode_wav(src, dest, ASR_RATE, reuse=False)
-
-
-
 def parakeet_chunks(wav: Path, directory: Path, seconds: int, overlap_seconds: int):
     window = int(seconds * ASR_RATE)
     overlap = int(overlap_seconds * ASR_RATE)
@@ -174,13 +158,56 @@ def chatterbox_wav(src: Path, cache_dir: Path) -> Path:
     return encode_wav(src, dest, TTS_RATE, reuse=True)
 
 
+def audio_pcm(audio, rate: int = ASR_RATE) -> bytes:
+    if audio is None:
+        return b""
+    source_rate, values = audio
+    x = np.asarray(values)
+    if x.ndim > 1:
+        x = x.mean(axis=1)
+    if np.issubdtype(x.dtype, np.integer):
+        info = np.iinfo(x.dtype)
+        x = x.astype(np.float32) / max(abs(info.min), info.max)
+    else:
+        x = x.astype(np.float32, copy=False)
+    x = np.clip(x, -1.0, 1.0)
+    if source_rate != rate and x.size:
+        count = max(1, round(x.size * rate / source_rate))
+        x = np.interp(np.linspace(0, x.size - 1, count), np.arange(x.size), x).astype(np.float32)
+    return x.astype("<f4", copy=False).tobytes()
+
+
+def float_pcm16(pcm_f32: bytes) -> bytes:
+    values = np.frombuffer(pcm_f32, dtype="<f4")
+    return (np.clip(values, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
+
+
+def pcm16_wav(pcm16: bytes, rate: int = TTS_RATE) -> bytes:
+    if not pcm16:
+        return b""
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(rate)
+        output.writeframes(pcm16)
+    return buffer.getvalue()
+
+
+def write_pcm_wav(path: Path, pcm_f32: bytes, rate: int = ASR_RATE) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(path), "wb") as output:
+        output.setnchannels(1)
+        output.setsampwidth(2)
+        output.setframerate(rate)
+        output.writeframes(float_pcm16(pcm_f32))
+    return path
+
+
 def wav_pcm(path: Path, rate: int) -> bytes:
     with wave.open(str(path), "rb") as audio:
         if audio.getnchannels() != 1 or audio.getsampwidth() != 2:
             raise RuntimeError(f"expected mono PCM16 WAV: {path}")
-        samples = np.frombuffer(audio.readframes(audio.getnframes()), dtype="<i2").astype(np.float32) / 32768.0
         source_rate = audio.getframerate()
-    if rate != source_rate and samples.size:
-        count = max(1, round(samples.size * rate / source_rate))
-        samples = np.interp(np.linspace(0, samples.size - 1, count), np.arange(samples.size), samples)
-    return samples.astype(np.float32, copy=False).tobytes()
+        values = np.frombuffer(audio.readframes(audio.getnframes()), dtype="<i2")
+    return audio_pcm((source_rate, values), rate)

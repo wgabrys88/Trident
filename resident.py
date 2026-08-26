@@ -211,10 +211,7 @@ def _ensure(
                 _terminate(name)
                 _wait_port_closed(name)
             else:
-                raise RuntimeError(
-                    f"{name} resident port {cfg['port']} is already in use by a different configuration; "
-                    "run `python main.py resident stop` once and retry"
-                )
+                raise RuntimeError(f"{name} resident port {cfg['port']} is already in use by an unowned process")
         state_path = _state_path(name)
         state_path.unlink(missing_ok=True)
         policy = "vulkan_f16=disabled" if env and env.get("GGML_VK_DISABLE_F16") == "1" else "vulkan_f16=default"
@@ -286,8 +283,8 @@ def ensure_chatterbox(server: Path, t3_model: Path, codec_model: Path, reference
         "--model", str(t3_model), "--s3gen-gguf", str(codec_model),
         "--reference", str(reference), "--language", language, "--port", str(port),
     ]
-    for _, section, key, _, flag, *_ in TTS_FIELDS:
-        command += [flag, str(family[section][key])]
+    for name, section, key, *_ in TTS_FIELDS:
+        command += ["--" + name.replace("_", "-"), str(family[section][key])]
     command += ["--fastconv", "1" if family["TTS_RUNTIME"]["fastconv"] else "0"]
     return _ensure(
         "chatterbox", server, t3_model, command, {"argv": command[1:]},

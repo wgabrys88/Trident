@@ -4,7 +4,6 @@ import http.client
 import json
 import secrets
 import urllib.parse
-import urllib.request
 from pathlib import Path
 
 
@@ -58,25 +57,6 @@ def parakeet_transcribe(base_url: str, wav: Path, timeout: float = 3600.0) -> di
         return json.loads(body.decode("utf-8"))
     finally:
         conn.close()
-
-
-def gemma_chat(base_url: str, payload: dict, timeout: float = 3600.0) -> dict:
-    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    url = base_url.rstrip("/") + "/v1/chat/completions"
-    request = urllib.request.Request(
-        url,
-        data=data,
-        method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "Connection": "close",
-            "User-Agent": "trident/1",
-        },
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        body = response.read()
-    return json.loads(body.decode("utf-8"))
 
 
 def gemma_chat_stream(base_url: str, payload: dict, timeout: float = 3600.0):
