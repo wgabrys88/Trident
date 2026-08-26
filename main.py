@@ -8,6 +8,7 @@ import time
 import wave
 from pathlib import Path
 
+from cable import play_wav as cable_play, status as cable_status, use as cable_use
 from config import ASR_CHUNK_OVERLAP_SECONDS, ASR_CHUNK_SECONDS, BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_THINKING, FAMILIES, HARDWARE_PROFILE, LANGUAGES, LIVE_SETTINGS, REFERENCE_MIN_SECONDS, SHARED_MODELS, TTS_FIELDS, TTS_RATE, Paths, default_family, resolve_voice
 from installer import ensure_ui, install, models_for, require_model, runtime_server, runtime_tts_server, validate_wav, write_text_atomic
 from local_api import chatterbox_stream as _chatterbox_stream, gemma_chat, parakeet_transcribe
@@ -314,7 +315,16 @@ def build_parser() -> argparse.ArgumentParser:
     c=sub.add_parser("tts"); c.add_argument("input", nargs="?"); c.add_argument("-t", "--text"); c.add_argument("-o", "--output"); c.add_argument("--family", choices=families, default=default_family()); add_tts_options(c)
     c=sub.add_parser("run"); c.add_argument("input"); c.add_argument("-o", "--output"); c.add_argument("--family", choices=families, default=default_family()); add_tts_options(c, "--tts-language"); add_prompt(c)
     c=sub.add_parser("resident"); c.add_argument("action", choices=("status", "warm", "stop")); c.add_argument("--family", choices=families, default=default_family()); add_tts_options(c, "--tts-language")
+    c=sub.add_parser("cable"); c.add_argument("action", choices=("status", "use"))
     return p
+
+
+def run_cable(args):
+    if args.action == "use":
+        result = cable_use()
+        print(f"routed: {result['changed']} previous={result['previous'] or '-'}")
+    else:
+        print(cable_status())
 
 
 def run_install(args) -> str:
@@ -353,6 +363,7 @@ def main() -> int:
         if args.action == "stop": resident_stop_all()
         elif args.action == "warm": warm_resident(args)
         print(resident_report())
+    elif args.command == "cable": run_cable(args)
     elif args.command: {"asr": run_asr, "brain": run_brain, "tts": run_tts, "run": run_pipeline}[args.command](args)
     if args.ui: return launch_ui(args)
     if not args.command: raise RuntimeError("choose a command or --ui")

@@ -55,6 +55,9 @@ SMART_TURN_SECONDS = 8
 TTS_RATE = 24000
 REFERENCE_MIN_SECONDS = 5.0
 
+CABLE_INPUT = "CABLE Input"
+CABLE_OUTPUT = "CABLE Output"
+
 RESIDENT_SERVERS = {
     "parakeet": {"host": "127.0.0.1", "port": 17931, "url": "http://127.0.0.1:17931", "startup_timeout_s": 120},
     "gemma": {"host": "127.0.0.1", "port": 17932, "url": "http://127.0.0.1:17932", "startup_timeout_s": 180},
