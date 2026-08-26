@@ -1,14 +1,19 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import os
 import subprocess
 import wave
 from pathlib import Path
+
+if os.name != "nt":
+    raise RuntimeError("VB-CABLE endpoint routing is available on Windows only")
 
 import numpy as np
 import sounddevice as sd
 
 from config import ASR_RATE, CABLE_INPUT, CABLE_OUTPUT, TOOLS
 from log import note
+from media import wav_pcm
 
 _SCRIPT = TOOLS / "cable.ps1"
 
@@ -80,9 +85,15 @@ def use() -> dict:
     changed = previous_id != target
     if changed:
         set_default_capture(target)
-        current_id, current_name = default_capture_endpoint()
-        if current_id != target:
-            raise RuntimeError(f"default capture did not switch to {CABLE_OUTPUT}: now {current_name!r} ({current_id})")
+        switched = False
+        try:
+            current_id, current_name = default_capture_endpoint()
+            if current_id != target:
+                raise RuntimeError(f"default capture did not switch to {CABLE_OUTPUT}: now {current_name!r} ({current_id})")
+            switched = True
+        finally:
+            if not switched:
+                set_default_capture(previous_id)
         note(f"component=cable event=capture_routed previous={previous_name} current={current_name}")
     return {"previous": previous_id if changed else None, "changed": changed, "devices": devices}
 
@@ -90,6 +101,10 @@ def use() -> dict:
 def restore(previous_id: str) -> None:
     if previous_id:
         set_default_capture(previous_id)
+        current_id, current_name = default_capture_endpoint()
+        if current_id != previous_id:
+            raise RuntimeError(f"default capture restore failed: now {current_name!r} ({current_id})")
+        note(f"component=cable event=capture_restored endpoint={current_id}")
 
 
 class Microphone:
@@ -126,16 +141,6 @@ class Microphone:
             stream.stop()
             stream.close()
             note("component=cable event=mic_stop")
-
-
-def wav_pcm(path: Path, rate: int) -> bytes:
-    with wave.open(str(path), "rb") as audio:
-        samples = np.frombuffer(audio.readframes(audio.getnframes()), dtype="<i2").astype(np.float32) / 32768.0
-        source_rate = audio.getframerate()
-    if rate != source_rate and samples.size:
-        count = max(1, round(samples.size * rate / source_rate))
-        samples = np.interp(np.linspace(0, samples.size - 1, count), np.arange(samples.size), samples)
-    return samples.astype(np.float32, copy=False).tobytes()
 
 
 def play_wav(path: Path) -> float:

@@ -16,7 +16,7 @@
 !/tts/src/*.cpp
 !/ui.py
 !/ui_streaming.py
-!/requirements-ui.txt
+!/requirements.txt
 !/patches/
 !/patches/*.patch
 !/conversation.py

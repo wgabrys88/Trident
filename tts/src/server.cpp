@@ -11,10 +11,21 @@
 #include <string>
 #include <vector>
 
+#ifdef _WIN32
 #include <winsock2.h>
 #include <ws2tcpip.h>
 using socket_t = SOCKET;
 static constexpr socket_t kInvalidSocket = INVALID_SOCKET;
+static constexpr int kSendFlags = 0;
+#else
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <unistd.h>
+using socket_t = int;
+static constexpr socket_t kInvalidSocket = -1;
+static constexpr int kSendFlags = MSG_NOSIGNAL;
+#endif
 
 namespace {
 
@@ -27,7 +38,11 @@ const std::vector<std::string> kRequired = {
 
 void close_socket(socket_t sock) noexcept {
     if (sock == kInvalidSocket) return;
+#ifdef _WIN32
     closesocket(sock);
+#else
+    close(sock);
+#endif
 }
 
 struct SocketGuard {
@@ -44,7 +59,7 @@ bool recv_all(socket_t sock, void* dst, std::size_t size) {
     while (done < size) {
         const std::size_t left = size - done;
         const int want = static_cast<int>(std::min<std::size_t>(left, static_cast<std::size_t>(std::numeric_limits<int>::max())));
-        const int got = recv(sock, reinterpret_cast<char*>(out + done), want, 0);
+        const auto got = recv(sock, reinterpret_cast<char*>(out + done), want, 0);
         if (got <= 0) return false;
         done += static_cast<std::size_t>(got);
     }
@@ -57,7 +72,7 @@ void send_all(socket_t sock, const void* src, std::size_t size) {
     while (done < size) {
         const std::size_t left = size - done;
         const int want = static_cast<int>(std::min<std::size_t>(left, static_cast<std::size_t>(std::numeric_limits<int>::max())));
-        const int sent = send(sock, reinterpret_cast<const char*>(in + done), want, 0);
+        const auto sent = send(sock, reinterpret_cast<const char*>(in + done), want, kSendFlags);
         if (sent <= 0) throw std::runtime_error("resident TTS socket send failed");
         done += static_cast<std::size_t>(sent);
     }
@@ -148,13 +163,19 @@ int main(int argc, char** argv) {
 
         tts::Session session(runtime, knobs, chunk_chars, tts::kQuietAmp2, first_chunk_chars);
 
+#ifdef _WIN32
         WSADATA wsa{};
         if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) throw std::runtime_error("WSAStartup failed");
         struct WsaGuard { ~WsaGuard() { WSACleanup(); } } wsa_guard;
+#endif
         SocketGuard listener(socket(AF_INET, SOCK_STREAM, IPPROTO_TCP));
         if (listener.value == kInvalidSocket) throw std::runtime_error("resident TTS socket creation failed");
         int reuse = 1;
+#ifdef _WIN32
         setsockopt(listener.value, SOL_SOCKET, SO_REUSEADDR, reinterpret_cast<const char*>(&reuse), sizeof(reuse));
+#else
+        setsockopt(listener.value, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
+#endif
         sockaddr_in address{};
         address.sin_family = AF_INET;
         address.sin_port = htons(static_cast<unsigned short>(port));
@@ -209,7 +230,11 @@ int main(int argc, char** argv) {
                     " join=" + (join ? "crossfade" : "chunks");
                 send_response(client.value, 0, result);
             } catch (const std::exception& error) {
-                try { send_response(client.value, 1, error.what()); } catch (...) {}
+                try {
+                    send_response(client.value, 1, error.what());
+                } catch (const std::exception& delivery_error) {
+                    tts::log("event=response_delivery_failed message=" + std::string(delivery_error.what()));
+                }
             }
         }
     } catch (const std::invalid_argument& error) {

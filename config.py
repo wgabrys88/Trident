@@ -10,25 +10,40 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 
 
+def platform_id() -> str:
+    if os.name == "nt": return "windows"
+    if sys.platform.startswith("linux"): return "linux"
+    raise RuntimeError(f"unsupported operating system: {sys.platform}")
+
+
+def architecture_id() -> str:
+    import platform
+    machine = platform.machine().lower()
+    if machine in {"amd64", "x86_64"}: return "x64"
+    raise RuntimeError(f"unsupported architecture: {machine}")
+
+
 def detect_hardware_profile() -> str:
-    if not sys.platform.startswith("win"):
-        raise RuntimeError("Trident requires Windows for GPU auto-discovery")
-    gpu = subprocess.check_output(
-        ["powershell.exe", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name -join ';'"],
-        text=True, encoding="utf-8", errors="replace", timeout=15,
-    ).lower()
-    if any(name in gpu for name in ("gtx 1050", "gtx 1060", "gtx 1070", "gtx 1080", "titan x (pascal)", "titan xp", "quadro p")): return "pascal"
-    if "iris" in gpu and "xe" in gpu: return "irisxe"
-    raise RuntimeError(f"unsupported experimental GPU: {gpu.strip()}")
+    if PLATFORM == "windows":
+        gpu = subprocess.check_output(
+            ["powershell.exe", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name -join ';'"],
+            text=True, encoding="utf-8", errors="replace", timeout=15,
+        ).lower()
+        if any(name in gpu for name in ("gtx 1050", "gtx 1060", "gtx 1070", "gtx 1080", "titan x (pascal)", "titan xp", "quadro p")): return "pascal"
+        if "iris" in gpu and "xe" in gpu: return "irisxe"
+        return "generic"
+    nvidia = Path("/proc/driver/nvidia/gpus")
+    if nvidia.is_dir():
+        gpu = " ".join(path.read_text(encoding="utf-8", errors="replace").lower() for path in nvidia.glob("*/information"))
+        if any(name in gpu for name in ("gtx 1050", "gtx 1060", "gtx 1070", "gtx 1080", "titan x", "titan xp", "quadro p")): return "pascal"
+    vendors = {path.read_text(encoding="ascii").strip().lower() for path in Path("/sys/class/drm").glob("card*/device/vendor") if path.is_file()}
+    return "intel" if "0x8086" in vendors else "generic"
 
 
+PLATFORM = platform_id()
+ARCHITECTURE = architecture_id()
 HARDWARE_PROFILE = detect_hardware_profile()
-
-
-GGML_VULKAN_ENV = {
-    "pascal": {"GGML_VK_DISABLE_F16": "1"},
-    "irisxe": {},
-}[HARDWARE_PROFILE]
+GGML_VULKAN_ENV = {"GGML_VK_DISABLE_F16": "1"} if HARDWARE_PROFILE == "pascal" else {}
 
 
 def ggml_vulkan_environment() -> dict[str, str]:
@@ -85,8 +100,12 @@ BRAIN_GENERATION = {
     "repeat_penalty": 1.0, "seed": 42, "max_tokens": 1024,
 }
 BRAIN_THINKING = False
-LIVE_SETTINGS_JSON = '{"ingestion_mode":"continuous","system_prompt":"The incoming speech transcript is auto-detected by ASR. Produce the final spoken response only in {tts_language_name} ({tts_language}). If the input language differs, preserve its meaning while translating or answering in the output language. Spoken prose only: short sentences ending with a period, question mark, or exclamation. No markdown, lists, code, URLs, emoji, or square-bracket tags. Expand numbers and abbreviations. Do not mention transcription, models, or reasoning.","tts_family":"v3","tts_join":"crossfade","tts_language":"en","tts_mode":"real","tts_voice":"trump","vad_silence_ms":200,"vad_threshold":0.5}'
-LIVE_SETTINGS = json.loads(LIVE_SETTINGS_JSON)
+LIVE_SETTINGS_DEFAULT = {
+    "ingestion_mode": "continuous",
+    "system_prompt": "The incoming speech transcript is auto-detected by ASR. Produce the final spoken response only in {tts_language_name} ({tts_language}). If the input language differs, preserve its meaning while translating or answering in the output language. Spoken prose only: short sentences ending with a period, question mark, or exclamation. No markdown, lists, code, URLs, emoji, or square-bracket tags. Expand numbers and abbreviations. Do not mention transcription, models, or reasoning.",
+    "tts_family": "nano", "tts_join": "crossfade", "tts_language": "en",
+    "tts_mode": "real", "tts_voice": "trump", "vad_silence_ms": 200, "vad_threshold": 0.5,
+}
 LIVE_AUDIO = {
     "asr_feed_seconds": 0.16,
     "vad_frame_samples": 512,
@@ -112,29 +131,6 @@ TTS_FIELDS = (
     ("exaggeration", "TTS_VOICE", "exaggeration", float, "--exaggeration", "Exaggeration", True),
 )
 
-
-def live_settings_path(data_dir: Path) -> Path:
-    return Path(data_dir) / "live-settings.json"
-
-
-def load_live_settings(data_dir: Path) -> dict:
-    path = live_settings_path(data_dir)
-    settings = json.loads(path.read_text(encoding="utf-8") if path.is_file() else LIVE_SETTINGS_JSON)
-    LIVE_SETTINGS.clear()
-    LIVE_SETTINGS.update(settings)
-    return dict(LIVE_SETTINGS)
-
-
-def save_live_settings(data_dir: Path, settings: dict) -> None:
-    path = live_settings_path(data_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(settings, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(payload, encoding="utf-8", newline="\n")
-    os.replace(temporary, path)
-    synced = json.loads(payload)
-    LIVE_SETTINGS.clear()
-    LIVE_SETTINGS.update(synced)
 
 LANGUAGES = {
     "en": "English", "es": "Spanish", "fr": "French", "de": "German",
@@ -220,16 +216,12 @@ FAMILIES = {
     ),
 }
 
-if HARDWARE_PROFILE == "irisxe":
+if HARDWARE_PROFILE in {"irisxe", "intel"}:
     for _family_spec in FAMILIES.values():
         _codec = _family_spec["TTS_MODELS"]["chatterbox-codec"]
         _codec["convert"]["quant"] = "q4_0"
         _codec["size"] = 0
         _codec["file"] = _codec["file"].replace("-f16.gguf", "-irisxe-q4_0-rawf32-v1.gguf")
-
-
-def default_family() -> str:
-    return next(iter(FAMILIES))
 
 
 SHARED_MODELS = {
@@ -252,31 +244,37 @@ VULKAN_VERSION = "1.4.357.0"
 PACKAGES = {
     "git": {"url": "https://github.com/git-for-windows/git/releases/download/v2.54.0.windows.1/MinGit-2.54.0-64-bit.zip", "file": "MinGit-2.54.0-64-bit.zip", "size": 39989839, "sha256": "04f937e1f0918b17b9be6f2294cb2bb66e96e1d9832d1c298e2de088a1d0e668"},
     "cmake": {"url": "https://github.com/Kitware/CMake/releases/download/v4.4.2/cmake-4.4.2-windows-x86_64.zip", "file": "cmake-4.4.2-windows-x86_64.zip", "size": 54405968, "sha256": "e8139d85b3813bc38833142ae1940472e9a587e9b5d2718ac1804c60f4e57a64"},
-    "msvc": {"url": "https://download.visualstudio.microsoft.com/download/pr/00d9d26c-2727-42c2-aa9e-eda63b03e1ee/15df9d3b4c2b2eaf44704d5e938c895341b9cd8ba40a9a18610f8d18cbe01b53/vs_BuildTools.exe", "file": "vs_BuildTools.exe", "size": 4458736, "sha256": "15df9d3b4c2b2eaf44704d5e938c895341b9cd8ba40a9a18610f8d18cbe01b53"},
+    "compiler": {"url": "https://download.visualstudio.microsoft.com/download/pr/00d9d26c-2727-42c2-aa9e-eda63b03e1ee/15df9d3b4c2b2eaf44704d5e938c895341b9cd8ba40a9a18610f8d18cbe01b53/vs_BuildTools.exe", "file": "vs_BuildTools.exe", "size": 4458736, "sha256": "15df9d3b4c2b2eaf44704d5e938c895341b9cd8ba40a9a18610f8d18cbe01b53"},
     "vulkan": {"url": f"https://sdk.lunarg.com/sdk/download/{VULKAN_VERSION}/windows/vulkansdk-windows-X64-{VULKAN_VERSION}.exe", "file": f"vulkansdk-windows-X64-{VULKAN_VERSION}.exe", "size": 0, "sha256": "81f474711e9042f4cd22b31b2f7a8870db2e428b21586fb43dd80150be97310d"},
-}
+} if PLATFORM == "windows" else {}
 
 SOURCES = {
     "chatterbox": ("https://github.com/wgabrys88/chatterbox.cpp", "77e9b0501aa76a46845d8b13cf956c21d060b593"),
     "ggml": ("https://github.com/ggml-org/ggml.git", "58c3805840b516b2a88ff867ccf7bb41dba79951"),
 }
 
+_BINARY_SUFFIX = ".exe" if PLATFORM == "windows" else ""
+_BINARY_ASSETS = {
+    "windows": {
+        "parakeet": "parakeet-v0.5.0-bin-win-vulkan-x64.zip",
+        "gemma": "llama-b10453-bin-win-vulkan-x64.zip",
+    },
+    "linux": {
+        "parakeet": "parakeet-v0.5.0-bin-linux-vulkan-x64.tar.gz",
+        "gemma": "llama-b10453-bin-ubuntu-vulkan-x64.tar.gz",
+    },
+}[PLATFORM]
 BINARIES = {
     "parakeet": {
         "label": "PARAKEET.CPP V0.5 VULKAN", "repo": "mudler/parakeet.cpp", "tag": "v0.5.0",
-        "asset": "parakeet-v0.5.0-bin-win-vulkan-x64.zip",
-        "server_exe": "parakeet-server.exe",
+        "asset": _BINARY_ASSETS["parakeet"], "server_exe": "parakeet-server" + _BINARY_SUFFIX,
     },
     "gemma": {
         "label": "LLAMA.CPP B10453 VULKAN", "repo": "ggml-org/llama.cpp", "tag": "b10453",
-        "asset": "llama-b10453-bin-win-vulkan-x64.zip",
-        "server_exe": "llama-server.exe",
+        "asset": _BINARY_ASSETS["gemma"], "server_exe": "llama-server" + _BINARY_SUFFIX,
     },
 }
-
-CHATTERBOX_LIBRARY = CHATTERBOX / "build" / "Release" / "tts-cpp.lib"
-TTS_BUILD = TTS / "build" / "Release"
-TTS_SERVER_EXE = "trident-tts-server.exe"
+TTS_SERVER_EXE = "trident-tts-server" + _BINARY_SUFFIX
 
 REFERENCE_VOICES = {
     "trump": {
@@ -305,16 +303,59 @@ def resolve_voice(data_dir: Path, value: str | None = None) -> Path:
     return Path(value).expanduser().resolve()
 
 
+def live_settings_path(data_dir: Path) -> Path:
+    return Path(data_dir) / "live-settings.json"
+
+
+def _live_settings(settings: dict) -> dict:
+    if set(settings) != set(LIVE_SETTINGS_DEFAULT):
+        raise RuntimeError("live settings schema mismatch")
+    value = dict(settings)
+    value["vad_threshold"] = float(value["vad_threshold"])
+    value["vad_silence_ms"] = int(value["vad_silence_ms"])
+    if value["ingestion_mode"] not in {"continuous", "ptt"}:
+        raise RuntimeError("invalid ingestion_mode")
+    if value["tts_family"] not in FAMILIES:
+        raise RuntimeError("invalid tts_family")
+    if value["tts_language"] not in FAMILIES[value["tts_family"]]["TTS_LANGUAGES"]:
+        raise RuntimeError(f"language {value['tts_language']!r} is not wired in {value['tts_family']}")
+    if not isinstance(value["tts_voice"], str) or not value["tts_voice"].strip():
+        raise RuntimeError("invalid tts_voice")
+    if value["tts_join"] not in {"chunks", "crossfade"} or value["tts_mode"] not in {"real", "buffered"}:
+        raise RuntimeError("invalid TTS delivery settings")
+    if not 0.1 <= value["vad_threshold"] <= 0.9 or not 100 <= value["vad_silence_ms"] <= 1500:
+        raise RuntimeError("invalid VAD settings")
+    return value
+
+
+def save_live_settings(data_dir: Path, settings: dict) -> dict:
+    value = _live_settings(settings)
+    path = live_settings_path(data_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(payload, encoding="utf-8", newline="\n")
+    os.replace(temporary, path)
+    return value
+
+
+def load_live_settings(data_dir: Path) -> dict:
+    path = live_settings_path(data_dir)
+    if not path.is_file():
+        return save_live_settings(data_dir, LIVE_SETTINGS_DEFAULT)
+    return _live_settings(json.loads(path.read_text(encoding="utf-8")))
+
+
 class Paths:
     def __init__(self, models_dir: Path | None = None, data_dir: Path | None = None, command: str | None = None) -> None:
         self.models_dir = (models_dir or DEFAULT_MODELS_DIR).resolve()
         self.data_dir = (data_dir or DEFAULT_DATA_DIR).resolve()
-        self.stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f") if command else None
-        self.run_dir = self.data_dir / "runs" / f"{self.stamp}-{command}" if command else None
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f") if command else None
+        self.run_dir = self.data_dir / "runs" / f"{stamp}-{command}" if command else None
         if self.run_dir:
             self.run_dir.mkdir(parents=True)
         def artifact(name: str):
-            return self.run_dir / f"{self.stamp}-{name}" if self.run_dir else None
+            return self.run_dir / name if self.run_dir else None
         self.transcript = artifact("transcript.txt")
         self.answer = artifact("answer.txt")
         self.system = artifact("system.txt")

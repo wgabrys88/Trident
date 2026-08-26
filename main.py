@@ -2,15 +2,43 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
+import os
 import shutil
+import subprocess
+import sys
 import time
+import venv
 import wave
 from pathlib import Path
 
-from cable import play_wav as cable_play, status as cable_status, use as cable_use
-from config import ASR_CHUNK_OVERLAP_SECONDS, ASR_CHUNK_SECONDS, BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_THINKING, FAMILIES, HARDWARE_PROFILE, LANGUAGES, LIVE_SETTINGS, REFERENCE_MIN_SECONDS, SHARED_MODELS, TTS_FIELDS, TTS_RATE, Paths, default_family, resolve_voice
-from installer import ensure_ui, install, models_for, require_model, runtime_server, runtime_tts_server, validate_wav, write_text_atomic
+
+def _bootstrap_runtime() -> None:
+    if sys.version_info < (3, 11):
+        raise RuntimeError("Trident requires Python 3.11 or newer")
+    if os.name != "nt" and not sys.platform.startswith("linux"):
+        raise RuntimeError(f"Trident supports Windows and Linux, not {sys.platform}")
+    root = Path(__file__).resolve().parent
+    env = root / ".venv"
+    python = env / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    requirements = root / "requirements.txt"
+    digest = hashlib.sha256(requirements.read_bytes()).hexdigest()
+    marker = env / ".trident-runtime"
+    if not python.is_file():
+        venv.EnvBuilder(with_pip=True).create(env)
+    if not marker.is_file() or marker.read_text(encoding="ascii").strip() != digest:
+        subprocess.run([str(python), "-m", "pip", "install", "--disable-pip-version-check", "-r", str(requirements)], check=True)
+        marker.write_text(digest + "\n", encoding="ascii")
+    if Path(sys.prefix).resolve() != env.resolve():
+        os.execv(str(python), [str(python), "-X", "utf8", str(Path(__file__).resolve()), *sys.argv[1:]])
+
+
+if __name__ == "__main__":
+    _bootstrap_runtime()
+
+from config import ASR_CHUNK_OVERLAP_SECONDS, ASR_CHUNK_SECONDS, BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_THINKING, FAMILIES, HARDWARE_PROFILE, LANGUAGES, REFERENCE_MIN_SECONDS, SHARED_MODELS, TTS_FIELDS, TTS_RATE, Paths, load_live_settings, resolve_voice
+from installer import install, models_for, require_model, runtime_server, runtime_tts_server, validate_wav, write_text_atomic
 from local_api import chatterbox_stream as _chatterbox_stream, gemma_chat, parakeet_transcribe
 from log import clear_run_log, note, set_run_log
 from media import chatterbox_wav, parakeet_chunks, parakeet_wav
@@ -23,8 +51,8 @@ def resolve_language(family: dict, language: str | None) -> str:
     return code
 
 
-def render_system_prompt(template: str | None, code: str, name: str) -> str:
-    text = LIVE_SETTINGS["system_prompt"] if template is None else template
+def render_system_prompt(template: str, code: str, name: str) -> str:
+    text = template
     for key, value in {"{tts_language}": code, "{tts_language_name}": name, "{language}": code, "{language_name}": name}.items(): text = text.replace(key, value)
     return text.strip()
 
@@ -43,7 +71,8 @@ def _read_system_prompt(args) -> str | None:
     text, filename = getattr(args, "system_prompt", None), getattr(args, "system_prompt_file", None)
     if text is not None and filename is not None: raise RuntimeError("choose one system prompt source")
     if filename: text = Path(filename).expanduser().resolve().read_text(encoding="utf-8")
-    return text.strip() if text is not None else None
+    if text is None: text = args.live_settings["system_prompt"]
+    return text.strip()
 
 
 def _copy(src: Path, dest: Path | None) -> None:
@@ -215,12 +244,12 @@ def _tts_failure(exc: Exception, unit: int | None = None, max_tokens: int | None
     note(f"component=tts event=failed outcome=error reason={reason}{prefix}{ceiling} message={message}")
 
 
-def stream_synthesize(text: str, reference: Path, output: Path, language: str, family: dict, paths: Paths, *, base: str | None = None, unit: int | None = None, streaming: bool | None = None):
+def stream_synthesize(text: str, reference: Path, output: Path, language: str, family: dict, paths: Paths, *, base: str | None = None, unit: int | None = None, streaming: bool | None = None, cancel=None):
     endpoint = base or tts_endpoint(reference, language, family, paths)
     stream = family["TTS_STREAM"]
     enabled = stream["enabled"] if streaming is None else streaming
     try:
-        generator = _chatterbox_stream(endpoint, text.strip(), output, enabled, stream["join"])
+        generator = _chatterbox_stream(endpoint, text.strip(), output, enabled, stream["join"], cancel=cancel)
         while True:
             try:
                 chunk = next(generator)
@@ -235,8 +264,8 @@ def stream_synthesize(text: str, reference: Path, output: Path, language: str, f
         raise
 
 
-def synthesize_text(text: str, reference: Path, output: Path, language: str, family: dict, paths: Paths, *, base: str | None = None, streaming: bool | None = None, unit: int | None = None) -> str:
-    generator = stream_synthesize(text, reference, output, language, family, paths, base=base, unit=unit, streaming=streaming)
+def synthesize_text(text: str, reference: Path, output: Path, language: str, family: dict, paths: Paths, *, base: str | None = None, streaming: bool | None = None, unit: int | None = None, cancel=None) -> str:
+    generator = stream_synthesize(text, reference, output, language, family, paths, base=base, unit=unit, streaming=streaming, cancel=cancel)
     try:
         while True:
             next(generator)
@@ -311,16 +340,17 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command")
     c=sub.add_parser("install"); c.add_argument("--family", choices=("all", *families), default="all"); c.add_argument("--ui", action="store_true", default=argparse.SUPPRESS)
     c=sub.add_parser("asr"); c.add_argument("input"); c.add_argument("-o", "--output")
-    c=sub.add_parser("brain"); c.add_argument("input", nargs="?"); c.add_argument("-t", "--text"); c.add_argument("-o", "--output"); c.add_argument("--language", choices=tuple(LANGUAGES), default="en"); add_prompt(c)
-    c=sub.add_parser("tts"); c.add_argument("input", nargs="?"); c.add_argument("-t", "--text"); c.add_argument("-o", "--output"); c.add_argument("--family", choices=families, default=default_family()); add_tts_options(c)
-    c=sub.add_parser("run"); c.add_argument("input"); c.add_argument("-o", "--output"); c.add_argument("--family", choices=families, default=default_family()); add_tts_options(c, "--tts-language"); add_prompt(c)
-    c=sub.add_parser("resident"); c.add_argument("action", choices=("status", "warm", "stop")); c.add_argument("--family", choices=families, default=default_family()); add_tts_options(c, "--tts-language")
+    c=sub.add_parser("brain"); c.add_argument("input", nargs="?"); c.add_argument("-t", "--text"); c.add_argument("-o", "--output"); c.add_argument("--language", choices=tuple(LANGUAGES)); add_prompt(c)
+    c=sub.add_parser("tts"); c.add_argument("input", nargs="?"); c.add_argument("-t", "--text"); c.add_argument("-o", "--output"); c.add_argument("--family", choices=families); add_tts_options(c)
+    c=sub.add_parser("run"); c.add_argument("input"); c.add_argument("-o", "--output"); c.add_argument("--family", choices=families); add_tts_options(c, "--tts-language"); add_prompt(c)
+    c=sub.add_parser("resident"); c.add_argument("action", choices=("status", "warm", "stop")); c.add_argument("--family", choices=families); add_tts_options(c, "--tts-language")
     c=sub.add_parser("cable"); c.add_argument("action", choices=("status", "use"))
     c=sub.add_parser("agent"); c.add_argument("--say", action="append", required=True); c.add_argument("--expect", action="append")
     return p
 
 
 def run_cable(args):
+    from cable import status as cable_status, use as cable_use
     if args.action == "use":
         result = cable_use()
         print(f"routed: {result['changed']} previous={result['previous'] or '-'}")
@@ -335,13 +365,13 @@ def run_agent(args) -> int:
 
 def run_install(args) -> str:
     paths = start_run("install", args.models_dir, args.data_dir)
+    outcome = "error"
     try:
         install(args.family, paths.models_dir, paths.data_dir)
         write_meta(paths, command="install", family=args.family, hardware=HARDWARE_PROFILE)
-    except Exception:
-        finish(paths, "error")
-        raise
-    finish(paths)
+        outcome = "ok"
+    finally:
+        finish(paths, outcome)
     return "Install complete"
 
 def warm_resident(args) -> None:
@@ -359,11 +389,24 @@ def resident_report() -> str:
 
 
 def launch_ui(args) -> int:
-    ensure_ui(); from ui import launch; launch(args.models_dir, args.data_dir); return 0
+    from ui import launch; launch(args.models_dir, args.data_dir); return 0
+
+
+def _apply_live_settings(args) -> None:
+    paths = Paths(args.models_dir, args.data_dir)
+    args.models_dir, args.data_dir = paths.models_dir, paths.data_dir
+    settings = load_live_settings(paths.data_dir)
+    args.live_settings = settings
+    for attr, key in (("family", "tts_family"), ("language", "tts_language"), ("tts_language", "tts_language"), ("reference", "tts_voice"), ("stream_join", "tts_join")):
+        if hasattr(args, attr) and getattr(args, attr) is None:
+            setattr(args, attr, settings[key])
+    if hasattr(args, "streaming") and args.streaming is None:
+        args.streaming = settings["tts_mode"] == "real"
 
 
 def main() -> int:
     args = build_parser().parse_args()
+    _apply_live_settings(args)
     if args.command == "install": run_install(args)
     elif args.command == "resident":
         if args.action == "stop": resident_stop_all()
