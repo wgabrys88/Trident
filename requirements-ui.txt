@@ -1,6 +1,5 @@
-cmake==4.4.2
-gradio==6.25.0
-imageio-ffmpeg==0.6.0
+gradio==6.26.0
 numpy>=2,<3
 onnxruntime==1.29.0
 silero-vad-notorch==6.2.1.1
+sounddevice==0.5.6

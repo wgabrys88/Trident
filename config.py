@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-import copy
 import json
 import os
 import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -11,19 +11,24 @@ ROOT = Path(__file__).resolve().parent
 
 
 def detect_hardware_profile() -> str:
+    if not sys.platform.startswith("win"):
+        raise RuntimeError("Trident requires Windows for GPU auto-discovery")
     gpu = subprocess.check_output(
         ["powershell.exe", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name -join ';'"],
         text=True, encoding="utf-8", errors="replace", timeout=15,
     ).lower()
-    if any(name in gpu for name in ("gtx 1050", "gtx 1060", "gtx 1070", "gtx 1080", "titan x (pascal)", "titan xp", "quadro p")):
-        return "pascal"
-    if "iris" in gpu and "xe" in gpu:
-        return "irisxe"
-    return "generic"
+    if any(name in gpu for name in ("gtx 1050", "gtx 1060", "gtx 1070", "gtx 1080", "titan x (pascal)", "titan xp", "quadro p")): return "pascal"
+    if "iris" in gpu and "xe" in gpu: return "irisxe"
+    raise RuntimeError(f"unsupported experimental GPU: {gpu.strip()}")
 
 
 HARDWARE_PROFILE = detect_hardware_profile()
-GGML_VULKAN_ENV = {"GGML_VK_DISABLE_F16": "1"} if HARDWARE_PROFILE == "pascal" else {}
+
+
+GGML_VULKAN_ENV = {
+    "pascal": {"GGML_VK_DISABLE_F16": "1"},
+    "irisxe": {},
+}[HARDWARE_PROFILE]
 
 
 def ggml_vulkan_environment() -> dict[str, str]:
@@ -50,6 +55,8 @@ SMART_TURN_SECONDS = 8
 TTS_RATE = 24000
 REFERENCE_MIN_SECONDS = 5.0
 
+CABLE_INPUT = "CABLE Input"
+CABLE_OUTPUT = "CABLE Output"
 
 RESIDENT_SERVERS = {
     "parakeet": {"host": "127.0.0.1", "port": 17931, "url": "http://127.0.0.1:17931", "startup_timeout_s": 120},
@@ -78,12 +85,8 @@ BRAIN_GENERATION = {
     "repeat_penalty": 1.0, "seed": 42, "max_tokens": 1024,
 }
 BRAIN_THINKING = False
-LIVE_SETTINGS_DEFAULT = {
-    "ingestion_mode": "continuous",
-    "system_prompt": "The incoming speech transcript is auto-detected by ASR. Produce the final spoken response only in {tts_language_name} ({tts_language}). If the input language differs, preserve its meaning while translating or answering in the output language. Spoken prose only: short sentences ending with a period, question mark, or exclamation. No markdown, lists, code, URLs, emoji, or square-bracket tags. Expand numbers and abbreviations. Do not mention transcription, models, or reasoning.",
-    "tts_family": "nano", "tts_join": "crossfade", "tts_language": "en",
-    "tts_mode": "real", "tts_voice": "trump", "vad_silence_ms": 200, "vad_threshold": 0.5,
-}
+LIVE_SETTINGS_JSON = '{"ingestion_mode":"continuous","system_prompt":"The incoming speech transcript is auto-detected by ASR. Produce the final spoken response only in {tts_language_name} ({tts_language}). If the input language differs, preserve its meaning while translating or answering in the output language. Spoken prose only: short sentences ending with a period, question mark, or exclamation. No markdown, lists, code, URLs, emoji, or square-bracket tags. Expand numbers and abbreviations. Do not mention transcription, models, or reasoning.","tts_family":"v3","tts_join":"crossfade","tts_language":"en","tts_mode":"real","tts_voice":"trump","vad_silence_ms":200,"vad_threshold":0.5}'
+LIVE_SETTINGS = json.loads(LIVE_SETTINGS_JSON)
 LIVE_AUDIO = {
     "asr_feed_seconds": 0.16,
     "vad_frame_samples": 512,
@@ -92,23 +95,46 @@ LIVE_AUDIO = {
 }
 
 TTS_FIELDS = (
-    ("n_gpu_layers", "TTS_RUNTIME", "gpu_layers", int, "GPU layers"),
-    ("context", "TTS_RUNTIME", "context", int, "Context"),
-    ("threads", "TTS_RUNTIME", "threads", int, "Threads"),
-    ("seed", "TTS_SAMPLE", "seed", int, "Seed"),
-    ("max_tokens", "TTS_SAMPLE", "max_tokens", int, "Max T3 tokens"),
-    ("top_k", "TTS_SAMPLE", "top_k", int, "Top K"),
-    ("cfm_steps", "TTS_SAMPLE", "cfm_steps", int, "CFM steps"),
-    ("first_chunk_chars", "TTS_CHUNK", "first_chars", int, "First streaming text-unit chars"),
-    ("chunk_chars", "TTS_CHUNK", "chars", int, "Text-unit chars"),
-    ("top_p", "TTS_SAMPLE", "top_p", float, "Top P"),
-    ("min_p", "TTS_SAMPLE", "min_p", float, "Min P (V3)"),
-    ("temperature", "TTS_SAMPLE", "temperature", float, "Temperature"),
-    ("repeat_penalty", "TTS_SAMPLE", "repeat_penalty", float, "Repeat penalty"),
-    ("cfg_weight", "TTS_VOICE", "cfg_weight", float, "CFG weight (V3)"),
-    ("exaggeration", "TTS_VOICE", "exaggeration", float, "Exaggeration (V3)"),
+    ("n_gpu_layers", "TTS_RUNTIME", "gpu_layers", int, "--n-gpu-layers", "GPU layers", False),
+    ("context", "TTS_RUNTIME", "context", int, "--context", "Context", False),
+    ("threads", "TTS_RUNTIME", "threads", int, "--threads", "Threads", False),
+    ("seed", "TTS_SAMPLE", "seed", int, "--seed", "Seed", False),
+    ("max_tokens", "TTS_SAMPLE", "max_tokens", int, "--max-tokens", "Max T3 tokens", False),
+    ("top_k", "TTS_SAMPLE", "top_k", int, "--top-k", "Top K", False),
+    ("cfm_steps", "TTS_SAMPLE", "cfm_steps", int, "--cfm-steps", "CFM steps", False),
+    ("first_chunk_chars", "TTS_CHUNK", "first_chars", int, "--first-chunk-chars", "First streaming text-unit chars", False),
+    ("chunk_chars", "TTS_CHUNK", "chars", int, "--chunk-chars", "Text-unit chars", False),
+    ("top_p", "TTS_SAMPLE", "top_p", float, "--top-p", "Top P", False),
+    ("min_p", "TTS_SAMPLE", "min_p", float, "--min-p", "Min P", True),
+    ("temperature", "TTS_SAMPLE", "temperature", float, "--temperature", "Temperature", False),
+    ("repeat_penalty", "TTS_SAMPLE", "repeat_penalty", float, "--repeat-penalty", "Repeat penalty", False),
+    ("cfg_weight", "TTS_VOICE", "cfg_weight", float, "--cfg-weight", "CFG weight", True),
+    ("exaggeration", "TTS_VOICE", "exaggeration", float, "--exaggeration", "Exaggeration", True),
 )
 
+
+def live_settings_path(data_dir: Path) -> Path:
+    return Path(data_dir) / "live-settings.json"
+
+
+def load_live_settings(data_dir: Path) -> dict:
+    path = live_settings_path(data_dir)
+    settings = json.loads(path.read_text(encoding="utf-8") if path.is_file() else LIVE_SETTINGS_JSON)
+    LIVE_SETTINGS.clear()
+    LIVE_SETTINGS.update(settings)
+    return dict(LIVE_SETTINGS)
+
+
+def save_live_settings(data_dir: Path, settings: dict) -> None:
+    path = live_settings_path(data_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(settings, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(payload, encoding="utf-8", newline="\n")
+    os.replace(temporary, path)
+    synced = json.loads(payload)
+    LIVE_SETTINGS.clear()
+    LIVE_SETTINGS.update(synced)
 
 LANGUAGES = {
     "en": "English", "es": "Spanish", "fr": "French", "de": "German",
@@ -190,7 +216,7 @@ FAMILIES = {
     ),
     "nano": _english_family(
         "nano", "ResembleAI/chatterbox-nano", "71ccd1d0081b430592cea481f4307e764e07bc64",
-        "t3_nano_v1.safetensors", "chatterbox-t3-nano-q4_0.gguf", 171901536, 180,
+        "t3_nano_v1.safetensors", "chatterbox-t3-nano-q4_0.gguf", 171901536, 80,
     ),
 }
 
@@ -200,6 +226,10 @@ if HARDWARE_PROFILE == "irisxe":
         _codec["convert"]["quant"] = "q4_0"
         _codec["size"] = 0
         _codec["file"] = _codec["file"].replace("-f16.gguf", "-irisxe-q4_0-rawf32-v1.gguf")
+
+
+def default_family() -> str:
+    return next(iter(FAMILIES))
 
 
 SHARED_MODELS = {
@@ -220,8 +250,10 @@ SHARED_MODELS = {
 VULKAN_VERSION = "1.4.357.0"
 
 PACKAGES = {
-    "vulkan": {"url": f"https://sdk.lunarg.com/sdk/download/{VULKAN_VERSION}/windows/vulkansdk-windows-X64-{VULKAN_VERSION}.exe", "file": f"vulkansdk-windows-X64-{VULKAN_VERSION}.exe", "sha256": "81f474711e9042f4cd22b31b2f7a8870db2e428b21586fb43dd80150be97310d"},
-    "compiler": {"url": "https://download.visualstudio.microsoft.com/download/pr/00d9d26c-2727-42c2-aa9e-eda63b03e1ee/15df9d3b4c2b2eaf44704d5e938c895341b9cd8ba40a9a18610f8d18cbe01b53/vs_BuildTools.exe", "file": "vs_BuildTools.exe", "size": 4458736, "sha256": "15df9d3b4c2b2eaf44704d5e938c895341b9cd8ba40a9a18610f8d18cbe01b53"},
+    "git": {"url": "https://github.com/git-for-windows/git/releases/download/v2.54.0.windows.1/MinGit-2.54.0-64-bit.zip", "file": "MinGit-2.54.0-64-bit.zip", "size": 39989839, "sha256": "04f937e1f0918b17b9be6f2294cb2bb66e96e1d9832d1c298e2de088a1d0e668"},
+    "cmake": {"url": "https://github.com/Kitware/CMake/releases/download/v4.4.2/cmake-4.4.2-windows-x86_64.zip", "file": "cmake-4.4.2-windows-x86_64.zip", "size": 54405968, "sha256": "e8139d85b3813bc38833142ae1940472e9a587e9b5d2718ac1804c60f4e57a64"},
+    "msvc": {"url": "https://download.visualstudio.microsoft.com/download/pr/00d9d26c-2727-42c2-aa9e-eda63b03e1ee/15df9d3b4c2b2eaf44704d5e938c895341b9cd8ba40a9a18610f8d18cbe01b53/vs_BuildTools.exe", "file": "vs_BuildTools.exe", "size": 4458736, "sha256": "15df9d3b4c2b2eaf44704d5e938c895341b9cd8ba40a9a18610f8d18cbe01b53"},
+    "vulkan": {"url": f"https://sdk.lunarg.com/sdk/download/{VULKAN_VERSION}/windows/vulkansdk-windows-X64-{VULKAN_VERSION}.exe", "file": f"vulkansdk-windows-X64-{VULKAN_VERSION}.exe", "size": 0, "sha256": "81f474711e9042f4cd22b31b2f7a8870db2e428b21586fb43dd80150be97310d"},
 }
 
 SOURCES = {
@@ -229,20 +261,21 @@ SOURCES = {
     "ggml": ("https://github.com/ggml-org/ggml.git", "58c3805840b516b2a88ff867ccf7bb41dba79951"),
 }
 
-_BINARY_ASSETS = {
-    "parakeet": "parakeet-v0.5.0-bin-win-vulkan-x64.zip",
-    "gemma": "llama-b10453-bin-win-vulkan-x64.zip",
-}
 BINARIES = {
     "parakeet": {
         "label": "PARAKEET.CPP V0.5 VULKAN", "repo": "mudler/parakeet.cpp", "tag": "v0.5.0",
-        "asset": _BINARY_ASSETS["parakeet"], "server_exe": "parakeet-server.exe",
+        "asset": "parakeet-v0.5.0-bin-win-vulkan-x64.zip",
+        "server_exe": "parakeet-server.exe",
     },
     "gemma": {
         "label": "LLAMA.CPP B10453 VULKAN", "repo": "ggml-org/llama.cpp", "tag": "b10453",
-        "asset": _BINARY_ASSETS["gemma"], "server_exe": "llama-server.exe",
+        "asset": "llama-b10453-bin-win-vulkan-x64.zip",
+        "server_exe": "llama-server.exe",
     },
 }
+
+CHATTERBOX_LIBRARY = CHATTERBOX / "build" / "Release" / "tts-cpp.lib"
+TTS_BUILD = TTS / "build" / "Release"
 TTS_SERVER_EXE = "trident-tts-server.exe"
 
 REFERENCE_VOICES = {
@@ -265,58 +298,6 @@ REFERENCE_VOICES = {
 DEFAULT_VOICE = "trump"
 
 
-def effective_family(name: str, overrides: dict | None = None) -> dict:
-    family = copy.deepcopy(FAMILIES[name])
-    values = overrides or {}
-    for key, section, field, typ, *_ in TTS_FIELDS:
-        value = values.get(key)
-        if value is not None:
-            family[section][field] = typ(value)
-    if values.get("streaming") is not None:
-        family["TTS_STREAM"]["enabled"] = bool(values["streaming"])
-    if values.get("stream_join") is not None:
-        family["TTS_STREAM"]["join"] = values["stream_join"]
-    if name in {"turbo", "nano"} and (family["TTS_SAMPLE"]["min_p"] or family["TTS_VOICE"]["cfg_weight"] or family["TTS_VOICE"]["exaggeration"]):
-        raise RuntimeError(f"{name} does not support min-p, CFG weight, or exaggeration")
-    return family
-
-
-def render_system_prompt(template: str, code: str) -> str:
-    name = LANGUAGES[code]
-    for key, value in (("{tts_language}", code), ("{tts_language_name}", name), ("{language}", code), ("{language_name}", name)):
-        template = template.replace(key, value)
-    return template.strip()
-
-
-def spoken_reply(raw: str, streaming: bool = False) -> str:
-    text = raw.replace("\r\n", "\n").replace("\r", "\n").strip()
-    if "\nAssistant:\n" in text:
-        text = text.rsplit("\nAssistant:\n", 1)[1].strip()
-    elif text.startswith("Assistant:\n"):
-        text = text[11:].strip()
-    if "[Start thinking]" in text:
-        if "[End thinking]" in text:
-            text = text.split("[End thinking]", 1)[1].strip()
-        elif streaming:
-            return ""
-    return text
-
-
-def gemma_payload(messages: list, stream: bool) -> dict:
-    return {
-        "model": "gemma", "messages": messages, "stream": stream, "cache_prompt": True,
-        "temperature": BRAIN_GENERATION["temperature"], "top_p": BRAIN_GENERATION["top_p"],
-        "top_k": BRAIN_GENERATION["top_k"], "min_p": BRAIN_GENERATION["min_p"],
-        "repeat_penalty": BRAIN_GENERATION["repeat_penalty"], "seed": BRAIN_GENERATION["seed"],
-        "max_tokens": BRAIN_GENERATION["max_tokens"],
-        "chat_template_kwargs": {"enable_thinking": BRAIN_THINKING},
-    }
-
-
-def resolved_tts(family: dict) -> str:
-    return json.dumps({key: family[key] for key in ("name", "TTS_RUNTIME", "TTS_SAMPLE", "TTS_VOICE", "TTS_CHUNK", "TTS_STREAM")}, sort_keys=True, separators=(",", ":"))
-
-
 def resolve_voice(data_dir: Path, value: str | None = None) -> Path:
     key = None if value is None else value.lower()
     if key is None or key in REFERENCE_VOICES:
@@ -324,62 +305,21 @@ def resolve_voice(data_dir: Path, value: str | None = None) -> Path:
     return Path(value).expanduser().resolve()
 
 
-def live_settings_path(data_dir: Path) -> Path:
-    return Path(data_dir) / "live-settings.json"
-
-
-def _live_settings(settings: dict) -> dict:
-    if set(settings) != set(LIVE_SETTINGS_DEFAULT):
-        raise RuntimeError("live settings schema mismatch")
-    value = dict(settings)
-    value["vad_threshold"] = float(value["vad_threshold"])
-    value["vad_silence_ms"] = int(value["vad_silence_ms"])
-    if value["ingestion_mode"] not in {"continuous", "ptt"}:
-        raise RuntimeError("invalid ingestion_mode")
-    if value["tts_family"] not in FAMILIES:
-        raise RuntimeError("invalid tts_family")
-    if value["tts_language"] not in FAMILIES[value["tts_family"]]["TTS_LANGUAGES"]:
-        raise RuntimeError(f"language {value['tts_language']!r} is not wired in {value['tts_family']}")
-    if not isinstance(value["tts_voice"], str) or not value["tts_voice"].strip():
-        raise RuntimeError("invalid tts_voice")
-    if value["tts_join"] not in {"chunks", "crossfade"} or value["tts_mode"] not in {"real", "buffered"}:
-        raise RuntimeError("invalid TTS delivery settings")
-    if not 0.1 <= value["vad_threshold"] <= 0.9 or not 100 <= value["vad_silence_ms"] <= 1500:
-        raise RuntimeError("invalid VAD settings")
-    return value
-
-
-def save_live_settings(data_dir: Path, settings: dict) -> dict:
-    value = _live_settings(settings)
-    path = live_settings_path(data_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(payload, encoding="utf-8", newline="\n")
-    os.replace(temporary, path)
-    return value
-
-
-def load_live_settings(data_dir: Path) -> dict:
-    path = live_settings_path(data_dir)
-    if not path.is_file():
-        return save_live_settings(data_dir, LIVE_SETTINGS_DEFAULT)
-    return _live_settings(json.loads(path.read_text(encoding="utf-8")))
-
-
 class Paths:
     def __init__(self, models_dir: Path | None = None, data_dir: Path | None = None, command: str | None = None) -> None:
         self.models_dir = (models_dir or DEFAULT_MODELS_DIR).resolve()
         self.data_dir = (data_dir or DEFAULT_DATA_DIR).resolve()
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f") if command else None
-        self.run_dir = self.data_dir / "runs" / f"{stamp}-{command}" if command else None
+        self.stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f") if command else None
+        self.run_dir = self.data_dir / "runs" / f"{self.stamp}-{command}" if command else None
         if self.run_dir:
             self.run_dir.mkdir(parents=True)
         def artifact(name: str):
-            return self.run_dir / name if self.run_dir else None
+            return self.run_dir / f"{self.stamp}-{name}" if self.run_dir else None
         self.transcript = artifact("transcript.txt")
         self.answer = artifact("answer.txt")
+        self.system = artifact("system.txt")
         self.output = artifact("output.wav")
         self.input = artifact("input.wav")
+        self.literal = artifact("literal.txt")
         self.log = artifact("trident.log")
         self.meta = artifact("meta.txt")

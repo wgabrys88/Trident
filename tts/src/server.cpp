@@ -15,7 +15,6 @@
 #include <ws2tcpip.h>
 using socket_t = SOCKET;
 static constexpr socket_t kInvalidSocket = INVALID_SOCKET;
-static constexpr int kSendFlags = 0;
 
 namespace {
 
@@ -27,7 +26,8 @@ const std::vector<std::string> kRequired = {
 };
 
 void close_socket(socket_t sock) noexcept {
-    if (sock != kInvalidSocket) closesocket(sock);
+    if (sock == kInvalidSocket) return;
+    closesocket(sock);
 }
 
 struct SocketGuard {
@@ -44,7 +44,7 @@ bool recv_all(socket_t sock, void* dst, std::size_t size) {
     while (done < size) {
         const std::size_t left = size - done;
         const int want = static_cast<int>(std::min<std::size_t>(left, static_cast<std::size_t>(std::numeric_limits<int>::max())));
-        const auto got = recv(sock, reinterpret_cast<char*>(out + done), want, 0);
+        const int got = recv(sock, reinterpret_cast<char*>(out + done), want, 0);
         if (got <= 0) return false;
         done += static_cast<std::size_t>(got);
     }
@@ -57,7 +57,7 @@ void send_all(socket_t sock, const void* src, std::size_t size) {
     while (done < size) {
         const std::size_t left = size - done;
         const int want = static_cast<int>(std::min<std::size_t>(left, static_cast<std::size_t>(std::numeric_limits<int>::max())));
-        const auto sent = send(sock, reinterpret_cast<const char*>(in + done), want, kSendFlags);
+        const int sent = send(sock, reinterpret_cast<const char*>(in + done), want, 0);
         if (sent <= 0) throw std::runtime_error("resident TTS socket send failed");
         done += static_cast<std::size_t>(sent);
     }
@@ -209,11 +209,7 @@ int main(int argc, char** argv) {
                     " join=" + (join ? "crossfade" : "chunks");
                 send_response(client.value, 0, result);
             } catch (const std::exception& error) {
-                try {
-                    send_response(client.value, 1, error.what());
-                } catch (const std::exception& delivery_error) {
-                    tts::log("event=response_delivery_failed message=" + std::string(delivery_error.what()));
-                }
+                try { send_response(client.value, 1, error.what()); } catch (...) {}
             }
         }
     } catch (const std::invalid_argument& error) {
