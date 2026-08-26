@@ -218,7 +218,10 @@ class Conversation:
             elif op == "vad-config":
                 self.vad.configure(*payload)
             elif op == "finish":
-                self._transcribe_turn("STOP")
+                if self.vad.speech:
+                    self._transcribe_turn("STOP")
+                else:
+                    self._discard_turn()
                 return
             else:
                 raise RuntimeError(f"unknown ASR queue operation: {op}")
