@@ -30,7 +30,7 @@ int parse_int(const Args& args, const std::string& key) {
     size_t used = 0;
     long long value = 0;
     try { value = std::stoll(raw, &used); }
-    catch (const std::exception&) { throw std::invalid_argument("invalid integer for " + key + ": " + raw); }
+    catch (...) { throw std::invalid_argument("invalid integer for " + key + ": " + raw); }
     if (used != raw.size() || value < std::numeric_limits<int>::min() || value > std::numeric_limits<int>::max())
         throw std::invalid_argument("invalid integer for " + key + ": " + raw);
     return static_cast<int>(value);
@@ -41,7 +41,7 @@ float parse_float(const Args& args, const std::string& key) {
     size_t used = 0;
     float value = 0;
     try { value = std::stof(raw, &used); }
-    catch (const std::exception&) { throw std::invalid_argument("invalid number for " + key + ": " + raw); }
+    catch (...) { throw std::invalid_argument("invalid number for " + key + ": " + raw); }
     if (used != raw.size() || !std::isfinite(value)) throw std::invalid_argument("invalid number for " + key + ": " + raw);
     return value;
 }

@@ -8,14 +8,11 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
 
 from config import GGML_VULKAN_ENV, RESIDENT_SERVERS, RUNTIMES, TTS_FIELDS, ggml_vulkan_environment
 from log import note
-
-import msvcrt
 
 
 def _state_dir() -> Path:
@@ -28,25 +25,11 @@ def _state_path(name: str) -> Path:
     return _state_dir() / f"{name}.json"
 
 
-@contextmanager
-def _resident_lock(name: str):
-    path = _state_dir() / f"{name}.lock"
-    with path.open("a+b") as handle:
-        if path.stat().st_size == 0:
-            handle.write(b"\0")
-            handle.flush()
-        handle.seek(0)
-        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-        try:
-            yield
-        finally:
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-
-
 def _read_state(name: str) -> dict:
     path = _state_path(name)
-    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    if not path.is_file():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _write_state(name: str, state: dict) -> None:
@@ -56,30 +39,21 @@ def _write_state(name: str, state: dict) -> None:
     os.replace(partial, path)
 
 
-def _file_manifest(path: Path) -> dict:
+def _file_signature(path: Path) -> dict:
     resolved = path.resolve()
     st = resolved.stat()
     return {"path": str(resolved), "size": st.st_size, "mtime_ns": st.st_mtime_ns}
 
 
-def _manifest(files: dict[str, Path], extra: dict) -> dict:
-    return {"files": {key: _file_manifest(path) for key, path in sorted(files.items())}, "extra": extra}
-
-
-def _identity(files: dict[str, Path], extra: dict) -> str:
-    digest = hashlib.sha256()
-    for key, path in sorted(files.items()):
-        resolved = path.resolve()
-        header = json.dumps([key, str(resolved)], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        digest.update(len(header).to_bytes(8, "little"))
-        digest.update(header)
-        with resolved.open("rb") as source:
-            for block in iter(lambda: source.read(8 * 1024 * 1024), b""):
-                digest.update(block)
-    payload = json.dumps(extra, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    digest.update(len(payload).to_bytes(8, "little"))
-    digest.update(payload)
-    return digest.hexdigest()
+def _identity(name: str, server: Path, model: Path, extra: dict) -> str:
+    payload = {
+        "name": name,
+        "server": _file_signature(server),
+        "model": _file_signature(model),
+        **extra,
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
 
 
 def _port_open(host: str, port: int, timeout: float = 0.25) -> bool:
@@ -109,7 +83,9 @@ def _spawn_detached(command: list[str], cwd: Path, env: dict[str, str] | None) -
     )
 
 
-def _wait_ready(name: str, process: subprocess.Popen, probe: Callable[[], bool], timeout_s: float) -> None:
+def _wait_ready(
+    name: str, process: subprocess.Popen, probe: Callable[[], bool], timeout_s: float
+) -> None:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if probe():
@@ -121,19 +97,15 @@ def _wait_ready(name: str, process: subprocess.Popen, probe: Callable[[], bool],
     raise RuntimeError(f"{name} resident server did not become ready within {timeout_s:g}s (pid {process.pid})")
 
 
-def _kill_pid(name: str, pid: int) -> None:
-    note(f"component=resident event=stop name={name} pid={pid}")
-    subprocess.run(
-        ["taskkill", "/PID", str(pid), "/T", "/F"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
-    )
-
-
 def _terminate(name: str) -> None:
     state = _read_state(name)
     pid = int(state.get("pid") or 0)
     if pid > 0:
-        _kill_pid(name, pid)
+        note(f"component=resident event=stop name={name} pid={pid}")
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+        )
     _state_path(name).unlink(missing_ok=True)
 
 
@@ -150,18 +122,17 @@ def _wait_port_closed(name: str, timeout_s: float = 10.0) -> None:
 def stop_owned(name: str) -> None:
     if name not in RESIDENT_SERVERS:
         raise ValueError(f"unknown resident component: {name}")
-    with _resident_lock(name):
-        state = _read_state(name)
-        if int(state.get("pid") or 0) <= 0:
-            cfg = RESIDENT_SERVERS[name]
-            if _port_open(str(cfg["host"]), int(cfg["port"])):
-                raise RuntimeError(
-                    f"{name} resident port {cfg['port']} is in use but no owned PID is recorded; "
-                    "stop that process before installation"
-                )
-            return
-        _terminate(name)
-        _wait_port_closed(name)
+    state = _read_state(name)
+    if int(state.get("pid") or 0) <= 0:
+        cfg = RESIDENT_SERVERS[name]
+        if _port_open(str(cfg["host"]), int(cfg["port"])):
+            raise RuntimeError(
+                f"{name} resident port {cfg['port']} is in use but no owned PID is recorded; "
+                "stop that process before installation"
+            )
+        return
+    _terminate(name)
+    _wait_port_closed(name)
 
 
 def _ensure(
@@ -172,50 +143,55 @@ def _ensure(
     identity_extra: dict,
     ready_probe: Callable[[], bool],
     *,
-    identity_files: dict[str, Path] | None = None,
     env: dict[str, str] | None = None,
     state_extra: dict | None = None,
 ) -> str:
-    with _resident_lock(name):
-        cfg = RESIDENT_SERVERS[name]
-        files = {"server": server, "model": model, **(identity_files or {})}
-        manifest = _manifest(files, identity_extra)
-        state = _read_state(name)
-        ident = state.get("identity") if state.get("manifest") == manifest else None
-        if not ident:
-            ident = _identity(files, identity_extra)
-        if ready_probe():
-            if state.get("identity") == ident:
-                if state.get("manifest") != manifest:
-                    state["manifest"] = manifest
-                    _write_state(name, state)
-                return str(cfg["url"])
-            if int(state.get("pid") or 0) > 0:
-                note(f"component=resident event=restart name={name} reason=identity_changed")
-                _terminate(name)
-                _wait_port_closed(name)
-            else:
-                raise RuntimeError(f"{name} resident port {cfg['port']} is already in use by an unowned process")
-        state_path = _state_path(name)
+    cfg = RESIDENT_SERVERS[name]
+    ident = _identity(name, server, model, identity_extra)
+    state = _read_state(name)
+    if ready_probe():
+        if state.get("identity") == ident:
+            return str(cfg["url"])
+        if int(state.get("pid") or 0) > 0:
+            note(f"component=resident event=restart name={name} reason=identity_changed")
+            _terminate(name)
+            _wait_port_closed(name)
+        else:
+            raise RuntimeError(
+                f"{name} resident port {cfg['port']} is already in use by a different configuration; "
+                "run `python main.py resident stop` once and retry"
+            )
+
+    state_path = _state_path(name)
+    if state_path.exists():
         state_path.unlink(missing_ok=True)
-        policy = "vulkan_f16=disabled" if env and env.get("GGML_VK_DISABLE_F16") == "1" else "vulkan_f16=default"
-        note(f"component=resident event=start name={name} policy={policy}")
-        process = _spawn_detached(command, server.parent, env)
-        pid = int(process.pid)
-        state_value = {"identity": ident, "manifest": manifest, "pid": pid, **(state_extra or {})}
-        _write_state(name, state_value)
-        ready = False
-        try:
-            _wait_ready(name, process, ready_probe, float(cfg["startup_timeout_s"]))
-            ready = True
-        finally:
-            if not ready:
-                note(f"component=resident event=failed name={name}")
-                _kill_pid(name, pid)
-                state_path.unlink(missing_ok=True)
-                _wait_port_closed(name)
-        note(f"component=resident event=ready name={name} pid={pid}")
-        return str(cfg["url"])
+
+    policy = "vulkan_f16=disabled" if env and env.get("GGML_VK_DISABLE_F16") == "1" else "vulkan_f16=default"
+    note(f"component=resident event=start name={name} policy={policy}")
+    process = _spawn_detached(command, server.parent, env)
+    pid = int(process.pid)
+    state_value = {
+        "identity": ident,
+        "pid": pid,
+        "port": int(cfg["port"]),
+        "url": str(cfg["url"]),
+        "server": str(server),
+        "model": str(model),
+        "identity_inputs": identity_extra,
+        "started_unix": time.time(),
+    }
+    if state_extra:
+        state_value.update(state_extra)
+    _write_state(name, state_value)
+    try:
+        _wait_ready(name, process, ready_probe, float(cfg["startup_timeout_s"]))
+    except Exception as exc:
+        message = " ".join(str(exc).split())
+        note(f"component=resident event=failed name={name} message={message}")
+        _state_path(name).unlink(missing_ok=True)
+        raise
+    note(f"component=resident event=ready name={name} pid={pid}")
+    return str(cfg["url"])
 
 
 def ensure_parakeet(server: Path, model: Path) -> str:
@@ -267,19 +243,23 @@ def ensure_chatterbox(server: Path, t3_model: Path, codec_model: Path, reference
         "--model", str(t3_model), "--s3gen-gguf", str(codec_model),
         "--reference", str(reference), "--language", language, "--port", str(port),
     ]
-    for name, section, key, *_ in TTS_FIELDS:
-        command += ["--" + name.replace("_", "-"), str(family[section][key])]
+    for _, section, key, _, flag, *_ in TTS_FIELDS:
+        command += [flag, str(family[section][key])]
     command += ["--fastconv", "1" if family["TTS_RUNTIME"]["fastconv"] else "0"]
     return _ensure(
-        "chatterbox", server, t3_model, command, {"argv": command[1:]},
-        lambda: _port_open(host, port), identity_files={"codec": codec_model, "reference": reference},
-        state_extra={"family": family["name"], "language": language, "reference": str(reference.resolve())},
+        "chatterbox", server, t3_model, command,
+        {"argv": command[1:], "codec": _file_signature(codec_model), "reference": _file_signature(reference)},
+        lambda: _port_open(host, port),
+        state_extra={
+            "family": family["name"], "language": language,
+            "reference": str(reference.resolve()), "codec": str(codec_model.resolve()),
+        },
     )
 
 
 def stop_all() -> None:
     for name in ("parakeet", "gemma", "chatterbox"):
-        stop_owned(name)
+        _terminate(name)
 
 
 def status() -> list[dict]:
