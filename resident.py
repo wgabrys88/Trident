@@ -11,7 +11,7 @@ import urllib.request
 from pathlib import Path
 from typing import Callable
 
-from config import GGML_VULKAN_ENV, RESIDENT_SERVERS, RUNTIMES, ggml_vulkan_environment
+from config import GGML_VULKAN_ENV, RESIDENT_SERVERS, RUNTIMES, TTS_FIELDS, ggml_vulkan_environment
 from log import note
 
 
@@ -198,13 +198,10 @@ def ensure_parakeet(server: Path, model: Path) -> str:
     cfg = RESIDENT_SERVERS["parakeet"]
     host, port = str(cfg["host"]), int(cfg["port"])
     command = [str(server), "--model", str(model), "--port", str(port)]
-    identity = {
-        "model_mode": "parakeet-tdt-v3", "device": "auto", "port": port,
-        "vulkan_env": GGML_VULKAN_ENV,
-    }
     return _ensure(
-        "parakeet", server, model, command, identity, lambda: _port_open(host, port),
-        env=ggml_vulkan_environment(),
+        "parakeet", server, model, command,
+        {"argv": command[1:], "vulkan_env": GGML_VULKAN_ENV},
+        lambda: _port_open(host, port), env=ggml_vulkan_environment(),
     )
 
 
@@ -230,71 +227,32 @@ def ensure_gemma(server: Path, model: Path, runtime: dict) -> str:
         "--cache-prompt", "--no-ui", "--reasoning", "off",
     ]
     probe_url = f"http://{host}:{port}/health"
-    probe = lambda: _http_status(probe_url, timeout=1.0) == 200
-    identity = {
-        "gpu_layers": str(runtime["gpu_layers"]), "context": int(runtime["context"]),
-        "load_mode": str(runtime["load_mode"]), "flash_attn": str(runtime["flash_attn"]),
-        "fit": str(runtime["fit"]), "cache_type_k": str(runtime["cache_type_k"]),
-        "cache_type_v": str(runtime["cache_type_v"]), "parallel": int(runtime["parallel"]),
-        "threads": int(runtime["threads"]), "threads_batch": int(runtime["threads_batch"]),
-        "poll": int(runtime["poll"]), "poll_batch": int(runtime["poll_batch"]),
-        "log_verbosity": 4, "log_prefix": True, "log_timestamps": True,
-        "cors_origins": "localhost", "cache_prompt": True, "ui": False,
-        "alias": "gemma", "port": port, "vulkan_env": GGML_VULKAN_ENV,
-    }
-    return _ensure("gemma", server, model, command, identity, probe, env=ggml_vulkan_environment())
+    return _ensure(
+        "gemma", server, model, command,
+        {"argv": command[1:], "vulkan_env": GGML_VULKAN_ENV},
+        lambda: _http_status(probe_url, timeout=1.0) == 200,
+        env=ggml_vulkan_environment(),
+    )
 
 
-def ensure_chatterbox(
-    server: Path,
-    t3_model: Path,
-    codec_model: Path,
-    reference: Path,
-    family_name: str,
-    language: str,
-    runtime: dict,
-    sample: dict,
-    voice: dict,
-    chunk: dict,
-) -> str:
+def ensure_chatterbox(server: Path, t3_model: Path, codec_model: Path, reference: Path, family: dict, language: str) -> str:
     cfg = RESIDENT_SERVERS["chatterbox"]
     host, port = str(cfg["host"]), int(cfg["port"])
     command = [
-        str(server), "--family", family_name,
+        str(server), "--family", family["name"],
         "--model", str(t3_model), "--s3gen-gguf", str(codec_model),
-        "--reference", str(reference), "--language", language,
-        "--port", str(port),
-        "--n-gpu-layers", str(runtime["gpu_layers"]),
-        "--context", str(runtime["context"]), "--threads", str(runtime["threads"]),
-        "--seed", str(sample["seed"]), "--max-tokens", str(sample["max_tokens"]),
-        "--top-k", str(sample["top_k"]), "--top-p", str(sample["top_p"]),
-        "--min-p", str(sample["min_p"]), "--temperature", str(sample["temperature"]),
-        "--repeat-penalty", str(sample["repeat_penalty"]),
-        "--cfg-weight", str(voice["cfg_weight"]), "--exaggeration", str(voice["exaggeration"]),
-        "--cfm-steps", str(sample["cfm_steps"]),
-        "--first-chunk-chars", str(chunk.get("first_chars", chunk["chars"])),
-        "--chunk-chars", str(chunk["chars"]),
-        "--fastconv", "1" if runtime.get("fastconv") else "0",
+        "--reference", str(reference), "--language", language, "--port", str(port),
     ]
-    probe = lambda: _port_open(host, port)
-    identity_extra = {
-        "codec": _file_signature(codec_model),
-        "reference": _file_signature(reference),
-        "family": family_name,
-        "language": language,
-        "runtime": runtime,
-        "sample": sample,
-        "voice": voice,
-        "chunk": chunk,
-        "port": port,
-    }
+    for _, section, key, _, flag, *_ in TTS_FIELDS:
+        command += [flag, str(family[section][key])]
+    command += ["--fastconv", "1" if family["TTS_RUNTIME"]["fastconv"] else "0"]
     return _ensure(
-        "chatterbox", server, t3_model, command, identity_extra, probe,
+        "chatterbox", server, t3_model, command,
+        {"argv": command[1:], "codec": _file_signature(codec_model), "reference": _file_signature(reference)},
+        lambda: _port_open(host, port),
         state_extra={
-            "family": family_name,
-            "language": language,
-            "reference": str(reference.resolve()),
-            "codec": str(codec_model.resolve()),
+            "family": family["name"], "language": language,
+            "reference": str(reference.resolve()), "codec": str(codec_model.resolve()),
         },
     )
 
@@ -309,18 +267,9 @@ def status() -> list[dict]:
     for name in ("parakeet", "gemma", "chatterbox"):
         cfg = RESIDENT_SERVERS[name]
         state = _read_state(name)
-        ready = _port_open(str(cfg["host"]), int(cfg["port"]))
-        identity = state.get("identity_inputs") or {}
-        runtime = identity.get("runtime") or {}
         rows.append({
-            "name": name, "ready": ready, "pid": state.get("pid"), "url": cfg["url"],
+            "name": name, "ready": _port_open(str(cfg["host"]), int(cfg["port"])),
+            "pid": state.get("pid"), "url": cfg["url"],
             "family": state.get("family"), "language": state.get("language"), "reference": state.get("reference"),
-            "device": "auto", "gpu_layers": identity.get("gpu_layers", runtime.get("gpu_layers")),
         })
     return rows
-
-
-def stop(name: str) -> None:
-    if name not in RESIDENT_SERVERS:
-        raise RuntimeError(f"unknown resident: {name}")
-    _terminate(name)

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import queue
 import threading
 import wave
@@ -8,11 +7,11 @@ from pathlib import Path
 
 import numpy as np
 
-from config import ASR_RATE, BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_THINKING, LANGUAGES, LIVE_AUDIO, SHARED_MODELS, SMART_TURN_SECONDS, resolve_voice
+from config import ASR_RATE, BRAIN_MODEL, BRAIN_RUNTIME, LANGUAGES, LIVE_AUDIO, SHARED_MODELS, SMART_TURN_SECONDS, resolve_voice
 from installer import require_model, runtime_server
 from local_api import gemma_chat_stream
-from main import effective_family, finish, prepared_reference, render_system_prompt, resolved_tts, spoken_reply, start_run, stream_synthesize, synthesize_text, transcribe_wav, tts_endpoint, write_meta
-from log import clear_run_log, set_run_log
+from log import clear_run_log, note, set_run_log
+from main import effective_family, finish, gemma_kwargs, prepared_reference, render_system_prompt, resolved_tts, spoken_reply, start_run, stream_synthesize, synthesize_text, transcribe_wav, tts_endpoint, write_meta
 from resident import ensure_gemma, ensure_parakeet
 from ui_streaming import SpeechSegmenter
 from vad import SileroEndpoint, SmartTurnEndpoint
@@ -48,8 +47,13 @@ class Conversation:
         self.references: dict[str, Path] = {}
 
     def _family(self, settings: dict, streaming: bool):
-        args = argparse.Namespace(streaming=streaming, stream_join=settings["tts_join"])
-        return effective_family(settings["tts_family"], args)
+        return effective_family(settings["tts_family"], {"streaming": streaming, "stream_join": settings["tts_join"]})
+
+    def _require_engine(self) -> None:
+        if self.failure:
+            raise RuntimeError(str(self.failure))
+        if not self.active:
+            raise RuntimeError("conversation is not active")
 
     def _reference(self, voice: str) -> Path:
         source = resolve_voice(self.data_dir, voice).resolve()
@@ -112,18 +116,20 @@ class Conversation:
         self.settings = dict(settings)
         if vad_changed:
             self.asr_queue.put(("vad-config", (self.settings["vad_threshold"], self.settings["vad_silence_ms"])))
+        note(
+            f"component=conversation event=configure ingestion={settings['ingestion_mode']}"
+            f" tts_family={settings['tts_family']} tts_mode={settings['tts_mode']}"
+            f" tts_language={settings['tts_language']} vad_threshold={settings['vad_threshold']}"
+            f" vad_silence_ms={settings['vad_silence_ms']}"
+        )
         self._state("Configuration applied")
 
     def submit(self, text: str) -> None:
-        if not self.active:
-            raise RuntimeError("conversation is not active")
+        self._require_engine()
         self.asr_queue.put(("manual", text.strip()))
 
     def submit_audio(self, pcm_f32: bytes) -> None:
-        if self.failure:
-            raise RuntimeError(str(self.failure))
-        if not self.active:
-            raise RuntimeError("conversation is not active")
+        self._require_engine()
         if not pcm_f32:
             self._state("Push-to-talk · no audio")
             return
@@ -132,10 +138,7 @@ class Conversation:
         self._state("Push-to-talk · finalizing")
 
     def feed_audio(self, pcm_f32: bytes) -> None:
-        if self.failure:
-            raise RuntimeError(str(self.failure))
-        if not self.active:
-            raise RuntimeError("conversation is not active")
+        self._require_engine()
         if self.settings["ingestion_mode"] != "continuous":
             return
         if pcm_f32:
@@ -226,22 +229,10 @@ class Conversation:
         language = settings["tts_language"]
         system = render_system_prompt(settings["system_prompt"], language, LANGUAGES[language])
         limit = int(LIVE_AUDIO["llm_history_turns"]) * 2
-        messages = [{"role": "system", "content": system}, *self.history[-limit:], {"role": "user", "content": text}]
-        g = BRAIN_GENERATION
-        return {
-            "model": "gemma",
-            "messages": messages,
-            "stream": True,
-            "cache_prompt": True,
-            "temperature": g["temperature"],
-            "top_p": g["top_p"],
-            "top_k": g["top_k"],
-            "min_p": g["min_p"],
-            "repeat_penalty": g["repeat_penalty"],
-            "seed": g["seed"],
-            "max_tokens": g["max_tokens"],
-            "chat_template_kwargs": {"enable_thinking": bool(BRAIN_THINKING)},
-        }
+        return gemma_kwargs(
+            [{"role": "system", "content": system}, *self.history[-limit:], {"role": "user", "content": text}],
+            stream=True,
+        )
 
     def _llm_loop(self) -> None:
         base = ensure_gemma(runtime_server("gemma"), require_model(SHARED_MODELS[BRAIN_MODEL], self.models_dir), BRAIN_RUNTIME)
@@ -294,10 +285,23 @@ class Conversation:
             family = self._family(settings, settings["tts_mode"] == "real")
             language = settings["tts_language"]
             reference = self._reference(settings["tts_voice"])
-            if settings["tts_mode"] == "real":
-                self._tts_real(turn, text, family, language, reference)
-            else:
-                self._tts_buffered(turn, text, family, language, reference)
+            streaming = settings["tts_mode"] == "real"
+            base = tts_endpoint(reference, language, family, self.paths)
+            unit, index = text, 0
+            while unit is not None:
+                index += 1
+                self._state(f"TTS {turn} · {'streaming' if streaming else 'buffered'} · speech unit {index}")
+                output = self.paths.run_dir / f"tts-turn-{turn:04d}-{index:03d}.wav"
+                if streaming:
+                    for raw in stream_synthesize(unit, reference, output, language, family, self.paths, base=base, unit=index):
+                        self._emit("audio-pcm", raw)
+                else:
+                    result = synthesize_text(unit, reference, output, language, family, self.paths, base=base, streaming=False, unit=index)
+                    if not output.is_file():
+                        raise RuntimeError(f"Chatterbox did not create buffered unit {index}: {result}")
+                    self._emit("audio-file", str(output))
+                unit, _ = self._next_tts(turn)
+            self._state(f"TTS {turn} · complete")
 
     def _next_tts(self, turn: int) -> tuple[str | None, str | None]:
         item = self.tts_queue.get()
@@ -311,34 +315,6 @@ class Conversation:
         if op == "end":
             return None, text
         raise RuntimeError(f"unexpected TTS queue operation: {op}")
-
-    def _tts_real(self, turn: int, first: str, family: dict, language: str, reference: Path) -> None:
-        base = tts_endpoint(reference, language, family, self.paths)
-        unit = first
-        index = 0
-        while unit is not None:
-            index += 1
-            self._state(f"TTS {turn} · streaming · speech unit {index}")
-            output = self.paths.run_dir / f"tts-turn-{turn:04d}-{index:03d}.wav"
-            for raw in stream_synthesize(unit, reference, output, language, family, self.paths, base=base, unit=index):
-                self._emit("audio-pcm", raw)
-            unit, _ = self._next_tts(turn)
-        self._state(f"TTS {turn} · complete")
-
-    def _tts_buffered(self, turn: int, first: str, family: dict, language: str, reference: Path) -> None:
-        base = tts_endpoint(reference, language, family, self.paths)
-        unit = first
-        index = 0
-        while unit is not None:
-            index += 1
-            self._state(f"TTS {turn} · buffered · speech unit {index}")
-            path = self.paths.run_dir / f"tts-turn-{turn:04d}-{index:03d}.wav"
-            result = synthesize_text(unit, reference, path, language, family, self.paths, base=base, streaming=False, unit=index)
-            if not path.is_file():
-                raise RuntimeError(f"Chatterbox did not create buffered unit {index}: {result}")
-            self._emit("audio-file", str(path))
-            unit, _ = self._next_tts(turn)
-        self._state(f"TTS {turn} · complete")
 
     def stop(self) -> None:
         if not self.active:

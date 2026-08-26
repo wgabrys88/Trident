@@ -146,7 +146,6 @@ def checkout(component: str, path: Path, source: str) -> None:
         run_process(component, stage, args, path)
 
 
-
 def tune_ggml_vulkan() -> None:
     path = GGML / "src" / "ggml-vulkan" / "ggml-vulkan.cpp"
     lines = path.read_text(encoding="utf-8").splitlines()
@@ -209,11 +208,6 @@ def _runtime_build_marker(component: str) -> Path:
 def _runtime_marker_matches(component: str, revision: str) -> bool:
     marker = _runtime_build_marker(component)
     return marker.is_file() and marker.read_text(encoding="ascii", errors="ignore").strip() == revision
-
-
-def _stop_owned_chatterbox_before_replace() -> None:
-    from resident import stop_owned
-    stop_owned("chatterbox")
 
 
 def github_release_asset(spec: dict, asset_name: str | None = None) -> tuple[str, int, str | None]:
@@ -425,11 +419,7 @@ def install_tts() -> None:
 
     revision = trident_tts_revision()
     runtime = RUNTIMES / "tts"
-    source_changed = (
-        (runtime_tts_server(required=False) is not None and not _runtime_marker_matches("server", revision))
-        or (runtime / ".build-revision").is_file()
-    )
-    if source_changed:
+    if runtime_tts_server(required=False) is not None and not _runtime_marker_matches("server", revision):
         remove_tree(TTS / "build")
 
     run_process("tts", "configure-trident-tts", [cmake, "-S", ".", "-B", "build", "-A", "x64", f"-DCHATTERBOX_CPP_ROOT={CHATTERBOX}"], TTS)
@@ -438,21 +428,17 @@ def install_tts() -> None:
     if not built_server.is_file():
         raise RuntimeError(f"TTS build did not create {built_server}")
 
-    _stop_owned_chatterbox_before_replace()
+    from resident import stop_owned
+    stop_owned("chatterbox")
     runtime.mkdir(parents=True, exist_ok=True)
-    for obsolete in (
-        "trident-tts-nano.exe", "trident-tts-turbo.exe", "trident-tts-v3.exe",
-        ".build-nano.revision", ".build-turbo.revision", ".build-v3.revision",
-    ):
-        (runtime / obsolete).unlink(missing_ok=True)
     shutil.copy2(built_server, runtime / built_server.name)
     for artifact in TTS_BUILD.iterdir():
         if artifact.is_file() and artifact.suffix.lower() == ".dll":
             shutil.copy2(artifact, runtime / artifact.name)
     _runtime_build_marker("server").write_text(revision + "\n", encoding="ascii")
-    (runtime / ".build-revision").unlink(missing_ok=True)
     if not tts_runtime_ready():
         raise RuntimeError(f"TTS runtime verification failed for {TTS_SERVER_EXE}")
+
 
 def models_for(family: str) -> dict:
     return {**FAMILIES[family]["TTS_MODELS"], **SHARED_MODELS}

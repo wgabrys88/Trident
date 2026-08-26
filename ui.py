@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import argparse
 import io
-import subprocess
-import sys
 import threading
 import wave
 from pathlib import Path
@@ -11,21 +9,12 @@ from pathlib import Path
 import gradio as gr
 import numpy as np
 
-from config import ASR_RATE, FAMILIES, LANGUAGES, LIVE_AUDIO, LIVE_SETTINGS, REFERENCE_VOICES, TTS_RATE, Paths, resolve_voice, save_live_settings
+from config import ASR_RATE, FAMILIES, LANGUAGES, LIVE_AUDIO, LIVE_SETTINGS, REFERENCE_VOICES, TTS_FIELDS, TTS_RATE, Paths, live_settings_path, load_live_settings, resolve_voice, save_live_settings
 from conversation import Conversation
-from main import effective_family, finish, prepared_reference, resolved_tts, start_run, stream_synthesize, synthesize_text, tts_endpoint, tts_metrics, write_meta
+from main import effective_family, finish, prepared_reference, resident_report, resolved_tts, run_asr, run_brain, run_install, run_pipeline, run_tts, start_run, stream_synthesize, synthesize_text, tts_endpoint, tts_metrics, warm_resident, write_meta
+from resident import stop_all as resident_stop_all
 
-ROOT = Path(__file__).resolve().parent
-INT_FLAGS = {
-    "n_gpu_layers": "--n-gpu-layers", "context": "--context", "threads": "--threads", "seed": "--seed",
-    "max_tokens": "--max-tokens", "top_k": "--top-k", "cfm_steps": "--cfm-steps",
-    "first_chunk_chars": "--first-chunk-chars", "chunk_chars": "--chunk-chars",
-}
-FLOAT_FLAGS = {
-    "top_p": "--top-p", "min_p": "--min-p", "temperature": "--temperature",
-    "repeat_penalty": "--repeat-penalty", "cfg_weight": "--cfg-weight", "exaggeration": "--exaggeration",
-}
-TTS_SETTING_KEYS = ["family", "language", "voice", "reference_mode", "reference", "join", *INT_FLAGS, *FLOAT_FLAGS]
+TTS_SETTING_KEYS = ["family", "language", "voice", "reference_mode", "reference", "join", *[field[0] for field in TTS_FIELDS]]
 LIVE_SETTING_KEYS = [
     "ingestion_mode", "vad_threshold", "vad_silence_ms",
     "system_prompt", "tts_mode", "tts_family", "tts_language", "tts_voice", "tts_join",
@@ -77,12 +66,6 @@ def _settings(values) -> dict:
     return dict(zip(TTS_SETTING_KEYS, values, strict=True))
 
 
-def _namespace(settings: dict, streaming: bool) -> argparse.Namespace:
-    values = {key: settings.get(key) for key in (*INT_FLAGS, *FLOAT_FLAGS)}
-    values.update(streaming=streaming, stream_join=settings["join"])
-    return argparse.Namespace(**values)
-
-
 def _reference(root: Paths, settings: dict) -> Path:
     if settings["reference_mode"] == "custom":
         custom = settings.get("reference")
@@ -92,46 +75,10 @@ def _reference(root: Paths, settings: dict) -> Path:
     return resolve_voice(root.data_dir, settings["voice"])
 
 
-def _cli(root: Paths, parts: list[str]) -> str:
-    command = [sys.executable, str(ROOT / "main.py"), "--models-dir", str(root.models_dir), "--data-dir", str(root.data_dir), *parts]
-    result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    if result.returncode:
-        raise RuntimeError((result.stderr or result.stdout or f"CLI failed with exit code {result.returncode}").strip())
-    return result.stdout.strip()
-
-
-def _tts_cli_args(root: Paths, settings: dict, streaming: bool | None, language_flag: str = "--language") -> list[str]:
-    args = [
-        "--family", settings["family"], language_flag, settings["language"],
-        "-r", str(_reference(root, settings)),
-    ]
-    if streaming is not None:
-        args += ["--streaming" if streaming else "--no-streaming", "--stream-join", settings["join"]]
-    for key, flag in INT_FLAGS.items():
-        value = settings.get(key)
-        if value is not None:
-            args += [flag, str(int(value))]
-    for key, flag in FLOAT_FLAGS.items():
-        value = settings.get(key)
-        if value is not None:
-            args += [flag, str(float(value))]
-    return args
-
-
-def _system_prompt_args(text: str | None, filename: str | None) -> list[str]:
-    text = str(text or "").strip()
-    if text and filename:
-        raise RuntimeError("choose one system prompt source")
-    if filename:
-        return ["--system-prompt-file", str(Path(filename).resolve())]
-    return ["--system-prompt", text] if text else []
-
-
-def _output_path(stdout: str) -> str:
-    for line in reversed(stdout.splitlines()):
-        if line.startswith("Output: "):
-            return line[8:].strip()
-    raise RuntimeError("CLI did not report an output WAV")
+def _family_help(name: str) -> str:
+    if name == "v3":
+        return "**Multilingual V3:** Min P, CFG weight, and exaggeration are active model controls."
+    return "**Turbo / Nano:** upstream uses Temperature, Top K, Top P, and repetition penalty. Min P, CFG weight, and exaggeration are unsupported and are hidden here."
 
 
 def _session_id(request: gr.Request) -> str:
@@ -160,23 +107,31 @@ def _tts_status(label: str, result: str) -> str:
 
 def build(models_dir: Path | None = None, data_dir: Path | None = None):
     root = Paths(models_dir, data_dir)
+    load_live_settings(root.data_dir)
     runs_dir = root.data_dir / "runs"
     runs_dir.mkdir(parents=True, exist_ok=True)
+
+    def _ns(**kwargs):
+        kwargs.setdefault("models_dir", root.models_dir)
+        kwargs.setdefault("data_dir", root.data_dir)
+        return argparse.Namespace(**kwargs)
+
+    def _tts_ns(settings, **extra):
+        return _ns(
+            family=settings["family"], language=settings["language"], tts_language=settings["language"],
+            reference=str(_reference(root, settings)), stream_join=settings["join"],
+            **{key: settings.get(key) for key, *_ in TTS_FIELDS}, **extra,
+        )
 
     def family_changed(name):
         family = FAMILIES[name]
         multilingual = name == "v3"
-        note = (
-            "**Multilingual V3:** Min P, CFG weight, and exaggeration are active model controls."
-            if multilingual else
-            "**Turbo / Nano:** upstream uses Temperature, Top K, Top P, and repetition penalty. Min P, CFG weight, and exaggeration are unsupported and are hidden here."
-        )
         return (
             gr.Dropdown(choices=list(family["TTS_LANGUAGES"]), value=family["DEFAULT_REPLY_LANGUAGE"]),
             gr.Number(value=None, visible=multilingual),
             gr.Number(value=None, visible=multilingual),
             gr.Number(value=None, visible=multilingual),
-            note,
+            _family_help(name),
         )
 
     def custom_reference_changed(mode: str):
@@ -192,24 +147,25 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
 
     def save_config(request: gr.Request, *values):
         settings = live_settings(values)
-        save_live_settings(settings)
+        save_live_settings(root.data_dir, settings)
         with _sessions_lock:
             engine = _sessions.get(_session_id(request))
             if engine and engine.active:
                 engine.configure(settings)
-        return "Saved to config.py"
+        return f"Saved to {live_settings_path(root.data_dir).name}"
 
     def start_conversation(request: gr.Request, *values):
         session_id = _session_id(request)
         settings = live_settings(values)
-        save_live_settings(settings)
+        save_live_settings(root.data_dir, settings)
+        with _sessions_lock:
+            previous = _sessions.pop(session_id, None)
+        if previous:
+            previous.close()
         engine = Conversation(root.models_dir, root.data_dir, settings)
         engine.start()
         with _sessions_lock:
-            previous = _sessions.get(session_id)
             _sessions[session_id] = engine
-        if previous:
-            previous.close()
         continuous = settings["ingestion_mode"] == "continuous"
         return (
             engine.transcript, engine.answer, engine.status,
@@ -294,7 +250,7 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
         if not text:
             raise RuntimeError("text is empty")
         settings = _settings(values)
-        family = effective_family(settings["family"], _namespace(settings, streaming=mode == "real"))
+        family = effective_family(settings["family"], {**{key: settings.get(key) for key, *_ in TTS_FIELDS}, "streaming": mode == "real", "stream_join": settings["join"]})
         language = settings["language"]
         if language not in family["TTS_LANGUAGES"]:
             raise RuntimeError(f"language {language!r} is not wired in {family['name']}")
@@ -345,68 +301,58 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
         text = str(text or "").strip()
         if bool(text) == bool(text_file):
             raise RuntimeError("provide exactly one TTS text source")
-        settings = _settings(values)
-        parts = ["tts"]
-        if text_file:
-            parts.append(str(Path(text_file).resolve()))
-        else:
-            parts += ["-t", text]
-        if output_file := str(output_file or "").strip():
-            parts += ["-o", output_file]
-        stdout = _cli(root, [*parts, *_tts_cli_args(root, settings, streaming=bool(cli_streaming))])
-        return str(Path(output_file).expanduser().resolve()) if output_file else _output_path(stdout), stdout
+        output_file = str(output_file or "").strip() or None
+        path = run_tts(_tts_ns(
+            _settings(values),
+            input=str(Path(text_file).resolve()) if text_file else None,
+            text=text or None, output=output_file, streaming=bool(cli_streaming),
+        ))
+        return path, f"Output: {path}"
 
     def cli_asr(audio: str | None, output_file: str):
         if not audio:
             raise RuntimeError("ASR input audio is required")
-        parts = ["asr", str(Path(audio).resolve())]
-        if output_file := str(output_file or "").strip():
-            parts += ["-o", output_file]
-        stdout = _cli(root, parts)
-        marker = "\nRun: "
-        return stdout.rsplit(marker, 1)[0].strip() if marker in stdout else stdout
+        return run_asr(_ns(input=str(Path(audio).resolve()), output=str(output_file or "").strip() or None))
 
     def cli_brain(text: str, text_file: str | None, output_file: str, language: str, system_prompt: str, system_prompt_file: str | None):
         text = str(text or "").strip()
         if bool(text) == bool(text_file):
             raise RuntimeError("provide exactly one Brain text source")
-        parts = ["brain"]
-        if text_file:
-            parts.append(str(Path(text_file).resolve()))
-        else:
-            parts += ["-t", text]
-        if output_file := str(output_file or "").strip():
-            parts += ["-o", output_file]
-        parts += ["--language", language, *_system_prompt_args(system_prompt, system_prompt_file)]
-        return _cli(root, parts)
+        prompt, prompt_file = str(system_prompt or "").strip() or None, system_prompt_file
+        if prompt and prompt_file:
+            raise RuntimeError("choose one system prompt source")
+        return run_brain(_ns(
+            input=str(Path(text_file).resolve()) if text_file else None, text=text or None,
+            output=str(output_file or "").strip() or None, language=language,
+            system_prompt=prompt, system_prompt_file=prompt_file,
+        ))
 
     def cli_run(audio: str | None, output_file: str, cli_streaming: bool, system_prompt: str, system_prompt_file: str | None, *values):
         if not audio:
             raise RuntimeError("pipeline input audio is required")
-        settings = _settings(values)
-        parts = ["run", str(Path(audio).resolve())]
-        if output_file := str(output_file or "").strip():
-            parts += ["-o", output_file]
-        stdout = _cli(root, [*parts, *_tts_cli_args(root, settings, streaming=bool(cli_streaming), language_flag="--tts-language"), *_system_prompt_args(system_prompt, system_prompt_file)])
-        if not stdout.startswith("Transcript: ") or "\nAnswer: " not in stdout or "\nOutput: " not in stdout:
-            raise RuntimeError("pipeline CLI output format changed")
-        transcript, rest = stdout[len("Transcript: "):].split("\nAnswer: ", 1)
-        answer, output = rest.rsplit("\nOutput: ", 1)
-        actual_output = str(Path(output_file).expanduser().resolve()) if output_file else output.strip()
-        return transcript.strip(), answer.strip(), actual_output, stdout
+        prompt, prompt_file = str(system_prompt or "").strip() or None, system_prompt_file
+        if prompt and prompt_file:
+            raise RuntimeError("choose one system prompt source")
+        output_file = str(output_file or "").strip() or None
+        transcript, answer, output = run_pipeline(_tts_ns(
+            _settings(values), input=str(Path(audio).resolve()), output=output_file,
+            streaming=bool(cli_streaming), system_prompt=prompt, system_prompt_file=prompt_file,
+        ))
+        return transcript, answer, output, f"Transcript: {transcript}\nAnswer: {answer}\nOutput: {output}"
 
     def cli_resident_status():
-        return _cli(root, ["resident", "status"])
+        return resident_report()
 
     def cli_resident_stop():
-        return _cli(root, ["resident", "stop"])
+        resident_stop_all()
+        return resident_report()
 
     def cli_resident_warm(*values):
-        settings = _settings(values)
-        return _cli(root, ["resident", "warm", *_tts_cli_args(root, settings, streaming=None, language_flag="--tts-language")])
+        warm_resident(_tts_ns(_settings(values)))
+        return resident_report()
 
     def cli_install(family_name: str):
-        return _cli(root, ["install", "--family", family_name]) or "Install complete"
+        return run_install(_ns(family=family_name))
 
     def selected_log(value) -> Path | None:
         if isinstance(value, list):
@@ -447,34 +393,14 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
             reference = gr.Audio(sources=["upload", "microphone"], type="filepath", label="Custom voice reference", visible=False)
             with gr.Accordion("Manual / CLI engine overrides", open=False):
                 gr.Markdown("Conversation uses the selected family defaults. These overrides apply to Manual TTS, CLI actions, and Runtime Warm. Blank values use family defaults; changing resident settings can restart Chatterbox.")
-                family_note = gr.Markdown(
-                    "**Multilingual V3:** Min P, CFG weight, and exaggeration are active model controls."
-                    if family_default == "v3" else
-                    "**Turbo / Nano:** upstream uses Temperature, Top K, Top P, and repetition penalty. Min P, CFG weight, and exaggeration are unsupported and are hidden here."
-                )
-                n_gpu_layers = gr.Number(value=None, precision=0, label="GPU layers")
-                context = gr.Number(value=None, precision=0, label="Context")
-                threads = gr.Number(value=None, precision=0, label="Threads")
-                seed = gr.Number(value=None, precision=0, label="Seed")
-                max_tokens = gr.Number(value=None, precision=0, label="Max T3 tokens")
-                top_k = gr.Number(value=None, precision=0, label="Top K")
-                top_p = gr.Number(value=None, label="Top P")
-                min_p = gr.Number(value=None, label="Min P", visible=family_default == "v3")
-                temperature = gr.Number(value=None, label="Temperature")
-                repeat_penalty = gr.Number(value=None, label="Repeat penalty")
-                cfm_steps = gr.Number(value=None, precision=0, label="CFM steps")
-                cfg_weight = gr.Number(value=None, label="CFG weight", visible=family_default == "v3")
-                exaggeration = gr.Number(value=None, label="Exaggeration", visible=family_default == "v3")
-                first_chunk_chars = gr.Number(value=None, precision=0, label="First streaming text-unit chars")
-                chunk_chars = gr.Number(value=None, precision=0, label="Text-unit chars")
+                family_note = gr.Markdown(_family_help(family_default))
+                override_widgets = {
+                    key: gr.Number(value=None, precision=0 if typ is int else None, label=label, visible=(not v3_only) or family_default == "v3")
+                    for key, _, _, typ, _, label, v3_only in TTS_FIELDS
+                }
 
-        tts_inputs = [
-            family, language, voice, reference_mode, reference, join,
-            n_gpu_layers, context, threads, seed, max_tokens, top_k, cfm_steps,
-            first_chunk_chars, chunk_chars,
-            top_p, min_p, temperature, repeat_penalty, cfg_weight, exaggeration,
-        ]
-        family.change(family_changed, family, [language, min_p, cfg_weight, exaggeration, family_note], queue=False)
+        tts_inputs = [family, language, voice, reference_mode, reference, join, *[override_widgets[key] for key, *_ in TTS_FIELDS]]
+        family.change(family_changed, family, [language, override_widgets["min_p"], override_widgets["cfg_weight"], override_widgets["exaggeration"], family_note], queue=False)
         reference_mode.change(custom_reference_changed, reference_mode, reference, queue=False)
 
         with gr.Tabs():
@@ -558,7 +484,7 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
                 speak_button.click(speak, [manual_tts_text, manual_tts_mode, *tts_inputs], [manual_output, manual_status], concurrency_limit=None, show_progress="minimal")
 
             with gr.Tab("CLI"):
-                gr.Markdown("This tab intentionally executes `main.py` so command-line behavior can be checked from the same interface. Manual TTS above uses the resident Python path directly.")
+                gr.Markdown("This tab runs the same `main.py` command functions used by the CLI. Manual TTS above streams through the resident path directly.")
                 with gr.Row(equal_height=False):
                     with gr.Column(elem_classes="trident-card"):
                         gr.Markdown("### ASR")

@@ -8,9 +8,9 @@ import time
 import wave
 from pathlib import Path
 
-from config import ASR_CHUNK_OVERLAP_SECONDS, ASR_CHUNK_SECONDS, BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_THINKING, FAMILIES, HARDWARE_PROFILE, LANGUAGES, LIVE_SETTINGS, REFERENCE_MIN_SECONDS, SHARED_MODELS, TTS_RATE, Paths, default_family, resolve_voice
+from config import ASR_CHUNK_OVERLAP_SECONDS, ASR_CHUNK_SECONDS, BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_THINKING, FAMILIES, HARDWARE_PROFILE, LANGUAGES, LIVE_SETTINGS, REFERENCE_MIN_SECONDS, SHARED_MODELS, TTS_FIELDS, TTS_RATE, Paths, default_family, resolve_voice
 from installer import ensure_ui, install, models_for, require_model, runtime_server, runtime_tts_server, validate_wav, write_text_atomic
-from local_api import chatterbox_stream as _chatterbox_stream, chatterbox_synthesize as _chatterbox_synthesize, gemma_chat, parakeet_transcribe
+from local_api import chatterbox_stream as _chatterbox_stream, gemma_chat, parakeet_transcribe
 from log import clear_run_log, note, set_run_log
 from media import chatterbox_wav, parakeet_chunks, parakeet_wav
 from resident import ensure_chatterbox, ensure_gemma, ensure_parakeet, status as resident_status, stop_all as resident_stop_all
@@ -67,19 +67,17 @@ def prepared_reference(reference: Path, data_dir: Path) -> Path:
     return wav
 
 
-def _apply(args, target: dict, mapping: dict[str, str]) -> None:
-    for arg, key in mapping.items():
-        value = getattr(args, arg, None)
-        if value is not None: target[key] = value
-
-
-def effective_family(name: str, args) -> dict:
+def effective_family(name: str, overrides: dict | None = None) -> dict:
     family = copy.deepcopy(FAMILIES[name])
-    _apply(args, family["TTS_RUNTIME"], {"n_gpu_layers": "gpu_layers", "context": "context", "threads": "threads"})
-    _apply(args, family["TTS_SAMPLE"], {"seed": "seed", "max_tokens": "max_tokens", "top_k": "top_k", "top_p": "top_p", "min_p": "min_p", "temperature": "temperature", "repeat_penalty": "repeat_penalty", "cfm_steps": "cfm_steps"})
-    _apply(args, family["TTS_VOICE"], {"cfg_weight": "cfg_weight", "exaggeration": "exaggeration"})
-    _apply(args, family["TTS_CHUNK"], {"first_chunk_chars": "first_chars", "chunk_chars": "chars"})
-    _apply(args, family["TTS_STREAM"], {"streaming": "enabled", "stream_join": "join"})
+    src = overrides or {}
+    for key, section, dest, typ, *_ in TTS_FIELDS:
+        value = src.get(key)
+        if value is not None:
+            family[section][dest] = typ(value)
+    if src.get("streaming") is not None:
+        family["TTS_STREAM"]["enabled"] = bool(src["streaming"])
+    if src.get("stream_join") is not None:
+        family["TTS_STREAM"]["join"] = src["stream_join"]
     if name in {"turbo", "nano"} and (
         family["TTS_SAMPLE"]["min_p"] != 0.0
         or family["TTS_VOICE"]["cfg_weight"] != 0.0
@@ -87,6 +85,16 @@ def effective_family(name: str, args) -> dict:
     ):
         raise RuntimeError(f"{name} does not support min-p, CFG weight, or exaggeration")
     return family
+
+
+def gemma_kwargs(messages: list, stream: bool) -> dict:
+    g = BRAIN_GENERATION
+    return {
+        "model": "gemma", "messages": messages, "stream": stream, "cache_prompt": True,
+        "temperature": g["temperature"], "top_p": g["top_p"], "top_k": g["top_k"], "min_p": g["min_p"],
+        "repeat_penalty": g["repeat_penalty"], "seed": g["seed"], "max_tokens": g["max_tokens"],
+        "chat_template_kwargs": {"enable_thinking": bool(BRAIN_THINKING)},
+    }
 
 
 def resolved_tts(family: dict) -> str:
@@ -155,8 +163,7 @@ def brain(prompt: Path, paths: Paths, language: str, language_name: str, templat
     system, prompt_text = render_system_prompt(template, language, language_name), prompt.read_text(encoding="utf-8").strip()
     write_text_atomic(paths.system, system + "\n")
     base = ensure_gemma(runtime_server("gemma"), require_model(SHARED_MODELS[BRAIN_MODEL], paths.models_dir), BRAIN_RUNTIME)
-    g = BRAIN_GENERATION
-    payload = gemma_chat(base, {"model": "gemma", "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt_text}], "stream": False, "cache_prompt": True, "temperature": g["temperature"], "top_p": g["top_p"], "top_k": g["top_k"], "min_p": g["min_p"], "repeat_penalty": g["repeat_penalty"], "seed": g["seed"], "max_tokens": g["max_tokens"], "chat_template_kwargs": {"enable_thinking": bool(BRAIN_THINKING)}})
+    payload = gemma_chat(base, gemma_kwargs([{"role": "system", "content": system}, {"role": "user", "content": prompt_text}], stream=False))
     text = spoken_reply(str((payload.get("choices") or [{}])[0].get("message", {}).get("content", "")))
     if not text: raise RuntimeError("Gemma returned an empty answer")
     write_text_atomic(paths.answer, text + "\n")
@@ -165,7 +172,10 @@ def brain(prompt: Path, paths: Paths, language: str, language_name: str, templat
 
 def tts_endpoint(reference: Path, language: str, family: dict, paths: Paths) -> str:
     models = models_for(family["name"])
-    return ensure_chatterbox(runtime_tts_server(), require_model(models["chatterbox-t3"], paths.models_dir), require_model(models["chatterbox-codec"], paths.models_dir), reference, family["name"], language, family["TTS_RUNTIME"], family["TTS_SAMPLE"], family["TTS_VOICE"], family["TTS_CHUNK"])
+    return ensure_chatterbox(
+        runtime_tts_server(), require_model(models["chatterbox-t3"], paths.models_dir),
+        require_model(models["chatterbox-codec"], paths.models_dir), reference, family, language,
+    )
 
 
 def _result_fields(result: str) -> dict[str, str]:
@@ -189,9 +199,9 @@ def _tts_complete(result: str, unit: int | None = None) -> None:
     prefix = f" unit={unit}" if unit is not None else ""
     note(
         "component=tts event=complete outcome=ok" + prefix +
-        f" audio_s={fields['audio_s']:.3f} chunks={fields.get('chunks', '?')}" +
-        f" total_ms={fields.get('total_ms', '?')} t3_ms={fields.get('t3_ms', '?')}" +
-        f" s3gen_ms={fields.get('s3gen_ms', '?')} ttfa_ms={fields.get('ttfa_ms', '?')}" +
+        f" audio_s={fields['audio_s']:.3f} chunks={fields['chunks']}" +
+        f" total_ms={fields['total_ms']} t3_ms={fields['t3_ms']}" +
+        f" s3gen_ms={fields['s3gen_ms']} ttfa_ms={fields['ttfa_ms']}" +
         f" rtf={fields['rtf']:.4f} x_realtime={fields['x_realtime']:.2f}"
     )
 
@@ -204,11 +214,12 @@ def _tts_failure(exc: Exception, unit: int | None = None, max_tokens: int | None
     note(f"component=tts event=failed outcome=error reason={reason}{prefix}{ceiling} message={message}")
 
 
-def stream_synthesize(text: str, reference: Path, output: Path, language: str, family: dict, paths: Paths, *, base: str | None = None, unit: int | None = None):
+def stream_synthesize(text: str, reference: Path, output: Path, language: str, family: dict, paths: Paths, *, base: str | None = None, unit: int | None = None, streaming: bool | None = None):
     endpoint = base or tts_endpoint(reference, language, family, paths)
     stream = family["TTS_STREAM"]
+    enabled = stream["enabled"] if streaming is None else streaming
     try:
-        generator = _chatterbox_stream(endpoint, text.strip(), output, stream["enabled"], stream["join"])
+        generator = _chatterbox_stream(endpoint, text.strip(), output, enabled, stream["join"])
         while True:
             try:
                 chunk = next(generator)
@@ -224,16 +235,12 @@ def stream_synthesize(text: str, reference: Path, output: Path, language: str, f
 
 
 def synthesize_text(text: str, reference: Path, output: Path, language: str, family: dict, paths: Paths, *, base: str | None = None, streaming: bool | None = None, unit: int | None = None) -> str:
-    endpoint = base or tts_endpoint(reference, language, family, paths)
-    stream = family["TTS_STREAM"]
-    enabled = stream["enabled"] if streaming is None else streaming
+    generator = stream_synthesize(text, reference, output, language, family, paths, base=base, unit=unit, streaming=streaming)
     try:
-        result = _chatterbox_synthesize(endpoint, text.strip(), output, enabled, stream["join"])
-        _tts_complete(result, unit)
-        return result
-    except Exception as exc:
-        _tts_failure(exc, unit, int(family["TTS_SAMPLE"]["max_tokens"]))
-        raise
+        while True:
+            next(generator)
+    except StopIteration as done:
+        return str(done.value or "")
 
 
 def synthesize(text_file: Path, reference: Path, output: Path, language: str, family: dict, paths: Paths) -> None:
@@ -248,43 +255,47 @@ def _output(value: str | None, wav=False) -> Path | None:
     return path
 
 
-def run_asr(args) -> int:
+def run_asr(args):
     paths = start_run("asr", args.models_dir, args.data_dir); text = transcribe(Path(args.input).expanduser().resolve(), paths)
     _copy(paths.transcript, _output(args.output)); write_meta(paths, command="asr", transcript=paths.transcript, language_mode="auto", hardware=HARDWARE_PROFILE)
-    print(text); print(f"Run: {paths.run_dir}"); return finish(paths)
+    print(text); print(f"Run: {paths.run_dir}"); finish(paths); return text
 
 
-def run_brain(args) -> int:
+def run_brain(args):
     paths = start_run("brain", args.models_dir, args.data_dir); source = _text_source(args, paths)
     text = brain(source, paths, args.language, LANGUAGES[args.language], _read_system_prompt(args)); _copy(paths.answer, _output(args.output))
-    write_meta(paths, command="brain", language=args.language, answer=paths.answer, hardware=HARDWARE_PROFILE); print(text); return finish(paths)
+    write_meta(paths, command="brain", language=args.language, answer=paths.answer, hardware=HARDWARE_PROFILE); print(text); finish(paths); return text
 
 
 def _tts_context(args, command: str, language_attr: str):
-    paths = start_run(command, args.models_dir, args.data_dir); family = effective_family(args.family, args)
-    language = resolve_language(family, getattr(args, language_attr)); reference = prepared_reference(resolve_voice(paths.data_dir, args.reference), paths.data_dir)
+    family = effective_family(args.family, vars(args))
+    language = resolve_language(family, getattr(args, language_attr))
+    paths = start_run(command, args.models_dir, args.data_dir)
+    reference = prepared_reference(resolve_voice(paths.data_dir, args.reference), paths.data_dir)
     return paths, family, language, reference
 
 
-def run_tts(args) -> int:
+def run_tts(args):
     paths, family, language, reference = _tts_context(args, "tts", "language"); source = _text_source(args, paths)
-    synthesize(source, reference, paths.output, language, family, paths); _copy(paths.output, _output(args.output, True))
-    write_meta(paths, command="tts", family=family["name"], language=language, output=paths.output, resolved_tts=resolved_tts(family)); print(f"Output: {paths.output}"); return finish(paths)
+    synthesize(source, reference, paths.output, language, family, paths)
+    dest = _output(args.output, True); _copy(paths.output, dest)
+    write_meta(paths, command="tts", family=family["name"], language=language, output=paths.output, resolved_tts=resolved_tts(family)); print(f"Output: {paths.output}"); finish(paths)
+    return str(dest) if dest else str(paths.output)
 
 
-def run_pipeline(args) -> int:
+def run_pipeline(args):
     paths, family, language, reference = _tts_context(args, "run", "tts_language"); started = time.perf_counter()
     transcript = transcribe(Path(args.input).expanduser().resolve(), paths); answer = brain(paths.transcript, paths, language, family["TTS_LANGUAGES"][language], _read_system_prompt(args))
-    synthesize(paths.answer, reference, paths.output, language, family, paths); _copy(paths.output, _output(args.output, True))
-    write_meta(paths, command="run", family=family["name"], tts_language=language, transcript=paths.transcript, answer=paths.answer, output=paths.output, pipeline_ms=f"{(time.perf_counter()-started)*1000:.3f}", resolved_tts=resolved_tts(family)); print(f"Transcript: {transcript}\nAnswer: {answer}\nOutput: {paths.output}"); return finish(paths)
+    synthesize(paths.answer, reference, paths.output, language, family, paths)
+    dest = _output(args.output, True); _copy(paths.output, dest)
+    write_meta(paths, command="run", family=family["name"], tts_language=language, transcript=paths.transcript, answer=paths.answer, output=paths.output, pipeline_ms=f"{(time.perf_counter()-started)*1000:.3f}", resolved_tts=resolved_tts(family)); print(f"Transcript: {transcript}\nAnswer: {answer}\nOutput: {paths.output}"); finish(paths)
+    return transcript, answer, str(dest) if dest else str(paths.output)
 
 
 def add_tts_options(cmd, language_flag="--language") -> None:
     cmd.add_argument("-r", "--reference"); cmd.add_argument(language_flag, dest=language_flag[2:].replace("-", "_"))
-    ints = "n-gpu-layers context threads seed max-tokens top-k cfm-steps first-chunk-chars chunk-chars".split()
-    floats = "top-p min-p temperature repeat-penalty cfg-weight exaggeration".split()
-    for flag in ints: cmd.add_argument("--" + flag, type=int)
-    for flag in floats: cmd.add_argument("--" + flag, type=float)
+    for _, _, _, typ, flag, *_ in TTS_FIELDS:
+        cmd.add_argument(flag, type=typ)
     cmd.add_argument("--streaming", action=argparse.BooleanOptionalAction, default=None)
     cmd.add_argument("--stream-join", choices=("chunks", "crossfade"))
 
@@ -306,8 +317,7 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-
-def run_install(args) -> int:
+def run_install(args) -> str:
     paths = start_run("install", args.models_dir, args.data_dir)
     try:
         install(args.family, paths.models_dir, paths.data_dir)
@@ -315,18 +325,21 @@ def run_install(args) -> int:
     except Exception:
         finish(paths, "error")
         raise
-    return finish(paths)
+    finish(paths)
+    return "Install complete"
 
 def warm_resident(args) -> None:
-    paths = Paths(args.models_dir, args.data_dir); family = effective_family(args.family, args); language = resolve_language(family, args.tts_language); reference = prepared_reference(resolve_voice(paths.data_dir, args.reference), paths.data_dir)
+    paths = Paths(args.models_dir, args.data_dir); family = effective_family(args.family, vars(args)); language = resolve_language(family, args.tts_language); reference = prepared_reference(resolve_voice(paths.data_dir, args.reference), paths.data_dir)
     ensure_parakeet(runtime_server("parakeet"), require_model(SHARED_MODELS["parakeet"], paths.models_dir)); ensure_gemma(runtime_server("gemma"), require_model(SHARED_MODELS[BRAIN_MODEL], paths.models_dir), BRAIN_RUNTIME)
-    models = models_for(family["name"]); ensure_chatterbox(runtime_tts_server(), require_model(models["chatterbox-t3"], paths.models_dir), require_model(models["chatterbox-codec"], paths.models_dir), reference, family["name"], language, family["TTS_RUNTIME"], family["TTS_SAMPLE"], family["TTS_VOICE"], family["TTS_CHUNK"])
+    models = models_for(family["name"]); ensure_chatterbox(runtime_tts_server(), require_model(models["chatterbox-t3"], paths.models_dir), require_model(models["chatterbox-codec"], paths.models_dir), reference, family, language)
 
 
-def print_resident_status() -> None:
+def resident_report() -> str:
+    lines = []
     for row in resident_status():
         role = " runtime=Parakeet.cpp model=Parakeet-TDT-0.6B-v3" if row["name"] == "parakeet" else ""
-        print(f"{row['name']}: {'ready' if row['ready'] else 'stopped'} pid={row['pid'] or '-'} url={row['url']} family={row.get('family') or '-'}{role}")
+        lines.append(f"{row['name']}: {'ready' if row['ready'] else 'stopped'} pid={row['pid'] or '-'} url={row['url']} family={row.get('family') or '-'}{role}")
+    return "\n".join(lines)
 
 
 def launch_ui(args) -> int:
@@ -339,8 +352,8 @@ def main() -> int:
     elif args.command == "resident":
         if args.action == "stop": resident_stop_all()
         elif args.action == "warm": warm_resident(args)
-        print_resident_status()
-    elif args.command: return {"asr": run_asr, "brain": run_brain, "tts": run_tts, "run": run_pipeline}[args.command](args)
+        print(resident_report())
+    elif args.command: {"asr": run_asr, "brain": run_brain, "tts": run_tts, "run": run_pipeline}[args.command](args)
     if args.ui: return launch_ui(args)
     if not args.command: raise RuntimeError("choose a command or --ui")
     return 0
