@@ -4,5 +4,3 @@ imageio-ffmpeg==0.6.0
 numpy>=2,<3
 onnxruntime==1.29.0
 silero-vad-notorch==6.2.1.1
-ziglang==0.16.0; sys_platform == "linux" and platform_machine == "x86_64"
-ninja==1.13.0; sys_platform == "linux" and platform_machine == "x86_64"

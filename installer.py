@@ -3,8 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import platform
-import shlex
 import shutil
 import subprocess
 import sys
@@ -20,7 +18,7 @@ from pathlib import Path
 from config import (
     FAMILIES, SHARED_MODELS, VULKAN_VERSION, PACKAGES, SOURCES, BINARIES,
     TTS_SERVER_EXE, TTS, CHATTERBOX, GGML, RUNTIMES, CONVERTER, THIRD_PARTY, TOOLS, ROOT,
-    REFERENCE_VOICES, REFERENCE_MIN_SECONDS, Paths, HARDWARE_PROFILE, PLATFORM, ARCHITECTURE,
+    REFERENCE_VOICES, REFERENCE_MIN_SECONDS, Paths, HARDWARE_PROFILE,
 )
 from log import note, run as run_logged
 
@@ -53,40 +51,23 @@ def present(path: Path, size: int = 0) -> bool:
 
 
 def cmake_bin() -> str:
-    path = Path(sys.executable).parent / ("cmake.exe" if PLATFORM == "windows" else "cmake")
+    path = Path(sys.executable).parent / "cmake.exe"
     if not path.is_file():
         raise RuntimeError(f"bootstrap did not install CMake: {path}")
     return str(path)
 
 def compiler_path() -> Path | None:
-    if PLATFORM == "linux":
-        path = TOOLS / "toolchain" / "clang++"
-        return path if path.is_file() else None
     root = Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Microsoft Visual Studio"
     matches = sorted(root.glob("*/BuildTools/VC/Tools/MSVC/*/bin/Hostx64/x64/cl.exe"), reverse=True)
     return matches[0] if matches else None
 
 
 def vulkan_path() -> Path | None:
-    root = TOOLS / "VulkanSDK" / VULKAN_VERSION
-    sdk = root if PLATFORM == "windows" else root / "x86_64"
-    include = sdk / ("Include/vulkan/vulkan.h" if PLATFORM == "windows" else "include/vulkan/vulkan.h")
-    library = sdk / ("Lib/vulkan-1.lib" if PLATFORM == "windows" else "lib/libvulkan.so")
-    glslc = sdk / ("Bin/glslc.exe" if PLATFORM == "windows" else "bin/glslc")
+    sdk = TOOLS / "VulkanSDK" / VULKAN_VERSION
+    include = sdk / "Include/vulkan/vulkan.h"
+    library = sdk / "Lib/vulkan-1.lib"
+    glslc = sdk / "Bin/glslc.exe"
     return sdk if include.is_file() and library.is_file() and glslc.is_file() else None
-
-
-def _zig_toolchain() -> None:
-    zig = Path(sys.executable).parent / "python-zig"
-    if not zig.is_file():
-        raise RuntimeError(f"bootstrap did not install Zig: {zig}")
-    directory = TOOLS / "toolchain"
-    directory.mkdir(parents=True, exist_ok=True)
-    quoted = shlex.quote(str(zig))
-    for name, mode in (("clang", "cc"), ("clang++", "c++")):
-        wrapper = directory / name
-        wrapper.write_text(f'#!/bin/sh\nexec {quoted} {mode} "$@"\n', encoding="utf-8", newline="\n")
-        wrapper.chmod(0o755)
 
 
 def prerequisite_ready(name: str) -> bool:
@@ -101,17 +82,11 @@ def build_env() -> dict[str, str]:
     compiler = compiler_path()
     if sdk is None or compiler is None:
         raise RuntimeError("native build prerequisites are not installed")
-    paths = [str(Path(cmake_bin()).parent), str(sdk / ("Bin" if PLATFORM == "windows" else "bin"))]
     env["VULKAN_SDK"] = str(sdk)
-    env["CMAKE_PREFIX_PATH"] = os.pathsep.join((str(sdk), str(sdk / "lib" / "VulkanLoader"), env.get("CMAKE_PREFIX_PATH", "")))
-    if PLATFORM == "linux":
-        toolchain = str(compiler.parent)
-        paths.insert(0, toolchain)
-        env["CC"] = str(compiler.parent / "clang")
-        env["CXX"] = str(compiler)
-        env["LD_LIBRARY_PATH"] = os.pathsep.join((str(sdk / "lib"), env.get("LD_LIBRARY_PATH", "")))
-    env["PATH"] = os.pathsep.join(paths + [env.get("PATH", "")])
+    env["CMAKE_PREFIX_PATH"] = os.pathsep.join((str(sdk), str(sdk / "Lib" / "VulkanLoader"), env.get("CMAKE_PREFIX_PATH", "")))
+    env["PATH"] = os.pathsep.join((str(Path(cmake_bin()).parent), str(sdk / "Bin"), env.get("PATH", "")))
     return env
+
 
 def run_process(component: str, stage: str, command: list[str], cwd: Path, env: dict[str, str] | None = None) -> None:
     note(f"component={component} stage={stage} event=start")
@@ -128,9 +103,8 @@ def run_process(component: str, stage: str, command: list[str], cwd: Path, env: 
 def remove_tree(path: Path) -> None:
     if not path.exists():
         return
-    if PLATFORM == "windows":
-        attrib = Path(os.environ["SystemRoot"]) / "System32" / "attrib.exe"
-        subprocess.run([str(attrib), "-R", str(path / "*"), "/S", "/D"], check=True)
+    attrib = Path(os.environ["SystemRoot"]) / "System32" / "attrib.exe"
+    subprocess.run([str(attrib), "-R", str(path / "*"), "/S", "/D"], check=True)
     shutil.rmtree(path)
 
 
@@ -182,11 +156,11 @@ def chatterbox_native_revision() -> str:
     parts = [
         repr(SOURCES["chatterbox"]).encode("utf-8"),
         repr(SOURCES["ggml"]).encode("utf-8"),
-        PLATFORM.encode("ascii"), ARCHITECTURE.encode("ascii"), platform.processor().encode("utf-8"), HARDWARE_PROFILE.encode("ascii"),
+        HARDWARE_PROFILE.encode("ascii"),
         b"ggml-vulkan:auto-disable-f16-nvidia-pre-turing-v2",
         b"trident-cmake:add-subdirectory-static-v1",
         f"vulkan-sdk={VULKAN_VERSION}".encode("ascii"),
-        (b"toolchain=msvc" if PLATFORM == "windows" else b"toolchain=ziglang-0.16.0+ninja-1.13.0"),
+        b"toolchain=msvc",
     ]
     return _hash_identity(parts)
 
@@ -284,22 +258,12 @@ def extract_release_bundle(archives: tuple[Path, ...], destination: Path, requir
     complete = False
     try:
         for archive in archives:
-            if zipfile.is_zipfile(archive):
-                with zipfile.ZipFile(archive) as package:
-                    for member in package.infolist():
-                        _archive_target(root, member.filename)
-                    package.extractall(partial)
-            elif tarfile.is_tarfile(archive):
-                with tarfile.open(archive) as package:
-                    for member in package.getmembers():
-                        target = _archive_target(root, member.name)
-                        if member.issym() or member.islnk():
-                            link = (target.parent / member.linkname).resolve()
-                            if link != root and root not in link.parents:
-                                raise RuntimeError(f"unsafe archive link: {member.name} -> {member.linkname}")
-                    package.extractall(partial)
-            else:
-                raise RuntimeError(f"unsupported release archive: {archive.name}")
+            if not zipfile.is_zipfile(archive):
+                raise RuntimeError(f"release asset is not a ZIP archive: {archive.name}")
+            with zipfile.ZipFile(archive) as package:
+                for member in package.infolist():
+                    _archive_target(root, member.filename)
+                package.extractall(partial)
         for name in required_names:
             matches = [p for p in partial.rglob("*") if p.is_file() and p.name.lower() == name.lower()]
             if len(matches) != 1:
@@ -318,8 +282,6 @@ def _runtime_binary(name: str, key: str, required: bool = True) -> Path | None:
     matches = [p for p in root.rglob("*") if p.is_file() and p.name.lower() == exe.lower()] if root.exists() else []
     if len(matches) == 1:
         binary = matches[0]
-        if PLATFORM == "linux" and not os.access(binary, os.X_OK):
-            raise RuntimeError(f"runtime binary is not executable: {binary}")
         return binary
     if required:
         raise RuntimeError(f"runtime must contain exactly one {exe}; found {len(matches)}")
@@ -344,8 +306,6 @@ def runtime_tts_server(required: bool = True) -> Path | None:
     matches = [p for p in root.rglob("*") if p.is_file() and p.name.lower() == TTS_SERVER_EXE.lower()] if root.exists() else []
     if len(matches) == 1:
         binary = matches[0]
-        if PLATFORM == "linux" and not os.access(binary, os.X_OK):
-            raise RuntimeError(f"runtime binary is not executable: {binary}")
         return binary
     if required:
         raise RuntimeError(f"missing TTS runtime: {TTS_SERVER_EXE}")
@@ -375,10 +335,6 @@ def install_release_binary(name: str) -> None:
 
 
 def install_prerequisite(name: str) -> None:
-    if name == "compiler" and PLATFORM == "linux":
-        _zig_toolchain()
-        note("compiler: ready (Zig)")
-        return
     if prerequisite_ready(name):
         note(f"{name}: ready")
         return
@@ -388,18 +344,9 @@ def install_prerequisite(name: str) -> None:
     fetch(spec["url"], archive, spec.get("size", 0), spec.get("sha256"))
     if name == "compiler":
         run_process(name, "install", [str(archive), "--quiet", "--wait", "--norestart", "--nocache", "--add", "Microsoft.VisualStudio.Workload.VCTools", "--includeRecommended"], ROOT, os.environ.copy())
-    elif PLATFORM == "windows":
+    else:
         destination = TOOLS / "VulkanSDK" / VULKAN_VERSION
         run_process(name, "install", [str(archive), "--root", str(destination), "--accept-licenses", "--default-answer", "--confirm-command", "install", "copy_only=1"], ROOT, os.environ.copy())
-    else:
-        destination = TOOLS / "VulkanSDK"
-        remove_tree(destination)
-        destination.mkdir(parents=True)
-        root = destination.resolve()
-        with tarfile.open(archive) as package:
-            for member in package.getmembers():
-                _archive_target(root, member.name)
-            package.extractall(destination)
     archive.unlink(missing_ok=True)
     if not prerequisite_ready(name):
         raise RuntimeError(f"{name} installer completed but prerequisite is still missing")
@@ -422,10 +369,7 @@ def install_tts() -> None:
         cmake, "-S", ".", "-B", "build", "-DCMAKE_BUILD_TYPE=Release",
         f"-DCHATTERBOX_CPP_ROOT={CHATTERBOX}",
     ]
-    if PLATFORM == "windows":
-        configure += ["-A", "x64"]
-    else:
-        configure += ["-G", "Ninja"]
+    configure += ["-A", "x64"]
     run_process("tts", "configure", configure, TTS, env)
     run_process("tts", "build", [cmake, "--build", "build", "--config", "Release", "--target", "trident-tts-server", "--parallel"], TTS, env)
     matches = [path for path in (TTS / "build").rglob(TTS_SERVER_EXE) if path.is_file()]
@@ -464,7 +408,6 @@ def clean_install_artifacts() -> None:
         CONVERTER,
         TOOLS / "downloads",
         TOOLS / "VulkanSDK",
-        TOOLS / "toolchain",
     ):
         remove_tree(path)
     note("install build artifacts: pruned")
@@ -529,8 +472,6 @@ def download_reference_voices(data_dir: Path) -> None:
 
 
 def install(models_dir: Path | None = None, data_dir: Path | None = None) -> None:
-    if PLATFORM not in {"windows", "linux"} or ARCHITECTURE != "x64":
-        raise RuntimeError(f"Trident installation requires Windows or Linux x64, got {PLATFORM}/{ARCHITECTURE}")
     paths = Paths(models_dir, data_dir)
     paths.models_dir.mkdir(parents=True, exist_ok=True)
     paths.data_dir.mkdir(parents=True, exist_ok=True)

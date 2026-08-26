@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import signal
 import socket
 import subprocess
 import time
@@ -16,10 +15,7 @@ from typing import Callable
 from config import GGML_VULKAN_ENV, RESIDENT_SERVERS, RUNTIMES, TTS_FIELDS, ggml_vulkan_environment
 from log import note
 
-if os.name == "nt":
-    import msvcrt
-else:
-    import fcntl
+import msvcrt
 
 
 def _state_dir() -> Path:
@@ -36,22 +32,16 @@ def _state_path(name: str) -> Path:
 def _resident_lock(name: str):
     path = _state_dir() / f"{name}.lock"
     with path.open("a+b") as handle:
-        if os.name == "nt":
-            if path.stat().st_size == 0:
-                handle.write(b"\0")
-                handle.flush()
-            handle.seek(0)
-            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-        else:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        if path.stat().st_size == 0:
+            handle.write(b"\0")
+            handle.flush()
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
         try:
             yield
         finally:
-            if os.name == "nt":
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
 
 
 def _read_state(name: str) -> dict:
@@ -112,10 +102,10 @@ def _http_status(url: str, timeout: float = 1.0) -> int | None:
 
 
 def _spawn_detached(command: list[str], cwd: Path, env: dict[str, str] | None) -> subprocess.Popen:
-    kwargs = {"creationflags": subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
     return subprocess.Popen(
         command, cwd=str(cwd), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-        stderr=subprocess.STDOUT, close_fds=True, **kwargs,
+        stderr=subprocess.STDOUT, close_fds=True,
+        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
     )
 
 
@@ -133,16 +123,10 @@ def _wait_ready(name: str, process: subprocess.Popen, probe: Callable[[], bool],
 
 def _kill_pid(name: str, pid: int) -> None:
     note(f"component=resident event=stop name={name} pid={pid}")
-    if os.name == "nt":
-        subprocess.run(
-            ["taskkill", "/PID", str(pid), "/T", "/F"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
-        )
-    else:
-        try:
-            os.killpg(pid, signal.SIGKILL)
-        except ProcessLookupError:
-            note(f"component=resident event=already_stopped name={name} pid={pid}")
+    subprocess.run(
+        ["taskkill", "/PID", str(pid), "/T", "/F"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+    )
 
 
 def _terminate(name: str) -> None:
