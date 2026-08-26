@@ -390,7 +390,7 @@ def install_prerequisite(name: str) -> None:
         run_process(name, "install", [str(archive), "--quiet", "--wait", "--norestart", "--nocache", "--add", "Microsoft.VisualStudio.Workload.VCTools", "--includeRecommended"], ROOT, os.environ.copy())
     elif PLATFORM == "windows":
         destination = TOOLS / "VulkanSDK" / VULKAN_VERSION
-        run_process(name, "install", [str(archive), "--root", str(destination), "--accept-licenses", "--default-answer", "--confirm-command", "install"], ROOT, os.environ.copy())
+        run_process(name, "install", [str(archive), "--root", str(destination), "--accept-licenses", "--default-answer", "--confirm-command", "install", "copy_only=1"], ROOT, os.environ.copy())
     else:
         destination = TOOLS / "VulkanSDK"
         remove_tree(destination)
