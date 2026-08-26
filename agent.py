@@ -6,8 +6,8 @@ import re
 import time
 from pathlib import Path
 
-from cable import Microphone, play_wav, restore, use as cable_use
-from config import TTS_FIELDS, load_live_settings, resolve_voice
+from cable import Microphone, play_wav, restore, use as cable_use, wav_pcm
+from config import ASR_RATE, TTS_FIELDS, load_live_settings, resolve_voice
 from conversation import Conversation
 from log import clear_run_log, note
 from main import effective_family, prepared_reference, start_run, synthesize_text, warm_resident
@@ -28,7 +28,9 @@ def _settings_namespace(models_dir: Path, data_dir: Path):
 
 def run(says: list[str], expects: list[str], models_dir: Path | None = None, data_dir: Path | None = None) -> int:
     paths = start_run("agent", models_dir, data_dir)
-    routing = cable_use()
+    _, settings = _settings_namespace(paths.models_dir, paths.data_dir)
+    continuous = settings["ingestion_mode"] == "continuous"
+    routing = cable_use() if continuous else {"previous": None}
     engine: Conversation | None = None
     mic: Microphone | None = None
     try:
@@ -43,8 +45,9 @@ def run(says: list[str], expects: list[str], models_dir: Path | None = None, dat
 
         engine = Conversation(paths.models_dir, paths.data_dir, settings)
         engine.start()
-        mic = Microphone(engine.feed_audio)
-        mic.start()
+        if continuous:
+            mic = Microphone(engine.feed_audio)
+            mic.start()
         results = []
         for index, say in enumerate(says):
             expect = expects[index] if index < len(expects) else None
@@ -53,7 +56,10 @@ def run(says: list[str], expects: list[str], models_dir: Path | None = None, dat
             turn_before = engine.turn
             transcript_before = len(engine.transcript)
             started = time.perf_counter()
-            play_wav(prompt)
+            if continuous:
+                play_wav(prompt)
+            else:
+                engine.submit_audio(wav_pcm(prompt, ASR_RATE))
             deadline = time.monotonic() + _TURN_IDLE_TIMEOUT_S
             last_status = None
             settled = None
