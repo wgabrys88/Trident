@@ -27,6 +27,8 @@ class Conversation:
         self.parakeet = None
         self.smart_turn = None
         self.vad = None
+        self.gemma_base = None
+        self.tts_base = None
         self.turn_wave = None
         self.turn_path = None
         self.turn_tail = bytearray()
@@ -91,13 +93,13 @@ class Conversation:
         self.paths = start_run("conversation", self.models_dir, self.data_dir)
         try:
             self.parakeet = ensure_parakeet(runtime_server("parakeet"), require_model(SHARED_MODELS["parakeet"], self.models_dir))
-            ensure_gemma(runtime_server("gemma"), require_model(SHARED_MODELS[BRAIN_MODEL], self.models_dir), BRAIN_RUNTIME)
+            self.gemma_base = ensure_gemma(runtime_server("gemma"), require_model(SHARED_MODELS[BRAIN_MODEL], self.models_dir), BRAIN_RUNTIME)
             settings = dict(self.settings)
             family = self._family(settings, settings["tts_mode"] == "real")
             language = settings["tts_language"]
             if language not in family["TTS_LANGUAGES"]:
                 raise RuntimeError(f"language {language!r} is not wired in {family['name']}")
-            tts_endpoint(self._reference(settings["tts_voice"]), language, family, self.paths)
+            self.tts_base = tts_endpoint(self._reference(settings["tts_voice"]), language, family, self.paths)
             self.smart_turn = SmartTurnEndpoint(require_model(SHARED_MODELS["smart-turn"], self.models_dir))
             self.vad = SileroEndpoint(settings["vad_threshold"], settings["vad_silence_ms"])
             self.active = True
@@ -114,9 +116,12 @@ class Conversation:
 
     def configure(self, settings: dict) -> None:
         vad_changed = settings["vad_threshold"] != self.settings["vad_threshold"] or settings["vad_silence_ms"] != self.settings["vad_silence_ms"]
+        voice_changed = any(settings[key] != self.settings[key] for key in ("tts_family", "tts_voice", "tts_language"))
         self.settings = dict(settings)
         if vad_changed:
             self.asr_queue.put(("vad-config", (self.settings["vad_threshold"], self.settings["vad_silence_ms"])))
+        if voice_changed:
+            self.tts_base = None
         note(
             f"component=conversation event=configure ingestion={settings['ingestion_mode']}"
             f" tts_family={settings['tts_family']} tts_mode={settings['tts_mode']}"
@@ -237,7 +242,7 @@ class Conversation:
         )
 
     def _llm_loop(self) -> None:
-        base = ensure_gemma(runtime_server("gemma"), require_model(SHARED_MODELS[BRAIN_MODEL], self.models_dir), BRAIN_RUNTIME)
+        base = self.gemma_base
         while True:
             item = self.llm_queue.get()
             if item is None:
@@ -297,7 +302,9 @@ class Conversation:
             language = settings["tts_language"]
             reference = self._reference(settings["tts_voice"])
             streaming = settings["tts_mode"] == "real"
-            base = tts_endpoint(reference, language, family, self.paths)
+            base = self.tts_base
+            if base is None:
+                base = self.tts_base = tts_endpoint(reference, language, family, self.paths)
             unit, index = text, 0
             while unit is not None:
                 index += 1

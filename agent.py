@@ -13,7 +13,7 @@ from log import clear_run_log, note
 from main import effective_family, prepared_reference, start_run, synthesize_text, warm_resident
 from resident import status as resident_status
 
-_TURN_TIMEOUT_S = 120.0
+_TURN_IDLE_TIMEOUT_S = 120.0
 
 
 def _settings_namespace(models_dir: Path, data_dir: Path):
@@ -54,21 +54,31 @@ def run(says: list[str], expects: list[str], models_dir: Path | None = None, dat
             transcript_before = len(engine.transcript)
             started = time.perf_counter()
             play_wav(prompt)
-            deadline = time.monotonic() + _TURN_TIMEOUT_S
+            deadline = time.monotonic() + _TURN_IDLE_TIMEOUT_S
+            last_status = None
+            settled = None
             while True:
-                if engine.turn > turn_before and f"TTS {engine.turn} · complete" in engine.status:
+                complete = engine.turn > turn_before and f"TTS {engine.turn} · complete" in engine.status
+                if complete and settled is None:
+                    settled = time.monotonic()
+                if not complete:
+                    settled = None
+                if complete and time.monotonic() - settled >= 1.5:
                     break
                 if engine.failure:
                     raise RuntimeError(f"conversation failed during turn {index + 1}: {engine.failure}")
+                if engine.status != last_status:
+                    last_status = engine.status
+                    deadline = time.monotonic() + _TURN_IDLE_TIMEOUT_S
                 if time.monotonic() > deadline:
                     raise RuntimeError(
-                        f"turn {index + 1} did not complete within {_TURN_TIMEOUT_S:g}s"
+                        f"turn {index + 1} stalled for {_TURN_IDLE_TIMEOUT_S:g}s without progress"
                         f" (turn={engine.turn} status={engine.status!r})"
                     )
                 time.sleep(0.1)
             heard = engine.transcript[transcript_before:].strip()
             answer = engine.answer.strip()
-            match = bool(re.search(expect, heard)) if expect else None
+            match = bool(re.search(expect, answer)) if expect and expect != "-" else None
             elapsed = time.perf_counter() - started
             results.append({
                 "say": say, "heard": heard, "answer": answer,
