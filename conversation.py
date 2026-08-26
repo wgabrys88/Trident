@@ -6,16 +6,155 @@ import time
 import wave
 from pathlib import Path
 
-import numpy as np
 
-from config import ASR_RATE, BRAIN_MODEL, BRAIN_RUNTIME, LANGUAGES, LIVE_AUDIO, SHARED_MODELS, SMART_TURN_SECONDS, resolve_voice
-from installer import require_model, runtime_server, write_text_atomic
-from local_api import gemma_chat_stream
-from log import clear_run_log, note, set_run_log
-from main import effective_family, finish, gemma_kwargs, prepared_reference, render_system_prompt, resolved_tts, spoken_reply, start_run, stream_synthesize, synthesize_text, transcribe_wav, tts_endpoint, write_meta
-from resident import ensure_gemma, ensure_parakeet
-from ui_streaming import SpeechSegmenter
+from config import ASR_CHUNK_OVERLAP_SECONDS, ASR_CHUNK_SECONDS, ASR_RATE, BRAIN_MODEL, BRAIN_RUNTIME, LIVE_AUDIO, REFERENCE_MIN_SECONDS, SHARED_MODELS, SMART_TURN_SECONDS, TTS_RATE, Paths, effective_family, gemma_payload, render_system_prompt, resolve_voice, resolved_tts, spoken_reply
+from installer import models_for, require_model, runtime_server, runtime_tts_server, validate_wav
+from local_api import chatterbox_stream, gemma_chat_stream, parakeet_transcribe
+from log import clear_run_log, finish, note, set_run_log, start_run, write_meta, write_text
+from media import chatterbox_wav, float_pcm16, parakeet_chunks, write_pcm_wav
+from resident import ensure_chatterbox, ensure_gemma, ensure_parakeet, status as resident_status
 from vad import SileroEndpoint, SmartTurnEndpoint
+
+
+
+def prepared_reference(reference: Path, data_dir: Path) -> Path:
+    wav = chatterbox_wav(reference, data_dir / "prepared")
+    validate_wav(wav, TTS_RATE, minimum_seconds=REFERENCE_MIN_SECONDS, channels=1)
+    with wave.open(str(wav), "rb") as audio:
+        seconds = audio.getnframes() / audio.getframerate()
+    note(f"component=tts event=reference_ready duration_s={seconds:.3f}")
+    return wav
+
+
+def transcribe_wav(wav: Path, base: str, chunk_dir: Path) -> str:
+    with wave.open(str(wav), "rb") as audio:
+        duration = audio.getnframes() / audio.getframerate()
+    started = time.perf_counter()
+    words, chunks = [], 0
+    for chunk, offset, chunk_seconds, final in parakeet_chunks(wav, chunk_dir, ASR_CHUNK_SECONDS, ASR_CHUNK_OVERLAP_SECONDS):
+        payload = parakeet_transcribe(base, chunk)
+        chunks += 1
+        rows = payload.get("words")
+        if duration <= ASR_CHUNK_SECONDS and not rows:
+            text = str(payload.get("text") or "").strip()
+            words = [text] if text else []
+            break
+        if not isinstance(rows, list):
+            raise RuntimeError("Parakeet verbose transcript did not include word timestamps")
+        left = 0.0 if offset == 0 else ASR_CHUNK_OVERLAP_SECONDS / 2
+        right = chunk_seconds if final else chunk_seconds - ASR_CHUNK_OVERLAP_SECONDS / 2
+        for row in rows:
+            midpoint = (float(row["start"]) + float(row["end"])) / 2
+            if left <= midpoint < right or final and midpoint == right:
+                word = str(row.get("word", row.get("w", ""))).strip()
+                if word:
+                    words.append(word)
+    text = " ".join(words).strip()
+    elapsed = time.perf_counter() - started
+    rtf = elapsed / duration if duration else 0.0
+    note(f"component=asr event=done duration_s={duration:.3f} chunks={chunks} request_ms={elapsed * 1000:.3f} rtf={rtf:.4f} x_realtime={1.0 / rtf if rtf else 0.0:.2f}")
+    return text
+
+
+
+def transcribe_pcm(pcm_f32: bytes, paths: Paths) -> str:
+    if not pcm_f32:
+        raise RuntimeError("audio is empty")
+    write_pcm_wav(paths.input, pcm_f32)
+    base = ensure_parakeet(runtime_server("parakeet"), require_model(SHARED_MODELS["parakeet"], paths.models_dir))
+    text = transcribe_wav(paths.input, base, paths.run_dir / ".asr-chunks")
+    if not text:
+        raise RuntimeError("Parakeet returned an empty transcript")
+    write_text(paths.transcript, text + "\n")
+    return text
+
+def tts_endpoint(reference: Path, language: str, family: dict, paths: Paths) -> str:
+    models = models_for(family["name"])
+    return ensure_chatterbox(runtime_tts_server(), require_model(models["chatterbox-t3"], paths.models_dir), require_model(models["chatterbox-codec"], paths.models_dir), reference, family, language)
+
+
+def tts_metrics(result: str) -> dict[str, float | str]:
+    fields = {key: value for item in result.split() if "=" in item for key, value in [item.split("=", 1)]}
+    samples = int(fields["samples"])
+    rtf = float(fields["wall_rtf"])
+    return {**fields, "audio_s": samples / TTS_RATE, "rtf": rtf, "x_realtime": 1.0 / rtf if rtf else 0.0}
+
+
+def stream_synthesize(text: str, reference: Path, output: Path, language: str, family: dict, paths: Paths, *, base: str | None = None, unit: int | None = None, streaming: bool | None = None, cancel=None):
+    endpoint = base or tts_endpoint(reference, language, family, paths)
+    stream = family["TTS_STREAM"]
+    enabled = stream["enabled"] if streaming is None else streaming
+    try:
+        generator = chatterbox_stream(endpoint, text.strip(), output, enabled, stream["join"], cancel=cancel)
+        while True:
+            try:
+                yield next(generator)
+            except StopIteration as done:
+                result = str(done.value or "")
+                if result:
+                    fields = tts_metrics(result)
+                    prefix = f" unit={unit}" if unit is not None else ""
+                    note("component=tts event=complete outcome=ok" + prefix + f" audio_s={fields['audio_s']:.3f} chunks={fields['chunks']} total_ms={fields['total_ms']} t3_ms={fields['t3_ms']} s3gen_ms={fields['s3gen_ms']} ttfa_ms={fields['ttfa_ms']} rtf={fields['rtf']:.4f} x_realtime={fields['x_realtime']:.2f}")
+                return result
+    except Exception as exc:
+        message = " ".join(str(exc).split())
+        reason = "missing_eos" if "without EOS" in message else "request_error"
+        prefix = f" unit={unit}" if unit is not None else ""
+        ceiling = f" configured_max_tokens={family['TTS_SAMPLE']['max_tokens']}" if reason == "missing_eos" else ""
+        note(f"component=tts event=failed outcome=error reason={reason}{prefix}{ceiling} message={message}")
+        raise
+
+
+def synthesize_text(text: str, reference: Path, output: Path, language: str, family: dict, paths: Paths, *, base: str | None = None, streaming: bool | None = None, unit: int | None = None, cancel=None) -> str:
+    generator = stream_synthesize(text, reference, output, language, family, paths, base=base, unit=unit, streaming=streaming, cancel=cancel)
+    try:
+        while True:
+            next(generator)
+    except StopIteration as done:
+        return str(done.value or "")
+
+
+def warm_residents(paths: Paths, settings: dict) -> None:
+    family = effective_family(settings["tts_family"])
+    language = settings["tts_language"]
+    reference = prepared_reference(resolve_voice(paths.data_dir, settings["tts_voice"]), paths.data_dir)
+    ensure_parakeet(runtime_server("parakeet"), require_model(SHARED_MODELS["parakeet"], paths.models_dir))
+    ensure_gemma(runtime_server("gemma"), require_model(SHARED_MODELS[BRAIN_MODEL], paths.models_dir), BRAIN_RUNTIME)
+    tts_endpoint(reference, language, family, paths)
+
+
+def resident_report() -> str:
+    return "\n".join(f"{row['name']}: {'ready' if row['ready'] else 'stopped'} pid={row['pid'] or '-'} url={row['url']} family={row.get('family') or '-'}" for row in resident_status())
+
+
+class _SpeechSegmenter:
+    def __init__(self, minimum: int, hard_limit: int) -> None:
+        if minimum < 1 or hard_limit < minimum:
+            raise ValueError("speech segmentation limits are invalid")
+        self.minimum = minimum
+        self.hard_limit = hard_limit
+        self.sent = 0
+
+    def update(self, text: str, flush: bool = False) -> list[str]:
+        units = []
+        while self.sent < len(text):
+            pending = text[self.sent:]
+            stop = min(len(pending), self.hard_limit)
+            cut = next((i + 1 for i in range(self.minimum - 1, stop) if pending[i] in ".?!" and (i + 1 == len(pending) or pending[i + 1].isspace())), 0)
+            if not cut and len(pending) >= self.hard_limit:
+                split = max(pending.rfind(ch, self.minimum, self.hard_limit) for ch in (" ", "\n", "\t"))
+                cut = split + 1 if split >= self.minimum else self.hard_limit
+            if not cut and flush:
+                cut = len(pending)
+            if not cut:
+                break
+            unit = pending[:cut].strip()
+            self.sent += cut
+            while self.sent < len(text) and text[self.sent].isspace():
+                self.sent += 1
+            if unit:
+                units.append(unit)
+        return units
 
 
 class Conversation:
@@ -184,9 +323,7 @@ class Conversation:
             self.turn_wave.setnchannels(1)
             self.turn_wave.setsampwidth(2)
             self.turn_wave.setframerate(ASR_RATE)
-        audio = np.frombuffer(pcm_f32, dtype="<f4")
-        pcm16 = (np.clip(audio, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
-        self.turn_wave.writeframesraw(pcm16)
+        self.turn_wave.writeframesraw(float_pcm16(pcm_f32))
         self.turn_tail.extend(pcm_f32)
         limit = SMART_TURN_SECONDS * ASR_RATE * 4
         if len(self.turn_tail) > limit:
@@ -273,9 +410,9 @@ class Conversation:
 
     def _llm_payload(self, text: str, settings: dict) -> dict:
         language = settings["tts_language"]
-        system = render_system_prompt(settings["system_prompt"], language, LANGUAGES[language])
+        system = render_system_prompt(settings["system_prompt"], language)
         limit = int(LIVE_AUDIO["llm_history_turns"]) * 2
-        return gemma_kwargs(
+        return gemma_payload(
             [{"role": "system", "content": system}, *self.history[-limit:], {"role": "user", "content": text}],
             stream=True,
         )
@@ -294,16 +431,16 @@ class Conversation:
             ttfa = None
             family = self._family(settings, settings["tts_mode"] == "real")
             hard_limit = int(family["TTS_CHUNK"]["chars"])
-            segmenter = SpeechSegmenter(min(int(family["TTS_CHUNK"]["first_chars"]), hard_limit), hard_limit)
+            segmenter = _SpeechSegmenter(min(int(family["TTS_CHUNK"]["first_chars"]), hard_limit), hard_limit)
             speech_started = False
 
             def enqueue(units) -> None:
                 nonlocal speech_started
                 for unit in units:
                     if speech_started:
-                        self.tts_queue.put(("unit", turn, unit.text))
+                        self.tts_queue.put(("unit", turn, unit))
                     else:
-                        self.tts_queue.put(("start", turn, unit.text, settings))
+                        self.tts_queue.put(("start", turn, unit, settings))
                         speech_started = True
 
             for delta in gemma_chat_stream(base, self._llm_payload(prompt, settings)):
@@ -320,7 +457,7 @@ class Conversation:
                 raise RuntimeError("Gemma returned an empty answer")
             enqueue(segmenter.update(answer, flush=True))
             self.answer = answer
-            write_text_atomic(self.paths.answer, answer + "\n")
+            write_text(self.paths.answer, answer + "\n")
             self.history.extend(({"role": "user", "content": prompt}, {"role": "assistant", "content": answer}))
             self.tts_queue.put(("end", turn, answer))
             note(
@@ -388,6 +525,7 @@ class Conversation:
     def stop(self) -> None:
         if not self.active:
             return
+        self._interrupt_tts()
         self.active = False
         self.asr_queue.put(("finish", None))
         self.asr_thread.join()
@@ -395,7 +533,7 @@ class Conversation:
         self.llm_thread.join()
         self.tts_queue.put(None)
         self.tts_thread.join()
-        write_text_atomic(self.paths.transcript, self.transcript + ("\n" if self.transcript else ""))
+        write_text(self.paths.transcript, self.transcript + ("\n" if self.transcript else ""))
         if self.owns_run:
             final_family = self._family(self.settings, self.settings["tts_mode"] == "real")
             write_meta(

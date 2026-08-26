@@ -15,14 +15,7 @@
 !/tts/src/
 !/tts/src/*.cpp
 !/ui.py
-!/ui_streaming.py
 !/requirements.txt
-!/patches/
-!/patches/*.patch
 !/conversation.py
 !/vad.py
-!/cable.py
 !/agent.py
-!/tools/
-/tools/*
-!/tools/cable.ps1

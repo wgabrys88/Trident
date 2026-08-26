@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import subprocess
@@ -70,8 +71,6 @@ SMART_TURN_SECONDS = 8
 TTS_RATE = 24000
 REFERENCE_MIN_SECONDS = 5.0
 
-CABLE_INPUT = "CABLE Input"
-CABLE_OUTPUT = "CABLE Output"
 
 RESIDENT_SERVERS = {
     "parakeet": {"host": "127.0.0.1", "port": 17931, "url": "http://127.0.0.1:17931", "startup_timeout_s": 120},
@@ -114,21 +113,21 @@ LIVE_AUDIO = {
 }
 
 TTS_FIELDS = (
-    ("n_gpu_layers", "TTS_RUNTIME", "gpu_layers", int, "--n-gpu-layers", "GPU layers", False),
-    ("context", "TTS_RUNTIME", "context", int, "--context", "Context", False),
-    ("threads", "TTS_RUNTIME", "threads", int, "--threads", "Threads", False),
-    ("seed", "TTS_SAMPLE", "seed", int, "--seed", "Seed", False),
-    ("max_tokens", "TTS_SAMPLE", "max_tokens", int, "--max-tokens", "Max T3 tokens", False),
-    ("top_k", "TTS_SAMPLE", "top_k", int, "--top-k", "Top K", False),
-    ("cfm_steps", "TTS_SAMPLE", "cfm_steps", int, "--cfm-steps", "CFM steps", False),
-    ("first_chunk_chars", "TTS_CHUNK", "first_chars", int, "--first-chunk-chars", "First streaming text-unit chars", False),
-    ("chunk_chars", "TTS_CHUNK", "chars", int, "--chunk-chars", "Text-unit chars", False),
-    ("top_p", "TTS_SAMPLE", "top_p", float, "--top-p", "Top P", False),
-    ("min_p", "TTS_SAMPLE", "min_p", float, "--min-p", "Min P", True),
-    ("temperature", "TTS_SAMPLE", "temperature", float, "--temperature", "Temperature", False),
-    ("repeat_penalty", "TTS_SAMPLE", "repeat_penalty", float, "--repeat-penalty", "Repeat penalty", False),
-    ("cfg_weight", "TTS_VOICE", "cfg_weight", float, "--cfg-weight", "CFG weight", True),
-    ("exaggeration", "TTS_VOICE", "exaggeration", float, "--exaggeration", "Exaggeration", True),
+    ("n_gpu_layers", "TTS_RUNTIME", "gpu_layers", int, "GPU layers"),
+    ("context", "TTS_RUNTIME", "context", int, "Context"),
+    ("threads", "TTS_RUNTIME", "threads", int, "Threads"),
+    ("seed", "TTS_SAMPLE", "seed", int, "Seed"),
+    ("max_tokens", "TTS_SAMPLE", "max_tokens", int, "Max T3 tokens"),
+    ("top_k", "TTS_SAMPLE", "top_k", int, "Top K"),
+    ("cfm_steps", "TTS_SAMPLE", "cfm_steps", int, "CFM steps"),
+    ("first_chunk_chars", "TTS_CHUNK", "first_chars", int, "First streaming text-unit chars"),
+    ("chunk_chars", "TTS_CHUNK", "chars", int, "Text-unit chars"),
+    ("top_p", "TTS_SAMPLE", "top_p", float, "Top P"),
+    ("min_p", "TTS_SAMPLE", "min_p", float, "Min P (V3)"),
+    ("temperature", "TTS_SAMPLE", "temperature", float, "Temperature"),
+    ("repeat_penalty", "TTS_SAMPLE", "repeat_penalty", float, "Repeat penalty"),
+    ("cfg_weight", "TTS_VOICE", "cfg_weight", float, "CFG weight (V3)"),
+    ("exaggeration", "TTS_VOICE", "exaggeration", float, "Exaggeration (V3)"),
 )
 
 
@@ -242,11 +241,13 @@ SHARED_MODELS = {
 VULKAN_VERSION = "1.4.357.0"
 
 PACKAGES = {
-    "git": {"url": "https://github.com/git-for-windows/git/releases/download/v2.54.0.windows.1/MinGit-2.54.0-64-bit.zip", "file": "MinGit-2.54.0-64-bit.zip", "size": 39989839, "sha256": "04f937e1f0918b17b9be6f2294cb2bb66e96e1d9832d1c298e2de088a1d0e668"},
-    "cmake": {"url": "https://github.com/Kitware/CMake/releases/download/v4.4.2/cmake-4.4.2-windows-x86_64.zip", "file": "cmake-4.4.2-windows-x86_64.zip", "size": 54405968, "sha256": "e8139d85b3813bc38833142ae1940472e9a587e9b5d2718ac1804c60f4e57a64"},
-    "compiler": {"url": "https://download.visualstudio.microsoft.com/download/pr/00d9d26c-2727-42c2-aa9e-eda63b03e1ee/15df9d3b4c2b2eaf44704d5e938c895341b9cd8ba40a9a18610f8d18cbe01b53/vs_BuildTools.exe", "file": "vs_BuildTools.exe", "size": 4458736, "sha256": "15df9d3b4c2b2eaf44704d5e938c895341b9cd8ba40a9a18610f8d18cbe01b53"},
-    "vulkan": {"url": f"https://sdk.lunarg.com/sdk/download/{VULKAN_VERSION}/windows/vulkansdk-windows-X64-{VULKAN_VERSION}.exe", "file": f"vulkansdk-windows-X64-{VULKAN_VERSION}.exe", "size": 0, "sha256": "81f474711e9042f4cd22b31b2f7a8870db2e428b21586fb43dd80150be97310d"},
-} if PLATFORM == "windows" else {}
+    "vulkan": {
+        "windows": {"url": f"https://sdk.lunarg.com/sdk/download/{VULKAN_VERSION}/windows/vulkansdk-windows-X64-{VULKAN_VERSION}.exe", "file": f"vulkansdk-windows-X64-{VULKAN_VERSION}.exe", "sha256": "81f474711e9042f4cd22b31b2f7a8870db2e428b21586fb43dd80150be97310d"},
+        "linux": {"url": f"https://sdk.lunarg.com/sdk/download/{VULKAN_VERSION}/linux/vulkansdk-linux-x86_64-{VULKAN_VERSION}.tar.xz", "file": f"vulkansdk-linux-x86_64-{VULKAN_VERSION}.tar.xz", "sha256": "0f09bf6a0625e346bf004be70b92907e934a4c76606b323441b2baf3a5a0e66d"},
+    }[PLATFORM],
+}
+if PLATFORM == "windows":
+    PACKAGES["compiler"] = {"url": "https://download.visualstudio.microsoft.com/download/pr/00d9d26c-2727-42c2-aa9e-eda63b03e1ee/15df9d3b4c2b2eaf44704d5e938c895341b9cd8ba40a9a18610f8d18cbe01b53/vs_BuildTools.exe", "file": "vs_BuildTools.exe", "size": 4458736, "sha256": "15df9d3b4c2b2eaf44704d5e938c895341b9cd8ba40a9a18610f8d18cbe01b53"}
 
 SOURCES = {
     "chatterbox": ("https://github.com/wgabrys88/chatterbox.cpp", "77e9b0501aa76a46845d8b13cf956c21d060b593"),
@@ -294,6 +295,58 @@ REFERENCE_VOICES = {
     },
 }
 DEFAULT_VOICE = "trump"
+
+
+def effective_family(name: str, overrides: dict | None = None) -> dict:
+    family = copy.deepcopy(FAMILIES[name])
+    values = overrides or {}
+    for key, section, field, typ, *_ in TTS_FIELDS:
+        value = values.get(key)
+        if value is not None:
+            family[section][field] = typ(value)
+    if values.get("streaming") is not None:
+        family["TTS_STREAM"]["enabled"] = bool(values["streaming"])
+    if values.get("stream_join") is not None:
+        family["TTS_STREAM"]["join"] = values["stream_join"]
+    if name in {"turbo", "nano"} and (family["TTS_SAMPLE"]["min_p"] or family["TTS_VOICE"]["cfg_weight"] or family["TTS_VOICE"]["exaggeration"]):
+        raise RuntimeError(f"{name} does not support min-p, CFG weight, or exaggeration")
+    return family
+
+
+def render_system_prompt(template: str, code: str) -> str:
+    name = LANGUAGES[code]
+    for key, value in (("{tts_language}", code), ("{tts_language_name}", name), ("{language}", code), ("{language_name}", name)):
+        template = template.replace(key, value)
+    return template.strip()
+
+
+def spoken_reply(raw: str, streaming: bool = False) -> str:
+    text = raw.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if "\nAssistant:\n" in text:
+        text = text.rsplit("\nAssistant:\n", 1)[1].strip()
+    elif text.startswith("Assistant:\n"):
+        text = text[11:].strip()
+    if "[Start thinking]" in text:
+        if "[End thinking]" in text:
+            text = text.split("[End thinking]", 1)[1].strip()
+        elif streaming:
+            return ""
+    return text
+
+
+def gemma_payload(messages: list, stream: bool) -> dict:
+    return {
+        "model": "gemma", "messages": messages, "stream": stream, "cache_prompt": True,
+        "temperature": BRAIN_GENERATION["temperature"], "top_p": BRAIN_GENERATION["top_p"],
+        "top_k": BRAIN_GENERATION["top_k"], "min_p": BRAIN_GENERATION["min_p"],
+        "repeat_penalty": BRAIN_GENERATION["repeat_penalty"], "seed": BRAIN_GENERATION["seed"],
+        "max_tokens": BRAIN_GENERATION["max_tokens"],
+        "chat_template_kwargs": {"enable_thinking": BRAIN_THINKING},
+    }
+
+
+def resolved_tts(family: dict) -> str:
+    return json.dumps({key: family[key] for key in ("name", "TTS_RUNTIME", "TTS_SAMPLE", "TTS_VOICE", "TTS_CHUNK", "TTS_STREAM")}, sort_keys=True, separators=(",", ":"))
 
 
 def resolve_voice(data_dir: Path, value: str | None = None) -> Path:
@@ -358,9 +411,7 @@ class Paths:
             return self.run_dir / name if self.run_dir else None
         self.transcript = artifact("transcript.txt")
         self.answer = artifact("answer.txt")
-        self.system = artifact("system.txt")
         self.output = artifact("output.wav")
         self.input = artifact("input.wav")
-        self.literal = artifact("literal.txt")
         self.log = artifact("trident.log")
         self.meta = artifact("meta.txt")
