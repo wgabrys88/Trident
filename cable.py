@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import sounddevice as sd
 
-from config import CABLE_INPUT, CABLE_OUTPUT, TOOLS
+from config import ASR_RATE, CABLE_INPUT, CABLE_OUTPUT, TOOLS
 from log import note
 
 _SCRIPT = TOOLS / "cable.ps1"
@@ -90,6 +90,42 @@ def use() -> dict:
 def restore(previous_id: str) -> None:
     if previous_id:
         set_default_capture(previous_id)
+
+
+class Microphone:
+    def __init__(self, feed) -> None:
+        self._feed = feed
+        self._device = _cable_devices()["record"][0]
+        info = sd.query_devices(self._device)
+        self._rate = int(info["default_samplerate"])
+        self._channels = max(1, int(info["max_input_channels"]))
+        self._stream: sd.InputStream | None = None
+
+    def _callback(self, indata, frames, time_info, status) -> None:
+        if status:
+            note(f"component=cable event=mic_overflow detail={status}")
+        audio = indata[:, 0] if self._channels == 1 else indata.mean(axis=1)
+        if self._rate != ASR_RATE and audio.size:
+            count = max(1, round(audio.size * ASR_RATE / self._rate))
+            audio = np.interp(np.linspace(0, audio.size - 1, count), np.arange(audio.size), audio)
+        self._feed(audio.astype(np.float32, copy=False).tobytes())
+
+    def start(self) -> None:
+        if self._stream is not None:
+            raise RuntimeError("cable microphone is already capturing")
+        self._stream = sd.InputStream(
+            samplerate=self._rate, channels=self._channels, dtype="float32",
+            device=self._device, blocksize=int(self._rate * 0.02), callback=self._callback,
+        )
+        self._stream.start()
+        note(f"component=cable event=mic_start device={self._device} rate={self._rate} channels={self._channels}")
+
+    def stop(self) -> None:
+        stream, self._stream = self._stream, None
+        if stream is not None:
+            stream.stop()
+            stream.close()
+            note("component=cable event=mic_stop")
 
 
 def play_wav(path: Path) -> float:

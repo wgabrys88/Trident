@@ -22,6 +22,7 @@
 !/conversation.py
 !/vad.py
 !/cable.py
+!/agent.py
 !/tools/
 /tools/*
 !/tools/cable.ps1
