@@ -122,7 +122,7 @@ def load_live_settings(data_dir: Path) -> dict:
     settings = json.loads(path.read_text(encoding="utf-8") if path.is_file() else LIVE_SETTINGS_JSON)
     LIVE_SETTINGS.clear()
     LIVE_SETTINGS.update(settings)
-    return LIVE_SETTINGS
+    return dict(LIVE_SETTINGS)
 
 
 def save_live_settings(data_dir: Path, settings: dict) -> None:
@@ -132,8 +132,9 @@ def save_live_settings(data_dir: Path, settings: dict) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(payload, encoding="utf-8", newline="\n")
     os.replace(temporary, path)
+    synced = json.loads(payload)
     LIVE_SETTINGS.clear()
-    LIVE_SETTINGS.update(settings)
+    LIVE_SETTINGS.update(synced)
 
 LANGUAGES = {
     "en": "English", "es": "Spanish", "fr": "French", "de": "German",

@@ -128,6 +128,16 @@ class Microphone:
             note("component=cable event=mic_stop")
 
 
+def wav_pcm(path: Path, rate: int) -> bytes:
+    with wave.open(str(path), "rb") as audio:
+        samples = np.frombuffer(audio.readframes(audio.getnframes()), dtype="<i2").astype(np.float32) / 32768.0
+        source_rate = audio.getframerate()
+    if rate != source_rate and samples.size:
+        count = max(1, round(samples.size * rate / source_rate))
+        samples = np.interp(np.linspace(0, samples.size - 1, count), np.arange(samples.size), samples)
+    return samples.astype(np.float32, copy=False).tobytes()
+
+
 def play_wav(path: Path) -> float:
     with wave.open(str(path), "rb") as audio:
         rate = audio.getframerate()
