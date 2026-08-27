@@ -92,6 +92,7 @@ class Conversation:
             except Exception as exc:
                 self.failure = exc
                 self.status = f"{name} failed · {exc}"
+                note(f"component=conversation event=worker_exception name={name} type={type(exc).__name__} message={exc}")
                 self._emit("error", exc)
             finally:
                 clear_run_log(self.paths.log)
@@ -163,15 +164,28 @@ class Conversation:
             self.asr_queue.put(("feed", pcm_f32))
 
     def _interrupt(self) -> None:
+        seq_before = self.brain_seq
         self.brain_seq += 1
+        note(
+            f"component=conversation event=interrupt brain_seq_before={seq_before} brain_seq_after={self.brain_seq}"
+            f" turn={self.turn} tts_started_through={self.tts_started_through} tts_done_through={self.tts_done_through}"
+            f" cancelled_through={self.cancelled_through} pending_chars={len(self.pending)}"
+            f" transcript_chars={len(self.transcript)}"
+        )
         self._interrupt_tts()
 
     def _interrupt_tts(self) -> None:
         target = self.turn
         if target < 1:
+            note(f"component=tts event=interrupt_skipped through_turn={target} reason=no_turn")
             return
         self._emit("audio-reset")
+        note(f"component=conversation event=audio_reset turn={target} tts_done_through={self.tts_done_through} cancelled_through={self.cancelled_through}")
         if target <= self.tts_done_through or target <= self.cancelled_through:
+            note(
+                f"component=tts event=interrupt_skipped through_turn={target}"
+                f" reason=already_done tts_done_through={self.tts_done_through} cancelled_through={self.cancelled_through}"
+            )
             return
         self.cancelled_through = target
         note(f"component=tts event=interruption_requested through_turn={target}")
@@ -227,8 +241,16 @@ class Conversation:
                 if self.settings["ingestion_mode"] == "continuous":
                     speech_started, speech_ended = self.vad.feed(payload)
                     if speech_started:
+                        note(
+                            f"component=conversation event=vad_start turn={self.turn} brain_seq={self.brain_seq}"
+                            f" pending_chars={len(self.pending)} transcript_chars={len(self.transcript)}"
+                        )
                         self._interrupt()
                     if speech_ended:
+                        note(
+                            f"component=conversation event=vad_end turn={self.turn} brain_seq={self.brain_seq}"
+                            f" pending_chars={len(self.pending)} transcript_chars={len(self.transcript)}"
+                        )
                         self._transcribe_turn("VAD")
                         self.vad.reset()
             elif op == "cut":
@@ -260,7 +282,10 @@ class Conversation:
         self.transcript = (self.transcript.rstrip() + " " + text).strip()
         self.brain_seq += 1
         seq = self.brain_seq
-        note(f"component=conversation event=dispatch seq={seq} reason={reason} pending_chars={len(self.pending)}")
+        note(
+            f"component=conversation event=dispatch seq={seq} reason={reason}"
+            f" pending_chars={len(self.pending)} transcript_chars={len(self.transcript)}"
+        )
         self.llm_queue.put((seq, self.pending, dict(self.settings)))
         self._state(f"Dispatch {seq} · {reason} · {len(self.pending)} chars")
 
@@ -284,6 +309,7 @@ class Conversation:
             self._require_language(settings)
             self.answer = ""
             self._state(f"LLM {seq} · generating")
+            note(f"component=llm event=begin seq={seq} pending_chars={len(prompt)} transcript_chars={len(self.transcript)}")
             raw = ""
             started = time.perf_counter()
             ttfa = None
@@ -365,6 +391,7 @@ class Conversation:
                 raise RuntimeError(f"unexpected TTS queue operation: {op}")
             unit, index = text, 0
             interrupted = self._tts_cancelled(turn)
+            first_pcm = True
             if not interrupted:
                 family = self._family(settings, settings["tts_mode"] == "real")
                 language = settings["tts_language"]
@@ -377,11 +404,14 @@ class Conversation:
                     output = self.paths.run_dir / f"tts-turn-{turn:04d}-{index:03d}.wav"
                     cancel = lambda turn=turn: self._tts_cancelled(turn)
                     if streaming:
-                        first_chunk = True
                         for raw in stream_synthesize(unit, reference, output, language, family, self.paths, base=base, unit=index, cancel=cancel):
-                            if first_chunk:
+                            if first_pcm:
                                 self.tts_started_through = turn
-                                first_chunk = False
+                                note(
+                                    f"component=tts event=started_through turn={turn} unit={index}"
+                                    f" bytes={len(raw)} tts_done_through={self.tts_done_through}"
+                                )
+                                first_pcm = False
                             self._emit("audio-pcm", raw)
                     else:
                         result = synthesize_text(unit, reference, output, language, family, self.paths, base=base, streaming=False, unit=index, cancel=cancel)
@@ -389,6 +419,10 @@ class Conversation:
                             if not output.is_file():
                                 raise RuntimeError(f"Chatterbox did not create buffered unit {index}: {result}")
                             self.tts_started_through = turn
+                            note(
+                                f"component=tts event=started_through turn={turn} unit={index}"
+                                f" path={output} tts_done_through={self.tts_done_through}"
+                            )
                             self._emit("audio-file", str(output))
                     interrupted = cancel()
                     if not interrupted:
@@ -398,6 +432,10 @@ class Conversation:
                     unit, _ = self._next_tts(turn)
                 note(f"component=tts event=interrupted turn={turn}")
             self.tts_done_through = turn
+            note(
+                f"component=tts event=done_through turn={turn} interrupted={int(interrupted)}"
+                f" tts_started_through={self.tts_started_through}"
+            )
             self._state(f"TTS {turn} · {'interrupted' if interrupted else 'complete'}")
 
     def _next_tts(self, turn: int) -> tuple[str | None, str | None]:
@@ -416,6 +454,11 @@ class Conversation:
     def stop(self) -> None:
         if not self.active:
             return
+        note(
+            f"component=conversation event=stop_begin turn={self.turn} brain_seq={self.brain_seq}"
+            f" tts_started_through={self.tts_started_through} tts_done_through={self.tts_done_through}"
+            f" cancelled_through={self.cancelled_through}"
+        )
         self._interrupt()
         self.active = False
         self.asr_queue.put(("finish", None))
@@ -443,12 +486,27 @@ class Conversation:
             finish(self.paths, "error" if self.failure else "ok")
         self._state("Stopped")
         self._emit("closed")
+        note("component=conversation event=stop_end")
 
     def close(self) -> None:
-        if self.active:
-            self.stop()
-        else:
-            self._discard_turn()
+        note(
+            f"component=conversation event=close_begin active={int(self.active)} turn={self.turn}"
+            f" tts_started_through={self.tts_started_through} tts_done_through={self.tts_done_through}"
+            f" brain_seq={self.brain_seq}"
+        )
+        try:
+            if self.active:
+                self.stop()
+            else:
+                self._discard_turn()
+        except Exception as exc:
+            note(f"component=conversation event=close_exception type={type(exc).__name__} message={exc}")
+            raise
+        finally:
+            note(
+                f"component=conversation event=close_end active={int(self.active)}"
+                f" failure={type(self.failure).__name__ if self.failure else 'none'}"
+            )
 
     def next_output(self):
         return self.output_queue.get()

@@ -26,17 +26,32 @@ class Speaker:
         info = sd.query_devices(kind="output")
         self._rate = int(info["default_samplerate"])
         self._channels = max(1, int(info["max_output_channels"]))
+        self._device = int(info["index"])
+        self._name = str(info["name"])
         self._stream: sd.OutputStream | None = None
+        note(
+            f"component=speaker event=init device={self._device} name={self._name}"
+            f" rate={self._rate} channels={self._channels}"
+        )
 
     def _ensure(self) -> None:
         if self._stream is not None:
             return
         self._stream = sd.OutputStream(samplerate=self._rate, channels=self._channels, dtype="int16")
         self._stream.start()
-        note(f"component=speaker event=start rate={self._rate} channels={self._channels}")
+        note(
+            f"component=speaker event=start device={self._device} name={self._name}"
+            f" rate={self._rate} channels={self._channels}"
+        )
 
     def write(self, pcm16: bytes, src_rate: int = TTS_RATE) -> None:
+        note(
+            f"component=speaker event=write_begin bytes={len(pcm16)} src_rate={src_rate}"
+            f" dst_rate={self._rate} channels={self._channels}"
+        )
+        started = time.perf_counter()
         if not pcm16:
+            note(f"component=speaker event=write_return bytes=0 elapsed_ms={(time.perf_counter() - started) * 1000:.3f}")
             return
         samples = np.frombuffer(pcm16, dtype="<i2")
         if src_rate != self._rate and samples.size:
@@ -51,8 +66,13 @@ class Speaker:
             if self._channels > 1:
                 frames[:, 1] = samples
         self._stream.write(frames)
+        note(
+            f"component=speaker event=write_return bytes={len(pcm16)} frames={int(samples.size)}"
+            f" elapsed_ms={(time.perf_counter() - started) * 1000:.3f}"
+        )
 
     def write_wav(self, path: str) -> None:
+        note(f"component=speaker event=write_wav_begin path={path}")
         with wave.open(path, "rb") as audio:
             pcm16 = audio.readframes(audio.getnframes())
             rate = audio.getframerate()
@@ -112,6 +132,15 @@ def _pump_speaker(engine: Conversation) -> None:
     try:
         while True:
             kind, payload = engine.next_output()
+            if kind == "audio-pcm":
+                extra = f" bytes={len(payload)}"
+            elif kind == "audio-file":
+                extra = f" path={payload}"
+            elif kind == "error":
+                extra = f" type={type(payload).__name__} message={payload}"
+            else:
+                extra = ""
+            note(f"component=speaker event=queue kind={kind}{extra}")
             if kind == "closed":
                 return
             if kind == "error":
@@ -123,11 +152,14 @@ def _pump_speaker(engine: Conversation) -> None:
             elif kind == "audio-file":
                 speaker.write_wav(payload)
     except Exception as exc:
+        note(f"component=speaker event=pump_exception type={type(exc).__name__} message={exc}")
         if engine.failure is None:
             engine.failure = exc
         raise
     finally:
+        note("component=speaker event=close_begin")
         speaker.close()
+        note("component=speaker event=close_end")
         clear_run_log(engine.paths.log)
 
 
@@ -203,14 +235,26 @@ def run(
         failed = any(row["match"] is False for row in results)
         outcome = "failed" if failed else "ok"
         return 1 if failed else 0
+    except Exception as exc:
+        note(f"component=agent event=run_exception type={type(exc).__name__} message={exc}")
+        raise
     finally:
         try:
+            note(
+                f"component=agent event=teardown_begin outcome={outcome}"
+                f" pump_alive={int(pump is not None and pump.is_alive())}"
+            )
             if mic is not None:
                 mic.stop()
             if engine is not None:
                 engine.close()
             if pump is not None:
                 pump.join(timeout=5)
+                note(f"component=agent event=pump_join alive={int(pump.is_alive())}")
+            note("component=agent event=teardown_end")
+        except Exception as exc:
+            note(f"component=agent event=teardown_exception type={type(exc).__name__} message={exc}")
+            raise
         finally:
             write_meta(
                 paths, command="agent", turns=len(results), transcript=paths.transcript, outcome=outcome,

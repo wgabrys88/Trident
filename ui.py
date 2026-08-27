@@ -9,9 +9,9 @@ from pathlib import Path
 import gradio as gr
 import numpy as np
 
-from config import ASR_RATE, FAMILIES, LANGUAGES, LIVE_AUDIO, REFERENCE_VOICES, TTS_FIELDS, TTS_RATE, Paths, live_settings_path, load_live_settings, resolve_voice, save_live_settings
+from config import ASR_RATE, FAMILIES, LIVE_AUDIO, REFERENCE_VOICES, TTS_FIELDS, TTS_RATE, Paths, live_settings_path, load_live_settings, resolve_voice, save_live_settings
 from conversation import Conversation
-from main import effective_family, finish, prepared_reference, resident_report, resolved_tts, run_asr, run_brain, run_install, run_pipeline, run_tts, start_run, stream_synthesize, synthesize_text, tts_endpoint, tts_metrics, warm_resident, write_meta
+from main import effective_family, finish, prepared_reference, resident_report, resolved_tts, run_install, start_run, stream_synthesize, synthesize_text, tts_endpoint, tts_metrics, warm_resident, write_meta
 from resident import stop_all as resident_stop_all
 
 TTS_SETTING_KEYS = ["family", "language", "voice", "reference_mode", "reference", "join", *[field[0] for field in TTS_FIELDS]]
@@ -108,8 +108,6 @@ def _tts_status(label: str, result: str) -> str:
 def build(models_dir: Path | None = None, data_dir: Path | None = None):
     root = Paths(models_dir, data_dir)
     live = load_live_settings(root.data_dir)
-    runs_dir = root.data_dir / "runs"
-    runs_dir.mkdir(parents=True, exist_ok=True)
 
     def _ns(**kwargs):
         kwargs.setdefault("models_dir", root.models_dir)
@@ -299,49 +297,6 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
         finally:
             finish(paths, outcome)
 
-    def cli_tts(text: str, text_file: str | None, output_file: str, cli_streaming: bool, *values):
-        text = str(text or "").strip()
-        if bool(text) == bool(text_file):
-            raise RuntimeError("provide exactly one TTS text source")
-        output_file = str(output_file or "").strip() or None
-        path = run_tts(_tts_ns(
-            _settings(values),
-            input=str(Path(text_file).resolve()) if text_file else None,
-            text=text or None, output=output_file, streaming=bool(cli_streaming),
-        ))
-        return path, f"Output: {path}"
-
-    def cli_asr(audio: str | None, output_file: str):
-        if not audio:
-            raise RuntimeError("ASR input audio is required")
-        return run_asr(_ns(input=str(Path(audio).resolve()), output=str(output_file or "").strip() or None))
-
-    def cli_brain(text: str, text_file: str | None, output_file: str, language: str, system_prompt: str, system_prompt_file: str | None):
-        text = str(text or "").strip()
-        if bool(text) == bool(text_file):
-            raise RuntimeError("provide exactly one Brain text source")
-        prompt, prompt_file = str(system_prompt or "").strip() or None, system_prompt_file
-        if prompt and prompt_file:
-            raise RuntimeError("choose one system prompt source")
-        return run_brain(_ns(
-            input=str(Path(text_file).resolve()) if text_file else None, text=text or None,
-            output=str(output_file or "").strip() or None, language=language,
-            system_prompt=prompt, system_prompt_file=prompt_file,
-        ))
-
-    def cli_run(audio: str | None, output_file: str, cli_streaming: bool, system_prompt: str, system_prompt_file: str | None, *values):
-        if not audio:
-            raise RuntimeError("pipeline input audio is required")
-        prompt, prompt_file = str(system_prompt or "").strip() or None, system_prompt_file
-        if prompt and prompt_file:
-            raise RuntimeError("choose one system prompt source")
-        output_file = str(output_file or "").strip() or None
-        transcript, answer, output = run_pipeline(_tts_ns(
-            _settings(values), input=str(Path(audio).resolve()), output=output_file,
-            streaming=bool(cli_streaming), system_prompt=prompt, system_prompt_file=prompt_file,
-        ))
-        return transcript, answer, output, f"Transcript: {transcript}\nAnswer: {answer}\nOutput: {output}"
-
     def cli_resident_status():
         return resident_report()
 
@@ -356,27 +311,6 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
     def cli_install():
         return run_install(_ns())
 
-    def selected_log(value) -> Path | None:
-        if isinstance(value, list):
-            value = value[0] if value else None
-        if value:
-            candidate = Path(value)
-            if not candidate.is_absolute():
-                candidate = runs_dir / candidate
-            candidate = candidate.resolve()
-            try:
-                candidate.relative_to(runs_dir.resolve())
-            except ValueError as exc:
-                raise RuntimeError("selected log is outside the run directory") from exc
-            if candidate.is_file():
-                return candidate
-        files = [path for path in runs_dir.glob("*/*-trident.log") if path.is_file()]
-        return max(files, key=lambda path: path.stat().st_mtime_ns) if files else None
-
-    def read_log(value=None) -> str:
-        path = selected_log(value)
-        return path.read_text(encoding="utf-8", errors="replace") if path else "No Trident run logs yet."
-
     voices = list(REFERENCE_VOICES)
     family_default = live["tts_family"]
     live_language_default = live["tts_language"]
@@ -390,11 +324,11 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
             language = gr.Dropdown(list(FAMILIES[family_default]["TTS_LANGUAGES"]), value=live_language_default, label="Spoken language")
             voice = gr.Dropdown(voices, value=live["tts_voice"], label="Preset voice")
             join = gr.Radio([("Crossfade", "crossfade"), ("Separate chunks", "chunks")], value=live["tts_join"], label="Speech-unit join")
-            gr.Markdown("Preset voice is used by Conversation. Manual TTS and CLI can instead use a temporary reference; recording one does not create a new preset.")
-            reference_mode = gr.Radio([("Use preset", "preset"), ("Use custom reference", "custom")], value="preset", label="Manual / CLI voice source")
+            gr.Markdown("Preset voice is used by Conversation. Manual TTS can instead use a temporary reference; recording one does not create a new preset.")
+            reference_mode = gr.Radio([("Use preset", "preset"), ("Use custom reference", "custom")], value="preset", label="Manual TTS voice source")
             reference = gr.Audio(sources=["upload", "microphone"], type="filepath", label="Custom voice reference", visible=False)
-            with gr.Accordion("Manual / CLI engine overrides", open=False):
-                gr.Markdown("Conversation uses the selected family defaults. These overrides apply to Manual TTS, CLI actions, and Runtime Warm. Blank values use family defaults; changing resident settings can restart Chatterbox.")
+            with gr.Accordion("Manual TTS engine overrides", open=False):
+                gr.Markdown("Conversation uses the selected family defaults. These overrides apply to Manual TTS and Runtime Warm. Blank values use family defaults; changing resident settings can restart Chatterbox.")
                 family_note = gr.Markdown(_family_help(family_default))
                 override_widgets = {
                     key: gr.Number(value=None, precision=0 if typ is int else None, label=label, visible=(not v3_only) or family_default == "v3")
@@ -485,52 +419,6 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
                         manual_status = gr.Textbox(value="Idle", label="Synthesis status", interactive=False, elem_classes="trident-status")
                 speak_button.click(speak, [manual_tts_text, manual_tts_mode, *tts_inputs], [manual_output, manual_status], concurrency_limit=None, show_progress="minimal")
 
-            with gr.Tab("CLI"):
-                gr.Markdown("This tab runs the same `main.py` command functions used by the CLI. Manual TTS above streams through the resident path directly.")
-                with gr.Row(equal_height=False):
-                    with gr.Column(elem_classes="trident-card"):
-                        gr.Markdown("### ASR")
-                        asr_file = gr.Audio(sources=["upload", "microphone"], type="filepath", label="Input audio")
-                        asr_output_file = gr.Textbox(label="Optional transcript output path")
-                        asr_file_button = gr.Button("Transcribe")
-                        asr_file_text = gr.Textbox(label="Transcript", lines=6)
-                        asr_file_button.click(cli_asr, [asr_file, asr_output_file], asr_file_text, concurrency_limit=None, show_progress="minimal")
-                    with gr.Column(elem_classes="trident-card"):
-                        gr.Markdown("### Brain")
-                        brain_text = gr.Textbox(label="Text", lines=4)
-                        brain_file = gr.File(label="Text file", file_types=[".txt"], type="filepath")
-                        brain_output_file = gr.Textbox(label="Optional answer output path")
-                        brain_language = gr.Dropdown(list(LANGUAGES), value="en", label="Language")
-                        brain_system = gr.Textbox(label="System prompt", lines=3)
-                        brain_system_file = gr.File(label="System prompt file", file_types=[".txt"], type="filepath")
-                        brain_button = gr.Button("Run Brain")
-                        brain_output = gr.Textbox(label="Answer", lines=7)
-                        brain_button.click(cli_brain, [brain_text, brain_file, brain_output_file, brain_language, brain_system, brain_system_file], brain_output, concurrency_limit=None, show_progress="minimal")
-                with gr.Row(equal_height=False):
-                    with gr.Column(elem_classes="trident-card"):
-                        gr.Markdown("### TTS")
-                        cli_tts_text = gr.Textbox(label="Text", lines=5)
-                        cli_tts_file = gr.File(label="Text file", file_types=[".txt"], type="filepath")
-                        cli_tts_output_file = gr.Textbox(label="Optional WAV output path")
-                        cli_tts_streaming = gr.Checkbox(value=False, label="Streaming delivery")
-                        cli_tts_button = gr.Button("Render WAV")
-                        cli_tts_audio = gr.Audio(label="Rendered WAV")
-                        cli_tts_log = gr.Textbox(label="CLI output", lines=4, interactive=False, elem_classes="trident-status")
-                        cli_tts_button.click(cli_tts, [cli_tts_text, cli_tts_file, cli_tts_output_file, cli_tts_streaming, *tts_inputs], [cli_tts_audio, cli_tts_log], concurrency_limit=None, show_progress="minimal")
-                    with gr.Column(elem_classes="trident-card"):
-                        gr.Markdown("### Full pipeline")
-                        run_audio = gr.Audio(sources=["upload", "microphone"], type="filepath", label="Input audio")
-                        run_output_file = gr.Textbox(label="Optional WAV output path")
-                        run_streaming = gr.Checkbox(value=False, label="Streaming TTS delivery")
-                        run_system = gr.Textbox(label="System prompt", lines=3)
-                        run_system_file = gr.File(label="System prompt file", file_types=[".txt"], type="filepath")
-                        run_button = gr.Button("Run ASR → Brain → TTS", variant="primary")
-                        run_transcript = gr.Textbox(label="Transcript", lines=3)
-                        run_answer = gr.Textbox(label="Answer", lines=5)
-                        run_output = gr.Audio(label="Response WAV")
-                        run_log = gr.Textbox(label="CLI output", lines=5, interactive=False, elem_classes="trident-status")
-                        run_button.click(cli_run, [run_audio, run_output_file, run_streaming, run_system, run_system_file, *tts_inputs], [run_transcript, run_answer, run_output, run_log], concurrency_limit=None, show_progress="minimal")
-
             with gr.Tab("Runtime"):
                 with gr.Row(equal_height=False):
                     with gr.Column(elem_classes="trident-card"):
@@ -549,15 +437,6 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
                         install_button = gr.Button("Install / repair")
                         install_output = gr.Textbox(label="Installer output", lines=8, interactive=False, elem_classes="trident-status")
                         install_button.click(cli_install, outputs=install_output, concurrency_limit=None, show_progress="minimal")
-
-            with gr.Tab("Logs"):
-                gr.Markdown("Run-owned logs stay on disk and are shown here directly. Leave the selector empty to follow the newest run; choose a file to inspect an older run.")
-                with gr.Row(equal_height=False):
-                    log_file = gr.FileExplorer(glob="**/*-trident.log", root_dir=runs_dir, file_count="single", label="Run logs", max_height=520)
-                    log_view = gr.Code(value=read_log, language=None, label="Log", lines=28, max_lines=40, interactive=False, wrap_lines=True, show_line_numbers=False, buttons=["copy", "download"])
-                log_timer = gr.Timer(1.0)
-                log_timer.tick(read_log, log_file, log_view, queue=False, show_progress="hidden")
-                log_file.change(read_log, log_file, log_view, queue=False, show_progress="hidden")
 
         demo.unload(cleanup_session)
 
