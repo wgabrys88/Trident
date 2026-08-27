@@ -21,15 +21,13 @@ def _host_tag(name: str) -> str:
     return ""
 
 
-def _ps(action: str, endpoint_id: str | None = None) -> str:
-    command = [
-        "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
-        "-File", str(_SCRIPT), "-Action", action,
-    ]
-    if endpoint_id:
-        command += ["-EndpointId", endpoint_id]
+def _ps(action: str) -> str:
     result = subprocess.run(
-        command, capture_output=True, text=True, encoding="utf-8", timeout=60,
+        [
+            "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-File", str(_SCRIPT), "-Action", action,
+        ],
+        capture_output=True, text=True, encoding="utf-8", timeout=60,
         creationflags=subprocess.CREATE_NO_WINDOW,
     )
     if result.returncode != 0:
@@ -49,11 +47,6 @@ def _active_captures() -> dict[str, str]:
 def default_capture_endpoint() -> tuple[str, str]:
     endpoint = _ps("default")
     return endpoint, _active_captures().get(endpoint, "")
-
-
-def set_default_capture(endpoint_id: str) -> None:
-    _ps("set", endpoint_id)
-    note(f"component=cable event=default_set endpoint={endpoint_id} roles=console,multimedia")
 
 
 def _cable_devices() -> dict[str, tuple[int, str]]:
@@ -90,36 +83,6 @@ def _cable_devices() -> dict[str, tuple[int, str]]:
     rec_index, rec_name, _ = records[0]
     play_index, play_name, _, _ = min(plays, key=lambda row: (row[3], row[0]))
     return {"play": (play_index, play_name), "record": (rec_index, rec_name)}
-
-
-def _target_capture_id() -> str:
-    lowered = CABLE_OUTPUT.lower()
-    matches = [(endpoint, name) for endpoint, name in _active_captures().items() if name.lower().startswith(lowered)]
-    if len(matches) != 1:
-        raise RuntimeError(f"expected one active capture endpoint starting with {CABLE_OUTPUT!r}: {matches}")
-    return matches[0][0]
-
-
-def use() -> dict:
-    devices = _cable_devices()
-    target = _target_capture_id()
-    previous_id, previous_name = default_capture_endpoint()
-    changed = previous_id != target
-    if changed:
-        set_default_capture(target)
-        current_id, current_name = default_capture_endpoint()
-        if current_id != target:
-            raise RuntimeError(
-                f"Windows default capture did not switch to {CABLE_OUTPUT} "
-                f"(target={target}, now={current_name or '?'} {current_id})"
-            )
-        note(f"component=cable event=capture_routed previous={previous_name} current={current_name}")
-    return {"previous": previous_id if changed else None, "changed": changed, "devices": devices}
-
-
-def restore(previous_id: str) -> None:
-    if previous_id:
-        set_default_capture(previous_id)
 
 
 class Microphone:

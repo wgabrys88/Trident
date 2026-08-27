@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import io
 import threading
 import wave
@@ -101,11 +100,6 @@ def _tts_status(label: str, result: str) -> str:
 def build(models_dir: Path | None = None, data_dir: Path | None = None):
     root = Paths(models_dir, data_dir)
     live = load_live_settings(root.data_dir)
-
-    def _ns(**kwargs):
-        kwargs.setdefault("models_dir", root.models_dir)
-        kwargs.setdefault("data_dir", root.data_dir)
-        return argparse.Namespace(**kwargs)
 
     def family_changed(name):
         family = FAMILIES[name]
@@ -277,7 +271,7 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
             finish(paths, outcome)
 
     def cli_install():
-        return run_install(_ns())
+        return run_install(root.models_dir, root.data_dir)
 
     voices = list(REFERENCE_VOICES)
     family_default = live["tts_family"]
