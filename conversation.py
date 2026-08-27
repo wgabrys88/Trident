@@ -459,7 +459,10 @@ class Conversation:
             f" tts_started_through={self.tts_started_through} tts_done_through={self.tts_done_through}"
             f" cancelled_through={self.cancelled_through}"
         )
-        self._interrupt()
+        if self.turn >= 1 and self.turn > self.tts_done_through and self.turn > self.cancelled_through:
+            self._interrupt()
+        else:
+            self.brain_seq += 1
         self.active = False
         self.asr_queue.put(("finish", None))
         self.asr_thread.join()

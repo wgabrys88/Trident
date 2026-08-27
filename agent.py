@@ -89,7 +89,11 @@ class Speaker:
             note("component=speaker event=reset")
 
     def close(self) -> None:
-        self.reset()
+        stream, self._stream = self._stream, None
+        if stream is not None:
+            stream.stop()
+            stream.close()
+            note("component=speaker event=stopped")
 
 
 def _settings_namespace(models_dir: Path, data_dir: Path, family: str | None, language: str | None):
@@ -199,7 +203,7 @@ def run(
 
         engine = Conversation(paths.models_dir, paths.data_dir, settings, paths=paths, output_audio=True)
         engine.start()
-        pump = threading.Thread(target=_pump_speaker, args=(engine,), name="trident-speaker", daemon=True)
+        pump = threading.Thread(target=_pump_speaker, args=(engine,), name="trident-speaker")
         pump.start()
         if continuous:
             mic = Microphone(engine.feed_audio)
@@ -249,8 +253,11 @@ def run(
             if engine is not None:
                 engine.close()
             if pump is not None:
-                pump.join(timeout=5)
+                pump.join()
                 note(f"component=agent event=pump_join alive={int(pump.is_alive())}")
+            if engine is not None and engine.failure is not None:
+                outcome = "error"
+                raise engine.failure
             note("component=agent event=teardown_end")
         except Exception as exc:
             note(f"component=agent event=teardown_exception type={type(exc).__name__} message={exc}")
