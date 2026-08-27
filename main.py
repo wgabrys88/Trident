@@ -315,19 +315,15 @@ def build_parser() -> argparse.ArgumentParser:
     c=sub.add_parser("brain"); c.add_argument("input", nargs="?"); c.add_argument("-t", "--text"); c.add_argument("-o", "--output"); c.add_argument("--language", choices=tuple(LANGUAGES), default="en"); add_prompt(c)
     c=sub.add_parser("tts"); c.add_argument("input", nargs="?"); c.add_argument("-t", "--text"); c.add_argument("-o", "--output"); c.add_argument("--family", choices=families, default=default_family()); add_tts_options(c)
     c=sub.add_parser("run"); c.add_argument("input"); c.add_argument("-o", "--output"); c.add_argument("--family", choices=families, default=default_family()); add_tts_options(c, "--tts-language"); add_prompt(c)
-    c=sub.add_parser("resident"); c.add_argument("action", choices=("status", "boot", "stop")); c.add_argument("--family", choices=families, default=default_family()); add_tts_options(c, "--tts-language")
-    c=sub.add_parser("cable"); c.add_argument("action", choices=("status", "use"))
+    c=sub.add_parser("resident"); c.add_argument("action", choices=("status", "boot", "stop")); c.add_argument("--family", choices=families); c.add_argument("-r", "--reference"); c.add_argument("--tts-language")
+    sub.add_parser("cable")
     c=sub.add_parser("agent"); c.add_argument("--say", action="append", required=True); c.add_argument("--expect", action="append"); c.add_argument("--family", choices=families); c.add_argument("--language", choices=tuple(LANGUAGES))
     return p
 
 
-def run_cable(args):
-    from cable import status, use
-    if args.action == "use":
-        result = use()
-        print(f"routed: {result['changed']} previous={result['previous'] or '-'}")
-    else:
-        print(status())
+def run_cable() -> None:
+    from cable import status
+    print(status())
 
 
 def run_agent(args) -> int:
@@ -335,8 +331,8 @@ def run_agent(args) -> int:
     return agent_run(args.say, args.expect, args.models_dir, args.data_dir, args.family, args.language)
 
 
-def run_install(args) -> Path:
-    paths = start_run("install", args.models_dir, args.data_dir)
+def run_install(models_dir=None, data_dir=None) -> Path:
+    paths = start_run("install", models_dir, data_dir)
     try:
         python = install(paths.models_dir, paths.data_dir)
         write_meta(paths, command="install", family="all", hardware=HARDWARE_PROFILE)
@@ -345,6 +341,7 @@ def run_install(args) -> Path:
         raise
     finish(paths)
     return python
+
 
 def boot_residents(models_dir=None, data_dir=None, family: str | None = None, language: str | None = None, voice: str | None = None) -> Path:
     paths = Paths(models_dir, data_dir)
@@ -402,8 +399,10 @@ def boot_residents(models_dir=None, data_dir=None, family: str | None = None, la
 def resident_report() -> str:
     lines = []
     for row in resident_status():
-        role = " runtime=Parakeet.cpp model=Parakeet-TDT-0.6B-v3" if row["name"] == "parakeet" else ""
-        lines.append(f"{row['name']}: {'ready' if row['ready'] else 'stopped'} pid={row['pid'] or '-'} url={row['url']} family={row.get('family') or '-'}{role}")
+        lines.append(
+            f"{row['name']}: {'ready' if row['ready'] else 'stopped'} pid={row['pid'] or '-'} "
+            f"url={row['url']} family={row.get('family') or '-'} language={row.get('language') or '-'}"
+        )
     return "\n".join(lines)
 
 
@@ -411,6 +410,7 @@ def launch_ui(args) -> int:
     paths = start_run("ui", args.models_dir, args.data_dir)
     try:
         boot_residents(paths.models_dir, paths.data_dir)
+        print(resident_report())
         from ui import launch
         launch(args.models_dir, args.data_dir)
     except Exception:
@@ -423,9 +423,9 @@ def launch_ui(args) -> int:
 def main() -> int:
     args = build_parser().parse_args()
     if not args.command and not args.ui:
-        python = run_install(args)
+        python = run_install(args.models_dir, args.data_dir)
         os.execv(str(python), [str(python), "-X", "utf8", str(Path(__file__).resolve()), *sys.argv[1:], "--ui"])
-    if args.command == "install": run_install(args)
+    if args.command == "install": run_install(args.models_dir, args.data_dir)
     elif args.command == "resident":
         if args.action == "stop": resident_stop_all()
         elif args.action == "boot":
@@ -437,7 +437,7 @@ def main() -> int:
                 raise
             finish(paths)
         print(resident_report())
-    elif args.command == "cable": run_cable(args)
+    elif args.command == "cable": run_cable()
     elif args.command == "agent": return run_agent(args)
     elif args.command: {"asr": run_asr, "brain": run_brain, "tts": run_tts, "run": run_pipeline}[args.command](args)
     if args.ui: return launch_ui(args)
