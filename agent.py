@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import json
 import re
 import threading
@@ -12,10 +11,10 @@ import numpy as np
 import sounddevice as sd
 
 from cable import Microphone, play_wav, wav_pcm
-from config import ASR_RATE, FAMILIES, LANGUAGES, TTS_FIELDS, TTS_RATE, load_live_settings, resolve_voice
+from config import ASR_RATE, FAMILIES, LANGUAGES, TTS_RATE, load_live_settings, resolve_voice
 from conversation import Conversation
 from log import clear_run_log, note, set_run_log
-from main import effective_family, finish, prepared_reference, start_run, synthesize_text, warm_resident, write_meta
+from main import boot_residents, effective_family, finish, prepared_reference, start_run, synthesize_text, write_meta
 from resident import status as resident_status
 
 _TURN_IDLE_TIMEOUT_S = 120.0
@@ -96,18 +95,13 @@ class Speaker:
             note("component=speaker event=stopped")
 
 
-def _settings_namespace(models_dir: Path, data_dir: Path, family: str | None, language: str | None):
+def _live_settings(data_dir: Path, family: str | None, language: str | None) -> dict:
     settings = load_live_settings(data_dir)
     if family is not None:
         settings["tts_family"] = family
     if language is not None:
         settings["tts_language"] = language
-    values = {key: None for key, *_ in TTS_FIELDS}
-    return argparse.Namespace(
-        models_dir=models_dir, data_dir=data_dir, family=settings["tts_family"],
-        tts_language=settings["tts_language"], reference=str(resolve_voice(data_dir, settings["tts_voice"])),
-        streaming=None, stream_join=None, **values,
-    ), settings
+    return settings
 
 
 def _wait(engine: Conversation, pred, what: str) -> None:
@@ -176,33 +170,47 @@ def run(
     language: str | None = None,
 ) -> int:
     paths = start_run("agent", models_dir, data_dir)
-    args, settings = _settings_namespace(paths.models_dir, paths.data_dir, family, language)
-    if args.family not in FAMILIES:
-        raise RuntimeError(f"unknown family {args.family!r}")
-    if args.tts_language not in LANGUAGES:
-        raise RuntimeError(f"unknown language {args.tts_language!r}")
+    settings = _live_settings(paths.data_dir, family, language)
+    if settings["tts_family"] not in FAMILIES:
+        raise RuntimeError(f"unknown family {settings['tts_family']!r}")
+    if settings["tts_language"] not in LANGUAGES:
+        raise RuntimeError(f"unknown language {settings['tts_language']!r}")
     continuous = settings["ingestion_mode"] == "continuous"
     engine: Conversation | None = None
     mic: Microphone | None = None
     pump: threading.Thread | None = None
+    starter: threading.Thread | None = None
     results = []
     outcome = "error"
     try:
-        warm_resident(args)
+        boot_residents(paths.models_dir, paths.data_dir, settings["tts_family"], settings["tts_language"], settings["tts_voice"])
         note(f"component=agent event=residents_ready state={[row['name'] for row in resident_status() if row['ready']]}")
         family_spec = effective_family(settings["tts_family"], {"streaming": False})
         language_code = settings["tts_language"]
         if language_code not in family_spec["TTS_LANGUAGES"]:
             raise RuntimeError(f"language {language_code!r} is not wired in {family_spec['name']}")
         reference = prepared_reference(resolve_voice(paths.data_dir, settings["tts_voice"]), paths.data_dir)
-        prompts = []
-        for index, say in enumerate(says):
-            prompt = paths.run_dir / f"prompt-{index:02d}.wav"
-            synthesize_text(say, reference, prompt, language_code, family_spec, paths)
-            prompts.append(prompt)
-
         engine = Conversation(paths.models_dir, paths.data_dir, settings, paths=paths, output_audio=True)
-        engine.start()
+        start_error: list[BaseException] = []
+
+        def start_engine() -> None:
+            try:
+                engine.start()
+            except BaseException as exc:
+                start_error.append(exc)
+
+        starter = threading.Thread(target=start_engine, name="trident-engine-start")
+        starter.start()
+        prompts = []
+        try:
+            for index, say in enumerate(says):
+                prompt = paths.run_dir / f"prompt-{index:02d}.wav"
+                synthesize_text(say, reference, prompt, language_code, family_spec, paths)
+                prompts.append(prompt)
+        finally:
+            starter.join()
+        if start_error:
+            raise start_error[0]
         pump = threading.Thread(target=_pump_speaker, args=(engine,), name="trident-speaker")
         pump.start()
         if continuous:

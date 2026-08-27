@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import os
@@ -9,13 +10,19 @@ import time
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
+from ctypes import wintypes
 from pathlib import Path
 from typing import Callable
 
-from config import GGML_VULKAN_ENV, RESIDENT_SERVERS, RUNTIMES, TTS_FIELDS, ggml_vulkan_environment
+from config import FAMILIES, GGML_VULKAN_ENV, RESIDENT_SERVERS, RUNTIMES, TTS_FIELDS, ggml_vulkan_environment
 from log import note
 
 import msvcrt
+
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_STILL_ACTIVE = 259
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+_booted = False
 
 
 def _state_dir() -> Path:
@@ -64,24 +71,12 @@ def _file_manifest(path: Path) -> dict:
     return {"path": str(resolved), "size": st.st_size, "mtime_ns": st.st_mtime_ns}
 
 
-def _manifest(files: dict[str, Path], extra: dict) -> dict:
-    return {"files": {key: _file_manifest(path) for key, path in sorted(files.items())}, "extra": extra}
-
-
 def _identity(files: dict[str, Path], extra: dict) -> str:
-    digest = hashlib.sha256()
-    for key, path in sorted(files.items()):
-        resolved = path.resolve()
-        header = json.dumps([key, str(resolved)], ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        digest.update(len(header).to_bytes(8, "little"))
-        digest.update(header)
-        with resolved.open("rb") as source:
-            for block in iter(lambda: source.read(8 * 1024 * 1024), b""):
-                digest.update(block)
-    payload = json.dumps(extra, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    digest.update(len(payload).to_bytes(8, "little"))
-    digest.update(payload)
-    return digest.hexdigest()
+    payload = {
+        "files": {key: _file_manifest(path) for key, path in sorted(files.items())},
+        "extra": extra,
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def _port_open(host: str, port: int, timeout: float = 0.25) -> bool:
@@ -103,6 +98,28 @@ def _http_status(url: str, timeout: float = 1.0) -> int | None:
         return None
 
 
+def _pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    handle = _kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+    if not handle:
+        return False
+    code = wintypes.DWORD()
+    ok = _kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+    _kernel32.CloseHandle(handle)
+    if not ok:
+        raise OSError(f"GetExitCodeProcess failed for pid {pid}")
+    return int(code.value) == _STILL_ACTIVE
+
+
+def _probe(name: str) -> bool:
+    cfg = RESIDENT_SERVERS[name]
+    host, port = str(cfg["host"]), int(cfg["port"])
+    if name == "gemma":
+        return _http_status(f"http://{host}:{port}/health", timeout=1.0) == 200
+    return _port_open(host, port)
+
+
 def _spawn_detached(command: list[str], cwd: Path, env: dict[str, str] | None) -> subprocess.Popen:
     return subprocess.Popen(
         command, cwd=str(cwd), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -111,9 +128,7 @@ def _spawn_detached(command: list[str], cwd: Path, env: dict[str, str] | None) -
     )
 
 
-def _wait_ready(
-    name: str, process: subprocess.Popen, probe: Callable[[], bool], timeout_s: float
-) -> None:
+def _wait_ready(name: str, process: subprocess.Popen, probe: Callable[[], bool], timeout_s: float) -> None:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         if probe():
@@ -164,7 +179,7 @@ def stop_owned(name: str) -> None:
         _wait_port_closed(name)
 
 
-def _ensure(
+def _launch(
     name: str,
     server: Path,
     model: Path,
@@ -175,38 +190,42 @@ def _ensure(
     identity_files: dict[str, Path] | None = None,
     env: dict[str, str] | None = None,
     state_extra: dict | None = None,
+    allow_replace: bool = False,
 ) -> str:
     with _resident_lock(name):
         cfg = RESIDENT_SERVERS[name]
         files = {"server": server, "model": model, **(identity_files or {})}
-        manifest = _manifest(files, identity_extra)
+        ident = _identity(files, identity_extra)
         state = _read_state(name)
-        ident = state.get("identity") if state.get("manifest") == manifest else None
-        if not ident:
-            ident = _identity(files, identity_extra)
-        if ready_probe():
-            if state.get("identity") == ident:
-                if state.get("manifest") != manifest:
-                    state["manifest"] = manifest
-                    _write_state(name, state)
-                return str(cfg["url"])
-            if int(state.get("pid") or 0) > 0:
-                note(f"component=resident event=restart name={name} reason=identity_changed")
-                _terminate(name)
-                _wait_port_closed(name)
-            else:
+        pid = int(state.get("pid") or 0)
+        alive = _pid_alive(pid) and ready_probe()
+        if alive and state.get("identity") == ident:
+            note(f"component=resident event=reuse name={name} pid={pid}")
+            return str(cfg["url"])
+        if alive:
+            if not allow_replace:
+                raise RuntimeError(f"{name} resident pid {pid} is running with a different identity")
+            note(f"component=resident event=replace name={name} reason=identity")
+            _terminate(name)
+            _wait_port_closed(name)
+        else:
+            if _pid_alive(pid):
+                raise RuntimeError(f"{name} resident pid {pid} is not answering on port {cfg['port']}")
+            if _booted and state.get("identity") == ident:
+                raise RuntimeError(f"{name} resident pid {pid or '-'} is not alive")
+            if _booted and not allow_replace:
+                raise RuntimeError(f"{name} resident is not alive")
+            if _port_open(str(cfg["host"]), int(cfg["port"])):
                 raise RuntimeError(f"{name} resident port {cfg['port']} is already in use by an unowned process")
+            _state_path(name).unlink(missing_ok=True)
 
-        state_path = _state_path(name)
-        state_path.unlink(missing_ok=True)
         policy = "vulkan_f16=disabled" if env and env.get("GGML_VK_DISABLE_F16") == "1" else "vulkan_f16=default"
         note(f"component=resident event=start name={name} policy={policy}")
         process = _spawn_detached(command, server.parent, env)
-        pid = int(process.pid)
+        spawned = int(process.pid)
         state_value = {
             "identity": ident,
-            "manifest": manifest,
-            "pid": pid,
+            "pid": spawned,
             "port": int(cfg["port"]),
             "url": str(cfg["url"]),
             "server": str(server),
@@ -221,26 +240,29 @@ def _ensure(
         except Exception as exc:
             message = " ".join(str(exc).split())
             note(f"component=resident event=failed name={name} message={message}")
-            _kill_pid(name, pid)
-            state_path.unlink(missing_ok=True)
+            _kill_pid(name, spawned)
+            _state_path(name).unlink(missing_ok=True)
             _wait_port_closed(name)
             raise
-        note(f"component=resident event=ready name={name} pid={pid}")
+        if not _pid_alive(spawned):
+            raise RuntimeError(f"{name} resident pid {spawned} died after ready probe")
+        note(f"component=resident event=ready name={name} pid={spawned}")
         return str(cfg["url"])
 
 
-def ensure_parakeet(server: Path, model: Path) -> str:
+def start_parakeet(server: Path, model: Path) -> str:
     cfg = RESIDENT_SERVERS["parakeet"]
     host, port = str(cfg["host"]), int(cfg["port"])
     command = [str(server), "--model", str(model), "--port", str(port)]
-    return _ensure(
+    return _launch(
         "parakeet", server, model, command,
         {"argv": command[1:], "vulkan_env": GGML_VULKAN_ENV},
         lambda: _port_open(host, port), env=ggml_vulkan_environment(),
+        allow_replace=not _booted,
     )
 
 
-def ensure_gemma(server: Path, model: Path, runtime: dict) -> str:
+def start_gemma(server: Path, model: Path, runtime: dict) -> str:
     cfg = RESIDENT_SERVERS["gemma"]
     host, port = str(cfg["host"]), int(cfg["port"])
     command = [
@@ -262,15 +284,20 @@ def ensure_gemma(server: Path, model: Path, runtime: dict) -> str:
         "--cache-prompt", "--no-ui", "--reasoning", "off",
     ]
     probe_url = f"http://{host}:{port}/health"
-    return _ensure(
+    return _launch(
         "gemma", server, model, command,
         {"argv": command[1:], "vulkan_env": GGML_VULKAN_ENV},
         lambda: _http_status(probe_url, timeout=1.0) == 200,
         env=ggml_vulkan_environment(),
+        allow_replace=not _booted,
     )
 
 
-def ensure_chatterbox(server: Path, t3_model: Path, codec_model: Path, reference: Path, family: dict, language: str) -> str:
+def use_chatterbox(server: Path, t3_model: Path, codec_model: Path, reference: Path, family: dict, language: str) -> str:
+    if family["name"] not in FAMILIES:
+        raise RuntimeError(f"unknown Chatterbox family {family['name']!r}")
+    if language not in family["TTS_LANGUAGES"]:
+        raise RuntimeError(f"language {language!r} is not wired in {family['name']}")
     cfg = RESIDENT_SERVERS["chatterbox"]
     host, port = str(cfg["host"]), int(cfg["port"])
     command = [
@@ -281,7 +308,7 @@ def ensure_chatterbox(server: Path, t3_model: Path, codec_model: Path, reference
     for _, section, key, _, flag, *_ in TTS_FIELDS:
         command += [flag, str(family[section][key])]
     command += ["--fastconv", "1" if family["TTS_RUNTIME"]["fastconv"] else "0"]
-    return _ensure(
+    return _launch(
         "chatterbox", server, t3_model, command,
         {"argv": command[1:]}, lambda: _port_open(host, port),
         identity_files={"codec": codec_model, "reference": reference},
@@ -289,12 +316,34 @@ def ensure_chatterbox(server: Path, t3_model: Path, codec_model: Path, reference
             "family": family["name"], "language": language,
             "reference": str(reference.resolve()), "codec": str(codec_model.resolve()),
         },
+        allow_replace=True,
     )
 
 
+def require_alive(name: str) -> str:
+    if name not in RESIDENT_SERVERS:
+        raise ValueError(f"unknown resident component: {name}")
+    cfg = RESIDENT_SERVERS[name]
+    state = _read_state(name)
+    pid = int(state.get("pid") or 0)
+    if not _pid_alive(pid):
+        raise RuntimeError(f"{name} resident pid {pid or '-'} is not alive")
+    if not _probe(name):
+        raise RuntimeError(f"{name} resident pid {pid} is not answering on port {cfg['port']}")
+    return str(cfg["url"])
+
+
+def mark_booted() -> None:
+    global _booted
+    _booted = True
+    note("component=resident event=boot_complete names=" + ",".join(RESIDENT_SERVERS))
+
+
 def stop_all() -> None:
+    global _booted
     for name in ("parakeet", "gemma", "chatterbox"):
         stop_owned(name)
+    _booted = False
 
 
 def status() -> list[dict]:
@@ -302,8 +351,9 @@ def status() -> list[dict]:
     for name in ("parakeet", "gemma", "chatterbox"):
         cfg = RESIDENT_SERVERS[name]
         state = _read_state(name)
+        pid = int(state.get("pid") or 0)
         rows.append({
-            "name": name, "ready": _port_open(str(cfg["host"]), int(cfg["port"])),
+            "name": name, "ready": _pid_alive(pid) and _probe(name),
             "pid": state.get("pid"), "url": cfg["url"],
             "family": state.get("family"), "language": state.get("language"), "reference": state.get("reference"),
         })
