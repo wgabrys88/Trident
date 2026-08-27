@@ -8,11 +8,11 @@ from pathlib import Path
 import gradio as gr
 import numpy as np
 
-from config import ASR_RATE, FAMILIES, LIVE_AUDIO, REFERENCE_VOICES, TTS_RATE, Paths, live_settings_path, load_live_settings, resolve_voice, save_live_settings
+from config import ASR_RATE, FAMILIES, LIVE_AUDIO, TTS_RATE, Paths, list_voices, live_settings_path, load_live_settings, resolve_voice, save_live_settings
 from conversation import Conversation
-from main import effective_family, finish, prepared_reference, resolved_tts, run_install, start_run, stream_synthesize, synthesize_text, tts_endpoint, tts_metrics, write_meta
+from main import effective_family, finish, prepared_reference, resolved_tts, run_install, save_voice, start_run, stream_synthesize, synthesize_text, transcribe_file, tts_endpoint, tts_metrics, write_meta
 
-TTS_SETTING_KEYS = ["family", "language", "voice", "reference_mode", "reference", "join"]
+TTS_SETTING_KEYS = ["family", "language", "voice", "join"]
 LIVE_SETTING_KEYS = [
     "ingestion_mode", "vad_threshold", "vad_silence_ms",
     "system_prompt", "tts_mode", "tts_family", "tts_language", "tts_voice", "tts_join",
@@ -64,13 +64,11 @@ def _settings(values) -> dict:
     return dict(zip(TTS_SETTING_KEYS, values, strict=True))
 
 
-def _reference(root: Paths, settings: dict) -> Path:
-    if settings["reference_mode"] == "custom":
-        custom = settings.get("reference")
-        if not custom:
-            raise RuntimeError("record or upload a custom reference first")
-        return Path(custom).resolve()
-    return resolve_voice(root.data_dir, settings["voice"])
+def _in_flight(engine: Conversation | None) -> bool:
+    return bool(
+        engine and engine.active and engine.turn >= 1
+        and engine.turn > engine.tts_done_through and engine.turn > engine.cancelled_through
+    )
 
 
 def _session_id(request: gr.Request) -> str:
@@ -105,9 +103,6 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
         family = FAMILIES[name]
         return gr.Dropdown(choices=list(family["TTS_LANGUAGES"]), value=family["DEFAULT_REPLY_LANGUAGE"])
 
-    def custom_reference_changed(mode: str):
-        return gr.Audio(value=None, visible=mode == "custom")
-
     def live_settings(values) -> dict:
         settings = dict(zip(LIVE_SETTING_KEYS, values, strict=True))
         settings["vad_threshold"] = float(settings["vad_threshold"])
@@ -116,13 +111,23 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
             raise RuntimeError(f"language {settings['tts_language']!r} is not wired in {settings['tts_family']}")
         return settings
 
+    def _load_speech(settings: dict) -> None:
+        family = effective_family(settings["tts_family"], {"streaming": settings["tts_mode"] == "real", "stream_join": settings["tts_join"]})
+        tts_endpoint(
+            prepared_reference(resolve_voice(root.data_dir, settings["tts_voice"]), root.data_dir),
+            settings["tts_language"], family, root,
+        )
+
     def save_config(request: gr.Request, *values):
         settings = live_settings(values)
         save_live_settings(root.data_dir, settings)
         with _sessions_lock:
             engine = _sessions.get(_session_id(request))
+            busy = _in_flight(engine)
             if engine and engine.active:
                 engine.configure(settings)
+        if not busy:
+            _load_speech(settings)
         return f"Saved to {live_settings_path(root.data_dir).name}"
 
     def start_conversation(request: gr.Request, *values):
@@ -231,7 +236,7 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
         outcome = "aborted"
         try:
             yield gr.skip(), "Preparing synthesis"
-            reference = prepared_reference(_reference(root, settings), root.data_dir)
+            reference = prepared_reference(resolve_voice(root.data_dir, settings["voice"]), root.data_dir)
             base = tts_endpoint(reference, language, family, paths)
             write_meta(
                 paths, command="ui-tts", family=family["name"], language=language,
@@ -273,33 +278,77 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
     def cli_install():
         return run_install(root.models_dir, root.data_dir)
 
-    voices = list(REFERENCE_VOICES)
+    def save_clone(name: str, audio, request: gr.Request):
+        if not audio:
+            raise RuntimeError("record or upload a voice first")
+        slug = save_voice(root.data_dir, name, Path(audio).resolve())
+        settings = load_live_settings(root.data_dir)
+        settings["tts_voice"] = slug
+        save_live_settings(root.data_dir, settings)
+        with _sessions_lock:
+            engine = _sessions.get(request.session_hash) if request.session_hash else None
+            busy = _in_flight(engine)
+            if engine and engine.active:
+                engine.configure(settings)
+        if not busy:
+            _load_speech(settings)
+        return f"Saved voice {slug}", gr.Dropdown(choices=list_voices(root.data_dir), value=slug)
+
+    def asr_file(audio):
+        if not audio:
+            raise RuntimeError("provide an audio file")
+        paths = start_run("ui-asr", root.models_dir, root.data_dir)
+        outcome = "error"
+        try:
+            yield "", "Converting to 16 kHz mono"
+            text = ""
+            for kind, text, chunks, duration, extra in transcribe_file(Path(audio).resolve(), paths):
+                if kind == "progress":
+                    yield text, f"{extra:.0f}s / {duration:.0f}s · {chunks} chunks"
+                else:
+                    write_meta(paths, command="ui-asr", transcript=paths.transcript, chunks=chunks, duration_s=f"{duration:.3f}")
+                    outcome = "ok"
+                    yield text, f"Done · {duration:.1f}s · {chunks} chunks · {extra:.2f}× realtime · {paths.transcript}"
+        finally:
+            finish(paths, outcome)
+
+    voices = list_voices(root.data_dir)
     family_default = live["tts_family"]
     live_language_default = live["tts_language"]
+    voice_default = live["tts_voice"]
+    if voice_default not in voices:
+        voices.append(voice_default)
 
     with gr.Blocks(fill_width=True, title="Trident", delete_cache=(86400, 86400)) as demo:
-        gr.HTML("<div class='trident-hero'><h1>Trident</h1><p>Local multilingual speech pipeline · Parakeet TDT · Gemma · Chatterbox.</p></div>")
+        gr.HTML("<div class='trident-hero'><h1>Trident</h1><p>Clone a voice. Talk over each other. Transcribe hours of audio. Local Parakeet, Gemma, Chatterbox.</p></div>")
 
         with gr.Sidebar(label="Speech settings", open=False, width=340):
             gr.Markdown("### Speech output")
             family = gr.Dropdown(list(FAMILIES), value=family_default, label="Chatterbox family")
             language = gr.Dropdown(list(FAMILIES[family_default]["TTS_LANGUAGES"]), value=live_language_default, label="Spoken language")
-            voice = gr.Dropdown(voices, value=live["tts_voice"], label="Preset voice")
+            voice = gr.Dropdown(voices, value=voice_default, label="Voice")
             join = gr.Radio([("Crossfade", "crossfade"), ("Separate chunks", "chunks")], value=live["tts_join"], label="Speech-unit join")
-            gr.Markdown("Preset voice is used by Conversation. Manual TTS can instead use a temporary reference; recording one does not create a new preset. Changing family replaces the one loaded Chatterbox process.")
-            reference_mode = gr.Radio([("Use preset", "preset"), ("Use custom reference", "custom")], value="preset", label="Manual TTS voice source")
-            reference = gr.Audio(sources=["upload", "microphone"], type="filepath", label="Custom voice reference", visible=False)
+            gr.Markdown("The voice is the speaking identity, including voices you clone. v3 speaks any wired language in that voice. Nano and turbo are English only. Changing family or voice replaces the one loaded Chatterbox process.")
             gr.Markdown("### Installation")
             gr.Markdown("Existing validated model files are reused. Install/repair only downloads or converts a model when its expected artifact is missing or invalid.")
             install_button = gr.Button("Install / repair")
             install_output = gr.Textbox(label="Installer output", lines=8, interactive=False, elem_classes="trident-status")
             install_button.click(cli_install, outputs=install_output, concurrency_limit=None, show_progress="minimal")
 
-        tts_inputs = [family, language, voice, reference_mode, reference, join]
+        tts_inputs = [family, language, voice, join]
         family.change(family_changed, family, language, queue=False)
-        reference_mode.change(custom_reference_changed, reference_mode, reference, queue=False)
 
         with gr.Tabs():
+            with gr.Tab("Clone"):
+                with gr.Row(equal_height=False):
+                    with gr.Column(elem_classes="trident-card"):
+                        clone_name = gr.Textbox(label="Voice name", placeholder="my-voice")
+                        clone_audio = gr.Audio(sources=["microphone", "upload"], type="filepath", label="Recording or file · at least 5 seconds")
+                        clone_button = gr.Button("Save voice", variant="primary")
+                    with gr.Column(elem_classes="trident-card"):
+                        clone_status = gr.Textbox(value="Record yourself, name it, save. Conversation and TTS then speak as you.", label="Clone status", interactive=False, elem_classes="trident-status")
+                clone_button.click(save_clone, [clone_name, clone_audio], [clone_status, voice], concurrency_limit=None, show_progress="minimal")
+
             with gr.Tab("Conversation"):
                 with gr.Row(equal_height=False):
                     with gr.Column(scale=1, min_width=340, elem_classes="trident-card"):
@@ -367,6 +416,16 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
                 stop_button.click(prepare_stop, outputs=[handsfree_mic, ptt_mic, stop_button, submit_button], queue=False).then(
                     stop_conversation, outputs=[live_status, start_button, ingestion], concurrency_limit=None, show_progress="minimal"
                 )
+
+            with gr.Tab("ASR"):
+                with gr.Row(equal_height=False):
+                    with gr.Column(elem_classes="trident-card"):
+                        asr_audio = gr.Audio(sources=["upload"], type="filepath", label="Audio file · hours are fine, 30-second overlapping chunks")
+                        asr_button = gr.Button("Transcribe", variant="primary")
+                    with gr.Column(elem_classes="trident-card"):
+                        asr_text = gr.Textbox(label="Transcript", lines=18)
+                        asr_status = gr.Textbox(value="Idle", label="ASR status", interactive=False, elem_classes="trident-status")
+                asr_button.click(asr_file, asr_audio, [asr_text, asr_status], concurrency_limit=None, show_progress="minimal")
 
             with gr.Tab("TTS"):
                 with gr.Row(equal_height=False):

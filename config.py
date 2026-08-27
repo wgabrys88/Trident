@@ -276,11 +276,34 @@ REFERENCE_VOICES = {
 DEFAULT_VOICE = "trump"
 
 
+def voices_dir(data_dir: Path) -> Path:
+    return Path(data_dir) / "voices"
+
+
+def list_voices(data_dir: Path) -> list[str]:
+    names = list(REFERENCE_VOICES)
+    folder = voices_dir(data_dir)
+    if folder.is_dir():
+        for wav in sorted(folder.glob("*.wav")):
+            if wav.stem and wav.stem not in names:
+                names.append(wav.stem)
+    return names
+
+
 def resolve_voice(data_dir: Path, value: str | None = None) -> Path:
-    key = None if value is None else value.lower()
-    if key is None or key in REFERENCE_VOICES:
-        return (data_dir / REFERENCE_VOICES[key or DEFAULT_VOICE]["file"]).resolve()
-    return Path(value).expanduser().resolve()
+    raw = (value or DEFAULT_VOICE).strip()
+    if not raw:
+        raw = DEFAULT_VOICE
+    key = raw.lower()
+    if key in REFERENCE_VOICES:
+        return (data_dir / REFERENCE_VOICES[key]["file"]).resolve()
+    clone = voices_dir(data_dir) / f"{key}.wav"
+    if clone.is_file():
+        return clone.resolve()
+    path = Path(raw).expanduser()
+    if path.is_file():
+        return path.resolve()
+    raise RuntimeError(f"unknown voice {raw!r}")
 
 
 class Paths:

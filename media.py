@@ -11,9 +11,6 @@ from config import ASR_RATE, TTS_RATE
 from log import note
 
 
-_ffmpeg: Path | None = None
-
-
 def ffmpeg_bin() -> Path:
     found = shutil.which("ffmpeg")
     if not found:
@@ -21,19 +18,12 @@ def ffmpeg_bin() -> Path:
     return Path(found)
 
 
-def ensure_ffmpeg() -> Path:
-    global _ffmpeg
-    if _ffmpeg is None:
-        _ffmpeg = ffmpeg_bin()
-    return _ffmpeg
-
-
 def _popen_kwargs() -> dict:
     return {"creationflags": subprocess.CREATE_NO_WINDOW}
 
 
 def _run_ffmpeg(args: list[str]) -> None:
-    binary = ensure_ffmpeg()
+    binary = ffmpeg_bin()
     command = [str(binary), "-hide_banner", "-nostdin", "-loglevel", "error", "-y", *args]
     note("component=ffmpeg event=start operation=encode_wav")
     result = subprocess.run(
