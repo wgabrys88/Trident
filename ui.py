@@ -195,6 +195,8 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
                 audio = _wav_bytes(payload)
             elif kind == "audio-file":
                 audio = payload
+            elif kind == "audio-reset":
+                audio = gr.Audio(value=None)
             if kind == "error":
                 _cleanup_session(session_id)
                 yield engine.transcript, engine.answer, audio, engine.status, *stopped_controls

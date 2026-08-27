@@ -5,7 +5,6 @@ import json
 import os
 import platform
 import shutil
-import site
 import subprocess
 import sys
 import venv
@@ -17,7 +16,7 @@ import zipfile
 from pathlib import Path
 
 from config import (
-    FAMILIES, SHARED_MODELS, VULKAN_VERSION, PACKAGES, SOURCES, BINARIES,
+    FAMILIES, SHARED_MODELS, SOURCES, BINARIES,
     CHATTERBOX_LIBRARY, TTS_BUILD, TTS_SERVER_EXE, TTS,
     CHATTERBOX, GGML, RUNTIMES, CONVERTER, THIRD_PARTY, TOOLS, ROOT,
     REFERENCE_VOICES, REFERENCE_MIN_SECONDS, Paths, HARDWARE_PROFILE,
@@ -27,7 +26,7 @@ from log import note, run as run_logged
 
 def validate_wav(path: Path, rate: int | None = None, minimum_seconds: float = 0.0, channels: int | None = None, *, pcm16: bool = True) -> None:
     if not path.is_file():
-        raise RuntimeError(f"missing {path}; python main.py install --family nano")
+        raise RuntimeError(f"missing {path}; run: python main.py")
     with path.open("rb") as raw:
         header = raw.read(12)
     if len(header) != 12 or header[:4] != b"RIFF" or header[8:] != b"WAVE":
@@ -58,62 +57,12 @@ def present(path: Path, size: int = 0) -> bool:
     return path.is_file() and path.stat().st_size > 0 and (not size or path.stat().st_size == size)
 
 
-def executable(name: str) -> str | None:
-    local = {
-        "git": TOOLS / "git" / "cmd" / "git.exe",
-        "cmake": TOOLS / "cmake-4.4.2-windows-x86_64" / "bin" / "cmake.exe",
-    }.get(name)
-    return str(local) if local and local.is_file() else shutil.which(name)
-
-
-def need(name: str) -> str:
-    value = executable(name)
-    if not value:
-        raise RuntimeError(f"{name} is missing")
-    return value
-
-
-def msvc_path() -> Path | None:
-    root = Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Microsoft Visual Studio"
-    matches = sorted(root.glob("*/BuildTools/VC/Tools/MSVC/*/bin/Hostx64/x64/cl.exe"), reverse=True)
-    return matches[0] if matches else None
-
-
-def vulkan_path() -> Path | None:
-    roots = [Path(os.environ["VULKAN_SDK"])] if os.environ.get("VULKAN_SDK") else []
-    roots += [TOOLS / "VulkanSDK" / VULKAN_VERSION]
-    roots += sorted(Path("C:/VulkanSDK").glob("*"), reverse=True)
-    return next((p for p in roots if (p / "Include/vulkan/vulkan.h").is_file() and (p / "Lib/vulkan-1.lib").is_file()), None)
-
-
-def prerequisite_ready(name: str) -> bool:
-    if name == "python":
-        return sys.version_info >= (3, 11)
-    if name == "git" or name == "cmake":
-        return executable(name) is not None
-    if name == "msvc":
-        return msvc_path() is not None
-    if name == "vulkan":
-        return vulkan_path() is not None
-    raise ValueError(name)
-
-
-def build_env() -> dict[str, str]:
-    sdk = vulkan_path()
-    if not sdk:
-        raise RuntimeError("Vulkan SDK is missing")
-    env = os.environ.copy()
-    env["VULKAN_SDK"] = str(sdk)
-    paths = [str(sdk / "Bin"), str(Path(need("git")).parent), str(Path(need("cmake")).parent)]
-    env["PATH"] = os.pathsep.join(paths + [env.get("PATH", "")])
-    return env
-
 
 def run_process(component: str, stage: str, command: list[str], cwd: Path, env: dict[str, str] | None = None) -> None:
     note(f"component={component} stage={stage} event=start")
     started = time.perf_counter()
     try:
-        run_logged(command, cwd, env or build_env())
+        run_logged(command, cwd, env or os.environ.copy())
     except Exception as exc:
         message = str(exc).splitlines()[0].strip() or type(exc).__name__
         note(f"component={component} stage={stage} event=failed message={message}")
@@ -131,19 +80,19 @@ def remove_tree(path: Path) -> None:
 
 def checkout(component: str, path: Path, source: str) -> None:
     url, revision = SOURCES[source]
-    git = need("git")
+    git = "git"
     if path.exists() and not (path / ".git").is_dir():
         raise RuntimeError(f"non-git path blocks checkout: {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
-        run_process(component, f"clone-{source}", [git, "clone", "--filter=blob:none", "--no-checkout", url, str(path)], path.parent)
+        run_process(component, f"clone-{source}", [git, "clone", "--filter=blob:none", "--no-checkout", url, str(path)], path.parent, os.environ.copy())
     for stage, args in (
         (f"fetch-{source}", [git, "fetch", "--depth", "1", "origin", revision]),
         (f"checkout-{source}", [git, "checkout", "--detach", revision]),
         (f"reset-{source}", [git, "reset", "--hard", revision]),
         (f"clean-{source}", [git, "clean", "-fdx"]),
     ):
-        run_process(component, stage, args, path)
+        run_process(component, stage, args, path, os.environ.copy())
 
 
 def tune_ggml_vulkan() -> None:
@@ -248,21 +197,26 @@ def fetch(url: str, destination: Path, size: int, sha256: str | None = None) -> 
     partial.unlink(missing_ok=True)
     request = urllib.request.Request(url, headers={"User-Agent": "trident/1"})
     done = 0
-    note(f"download start file={destination.name} size={size}")
+    note(f"component=download event=start file={destination.name} expected_bytes={size}")
     try:
         with urllib.request.urlopen(request, timeout=60) as response, partial.open("wb") as output:
             for block in iter(lambda: response.read(1024 * 1024), b""):
                 output.write(block)
                 done += len(block)
-        note(f"download done file={destination.name} bytes={done}")
         if size and done != size:
+            note(
+                f"component=download event=failed file={destination.name} invariant=size"
+                f" expected_bytes={size} actual_bytes={done}"
+            )
             raise RuntimeError(f"download size mismatch for {destination.name}: expected {size}, got {done}")
         if sha256:
             with partial.open("rb") as downloaded:
                 actual = hashlib.file_digest(downloaded, "sha256").hexdigest()
             if actual != sha256:
-                raise RuntimeError(f"download SHA-256 mismatch for {destination.name}: expected {sha256}, got {actual}")
+                note(f"component=download event=failed file={destination.name} invariant=sha256")
+                raise RuntimeError(f"download SHA-256 mismatch for {destination.name}")
         os.replace(partial, destination)
+        note(f"component=download event=complete file={destination.name} bytes={done}")
     except Exception:
         partial.unlink(missing_ok=True)
         raise
@@ -316,21 +270,18 @@ def _release_identity(name: str) -> str:
     return f"{spec['repo']}@{spec['tag']}:{spec['asset']}"
 
 
-def ensure_ui() -> None:
+def install_ui() -> Path:
     env = ROOT / ".venv"
     python = env / "Scripts" / "python.exe"
     requirements = ROOT / "requirements-ui.txt"
     digest = hashlib.sha256(requirements.read_bytes()).hexdigest()
     marker = env / ".trident-ui"
-    if not python.is_file(): venv.EnvBuilder(with_pip=True).create(env)
+    if not python.is_file():
+        venv.EnvBuilder(with_pip=True).create(env)
     if not marker.is_file() or marker.read_text(encoding="ascii").strip() != digest:
         subprocess.run([str(python), "-m", "pip", "install", "--disable-pip-version-check", "-r", str(requirements)], check=True)
         marker.write_text(digest + "\n", encoding="ascii")
-    packages = env / "Lib" / "site-packages"
-    site.addsitedir(str(packages))
-    value = str(packages)
-    if value in sys.path: sys.path.remove(value)
-    sys.path.insert(0, value)
+    return python
 
 
 def runtime_tts_server(required: bool = True) -> Path | None:
@@ -339,15 +290,12 @@ def runtime_tts_server(required: bool = True) -> Path | None:
     if len(matches) == 1:
         return matches[0]
     if required:
-        raise RuntimeError(f"{TTS_SERVER_EXE} is not installed; python main.py install --family all")
+        raise RuntimeError(f"{TTS_SERVER_EXE} is not installed; run: python main.py")
     return None
 
 
 def tts_runtime_ready() -> bool:
-    if not _native_build_ready():
-        return False
-    revision = trident_tts_revision()
-    return _runtime_marker_matches("server", revision) and runtime_tts_server(required=False) is not None
+    return _runtime_marker_matches("server", trident_tts_revision()) and runtime_tts_server(required=False) is not None
 
 
 def install_release_binary(name: str) -> None:
@@ -368,40 +316,9 @@ def install_release_binary(name: str) -> None:
     marker.write_text(identity + "\n", encoding="ascii")
 
 
-def install_prerequisite(name: str) -> None:
-    if prerequisite_ready(name):
-        note(f"{name}: ready")
-        return
-    if name == "python":
-        raise RuntimeError("Python 3.11+ must be installed before running main.py")
-    spec = PACKAGES[name]
-    archive = TOOLS / "downloads" / spec["file"]
-    note(f"{name}: installing")
-    fetch(spec["url"], archive, spec["size"], spec.get("sha256"))
-    if name == "git":
-        destination = TOOLS / "git"
-        remove_tree(destination)
-        with zipfile.ZipFile(archive) as package:
-            package.extractall(destination)
-    elif name == "cmake":
-        destination = TOOLS / "cmake-4.4.2-windows-x86_64"
-        remove_tree(destination)
-        with zipfile.ZipFile(archive) as package:
-            package.extractall(TOOLS)
-    elif name == "msvc":
-        run_process(name, "install", [str(archive), "--quiet", "--wait", "--norestart", "--nocache", "--add", "Microsoft.VisualStudio.Workload.VCTools", "--includeRecommended"], ROOT, os.environ.copy())
-    elif name == "vulkan":
-        destination = TOOLS / "VulkanSDK" / VULKAN_VERSION
-        run_process(name, "install", [str(archive), "--root", str(destination), "--accept-licenses", "--default-answer", "--confirm-command", "install"], ROOT, os.environ.copy())
-    if not prerequisite_ready(name):
-        raise RuntimeError(f"{name} installer completed but prerequisite is still missing")
-
 
 def install_tts() -> None:
-    if tts_runtime_ready():
-        note("CHATTERBOX TTS RUNTIME: ready")
-        return
-    cmake = need("cmake")
+    cmake = "cmake"
 
     native_revision = chatterbox_native_revision()
     if not _native_build_ready():
@@ -451,7 +368,7 @@ def model_path(spec: dict, models_dir: Path) -> Path:
 def require_model(spec: dict, models_dir: Path) -> Path:
     path = model_path(spec, models_dir)
     if not present(path, spec["size"]):
-        raise RuntimeError(f"missing model {path}; python main.py install --family all")
+        raise RuntimeError(f"missing model {path}; run: python main.py")
     return path
 
 
@@ -462,9 +379,6 @@ def clean_install_artifacts() -> None:
         CONVERTER,
         TOOLS / "huggingface",
         TOOLS / "downloads",
-        TOOLS / "git",
-        TOOLS / "cmake-4.4.2-windows-x86_64",
-        TOOLS / "VulkanSDK",
     ):
         remove_tree(path)
     note("install build artifacts: pruned")
@@ -482,8 +396,8 @@ def download_model(spec: dict, models_dir: Path) -> None:
         return
     recipe = spec["convert"]
     script = CHATTERBOX / "scripts" / recipe["script"]
-    if not CHATTERBOX_LIBRARY.is_file() or not script.is_file():
-        raise RuntimeError("install Chatterbox TTS before converting its models")
+    if not script.is_file():
+        raise RuntimeError("Chatterbox conversion sources are missing")
     python = CONVERTER / "Scripts" / "python.exe"
     torch_pin = "torch==2.6.0"
     packages = "numpy==1.26.4 gguf==0.19.0 safetensors==0.5.3 scipy==1.15.3 librosa==0.11.0 resampy==0.4.3 huggingface-hub==0.34.4"
@@ -525,7 +439,7 @@ def download_model(spec: dict, models_dir: Path) -> None:
     if recipe.get("variant"):
         command += ["--variant", recipe["variant"]]
     command += ["--ckpt-dir", str(checkpoint), "--out", str(partial), "--quant", recipe["quant"]]
-    env = build_env()
+    env = os.environ.copy()
     env["HF_HOME"] = str(TOOLS / "huggingface")
     run_process(spec["label"], "convert", command, ROOT, env)
     if not present(partial, spec["size"]):
@@ -546,30 +460,34 @@ def download_reference_voices(data_dir: Path) -> None:
         validate_wav(dest, minimum_seconds=REFERENCE_MIN_SECONDS)
 
 
-def install(family: str, models_dir: Path | None = None, data_dir: Path | None = None) -> None:
+def install(models_dir: Path | None = None, data_dir: Path | None = None) -> Path:
+    if sys.version_info < (3, 11):
+        raise RuntimeError("Trident requires Python 3.11 or newer")
     if os.name != "nt" or platform.machine().lower() not in {"amd64", "x86_64"}:
         raise RuntimeError("Trident installation requires Windows x64")
-    if family != "all" and family not in FAMILIES:
-        raise RuntimeError(f"unknown family: {family}")
-    selected = list(FAMILIES) if family == "all" else [family]
     paths = Paths(models_dir, data_dir)
     paths.models_dir.mkdir(parents=True, exist_ok=True)
     paths.data_dir.mkdir(parents=True, exist_ok=True)
-    for name in ("python", "git", "cmake", "msvc", "vulkan"):
-        install_prerequisite(name)
-    from media import ensure_ffmpeg
-    ensure_ffmpeg()
+    specs = {spec["file"]: spec for spec in SHARED_MODELS.values()}
+    for family in FAMILIES.values():
+        specs.update((spec["file"], spec) for spec in family["TTS_MODELS"].values())
+    needs_tts = not tts_runtime_ready()
+    missing_conversion = any(
+        spec.get("convert") and not present(model_path(spec, paths.models_dir), spec["size"])
+        for spec in specs.values()
+    )
+
+    if needs_tts:
+        install_tts()
+    elif missing_conversion:
+        checkout("tts", CHATTERBOX, "chatterbox")
+
     install_release_binary("parakeet")
     install_release_binary("gemma")
     download_reference_voices(paths.data_dir)
-    if not tts_runtime_ready():
-        install_tts()
-
-    specs: dict[str, dict] = {spec["file"]: spec for spec in SHARED_MODELS.values()}
-    for family_name in selected:
-        for spec in FAMILIES[family_name]["TTS_MODELS"].values():
-            specs[spec["file"]] = spec
     for spec in specs.values():
         download_model(spec, paths.models_dir)
     clean_install_artifacts()
-    note(f"component=install event=complete family={family}")
+    python = install_ui()
+    note("component=install event=complete family=all")
+    return python

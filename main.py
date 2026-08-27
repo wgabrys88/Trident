@@ -3,14 +3,14 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os, sys
 import shutil
 import time
 import wave
 from pathlib import Path
 
-from cable import play_wav as cable_play, status as cable_status, use as cable_use
 from config import ASR_CHUNK_OVERLAP_SECONDS, ASR_CHUNK_SECONDS, BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_THINKING, FAMILIES, HARDWARE_PROFILE, LANGUAGES, LIVE_SETTINGS, REFERENCE_MIN_SECONDS, SHARED_MODELS, TTS_FIELDS, TTS_RATE, Paths, default_family, resolve_voice
-from installer import ensure_ui, install, models_for, require_model, runtime_server, runtime_tts_server, validate_wav, write_text_atomic
+from installer import install, models_for, require_model, runtime_server, runtime_tts_server, validate_wav, write_text_atomic
 from local_api import chatterbox_stream as _chatterbox_stream, gemma_chat, parakeet_transcribe
 from log import clear_run_log, note, set_run_log
 from media import chatterbox_wav, parakeet_chunks, parakeet_wav
@@ -215,12 +215,12 @@ def _tts_failure(exc: Exception, unit: int | None = None, max_tokens: int | None
     note(f"component=tts event=failed outcome=error reason={reason}{prefix}{ceiling} message={message}")
 
 
-def stream_synthesize(text: str, reference: Path, output: Path, language: str, family: dict, paths: Paths, *, base: str | None = None, unit: int | None = None, streaming: bool | None = None):
+def stream_synthesize(text: str, reference: Path, output: Path, language: str, family: dict, paths: Paths, *, base: str | None = None, unit: int | None = None, streaming: bool | None = None, cancel=None):
     endpoint = base or tts_endpoint(reference, language, family, paths)
     stream = family["TTS_STREAM"]
     enabled = stream["enabled"] if streaming is None else streaming
     try:
-        generator = _chatterbox_stream(endpoint, text.strip(), output, enabled, stream["join"])
+        generator = _chatterbox_stream(endpoint, text.strip(), output, enabled, stream["join"], cancel=cancel)
         while True:
             try:
                 chunk = next(generator)
@@ -235,8 +235,8 @@ def stream_synthesize(text: str, reference: Path, output: Path, language: str, f
         raise
 
 
-def synthesize_text(text: str, reference: Path, output: Path, language: str, family: dict, paths: Paths, *, base: str | None = None, streaming: bool | None = None, unit: int | None = None) -> str:
-    generator = stream_synthesize(text, reference, output, language, family, paths, base=base, unit=unit, streaming=streaming)
+def synthesize_text(text: str, reference: Path, output: Path, language: str, family: dict, paths: Paths, *, base: str | None = None, streaming: bool | None = None, unit: int | None = None, cancel=None) -> str:
+    generator = stream_synthesize(text, reference, output, language, family, paths, base=base, unit=unit, streaming=streaming, cancel=cancel)
     try:
         while True:
             next(generator)
@@ -309,7 +309,7 @@ def build_parser() -> argparse.ArgumentParser:
     families = tuple(FAMILIES); p = argparse.ArgumentParser(prog="python main.py", description="Baremetal local ASR -> Gemma -> Chatterbox")
     p.add_argument("--models-dir", type=Path); p.add_argument("--data-dir", type=Path); p.add_argument("--ui", action="store_true")
     sub = p.add_subparsers(dest="command")
-    c=sub.add_parser("install"); c.add_argument("--family", choices=("all", *families), default="all"); c.add_argument("--ui", action="store_true", default=argparse.SUPPRESS)
+    sub.add_parser("install")
     c=sub.add_parser("asr"); c.add_argument("input"); c.add_argument("-o", "--output")
     c=sub.add_parser("brain"); c.add_argument("input", nargs="?"); c.add_argument("-t", "--text"); c.add_argument("-o", "--output"); c.add_argument("--language", choices=tuple(LANGUAGES), default="en"); add_prompt(c)
     c=sub.add_parser("tts"); c.add_argument("input", nargs="?"); c.add_argument("-t", "--text"); c.add_argument("-o", "--output"); c.add_argument("--family", choices=families, default=default_family()); add_tts_options(c)
@@ -321,11 +321,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def run_cable(args):
+    from cable import status, use
     if args.action == "use":
-        result = cable_use()
+        result = use()
         print(f"routed: {result['changed']} previous={result['previous'] or '-'}")
     else:
-        print(cable_status())
+        print(status())
 
 
 def run_agent(args) -> int:
@@ -333,16 +334,16 @@ def run_agent(args) -> int:
     return agent_run(args.say, args.expect, args.models_dir, args.data_dir)
 
 
-def run_install(args) -> str:
+def run_install(args) -> Path:
     paths = start_run("install", args.models_dir, args.data_dir)
     try:
-        install(args.family, paths.models_dir, paths.data_dir)
-        write_meta(paths, command="install", family=args.family, hardware=HARDWARE_PROFILE)
+        python = install(paths.models_dir, paths.data_dir)
+        write_meta(paths, command="install", family="all", hardware=HARDWARE_PROFILE)
     except Exception:
         finish(paths, "error")
         raise
     finish(paths)
-    return "Install complete"
+    return python
 
 def warm_resident(args) -> None:
     paths = Paths(args.models_dir, args.data_dir); family = effective_family(args.family, vars(args)); language = resolve_language(family, args.tts_language); reference = prepared_reference(resolve_voice(paths.data_dir, args.reference), paths.data_dir)
@@ -359,11 +360,14 @@ def resident_report() -> str:
 
 
 def launch_ui(args) -> int:
-    ensure_ui(); from ui import launch; launch(args.models_dir, args.data_dir); return 0
+    from ui import launch; launch(args.models_dir, args.data_dir); return 0
 
 
 def main() -> int:
     args = build_parser().parse_args()
+    if not args.command and not args.ui:
+        python = run_install(args)
+        os.execv(str(python), [str(python), "-X", "utf8", str(Path(__file__).resolve()), *sys.argv[1:], "--ui"])
     if args.command == "install": run_install(args)
     elif args.command == "resident":
         if args.action == "stop": resident_stop_all()
@@ -373,7 +377,6 @@ def main() -> int:
     elif args.command == "agent": return run_agent(args)
     elif args.command: {"asr": run_asr, "brain": run_brain, "tts": run_tts, "run": run_pipeline}[args.command](args)
     if args.ui: return launch_ui(args)
-    if not args.command: raise RuntimeError("choose a command or --ui")
     return 0
 
 

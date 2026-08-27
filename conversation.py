@@ -19,16 +19,17 @@ from vad import SileroEndpoint, SmartTurnEndpoint
 
 
 class Conversation:
-    def __init__(self, models_dir: Path, data_dir: Path, settings: dict) -> None:
+    def __init__(self, models_dir: Path, data_dir: Path, settings: dict, paths=None, output_audio: bool = True) -> None:
         self.models_dir = models_dir
         self.data_dir = data_dir
         self.settings = dict(settings)
-        self.paths = None
+        self.paths = paths
+        self.owns_run = paths is None
+        self.output_audio = output_audio
         self.parakeet = None
         self.smart_turn = None
         self.vad = None
         self.gemma_base = None
-        self.tts_base = None
         self.turn_wave = None
         self.turn_path = None
         self.turn_tail = bytearray()
@@ -48,6 +49,8 @@ class Conversation:
         self.status = "Stopped"
         self.history = []
         self.references: dict[str, Path] = {}
+        self.cancelled_through = 0
+        self.tts_done_through = 0
 
     def _family(self, settings: dict, streaming: bool):
         return effective_family(settings["tts_family"], {"streaming": streaming, "stream_join": settings["tts_join"]})
@@ -66,7 +69,8 @@ class Conversation:
         return self.references[key]
 
     def _emit(self, kind: str, payload=None) -> None:
-        self.output_queue.put((kind, payload))
+        if self.output_audio or not kind.startswith("audio-"):
+            self.output_queue.put((kind, payload))
 
     def _state(self, status: str | None = None) -> None:
         if status is not None:
@@ -78,7 +82,7 @@ class Conversation:
             set_run_log(self.paths.log)
             try:
                 target()
-            except BaseException as exc:
+            except Exception as exc:
                 self.failure = exc
                 self.status = f"{name} failed · {exc}"
                 self._emit("error", exc)
@@ -90,7 +94,10 @@ class Conversation:
     def start(self) -> None:
         if self.active:
             raise RuntimeError("conversation is already active")
-        self.paths = start_run("conversation", self.models_dir, self.data_dir)
+        if self.paths is None:
+            self.paths = start_run("conversation", self.models_dir, self.data_dir)
+        else:
+            set_run_log(self.paths.log)
         try:
             self.parakeet = ensure_parakeet(runtime_server("parakeet"), require_model(SHARED_MODELS["parakeet"], self.models_dir))
             self.gemma_base = ensure_gemma(runtime_server("gemma"), require_model(SHARED_MODELS[BRAIN_MODEL], self.models_dir), BRAIN_RUNTIME)
@@ -99,7 +106,7 @@ class Conversation:
             language = settings["tts_language"]
             if language not in family["TTS_LANGUAGES"]:
                 raise RuntimeError(f"language {language!r} is not wired in {family['name']}")
-            self.tts_base = tts_endpoint(self._reference(settings["tts_voice"]), language, family, self.paths)
+            tts_endpoint(self._reference(settings["tts_voice"]), language, family, self.paths)
             self.smart_turn = SmartTurnEndpoint(require_model(SHARED_MODELS["smart-turn"], self.models_dir))
             self.vad = SileroEndpoint(settings["vad_threshold"], settings["vad_silence_ms"])
             self.active = True
@@ -111,17 +118,15 @@ class Conversation:
             self.tts_thread.start()
             self._state("Listening · Parakeet ASR · Smart Turn CPU · Gemma · TTS resident")
         except Exception:
-            finish(self.paths, "error")
+            if self.owns_run:
+                finish(self.paths, "error")
             raise
 
     def configure(self, settings: dict) -> None:
         vad_changed = settings["vad_threshold"] != self.settings["vad_threshold"] or settings["vad_silence_ms"] != self.settings["vad_silence_ms"]
-        voice_changed = any(settings[key] != self.settings[key] for key in ("tts_family", "tts_voice", "tts_language"))
         self.settings = dict(settings)
         if vad_changed:
             self.asr_queue.put(("vad-config", (self.settings["vad_threshold"], self.settings["vad_silence_ms"])))
-        if voice_changed:
-            self.tts_base = None
         note(
             f"component=conversation event=configure ingestion={settings['ingestion_mode']}"
             f" tts_family={settings['tts_family']} tts_mode={settings['tts_mode']}"
@@ -132,6 +137,7 @@ class Conversation:
 
     def submit(self, text: str) -> None:
         self._require_engine()
+        self._interrupt_tts()
         self.asr_queue.put(("manual", text.strip()))
 
     def submit_audio(self, pcm_f32: bytes) -> None:
@@ -139,6 +145,7 @@ class Conversation:
         if not pcm_f32:
             self._state("Push-to-talk · no audio")
             return
+        self._interrupt_tts()
         self.asr_queue.put(("feed", pcm_f32))
         self.asr_queue.put(("cut", "PTT"))
         self._state("Push-to-talk · finalizing")
@@ -149,6 +156,20 @@ class Conversation:
             return
         if pcm_f32:
             self.asr_queue.put(("feed", pcm_f32))
+
+    def _interrupt_tts(self) -> None:
+        target = self.turn
+        if target < 1:
+            return
+        self._emit("audio-reset")
+        if target <= self.tts_done_through or target <= self.cancelled_through:
+            return
+        self.cancelled_through = target
+        note(f"component=tts event=interruption_requested through_turn={target}")
+        self._state(f"TTS through {target} · interrupted")
+
+    def _tts_cancelled(self, turn: int) -> bool:
+        return turn <= self.cancelled_through
 
     def _append_turn(self, pcm_f32: bytes) -> None:
         if self.turn_wave is None:
@@ -200,7 +221,12 @@ class Conversation:
             op, payload = self.asr_queue.get()
             if op == "feed":
                 self._append_turn(payload)
-                if self.settings["ingestion_mode"] == "continuous" and self.vad.feed(payload):
+                if self.settings["ingestion_mode"] == "continuous":
+                    speech_started, speech_ended = self.vad.feed(payload)
+                    if speech_started:
+                        self._interrupt_tts()
+                    if not speech_ended:
+                        continue
                     started = time.perf_counter()
                     complete, probability = self.smart_turn.complete(bytes(self.turn_tail))
                     note(
@@ -236,7 +262,7 @@ class Conversation:
         if not text:
             return
         self.turn += 1
-        note(f'component=conversation event=dispatch turn={self.turn} reason={reason} text="{text}"')
+        note(f"component=conversation event=dispatch turn={self.turn} reason={reason} chars={len(text)}")
         self.llm_queue.put((self.turn, text, dict(self.settings)))
         self._state(f"Dispatch {self.turn} · {reason} · {len(text)} chars")
 
@@ -295,7 +321,6 @@ class Conversation:
                 f"component=llm event=complete turn={turn} ttfa_ms={(ttfa or time.perf_counter() - started) * 1000:.3f}"
                 f" total_ms={(time.perf_counter() - started) * 1000:.3f} chars={len(answer)}"
             )
-            note(f'component=llm event=answer turn={turn} text="{answer}"')
             self._state(f"LLM {turn} · complete · TTS finishing")
 
     def _tts_loop(self) -> None:
@@ -306,28 +331,37 @@ class Conversation:
             op, turn, text, settings = item
             if op != "start":
                 raise RuntimeError(f"unexpected TTS queue operation: {op}")
-            family = self._family(settings, settings["tts_mode"] == "real")
-            language = settings["tts_language"]
-            reference = self._reference(settings["tts_voice"])
-            streaming = settings["tts_mode"] == "real"
-            base = self.tts_base
-            if base is None:
-                base = self.tts_base = tts_endpoint(reference, language, family, self.paths)
             unit, index = text, 0
-            while unit is not None:
-                index += 1
-                self._state(f"TTS {turn} · {'streaming' if streaming else 'buffered'} · speech unit {index}")
-                output = self.paths.run_dir / f"tts-turn-{turn:04d}-{index:03d}.wav"
-                if streaming:
-                    for raw in stream_synthesize(unit, reference, output, language, family, self.paths, base=base, unit=index):
-                        self._emit("audio-pcm", raw)
-                else:
-                    result = synthesize_text(unit, reference, output, language, family, self.paths, base=base, streaming=False, unit=index)
-                    if not output.is_file():
-                        raise RuntimeError(f"Chatterbox did not create buffered unit {index}: {result}")
-                    self._emit("audio-file", str(output))
-                unit, _ = self._next_tts(turn)
-            self._state(f"TTS {turn} · complete")
+            interrupted = self._tts_cancelled(turn)
+            if not interrupted:
+                family = self._family(settings, settings["tts_mode"] == "real")
+                language = settings["tts_language"]
+                reference = self._reference(settings["tts_voice"])
+                streaming = settings["tts_mode"] == "real"
+                base = tts_endpoint(reference, language, family, self.paths)
+                while unit is not None and not interrupted:
+                    index += 1
+                    self._state(f"TTS {turn} · {'streaming' if streaming else 'buffered'} · speech unit {index}")
+                    output = self.paths.run_dir / f"tts-turn-{turn:04d}-{index:03d}.wav"
+                    cancel = lambda turn=turn: self._tts_cancelled(turn)
+                    if streaming:
+                        for raw in stream_synthesize(unit, reference, output, language, family, self.paths, base=base, unit=index, cancel=cancel):
+                            self._emit("audio-pcm", raw)
+                    else:
+                        result = synthesize_text(unit, reference, output, language, family, self.paths, base=base, streaming=False, unit=index, cancel=cancel)
+                        if not cancel():
+                            if not output.is_file():
+                                raise RuntimeError(f"Chatterbox did not create buffered unit {index}: {result}")
+                            self._emit("audio-file", str(output))
+                    interrupted = cancel()
+                    if not interrupted:
+                        unit, _ = self._next_tts(turn)
+            if interrupted:
+                while unit is not None:
+                    unit, _ = self._next_tts(turn)
+                note(f"component=tts event=interrupted turn={turn}")
+            self.tts_done_through = turn
+            self._state(f"TTS {turn} · {'interrupted' if interrupted else 'complete'}")
 
     def _next_tts(self, turn: int) -> tuple[str | None, str | None]:
         item = self.tts_queue.get()
@@ -345,6 +379,7 @@ class Conversation:
     def stop(self) -> None:
         if not self.active:
             return
+        self._interrupt_tts()
         self.active = False
         self.asr_queue.put(("finish", None))
         self.asr_thread.join()
@@ -352,22 +387,23 @@ class Conversation:
         self.llm_thread.join()
         self.tts_queue.put(None)
         self.tts_thread.join()
-        final_family = self._family(self.settings, self.settings["tts_mode"] == "real")
-        write_meta(
-            self.paths,
-            command="conversation",
-            transcript=self.paths.transcript,
-            turns=self.turn,
-            turn_detector="smart-turn-v3.2-cpu",
-            vad_threshold=self.settings["vad_threshold"],
-            vad_silence_ms=self.settings["vad_silence_ms"],
-            tts_mode=self.settings["tts_mode"],
-            tts_language=self.settings["tts_language"],
-            resolved_tts=resolved_tts(final_family),
-        )
         self.paths.transcript.write_text(self.transcript + ("\n" if self.transcript else ""), encoding="utf-8")
-        set_run_log(self.paths.log)
-        finish(self.paths)
+        if self.owns_run:
+            final_family = self._family(self.settings, self.settings["tts_mode"] == "real")
+            write_meta(
+                self.paths,
+                command="conversation",
+                transcript=self.paths.transcript,
+                turns=self.turn,
+                turn_detector="smart-turn-v3.2-cpu",
+                vad_threshold=self.settings["vad_threshold"],
+                vad_silence_ms=self.settings["vad_silence_ms"],
+                tts_mode=self.settings["tts_mode"],
+                tts_language=self.settings["tts_language"],
+                resolved_tts=resolved_tts(final_family),
+            )
+            set_run_log(self.paths.log)
+            finish(self.paths, "error" if self.failure else "ok")
         self._state("Stopped")
         self._emit("closed")
 

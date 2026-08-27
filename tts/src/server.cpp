@@ -209,7 +209,11 @@ int main(int argc, char** argv) {
                     " join=" + (join ? "crossfade" : "chunks");
                 send_response(client.value, 0, result);
             } catch (const std::exception& error) {
-                try { send_response(client.value, 1, error.what()); } catch (...) {}
+                try {
+                    send_response(client.value, 1, error.what());
+                } catch (const std::exception& delivery_error) {
+                    tts::log("event=response_delivery_failed message=" + std::string(delivery_error.what()));
+                }
             }
         }
     } catch (const std::invalid_argument& error) {
