@@ -6,7 +6,7 @@ import re
 import time
 from pathlib import Path
 
-from cable import Microphone, play_wav, restore, use as cable_use, wav_pcm
+from cable import Microphone, play_wav, wav_pcm
 from config import ASR_RATE, TTS_FIELDS, load_live_settings, resolve_voice
 from conversation import Conversation
 from log import note
@@ -28,19 +28,15 @@ def _settings_namespace(models_dir: Path, data_dir: Path):
 
 def run(says: list[str], expects: list[str] | None = None, models_dir: Path | None = None, data_dir: Path | None = None) -> int:
     paths = start_run("agent", models_dir, data_dir)
-    _, settings = _settings_namespace(paths.models_dir, paths.data_dir)
+    args, settings = _settings_namespace(paths.models_dir, paths.data_dir)
     continuous = settings["ingestion_mode"] == "continuous"
-    routing = {"previous": None}
     engine: Conversation | None = None
     mic: Microphone | None = None
     results = []
     outcome = "error"
     try:
-        if continuous:
-            routing = cable_use()
-        warm_resident(_settings_namespace(paths.models_dir, paths.data_dir)[0])
+        warm_resident(args)
         note(f"component=agent event=residents_ready state={[row['name'] for row in resident_status() if row['ready']]}")
-        _, settings = _settings_namespace(paths.models_dir, paths.data_dir)
         family = effective_family(settings["tts_family"], {"streaming": False})
         language = settings["tts_language"]
         if language not in family["TTS_LANGUAGES"]:
@@ -65,24 +61,18 @@ def run(says: list[str], expects: list[str] | None = None, models_dir: Path | No
                 engine.submit_audio(wav_pcm(prompt, ASR_RATE))
             deadline = time.monotonic() + _TURN_IDLE_TIMEOUT_S
             last_status = None
-            settled = None
             while True:
-                complete = engine.turn > turn_before and f"TTS {engine.turn} · complete" in engine.status
-                if complete and settled is None:
-                    settled = time.monotonic()
-                if not complete:
-                    settled = None
-                if complete and time.monotonic() - settled >= 1.5:
-                    break
                 if engine.failure:
                     raise RuntimeError(f"conversation failed during turn {index + 1}: {engine.failure}")
+                if engine.turn > turn_before and engine.tts_done_through >= engine.turn:
+                    break
                 if engine.status != last_status:
                     last_status = engine.status
                     deadline = time.monotonic() + _TURN_IDLE_TIMEOUT_S
                 if time.monotonic() > deadline:
                     raise RuntimeError(
                         f"turn {index + 1} stalled for {_TURN_IDLE_TIMEOUT_S:g}s without progress"
-                        f" (turn={engine.turn} status={engine.status!r})"
+                        f" (turn={engine.turn} tts_done={engine.tts_done_through} status={engine.status!r})"
                     )
                 time.sleep(0.1)
             heard = engine.transcript[transcript_before:].strip()
@@ -93,7 +83,6 @@ def run(says: list[str], expects: list[str] | None = None, models_dir: Path | No
                 "say": say, "heard": heard, "answer": answer,
                 "expect": expect, "match": match,
                 "turn_s": round(elapsed, 3),
-                "conversation_run_dir": str(engine.paths.run_dir),
             })
             note(f"component=agent event=turn outcome={'match' if match is True else 'mismatch' if match is False else 'unchecked'} turn_s={elapsed:.3f} heard_len={len(heard)}")
             if match is False:
@@ -109,8 +98,5 @@ def run(says: list[str], expects: list[str] | None = None, models_dir: Path | No
             if engine is not None:
                 engine.close()
         finally:
-            try:
-                restore(routing["previous"])
-            finally:
-                write_meta(paths, command="agent", turns=len(results), transcript=paths.transcript, outcome=outcome)
-                finish(paths, outcome)
+            write_meta(paths, command="agent", turns=len(results), transcript=paths.transcript, outcome=outcome)
+            finish(paths, outcome)
