@@ -10,7 +10,7 @@ import time
 import wave
 from pathlib import Path
 
-from config import ASR_CHUNK_OVERLAP_SECONDS, ASR_CHUNK_SECONDS, BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_THINKING, FAMILIES, HARDWARE_PROFILE, LANGUAGES, LIVE_SETTINGS, REFERENCE_MIN_SECONDS, SHARED_MODELS, TTS_FIELDS, TTS_RATE, Paths, default_family, load_live_settings, resolve_voice
+from config import ASR_CHUNK_OVERLAP_SECONDS, ASR_CHUNK_SECONDS, BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_THINKING, FAMILIES, HARDWARE_PROFILE, LANGUAGES, LIVE_SETTINGS, REFERENCE_MIN_SECONDS, REFERENCE_VOICES, SHARED_MODELS, TTS_FIELDS, TTS_RATE, Paths, default_family, load_live_settings, resolve_voice, voices_dir
 from installer import install, models_for, require_model, runtime_server, runtime_tts_server, validate_wav, write_text_atomic
 from local_api import chatterbox_stream as _chatterbox_stream, gemma_chat, parakeet_transcribe
 from log import clear_run_log, note, run_log, set_run_log
@@ -69,6 +69,22 @@ def prepared_reference(reference: Path, data_dir: Path) -> Path:
     return wav
 
 
+def save_voice(data_dir: Path, name: str, source: Path) -> str:
+    slug = "-".join("".join(ch if ch.isalnum() else " " for ch in name.strip().lower()).split())
+    if not slug:
+        raise RuntimeError("voice name is empty")
+    if slug in REFERENCE_VOICES:
+        raise RuntimeError(f"{slug} is a built-in voice")
+    dest = voices_dir(data_dir) / f"{slug}.wav"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    wav = prepared_reference(source, data_dir)
+    if wav.resolve() != dest.resolve():
+        shutil.copy2(wav, dest)
+    validate_wav(dest, TTS_RATE, minimum_seconds=REFERENCE_MIN_SECONDS, channels=1)
+    note(f"component=tts event=voice_saved name={slug} path={dest}")
+    return slug
+
+
 def effective_family(name: str, overrides: dict | None = None) -> dict:
     family = copy.deepcopy(FAMILIES[name])
     src = overrides or {}
@@ -120,7 +136,7 @@ def write_meta(paths: Paths, **rows) -> None:
     write_text_atomic(paths.meta, "".join(f"{k}={v}\n" for k, v in rows.items()))
 
 
-def transcribe_wav(wav: Path, base: str, chunk_dir: Path) -> str:
+def _iter_asr(wav: Path, base: str, chunk_dir: Path):
     with wave.open(str(wav), "rb") as audio:
         duration = audio.getnframes() / audio.getframerate()
     started = time.perf_counter(); words = []; chunks = 0
@@ -143,22 +159,43 @@ def transcribe_wav(wav: Path, base: str, chunk_dir: Path) -> str:
                 word = str(row.get("word", row.get("w", ""))).strip()
                 if word:
                     words.append(word)
+        yield "progress", " ".join(words).strip(), chunks, duration, offset + chunk_seconds
     text = " ".join(words).strip()
     elapsed = time.perf_counter() - started
     rtf = elapsed / duration if duration > 0 else 0.0
     speed = 1.0 / rtf if rtf > 0 else 0.0
     note(f"component=asr event=done duration_s={duration:.3f} chunks={chunks} request_ms={elapsed * 1000:.3f} rtf={rtf:.4f} x_realtime={speed:.2f}")
+    yield "done", text, chunks, duration, speed
+
+
+def transcribe_wav(wav: Path, base: str, chunk_dir: Path) -> str:
+    text = ""
+    for kind, text, *_rest in _iter_asr(wav, base, chunk_dir):
+        pass
     return text
 
 
 def transcribe(source: Path, paths: Paths) -> str:
+    text = ""
+    for kind, text, *_rest in transcribe_file(source, paths):
+        pass
+    return text
+
+
+def transcribe_file(source: Path, paths: Paths):
     wav = parakeet_wav(source, paths.input)
     base = require_alive("parakeet")
-    text = transcribe_wav(wav, base, paths.run_dir / ".asr-chunks")
+    done = None
+    for item in _iter_asr(wav, base, paths.run_dir / ".asr-chunks"):
+        if item[0] == "done":
+            done = item
+        else:
+            yield item
+    text = done[1] if done else ""
     if not text:
         raise RuntimeError("Parakeet returned an empty transcript")
     write_text_atomic(paths.transcript, text + "\n")
-    return text
+    yield done
 
 
 def brain(prompt: Path, paths: Paths, language: str, language_name: str, template: str | None = None) -> str:
