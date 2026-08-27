@@ -255,7 +255,7 @@ def run(
             if pump is not None:
                 pump.join()
                 note(f"component=agent event=pump_join alive={int(pump.is_alive())}")
-            if engine is not None and engine.failure is not None:
+            if outcome == "ok" and engine is not None and engine.failure is not None:
                 outcome = "error"
                 raise engine.failure
             note("component=agent event=teardown_end")
