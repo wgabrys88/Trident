@@ -8,12 +8,11 @@ from pathlib import Path
 
 import numpy as np
 
-from config import ASR_RATE, BRAIN_MODEL, BRAIN_RUNTIME, LANGUAGES, SHARED_MODELS, resolve_voice
-from installer import require_model, runtime_server
+from config import ASR_RATE, LANGUAGES, resolve_voice
 from local_api import gemma_chat_stream
 from log import clear_run_log, note, set_run_log
 from main import effective_family, finish, gemma_kwargs, prepared_reference, render_system_prompt, resolved_tts, spoken_reply, start_run, stream_synthesize, synthesize_text, transcribe_wav, tts_endpoint, write_meta
-from resident import ensure_gemma, ensure_parakeet
+from resident import require_alive
 from ui_streaming import SpeechSegmenter
 from vad import SileroEndpoint
 
@@ -107,13 +106,13 @@ class Conversation:
         else:
             set_run_log(self.paths.log)
         try:
-            self.parakeet = ensure_parakeet(runtime_server("parakeet"), require_model(SHARED_MODELS["parakeet"], self.models_dir))
-            self.gemma_base = ensure_gemma(runtime_server("gemma"), require_model(SHARED_MODELS[BRAIN_MODEL], self.models_dir), BRAIN_RUNTIME)
+            self.parakeet = require_alive("parakeet")
+            self.gemma_base = require_alive("gemma")
             settings = dict(self.settings)
             self._require_language(settings)
+            self.vad = SileroEndpoint(settings["vad_threshold"], settings["vad_silence_ms"])
             family = self._family(settings, settings["tts_mode"] == "real")
             tts_endpoint(self._reference(settings["tts_voice"]), settings["tts_language"], family, self.paths)
-            self.vad = SileroEndpoint(settings["vad_threshold"], settings["vad_silence_ms"])
             self.active = True
             self.asr_thread = self._worker(self._asr_loop, "trident-asr")
             self.llm_thread = self._worker(self._llm_loop, "trident-llm")

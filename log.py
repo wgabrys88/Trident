@@ -16,6 +16,10 @@ def set_run_log(path: Path | None) -> Path | None:
     return path
 
 
+def run_log() -> Path | None:
+    return getattr(_state, "run_log", None)
+
+
 def clear_run_log(path: Path | None = None) -> None:
     current = getattr(_state, "run_log", None)
     if path is None or current == path:

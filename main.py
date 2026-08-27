@@ -5,16 +5,17 @@ import copy
 import json
 import os, sys
 import shutil
+import threading
 import time
 import wave
 from pathlib import Path
 
-from config import ASR_CHUNK_OVERLAP_SECONDS, ASR_CHUNK_SECONDS, BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_THINKING, FAMILIES, HARDWARE_PROFILE, LANGUAGES, LIVE_SETTINGS, REFERENCE_MIN_SECONDS, SHARED_MODELS, TTS_FIELDS, TTS_RATE, Paths, default_family, resolve_voice
+from config import ASR_CHUNK_OVERLAP_SECONDS, ASR_CHUNK_SECONDS, BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_THINKING, FAMILIES, HARDWARE_PROFILE, LANGUAGES, LIVE_SETTINGS, REFERENCE_MIN_SECONDS, SHARED_MODELS, TTS_FIELDS, TTS_RATE, Paths, default_family, load_live_settings, resolve_voice
 from installer import install, models_for, require_model, runtime_server, runtime_tts_server, validate_wav, write_text_atomic
 from local_api import chatterbox_stream as _chatterbox_stream, gemma_chat, parakeet_transcribe
-from log import clear_run_log, note, set_run_log
+from log import clear_run_log, note, run_log, set_run_log
 from media import chatterbox_wav, parakeet_chunks, parakeet_wav
-from resident import ensure_chatterbox, ensure_gemma, ensure_parakeet, status as resident_status, stop_all as resident_stop_all
+from resident import mark_booted, require_alive, start_gemma, start_parakeet, status as resident_status, stop_all as resident_stop_all, use_chatterbox
 
 
 def resolve_language(family: dict, language: str | None) -> str:
@@ -152,7 +153,7 @@ def transcribe_wav(wav: Path, base: str, chunk_dir: Path) -> str:
 
 def transcribe(source: Path, paths: Paths) -> str:
     wav = parakeet_wav(source, paths.input)
-    base = ensure_parakeet(runtime_server("parakeet"), require_model(SHARED_MODELS["parakeet"], paths.models_dir))
+    base = require_alive("parakeet")
     text = transcribe_wav(wav, base, paths.run_dir / ".asr-chunks")
     if not text:
         raise RuntimeError("Parakeet returned an empty transcript")
@@ -163,7 +164,7 @@ def transcribe(source: Path, paths: Paths) -> str:
 def brain(prompt: Path, paths: Paths, language: str, language_name: str, template: str | None = None) -> str:
     system, prompt_text = render_system_prompt(template, language, language_name), prompt.read_text(encoding="utf-8").strip()
     write_text_atomic(paths.system, system + "\n")
-    base = ensure_gemma(runtime_server("gemma"), require_model(SHARED_MODELS[BRAIN_MODEL], paths.models_dir), BRAIN_RUNTIME)
+    base = require_alive("gemma")
     payload = gemma_chat(base, gemma_kwargs([{"role": "system", "content": system}, {"role": "user", "content": prompt_text}], stream=False))
     text = spoken_reply(str((payload.get("choices") or [{}])[0].get("message", {}).get("content", "")))
     if not text: raise RuntimeError("Gemma returned an empty answer")
@@ -173,7 +174,7 @@ def brain(prompt: Path, paths: Paths, language: str, language_name: str, templat
 
 def tts_endpoint(reference: Path, language: str, family: dict, paths: Paths) -> str:
     models = models_for(family["name"])
-    return ensure_chatterbox(
+    return use_chatterbox(
         runtime_tts_server(), require_model(models["chatterbox-t3"], paths.models_dir),
         require_model(models["chatterbox-codec"], paths.models_dir), reference, family, language,
     )
@@ -257,13 +258,13 @@ def _output(value: str | None, wav=False) -> Path | None:
 
 
 def run_asr(args):
-    paths = start_run("asr", args.models_dir, args.data_dir); text = transcribe(Path(args.input).expanduser().resolve(), paths)
+    paths = start_run("asr", args.models_dir, args.data_dir); boot_residents(paths.models_dir, paths.data_dir); text = transcribe(Path(args.input).expanduser().resolve(), paths)
     _copy(paths.transcript, _output(args.output)); write_meta(paths, command="asr", transcript=paths.transcript, language_mode="auto", hardware=HARDWARE_PROFILE)
     print(text); print(f"Run: {paths.run_dir}"); finish(paths); return text
 
 
 def run_brain(args):
-    paths = start_run("brain", args.models_dir, args.data_dir); source = _text_source(args, paths)
+    paths = start_run("brain", args.models_dir, args.data_dir); boot_residents(paths.models_dir, paths.data_dir); source = _text_source(args, paths)
     text = brain(source, paths, args.language, LANGUAGES[args.language], _read_system_prompt(args)); _copy(paths.answer, _output(args.output))
     write_meta(paths, command="brain", language=args.language, answer=paths.answer, hardware=HARDWARE_PROFILE); print(text); finish(paths); return text
 
@@ -272,7 +273,7 @@ def _tts_context(args, command: str, language_attr: str):
     family = effective_family(args.family, vars(args))
     language = resolve_language(family, getattr(args, language_attr))
     paths = start_run(command, args.models_dir, args.data_dir)
-    reference = prepared_reference(resolve_voice(paths.data_dir, args.reference), paths.data_dir)
+    reference = boot_residents(paths.models_dir, paths.data_dir, family["name"], language, args.reference)
     return paths, family, language, reference
 
 
@@ -314,7 +315,7 @@ def build_parser() -> argparse.ArgumentParser:
     c=sub.add_parser("brain"); c.add_argument("input", nargs="?"); c.add_argument("-t", "--text"); c.add_argument("-o", "--output"); c.add_argument("--language", choices=tuple(LANGUAGES), default="en"); add_prompt(c)
     c=sub.add_parser("tts"); c.add_argument("input", nargs="?"); c.add_argument("-t", "--text"); c.add_argument("-o", "--output"); c.add_argument("--family", choices=families, default=default_family()); add_tts_options(c)
     c=sub.add_parser("run"); c.add_argument("input"); c.add_argument("-o", "--output"); c.add_argument("--family", choices=families, default=default_family()); add_tts_options(c, "--tts-language"); add_prompt(c)
-    c=sub.add_parser("resident"); c.add_argument("action", choices=("status", "warm", "stop")); c.add_argument("--family", choices=families, default=default_family()); add_tts_options(c, "--tts-language")
+    c=sub.add_parser("resident"); c.add_argument("action", choices=("status", "boot", "stop")); c.add_argument("--family", choices=families, default=default_family()); add_tts_options(c, "--tts-language")
     c=sub.add_parser("cable"); c.add_argument("action", choices=("status", "use"))
     c=sub.add_parser("agent"); c.add_argument("--say", action="append", required=True); c.add_argument("--expect", action="append"); c.add_argument("--family", choices=families); c.add_argument("--language", choices=tuple(LANGUAGES))
     return p
@@ -345,10 +346,57 @@ def run_install(args) -> Path:
     finish(paths)
     return python
 
-def warm_resident(args) -> None:
-    paths = Paths(args.models_dir, args.data_dir); family = effective_family(args.family, vars(args)); language = resolve_language(family, args.tts_language); reference = prepared_reference(resolve_voice(paths.data_dir, args.reference), paths.data_dir)
-    ensure_parakeet(runtime_server("parakeet"), require_model(SHARED_MODELS["parakeet"], paths.models_dir)); ensure_gemma(runtime_server("gemma"), require_model(SHARED_MODELS[BRAIN_MODEL], paths.models_dir), BRAIN_RUNTIME)
-    models = models_for(family["name"]); ensure_chatterbox(runtime_tts_server(), require_model(models["chatterbox-t3"], paths.models_dir), require_model(models["chatterbox-codec"], paths.models_dir), reference, family, language)
+def boot_residents(models_dir=None, data_dir=None, family: str | None = None, language: str | None = None, voice: str | None = None) -> Path:
+    paths = Paths(models_dir, data_dir)
+    settings = load_live_settings(paths.data_dir)
+    family_name = family or settings["tts_family"]
+    language_code = language or settings["tts_language"]
+    voice_value = voice or settings["tts_voice"]
+    spec = effective_family(family_name)
+    language_code = resolve_language(spec, language_code)
+    errors: list[BaseException] = []
+    reference: list[Path] = []
+    log_path = run_log()
+
+    def run(name: str, fn) -> None:
+        set_run_log(log_path)
+        try:
+            fn()
+        except BaseException as exc:
+            errors.append(exc)
+            note(f"component=resident event=boot_failed name={name} type={type(exc).__name__} message={exc}")
+
+    def prep() -> None:
+        reference.append(prepared_reference(resolve_voice(paths.data_dir, voice_value), paths.data_dir))
+
+    def parakeet() -> None:
+        start_parakeet(runtime_server("parakeet"), require_model(SHARED_MODELS["parakeet"], paths.models_dir))
+
+    def gemma() -> None:
+        start_gemma(runtime_server("gemma"), require_model(SHARED_MODELS[BRAIN_MODEL], paths.models_dir), BRAIN_RUNTIME)
+
+    workers = [
+        threading.Thread(target=run, args=("reference", prep), name="boot-reference"),
+        threading.Thread(target=run, args=("parakeet", parakeet), name="boot-parakeet"),
+        threading.Thread(target=run, args=("gemma", gemma), name="boot-gemma"),
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join()
+    if errors:
+        raise errors[0]
+    models = models_for(spec["name"])
+    use_chatterbox(
+        runtime_tts_server(), require_model(models["chatterbox-t3"], paths.models_dir),
+        require_model(models["chatterbox-codec"], paths.models_dir), reference[0], spec, language_code,
+    )
+    require_alive("parakeet")
+    require_alive("gemma")
+    require_alive("chatterbox")
+    mark_booted()
+    note(f"component=resident event=residents_ready family={spec['name']} language={language_code}")
+    return reference[0]
 
 
 def resident_report() -> str:
@@ -360,7 +408,16 @@ def resident_report() -> str:
 
 
 def launch_ui(args) -> int:
-    from ui import launch; launch(args.models_dir, args.data_dir); return 0
+    paths = start_run("ui", args.models_dir, args.data_dir)
+    try:
+        boot_residents(paths.models_dir, paths.data_dir)
+        from ui import launch
+        launch(args.models_dir, args.data_dir)
+    except Exception:
+        finish(paths, "error")
+        raise
+    finish(paths)
+    return 0
 
 
 def main() -> int:
@@ -371,7 +428,14 @@ def main() -> int:
     if args.command == "install": run_install(args)
     elif args.command == "resident":
         if args.action == "stop": resident_stop_all()
-        elif args.action == "warm": warm_resident(args)
+        elif args.action == "boot":
+            paths = start_run("resident", args.models_dir, args.data_dir)
+            try:
+                boot_residents(paths.models_dir, paths.data_dir, args.family, args.tts_language, args.reference)
+            except Exception:
+                finish(paths, "error")
+                raise
+            finish(paths)
         print(resident_report())
     elif args.command == "cable": run_cable(args)
     elif args.command == "agent": return run_agent(args)

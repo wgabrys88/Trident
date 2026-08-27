@@ -9,12 +9,11 @@ from pathlib import Path
 import gradio as gr
 import numpy as np
 
-from config import ASR_RATE, FAMILIES, LIVE_AUDIO, REFERENCE_VOICES, TTS_FIELDS, TTS_RATE, Paths, live_settings_path, load_live_settings, resolve_voice, save_live_settings
+from config import ASR_RATE, FAMILIES, LIVE_AUDIO, REFERENCE_VOICES, TTS_RATE, Paths, live_settings_path, load_live_settings, resolve_voice, save_live_settings
 from conversation import Conversation
-from main import effective_family, finish, prepared_reference, resident_report, resolved_tts, run_install, start_run, stream_synthesize, synthesize_text, tts_endpoint, tts_metrics, warm_resident, write_meta
-from resident import stop_all as resident_stop_all
+from main import effective_family, finish, prepared_reference, resolved_tts, run_install, start_run, stream_synthesize, synthesize_text, tts_endpoint, tts_metrics, write_meta
 
-TTS_SETTING_KEYS = ["family", "language", "voice", "reference_mode", "reference", "join", *[field[0] for field in TTS_FIELDS]]
+TTS_SETTING_KEYS = ["family", "language", "voice", "reference_mode", "reference", "join"]
 LIVE_SETTING_KEYS = [
     "ingestion_mode", "vad_threshold", "vad_silence_ms",
     "system_prompt", "tts_mode", "tts_family", "tts_language", "tts_voice", "tts_join",
@@ -75,12 +74,6 @@ def _reference(root: Paths, settings: dict) -> Path:
     return resolve_voice(root.data_dir, settings["voice"])
 
 
-def _family_help(name: str) -> str:
-    if name == "v3":
-        return "**Multilingual V3:** Min P, CFG weight, and exaggeration are active model controls."
-    return "**Turbo / Nano:** upstream uses Temperature, Top K, Top P, and repetition penalty. Min P, CFG weight, and exaggeration are unsupported and are hidden here."
-
-
 def _session_id(request: gr.Request) -> str:
     if not request.session_hash:
         raise RuntimeError("Gradio session is unavailable")
@@ -114,23 +107,9 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
         kwargs.setdefault("data_dir", root.data_dir)
         return argparse.Namespace(**kwargs)
 
-    def _tts_ns(settings, **extra):
-        return _ns(
-            family=settings["family"], language=settings["language"], tts_language=settings["language"],
-            reference=str(_reference(root, settings)), stream_join=settings["join"],
-            **{key: settings.get(key) for key, *_ in TTS_FIELDS}, **extra,
-        )
-
     def family_changed(name):
         family = FAMILIES[name]
-        multilingual = name == "v3"
-        return (
-            gr.Dropdown(choices=list(family["TTS_LANGUAGES"]), value=family["DEFAULT_REPLY_LANGUAGE"]),
-            gr.Number(value=None, visible=multilingual),
-            gr.Number(value=None, visible=multilingual),
-            gr.Number(value=None, visible=multilingual),
-            _family_help(name),
-        )
+        return gr.Dropdown(choices=list(family["TTS_LANGUAGES"]), value=family["DEFAULT_REPLY_LANGUAGE"])
 
     def custom_reference_changed(mode: str):
         return gr.Audio(value=None, visible=mode == "custom")
@@ -250,7 +229,7 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
         if not text:
             raise RuntimeError("text is empty")
         settings = _settings(values)
-        family = effective_family(settings["family"], {**{key: settings.get(key) for key, *_ in TTS_FIELDS}, "streaming": mode == "real", "stream_join": settings["join"]})
+        family = effective_family(settings["family"], {"streaming": mode == "real", "stream_join": settings["join"]})
         language = settings["language"]
         if language not in family["TTS_LANGUAGES"]:
             raise RuntimeError(f"language {language!r} is not wired in {family['name']}")
@@ -297,17 +276,6 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
         finally:
             finish(paths, outcome)
 
-    def cli_resident_status():
-        return resident_report()
-
-    def cli_resident_stop():
-        resident_stop_all()
-        return resident_report()
-
-    def cli_resident_warm(*values):
-        warm_resident(_tts_ns(_settings(values)))
-        return resident_report()
-
     def cli_install():
         return run_install(_ns())
 
@@ -324,19 +292,17 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
             language = gr.Dropdown(list(FAMILIES[family_default]["TTS_LANGUAGES"]), value=live_language_default, label="Spoken language")
             voice = gr.Dropdown(voices, value=live["tts_voice"], label="Preset voice")
             join = gr.Radio([("Crossfade", "crossfade"), ("Separate chunks", "chunks")], value=live["tts_join"], label="Speech-unit join")
-            gr.Markdown("Preset voice is used by Conversation. Manual TTS can instead use a temporary reference; recording one does not create a new preset.")
+            gr.Markdown("Preset voice is used by Conversation. Manual TTS can instead use a temporary reference; recording one does not create a new preset. Changing family replaces the one loaded Chatterbox process.")
             reference_mode = gr.Radio([("Use preset", "preset"), ("Use custom reference", "custom")], value="preset", label="Manual TTS voice source")
             reference = gr.Audio(sources=["upload", "microphone"], type="filepath", label="Custom voice reference", visible=False)
-            with gr.Accordion("Manual TTS engine overrides", open=False):
-                gr.Markdown("Conversation uses the selected family defaults. These overrides apply to Manual TTS and Runtime Warm. Blank values use family defaults; changing resident settings can restart Chatterbox.")
-                family_note = gr.Markdown(_family_help(family_default))
-                override_widgets = {
-                    key: gr.Number(value=None, precision=0 if typ is int else None, label=label, visible=(not v3_only) or family_default == "v3")
-                    for key, _, _, typ, _, label, v3_only in TTS_FIELDS
-                }
+            gr.Markdown("### Installation")
+            gr.Markdown("Existing validated model files are reused. Install/repair only downloads or converts a model when its expected artifact is missing or invalid.")
+            install_button = gr.Button("Install / repair")
+            install_output = gr.Textbox(label="Installer output", lines=8, interactive=False, elem_classes="trident-status")
+            install_button.click(cli_install, outputs=install_output, concurrency_limit=None, show_progress="minimal")
 
-        tts_inputs = [family, language, voice, reference_mode, reference, join, *[override_widgets[key] for key, *_ in TTS_FIELDS]]
-        family.change(family_changed, family, [language, override_widgets["min_p"], override_widgets["cfg_weight"], override_widgets["exaggeration"], family_note], queue=False)
+        tts_inputs = [family, language, voice, reference_mode, reference, join]
+        family.change(family_changed, family, language, queue=False)
         reference_mode.change(custom_reference_changed, reference_mode, reference, queue=False)
 
         with gr.Tabs():
@@ -418,25 +384,6 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
                         manual_output = gr.Audio(label="Output", streaming=True, autoplay=True)
                         manual_status = gr.Textbox(value="Idle", label="Synthesis status", interactive=False, elem_classes="trident-status")
                 speak_button.click(speak, [manual_tts_text, manual_tts_mode, *tts_inputs], [manual_output, manual_status], concurrency_limit=None, show_progress="minimal")
-
-            with gr.Tab("Runtime"):
-                with gr.Row(equal_height=False):
-                    with gr.Column(elem_classes="trident-card"):
-                        gr.Markdown("### Resident models")
-                        with gr.Row():
-                            resident_status_button = gr.Button("Status")
-                            resident_warm_button = gr.Button("Warm")
-                            resident_stop_button = gr.Button("Stop all")
-                        resident_output = gr.Textbox(label="Resident state", lines=8, interactive=False, elem_classes="trident-status")
-                        resident_status_button.click(cli_resident_status, outputs=resident_output, concurrency_limit=None, show_progress="minimal")
-                        resident_warm_button.click(cli_resident_warm, tts_inputs, resident_output, concurrency_limit=None, show_progress="minimal")
-                        resident_stop_button.click(cli_resident_stop, outputs=resident_output, concurrency_limit=None, show_progress="minimal")
-                    with gr.Column(elem_classes="trident-card"):
-                        gr.Markdown("### Installation")
-                        gr.Markdown("Existing validated model files are reused. Install/repair only downloads or converts a model when its expected artifact is missing or invalid.")
-                        install_button = gr.Button("Install / repair")
-                        install_output = gr.Textbox(label="Installer output", lines=8, interactive=False, elem_classes="trident-status")
-                        install_button.click(cli_install, outputs=install_output, concurrency_limit=None, show_progress="minimal")
 
         demo.unload(cleanup_session)
 
