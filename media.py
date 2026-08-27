@@ -7,74 +7,29 @@ import subprocess
 import wave
 from pathlib import Path
 
-from config import ASR_RATE, ROOT, TTS_RATE
-from log import note, run as run_logged
+from config import ASR_RATE, TTS_RATE
+from log import note
 
 
 _ffmpeg: Path | None = None
 
 
-def _winget_ffmpeg() -> Path | None:
-    root = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Packages"
-    matches = sorted(root.glob("Gyan.FFmpeg*/ffmpeg-*/bin/ffmpeg.exe"), reverse=True)
-    return next((path for path in matches if path.is_file()), None)
-
-
 def ffmpeg_bin() -> Path:
     found = shutil.which("ffmpeg")
-    if found:
-        return Path(found)
-    packed = _winget_ffmpeg()
-    if packed:
-        return packed
-    raise RuntimeError("ffmpeg is not installed")
-
-
-def _ffmpeg_version(path: Path) -> str:
-    result = subprocess.run(
-        [str(path), "-version"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        **_popen_kwargs(),
-    )
-    line = (result.stdout or result.stderr).splitlines()[0] if result.returncode == 0 else ""
-    return line.replace("ffmpeg version ", "", 1).split(" ", 1)[0] if line else "unknown"
-
-
-def _popen_kwargs() -> dict:
-    return {"creationflags": subprocess.CREATE_NO_WINDOW}
+    if not found:
+        raise RuntimeError("ffmpeg is not installed")
+    return Path(found)
 
 
 def ensure_ffmpeg() -> Path:
     global _ffmpeg
-    if _ffmpeg is not None:
-        return _ffmpeg
-    try:
-        path = ffmpeg_bin()
-    except RuntimeError:
-        path = None
-    if path is None:
-        winget = shutil.which("winget")
-        if not winget:
-            raise RuntimeError(
-                "ffmpeg is missing and winget is unavailable; install Gyan.FFmpeg globally"
-            )
-        note("component=ffmpeg event=install id=Gyan.FFmpeg source=winget")
-        run_logged(
-            [
-                winget, "install", "-e", "--id", "Gyan.FFmpeg", "--source", "winget",
-                "--accept-package-agreements", "--accept-source-agreements",
-                "--disable-interactivity",
-            ],
-            ROOT,
-            os.environ.copy(),
-        )
-        path = ffmpeg_bin()
-    _ffmpeg = path
-    note(f"component=ffmpeg event=ready version={_ffmpeg_version(path)}")
-    return path
+    if _ffmpeg is None:
+        _ffmpeg = ffmpeg_bin()
+    return _ffmpeg
+
+
+def _popen_kwargs() -> dict:
+    return {"creationflags": subprocess.CREATE_NO_WINDOW}
 
 
 def _run_ffmpeg(args: list[str]) -> None:

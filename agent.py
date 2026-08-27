@@ -9,8 +9,8 @@ from pathlib import Path
 from cable import Microphone, play_wav, restore, use as cable_use, wav_pcm
 from config import ASR_RATE, TTS_FIELDS, load_live_settings, resolve_voice
 from conversation import Conversation
-from log import clear_run_log, note
-from main import effective_family, prepared_reference, start_run, synthesize_text, warm_resident
+from log import note
+from main import effective_family, finish, prepared_reference, start_run, synthesize_text, warm_resident, write_meta
 from resident import status as resident_status
 
 _TURN_IDLE_TIMEOUT_S = 120.0
@@ -26,14 +26,18 @@ def _settings_namespace(models_dir: Path, data_dir: Path):
     ), settings
 
 
-def run(says: list[str], expects: list[str], models_dir: Path | None = None, data_dir: Path | None = None) -> int:
+def run(says: list[str], expects: list[str] | None = None, models_dir: Path | None = None, data_dir: Path | None = None) -> int:
     paths = start_run("agent", models_dir, data_dir)
     _, settings = _settings_namespace(paths.models_dir, paths.data_dir)
     continuous = settings["ingestion_mode"] == "continuous"
-    routing = cable_use() if continuous else {"previous": None}
+    routing = {"previous": None}
     engine: Conversation | None = None
     mic: Microphone | None = None
+    results = []
+    outcome = "error"
     try:
+        if continuous:
+            routing = cable_use()
         warm_resident(_settings_namespace(paths.models_dir, paths.data_dir)[0])
         note(f"component=agent event=residents_ready state={[row['name'] for row in resident_status() if row['ready']]}")
         _, settings = _settings_namespace(paths.models_dir, paths.data_dir)
@@ -43,14 +47,13 @@ def run(says: list[str], expects: list[str], models_dir: Path | None = None, dat
             raise RuntimeError(f"language {language!r} is not wired in {family['name']}")
         reference = prepared_reference(resolve_voice(paths.data_dir, settings["tts_voice"]), paths.data_dir)
 
-        engine = Conversation(paths.models_dir, paths.data_dir, settings)
+        engine = Conversation(paths.models_dir, paths.data_dir, settings, paths=paths, output_audio=False)
         engine.start()
         if continuous:
             mic = Microphone(engine.feed_audio)
             mic.start()
-        results = []
         for index, say in enumerate(says):
-            expect = expects[index] if index < len(expects) else None
+            expect = expects[index] if expects and index < len(expects) else None
             prompt = paths.run_dir / f"prompt-{index:02d}.wav"
             synthesize_text(say, reference, prompt, language, family, paths)
             turn_before = engine.turn
@@ -92,16 +95,22 @@ def run(says: list[str], expects: list[str], models_dir: Path | None = None, dat
                 "turn_s": round(elapsed, 3),
                 "conversation_run_dir": str(engine.paths.run_dir),
             })
-            note(f"component=agent event=turn outcome={'match' if match else 'unchecked'} turn_s={elapsed:.3f} heard_len={len(heard)}")
+            note(f"component=agent event=turn outcome={'match' if match is True else 'mismatch' if match is False else 'unchecked'} turn_s={elapsed:.3f} heard_len={len(heard)}")
             if match is False:
                 break
         print(json.dumps({"run_dir": str(paths.run_dir), "turns": results}, ensure_ascii=False))
         failed = any(row["match"] is False for row in results)
+        outcome = "failed" if failed else "ok"
         return 1 if failed else 0
     finally:
-        if mic is not None:
-            mic.stop()
-        if engine is not None:
-            engine.close()
-        restore(routing["previous"])
-        clear_run_log(paths.log)
+        try:
+            if mic is not None:
+                mic.stop()
+            if engine is not None:
+                engine.close()
+        finally:
+            try:
+                restore(routing["previous"])
+            finally:
+                write_meta(paths, command="agent", turns=len(results), transcript=paths.transcript, outcome=outcome)
+                finish(paths, outcome)

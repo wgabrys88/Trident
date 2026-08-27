@@ -111,7 +111,8 @@ def gemma_chat_stream(base_url: str, payload: dict, timeout: float = 3600.0):
         conn.close()
 
 
-def chatterbox_stream(base_url: str, text: str, output: Path, streaming: bool = True, join: str = "crossfade", timeout: float = 3600.0):
+def chatterbox_stream(base_url: str, text: str, output: Path, streaming: bool = True, join: str = "crossfade", timeout: float = 3600.0, cancel=None):
+    import select
     import socket
     import struct
 
@@ -123,6 +124,10 @@ def chatterbox_stream(base_url: str, text: str, output: Path, streaming: bool = 
     def recv_exact(sock: socket.socket, count: int) -> bytes:
         data = bytearray()
         while len(data) < count:
+            if cancel and cancel():
+                raise InterruptedError
+            if cancel and not select.select([sock], [], [], 0.05)[0]:
+                continue
             part = sock.recv(count - len(data))
             if not part:
                 raise RuntimeError("resident TTS closed the connection early")
@@ -130,6 +135,8 @@ def chatterbox_stream(base_url: str, text: str, output: Path, streaming: bool = 
         return bytes(data)
 
     try:
+        if cancel and cancel():
+            return
         with socket.create_connection((parsed.hostname, parsed.port), timeout=timeout) as sock:
             sock.settimeout(timeout)
             sock.sendall(struct.pack("<IIII", len(text_bytes), len(output_bytes), int(streaming), {"chunks": 0, "crossfade": 1}[join]))
@@ -145,5 +152,7 @@ def chatterbox_stream(base_url: str, text: str, output: Path, streaming: bool = 
                 if kind == 0:
                     return message
                 raise RuntimeError(f"Chatterbox resident synthesis failed: {message or 'unknown error'}")
+    except InterruptedError:
+        return
     except OSError as exc:
         raise RuntimeError(f"Chatterbox resident request failed: {exc}") from exc
