@@ -51,7 +51,6 @@ CONVERTER = TOOLS / "convert"
 ASR_RATE = 16000
 ASR_CHUNK_SECONDS = 30
 ASR_CHUNK_OVERLAP_SECONDS = 4
-SMART_TURN_SECONDS = 8
 TTS_RATE = 24000
 REFERENCE_MIN_SECONDS = 5.0
 
@@ -85,13 +84,12 @@ BRAIN_GENERATION = {
     "repeat_penalty": 1.0, "seed": 42, "max_tokens": 1024,
 }
 BRAIN_THINKING = False
-LIVE_SETTINGS_JSON = '{"ingestion_mode":"continuous","system_prompt":"The incoming speech transcript is auto-detected by ASR. Produce the final spoken response only in {tts_language_name} ({tts_language}). If the input language differs, preserve its meaning while translating or answering in the output language. Spoken prose only: short sentences ending with a period, question mark, or exclamation. No markdown, lists, code, URLs, emoji, or square-bracket tags. Expand numbers and abbreviations. Do not mention transcription, models, or reasoning.","tts_family":"v3","tts_join":"crossfade","tts_language":"en","tts_mode":"real","tts_voice":"trump","vad_silence_ms":200,"vad_threshold":0.5}'
+LIVE_SETTINGS_JSON = '{"ingestion_mode":"continuous","system_prompt":"ASR may deliver incomplete fragments. If the user has not finished a request or thought, output nothing. When a spoken reply is needed now, produce only that reply in {tts_language_name} ({tts_language}), the language the loaded voice can speak. If the input language differs, preserve meaning while answering in the output language. Spoken prose only: short sentences ending with a period, question mark, or exclamation. No markdown, lists, code, URLs, emoji, or square-bracket tags. Expand numbers and abbreviations. Do not mention transcription, models, or reasoning.","tts_family":"v3","tts_join":"crossfade","tts_language":"en","tts_mode":"real","tts_voice":"trump","vad_silence_ms":200,"vad_threshold":0.5}'
 LIVE_SETTINGS = json.loads(LIVE_SETTINGS_JSON)
 LIVE_AUDIO = {
     "asr_feed_seconds": 0.16,
     "vad_frame_samples": 512,
     "mic_time_limit_seconds": 86400,
-    "llm_history_turns": 6,
 }
 
 TTS_FIELDS = (
@@ -119,10 +117,7 @@ def live_settings_path(data_dir: Path) -> Path:
 
 def load_live_settings(data_dir: Path) -> dict:
     path = live_settings_path(data_dir)
-    settings = json.loads(path.read_text(encoding="utf-8") if path.is_file() else LIVE_SETTINGS_JSON)
-    LIVE_SETTINGS.clear()
-    LIVE_SETTINGS.update(settings)
-    return dict(LIVE_SETTINGS)
+    return json.loads(path.read_text(encoding="utf-8") if path.is_file() else LIVE_SETTINGS_JSON)
 
 
 def save_live_settings(data_dir: Path, settings: dict) -> None:
@@ -132,9 +127,6 @@ def save_live_settings(data_dir: Path, settings: dict) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(payload, encoding="utf-8", newline="\n")
     os.replace(temporary, path)
-    synced = json.loads(payload)
-    LIVE_SETTINGS.clear()
-    LIVE_SETTINGS.update(synced)
 
 LANGUAGES = {
     "en": "English", "es": "Spanish", "fr": "French", "de": "German",
@@ -237,12 +229,6 @@ SHARED_MODELS = {
         "label": "PARAKEET TDT 0.6B V3 Q4_K",
         "repo": "mudler/parakeet-cpp-gguf", "revision": "bf0af9f425fa01809cadec671b3cb672709d13e9",
         "file": "tdt-0.6b-v3-q4_k.gguf", "size": 675200864,
-    },
-    "smart-turn": {
-        "label": "SMART TURN V3.2 MULTILINGUAL CPU INT8",
-        "repo": "pipecat-ai/smart-turn-v3", "revision": "f766f81d3cfdf7737ac64aad813d91bbfd56bf93",
-        "file": "smart-turn-v3.2-cpu.onnx", "size": 8679182,
-        "sha256": "2bb026316b14a660486a75b1733cd3fbab8c2fd0314dc9af7be49f8cca967e4f",
     },
     "gemma": {"label": "GEMMA 4 E2B", "repo": "google/gemma-4-E2B-it-qat-q4_0-gguf", "revision": "675cff42a74c774d6cb76f76d8eacb49b48c9b93", "file": "gemma-4-E2B_q4_0-it.gguf", "size": 3349516256},
 }

@@ -316,7 +316,7 @@ def build_parser() -> argparse.ArgumentParser:
     c=sub.add_parser("run"); c.add_argument("input"); c.add_argument("-o", "--output"); c.add_argument("--family", choices=families, default=default_family()); add_tts_options(c, "--tts-language"); add_prompt(c)
     c=sub.add_parser("resident"); c.add_argument("action", choices=("status", "warm", "stop")); c.add_argument("--family", choices=families, default=default_family()); add_tts_options(c, "--tts-language")
     c=sub.add_parser("cable"); c.add_argument("action", choices=("status", "use"))
-    c=sub.add_parser("agent"); c.add_argument("--say", action="append", required=True); c.add_argument("--expect", action="append")
+    c=sub.add_parser("agent"); c.add_argument("--say", action="append", required=True); c.add_argument("--expect", action="append"); c.add_argument("--family", choices=families); c.add_argument("--language", choices=tuple(LANGUAGES))
     return p
 
 
@@ -331,7 +331,7 @@ def run_cable(args):
 
 def run_agent(args) -> int:
     from agent import run as agent_run
-    return agent_run(args.say, args.expect, args.models_dir, args.data_dir)
+    return agent_run(args.say, args.expect, args.models_dir, args.data_dir, args.family, args.language)
 
 
 def run_install(args) -> Path:
