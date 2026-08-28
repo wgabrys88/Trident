@@ -193,7 +193,7 @@ int main(int argc, char** argv) {
                     std::vector<std::string> texts;
                     texts.reserve(piece_count);
                     for (std::uint32_t i = 0; i < piece_count; ++i) {
-                        std::array<unsigned char, 8> piece_header{};
+                        std::array<unsigned char, 4> piece_header{};
                         if (!recv_all(client.value, piece_header.data(), piece_header.size())) {
                             request_error = "short piece header";
                             request_failed = true;

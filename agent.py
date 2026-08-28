@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import queue
 import re
 import threading
 import time
@@ -11,7 +12,7 @@ from pathlib import Path
 import numpy as np
 import sounddevice as sd
 
-from cable import Microphone, play_wav, wav_pcm
+from cable import _cable_devices, wav_pcm
 from config import ASR_RATE, FAMILIES, LANGUAGES, Paths, TTS_RATE, load_live_settings, resolve_voice
 from conversation import Conversation
 from log import clear_run_log, note, set_run_log
@@ -35,52 +36,87 @@ _CLAUSE_GAP_S = 9.0
 
 
 class Speaker:
-    def __init__(self) -> None:
-        info = sd.query_devices(kind="output")
-        self._rate = int(info["default_samplerate"])
-        self._channels = max(1, int(info["max_output_channels"]))
+    def __init__(self, reference) -> None:
+        info = sd.query_devices(_cable_devices()["play"][0])
+        self._reference = reference
         self._device = int(info["index"])
         self._name = str(info["name"])
+        self._rate = int(info["default_samplerate"])
+        self._channels = max(1, int(info["max_output_channels"]))
+        self._assistant: queue.SimpleQueue = queue.SimpleQueue()
+        self._actor: queue.SimpleQueue = queue.SimpleQueue()
+        self._assistant_pending = np.zeros((0, self._channels), dtype="<i2")
+        self._actor_pending = np.zeros((0, self._channels), dtype="<i2")
+        self._actor_frames = 0
+        self._actor_done = threading.Event()
+        self._actor_done.set()
+        self._lock = threading.Lock()
         self._stream: sd.OutputStream | None = None
         note(
             f"component=speaker event=init device={self._device} name={self._name}"
             f" rate={self._rate} channels={self._channels}"
         )
 
+    def _take(self, source: queue.SimpleQueue, pending: np.ndarray, frames: int) -> tuple[np.ndarray, np.ndarray, int]:
+        while len(pending) < frames:
+            try:
+                queued = source.get_nowait()
+            except queue.Empty:
+                break
+            pending = np.concatenate((pending, queued))
+        count = min(frames, len(pending))
+        block = np.zeros((frames, self._channels), dtype="<i2")
+        if count:
+            block[:count] = pending[:count]
+        return block, pending[count:], count
+
+    def _cable_callback(self, outdata, frames, time_info, status) -> None:
+        with self._lock:
+            assistant, self._assistant_pending, _ = self._take(self._assistant, self._assistant_pending, frames)
+            actor, self._actor_pending, actor_count = self._take(self._actor, self._actor_pending, frames)
+            mixed = assistant.astype(np.int32) + actor.astype(np.int32)
+            outdata[:] = np.clip(mixed, -32768, 32767).astype("<i2")
+            self._actor_frames -= actor_count
+            if self._actor_frames == 0:
+                self._actor_done.set()
+        self._reference(assistant[:, 0].tobytes(), self._rate)
+
     def _ensure(self) -> None:
         if self._stream is not None:
             return
-        self._stream = sd.OutputStream(samplerate=self._rate, channels=self._channels, dtype="int16")
+        self._stream = sd.OutputStream(
+            samplerate=self._rate, channels=self._channels, dtype="int16", device=self._device,
+            callback=self._cable_callback,
+        )
         self._stream.start()
         note(
             f"component=speaker event=start device={self._device} name={self._name}"
             f" rate={self._rate} channels={self._channels}"
         )
 
-    def write(self, pcm16: bytes, src_rate: int = TTS_RATE) -> None:
-        note(
-            f"component=speaker event=write_begin bytes={len(pcm16)} src_rate={src_rate}"
-            f" dst_rate={self._rate} channels={self._channels}"
-        )
-        started = time.perf_counter()
-        if not pcm16:
-            note(f"component=speaker event=write_return bytes=0 elapsed_ms={(time.perf_counter() - started) * 1000:.3f}")
-            return
+    def _frames(self, pcm16: bytes, src_rate: int) -> np.ndarray:
         samples = np.frombuffer(pcm16, dtype="<i2")
         if src_rate != self._rate and samples.size:
             count = max(1, round(samples.size * self._rate / src_rate))
-            samples = np.interp(np.linspace(0, samples.size - 1, count), np.arange(samples.size), samples.astype(np.float32)).astype("<i2")
+            samples = np.interp(
+                np.linspace(0, samples.size - 1, count), np.arange(samples.size), samples.astype(np.float32),
+            ).astype("<i2")
+        frames = np.zeros((len(samples), self._channels), dtype="<i2")
+        frames[:, 0] = samples
+        if self._channels > 1:
+            frames[:, 1] = samples
+        return frames
+
+    def write(self, pcm16: bytes, src_rate: int = TTS_RATE) -> None:
+        started = time.perf_counter()
+        if not pcm16:
+            return
+        frames = self._frames(pcm16, src_rate)
         self._ensure()
-        if self._channels == 1:
-            frames = samples
-        else:
-            frames = np.zeros((len(samples), self._channels), dtype="<i2")
-            frames[:, 0] = samples
-            if self._channels > 1:
-                frames[:, 1] = samples
-        self._stream.write(frames)
+        with self._lock:
+            self._assistant.put(frames)
         note(
-            f"component=speaker event=write_return bytes={len(pcm16)} frames={int(samples.size)}"
+            f"component=speaker event=write_return bytes={len(pcm16)} frames={len(frames)}"
             f" elapsed_ms={(time.perf_counter() - started) * 1000:.3f}"
         )
 
@@ -92,14 +128,20 @@ class Speaker:
             channels = audio.getnchannels()
         if channels > 1:
             pcm16 = np.frombuffer(pcm16, dtype="<i2").reshape(-1, channels)[:, 0].tobytes()
-        self.write(pcm16, rate)
+        frames = self._frames(pcm16, rate)
+        self._ensure()
+        with self._lock:
+            self._actor_done.clear()
+            self._actor_frames += len(frames)
+            self._actor.put(frames)
+        self._actor_done.wait()
+        note(f"component=speaker event=write_wav_end path={path}")
 
     def reset(self) -> None:
-        stream, self._stream = self._stream, None
-        if stream is not None:
-            stream.abort()
-            stream.close()
-            note("component=speaker event=reset")
+        with self._lock:
+            self._assistant = queue.SimpleQueue()
+            self._assistant_pending = np.zeros((0, self._channels), dtype="<i2")
+        note("component=speaker event=reset")
 
     def close(self) -> None:
         stream, self._stream = self._stream, None
@@ -138,9 +180,8 @@ def _wait(engine: Conversation, pred, what: str) -> None:
         time.sleep(0.1)
 
 
-def _pump_speaker(engine: Conversation) -> None:
+def _pump_speaker(engine: Conversation, speaker: Speaker) -> None:
     set_run_log(engine.paths.log)
-    speaker = Speaker()
     last_epoch = -1
     try:
         while True:
@@ -227,9 +268,8 @@ def run(
     continuous = settings["ingestion_mode"] == "continuous"
     longform = duration_seconds is not None and duration_seconds > 0
     engine: Conversation | None = None
-    mic: Microphone | None = None
     pump: threading.Thread | None = None
-    starter: threading.Thread | None = None
+    speaker: Speaker | None = None
     results: list[dict] = []
     outcome = "error"
     turns_csv: Path | None = None
@@ -242,17 +282,6 @@ def run(
         if language_code not in family_spec["TTS_LANGUAGES"]:
             raise RuntimeError(f"language {language_code!r} is not wired in {family_spec['name']}")
         reference = prepared_reference(resolve_voice(paths.data_dir, settings["tts_voice"]), paths.data_dir)
-        engine = Conversation(paths.models_dir, paths.data_dir, settings, paths=paths, output_audio=True)
-        start_error: list[BaseException] = []
-
-        def start_engine() -> None:
-            try:
-                engine.start()
-            except BaseException as exc:
-                start_error.append(exc)
-
-        starter = threading.Thread(target=start_engine, name="trident-engine-start")
-        starter.start()
         if longform:
             closing = (actor_text or _DEFAULT_CLOSING).strip()
             clauses = [*_DEFAULT_ACTOR_CLAUSES, closing]
@@ -265,21 +294,17 @@ def run(
             with turns_csv.open("w", encoding="utf-8", newline="") as handle:
                 csv.writer(handle).writerow(["turn_index", "t_vad_end_s", "t_llm_begin_s", "t_first_pcm_s", "t_tts_done_s", "interrupted", "transcript_chars", "answer_chars", "mic_overflow_count"])
         prompts = []
-        try:
-            for index, say in enumerate(says):
-                prompt = paths.run_dir / f"prompt-{index:02d}.wav"
-                synthesize_text(say, reference, prompt, language_code, family_spec, paths)
-                prompts.append(prompt)
-        finally:
-            starter.join()
-        if start_error:
-            raise start_error[0]
-        pump = threading.Thread(target=_pump_speaker, args=(engine,), name="trident-speaker")
+        for index, say in enumerate(says):
+            prompt = paths.run_dir / f"prompt-{index:02d}.wav"
+            synthesize_text(say, reference, prompt, language_code, family_spec, paths)
+            prompts.append(prompt)
+        engine = Conversation(paths.models_dir, paths.data_dir, settings, paths=paths, output_audio=True)
+        engine.start()
+        speaker = Speaker(engine.reference_audio)
+        pump = threading.Thread(target=_pump_speaker, args=(engine, speaker), name="trident-speaker")
         pump.start()
-        if continuous:
-            mic = Microphone(engine.feed_audio)
-            mic.start()
-        t_run_start = time.perf_counter()
+        log_offset = paths.log.stat().st_size
+        t_run_start = time.monotonic()
         for index, (say, prompt) in enumerate(zip(says, prompts)):
             expect = expects[index] if expects and index < len(expects) else None
             turn_before = engine.turn
@@ -289,10 +314,10 @@ def run(
             overflow_before = sum(1 for line in paths.log.read_text(encoding="utf-8", errors="replace").splitlines() if "mic_overflow" in line)
             started = time.perf_counter()
             if longform:
-                play_wav(actor_path) if index == 0 else None
+                speaker.write_wav(str(actor_path))
                 break
             if continuous:
-                play_wav(prompt)
+                speaker.write_wav(str(prompt))
             else:
                 engine.submit_audio(wav_pcm(prompt, ASR_RATE))
             last = index + 1 == len(says)
@@ -315,8 +340,7 @@ def run(
         if longform:
             assert actor_path is not None and turns_csv is not None
             expected_turns = len(says)
-            log_offset = paths.log.stat().st_size
-            deadline = time.monotonic() + (duration_seconds or 0) + 60
+            deadline = t_run_start + (duration_seconds or 0) + 60
             while time.monotonic() < deadline:
                 if engine.turn >= expected_turns and engine.tts_done_through >= engine.turn:
                     break
@@ -354,8 +378,11 @@ def run(
             }]
             note(f"component=agent event=longform_complete turns={engine.turn} done={engine.tts_done_through} overflow={overflow_after} csv={turns_csv}")
             assert_msg = ""
-            if assert_blue and "blue" not in engine.answer.lower():
-                assert_msg = f" --assert-blue failed: answer does not contain 'blue': {engine.answer!r}"
+            if not expected_turns <= engine.turn <= expected_turns + 1 or engine.tts_done_through < engine.turn:
+                assert_msg = f"longform produced {engine.turn} turns for {expected_turns} clauses and completed TTS through {engine.tts_done_through}"
+                outcome = "failed"
+            elif "blue" not in engine.answer.lower():
+                assert_msg = f"closing answer does not contain 'blue': {engine.answer!r}"
                 outcome = "failed"
             elif engine.failure:
                 outcome = "error"
@@ -366,8 +393,8 @@ def run(
             failed = any(row["match"] is False for row in results)
             outcome = "failed" if failed else "ok"
         print(json.dumps({"run_dir": str(paths.run_dir), "turns": results, "turns_csv": str(turns_csv) if turns_csv else None}, ensure_ascii=False, indent=2))
-        if longform and assert_blue and "blue" not in engine.answer.lower():
-            raise SystemExit(assert_msg.strip() or "answer does not contain 'blue'")
+        if longform and outcome == "failed":
+            raise SystemExit(assert_msg)
         return 1 if outcome == "failed" else 0
     except SystemExit:
         raise
@@ -380,8 +407,6 @@ def run(
                 f"component=agent event=teardown_begin outcome={outcome}"
                 f" pump_alive={int(pump is not None and pump.is_alive())}"
             )
-            if mic is not None:
-                mic.stop()
             if engine is not None:
                 engine.close()
             if pump is not None:

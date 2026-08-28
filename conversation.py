@@ -58,6 +58,7 @@ class Capture:
         self._turn_path: Path | None = None
         self._turn_index = 0
         self._echo_ring = np.zeros(0, dtype=np.int16)
+        self._echo_rate = 0
         self._echo_lock = threading.Lock()
         self._handsfree = settings.get("ingestion_mode", "continuous") == "continuous"
 
@@ -85,7 +86,7 @@ class Capture:
         if not pcm_f32:
             return
         self._on_epoch("ptt")
-        self._asr_queue.put(("feed", pcm_f32))
+        self._asr_queue.put(("feed", (pcm_f32, ASR_RATE)))
         self._asr_queue.put(("cut", "PTT"))
 
     def feed_audio(self, pcm_f32: bytes) -> None:
@@ -94,7 +95,7 @@ class Capture:
         if not self._settings.get("ingestion_mode", "continuous") == "continuous":
             return
         if pcm_f32:
-            self._asr_queue.put(("feed", pcm_f32))
+            self._asr_queue.put(("feed", (pcm_f32, ASR_RATE)))
 
     def manual_text(self, text: str) -> bool:
         if not self._active:
@@ -116,67 +117,69 @@ class Capture:
             return
         if samples.size == 0:
             return
-        if src_rate != TTS_RATE and samples.size:
-            count = max(1, round(samples.size * TTS_RATE / src_rate))
-            samples = np.interp(np.linspace(0, samples.size - 1, count), np.arange(samples.size), samples.astype(np.float32)).astype("<i2")
         with self._echo_lock:
-            target = max(1, int(TTS_RATE * ECHO_RING_MS / 1000))
+            self._echo_rate = src_rate
+            target = max(1, int(src_rate * ECHO_RING_MS / 1000))
             new = np.concatenate((self._echo_ring, samples)) if self._echo_ring.size else samples.astype("<i2")
             if new.size > target:
                 new = new[-target:]
             self._echo_ring = new
 
-    def _echo_score(self, pcm_f32: bytes) -> tuple[float, float]:
+    def _echo_score(self, pcm_f32: bytes, src_rate: int) -> tuple[float, float]:
         if not pcm_f32:
             return 0.0, 0.0
         with self._echo_lock:
             ring = self._echo_ring
-        if ring.size == 0:
-            return 0.0, 0.0
+            echo_rate = self._echo_rate
         try:
             mic = np.frombuffer(pcm_f32, dtype="<f4")
         except ValueError:
             return 0.0, 0.0
         if mic.size == 0:
             return 0.0, 0.0
-        window = min(mic.size, int(ASR_RATE * 0.2))
-        if window < 160:
+        if src_rate != echo_rate:
+            return 0.0, 0.0
+        window = min(mic.size, int(src_rate * 0.2))
+        if window < 160 or ring.size < window:
             return 0.0, 0.0
         mic_window = mic[-window:]
-        if ring.size < window:
-            ring_window = ring
-        else:
-            ring_window = ring[-window:]
-        if ring_window.size != window:
-            count = window
-            resampled = np.interp(np.linspace(0, ring_window.size - 1, count), np.arange(ring_window.size), ring_window.astype(np.float32))
-            ring_window = resampled
-        else:
-            ring_window = ring_window.astype(np.float32)
         mic_centered = mic_window - mic_window.mean()
-        ring_centered = ring_window - ring_window.mean()
         mic_std = float(np.sqrt((mic_centered * mic_centered).mean()))
-        ring_std = float(np.sqrt((ring_centered * ring_centered).mean()))
-        if mic_std < 1e-4 or ring_std < 1e-4:
+        if mic_std < 1e-4:
             return 0.0, 0.0
-        corr = float((mic_centered * ring_centered).mean() / (mic_std * ring_std))
+        reference = ring.astype(np.float32)
+        sums = np.concatenate(([0.0], np.cumsum(reference, dtype=np.float64)))
+        squares = np.concatenate(([0.0], np.cumsum(reference * reference, dtype=np.float64)))
+        window_sums = sums[window:] - sums[:-window]
+        energy = squares[window:] - squares[:-window] - window_sums * window_sums / window
+        dots = np.correlate(reference, mic_centered, mode="valid")
+        denominator = np.sqrt(np.maximum(energy, 0.0)) * np.sqrt((mic_centered * mic_centered).sum())
+        correlations = np.divide(dots, denominator, out=np.zeros_like(dots), where=denominator > 0)
+        index = int(np.argmax(correlations))
+        corr = float(correlations[index])
+        ring_std = float(np.sqrt(max(energy[index], 0.0) / window))
         return corr, ring_std
 
-    def _vad_should_suppress(self, pcm_f32: bytes) -> bool:
-        corr, ring_std = self._echo_score(pcm_f32)
-        if ring_std < 200.0:
-            return False
+    def _vad_should_suppress(self, pcm_f32: bytes, src_rate: int) -> bool:
+        corr, ring_std = self._echo_score(pcm_f32, src_rate)
         if corr >= 0.7:
             note(f"component=capture event=echo_suppress corr={corr:.3f} ring_std={ring_std:.1f}")
             return True
         return False
 
-    def _feed_audio_bytes(self, pcm_f32: bytes) -> None:
+    def _feed_audio_bytes(self, pcm_f32: bytes, src_rate: int) -> None:
         if not pcm_f32:
             return
         if not self._settings.get("ingestion_mode", "continuous") == "continuous":
             return
-        self._asr_queue.put(("feed", pcm_f32))
+        self._asr_queue.put(("feed", (pcm_f32, src_rate)))
+
+    def _resample(self, pcm_f32: bytes, src_rate: int) -> bytes:
+        samples = np.frombuffer(pcm_f32, dtype="<f4")
+        if src_rate != ASR_RATE and samples.size:
+            count = max(1, round(samples.size * ASR_RATE / src_rate))
+            samples = np.interp(np.linspace(0, samples.size - 1, count), np.arange(samples.size), samples).astype(np.float32)
+        return samples.astype("<f4", copy=False).tobytes()
 
     def _open_turn(self) -> None:
         if self._turn_wave is not None:
@@ -229,26 +232,18 @@ class Capture:
             return
         self._on_utterance(reason, text)
 
-    def submit_audio(self, pcm_f32: bytes) -> None:
-        if not self._active:
-            return
-        if not pcm_f32:
-            return
-        self._on_epoch("ptt")
-        self._asr_queue.put(("feed", pcm_f32))
-        self._asr_queue.put(("cut", "PTT"))
-
     def _asr_loop(self) -> None:
         set_run_log(self._paths.log)
         try:
             while True:
                 op, payload = self._asr_queue.get()
                 if op == "feed":
-                    pcm = payload
+                    native, src_rate = payload
+                    pcm = self._resample(native, src_rate)
                     if self._settings.get("ingestion_mode", "continuous") == "continuous" and self._vad is not None:
                         started, ended = self._vad.feed(pcm)
                         if started:
-                            if self._vad_should_suppress(pcm):
+                            if self._vad_should_suppress(native, src_rate):
                                 self._vad.reset()
                             else:
                                 self._on_epoch("vad-start")
@@ -471,6 +466,10 @@ class Conversation:
             return
         self._capture.feed_audio(pcm_f32)
 
+    def reference_audio(self, pcm16: bytes, src_rate: int) -> None:
+        if self._capture is not None:
+            self._capture.play_pcm(pcm16, src_rate)
+
     def _on_utterance(self, reason: str, text: str) -> None:
         text = text.strip()
         if not text:
@@ -494,62 +493,44 @@ class Conversation:
         )
 
     def _tts_loop(self) -> None:
-        client: ChatterboxClient | None = None
         turn_active = 0
-        epoch_active = 0
         while True:
             item = self._tts_queue.get()
             if item is None:
-                if client is not None:
-                    self._close_client(client)
                 return
             piece: _Piece = item
-            if client is None and not piece.is_last and piece.text and piece.turn >= 1:
-                family = self._family()
-                language = self.settings["tts_language"]
-                reference = self._reference(self.settings["tts_voice"])
-                base = tts_endpoint(reference, language, family, self.paths)
-                wav_path = self.paths.run_dir / f"tts-turn-{piece.turn:04d}.wav"
-                epoch_active = self.epoch()
-                try:
-                    client = ChatterboxClient(base, cancel=lambda: self.epoch() != epoch_active)
-                    client.open(wav_path)
-                    client.send_piece(piece.text)
+            if piece.is_last or not piece.text or piece.turn < 1:
+                continue
+            family = self._family()
+            language = self.settings["tts_language"]
+            reference = self._reference(self.settings["tts_voice"])
+            base = tts_endpoint(reference, language, family, self.paths)
+            epoch_active = self.epoch()
+            client = ChatterboxClient(base, cancel=lambda: self.epoch() != epoch_active)
+            try:
+                client.open()
+                client.send_piece(piece.text)
+                if piece.turn != turn_active:
                     self._emit("audio-reset")
-                except Exception as exc:
-                    note(
-                        f"component=tts event=open_failed turn={piece.turn} seq={piece.seq}"
-                        f" type={type(exc).__name__} message={exc}"
-                    )
-                    self._close_client(client) if client is not None else None
-                    client = None
-                    continue
                 turn_active = piece.turn
-                self._drain_pieces(client, piece.turn, piece.seq, epoch_active)
+            except Exception as exc:
+                note(
+                    f"component=tts event=open_failed turn={piece.turn} seq={piece.seq}"
+                    f" type={type(exc).__name__} message={exc}"
+                )
+                client.close()
                 continue
-            if client is not None and not piece.is_last and piece.text and piece.turn == turn_active:
-                try:
-                    client.send_piece(piece.text)
-                except Exception as exc:
-                    note(
-                        f"component=tts event=send_failed turn={piece.turn} seq={piece.seq}"
-                        f" type={type(exc).__name__} message={exc}"
-                    )
-                    self._close_client(client)
-                    client = None
-                    continue
+            try:
                 self._drain_pieces(client, piece.turn, piece.seq, epoch_active)
-                continue
-            if piece.is_last or (client is not None and piece.turn != turn_active):
-                self._close_client(client)
-                client = None
+            finally:
+                client.close()
 
     def _drain_pieces(self, client: ChatterboxClient, turn: int, seq: int, epoch_active: int) -> None:
         cancelled = False
         try:
             for pcm in client:
                 if self.epoch() != epoch_active:
-                    client.cancel_piece()
+                    client.cancel()
                     cancelled = True
                     break
                 if not pcm:
@@ -560,8 +541,6 @@ class Conversation:
                         f"component=tts event=started_through turn={turn} seq={seq}"
                         f" bytes={len(pcm)} tts_done_through={self.tts_done_through}"
                     )
-                if self._capture is not None:
-                    self._capture.play_pcm(pcm, TTS_RATE)
                 self._emit("audio-pcm", pcm)
             if not cancelled and self.epoch() == epoch_active:
                 self.tts_done_through = max(self.tts_done_through, turn)
@@ -574,16 +553,6 @@ class Conversation:
                 f"component=tts event=drain_failed turn={turn} seq={seq}"
                 f" type={type(exc).__name__} message={exc}"
             )
-
-    def _close_client(self, client: ChatterboxClient) -> None:
-        try:
-            client.end()
-        except Exception:
-            pass
-        try:
-            client.close()
-        except Exception:
-            pass
 
     def _llm_loop(self) -> None:
         from local_api import gemma_chat_stream
