@@ -22,10 +22,6 @@
 !/conversation.py
 !/vad.py
 !/cable.py
-!/agent.py
-!/vram_audit.py
-!/data/
-/data/*
 !/tools/
 /tools/*
 !/tools/cable.ps1
