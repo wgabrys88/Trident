@@ -15,11 +15,8 @@ import json
 import select
 import socket
 import struct
-import sys
 import urllib.parse
-import urllib.request
-from pathlib import Path
-from typing import Callable, Iterable, Iterator
+from typing import Callable, Iterator
 
 
 def _connection(base_url: str, timeout: float):
@@ -73,25 +70,6 @@ def parakeet_transcribe(base_url: str, wav: Path, timeout: float = 3600.0) -> di
         return json.loads(body.decode("utf-8"))
     finally:
         conn.close()
-
-
-def gemma_chat(base_url: str, payload: dict, timeout: float = 3600.0) -> dict:
-    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    url = base_url.rstrip("/") + "/v1/chat/completions"
-    request = urllib.request.Request(
-        url,
-        data=data,
-        method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "Connection": "close",
-            "User-Agent": "trident/1",
-        },
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        body = response.read()
-    return json.loads(body.decode("utf-8"))
 
 
 def gemma_chat_stream(base_url: str, payload: dict, timeout: float = 3600.0):
@@ -203,18 +181,6 @@ class ChatterboxClient:
         self._send_all(struct.pack("<I", len(text_bytes)) + text_bytes)
         self._sent += 1
 
-    def send_pieces(self, texts: Iterable[str]) -> None:
-        if self._sock is None:
-            raise RuntimeError("ChatterboxClient.open() must be called before send_pieces()")
-        if self._sent != 0:
-            raise RuntimeError("send_pieces must be called exactly once before any send_piece")
-        pieces = list(texts)
-        self._send_all(struct.pack("<I", len(pieces)))
-        for text in pieces:
-            text_bytes = text.encode("utf-8")
-            self._send_all(struct.pack("<I", len(text_bytes)) + text_bytes)
-        self._sent = len(pieces)
-
     def _check_cancel(self) -> None:
         if self._cancel and self._cancel():
             raise InterruptedError
@@ -254,31 +220,3 @@ class _TtsComplete(Exception):
     def __init__(self, metrics: str) -> None:
         super().__init__(metrics)
         self.metrics = metrics
-
-
-def chatterbox_stream(base_url: str, text: str, output: Path, cancel: Callable[[], bool] | None = None) -> Iterator[bytes]:
-    """Legacy single-text stream. Used by callers that want one-shot TTS.
-
-    Writes the concatenated PCM (int16 LE, 24 kHz) wrapped in a WAV container
-    to `output` and yields each PCM chunk from the resident.
-    """
-    import wave
-    client = ChatterboxClient(base_url, cancel=cancel)
-    client.open()
-    try:
-        client.send_piece(text)
-        output.parent.mkdir(parents=True, exist_ok=True)
-        with wave.open(str(output), "wb") as sink:
-            sink.setnchannels(1)
-            sink.setsampwidth(2)
-            sink.setframerate(24000)
-            while True:
-                try:
-                    pcm = client.recv_pcm()
-                except _TtsComplete as done:
-                    client._metrics = done.metrics
-                    return
-                sink.writeframes(pcm)
-                yield pcm
-    finally:
-        client.close()

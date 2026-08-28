@@ -94,18 +94,6 @@ def encode_wav(src: Path, dest: Path, rate: int, *, reuse: bool = True) -> Path:
     return wav
 
 
-def parakeet_wav(src: Path, dest: Path) -> Path:
-    src = src.expanduser().resolve()
-    dest = dest.expanduser().resolve()
-    if _canonical_wav(src, ASR_RATE):
-        if src != dest:
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dest)
-        return dest
-    return encode_wav(src, dest, ASR_RATE, reuse=False)
-
-
-
 def parakeet_chunks(wav: Path, directory: Path, seconds: int, overlap_seconds: int):
     window = int(seconds * ASR_RATE)
     overlap = int(overlap_seconds * ASR_RATE)
