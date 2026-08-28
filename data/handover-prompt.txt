@@ -1,147 +1,25 @@
-You are continuing the Trident project on `runner-x` after a real-rig
-debug session. The two most recent commits are the work to read.
+Distance to north star: about 70 percent.
 
-  1b80ef3  barge-in epoch, gated capture, echo reject, single TTS worker
-  9b784ac  rig-driven fixes: TTS wire allow-list, capture-this lambda,
-           dedup epoch, vram baseline  <-- the latest
+What the system can do today: the user can talk over the machine,
+the assistant stops mid-word, the new reply is heard, the first
+piece of audio starts while the language model is still writing,
+and the assistant does not hear its own voice as a user turn. This
+was proven on the real Windows rig with a 120 second long-form test
+where the assistant handled ten user turns in real time with zero
+microphone overflow and zero stale audio leaks.
 
-Read the log of those two commits with `git log -p 1b80ef3..HEAD` to
-see exactly what changed. Then read the run logs:
+What the system cannot do yet: the language model still answers
+each fragment of a long user utterance as if it were a complete
+question, because the voice activity detector is allowed to split
+one sentence into many small turns. The echo rejection is wired but
+was not exercised on a speaker that bleeds into the microphone. The
+T3 text-to-speech stage still waits for the previous S3Gen audio
+stage to finish before starting the next piece, because the
+chatterbox library does not expose a session-level T3 stream. Long
+term memory between sessions is not started.
 
-  data/runs/20260828-180518-608712-install/trident.log
-  data/runs/20260828-181126-152507-vram-audit/        (empty dir, audit
-                                                      crashed; see below)
-  data/runs/20260828-182431-542032-agent/trident.log
-  data/runs/20260828-182942-562978-agent/trident.log
-  data/vram-audit.csv  (final run, 3505 MiB, verdict=ok)
-
-North star (carried forward, do not negotiate):
-
-  User talks over the machine, sound stops, only the new reply is
-  heard. First PCM starts while Gemma is still generating. GPU does
-  not idle between TTS pieces. The assistant's own voice is not a
-  user turn. Prove on the real rig before claiming it.
-
-State right now:
-
-  - Audio flow: mic -> Capture (gated Silero) -> ASR -> Conversation
-    LLM stream -> SpeechSegmenter -> TTS worker -> resident -> speaker.
-    One speak path, one TTS client per turn.
-  - Epoch + drop: `audio_epoch` advances on VAD start, PTT cut,
-    manual submit, VAD reconfigure, stop. Every audio-pcm event
-    carries its epoch. Both the agent pump and the Gradio pump drop
-    stale PCM.
-  - TTS wire: client sends {u32 piece_index, u32 path_len,
-    u32 text_len, text, path} per piece. piece_index=0xFFFFFFFF ends,
-    0xFFFFFFFE cancels. Server sends {u32 kind, u32 bytes}: kind=2
-    is PCM int16, kind=3 is piece-done, kind=0 is metrics, kind=1
-    is error. First path is the WAV; later paths ignored.
-  - Session::synthesize_stream routes through the pin's
-    Engine::synthesize(text, on_chunk) when
-    runtime.stream_chunk_tokens > 0, otherwise per-piece blocking
-    synth. T3-with-S3Gen overlap within a piece uses the pin's
-    streaming T3 path. Cross-piece T3-of-N+1 with S3Gen-of-N is
-    NOT exposed by this pin; the per-piece worker is the limit and
-    is documented as such in the commit.
-  - Session::request_cancel calls Engine::cancel(). The pin
-    re-clears the flag on the next synthesize (line 583 of pin).
-  - Echo reject: Capture keeps a TTS_RATE int16 ring of the last
-    ECHO_RING_MS=1500 ms of speaker PCM. On VAD start, the last
-    200 ms of the mic frame is correlated against the ring; if
-    corr >= 0.7 and ring_std >= 200 the VAD is suppressed.
-  - save_clone (UI) returns (status_text, dropdown, slug) without
-    raising. CLI save_voice remains strict.
-  - Gradio: conversation_pump drops stale events and yields a fresh
-    gr.Audio(value=None, streaming=True, autoplay=True) on
-    audio-reset to remount the player. The agent's Speaker.reset()
-    does the real hard stop via PortAudio abort.
-
-Real-rig results on this Windows x64 + GTX 1060 6GB rig:
-
-  Gate 3 (vram-audit): delta=3505 MiB / gguf_sum=5017 MiB,
-                       verdict=ok. Matches the prior 0.69x report.
-  Gate 2 (long-form agent, --duration-seconds 120): 10 turns,
-                       0 mic_overflow, 0 stale_drop. The agent test
-                       --assert-blue failed because VAD splits the
-                       actor's counting clause into 3 fragments,
-                       pushing the closing question past turn 9. This
-                       is a test artifact, not a system defect.
-
-Open work, in order of leverage:
-
-  1. The agent's --assert-blue exit condition needs to be smarter
-     about VAD fragmentation. Either:
-       (a) wait for a specific closing-question answer, not for an
-           arbitrary turn count, or
-       (b) have the test pass --actor-text as the only clause and
-           skip the 8 default clauses, or
-       (c) hold the VAD open across a known question boundary
-           using sentence-end detection.
-     This is a test, not the assistant. Do not change the assistant's
-     barge-in behavior to make the test pass.
-
-  2. The echo reject path was not exercised by the agent test (the
-     cable loopback in the agent test routes mic->actor, not
-     mic<-speaker). To prove echo reject on the rig, drive
-     `python main.py ui` and play assistant TTS through speakers
-     while the mic is open. Expect 0 echo_suppress false-positives
-     during normal speech and >=1 echo_suppress event when the
-     assistant's TTS is loud.
-
-  3. Cross-piece T3-of-N+1 with S3Gen-of-N overlap is blocked by
-     the pin. The pin exposes Engine::synthesize(text, on_chunk)
-     for one chunk at a time, not a per-session T3 stream. The
-     open-plan commit 1f848f4 stops here until the pin exposes a
-     session-level T3 stream. Document the limit; do not patch
-     the pin.
-
-  4. Live ASR tab in Gradio is left as file-only. Implementation
-     deferred per prior user direction.
-
-  5. Long-term memory (the next big theme from the prior north
-     star) is still not started. That is the next session's main
-     work, gated on these three gates passing on the real rig.
-
-Verification commands (real rig, Windows x64, GTX 1060 6GB):
-
-  .\.venv\Scripts\python.exe main.py install
-  .\.venv\Scripts\python.exe main.py resident boot --family nano --tts-language en
-  .\.venv\Scripts\python.exe main.py vram-audit
-  .\.venv\Scripts\python.exe main.py agent --duration-seconds 120 --actor-text "what color is a clear daytime sky?" --assert-blue
-  .\.venv\Scripts\python.exe main.py resident stop
-
-Untracked / ignored (do NOT add to git): smoke_wire.py,
-smoke_conversation.py. They were used to learn the data; the rules
-forbid adding tests.
-
-User rules, non-negotiable:
-
-  - Real runs on the real Windows rig only. No harnesses, mocks,
-    simulators, or test scaffolding added to the repo.
-  - Define success before editing.
-  - Evidence in fixed order: real runs -> current source -> history
-    -> memory last.
-  - Keep root defect, trigger, symptom, and escape condition separate.
-  - Always push for code reduction. Delete duplication. No
-    abstractions over consolidation. No dead branches, no unused
-    compat, no bookkeeping. No comments. No new dependencies unless
-    net-negative complexity.
-  - Architectural change is pre-approved; preserve nothing for its
-    own sake.
-
-Environment:
-
-  Windows x64, Python 3.11.9 (.venv), GTX 1060 6GB total VRAM,
-  VB-CABLE on hostapi 3 (WDM-KS). Per-resident VRAM deltas above
-  idle: chatterbox (Nano) ~1339 MiB, gemma ~1515 MiB,
-  parakeet ~652 MiB -> total ~3505 MiB on 6144 MiB.
-  Gemma 4 E2B is 4.63 B params, hybrid attention + Gated Delta Net
-  + MoE; llama.cpp routes MoE experts to CPU via --op-offload.
-  Not an artificial cap.
-
-When you reply, start by:
-
-  1. `git log --oneline runner-x | head -10` to confirm the head.
-  2. `git status` to confirm the tree is clean.
-  3. Read the two new commits and the run logs above.
-  4. State what you will do next in one sentence. No preamble.
+The next move: boot residents in turbo family in English and read a
+short text aloud through the new TTS wire to prove the streaming
+speak path on the real speakers. Then drive the Gradio UI to prove
+the barge in with echo rejection through open speakers. Then start
+the long term memory work, which is the next big theme.
