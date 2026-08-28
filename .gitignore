@@ -24,6 +24,9 @@
 !/cable.py
 !/agent.py
 !/vram_audit.py
+!/data/
+/data/*
+!/data/handover-prompt.txt
 !/tools/
 /tools/*
 !/tools/cable.ps1
