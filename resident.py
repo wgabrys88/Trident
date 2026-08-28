@@ -305,7 +305,7 @@ def use_chatterbox(server: Path, t3_model: Path, codec_model: Path, reference: P
         "--model", str(t3_model), "--s3gen-gguf", str(codec_model),
         "--reference", str(reference), "--language", language, "--port", str(port),
     ]
-    for _, section, key, _, flag, *_ in TTS_FIELDS:
+    for section, key, flag in TTS_FIELDS:
         command += [flag, str(family[section][key])]
     command += ["--fastconv", "1" if family["TTS_RUNTIME"]["fastconv"] else "0"]
     return _launch(

@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import sounddevice as sd
 
-from config import CABLE_INPUT, CABLE_OUTPUT, TOOLS
+from config import CABLE_OUTPUT, TOOLS
 from log import note
 
 _SCRIPT = TOOLS / "cable.ps1"

@@ -18,22 +18,17 @@ def detect_hardware_profile() -> str:
         text=True, encoding="utf-8", errors="replace", timeout=15,
     ).lower()
     if any(name in gpu for name in ("gtx 1050", "gtx 1060", "gtx 1070", "gtx 1080", "titan x (pascal)", "titan xp", "quadro p")): return "pascal"
-    if "iris" in gpu and "xe" in gpu: return "irisxe"
-    raise RuntimeError(f"unsupported experimental GPU: {gpu.strip()}")
+    raise RuntimeError(f"unsupported GPU: {gpu.strip()}")
 
 
 HARDWARE_PROFILE = detect_hardware_profile()
 
 
-GGML_VULKAN_ENV = {
-    "pascal": {"GGML_VK_DISABLE_F16": "1"},
-    "irisxe": {},
-}[HARDWARE_PROFILE]
+GGML_VULKAN_ENV = {"GGML_VK_DISABLE_F16": "1"}
 
 
 def ggml_vulkan_environment() -> dict[str, str]:
     env = os.environ.copy()
-    env.pop("GGML_VK_DISABLE_F16", None)
     env.update(GGML_VULKAN_ENV)
     return env
 
@@ -55,7 +50,6 @@ TTS_RATE = 24000
 REFERENCE_MIN_SECONDS = 5.0
 ECHO_RING_MS = 1500
 
-CABLE_INPUT = "CABLE Input"
 CABLE_OUTPUT = "CABLE Output"
 
 RESIDENT_SERVERS = {
@@ -68,7 +62,7 @@ BRAIN_MODEL = "gemma"
 BRAIN_RUNTIME = {
     "gpu_layers": "all",
     "context": 4096,
-    "flash_attn": "on" if HARDWARE_PROFILE == "pascal" else "off",
+    "flash_attn": "on",
     "fit": "off",
     "load_mode": "mmap",
     "parallel": 1,
@@ -85,33 +79,29 @@ BRAIN_GENERATION = {
     "repeat_penalty": 1.0, "seed": 42, "max_tokens": 1024,
 }
 BRAIN_THINKING = False
-LIVE_SETTINGS_JSON = '{"ingestion_mode":"continuous","system_prompt":"ASR may deliver incomplete fragments. If the user has not finished a request or thought, output nothing. When a spoken reply is needed now, produce only that reply in {tts_language_name} ({tts_language}), the language the loaded voice can speak. If the input language differs, preserve meaning while answering in the output language. Spoken prose only: short sentences ending with a period, question mark, or exclamation. No markdown, lists, code, URLs, emoji, or square-bracket tags. Expand numbers and abbreviations. Do not mention transcription, models, or reasoning.","tts_family":"nano","tts_language":"en","tts_voice":"trump","vad_silence_ms":200,"vad_threshold":0.5}'
+LIVE_SETTINGS_JSON = '{"system_prompt":"ASR may deliver incomplete fragments. If the user has not finished a request or thought, output nothing. When a spoken reply is needed now, produce only that reply in {tts_language_name} ({tts_language}), the language the loaded voice can speak. If the input language differs, preserve meaning while answering in the output language. Spoken prose only: short sentences ending with a period, question mark, or exclamation. No markdown, lists, code, URLs, emoji, or square-bracket tags. Expand numbers and abbreviations. Do not mention transcription, models, or reasoning.","tts_family":"nano","tts_language":"en","tts_voice":"trump","vad_silence_ms":200,"vad_threshold":0.5}'
 LIVE_SETTINGS = json.loads(LIVE_SETTINGS_JSON)
-LIVE_AUDIO = {
-    "asr_feed_seconds": 0.16,
-    "vad_frame_samples": 512,
-    "mic_time_limit_seconds": 86400,
-}
+VAD_FRAME_SAMPLES = 512
 
 TTS_FIELDS = (
-    ("n_gpu_layers", "TTS_RUNTIME", "gpu_layers", int, "--n-gpu-layers", "GPU layers", False),
-    ("context", "TTS_RUNTIME", "context", int, "--context", "Context", False),
-    ("threads", "TTS_RUNTIME", "threads", int, "--threads", "Threads", False),
-    ("seed", "TTS_SAMPLE", "seed", int, "--seed", "Seed", False),
-    ("max_tokens", "TTS_SAMPLE", "max_tokens", int, "--max-tokens", "Max T3 tokens", False),
-    ("top_k", "TTS_SAMPLE", "top_k", int, "--top-k", "Top K", False),
-    ("cfm_steps", "TTS_SAMPLE", "cfm_steps", int, "--cfm-steps", "CFM steps", False),
-    ("first_chunk_chars", "TTS_CHUNK", "first_chars", int, "--first-chunk-chars", "First streaming text-unit chars", False),
-    ("chunk_chars", "TTS_CHUNK", "chars", int, "--chunk-chars", "Text-unit chars", False),
-    ("top_p", "TTS_SAMPLE", "top_p", float, "--top-p", "Top P", False),
-    ("min_p", "TTS_SAMPLE", "min_p", float, "--min-p", "Min P", True),
-    ("temperature", "TTS_SAMPLE", "temperature", float, "--temperature", "Temperature", False),
-    ("repeat_penalty", "TTS_SAMPLE", "repeat_penalty", float, "--repeat-penalty", "Repeat penalty", False),
-    ("cfg_weight", "TTS_VOICE", "cfg_weight", float, "--cfg-weight", "CFG weight", True),
-    ("exaggeration", "TTS_VOICE", "exaggeration", float, "--exaggeration", "Exaggeration", True),
-    ("stream_chunk_tokens", "TTS_CHUNK", "stream_chunk_tokens", int, "--stream-chunk-tokens", "Pin streaming chunk tokens", True),
-    ("stream_first_chunk_tokens", "TTS_CHUNK", "stream_first_chunk_tokens", int, "--stream-first-chunk-tokens", "Pin streaming first chunk tokens", True),
-    ("stream_cfm_steps", "TTS_SAMPLE", "stream_cfm_steps", int, "--stream-cfm-steps", "Pin streaming CFM steps", True),
+    ("TTS_RUNTIME", "gpu_layers", "--n-gpu-layers"),
+    ("TTS_RUNTIME", "context", "--context"),
+    ("TTS_RUNTIME", "threads", "--threads"),
+    ("TTS_SAMPLE", "seed", "--seed"),
+    ("TTS_SAMPLE", "max_tokens", "--max-tokens"),
+    ("TTS_SAMPLE", "top_k", "--top-k"),
+    ("TTS_SAMPLE", "cfm_steps", "--cfm-steps"),
+    ("TTS_CHUNK", "first_chars", "--first-chunk-chars"),
+    ("TTS_CHUNK", "chars", "--chunk-chars"),
+    ("TTS_SAMPLE", "top_p", "--top-p"),
+    ("TTS_SAMPLE", "min_p", "--min-p"),
+    ("TTS_SAMPLE", "temperature", "--temperature"),
+    ("TTS_SAMPLE", "repeat_penalty", "--repeat-penalty"),
+    ("TTS_VOICE", "cfg_weight", "--cfg-weight"),
+    ("TTS_VOICE", "exaggeration", "--exaggeration"),
+    ("TTS_CHUNK", "stream_chunk_tokens", "--stream-chunk-tokens"),
+    ("TTS_CHUNK", "stream_first_chunk_tokens", "--stream-first-chunk-tokens"),
+    ("TTS_SAMPLE", "stream_cfm_steps", "--stream-cfm-steps"),
 )
 
 
@@ -206,18 +196,6 @@ FAMILIES = {
         "t3_nano_v1.safetensors", "chatterbox-t3-nano-q4_0.gguf", 171901536, 80,
     ),
 }
-
-if HARDWARE_PROFILE == "irisxe":
-    for _family_spec in FAMILIES.values():
-        _codec = _family_spec["TTS_MODELS"]["chatterbox-codec"]
-        _codec["convert"]["quant"] = "q4_0"
-        _codec["size"] = 0
-        _codec["file"] = _codec["file"].replace("-f16.gguf", "-irisxe-q4_0-rawf32-v1.gguf")
-
-
-def default_family() -> str:
-    return "nano"
-
 
 SHARED_MODELS = {
     "parakeet": {

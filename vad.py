@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 from silero_vad_notorch import VADIterator, load_silero_vad
 
-from config import ASR_RATE, LIVE_AUDIO
+from config import ASR_RATE, VAD_FRAME_SAMPLES
 
 
 class SileroEndpoint:
@@ -27,7 +27,7 @@ class SileroEndpoint:
             return False, False
         self.buffer = np.concatenate((self.buffer, np.frombuffer(pcm_f32, dtype="<f4")))
         started = ended = False
-        frame = int(LIVE_AUDIO["vad_frame_samples"])
+        frame = VAD_FRAME_SAMPLES
         while self.buffer.size >= frame:
             event = self.iterator(self.buffer[:frame])
             self.buffer = self.buffer[frame:]

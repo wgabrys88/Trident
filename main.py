@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import copy
 import json
 import os, sys
 import threading
@@ -9,7 +8,7 @@ import time
 import wave
 from pathlib import Path
 
-from config import ASR_CHUNK_OVERLAP_SECONDS, ASR_CHUNK_SECONDS, BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_THINKING, FAMILIES, HARDWARE_PROFILE, LIVE_SETTINGS, REFERENCE_MIN_SECONDS, SHARED_MODELS, TTS_FIELDS, TTS_RATE, Paths, load_live_settings, resolve_voice
+from config import ASR_CHUNK_OVERLAP_SECONDS, ASR_CHUNK_SECONDS, BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_THINKING, FAMILIES, HARDWARE_PROFILE, LIVE_SETTINGS, REFERENCE_MIN_SECONDS, SHARED_MODELS, TTS_RATE, Paths, load_live_settings, resolve_voice
 from installer import install, models_for, require_model, runtime_server, runtime_tts_server, validate_wav, write_text_atomic
 from local_api import parakeet_transcribe
 from log import clear_run_log, note, run_log, set_run_log
@@ -47,20 +46,8 @@ def prepared_reference(reference: Path, data_dir: Path) -> Path:
     return wav
 
 
-def effective_family(name: str, overrides: dict | None = None) -> dict:
-    family = copy.deepcopy(FAMILIES[name])
-    src = overrides or {}
-    for key, section, dest, typ, *_ in TTS_FIELDS:
-        value = src.get(key)
-        if value is not None:
-            family[section][dest] = typ(value)
-    if name in {"turbo", "nano"} and (
-        family["TTS_SAMPLE"]["min_p"] != 0.0
-        or family["TTS_VOICE"]["cfg_weight"] != 0.0
-        or family["TTS_VOICE"]["exaggeration"] != 0.0
-    ):
-        raise RuntimeError(f"{name} does not support min-p, CFG weight, or exaggeration")
-    return family
+def effective_family(name: str) -> dict:
+    return FAMILIES[name]
 
 
 def gemma_kwargs(messages: list, stream: bool) -> dict:
