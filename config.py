@@ -123,15 +123,6 @@ def load_live_settings(data_dir: Path) -> dict:
     path = live_settings_path(data_dir)
     return json.loads(path.read_text(encoding="utf-8") if path.is_file() else LIVE_SETTINGS_JSON)
 
-
-def save_live_settings(data_dir: Path, settings: dict) -> None:
-    path = live_settings_path(data_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(settings, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n"
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(payload, encoding="utf-8", newline="\n")
-    os.replace(temporary, path)
-
 LANGUAGES = {
     "en": "English", "es": "Spanish", "fr": "French", "de": "German",
     "it": "Italian", "pt": "Portuguese", "nl": "Dutch", "pl": "Polish",
@@ -282,16 +273,6 @@ DEFAULT_VOICE = "trump"
 
 def voices_dir(data_dir: Path) -> Path:
     return Path(data_dir) / "voices"
-
-
-def list_voices(data_dir: Path) -> list[str]:
-    names = list(REFERENCE_VOICES)
-    folder = voices_dir(data_dir)
-    if folder.is_dir():
-        for wav in sorted(folder.glob("*.wav")):
-            if wav.stem and wav.stem not in names:
-                names.append(wav.stem)
-    return names
 
 
 def resolve_voice(data_dir: Path, value: str | None = None) -> Path:

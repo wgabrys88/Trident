@@ -10,7 +10,7 @@ import time
 import wave
 from pathlib import Path
 
-from config import ASR_CHUNK_OVERLAP_SECONDS, ASR_CHUNK_SECONDS, BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_THINKING, FAMILIES, HARDWARE_PROFILE, LANGUAGES, LIVE_SETTINGS, REFERENCE_MIN_SECONDS, REFERENCE_VOICES, SHARED_MODELS, TTS_FIELDS, TTS_RATE, Paths, default_family, load_live_settings, resolve_voice, voices_dir
+from config import ASR_CHUNK_OVERLAP_SECONDS, ASR_CHUNK_SECONDS, BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_THINKING, FAMILIES, HARDWARE_PROFILE, LANGUAGES, LIVE_SETTINGS, REFERENCE_MIN_SECONDS, SHARED_MODELS, TTS_FIELDS, TTS_RATE, Paths, default_family, load_live_settings, resolve_voice
 from installer import install, models_for, require_model, runtime_server, runtime_tts_server, validate_wav, write_text_atomic
 from local_api import chatterbox_stream as _chatterbox_stream, gemma_chat, parakeet_transcribe
 from log import clear_run_log, note, run_log, set_run_log
@@ -67,22 +67,6 @@ def prepared_reference(reference: Path, data_dir: Path) -> Path:
     with wave.open(str(wav), "rb") as audio: seconds = audio.getnframes() / audio.getframerate()
     note(f"component=tts event=reference_ready duration_s={seconds:.3f}")
     return wav
-
-
-def save_voice(data_dir: Path, name: str, source: Path) -> str:
-    slug = "-".join("".join(ch if ch.isalnum() else " " for ch in name.strip().lower()).split())
-    if not slug:
-        raise RuntimeError("voice name is empty")
-    if slug in REFERENCE_VOICES:
-        raise RuntimeError(f"{slug} is a built-in voice")
-    dest = voices_dir(data_dir) / f"{slug}.wav"
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    wav = prepared_reference(source, data_dir)
-    if wav.resolve() != dest.resolve():
-        shutil.copy2(wav, dest)
-    validate_wav(dest, TTS_RATE, minimum_seconds=REFERENCE_MIN_SECONDS, channels=1)
-    note(f"component=tts event=voice_saved name={slug} path={dest}")
-    return slug
 
 
 def effective_family(name: str, overrides: dict | None = None) -> dict:
@@ -336,9 +320,10 @@ def add_prompt(cmd) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     families = tuple(FAMILIES); p = argparse.ArgumentParser(prog="python main.py", description="Baremetal local ASR -> Gemma -> Chatterbox")
-    p.add_argument("--models-dir", type=Path); p.add_argument("--data-dir", type=Path); p.add_argument("--ui", action="store_true")
+    p.add_argument("--models-dir", type=Path); p.add_argument("--data-dir", type=Path)
     sub = p.add_subparsers(dest="command")
     sub.add_parser("install")
+    sub.add_parser("conversation")
     c=sub.add_parser("asr"); c.add_argument("input"); c.add_argument("-o", "--output")
     c=sub.add_parser("brain"); c.add_argument("input", nargs="?"); c.add_argument("-t", "--text"); c.add_argument("-o", "--output"); c.add_argument("--language", choices=tuple(LANGUAGES), default="en"); add_prompt(c)
     c=sub.add_parser("tts"); c.add_argument("input", nargs="?"); c.add_argument("-t", "--text"); c.add_argument("-o", "--output"); c.add_argument("--family", choices=families, default=default_family()); add_tts_options(c)
@@ -428,26 +413,32 @@ def resident_report() -> str:
     return "\n".join(lines)
 
 
-def launch_ui(args) -> int:
-    paths = start_run("ui", args.models_dir, args.data_dir)
+def run_conversation(args) -> None:
+    from conversation import Conversation
+    paths = Paths(args.models_dir, args.data_dir)
+    boot_residents(paths.models_dir, paths.data_dir)
+    print(resident_report())
+    engine = Conversation(paths.models_dir, paths.data_dir, load_live_settings(paths.data_dir))
     try:
-        boot_residents(paths.models_dir, paths.data_dir)
-        print(resident_report())
-        from ui import launch
-        launch(args.models_dir, args.data_dir)
-    except Exception:
-        finish(paths, "error")
-        raise
-    finish(paths)
-    return 0
+        engine.start()
+        print("Listening · Ctrl+C to stop", flush=True)
+        while engine.failure is None:
+            time.sleep(0.25)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        engine.stop()
+    if engine.failure:
+        raise engine.failure
 
 
 def main() -> int:
     args = build_parser().parse_args()
-    if not args.command and not args.ui:
+    if not args.command:
         python = run_install(args.models_dir, args.data_dir)
-        os.execv(str(python), [str(python), "-X", "utf8", str(Path(__file__).resolve()), *sys.argv[1:], "--ui"])
+        os.execv(str(python), [str(python), "-X", "utf8", str(Path(__file__).resolve()), *sys.argv[1:], "conversation"])
     if args.command == "install": run_install(args.models_dir, args.data_dir)
+    elif args.command == "conversation": run_conversation(args)
     elif args.command == "resident":
         if args.action == "stop": resident_stop_all()
         elif args.action == "boot":
@@ -461,7 +452,6 @@ def main() -> int:
         print(resident_report())
     elif args.command == "cable": run_cable()
     elif args.command: {"asr": run_asr, "brain": run_brain, "tts": run_tts, "run": run_pipeline}[args.command](args)
-    if args.ui: return launch_ui(args)
     return 0
 
 

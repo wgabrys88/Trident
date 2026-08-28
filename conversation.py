@@ -6,25 +6,18 @@ import time
 import wave
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 import numpy as np
 
-from cable import Microphone
+from cable import Microphone, Speaker
 from config import ASR_RATE, ECHO_RING_MS, LANGUAGES, TTS_RATE, resolve_voice
-from local_api import ChatterboxClient
+from local_api import ChatterboxClient, gemma_chat_stream
 from log import clear_run_log, note, set_run_log
-from main import effective_family, finish, gemma_kwargs, prepared_reference, render_system_prompt, resolved_tts, spoken_reply, start_run, stream_synthesize, transcribe_wav, tts_endpoint, write_meta
+from main import effective_family, finish, gemma_kwargs, prepared_reference, render_system_prompt, resolved_tts, spoken_reply, start_run, transcribe_wav, tts_endpoint, write_meta
 from resident import require_alive
 from ui_streaming import SpeechSegmenter
 from vad import SileroEndpoint
-
-
-@dataclass
-class Event:
-    kind: str
-    payload: Any = None
-    epoch: int = 0
 
 
 @dataclass
@@ -60,7 +53,6 @@ class Capture:
         self._echo_ring = np.zeros(0, dtype=np.int16)
         self._echo_rate = 0
         self._echo_lock = threading.Lock()
-        self._handsfree = settings.get("ingestion_mode", "continuous") == "continuous"
 
     def open(self) -> None:
         if self._active:
@@ -68,45 +60,10 @@ class Capture:
         self._vad = SileroEndpoint(self._settings["vad_threshold"], self._settings["vad_silence_ms"])
         self._thread = threading.Thread(target=self._asr_loop, name="trident-capture", daemon=True)
         self._thread.start()
-        if self._handsfree:
-            self._mic = Microphone(self._feed_audio_bytes)
-            self._mic.start()
+        self._mic = Microphone(self._feed_audio_bytes)
+        self._mic.start()
         self._active = True
-        note(f"component=capture event=open handsfree={int(self._handsfree)}")
-
-    def configure_vad(self, threshold: float, silence_ms: int) -> None:
-        if not self._active:
-            return
-        self._asr_queue.put(("vad-config", (float(threshold), int(silence_ms))))
-        self._on_epoch("vad-config")
-
-    def submit_audio(self, pcm_f32: bytes) -> None:
-        if not self._active:
-            return
-        if not pcm_f32:
-            return
-        self._on_epoch("ptt")
-        self._asr_queue.put(("feed", (pcm_f32, ASR_RATE)))
-        self._asr_queue.put(("cut", "PTT"))
-
-    def feed_audio(self, pcm_f32: bytes) -> None:
-        if not self._active:
-            return
-        if not self._settings.get("ingestion_mode", "continuous") == "continuous":
-            return
-        if pcm_f32:
-            self._asr_queue.put(("feed", (pcm_f32, ASR_RATE)))
-
-    def manual_text(self, text: str) -> bool:
-        if not self._active:
-            return False
-        text = text.strip()
-        if not text:
-            self._asr_queue.put(("cut", "MANUAL"))
-            return True
-        self._on_epoch("manual")
-        self._asr_queue.put(("manual", text))
-        return True
+        note("component=capture event=open")
 
     def play_pcm(self, pcm16: bytes, src_rate: int = TTS_RATE) -> None:
         if not pcm16:
@@ -169,8 +126,6 @@ class Capture:
 
     def _feed_audio_bytes(self, pcm_f32: bytes, src_rate: int) -> None:
         if not pcm_f32:
-            return
-        if not self._settings.get("ingestion_mode", "continuous") == "continuous":
             return
         self._asr_queue.put(("feed", (pcm_f32, src_rate)))
 
@@ -240,30 +195,17 @@ class Capture:
                 if op == "feed":
                     native, src_rate = payload
                     pcm = self._resample(native, src_rate)
-                    if self._settings.get("ingestion_mode", "continuous") == "continuous" and self._vad is not None:
-                        started, ended = self._vad.feed(pcm)
-                        if started:
-                            if self._vad_should_suppress(native, src_rate):
-                                self._vad.reset()
-                            else:
-                                self._on_epoch("vad-start")
-                                self._open_turn()
-                        if self._vad.speech:
-                            self._write_turn(pcm)
-                        if ended:
-                            self._transcribe_turn("VAD")
-                    else:
-                        if self._turn_wave is None:
+                    started, ended = self._vad.feed(pcm)
+                    if started:
+                        if self._vad_should_suppress(native, src_rate):
+                            self._vad.reset()
+                        else:
+                            self._on_epoch("vad-start")
                             self._open_turn()
+                    if self._vad.speech:
                         self._write_turn(pcm)
-                elif op == "cut":
-                    self._transcribe_turn(payload)
-                elif op == "manual":
-                    self._on_utterance("MANUAL", payload)
-                elif op == "vad-config":
-                    threshold, silence_ms = payload
-                    if self._vad is not None:
-                        self._vad.configure(threshold, silence_ms)
+                    if ended:
+                        self._transcribe_turn("VAD")
                 elif op == "finish":
                     if self._vad is not None and self._vad.speech:
                         self._transcribe_turn("STOP")
@@ -281,7 +223,7 @@ class Capture:
     def close(self) -> None:
         if not self._active:
             return
-        note(f"component=capture event=close active=1")
+        note("component=capture event=close active=1")
         self._active = False
         if self._mic is not None:
             self._mic.stop()
@@ -291,15 +233,13 @@ class Capture:
 
 
 class Conversation:
-    def __init__(self, models_dir: Path, data_dir: Path, settings: dict, paths=None, output_audio: bool = True) -> None:
+    def __init__(self, models_dir: Path, data_dir: Path, settings: dict, paths=None) -> None:
         self.models_dir = models_dir
         self.data_dir = data_dir
         self.settings = dict(settings)
         self.paths = paths
         self.owns_run = paths is None
-        self.output_audio = output_audio
         self.parakeet = None
-        self.vad = None
         self.gemma_base = None
         self.references: dict[str, Path] = {}
         self.brain_seq = 0
@@ -312,14 +252,13 @@ class Conversation:
         self.turn = 0
         self.tts_started_through = 0
         self.tts_done_through = 0
-        self._output_queue: queue.SimpleQueue = queue.SimpleQueue()
         self._llm_queue: queue.SimpleQueue = queue.SimpleQueue()
         self._tts_queue: queue.SimpleQueue = queue.SimpleQueue()
         self._capture: Capture | None = None
+        self._speaker: Speaker | None = None
         self._llm_thread: threading.Thread | None = None
         self._tts_thread: threading.Thread | None = None
         self._active = False
-        self._epoch_callbacks: list[Callable[[int], None]] = []
         self._epoch_lock = threading.Lock()
 
     def _family(self) -> dict:
@@ -331,22 +270,12 @@ class Conversation:
         if language not in family["TTS_LANGUAGES"]:
             raise RuntimeError(f"language {language!r} is not wired in {family['name']}")
 
-    def _require_engine(self) -> None:
-        if self.failure:
-            raise RuntimeError(str(self.failure))
-        if not self._active:
-            raise RuntimeError("conversation is not active")
-
     def _reference(self, voice: str) -> Path:
         source = resolve_voice(self.data_dir, voice).resolve()
         key = str(source)
         if key not in self.references:
             self.references[key] = prepared_reference(source, self.data_dir)
         return self.references[key]
-
-    def _emit(self, kind: str, payload=None) -> None:
-        if self.output_audio or not kind.startswith("audio-"):
-            self._output_queue.put(Event(kind, payload, self.audio_epoch))
 
     def epoch(self) -> int:
         with self._epoch_lock:
@@ -356,23 +285,10 @@ class Conversation:
         with self._epoch_lock:
             self.audio_epoch += 1
             epoch = self.audio_epoch
+        if self._speaker is not None:
+            self._speaker.clear()
         note(
             f"component=conversation event=epoch_bump epoch={epoch} reason={reason}"
-            f" turn={self.turn} tts_started_through={self.tts_started_through}"
-            f" tts_done_through={self.tts_done_through} transcript_chars={len(self.transcript)}"
-        )
-        for callback in list(self._epoch_callbacks):
-            try:
-                callback(epoch)
-            except Exception as exc:
-                note(f"component=conversation event=epoch_callback_error type={type(exc).__name__} message={exc}")
-
-    def _interrupt(self, reason: str = "interrupt") -> None:
-        seq_before = self.brain_seq
-        self.brain_seq += 1
-        self._bump_epoch(reason)
-        note(
-            f"component=conversation event=interrupt seq_before={seq_before} seq_after={self.brain_seq}"
             f" turn={self.turn} tts_started_through={self.tts_started_through}"
             f" tts_done_through={self.tts_done_through} transcript_chars={len(self.transcript)}"
         )
@@ -380,7 +296,7 @@ class Conversation:
     def _state(self, status: str | None = None) -> None:
         if status is not None:
             self.status = status
-        self._emit("state")
+            print(status, flush=True)
 
     def _worker(self, target, name: str) -> threading.Thread:
         def run():
@@ -391,7 +307,6 @@ class Conversation:
                 self.failure = exc
                 self.status = f"{name} failed · {exc}"
                 note(f"component=conversation event=worker_exception name={name} type={type(exc).__name__} message={exc}")
-                self._emit("error", exc)
             finally:
                 clear_run_log(self.paths.log)
         return threading.Thread(target=run, name=name, daemon=True)
@@ -407,9 +322,11 @@ class Conversation:
             self.parakeet = require_alive("parakeet")
             self.gemma_base = require_alive("gemma")
             self._require_language()
-            self._capture = Capture(self._on_utterance, self._on_capture_epoch, self.paths, self.parakeet, self.settings)
             family = self._family()
             tts_endpoint(self._reference(self.settings["tts_voice"]), self.settings["tts_language"], family, self.paths)
+            self._speaker = Speaker()
+            self._speaker.start()
+            self._capture = Capture(self._on_utterance, self._on_capture_epoch, self.paths, self.parakeet, self.settings)
             self._capture.open()
             self._llm_thread = self._worker(self._llm_loop, "trident-llm")
             self._tts_thread = self._worker(self._tts_loop, "trident-tts")
@@ -418,57 +335,18 @@ class Conversation:
             self._active = True
             self._state("Listening · Parakeet ASR · Gemma · TTS resident")
         except Exception:
+            if self._speaker is not None:
+                self._speaker.stop()
+                self._speaker = None
+            if self._capture is not None:
+                self._capture.close()
+                self._capture = None
             if self.owns_run:
                 finish(self.paths, "error")
             raise
 
     def _on_capture_epoch(self, reason: str) -> None:
         self._bump_epoch(reason)
-
-    def configure(self, settings: dict) -> None:
-        self._require_language()
-        vad_changed = (
-            settings["vad_threshold"] != self.settings["vad_threshold"]
-            or settings["vad_silence_ms"] != self.settings["vad_silence_ms"]
-        )
-        self.settings = dict(settings)
-        if vad_changed and self._capture is not None:
-            self._capture.configure_vad(self.settings["vad_threshold"], self.settings["vad_silence_ms"])
-        note(
-            f"component=conversation event=configure ingestion={settings['ingestion_mode']}"
-            f" tts_family={settings['tts_family']}"
-            f" tts_language={settings['tts_language']} vad_threshold={settings['vad_threshold']}"
-            f" vad_silence_ms={settings['vad_silence_ms']}"
-        )
-        self._state("Configuration applied")
-
-    def submit(self, text: str) -> None:
-        self._require_engine()
-        if self._capture is None:
-            raise RuntimeError("conversation is not active")
-        if not self._capture.manual_text(text):
-            return
-        self._state(f"Dispatch {self.brain_seq} · MANUAL · {len(text)} chars")
-
-    def submit_audio(self, pcm_f32: bytes) -> None:
-        self._require_engine()
-        if self._capture is None:
-            raise RuntimeError("conversation is not active")
-        if not pcm_f32:
-            self._state("Push-to-talk · no audio")
-            return
-        self._capture.submit_audio(pcm_f32)
-        self._state("Push-to-talk · finalizing")
-
-    def feed_audio(self, pcm_f32: bytes) -> None:
-        self._require_engine()
-        if self._capture is None:
-            return
-        self._capture.feed_audio(pcm_f32)
-
-    def reference_audio(self, pcm16: bytes, src_rate: int) -> None:
-        if self._capture is not None:
-            self._capture.play_pcm(pcm16, src_rate)
 
     def _on_utterance(self, reason: str, text: str) -> None:
         text = text.strip()
@@ -482,6 +360,7 @@ class Conversation:
             f"component=conversation event=utterance seq={seq} reason={reason}"
             f" chars={len(text)} transcript_chars={len(self.transcript)}"
         )
+        print(f"User: {text}", flush=True)
         self._state(f"Dispatch {seq} · {reason} · {len(text)} chars")
 
     def _llm_payload(self, text: str, settings: dict) -> dict:
@@ -511,7 +390,8 @@ class Conversation:
                 client.open()
                 client.send_piece(piece.text)
                 if piece.turn != turn_active:
-                    self._emit("audio-reset")
+                    if self._speaker is not None:
+                        self._speaker.clear()
                 turn_active = piece.turn
             except Exception as exc:
                 note(
@@ -541,7 +421,10 @@ class Conversation:
                         f"component=tts event=started_through turn={turn} seq={seq}"
                         f" bytes={len(pcm)} tts_done_through={self.tts_done_through}"
                     )
-                self._emit("audio-pcm", pcm)
+                if self._speaker is not None:
+                    played = self._speaker.play(pcm, TTS_RATE)
+                    if self._capture is not None:
+                        self._capture.play_pcm(played, self._speaker.rate)
             if not cancelled and self.epoch() == epoch_active:
                 self.tts_done_through = max(self.tts_done_through, turn)
                 note(
@@ -555,7 +438,6 @@ class Conversation:
             )
 
     def _llm_loop(self) -> None:
-        from local_api import gemma_chat_stream
         while True:
             item = self._llm_queue.get()
             if item is None:
@@ -608,6 +490,7 @@ class Conversation:
                 f"component=llm event=complete seq={seq} turn={turn} ttfa_ms={(ttfa or time.perf_counter() - started) * 1000:.3f}"
                 f" total_ms={(time.perf_counter() - started) * 1000:.3f} chars={len(answer)}"
             )
+            print(f"Assistant: {answer}", flush=True)
             self._state(f"LLM {turn} · complete")
 
     def stop(self) -> None:
@@ -622,6 +505,9 @@ class Conversation:
         self._active = False
         if self._capture is not None:
             self._capture.close()
+        if self._speaker is not None:
+            self._speaker.stop()
+            self._speaker = None
         self._llm_queue.put(None)
         if self._llm_thread is not None:
             self._llm_thread.join()
@@ -644,7 +530,6 @@ class Conversation:
             set_run_log(self.paths.log)
             finish(self.paths, "error" if self.failure else "ok")
         self._state("Stopped")
-        self._emit("closed")
         note("component=conversation event=stop_end")
 
     def close(self) -> None:
@@ -664,6 +549,3 @@ class Conversation:
                 f"component=conversation event=close_end active={int(self._active)}"
                 f" failure={type(self.failure).__name__ if self.failure else 'none'}"
             )
-
-    def next_output(self):
-        return self._output_queue.get()

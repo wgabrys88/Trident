@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import threading
 import wave
 from pathlib import Path
 
@@ -112,6 +113,65 @@ class Microphone:
             stream.stop()
             stream.close()
             note("component=cable event=mic_stop")
+
+
+class Speaker:
+    def __init__(self) -> None:
+        self._device = _cable_devices()["play"][0]
+        info = sd.query_devices(self._device)
+        self.rate = int(info["default_samplerate"])
+        self._channels = max(1, int(info["max_output_channels"]))
+        self._lock = threading.Lock()
+        self._pending = np.zeros(0, dtype=np.float32)
+        self._stream: sd.OutputStream | None = None
+
+    def _callback(self, outdata, frames, time_info, status) -> None:
+        if status:
+            note(f"component=cable event=spk_underflow detail={status}")
+        with self._lock:
+            take = min(self._pending.size, frames)
+            chunk = self._pending[:take]
+            self._pending = self._pending[take:]
+        if self._channels == 1:
+            outdata[:take, 0] = chunk
+            if take < frames:
+                outdata[take:] = 0
+        else:
+            outdata[:take, 0] = chunk
+            outdata[:take, 1:] = 0
+            if take < frames:
+                outdata[take:] = 0
+
+    def start(self) -> None:
+        if self._stream is not None:
+            raise RuntimeError("cable speaker is already playing")
+        self._stream = sd.OutputStream(
+            samplerate=self.rate, channels=self._channels, dtype="float32",
+            device=self._device, blocksize=int(self.rate * 0.02), callback=self._callback,
+        )
+        self._stream.start()
+        note(f"component=cable event=spk_start device={self._device} rate={self.rate} channels={self._channels}")
+
+    def play(self, pcm16: bytes, src_rate: int) -> bytes:
+        samples = np.frombuffer(pcm16, dtype="<i2").astype(np.float32) / 32768.0
+        if src_rate != self.rate and samples.size:
+            count = max(1, round(samples.size * self.rate / src_rate))
+            samples = np.interp(np.linspace(0, samples.size - 1, count), np.arange(samples.size), samples).astype(np.float32)
+        with self._lock:
+            self._pending = np.concatenate((self._pending, samples)) if self._pending.size else samples
+        return (np.clip(samples, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
+
+    def clear(self) -> None:
+        with self._lock:
+            self._pending = np.zeros(0, dtype=np.float32)
+
+    def stop(self) -> None:
+        stream, self._stream = self._stream, None
+        self.clear()
+        if stream is not None:
+            stream.stop()
+            stream.close()
+            note("component=cable event=spk_stop")
 
 
 def wav_pcm(path: Path, rate: int) -> bytes:
