@@ -24,15 +24,13 @@ from config import (
 from log import note, run as run_logged
 
 
-def validate_wav(path: Path, rate: int | None = None, minimum_seconds: float = 0.0, channels: int | None = None, *, pcm16: bool = True) -> None:
+def validate_wav(path: Path, rate: int | None = None, minimum_seconds: float = 0.0, channels: int | None = None) -> None:
     if not path.is_file():
         raise RuntimeError(f"missing {path}; run: python main.py")
     with path.open("rb") as raw:
         header = raw.read(12)
     if len(header) != 12 or header[:4] != b"RIFF" or header[8:] != b"WAVE":
         raise RuntimeError(f"invalid WAV {path}: not a RIFF/WAVE file")
-    if not pcm16:
-        return
     with wave.open(str(path), "rb") as audio:
         if audio.getsampwidth() != 2 or audio.getcomptype() != "NONE":
             raise RuntimeError(f"invalid WAV {path}: must be PCM16")

@@ -19,9 +19,7 @@ set(GGML_BUILD "${CHATTERBOX_BUILD}/ggml/src")
 
 add_executable(trident-tts-server
     src/audio.cpp
-    src/cli.cpp
     src/server.cpp
-    src/session.cpp
 )
 target_include_directories(trident-tts-server PRIVATE
     include "${CHATTERBOX_CPP_ROOT}/include" "${CHATTERBOX_CPP_ROOT}/ggml/include" ${Vulkan_INCLUDE_DIRS})

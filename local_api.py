@@ -38,12 +38,6 @@ def parakeet_transcribe(base_url: str, wav: Path, timeout: float = 3600.0) -> di
         f"\r\n--{boundary}\r\n"
         'Content-Disposition: form-data; name="model"\r\n\r\n'
         "parakeet\r\n"
-        f"--{boundary}\r\n"
-        'Content-Disposition: form-data; name="response_format"\r\n\r\n'
-        "verbose_json\r\n"
-        f"--{boundary}\r\n"
-        'Content-Disposition: form-data; name="timestamp_granularities[]"\r\n\r\n'
-        "word\r\n"
         f"--{boundary}--\r\n"
     ).encode("ascii")
     content_length = len(head) + wav.stat().st_size + len(fields)
@@ -124,7 +118,6 @@ class ChatterboxClient:
         self._sock: socket.socket | None = None
         self._closed = False
         self._cancel = cancel
-        self._metrics: str = ""
         self._sent = 0
 
     def _recv_exact(self, count: int) -> bytes:
@@ -162,7 +155,6 @@ class ChatterboxClient:
         sock.settimeout(self._timeout)
         self._sock = sock
         self._sent = 0
-        self._metrics = ""
 
     def close(self) -> None:
         if self._sock is None:
@@ -201,8 +193,7 @@ class ChatterboxClient:
         if kind == 2:
             return payload
         if kind == 0:
-            self._metrics = payload.decode("utf-8", errors="replace")
-            raise _TtsComplete(self._metrics)
+            raise _TtsComplete
         if kind == 1:
             message = payload.decode("utf-8", errors="replace")
             raise RuntimeError(f"Chatterbox resident synthesis failed: {message or 'unknown error'}")
@@ -219,12 +210,6 @@ class ChatterboxClient:
         self._closed = True
         self.close()
 
-    @property
-    def metrics(self) -> str:
-        return self._metrics
-
 
 class _TtsComplete(Exception):
-    def __init__(self, metrics: str) -> None:
-        super().__init__(metrics)
-        self.metrics = metrics
+    pass
