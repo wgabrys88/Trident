@@ -371,16 +371,6 @@ class Conversation:
                 callback(epoch)
             except Exception as exc:
                 note(f"component=conversation event=epoch_callback_error type={type(exc).__name__} message={exc}")
-        note(
-            f"component=conversation event=epoch_bump epoch={epoch} reason={reason}"
-            f" turn={self.turn} tts_started_through={self.tts_started_through}"
-            f" tts_done_through={self.tts_done_through} transcript_chars={len(self.transcript)}"
-        )
-        for callback in list(self._epoch_callbacks):
-            try:
-                callback(epoch)
-            except Exception as exc:
-                note(f"component=conversation event=epoch_callback_error type={type(exc).__name__} message={exc}")
 
     def _interrupt(self, reason: str = "interrupt") -> None:
         seq_before = self.brain_seq
