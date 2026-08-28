@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import sounddevice as sd
 
-from config import ASR_RATE, CABLE_INPUT, CABLE_OUTPUT, TOOLS
+from config import CABLE_INPUT, CABLE_OUTPUT, TOOLS
 from log import note
 
 _SCRIPT = TOOLS / "cable.ps1"
@@ -50,7 +50,8 @@ def _host_tag(name: str) -> str:
 
 
 def _cable_devices() -> dict[str, tuple[int, str]]:
-    listed = list(sd.query_devices())
+    host = next(index for index, info in enumerate(sd.query_hostapis()) if info["name"] == "Windows WDM-KS")
+    listed = [info for info in sd.query_devices() if int(info["hostapi"]) == host]
     names = [str(info["name"]) for info in listed]
     records: list[tuple[int, str, int, str]] = []
     plays_by_tag: dict[str, list[tuple[int, str, int]]] = {}
@@ -93,10 +94,7 @@ class Microphone:
         if status:
             note(f"component=cable event=mic_overflow detail={status}")
         audio = np.asarray(indata[:, 0], dtype=np.float32)
-        if self._rate != ASR_RATE and audio.size:
-            count = max(1, round(audio.size * ASR_RATE / self._rate))
-            audio = np.interp(np.linspace(0, audio.size - 1, count), np.arange(audio.size), audio).astype(np.float32)
-        self._feed(audio.tobytes())
+        self._feed(audio.tobytes(), self._rate)
 
     def start(self) -> None:
         if self._stream is not None:

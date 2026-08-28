@@ -267,6 +267,7 @@ def chatterbox_stream(base_url: str, text: str, output: Path, cancel: Callable[[
     client.open()
     try:
         client.send_piece(text)
+        output.parent.mkdir(parents=True, exist_ok=True)
         with wave.open(str(output), "wb") as sink:
             sink.setnchannels(1)
             sink.setsampwidth(2)
