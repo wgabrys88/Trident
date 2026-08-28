@@ -114,20 +114,24 @@ def gemma_chat_stream(base_url: str, payload: dict, timeout: float = 3600.0):
         conn.close()
 
 
-class ChatterboxClient:
-    def __init__(self, base_url: str, timeout: float = 3600.0, cancel=None) -> None:
+_PIECE_END = 0xFFFFFFFF
+_PIECE_CANCEL = 0xFFFFFFFE
+_PIECE_FRAME_KIND = 3
+
+
+class _TtsConnection:
+    def __init__(self, base_url: str, timeout: float) -> None:
         self._parsed = urllib.parse.urlsplit(base_url)
         self._timeout = timeout
-        self._cancel = cancel
         self._sock: socket.socket | None = None
         self._closed = False
+        self._metrics: str = ""
 
     def _recv_exact(self, count: int) -> bytes:
+        assert self._sock is not None
         data = bytearray()
         while len(data) < count:
             if self._closed:
-                raise InterruptedError
-            if self._cancel and self._cancel():
                 raise InterruptedError
             if not select.select([self._sock], [], [], 0.05)[0]:
                 continue
@@ -137,36 +141,49 @@ class ChatterboxClient:
             data.extend(part)
         return bytes(data)
 
-    def __iter__(self):
-        if self._sock is None:
-            raise RuntimeError("ChatterboxClient.connect() must be called before iteration")
-        try:
-            while True:
-                kind, length = struct.unpack("<II", self._recv_exact(8))
-                payload = self._recv_exact(length) if length else b""
-                if kind == 2:
-                    yield payload
-                    continue
-                message = payload.decode("utf-8", errors="replace")
-                if kind == 0:
-                    return message
-                raise RuntimeError(f"Chatterbox resident synthesis failed: {message or 'unknown error'}")
-        except InterruptedError:
-            return
-        except OSError as exc:
-            raise RuntimeError(f"Chatterbox resident request failed: {exc}") from exc
-
-    def connect(self, text: str, output: Path) -> None:
-        if self._sock is not None:
-            raise RuntimeError("ChatterboxClient is already connected")
-        text_bytes = text.encode("utf-8")
-        path_bytes = str(output.resolve()).encode("utf-8")
-        output.parent.mkdir(parents=True, exist_ok=True)
-        self._sock = socket.create_connection((self._parsed.hostname, self._parsed.port), timeout=self._timeout)
+    def connect(self) -> None:
+        self._sock = socket.create_connection(
+            (self._parsed.hostname, self._parsed.port), timeout=self._timeout
+        )
         self._sock.settimeout(self._timeout)
-        self._sock.sendall(struct.pack("<II", len(text_bytes), len(path_bytes)))
+
+    def send_piece(self, index: int, text: str, wav_path: Path | None) -> None:
+        assert self._sock is not None
+        text_bytes = text.encode("utf-8")
+        path_bytes = str(wav_path.resolve()).encode("utf-8") if wav_path is not None else b""
+        header = struct.pack("<III", int(index) & 0xFFFFFFFF, len(path_bytes), len(text_bytes))
+        self._sock.sendall(header)
         self._sock.sendall(text_bytes)
         self._sock.sendall(path_bytes)
+
+    def cancel_piece(self) -> None:
+        assert self._sock is not None
+        header = struct.pack("<III", _PIECE_CANCEL, 0, 0)
+        self._sock.sendall(header)
+
+    def end_stream(self) -> str:
+        assert self._sock is not None
+        self._sock.sendall(struct.pack("<III", _PIECE_END, 0, 0))
+        kind, length = struct.unpack("<II", self._recv_exact(8))
+        payload = self._recv_exact(length) if length else b""
+        if kind == 0:
+            self._metrics = payload.decode("utf-8", errors="replace")
+            return self._metrics
+        message = payload.decode("utf-8", errors="replace")
+        raise RuntimeError(f"Chatterbox resident synthesis failed: {message or 'unknown error'}")
+
+    def recv_pcm(self) -> bytes:
+        kind, length = struct.unpack("<II", self._recv_exact(8))
+        payload = self._recv_exact(length) if length else b""
+        if kind == 2:
+            return payload
+        if kind == _PIECE_FRAME_KIND:
+            raise _PieceComplete()
+        message = payload.decode("utf-8", errors="replace")
+        if kind == 0:
+            self._metrics = message
+            raise _TtsComplete(message)
+        raise RuntimeError(f"Chatterbox resident synthesis failed: {message or 'unknown error'}")
 
     def close(self) -> None:
         if self._closed:
@@ -181,20 +198,106 @@ class ChatterboxClient:
             pass
         sock.close()
 
+    @property
+    def metrics(self) -> str:
+        return self._metrics
+
+
+class _TtsComplete(Exception):
+    def __init__(self, metrics: str) -> None:
+        super().__init__(metrics)
+        self.metrics = metrics
+
+
+class _PieceComplete(Exception):
+    pass
+
+
+class ChatterboxClient:
+    def __init__(self, base_url: str, timeout: float = 3600.0, cancel=None) -> None:
+        self._conn = _TtsConnection(base_url, timeout)
+        self._cancel = cancel
+        self._opened = False
+        self._piece_index = 0
+        self._wav_sent = False
+
+    def open(self, wav_path: Path) -> None:
+        if self._opened:
+            raise RuntimeError("ChatterboxClient is already open")
+        self._conn.connect()
+        self._opened = True
+        self._piece_index = 0
+        self._wav_sent = False
+        self._wav_path = wav_path
+
+    def _check_cancel(self) -> None:
+        if self._cancel and self._cancel():
+            raise InterruptedError
+
+    def send_piece(self, text: str) -> None:
+        if not self._opened:
+            raise RuntimeError("ChatterboxClient.open() must be called before send_piece()")
+        self._check_cancel()
+        self._piece_index += 1
+        path = self._wav_path if not self._wav_sent else None
+        try:
+            self._conn.send_piece(self._piece_index, text, path)
+        except OSError as exc:
+            raise RuntimeError(f"Chatterbox resident request failed: {exc}") from exc
+        self._wav_sent = True
+
+    def recv_pcm(self) -> bytes:
+        try:
+            return self._conn.recv_pcm()
+        except _PieceComplete:
+            raise StopIteration("piece_complete")
+        except _TtsComplete as done:
+            raise StopIteration(done.metrics)
+        except OSError as exc:
+            raise RuntimeError(f"Chatterbox resident request failed: {exc}") from exc
+
+    def cancel_piece(self) -> None:
+        if self._opened and self._conn._sock:
+            try:
+                self._conn.cancel_piece()
+            except OSError:
+                pass
+
+    def end(self) -> str:
+        try:
+            return self._conn.end_stream()
+        except OSError as exc:
+            raise RuntimeError(f"Chatterbox resident request failed: {exc}") from exc
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        self._conn.close()
+        self._opened = False
+
+    def __iter__(self):
+        if not self._opened:
+            raise RuntimeError("ChatterboxClient.open() must be called before iteration")
+        while True:
+            try:
+                yield self._conn.recv_pcm()
+            except _PieceComplete:
+                return
+            except _TtsComplete as done:
+                return done.metrics
+            except OSError as exc:
+                raise RuntimeError(f"Chatterbox resident request failed: {exc}") from exc
+
+    @property
+    def metrics(self) -> str:
+        return self._conn.metrics
+
 
 def chatterbox_stream(base_url: str, text: str, output: Path, cancel=None):
     client = ChatterboxClient(base_url, cancel=cancel)
-    cancelled = bool(cancel and cancel())
-    if not cancelled:
-        try:
-            client.connect(text, output)
-        except Exception:
-            client.close()
-            raise
-    cancelled = bool(cancel and cancel())
-    if cancelled:
-        client.close()
-        return
+    if not (cancel and cancel()):
+        client.open(output)
+        client.send_piece(text)
     try:
         yield from client
     finally:

@@ -141,12 +141,15 @@ def _wait(engine: Conversation, pred, what: str) -> None:
 def _pump_speaker(engine: Conversation) -> None:
     set_run_log(engine.paths.log)
     speaker = Speaker()
+    last_epoch = -1
     try:
         while True:
             event = engine.next_output()
-            kind, payload = event.kind, event.payload
+            kind, payload, epoch = event.kind, event.payload, event.epoch
+            if epoch != last_epoch and kind == "audio-pcm":
+                last_epoch = epoch
             if kind == "audio-pcm":
-                extra = f" bytes={len(payload)}"
+                extra = f" bytes={len(payload)} epoch={epoch}"
             elif kind == "error":
                 extra = f" type={type(payload).__name__} message={payload}"
             else:
@@ -159,6 +162,9 @@ def _pump_speaker(engine: Conversation) -> None:
             if kind == "audio-reset":
                 speaker.reset()
             elif kind == "audio-pcm":
+                if epoch != engine.audio_epoch:
+                    note(f"component=speaker event=stale_drop epoch={epoch} current={engine.audio_epoch}")
+                    continue
                 speaker.write(payload)
     except Exception as exc:
         note(f"component=speaker event=pump_exception type={type(exc).__name__} message={exc}")
@@ -278,6 +284,7 @@ def run(
             expect = expects[index] if expects and index < len(expects) else None
             turn_before = engine.turn
             started_before = engine.tts_started_through
+            epoch_before = engine.audio_epoch
             transcript_before = len(engine.transcript)
             overflow_before = sum(1 for line in paths.log.read_text(encoding="utf-8", errors="replace").splitlines() if "mic_overflow" in line)
             started = time.perf_counter()
@@ -290,9 +297,9 @@ def run(
                 engine.submit_audio(wav_pcm(prompt, ASR_RATE))
             last = index + 1 == len(says)
             if last:
-                _wait(engine, lambda: engine.turn > turn_before and engine.tts_done_through >= engine.turn, f"spoken reply {index + 1}")
+                _wait(engine, lambda: engine.turn > turn_before and (engine.tts_done_through >= engine.turn or engine.audio_epoch > epoch_before), f"spoken reply {index + 1}")
             else:
-                _wait(engine, lambda: engine.tts_started_through > started_before, f"system speech {index + 1}")
+                _wait(engine, lambda: engine.tts_started_through > started_before or engine.audio_epoch > epoch_before, f"system speech {index + 1}")
             heard = engine.transcript[transcript_before:].strip()
             answer = engine.answer.strip()
             match = bool(re.search(expect, answer)) if expect and expect != "-" else None
@@ -321,21 +328,25 @@ def run(
                 new_log = handle.read().decode("utf-8", errors="replace")
             log_lines = new_log.splitlines()
             overflow_after = sum(1 for line in log_lines if "mic_overflow" in line)
+            vad_end_ts: list[str] = []
+            for line in log_lines:
+                if "vad_end" in line and "ts=" in line:
+                    vad_end_ts.append(line.split("ts=", 1)[1].split(" ", 1)[0])
             rows: list[list] = []
             for turn_index in range(1, expected_turns + 1):
-                turn_lines = [line for line in log_lines if f"turn={turn_index}" in line or f"turn {turn_index}" in line]
-                vad_end = next((line.split("ts=", 1)[1].split(" ", 1)[0] for line in turn_lines if "vad_end" in line and f"turn={turn_index}" in line), "")
-                llm_begin = next((line.split("ts=", 1)[1].split(" ", 1)[0] for line in turn_lines if "llm event=begin" in line and f"seq=" in line), "")
+                turn_lines = [line for line in log_lines if f"turn={turn_index}" in line]
+                vad_end = vad_end_ts[turn_index - 1] if turn_index - 1 < len(vad_end_ts) else ""
+                llm_begin = next((line.split("ts=", 1)[1].split(" ", 1)[0] for line in turn_lines if "llm event=begin" in line), "")
                 first_pcm = next((line.split("ts=", 1)[1].split(" ", 1)[0] for line in turn_lines if "started_through" in line and f"turn={turn_index}" in line), "")
                 done = next((line.split("ts=", 1)[1].split(" ", 1)[0] for line in turn_lines if "done_through" in line and f"turn={turn_index} " in line), "")
-                interrupted = any("interrupted turn=" + str(turn_index) in line for line in turn_lines)
+                interrupted = any("epoch_bump" in line and f"turn={turn_index}" in line and "reason=vad-start" not in line for line in turn_lines[1:])
                 rows.append([turn_index, vad_end, llm_begin, first_pcm, done, int(interrupted), 0, len(engine.history[turn_index * 2 - 1]["content"]) if engine.history and turn_index * 2 - 1 < len(engine.history) else 0, overflow_after])
             with turns_csv.open("w", encoding="utf-8", newline="") as handle:
                 csv.writer(handle).writerows(rows)
             results = [{
                 "turns_completed": engine.turn,
                 "tts_done_through": engine.tts_done_through,
-                "cancelled_through": engine.cancelled_through,
+                "audio_epoch": engine.audio_epoch,
                 "answer": engine.answer,
                 "actor_duration_s": round(actor_duration, 3),
                 "mic_overflow_count": overflow_after,

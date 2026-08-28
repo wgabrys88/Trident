@@ -2,6 +2,7 @@
 
 #include "audio.hpp"
 
+#include <atomic>
 #include <cstddef>
 #include <functional>
 #include <memory>
@@ -10,6 +11,7 @@
 namespace tts {
 
 using AudioSink = std::function<void(const float*, std::size_t)>;
+using StreamingSink = std::function<void(const float*, std::size_t, int, bool)>;
 
 class Session {
 public:
@@ -18,6 +20,8 @@ public:
     Session(const Session&) = delete;
     Session& operator=(const Session&) = delete;
     Speech synthesize(const std::string& text, const AudioSink& sink);
+    Speech synthesize_stream(const std::string& text, const StreamingSink& sink);
+    void request_cancel();
     const Runtime& runtime() const noexcept;
     const EngineKnobs& knobs() const noexcept;
     int chunk_chars() const noexcept;

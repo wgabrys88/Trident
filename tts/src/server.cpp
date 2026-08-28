@@ -25,6 +25,9 @@ const std::vector<std::string> kRequired = {
     "--exaggeration", "--cfm-steps", "--first-chunk-chars", "--chunk-chars", "--fastconv",
 };
 
+constexpr std::uint32_t kPieceEnd    = 0xFFFFFFFFu;
+constexpr std::uint32_t kPieceCancel = 0xFFFFFFFEu;
+
 void close_socket(socket_t sock) noexcept {
     if (sock == kInvalidSocket) return;
     closesocket(sock);
@@ -144,7 +147,10 @@ int main(int argc, char** argv) {
         validate_knobs(family, knobs, first_chunk_chars, chunk_chars);
 
         const tts::Runtime runtime = tts::runtime_from(args);
-        tts::log("event=resident_start family=" + family + " preload=begin language=" + knobs.language);
+        tts::log("event=resident_start family=" + family + " preload=begin language=" + knobs.language +
+                 " stream_chunk_tokens=" + std::to_string(runtime.stream_chunk_tokens) +
+                 " stream_first_chunk_tokens=" + std::to_string(runtime.stream_first_chunk_tokens) +
+                 " stream_cfm_steps=" + std::to_string(runtime.stream_cfm_steps));
 
         tts::Session session(runtime, knobs, chunk_chars, tts::kQuietAmp2, first_chunk_chars);
 
@@ -163,52 +169,125 @@ int main(int argc, char** argv) {
             throw std::runtime_error("resident TTS bind failed on 127.0.0.1:" + std::to_string(port));
         if (listen(listener.value, 8) != 0) throw std::runtime_error("resident TTS listen failed");
         tts::log("event=resident_ready ready=1 family=" + family + " host=127.0.0.1 port=" + std::to_string(port) +
-                 " model_resident=1 reference_conditioning_resident=1 language=" + knobs.language);
+                 " model_resident=1 reference_conditioning_resident=1 language=" + knobs.language +
+                 " streaming=" + (runtime.stream_chunk_tokens > 0 ? "1" : "0"));
 
         std::uint64_t request_seq = 0;
         for (;;) {
             SocketGuard client(accept(listener.value, nullptr, nullptr));
             if (client.value == kInvalidSocket) continue;
-            std::array<unsigned char, 8> header{};
-            if (!recv_all(client.value, header.data(), header.size())) continue;
-            const std::uint32_t text_len = decode_u32_le(header.data());
-            const std::uint32_t path_len = decode_u32_le(header.data() + 4);
-            if (!text_len || text_len > 4u * 1024u * 1024u || !path_len || path_len > 32768u) {
-                send_response(client.value, 1, "invalid request header");
-                continue;
-            }
-            std::string text(text_len, '\0');
-            std::string output(path_len, '\0');
-            if (!recv_all(client.value, text.data(), text.size()) || !recv_all(client.value, output.data(), output.size()))
-                continue;
 
-            try {
-                const std::uint64_t request_id = ++request_seq;
-                tts::set_request_id(request_id);
-                const auto started = std::chrono::steady_clock::now();
-                const tts::AudioSink sink = [&](const float* pcm, std::size_t count) { send_pcm(client.value, pcm, count); };
-                const tts::Speech speech = session.synthesize(text, sink);
-                tts::write_wav(output, speech.pcm);
-                const double total_ms = std::chrono::duration<double, std::milli>(
-                    std::chrono::steady_clock::now() - started).count();
-                const double audio_ms = speech.pcm.size() * 1000.0 / tts::kRate;
-                const double wall_rtf = audio_ms > 0 ? total_ms / audio_ms : 0.0;
-                const std::string result = "request_id=" + std::to_string(request_id) +
-                    " samples=" + std::to_string(speech.pcm.size()) +
-                    " chunks=" + std::to_string(speech.chunks) +
-                    " t3_ms=" + std::to_string(speech.t3_ms) +
-                    " s3gen_ms=" + std::to_string(speech.s3gen_ms) +
-                    " ttfa_ms=" + std::to_string(speech.ttfa_ms) +
-                    " total_ms=" + std::to_string(total_ms) +
-                    " wall_rtf=" + std::to_string(wall_rtf);
-                send_response(client.value, 0, result);
-            } catch (const std::exception& error) {
+            std::string wav_path;
+            tts::Speech session_speech;
+            session_speech.pcm.clear();
+            auto started_overall = std::chrono::steady_clock::now();
+            bool first_audio_seen = false;
+            auto mark_first = [&]() {
+                if (first_audio_seen) return;
+                first_audio_seen = true;
+                session_speech.ttfa_ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - started_overall).count();
+            };
+            std::uint32_t piece_index = 0;
+            int pieces_synthesized = 0;
+            const std::uint64_t request_id = ++request_seq;
+            tts::set_request_id(request_id);
+            bool stream_failed = false;
+            std::string stream_error;
+
+            for (;;) {
+                std::array<unsigned char, 12> header{};
+                if (!recv_all(client.value, header.data(), header.size())) break;
+                const std::uint32_t pi   = decode_u32_le(header.data());
+                const std::uint32_t plen = decode_u32_le(header.data() + 4);
+                const std::uint32_t tlen = decode_u32_le(header.data() + 8);
+                if (pi == kPieceEnd) break;
+                if (pi == kPieceCancel) {
+                    session.request_cancel();
+                    continue;
+                }
+                if (tlen == 0 || tlen > 4u * 1024u * 1024u || plen > 32768u) {
+                    stream_failed = true;
+                    stream_error = "invalid piece header";
+                    break;
+                }
+                std::string text(tlen, '\0');
+                if (!recv_all(client.value, text.data(), text.size())) {
+                    stream_failed = true;
+                    stream_error = "short text read";
+                    break;
+                }
+                std::string path(plen, '\0');
+                if (plen && !recv_all(client.value, path.data(), path.size())) {
+                    stream_failed = true;
+                    stream_error = "short path read";
+                    break;
+                }
+                if (!wav_path.empty()) {
+                    tts::log("event=path_ignored piece_index=" + std::to_string(pi) +
+                             " path=" + path);
+                } else if (!path.empty()) {
+                    wav_path = path;
+                }
+                piece_index = pi;
                 try {
-                    send_response(client.value, 1, error.what());
-                } catch (const std::exception& delivery_error) {
-                    tts::log("event=response_delivery_failed message=" + std::string(delivery_error.what()));
+                    const auto piece_started = std::chrono::steady_clock::now();
+                    const tts::StreamingSink sink = [&](const float* pcm, std::size_t count, int, bool) {
+                        if (count == 0) return;
+                        mark_first();
+                        send_pcm(client.value, pcm, count);
+                    };
+                    tts::Speech piece_speech = session.synthesize_stream(text, sink);
+                    session_speech.t3_ms    += piece_speech.t3_ms;
+                    session_speech.s3gen_ms += piece_speech.s3gen_ms;
+                    session_speech.t3_tokens += piece_speech.t3_tokens;
+                    session_speech.pcm.insert(session_speech.pcm.end(), piece_speech.pcm.begin(), piece_speech.pcm.end());
+                    pieces_synthesized += 1;
+                    send_frame(client.value, 3, nullptr, 0);
+                    const double piece_ms = std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - piece_started).count();
+                    tts::log("event=piece_complete piece_index=" + std::to_string(pi) +
+                             " pieces=" + std::to_string(pieces_synthesized) +
+                             " t3_ms=" + std::to_string(piece_speech.t3_ms) +
+                             " s3gen_ms=" + std::to_string(piece_speech.s3gen_ms) +
+                             " t3_tokens=" + std::to_string(piece_speech.t3_tokens) +
+                             " piece_ms=" + std::to_string(piece_ms));
+                } catch (const std::exception& piece_error) {
+                    stream_failed = true;
+                    stream_error = piece_error.what();
+                    break;
                 }
             }
+
+            if (stream_failed) {
+                try { send_response(client.value, 1, stream_error); } catch (...) {}
+                tts::log("event=stream_failed request_id=" + std::to_string(request_id) +
+                         " message=" + stream_error);
+                continue;
+            }
+
+            if (!wav_path.empty() && !session_speech.pcm.empty()) {
+                try { tts::write_wav(wav_path, session_speech.pcm); }
+                catch (const std::exception& wav_error) {
+                    try { send_response(client.value, 1, std::string("wav write failed: ") + wav_error.what()); } catch (...) {}
+                    continue;
+                }
+            }
+
+            session_speech.chunks = pieces_synthesized;
+            const double total_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - started_overall).count();
+            const double audio_ms = session_speech.pcm.size() * 1000.0 / tts::kRate;
+            const double wall_rtf = audio_ms > 0 ? total_ms / audio_ms : 0.0;
+            const std::string result = "request_id=" + std::to_string(request_id) +
+                " samples=" + std::to_string(session_speech.pcm.size()) +
+                " pieces=" + std::to_string(pieces_synthesized) +
+                " t3_ms=" + std::to_string(session_speech.t3_ms) +
+                " s3gen_ms=" + std::to_string(session_speech.s3gen_ms) +
+                " ttfa_ms=" + std::to_string(session_speech.ttfa_ms) +
+                " total_ms=" + std::to_string(total_ms) +
+                " wall_rtf=" + std::to_string(wall_rtf);
+            try { send_response(client.value, 0, result); } catch (...) {}
         }
     } catch (const std::invalid_argument& error) {
         std::cerr << "argument error: " << error.what() << std::endl;
