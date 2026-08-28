@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import re
 import threading
@@ -11,13 +12,26 @@ import numpy as np
 import sounddevice as sd
 
 from cable import Microphone, play_wav, wav_pcm
-from config import ASR_RATE, FAMILIES, LANGUAGES, TTS_RATE, load_live_settings, resolve_voice
+from config import ASR_RATE, FAMILIES, LANGUAGES, Paths, TTS_RATE, load_live_settings, resolve_voice
 from conversation import Conversation
 from log import clear_run_log, note, set_run_log
 from main import boot_residents, effective_family, finish, prepared_reference, start_run, synthesize_text, write_meta
 from resident import status as resident_status
 
 _TURN_IDLE_TIMEOUT_S = 120.0
+
+_DEFAULT_ACTOR_CLAUSES = (
+    "Count out loud slowly, from one to twenty, saying each number clearly and taking your time between each one, do not stop.",
+    "What is the capital city of France?",
+    "Spell the word intelligence letter by letter.",
+    "Name three fruits that are yellow.",
+    "What is twelve plus seven?",
+    "What color is the ocean on a clear day?",
+    "Who wrote the play Romeo and Juliet?",
+    "How many days are in a leap year?",
+)
+_DEFAULT_CLOSING = "Stop counting and answer only this. What color is a clear daytime sky?"
+_CLAUSE_GAP_S = 9.0
 
 
 class Speaker:
@@ -158,6 +172,35 @@ def _pump_speaker(engine: Conversation) -> None:
         clear_run_log(engine.paths.log)
 
 
+def _build_long_actor(
+    clauses: list[str], gap_seconds: float, reference: Path, family_spec: dict, language: str, paths: Paths, out_dir: Path,
+) -> tuple[Path, int]:
+    from main import synthesize_text
+    wavs = []
+    for index, clause in enumerate(clauses):
+        path = out_dir / f"actor-{index:02d}.wav"
+        synthesize_text(clause, reference, path, language, family_spec, paths)
+        wavs.append(path)
+    with wave.open(str(wavs[0]), "rb") as a:
+        rate, ch, sw = a.getframerate(), a.getnchannels(), a.getsampwidth()
+        if (ch, sw) != (1, 2):
+            raise RuntimeError("actor clause WAV is not mono PCM16")
+    frame = sw * ch
+    gap_bytes = int(rate * gap_seconds) * frame
+    silence = b"\x00" * gap_bytes
+    combined = b""
+    for i, w in enumerate(wavs):
+        with wave.open(str(w), "rb") as a:
+            combined += a.readframes(a.getnframes())
+        if i < len(wavs) - 1:
+            combined += silence
+    actor = paths.run_dir / "actor.wav"
+    with wave.open(str(actor), "wb") as o:
+        o.setnchannels(ch); o.setsampwidth(sw); o.setframerate(rate)
+        o.writeframes(combined)
+    return actor, rate
+
+
 def run(
     says: list[str],
     expects: list[str] | None = None,
@@ -165,6 +208,9 @@ def run(
     data_dir: Path | None = None,
     family: str | None = None,
     language: str | None = None,
+    duration_seconds: float | None = None,
+    actor_text: str | None = None,
+    assert_blue: bool = False,
 ) -> int:
     paths = start_run("agent", models_dir, data_dir)
     settings = _live_settings(paths.data_dir, family, language)
@@ -173,12 +219,15 @@ def run(
     if settings["tts_language"] not in LANGUAGES:
         raise RuntimeError(f"unknown language {settings['tts_language']!r}")
     continuous = settings["ingestion_mode"] == "continuous"
+    longform = duration_seconds is not None and duration_seconds > 0
     engine: Conversation | None = None
     mic: Microphone | None = None
     pump: threading.Thread | None = None
     starter: threading.Thread | None = None
-    results = []
+    results: list[dict] = []
     outcome = "error"
+    turns_csv: Path | None = None
+    actor_path: Path | None = None
     try:
         boot_residents(paths.models_dir, paths.data_dir, settings["tts_family"], settings["tts_language"], settings["tts_voice"])
         note(f"component=agent event=residents_ready state={[row['name'] for row in resident_status() if row['ready']]}")
@@ -198,6 +247,17 @@ def run(
 
         starter = threading.Thread(target=start_engine, name="trident-engine-start")
         starter.start()
+        if longform:
+            closing = (actor_text or _DEFAULT_CLOSING).strip()
+            clauses = [*_DEFAULT_ACTOR_CLAUSES, closing]
+            actor_path, _actor_rate = _build_long_actor(clauses, _CLAUSE_GAP_S, reference, family_spec, language_code, paths, paths.run_dir / ".actor")
+            says = clauses
+            expects = ["-"] * (len(clauses) - 1) + ["blue"]
+            actor_duration = wave.open(str(actor_path), "rb").getnframes() / _actor_rate
+            note(f"component=agent event=longform_built clauses={len(clauses)} actor_duration_s={actor_duration:.3f}")
+            turns_csv = paths.run_dir / "turns.csv"
+            with turns_csv.open("w", encoding="utf-8", newline="") as handle:
+                csv.writer(handle).writerow(["turn_index", "t_vad_end_s", "t_llm_begin_s", "t_first_pcm_s", "t_tts_done_s", "interrupted", "transcript_chars", "answer_chars", "mic_overflow_count"])
         prompts = []
         try:
             for index, say in enumerate(says):
@@ -213,12 +273,17 @@ def run(
         if continuous:
             mic = Microphone(engine.feed_audio)
             mic.start()
+        t_run_start = time.perf_counter()
         for index, (say, prompt) in enumerate(zip(says, prompts)):
             expect = expects[index] if expects and index < len(expects) else None
             turn_before = engine.turn
             started_before = engine.tts_started_through
             transcript_before = len(engine.transcript)
+            overflow_before = sum(1 for line in paths.log.read_text(encoding="utf-8", errors="replace").splitlines() if "mic_overflow" in line)
             started = time.perf_counter()
+            if longform:
+                play_wav(actor_path) if index == 0 else None
+                break
             if continuous:
                 play_wav(prompt)
             else:
@@ -240,10 +305,61 @@ def run(
             note(f"component=agent event=turn outcome={'match' if match is True else 'mismatch' if match is False else 'unchecked'} turn_s={elapsed:.3f} heard_len={len(heard)}")
             if match is False:
                 break
-        print(json.dumps({"run_dir": str(paths.run_dir), "turns": results}, ensure_ascii=False))
-        failed = any(row["match"] is False for row in results)
-        outcome = "failed" if failed else "ok"
-        return 1 if failed else 0
+        if longform:
+            assert actor_path is not None and turns_csv is not None
+            expected_turns = len(says)
+            log_offset = paths.log.stat().st_size
+            deadline = time.monotonic() + (duration_seconds or 0) + 60
+            while time.monotonic() < deadline:
+                if engine.turn >= expected_turns and engine.tts_done_through >= engine.turn:
+                    break
+                if engine.failure:
+                    break
+                time.sleep(0.2)
+            with paths.log.open("rb") as handle:
+                handle.seek(log_offset)
+                new_log = handle.read().decode("utf-8", errors="replace")
+            log_lines = new_log.splitlines()
+            overflow_after = sum(1 for line in log_lines if "mic_overflow" in line)
+            rows: list[list] = []
+            for turn_index in range(1, expected_turns + 1):
+                turn_lines = [line for line in log_lines if f"turn={turn_index}" in line or f"turn {turn_index}" in line]
+                vad_end = next((line.split("ts=", 1)[1].split(" ", 1)[0] for line in turn_lines if "vad_end" in line and f"turn={turn_index}" in line), "")
+                llm_begin = next((line.split("ts=", 1)[1].split(" ", 1)[0] for line in turn_lines if "llm event=begin" in line and f"seq=" in line), "")
+                first_pcm = next((line.split("ts=", 1)[1].split(" ", 1)[0] for line in turn_lines if "started_through" in line and f"turn={turn_index}" in line), "")
+                done = next((line.split("ts=", 1)[1].split(" ", 1)[0] for line in turn_lines if "done_through" in line and f"turn={turn_index} " in line), "")
+                interrupted = any("interrupted turn=" + str(turn_index) in line for line in turn_lines)
+                rows.append([turn_index, vad_end, llm_begin, first_pcm, done, int(interrupted), 0, len(engine.history[turn_index * 2 - 1]["content"]) if engine.history and turn_index * 2 - 1 < len(engine.history) else 0, overflow_after])
+            with turns_csv.open("w", encoding="utf-8", newline="") as handle:
+                csv.writer(handle).writerows(rows)
+            results = [{
+                "turns_completed": engine.turn,
+                "tts_done_through": engine.tts_done_through,
+                "cancelled_through": engine.cancelled_through,
+                "answer": engine.answer,
+                "actor_duration_s": round(actor_duration, 3),
+                "mic_overflow_count": overflow_after,
+                "transcript_chars": len(engine.transcript),
+            }]
+            note(f"component=agent event=longform_complete turns={engine.turn} done={engine.tts_done_through} overflow={overflow_after} csv={turns_csv}")
+            assert_msg = ""
+            if assert_blue and "blue" not in engine.answer.lower():
+                assert_msg = f" --assert-blue failed: answer does not contain 'blue': {engine.answer!r}"
+                outcome = "failed"
+            elif engine.failure:
+                outcome = "error"
+                raise engine.failure
+            else:
+                outcome = "ok"
+        else:
+            failed = any(row["match"] is False for row in results)
+            outcome = "failed" if failed else "ok"
+        print(json.dumps({"run_dir": str(paths.run_dir), "turns": results, "turns_csv": str(turns_csv) if turns_csv else None}, ensure_ascii=False, indent=2))
+        if longform and assert_blue and "blue" not in engine.answer.lower():
+            raise SystemExit(assert_msg.strip() or "answer does not contain 'blue'")
+        return 1 if outcome == "failed" else 0
+    except SystemExit:
+        raise
     except Exception as exc:
         note(f"component=agent event=run_exception type={type(exc).__name__} message={exc}")
         raise
