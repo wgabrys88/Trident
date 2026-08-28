@@ -28,10 +28,8 @@ class Event:
 
 @dataclass
 class _Piece:
-    turn: int
-    seq: int
+    epoch: int
     text: str
-    is_last: bool
 
 
 class Capture:
@@ -228,8 +226,8 @@ class Conversation:
         self.owns_run = paths is None
         self.parakeet = None
         self.gemma_base = None
+        self.tts_base = None
         self.references: dict[str, Path] = {}
-        self.brain_seq = 0
         self.audio_epoch = 0
         self.transcript = ""
         self.answer = ""
@@ -237,8 +235,6 @@ class Conversation:
         self.history: list[dict] = []
         self.failure: BaseException | None = None
         self.turn = 0
-        self.tts_started_through = 0
-        self.tts_done_through = 0
         self._output_queue: queue.SimpleQueue = queue.SimpleQueue()
         self._llm_queue: queue.SimpleQueue = queue.SimpleQueue()
         self._tts_queue: queue.SimpleQueue = queue.SimpleQueue()
@@ -258,8 +254,8 @@ class Conversation:
             self.references[key] = prepared_reference(source, self.data_dir)
         return self.references[key]
 
-    def _emit(self, kind: str, payload=None) -> None:
-        self._output_queue.put(Event(kind, payload, self.audio_epoch))
+    def _emit(self, kind: str, payload=None, epoch: int | None = None) -> None:
+        self._output_queue.put(Event(kind, payload, self.audio_epoch if epoch is None else epoch))
 
     def epoch(self) -> int:
         with self._epoch_lock:
@@ -271,19 +267,9 @@ class Conversation:
             epoch = self.audio_epoch
         note(
             f"component=conversation event=epoch_bump epoch={epoch} reason={reason}"
-            f" turn={self.turn} tts_started_through={self.tts_started_through}"
-            f" tts_done_through={self.tts_done_through} transcript_chars={len(self.transcript)}"
+            f" turn={self.turn} transcript_chars={len(self.transcript)}"
         )
-        self._emit("audio-reset")
-
-    def _interrupt(self, reason: str) -> None:
-        self.brain_seq += 1
-        self._bump_epoch(reason)
-        note(
-            f"component=conversation event=interrupt seq={self.brain_seq} reason={reason}"
-            f" turn={self.turn} tts_started_through={self.tts_started_through}"
-            f" tts_done_through={self.tts_done_through}"
-        )
+        self._emit("audio-reset", epoch=epoch)
 
     def _state(self, status: str | None = None) -> None:
         if status is not None:
@@ -315,7 +301,7 @@ class Conversation:
             self.parakeet = require_alive("parakeet")
             self.gemma_base = require_alive("gemma")
             family = self._family()
-            tts_endpoint(self._reference(self.settings["tts_voice"]), "en", family, self.paths)
+            self.tts_base = tts_endpoint(self._reference(self.settings["tts_voice"]), "en", family, self.paths)
             self._capture = Capture(self._on_utterance, self._on_capture_epoch, self.paths, self.parakeet, self.settings)
             self._capture.open()
             self._llm_thread = self._worker(self._llm_loop, "trident-llm")
@@ -333,7 +319,7 @@ class Conversation:
             raise
 
     def _on_capture_epoch(self, reason: str) -> None:
-        self._interrupt(reason)
+        self._bump_epoch(reason)
 
     def feed_audio(self, pcm_f32: bytes) -> None:
         if not self._active or self._capture is None:
@@ -345,14 +331,13 @@ class Conversation:
         if not text:
             return
         self.transcript = (self.transcript.rstrip() + " " + text).strip()
-        self.brain_seq += 1
-        seq = self.brain_seq
-        self._llm_queue.put((seq, text, dict(self.settings)))
+        epoch = self.epoch()
+        self._llm_queue.put((epoch, text, dict(self.settings)))
         note(
-            f"component=conversation event=utterance seq={seq} reason={reason}"
+            f"component=conversation event=utterance epoch={epoch} reason={reason}"
             f" chars={len(text)} transcript_chars={len(self.transcript)}"
         )
-        self._state(f"Dispatch {seq} · {len(text)} chars")
+        self._state(f"Dispatch {epoch} · {len(text)} chars")
 
     def _llm_payload(self, text: str, settings: dict) -> dict:
         system = render_system_prompt(settings["system_prompt"])
@@ -362,67 +347,45 @@ class Conversation:
         )
 
     def _tts_loop(self) -> None:
-        turn_active = 0
         while True:
             item = self._tts_queue.get()
             if item is None:
                 return
             piece: _Piece = item
-            if piece.is_last or not piece.text or piece.turn < 1:
+            live = self.epoch()
+            if not piece.text or piece.epoch != live:
+                if piece.text:
+                    note(f"component=tts event=skip_stale epoch={piece.epoch} live={live}")
                 continue
-            family = self._family()
-            reference = self._reference(self.settings["tts_voice"])
-            base = tts_endpoint(reference, "en", family, self.paths)
-            epoch_active = self.epoch()
-            client = ChatterboxClient(base, cancel=lambda: self.epoch() != epoch_active)
+            client = ChatterboxClient(self.tts_base, cancel=lambda e=piece.epoch: self.epoch() != e)
             try:
                 client.open()
                 client.send_piece(piece.text)
-                if piece.turn != turn_active:
-                    self._emit("audio-reset")
-                turn_active = piece.turn
+                note(f"component=tts event=begin epoch={piece.epoch} chars={len(piece.text)}")
+                self._drain_pieces(client, piece.epoch)
+            except InterruptedError:
+                note(f"component=tts event=interrupted epoch={piece.epoch} live={self.epoch()}")
             except Exception as exc:
                 note(
-                    f"component=tts event=open_failed turn={piece.turn} seq={piece.seq}"
+                    f"component=tts event=failed epoch={piece.epoch}"
                     f" type={type(exc).__name__} message={exc}"
                 )
-                client.close()
-                continue
-            try:
-                self._drain_pieces(client, piece.turn, piece.seq, epoch_active)
             finally:
-                client.close()
+                client.cancel()
 
-    def _drain_pieces(self, client: ChatterboxClient, turn: int, seq: int, epoch_active: int) -> None:
-        cancelled = False
-        try:
-            for pcm in client:
-                if self.epoch() != epoch_active:
-                    client.cancel()
-                    cancelled = True
-                    break
-                if not pcm:
-                    continue
-                if self.tts_started_through < turn:
-                    self.tts_started_through = turn
-                    note(
-                        f"component=tts event=started_through turn={turn} seq={seq}"
-                        f" bytes={len(pcm)} tts_done_through={self.tts_done_through}"
-                    )
-                self._emit("audio-pcm", pcm)
-                if self._capture is not None:
-                    self._capture.play_pcm(pcm, TTS_RATE)
-            if not cancelled and self.epoch() == epoch_active:
-                self.tts_done_through = max(self.tts_done_through, turn)
-                note(
-                    f"component=tts event=done_through turn={turn} seq={seq}"
-                    f" tts_started_through={self.tts_started_through} tts_done_through={self.tts_done_through}"
-                )
-        except Exception as exc:
-            note(
-                f"component=tts event=drain_failed turn={turn} seq={seq}"
-                f" type={type(exc).__name__} message={exc}"
-            )
+    def _drain_pieces(self, client: ChatterboxClient, epoch: int) -> None:
+        for pcm in client:
+            if self.epoch() != epoch:
+                client.cancel()
+                note(f"component=tts event=cancel epoch={epoch} live={self.epoch()}")
+                return
+            if not pcm:
+                continue
+            self._emit("audio-pcm", pcm, epoch=epoch)
+            if self._capture is not None:
+                self._capture.play_pcm(pcm, TTS_RATE)
+        if self.epoch() == epoch:
+            note(f"component=tts event=done epoch={epoch}")
 
     def _llm_loop(self) -> None:
         while True:
@@ -430,12 +393,13 @@ class Conversation:
             if item is None:
                 self._tts_queue.put(None)
                 return
-            seq, prompt, settings = item
-            if seq != self.brain_seq:
+            epoch, prompt, settings = item
+            if epoch != self.epoch():
+                note(f"component=llm event=skip_stale epoch={epoch} live={self.epoch()}")
                 continue
             self.answer = ""
-            self._state(f"LLM {seq} · generating")
-            note(f"component=llm event=begin seq={seq} pending_chars={len(prompt)} transcript_chars={len(self.transcript)}")
+            self._state(f"LLM {epoch} · generating")
+            note(f"component=llm event=begin epoch={epoch} pending_chars={len(prompt)} transcript_chars={len(self.transcript)}")
             started = time.perf_counter()
             ttfa = None
             family = self._family()
@@ -444,37 +408,32 @@ class Conversation:
             segmenter = SpeechSegmenter(first_chars, hard_limit)
             raw = ""
             turn = self.turn + 1
-            epoch_at_dispatch = self.audio_epoch
             self.turn = turn
-            note(f"component=llm event=turn_open turn={turn} seq={seq}")
-            self._state(f"LLM {seq} · speech ready")
+            note(f"component=llm event=turn_open turn={turn} epoch={epoch}")
+            self._state(f"LLM {epoch} · speech ready")
             for delta in gemma_chat_stream(self.gemma_base, self._llm_payload(prompt, settings)):
-                if seq != self.brain_seq:
+                if epoch != self.epoch():
                     break
                 if ttfa is None:
                     ttfa = time.perf_counter() - started
                 raw += delta
                 self.answer = raw
                 self._emit("state")
-                if epoch_at_dispatch != self.audio_epoch:
-                    break
                 for unit in segmenter.update(spoken_reply(raw, streaming=True)):
-                    self._tts_queue.put(_Piece(turn, seq, unit.text, False))
-            if seq != self.brain_seq:
-                note(f"component=llm event=cancelled seq={seq} turn={turn}")
-                self._tts_queue.put(_Piece(turn, seq, "", True))
+                    self._tts_queue.put(_Piece(epoch, unit.text))
+            if epoch != self.epoch():
+                note(f"component=llm event=cancelled epoch={epoch} turn={turn} live={self.epoch()}")
                 continue
             answer = spoken_reply(raw)
             for unit in segmenter.update(answer, flush=True):
-                self._tts_queue.put(_Piece(turn, seq, unit.text, False))
+                self._tts_queue.put(_Piece(epoch, unit.text))
             if not answer:
-                self._state(f"LLM {seq} · wait")
+                self._state(f"LLM {epoch} · wait")
                 continue
             self.answer = answer
             self.history.extend(({"role": "user", "content": prompt}, {"role": "assistant", "content": answer}))
-            self._tts_queue.put(_Piece(turn, seq, "", True))
             note(
-                f"component=llm event=complete seq={seq} turn={turn} ttfa_ms={(ttfa or time.perf_counter() - started) * 1000:.3f}"
+                f"component=llm event=complete epoch={epoch} turn={turn} ttfa_ms={(ttfa or time.perf_counter() - started) * 1000:.3f}"
                 f" total_ms={(time.perf_counter() - started) * 1000:.3f} chars={len(answer)}"
             )
             self._state(f"LLM {turn} · complete")
@@ -483,8 +442,7 @@ class Conversation:
         if not self._active:
             return
         note(
-            f"component=conversation event=stop_begin turn={self.turn} brain_seq={self.brain_seq}"
-            f" tts_started_through={self.tts_started_through} tts_done_through={self.tts_done_through}"
+            f"component=conversation event=stop_begin turn={self.turn}"
             f" audio_epoch={self.audio_epoch}"
         )
         self._bump_epoch("stop")

@@ -97,6 +97,8 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
                     continue
                 audio_value = _wav_bytes(payload)
             elif kind == "audio-reset":
+                if epoch != engine.audio_epoch:
+                    continue
                 audio_value = gr.Audio(value=None, streaming=True, autoplay=True)
             if kind == "error":
                 _cleanup(session_id)
