@@ -12,10 +12,10 @@ from config import ASR_RATE, FAMILIES, LIVE_AUDIO, TTS_RATE, Paths, list_voices,
 from conversation import Conversation
 from main import effective_family, finish, prepared_reference, resolved_tts, run_install, save_voice, start_run, stream_synthesize, synthesize_text, transcribe_file, tts_endpoint, tts_metrics, write_meta
 
-TTS_SETTING_KEYS = ["family", "language", "voice", "join"]
+TTS_SETTING_KEYS = ["family", "language", "voice"]
 LIVE_SETTING_KEYS = [
     "ingestion_mode", "vad_threshold", "vad_silence_ms",
-    "system_prompt", "tts_mode", "tts_family", "tts_language", "tts_voice", "tts_join",
+    "system_prompt", "tts_family", "tts_language", "tts_voice",
 ]
 CSS = """
 .gradio-container {max-width: 1480px !important;}
@@ -112,7 +112,7 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
         return settings
 
     def _load_speech(settings: dict) -> None:
-        family = effective_family(settings["tts_family"], {"streaming": settings["tts_mode"] == "real", "stream_join": settings["tts_join"]})
+        family = effective_family(settings["tts_family"])
         tts_endpoint(
             prepared_reference(resolve_voice(root.data_dir, settings["tts_voice"]), root.data_dir),
             settings["tts_language"], family, root,
@@ -165,12 +165,11 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
             gr.Radio(interactive=True), gr.Button(interactive=False),
         )
         while True:
-            kind, payload = engine.next_output()
+            event = engine.next_output()
+            kind, payload = event.kind, event.payload
             audio = gr.skip()
             if kind == "audio-pcm":
                 audio = _wav_bytes(payload)
-            elif kind == "audio-file":
-                audio = payload
             elif kind == "audio-reset":
                 audio = gr.Audio(value=None)
             if kind == "error":
@@ -223,12 +222,12 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
     def cleanup_session(request: gr.Request):
         _cleanup_session(_session_id(request))
 
-    def speak(text: str, mode: str, *values):
+    def speak(text: str, *values):
         text = str(text or "").strip()
         if not text:
             raise RuntimeError("text is empty")
         settings = _settings(values)
-        family = effective_family(settings["family"], {"streaming": mode == "real", "stream_join": settings["join"]})
+        family = effective_family(settings["family"])
         language = settings["language"]
         if language not in family["TTS_LANGUAGES"]:
             raise RuntimeError(f"language {language!r} is not wired in {family['name']}")
@@ -240,35 +239,18 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
             base = tts_endpoint(reference, language, family, paths)
             write_meta(
                 paths, command="ui-tts", family=family["name"], language=language,
-                resolved_tts=resolved_tts(family), streaming=int(mode == "real"),
-                join=settings["join"], output=paths.output,
+                resolved_tts=resolved_tts(family), output=paths.output,
             )
-            if mode == "buffered":
-                yield gr.skip(), "Buffered · synthesizing"
-                result = synthesize_text(text, reference, paths.output, language, family, paths, base=base, streaming=False)
-                if not paths.output.is_file():
-                    raise RuntimeError(f"Chatterbox did not create buffered output: {result}")
-                outcome = "ok"
-                yield str(paths.output), _tts_status("Buffered · complete", result)
-                return
-
             yield gr.skip(), "Streaming · waiting for first speech unit"
-            generator = stream_synthesize(text, reference, paths.output, language, family, paths, base=base)
             units = 0
             audio_samples = 0
-            while True:
-                try:
-                    raw = next(generator)
-                except StopIteration as done:
-                    result = str(done.value or "")
-                    if not result:
-                        raise RuntimeError("resident TTS stream ended without a completion result")
-                    outcome = "ok"
-                    yield gr.skip(), _tts_status("Streaming · complete", result)
-                    return
+            for raw in stream_synthesize(text, reference, paths.output, language, family, paths, base=base):
                 units += 1
                 audio_samples += len(raw) // 2
                 yield _wav_bytes(raw), f"Streaming · speech unit {units} · {audio_samples / TTS_RATE:.1f}s audio ready"
+            outcome = "ok"
+            yield gr.skip(), f"Streaming · complete · {units} units · {audio_samples / TTS_RATE:.1f}s audio"
+            return
         except Exception:
             outcome = "error"
             raise
@@ -327,7 +309,6 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
             family = gr.Dropdown(list(FAMILIES), value=family_default, label="Chatterbox family")
             language = gr.Dropdown(list(FAMILIES[family_default]["TTS_LANGUAGES"]), value=live_language_default, label="Spoken language")
             voice = gr.Dropdown(voices, value=voice_default, label="Voice")
-            join = gr.Radio([("Crossfade", "crossfade"), ("Separate chunks", "chunks")], value=live["tts_join"], label="Speech-unit join")
             gr.Markdown("The voice is the speaking identity, including voices you clone. v3 speaks any wired language in that voice. Nano and turbo are English only. Changing family or voice replaces the one loaded Chatterbox process.")
             gr.Markdown("### Installation")
             gr.Markdown("Existing validated model files are reused. Install/repair only downloads or converts a model when its expected artifact is missing or invalid.")
@@ -335,7 +316,7 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
             install_output = gr.Textbox(label="Installer output", lines=8, interactive=False, elem_classes="trident-status")
             install_button.click(cli_install, outputs=install_output, concurrency_limit=None, show_progress="minimal")
 
-        tts_inputs = [family, language, voice, join]
+        tts_inputs = [family, language, voice]
         family.change(family_changed, family, language, queue=False)
 
         with gr.Tabs():
@@ -383,14 +364,13 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
                                 vad_silence = gr.Slider(100, 1500, value=live["vad_silence_ms"], step=20, label="Candidate silence · ms")
                         with gr.Column():
                             system_prompt = gr.Textbox(value=live["system_prompt"], label="System prompt", lines=7)
-                            tts_mode = gr.Radio([("Stream speech units", "real"), ("Buffered WAV units", "buffered")], value=live["tts_mode"], label="Conversation TTS delivery")
                             manual_text = gr.Textbox(label="Manual turn", placeholder="Send text directly, or leave empty to finalize captured speech")
                             with gr.Row():
                                 submit_button = gr.Button("Send turn", interactive=False)
                                 save_button = gr.Button("Save settings")
                             config_status = gr.Textbox(value="", label="Configuration", interactive=False, elem_classes="trident-status")
 
-                live_inputs = [ingestion, vad_threshold, vad_silence, system_prompt, tts_mode, family, language, voice, join]
+                live_inputs = [ingestion, vad_threshold, vad_silence, system_prompt, family, language, voice]
                 def mode_changed(mode: str):
                     return (
                         _mode_help(mode), gr.Column(visible=mode == "continuous"),
@@ -431,12 +411,11 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
                 with gr.Row(equal_height=False):
                     with gr.Column(elem_classes="trident-card"):
                         manual_tts_text = gr.Textbox(label="Text", lines=10)
-                        manual_tts_mode = gr.Radio([("Stream speech units", "real"), ("Buffered WAV", "buffered")], value="real", label="Delivery")
                         speak_button = gr.Button("Speak", variant="primary")
                     with gr.Column(elem_classes="trident-card"):
                         manual_output = gr.Audio(label="Output", streaming=True, autoplay=True)
                         manual_status = gr.Textbox(value="Idle", label="Synthesis status", interactive=False, elem_classes="trident-status")
-                speak_button.click(speak, [manual_tts_text, manual_tts_mode, *tts_inputs], [manual_output, manual_status], concurrency_limit=None, show_progress="minimal")
+                speak_button.click(speak, [manual_tts_text, *tts_inputs], [manual_output, manual_status], concurrency_limit=None, show_progress="minimal")
 
         demo.unload(cleanup_session)
 

@@ -129,11 +129,10 @@ def _pump_speaker(engine: Conversation) -> None:
     speaker = Speaker()
     try:
         while True:
-            kind, payload = engine.next_output()
+            event = engine.next_output()
+            kind, payload = event.kind, event.payload
             if kind == "audio-pcm":
                 extra = f" bytes={len(payload)}"
-            elif kind == "audio-file":
-                extra = f" path={payload}"
             elif kind == "error":
                 extra = f" type={type(payload).__name__} message={payload}"
             else:
@@ -147,8 +146,6 @@ def _pump_speaker(engine: Conversation) -> None:
                 speaker.reset()
             elif kind == "audio-pcm":
                 speaker.write(payload)
-            elif kind == "audio-file":
-                speaker.write_wav(payload)
     except Exception as exc:
         note(f"component=speaker event=pump_exception type={type(exc).__name__} message={exc}")
         if engine.failure is None:
@@ -185,7 +182,7 @@ def run(
     try:
         boot_residents(paths.models_dir, paths.data_dir, settings["tts_family"], settings["tts_language"], settings["tts_voice"])
         note(f"component=agent event=residents_ready state={[row['name'] for row in resident_status() if row['ready']]}")
-        family_spec = effective_family(settings["tts_family"], {"streaming": False})
+        family_spec = effective_family(settings["tts_family"])
         language_code = settings["tts_language"]
         if language_code not in family_spec["TTS_LANGUAGES"]:
             raise RuntimeError(f"language {language_code!r} is not wired in {family_spec['name']}")
