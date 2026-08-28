@@ -16,15 +16,10 @@ from media import chatterbox_wav, parakeet_chunks
 from resident import mark_booted, require_alive, start_gemma, start_parakeet, status as resident_status, stop_all as resident_stop_all, use_chatterbox
 
 
-def resolve_language(family: dict, language: str | None) -> str:
-    code = language or family["DEFAULT_REPLY_LANGUAGE"]
-    if code not in family["TTS_LANGUAGES"]: raise RuntimeError(f"language {code!r} is not wired in {family['name']}")
-    return code
-
-
-def render_system_prompt(template: str | None, code: str, name: str) -> str:
+def render_system_prompt(template: str | None = None) -> str:
     text = LIVE_SETTINGS["system_prompt"] if template is None else template
-    for key, value in {"{tts_language}": code, "{tts_language_name}": name, "{language}": code, "{language_name}": name}.items(): text = text.replace(key, value)
+    for key, value in {"{tts_language}": "en", "{tts_language_name}": "English", "{language}": "en", "{language_name}": "English"}.items():
+        text = text.replace(key, value)
     return text.strip()
 
 
@@ -44,10 +39,6 @@ def prepared_reference(reference: Path, data_dir: Path) -> Path:
     with wave.open(str(wav), "rb") as audio: seconds = audio.getnframes() / audio.getframerate()
     note(f"component=tts event=reference_ready duration_s={seconds:.3f}")
     return wav
-
-
-def effective_family(name: str) -> dict:
-    return FAMILIES[name]
 
 
 def gemma_kwargs(messages: list, stream: bool) -> dict:
@@ -121,31 +112,22 @@ def tts_endpoint(reference: Path, language: str, family: dict, paths: Paths) -> 
 
 
 def build_parser() -> argparse.ArgumentParser:
-    families = tuple(FAMILIES)
-    p = argparse.ArgumentParser(prog="python main.py", description="Baremetal local ASR -> Gemma -> Chatterbox")
+    p = argparse.ArgumentParser(prog="python main.py", description="Baremetal nano conversation")
     p.add_argument("--models-dir", type=Path); p.add_argument("--data-dir", type=Path)
     sub = p.add_subparsers(dest="command")
     sub.add_parser("install")
-    sub.add_parser("conversation")
+    sub.add_parser("ui")
     c = sub.add_parser("resident")
     c.add_argument("action", choices=("status", "boot", "stop"))
-    c.add_argument("--family", choices=families)
     c.add_argument("-r", "--reference")
-    c.add_argument("--tts-language")
-    sub.add_parser("cable")
     return p
-
-
-def run_cable() -> None:
-    from cable import status
-    print(status())
 
 
 def run_install(models_dir=None, data_dir=None) -> Path:
     paths = start_run("install", models_dir, data_dir)
     try:
         python = install(paths.models_dir, paths.data_dir)
-        write_meta(paths, command="install", family="all", hardware=HARDWARE_PROFILE)
+        write_meta(paths, command="install", family="nano", hardware=HARDWARE_PROFILE)
     except Exception:
         finish(paths, "error")
         raise
@@ -153,14 +135,11 @@ def run_install(models_dir=None, data_dir=None) -> Path:
     return python
 
 
-def boot_residents(models_dir=None, data_dir=None, family: str | None = None, language: str | None = None, voice: str | None = None) -> Path:
+def boot_residents(models_dir=None, data_dir=None, voice: str | None = None) -> Path:
     paths = Paths(models_dir, data_dir)
     settings = load_live_settings(paths.data_dir)
-    family_name = family or settings["tts_family"]
-    language_code = language or settings["tts_language"]
     voice_value = voice or settings["tts_voice"]
-    spec = effective_family(family_name)
-    language_code = resolve_language(spec, language_code)
+    spec = FAMILIES["nano"]
     errors: list[BaseException] = []
     reference: list[Path] = []
     log_path = run_log()
@@ -196,13 +175,13 @@ def boot_residents(models_dir=None, data_dir=None, family: str | None = None, la
     models = models_for(spec["name"])
     use_chatterbox(
         runtime_tts_server(), require_model(models["chatterbox-t3"], paths.models_dir),
-        require_model(models["chatterbox-codec"], paths.models_dir), reference[0], spec, language_code,
+        require_model(models["chatterbox-codec"], paths.models_dir), reference[0], spec, "en",
     )
     require_alive("parakeet")
     require_alive("gemma")
     require_alive("chatterbox")
     mark_booted()
-    note(f"component=resident event=residents_ready family={spec['name']} language={language_code}")
+    note("component=resident event=residents_ready family=nano language=en")
     return reference[0]
 
 
@@ -216,44 +195,38 @@ def resident_report() -> str:
     return "\n".join(lines)
 
 
-def run_conversation(args) -> None:
-    from conversation import Conversation
-    paths = Paths(args.models_dir, args.data_dir)
-    boot_residents(paths.models_dir, paths.data_dir)
-    print(resident_report())
-    engine = Conversation(paths.models_dir, paths.data_dir, load_live_settings(paths.data_dir))
+def launch_ui(args) -> int:
+    paths = start_run("ui", args.models_dir, args.data_dir)
     try:
-        engine.start()
-        print("Listening · Ctrl+C to stop", flush=True)
-        while engine.failure is None:
-            time.sleep(0.25)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        engine.stop()
-    if engine.failure:
-        raise engine.failure
+        boot_residents(paths.models_dir, paths.data_dir)
+        print(resident_report())
+        from ui import launch
+        launch(args.models_dir, args.data_dir)
+    except Exception:
+        finish(paths, "error")
+        raise
+    finish(paths)
+    return 0
 
 
 def main() -> int:
     args = build_parser().parse_args()
     if not args.command:
         python = run_install(args.models_dir, args.data_dir)
-        os.execv(str(python), [str(python), "-X", "utf8", str(Path(__file__).resolve()), *sys.argv[1:], "conversation"])
+        os.execv(str(python), [str(python), "-X", "utf8", str(Path(__file__).resolve()), *sys.argv[1:], "ui"])
     if args.command == "install": run_install(args.models_dir, args.data_dir)
-    elif args.command == "conversation": run_conversation(args)
+    elif args.command == "ui": return launch_ui(args)
     elif args.command == "resident":
         if args.action == "stop": resident_stop_all()
         elif args.action == "boot":
             paths = start_run("resident", args.models_dir, args.data_dir)
             try:
-                boot_residents(paths.models_dir, paths.data_dir, args.family, args.tts_language, args.reference)
+                boot_residents(paths.models_dir, paths.data_dir, args.reference)
             except Exception:
                 finish(paths, "error")
                 raise
             finish(paths)
         print(resident_report())
-    elif args.command == "cable": run_cable()
     return 0
 
 
