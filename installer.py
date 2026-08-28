@@ -489,5 +489,5 @@ def install(models_dir: Path | None = None, data_dir: Path | None = None) -> Pat
         download_model(spec, paths.models_dir)
     clean_install_artifacts()
     python = install_ui()
-    note("component=install event=complete family=all")
+    note("component=install event=complete family=nano")
     return python

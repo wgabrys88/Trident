@@ -10,14 +10,20 @@ from typing import Callable
 
 import numpy as np
 
-from cable import Microphone, Speaker
-from config import ASR_RATE, ECHO_RING_MS, LANGUAGES, TTS_RATE, resolve_voice
+from config import ASR_RATE, ECHO_RING_MS, FAMILIES, TTS_RATE, resolve_voice
 from local_api import ChatterboxClient, gemma_chat_stream
 from log import clear_run_log, note, set_run_log
-from main import effective_family, finish, gemma_kwargs, prepared_reference, render_system_prompt, resolved_tts, spoken_reply, start_run, transcribe_wav, tts_endpoint, write_meta
+from main import finish, gemma_kwargs, prepared_reference, render_system_prompt, resolved_tts, spoken_reply, start_run, transcribe_wav, tts_endpoint, write_meta
 from resident import require_alive
 from ui_streaming import SpeechSegmenter
 from vad import SileroEndpoint
+
+
+@dataclass
+class Event:
+    kind: str
+    payload: object = None
+    epoch: int = 0
 
 
 @dataclass
@@ -45,13 +51,11 @@ class Capture:
         self._asr_queue: queue.SimpleQueue = queue.SimpleQueue()
         self._vad: SileroEndpoint | None = None
         self._thread: threading.Thread | None = None
-        self._mic: Microphone | None = None
         self._active = False
         self._turn_wave: wave.Wave_write | None = None
         self._turn_path: Path | None = None
         self._turn_index = 0
         self._echo_ring = np.zeros(0, dtype=np.int16)
-        self._echo_rate = 0
         self._echo_lock = threading.Lock()
 
     def open(self) -> None:
@@ -60,43 +64,38 @@ class Capture:
         self._vad = SileroEndpoint(self._settings["vad_threshold"], self._settings["vad_silence_ms"])
         self._thread = threading.Thread(target=self._asr_loop, name="trident-capture", daemon=True)
         self._thread.start()
-        self._mic = Microphone(self._feed_audio_bytes)
-        self._mic.start()
         self._active = True
         note("component=capture event=open")
+
+    def feed(self, pcm_f32: bytes, src_rate: int = ASR_RATE) -> None:
+        if not self._active or not pcm_f32:
+            return
+        self._asr_queue.put(("feed", (pcm_f32, src_rate)))
 
     def play_pcm(self, pcm16: bytes, src_rate: int = TTS_RATE) -> None:
         if not pcm16:
             return
-        try:
-            samples = np.frombuffer(pcm16, dtype="<i2")
-        except ValueError:
-            return
-        if samples.size == 0:
-            return
+        samples = np.frombuffer(pcm16, dtype="<i2").astype(np.float32)
+        if src_rate != ASR_RATE and samples.size:
+            count = max(1, round(samples.size * ASR_RATE / src_rate))
+            samples = np.interp(np.linspace(0, samples.size - 1, count), np.arange(samples.size), samples)
+        pcm = np.clip(samples, -32768.0, 32767.0).astype("<i2")
         with self._echo_lock:
-            self._echo_rate = src_rate
-            target = max(1, int(src_rate * ECHO_RING_MS / 1000))
-            new = np.concatenate((self._echo_ring, samples)) if self._echo_ring.size else samples.astype("<i2")
+            target = max(1, int(ASR_RATE * ECHO_RING_MS / 1000))
+            new = np.concatenate((self._echo_ring, pcm)) if self._echo_ring.size else pcm
             if new.size > target:
                 new = new[-target:]
             self._echo_ring = new
 
-    def _echo_score(self, pcm_f32: bytes, src_rate: int) -> tuple[float, float]:
+    def _echo_score(self, pcm_f32: bytes) -> tuple[float, float]:
         if not pcm_f32:
             return 0.0, 0.0
         with self._echo_lock:
             ring = self._echo_ring
-            echo_rate = self._echo_rate
-        try:
-            mic = np.frombuffer(pcm_f32, dtype="<f4")
-        except ValueError:
-            return 0.0, 0.0
+        mic = np.frombuffer(pcm_f32, dtype="<f4")
         if mic.size == 0:
             return 0.0, 0.0
-        if src_rate != echo_rate:
-            return 0.0, 0.0
-        window = min(mic.size, int(src_rate * 0.2))
+        window = min(mic.size, int(ASR_RATE * 0.2))
         if window < 160 or ring.size < window:
             return 0.0, 0.0
         mic_window = mic[-window:]
@@ -117,17 +116,12 @@ class Capture:
         ring_std = float(np.sqrt(max(energy[index], 0.0) / window))
         return corr, ring_std
 
-    def _vad_should_suppress(self, pcm_f32: bytes, src_rate: int) -> bool:
-        corr, ring_std = self._echo_score(pcm_f32, src_rate)
+    def _vad_should_suppress(self, pcm_f32: bytes) -> bool:
+        corr, ring_std = self._echo_score(pcm_f32)
         if corr >= 0.7:
             note(f"component=capture event=echo_suppress corr={corr:.3f} ring_std={ring_std:.1f}")
             return True
         return False
-
-    def _feed_audio_bytes(self, pcm_f32: bytes, src_rate: int) -> None:
-        if not pcm_f32:
-            return
-        self._asr_queue.put(("feed", (pcm_f32, src_rate)))
 
     def _resample(self, pcm_f32: bytes, src_rate: int) -> bytes:
         samples = np.frombuffer(pcm_f32, dtype="<f4")
@@ -149,14 +143,9 @@ class Capture:
         self._turn_path = path
 
     def _write_turn(self, pcm_f32: bytes) -> None:
-        if self._turn_wave is None:
+        if self._turn_wave is None or not pcm_f32:
             return
-        if not pcm_f32:
-            return
-        try:
-            audio = np.frombuffer(pcm_f32, dtype="<f4")
-        except ValueError:
-            return
+        audio = np.frombuffer(pcm_f32, dtype="<f4")
         pcm16 = (np.clip(audio, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
         self._turn_wave.writeframesraw(pcm16)
 
@@ -197,7 +186,7 @@ class Capture:
                     pcm = self._resample(native, src_rate)
                     started, ended = self._vad.feed(pcm)
                     if started:
-                        if self._vad_should_suppress(native, src_rate):
+                        if self._vad_should_suppress(pcm):
                             self._vad.reset()
                         else:
                             self._on_epoch("vad-start")
@@ -225,8 +214,6 @@ class Capture:
             return
         note("component=capture event=close active=1")
         self._active = False
-        if self._mic is not None:
-            self._mic.stop()
         self._asr_queue.put(("finish", None))
         if self._thread is not None:
             self._thread.join()
@@ -252,23 +239,17 @@ class Conversation:
         self.turn = 0
         self.tts_started_through = 0
         self.tts_done_through = 0
+        self._output_queue: queue.SimpleQueue = queue.SimpleQueue()
         self._llm_queue: queue.SimpleQueue = queue.SimpleQueue()
         self._tts_queue: queue.SimpleQueue = queue.SimpleQueue()
         self._capture: Capture | None = None
-        self._speaker: Speaker | None = None
         self._llm_thread: threading.Thread | None = None
         self._tts_thread: threading.Thread | None = None
         self._active = False
         self._epoch_lock = threading.Lock()
 
     def _family(self) -> dict:
-        return effective_family(self.settings["tts_family"])
-
-    def _require_language(self) -> None:
-        family = self._family()
-        language = self.settings["tts_language"]
-        if language not in family["TTS_LANGUAGES"]:
-            raise RuntimeError(f"language {language!r} is not wired in {family['name']}")
+        return FAMILIES["nano"]
 
     def _reference(self, voice: str) -> Path:
         source = resolve_voice(self.data_dir, voice).resolve()
@@ -276,6 +257,9 @@ class Conversation:
         if key not in self.references:
             self.references[key] = prepared_reference(source, self.data_dir)
         return self.references[key]
+
+    def _emit(self, kind: str, payload=None) -> None:
+        self._output_queue.put(Event(kind, payload, self.audio_epoch))
 
     def epoch(self) -> int:
         with self._epoch_lock:
@@ -285,18 +269,26 @@ class Conversation:
         with self._epoch_lock:
             self.audio_epoch += 1
             epoch = self.audio_epoch
-        if self._speaker is not None:
-            self._speaker.clear()
         note(
             f"component=conversation event=epoch_bump epoch={epoch} reason={reason}"
             f" turn={self.turn} tts_started_through={self.tts_started_through}"
             f" tts_done_through={self.tts_done_through} transcript_chars={len(self.transcript)}"
         )
+        self._emit("audio-reset")
+
+    def _interrupt(self, reason: str) -> None:
+        self.brain_seq += 1
+        self._bump_epoch(reason)
+        note(
+            f"component=conversation event=interrupt seq={self.brain_seq} reason={reason}"
+            f" turn={self.turn} tts_started_through={self.tts_started_through}"
+            f" tts_done_through={self.tts_done_through}"
+        )
 
     def _state(self, status: str | None = None) -> None:
         if status is not None:
             self.status = status
-            print(status, flush=True)
+        self._emit("state")
 
     def _worker(self, target, name: str) -> threading.Thread:
         def run():
@@ -307,6 +299,7 @@ class Conversation:
                 self.failure = exc
                 self.status = f"{name} failed · {exc}"
                 note(f"component=conversation event=worker_exception name={name} type={type(exc).__name__} message={exc}")
+                self._emit("error", exc)
             finally:
                 clear_run_log(self.paths.log)
         return threading.Thread(target=run, name=name, daemon=True)
@@ -321,11 +314,8 @@ class Conversation:
         try:
             self.parakeet = require_alive("parakeet")
             self.gemma_base = require_alive("gemma")
-            self._require_language()
             family = self._family()
-            tts_endpoint(self._reference(self.settings["tts_voice"]), self.settings["tts_language"], family, self.paths)
-            self._speaker = Speaker()
-            self._speaker.start()
+            tts_endpoint(self._reference(self.settings["tts_voice"]), "en", family, self.paths)
             self._capture = Capture(self._on_utterance, self._on_capture_epoch, self.paths, self.parakeet, self.settings)
             self._capture.open()
             self._llm_thread = self._worker(self._llm_loop, "trident-llm")
@@ -333,11 +323,8 @@ class Conversation:
             self._llm_thread.start()
             self._tts_thread.start()
             self._active = True
-            self._state("Listening · Parakeet ASR · Gemma · TTS resident")
+            self._state("Listening")
         except Exception:
-            if self._speaker is not None:
-                self._speaker.stop()
-                self._speaker = None
             if self._capture is not None:
                 self._capture.close()
                 self._capture = None
@@ -346,7 +333,12 @@ class Conversation:
             raise
 
     def _on_capture_epoch(self, reason: str) -> None:
-        self._bump_epoch(reason)
+        self._interrupt(reason)
+
+    def feed_audio(self, pcm_f32: bytes) -> None:
+        if not self._active or self._capture is None:
+            return
+        self._capture.feed(pcm_f32)
 
     def _on_utterance(self, reason: str, text: str) -> None:
         text = text.strip()
@@ -360,12 +352,10 @@ class Conversation:
             f"component=conversation event=utterance seq={seq} reason={reason}"
             f" chars={len(text)} transcript_chars={len(self.transcript)}"
         )
-        print(f"User: {text}", flush=True)
-        self._state(f"Dispatch {seq} · {reason} · {len(text)} chars")
+        self._state(f"Dispatch {seq} · {len(text)} chars")
 
     def _llm_payload(self, text: str, settings: dict) -> dict:
-        language = settings["tts_language"]
-        system = render_system_prompt(settings["system_prompt"], language, LANGUAGES[language])
+        system = render_system_prompt(settings["system_prompt"])
         return gemma_kwargs(
             [{"role": "system", "content": system}, *self.history, {"role": "user", "content": text}],
             stream=True,
@@ -381,17 +371,15 @@ class Conversation:
             if piece.is_last or not piece.text or piece.turn < 1:
                 continue
             family = self._family()
-            language = self.settings["tts_language"]
             reference = self._reference(self.settings["tts_voice"])
-            base = tts_endpoint(reference, language, family, self.paths)
+            base = tts_endpoint(reference, "en", family, self.paths)
             epoch_active = self.epoch()
             client = ChatterboxClient(base, cancel=lambda: self.epoch() != epoch_active)
             try:
                 client.open()
                 client.send_piece(piece.text)
                 if piece.turn != turn_active:
-                    if self._speaker is not None:
-                        self._speaker.clear()
+                    self._emit("audio-reset")
                 turn_active = piece.turn
             except Exception as exc:
                 note(
@@ -421,10 +409,9 @@ class Conversation:
                         f"component=tts event=started_through turn={turn} seq={seq}"
                         f" bytes={len(pcm)} tts_done_through={self.tts_done_through}"
                     )
-                if self._speaker is not None:
-                    played = self._speaker.play(pcm, TTS_RATE)
-                    if self._capture is not None:
-                        self._capture.play_pcm(played, self._speaker.rate)
+                self._emit("audio-pcm", pcm)
+                if self._capture is not None:
+                    self._capture.play_pcm(pcm, TTS_RATE)
             if not cancelled and self.epoch() == epoch_active:
                 self.tts_done_through = max(self.tts_done_through, turn)
                 note(
@@ -446,7 +433,6 @@ class Conversation:
             seq, prompt, settings = item
             if seq != self.brain_seq:
                 continue
-            self._require_language()
             self.answer = ""
             self._state(f"LLM {seq} · generating")
             note(f"component=llm event=begin seq={seq} pending_chars={len(prompt)} transcript_chars={len(self.transcript)}")
@@ -469,6 +455,7 @@ class Conversation:
                     ttfa = time.perf_counter() - started
                 raw += delta
                 self.answer = raw
+                self._emit("state")
                 if epoch_at_dispatch != self.audio_epoch:
                     break
                 for unit in segmenter.update(spoken_reply(raw, streaming=True)):
@@ -490,7 +477,6 @@ class Conversation:
                 f"component=llm event=complete seq={seq} turn={turn} ttfa_ms={(ttfa or time.perf_counter() - started) * 1000:.3f}"
                 f" total_ms={(time.perf_counter() - started) * 1000:.3f} chars={len(answer)}"
             )
-            print(f"Assistant: {answer}", flush=True)
             self._state(f"LLM {turn} · complete")
 
     def stop(self) -> None:
@@ -505,9 +491,6 @@ class Conversation:
         self._active = False
         if self._capture is not None:
             self._capture.close()
-        if self._speaker is not None:
-            self._speaker.stop()
-            self._speaker = None
         self._llm_queue.put(None)
         if self._llm_thread is not None:
             self._llm_thread.join()
@@ -515,37 +498,25 @@ class Conversation:
             self._tts_thread.join()
         self.paths.transcript.write_text(self.transcript + ("\n" if self.transcript else ""), encoding="utf-8")
         if self.owns_run:
-            final_family = self._family()
             write_meta(
                 self.paths,
                 command="conversation",
                 transcript=self.paths.transcript,
                 turns=self.turn,
-                reply_owner="brain",
+                family="nano",
                 vad_threshold=self.settings["vad_threshold"],
                 vad_silence_ms=self.settings["vad_silence_ms"],
-                tts_language=self.settings["tts_language"],
-                resolved_tts=resolved_tts(final_family),
+                resolved_tts=resolved_tts(self._family()),
             )
             set_run_log(self.paths.log)
             finish(self.paths, "error" if self.failure else "ok")
         self._state("Stopped")
+        self._emit("closed")
         note("component=conversation event=stop_end")
 
     def close(self) -> None:
-        note(
-            f"component=conversation event=close_begin active={int(self._active)} turn={self.turn}"
-            f" tts_started_through={self.tts_started_through} tts_done_through={self.tts_done_through}"
-            f" brain_seq={self.brain_seq} audio_epoch={self.audio_epoch}"
-        )
-        try:
-            if self._active:
-                self.stop()
-        except Exception as exc:
-            note(f"component=conversation event=close_exception type={type(exc).__name__} message={exc}")
-            raise
-        finally:
-            note(
-                f"component=conversation event=close_end active={int(self._active)}"
-                f" failure={type(self.failure).__name__ if self.failure else 'none'}"
-            )
+        if self._active:
+            self.stop()
+
+    def next_output(self):
+        return self._output_queue.get()

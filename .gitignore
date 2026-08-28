@@ -14,13 +14,10 @@
 !/tts/include/*.hpp
 !/tts/src/
 !/tts/src/*.cpp
+!/ui.py
 !/ui_streaming.py
 !/requirements-ui.txt
 !/patches/
 !/patches/*.patch
 !/conversation.py
 !/vad.py
-!/cable.py
-!/tools/
-/tools/*
-!/tools/cable.ps1

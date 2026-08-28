@@ -49,8 +49,8 @@ ASR_CHUNK_OVERLAP_SECONDS = 4
 TTS_RATE = 24000
 REFERENCE_MIN_SECONDS = 5.0
 ECHO_RING_MS = 1500
-
-CABLE_OUTPUT = "CABLE Output"
+ASR_FEED_SECONDS = 0.16
+MIC_TIME_LIMIT_SECONDS = 86400
 
 RESIDENT_SERVERS = {
     "parakeet": {"host": "127.0.0.1", "port": 17931, "url": "http://127.0.0.1:17931", "startup_timeout_s": 120},
@@ -79,7 +79,7 @@ BRAIN_GENERATION = {
     "repeat_penalty": 1.0, "seed": 42, "max_tokens": 1024,
 }
 BRAIN_THINKING = False
-LIVE_SETTINGS_JSON = '{"system_prompt":"ASR may deliver incomplete fragments. If the user has not finished a request or thought, output nothing. When a spoken reply is needed now, produce only that reply in {tts_language_name} ({tts_language}), the language the loaded voice can speak. If the input language differs, preserve meaning while answering in the output language. Spoken prose only: short sentences ending with a period, question mark, or exclamation. No markdown, lists, code, URLs, emoji, or square-bracket tags. Expand numbers and abbreviations. Do not mention transcription, models, or reasoning.","tts_family":"nano","tts_language":"en","tts_voice":"trump","vad_silence_ms":200,"vad_threshold":0.5}'
+LIVE_SETTINGS_JSON = '{"system_prompt":"ASR may deliver incomplete fragments. If the user has not finished a request or thought, output nothing. When a spoken reply is needed now, produce only that reply in English. If the input language differs, preserve meaning while answering in English. Spoken prose only: short sentences ending with a period, question mark, or exclamation. No markdown, lists, code, URLs, emoji, or square-bracket tags. Expand numbers and abbreviations. Do not mention transcription, models, or reasoning.","tts_voice":"trump","vad_silence_ms":200,"vad_threshold":0.5}'
 LIVE_SETTINGS = json.loads(LIVE_SETTINGS_JSON)
 VAD_FRAME_SAMPLES = 512
 
@@ -113,14 +113,6 @@ def load_live_settings(data_dir: Path) -> dict:
     path = live_settings_path(data_dir)
     return json.loads(path.read_text(encoding="utf-8") if path.is_file() else LIVE_SETTINGS_JSON)
 
-LANGUAGES = {
-    "en": "English", "es": "Spanish", "fr": "French", "de": "German",
-    "it": "Italian", "pt": "Portuguese", "nl": "Dutch", "pl": "Polish",
-    "tr": "Turkish", "sv": "Swedish", "da": "Danish", "fi": "Finnish",
-    "no": "Norwegian", "el": "Greek", "ms": "Malay", "sw": "Swahili",
-    "ar": "Arabic", "ko": "Korean",
-}
-
 
 def _model(label, repo, revision, file, size, script, quant, files, *, variant=None, copy=None):
     recipe = {"script": script, "quant": quant, "files": files}
@@ -129,72 +121,33 @@ def _model(label, repo, revision, file, size, script, quant, files, *, variant=N
     return {"label": label, "repo": repo, "revision": revision, "file": file, "size": size, "convert": recipe}
 
 
-def _family(name, languages, sample, voice, chunk, t3, codec):
-    return {
-        "name": name, "TTS_LANGUAGES": languages, "DEFAULT_REPLY_LANGUAGE": "en",
-        "TTS_RUNTIME": {
-            "gpu_layers": 99, "context": 2048, "threads": 4, "fastconv": True,
-        },
-        "TTS_SAMPLE": {**sample, "stream_cfm_steps": 0},
-        "TTS_VOICE": voice, "TTS_CHUNK": {**chunk, "stream_chunk_tokens": 0, "stream_first_chunk_tokens": 0},
-        "TTS_MODELS": {"chatterbox-t3": t3, "chatterbox-codec": codec},
-    }
-
-
-_TURBO_FILES = (
-    "t3_turbo_v1.safetensors", "s3gen_meanflow.safetensors", "conds.pt",
+_NANO_FILES = (
+    "t3_nano_v1.safetensors", "s3gen_meanflow.safetensors", "conds.pt",
     "ve.safetensors", "vocab.json", "merges.txt", "added_tokens.json",
 )
-_NANO_FILES = ("t3_nano_v1.safetensors", *_TURBO_FILES[1:])
-_MTL_FILES = (
-    "ve.pt", "t3_mtl23ls_v3.safetensors", "s3gen_v3.pt",
-    "grapheme_mtl_merged_expanded_v1.json", "conds.pt", "Cangjie5_TC.json",
+_NANO_T3 = _model(
+    "CHATTERBOX NANO T3", "ResembleAI/chatterbox-nano", "71ccd1d0081b430592cea481f4307e764e07bc64",
+    "chatterbox-t3-nano-q4_0.gguf", 171901536, "convert-t3-turbo-to-gguf.py", "q4_0", _NANO_FILES,
+    copy={"t3_nano_v1.safetensors": "t3_turbo_v1.safetensors"},
 )
-
-
-def _english_family(name, repo, revision, t3_source, t3_file, t3_size, first_chars):
-    files = _NANO_FILES if name == "nano" else _TURBO_FILES
-    copy = {t3_source: "t3_turbo_v1.safetensors"} if name == "nano" else None
-    t3 = _model(f"CHATTERBOX {name.upper()} T3", repo, revision, t3_file, t3_size,
-                "convert-t3-turbo-to-gguf.py", "q4_0", files, copy=copy)
-    codec = _model(f"CHATTERBOX {name.upper()} S3GEN", repo, revision,
-                   f"chatterbox-s3gen-{name}-f16.gguf", 1064879936,
-                   "convert-s3gen-to-gguf.py", "f16", files, variant="turbo")
-    return _family(
-        name, {"en": "English"},
-        {"seed": 42, "max_tokens": 768, "top_k": 1000, "top_p": 0.95,
-         "min_p": 0.0, "temperature": 0.8, "repeat_penalty": 1.2, "cfm_steps": 2},
-        {"cfg_weight": 0.0, "exaggeration": 0.0},
-        {"first_chars": first_chars, "chars": 280}, t3, codec,
-    )
-
-
-_v3_t3 = _model(
-    "CHATTERBOX V3 T3", "ResembleAI/chatterbox", "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18",
-    "chatterbox-t3-mtl-v3-q4_0.gguf", 344985408, "convert-t3-mtl-to-gguf.py", "q4_0", _MTL_FILES,
-    copy={"t3_mtl23ls_v3.safetensors": "t3_mtl23ls_v2.safetensors"},
-)
-_v3_codec = _model(
-    "CHATTERBOX V3 S3GEN", "ResembleAI/chatterbox", "5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18",
-    "chatterbox-s3gen-mtl-v3-f16.gguf", 1056431360, "convert-s3gen-to-gguf.py", "f16", _MTL_FILES,
-    variant="mtl", copy={"s3gen_v3.pt": "s3gen.pt"},
+_NANO_CODEC = _model(
+    "CHATTERBOX NANO S3GEN", "ResembleAI/chatterbox-nano", "71ccd1d0081b430592cea481f4307e764e07bc64",
+    "chatterbox-s3gen-nano-f16.gguf", 1064879936, "convert-s3gen-to-gguf.py", "f16", _NANO_FILES,
+    variant="turbo",
 )
 FAMILIES = {
-    "v3": _family(
-        "v3", LANGUAGES,
-        {"seed": 42, "max_tokens": 768, "top_k": 0, "top_p": 1.0,
-         "min_p": 0.05, "temperature": 0.8, "repeat_penalty": 1.2, "cfm_steps": 5},
-        {"cfg_weight": 0.5, "exaggeration": 0.5}, {"first_chars": 180, "chars": 300},
-        _v3_t3, _v3_codec,
-    ),
-    "turbo": _english_family(
-        "turbo", "ResembleAI/chatterbox-turbo", "749d1c1a46eb10492095d68fbcf55691ccf137cd",
-        "t3_turbo_v1.safetensors", "chatterbox-t3-turbo-q4_0.gguf", 333506240, 120,
-    ),
-    "nano": _english_family(
-        "nano", "ResembleAI/chatterbox-nano", "71ccd1d0081b430592cea481f4307e764e07bc64",
-        "t3_nano_v1.safetensors", "chatterbox-t3-nano-q4_0.gguf", 171901536, 80,
-    ),
+    "nano": {
+        "name": "nano", "TTS_LANGUAGES": {"en": "English"}, "DEFAULT_REPLY_LANGUAGE": "en",
+        "TTS_RUNTIME": {"gpu_layers": 99, "context": 2048, "threads": 4, "fastconv": True},
+        "TTS_SAMPLE": {
+            "seed": 42, "max_tokens": 768, "top_k": 1000, "top_p": 0.95,
+            "min_p": 0.0, "temperature": 0.8, "repeat_penalty": 1.2, "cfm_steps": 2,
+            "stream_cfm_steps": 0,
+        },
+        "TTS_VOICE": {"cfg_weight": 0.0, "exaggeration": 0.0},
+        "TTS_CHUNK": {"first_chars": 80, "chars": 280, "stream_chunk_tokens": 0, "stream_first_chunk_tokens": 0},
+        "TTS_MODELS": {"chatterbox-t3": _NANO_T3, "chatterbox-codec": _NANO_CODEC},
+    },
 }
 
 SHARED_MODELS = {
