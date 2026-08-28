@@ -1,0 +1,365 @@
+You are picking up the Trident project on branch `runner-x`. The previous
+session produced and pushed a clean modernized codebase. Your job is to
+follow the commits in order, understand the current state from the
+diagnostic evidence, and continue from the open plan.
+
+Read these commits in order, from oldest to newest:
+
+  9c5736e  prior plan
+  1275a48  prior
+  e65b29e  plan: evidence-based long-form full-duplex with VRAM-cap audit
+  97cf41a  modernize TTS delivery: single streaming path, stateful
+           client, typed events, hardened cable discovery
+  4dc27d5  set Nano as the fresh-install default family
+  b0d798e  add long-form agent driver with per-turn CSV and --assert-blue
+  d873240  add VRAM audit command
+  1f848f4  plan: stream T3 tokens incrementally through the TTS resident
+           to overlap T3 with S3Gen and eliminate GPU idle gaps  <-- OPEN
+
+`git log --oneline runner-x` will confirm. `git status` is clean on
+`runner-x`. Working tree: C:\Users\px-wjt\Downloads\Trident.
+
+What the project is, in one breath: a real-time, full-duplex Polish
+voice assistant. Three residents — Parakeet (STT, port 17931), Gemma
+4 E2B via llama.cpp (LLM, port 17932, Vulkan 0 + CPU MoE offload),
+Chatterbox TTS (port 17933, on a C++ trident-tts-server over a 8-byte
+wire header). One VB-CABLE pair: record idx 10 `CABLE Output`,
+play idx 11 `Output (VB-Audio Point)`. Physical default output is
+`Remote Audio` (MME, idx 3) — the speakers. The Python glue lives in
+`main.py`, `conversation.py`, `local_api.py`, `agent.py`, `cable.py`,
+`ui.py`, `config.py`, `vram_audit.py`, `resident.py`. The TTS server
+binary is `tools/runtime/tts/trident-tts-server.exe` (built from
+`tts/`).
+
+What was just shipped, the evidence you must read before editing:
+
+  data/diagnostic-report-2.md        full evidence + 4-commit plan
+                                     + post-commit gate results
+  data/vram-trace.csv                pre-commit VRAM samples
+  data/vram-audit.csv                post-commit VRAM audit (verdict ok,
+                                     delta 3,477 MiB / 5,017 MiB = 0.69x)
+  data/lecture-realtime.log          the 17-paragraph streaming run that
+                                     produced the GPU sawtooth observation
+  data/runs/20260828-125739-*/       Gate 2 (pre-commit long-form)
+  data/runs/20260828-132733-*/       Gate 2 (post-commit long-form)
+  data/runs/20260828-124904-*/       Gate 1 (pre-commit cancel+replace)
+  data/runs/20260828-132514-*/       Gate 1 (post-commit cancel+replace,
+                                     41 ms cancel latency)
+
+The three Diagnostic Gates every change must pass on the real rig:
+
+  Gate 1  cancel+replace: a 2-actor mic test. After the first
+          response starts streaming, inject a second actor and
+          measure how quickly the engine cancels the first TTS and
+          starts the second's TTS. Pass if < 80 ms cancel latency.
+  Gate 2  2-minute long-form full-duplex: actor plays for 120 s
+          with multiple VAD-closed segments, the assistant
+          responds in turn, the engine must show 0 mic_overflow
+          events and 9 TTS turn WAVs.
+  Gate 3  VRAM audit: run `python main.py vram-audit`. Verdict
+          `ok` if delta is >= 0.5x the gguf_sum of the loaded
+          models, `below_expected` 0.3-0.5, `cap_suspect` < 0.3.
+
+How to run a real-rig diagnostic (long-form agent, scripted actor):
+
+  .\.venv\Scripts\python.exe main.py resident boot --family v3
+  .\.venv\Scripts\python.exe main.py vram-audit
+  .\.venv\Scripts\python.exe main.py agent --duration-seconds 120
+      --actor-text "what color is a clear daytime sky?" --assert-blue
+  .\.venv\Scripts\python.exe main.py resident stop
+
+How to make the assistant speak to me in realtime on the speakers
+(the path the user exercised in this session, 2026-08-28):
+
+  The realtime voice path uses three residents (Parakeet, Gemma,
+  Chatterbox v3) and the VB-CABLE pair. The cable's "play" side is
+  driven by `cable.play_wav(path)` to inject audio into the assistant
+  as if it were mic input. The cable's "record" side is the actual
+  mic capture (`cable.Microphone(feed_audio)`). The assistant's TTS
+  is written to the physical default output device through
+  `agent.Speaker()` (PortAudio OutputStream on `Remote Audio`, MME
+  idx 3) — the user hears it in realtime.
+
+  Full-duplex conversation (the user speaks, the assistant replies
+  in realtime on the speakers, the user can interrupt and the TTS
+  cancels within 60 ms):
+
+    .\.venv\Scripts\python.exe main.py resident boot --family v3 --tts-language pl
+    .\.venv\Scripts\python.exe main.py ui
+
+  In the UI, the cable is auto-discovered from the live settings.
+  The user speaks into the mic, the cable feeds the assistant's
+  "mic" capture, Parakeet transcribes, Gemma responds in Polish,
+  Chatterbox v3 streams PCM to the speaker. Interrupt (start
+  speaking again) and the TTS is cancelled mid-stream and replaced
+  with the new turn's TTS.
+
+  Realtime lecture (the user wants to hear a long text spoken in
+  Polish without LLM rewriting it; the path this session proved):
+
+    .\.venv\Scripts\python.exe main.py resident boot --family v3 --tts-language pl
+    .\.venv\Scripts\python.exe "C:\Users\px-wjt\AppData\Local\Temp\opencode\lecture_realtime.py"
+    .\.venv\Scripts\python.exe main.py resident stop
+
+  `lecture_realtime.py` reads `data/handover-lecture.txt`, splits on
+  blank lines, and for each paragraph calls `chatterbox_stream`
+  (the real TCP client in `local_api.py`) over the real socket to
+  the v3 resident, pipes each PCM chunk through `agent.Speaker`
+  to the real default output. The user hears the v3 voice speak
+  the lecture in realtime, paragraph by paragraph, exactly as the
+  assistant's TTS was heard during the diagnostic gates.
+
+  Realtime diagnostic actor + cancel test (the Gate 1 path, real rig,
+  hands-on, what the user actually did):
+
+    # 1. Boot the residents.
+    .\.venv\Scripts\python.exe main.py resident boot --family v3 --tts-language pl
+
+    # 2. Build a 2-actor WAV (actor 1: short question, actor 2: interrupting
+    #    question) and a longer 9-clause actor for the long-form gate. The
+    #    scratch builders in %TEMP%\opencode\diag.py and ...\build_long_actor.py
+    #    are how this session produced them; their outputs live in
+    #    data/runs/20260828-*/actor.wav.
+
+    # 3. Drive the conversation: cable feeds the actor, mic captures
+    #    the assistant's TTS through the cable loopback, Speaker plays
+    #    it to the real speakers. The `_pump_speaker` thread writes
+    #    to the real default output. The user hears the assistant's
+    #    voice on the speakers; the cable loopback means the assistant
+    #    also hears its own output (which is fine for the test).
+
+  Realtime agent with a 2-minute scripted actor (the Gate 2 path):
+
+    .\.venv\Scripts\python.exe main.py agent --duration-seconds 120
+        --actor-text "what color is a clear daytime sky?"
+    # The agent builds a 9-clause actor WAV, plays it into the cable
+    # for 120 s, the assistant responds per turn, every turn's TTS
+    # is written to data/runs/<timestamp>/turn-NN.wav and (if
+    # output_audio=True) to the real speakers.
+
+  Realtime TTS only (no LLM, no ASR; the user wants to hear a long
+  text spoken verbatim through the v3 voice without Gemma rewriting
+  it):
+
+    .\.venv\Scripts\python.exe main.py resident boot --family v3 --tts-language pl
+    .\.venv\Scripts\python.exe main.py tts "Tekst do wypowiedzenia." \
+        --family v3 --language pl --voice trump
+    .\.venv\Scripts\python.exe main.py resident stop
+
+  All paths above are real-rig paths, exercised on this Windows
+  machine, with the residents, the cable, the speakers, and PortAudio
+  all in their observed state. The default family for fresh installs
+  is now `nano` (set in commit 4dc27d5); pass `--family v3` explicitly
+  to get the Trump Polish voice. The `voice` setting is the file stem
+  in `data/voices/` (e.g. `trump` -> `data/voices/trump.wav`); if the
+  file is missing, the engine falls back to the resident's default
+  reference.
+
+What the system can do (capability summary, no marketing):
+
+  - Full-duplex Polish voice conversation. The user speaks, the
+    assistant transcribes, thinks in Polish, and speaks back in
+    Polish, in realtime, with mid-stream cancel-on-interrupt.
+  - Streaming TTS. The user hears the first PCM of the assistant's
+    reply within ~250-400 ms of the LLM emitting its first token;
+    cancel latency is 41 ms (Gate 1, post-commit, run
+    data/runs/20260828-132514-*).
+  - Long-form full-duplex. 120 s of scripted actor with 9 VAD-closed
+    segments, 0 mic_overflow, 9 TTS turn WAVs, 100.28 s of TTS
+    total (Gate 2, run data/runs/20260828-132733-*).
+  - VRAM audit. `python main.py vram-audit` reports a verdict
+    (ok / below_expected / cap_suspect) on the live rig (Gate 3,
+    data/vram-audit.csv, verdict ok at 0.69x).
+  - Two TTS families: `nano` (Chatterbox Nano, faster, smaller) and
+    `v3` (Chatterbox v3, larger, longer-form stable). Family
+    selection is a single field in the live settings.
+  - Two languages: `pl` (default) and `en`. The default in
+    `live-settings.json` is pl.
+  - Voice selection. Any reference WAV in `data/voices/<stem>.wav`
+    is supported; missing files fall back to the resident default.
+  - Realtime lecture (this session). The 17-paragraph Polish
+    handover lecture was streamed through the real v3 TTS resident
+    + real `agent.Speaker` to the real physical default output, in
+    491 s wall, with the user hearing it in realtime (data/
+    lecture-realtime.log).
+  - Cancel and replace. Mid-TTS, the user's next VAD-closed segment
+    cancels the current TTS within the 60 ms PortAudio callback
+    budget and starts the new turn's TTS. The 41 ms cancel latency
+    was measured end-to-end from interrupt event to first PCM of
+    the new turn.
+  - The C++ TTS server (chatterbox.cpp + trident-tts-server) is
+    built and shipped at `tools/runtime/tts/trident-tts-server.exe`
+    with the ggml Vulkan DLLs alongside. Rebuild with the script
+    `C:\Users\px-wjt\AppData\Local\Temp\opencode\rebuild_tts.py`.
+
+What the system cannot do (be honest about gaps):
+
+  - It does not run headless in CI. There is no CI. The user runs
+    on the real Windows rig. The "tests" are the three Diagnostic
+    Gates above.
+  - The LLM is a small local model (Gemma 4 E2B, 4.63 B params with
+    MoE offload to CPU). Reasoning depth is bounded. For long
+    lectures the user prefers the TTS-only path so the LLM does
+    not rewrite the text.
+  - The TTS resident currently exposes a request/response wire
+    protocol. There is no streaming T3 in the wire protocol today;
+    the open plan (commit 1f848f4) is the next session's work and
+    is gated on the chatterbox.cpp pin exposing a streaming T3
+    call. If the pin does not expose it, the plan stops and the
+    implementer reports the limitation; partial overlap is not
+    acceptable.
+  - VRAM is at the edge. The 6 GB GPU holds chatterbox + gemma +
+    parakeet at 3,506 MiB above idle. The next chat should not add
+    another resident or model without first re-running Gate 3 and
+    re-checking the verdict.
+
+What just got shipped in this session, by commit (same list as the
+commit block at the top, repeated here for top-down skim):
+
+  e65b29e  plan (evidence-based long-form full-duplex with VRAM-cap audit)
+  97cf41a  modernize TTS: +222/-286 net, single streaming path,
+           stateful ChatterboxClient with _cancel, Event dataclass
+           for typed conversation events, hardened cable discovery
+           (fails loud on missing/mismatched/ambiguous devices)
+  4dc27d5  Nano as default family for fresh installs (+2/-2)
+  b0d798e  long-form agent driver with per-turn CSV and --assert-blue
+           (+124/-8)
+  d873240  VRAM audit command, data/vram-audit.csv with verdict
+           (+79/0)
+  1f848f4  plan: stream T3 tokens incrementally (open, not started)
+
+User rules, non-negotiable:
+
+  - Real runs on the real Windows rig only. No harnesses, mocks,
+    simulators, or test scaffolding.
+  - Define success before editing.
+  - Evidence in fixed order: real runs -> current source -> history
+    -> memory last.
+  - Keep root defect, trigger, symptom, and escape condition
+    separate.
+  - Always push for code reduction. Delete duplication. No
+    abstractions over consolidation. No dead branches, no unused
+    compat, no bookkeeping. No comments. No new dependencies unless
+    net-negative complexity.
+  - Architectural change is pre-approved; preserve nothing for its
+    own sake.
+
+Environment:
+
+  Windows x64, Python 3.11.9 (.venv), Vulkan GPU with 6 GB total
+  VRAM, VB-CABLE on hostapi 3 (WDM-KS). PortAudio mic callback
+  period = 20 ms (cable.py:110, int(rate * 0.02)).
+  Per-resident VRAM deltas above idle: chatterbox (Nano) +1339 MiB,
+  gemma +1515 MiB, parakeet +652 MiB -> total 3506 MiB on 6144 MiB.
+  Gemma 4 E2B is 4.63 B params, hybrid attention + Gated Delta Net
+  + MoE; llama.cpp routes MoE experts to CPU via --op-offload
+  (Vulkan0 model buffer = 1341.76 MiB, CPU_Mapped = 2152.50 MiB).
+  Not an artificial cap.
+
+The open plan you are picking up (commit 1f848f4):
+
+  "stream T3 tokens incrementally through the TTS resident to
+  overlap T3 with S3Gen and eliminate GPU idle gaps."
+
+  The user observed non-working GPU timelines during the realtime
+  lecture synthesis: each chunk's T3 + S3Gen pass spikes the GPU,
+  then the GPU goes idle while the Python side reads PCM and
+  dispatches the next chunk. The log in
+  data/lecture-realtime.log confirms the pattern with per-chunk
+  speak_end -> speak_begin gaps.
+
+  The fix: streaming T3 protocol. The resident accepts pieces
+  incrementally over one socket. While S3Gen for piece N is on the
+  GPU, T3 for piece N+1 starts. The wire protocol becomes
+  {u32 piece_index, u32 path_len, u32 text_len, text, output_path}
+  with a 0xFFFFFFFF sentinel to end. The session's
+  pack_text_staged becomes piece-at-a-time, and
+  session.synthesize_stream(text, sink, advance_callback) is the
+  new entry point.
+
+  Acceptance: the same 17-paragraph lecture must show GPU idle
+  intervals between chunks near zero, total wall time reduced by
+  30-50%, realtime streaming preserved, and cancel-on-interrupt
+  still within the 60 ms PortAudio callback budget.
+
+  STOP CONDITION: if chatterbox.cpp's Engine::synthesize remains a
+  blocking single-call API, the implementer must not ship a partial
+  overlap. The plan stops and the implementer reports the pin
+  limitation with the artifacts collected.
+
+When you reply, start by:
+
+  1. `git log --oneline runner-x | head -20` to confirm the head.
+  2. `git status` to confirm the tree.
+  3. Read `data/diagnostic-report-2.md` and the latest run dirs.
+  4. State what you will do next in one sentence. No preamble.
+
+The North Star (read this last, carry it as the goal of every
+session; this is the human-language version of the lecture the user
+spoke through v3 Polish at the end of this session, see
+data/handover-lecture.txt for the spoken form):
+
+  Trident is a place where a conversation with a machine has no
+  artificial boundaries. There is no two-minute cap. There is no
+  three-response cap. There is no boundary that says you can only
+  speak when the machine has finished. Full duplex, not turn-taking.
+  Real interrupt resilience, not pretended. Voice reproduction that
+  sounds like you, or like anyone you choose, with no language limit
+  and no length limit.
+
+  Technically the north star is the tension between two poles. One
+  pole is quality: fewer artifacts, more natural voice, shorter
+  time to first audio. The other pole is responsiveness: less delay
+  from the end of your sentence to the start of the machine's
+  reply. The goal is the point where both are good enough that the
+  user forgets they are talking to a machine.
+
+  The lesson of this session, which is part of the north star: not
+  every failure is a defect that needs a fix. Sometimes it is a
+  mirage that disappears the moment you turn on the real hardware,
+  write a real log, and look at the actual event times. Hypotheses
+  that do not survive contact with artifacts should be discarded,
+  not coded. Real hardware, real log, real times. Everything else
+  is speculation.
+
+  The four big themes for the sessions that follow, in order of
+  leverage:
+
+    1. Long-term memory. Today the conversation is stateless
+       between sessions. The next session starts from zero. That
+       is a large defect in the user experience, and that is the
+       field to work in. Without it, the user has to re-establish
+       context every time. With it, Trident becomes a partner
+       rather than a tool.
+
+    2. Streaming T3 (commit 1f848f4, in flight, gated on the
+       chatterbox.cpp pin). The current wire protocol is
+       request/response, so the GPU goes idle between chunks. A
+       streaming T3 protocol closes the gap, makes the per-chunk
+       wall time roughly max(T3, S3Gen) instead of T3 + S3Gen,
+       and brings the time-to-first-audio from 3.5 s toward
+       sub-second.
+
+    3. Multimodality. Today the only channel is voice. Adding
+       vision would open a different set of uses. This is a
+       large topic, likely many sessions, and a VRAM question
+       first (Gate 3 verdict must remain `ok`).
+
+    4. Privacy and locality. Everything runs locally today, which
+       is a strong property. The next step is to harden the
+       boundary so that user data never leaves the machine. This
+       is not a feature; it is a constraint on every future
+       change.
+
+  And the rule of every session, written so it is impossible to
+  miss: every session begins by reading the diagnostic report,
+  reading the latest plan, running the three Diagnostic Gates on
+  the real rig, and only then thinking about new changes. This is
+  not bureaucracy. It is the way to avoid the mistakes that
+  already happened once. Real hardware, real log, real times.
+  Everything else is speculation.
+
+  The single sentence the next agent should keep in mind, in
+  human language: build a voice conversation that is so natural
+  the user forgets the machine is there, and prove it on the
+  real rig before claiming it.
