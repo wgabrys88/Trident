@@ -90,7 +90,7 @@ struct Session::Impl {
             try {
                 const bool use_streaming = runtime.stream_chunk_tokens > 0;
                 if (use_streaming) {
-                    const StreamingSink forward = [&pending, &speech, &first_audio, &started, sink](const float* pcm, std::size_t count, int chunk_index, bool is_last) {
+                    const StreamingSink forward = [this, &pending, &speech, &first_audio, &started, sink](const float* pcm, std::size_t count, int chunk_index, bool is_last) {
                         if (count == 0) return;
                         std::vector<float> chunk(pcm, pcm + count);
                         glue(pending, chunk, quiet_amp2);

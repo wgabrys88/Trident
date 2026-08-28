@@ -58,8 +58,8 @@ def run(models_dir: Path | None = None, data_dir: Path | None = None) -> int:
         csv.writer(handle).writerows(rows)
     gguf_sum = _gguf_sum_mib()
     all_ready = next((int(r[2]) for r in reversed(rows) if r[1] == "all-ready"), 0)
-    idle = int(rows[1][2])
-    delta = all_ready - idle
+    after_stop = int(rows[-1][2])
+    delta = all_ready - after_stop
     if delta >= int(gguf_sum * 0.5):
         verdict = "ok"
     elif delta >= int(gguf_sum * 0.3):

@@ -23,6 +23,7 @@ const std::vector<std::string> kRequired = {
     "--n-gpu-layers", "--context", "--threads", "--seed", "--max-tokens",
     "--top-k", "--top-p", "--min-p", "--temperature", "--repeat-penalty", "--cfg-weight",
     "--exaggeration", "--cfm-steps", "--first-chunk-chars", "--chunk-chars", "--fastconv",
+    "--stream-chunk-tokens", "--stream-first-chunk-tokens", "--stream-cfm-steps",
 };
 
 constexpr std::uint32_t kPieceEnd    = 0xFFFFFFFFu;
