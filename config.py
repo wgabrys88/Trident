@@ -161,7 +161,7 @@ SHARED_MODELS = {
 
 
 SOURCES = {
-    "chatterbox": ("https://github.com/wgabrys88/chatterbox.cpp", "refs/heads/main"),
+    "chatterbox": ("https://github.com/wgabrys88/chatterbox.cpp", "67b1d7eb27757247a5a4d7b153cab34d7912a6fd"),
     "ggml": ("https://github.com/ggml-org/ggml.git", "58c3805840b516b2a88ff867ccf7bb41dba79951"),
 }
 

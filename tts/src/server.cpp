@@ -3,12 +3,14 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <winsock2.h>
@@ -107,14 +109,33 @@ void validate_knobs(const std::string& family, const tts::EngineKnobs& knobs, in
     if (knobs.top_p < 0 || knobs.top_p > 1 || knobs.min_p < 0 || knobs.min_p > 1 || knobs.temperature < 0 ||
         knobs.repeat_penalty <= 0 || knobs.cfg_weight < 0 || knobs.exaggeration < 0)
         throw std::invalid_argument("sampling or voice values are out of range");
-    if (family == "turbo" || family == "nano") {
-        if (knobs.language != "en") throw std::invalid_argument("Turbo/Nano resident TTS supports language en only");
-        if (knobs.min_p != 0.0f || knobs.cfg_weight != 0.0f || knobs.exaggeration != 0.0f)
-            throw std::invalid_argument("Turbo/Nano do not support min-p, CFG weight, or exaggeration");
-    } else if (family == "v3") {
-        if (knobs.language.size() != 2) throw std::invalid_argument("v3 resident TTS language must be a 2-letter code");
-    } else {
-        throw std::invalid_argument("unknown resident TTS family: " + family);
+    if (family != "nano") throw std::invalid_argument("unknown resident TTS family: " + family);
+    if (knobs.language != "en") throw std::invalid_argument("Nano resident TTS supports language en only");
+    if (knobs.min_p != 0.0f || knobs.cfg_weight != 0.0f || knobs.exaggeration != 0.0f)
+        throw std::invalid_argument("Nano does not support min-p, CFG weight, or exaggeration");
+}
+
+void watch_client_hangup(socket_t sock, tts::Session& session, std::atomic<bool>& done) {
+    while (!done.load(std::memory_order_relaxed)) {
+        fd_set readfds;
+        FD_ZERO(&readfds);
+        FD_SET(sock, &readfds);
+        timeval tv{};
+        tv.tv_sec = 0;
+        tv.tv_usec = 50000;
+        const int n = select(0, &readfds, nullptr, nullptr, &tv);
+        if (n == SOCKET_ERROR) {
+            session.request_cancel();
+            return;
+        }
+        if (n > 0 && FD_ISSET(sock, &readfds)) {
+            char b = 0;
+            const int got = recv(sock, &b, 1, MSG_PEEK);
+            if (got == 0 || got == SOCKET_ERROR) {
+                session.request_cancel();
+                return;
+            }
+        }
     }
 }
 
@@ -226,7 +247,19 @@ int main(int argc, char** argv) {
                             mark_first();
                             send_pcm(client.value, pcm, count);
                         };
-                        std::vector<tts::Session::Speech> results = session.synthesize_pieces(texts, sink);
+                        std::atomic<bool> finished{false};
+                        std::thread hangup([&] { watch_client_hangup(client.value, session, finished); });
+                        std::vector<tts::Session::Speech> results;
+                        try {
+                            results = session.synthesize_pieces(texts, sink);
+                        } catch (...) {
+                            finished.store(true, std::memory_order_relaxed);
+                            session.request_cancel();
+                            hangup.join();
+                            throw;
+                        }
+                        finished.store(true, std::memory_order_relaxed);
+                        hangup.join();
                         std::vector<float> all_pcm;
                         std::uint64_t total_t3_ms = 0;
                         std::uint64_t total_s3gen_ms = 0;
@@ -253,6 +286,7 @@ int main(int argc, char** argv) {
                     }
                 }
             } catch (const std::exception& exc) {
+                session.request_cancel();
                 request_error = exc.what();
                 request_failed = true;
             }

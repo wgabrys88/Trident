@@ -16,6 +16,7 @@ import select
 import socket
 import struct
 import urllib.parse
+from pathlib import Path
 from typing import Callable, Iterator
 
 
@@ -127,16 +128,22 @@ class ChatterboxClient:
         self._sent = 0
 
     def _recv_exact(self, count: int) -> bytes:
-        assert self._sock is not None
+        if self._sock is None:
+            raise InterruptedError if self._closed else RuntimeError("ChatterboxClient not open")
         data = bytearray()
         while len(data) < count:
             if self._closed:
+                raise InterruptedError
+            self._check_cancel()
+            if self._sock is None:
                 raise InterruptedError
             r, _, _ = select.select([self._sock], [], [], 0.05)
             if not r:
                 continue
             part = self._sock.recv(count - len(data))
             if not part:
+                if self._closed:
+                    raise InterruptedError
                 raise RuntimeError("resident TTS closed the connection early")
             data.extend(part)
         return bytes(data)
@@ -210,6 +217,7 @@ class ChatterboxClient:
 
     def cancel(self) -> None:
         self._closed = True
+        self.close()
 
     @property
     def metrics(self) -> str:
