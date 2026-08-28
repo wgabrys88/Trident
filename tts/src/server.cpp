@@ -1,5 +1,5 @@
+#include "audio.hpp"
 #include "cli.hpp"
-#include "session.hpp"
 
 #include <algorithm>
 #include <array>
@@ -15,6 +15,8 @@
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include "tts-cpp/chatterbox/engine.h"
+
 using socket_t = SOCKET;
 static constexpr socket_t kInvalidSocket = INVALID_SOCKET;
 
@@ -24,8 +26,7 @@ const std::vector<std::string> kRequired = {
     "--family", "--model", "--s3gen-gguf", "--reference", "--language", "--port",
     "--n-gpu-layers", "--context", "--threads", "--seed", "--max-tokens",
     "--top-k", "--top-p", "--min-p", "--temperature", "--repeat-penalty", "--cfg-weight",
-    "--exaggeration", "--cfm-steps", "--first-chunk-chars", "--chunk-chars", "--fastconv",
-    "--stream-chunk-tokens", "--stream-first-chunk-tokens", "--stream-cfm-steps",
+    "--exaggeration", "--cfm-steps", "--fastconv",
 };
 
 constexpr std::uint32_t kKindPcm   = 2;
@@ -103,8 +104,8 @@ void send_pcm(socket_t sock, const float* pcm, std::size_t count) {
     send_frame(sock, kKindPcm, samples.data(), samples.size() * sizeof(samples[0]));
 }
 
-void validate_knobs(const std::string& family, const tts::EngineKnobs& knobs, int first_chunk_chars, int chunk_chars) {
-    if (knobs.max_tokens < 1 || knobs.top_k < 0 || knobs.cfm_steps < 1 || first_chunk_chars < 1 || chunk_chars < 1)
+void validate_knobs(const std::string& family, const tts::EngineKnobs& knobs) {
+    if (knobs.max_tokens < 1 || knobs.top_k < 0 || knobs.cfm_steps < 1)
         throw std::invalid_argument("integer sampling values are out of range");
     if (knobs.top_p < 0 || knobs.top_p > 1 || knobs.min_p < 0 || knobs.min_p > 1 || knobs.temperature < 0 ||
         knobs.repeat_penalty <= 0 || knobs.cfg_weight < 0 || knobs.exaggeration < 0)
@@ -115,7 +116,7 @@ void validate_knobs(const std::string& family, const tts::EngineKnobs& knobs, in
         throw std::invalid_argument("Nano does not support min-p, CFG weight, or exaggeration");
 }
 
-void watch_client_hangup(socket_t sock, tts::Session& session, std::atomic<bool>& done) {
+void watch_client_hangup(socket_t sock, tts_cpp::chatterbox::Engine& engine, std::atomic<bool>& done) {
     while (!done.load(std::memory_order_relaxed)) {
         fd_set readfds;
         FD_ZERO(&readfds);
@@ -125,18 +126,42 @@ void watch_client_hangup(socket_t sock, tts::Session& session, std::atomic<bool>
         tv.tv_usec = 50000;
         const int n = select(0, &readfds, nullptr, nullptr, &tv);
         if (n == SOCKET_ERROR) {
-            session.request_cancel();
+            engine.cancel();
             return;
         }
         if (n > 0 && FD_ISSET(sock, &readfds)) {
             char b = 0;
             const int got = recv(sock, &b, 1, MSG_PEEK);
             if (got == 0 || got == SOCKET_ERROR) {
-                session.request_cancel();
+                engine.cancel();
                 return;
             }
         }
     }
+}
+
+tts_cpp::chatterbox::Engine make_engine(const std::string& t3_gguf, const std::string& s3gen_gguf,
+                                       const tts::Runtime& runtime, const tts::EngineKnobs& knobs) {
+    tts_cpp::chatterbox::EngineOptions opts;
+    opts.t3_gguf_path = t3_gguf;
+    opts.s3gen_gguf_path = s3gen_gguf;
+    opts.reference_audio = knobs.reference;
+    opts.n_gpu_layers = runtime.n_gpu_layers;
+    opts.n_threads = runtime.threads;
+    opts.seed = knobs.seed;
+    opts.n_predict = knobs.max_tokens;
+    opts.n_ctx = runtime.context;
+    opts.top_k = knobs.top_k;
+    opts.top_p = knobs.top_p;
+    opts.temperature = knobs.temperature;
+    opts.repeat_penalty = knobs.repeat_penalty;
+    opts.language = knobs.language;
+    opts.exaggeration = knobs.exaggeration;
+    opts.cfg_weight = knobs.cfg_weight;
+    opts.min_p = knobs.min_p;
+    opts.cfm_steps = knobs.cfm_steps;
+    opts.fastconv = runtime.fastconv != 0;
+    return tts_cpp::chatterbox::Engine(opts);
 }
 
 }
@@ -161,19 +186,12 @@ int main(int argc, char** argv) {
         knobs.cfg_weight = tts::parse_float(args, "--cfg-weight");
         knobs.exaggeration = tts::parse_float(args, "--exaggeration");
         knobs.cfm_steps = tts::parse_int(args, "--cfm-steps");
-        const int first_chunk_chars = tts::parse_int(args, "--first-chunk-chars");
-        const int chunk_chars = tts::parse_int(args, "--chunk-chars");
-        validate_knobs(family, knobs, first_chunk_chars, chunk_chars);
+        validate_knobs(family, knobs);
 
         const tts::Runtime runtime = tts::runtime_from(args);
-        tts::log("event=resident_start family=" + family + " preload=begin language=" + knobs.language +
-                 " stream_chunk_tokens=" + std::to_string(runtime.stream_chunk_tokens) +
-                 " stream_first_chunk_tokens=" + std::to_string(runtime.stream_first_chunk_tokens) +
-                 " stream_cfm_steps=" + std::to_string(runtime.stream_cfm_steps));
+        tts::log("event=resident_start family=" + family + " preload=begin language=" + knobs.language);
 
-        const std::string t3_gguf = args.at("--model");
-        const std::string s3gen_gguf = args.at("--s3gen-gguf");
-        tts::Session session(t3_gguf, s3gen_gguf, runtime, knobs, chunk_chars, tts::kQuietAmp2, first_chunk_chars);
+        tts_cpp::chatterbox::Engine engine = make_engine(args.at("--model"), args.at("--s3gen-gguf"), runtime, knobs);
 
         WSADATA wsa{};
         if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) throw std::runtime_error("WSAStartup failed");
@@ -190,8 +208,7 @@ int main(int argc, char** argv) {
             throw std::runtime_error("resident TTS bind failed on 127.0.0.1:" + std::to_string(port));
         if (listen(listener.value, 8) != 0) throw std::runtime_error("resident TTS listen failed");
         tts::log("event=resident_ready ready=1 family=" + family + " host=127.0.0.1 port=" + std::to_string(port) +
-                 " model_resident=1 reference_conditioning_resident=1 language=" + knobs.language +
-                 " streaming=" + (runtime.stream_chunk_tokens > 0 ? "1" : "0"));
+                 " model_resident=1 reference_conditioning_resident=1 language=" + knobs.language);
 
         std::uint64_t request_seq = 0;
         for (;;) {
@@ -199,7 +216,6 @@ int main(int argc, char** argv) {
             if (client.value == kInvalidSocket) continue;
 
             const std::uint64_t request_id = ++request_seq;
-            tts::set_request_id(request_id);
             bool request_failed = false;
             std::string request_error;
 
@@ -242,40 +258,40 @@ int main(int argc, char** argv) {
                             first_audio_seen = true;
                             tts::log("event=first_audio request_id=" + std::to_string(request_id));
                         };
-                        const tts::StreamingSink sink = [&](const float* pcm, std::size_t count, int, bool) {
-                            if (count == 0) return;
-                            mark_first();
-                            send_pcm(client.value, pcm, count);
-                        };
                         std::atomic<bool> finished{false};
-                        std::thread hangup([&] { watch_client_hangup(client.value, session, finished); });
-                        std::vector<tts::Session::Speech> results;
+                        std::thread hangup([&] { watch_client_hangup(client.value, engine, finished); });
+                        std::vector<tts_cpp::chatterbox::Engine::PieceResult> results;
                         try {
-                            results = session.synthesize_pieces(texts, sink);
+                            results = engine.synthesize_pieces(texts,
+                                [&](int, const float* pcm, std::size_t count, int, bool) {
+                                    if (count == 0) return;
+                                    mark_first();
+                                    send_pcm(client.value, pcm, count);
+                                });
                         } catch (...) {
                             finished.store(true, std::memory_order_relaxed);
-                            session.request_cancel();
+                            engine.cancel();
                             hangup.join();
                             throw;
                         }
                         finished.store(true, std::memory_order_relaxed);
                         hangup.join();
-                        std::vector<float> all_pcm;
                         std::uint64_t total_t3_ms = 0;
                         std::uint64_t total_s3gen_ms = 0;
                         std::uint64_t total_t3_tokens = 0;
+                        std::uint64_t samples = 0;
                         for (auto& r : results) {
                             total_t3_ms += static_cast<std::uint64_t>(r.t3_ms);
                             total_s3gen_ms += static_cast<std::uint64_t>(r.s3gen_ms);
                             total_t3_tokens += static_cast<std::uint64_t>(r.t3_tokens);
-                            all_pcm.insert(all_pcm.end(), r.pcm.begin(), r.pcm.end());
+                            samples += r.pcm.size();
                         }
                         const double total_ms = std::chrono::duration<double, std::milli>(
                             std::chrono::steady_clock::now() - started_overall).count();
-                        const double audio_ms = all_pcm.size() * 1000.0 / tts::kRate;
+                        const double audio_ms = samples * 1000.0 / tts::kRate;
                         const double wall_rtf = audio_ms > 0 ? total_ms / audio_ms : 0.0;
                         const std::string result = "request_id=" + std::to_string(request_id) +
-                            " samples=" + std::to_string(all_pcm.size()) +
+                            " samples=" + std::to_string(samples) +
                             " pieces=" + std::to_string(results.size()) +
                             " t3_ms=" + std::to_string(total_t3_ms) +
                             " s3gen_ms=" + std::to_string(total_s3gen_ms) +
@@ -286,7 +302,7 @@ int main(int argc, char** argv) {
                     }
                 }
             } catch (const std::exception& exc) {
-                session.request_cancel();
+                engine.cancel();
                 request_error = exc.what();
                 request_failed = true;
             }

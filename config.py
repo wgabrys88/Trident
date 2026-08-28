@@ -44,8 +44,6 @@ RUNTIMES = TOOLS / "runtime"
 CONVERTER = TOOLS / "convert"
 
 ASR_RATE = 16000
-ASR_CHUNK_SECONDS = 30
-ASR_CHUNK_OVERLAP_SECONDS = 4
 TTS_RATE = 24000
 REFERENCE_MIN_SECONDS = 5.0
 ECHO_RING_MS = 1500
@@ -78,7 +76,6 @@ BRAIN_GENERATION = {
     "temperature": 1.0, "top_p": 0.95, "top_k": 64, "min_p": 0.0,
     "repeat_penalty": 1.0, "seed": 42, "max_tokens": 1024,
 }
-BRAIN_THINKING = False
 LIVE_SETTINGS_JSON = '{"system_prompt":"ASR may deliver incomplete fragments. If the user has not finished a request or thought, output nothing. When a spoken reply is needed now, produce only that reply in English. If the input language differs, preserve meaning while answering in English. Spoken prose only: short sentences ending with a period, question mark, or exclamation. No markdown, lists, code, URLs, emoji, or square-bracket tags. Expand numbers and abbreviations. Do not mention transcription, models, or reasoning.","tts_voice":"trump","vad_silence_ms":200,"vad_threshold":0.5}'
 LIVE_SETTINGS = json.loads(LIVE_SETTINGS_JSON)
 VAD_FRAME_SAMPLES = 512
@@ -91,17 +88,12 @@ TTS_FIELDS = (
     ("TTS_SAMPLE", "max_tokens", "--max-tokens"),
     ("TTS_SAMPLE", "top_k", "--top-k"),
     ("TTS_SAMPLE", "cfm_steps", "--cfm-steps"),
-    ("TTS_CHUNK", "first_chars", "--first-chunk-chars"),
-    ("TTS_CHUNK", "chars", "--chunk-chars"),
     ("TTS_SAMPLE", "top_p", "--top-p"),
     ("TTS_SAMPLE", "min_p", "--min-p"),
     ("TTS_SAMPLE", "temperature", "--temperature"),
     ("TTS_SAMPLE", "repeat_penalty", "--repeat-penalty"),
     ("TTS_VOICE", "cfg_weight", "--cfg-weight"),
     ("TTS_VOICE", "exaggeration", "--exaggeration"),
-    ("TTS_CHUNK", "stream_chunk_tokens", "--stream-chunk-tokens"),
-    ("TTS_CHUNK", "stream_first_chunk_tokens", "--stream-first-chunk-tokens"),
-    ("TTS_SAMPLE", "stream_cfm_steps", "--stream-cfm-steps"),
 )
 
 
@@ -142,10 +134,9 @@ FAMILIES = {
         "TTS_SAMPLE": {
             "seed": 42, "max_tokens": 768, "top_k": 1000, "top_p": 0.95,
             "min_p": 0.0, "temperature": 0.8, "repeat_penalty": 1.2, "cfm_steps": 2,
-            "stream_cfm_steps": 0,
         },
         "TTS_VOICE": {"cfg_weight": 0.0, "exaggeration": 0.0},
-        "TTS_CHUNK": {"first_chars": 80, "chars": 280, "stream_chunk_tokens": 0, "stream_first_chunk_tokens": 0},
+        "TTS_CHUNK": {"first_chars": 80, "chars": 280},
         "TTS_MODELS": {"chatterbox-t3": _NANO_T3, "chatterbox-codec": _NANO_CODEC},
     },
 }
@@ -233,10 +224,5 @@ class Paths:
         def artifact(name: str):
             return self.run_dir / f"{self.stamp}-{name}" if self.run_dir else None
         self.transcript = artifact("transcript.txt")
-        self.answer = artifact("answer.txt")
-        self.system = artifact("system.txt")
-        self.output = artifact("output.wav")
-        self.input = artifact("input.wav")
-        self.literal = artifact("literal.txt")
         self.log = artifact("trident.log")
         self.meta = artifact("meta.txt")

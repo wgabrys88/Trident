@@ -8,28 +8,23 @@ import time
 import wave
 from pathlib import Path
 
-from config import ASR_CHUNK_OVERLAP_SECONDS, ASR_CHUNK_SECONDS, BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME, BRAIN_THINKING, FAMILIES, HARDWARE_PROFILE, LIVE_SETTINGS, REFERENCE_MIN_SECONDS, SHARED_MODELS, TTS_RATE, Paths, load_live_settings, resolve_voice
+from config import BRAIN_GENERATION, BRAIN_MODEL, BRAIN_RUNTIME, FAMILIES, HARDWARE_PROFILE, LIVE_SETTINGS, REFERENCE_MIN_SECONDS, SHARED_MODELS, TTS_RATE, Paths, load_live_settings, resolve_voice
 from installer import install, models_for, require_model, runtime_server, runtime_tts_server, validate_wav, write_text_atomic
 from local_api import parakeet_transcribe
 from log import clear_run_log, note, run_log, set_run_log
-from media import chatterbox_wav, parakeet_chunks
+from media import chatterbox_wav
 from resident import mark_booted, require_alive, start_gemma, start_parakeet, status as resident_status, stop_all as resident_stop_all, use_chatterbox
 
 
 def render_system_prompt(template: str | None = None) -> str:
     text = LIVE_SETTINGS["system_prompt"] if template is None else template
-    for key, value in {"{tts_language}": "en", "{tts_language_name}": "English", "{language}": "en", "{language_name}": "English"}.items():
-        text = text.replace(key, value)
     return text.strip()
 
 
-def spoken_reply(raw: str, streaming: bool = False) -> str:
+def spoken_reply(raw: str) -> str:
     text = raw.replace("\r\n", "\n").replace("\r", "\n").strip()
     if "\nAssistant:\n" in text: text = text.rsplit("\nAssistant:\n", 1)[1].strip()
     elif text.startswith("Assistant:\n"): text = text[11:].strip()
-    if "[Start thinking]" in text:
-        if "[End thinking]" in text: text = text.split("[End thinking]", 1)[1].strip()
-        elif streaming: return ""
     return text
 
 
@@ -47,7 +42,7 @@ def gemma_kwargs(messages: list, stream: bool) -> dict:
         "model": "gemma", "messages": messages, "stream": stream, "cache_prompt": True,
         "temperature": g["temperature"], "top_p": g["top_p"], "top_k": g["top_k"], "min_p": g["min_p"],
         "repeat_penalty": g["repeat_penalty"], "seed": g["seed"], "max_tokens": g["max_tokens"],
-        "chat_template_kwargs": {"enable_thinking": bool(BRAIN_THINKING)},
+        "chat_template_kwargs": {"enable_thinking": False},
     }
 
 
@@ -72,34 +67,15 @@ def write_meta(paths: Paths, **rows) -> None:
     write_text_atomic(paths.meta, "".join(f"{k}={v}\n" for k, v in rows.items()))
 
 
-def transcribe_wav(wav: Path, base: str, chunk_dir: Path) -> str:
+def transcribe_wav(wav: Path, base: str) -> str:
     with wave.open(str(wav), "rb") as audio:
         duration = audio.getnframes() / audio.getframerate()
-    started = time.perf_counter(); words = []; chunks = 0
-    for chunk, offset, chunk_seconds, final in parakeet_chunks(
-        wav, chunk_dir, ASR_CHUNK_SECONDS, ASR_CHUNK_OVERLAP_SECONDS
-    ):
-        payload = parakeet_transcribe(base, chunk); chunks += 1
-        rows = payload.get("words")
-        if duration <= ASR_CHUNK_SECONDS and not rows:
-            text = str(payload.get("text") or "").strip()
-            words = [text] if text else []
-            break
-        if not isinstance(rows, list):
-            raise RuntimeError("Parakeet verbose transcript did not include word timestamps")
-        left = 0.0 if offset == 0 else ASR_CHUNK_OVERLAP_SECONDS / 2
-        right = chunk_seconds if final else chunk_seconds - ASR_CHUNK_OVERLAP_SECONDS / 2
-        for row in rows:
-            midpoint = (float(row["start"]) + float(row["end"])) / 2
-            if left <= midpoint < right or (final and midpoint == right):
-                word = str(row.get("word", row.get("w", ""))).strip()
-                if word:
-                    words.append(word)
-    text = " ".join(words).strip()
+    started = time.perf_counter()
+    text = str(parakeet_transcribe(base, wav).get("text") or "").strip()
     elapsed = time.perf_counter() - started
     rtf = elapsed / duration if duration > 0 else 0.0
     speed = 1.0 / rtf if rtf > 0 else 0.0
-    note(f"component=asr event=done duration_s={duration:.3f} chunks={chunks} request_ms={elapsed * 1000:.3f} rtf={rtf:.4f} x_realtime={speed:.2f}")
+    note(f"component=asr event=done duration_s={duration:.3f} request_ms={elapsed * 1000:.3f} rtf={rtf:.4f} x_realtime={speed:.2f}")
     return text
 
 
