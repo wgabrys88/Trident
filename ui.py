@@ -66,8 +66,8 @@ def _settings(values) -> dict:
 
 def _in_flight(engine: Conversation | None) -> bool:
     return bool(
-        engine and engine.active and engine.turn >= 1
-        and engine.turn > engine.tts_done_through and engine.turn > engine.cancelled_through
+        engine and engine._active and engine.turn >= 1
+        and engine.turn > engine.tts_done_through
     )
 
 
@@ -124,7 +124,7 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
         with _sessions_lock:
             engine = _sessions.get(_session_id(request))
             busy = _in_flight(engine)
-            if engine and engine.active:
+            if engine and engine._active:
                 engine.configure(settings)
         if not busy:
             _load_speech(settings)
@@ -164,22 +164,34 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
             gr.Button(interactive=True), gr.Button(interactive=False),
             gr.Radio(interactive=True), gr.Button(interactive=False),
         )
+        pending_audio: bytes | None = None
         while True:
             event = engine.next_output()
-            kind, payload = event.kind, event.payload
-            audio = gr.skip()
+            kind, payload, epoch = event.kind, event.payload, event.epoch
+            if kind == "audio-pcm" and epoch != engine.audio_epoch:
+                note(f"component=ui event=stale_drop epoch={epoch} current={engine.audio_epoch}")
+                continue
+            audio_value = gr.skip()
             if kind == "audio-pcm":
-                audio = _wav_bytes(payload)
+                pending_audio = payload if pending_audio is None else pending_audio + payload
+                audio_value = gr.skip()
             elif kind == "audio-reset":
-                audio = gr.Audio(value=None)
+                if pending_audio is not None:
+                    audio_value = _wav_bytes(pending_audio)
+                    pending_audio = None
+                else:
+                    audio_value = gr.Audio(value=None, streaming=True, autoplay=True)
             if kind == "error":
                 _cleanup_session(session_id)
-                yield engine.transcript, engine.answer, audio, engine.status, *stopped_controls
+                yield engine.transcript, engine.answer, audio_value, engine.status, *stopped_controls
                 raise RuntimeError(str(payload))
             if kind == "closed":
-                yield engine.transcript, engine.answer, audio, engine.status, *stopped_controls
+                if pending_audio is not None:
+                    yield engine.transcript, engine.answer, _wav_bytes(pending_audio), engine.status, *unchanged_controls
+                    pending_audio = None
+                yield engine.transcript, engine.answer, audio_value, engine.status, *stopped_controls
                 return
-            yield engine.transcript, engine.answer, audio, engine.status, *unchanged_controls
+            yield engine.transcript, engine.answer, audio_value, engine.status, *unchanged_controls
 
     def feed_conversation(audio, request: gr.Request):
         pcm_f32 = _pcm16k(audio)
@@ -261,20 +273,36 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
         return run_install(root.models_dir, root.data_dir)
 
     def save_clone(name: str, audio, request: gr.Request):
+        choices = list_voices(root.data_dir)
         if not audio:
-            raise RuntimeError("record or upload a voice first")
-        slug = save_voice(root.data_dir, name, Path(audio).resolve())
+            return "Record or upload audio first.", gr.Dropdown(choices=choices, value=voice_default), voice_default
+        slug_value = "-".join("".join(ch if ch.isalnum() else " " for ch in str(name or "").strip().lower()).split())
+        if not slug_value:
+            return "Voice name is empty.", gr.Dropdown(choices=choices, value=voice_default), voice_default
+        try:
+            source = Path(audio).resolve()
+        except (TypeError, OSError) as exc:
+            return f"Audio path is invalid: {exc}", gr.Dropdown(choices=choices, value=voice_default), voice_default
+        if not source.is_file():
+            return f"Audio file is missing: {source}", gr.Dropdown(choices=choices, value=voice_default), voice_default
+        try:
+            slug = save_voice(root.data_dir, slug_value, source)
+        except Exception as exc:
+            return f"Could not save voice: {exc}", gr.Dropdown(choices=choices, value=voice_default), voice_default
         settings = load_live_settings(root.data_dir)
         settings["tts_voice"] = slug
         save_live_settings(root.data_dir, settings)
         with _sessions_lock:
             engine = _sessions.get(request.session_hash) if request.session_hash else None
             busy = _in_flight(engine)
-            if engine and engine.active:
+            if engine and engine._active:
                 engine.configure(settings)
         if not busy:
-            _load_speech(settings)
-        return f"Saved voice {slug}", gr.Dropdown(choices=list_voices(root.data_dir), value=slug)
+            try:
+                _load_speech(settings)
+            except Exception as exc:
+                return f"Saved voice {slug}, but speech could not be loaded: {exc}", gr.Dropdown(choices=list_voices(root.data_dir), value=slug), slug
+        return f"Saved voice {slug}", gr.Dropdown(choices=list_voices(root.data_dir), value=slug), slug
 
     def asr_file(audio):
         if not audio:
@@ -328,7 +356,7 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
                         clone_button = gr.Button("Save voice", variant="primary")
                     with gr.Column(elem_classes="trident-card"):
                         clone_status = gr.Textbox(value="Record yourself, name it, save. Conversation and TTS then speak as you.", label="Clone status", interactive=False, elem_classes="trident-status")
-                clone_button.click(save_clone, [clone_name, clone_audio], [clone_status, voice], concurrency_limit=None, show_progress="minimal")
+                clone_button.click(save_clone, [clone_name, clone_audio], [clone_status, voice, voice], concurrency_limit=None, show_progress="minimal")
 
             with gr.Tab("Conversation"):
                 with gr.Row(equal_height=False):

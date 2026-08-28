@@ -62,9 +62,20 @@ Runtime runtime_from(const Args& args) {
     runtime.context = parse_int(args, "--context");
     runtime.threads = parse_int(args, "--threads");
     runtime.fastconv = parse_int(args, "--fastconv") != 0;
+    runtime.stream_chunk_tokens       = parse_optional_int(args, "--stream-chunk-tokens", 0);
+    runtime.stream_first_chunk_tokens = parse_optional_int(args, "--stream-first-chunk-tokens", 0);
+    runtime.stream_cfm_steps          = parse_optional_int(args, "--stream-cfm-steps", 0);
     if (runtime.gpu < 0 || runtime.context < 1 || runtime.threads < 1)
         throw std::invalid_argument("integer runtime values are out of range");
+    if (runtime.stream_chunk_tokens < 0 || runtime.stream_first_chunk_tokens < 0 || runtime.stream_cfm_steps < 0)
+        throw std::invalid_argument("streaming chunk values must be non-negative");
     return runtime;
+}
+
+int parse_optional_int(const Args& args, const std::string& key, int default_value) {
+    auto it = args.find(key);
+    if (it == args.end()) return default_value;
+    return parse_int(args, key);
 }
 
 

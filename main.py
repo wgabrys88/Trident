@@ -221,6 +221,8 @@ def tts_metrics(result: str) -> dict[str, float | str]:
     fields = _result_fields(result)
     samples = int(fields["samples"])
     rtf = float(fields["wall_rtf"])
+    if "pieces" in fields and "chunks" not in fields:
+        fields["chunks"] = fields["pieces"]
     return {
         **fields,
         "audio_s": samples / TTS_RATE,

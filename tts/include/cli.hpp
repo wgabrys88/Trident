@@ -18,4 +18,6 @@ Runtime runtime_from(const Args& args);
 void set_request_id(std::uint64_t id);
 void log(const std::string& line);
 
+int parse_optional_int(const Args& args, const std::string& key, int default_value);
+
 }

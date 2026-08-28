@@ -21,6 +21,9 @@ inline int utf8_chars(const std::string& s) {
 struct Runtime {
     std::string t3, s3;
     int gpu = 0, threads = 0, context = 0;
+    int stream_chunk_tokens = 0;
+    int stream_first_chunk_tokens = 0;
+    int stream_cfm_steps = 0;
     bool fastconv = false;
 };
 

@@ -53,6 +53,7 @@ ASR_CHUNK_SECONDS = 30
 ASR_CHUNK_OVERLAP_SECONDS = 4
 TTS_RATE = 24000
 REFERENCE_MIN_SECONDS = 5.0
+ECHO_RING_MS = 1500
 
 CABLE_INPUT = "CABLE Input"
 CABLE_OUTPUT = "CABLE Output"
@@ -108,6 +109,9 @@ TTS_FIELDS = (
     ("repeat_penalty", "TTS_SAMPLE", "repeat_penalty", float, "--repeat-penalty", "Repeat penalty", False),
     ("cfg_weight", "TTS_VOICE", "cfg_weight", float, "--cfg-weight", "CFG weight", True),
     ("exaggeration", "TTS_VOICE", "exaggeration", float, "--exaggeration", "Exaggeration", True),
+    ("stream_chunk_tokens", "TTS_CHUNK", "stream_chunk_tokens", int, "--stream-chunk-tokens", "Pin streaming chunk tokens", True),
+    ("stream_first_chunk_tokens", "TTS_CHUNK", "stream_first_chunk_tokens", int, "--stream-first-chunk-tokens", "Pin streaming first chunk tokens", True),
+    ("stream_cfm_steps", "TTS_SAMPLE", "stream_cfm_steps", int, "--stream-cfm-steps", "Pin streaming CFM steps", True),
 )
 
 
@@ -150,7 +154,8 @@ def _family(name, languages, sample, voice, chunk, t3, codec):
         "TTS_RUNTIME": {
             "gpu_layers": 99, "context": 2048, "threads": 4, "fastconv": True,
         },
-        "TTS_SAMPLE": sample, "TTS_VOICE": voice, "TTS_CHUNK": chunk,
+        "TTS_SAMPLE": {**sample, "stream_cfm_steps": 0},
+        "TTS_VOICE": voice, "TTS_CHUNK": {**chunk, "stream_chunk_tokens": 0, "stream_first_chunk_tokens": 0},
         "TTS_MODELS": {"chatterbox-t3": t3, "chatterbox-codec": codec},
     }
 
