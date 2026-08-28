@@ -344,6 +344,7 @@ def build_parser() -> argparse.ArgumentParser:
     c=sub.add_parser("resident"); c.add_argument("action", choices=("status", "boot", "stop")); c.add_argument("--family", choices=families); c.add_argument("-r", "--reference"); c.add_argument("--tts-language")
     sub.add_parser("cable")
     c=sub.add_parser("agent"); c.add_argument("--say", action="append"); c.add_argument("--expect", action="append"); c.add_argument("--family", choices=families); c.add_argument("--language", choices=tuple(LANGUAGES)); c.add_argument("--duration-seconds", type=float); c.add_argument("--actor-text"); c.add_argument("--assert-blue", action="store_true")
+    sub.add_parser("vram-audit")
     return p
 
 
@@ -355,6 +356,11 @@ def run_cable() -> None:
 def run_agent(args) -> int:
     from agent import run as agent_run
     return agent_run(args.say, args.expect, args.models_dir, args.data_dir, args.family, args.language, args.duration_seconds, args.actor_text, args.assert_blue)
+
+
+def run_vram_audit(args) -> int:
+    from vram_audit import run as vram_audit_run
+    return vram_audit_run(args.models_dir, args.data_dir)
 
 
 def run_install(models_dir=None, data_dir=None) -> Path:
@@ -465,6 +471,7 @@ def main() -> int:
         print(resident_report())
     elif args.command == "cable": run_cable()
     elif args.command == "agent": return run_agent(args)
+    elif args.command == "vram-audit": return run_vram_audit(args)
     elif args.command: {"asr": run_asr, "brain": run_brain, "tts": run_tts, "run": run_pipeline}[args.command](args)
     if args.ui: return launch_ui(args)
     return 0

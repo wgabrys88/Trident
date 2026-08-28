@@ -23,6 +23,7 @@
 !/vad.py
 !/cable.py
 !/agent.py
+!/vram_audit.py
 !/tools/
 /tools/*
 !/tools/cable.ps1
