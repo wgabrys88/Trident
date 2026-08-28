@@ -92,10 +92,6 @@ def effective_family(name: str, overrides: dict | None = None) -> dict:
         value = src.get(key)
         if value is not None:
             family[section][dest] = typ(value)
-    if src.get("streaming") is not None:
-        family["TTS_STREAM"]["enabled"] = bool(src["streaming"])
-    if src.get("stream_join") is not None:
-        family["TTS_STREAM"]["join"] = src["stream_join"]
     if name in {"turbo", "nano"} and (
         family["TTS_SAMPLE"]["min_p"] != 0.0
         or family["TTS_VOICE"]["cfg_weight"] != 0.0
@@ -116,7 +112,7 @@ def gemma_kwargs(messages: list, stream: bool) -> dict:
 
 
 def resolved_tts(family: dict) -> str:
-    return json.dumps({k: family[k] for k in ("name", "TTS_RUNTIME", "TTS_SAMPLE", "TTS_VOICE", "TTS_CHUNK", "TTS_STREAM")}, sort_keys=True, separators=(",", ":"))
+    return json.dumps({k: family[k] for k in ("name", "TTS_RUNTIME", "TTS_SAMPLE", "TTS_VOICE", "TTS_CHUNK")}, sort_keys=True, separators=(",", ":"))
 
 
 def start_run(command: str, models_dir=None, data_dir=None) -> Paths:
@@ -253,15 +249,13 @@ def _tts_failure(exc: Exception, unit: int | None = None, max_tokens: int | None
     note(f"component=tts event=failed outcome=error reason={reason}{prefix}{ceiling} message={message}")
 
 
-def stream_synthesize(text: str, reference: Path, output: Path, language: str, family: dict, paths: Paths, *, base: str | None = None, unit: int | None = None, streaming: bool | None = None, cancel=None):
+def stream_synthesize(text: str, reference: Path, output: Path, language: str, family: dict, paths: Paths, *, base: str | None = None, unit: int | None = None, cancel=None):
     endpoint = base or tts_endpoint(reference, language, family, paths)
-    stream = family["TTS_STREAM"]
-    enabled = stream["enabled"] if streaming is None else streaming
     try:
-        generator = _chatterbox_stream(endpoint, text.strip(), output, enabled, stream["join"], cancel=cancel)
+        client = _chatterbox_stream(endpoint, text.strip(), output, cancel=cancel)
         while True:
             try:
-                chunk = next(generator)
+                chunk = next(client)
             except StopIteration as done:
                 result = str(done.value or "")
                 if result:
@@ -273,13 +267,10 @@ def stream_synthesize(text: str, reference: Path, output: Path, language: str, f
         raise
 
 
-def synthesize_text(text: str, reference: Path, output: Path, language: str, family: dict, paths: Paths, *, base: str | None = None, streaming: bool | None = None, unit: int | None = None, cancel=None) -> str:
-    generator = stream_synthesize(text, reference, output, language, family, paths, base=base, unit=unit, streaming=streaming, cancel=cancel)
-    try:
-        while True:
-            next(generator)
-    except StopIteration as done:
-        return str(done.value or "")
+def synthesize_text(text: str, reference: Path, output: Path, language: str, family: dict, paths: Paths, *, base: str | None = None, cancel=None) -> str:
+    for _ in stream_synthesize(text, reference, output, language, family, paths, base=base, cancel=cancel):
+        pass
+    return str(output)
 
 
 def synthesize(text_file: Path, reference: Path, output: Path, language: str, family: dict, paths: Paths) -> None:
@@ -335,8 +326,6 @@ def add_tts_options(cmd, language_flag="--language") -> None:
     cmd.add_argument("-r", "--reference"); cmd.add_argument(language_flag, dest=language_flag[2:].replace("-", "_"))
     for _, _, _, typ, flag, *_ in TTS_FIELDS:
         cmd.add_argument(flag, type=typ)
-    cmd.add_argument("--streaming", action=argparse.BooleanOptionalAction, default=None)
-    cmd.add_argument("--stream-join", choices=("chunks", "crossfade"))
 
 
 def add_prompt(cmd) -> None:

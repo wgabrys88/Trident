@@ -34,9 +34,9 @@ struct Session::Impl {
         speech.t3_ms += r.t3_ms; speech.s3gen_ms += r.s3gen_ms; speech.t3_tokens += r.t3_tokens;
     }
 
-    Speech synthesize(const std::string& text, const AudioSink& sink, bool streaming, JoinMode join) {
+    Speech synthesize(const std::string& text, const AudioSink& sink) {
         const auto started = std::chrono::steady_clock::now();
-        const auto pieces = streaming ? pack_text_staged(text, first_chunk_chars, chunk_chars) : pack_text(text, chunk_chars);
+        const auto pieces = pack_text_staged(text, first_chunk_chars, chunk_chars);
         Speech speech; speech.chunks = static_cast<int>(pieces.size());
         bool first_audio = true;
         auto first = [&] {
@@ -51,18 +51,6 @@ struct Session::Impl {
                 auto r = engine->synthesize(pieces[static_cast<std::size_t>(i)]);
                 first();
                 metrics(speech, r);
-
-                if (!streaming) {
-                    if (join == JoinMode::Crossfade) glue(speech.pcm, r.pcm, quiet_amp2);
-                    else speech.pcm.insert(speech.pcm.end(), r.pcm.begin(), r.pcm.end());
-                    continue;
-                }
-
-                if (join == JoinMode::Chunks) {
-                    if (sink) sink(r.pcm.data(), r.pcm.size());
-                    speech.pcm.insert(speech.pcm.end(), r.pcm.begin(), r.pcm.end());
-                    continue;
-                }
 
                 glue(pending, r.pcm, quiet_amp2);
                 const bool last = i + 1 == speech.chunks;
@@ -88,7 +76,7 @@ struct Session::Impl {
 Session::Session(const Runtime& runtime, const EngineKnobs& knobs, int chunk_chars, float quiet_amp2, int first_chunk_chars)
     : impl_(std::make_unique<Impl>(runtime, knobs, chunk_chars, quiet_amp2, first_chunk_chars)) {}
 Session::~Session() = default;
-Speech Session::synthesize(const std::string& text, const AudioSink& sink, bool streaming, JoinMode join) { return impl_->synthesize(text, sink, streaming, join); }
+Speech Session::synthesize(const std::string& text, const AudioSink& sink) { return impl_->synthesize(text, sink); }
 const Runtime& Session::runtime() const noexcept { return impl_->runtime; }
 const EngineKnobs& Session::knobs() const noexcept { return impl_->knobs; }
 int Session::chunk_chars() const noexcept { return impl_->chunk_chars; }

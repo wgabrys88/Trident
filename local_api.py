@@ -3,6 +3,9 @@ from __future__ import annotations
 import http.client
 import json
 import secrets
+import select
+import socket
+import struct
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -111,40 +114,36 @@ def gemma_chat_stream(base_url: str, payload: dict, timeout: float = 3600.0):
         conn.close()
 
 
-def chatterbox_stream(base_url: str, text: str, output: Path, streaming: bool = True, join: str = "crossfade", timeout: float = 3600.0, cancel=None):
-    import select
-    import socket
-    import struct
+class ChatterboxClient:
+    def __init__(self, base_url: str, timeout: float = 3600.0, cancel=None) -> None:
+        self._parsed = urllib.parse.urlsplit(base_url)
+        self._timeout = timeout
+        self._cancel = cancel
+        self._sock: socket.socket | None = None
+        self._closed = False
 
-    parsed = urllib.parse.urlsplit(base_url)
-    text_bytes = text.encode("utf-8")
-    output_bytes = str(output.resolve()).encode("utf-8")
-    output.parent.mkdir(parents=True, exist_ok=True)
-
-    def recv_exact(sock: socket.socket, count: int) -> bytes:
+    def _recv_exact(self, count: int) -> bytes:
         data = bytearray()
         while len(data) < count:
-            if cancel and cancel():
+            if self._closed:
                 raise InterruptedError
-            if cancel and not select.select([sock], [], [], 0.05)[0]:
+            if self._cancel and self._cancel():
+                raise InterruptedError
+            if not select.select([self._sock], [], [], 0.05)[0]:
                 continue
-            part = sock.recv(count - len(data))
+            part = self._sock.recv(count - len(data))
             if not part:
                 raise RuntimeError("resident TTS closed the connection early")
             data.extend(part)
         return bytes(data)
 
-    try:
-        if cancel and cancel():
-            return
-        with socket.create_connection((parsed.hostname, parsed.port), timeout=timeout) as sock:
-            sock.settimeout(timeout)
-            sock.sendall(struct.pack("<IIII", len(text_bytes), len(output_bytes), int(streaming), {"chunks": 0, "crossfade": 1}[join]))
-            sock.sendall(text_bytes)
-            sock.sendall(output_bytes)
+    def __iter__(self):
+        if self._sock is None:
+            raise RuntimeError("ChatterboxClient.connect() must be called before iteration")
+        try:
             while True:
-                kind, length = struct.unpack("<II", recv_exact(sock, 8))
-                payload = recv_exact(sock, length) if length else b""
+                kind, length = struct.unpack("<II", self._recv_exact(8))
+                payload = self._recv_exact(length) if length else b""
                 if kind == 2:
                     yield payload
                     continue
@@ -152,7 +151,51 @@ def chatterbox_stream(base_url: str, text: str, output: Path, streaming: bool = 
                 if kind == 0:
                     return message
                 raise RuntimeError(f"Chatterbox resident synthesis failed: {message or 'unknown error'}")
-    except InterruptedError:
+        except InterruptedError:
+            return
+        except OSError as exc:
+            raise RuntimeError(f"Chatterbox resident request failed: {exc}") from exc
+
+    def connect(self, text: str, output: Path) -> None:
+        if self._sock is not None:
+            raise RuntimeError("ChatterboxClient is already connected")
+        text_bytes = text.encode("utf-8")
+        path_bytes = str(output.resolve()).encode("utf-8")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        self._sock = socket.create_connection((self._parsed.hostname, self._parsed.port), timeout=self._timeout)
+        self._sock.settimeout(self._timeout)
+        self._sock.sendall(struct.pack("<II", len(text_bytes), len(path_bytes)))
+        self._sock.sendall(text_bytes)
+        self._sock.sendall(path_bytes)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        sock, self._sock = self._sock, None
+        if sock is None:
+            return
+        try:
+            sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        sock.close()
+
+
+def chatterbox_stream(base_url: str, text: str, output: Path, cancel=None):
+    client = ChatterboxClient(base_url, cancel=cancel)
+    cancelled = bool(cancel and cancel())
+    if not cancelled:
+        try:
+            client.connect(text, output)
+        except Exception:
+            client.close()
+            raise
+    cancelled = bool(cancel and cancel())
+    if cancelled:
+        client.close()
         return
-    except OSError as exc:
-        raise RuntimeError(f"Chatterbox resident request failed: {exc}") from exc
+    try:
+        yield from client
+    finally:
+        client.close()

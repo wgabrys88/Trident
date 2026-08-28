@@ -169,13 +169,11 @@ int main(int argc, char** argv) {
         for (;;) {
             SocketGuard client(accept(listener.value, nullptr, nullptr));
             if (client.value == kInvalidSocket) continue;
-            std::array<unsigned char, 16> header{};
+            std::array<unsigned char, 8> header{};
             if (!recv_all(client.value, header.data(), header.size())) continue;
             const std::uint32_t text_len = decode_u32_le(header.data());
             const std::uint32_t path_len = decode_u32_le(header.data() + 4);
-            const std::uint32_t streaming = decode_u32_le(header.data() + 8);
-            const std::uint32_t join = decode_u32_le(header.data() + 12);
-            if (!text_len || text_len > 4u * 1024u * 1024u || !path_len || path_len > 32768u || streaming > 1 || join > 1) {
+            if (!text_len || text_len > 4u * 1024u * 1024u || !path_len || path_len > 32768u) {
                 send_response(client.value, 1, "invalid request header");
                 continue;
             }
@@ -187,11 +185,9 @@ int main(int argc, char** argv) {
             try {
                 const std::uint64_t request_id = ++request_seq;
                 tts::set_request_id(request_id);
-                const bool stream_client = streaming != 0;
-                const auto join_mode = join ? tts::JoinMode::Crossfade : tts::JoinMode::Chunks;
                 const auto started = std::chrono::steady_clock::now();
-                const tts::AudioSink sink = stream_client ? tts::AudioSink([&](const float* pcm, std::size_t count) { send_pcm(client.value, pcm, count); }) : tts::AudioSink{};
-                const tts::Speech speech = session.synthesize(text, sink, stream_client, join_mode);
+                const tts::AudioSink sink = [&](const float* pcm, std::size_t count) { send_pcm(client.value, pcm, count); };
+                const tts::Speech speech = session.synthesize(text, sink);
                 tts::write_wav(output, speech.pcm);
                 const double total_ms = std::chrono::duration<double, std::milli>(
                     std::chrono::steady_clock::now() - started).count();
@@ -204,9 +200,7 @@ int main(int argc, char** argv) {
                     " s3gen_ms=" + std::to_string(speech.s3gen_ms) +
                     " ttfa_ms=" + std::to_string(speech.ttfa_ms) +
                     " total_ms=" + std::to_string(total_ms) +
-                    " wall_rtf=" + std::to_string(wall_rtf) +
-                    " client_streaming=" + (stream_client ? "1" : "0") +
-                    " join=" + (join ? "crossfade" : "chunks");
+                    " wall_rtf=" + std::to_string(wall_rtf);
                 send_response(client.value, 0, result);
             } catch (const std::exception& error) {
                 try {

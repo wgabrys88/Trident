@@ -10,7 +10,6 @@
 namespace tts {
 
 using AudioSink = std::function<void(const float*, std::size_t)>;
-enum class JoinMode { Chunks = 0, Crossfade = 1 };
 
 class Session {
 public:
@@ -18,7 +17,7 @@ public:
     ~Session();
     Session(const Session&) = delete;
     Session& operator=(const Session&) = delete;
-    Speech synthesize(const std::string& text, const AudioSink& sink, bool streaming, JoinMode join);
+    Speech synthesize(const std::string& text, const AudioSink& sink);
     const Runtime& runtime() const noexcept;
     const EngineKnobs& knobs() const noexcept;
     int chunk_chars() const noexcept;

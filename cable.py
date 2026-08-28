@@ -13,14 +13,6 @@ from log import note
 _SCRIPT = TOOLS / "cable.ps1"
 
 
-def _host_tag(name: str) -> str:
-    start = name.rfind("(")
-    end = name.rfind(")")
-    if 0 <= start < end:
-        return name[start + 1:end].strip().lower()
-    return ""
-
-
 def _ps(action: str) -> str:
     result = subprocess.run(
         [
@@ -49,39 +41,43 @@ def default_capture_endpoint() -> tuple[str, str]:
     return endpoint, _active_captures().get(endpoint, "")
 
 
+def _host_tag(name: str) -> str:
+    start = name.rfind("(")
+    end = name.rfind(")")
+    if 0 <= start < end:
+        return name[start + 1:end].strip().lower()
+    return ""
+
+
 def _cable_devices() -> dict[str, tuple[int, str]]:
-    names: list[str] = []
-    plays: list[tuple[int, str, int, int]] = []
-    records: list[tuple[int, str, int]] = []
     listed = list(sd.query_devices())
+    names = [str(info["name"]) for info in listed]
+    records: list[tuple[int, str, int, str]] = []
+    plays_by_tag: dict[str, list[tuple[int, str, int]]] = {}
     for info in listed:
         name = str(info["name"])
-        names.append(name)
         index = int(info["index"])
         host = int(info["hostapi"])
         lowered = name.lower()
-        if info["max_output_channels"] > 0 and (
-            lowered.startswith(CABLE_INPUT.lower()) or lowered.startswith("cable in ")
-        ):
-            plays.append((index, name, host, 0))
         if info["max_input_channels"] > 0 and lowered.startswith(CABLE_OUTPUT.lower()):
-            records.append((index, name, host))
-    tags = {_host_tag(name) for _, name, _ in records if _host_tag(name)}
-    for info in listed:
-        name = str(info["name"])
-        if info["max_output_channels"] > 0:
+            records.append((index, name, host, _host_tag(name)))
+        elif info["max_output_channels"] > 0:
             tag = _host_tag(name)
-            if name.lower().startswith("output (") and tag and tag in tags:
-                plays.append((int(info["index"]), name, int(info["hostapi"]), 1))
-    if not plays or not records:
-        missing = [label for label, found in (("play", plays), ("record", records)) if not found]
+            if tag:
+                plays_by_tag.setdefault(tag, []).append((index, name, host))
+    if not records or not any(plays_by_tag.get(rec_tag) for _, _, _, rec_tag in records):
+        missing = [label for label, found in (("play", plays_by_tag), ("record", records)) if not found]
         raise RuntimeError(f"VB-CABLE endpoints {missing} not found among PortAudio devices: {names}")
-    record_by_host = {host: (index, name) for index, name, host in records}
-    for index, name, host, _rank in sorted(plays, key=lambda row: (row[3], row[0])):
-        if host in record_by_host:
-            return {"play": (index, name), "record": record_by_host[host]}
-    rec_index, rec_name, _ = records[0]
-    play_index, play_name, _, _ = min(plays, key=lambda row: (row[3], row[0]))
+    matched_records = [rec for rec in records if plays_by_tag.get(rec[3])]
+    if len(matched_records) > 1:
+        raise RuntimeError(f"VB-CABLE record devices ambiguous: {matched_records}")
+    rec_index, rec_name, rec_host, rec_tag = matched_records[0]
+    candidates = plays_by_tag[rec_tag]
+    if len(candidates) > 1:
+        raise RuntimeError(f"VB-CABLE play devices ambiguous for tag {rec_tag!r}: {candidates}")
+    play_index, play_name, play_host = candidates[0]
+    if play_host != rec_host:
+        raise RuntimeError(f"VB-CABLE play and record on different host APIs: {play_host} vs {rec_host}")
     return {"play": (play_index, play_name), "record": (rec_index, rec_name)}
 
 
