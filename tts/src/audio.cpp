@@ -215,4 +215,15 @@ void write_wav(const std::string& path, const std::vector<float>& pcm) {
     if (!out) throw std::runtime_error("failed while writing WAV output: " + path);
 }
 
+int utf8_chars(const std::string& s) {
+    int n = 0;
+    for (std::size_t i = 0; i < s.size(); ) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        std::size_t w = c < 0x80 ? 1 : (c & 0xE0) == 0xC0 ? 2 : (c & 0xF0) == 0xE0 ? 3 : (c & 0xF8) == 0xF0 ? 4 : 1;
+        i += w;
+        ++n;
+    }
+    return n;
+}
+
 }

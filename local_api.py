@@ -1,14 +1,25 @@
+"""Trident client adapters: Parakeet STT, Gemma LLM, Chatterbox TTS.
+
+TTS protocol (chatterbox.cpp pin, one connection per utterance-stream):
+
+  client -> {u32 piece_count, then for each piece: {u32 text_len, text}}
+  resident -> one or more frames {u32 kind, u32 bytes, payload}
+    kind=2  int16 little-endian PCM at 24 kHz
+    kind=0  metrics, payload is the text "request_id=... samples=... pieces=..."
+    kind=1  error, payload is utf-8 message
+"""
 from __future__ import annotations
 
 import http.client
 import json
-import secrets
 import select
 import socket
 import struct
+import sys
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from typing import Callable, Iterable, Iterator
 
 
 def _connection(base_url: str, timeout: float):
@@ -17,7 +28,8 @@ def _connection(base_url: str, timeout: float):
 
 
 def parakeet_transcribe(base_url: str, wav: Path, timeout: float = 3600.0) -> dict:
-    boundary = "----------------trident" + secrets.token_hex(12)
+    import secrets
+    boundary = "----------trident" + secrets.token_hex(12)
     filename = wav.name.replace('"', "_")
     head = (
         f"--{boundary}\r\n"
@@ -114,18 +126,27 @@ def gemma_chat_stream(base_url: str, payload: dict, timeout: float = 3600.0):
         conn.close()
 
 
-_PIECE_END = 0xFFFFFFFF
-_PIECE_CANCEL = 0xFFFFFFFE
-_PIECE_FRAME_KIND = 3
+class ChatterboxClient:
+    """One TCP connection per turn: send N texts, yield N pieces of int16 PCM.
 
+    The wire on the wire:
+      open socket
+      send: {u32 piece_count} [{u32 text_len, text}]*
+      loop: recv {u32 kind, u32 bytes, payload}
+        kind=2 -> yield payload (int16 PCM)
+        kind=0 -> store metrics, raise _TtsComplete
+        kind=1 -> raise RuntimeError
+      close socket
+    """
 
-class _TtsConnection:
-    def __init__(self, base_url: str, timeout: float) -> None:
+    def __init__(self, base_url: str, timeout: float = 3600.0, cancel: Callable[[], bool] | None = None) -> None:
         self._parsed = urllib.parse.urlsplit(base_url)
         self._timeout = timeout
         self._sock: socket.socket | None = None
         self._closed = False
+        self._cancel = cancel
         self._metrics: str = ""
+        self._sent = 0
 
     def _recv_exact(self, count: int) -> bytes:
         assert self._sock is not None
@@ -133,7 +154,8 @@ class _TtsConnection:
         while len(data) < count:
             if self._closed:
                 raise InterruptedError
-            if not select.select([self._sock], [], [], 0.05)[0]:
+            r, _, _ = select.select([self._sock], [], [], 0.05)
+            if not r:
                 continue
             part = self._sock.recv(count - len(data))
             if not part:
@@ -141,62 +163,87 @@ class _TtsConnection:
             data.extend(part)
         return bytes(data)
 
-    def connect(self) -> None:
-        self._sock = socket.create_connection(
-            (self._parsed.hostname, self._parsed.port), timeout=self._timeout
+    def _send_all(self, data: bytes) -> None:
+        assert self._sock is not None
+        self._sock.sendall(data)
+
+    def open(self) -> None:
+        if self._sock is not None:
+            raise RuntimeError("ChatterboxClient is already open")
+        sock = socket.create_connection(
+            (self._parsed.hostname, self._parsed.port or 17933),
+            timeout=self._timeout,
         )
-        self._sock.settimeout(self._timeout)
+        sock.settimeout(self._timeout)
+        self._sock = sock
+        self._sent = 0
+        self._metrics = ""
 
-    def send_piece(self, index: int, text: str, wav_path: Path | None) -> None:
-        assert self._sock is not None
+    def close(self) -> None:
+        if self._sock is None:
+            return
+        try:
+            self._sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            self._sock.close()
+        except OSError:
+            pass
+        self._sock = None
+
+    def send_piece(self, text: str) -> None:
+        if self._sock is None:
+            raise RuntimeError("ChatterboxClient.open() must be called before send_piece()")
+        if self._cancel and self._cancel():
+            raise InterruptedError
         text_bytes = text.encode("utf-8")
-        path_bytes = str(wav_path.resolve()).encode("utf-8") if wav_path is not None else b""
-        header = struct.pack("<III", int(index) & 0xFFFFFFFF, len(path_bytes), len(text_bytes))
-        self._sock.sendall(header)
-        self._sock.sendall(text_bytes)
-        self._sock.sendall(path_bytes)
+        if self._sent == 0:
+            self._send_all(struct.pack("<I", 1))  # piece_count = 1
+        self._send_all(struct.pack("<I", len(text_bytes)) + text_bytes)
+        self._sent += 1
 
-    def cancel_piece(self) -> None:
-        assert self._sock is not None
-        header = struct.pack("<III", _PIECE_CANCEL, 0, 0)
-        self._sock.sendall(header)
+    def send_pieces(self, texts: Iterable[str]) -> None:
+        if self._sock is None:
+            raise RuntimeError("ChatterboxClient.open() must be called before send_pieces()")
+        if self._sent != 0:
+            raise RuntimeError("send_pieces must be called exactly once before any send_piece")
+        pieces = list(texts)
+        self._send_all(struct.pack("<I", len(pieces)))
+        for text in pieces:
+            text_bytes = text.encode("utf-8")
+            self._send_all(struct.pack("<I", len(text_bytes)) + text_bytes)
+        self._sent = len(pieces)
 
-    def end_stream(self) -> str:
-        assert self._sock is not None
-        self._sock.sendall(struct.pack("<III", _PIECE_END, 0, 0))
-        kind, length = struct.unpack("<II", self._recv_exact(8))
-        payload = self._recv_exact(length) if length else b""
-        if kind == 0:
-            self._metrics = payload.decode("utf-8", errors="replace")
-            return self._metrics
-        message = payload.decode("utf-8", errors="replace")
-        raise RuntimeError(f"Chatterbox resident synthesis failed: {message or 'unknown error'}")
+    def _check_cancel(self) -> None:
+        if self._cancel and self._cancel():
+            raise InterruptedError
 
     def recv_pcm(self) -> bytes:
+        if self._sock is None:
+            raise RuntimeError("ChatterboxClient not open")
+        self._check_cancel()
         kind, length = struct.unpack("<II", self._recv_exact(8))
         payload = self._recv_exact(length) if length else b""
         if kind == 2:
             return payload
-        if kind == _PIECE_FRAME_KIND:
-            raise _PieceComplete()
-        message = payload.decode("utf-8", errors="replace")
         if kind == 0:
-            self._metrics = message
-            raise _TtsComplete(message)
-        raise RuntimeError(f"Chatterbox resident synthesis failed: {message or 'unknown error'}")
+            self._metrics = payload.decode("utf-8", errors="replace")
+            raise _TtsComplete(self._metrics)
+        if kind == 1:
+            message = payload.decode("utf-8", errors="replace")
+            raise RuntimeError(f"Chatterbox resident synthesis failed: {message or 'unknown error'}")
+        raise RuntimeError(f"unknown Chatterbox frame kind: {kind}")
 
-    def close(self) -> None:
-        if self._closed:
-            return
+    def __iter__(self) -> Iterator[bytes]:
+        while True:
+            try:
+                yield self.recv_pcm()
+            except _TtsComplete:
+                return
+
+    def cancel(self) -> None:
         self._closed = True
-        sock, self._sock = self._sock, None
-        if sock is None:
-            return
-        try:
-            sock.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
-        sock.close()
 
     @property
     def metrics(self) -> str:
@@ -209,96 +256,28 @@ class _TtsComplete(Exception):
         self.metrics = metrics
 
 
-class _PieceComplete(Exception):
-    pass
+def chatterbox_stream(base_url: str, text: str, output: Path, cancel: Callable[[], bool] | None = None) -> Iterator[bytes]:
+    """Legacy single-text stream. Used by callers that want one-shot TTS.
 
-
-class ChatterboxClient:
-    def __init__(self, base_url: str, timeout: float = 3600.0, cancel=None) -> None:
-        self._conn = _TtsConnection(base_url, timeout)
-        self._cancel = cancel
-        self._opened = False
-        self._piece_index = 0
-        self._wav_sent = False
-
-    def open(self, wav_path: Path) -> None:
-        if self._opened:
-            raise RuntimeError("ChatterboxClient is already open")
-        self._conn.connect()
-        self._opened = True
-        self._piece_index = 0
-        self._wav_sent = False
-        self._wav_path = wav_path
-
-    def _check_cancel(self) -> None:
-        if self._cancel and self._cancel():
-            raise InterruptedError
-
-    def send_piece(self, text: str) -> None:
-        if not self._opened:
-            raise RuntimeError("ChatterboxClient.open() must be called before send_piece()")
-        self._check_cancel()
-        self._piece_index += 1
-        path = self._wav_path if not self._wav_sent else None
-        try:
-            self._conn.send_piece(self._piece_index, text, path)
-        except OSError as exc:
-            raise RuntimeError(f"Chatterbox resident request failed: {exc}") from exc
-        self._wav_sent = True
-
-    def recv_pcm(self) -> bytes:
-        try:
-            return self._conn.recv_pcm()
-        except _PieceComplete:
-            raise StopIteration("piece_complete")
-        except _TtsComplete as done:
-            raise StopIteration(done.metrics)
-        except OSError as exc:
-            raise RuntimeError(f"Chatterbox resident request failed: {exc}") from exc
-
-    def cancel_piece(self) -> None:
-        if self._opened and self._conn._sock:
-            try:
-                self._conn.cancel_piece()
-            except OSError:
-                pass
-
-    def end(self) -> str:
-        try:
-            return self._conn.end_stream()
-        except OSError as exc:
-            raise RuntimeError(f"Chatterbox resident request failed: {exc}") from exc
-        finally:
-            self.close()
-
-    def close(self) -> None:
-        self._conn.close()
-        self._opened = False
-
-    def __iter__(self):
-        if not self._opened:
-            raise RuntimeError("ChatterboxClient.open() must be called before iteration")
-        while True:
-            try:
-                yield self._conn.recv_pcm()
-            except _PieceComplete:
-                return
-            except _TtsComplete as done:
-                return done.metrics
-            except OSError as exc:
-                raise RuntimeError(f"Chatterbox resident request failed: {exc}") from exc
-
-    @property
-    def metrics(self) -> str:
-        return self._conn.metrics
-
-
-def chatterbox_stream(base_url: str, text: str, output: Path, cancel=None):
+    Writes the concatenated PCM (int16 LE, 24 kHz) wrapped in a WAV container
+    to `output` and yields each PCM chunk from the resident.
+    """
+    import wave
     client = ChatterboxClient(base_url, cancel=cancel)
-    if not (cancel and cancel()):
-        client.open(output)
-        client.send_piece(text)
+    client.open()
     try:
-        yield from client
+        client.send_piece(text)
+        with wave.open(str(output), "wb") as sink:
+            sink.setnchannels(1)
+            sink.setsampwidth(2)
+            sink.setframerate(24000)
+            while True:
+                try:
+                    pcm = client.recv_pcm()
+                except _TtsComplete as done:
+                    client._metrics = done.metrics
+                    return
+                sink.writeframes(pcm)
+                yield pcm
     finally:
         client.close()

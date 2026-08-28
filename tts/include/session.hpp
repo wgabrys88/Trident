@@ -1,33 +1,34 @@
 #pragma once
 
 #include "audio.hpp"
+#include "cli.hpp"
 
-#include <atomic>
-#include <cstddef>
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace tts {
 
-using AudioSink = std::function<void(const float*, std::size_t)>;
-using StreamingSink = std::function<void(const float*, std::size_t, int, bool)>;
-
 class Session {
 public:
-    Session(const Runtime& runtime, const EngineKnobs& knobs, int chunk_chars, float quiet_amp2 = kQuietAmp2, int first_chunk_chars = 0);
+    struct Speech {
+        std::vector<float> pcm;
+        double t3_ms = 0.0;
+        double s3gen_ms = 0.0;
+        int t3_tokens = 0;
+        int sample_rate = 24000;
+    };
+
+    Session(const std::string& t3_gguf, const std::string& s3gen_gguf, const Runtime& runtime, const EngineKnobs& knobs, int chunk_chars, float quiet_amp2, int first_chunk_chars);
     ~Session();
-    Session(const Session&) = delete;
-    Session& operator=(const Session&) = delete;
-    Speech synthesize(const std::string& text, const AudioSink& sink);
-    Speech synthesize_stream(const std::string& text, const StreamingSink& sink);
+
+    std::vector<Speech> synthesize_pieces(const std::vector<std::string>& texts, const StreamingSink& sink);
     void request_cancel();
-    const Runtime& runtime() const noexcept;
-    const EngineKnobs& knobs() const noexcept;
-    int chunk_chars() const noexcept;
+
 private:
     struct Impl;
-    std::unique_ptr<Impl> impl_;
+    Impl* pimpl_;
 };
 
 }
