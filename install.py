@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -12,16 +13,28 @@ import zipfile
 from pathlib import Path
 
 from config import (
-    CHATTERBOX, CODEC_FILE, CODEC_QUANT, CONVERTER, DATA, GEMMA_FILE, GEMMA_URL, GGML_REV,
-    GGML_URL, HARDWARE, LLAMA_ZIP, MODELS, NANO_FILES, NANO_REPO, NANO_REV, PARAKEET_FILE,
-    PARAKEET_URL, PARAKEET_ZIP, ROOT, RUNTIMES, T3_FILE, TOOLS, TTS, VOICE_HF, VOICES, find_exe,
-    log,
+    CHATTERBOX, CHATTERBOX_URL, CODEC_FILE, CODEC_QUANT, CONVERTER, DATA, GEMMA_FILE, GEMMA_URL,
+    GGML, GGML_GIT, HARDWARE, LLAMA_ZIP, MODELS, NANO_FILES, NANO_REPO, NANO_REV, PARAKEET_FILE,
+    PARAKEET_URL, PARAKEET_ZIP, ROOT, RUNTIMES, T3_FILE, THIRD_PARTY, TOOLS, TTS, VOICE_HF, VOICES,
+    find_exe, log,
 )
+
+PIN = RUNTIMES / "tts" / ".pin"
 
 
 def sh(cmd, cwd=None, env=None) -> None:
     log("exec " + " ".join(str(c) for c in cmd))
     subprocess.check_call(cmd, cwd=cwd, env=env)
+
+
+def wipe(path: Path) -> None:
+    if not path.exists():
+        return
+    def onerror(fn, p, _exc):
+        os.chmod(p, stat.S_IWRITE)
+        fn(p)
+    shutil.rmtree(path, onerror=onerror)
+    log(f"wipe {path}")
 
 
 def pull(url: str, dest: Path) -> Path:
@@ -46,36 +59,41 @@ def pull(url: str, dest: Path) -> Path:
 
 
 def unzip(archive: Path, dest: Path) -> None:
-    if dest.exists():
-        shutil.rmtree(dest)
+    wipe(dest)
     dest.mkdir(parents=True)
     with zipfile.ZipFile(archive) as z:
         z.extractall(dest)
     log(f"unzip {archive.name} -> {dest}")
 
 
-def ensure_chatterbox() -> None:
-    engine = CHATTERBOX / "include" / "tts-cpp" / "chatterbox" / "engine.h"
-    if not engine.is_file():
-        raise RuntimeError(f"chatterbox.cpp missing at {CHATTERBOX}")
-    rev = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=CHATTERBOX, text=True).strip()
-    log(f"chatterbox root={CHATTERBOX} rev={rev}")
+def remote_head(url: str) -> str:
+    return subprocess.check_output(["git", "ls-remote", url, "HEAD"], text=True).split()[0]
 
 
-def ensure_ggml() -> None:
-    dest = CHATTERBOX / "ggml"
-    if not (dest / ".git").exists():
-        if dest.exists():
-            shutil.rmtree(dest)
-        sh(["git", "clone", "--filter=blob:none", "--no-checkout", GGML_URL, str(dest)])
-    sh(["git", "fetch", "--depth", "1", "origin", GGML_REV], dest)
-    sh(["git", "checkout", "--detach", GGML_REV], dest)
-    sh(["git", "reset", "--hard", GGML_REV], dest)
-    patch_ggml()
+def clone(url: str, dest: Path) -> str:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if (dest / ".git").is_dir():
+        sh(["git", "fetch", "--depth", "1", "origin"], dest)
+        sh(["git", "reset", "--hard", "FETCH_HEAD"], dest)
+    else:
+        wipe(dest)
+        sh(["git", "clone", "--filter=blob:none", "--depth", "1", url, str(dest)])
+    rev = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=dest, text=True).strip()
+    log(f"git {dest.name} {rev}")
+    return rev
+
+
+def pin(url: str, rev: str, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if not (dest / ".git").is_dir():
+        wipe(dest)
+        sh(["git", "clone", "--filter=blob:none", "--no-checkout", url, str(dest)])
+    sh(["git", "fetch", "--depth", "1", "origin", rev], dest)
+    sh(["git", "checkout", "--detach", "--force", rev], dest)
 
 
 def patch_ggml() -> None:
-    path = CHATTERBOX / "ggml" / "src" / "ggml-vulkan" / "ggml-vulkan.cpp"
+    path = GGML / "src" / "ggml-vulkan" / "ggml-vulkan.cpp"
     lines = path.read_text(encoding="utf-8").splitlines()
     direct = next(i for i, line in enumerate(lines) if "force_disable_f16" in line and "getenv(" in line)
     staged = next(i for i, line in enumerate(lines[:-1]) if "getenv(" in line and "force_disable_f16" in lines[i + 1])
@@ -86,19 +104,18 @@ def patch_ggml() -> None:
     log("ggml vulkan: Pascal pre-Turing FP16 off")
 
 
-def tts_pin() -> str:
-    chatter = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=CHATTERBOX, text=True).strip()
-    ggml = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=CHATTERBOX / "ggml", text=True).strip()
-    blob = (
-        chatter.encode("ascii") + ggml.encode("ascii")
-        + (TTS / "src" / "server.cpp").read_bytes()
-        + (TTS / "CMakeLists.txt").read_bytes()
-    )
-    return hashlib.sha256(blob).hexdigest()[:16]
+def tts_pin(chatter_rev: str) -> str:
+    blob = (TTS / "src" / "server.cpp").read_bytes() + (TTS / "CMakeLists.txt").read_bytes()
+    return f"{chatter_rev} {HARDWARE} {GGML_GIT[1]} {hashlib.sha256(blob).hexdigest()[:16]}"
 
 
-def build_tts() -> None:
+def build_tts(chatter_rev: str) -> None:
     t0 = time.perf_counter()
+    pin(*GGML_GIT, GGML)
+    if HARDWARE == "pascal":
+        patch_ggml()
+    else:
+        log(f"ggml vulkan: {HARDWARE} stock")
     cmake = "cmake"
     sh([cmake, "-S", ".", "-B", "build", "-A", "x64",
         "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_NATIVE=ON", "-DGGML_CCACHE=OFF",
@@ -107,15 +124,17 @@ def build_tts() -> None:
     sh([cmake, "-S", ".", "-B", "build", "-A", "x64", f"-DCHATTERBOX_CPP_ROOT={CHATTERBOX}"], TTS)
     sh([cmake, "--build", "build", "--config", "Release", "--target", "trident-tts-server", "--parallel"], TTS)
     built = TTS / "build" / "Release"
+    server = built / "trident-tts-server.exe"
+    if not server.is_file():
+        raise RuntimeError("trident-tts-server.exe missing after build")
     dest = RUNTIMES / "tts"
     dest.mkdir(parents=True, exist_ok=True)
-    for path in built.iterdir():
-        if path.is_file():
-            shutil.copy2(path, dest / path.name)
-    pin_path = CHATTERBOX / "build" / ".pin"
-    pin_path.parent.mkdir(parents=True, exist_ok=True)
-    pin_path.write_text(tts_pin() + "\n", encoding="ascii")
-    log(f"tts server ready elapsed_ms={(time.perf_counter() - t0) * 1000:.0f}")
+    shutil.copy2(server, dest / server.name)
+    for dll in built.glob("*.dll"):
+        shutil.copy2(dll, dest / dll.name)
+    PIN.parent.mkdir(parents=True, exist_ok=True)
+    PIN.write_text(tts_pin(chatter_rev) + "\n", encoding="ascii")
+    log(f"tts server ready hardware={HARDWARE} elapsed_ms={(time.perf_counter() - t0) * 1000:.0f}")
 
 
 def convert_nano(models: Path) -> None:
@@ -145,19 +164,17 @@ def convert_nano(models: Path) -> None:
         shutil.copyfile(ckpt / "t3_nano_v1.safetensors", turbo)
     models.mkdir(parents=True, exist_ok=True)
     t3, codec = models / T3_FILE, models / CODEC_FILE
-    script_t3 = CHATTERBOX / "scripts" / "convert-t3-turbo-to-gguf.py"
-    script_s3 = CHATTERBOX / "scripts" / "convert-s3gen-to-gguf.py"
-    if not script_t3.is_file() or not script_s3.is_file():
-        raise RuntimeError(f"chatterbox convert scripts missing under {CHATTERBOX / 'scripts'}")
     if not t3.is_file():
-        sh([str(py), str(script_t3), "--ckpt-dir", str(ckpt), "--out", str(t3), "--quant", "q4_0"], ROOT, env)
+        sh([str(py), str(CHATTERBOX / "scripts" / "convert-t3-turbo-to-gguf.py"),
+            "--ckpt-dir", str(ckpt), "--out", str(t3), "--quant", "q4_0"], ROOT, env)
     if not codec.is_file():
-        sh([str(py), str(script_s3), "--variant", "turbo", "--ckpt-dir", str(ckpt), "--out", str(codec),
+        sh([str(py), str(CHATTERBOX / "scripts" / "convert-s3gen-to-gguf.py"),
+            "--variant", "turbo", "--ckpt-dir", str(ckpt), "--out", str(codec),
             "--quant", CODEC_QUANT], ROOT, env)
-    log(f"nano gguf ready t3={t3.name} codec={codec.name} elapsed_ms={(time.perf_counter() - t0) * 1000:.0f}")
+    log(f"nano gguf ready t3={t3.name} codec={codec.name} hardware={HARDWARE} elapsed_ms={(time.perf_counter() - t0) * 1000:.0f}")
 
 
-def install_ui() -> Path:
+def install_ui() -> None:
     env = ROOT / ".venv"
     python = env / "Scripts" / "python.exe"
     req = ROOT / "requirements-ui.txt"
@@ -170,7 +187,6 @@ def install_ui() -> Path:
             "-r", str(req)])
         marker.write_text(digest + "\n", encoding="ascii")
     log(f"ui venv {python}")
-    return python
 
 
 def install(models_dir: Path | None = None, data_dir: Path | None = None) -> None:
@@ -180,29 +196,30 @@ def install(models_dir: Path | None = None, data_dir: Path | None = None) -> Non
     data = Path(data_dir or DATA)
     models.mkdir(parents=True, exist_ok=True)
     data.mkdir(parents=True, exist_ok=True)
-    log(f"install hardware={HARDWARE} chatterbox={CHATTERBOX}")
+    log(f"install hardware={HARDWARE}")
 
-    ensure_chatterbox()
-    ensure_ggml()
+    head = remote_head(CHATTERBOX_URL)
     server = RUNTIMES / "tts" / "trident-tts-server.exe"
-    pin_file = CHATTERBOX / "build" / ".pin"
-    pin = pin_file.read_text(encoding="ascii").strip() if pin_file.is_file() else ""
-    if not server.is_file() or pin != tts_pin():
-        build_tts()
-
-    if not (models / T3_FILE).is_file() or not (models / CODEC_FILE).is_file():
+    pin_text = PIN.read_text(encoding="ascii").strip() if PIN.is_file() else ""
+    need_tts = not server.is_file() or pin_text != tts_pin(head)
+    need_gguf = not (models / T3_FILE).is_file() or not (models / CODEC_FILE).is_file()
+    if need_tts or need_gguf:
+        head = clone(CHATTERBOX_URL, CHATTERBOX)
+    if need_tts:
+        build_tts(head)
+    if need_gguf:
         convert_nano(models)
 
-    parakeet_zip = pull(PARAKEET_ZIP[0], TOOLS / "downloads" / PARAKEET_ZIP[1])
     if find_exe(RUNTIMES / "parakeet", "parakeet-server.exe") is None:
-        unzip(parakeet_zip, RUNTIMES / "parakeet")
-    llama_zip = pull(LLAMA_ZIP[0], TOOLS / "downloads" / LLAMA_ZIP[1])
+        unzip(pull(PARAKEET_ZIP[0], TOOLS / "downloads" / PARAKEET_ZIP[1]), RUNTIMES / "parakeet")
     if find_exe(RUNTIMES / "gemma", "llama-server.exe") is None:
-        unzip(llama_zip, RUNTIMES / "gemma")
+        unzip(pull(LLAMA_ZIP[0], TOOLS / "downloads" / LLAMA_ZIP[1]), RUNTIMES / "gemma")
 
     for source, name in VOICES.values():
         pull(VOICE_HF + source, data / name)
     pull(PARAKEET_URL, models / PARAKEET_FILE)
     pull(GEMMA_URL, models / GEMMA_FILE)
     install_ui()
+    for path in (THIRD_PARTY, TTS / "build", CONVERTER, TOOLS / "huggingface", TOOLS / "downloads"):
+        wipe(path)
     log("install complete")

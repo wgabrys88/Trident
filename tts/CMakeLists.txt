@@ -7,7 +7,7 @@ add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
 add_compile_options(/MP /bigobj)
 
 if(NOT CHATTERBOX_CPP_ROOT)
-    get_filename_component(CHATTERBOX_CPP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../chatterbox.cpp" ABSOLUTE)
+    get_filename_component(CHATTERBOX_CPP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../third_party/chatterbox.cpp" ABSOLUTE)
 endif()
 if(NOT EXISTS "${CHATTERBOX_CPP_ROOT}/include/tts-cpp/chatterbox/engine.h")
     message(FATAL_ERROR "chatterbox.cpp missing at ${CHATTERBOX_CPP_ROOT}")

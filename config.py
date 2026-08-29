@@ -10,14 +10,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 MODELS = ROOT / "models"
 DATA = ROOT / "data"
+THIRD_PARTY = ROOT / "third_party"
 TOOLS = ROOT / "tools"
 TTS = ROOT / "tts"
-CHATTERBOX = ROOT.parent / "chatterbox.cpp"
+CHATTERBOX = THIRD_PARTY / "chatterbox.cpp"
+GGML = CHATTERBOX / "ggml"
 RUNTIMES = TOOLS / "runtime"
 CONVERTER = TOOLS / "convert"
 
-GGML_URL = "https://github.com/ggml-org/ggml.git"
-GGML_REV = "58c3805840b516b2a88ff867ccf7bb41dba79951"
+CHATTERBOX_URL = "https://github.com/wgabrys88/chatterbox.cpp"
+GGML_GIT = ("https://github.com/ggml-org/ggml.git", "58c3805840b516b2a88ff867ccf7bb41dba79951")
 
 ASR_RATE = 16000
 TTS_RATE = 24000
