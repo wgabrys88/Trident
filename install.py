@@ -11,7 +11,7 @@ import venv
 import zipfile
 from pathlib import Path
 
-from config import CHATTERBOX, CHATTERBOX_REV, CHATTERBOX_URL, CODEC_FILE, CODEC_QUANT, CONVERTER, DATA, GEMMA_FILE, GEMMA_URL, GGML, GGML_GIT, HARDWARE, LLAMA_ZIP, MODELS, NANO_FILES, NANO_REPO, NANO_REV, PARAKEET_FILE, PARAKEET_URL, PARAKEET_ZIP, ROOT, RUNTIMES, T3_FILE, THIRD_PARTY, TOOLS, TTS, VOICE_HF, VOICES, find_exe, log
+from config import CHATTERBOX, CHATTERBOX_REV, CHATTERBOX_URL, CODEC_FILE, CODEC_QUANT, CONVERTER, DATA, GEMMA_FILE, GEMMA_URL, GGML, GGML_GIT, HARDWARE, LLAMA_ZIP, MODELS, NANO_FILES, NANO_REPO, NANO_REV, PARAKEET_FILE, PARAKEET_URL, PARAKEET_ZIP, ROOT, RUNTIMES, T3_FILE, TOOLS, TTS, VOICE_HF, VOICES, find_exe, log
 
 PIN = RUNTIMES / "tts" / ".pin"
 
@@ -149,6 +149,4 @@ def install(models_dir: Path | None = None, data_dir: Path | None = None) -> Non
     pull(PARAKEET_URL, models / PARAKEET_FILE)
     pull(GEMMA_URL, models / GEMMA_FILE)
     install_ui()
-    for path in (THIRD_PARTY, TTS / "build", CONVERTER, TOOLS / "huggingface", TOOLS / "downloads"):
-        wipe(path)
     log("install complete")
