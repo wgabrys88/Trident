@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parent
 MODELS, DATA, THIRD_PARTY, TOOLS, TTS = (ROOT / n for n in ("models", "data", "third_party", "tools", "tts"))
 CHATTERBOX = THIRD_PARTY / "chatterbox.cpp"
 GGML, RUNTIMES, CONVERTER = CHATTERBOX / "ggml", TOOLS / "runtime", TOOLS / "convert"
-CHATTERBOX_URL, CHATTERBOX_REV = "https://github.com/wgabrys88/chatterbox.cpp", "9714d18af1096db5c8a8ace2f6cd77cc6a2d64cf"
+CHATTERBOX_URL, CHATTERBOX_REV = "https://github.com/wgabrys88/chatterbox.cpp", "f0fa2ef3324698222fd02de144d6939dfd247a28"
 GGML_GIT = ("https://github.com/ggml-org/ggml.git", "58c3805840b516b2a88ff867ccf7bb41dba79951")
 ASR_RATE, TTS_RATE, VAD_FRAME, FEED_S, PLAY_SLICE_S, MIC_LIMIT_S = 16000, 24000, 512, .16, .06, 86400
 NANO_FILES = ("t3_nano_v1.safetensors", "s3gen_meanflow.safetensors", "conds.pt", "ve.safetensors", "vocab.json", "merges.txt", "added_tokens.json")
@@ -34,7 +34,7 @@ TTS_PROFILES = {
     "turbo": {**TTS_KNOBS, "max_tokens": 1000},
     "v3": {**TTS_KNOBS, "max_tokens": 1000, "top_k": 0, "top_p": 1., "min_p": .05, "cfm_steps": 0, "cfg_weight": .5, "exaggeration": .5},
 }
-V3_LANGUAGES = ("ar", "da", "de", "el", "en", "es", "fi", "fr", "it", "ko", "ms", "nl", "no", "pl", "pt", "sv", "sw", "tr")
+V3_LANGUAGES = ("ar", "da", "de", "el", "en", "es", "fi", "fr", "he", "hi", "it", "ja", "ko", "ms", "nl", "no", "pl", "pt", "ru", "sv", "sw", "tr", "zh")
 GEMMA_GEN = {"temperature": 1., "top_p": .95, "top_k": 64, "min_p": 0., "repeat_penalty": 1., "seed": 42, "max_tokens": 1024}
 LOG_FILE: Path | None = None
 _log_lock = threading.Lock()
@@ -56,7 +56,7 @@ CODEC_QUANT, CODEC_FILE = (("q4_0", "chatterbox-s3gen-nano-irisxe-q4_0-rawf32-v1
 TTS_MODELS = {
     "nano": (T3_FILE, CODEC_FILE),
     "turbo": ("chatterbox-t3-turbo-q4_0.gguf", f"chatterbox-s3gen-turbo-{CODEC_QUANT}.gguf"),
-    "v3": ("chatterbox-t3-mtl-v3-q4_0.gguf", f"chatterbox-s3gen-mtl-v3-{CODEC_QUANT}.gguf"),
+    "v3": ("chatterbox-t3-mtl-v3-cangjie-q4_0.gguf", f"chatterbox-s3gen-mtl-v3-{CODEC_QUANT}.gguf"),
 }
 
 def log(msg: str, file: Path | None = None) -> None:
