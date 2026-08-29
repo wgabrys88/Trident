@@ -119,9 +119,13 @@ class Chatterbox:
 
     def _recv(self, n: int) -> bytes | None:
         while len(self.buf) < n:
-            if self.sock is None:
+            sock = self.sock
+            if sock is None:
                 return None
-            chunk = self.sock.recv(65536)
+            try:
+                chunk = sock.recv(65536)
+            except OSError:
+                return None
             if not chunk:
                 return None
             self.buf.extend(chunk)
@@ -147,5 +151,8 @@ class Chatterbox:
     def close(self) -> None:
         sock, self.sock = self.sock, None
         if sock is not None:
-            sock.shutdown(socket.SHUT_RDWR)
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
             sock.close()

@@ -100,7 +100,7 @@ class Capture:
             self.pending = np.concatenate((self.pending, np.frombuffer(pcm, dtype="<f4")))
             while self.pending.size >= VAD_FRAME:
                 frame, self.pending = self.pending[:VAD_FRAME], self.pending[VAD_FRAME:]
-                event = self.vad(frame)
+                event = self.vad(frame) or {}
                 if "start" in event:
                     self.turn += 1
                     self.audio.clear()
