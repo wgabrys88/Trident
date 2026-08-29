@@ -4,7 +4,6 @@
 #include <condition_variable>
 #include <cstdlib>
 #include <cstdint>
-#include <iostream>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -14,6 +13,7 @@
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include "tts-cpp/chatterbox/engine.h"
+#include "tts-cpp/chatterbox/log.h"
 
 using mono_clock = std::chrono::steady_clock;
 using args_t = std::unordered_map<std::string, std::string>;
@@ -107,22 +107,22 @@ static void serve(SOCKET client, tts_cpp::chatterbox::Engine& tts) {
                 epoch = live.load();
             }
             auto started = mono_clock::now();
-            if (had_last) std::cerr << "tts gap epoch=" << epoch << " gap_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(started - last).count() << '\n';
-            std::cerr << "tts synth epoch=" << epoch << " pieces=" << batch.size() << '\n';
+            if (had_last) tts_emit("tts.gap", ",\"epoch\":" + std::to_string(epoch) + ",\"gap_ms\":" + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(started - last).count()));
+            tts_emit("tts.synth", ",\"epoch\":" + std::to_string(epoch) + ",\"pieces\":" + std::to_string(batch.size()));
             try {
                 tts.synthesize_pieces(batch, [&](int, const float* data, std::size_t n, int, bool) {
                     if (n && live.load() == epoch) pcm(client, epoch, data, n);
                 });
                 if (live.load() == epoch) {
                     frame(client, 0, epoch, "ok", 2);
-                    std::cerr << "tts done epoch=" << epoch << " elapsed_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(mono_clock::now() - started).count() << '\n';
+                    tts_emit("tts.ok", ",\"epoch\":" + std::to_string(epoch) + ",\"elapsed_ms\":" + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(mono_clock::now() - started).count()));
                 }
             } catch (const std::exception& e) {
                 if (live.load() != epoch) {
-                    std::cerr << "tts cancelled epoch=" << epoch << " live=" << live.load() << ' ' << e.what() << '\n';
+                    tts_emit("tts.cancel", ",\"epoch\":" + std::to_string(epoch) + ",\"live\":" + std::to_string(live.load()) + ",\"error\":" + tts_json_escape(e.what()));
                     continue;
                 }
-                std::cerr << "tts failed epoch=" << epoch << ' ' << e.what() << '\n';
+                tts_emit("tts.fail", ",\"epoch\":" + std::to_string(epoch) + ",\"error\":" + tts_json_escape(e.what()));
                 std::exit(1);
             }
             last = mono_clock::now();
@@ -135,7 +135,7 @@ static void serve(SOCKET client, tts_cpp::chatterbox::Engine& tts) {
         {
             std::lock_guard lock(mu);
             if (epoch != live.load()) {
-                std::cerr << "tts cancel live=" << live.load() << " epoch=" << epoch << " queued=" << pending.size() << '\n';
+                tts_emit("tts.cancel", ",\"live\":" + std::to_string(live.load()) + ",\"epoch\":" + std::to_string(epoch) + ",\"queued\":" + std::to_string(pending.size()));
                 live.store(epoch);
                 tts.cancel();
                 pending.clear();
@@ -171,17 +171,17 @@ int main(int argc, char** argv) {
         addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         if (bind(listener, reinterpret_cast<sockaddr*>(&addr), sizeof(addr))) throw std::runtime_error("bind failed");
         if (listen(listener, 1)) throw std::runtime_error("listen failed");
-        std::cerr << "tts ready host=127.0.0.1 port=" << ntohs(addr.sin_port) << '\n';
+        tts_emit("tts.ready", ",\"port\":" + std::to_string(ntohs(addr.sin_port)) + ",\"family\":" + tts_json_escape(a.at("--family")) + ",\"language\":" + tts_json_escape(a.at("--language")));
         for (;;) {
             SOCKET client = accept(listener, nullptr, nullptr);
             if (client == INVALID_SOCKET) throw std::runtime_error("accept failed");
-            std::cerr << "tts client connected\n";
+            tts_emit("tts.client");
             serve(client, tts);
             closesocket(client);
-            std::cerr << "tts client gone\n";
+            tts_emit("tts.client_gone");
         }
     } catch (const std::exception& e) {
-        std::cerr << "tts resident error: " << e.what() << '\n';
+        tts_emit("tts.fail", ",\"error\":" + tts_json_escape(e.what()));
         return 1;
     }
 }

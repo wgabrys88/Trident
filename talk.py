@@ -10,7 +10,7 @@ import gradio as gr
 import numpy as np
 from silero_vad_notorch import VADIterator, load_silero_vad
 
-from config import ASR_RATE, FEED_S, MIC_LIMIT_S, PLAY_SLICE_S, Paths, TTS_KNOBS, TTS_RATE, V3_LANGUAGES, VAD_FRAME, load_settings, log
+from config import ASR_RATE, FEED_S, MIC_LIMIT_S, Paths, TTS_KNOBS, TTS_RATE, V3_LANGUAGES, VAD_FRAME, emit, load_settings
 from runtime import Chatterbox, boot, gemma_stream, require_alive, stop_all, transcribe
 
 def resample(x: np.ndarray, src: int) -> np.ndarray:
@@ -74,7 +74,7 @@ class Capture:
     def open(self) -> None:
         self.active = True
         self.thread.start()
-        log("capture open")
+        emit("capture.open")
 
     def feed(self, pcm: bytes) -> None:
         if self.active and pcm:
@@ -91,7 +91,7 @@ class Capture:
         started = time.perf_counter()
         text = transcribe(self.asr, wav)
         elapsed = time.perf_counter() - started
-        log(f"asr input_s={duration:.3f} inference_ms={elapsed * 1000:.0f} rtf={elapsed / duration:.3f} text={text!r}")
+        emit("asr", turn=self.turn, input_s=round(duration, 3), inference_ms=round(elapsed * 1000), rtf=round(elapsed / duration, 3), text=text)
         if self.active and text:
             self.on_text(text)
 
@@ -105,12 +105,11 @@ class Capture:
                     self.turn += 1
                     self.audio.clear()
                     self.speech = True
-                    self.on_epoch()
-                    log(f"vad start turn={self.turn}")
+                    emit("vad.start", turn=self.turn, epoch=self.on_epoch())
                 if self.speech:
                     self.audio.extend(frame.astype("<f4", copy=False).tobytes())
                 if "end" in event:
-                    log(f"vad end turn={self.turn} input_s={len(self.audio) / (ASR_RATE * 4):.3f}")
+                    emit("vad.end", turn=self.turn, input_s=round(len(self.audio) / (ASR_RATE * 4), 3))
                     self.speech = False
                     self._asr()
         self.audio.clear()
@@ -120,7 +119,7 @@ class Capture:
             self.active = False
             self.q.put(None)
             self.thread.join()
-            log("capture close")
+            emit("capture.close")
 
 class Conversation:
     def __init__(self, paths: Paths, settings: dict) -> None:
@@ -145,7 +144,7 @@ class Conversation:
             self.epoch += 1
             epoch = self.epoch
             self.tts.send(epoch, [])
-        log(f"barge-in epoch={epoch} reason={reason} turn={self.turn}")
+        emit("barge_in", epoch=epoch, reason=reason, turn=self.turn)
         self.out.put(("audio-reset", None, epoch))
         return epoch
 
@@ -174,18 +173,16 @@ class Conversation:
         self.transcript = (self.transcript + " " + text).strip()
         with self.lock:
             epoch = self.epoch
-        log(f"user epoch={epoch} text={text!r}")
+        emit("user", epoch=epoch, chars=len(text), text=text)
         self.llm_q.put((epoch, text))
         self._state(f"Heard {len(text)} chars")
 
-    def _send(self, epoch: int, turn: int, unit: str, first: bool) -> bool:
+    def _send(self, epoch: int, turn: int, unit: str) -> None:
         with self.lock:
             if epoch != self.epoch:
-                return first
+                return
             self.tts.send(epoch, [unit])
-        if first:
-            log(f"tts first_send turn={turn} epoch={epoch} text={unit!r}")
-        return False
+        emit("tts.send", turn=turn, epoch=epoch, chars=len(unit), text=unit)
 
     def _llm(self) -> None:
         while item := self.llm_q.get():
@@ -193,10 +190,11 @@ class Conversation:
             with self.lock:
                 stale = epoch != self.epoch
             if stale:
+                emit("llm.skip", epoch=epoch)
                 continue
             self.turn += 1
-            turn, t0, first, first_send = self.turn, time.perf_counter(), True, True
-            log(f"llm begin turn={turn} epoch={epoch} prompt={prompt!r}")
+            turn, t0, first = self.turn, time.perf_counter(), True
+            emit("llm.begin", turn=turn, epoch=epoch, chars=len(prompt), prompt=prompt)
             self._state("Thinking")
             seg, raw = Segmenter(), ""
             messages = [{"role": "system", "content": self.settings["system_prompt"].strip()}, *self.history, {"role": "user", "content": prompt}]
@@ -208,48 +206,43 @@ class Conversation:
                     if stale:
                         break
                     if first:
-                        log(f"llm first turn={turn} epoch={epoch} ms={(time.perf_counter() - t0) * 1000:.0f}")
+                        emit("llm.first", turn=turn, epoch=epoch, ms=round((time.perf_counter() - t0) * 1000))
                         first = False
                     raw += delta
                     self.answer = raw
                     for unit in seg.take(spoken(raw)):
-                        first_send = self._send(epoch, turn, unit, first_send)
+                        self._send(epoch, turn, unit)
             finally:
                 gen.close()
             with self.lock:
                 stale = epoch != self.epoch
             if stale:
-                log(f"llm cancelled turn={turn} epoch={epoch} ms={(time.perf_counter() - t0) * 1000:.0f}")
+                emit("llm.cancel", turn=turn, epoch=epoch, ms=round((time.perf_counter() - t0) * 1000))
                 continue
             answer = spoken(raw)
             for unit in seg.take(answer, True):
-                first_send = self._send(epoch, turn, unit, first_send)
+                self._send(epoch, turn, unit)
             if answer:
                 self.answer = answer
                 self.history.extend(({"role": "user", "content": prompt}, {"role": "assistant", "content": answer}))
-            log(f"llm done turn={turn} epoch={epoch} empty={int(not answer)} ms={(time.perf_counter() - t0) * 1000:.0f} answer={answer!r}")
+            emit("llm.done", turn=turn, epoch=epoch, empty=not answer, ms=round((time.perf_counter() - t0) * 1000), chars=len(answer), answer=answer)
             self._state("Listening")
 
     def _pcm(self) -> None:
-        first_epoch = -1
         while frame := self.tts.recv_frame():
             kind, epoch, payload = frame
             if kind == 2 and payload and epoch == self.epoch:
-                if first_epoch != epoch:
-                    first_epoch = epoch
-                    log(f"tts first_pcm epoch={epoch} bytes={len(payload)}")
+                emit("tts.pcm", epoch=epoch, bytes=len(payload), audio_ms=round(1000 * len(payload) / (TTS_RATE * 2)))
                 self.out.put(("audio-pcm", payload, epoch))
-            if kind == 0:
-                log(f"tts done epoch={epoch}")
             if kind == 1:
-                raise RuntimeError("TTS: " + payload.decode("utf-8", "replace"))
+                raise RuntimeError("TTS: " + payload.decode("utf-8"))
             if kind > 2:
                 raise RuntimeError(f"TTS frame {kind}")
 
     def stop(self) -> None:
         if not self.active:
             return
-        log(f"stop begin turn={self.turn} epoch={self.epoch}")
+        emit("stop.begin", turn=self.turn, epoch=self.epoch)
         self.active = False
         self._bump("stop")
         self.capture.close()
@@ -259,7 +252,7 @@ class Conversation:
         self.pcm_t.join()
         self._state("Stopped")
         self.out.put(("closed", None, self.epoch))
-        log("stop end")
+        emit("stop.end")
 
 def load_mic(audio) -> bytes:
     if audio is None:
@@ -309,15 +302,7 @@ def build(paths: Paths):
             kind, payload, epoch = current.out.get()
             audio = gr.skip()
             if kind == "audio-pcm" and epoch == current.epoch:
-                step = max(2, int(TTS_RATE * PLAY_SLICE_S) * 2)
-                for offset in range(0, len(payload), step):
-                    if epoch != current.epoch:
-                        break
-                    chunk = payload[offset:offset + step]
-                    yield current.transcript, current.answer, wav_bytes(chunk, TTS_RATE), current.status, gr.skip(), gr.skip(), gr.skip()
-                    if offset + step < len(payload):
-                        time.sleep(len(chunk) / (TTS_RATE * 2))
-                continue
+                audio = wav_bytes(payload, TTS_RATE)
             if kind == "audio-reset" and epoch == current.epoch:
                 audio = gr.Audio(value=None, streaming=True, autoplay=True)
             if kind == "closed":
@@ -353,6 +338,10 @@ def build(paths: Paths):
     return demo.queue(default_concurrency_limit=None)
 
 def launch(paths: Paths) -> None:
+    import logging
+    logging.getLogger("gradio").setLevel(logging.ERROR)
+    logging.getLogger("httpx").setLevel(logging.ERROR)
+    logging.getLogger("httpcore").setLevel(logging.ERROR)
     try:
         build(paths).launch(server_name="127.0.0.1", server_port=7860, show_error=True)
     finally:

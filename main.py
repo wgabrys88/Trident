@@ -1,7 +1,7 @@
 from __future__ import annotations
 import argparse
 from pathlib import Path
-from config import HARDWARE, Paths, log
+from config import HARDWARE, Paths, emit
 from install import install
 
 def main() -> int:
@@ -11,7 +11,7 @@ def main() -> int:
     p.add_argument("command", nargs="?", choices=("install", "ui"), default="install")
     args = p.parse_args()
     paths = Paths(args.models_dir, args.data_dir)
-    log(f"main command={args.command} hardware={HARDWARE}", file=paths.log)
+    emit("main", command=args.command, hardware=HARDWARE)
     if args.command == "install":
         install(args.models_dir, args.data_dir)
         return 0

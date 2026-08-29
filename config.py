@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 import threading
@@ -11,9 +12,9 @@ ROOT = Path(__file__).resolve().parent
 MODELS, DATA, THIRD_PARTY, TOOLS, TTS = (ROOT / n for n in ("models", "data", "third_party", "tools", "tts"))
 CHATTERBOX = THIRD_PARTY / "chatterbox.cpp"
 GGML, RUNTIMES, CONVERTER = CHATTERBOX / "ggml", TOOLS / "runtime", TOOLS / "convert"
-CHATTERBOX_URL, CHATTERBOX_REV = "https://github.com/wgabrys88/chatterbox.cpp", "f0fa2ef3324698222fd02de144d6939dfd247a28"
+CHATTERBOX_URL, CHATTERBOX_REV = "https://github.com/wgabrys88/chatterbox.cpp", "latest"
 GGML_GIT = ("https://github.com/ggml-org/ggml.git", "58c3805840b516b2a88ff867ccf7bb41dba79951")
-ASR_RATE, TTS_RATE, VAD_FRAME, FEED_S, PLAY_SLICE_S, MIC_LIMIT_S = 16000, 24000, 512, .16, .06, 86400
+ASR_RATE, TTS_RATE, VAD_FRAME, FEED_S, MIC_LIMIT_S = 16000, 24000, 512, .16, 86400
 NANO_FILES = ("t3_nano_v1.safetensors", "s3gen_meanflow.safetensors", "conds.pt", "ve.safetensors", "vocab.json", "merges.txt", "added_tokens.json")
 NANO_REPO, NANO_REV = "ResembleAI/chatterbox-nano", "71ccd1d0081b430592cea481f4307e764e07bc64"
 T3_FILE, PARAKEET_FILE, GEMMA_FILE = "chatterbox-t3-nano-q4_0.gguf", "tdt-0.6b-v3-q4_k.gguf", "gemma-4-E2B_q4_0-it.gguf"
@@ -59,14 +60,19 @@ TTS_MODELS = {
     "v3": ("chatterbox-t3-mtl-v3-cangjie-q4_0.gguf", f"chatterbox-s3gen-mtl-v3-{CODEC_QUANT}.gguf"),
 }
 
-def log(msg: str, file: Path | None = None) -> None:
-    line = f"{datetime.now().astimezone().isoformat(timespec='milliseconds')} {msg}"
+def _write(line: str) -> None:
     print(line, flush=True)
-    dest = file or LOG_FILE
-    if dest is not None:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        with _log_lock, dest.open("a", encoding="utf-8", newline="\n") as h:
-            h.write(line + "\n")
+    if LOG_FILE is None:
+        return
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with _log_lock, LOG_FILE.open("a", encoding="utf-8", newline="\n") as h:
+        h.write(line + "\n")
+
+def emit(event: str, **fields) -> None:
+    _write(json.dumps({"ts": datetime.now().astimezone().isoformat(timespec="milliseconds"), "event": event, **fields}, ensure_ascii=False, separators=(",", ":"), default=str))
+
+def emit_raw(line: str) -> None:
+    _write(line.rstrip("\r\n"))
 
 def find_exe(root: Path, name: str) -> Path | None:
     return next((p for p in root.rglob(name) if p.is_file()), None) if root.is_dir() else None
@@ -91,7 +97,10 @@ class Paths:
         global LOG_FILE
         self.models_dir, self.data_dir = Path(models_dir or MODELS).resolve(), Path(data_dir or DATA).resolve()
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-        self.run_dir = self.data_dir / "runs" / stamp
-        self.run_dir.mkdir(parents=True, exist_ok=True)
-        self.log = self.run_dir / f"{stamp}-trident.log"
+        runs = self.data_dir / "runs"
+        if runs.exists():
+            shutil.rmtree(runs)
+        self.run_dir = runs / stamp
+        self.run_dir.mkdir(parents=True)
+        self.log = self.run_dir / "events.jsonl"
         LOG_FILE = self.log
