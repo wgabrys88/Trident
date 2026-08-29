@@ -11,7 +11,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from config import CODEC_FILE, FLASH_ATTN, GEMMA_FILE, GEMMA_GEN, PARAKEET_FILE, PORTS, RUNTIMES, T3_FILE, TTS_KNOBS, VULKAN_ENV, Paths, find_exe, load_settings, log, voice_wav
+from config import FLASH_ATTN, GEMMA_FILE, GEMMA_GEN, PARAKEET_FILE, PORTS, RUNTIMES, TTS_MODELS, TTS_PROFILES, V3_LANGUAGES, VULKAN_ENV, Paths, find_exe, load_settings, log, voice_wav
 
 _PROCS: dict[str, subprocess.Popen] = {}
 
@@ -57,20 +57,30 @@ def _start(name: str, cmd: list[str], cwd: Path, paths: Paths) -> None:
     stop_all()
     raise RuntimeError(f"{name} did not become ready")
 
-def boot(paths: Paths) -> None:
+def boot(paths: Paths, family: str = "nano", language: str = "en") -> None:
+    family = family.strip().lower()
+    language = language.strip().lower()
+    if family not in TTS_MODELS:
+        raise RuntimeError(f"unknown TTS family {family!r}")
+    if family != "v3" and language != "en":
+        raise RuntimeError(f"{family} supports English only")
+    if family == "v3" and language not in V3_LANGUAGES:
+        raise RuntimeError(f"V3 language {language!r} is not supported by this chatterbox.cpp build")
+
     stop_all()
     parakeet, gemma, tts = _exe("parakeet", "parakeet-server.exe"), _exe("gemma", "llama-server.exe"), _exe("tts", "trident-tts-server.exe")
-    k = TTS_KNOBS
+    k = TTS_PROFILES[family]
+    t3_file, codec_file = TTS_MODELS[family]
     settings = load_settings(paths.data_dir)
     commands = (
         ("parakeet", parakeet, [str(parakeet), "--model", str(paths.models_dir / PARAKEET_FILE), "--port", str(PORTS["parakeet"])]),
         ("gemma", gemma, [str(gemma), "-m", str(paths.models_dir / GEMMA_FILE), "--alias", "gemma", "--host", "127.0.0.1", "--port", str(PORTS["gemma"]), "--offline", "--n-gpu-layers", "all", "--ctx-size", "4096", "--no-mmproj", "--flash-attn", FLASH_ATTN, "--threads", "2", "--threads-batch", "2", "--poll", "0", "--poll-batch", "0", "--threads-http", "1", "--no-ui", "--reasoning", "off"]),
-        ("chatterbox", tts, [str(tts), "--family", "nano", "--model", str(paths.models_dir / T3_FILE), "--s3gen-gguf", str(paths.models_dir / CODEC_FILE), "--reference", str(voice_wav(paths.data_dir, settings["tts_voice"])), "--language", "en", "--port", str(PORTS["chatterbox"]), "--n-gpu-layers", str(k["gpu_layers"]), "--context", str(k["context"]), "--threads", str(k["threads"]), "--seed", str(k["seed"]), "--max-tokens", str(k["max_tokens"]), "--top-k", str(k["top_k"]), "--top-p", str(k["top_p"]), "--min-p", str(k["min_p"]), "--temperature", str(k["temperature"]), "--repeat-penalty", str(k["repeat_penalty"]), "--cfg-weight", str(k["cfg_weight"]), "--exaggeration", str(k["exaggeration"]), "--cfm-steps", str(k["cfm_steps"]), "--fastconv", str(k["fastconv"])]),
+        ("chatterbox", tts, [str(tts), "--family", family, "--model", str(paths.models_dir / t3_file), "--s3gen-gguf", str(paths.models_dir / codec_file), "--reference", str(voice_wav(paths.data_dir, settings["tts_voice"])), "--language", language, "--port", str(PORTS["chatterbox"]), "--n-gpu-layers", str(k["gpu_layers"]), "--context", str(k["context"]), "--threads", str(k["threads"]), "--seed", str(k["seed"]), "--max-tokens", str(k["max_tokens"]), "--top-k", str(k["top_k"]), "--top-p", str(k["top_p"]), "--min-p", str(k["min_p"]), "--temperature", str(k["temperature"]), "--repeat-penalty", str(k["repeat_penalty"]), "--cfg-weight", str(k["cfg_weight"]), "--exaggeration", str(k["exaggeration"]), "--cfm-steps", str(k["cfm_steps"]), "--fastconv", str(k["fastconv"])]),
     )
     log("boot begin")
     for name, exe, cmd in commands:
         _start(name, cmd, exe.parent, paths)
-    log("boot ready family=nano language=en")
+    log(f"boot ready family={family} language={language}")
 
 def require_alive(name: str) -> str:
     proc = _PROCS.get(name)

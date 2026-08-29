@@ -10,7 +10,7 @@ import gradio as gr
 import numpy as np
 from silero_vad_notorch import VADIterator, load_silero_vad
 
-from config import ASR_RATE, FEED_S, MIC_LIMIT_S, Paths, TTS_KNOBS, TTS_RATE, VAD_FRAME, load_settings, log
+from config import ASR_RATE, FEED_S, MIC_LIMIT_S, PLAY_SLICE_S, Paths, TTS_KNOBS, TTS_RATE, V3_LANGUAGES, VAD_FRAME, load_settings, log
 from runtime import Chatterbox, boot, gemma_stream, require_alive, stop_all, transcribe
 
 def resample(x: np.ndarray, src: int) -> np.ndarray:
@@ -290,13 +290,16 @@ def build(paths: Paths):
             engine = None
         stop_all()
 
-    def start():
+    def start(family, language):
         nonlocal engine
         drop()
-        boot(paths)
+        boot(paths, str(family), str(language))
         engine = Conversation(paths, settings)
         engine.start()
         return engine.transcript, engine.answer, engine.status, gr.Audio(value=None, interactive=True, recording=True), gr.update(interactive=False), gr.update(interactive=True)
+
+    def set_family(family):
+        return gr.update(choices=list(V3_LANGUAGES) if family == "v3" else ["en"], value="en")
 
     def pump():
         current = engine
@@ -306,7 +309,15 @@ def build(paths: Paths):
             kind, payload, epoch = current.out.get()
             audio = gr.skip()
             if kind == "audio-pcm" and epoch == current.epoch:
-                audio = wav_bytes(payload, TTS_RATE)
+                step = max(2, int(TTS_RATE * PLAY_SLICE_S) * 2)
+                for offset in range(0, len(payload), step):
+                    if epoch != current.epoch:
+                        break
+                    chunk = payload[offset:offset + step]
+                    yield current.transcript, current.answer, wav_bytes(chunk, TTS_RATE), current.status, gr.skip(), gr.skip(), gr.skip()
+                    if offset + step < len(payload):
+                        time.sleep(len(chunk) / (TTS_RATE * 2))
+                continue
             if kind == "audio-reset" and epoch == current.epoch:
                 audio = gr.Audio(value=None, streaming=True, autoplay=True)
             if kind == "closed":
@@ -323,6 +334,9 @@ def build(paths: Paths):
         return "", "", gr.Audio(value=None, streaming=True, autoplay=True), "Stopped", *idle
 
     with gr.Blocks(title="Trident") as demo:
+        with gr.Row():
+            family = gr.Dropdown(choices=["nano", "turbo", "v3"], value="nano", label="Synthesizer")
+            language = gr.Dropdown(choices=["en"], value="en", label="TTS language")
         mic = gr.Audio(sources=["microphone"], type="numpy", streaming=True, interactive=False, label="Microphone")
         with gr.Row():
             start_btn = gr.Button("Start", variant="primary")
@@ -331,7 +345,8 @@ def build(paths: Paths):
         you = gr.Textbox(label="You", lines=3, interactive=False)
         bot = gr.Textbox(label="Trident", lines=4, interactive=False)
         speaker = gr.Audio(label="Speech", streaming=True, autoplay=True)
-        start_btn.click(start, outputs=[you, bot, status, mic, start_btn, stop_btn], concurrency_limit=None).then(pump, outputs=[you, bot, speaker, status, mic, start_btn, stop_btn], concurrency_limit=None)
+        family.change(set_family, family, language, queue=False)
+        start_btn.click(start, inputs=[family, language], outputs=[you, bot, status, mic, start_btn, stop_btn], concurrency_limit=None).then(pump, outputs=[you, bot, speaker, status, mic, start_btn, stop_btn], concurrency_limit=None)
         mic.stream(feed, mic, outputs=None, time_limit=MIC_LIMIT_S, stream_every=FEED_S, concurrency_limit=1)
         stop_btn.click(stop, outputs=[you, bot, speaker, status, mic, start_btn, stop_btn], queue=False)
         demo.unload(drop)
