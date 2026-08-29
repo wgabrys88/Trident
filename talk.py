@@ -152,17 +152,19 @@ class Capture:
 
     def _asr(self, reason: str) -> None:
         path = self._close()
-        if not path or self.duration_s < MIN_TURN_S:
-            path.unlink(missing_ok=True)
+        if path is None:
             return
+        if self.duration_s < MIN_TURN_S:
+            path.unlink()
+            return
+        started = time.perf_counter()
         try:
-            started = time.perf_counter()
             text = transcribe(self.asr, path)
-            elapsed = time.perf_counter() - started
-            rtf = elapsed / self.duration_s
-            log(f"asr {reason} {self.duration_s:.2f}s x{1 / rtf if rtf else 0:.2f} {text!r}")
         finally:
-            path.unlink(missing_ok=True)
+            path.unlink()
+        elapsed = time.perf_counter() - started
+        rtf = elapsed / self.duration_s
+        log(f"asr {reason} {self.duration_s:.2f}s x{1 / rtf if rtf else 0:.2f} {text!r}")
         if text:
             self.on_text(text)
 
@@ -213,7 +215,7 @@ class Conversation:
         self.llm_q: queue.SimpleQueue = queue.SimpleQueue()
         self.tts_q: queue.SimpleQueue = queue.SimpleQueue()
         self.capture: Capture | None = None
-        self.llm_t = self.tts_t = None
+        self.llm_t = self.tts_t = self.pcm_t = None
         self.active = False
         self.lock = threading.Lock()
         self.tts_client: Chatterbox | None = None
@@ -223,6 +225,8 @@ class Conversation:
             self.epoch += 1
             epoch = self.epoch
         log(f"barge-in epoch={epoch} reason={reason} turn={self.turn}")
+        if self.tts_client is not None:
+            self.tts_client.send(epoch, [])
         self.out.put(("audio-reset", None, epoch))
         return epoch
 
@@ -234,6 +238,8 @@ class Conversation:
     def start(self) -> None:
         self.tts_client = Chatterbox(self.tts_url)
         self.tts_client.open()
+        self.pcm_t = threading.Thread(target=self._pcm, name="pcm", daemon=True)
+        self.pcm_t.start()
         self.capture = Capture(self._utterance, lambda: self._bump("vad-start"), self.paths.run_dir, self.parakeet, self.settings)
         self.capture.open()
         self.llm_t = threading.Thread(target=self._llm, name="llm", daemon=True)
@@ -278,20 +284,24 @@ class Conversation:
             seg = Segmenter(min(TTS_KNOBS["first_chars"], TTS_KNOBS["chars"]), TTS_KNOBS["chars"])
             raw = ""
             messages = [{"role": "system", "content": self.settings["system_prompt"].strip()}, *self.history, {"role": "user", "content": prompt}]
-            for delta in gemma_stream(self.gemma, messages):
-                with self.lock:
-                    stale = epoch != self.epoch
-                if stale:
-                    return
-                if ttfa is None:
-                    ttfa = time.perf_counter() - t0
-                raw += delta
-                self.answer = raw
-                for unit in seg.update(spoken(raw)):
-                    self.tts_q.put((epoch, unit))
+            gen = gemma_stream(self.gemma, messages)
+            try:
+                for delta in gen:
+                    with self.lock:
+                        stale = epoch != self.epoch
+                    if stale:
+                        break
+                    if ttfa is None:
+                        ttfa = time.perf_counter() - t0
+                    raw += delta
+                    self.answer = raw
+                    for unit in seg.update(spoken(raw)):
+                        self.tts_q.put((epoch, unit))
+            finally:
+                gen.close()
             with self.lock:
                 if epoch != self.epoch:
-                    return
+                    continue
             answer = spoken(raw)
             for unit in seg.update(answer, flush=True):
                 self.tts_q.put((epoch, unit))
@@ -314,14 +324,40 @@ class Conversation:
                 live = self.epoch
             if not text or epoch != live:
                 continue
-            self.tts_client.send(epoch, [text])
-            log(f"tts begin epoch={epoch} {text!r}")
-            for pcm in self.tts_client:
-                with self.lock:
-                    if self.epoch != epoch:
-                        return
-                if pcm:
-                    self.out.put(("audio-pcm", pcm, epoch))
+            pieces = [text]
+            while True:
+                try:
+                    more = self.tts_q.get_nowait()
+                except queue.Empty:
+                    break
+                if more is None:
+                    self.tts_q.put(None)
+                    break
+                more_epoch, more_text = more
+                if more_epoch == epoch and more_text:
+                    pieces.append(more_text)
+            with self.lock:
+                if epoch != self.epoch:
+                    continue
+            self.tts_client.send(epoch, pieces)
+            log(f"tts send epoch={epoch} n={len(pieces)} {pieces[0]!r}")
+
+    def _pcm(self) -> None:
+        assert self.tts_client is not None
+        while True:
+            frame = self.tts_client.recv_frame()
+            if frame is None:
+                return
+            kind, epoch, payload = frame
+            if kind == 2:
+                if payload and epoch == self.epoch:
+                    self.out.put(("audio-pcm", payload, epoch))
+            elif kind == 0:
+                log(f"tts batch done epoch={epoch}")
+            elif kind == 1:
+                raise RuntimeError("TTS: " + payload.decode("utf-8", "replace"))
+            else:
+                raise RuntimeError(f"TTS frame {kind}")
 
     def stop(self) -> None:
         if not self.active:
@@ -338,6 +374,8 @@ class Conversation:
             self.tts_t.join()
         if self.tts_client:
             self.tts_client.close()
+        if self.pcm_t:
+            self.pcm_t.join()
         self._state("Stopped")
         self.out.put(("closed", None, self.epoch))
         log("stop end")
@@ -350,36 +388,17 @@ class Conversation:
 def load_mic(audio) -> bytes:
     if audio is None:
         return b""
-    if isinstance(audio, (tuple, list)) and len(audio) == 2:
-        rate, values = audio
-        x = np.asarray(values)
-        if x.ndim > 1:
-            x = x.mean(axis=1)
-        if np.issubdtype(x.dtype, np.integer):
-            x = x.astype(np.float32) / max(abs(np.iinfo(x.dtype).min), np.iinfo(x.dtype).max)
-        else:
-            x = x.astype(np.float32, copy=False)
-        return np.clip(linear_resample(np.clip(x, -1, 1), int(rate), ASR_RATE), -1, 1).astype("<f4").tobytes()
-    path = Path(str(audio))
-    if not path.is_file() or path.stat().st_size < 44:
+    rate, values = audio
+    x = np.asarray(values)
+    if x.size == 0:
         return b""
-    try:
-        with wave.open(str(path), "rb") as w:
-            rate = w.getframerate()
-            nch = w.getnchannels()
-            raw = w.readframes(w.getnframes())
-            sw = w.getsampwidth()
-    except (wave.Error, EOFError, OSError):
-        return b""
-    if sw == 2:
-        x = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
-    elif sw == 4:
-        x = np.frombuffer(raw, dtype="<i4").astype(np.float32) / 2147483648.0
+    if x.ndim > 1:
+        x = x.mean(axis=1)
+    if np.issubdtype(x.dtype, np.integer):
+        x = x.astype(np.float32) / max(abs(np.iinfo(x.dtype).min), np.iinfo(x.dtype).max)
     else:
-        return b""
-    if nch > 1:
-        x = x.reshape(-1, nch).mean(axis=1)
-    return np.clip(linear_resample(x, rate, ASR_RATE), -1, 1).astype("<f4").tobytes()
+        x = x.astype(np.float32, copy=False)
+    return np.clip(linear_resample(np.clip(x, -1, 1), int(rate), ASR_RATE), -1, 1).astype("<f4").tobytes()
 
 
 _sessions: dict[str, Conversation] = {}
@@ -443,7 +462,7 @@ def build(paths: Paths):
         return "Stopped", gr.Button(interactive=True)
 
     with gr.Blocks(fill_width=True, title="Trident") as demo:
-        mic = gr.Audio(sources=["microphone"], type="filepath", streaming=True, interactive=False, label="Microphone")
+        mic = gr.Audio(sources=["microphone"], type="numpy", streaming=True, interactive=False, label="Microphone")
         with gr.Row():
             start_btn = gr.Button("Start", variant="primary")
             stop_btn = gr.Button("Stop", interactive=False)
