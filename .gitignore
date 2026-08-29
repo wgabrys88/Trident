@@ -10,4 +10,4 @@
 !/tts/CMakeLists.txt
 !/tts/src/
 !/tts/src/*.cpp
-!/requirements-ui.txt
+!/requirements.txt
