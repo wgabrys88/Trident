@@ -18,17 +18,22 @@ def detect_hardware_profile() -> str:
         text=True, encoding="utf-8", errors="replace", timeout=15,
     ).lower()
     if any(name in gpu for name in ("gtx 1050", "gtx 1060", "gtx 1070", "gtx 1080", "titan x (pascal)", "titan xp", "quadro p")): return "pascal"
-    raise RuntimeError(f"unsupported GPU: {gpu.strip()}")
+    if "iris" in gpu and "xe" in gpu: return "irisxe"
+    raise RuntimeError(f"unsupported experimental GPU: {gpu.strip()}")
 
 
 HARDWARE_PROFILE = detect_hardware_profile()
 
 
-GGML_VULKAN_ENV = {"GGML_VK_DISABLE_F16": "1"}
+GGML_VULKAN_ENV = {
+    "pascal": {"GGML_VK_DISABLE_F16": "1"},
+    "irisxe": {},
+}[HARDWARE_PROFILE]
 
 
 def ggml_vulkan_environment() -> dict[str, str]:
     env = os.environ.copy()
+    env.pop("GGML_VK_DISABLE_F16", None)
     env.update(GGML_VULKAN_ENV)
     return env
 
@@ -60,7 +65,7 @@ BRAIN_MODEL = "gemma"
 BRAIN_RUNTIME = {
     "gpu_layers": "all",
     "context": 4096,
-    "flash_attn": "on",
+    "flash_attn": "on" if HARDWARE_PROFILE == "pascal" else "off",
     "fit": "off",
     "load_mode": "mmap",
     "parallel": 1,
@@ -140,6 +145,14 @@ FAMILIES = {
         "TTS_MODELS": {"chatterbox-t3": _NANO_T3, "chatterbox-codec": _NANO_CODEC},
     },
 }
+
+if HARDWARE_PROFILE == "irisxe":
+    for _family_spec in FAMILIES.values():
+        _codec = _family_spec["TTS_MODELS"]["chatterbox-codec"]
+        _codec["convert"]["quant"] = "q4_0"
+        _codec["size"] = 0
+        _codec["file"] = _codec["file"].replace("-f16.gguf", "-irisxe-q4_0-rawf32-v1.gguf")
+
 
 SHARED_MODELS = {
     "parakeet": {
