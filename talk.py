@@ -13,9 +13,9 @@ from silero_vad_notorch import VADIterator, load_silero_vad
 
 from config import (
     ASR_RATE, FEED_S, MIC_LIMIT_S, Paths, TTS_KNOBS, TTS_RATE, VAD_FRAME,
-    load_settings, log, voice_wav,
+    load_settings, log,
 )
-from runtime import Chatterbox, gemma_stream, require_alive, transcribe
+from runtime import Chatterbox, boot, gemma_stream, require_alive, stop_all, transcribe
 
 MIN_TURN_S = 1.0
 
@@ -67,11 +67,6 @@ class VAD:
             if "end" in event:
                 self.speech, ended = False, True
         return started, ended
-
-    def reset(self) -> None:
-        self.iterator.reset_states()
-        self.buffer = np.empty(0, dtype=np.float32)
-        self.speech = False
 
 
 class Segmenter:
@@ -407,11 +402,14 @@ _lock = threading.Lock()
 
 def build(paths: Paths):
     settings = load_settings(paths.data_dir)
+    idle = (
+        gr.Audio(value=None, interactive=False, recording=False),
+        gr.update(interactive=True),
+        gr.update(interactive=False),
+    )
 
     def sid(request: gr.Request | None) -> str:
-        if request is None or not request.session_hash:
-            return ""
-        return request.session_hash
+        return request.session_hash if request and request.session_hash else ""
 
     def drop(session: str) -> None:
         with _lock:
@@ -422,19 +420,18 @@ def build(paths: Paths):
     def start(request: gr.Request | None):
         session = sid(request)
         drop(session)
+        boot(paths.models_dir, paths.data_dir)
         engine = Conversation(paths, settings)
         engine.start()
         with _lock:
             _sessions[session] = engine
-        return engine.transcript, engine.answer, engine.status, gr.Audio(value=None, interactive=True, recording=True), gr.Button(interactive=False), gr.Button(interactive=True)
+        return engine.transcript, engine.answer, engine.status, gr.Audio(value=None, interactive=True, recording=True), gr.update(interactive=False), gr.update(interactive=True)
 
     def pump(request: gr.Request | None):
         with _lock:
             engine = _sessions.get(sid(request))
         if engine is None:
             return
-        hold = (gr.skip(), gr.skip(), gr.skip())
-        stopped = (gr.Audio(value=None, interactive=False, recording=False), gr.Button(interactive=True), gr.Button(interactive=False))
         while True:
             kind, payload, epoch = engine.out.get()
             audio = gr.skip()
@@ -443,9 +440,9 @@ def build(paths: Paths):
             elif kind == "audio-reset" and epoch == engine.epoch:
                 audio = gr.Audio(value=None, streaming=True, autoplay=True)
             if kind == "closed":
-                yield engine.transcript, engine.answer, audio, engine.status, *stopped
+                yield engine.transcript, engine.answer, audio, engine.status, *idle
                 return
-            yield engine.transcript, engine.answer, audio, engine.status, *hold
+            yield engine.transcript, engine.answer, audio, engine.status, gr.skip(), gr.skip(), gr.skip()
 
     def feed(audio, request: gr.Request | None):
         pcm = load_mic(audio)
@@ -455,31 +452,30 @@ def build(paths: Paths):
                 engine.feed(pcm)
 
     def stop(request: gr.Request | None):
-        with _lock:
-            engine = _sessions.pop(sid(request), None)
-        if engine:
-            engine.stop()
-        return "Stopped", gr.Button(interactive=True)
+        drop(sid(request))
+        stop_all()
+        return "", "", gr.Audio(value=None, streaming=True, autoplay=True), "Stopped", *idle
 
-    with gr.Blocks(fill_width=True, title="Trident") as demo:
+    with gr.Blocks(title="Trident") as demo:
         mic = gr.Audio(sources=["microphone"], type="numpy", streaming=True, interactive=False, label="Microphone")
         with gr.Row():
             start_btn = gr.Button("Start", variant="primary")
             stop_btn = gr.Button("Stop", interactive=False)
         status = gr.Textbox(value="Stopped", label="Status", interactive=False)
-        you = gr.Textbox(label="You", lines=5, interactive=False)
-        bot = gr.Textbox(label="Trident", lines=6, interactive=False)
+        you = gr.Textbox(label="You", lines=3, interactive=False)
+        bot = gr.Textbox(label="Trident", lines=4, interactive=False)
         speaker = gr.Audio(label="Speech", streaming=True, autoplay=True)
-        start_btn.click(start, outputs=[you, bot, status, mic, start_btn, stop_btn], concurrency_limit=None, show_progress="minimal").then(
-            pump, outputs=[you, bot, speaker, status, mic, start_btn, stop_btn], concurrency_limit=None, show_progress="hidden",
+        start_btn.click(start, outputs=[you, bot, status, mic, start_btn, stop_btn], concurrency_limit=None).then(
+            pump, outputs=[you, bot, speaker, status, mic, start_btn, stop_btn], concurrency_limit=None,
         )
-        mic.stream(feed, mic, outputs=None, time_limit=MIC_LIMIT_S, stream_every=FEED_S, concurrency_limit=1, show_progress="hidden")
-        stop_btn.click(lambda: (gr.Audio(value=None, interactive=False, recording=False), gr.Button(interactive=False)), outputs=[mic, stop_btn], queue=False).then(
-            stop, outputs=[status, start_btn], concurrency_limit=None, show_progress="minimal",
-        )
+        mic.stream(feed, mic, outputs=None, time_limit=MIC_LIMIT_S, stream_every=FEED_S, concurrency_limit=1)
+        stop_btn.click(stop, outputs=[you, bot, speaker, status, mic, start_btn, stop_btn], queue=False)
         demo.unload(lambda request=None: drop(sid(request)))
     return demo.queue(default_concurrency_limit=None)
 
 
 def launch(paths: Paths) -> None:
-    build(paths).launch(server_name="127.0.0.1", server_port=7860, show_error=True)
+    try:
+        build(paths).launch(server_name="127.0.0.1", server_port=7860, show_error=True)
+    finally:
+        stop_all()

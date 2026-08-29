@@ -14,7 +14,7 @@ from pathlib import Path
 
 from config import (
     CODEC_FILE, FLASH_ATTN, GEMMA_FILE, GEMMA_GEN, PARAKEET_FILE, PORTS, RUNTIMES,
-    T3_FILE, TTS_KNOBS, URLS, VULKAN_ENV, find_exe, log,
+    T3_FILE, TTS_KNOBS, URLS, VULKAN_ENV, find_exe, load_settings, log, voice_wav,
 )
 
 _STILL_ACTIVE = 259
@@ -177,6 +177,14 @@ def start_chatterbox(models_dir: Path, reference: Path) -> str:
         {"server": server, "model": t3, "codec": codec, "reference": reference},
         {"argv": cmd[1:], "family": "nano", "language": "en", "reference": str(reference.resolve())},
     )
+
+
+def boot(models_dir: Path, data_dir: Path) -> None:
+    log("boot begin")
+    start_parakeet(models_dir)
+    start_gemma(models_dir)
+    start_chatterbox(models_dir, voice_wav(data_dir, load_settings(data_dir)["tts_voice"]))
+    log("residents ready family=nano language=en")
 
 
 def require_alive(name: str) -> str:

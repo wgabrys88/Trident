@@ -5,26 +5,14 @@ from pathlib import Path
 
 from config import HARDWARE, Paths, log
 from install import install
-from runtime import start_chatterbox, start_gemma, start_parakeet, status, stop_all
-
-
-def boot(paths: Paths, reference: Path | None = None) -> None:
-    log("boot begin")
-    if reference is None:
-        from config import load_settings, voice_wav
-        settings = load_settings(paths.data_dir)
-        reference = voice_wav(paths.data_dir, settings["tts_voice"])
-    start_parakeet(paths.models_dir)
-    start_gemma(paths.models_dir)
-    start_chatterbox(paths.models_dir, reference)
-    log("residents ready family=nano language=en")
+from runtime import boot, status, stop_all
 
 
 def main() -> int:
     p = argparse.ArgumentParser(prog="python main.py")
     p.add_argument("--models-dir", type=Path)
     p.add_argument("--data-dir", type=Path)
-    sub = p.add_subparsers(dest="command", required=True)
+    sub = p.add_subparsers(dest="command")
     sub.add_parser("install")
     sub.add_parser("ui")
     r = sub.add_parser("resident")
@@ -32,13 +20,14 @@ def main() -> int:
     args = p.parse_args()
 
     paths = Paths(args.models_dir, args.data_dir)
-    log(f"main command={args.command} hardware={HARDWARE}", file=paths.log)
+    command = args.command or "install"
+    log(f"main command={command} hardware={HARDWARE}", file=paths.log)
 
-    if args.command == "install":
+    if command == "install":
         install(args.models_dir, args.data_dir)
         return 0
-    if args.command == "ui":
-        boot(paths)
+    if command == "ui":
+        boot(paths.models_dir, paths.data_dir)
         print(status())
         from talk import launch
         launch(paths)
