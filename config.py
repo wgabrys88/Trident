@@ -4,42 +4,13 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-
-
-def detect_hardware_profile() -> str:
-    if not sys.platform.startswith("win"):
-        raise RuntimeError("Trident requires Windows for GPU auto-discovery")
-    gpu = subprocess.check_output(
-        ["powershell.exe", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name -join ';'"],
-        text=True, encoding="utf-8", errors="replace", timeout=15,
-    ).lower()
-    if any(name in gpu for name in ("gtx 1050", "gtx 1060", "gtx 1070", "gtx 1080", "titan x (pascal)", "titan xp", "quadro p")): return "pascal"
-    if "iris" in gpu and "xe" in gpu: return "irisxe"
-    raise RuntimeError(f"unsupported experimental GPU: {gpu.strip()}")
-
-
-HARDWARE_PROFILE = detect_hardware_profile()
-
-
-GGML_VULKAN_ENV = {
-    "pascal": {"GGML_VK_DISABLE_F16": "1"},
-    "irisxe": {},
-}[HARDWARE_PROFILE]
-
-
-def ggml_vulkan_environment() -> dict[str, str]:
-    env = os.environ.copy()
-    env.pop("GGML_VK_DISABLE_F16", None)
-    env.update(GGML_VULKAN_ENV)
-    return env
-
-DEFAULT_MODELS_DIR = ROOT / "models"
-DEFAULT_DATA_DIR = ROOT / "data"
-
+MODELS = ROOT / "models"
+DATA = ROOT / "data"
 THIRD_PARTY = ROOT / "third_party"
 TOOLS = ROOT / "tools"
 TTS = ROOT / "tts"
@@ -50,174 +21,135 @@ CONVERTER = TOOLS / "convert"
 
 ASR_RATE = 16000
 TTS_RATE = 24000
-REFERENCE_MIN_SECONDS = 5.0
-ECHO_RING_MS = 1500
-ASR_FEED_SECONDS = 0.16
-MIC_TIME_LIMIT_SECONDS = 86400
+VAD_FRAME = 512
+ECHO_MS = 1500
+FEED_S = 0.16
+MIC_LIMIT_S = 86400
+REF_MIN_S = 5.0
 
-RESIDENT_SERVERS = {
-    "parakeet": {"host": "127.0.0.1", "port": 17931, "url": "http://127.0.0.1:17931", "startup_timeout_s": 120},
-    "gemma": {"host": "127.0.0.1", "port": 17932, "url": "http://127.0.0.1:17932", "startup_timeout_s": 180},
-    "chatterbox": {"host": "127.0.0.1", "port": 17933, "url": "tcp://127.0.0.1:17933", "startup_timeout_s": 300},
-}
-
-BRAIN_MODEL = "gemma"
-BRAIN_RUNTIME = {
-    "gpu_layers": "all",
-    "context": 4096,
-    "flash_attn": "on" if HARDWARE_PROFILE == "pascal" else "off",
-    "fit": "off",
-    "load_mode": "mmap",
-    "parallel": 1,
-    "cache_type_k": "f16",
-    "cache_type_v": "f16",
-    "poll": 0,
-    "poll_batch": 0,
-    "threads": 2,
-    "threads_batch": 2,
-    "threads_http": 1,
-}
-BRAIN_GENERATION = {
-    "temperature": 1.0, "top_p": 0.95, "top_k": 64, "min_p": 0.0,
-    "repeat_penalty": 1.0, "seed": 42, "max_tokens": 1024,
-}
-LIVE_SETTINGS_JSON = '{"system_prompt":"ASR may deliver incomplete fragments. If the user has not finished a request or thought, output nothing. When a spoken reply is needed now, produce only that reply in English. If the input language differs, preserve meaning while answering in English. Spoken prose only: short sentences ending with a period, question mark, or exclamation. No markdown, lists, code, URLs, emoji, or square-bracket tags. Expand numbers and abbreviations. Do not mention transcription, models, or reasoning.","tts_voice":"trump","vad_silence_ms":200,"vad_threshold":0.5}'
-LIVE_SETTINGS = json.loads(LIVE_SETTINGS_JSON)
-VAD_FRAME_SAMPLES = 512
-
-TTS_FIELDS = (
-    ("TTS_RUNTIME", "gpu_layers", "--n-gpu-layers"),
-    ("TTS_RUNTIME", "context", "--context"),
-    ("TTS_RUNTIME", "threads", "--threads"),
-    ("TTS_SAMPLE", "seed", "--seed"),
-    ("TTS_SAMPLE", "max_tokens", "--max-tokens"),
-    ("TTS_SAMPLE", "top_k", "--top-k"),
-    ("TTS_SAMPLE", "cfm_steps", "--cfm-steps"),
-    ("TTS_SAMPLE", "top_p", "--top-p"),
-    ("TTS_SAMPLE", "min_p", "--min-p"),
-    ("TTS_SAMPLE", "temperature", "--temperature"),
-    ("TTS_SAMPLE", "repeat_penalty", "--repeat-penalty"),
-    ("TTS_VOICE", "cfg_weight", "--cfg-weight"),
-    ("TTS_VOICE", "exaggeration", "--exaggeration"),
-)
-
-
-def live_settings_path(data_dir: Path) -> Path:
-    return Path(data_dir) / "live-settings.json"
-
-
-def load_live_settings(data_dir: Path) -> dict:
-    path = live_settings_path(data_dir)
-    return json.loads(path.read_text(encoding="utf-8") if path.is_file() else LIVE_SETTINGS_JSON)
-
-
-def _model(label, repo, revision, file, size, script, quant, files, *, variant=None, copy=None):
-    recipe = {"script": script, "quant": quant, "files": files}
-    if variant: recipe["variant"] = variant
-    if copy: recipe["copy"] = copy
-    return {"label": label, "repo": repo, "revision": revision, "file": file, "size": size, "convert": recipe}
-
-
-_NANO_FILES = (
+CHATTERBOX_GIT = ("https://github.com/wgabrys88/chatterbox.cpp", "67b1d7eb27757247a5a4d7b153cab34d7912a6fd")
+GGML_GIT = ("https://github.com/ggml-org/ggml.git", "58c3805840b516b2a88ff867ccf7bb41dba79951")
+NANO_REPO, NANO_REV = "ResembleAI/chatterbox-nano", "71ccd1d0081b430592cea481f4307e764e07bc64"
+NANO_FILES = (
     "t3_nano_v1.safetensors", "s3gen_meanflow.safetensors", "conds.pt",
     "ve.safetensors", "vocab.json", "merges.txt", "added_tokens.json",
 )
-_NANO_T3 = _model(
-    "CHATTERBOX NANO T3", "ResembleAI/chatterbox-nano", "71ccd1d0081b430592cea481f4307e764e07bc64",
-    "chatterbox-t3-nano-q4_0.gguf", 171901536, "convert-t3-turbo-to-gguf.py", "q4_0", _NANO_FILES,
-    copy={"t3_nano_v1.safetensors": "t3_turbo_v1.safetensors"},
+T3_FILE = "chatterbox-t3-nano-q4_0.gguf"
+PARAKEET_FILE = "tdt-0.6b-v3-q4_k.gguf"
+GEMMA_FILE = "gemma-4-E2B_q4_0-it.gguf"
+PARAKEET_URL = "https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/bf0af9f425fa01809cadec671b3cb672709d13e9/" + PARAKEET_FILE
+GEMMA_URL = "https://huggingface.co/google/gemma-4-E2B-it-qat-q4_0-gguf/resolve/675cff42a74c774d6cb76f76d8eacb49b48c9b93/" + GEMMA_FILE
+PARAKEET_ZIP = (
+    "https://github.com/mudler/parakeet.cpp/releases/download/v0.5.0/parakeet-v0.5.0-bin-win-vulkan-x64.zip",
+    "parakeet-v0.5.0-bin-win-vulkan-x64.zip",
 )
-_NANO_CODEC = _model(
-    "CHATTERBOX NANO S3GEN", "ResembleAI/chatterbox-nano", "71ccd1d0081b430592cea481f4307e764e07bc64",
-    "chatterbox-s3gen-nano-f16.gguf", 1064879936, "convert-s3gen-to-gguf.py", "f16", _NANO_FILES,
-    variant="turbo",
+LLAMA_ZIP = (
+    "https://github.com/ggml-org/llama.cpp/releases/download/b10453/llama-b10453-bin-win-vulkan-x64.zip",
+    "llama-b10453-bin-win-vulkan-x64.zip",
 )
-FAMILIES = {
-    "nano": {
-        "name": "nano", "TTS_LANGUAGES": {"en": "English"}, "DEFAULT_REPLY_LANGUAGE": "en",
-        "TTS_RUNTIME": {"gpu_layers": 99, "context": 2048, "threads": 4, "fastconv": True},
-        "TTS_SAMPLE": {
-            "seed": 42, "max_tokens": 768, "top_k": 1000, "top_p": 0.95,
-            "min_p": 0.0, "temperature": 0.8, "repeat_penalty": 1.2, "cfm_steps": 2,
-        },
-        "TTS_VOICE": {"cfg_weight": 0.0, "exaggeration": 0.0},
-        "TTS_CHUNK": {"first_chars": 80, "chars": 280},
-        "TTS_MODELS": {"chatterbox-t3": _NANO_T3, "chatterbox-codec": _NANO_CODEC},
-    },
+
+VOICES = {
+    "trump": ("audio/donald-trump.wav", "ref-trump.wav"),
+    "obama": ("audio/barack-obama.wav", "ref-obama.wav"),
+    "kamala": ("audio/kamala_harris.wav", "ref-kamala.wav"),
 }
-
-if HARDWARE_PROFILE == "irisxe":
-    for _family_spec in FAMILIES.values():
-        _codec = _family_spec["TTS_MODELS"]["chatterbox-codec"]
-        _codec["convert"]["quant"] = "q4_0"
-        _codec["size"] = 0
-        _codec["file"] = _codec["file"].replace("-f16.gguf", "-irisxe-q4_0-rawf32-v1.gguf")
-
-
-SHARED_MODELS = {
-    "parakeet": {
-        "label": "PARAKEET TDT 0.6B V3 Q4_K",
-        "repo": "mudler/parakeet-cpp-gguf", "revision": "bf0af9f425fa01809cadec671b3cb672709d13e9",
-        "file": "tdt-0.6b-v3-q4_k.gguf", "size": 675200864,
-    },
-    "gemma": {"label": "GEMMA 4 E2B", "repo": "google/gemma-4-E2B-it-qat-q4_0-gguf", "revision": "675cff42a74c774d6cb76f76d8eacb49b48c9b93", "file": "gemma-4-E2B_q4_0-it.gguf", "size": 3349516256},
-}
-
-
-SOURCES = {
-    "chatterbox": ("https://github.com/wgabrys88/chatterbox.cpp", "67b1d7eb27757247a5a4d7b153cab34d7912a6fd"),
-    "ggml": ("https://github.com/ggml-org/ggml.git", "58c3805840b516b2a88ff867ccf7bb41dba79951"),
-}
-
-BINARIES = {
-    "parakeet": {
-        "label": "PARAKEET.CPP V0.5 VULKAN", "repo": "mudler/parakeet.cpp", "tag": "v0.5.0",
-        "asset": "parakeet-v0.5.0-bin-win-vulkan-x64.zip",
-        "server_exe": "parakeet-server.exe",
-    },
-    "gemma": {
-        "label": "LLAMA.CPP B10453 VULKAN", "repo": "ggml-org/llama.cpp", "tag": "b10453",
-        "asset": "llama-b10453-bin-win-vulkan-x64.zip",
-        "server_exe": "llama-server.exe",
-    },
-}
-
-CHATTERBOX_LIBRARY = CHATTERBOX / "build" / "Release" / "tts-cpp.lib"
-TTS_BUILD = TTS / "build" / "Release"
-TTS_SERVER_EXE = "trident-tts-server.exe"
-
-REFERENCE_VOICES = {
-    "trump": {
-        "label": "VOICE TRUMP", "name": "Donald Trump",
-        "repo": "sdialog/voices-celebrities", "revision": "57746b866d470be717097b87ba0428f8dd73e4f4",
-        "source": "audio/donald-trump.wav", "file": "ref-trump.wav", "size": 4210766,
-    },
-    "obama": {
-        "label": "VOICE OBAMA", "name": "Barack Obama",
-        "repo": "sdialog/voices-celebrities", "revision": "57746b866d470be717097b87ba0428f8dd73e4f4",
-        "source": "audio/barack-obama.wav", "file": "ref-obama.wav", "size": 8454222,
-    },
-    "kamala": {
-        "label": "VOICE KAMALA", "name": "Kamala Harris",
-        "repo": "sdialog/voices-celebrities", "revision": "57746b866d470be717097b87ba0428f8dd73e4f4",
-        "source": "audio/kamala_harris.wav", "file": "ref-kamala.wav", "size": 7487566,
-    },
-}
+VOICE_HF = "https://huggingface.co/datasets/sdialog/voices-celebrities/resolve/57746b866d470be717097b87ba0428f8dd73e4f4/"
 DEFAULT_VOICE = "trump"
 
+PORTS = {"parakeet": 17931, "gemma": 17932, "chatterbox": 17933}
+URLS = {
+    "parakeet": "http://127.0.0.1:17931",
+    "gemma": "http://127.0.0.1:17932",
+    "chatterbox": "tcp://127.0.0.1:17933",
+}
 
-def voices_dir(data_dir: Path) -> Path:
-    return Path(data_dir) / "voices"
+PROMPT = (
+    "ASR may deliver incomplete fragments. If the user has not finished a request or thought, output nothing. "
+    "When a spoken reply is needed now, produce only that reply in English. If the input language differs, "
+    "preserve meaning while answering in English. Spoken prose only: short sentences ending with a period, "
+    "question mark, or exclamation. No markdown, lists, code, URLs, emoji, or square-bracket tags. "
+    "Expand numbers and abbreviations. Do not mention transcription, models, or reasoning."
+)
+LIVE = {"system_prompt": PROMPT, "tts_voice": "trump", "vad_silence_ms": 200, "vad_threshold": 0.5}
+
+TTS_KNOBS = {
+    "gpu_layers": 99, "context": 2048, "threads": 4, "fastconv": 1,
+    "seed": 42, "max_tokens": 768, "top_k": 1000, "top_p": 0.95, "min_p": 0.0,
+    "temperature": 0.8, "repeat_penalty": 1.2, "cfm_steps": 2,
+    "cfg_weight": 0.0, "exaggeration": 0.0, "first_chars": 80, "chars": 280,
+}
+GEMMA_GEN = {"temperature": 1.0, "top_p": 0.95, "top_k": 64, "min_p": 0.0, "repeat_penalty": 1.0, "seed": 42, "max_tokens": 1024}
 
 
-def resolve_voice(data_dir: Path, value: str | None = None) -> Path:
-    raw = (value or DEFAULT_VOICE).strip()
-    if not raw:
-        raw = DEFAULT_VOICE
+def detect_hardware() -> str:
+    if not sys.platform.startswith("win"):
+        raise RuntimeError("Trident requires Windows")
+    gpu = subprocess.check_output(
+        ["powershell.exe", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name -join ';'"],
+        text=True, encoding="utf-8", errors="replace", timeout=15,
+    ).lower()
+    if any(n in gpu for n in ("gtx 1050", "gtx 1060", "gtx 1070", "gtx 1080", "titan x (pascal)", "titan xp", "quadro p")):
+        return "pascal"
+    if "iris" in gpu and "xe" in gpu:
+        return "irisxe"
+    raise RuntimeError(f"unsupported GPU: {gpu.strip()}")
+
+
+HARDWARE = detect_hardware()
+VULKAN_ENV = {"GGML_VK_DISABLE_F16": "1"} if HARDWARE == "pascal" else {}
+FLASH_ATTN = "on" if HARDWARE == "pascal" else "off"
+CODEC_QUANT = "q4_0" if HARDWARE == "irisxe" else "f16"
+CODEC_FILE = (
+    "chatterbox-s3gen-nano-irisxe-q4_0-rawf32-v1.gguf" if HARDWARE == "irisxe"
+    else "chatterbox-s3gen-nano-f16.gguf"
+)
+
+
+def vulkan_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env.pop("GGML_VK_DISABLE_F16", None)
+    env.update(VULKAN_ENV)
+    return env
+
+
+_log_lock = threading.Lock()
+LOG: Path | None = None
+
+
+def set_log(path: Path | None) -> None:
+    global LOG
+    LOG = Path(path) if path else None
+    if LOG:
+        LOG.parent.mkdir(parents=True, exist_ok=True)
+
+
+def log(msg: str) -> None:
+    line = f"{datetime.now().astimezone().isoformat(timespec='milliseconds')} {msg}"
+    print(line, flush=True)
+    if LOG is None:
+        return
+    with _log_lock, LOG.open("a", encoding="utf-8", newline="\n") as handle:
+        handle.write(line + "\n")
+
+
+def load_settings(data_dir: Path) -> dict:
+    path = Path(data_dir) / "live-settings.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else dict(LIVE)
+
+
+def find_exe(root: Path, name: str) -> Path:
+    hits = [p for p in root.rglob("*") if p.is_file() and p.name.lower() == name.lower()] if root.is_dir() else []
+    if not hits:
+        raise RuntimeError(f"{name} not found under {root}; run: python main.py")
+    return hits[0]
+
+
+def voice_wav(data_dir: Path, value: str | None = None) -> Path:
+    raw = (value or DEFAULT_VOICE).strip() or DEFAULT_VOICE
     key = raw.lower()
-    if key in REFERENCE_VOICES:
-        return (data_dir / REFERENCE_VOICES[key]["file"]).resolve()
-    clone = voices_dir(data_dir) / f"{key}.wav"
+    if key in VOICES:
+        return (Path(data_dir) / VOICES[key][1]).resolve()
+    clone = Path(data_dir) / "voices" / f"{key}.wav"
     if clone.is_file():
         return clone.resolve()
     path = Path(raw).expanduser()
@@ -227,15 +159,12 @@ def resolve_voice(data_dir: Path, value: str | None = None) -> Path:
 
 
 class Paths:
-    def __init__(self, models_dir: Path | None = None, data_dir: Path | None = None, command: str | None = None) -> None:
-        self.models_dir = (models_dir or DEFAULT_MODELS_DIR).resolve()
-        self.data_dir = (data_dir or DEFAULT_DATA_DIR).resolve()
+    def __init__(self, models_dir=None, data_dir=None, command: str | None = None) -> None:
+        self.models_dir = Path(models_dir or MODELS).resolve()
+        self.data_dir = Path(data_dir or DATA).resolve()
         self.stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f") if command else None
         self.run_dir = self.data_dir / "runs" / f"{self.stamp}-{command}" if command else None
         if self.run_dir:
             self.run_dir.mkdir(parents=True)
-        def artifact(name: str):
-            return self.run_dir / f"{self.stamp}-{name}" if self.run_dir else None
-        self.transcript = artifact("transcript.txt")
-        self.log = artifact("trident.log")
-        self.meta = artifact("meta.txt")
+        self.log = self.run_dir / f"{self.stamp}-trident.log" if self.run_dir else None
+        self.transcript = self.run_dir / f"{self.stamp}-transcript.txt" if self.run_dir else None
