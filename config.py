@@ -12,9 +12,12 @@ MODELS = ROOT / "models"
 DATA = ROOT / "data"
 TOOLS = ROOT / "tools"
 TTS = ROOT / "tts"
-CHATTERBOX = ROOT / "third_party" / "chatterbox.cpp"
+CHATTERBOX = ROOT.parent / "chatterbox.cpp"
 RUNTIMES = TOOLS / "runtime"
 CONVERTER = TOOLS / "convert"
+
+GGML_URL = "https://github.com/ggml-org/ggml.git"
+GGML_REV = "58c3805840b516b2a88ff867ccf7bb41dba79951"
 
 ASR_RATE = 16000
 TTS_RATE = 24000
@@ -42,9 +45,9 @@ LLAMA_ZIP = (
 )
 
 VOICES = {
-    "trump": "ref-trump.wav",
-    "obama": "ref-obama.wav",
-    "kamala": "ref-kamala.wav",
+    "trump": ("audio/donald-trump.wav", "ref-trump.wav"),
+    "obama": ("audio/barack-obama.wav", "ref-obama.wav"),
+    "kamala": ("audio/kamala_harris.wav", "ref-kamala.wav"),
 }
 VOICE_HF = "https://huggingface.co/datasets/sdialog/voices-celebrities/resolve/57746b866d470be717097b87ba0428f8dd73e4f4/"
 DEFAULT_VOICE = "trump"
@@ -68,6 +71,9 @@ TTS_KNOBS = {
 }
 GEMMA_GEN = {"temperature": 1.0, "top_p": 0.95, "top_k": 64, "min_p": 0.0, "repeat_penalty": 1.0, "seed": 42, "max_tokens": 1024}
 
+LOG_FILE: Path | None = None
+_log_lock = threading.Lock()
+
 
 def detect_hardware() -> str:
     if not sys.platform.startswith("win"):
@@ -89,17 +95,26 @@ FLASH_ATTN = "on" if HARDWARE == "pascal" else "off"
 CODEC_QUANT = "q4_0" if HARDWARE == "irisxe" else "f16"
 CODEC_FILE = "chatterbox-s3gen-nano-irisxe-q4_0-rawf32-v1.gguf" if HARDWARE == "irisxe" else "chatterbox-s3gen-nano-f16.gguf"
 
-_log_lock = threading.Lock()
-
 
 def log(msg: str, file: Path | None = None) -> None:
     line = f"{datetime.now().astimezone().isoformat(timespec='milliseconds')} {msg}"
     print(line, flush=True)
-    if file is None:
+    dest = file or LOG_FILE
+    if dest is None:
         return
-    file.parent.mkdir(parents=True, exist_ok=True)
-    with _log_lock, file.open("a", encoding="utf-8", newline="\n") as h:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with _log_lock, dest.open("a", encoding="utf-8", newline="\n") as h:
         h.write(line + "\n")
+
+
+def find_exe(root: Path, name: str) -> Path | None:
+    if not root.is_dir():
+        return None
+    needle = name.lower()
+    for path in root.rglob("*"):
+        if path.is_file() and path.name.lower() == needle:
+            return path
+    return None
 
 
 def load_settings(data_dir: Path) -> dict:
@@ -116,7 +131,7 @@ def voice_wav(data_dir: Path, value: str | None = None) -> Path:
     raw = (value or DEFAULT_VOICE).strip() or DEFAULT_VOICE
     key = raw.lower()
     if key in VOICES:
-        return (Path(data_dir) / VOICES[key]).resolve()
+        return (Path(data_dir) / VOICES[key][1]).resolve()
     clone = Path(data_dir) / "voices" / f"{key}.wav"
     if clone.is_file():
         return clone.resolve()
@@ -128,9 +143,11 @@ def voice_wav(data_dir: Path, value: str | None = None) -> Path:
 
 class Paths:
     def __init__(self, models_dir=None, data_dir=None) -> None:
+        global LOG_FILE
         self.models_dir = Path(models_dir or MODELS).resolve()
         self.data_dir = Path(data_dir or DATA).resolve()
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
         self.run_dir = self.data_dir / "runs" / stamp
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.log = self.run_dir / f"{stamp}-trident.log"
+        LOG_FILE = self.log

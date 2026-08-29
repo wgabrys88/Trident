@@ -1,10 +1,11 @@
 #include <algorithm>
-#include <array>
 #include <atomic>
-#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <iostream>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -31,6 +32,20 @@ struct Sock {
     Sock& operator=(const Sock&) = delete;
 };
 
+static void put_u32(unsigned char* p, std::uint32_t v) {
+    p[0] = (unsigned char)(v & 0xff);
+    p[1] = (unsigned char)((v >> 8) & 0xff);
+    p[2] = (unsigned char)((v >> 16) & 0xff);
+    p[3] = (unsigned char)((v >> 24) & 0xff);
+}
+
+static std::uint32_t get_u32(const unsigned char* p) {
+    return (std::uint32_t)p[0]
+        | ((std::uint32_t)p[1] << 8)
+        | ((std::uint32_t)p[2] << 16)
+        | ((std::uint32_t)p[3] << 24);
+}
+
 static bool recv_all(socket_t s, void* dst, std::size_t n) {
     auto* p = static_cast<unsigned char*>(dst);
     std::size_t done = 0;
@@ -54,26 +69,24 @@ static void send_all(socket_t s, const void* src, std::size_t n) {
     }
 }
 
-static void send_frame(socket_t s, std::uint32_t kind, const void* data, std::size_t n) {
-    unsigned char h[8];
-    for (int i = 0; i < 2; ++i) {
-        const std::uint32_t v = (i == 0) ? kind : static_cast<std::uint32_t>(n);
-        h[4 * i + 0] = (unsigned char)(v & 0xff);
-        h[4 * i + 1] = (unsigned char)((v >> 8) & 0xff);
-        h[4 * i + 2] = (unsigned char)((v >> 16) & 0xff);
-        h[4 * i + 3] = (unsigned char)((v >> 24) & 0xff);
-    }
-    send_all(s, h, 8);
+static void send_frame(socket_t s, std::mutex& send_mu, std::uint32_t kind, std::uint32_t epoch,
+                       const void* data, std::size_t n) {
+    unsigned char h[12];
+    put_u32(h, kind);
+    put_u32(h + 4, epoch);
+    put_u32(h + 8, static_cast<std::uint32_t>(n));
+    std::lock_guard<std::mutex> lock(send_mu);
+    send_all(s, h, 12);
     if (n) send_all(s, data, n);
 }
 
-static void send_pcm(socket_t s, const float* pcm, std::size_t count) {
+static void send_pcm(socket_t s, std::mutex& send_mu, std::uint32_t epoch, const float* pcm, std::size_t count) {
     std::vector<std::int16_t> out(count);
     for (std::size_t i = 0; i < count; ++i) {
         const float c = std::max(-1.0f, std::min(1.0f, pcm[i]));
         out[i] = static_cast<std::int16_t>(c * 32767.0f);
     }
-    send_frame(s, kPcm, out.data(), out.size() * 2);
+    send_frame(s, send_mu, kPcm, epoch, out.data(), out.size() * 2);
 }
 
 static tts_cpp::chatterbox::Engine make_engine(const std::unordered_map<std::string, std::string>& a) {
@@ -106,31 +119,101 @@ static tts_cpp::chatterbox::Engine make_engine(const std::unordered_map<std::str
 static bool recv_request(socket_t s, std::uint32_t& epoch, std::vector<std::string>& texts) {
     unsigned char hdr[8];
     if (!recv_all(s, hdr, 8)) return false;
-    const std::uint32_t n = (std::uint32_t)hdr[0]
-        | ((std::uint32_t)hdr[1] << 8)
-        | ((std::uint32_t)hdr[2] << 16)
-        | ((std::uint32_t)hdr[3] << 24);
-    epoch = (std::uint32_t)hdr[4]
-        | ((std::uint32_t)hdr[5] << 8)
-        | ((std::uint32_t)hdr[6] << 16)
-        | ((std::uint32_t)hdr[7] << 24);
-    if (n == 0) { texts.clear(); return true; }
+    const std::uint32_t n = get_u32(hdr);
+    epoch = get_u32(hdr + 4);
     if (n > 4096u) throw std::runtime_error("piece_count out of range");
     texts.clear();
     texts.reserve(n);
     for (std::uint32_t i = 0; i < n; ++i) {
         unsigned char th[4];
         if (!recv_all(s, th, 4)) throw std::runtime_error("short piece header");
-        const std::uint32_t len = (std::uint32_t)th[0]
-            | ((std::uint32_t)th[1] << 8)
-            | ((std::uint32_t)th[2] << 16)
-            | ((std::uint32_t)th[3] << 24);
+        const std::uint32_t len = get_u32(th);
         if (len > 4u * 1024u * 1024u) throw std::runtime_error("piece too large");
         std::string text(len, '\0');
         if (!recv_all(s, text.data(), text.size())) throw std::runtime_error("short text");
         texts.push_back(std::move(text));
     }
     return true;
+}
+
+static void serve(socket_t client, tts_cpp::chatterbox::Engine& engine) {
+    std::mutex mu;
+    std::mutex send_mu;
+    std::condition_variable cv;
+    std::deque<std::string> queue;
+    std::atomic<std::uint32_t> live_epoch{0};
+    std::atomic<bool> stop{false};
+
+    std::thread synth([&] {
+        for (;;) {
+            std::vector<std::string> batch;
+            std::uint32_t ep = 0;
+            {
+                std::unique_lock<std::mutex> lock(mu);
+                cv.wait(lock, [&] { return stop.load() || !queue.empty(); });
+                if (stop.load() && queue.empty()) return;
+                ep = live_epoch.load();
+                while (!queue.empty()) {
+                    batch.push_back(std::move(queue.front()));
+                    queue.pop_front();
+                }
+            }
+            if (batch.empty()) continue;
+            std::cerr << "tts synth epoch=" << ep << " pieces=" << batch.size() << std::endl;
+            try {
+                engine.synthesize_pieces(batch, [&](int, const float* pcm, std::size_t count, int, bool) {
+                    if (count && live_epoch.load() == ep) send_pcm(client, send_mu, ep, pcm, count);
+                });
+                if (live_epoch.load() == ep) {
+                    const char* ok = "ok";
+                    send_frame(client, send_mu, kDone, ep, ok, 2);
+                    std::cerr << "tts batch done epoch=" << ep << std::endl;
+                }
+            } catch (const std::exception& e) {
+                if (live_epoch.load() != ep) {
+                    std::cerr << "tts cancelled epoch=" << ep << " live=" << live_epoch.load()
+                              << " " << e.what() << std::endl;
+                    continue;
+                }
+                const std::string m = e.what();
+                std::cerr << "tts synth failed epoch=" << ep << " " << m << std::endl;
+                send_frame(client, send_mu, kErr, ep, m.data(), m.size());
+                return;
+            }
+        }
+    });
+
+    try {
+        for (;;) {
+            std::uint32_t epoch = 0;
+            std::vector<std::string> texts;
+            if (!recv_request(client, epoch, texts)) break;
+            {
+                std::lock_guard<std::mutex> lock(mu);
+                if (epoch != live_epoch.load()) {
+                    std::cerr << "tts cancel live=" << live_epoch.load() << " epoch=" << epoch
+                              << " queued=" << queue.size() << std::endl;
+                    engine.cancel();
+                    queue.clear();
+                    live_epoch.store(epoch);
+                }
+                for (auto& text : texts) {
+                    if (!text.empty()) queue.push_back(std::move(text));
+                }
+            }
+            cv.notify_all();
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "tts recv error: " << e.what() << std::endl;
+        try {
+            send_frame(client, send_mu, kErr, live_epoch.load(), e.what(), std::strlen(e.what()));
+        } catch (const std::exception& send_err) {
+            std::cerr << "tts recv error send failed: " << send_err.what() << std::endl;
+        }
+    }
+    stop.store(true);
+    cv.notify_all();
+    synth.join();
 }
 
 int main(int argc, char** argv) {
@@ -162,36 +245,12 @@ int main(int argc, char** argv) {
         if (listen(listener.v, 1) != 0) throw std::runtime_error("listen failed");
         std::cerr << "tts ready host=127.0.0.1 port=" << port << std::endl;
 
-        Sock client(accept(listener.v, nullptr, nullptr));
-        if (client.v == kInvalid) throw std::runtime_error("accept failed");
-        std::cerr << "tts client connected" << std::endl;
-
-        std::uint32_t live_epoch = 0;
-        bool have_epoch = false;
         for (;;) {
-            std::uint32_t epoch = 0;
-            std::vector<std::string> texts;
-            try {
-                if (!recv_request(client.v, epoch, texts)) break;
-            } catch (const std::exception& e) {
-                send_frame(client.v, kErr, e.what(), std::strlen(e.what()));
-                break;
-            }
-            if (have_epoch && epoch != live_epoch) engine.cancel();
-            live_epoch = epoch;
-            have_epoch = true;
-            if (texts.empty()) continue;
-            try {
-                engine.synthesize_pieces(texts, [&](int, const float* pcm, std::size_t count, int, bool) {
-                    if (count) send_pcm(client.v, pcm, count);
-                });
-                const char* ok = "ok";
-                send_frame(client.v, kDone, ok, 2);
-            } catch (const std::exception& e) {
-                const std::string m = e.what();
-                try { send_frame(client.v, kErr, m.data(), m.size()); } catch (...) {}
-                std::cerr << "tts request epoch=" << epoch << " failed: " << m << std::endl;
-            }
+            Sock client(accept(listener.v, nullptr, nullptr));
+            if (client.v == kInvalid) throw std::runtime_error("accept failed");
+            std::cerr << "tts client connected" << std::endl;
+            serve(client.v, engine);
+            std::cerr << "tts client gone" << std::endl;
         }
     } catch (const std::exception& e) {
         std::cerr << "tts resident error: " << e.what() << std::endl;

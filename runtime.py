@@ -7,13 +7,14 @@ import os
 import socket
 import struct
 import subprocess
+import threading
 import time
 import urllib.parse
 from pathlib import Path
 
 from config import (
     CODEC_FILE, FLASH_ATTN, GEMMA_FILE, GEMMA_GEN, PARAKEET_FILE, PORTS, RUNTIMES,
-    T3_FILE, TTS_KNOBS, TTS_RATE, URLS, VULKAN_ENV, log,
+    T3_FILE, TTS_KNOBS, URLS, VULKAN_ENV, find_exe, log,
 )
 
 _STILL_ACTIVE = 259
@@ -49,14 +50,14 @@ def _port_open(port: int) -> bool:
 
 
 def _probe(name: str) -> bool:
-    if name == "gemma":
-        try:
-            import urllib.request
-            with urllib.request.urlopen(URLS["gemma"] + "/health", timeout=1) as r:
-                return r.status == 200
-        except Exception:
-            return False
-    return _port_open(PORTS[name])
+    if name != "gemma":
+        return _port_open(PORTS[name])
+    import urllib.request
+    try:
+        with urllib.request.urlopen(URLS["gemma"] + "/health", timeout=1) as r:
+            return r.status == 200
+    except OSError:
+        return False
 
 
 def _kill(pid: int) -> None:
@@ -116,36 +117,32 @@ def _launch(name: str, cmd: list[str], cwd: Path, files: dict[str, Path], extra:
         _wait_port(PORTS[name], 10)
     env = os.environ.copy()
     env.update(VULKAN_ENV)
-    log(f"start {name}")
-    proc = subprocess.Popen(
-        cmd, cwd=str(cwd), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-        stderr=subprocess.STDOUT, close_fds=True,
-        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-    )
+    log_path = _state_dir() / f"{name}.log"
+    log(f"start {name} log={log_path}")
+    with log_path.open("ab") as log_file:
+        proc = subprocess.Popen(
+            cmd, cwd=str(cwd), env=env, stdin=subprocess.DEVNULL, stdout=log_file,
+            stderr=subprocess.STDOUT, close_fds=True,
+            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
     _write(name, {"identity": ident, "pid": proc.pid, "port": PORTS[name], "url": URLS[name], **extra})
     _wait_probe(name, proc, 300 if name == "chatterbox" else 180)
     return URLS[name]
 
 
-def _server_dir(name: str) -> Path:
-    base = RUNTIMES / name
-    if any(base.glob("*.exe")):
-        return base
-    for child in base.iterdir():
-        if child.is_dir() and any(child.glob("*.exe")):
-            return child
-    return base
-
-
 def start_parakeet(models_dir: Path) -> str:
-    server = _server_dir("parakeet") / "parakeet-server.exe"
+    server = find_exe(RUNTIMES / "parakeet", "parakeet-server.exe")
+    if server is None:
+        raise RuntimeError("parakeet-server.exe missing; run python main.py install")
     gguf = Path(models_dir) / PARAKEET_FILE
     cmd = [str(server), "--model", str(gguf), "--port", str(PORTS["parakeet"])]
     return _launch("parakeet", cmd, server.parent, {"server": server, "model": gguf}, {"argv": cmd[1:]})
 
 
 def start_gemma(models_dir: Path) -> str:
-    server = _server_dir("gemma") / "llama-server.exe"
+    server = find_exe(RUNTIMES / "gemma", "llama-server.exe")
+    if server is None:
+        raise RuntimeError("llama-server.exe missing; run python main.py install")
     gguf = Path(models_dir) / GEMMA_FILE
     cmd = [
         str(server), "-m", str(gguf), "--alias", "gemma", "--host", "127.0.0.1", "--port", str(PORTS["gemma"]), "--offline",
@@ -160,7 +157,9 @@ def start_gemma(models_dir: Path) -> str:
 
 
 def start_chatterbox(models_dir: Path, reference: Path) -> str:
-    server = _server_dir("tts") / "trident-tts-server.exe"
+    server = find_exe(RUNTIMES / "tts", "trident-tts-server.exe")
+    if server is None:
+        raise RuntimeError("trident-tts-server.exe missing; run python main.py install")
     t3 = Path(models_dir) / T3_FILE
     codec = Path(models_dir) / CODEC_FILE
     k = TTS_KNOBS
@@ -218,6 +217,7 @@ def status() -> str:
 def _http_post(base: str, path: str, body: bytes, headers: dict, stream: bool = False):
     parsed = urllib.parse.urlsplit(base)
     conn = http.client.HTTPConnection(parsed.hostname, parsed.port or 80, timeout=3600)
+    owned = True
     try:
         conn.putrequest("POST", path, skip_host=False, skip_accept_encoding=True)
         for k, v in headers.items():
@@ -228,11 +228,12 @@ def _http_post(base: str, path: str, body: bytes, headers: dict, stream: bool = 
         if not 200 <= response.status < 300:
             raise RuntimeError(f"{path} HTTP {response.status} " + response.read().decode("utf-8", "replace")[:500])
         if stream:
+            owned = False
             return conn, response
         return response.read()
-    except Exception:
-        conn.close()
-        raise
+    finally:
+        if owned:
+            conn.close()
 
 
 def transcribe(base: str, wav: Path) -> str:
@@ -289,53 +290,49 @@ class Chatterbox:
         self._parsed = urllib.parse.urlsplit(url)
         self._sock: socket.socket | None = None
         self._buf = bytearray()
+        self._send_lock = threading.Lock()
 
     def open(self) -> None:
         self._sock = socket.create_connection((self._parsed.hostname, self._parsed.port or 17933), timeout=3600)
 
-    def _recv_exact(self, n: int) -> bytes:
+    def _recv_exact(self, n: int) -> bytes | None:
         while len(self._buf) < n:
-            assert self._sock is not None
+            if self._sock is None:
+                return None
             chunk = self._sock.recv(65536)
             if not chunk:
-                raise RuntimeError("TTS closed early")
+                return None
             self._buf.extend(chunk)
         out = bytes(self._buf[:n])
         del self._buf[:n]
         return out
 
     def send(self, epoch: int, pieces: list[str]) -> None:
-        assert self._sock is not None
+        if self._sock is None:
+            raise RuntimeError("TTS socket closed")
         payload = b""
         for piece in pieces:
             raw = piece.encode("utf-8")
             payload += struct.pack("<I", len(raw)) + raw
-        self._sock.sendall(struct.pack("<II", len(pieces), epoch) + payload)
+        with self._send_lock:
+            self._sock.sendall(struct.pack("<II", len(pieces), epoch) + payload)
 
-    def __iter__(self):
-        sock = self._sock
-        assert sock is not None
-        while True:
-            kind, length = struct.unpack("<II", self._recv_exact(8))
-            payload = self._recv_exact(length) if length else b""
-            if kind == 2:
-                yield payload
-            elif kind == 0:
-                return
-            elif kind == 1:
-                raise RuntimeError("TTS: " + payload.decode("utf-8", "replace"))
-            else:
-                raise RuntimeError(f"TTS frame {kind}")
+    def recv_frame(self) -> tuple[int, int, bytes] | None:
+        header = self._recv_exact(12)
+        if header is None:
+            return None
+        kind, epoch, length = struct.unpack("<III", header)
+        payload = b""
+        if length:
+            got = self._recv_exact(length)
+            if got is None:
+                return None
+            payload = got
+        return kind, epoch, payload
 
     def close(self) -> None:
-        if self._sock is None:
+        sock, self._sock = self._sock, None
+        if sock is None:
             return
-        try:
-            self._sock.shutdown(socket.SHUT_RDWR)
-        except OSError:
-            pass
-        try:
-            self._sock.close()
-        except OSError:
-            pass
-        self._sock = None
+        sock.shutdown(socket.SHUT_RDWR)
+        sock.close()
