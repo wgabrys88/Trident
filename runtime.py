@@ -11,7 +11,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from config import FLASH_ATTN, GEMMA_FILE, GEMMA_GEN, PARAKEET_FILE, PORTS, RUNTIMES, TTS_MODELS, TTS_PROFILES, V3_LANGUAGES, VULKAN_ENV, Paths, find_exe, load_settings, log, voice_wav
+from config import FLASH_ATTN, GEMMA_FILE, GEMMA_GEN, PARAKEET_FILE, PORTS, RUNTIMES, TTS_MODELS, TTS_PROFILES, V3_LANGUAGES, VULKAN_ENV, Paths, emit, emit_raw, find_exe, load_settings, voice_wav
 
 _PROCS: dict[str, subprocess.Popen] = {}
 
@@ -31,27 +31,40 @@ def _exe(folder: str, name: str) -> Path:
         raise RuntimeError(f"{name} missing; run python main.py install")
     return path
 
+def _forward(proc: subprocess.Popen, path: Path) -> None:
+    with path.open("wb") as out:
+        for line in proc.stdout:
+            out.write(line)
+            out.flush()
+            if line.startswith(b"{"):
+                emit_raw(line.decode("utf-8").rstrip("\r\n"))
+
 def _start(name: str, cmd: list[str], cwd: Path, paths: Paths) -> None:
     if _probe(name):
         raise RuntimeError(f"{name} port {PORTS[name]} already in use")
     env = os.environ.copy()
     env.update(VULKAN_ENV)
     native_log = paths.run_dir / f"{name}.log"
-    log(f"resident start name={name} log={native_log}")
-    with native_log.open("ab") as out:
-        try:
-            proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, close_fds=True)
-        except OSError:
-            stop_all()
-            raise
+    emit("resident.start", name=name, log=str(native_log))
+    try:
+        if name == "chatterbox":
+            proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        else:
+            with native_log.open("wb") as out:
+                proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT)
+    except OSError:
+        stop_all()
+        raise
     _PROCS[name] = proc
+    if name == "chatterbox":
+        threading.Thread(target=_forward, args=(proc, native_log), daemon=True).start()
     end = time.monotonic() + (300 if name == "chatterbox" else 180)
     while time.monotonic() < end:
         if proc.poll() is not None:
             stop_all()
             raise RuntimeError(f"{name} exited before ready pid={proc.pid} exit={proc.returncode}")
         if _probe(name):
-            log(f"resident ready name={name} pid={proc.pid}")
+            emit("resident.ready", name=name, pid=proc.pid)
             return
         time.sleep(.25)
     stop_all()
@@ -77,10 +90,10 @@ def boot(paths: Paths, family: str = "nano", language: str = "en") -> None:
         ("gemma", gemma, [str(gemma), "-m", str(paths.models_dir / GEMMA_FILE), "--alias", "gemma", "--host", "127.0.0.1", "--port", str(PORTS["gemma"]), "--offline", "--n-gpu-layers", "all", "--ctx-size", "4096", "--no-mmproj", "--flash-attn", FLASH_ATTN, "--threads", "2", "--threads-batch", "2", "--poll", "0", "--poll-batch", "0", "--threads-http", "1", "--no-ui", "--reasoning", "off"]),
         ("chatterbox", tts, [str(tts), "--family", family, "--model", str(paths.models_dir / t3_file), "--s3gen-gguf", str(paths.models_dir / codec_file), "--reference", str(voice_wav(paths.data_dir, settings["tts_voice"])), "--language", language, "--port", str(PORTS["chatterbox"]), "--n-gpu-layers", str(k["gpu_layers"]), "--context", str(k["context"]), "--threads", str(k["threads"]), "--seed", str(k["seed"]), "--max-tokens", str(k["max_tokens"]), "--top-k", str(k["top_k"]), "--top-p", str(k["top_p"]), "--min-p", str(k["min_p"]), "--temperature", str(k["temperature"]), "--repeat-penalty", str(k["repeat_penalty"]), "--cfg-weight", str(k["cfg_weight"]), "--exaggeration", str(k["exaggeration"]), "--cfm-steps", str(k["cfm_steps"]), "--fastconv", str(k["fastconv"])]),
     )
-    log("boot begin")
+    emit("boot.begin", family=family, language=language)
     for name, exe, cmd in commands:
         _start(name, cmd, exe.parent, paths)
-    log(f"boot ready family={family} language={language}")
+    emit("boot.ready", family=family, language=language)
 
 def require_alive(name: str) -> str:
     proc = _PROCS.get(name)
@@ -91,7 +104,7 @@ def require_alive(name: str) -> str:
 def stop_all() -> None:
     for name, proc in tuple(_PROCS.items()):
         if proc.poll() is None:
-            log(f"resident stop name={name} pid={proc.pid}")
+            emit("resident.stop", name=name, pid=proc.pid)
             proc.kill()
             proc.wait()
     _PROCS.clear()

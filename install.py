@@ -11,26 +11,26 @@ import venv
 import zipfile
 from pathlib import Path
 
-from config import CHATTERBOX, CHATTERBOX_REV, CHATTERBOX_URL, CODEC_FILE, CODEC_QUANT, CONVERTER, DATA, GEMMA_FILE, GEMMA_URL, GGML, GGML_GIT, HARDWARE, LLAMA_ZIP, MODELS, NANO_FILES, NANO_REPO, NANO_REV, PARAKEET_FILE, PARAKEET_URL, PARAKEET_ZIP, ROOT, RUNTIMES, T3_FILE, TOOLS, TTS, TTS_MODELS, VOICE_HF, VOICES, find_exe, log
+from config import CHATTERBOX, CHATTERBOX_REV, CHATTERBOX_URL, CODEC_FILE, CODEC_QUANT, CONVERTER, DATA, GEMMA_FILE, GEMMA_URL, GGML, GGML_GIT, HARDWARE, LLAMA_ZIP, MODELS, NANO_FILES, NANO_REPO, NANO_REV, PARAKEET_FILE, PARAKEET_URL, PARAKEET_ZIP, ROOT, RUNTIMES, T3_FILE, TOOLS, TTS, TTS_MODELS, VOICE_HF, VOICES, emit, find_exe
 
 PIN = RUNTIMES / "tts" / ".pin"
 
 def sh(cmd, cwd=None, env=None) -> None:
-    log("exec " + " ".join(str(c) for c in cmd))
+    emit("exec", cmd=" ".join(str(c) for c in cmd))
     subprocess.check_call(cmd, cwd=cwd, env=env)
 
 def wipe(path: Path) -> None:
     if not path.exists():
         return
     shutil.rmtree(path)
-    log(f"wipe {path}")
+    emit("wipe", path=str(path))
 
 def pull(url: str, dest: Path) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
     if dest.is_file() and dest.stat().st_size:
-        log(f"have {dest.name} {dest.stat().st_size} bytes")
+        emit("fetch.have", name=dest.name, bytes=dest.stat().st_size)
         return dest
-    log(f"get {url}")
+    emit("fetch.get", url=url)
     tmp = dest.with_suffix(dest.suffix + ".part")
     tmp.unlink(missing_ok=True)
     req = urllib.request.Request(url, headers={"User-Agent": "trident/1"})
@@ -38,7 +38,7 @@ def pull(url: str, dest: Path) -> Path:
     with urllib.request.urlopen(req) as response, tmp.open("wb") as out:
         shutil.copyfileobj(response, out, 1024 * 1024)
     tmp.replace(dest)
-    log(f"got {dest.name} {dest.stat().st_size} bytes elapsed_ms={(time.perf_counter() - t0) * 1000:.0f}")
+    emit("fetch.got", name=dest.name, bytes=dest.stat().st_size, elapsed_ms=round((time.perf_counter() - t0) * 1000))
     return dest
 
 def unzip(archive: Path, dest: Path) -> None:
@@ -46,15 +46,19 @@ def unzip(archive: Path, dest: Path) -> None:
     dest.mkdir(parents=True)
     with zipfile.ZipFile(archive) as z:
         z.extractall(dest)
-    log(f"unzip {archive.name} -> {dest}")
+    emit("unzip", archive=archive.name, dest=str(dest))
 
 def pin(url: str, rev: str, dest: Path) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     if not (dest / ".git").is_dir():
         wipe(dest)
         sh(["git", "clone", "--filter=blob:none", "--no-checkout", url, str(dest)])
-    sh(["git", "fetch", "--depth", "1", "origin", rev], dest)
-    sh(["git", "checkout", "--detach", "--force", rev], dest)
+    if rev == "latest":
+        sh(["git", "fetch", "--depth", "1", "origin", "HEAD"], dest)
+        sh(["git", "checkout", "--detach", "--force", "FETCH_HEAD"], dest)
+    else:
+        sh(["git", "fetch", "--depth", "1", "origin", rev], dest)
+        sh(["git", "checkout", "--detach", "--force", rev], dest)
 
 def patch_ggml() -> None:
     path = GGML / "src" / "ggml-vulkan" / "ggml-vulkan.cpp"
@@ -65,11 +69,14 @@ def patch_ggml() -> None:
     lines[staged] = ""
     lines[staged + 1] = "    bool force_disable_f16 = physical_device.getProperties().vendorID == VK_VENDOR_ID_NVIDIA && device_architecture == vk_device_architecture::NVIDIA_PRE_TURING;"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    log("ggml vulkan: Pascal pre-Turing FP16 off")
+    emit("ggml.patch", hardware=HARDWARE)
+
+def chatterbox_sha() -> str:
+    return subprocess.check_output(["git", "-C", str(CHATTERBOX), "rev-parse", "HEAD"], text=True).strip()
 
 def tts_pin() -> str:
     blob = (TTS / "src" / "server.cpp").read_bytes() + (TTS / "CMakeLists.txt").read_bytes()
-    return f"{CHATTERBOX_REV} {HARDWARE} {GGML_GIT[1]} {hashlib.sha256(blob).hexdigest()[:16]}"
+    return f"{chatterbox_sha()} {HARDWARE} {GGML_GIT[1]} {hashlib.sha256(blob).hexdigest()[:16]}"
 
 def build_tts() -> None:
     t0 = time.perf_counter()
@@ -88,7 +95,7 @@ def build_tts() -> None:
     for dll in built.glob("*.dll"):
         shutil.copy2(dll, dest / dll.name)
     PIN.write_text(tts_pin() + "\n", encoding="ascii")
-    log(f"tts server ready hardware={HARDWARE} elapsed_ms={(time.perf_counter() - t0) * 1000:.0f}")
+    emit("tts.build", hardware=HARDWARE, sha=chatterbox_sha(), elapsed_ms=round((time.perf_counter() - t0) * 1000))
 
 def convert_tts(models: Path) -> None:
     t0 = time.perf_counter()
@@ -122,7 +129,7 @@ def convert_tts(models: Path) -> None:
         sh([str(py), str(CHATTERBOX / "scripts" / "convert-t3-mtl-to-gguf.py"), "--out", str(v3_t3), "--quant", "q4_0"], ROOT, env)
     if not v3_codec.is_file():
         sh([str(py), str(CHATTERBOX / "scripts" / "convert-s3gen-to-gguf.py"), "--variant", "mtl", "--out", str(v3_codec), "--quant", CODEC_QUANT], ROOT, env)
-    log(f"tts gguf ready hardware={HARDWARE} elapsed_ms={(time.perf_counter() - t0) * 1000:.0f}")
+    emit("tts.gguf", hardware=HARDWARE, elapsed_ms=round((time.perf_counter() - t0) * 1000))
 
 def install_ui() -> None:
     env = ROOT / ".venv"
@@ -133,20 +140,18 @@ def install_ui() -> None:
     if not marker.is_file() or marker.read_text(encoding="ascii").strip() != digest:
         sh([str(python), "-m", "pip", "install", "--disable-pip-version-check", "--progress-bar", "off", "--no-input", "-r", str(req)])
         marker.write_text(digest + "\n", encoding="ascii")
-    log(f"ui venv {python}")
+    emit("ui.venv", python=str(python))
 
 def install(models_dir: Path | None = None, data_dir: Path | None = None) -> None:
     if sys.version_info < (3, 11) or os.name != "nt":
         raise RuntimeError("Trident needs Python 3.11+ on Windows")
     models, data = Path(models_dir or MODELS), Path(data_dir or DATA)
     models.mkdir(parents=True, exist_ok=True); data.mkdir(parents=True, exist_ok=True)
-    log(f"install hardware={HARDWARE}")
+    emit("install", hardware=HARDWARE, chatterbox_rev=CHATTERBOX_REV)
     server = RUNTIMES / "tts" / "trident-tts-server.exe"
-    need_tts = not server.is_file() or not PIN.is_file() or PIN.read_text(encoding="ascii").strip() != tts_pin()
     need_gguf = any(not (models / name).is_file() for pair in TTS_MODELS.values() for name in pair)
-    if need_tts or need_gguf:
-        pin(CHATTERBOX_URL, CHATTERBOX_REV, CHATTERBOX)
-    if need_tts:
+    pin(CHATTERBOX_URL, CHATTERBOX_REV, CHATTERBOX)
+    if not server.is_file() or not PIN.is_file() or PIN.read_text(encoding="ascii").strip() != tts_pin():
         build_tts()
     if need_gguf:
         convert_tts(models)
@@ -159,4 +164,4 @@ def install(models_dir: Path | None = None, data_dir: Path | None = None) -> Non
     pull(PARAKEET_URL, models / PARAKEET_FILE)
     pull(GEMMA_URL, models / GEMMA_FILE)
     install_ui()
-    log("install complete")
+    emit("install.done")
