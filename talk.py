@@ -5,88 +5,51 @@ import queue
 import threading
 import time
 import wave
-from pathlib import Path
 
 import gradio as gr
 import numpy as np
 from silero_vad_notorch import VADIterator, load_silero_vad
 
-from config import (
-    ASR_RATE, FEED_S, MIC_LIMIT_S, Paths, TTS_KNOBS, TTS_RATE, VAD_FRAME,
-    load_settings, log,
-)
+from config import ASR_RATE, FEED_S, MIC_LIMIT_S, Paths, TTS_KNOBS, TTS_RATE, VAD_FRAME, load_settings, log
 from runtime import Chatterbox, boot, gemma_stream, require_alive, stop_all, transcribe
 
-MIN_TURN_S = 1.0
+def resample(x: np.ndarray, src: int) -> np.ndarray:
+    if src == ASR_RATE or not x.size:
+        return x
+    n = max(1, round(x.size * ASR_RATE / src))
+    return np.interp(np.linspace(0, x.size - 1, n), np.arange(x.size), x).astype(np.float32)
 
-
-def linear_resample(samples: np.ndarray, src: int, dst: int) -> np.ndarray:
-    if src == dst or samples.size == 0:
-        return samples
-    n = max(1, round(samples.size * dst / src))
-    return np.interp(np.linspace(0, samples.size - 1, n), np.arange(samples.size), samples).astype(np.float32)
-
-
-def spoken(raw: str) -> str:
-    text = raw.replace("\r\n", "\n").replace("\r", "\n").strip()
-    if "\nAssistant:\n" in text:
-        text = text.rsplit("\nAssistant:\n", 1)[1].strip()
-    elif text.startswith("Assistant:\n"):
-        text = text[11:].strip()
+def spoken(text: str) -> str:
+    text = text.replace("\r", "").strip()
+    marker = "Assistant:\n"
+    if marker in text:
+        text = text.rsplit(marker, 1)[1].strip()
     return text
 
-
-def pcm_to_wav(pcm: bytes, rate: int) -> bytes:
-    if not pcm:
-        return b""
+def wav_bytes(pcm: bytes, rate: int) -> bytes:
     buf = io.BytesIO()
     with wave.open(buf, "wb") as out:
-        out.setnchannels(1)
-        out.setsampwidth(2)
-        out.setframerate(rate)
+        out.setparams((1, 2, rate, 0, "NONE", "not compressed"))
         out.writeframes(pcm)
     return buf.getvalue()
 
-
-class VAD:
-    def __init__(self, threshold: float, silence_ms: int) -> None:
-        self.iterator = VADIterator(load_silero_vad(onnx=True), threshold=float(threshold), sampling_rate=ASR_RATE, min_silence_duration_ms=int(silence_ms), speech_pad_ms=0)
-        self.buffer = np.empty(0, dtype=np.float32)
-        self.speech = False
-
-    def feed(self, pcm: bytes) -> tuple[bool, bool]:
-        if not pcm:
-            return False, False
-        self.buffer = np.concatenate((self.buffer, np.frombuffer(pcm, dtype="<f4")))
-        started = ended = False
-        while self.buffer.size >= VAD_FRAME:
-            event = self.iterator(self.buffer[:VAD_FRAME])
-            self.buffer = self.buffer[VAD_FRAME:]
-            if "start" in event:
-                self.speech, started = True, True
-            if "end" in event:
-                self.speech, ended = False, True
-        return started, ended
-
-
 class Segmenter:
-    def __init__(self, minimum: int, hard: int) -> None:
-        self.minimum, self.hard, self.sent = minimum, hard, 0
+    def __init__(self) -> None:
+        self.sent = 0
 
-    def update(self, text: str, flush: bool = False) -> list[str]:
-        out = []
+    def take(self, text: str, flush: bool = False) -> list[str]:
+        out, minimum, hard = [], min(TTS_KNOBS["first_chars"], TTS_KNOBS["chars"]), TTS_KNOBS["chars"]
         while self.sent < len(text):
-            pending = text[self.sent:]
-            cut = 0
-            for i in range(self.minimum - 1, min(len(pending), self.hard)):
+            pending, cut = text[self.sent:], 0
+            for i in range(minimum - 1, min(len(pending), hard)):
                 if pending[i] in ".?!" and (i + 1 == len(pending) or pending[i + 1].isspace()):
                     cut = i + 1
                     break
-            if not cut and len(pending) >= self.hard:
-                split = max(pending.rfind(" ", self.minimum, self.hard), pending.rfind("\n", self.minimum, self.hard), pending.rfind("\t", self.minimum, self.hard))
-                cut = split + 1 if split >= self.minimum else self.hard
-            if not cut and flush:
-                cut = len(pending)
+            if not cut and len(pending) >= hard:
+                split = max(pending.rfind(" ", minimum, hard), pending.rfind("\n", minimum, hard), pending.rfind("\t", minimum, hard))
+                cut = split + 1 if split >= minimum else hard
+            if not cut:
+                cut = len(pending) if flush else 0
             if not cut:
                 break
             unit = pending[:cut].strip()
@@ -97,187 +60,145 @@ class Segmenter:
                 out.append(unit)
         return out
 
-
 class Capture:
-    def __init__(self, on_text, on_epoch, run_dir: Path, asr: str, settings: dict) -> None:
-        self.on_text, self.on_epoch = on_text, on_epoch
-        self.run_dir, self.asr, self.settings = run_dir, asr, settings
+    def __init__(self, on_text, on_epoch, asr: str, settings: dict) -> None:
+        self.on_text, self.on_epoch, self.asr = on_text, on_epoch, asr
+        self.vad = VADIterator(load_silero_vad(onnx=True), threshold=float(settings["vad_threshold"]), sampling_rate=ASR_RATE, min_silence_duration_ms=int(settings["vad_silence_ms"]), speech_pad_ms=0)
         self.q: queue.SimpleQueue = queue.SimpleQueue()
-        self.vad: VAD | None = None
-        self.thread: threading.Thread | None = None
-        self.active = False
-        self.wav: wave.Wave_write | None = None
-        self.path: Path | None = None
-        self.index = 0
-        self.duration_s = 0.0
+        self.pending = np.empty(0, dtype=np.float32)
+        self.audio = bytearray()
+        self.thread = threading.Thread(target=self._loop, name="capture", daemon=True)
+        self.speech = self.active = False
+        self.turn = 0
 
     def open(self) -> None:
-        self.vad = VAD(self.settings["vad_threshold"], self.settings["vad_silence_ms"])
-        self.thread = threading.Thread(target=self._loop, name="capture", daemon=True)
-        self.thread.start()
         self.active = True
+        self.thread.start()
         log("capture open")
 
     def feed(self, pcm: bytes) -> None:
         if self.active and pcm:
             self.q.put(pcm)
 
-    def _open_turn(self) -> None:
-        self.index += 1
-        self.duration_s = 0.0
-        self.path = self.run_dir / f".turn-{self.index:04d}.wav"
-        self.wav = wave.open(str(self.path), "wb")
-        self.wav.setnchannels(1)
-        self.wav.setsampwidth(2)
-        self.wav.setframerate(ASR_RATE)
-
-    def _write(self, pcm: bytes) -> None:
-        if self.wav is None or not pcm:
+    def _asr(self) -> None:
+        if not self.audio:
             return
-        audio = np.frombuffer(pcm, dtype="<f4")
-        self.wav.writeframesraw((np.clip(audio, -1, 1) * 32767).astype("<i2").tobytes())
-        self.duration_s += len(pcm) / (ASR_RATE * 4)
-
-    def _close(self) -> Path | None:
-        if self.wav is None:
-            return None
-        self.wav.close()
-        path, self.wav, self.path = self.path, None, None
-        return path
-
-    def _asr(self, reason: str) -> None:
-        path = self._close()
-        if path is None:
-            return
-        if self.duration_s < MIN_TURN_S:
-            path.unlink()
-            return
+        pcm = bytes(self.audio)
+        self.audio.clear()
+        duration = len(pcm) / (ASR_RATE * 4)
+        x = np.frombuffer(pcm, dtype="<f4")
+        wav = wav_bytes((np.clip(x, -1, 1) * 32767).astype("<i2").tobytes(), ASR_RATE)
         started = time.perf_counter()
-        try:
-            text = transcribe(self.asr, path)
-        finally:
-            path.unlink()
+        text = transcribe(self.asr, wav)
         elapsed = time.perf_counter() - started
-        rtf = elapsed / self.duration_s
-        log(f"asr {reason} {self.duration_s:.2f}s x{1 / rtf if rtf else 0:.2f} {text!r}")
-        if text:
+        log(f"asr input_s={duration:.3f} inference_ms={elapsed * 1000:.0f} rtf={elapsed / duration:.3f} text={text!r}")
+        if self.active and text:
             self.on_text(text)
 
     def _loop(self) -> None:
-        while True:
-            pcm = self.q.get()
-            if pcm is None:
-                if self.vad and self.vad.speech:
-                    self._asr("stop")
-                else:
-                    path = self._close()
-                    if path:
-                        path.unlink(missing_ok=True)
-                return
-            assert self.vad is not None
-            started, ended = self.vad.feed(pcm)
-            if started:
-                self.on_epoch()
-                self._open_turn()
-            if self.vad.speech:
-                self._write(pcm)
-            if ended:
-                self._asr("vad")
+        while pcm := self.q.get():
+            self.pending = np.concatenate((self.pending, np.frombuffer(pcm, dtype="<f4")))
+            while self.pending.size >= VAD_FRAME:
+                frame, self.pending = self.pending[:VAD_FRAME], self.pending[VAD_FRAME:]
+                event = self.vad(frame)
+                if "start" in event:
+                    self.turn += 1
+                    self.audio.clear()
+                    self.speech = True
+                    self.on_epoch()
+                    log(f"vad start turn={self.turn}")
+                if self.speech:
+                    self.audio.extend(frame.astype("<f4", copy=False).tobytes())
+                if "end" in event:
+                    log(f"vad end turn={self.turn} input_s={len(self.audio) / (ASR_RATE * 4):.3f}")
+                    self.speech = False
+                    self._asr()
+        self.audio.clear()
 
     def close(self) -> None:
-        if not self.active:
-            return
-        self.active = False
-        self.q.put(None)
-        if self.thread:
+        if self.active:
+            self.active = False
+            self.q.put(None)
             self.thread.join()
-        log("capture close")
-
+            log("capture close")
 
 class Conversation:
     def __init__(self, paths: Paths, settings: dict) -> None:
-        self.paths, self.settings = paths, dict(settings)
-        self.parakeet = require_alive("parakeet")
-        self.gemma = require_alive("gemma")
-        self.tts_url = require_alive("chatterbox")
-        self.epoch = 0
-        self.turn = 0
-        self.transcript = ""
-        self.answer = ""
+        self.settings = settings
+        self.parakeet, self.gemma = require_alive("parakeet"), require_alive("gemma")
+        require_alive("chatterbox")
+        self.epoch = self.turn = 0
+        self.transcript = self.answer = ""
         self.status = "Stopped"
         self.history: list[dict[str, str]] = []
         self.out: queue.SimpleQueue = queue.SimpleQueue()
         self.llm_q: queue.SimpleQueue = queue.SimpleQueue()
-        self.tts_q: queue.SimpleQueue = queue.SimpleQueue()
-        self.capture: Capture | None = None
-        self.llm_t = self.tts_t = self.pcm_t = None
-        self.active = False
         self.lock = threading.Lock()
-        self.tts_client: Chatterbox | None = None
+        self.tts = Chatterbox()
+        self.capture = Capture(self._utterance, lambda: self._bump("vad-start"), self.parakeet, settings)
+        self.llm_t = threading.Thread(target=self._llm, name="llm", daemon=True)
+        self.pcm_t = threading.Thread(target=self._pcm, name="pcm", daemon=True)
+        self.active = False
 
     def _bump(self, reason: str) -> int:
         with self.lock:
             self.epoch += 1
             epoch = self.epoch
+            self.tts.send(epoch, [])
         log(f"barge-in epoch={epoch} reason={reason} turn={self.turn}")
-        if self.tts_client is not None:
-            self.tts_client.send(epoch, [])
         self.out.put(("audio-reset", None, epoch))
         return epoch
 
-    def _state(self, status: str | None = None) -> None:
-        if status is not None:
-            self.status = status
+    def _state(self, status: str) -> None:
+        self.status = status
         self.out.put(("state", None, self.epoch))
 
     def start(self) -> None:
-        self.tts_client = Chatterbox(self.tts_url)
-        self.tts_client.open()
-        self.pcm_t = threading.Thread(target=self._pcm, name="pcm", daemon=True)
+        self.tts.open()
         self.pcm_t.start()
-        self.capture = Capture(self._utterance, lambda: self._bump("vad-start"), self.paths.run_dir, self.parakeet, self.settings)
         self.capture.open()
-        self.llm_t = threading.Thread(target=self._llm, name="llm", daemon=True)
-        self.tts_t = threading.Thread(target=self._tts, name="tts", daemon=True)
         self.llm_t.start()
-        self.tts_t.start()
         self.active = True
         self._state("Listening")
 
     def feed(self, pcm: bytes) -> None:
-        if self.active and self.capture:
+        if self.active:
             self.capture.feed(pcm)
 
     def _utterance(self, text: str) -> None:
+        if not self.active:
+            return
         text = text.strip()
         if not text:
             return
         self.transcript = (self.transcript + " " + text).strip()
         with self.lock:
             epoch = self.epoch
-        log(f"user epoch={epoch} {text!r}")
+        log(f"user epoch={epoch} text={text!r}")
         self.llm_q.put((epoch, text))
         self._state(f"Heard {len(text)} chars")
 
+    def _send(self, epoch: int, turn: int, unit: str, first: bool) -> bool:
+        with self.lock:
+            if epoch != self.epoch:
+                return first
+            self.tts.send(epoch, [unit])
+        if first:
+            log(f"tts first_send turn={turn} epoch={epoch} text={unit!r}")
+        return False
+
     def _llm(self) -> None:
-        while True:
-            item = self.llm_q.get()
-            if item is None:
-                self.tts_q.put(None)
-                return
+        while item := self.llm_q.get():
             epoch, prompt = item
             with self.lock:
-                live = self.epoch
-            if epoch != live:
+                stale = epoch != self.epoch
+            if stale:
                 continue
             self.turn += 1
-            turn = self.turn
-            log(f"llm begin turn={turn} epoch={epoch} {prompt!r}")
+            turn, t0, first, first_send = self.turn, time.perf_counter(), True, True
+            log(f"llm begin turn={turn} epoch={epoch} prompt={prompt!r}")
             self._state("Thinking")
-            t0 = time.perf_counter()
-            ttfa: float | None = None
-            seg = Segmenter(min(TTS_KNOBS["first_chars"], TTS_KNOBS["chars"]), TTS_KNOBS["chars"])
-            raw = ""
+            seg, raw = Segmenter(), ""
             messages = [{"role": "system", "content": self.settings["system_prompt"].strip()}, *self.history, {"role": "user", "content": prompt}]
             gen = gemma_stream(self.gemma, messages)
             try:
@@ -286,174 +207,119 @@ class Conversation:
                         stale = epoch != self.epoch
                     if stale:
                         break
-                    if ttfa is None:
-                        ttfa = time.perf_counter() - t0
+                    if first:
+                        log(f"llm first turn={turn} epoch={epoch} ms={(time.perf_counter() - t0) * 1000:.0f}")
+                        first = False
                     raw += delta
                     self.answer = raw
-                    for unit in seg.update(spoken(raw)):
-                        self.tts_q.put((epoch, unit))
+                    for unit in seg.take(spoken(raw)):
+                        first_send = self._send(epoch, turn, unit, first_send)
             finally:
                 gen.close()
             with self.lock:
-                if epoch != self.epoch:
-                    continue
-            answer = spoken(raw)
-            for unit in seg.update(answer, flush=True):
-                self.tts_q.put((epoch, unit))
-            if not answer:
-                self._state("Listening")
+                stale = epoch != self.epoch
+            if stale:
+                log(f"llm cancelled turn={turn} epoch={epoch} ms={(time.perf_counter() - t0) * 1000:.0f}")
                 continue
-            self.answer = answer
-            self.history.extend(({"role": "user", "content": prompt}, {"role": "assistant", "content": answer}))
-            log(f"llm done turn={turn} ttfa_ms={(ttfa or 0) * 1000:.0f} total_ms={(time.perf_counter() - t0) * 1000:.0f} {answer!r}")
+            answer = spoken(raw)
+            for unit in seg.take(answer, True):
+                first_send = self._send(epoch, turn, unit, first_send)
+            if answer:
+                self.answer = answer
+                self.history.extend(({"role": "user", "content": prompt}, {"role": "assistant", "content": answer}))
+            log(f"llm done turn={turn} epoch={epoch} empty={int(not answer)} ms={(time.perf_counter() - t0) * 1000:.0f} answer={answer!r}")
             self._state("Listening")
 
-    def _tts(self) -> None:
-        assert self.tts_client is not None
-        while True:
-            item = self.tts_q.get()
-            if item is None:
-                return
-            epoch, text = item
-            with self.lock:
-                live = self.epoch
-            if not text or epoch != live:
-                continue
-            pieces = [text]
-            while True:
-                try:
-                    more = self.tts_q.get_nowait()
-                except queue.Empty:
-                    break
-                if more is None:
-                    self.tts_q.put(None)
-                    break
-                more_epoch, more_text = more
-                if more_epoch == epoch and more_text:
-                    pieces.append(more_text)
-            with self.lock:
-                if epoch != self.epoch:
-                    continue
-            self.tts_client.send(epoch, pieces)
-            log(f"tts send epoch={epoch} n={len(pieces)} {pieces[0]!r}")
-
     def _pcm(self) -> None:
-        assert self.tts_client is not None
-        while True:
-            frame = self.tts_client.recv_frame()
-            if frame is None:
-                return
+        first_epoch = -1
+        while frame := self.tts.recv_frame():
             kind, epoch, payload = frame
-            if kind == 2:
-                if payload and epoch == self.epoch:
-                    self.out.put(("audio-pcm", payload, epoch))
-            elif kind == 0:
-                log(f"tts batch done epoch={epoch}")
-            elif kind == 1:
+            if kind == 2 and payload and epoch == self.epoch:
+                if first_epoch != epoch:
+                    first_epoch = epoch
+                    log(f"tts first_pcm epoch={epoch} bytes={len(payload)}")
+                self.out.put(("audio-pcm", payload, epoch))
+            if kind == 0:
+                log(f"tts done epoch={epoch}")
+            if kind == 1:
                 raise RuntimeError("TTS: " + payload.decode("utf-8", "replace"))
-            else:
+            if kind > 2:
                 raise RuntimeError(f"TTS frame {kind}")
 
     def stop(self) -> None:
         if not self.active:
             return
         log(f"stop begin turn={self.turn} epoch={self.epoch}")
-        self._bump("stop")
         self.active = False
-        if self.capture:
-            self.capture.close()
+        self._bump("stop")
+        self.capture.close()
         self.llm_q.put(None)
-        if self.llm_t:
-            self.llm_t.join()
-        if self.tts_t:
-            self.tts_t.join()
-        if self.tts_client:
-            self.tts_client.close()
-        if self.pcm_t:
-            self.pcm_t.join()
+        self.llm_t.join()
+        self.tts.close()
+        self.pcm_t.join()
         self._state("Stopped")
         self.out.put(("closed", None, self.epoch))
         log("stop end")
-
-    def close(self) -> None:
-        if self.active:
-            self.stop()
-
 
 def load_mic(audio) -> bytes:
     if audio is None:
         return b""
     rate, values = audio
     x = np.asarray(values)
-    if x.size == 0:
+    if not x.size:
         return b""
+    integer = np.issubdtype(x.dtype, np.integer)
+    if integer:
+        info = np.iinfo(x.dtype)
+        x = x.astype(np.float32) / max(abs(info.min), info.max)
+    if not integer:
+        x = x.astype(np.float32, copy=False)
     if x.ndim > 1:
         x = x.mean(axis=1)
-    if np.issubdtype(x.dtype, np.integer):
-        x = x.astype(np.float32) / max(abs(np.iinfo(x.dtype).min), np.iinfo(x.dtype).max)
-    else:
-        x = x.astype(np.float32, copy=False)
-    return np.clip(linear_resample(np.clip(x, -1, 1), int(rate), ASR_RATE), -1, 1).astype("<f4").tobytes()
-
-
-_sessions: dict[str, Conversation] = {}
-_lock = threading.Lock()
-
+    return np.clip(resample(np.clip(x, -1, 1), int(rate)), -1, 1).astype("<f4").tobytes()
 
 def build(paths: Paths):
     settings = load_settings(paths.data_dir)
-    idle = (
-        gr.Audio(value=None, interactive=False, recording=False),
-        gr.update(interactive=True),
-        gr.update(interactive=False),
-    )
+    engine: Conversation | None = None
+    idle = (gr.Audio(value=None, interactive=False, recording=False), gr.update(interactive=True), gr.update(interactive=False))
 
-    def sid(request: gr.Request | None) -> str:
-        return request.session_hash if request and request.session_hash else ""
+    def drop() -> None:
+        nonlocal engine
+        if engine is not None:
+            engine.stop()
+            engine = None
+        stop_all()
 
-    def drop(session: str) -> None:
-        with _lock:
-            engine = _sessions.pop(session, None)
-        if engine:
-            engine.close()
-
-    def start(request: gr.Request | None):
-        session = sid(request)
-        drop(session)
-        boot(paths.models_dir, paths.data_dir)
+    def start():
+        nonlocal engine
+        drop()
+        boot(paths)
         engine = Conversation(paths, settings)
         engine.start()
-        with _lock:
-            _sessions[session] = engine
         return engine.transcript, engine.answer, engine.status, gr.Audio(value=None, interactive=True, recording=True), gr.update(interactive=False), gr.update(interactive=True)
 
-    def pump(request: gr.Request | None):
-        with _lock:
-            engine = _sessions.get(sid(request))
-        if engine is None:
+    def pump():
+        current = engine
+        if current is None:
             return
         while True:
-            kind, payload, epoch = engine.out.get()
+            kind, payload, epoch = current.out.get()
             audio = gr.skip()
-            if kind == "audio-pcm" and epoch == engine.epoch:
-                audio = pcm_to_wav(payload, TTS_RATE)
-            elif kind == "audio-reset" and epoch == engine.epoch:
+            if kind == "audio-pcm" and epoch == current.epoch:
+                audio = wav_bytes(payload, TTS_RATE)
+            if kind == "audio-reset" and epoch == current.epoch:
                 audio = gr.Audio(value=None, streaming=True, autoplay=True)
             if kind == "closed":
-                yield engine.transcript, engine.answer, audio, engine.status, *idle
+                yield current.transcript, current.answer, audio, current.status, *idle
                 return
-            yield engine.transcript, engine.answer, audio, engine.status, gr.skip(), gr.skip(), gr.skip()
+            yield current.transcript, current.answer, audio, current.status, gr.skip(), gr.skip(), gr.skip()
 
-    def feed(audio, request: gr.Request | None):
-        pcm = load_mic(audio)
-        with _lock:
-            engine = _sessions.get(sid(request))
-            if engine:
-                engine.feed(pcm)
+    def feed(audio):
+        if engine is not None:
+            engine.feed(load_mic(audio))
 
-    def stop(request: gr.Request | None):
-        drop(sid(request))
-        stop_all()
+    def stop():
+        drop()
         return "", "", gr.Audio(value=None, streaming=True, autoplay=True), "Stopped", *idle
 
     with gr.Blocks(title="Trident") as demo:
@@ -465,14 +331,11 @@ def build(paths: Paths):
         you = gr.Textbox(label="You", lines=3, interactive=False)
         bot = gr.Textbox(label="Trident", lines=4, interactive=False)
         speaker = gr.Audio(label="Speech", streaming=True, autoplay=True)
-        start_btn.click(start, outputs=[you, bot, status, mic, start_btn, stop_btn], concurrency_limit=None).then(
-            pump, outputs=[you, bot, speaker, status, mic, start_btn, stop_btn], concurrency_limit=None,
-        )
+        start_btn.click(start, outputs=[you, bot, status, mic, start_btn, stop_btn], concurrency_limit=None).then(pump, outputs=[you, bot, speaker, status, mic, start_btn, stop_btn], concurrency_limit=None)
         mic.stream(feed, mic, outputs=None, time_limit=MIC_LIMIT_S, stream_every=FEED_S, concurrency_limit=1)
         stop_btn.click(stop, outputs=[you, bot, speaker, status, mic, start_btn, stop_btn], queue=False)
-        demo.unload(lambda request=None: drop(sid(request)))
+        demo.unload(drop)
     return demo.queue(default_concurrency_limit=None)
-
 
 def launch(paths: Paths) -> None:
     try:
