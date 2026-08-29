@@ -13,7 +13,7 @@ CHATTERBOX = THIRD_PARTY / "chatterbox.cpp"
 GGML, RUNTIMES, CONVERTER = CHATTERBOX / "ggml", TOOLS / "runtime", TOOLS / "convert"
 CHATTERBOX_URL, CHATTERBOX_REV = "https://github.com/wgabrys88/chatterbox.cpp", "9714d18af1096db5c8a8ace2f6cd77cc6a2d64cf"
 GGML_GIT = ("https://github.com/ggml-org/ggml.git", "58c3805840b516b2a88ff867ccf7bb41dba79951")
-ASR_RATE, TTS_RATE, VAD_FRAME, FEED_S, MIC_LIMIT_S = 16000, 24000, 512, .16, 86400
+ASR_RATE, TTS_RATE, VAD_FRAME, FEED_S, PLAY_SLICE_S, MIC_LIMIT_S = 16000, 24000, 512, .16, .06, 86400
 NANO_FILES = ("t3_nano_v1.safetensors", "s3gen_meanflow.safetensors", "conds.pt", "ve.safetensors", "vocab.json", "merges.txt", "added_tokens.json")
 NANO_REPO, NANO_REV = "ResembleAI/chatterbox-nano", "71ccd1d0081b430592cea481f4307e764e07bc64"
 T3_FILE, PARAKEET_FILE, GEMMA_FILE = "chatterbox-t3-nano-q4_0.gguf", "tdt-0.6b-v3-q4_k.gguf", "gemma-4-E2B_q4_0-it.gguf"
@@ -29,6 +29,12 @@ PROMPT = ("ASR may deliver incomplete fragments. If the user has not finished a 
           "Spoken prose only: short sentences ending with a period, question mark, or exclamation. No markdown, lists, code, URLs, emoji, or square-bracket tags. "
           "Expand numbers and abbreviations. Do not mention transcription, models, or reasoning.")
 TTS_KNOBS = {"gpu_layers": 99, "context": 2048, "threads": 4, "fastconv": 1, "seed": 42, "max_tokens": 768, "top_k": 1000, "top_p": .95, "min_p": 0., "temperature": .8, "repeat_penalty": 1.2, "cfm_steps": 2, "cfg_weight": 0., "exaggeration": 0., "first_chars": 80, "chars": 280}
+TTS_PROFILES = {
+    "nano": TTS_KNOBS,
+    "turbo": {**TTS_KNOBS, "max_tokens": 1000},
+    "v3": {**TTS_KNOBS, "max_tokens": 1000, "top_k": 0, "top_p": 1., "min_p": .05, "cfm_steps": 0, "cfg_weight": .5, "exaggeration": .5},
+}
+V3_LANGUAGES = ("ar", "da", "de", "el", "en", "es", "fi", "fr", "it", "ko", "ms", "nl", "no", "pl", "pt", "sv", "sw", "tr")
 GEMMA_GEN = {"temperature": 1., "top_p": .95, "top_k": 64, "min_p": 0., "repeat_penalty": 1., "seed": 42, "max_tokens": 1024}
 LOG_FILE: Path | None = None
 _log_lock = threading.Lock()
@@ -47,6 +53,11 @@ HARDWARE = detect_hardware()
 VULKAN_ENV = {"GGML_VK_DISABLE_F16": "1"} if HARDWARE == "pascal" else {}
 FLASH_ATTN = "on" if HARDWARE == "pascal" else "off"
 CODEC_QUANT, CODEC_FILE = (("q4_0", "chatterbox-s3gen-nano-irisxe-q4_0-rawf32-v1.gguf") if HARDWARE == "irisxe" else ("f16", "chatterbox-s3gen-nano-f16.gguf"))
+TTS_MODELS = {
+    "nano": (T3_FILE, CODEC_FILE),
+    "turbo": ("chatterbox-t3-turbo-q4_0.gguf", f"chatterbox-s3gen-turbo-{CODEC_QUANT}.gguf"),
+    "v3": ("chatterbox-t3-mtl-v3-q4_0.gguf", f"chatterbox-s3gen-mtl-v3-{CODEC_QUANT}.gguf"),
+}
 
 def log(msg: str, file: Path | None = None) -> None:
     line = f"{datetime.now().astimezone().isoformat(timespec='milliseconds')} {msg}"

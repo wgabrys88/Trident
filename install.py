@@ -11,7 +11,7 @@ import venv
 import zipfile
 from pathlib import Path
 
-from config import CHATTERBOX, CHATTERBOX_REV, CHATTERBOX_URL, CODEC_FILE, CODEC_QUANT, CONVERTER, DATA, GEMMA_FILE, GEMMA_URL, GGML, GGML_GIT, HARDWARE, LLAMA_ZIP, MODELS, NANO_FILES, NANO_REPO, NANO_REV, PARAKEET_FILE, PARAKEET_URL, PARAKEET_ZIP, ROOT, RUNTIMES, T3_FILE, TOOLS, TTS, VOICE_HF, VOICES, find_exe, log
+from config import CHATTERBOX, CHATTERBOX_REV, CHATTERBOX_URL, CODEC_FILE, CODEC_QUANT, CONVERTER, DATA, GEMMA_FILE, GEMMA_URL, GGML, GGML_GIT, HARDWARE, LLAMA_ZIP, MODELS, NANO_FILES, NANO_REPO, NANO_REV, PARAKEET_FILE, PARAKEET_URL, PARAKEET_ZIP, ROOT, RUNTIMES, T3_FILE, TOOLS, TTS, TTS_MODELS, VOICE_HF, VOICES, find_exe, log
 
 PIN = RUNTIMES / "tts" / ".pin"
 
@@ -90,7 +90,7 @@ def build_tts() -> None:
     PIN.write_text(tts_pin() + "\n", encoding="ascii")
     log(f"tts server ready hardware={HARDWARE} elapsed_ms={(time.perf_counter() - t0) * 1000:.0f}")
 
-def convert_nano(models: Path) -> None:
+def convert_tts(models: Path) -> None:
     t0 = time.perf_counter()
     py = CONVERTER / "Scripts" / "python.exe"
     if not py.is_file():
@@ -112,7 +112,17 @@ def convert_nano(models: Path) -> None:
         sh([str(py), str(CHATTERBOX / "scripts" / "convert-t3-turbo-to-gguf.py"), "--ckpt-dir", str(ckpt), "--out", str(t3), "--quant", "q4_0"], ROOT, env)
     if not codec.is_file():
         sh([str(py), str(CHATTERBOX / "scripts" / "convert-s3gen-to-gguf.py"), "--variant", "turbo", "--ckpt-dir", str(ckpt), "--out", str(codec), "--quant", CODEC_QUANT], ROOT, env)
-    log(f"nano gguf ready t3={t3.name} codec={codec.name} hardware={HARDWARE} elapsed_ms={(time.perf_counter() - t0) * 1000:.0f}")
+    turbo_t3, turbo_codec = (models / name for name in TTS_MODELS["turbo"])
+    if not turbo_t3.is_file():
+        sh([str(py), str(CHATTERBOX / "scripts" / "convert-t3-turbo-to-gguf.py"), "--model", "turbo", "--out", str(turbo_t3), "--quant", "q4_0"], ROOT, env)
+    if not turbo_codec.is_file():
+        sh([str(py), str(CHATTERBOX / "scripts" / "convert-s3gen-to-gguf.py"), "--variant", "turbo", "--out", str(turbo_codec), "--quant", CODEC_QUANT], ROOT, env)
+    v3_t3, v3_codec = (models / name for name in TTS_MODELS["v3"])
+    if not v3_t3.is_file():
+        sh([str(py), str(CHATTERBOX / "scripts" / "convert-t3-mtl-to-gguf.py"), "--out", str(v3_t3), "--quant", "q4_0"], ROOT, env)
+    if not v3_codec.is_file():
+        sh([str(py), str(CHATTERBOX / "scripts" / "convert-s3gen-to-gguf.py"), "--variant", "mtl", "--out", str(v3_codec), "--quant", CODEC_QUANT], ROOT, env)
+    log(f"tts gguf ready hardware={HARDWARE} elapsed_ms={(time.perf_counter() - t0) * 1000:.0f}")
 
 def install_ui() -> None:
     env = ROOT / ".venv"
@@ -133,13 +143,13 @@ def install(models_dir: Path | None = None, data_dir: Path | None = None) -> Non
     log(f"install hardware={HARDWARE}")
     server = RUNTIMES / "tts" / "trident-tts-server.exe"
     need_tts = not server.is_file() or not PIN.is_file() or PIN.read_text(encoding="ascii").strip() != tts_pin()
-    need_gguf = not (models / T3_FILE).is_file() or not (models / CODEC_FILE).is_file()
+    need_gguf = any(not (models / name).is_file() for pair in TTS_MODELS.values() for name in pair)
     if need_tts or need_gguf:
         pin(CHATTERBOX_URL, CHATTERBOX_REV, CHATTERBOX)
     if need_tts:
         build_tts()
     if need_gguf:
-        convert_nano(models)
+        convert_tts(models)
     if find_exe(RUNTIMES / "parakeet", "parakeet-server.exe") is None:
         unzip(pull(PARAKEET_ZIP[0], TOOLS / "downloads" / PARAKEET_ZIP[1]), RUNTIMES / "parakeet")
     if find_exe(RUNTIMES / "gemma", "llama-server.exe") is None:
