@@ -131,16 +131,17 @@ def convert_tts(models: Path) -> None:
         sh([str(py), str(CHATTERBOX / "scripts" / "convert-s3gen-to-gguf.py"), "--variant", "mtl", "--out", str(v3_codec), "--quant", CODEC_QUANT], ROOT, env)
     emit("tts.gguf", hardware=HARDWARE, elapsed_ms=round((time.perf_counter() - t0) * 1000))
 
-def install_ui() -> None:
+def install_python() -> None:
     env = ROOT / ".venv"
-    python, req, marker = env / "Scripts" / "python.exe", ROOT / "requirements-ui.txt", env / ".req"
+    python, req, marker = env / "Scripts" / "python.exe", ROOT / "requirements.txt", env / ".req"
     digest = hashlib.sha256(req.read_bytes()).hexdigest()
-    if not python.is_file():
+    if not python.is_file() or not marker.is_file() or marker.read_text(encoding="ascii").strip() != digest:
+        if env.exists():
+            shutil.rmtree(env)
         venv.EnvBuilder(with_pip=True).create(env)
-    if not marker.is_file() or marker.read_text(encoding="ascii").strip() != digest:
         sh([str(python), "-m", "pip", "install", "--disable-pip-version-check", "--progress-bar", "off", "--no-input", "-r", str(req)])
         marker.write_text(digest + "\n", encoding="ascii")
-    emit("ui.venv", python=str(python))
+    emit("python.venv", python=str(python))
 
 def install(models_dir: Path | None = None, data_dir: Path | None = None) -> None:
     if sys.version_info < (3, 11) or os.name != "nt":
@@ -163,5 +164,5 @@ def install(models_dir: Path | None = None, data_dir: Path | None = None) -> Non
         pull(VOICE_HF + source, data / name)
     pull(PARAKEET_URL, models / PARAKEET_FILE)
     pull(GEMMA_URL, models / GEMMA_FILE)
-    install_ui()
+    install_python()
     emit("install.done")
