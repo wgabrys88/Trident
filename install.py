@@ -11,9 +11,9 @@ import zipfile
 from pathlib import Path
 
 from config import (
-    CHATTERBOX, CHATTERBOX_GIT, CODEC_FILE, CODEC_QUANT, CONVERTER, DATA, GEMMA_FILE, GEMMA_URL,
-    GGML, GGML_GIT, HARDWARE, LLAMA_ZIP, MODELS, NANO_FILES, NANO_REPO, NANO_REV, PARAKEET_FILE,
-    PARAKEET_URL, PARAKEET_ZIP, ROOT, RUNTIMES, T3_FILE, TOOLS, TTS, VOICE_HF, VOICES, find_exe, log,
+    CHATTERBOX, CODEC_FILE, CODEC_QUANT, CONVERTER, DATA, GEMMA_FILE, GEMMA_URL, HARDWARE,
+    LLAMA_ZIP, MODELS, NANO_FILES, NANO_REPO, NANO_REV, PARAKEET_FILE, PARAKEET_URL,
+    PARAKEET_ZIP, ROOT, RUNTIMES, T3_FILE, TOOLS, TTS, VOICE_HF, VOICES, log,
 )
 
 
@@ -44,45 +44,43 @@ def unzip(archive: Path, dest: Path) -> None:
         z.extractall(dest)
 
 
-def pin(url: str, rev: str, dest: Path) -> None:
-    dest.parent.mkdir(parents=True, exist_ok=True)
+def git_clone_shallow(url: str, dest: Path) -> None:
     if not (dest / ".git").is_dir():
-        sh(["git", "clone", "--filter=blob:none", "--no-checkout", url, str(dest)], dest.parent)
-    sh(["git", "fetch", "--depth", "1", "origin", rev], dest)
-    sh(["git", "checkout", "--detach", rev], dest)
+        sh(["git", "clone", "--filter=blob:none", "--depth", "1", url, str(dest)], dest.parent)
+
+
+def git_pull_shallow(dest: Path) -> None:
+    sh(["git", "fetch", "--depth", "1", "origin"], dest)
+    sh(["git", "reset", "--hard", "origin/HEAD"], dest)
 
 
 def patch_ggml() -> None:
-    path = GGML / "src" / "ggml-vulkan" / "ggml-vulkan.cpp"
+    path = CHATTERBOX / "ggml" / "src" / "ggml-vulkan" / "ggml-vulkan.cpp"
     lines = path.read_text(encoding="utf-8").splitlines()
-    nvidia = "NVIDIA_PRE_TURING"
     direct = next(i for i, line in enumerate(lines) if "force_disable_f16" in line and "getenv(" in line)
     staged = next(i for i, line in enumerate(lines[:-1]) if "getenv(" in line and "force_disable_f16" in lines[i + 1])
-    lines[direct] = (
-        "    const bool force_disable_f16 = device->vendor_id == VK_VENDOR_ID_NVIDIA "
-        f"&& device->architecture == vk_device_architecture::{nvidia};"
-    )
+    lines[direct] = "    const bool force_disable_f16 = device->vendor_id == VK_VENDOR_ID_NVIDIA && device->architecture == vk_device_architecture::NVIDIA_PRE_TURING;"
     lines[staged] = ""
-    lines[staged + 1] = (
-        "    bool force_disable_f16 = physical_device.getProperties().vendorID == VK_VENDOR_ID_NVIDIA "
-        f"&& device_architecture == vk_device_architecture::{nvidia};"
-    )
+    lines[staged + 1] = "    bool force_disable_f16 = physical_device.getProperties().vendorID == VK_VENDOR_ID_NVIDIA && device_architecture == vk_device_architecture::NVIDIA_PRE_TURING;"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     log("ggml vulkan: Pascal pre-Turing FP16 off")
 
 
-def has_exe(root: Path, name: str) -> bool:
-    return root.is_dir() and any(p.is_file() and p.name.lower() == name.lower() for p in root.rglob("*"))
-
-
 def tts_pin() -> str:
     blob = (TTS / "src" / "server.cpp").read_bytes() + (TTS / "CMakeLists.txt").read_bytes()
-    return f"{CHATTERBOX_GIT[1]} {GGML_GIT[1]} {hashlib.sha256(blob).hexdigest()[:16]}"
+    return hashlib.sha256(blob).hexdigest()[:16]
+
+
+def has_exe(root: Path, name: str) -> bool:
+    if not root.is_dir():
+        return False
+    return any(p.is_file() and p.name.lower() == name.lower() for p in root.iterdir())
 
 
 def build_tts() -> None:
-    pin(*CHATTERBOX_GIT, CHATTERBOX)
-    pin(*GGML_GIT, GGML)
+    git_clone_shallow("https://github.com/wgabrys88/chatterbox.cpp", CHATTERBOX)
+    git_clone_shallow("https://github.com/ggml-org/ggml.git", CHATTERBOX / "ggml")
+    git_pull_shallow(CHATTERBOX / "ggml")
     patch_ggml()
     cmake = "cmake"
     sh([cmake, "-S", ".", "-B", "build", "-A", "x64",
@@ -92,20 +90,17 @@ def build_tts() -> None:
     sh([cmake, "-S", ".", "-B", "build", "-A", "x64", f"-DCHATTERBOX_CPP_ROOT={CHATTERBOX}"], TTS)
     sh([cmake, "--build", "build", "--config", "Release", "--target", "trident-tts-server", "--parallel"], TTS)
     built = TTS / "build" / "Release"
-    server = built / "trident-tts-server.exe"
-    if not server.is_file():
-        raise RuntimeError("trident-tts-server.exe missing after build")
     dest = RUNTIMES / "tts"
     dest.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(server, dest / server.name)
-    for dll in built.glob("*.dll"):
-        shutil.copy2(dll, dest / dll.name)
+    for path in built.iterdir():
+        if path.is_file():
+            shutil.copy2(path, dest / path.name)
     (CHATTERBOX / "build" / ".pin").write_text(tts_pin() + "\n", encoding="ascii")
     log("tts server ready")
 
 
 def convert_nano() -> None:
-    pin(*CHATTERBOX_GIT, CHATTERBOX)
+    git_clone_shallow("https://github.com/wgabrys88/chatterbox.cpp", CHATTERBOX)
     py = CONVERTER / "Scripts" / "python.exe"
     if not py.is_file():
         sh([sys.executable, "-m", "venv", str(CONVERTER)])
@@ -126,7 +121,8 @@ def convert_nano() -> None:
             f"allow_patterns={list(NANO_FILES)!r}, local_dir={str(ckpt)!r})"
         )
         sh([str(py), "-c", code], ROOT, env)
-    shutil.copyfile(ckpt / "t3_nano_v1.safetensors", ckpt / "t3_turbo_v1.safetensors")
+    if not (ckpt / "t3_turbo_v1.safetensors").is_file():
+        shutil.copyfile(ckpt / "t3_nano_v1.safetensors", ckpt / "t3_turbo_v1.safetensors")
     MODELS.mkdir(parents=True, exist_ok=True)
     t3, codec = MODELS / T3_FILE, MODELS / CODEC_FILE
     env = os.environ.copy()
@@ -154,7 +150,7 @@ def install_ui() -> Path:
     return python
 
 
-def install(models_dir: Path | None = None, data_dir: Path | None = None) -> Path:
+def install(models_dir: Path | None = None, data_dir: Path | None = None) -> None:
     if sys.version_info < (3, 11) or os.name != "nt":
         raise RuntimeError("Trident needs Python 3.11+ on Windows")
     models = Path(models_dir or MODELS)
@@ -177,13 +173,10 @@ def install(models_dir: Path | None = None, data_dir: Path | None = None) -> Pat
     llama_zip = pull(LLAMA_ZIP[0], TOOLS / "downloads" / LLAMA_ZIP[1])
     if not has_exe(RUNTIMES / "gemma", "llama-server.exe"):
         unzip(llama_zip, RUNTIMES / "gemma")
-    find_exe(RUNTIMES / "parakeet", "parakeet-server.exe")
-    find_exe(RUNTIMES / "gemma", "llama-server.exe")
 
-    for src, name in VOICES.values():
-        pull(VOICE_HF + src, data / name)
+    for name in VOICES.values():
+        pull(VOICE_HF + name, data / name)
     pull(PARAKEET_URL, models / PARAKEET_FILE)
     pull(GEMMA_URL, models / GEMMA_FILE)
-    python = install_ui()
+    install_ui()
     log("install complete")
-    return python

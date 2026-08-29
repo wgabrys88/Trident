@@ -11,15 +11,16 @@ import gradio as gr
 import numpy as np
 from silero_vad_notorch import VADIterator, load_silero_vad
 
-import config
 from config import (
-    ASR_RATE, ECHO_MS, FEED_S, MIC_LIMIT_S, Paths, TTS_KNOBS, TTS_RATE, VAD_FRAME,
+    ASR_RATE, FEED_S, MIC_LIMIT_S, Paths, TTS_KNOBS, TTS_RATE, VAD_FRAME,
     load_settings, log, voice_wav,
 )
-from runtime import Chatterbox, gemma_stream, pcm24, require_alive, start_chatterbox, transcribe
+from runtime import Chatterbox, gemma_stream, require_alive, transcribe
+
+MIN_TURN_S = 1.0
 
 
-def resample(samples: np.ndarray, src: int, dst: int) -> np.ndarray:
+def linear_resample(samples: np.ndarray, src: int, dst: int) -> np.ndarray:
     if src == dst or samples.size == 0:
         return samples
     n = max(1, round(samples.size * dst / src))
@@ -33,6 +34,18 @@ def spoken(raw: str) -> str:
     elif text.startswith("Assistant:\n"):
         text = text[11:].strip()
     return text
+
+
+def pcm_to_wav(pcm: bytes, rate: int) -> bytes:
+    if not pcm:
+        return b""
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(rate)
+        out.writeframes(pcm)
+    return buf.getvalue()
 
 
 class VAD:
@@ -49,11 +62,10 @@ class VAD:
         while self.buffer.size >= VAD_FRAME:
             event = self.iterator(self.buffer[:VAD_FRAME])
             self.buffer = self.buffer[VAD_FRAME:]
-            if event:
-                if "start" in event:
-                    self.speech, started = True, True
-                if "end" in event:
-                    self.speech, ended = False, True
+            if "start" in event:
+                self.speech, started = True, True
+            if "end" in event:
+                self.speech, ended = False, True
         return started, ended
 
     def reset(self) -> None:
@@ -96,13 +108,13 @@ class Capture:
         self.on_text, self.on_epoch = on_text, on_epoch
         self.run_dir, self.asr, self.settings = run_dir, asr, settings
         self.q: queue.SimpleQueue = queue.SimpleQueue()
-        self.vad = None
-        self.thread = None
+        self.vad: VAD | None = None
+        self.thread: threading.Thread | None = None
         self.active = False
-        self.wav = self.path = None
+        self.wav: wave.Wave_write | None = None
+        self.path: Path | None = None
         self.index = 0
-        self.ring = np.zeros(0, dtype=np.int16)
-        self.lock = threading.Lock()
+        self.duration_s = 0.0
 
     def open(self) -> None:
         self.vad = VAD(self.settings["vad_threshold"], self.settings["vad_silence_ms"])
@@ -111,51 +123,13 @@ class Capture:
         self.active = True
         log("capture open")
 
-    def feed(self, pcm: bytes, rate: int = ASR_RATE) -> None:
+    def feed(self, pcm: bytes) -> None:
         if self.active and pcm:
-            self.q.put(("feed", (pcm, rate)))
-
-    def play(self, pcm16: bytes, rate: int = TTS_RATE) -> None:
-        if not pcm16:
-            return
-        samples = np.frombuffer(pcm16, dtype="<i2").astype(np.float32)
-        samples = resample(samples, rate, ASR_RATE)
-        pcm = np.clip(samples, -32768, 32767).astype("<i2")
-        with self.lock:
-            n = max(1, int(ASR_RATE * ECHO_MS / 1000))
-            self.ring = np.concatenate((self.ring, pcm))[-n:] if self.ring.size else pcm
-
-    def _echo(self, pcm: bytes) -> bool:
-        with self.lock:
-            ring = self.ring
-        mic = np.frombuffer(pcm, dtype="<f4")
-        window = min(mic.size, int(ASR_RATE * 0.2))
-        if window < 160 or ring.size < window:
-            return False
-        mic_w = mic[-window:]
-        mic_c = mic_w - mic_w.mean()
-        if float(np.sqrt((mic_c * mic_c).mean())) < 1e-4:
-            return False
-        ref = ring.astype(np.float32)
-        sums = np.concatenate(([0.0], np.cumsum(ref, dtype=np.float64)))
-        squares = np.concatenate(([0.0], np.cumsum(ref * ref, dtype=np.float64)))
-        energy = squares[window:] - squares[:-window] - (sums[window:] - sums[:-window]) ** 2 / window
-        dots = np.correlate(ref, mic_c, mode="valid")
-        denom = np.sqrt(np.maximum(energy, 0.0)) * np.sqrt((mic_c * mic_c).sum())
-        corr = np.divide(dots, denom, out=np.zeros_like(dots), where=denom > 0)
-        score = float(corr[int(np.argmax(corr))])
-        if score >= 0.7:
-            log(f"echo suppress corr={score:.3f}")
-            return True
-        return False
-
-    def _to16k(self, pcm: bytes, rate: int) -> bytes:
-        return resample(np.frombuffer(pcm, dtype="<f4"), rate, ASR_RATE).astype("<f4").tobytes()
+            self.q.put(pcm)
 
     def _open_turn(self) -> None:
-        if self.wav is not None:
-            return
         self.index += 1
+        self.duration_s = 0.0
         self.path = self.run_dir / f".turn-{self.index:04d}.wav"
         self.wav = wave.open(str(self.path), "wb")
         self.wav.setnchannels(1)
@@ -167,6 +141,7 @@ class Capture:
             return
         audio = np.frombuffer(pcm, dtype="<f4")
         self.wav.writeframesraw((np.clip(audio, -1, 1) * 32767).astype("<i2").tobytes())
+        self.duration_s += len(pcm) / (ASR_RATE * 4)
 
     def _close(self) -> Path | None:
         if self.wav is None:
@@ -177,77 +152,71 @@ class Capture:
 
     def _asr(self, reason: str) -> None:
         path = self._close()
-        if not path:
+        if not path or self.duration_s < MIN_TURN_S:
+            path.unlink(missing_ok=True)
             return
         try:
             started = time.perf_counter()
-            with wave.open(str(path), "rb") as audio:
-                duration = audio.getnframes() / audio.getframerate()
             text = transcribe(self.asr, path)
             elapsed = time.perf_counter() - started
-            rtf = elapsed / duration if duration else 0
-            log(f"asr {reason} {duration:.2f}s x{1 / rtf if rtf else 0:.2f} {text!r}")
+            rtf = elapsed / self.duration_s
+            log(f"asr {reason} {self.duration_s:.2f}s x{1 / rtf if rtf else 0:.2f} {text!r}")
         finally:
             path.unlink(missing_ok=True)
         if text:
             self.on_text(text)
 
     def _loop(self) -> None:
-        try:
-            while True:
-                op, payload = self.q.get()
-                if op == "finish":
-                    if self.vad and self.vad.speech:
-                        self._asr("stop")
-                    else:
-                        path = self._close()
-                        if path:
-                            path.unlink(missing_ok=True)
-                    return
-                pcm, rate = payload
-                pcm = self._to16k(pcm, rate)
-                started, ended = self.vad.feed(pcm)
-                if started:
-                    if self._echo(pcm):
-                        self.vad.reset()
-                    else:
-                        self.on_epoch()
-                        self._open_turn()
-                if self.vad.speech:
-                    self._write(pcm)
-                if ended:
-                    self._asr("vad")
-        except Exception as exc:
-            log(f"capture failed {type(exc).__name__}: {exc}")
-            raise
+        while True:
+            pcm = self.q.get()
+            if pcm is None:
+                if self.vad and self.vad.speech:
+                    self._asr("stop")
+                else:
+                    path = self._close()
+                    if path:
+                        path.unlink(missing_ok=True)
+                return
+            assert self.vad is not None
+            started, ended = self.vad.feed(pcm)
+            if started:
+                self.on_epoch()
+                self._open_turn()
+            if self.vad.speech:
+                self._write(pcm)
+            if ended:
+                self._asr("vad")
 
     def close(self) -> None:
         if not self.active:
             return
         self.active = False
-        self.q.put(("finish", None))
+        self.q.put(None)
         if self.thread:
             self.thread.join()
         log("capture close")
 
 
 class Conversation:
-    def __init__(self, models_dir: Path, data_dir: Path, settings: dict, paths: Paths) -> None:
-        self.models_dir, self.data_dir, self.settings, self.paths = models_dir, data_dir, dict(settings), paths
-        self.parakeet = self.gemma = self.tts = None
+    def __init__(self, paths: Paths, settings: dict) -> None:
+        self.paths, self.settings = paths, dict(settings)
+        self.parakeet = require_alive("parakeet")
+        self.gemma = require_alive("gemma")
+        self.tts_url = require_alive("chatterbox")
         self.epoch = 0
-        self.transcript = self.answer = ""
-        self.status = "Stopped"
-        self.history: list[dict] = []
         self.turn = 0
+        self.transcript = ""
+        self.answer = ""
+        self.status = "Stopped"
+        self.history: list[dict[str, str]] = []
         self.out: queue.SimpleQueue = queue.SimpleQueue()
         self.llm_q: queue.SimpleQueue = queue.SimpleQueue()
         self.tts_q: queue.SimpleQueue = queue.SimpleQueue()
-        self.capture = None
+        self.capture: Capture | None = None
         self.llm_t = self.tts_t = None
         self.active = False
         self.lock = threading.Lock()
-        self.failure = None
+        self.tts_client: Chatterbox | None = None
 
     def _bump(self, reason: str) -> int:
         with self.lock:
@@ -263,10 +232,8 @@ class Conversation:
         self.out.put(("state", None, self.epoch))
 
     def start(self) -> None:
-        self.parakeet = require_alive("parakeet")
-        self.gemma = require_alive("gemma")
-        ref = pcm24(voice_wav(self.data_dir, self.settings["tts_voice"]), self.data_dir / "prepared")
-        self.tts = start_chatterbox(self.models_dir, ref)
+        self.tts_client = Chatterbox(self.tts_url)
+        self.tts_client.open()
         self.capture = Capture(self._utterance, lambda: self._bump("vad-start"), self.paths.run_dir, self.parakeet, self.settings)
         self.capture.open()
         self.llm_t = threading.Thread(target=self._llm, name="llm", daemon=True)
@@ -292,98 +259,69 @@ class Conversation:
         self._state(f"Heard {len(text)} chars")
 
     def _llm(self) -> None:
-        try:
-            while True:
-                item = self.llm_q.get()
-                if item is None:
-                    self.tts_q.put(None)
+        while True:
+            item = self.llm_q.get()
+            if item is None:
+                self.tts_q.put(None)
+                return
+            epoch, prompt = item
+            with self.lock:
+                live = self.epoch
+            if epoch != live:
+                continue
+            self.turn += 1
+            turn = self.turn
+            log(f"llm begin turn={turn} epoch={epoch} {prompt!r}")
+            self._state("Thinking")
+            t0 = time.perf_counter()
+            ttfa: float | None = None
+            seg = Segmenter(min(TTS_KNOBS["first_chars"], TTS_KNOBS["chars"]), TTS_KNOBS["chars"])
+            raw = ""
+            messages = [{"role": "system", "content": self.settings["system_prompt"].strip()}, *self.history, {"role": "user", "content": prompt}]
+            for delta in gemma_stream(self.gemma, messages):
+                with self.lock:
+                    stale = epoch != self.epoch
+                if stale:
                     return
-                epoch, prompt = item
-                with self.lock:
-                    live = self.epoch
-                if epoch != live:
-                    log(f"llm skip stale epoch={epoch} live={live}")
-                    continue
-                self.answer = ""
-                self.turn += 1
-                turn = self.turn
-                log(f"llm begin turn={turn} epoch={epoch} {prompt!r}")
-                self._state("Thinking")
-                t0 = time.perf_counter()
-                ttfa = None
-                seg = Segmenter(min(TTS_KNOBS["first_chars"], TTS_KNOBS["chars"]), TTS_KNOBS["chars"])
-                raw = ""
-                messages = [{"role": "system", "content": self.settings["system_prompt"].strip()}, *self.history, {"role": "user", "content": prompt}]
-                for delta in gemma_stream(self.gemma, messages):
-                    with self.lock:
-                        if epoch != self.epoch:
-                            break
-                    if ttfa is None:
-                        ttfa = time.perf_counter() - t0
-                    raw += delta
-                    self.answer = raw
-                    self.out.put(("state", None, epoch))
-                    for unit in seg.update(spoken(raw)):
-                        self.tts_q.put((epoch, unit))
-                with self.lock:
-                    if epoch != self.epoch:
-                        log(f"llm cancelled turn={turn} epoch={epoch} live={self.epoch}")
-                        continue
-                answer = spoken(raw)
-                for unit in seg.update(answer, flush=True):
+                if ttfa is None:
+                    ttfa = time.perf_counter() - t0
+                raw += delta
+                self.answer = raw
+                for unit in seg.update(spoken(raw)):
                     self.tts_q.put((epoch, unit))
-                if not answer:
-                    self._state("Listening")
-                    continue
-                self.answer = answer
-                self.history.extend(({"role": "user", "content": prompt}, {"role": "assistant", "content": answer}))
-                log(f"llm done turn={turn} ttfa_ms={(ttfa or 0) * 1000:.0f} total_ms={(time.perf_counter() - t0) * 1000:.0f} {answer!r}")
+            with self.lock:
+                if epoch != self.epoch:
+                    return
+            answer = spoken(raw)
+            for unit in seg.update(answer, flush=True):
+                self.tts_q.put((epoch, unit))
+            if not answer:
                 self._state("Listening")
-        except Exception as exc:
-            self.failure = exc
-            log(f"llm failed {type(exc).__name__}: {exc}")
-            self.out.put(("error", exc, self.epoch))
+                continue
+            self.answer = answer
+            self.history.extend(({"role": "user", "content": prompt}, {"role": "assistant", "content": answer}))
+            log(f"llm done turn={turn} ttfa_ms={(ttfa or 0) * 1000:.0f} total_ms={(time.perf_counter() - t0) * 1000:.0f} {answer!r}")
+            self._state("Listening")
 
     def _tts(self) -> None:
-        try:
-            while True:
-                item = self.tts_q.get()
-                if item is None:
-                    return
-                epoch, text = item
+        assert self.tts_client is not None
+        while True:
+            item = self.tts_q.get()
+            if item is None:
+                return
+            epoch, text = item
+            with self.lock:
+                live = self.epoch
+            if not text or epoch != live:
+                continue
+            self.tts_client.send(epoch, [text])
+            log(f"tts begin epoch={epoch} {text!r}")
+            for pcm in self.tts_client:
                 with self.lock:
-                    live = self.epoch
-                if not text or epoch != live:
-                    if text:
-                        log(f"tts skip stale epoch={epoch} live={live} {text!r}")
-                    continue
-                client = Chatterbox(self.tts, cancel=lambda e=epoch: self.epoch != e)
-                try:
-                    client.open()
-                    client.send(text)
-                    log(f"tts begin epoch={epoch} {text!r}")
-                    for pcm in client:
-                        with self.lock:
-                            if self.epoch != epoch:
-                                client.close()
-                                log(f"tts cancel epoch={epoch} live={self.epoch}")
-                                break
-                        if pcm:
-                            self.out.put(("audio-pcm", pcm, epoch))
-                            if self.capture:
-                                self.capture.play(pcm, TTS_RATE)
-                    else:
-                        log(f"tts done epoch={epoch}")
-                except InterruptedError:
-                    log(f"tts interrupted epoch={epoch} live={self.epoch}")
-                except Exception as exc:
-                    log(f"tts failed epoch={epoch} {type(exc).__name__}: {exc}")
-                finally:
-                    client.close()
-        except Exception as exc:
-            self.failure = exc
-            log(f"tts worker failed {type(exc).__name__}: {exc}")
-            self.out.put(("error", exc, self.epoch))
+                    if self.epoch != epoch:
+                        return
+                if pcm:
+                    self.out.put(("audio-pcm", pcm, epoch))
 
     def stop(self) -> None:
         if not self.active:
@@ -398,8 +336,8 @@ class Conversation:
             self.llm_t.join()
         if self.tts_t:
             self.tts_t.join()
-        if self.paths.transcript:
-            self.paths.transcript.write_text(self.transcript + ("\n" if self.transcript else ""), encoding="utf-8")
+        if self.tts_client:
+            self.tts_client.close()
         self._state("Stopped")
         self.out.put(("closed", None, self.epoch))
         log("stop end")
@@ -421,7 +359,7 @@ def load_mic(audio) -> bytes:
             x = x.astype(np.float32) / max(abs(np.iinfo(x.dtype).min), np.iinfo(x.dtype).max)
         else:
             x = x.astype(np.float32, copy=False)
-        return np.clip(resample(np.clip(x, -1, 1), int(rate), ASR_RATE), -1, 1).astype("<f4").tobytes()
+        return np.clip(linear_resample(np.clip(x, -1, 1), int(rate), ASR_RATE), -1, 1).astype("<f4").tobytes()
     path = Path(str(audio))
     if not path.is_file() or path.stat().st_size < 44:
         return b""
@@ -441,36 +379,19 @@ def load_mic(audio) -> bytes:
         return b""
     if nch > 1:
         x = x.reshape(-1, nch).mean(axis=1)
-    return np.clip(resample(x, rate, ASR_RATE), -1, 1).astype("<f4").tobytes()
-
-
-def wav_bytes(pcm16: bytes) -> bytes:
-    if not pcm16:
-        return b""
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as out:
-        out.setnchannels(1)
-        out.setsampwidth(2)
-        out.setframerate(TTS_RATE)
-        out.writeframes(pcm16)
-    return buf.getvalue()
+    return np.clip(linear_resample(x, rate, ASR_RATE), -1, 1).astype("<f4").tobytes()
 
 
 _sessions: dict[str, Conversation] = {}
 _lock = threading.Lock()
 
 
-def build(models_dir: Path | None = None, data_dir: Path | None = None):
-    root = Paths(models_dir, data_dir)
-    if config.LOG:
-        root.log = config.LOG
-        root.run_dir = config.LOG.parent
-        root.transcript = config.LOG.parent / (config.LOG.stem.replace("trident", "transcript") + ".txt")
-    settings = load_settings(root.data_dir)
+def build(paths: Paths):
+    settings = load_settings(paths.data_dir)
 
-    def sid(request: gr.Request) -> str:
-        if not request.session_hash:
-            raise RuntimeError("Gradio session missing")
+    def sid(request: gr.Request | None) -> str:
+        if request is None or not request.session_hash:
+            return ""
         return request.session_hash
 
     def drop(session: str) -> None:
@@ -479,16 +400,16 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
         if engine:
             engine.close()
 
-    def start(request: gr.Request):
+    def start(request: gr.Request | None):
         session = sid(request)
         drop(session)
-        engine = Conversation(root.models_dir, root.data_dir, settings, root)
+        engine = Conversation(paths, settings)
         engine.start()
         with _lock:
             _sessions[session] = engine
         return engine.transcript, engine.answer, engine.status, gr.Audio(value=None, interactive=True, recording=True), gr.Button(interactive=False), gr.Button(interactive=True)
 
-    def pump(request: gr.Request):
+    def pump(request: gr.Request | None):
         with _lock:
             engine = _sessions.get(sid(request))
         if engine is None:
@@ -499,26 +420,22 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
             kind, payload, epoch = engine.out.get()
             audio = gr.skip()
             if kind == "audio-pcm" and epoch == engine.epoch:
-                audio = wav_bytes(payload)
+                audio = pcm_to_wav(payload, TTS_RATE)
             elif kind == "audio-reset" and epoch == engine.epoch:
                 audio = gr.Audio(value=None, streaming=True, autoplay=True)
-            if kind == "error":
-                drop(sid(request))
-                yield engine.transcript, engine.answer, audio, engine.status, *stopped
-                raise RuntimeError(str(payload))
             if kind == "closed":
                 yield engine.transcript, engine.answer, audio, engine.status, *stopped
                 return
             yield engine.transcript, engine.answer, audio, engine.status, *hold
 
-    def feed(audio, request: gr.Request):
+    def feed(audio, request: gr.Request | None):
         pcm = load_mic(audio)
         with _lock:
             engine = _sessions.get(sid(request))
             if engine:
                 engine.feed(pcm)
 
-    def stop(request: gr.Request):
+    def stop(request: gr.Request | None):
         with _lock:
             engine = _sessions.pop(sid(request), None)
         if engine:
@@ -541,9 +458,9 @@ def build(models_dir: Path | None = None, data_dir: Path | None = None):
         stop_btn.click(lambda: (gr.Audio(value=None, interactive=False, recording=False), gr.Button(interactive=False)), outputs=[mic, stop_btn], queue=False).then(
             stop, outputs=[status, start_btn], concurrency_limit=None, show_progress="minimal",
         )
-        demo.unload(lambda request: drop(sid(request)))
+        demo.unload(lambda request=None: drop(sid(request)))
     return demo.queue(default_concurrency_limit=None)
 
 
-def launch(models_dir: Path | None = None, data_dir: Path | None = None) -> None:
-    build(models_dir, data_dir).launch(server_name="127.0.0.1", server_port=7860, show_error=True)
+def launch(paths: Paths) -> None:
+    build(paths).launch(server_name="127.0.0.1", server_port=7860, show_error=True)

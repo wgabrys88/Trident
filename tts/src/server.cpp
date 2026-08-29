@@ -3,8 +3,8 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
-#include <limits>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -54,18 +54,14 @@ static void send_all(socket_t s, const void* src, std::size_t n) {
     }
 }
 
-static std::uint32_t u32le(const unsigned char* p) {
-    return (std::uint32_t)p[0] | ((std::uint32_t)p[1] << 8) | ((std::uint32_t)p[2] << 16) | ((std::uint32_t)p[3] << 24);
-}
-
 static void send_frame(socket_t s, std::uint32_t kind, const void* data, std::size_t n) {
     unsigned char h[8];
-    const std::uint32_t vals[2] = {kind, static_cast<std::uint32_t>(n)};
     for (int i = 0; i < 2; ++i) {
-        h[4 * i + 0] = (unsigned char)(vals[i] & 0xff);
-        h[4 * i + 1] = (unsigned char)((vals[i] >> 8) & 0xff);
-        h[4 * i + 2] = (unsigned char)((vals[i] >> 16) & 0xff);
-        h[4 * i + 3] = (unsigned char)((vals[i] >> 24) & 0xff);
+        const std::uint32_t v = (i == 0) ? kind : static_cast<std::uint32_t>(n);
+        h[4 * i + 0] = (unsigned char)(v & 0xff);
+        h[4 * i + 1] = (unsigned char)((v >> 8) & 0xff);
+        h[4 * i + 2] = (unsigned char)((v >> 16) & 0xff);
+        h[4 * i + 3] = (unsigned char)((v >> 24) & 0xff);
     }
     send_all(s, h, 8);
     if (n) send_all(s, data, n);
@@ -78,28 +74,6 @@ static void send_pcm(socket_t s, const float* pcm, std::size_t count) {
         out[i] = static_cast<std::int16_t>(c * 32767.0f);
     }
     send_frame(s, kPcm, out.data(), out.size() * 2);
-}
-
-static void watch_hangup(socket_t s, tts_cpp::chatterbox::Engine& engine, std::atomic<bool>& done) {
-    while (!done.load(std::memory_order_relaxed)) {
-        fd_set fds;
-        FD_ZERO(&fds);
-        FD_SET(s, &fds);
-        timeval tv{0, 50000};
-        const int n = select(0, &fds, nullptr, nullptr, &tv);
-        if (n == SOCKET_ERROR) {
-            engine.cancel();
-            return;
-        }
-        if (n > 0 && FD_ISSET(s, &fds)) {
-            char b = 0;
-            const int got = recv(s, &b, 1, MSG_PEEK);
-            if (got == 0 || got == SOCKET_ERROR) {
-                engine.cancel();
-                return;
-            }
-        }
-    }
 }
 
 static tts_cpp::chatterbox::Engine make_engine(const std::unordered_map<std::string, std::string>& a) {
@@ -129,6 +103,36 @@ static tts_cpp::chatterbox::Engine make_engine(const std::unordered_map<std::str
     return tts_cpp::chatterbox::Engine(o);
 }
 
+static bool recv_request(socket_t s, std::uint32_t& epoch, std::vector<std::string>& texts) {
+    unsigned char hdr[8];
+    if (!recv_all(s, hdr, 8)) return false;
+    const std::uint32_t n = (std::uint32_t)hdr[0]
+        | ((std::uint32_t)hdr[1] << 8)
+        | ((std::uint32_t)hdr[2] << 16)
+        | ((std::uint32_t)hdr[3] << 24);
+    epoch = (std::uint32_t)hdr[4]
+        | ((std::uint32_t)hdr[5] << 8)
+        | ((std::uint32_t)hdr[6] << 16)
+        | ((std::uint32_t)hdr[7] << 24);
+    if (n == 0) { texts.clear(); return true; }
+    if (n > 4096u) throw std::runtime_error("piece_count out of range");
+    texts.clear();
+    texts.reserve(n);
+    for (std::uint32_t i = 0; i < n; ++i) {
+        unsigned char th[4];
+        if (!recv_all(s, th, 4)) throw std::runtime_error("short piece header");
+        const std::uint32_t len = (std::uint32_t)th[0]
+            | ((std::uint32_t)th[1] << 8)
+            | ((std::uint32_t)th[2] << 16)
+            | ((std::uint32_t)th[3] << 24);
+        if (len > 4u * 1024u * 1024u) throw std::runtime_error("piece too large");
+        std::string text(len, '\0');
+        if (!recv_all(s, text.data(), text.size())) throw std::runtime_error("short text");
+        texts.push_back(std::move(text));
+    }
+    return true;
+}
+
 int main(int argc, char** argv) {
     try {
         std::unordered_map<std::string, std::string> args;
@@ -155,52 +159,38 @@ int main(int argc, char** argv) {
         addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         if (bind(listener.v, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0)
             throw std::runtime_error("bind 127.0.0.1:" + std::to_string(port) + " failed");
-        if (listen(listener.v, 8) != 0) throw std::runtime_error("listen failed");
+        if (listen(listener.v, 1) != 0) throw std::runtime_error("listen failed");
         std::cerr << "tts ready host=127.0.0.1 port=" << port << std::endl;
 
-        std::uint64_t seq = 0;
+        Sock client(accept(listener.v, nullptr, nullptr));
+        if (client.v == kInvalid) throw std::runtime_error("accept failed");
+        std::cerr << "tts client connected" << std::endl;
+
+        std::uint32_t live_epoch = 0;
+        bool have_epoch = false;
         for (;;) {
-            Sock client(accept(listener.v, nullptr, nullptr));
-            if (client.v == kInvalid) continue;
-            const auto id = ++seq;
-            std::string err;
+            std::uint32_t epoch = 0;
+            std::vector<std::string> texts;
             try {
-                unsigned char hdr[4];
-                if (!recv_all(client.v, hdr, 4)) continue;
-                const auto n = u32le(hdr);
-                if (n == 0 || n > 4096u) throw std::runtime_error("piece_count out of range");
-                std::vector<std::string> texts;
-                texts.reserve(n);
-                for (std::uint32_t i = 0; i < n; ++i) {
-                    unsigned char th[4];
-                    if (!recv_all(client.v, th, 4)) throw std::runtime_error("short piece header");
-                    const auto len = u32le(th);
-                    if (len == 0 || len > 4u * 1024u * 1024u) throw std::runtime_error("piece too large");
-                    std::string text(len, '\0');
-                    if (!recv_all(client.v, text.data(), text.size())) throw std::runtime_error("short text");
-                    texts.push_back(std::move(text));
-                }
-                std::atomic<bool> finished{false};
-                std::thread hangup([&] { watch_hangup(client.v, engine, finished); });
-                try {
-                    engine.synthesize_pieces(texts, [&](int, const float* pcm, std::size_t count, int, bool) {
-                        if (count) send_pcm(client.v, pcm, count);
-                    });
-                } catch (...) {
-                    finished.store(true);
-                    engine.cancel();
-                    hangup.join();
-                    throw;
-                }
-                finished.store(true);
-                hangup.join();
-                const char* ok = "ok";
-                try { send_frame(client.v, kDone, ok, 2); } catch (...) {}
+                if (!recv_request(client.v, epoch, texts)) break;
             } catch (const std::exception& e) {
-                engine.cancel();
-                err = e.what();
-                try { send_frame(client.v, kErr, err.data(), err.size()); } catch (...) {}
-                std::cerr << "tts request " << id << " failed: " << err << std::endl;
+                send_frame(client.v, kErr, e.what(), std::strlen(e.what()));
+                break;
+            }
+            if (have_epoch && epoch != live_epoch) engine.cancel();
+            live_epoch = epoch;
+            have_epoch = true;
+            if (texts.empty()) continue;
+            try {
+                engine.synthesize_pieces(texts, [&](int, const float* pcm, std::size_t count, int, bool) {
+                    if (count) send_pcm(client.v, pcm, count);
+                });
+                const char* ok = "ok";
+                send_frame(client.v, kDone, ok, 2);
+            } catch (const std::exception& e) {
+                const std::string m = e.what();
+                try { send_frame(client.v, kErr, m.data(), m.size()); } catch (...) {}
+                std::cerr << "tts request epoch=" << epoch << " failed: " << m << std::endl;
             }
         }
     } catch (const std::exception& e) {
