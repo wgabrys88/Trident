@@ -15,7 +15,7 @@
 #include <ws2tcpip.h>
 #include "tts-cpp/chatterbox/engine.h"
 
-using clock_t = std::chrono::steady_clock;
+using mono_clock = std::chrono::steady_clock;
 using args_t = std::unordered_map<std::string, std::string>;
 
 static bool recv_all(SOCKET s, void* dst, std::size_t n) {
@@ -94,7 +94,7 @@ static void serve(SOCKET client, tts_cpp::chatterbox::Engine& tts) {
     std::atomic<std::uint32_t> live{0};
     bool stop = false;
     std::thread synth([&] {
-        clock_t::time_point last{};
+        mono_clock::time_point last{};
         bool had_last = false;
         for (;;) {
             std::vector<std::string> batch;
@@ -106,7 +106,7 @@ static void serve(SOCKET client, tts_cpp::chatterbox::Engine& tts) {
                 batch.swap(pending);
                 epoch = live.load();
             }
-            auto started = clock_t::now();
+            auto started = mono_clock::now();
             if (had_last) std::cerr << "tts gap epoch=" << epoch << " gap_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(started - last).count() << '\n';
             std::cerr << "tts synth epoch=" << epoch << " pieces=" << batch.size() << '\n';
             try {
@@ -115,7 +115,7 @@ static void serve(SOCKET client, tts_cpp::chatterbox::Engine& tts) {
                 });
                 if (live.load() == epoch) {
                     frame(client, 0, epoch, "ok", 2);
-                    std::cerr << "tts done epoch=" << epoch << " elapsed_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(clock_t::now() - started).count() << '\n';
+                    std::cerr << "tts done epoch=" << epoch << " elapsed_ms=" << std::chrono::duration_cast<std::chrono::milliseconds>(mono_clock::now() - started).count() << '\n';
                 }
             } catch (const std::exception& e) {
                 if (live.load() != epoch) {
@@ -125,7 +125,7 @@ static void serve(SOCKET client, tts_cpp::chatterbox::Engine& tts) {
                 std::cerr << "tts failed epoch=" << epoch << ' ' << e.what() << '\n';
                 std::exit(1);
             }
-            last = clock_t::now();
+            last = mono_clock::now();
             had_last = true;
         }
     });
