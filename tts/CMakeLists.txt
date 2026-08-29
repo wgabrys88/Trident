@@ -18,11 +18,10 @@ set(CHATTERBOX_BUILD "${CHATTERBOX_CPP_ROOT}/build")
 set(GGML_BUILD "${CHATTERBOX_BUILD}/ggml/src")
 
 add_executable(trident-tts-server
-    src/audio.cpp
     src/server.cpp
 )
 target_include_directories(trident-tts-server PRIVATE
-    include "${CHATTERBOX_CPP_ROOT}/include" "${CHATTERBOX_CPP_ROOT}/ggml/include" ${Vulkan_INCLUDE_DIRS})
+    "${CHATTERBOX_CPP_ROOT}/include" "${CHATTERBOX_CPP_ROOT}/ggml/include" ${Vulkan_INCLUDE_DIRS})
 target_link_libraries(trident-tts-server PRIVATE
     "${CHATTERBOX_BUILD}/Release/tts-cpp.lib"
     "${CHATTERBOX_BUILD}/Release/mtl_tokenizer.lib"
