@@ -3,22 +3,17 @@ from __future__ import annotations
 import hashlib
 import http.client
 import json
-import select
-import shutil
+import os
 import socket
 import struct
 import subprocess
 import time
 import urllib.parse
-import urllib.request
-import wave
 from pathlib import Path
 
-import msvcrt
-
 from config import (
-    CODEC_FILE, FLASH_ATTN, GEMMA_FILE, GEMMA_GEN, PARAKEET_FILE, PORTS, RUNTIMES, T3_FILE, TTS_KNOBS,
-    TTS_RATE, URLS, VULKAN_ENV, find_exe, log, vulkan_env,
+    CODEC_FILE, FLASH_ATTN, GEMMA_FILE, GEMMA_GEN, PARAKEET_FILE, PORTS, RUNTIMES,
+    T3_FILE, TTS_KNOBS, TTS_RATE, URLS, VULKAN_ENV, log,
 )
 
 _STILL_ACTIVE = 259
@@ -28,33 +23,6 @@ def _state_dir() -> Path:
     path = RUNTIMES / ".resident"
     path.mkdir(parents=True, exist_ok=True)
     return path
-
-
-def _lock(name: str):
-    path = _state_dir() / f"{name}.lock"
-    handle = path.open("a+b")
-    if path.stat().st_size == 0:
-        handle.write(b"\0")
-        handle.flush()
-    handle.seek(0)
-    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-    return handle
-
-
-def _unlock(handle) -> None:
-    handle.seek(0)
-    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-    handle.close()
-
-
-def _read(name: str) -> dict:
-    path = _state_dir() / f"{name}.json"
-    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
-
-
-def _write(name: str, state: dict) -> None:
-    path = _state_dir() / f"{name}.json"
-    path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def _alive(pid: int) -> bool:
@@ -72,7 +40,7 @@ def _alive(pid: int) -> bool:
     return bool(ok) and int(code.value) == _STILL_ACTIVE
 
 
-def _port(port: int) -> bool:
+def _port_open(port: int) -> bool:
     try:
         with socket.create_connection(("127.0.0.1", port), timeout=0.25):
             return True
@@ -80,18 +48,15 @@ def _port(port: int) -> bool:
         return False
 
 
-def _http_ok(url: str) -> bool:
-    try:
-        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "trident/1"}), timeout=1) as r:
-            return int(r.status) == 200
-    except Exception:
-        return False
-
-
 def _probe(name: str) -> bool:
     if name == "gemma":
-        return _http_ok(f"{URLS['gemma']}/health")
-    return _port(PORTS[name])
+        try:
+            import urllib.request
+            with urllib.request.urlopen(URLS["gemma"] + "/health", timeout=1) as r:
+                return r.status == 200
+        except Exception:
+            return False
+    return _port_open(PORTS[name])
 
 
 def _kill(pid: int) -> None:
@@ -106,63 +71,84 @@ def _ident(files: dict[str, Path], extra: dict) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def _launch(name: str, cmd: list[str], cwd: Path, files: dict[str, Path], extra: dict, env=None) -> str:
-    handle = _lock(name)
-    try:
-        ident = _ident(files, extra)
-        state = _read(name)
-        pid = int(state.get("pid") or 0)
-        if _alive(pid) and _probe(name) and state.get("identity") == ident:
-            log(f"reuse {name} pid={pid}")
-            return URLS[name]
-        if _alive(pid):
-            log(f"replace {name} pid={pid}")
-            _kill(pid)
-            deadline = time.monotonic() + 10
-            while time.monotonic() < deadline and _port(PORTS[name]):
-                time.sleep(0.1)
-        policy = "vulkan_f16=disabled" if env and env.get("GGML_VK_DISABLE_F16") == "1" else "vulkan_f16=default"
-        log(f"start {name} {policy}")
-        proc = subprocess.Popen(
-            cmd, cwd=str(cwd), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-            stderr=subprocess.STDOUT, close_fds=True,
-            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-        )
-        _write(name, {"identity": ident, "pid": proc.pid, "port": PORTS[name], "url": URLS[name], **extra})
-        deadline = time.monotonic() + (300 if name == "chatterbox" else 180)
-        while time.monotonic() < deadline:
-            if _probe(name):
-                log(f"ready {name} pid={proc.pid}")
-                return URLS[name]
-            if proc.poll() is not None:
-                raise RuntimeError(f"{name} exited before ready: pid={proc.pid} exit={proc.returncode}")
-            time.sleep(0.25)
-        _kill(proc.pid)
-        raise RuntimeError(f"{name} did not become ready")
-    finally:
-        _unlock(handle)
+def _write(name: str, state: dict) -> None:
+    path = _state_dir() / f"{name}.json"
+    path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def model(models_dir: Path, name: str) -> Path:
-    path = Path(models_dir) / name
-    if not path.is_file():
-        raise RuntimeError(f"missing {path}; run: python main.py")
-    return path
+def _read(name: str) -> dict:
+    path = _state_dir() / f"{name}.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+
+
+def _wait_port(port: int, deadline_s: float) -> bool:
+    end = time.monotonic() + deadline_s
+    while time.monotonic() < end:
+        if _port_open(port):
+            return True
+        time.sleep(0.25)
+    return False
+
+
+def _wait_probe(name: str, proc: subprocess.Popen, deadline_s: float) -> None:
+    end = time.monotonic() + deadline_s
+    while time.monotonic() < end:
+        if _probe(name):
+            log(f"ready {name} pid={proc.pid}")
+            return
+        if proc.poll() is not None:
+            raise RuntimeError(f"{name} exited before ready: pid={proc.pid} exit={proc.returncode}")
+        time.sleep(0.25)
+    _kill(proc.pid)
+    raise RuntimeError(f"{name} did not become ready")
+
+
+def _launch(name: str, cmd: list[str], cwd: Path, files: dict[str, Path], extra: dict) -> str:
+    ident = _ident(files, extra)
+    state = _read(name)
+    pid = int(state.get("pid") or 0)
+    if _alive(pid) and _probe(name) and state.get("identity") == ident:
+        log(f"reuse {name} pid={pid}")
+        return URLS[name]
+    if _alive(pid):
+        log(f"replace {name} pid={pid}")
+        _kill(pid)
+        _wait_port(PORTS[name], 10)
+    env = os.environ.copy()
+    env.update(VULKAN_ENV)
+    log(f"start {name}")
+    proc = subprocess.Popen(
+        cmd, cwd=str(cwd), env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.STDOUT, close_fds=True,
+        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+    )
+    _write(name, {"identity": ident, "pid": proc.pid, "port": PORTS[name], "url": URLS[name], **extra})
+    _wait_probe(name, proc, 300 if name == "chatterbox" else 180)
+    return URLS[name]
+
+
+def _server_dir(name: str) -> Path:
+    base = RUNTIMES / name
+    if any(base.glob("*.exe")):
+        return base
+    for child in base.iterdir():
+        if child.is_dir() and any(child.glob("*.exe")):
+            return child
+    return base
 
 
 def start_parakeet(models_dir: Path) -> str:
-    server = find_exe(RUNTIMES / "parakeet", "parakeet-server.exe")
-    gguf = model(models_dir, PARAKEET_FILE)
+    server = _server_dir("parakeet") / "parakeet-server.exe"
+    gguf = Path(models_dir) / PARAKEET_FILE
     cmd = [str(server), "--model", str(gguf), "--port", str(PORTS["parakeet"])]
-    return _launch("parakeet", cmd, server.parent, {"server": server, "model": gguf}, {"argv": cmd[1:], "vulkan_env": VULKAN_ENV}, vulkan_env())
+    return _launch("parakeet", cmd, server.parent, {"server": server, "model": gguf}, {"argv": cmd[1:]})
 
 
 def start_gemma(models_dir: Path) -> str:
-    server = find_exe(RUNTIMES / "gemma", "llama-server.exe")
-    gguf = model(models_dir, GEMMA_FILE)
-    host, port = "127.0.0.1", PORTS["gemma"]
+    server = _server_dir("gemma") / "llama-server.exe"
+    gguf = Path(models_dir) / GEMMA_FILE
     cmd = [
-        str(server), "-m", str(gguf), "--alias", "gemma", "--host", host, "--port", str(port), "--offline",
+        str(server), "-m", str(gguf), "--alias", "gemma", "--host", "127.0.0.1", "--port", str(PORTS["gemma"]), "--offline",
         "--n-gpu-layers", "all", "--ctx-size", "4096", "--no-mmproj", "--load-mode", "mmap",
         "--flash-attn", FLASH_ATTN, "--repack", "--fit", "off", "--kv-offload", "--op-offload",
         "--cache-type-k", "f16", "--cache-type-v", "f16", "--parallel", "1",
@@ -170,12 +156,13 @@ def start_gemma(models_dir: Path) -> str:
         "--cors-origins", "localhost", "--log-verbosity", "4", "--log-prefix", "--log-timestamps",
         "--cache-prompt", "--no-ui", "--reasoning", "off",
     ]
-    return _launch("gemma", cmd, server.parent, {"server": server, "model": gguf}, {"argv": cmd[1:], "vulkan_env": VULKAN_ENV}, vulkan_env())
+    return _launch("gemma", cmd, server.parent, {"server": server, "model": gguf}, {"argv": cmd[1:]})
 
 
 def start_chatterbox(models_dir: Path, reference: Path) -> str:
-    server = find_exe(RUNTIMES / "tts", "trident-tts-server.exe")
-    t3, codec = model(models_dir, T3_FILE), model(models_dir, CODEC_FILE)
+    server = _server_dir("tts") / "trident-tts-server.exe"
+    t3 = Path(models_dir) / T3_FILE
+    codec = Path(models_dir) / CODEC_FILE
     k = TTS_KNOBS
     cmd = [
         str(server), "--family", "nano", "--model", str(t3), "--s3gen-gguf", str(codec),
@@ -202,59 +189,50 @@ def require_alive(name: str) -> str:
 
 
 def stop(name: str) -> None:
-    handle = _lock(name)
-    try:
-        pid = int(_read(name).get("pid") or 0)
-        if pid > 0:
-            log(f"stop {name} pid={pid}")
-            _kill(pid)
-        (_state_dir() / f"{name}.json").unlink(missing_ok=True)
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline and _port(PORTS[name]):
-            time.sleep(0.1)
-    finally:
-        _unlock(handle)
+    pid = int(_read(name).get("pid") or 0)
+    if pid > 0:
+        log(f"stop {name} pid={pid}")
+        _kill(pid)
+    (_state_dir() / f"{name}.json").unlink(missing_ok=True)
+    _wait_port(PORTS[name], 10)
 
 
 def stop_all() -> None:
-    for name in ("parakeet", "gemma", "chatterbox"):
+    for name in PORTS:
         stop(name)
 
 
 def status() -> str:
-    lines = []
-    for name in ("parakeet", "gemma", "chatterbox"):
+    out = []
+    for name in PORTS:
         state = _read(name)
         pid = int(state.get("pid") or 0)
         ready = _alive(pid) and _probe(name)
-        lines.append(
+        out.append(
             f"{name}: {'ready' if ready else 'stopped'} pid={pid or '-'} url={URLS[name]} "
             f"family={state.get('family') or '-'} language={state.get('language') or '-'}"
         )
-    return "\n".join(lines)
+    return "\n".join(out)
 
 
-def pcm24(src: Path, cache: Path) -> Path:
-    src = src.resolve()
+def _http_post(base: str, path: str, body: bytes, headers: dict, stream: bool = False):
+    parsed = urllib.parse.urlsplit(base)
+    conn = http.client.HTTPConnection(parsed.hostname, parsed.port or 80, timeout=3600)
     try:
-        with wave.open(str(src), "rb") as audio:
-            ok = audio.getsampwidth() == 2 and audio.getnchannels() == 1 and audio.getframerate() == TTS_RATE and audio.getnframes() > 0
-    except wave.Error:
-        ok = False
-    if ok:
-        return src
-    cache.mkdir(parents=True, exist_ok=True)
-    dest = cache / f"{src.stem}.wav"
-    if dest.is_file() and dest.stat().st_mtime_ns >= src.stat().st_mtime_ns:
-        return dest
-    ffmpeg = shutil.which("ffmpeg")
-    if not ffmpeg:
-        raise RuntimeError("ffmpeg is not installed")
-    cmd = [ffmpeg, "-hide_banner", "-nostdin", "-loglevel", "error", "-y",
-           "-i", str(src), "-vn", "-ac", "1", "-ar", str(TTS_RATE), "-c:a", "pcm_s16le", str(dest)]
-    log("ffmpeg reference wav")
-    subprocess.check_call(cmd, creationflags=subprocess.CREATE_NO_WINDOW)
-    return dest
+        conn.putrequest("POST", path, skip_host=False, skip_accept_encoding=True)
+        for k, v in headers.items():
+            conn.putheader(k, v)
+        conn.endheaders()
+        conn.send(body)
+        response = conn.getresponse()
+        if not 200 <= response.status < 300:
+            raise RuntimeError(f"{path} HTTP {response.status} " + response.read().decode("utf-8", "replace")[:500])
+        if stream:
+            return conn, response
+        return response.read()
+    except Exception:
+        conn.close()
+        raise
 
 
 def transcribe(base: str, wav: Path) -> str:
@@ -268,25 +246,16 @@ def transcribe(base: str, wav: Path) -> str:
     tail = (
         f"\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nparakeet\r\n--{boundary}--\r\n"
     ).encode("ascii")
-    parsed = urllib.parse.urlsplit(base)
-    conn = http.client.HTTPConnection(parsed.hostname, parsed.port or 80, timeout=3600)
-    try:
-        conn.putrequest("POST", "/v1/audio/transcriptions")
-        conn.putheader("Content-Type", f"multipart/form-data; boundary={boundary}")
-        conn.putheader("Content-Length", str(len(head) + len(blob) + len(tail)))
-        conn.putheader("Accept", "application/json")
-        conn.endheaders()
-        conn.send(head + blob + tail)
-        resp = conn.getresponse()
-        body = resp.read()
-        if not 200 <= resp.status < 300:
-            raise RuntimeError("Parakeet HTTP " + str(resp.status) + " " + body.decode("utf-8", "replace")[:500])
-        return str(json.loads(body.decode("utf-8")).get("text") or "").strip()
-    finally:
-        conn.close()
+    body = head + blob + tail
+    raw = _http_post(base, "/v1/audio/transcriptions", body, {
+        "Content-Type": f"multipart/form-data; boundary={boundary}",
+        "Content-Length": str(len(body)),
+        "Accept": "application/json",
+    })
+    return str(json.loads(raw.decode("utf-8")).get("text") or "").strip()
 
 
-def gemma_stream(base: str, messages: list) -> object:
+def gemma_stream(base: str, messages: list[dict[str, str]]):
     g = GEMMA_GEN
     payload = {
         "model": "gemma", "messages": messages, "stream": True, "cache_prompt": True,
@@ -295,25 +264,19 @@ def gemma_stream(base: str, messages: list) -> object:
         "chat_template_kwargs": {"enable_thinking": False},
     }
     data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    parsed = urllib.parse.urlsplit(base)
-    conn = http.client.HTTPConnection(parsed.hostname, parsed.port or 80, timeout=3600)
+    conn, response = _http_post(base, "/v1/chat/completions", data, {
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+        "Content-Length": str(len(data)),
+    }, stream=True)
     try:
-        conn.putrequest("POST", "/v1/chat/completions")
-        conn.putheader("Content-Type", "application/json")
-        conn.putheader("Accept", "text/event-stream")
-        conn.putheader("Content-Length", str(len(data)))
-        conn.endheaders()
-        conn.send(data)
-        response = conn.getresponse()
-        if not 200 <= response.status < 300:
-            raise RuntimeError("Gemma HTTP " + str(response.status) + " " + response.read().decode("utf-8", "replace")[:500])
         while line := response.readline():
             line = line.strip()
             if not line.startswith(b"data:"):
                 continue
             chunk = line[5:].strip()
             if chunk == b"[DONE]":
-                break
+                return
             text = str((json.loads(chunk.decode("utf-8")).get("choices") or [{}])[0].get("delta", {}).get("content") or "")
             if text:
                 yield text
@@ -322,39 +285,39 @@ def gemma_stream(base: str, messages: list) -> object:
 
 
 class Chatterbox:
-    def __init__(self, url: str, cancel=None) -> None:
+    def __init__(self, url: str) -> None:
         self._parsed = urllib.parse.urlsplit(url)
-        self._cancel = cancel
-        self._sock = None
-        self._closed = False
+        self._sock: socket.socket | None = None
+        self._buf = bytearray()
 
     def open(self) -> None:
         self._sock = socket.create_connection((self._parsed.hostname, self._parsed.port or 17933), timeout=3600)
 
-    def _recv(self, n: int) -> bytes:
-        data = bytearray()
-        while len(data) < n:
-            if self._closed:
-                raise InterruptedError
-            if self._cancel and self._cancel():
-                raise InterruptedError
-            r, _, _ = select.select([self._sock], [], [], 0.05)
-            if not r:
-                continue
-            part = self._sock.recv(n - len(data))
-            if not part:
-                raise InterruptedError if self._closed else RuntimeError("TTS closed early")
-            data.extend(part)
-        return bytes(data)
+    def _recv_exact(self, n: int) -> bytes:
+        while len(self._buf) < n:
+            assert self._sock is not None
+            chunk = self._sock.recv(65536)
+            if not chunk:
+                raise RuntimeError("TTS closed early")
+            self._buf.extend(chunk)
+        out = bytes(self._buf[:n])
+        del self._buf[:n]
+        return out
 
-    def send(self, text: str) -> None:
-        raw = text.encode("utf-8")
-        self._sock.sendall(struct.pack("<I", 1) + struct.pack("<I", len(raw)) + raw)
+    def send(self, epoch: int, pieces: list[str]) -> None:
+        assert self._sock is not None
+        payload = b""
+        for piece in pieces:
+            raw = piece.encode("utf-8")
+            payload += struct.pack("<I", len(raw)) + raw
+        self._sock.sendall(struct.pack("<II", len(pieces), epoch) + payload)
 
     def __iter__(self):
+        sock = self._sock
+        assert sock is not None
         while True:
-            kind, length = struct.unpack("<II", self._recv(8))
-            payload = self._recv(length) if length else b""
+            kind, length = struct.unpack("<II", self._recv_exact(8))
+            payload = self._recv_exact(length) if length else b""
             if kind == 2:
                 yield payload
             elif kind == 0:
@@ -365,7 +328,6 @@ class Chatterbox:
                 raise RuntimeError(f"TTS frame {kind}")
 
     def close(self) -> None:
-        self._closed = True
         if self._sock is None:
             return
         try:
