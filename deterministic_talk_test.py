@@ -121,6 +121,51 @@ def interrupt_process(process: subprocess.Popen) -> None:
         kernel32.FreeConsole()
 
 
+def resident_processes() -> list[dict]:
+    encoded_root = base64.b64encode(str(ROOT).encode()).decode()
+    script = f"""
+$root = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{encoded_root}'))
+Get-CimInstance Win32_Process | Where-Object {{
+    $_.Name -in @('parakeet-server.exe', 'llama-server.exe', 'trident-tts-server.exe') -and
+    $_.ExecutablePath -and $_.ExecutablePath.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)
+}} | Select-Object ProcessId, Name, ExecutablePath | ConvertTo-Json -Compress
+"""
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    if not result.stdout.strip():
+        return []
+    parsed = json.loads(result.stdout)
+    return parsed if isinstance(parsed, list) else [parsed]
+
+
+def cleanup_residents() -> None:
+    for _ in range(3):
+        found = resident_processes()
+        if not found:
+            return
+        for process in found:
+            subprocess.run(
+                ["taskkill", "/PID", str(process["ProcessId"]), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        time.sleep(0.5)
+
+
+def wait_for_resident_exit(timeout: float = 10) -> list[dict]:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        found = resident_processes()
+        if not found:
+            return []
+        time.sleep(0.2)
+    return resident_processes()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Deterministic VB-CABLE talk and barge-in test")
     parser.add_argument("--interrupt-delay-ms", type=int, default=750)
@@ -135,6 +180,9 @@ def main() -> int:
     speakers = playback_index()
     sd.check_input_settings(device=cable_output, samplerate=16000, channels=1, dtype="float32")
     sd.check_output_settings(device=cable_input, samplerate=44100, channels=2, dtype="float32")
+    stale = resident_processes()
+    if stale:
+        raise RuntimeError(f"Trident resident processes already exist: {stale}")
 
     started = time.time()
     existing = set((ROOT / "data" / "runs").glob("*-talk-irisxe-nano-en-*"))
@@ -216,10 +264,15 @@ def main() -> int:
             )
             time.sleep(1.0)
             interrupt_process(process)
+            leaked = wait_for_resident_exit()
+            if leaked:
+                cleanup_residents()
+                raise RuntimeError(f"Trident resident processes survived shutdown: {leaked}")
         except Exception as error:
             failure = f"{type(error).__name__}: {error}"
             if process.poll() is None:
                 subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            cleanup_residents()
             raise
         finally:
             if run_dir is not None:
@@ -241,6 +294,7 @@ def main() -> int:
                     "s3_first_chunk_tokens": [e.get("tokens") for e in s3_starts],
                     "pcm_first_epochs": [e.get("epoch") for e in pcm],
                     "graceful_shutdown": graceful,
+                    "resident_processes_after_shutdown": resident_processes(),
                     "fail_events": fail_events,
                 }
                 functional_passed = (
@@ -253,6 +307,7 @@ def main() -> int:
                     and all(token == 12 for token in assertions["s3_first_chunk_tokens"])
                     and len(set(assertions["pcm_first_epochs"])) >= 2
                     and graceful
+                    and not assertions["resident_processes_after_shutdown"]
                     and not fail_events
                 )
                 report = {
