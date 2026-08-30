@@ -36,13 +36,16 @@ class Segmenter:
         self.sent = 0
 
     def take(self, text: str, flush: bool = False) -> list[str]:
-        out, minimum, hard = [], min(TTS_KNOBS["first_chars"], TTS_KNOBS["chars"]), TTS_KNOBS["chars"]
+        out, minimum, first, hard = [], min(TTS_KNOBS["first_chars"], TTS_KNOBS["chars"]), TTS_KNOBS["first_chars"], TTS_KNOBS["chars"]
         while self.sent < len(text):
             pending, cut = text[self.sent:], 0
             for i in range(minimum - 1, min(len(pending), hard)):
                 if pending[i] in ".?!" and (i + 1 == len(pending) or pending[i + 1].isspace()):
                     cut = i + 1
                     break
+            if not cut and len(pending) >= first and not flush:
+                split = max(pending.rfind(" ", 0, first), pending.rfind("\n", 0, first), pending.rfind("\t", 0, first))
+                cut = split + 1 if split >= 0 else min(len(pending), first)
             if not cut and len(pending) >= hard:
                 split = max(pending.rfind(" ", minimum, hard), pending.rfind("\n", minimum, hard), pending.rfind("\t", minimum, hard))
                 cut = split + 1 if split >= minimum else hard

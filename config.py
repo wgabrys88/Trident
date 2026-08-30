@@ -27,11 +27,11 @@ PROMPT = ("ASR may deliver incomplete fragments. If the user has not finished a 
           "When a spoken reply is needed now, produce only that reply in English. If the input language differs, preserve meaning while answering in English. "
           "Spoken prose only: short sentences ending with a period, question mark, or exclamation. No markdown, lists, code, URLs, emoji, or square-bracket tags. "
           "Expand numbers and abbreviations. Do not mention transcription, models, or reasoning.")
-TTS_KNOBS = {"gpu_layers": 99, "context": 2048, "threads": 4, "fastconv": 1, "seed": 42, "max_tokens": 768, "top_k": 1000, "top_p": .95, "min_p": 0., "temperature": .8, "repeat_penalty": 1.2, "cfm_steps": 2, "cfg_weight": 0., "exaggeration": 0., "first_chars": 80, "chars": 280}
+TTS_KNOBS = {"gpu_layers": 99, "context": 2048, "threads": 4, "fastconv": 1, "seed": 42, "max_tokens": 1024, "top_k": 1000, "top_p": .95, "min_p": .05, "temperature": .8, "repeat_penalty": 1.2, "cfm_steps": 1, "cfg_weight": .5, "exaggeration": .5, "first_chars": 40, "chars": 120}
 TTS_PROFILES = {
     "nano": TTS_KNOBS,
     "turbo": {**TTS_KNOBS, "max_tokens": 1000},
-    "v3": {**TTS_KNOBS, "max_tokens": 1000, "top_k": 0, "top_p": 1., "min_p": .05, "cfm_steps": 0, "cfg_weight": .5, "exaggeration": .5},
+    "v3": {**TTS_KNOBS, "max_tokens": 1024, "top_k": 0, "top_p": 1., "min_p": .05, "cfm_steps": 0, "cfg_weight": .5, "exaggeration": .5},
 }
 V3_LANGUAGES = ("ar", "da", "de", "el", "en", "es", "fi", "fr", "he", "hi", "it", "ja", "ko", "ms", "nl", "no", "pl", "pt", "ru", "sv", "sw", "tr", "zh")
 GEMMA_GEN = {"temperature": 1., "top_p": .95, "top_k": 64, "min_p": 0., "repeat_penalty": 1., "seed": 42, "max_tokens": 1024}
