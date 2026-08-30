@@ -11,11 +11,12 @@ import time
 import urllib.request
 from pathlib import Path
 
-from config import FLASH_ATTN, GEMMA_FILE, GEMMA_GEN, PARAKEET_FILE, PORTS, RUNTIMES, TTS_MODELS, TTS_PROFILES, V3_LANGUAGES, VULKAN_ENV, Paths, emit, find_exe, load_settings, raise_worker_failure, voice_wav
+from config import CHATTERBOX, FLASH_ATTN, GEMMA_FILE, GEMMA_GEN, HARDWARE, PARAKEET_FILE, PORTS, RUNTIMES, TTS_MODELS, TTS_PROFILES, V3_LANGUAGES, VULKAN_ENV, Paths, emit, find_exe, git_sha, load_settings, raise_worker_failure, run_file, voice_wav
 
 _PROCS: dict[str, subprocess.Popen] = {}
 _READERS: dict[str, threading.Thread] = {}
 _READY = {"parakeet": "parakeet-server: listening on ", "gemma": "llama_server: listening on http://127.0.0.1:"}
+_JOURNAL_SKIP = {"tts.frame"}
 
 def _exe(folder: str, name: str) -> Path:
     path = find_exe(RUNTIMES / folder, name)
@@ -43,15 +44,16 @@ def _forward(name: str, proc: subprocess.Popen, path: Path, ready: threading.Eve
                 context = {key: data[key] for key in ("epoch", "response_id", "piece_id")}
             if event in ("t3", "s3gen"):
                 data.update(context)
-            emit(event, producer=name, producer_ts=source_ts, **data)
+            if event not in _JOURNAL_SKIP:
+                emit(event, producer=name, producer_ts=source_ts, **data)
             if event in ("tts.piece.done", "tts.piece.cancel"):
                 context = {}
 
-def _start(name: str, cmd: list[str], cwd: Path, paths: Paths) -> None:
+def _start(name: str, cmd: list[str], cwd: Path, paths: Paths, tag: str) -> None:
     env = os.environ.copy()
     env.update(VULKAN_ENV)
-    log = paths.run_dir / f"{name}.log"
-    emit("resident.start", name=name, log=str(log))
+    log = run_file(f"resident-{name}-{tag}")
+    emit("resident.start", name=name, tag=tag, log=log.name)
     proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     _PROCS[name] = proc
     ready = threading.Event()
@@ -80,14 +82,14 @@ def boot(paths: Paths, family: str = "nano", language: str = "en") -> None:
     t3_file, codec_file = TTS_MODELS[family]
     settings = load_settings(paths.data_dir)
     commands = (
-        ("parakeet", parakeet, [str(parakeet), "--model", str(paths.models_dir / PARAKEET_FILE), "--port", str(PORTS["parakeet"])]),
-        ("gemma", gemma, [str(gemma), "-m", str(paths.models_dir / GEMMA_FILE), "--alias", "gemma", "--host", "127.0.0.1", "--port", str(PORTS["gemma"]), "--offline", "--n-gpu-layers", "all", "--ctx-size", "4096", "--no-mmproj", "--flash-attn", FLASH_ATTN, "--threads", "2", "--threads-batch", "2", "--poll", "0", "--poll-batch", "0", "--threads-http", "1", "--no-ui", "--reasoning", "off"]),
-        ("chatterbox", tts, [str(tts), "--family", family, "--model", str(paths.models_dir / t3_file), "--s3gen-gguf", str(paths.models_dir / codec_file), "--reference", str(voice_wav(paths.data_dir, settings["tts_voice"])), "--language", language, "--port", str(PORTS["chatterbox"]), "--n-gpu-layers", str(k["gpu_layers"]), "--context", str(k["context"]), "--threads", str(k["threads"]), "--seed", str(k["seed"]), "--max-tokens", str(k["max_tokens"]), "--top-k", str(k["top_k"]), "--top-p", str(k["top_p"]), "--min-p", str(k["min_p"]), "--temperature", str(k["temperature"]), "--repeat-penalty", str(k["repeat_penalty"]), "--cfg-weight", str(k["cfg_weight"]), "--exaggeration", str(k["exaggeration"]), "--cfm-steps", str(k["cfm_steps"]), "--fastconv", str(k["fastconv"])]),
+        ("parakeet", Path(PARAKEET_FILE).stem, parakeet, [str(parakeet), "--model", str(paths.models_dir / PARAKEET_FILE), "--port", str(PORTS["parakeet"])]),
+        ("gemma", Path(GEMMA_FILE).stem, gemma, [str(gemma), "-m", str(paths.models_dir / GEMMA_FILE), "--alias", "gemma", "--host", "127.0.0.1", "--port", str(PORTS["gemma"]), "--offline", "--n-gpu-layers", "all", "--ctx-size", "4096", "--no-mmproj", "--flash-attn", FLASH_ATTN, "--threads", "2", "--threads-batch", "2", "--poll", "0", "--poll-batch", "0", "--threads-http", "1", "--no-ui", "--reasoning", "off"]),
+        ("chatterbox", f"{family}-{Path(t3_file).stem}", tts, [str(tts), "--family", family, "--model", str(paths.models_dir / t3_file), "--s3gen-gguf", str(paths.models_dir / codec_file), "--reference", str(voice_wav(paths.data_dir, settings["tts_voice"])), "--language", language, "--port", str(PORTS["chatterbox"]), "--n-gpu-layers", str(k["gpu_layers"]), "--context", str(k["context"]), "--threads", str(k["threads"]), "--seed", str(k["seed"]), "--max-tokens", str(k["max_tokens"]), "--top-k", str(k["top_k"]), "--top-p", str(k["top_p"]), "--min-p", str(k["min_p"]), "--temperature", str(k["temperature"]), "--repeat-penalty", str(k["repeat_penalty"]), "--cfg-weight", str(k["cfg_weight"]), "--exaggeration", str(k["exaggeration"]), "--cfm-steps", str(k["cfm_steps"]), "--fastconv", str(k["fastconv"])]),
     )
-    emit("boot.begin", family=family, language=language)
-    for name, exe, cmd in commands:
-        _start(name, cmd, exe.parent, paths)
-    emit("boot.ready", family=family, language=language)
+    emit("boot.begin", family=family, language=language, voice=settings["tts_voice"], hardware=HARDWARE, t3=t3_file, codec=codec_file, chatterbox_sha=git_sha(CHATTERBOX), knobs=k)
+    for name, tag, exe, cmd in commands:
+        _start(name, cmd, exe.parent, paths, tag)
+    emit("boot.ready", family=family, language=language, voice=settings["tts_voice"])
 
 def require_alive(name: str) -> str:
     proc = _PROCS.get(name)

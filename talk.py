@@ -15,10 +15,34 @@ from silero_vad_notorch import VADIterator, load_silero_vad
 from config import ASR_RATE, SMART_TURN_FILE, Paths, TTS_KNOBS, TTS_RATE, VAD_FRAME, emit, load_settings, raise_worker_failure, wait_workers
 from runtime import Chatterbox, boot, check_residents, gemma_stream, require_alive, stop_all, transcribe
 
+STOP_PHRASES = {
+    "stop", "stop speaking", "please stop", "that's enough", "thats enough",
+    "quiet", "silence", "przestan", "przestań", "przestan mowic", "przestań mówić",
+    "dosyc", "dość", "cicho", "milcz",
+}
+BACKCHANNELS = {
+    "yeah", "yes", "yep", "yup", "ok", "okay", "mhm", "mm", "uh", "um", "aha",
+    "uh huh", "huh", "right", "sure", "tak", "no", "nie", "okej",
+}
+
 def spoken(text: str) -> str:
     text = text.replace("\r", "").strip()
     marker = "Assistant:\n"
     return text.rsplit(marker, 1)[-1].strip() if marker in text else text
+
+def folded_utterance(text: str) -> str:
+    out = []
+    for ch in text.casefold().replace("\r", " ").replace("\n", " "):
+        out.append(ch if ch.isalnum() or ch.isspace() else " ")
+    return " ".join("".join(out).split())
+
+def classify_utterance(text: str) -> tuple[str, str, bool]:
+    folded = folded_utterance(text)
+    if folded in STOP_PHRASES:
+        return "stop", folded, False
+    if folded in BACKCHANNELS:
+        return "backchannel", folded, False
+    return "request", folded, bool(folded) and len(folded) <= 3 and folded.isalpha()
 
 def wav_bytes(pcm: bytes) -> bytes:
     buf = io.BytesIO()
@@ -259,21 +283,24 @@ class Conversation:
         self.llm_active = False
         self.tts_pending = 0
         self.first_pcm: set[int] = set()
+        self._queue_ns = 0
+        self._queue_response = 0
         self.active = False
 
     def _advance(self, reason: str, utterance_id: int = 0) -> int:
         with self.lock:
-            interrupted = self.llm_active or self.tts_pending > 0 or self.speaker.busy()
+            llm_active, tts_pending, speaker_busy = self.llm_active, self.tts_pending, self.speaker.busy()
+            interrupted = llm_active or tts_pending > 0 or speaker_busy
             self.epoch += 1
             epoch = self.epoch
             self.llm_active = False
             self.tts_pending = 0
             dropped = self.speaker.cancel(epoch)
             self.tts.send(epoch, 0, 0)
-        emit("epoch.advance", epoch=epoch, reason=reason, utterance_id=utterance_id)
+        emit("epoch.advance", epoch=epoch, reason=reason, utterance_id=utterance_id, interrupted=interrupted, llm_active=llm_active, tts_pending=tts_pending, speaker_busy=speaker_busy)
         emit("audio.cancel", epoch=epoch, dropped_bytes=dropped, audio_ms=round(1000 * dropped / (TTS_RATE * 2)))
         if reason == "speech" and interrupted:
-            emit("barge_in", epoch=epoch, utterance_id=utterance_id)
+            emit("barge_in", epoch=epoch, utterance_id=utterance_id, llm_active=llm_active, tts_pending=tts_pending, speaker_busy=speaker_busy)
         return epoch
 
     def _speech_start(self, utterance_id: int) -> int:
@@ -298,7 +325,10 @@ class Conversation:
                 return
             self.tts.send(epoch, response_id, piece_id, text)
             self.tts_pending += 1
-        emit("tts.piece.queued", epoch=epoch, response_id=response_id, piece_id=piece_id, chars=len(text))
+            now = time.perf_counter_ns()
+            gap = round((now - self._queue_ns) / 1e6, 3) if self._queue_ns and self._queue_response == response_id else None
+            self._queue_ns, self._queue_response = now, response_id
+        emit("tts.piece.queued", epoch=epoch, response_id=response_id, piece_id=piece_id, chars=len(text), gap_ms=gap, text=text)
 
     def _conversation(self) -> None:
         while (item := self.q.get()) is not None:
@@ -320,6 +350,8 @@ class Conversation:
             emit("asr.done", epoch=epoch, utterance_id=utterance_id, accepted=not stale and bool(prompt), inference_ms=round(elapsed * 1000), rtf=round(elapsed / duration, 3), chars=len(prompt), text=prompt)
             if stale or not prompt:
                 continue
+            intent, folded, short_alpha = classify_utterance(prompt)
+            emit("asr.intent", epoch=epoch, utterance_id=utterance_id, intent=intent, folded=folded, short_alpha=short_alpha, routed="gemma")
             with self.lock:
                 self.response_id += 1
                 response_id = self.response_id
@@ -357,24 +389,31 @@ class Conversation:
                 self.history.extend(({"role": "user", "content": prompt}, {"role": "assistant", "content": answer}))
             with self.lock:
                 self.llm_active = False
-            emit("llm.done", epoch=epoch, utterance_id=utterance_id, response_id=response_id, empty=not answer, elapsed_ms=round((time.perf_counter() - started) * 1000), chars=len(answer), pieces=piece_id, text=answer)
+                heard = response_id in self.first_pcm
+            emit("llm.done", epoch=epoch, utterance_id=utterance_id, response_id=response_id, empty=not answer, elapsed_ms=round((time.perf_counter() - started) * 1000), chars=len(answer), pieces=piece_id, pcm_first=heard, text=answer)
 
     def _pcm(self) -> None:
         while (frame := self.tts.recv_frame()) is not None:
             kind, epoch, response_id, piece_id, chunk_id, payload = frame
             if kind == 2:
                 with self.lock:
-                    accepted = epoch == self.epoch and self.speaker.put(epoch, payload)
-                event = "pcm.accept" if accepted else "pcm.drop"
-                emit(event, epoch=epoch, response_id=response_id, piece_id=piece_id, chunk_id=chunk_id, bytes=len(payload), audio_ms=round(1000 * len(payload) / (TTS_RATE * 2)))
-                if accepted and response_id not in self.first_pcm:
-                    self.first_pcm.add(response_id)
-                    emit("pcm.first", epoch=epoch, response_id=response_id, piece_id=piece_id, chunk_id=chunk_id)
+                    live_epoch, llm_active = self.epoch, self.llm_active
+                    accepted = epoch == live_epoch and self.speaker.put(epoch, payload)
+                    first = accepted and response_id not in self.first_pcm
+                    if first:
+                        self.first_pcm.add(response_id)
+                if not accepted:
+                    emit("pcm.drop", epoch=epoch, live_epoch=live_epoch, response_id=response_id, piece_id=piece_id, chunk_id=chunk_id, bytes=len(payload), audio_ms=round(1000 * len(payload) / (TTS_RATE * 2)))
+                elif first:
+                    emit("pcm.first", epoch=epoch, response_id=response_id, piece_id=piece_id, chunk_id=chunk_id, bytes=len(payload), llm_active=llm_active)
             elif kind == 0:
                 with self.lock:
-                    if epoch == self.epoch:
+                    live_epoch = self.epoch
+                    accepted = epoch == live_epoch
+                    if accepted:
                         self.tts_pending -= 1
-                emit("tts.piece.done", epoch=epoch, response_id=response_id, piece_id=piece_id, chunks=chunk_id + 1)
+                    pending = self.tts_pending
+                emit("tts.piece.ack", epoch=epoch, live_epoch=live_epoch, response_id=response_id, piece_id=piece_id, chunks=chunk_id + 1, accepted=accepted, tts_pending=pending)
             elif kind == 1:
                 raise RuntimeError(payload.decode("utf-8"))
             else:
@@ -407,12 +446,11 @@ def launch(paths: Paths, family: str = "nano", language: str = "en") -> None:
         conversation = Conversation(paths, load_settings(paths.data_dir))
         conversation.start()
         emit("console.ready", family=family, language=language, stop="Ctrl+C")
+        print("trident.ready", flush=True)
         while True:
             conversation.check()
             check_residents()
             wait_workers(.05)
-    except KeyboardInterrupt:
-        emit("console.interrupt")
     finally:
         try:
             if conversation is not None:

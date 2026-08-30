@@ -11,14 +11,28 @@ import venv
 import zipfile
 from pathlib import Path
 
-from config import CHATTERBOX, CHATTERBOX_REV, CHATTERBOX_URL, CODEC_QUANT, CONVERTER, DATA, GEMMA_FILE, GEMMA_URL, GGML, GGML_GIT, HARDWARE, LLAMA_ZIP, MODELS, PARAKEET_FILE, PARAKEET_URL, PARAKEET_ZIP, ROOT, RUNTIMES, SMART_TURN_FILE, SMART_TURN_SHA256, SMART_TURN_SIZE, SMART_TURN_URL, TOOLS, TTS, TTS_MODELS, TTS_WEIGHTS, VOICE_HF, VOICES, emit, find_exe, sidecar
+from config import CHATTERBOX, CHATTERBOX_REV, CHATTERBOX_URL, CODEC_QUANT, CONVERTER, DATA, GEMMA_FILE, GEMMA_URL, GGML, GGML_GIT, HARDWARE, LLAMA_ZIP, MODELS, PARAKEET_FILE, PARAKEET_URL, PARAKEET_ZIP, ROOT, RUNTIMES, SMART_TURN_FILE, SMART_TURN_SHA256, SMART_TURN_SIZE, SMART_TURN_URL, TOOLS, TTS, TTS_MODELS, TTS_WEIGHTS, VOICE_HF, VOICES, emit, find_exe, git_sha, sidecar
 
 PIN = RUNTIMES / "tts" / ".pin"
+_exec = 0
 
 def sh(cmd, cwd=None, env=None) -> None:
-    emit("exec", cmd=" ".join(str(c) for c in cmd))
-    with sidecar("install.log").open("ab") as output:
-        subprocess.check_call(cmd, cwd=cwd, env=env, stdout=output, stderr=subprocess.STDOUT)
+    global _exec
+    _exec += 1
+    name = "-".join(Path(str(part)).stem[:32] for part in cmd if not str(part).startswith("-"))[:90] or "cmd"
+    log = sidecar(f"exec-{_exec:02d}-{name}")
+    emit("exec", cmd=" ".join(str(c) for c in cmd), log=log.name)
+    t0 = time.perf_counter()
+    with log.open("ab") as output:
+        try:
+            subprocess.check_call(cmd, cwd=cwd, env=env, stdout=output, stderr=subprocess.STDOUT)
+        except subprocess.CalledProcessError as error:
+            try:
+                tail = log.read_bytes()[-2000:].decode("utf-8", "replace").replace("\r", "\n")[-1500:]
+            except OSError:
+                tail = ""
+            emit("exec.fail", cmd=" ".join(str(c) for c in cmd), log=log.name, returncode=error.returncode, elapsed_ms=round((time.perf_counter() - t0) * 1000), tail=tail)
+            raise
 
 def pull(url: str, dest: Path, size: int = 0, sha256: str = "") -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -69,6 +83,8 @@ def pin(url: str, rev: str, dest: Path) -> None:
     fetched = subprocess.check_output(["git", "rev-parse", target], cwd=dest, text=True).strip()
     if created or current != fetched:
         sh(["git", "checkout", "--detach", target], dest)
+    else:
+        emit("git.have", dest=str(dest), sha=current)
 
 def patch_ggml() -> None:
     path = GGML / "src" / "ggml-vulkan" / "ggml-vulkan.cpp"
@@ -130,8 +146,10 @@ def convert_tts(models: Path) -> None:
     for family, spec in TTS_WEIGHTS.items():
         t3, codec = (models / name for name in TTS_MODELS[family])
         if t3.is_file() and codec.is_file():
+            emit("tts.gguf.have", family=family, t3=t3.name, t3_bytes=t3.stat().st_size, codec=codec.name, codec_bytes=codec.stat().st_size)
             continue
         ckpt = CONVERTER / spec["ckpt"]
+        emit("tts.convert", family=family, t3=t3.name, codec=codec.name, ckpt=str(ckpt), repo=spec["repo"], rev=spec["rev"])
         snapshot(py, env, spec["repo"], spec["rev"], spec["files"], ckpt)
         if not t3.is_file():
             cmd = [str(py), str(CHATTERBOX / "scripts" / spec["t3"])]
@@ -141,6 +159,7 @@ def convert_tts(models: Path) -> None:
             sh(cmd, ROOT, env)
         if not codec.is_file():
             sh([str(py), str(CHATTERBOX / "scripts" / "convert-s3gen-to-gguf.py"), "--variant", spec["s3"], "--ckpt-dir", str(ckpt), "--out", str(codec), "--quant", CODEC_QUANT], ROOT, env)
+        emit("tts.gguf.wrote", family=family, t3=t3.name, t3_bytes=t3.stat().st_size if t3.is_file() else 0, codec=codec.name, codec_bytes=codec.stat().st_size if codec.is_file() else 0)
     emit("tts.gguf", hardware=HARDWARE, elapsed_ms=round((time.perf_counter() - t0) * 1000))
 
 def install_python() -> None:
@@ -159,13 +178,17 @@ def install(models_dir: Path | None = None, data_dir: Path | None = None) -> Non
         raise RuntimeError("Trident needs Python 3.11+ on Windows")
     models, data = Path(models_dir or MODELS), Path(data_dir or DATA)
     models.mkdir(parents=True, exist_ok=True); data.mkdir(parents=True, exist_ok=True)
-    emit("install", hardware=HARDWARE, chatterbox_rev=CHATTERBOX_REV)
+    emit("install", hardware=HARDWARE, chatterbox_rev=CHATTERBOX_REV, trident_sha=git_sha(ROOT))
     server = RUNTIMES / "tts" / "trident-tts-server.exe"
-    need_gguf = any(not (models / name).is_file() for pair in TTS_MODELS.values() for name in pair)
+    need_gguf = [family for family, pair in TTS_MODELS.items() if any(not (models / name).is_file() for name in pair)]
     pin(CHATTERBOX_URL, CHATTERBOX_REV, CHATTERBOX)
+    emit("install.pin", requested=CHATTERBOX_REV, chatterbox_sha=chatterbox_sha(), ggml=GGML_GIT[1], pin=tts_pin())
     if not server.is_file() or not PIN.is_file() or PIN.read_text(encoding="ascii").strip() != tts_pin():
         build_tts()
+    else:
+        emit("tts.build.have", sha=chatterbox_sha(), pin=PIN.read_text(encoding="ascii").strip())
     if need_gguf:
+        emit("tts.convert.need", families=need_gguf)
         convert_tts(models)
     if find_exe(RUNTIMES / "parakeet", "parakeet-server.exe") is None:
         unzip(pull(PARAKEET_ZIP[0], TOOLS / "downloads" / PARAKEET_ZIP[1]), RUNTIMES / "parakeet")
@@ -177,4 +200,4 @@ def install(models_dir: Path | None = None, data_dir: Path | None = None) -> Non
     pull(GEMMA_URL, models / GEMMA_FILE)
     pull(SMART_TURN_URL, models / SMART_TURN_FILE, SMART_TURN_SIZE, SMART_TURN_SHA256)
     install_python()
-    emit("install.done")
+    emit("install.done", chatterbox_sha=chatterbox_sha(), models={family: [name for name in pair] for family, pair in TTS_MODELS.items()})
