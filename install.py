@@ -111,11 +111,9 @@ def build_tts() -> None:
     pin(*GGML_GIT, GGML)
     if HARDWARE == "pascal":
         patch_ggml()
-    sh(["cmake", "-S", ".", "-B", "build", "-A", "x64", "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_NATIVE=ON", "-DGGML_CCACHE=OFF", "-DTTS_CPP_BUILD_EXECUTABLES=OFF", "-DTTS_CPP_BUILD_TESTS=OFF"], CHATTERBOX)
-    sh(["cmake", "--build", "build", "--config", "Release", "--target", "tts-cpp", "mtl_tokenizer", "--parallel"], CHATTERBOX)
-    sh(["cmake", "-S", ".", "-B", "build", "-A", "x64", f"-DCHATTERBOX_CPP_ROOT={CHATTERBOX}"], TTS)
+    sh(["cmake", "-S", ".", "-B", "build", "-A", "x64", f"-DCHATTERBOX_CPP_ROOT={CHATTERBOX}", "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_NATIVE=ON", "-DGGML_CCACHE=OFF"], TTS)
     sh(["cmake", "--build", "build", "--config", "Release", "--target", "trident-tts-server", "--parallel"], TTS)
-    built, server = TTS / "build" / "Release", TTS / "build" / "Release" / "trident-tts-server.exe"
+    built, server = TTS / "build" / "bin", TTS / "build" / "bin" / "trident-tts-server.exe"
     if not server.is_file():
         raise RuntimeError("trident-tts-server.exe missing after build")
     dest = RUNTIMES / "tts"; dest.mkdir(parents=True, exist_ok=True)
