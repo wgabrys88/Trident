@@ -12,7 +12,7 @@ import onnxruntime as ort
 import sounddevice as sd
 from silero_vad_notorch import VADIterator, load_silero_vad
 
-from config import ASR_RATE, SMART_TURN_FILE, Paths, TTS_KNOBS, TTS_RATE, VAD_FRAME, emit, load_settings, raise_worker_failure, wait_workers
+from config import ASR_RATE, SMART_TURN_FILE, Paths, TTS_KNOBS, TTS_RATE, VAD_FRAME, emit, load_settings, raise_worker_failure, run_file, transcript, wait_workers
 from runtime import Chatterbox, boot, check_residents, gemma_stream, require_alive, stop_all, transcribe
 
 STOP_PHRASES = {
@@ -212,8 +212,11 @@ class Capture:
         self.smart = SmartTurn(model, settings["completion_threshold"], settings["acoustic_context_seconds"])
         self.context_seconds = float(settings["acoustic_context_seconds"])
         self.q: queue.SimpleQueue = queue.SimpleQueue()
+        self.decisions: queue.SimpleQueue = queue.SimpleQueue()
         self.audio = bytearray()
+        self.state_lock = threading.Lock()
         self.thread = threading.Thread(target=self._loop, name="vad")
+        self.decision_thread = threading.Thread(target=self._decide, name="smart-turn")
         self.stream: sd.RawInputStream | None = None
         self.error: RuntimeError | None = None
         self.active = self.utterance = False
@@ -228,39 +231,53 @@ class Capture:
 
     def open(self) -> None:
         self.active = True
+        self.decision_thread.start()
         self.thread.start()
         self.stream = sd.RawInputStream(samplerate=ASR_RATE, blocksize=VAD_FRAME, channels=1, dtype="float32", latency="low", callback=self._callback)
         self.stream.start()
         emit("capture.open")
 
-    def _loop(self) -> None:
-        emit("worker.start", worker="vad")
-        while (pcm := self.q.get()) is not None:
-            event = self.vad(np.frombuffer(pcm, dtype="<f4")) or {}
-            if "start" in event:
-                if not self.utterance:
-                    self.audio.clear()
-                    self.utterance = True
-                    self.utterance_id += 1
-                    self.epoch = self.on_start(self.utterance_id)
-                    emit("vad.start", epoch=self.epoch, utterance_id=self.utterance_id)
-                else:
-                    emit("vad.resume", epoch=self.epoch, utterance_id=self.utterance_id)
-            if self.utterance:
-                self.audio.extend(pcm)
-            if "end" in event:
-                emit("vad.end_candidate", epoch=self.epoch, utterance_id=self.utterance_id, vad_sample=int(event["end"]), candidate_silence_ms=self.candidate_silence_ms, input_s=round(len(self.audio) / (ASR_RATE * 4), 3))
-                started = time.perf_counter()
-                complete, probability = self.smart.decide(bytes(self.audio))
-                elapsed = (time.perf_counter() - started) * 1000
-                emit("turn.decision", epoch=self.epoch, utterance_id=self.utterance_id, complete=complete, probability=round(probability, 6), decision_ms=round(elapsed, 3), context_s=self.context_seconds, input_s=round(len(self.audio) / (ASR_RATE * 4), 3))
-                if complete:
+    def _decide(self) -> None:
+        emit("worker.start", worker="smart-turn")
+        while (item := self.decisions.get()) is not None:
+            epoch, utterance_id, audio = item
+            started = time.perf_counter(); complete, probability = self.smart.decide(audio)
+            elapsed = (time.perf_counter() - started) * 1000
+            emit("turn.decision", epoch=epoch, utterance_id=utterance_id, complete=complete, probability=round(probability, 6), decision_ms=round(elapsed, 3), context_s=self.context_seconds, input_s=round(len(audio) / (ASR_RATE * 4), 3))
+            with self.state_lock:
+                if complete and self.utterance and epoch == self.epoch and utterance_id == self.utterance_id:
                     audio = bytes(self.audio)
                     self.audio.clear()
                     self.utterance = False
                     self.vad.reset_states()
-                    emit("utterance.complete", epoch=self.epoch, utterance_id=self.utterance_id, input_s=round(len(audio) / (ASR_RATE * 4), 3))
-                    self.on_utterance(self.epoch, self.utterance_id, audio)
+                else:
+                    audio = b""
+            if audio:
+                emit("utterance.complete", epoch=epoch, utterance_id=utterance_id, input_s=round(len(audio) / (ASR_RATE * 4), 3))
+                self.on_utterance(epoch, utterance_id, audio)
+        emit("worker.stop", worker="smart-turn")
+
+    def _loop(self) -> None:
+        emit("worker.start", worker="vad")
+        while (pcm := self.q.get()) is not None:
+            with self.state_lock:
+                event = self.vad(np.frombuffer(pcm, dtype="<f4")) or {}
+                if "start" in event:
+                    if not self.utterance:
+                        self.audio.clear()
+                        self.utterance = True
+                        self.utterance_id += 1
+                        self.epoch = self.on_start(self.utterance_id)
+                        emit("vad.start", epoch=self.epoch, utterance_id=self.utterance_id)
+                    else:
+                        emit("vad.resume", epoch=self.epoch, utterance_id=self.utterance_id)
+                if self.utterance:
+                    self.audio.extend(pcm)
+                if "end" in event:
+                    emit("vad.end_candidate", epoch=self.epoch, utterance_id=self.utterance_id, vad_sample=int(event["end"]), candidate_silence_ms=self.candidate_silence_ms, input_s=round(len(self.audio) / (ASR_RATE * 4), 3))
+                    self.decisions.put((self.epoch, self.utterance_id, bytes(self.audio)))
+        self.decisions.put(None)
+        self.decision_thread.join()
         if self.audio:
             emit("utterance.drop", epoch=self.epoch, utterance_id=self.utterance_id, reason="shutdown", bytes=len(self.audio))
         self.audio.clear()
@@ -322,6 +339,8 @@ class Conversation:
         return self._advance("speech", utterance_id)
 
     def start(self) -> None:
+        transcript("user", ""); transcript("assistant", "")
+        emit("transcript.open", user=run_file("transcript-user", "txt").name, assistant=run_file("transcript-assistant", "txt").name)
         self.speaker.open()
         self.tts.open()
         self.pcm_thread.start()
@@ -375,6 +394,8 @@ class Conversation:
             with self.lock:
                 stale = epoch != self.epoch
             emit("asr.done", epoch=epoch, utterance_id=utterance_id, accepted=not stale and bool(prompt), roundtrip_ms=round(roundtrip * 1000, 3), total_ms=round(total * 1000, 3), roundtrip_rtf=round(roundtrip / duration, 3), total_rtf=round(total / duration, 3), chars=len(prompt), text=prompt)
+            if prompt:
+                transcript("user", prompt); print(f"\nuser: {prompt}", flush=True)
             if stale or not prompt:
                 continue
             intent, folded, short_alpha = classify_utterance(prompt)
@@ -385,6 +406,7 @@ class Conversation:
                 self.llm_active = True
             started, first, raw, piece_id = time.perf_counter(), True, "", 0
             emit("llm.begin", epoch=epoch, utterance_id=utterance_id, response_id=response_id, chars=len(prompt))
+            print("assistant: ", end="", flush=True)
             segmenter = Segmenter()
             messages = [{"role": "system", "content": self.settings["system_prompt"].strip()}, *self.history, {"role": "user", "content": prompt}]
             stream = gemma_stream(self.gemma, messages)
@@ -397,12 +419,14 @@ class Conversation:
                     if first:
                         emit("llm.first", epoch=epoch, utterance_id=utterance_id, response_id=response_id, latency_ms=round((time.perf_counter() - started) * 1000))
                         first = False
+                    transcript("assistant", delta); print(delta, end="", flush=True)
                     raw += delta
                     for unit in segmenter.take(spoken(raw)):
                         piece_id += 1
                         self._send(epoch, response_id, piece_id, unit)
             finally:
                 stream.close()
+            print(flush=True)
             with self.lock:
                 stale = epoch != self.epoch
             if stale:
