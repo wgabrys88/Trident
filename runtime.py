@@ -40,13 +40,13 @@ def _forward(name: str, proc: subprocess.Popen, path: Path, ready: threading.Eve
             source_ts = data.pop("ts", None)
             if event == "tts.ready":
                 ready.set()
-            if event == "tts.piece.begin":
-                context = {key: data[key] for key in ("epoch", "response_id", "piece_id")}
-            if event in ("t3", "s3gen"):
+            if event == "tts.batch.begin":
+                context = {key: data[key] for key in ("epoch", "response_id", "piece_id", "piece_last_id", "pieces")}
+            if event in ("t3", "t3.ready", "s3gen.begin", "s3gen"):
                 data.update(context)
             if event not in _JOURNAL_SKIP:
                 emit(event, producer=name, producer_ts=source_ts, **data)
-            if event in ("tts.piece.done", "tts.piece.cancel"):
+            if event in ("tts.batch.done", "tts.batch.cancel"):
                 context = {}
 
 def _start(name: str, cmd: list[str], cwd: Path, paths: Paths, tag: str) -> None:

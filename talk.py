@@ -129,7 +129,9 @@ class Speaker:
         self.lock = threading.Lock()
         self.pcm: deque[bytes] = deque()
         self.events: queue.SimpleQueue = queue.SimpleQueue()
+        self.drains: queue.SimpleQueue = queue.SimpleQueue()
         self.offset = self.epoch = 0
+        self.last_drained_ns = 0
         self.silence: tuple[int, int] | None = None
         self.error: RuntimeError | None = None
         self.stream: sd.RawOutputStream | None = None
@@ -155,17 +157,22 @@ class Speaker:
                 if self.offset == len(source):
                     self.pcm.popleft()
                     self.offset = 0
+            if written and not self.pcm:
+                observed = time.perf_counter_ns()
+                self.last_drained_ns = observed
+                self.drains.put((self.epoch, observed))
 
     def open(self) -> None:
         self.stream = sd.RawOutputStream(samplerate=TTS_RATE, blocksize=VAD_FRAME, channels=1, dtype="int16", latency="low", callback=self._callback)
         self.stream.start()
 
-    def put(self, epoch: int, pcm: bytes) -> bool:
+    def put(self, epoch: int, pcm: bytes) -> tuple[bool, int]:
         with self.lock:
             if epoch != self.epoch:
-                return False
+                return False, 0
+            resume_from = self.last_drained_ns if not self.pcm else 0
             self.pcm.append(pcm)
-            return True
+            return True, resume_from
 
     def busy(self) -> bool:
         with self.lock:
@@ -177,6 +184,7 @@ class Speaker:
             self.pcm.clear()
             self.offset = 0
             self.epoch = epoch
+            self.last_drained_ns = 0
             self.silence = (epoch, time.perf_counter_ns())
             return dropped
 
@@ -185,7 +193,10 @@ class Speaker:
             raise self.error
         while not self.events.empty():
             epoch, requested, observed = self.events.get()
-            emit("audio.silent", epoch=epoch, latency_ms=round((observed - requested) / 1e6, 3))
+            emit("audio.silent", epoch=epoch, latency_ms=round((observed - requested) / 1e6, 3), callback_ns=observed)
+        while not self.drains.empty():
+            epoch, observed = self.drains.get()
+            emit("audio.drained", epoch=epoch, callback_ns=observed, dispatch_delay_ms=round((time.perf_counter_ns() - observed) / 1e6, 3))
 
     def close(self) -> None:
         if self.stream is not None:
@@ -196,7 +207,8 @@ class Speaker:
 class Capture:
     def __init__(self, model, settings: dict, on_start, on_utterance) -> None:
         self.on_start, self.on_utterance = on_start, on_utterance
-        self.vad = VADIterator(load_silero_vad(onnx=True), threshold=.5, sampling_rate=ASR_RATE, min_silence_duration_ms=int(settings["candidate_silence_ms"]), speech_pad_ms=0)
+        self.candidate_silence_ms = int(settings["candidate_silence_ms"])
+        self.vad = VADIterator(load_silero_vad(onnx=True), threshold=.5, sampling_rate=ASR_RATE, min_silence_duration_ms=self.candidate_silence_ms, speech_pad_ms=0)
         self.smart = SmartTurn(model, settings["completion_threshold"], settings["acoustic_context_seconds"])
         self.context_seconds = float(settings["acoustic_context_seconds"])
         self.q: queue.SimpleQueue = queue.SimpleQueue()
@@ -222,6 +234,7 @@ class Capture:
         emit("capture.open")
 
     def _loop(self) -> None:
+        emit("worker.start", worker="vad")
         while (pcm := self.q.get()) is not None:
             event = self.vad(np.frombuffer(pcm, dtype="<f4")) or {}
             if "start" in event:
@@ -236,10 +249,11 @@ class Capture:
             if self.utterance:
                 self.audio.extend(pcm)
             if "end" in event:
+                emit("vad.end_candidate", epoch=self.epoch, utterance_id=self.utterance_id, vad_sample=int(event["end"]), candidate_silence_ms=self.candidate_silence_ms, input_s=round(len(self.audio) / (ASR_RATE * 4), 3))
                 started = time.perf_counter()
                 complete, probability = self.smart.decide(bytes(self.audio))
                 elapsed = (time.perf_counter() - started) * 1000
-                emit("turn.decision", epoch=self.epoch, utterance_id=self.utterance_id, complete=complete, probability=round(probability, 6), inference_ms=round(elapsed, 3), context_s=self.context_seconds, input_s=round(len(self.audio) / (ASR_RATE * 4), 3))
+                emit("turn.decision", epoch=self.epoch, utterance_id=self.utterance_id, complete=complete, probability=round(probability, 6), decision_ms=round(elapsed, 3), context_s=self.context_seconds, input_s=round(len(self.audio) / (ASR_RATE * 4), 3))
                 if complete:
                     audio = bytes(self.audio)
                     self.audio.clear()
@@ -250,6 +264,7 @@ class Capture:
         if self.audio:
             emit("utterance.drop", epoch=self.epoch, utterance_id=self.utterance_id, reason="shutdown", bytes=len(self.audio))
         self.audio.clear()
+        emit("worker.stop", worker="vad")
 
     def check(self) -> None:
         if self.error is not None:
@@ -317,7 +332,9 @@ class Conversation:
 
     def _utterance(self, epoch: int, utterance_id: int, pcm: bytes) -> None:
         if self.active:
-            self.q.put((epoch, utterance_id, pcm))
+            queued = time.perf_counter_ns()
+            self.q.put((epoch, utterance_id, pcm, queued))
+            emit("utterance.queued", epoch=epoch, utterance_id=utterance_id, bytes=len(pcm))
 
     def _send(self, epoch: int, response_id: int, piece_id: int, text: str) -> None:
         with self.lock:
@@ -325,29 +342,39 @@ class Conversation:
                 return
             self.tts.send(epoch, response_id, piece_id, text)
             self.tts_pending += 1
+            pending = self.tts_pending
             now = time.perf_counter_ns()
             gap = round((now - self._queue_ns) / 1e6, 3) if self._queue_ns and self._queue_response == response_id else None
             self._queue_ns, self._queue_response = now, response_id
-        emit("tts.piece.queued", epoch=epoch, response_id=response_id, piece_id=piece_id, chars=len(text), gap_ms=gap, text=text)
+        emit("tts.piece.queued", epoch=epoch, response_id=response_id, piece_id=piece_id, chars=len(text), gap_ms=gap, tts_pending=pending, text=text)
 
     def _conversation(self) -> None:
+        emit("worker.start", worker="conversation")
         while (item := self.q.get()) is not None:
-            epoch, utterance_id, pcm = item
+            epoch, utterance_id, pcm, queued = item
+            dequeued = time.perf_counter_ns()
+            queue_ms = round((dequeued - queued) / 1e6, 3)
+            emit("utterance.dequeued", epoch=epoch, utterance_id=utterance_id, queue_ms=queue_ms)
             with self.lock:
                 stale = epoch != self.epoch
             if stale:
                 emit("utterance.drop", epoch=epoch, utterance_id=utterance_id, reason="stale", bytes=len(pcm))
                 continue
             duration = len(pcm) / (ASR_RATE * 4)
+            asr_started = time.perf_counter()
+            emit("asr.begin", epoch=epoch, utterance_id=utterance_id, input_s=round(duration, 3), queue_ms=queue_ms)
+            prepared = time.perf_counter()
             audio = np.frombuffer(pcm, dtype="<f4")
             wav = wav_bytes((np.clip(audio, -1, 1) * 32767).astype("<i2").tobytes())
-            started = time.perf_counter()
-            emit("asr.begin", epoch=epoch, utterance_id=utterance_id, input_s=round(duration, 3))
+            prepare_ms = round((time.perf_counter() - prepared) * 1000, 3)
+            emit("asr.request", epoch=epoch, utterance_id=utterance_id, prepare_ms=prepare_ms, wav_bytes=len(wav))
+            request_started = time.perf_counter()
             prompt = transcribe(self.parakeet, wav)
-            elapsed = time.perf_counter() - started
+            roundtrip = time.perf_counter() - request_started
+            total = time.perf_counter() - asr_started
             with self.lock:
                 stale = epoch != self.epoch
-            emit("asr.done", epoch=epoch, utterance_id=utterance_id, accepted=not stale and bool(prompt), inference_ms=round(elapsed * 1000), rtf=round(elapsed / duration, 3), chars=len(prompt), text=prompt)
+            emit("asr.done", epoch=epoch, utterance_id=utterance_id, accepted=not stale and bool(prompt), roundtrip_ms=round(roundtrip * 1000, 3), total_ms=round(total * 1000, 3), roundtrip_rtf=round(roundtrip / duration, 3), total_rtf=round(total / duration, 3), chars=len(prompt), text=prompt)
             if stale or not prompt:
                 continue
             intent, folded, short_alpha = classify_utterance(prompt)
@@ -391,21 +418,28 @@ class Conversation:
                 self.llm_active = False
                 heard = response_id in self.first_pcm
             emit("llm.done", epoch=epoch, utterance_id=utterance_id, response_id=response_id, empty=not answer, elapsed_ms=round((time.perf_counter() - started) * 1000), chars=len(answer), pieces=piece_id, pcm_first=heard, text=answer)
+        emit("worker.stop", worker="conversation")
 
     def _pcm(self) -> None:
+        emit("worker.start", worker="pcm")
         while (frame := self.tts.recv_frame()) is not None:
             kind, epoch, response_id, piece_id, chunk_id, payload = frame
             if kind == 2:
+                received = time.perf_counter_ns()
                 with self.lock:
                     live_epoch, llm_active = self.epoch, self.llm_active
-                    accepted = epoch == live_epoch and self.speaker.put(epoch, payload)
+                    accepted, resume_from = self.speaker.put(epoch, payload) if epoch == live_epoch else (False, 0)
                     first = accepted and response_id not in self.first_pcm
                     if first:
                         self.first_pcm.add(response_id)
+                    pending = self.tts_pending
+                audio_ms = round(1000 * len(payload) / (TTS_RATE * 2))
                 if not accepted:
-                    emit("pcm.drop", epoch=epoch, live_epoch=live_epoch, response_id=response_id, piece_id=piece_id, chunk_id=chunk_id, bytes=len(payload), audio_ms=round(1000 * len(payload) / (TTS_RATE * 2)))
+                    emit("pcm.drop", epoch=epoch, live_epoch=live_epoch, response_id=response_id, piece_id=piece_id, chunk_id=chunk_id, bytes=len(payload), audio_ms=audio_ms)
                 elif first:
-                    emit("pcm.first", epoch=epoch, response_id=response_id, piece_id=piece_id, chunk_id=chunk_id, bytes=len(payload), llm_active=llm_active)
+                    emit("pcm.first", epoch=epoch, response_id=response_id, piece_id=piece_id, chunk_id=chunk_id, bytes=len(payload), audio_ms=audio_ms, received_ns=received, llm_active=llm_active, tts_pending=pending)
+                elif resume_from:
+                    emit("pcm.resume", epoch=epoch, response_id=response_id, piece_id=piece_id, chunk_id=chunk_id, bytes=len(payload), audio_ms=audio_ms, starvation_ms=round((received - resume_from) / 1e6, 3), drained_ns=resume_from, received_ns=received, llm_active=llm_active, tts_pending=pending)
             elif kind == 0:
                 with self.lock:
                     live_epoch = self.epoch
@@ -413,11 +447,12 @@ class Conversation:
                     if accepted:
                         self.tts_pending -= 1
                     pending = self.tts_pending
-                emit("tts.piece.ack", epoch=epoch, live_epoch=live_epoch, response_id=response_id, piece_id=piece_id, chunks=chunk_id + 1, accepted=accepted, tts_pending=pending)
+                emit("tts.piece.ack", epoch=epoch, live_epoch=live_epoch, response_id=response_id, piece_id=piece_id, batch_chunks=chunk_id + 1, accepted=accepted, tts_pending=pending)
             elif kind == 1:
                 raise RuntimeError(payload.decode("utf-8"))
             else:
                 raise RuntimeError(f"TTS frame {kind}")
+        emit("worker.stop", worker="pcm")
 
     def check(self) -> None:
         self.capture.check()
