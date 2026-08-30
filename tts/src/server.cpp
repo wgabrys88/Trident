@@ -110,7 +110,7 @@ static void serve(SOCKET client, tts_cpp::chatterbox::Engine& tts) {
             if (had_last) tts_emit("tts.gap", ",\"epoch\":" + std::to_string(epoch) + ",\"gap_ms\":" + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(started - last).count()));
             tts_emit("tts.synth", ",\"epoch\":" + std::to_string(epoch) + ",\"pieces\":" + std::to_string(batch.size()));
             try {
-                tts.synthesize_pieces(batch, [&](int, const float* data, std::size_t n, int, bool) {
+                tts.synthesize_pieces_streaming(batch, [&](int, const float* data, std::size_t n, int, bool) {
                     if (n && live.load() == epoch) pcm(client, epoch, data, n);
                 });
                 if (live.load() == epoch) {
