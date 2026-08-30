@@ -11,19 +11,11 @@ import time
 import urllib.request
 from pathlib import Path
 
-from config import FLASH_ATTN, GEMMA_FILE, GEMMA_GEN, PARAKEET_FILE, PORTS, RUNTIMES, TTS_MODELS, TTS_PROFILES, V3_LANGUAGES, VULKAN_ENV, Paths, emit, emit_raw, find_exe, load_settings, voice_wav
+from config import FLASH_ATTN, GEMMA_FILE, GEMMA_GEN, PARAKEET_FILE, PORTS, RUNTIMES, TTS_MODELS, TTS_PROFILES, V3_LANGUAGES, VULKAN_ENV, Paths, emit, find_exe, load_settings, raise_worker_failure, voice_wav
 
 _PROCS: dict[str, subprocess.Popen] = {}
-
-def _probe(name: str) -> bool:
-    try:
-        if name == "gemma":
-            with urllib.request.urlopen(f"http://127.0.0.1:{PORTS[name]}/health", timeout=1) as r:
-                return r.status == 200
-        with socket.create_connection(("127.0.0.1", PORTS[name]), timeout=.25):
-            return True
-    except OSError:
-        return False
+_READERS: dict[str, threading.Thread] = {}
+_READY = {"parakeet": "parakeet-server: listening on ", "gemma": "llama_server: listening on http://127.0.0.1:"}
 
 def _exe(folder: str, name: str) -> Path:
     path = find_exe(RUNTIMES / folder, name)
@@ -31,56 +23,58 @@ def _exe(folder: str, name: str) -> Path:
         raise RuntimeError(f"{name} missing; run python main.py install")
     return path
 
-def _forward(proc: subprocess.Popen, path: Path) -> None:
+def _forward(name: str, proc: subprocess.Popen, path: Path, ready: threading.Event) -> None:
+    context = {}
     with path.open("wb") as out:
-        for line in proc.stdout:
-            out.write(line)
+        for raw in proc.stdout:
+            out.write(raw)
             out.flush()
-            if line.startswith(b"{"):
-                emit_raw(line.decode("utf-8").rstrip("\r\n"))
+            line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+            if name in _READY and _READY[name] in line:
+                ready.set()
+            if not line.startswith("{"):
+                continue
+            data = json.loads(line)
+            event = data.pop("event")
+            source_ts = data.pop("ts", None)
+            if event == "tts.ready":
+                ready.set()
+            if event == "tts.piece.begin":
+                context = {key: data[key] for key in ("epoch", "response_id", "piece_id")}
+            if event in ("t3", "s3gen"):
+                data.update(context)
+            emit(event, producer=name, producer_ts=source_ts, **data)
+            if event in ("tts.piece.done", "tts.piece.cancel"):
+                context = {}
 
 def _start(name: str, cmd: list[str], cwd: Path, paths: Paths) -> None:
-    if _probe(name):
-        raise RuntimeError(f"{name} port {PORTS[name]} already in use")
     env = os.environ.copy()
     env.update(VULKAN_ENV)
-    native_log = paths.run_dir / f"{name}.log"
-    emit("resident.start", name=name, log=str(native_log))
-    try:
-        if name == "chatterbox":
-            proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        else:
-            with native_log.open("wb") as out:
-                proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT)
-    except OSError:
-        stop_all()
-        raise
+    log = paths.run_dir / f"{name}.log"
+    emit("resident.start", name=name, log=str(log))
+    proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     _PROCS[name] = proc
-    if name == "chatterbox":
-        threading.Thread(target=_forward, args=(proc, native_log), daemon=True).start()
-    end = time.monotonic() + (300 if name == "chatterbox" else 180)
-    while time.monotonic() < end:
+    ready = threading.Event()
+    reader = threading.Thread(target=_forward, args=(name, proc, log, ready), name=f"resident:{name}")
+    _READERS[name] = reader
+    reader.start()
+    deadline = time.monotonic() + (300 if name == "chatterbox" else 180)
+    while not ready.wait(.1):
+        raise_worker_failure()
         if proc.poll() is not None:
-            stop_all()
             raise RuntimeError(f"{name} exited before ready pid={proc.pid} exit={proc.returncode}")
-        if _probe(name):
-            emit("resident.ready", name=name, pid=proc.pid)
-            return
-        time.sleep(.25)
-    stop_all()
-    raise RuntimeError(f"{name} did not become ready")
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"{name} did not become ready")
+    emit("resident.ready", name=name, pid=proc.pid)
 
 def boot(paths: Paths, family: str = "nano", language: str = "en") -> None:
-    family = family.strip().lower()
-    language = language.strip().lower()
+    family, language = family.strip().lower(), language.strip().lower()
     if family not in TTS_MODELS:
         raise RuntimeError(f"unknown TTS family {family!r}")
     if family != "v3" and language != "en":
         raise RuntimeError(f"{family} supports English only")
     if family == "v3" and language not in V3_LANGUAGES:
-        raise RuntimeError(f"V3 language {language!r} is not supported by this chatterbox.cpp build")
-
-    stop_all()
+        raise RuntimeError(f"V3 language {language!r} is not supported")
     parakeet, gemma, tts = _exe("parakeet", "parakeet-server.exe"), _exe("gemma", "llama-server.exe"), _exe("tts", "trident-tts-server.exe")
     k = TTS_PROFILES[family]
     t3_file, codec_file = TTS_MODELS[family]
@@ -97,39 +91,47 @@ def boot(paths: Paths, family: str = "nano", language: str = "en") -> None:
 
 def require_alive(name: str) -> str:
     proc = _PROCS.get(name)
-    if proc is None or proc.poll() is not None or not _probe(name):
+    if proc is None or proc.poll() is not None:
         raise RuntimeError(f"{name} is not running")
     return f"http://127.0.0.1:{PORTS[name]}"
 
+def check_residents() -> None:
+    raise_worker_failure()
+    for name, proc in _PROCS.items():
+        if proc.poll() is not None:
+            raise RuntimeError(f"{name} exited pid={proc.pid} exit={proc.returncode}")
+
 def stop_all() -> None:
-    for name, proc in tuple(_PROCS.items()):
-        if proc.poll() is None:
-            emit("resident.stop", name=name, pid=proc.pid)
+    for name, proc in reversed(tuple(_PROCS.items())):
+        running = proc.poll() is None
+        emit("resident.stop", name=name, pid=proc.pid, running=running)
+        if running:
             proc.kill()
-            proc.wait()
+        code = proc.wait()
+        _READERS[name].join()
+        emit("resident.stopped", name=name, pid=proc.pid, exit_code=code)
+    _READERS.clear()
     _PROCS.clear()
 
 def transcribe(base: str, wav: bytes) -> str:
     boundary = "----trident" + secrets.token_hex(8)
-    body = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"turn.wav\"\r\nContent-Type: audio/wav\r\n\r\n".encode() + wav + f"\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nparakeet\r\n--{boundary}--\r\n".encode())
+    body = f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"utterance.wav\"\r\nContent-Type: audio/wav\r\n\r\n".encode() + wav + f"\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nparakeet\r\n--{boundary}--\r\n".encode()
     req = urllib.request.Request(base + "/v1/audio/transcriptions", body, {"Content-Type": f"multipart/form-data; boundary={boundary}", "Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=3600) as r:
-        return str(json.loads(r.read()).get("text") or "").strip()
+    with urllib.request.urlopen(req, timeout=3600) as response:
+        return str(json.loads(response.read()).get("text") or "").strip()
 
 def gemma_stream(base: str, messages: list[dict[str, str]]):
     payload = {"model": "gemma", "messages": messages, "stream": True, "cache_prompt": True, **GEMMA_GEN, "chat_template_kwargs": {"enable_thinking": False}}
-    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
-    req = urllib.request.Request(base + "/v1/chat/completions", data, {"Content-Type": "application/json", "Accept": "text/event-stream"})
-    with urllib.request.urlopen(req, timeout=3600) as r:
-        while line := r.readline():
-            if not line.startswith(b"data:"):
-                continue
-            chunk = line[5:].strip()
-            if chunk == b"[DONE]":
-                return
-            text = str((json.loads(chunk).get("choices") or [{}])[0].get("delta", {}).get("content") or "")
-            if text:
-                yield text
+    req = urllib.request.Request(base + "/v1/chat/completions", json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(), {"Content-Type": "application/json", "Accept": "text/event-stream"})
+    with urllib.request.urlopen(req, timeout=3600) as response:
+        while line := response.readline():
+            if line.startswith(b"data:"):
+                chunk = line[5:].strip()
+                if chunk == b"[DONE]":
+                    return
+                text = str((json.loads(chunk).get("choices") or [{}])[0].get("delta", {}).get("content") or "")
+                if text:
+                    yield text
 
 class Chatterbox:
     def __init__(self) -> None:
@@ -148,34 +150,36 @@ class Chatterbox:
             try:
                 chunk = sock.recv(65536)
             except OSError:
-                return None
+                if self.sock is None:
+                    return None
+                raise
             if not chunk:
-                return None
+                if self.sock is None:
+                    return None
+                raise RuntimeError("unexpected TTS socket EOF")
             self.buf.extend(chunk)
         out = bytes(self.buf[:n])
         del self.buf[:n]
         return out
 
-    def send(self, epoch: int, pieces: list[str]) -> None:
-        if self.sock is None:
-            raise RuntimeError("TTS socket closed")
-        body = b"".join(struct.pack("<I", len(raw)) + raw for raw in map(str.encode, pieces))
+    def send(self, epoch: int, response_id: int, piece_id: int, text: str = "") -> None:
+        raw = text.encode()
         with self.lock:
-            self.sock.sendall(struct.pack("<II", len(pieces), epoch) + body)
+            if self.sock is None:
+                raise RuntimeError("TTS socket closed")
+            self.sock.sendall(struct.pack("<IIII", epoch, response_id, piece_id, len(raw)) + raw)
 
-    def recv_frame(self) -> tuple[int, int, bytes] | None:
-        header = self._recv(12)
+    def recv_frame(self) -> tuple[int, int, int, int, int, bytes] | None:
+        header = self._recv(24)
         if header is None:
             return None
-        kind, epoch, length = struct.unpack("<III", header)
+        kind, epoch, response_id, piece_id, chunk_id, length = struct.unpack("<IIIIII", header)
         payload = self._recv(length) if length else b""
-        return None if payload is None else (kind, epoch, payload)
+        return None if payload is None else (kind, epoch, response_id, piece_id, chunk_id, payload)
 
     def close(self) -> None:
-        sock, self.sock = self.sock, None
+        with self.lock:
+            sock, self.sock = self.sock, None
         if sock is not None:
-            try:
-                sock.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
+            sock.shutdown(socket.SHUT_RDWR)
             sock.close()
