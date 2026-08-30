@@ -11,7 +11,7 @@ import venv
 import zipfile
 from pathlib import Path
 
-from config import CHATTERBOX, CHATTERBOX_REV, CHATTERBOX_URL, CODEC_FILE, CODEC_QUANT, CONVERTER, DATA, GEMMA_FILE, GEMMA_URL, GGML, GGML_GIT, HARDWARE, LLAMA_ZIP, MODELS, NANO_FILES, NANO_REPO, NANO_REV, PARAKEET_FILE, PARAKEET_URL, PARAKEET_ZIP, ROOT, RUNTIMES, SMART_TURN_FILE, SMART_TURN_SHA256, SMART_TURN_SIZE, SMART_TURN_URL, T3_FILE, TOOLS, TTS, TTS_MODELS, VOICE_HF, VOICES, emit, find_exe, sidecar
+from config import CHATTERBOX, CHATTERBOX_REV, CHATTERBOX_URL, CODEC_QUANT, CONVERTER, DATA, GEMMA_FILE, GEMMA_URL, GGML, GGML_GIT, HARDWARE, LLAMA_ZIP, MODELS, PARAKEET_FILE, PARAKEET_URL, PARAKEET_ZIP, ROOT, RUNTIMES, SMART_TURN_FILE, SMART_TURN_SHA256, SMART_TURN_SIZE, SMART_TURN_URL, TOOLS, TTS, TTS_MODELS, TTS_WEIGHTS, VOICE_HF, VOICES, emit, find_exe, sidecar
 
 PIN = RUNTIMES / "tts" / ".pin"
 
@@ -109,6 +109,13 @@ def build_tts() -> None:
     PIN.write_text(tts_pin() + "\n", encoding="ascii")
     emit("tts.build", hardware=HARDWARE, sha=chatterbox_sha(), elapsed_ms=round((time.perf_counter() - t0) * 1000))
 
+def snapshot(py: Path, env: dict, repo: str, rev: str, files: tuple[str, ...], dest: Path) -> None:
+    dest.mkdir(parents=True, exist_ok=True)
+    if all((dest / name).is_file() for name in files):
+        return
+    code = "from huggingface_hub import snapshot_download; " + f"snapshot_download(repo_id={repo!r}, revision={rev!r}, allow_patterns={list(files)!r}, local_dir={str(dest)!r})"
+    sh([str(py), "-c", code], ROOT, env)
+
 def convert_tts(models: Path) -> None:
     t0 = time.perf_counter()
     py = CONVERTER / "Scripts" / "python.exe"
@@ -116,31 +123,24 @@ def convert_tts(models: Path) -> None:
         sh([sys.executable, "-m", "venv", str(CONVERTER)])
         sh([str(py), "-m", "pip", "install", "--disable-pip-version-check", "--progress-bar", "off", "--no-input", "torch==2.6.0", "--index-url", "https://download.pytorch.org/whl/cpu"])
         sh([str(py), "-m", "pip", "install", "--disable-pip-version-check", "--progress-bar", "off", "--no-input", "numpy==1.26.4", "gguf==0.19.0", "safetensors==0.5.3", "scipy==1.15.3", "librosa==0.11.0", "resampy==0.4.3", "huggingface-hub==0.34.4"])
-    ckpt = CONVERTER / "ckpt"; ckpt.mkdir(parents=True, exist_ok=True)
-    missing = [f for f in NANO_FILES if not (ckpt / f).is_file()]
     env = os.environ.copy()
     env["HF_HOME"] = str(TOOLS / "huggingface")
-    if missing:
-        code = "from huggingface_hub import snapshot_download; " + f"snapshot_download(repo_id={NANO_REPO!r}, revision={NANO_REV!r}, allow_patterns={list(NANO_FILES)!r}, local_dir={str(ckpt)!r})"
-        sh([str(py), "-c", code], ROOT, env)
-    turbo = ckpt / "t3_turbo_v1.safetensors"
-    if not turbo.is_file():
-        shutil.copyfile(ckpt / "t3_nano_v1.safetensors", turbo)
-    models.mkdir(parents=True, exist_ok=True); t3, codec = models / T3_FILE, models / CODEC_FILE
-    if not t3.is_file():
-        sh([str(py), str(CHATTERBOX / "scripts" / "convert-t3-turbo-to-gguf.py"), "--ckpt-dir", str(ckpt), "--out", str(t3), "--quant", "q4_0"], ROOT, env)
-    if not codec.is_file():
-        sh([str(py), str(CHATTERBOX / "scripts" / "convert-s3gen-to-gguf.py"), "--variant", "turbo", "--ckpt-dir", str(ckpt), "--out", str(codec), "--quant", CODEC_QUANT], ROOT, env)
-    turbo_t3, turbo_codec = (models / name for name in TTS_MODELS["turbo"])
-    if not turbo_t3.is_file():
-        sh([str(py), str(CHATTERBOX / "scripts" / "convert-t3-turbo-to-gguf.py"), "--model", "turbo", "--out", str(turbo_t3), "--quant", "q4_0"], ROOT, env)
-    if not turbo_codec.is_file():
-        sh([str(py), str(CHATTERBOX / "scripts" / "convert-s3gen-to-gguf.py"), "--variant", "turbo", "--out", str(turbo_codec), "--quant", CODEC_QUANT], ROOT, env)
-    v3_t3, v3_codec = (models / name for name in TTS_MODELS["v3"])
-    if not v3_t3.is_file():
-        sh([str(py), str(CHATTERBOX / "scripts" / "convert-t3-mtl-to-gguf.py"), "--out", str(v3_t3), "--quant", "q4_0"], ROOT, env)
-    if not v3_codec.is_file():
-        sh([str(py), str(CHATTERBOX / "scripts" / "convert-s3gen-to-gguf.py"), "--variant", "mtl", "--out", str(v3_codec), "--quant", CODEC_QUANT], ROOT, env)
+    env["HF_HUB_DISABLE_SYMLINKS"] = "1"
+    models.mkdir(parents=True, exist_ok=True)
+    for family, spec in TTS_WEIGHTS.items():
+        t3, codec = (models / name for name in TTS_MODELS[family])
+        if t3.is_file() and codec.is_file():
+            continue
+        ckpt = CONVERTER / spec["ckpt"]
+        snapshot(py, env, spec["repo"], spec["rev"], spec["files"], ckpt)
+        if not t3.is_file():
+            cmd = [str(py), str(CHATTERBOX / "scripts" / spec["t3"])]
+            if model := spec.get("model"):
+                cmd += ["--model", model]
+            cmd += ["--ckpt-dir", str(ckpt), "--out", str(t3), "--quant", "q4_0"]
+            sh(cmd, ROOT, env)
+        if not codec.is_file():
+            sh([str(py), str(CHATTERBOX / "scripts" / "convert-s3gen-to-gguf.py"), "--variant", spec["s3"], "--ckpt-dir", str(ckpt), "--out", str(codec), "--quant", CODEC_QUANT], ROOT, env)
     emit("tts.gguf", hardware=HARDWARE, elapsed_ms=round((time.perf_counter() - t0) * 1000))
 
 def install_python() -> None:
