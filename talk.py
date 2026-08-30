@@ -15,12 +15,39 @@ from config import ASR_RATE, Paths, TTS_KNOBS, TTS_RATE, VAD_FRAME, emit, load_s
 from runtime import Chatterbox, boot, gemma_stream, require_alive, stop_all, transcribe
 
 
+STOP_PHRASES = {
+    "stop", "stop speaking", "please stop", "that's enough", "thats enough",
+    "quiet", "silence", "przestan", "przestań", "przestan mowic", "przestań mówić",
+    "dosyc", "dość", "cicho", "milcz",
+}
+BACKCHANNELS = {
+    "yeah", "yes", "yep", "yup", "ok", "okay", "mhm", "mm", "uh", "um", "aha",
+    "uh huh", "huh", "right", "sure", "tak", "no", "nie", "aha", "okej",
+}
+
+
 def spoken(text: str) -> str:
     text = text.replace("\r", "").strip()
     marker = "Assistant:\n"
     if marker in text:
         text = text.rsplit(marker, 1)[1].strip()
     return text
+
+
+def _folded(text: str) -> str:
+    out = []
+    for ch in text.casefold().replace("\r", " ").replace("\n", " "):
+        out.append(ch if ch.isalnum() or ch.isspace() else " ")
+    return " ".join("".join(out).split())
+
+
+def is_stop_phrase(text: str) -> bool:
+    return _folded(text) in STOP_PHRASES
+
+
+def is_backchannel(text: str) -> bool:
+    folded = _folded(text)
+    return folded in BACKCHANNELS or (len(folded) <= 3 and folded.isalpha())
 
 
 def wav_bytes(pcm: bytes, rate: int) -> bytes:
@@ -36,10 +63,11 @@ class Segmenter:
         self.sent = 0
 
     def take(self, text: str, flush: bool = False) -> list[str]:
-        out, minimum, first, hard = [], min(TTS_KNOBS["first_chars"], TTS_KNOBS["chars"]), TTS_KNOBS["first_chars"], TTS_KNOBS["chars"]
+        out, first, hard, punct_min = [], TTS_KNOBS["first_chars"], TTS_KNOBS["chars"], 8
         while self.sent < len(text):
             pending, cut = text[self.sent:], 0
-            for i in range(minimum - 1, min(len(pending), hard)):
+            limit = min(len(pending), hard)
+            for i in range(punct_min - 1, limit):
                 if pending[i] in ".?!" and (i + 1 == len(pending) or pending[i + 1].isspace()):
                     cut = i + 1
                     break
@@ -47,8 +75,8 @@ class Segmenter:
                 split = max(pending.rfind(" ", 0, first), pending.rfind("\n", 0, first), pending.rfind("\t", 0, first))
                 cut = split + 1 if split >= 0 else min(len(pending), first)
             if not cut and len(pending) >= hard:
-                split = max(pending.rfind(" ", minimum, hard), pending.rfind("\n", minimum, hard), pending.rfind("\t", minimum, hard))
-                cut = split + 1 if split >= minimum else hard
+                split = max(pending.rfind(" ", punct_min, hard), pending.rfind("\n", punct_min, hard), pending.rfind("\t", punct_min, hard))
+                cut = split + 1 if split >= punct_min else hard
             if not cut:
                 cut = len(pending) if flush else 0
             if not cut:
@@ -235,6 +263,12 @@ class Conversation:
             return
         with self.lock:
             epoch = self.epoch
+        if is_stop_phrase(text):
+            emit("user.stop", epoch=epoch, chars=len(text), text=text)
+            return
+        if is_backchannel(text):
+            emit("user.skip", epoch=epoch, reason="backchannel", chars=len(text), text=text)
+            return
         emit("user", epoch=epoch, chars=len(text), text=text)
         self.llm_q.put((epoch, text))
 
