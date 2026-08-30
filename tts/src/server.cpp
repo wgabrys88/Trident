@@ -106,7 +106,7 @@ static void serve(SOCKET client, tts_cpp::chatterbox::Engine& tts) {
     std::thread synth([&] {
         tts_emit("tts.worker.start");
         for (;;) {
-            std::vector<request_t> batch;
+            request_t request;
             {
                 std::unique_lock lock(mutex);
                 changed.wait(lock, [&] { return stop || !pending.empty(); });
@@ -114,38 +114,22 @@ static void serve(SOCKET client, tts_cpp::chatterbox::Engine& tts) {
                     tts_emit("tts.worker.stop");
                     return;
                 }
-                batch.push_back(std::move(pending.front()));
+                request = std::move(pending.front());
                 pending.pop_front();
-                while (!pending.empty()
-                    && pending.front().epoch == batch.front().epoch
-                    && pending.front().response == batch.front().response) {
-                    batch.push_back(std::move(pending.front()));
-                    pending.pop_front();
-                }
             }
 
-            const request_t& first = batch.front();
-            const request_t& last = batch.back();
-            std::vector<std::string> texts;
-            texts.reserve(batch.size());
-            std::size_t chars = 0;
-            for (const auto& request : batch) {
-                chars += request.text.size();
-                texts.push_back(request.text);
-            }
             const auto started = mono_clock::now();
-            const auto queue_us = std::chrono::duration_cast<std::chrono::microseconds>(started - first.queued).count();
-            const std::string batch_ids = ids(first)
-                + ",\"piece_last_id\":" + std::to_string(last.piece)
-                + ",\"pieces\":" + std::to_string(batch.size());
+            const std::string batch_ids = ids(request)
+                + ",\"piece_last_id\":" + std::to_string(request.piece)
+                + ",\"pieces\":1";
             tts_emit("tts.batch.begin", batch_ids
-                + ",\"chars\":" + std::to_string(chars)
-                + ",\"queue_ms\":" + std::to_string(queue_us / 1000.0));
+                + ",\"chars\":" + std::to_string(request.text.size())
+                + ",\"queue_ms\":" + std::to_string(std::chrono::duration_cast<std::chrono::microseconds>(started - request.queued).count() / 1000.0));
             try {
                 std::uint32_t chunks = 0;
                 bool first_pcm = true;
-                tts.synthesize_pieces_streaming(texts, [&](int, const float* data, std::size_t size, int chunk, bool last_chunk) {
-                    if (live.load() != first.epoch) return;
+                tts.synthesize_pieces_streaming({request.text}, [&](int, const float* data, std::size_t size, int chunk, bool last_chunk) {
+                    if (live.load() != request.epoch) return;
                     chunks = std::max(chunks, static_cast<std::uint32_t>(chunk + 1));
                     tts_emit("tts.frame", batch_ids
                         + ",\"chunk_id\":" + std::to_string(chunk)
@@ -158,18 +142,17 @@ static void serve(SOCKET client, tts_cpp::chatterbox::Engine& tts) {
                                 + ",\"chunk_id\":" + std::to_string(chunk)
                                 + ",\"elapsed_ms\":" + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(mono_clock::now() - started).count()));
                         }
-                        pcm(client, first, chunk, data, size);
+                        pcm(client, request, chunk, data, size);
                     }
                 });
-                if (live.load() == first.epoch) {
-                    const std::uint32_t last_chunk = chunks ? chunks - 1 : 0;
-                    for (const auto& request : batch) frame(client, 0, request, last_chunk, nullptr, 0);
+                if (live.load() == request.epoch) {
+                    frame(client, 0, request, chunks ? chunks - 1 : 0, nullptr, 0);
                     tts_emit("tts.batch.done", batch_ids
                         + ",\"chunks\":" + std::to_string(chunks)
                         + ",\"elapsed_ms\":" + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(mono_clock::now() - started).count()));
                 }
             } catch (const std::exception& error) {
-                if (live.load() != first.epoch) {
+                if (live.load() != request.epoch) {
                     tts_emit("tts.batch.cancel", batch_ids);
                     continue;
                 }

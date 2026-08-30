@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parent
 MODELS, DATA, THIRD_PARTY, TOOLS, TTS = (ROOT / n for n in ("models", "data", "third_party", "tools", "tts"))
 CHATTERBOX = THIRD_PARTY / "chatterbox.cpp"
 GGML, RUNTIMES, CONVERTER = CHATTERBOX / "ggml", TOOLS / "runtime", TOOLS / "convert"
-CHATTERBOX_URL, CHATTERBOX_REV = "https://github.com/wgabrys88/chatterbox.cpp", "e156270d9dfe02c84986f51f2ff557cdd79d0d29"
+CHATTERBOX_URL, CHATTERBOX_REV = "https://github.com/wgabrys88/chatterbox.cpp", "892b020698205f884f6d198d2344a34e5d05a86e"
 GGML_GIT = ("https://github.com/ggml-org/ggml.git", "58c3805840b516b2a88ff867ccf7bb41dba79951")
 ASR_RATE, TTS_RATE, VAD_FRAME = 16000, 24000, 512
 T3_FILE, PARAKEET_FILE, GEMMA_FILE = "chatterbox-t3-nano-q4_0.gguf", "tdt-0.6b-v3-q4_k.gguf", "gemma-4-E2B_q4_0-it.gguf"
@@ -28,10 +28,10 @@ LLAMA_ZIP = ("https://github.com/ggml-org/llama.cpp/releases/download/b10453/lla
 VOICES = {"trump": ("audio/donald-trump.wav", "ref-trump.wav"), "obama": ("audio/barack-obama.wav", "ref-obama.wav"), "kamala": ("audio/kamala_harris.wav", "ref-kamala.wav")}
 VOICE_HF = "https://huggingface.co/datasets/sdialog/voices-celebrities/resolve/57746b866d470be717097b87ba0428f8dd73e4f4/"
 PORTS = {"parakeet": 17931, "gemma": 17932, "chatterbox": 17933}
-PROMPT = ("ASR may deliver incomplete fragments. If the user has not finished a request or thought, output nothing. "
-          "When a spoken reply is needed now, produce only that reply in English. If the input language differs, preserve meaning while answering in English. "
-          "Spoken prose only: short sentences ending with a period, question mark, or exclamation. No markdown, lists, code, URLs, emoji, or square-bracket tags. "
-          "Expand numbers and abbreviations. Do not mention transcription, models, or reasoning.")
+PROMPT = ("You are the mind of this spoken conversation. Remember what was already said and use it. If the user has not finished a request or thought, or ASR is an incomplete fragment, output nothing. "
+          "When a spoken reply is needed now, answer as a capable partner: useful, direct, specific. Do not narrate that you are thinking or preparing speech. Speak English. If the user used another language, keep their meaning and answer in English. "
+          "Output only words to be read aloud. Short sentences, each ending with a period, question mark, or exclamation mark. "
+          "No markdown, lists, code, URLs, emoji, stage directions, or square-bracket tags. Expand numbers and abbreviations. Do not mention transcription, models, prompts, or reasoning.")
 TTS_KNOBS = {
     "gpu_layers": 99,
     "context": 2048,
@@ -116,6 +116,9 @@ def emit(event: str, **fields) -> None:
         if LOG_FILE is not None:
             with LOG_FILE.open("a", encoding="utf-8", newline="\n") as h:
                 h.write(line + "\n")
+
+def transcript(role: str, text: str) -> None:
+    with _log_lock, run_file(f"transcript-{role}", "txt").open("a", encoding="utf-8", newline="\n") as h: h.write(text); h.flush()
 
 def _thread_failed(args) -> None:
     _failures.put(args)
