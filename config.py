@@ -37,6 +37,7 @@ VOICE_HF = "https://huggingface.co/datasets/sdialog/voices-celebrities/resolve/5
 PORTS = {"parakeet": 17931, "gemma": 17932, "chatterbox": 17933}
 PROMPT = ("You are the mind of this spoken conversation. Remember what was already said and use it. If the user has not finished a request or thought, or ASR is an incomplete fragment, output nothing. "
           "When a spoken reply is needed now, answer as a capable partner: useful, direct, specific. Do not narrate that you are thinking or preparing speech. "
+          "Keep each turn to at most sixty spoken words, even when the request is large. End at a natural sentence so the user can continue the conversation. "
           "Output only words to be read aloud. Short sentences, each ending with a period, question mark, or exclamation mark. "
           "No markdown, lists, code, URLs, emoji, stage directions, or square-bracket tags. Expand numbers and abbreviations. Do not mention transcription, models, prompts, or reasoning.")
 TTS_KNOBS = {
@@ -58,11 +59,11 @@ TTS_KNOBS = {
 TTS_PROFILES = {
     "nano": TTS_KNOBS,
     "turbo": TTS_KNOBS,
-    "v3": {**TTS_KNOBS, "top_k": 0, "top_p": 1., "cfm_steps": 0},
+    "v3": {**TTS_KNOBS, "top_k": 0, "top_p": 1., "cfm_steps": 5},
 }
 V3_LANGUAGES = ("ar", "da", "de", "el", "en", "es", "fi", "fr", "he", "hi", "it", "ja", "ko", "ms", "nl", "no", "pl", "pt", "ru", "sv", "sw", "tr", "zh")
 GEMMA_CONTEXT = 4096
-GEMMA_GEN = {"temperature": 1., "top_p": .95, "top_k": 64, "min_p": 0., "repeat_penalty": 1., "seed": 42, "max_tokens": 1024}
+GEMMA_GEN = {"temperature": 1., "top_p": .95, "top_k": 64, "min_p": 0., "repeat_penalty": 1., "seed": 42, "max_tokens": 256}
 
 
 def detect_hardware() -> tuple[str, str | None, str]:
