@@ -14,7 +14,10 @@ import onnxruntime as ort
 import sounddevice as sd
 from silero_vad_notorch import VADIterator, load_silero_vad
 
-from config import ASR_RATE, GEMMA_CONTEXT, GEMMA_GEN, SMART_TURN_FILE, TTS_RATE, VAD_FRAME, Paths, load_settings, system_prompt, wasapi_device, wasapi_native_rate
+from config import (
+    ASR_RATE, CABLE_CHANNELS, CABLE_RATE, GEMMA_CONTEXT, GEMMA_GEN, SMART_TURN_FILE,
+    TTS_RATE, VAD_FRAME, Paths, cable_device, load_settings, system_prompt,
+)
 from runtime import (
     CancelableHTTP, Residents, RESP_CANCELLED, RESP_CLOSED, RESP_DONE,
     RESP_ERROR, RESP_PCM, gemma_stream, transcribe,
@@ -174,23 +177,11 @@ class Renderer:
         self.paused = False
         self.force_silence = False
         self.pending: set[tuple[int, int, int]] = set()
-        self.starved_at_ns = 0
-        self.starved_missing = 0
-        self.started_audio = False
         self._drained = True
-        self.generation = 0
         self._events: queue.SimpleQueue = queue.SimpleQueue()
 
     def _busy(self) -> None:
         self._drained = False
-        self.generation += 1
-
-    def _finish_starvation(self, reason: str) -> None:
-        if not self.starved_at_ns:
-            return
-        self._events.put(("starved", (self.epoch, time.perf_counter_ns() - self.starved_at_ns, self.starved_missing, reason)))
-        self.starved_at_ns = 0
-        self.starved_missing = 0
 
     def set_pending(self, pending: set[tuple[int, int, int]]) -> None:
         with self.lock:
@@ -199,20 +190,16 @@ class Renderer:
             live = any(identity[0] == self.epoch for identity in pending)
             if changed and live:
                 self._busy()
-            if not live:
-                self._finish_starvation("terminal")
 
     def put(self, entry: PCMEntry) -> bool:
         with self.lock:
             if entry.epoch != self.epoch:
                 self._events.put(("late", entry)); return False
-            self._finish_starvation("pcm")
             self.entries.append(entry); self._busy()
             return True
 
     def pause(self) -> None:
         with self.lock:
-            self._finish_starvation("paused")
             self.paused = True; self._busy()
 
     def resume(self) -> None:
@@ -221,10 +208,9 @@ class Renderer:
 
     def advance(self, epoch: int) -> int:
         with self.lock:
-            self._finish_starvation("epoch-cutover")
             dropped = sum(len(e.pcm) - e.offset for e in self.entries)
             self.entries.clear(); self.epoch = epoch; self.paused = False; self.force_silence = True
-            self.started_audio = False; self._busy()
+            self._busy()
             return dropped
 
     def render(self) -> tuple[bytes, bool, bool]:
@@ -245,21 +231,15 @@ class Renderer:
                 count = min(len(block) - wrote, len(entry.pcm) - entry.offset)
                 block[wrote:wrote + count] = entry.pcm[entry.offset:entry.offset + count]
                 wrote += count; entry.offset += count; had_pcm = had_pcm or count > 0
-                if count: self.started_audio = True
                 if entry.offset == len(entry.pcm): self.entries.popleft()
             live_pending = any(identity[0] == self.epoch for identity in self.pending)
-            if wrote < len(block) and live_pending and self.started_audio and not self.starved_at_ns:
-                self.starved_at_ns = time.perf_counter_ns(); self.starved_missing = len(block) - wrote
             if not self.entries and not live_pending and not self.force_silence:
-                self._finish_starvation("terminal"); self._drained = True
+                self._drained = True
         return bytes(block), had_pcm, False
 
-    def drain_state(self) -> tuple[bool, int]:
-        with self.lock:
-            return self._drained and not self.entries and not self.force_silence, self.generation
-
     def drained(self) -> bool:
-        return self.drain_state()[0]
+        with self.lock:
+            return self._drained and not self.entries and not self.force_silence
 
     def check(self) -> None:
         while not self._events.empty():
@@ -268,69 +248,18 @@ class Renderer:
                 e = value; self.journal.emit("playback", "dropped", epoch=e.epoch, live_epoch=self.epoch, response_id=e.response, piece_id=e.piece, chunk_id=e.chunk, bytes=len(e.pcm) - e.offset)
             elif event == "silenced":
                 self.journal.emit("playback", "silenced", epoch=value, blocks=1)
-            elif event == "starved":
-                epoch, ns, missing, reason = value
-                self.journal.emit("playback", "starved", epoch=epoch, starvation_ms=round(ns / 1e6, 3), missing_bytes=missing, block_ms=round(BLOCK_SECONDS * 1000, 3), ended_by=reason)
 
 
-class WavSink:
-    def __init__(self, path: Path, renderer: Renderer, paths: Paths) -> None:
-        self.path, self.renderer, self.paths = Path(path), renderer, paths
-        self.stop_event = threading.Event(); self.thread: threading.Thread | None = None
-        self.file = None; self.wav = None; self.virtual_ns = 0; self.drain_reported = False
-        self.commit_lock = threading.Lock(); self.committed_generation = -1
-
-    def open(self) -> None:
-        self.file = self.path.open("xb")
-        self.wav = wave.open(self.file, "wb"); self.wav.setparams((1, 2, TTS_RATE, 0, "NONE", "not compressed"))
-        self.virtual_ns = time.perf_counter_ns()
-        self.thread = self.paths.supervisor.start("wav-sink", self._loop)
-        self.paths.journal.emit("playback", "sink.ready", type="wav", path=str(self.path), rate=TTS_RATE, channels=1, sample_format="pcm16", block=VAD_FRAME)
-
-    def _loop(self) -> None:
-        deadline = time.perf_counter()
-        while not self.stop_event.is_set():
-            block, _, _ = self.renderer.render(); self.wav.writeframesraw(block)
-            drained, generation = self.renderer.drain_state()
-            with self.commit_lock:
-                self.committed_generation = generation if drained else -1
-            self.virtual_ns += round(BLOCK_SECONDS * 1e9)
-            deadline += BLOCK_SECONDS
-            self.stop_event.wait(max(0.0, deadline - time.perf_counter()))
-
-    def drained(self) -> bool:
-        drained, generation = self.renderer.drain_state()
-        with self.commit_lock:
-            committed = drained and self.committed_generation == generation
-        if committed and not self.drain_reported:
-            self.paths.journal.emit("playback", "drained", type="wav", virtual_ns=self.virtual_ns); self.drain_reported = True
-        elif not committed:
-            self.drain_reported = False
-        return committed
-
-    def close(self) -> None:
-        self.stop_event.set()
-        failure = None
-        try: _join_or_fail(self.thread, "wav-sink")
-        except BaseException as error: failure = error
-        if self.wav is not None: self.wav.close(); self.wav = None
-        if self.file is not None and not self.file.closed: self.file.close()
-        self.paths.journal.emit("playback", "sink.stopped", type="wav", path=str(self.path))
-        if failure is not None: raise failure
-
-
-class SpeakerSink:
+class CableSink:
     def __init__(self, renderer: Renderer, paths: Paths) -> None:
         self.renderer, self.paths = renderer, paths
         self.stream = None; self.native = np.empty(0, dtype=np.float32); self.offset = 0; self.error = None
-        self.native_rate = 0; self.resampler = None; self.drain_deadline = 0.0; self.drain_reported = False
-        self.callback_frames = 0; self.callback_reported = False
+        self.resampler = StatefulResampler(TTS_RATE, CABLE_RATE); self.drain_deadline = 0.0; self.drain_reported = False
 
     def _callback(self, outdata, frames, timing, status) -> None:
         if status:
-            self.error = RuntimeError(f"speaker: {status}"); raise sd.CallbackAbort
-        if not self.callback_frames: self.callback_frames = frames
-        target = np.frombuffer(outdata, dtype="<f4", count=frames); written = 0
+            self.error = RuntimeError(f"CABLE render: {status}"); raise sd.CallbackAbort
+        target = np.frombuffer(outdata, dtype="<f4", count=frames * CABLE_CHANNELS).reshape(frames, CABLE_CHANNELS); written = 0
         while written < frames:
             if self.offset >= self.native.size:
                 block, had_pcm, forced_silence = self.renderer.render()
@@ -342,17 +271,17 @@ class SpeakerSink:
             count = min(frames - written, self.native.size - self.offset)
             if count <= 0:
                 target[written:] = 0; break
-            target[written:written + count] = self.native[self.offset:self.offset + count]
+            mono = self.native[self.offset:self.offset + count]
+            target[written:written + count] = mono[:, None]
             written += count; self.offset += count
 
     def open(self) -> None:
-        index, device, host = wasapi_device("output")
-        self.native_rate = wasapi_native_rate(device); self.resampler = StatefulResampler(TTS_RATE, self.native_rate)
+        index, device, host = cable_device("output")
         extra = sd.WasapiSettings(exclusive=False, auto_convert=False, explicit_sample_format=True)
-        sd.check_output_settings(device=index, channels=1, dtype="float32", samplerate=self.native_rate, extra_settings=extra)
-        self.stream = sd.RawOutputStream(samplerate=self.native_rate, blocksize=0, device=index, channels=1, dtype="float32", latency="low", extra_settings=extra, callback=self._callback)
+        sd.check_output_settings(device=index, channels=CABLE_CHANNELS, dtype="float32", samplerate=CABLE_RATE, extra_settings=extra)
+        self.stream = sd.RawOutputStream(samplerate=CABLE_RATE, blocksize=0, device=index, channels=CABLE_CHANNELS, dtype="float32", latency="low", extra_settings=extra, callback=self._callback)
         self.stream.start()
-        self.paths.journal.emit("playback", "sink.ready", type="speaker", device=device["name"], host_api=host["name"], mode="wasapi-shared-low-latency", native_rate=self.native_rate, render_rate=TTS_RATE, advertised_low_latency=device.get("default_low_output_latency"), negotiated_latency=self.stream.latency, configured_block=0, render_block=VAD_FRAME)
+        self.paths.journal.emit("playback", "sink.ready", type="cable", device=device["name"], host_api=host["name"], channels=CABLE_CHANNELS, native_rate=CABLE_RATE, render_rate=TTS_RATE, auto_convert=False, negotiated_latency=self.stream.latency)
 
     def drained(self) -> bool:
         if not self.renderer.drained(): return False
@@ -360,125 +289,69 @@ class SpeakerSink:
         now = float(getattr(self.stream, "time", 0.0)) if self.stream is not None else time.monotonic()
         if now >= self.drain_deadline:
             if not self.drain_reported:
-                self.paths.journal.emit("playback", "drained", type="speaker", dac_time=self.drain_deadline); self.drain_reported = True
+                self.paths.journal.emit("playback", "drained", type="cable", dac_time=self.drain_deadline); self.drain_reported = True
             return True
         return False
 
     def check(self) -> None:
         if self.error is not None: raise self.error
-        if self.callback_frames and not self.callback_reported:
-            self.paths.journal.emit("playback", "sink.negotiated", type="speaker", mode="wasapi-shared-low-latency", native_rate=self.native_rate, callback_block=self.callback_frames, callback_period_ms=round(self.callback_frames * 1000 / self.native_rate, 3), negotiated_latency=self.stream.latency)
-            self.callback_reported = True
 
     def close(self) -> None:
         if self.stream is not None:
             self.stream.stop(); self.stream.close(); self.stream = None
-        self.paths.journal.emit("playback", "sink.stopped", type="speaker")
+        self.paths.journal.emit("playback", "sink.stopped", type="cable")
 
 
-class WavSource:
-    finite = True
-    def __init__(self, path: Path, frame_cb, eof_cb, paths: Paths, candidate_silence_ms: int) -> None:
-        self.path, self.frame_cb, self.eof_cb, self.paths = Path(path), frame_cb, eof_cb, paths
-        frame_ms = VAD_FRAME * 1000 / ASR_RATE
-        self.tail_frames = max(2, int(np.ceil(candidate_silence_ms / frame_ms)) + 2)
-        self.stop_event = threading.Event(); self.thread = None
-
-    def open(self) -> None:
-        self.thread = self.paths.supervisor.start("wav-source", self._loop)
-        self.paths.journal.emit("capture", "source.ready", type="wav", path=str(self.path), native_rate=TTS_RATE, capture_rate=ASR_RATE, block=VAD_FRAME)
-
-    def _loop(self) -> None:
-        resampler = StatefulResampler(TTS_RATE, ASR_RATE); pending = np.empty(0, dtype=np.float32)
-        deadline = time.perf_counter()
-        with wave.open(str(self.path), "rb") as src:
-            while not self.stop_event.is_set():
-                raw = src.readframes(768)
-                if not raw: break
-                samples = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
-                pending = np.concatenate((pending, resampler.feed(samples)))
-                while pending.size >= VAD_FRAME:
-                    self.frame_cb(pending[:VAD_FRAME]); pending = pending[VAD_FRAME:]
-                    deadline += VAD_FRAME / ASR_RATE
-                    self.stop_event.wait(max(0.0, deadline - time.perf_counter()))
-        if not self.stop_event.is_set():
-            if pending.size:
-                pending = np.pad(pending, (0, VAD_FRAME - pending.size)); self.frame_cb(pending[:VAD_FRAME])
-            for _ in range(self.tail_frames):
-                self.frame_cb(np.zeros(VAD_FRAME, dtype=np.float32)); deadline += VAD_FRAME / ASR_RATE
-                self.stop_event.wait(max(0.0, deadline - time.perf_counter()))
-            self.eof_cb()
-            self.paths.journal.emit("capture", "source.eof", type="wav")
-
-    def close(self) -> None:
-        self.stop_event.set()
-        _join_or_fail(self.thread, "wav-source")
-
-
-class MicrophoneSource:
-    finite = False
-    def __init__(self, frame_cb, _eof_cb, paths: Paths) -> None:
+class CableSource:
+    def __init__(self, frame_cb, paths: Paths) -> None:
         self.frame_cb, self.paths = frame_cb, paths; self.stream = None; self.error = None
-        self.native_rate = 0; self.resampler = None; self.pending = np.empty(0, dtype=np.float32)
-        self.callback_frames = 0; self.callback_reported = False
+        self.resampler = StatefulResampler(CABLE_RATE, ASR_RATE); self.pending = np.empty(0, dtype=np.float32)
 
     def _callback(self, indata, frames, _timing, status) -> None:
         if status:
-            self.error = RuntimeError(f"microphone: {status}"); raise sd.CallbackAbort
-        if not self.callback_frames: self.callback_frames = frames
-        samples = np.frombuffer(indata, dtype="<f4", count=frames)
+            self.error = RuntimeError(f"CABLE capture: {status}"); raise sd.CallbackAbort
+        samples = np.frombuffer(indata, dtype="<f4", count=frames * CABLE_CHANNELS).reshape(frames, CABLE_CHANNELS).mean(axis=1)
         self.pending = np.concatenate((self.pending, self.resampler.feed(samples)))
         while self.pending.size >= VAD_FRAME:
             self.frame_cb(self.pending[:VAD_FRAME]); self.pending = self.pending[VAD_FRAME:]
 
     def open(self) -> None:
-        index, device, host = wasapi_device("input")
-        self.native_rate = wasapi_native_rate(device); self.resampler = StatefulResampler(self.native_rate, ASR_RATE)
+        index, device, host = cable_device("input")
         extra = sd.WasapiSettings(exclusive=False, auto_convert=False, explicit_sample_format=True)
-        sd.check_input_settings(device=index, channels=1, dtype="float32", samplerate=self.native_rate, extra_settings=extra)
-        self.stream = sd.RawInputStream(samplerate=self.native_rate, blocksize=0, device=index, channels=1, dtype="float32", latency="low", extra_settings=extra, callback=self._callback)
+        sd.check_input_settings(device=index, channels=CABLE_CHANNELS, dtype="float32", samplerate=CABLE_RATE, extra_settings=extra)
+        self.stream = sd.RawInputStream(samplerate=CABLE_RATE, blocksize=0, device=index, channels=CABLE_CHANNELS, dtype="float32", latency="low", extra_settings=extra, callback=self._callback)
         self.stream.start()
-        self.paths.journal.emit("capture", "source.ready", type="microphone", device=device["name"], host_api=host["name"], mode="wasapi-shared-low-latency", native_rate=self.native_rate, capture_rate=ASR_RATE, advertised_low_latency=device.get("default_low_input_latency"), negotiated_latency=self.stream.latency, configured_block=0, capture_block=VAD_FRAME)
+        self.paths.journal.emit("capture", "source.ready", type="cable", device=device["name"], host_api=host["name"], channels=CABLE_CHANNELS, native_rate=CABLE_RATE, capture_rate=ASR_RATE, auto_convert=False, negotiated_latency=self.stream.latency)
 
     def check(self) -> None:
         if self.error is not None: raise self.error
-        if self.callback_frames and not self.callback_reported:
-            self.paths.journal.emit("capture", "source.negotiated", type="microphone", mode="wasapi-shared-low-latency", native_rate=self.native_rate, callback_block=self.callback_frames, callback_period_ms=round(self.callback_frames * 1000 / self.native_rate, 3), negotiated_latency=self.stream.latency)
-            self.callback_reported = True
 
     def close(self) -> None:
         if self.stream is not None:
             self.stream.stop(); self.stream.close(); self.stream = None
-        self.paths.journal.emit("capture", "source.stopped", type="microphone")
+        self.paths.journal.emit("capture", "source.stopped", type="cable")
 
 
 class Capture:
-    def __init__(self, paths: Paths, input_file: Path | None, settings: dict, on_start, on_utterance) -> None:
+    def __init__(self, paths: Paths, settings: dict, on_start, on_utterance) -> None:
         self.paths, self.journal = paths, paths.journal; self.on_start, self.on_utterance = on_start, on_utterance
-        self.candidate_silence_ms = int(settings["candidate_silence_ms"])
-        self.vad = VADIterator(load_silero_vad(onnx=True), threshold=.5, sampling_rate=ASR_RATE, min_silence_duration_ms=self.candidate_silence_ms, speech_pad_ms=0)
+        self.vad = VADIterator(load_silero_vad(onnx=True), threshold=.5, sampling_rate=ASR_RATE, min_silence_duration_ms=int(settings["candidate_silence_ms"]), speech_pad_ms=0)
         self.smart = SmartTurn(paths.models_dir / SMART_TURN_FILE, settings["completion_threshold"], settings["acoustic_context_seconds"])
-        self.context_seconds = float(settings["acoustic_context_seconds"])
         self.frames: queue.SimpleQueue = queue.SimpleQueue(); self.decisions: queue.SimpleQueue = queue.SimpleQueue()
         self.audio = bytearray(); self.state_lock = threading.Lock(); self.active = False; self.utterance = False
-        self.utterance_id = 0; self.generation = 0; self.accepted_turns = 0; self.saw_speech = False
-        self.input_ended = threading.Event(); self.finite_complete = threading.Event(); self.incomplete = threading.Event()
-        source_cls = WavSource if input_file is not None else MicrophoneSource
-        self.source = source_cls(input_file, self.frame, self.eof, paths, self.candidate_silence_ms) if input_file is not None else source_cls(self.frame, self.eof, paths)
+        self.utterance_id = 0; self.generation = 0; self.accepted_turns = 0
+        self.source = CableSource(self.frame, paths)
         self.vad_thread = self.decision_thread = None
 
     def frame(self, samples: np.ndarray) -> None:
         if self.active: self.frames.put(np.asarray(samples, dtype="<f4").tobytes())
-
-    def eof(self) -> None:
-        self.input_ended.set(); self.frames.put(_EOF)
 
     def open(self) -> None:
         self.active = True
         self.decision_thread = self.paths.supervisor.start("smart-turn", self._decide)
         self.vad_thread = self.paths.supervisor.start("vad", self._loop)
         self.source.open()
-        self.journal.emit("capture", "ready", finite=self.source.finite)
+        self.journal.emit("capture", "ready")
 
     def _decide(self) -> None:
         self.journal.emit("smart-turn", "start")
@@ -497,11 +370,7 @@ class Capture:
                     self.journal.emit("smart-turn", "cancelled", utterance_id=utterance_id, candidate_generation=generation, reason="candidate-resumed-or-changed")
             if accepted:
                 self.journal.emit("capture", "utterance.completed", utterance_id=utterance_id, input_s=round(len(accepted) / (ASR_RATE * 4), 3)); self.on_utterance(utterance_id, accepted)
-        with self.state_lock:
-            unfinished = self.utterance or self.accepted_turns == 0
-        if self.source.finite:
-            (self.incomplete if unfinished else self.finite_complete).set()
-        self.journal.emit("smart-turn", "stopped", incomplete=unfinished, accepted_turns=self.accepted_turns)
+        self.journal.emit("smart-turn", "stopped", accepted_turns=self.accepted_turns)
 
     def _loop(self) -> None:
         self.journal.emit("vad", "start")
@@ -512,7 +381,7 @@ class Capture:
                 event = self.vad(np.frombuffer(pcm, dtype="<f4")) or {}
                 if "start" in event:
                     if not self.utterance:
-                        self.audio.clear(); self.utterance = True; self.saw_speech = True; self.utterance_id += 1; self.generation += 1
+                        self.audio.clear(); self.utterance = True; self.utterance_id += 1; self.generation += 1
                         self.on_start(self.utterance_id); self.journal.emit("vad", "speech.started", utterance_id=self.utterance_id, candidate_generation=self.generation)
                     else:
                         self.generation += 1; self.journal.emit("vad", "speech.resumed", utterance_id=self.utterance_id, candidate_generation=self.generation)
@@ -527,23 +396,22 @@ class Capture:
     def check(self) -> None:
         if hasattr(self.source, "check"): self.source.check()
         self.paths.supervisor.check()
-        if self.incomplete.is_set(): raise RuntimeError("finite input ended before Smart Turn accepted the utterance")
 
     def close(self) -> None:
         if not self.active: return
         self.active = False; self.source.close()
-        if not self.input_ended.is_set(): self.frames.put(_EOF)
+        self.frames.put(_EOF)
         _join_or_fail(self.vad_thread, "vad")
         _join_or_fail(self.decision_thread, "smart-turn")
         self.journal.emit("capture", "stopped")
 
 
 class Synthesis:
-    def __init__(self, paths: Paths, residents: Residents, output_file: Path | None) -> None:
+    def __init__(self, paths: Paths, residents: Residents) -> None:
         self.paths, self.journal, self.residents = paths, paths.journal, residents
         residents.require_alive("chatterbox")
         self.lock = threading.Lock(); self.epoch = 0; self.response_id = 0; self.pending: set[tuple[int, int, int]] = set(); self.terminal: set[tuple[int, int, int]] = set()
-        self.tts = residents.chatterbox_client(); self.renderer = Renderer(paths); self.sink = WavSink(output_file, self.renderer, paths) if output_file else SpeakerSink(self.renderer, paths)
+        self.tts = residents.chatterbox_client(); self.renderer = Renderer(paths); self.sink = CableSink(self.renderer, paths)
         self.reader = None; self.closed = residents.chatterbox_closed; self.active = False; self.first_pcm: set[int] = set()
 
     def start_output(self) -> None:
@@ -650,18 +518,20 @@ class Synthesis:
         if failure is not None:
             raise failure
 
+    def stop(self, cancel: bool) -> None:
+        self.stop_output(cancel)
+
 
 class Conversation(Synthesis):
-    def __init__(self, paths: Paths, residents: Residents, settings: dict, input_file: Path | None, output_file: Path | None, language: str) -> None:
-        super().__init__(paths, residents, output_file)
+    def __init__(self, paths: Paths, residents: Residents, settings: dict, language: str) -> None:
+        super().__init__(paths, residents)
         self.settings, self.language = settings, language
         self.parakeet, self.gemma = residents.require_alive("parakeet"), residents.require_alive("gemma")
         self.asr_http, self.gemma_http = CancelableHTTP(), CancelableHTTP()
         self.recognition_q: queue.SimpleQueue = queue.SimpleQueue(); self.generation_q: queue.SimpleQueue = queue.SimpleQueue()
-        self.work_lock = threading.Lock(); self.recognition_outstanding = self.generation_outstanding = 0
         self.latest_utterance = 0; self.stopping = False
         self.history: list[dict[str, str]] = []; self.fragment = ""
-        self.capture = Capture(paths, input_file, settings, self._speech_start, self._utterance)
+        self.capture = Capture(paths, settings, self._speech_start, self._utterance)
         self.recognition_thread = self.generation_thread = None
 
     def start(self) -> None:
@@ -674,7 +544,6 @@ class Conversation(Synthesis):
         self.latest_utterance = utterance_id; self.asr_http.close(); self.pause(utterance_id)
 
     def _utterance(self, utterance_id: int, pcm: bytes) -> None:
-        with self.work_lock: self.recognition_outstanding += 1
         self.recognition_q.put((utterance_id, pcm, time.perf_counter_ns()))
         self.journal.emit("asr", "queued", utterance_id=utterance_id, input_s=round(len(pcm) / (ASR_RATE * 4), 3))
 
@@ -682,33 +551,27 @@ class Conversation(Synthesis):
         while True:
             item = self.recognition_q.get()
             if item is _EOF: break
+            if self.stopping: continue
+            utterance_id, pcm, queued_ns = item
+            dequeued_ns = time.perf_counter_ns(); duration = len(pcm) / (ASR_RATE * 4); started = time.perf_counter()
+            audio = np.frombuffer(pcm, dtype="<f4"); wav = wav_bytes((np.clip(audio, -1, 1) * 32767).astype("<i2").tobytes())
             try:
-                if self.stopping: continue
-                utterance_id, pcm, queued_ns = item
-                dequeued_ns = time.perf_counter_ns(); duration = len(pcm) / (ASR_RATE * 4); started = time.perf_counter()
-                audio = np.frombuffer(pcm, dtype="<f4"); wav = wav_bytes((np.clip(audio, -1, 1) * 32767).astype("<i2").tobytes())
-                try:
-                    text = transcribe(self.parakeet, wav, self.asr_http)
-                except Exception:
-                    if self.stopping or utterance_id != self.latest_utterance: text = ""
-                    else: raise
-                total = time.perf_counter() - started; live = utterance_id == self.latest_utterance
-                self.journal.emit("asr", "completed", utterance_id=utterance_id, accepted=live and bool(text), input_s=round(duration, 3), total_ms=round(total * 1000, 3), rtf=round(total / duration, 3), queue_ms=round((dequeued_ns - queued_ns) / 1e6, 3), chars=len(text))
-                if not live: continue
-                if not text:
-                    self.resume(utterance_id); continue
-                self.journal.transcript("user", text); print(f"\nuser: {text}", flush=True)
-                intent = classify_utterance(text); self.journal.emit("conversation", "intent", utterance_id=utterance_id, intent=intent)
-                if intent == "backchannel":
-                    self.resume(utterance_id)
-                elif intent == "stop":
-                    self.gemma_http.close(); self.advance("stop", utterance_id)
-                else:
-                    self.gemma_http.close(); epoch = self.advance("request", utterance_id)
-                    with self.work_lock: self.generation_outstanding += 1
-                    self.generation_q.put((epoch, utterance_id, text))
-            finally:
-                with self.work_lock: self.recognition_outstanding -= 1
+                text = transcribe(self.parakeet, wav, self.asr_http)
+            except Exception:
+                if self.stopping or utterance_id != self.latest_utterance: text = ""
+                else: raise
+            total = time.perf_counter() - started; live = utterance_id == self.latest_utterance
+            self.journal.emit("asr", "completed", utterance_id=utterance_id, accepted=live and bool(text), input_s=round(duration, 3), total_ms=round(total * 1000, 3), rtf=round(total / duration, 3), queue_ms=round((dequeued_ns - queued_ns) / 1e6, 3), chars=len(text))
+            if not live: continue
+            if not text:
+                self.resume(utterance_id); continue
+            self.journal.transcript("user", text); print(f"\nuser: {text}", flush=True)
+            intent = classify_utterance(text); self.journal.emit("conversation", "intent", utterance_id=utterance_id, intent=intent)
+            if intent == "backchannel": self.resume(utterance_id)
+            elif intent == "stop": self.gemma_http.close(); self.advance("stop", utterance_id)
+            else:
+                self.gemma_http.close(); epoch = self.advance("request", utterance_id)
+                self.generation_q.put((epoch, utterance_id, text))
 
     def _system(self) -> str:
         return system_prompt(self.language, str(self.settings.get("system_prompt") or ""))
@@ -738,49 +601,41 @@ class Conversation(Synthesis):
         while True:
             item = self.generation_q.get()
             if item is _EOF: break
+            if self.stopping: continue
+            epoch, utterance_id, prompt = item
+            merged = " ".join(part for part in (self.fragment, prompt) if part).strip()
+            with self.lock:
+                self.response_id += 1; response_id = self.response_id
+            segmenter = Segmenter(); raw = ""; piece_id = 0; started = time.perf_counter(); first = True
+            messages = self._messages(merged)
+            self.journal.emit("gemma", "start", epoch=epoch, utterance_id=utterance_id, response_id=response_id, chars=len(merged), retained_turns=len(messages) - 2)
+            cancelled = False
             try:
-                if self.stopping: continue
-                epoch, utterance_id, prompt = item
-                merged = " ".join(part for part in (self.fragment, prompt) if part).strip()
-                with self.lock:
-                    self.response_id += 1; response_id = self.response_id
-                segmenter = Segmenter(); raw = ""; piece_id = 0; started = time.perf_counter(); first = True
-                messages = self._messages(merged)
-                self.journal.emit("gemma", "start", epoch=epoch, utterance_id=utterance_id, response_id=response_id, chars=len(merged), retained_turns=len(messages) - 2)
-                cancelled = False
-                try:
-                    stream = gemma_stream(self.gemma, messages, self.gemma_http)
-                    for delta in stream:
-                        with self.lock: live = epoch == self.epoch
-                        if not live: cancelled = True; break
-                        if first:
-                            first = False; self.journal.emit("gemma", "first_result", epoch=epoch, response_id=response_id, latency_ms=round((time.perf_counter() - started) * 1000, 3))
-                        raw += delta
-                        for unit in segmenter.take(spoken(raw)):
-                            piece_id += 1; self.send_sentence(epoch, response_id, piece_id, unit)
-                except Exception:
+                stream = gemma_stream(self.gemma, messages, self.gemma_http)
+                for delta in stream:
                     with self.lock: live = epoch == self.epoch
-                    if live and not self.stopping: raise
-                    cancelled = True
+                    if not live: cancelled = True; break
+                    if first:
+                        first = False; self.journal.emit("gemma", "first_result", epoch=epoch, response_id=response_id, latency_ms=round((time.perf_counter() - started) * 1000, 3))
+                    raw += delta
+                    for unit in segmenter.take(spoken(raw)):
+                        piece_id += 1; self.send_sentence(epoch, response_id, piece_id, unit)
+            except Exception:
                 with self.lock: live = epoch == self.epoch
-                answer = spoken(raw)
-                if cancelled or not live:
-                    if answer: self.journal.transcript("assistant", answer)
-                    self.journal.emit("gemma", "cancelled", epoch=epoch, response_id=response_id, elapsed_ms=round((time.perf_counter() - started) * 1000, 3), chars=len(answer)); continue
-                for unit in segmenter.take(answer, True):
-                    piece_id += 1; self.send_sentence(epoch, response_id, piece_id, unit)
-                if answer:
-                    self.fragment = ""; self.history.extend(({"role": "user", "content": merged}, {"role": "assistant", "content": answer})); self._trim_history(); self.journal.transcript("assistant", answer); print(f"assistant: {answer}", flush=True)
-                else:
-                    self.fragment = merged
-                self.journal.emit("gemma", "completed", epoch=epoch, response_id=response_id, empty=not answer, elapsed_ms=round((time.perf_counter() - started) * 1000, 3), chars=len(answer), pieces=piece_id)
-            finally:
-                with self.work_lock: self.generation_outstanding -= 1
-
-    def finite_done(self) -> bool:
-        if not self.capture.source.finite or not self.capture.finite_complete.is_set(): return False
-        with self.work_lock: outstanding = self.recognition_outstanding + self.generation_outstanding
-        return outstanding == 0 and self.all_acknowledged() and self.live_complete()
+                if live and not self.stopping: raise
+                cancelled = True
+            with self.lock: live = epoch == self.epoch
+            answer = spoken(raw)
+            if cancelled or not live:
+                if answer: self.journal.transcript("assistant", answer)
+                self.journal.emit("gemma", "cancelled", epoch=epoch, response_id=response_id, elapsed_ms=round((time.perf_counter() - started) * 1000, 3), chars=len(answer)); continue
+            for unit in segmenter.take(answer, True):
+                piece_id += 1; self.send_sentence(epoch, response_id, piece_id, unit)
+            if answer:
+                self.fragment = ""; self.history.extend(({"role": "user", "content": merged}, {"role": "assistant", "content": answer})); self._trim_history(); self.journal.transcript("assistant", answer); print(f"assistant: {answer}", flush=True)
+            else:
+                self.fragment = merged
+            self.journal.emit("gemma", "completed", epoch=epoch, response_id=response_id, empty=not answer, elapsed_ms=round((time.perf_counter() - started) * 1000, 3), chars=len(answer), pieces=piece_id)
 
     def check(self) -> None:
         self.capture.check(); super().check()
@@ -801,8 +656,8 @@ class Conversation(Synthesis):
 
 
 class TTSMode(Synthesis):
-    def __init__(self, paths: Paths, residents: Residents, output_file: Path | None, primary: str, replacement: str | None, interrupt_after: float | None) -> None:
-        super().__init__(paths, residents, output_file); self.primary, self.replacement, self.interrupt_after = primary, replacement, interrupt_after
+    def __init__(self, paths: Paths, residents: Residents, primary: str, replacement: str | None, interrupt_after: float | None) -> None:
+        super().__init__(paths, residents); self.primary, self.replacement, self.interrupt_after = primary, replacement, interrupt_after
         self.ready_ns = self.started_ns = 0
 
     def _input(self, text: str, source: str, injected_ns: int) -> None:
@@ -827,32 +682,21 @@ class TTSMode(Synthesis):
             self.paths.supervisor.wait(.01)
 
 
-def launch(paths: Paths, family: str = "nano", language: str = "en", input_file: Path | None = None, output_file: Path | None = None) -> None:
-    residents = Residents(paths); conversation = None; interrupted = False
-    primary = None
+def launch(paths: Paths, family: str = "nano", language: str = "en", primary: str | None = None,
+           replacement: str | None = None, interrupt_after: float | None = None) -> None:
+    residents = Residents(paths); mode = None; failure = None
     try:
-        residents.boot(family, language); conversation = Conversation(paths, residents, load_settings(paths.data_dir), input_file, output_file, language); conversation.start()
-        paths.journal.emit("main", "ready", family=family, language=language, finite_input=input_file is not None); print("trident.ready", flush=True)
-        while True:
-            conversation.check()
-            if conversation.finite_done(): break
-            paths.supervisor.wait(.02)
+        residents.boot(family, language)
+        if paths.command == "talk":
+            mode = Conversation(paths, residents, load_settings(paths.data_dir), language); mode.start()
+            paths.journal.emit("main", "ready", family=family, language=language); print("trident.ready", flush=True)
+            while True: mode.check(); paths.supervisor.wait(.02)
+        else:
+            assert primary is not None
+            mode = TTSMode(paths, residents, primary, replacement, interrupt_after); mode.start(); mode.run()
     except BaseException as error:
-        interrupted = True; primary = (error, error.__traceback__)
+        failure = (error, error.__traceback__)
     actions = []
-    if conversation is not None: actions.append(("conversation", lambda: conversation.stop(cancel=interrupted)))
-    actions.extend((("residents", residents.stop), ("supervisor", lambda: paths.supervisor.join(1))))
-    _finish_cleanup(paths, primary, actions)
-
-
-def launch_tts(paths: Paths, family: str, language: str, primary: str, replacement: str | None, interrupt_after: float | None, output_file: Path | None = None) -> None:
-    residents = Residents(paths); mode = None; interrupted = False
-    failure = None
-    try:
-        residents.boot(family, language); mode = TTSMode(paths, residents, output_file, primary, replacement, interrupt_after); mode.start(); mode.run()
-    except BaseException as error:
-        interrupted = True; failure = (error, error.__traceback__)
-    actions = []
-    if mode is not None: actions.append(("synthesis", lambda: mode.stop_output(cancel=interrupted)))
+    if mode is not None: actions.append((paths.command, lambda: mode.stop(cancel=failure is not None)))
     actions.extend((("residents", residents.stop), ("supervisor", lambda: paths.supervisor.join(1))))
     _finish_cleanup(paths, failure, actions)

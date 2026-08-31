@@ -74,23 +74,8 @@ class Residents:
                 line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
                 if name in _READY and _READY[name] in line:
                     ready.set()
-                if not line.startswith("{"):
-                    continue
-                try:
-                    data = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                event = str(data.pop("event", "native"))
-                component = str(data.pop("component", name))
-                if name == "chatterbox" and event == "server.ready":
+                if name == "chatterbox" and '"event":"server.ready"' in line:
                     ready.set()
-                native = {
-                    f"native_{key}": value for key, value in data.items()
-                    if key in ("schema_version", "run_id", "sequence", "wall_timestamp", "monotonic_ns")
-                }
-                for key in tuple(native):
-                    data.pop(key.removeprefix("native_"), None)
-                self.journal.emit(component, event, producer=name, **native, **data)
 
     def _start(self, name: str, cmd: list[str], cwd: Path, timeout: float) -> None:
         env = os.environ.copy(); env.update(VULKAN_ENV)
@@ -223,17 +208,13 @@ class Residents:
         self.journal.emit("resident", "signal.delivered", name=name, pid=proc.pid, signal="CTRL_C_EVENT", scope="resident-console")
 
     def stop(self) -> None:
-        forced: list[str] = []
-        bad_exits: list[str] = []
-        reader_survivors: list[str] = []
-        protocol_errors: list[str] = []
-        signal_errors: list[str] = []
+        failures: list[str] = []
         chatterbox_proc = self.procs.get("chatterbox")
         if chatterbox_proc is not None and chatterbox_proc.poll() is None and not self.chatterbox_closed.is_set():
             try:
                 self._wait_ready("chatterbox", chatterbox_proc); self.close_chatterbox()
             except BaseException as error:
-                protocol_errors.append(str(error)); self.journal.failure("resident.chatterbox-close", error)
+                failures.append(f"chatterbox close: {error}"); self.journal.failure("resident.chatterbox-close", error)
         for name, proc in reversed(tuple(self.procs.items())):
             running = proc.poll() is None
             self.journal.emit("resident", "stop", name=name, pid=proc.pid, running=running)
@@ -246,24 +227,22 @@ class Residents:
                         if name != "chatterbox": self._ctrl_c(name, proc)
                         proc.wait(timeout=10)
                 except (ValueError, OSError, subprocess.TimeoutExpired, RuntimeError) as error:
-                    signal_errors.append(f"{name}:{error}")
+                    failures.append(f"{name}: {error}")
                     if proc.poll() is None:
-                        forced.append(name); proc.kill(); proc.wait(timeout=5)
+                        proc.kill(); proc.wait(timeout=5)
             code = proc.wait()
             reader = self.readers.get(name)
             if reader is not None:
                 reader.join(timeout=5)
-                if reader.is_alive(): reader_survivors.append(name)
-            clean = code == 0 and name not in forced
-            if not clean: bad_exits.append(f"{name}:{code}")
+                if reader.is_alive(): failures.append(f"{name}: log reader survived")
+            clean = code == 0
+            if not clean: failures.append(f"{name}: exit {code}")
             self.journal.emit("resident", "stopped", name=name, pid=proc.pid, exit_code=code, clean=clean)
         if self.chatterbox is not None: self.chatterbox.disconnect()
         self.procs.clear(); self.readers.clear(); self.ready.clear(); self.ready_deadlines.clear()
         listening = _listening_ports()
-        if forced or bad_exits or reader_survivors or protocol_errors or signal_errors or listening:
-            detail = {"forced": forced, "bad_exits": bad_exits, "reader_survivors": reader_survivors, "protocol_errors": protocol_errors, "signal_errors": signal_errors, "listeners": listening}
-            self.journal.emit("resident", "failed", error="shutdown survivors", **detail)
-            raise RuntimeError(f"resident shutdown incomplete: {detail}")
+        if listening: failures.append(f"ports survived: {', '.join(listening)}")
+        if failures: raise RuntimeError("resident shutdown incomplete: " + "; ".join(failures))
         self.journal.emit("resident", "drained", ports=list(PORTS.values()))
 
 
