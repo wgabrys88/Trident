@@ -277,11 +277,11 @@ class CableSink:
 
     def open(self) -> None:
         index, device, host = cable_device("output")
-        extra = sd.WasapiSettings(exclusive=False, auto_convert=False, explicit_sample_format=True)
+        extra = sd.WasapiSettings(exclusive=False, auto_convert=True, explicit_sample_format=True)
         sd.check_output_settings(device=index, channels=CABLE_CHANNELS, dtype="float32", samplerate=CABLE_RATE, extra_settings=extra)
         self.stream = sd.RawOutputStream(samplerate=CABLE_RATE, blocksize=0, device=index, channels=CABLE_CHANNELS, dtype="float32", latency="low", extra_settings=extra, callback=self._callback)
         self.stream.start()
-        self.paths.journal.emit("playback", "sink.ready", type="cable", device=device["name"], host_api=host["name"], channels=CABLE_CHANNELS, native_rate=CABLE_RATE, render_rate=TTS_RATE, auto_convert=False, negotiated_latency=self.stream.latency)
+        self.paths.journal.emit("playback", "sink.ready", type="cable", device=device["name"], host_api=host["name"], channels=CABLE_CHANNELS, native_rate=CABLE_RATE, render_rate=TTS_RATE, auto_convert=True, negotiated_latency=self.stream.latency)
 
     def drained(self) -> bool:
         if not self.renderer.drained(): return False
@@ -317,11 +317,11 @@ class CableSource:
 
     def open(self) -> None:
         index, device, host = cable_device("input")
-        extra = sd.WasapiSettings(exclusive=False, auto_convert=False, explicit_sample_format=True)
+        extra = sd.WasapiSettings(exclusive=False, auto_convert=True, explicit_sample_format=True)
         sd.check_input_settings(device=index, channels=CABLE_CHANNELS, dtype="float32", samplerate=CABLE_RATE, extra_settings=extra)
         self.stream = sd.RawInputStream(samplerate=CABLE_RATE, blocksize=0, device=index, channels=CABLE_CHANNELS, dtype="float32", latency="low", extra_settings=extra, callback=self._callback)
         self.stream.start()
-        self.paths.journal.emit("capture", "source.ready", type="cable", device=device["name"], host_api=host["name"], channels=CABLE_CHANNELS, native_rate=CABLE_RATE, capture_rate=ASR_RATE, auto_convert=False, negotiated_latency=self.stream.latency)
+        self.paths.journal.emit("capture", "source.ready", type="cable", device=device["name"], host_api=host["name"], channels=CABLE_CHANNELS, native_rate=CABLE_RATE, capture_rate=ASR_RATE, auto_convert=True, negotiated_latency=self.stream.latency)
 
     def check(self) -> None:
         if self.error is not None: raise self.error
