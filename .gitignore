@@ -5,6 +5,7 @@
 !/config.py
 !/install.py
 !/runtime.py
+!/journal.py
 !/talk.py
 !/tts/
 !/tts/CMakeLists.txt

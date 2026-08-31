@@ -1,35 +1,40 @@
 from __future__ import annotations
 
 import json
-import queue
 import subprocess
 import sys
-import threading
-import time
 from datetime import datetime
 from pathlib import Path
+
+from journal import Journal, WorkerSupervisor, git_identity
 
 ROOT = Path(__file__).resolve().parent
 MODELS, DATA, THIRD_PARTY, TOOLS, TTS = (ROOT / n for n in ("models", "data", "third_party", "tools", "tts"))
 CHATTERBOX = THIRD_PARTY / "chatterbox.cpp"
 GGML, RUNTIMES, CONVERTER = CHATTERBOX / "ggml", TOOLS / "runtime", TOOLS / "convert"
-CHATTERBOX_URL, CHATTERBOX_REV = "https://github.com/wgabrys88/chatterbox.cpp", "892b020698205f884f6d198d2344a34e5d05a86e"
+CHATTERBOX_URL, CHATTERBOX_REV = "https://github.com/wgabrys88/chatterbox.cpp", "4024d602b5c0cb8ef4c4452480791fc42b8b5d0e"
 GGML_GIT = ("https://github.com/ggml-org/ggml.git", "58c3805840b516b2a88ff867ccf7bb41dba79951")
 ASR_RATE, TTS_RATE, VAD_FRAME = 16000, 24000, 512
 T3_FILE, PARAKEET_FILE, GEMMA_FILE = "chatterbox-t3-nano-q4_0.gguf", "tdt-0.6b-v3-q4_k.gguf", "gemma-4-E2B_q4_0-it.gguf"
 PARAKEET_URL = "https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/bf0af9f425fa01809cadec671b3cb672709d13e9/" + PARAKEET_FILE
+PARAKEET_SIZE, PARAKEET_SHA256 = 675200864, "993d73feb4206dadda865ab25bd64b50c48dc4d013c3bf6126a721f28b1d5ee8"
 GEMMA_URL = "https://huggingface.co/google/gemma-4-E2B-it-qat-q4_0-gguf/resolve/675cff42a74c774d6cb76f76d8eacb49b48c9b93/" + GEMMA_FILE
+GEMMA_SIZE, GEMMA_SHA256 = 3349516256, "fa401b55b07ee70a54c6dae3903c783a6e65064312529ea57175cb5f8dec6634"
 SMART_TURN_FILE = "smart-turn-v3.2-cpu.onnx"
 SMART_TURN_URL = "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/f766f81d3cfdf7737ac64aad813d91bbfd56bf93/" + SMART_TURN_FILE
 SMART_TURN_SIZE = 8679182
 SMART_TURN_SHA256 = "2bb026316b14a660486a75b1733cd3fbab8c2fd0314dc9af7be49f8cca967e4f"
-PARAKEET_ZIP = ("https://github.com/mudler/parakeet.cpp/releases/download/v0.5.0/parakeet-v0.5.0-bin-win-vulkan-x64.zip", "parakeet-v0.5.0-bin-win-vulkan-x64.zip")
-LLAMA_ZIP = ("https://github.com/ggml-org/llama.cpp/releases/download/b10453/llama-b10453-bin-win-vulkan-x64.zip", "llama-b10453-bin-win-vulkan-x64.zip")
-VOICES = {"trump": ("audio/donald-trump.wav", "ref-trump.wav"), "obama": ("audio/barack-obama.wav", "ref-obama.wav"), "kamala": ("audio/kamala_harris.wav", "ref-kamala.wav")}
+PARAKEET_ZIP = ("https://github.com/mudler/parakeet.cpp/releases/download/v0.5.0/parakeet-v0.5.0-bin-win-vulkan-x64.zip", "parakeet-v0.5.0-bin-win-vulkan-x64.zip", 0, "717c416fab299755e8140137e3a0115121ce1acb6379d13c60f2f0613f6c13a3")
+LLAMA_ZIP = ("https://github.com/ggml-org/llama.cpp/releases/download/b10621/llama-b10621-bin-win-vulkan-x64.zip", "llama-b10621-bin-win-vulkan-x64.zip", 0, "2672d85bf87c8280d94dee01eb6a86280046878f70a07d786a93637fa9081163")
+VOICES = {
+    "trump": ("audio/donald-trump.wav", "ref-trump.wav", 4210766, "9d8b44d73192e9c04dd241f16177e4c5753bcefadde69e6e24b45e278b821f8c"),
+    "obama": ("audio/barack-obama.wav", "ref-obama.wav", 8454222, "42ba473919a79233690b60b3de56bb3eb0e6587173908a4b83841d30c18cdfc8"),
+    "kamala": ("audio/kamala_harris.wav", "ref-kamala.wav", 7487566, "5dbec60bd5be09cb31436ca6652241aa97a05c8187efbfd02df0c45f5c7aa7ea"),
+}
 VOICE_HF = "https://huggingface.co/datasets/sdialog/voices-celebrities/resolve/57746b866d470be717097b87ba0428f8dd73e4f4/"
 PORTS = {"parakeet": 17931, "gemma": 17932, "chatterbox": 17933}
 PROMPT = ("You are the mind of this spoken conversation. Remember what was already said and use it. If the user has not finished a request or thought, or ASR is an incomplete fragment, output nothing. "
-          "When a spoken reply is needed now, answer as a capable partner: useful, direct, specific. Do not narrate that you are thinking or preparing speech. Speak English. If the user used another language, keep their meaning and answer in English. "
+          "When a spoken reply is needed now, answer as a capable partner: useful, direct, specific. Do not narrate that you are thinking or preparing speech. "
           "Output only words to be read aloud. Short sentences, each ending with a period, question mark, or exclamation mark. "
           "No markdown, lists, code, URLs, emoji, stage directions, or square-bracket tags. Expand numbers and abbreviations. Do not mention transcription, models, prompts, or reasoning.")
 TTS_KNOBS = {
@@ -47,7 +52,6 @@ TTS_KNOBS = {
     "cfm_steps": 1,
     "cfg_weight": .5,
     "exaggeration": .5,
-    "chars": 180,
 }
 TTS_PROFILES = {
     "nano": TTS_KNOBS,
@@ -55,28 +59,34 @@ TTS_PROFILES = {
     "v3": {**TTS_KNOBS, "top_k": 0, "top_p": 1., "cfm_steps": 0},
 }
 V3_LANGUAGES = ("ar", "da", "de", "el", "en", "es", "fi", "fr", "he", "hi", "it", "ja", "ko", "ms", "nl", "no", "pl", "pt", "ru", "sv", "sw", "tr", "zh")
+GEMMA_CONTEXT = 4096
 GEMMA_GEN = {"temperature": 1., "top_p": .95, "top_k": 64, "min_p": 0., "repeat_penalty": 1., "seed": 42, "max_tokens": 1024}
-CONSOLE = False
-LOG_FILE: Path | None = None
-RUN_DIR: Path | None = None
-RUN_PREFIX = ""
-_log_lock = threading.Lock()
-_log_sequence = 0
-_started_ns = time.perf_counter_ns()
-_failures: queue.SimpleQueue = queue.SimpleQueue()
-_failed = threading.Event()
 
-def detect_hardware() -> str:
+
+def detect_hardware() -> tuple[str, str | None, str]:
     if not sys.platform.startswith("win"):
         raise RuntimeError("Trident requires Windows")
-    gpu = subprocess.check_output(["powershell.exe", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name -join ';'"], text=True, encoding="utf-8", errors="replace", timeout=15).lower()
-    if any(n in gpu for n in ("gtx 1050", "gtx 1060", "gtx 1070", "gtx 1080", "titan x (pascal)", "titan xp", "quadro p")):
-        return "pascal"
-    if "iris" in gpu and "xe" in gpu:
-        return "irisxe"
-    raise RuntimeError(f"unsupported GPU: {gpu.strip()}")
+    try:
+        rows = subprocess.check_output(["nvidia-smi", "--query-gpu=name,compute_cap", "--format=csv,noheader,nounits"], text=True, encoding="utf-8", errors="replace", timeout=15).splitlines()
+        for row in rows:
+            name, _, cc = row.rpartition(",")
+            cc = cc.strip()
+            if cc in {"6.0", "6.1", "6.2"}:
+                return "pascal", cc.replace(".", ""), name.strip()
+    except Exception:
+        pass
+    gpu = subprocess.check_output(["powershell.exe", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name -join ';'"], text=True, encoding="utf-8", errors="replace", timeout=15).strip()
+    lower = gpu.casefold()
+    if any(n in lower for n in ("tesla p100", "quadro gp100")):
+        return "pascal", "60", gpu
+    if any(n in lower for n in ("gtx 1050", "gtx 1060", "gtx 1070", "gtx 1080", "titan x (pascal)", "titan xp", "quadro p", "tesla p4", "tesla p40")):
+        return "pascal", "61", gpu
+    if "iris" in lower and "xe" in lower:
+        return "irisxe", None, gpu
+    raise RuntimeError(f"unsupported GPU: {gpu}")
 
-HARDWARE = detect_hardware()
+HARDWARE, CUDA_ARCH, GPU_NAME = detect_hardware()
+TTS_BACKEND = "vulkan"
 VULKAN_ENV = {"GGML_VK_DISABLE_F16": "1"} if HARDWARE == "pascal" else {}
 FLASH_ATTN = "on" if HARDWARE == "pascal" else "off"
 CODEC_QUANT, CODEC_FILE = (("q4_0", "chatterbox-s3gen-nano-irisxe-q4_0-rawf32-v1.gguf") if HARDWARE == "irisxe" else ("f16", "chatterbox-s3gen-nano-f16.gguf"))
@@ -93,54 +103,18 @@ TTS_WEIGHTS = {
     "v3": {"repo": "ResembleAI/chatterbox", "rev": "ef85ce7bef2f3f1a74d0d837d379d2fcb68203cd", "ckpt": "ckpt-v3", "t3": "convert-t3-mtl-to-gguf.py", "s3": "mtl",
            "files": ("t3_mtl23ls_v3.safetensors", "s3gen.pt", "ve.pt", "conds.pt", "grapheme_mtl_merged_expanded_v1.json", "Cangjie5_TC.json")},
 }
-
 def git_sha(path: Path) -> str:
-    try:
-        return subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL, timeout=15).strip()
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        return ""
-
-def run_file(role: str, ext: str = "log") -> Path:
-    if RUN_DIR is None:
-        raise RuntimeError("run log is not initialized")
-    safe = "".join(ch if ch.isalnum() or ch in "-._" else "-" for ch in role)
-    return RUN_DIR / f"{RUN_PREFIX}-{safe}.{ext}"
-
-def emit(event: str, **fields) -> None:
-    global _log_sequence
-    with _log_lock:
-        _log_sequence += 1
-        line = json.dumps({"sequence": _log_sequence, "ts": datetime.now().astimezone().isoformat(timespec="milliseconds"), "mono_ms": round((time.perf_counter_ns() - _started_ns) / 1e6, 3), "event": event, **fields}, ensure_ascii=False, separators=(",", ":"), default=str)
-        if CONSOLE:
-            print(line, flush=True)
-        if LOG_FILE is not None:
-            with LOG_FILE.open("a", encoding="utf-8", newline="\n") as h:
-                h.write(line + "\n")
-
-def transcript(role: str, text: str) -> None:
-    with _log_lock, run_file(f"transcript-{role}", "txt").open("a", encoding="utf-8", newline="\n") as h: h.write(text); h.flush()
-
-def _thread_failed(args) -> None:
-    _failures.put(args)
-    _failed.set()
-    emit("failure", producer=args.thread.name, type=args.exc_type.__name__, error=str(args.exc_value))
-
-threading.excepthook = _thread_failed
-
-def raise_worker_failure() -> None:
-    if _failed.is_set():
-        args = _failures.get()
-        raise args.exc_value.with_traceback(args.exc_traceback)
-
-def wait_workers(seconds: float) -> None:
-    _failed.wait(seconds)
-    raise_worker_failure()
-
-def sidecar(role: str, ext: str = "log") -> Path:
-    return run_file(role, ext)
+    return str(git_identity(path).get("sha") or "")
 
 def find_exe(root: Path, name: str) -> Path | None:
     return next((p for p in root.rglob(name) if p.is_file()), None) if root.is_dir() else None
+
+LANGUAGE_NAMES = {"ar":"Arabic","da":"Danish","de":"German","el":"Greek","en":"English","es":"Spanish","fi":"Finnish","fr":"French","he":"Hebrew","hi":"Hindi","it":"Italian","ja":"Japanese","ko":"Korean","ms":"Malay","nl":"Dutch","no":"Norwegian","pl":"Polish","pt":"Portuguese","ru":"Russian","sv":"Swedish","sw":"Swahili","tr":"Turkish","zh":"Chinese"}
+
+def system_prompt(language: str, base: str | None = None) -> str:
+    language = language.strip().lower()
+    name = LANGUAGE_NAMES.get(language, language)
+    return (base or PROMPT).rstrip() + f" Speak and answer in {name}. Preserve the user's meaning if recognition contains another language."
 
 def load_settings(data_dir: Path) -> dict:
     path = Path(data_dir) / "live-settings.json"
@@ -157,23 +131,42 @@ def voice_wav(data_dir: Path, value: str | None = None) -> Path:
         return path.resolve()
     raise RuntimeError(f"unknown voice {raw!r}")
 
+def wasapi_device(kind: str) -> tuple[int, dict, dict]:
+    import sounddevice as sd
+    hostapis = sd.query_hostapis(); devices = sd.query_devices()
+    host_index = next((i for i, api in enumerate(hostapis) if "wasapi" in str(api["name"]).casefold()), None)
+    if host_index is None: raise RuntimeError("Windows WASAPI host API is unavailable")
+    direction = 0 if kind == "input" else 1
+    default_index = int(sd.default.device[direction]); default_name = str(devices[default_index]["name"]).casefold()
+    channel_key = "max_input_channels" if kind == "input" else "max_output_channels"
+    candidates = [(i, d) for i, d in enumerate(devices) if int(d["hostapi"]) == host_index and int(d[channel_key]) > 0]
+    exact = [(i, d) for i, d in candidates if str(d["name"]).casefold() == default_name]
+    if exact:
+        index, device = exact[0]
+    else:
+        words = {w for w in default_name.replace("(", " ").replace(")", " ").split() if len(w) > 3}
+        ranked = sorted(candidates, key=lambda item: len(words & set(str(item[1]["name"]).casefold().split())), reverse=True)
+        if not ranked or not words or len(words & set(str(ranked[0][1]["name"]).casefold().split())) < 2:
+            raise RuntimeError(f"cannot resolve default {kind} endpoint to stable WASAPI name")
+        index, device = ranked[0]
+    return index, dict(device), dict(hostapis[host_index])
+
+
 class Paths:
-    def __init__(self, models_dir=None, data_dir=None, command="install", family="nano", language="en", console=False) -> None:
-        global LOG_FILE, RUN_DIR, RUN_PREFIX, CONSOLE, _log_sequence, _started_ns
+    def __init__(self, models_dir=None, data_dir=None, command="install", family="nano", language="en", console=False, source="microphone", sink="speaker") -> None:
         self.models_dir, self.data_dir = Path(models_dir or MODELS).resolve(), Path(data_dir or DATA).resolve()
         self.command, self.family, self.language = command, family.strip().lower(), language.strip().lower()
+        self.source, self.sink = source, sink
         self.voice = str(load_settings(self.data_dir).get("tts_voice") or "trump")
         self.stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
         bits = [self.stamp, command, HARDWARE]
         if command in ("talk", "tts"):
             bits += [self.family, self.language, self.voice]
-        RUN_PREFIX = "-".join(bits)
-        self.run_dir = self.data_dir / "runs" / RUN_PREFIX
+        self.run_dir = self.data_dir / "runs" / "-".join(bits)
         self.run_dir.mkdir(parents=True)
-        RUN_DIR, CONSOLE = self.run_dir, bool(console)
-        self.log = run_file("events", "jsonl")
-        LOG_FILE = self.log
-        _log_sequence = 0
-        _started_ns = time.perf_counter_ns()
-        run_file("run", "json").write_text(json.dumps({"stamp": self.stamp, "command": command, "hardware": HARDWARE, "family": self.family, "language": self.language, "voice": self.voice, "console": CONSOLE, "trident_sha": git_sha(ROOT), "chatterbox_rev": CHATTERBOX_REV}, indent=2) + "\n", encoding="utf-8")
+        self.journal = Journal(self.run_dir, console)
+        self.supervisor = WorkerSupervisor(self.journal)
         print(f"trident.run {self.run_dir}", flush=True)
+
+    def close(self) -> None:
+        self.journal.close()
