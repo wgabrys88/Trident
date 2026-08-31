@@ -132,7 +132,7 @@ def pin(paths, url: str, rev: str, dest: Path, role: str) -> str:
     dest.parent.mkdir(parents=True, exist_ok=True)
     if not (dest / ".git").is_dir():
         if dest.exists(): raise RuntimeError(f"refusing to replace {dest}")
-        _run(paths, ["git", "clone", "--filter=blob:none", "--no-checkout", url, str(dest)], role=f"git-{role}")
+        _run(paths, ["git", "clone", "--filter=blob:none", url, str(dest)], role=f"git-{role}")
     _clean_repo(dest)
     target = "FETCH_HEAD" if rev == "latest" else rev
     _run(paths, ["git", "fetch", "--depth", "1", "origin", "HEAD" if rev == "latest" else rev], dest, role=f"git-{role}")
