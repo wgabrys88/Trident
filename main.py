@@ -13,7 +13,7 @@ if sys.platform.startswith("win") and VENV_PYTHON.is_file() and Path(sys.executa
 
 import config
 from config import (
-    CABLE_CHANNELS, CABLE_DEVICES, CABLE_RATE, CHATTERBOX, CHATTERBOX_REV, FLASH_ATTN,
+    CABLE_CHANNELS, CABLE_RATE, CHATTERBOX, CHATTERBOX_REV, FLASH_ATTN,
     GGML, GGML_GIT, HARDWARE, Paths, ROOT, TTS_MODELS, TTS_PROFILES, VULKAN_ENV,
     cable_device, load_settings,
 )
@@ -32,8 +32,8 @@ def _manifest(paths: Paths) -> dict:
     audio = {}
     for kind in (("input",) if paths.command == "talk" else ()) + (("output",) if paths.command in ("talk", "tts") else ()):
         index, device, host = cable_device(kind)
-        audio[kind] = {"device": CABLE_DEVICES[kind], "index": index, "host_api": host["name"],
-                       "channels": CABLE_CHANNELS, "rate": CABLE_RATE, "auto_convert": False}
+        audio[kind] = {"device": device["name"], "index": index, "host_api": host["name"],
+                       "channels": CABLE_CHANNELS, "rate": CABLE_RATE, "auto_convert": True}
     manifest = {
         "created_at": paths.stamp,
         "command": paths.command,

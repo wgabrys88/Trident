@@ -135,19 +135,21 @@ def voice_wav(data_dir: Path, value: str | None = None) -> Path:
 
 def cable_device(kind: str) -> tuple[int, dict, dict]:
     import sounddevice as sd
-    expected = CABLE_DEVICES[kind]
+    skip = CABLE_DEVICES[kind]
     hostapis = sd.query_hostapis(); devices = sd.query_devices()
     host_index = next((i for i, api in enumerate(hostapis) if "wasapi" in str(api["name"]).casefold()), None)
     if host_index is None: raise RuntimeError("Windows WASAPI host API is unavailable")
     channel_key = "max_input_channels" if kind == "input" else "max_output_channels"
-    match = next(((i, d) for i, d in enumerate(devices)
-                  if int(d["hostapi"]) == host_index and str(d["name"]) == expected), None)
-    if match is None:
-        raise RuntimeError(f"required WASAPI endpoint is missing: {expected}")
-    index, device = match
-    if int(device[channel_key]) < CABLE_CHANNELS:
-        raise RuntimeError(f"{expected} does not expose {CABLE_CHANNELS} {kind} channels")
-    return index, dict(device), dict(hostapis[host_index])
+    api = hostapis[host_index]
+    matches = [(i, d) for i, d in enumerate(devices)
+               if int(d["hostapi"]) == host_index and int(d[channel_key]) >= 1]
+    if not matches:
+        raise RuntimeError(f"no WASAPI {kind} endpoint is available")
+    physical = [(i, d) for i, d in matches if str(d["name"]) != skip]
+    pool = physical or matches
+    default_index = int(api["default_input_device"] if kind == "input" else api["default_output_device"])
+    index, device = next(((i, d) for i, d in pool if i == default_index), pool[0])
+    return index, dict(device), dict(api)
 
 
 class Paths:
