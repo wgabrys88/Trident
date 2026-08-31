@@ -97,17 +97,17 @@ def _manifest(paths: Paths, input_file: Path | None, output_file: Path | None) -
     if paths.source == "wav" and input_file is not None:
         manifest["audio"]["source"] = {"type": "wav", "format": "pcm16-mono", "rate": 24000, **file_identity(input_file)}
     elif paths.source == "microphone":
-        index, device, host = config.wasapi_device("input")
+        index, device, host = config.wasapi_device("input"); native_rate = config.wasapi_native_rate(device)
         manifest["audio"]["source"] = {"type": "physical", "selection": "stable-host-api/name", "host_api": host.get("name"),
-            "device": device.get("name"), "resolved_index": index, "native_rate": 48000, "render_rate": 16000,
-            "advertised_low_latency": device.get("default_low_input_latency"), "default_samplerate": device.get("default_samplerate"), "mode": "wasapi-exclusive-event"}
+            "device": device.get("name"), "resolved_index": index, "native_rate": native_rate, "capture_rate": 16000,
+            "advertised_low_latency": device.get("default_low_input_latency"), "default_samplerate": device.get("default_samplerate"), "mode": "wasapi-shared-low-latency"}
     if paths.sink == "wav" and output_file is not None:
         manifest["audio"]["sink"] = {"type": "wav", "path": str(output_file), "format": "pcm16-mono", "rate": 24000}
     elif paths.sink == "speaker":
-        index, device, host = config.wasapi_device("output")
+        index, device, host = config.wasapi_device("output"); native_rate = config.wasapi_native_rate(device)
         manifest["audio"]["sink"] = {"type": "physical", "selection": "stable-host-api/name", "host_api": host.get("name"),
-            "device": device.get("name"), "resolved_index": index, "native_rate": 48000, "render_rate": 24000,
-            "advertised_low_latency": device.get("default_low_output_latency"), "default_samplerate": device.get("default_samplerate"), "mode": "wasapi-exclusive-event"}
+            "device": device.get("name"), "resolved_index": index, "native_rate": native_rate, "render_rate": 24000,
+            "advertised_low_latency": device.get("default_low_output_latency"), "default_samplerate": device.get("default_samplerate"), "mode": "wasapi-shared-low-latency"}
     for role, folder, name in (("chatterbox", "tts", "trident-tts-server.exe"), ("parakeet", "parakeet", "parakeet-server.exe"), ("gemma", "gemma", "llama-server.exe")):
         exe = find_exe(RUNTIMES / folder, name)
         if exe is not None: manifest["executables"][role] = file_identity(exe)
