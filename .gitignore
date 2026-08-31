@@ -11,4 +11,3 @@
 !/tts/src/
 !/tts/src/*.cpp
 !/requirements.txt
-!/deterministic_talk_test.py

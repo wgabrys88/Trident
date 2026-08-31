@@ -165,7 +165,7 @@ class Paths:
         self.voice = str(load_settings(self.data_dir).get("tts_voice") or "trump")
         self.stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
         bits = [self.stamp, command, HARDWARE]
-        if command == "talk":
+        if command in ("talk", "tts"):
             bits += [self.family, self.language, self.voice]
         RUN_PREFIX = "-".join(bits)
         self.run_dir = self.data_dir / "runs" / RUN_PREFIX

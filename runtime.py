@@ -54,7 +54,7 @@ def _start(name: str, cmd: list[str], cwd: Path, paths: Paths, tag: str) -> None
     env.update(VULKAN_ENV)
     log = run_file(f"resident-{name}-{tag}")
     emit("resident.start", name=name, tag=tag, log=log.name)
-    proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
     _PROCS[name] = proc
     ready = threading.Event()
     reader = threading.Thread(target=_forward, args=(name, proc, log, ready), name=f"resident:{name}")
@@ -77,19 +77,26 @@ def boot(paths: Paths, family: str = "nano", language: str = "en") -> None:
         raise RuntimeError(f"{family} supports English only")
     if family == "v3" and language not in V3_LANGUAGES:
         raise RuntimeError(f"V3 language {language!r} is not supported")
-    parakeet, gemma, tts = _exe("parakeet", "parakeet-server.exe"), _exe("gemma", "llama-server.exe"), _exe("tts", "trident-tts-server.exe")
+    tts = _exe("tts", "trident-tts-server.exe")
     k = TTS_PROFILES[family]
     t3_file, codec_file = TTS_MODELS[family]
     settings = load_settings(paths.data_dir)
-    commands = (
-        ("parakeet", Path(PARAKEET_FILE).stem, parakeet, [str(parakeet), "--model", str(paths.models_dir / PARAKEET_FILE), "--port", str(PORTS["parakeet"])]),
-        ("gemma", Path(GEMMA_FILE).stem, gemma, [str(gemma), "-m", str(paths.models_dir / GEMMA_FILE), "--alias", "gemma", "--host", "127.0.0.1", "--port", str(PORTS["gemma"]), "--offline", "--n-gpu-layers", "all", "--ctx-size", "4096", "--no-mmproj", "--flash-attn", FLASH_ATTN, "--threads", "2", "--threads-batch", "2", "--poll", "0", "--poll-batch", "0", "--threads-http", "1", "--no-ui", "--reasoning", "off"]),
-        ("chatterbox", f"{family}-{Path(t3_file).stem}", tts, [str(tts), "--family", family, "--model", str(paths.models_dir / t3_file), "--s3gen-gguf", str(paths.models_dir / codec_file), "--reference", str(voice_wav(paths.data_dir, settings["tts_voice"])), "--language", language, "--port", str(PORTS["chatterbox"]), "--n-gpu-layers", str(k["gpu_layers"]), "--context", str(k["context"]), "--threads", str(k["threads"]), "--seed", str(k["seed"]), "--max-tokens", str(k["max_tokens"]), "--top-k", str(k["top_k"]), "--top-p", str(k["top_p"]), "--min-p", str(k["min_p"]), "--temperature", str(k["temperature"]), "--repeat-penalty", str(k["repeat_penalty"]), "--cfg-weight", str(k["cfg_weight"]), "--exaggeration", str(k["exaggeration"]), "--cfm-steps", str(k["cfm_steps"]), "--fastconv", str(k["fastconv"])]),
-    )
-    emit("boot.begin", family=family, language=language, voice=settings["tts_voice"], hardware=HARDWARE, t3=t3_file, codec=codec_file, chatterbox_sha=git_sha(CHATTERBOX), knobs=k)
+    chatterbox = ("chatterbox", f"{family}-{Path(t3_file).stem}", tts, [str(tts), "--family", family, "--model", str(paths.models_dir / t3_file), "--s3gen-gguf", str(paths.models_dir / codec_file), "--reference", str(voice_wav(paths.data_dir, settings["tts_voice"])), "--language", language, "--port", str(PORTS["chatterbox"]), "--n-gpu-layers", str(k["gpu_layers"]), "--context", str(k["context"]), "--threads", str(k["threads"]), "--seed", str(k["seed"]), "--max-tokens", str(k["max_tokens"]), "--top-k", str(k["top_k"]), "--top-p", str(k["top_p"]), "--min-p", str(k["min_p"]), "--temperature", str(k["temperature"]), "--repeat-penalty", str(k["repeat_penalty"]), "--cfg-weight", str(k["cfg_weight"]), "--exaggeration", str(k["exaggeration"]), "--cfm-steps", str(k["cfm_steps"]), "--fastconv", str(k["fastconv"])])
+    if paths.command == "talk":
+        parakeet, gemma = _exe("parakeet", "parakeet-server.exe"), _exe("gemma", "llama-server.exe")
+        commands = (
+            ("parakeet", Path(PARAKEET_FILE).stem, parakeet, [str(parakeet), "--model", str(paths.models_dir / PARAKEET_FILE), "--port", str(PORTS["parakeet"])]),
+            ("gemma", Path(GEMMA_FILE).stem, gemma, [str(gemma), "-m", str(paths.models_dir / GEMMA_FILE), "--alias", "gemma", "--host", "127.0.0.1", "--port", str(PORTS["gemma"]), "--offline", "--n-gpu-layers", "all", "--ctx-size", "4096", "--no-mmproj", "--flash-attn", FLASH_ATTN, "--threads", "2", "--threads-batch", "2", "--poll", "0", "--poll-batch", "0", "--threads-http", "1", "--no-ui", "--reasoning", "off"]),
+            chatterbox,
+        )
+    elif paths.command == "tts":
+        commands = (chatterbox,)
+    else:
+        raise RuntimeError(f"cannot boot command {paths.command!r}")
+    emit("boot.begin", command=paths.command, family=family, language=language, voice=settings["tts_voice"], hardware=HARDWARE, t3=t3_file, codec=codec_file, chatterbox_sha=git_sha(CHATTERBOX), knobs=k)
     for name, tag, exe, cmd in commands:
         _start(name, cmd, exe.parent, paths, tag)
-    emit("boot.ready", family=family, language=language, voice=settings["tts_voice"])
+    emit("boot.ready", command=paths.command, family=family, language=language, voice=settings["tts_voice"])
 
 def require_alive(name: str) -> str:
     proc = _PROCS.get(name)

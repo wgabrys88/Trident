@@ -298,19 +298,13 @@ class Capture:
             self.thread.join()
             emit("capture.close")
 
-class Conversation:
-    def __init__(self, paths: Paths, settings: dict) -> None:
-        self.settings = settings
-        self.parakeet, self.gemma = require_alive("parakeet"), require_alive("gemma")
+class Synthesis:
+    def __init__(self) -> None:
         require_alive("chatterbox")
         self.epoch = self.response_id = 0
-        self.history: list[dict[str, str]] = []
-        self.q: queue.SimpleQueue = queue.SimpleQueue()
         self.lock = threading.Lock()
         self.tts = Chatterbox()
         self.speaker = Speaker()
-        self.capture = Capture(paths.models_dir / SMART_TURN_FILE, settings, self._speech_start, self._utterance)
-        self.conversation_thread = threading.Thread(target=self._conversation, name="conversation")
         self.pcm_thread = threading.Thread(target=self._pcm, name="pcm")
         self.llm_active = False
         self.tts_pending = 0
@@ -318,6 +312,12 @@ class Conversation:
         self._queue_ns = 0
         self._queue_response = 0
         self.active = False
+
+    def _start_output(self) -> None:
+        self.speaker.open()
+        self.tts.open()
+        self.pcm_thread.start()
+        self.active = True
 
     def _advance(self, reason: str, utterance_id: int = 0) -> int:
         with self.lock:
@@ -338,23 +338,6 @@ class Conversation:
     def _speech_start(self, utterance_id: int) -> int:
         return self._advance("speech", utterance_id)
 
-    def start(self) -> None:
-        transcript("user", ""); transcript("assistant", "")
-        emit("transcript.open", user=run_file("transcript-user", "txt").name, assistant=run_file("transcript-assistant", "txt").name)
-        self.speaker.open()
-        self.tts.open()
-        self.pcm_thread.start()
-        self.conversation_thread.start()
-        self.active = True
-        self.capture.open()
-        emit("audio.open", input=str(sd.query_devices(kind="input")["name"]), output=str(sd.query_devices(kind="output")["name"]), input_rate=ASR_RATE, output_rate=TTS_RATE, output_block=VAD_FRAME)
-
-    def _utterance(self, epoch: int, utterance_id: int, pcm: bytes) -> None:
-        if self.active:
-            queued = time.perf_counter_ns()
-            self.q.put((epoch, utterance_id, pcm, queued))
-            emit("utterance.queued", epoch=epoch, utterance_id=utterance_id, bytes=len(pcm))
-
     def _send(self, epoch: int, response_id: int, piece_id: int, text: str) -> None:
         with self.lock:
             if epoch != self.epoch:
@@ -366,6 +349,73 @@ class Conversation:
             gap = round((now - self._queue_ns) / 1e6, 3) if self._queue_ns and self._queue_response == response_id else None
             self._queue_ns, self._queue_response = now, response_id
         emit("tts.piece.queued", epoch=epoch, response_id=response_id, piece_id=piece_id, chars=len(text), gap_ms=gap, tts_pending=pending, text=text)
+
+    def _pcm(self) -> None:
+        emit("worker.start", worker="pcm")
+        while (frame := self.tts.recv_frame()) is not None:
+            kind, epoch, response_id, piece_id, chunk_id, payload = frame
+            if kind == 2:
+                received = time.perf_counter_ns()
+                with self.lock:
+                    live_epoch, llm_active = self.epoch, self.llm_active
+                    accepted, resume_from = self.speaker.put(epoch, payload) if epoch == live_epoch else (False, 0)
+                    first = accepted and response_id not in self.first_pcm
+                    if first:
+                        self.first_pcm.add(response_id)
+                    pending = self.tts_pending
+                audio_ms = round(1000 * len(payload) / (TTS_RATE * 2))
+                if not accepted:
+                    emit("pcm.drop", epoch=epoch, live_epoch=live_epoch, response_id=response_id, piece_id=piece_id, chunk_id=chunk_id, bytes=len(payload), audio_ms=audio_ms)
+                elif first:
+                    emit("pcm.first", epoch=epoch, response_id=response_id, piece_id=piece_id, chunk_id=chunk_id, bytes=len(payload), audio_ms=audio_ms, received_ns=received, llm_active=llm_active, tts_pending=pending)
+                elif resume_from:
+                    emit("pcm.resume", epoch=epoch, response_id=response_id, piece_id=piece_id, chunk_id=chunk_id, bytes=len(payload), audio_ms=audio_ms, starvation_ms=round((received - resume_from) / 1e6, 3), drained_ns=resume_from, received_ns=received, llm_active=llm_active, tts_pending=pending)
+            elif kind == 0:
+                with self.lock:
+                    live_epoch = self.epoch
+                    accepted = epoch == live_epoch
+                    if accepted:
+                        self.tts_pending -= 1
+                    pending = self.tts_pending
+                emit("tts.piece.ack", epoch=epoch, live_epoch=live_epoch, response_id=response_id, piece_id=piece_id, batch_chunks=chunk_id + 1, accepted=accepted, tts_pending=pending)
+            elif kind == 1:
+                raise RuntimeError(payload.decode("utf-8"))
+            else:
+                raise RuntimeError(f"TTS frame {kind}")
+        emit("worker.stop", worker="pcm")
+
+    def check(self) -> None:
+        self.speaker.check()
+        raise_worker_failure()
+
+    def _stop_output(self) -> None:
+        self.tts.close()
+        self.pcm_thread.join()
+        self.speaker.close()
+
+class Conversation(Synthesis):
+    def __init__(self, paths: Paths, settings: dict) -> None:
+        super().__init__()
+        self.settings = settings
+        self.parakeet, self.gemma = require_alive("parakeet"), require_alive("gemma")
+        self.history: list[dict[str, str]] = []
+        self.q: queue.SimpleQueue = queue.SimpleQueue()
+        self.capture = Capture(paths.models_dir / SMART_TURN_FILE, settings, self._speech_start, self._utterance)
+        self.conversation_thread = threading.Thread(target=self._conversation, name="conversation")
+
+    def start(self) -> None:
+        transcript("user", ""); transcript("assistant", "")
+        emit("transcript.open", user=run_file("transcript-user", "txt").name, assistant=run_file("transcript-assistant", "txt").name)
+        self._start_output()
+        self.conversation_thread.start()
+        self.capture.open()
+        emit("audio.open", input=str(sd.query_devices(kind="input")["name"]), output=str(sd.query_devices(kind="output")["name"]), input_rate=ASR_RATE, output_rate=TTS_RATE, output_block=VAD_FRAME)
+
+    def _utterance(self, epoch: int, utterance_id: int, pcm: bytes) -> None:
+        if self.active:
+            queued = time.perf_counter_ns()
+            self.q.put((epoch, utterance_id, pcm, queued))
+            emit("utterance.queued", epoch=epoch, utterance_id=utterance_id, bytes=len(pcm))
 
     def _conversation(self) -> None:
         emit("worker.start", worker="conversation")
@@ -444,44 +494,9 @@ class Conversation:
             emit("llm.done", epoch=epoch, utterance_id=utterance_id, response_id=response_id, empty=not answer, elapsed_ms=round((time.perf_counter() - started) * 1000), chars=len(answer), pieces=piece_id, pcm_first=heard, text=answer)
         emit("worker.stop", worker="conversation")
 
-    def _pcm(self) -> None:
-        emit("worker.start", worker="pcm")
-        while (frame := self.tts.recv_frame()) is not None:
-            kind, epoch, response_id, piece_id, chunk_id, payload = frame
-            if kind == 2:
-                received = time.perf_counter_ns()
-                with self.lock:
-                    live_epoch, llm_active = self.epoch, self.llm_active
-                    accepted, resume_from = self.speaker.put(epoch, payload) if epoch == live_epoch else (False, 0)
-                    first = accepted and response_id not in self.first_pcm
-                    if first:
-                        self.first_pcm.add(response_id)
-                    pending = self.tts_pending
-                audio_ms = round(1000 * len(payload) / (TTS_RATE * 2))
-                if not accepted:
-                    emit("pcm.drop", epoch=epoch, live_epoch=live_epoch, response_id=response_id, piece_id=piece_id, chunk_id=chunk_id, bytes=len(payload), audio_ms=audio_ms)
-                elif first:
-                    emit("pcm.first", epoch=epoch, response_id=response_id, piece_id=piece_id, chunk_id=chunk_id, bytes=len(payload), audio_ms=audio_ms, received_ns=received, llm_active=llm_active, tts_pending=pending)
-                elif resume_from:
-                    emit("pcm.resume", epoch=epoch, response_id=response_id, piece_id=piece_id, chunk_id=chunk_id, bytes=len(payload), audio_ms=audio_ms, starvation_ms=round((received - resume_from) / 1e6, 3), drained_ns=resume_from, received_ns=received, llm_active=llm_active, tts_pending=pending)
-            elif kind == 0:
-                with self.lock:
-                    live_epoch = self.epoch
-                    accepted = epoch == live_epoch
-                    if accepted:
-                        self.tts_pending -= 1
-                    pending = self.tts_pending
-                emit("tts.piece.ack", epoch=epoch, live_epoch=live_epoch, response_id=response_id, piece_id=piece_id, batch_chunks=chunk_id + 1, accepted=accepted, tts_pending=pending)
-            elif kind == 1:
-                raise RuntimeError(payload.decode("utf-8"))
-            else:
-                raise RuntimeError(f"TTS frame {kind}")
-        emit("worker.stop", worker="pcm")
-
     def check(self) -> None:
         self.capture.check()
-        self.speaker.check()
-        raise_worker_failure()
+        super().check()
 
     def stop(self) -> None:
         if not self.active:
@@ -492,9 +507,64 @@ class Conversation:
         self.capture.close()
         self.q.put(None)
         self.conversation_thread.join()
-        self.tts.close()
-        self.pcm_thread.join()
-        self.speaker.close()
+        self._stop_output()
+        emit("audio.close")
+        emit("shutdown.done", epoch=self.epoch)
+
+class TTSMode(Synthesis):
+    def __init__(self, primary: str, replacement: str | None, interrupt_after: float | None) -> None:
+        super().__init__()
+        self.primary, self.replacement = primary, replacement
+        self.interrupt_after = interrupt_after
+        self.ready_ns = 0
+        self.started_ns = 0
+
+    def _input(self, text: str, source: str, injected_ns: int) -> None:
+        units = Segmenter().take(text, True)
+        with self.lock:
+            self.response_id += 1
+            epoch, response_id = self.epoch, self.response_id
+        emit("tts.input", source=source, epoch=epoch, response_id=response_id, injected_ns=injected_ns, after_ready_ms=round((injected_ns - self.ready_ns) / 1e6, 3), chars=len(text), pieces=len(units), text=text)
+        for piece_id, unit in enumerate(units, 1):
+            self._send(epoch, response_id, piece_id, unit)
+
+    def start(self) -> None:
+        self._start_output()
+        self.ready_ns = self.started_ns = time.perf_counter_ns()
+        output = str(sd.query_devices(kind="output")["name"])
+        emit("audio.open", output=output, output_rate=TTS_RATE, output_block=VAD_FRAME)
+        emit("tts.mode.ready", ready_ns=self.ready_ns, output=output)
+        print("trident.ready", flush=True)
+        self._input(self.primary, "primary", self.ready_ns)
+
+    def run(self) -> None:
+        requested_ns = self.ready_ns + round(self.interrupt_after * 1e9) if self.replacement is not None else 0
+        interrupted = False
+        while True:
+            self.check()
+            check_residents()
+            now = time.perf_counter_ns()
+            if self.replacement is not None and not interrupted and now >= requested_ns:
+                observed_ns = now
+                self._advance("tts.interrupt")
+                emit("tts.interrupt", requested_after_s=self.interrupt_after, observed_after_s=round((observed_ns - self.ready_ns) / 1e9, 6), drift_ms=round((observed_ns - requested_ns) / 1e6, 3), ready_ns=self.ready_ns, requested_ns=requested_ns, observed_ns=observed_ns, epoch=self.epoch)
+                self._input(self.replacement, "replacement", observed_ns)
+                interrupted = True
+            with self.lock:
+                pending = self.tts_pending
+            if pending == 0 and not self.speaker.busy() and (self.replacement is None or interrupted):
+                self.speaker.check()
+                emit("tts.complete", epoch=self.epoch, response_id=self.response_id, elapsed_ms=round((time.perf_counter_ns() - self.started_ns) / 1e6, 3))
+                return
+            wait_workers(.01)
+
+    def stop(self) -> None:
+        if not self.active:
+            return
+        emit("shutdown.begin", epoch=self.epoch)
+        self.active = False
+        self._advance("shutdown")
+        self._stop_output()
         emit("audio.close")
         emit("shutdown.done", epoch=self.epoch)
 
@@ -514,5 +584,19 @@ def launch(paths: Paths, family: str = "nano", language: str = "en") -> None:
         try:
             if conversation is not None:
                 conversation.stop()
+        finally:
+            stop_all()
+
+def launch_tts(paths: Paths, family: str, language: str, primary: str, replacement: str | None, interrupt_after: float | None) -> None:
+    mode = None
+    try:
+        boot(paths, family, language)
+        mode = TTSMode(primary, replacement, interrupt_after)
+        mode.start()
+        mode.run()
+    finally:
+        try:
+            if mode is not None:
+                mode.stop()
         finally:
             stop_all()
