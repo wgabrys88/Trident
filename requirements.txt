@@ -1,4 +1,4 @@
-numpy>=2,<3
+numpy==2.4.6
 onnxruntime==1.29.0
 silero-vad-notorch==6.2.1.1
 sounddevice==0.5.6
