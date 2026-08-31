@@ -29,6 +29,9 @@ STOP_PHRASES = {
 }
 BACKCHANNELS = {"yeah", "yes", "yep", "yup", "ok", "okay", "mhm", "mm", "uh", "um", "aha", "uh huh", "huh", "right", "sure", "tak", "no", "nie", "okej"}
 BLOCK_SECONDS = VAD_FRAME / TTS_RATE
+SPEAKABLE_MIN_WORDS = 8
+SPOKEN_TURN_WORDS = 60
+SPOKEN_TURN_CHARS = 480
 _EOF = object()
 
 
@@ -120,6 +123,7 @@ class SmartTurn:
 class Segmenter:
     def __init__(self) -> None:
         self.sent = 0
+        self.buffer: list[str] = []
 
     def take(self, text: str, flush: bool = False) -> list[str]:
         out: list[str] = []
@@ -134,7 +138,11 @@ class Segmenter:
                 break
             unit = pending[:cut].strip(); self.sent += cut
             while self.sent < len(text) and text[self.sent].isspace(): self.sent += 1
-            if unit: out.append(unit)
+            if unit: self.buffer.append(unit)
+            if sum(len(part.split()) for part in self.buffer) >= SPEAKABLE_MIN_WORDS:
+                out.append(" ".join(self.buffer)); self.buffer.clear()
+        if flush and self.buffer:
+            out.append(" ".join(self.buffer)); self.buffer.clear()
         return out
 
 
@@ -440,12 +448,21 @@ class Synthesis:
         self.journal.emit("synthesis", "queued", epoch=epoch, response_id=response_id, piece_id=piece_id, chars=len(text))
         return True
 
-    def advance(self, reason: str, utterance_id: int = 0) -> int:
+    def advance(self, reason: str, utterance_id: int = 0, preserve_playback: bool = False) -> int:
         with self.lock:
-            self.epoch += 1; epoch = self.epoch; dropped = self.renderer.advance(epoch); self.tts.advance(epoch); self._sync_pending()
+            self.epoch += 1; epoch = self.epoch
+            dropped = 0 if preserve_playback else self.renderer.advance(epoch)
+            self.tts.advance(epoch); self._sync_pending()
             old_pending = sum(1 for identity in self.pending if identity[0] != epoch)
         self.journal.emit("synthesis", "epoch.advanced", epoch=epoch, reason=reason, utterance_id=utterance_id, pending_cancel_count=old_pending, dropped_bytes=dropped)
         return epoch
+
+    def cutover(self, epoch: int, reason: str, utterance_id: int) -> bool:
+        with self.lock:
+            if epoch != self.epoch: return False
+            dropped = self.renderer.advance(epoch); self._sync_pending()
+        self.journal.emit("playback", "cutover", epoch=epoch, reason=reason, utterance_id=utterance_id, dropped_bytes=dropped)
+        return True
 
     def pause(self, utterance_id: int) -> None:
         self.renderer.pause(); self.journal.emit("playback", "paused", epoch=self.epoch, utterance_id=utterance_id)
@@ -529,7 +546,7 @@ class Conversation(Synthesis):
         self.parakeet, self.gemma = residents.require_alive("parakeet"), residents.require_alive("gemma")
         self.asr_http, self.gemma_http = CancelableHTTP(), CancelableHTTP()
         self.recognition_q: queue.SimpleQueue = queue.SimpleQueue(); self.generation_q: queue.SimpleQueue = queue.SimpleQueue()
-        self.latest_utterance = 0; self.stopping = False
+        self.latest_utterance = 0; self.interruption_epoch = 0; self.stopping = False
         self.history: list[dict[str, str]] = []; self.fragment = ""
         self.capture = Capture(paths, settings, self._speech_start, self._utterance)
         self.recognition_thread = self.generation_thread = None
@@ -541,7 +558,8 @@ class Conversation(Synthesis):
         self.capture.open()
 
     def _speech_start(self, utterance_id: int) -> None:
-        self.latest_utterance = utterance_id; self.asr_http.close(); self.pause(utterance_id)
+        self.latest_utterance = utterance_id; self.asr_http.close(); self.gemma_http.close(); self.pause(utterance_id)
+        self.interruption_epoch = self.advance("request", utterance_id, preserve_playback=True)
 
     def _utterance(self, utterance_id: int, pcm: bytes) -> None:
         self.recognition_q.put((utterance_id, pcm, time.perf_counter_ns()))
@@ -568,10 +586,10 @@ class Conversation(Synthesis):
             self.journal.transcript("user", text); print(f"\nuser: {text}", flush=True)
             intent = classify_utterance(text); self.journal.emit("conversation", "intent", utterance_id=utterance_id, intent=intent)
             if intent == "backchannel": self.resume(utterance_id)
-            elif intent == "stop": self.gemma_http.close(); self.advance("stop", utterance_id)
+            elif intent == "stop": self.cutover(self.interruption_epoch, "stop", utterance_id)
             else:
-                self.gemma_http.close(); epoch = self.advance("request", utterance_id)
-                self.generation_q.put((epoch, utterance_id, text))
+                epoch = self.interruption_epoch
+                if self.cutover(epoch, "request", utterance_id): self.generation_q.put((epoch, utterance_id, text))
 
     def _system(self) -> str:
         return system_prompt(self.language, str(self.settings.get("system_prompt") or ""))
@@ -606,7 +624,18 @@ class Conversation(Synthesis):
             merged = " ".join(part for part in (self.fragment, prompt) if part).strip()
             with self.lock:
                 self.response_id += 1; response_id = self.response_id
-            segmenter = Segmenter(); raw = ""; piece_id = 0; started = time.perf_counter(); first = True
+            segmenter = Segmenter(); raw = ""; units: list[str] = []; piece_id = 0; started = time.perf_counter(); first = True
+            budget_reached = False
+            def queue_unit(unit: str) -> bool:
+                nonlocal piece_id, budget_reached
+                words = sum(len(part.split()) for part in units)
+                chars = sum(len(part) for part in units)
+                if units and (words + len(unit.split()) > SPOKEN_TURN_WORDS or chars + len(unit) > SPOKEN_TURN_CHARS):
+                    budget_reached = True; return False
+                piece_id += 1
+                if self.send_sentence(epoch, response_id, piece_id, unit): units.append(unit)
+                budget_reached = words + len(unit.split()) >= SPOKEN_TURN_WORDS or chars + len(unit) >= SPOKEN_TURN_CHARS
+                return not budget_reached
             messages = self._messages(merged)
             self.journal.emit("gemma", "start", epoch=epoch, utterance_id=utterance_id, response_id=response_id, chars=len(merged), retained_turns=len(messages) - 2)
             cancelled = False
@@ -619,23 +648,27 @@ class Conversation(Synthesis):
                         first = False; self.journal.emit("gemma", "first_result", epoch=epoch, response_id=response_id, latency_ms=round((time.perf_counter() - started) * 1000, 3))
                     raw += delta
                     for unit in segmenter.take(spoken(raw)):
-                        piece_id += 1; self.send_sentence(epoch, response_id, piece_id, unit)
+                        if not queue_unit(unit): break
+                    if budget_reached: break
+                if budget_reached: stream.close()
             except Exception:
                 with self.lock: live = epoch == self.epoch
                 if live and not self.stopping: raise
                 cancelled = True
             with self.lock: live = epoch == self.epoch
-            answer = spoken(raw)
+            generated = spoken(raw)
             if cancelled or not live:
-                if answer: self.journal.transcript("assistant", answer)
-                self.journal.emit("gemma", "cancelled", epoch=epoch, response_id=response_id, elapsed_ms=round((time.perf_counter() - started) * 1000, 3), chars=len(answer)); continue
-            for unit in segmenter.take(answer, True):
-                piece_id += 1; self.send_sentence(epoch, response_id, piece_id, unit)
+                if generated: self.journal.transcript("assistant", generated)
+                self.journal.emit("gemma", "cancelled", epoch=epoch, response_id=response_id, elapsed_ms=round((time.perf_counter() - started) * 1000, 3), chars=len(generated)); continue
+            if not budget_reached:
+                for unit in segmenter.take(generated, True):
+                    if not queue_unit(unit): break
+            answer = " ".join(units)
             if answer:
                 self.fragment = ""; self.history.extend(({"role": "user", "content": merged}, {"role": "assistant", "content": answer})); self._trim_history(); self.journal.transcript("assistant", answer); print(f"assistant: {answer}", flush=True)
             else:
                 self.fragment = merged
-            self.journal.emit("gemma", "completed", epoch=epoch, response_id=response_id, empty=not answer, elapsed_ms=round((time.perf_counter() - started) * 1000, 3), chars=len(answer), pieces=piece_id)
+            self.journal.emit("gemma", "completed", epoch=epoch, response_id=response_id, empty=not answer, elapsed_ms=round((time.perf_counter() - started) * 1000, 3), chars=len(answer), generated_chars=len(generated), pieces=piece_id, budget_reached=budget_reached)
 
     def check(self) -> None:
         self.capture.check(); super().check()
