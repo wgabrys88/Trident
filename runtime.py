@@ -4,10 +4,10 @@ import http.client
 import json
 import os
 import secrets
-import signal
 import socket
 import struct
 import subprocess
+import sys
 import threading
 import time
 import urllib.parse
@@ -24,6 +24,16 @@ PROTOCOL_VERSION = 2
 REQ_SYNTH, REQ_ADVANCE, REQ_CLOSE = 1, 2, 3
 RESP_PCM, RESP_DONE, RESP_CANCELLED, RESP_ERROR, RESP_CLOSED = 1, 2, 3, 4, 5
 _READY = {"parakeet": "parakeet-server: listening on ", "gemma": "llama_server: listening on http://127.0.0.1:"}
+_CTRL_C_HELPER = """import ctypes,sys,time
+k=ctypes.WinDLL('kernel32', use_last_error=True)
+pid=int(sys.argv[1])
+k.FreeConsole()
+if not k.AttachConsole(pid): raise ctypes.WinError(ctypes.get_last_error())
+if not k.SetConsoleCtrlHandler(None, True): raise ctypes.WinError(ctypes.get_last_error())
+if not k.GenerateConsoleCtrlEvent(0, 0): raise ctypes.WinError(ctypes.get_last_error())
+time.sleep(0.5)
+k.FreeConsole()
+"""
 
 
 def _exe(folder: str, name: str) -> Path:
@@ -49,7 +59,12 @@ class Residents:
         self.supervisor = paths.supervisor
         self.procs: dict[str, subprocess.Popen] = {}
         self.readers: dict[str, threading.Thread] = {}
-        self.chatterbox_closed = False
+        self.ready: dict[str, threading.Event] = {}
+        self.ready_deadlines: dict[str, float] = {}
+        self.chatterbox: Chatterbox | None = None
+        self.chatterbox_reader: threading.Thread | None = None
+        self.chatterbox_closed = threading.Event()
+        self.chatterbox_close_requested = False
 
     def _forward(self, name: str, proc: subprocess.Popen, path: Path, ready: threading.Event) -> None:
         with path.open("wb", buffering=0) as out:
@@ -81,19 +96,20 @@ class Residents:
         env = os.environ.copy(); env.update(VULKAN_ENV)
         log = self.journal.sidecar(name)
         self.journal.emit("resident", "start", name=name, executable=str(cmd[0]), sidecar=log.name)
+        startup = subprocess.STARTUPINFO(); startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW; startup.wShowWindow = subprocess.SW_HIDE
         proc = subprocess.Popen(
             cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+            stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NEW_CONSOLE, startupinfo=startup,
         )
         self.procs[name] = proc
-        ready = threading.Event()
+        ready = self.ready[name] = threading.Event()
+        self.ready_deadlines[name] = time.monotonic() + timeout
         self.readers[name] = self.supervisor.start(f"resident-{name}", self._forward, name, proc, log, ready)
-        deadline = time.monotonic() + timeout
         while not ready.wait(.1):
             self.supervisor.check()
             if proc.poll() is not None:
                 raise RuntimeError(f"{name} exited before ready pid={proc.pid} exit={proc.returncode}")
-            if time.monotonic() >= deadline:
+            if time.monotonic() >= self.ready_deadlines[name]:
                 raise RuntimeError(f"{name} did not become ready")
         self.journal.emit("resident", "ready", name=name, pid=proc.pid)
 
@@ -128,7 +144,7 @@ class Residents:
             parakeet, gemma = _exe("parakeet", "parakeet-server.exe"), _exe("gemma", "llama-server.exe")
             commands.extend([
                 ("parakeet", parakeet.parent, [str(parakeet), "--model", str(self.paths.models_dir / PARAKEET_FILE), "--port", str(PORTS["parakeet"])], 180),
-                ("gemma", gemma.parent, [str(gemma), "-m", str(self.paths.models_dir / GEMMA_FILE), "--alias", "gemma", "--host", "127.0.0.1", "--port", str(PORTS["gemma"]), "--offline", "--n-gpu-layers", "all", "--ctx-size", str(GEMMA_CONTEXT), "--no-mmproj", "--flash-attn", FLASH_ATTN, "--threads", "2", "--threads-batch", "2", "--poll", "0", "--poll-batch", "0", "--threads-http", "1", "--no-ui", "--reasoning", "off"], 180),
+                ("gemma", gemma.parent, [str(gemma), "-m", str(self.paths.models_dir / GEMMA_FILE), "--alias", "gemma", "--host", "127.0.0.1", "--port", str(PORTS["gemma"]), "--offline", "--device", "Vulkan0", "--n-gpu-layers", "all", "--ctx-size", str(GEMMA_CONTEXT), "--no-mmproj", "--flash-attn", FLASH_ATTN, "--threads", "2", "--threads-batch", "2", "--poll", "0", "--poll-batch", "0", "--threads-http", "1", "--no-ui", "--reasoning", "off"], 180),
             ])
         elif self.paths.command != "tts":
             raise RuntimeError(f"cannot boot command {self.paths.command!r}")
@@ -136,6 +152,8 @@ class Residents:
         self.journal.emit("runtime", "boot.start", command=self.paths.command, family=family, language=language, voice=settings["tts_voice"], t3=t3_file, codec=codec_file, chatterbox_sha=git_sha(CHATTERBOX), knobs=knobs)
         for name, cwd, command, timeout in commands:
             self._start(name, command, cwd, timeout)
+            if name == "chatterbox":
+                self.chatterbox_client()
         self.journal.emit("runtime", "boot.ready", command=self.paths.command, family=family, language=language)
 
     def require_alive(self, name: str) -> str:
@@ -147,26 +165,88 @@ class Residents:
     def check(self) -> None:
         self.supervisor.check()
         for name, proc in self.procs.items():
-            if proc.poll() is not None and not (name == "chatterbox" and self.chatterbox_closed and proc.returncode == 0):
+            if proc.poll() is not None and not (name == "chatterbox" and self.chatterbox_closed.is_set() and proc.returncode == 0):
                 raise RuntimeError(f"{name} exited pid={proc.pid} exit={proc.returncode}")
 
-    def mark_chatterbox_closed(self) -> None:
-        self.chatterbox_closed = True
+    def chatterbox_client(self) -> Chatterbox:
+        if self.chatterbox is None:
+            self.chatterbox = Chatterbox()
+        if self.chatterbox.sock is None and not self.chatterbox_closed.is_set():
+            self.chatterbox.open()
+            self.journal.emit("resident", "client.connected", name="chatterbox", protocol_version=PROTOCOL_VERSION)
+        return self.chatterbox
+
+    def register_chatterbox_reader(self, reader: threading.Thread) -> None:
+        self.chatterbox_reader = reader
+
+    def close_chatterbox(self) -> None:
+        if self.chatterbox_closed.is_set(): return
+        client = self.chatterbox_client()
+        if not self.chatterbox_close_requested:
+            client.request_close(); self.chatterbox_close_requested = True
+            self.journal.emit("resident", "protocol.close.requested", name="chatterbox", protocol_version=PROTOCOL_VERSION)
+        deadline = time.monotonic() + 10
+        reader = self.chatterbox_reader
+        if reader is not None and reader.is_alive():
+            while not self.chatterbox_closed.wait(.05):
+                self.supervisor.check()
+                if time.monotonic() >= deadline: raise RuntimeError("native close handshake timed out")
+            reader.join(timeout=2)
+            if reader.is_alive(): raise RuntimeError("native TTS reader survived close handshake")
+        else:
+            assert client.sock is not None
+            client.sock.settimeout(10)
+            while time.monotonic() < deadline:
+                frame = client.recv_frame()
+                if frame is not None and frame[0] == RESP_CLOSED:
+                    self.chatterbox_closed.set(); break
+            if not self.chatterbox_closed.is_set(): raise RuntimeError("native close handshake timed out")
+        self.journal.emit("resident", "protocol.closed", name="chatterbox", protocol_version=PROTOCOL_VERSION)
+
+    def _wait_ready(self, name: str, proc: subprocess.Popen) -> None:
+        ready = self.ready.get(name)
+        if ready is None or ready.is_set() or proc.poll() is not None: return
+        deadline = self.ready_deadlines.get(name, time.monotonic() + 10)
+        self.journal.emit("resident", "stop.waiting_for_ready", name=name, pid=proc.pid)
+        while proc.poll() is None and not ready.wait(.1):
+            self.supervisor.check()
+            if time.monotonic() >= deadline: raise RuntimeError(f"{name} did not become ready for graceful shutdown")
+
+    def _ctrl_c(self, name: str, proc: subprocess.Popen) -> None:
+        result = subprocess.run(
+            [sys.executable, "-c", _CTRL_C_HELPER, str(proc.pid)], stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NO_WINDOW,
+            text=True, encoding="utf-8", errors="replace", timeout=5,
+        )
+        if result.returncode:
+            raise RuntimeError(f"{name} CTRL_C helper failed exit={result.returncode}: {result.stdout.strip()}")
+        self.journal.emit("resident", "signal.delivered", name=name, pid=proc.pid, signal="CTRL_C_EVENT", scope="resident-console")
 
     def stop(self) -> None:
         forced: list[str] = []
         bad_exits: list[str] = []
         reader_survivors: list[str] = []
+        protocol_errors: list[str] = []
+        signal_errors: list[str] = []
+        chatterbox_proc = self.procs.get("chatterbox")
+        if chatterbox_proc is not None and chatterbox_proc.poll() is None and not self.chatterbox_closed.is_set():
+            try:
+                self._wait_ready("chatterbox", chatterbox_proc); self.close_chatterbox()
+            except BaseException as error:
+                protocol_errors.append(str(error)); self.journal.failure("resident.chatterbox-close", error)
         for name, proc in reversed(tuple(self.procs.items())):
             running = proc.poll() is None
             self.journal.emit("resident", "stop", name=name, pid=proc.pid, running=running)
             if running:
                 try:
-                    if name == "chatterbox" and self.chatterbox_closed:
+                    if name == "chatterbox" and self.chatterbox_closed.is_set():
                         proc.wait(timeout=10)
                     else:
-                        proc.send_signal(signal.CTRL_BREAK_EVENT); proc.wait(timeout=10)
-                except (ValueError, OSError, subprocess.TimeoutExpired):
+                        self._wait_ready(name, proc)
+                        if name != "chatterbox": self._ctrl_c(name, proc)
+                        proc.wait(timeout=10)
+                except (ValueError, OSError, subprocess.TimeoutExpired, RuntimeError) as error:
+                    signal_errors.append(f"{name}:{error}")
                     if proc.poll() is None:
                         forced.append(name); proc.kill(); proc.wait(timeout=5)
             code = proc.wait()
@@ -177,10 +257,11 @@ class Residents:
             clean = code == 0 and name not in forced
             if not clean: bad_exits.append(f"{name}:{code}")
             self.journal.emit("resident", "stopped", name=name, pid=proc.pid, exit_code=code, clean=clean)
-        self.procs.clear(); self.readers.clear()
+        if self.chatterbox is not None: self.chatterbox.disconnect()
+        self.procs.clear(); self.readers.clear(); self.ready.clear(); self.ready_deadlines.clear()
         listening = _listening_ports()
-        if forced or bad_exits or reader_survivors or listening:
-            detail = {"forced": forced, "bad_exits": bad_exits, "reader_survivors": reader_survivors, "listeners": listening}
+        if forced or bad_exits or reader_survivors or protocol_errors or signal_errors or listening:
+            detail = {"forced": forced, "bad_exits": bad_exits, "reader_survivors": reader_survivors, "protocol_errors": protocol_errors, "signal_errors": signal_errors, "listeners": listening}
             self.journal.emit("resident", "failed", error="shutdown survivors", **detail)
             raise RuntimeError(f"resident shutdown incomplete: {detail}")
         self.journal.emit("resident", "drained", ports=list(PORTS.values()))

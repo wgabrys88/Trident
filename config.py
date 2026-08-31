@@ -152,6 +152,13 @@ def wasapi_device(kind: str) -> tuple[int, dict, dict]:
     return index, dict(device), dict(hostapis[host_index])
 
 
+def wasapi_native_rate(device: dict) -> int:
+    rate = int(round(float(device.get("default_samplerate") or 0)))
+    if rate <= 0:
+        raise RuntimeError(f"WASAPI endpoint has no valid native sample rate: {device.get('name')}")
+    return rate
+
+
 class Paths:
     def __init__(self, models_dir=None, data_dir=None, command="install", family="nano", language="en", console=False, source="microphone", sink="speaker") -> None:
         self.models_dir, self.data_dir = Path(models_dir or MODELS).resolve(), Path(data_dir or DATA).resolve()

@@ -14,9 +14,9 @@ import onnxruntime as ort
 import sounddevice as sd
 from silero_vad_notorch import VADIterator, load_silero_vad
 
-from config import ASR_RATE, GEMMA_CONTEXT, GEMMA_GEN, SMART_TURN_FILE, TTS_RATE, VAD_FRAME, Paths, load_settings, system_prompt, wasapi_device
+from config import ASR_RATE, GEMMA_CONTEXT, GEMMA_GEN, SMART_TURN_FILE, TTS_RATE, VAD_FRAME, Paths, load_settings, system_prompt, wasapi_device, wasapi_native_rate
 from runtime import (
-    Chatterbox, CancelableHTTP, Residents, RESP_CANCELLED, RESP_CLOSED, RESP_DONE,
+    CancelableHTTP, Residents, RESP_CANCELLED, RESP_CLOSED, RESP_DONE,
     RESP_ERROR, RESP_PCM, gemma_stream, transcribe,
 )
 
@@ -26,7 +26,6 @@ STOP_PHRASES = {
 }
 BACKCHANNELS = {"yeah", "yes", "yep", "yup", "ok", "okay", "mhm", "mm", "uh", "um", "aha", "uh huh", "huh", "right", "sure", "tak", "no", "nie", "okej"}
 BLOCK_SECONDS = VAD_FRAME / TTS_RATE
-_NATIVE_RATE = 48000
 _EOF = object()
 
 
@@ -34,6 +33,20 @@ def _join_or_fail(thread: threading.Thread | None, role: str, timeout: float = 5
     if thread is None or not thread.is_alive(): return
     thread.join(timeout)
     if thread.is_alive(): raise RuntimeError(f"{role} worker survived shutdown")
+
+
+def _finish_cleanup(paths: Paths, primary, actions) -> None:
+    failures: list[tuple[BaseException, object]] = []
+    for role, action in actions:
+        try:
+            action()
+        except BaseException as error:
+            failures.append((error, error.__traceback__))
+            paths.journal.failure(f"cleanup.{role}", error)
+    if primary is not None:
+        raise primary[0].with_traceback(primary[1])
+    if failures:
+        raise failures[0][0].with_traceback(failures[0][1])
 
 
 def spoken(text: str) -> str:
@@ -306,50 +319,40 @@ class WavSink:
         if failure is not None: raise failure
 
 
-class Upsample2x:
-    def __init__(self) -> None:
-        self.previous: float | None = None
-
-    def feed(self, block: bytes) -> bytes:
-        samples = np.frombuffer(block, dtype="<i2").astype(np.float32)
-        if not samples.size:
-            return b""
-        previous = samples[0] if self.previous is None else self.previous
-        left = np.empty_like(samples); left[0] = previous; left[1:] = samples[:-1]
-        out = np.empty(samples.size * 2, dtype=np.float32)
-        out[0::2] = (left + samples) * .5; out[1::2] = samples
-        self.previous = float(samples[-1])
-        return np.clip(np.rint(out), -32768, 32767).astype("<i2").tobytes()
-
-
 class SpeakerSink:
     def __init__(self, renderer: Renderer, paths: Paths) -> None:
         self.renderer, self.paths = renderer, paths
-        self.stream = None; self.native = b""; self.offset = 0; self.error = None
-        self.resampler = Upsample2x(); self.drain_deadline = 0.0; self.drain_reported = False
+        self.stream = None; self.native = np.empty(0, dtype=np.float32); self.offset = 0; self.error = None
+        self.native_rate = 0; self.resampler = None; self.drain_deadline = 0.0; self.drain_reported = False
+        self.callback_frames = 0; self.callback_reported = False
 
     def _callback(self, outdata, frames, timing, status) -> None:
         if status:
             self.error = RuntimeError(f"speaker: {status}"); raise sd.CallbackAbort
-        target = memoryview(outdata); written = 0
-        while written < len(target):
-            if self.offset >= len(self.native):
+        if not self.callback_frames: self.callback_frames = frames
+        target = np.frombuffer(outdata, dtype="<f4", count=frames); written = 0
+        while written < frames:
+            if self.offset >= self.native.size:
                 block, had_pcm, forced_silence = self.renderer.render()
-                self.native = self.resampler.feed(block); self.offset = 0
+                samples = np.frombuffer(block, dtype="<i2").astype(np.float32) / 32768.0
+                self.native = self.resampler.feed(samples); self.offset = 0
                 if had_pcm or forced_silence:
                     self.drain_deadline = float(timing.outputBufferDacTime) + BLOCK_SECONDS
                     self.drain_reported = False
-            count = min(len(target) - written, len(self.native) - self.offset)
+            count = min(frames - written, self.native.size - self.offset)
+            if count <= 0:
+                target[written:] = 0; break
             target[written:written + count] = self.native[self.offset:self.offset + count]
             written += count; self.offset += count
 
     def open(self) -> None:
         index, device, host = wasapi_device("output")
-        extra = sd.WasapiSettings(exclusive=True, auto_convert=False, explicit_sample_format=True)
-        sd.check_output_settings(device=index, channels=1, dtype="int16", samplerate=_NATIVE_RATE, extra_settings=extra)
-        self.stream = sd.RawOutputStream(samplerate=_NATIVE_RATE, blocksize=128, device=index, channels=1, dtype="int16", latency="low", extra_settings=extra, callback=self._callback)
+        self.native_rate = wasapi_native_rate(device); self.resampler = StatefulResampler(TTS_RATE, self.native_rate)
+        extra = sd.WasapiSettings(exclusive=False, auto_convert=False, explicit_sample_format=True)
+        sd.check_output_settings(device=index, channels=1, dtype="float32", samplerate=self.native_rate, extra_settings=extra)
+        self.stream = sd.RawOutputStream(samplerate=self.native_rate, blocksize=0, device=index, channels=1, dtype="float32", latency="low", extra_settings=extra, callback=self._callback)
         self.stream.start()
-        self.paths.journal.emit("playback", "sink.ready", type="speaker", device=device["name"], host_api=host["name"], native_rate=_NATIVE_RATE, render_rate=TTS_RATE, advertised_low_latency=device.get("default_low_output_latency"), negotiated_latency=self.stream.latency, native_block=128, render_block=VAD_FRAME)
+        self.paths.journal.emit("playback", "sink.ready", type="speaker", device=device["name"], host_api=host["name"], mode="wasapi-shared-low-latency", native_rate=self.native_rate, render_rate=TTS_RATE, advertised_low_latency=device.get("default_low_output_latency"), negotiated_latency=self.stream.latency, configured_block=0, render_block=VAD_FRAME)
 
     def drained(self) -> bool:
         if not self.renderer.drained(): return False
@@ -363,6 +366,9 @@ class SpeakerSink:
 
     def check(self) -> None:
         if self.error is not None: raise self.error
+        if self.callback_frames and not self.callback_reported:
+            self.paths.journal.emit("playback", "sink.negotiated", type="speaker", mode="wasapi-shared-low-latency", native_rate=self.native_rate, callback_block=self.callback_frames, callback_period_ms=round(self.callback_frames * 1000 / self.native_rate, 3), negotiated_latency=self.stream.latency)
+            self.callback_reported = True
 
     def close(self) -> None:
         if self.stream is not None:
@@ -413,11 +419,13 @@ class MicrophoneSource:
     finite = False
     def __init__(self, frame_cb, _eof_cb, paths: Paths) -> None:
         self.frame_cb, self.paths = frame_cb, paths; self.stream = None; self.error = None
-        self.resampler = StatefulResampler(_NATIVE_RATE, ASR_RATE); self.pending = np.empty(0, dtype=np.float32)
+        self.native_rate = 0; self.resampler = None; self.pending = np.empty(0, dtype=np.float32)
+        self.callback_frames = 0; self.callback_reported = False
 
     def _callback(self, indata, frames, _timing, status) -> None:
         if status:
             self.error = RuntimeError(f"microphone: {status}"); raise sd.CallbackAbort
+        if not self.callback_frames: self.callback_frames = frames
         samples = np.frombuffer(indata, dtype="<f4", count=frames)
         self.pending = np.concatenate((self.pending, self.resampler.feed(samples)))
         while self.pending.size >= VAD_FRAME:
@@ -425,18 +433,23 @@ class MicrophoneSource:
 
     def open(self) -> None:
         index, device, host = wasapi_device("input")
-        extra = sd.WasapiSettings(exclusive=True, auto_convert=False, explicit_sample_format=True)
-        sd.check_input_settings(device=index, channels=1, dtype="float32", samplerate=_NATIVE_RATE, extra_settings=extra)
-        self.stream = sd.RawInputStream(samplerate=_NATIVE_RATE, blocksize=1536, device=index, channels=1, dtype="float32", latency="low", extra_settings=extra, callback=self._callback)
+        self.native_rate = wasapi_native_rate(device); self.resampler = StatefulResampler(self.native_rate, ASR_RATE)
+        extra = sd.WasapiSettings(exclusive=False, auto_convert=False, explicit_sample_format=True)
+        sd.check_input_settings(device=index, channels=1, dtype="float32", samplerate=self.native_rate, extra_settings=extra)
+        self.stream = sd.RawInputStream(samplerate=self.native_rate, blocksize=0, device=index, channels=1, dtype="float32", latency="low", extra_settings=extra, callback=self._callback)
         self.stream.start()
-        self.paths.journal.emit("capture", "source.ready", type="microphone", device=device["name"], host_api=host["name"], native_rate=_NATIVE_RATE, capture_rate=ASR_RATE, advertised_low_latency=device.get("default_low_input_latency"), negotiated_latency=self.stream.latency, native_block=1536, capture_block=VAD_FRAME)
+        self.paths.journal.emit("capture", "source.ready", type="microphone", device=device["name"], host_api=host["name"], mode="wasapi-shared-low-latency", native_rate=self.native_rate, capture_rate=ASR_RATE, advertised_low_latency=device.get("default_low_input_latency"), negotiated_latency=self.stream.latency, configured_block=0, capture_block=VAD_FRAME)
 
     def check(self) -> None:
         if self.error is not None: raise self.error
+        if self.callback_frames and not self.callback_reported:
+            self.paths.journal.emit("capture", "source.negotiated", type="microphone", mode="wasapi-shared-low-latency", native_rate=self.native_rate, callback_block=self.callback_frames, callback_period_ms=round(self.callback_frames * 1000 / self.native_rate, 3), negotiated_latency=self.stream.latency)
+            self.callback_reported = True
 
     def close(self) -> None:
         if self.stream is not None:
             self.stream.stop(); self.stream.close(); self.stream = None
+        self.paths.journal.emit("capture", "source.stopped", type="microphone")
 
 
 class Capture:
@@ -530,17 +543,17 @@ class Synthesis:
         self.paths, self.journal, self.residents = paths, paths.journal, residents
         residents.require_alive("chatterbox")
         self.lock = threading.Lock(); self.epoch = 0; self.response_id = 0; self.pending: set[tuple[int, int, int]] = set(); self.terminal: set[tuple[int, int, int]] = set()
-        self.tts = Chatterbox(); self.renderer = Renderer(paths); self.sink = WavSink(output_file, self.renderer, paths) if output_file else SpeakerSink(self.renderer, paths)
-        self.reader = None; self.closed = threading.Event(); self.active = False; self.first_pcm: set[int] = set()
+        self.tts = residents.chatterbox_client(); self.renderer = Renderer(paths); self.sink = WavSink(output_file, self.renderer, paths) if output_file else SpeakerSink(self.renderer, paths)
+        self.reader = None; self.closed = residents.chatterbox_closed; self.active = False; self.first_pcm: set[int] = set()
 
     def start_output(self) -> None:
         self.sink.open()
         try:
-            self.tts.open()
             self.reader = self.paths.supervisor.start("tts-reader", self._reader)
+            self.residents.register_chatterbox_reader(self.reader)
             self.active = True
         except BaseException:
-            self.tts.disconnect(); self.sink.close()
+            self.sink.close()
             raise
 
     def _sync_pending(self) -> None: self.renderer.set_pending(self.pending)
@@ -624,22 +637,14 @@ class Synthesis:
                 while not self.sink.drained() and time.monotonic() < deadline:
                     self.check(); time.sleep(.005)
                 if not self.sink.drained(): raise RuntimeError("playback did not render epoch-cutover silence before shutdown")
-            self.tts.request_close()
-            close_deadline = time.monotonic() + 10
-            while not self.closed.wait(.05):
-                self.paths.supervisor.check()
-                if time.monotonic() >= close_deadline: raise RuntimeError("native close handshake timed out")
-            if self.reader is not None:
-                self.reader.join(timeout=2)
-                if self.reader.is_alive(): raise RuntimeError("native TTS reader survived close handshake")
-            self.residents.mark_chatterbox_closed()
+            self.residents.close_chatterbox()
         except BaseException as error:
             failure = error
         finally:
-            self.tts.disconnect()
             try:
                 self.sink.close()
             except BaseException as error:
+                self.journal.failure("cleanup.sink", error)
                 if failure is None: failure = error
             self.active = False
         if failure is not None:
@@ -781,11 +786,18 @@ class Conversation(Synthesis):
         self.capture.check(); super().check()
 
     def stop(self, cancel: bool) -> None:
-        self.stopping = True; self.asr_http.close(); self.gemma_http.close(); self.capture.close()
+        self.stopping = True; self.asr_http.close(); self.gemma_http.close()
+        primary = None
+        try:
+            self.capture.close()
+        except BaseException as error:
+            primary = (error, error.__traceback__); self.journal.failure("cleanup.capture", error)
         self.recognition_q.put(_EOF); self.generation_q.put(_EOF)
-        _join_or_fail(self.recognition_thread, "recognition")
-        _join_or_fail(self.generation_thread, "generation")
-        self.stop_output(cancel)
+        _finish_cleanup(self.paths, primary, [
+            ("recognition", lambda: _join_or_fail(self.recognition_thread, "recognition")),
+            ("generation", lambda: _join_or_fail(self.generation_thread, "generation")),
+            ("synthesis", lambda: self.stop_output(cancel)),
+        ])
 
 
 class TTSMode(Synthesis):
@@ -817,6 +829,7 @@ class TTSMode(Synthesis):
 
 def launch(paths: Paths, family: str = "nano", language: str = "en", input_file: Path | None = None, output_file: Path | None = None) -> None:
     residents = Residents(paths); conversation = None; interrupted = False
+    primary = None
     try:
         residents.boot(family, language); conversation = Conversation(paths, residents, load_settings(paths.data_dir), input_file, output_file, language); conversation.start()
         paths.journal.emit("main", "ready", family=family, language=language, finite_input=input_file is not None); print("trident.ready", flush=True)
@@ -824,25 +837,22 @@ def launch(paths: Paths, family: str = "nano", language: str = "en", input_file:
             conversation.check()
             if conversation.finite_done(): break
             paths.supervisor.wait(.02)
-    except BaseException:
-        interrupted = True; raise
-    finally:
-        try:
-            if conversation is not None: conversation.stop(cancel=interrupted)
-        finally:
-            try: residents.stop()
-            finally: paths.supervisor.join(1)
+    except BaseException as error:
+        interrupted = True; primary = (error, error.__traceback__)
+    actions = []
+    if conversation is not None: actions.append(("conversation", lambda: conversation.stop(cancel=interrupted)))
+    actions.extend((("residents", residents.stop), ("supervisor", lambda: paths.supervisor.join(1))))
+    _finish_cleanup(paths, primary, actions)
 
 
 def launch_tts(paths: Paths, family: str, language: str, primary: str, replacement: str | None, interrupt_after: float | None, output_file: Path | None = None) -> None:
     residents = Residents(paths); mode = None; interrupted = False
+    failure = None
     try:
         residents.boot(family, language); mode = TTSMode(paths, residents, output_file, primary, replacement, interrupt_after); mode.start(); mode.run()
-    except BaseException:
-        interrupted = True; raise
-    finally:
-        try:
-            if mode is not None: mode.stop_output(cancel=interrupted)
-        finally:
-            try: residents.stop()
-            finally: paths.supervisor.join(1)
+    except BaseException as error:
+        interrupted = True; failure = (error, error.__traceback__)
+    actions = []
+    if mode is not None: actions.append(("synthesis", lambda: mode.stop_output(cancel=interrupted)))
+    actions.extend((("residents", residents.stop), ("supervisor", lambda: paths.supervisor.join(1))))
+    _finish_cleanup(paths, failure, actions)
