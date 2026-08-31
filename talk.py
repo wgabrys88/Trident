@@ -67,7 +67,7 @@ def folded_utterance(text: str) -> str:
 
 def classify_utterance(text: str) -> str:
     folded = folded_utterance(text)
-    if folded in STOP_PHRASES:
+    if folded in STOP_PHRASES or any(folded.startswith(phrase + " ") for phrase in STOP_PHRASES):
         return "stop"
     if folded in BACKCHANNELS:
         return "backchannel"
