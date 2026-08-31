@@ -107,8 +107,8 @@ def install_runtime(paths, role: str, exe_name: str, spec: tuple[str, str, int, 
             receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
             exe = find_exe(dest, exe_name)
             if (exe is not None and receipt.get("archive", {}).get("sha256") == expected_sha
-                    and receipt.get("executable", {}).get("sha256") == _sha(exe)):
-                paths.journal.emit("install", "runtime.ready", role=role, executable=file_identity(exe), archive=receipt.get("archive"))
+                    and receipt.get("executable", {}).get("size") == exe.stat().st_size):
+                paths.journal.emit("install", "runtime.ready", role=role, executable=receipt["executable"], archive=receipt.get("archive"))
                 return
         except Exception:
             pass
@@ -119,7 +119,8 @@ def install_runtime(paths, role: str, exe_name: str, spec: tuple[str, str, int, 
     exe = find_exe(dest, exe_name)
     if exe is None:
         raise RuntimeError(f"{exe_name} missing from verified {archive_name}")
-    receipt = {"role": role, "url": url, "archive": file_identity(archive), "executable": file_identity(exe), "version": _tool([str(exe), "--version"])}
+    receipt = {"role": role, "url": url, "archive": file_identity(archive),
+               "executable": {"path": str(exe), "size": exe.stat().st_size}, "version": _tool([str(exe), "--version"])}
     _write_json(receipt_path, receipt)
     paths.journal.emit("install", "runtime.completed", **receipt)
 

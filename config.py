@@ -15,6 +15,8 @@ GGML, RUNTIMES, CONVERTER = CHATTERBOX / "ggml", TOOLS / "runtime", TOOLS / "con
 CHATTERBOX_URL, CHATTERBOX_REV = "https://github.com/wgabrys88/chatterbox.cpp", "ffd78fb72b7943199d1ea6ea5b43d808c1a2f4a6"
 GGML_GIT = ("https://github.com/ggml-org/ggml.git", "58c3805840b516b2a88ff867ccf7bb41dba79951")
 ASR_RATE, TTS_RATE, VAD_FRAME = 16000, 24000, 512
+CABLE_RATE, CABLE_CHANNELS = 48000, 2
+CABLE_DEVICES = {"input": "CABLE Output (VB-Audio Virtual Cable)", "output": "CABLE Input (VB-Audio Virtual Cable)"}
 T3_FILE, PARAKEET_FILE, GEMMA_FILE = "chatterbox-t3-nano-q4_0.gguf", "tdt-0.6b-v3-q4_k.gguf", "gemma-4-E2B_q4_0-it.gguf"
 PARAKEET_URL = "https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/bf0af9f425fa01809cadec671b3cb672709d13e9/" + PARAKEET_FILE
 PARAKEET_SIZE, PARAKEET_SHA256 = 675200864, "993d73feb4206dadda865ab25bd64b50c48dc4d013c3bf6126a721f28b1d5ee8"
@@ -131,39 +133,27 @@ def voice_wav(data_dir: Path, value: str | None = None) -> Path:
         return path.resolve()
     raise RuntimeError(f"unknown voice {raw!r}")
 
-def wasapi_device(kind: str) -> tuple[int, dict, dict]:
+def cable_device(kind: str) -> tuple[int, dict, dict]:
     import sounddevice as sd
+    expected = CABLE_DEVICES[kind]
     hostapis = sd.query_hostapis(); devices = sd.query_devices()
     host_index = next((i for i, api in enumerate(hostapis) if "wasapi" in str(api["name"]).casefold()), None)
     if host_index is None: raise RuntimeError("Windows WASAPI host API is unavailable")
-    direction = 0 if kind == "input" else 1
-    default_index = int(sd.default.device[direction]); default_name = str(devices[default_index]["name"]).casefold()
     channel_key = "max_input_channels" if kind == "input" else "max_output_channels"
-    candidates = [(i, d) for i, d in enumerate(devices) if int(d["hostapi"]) == host_index and int(d[channel_key]) > 0]
-    exact = [(i, d) for i, d in candidates if str(d["name"]).casefold() == default_name]
-    if exact:
-        index, device = exact[0]
-    else:
-        words = {w for w in default_name.replace("(", " ").replace(")", " ").split() if len(w) > 3}
-        ranked = sorted(candidates, key=lambda item: len(words & set(str(item[1]["name"]).casefold().split())), reverse=True)
-        if not ranked or not words or len(words & set(str(ranked[0][1]["name"]).casefold().split())) < 2:
-            raise RuntimeError(f"cannot resolve default {kind} endpoint to stable WASAPI name")
-        index, device = ranked[0]
+    match = next(((i, d) for i, d in enumerate(devices)
+                  if int(d["hostapi"]) == host_index and str(d["name"]) == expected), None)
+    if match is None:
+        raise RuntimeError(f"required WASAPI endpoint is missing: {expected}")
+    index, device = match
+    if int(device[channel_key]) < CABLE_CHANNELS:
+        raise RuntimeError(f"{expected} does not expose {CABLE_CHANNELS} {kind} channels")
     return index, dict(device), dict(hostapis[host_index])
 
 
-def wasapi_native_rate(device: dict) -> int:
-    rate = int(round(float(device.get("default_samplerate") or 0)))
-    if rate <= 0:
-        raise RuntimeError(f"WASAPI endpoint has no valid native sample rate: {device.get('name')}")
-    return rate
-
-
 class Paths:
-    def __init__(self, models_dir=None, data_dir=None, command="install", family="nano", language="en", console=False, source="microphone", sink="speaker") -> None:
+    def __init__(self, models_dir=None, data_dir=None, command="install", family="nano", language="en", console=False) -> None:
         self.models_dir, self.data_dir = Path(models_dir or MODELS).resolve(), Path(data_dir or DATA).resolve()
         self.command, self.family, self.language = command, family.strip().lower(), language.strip().lower()
-        self.source, self.sink = source, sink
         self.voice = str(load_settings(self.data_dir).get("tts_voice") or "trump")
         self.stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
         bits = [self.stamp, command, HARDWARE]
