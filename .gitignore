@@ -11,3 +11,5 @@
 !/generation.py
 !/tts.py
 !/requirements.txt
+!/.handoff.md
+!/.findings.md
