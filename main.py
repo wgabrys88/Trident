@@ -8,7 +8,7 @@ from config import (
     TTS_MODELS, TTS_PROFILES, TTS_RATE, VULKAN_ENV, ensure_venv, load_settings, wasapi_device,
 )
 import config
-from install import install
+from install import install, tts_provenance
 from journal import git_identity
 
 ensure_venv(__file__)
@@ -21,12 +21,13 @@ def _read_utf8(path: Path, parser: argparse.ArgumentParser, label: str) -> str:
 
 
 def _manifest(paths: Paths) -> dict:
+    installed_tts = tts_provenance() if paths.command in ("talk", "tts") else None
     settings, audio = load_settings(paths.data_dir), {}
     for kind in {"talk": ("input", "output"), "tts": ("output",), "asr": ("input",)}.get(paths.command, ()):
         index, device, host = wasapi_device(kind)
         audio[kind] = {"device": device["name"], "index": index, "host_api": host["name"],
                        "channels": 1, "rate": ASR_RATE if kind == "input" else TTS_RATE, "auto_convert": True}
-    return {
+    manifest = {
         "created_at": paths.stamp, "command": paths.command, "family": paths.family,
         "language": paths.language, "voice": paths.voice,
         "repositories": {
@@ -42,6 +43,8 @@ def _manifest(paths: Paths) -> dict:
         "conversation": {k: settings.get(k) for k in ("candidate_silence_ms", "completion_threshold", "acoustic_context_seconds")},
         "audio": audio,
     }
+    if installed_tts is not None: manifest["installed_tts"] = installed_tts
+    return manifest
 
 
 def main(command: str | None = None) -> int:

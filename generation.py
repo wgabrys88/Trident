@@ -15,6 +15,12 @@ SPOKEN_TURN_WORDS = 60
 SPOKEN_TURN_CHARS = 480
 
 
+def fit_spoken_unit(text: str, max_words: int, max_chars: int) -> tuple[str, bool]:
+    parts = text.split(); normalized = " ".join(parts)
+    fitted = " ".join(parts[:max(0, max_words)])[:max(0, max_chars)].rstrip()
+    return fitted, len(parts) > max_words or len(normalized) > max_chars
+
+
 def spoken(text: str) -> str:
     text, marker = text.replace("\r", "").strip(), "Assistant:\n"
     return text.rsplit(marker, 1)[-1].strip() if marker in text else text

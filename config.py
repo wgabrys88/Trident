@@ -41,7 +41,7 @@ PROMPT = ("You are the mind of this spoken conversation. Remember what was alrea
 TTS_KNOBS = {
     "gpu_layers": 99, "context": 2048, "threads": 4, "fastconv": 1, "seed": 42, "max_tokens": 1000,
     "top_k": 1000, "top_p": .95, "min_p": .05, "temperature": .8, "repeat_penalty": 1.2,
-    "cfm_steps": 1, "cfg_weight": .5, "exaggeration": .5,
+    "cfm_steps": 2, "cfg_weight": .5, "exaggeration": .5,
 }
 TTS_PROFILES = {"nano": TTS_KNOBS, "turbo": TTS_KNOBS, "v3": {**TTS_KNOBS, "top_k": 0, "top_p": 1., "cfm_steps": 5}}
 LANGUAGE_NAMES = {"ar":"Arabic","da":"Danish","de":"German","el":"Greek","en":"English","es":"Spanish","fi":"Finnish","fr":"French","he":"Hebrew","hi":"Hindi","it":"Italian","ja":"Japanese","ko":"Korean","ms":"Malay","nl":"Dutch","no":"Norwegian","pl":"Polish","pt":"Portuguese","ru":"Russian","sv":"Swedish","sw":"Swahili","tr":"Turkish","zh":"Chinese"}
