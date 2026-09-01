@@ -59,7 +59,9 @@ def transcribe(base: str, pcm: bytes, channel: CancelableHTTP) -> str:
 def _mel_filters() -> np.ndarray:
     def hz_to_mel(hz):
         hz = np.asarray(hz, dtype=np.float64)
-        return np.where(hz >= 1000.0, 15.0 + np.log(hz / 1000.0) / (np.log(6.4) / 27.0), hz / (200.0 / 3.0))
+        mel, high = hz / (200.0 / 3.0), hz >= 1000.0
+        mel[high] = 15.0 + np.log(hz[high] / 1000.0) / (np.log(6.4) / 27.0)
+        return mel
     def mel_to_hz(mel):
         mel = np.asarray(mel, dtype=np.float64)
         return np.where(mel >= 15.0, 1000.0 * np.exp((np.log(6.4) / 27.0) * (mel - 15.0)), (200.0 / 3.0) * mel)

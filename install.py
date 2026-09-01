@@ -157,13 +157,28 @@ def build_tts(paths) -> None:
     paths.journal.emit("install", "tts.build.completed", **receipt)
 
 
+def tts_provenance() -> dict:
+    exe = RUNTIMES / "tts" / "chatterbox-server.exe"
+    receipt = _read_json(RUNTIMES / "tts" / "provenance.json")
+    source, actual = git_identity(CHATTERBOX), file_identity(exe)
+    checks = {
+        "receipt": isinstance(receipt, dict),
+        "configured source": source.get("sha") == CHATTERBOX_REV and source.get("dirty") is False,
+        "built source": isinstance(receipt, dict) and receipt.get("chatterbox", {}).get("sha") == CHATTERBOX_REV and receipt.get("chatterbox", {}).get("dirty") is False,
+        "hardware": isinstance(receipt, dict) and receipt.get("hardware") == HARDWARE,
+        "backend": isinstance(receipt, dict) and receipt.get("backend") == TTS_BACKEND,
+        "ggml": isinstance(receipt, dict) and receipt.get("ggml_sha") == GGML_GIT[1],
+        "build flags": isinstance(receipt, dict) and receipt.get("build_flags") == _BUILD_FLAGS,
+        "executable": isinstance(receipt, dict) and receipt.get("executable", {}).get("size") == actual.get("size") and receipt.get("executable", {}).get("sha256") == actual.get("sha256"),
+    }
+    if failed := [name for name, valid in checks.items() if not valid]:
+        raise RuntimeError(f"installed TTS provenance mismatch ({', '.join(failed)}); run python main.py install")
+    return {**receipt, "configured_pin": CHATTERBOX_REV, "executable": actual}
+
+
 def _build_valid() -> bool:
-    exe, receipt = RUNTIMES / "tts" / "chatterbox-server.exe", _read_json(RUNTIMES / "tts" / "provenance.json")
-    return (receipt is not None and exe.is_file()
-        and receipt.get("hardware") == HARDWARE and receipt.get("chatterbox", {}).get("sha") == git_identity(CHATTERBOX).get("sha")
-        and receipt.get("chatterbox", {}).get("dirty") is False and receipt.get("ggml_sha") == GGML_GIT[1]
-        and receipt.get("backend") == TTS_BACKEND and receipt.get("build_flags") == _BUILD_FLAGS
-        and receipt.get("executable", {}).get("sha256") == _sha(exe))
+    try: tts_provenance(); return True
+    except RuntimeError: return False
 
 
 def _converter(paths) -> tuple[Path, dict]:
