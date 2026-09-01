@@ -13,17 +13,14 @@ from dataclasses import dataclass
 import numpy as np
 import sounddevice as sd
 
-from config import TTS_RATE, VAD_FRAME, Paths, Wasapi
+from config import TTS_RATE, Paths, Wasapi
 from generation import Segmenter
 from journal import finish_cleanup
 from runtime import RESP_CANCELLED, RESP_CLOSED, RESP_DONE, RESP_ERROR, RESP_PCM, Residents
 
-BLOCK_SECONDS = VAD_FRAME / TTS_RATE
-
-
 @dataclass
 class PCMEntry:
-    epoch: int; response: int; piece: int; chunk: int; pcm: bytes; offset: int = 0
+    epoch: int; response: int; piece: int; chunk: int; pcm: bytes; offset: int = 0; started_dac: float | None = None
 
 
 class Renderer:
@@ -37,6 +34,10 @@ class Renderer:
         self.pending: set[tuple[int, int, int]] = set()
         self._drained = True
         self._events: queue.SimpleQueue = queue.SimpleQueue()
+        self.last_completed: tuple[int, int, int, int] | None = None
+        self.underrun: tuple[float, tuple[int, int, int, int]] | None = None
+        self.scheduled: tuple[int, int, int, int] | None = None
+        self.scheduled_until = 0.0
 
     def _busy(self) -> None:
         self._drained = False
@@ -46,17 +47,17 @@ class Renderer:
             changed = pending != self.pending
             self.pending = set(pending)
             if changed and any(i[0] == self.epoch for i in pending): self._busy()
+            if not any(i[0] == self.epoch for i in pending): self.underrun = None
 
-    def put(self, entry: PCMEntry) -> bool:
+    def put(self, entry: PCMEntry) -> tuple[bool, int, int]:
         with self.lock:
-            if entry.epoch != self.epoch: self._events.put(("late", (entry, self.epoch))); return False
-            self.entries.append(entry); self._busy(); return True
+            if entry.epoch != self.epoch: self._events.put(("late", (entry, self.epoch))); return False, self.epoch, 0
+            self.entries.append(entry); self._busy()
+            buffered = sum(len(item.pcm) - item.offset for item in self.entries)
+            return True, self.epoch, buffered
 
     def resume(self) -> None:
         with self.lock: self.paused = False
-
-    def is_paused(self) -> bool:
-        with self.lock: return self.paused
 
     def advance(self, epoch: int, preserve_playback: bool = False) -> int:
         with self.lock:
@@ -69,14 +70,27 @@ class Renderer:
                 self.entries.clear(); self.preserved_epochs.clear()
                 dropped = buffered
                 self.paused = False; self.force_silence = True
+                self.last_completed = None
+            self.underrun = None
             self.epoch = epoch; self._busy()
             return dropped
 
-    def render(self) -> tuple[bytes, bool, bool]:
-        block = bytearray(VAD_FRAME * 2); wrote = 0; had_pcm = False
+    def snapshot(self, dac_time: float) -> dict:
+        with self.lock:
+            active = self.scheduled is not None and self.scheduled_until > dac_time
+            fields = {"playback_active": active, "playback_tail_ms": round(max(0.0, self.scheduled_until - dac_time) * 1000, 3),
+                "playback_scheduled_until": round(self.scheduled_until, 6) if active else None}
+            if active:
+                fields.update(zip(("playback_epoch", "playback_response_id", "playback_piece_id", "playback_chunk_id"), self.scheduled))
+            else:
+                fields.update({"playback_epoch": None, "playback_response_id": None, "playback_piece_id": None, "playback_chunk_id": None})
+            return fields
+
+    def render(self, frames: int, dac_time: float) -> tuple[bytes, bool, bool]:
+        block = bytearray(frames * 2); wrote = 0; had_pcm = False
         with self.lock:
             if self.force_silence:
-                self.force_silence = False; self._events.put(("silenced", self.epoch))
+                self.force_silence = False; self._events.put(("silenced", {"epoch": self.epoch, "blocks": 1, "frames": frames, "dac_time": round(dac_time, 6)}))
                 if not self.entries and not any(i[0] == self.epoch for i in self.pending): self._drained = True
                 return bytes(block), False, True
             if self.paused: return bytes(block), False, False
@@ -84,11 +98,33 @@ class Renderer:
                 entry = self.entries[0]
                 if entry.epoch != self.epoch and entry.epoch not in self.preserved_epochs:
                     self.entries.popleft(); self._events.put(("late", (entry, self.epoch))); continue
+                identity = (entry.epoch, entry.response, entry.piece, entry.chunk)
+                if entry.started_dac is None:
+                    entry.started_dac = dac_time + wrote / 2 / TTS_RATE
+                    preserved = entry.epoch != self.epoch
+                    if self.underrun is not None:
+                        gap_start, previous = self.underrun; gap_end = entry.started_dac
+                        self._events.put(("underrun", {"epoch": self.epoch, "start_dac_time": round(gap_start, 6),
+                            "end_dac_time": round(gap_end, 6), "duration_ms": round(max(0.0, gap_end - gap_start) * 1000, 3),
+                            "previous_response_id": previous[1], "previous_piece_id": previous[2], "previous_chunk_id": previous[3],
+                            "next_response_id": entry.response, "next_piece_id": entry.piece, "next_chunk_id": entry.chunk}))
+                        self.underrun = None
+                    self._events.put(("started", {"epoch": entry.epoch, "live_epoch": self.epoch, "epoch_violation": False,
+                        "preserved_playback": preserved, "response_id": entry.response, "piece_id": entry.piece,
+                        "chunk_id": entry.chunk, "bytes": len(entry.pcm), "dac_time": round(entry.started_dac, 6)}))
                 count = min(len(block) - wrote, len(entry.pcm) - entry.offset)
                 block[wrote:wrote + count] = entry.pcm[entry.offset:entry.offset + count]
                 wrote += count; entry.offset += count; had_pcm = had_pcm or count > 0
-                if entry.offset == len(entry.pcm): self.entries.popleft()
+                self.scheduled, self.scheduled_until = identity, dac_time + wrote / 2 / TTS_RATE
+                if entry.offset == len(entry.pcm):
+                    self.entries.popleft(); self.last_completed = identity
+                    self._events.put(("completed", {"epoch": entry.epoch, "live_epoch": self.epoch, "epoch_violation": False,
+                        "preserved_playback": entry.epoch != self.epoch, "response_id": entry.response, "piece_id": entry.piece,
+                        "chunk_id": entry.chunk, "bytes": len(entry.pcm), "start_dac_time": round(entry.started_dac, 6),
+                        "end_dac_time": round(self.scheduled_until, 6)}))
             if not self.entries: self.preserved_epochs.clear()
+            if wrote < len(block) and self.last_completed is not None and any(i[0] == self.epoch for i in self.pending) and self.underrun is None:
+                self.underrun = (dac_time + wrote / 2 / TTS_RATE, self.last_completed)
             if not self.entries and not any(i[0] == self.epoch for i in self.pending) and not self.force_silence:
                 self._drained = True
         return bytes(block), had_pcm, False
@@ -101,42 +137,29 @@ class Renderer:
             event, value = self._events.get()
             if event == "late":
                 e, live_epoch = value; self.journal.emit("playback", "dropped", epoch=e.epoch, live_epoch=live_epoch, epoch_violation=e.epoch != live_epoch, response_id=e.response, piece_id=e.piece, chunk_id=e.chunk, bytes=len(e.pcm) - e.offset)
-            elif event == "silenced":
-                self.journal.emit("playback", "silenced", epoch=value, blocks=1)
+            else:
+                self.journal.emit("playback", event, **value)
 
 
 class Sink(Wasapi):
     def __init__(self, renderer: Renderer, paths: Paths) -> None:
         super().__init__(paths)
         self.renderer = renderer
-        self.lock = threading.Lock()
-        self.native = np.empty(0, dtype=np.float32); self.offset = 0
         self.drain_deadline = 0.0; self.drain_reported = False
 
     def _callback(self, outdata, frames, timing, status) -> None:
         if status:
             self.error = RuntimeError(f"WASAPI render: {status}"); raise sd.CallbackAbort
         target = np.frombuffer(outdata, dtype="<f4", count=frames)
-        with self.lock:
-            if self.renderer.is_paused(): target[:] = 0; return
-            written = 0
-            while written < frames:
-                if self.offset >= self.native.size:
-                    block, had_pcm, forced_silence = self.renderer.render()
-                    self.native = np.frombuffer(block, dtype="<i2").astype(np.float32) / 32768.0; self.offset = 0
-                    if had_pcm or forced_silence:
-                        self.drain_deadline = float(timing.outputBufferDacTime) + BLOCK_SECONDS; self.drain_reported = False
-                count = min(frames - written, self.native.size - self.offset)
-                if count <= 0:
-                    target[written:] = 0; break
-                target[written:written + count] = self.native[self.offset:self.offset + count]
-                written += count; self.offset += count
+        dac_time = float(timing.outputBufferDacTime)
+        block, had_pcm, forced_silence = self.renderer.render(frames, dac_time)
+        target[:] = np.frombuffer(block, dtype="<i2").astype(np.float32) / 32768.0
+        if had_pcm or forced_silence:
+            self.drain_deadline = dac_time + frames / TTS_RATE; self.drain_reported = False
 
-    def cutover(self) -> int:
-        with self.lock:
-            dropped = int(max(0, self.native.size - self.offset)) * 2
-            self.native = np.empty(0, dtype=np.float32); self.offset = 0
-            return dropped
+    def snapshot(self) -> dict:
+        now = float(getattr(self.stream, "time", 0.0)) if self.stream is not None else time.monotonic()
+        return self.renderer.snapshot(now)
 
     def drained(self) -> bool:
         if not self.renderer.drained(): return False
@@ -184,7 +207,6 @@ class Synthesis:
         with self.lock:
             old_epoch = self.epoch; self.epoch += 1; epoch = self.epoch
             dropped = self.renderer.advance(epoch, preserve_playback)
-            if not preserve_playback: dropped += self.sink.cutover()
             self.tts.advance(epoch); self._sync_pending(); native_advance_sent = True
             old_pending = sum(1 for identity in self.pending if identity[0] != epoch)
         if preserve_playback:
@@ -195,7 +217,7 @@ class Synthesis:
     def cutover(self, epoch: int, reason: str, utterance_id: int) -> bool:
         with self.lock:
             if epoch != self.epoch: return False
-            dropped = self.renderer.advance(epoch); dropped += self.sink.cutover(); self._sync_pending()
+            dropped = self.renderer.advance(epoch); self._sync_pending()
         self.journal.emit("playback", "cutover", epoch=epoch, reason=reason, utterance_id=utterance_id, dropped_bytes=dropped)
         return True
 
@@ -210,7 +232,11 @@ class Synthesis:
             kind, epoch, response_id, piece_id, chunk_id, payload = frame; identity = (epoch, response_id, piece_id)
             if kind == RESP_PCM:
                 response = (epoch, response_id)
-                if self.renderer.put(PCMEntry(epoch, response_id, piece_id, chunk_id, payload)) and response not in self.first_pcm:
+                accepted, live_epoch, buffered = self.renderer.put(PCMEntry(epoch, response_id, piece_id, chunk_id, payload))
+                self.journal.emit("synthesis", "pcm", epoch=epoch, live_epoch=live_epoch, epoch_violation=not accepted,
+                    response_id=response_id, piece_id=piece_id, chunk_id=chunk_id, bytes=len(payload), accepted=accepted,
+                    buffered_bytes=buffered)
+                if accepted and response not in self.first_pcm:
                     self.first_pcm.add(response); self.journal.emit("synthesis", "first_result", epoch=epoch, response_id=response_id, piece_id=piece_id, chunk_id=chunk_id, bytes=len(payload))
             elif kind in (RESP_DONE, RESP_CANCELLED, RESP_ERROR):
                 with self.lock:

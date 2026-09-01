@@ -36,10 +36,11 @@ class Conversation(Synthesis):
         self.capture.open()
 
     def _speech_start(self, utterance_id: int) -> dict:
-        self.latest_utterance = utterance_id; old_epoch = self.epoch
+        self.latest_utterance = utterance_id; old_epoch = self.epoch; playback = self.sink.snapshot()
         self.interruption_epoch = self.advance("request", utterance_id, preserve_playback=True)
         self.gemma_http.close(); self.asr_http.close()
-        return {"old_epoch": old_epoch, "new_epoch": self.interruption_epoch, "preserve_playback": True, "native_advance_sent": True}
+        return {"old_epoch": old_epoch, "new_epoch": self.interruption_epoch, "preserve_playback": True,
+            "native_advance_sent": True, **playback}
 
     def _utterance(self, utterance_id: int, pcm: bytes) -> None:
         self.recognition_q.put((utterance_id, pcm, time.perf_counter_ns()))
