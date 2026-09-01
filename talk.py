@@ -35,9 +35,11 @@ class Conversation(Synthesis):
         self.generation_thread = self.paths.supervisor.start("generation", self._generation)
         self.capture.open()
 
-    def _speech_start(self, utterance_id: int) -> None:
-        self.latest_utterance = utterance_id; self.asr_http.close(); self.gemma_http.close(); self.pause(utterance_id)
+    def _speech_start(self, utterance_id: int) -> dict:
+        self.latest_utterance = utterance_id; old_epoch = self.epoch
         self.interruption_epoch = self.advance("request", utterance_id, preserve_playback=True)
+        self.gemma_http.close(); self.asr_http.close()
+        return {"old_epoch": old_epoch, "new_epoch": self.interruption_epoch, "preserve_playback": True, "native_advance_sent": True}
 
     def _utterance(self, utterance_id: int, pcm: bytes) -> None:
         self.recognition_q.put((utterance_id, pcm, time.perf_counter_ns()))
@@ -51,21 +53,30 @@ class Conversation(Synthesis):
             if self.stopping: continue
             utterance_id, pcm, queued_ns = item
             dequeued_ns, duration, started = time.perf_counter_ns(), len(pcm) / (ASR_RATE * 4), time.perf_counter()
+            if utterance_id != self.latest_utterance:
+                self.journal.emit("asr", "completed", utterance_id=utterance_id, accepted=False, input_s=round(duration, 3), total_ms=0.0, rtf=0.0, queue_ms=round((dequeued_ns - queued_ns) / 1e6, 3), chars=0, text="")
+                continue
             try: text = transcribe(self.parakeet, pcm, self.asr_http)
             except Exception:
                 if self.stopping or utterance_id != self.latest_utterance: text = ""
                 else: raise
             total, live = time.perf_counter() - started, utterance_id == self.latest_utterance
-            self.journal.emit("asr", "completed", utterance_id=utterance_id, accepted=live and bool(text), input_s=round(duration, 3), total_ms=round(total * 1000, 3), rtf=round(total / duration, 3), queue_ms=round((dequeued_ns - queued_ns) / 1e6, 3), chars=len(text))
+            accepted = live and bool(text)
+            self.journal.emit("asr", "completed", utterance_id=utterance_id, accepted=accepted, input_s=round(duration, 3), total_ms=round(total * 1000, 3), rtf=round(total / duration, 3), queue_ms=round((dequeued_ns - queued_ns) / 1e6, 3), chars=len(text), text=text if accepted else "")
             if not live: continue
             if not text: self.resume(utterance_id); continue
             self.journal.transcript("user", text); print(f"\nuser: {text}", flush=True)
-            intent = classify_utterance(text); self.journal.emit("conversation", "intent", utterance_id=utterance_id, intent=intent)
-            if intent == "backchannel": self.resume(utterance_id)
-            elif intent == "stop": self.cutover(self.interruption_epoch, "stop", utterance_id)
+            intent, generation = classify_utterance(text), None
+            if intent == "backchannel":
+                self.resume(utterance_id); playback_action, applied = "resumed", True
+            elif intent == "stop":
+                playback_action, applied = "cutover", self.cutover(self.interruption_epoch, "stop", utterance_id)
             else:
                 epoch = self.interruption_epoch
-                if self.cutover(epoch, "request", utterance_id): self.generation_q.put((epoch, utterance_id, text))
+                playback_action, applied = "cutover", self.cutover(epoch, "request", utterance_id)
+                if applied: generation = (epoch, utterance_id, text)
+            self.journal.emit("conversation", "intent", utterance_id=utterance_id, intent=intent, playback_action=playback_action, action_applied=applied)
+            if generation is not None: self.generation_q.put(generation)
 
     def _system(self) -> str:
         return system_prompt(self.language, str(self.settings.get("system_prompt") or ""))
@@ -93,6 +104,7 @@ class Conversation(Synthesis):
         while (item := self.generation_q.get()) is not _EOF:
             if self.stopping: continue
             epoch, utterance_id, prompt = item
+            if not self._live(epoch): continue
             merged = " ".join(part for part in (self.fragment, prompt) if part).strip()
             with self.lock:
                 self.response_id += 1; response_id = self.response_id
@@ -114,7 +126,7 @@ class Conversation(Synthesis):
                 for delta in stream:
                     if not self._live(epoch): cancelled = True; break
                     if first:
-                        first = False; self.journal.emit("gemma", "first_result", epoch=epoch, response_id=response_id, latency_ms=round((time.perf_counter() - started) * 1000, 3))
+                        first = False; self.journal.emit("gemma", "first_result", epoch=epoch, utterance_id=utterance_id, response_id=response_id, latency_ms=round((time.perf_counter() - started) * 1000, 3))
                     raw += delta
                     for unit in segmenter.take(spoken(raw)):
                         if not queue_unit(unit): break
@@ -135,7 +147,7 @@ class Conversation(Synthesis):
                 self.fragment = ""; self.history.extend(({"role": "user", "content": merged}, {"role": "assistant", "content": answer})); self._trim_history(); self.journal.transcript("assistant", answer); print(f"assistant: {answer}", flush=True)
             else:
                 self.fragment = merged
-            self.journal.emit("gemma", "completed", epoch=epoch, response_id=response_id, empty=not answer, elapsed_ms=round((time.perf_counter() - started) * 1000, 3), chars=len(answer), generated_chars=len(generated), pieces=piece_id, budget_reached=budget_reached)
+            self.journal.emit("gemma", "completed", epoch=epoch, utterance_id=utterance_id, response_id=response_id, empty=not answer, elapsed_ms=round((time.perf_counter() - started) * 1000, 3), chars=len(answer), generated_chars=len(generated), pieces=piece_id, budget_reached=budget_reached)
 
     def check(self) -> None:
         self.capture.check(); super().check()
