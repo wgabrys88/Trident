@@ -4,7 +4,6 @@ if __name__ == "__main__":
     from main import main
     raise SystemExit(main("install"))
 
-import hashlib
 import json
 import os
 import shutil
@@ -137,10 +136,6 @@ def _cache_values(path: Path) -> dict:
             if line.startswith(keys)}
 
 
-def _server_source_identity() -> str:
-    return hashlib.sha256((CHATTERBOX / "src" / "server.cpp").read_bytes()).hexdigest()
-
-
 def build_tts(paths) -> None:
     ggml_sha = pin(paths, *GGML_GIT, GGML, "ggml")
     build = TOOLS / "tts-build"
@@ -154,7 +149,7 @@ def build_tts(paths) -> None:
     for dll in built.glob("*.dll"): shutil.copy2(dll, dest / dll.name)
     receipt = {
         "hardware": HARDWARE, "backend": TTS_BACKEND, "chatterbox": git_identity(CHATTERBOX), "ggml_sha": ggml_sha,
-        "server_source_sha256": _server_source_identity(), "build_flags": _BUILD_FLAGS,
+        "build_flags": _BUILD_FLAGS,
         "cmake": _tool(["cmake", "--version"]), "compiler": _cache_values(build / "CMakeCache.txt"),
         "executable": file_identity(dest / server.name),
     }
@@ -168,7 +163,6 @@ def _build_valid() -> bool:
         and receipt.get("hardware") == HARDWARE and receipt.get("chatterbox", {}).get("sha") == git_identity(CHATTERBOX).get("sha")
         and receipt.get("chatterbox", {}).get("dirty") is False and receipt.get("ggml_sha") == GGML_GIT[1]
         and receipt.get("backend") == TTS_BACKEND and receipt.get("build_flags") == _BUILD_FLAGS
-        and receipt.get("server_source_sha256") == _server_source_identity()
         and receipt.get("executable", {}).get("sha256") == _sha(exe))
 
 
