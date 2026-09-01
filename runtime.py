@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import http.client
 import os
 import socket
@@ -60,7 +62,10 @@ class Residents:
             assert proc.stdout is not None
             for raw in proc.stdout:
                 out.write(raw)
-                if name in _READY and _READY[name] in raw.decode("utf-8", errors="replace").rstrip("\r\n"):
+                if name == "chatterbox":
+                    event = self.journal.ingest(raw)
+                    if event == "server.ready": ready.set()
+                elif name in _READY and _READY[name] in raw.decode("utf-8", errors="replace").rstrip("\r\n"):
                     ready.set()
 
     def _start(self, name: str, cmd: list[str], cwd: Path, timeout: float) -> None:

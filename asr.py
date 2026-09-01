@@ -151,7 +151,8 @@ class Capture:
                 if "start" in event:
                     if not self.utterance:
                         self.audio.clear(); self.utterance = True; self.utterance_id += 1; self.generation += 1
-                        self.on_start(self.utterance_id); self.journal.emit("vad", "speech.started", utterance_id=self.utterance_id, candidate_generation=self.generation)
+                        fields = self.on_start(self.utterance_id) or {}
+                        self.journal.emit("vad", "speech.started", utterance_id=self.utterance_id, candidate_generation=self.generation, **fields)
                     else:
                         self.generation += 1; self.journal.emit("vad", "speech.resumed", utterance_id=self.utterance_id, candidate_generation=self.generation)
                 if self.utterance: self.audio.extend(pcm)
@@ -187,7 +188,7 @@ def launch(paths: Paths, family: str = "nano", language: str = "en", primary=Non
             duration = len(pcm) / (ASR_RATE * 4)
             text = transcribe(base, pcm, http)
             total = time.perf_counter() - started
-            paths.journal.emit("asr", "completed", utterance_id=utterance_id, accepted=bool(text), input_s=round(duration, 3), total_ms=round(total * 1000, 3), rtf=round(total / max(duration, 1e-9), 3), chars=len(text))
+            paths.journal.emit("asr", "completed", utterance_id=utterance_id, accepted=bool(text), input_s=round(duration, 3), total_ms=round(total * 1000, 3), rtf=round(total / max(duration, 1e-9), 3), chars=len(text), text=text)
             if text:
                 paths.journal.transcript("user", text); print(f"user: {text}", flush=True)
     except BaseException as error:

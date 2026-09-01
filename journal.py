@@ -35,15 +35,40 @@ class Journal:
         safe = "".join(ch if ch.isalnum() or ch in "-._" else "-" for ch in role).strip(".-") or "sidecar"
         return self.run_dir / f"{safe}.{ext}"
 
-    def emit(self, component: str, event: str, **fields) -> None:
-        now = datetime.now().astimezone().isoformat(timespec="milliseconds")
+    def _append(self, component: str, event: str, fields: dict, wall_timestamp: str | None = None,
+                monotonic_ns: int | None = None) -> None:
+        if not component or not event: raise RuntimeError("journal component and event are required")
+        reserved = {"schema_version", "run_id", "sequence", "wall_timestamp", "monotonic_ns", "component", "event"}
+        if overlap := reserved.intersection(fields): raise RuntimeError(f"journal fields replace schema envelope: {sorted(overlap)}")
+        wall_timestamp = wall_timestamp or datetime.now().astimezone().isoformat(timespec="milliseconds")
+        monotonic_ns = time.perf_counter_ns() if monotonic_ns is None else monotonic_ns
         with self._lock:
             self._sequence += 1
             line = json.dumps({"schema_version": 2, "run_id": self.run_id, "sequence": self._sequence,
-                "wall_timestamp": now, "monotonic_ns": time.perf_counter_ns(), "component": component, "event": event, **fields},
+                "wall_timestamp": wall_timestamp, "monotonic_ns": monotonic_ns, "component": component, "event": event, **fields},
                 ensure_ascii=False, separators=(",", ":"), default=str)
             self._events.write(line + "\n")
             if self.console: print(line, flush=True)
+
+    def emit(self, component: str, event: str, **fields) -> None:
+        self._append(component, event, fields)
+
+    def ingest(self, raw: bytes) -> str:
+        try:
+            record = json.loads(raw.decode("utf-8", errors="strict"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise RuntimeError(f"invalid native schema-v2 JSON: {error}") from error
+        if not isinstance(record, dict) or record.get("schema_version") != 2 or record.get("run_id") != self.run_id:
+            raise RuntimeError("native journal schema or run identity mismatch")
+        if record.get("component") != "chatterbox" or not isinstance(record.get("event"), str):
+            raise RuntimeError("native journal component or event is invalid")
+        if not isinstance(record.get("sequence"), int) or not isinstance(record.get("wall_timestamp"), str) or not isinstance(record.get("monotonic_ns"), int):
+            raise RuntimeError("native journal envelope is invalid")
+        component, event = record.pop("component"), record.pop("event")
+        wall_timestamp, monotonic_ns = record.pop("wall_timestamp"), record.pop("monotonic_ns")
+        for key in ("schema_version", "run_id", "sequence"): record.pop(key)
+        self._append(component, event, record, wall_timestamp, monotonic_ns)
+        return event
 
     def write_manifest(self, manifest: dict) -> None:
         with self._lock:
