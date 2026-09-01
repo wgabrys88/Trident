@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import io
 import queue
 import threading
@@ -75,11 +73,11 @@ def wav_bytes(pcm: bytes) -> bytes:
 
 def _mel_filters() -> np.ndarray:
     def hz_to_mel(hz):
-        hz = np.asarray(hz, dtype=np.float64); mel = hz / (200.0 / 3.0); mask = hz >= 1000.0
-        mel[mask] = 15.0 + np.log(hz[mask] / 1000.0) / (np.log(6.4) / 27.0); return mel
+        hz = np.asarray(hz, dtype=np.float64)
+        return np.where(hz >= 1000.0, 15.0 + np.log(hz / 1000.0) / (np.log(6.4) / 27.0), hz / (200.0 / 3.0))
     def mel_to_hz(mel):
-        mel = np.asarray(mel, dtype=np.float64); hz = (200.0 / 3.0) * mel; mask = mel >= 15.0
-        hz[mask] = 1000.0 * np.exp((np.log(6.4) / 27.0) * (mel[mask] - 15.0)); return hz
+        mel = np.asarray(mel, dtype=np.float64)
+        return np.where(mel >= 15.0, 1000.0 * np.exp((np.log(6.4) / 27.0) * (mel - 15.0)), (200.0 / 3.0) * mel)
     centers = mel_to_hz(np.linspace(hz_to_mel([0.0])[0], hz_to_mel([8000.0])[0], 82))
     bins = np.linspace(0.0, ASR_RATE / 2.0, 201)
     return np.maximum(0.0, np.minimum((bins[:, None] - centers[:-2]) / (centers[1:-1] - centers[:-2]), (centers[2:] - bins[:, None]) / (centers[2:] - centers[1:-1]))) * 2.0 / (centers[2:] - centers[:-2])
@@ -320,9 +318,7 @@ class Capture:
 
     def _decide(self) -> None:
         self.journal.emit("smart-turn", "start")
-        while True:
-            item = self.decisions.get()
-            if item is _EOF: break
+        while (item := self.decisions.get()) is not _EOF:
             utterance_id, generation, audio = item
             started = time.perf_counter(); complete, probability = self.smart.decide(audio)
             self.journal.emit("smart-turn", "completed", utterance_id=utterance_id, candidate_generation=generation, complete=complete, probability=round(probability, 6), decision_ms=round((time.perf_counter() - started) * 1000, 3), input_s=round(len(audio) / (ASR_RATE * 4), 3))
@@ -339,9 +335,7 @@ class Capture:
 
     def _loop(self) -> None:
         self.journal.emit("vad", "start")
-        while True:
-            pcm = self.frames.get()
-            if pcm is _EOF: break
+        while (pcm := self.frames.get()) is not _EOF:
             with self.state_lock:
                 event = self.vad(np.frombuffer(pcm, dtype="<f4")) or {}
                 if "start" in event:
@@ -422,16 +416,14 @@ class Synthesis:
 
     def _reader(self) -> None:
         while True:
-            frame = self.tts.recv_frame()
-            if frame is None:
+            if (frame := self.tts.recv_frame()) is None:
                 if not self.closed.is_set(): raise RuntimeError("native TTS socket closed before close handshake")
                 break
             kind, epoch, response_id, piece_id, chunk_id, payload = frame; identity = (epoch, response_id, piece_id)
             if kind == RESP_PCM:
                 if self.renderer.put(PCMEntry(epoch, response_id, piece_id, chunk_id, payload)) and response_id not in self.first_pcm:
                     self.first_pcm.add(response_id); self.journal.emit("synthesis", "first_result", epoch=epoch, response_id=response_id, piece_id=piece_id, chunk_id=chunk_id, bytes=len(payload))
-                continue
-            if kind in (RESP_DONE, RESP_CANCELLED, RESP_ERROR):
+            elif kind in (RESP_DONE, RESP_CANCELLED, RESP_ERROR):
                 with self.lock:
                     if identity in self.terminal: raise RuntimeError(f"duplicate terminal ACK for {identity}")
                     if identity not in self.pending: raise RuntimeError(f"terminal ACK for unknown piece {identity}")
@@ -439,10 +431,10 @@ class Synthesis:
                 event = "acknowledged" if kind == RESP_DONE else "cancelled" if kind == RESP_CANCELLED else "failed"
                 self.journal.emit("synthesis", event, epoch=epoch, response_id=response_id, piece_id=piece_id, error=payload.decode("utf-8", errors="replace") if kind == RESP_ERROR else None)
                 if kind == RESP_ERROR: raise RuntimeError(payload.decode("utf-8", errors="replace"))
-                continue
-            if kind == RESP_CLOSED:
+            elif kind == RESP_CLOSED:
                 self.closed.set(); self.journal.emit("synthesis", "closed"); break
-            raise RuntimeError(f"unknown TTS response kind {kind}")
+            else:
+                raise RuntimeError(f"unknown TTS response kind {kind}")
 
     def live_complete(self) -> bool:
         with self.lock: live_pending = any(identity[0] == self.epoch for identity in self.pending)
@@ -462,13 +454,9 @@ class Synthesis:
                 try: self.advance("shutdown")
                 except OSError: pass
             deadline = time.monotonic() + 10
-            while not self.all_acknowledged() and time.monotonic() < deadline:
-                self.check(); time.sleep(.01)
-            if not self.all_acknowledged(): raise RuntimeError("missing terminal synthesis ACK during shutdown")
+            self.paths.supervisor.spin(self.all_acknowledged, deadline, "missing terminal synthesis ACK during shutdown", interval=.01, tick=self.check)
             if cancel:
-                while not self.sink.drained() and time.monotonic() < deadline:
-                    self.check(); time.sleep(.005)
-                if not self.sink.drained(): raise RuntimeError("playback did not render epoch-cutover silence before shutdown")
+                self.paths.supervisor.spin(self.sink.drained, deadline, "playback did not render epoch-cutover silence before shutdown", interval=.005, tick=self.check)
             self.residents.close_chatterbox()
         except BaseException as error:
             failure = error
@@ -513,9 +501,7 @@ class Conversation(Synthesis):
         with self.lock: return epoch == self.epoch
 
     def _recognition(self) -> None:
-        while True:
-            item = self.recognition_q.get()
-            if item is _EOF: break
+        while (item := self.recognition_q.get()) is not _EOF:
             if self.stopping: continue
             utterance_id, pcm, queued_ns = item
             dequeued_ns, duration, started = time.perf_counter_ns(), len(pcm) / (ASR_RATE * 4), time.perf_counter()
@@ -559,9 +545,7 @@ class Conversation(Synthesis):
         return [fixed[0], *kept, fixed[1]]
 
     def _generation(self) -> None:
-        while True:
-            item = self.generation_q.get()
-            if item is _EOF: break
+        while (item := self.generation_q.get()) is not _EOF:
             if self.stopping: continue
             epoch, utterance_id, prompt = item
             merged = " ".join(part for part in (self.fragment, prompt) if part).strip()
