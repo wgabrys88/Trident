@@ -13,22 +13,20 @@ from typing import Callable
 
 def file_identity(path: Path) -> dict:
     path = Path(path)
-    if not path.is_file():
-        return {"path": str(path), "missing": True}
+    if not path.is_file(): return {"path": str(path), "missing": True}
     digest = hashlib.sha256()
     with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(8 << 20), b""):
-            digest.update(block)
+        for block in iter(lambda: handle.read(8 << 20), b""): digest.update(block)
     return {"path": str(path), "size": path.stat().st_size, "sha256": digest.hexdigest()}
 
 
 def git_identity(path: Path) -> dict:
     path = Path(path)
     try:
-        sha = subprocess.check_output(["git", "-C", str(path), "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL, timeout=15).strip()
-        dirty = bool(subprocess.check_output(["git", "-C", str(path), "status", "--porcelain", "--untracked-files=no"], text=True, stderr=subprocess.DEVNULL, timeout=15).strip())
-        branch = subprocess.check_output(["git", "-C", str(path), "branch", "--show-current"], text=True, stderr=subprocess.DEVNULL, timeout=15).strip()
-        return {"sha": sha, "branch": branch, "dirty": dirty}
+        run = lambda *a: subprocess.check_output(["git", "-C", str(path), *a], text=True, stderr=subprocess.DEVNULL, timeout=15).strip()
+        sha = run("rev-parse", "HEAD")
+        dirty = bool(run("status", "--porcelain", "--untracked-files=no"))
+        return {"sha": sha, "branch": run("branch", "--show-current"), "dirty": dirty}
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return {"sha": "", "branch": "", "dirty": None}
 
@@ -52,32 +50,22 @@ class Journal:
         now = datetime.now().astimezone().isoformat(timespec="milliseconds")
         with self._lock:
             self._sequence += 1
-            record = {
-                "schema_version": 2,
-                "run_id": self.run_id,
-                "sequence": self._sequence,
-                "wall_timestamp": now,
-                "monotonic_ns": time.perf_counter_ns(),
-                "component": component,
-                "event": event,
-                **fields,
-            }
-            line = json.dumps(record, ensure_ascii=False, separators=(",", ":"), default=str)
+            line = json.dumps({"schema_version": 2, "run_id": self.run_id, "sequence": self._sequence,
+                "wall_timestamp": now, "monotonic_ns": time.perf_counter_ns(), "component": component, "event": event, **fields},
+                ensure_ascii=False, separators=(",", ":"), default=str)
             self._events.write(line + "\n")
-            if self.console:
-                print(line, flush=True)
+            if self.console: print(line, flush=True)
 
     def write_manifest(self, manifest: dict) -> None:
         with self._lock:
             if self._manifest_written or (self.run_dir / "run.json").exists():
                 raise RuntimeError("run manifest is immutable")
-            payload = {"schema_version": 2, "run_id": self.run_id, **manifest}
-            (self.run_dir / "run.json").write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
+            (self.run_dir / "run.json").write_text(json.dumps({"schema_version": 2, "run_id": self.run_id, **manifest},
+                ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
             self._manifest_written = True
 
     def transcript(self, role: str, text: str) -> None:
-        if not text:
-            return
+        if not text: return
         with self._lock:
             handle = self._transcripts.get(role)
             if handle is None:
@@ -92,12 +80,10 @@ class Journal:
 
     def close(self) -> None:
         with self._lock:
-            for handle in self._transcripts.values():
-                handle.close()
+            for handle in self._transcripts.values(): handle.close()
             self._transcripts.clear()
             if not self._events.closed:
-                self._events.flush()
-                self._events.close()
+                self._events.flush(); self._events.close()
 
 
 class WorkerSupervisor:
@@ -110,38 +96,28 @@ class WorkerSupervisor:
 
     def start(self, name: str, target: Callable, *args, daemon: bool = False, **kwargs) -> threading.Thread:
         def guarded() -> None:
-            try:
-                target(*args, **kwargs)
+            try: target(*args, **kwargs)
             except BaseException as error:
                 with self._failure_lock:
                     if self._failure is None:
-                        self._failure = (error, error.__traceback__)
-                        self._failed.set()
+                        self._failure = (error, error.__traceback__); self._failed.set()
                 self.journal.failure(name, error)
         thread = threading.Thread(target=guarded, name=name, daemon=daemon)
-        self._threads.append(thread)
-        thread.start()
-        return thread
+        self._threads.append(thread); thread.start(); return thread
 
     def check(self) -> None:
         if self._failed.is_set():
-            with self._failure_lock:
-                failure = self._failure
-            if failure is not None:
-                error, tb = failure
-                raise error.with_traceback(tb)
+            with self._failure_lock: failure = self._failure
+            if failure is not None: raise failure[0].with_traceback(failure[1])
 
     def wait(self, seconds: float) -> None:
-        self._failed.wait(seconds)
-        self.check()
+        self._failed.wait(seconds); self.check()
 
     def join(self, timeout: float | None = None) -> None:
         deadline = None if timeout is None else time.monotonic() + timeout
         for thread in self._threads:
             if thread.is_alive():
-                remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
-                thread.join(remaining)
-        survivors = [thread.name for thread in self._threads if thread.is_alive()]
-        if survivors:
-            raise RuntimeError(f"worker survivors after shutdown: {', '.join(survivors)}")
+                thread.join(None if deadline is None else max(0.0, deadline - time.monotonic()))
+        survivors = [t.name for t in self._threads if t.is_alive()]
+        if survivors: raise RuntimeError(f"worker survivors after shutdown: {', '.join(survivors)}")
         self.check()

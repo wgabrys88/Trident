@@ -6,7 +6,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from journal import Journal, WorkerSupervisor, git_identity
+from journal import Journal, WorkerSupervisor
 
 ROOT = Path(__file__).resolve().parent
 MODELS, DATA, THIRD_PARTY, TOOLS, TTS = (ROOT / n for n in ("models", "data", "third_party", "tools", "tts"))
@@ -61,34 +61,29 @@ TTS_PROFILES = {
     "turbo": TTS_KNOBS,
     "v3": {**TTS_KNOBS, "top_k": 0, "top_p": 1., "cfm_steps": 5},
 }
-V3_LANGUAGES = ("ar", "da", "de", "el", "en", "es", "fi", "fr", "he", "hi", "it", "ja", "ko", "ms", "nl", "no", "pl", "pt", "ru", "sv", "sw", "tr", "zh")
+LANGUAGE_NAMES = {"ar":"Arabic","da":"Danish","de":"German","el":"Greek","en":"English","es":"Spanish","fi":"Finnish","fr":"French","he":"Hebrew","hi":"Hindi","it":"Italian","ja":"Japanese","ko":"Korean","ms":"Malay","nl":"Dutch","no":"Norwegian","pl":"Polish","pt":"Portuguese","ru":"Russian","sv":"Swedish","sw":"Swahili","tr":"Turkish","zh":"Chinese"}
+V3_LANGUAGES = tuple(LANGUAGE_NAMES)
 GEMMA_CONTEXT = 4096
 GEMMA_GEN = {"temperature": .2, "top_p": .95, "top_k": 64, "min_p": 0., "repeat_penalty": 1., "seed": 42, "max_tokens": 1024}
 
 
 def detect_hardware() -> tuple[str, str | None, str]:
-    if not sys.platform.startswith("win"):
-        raise RuntimeError("Trident requires Windows")
+    if not sys.platform.startswith("win"): raise RuntimeError("Trident requires Windows")
+    run = lambda cmd: subprocess.check_output(cmd, text=True, encoding="utf-8", errors="replace", timeout=15)
     try:
-        rows = subprocess.check_output(["nvidia-smi", "--query-gpu=name,compute_cap", "--format=csv,noheader,nounits"], text=True, encoding="utf-8", errors="replace", timeout=15).splitlines()
-        for row in rows:
-            name, _, cc = row.rpartition(",")
-            cc = cc.strip()
-            if cc in {"6.0", "6.1", "6.2"}:
-                return "pascal", cc.replace(".", ""), name.strip()
-    except Exception:
-        pass
-    gpu = subprocess.check_output(["powershell.exe", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name -join ';'"], text=True, encoding="utf-8", errors="replace", timeout=15).strip()
+        for row in run(["nvidia-smi", "--query-gpu=name,compute_cap", "--format=csv,noheader,nounits"]).splitlines():
+            name, _, cc = row.rpartition(","); cc = cc.strip()
+            if cc in {"6.0", "6.1", "6.2"}: return "pascal", cc.replace(".", ""), name.strip()
+    except Exception: pass
+    gpu = run(["powershell.exe", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name -join ';'"]).strip()
     lower = gpu.casefold()
-    if any(n in lower for n in ("tesla p100", "quadro gp100")):
-        return "pascal", "60", gpu
+    if any(n in lower for n in ("tesla p100", "quadro gp100")): return "pascal", "60", gpu
     if any(n in lower for n in ("gtx 1050", "gtx 1060", "gtx 1070", "gtx 1080", "titan x (pascal)", "titan xp", "quadro p", "tesla p4", "tesla p40")):
         return "pascal", "61", gpu
-    if "iris" in lower and "xe" in lower:
-        return "irisxe", None, gpu
+    if "iris" in lower and "xe" in lower: return "irisxe", None, gpu
     raise RuntimeError(f"unsupported GPU: {gpu}")
 
-HARDWARE, CUDA_ARCH, GPU_NAME = detect_hardware()
+HARDWARE, _, GPU_NAME = detect_hardware()
 TTS_BACKEND = "vulkan"
 VULKAN_ENV = {"GGML_VK_DISABLE_F16": "1"} if HARDWARE == "pascal" else {}
 FLASH_ATTN = "on" if HARDWARE == "pascal" else "off"
@@ -106,18 +101,12 @@ TTS_WEIGHTS = {
     "v3": {"repo": "ResembleAI/chatterbox", "rev": "ef85ce7bef2f3f1a74d0d837d379d2fcb68203cd", "ckpt": "ckpt-v3", "t3": "convert-t3-mtl-to-gguf.py", "s3": "mtl",
            "files": ("t3_mtl23ls_v3.safetensors", "s3gen.pt", "ve.pt", "conds.pt", "grapheme_mtl_merged_expanded_v1.json", "Cangjie5_TC.json")},
 }
-def git_sha(path: Path) -> str:
-    return str(git_identity(path).get("sha") or "")
-
 def find_exe(root: Path, name: str) -> Path | None:
     return next((p for p in root.rglob(name) if p.is_file()), None) if root.is_dir() else None
 
-LANGUAGE_NAMES = {"ar":"Arabic","da":"Danish","de":"German","el":"Greek","en":"English","es":"Spanish","fi":"Finnish","fr":"French","he":"Hebrew","hi":"Hindi","it":"Italian","ja":"Japanese","ko":"Korean","ms":"Malay","nl":"Dutch","no":"Norwegian","pl":"Polish","pt":"Portuguese","ru":"Russian","sv":"Swedish","sw":"Swahili","tr":"Turkish","zh":"Chinese"}
-
 def system_prompt(language: str, base: str | None = None) -> str:
     language = language.strip().lower()
-    name = LANGUAGE_NAMES.get(language, language)
-    return (base or PROMPT).rstrip() + f" Speak and answer in {name}. Preserve the user's meaning if recognition contains another language."
+    return (base or PROMPT).rstrip() + f" Speak and answer in {LANGUAGE_NAMES.get(language, language)}. Preserve the user's meaning if recognition contains another language."
 
 def load_settings(data_dir: Path) -> dict:
     path = Path(data_dir) / "live-settings.json"
@@ -125,30 +114,21 @@ def load_settings(data_dir: Path) -> dict:
 
 def voice_wav(data_dir: Path, value: str | None = None) -> Path:
     raw = (value or "trump").strip() or "trump"
-    key = raw.lower()
-    path = Path(data_dir) / (VOICES[key][1] if key in VOICES else f"voices/{key}.wav")
-    if path.is_file():
-        return path.resolve()
-    path = Path(raw).expanduser()
-    if path.is_file():
-        return path.resolve()
+    for path in (Path(data_dir) / (VOICES[raw.lower()][1] if raw.lower() in VOICES else f"voices/{raw.lower()}.wav"), Path(raw).expanduser()):
+        if path.is_file(): return path.resolve()
     raise RuntimeError(f"unknown voice {raw!r}")
 
 def cable_device(kind: str) -> tuple[int, dict, dict]:
     import sounddevice as sd
-    skip = CABLE_DEVICES[kind]
-    hostapis = sd.query_hostapis(); devices = sd.query_devices()
+    skip, hostapis, devices = CABLE_DEVICES[kind], sd.query_hostapis(), sd.query_devices()
     host_index = next((i for i, api in enumerate(hostapis) if "wasapi" in str(api["name"]).casefold()), None)
     if host_index is None: raise RuntimeError("Windows WASAPI host API is unavailable")
     channel_key = "max_input_channels" if kind == "input" else "max_output_channels"
     api = hostapis[host_index]
-    matches = [(i, d) for i, d in enumerate(devices)
-               if int(d["hostapi"]) == host_index and int(d[channel_key]) >= 1]
-    if not matches:
-        raise RuntimeError(f"no WASAPI {kind} endpoint is available")
-    physical = [(i, d) for i, d in matches if str(d["name"]) != skip]
-    pool = physical or matches
-    default_index = int(api["default_input_device"] if kind == "input" else api["default_output_device"])
+    matches = [(i, d) for i, d in enumerate(devices) if int(d["hostapi"]) == host_index and int(d[channel_key]) >= 1]
+    if not matches: raise RuntimeError(f"no WASAPI {kind} endpoint is available")
+    pool = [(i, d) for i, d in matches if str(d["name"]) != skip] or matches
+    default_index = int(api["default_input_device" if kind == "input" else "default_output_device"])
     index, device = next(((i, d) for i, d in pool if i == default_index), pool[0])
     return index, dict(device), dict(api)
 
@@ -159,9 +139,7 @@ class Paths:
         self.command, self.family, self.language = command, family.strip().lower(), language.strip().lower()
         self.voice = str(load_settings(self.data_dir).get("tts_voice") or "trump")
         self.stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-        bits = [self.stamp, command, HARDWARE]
-        if command in ("talk", "tts"):
-            bits += [self.family, self.language, self.voice]
+        bits = [self.stamp, command, HARDWARE] + ([self.family, self.language, self.voice] if command in ("talk", "tts") else [])
         self.run_dir = self.data_dir / "runs" / "-".join(bits)
         self.run_dir.mkdir(parents=True)
         self.journal = Journal(self.run_dir, console)
