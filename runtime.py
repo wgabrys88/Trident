@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import http.client
 import json
 import os
@@ -28,16 +26,7 @@ _TTS_FLAGS = (("--n-gpu-layers", "gpu_layers"), ("--context", "context"), ("--th
     ("--max-tokens", "max_tokens"), ("--top-k", "top_k"), ("--top-p", "top_p"), ("--min-p", "min_p"),
     ("--temperature", "temperature"), ("--repeat-penalty", "repeat_penalty"), ("--cfg-weight", "cfg_weight"),
     ("--exaggeration", "exaggeration"), ("--cfm-steps", "cfm_steps"), ("--fastconv", "fastconv"))
-_CTRL_C_HELPER = """import ctypes,sys,time
-k=ctypes.WinDLL('kernel32', use_last_error=True)
-pid=int(sys.argv[1])
-k.FreeConsole()
-if not k.AttachConsole(pid): raise ctypes.WinError(ctypes.get_last_error())
-if not k.SetConsoleCtrlHandler(None, True): raise ctypes.WinError(ctypes.get_last_error())
-if not k.GenerateConsoleCtrlEvent(0, 0): raise ctypes.WinError(ctypes.get_last_error())
-time.sleep(0.5)
-k.FreeConsole()
-"""
+_CTRL_C_HELPER = "import ctypes,sys,time\nk=ctypes.WinDLL('kernel32',use_last_error=True)\nk.FreeConsole()\nif not k.AttachConsole(int(sys.argv[1])): raise ctypes.WinError(ctypes.get_last_error())\nif not k.SetConsoleCtrlHandler(None,True): raise ctypes.WinError(ctypes.get_last_error())\nif not k.GenerateConsoleCtrlEvent(0,0): raise ctypes.WinError(ctypes.get_last_error())\ntime.sleep(0.5)\nk.FreeConsole()\n"
 
 
 def _exe(folder: str, name: str) -> Path:
@@ -85,12 +74,10 @@ class Residents:
             stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NEW_CONSOLE, startupinfo=startup)
         self.procs[name] = proc
         ready = self.ready[name] = threading.Event()
-        self.ready_deadlines[name] = time.monotonic() + timeout
+        deadline = self.ready_deadlines[name] = time.monotonic() + timeout
         self.readers[name] = self.supervisor.start(f"resident-{name}", self._forward, name, proc, log, ready)
-        while not ready.wait(.1):
-            self.supervisor.check()
-            if proc.poll() is not None: raise RuntimeError(f"{name} exited before ready pid={proc.pid} exit={proc.returncode}")
-            if time.monotonic() >= self.ready_deadlines[name]: raise RuntimeError(f"{name} did not become ready")
+        self.supervisor.spin(ready.is_set, deadline, f"{name} did not become ready", interval=.1, event=ready,
+            abort=lambda: None if proc.poll() is None else f"{name} exited before ready pid={proc.pid} exit={proc.returncode}")
         self.journal.emit("resident", "ready", name=name, pid=proc.pid)
 
     def boot(self, family: str = "nano", language: str = "en") -> None:
@@ -150,9 +137,7 @@ class Residents:
             self.journal.emit("resident", "protocol.close.requested", name="chatterbox", protocol_version=PROTOCOL_VERSION)
         deadline, reader = time.monotonic() + 10, self.chatterbox_reader
         if reader is not None and reader.is_alive():
-            while not self.chatterbox_closed.wait(.05):
-                self.supervisor.check()
-                if time.monotonic() >= deadline: raise RuntimeError("native close handshake timed out")
+            self.supervisor.spin(self.chatterbox_closed.is_set, deadline, "native close handshake timed out", interval=.05, event=self.chatterbox_closed)
             reader.join(timeout=2)
             if reader.is_alive(): raise RuntimeError("native TTS reader survived close handshake")
         else:
@@ -169,9 +154,8 @@ class Residents:
         if ready is None or ready.is_set() or proc.poll() is not None: return
         deadline = self.ready_deadlines.get(name, time.monotonic() + 10)
         self.journal.emit("resident", "stop.waiting_for_ready", name=name, pid=proc.pid)
-        while proc.poll() is None and not ready.wait(.1):
-            self.supervisor.check()
-            if time.monotonic() >= deadline: raise RuntimeError(f"{name} did not become ready for graceful shutdown")
+        self.supervisor.spin(lambda: ready.is_set() or proc.poll() is not None, deadline,
+            f"{name} did not become ready for graceful shutdown", event=ready)
 
     def _ctrl_c(self, name: str, proc: subprocess.Popen) -> None:
         result = subprocess.run([sys.executable, "-c", _CTRL_C_HELPER, str(proc.pid)], stdin=subprocess.DEVNULL,
@@ -180,32 +164,30 @@ class Residents:
         if result.returncode: raise RuntimeError(f"{name} CTRL_C helper failed exit={result.returncode}: {result.stdout.strip()}")
         self.journal.emit("resident", "signal.delivered", name=name, pid=proc.pid, signal="CTRL_C_EVENT", scope="resident-console")
 
+    def _reap(self, name: str, proc: subprocess.Popen, failures: list[str]) -> None:
+        running = proc.poll() is None
+        self.journal.emit("resident", "stop", name=name, pid=proc.pid, running=running)
+        if running:
+            try:
+                if not (name == "chatterbox" and self.chatterbox_closed.is_set()):
+                    self._wait_ready(name, proc)
+                    if name != "chatterbox": self._ctrl_c(name, proc)
+                proc.wait(timeout=10)
+            except (ValueError, OSError, subprocess.TimeoutExpired, RuntimeError) as error:
+                failures.append(f"{name}: {error}")
+                if proc.poll() is None: proc.kill(); proc.wait(timeout=5)
+        if (reader := self.readers.get(name)) is not None:
+            reader.join(timeout=5)
+            if reader.is_alive(): failures.append(f"{name}: log reader survived")
+        if not (clean := (code := proc.wait()) == 0): failures.append(f"{name}: exit {code}")
+        self.journal.emit("resident", "stopped", name=name, pid=proc.pid, exit_code=code, clean=clean)
+
     def stop(self) -> None:
         failures: list[str] = []
-        chatterbox_proc = self.procs.get("chatterbox")
-        if chatterbox_proc is not None and chatterbox_proc.poll() is None and not self.chatterbox_closed.is_set():
-            try:
-                self._wait_ready("chatterbox", chatterbox_proc); self.close_chatterbox()
-            except BaseException as error:
-                failures.append(f"chatterbox close: {error}"); self.journal.failure("resident.chatterbox-close", error)
-        for name, proc in reversed(tuple(self.procs.items())):
-            running = proc.poll() is None
-            self.journal.emit("resident", "stop", name=name, pid=proc.pid, running=running)
-            if running:
-                try:
-                    if not (name == "chatterbox" and self.chatterbox_closed.is_set()):
-                        self._wait_ready(name, proc)
-                        if name != "chatterbox": self._ctrl_c(name, proc)
-                    proc.wait(timeout=10)
-                except (ValueError, OSError, subprocess.TimeoutExpired, RuntimeError) as error:
-                    failures.append(f"{name}: {error}")
-                    if proc.poll() is None: proc.kill(); proc.wait(timeout=5)
-            code = proc.wait()
-            if (reader := self.readers.get(name)) is not None:
-                reader.join(timeout=5)
-                if reader.is_alive(): failures.append(f"{name}: log reader survived")
-            if not (clean := code == 0): failures.append(f"{name}: exit {code}")
-            self.journal.emit("resident", "stopped", name=name, pid=proc.pid, exit_code=code, clean=clean)
+        if (cb := self.procs.get("chatterbox")) is not None and cb.poll() is None and not self.chatterbox_closed.is_set():
+            try: self._wait_ready("chatterbox", cb); self.close_chatterbox()
+            except BaseException as error: failures.append(f"chatterbox close: {error}"); self.journal.failure("resident.chatterbox-close", error)
+        for name, proc in reversed(tuple(self.procs.items())): self._reap(name, proc, failures)
         if self.chatterbox is not None: self.chatterbox.disconnect()
         self.procs.clear(); self.readers.clear(); self.ready.clear(); self.ready_deadlines.clear()
         if listening := _listening_ports(): failures.append(f"ports survived: {', '.join(listening)}")
@@ -236,13 +218,11 @@ class CancelableHTTP:
             if self._active is not None: raise RuntimeError("HTTP channel already has an active request")
             generation = self._generation; self._active = (conn, None)
         try:
-            path = target.path or "/"
-            if target.query: path += "?" + target.query
-            conn.request("POST", path, body=body, headers=headers)
+            conn.request("POST", (target.path or "/") + (f"?{target.query}" if target.query else ""), body=body, headers=headers)
             response = conn.getresponse()
             with self._lock:
-                if generation != self._generation or self._active is None or self._active[0] is not conn: cancelled = True
-                else: self._active = (conn, response); cancelled = False
+                cancelled = generation != self._generation or self._active is None or self._active[0] is not conn
+                if not cancelled: self._active = (conn, response)
             if cancelled:
                 response.close(); self._disconnect(conn); raise OSError("HTTP request cancelled before response ownership")
             return response
@@ -311,8 +291,7 @@ class Chatterbox:
                 if self.sock is None: return None
                 raise RuntimeError("unexpected TTS socket EOF")
             self.buf.extend(chunk)
-        out = bytes(self.buf[:n]); del self.buf[:n]
-        return out
+        out = bytes(self.buf[:n]); del self.buf[:n]; return out
 
     def _send(self, kind: int, epoch: int = 0, response_id: int = 0, piece_id: int = 0, text: str = "") -> None:
         raw = text.encode("utf-8")

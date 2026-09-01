@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import hashlib
 import json
 import subprocess
@@ -8,39 +6,30 @@ import time
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
 
 
 def file_identity(path: Path) -> dict:
     path = Path(path)
     if not path.is_file(): return {"path": str(path), "missing": True}
-    digest = hashlib.sha256()
     with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(8 << 20), b""): digest.update(block)
-    return {"path": str(path), "size": path.stat().st_size, "sha256": digest.hexdigest()}
+        return {"path": str(path), "size": path.stat().st_size, "sha256": hashlib.file_digest(handle, "sha256").hexdigest()}
 
 
 def git_identity(path: Path) -> dict:
-    path = Path(path)
     try:
         run = lambda *a: subprocess.check_output(["git", "-C", str(path), *a], text=True, stderr=subprocess.DEVNULL, timeout=15).strip()
-        sha = run("rev-parse", "HEAD")
-        dirty = bool(run("status", "--porcelain", "--untracked-files=no"))
-        return {"sha": sha, "branch": run("branch", "--show-current"), "dirty": dirty}
+        return {"sha": run("rev-parse", "HEAD"), "branch": run("branch", "--show-current"),
+                "dirty": bool(run("status", "--porcelain", "--untracked-files=no"))}
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return {"sha": "", "branch": "", "dirty": None}
 
 
 class Journal:
     def __init__(self, run_dir: Path, console: bool = False) -> None:
-        self.run_dir = Path(run_dir)
-        self.run_id = self.run_dir.name
-        self.console = bool(console)
-        self._lock = threading.Lock()
-        self._sequence = 0
+        self.run_dir, self.run_id, self.console = Path(run_dir), Path(run_dir).name, bool(console)
+        self._lock, self._sequence, self._manifest_written = threading.Lock(), 0, False
         self._events = (self.run_dir / "events.jsonl").open("a", encoding="utf-8", newline="\n", buffering=1)
         self._transcripts: dict[str, object] = {}
-        self._manifest_written = False
 
     def sidecar(self, role: str, ext: str = "log") -> Path:
         safe = "".join(ch if ch.isalnum() or ch in "-._" else "-" for ch in role).strip(".-") or "sidecar"
@@ -67,10 +56,8 @@ class Journal:
     def transcript(self, role: str, text: str) -> None:
         if not text: return
         with self._lock:
-            handle = self._transcripts.get(role)
-            if handle is None:
-                handle = self.sidecar(role, "txt").open("a", encoding="utf-8", newline="\n", buffering=1)
-                self._transcripts[role] = handle
+            handle = self._transcripts.get(role) or self.sidecar(role, "txt").open("a", encoding="utf-8", newline="\n", buffering=1)
+            self._transcripts[role] = handle
             handle.write(text.rstrip() + "\n")
 
     def failure(self, component: str, error: BaseException) -> None:
@@ -91,10 +78,9 @@ class WorkerSupervisor:
         self.journal = journal
         self._failure_lock = threading.Lock()
         self._failure: tuple[BaseException, object] | None = None
-        self._failed = threading.Event()
-        self._threads: list[threading.Thread] = []
+        self._failed, self._threads = threading.Event(), []
 
-    def start(self, name: str, target: Callable, *args, daemon: bool = False, **kwargs) -> threading.Thread:
+    def start(self, name: str, target, *args, daemon: bool = False, **kwargs) -> threading.Thread:
         def guarded() -> None:
             try: target(*args, **kwargs)
             except BaseException as error:
@@ -113,11 +99,17 @@ class WorkerSupervisor:
     def wait(self, seconds: float) -> None:
         self._failed.wait(seconds); self.check()
 
+    def spin(self, done, deadline: float, err: str, interval: float = .1, event: threading.Event | None = None, tick=None, abort=None) -> None:
+        while not done():
+            (tick or self.check)()
+            if abort and (msg := abort()): raise RuntimeError(msg)
+            if time.monotonic() >= deadline: raise RuntimeError(err)
+            (event or self._failed).wait(min(interval, max(0.0, deadline - time.monotonic())))
+
     def join(self, timeout: float | None = None) -> None:
         deadline = None if timeout is None else time.monotonic() + timeout
         for thread in self._threads:
-            if thread.is_alive():
-                thread.join(None if deadline is None else max(0.0, deadline - time.monotonic()))
-        survivors = [t.name for t in self._threads if t.is_alive()]
-        if survivors: raise RuntimeError(f"worker survivors after shutdown: {', '.join(survivors)}")
+            if thread.is_alive(): thread.join(None if deadline is None else max(0.0, deadline - time.monotonic()))
+        if survivors := [t.name for t in self._threads if t.is_alive()]:
+            raise RuntimeError(f"worker survivors after shutdown: {', '.join(survivors)}")
         self.check()

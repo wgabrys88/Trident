@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 import subprocess
 import sys
@@ -66,7 +64,6 @@ V3_LANGUAGES = tuple(LANGUAGE_NAMES)
 GEMMA_CONTEXT = 4096
 GEMMA_GEN = {"temperature": .2, "top_p": .95, "top_k": 64, "min_p": 0., "repeat_penalty": 1., "seed": 42, "max_tokens": 1024}
 
-
 def detect_hardware() -> tuple[str, str | None, str]:
     if not sys.platform.startswith("win"): raise RuntimeError("Trident requires Windows")
     run = lambda cmd: subprocess.check_output(cmd, text=True, encoding="utf-8", errors="replace", timeout=15)
@@ -77,9 +74,8 @@ def detect_hardware() -> tuple[str, str | None, str]:
     except Exception: pass
     gpu = run(["powershell.exe", "-NoProfile", "-Command", "(Get-CimInstance Win32_VideoController).Name -join ';'"]).strip()
     lower = gpu.casefold()
-    if any(n in lower for n in ("tesla p100", "quadro gp100")): return "pascal", "60", gpu
-    if any(n in lower for n in ("gtx 1050", "gtx 1060", "gtx 1070", "gtx 1080", "titan x (pascal)", "titan xp", "quadro p", "tesla p4", "tesla p40")):
-        return "pascal", "61", gpu
+    for tag, names in (("60", ("tesla p100", "quadro gp100")), ("61", ("gtx 1050", "gtx 1060", "gtx 1070", "gtx 1080", "titan x (pascal)", "titan xp", "quadro p", "tesla p4", "tesla p40"))):
+        if any(n in lower for n in names): return "pascal", tag, gpu
     if "iris" in lower and "xe" in lower: return "irisxe", None, gpu
     raise RuntimeError(f"unsupported GPU: {gpu}")
 
@@ -123,13 +119,12 @@ def cable_device(kind: str) -> tuple[int, dict, dict]:
     skip, hostapis, devices = CABLE_DEVICES[kind], sd.query_hostapis(), sd.query_devices()
     host_index = next((i for i, api in enumerate(hostapis) if "wasapi" in str(api["name"]).casefold()), None)
     if host_index is None: raise RuntimeError("Windows WASAPI host API is unavailable")
-    channel_key = "max_input_channels" if kind == "input" else "max_output_channels"
-    api = hostapis[host_index]
-    matches = [(i, d) for i, d in enumerate(devices) if int(d["hostapi"]) == host_index and int(d[channel_key]) >= 1]
+    api, key = hostapis[host_index], "max_input_channels" if kind == "input" else "max_output_channels"
+    matches = [(i, d) for i, d in enumerate(devices) if int(d["hostapi"]) == host_index and int(d[key]) >= 1]
     if not matches: raise RuntimeError(f"no WASAPI {kind} endpoint is available")
     pool = [(i, d) for i, d in matches if str(d["name"]) != skip] or matches
-    default_index = int(api["default_input_device" if kind == "input" else "default_output_device"])
-    index, device = next(((i, d) for i, d in pool if i == default_index), pool[0])
+    want = int(api["default_input_device" if kind == "input" else "default_output_device"])
+    index, device = next(((i, d) for i, d in pool if i == want), pool[0])
     return index, dict(device), dict(api)
 
 
@@ -138,9 +133,8 @@ class Paths:
         self.models_dir, self.data_dir = Path(models_dir or MODELS).resolve(), Path(data_dir or DATA).resolve()
         self.command, self.family, self.language = command, family.strip().lower(), language.strip().lower()
         self.voice = str(load_settings(self.data_dir).get("tts_voice") or "trump")
-        self.stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
-        bits = [self.stamp, command, HARDWARE] + ([self.family, self.language, self.voice] if command in ("talk", "tts") else [])
-        self.run_dir = self.data_dir / "runs" / "-".join(bits)
+        bits = [datetime.now().strftime("%Y%m%d-%H%M%S-%f"), command, HARDWARE] + ([self.family, self.language, self.voice] if command in ("talk", "tts") else [])
+        self.stamp, self.run_dir = bits[0], self.data_dir / "runs" / "-".join(bits)
         self.run_dir.mkdir(parents=True)
         self.journal = Journal(self.run_dir, console)
         self.supervisor = WorkerSupervisor(self.journal)

@@ -58,6 +58,10 @@ void send_all(SOCKET socket, const void* src, std::size_t size) {
         throw std::runtime_error("TTS send failed");
 }
 
+std::string elapsed_ms(mono_clock::time_point a, mono_clock::time_point b) {
+    return std::to_string(std::chrono::duration<double, std::milli>(a - b).count());
+}
+
 struct wire_writer {
     SOCKET socket;
     std::mutex mutex;
@@ -103,23 +107,18 @@ tts_cpp::chatterbox::Engine make_engine(const args_t& args) {
 bool receive(SOCKET socket, request_t& request) {
     std::uint32_t header[7];
     if (!recv_all(socket, header, sizeof(header))) return false;
-    if (header[0] != PROTOCOL_MAGIC || header[1] != PROTOCOL_VERSION)
-        throw std::runtime_error("unsupported TTS protocol");
-    if (header[2] < static_cast<std::uint32_t>(request_kind::synthesize) ||
-        header[2] > static_cast<std::uint32_t>(request_kind::close))
+    if (header[0] != PROTOCOL_MAGIC || header[1] != PROTOCOL_VERSION) throw std::runtime_error("unsupported TTS protocol");
+    if (header[2] < static_cast<std::uint32_t>(request_kind::synthesize) || header[2] > static_cast<std::uint32_t>(request_kind::close))
         throw std::runtime_error("invalid TTS request kind");
     request = {};
     request.kind = static_cast<request_kind>(header[2]);
     request.epoch = header[3]; request.response = header[4]; request.piece = header[5];
-    const auto bytes = header[6];
-    if (bytes > MAX_TEXT_BYTES) throw std::runtime_error("TTS request too large");
-    if (request.kind != request_kind::synthesize && (bytes != 0 || request.response != 0 || request.piece != 0))
+    if (header[6] > MAX_TEXT_BYTES) throw std::runtime_error("TTS request too large");
+    if (request.kind != request_kind::synthesize && (header[6] || request.response || request.piece))
         throw std::runtime_error("invalid TTS control frame");
-    request.text.resize(bytes);
-    if (bytes && !recv_all(socket, request.text.data(), request.text.size()))
-        throw std::runtime_error("truncated TTS request");
-    if (request.kind == request_kind::synthesize && request.text.empty())
-        throw std::runtime_error("empty TTS sentence");
+    request.text.resize(header[6]);
+    if (header[6] && !recv_all(socket, request.text.data(), request.text.size())) throw std::runtime_error("truncated TTS request");
+    if (request.kind == request_kind::synthesize && request.text.empty()) throw std::runtime_error("empty TTS sentence");
     request.queued = mono_clock::now();
     return true;
 }
@@ -154,6 +153,10 @@ void serve(SOCKET client, tts_cpp::chatterbox::Engine& tts) {
             tts_emit("synthesis.cancelled", ",\"state\":\"queued\"");
         }
     };
+    auto finish_piece = [&](const request_t& request, response_kind kind, const std::string& message = {}) {
+        writer.terminal(kind, request, message);
+        active.reset();
+    };
 
     std::thread synth([&] {
         tts_emit("synthesis.worker.start");
@@ -168,37 +171,30 @@ void serve(SOCKET client, tts_cpp::chatterbox::Engine& tts) {
             }
             tts_context_scope context(request.epoch, request.response, request.piece);
             const auto started = mono_clock::now();
-            auto ms = [](mono_clock::time_point a, mono_clock::time_point b) {
-                return std::to_string(std::chrono::duration<double, std::milli>(a - b).count());
-            };
-            tts_emit("synthesis.start", ",\"chars\":" + std::to_string(request.text.size()) + ",\"queue_ms\":" + ms(started, request.queued));
+            tts_emit("synthesis.start", ",\"chars\":" + std::to_string(request.text.size()) + ",\"queue_ms\":" + elapsed_ms(started, request.queued));
             try {
                 std::uint32_t chunks = 0; bool first_pcm = true;
                 tts.synthesize_pieces_streaming({request.text}, [&](int, const float* data, std::size_t size, int chunk, bool) {
                     if (live_epoch.load(std::memory_order_acquire) != request.epoch) return;
                     chunks = std::max(chunks, static_cast<std::uint32_t>(chunk + 1));
                     if (!size) return;
-                    if (first_pcm) {
-                        first_pcm = false;
-                        tts_emit("synthesis.first_result", ",\"chunk_id\":" + std::to_string(chunk) + ",\"elapsed_ms\":" + ms(mono_clock::now(), started));
-                    }
+                    if (first_pcm) { first_pcm = false; tts_emit("synthesis.first_result", ",\"chunk_id\":" + std::to_string(chunk) + ",\"elapsed_ms\":" + elapsed_ms(mono_clock::now(), started)); }
                     writer.pcm(request, static_cast<std::uint32_t>(chunk), data, size);
                 });
                 bool completed = false;
                 {
                     std::lock_guard lock(mutex);
                     completed = live_epoch.load(std::memory_order_acquire) == request.epoch;
-                    writer.terminal(completed ? response_kind::done : response_kind::cancelled, request);
-                    active.reset();
+                    finish_piece(request, completed ? response_kind::done : response_kind::cancelled);
                 }
-                if (completed) tts_emit("synthesis.completed", ",\"chunks\":" + std::to_string(chunks) + ",\"elapsed_ms\":" + ms(mono_clock::now(), started));
+                if (completed) tts_emit("synthesis.completed", ",\"chunks\":" + std::to_string(chunks) + ",\"elapsed_ms\":" + elapsed_ms(mono_clock::now(), started));
                 else tts_emit("synthesis.cancelled", ",\"state\":\"active\"");
             } catch (const std::exception& error) {
                 bool cancelled = false;
                 {
                     std::lock_guard lock(mutex);
                     cancelled = live_epoch.load(std::memory_order_acquire) != request.epoch || stop.load(std::memory_order_acquire);
-                    writer.terminal(cancelled ? response_kind::cancelled : response_kind::error, request, cancelled ? std::string{} : error.what());
+                    finish_piece(request, cancelled ? response_kind::cancelled : response_kind::error, cancelled ? std::string{} : error.what());
                     if (!cancelled) { failed = true; stop.store(true, std::memory_order_release); shutdown(client, SD_RECEIVE); }
                 }
                 if (cancelled) tts_emit("synthesis.cancelled", ",\"state\":\"active\"");

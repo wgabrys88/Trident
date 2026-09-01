@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import hashlib
 import json
 import os
@@ -23,6 +21,7 @@ DOWNLOADS = TOOLS / "downloads"
 CONVERTER_PINS = {"torch": "2.6.0", "numpy": "1.26.4", "gguf": "0.19.0", "safetensors": "0.5.3", "scipy": "1.15.3",
                   "librosa": "0.11.0", "resampy": "0.4.3", "huggingface-hub": "0.34.4"}
 _PIP = ("-m", "pip", "install", "--disable-pip-version-check", "--progress-bar", "off", "--no-input")
+_BUILD_FLAGS = ["-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_NATIVE=ON", "-DGGML_CCACHE=OFF"]
 
 
 def _sha(path: Path) -> str:
@@ -37,10 +36,8 @@ def _write_json(path: Path, value: dict) -> None:
 
 
 def _read_json(path: Path):
-    try:
-        return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
-    except Exception:
-        return None
+    try: return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+    except Exception: return None
 
 
 def _run(paths, cmd, cwd=None, env=None, role="exec") -> str:
@@ -61,19 +58,16 @@ def pull(paths, url: str, dest: Path, size: int = 0, sha256: str = "") -> Path:
     if dest.is_file() and (not size or dest.stat().st_size == size) and (not sha256 or _sha(dest) == sha256):
         paths.journal.emit("install", "fetch.ready", name=dest.name, size=dest.stat().st_size, sha256=_sha(dest))
         return dest
-    if dest.exists():
-        raise RuntimeError(f"refusing unverified existing artifact: {dest}")
+    if dest.exists(): raise RuntimeError(f"refusing unverified existing artifact: {dest}")
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part"); tmp.unlink(missing_ok=True)
-    req = urllib.request.Request(url, headers={"User-Agent": "Trident/2"})
     paths.journal.emit("install", "fetch.start", name=dest.name, url=url)
-    with urllib.request.urlopen(req, timeout=120) as response, tmp.open("wb") as out:
+    with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "Trident/2"}), timeout=120) as response, tmp.open("wb") as out:
         header_size = int(response.headers.get("Content-Length") or 0)
         shutil.copyfileobj(response, out, 4 << 20)
     got_size, got_sha = tmp.stat().st_size, _sha(tmp)
     if got_size != (size or header_size or got_size) or (sha256 and got_sha != sha256):
-        tmp.unlink(missing_ok=True)
-        raise RuntimeError(f"download identity mismatch for {dest.name}")
+        tmp.unlink(missing_ok=True); raise RuntimeError(f"download identity mismatch for {dest.name}")
     tmp.replace(dest)
     paths.journal.emit("install", "fetch.completed", name=dest.name, size=got_size, sha256=got_sha)
     return dest
@@ -92,8 +86,7 @@ def install_runtime(paths, role: str, exe_name: str, spec: tuple[str, str, int, 
     dest.mkdir(parents=True)
     with zipfile.ZipFile(archive) as z: z.extractall(dest)
     paths.journal.emit("install", "archive.completed", archive=archive.name, destination=str(dest))
-    exe = find_exe(dest, exe_name)
-    if exe is None: raise RuntimeError(f"{exe_name} missing from verified {archive_name}")
+    if (exe := find_exe(dest, exe_name)) is None: raise RuntimeError(f"{exe_name} missing from verified {archive_name}")
     receipt = {"role": role, "url": url, "archive": file_identity(archive),
                "executable": {"path": str(exe), "size": exe.stat().st_size}, "version": _tool([str(exe), "--version"])}
     _write_json(receipt_path, receipt)
@@ -116,8 +109,8 @@ def pin(paths, url: str, rev: str, dest: Path, role: str) -> str:
         _run(paths, ["git", "clone", "--filter=blob:none", url, str(dest)], role=f"git-{role}")
     _clean_repo(dest)
     _run(paths, ["git", "fetch", "--depth", "1", "origin", rev], dest, role=f"git-{role}")
-    fetched, current = _git(dest, "rev-parse", rev), _git(dest, "rev-parse", "HEAD")
-    if current != fetched: _run(paths, ["git", "checkout", "--detach", rev], dest, role=f"git-{role}")
+    fetched = _git(dest, "rev-parse", rev)
+    if fetched != _git(dest, "rev-parse", "HEAD"): _run(paths, ["git", "checkout", "--detach", rev], dest, role=f"git-{role}")
     _clean_repo(dest)
     paths.journal.emit("install", "repository.ready", role=role, requested=rev, sha=fetched, dirty=False)
     return fetched
@@ -132,21 +125,14 @@ def _tool(command: list[str], first_line: bool = True) -> str:
 
 
 def _cache_values(path: Path) -> dict:
-    values = {}
-    if path.is_file():
-        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            if line.startswith(("CMAKE_CXX_COMPILER:", "CMAKE_CXX_COMPILER_VERSION:", "CMAKE_GENERATOR:")):
-                key, value = line.split("=", 1); values[key.split(":", 1)[0]] = value
-    return values
+    keys = ("CMAKE_CXX_COMPILER:", "CMAKE_CXX_COMPILER_VERSION:", "CMAKE_GENERATOR:")
+    return {line.split("=", 1)[0].split(":", 1)[0]: line.split("=", 1)[1]
+            for line in (path.read_text(encoding="utf-8", errors="replace").splitlines() if path.is_file() else [])
+            if line.startswith(keys)}
 
 
 def _server_source_identity() -> str:
     return hashlib.sha256(b"".join(p.read_bytes() for p in (TTS / "CMakeLists.txt", TTS / "src" / "server.cpp"))).hexdigest()
-
-
-# North Star GPU path is Vulkan on both Intel Iris Xe and NVIDIA Pascal.
-# CUDA is intentionally not a build/runtime dependency.
-_BUILD_FLAGS = ["-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_NATIVE=ON", "-DGGML_CCACHE=OFF"]
 
 
 def build_tts(paths) -> None:
@@ -214,19 +200,18 @@ def _conversion_identity(family: str, models: Path, converter: dict) -> dict:
 
 
 def _conversion_valid(family: str, models: Path, converter: dict | None = None) -> bool:
-    receipt, spec = _read_json(models / f".{family}-provenance.json"), TTS_WEIGHTS[family]
-    if receipt is None: return False
+    spec, receipt = TTS_WEIGHTS[family], _read_json(models / f".{family}-provenance.json")
+    if not receipt: return False
+    ckpt = CONVERTER / spec["ckpt"]
     if (receipt.get("checkpoint_repo") != spec["repo"] or receipt.get("checkpoint_revision") != spec["rev"]
             or receipt.get("converter_repository", {}).get("sha") != git_identity(CHATTERBOX).get("sha")
             or receipt.get("converter_scripts") != {p.name: _sha(p) for p in _scripts(spec) if p.is_file()}
             or receipt.get("quantization") != {"t3": "q4_0", "s3gen": CODEC_QUANT}
             or (converter is not None and receipt.get("tool_versions") != converter)
-            or receipt.get("checkpoint_files") != {name: file_identity(CONVERTER / spec["ckpt"] / name) for name in spec["files"]}):
+            or receipt.get("checkpoint_files") != {name: file_identity(ckpt / name) for name in spec["files"]}):
         return False
-    for role, name in zip(("t3", "s3gen"), TTS_MODELS[family]):
-        path, recorded = models / name, receipt.get("outputs", {}).get(role, {})
-        if not path.is_file() or recorded.get("size") != path.stat().st_size or recorded.get("sha256") != _sha(path): return False
-    return True
+    return all((p := models / name).is_file() and (r := receipt.get("outputs", {}).get(role, {})).get("size") == p.stat().st_size and r.get("sha256") == _sha(p)
+               for role, name in zip(("t3", "s3gen"), TTS_MODELS[family]))
 
 
 def convert_tts(paths, models: Path, families: list[str]) -> None:
@@ -234,13 +219,12 @@ def convert_tts(paths, models: Path, families: list[str]) -> None:
     for family in families:
         if _conversion_valid(family, models, tools):
             paths.journal.emit("install", "tts.convert.ready", family=family); continue
-        spec = TTS_WEIGHTS[family]; ckpt = CONVERTER / spec["ckpt"]
+        spec, ckpt = TTS_WEIGHTS[family], CONVERTER / TTS_WEIGHTS[family]["ckpt"]
         _snapshot(paths, py, env, spec, ckpt)
         t3, s3 = (models / name for name in TTS_MODELS[family]); temps = [p.with_suffix(p.suffix + ".new") for p in (t3, s3)]
         for temp in temps: temp.unlink(missing_ok=True)
-        t3_py, s3_py = _scripts(spec); cmd = [str(py), str(t3_py)]
-        if model := spec.get("model"): cmd += ["--model", model]
-        _run(paths, cmd + ["--ckpt-dir", str(ckpt), "--out", str(temps[0]), "--quant", "q4_0"], ROOT, env, role=f"convert-{family}-t3")
+        t3_py, s3_py = _scripts(spec)
+        _run(paths, [str(py), str(t3_py), *(["--model", spec["model"]] if spec.get("model") else []), "--ckpt-dir", str(ckpt), "--out", str(temps[0]), "--quant", "q4_0"], ROOT, env, role=f"convert-{family}-t3")
         _run(paths, [str(py), str(s3_py), "--variant", spec["s3"], "--ckpt-dir", str(ckpt), "--out", str(temps[1]), "--quant", CODEC_QUANT], ROOT, env, role=f"convert-{family}-s3")
         if not all(p.is_file() and p.stat().st_size for p in temps): raise RuntimeError(f"{family} conversion produced incomplete output")
         for temp, final in zip(temps, (t3, s3)): os.replace(temp, final)
@@ -270,7 +254,8 @@ def install(models_dir: Path | None, data_dir: Path | None, paths) -> None:
     install_runtime(paths, "parakeet", "parakeet-server.exe", PARAKEET_ZIP)
     install_runtime(paths, "gemma", "llama-server.exe", LLAMA_ZIP)
     for source, name, size, sha256 in VOICES.values(): pull(paths, VOICE_HF + source, data / name, size, sha256)
-    pull(paths, PARAKEET_URL, models / PARAKEET_FILE, PARAKEET_SIZE, PARAKEET_SHA256); pull(paths, GEMMA_URL, models / GEMMA_FILE, GEMMA_SIZE, GEMMA_SHA256)
+    pull(paths, PARAKEET_URL, models / PARAKEET_FILE, PARAKEET_SIZE, PARAKEET_SHA256)
+    pull(paths, GEMMA_URL, models / GEMMA_FILE, GEMMA_SIZE, GEMMA_SHA256)
     pull(paths, SMART_TURN_URL, models / SMART_TURN_FILE, SMART_TURN_SIZE, SMART_TURN_SHA256)
     install_python(paths)
     paths.journal.emit("install", "completed", models={family: list(names) for family, names in TTS_MODELS.items()}, chatterbox=git_identity(CHATTERBOX), ggml=git_identity(GGML))
