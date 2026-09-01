@@ -1,0 +1,4 @@
+ggml_vulkan: Found 1 Vulkan devices:
+ggml_vulkan: 0 = NVIDIA GeForce GTX 1060 6GB (NVIDIA) | uma: 0 | fp16: 0 | bf16: 0 | warp size: 32 | shared memory: 49152 | int dot: 1 | matrix cores: none
+[parakeet] pk::Backend using device: Vulkan0
+parakeet-server: listening on http://127.0.0.1:17931 (model: C:\Users\px-wjt\Downloads\Trident\models\tdt-0.6b-v3-q4_k.gguf)
