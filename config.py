@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime
@@ -7,14 +8,13 @@ from pathlib import Path
 from journal import Journal, WorkerSupervisor
 
 ROOT = Path(__file__).resolve().parent
-MODELS, DATA, THIRD_PARTY, TOOLS, TTS = (ROOT / n for n in ("models", "data", "third_party", "tools", "tts"))
+MODELS, DATA, THIRD_PARTY, TOOLS = (ROOT / n for n in ("models", "data", "third_party", "tools"))
 CHATTERBOX = THIRD_PARTY / "chatterbox.cpp"
 GGML, RUNTIMES, CONVERTER = CHATTERBOX / "ggml", TOOLS / "runtime", TOOLS / "convert"
-CHATTERBOX_URL, CHATTERBOX_REV = "https://github.com/wgabrys88/chatterbox.cpp", "e50f0cdd019593c8451502acb1ea291a22961237"
+CHATTERBOX_URL, CHATTERBOX_REV = "https://github.com/wgabrys88/chatterbox.cpp", "4275697f6c6fbf24d2e71b3df7b6cc910c92f206"
 GGML_GIT = ("https://github.com/ggml-org/ggml.git", "58c3805840b516b2a88ff867ccf7bb41dba79951")
 ASR_RATE, TTS_RATE, VAD_FRAME = 16000, 24000, 512
-CABLE_RATE, CABLE_CHANNELS = 48000, 2
-CABLE_DEVICES = {"input": "CABLE Output (VB-Audio Virtual Cable)", "output": "CABLE Input (VB-Audio Virtual Cable)"}
+SKIP_DEVICES = {"input": "CABLE Output (VB-Audio Virtual Cable)", "output": "CABLE Input (VB-Audio Virtual Cable)"}
 T3_FILE, PARAKEET_FILE, GEMMA_FILE = "chatterbox-t3-nano-q4_0.gguf", "tdt-0.6b-v3-q4_k.gguf", "gemma-4-E2B_q4_0-it.gguf"
 PARAKEET_URL = "https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/bf0af9f425fa01809cadec671b3cb672709d13e9/" + PARAKEET_FILE
 PARAKEET_SIZE, PARAKEET_SHA256 = 675200864, "993d73feb4206dadda865ab25bd64b50c48dc4d013c3bf6126a721f28b1d5ee8"
@@ -39,30 +39,24 @@ PROMPT = ("You are the mind of this spoken conversation. Remember what was alrea
           "Output only words to be read aloud. Short sentences, each ending with a period, question mark, or exclamation mark. "
           "No markdown, lists, code, URLs, emoji, stage directions, or square-bracket tags. Expand numbers and abbreviations. Do not mention transcription, models, prompts, or reasoning.")
 TTS_KNOBS = {
-    "gpu_layers": 99,
-    "context": 2048,
-    "threads": 4,
-    "fastconv": 1,
-    "seed": 42,
-    "max_tokens": 1000,
-    "top_k": 1000,
-    "top_p": .95,
-    "min_p": .05,
-    "temperature": .8,
-    "repeat_penalty": 1.2,
-    "cfm_steps": 1,
-    "cfg_weight": .5,
-    "exaggeration": .5,
+    "gpu_layers": 99, "context": 2048, "threads": 4, "fastconv": 1, "seed": 42, "max_tokens": 1000,
+    "top_k": 1000, "top_p": .95, "min_p": .05, "temperature": .8, "repeat_penalty": 1.2,
+    "cfm_steps": 1, "cfg_weight": .5, "exaggeration": .5,
 }
-TTS_PROFILES = {
-    "nano": TTS_KNOBS,
-    "turbo": TTS_KNOBS,
-    "v3": {**TTS_KNOBS, "top_k": 0, "top_p": 1., "cfm_steps": 5},
-}
+TTS_PROFILES = {"nano": TTS_KNOBS, "turbo": TTS_KNOBS, "v3": {**TTS_KNOBS, "top_k": 0, "top_p": 1., "cfm_steps": 5}}
 LANGUAGE_NAMES = {"ar":"Arabic","da":"Danish","de":"German","el":"Greek","en":"English","es":"Spanish","fi":"Finnish","fr":"French","he":"Hebrew","hi":"Hindi","it":"Italian","ja":"Japanese","ko":"Korean","ms":"Malay","nl":"Dutch","no":"Norwegian","pl":"Polish","pt":"Portuguese","ru":"Russian","sv":"Swedish","sw":"Swahili","tr":"Turkish","zh":"Chinese"}
 V3_LANGUAGES = tuple(LANGUAGE_NAMES)
 GEMMA_CONTEXT = 4096
 GEMMA_GEN = {"temperature": .2, "top_p": .95, "top_k": 64, "min_p": 0., "repeat_penalty": 1., "seed": 42, "max_tokens": 1024}
+SERVICES = {"talk": ("parakeet", "gemma", "chatterbox"), "tts": ("chatterbox",), "asr": ("parakeet",), "generation": ("gemma",)}
+
+
+def ensure_venv(script=None) -> None:
+    venv = ROOT / ".venv" / "Scripts" / "python.exe"
+    here = Path(script or sys.argv[0]).resolve()
+    if sys.platform.startswith("win") and venv.is_file() and Path(sys.executable).resolve() != venv.resolve():
+        os.execv(str(venv), [str(venv), str(here), *sys.argv[1:]])
+
 
 def detect_hardware() -> tuple[str, str | None, str]:
     if not sys.platform.startswith("win"): raise RuntimeError("Trident requires Windows")
@@ -97,6 +91,7 @@ TTS_WEIGHTS = {
     "v3": {"repo": "ResembleAI/chatterbox", "rev": "ef85ce7bef2f3f1a74d0d837d379d2fcb68203cd", "ckpt": "ckpt-v3", "t3": "convert-t3-mtl-to-gguf.py", "s3": "mtl",
            "files": ("t3_mtl23ls_v3.safetensors", "s3gen.pt", "ve.pt", "conds.pt", "grapheme_mtl_merged_expanded_v1.json", "Cangjie5_TC.json")},
 }
+
 def find_exe(root: Path, name: str) -> Path | None:
     return next((p for p in root.rglob(name) if p.is_file()), None) if root.is_dir() else None
 
@@ -114,9 +109,9 @@ def voice_wav(data_dir: Path, value: str | None = None) -> Path:
         if path.is_file(): return path.resolve()
     raise RuntimeError(f"unknown voice {raw!r}")
 
-def cable_device(kind: str) -> tuple[int, dict, dict]:
+def wasapi_device(kind: str) -> tuple[int, dict, dict]:
     import sounddevice as sd
-    skip, hostapis, devices = CABLE_DEVICES[kind], sd.query_hostapis(), sd.query_devices()
+    skip, hostapis, devices = SKIP_DEVICES[kind], sd.query_hostapis(), sd.query_devices()
     host_index = next((i for i, api in enumerate(hostapis) if "wasapi" in str(api["name"]).casefold()), None)
     if host_index is None: raise RuntimeError("Windows WASAPI host API is unavailable")
     api, key = hostapis[host_index], "max_input_channels" if kind == "input" else "max_output_channels"
@@ -133,7 +128,7 @@ class Paths:
         self.models_dir, self.data_dir = Path(models_dir or MODELS).resolve(), Path(data_dir or DATA).resolve()
         self.command, self.family, self.language = command, family.strip().lower(), language.strip().lower()
         self.voice = str(load_settings(self.data_dir).get("tts_voice") or "trump")
-        bits = [datetime.now().strftime("%Y%m%d-%H%M%S-%f"), command, HARDWARE] + ([self.family, self.language, self.voice] if command in ("talk", "tts") else [])
+        bits = [datetime.now().strftime("%Y%m%d-%H%M%S-%f"), command, HARDWARE] + ([self.family, self.language, self.voice] if command != "install" else [])
         self.stamp, self.run_dir = bits[0], self.data_dir / "runs" / "-".join(bits)
         self.run_dir.mkdir(parents=True)
         self.journal = Journal(self.run_dir, console)
@@ -142,3 +137,32 @@ class Paths:
 
     def close(self) -> None:
         self.journal.close()
+
+
+class Wasapi:
+    kind, component, ready_event, stop_event, rate_key, peer_rate = "output", "playback", "sink.ready", "sink.stopped", "render_rate", TTS_RATE
+
+    def __init__(self, paths: Paths) -> None:
+        self.paths = paths; self.stream = self.error = None
+
+    def check(self) -> None:
+        if self.error is not None: raise self.error
+
+    def close(self) -> None:
+        if self.stream is not None:
+            self.stream.stop(); self.stream.close(); self.stream = None
+        self.paths.journal.emit(self.component, self.stop_event, type="wasapi")
+
+    def open(self) -> None:
+        import sounddevice as sd
+        index, device, host = wasapi_device(self.kind)
+        extra = sd.WasapiSettings(exclusive=False, auto_convert=True, explicit_sample_format=True)
+        (sd.check_output_settings if self.kind == "output" else sd.check_input_settings)(
+            device=index, channels=1, dtype="float32", samplerate=self.peer_rate, extra_settings=extra)
+        cls = sd.RawOutputStream if self.kind == "output" else sd.RawInputStream
+        self.stream = cls(samplerate=self.peer_rate, blocksize=0, device=index, channels=1, dtype="float32",
+                          latency="low", extra_settings=extra, callback=self._callback)
+        self.stream.start()
+        self.paths.journal.emit(self.component, self.ready_event, type="wasapi", device=device["name"], host_api=host["name"],
+            channels=1, native_rate=self.peer_rate, auto_convert=True, negotiated_latency=self.stream.latency,
+            **{self.rate_key: self.peer_rate})

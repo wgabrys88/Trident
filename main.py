@@ -1,22 +1,17 @@
 import argparse
 import math
-import os
 import sys
 from pathlib import Path
 
-ROOT_BOOT = Path(__file__).resolve().parent
-VENV_PYTHON = ROOT_BOOT / ".venv" / "Scripts" / "python.exe"
-if sys.platform.startswith("win") and VENV_PYTHON.is_file() and Path(sys.executable).resolve() != VENV_PYTHON.resolve():
-    os.execv(str(VENV_PYTHON), [str(VENV_PYTHON), str(Path(__file__).resolve()), *sys.argv[1:]])
-
-import config
 from config import (
-    CABLE_CHANNELS, CABLE_RATE, CHATTERBOX, CHATTERBOX_REV, FLASH_ATTN,
-    GGML, GGML_GIT, HARDWARE, Paths, ROOT, TTS_MODELS, TTS_PROFILES, VULKAN_ENV,
-    cable_device, load_settings,
+    ASR_RATE, CHATTERBOX, CHATTERBOX_REV, FLASH_ATTN, GGML, GGML_GIT, HARDWARE, Paths, ROOT,
+    TTS_MODELS, TTS_PROFILES, TTS_RATE, VULKAN_ENV, ensure_venv, load_settings, wasapi_device,
 )
+import config
 from install import install
 from journal import git_identity
+
+ensure_venv(__file__)
 
 
 def _read_utf8(path: Path, parser: argparse.ArgumentParser, label: str) -> str:
@@ -27,10 +22,10 @@ def _read_utf8(path: Path, parser: argparse.ArgumentParser, label: str) -> str:
 
 def _manifest(paths: Paths) -> dict:
     settings, audio = load_settings(paths.data_dir), {}
-    for kind in {"talk": ("input", "output"), "tts": ("output",)}.get(paths.command, ()):
-        index, device, host = cable_device(kind)
+    for kind in {"talk": ("input", "output"), "tts": ("output",), "asr": ("input",)}.get(paths.command, ()):
+        index, device, host = wasapi_device(kind)
         audio[kind] = {"device": device["name"], "index": index, "host_api": host["name"],
-                       "channels": CABLE_CHANNELS, "rate": CABLE_RATE, "auto_convert": True}
+                       "channels": 1, "rate": ASR_RATE if kind == "input" else TTS_RATE, "auto_convert": True}
     return {
         "created_at": paths.stamp, "command": paths.command, "family": paths.family,
         "language": paths.language, "voice": paths.voice,
@@ -49,43 +44,46 @@ def _manifest(paths: Paths) -> dict:
     }
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(prog="python main.py")
+def main(command: str | None = None) -> int:
+    parser = argparse.ArgumentParser(prog=f"python {command}.py" if command else "python main.py")
     parser.add_argument("--models-dir", type=Path); parser.add_argument("--data-dir", type=Path)
     parser.add_argument("--family", choices=("nano", "turbo", "v3"), default="nano"); parser.add_argument("--language", default="en")
     parser.add_argument("--console", action="store_true")
     parser.add_argument("--text"); parser.add_argument("--text-file", type=Path)
     parser.add_argument("--interrupt-text"); parser.add_argument("--interrupt-file", type=Path); parser.add_argument("--interrupt-after", type=float)
-    parser.add_argument("command", nargs="?", choices=("install", "talk", "tts"), default="install")
+    if command is None:
+        parser.add_argument("command", nargs="?", choices=("install", "talk", "tts", "asr", "generation"), default="install")
     args = parser.parse_args()
+    cmd = command or args.command
     primary = replacement = None
     flags = (args.text, args.text_file, args.interrupt_text, args.interrupt_file, args.interrupt_after)
-    if args.command != "tts":
-        if any(v is not None for v in flags):
-            parser.error("TTS text and replacement flags require command tts" if args.command == "talk" else "install does not accept streaming or TTS content flags")
-    else:
+    if cmd in ("tts", "generation"):
+        if cmd == "generation" and any(v is not None for v in flags[2:]):
+            parser.error("generation does not accept interrupt flags")
         if (args.text is None) == (args.text_file is None): parser.error("exactly one of --text and --text-file is required")
-        if args.interrupt_text is not None and args.interrupt_file is not None: parser.error("--interrupt-text and --interrupt-file are mutually exclusive")
-        if (args.interrupt_text is not None or args.interrupt_file is not None) != (args.interrupt_after is not None): parser.error("interrupt content and --interrupt-after are required together")
-        if args.interrupt_after is not None and (not math.isfinite(args.interrupt_after) or args.interrupt_after < 0): parser.error("--interrupt-after must be finite and non-negative")
+        if cmd == "tts":
+            if args.interrupt_text is not None and args.interrupt_file is not None: parser.error("--interrupt-text and --interrupt-file are mutually exclusive")
+            if (args.interrupt_text is not None or args.interrupt_file is not None) != (args.interrupt_after is not None): parser.error("interrupt content and --interrupt-after are required together")
+            if args.interrupt_after is not None and (not math.isfinite(args.interrupt_after) or args.interrupt_after < 0): parser.error("--interrupt-after must be finite and non-negative")
         primary = (args.text if args.text is not None else _read_utf8(args.text_file, parser, "--text-file")).strip()
         replacement = args.interrupt_text if args.interrupt_text is not None else (_read_utf8(args.interrupt_file, parser, "--interrupt-file") if args.interrupt_file is not None else None)
         replacement = replacement.strip() if replacement is not None else None
-        if not primary: parser.error("TTS input is empty")
+        if not primary: parser.error("TTS input is empty" if cmd == "tts" else "generation input is empty")
         if replacement is not None and not replacement: parser.error("TTS replacement is empty")
-    family, language = (args.family, args.language.strip().lower()) if args.command in ("talk", "tts") else ("all", "all")
-    if HARDWARE == "irisxe" and args.command in ("talk", "tts") and family != "nano":
+    elif any(v is not None for v in flags):
+        parser.error("TTS text and replacement flags require command tts" if cmd == "talk" else f"{cmd} does not accept streaming or TTS content flags")
+    family, language = (args.family, args.language.strip().lower()) if cmd != "install" else ("all", "all")
+    if HARDWARE == "irisxe" and cmd in ("talk", "tts") and family != "nano":
         parser.error("Iris Xe supports Nano English only")
-    paths = Paths(args.models_dir, args.data_dir, args.command, family, language, args.console)
+    paths = Paths(args.models_dir, args.data_dir, cmd, family, language, args.console)
     try:
         paths.journal.write_manifest(_manifest(paths))
-        paths.journal.emit("main", "start", command=args.command, hardware=HARDWARE, family=family, language=language)
-        if args.command == "install":
+        paths.journal.emit("main", "start", command=cmd, hardware=HARDWARE, family=family, language=language)
+        if cmd == "install":
             install(args.models_dir, args.data_dir, paths)
         else:
-            from talk import launch
-            launch(paths, args.family, language, primary, replacement, args.interrupt_after)
-        paths.journal.emit("main", "completed", command=args.command); print(f"trident.done {paths.run_dir}", flush=True); return 0
+            __import__(cmd).launch(paths, args.family, language, primary, replacement, args.interrupt_after)
+        paths.journal.emit("main", "completed", command=cmd); print(f"trident.done {paths.run_dir}", flush=True); return 0
     except KeyboardInterrupt:
         paths.journal.emit("main", "stopped", reason="ctrl+c"); print(f"trident.interrupt {paths.run_dir}", flush=True); return 130
     except Exception as error:

@@ -1,7 +1,5 @@
 import http.client
-import json
 import os
-import secrets
 import socket
 import struct
 import subprocess
@@ -12,7 +10,7 @@ import urllib.parse
 from pathlib import Path
 
 from config import (
-    CHATTERBOX, FLASH_ATTN, GEMMA_CONTEXT, GEMMA_FILE, GEMMA_GEN, PARAKEET_FILE, PORTS, RUNTIMES,
+    CHATTERBOX, FLASH_ATTN, GEMMA_CONTEXT, GEMMA_FILE, PARAKEET_FILE, PORTS, RUNTIMES, SERVICES,
     TTS_MODELS, TTS_PROFILES, V3_LANGUAGES, VULKAN_ENV, Paths, find_exe, load_settings, voice_wav,
 )
 from journal import git_identity
@@ -82,27 +80,28 @@ class Residents:
 
     def boot(self, family: str = "nano", language: str = "en") -> None:
         if occupied := _listening_ports(): raise RuntimeError(f"Trident ports already occupied: {', '.join(occupied)}")
-        family, language = family.strip().lower(), language.strip().lower()
-        if family not in TTS_MODELS: raise RuntimeError(f"unknown TTS family {family!r}")
-        if family != "v3" and language != "en": raise RuntimeError(f"{family} supports English only")
-        if family == "v3" and language not in V3_LANGUAGES: raise RuntimeError(f"V3 language {language!r} is not supported")
-        tts, knobs, settings = _exe("tts", "trident-tts-server.exe"), TTS_PROFILES[family], load_settings(self.paths.data_dir)
-        t3_file, codec_file = TTS_MODELS[family]
-        chatterbox_cmd = [str(tts), "--run-id", self.journal.run_id, "--family", family,
-            "--model", str(self.paths.models_dir / t3_file), "--s3gen-gguf", str(self.paths.models_dir / codec_file),
-            "--reference", str(voice_wav(self.paths.data_dir, settings["tts_voice"])), "--language", language,
-            "--port", str(PORTS["chatterbox"]), *[x for flag, key in _TTS_FLAGS for x in (flag, str(knobs[key]))]]
+        family, language, need = family.strip().lower(), language.strip().lower(), SERVICES.get(self.paths.command)
+        if need is None: raise RuntimeError(f"cannot boot command {self.paths.command!r}")
         commands: list[tuple[str, Path, list[str], float]] = []
-        if self.paths.command == "talk":
-            parakeet, gemma = _exe("parakeet", "parakeet-server.exe"), _exe("gemma", "llama-server.exe")
-            commands.extend([
-                ("parakeet", parakeet.parent, [str(parakeet), "--model", str(self.paths.models_dir / PARAKEET_FILE), "--port", str(PORTS["parakeet"])], 180),
-                ("gemma", gemma.parent, [str(gemma), "-m", str(self.paths.models_dir / GEMMA_FILE), "--alias", "gemma", "--host", "127.0.0.1", "--port", str(PORTS["gemma"]), "--offline", "--device", "Vulkan0", "--n-gpu-layers", "all", "--ctx-size", str(GEMMA_CONTEXT), "--no-mmproj", "--flash-attn", FLASH_ATTN, "--threads", "2", "--threads-batch", "2", "--poll", "0", "--poll-batch", "0", "--threads-http", "1", "--no-ui", "--reasoning", "off"], 180),
-            ])
-        elif self.paths.command != "tts":
-            raise RuntimeError(f"cannot boot command {self.paths.command!r}")
-        commands.append(("chatterbox", tts.parent, chatterbox_cmd, 300))
-        self.journal.emit("runtime", "boot.start", command=self.paths.command, family=family, language=language, voice=settings["tts_voice"], t3=t3_file, codec=codec_file, chatterbox_sha=git_identity(CHATTERBOX).get("sha") or "", knobs=knobs)
+        if "parakeet" in need:
+            parakeet = _exe("parakeet", "parakeet-server.exe")
+            commands.append(("parakeet", parakeet.parent, [str(parakeet), "--model", str(self.paths.models_dir / PARAKEET_FILE), "--port", str(PORTS["parakeet"])], 180))
+        if "gemma" in need:
+            gemma = _exe("gemma", "llama-server.exe")
+            commands.append(("gemma", gemma.parent, [str(gemma), "-m", str(self.paths.models_dir / GEMMA_FILE), "--alias", "gemma", "--host", "127.0.0.1", "--port", str(PORTS["gemma"]), "--offline", "--device", "Vulkan0", "--n-gpu-layers", "all", "--ctx-size", str(GEMMA_CONTEXT), "--no-mmproj", "--flash-attn", FLASH_ATTN, "--threads", "2", "--threads-batch", "2", "--poll", "0", "--poll-batch", "0", "--threads-http", "1", "--no-ui", "--reasoning", "off"], 180))
+        if "chatterbox" in need:
+            if family not in TTS_MODELS: raise RuntimeError(f"unknown TTS family {family!r}")
+            if family != "v3" and language != "en": raise RuntimeError(f"{family} supports English only")
+            if family == "v3" and language not in V3_LANGUAGES: raise RuntimeError(f"V3 language {language!r} is not supported")
+            tts, knobs, settings = _exe("tts", "chatterbox-server.exe"), TTS_PROFILES[family], load_settings(self.paths.data_dir)
+            t3_file, codec_file = TTS_MODELS[family]
+            commands.append(("chatterbox", tts.parent, [str(tts), "--run-id", self.journal.run_id, "--family", family,
+                "--model", str(self.paths.models_dir / t3_file), "--s3gen-gguf", str(self.paths.models_dir / codec_file),
+                "--reference", str(voice_wav(self.paths.data_dir, settings["tts_voice"])), "--language", language,
+                "--port", str(PORTS["chatterbox"]), *[x for flag, key in _TTS_FLAGS for x in (flag, str(knobs[key]))]], 300))
+            self.journal.emit("runtime", "boot.start", command=self.paths.command, family=family, language=language, voice=settings["tts_voice"], t3=t3_file, codec=codec_file, chatterbox_sha=git_identity(CHATTERBOX).get("sha") or "", knobs=knobs)
+        else:
+            self.journal.emit("runtime", "boot.start", command=self.paths.command, family=family, language=language)
         for name, cwd, command, timeout in commands:
             self._start(name, command, cwd, timeout)
             if name == "chatterbox": self.chatterbox_client()
@@ -245,30 +244,6 @@ class CancelableHTTP:
         with self._lock:
             self._generation += 1; active, self._active = self._active, None
         if active is not None: self._interrupt(active[0])
-
-
-def transcribe(base: str, wav: bytes, channel: CancelableHTTP) -> str:
-    boundary = "----trident" + secrets.token_hex(8)
-    body = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"utterance.wav\"\r\nContent-Type: audio/wav\r\n\r\n".encode()
-            + wav + f"\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nparakeet\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"response_format\"\r\n\r\njson\r\n--{boundary}--\r\n".encode())
-    response = channel.open(base + "/v1/audio/transcriptions", body, {"Content-Type": f"multipart/form-data; boundary={boundary}", "Accept": "application/json"})
-    try: return str(json.loads(response.read()).get("text") or "").strip()
-    finally: channel.clear(response)
-
-
-def gemma_stream(base: str, messages: list[dict[str, str]], channel: CancelableHTTP):
-    payload = {"model": "gemma", "messages": messages, "stream": True, "cache_prompt": True, **GEMMA_GEN, "chat_template_kwargs": {"enable_thinking": False}}
-    response = channel.open(base + "/v1/chat/completions", json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode(),
-                            {"Content-Type": "application/json", "Accept": "text/event-stream"})
-    try:
-        while line := response.readline():
-            if not line.startswith(b"data:"): continue
-            chunk = line[5:].strip()
-            if chunk == b"[DONE]": return
-            if text := str((json.loads(chunk).get("choices") or [{}])[0].get("delta", {}).get("content") or ""):
-                yield text
-    finally:
-        channel.clear(response)
 
 
 class Chatterbox:

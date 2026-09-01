@@ -1,3 +1,9 @@
+from config import ensure_venv
+ensure_venv()
+if __name__ == "__main__":
+    from main import main
+    raise SystemExit(main("install"))
+
 import hashlib
 import json
 import os
@@ -14,14 +20,14 @@ from config import (CHATTERBOX, CHATTERBOX_REV, CHATTERBOX_URL, CODEC_QUANT, CON
                     GEMMA_SHA256, GEMMA_SIZE, GEMMA_URL, GGML, GGML_GIT, HARDWARE, LLAMA_ZIP, MODELS,
                     PARAKEET_FILE, PARAKEET_SHA256, PARAKEET_SIZE, PARAKEET_URL, PARAKEET_ZIP, ROOT, RUNTIMES,
                     SMART_TURN_FILE, SMART_TURN_SHA256, SMART_TURN_SIZE,
-                    SMART_TURN_URL, TOOLS, TTS, TTS_BACKEND, TTS_MODELS, TTS_WEIGHTS, VOICE_HF, VOICES, find_exe)
+                    SMART_TURN_URL, TOOLS, TTS_BACKEND, TTS_MODELS, TTS_WEIGHTS, VOICE_HF, VOICES, find_exe)
 from journal import file_identity, git_identity
 
 DOWNLOADS = TOOLS / "downloads"
 CONVERTER_PINS = {"torch": "2.6.0", "numpy": "1.26.4", "gguf": "0.19.0", "safetensors": "0.5.3", "scipy": "1.15.3",
                   "librosa": "0.11.0", "resampy": "0.4.3", "huggingface-hub": "0.34.4"}
 _PIP = ("-m", "pip", "install", "--disable-pip-version-check", "--progress-bar", "off", "--no-input")
-_BUILD_FLAGS = ["-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_NATIVE=ON", "-DGGML_CCACHE=OFF"]
+_BUILD_FLAGS = ["-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_NATIVE=ON", "-DGGML_CCACHE=OFF", "-DTTS_CPP_BUILD_EXECUTABLES=ON"]
 
 
 def _sha(path: Path) -> str:
@@ -132,17 +138,17 @@ def _cache_values(path: Path) -> dict:
 
 
 def _server_source_identity() -> str:
-    return hashlib.sha256(b"".join(p.read_bytes() for p in (TTS / "CMakeLists.txt", TTS / "src" / "server.cpp"))).hexdigest()
+    return hashlib.sha256((CHATTERBOX / "src" / "server.cpp").read_bytes()).hexdigest()
 
 
 def build_tts(paths) -> None:
     ggml_sha = pin(paths, *GGML_GIT, GGML, "ggml")
-    build = TTS / "build"
-    _run(paths, ["cmake", "-S", ".", "-B", "build", "-A", "x64", f"-DCHATTERBOX_CPP_ROOT={CHATTERBOX}", *_BUILD_FLAGS], TTS, role="cmake-configure")
-    _run(paths, ["cmake", "--build", "build", "--config", "Release", "--target", "trident-tts-server", "--parallel"], TTS, role="cmake-build")
+    build = TOOLS / "tts-build"
+    _run(paths, ["cmake", "-S", str(CHATTERBOX), "-B", str(build), "-A", "x64", *_BUILD_FLAGS], role="cmake-configure")
+    _run(paths, ["cmake", "--build", str(build), "--config", "Release", "--target", "chatterbox-server", "--parallel"], role="cmake-build")
     _clean_repo(GGML)
-    built, server = build / "bin", build / "bin" / "trident-tts-server.exe"
-    if not server.is_file(): raise RuntimeError("trident-tts-server.exe missing after build")
+    built, server = build / "bin", build / "bin" / "chatterbox-server.exe"
+    if not server.is_file(): raise RuntimeError("chatterbox-server.exe missing after build")
     dest = RUNTIMES / "tts"; dest.mkdir(parents=True, exist_ok=True)
     shutil.copy2(server, dest / server.name)
     for dll in built.glob("*.dll"): shutil.copy2(dll, dest / dll.name)
@@ -157,7 +163,7 @@ def build_tts(paths) -> None:
 
 
 def _build_valid() -> bool:
-    exe, receipt = RUNTIMES / "tts" / "trident-tts-server.exe", _read_json(RUNTIMES / "tts" / "provenance.json")
+    exe, receipt = RUNTIMES / "tts" / "chatterbox-server.exe", _read_json(RUNTIMES / "tts" / "provenance.json")
     return (receipt is not None and exe.is_file()
         and receipt.get("hardware") == HARDWARE and receipt.get("chatterbox", {}).get("sha") == git_identity(CHATTERBOX).get("sha")
         and receipt.get("chatterbox", {}).get("dirty") is False and receipt.get("ggml_sha") == GGML_GIT[1]
@@ -249,7 +255,7 @@ def install(models_dir: Path | None, data_dir: Path | None, paths) -> None:
     paths.journal.emit("install", "start", hardware=HARDWARE, chatterbox_revision=CHATTERBOX_REV, ggml_revision=GGML_GIT[1])
     pin(paths, CHATTERBOX_URL, CHATTERBOX_REV, CHATTERBOX, "chatterbox")
     if not _build_valid(): build_tts(paths)
-    else: paths.journal.emit("install", "tts.build.ready", executable=file_identity(RUNTIMES / "tts" / "trident-tts-server.exe"))
+    else: paths.journal.emit("install", "tts.build.ready", executable=file_identity(RUNTIMES / "tts" / "chatterbox-server.exe"))
     convert_tts(paths, models, list(TTS_MODELS))
     install_runtime(paths, "parakeet", "parakeet-server.exe", PARAKEET_ZIP)
     install_runtime(paths, "gemma", "llama-server.exe", LLAMA_ZIP)
