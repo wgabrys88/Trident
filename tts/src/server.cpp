@@ -38,23 +38,24 @@ struct request_t {
     mono_clock::time_point queued{};
 };
 
-bool recv_all(SOCKET socket, void* dst, std::size_t size) {
-    auto* data = static_cast<char*>(dst);
+bool io_all(SOCKET socket, char* data, std::size_t size, bool sending) {
     for (std::size_t done = 0; done < size;) {
-        const int got = recv(socket, data + done, static_cast<int>(std::min<std::size_t>(size - done, 1 << 20)), 0);
-        if (got <= 0) return false;
-        done += static_cast<std::size_t>(got);
+        const int n = sending
+            ? send(socket, data + done, static_cast<int>(std::min<std::size_t>(size - done, 1 << 20)), 0)
+            : recv(socket, data + done, static_cast<int>(std::min<std::size_t>(size - done, 1 << 20)), 0);
+        if (n <= 0) return false;
+        done += static_cast<std::size_t>(n);
     }
     return true;
 }
 
+bool recv_all(SOCKET socket, void* dst, std::size_t size) {
+    return io_all(socket, static_cast<char*>(dst), size, false);
+}
+
 void send_all(SOCKET socket, const void* src, std::size_t size) {
-    auto* data = static_cast<const char*>(src);
-    for (std::size_t done = 0; done < size;) {
-        const int sent = send(socket, data + done, static_cast<int>(std::min<std::size_t>(size - done, 1 << 20)), 0);
-        if (sent <= 0) throw std::runtime_error("TTS send failed");
-        done += static_cast<std::size_t>(sent);
-    }
+    if (!io_all(socket, const_cast<char*>(static_cast<const char*>(src)), size, true))
+        throw std::runtime_error("TTS send failed");
 }
 
 struct wire_writer {
@@ -74,8 +75,7 @@ struct wire_writer {
 
     void pcm(const request_t& request, std::uint32_t chunk, const float* samples, std::size_t count) {
         thread_local std::vector<std::int16_t> out; out.resize(count);
-        for (std::size_t i = 0; i < count; ++i)
-            out[i] = static_cast<std::int16_t>(std::clamp(samples[i], -1.0f, 1.0f) * 32767.0f);
+        for (std::size_t i = 0; i < count; ++i) out[i] = static_cast<std::int16_t>(std::clamp(samples[i], -1.0f, 1.0f) * 32767.0f);
         frame(response_kind::pcm, request, chunk, out.data(), out.size() * sizeof(std::int16_t));
     }
 
@@ -85,26 +85,19 @@ struct wire_writer {
 };
 
 tts_cpp::chatterbox::Engine make_engine(const args_t& args) {
-    tts_cpp::chatterbox::EngineOptions options;
-    options.t3_gguf_path = args.at("--model");
-    options.s3gen_gguf_path = args.at("--s3gen-gguf");
-    options.reference_audio = args.at("--reference");
-    options.language = args.at("--language");
-    options.n_gpu_layers = std::stoi(args.at("--n-gpu-layers"));
-    options.n_threads = std::stoi(args.at("--threads"));
-    options.seed = std::stoi(args.at("--seed"));
-    options.n_predict = std::stoi(args.at("--max-tokens"));
-    options.n_ctx = std::stoi(args.at("--context"));
-    options.top_k = std::stoi(args.at("--top-k"));
-    options.top_p = std::stof(args.at("--top-p"));
-    options.min_p = std::stof(args.at("--min-p"));
-    options.temperature = std::stof(args.at("--temperature"));
-    options.repeat_penalty = std::stof(args.at("--repeat-penalty"));
-    options.cfg_weight = std::stof(args.at("--cfg-weight"));
-    options.exaggeration = std::stof(args.at("--exaggeration"));
-    options.cfm_steps = std::stoi(args.at("--cfm-steps"));
-    options.fastconv = std::stoi(args.at("--fastconv")) != 0;
-    return tts_cpp::chatterbox::Engine(options);
+    tts_cpp::chatterbox::EngineOptions o;
+    auto s = [&](const char* k) -> const std::string& { return args.at(k); };
+    auto i = [&](const char* k) { return std::stoi(s(k)); };
+    auto f = [&](const char* k) { return std::stof(s(k)); };
+    o.t3_gguf_path = s("--model"); o.s3gen_gguf_path = s("--s3gen-gguf");
+    o.reference_audio = s("--reference"); o.language = s("--language");
+    o.n_gpu_layers = i("--n-gpu-layers"); o.n_threads = i("--threads"); o.seed = i("--seed");
+    o.n_predict = i("--max-tokens"); o.n_ctx = i("--context"); o.top_k = i("--top-k");
+    o.top_p = f("--top-p"); o.min_p = f("--min-p"); o.temperature = f("--temperature");
+    o.repeat_penalty = f("--repeat-penalty"); o.cfg_weight = f("--cfg-weight");
+    o.exaggeration = f("--exaggeration"); o.cfm_steps = i("--cfm-steps");
+    o.fastconv = i("--fastconv") != 0;
+    return {o};
 }
 
 bool receive(SOCKET socket, request_t& request) {
@@ -117,9 +110,7 @@ bool receive(SOCKET socket, request_t& request) {
         throw std::runtime_error("invalid TTS request kind");
     request = {};
     request.kind = static_cast<request_kind>(header[2]);
-    request.epoch = header[3];
-    request.response = header[4];
-    request.piece = header[5];
+    request.epoch = header[3]; request.response = header[4]; request.piece = header[5];
     const auto bytes = header[6];
     if (bytes > MAX_TEXT_BYTES) throw std::runtime_error("TTS request too large");
     if (request.kind != request_kind::synthesize && (bytes != 0 || request.response != 0 || request.piece != 0))
@@ -134,8 +125,7 @@ bool receive(SOCKET socket, request_t& request) {
 }
 
 std::string counts(std::size_t queued, bool active) {
-    return ",\"queued_cancel_count\":" + std::to_string(queued)
-        + ",\"active_cancel_count\":" + std::to_string(active ? 1 : 0);
+    return ",\"queued_cancel_count\":" + std::to_string(queued) + ",\"active_cancel_count\":" + std::to_string(active ? 1 : 0);
 }
 
 void serve(SOCKET client, tts_cpp::chatterbox::Engine& tts) {
@@ -152,12 +142,8 @@ void serve(SOCKET client, tts_cpp::chatterbox::Engine& tts) {
     auto cancel_queued = [&](std::uint32_t new_epoch) {
         std::vector<request_t> cancelled;
         for (auto it = pending.begin(); it != pending.end();) {
-            if (it->epoch != new_epoch) {
-                cancelled.push_back(std::move(*it));
-                it = pending.erase(it);
-            } else {
-                ++it;
-            }
+            if (it->epoch != new_epoch) { cancelled.push_back(std::move(*it)); it = pending.erase(it); }
+            else ++it;
         }
         return cancelled;
     };
@@ -178,25 +164,23 @@ void serve(SOCKET client, tts_cpp::chatterbox::Engine& tts) {
                 std::unique_lock lock(mutex);
                 changed.wait(lock, [&] { return stop.load(std::memory_order_acquire) || !pending.empty(); });
                 if (stop.load(std::memory_order_acquire) && pending.empty()) break;
-                request = std::move(pending.front());
-                pending.pop_front();
-                active = request;
+                request = std::move(pending.front()); pending.pop_front(); active = request;
             }
             tts_context_scope context(request.epoch, request.response, request.piece);
             const auto started = mono_clock::now();
-            tts_emit("synthesis.start", ",\"chars\":" + std::to_string(request.text.size())
-                + ",\"queue_ms\":" + std::to_string(std::chrono::duration<double, std::milli>(started - request.queued).count()));
+            auto ms = [](mono_clock::time_point a, mono_clock::time_point b) {
+                return std::to_string(std::chrono::duration<double, std::milli>(a - b).count());
+            };
+            tts_emit("synthesis.start", ",\"chars\":" + std::to_string(request.text.size()) + ",\"queue_ms\":" + ms(started, request.queued));
             try {
-                std::uint32_t chunks = 0;
-                bool first_pcm = true;
+                std::uint32_t chunks = 0; bool first_pcm = true;
                 tts.synthesize_pieces_streaming({request.text}, [&](int, const float* data, std::size_t size, int chunk, bool) {
                     if (live_epoch.load(std::memory_order_acquire) != request.epoch) return;
                     chunks = std::max(chunks, static_cast<std::uint32_t>(chunk + 1));
                     if (!size) return;
                     if (first_pcm) {
                         first_pcm = false;
-                        tts_emit("synthesis.first_result", ",\"chunk_id\":" + std::to_string(chunk)
-                            + ",\"elapsed_ms\":" + std::to_string(std::chrono::duration<double, std::milli>(mono_clock::now() - started).count()));
+                        tts_emit("synthesis.first_result", ",\"chunk_id\":" + std::to_string(chunk) + ",\"elapsed_ms\":" + ms(mono_clock::now(), started));
                     }
                     writer.pcm(request, static_cast<std::uint32_t>(chunk), data, size);
                 });
@@ -207,44 +191,31 @@ void serve(SOCKET client, tts_cpp::chatterbox::Engine& tts) {
                     writer.terminal(completed ? response_kind::done : response_kind::cancelled, request);
                     active.reset();
                 }
-                if (completed) {
-                    tts_emit("synthesis.completed", ",\"chunks\":" + std::to_string(chunks)
-                        + ",\"elapsed_ms\":" + std::to_string(std::chrono::duration<double, std::milli>(mono_clock::now() - started).count()));
-                } else {
-                    tts_emit("synthesis.cancelled", ",\"state\":\"active\"");
-                }
+                if (completed) tts_emit("synthesis.completed", ",\"chunks\":" + std::to_string(chunks) + ",\"elapsed_ms\":" + ms(mono_clock::now(), started));
+                else tts_emit("synthesis.cancelled", ",\"state\":\"active\"");
             } catch (const std::exception& error) {
                 bool cancelled = false;
                 {
                     std::lock_guard lock(mutex);
                     cancelled = live_epoch.load(std::memory_order_acquire) != request.epoch || stop.load(std::memory_order_acquire);
                     writer.terminal(cancelled ? response_kind::cancelled : response_kind::error, request, cancelled ? std::string{} : error.what());
-                    if (!cancelled) {
-                        failed = true;
-                        stop.store(true, std::memory_order_release);
-                        shutdown(client, SD_RECEIVE);
-                    }
+                    if (!cancelled) { failed = true; stop.store(true, std::memory_order_release); shutdown(client, SD_RECEIVE); }
                 }
                 if (cancelled) tts_emit("synthesis.cancelled", ",\"state\":\"active\"");
                 else tts_emit("synthesis.failed", ",\"error\":" + tts_json_escape(error.what()));
             }
             {
                 std::lock_guard lock(mutex);
-                if (active && active->epoch == request.epoch && active->response == request.response && active->piece == request.piece)
-                    active.reset();
+                if (active && active->epoch == request.epoch && active->response == request.response && active->piece == request.piece) active.reset();
             }
             changed.notify_all();
         }
         } catch (const std::exception& error) {
             {
                 std::lock_guard lock(mutex);
-                failed = true;
-                stop.store(true, std::memory_order_release);
-                active.reset();
+                failed = true; stop.store(true, std::memory_order_release); active.reset();
             }
-            tts.cancel();
-            shutdown(client, SD_BOTH);
-            changed.notify_all();
+            tts.cancel(); shutdown(client, SD_BOTH); changed.notify_all();
             tts_emit("synthesis.worker.failed", ",\"error\":" + tts_json_escape(error.what()));
         }
         tts_emit("synthesis.worker.stopped");
@@ -256,19 +227,15 @@ void serve(SOCKET client, tts_cpp::chatterbox::Engine& tts) {
         while (!close_requested && receive(client, request)) {
             if (request.kind == request_kind::synthesize) {
                 if (request.epoch != live_epoch.load(std::memory_order_acquire)) {
-                    writer.terminal(response_kind::error, request, "sentence epoch is not live");
-                    continue;
+                    writer.terminal(response_kind::error, request, "sentence epoch is not live"); continue;
                 }
                 {
                     std::lock_guard lock(mutex);
-                    const auto identity = std::make_tuple(request.epoch, request.response, request.piece);
-                    if (!accepted.insert(identity).second) throw std::runtime_error("duplicate synthesis identity");
+                    if (!accepted.insert(std::make_tuple(request.epoch, request.response, request.piece)).second)
+                        throw std::runtime_error("duplicate synthesis identity");
                     pending.push_back(request);
                 }
-                {
-                    tts_context_scope context(request.epoch, request.response, request.piece);
-                    tts_emit("synthesis.queued");
-                }
+                { tts_context_scope context(request.epoch, request.response, request.piece); tts_emit("synthesis.queued"); }
                 changed.notify_one();
                 continue;
             }
@@ -312,11 +279,9 @@ void serve(SOCKET client, tts_cpp::chatterbox::Engine& tts) {
     } catch (...) {
         {
             std::lock_guard lock(mutex);
-            stop.store(true, std::memory_order_release);
-            live_epoch.fetch_add(1, std::memory_order_acq_rel);
+            stop.store(true, std::memory_order_release); live_epoch.fetch_add(1, std::memory_order_acq_rel);
         }
-        tts.cancel();
-        changed.notify_all();
+        tts.cancel(); changed.notify_all();
         if (synth.joinable()) synth.join();
         throw;
     }
@@ -341,8 +306,7 @@ void serve(SOCKET client, tts_cpp::chatterbox::Engine& tts) {
 } // namespace
 
 int main(int argc, char** argv) {
-    SOCKET listener = INVALID_SOCKET;
-    SOCKET client = INVALID_SOCKET;
+    SOCKET listener = INVALID_SOCKET, client = INVALID_SOCKET;
     bool wsa_started = false;
     try {
         args_t args;

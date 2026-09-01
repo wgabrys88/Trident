@@ -30,16 +30,13 @@ def _read_utf8(path: Path, parser: argparse.ArgumentParser, label: str) -> str:
 def _manifest(paths: Paths) -> dict:
     settings = load_settings(paths.data_dir)
     audio = {}
-    for kind in (("input",) if paths.command == "talk" else ()) + (("output",) if paths.command in ("talk", "tts") else ()):
+    for kind in {"talk": ("input", "output"), "tts": ("output",)}.get(paths.command, ()):
         index, device, host = cable_device(kind)
         audio[kind] = {"device": device["name"], "index": index, "host_api": host["name"],
                        "channels": CABLE_CHANNELS, "rate": CABLE_RATE, "auto_convert": True}
-    manifest = {
-        "created_at": paths.stamp,
-        "command": paths.command,
-        "family": paths.family,
-        "language": paths.language,
-        "voice": paths.voice,
+    return {
+        "created_at": paths.stamp, "command": paths.command, "family": paths.family,
+        "language": paths.language, "voice": paths.voice,
         "repositories": {
             "trident": git_identity(ROOT),
             "chatterbox": {**git_identity(CHATTERBOX), "configured_pin": CHATTERBOX_REV},
@@ -49,11 +46,10 @@ def _manifest(paths: Paths) -> dict:
         "machine": {"hardware": HARDWARE, "gpu": config.GPU_NAME, "backend": config.TTS_BACKEND,
                     "codec": TTS_MODELS.get(paths.family, (None, None))[1], "vulkan_env": VULKAN_ENV,
                     "flash_attn": FLASH_ATTN},
-        "runtime_knobs": TTS_PROFILES.get(paths.family, {}) if paths.family in TTS_PROFILES else {},
+        "runtime_knobs": TTS_PROFILES.get(paths.family, {}),
         "conversation": {k: settings.get(k) for k in ("candidate_silence_ms", "completion_threshold", "acoustic_context_seconds")},
         "audio": audio,
     }
-    return manifest
 
 
 def main() -> int:
@@ -66,21 +62,17 @@ def main() -> int:
     parser.add_argument("command", nargs="?", choices=("install", "talk", "tts"), default="install")
     args = parser.parse_args()
 
-    if args.command == "install":
-        if any(v is not None for v in (args.text, args.text_file, args.interrupt_text, args.interrupt_file, args.interrupt_after)):
-            parser.error("install does not accept streaming or TTS content flags")
-    elif args.command == "talk":
-        if any(v is not None for v in (args.text, args.text_file, args.interrupt_text, args.interrupt_file, args.interrupt_after)):
-            parser.error("TTS text and replacement flags require command tts")
+    primary = replacement = None
+    tts_flags = (args.text, args.text_file, args.interrupt_text, args.interrupt_file, args.interrupt_after)
+    if args.command != "tts":
+        if any(v is not None for v in tts_flags):
+            parser.error("TTS text and replacement flags require command tts" if args.command == "talk" else "install does not accept streaming or TTS content flags")
     else:
         if (args.text is None) == (args.text_file is None): parser.error("exactly one of --text and --text-file is required")
         if args.interrupt_text is not None and args.interrupt_file is not None: parser.error("--interrupt-text and --interrupt-file are mutually exclusive")
         replacement_given = args.interrupt_text is not None or args.interrupt_file is not None
         if replacement_given != (args.interrupt_after is not None): parser.error("interrupt content and --interrupt-after are required together")
         if args.interrupt_after is not None and (not math.isfinite(args.interrupt_after) or args.interrupt_after < 0): parser.error("--interrupt-after must be finite and non-negative")
-
-    primary = replacement = None
-    if args.command == "tts":
         primary = args.text if args.text is not None else _read_utf8(args.text_file, parser, "--text-file")
         replacement = args.interrupt_text if args.interrupt_text is not None else (_read_utf8(args.interrupt_file, parser, "--interrupt-file") if args.interrupt_file is not None else None)
         primary = primary.strip(); replacement = replacement.strip() if replacement is not None else None
@@ -96,9 +88,6 @@ def main() -> int:
         paths.journal.emit("main", "start", command=args.command, hardware=HARDWARE, family=family, language=language)
         if args.command == "install":
             install(args.models_dir, args.data_dir, paths)
-        elif args.command == "talk":
-            from talk import launch
-            launch(paths, args.family, language)
         else:
             from talk import launch
             launch(paths, args.family, language, primary, replacement, args.interrupt_after)
