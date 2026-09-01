@@ -7,8 +7,7 @@
 !/runtime.py
 !/journal.py
 !/talk.py
-!/tts/
-!/tts/CMakeLists.txt
-!/tts/src/
-!/tts/src/*.cpp
+!/asr.py
+!/generation.py
+!/tts.py
 !/requirements.txt

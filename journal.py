@@ -113,3 +113,19 @@ class WorkerSupervisor:
         if survivors := [t.name for t in self._threads if t.is_alive()]:
             raise RuntimeError(f"worker survivors after shutdown: {', '.join(survivors)}")
         self.check()
+
+
+def join_or_fail(thread: threading.Thread | None, role: str, timeout: float = 5.0) -> None:
+    if thread is None or not thread.is_alive(): return
+    thread.join(timeout)
+    if thread.is_alive(): raise RuntimeError(f"{role} worker survived shutdown")
+
+
+def finish_cleanup(journal_owner, primary, actions) -> None:
+    failures: list[tuple[BaseException, object]] = []
+    for role, action in actions:
+        try: action()
+        except BaseException as error:
+            failures.append((error, error.__traceback__)); journal_owner.journal.failure(f"cleanup.{role}", error)
+    if primary is not None: raise primary[0].with_traceback(primary[1])
+    if failures: raise failures[0][0].with_traceback(failures[0][1])
