@@ -13,9 +13,8 @@ from pathlib import Path
 
 from config import (
     CHATTERBOX, GEMMA_FILE, PORTS, SERVICES,
-    TTS_MODELS, V3_LANGUAGES, VULKAN_ENV, Paths, find_exe, voice_wav,
+    TTS_MODELS, V3_LANGUAGES, VULKAN_ENV, Paths, find_exe, git_identity, voice_wav,
 )
-from journal import git_identity
 
 PROTOCOL_MAGIC, PROTOCOL_VERSION = 0x32525454, 2
 REQ_SYNTH, REQ_ADVANCE, REQ_CLOSE = 1, 2, 3

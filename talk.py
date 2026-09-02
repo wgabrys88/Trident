@@ -134,31 +134,27 @@ class Conversation(Synthesis):
             messages = self._messages(prompt); retained = max(0, (len(messages) - 2) // 2)
             self.journal.emit("gemma", "start", epoch=epoch, utterance_id=utterance_id, response_id=response_id, chars=len(prompt),
                               retained_turns=retained, history_mode=self.paths.history_mode, thinking=self.paths.thinking, tools=self.paths.tools_enabled)
-            cancelled = False
+            cancelled, tools, choice, stream = False, None, None, None
             try:
-                direct = augmented = None
                 if self.paths.tools_enabled:
-                    direct, augmented, results = tool_round(self.gemma, messages, self.gemma_http, self.paths.gemma_gen, self.paths.thinking, self.paths.thinking_budget)
+                    direct, messages, results = tool_round(self.gemma, messages, self.gemma_http, self.paths.gemma_gen, self.paths.thinking, self.paths.thinking_budget)
                     for name, result in results:
                         self.journal.emit("gemma", "tool.completed", epoch=epoch, response_id=response_id, name=name, result_chars=len(result))
-                if direct is not None:
-                    raw = direct
-                    if raw and first:
+                    if direct is None: tools, choice = [HELLO_TOOL], "none"
+                else:
+                    direct = None
+                stream = None if direct is not None else gemma_stream(self.gemma, messages, self.gemma_http, self.paths.gemma_gen, self.paths.thinking,
+                                                                     self.paths.thinking_budget, tools, choice)
+                for delta in (direct,) if direct is not None else stream:
+                    if not self._live(epoch): cancelled = True; break
+                    if first:
                         first = False; self.journal.emit("gemma", "first_result", epoch=epoch, utterance_id=utterance_id, response_id=response_id,
                                                         latency_ms=round((time.perf_counter() - started) * 1000, 3))
-                else:
-                    stream = gemma_stream(self.gemma, augmented or messages, self.gemma_http, self.paths.gemma_gen, self.paths.thinking,
-                                          self.paths.thinking_budget, [HELLO_TOOL] if augmented else None, "none" if augmented else None)
-                    for delta in stream:
-                        if not self._live(epoch): cancelled = True; break
-                        if first:
-                            first = False; self.journal.emit("gemma", "first_result", epoch=epoch, utterance_id=utterance_id, response_id=response_id,
-                                                            latency_ms=round((time.perf_counter() - started) * 1000, 3))
-                        raw += delta
-                        for unit in segmenter.take(spoken(raw)):
-                            if not queue_unit(unit): break
-                        if budget_reached: break
-                    if budget_reached: stream.close()
+                    raw += delta
+                    for unit in segmenter.take(spoken(raw)):
+                        if not queue_unit(unit): break
+                    if budget_reached: break
+                if budget_reached and stream is not None: stream.close()
             except Exception:
                 if self._live(epoch) and not self.stopping: raise
                 cancelled = True

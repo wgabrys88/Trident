@@ -36,6 +36,13 @@ def _payload(messages: list[dict], gen: dict, thinking: str, thinking_budget: in
     return payload
 
 
+def _choice(data, what: str) -> dict:
+    choices = data.get("choices") if type(data) is dict else None
+    if type(choices) is not list or not choices or type(choices[0]) is not dict:
+        raise RuntimeError(f"Gemma {what} is missing a valid choices envelope")
+    return choices[0]
+
+
 def _open_json(base: str, channel: CancelableHTTP, payload: dict, accept: str = "application/json"):
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
     response = channel.open(base + "/v1/chat/completions", raw, {"Content-Type": "application/json", "Accept": accept})
@@ -59,7 +66,7 @@ def gemma_stream(base: str, messages: list[dict], channel: CancelableHTTP, gen: 
             if not line.startswith(b"data:"): continue
             chunk = line[5:].strip()
             if chunk == b"[DONE]": return
-            if text := str((json.loads(chunk).get("choices") or [{}])[0].get("delta", {}).get("content") or ""):
+            if text := str((_choice(json.loads(chunk), "SSE chunk").get("delta") or {}).get("content") or ""):
                 yield text
     finally:
         channel.clear(response)
@@ -68,8 +75,10 @@ def gemma_stream(base: str, messages: list[dict], channel: CancelableHTTP, gen: 
 def gemma_complete(base: str, messages: list[dict], channel: CancelableHTTP, gen: dict,
                    thinking: str = "off", thinking_budget: int = -1, **extra) -> dict:
     response = _open_json(base, channel, _payload(messages, dict(gen), thinking, thinking_budget, stream=False, **extra))
-    try: return json.loads(response.read())
+    try: data = json.loads(response.read())
     finally: channel.clear(response)
+    if type(data) is not dict: raise RuntimeError("Gemma completion is not an object")
+    return data
 
 
 def gemma_prefill(base: str, messages: list[dict], channel: CancelableHTTP, thinking: str = "off") -> dict:
@@ -93,11 +102,12 @@ def execute_tool(call: dict) -> tuple[str, str]:
 
 
 def tool_round(base: str, messages: list[dict], channel: CancelableHTTP, gen: dict, thinking: str,
-               thinking_budget: int) -> tuple[str | None, list[dict] | None, list[tuple[str, str]]]:
+               thinking_budget: int) -> tuple[str | None, list[dict], list[tuple[str, str]]]:
     data = gemma_complete(base, messages, channel, gen, thinking, thinking_budget, tools=[HELLO_TOOL], tool_choice="auto", parallel_tool_calls=False)
-    message = (data.get("choices") or [{}])[0].get("message") or {}
+    message = _choice(data, "completion").get("message")
+    if type(message) is not dict: raise RuntimeError("Gemma completion is missing a message")
     calls = message.get("tool_calls") or []
-    if not calls: return str(message.get("content") or ""), None, []
+    if not calls: return str(message.get("content") or ""), messages, []
     augmented = [*messages, {k: v for k, v in message.items() if k in ("role", "content", "reasoning_content", "tool_calls")}]
     results = []
     for call in calls[:1]:
@@ -135,17 +145,14 @@ def launch(paths: Paths, family: str = "nano", language: str = "en", primary: st
         residents.boot(family, language)
         messages = [{"role": "system", "content": system_prompt(language, paths.system_prompt)}, {"role": "user", "content": primary}]
         paths.journal.emit("gemma", "start", chars=len(primary), thinking=paths.thinking, tools=paths.tools_enabled); print("trident.ready", flush=True)
-        raw: list[str] = []
+        raw: list[str] = []; tools = choice = None; gemma = residents.require_alive("gemma"); chunks = None
         if paths.tools_enabled:
-            direct, augmented, results = tool_round(residents.require_alive("gemma"), messages, http, paths.gemma_gen, paths.thinking, paths.thinking_budget)
+            direct, messages, results = tool_round(gemma, messages, http, paths.gemma_gen, paths.thinking, paths.thinking_budget)
             for name, result in results: paths.journal.emit("gemma", "tool.completed", name=name, result_chars=len(result))
-            if direct is not None: raw.append(direct); print(direct, end="", flush=True)
-            else:
-                for delta in gemma_stream(residents.require_alive("gemma"), augmented or messages, http, paths.gemma_gen, paths.thinking, paths.thinking_budget, [HELLO_TOOL], "none"):
-                    print(delta, end="", flush=True); raw.append(delta)
-        else:
-            for delta in gemma_stream(residents.require_alive("gemma"), messages, http, paths.gemma_gen, paths.thinking, paths.thinking_budget):
-                print(delta, end="", flush=True); raw.append(delta)
+            if direct is not None: chunks = (direct,)
+            else: tools, choice = [HELLO_TOOL], "none"
+        for delta in chunks if chunks is not None else gemma_stream(gemma, messages, http, paths.gemma_gen, paths.thinking, paths.thinking_budget, tools, choice):
+            print(delta, end="", flush=True); raw.append(delta)
         answer = spoken("".join(raw)); print()
         if answer: paths.journal.transcript("assistant", answer)
         paths.journal.emit("gemma", "completed", chars=len(answer), generated_chars=len("".join(raw)))

@@ -1,76 +1,69 @@
 import json
-import subprocess
 import threading
 import time
 import traceback
 from datetime import datetime
 from pathlib import Path
 
-
-def git_identity(path: Path) -> dict:
-    try:
-        run = lambda *a: subprocess.check_output(["git", "-C", str(path), *a], text=True, stderr=subprocess.DEVNULL, timeout=15).strip()
-        return {"sha": run("rev-parse", "HEAD"), "branch": run("branch", "--show-current"),
-                "dirty": bool(run("status", "--porcelain", "--untracked-files=no"))}
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        return {"sha": "", "branch": "", "dirty": None}
+SCHEMA = 2
+_ENVELOPE = frozenset({"schema_version", "run_id", "sequence", "wall_timestamp", "monotonic_ns", "component", "event"})
 
 
 class Journal:
-    _ENVELOPE = frozenset({"schema_version", "run_id", "sequence", "wall_timestamp", "monotonic_ns", "component", "event"})
-
     def __init__(self, run_dir: Path, console: bool = False) -> None:
         self.run_dir, self.run_id, self.console = Path(run_dir), Path(run_dir).name, bool(console)
-        self._lock, self._sequence, self._native_sequence, self._manifest_written = threading.Lock(), 0, 0, False
+        self._lock, self._n, self._native, self._manifest_written = threading.Lock(), 0, 0, False
         self._events = (self.run_dir / "events.jsonl").open("a", encoding="utf-8", newline="\n", buffering=1)
         self._transcripts: dict[str, object] = {}
 
     def sidecar(self, role: str, ext: str = "log") -> Path:
-        safe = "".join(ch if ch.isalnum() or ch in "-._" else "-" for ch in role).strip(".-") or "sidecar"
-        return self.run_dir / f"{safe}.{ext}"
+        name = "".join(ch if ch.isalnum() or ch in "-._" else "-" for ch in role).strip(".-") or "sidecar"
+        return self.run_dir / f"{name}.{ext}"
 
-    def _write(self, component: str, event: str, fields: dict, wall_timestamp: str | None = None,
-               monotonic_ns: int | None = None) -> None:
+    def _record(self, component: str, event: str, fields: dict, wall_timestamp: str | None, monotonic_ns: int | None) -> None:
         if not isinstance(component, str) or not component or not isinstance(event, str) or not event:
             raise RuntimeError("journal component and event are required")
-        if overlap := self._ENVELOPE.intersection(fields):
+        if overlap := _ENVELOPE.intersection(fields):
             raise RuntimeError(f"journal fields replace schema envelope: {sorted(overlap)}")
         with self._lock:
-            self._sequence += 1
-            record = {"schema_version": 2, "run_id": self.run_id, "sequence": self._sequence,
-                "wall_timestamp": wall_timestamp or datetime.now().astimezone().isoformat(timespec="milliseconds"),
-                "monotonic_ns": time.perf_counter_ns() if monotonic_ns is None else monotonic_ns,
-                "component": component, "event": event, **fields}
+            self._n += 1
+            record = {"schema_version": SCHEMA, "run_id": self.run_id, "sequence": self._n,
+                      "wall_timestamp": wall_timestamp or datetime.now().astimezone().isoformat(timespec="milliseconds"),
+                      "monotonic_ns": time.perf_counter_ns() if monotonic_ns is None else monotonic_ns,
+                      "component": component, "event": event, **fields}
             line = json.dumps(record, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
             self._events.write(line + "\n")
             if self.console: print(line, flush=True)
 
     def emit(self, component: str, event: str, **fields) -> None:
-        self._write(component, event, fields)
+        self._record(component, event, fields, None, None)
 
     def ingest(self, raw: bytes) -> str:
+        if not raw.strip():
+            return ""
         try:
-            record = json.loads(raw.decode("utf-8", errors="strict"))
+            record = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise RuntimeError(f"invalid native schema-v2 JSON: {error}") from error
-        if type(record) is not dict or record.get("schema_version") != 2 or record.get("run_id") != self.run_id:
+        if type(record) is not dict or record.get("schema_version") != SCHEMA or record.get("run_id") != self.run_id:
             raise RuntimeError("native journal schema or run identity mismatch")
-        if record.get("component") != "chatterbox" or not isinstance(record.get("event"), str) or not record["event"]:
+        event, seq, mono, wall = record.get("event"), record.get("sequence"), record.get("monotonic_ns"), record.get("wall_timestamp")
+        if record.get("component") != "chatterbox" or type(event) is not str or not event:
             raise RuntimeError("native journal component or event is invalid")
-        if type(record.get("sequence")) is not int or type(record.get("monotonic_ns")) is not int or not isinstance(record.get("wall_timestamp"), str):
+        if type(seq) is not int or type(mono) is not int or type(wall) is not str:
             raise RuntimeError("native journal envelope is invalid")
-        if record["sequence"] != self._native_sequence + 1:
-            raise RuntimeError(f"native journal sequence discontinuity: expected {self._native_sequence + 1}, got {record['sequence']}")
-        self._native_sequence = record["sequence"]
-        fields = {key: value for key, value in record.items() if key not in self._ENVELOPE}
-        self._write("chatterbox", record["event"], fields, record["wall_timestamp"], record["monotonic_ns"])
-        return record["event"]
+        with self._lock:
+            if seq != self._native + 1:
+                raise RuntimeError(f"native journal sequence discontinuity: expected {self._native + 1}, got {seq}")
+            self._native = seq
+        self._record("chatterbox", event, {k: v for k, v in record.items() if k not in _ENVELOPE}, wall, mono)
+        return event
 
     def write_manifest(self, manifest: dict) -> None:
         with self._lock:
             if self._manifest_written or (self.run_dir / "run.json").exists():
                 raise RuntimeError("run manifest is immutable")
-            (self.run_dir / "run.json").write_text(json.dumps({"schema_version": 2, "run_id": self.run_id, **manifest},
+            (self.run_dir / "run.json").write_text(json.dumps({"schema_version": SCHEMA, "run_id": self.run_id, **manifest},
                 ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
             self._manifest_written = True
 
