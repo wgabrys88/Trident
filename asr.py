@@ -52,7 +52,7 @@ class StreamingASR:
         dll = find_exe(root, "parakeet.dll")
         if dll is None: raise RuntimeError("parakeet.dll missing; run python main.py install")
         if paths.asr_device: os.environ["PARAKEET_DEVICE"] = paths.asr_device
-        self._dll_dirs = [os.add_dll_directory(str(p)) for p in {dll.parent, root} if p.is_dir() and hasattr(os, "add_dll_directory")]
+        self._dll_dirs = [os.add_dll_directory(str(p)) for p in {dll.parent, root} if p.is_dir()]
         os.environ["PATH"] = str(dll.parent) + os.pathsep + os.environ.get("PATH", "")
         self.lib = ctypes.CDLL(str(dll))
         self._bind()
@@ -79,7 +79,7 @@ class StreamingASR:
         L.parakeet_capi_last_error.argtypes = [ctypes.c_void_p]; L.parakeet_capi_last_error.restype = ctypes.c_char_p
 
     def _error(self) -> str:
-        raw = self.lib.parakeet_capi_last_error(getattr(self, "ctx", None))
+        raw = self.lib.parakeet_capi_last_error(self.ctx)
         return raw.decode("utf-8", "replace") if raw else "unknown error"
 
     def _take(self, ptr) -> str:
@@ -105,7 +105,7 @@ class StreamingASR:
         return self.text, int(event.value), (time.perf_counter() - started) * 1000
 
     def finalize(self) -> str:
-        if not self.stream: return ""
+        if not self.stream: raise RuntimeError("parakeet stream is not active")
         try:
             tail = self._take(self.lib.parakeet_capi_stream_finalize(self.stream))
             if tail: self.text += tail
@@ -122,6 +122,7 @@ class StreamingASR:
     def close(self) -> None:
         self.abort()
         if self.ctx: self.lib.parakeet_capi_free(self.ctx); self.ctx = None
+        for cookie in self._dll_dirs: cookie.close()
         self._dll_dirs.clear()
 
 

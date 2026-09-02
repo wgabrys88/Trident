@@ -157,14 +157,17 @@ class Sink(Wasapi):
         if had_pcm or forced_silence:
             self.drain_deadline = dac_time + frames / TTS_RATE; self.drain_reported = False
 
+    def _now(self) -> float:
+        if self.stream is None: raise RuntimeError("WASAPI playback stream is not open")
+        return float(self.stream.time)
+
     def snapshot(self) -> dict:
-        now = float(getattr(self.stream, "time", 0.0)) if self.stream is not None else time.monotonic()
-        return self.renderer.snapshot(now)
+        return self.renderer.snapshot(self._now())
 
     def drained(self) -> bool:
         if not self.renderer.drained(): return False
         if not self.drain_deadline: return True
-        now = float(getattr(self.stream, "time", 0.0)) if self.stream is not None else time.monotonic()
+        now = self._now()
         if now >= self.drain_deadline:
             if not self.drain_reported:
                 self.paths.journal.emit("playback", "drained", type="wasapi", dac_time=self.drain_deadline); self.drain_reported = True

@@ -135,7 +135,8 @@ def wasapi_device(kind: str) -> tuple[int, dict, dict]:
     api, key = hostapis[host_index], "max_input_channels" if kind == "input" else "max_output_channels"
     matches = [(i, d) for i, d in enumerate(devices) if int(d["hostapi"]) == host_index and int(d[key]) >= 1]
     if not matches: raise RuntimeError(f"no WASAPI {kind} endpoint is available")
-    pool = [(i, d) for i, d in matches if str(d["name"]) != skip] or matches
+    pool = [(i, d) for i, d in matches if str(d["name"]) != skip]
+    if not pool: raise RuntimeError(f"no WASAPI {kind} endpoint remains after skipping {skip}")
     want = int(api["default_input_device" if kind == "input" else "default_output_device"])
     index, device = next(((i, d) for i, d in pool if i == want), pool[0])
     return index, dict(device), dict(api)
@@ -146,6 +147,9 @@ class Paths:
         self.models_dir, self.data_dir = Path(models_dir or MODELS).resolve(), Path(data_dir or DATA).resolve()
         self.command, self.family, self.language = command, family.strip().lower(), language.strip().lower()
         self.voice = str(load_settings(self.data_dir).get("tts_voice") or "trump")
+        self.tts_knobs = self.gemma_runtime = self.gemma_gen = None
+        self.thinking = self.thinking_budget = self.history_mode = self.history_turns = None
+        self.tools_enabled = self.system_prompt = self.asr_device = self.prefill_min_words = None
         bits = [datetime.now().strftime("%Y%m%d-%H%M%S-%f"), command, HARDWARE] + ([self.family, self.language, self.voice] if command != "install" else [])
         self.stamp, self.run_dir = bits[0], self.data_dir / "runs" / "-".join(bits)
         self.run_dir.mkdir(parents=True)
