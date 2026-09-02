@@ -27,6 +27,8 @@ flowchart LR
 
 There is no whole-WAV HTTP ASR fallback. Partial and final text come from one direct cache-aware Parakeet stream.
 
+`python main.py install` clones pinned `chatterbox.cpp` and `parakeet.cpp` v0.5.0, cmake-builds the Vulkan natives (including `parakeet.dll`), and fetches Gemma, Smart Turn, and reference voices. A fresh clone runs the same download-and-build path.
+
 ## Commands
 
 ```text

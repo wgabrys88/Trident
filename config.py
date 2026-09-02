@@ -10,8 +10,10 @@ from journal import Journal, WorkerSupervisor
 ROOT = Path(__file__).resolve().parent
 MODELS, DATA, THIRD_PARTY, TOOLS = (ROOT / n for n in ("models", "data", "third_party", "tools"))
 CHATTERBOX = THIRD_PARTY / "chatterbox.cpp"
+PARAKEET = THIRD_PARTY / "parakeet.cpp"
 GGML, RUNTIMES, CONVERTER = CHATTERBOX / "ggml", TOOLS / "runtime", TOOLS / "convert"
 CHATTERBOX_URL, CHATTERBOX_REV = "https://github.com/wgabrys88/chatterbox.cpp", "e61ff8f09029df2f7a721bfaf972409778c6f00d"
+PARAKEET_GIT_URL, PARAKEET_REV = "https://github.com/mudler/parakeet.cpp", "1bfbebfaaf493866f49597cd3b7901959d395c60"
 GGML_GIT = ("https://github.com/ggml-org/ggml.git", "58c3805840b516b2a88ff867ccf7bb41dba79951")
 ASR_RATE, TTS_RATE, VAD_FRAME = 16000, 24000, 512
 SKIP_DEVICES = {"input": "CABLE Output (VB-Audio Virtual Cable)", "output": "CABLE Input (VB-Audio Virtual Cable)"}
@@ -24,7 +26,6 @@ SMART_TURN_FILE = "smart-turn-v3.2-cpu.onnx"
 SMART_TURN_URL = "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/f766f81d3cfdf7737ac64aad813d91bbfd56bf93/" + SMART_TURN_FILE
 SMART_TURN_SIZE = 8679182
 SMART_TURN_SHA256 = "2bb026316b14a660486a75b1733cd3fbab8c2fd0314dc9af7be49f8cca967e4f"
-PARAKEET_ZIP = ("https://github.com/mudler/parakeet.cpp/releases/download/v0.5.0/parakeet-v0.5.0-bin-win-vulkan-x64.zip", "parakeet-v0.5.0-bin-win-vulkan-x64.zip", 0, "717c416fab299755e8140137e3a0115121ce1acb6379d13c60f2f0613f6c13a3")
 LLAMA_ZIP = ("https://github.com/ggml-org/llama.cpp/releases/download/b10741/llama-b10741-bin-win-vulkan-x64.zip", "llama-b10741-bin-win-vulkan-x64.zip", 0, "91c6b618ed30f003b5e3621a1e015863aab10c044a7102f85e00df0de56f0703")
 VOICES = {
     "trump": ("audio/donald-trump.wav", "ref-trump.wav", 4210766, "9d8b44d73192e9c04dd241f16177e4c5753bcefadde69e6e24b45e278b821f8c"),
