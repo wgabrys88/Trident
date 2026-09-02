@@ -16,7 +16,7 @@ import onnxruntime as ort
 import sounddevice as sd
 from silero_vad_notorch import VADIterator, load_silero_vad
 
-from config import ASR_LOCALES, ASR_RATE, PARAKEET_FILE, RUNTIMES, SMART_TURN_FILE, VAD_FRAME, Paths, Wasapi, find_exe, load_settings
+from config import ASR_LOCALES, ASR_RATE, PARAKEET_FILE, SMART_TURN_FILE, VAD_FRAME, Paths, Wasapi, find_exe, load_settings
 from journal import finish_cleanup, join_or_fail
 
 STOP_PHRASES = {
@@ -41,7 +41,7 @@ def classify_utterance(text: str) -> str:
 class StreamingASR:
     """One load-once parakeet.cpp C-API context and one cache-aware stream per acoustic turn."""
     def __init__(self, paths: Paths, language: str) -> None:
-        root = RUNTIMES / "parakeet"
+        root = paths.models_dir / "parakeet"
         dll = find_exe(root, "parakeet.dll")
         if dll is None: raise RuntimeError("parakeet.dll missing; run python main.py install")
         if paths.asr_device: os.environ["PARAKEET_DEVICE"] = paths.asr_device

@@ -1,4 +1,3 @@
-import hashlib
 import json
 import subprocess
 import threading
@@ -6,13 +5,6 @@ import time
 import traceback
 from datetime import datetime
 from pathlib import Path
-
-
-def file_identity(path: Path) -> dict:
-    path = Path(path)
-    if not path.is_file(): return {"path": str(path), "missing": True}
-    with path.open("rb") as handle:
-        return {"path": str(path), "size": path.stat().st_size, "sha256": hashlib.file_digest(handle, "sha256").hexdigest()}
 
 
 def git_identity(path: Path) -> dict:

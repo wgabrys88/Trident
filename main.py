@@ -9,7 +9,7 @@ from config import (
     load_settings, wasapi_device,
 )
 import config
-from install import install, tts_provenance
+from install import install, product_stamps
 from journal import git_identity
 
 ensure_venv(__file__)
@@ -22,7 +22,6 @@ def _read_utf8(path: Path, parser: argparse.ArgumentParser, label: str) -> str:
 
 
 def _manifest(paths: Paths) -> dict:
-    installed_tts = tts_provenance() if paths.command in ("talk", "tts") else None
     settings, audio = load_settings(paths.data_dir), {}
     for kind in {"talk": ("input", "output"), "tts": ("output",), "asr": ("input",)}.get(paths.command, ()):
         index, device, host = wasapi_device(kind)
@@ -56,7 +55,7 @@ def _manifest(paths: Paths) -> dict:
                          "history_turns": getattr(paths, "history_turns", settings.get("history_turns", 16))},
         "audio": audio,
     }
-    if installed_tts is not None: manifest["installed_tts"] = installed_tts
+    if paths.command != "install": manifest["products"] = product_stamps(paths.models_dir)
     return manifest
 
 

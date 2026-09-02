@@ -12,7 +12,7 @@ import urllib.parse
 from pathlib import Path
 
 from config import (
-    CHATTERBOX, GEMMA_FILE, PORTS, RUNTIMES, SERVICES,
+    CHATTERBOX, GEMMA_FILE, PORTS, SERVICES,
     TTS_MODELS, TTS_PROFILES, V3_LANGUAGES, VULKAN_ENV, Paths, find_exe, voice_wav,
 )
 from journal import git_identity
@@ -28,8 +28,8 @@ _TTS_FLAGS = (("--n-gpu-layers", "gpu_layers"), ("--context", "context"), ("--th
 _CTRL_C_HELPER = "import ctypes,sys,time\nk=ctypes.WinDLL('kernel32',use_last_error=True)\nk.FreeConsole()\nif not k.AttachConsole(int(sys.argv[1])): raise ctypes.WinError(ctypes.get_last_error())\nif not k.SetConsoleCtrlHandler(None,True): raise ctypes.WinError(ctypes.get_last_error())\nif not k.GenerateConsoleCtrlEvent(0,0): raise ctypes.WinError(ctypes.get_last_error())\ntime.sleep(0.5)\nk.FreeConsole()\n"
 
 
-def _exe(folder: str, name: str) -> Path:
-    if path := find_exe(RUNTIMES / folder, name): return path
+def _exe(models_dir: Path, folder: str, name: str) -> Path:
+    if path := find_exe(models_dir / folder, name): return path
     raise RuntimeError(f"{name} missing; run python main.py install")
 
 
@@ -88,7 +88,7 @@ class Residents:
         if need is None: raise RuntimeError(f"cannot boot command {self.paths.command!r}")
         commands: list[tuple[str, Path, list[str], float]] = []
         if "gemma" in need:
-            gemma = _exe("gemma", "llama-server.exe")
+            gemma = _exe(self.paths.models_dir, "gemma", "llama-server.exe")
             knobs = self.paths.gemma_runtime
             commands.append(("gemma", gemma.parent, [str(gemma), "-m", str(self.paths.models_dir / GEMMA_FILE), "--alias", "gemma",
                 "--host", "127.0.0.1", "--port", str(PORTS["gemma"]), "--offline", "--device", str(knobs["device"]),
@@ -103,11 +103,11 @@ class Residents:
             if family not in TTS_MODELS: raise RuntimeError(f"unknown TTS family {family!r}")
             if family != "v3" and language != "en": raise RuntimeError(f"{family} supports English only")
             if family == "v3" and language not in V3_LANGUAGES: raise RuntimeError(f"V3 language {language!r} is not supported")
-            tts, knobs = _exe("tts", "chatterbox-server.exe"), getattr(self.paths, "tts_knobs", TTS_PROFILES[family])
+            tts, knobs = _exe(self.paths.models_dir, "tts", "chatterbox-server.exe"), getattr(self.paths, "tts_knobs", TTS_PROFILES[family])
             t3_file, codec_file = TTS_MODELS[family]
             commands.append(("chatterbox", tts.parent, [str(tts), "--run-id", self.journal.run_id, "--family", family,
                 "--model", str(self.paths.models_dir / t3_file), "--s3gen-gguf", str(self.paths.models_dir / codec_file),
-                "--reference", str(voice_wav(self.paths.data_dir, self.paths.voice)), "--language", language,
+                "--reference", str(voice_wav(self.paths.models_dir, self.paths.voice)), "--language", language,
                 "--port", str(PORTS["chatterbox"]), *[x for flag, key in _TTS_FLAGS for x in (flag, str(knobs[key]))]], 300))
             self.journal.emit("runtime", "boot.start", command=self.paths.command, family=family, language=language, voice=self.paths.voice, t3=t3_file, codec=codec_file, chatterbox_sha=git_identity(CHATTERBOX).get("sha") or "", knobs=knobs)
         else:
