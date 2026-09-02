@@ -1,65 +1,65 @@
 # Trident
 
-**A fully local, real-time voice conversation stack built to make the machine disappear.**
+Local, interruptible, real-time voice conversation on consumer hardware.
 
 > [!IMPORTANT]
-> **In active development.** Trident is being pushed toward one North Star: natural, interruptible conversation with cloned speech, streamed end-to-end on consumer hardware.
+> The North Star is not merely good TTS. It is a conversation natural enough that the user forgets the machine: true streaming recognition, barge-in, generation/TTS overlap, continuous playback, cloned voice and no assistant self-ASR.
 
-The current stack is running on **Intel Iris Xe through Vulkan**, without requiring a discrete GPU. It combines specialized speech, turn-taking, language, and synthesis models into one resident conversational pipeline.
-
-## Architecture
+## Pipeline
 
 ```mermaid
 flowchart LR
-    MIC["Microphone<br/>16 kHz PCM"] --> VAD["Silero VAD"]
-    VAD --> TURN["Smart Turn v3.2"]
-    TURN --> ASR["Parakeet TDT 0.6B v3<br/>ASR"]
-    ASR --> LLM["Gemma 4 E2B<br/>streaming generation"]
-    LLM --> SEG["Streaming speech segmenter"]
-    SEG --> T3["Chatterbox T3<br/>semantic speech tokens"]
-    VOICE["Reference voice"] -. "voice conditioning" .-> T3
-    T3 --> S3["S3Gen<br/>CFM / MeanFlow"]
-    S3 --> PCM["HiFT / 24 kHz PCM"]
-    PCM --> PLAY["Epoch-aware renderer<br/>WASAPI"]
-
-    VAD -. "barge-in" .-> EPOCH["Epoch cancellation"]
-    EPOCH -.-> T3
-    EPOCH -.-> PLAY
+    MIC["Microphone<br/>16 kHz f32"] --> VAD["Silero VAD"]
+    VAD --> ASR["Parakeet / Nemotron 3.5<br/>cache-aware streaming C API"]
+    ASR --> PART["Live finalized partials<br/>user~:"]
+    VAD --> TURN["Smart Turn v3.2<br/>CPU endpointing"]
+    PART --> PREFILL["Gemma zero-token prefill"]
+    TURN --> FINAL["Finalize same ASR stream"]
+    FINAL --> GEMMA["Gemma 4 E2B<br/>llama.cpp Vulkan"]
+    GEMMA --> T3["Chatterbox T3"]
+    VOICE["Reference voice"] --> COND["Full speaker embedding<br/>family prompt windows"]
+    COND --> T3
+    T3 --> S3["S3Gen / CFM"]
+    S3 --> HIFT["HiFT / 24 kHz PCM"]
+    HIFT --> PLAY["Epoch-aware WASAPI renderer"]
+    VAD -. barge-in .-> PLAY
 ```
 
-## What is already inside
+There is no whole-WAV HTTP ASR fallback. Partial and final text come from one direct cache-aware Parakeet stream.
 
-- [x] Fully local runtime after installation
-- [x] **Silero VAD** for immediate speech onset detection
-- [x] **Smart Turn v3.2** for learned end-of-turn detection
-- [x] **Parakeet TDT 0.6B v3** for speech recognition
-- [x] **Gemma 4 E2B** for streamed conversational generation
-- [x] **Chatterbox Nano / Turbo / Multilingual V3**
-- [x] Reference-audio **voice cloning**
-- [x] Streaming **T3 → S3Gen → HiFT** speech generation
-- [x] Barge-in with cooperative epoch cancellation
-- [x] Persistent model runtimes and streamed PCM playback
-- [x] Windows **WASAPI + Vulkan**
-- [x] Dedicated **Intel Iris Xe** inference path
-- [ ] Final North-Star validation and release polish
+## Commands
 
-<details>
-<summary><strong>Why this is unusual</strong></summary>
+```text
+python main.py install
+python main.py asr --language pl --asr-device Vulkan0
+python main.py talk --family nano --language en --cfm-steps 1 --asr-device Vulkan0
+python main.py talk --family v3 --language pl --voice C:\path\ref.wav --cfm-steps 5 --cfg-weight 0.5 --exaggeration 0.5
+python main.py tts --family v3 --language pl --voice C:\path\ref.wav --text "Test."
+python main.py generation --thinking on --thinking-budget 256 --text "Analyze this carefully."
+```
 
-A single spoken turn crosses several learned systems before the answer reaches the speakers:
+Streaming ASR displays growing finalized text as `user~:` while the user is still speaking. Smart Turn decides whether a silence ends the turn; an incomplete pause keeps the same Parakeet stream alive.
 
-`Silero VAD → Smart Turn → Parakeet → Gemma → Chatterbox T3 → S3Gen / HiFT`
+## Reference voice
 
-They remain coordinated as one conversation: recognition, generation and synthesis overlap; speech can begin before the language model has finished; and a new human utterance can invalidate work already moving through the acoustic pipeline.
+The native startup path prioritizes identity fidelity:
 
-The goal is not a voice-command demo. It is continuous conversation that happens to run locally.
+- full normalized reference contributes to the speaker embedding;
+- Nano/Turbo T3 conditioning: 15 s;
+- V3 T3 conditioning: 6 s;
+- S3Gen conditioning: 10 s;
+- conditioning completes before S3Gen preload;
+- `--voice`, `--cfg-weight`, and `--exaggeration` are explicit controls.
 
-</details>
+## Hardware targets
 
-## North Star
+- Intel Iris Xe: Nano, Vulkan, aggressive `cfm_steps=1` default.
+- Pascal GTX 1060 6 GB: multilingual V3, Q4_0 T3/S3Gen, Vulkan, `GGML_VK_DISABLE_F16=1`, `cfm_steps=5`.
 
-> **Speak naturally. Interrupt naturally. Hear the answer immediately. Forget there is a pipeline underneath.**
+Hardware acceptance still requires fresh RTF/journal evidence and listening.
 
-Trident is not released yet.
+## Evidence
 
-It is getting close.
+Every product run writes immutable schema-v2 evidence under `data/runs/`. Acceptance must prove actual TTS PCM before Gemma completion, correct epoch cancellation, continuous live playback, exactly one terminal result per synthesis piece, no self-ASR, true streaming ASR partials, and target RTF below one.
+
+See the bundle-level `HANDOVER.md` for the full runbook, known upstream Parakeet streaming-memory risk and regression gates.
