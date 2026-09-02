@@ -17,8 +17,8 @@ from pathlib import Path
 
 from config import (CHATTERBOX, CHATTERBOX_REV, CHATTERBOX_URL, CODEC_QUANT, CONVERTER, DATA, GEMMA_FILE,
                     GEMMA_SHA256, GEMMA_SIZE, GEMMA_URL, GGML, GGML_GIT, HARDWARE, LLAMA_ZIP, MODELS,
-                    PARAKEET_FILE, PARAKEET_SHA256, PARAKEET_SIZE, PARAKEET_URL, PARAKEET_ZIP, ROOT, RUNTIMES,
-                    SMART_TURN_FILE, SMART_TURN_SHA256, SMART_TURN_SIZE,
+                    PARAKEET, PARAKEET_FILE, PARAKEET_GIT_URL, PARAKEET_REV, PARAKEET_SHA256, PARAKEET_SIZE,
+                    PARAKEET_URL, ROOT, RUNTIMES, SMART_TURN_FILE, SMART_TURN_SHA256, SMART_TURN_SIZE,
                     SMART_TURN_URL, TOOLS, TTS_BACKEND, TTS_MODELS, TTS_WEIGHTS, VOICE_HF, VOICES, find_exe)
 from journal import file_identity, git_identity
 
@@ -27,6 +27,11 @@ CONVERTER_PINS = {"torch": "2.6.0", "numpy": "1.26.4", "gguf": "0.19.0", "safete
                   "librosa": "0.11.0", "resampy": "0.4.3", "huggingface-hub": "0.34.4"}
 _PIP = ("-m", "pip", "install", "--disable-pip-version-check", "--progress-bar", "off", "--no-input")
 _BUILD_FLAGS = ["-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_NATIVE=ON", "-DGGML_CCACHE=OFF", "-DTTS_CPP_BUILD_EXECUTABLES=ON"]
+_PARAKEET_FLAGS = [
+    "-DPARAKEET_SHARED=ON", "-DPARAKEET_GGML_VULKAN=ON", "-DPARAKEET_GGML_CUDA=OFF",
+    "-DPARAKEET_BUILD_CLI=OFF", "-DPARAKEET_BUILD_SERVER=OFF", "-DPARAKEET_BUILD_TESTS=OFF",
+    "-DBUILD_SHARED_LIBS=OFF", "-DGGML_NATIVE=ON", "-DGGML_CCACHE=OFF", "-DPARAKEET_VERSION=0.5.0",
+]
 
 
 def _sha(path: Path) -> str:
@@ -108,16 +113,23 @@ def _clean_repo(dest: Path) -> None:
         raise RuntimeError(f"managed repository has tracked changes; refusing checkout: {dest}")
 
 
-def pin(paths, url: str, rev: str, dest: Path, role: str) -> str:
+def pin(paths, url: str, rev: str, dest: Path, role: str, submodules: bool = False) -> str:
     dest.parent.mkdir(parents=True, exist_ok=True)
     if not (dest / ".git").is_dir():
         if dest.exists(): raise RuntimeError(f"refusing to replace {dest}")
         _run(paths, ["git", "clone", "--filter=blob:none", url, str(dest)], role=f"git-{role}")
-    _clean_repo(dest)
+    elif submodules:
+        _run(paths, ["git", "reset", "--hard", "HEAD"], dest, role=f"git-{role}")
+    else:
+        _clean_repo(dest)
     _run(paths, ["git", "fetch", "--depth", "1", "origin", rev], dest, role=f"git-{role}")
     fetched = _git(dest, "rev-parse", rev)
     if fetched != _git(dest, "rev-parse", "HEAD"): _run(paths, ["git", "checkout", "--detach", rev], dest, role=f"git-{role}")
-    _clean_repo(dest)
+    if submodules:
+        _run(paths, ["git", "submodule", "sync", "--recursive"], dest, role=f"git-{role}")
+        _run(paths, ["git", "submodule", "update", "--init", "--recursive", "--force"], dest, role=f"git-{role}")
+    else:
+        _clean_repo(dest)
     paths.journal.emit("install", "repository.ready", role=role, requested=rev, sha=fetched, dirty=False)
     return fetched
 
@@ -180,6 +192,47 @@ def tts_provenance() -> dict:
 def _build_valid() -> bool:
     try: tts_provenance(); return True
     except RuntimeError: return False
+
+
+def _git_apply(repo: Path, patch: Path, check: bool = False, reverse: bool = False) -> bool:
+    cmd = ["git", "-C", str(repo), "apply"]
+    if check: cmd.append("--check")
+    if reverse: cmd.append("--reverse")
+    cmd.append(str(patch))
+    return subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+
+
+def _apply_parakeet_patches(paths) -> None:
+    ggml, patch_dir = PARAKEET / "third_party" / "ggml", PARAKEET / "third_party" / "ggml-patches"
+    if not (ggml / ".git").exists(): raise RuntimeError("parakeet ggml submodule is missing")
+    patches = sorted(patch_dir.glob("*.patch"))
+    if not patches: raise RuntimeError("parakeet ggml patches are missing")
+    applied = skipped = 0
+    for patch in patches:
+        if _git_apply(ggml, patch, check=True, reverse=True):
+            skipped += 1; continue
+        if not _git_apply(ggml, patch, check=True) or not _git_apply(ggml, patch):
+            raise RuntimeError(f"cannot apply ggml patch {patch.name}")
+        applied += 1
+    paths.journal.emit("install", "parakeet.patches", applied=applied, skipped=skipped)
+
+
+def build_parakeet(paths) -> None:
+    pin(paths, PARAKEET_GIT_URL, PARAKEET_REV, PARAKEET, "parakeet", submodules=True)
+    _apply_parakeet_patches(paths)
+    build = TOOLS / "parakeet-build"
+    _run(paths, ["cmake", "-S", str(PARAKEET), "-B", str(build), "-A", "x64", *_PARAKEET_FLAGS], role="parakeet-configure")
+    _run(paths, ["cmake", "--build", str(build), "--config", "Release", "--target", "parakeet", "--parallel"], role="parakeet-build")
+    dll = build / "Release" / "parakeet.dll"
+    if not dll.is_file(): dll = find_exe(build, "parakeet.dll")
+    if dll is None or not dll.is_file(): raise RuntimeError("parakeet.dll missing after build")
+    dest = RUNTIMES / "parakeet"
+    if dest.exists(): shutil.rmtree(dest)
+    dest.mkdir(parents=True)
+    shutil.copy2(dll, dest / "parakeet.dll")
+    for extra in dll.parent.glob("*.dll"):
+        if extra.name.casefold() != "parakeet.dll": shutil.copy2(extra, dest / extra.name)
+    paths.journal.emit("install", "parakeet.build.completed", artifact=str(dest / "parakeet.dll"))
 
 
 def _converter(paths) -> tuple[Path, dict]:
@@ -262,13 +315,12 @@ def install_python(paths) -> None:
 def install(models_dir: Path | None, data_dir: Path | None, paths) -> None:
     if sys.version_info < (3, 11) or os.name != "nt": raise RuntimeError("Trident needs Python 3.11+ on Windows")
     models, data = Path(models_dir or MODELS), Path(data_dir or DATA); models.mkdir(parents=True, exist_ok=True); data.mkdir(parents=True, exist_ok=True)
-    paths.journal.emit("install", "start", hardware=HARDWARE, chatterbox_revision=CHATTERBOX_REV, ggml_revision=GGML_GIT[1])
+    paths.journal.emit("install", "start", hardware=HARDWARE, chatterbox_revision=CHATTERBOX_REV, ggml_revision=GGML_GIT[1], parakeet_revision=PARAKEET_REV)
     pin(paths, CHATTERBOX_URL, CHATTERBOX_REV, CHATTERBOX, "chatterbox")
     if not _build_valid(): build_tts(paths)
     else: paths.journal.emit("install", "tts.build.ready", executable=file_identity(RUNTIMES / "tts" / "chatterbox-server.exe"))
     convert_tts(paths, models, list(TTS_MODELS))
-    install_runtime(paths, "parakeet", "parakeet.dll", PARAKEET_ZIP, "parakeet-cli.exe")
-    for stale in (RUNTIMES / "parakeet").rglob("parakeet-server.exe"): stale.unlink()
+    build_parakeet(paths)
     install_runtime(paths, "gemma", "llama-server.exe", LLAMA_ZIP)
     for source, name, size, sha256 in VOICES.values(): pull(paths, VOICE_HF + source, data / name, size, sha256)
     pull(paths, PARAKEET_URL, models / PARAKEET_FILE, PARAKEET_SIZE, PARAKEET_SHA256)
