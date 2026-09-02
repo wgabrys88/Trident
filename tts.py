@@ -157,17 +157,14 @@ class Sink(Wasapi):
         if had_pcm or forced_silence:
             self.drain_deadline = dac_time + frames / TTS_RATE; self.drain_reported = False
 
-    def _now(self) -> float:
-        if self.stream is None: raise RuntimeError("WASAPI playback stream is not open")
-        return float(self.stream.time)
-
     def snapshot(self) -> dict:
-        return self.renderer.snapshot(self._now())
+        now = float(getattr(self.stream, "time", 0.0)) if self.stream is not None else time.monotonic()
+        return self.renderer.snapshot(now)
 
     def drained(self) -> bool:
         if not self.renderer.drained(): return False
         if not self.drain_deadline: return True
-        now = self._now()
+        now = float(getattr(self.stream, "time", 0.0)) if self.stream is not None else time.monotonic()
         if now >= self.drain_deadline:
             if not self.drain_reported:
                 self.paths.journal.emit("playback", "drained", type="wasapi", dac_time=self.drain_deadline); self.drain_reported = True
@@ -193,10 +190,6 @@ class Synthesis:
             self.sink.close(); raise
 
     def _sync_pending(self) -> None: self.renderer.set_pending(self.pending)
-
-    def _live(self, epoch: int) -> bool:
-        with self.lock:
-            return epoch == self.epoch
 
     def send_sentence(self, epoch: int, response_id: int, piece_id: int, text: str) -> bool:
         identity = (epoch, response_id, piece_id)

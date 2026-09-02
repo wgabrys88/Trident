@@ -12,37 +12,25 @@ import urllib.parse
 from pathlib import Path
 
 from config import (
-    CHATTERBOX, GEMMA_FILE, PORTS, SERVICES,
-    TTS_MODELS, V3_LANGUAGES, VULKAN_ENV, Paths, find_exe, git_identity, voice_wav,
+    CHATTERBOX, FLASH_ATTN, GEMMA_CONTEXT, GEMMA_FILE, PARAKEET_FILE, PORTS, RUNTIMES, SERVICES,
+    TTS_MODELS, TTS_PROFILES, V3_LANGUAGES, VULKAN_ENV, Paths, find_exe, load_settings, voice_wav,
 )
+from journal import git_identity
 
 PROTOCOL_MAGIC, PROTOCOL_VERSION = 0x32525454, 2
 REQ_SYNTH, REQ_ADVANCE, REQ_CLOSE = 1, 2, 3
 RESP_PCM, RESP_DONE, RESP_CANCELLED, RESP_ERROR, RESP_CLOSED = 1, 2, 3, 4, 5
-_GEMMA_READY = "llama_server: listening on http://127.0.0.1:"
+_READY = {"parakeet": "parakeet-server: listening on ", "gemma": "llama_server: listening on http://127.0.0.1:",
+          "chatterbox": '"event":"server.ready"'}
 _TTS_FLAGS = (("--n-gpu-layers", "gpu_layers"), ("--context", "context"), ("--threads", "threads"), ("--seed", "seed"),
     ("--max-tokens", "max_tokens"), ("--top-k", "top_k"), ("--top-p", "top_p"), ("--min-p", "min_p"),
     ("--temperature", "temperature"), ("--repeat-penalty", "repeat_penalty"), ("--cfg-weight", "cfg_weight"),
     ("--exaggeration", "exaggeration"), ("--cfm-steps", "cfm_steps"), ("--fastconv", "fastconv"))
-# Attach to the hidden CREATE_NEW_CONSOLE, then CTRL_BREAK to that console (group 0).
-# CTRL_C is ignored by llama-server; CTRL_BREAK stops it with STATUS_CONTROL_C_EXIT.
-# The helper must eat CTRL_BREAK too, otherwise it dies with the resident.
-_STATUS_CONTROL_C_EXIT = 0xC000013A
-_CTRL_BREAK_HELPER = (
-    "import ctypes,sys,time\n"
-    "k=ctypes.WinDLL('kernel32',use_last_error=True)\n"
-    "H=ctypes.WINFUNCTYPE(ctypes.c_int,ctypes.c_uint); h=H(lambda ev: 1)\n"
-    "k.FreeConsole()\n"
-    "if not k.AttachConsole(int(sys.argv[1])): raise ctypes.WinError(ctypes.get_last_error())\n"
-    "if not k.SetConsoleCtrlHandler(h,True): raise ctypes.WinError(ctypes.get_last_error())\n"
-    "if not k.GenerateConsoleCtrlEvent(1,0): raise ctypes.WinError(ctypes.get_last_error())\n"
-    "time.sleep(0.5)\n"
-    "k.FreeConsole()\n"
-)
+_CTRL_C_HELPER = "import ctypes,sys,time\nk=ctypes.WinDLL('kernel32',use_last_error=True)\nk.FreeConsole()\nif not k.AttachConsole(int(sys.argv[1])): raise ctypes.WinError(ctypes.get_last_error())\nif not k.SetConsoleCtrlHandler(None,True): raise ctypes.WinError(ctypes.get_last_error())\nif not k.GenerateConsoleCtrlEvent(0,0): raise ctypes.WinError(ctypes.get_last_error())\ntime.sleep(0.5)\nk.FreeConsole()\n"
 
 
-def _exe(models_dir: Path, folder: str, name: str) -> Path:
-    if path := find_exe(models_dir / folder, name): return path
+def _exe(folder: str, name: str) -> Path:
+    if path := find_exe(RUNTIMES / folder, name): return path
     raise RuntimeError(f"{name} missing; run python main.py install")
 
 
@@ -77,7 +65,7 @@ class Residents:
                 if name == "chatterbox":
                     event = self.journal.ingest(raw)
                     if event == "server.ready": ready.set()
-                elif name == "gemma" and _GEMMA_READY in raw.decode("utf-8", errors="replace").rstrip("\r\n"):
+                elif name in _READY and _READY[name] in raw.decode("utf-8", errors="replace").rstrip("\r\n"):
                     ready.set()
 
     def _start(self, name: str, cmd: list[str], cwd: Path, timeout: float) -> None:
@@ -100,31 +88,23 @@ class Residents:
         family, language, need = family.strip().lower(), language.strip().lower(), SERVICES.get(self.paths.command)
         if need is None: raise RuntimeError(f"cannot boot command {self.paths.command!r}")
         commands: list[tuple[str, Path, list[str], float]] = []
+        if "parakeet" in need:
+            parakeet = _exe("parakeet", "parakeet-server.exe")
+            commands.append(("parakeet", parakeet.parent, [str(parakeet), "--model", str(self.paths.models_dir / PARAKEET_FILE), "--port", str(PORTS["parakeet"])], 180))
         if "gemma" in need:
-            if self.paths.gemma_runtime is None: raise RuntimeError("Gemma runtime was not configured for this command")
-            gemma = _exe(self.paths.models_dir, "gemma", "llama-server.exe")
-            knobs = self.paths.gemma_runtime
-            commands.append(("gemma", gemma.parent, [str(gemma), "-m", str(self.paths.models_dir / GEMMA_FILE), "--alias", "gemma",
-                "--host", "127.0.0.1", "--port", str(PORTS["gemma"]), "--offline", "--device", str(knobs["device"]),
-                "--n-gpu-layers", str(knobs["gpu_layers"]), "--ctx-size", str(knobs["context"]), "--parallel", str(knobs["parallel"]),
-                "--cache-type-k", str(knobs["cache_type_k"]), "--cache-type-v", str(knobs["cache_type_v"]),
-                "--batch-size", str(knobs["batch_size"]), "--ubatch-size", str(knobs["ubatch_size"]),
-                "--cache-ram", str(knobs["cache_ram"]), "--ctx-checkpoints", str(knobs["ctx_checkpoints"]),
-                "--checkpoint-min-step", str(knobs["checkpoint_min_step"]), "--no-mmproj", "--jinja",
-                "--flash-attn", str(knobs["flash_attn"]), "--threads", str(knobs["threads"]), "--threads-batch", str(knobs["threads_batch"]),
-                "--poll", "0", "--poll-batch", "0", "--threads-http", "1", "--no-ui", "--reasoning", "auto"], 180))
+            gemma = _exe("gemma", "llama-server.exe")
+            commands.append(("gemma", gemma.parent, [str(gemma), "-m", str(self.paths.models_dir / GEMMA_FILE), "--alias", "gemma", "--host", "127.0.0.1", "--port", str(PORTS["gemma"]), "--offline", "--device", "Vulkan0", "--n-gpu-layers", "all", "--ctx-size", str(GEMMA_CONTEXT), "--no-mmproj", "--flash-attn", FLASH_ATTN, "--threads", "2", "--threads-batch", "2", "--poll", "0", "--poll-batch", "0", "--threads-http", "1", "--no-ui", "--reasoning", "off"], 180))
         if "chatterbox" in need:
             if family not in TTS_MODELS: raise RuntimeError(f"unknown TTS family {family!r}")
             if family != "v3" and language != "en": raise RuntimeError(f"{family} supports English only")
             if family == "v3" and language not in V3_LANGUAGES: raise RuntimeError(f"V3 language {language!r} is not supported")
-            if self.paths.tts_knobs is None: raise RuntimeError("TTS knobs were not configured for this command")
-            tts, knobs = _exe(self.paths.models_dir, "tts", "chatterbox-server.exe"), self.paths.tts_knobs
+            tts, knobs, settings = _exe("tts", "chatterbox-server.exe"), TTS_PROFILES[family], load_settings(self.paths.data_dir)
             t3_file, codec_file = TTS_MODELS[family]
             commands.append(("chatterbox", tts.parent, [str(tts), "--run-id", self.journal.run_id, "--family", family,
                 "--model", str(self.paths.models_dir / t3_file), "--s3gen-gguf", str(self.paths.models_dir / codec_file),
-                "--reference", str(voice_wav(self.paths.models_dir, self.paths.voice)), "--language", language,
+                "--reference", str(voice_wav(self.paths.data_dir, settings["tts_voice"])), "--language", language,
                 "--port", str(PORTS["chatterbox"]), *[x for flag, key in _TTS_FLAGS for x in (flag, str(knobs[key]))]], 300))
-            self.journal.emit("runtime", "boot.start", command=self.paths.command, family=family, language=language, voice=self.paths.voice, t3=t3_file, codec=codec_file, chatterbox_sha=git_identity(CHATTERBOX).get("sha") or "", knobs=knobs)
+            self.journal.emit("runtime", "boot.start", command=self.paths.command, family=family, language=language, voice=settings["tts_voice"], t3=t3_file, codec=codec_file, chatterbox_sha=git_identity(CHATTERBOX).get("sha") or "", knobs=knobs)
         else:
             self.journal.emit("runtime", "boot.start", command=self.paths.command, family=family, language=language)
         for name, cwd, command, timeout in commands:
@@ -182,12 +162,11 @@ class Residents:
             f"{name} did not become ready for graceful shutdown", event=ready)
 
     def _ctrl_c(self, name: str, proc: subprocess.Popen) -> None:
-        result = subprocess.run([sys.executable, "-c", _CTRL_BREAK_HELPER, str(proc.pid)], stdin=subprocess.DEVNULL,
+        result = subprocess.run([sys.executable, "-c", _CTRL_C_HELPER, str(proc.pid)], stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NO_WINDOW,
             text=True, encoding="utf-8", errors="replace", timeout=5)
-        if result.returncode not in (0, _STATUS_CONTROL_C_EXIT):
-            raise RuntimeError(f"{name} CTRL_BREAK helper failed exit={result.returncode}: {result.stdout.strip()}")
-        self.journal.emit("resident", "signal.delivered", name=name, pid=proc.pid, signal="CTRL_BREAK_EVENT", scope="resident-console")
+        if result.returncode: raise RuntimeError(f"{name} CTRL_C helper failed exit={result.returncode}: {result.stdout.strip()}")
+        self.journal.emit("resident", "signal.delivered", name=name, pid=proc.pid, signal="CTRL_C_EVENT", scope="resident-console")
 
     def _reap(self, name: str, proc: subprocess.Popen, failures: list[str]) -> None:
         running = proc.poll() is None
@@ -199,14 +178,12 @@ class Residents:
                     if name != "chatterbox": self._ctrl_c(name, proc)
                 proc.wait(timeout=10)
             except (ValueError, OSError, subprocess.TimeoutExpired, RuntimeError) as error:
-                still = proc.poll() is None
-                detail = f"wait timed out after 10s" if isinstance(error, subprocess.TimeoutExpired) else str(error)
-                failures.append(f"{name}: {detail}")
-                if still: proc.kill(); proc.wait(timeout=5)
+                failures.append(f"{name}: {error}")
+                if proc.poll() is None: proc.kill(); proc.wait(timeout=5)
         if (reader := self.readers.get(name)) is not None:
             reader.join(timeout=5)
             if reader.is_alive(): failures.append(f"{name}: log reader survived")
-        if not (clean := (code := proc.wait()) in (0, _STATUS_CONTROL_C_EXIT)): failures.append(f"{name}: exit {code}")
+        if not (clean := (code := proc.wait()) == 0): failures.append(f"{name}: exit {code}")
         self.journal.emit("resident", "stopped", name=name, pid=proc.pid, exit_code=code, clean=clean)
 
     def stop(self) -> None:
