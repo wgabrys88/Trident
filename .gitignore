@@ -1,6 +1,8 @@
 *
 !/.gitignore
 !/.gitattributes
+!/README.md
+!/hello_world.py
 !/main.py
 !/config.py
 !/install.py

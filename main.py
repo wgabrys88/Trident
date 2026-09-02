@@ -28,15 +28,16 @@ def _manifest(paths: Paths) -> dict:
         audio[kind] = {"device": device["name"], "index": index, "host_api": host["name"],
                        "channels": 1, "rate": ASR_RATE if kind == "input" else TTS_RATE, "auto_convert": True}
     runtime_knobs = {}
-    if hasattr(paths, "tts_knobs"): runtime_knobs["tts"] = paths.tts_knobs
-    if hasattr(paths, "gemma_runtime"):
+    if paths.tts_knobs is not None: runtime_knobs["tts"] = paths.tts_knobs
+    if paths.gemma_runtime is not None:
         runtime_knobs["gemma"] = {"server": paths.gemma_runtime, "generation": paths.gemma_gen,
                                   "thinking": paths.thinking, "thinking_budget": paths.thinking_budget,
                                   "tools": paths.tools_enabled}
     if paths.command in ("talk", "asr"):
         runtime_knobs["asr"] = {"mode": "capi-stream", "model": PARAKEET_FILE,
                                 "device": paths.asr_device or "auto", "locale": ASR_LOCALES[paths.language],
-                                "prefill_min_words": getattr(paths, "prefill_min_words", None)}
+                                "prefill_min_words": paths.prefill_min_words}
+    gemma_runtime = paths.gemma_runtime or {}
     manifest = {
         "created_at": paths.stamp, "command": paths.command, "family": paths.family,
         "language": paths.language, "voice": paths.voice,
@@ -47,12 +48,12 @@ def _manifest(paths: Paths) -> dict:
         },
         "interpreter": {"path": sys.executable, "version": sys.version},
         "machine": {"hardware": HARDWARE, "gpu": config.GPU_NAME, "backend": config.TTS_BACKEND,
-                    "codec": TTS_MODELS.get(paths.family, (None, None))[1], "vulkan_env": VULKAN_ENV,
-                    "flash_attn": getattr(paths, "gemma_runtime", {}).get("flash_attn", FLASH_ATTN)},
+                    "codec": None if paths.family not in TTS_MODELS else TTS_MODELS[paths.family][1], "vulkan_env": VULKAN_ENV,
+                    "flash_attn": gemma_runtime.get("flash_attn", FLASH_ATTN)},
         "runtime_knobs": runtime_knobs,
         "conversation": {**{k: settings.get(k) for k in ("candidate_silence_ms", "completion_threshold", "acoustic_context_seconds")},
-                         "history_mode": getattr(paths, "history_mode", settings.get("history_mode", "conversation")),
-                         "history_turns": getattr(paths, "history_turns", settings.get("history_turns", 16))},
+                         "history_mode": paths.history_mode or settings.get("history_mode", "conversation"),
+                         "history_turns": paths.history_turns or settings.get("history_turns", 16)},
         "audio": audio,
     }
     if paths.command != "install": manifest["products"] = product_stamps(paths.models_dir)
@@ -197,6 +198,8 @@ def main(command: str | None = None) -> int:
         if paths.history_mode not in ("conversation", "turn"): parser.error("live-settings history_mode must be conversation or turn")
         if paths.history_turns < 1: parser.error("live-settings history_turns must be positive")
         paths.tools_enabled = bool(settings.get("tools_enabled", False)) if args.tools is None else args.tools
+        if paths.tools_enabled and not (ROOT / "hello_world.py").is_file():
+            parser.error("tools are enabled but hello_world.py is missing")
         paths.system_prompt = (args.system_prompt if args.system_prompt is not None else
                                _read_utf8(args.system_prompt_file, parser, "--system-prompt-file") if args.system_prompt_file is not None else
                                str(settings.get("system_prompt") or config.PROMPT)).strip()

@@ -13,14 +13,14 @@ from pathlib import Path
 
 from config import (
     CHATTERBOX, GEMMA_FILE, PORTS, SERVICES,
-    TTS_MODELS, TTS_PROFILES, V3_LANGUAGES, VULKAN_ENV, Paths, find_exe, voice_wav,
+    TTS_MODELS, V3_LANGUAGES, VULKAN_ENV, Paths, find_exe, voice_wav,
 )
 from journal import git_identity
 
 PROTOCOL_MAGIC, PROTOCOL_VERSION = 0x32525454, 2
 REQ_SYNTH, REQ_ADVANCE, REQ_CLOSE = 1, 2, 3
 RESP_PCM, RESP_DONE, RESP_CANCELLED, RESP_ERROR, RESP_CLOSED = 1, 2, 3, 4, 5
-_READY = {"gemma": "llama_server: listening on http://127.0.0.1:", "chatterbox": '"event":"server.ready"'}
+_GEMMA_READY = "llama_server: listening on http://127.0.0.1:"
 _TTS_FLAGS = (("--n-gpu-layers", "gpu_layers"), ("--context", "context"), ("--threads", "threads"), ("--seed", "seed"),
     ("--max-tokens", "max_tokens"), ("--top-k", "top_k"), ("--top-p", "top_p"), ("--min-p", "min_p"),
     ("--temperature", "temperature"), ("--repeat-penalty", "repeat_penalty"), ("--cfg-weight", "cfg_weight"),
@@ -78,7 +78,7 @@ class Residents:
                 if name == "chatterbox":
                     event = self.journal.ingest(raw)
                     if event == "server.ready": ready.set()
-                elif name in _READY and _READY[name] in raw.decode("utf-8", errors="replace").rstrip("\r\n"):
+                elif name == "gemma" and _GEMMA_READY in raw.decode("utf-8", errors="replace").rstrip("\r\n"):
                     ready.set()
 
     def _start(self, name: str, cmd: list[str], cwd: Path, timeout: float) -> None:
@@ -102,6 +102,7 @@ class Residents:
         if need is None: raise RuntimeError(f"cannot boot command {self.paths.command!r}")
         commands: list[tuple[str, Path, list[str], float]] = []
         if "gemma" in need:
+            if self.paths.gemma_runtime is None: raise RuntimeError("Gemma runtime was not configured for this command")
             gemma = _exe(self.paths.models_dir, "gemma", "llama-server.exe")
             knobs = self.paths.gemma_runtime
             commands.append(("gemma", gemma.parent, [str(gemma), "-m", str(self.paths.models_dir / GEMMA_FILE), "--alias", "gemma",
@@ -117,7 +118,8 @@ class Residents:
             if family not in TTS_MODELS: raise RuntimeError(f"unknown TTS family {family!r}")
             if family != "v3" and language != "en": raise RuntimeError(f"{family} supports English only")
             if family == "v3" and language not in V3_LANGUAGES: raise RuntimeError(f"V3 language {language!r} is not supported")
-            tts, knobs = _exe(self.paths.models_dir, "tts", "chatterbox-server.exe"), getattr(self.paths, "tts_knobs", TTS_PROFILES[family])
+            if self.paths.tts_knobs is None: raise RuntimeError("TTS knobs were not configured for this command")
+            tts, knobs = _exe(self.paths.models_dir, "tts", "chatterbox-server.exe"), self.paths.tts_knobs
             t3_file, codec_file = TTS_MODELS[family]
             commands.append(("chatterbox", tts.parent, [str(tts), "--run-id", self.journal.run_id, "--family", family,
                 "--model", str(self.paths.models_dir / t3_file), "--s3gen-gguf", str(self.paths.models_dir / codec_file),

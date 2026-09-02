@@ -25,8 +25,7 @@ def fit_spoken_unit(text: str, max_words: int, max_chars: int) -> tuple[str, boo
 
 
 def spoken(text: str) -> str:
-    text, marker = text.replace("\r", "").strip(), "Assistant:\n"
-    return text.rsplit(marker, 1)[-1].strip() if marker in text else text
+    return text.replace("\r", "").strip()
 
 
 def _payload(messages: list[dict], gen: dict, thinking: str, thinking_budget: int, **extra) -> dict:
@@ -47,10 +46,10 @@ def _open_json(base: str, channel: CancelableHTTP, payload: dict, accept: str = 
     return response
 
 
-def gemma_stream(base: str, messages: list[dict], channel: CancelableHTTP, gen: dict | None = None,
+def gemma_stream(base: str, messages: list[dict], channel: CancelableHTTP, gen: dict,
                  thinking: str = "off", thinking_budget: int = -1, tools: list[dict] | None = None,
                  tool_choice=None):
-    payload = _payload(messages, dict(gen or GEMMA_GEN), thinking, thinking_budget, stream=True)
+    payload = _payload(messages, dict(gen), thinking, thinking_budget, stream=True)
     if tools is not None:
         payload.update(tools=tools, parallel_tool_calls=False)
         if tool_choice is not None: payload["tool_choice"] = tool_choice
@@ -66,9 +65,9 @@ def gemma_stream(base: str, messages: list[dict], channel: CancelableHTTP, gen: 
         channel.clear(response)
 
 
-def gemma_complete(base: str, messages: list[dict], channel: CancelableHTTP, gen: dict | None = None,
+def gemma_complete(base: str, messages: list[dict], channel: CancelableHTTP, gen: dict,
                    thinking: str = "off", thinking_budget: int = -1, **extra) -> dict:
-    response = _open_json(base, channel, _payload(messages, dict(gen or GEMMA_GEN), thinking, thinking_budget, stream=False, **extra))
+    response = _open_json(base, channel, _payload(messages, dict(gen), thinking, thinking_budget, stream=False, **extra))
     try: return json.loads(response.read())
     finally: channel.clear(response)
 
