@@ -191,6 +191,10 @@ class Synthesis:
 
     def _sync_pending(self) -> None: self.renderer.set_pending(self.pending)
 
+    def _live(self, epoch: int) -> bool:
+        with self.lock:
+            return epoch == self.epoch
+
     def send_sentence(self, epoch: int, response_id: int, piece_id: int, text: str) -> bool:
         identity = (epoch, response_id, piece_id)
         with self.lock:
