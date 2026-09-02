@@ -27,12 +27,13 @@ flowchart LR
 
 There is no whole-WAV HTTP ASR fallback. Partial and final text come from one direct cache-aware Parakeet stream.
 
-`python main.py install` clones pinned `chatterbox.cpp` and `parakeet.cpp` v0.5.0, cmake-builds the Vulkan natives (including `parakeet.dll`), and fetches Gemma, Smart Turn, and reference voices. A fresh clone runs the same download-and-build path.
+`python main.py install` writes portable products into `--models-dir` (default `models/`): converted Chatterbox GGUFs, Gemma/Parakeet/Smart Turn weights, Vulkan engines (`tts/`, `parakeet/`, `gemma/`), and reference voices. Each product gets a `built-from/*.txt` stamp of the `config.py` pins that produced it. Copy that folder into another clone (or point several clones at one directory with `--models-dir`) and install skips anything whose stamp still matches. Changing a pin rebuilds only the products that list it. `.venv` and `tools/` stay local; `tools/` is the build factory (cmake trees, converter torch, downloads), not the cache. Source trees under `third_party/` are cloned only when a native build or GGUF conversion actually runs.
 
 ## Commands
 
 ```text
 python main.py install
+python main.py install --models-dir D:\trident-products
 python main.py asr --language pl --asr-device Vulkan0
 python main.py talk --family nano --language en --cfm-steps 1 --asr-device Vulkan0
 python main.py talk --family v3 --language pl --voice C:\path\ref.wav --cfm-steps 5 --cfg-weight 0.5 --exaggeration 0.5
