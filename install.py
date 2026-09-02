@@ -18,8 +18,7 @@ from pathlib import Path
 from config import (CHATTERBOX, CHATTERBOX_REV, CHATTERBOX_URL, CODEC_QUANT, CONVERTER, DATA, GEMMA_FILE,
                     GEMMA_URL, GGML, GGML_GIT, HARDWARE, LLAMA_ZIP, MODELS, PARAKEET, PARAKEET_FILE,
                     PARAKEET_GIT_URL, PARAKEET_REV, PARAKEET_URL, ROOT, SMART_TURN_FILE, SMART_TURN_URL,
-                    TOOLS, TTS_BACKEND, TTS_MODELS, TTS_WEIGHTS, VOICE_HF, VOICES, find_exe)
-from journal import git_identity
+                    TOOLS, TTS_BACKEND, TTS_MODELS, TTS_WEIGHTS, VOICE_HF, VOICES, find_exe, git_identity)
 
 DOWNLOADS = TOOLS / "downloads"
 CONVERTER_PINS = {"torch": "2.6.0", "numpy": "1.26.4", "gguf": "0.19.0", "safetensors": "0.5.3", "scipy": "1.15.3",
@@ -43,15 +42,8 @@ def _stamp(path: Path, **fields) -> None:
 
 
 def _ready(outputs: list[Path], stamp: Path, **fields) -> bool:
-    expected = _identity(**fields)
-    if not all(path.is_file() and path.stat().st_size for path in outputs):
-        return False
-    if stamp.is_file() and stamp.read_text(encoding="utf-8") == expected:
-        return True
-    if not stamp.is_file():
-        _stamp(stamp, **fields)
-        return True
-    return False
+    return (all(path.is_file() and path.stat().st_size for path in outputs)
+            and stamp.is_file() and stamp.read_text(encoding="utf-8") == _identity(**fields))
 
 
 def product_stamps(models: Path) -> dict[str, str]:
@@ -129,23 +121,33 @@ def pin(paths, url: str, rev: str, dest: Path, role: str, submodules: bool = Fal
     return fetched
 
 
-def _take(src: Path, dest: Path) -> None:
+def _take(src: Path, dest: Path) -> bool:
     if dest.exists() or not src.exists():
-        return
+        return False
     dest.parent.mkdir(parents=True, exist_ok=True)
     if src.is_dir():
         shutil.copytree(src, dest)
         (dest / "provenance.json").unlink(missing_ok=True)
     else:
         shutil.copy2(src, dest)
+    return True
 
 
-def _adopt_previous(models: Path) -> None:
-    old = TOOLS / "runtime"
-    for role in ("tts", "parakeet", "gemma"):
-        _take(old / role, models / role)
-    for _source, name in VOICES.values():
-        _take(DATA / name, models / "voices" / name)
+def _adopt_previous(models: Path) -> list[str]:
+    old, stamps, adopted = TOOLS / "runtime", Path(models) / "built-from", []
+    stamps.mkdir(parents=True, exist_ok=True)
+    for role, src, dest, write in (
+        ("tts", old / "tts", models / "tts", lambda: _stamp(stamps / "tts.txt", **_tts_server_fields())),
+        ("parakeet", old / "parakeet", models / "parakeet", lambda: _stamp(stamps / "parakeet.txt", **_parakeet_fields())),
+        ("gemma", old / "gemma", models / "gemma", lambda: _stamp(stamps / "gemma-server.txt", url=LLAMA_ZIP[0], archive=LLAMA_ZIP[1])),
+    ):
+        if _take(src, dest):
+            write(); adopted.append(role)
+    for source, name in VOICES.values():
+        role = f"voice-{Path(name).stem}"
+        if _take(DATA / name, models / "voices" / name):
+            _stamp(stamps / f"{role}.txt", url=VOICE_HF + source); adopted.append(role)
+    return adopted
 
 
 def _tts_server_fields() -> dict:
@@ -295,8 +297,9 @@ def install(models_dir: Path | None, data_dir: Path | None, paths) -> None:
     models, data = Path(models_dir or MODELS), Path(data_dir or DATA)
     models.mkdir(parents=True, exist_ok=True); data.mkdir(parents=True, exist_ok=True)
     stamps = models / "built-from"; stamps.mkdir(exist_ok=True)
-    _adopt_previous(models)
     paths.journal.emit("install", "start", hardware=HARDWARE, chatterbox_revision=CHATTERBOX_REV, ggml_revision=GGML_GIT[1], parakeet_revision=PARAKEET_REV)
+    if adopted := _adopt_previous(models):
+        paths.journal.emit("install", "adopted", roles=adopted)
 
     tts_exe = models / "tts" / "chatterbox-server.exe"
     need_tts = not _ready([tts_exe], stamps / "tts.txt", **_tts_server_fields())

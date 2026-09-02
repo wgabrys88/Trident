@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import subprocess
@@ -100,6 +101,21 @@ TTS_WEIGHTS = {
 
 def find_exe(root: Path, name: str) -> Path | None:
     return next((p for p in root.rglob(name) if p.is_file()), None) if root.is_dir() else None
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        while chunk := handle.read(1 << 20):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+def git_identity(path: Path) -> dict:
+    try:
+        run = lambda *a: subprocess.check_output(["git", "-C", str(path), *a], text=True, stderr=subprocess.DEVNULL, timeout=15).strip()
+        return {"sha": run("rev-parse", "HEAD"), "branch": run("branch", "--show-current"),
+                "dirty": bool(run("status", "--porcelain", "--untracked-files=no"))}
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return {"sha": "", "branch": "", "dirty": None}
 
 def system_prompt(language: str, base: str | None = None, spoken: bool = False) -> str:
     language = language.strip().lower()

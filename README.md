@@ -16,7 +16,7 @@ flowchart LR
     VAD -. barge-in .-> PLAY
 ```
 
-`python main.py install` writes portable products into `--models-dir` (default `models/`): Chatterbox GGUFs, Gemma/Parakeet/Smart Turn weights, Vulkan engines, and reference voices. Each product gets a `built-from/*.txt` stamp of the `config.py` pins that produced it. Copy that folder, or point several clones at one directory. A pin change rebuilds only the products that list it. `.venv` and `tools/` stay local; `third_party/` is cloned only for a native build or GGUF conversion.
+`python main.py install` writes portable products into `--models-dir` (default `models/`): Chatterbox GGUFs, Gemma/Parakeet/Smart Turn weights, Vulkan engines, and reference voices. Each product gets a `built-from/*.txt` stamp of the `config.py` pins that produced it. Copy that folder, or point several clones at one directory. A pin change rebuilds only the products that list it. Unstamped files are rebuilt, not silently stamped as current. `.venv` and `tools/` stay local; `third_party/` is cloned only for a native build or GGUF conversion.
 
 ```text
 python main.py install
