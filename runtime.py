@@ -12,16 +12,15 @@ import urllib.parse
 from pathlib import Path
 
 from config import (
-    CHATTERBOX, FLASH_ATTN, GEMMA_CONTEXT, GEMMA_FILE, PARAKEET_FILE, PORTS, RUNTIMES, SERVICES,
-    TTS_MODELS, TTS_PROFILES, V3_LANGUAGES, VULKAN_ENV, Paths, find_exe, load_settings, voice_wav,
+    CHATTERBOX, GEMMA_FILE, PORTS, RUNTIMES, SERVICES,
+    TTS_MODELS, TTS_PROFILES, V3_LANGUAGES, VULKAN_ENV, Paths, find_exe, voice_wav,
 )
 from journal import git_identity
 
 PROTOCOL_MAGIC, PROTOCOL_VERSION = 0x32525454, 2
 REQ_SYNTH, REQ_ADVANCE, REQ_CLOSE = 1, 2, 3
 RESP_PCM, RESP_DONE, RESP_CANCELLED, RESP_ERROR, RESP_CLOSED = 1, 2, 3, 4, 5
-_READY = {"parakeet": "parakeet-server: listening on ", "gemma": "llama_server: listening on http://127.0.0.1:",
-          "chatterbox": '"event":"server.ready"'}
+_READY = {"gemma": "llama_server: listening on http://127.0.0.1:", "chatterbox": '"event":"server.ready"'}
 _TTS_FLAGS = (("--n-gpu-layers", "gpu_layers"), ("--context", "context"), ("--threads", "threads"), ("--seed", "seed"),
     ("--max-tokens", "max_tokens"), ("--top-k", "top_k"), ("--top-p", "top_p"), ("--min-p", "min_p"),
     ("--temperature", "temperature"), ("--repeat-penalty", "repeat_penalty"), ("--cfg-weight", "cfg_weight"),
@@ -88,23 +87,29 @@ class Residents:
         family, language, need = family.strip().lower(), language.strip().lower(), SERVICES.get(self.paths.command)
         if need is None: raise RuntimeError(f"cannot boot command {self.paths.command!r}")
         commands: list[tuple[str, Path, list[str], float]] = []
-        if "parakeet" in need:
-            parakeet = _exe("parakeet", "parakeet-server.exe")
-            commands.append(("parakeet", parakeet.parent, [str(parakeet), "--model", str(self.paths.models_dir / PARAKEET_FILE), "--port", str(PORTS["parakeet"])], 180))
         if "gemma" in need:
             gemma = _exe("gemma", "llama-server.exe")
-            commands.append(("gemma", gemma.parent, [str(gemma), "-m", str(self.paths.models_dir / GEMMA_FILE), "--alias", "gemma", "--host", "127.0.0.1", "--port", str(PORTS["gemma"]), "--offline", "--device", "Vulkan0", "--n-gpu-layers", "all", "--ctx-size", str(GEMMA_CONTEXT), "--no-mmproj", "--flash-attn", FLASH_ATTN, "--threads", "2", "--threads-batch", "2", "--poll", "0", "--poll-batch", "0", "--threads-http", "1", "--no-ui", "--reasoning", "off"], 180))
+            knobs = self.paths.gemma_runtime
+            commands.append(("gemma", gemma.parent, [str(gemma), "-m", str(self.paths.models_dir / GEMMA_FILE), "--alias", "gemma",
+                "--host", "127.0.0.1", "--port", str(PORTS["gemma"]), "--offline", "--device", str(knobs["device"]),
+                "--n-gpu-layers", str(knobs["gpu_layers"]), "--ctx-size", str(knobs["context"]), "--parallel", str(knobs["parallel"]),
+                "--cache-type-k", str(knobs["cache_type_k"]), "--cache-type-v", str(knobs["cache_type_v"]),
+                "--batch-size", str(knobs["batch_size"]), "--ubatch-size", str(knobs["ubatch_size"]),
+                "--cache-ram", str(knobs["cache_ram"]), "--ctx-checkpoints", str(knobs["ctx_checkpoints"]),
+                "--checkpoint-min-step", str(knobs["checkpoint_min_step"]), "--no-mmproj", "--jinja",
+                "--flash-attn", str(knobs["flash_attn"]), "--threads", str(knobs["threads"]), "--threads-batch", str(knobs["threads_batch"]),
+                "--poll", "0", "--poll-batch", "0", "--threads-http", "1", "--no-ui", "--reasoning", "auto"], 180))
         if "chatterbox" in need:
             if family not in TTS_MODELS: raise RuntimeError(f"unknown TTS family {family!r}")
             if family != "v3" and language != "en": raise RuntimeError(f"{family} supports English only")
             if family == "v3" and language not in V3_LANGUAGES: raise RuntimeError(f"V3 language {language!r} is not supported")
-            tts, knobs, settings = _exe("tts", "chatterbox-server.exe"), TTS_PROFILES[family], load_settings(self.paths.data_dir)
+            tts, knobs = _exe("tts", "chatterbox-server.exe"), getattr(self.paths, "tts_knobs", TTS_PROFILES[family])
             t3_file, codec_file = TTS_MODELS[family]
             commands.append(("chatterbox", tts.parent, [str(tts), "--run-id", self.journal.run_id, "--family", family,
                 "--model", str(self.paths.models_dir / t3_file), "--s3gen-gguf", str(self.paths.models_dir / codec_file),
-                "--reference", str(voice_wav(self.paths.data_dir, settings["tts_voice"])), "--language", language,
+                "--reference", str(voice_wav(self.paths.data_dir, self.paths.voice)), "--language", language,
                 "--port", str(PORTS["chatterbox"]), *[x for flag, key in _TTS_FLAGS for x in (flag, str(knobs[key]))]], 300))
-            self.journal.emit("runtime", "boot.start", command=self.paths.command, family=family, language=language, voice=settings["tts_voice"], t3=t3_file, codec=codec_file, chatterbox_sha=git_identity(CHATTERBOX).get("sha") or "", knobs=knobs)
+            self.journal.emit("runtime", "boot.start", command=self.paths.command, family=family, language=language, voice=self.paths.voice, t3=t3_file, codec=codec_file, chatterbox_sha=git_identity(CHATTERBOX).get("sha") or "", knobs=knobs)
         else:
             self.journal.emit("runtime", "boot.start", command=self.paths.command, family=family, language=language)
         for name, cwd, command, timeout in commands:

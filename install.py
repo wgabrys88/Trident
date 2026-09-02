@@ -78,22 +78,23 @@ def pull(paths, url: str, dest: Path, size: int = 0, sha256: str = "") -> Path:
     return dest
 
 
-def install_runtime(paths, role: str, exe_name: str, spec: tuple[str, str, int, str]) -> None:
+def install_runtime(paths, role: str, artifact_name: str, spec: tuple[str, str, int, str], version_name: str | None = None) -> None:
     url, archive_name, expected_size, expected_sha = spec
     dest, archive, receipt_path = RUNTIMES / role, DOWNLOADS / archive_name, RUNTIMES / role / "provenance.json"
-    receipt, exe = _read_json(receipt_path), find_exe(dest, exe_name)
-    if (isinstance(receipt, dict) and exe is not None and receipt.get("archive", {}).get("sha256") == expected_sha
-            and receipt.get("executable", {}).get("size") == exe.stat().st_size):
-        paths.journal.emit("install", "runtime.ready", role=role, executable=receipt["executable"], archive=receipt.get("archive"))
+    receipt, artifact = _read_json(receipt_path), find_exe(dest, artifact_name)
+    if (isinstance(receipt, dict) and artifact is not None and receipt.get("archive", {}).get("sha256") == expected_sha
+            and receipt.get("artifact", {}).get("sha256") == _sha(artifact)):
+        paths.journal.emit("install", "runtime.ready", role=role, artifact=receipt["artifact"], archive=receipt.get("archive"))
         return
     if dest.exists(): shutil.rmtree(dest)
     archive = pull(paths, url, archive, expected_size, expected_sha)
     dest.mkdir(parents=True)
     with zipfile.ZipFile(archive) as z: z.extractall(dest)
     paths.journal.emit("install", "archive.completed", archive=archive.name, destination=str(dest))
-    if (exe := find_exe(dest, exe_name)) is None: raise RuntimeError(f"{exe_name} missing from verified {archive_name}")
-    receipt = {"role": role, "url": url, "archive": file_identity(archive),
-               "executable": {"path": str(exe), "size": exe.stat().st_size}, "version": _tool([str(exe), "--version"])}
+    if (artifact := find_exe(dest, artifact_name)) is None: raise RuntimeError(f"{artifact_name} missing from verified {archive_name}")
+    version_tool = find_exe(dest, version_name) if version_name else artifact
+    receipt = {"role": role, "url": url, "archive": file_identity(archive), "artifact": file_identity(artifact),
+               "version": _tool([str(version_tool), "--version"]) if version_tool else "unavailable"}
     _write_json(receipt_path, receipt)
     paths.journal.emit("install", "runtime.completed", **receipt)
 
@@ -266,7 +267,8 @@ def install(models_dir: Path | None, data_dir: Path | None, paths) -> None:
     if not _build_valid(): build_tts(paths)
     else: paths.journal.emit("install", "tts.build.ready", executable=file_identity(RUNTIMES / "tts" / "chatterbox-server.exe"))
     convert_tts(paths, models, list(TTS_MODELS))
-    install_runtime(paths, "parakeet", "parakeet-server.exe", PARAKEET_ZIP)
+    install_runtime(paths, "parakeet", "parakeet.dll", PARAKEET_ZIP, "parakeet-cli.exe")
+    for stale in (RUNTIMES / "parakeet").rglob("parakeet-server.exe"): stale.unlink()
     install_runtime(paths, "gemma", "llama-server.exe", LLAMA_ZIP)
     for source, name, size, sha256 in VOICES.values(): pull(paths, VOICE_HF + source, data / name, size, sha256)
     pull(paths, PARAKEET_URL, models / PARAKEET_FILE, PARAKEET_SIZE, PARAKEET_SHA256)
