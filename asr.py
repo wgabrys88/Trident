@@ -7,6 +7,7 @@ if __name__ == "__main__":
 import ctypes
 import os
 import queue
+import re
 import threading
 import time
 from pathlib import Path
@@ -26,10 +27,16 @@ STOP_PHRASES = {
 BACKCHANNELS = {"yeah", "yes", "yep", "yup", "ok", "okay", "mhm", "mm", "uh", "um", "aha", "uh huh", "huh", "right", "sure", "tak", "no", "nie", "okej"}
 PARAKEET_EVENT_EOU, PARAKEET_EVENT_EOB = 1, 2
 _EOF = object()
+_ASR_TAG = re.compile(r"\s*<[^>\s]+>")
+
+
+def asr_text(text: str) -> str:
+    # Streaming parakeet.cpp only strips <EOU>/<EOB> ids; language tags like <en-US> still leak.
+    return _ASR_TAG.sub("", text).strip()
 
 
 def folded_utterance(text: str) -> str:
-    return " ".join("".join(ch if ch.isalnum() or ch.isspace() else " " for ch in text.casefold().replace("\r", " ").replace("\n", " ")).split())
+    return " ".join("".join(ch if ch.isalnum() or ch.isspace() else " " for ch in asr_text(text).casefold().replace("\r", " ").replace("\n", " ")).split())
 
 
 def classify_utterance(text: str) -> str:
@@ -94,14 +101,16 @@ class StreamingASR:
         delta = self._take(ptr)
         if delta: self.text += delta
         self.feed_calls += 1
-        return self.text.strip(), int(event.value), (time.perf_counter() - started) * 1000
+        self.text = asr_text(self.text)
+        return self.text, int(event.value), (time.perf_counter() - started) * 1000
 
     def finalize(self) -> str:
         if not self.stream: return ""
         try:
             tail = self._take(self.lib.parakeet_capi_stream_finalize(self.stream))
             if tail: self.text += tail
-            return self.text.strip()
+            self.text = asr_text(self.text)
+            return self.text
         finally:
             self.lib.parakeet_capi_stream_free(self.stream); self.stream = None
 

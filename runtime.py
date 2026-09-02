@@ -25,7 +25,21 @@ _TTS_FLAGS = (("--n-gpu-layers", "gpu_layers"), ("--context", "context"), ("--th
     ("--max-tokens", "max_tokens"), ("--top-k", "top_k"), ("--top-p", "top_p"), ("--min-p", "min_p"),
     ("--temperature", "temperature"), ("--repeat-penalty", "repeat_penalty"), ("--cfg-weight", "cfg_weight"),
     ("--exaggeration", "exaggeration"), ("--cfm-steps", "cfm_steps"), ("--fastconv", "fastconv"))
-_CTRL_C_HELPER = "import ctypes,sys,time\nk=ctypes.WinDLL('kernel32',use_last_error=True)\nk.FreeConsole()\nif not k.AttachConsole(int(sys.argv[1])): raise ctypes.WinError(ctypes.get_last_error())\nif not k.SetConsoleCtrlHandler(None,True): raise ctypes.WinError(ctypes.get_last_error())\nif not k.GenerateConsoleCtrlEvent(0,0): raise ctypes.WinError(ctypes.get_last_error())\ntime.sleep(0.5)\nk.FreeConsole()\n"
+# Attach to the hidden CREATE_NEW_CONSOLE, then CTRL_BREAK to that console (group 0).
+# CTRL_C is ignored by llama-server; CTRL_BREAK stops it with STATUS_CONTROL_C_EXIT.
+# The helper must eat CTRL_BREAK too, otherwise it dies with the resident.
+_STATUS_CONTROL_C_EXIT = 0xC000013A
+_CTRL_BREAK_HELPER = (
+    "import ctypes,sys,time\n"
+    "k=ctypes.WinDLL('kernel32',use_last_error=True)\n"
+    "H=ctypes.WINFUNCTYPE(ctypes.c_int,ctypes.c_uint); h=H(lambda ev: 1)\n"
+    "k.FreeConsole()\n"
+    "if not k.AttachConsole(int(sys.argv[1])): raise ctypes.WinError(ctypes.get_last_error())\n"
+    "if not k.SetConsoleCtrlHandler(h,True): raise ctypes.WinError(ctypes.get_last_error())\n"
+    "if not k.GenerateConsoleCtrlEvent(1,0): raise ctypes.WinError(ctypes.get_last_error())\n"
+    "time.sleep(0.5)\n"
+    "k.FreeConsole()\n"
+)
 
 
 def _exe(models_dir: Path, folder: str, name: str) -> Path:
@@ -167,11 +181,12 @@ class Residents:
             f"{name} did not become ready for graceful shutdown", event=ready)
 
     def _ctrl_c(self, name: str, proc: subprocess.Popen) -> None:
-        result = subprocess.run([sys.executable, "-c", _CTRL_C_HELPER, str(proc.pid)], stdin=subprocess.DEVNULL,
+        result = subprocess.run([sys.executable, "-c", _CTRL_BREAK_HELPER, str(proc.pid)], stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NO_WINDOW,
             text=True, encoding="utf-8", errors="replace", timeout=5)
-        if result.returncode: raise RuntimeError(f"{name} CTRL_C helper failed exit={result.returncode}: {result.stdout.strip()}")
-        self.journal.emit("resident", "signal.delivered", name=name, pid=proc.pid, signal="CTRL_C_EVENT", scope="resident-console")
+        if result.returncode not in (0, _STATUS_CONTROL_C_EXIT):
+            raise RuntimeError(f"{name} CTRL_BREAK helper failed exit={result.returncode}: {result.stdout.strip()}")
+        self.journal.emit("resident", "signal.delivered", name=name, pid=proc.pid, signal="CTRL_BREAK_EVENT", scope="resident-console")
 
     def _reap(self, name: str, proc: subprocess.Popen, failures: list[str]) -> None:
         running = proc.poll() is None
@@ -183,12 +198,14 @@ class Residents:
                     if name != "chatterbox": self._ctrl_c(name, proc)
                 proc.wait(timeout=10)
             except (ValueError, OSError, subprocess.TimeoutExpired, RuntimeError) as error:
-                failures.append(f"{name}: {error}")
-                if proc.poll() is None: proc.kill(); proc.wait(timeout=5)
+                still = proc.poll() is None
+                detail = f"wait timed out after 10s" if isinstance(error, subprocess.TimeoutExpired) else str(error)
+                failures.append(f"{name}: {detail}")
+                if still: proc.kill(); proc.wait(timeout=5)
         if (reader := self.readers.get(name)) is not None:
             reader.join(timeout=5)
             if reader.is_alive(): failures.append(f"{name}: log reader survived")
-        if not (clean := (code := proc.wait()) == 0): failures.append(f"{name}: exit {code}")
+        if not (clean := (code := proc.wait()) in (0, _STATUS_CONTROL_C_EXIT)): failures.append(f"{name}: exit {code}")
         self.journal.emit("resident", "stopped", name=name, pid=proc.pid, exit_code=code, clean=clean)
 
     def stop(self) -> None:
