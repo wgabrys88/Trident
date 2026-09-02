@@ -1,7 +1,6 @@
 *
 !/.gitignore
 !/.gitattributes
-!/hello_world.py
 !/main.py
 !/config.py
 !/install.py
