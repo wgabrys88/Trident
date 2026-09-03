@@ -23,6 +23,8 @@ _REQUEST_HEADER = struct.Struct("<IIIIIII")
 _RESPONSE_HEADER = struct.Struct("<IIIIIIII")
 _TEXT_CHUNK_CHARS = 120
 _SENTENCE_BREAK = re.compile(r"(?<=[.!?\u2026])\s+")
+# chatterbox s3gen_synthesize zeros the first 20 ms of every chunk_id=0 cook.
+_S3GEN_OPENING_ZEROS = (TTS_RATE // 50) * 2
 
 
 def _send(sock: socket.socket, kind: int, epoch: int = 0, response_id: int = 0, piece_id: int = 0, text: str = "") -> None:
@@ -50,27 +52,25 @@ def _recv_frame(sock: socket.socket) -> tuple[int, int, int, int, int, bytes]:
 
 
 def _text_chunks(text: str, limit: int = _TEXT_CHUNK_CHARS) -> list[str]:
-    """Return bounded, non-overlapping speech pieces in their original order."""
+    """One punctuation sentence per S3Gen cook; wrap only sentences longer than limit."""
     normalized = " ".join(text.split())
-    units: list[str] = []
-    for sentence in _SENTENCE_BREAK.split(normalized):
-        units.extend(textwrap.wrap(sentence, width=limit, break_long_words=True,
-                                   break_on_hyphens=False, replace_whitespace=True,
-                                   drop_whitespace=True))
     chunks: list[str] = []
-    current = ""
-    for unit in units:
-        candidate = f"{current} {unit}" if current else unit
-        if current and len(candidate) > limit:
-            chunks.append(current)
-            current = unit
-        else:
-            current = candidate
-    if current:
-        chunks.append(current)
+    for sentence in _SENTENCE_BREAK.split(normalized):
+        chunks.extend(textwrap.wrap(sentence, width=limit, break_long_words=True,
+                                    break_on_hyphens=False, replace_whitespace=True,
+                                    drop_whitespace=True))
     if not chunks:
         raise RuntimeError("TTS input contains no speakable text")
     return chunks
+
+
+def _pcm_for_wav(payload: bytes, piece_id: int) -> bytes:
+    """Drop leftover start-of-stream zeros so concatenated pieces do not hole at the join."""
+    if piece_id == 0 or len(payload) <= _S3GEN_OPENING_ZEROS:
+        return payload
+    if payload[:_S3GEN_OPENING_ZEROS] != b"\x00" * _S3GEN_OPENING_ZEROS:
+        return payload
+    return payload[_S3GEN_OPENING_ZEROS:]
 
 
 def cook(paths: Paths, text: str) -> dict:
@@ -107,16 +107,17 @@ def cook(paths: Paths, text: str) -> dict:
                     if kind != RESP_CLOSED and identity != (0, 0, piece_id):
                         raise RuntimeError(f"unexpected TTS response identity {identity}, expected {(0, 0, piece_id)}")
                     if kind == RESP_PCM:
+                        wav_payload = _pcm_for_wav(payload, piece_id)
                         if first_pcm_at is None:
                             first_pcm_at = time.perf_counter()
                             paths.journal.emit("tts", "first_pcm",
                                                elapsed_ms=round((first_pcm_at - started) * 1000, 3),
-                                               bytes=len(payload), piece_id=piece_id, chunk_id=chunk_id)
-                        out.writeframesraw(payload)
-                        pcm_bytes += len(payload)
+                                               bytes=len(wav_payload), piece_id=piece_id, chunk_id=chunk_id)
+                        out.writeframesraw(wav_payload)
+                        pcm_bytes += len(wav_payload)
                         frames.append({"kind": "pcm", "epoch": epoch, "response_id": response_id,
                                        "piece_id": returned_piece, "chunk_id": chunk_id,
-                                       "bytes": len(payload)})
+                                       "bytes": len(wav_payload)})
                     elif kind == RESP_DONE:
                         terminal = {"kind": "done", "epoch": epoch, "response_id": response_id,
                                     "piece_id": returned_piece}
