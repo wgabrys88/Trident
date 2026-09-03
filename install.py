@@ -19,13 +19,16 @@ import zipfile
 from pathlib import Path
 
 from config import (
-    CHATTERBOX, CHATTERBOX_REV, CHATTERBOX_URL, CODEC_FILE, DATA, GGML, GGML_GIT, HARDWARE, MODELS, ROOT,
-    RUNTIMES, T3_FILE, TOOLS, TTS_BACKEND, TTS_MODELS, TTS_NANO_URLS, VOICE_FILE, VOICE_SHA256, VOICE_SIZE,
-    VOICE_URL, find_exe,
+    CHATTERBOX, CHATTERBOX_REV, CHATTERBOX_URL, CODEC_FILE, CODEC_QUANT, CONVERTER, DATA, GGML, GGML_GIT,
+    HARDWARE, MODELS, ROOT, RUNTIMES, T3_FILE, TOOLS, TTS_BACKEND, TTS_MODELS, TTS_NANO_SPEC, VOICE_FILE,
+    VOICE_SHA256, VOICE_SIZE, VOICE_URL, find_exe,
 )
 from journal import file_identity, git_identity
 
 DOWNLOADS = TOOLS / "downloads"
+CONVERTER_PINS = {"torch": "2.6.0", "numpy": "1.26.4", "gguf": "0.19.0", "safetensors": "0.5.3", "scipy": "1.15.3",
+                  "librosa": "0.11.0", "resampy": "0.4.3", "huggingface-hub": "0.34.4"}
+_PIP = ("-m", "pip", "install", "--disable-pip-version-check", "--progress-bar", "off", "--no-input")
 _BUILD_FLAGS = ["-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_NATIVE=ON", "-DGGML_CCACHE=OFF", "-DTTS_CPP_BUILD_EXECUTABLES=ON"]
 
 
@@ -176,6 +179,84 @@ def _build_valid() -> bool:
         return False
 
 
+def _converter(paths) -> tuple[Path, dict]:
+    py = CONVERTER / "Scripts" / "python.exe"
+    if not py.is_file():
+        _run(paths, [sys.executable, "-m", "venv", str(CONVERTER)], role="converter-venv")
+    code = "import importlib.metadata,json; print(json.dumps({n:importlib.metadata.version(n) for n in " + repr(tuple(CONVERTER_PINS)) + "}))"
+    try:
+        installed = json.loads(subprocess.check_output([str(py), "-c", code], text=True, stderr=subprocess.DEVNULL, timeout=30))
+    except Exception:
+        installed = {}
+    if any(installed.get(name) != version for name, version in CONVERTER_PINS.items()):
+        _run(paths, [str(py), *_PIP, "torch==2.6.0", "--index-url", "https://download.pytorch.org/whl/cpu"], role="converter-pip")
+        _run(paths, [str(py), *_PIP, *[f"{n}=={v}" for n, v in CONVERTER_PINS.items() if n != "torch"]], role="converter-pip")
+    return py, {"python": _tool([str(py), "--version"]), "required": CONVERTER_PINS, "packages": _tool([str(py), "-m", "pip", "freeze"], first_line=False).splitlines()}
+
+
+def _snapshot(paths, py: Path, env: dict, spec: dict, dest: Path) -> None:
+    code = "from huggingface_hub import snapshot_download;" + f"snapshot_download(repo_id={spec['repo']!r},revision={spec['rev']!r},allow_patterns={list(spec['files'])!r},local_dir={str(dest)!r})"
+    _run(paths, [str(py), "-c", code], ROOT, env, role="hf-snapshot")
+    missing = [name for name in spec["files"] if not (dest / name).is_file()]
+    if missing:
+        raise RuntimeError(f"checkpoint snapshot incomplete: {missing}")
+
+
+def _scripts(spec: dict) -> tuple[Path, Path]:
+    return CHATTERBOX / "scripts" / spec["t3"], CHATTERBOX / "scripts" / "convert-s3gen-to-gguf.py"
+
+
+def _conversion_identity(family: str, models: Path, converter: dict) -> dict:
+    spec = TTS_NANO_SPEC
+    t3, s3 = (models / name for name in TTS_MODELS[family])
+    ckpt = CONVERTER / spec["ckpt"]
+    return {"family": family, "checkpoint_repo": spec["repo"], "checkpoint_revision": spec["rev"],
+            "checkpoint_files": {name: file_identity(ckpt / name) for name in spec["files"]},
+            "converter_repository": git_identity(CHATTERBOX), "converter_scripts": {p.name: _sha(p) for p in _scripts(spec)},
+            "tool_versions": converter, "quantization": {"t3": "q4_0", "s3gen": CODEC_QUANT},
+            "outputs": {"t3": file_identity(t3), "s3gen": file_identity(s3)}}
+
+
+def _conversion_valid(family: str, models: Path, converter: dict | None = None) -> bool:
+    spec, receipt = TTS_NANO_SPEC, _read_json(models / f".{family}-provenance.json")
+    if not receipt:
+        return False
+    ckpt = CONVERTER / spec["ckpt"]
+    if (receipt.get("checkpoint_repo") != spec["repo"] or receipt.get("checkpoint_revision") != spec["rev"]
+            or receipt.get("converter_scripts") != {p.name: _sha(p) for p in _scripts(spec) if p.is_file()}
+            or receipt.get("quantization") != {"t3": "q4_0", "s3gen": CODEC_QUANT}
+            or (converter is not None and receipt.get("tool_versions") != converter)
+            or receipt.get("checkpoint_files") != {name: file_identity(ckpt / name) for name in spec["files"]}):
+        return False
+    return all((p := models / name).is_file() and (r := receipt.get("outputs", {}).get(role, {})).get("size") == p.stat().st_size and r.get("sha256") == _sha(p)
+               for role, name in zip(("t3", "s3gen"), TTS_MODELS[family]))
+
+
+def convert_tts(paths, models: Path) -> None:
+    py, tools = _converter(paths)
+    env = os.environ.copy()
+    env.update(HF_HOME=str(TOOLS / "huggingface"), HF_HUB_DISABLE_SYMLINKS="1")
+    spec, ckpt = TTS_NANO_SPEC, CONVERTER / TTS_NANO_SPEC["ckpt"]
+    if _conversion_valid("nano", models, tools):
+        paths.journal.emit("install", "tts.convert.ready", family="nano")
+    else:
+        _snapshot(paths, py, env, spec, ckpt)
+        t3, s3 = (models / name for name in TTS_MODELS["nano"])
+        temps = [p.with_suffix(p.suffix + ".new") for p in (t3, s3)]
+        for temp in temps:
+            temp.unlink(missing_ok=True)
+        t3_py, s3_py = _scripts(spec)
+        _run(paths, [str(py), str(t3_py), "--model", spec["model"], "--ckpt-dir", str(ckpt), "--out", str(temps[0]), "--quant", "q4_0"], ROOT, env, role="convert-nano-t3")
+        _run(paths, [str(py), str(s3_py), "--variant", spec["s3"], "--ckpt-dir", str(ckpt), "--out", str(temps[1]), "--quant", CODEC_QUANT], ROOT, env, role="convert-nano-s3")
+        if not all(p.is_file() and p.stat().st_size for p in temps):
+            raise RuntimeError("nano conversion produced incomplete output")
+        for temp, final in zip(temps, (t3, s3)):
+            os.replace(temp, final)
+        receipt = _conversion_identity("nano", models, tools)
+        _write_json(models / ".nano-provenance.json", receipt)
+        paths.journal.emit("install", "tts.convert.completed", **receipt)
+
+
 def install_python(paths) -> None:
     env = ROOT / ".venv"
     python, req, marker = env / "Scripts" / "python.exe", ROOT / "requirements.txt", env / ".requirements.sha256"
@@ -205,9 +286,7 @@ def install(models_dir: Path | None, data_dir: Path | None, paths) -> None:
         build_tts(paths)
     else:
         paths.journal.emit("install", "tts.build.ready", executable=file_identity(RUNTIMES / "tts" / "chatterbox-server.exe"))
-    t3_file, codec_file = TTS_MODELS["nano"]
-    pull(paths, TTS_NANO_URLS[t3_file][0], models / t3_file)
-    pull(paths, TTS_NANO_URLS[codec_file][0], models / codec_file)
+    convert_tts(paths, models)
     pull(paths, VOICE_URL, data / VOICE_FILE, VOICE_SIZE, VOICE_SHA256)
     install_python(paths)
     paths.journal.emit("install", "completed", models={family: list(names) for family, names in TTS_MODELS.items()}, chatterbox=git_identity(CHATTERBOX), ggml=git_identity(GGML))
