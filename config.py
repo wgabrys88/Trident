@@ -10,7 +10,7 @@ from journal import Journal, WorkerSupervisor
 ROOT = Path(__file__).resolve().parent
 MODELS, DATA, THIRD_PARTY, TOOLS = (ROOT / n for n in ("models", "data", "third_party", "tools"))
 CHATTERBOX = THIRD_PARTY / "chatterbox.cpp"
-GGML, RUNTIMES = CHATTERBOX / "ggml", TOOLS / "runtime"
+GGML, RUNTIMES, CONVERTER = CHATTERBOX / "ggml", TOOLS / "runtime", TOOLS / "convert"
 CHATTERBOX_URL, CHATTERBOX_REV = "https://github.com/wgabrys88/chatterbox.cpp", "77e0bfee1429a328cdbf2de7879f58182bbe115d"
 GGML_GIT = ("https://github.com/ggml-org/ggml.git", "58c3805840b516b2a88ff867ccf7bb41dba79951")
 TTS_RATE = 24000
@@ -63,10 +63,10 @@ VULKAN_ENV = {"GGML_VK_DISABLE_F16": "1"} if HARDWARE == "pascal" else {}
 FLASH_ATTN = "on" if HARDWARE == "pascal" else "off"
 CODEC_QUANT, CODEC_FILE = (("q4_0", "chatterbox-s3gen-nano-irisxe-q4_0-rawf32-v1.gguf") if HARDWARE == "irisxe" else ("f16", "chatterbox-s3gen-nano-f16.gguf"))
 TTS_MODELS = {"nano": (T3_FILE, CODEC_FILE)}
-TTS_NANO_URLS = {
-    T3_FILE: ("https://huggingface.co/ResembleAI/chatterbox-nano/resolve/71ccd1d0081b430592cea481f4307e764e07bc64/" + T3_FILE, T3_FILE),
-    CODEC_FILE: (f"https://huggingface.co/ResembleAI/chatterbox-nano/resolve/71ccd1d0081b430592cea481f4307e764e07bc64/{CODEC_FILE}", CODEC_FILE),
-}
+TTS_NANO_SPEC = {"repo": "ResembleAI/chatterbox-nano", "rev": "71ccd1d0081b430592cea481f4307e764e07bc64",
+                 "ckpt": "ckpt", "t3": "convert-t3-turbo-to-gguf.py", "model": "nano", "s3": "turbo",
+                 "files": ("t3_nano_v1.safetensors", "s3gen_meanflow.safetensors", "conds.pt", "ve.safetensors",
+                           "vocab.json", "merges.txt", "added_tokens.json")}
 
 
 def find_exe(root: Path, name: str) -> Path | None:
