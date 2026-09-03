@@ -9,7 +9,7 @@ import time
 
 from config import ASR_RATE, GEMMA_CONTEXT, GEMMA_GEN, Paths, load_settings, system_prompt
 from asr import Capture, classify_utterance, transcribe
-from generation import SPOKEN_TURN_CHARS, SPOKEN_TURN_WORDS, Segmenter, fit_spoken_unit, gemma_stream, spoken
+from generation import SPOKEN_TURN_WORDS, Segmenter, fit_spoken_unit, gemma_stream, spoken
 from journal import finish_cleanup, join_or_fail
 from runtime import CancelableHTTP, Residents
 from tts import Synthesis
@@ -112,15 +112,14 @@ class Conversation(Synthesis):
             segmenter, raw, units, piece_id, started, first, budget_reached = Segmenter(), "", [], 0, time.perf_counter(), True, False
             def queue_unit(unit: str) -> bool:
                 nonlocal piece_id, budget_reached
-                words, chars = sum(len(part.split()) for part in units), len(" ".join(units))
-                unit, truncated = fit_spoken_unit(unit, SPOKEN_TURN_WORDS - words,
-                    SPOKEN_TURN_CHARS - chars - (1 if units else 0))
+                words = sum(len(part.split()) for part in units)
+                unit, truncated = fit_spoken_unit(unit, SPOKEN_TURN_WORDS - words)
                 if not unit:
                     budget_reached = True; return False
                 piece_id += 1
                 if not self.send_sentence(epoch, response_id, piece_id, unit): return False
                 units.append(unit)
-                budget_reached = truncated or sum(len(part.split()) for part in units) >= SPOKEN_TURN_WORDS or len(" ".join(units)) >= SPOKEN_TURN_CHARS
+                budget_reached = truncated or sum(len(part.split()) for part in units) >= SPOKEN_TURN_WORDS
                 return not budget_reached
             messages = self._messages(merged)
             self.journal.emit("gemma", "start", epoch=epoch, utterance_id=utterance_id, response_id=response_id, chars=len(merged), retained_turns=len(messages) - 2)

@@ -12,13 +12,11 @@ from runtime import CancelableHTTP, Residents
 
 SPEAKABLE_MIN_WORDS = 8
 SPOKEN_TURN_WORDS = 60
-SPOKEN_TURN_CHARS = 480
 
 
-def fit_spoken_unit(text: str, max_words: int, max_chars: int) -> tuple[str, bool]:
-    parts = text.split(); normalized = " ".join(parts)
-    fitted = " ".join(parts[:max(0, max_words)])[:max(0, max_chars)].rstrip()
-    return fitted, len(parts) > max_words or len(normalized) > max_chars
+def fit_spoken_unit(text: str, max_words: int) -> tuple[str, bool]:
+    parts = text.split()
+    return " ".join(parts[:max(0, max_words)]), len(parts) > max_words
 
 
 def spoken(text: str) -> str:
