@@ -1,9 +1,11 @@
 import hashlib
 import json
+import shutil
 import subprocess
 import threading
 import time
 import traceback
+import wave
 from datetime import datetime
 from pathlib import Path
 
@@ -36,6 +38,28 @@ class Journal:
     def sidecar(self, role: str, ext: str = "log") -> Path:
         safe = "".join(ch if ch.isalnum() or ch in "-._" else "-" for ch in role).strip(".-") or "sidecar"
         return self.run_dir / f"{safe}.{ext}"
+
+    def wav(self, name: str, pcm: bytes, rate: int, width: int = 2) -> Path:
+        path = self.run_dir / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(path), "wb") as out:
+            out.setparams((1, width, rate, 0, "NONE", "not compressed"))
+            out.writeframes(pcm)
+        return path
+
+    def resample(self, src: Path, dest: Path, rate: int) -> Path:
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            raise RuntimeError("ffmpeg is required to write an ASR-rate wav")
+        dest = Path(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+        result = subprocess.run(
+            [ffmpeg, "-y", "-i", str(src), "-ar", str(rate), "-ac", "1", "-sample_fmt", "s16", str(dest)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=flags)
+        if result.returncode:
+            raise RuntimeError(f"ffmpeg resample failed: {result.stderr.decode('utf-8', errors='replace').strip()[-800:]}")
+        return dest
 
     def _write(self, component: str, event: str, fields: dict, wall_timestamp: str | None = None,
                monotonic_ns: int | None = None) -> None:

@@ -75,7 +75,7 @@ def launch(paths: Paths, family: str = "nano", language: str = "en", primary: st
         answer = spoken("".join(raw)); print()
         if answer:
             paths.journal.transcript("assistant", answer)
-        paths.journal.emit("gemma", "completed", chars=len(answer), generated_chars=len("".join(raw)))
+        paths.journal.emit("gemma", "completed", chars=len(answer), generated_chars=len("".join(raw)), text=answer)
     except BaseException as error:
         failure = (error, error.__traceback__)
     http.close()

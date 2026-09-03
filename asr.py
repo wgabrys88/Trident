@@ -20,22 +20,26 @@ from config import ASR_RATE, SMART_TURN_FILE, VAD_FRAME, Paths, Wasapi, load_set
 from journal import finish_cleanup, join_or_fail
 from runtime import CancelableHTTP, Residents
 
-STOP_PHRASES = {
-    "stop", "stop speaking", "please stop", "that's enough", "thats enough", "quiet", "silence",
-    "przestan", "przestań", "przestan mowic", "przestań mówić", "dosyc", "dość", "cicho", "milcz",
-}
-BACKCHANNELS = {"yeah", "yes", "yep", "yup", "ok", "okay", "mhm", "mm", "uh", "um", "aha", "uh huh", "huh", "right", "sure", "tak", "no", "nie", "okej"}
 _EOF = object()
 
 
-def folded_utterance(text: str) -> str:
-    return " ".join("".join(ch if ch.isalnum() or ch.isspace() else " " for ch in text.casefold().replace("\r", " ").replace("\n", " ")).split())
+def pcm_i16(pcm: bytes) -> bytes:
+    return (np.clip(np.frombuffer(pcm, dtype="<f4"), -1, 1) * 32767).astype("<i2").tobytes()
 
 
-def classify_utterance(text: str) -> str:
-    folded = folded_utterance(text)
-    if folded in STOP_PHRASES: return "stop"
-    return "backchannel" if folded in BACKCHANNELS else "request"
+def load_pcm(path: Path, journal=None) -> bytes:
+    def read(src: Path) -> tuple[int, int, int, bytes]:
+        with wave.open(str(src), "rb") as handle:
+            return handle.getframerate(), handle.getnchannels(), handle.getsampwidth(), handle.readframes(handle.getnframes())
+    rate, channels, width, frames = read(path)
+    if channels != 1 or width != 2 or rate != ASR_RATE:
+        if journal is None:
+            raise RuntimeError(f"wav must be 16 kHz mono s16: {path}")
+        dest = journal.run_dir / f"{Path(path).stem}-16k.wav"
+        rate, channels, width, frames = read(journal.resample(path, dest, ASR_RATE))
+        if channels != 1 or width != 2 or rate != ASR_RATE:
+            raise RuntimeError(f"ffmpeg did not produce 16 kHz mono s16: {dest}")
+    return (np.frombuffer(frames, dtype="<i2").astype(np.float32) / 32767.0).astype("<f4").tobytes()
 
 
 def wav_bytes(pcm: bytes) -> bytes:
@@ -47,7 +51,7 @@ def wav_bytes(pcm: bytes) -> bytes:
 
 def transcribe(base: str, pcm: bytes, channel: CancelableHTTP) -> str:
     import json, secrets
-    wav = wav_bytes((np.clip(np.frombuffer(pcm, dtype="<f4"), -1, 1) * 32767).astype("<i2").tobytes())
+    wav = wav_bytes(pcm_i16(pcm))
     boundary = "----trident" + secrets.token_hex(8)
     body = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"utterance.wav\"\r\nContent-Type: audio/wav\r\n\r\n".encode()
             + wav + f"\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nparakeet\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"response_format\"\r\n\r\njson\r\n--{boundary}--\r\n".encode())
@@ -126,10 +130,9 @@ class Capture:
         self.active = True
         self.decision_thread = self.paths.supervisor.start("smart-turn", self._decide)
         self.vad_thread = self.paths.supervisor.start("vad", self._loop)
-        self.source.open(); self.journal.emit("capture", "ready")
+        self.source.open()
 
     def _decide(self) -> None:
-        self.journal.emit("smart-turn", "start")
         while (item := self.decisions.get()) is not _EOF:
             utterance_id, generation, audio = item
             started = time.perf_counter(); complete, probability = self.smart.decide(audio)
@@ -142,11 +145,12 @@ class Capture:
                 elif complete and not same:
                     self.journal.emit("smart-turn", "cancelled", utterance_id=utterance_id, candidate_generation=generation, reason="candidate-resumed-or-changed")
             if accepted:
-                self.journal.emit("capture", "utterance.completed", utterance_id=utterance_id, input_s=round(len(accepted) / (ASR_RATE * 4), 3)); self.on_utterance(utterance_id, accepted)
-        self.journal.emit("smart-turn", "stopped", accepted_turns=self.accepted_turns)
+                rel = f"utterances/{utterance_id}.wav"
+                self.journal.wav(rel, pcm_i16(accepted), ASR_RATE)
+                self.journal.emit("capture", "utterance.completed", utterance_id=utterance_id, input_s=round(len(accepted) / (ASR_RATE * 4), 3), wav=rel)
+                self.on_utterance(utterance_id, accepted)
 
     def _loop(self) -> None:
-        self.journal.emit("vad", "start")
         while (pcm := self.frames.get()) is not _EOF:
             with self.state_lock:
                 event = self.vad(np.frombuffer(pcm, dtype="<f4")) or {}
@@ -162,7 +166,7 @@ class Capture:
                     generation, audio = self.generation, bytes(self.audio)
                     self.decisions.put((self.utterance_id, generation, audio))
                     self.journal.emit("vad", "candidate.queued", utterance_id=self.utterance_id, candidate_generation=generation, vad_sample=int(event["end"]), input_s=round(len(audio) / (ASR_RATE * 4), 3))
-        self.decisions.put(_EOF); self.journal.emit("vad", "stopped")
+        self.decisions.put(_EOF)
 
     def check(self) -> None:
         self.source.check(); self.paths.supervisor.check()
@@ -171,7 +175,6 @@ class Capture:
         if not self.active: return
         self.active = False; self.source.close(); self.frames.put(_EOF)
         join_or_fail(self.vad_thread, "vad"); join_or_fail(self.decision_thread, "smart-turn")
-        self.journal.emit("capture", "stopped")
 
 
 def launch(paths: Paths, family: str = "nano", language: str = "en", primary=None, replacement=None, interrupt_after=None) -> None:
@@ -179,20 +182,32 @@ def launch(paths: Paths, family: str = "nano", language: str = "en", primary=Non
     try:
         residents.boot(family, language)
         base = residents.require_alive("parakeet")
-        q: queue.SimpleQueue = queue.SimpleQueue()
-        capture = Capture(paths, load_settings(paths.data_dir), lambda uid: None, lambda uid, pcm: q.put((uid, pcm, time.perf_counter())))
-        capture.open()
         paths.journal.emit("main", "ready", family=family, language=language); print("trident.ready", flush=True)
-        while True:
-            capture.check(); residents.check()
-            try: utterance_id, pcm, started = q.get(timeout=.05)
-            except queue.Empty: continue
-            duration = len(pcm) / (ASR_RATE * 4)
-            text = transcribe(base, pcm, http)
-            total = time.perf_counter() - started
-            paths.journal.emit("asr", "completed", utterance_id=utterance_id, accepted=bool(text), input_s=round(duration, 3), total_ms=round(total * 1000, 3), rtf=round(total / max(duration, 1e-9), 3), chars=len(text), text=text)
-            if text:
-                paths.journal.transcript("user", text); print(f"user: {text}", flush=True)
+        if paths.wavs:
+            for index, src in enumerate(paths.wavs, 1):
+                dest = paths.run_dir / src.name
+                if dest.resolve() != src.resolve(): dest.write_bytes(src.read_bytes())
+                pcm = load_pcm(dest if dest.is_file() else src, paths.journal)
+                duration, started = len(pcm) / (ASR_RATE * 4), time.perf_counter()
+                text = transcribe(base, pcm, http)
+                total = time.perf_counter() - started
+                paths.journal.emit("asr", "completed", utterance_id=index, accepted=bool(text), input_s=round(duration, 3), total_ms=round(total * 1000, 3), rtf=round(total / max(duration, 1e-9), 3), chars=len(text), text=text, wav=dest.name)
+                if text:
+                    paths.journal.transcript("user", text); print(f"user: {text}", flush=True)
+        else:
+            q: queue.SimpleQueue = queue.SimpleQueue()
+            capture = Capture(paths, load_settings(paths.data_dir), lambda uid: None, lambda uid, pcm: q.put((uid, pcm, time.perf_counter())))
+            capture.open()
+            while True:
+                capture.check(); residents.check()
+                try: utterance_id, pcm, started = q.get(timeout=.05)
+                except queue.Empty: continue
+                duration = len(pcm) / (ASR_RATE * 4)
+                text = transcribe(base, pcm, http)
+                total = time.perf_counter() - started
+                paths.journal.emit("asr", "completed", utterance_id=utterance_id, accepted=bool(text), input_s=round(duration, 3), total_ms=round(total * 1000, 3), rtf=round(total / max(duration, 1e-9), 3), chars=len(text), text=text, wav=f"utterances/{utterance_id}.wav")
+                if text:
+                    paths.journal.transcript("user", text); print(f"user: {text}", flush=True)
     except BaseException as error:
         failure = (error, error.__traceback__)
     http.close()

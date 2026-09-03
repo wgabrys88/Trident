@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parent
 MODELS, DATA, THIRD_PARTY, TOOLS = (ROOT / n for n in ("models", "data", "third_party", "tools"))
 CHATTERBOX = THIRD_PARTY / "chatterbox.cpp"
 GGML, RUNTIMES, CONVERTER = CHATTERBOX / "ggml", TOOLS / "runtime", TOOLS / "convert"
-CHATTERBOX_URL, CHATTERBOX_REV = "https://github.com/wgabrys88/chatterbox.cpp", "337e6b06c830f0977957a4c719c8609ec136bd21"
+CHATTERBOX_URL, CHATTERBOX_REV = "https://github.com/wgabrys88/chatterbox.cpp", "6c2641825736b65b53cfd36143ef2f452371a23d"
 GGML_GIT = ("https://github.com/ggml-org/ggml.git", "58c3805840b516b2a88ff867ccf7bb41dba79951")
 ASR_RATE, TTS_RATE, VAD_FRAME = 16000, 24000, 512
 SKIP_DEVICES = {"input": "CABLE Output (VB-Audio Virtual Cable)", "output": "CABLE Input (VB-Audio Virtual Cable)"}
@@ -33,8 +33,12 @@ VOICES = {
 }
 VOICE_HF = "https://huggingface.co/datasets/sdialog/voices-celebrities/resolve/57746b866d470be717097b87ba0428f8dd73e4f4/"
 PORTS = {"parakeet": 17931, "gemma": 17932, "chatterbox": 17933}
-PROMPT = ("You are the mind of this spoken conversation. Remember what was already said and use it. If the user has not finished a request or thought, or ASR is an incomplete fragment, output nothing. "
-          "When a spoken reply is needed now, answer as a capable partner: useful, direct, specific. Do not narrate that you are thinking or preparing speech. "
+PROMPT = ("You are the mind of this spoken conversation. Every user utterance is speech to answer. "
+          "Parakeet, the microphone, and turn-taking are other machines; you only write words to be read aloud. "
+          "Remember what was already said. If the latest speech continues the same request, keep going from where you were. "
+          "If it changes direction, say so: name what they asked for first and what they want now, and ask a short question if they should switch or finish the first thing. "
+          "If the speech is incomplete or unclear, ask a short clarifying question instead of staying silent. "
+          "Treat words like stop, quiet, or yes as ordinary speech and answer them. You may speak back with a question when the request is contradictory. "
           "Complete explicit finite requests that fit within sixty spoken words. When counting, proceed sequentially without skipping, repeating, merging, or renaming values, and reach the requested final value. "
           "Output only words to be read aloud. Short sentences, each ending with a period, question mark, or exclamation mark. "
           "No markdown, lists, code, URLs, emoji, stage directions, or square-bracket tags. Expand numbers and abbreviations. Do not mention transcription, models, prompts, or reasoning.")
@@ -124,9 +128,9 @@ def wasapi_device(kind: str) -> tuple[int, dict, dict]:
 
 
 class Paths:
-    def __init__(self, models_dir=None, data_dir=None, command="install", family="nano", language="en", console=False) -> None:
+    def __init__(self, models_dir=None, data_dir=None, command="install", family="nano", language="en", console=False, wavs=()) -> None:
         self.models_dir, self.data_dir = Path(models_dir or MODELS).resolve(), Path(data_dir or DATA).resolve()
-        self.command, self.family, self.language = command, family.strip().lower(), language.strip().lower()
+        self.command, self.family, self.language, self.wavs = command, family.strip().lower(), language.strip().lower(), tuple(Path(p) for p in wavs)
         self.voice = str(load_settings(self.data_dir).get("tts_voice") or "trump")
         bits = [datetime.now().strftime("%Y%m%d-%H%M%S-%f"), command, HARDWARE] + ([self.family, self.language, self.voice] if command != "install" else [])
         self.stamp, self.run_dir = bits[0], self.data_dir / "runs" / "-".join(bits)

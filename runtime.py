@@ -127,7 +127,6 @@ class Residents:
         if self.chatterbox is None: self.chatterbox = Chatterbox()
         if self.chatterbox.sock is None and not self.chatterbox_closed.is_set():
             self.chatterbox.open()
-            self.journal.emit("resident", "client.connected", name="chatterbox", protocol_version=PROTOCOL_VERSION)
         return self.chatterbox
 
     def register_chatterbox_reader(self, reader: threading.Thread) -> None:
@@ -138,7 +137,6 @@ class Residents:
         client = self.chatterbox_client()
         if not self.chatterbox_close_requested:
             client.request_close(); self.chatterbox_close_requested = True
-            self.journal.emit("resident", "protocol.close.requested", name="chatterbox", protocol_version=PROTOCOL_VERSION)
         deadline, reader = time.monotonic() + 10, self.chatterbox_reader
         if reader is not None and reader.is_alive():
             self.supervisor.spin(self.chatterbox_closed.is_set, deadline, "native close handshake timed out", interval=.05, event=self.chatterbox_closed)
@@ -157,7 +155,6 @@ class Residents:
         ready = self.ready.get(name)
         if ready is None or ready.is_set() or proc.poll() is not None: return
         deadline = self.ready_deadlines.get(name, time.monotonic() + 10)
-        self.journal.emit("resident", "stop.waiting_for_ready", name=name, pid=proc.pid)
         self.supervisor.spin(lambda: ready.is_set() or proc.poll() is not None, deadline,
             f"{name} did not become ready for graceful shutdown", event=ready)
 
@@ -166,7 +163,6 @@ class Residents:
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, creationflags=subprocess.CREATE_NO_WINDOW,
             text=True, encoding="utf-8", errors="replace", timeout=5)
         if result.returncode: raise RuntimeError(f"{name} CTRL_C helper failed exit={result.returncode}: {result.stdout.strip()}")
-        self.journal.emit("resident", "signal.delivered", name=name, pid=proc.pid, signal="CTRL_C_EVENT", scope="resident-console")
 
     def _reap(self, name: str, proc: subprocess.Popen, failures: list[str]) -> None:
         running = proc.poll() is None
