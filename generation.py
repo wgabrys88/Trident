@@ -10,7 +10,6 @@ from config import GEMMA_GEN, Paths, load_settings, system_prompt
 from journal import finish_cleanup
 from runtime import CancelableHTTP, Residents
 
-SPEAKABLE_MIN_WORDS = 8
 SPOKEN_TURN_WORDS = 60
 
 
@@ -54,8 +53,6 @@ class Segmenter:
             unit = pending[:cut].strip(); self.sent += cut
             while self.sent < len(text) and text[self.sent].isspace(): self.sent += 1
             if unit: self.buffer.append(unit)
-            if sum(len(part.split()) for part in self.buffer) >= SPEAKABLE_MIN_WORDS:
-                out.append(" ".join(self.buffer)); self.buffer.clear()
         if flush and self.buffer:
             out.append(" ".join(self.buffer)); self.buffer.clear()
         return out

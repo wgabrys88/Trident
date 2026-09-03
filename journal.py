@@ -1,6 +1,5 @@
 import hashlib
 import json
-import shutil
 import subprocess
 import threading
 import time
@@ -48,18 +47,8 @@ class Journal:
         return path
 
     def resample(self, src: Path, dest: Path, rate: int) -> Path:
-        ffmpeg = shutil.which("ffmpeg")
-        if not ffmpeg:
-            raise RuntimeError("ffmpeg is required to write an ASR-rate wav")
-        dest = Path(dest)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        flags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
-        result = subprocess.run(
-            [ffmpeg, "-y", "-i", str(src), "-ar", str(rate), "-ac", "1", "-sample_fmt", "s16", str(dest)],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=flags)
-        if result.returncode:
-            raise RuntimeError(f"ffmpeg resample failed: {result.stderr.decode('utf-8', errors='replace').strip()[-800:]}")
-        return dest
+        from utils import resample
+        return resample(src, dest, rate)
 
     def emit(self, component: str, event: str, **fields) -> None:
         if not isinstance(component, str) or not component or not isinstance(event, str) or not event:
