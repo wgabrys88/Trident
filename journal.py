@@ -44,10 +44,6 @@ class Journal:
             out.writeframes(pcm)
         return path
 
-    def resample(self, src: Path, dest: Path, rate: int) -> Path:
-        from utils import resample
-        return resample(src, dest, rate)
-
     def emit(self, component: str, event: str, **fields) -> None:
         if not isinstance(component, str) or not component or not isinstance(event, str) or not event:
             raise RuntimeError("journal component and event are required")
@@ -85,61 +81,3 @@ class Journal:
             self._transcripts.clear()
             if not self._events.closed:
                 self._events.flush(); self._events.close()
-
-
-class WorkerSupervisor:
-    def __init__(self, journal: Journal) -> None:
-        self.journal = journal
-        self._failure_lock = threading.Lock()
-        self._failure: tuple[BaseException, object] | None = None
-        self._failed, self._threads = threading.Event(), []
-
-    def start(self, name: str, target, *args, daemon: bool = False, **kwargs) -> threading.Thread:
-        def guarded() -> None:
-            try: target(*args, **kwargs)
-            except BaseException as error:
-                with self._failure_lock:
-                    if self._failure is None:
-                        self._failure = (error, error.__traceback__); self._failed.set()
-                self.journal.failure(name, error)
-        thread = threading.Thread(target=guarded, name=name, daemon=daemon)
-        self._threads.append(thread); thread.start(); return thread
-
-    def check(self) -> None:
-        if self._failed.is_set():
-            with self._failure_lock: failure = self._failure
-            if failure is not None: raise failure[0].with_traceback(failure[1])
-
-    def wait(self, seconds: float) -> None:
-        self._failed.wait(seconds); self.check()
-
-    def spin(self, done, deadline: float, err: str, interval: float = .1, event: threading.Event | None = None, tick=None, abort=None) -> None:
-        while not done():
-            (tick or self.check)()
-            if abort and (msg := abort()): raise RuntimeError(msg)
-            if time.monotonic() >= deadline: raise RuntimeError(err)
-            (event or self._failed).wait(min(interval, max(0.0, deadline - time.monotonic())))
-
-    def join(self, timeout: float | None = None) -> None:
-        deadline = None if timeout is None else time.monotonic() + timeout
-        for thread in self._threads:
-            if thread.is_alive(): thread.join(None if deadline is None else max(0.0, deadline - time.monotonic()))
-        if survivors := [t.name for t in self._threads if t.is_alive()]:
-            raise RuntimeError(f"worker survivors after shutdown: {', '.join(survivors)}")
-        self.check()
-
-
-def join_or_fail(thread: threading.Thread | None, role: str, timeout: float = 5.0) -> None:
-    if thread is None or not thread.is_alive(): return
-    thread.join(timeout)
-    if thread.is_alive(): raise RuntimeError(f"{role} worker survived shutdown")
-
-
-def finish_cleanup(journal_owner, primary, actions) -> None:
-    failures: list[tuple[BaseException, object]] = []
-    for role, action in actions:
-        try: action()
-        except BaseException as error:
-            failures.append((error, error.__traceback__)); journal_owner.journal.failure(f"cleanup.{role}", error)
-    if primary is not None: raise primary[0].with_traceback(primary[1])
-    if failures: raise failures[0][0].with_traceback(failures[0][1])
