@@ -18,13 +18,14 @@ from config import CHATTERBOX_REV, PORTS, TTS_RATE, Paths
 from journal import finish_cleanup
 from runtime import PROTOCOL_MAGIC, PROTOCOL_VERSION, REQ_CLOSE, REQ_SYNTH, RESP_CANCELLED, RESP_CLOSED, RESP_DONE, RESP_ERROR, RESP_PCM, Residents
 
-_FRAME_HEADER = struct.Struct("<IIIIIIII")
+_REQUEST_HEADER = struct.Struct("<IIIIIII")
+_RESPONSE_HEADER = struct.Struct("<IIIIIIII")
 _INT16_MAX = 32767
 
 
-def _send(sock: socket.socket, kind: int, epoch: int, response_id: int, piece_id: int, text: str = "") -> None:
+def _send(sock: socket.socket, kind: int, epoch: int = 0, response_id: int = 0, piece_id: int = 0, text: str = "") -> None:
     raw = text.encode("utf-8")
-    sock.sendall(_FRAME_HEADER.pack(PROTOCOL_MAGIC, PROTOCOL_VERSION, kind, epoch, response_id, piece_id, 0, len(raw)) + raw)
+    sock.sendall(_REQUEST_HEADER.pack(PROTOCOL_MAGIC, PROTOCOL_VERSION, kind, epoch, response_id, piece_id, len(raw)) + raw)
 
 
 def _recv_exact(sock: socket.socket, n: int) -> bytes:
@@ -38,8 +39,8 @@ def _recv_exact(sock: socket.socket, n: int) -> bytes:
 
 
 def _recv_frame(sock: socket.socket) -> tuple[int, int, int, int, int, bytes]:
-    header = _recv_exact(sock, _FRAME_HEADER.size)
-    magic, version, kind, epoch, response_id, piece_id, chunk_id, length = _FRAME_HEADER.unpack(header)
+    header = _recv_exact(sock, _RESPONSE_HEADER.size)
+    magic, version, kind, epoch, response_id, piece_id, chunk_id, length = _RESPONSE_HEADER.unpack(header)
     if magic != PROTOCOL_MAGIC or version != PROTOCOL_VERSION:
         raise RuntimeError("unsupported TTS response protocol")
     payload = _recv_exact(sock, length) if length else b""
@@ -99,7 +100,7 @@ def cook(paths: Paths, text: str) -> dict:
 
         if terminal is None:
             terminal = {"kind": "unknown"}
-        if not terminal.get("epoch") and terminal.get("kind") != "closed":
+        if terminal.get("kind") not in {"done", "closed"}:
             raise RuntimeError(f"cooked PCM without terminal ACK: {terminal}")
         if first_pcm_at is not None:
             paths.journal.emit("tts", "first_pcm", elapsed_ms=round((first_pcm_at - started) * 1000, 3), bytes=0)
@@ -114,6 +115,7 @@ def cook(paths: Paths, text: str) -> dict:
         else:
             raise RuntimeError("native close handshake timed out")
         paths.journal.emit("tts", "closed")
+        residents.chatterbox_closed.set()
 
         duration_s = len(pcm) / (TTS_RATE * 2)
         out_wav = paths.run_dir / "out.wav"
