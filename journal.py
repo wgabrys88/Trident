@@ -31,7 +31,7 @@ class Journal:
 
     def __init__(self, run_dir: Path, console: bool = False) -> None:
         self.run_dir, self.run_id, self.console = Path(run_dir), Path(run_dir).name, bool(console)
-        self._lock, self._sequence, self._native_sequence, self._manifest_written = threading.Lock(), 0, 0, False
+        self._lock, self._sequence, self._manifest_written = threading.Lock(), 0, False
         self._events = (self.run_dir / "events.jsonl").open("a", encoding="utf-8", newline="\n", buffering=1)
         self._transcripts: dict[str, object] = {}
 
@@ -61,8 +61,7 @@ class Journal:
             raise RuntimeError(f"ffmpeg resample failed: {result.stderr.decode('utf-8', errors='replace').strip()[-800:]}")
         return dest
 
-    def _write(self, component: str, event: str, fields: dict, wall_timestamp: str | None = None,
-               monotonic_ns: int | None = None) -> None:
+    def emit(self, component: str, event: str, **fields) -> None:
         if not isinstance(component, str) or not component or not isinstance(event, str) or not event:
             raise RuntimeError("journal component and event are required")
         if overlap := self._ENVELOPE.intersection(fields):
@@ -70,33 +69,12 @@ class Journal:
         with self._lock:
             self._sequence += 1
             record = {"schema_version": 2, "run_id": self.run_id, "sequence": self._sequence,
-                "wall_timestamp": wall_timestamp or datetime.now().astimezone().isoformat(timespec="milliseconds"),
-                "monotonic_ns": time.perf_counter_ns() if monotonic_ns is None else monotonic_ns,
+                "wall_timestamp": datetime.now().astimezone().isoformat(timespec="milliseconds"),
+                "monotonic_ns": time.perf_counter_ns(),
                 "component": component, "event": event, **fields}
             line = json.dumps(record, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
             self._events.write(line + "\n")
             if self.console: print(line, flush=True)
-
-    def emit(self, component: str, event: str, **fields) -> None:
-        self._write(component, event, fields)
-
-    def ingest(self, raw: bytes) -> str:
-        try:
-            record = json.loads(raw.decode("utf-8", errors="strict"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise RuntimeError(f"invalid native schema-v2 JSON: {error}") from error
-        if type(record) is not dict or record.get("schema_version") != 2 or record.get("run_id") != self.run_id:
-            raise RuntimeError("native journal schema or run identity mismatch")
-        if record.get("component") != "chatterbox" or not isinstance(record.get("event"), str) or not record["event"]:
-            raise RuntimeError("native journal component or event is invalid")
-        if type(record.get("sequence")) is not int or type(record.get("monotonic_ns")) is not int or not isinstance(record.get("wall_timestamp"), str):
-            raise RuntimeError("native journal envelope is invalid")
-        if record["sequence"] != self._native_sequence + 1:
-            raise RuntimeError(f"native journal sequence discontinuity: expected {self._native_sequence + 1}, got {record['sequence']}")
-        self._native_sequence = record["sequence"]
-        fields = {key: value for key, value in record.items() if key not in self._ENVELOPE}
-        self._write("chatterbox", record["event"], fields, record["wall_timestamp"], record["monotonic_ns"])
-        return record["event"]
 
     def write_manifest(self, manifest: dict) -> None:
         with self._lock:

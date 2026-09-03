@@ -104,7 +104,7 @@ class Conversation(Synthesis):
             if not self._live(epoch): continue
             with self.lock:
                 self.response_id += 1; response_id = self.response_id
-            segmenter, raw, units, piece_id, started, first, budget_reached = Segmenter(), "", [], 0, time.perf_counter(), True, False
+            segmenter, raw, units, piece_id, started, budget_reached = Segmenter(), "", [], 0, time.perf_counter(), False
             def queue_unit(unit: str) -> bool:
                 nonlocal piece_id, budget_reached
                 words = sum(len(part.split()) for part in units)
@@ -123,8 +123,6 @@ class Conversation(Synthesis):
                 stream = gemma_stream(self.gemma, messages, self.gemma_http)
                 for delta in stream:
                     if not self._live(epoch): cancelled = True; break
-                    if first:
-                        first = False; self.journal.emit("gemma", "first_result", epoch=epoch, utterance_id=utterance_id, response_id=response_id, latency_ms=round((time.perf_counter() - started) * 1000, 3))
                     raw += delta
                     for unit in segmenter.take(spoken(raw)):
                         if not queue_unit(unit): break

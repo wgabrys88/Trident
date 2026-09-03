@@ -36,8 +36,6 @@ class Renderer:
         self._events: queue.SimpleQueue = queue.SimpleQueue()
         self.last_completed: tuple[int, int, int, int] | None = None
         self.underrun: tuple[float, tuple[int, int, int, int]] | None = None
-        self.scheduled: tuple[int, int, int, int] | None = None
-        self.scheduled_until = 0.0
 
     def _busy(self) -> None:
         self._drained = False
@@ -49,13 +47,11 @@ class Renderer:
             if changed and any(i[0] == self.epoch for i in pending): self._busy()
             if not any(i[0] == self.epoch for i in pending): self.underrun = None
 
-    def put(self, entry: PCMEntry) -> tuple[bool, int, int]:
+    def put(self, entry: PCMEntry) -> None:
         with self.lock:
             if entry.epoch != self.epoch:
-                self._events.put(("dropped", self._drop_fields(entry, self.epoch, "late"))); return False, self.epoch, 0
+                self._events.put(("dropped", self._drop_fields(entry, self.epoch, "late"))); return
             self.entries.append(entry); self._busy()
-            buffered = sum(len(item.pcm) - item.offset for item in self.entries)
-            return True, self.epoch, buffered
 
     def resume(self) -> None:
         with self.lock: self.paused = False
@@ -84,17 +80,6 @@ class Renderer:
             self._events.put(("dropped", fields))
         return sum(item["bytes"] for item in dropped)
 
-    def snapshot(self, dac_time: float) -> dict:
-        with self.lock:
-            active = self.scheduled is not None and self.scheduled_until > dac_time
-            fields = {"playback_active": active, "playback_tail_ms": round(max(0.0, self.scheduled_until - dac_time) * 1000, 3),
-                "playback_scheduled_until": round(self.scheduled_until, 6) if active else None}
-            if active:
-                fields.update(zip(("playback_epoch", "playback_response_id", "playback_piece_id", "playback_chunk_id"), self.scheduled))
-            else:
-                fields.update({"playback_epoch": None, "playback_response_id": None, "playback_piece_id": None, "playback_chunk_id": None})
-            return fields
-
     def render(self, frames: int, dac_time: float) -> tuple[bytes, bool, bool]:
         block = bytearray(frames * 2); wrote = 0; had_pcm = False
         with self.lock:
@@ -110,6 +95,9 @@ class Renderer:
                 identity = (entry.epoch, entry.response, entry.piece, entry.chunk)
                 if entry.started_dac is None:
                     entry.started_dac = dac_time + wrote / 2 / TTS_RATE
+                    self._events.put(("observed", {"epoch": entry.epoch, "response_id": entry.response,
+                        "piece_id": entry.piece, "chunk_id": entry.chunk, "dac_time": round(entry.started_dac, 6),
+                        "bytes": len(entry.pcm)}))
                     if self.underrun is not None:
                         gap_start, previous = self.underrun; gap_end = entry.started_dac
                         self._events.put(("underrun", {"epoch": self.epoch, "start_dac_time": round(gap_start, 6),
@@ -120,7 +108,6 @@ class Renderer:
                 count = min(len(block) - wrote, len(entry.pcm) - entry.offset)
                 block[wrote:wrote + count] = entry.pcm[entry.offset:entry.offset + count]
                 wrote += count; entry.offset += count; had_pcm = had_pcm or count > 0
-                self.scheduled, self.scheduled_until = identity, dac_time + wrote / 2 / TTS_RATE
                 if entry.offset == len(entry.pcm):
                     self.entries.popleft(); self.last_completed = identity
             if not self.entries: self.preserved_epochs.clear()
@@ -164,10 +151,6 @@ class Sink(Wasapi):
         if had_pcm or forced_silence:
             self.drain_deadline = dac_time + frames / TTS_RATE; self.drain_reported = False
 
-    def snapshot(self) -> dict:
-        now = float(getattr(self.stream, "time", 0.0)) if self.stream is not None else time.monotonic()
-        return self.renderer.snapshot(now)
-
     def drained(self) -> bool:
         if not self.renderer.drained(): return False
         if not self.drain_deadline: return True
@@ -196,7 +179,7 @@ class Synthesis:
         self.lock = threading.Lock(); self.epoch = self.response_id = 0
         self.pending: set[tuple[int, int, int]] = set(); self.terminal: set[tuple[int, int, int]] = set()
         self.tts = residents.chatterbox_client(); self.renderer = Renderer(paths); self.sink = Sink(self.renderer, paths)
-        self.reader = None; self.closed = residents.chatterbox_closed; self.active = False; self.first_pcm: set[tuple[int, int]] = set()
+        self.reader = None; self.closed = residents.chatterbox_closed; self.active = False
 
     def start_output(self) -> None:
         self.sink.open()
@@ -248,10 +231,7 @@ class Synthesis:
                 break
             kind, epoch, response_id, piece_id, chunk_id, payload = frame; identity = (epoch, response_id, piece_id)
             if kind == RESP_PCM:
-                response = (epoch, response_id)
-                accepted, live_epoch, _buffered = self.renderer.put(PCMEntry(epoch, response_id, piece_id, chunk_id, payload))
-                if accepted and response not in self.first_pcm:
-                    self.first_pcm.add(response); self.journal.emit("synthesis", "first_result", epoch=epoch, live_epoch=live_epoch, response_id=response_id, piece_id=piece_id, chunk_id=chunk_id, bytes=len(payload))
+                self.renderer.put(PCMEntry(epoch, response_id, piece_id, chunk_id, payload))
             elif kind in (RESP_DONE, RESP_CANCELLED, RESP_ERROR):
                 with self.lock:
                     if identity in self.terminal: raise RuntimeError(f"duplicate terminal ACK for {identity}")
