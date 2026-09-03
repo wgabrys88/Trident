@@ -60,12 +60,10 @@ class Residents:
     def _forward(self, name: str, proc: subprocess.Popen, path: Path, ready: threading.Event) -> None:
         with path.open("wb", buffering=0) as out:
             assert proc.stdout is not None
+            marker = _READY.get(name, "").encode()
             for raw in proc.stdout:
                 out.write(raw)
-                if name == "chatterbox":
-                    event = self.journal.ingest(raw)
-                    if event == "server.ready": ready.set()
-                elif name in _READY and _READY[name] in raw.decode("utf-8", errors="replace").rstrip("\r\n"):
+                if marker and marker in raw:
                     ready.set()
 
     def _start(self, name: str, cmd: list[str], cwd: Path, timeout: float) -> None:
