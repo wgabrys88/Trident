@@ -54,12 +54,19 @@ def main(command: str | None = None) -> int:
     parser.add_argument("--console", action="store_true")
     parser.add_argument("--text"); parser.add_argument("--text-file", type=Path)
     parser.add_argument("--interrupt-text"); parser.add_argument("--interrupt-file", type=Path); parser.add_argument("--interrupt-after", type=float)
+    parser.add_argument("--wav", action="append", type=Path, dest="wavs")
     if command is None:
         parser.add_argument("command", nargs="?", choices=("install", "talk", "tts", "asr", "generation"), default="install")
     args = parser.parse_args()
     cmd = command or args.command
     primary = replacement = None
     flags = (args.text, args.text_file, args.interrupt_text, args.interrupt_file, args.interrupt_after)
+    wavs = tuple(args.wavs or ())
+    if cmd == "asr":
+        missing = [str(path) for path in wavs if not path.is_file()]
+        if missing: parser.error("wav does not exist: " + ", ".join(missing))
+    elif wavs:
+        parser.error("--wav requires command asr")
     if cmd in ("tts", "generation"):
         if cmd == "generation" and any(v is not None for v in flags[2:]):
             parser.error("generation does not accept interrupt flags")
@@ -78,7 +85,7 @@ def main(command: str | None = None) -> int:
     family, language = (args.family, args.language.strip().lower()) if cmd != "install" else ("all", "all")
     if HARDWARE == "irisxe" and cmd in ("talk", "tts") and family != "nano":
         parser.error("Iris Xe supports Nano English only")
-    paths = Paths(args.models_dir, args.data_dir, cmd, family, language, args.console)
+    paths = Paths(args.models_dir, args.data_dir, cmd, family, language, args.console, wavs)
     try:
         paths.journal.write_manifest(_manifest(paths))
         paths.journal.emit("main", "start", command=cmd, hardware=HARDWARE, family=family, language=language)

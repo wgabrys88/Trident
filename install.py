@@ -219,7 +219,6 @@ def _conversion_valid(family: str, models: Path, converter: dict | None = None) 
     if not receipt: return False
     ckpt = CONVERTER / spec["ckpt"]
     if (receipt.get("checkpoint_repo") != spec["repo"] or receipt.get("checkpoint_revision") != spec["rev"]
-            or receipt.get("converter_repository", {}).get("sha") != git_identity(CHATTERBOX).get("sha")
             or receipt.get("converter_scripts") != {p.name: _sha(p) for p in _scripts(spec) if p.is_file()}
             or receipt.get("quantization") != {"t3": "q4_0", "s3gen": CODEC_QUANT}
             or (converter is not None and receipt.get("tool_versions") != converter)

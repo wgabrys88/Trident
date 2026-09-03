@@ -13,7 +13,7 @@ from dataclasses import dataclass
 import numpy as np
 import sounddevice as sd
 
-from config import TTS_RATE, Paths, Wasapi
+from config import ASR_RATE, TTS_RATE, Paths, Wasapi
 from generation import Segmenter
 from journal import finish_cleanup
 from runtime import RESP_CANCELLED, RESP_CLOSED, RESP_DONE, RESP_ERROR, RESP_PCM, Residents
@@ -51,7 +51,8 @@ class Renderer:
 
     def put(self, entry: PCMEntry) -> tuple[bool, int, int]:
         with self.lock:
-            if entry.epoch != self.epoch: self._events.put(("late", (entry, self.epoch))); return False, self.epoch, 0
+            if entry.epoch != self.epoch:
+                self._events.put(("dropped", self._drop_fields(entry, self.epoch, "late"))); return False, self.epoch, 0
             self.entries.append(entry); self._busy()
             buffered = sum(len(item.pcm) - item.offset for item in self.entries)
             return True, self.epoch, buffered
@@ -59,21 +60,29 @@ class Renderer:
     def resume(self) -> None:
         with self.lock: self.paused = False
 
+    @staticmethod
+    def _drop_fields(entry: PCMEntry, live_epoch: int, reason: str) -> dict:
+        remain = entry.pcm[entry.offset:]
+        return {"epoch": entry.epoch, "live_epoch": live_epoch, "epoch_violation": entry.epoch != live_epoch,
+                "response_id": entry.response, "piece_id": entry.piece, "chunk_id": entry.chunk,
+                "bytes": len(remain), "reason": reason, "pcm": remain}
+
     def advance(self, epoch: int, preserve_playback: bool = False) -> int:
+        dropped: list[dict] = []
         with self.lock:
-            buffered = sum(len(e.pcm) - e.offset for e in self.entries)
             if preserve_playback:
                 self.preserved_epochs = {entry.epoch for entry in self.entries}
-                dropped = 0
                 self.paused = True; self.force_silence = False
             else:
+                dropped = [fields for entry in self.entries if (fields := self._drop_fields(entry, epoch, "cutover"))["bytes"]]
                 self.entries.clear(); self.preserved_epochs.clear()
-                dropped = buffered
                 self.paused = False; self.force_silence = True
                 self.last_completed = None
             self.underrun = None
             self.epoch = epoch; self._busy()
-            return dropped
+        for fields in dropped:
+            self._events.put(("dropped", fields))
+        return sum(item["bytes"] for item in dropped)
 
     def snapshot(self, dac_time: float) -> dict:
         with self.lock:
@@ -97,11 +106,10 @@ class Renderer:
             while wrote < len(block) and self.entries:
                 entry = self.entries[0]
                 if entry.epoch != self.epoch and entry.epoch not in self.preserved_epochs:
-                    self.entries.popleft(); self._events.put(("late", (entry, self.epoch))); continue
+                    self.entries.popleft(); self._events.put(("dropped", self._drop_fields(entry, self.epoch, "late"))); continue
                 identity = (entry.epoch, entry.response, entry.piece, entry.chunk)
                 if entry.started_dac is None:
                     entry.started_dac = dac_time + wrote / 2 / TTS_RATE
-                    preserved = entry.epoch != self.epoch
                     if self.underrun is not None:
                         gap_start, previous = self.underrun; gap_end = entry.started_dac
                         self._events.put(("underrun", {"epoch": self.epoch, "start_dac_time": round(gap_start, 6),
@@ -109,19 +117,12 @@ class Renderer:
                             "previous_response_id": previous[1], "previous_piece_id": previous[2], "previous_chunk_id": previous[3],
                             "next_response_id": entry.response, "next_piece_id": entry.piece, "next_chunk_id": entry.chunk}))
                         self.underrun = None
-                    self._events.put(("started", {"epoch": entry.epoch, "live_epoch": self.epoch, "epoch_violation": False,
-                        "preserved_playback": preserved, "response_id": entry.response, "piece_id": entry.piece,
-                        "chunk_id": entry.chunk, "bytes": len(entry.pcm), "dac_time": round(entry.started_dac, 6)}))
                 count = min(len(block) - wrote, len(entry.pcm) - entry.offset)
                 block[wrote:wrote + count] = entry.pcm[entry.offset:entry.offset + count]
                 wrote += count; entry.offset += count; had_pcm = had_pcm or count > 0
                 self.scheduled, self.scheduled_until = identity, dac_time + wrote / 2 / TTS_RATE
                 if entry.offset == len(entry.pcm):
                     self.entries.popleft(); self.last_completed = identity
-                    self._events.put(("completed", {"epoch": entry.epoch, "live_epoch": self.epoch, "epoch_violation": False,
-                        "preserved_playback": entry.epoch != self.epoch, "response_id": entry.response, "piece_id": entry.piece,
-                        "chunk_id": entry.chunk, "bytes": len(entry.pcm), "start_dac_time": round(entry.started_dac, 6),
-                        "end_dac_time": round(self.scheduled_until, 6)}))
             if not self.entries: self.preserved_epochs.clear()
             if wrote < len(block) and self.last_completed is not None and any(i[0] == self.epoch for i in self.pending) and self.underrun is None:
                 self.underrun = (dac_time + wrote / 2 / TTS_RATE, self.last_completed)
@@ -135,8 +136,12 @@ class Renderer:
     def check(self) -> None:
         while not self._events.empty():
             event, value = self._events.get()
-            if event == "late":
-                e, live_epoch = value; self.journal.emit("playback", "dropped", epoch=e.epoch, live_epoch=live_epoch, epoch_violation=e.epoch != live_epoch, response_id=e.response, piece_id=e.piece, chunk_id=e.chunk, bytes=len(e.pcm) - e.offset)
+            if event == "dropped":
+                remain = value.pop("pcm", b"")
+                if remain:
+                    rel = f"dropped/{value['epoch']}-{value['response_id']}-{value['piece_id']}-{value['chunk_id']}.wav"
+                    self.journal.wav(rel, remain, TTS_RATE); value["wav"] = rel
+                self.journal.emit("playback", "dropped", **value)
             else:
                 self.journal.emit("playback", event, **value)
 
@@ -146,6 +151,7 @@ class Sink(Wasapi):
         super().__init__(paths)
         self.renderer = renderer
         self.drain_deadline = 0.0; self.drain_reported = False
+        self._mix = bytearray(); self._mix_lock = threading.Lock(); self._mix_written = False
 
     def _callback(self, outdata, frames, timing, status) -> None:
         if status:
@@ -154,6 +160,7 @@ class Sink(Wasapi):
         dac_time = float(timing.outputBufferDacTime)
         block, had_pcm, forced_silence = self.renderer.render(frames, dac_time)
         target[:] = np.frombuffer(block, dtype="<i2").astype(np.float32) / 32768.0
+        with self._mix_lock: self._mix.extend(block)
         if had_pcm or forced_silence:
             self.drain_deadline = dac_time + frames / TTS_RATE; self.drain_reported = False
 
@@ -170,6 +177,16 @@ class Sink(Wasapi):
                 self.paths.journal.emit("playback", "drained", type="wasapi", dac_time=self.drain_deadline); self.drain_reported = True
             return True
         return False
+
+    def close(self) -> None:
+        self.renderer.check()
+        super().close()
+        if self._mix_written: return
+        self._mix_written = True
+        with self._mix_lock: pcm = bytes(self._mix)
+        wav = self.paths.journal.wav("speaker.wav", pcm, TTS_RATE)
+        asr_wav = self.paths.journal.resample(wav, self.paths.run_dir / "speaker-16k.wav", ASR_RATE)
+        self.paths.journal.emit("playback", "wav", path=wav.name, asr_path=asr_wav.name, bytes=len(pcm), duration_s=round(len(pcm) / (TTS_RATE * 2), 3))
 
 
 class Synthesis:
@@ -207,11 +224,11 @@ class Synthesis:
         with self.lock:
             old_epoch = self.epoch; self.epoch += 1; epoch = self.epoch
             dropped = self.renderer.advance(epoch, preserve_playback)
-            self.tts.advance(epoch); self._sync_pending(); native_advance_sent = True
+            self.tts.advance(epoch); self._sync_pending()
             old_pending = sum(1 for identity in self.pending if identity[0] != epoch)
         if preserve_playback:
             self.journal.emit("playback", "paused", epoch=old_epoch, utterance_id=utterance_id)
-        self.journal.emit("synthesis", "epoch.advanced", epoch=epoch, old_epoch=old_epoch, new_epoch=epoch, reason=reason, utterance_id=utterance_id, preserve_playback=preserve_playback, native_advance_sent=native_advance_sent, pending_cancel_count=old_pending, dropped_bytes=dropped)
+        self.journal.emit("synthesis", "epoch.advanced", epoch=epoch, old_epoch=old_epoch, new_epoch=epoch, reason=reason, utterance_id=utterance_id, preserve_playback=preserve_playback, pending_cancel_count=old_pending, dropped_bytes=dropped)
         return epoch
 
     def cutover(self, epoch: int, reason: str, utterance_id: int) -> bool:
@@ -222,7 +239,7 @@ class Synthesis:
         return True
 
     def resume(self, utterance_id: int) -> None:
-        self.renderer.resume(); self.journal.emit("playback", "resumed_after_backchannel", epoch=self.epoch, utterance_id=utterance_id)
+        self.renderer.resume(); self.journal.emit("playback", "resumed", epoch=self.epoch, utterance_id=utterance_id)
 
     def _reader(self) -> None:
         while True:
@@ -232,12 +249,9 @@ class Synthesis:
             kind, epoch, response_id, piece_id, chunk_id, payload = frame; identity = (epoch, response_id, piece_id)
             if kind == RESP_PCM:
                 response = (epoch, response_id)
-                accepted, live_epoch, buffered = self.renderer.put(PCMEntry(epoch, response_id, piece_id, chunk_id, payload))
-                self.journal.emit("synthesis", "pcm", epoch=epoch, live_epoch=live_epoch, epoch_violation=not accepted,
-                    response_id=response_id, piece_id=piece_id, chunk_id=chunk_id, bytes=len(payload), accepted=accepted,
-                    buffered_bytes=buffered)
+                accepted, live_epoch, _buffered = self.renderer.put(PCMEntry(epoch, response_id, piece_id, chunk_id, payload))
                 if accepted and response not in self.first_pcm:
-                    self.first_pcm.add(response); self.journal.emit("synthesis", "first_result", epoch=epoch, response_id=response_id, piece_id=piece_id, chunk_id=chunk_id, bytes=len(payload))
+                    self.first_pcm.add(response); self.journal.emit("synthesis", "first_result", epoch=epoch, live_epoch=live_epoch, response_id=response_id, piece_id=piece_id, chunk_id=chunk_id, bytes=len(payload))
             elif kind in (RESP_DONE, RESP_CANCELLED, RESP_ERROR):
                 with self.lock:
                     if identity in self.terminal: raise RuntimeError(f"duplicate terminal ACK for {identity}")
