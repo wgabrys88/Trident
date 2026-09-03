@@ -4,18 +4,17 @@ import os
 import socket
 import struct
 import subprocess
-import sys
 import threading
 import time
 from pathlib import Path
 
 from config import (
-    CHATTERBOX, FLASH_ATTN, GGML, PORTS, RUNTIMES, TTS_MODELS, TTS_PROFILES, VULKAN_ENV, Paths, find_exe, voice_wav,
+    CHATTERBOX, PORTS, RUNTIMES, TTS_MODELS, TTS_PROFILES, VULKAN_ENV, Paths, find_exe, voice_wav,
 )
 from journal import git_identity
 
 PROTOCOL_MAGIC, PROTOCOL_VERSION = 0x32525454, 2
-REQ_SYNTH, REQ_ADVANCE, REQ_CLOSE = 1, 2, 3
+REQ_SYNTH, REQ_CLOSE = 1, 3
 RESP_PCM, RESP_DONE, RESP_CANCELLED, RESP_ERROR, RESP_CLOSED = 1, 2, 3, 4, 5
 _TTS_FLAGS = (
     ("--n-gpu-layers", "gpu_layers"), ("--context", "context"), ("--threads", "threads"), ("--seed", "seed"),
@@ -218,9 +217,6 @@ class Chatterbox:
             if self.sock is None:
                 raise RuntimeError("TTS socket closed")
             self.sock.sendall(struct.pack("<IIIIIII", PROTOCOL_MAGIC, PROTOCOL_VERSION, kind, epoch, response_id, piece_id, len(raw)) + raw)
-
-    def synthesize(self, epoch: int, response_id: int, piece_id: int, text: str) -> None:
-        self._send(REQ_SYNTH, epoch, response_id, piece_id, text)
 
     def request_close(self) -> None:
         self._send(REQ_CLOSE)
