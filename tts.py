@@ -16,7 +16,7 @@ import wave
 from config import CHATTERBOX_REV, TTS_RATE, Paths
 from runtime import REQ_CLOSE, REQ_SYNTH, RESP_CANCELLED, RESP_CLOSED, RESP_DONE, RESP_ERROR, RESP_PCM, Residents
 
-_TEXT_CHUNK_CHARS = 60
+_TEXT_CHUNK_CHARS = 50
 _SENTENCE_BREAK = re.compile(r"(?<=[.!?\u2026])\s+")
 # chatterbox s3gen_synthesize zeros the first 20 ms of every chunk_id=0 piece.
 # We strip this for piece_id==0 only; subsequent pieces keep zeros + fade-in.
