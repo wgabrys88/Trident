@@ -35,7 +35,7 @@ class Renderer:
         self._drained = True
         self._events: queue.SimpleQueue = queue.SimpleQueue()
         self.last_completed: tuple[int, int, int, int] | None = None
-        self.underrun: tuple[float, tuple[int, int, int, int]] | None = None
+        self.last_end_dac: float | None = None
 
     def _busy(self) -> None:
         self._drained = False
@@ -45,7 +45,6 @@ class Renderer:
             changed = pending != self.pending
             self.pending = set(pending)
             if changed and any(i[0] == self.epoch for i in pending): self._busy()
-            if not any(i[0] == self.epoch for i in pending): self.underrun = None
 
     def put(self, entry: PCMEntry) -> None:
         with self.lock:
@@ -74,7 +73,7 @@ class Renderer:
                 self.entries.clear(); self.preserved_epochs.clear()
                 self.paused = False; self.force_silence = True
                 self.last_completed = None
-            self.underrun = None
+                self.last_end_dac = None
             self.epoch = epoch; self._busy()
         for fields in dropped:
             self._events.put(("dropped", fields))
@@ -98,26 +97,24 @@ class Renderer:
                     self._events.put(("observed", {"epoch": entry.epoch, "response_id": entry.response,
                         "piece_id": entry.piece, "chunk_id": entry.chunk, "dac_time": round(entry.started_dac, 6),
                         "bytes": len(entry.pcm)}))
-                    if self.underrun is not None:
-                        gap_start, previous = self.underrun; gap_end = entry.started_dac
-                        self._events.put(("underrun", {"epoch": self.epoch, "start_dac_time": round(gap_start, 6),
-                            "end_dac_time": round(gap_end, 6), "duration_ms": round(max(0.0, gap_end - gap_start) * 1000, 3),
-                            "previous_response_id": previous[1], "previous_piece_id": previous[2], "previous_chunk_id": previous[3],
-                            "next_response_id": entry.response, "next_piece_id": entry.piece, "next_chunk_id": entry.chunk}))
-                        self.underrun = None
-                    elif self.last_completed is not None:
+                    if self.last_completed is not None and self.last_end_dac is not None:
                         previous = self.last_completed
-                        self._events.put(("joined", {"epoch": self.epoch,
+                        gap = entry.started_dac - self.last_end_dac
+                        fields = {"epoch": self.epoch,
                             "previous_response_id": previous[1], "previous_piece_id": previous[2], "previous_chunk_id": previous[3],
-                            "next_response_id": entry.response, "next_piece_id": entry.piece, "next_chunk_id": entry.chunk}))
+                            "next_response_id": entry.response, "next_piece_id": entry.piece, "next_chunk_id": entry.chunk}
+                        if gap > frames / TTS_RATE:
+                            self._events.put(("underrun", {**fields, "start_dac_time": round(self.last_end_dac, 6),
+                                "end_dac_time": round(entry.started_dac, 6), "duration_ms": round(gap * 1000, 3)}))
+                        else:
+                            self._events.put(("joined", fields))
                 count = min(len(block) - wrote, len(entry.pcm) - entry.offset)
                 block[wrote:wrote + count] = entry.pcm[entry.offset:entry.offset + count]
                 wrote += count; entry.offset += count; had_pcm = had_pcm or count > 0
                 if entry.offset == len(entry.pcm):
                     self.entries.popleft(); self.last_completed = identity
+                    self.last_end_dac = entry.started_dac + len(entry.pcm) / 2 / TTS_RATE
             if not self.entries: self.preserved_epochs.clear()
-            if wrote < len(block) and self.last_completed is not None and any(i[0] == self.epoch for i in self.pending) and self.underrun is None:
-                self.underrun = (dac_time + wrote / 2 / TTS_RATE, self.last_completed)
             if not self.entries and not any(i[0] == self.epoch for i in self.pending) and not self.force_silence:
                 self._drained = True
         return bytes(block), had_pcm, False
