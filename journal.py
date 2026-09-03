@@ -26,8 +26,6 @@ def git_identity(path: Path) -> dict:
 
 
 class Journal:
-    _ENVELOPE = frozenset({"schema_version", "run_id", "sequence", "wall_timestamp", "monotonic_ns", "component", "event"})
-
     def __init__(self, run_dir: Path, console: bool = False) -> None:
         self.run_dir, self.run_id, self.console = Path(run_dir), Path(run_dir).name, bool(console)
         self._lock, self._sequence, self._manifest_written = threading.Lock(), 0, False
@@ -53,15 +51,11 @@ class Journal:
     def emit(self, component: str, event: str, **fields) -> None:
         if not isinstance(component, str) or not component or not isinstance(event, str) or not event:
             raise RuntimeError("journal component and event are required")
-        if overlap := self._ENVELOPE.intersection(fields):
-            raise RuntimeError(f"journal fields replace schema envelope: {sorted(overlap)}")
         with self._lock:
             self._sequence += 1
-            record = {"schema_version": 2, "run_id": self.run_id, "sequence": self._sequence,
-                "wall_timestamp": datetime.now().astimezone().isoformat(timespec="milliseconds"),
-                "monotonic_ns": time.perf_counter_ns(),
-                "component": component, "event": event, **fields}
-            line = json.dumps(record, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+            ts = datetime.now().astimezone().strftime("%H:%M:%S") + f".{datetime.now().microsecond // 1000:03d}"
+            extras = " ".join(f"{k}={fields[k]}" for k in fields) if fields else ""
+            line = f"[{ts}] {component}.{event} {extras}".rstrip()
             self._events.write(line + "\n")
             if self.console: print(line, flush=True)
 

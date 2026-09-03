@@ -23,7 +23,8 @@ _REQUEST_HEADER = struct.Struct("<IIIIIII")
 _RESPONSE_HEADER = struct.Struct("<IIIIIIII")
 _TEXT_CHUNK_CHARS = 120
 _SENTENCE_BREAK = re.compile(r"(?<=[.!?\u2026])\s+")
-# chatterbox s3gen_synthesize zeros the first 20 ms of every chunk_id=0 cook.
+# chatterbox s3gen_synthesize zeros the first 20 ms of every chunk_id=0 piece.
+# We strip this for piece_id==0 only; subsequent pieces keep zeros + fade-in.
 _S3GEN_OPENING_ZEROS = (TTS_RATE // 50) * 2
 
 
@@ -65,10 +66,11 @@ def _text_chunks(text: str, limit: int = _TEXT_CHUNK_CHARS) -> list[str]:
 
 
 def _pcm_for_wav(payload: bytes, piece_id: int) -> bytes:
-    """Drop leftover start-of-stream zeros so concatenated pieces do not hole at the join."""
-    if piece_id == 0 or len(payload) <= _S3GEN_OPENING_ZEROS:
+    """Only strip start-of-stream zeros for the first piece. Subsequent pieces keep
+    zeros so the fade-in ramp smooths the join naturally (no abrupt onset artifacts)."""
+    if piece_id != 0:
         return payload
-    if payload[:_S3GEN_OPENING_ZEROS] != b"\x00" * _S3GEN_OPENING_ZEROS:
+    if len(payload) <= _S3GEN_OPENING_ZEROS or payload[:_S3GEN_OPENING_ZEROS] != b"\x00" * _S3GEN_OPENING_ZEROS:
         return payload
     return payload[_S3GEN_OPENING_ZEROS:]
 

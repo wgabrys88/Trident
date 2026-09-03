@@ -62,7 +62,7 @@ class Residents:
     def _forward(self, name: str, proc: subprocess.Popen, path: Path, ready: threading.Event) -> None:
         with path.open("wb", buffering=0) as out:
             assert proc.stdout is not None
-            marker = b'"event":"server.ready"'
+            marker = b"server.ready"
             for raw in proc.stdout:
                 out.write(raw)
                 if marker and marker in raw:
