@@ -4,13 +4,13 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from journal import Journal, WorkerSupervisor
+from journal import Journal
 
 ROOT = Path(__file__).resolve().parent
 MODELS, DATA, THIRD_PARTY, TOOLS = (ROOT / n for n in ("models", "data", "third_party", "tools"))
 CHATTERBOX = THIRD_PARTY / "chatterbox.cpp"
 GGML, RUNTIMES, CONVERTER = CHATTERBOX / "ggml", TOOLS / "runtime", TOOLS / "convert"
-CHATTERBOX_URL, CHATTERBOX_REV = "https://github.com/wgabrys88/chatterbox.cpp", "145bef10b86606cb4598ec310f9f4e5122768295"
+CHATTERBOX_URL, CHATTERBOX_REV = "https://github.com/wgabrys88/chatterbox.cpp", "bb0717cec20fafecf5491654a758cbee93cbe962"
 GGML_GIT = ("https://github.com/ggml-org/ggml.git", "58c3805840b516b2a88ff867ccf7bb41dba79951")
 TTS_RATE = 24000
 T3_FILE = "chatterbox-t3-nano-q4_0.gguf"
@@ -91,7 +91,6 @@ class Paths:
         self.stamp, self.run_dir = bits[0], self.data_dir / "runs" / "-".join(bits)
         self.run_dir.mkdir(parents=True)
         self.journal = Journal(self.run_dir, console)
-        self.supervisor = WorkerSupervisor(self.journal)
         print(f"trident.run {self.run_dir}", flush=True)
 
     def close(self) -> None:

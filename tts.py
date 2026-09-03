@@ -9,57 +9,45 @@ if __name__ == "__main__":
 
 import json
 import re
-import socket
-import struct
 import textwrap
 import time
 import wave
 
 from config import CHATTERBOX_REV, TTS_RATE, Paths
-from journal import finish_cleanup
-from runtime import PROTOCOL_MAGIC, PROTOCOL_VERSION, REQ_CLOSE, REQ_SYNTH, RESP_CANCELLED, RESP_CLOSED, RESP_DONE, RESP_ERROR, RESP_PCM, Residents
+from runtime import REQ_CLOSE, REQ_SYNTH, RESP_CANCELLED, RESP_CLOSED, RESP_DONE, RESP_ERROR, RESP_PCM, Residents
 
-_REQUEST_HEADER = struct.Struct("<IIIIIII")
-_RESPONSE_HEADER = struct.Struct("<IIIIIIII")
-_TEXT_CHUNK_CHARS = 120
+_TEXT_CHUNK_CHARS = 75
 _SENTENCE_BREAK = re.compile(r"(?<=[.!?\u2026])\s+")
 # chatterbox s3gen_synthesize zeros the first 20 ms of every chunk_id=0 piece.
 # We strip this for piece_id==0 only; subsequent pieces keep zeros + fade-in.
 _S3GEN_OPENING_ZEROS = (TTS_RATE // 50) * 2
 
 
-def _send(sock: socket.socket, kind: int, epoch: int = 0, response_id: int = 0, piece_id: int = 0, text: str = "") -> None:
-    raw = text.encode("utf-8")
-    sock.sendall(_REQUEST_HEADER.pack(PROTOCOL_MAGIC, PROTOCOL_VERSION, kind, epoch, response_id, piece_id, len(raw)) + raw)
-
-
-def _recv_exact(sock: socket.socket, n: int) -> bytes:
-    buf = bytearray()
-    while len(buf) < n:
-        chunk = sock.recv(min(n - len(buf), 1 << 20))
-        if not chunk:
-            raise RuntimeError("unexpected TTS socket EOF")
-        buf.extend(chunk)
-    return bytes(buf)
-
-
-def _recv_frame(sock: socket.socket) -> tuple[int, int, int, int, int, bytes]:
-    header = _recv_exact(sock, _RESPONSE_HEADER.size)
-    magic, version, kind, epoch, response_id, piece_id, chunk_id, length = _RESPONSE_HEADER.unpack(header)
-    if magic != PROTOCOL_MAGIC or version != PROTOCOL_VERSION:
-        raise RuntimeError("unsupported TTS response protocol")
-    payload = _recv_exact(sock, length) if length else b""
-    return kind, epoch, response_id, piece_id, chunk_id, payload
-
-
 def _text_chunks(text: str, limit: int = _TEXT_CHUNK_CHARS) -> list[str]:
-    """One punctuation sentence per S3Gen cook; wrap only sentences longer than limit."""
+    """Pack sentences into chunks of up to limit chars. A sentence longer than limit
+    is split by textwrap. Joining short sentences into one chunk reduces per-piece
+    S3Gen overhead (see chatterbox-tts CFM+HiFT pipeline at ~500ms/piece)."""
     normalized = " ".join(text.split())
+    sentences = [s.strip() for s in _SENTENCE_BREAK.split(normalized) if s.strip()]
     chunks: list[str] = []
-    for sentence in _SENTENCE_BREAK.split(normalized):
-        chunks.extend(textwrap.wrap(sentence, width=limit, break_long_words=True,
-                                    break_on_hyphens=False, replace_whitespace=True,
-                                    drop_whitespace=True))
+    current = ""
+    for sentence in sentences:
+        if len(sentence) > limit:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.extend(textwrap.wrap(sentence, width=limit, break_long_words=True,
+                                        break_on_hyphens=False, replace_whitespace=True,
+                                        drop_whitespace=True))
+            continue
+        candidate = f"{current} {sentence}".strip() if current else sentence
+        if len(candidate) <= limit:
+            current = candidate
+        else:
+            chunks.append(current)
+            current = sentence
+    if current:
+        chunks.append(current)
     if not chunks:
         raise RuntimeError("TTS input contains no speakable text")
     return chunks
@@ -84,9 +72,9 @@ def cook(paths: Paths, text: str) -> dict:
                            piece_chars=[len(piece) for piece in pieces])
         residents.boot("nano", "en")
         client = residents.chatterbox_client()
-        sock = client.sock
-        assert sock is not None
-        sock.settimeout(3600)
+        proto = client.proto
+        assert proto is not None and proto.sock is not None
+        proto.sock.settimeout(3600)
 
         started = time.perf_counter()
         out_wav = paths.run_dir / "out.wav"
@@ -99,12 +87,12 @@ def cook(paths: Paths, text: str) -> dict:
             for piece_id, piece in enumerate(pieces):
                 piece_started = time.perf_counter()
                 before_bytes, before_frames = pcm_bytes, len(frames)
-                _send(sock, REQ_SYNTH, 0, 0, piece_id, piece)
+                proto.send(REQ_SYNTH, piece_id=piece_id, text=piece)
                 paths.journal.emit("tts", "piece.sent", piece_id=piece_id, pieces=len(pieces),
                                    text=piece, chars=len(piece), bytes=len(piece.encode("utf-8")))
                 terminal: dict | None = None
                 while terminal is None:
-                    kind, epoch, response_id, returned_piece, chunk_id, payload = _recv_frame(sock)
+                    kind, epoch, response_id, returned_piece, chunk_id, payload = proto.recv_frame()
                     identity = (epoch, response_id, returned_piece)
                     if kind != RESP_CLOSED and identity != (0, 0, piece_id):
                         raise RuntimeError(f"unexpected TTS response identity {identity}, expected {(0, 0, piece_id)}")
@@ -150,10 +138,10 @@ def cook(paths: Paths, text: str) -> dict:
         paths.journal.emit("tts", "terminal", kind="done", pieces=len(terminals),
                            frames=len(frames), pcm_bytes=pcm_bytes)
 
-        _send(sock, REQ_CLOSE)
+        proto.send(REQ_CLOSE)
         closed_deadline = time.monotonic() + 10
         while time.monotonic() < closed_deadline:
-            kind, *_ = _recv_frame(sock)
+            kind, *_ = proto.recv_frame()
             if kind == RESP_CLOSED:
                 break
         else:
@@ -182,7 +170,12 @@ def cook(paths: Paths, text: str) -> dict:
         failure = (error, error.__traceback__)
         raise
     finally:
-        finish_cleanup(paths, failure, [("residents", residents.stop), ("supervisor", lambda: paths.supervisor.join(1))])
+        try:
+            residents.stop()
+        except BaseException as cleanup_error:
+            paths.journal.failure("cleanup.residents", cleanup_error)
+        if failure is not None:
+            raise failure[0].with_traceback(failure[1])
 
 
 def launch(paths: Paths, family: str = "nano", language: str = "en", primary: str | None = None,
