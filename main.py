@@ -11,7 +11,7 @@ ensure_venv(__file__)
 
 _COMMANDS = {
     "install": "Download models, pin Chatterbox, and build the native TTS server.",
-    "tts": "Cook PCM from --text via the pinned native TTS server; writes out.wav and out-spec.png.",
+    "tts": "Cook chunked PCM from --text via the pinned native TTS server; writes out.wav.",
 }
 
 
