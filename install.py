@@ -15,17 +15,15 @@ import sys
 import time
 import urllib.request
 import venv
-import zipfile
 from pathlib import Path
 
 from config import (
-    CHATTERBOX, CHATTERBOX_REV, CHATTERBOX_URL, CODEC_FILE, CODEC_QUANT, CONVERTER, DATA, GGML, GGML_GIT,
-    HARDWARE, MODELS, ROOT, RUNTIMES, T3_FILE, TOOLS, TTS_BACKEND, TTS_MODELS, TTS_NANO_SPEC, VOICE_FILE,
-    VOICE_SHA256, VOICE_SIZE, VOICE_URL, find_exe,
+    CHATTERBOX, CHATTERBOX_REV, CHATTERBOX_URL, CODEC_QUANT, CONVERTER, DATA, GGML, GGML_GIT,
+    HARDWARE, MODELS, ROOT, RUNTIMES, TOOLS, TTS_BACKEND, TTS_MODELS, TTS_NANO_SPEC, VOICE_FILE,
+    VOICE_SHA256, VOICE_SIZE, VOICE_URL,
 )
 from journal import file_identity, git_identity
 
-DOWNLOADS = TOOLS / "downloads"
 CONVERTER_PINS = {"torch": "2.6.0", "numpy": "1.26.4", "gguf": "0.19.0", "safetensors": "0.5.3", "scipy": "1.15.3",
                   "librosa": "0.11.0", "resampy": "0.4.3", "huggingface-hub": "0.34.4"}
 _PIP = ("-m", "pip", "install", "--disable-pip-version-check", "--progress-bar", "off", "--no-input")

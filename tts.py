@@ -14,7 +14,7 @@ import time
 import wave
 from pathlib import Path
 
-from config import CHATTERBOX_REV, PORTS, TTS_RATE, Paths
+from config import CHATTERBOX_REV, TTS_RATE, Paths
 from journal import finish_cleanup
 from runtime import PROTOCOL_MAGIC, PROTOCOL_VERSION, REQ_CLOSE, REQ_SYNTH, RESP_CANCELLED, RESP_CLOSED, RESP_DONE, RESP_ERROR, RESP_PCM, Residents
 
