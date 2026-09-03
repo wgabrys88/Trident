@@ -6,9 +6,6 @@
 !/install.py
 !/runtime.py
 !/journal.py
-!/talk.py
-!/asr.py
-!/generation.py
 !/tts.py
 !/utils.py
 !/requirements.txt
