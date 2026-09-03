@@ -105,6 +105,11 @@ class Renderer:
                             "previous_response_id": previous[1], "previous_piece_id": previous[2], "previous_chunk_id": previous[3],
                             "next_response_id": entry.response, "next_piece_id": entry.piece, "next_chunk_id": entry.chunk}))
                         self.underrun = None
+                    elif self.last_completed is not None:
+                        previous = self.last_completed
+                        self._events.put(("joined", {"epoch": self.epoch,
+                            "previous_response_id": previous[1], "previous_piece_id": previous[2], "previous_chunk_id": previous[3],
+                            "next_response_id": entry.response, "next_piece_id": entry.piece, "next_chunk_id": entry.chunk}))
                 count = min(len(block) - wrote, len(entry.pcm) - entry.offset)
                 block[wrote:wrote + count] = entry.pcm[entry.offset:entry.offset + count]
                 wrote += count; entry.offset += count; had_pcm = had_pcm or count > 0
