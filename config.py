@@ -17,7 +17,7 @@ T3_FILE = "chatterbox-t3-nano-q4_0.gguf"
 TTS_KNOBS = {
     "gpu_layers": 99, "context": 2048, "threads": 4, "fastconv": 1, "seed": 42, "max_tokens": 1000,
     "top_k": 1000, "top_p": .95, "min_p": .05, "temperature": .8, "repeat_penalty": 1.2,
-    "cfm_steps": 2, "cfg_weight": .5, "exaggeration": .5,
+    "cfm_steps": 1, "cfg_weight": .5, "exaggeration": .5,
 }
 TTS_PROFILES = {"nano": TTS_KNOBS}
 VOICE_DEFAULT = "trump"
