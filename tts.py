@@ -174,7 +174,12 @@ class Sink(Wasapi):
         with self._mix_lock: pcm = bytes(self._mix)
         wav = self.paths.journal.wav("speaker.wav", pcm, TTS_RATE)
         asr_wav = self.paths.journal.resample(wav, self.paths.run_dir / "speaker-16k.wav", ASR_RATE)
-        self.paths.journal.emit("playback", "wav", path=wav.name, asr_path=asr_wav.name, bytes=len(pcm), duration_s=round(len(pcm) / (TTS_RATE * 2), 3))
+        spec = None
+        if self.paths.spectrogram:
+            from utils import spectrogram
+            spec = spectrogram(wav)
+        self.paths.journal.emit("playback", "wav", path=wav.name, asr_path=asr_wav.name, bytes=len(pcm), duration_s=round(len(pcm) / (TTS_RATE * 2), 3),
+                                **({"spectrogram": spec.name} if spec is not None else {}))
 
 
 class Synthesis:

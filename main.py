@@ -85,6 +85,8 @@ def _parser(command: str | None) -> argparse.ArgumentParser:
                         help="TTS family (default: nano). Iris Xe talk/tts supports nano only")
     parser.add_argument("--language", default="en", help="Spoken language code (default: en). Non-English requires --family v3")
     parser.add_argument("--console", action="store_true", help="Print each journal event as JSON on stdout")
+    if show or command in ("tts", "talk", "asr"):
+        parser.add_argument("--spectrogram", action="store_true", help="Write an ffmpeg spectrogram PNG next to speaker.wav or each --wav (off by default)")
     if show or command in ("tts", "generation"):
         if command == "generation":
             text_help, file_help = "User text sent to Gemma", "UTF-8 file of user text sent to Gemma"
@@ -144,7 +146,10 @@ def main(command: str | None = None) -> int:
     family, language = (args.family, args.language.strip().lower()) if cmd != "install" else ("all", "all")
     if HARDWARE == "irisxe" and cmd in ("talk", "tts") and family != "nano":
         parser.error("Iris Xe supports Nano English only")
-    paths = Paths(args.models_dir, args.data_dir, cmd, family, language, args.console, wavs)
+    spectrogram = bool(getattr(args, "spectrogram", False))
+    if cmd not in ("tts", "talk", "asr") and spectrogram:
+        parser.error("--spectrogram requires command tts, talk, or asr")
+    paths = Paths(args.models_dir, args.data_dir, cmd, family, language, args.console, wavs, spectrogram)
     try:
         paths.journal.write_manifest(_manifest(paths))
         paths.journal.emit("main", "start", command=cmd, hardware=HARDWARE, family=family, language=language)

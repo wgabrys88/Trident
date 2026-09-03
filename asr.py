@@ -188,10 +188,15 @@ def launch(paths: Paths, family: str = "nano", language: str = "en", primary=Non
                 dest = paths.run_dir / src.name
                 if dest.resolve() != src.resolve(): dest.write_bytes(src.read_bytes())
                 pcm = load_pcm(dest if dest.is_file() else src, paths.journal)
+                spec = None
+                if paths.spectrogram:
+                    from utils import spectrogram
+                    spec = spectrogram(dest if dest.is_file() else src)
                 duration, started = len(pcm) / (ASR_RATE * 4), time.perf_counter()
                 text = transcribe(base, pcm, http)
                 total = time.perf_counter() - started
-                paths.journal.emit("asr", "completed", utterance_id=index, accepted=bool(text), input_s=round(duration, 3), total_ms=round(total * 1000, 3), rtf=round(total / max(duration, 1e-9), 3), chars=len(text), text=text, wav=dest.name)
+                paths.journal.emit("asr", "completed", utterance_id=index, accepted=bool(text), input_s=round(duration, 3), total_ms=round(total * 1000, 3), rtf=round(total / max(duration, 1e-9), 3), chars=len(text), text=text, wav=dest.name,
+                                   **({"spectrogram": spec.name} if spec is not None else {}))
                 if text:
                     paths.journal.transcript("user", text); print(f"user: {text}", flush=True)
         else:

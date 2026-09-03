@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parent
 MODELS, DATA, THIRD_PARTY, TOOLS = (ROOT / n for n in ("models", "data", "third_party", "tools"))
 CHATTERBOX = THIRD_PARTY / "chatterbox.cpp"
 GGML, RUNTIMES, CONVERTER = CHATTERBOX / "ggml", TOOLS / "runtime", TOOLS / "convert"
-CHATTERBOX_URL, CHATTERBOX_REV = "https://github.com/wgabrys88/chatterbox.cpp", "3cd9822ed830ee850327563219002c9b08d1fcb8"
+CHATTERBOX_URL, CHATTERBOX_REV = "https://github.com/wgabrys88/chatterbox.cpp", "938c71284bd89dbffe99c5fbcfd03e84114a4c4a"
 GGML_GIT = ("https://github.com/ggml-org/ggml.git", "58c3805840b516b2a88ff867ccf7bb41dba79951")
 ASR_RATE, TTS_RATE, VAD_FRAME = 16000, 24000, 512
 SKIP_DEVICES = {"input": "CABLE Output (VB-Audio Virtual Cable)", "output": "CABLE Input (VB-Audio Virtual Cable)"}
@@ -128,9 +128,10 @@ def wasapi_device(kind: str) -> tuple[int, dict, dict]:
 
 
 class Paths:
-    def __init__(self, models_dir=None, data_dir=None, command="install", family="nano", language="en", console=False, wavs=()) -> None:
+    def __init__(self, models_dir=None, data_dir=None, command="install", family="nano", language="en", console=False, wavs=(), spectrogram=False) -> None:
         self.models_dir, self.data_dir = Path(models_dir or MODELS).resolve(), Path(data_dir or DATA).resolve()
         self.command, self.family, self.language, self.wavs = command, family.strip().lower(), language.strip().lower(), tuple(Path(p) for p in wavs)
+        self.spectrogram = bool(spectrogram)
         self.voice = str(load_settings(self.data_dir).get("tts_voice") or "trump")
         bits = [datetime.now().strftime("%Y%m%d-%H%M%S-%f"), command, HARDWARE] + ([self.family, self.language, self.voice] if command != "install" else [])
         self.stamp, self.run_dir = bits[0], self.data_dir / "runs" / "-".join(bits)
