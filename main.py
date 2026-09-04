@@ -1,22 +1,34 @@
-import subprocess, sys, time
+import re, subprocess, sys, time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 
-def run(name, cmd, capture=False):
+def parse_rtf(text):
+    out = {}
+    for m in re.finditer(r"\[rtf\]\s+([a-zA-Z_][\w]*)=([\d.]+)s", text):
+        out[m.group(1)] = float(m.group(2))
+    for m in re.finditer(r"(startup|ttft|inference)_s=([\d.]+)", text):
+        out["brain_" + m.group(1)] = float(m.group(2))
+    for m in re.finditer(r"audio_s=([\d.]+)", text):
+        if "audio_s" not in out:
+            out["audio_s"] = float(m.group(1))
+    return out
+
+def run(name, cmd):
     t0 = time.perf_counter()
     print(f"[{name}] START", flush=True)
-    if capture:
-        r = subprocess.run(cmd, capture_output=True, text=True)
-        out = r.stdout + r.stderr
-        t1 = time.perf_counter()
-        print(f"[{name}] END   dt={t1-t0:.3f}s", flush=True)
-        return out, t1 - t0
-    else:
-        subprocess.run(cmd, check=True)
-        t1 = time.perf_counter()
-        print(f"[{name}] END   dt={t1-t0:.3f}s", flush=True)
-        return t1 - t0
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        print(r.stdout, end="")
+        print(r.stderr, end="", file=sys.stderr)
+        raise SystemExit(r.returncode)
+    out = r.stdout + r.stderr
+    dt = time.perf_counter() - t0
+    print(f"[{name}] END   outer_dt={dt:.3f}s", flush=True)
+    for line in r.stderr.splitlines():
+        if "[rtf]" in line or "startup_s=" in line or "inference_s=" in line:
+            print("  " + line, flush=True)
+    return out, dt, parse_rtf(out)
 
 args = sys.argv[1:]
 
@@ -33,27 +45,28 @@ if args and not args[0].startswith("-"):
     print()
 
     t_pipeline = time.perf_counter()
-
-    out, dt_brain = run("brain", ["python", str(ROOT / "brain.py")], capture=True)
+    _, dt_brain, rtf_brain = run("brain",   ["python", str(ROOT / "brain.py")])
     brain_out = (ROOT / "brain_out.txt").read_text(encoding="utf-8")
     print(f"[brain]    answer_chars={len(brain_out)}")
     print()
-
-    out, dt_tts = run("tts", ["python", str(ROOT / "tts_nano.py")], capture=True)
+    _, dt_tts, rtf_tts = run("tts",       ["python", str(ROOT / "tts_nano.py")])
     wavs = sorted(ROOT.glob("tts_out*.wav"))
     last_wav = wavs[-1] if wavs else None
     print(f"[tts]      wav={last_wav}")
     print()
+    _, dt_para, rtf_para = run("parakeet", ["python", str(ROOT / "parakeet.py"), str(last_wav)])
+    print()
 
-    out, dt_para = run("parakeet", ["python", str(ROOT / "parakeet.py"), str(last_wav)], capture=True)
-    print()
-    print(f"=== RTF ===")
-    print(f"brain     dt={dt_brain:.3f}s")
-    print(f"tts       dt={dt_tts:.3f}s")
-    print(f"parakeet  dt={dt_para:.3f}s")
-    print(f"pipeline  dt={time.perf_counter()-t_pipeline:.3f}s")
-    print()
-    print(f"transcribed: {out.strip()}")
+    print("=== RTF ===")
+    print(f"brain     outer={dt_brain:.3f}s | startup={rtf_brain.get('brain_startup','?')}s ttft={rtf_brain.get('brain_ttft','?')}s inference={rtf_brain.get('brain_inference','?')}s")
+    print(f"tts       outer={dt_tts:.3f}s | start={rtf_tts.get('tts_start','?')}s synth={rtf_tts.get('tts_synth','?')}s audio_s={rtf_tts.get('audio_s','?')}s")
+    print(f"parakeet  outer={dt_para:.3f}s | total={rtf_para.get('parakeet_total','?')}s audio_s={rtf_para.get('audio_s','?')}s")
+    pipe = time.perf_counter() - t_pipeline
+    print(f"pipeline  outer={pipe:.3f}s")
+    if rtf_tts.get("audio_s") and rtf_tts.get("tts_synth"):
+        print(f"tts rtf = synth/audio = {rtf_tts['tts_synth']/rtf_tts['audio_s']:.3f}x real-time")
+    if rtf_para.get("audio_s") and rtf_para.get("parakeet_total"):
+        print(f"parakeet rtf = total/audio = {rtf_para['parakeet_total']/rtf_para['audio_s']:.3f}x real-time")
     sys.exit(0)
 
 print("usage:")
