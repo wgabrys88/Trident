@@ -1,296 +1,321 @@
-﻿import argparse
+import argparse
 import hashlib
-import re
+import http.client
+import json
+from pathlib import Path
 import shutil
+import socket
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 import urllib.request
 import zipfile
-from pathlib import Path
+from collections import deque
 
 ROOT = Path(__file__).resolve().parent
 RUNTIME = ROOT / "tools/runtime/brain"
-EXE = RUNTIME / "llama-cli.exe"
-MODEL = ROOT / "models/gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf"
+EXE = RUNTIME / "llama-server.exe"
+RUNTIME_REVISION = RUNTIME / "REVISION"
+MODEL = ROOT / "models/gemma-4-E2B_q4_0-it.gguf"
 MODEL_CARD = MODEL.with_suffix(".md")
-MTP = ROOT / "models/mtp-gemma-4-E2B-it.gguf"
-MTP_CARD = MTP.with_suffix(".md")
-
-LLAMA_REV = "b10797"
+LLAMA_REV = "b10621"
 ARCHIVE = f"llama-{LLAMA_REV}-bin-win-vulkan-x64.zip"
 RUNTIME_URL = f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_REV}/{ARCHIVE}"
-RUNTIME_SHA = "851a05cb2ed0d35d7b336a193500d3baf86e80983b6d6c024c85afa14b0cadde"
-MODEL_URL = "https://huggingface.co/unsloth/gemma-4-E2B-it-qat-GGUF/resolve/main/gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf"
-MODEL_SHA = "e531007218dfab990486a5de7676a6932d6ea8dea233d1f698d7c21cf8a16889"
-MTP_URL = "https://huggingface.co/unsloth/gemma-4-E2B-it-qat-GGUF/resolve/main/mtp-gemma-4-E2B-it.gguf"
-MTP_SHA = "586f2460b909008640981ec34060aa864e03c144fbabfb3173c4335087e4aae0"
-CARD_URL = "https://huggingface.co/unsloth/gemma-4-E2B-it-qat-GGUF/resolve/main/README.md"
-MTP_CARD_URL = "https://huggingface.co/unsloth/gemma-4-E2B-it-qat-GGUF/resolve/main/MTP/README.md"
-
-SYSTEM_BASE = (
-    "You are a helpful, concise assistant. "
-    "Generate accurate, well-structured responses."
-)
-
-THINKING = True
-REASONING_EFFORT = "medium"
-REASONING_BUDGET = -1
-REASONING_PRESERVE = True
-REASONING_FORMAT = "none"
-
-TEMPERATURE = 1.0
+RUNTIME_SHA = "2672d85bf87c8280d94dee01eb6a86280046878f70a07d786a93637fa9081163"
+GEMMA_REV = "675cff42a74c774d6cb76f76d8eacb49b48c9b93"
+MODEL_URL = f"https://huggingface.co/google/gemma-4-E2B-it-qat-q4_0-gguf/resolve/{GEMMA_REV}/{MODEL.name}"
+MODEL_CARD_URL = f"https://huggingface.co/google/gemma-4-E2B-it-qat-q4_0-gguf/resolve/{GEMMA_REV}/README.md"
+MODEL_SIZE = 3_349_516_256
+MODEL_SHA = "fa401b55b07ee70a54c6dae3903c783a6e65064312529ea57175cb5f8dec6634"
+HOST = "127.0.0.1"
+PORT = 17932
+ALIAS = "gemma"
+DEVICE = "Vulkan0"
+GPU_LAYERS = "all"
+CONTEXT = 4096
+BATCH = 2048
+UBATCH = 512
+THREADS = 2
+THREADS_BATCH = 2
+POLL = 0
+POLL_BATCH = 0
+THREADS_HTTP = 1
+PARALLEL = 1
+FLASH_ATTN = "off"
+REASONING = "off"
+STARTUP_TIMEOUT = 180.0
+REQUEST_TIMEOUT = 3600.0
+CACHE_PROMPT = True
+TEMPERATURE = 0.2
 TOP_P = 0.95
 TOP_K = 64
-MIN_P = 0.05
-TYPICAL_P = 1.0
-
-REPEAT_LAST_N = 64
+MIN_P = 0.0
 REPEAT_PENALTY = 1.0
-PRESENCE_PENALTY = 0.0
-FREQUENCY_PENALTY = 0.0
+SEED = 42
+MAX_TOKENS = 1024
+SYSTEM_PROMPT = (
+    "Produce the spoken reply to the user. Answer directly and correctly. Output only natural speech with short sentences. "
+    "Do not use markdown, lists, code, URLs, emoji, stage directions, meta-commentary, or reasoning. "
+    "Keep ordinary answers under sixty spoken words unless the request requires more. Expand numbers and abbreviations when useful for speech. "
+    "Use the user's language."
+)
+SERVER_ARGS = (
+    "--alias", ALIAS,
+    "--host", HOST,
+    "--port", str(PORT),
+    "--offline",
+    "--device", DEVICE,
+    "--n-gpu-layers", GPU_LAYERS,
+    "--ctx-size", str(CONTEXT),
+    "--batch-size", str(BATCH),
+    "--ubatch-size", str(UBATCH),
+    "--threads", str(THREADS),
+    "--threads-batch", str(THREADS_BATCH),
+    "--poll", str(POLL),
+    "--poll-batch", str(POLL_BATCH),
+    "--threads-http", str(THREADS_HTTP),
+    "--parallel", str(PARALLEL),
+    "--flash-attn", FLASH_ATTN,
+    "--no-mmproj",
+    "--no-ui",
+    "--reasoning", REASONING,
+)
+# SERVER_ARGS += ("--cache-type-k", "q8_0", "--cache-type-v", "q8_0")
+# SERVER_ARGS += ("--cache-type-k", "q4_0", "--cache-type-v", "q4_0")
+# SERVER_ARGS += ("--no-kv-offload",)
+# SERVER_ARGS += ("--mlock",)
+# SERVER_ARGS += ("--no-mmap",)
+# SERVER_ARGS += ("--numa", "isolate")
+# SERVER_ARGS += ("--prio", "1", "--prio-batch", "1")
+# SERVER_ARGS += ("--cpu-range", "0-2", "--cpu-range-batch", "0-2")
+# SERVER_ARGS += ("--cpu-strict", "1", "--cpu-strict-batch", "1")
+# SERVER_ARGS += ("--split-mode", "none", "--main-gpu", "0")
+# SERVER_ARGS += ("--tensor-split", "1")
+# SERVER_ARGS += ("--no-repack",)
+# SERVER_ARGS += ("--no-host",)
+# SERVER_ARGS += ("--swa-full",)
+# SERVER_ARGS += ("--rope-scaling", "none")
+# SERVER_ARGS += ("--rope-scale", "1")
+# SERVER_ARGS += ("--rope-freq-base", "10000")
+# SERVER_ARGS += ("--rope-freq-scale", "1")
+# SERVER_ARGS += ("--yarn-orig-ctx", "4096")
+# SERVER_ARGS += ("--yarn-ext-factor", "-1")
+# SERVER_ARGS += ("--yarn-attn-factor", "-1")
+# SERVER_ARGS += ("--yarn-beta-slow", "-1")
+# SERVER_ARGS += ("--yarn-beta-fast", "-1")
+# SERVER_ARGS += ("--metrics",)
+# SERVER_ARGS += ("--slots",)
+# SERVER_ARGS += ("--cache-prompt",)
+# SERVER_ARGS += ("--log-disable",)
+# SERVER_ARGS += ("--log-verbosity", "2")
+# SERVER_ARGS += ("--override-tensor", "PATTERN=Vulkan0")
+REQUEST_ARGS = {
+    "temperature": TEMPERATURE,
+    "top_p": TOP_P,
+    "top_k": TOP_K,
+    "min_p": MIN_P,
+    "repeat_penalty": REPEAT_PENALTY,
+    "seed": SEED,
+    "max_tokens": MAX_TOKENS,
+}
+# REQUEST_ARGS["presence_penalty"] = 0.0
+# REQUEST_ARGS["frequency_penalty"] = 0.0
+# REQUEST_ARGS["stop"] = ["<|end|>"]
+# REQUEST_ARGS["n_probs"] = 0
+# REQUEST_ARGS["min_keep"] = 0
+_READY = "llama_server: listening on http://127.0.0.1:"
 
-DYNATEMP_RANGE = 0.0
-DYNATEMP_EXP = 1.0
-MIROSTAT = 0
-MIROSTAT_LR = 0.10
-MIROSTAT_ENT = 5.00
 
-ADAPTIVE_TARGET = -1.0
-ADAPTIVE_DECAY = 0.90
-XTC_PROBABILITY = 0.00
-XTC_THRESHOLD = 0.10
-DRY_MULTIPLIER = 0.00
+def _sha(path: Path) -> str:
+    with path.open("rb") as source:
+        return hashlib.file_digest(source, "sha256").hexdigest()
 
-CTX_SIZE = 2048
-BATCH_SIZE = 2048
-UBATCH_SIZE = 512
-CONTEXT_SHIFT = False
-CACHE_TYPE_K = "q4_0"
-CACHE_TYPE_V = "q4_0"
-DEFRAG_THOLD = 0.0
-KV_OFFLOAD = True
-GPU_LAYERS = 99
 
-THREADS = 7
-THREADS_BATCH = 7
-FLASH_ATTN = True
-PERF = True
-WARMUP = False
-SIMPLE_IO = True
-
-SPEC_TYPE = "draft-mtp"
-SPEC_DRAFT_N_MAX = 4
-SPEC_DRAFT_N_MIN = 1
-SPEC_DRAFT_P_SPLIT = 0.10
-SPEC_DRAFT_GPU_LAYERS = 99
-SPEC_DRAFT_THREADS = 7
-SPEC_DRAFT_THREADS_BATCH = 7
-
-JSON_SCHEMA = ""
-GRAMMAR_FILE = ""
-
-COLOR = True
-SINGLE_TURN = True
-MAX_TOKENS = 2048
-RNG_SEED = -1
-
-IMAGE_FILES = []
-AUDIO_FILES = []
-VIDEO_FILES = []
+def _download(url: str, path: Path, size: int = 0, sha: str = "") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_suffix(path.suffix + ".part")
+    partial.unlink(missing_ok=True)
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": "TridentBrain/1"})
+        with urllib.request.urlopen(request, timeout=3600) as source, partial.open("wb") as target:
+            shutil.copyfileobj(source, target, 4 << 20)
+        if size and partial.stat().st_size != size:
+            raise RuntimeError(f"Download size mismatch: {path.name}")
+        if sha and _sha(partial) != sha:
+            raise RuntimeError(f"Download checksum mismatch: {path.name}")
+        partial.replace(path)
+    finally:
+        partial.unlink(missing_ok=True)
 
 
 class BrainInstaller:
-    @staticmethod
-    def _download(url: str, path: Path, sha: str = "") -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        partial = path.with_suffix(path.suffix + ".part")
-        try:
-            req = urllib.request.Request(url, headers={"User-Agent": "Trident/1"})
-            with urllib.request.urlopen(req, timeout=3600) as src, \
-                    partial.open("wb") as dst:
-                shutil.copyfileobj(src, dst, 1 << 20)
-            if sha:
-                with partial.open("rb") as f:
-                    digest = hashlib.file_digest(f, "sha256").hexdigest()
-                    if digest != sha.lower():
-                        raise RuntimeError(
-                            f"Checksum mismatch for {path.name}: "
-                            f"expected {sha}, got {digest}"
-                        )
-            partial.replace(path)
-        except BaseException:
-            partial.unlink(missing_ok=True)
-            raise
-
     def install(self) -> None:
-        runtime_done = (
-            EXE.is_file()
-            and (RUNTIME / "ggml-vulkan.dll").is_file()
-            and (RUNTIME / "llama.dll").is_file()
-        )
-        model_done = MODEL.is_file() and MODEL_CARD.is_file()
-        mtp_done = MTP.is_file() and MTP_CARD.is_file()
-
-        if runtime_done and model_done and mtp_done:
-            return
-
-        archive_path = None
-        try:
-            if not EXE.is_file():
-                archive_path = ROOT / ARCHIVE
-                self._download(RUNTIME_URL, archive_path, RUNTIME_SHA)
-                RUNTIME.mkdir(parents=True, exist_ok=True)
-                with zipfile.ZipFile(archive_path) as zf:
-                    for name in zf.namelist():
-                        if not name.endswith("/"):
-                            (RUNTIME / name).write_bytes(zf.read(name))
-
-            if not model_done:
+        runtime_ok = EXE.is_file() and RUNTIME_REVISION.is_file() and RUNTIME_REVISION.read_text(encoding="utf-8").strip() == f"{LLAMA_REV} {RUNTIME_SHA}"
+        model_ok = MODEL.is_file() and MODEL.stat().st_size == MODEL_SIZE and _sha(MODEL) == MODEL_SHA
+        if MODEL.exists() and not model_ok:
+            raise RuntimeError(f"Refusing unverified existing model: {MODEL}")
+        with tempfile.TemporaryDirectory(prefix=".brain-install-", dir=ROOT) as temporary:
+            work = Path(temporary)
+            if not runtime_ok:
+                archive = work / ARCHIVE
+                _download(RUNTIME_URL, archive, sha=RUNTIME_SHA)
+                if RUNTIME.exists():
+                    shutil.rmtree(RUNTIME)
+                RUNTIME.mkdir(parents=True)
+                with zipfile.ZipFile(archive) as bundle:
+                    members = [name for name in bundle.namelist() if Path(name).name == EXE.name]
+                    if len(members) != 1:
+                        raise RuntimeError(f"Expected one {EXE.name} in verified runtime archive")
+                    parent = Path(members[0]).parent
+                    files = [name for name in bundle.namelist() if name and not name.endswith("/") and Path(name).parent == parent]
+                    for name in files:
+                        with bundle.open(name) as source, (RUNTIME / Path(name).name).open("wb") as target:
+                            shutil.copyfileobj(source, target)
+                if not EXE.is_file():
+                    raise RuntimeError(f"{EXE.name} missing after runtime installation")
+                RUNTIME_REVISION.write_text(f"{LLAMA_REV} {RUNTIME_SHA}\n", encoding="utf-8")
+            if not model_ok:
+                downloaded = work / MODEL.name
+                _download(MODEL_URL, downloaded, MODEL_SIZE, MODEL_SHA)
                 MODEL.parent.mkdir(parents=True, exist_ok=True)
-                self._download(MODEL_URL, MODEL, MODEL_SHA)
-                self._download(CARD_URL, MODEL_CARD, "")
-
-            if not mtp_done:
-                self._download(MTP_URL, MTP, MTP_SHA)
-                self._download(MTP_CARD_URL, MTP_CARD, "")
-        finally:
-            if archive_path and archive_path.is_file():
-                archive_path.unlink()
+                downloaded.replace(MODEL)
+            if not MODEL_CARD.is_file():
+                _download(MODEL_CARD_URL, MODEL_CARD)
 
 
 class Brain:
-    def _build_cmd(self, request: str) -> tuple[list[str], str, Path]:
-        system = "<|think|>\n" + SYSTEM_BASE if THINKING else SYSTEM_BASE
-        prompt_file = ROOT / f"in_brain_{time.strftime('%d-%m-%y-%H-%M-%S')}.txt"
-        prompt_file.write_text(
-            f"<|im_start|>system\n{system}<|im_end|>\n"
-            f"<|im_start|>user\n{request}<|im_end|>\n"
-            f"<|im_start|>assistant\n",
-            encoding="utf-8",
-        )
-        cmd = [
-            str(EXE),
-            "-m", str(MODEL),
-            "--model-draft", str(MTP),
-            "-ngl", str(GPU_LAYERS),
-            "--spec-draft-ngl", str(SPEC_DRAFT_GPU_LAYERS),
-            "-c", str(CTX_SIZE),
-            "-b", str(BATCH_SIZE),
-            "-ub", str(UBATCH_SIZE),
-            "-t", str(THREADS),
-            "-tb", str(THREADS_BATCH),
-            "--temp", str(TEMPERATURE),
-            "--top-p", str(TOP_P),
-            "--top-k", str(TOP_K),
-            "-n", str(MAX_TOKENS),
-            "-f", str(prompt_file),
-        ]
-        if FLASH_ATTN:
-            cmd += ["-fa", "on"]
-        if PERF:
-            cmd += ["--perf"]
-        if not WARMUP:
-            cmd += ["--no-warmup"]
-        if SIMPLE_IO:
-            cmd += ["--simple-io"]
-        if COLOR:
-            cmd += ["-co", "on"]
-        if SINGLE_TURN:
-            cmd += ["--single-turn"]
-        if not KV_OFFLOAD:
-            cmd += ["-nkvo"]
-        if CONTEXT_SHIFT:
-            cmd += ["--context-shift"]
-        if CTX_SIZE and CACHE_TYPE_K != "f16":
-            cmd += ["-ctk", CACHE_TYPE_K]
-        if CTX_SIZE and CACHE_TYPE_V != "f16":
-            cmd += ["-ctv", CACHE_TYPE_V]
-        if DEFRAG_THOLD > 0:
-            cmd += ["-dt", str(DEFRAG_THOLD)]
-        if REPEAT_LAST_N != 64:
-            cmd += ["--repeat-last-n", str(REPEAT_LAST_N)]
-        if REPEAT_PENALTY != 1.0:
-            cmd += ["--repeat-penalty", str(REPEAT_PENALTY)]
-        if PRESENCE_PENALTY != 0.0:
-            cmd += ["--presence-penalty", str(PRESENCE_PENALTY)]
-        if FREQUENCY_PENALTY != 0.0:
-            cmd += ["--frequency-penalty", str(FREQUENCY_PENALTY)]
-        if MIN_P != 0.05:
-            cmd += ["--min-p", str(MIN_P)]
-        if TYPICAL_P != 1.0:
-            cmd += ["--typical", str(TYPICAL_P)]
-        if DYNATEMP_RANGE > 0:
-            cmd += ["--dynatemp-range", str(DYNATEMP_RANGE)]
-            cmd += ["--dynatemp-exp", str(DYNATEMP_EXP)]
-        if ADAPTIVE_TARGET > 0:
-            cmd += ["--adaptive-target", str(ADAPTIVE_TARGET)]
-            cmd += ["--adaptive-decay", str(ADAPTIVE_DECAY)]
-        if XTC_PROBABILITY > 0:
-            cmd += ["--xtc-probability", str(XTC_PROBABILITY)]
-            cmd += ["--xtc-threshold", str(XTC_THRESHOLD)]
-        if DRY_MULTIPLIER > 0:
-            cmd += ["--dry-multiplier", str(DRY_MULTIPLIER)]
-        if MIROSTAT > 0:
-            cmd += ["--mirostat", str(MIROSTAT)]
-            cmd += ["--mirostat-lr", str(MIROSTAT_LR)]
-            cmd += ["--mirostat-ent", str(MIROSTAT_ENT)]
-        if RNG_SEED > 0:
-            cmd += ["-s", str(RNG_SEED)]
-        if REASONING_FORMAT != "auto":
-            cmd += ["--reasoning-format", REASONING_FORMAT]
-        if not REASONING_PRESERVE:
-            cmd += ["--no-reasoning-preserve"]
-        if REASONING_EFFORT not in ("", "default"):
-            cmd += ["--reasoning-effort", REASONING_EFFORT]
-        if REASONING_BUDGET != -1:
-            cmd += ["--reasoning-budget", str(REASONING_BUDGET)]
-        if SPEC_TYPE not in ("", "none"):
-            cmd += ["--spec-type", SPEC_TYPE]
-            cmd += ["--spec-draft-n-max", str(SPEC_DRAFT_N_MAX)]
-            cmd += ["--spec-draft-n-min", str(SPEC_DRAFT_N_MIN)]
-            cmd += ["--spec-draft-p-split", str(SPEC_DRAFT_P_SPLIT)]
-            cmd += ["-td", str(SPEC_DRAFT_THREADS)]
-            cmd += ["-tbd", str(SPEC_DRAFT_THREADS_BATCH)]
-        if JSON_SCHEMA:
-            cmd += ["-j", JSON_SCHEMA]
-        if GRAMMAR_FILE:
-            cmd += ["--grammar-file", GRAMMAR_FILE]
-        if IMAGE_FILES:
-            for img in IMAGE_FILES:
-                cmd += ["--image", img]
-        if AUDIO_FILES:
-            for aud in AUDIO_FILES:
-                cmd += ["--audio", aud]
-        if VIDEO_FILES:
-            for vid in VIDEO_FILES:
-                cmd += ["--video", vid]
-        cmd += ["--log-disable"]
-        return cmd, prompt_file
+    def __init__(self, system_prompt: str = SYSTEM_PROMPT) -> None:
+        self.system_prompt = system_prompt
+        self.process = None
+        self.reader = None
+        self.ready = threading.Event()
+        self.tail = deque(maxlen=80)
 
-    def ask(self, request: str) -> str:
-        cmd, prompt_file = self._build_cmd(request)
-        started = time.perf_counter()
-        proc = subprocess.run(
-            cmd,
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+    def _drain(self) -> None:
+        for line in self.process.stdout:
+            text = line.rstrip()
+            self.tail.append(text)
+            if _READY in text:
+                self.ready.set()
+
+    def start(self) -> None:
+        if self.process is not None and self.process.poll() is None:
+            return
+        if not EXE.is_file() or not RUNTIME_REVISION.is_file() or RUNTIME_REVISION.read_text(encoding="utf-8").strip() != f"{LLAMA_REV} {RUNTIME_SHA}":
+            raise RuntimeError("Brain runtime missing; run python brain.py")
+        if not MODEL.is_file() or MODEL.stat().st_size != MODEL_SIZE:
+            raise RuntimeError("Gemma model missing; run python brain.py")
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            probe.settimeout(0.2)
+            if probe.connect_ex((HOST, PORT)) == 0:
+                raise RuntimeError(f"Brain port {PORT} is already occupied")
+        command = [str(EXE), "--model", str(MODEL), *SERVER_ARGS]
+        self.process = subprocess.Popen(
+            command,
+            cwd=RUNTIME,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            errors="replace",
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform.startswith("win") else 0,
         )
-        elapsed = time.perf_counter() - started
-        tok_match = re.search(r"\btok/s:\s*([\d.]+)", proc.stderr)
-        if tok_match:
-            print(f"elapsed_s={elapsed:.2f} tok/s={tok_match.group(1)}", file=sys.stderr)
-        return proc.stdout
+        self.reader = threading.Thread(target=self._drain, daemon=True)
+        self.reader.start()
+        deadline = time.monotonic() + STARTUP_TIMEOUT
+        while not self.ready.wait(0.05):
+            if self.process.poll() is not None:
+                raise RuntimeError(f"llama-server exited with {self.process.returncode}\n" + "\n".join(self.tail))
+            if time.monotonic() >= deadline:
+                self.close()
+                raise TimeoutError("llama-server startup timed out\n" + "\n".join(self.tail))
+
+    def _payload(self, request: str) -> dict:
+        return {
+            "model": ALIAS,
+            "messages": [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": request},
+            ],
+            "stream": True,
+            "cache_prompt": CACHE_PROMPT,
+            "chat_template_kwargs": {"enable_thinking": False},
+            **REQUEST_ARGS,
+        }
+
+    def stream(self, request: str):
+        request = request.strip()
+        if not request:
+            raise ValueError("request must not be empty")
+        if self.process is None or self.process.poll() is not None:
+            self.start()
+        connection = http.client.HTTPConnection(HOST, PORT, timeout=REQUEST_TIMEOUT)
+        try:
+            body = json.dumps(self._payload(request), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            connection.request("POST", "/v1/chat/completions", body=body, headers={"Content-Type": "application/json", "Accept": "text/event-stream"})
+            response = connection.getresponse()
+            if response.status != 200:
+                raise RuntimeError(f"Gemma HTTP {response.status}: {response.read().decode('utf-8', 'replace')[-2000:]}")
+            while line := response.readline():
+                if not line.startswith(b"data:"):
+                    continue
+                chunk = line[5:].strip()
+                if chunk == b"[DONE]":
+                    return
+                data = json.loads(chunk)
+                text = str((data.get("choices") or [{}])[0].get("delta", {}).get("content") or "")
+                if text:
+                    yield text
+        finally:
+            connection.close()
+
+    def ask(self, request: str) -> str:
+        answer = "".join(self.stream(request)).replace("\r", "").strip()
+        marker = "Assistant:\n"
+        return answer.rsplit(marker, 1)[-1].strip() if marker in answer else answer
+
+    def close(self) -> None:
+        process, self.process = self.process, None
+        if process is None:
+            return
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+        if self.reader is not None:
+            self.reader.join(timeout=5)
+            self.reader = None
+        if process.stdout is not None:
+            process.stdout.close()
+        self.ready.clear()
 
 
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser()
-    parser.add_argument("--request", required=True)
+    parser.add_argument("--request")
     args = parser.parse_args()
-    BrainInstaller().install()
-    print(Brain().ask(args.request), flush=True)
+    if args.request is None:
+        BrainInstaller().install()
+    else:
+        started = time.perf_counter()
+        with Brain() as brain:
+            ready = time.perf_counter()
+            first = None
+            for chunk in brain.stream(args.request):
+                if first is None:
+                    first = time.perf_counter()
+                print(chunk, end="", flush=True)
+            finished = time.perf_counter()
+        print()
+        print(f"startup_s={ready-started:.3f} ttft_s={(first or finished)-ready:.3f} inference_s={finished-ready:.3f}", file=sys.stderr)
