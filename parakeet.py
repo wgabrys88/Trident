@@ -7,10 +7,10 @@ EXE = RUNTIME / "parakeet-cli.exe"
 SERVER = RUNTIME / "parakeet-server.exe"
 MODEL = ROOT / "models/nemotron-3.5-asr-streaming-0.6b-q4_k.gguf"
 MODEL_CARD = MODEL.with_suffix(".md")
-ARCHIVE = "parakeet-v0.5.0-bin-win-cpu-x64.zip"
+ARCHIVE = "parakeet-v0.5.0-bin-win-vulkan-x64.zip"
 RUNTIME_URL = f"https://github.com/mudler/parakeet.cpp/releases/download/v0.5.0/{ARCHIVE}"
 MODEL_URL = "https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/bf0af9f425fa01809cadec671b3cb672709d13e9"
-RUNTIME_SHA = "df25af4095807d83957f6e135950120e7954fd2d4aca8ad0a5de248ada6287e0"
+RUNTIME_SHA = "717c416fab299755e8140137e3a0115121ce1acb6379d13c60f2f0613f6c13a3"
 MODEL_SHA = "5ad85eb3f3014c1a300d67b7ccbd23c38c4c952405cbe33a861e19fb2775e84b"
 PARAKEET_REV = "e75de9b6b9b688fd293aa22f7e27aa724ea286f8"
 THREADS = 6
@@ -57,11 +57,16 @@ def _build(work: Path) -> None:
                     "-DGGML_NATIVE=ON", "-DGGML_LLAMAFILE=ON"], check=True)
     subprocess.run(["C:/Program Files/CMake/bin/cmake.exe", "--build", str(build),
                     "--config", "Release", "--target", "parakeet-server", "--parallel", "4"], check=True)
-    for name in ("parakeet-server.exe", "parakeet-cli.exe", "parakeet.dll"):
-        src = build / "bin" / name
-        if src.is_file():
-            shutil.copy2(src, RUNTIME / name)
-    for dll in build.glob("bin/*.dll"):
+    RUNTIME.mkdir(parents=True, exist_ok=True)
+    for name in ("parakeet-server.exe", "parakeet-cli.exe"):
+        for sub in ("bin", "bin/Release", "examples/cli", "examples/cli/Release", "examples/server", "examples/server/Release"):
+            src = build / sub / name
+            if src.is_file():
+                shutil.copy2(src, RUNTIME / name)
+                break
+    for dll in build.rglob("bin/Release/*.dll"):
+        shutil.copy2(dll, RUNTIME / dll.name)
+    for dll in build.rglob("bin/*.dll"):
         shutil.copy2(dll, RUNTIME / dll.name)
     shutil.copy2(source / "LICENSE", RUNTIME / "parakeet-LICENSE.txt")
 
@@ -108,12 +113,12 @@ def _drain() -> None:
 
 def _start() -> None:
     global _PROCESS, _READER
+    if _port_in_use():
+        return
     if _PROCESS is not None and _PROCESS.poll() is None:
         return
-    if _port_in_use():
-        raise RuntimeError(f"Parakeet port {PORT} is already occupied")
     cmd = [str(SERVER), "--model", str(MODEL), "--port", str(PORT),
-           "--threads", str(THREADS), "--lang", LANGUAGE]
+           "--threads", str(THREADS)]
     _PROCESS = subprocess.Popen(cmd, cwd=RUNTIME, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 creationflags=subprocess.CREATE_NO_WINDOW)
@@ -131,17 +136,22 @@ def _start() -> None:
 def _stop() -> None:
     global _PROCESS, _READER
     proc, _PROCESS = _PROCESS, None
-    if proc is None:
-        return
-    if proc.poll() is None:
-        proc.kill()
-    proc.wait()
+    if proc is not None:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
     if _READER is not None:
         _READER.join(timeout=5)
         _READER = None
-    if proc.stdout is not None:
+    if proc is not None and proc.stdout is not None:
         proc.stdout.close()
     _READY.clear()
+    if _port_in_use():
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f"Get-NetTCPConnection -LocalPort {PORT} -State Listen -ErrorAction SilentlyContinue | "
+             "ForEach-Object { taskkill /F /PID $_.OwningProcess }"],
+            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def _transcribe_cli(wav: Path) -> str:
@@ -154,22 +164,23 @@ def _transcribe_cli(wav: Path) -> str:
 def _transcribe_http(wav: Path) -> str:
     boundary = uuid.uuid4().hex
     with wav.open("rb") as f:
-        body = f.read()
-    parts = [
-        f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{wav.name}\"\r\n"
-        f"Content-Type: audio/wav\r\n\r\n".encode("utf-8") + body,
-        f"\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"response_format\"\r\n\r\ntext\r\n".encode("utf-8"),
-        f"--{boundary}--\r\n".encode("utf-8"),
-    ]
-    payload = b"".join(parts)
+        wav_bytes = f.read()
+    body = (
+        f'--{boundary}\r\n'
+        f'Content-Disposition: form-data; name="file"; filename="{wav.name}"\r\n'
+        f'Content-Type: audio/wav\r\n\r\n'
+    ).encode() + wav_bytes + (
+        f'\r\n--{boundary}--\r\n'
+    ).encode()
     conn = http.client.HTTPConnection("127.0.0.1", PORT, timeout=300)
     try:
-        conn.request("POST", "/v1/audio/transcriptions", body=payload,
+        conn.request("POST", "/v1/audio/transcriptions", body=body,
                      headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
         resp = conn.getresponse()
+        body = resp.read()
         if resp.status != 200:
-            raise RuntimeError(f"parakeet HTTP {resp.status}: {resp.read().decode('utf-8', 'replace')[-2000:]}")
-        return json.loads(resp.read())["text"]
+            raise RuntimeError(f"parakeet HTTP {resp.status}: {body.decode('utf-8', 'replace')[-2000:]}")
+        return json.loads(body)["text"]
     finally:
         conn.close()
 
