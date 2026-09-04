@@ -30,8 +30,6 @@ RATE, CHUNK_CHARS, PORT = 24000, 50, 17933
 MAGIC, VERSION = 0x32525454, 2
 REQUEST, RESPONSE = struct.Struct("<7I"), struct.Struct("<8I")
 
-_PROCESS, _READY, _READER = None, threading.Event(), None
-
 
 def _download(url: str, path: Path, sha: str = "") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -125,12 +123,6 @@ def _install() -> None:
         _download(f"{VOICE_URL}/README.md", VOICE.with_suffix(".md"))
 
 
-def _port_in_use() -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(0.2)
-        return s.connect_ex(("127.0.0.1", PORT)) == 0
-
-
 def _command() -> list:
     cmd = [str(RUNTIME / "chatterbox-server.exe"), "--run-id", "nano", "--family", "nano",
            "--model", str(T3), "--s3gen-gguf", str(S3), "--reference", str(VOICE),
@@ -139,46 +131,25 @@ def _command() -> list:
     return cmd
 
 
-def _drain() -> None:
-    for line in _PROCESS.stdout:
-        if b"server.ready" in line:
-            _READY.set()
-
-
-def _start() -> None:
-    global _PROCESS, _READER
-    if _PROCESS is not None and _PROCESS.poll() is None:
-        return
-    if _port_in_use():
-        raise RuntimeError(f"TTS port {PORT} is already occupied")
-    _PROCESS = subprocess.Popen(_command(), cwd=RUNTIME, stdin=subprocess.DEVNULL,
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                creationflags=subprocess.CREATE_NO_WINDOW)
-    _READY.clear()
-    _READER = threading.Thread(target=_drain, daemon=True)
-    _READER.start()
-    deadline = time.monotonic() + 300
-    while not _READY.wait(.1):
-        if _PROCESS.poll() is not None:
-            raise RuntimeError("Native TTS failed to start; see native diagnostics above")
-        if time.monotonic() >= deadline:
-            raise TimeoutError("Native TTS startup timed out")
-
-
-def _stop() -> None:
-    global _PROCESS, _READER
-    proc, _PROCESS = _PROCESS, None
-    if proc is None:
-        return
-    if proc.poll() is None:
+def _run_server() -> tuple:
+    LOG = ROOT / ".runtime-logs/tts_serve.log"
+    LOG.parent.mkdir(parents=True, exist_ok=True)
+    ready = threading.Event()
+    def drain():
+        with LOG.open("wb") as lf:
+            for raw in proc.stdout:
+                lf.write(raw)
+                lf.flush()
+                if b"server.ready" in raw:
+                    ready.set()
+    proc = subprocess.Popen(_command(), cwd=RUNTIME, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    t = threading.Thread(target=drain, daemon=True)
+    t.start()
+    if not ready.wait(timeout=120):
         proc.kill()
-    proc.wait()
-    if _READER is not None:
-        _READER.join(timeout=5)
-        _READER = None
-    if proc.stdout is not None:
-        proc.stdout.close()
-    _READY.clear()
+        raise TimeoutError("TTS server failed to start; see .runtime-logs/tts_serve.log")
+    return proc
 
 
 def _chunks(text: str) -> list:
@@ -224,7 +195,7 @@ def _receive(reader) -> tuple:
 def _synthesize(text: str) -> Path:
     pieces = _chunks(text)
     output = ROOT / f"out_{time.strftime(TIMESTAMP_FORMAT)}_tts.wav"
-    _start()
+    server = _run_server()
     try:
         with socket.create_connection(("127.0.0.1", PORT), timeout=3600) as sock, sock.makefile("rb") as reader:
             pcm_bytes = 0
@@ -254,7 +225,9 @@ def _synthesize(text: str) -> Path:
                 raise RuntimeError("Native TTS did not acknowledge close")
     except Exception:
         output.unlink(missing_ok=True)
+        server.kill()
         raise
+    server.wait(timeout=30)
     return output
 
 
@@ -267,21 +240,10 @@ if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
     p = argparse.ArgumentParser()
-    p.add_argument("--load", action="store_true")
-    p.add_argument("--unload", action="store_true")
     text = p.add_mutually_exclusive_group()
     text.add_argument("--text")
     text.add_argument("--text-file", type=Path)
     args = p.parse_args()
-    if args.load:
-        if _port_in_use():
-            sys.exit(0)
-        _install()
-        _start()
-        sys.exit(0)
-    if args.unload:
-        _stop()
-        sys.exit(0)
     if args.text is None and args.text_file is None:
         _install()
     src = args.text if args.text is not None else (ROOT / args.text_file).read_text(encoding="utf-8") if args.text_file else (ROOT / "brain_out.txt").read_text(encoding="utf-8")

@@ -1,3 +1,4 @@
+from __future__ import annotations
 import argparse, hashlib, http.client, json, shutil, socket, subprocess, sys, tempfile, threading, time, urllib.request, zipfile
 from collections import deque
 from pathlib import Path
@@ -114,14 +115,10 @@ def _drain() -> None:
 
 def _start() -> None:
     global _PROCESS, _READY_EVENT, _READER
+    if _port_in_use():
+        return
     if _PROCESS is not None and _PROCESS.poll() is None:
         return
-    if not EXE.is_file() or not RUNTIME_REVISION.is_file() or RUNTIME_REVISION.read_text(encoding="utf-8").strip() != f"{LLAMA_REV} {RUNTIME_SHA}":
-        raise RuntimeError("Brain runtime missing; run python brain.py")
-    if not MODEL.is_file() or MODEL.stat().st_size != MODEL_SIZE:
-        raise RuntimeError("Gemma model missing; run python brain.py")
-    if _port_in_use():
-        raise RuntimeError(f"Brain port {PORT} is already occupied")
     _PROCESS = subprocess.Popen(
         [str(EXE), "--model", str(MODEL), *SERVER_ARGS],
         cwd=RUNTIME, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -142,18 +139,23 @@ def _start() -> None:
 def _stop() -> None:
     global _PROCESS, _READY_EVENT, _READER
     proc, _PROCESS = _PROCESS, None
-    if proc is None:
-        return
-    if proc.poll() is None:
-        proc.kill()
-    proc.wait()
+    if proc is not None:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
     if _READER is not None:
         _READER.join(timeout=5)
         _READER = None
-    if proc.stdout is not None:
+    if proc is not None and proc.stdout is not None:
         proc.stdout.close()
     if _READY_EVENT is not None:
         _READY_EVENT.clear()
+    if _port_in_use():
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f"Get-NetTCPConnection -LocalPort {PORT} -State Listen -ErrorAction SilentlyContinue | "
+             "ForEach-Object { taskkill /F /PID $_.OwningProcess }"],
+            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 class Brain:
