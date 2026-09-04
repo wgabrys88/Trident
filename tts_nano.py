@@ -140,6 +140,9 @@ class NanoInstaller:
 
 
 class NanoTTS:
+    def __init__(self, *, log: bool = True) -> None:
+        self.log = log
+
     @staticmethod
     def _chunks(text: str) -> list[str]:
         chunks, current = [], ""
@@ -194,7 +197,8 @@ class NanoTTS:
 
         def drain() -> None:
             for line in process.stdout:
-                print(line.decode("utf-8", errors="replace").rstrip(), file=sys.stderr, flush=True)
+                if self.log:
+                    print(line.decode("utf-8", errors="replace").rstrip(), file=sys.stderr, flush=True)
                 if b"server.ready" in line:
                     ready.set()
             finished.set()
@@ -238,8 +242,9 @@ class NanoTTS:
             if process.wait(timeout=10):
                 raise RuntimeError(f"Native TTS exited with code {process.returncode}")
             duration = pcm_bytes / (RATE * 2)
-            print(f"audio_s={duration:.3f} synthesis_s={elapsed:.3f} synthesis_rtf={elapsed / duration:.3f}",
-                  file=sys.stderr)
+            if self.log:
+                print(f"audio_s={duration:.3f} synthesis_s={elapsed:.3f} synthesis_rtf={elapsed / duration:.3f}",
+                      file=sys.stderr)
             return output
         finally:
             if process.poll() is None:

@@ -59,7 +59,7 @@ class ParakeetInstaller:
 
 
 class Parakeet:
-    def transcribe(self, wav: Path) -> str:
+    def transcribe(self, wav: Path, *, log: bool = True) -> str:
         wav = ROOT / wav
         with wave.open(str(wav), "rb") as audio:
             duration = audio.getnframes() / audio.getframerate()
@@ -71,7 +71,8 @@ class Parakeet:
         ts = time.strftime(TIMESTAMP_FORMAT)
         with (ROOT / f"in_{ts}_{wav.stem}_asr.txt").open("x", encoding="utf-8") as output:
             output.write(result.stdout)
-        print(f"audio_s={duration:.3f} elapsed_s={elapsed:.3f} rtf={elapsed / duration:.4f}", file=sys.stderr)
+        if log:
+            print(f"audio_s={duration:.3f} elapsed_s={elapsed:.3f} rtf={elapsed / duration:.4f}", file=sys.stderr)
         return result.stdout
 
 
