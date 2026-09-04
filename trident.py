@@ -14,9 +14,9 @@ TOOLS, MODELS, DATA = (ROOT / n for n in ("tools", "models", "data"))
 RUNTIMES, DOWNLOADS = TOOLS / "runtime", TOOLS / "downloads"
 
 PARAKEET_VERSION = "0.5.0"
-PARAKEET_ZIP_URL = f"https://github.com/mudler/parakeet.cpp/releases/download/v{PARAKEET_VERSION}/parakeet-v{PARAKEET_VERSION}-bin-win-vulkan-x64.zip"
-PARAKEET_ZIP_NAME = f"parakeet-v{PARAKEET_VERSION}-bin-win-vulkan-x64.zip"
-PARAKEET_ZIP_SHA = "717c416fab299755e8140137e3a0115121ce1acb6379d13c60f2f0613f6c13a3"
+PARAKEET_ZIP_URL = f"https://github.com/mudler/parakeet.cpp/releases/download/v{PARAKEET_VERSION}/parakeet-v{PARAKEET_VERSION}-bin-win-cpu-x64.zip"
+PARAKEET_ZIP_NAME = f"parakeet-v{PARAKEET_VERSION}-bin-win-cpu-x64.zip"
+PARAKEET_ZIP_SHA = "df25af4095807d83957f6e135950120e7954fd2d4aca8ad0a5de248ada6287e0"
 PARAKEET_EXE = "parakeet-cli.exe"
 RUNTIME_DIR = RUNTIMES / "parakeet"
 
@@ -120,6 +120,9 @@ def install() -> int:
                 for child in inner.iterdir():
                     shutil.move(str(child), str(RUNTIME_DIR / child.name))
                 inner.rmdir()
+            extra = RUNTIME_DIR / "parakeet-server.exe"
+            if extra.is_file():
+                extra.unlink()
         if not exe.is_file():
             raise RuntimeError(f"{PARAKEET_EXE} missing after extract")
         journal.emit("install", "runtime.ready", executable=str(exe))
