@@ -5,7 +5,6 @@ The native runtime needs no Python packages; conversion dependencies are tempora
 """
 
 import argparse
-from collections import deque
 import hashlib
 from pathlib import Path
 import re
@@ -79,12 +78,11 @@ class NanoInstaller:
                        input="\n".join(patterns) + "\n", text=True, check=True)
         subprocess.run([*git, "checkout", "--detach", rev], check=True)
 
-    def _build(self, work: Path, source: Path) -> None:
+    def _build(self, work: Path, source: Path, cmake: str, sdk: Path) -> None:
         self._checkout("https://github.com/ggml-org/ggml.git", GGML_REV, source / "ggml",
                        ("/CMakeLists.txt", "/LICENSE", "/cmake/", "/include/", "/src/*",
                         "!/src/*/", "/src/ggml-cpu/", "/src/ggml-vulkan/"))
-        sdk = max(Path("C:/VulkanSDK").iterdir(), key=lambda p: tuple(map(int, p.name.split("."))))
-        cmake, build = "C:/Program Files/CMake/bin/cmake.exe", work / "build"
+        sdk, build = (ROOT / sdk).resolve(), work / "build"
         subprocess.run([
             cmake, "-S", str(source), "-B", str(build), "-G", "Visual Studio 17 2022", "-A", "x64",
             "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_NATIVE=ON", "-DGGML_CCACHE=OFF",
@@ -123,7 +121,7 @@ class NanoInstaller:
             MODELS.mkdir(parents=True, exist_ok=True)
             converted.replace(output)
 
-    def install(self) -> None:
+    def install(self, cmake: str = "cmake", vulkan_sdk: Path = Path("tools/vulkan-sdk")) -> None:
         required = [*(RUNTIME / name for name in RUNTIME_FILES), T3, S3, VOICE,
                     RUNTIME / "chatterbox-LICENSE.txt", RUNTIME / "ggml-LICENSE.txt",
                     MODELS / "nano-model-card.md", VOICE.with_suffix(".md")]
@@ -137,7 +135,7 @@ class NanoInstaller:
             self._checkout("https://github.com/wgabrys88/chatterbox.cpp.git", CHATTERBOX_REV, source,
                            ("/CMakeLists.txt", "/LICENSE", "/src/", "/include/",
                             *(f"/scripts/{name}" for name in CONVERTERS)))
-            self._build(work, source)
+            self._build(work, source, cmake, vulkan_sdk)
             self._convert(work, source)
             self._download(f"{VOICE_URL}/audio/donald-trump.wav", VOICE, VOICE_SHA)
             self._download(f"{NANO_URL}/README.md", MODELS / "nano-model-card.md")
@@ -177,7 +175,8 @@ class NanoTTS:
         if len(header) != RESPONSE.size:
             raise EOFError("Native TTS closed the connection")
         magic, version, kind, epoch, response, piece, chunk, length = RESPONSE.unpack(header)
-        if (magic, version, epoch, response) != (MAGIC, VERSION, 0, 0):
+        # Closing advances the native epoch; synthesis responses stay at epoch zero.
+        if (magic, version) != (MAGIC, VERSION) or (kind != 5 and (epoch, response) != (0, 0)):
             raise RuntimeError("Unexpected TTS response header")
         payload = reader.read(length)
         if len(payload) != length:
@@ -188,7 +187,7 @@ class NanoTTS:
 
     def synthesize(self, text: str, output: Path) -> Path:
         pieces = self._chunks(text)
-        output = Path(output).resolve()
+        output = (ROOT / output).resolve()
         command = [str(RUNTIME / "chatterbox-server.exe"), "--run-id", "nano", "--family", "nano",
                    "--model", str(T3), "--s3gen-gguf", str(S3), "--reference", str(VOICE),
                    "--language", "en", "--port", str(PORT)]
@@ -196,11 +195,11 @@ class NanoTTS:
         process = subprocess.Popen(command, cwd=RUNTIME, stdin=subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                    creationflags=subprocess.CREATE_NO_WINDOW)
-        ready, finished, tail = threading.Event(), threading.Event(), deque(maxlen=8)
+        ready, finished = threading.Event(), threading.Event()
 
         def drain() -> None:
             for line in process.stdout:
-                tail.append(line.decode("utf-8", errors="replace").rstrip())
+                print(line.decode("utf-8", errors="replace").rstrip(), file=sys.stderr, flush=True)
                 if b"server.ready" in line:
                     ready.set()
             finished.set()
@@ -211,7 +210,7 @@ class NanoTTS:
             deadline = time.monotonic() + 300
             while not ready.wait(.1):
                 if finished.is_set():
-                    raise RuntimeError("Native TTS failed to start:\n" + "\n".join(tail))
+                    raise RuntimeError("Native TTS failed to start; see native diagnostics above")
                 if time.monotonic() >= deadline:
                     raise TimeoutError("Native TTS startup timed out")
             output.parent.mkdir(parents=True, exist_ok=True)
@@ -244,7 +243,7 @@ class NanoTTS:
                 if self._receive(reader)[0] != 5:
                     raise RuntimeError("Native TTS did not acknowledge close")
             if process.wait(timeout=10):
-                raise RuntimeError("Native TTS exited with an error:\n" + "\n".join(tail))
+                raise RuntimeError(f"Native TTS exited with code {process.returncode}")
             duration = pcm_bytes / (RATE * 2)
             print(f"audio_s={duration:.3f} synthesis_s={elapsed:.3f} synthesis_rtf={elapsed / duration:.3f}",
                   file=sys.stderr)
@@ -258,9 +257,14 @@ class NanoTTS:
 
 
 def main() -> None:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("install", help="Build the native server and convert Nano models")
+    install = commands.add_parser("install", help="Build the native server and convert Nano models")
+    install.add_argument("--cmake", default="cmake", help="CMake executable (install only)")
+    install.add_argument("--vulkan-sdk", type=Path, default=Path("tools/vulkan-sdk"),
+                         help="Installed Vulkan SDK path (default: tools/vulkan-sdk)")
     run = commands.add_parser("run", help="Synthesize English text to a WAV file")
     text = run.add_mutually_exclusive_group(required=True)
     text.add_argument("--text")
@@ -268,9 +272,9 @@ def main() -> None:
     run.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     if args.command == "install":
-        NanoInstaller().install()
+        NanoInstaller().install(args.cmake, args.vulkan_sdk)
     else:
-        source = args.text if args.text is not None else args.text_file.read_text(encoding="utf-8")
+        source = args.text if args.text is not None else (ROOT / args.text_file).read_text(encoding="utf-8")
         print(NanoTTS().synthesize(source, args.out))
 
 

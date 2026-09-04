@@ -1,7 +1,5 @@
 *
 !/.gitignore
 !/.gitattributes
-!/main.py
-!/journal.py
-!/trident.py
+!/parakeet.py
 !/tts_nano.py
