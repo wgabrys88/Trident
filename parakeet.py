@@ -214,9 +214,25 @@ if __name__ == "__main__":
         _stop()
         sys.exit(0)
     if args.wav:
-        for wav in args.wav:
-            print(transcribe(wav), end="", flush=True)
+        import wave as _w
+        for wav_path in args.wav:
+            t0 = time.perf_counter()
+            transcript = transcribe(wav_path).strip()
+            t1 = time.perf_counter()
+            with _w.open(str(wav_path)) as wf:
+                dur = wf.getnframes() / wf.getframerate()
+            print(transcript, flush=True)
+            print(f"[rtf] parakeet_total={t1-t0:.3f}s", file=sys.stderr)
+            print(f"[rtf] audio_s={dur:.3f}s", file=sys.stderr)
     else:
+        import wave as _w
         _install()
-        transcript = transcribe(ROOT / "tts_out.wav").strip()
+        wav = ROOT / "tts_out.wav"
+        with _w.open(str(wav)) as wf:
+            dur = wf.getnframes() / wf.getframerate()
+        t0 = time.perf_counter()
+        transcript = transcribe(wav).strip()
+        t1 = time.perf_counter()
         print(transcript)
+        print(f"[rtf] parakeet_total={t1-t0:.3f}s", file=sys.stderr)
+        print(f"[rtf] audio_s={dur:.3f}s", file=sys.stderr)
