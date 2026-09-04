@@ -1,5 +1,3 @@
-"""Install with no arguments; pass WAV paths to print and save timestamped transcripts."""
-
 import argparse
 import hashlib
 from pathlib import Path
@@ -30,7 +28,6 @@ TIMESTAMP_FORMAT = "%d-%m-%y-%H-%M-%S"
 class ParakeetInstaller:
     @staticmethod
     def _download(url: str, path: Path, sha: str = "") -> None:
-        print(f"Downloading {path.name}", file=sys.stderr, flush=True)
         request = urllib.request.Request(url, headers={"User-Agent": "Parakeet/1"})
         with urllib.request.urlopen(request, timeout=1800) as source, path.open("wb") as target:
             shutil.copyfileobj(source, target, 1 << 20)
@@ -41,7 +38,6 @@ class ParakeetInstaller:
 
     def install(self) -> None:
         if all(path.is_file() for path in (EXE, RUNTIME / "LICENSE", MODEL, MODEL_CARD)):
-            print("Parakeet is installed.")
             return
         with tempfile.TemporaryDirectory(prefix=".parakeet-install-", dir=ROOT) as temporary:
             work = Path(temporary)
@@ -60,7 +56,6 @@ class ParakeetInstaller:
                     downloaded = work / output.name
                     self._download(f"{MODEL_URL}/{name}", downloaded, sha)
                     downloaded.replace(output)
-        print("Parakeet is installed.")
 
 
 class Parakeet:
@@ -70,11 +65,11 @@ class Parakeet:
             duration = audio.getnframes() / audio.getframerate()
         command = [str(EXE), "transcribe", "--model", str(MODEL), "--input", str(wav),
                    "--lang", LANGUAGE, "--threads", str(THREADS)]
-        print(f"parakeet.run wav={wav.name} lang={LANGUAGE} threads={THREADS}", file=sys.stderr, flush=True)
         started = time.perf_counter()
         result = subprocess.run(command, stdout=subprocess.PIPE, text=True, encoding="utf-8", check=True)
         elapsed = time.perf_counter() - started
-        with (ROOT / f"{time.strftime(TIMESTAMP_FORMAT)}-asr-{wav.stem}.txt").open("x", encoding="utf-8") as output:
+        ts = time.strftime(TIMESTAMP_FORMAT)
+        with (ROOT / f"in_{ts}_{wav.stem}_asr.txt").open("x", encoding="utf-8") as output:
             output.write(result.stdout)
         print(f"audio_s={duration:.3f} elapsed_s={elapsed:.3f} rtf={elapsed / duration:.4f}", file=sys.stderr)
         return result.stdout
@@ -83,8 +78,8 @@ class Parakeet:
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("wav", type=Path, nargs="*", help="WAV paths; omit to install")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("wav", type=Path, nargs="*")
     args = parser.parse_args()
     if not args.wav:
         ParakeetInstaller().install()
