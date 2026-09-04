@@ -1,4 +1,4 @@
-"""Offline multilingual WAV transcription with pinned Parakeet v0.5.0 on CPU."""
+"""Install with no arguments; pass WAV paths for offline multilingual CPU transcription."""
 
 import argparse
 import hashlib
@@ -23,6 +23,7 @@ MODEL_URL = "https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/bf0af9f425f
 RUNTIME_SHA = "df25af4095807d83957f6e135950120e7954fd2d4aca8ad0a5de248ada6287e0"
 MODEL_SHA = "5ad85eb3f3014c1a300d67b7ccbd23c38c4c952405cbe33a861e19fb2775e84b"
 THREADS = 6
+LANGUAGE = "auto"
 
 
 class ParakeetInstaller:
@@ -62,13 +63,13 @@ class ParakeetInstaller:
 
 
 class Parakeet:
-    def transcribe(self, wav: Path, lang: str = "auto", threads: int = THREADS) -> str:
+    def transcribe(self, wav: Path) -> str:
         wav = ROOT / wav
         with wave.open(str(wav), "rb") as audio:
             duration = audio.getnframes() / audio.getframerate()
         command = [str(EXE), "transcribe", "--model", str(MODEL), "--input", str(wav),
-                   "--lang", lang, "--threads", str(threads)]
-        print(f"parakeet.run wav={wav.name} lang={lang} threads={threads}", file=sys.stderr, flush=True)
+                   "--lang", LANGUAGE, "--threads", str(THREADS)]
+        print(f"parakeet.run wav={wav.name} lang={LANGUAGE} threads={THREADS}", file=sys.stderr, flush=True)
         started = time.perf_counter()
         result = subprocess.run(command, stdout=subprocess.PIPE, text=True, encoding="utf-8", check=True)
         elapsed = time.perf_counter() - started
@@ -80,19 +81,14 @@ def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
-    commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("install", help="Download the pinned CPU executable and Q4_K model")
-    run = commands.add_parser("run", help="Transcribe finished WAV files; print text and timing")
-    run.add_argument("--wav", type=Path, action="append", required=True)
-    run.add_argument("--lang", default="auto", help="Language locale, e.g. en, pl, de, or auto (default)")
-    run.add_argument("--threads", type=int, default=THREADS, help=f"CPU threads (default: {THREADS})")
+    parser.add_argument("wav", type=Path, nargs="*", help="WAV paths; omit to install")
     args = parser.parse_args()
-    if args.command == "install":
+    if not args.wav:
         ParakeetInstaller().install()
     else:
         asr = Parakeet()
         for wav in args.wav:
-            print(asr.transcribe(wav, args.lang, args.threads), end="", flush=True)
+            print(asr.transcribe(wav), end="", flush=True)
 
 
 if __name__ == "__main__":

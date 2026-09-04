@@ -1,6 +1,6 @@
 """Standalone Nano TTS, ported from codex/tts-only-nano at 97b4480.
 
-Install once, then run English text-to-WAV synthesis on Windows / Iris Xe.
+Run with no arguments to install; use --text or --text-file and --out to synthesize.
 The native runtime needs no Python packages; conversion dependencies are temporary.
 """
 
@@ -25,6 +25,10 @@ ROOT = Path(__file__).resolve().parent
 RUNTIME = ROOT / "tools" / "runtime" / "tts"
 MODELS = ROOT / "models"
 VOICE = ROOT / "data" / "ref-trump.wav"
+CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
+VULKAN_SDK = Path("C:/VulkanSDK/1.4.357.0")
+BUILD_THREADS = 4
+LANGUAGE = "en"
 CHATTERBOX_REV = "bb0717cec20fafecf5491654a758cbee93cbe962"
 GGML_REV = "58c3805840b516b2a88ff867ccf7bb41dba79951"
 NANO_REV = "71ccd1d0081b430592cea481f4307e764e07bc64"
@@ -78,21 +82,21 @@ class NanoInstaller:
                        input="\n".join(patterns) + "\n", text=True, check=True)
         subprocess.run([*git, "checkout", "--detach", rev], check=True)
 
-    def _build(self, work: Path, source: Path, cmake: str, sdk: Path) -> None:
+    def _build(self, work: Path, source: Path) -> None:
         self._checkout("https://github.com/ggml-org/ggml.git", GGML_REV, source / "ggml",
                        ("/CMakeLists.txt", "/LICENSE", "/cmake/", "/include/", "/src/*",
                         "!/src/*/", "/src/ggml-cpu/", "/src/ggml-vulkan/"))
-        sdk, build = (ROOT / sdk).resolve(), work / "build"
+        build = work / "build"
         subprocess.run([
-            cmake, "-S", str(source), "-B", str(build), "-G", "Visual Studio 17 2022", "-A", "x64",
+            CMAKE, "-S", str(source), "-B", str(build), "-G", "Visual Studio 17 2022", "-A", "x64",
             "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_NATIVE=ON", "-DGGML_CCACHE=OFF",
             "-DBUILD_SHARED_LIBS=ON", "-DTTS_CPP_BUILD_EXECUTABLES=ON", "-DTTS_CPP_BUILD_TESTS=OFF",
             "-DGGML_BUILD_TESTS=OFF", "-DGGML_BUILD_EXAMPLES=OFF",
-            f"-DVulkan_INCLUDE_DIR={sdk / 'Include'}", f"-DVulkan_LIBRARY={sdk / 'Lib/vulkan-1.lib'}",
-            f"-DVulkan_GLSLC_EXECUTABLE={sdk / 'Bin/glslc.exe'}",
+            f"-DVulkan_INCLUDE_DIR={VULKAN_SDK / 'Include'}", f"-DVulkan_LIBRARY={VULKAN_SDK / 'Lib/vulkan-1.lib'}",
+            f"-DVulkan_GLSLC_EXECUTABLE={VULKAN_SDK / 'Bin/glslc.exe'}",
         ], check=True)
-        subprocess.run([cmake, "--build", str(build), "--config", "Release", "--target",
-                        "chatterbox-server", "--parallel", "4"], check=True)
+        subprocess.run([CMAKE, "--build", str(build), "--config", "Release", "--target",
+                        "chatterbox-server", "--parallel", str(BUILD_THREADS)], check=True)
         RUNTIME.mkdir(parents=True, exist_ok=True)
         for name in RUNTIME_FILES:
             shutil.copy2(build / "bin" / name, RUNTIME / name)
@@ -121,7 +125,7 @@ class NanoInstaller:
             MODELS.mkdir(parents=True, exist_ok=True)
             converted.replace(output)
 
-    def install(self, cmake: str = "cmake", vulkan_sdk: Path = Path("tools/vulkan-sdk")) -> None:
+    def install(self) -> None:
         required = [*(RUNTIME / name for name in RUNTIME_FILES), T3, S3, VOICE,
                     RUNTIME / "chatterbox-LICENSE.txt", RUNTIME / "ggml-LICENSE.txt",
                     MODELS / "nano-model-card.md", VOICE.with_suffix(".md")]
@@ -135,7 +139,7 @@ class NanoInstaller:
             self._checkout("https://github.com/wgabrys88/chatterbox.cpp.git", CHATTERBOX_REV, source,
                            ("/CMakeLists.txt", "/LICENSE", "/src/", "/include/",
                             *(f"/scripts/{name}" for name in CONVERTERS)))
-            self._build(work, source, cmake, vulkan_sdk)
+            self._build(work, source)
             self._convert(work, source)
             self._download(f"{VOICE_URL}/audio/donald-trump.wav", VOICE, VOICE_SHA)
             self._download(f"{NANO_URL}/README.md", MODELS / "nano-model-card.md")
@@ -190,7 +194,7 @@ class NanoTTS:
         output = (ROOT / output).resolve()
         command = [str(RUNTIME / "chatterbox-server.exe"), "--run-id", "nano", "--family", "nano",
                    "--model", str(T3), "--s3gen-gguf", str(S3), "--reference", str(VOICE),
-                   "--language", "en", "--port", str(PORT)]
+                   "--language", LANGUAGE, "--port", str(PORT)]
         command.extend(arg for name, value in KNOBS.items() for arg in (f"--{name}", str(value)))
         process = subprocess.Popen(command, cwd=RUNTIME, stdin=subprocess.DEVNULL,
                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -259,23 +263,17 @@ class NanoTTS:
 def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
+    if len(sys.argv) == 1:
+        NanoInstaller().install()
+        return
     parser = argparse.ArgumentParser(description=__doc__)
-    commands = parser.add_subparsers(dest="command", required=True)
-    install = commands.add_parser("install", help="Build the native server and convert Nano models")
-    install.add_argument("--cmake", default="cmake", help="CMake executable (install only)")
-    install.add_argument("--vulkan-sdk", type=Path, default=Path("tools/vulkan-sdk"),
-                         help="Installed Vulkan SDK path (default: tools/vulkan-sdk)")
-    run = commands.add_parser("run", help="Synthesize English text to a WAV file")
-    text = run.add_mutually_exclusive_group(required=True)
+    text = parser.add_mutually_exclusive_group(required=True)
     text.add_argument("--text")
     text.add_argument("--text-file", type=Path)
-    run.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
-    if args.command == "install":
-        NanoInstaller().install(args.cmake, args.vulkan_sdk)
-    else:
-        source = args.text if args.text is not None else (ROOT / args.text_file).read_text(encoding="utf-8")
-        print(NanoTTS().synthesize(source, args.out))
+    source = args.text if args.text is not None else (ROOT / args.text_file).read_text(encoding="utf-8")
+    print(NanoTTS().synthesize(source, args.out))
 
 
 if __name__ == "__main__":
