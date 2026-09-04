@@ -113,9 +113,9 @@ def _drain() -> None:
 
 def _start() -> None:
     global _PROCESS, _READER
-    if _port_in_use():
-        return
     if _PROCESS is not None and _PROCESS.poll() is None:
+        return
+    if _port_in_use():
         return
     cmd = [str(SERVER), "--model", str(MODEL), "--port", str(PORT),
            "--threads", str(THREADS)]
@@ -201,10 +201,14 @@ if __name__ == "__main__":
     p.add_argument("wav", type=Path, nargs="*")
     args = p.parse_args()
     if args.load:
-        if _port_in_use():
-            sys.exit(0)
         _install()
         _start()
+        try:
+            input("[parakeet] ready. Press Enter to stop...\n")
+        except EOFError:
+            while True:
+                time.sleep(3600)
+        _stop()
         sys.exit(0)
     if args.unload:
         _stop()
