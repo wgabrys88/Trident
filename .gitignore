@@ -2,10 +2,5 @@
 !/.gitignore
 !/.gitattributes
 !/main.py
-!/config.py
-!/install.py
-!/runtime.py
 !/journal.py
-!/asr.py
-!/utils.py
-!/requirements.txt
+!/trident.py
