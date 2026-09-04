@@ -9,10 +9,10 @@ EXE = RUNTIME / "llama-server.exe"
 RUNTIME_REVISION = RUNTIME / "REVISION"
 MODEL = ROOT / "models/gemma-4-E2B_q4_0-it.gguf"
 MODEL_CARD = MODEL.with_suffix(".md")
-LLAMA_REV = "b10621"
+LLAMA_REV = "b10816"
 ARCHIVE = f"llama-{LLAMA_REV}-bin-win-vulkan-x64.zip"
 RUNTIME_URL = f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_REV}/{ARCHIVE}"
-RUNTIME_SHA = "2672d85bf87c8280d94dee01eb6a86280046878f70a07d786a93637fa9081163"
+RUNTIME_SHA = "ea6704bd058cb37c3d960913638b37b766f66fb5baff37547d0fa95aa0ed7528"
 GEMMA_REV = "675cff42a74c774d6cb76f76d8eacb49b48c9b93"
 MODEL_URL = f"https://huggingface.co/google/gemma-4-E2B-it-qat-q4_0-gguf/resolve/{GEMMA_REV}/{MODEL.name}"
 MODEL_CARD_URL = f"https://huggingface.co/google/gemma-4-E2B-it-qat-q4_0-gguf/resolve/{GEMMA_REV}/README.md"
@@ -35,7 +35,7 @@ SERVER_ARGS = ["--alias", ALIAS, "--host", HOST, "--port", str(PORT), "--offline
                "--ubatch-size", str(UBATCH), "--threads", str(THREADS), "--threads-batch", str(THREADS_BATCH),
                "--poll", str(POLL), "--poll-batch", str(POLL_BATCH), "--threads-http", str(THREADS_HTTP),
                "--parallel", str(PARALLEL), "--flash-attn", FLASH_ATTN, "--no-mmproj", "--no-ui",
-               "--reasoning", REASONING]
+               "--reasoning", REASONING, "--lazy-mode", "auto"]
 REQUEST_ARGS = {"temperature": TEMPERATURE, "top_p": TOP_P, "top_k": TOP_K, "min_p": MIN_P,
                 "repeat_penalty": REPEAT_PENALTY, "seed": SEED, "max_tokens": MAX_TOKENS}
 _READY = "llama_server: listening on http://127.0.0.1:"
@@ -71,7 +71,16 @@ def _port_in_use() -> bool:
         return s.connect_ex((HOST, PORT)) == 0
 
 
+def _kill_port() -> None:
+    subprocess.run(
+        ["powershell", "-NoProfile", "-Command",
+         f"Get-NetTCPConnection -LocalPort {PORT} -State Listen -ErrorAction SilentlyContinue | "
+         "ForEach-Object { taskkill /F /PID $_.OwningProcess }"],
+        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 def _install() -> None:
+    _kill_port()
     runtime_ok = EXE.is_file() and RUNTIME_REVISION.is_file() and RUNTIME_REVISION.read_text(encoding="utf-8").strip() == f"{LLAMA_REV} {RUNTIME_SHA}"
     model_ok = MODEL.is_file() and MODEL.stat().st_size == MODEL_SIZE and _sha(MODEL) == MODEL_SHA
     if MODEL.exists() and not model_ok:
@@ -115,9 +124,9 @@ def _drain() -> None:
 
 def _start() -> None:
     global _PROCESS, _READY_EVENT, _READER
-    if _port_in_use():
-        return
     if _PROCESS is not None and _PROCESS.poll() is None:
+        return
+    if _port_in_use():
         return
     _PROCESS = subprocess.Popen(
         [str(EXE), "--model", str(MODEL), *SERVER_ARGS],
@@ -150,12 +159,7 @@ def _stop() -> None:
         proc.stdout.close()
     if _READY_EVENT is not None:
         _READY_EVENT.clear()
-    if _port_in_use():
-        subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             f"Get-NetTCPConnection -LocalPort {PORT} -State Listen -ErrorAction SilentlyContinue | "
-             "ForEach-Object { taskkill /F /PID $_.OwningProcess }"],
-            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    _kill_port()
 
 
 class Brain:
@@ -219,10 +223,14 @@ if __name__ == "__main__":
     p.add_argument("--request")
     args = p.parse_args()
     if args.load:
-        if _port_in_use():
-            sys.exit(0)
         _install()
         _start()
+        try:
+            input("[brain] ready. Press Enter to stop...\n")
+        except EOFError:
+            while True:
+                time.sleep(3600)
+        _stop()
         sys.exit(0)
     if args.unload:
         _stop()
