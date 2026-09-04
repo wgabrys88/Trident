@@ -12,6 +12,12 @@ def parse_rtf(text):
     for m in re.finditer(r"audio_s=([\d.]+)", text):
         if "audio_s" not in out:
             out["audio_s"] = float(m.group(1))
+    for m in re.finditer(r"tokens=(\d+)", text):
+        if "brain_tokens" not in out:
+            out["brain_tokens"] = int(m.group(1))
+    for m in re.finditer(r"tps=([\d.]+)", text):
+        if "brain_tps" not in out:
+            out["brain_tps"] = float(m.group(1))
     return out
 
 def run(name, cmd):
@@ -58,11 +64,13 @@ if args and not args[0].startswith("-"):
     print()
 
     print("=== RTF ===")
-    print(f"brain     outer={dt_brain:.3f}s | startup={rtf_brain.get('brain_startup','?')}s ttft={rtf_brain.get('brain_ttft','?')}s inference={rtf_brain.get('brain_inference','?')}s")
+    print(f"brain     outer={dt_brain:.3f}s | startup={rtf_brain.get('brain_startup','?')}s ttft={rtf_brain.get('brain_ttft','?')}s inference={rtf_brain.get('brain_inference','?')}s tokens={rtf_brain.get('brain_tokens','?')} tps={rtf_brain.get('brain_tps','?')}")
     print(f"tts       outer={dt_tts:.3f}s | start={rtf_tts.get('tts_start','?')}s synth={rtf_tts.get('tts_synth','?')}s audio_s={rtf_tts.get('audio_s','?')}s")
     print(f"parakeet  outer={dt_para:.3f}s | total={rtf_para.get('parakeet_total','?')}s audio_s={rtf_para.get('audio_s','?')}s")
     pipe = time.perf_counter() - t_pipeline
     print(f"pipeline  outer={pipe:.3f}s")
+    if rtf_brain.get("brain_inference"):
+        print(f"brain rtf = inference_s (text gen, no audio) = {rtf_brain['brain_inference']:.3f}s")
     if rtf_tts.get("audio_s") and rtf_tts.get("tts_synth"):
         print(f"tts rtf = synth/audio = {rtf_tts['tts_synth']/rtf_tts['audio_s']:.3f}x real-time")
     if rtf_para.get("audio_s") and rtf_para.get("parakeet_total"):

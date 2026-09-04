@@ -267,4 +267,7 @@ if __name__ == "__main__":
         if not answer:
             raise RuntimeError("Brain produced no spoken reply")
         (ROOT / "brain_out.txt").write_text(answer, encoding="utf-8")
-        print(f"[brain] startup_s={ready-started:.3f} ttft_s={(first or finished)-ready:.3f} inference_s={finished-ready:.3f}", file=sys.stderr)
+        n_tokens = len(answer.split())
+        inf_s = finished - ready
+        tps = n_tokens / inf_s if inf_s > 0 else 0.0
+        print(f"[brain] startup_s={ready-started:.3f} ttft_s={(first or finished)-ready:.3f} inference_s={inf_s:.3f} tokens={n_tokens} tps={tps:.2f}", file=sys.stderr)
