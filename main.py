@@ -69,8 +69,8 @@ if args and not args[0].startswith("-"):
     print(f"parakeet  outer={dt_para:.3f}s | total={rtf_para.get('parakeet_total','?')}s audio_s={rtf_para.get('audio_s','?')}s")
     pipe = time.perf_counter() - t_pipeline
     print(f"pipeline  outer={pipe:.3f}s")
-    if rtf_brain.get("brain_inference"):
-        print(f"brain rtf = inference_s (text gen, no audio) = {rtf_brain['brain_inference']:.3f}s")
+    if rtf_brain.get("brain_inference") and rtf_tts.get("tts_synth"):
+        print(f"brain rtf = brain_inference/tts_synth = {rtf_brain['brain_inference']/rtf_tts['tts_synth']:.3f}x")
     if rtf_tts.get("audio_s") and rtf_tts.get("tts_synth"):
         print(f"tts rtf = synth/audio = {rtf_tts['tts_synth']/rtf_tts['audio_s']:.3f}x real-time")
     if rtf_para.get("audio_s") and rtf_para.get("parakeet_total"):
