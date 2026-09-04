@@ -1,4 +1,4 @@
-"""Install with no arguments; pass WAV paths for offline multilingual CPU transcription."""
+"""Install with no arguments; pass WAV paths to print and save timestamped transcripts."""
 
 import argparse
 import hashlib
@@ -24,6 +24,7 @@ RUNTIME_SHA = "df25af4095807d83957f6e135950120e7954fd2d4aca8ad0a5de248ada6287e0"
 MODEL_SHA = "5ad85eb3f3014c1a300d67b7ccbd23c38c4c952405cbe33a861e19fb2775e84b"
 THREADS = 6
 LANGUAGE = "auto"
+TIMESTAMP_FORMAT = "%d-%m-%y-%H-%M-%S"
 
 
 class ParakeetInstaller:
@@ -73,11 +74,13 @@ class Parakeet:
         started = time.perf_counter()
         result = subprocess.run(command, stdout=subprocess.PIPE, text=True, encoding="utf-8", check=True)
         elapsed = time.perf_counter() - started
+        with (ROOT / f"{time.strftime(TIMESTAMP_FORMAT)}-asr-{wav.stem}.txt").open("x", encoding="utf-8") as output:
+            output.write(result.stdout)
         print(f"audio_s={duration:.3f} elapsed_s={elapsed:.3f} rtf={elapsed / duration:.4f}", file=sys.stderr)
         return result.stdout
 
 
-def main() -> None:
+if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
@@ -89,7 +92,3 @@ def main() -> None:
         asr = Parakeet()
         for wav in args.wav:
             print(asr.transcribe(wav), end="", flush=True)
-
-
-if __name__ == "__main__":
-    main()
