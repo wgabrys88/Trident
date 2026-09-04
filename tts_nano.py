@@ -1,9 +1,3 @@
-"""Standalone Nano TTS, ported from codex/tts-only-nano at 97b4480.
-
-Run with no arguments to install; use --text or --text-file for a timestamped WAV.
-The native runtime needs no Python packages; conversion dependencies are temporary.
-"""
-
 import argparse
 import hashlib
 from pathlib import Path
@@ -131,9 +125,7 @@ class NanoInstaller:
                     RUNTIME / "chatterbox-LICENSE.txt", RUNTIME / "ggml-LICENSE.txt",
                     MODELS / "nano-model-card.md", VOICE.with_suffix(".md")]
         if all(path.is_file() for path in required):
-            print("Nano TTS is installed.")
             return
-        # Everything needed only for compilation/conversion lives under this directory.
         with tempfile.TemporaryDirectory(prefix=".nano-install-", dir=ROOT) as temporary:
             work = Path(temporary)
             source = work / "chatterbox"
@@ -145,7 +137,6 @@ class NanoInstaller:
             self._download(f"{VOICE_URL}/audio/donald-trump.wav", VOICE, VOICE_SHA)
             self._download(f"{NANO_URL}/README.md", MODELS / "nano-model-card.md")
             self._download(f"{VOICE_URL}/README.md", VOICE.with_suffix(".md"))
-        print("Nano TTS is installed.")
 
 
 class NanoTTS:
@@ -180,7 +171,6 @@ class NanoTTS:
         if len(header) != RESPONSE.size:
             raise EOFError("Native TTS closed the connection")
         magic, version, kind, epoch, response, piece, chunk, length = RESPONSE.unpack(header)
-        # Closing advances the native epoch; synthesis responses stay at epoch zero.
         if (magic, version) != (MAGIC, VERSION) or (kind != 5 and (epoch, response) != (0, 0)):
             raise RuntimeError("Unexpected TTS response header")
         payload = reader.read(length)
@@ -192,7 +182,7 @@ class NanoTTS:
 
     def synthesize(self, text: str) -> Path:
         pieces = self._chunks(text)
-        output = ROOT / f"{time.strftime(TIMESTAMP_FORMAT)}-tts.wav"
+        output = ROOT / f"out_{time.strftime(TIMESTAMP_FORMAT)}_tts.wav"
         command = [str(RUNTIME / "chatterbox-server.exe"), "--run-id", "nano", "--family", "nano",
                    "--model", str(T3), "--s3gen-gguf", str(S3), "--reference", str(VOICE),
                    "--language", LANGUAGE, "--port", str(PORT)]
@@ -233,7 +223,6 @@ class NanoTTS:
                                 break
                             if kind != 1:
                                 raise RuntimeError(f"Unexpected TTS response kind: {kind}")
-                            # Remove only the first piece's 20 ms opening zeros; keep later joins.
                             zeros = RATE // 50 * 2
                             if piece_id == 0 and chunk == 0 and len(payload) > zeros and payload[:zeros] == b"\0" * zeros:
                                 payload = payload[zeros:]
@@ -266,7 +255,7 @@ if __name__ == "__main__":
     if len(sys.argv) == 1:
         NanoInstaller().install()
         sys.exit()
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser()
     text = parser.add_mutually_exclusive_group(required=True)
     text.add_argument("--text")
     text.add_argument("--text-file", type=Path)
