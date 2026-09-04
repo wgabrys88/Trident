@@ -151,34 +151,16 @@ class Brain:
         elapsed = time.perf_counter() - started
         prompt_file.unlink(missing_ok=True)
 
-        stderr_lines = [ln.strip() for ln in proc.stderr.splitlines() if ln.strip()]
-        fatal_errors = [
-            ln for ln in stderr_lines
-            if "error" in ln.lower()
-            and "ctx_other" not in ln
-            and "Gemma4Assistant" not in ln
-        ]
-
-        if fatal_errors:
-            for ln in stderr_lines:
+        for ln in proc.stderr.splitlines():
+            if ln.strip():
                 sys.stderr.write(ln + "\n")
-            raise RuntimeError(
-                f"llama-cli fatal error, exit code {proc.returncode}"
-            )
-
-        for ln in stderr_lines:
-            sys.stderr.write(ln + "\n")
 
         tok_match = re.search(r"\btok/s:\s*([\d.]+)", proc.stderr)
         if tok_match:
             print(f"elapsed_s={elapsed:.2f} tok/s={tok_match.group(1)}",
                   file=sys.stderr)
 
-        out = proc.stdout.strip()
-        out = re.sub(r"<\|channel\|>thought[^\n]*\n.*?<\|channel\|>", "", out, flags=re.DOTALL)
-        out = re.sub(r"<\|channel\|>thought[^\n]*\n.*", "", out, flags=re.DOTALL)
-        out = re.sub(r"\[Start thinking\].*?\[End thinking\]", "", out, flags=re.DOTALL)
-        return out.strip()
+        return proc.stdout
 
 
 if __name__ == "__main__":
