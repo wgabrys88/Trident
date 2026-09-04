@@ -114,6 +114,12 @@ def install() -> int:
             RUNTIME_DIR.mkdir(parents=True)
             with zipfile.ZipFile(archive) as z:
                 z.extractall(RUNTIME_DIR)
+            inner = next((p for p in RUNTIME_DIR.iterdir() if p.is_dir()), None)
+            if inner is not None and not exe.is_file():
+                import shutil
+                for child in inner.iterdir():
+                    shutil.move(str(child), str(RUNTIME_DIR / child.name))
+                inner.rmdir()
         if not exe.is_file():
             raise RuntimeError(f"{PARAKEET_EXE} missing after extract")
         journal.emit("install", "runtime.ready", executable=str(exe))
@@ -180,7 +186,7 @@ def asr(wavs: list[Path], lang: str) -> int:
             if text:
                 journal.transcript("user", text)
                 print(f"user: {text}", flush=True)
-        journal.emit("asr", "completed")
+        journal.emit("asr", "summary", count=len(wavs))
         print("trident.done", flush=True)
         return 0
     except BaseException as error:
