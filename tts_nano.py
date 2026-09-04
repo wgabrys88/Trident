@@ -1,6 +1,6 @@
 """Standalone Nano TTS, ported from codex/tts-only-nano at 97b4480.
 
-Run with no arguments to install; use --text or --text-file and --out to synthesize.
+Run with no arguments to install; use --text or --text-file for a timestamped WAV.
 The native runtime needs no Python packages; conversion dependencies are temporary.
 """
 
@@ -29,6 +29,7 @@ CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 VULKAN_SDK = Path("C:/VulkanSDK/1.4.357.0")
 BUILD_THREADS = 4
 LANGUAGE = "en"
+TIMESTAMP_FORMAT = "%d-%m-%y-%H-%M-%S"
 CHATTERBOX_REV = "bb0717cec20fafecf5491654a758cbee93cbe962"
 GGML_REV = "58c3805840b516b2a88ff867ccf7bb41dba79951"
 NANO_REV = "71ccd1d0081b430592cea481f4307e764e07bc64"
@@ -189,9 +190,9 @@ class NanoTTS:
             raise RuntimeError(payload.decode("utf-8", errors="replace"))
         return kind, piece, chunk, payload
 
-    def synthesize(self, text: str, output: Path) -> Path:
+    def synthesize(self, text: str) -> Path:
         pieces = self._chunks(text)
-        output = (ROOT / output).resolve()
+        output = ROOT / f"{time.strftime(TIMESTAMP_FORMAT)}-tts.wav"
         command = [str(RUNTIME / "chatterbox-server.exe"), "--run-id", "nano", "--family", "nano",
                    "--model", str(T3), "--s3gen-gguf", str(S3), "--reference", str(VOICE),
                    "--language", LANGUAGE, "--port", str(PORT)]
@@ -217,10 +218,9 @@ class NanoTTS:
                     raise RuntimeError("Native TTS failed to start; see native diagnostics above")
                 if time.monotonic() >= deadline:
                     raise TimeoutError("Native TTS startup timed out")
-            output.parent.mkdir(parents=True, exist_ok=True)
             with socket.create_connection(("127.0.0.1", PORT), timeout=3600) as sock, sock.makefile("rb") as reader:
                 started, pcm_bytes = time.perf_counter(), 0
-                with wave.open(str(output), "wb") as wav:
+                with output.open("xb") as target, wave.open(target, "wb") as wav:
                     wav.setparams((1, 2, RATE, 0, "NONE", "not compressed"))
                     for piece_id, piece in enumerate(pieces):
                         self._send(sock, 1, piece_id, piece)
@@ -260,21 +260,16 @@ class NanoTTS:
             process.stdout.close()
 
 
-def main() -> None:
+if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
     if len(sys.argv) == 1:
         NanoInstaller().install()
-        return
+        sys.exit()
     parser = argparse.ArgumentParser(description=__doc__)
     text = parser.add_mutually_exclusive_group(required=True)
     text.add_argument("--text")
     text.add_argument("--text-file", type=Path)
-    parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     source = args.text if args.text is not None else (ROOT / args.text_file).read_text(encoding="utf-8")
-    print(NanoTTS().synthesize(source, args.out))
-
-
-if __name__ == "__main__":
-    main()
+    print(NanoTTS().synthesize(source))
