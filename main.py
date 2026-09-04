@@ -6,7 +6,7 @@ import trident
 
 def main() -> int:
     parser = argparse.ArgumentParser(prog="python main.py",
-        description="Trident: bare-metal parakeet streaming ASR (Nemotron 0.6b multilingual, Windows Vulkan)")
+        description="Trident: bare-metal parakeet streaming ASR (Nemotron 0.6b multilingual, Windows CPU)")
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("install", help="Download parakeet-cli and the streaming model")
     asr = sub.add_parser("asr", help="Transcribe one or more WAV files")
