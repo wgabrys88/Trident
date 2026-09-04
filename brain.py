@@ -62,24 +62,30 @@ XTC_PROBABILITY = 0.00
 XTC_THRESHOLD = 0.10
 DRY_MULTIPLIER = 0.00
 
-CTX_SIZE = 4096
+CTX_SIZE = 2048
+BATCH_SIZE = 2048
+UBATCH_SIZE = 512
 CONTEXT_SHIFT = False
-CACHE_TYPE_K = "f16"
-CACHE_TYPE_V = "f16"
+CACHE_TYPE_K = "q4_0"
+CACHE_TYPE_V = "q4_0"
 DEFRAG_THOLD = 0.0
 KV_OFFLOAD = True
 GPU_LAYERS = 99
 
-THREADS = 6
+THREADS = 7
+THREADS_BATCH = 7
 FLASH_ATTN = True
 PERF = True
-WARMUP = True
+WARMUP = False
 SIMPLE_IO = True
 
 SPEC_TYPE = "draft-mtp"
 SPEC_DRAFT_N_MAX = 4
-SPEC_DRAFT_N_MIN = 0
+SPEC_DRAFT_N_MIN = 1
 SPEC_DRAFT_P_SPLIT = 0.10
+SPEC_DRAFT_GPU_LAYERS = 99
+SPEC_DRAFT_THREADS = 7
+SPEC_DRAFT_THREADS_BATCH = 7
 
 JSON_SCHEMA = ""
 GRAMMAR_FILE = ""
@@ -168,8 +174,12 @@ class Brain:
             "-m", str(MODEL),
             "--model-draft", str(MTP),
             "-ngl", str(GPU_LAYERS),
+            "--spec-draft-ngl", str(SPEC_DRAFT_GPU_LAYERS),
             "-c", str(CTX_SIZE),
+            "-b", str(BATCH_SIZE),
+            "-ub", str(UBATCH_SIZE),
             "-t", str(THREADS),
+            "-tb", str(THREADS_BATCH),
             "--temp", str(TEMPERATURE),
             "--top-p", str(TOP_P),
             "--top-k", str(TOP_K),
@@ -240,6 +250,8 @@ class Brain:
             cmd += ["--spec-draft-n-max", str(SPEC_DRAFT_N_MAX)]
             cmd += ["--spec-draft-n-min", str(SPEC_DRAFT_N_MIN)]
             cmd += ["--spec-draft-p-split", str(SPEC_DRAFT_P_SPLIT)]
+            cmd += ["-td", str(SPEC_DRAFT_THREADS)]
+            cmd += ["-tbd", str(SPEC_DRAFT_THREADS_BATCH)]
         if JSON_SCHEMA:
             cmd += ["-j", JSON_SCHEMA]
         if GRAMMAR_FILE:
