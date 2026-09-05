@@ -290,7 +290,7 @@ if __name__ == "__main__":
     if args.unload:
         tts.stop()
         sys.exit(0)
-    src = (args.text or
+    src = (args.text if args.text is not None else
            (ROOT / args.text_file).read_text(encoding="utf-8") if args.text_file else
            (ROOT / "brain_out.txt").read_text(encoding="utf-8"))
     t_start = time.perf_counter()
