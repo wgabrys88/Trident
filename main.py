@@ -23,8 +23,12 @@ def _download(url: str, path: Path, sha: str = "") -> None:
 
 def _port_in_use(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(0.2)
-        return s.connect_ex(("127.0.0.1", port)) == 0
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        try:
+            s.bind(("127.0.0.1", port))
+        except OSError:
+            return True
+        return False
 
 
 def _kill_port(port: int) -> None:

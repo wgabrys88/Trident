@@ -1,8 +1,8 @@
 from __future__ import annotations
-import argparse, re, shutil, socket, struct, subprocess, sys, tempfile, textwrap, threading, time, venv, wave
+import argparse, re, shutil, socket, struct, subprocess, sys, tempfile, textwrap, time, venv, wave
 from pathlib import Path
 
-from main import ROOT, _download, _port_in_use, _kill_port, _drain, _wait_ready
+from main import ROOT, _download, _port_in_use, _kill_port
 
 RUNTIME = ROOT / "tools/runtime/tts"
 MODELS = ROOT / "models"
@@ -15,19 +15,21 @@ TIMESTAMP_FORMAT = "%d-%m-%y-%H-%M-%S"
 CHATTERBOX_REV = "acc8d360a3d4f6a779d619d2be5971b1f3f94558"
 GGML_REV = "58c3805840b516b2a88ff867ccf7bb41dba79951"
 NANO_REV = "71ccd1d0081b430592cea481f4307e764e07bc64"
+NATIVE_PIN = f"{CHATTERBOX_REV} {GGML_REV}"
 NANO_URL = f"https://huggingface.co/ResembleAI/chatterbox-nano/resolve/{NANO_REV}"
 VOICE_URL = "https://huggingface.co/datasets/sdialog/voices-celebrities/resolve/57746b866d470be717097b87ba0428f8dd73e4f4"
 VOICE_SHA = "9d8b44d73192e9c04dd241f16177e4c5753bcefadde69e6e24b45e278b821f8c"
 T3 = MODELS / "chatterbox-t3-nano-q4_0.gguf"
 S3 = MODELS / "chatterbox-s3gen-nano-irisxe-q4_0-rawf32-v1.gguf"
+RUNTIME_REVISION = RUNTIME / "REVISION"
 RUNTIME_FILES = ("chatterbox-server.exe", "ggml.dll", "ggml-base.dll", "ggml-cpu.dll", "ggml-vulkan.dll")
 CHECKPOINT_FILES = ("t3_nano_v1.safetensors", "s3gen_meanflow.safetensors", "conds.pt",
                     "ve.safetensors", "vocab.json", "merges.txt", "added_tokens.json")
 CONVERTERS = ("convert-t3-turbo-to-gguf.py", "convert-s3gen-to-gguf.py", "quant_policy.py")
 KNOBS = {"n-gpu-layers": 99, "context": 2048, "threads": 4, "fastconv": 1, "seed": 42,
-         "max-tokens": 1000, "top-k": 1000, "top-p": .95, "min-p": .05,
+         "max-tokens": 1000, "top-k": 1000, "top-p": .95, "min-p": 0,
          "temperature": .8, "repeat-penalty": 1.2, "cfm-steps": 1,
-         "cfg-weight": .5, "exaggeration": .5}
+         "cfg-weight": 0, "exaggeration": 0}
 RATE, CHUNK_CHARS, PORT = 24000, 50, 17933
 MAGIC, VERSION = 0x32525454, 2
 REQUEST, RESPONSE = struct.Struct("<7I"), struct.Struct("<8I")
@@ -92,29 +94,41 @@ def _convert(work: Path, source: Path) -> None:
 
 
 def _install() -> None:
-    required = [*(RUNTIME / n for n in RUNTIME_FILES), T3, S3, VOICE,
-                RUNTIME / "chatterbox-LICENSE.txt", RUNTIME / "ggml-LICENSE.txt",
-                MODELS / "nano-model-card.md", VOICE.with_suffix(".md")]
-    missing = [p for p in required if not p.is_file()]
-    if not missing:
-        print(f"[tts] install | all files present, skipping")
+    runtime = [*(RUNTIME / n for n in RUNTIME_FILES), RUNTIME / "chatterbox-LICENSE.txt",
+               RUNTIME / "ggml-LICENSE.txt"]
+    models = [T3, S3, MODELS / "nano-model-card.md"]
+    voice = [VOICE, VOICE.with_suffix(".md")]
+    stamp = RUNTIME_REVISION.read_text(encoding="utf-8").strip() if RUNTIME_REVISION.is_file() else ""
+    runtime_ok = all(p.is_file() for p in runtime) and stamp == NATIVE_PIN
+    if all(p.is_file() for p in runtime) and not stamp:
+        RUNTIME_REVISION.write_text(NATIVE_PIN + "\n", encoding="utf-8")
+        runtime_ok = True
+    models_ok = all(p.is_file() for p in models)
+    voice_ok = all(p.is_file() for p in voice)
+    if runtime_ok and models_ok and voice_ok:
+        print(f"[tts] install | pin={NATIVE_PIN} skip")
         return
-    print(f"[tts] install | missing {len(missing)} files: {[str(p.relative_to(ROOT)) for p in missing]}")
+    print(f"[tts] install | runtime_ok={runtime_ok} models_ok={models_ok} voice_ok={voice_ok}")
     with tempfile.TemporaryDirectory(prefix=".nano-install-", dir=ROOT) as tmp:
         work = Path(tmp)
         source = work / "chatterbox"
-        print(f"[tts] install | checking out CHATTERBOX_REV={CHATTERBOX_REV}")
-        _checkout("https://github.com/wgabrys88/chatterbox.cpp.git", CHATTERBOX_REV, source,
-                  ("/CMakeLists.txt", "/LICENSE", "/src/", "/include/",
-                   *(f"/scripts/{n}" for n in CONVERTERS)))
-        print(f"[tts] install | building")
-        _build(work, source)
-        print(f"[tts] install | converting models")
-        _convert(work, source)
-        print(f"[tts] install | downloading voice")
-        _download(f"{VOICE_URL}/audio/donald-trump.wav", VOICE, VOICE_SHA)
-        _download(f"{NANO_URL}/README.md", MODELS / "nano-model-card.md")
-        _download(f"{VOICE_URL}/README.md", VOICE.with_suffix(".md"))
+        if not runtime_ok or not models_ok:
+            print(f"[tts] install | checkout {CHATTERBOX_REV}")
+            _checkout("https://github.com/wgabrys88/chatterbox.cpp.git", CHATTERBOX_REV, source,
+                      ("/CMakeLists.txt", "/LICENSE", "/src/", "/include/",
+                       *(f"/scripts/{n}" for n in CONVERTERS)))
+        if not runtime_ok:
+            print(f"[tts] install | building")
+            _build(work, source)
+            RUNTIME_REVISION.write_text(NATIVE_PIN + "\n", encoding="utf-8")
+        if not models_ok:
+            print(f"[tts] install | converting")
+            _convert(work, source)
+            _download(f"{NANO_URL}/README.md", MODELS / "nano-model-card.md")
+        if not voice_ok:
+            print(f"[tts] install | voice")
+            _download(f"{VOICE_URL}/audio/donald-trump.wav", VOICE, VOICE_SHA)
+            _download(f"{VOICE_URL}/README.md", VOICE.with_suffix(".md"))
         print(f"[tts] install | done")
 
 
@@ -155,14 +169,12 @@ class TTS:
             if self._proc.poll() is not None:
                 raise RuntimeError(f"server died with code {self._proc.poll()}")
             self._log_fh.flush()
-            try:
-                with open(self._log_path, "r", encoding="utf-8", errors="replace") as lf:
-                    lf.seek(pre_size)
-                    for line in lf:
-                        if " server.ready" in line and "| nano" in line:
-                            self._emit("start | ready")
-                            return self
-            except: pass
+            with open(self._log_path, "r", encoding="utf-8", errors="replace") as lf:
+                lf.seek(pre_size)
+                for line in lf:
+                    if " server.ready" in line and "| nano" in line:
+                        self._emit("start | ready")
+                        return self
         self._proc.kill()
         raise TimeoutError("server startup timed out")
 
@@ -181,12 +193,14 @@ class TTS:
         self.start()
         pieces = self._chunks(text)
         output = ROOT / f"out_{time.strftime(TIMESTAMP_FORMAT)}_tts.wav"
-        with socket.create_connection(("127.0.0.1", PORT), timeout=30) as sock, sock.makefile("rb") as reader:
+        with socket.create_connection(("127.0.0.1", PORT), timeout=300) as sock, sock.makefile("rb") as reader:
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            for piece_id, piece in enumerate(pieces):
+                self._send(sock, 1, piece_id, piece)
             pcm_bytes = 0
             with output.open("xb") as target, wave.open(target, "wb") as wav:
                 wav.setparams((1, 2, RATE, 0, "NONE", "not compressed"))
-                for piece_id, piece in enumerate(pieces):
-                    self._send(sock, 1, piece_id, piece)
+                for piece_id in range(len(pieces)):
                     before = pcm_bytes
                     while True:
                         kind, returned_piece, chunk, payload = self._receive(reader)
