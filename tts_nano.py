@@ -1,8 +1,9 @@
 from __future__ import annotations
-import argparse, hashlib, re, shutil, socket, struct, subprocess, sys, tempfile, textwrap, threading, time, urllib.request, venv, wave
+import argparse, re, shutil, socket, struct, subprocess, sys, tempfile, textwrap, threading, time, venv, wave
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+from main import ROOT, _download, _port_in_use, _kill_port, _drain, _wait_ready
+
 RUNTIME = ROOT / "tools/runtime/tts"
 MODELS = ROOT / "models"
 VOICE = ROOT / "data/ref-trump.wav"
@@ -33,30 +34,12 @@ REQUEST, RESPONSE = struct.Struct("<7I"), struct.Struct("<8I")
 LOG = ROOT / ".runtime-logs/tts.log"
 
 
-def _download(url: str, path: Path, sha: str = "") -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    partial = path.with_suffix(path.suffix + ".part")
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "NanoTTS/1"})
-        with urllib.request.urlopen(req, timeout=120) as src, partial.open("wb") as dst:
-            shutil.copyfileobj(src, dst, 1 << 20)
-        if sha:
-            with partial.open("rb") as f:
-                if hashlib.file_digest(f, "sha256").hexdigest() != sha:
-                    raise RuntimeError(f"Download checksum mismatch: {path.name}")
-        partial.replace(path)
-    finally:
-        partial.unlink(missing_ok=True)
-
-
-def _checkout(url: str, rev: str, path: Path, patterns: tuple, branch: str = "") -> None:
-    if not branch:
-        branch = rev
+def _checkout(url: str, rev: str, path: Path, patterns: tuple) -> None:
     subprocess.run(["git", "init", str(path)], check=True)
     git = ["git", "-C", str(path)]
     for args in (("remote", "add", "origin", url), ("config", "remote.origin.promisor", "true"),
                  ("config", "remote.origin.partialclonefilter", "blob:none"),
-                 ("fetch", "--depth=1", "--filter=blob:none", "--no-tags", "origin", branch)):
+                 ("fetch", "--depth=1", "--filter=blob:none", "--no-tags", "origin", rev)):
         subprocess.run([*git, *args], check=True)
     subprocess.run([*git, "sparse-checkout", "set", "--no-cone", "--stdin"],
                    input="\n".join(patterns) + "\n", text=True, check=True)
@@ -123,7 +106,7 @@ def _install() -> None:
         print(f"[tts] install | checking out CHATTERBOX_REV={CHATTERBOX_REV}")
         _checkout("https://github.com/wgabrys88/chatterbox.cpp.git", CHATTERBOX_REV, source,
                   ("/CMakeLists.txt", "/LICENSE", "/src/", "/include/",
-                   *(f"/scripts/{n}" for n in CONVERTERS)), branch="persistent-server")
+                   *(f"/scripts/{n}" for n in CONVERTERS)))
         print(f"[tts] install | building")
         _build(work, source)
         print(f"[tts] install | converting models")
@@ -155,12 +138,9 @@ class TTS:
     def start(self) -> TTS:
         if self._proc is not None and self._proc.poll() is None:
             return self
-        try:
-            with socket.create_connection(("127.0.0.1", PORT), timeout=2):
-                self._emit("start | port already listening")
-                return self
-        except OSError:
-            pass
+        if _port_in_use(PORT):
+            self._emit("start | port already listening")
+            return self
         exe = RUNTIME / "chatterbox-server.exe"
         self._emit(f"start | spawning server")
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -195,6 +175,7 @@ class TTS:
         if self._log_fh:
             self._log_fh.close()
             self._log_fh = None
+        _kill_port(PORT)
 
     def synthesize(self, text: str) -> Path:
         self.start()
