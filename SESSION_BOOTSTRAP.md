@@ -1,14 +1,65 @@
-# Cold-start: Trident TTS (paste this whole file into a new session)
+# Paste this whole file into a new session (no history)
 
-You have **no prior session history**. Grok remote history is off. GitHub remotes are the only memory. This file is the bootstrap.
+Grok remote history is off. GitHub is the only memory. Write as if this PC will be destroyed after every push.
 
-Do **not** start implementing a “fix” in the first turn. The human will clone, `--install`, listen, and then code-review with you. Wait for their listen notes. The plan below is a **hypothesis**, not a decision.
+Do **not** implement in the first turn. The human clones, installs, **listens**, then code-reviews with you. Their ears beat this file. This file is what we actually agreed, not a GPU-overlap recipe.
 
 ---
 
-## What the human wants (rephrased)
+## Talk to the human like a human
 
-Treat GitHub as if this machine will be destroyed after every push. A fresh clone of **Trident `runner-z`** must install and speak. Quality is judged by a **human listener**, not by constants: not 20 ms, not `overlap_ms`, not fence theory. If the paragraph sounds continuous, in-voice, and finishes in about the old sequential wall time, that is success. If it stutters, holes, clicks, or is slower than sequential for no audible gain, that is failure — even if the pipeline “overlaps” on paper.
+Before any of this overlap work, Trident already spoke on Intel Iris Xe. The voice was good — sometimes emotional, sometimes amazing. Wait was fine: about 16 seconds of audio in about 9 seconds. The pain was **clicks where one chunk is glued to the next**. Chunk size was fiddled until it hurt.
+
+Then a lot of time went into “streaming” and overlapping T3 with S3 on one GPU. That did **not** fix the glue. It made more cuts and made the wait **worse** (~10.4 s instead of ~9 s). Same voice, worse joints, longer wait. That is the scoreboard. Do not pretend we shipped a win.
+
+**What the next session is for**
+
+Same voice they already like. Long text still gets **chunked** (not token-streamed). Each chunk can be a full short synthesis, even from zero, if that keeps the voice honest. The only hard problem is the **seam**. When that is done, waiting should be at least as short as the old sequential run. Faster is optional. Emotion was never missing.
+
+If you start chasing Vulkan queues before the join sounds like one take, you are on the wrong job.
+
+---
+
+## What the human approved and rejected
+
+**Approved**
+
+- **Chunking**, not intra-piece streaming / 25-token S3 hops. Chunking is faster on this machine. Hops made 18 vocoder calls and more clicks. Do not bring hops back.
+- Local Iris Xe. Bare metal. Remotes as the only memory.
+- Listener quality first. Speed still matters — it must not get worse than the old ~8.5–9.3 s mars-bars wait unless the extra time is an audible win they asked for.
+
+**Rejected**
+
+- **`CHUNK_CHARS=50` as a law.** That number is a speed sweep (`97b4480`: 50 chars beat 60 on RTF, 0.542 vs 0.641). It is not how people talk. It also **creates more seams**, and the same commit already warned shorter chunks make more discontinuities. Do not freeze 50. Do not split only on `. ? ! …`.
+- Splitting speech by dots or a character cap. Cuts should follow **meaning**. A human can pause in the middle of a sentence and continue. A regex cannot know if that pause is the end. That needs a small smart model, not punctuation.
+- Over-engineering GPU overlap, 20 ms religions, `overlap_ms` as a trophy. The listener does not care how the seam is implemented.
+
+**Their “from zero each chunk” idea is not stupid.** If ten seconds of cold synthesis sounds great, keep that. Chop the long text into meaning-sized pieces, synth each as a good short take, **glue the intersection**. Do not invent a new TTS architecture to avoid a pop.
+
+---
+
+## Smart Turn (the model they meant)
+
+It is **Smart Turn v3.2**, not a TTS vocoder trick.
+
+| | |
+|--|--|
+| Label in this repo | `SMART TURN V3.2 MULTILINGUAL CPU INT8` |
+| File | `smart-turn-v3.2-cpu.onnx` (~8.3 MB, well under 100 MB) |
+| Source | HuggingFace `pipecat-ai/smart-turn-v3` @ `f766f81d3cfdf7737ac64aad813d91bbfd56bf93` |
+| Where it lived | Trident history, e.g. `55aca13` (logged 61–72 ms/decision, 1 ONNX intra-op thread on this CPU). Wired in old `vad.py` `SmartTurnEndpoint` + `conversation.py`. |
+| Dropped | `3e86f63` / `d8071e4` / `15eeb0b` when the stack was stripped to bare TTS/ASR. **Not on `runner-z` now.** |
+
+What it actually does: Silero proposes a pause in **audio**. Smart Turn looks at up to 8 s of audio and says **complete vs continue**. That is exactly “they stopped mid-sentence to think, do not cut them off.”
+
+What it does **not** do: read a text string and emit TTS piece boundaries. Do not pretend the ONNX file splits `tts_nano.py` input.
+
+So two different cuts, both “by meaning”:
+
+1. **Listening (conversation, later):** restore Smart Turn so a breath is not a turn end. North star of this repo was a talk loop so natural you forget the machine. They said they will go bare-metal and then come back to that system.
+2. **Speaking (TTS now):** stop wrapping at 50 chars / dots. Piece boundaries should be speakable units of meaning (brain-emitted units, or a small text segmenter — this repo used to have a Python `Segmenter` / spoken-unit splitter, dropped in `b7757f6`). Until that exists, do not treat 50 as sacred; it is only the current code.
+
+Current splitter (replace when you have meaning-cuts): `tts_nano.py` `TTS._chunks` — regex on `[.!?…]` then `textwrap` at `CHUNK_CHARS=50`.
 
 ---
 
@@ -22,136 +73,72 @@ python tts_nano.py --text "Now let's make my mum's favourite. So three mars bars
 python parakeet.py tts_out.wav
 ```
 
-`--install` clones `https://github.com/wgabrys88/chatterbox.cpp.git` at `CHATTERBOX_REV`, checkouts ggml `GGML_REV`, applies `src/ggml-vulkan-queue.patch`, builds `chatterbox-server`. Do not push `ggml-org/ggml`.
+They also clone chatterbox by hand (GitHub Desktop → `main`) so you have a tree to edit. That is optional for install. **Trident pins the latest chatterbox `origin/main`:** `CHATTERBOX_REV = 3593cf22d6d2a8d044e1af8968f1220fe6b03aa1`. Yes, pin == latest pushed native commit. If native moves, bump the pin in the same Trident push.
 
-Host assumptions baked into `tts_nano.py` (not portable): Python 3, Visual Studio 17 2022 x64, CMake `C:/Program Files/CMake/bin/cmake.exe`, Vulkan SDK `C:/VulkanSDK/1.4.357.0`. Models/voice download on first install. Do not commit models, binaries, logs, or WAVs.
+`--install` fetches chatterbox at that SHA, ggml `58c3805840b516b2a88ff867ccf7bb41dba79951`, applies `src/ggml-vulkan-queue.patch`, builds `chatterbox-server`. Do not push `ggml-org/ggml`. Do not commit models, binaries, logs, WAVs.
 
-WAV: `out_<dd-mm-yy-HH-MM-SS>_tts.wav` and copy `tts_out.wav`. Server log: `.runtime-logs/tts.log` (append-only; read only the new session). Port 17933. Parakeet: `parakeet.py` (port 17934).
+Host paths in `tts_nano.py`: VS 2022 x64, CMake `C:/Program Files/CMake/bin/cmake.exe`, Vulkan SDK `C:/VulkanSDK/1.4.357.0`. WAV `out_<dd-mm-yy-HH-MM-SS>_tts.wav` and `tts_out.wav`. Log `.runtime-logs/tts.log` (append-only; read the new tail). TTS port 17933, Parakeet 17934.
 
-Do not change knobs, `CHUNK_CHARS=50`, `GGML_REV`, `NANO_REV`, public Engine callback, or TTR2.
+PowerShell: no `&&` (use `;`). Native git: `git -C <chatterbox clone>`. Trident cwd is the wrong repo for C++.
 
 ---
 
-## Pins (must match)
+## Pins
 
-| Repo | Remote | Branch | SHA |
-|------|--------|--------|-----|
-| Trident | `https://github.com/wgabrys88/Trident.git` | `runner-z` | this commit (file lives here) |
+| | Remote | Branch | SHA |
+|--|--|--|--|
+| Trident | `https://github.com/wgabrys88/Trident.git` | `runner-z` | this commit |
 | chatterbox.cpp | `https://github.com/wgabrys88/chatterbox.cpp.git` | `main` | `3593cf22d6d2a8d044e1af8968f1220fe6b03aa1` |
-| ggml (pinned, patched at build) | do not push | — | `58c3805840b516b2a88ff867ccf7bb41dba79951` |
-| Nano weights | HuggingFace ResembleAI/chatterbox-nano | — | `NANO_REV=71ccd1d0081b430592cea481f4307e764e07bc64` |
+| ggml | do not push | — | `58c3805840b516b2a88ff867ccf7bb41dba79951` |
+| Nano weights | ResembleAI/chatterbox-nano | — | `71ccd1d0081b430592cea481f4307e764e07bc64` |
 
-`tts_nano.py` `CHATTERBOX_REV` **is** `3593cf2`. `_build` runs `git -C ggml apply --whitespace=nowarn src/ggml-vulkan-queue.patch`. Installed stamp `tools/runtime/tts/REVISION` must equal:
+`tools/runtime/tts/REVISION` after install:
 
 ```
 3593cf22d6d2a8d044e1af8968f1220fe6b03aa1 58c3805840b516b2a88ff867ccf7bb41dba79951
 ```
 
-Never leave `CHATTERBOX_REV` uncommitted without a matching **pushed** native SHA. Native git: `git -C <chatterbox.cpp clone>`. Trident cwd is the wrong repo for C++ work. PowerShell: no `&&` (use `;`); no nested-quote `python -c`; `Set-Content -Encoding utf8NoBOM` is invalid on the old host (used ascii + strip CRLF for the ggml patch).
+Never leave `CHATTERBOX_REV` uncommitted without that SHA already on `origin/main`.
 
-Sibling path on the old machine was `C:\Users\eb-wjt\Downloads\chatterbox.cpp`. On a new machine, clone it next to Trident or let `--install` fetch it.
-
----
-
-## What already landed (do not redo)
-
-Chatterbox `origin/main` (working tree was clean when this was written):
-
-| SHA | What |
-|-----|------|
-| `c46535b677ef23be72ac2a225a7bb4fa6251dee8` | Logging: one `t3` line, one aggregated `s3` line, one `session` line. No per-line thread hash. No 16k Vulkan firehose. `src/overlap-vulkan-trace.patch` deleted. |
-| `0f4ab055d0f1e265925f2844d2bf04b64e4306c7` | One `s3gen_synthesize` per piece (`final=true`, dummy pad `4299` × lookahead). Session-persistent `acoustic` + `speech_history` on `Engine::Impl`. `begin_synthesis` resets acoustics (second TCP client must not inherit). Recv `pending.empty()` locked. T3(N+1) fail during S3(N) throws original T3 error after join. Server same-epoch batch + socket coalesce. **Also launches T3(N+1) while S3(N) runs.** |
-| `3593cf22d6d2a8d044e1af8968f1220fe6b03aa1` | `src/ggml-vulkan-queue.patch`: last real submit uses this context’s fence; `ggml_vk_synchronize` does **not** empty-submit a fence; transfer leftover host-waits this backend’s timeline; `ggml_vk_sync_buffers` uses buffer barriers on unsynced+prealloc, global only if empty. Counters `wait_us`/`submit_n`/`barrier_n` via `ggml_vk_overlap_counters` (`dllexport` from ggml-vulkan, `dllimport` from chatterbox). `queue_mutex` still only around `vkQueueSubmit`. |
-
-Trident `6de62fb` pinned that SHA and the patch apply. This bootstrap commit does not change the pin.
-
-Keep: producer/consumer of **pieces** (client queues all pieces before first recv; one TCP session). One S3 graph per piece. Persistent acoustics. Honest logs. Scoped-fence patch. Do **not** restore 25-token S3 hops. The S3 encoder is full-sequence Conformer (`ggml_soft_max` T×T, not causal). Prompt-activation concat cache is invalid. A real prompt cache is KV/prefix inside Conformer+CFM (graph rewrite, later).
+Keep: TTR2, one TCP session, queue all pieces then recv, `TCP_NODELAY`, 300s timeout, bind port probe, public Engine callback, `GGML_REV`, `NANO_REV`, knobs unless a listen+review says a knob is the click. No tests, no harnesses, no process-wide inference lock, no third backend, no extra design docs besides this file.
 
 ---
 
-## Mars-bars already measured on this pin (2026-09-05 20:38:50)
+## What is already on GitHub (do not redo)
 
-Client: `tts_synth=10.400s`, `audio_s=15.820s`, `tts_start=0.001s` (server already up). WAV `out_05-09-26-20-38-50_tts.wav`.
+Chatterbox `origin/main` was clean at `3593cf2`:
 
-Server session line: `tts_synth=10392 first_audio_ms=1418 overlap_ms=7426`.
+- `c46535b` — honest logs (one t3, one s3, one session). No 16k Vulkan firehose.
+- `0f4ab05` — one S3 call per piece (dummy pad `4299` × 3 lookahead). Acoustics + last 25 speech tokens persist across pieces. `begin_synthesis` resets so a second client does not inherit. Recv `pending.empty()` locked. Server batches same-epoch pieces. **Also starts T3 of piece N+1 while S3 of N runs** (this is the overlap that lost time).
+- `3593cf2` — ggml patch: fence on this context’s last real submit, no empty-submit queue-wide wait, buffer barriers, `wait_us` / `submit_n` / `barrier_n`. Still one compute queue. `queue_mutex` only around `vkQueueSubmit`.
 
-Protocol: one session, pieces 0–6 **queued before first T3**, one `terminal=done` per piece, `server.close.requested` + `server.closed`, no dummy `client_closed`. 7 S3 lines, `prompt_tokens=250` each. ~53 new log lines, not 16k.
+Trident `6de62fb` pinned that SHA and applies the patch at `_build`. This bootstrap does not change the pin.
 
-Tokens: 50+53+77+50+75+37+54 = **396** (old sequential was ~380-class; same knobs; sampling drift — record it, do not chase it).
-
-| | This pin | Old sequential | Hop prototype |
-|--|----------|----------------|---------------|
-| `tts_synth` | **10.4s worse** | 8.5–9.3s | ~15.5s |
-| `first_audio_ms` | 1418 | ~1207 | ~967 |
-| S3 calls | 7 | ~7 | 18 |
-| `audio_s` | 15.82s | ~15.8s | — |
-
-Parakeet recovered the paragraph: “Now let's make my mum's favourite so three Mars bars into the pan then we add the tuna and just stir for a bit just let the chocolate and fish infuse as sprinkle of olive oil and some tomato catch up now smell that oh boy this is going to be incredible”.
-
-### GPU: overlap is CPU-real, GPU-fake
-
-T3 `ms` sum 9280; T3 `wait_us` sum **2.96s**. S3 stage fields sum ~8.36s; S3 `wait_us` sum **7.00s**. S3 `submit_n` 254–255/piece, `barrier_n=2921`.
-
-Two ggml backends (`Engine` T3 + cached S3) share **one** Vulkan compute queue. `overlap_ms=7426` is two CPU threads in flight. A fence on submit N still covers earlier queue work, so they host-wait on each other. The scoped-fence patch stopped empty-submit-*later* (do not wait for work after our last submit). It cannot create GPU concurrency on one queue. That is the measured reason wall time lost to sequential, **not** “we forgot to cache prompt `mu`” (sequential also re-encoded 250 prompt tokens × 7).
-
-Iris Xe compute `queueCount` was **not** probed. Do not assume two queues exist.
-
-### Audio: holes at piece joins, not impulse clicks
-
-`final=true` is required for dummy pad, and it also does `end = wav.size()`, so `pending_pcm` is always empty. The cosine OLA in `s3gen_synthesize` never runs across pieces.
-
-PCM at the six joins (piece sample counts from S3 `samples=`; piece 0 minus 480 client-stripped leading zeros): **30–70 ms of digital zeros** (trailing ~22–47 ms + leading ~10–27 ms). No sample-to-sample jump ≥8000 within 20 ms of a join. Listener effect is a **dropout/stutter at sentence boundaries**, not a spike click.
-
-`n_trim = sr/50 = 480 samples ≈ 20 ms` is an existing fade/HiFT holdback constant in `chatterbox_tts.cpp`. It is **not** a quality target and not a rule to enshrine. If a join needs a different overlap, different history, or a different vocoder boundary, do that because it **sounds** better, not because a plan said 20 ms.
+Do not restore hops. S3 encoder is full-sequence Conformer (T×T softmax, not causal). You cannot cache prompt by concatenating activations. A real prompt cache is KV inside Conformer+CFM — later, and only after the seam and wait are fixed.
 
 ---
 
-## Code map (where to look)
+## Measured mars-bars on this pin (2026-09-05 20:38:50)
 
-Native, chatterbox `3593cf2`:
+`tts_synth=10.400s` `audio_s=15.820s` `first_audio_ms=1418` `overlap_ms=7426`. Seven pieces queued before first T3, seven S3 calls, close ack. Tokens 396 (old sequential ~380; same knobs; drift, do not chase). Parakeet still gets the paragraph (ketchup → “catch up”).
 
-- `src/chatterbox_engine.cpp` `pipeline_pieces` — launches T3(N+1) before `run_s3` of N; `overlap_ms` accumulated here.
-- `src/chatterbox_engine.cpp` `run_s3` — `s.final = true` every piece; prepends `speech_history` (25 tokens); one synthesize call.
-- `src/chatterbox_engine.cpp` `begin_synthesis` / `reset_acoustics` — must clear `acoustic` + `speech_history` per session.
-- `src/chatterbox_tts.cpp` `s3gen_synthesize` — dummy pad if `final`; history mel overwrite on **history** frames; `n_trim`; pending OLA; emit `[begin, end)`.
-- `src/s3gen_pipeline.h` — `kSpeechHistoryTokens=25`, `kSpeechLookaheadTokens=3`, `kSamplesPerToken=960`, `s3gen_piece_state`.
-- `src/ggml-vulkan-queue.patch` — fence/barrier/counter patch applied at Trident `_build` onto ggml `58c3805`.
-- `include/tts-cpp/chatterbox/log.h` — session `overlap_ms`, piece lines.
+Old sequential: wait ~8.5–9.3 s, first audio ~1207 ms, ~7 S3. Hop prototype: wait ~15.5 s, 18 S3.
 
-Trident:
+S3 `wait_us` summed to ~7 s. Two backends on one Vulkan queue. CPU threads overlap; GPU work does not. That is why wait got worse. Iris Xe `queueCount` was never probed.
 
-- `tts_nano.py` — pin, patch apply, TTR2 client, `CHUNK_CHARS=50`, queue-all-then-recv, `TCP_NODELAY`, 300s timeout, bind port probe, strip 20 ms zeros on piece 0 chunk 0.
-- `parakeet.py` — ASR check.
+Joins: `final=true` (needed for dummy pad) also sets `end = wav.size()`, so `pending_pcm` is always empty and the cosine mix never runs. At the six seams, 30–70 ms of digital zeros. Not a spike click — a hole. `n_trim = 24000/50 = 480` samples (~20 ms) is an old fade constant. It is **not** a quality target.
+
+Glue lives here: `chatterbox_tts.cpp` `s3gen_synthesize` (pending / `final` / history mel). Pipeline overlap: `chatterbox_engine.cpp` `pipeline_pieces`. Piece 0 leading-zero strip: `tts_nano.py` synthesize.
 
 ---
 
-## Constraints still in force
+## First turn of the new session
 
-- No tests, no harnesses, no extra design docs beyond this bootstrap.
-- No process-wide inference lock. No third backend object. No ggml-org push.
-- Commit+push after every **working** step: chatterbox `main` first (full SHA), then Trident `runner-z` pin if SHA moved, then `--install` once.
-- Public Engine callback and TTR2 unchanged.
+1. Confirm remotes. Pin must still be latest chatterbox `main` or a later SHA already pushed and pinned.
+2. Listen with the human. Code-review against **this** brief, not the old overlap plan.
+3. Propose the smallest change that makes the paragraph sound like one take and does not make wait worse. Stop for approval if it is large.
+4. Chatterbox commit+push first, bump pin, Trident commit+push, `--install` once, mars-bars, Parakeet, listen again. Numbers in the Trident message.
 
----
+**Likely shape (hypothesis, not a ticket):** sequential GPU again (stop launching next T3 until this S3 finishes) if they still share one queue; actually mix the tail of chunk A into the head of chunk B; replace 50-char/dot packing with meaning-sized pieces when a splitter exists; bring Smart Turn back when the talk loop comes back. Throw any of that away if the ears disagree.
 
-## Hypotheses (not ordered work — review may throw them out)
-
-These were written after the 10.4 s run. They may be wrong. The human’s ears beat this list.
-
-1. **If Iris Xe `queueCount < 2`:** stop launching T3(N+1) until S3(N) returns. Keep piece batching and one S3/piece. `overlap_ms=0` would then be honest, not a regression. Do not revert the scoped-fence patch.
-2. **If `queueCount >= 2`:** distinct compute queues for T3 and S3 so fences do not cover each other. Only then is T3\|\|S3 real.
-3. **Joins:** split “dummy pad” (`final`) from “hold some tail PCM into the next piece so the join is continuous.” Length should be whatever sounds continuous, not a hardcoded 20 ms religion. Fade-in only on the true start of the utterance.
-4. **After wall time is at least sequential and joins sound good:** beat sequential. Valid: two queues if we sequentialized and the device has them; Conformer+CFM prompt KV (not memcpy of `mu`). Do not bring hops back unless prompt work is actually cheap.
-
-Do not implement 1–4 before the human has listened on the new clone and you have done the code review they asked for.
-
----
-
-## First turn of the new session (checklist)
-
-1. Confirm remotes: Trident `runner-z` has this file; chatterbox `origin/main` is `3593cf2` (or a later SHA the human already pinned).
-2. Code-review the pinned native+runner against this brief. Ask where the listener will hear a problem (joins, pacing, latency-to-first-audio) and where the GPU story is fake.
-3. Incorporate the human’s listen notes and comments. Rephrase disagreements. Then propose a plan. Stop for approval if the change is large.
-4. Implement only what the review+ears support. Chatterbox commit+push first, bump `CHATTERBOX_REV`, Trident commit+push, `--install` once, mars-bars, Parakeet, listen again. Put numbers in the Trident commit message.
-
-Done when a cold clone installs, the mars-bars paragraph sounds like one take, and `tts_synth` is not worse than sequential unless the extra time is an audible quality win the human wants.
+Done when a cold clone installs, the voice still sounds like the one they already loved, the joins do not pop or drop, and waiting is not worse than the old sequential run.
