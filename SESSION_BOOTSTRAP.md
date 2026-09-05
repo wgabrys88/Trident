@@ -124,15 +124,17 @@ WAV: `out_<dd-mm-yy-HH-MM-SS>_tts.wav` and `tts_out.wav`. Log: `.runtime-logs/tt
 | | Remote | Branch | SHA |
 |--|--|--|--|
 | Trident | `https://github.com/wgabrys88/Trident.git` | `runner-z` | this commit |
-| chatterbox.cpp | `https://github.com/wgabrys88/chatterbox.cpp.git` | `main` | `3593cf22d6d2a8d044e1af8968f1220fe6b03aa1` |
+| chatterbox.cpp | `https://github.com/wgabrys88/chatterbox.cpp.git` | `main` | `c4e051e82f086b80c5379e4219e2693c15db90f8` |
 | ggml (patched at build, never pushed) | | | `58c3805840b516b2a88ff867ccf7bb41dba79951` |
 | Nano weights | ResembleAI/chatterbox-nano | | `71ccd1d0081b430592cea481f4307e764e07bc64` |
 
 `tts_nano.py` `CHATTERBOX_REV` is that chatterbox SHA. `_build` applies `src/ggml-vulkan-queue.patch` onto ggml. After install, `tools/runtime/tts/REVISION` is:
 
 ```
-3593cf22d6d2a8d044e1af8968f1220fe6b03aa1 58c3805840b516b2a88ff867ccf7bb41dba79951
+c4e051e82f086b80c5379e4219e2693c15db90f8 58c3805840b516b2a88ff867ccf7bb41dba79951
 ```
+
+CPU meaning-cutter: `chunk.py`, SaT `sat-3l-sm` ONNX (`model_optimized.onnx` sha `8573277b4dbea9c5fb1b4cfd8c21e5aa628069ac8258d1342ba664e1b64ada6d`), `CPUExecutionProvider` only, one ONNX thread. Never pack sentences. Never 50-character wrap.
 
 If you change chatterbox, push `origin/main` first, then bump this pin on `runner-z`, then `--install` once.
 
@@ -140,18 +142,17 @@ Keep TTR2, public Engine callback, `GGML_REV`, `NANO_REV`, knobs unless a listen
 
 ---
 
-## Where the code is today (not the destination)
+## Where the code is today
 
-On chatterbox `3593cf2` (this is latest `origin/main`):
+On chatterbox `c4e051e` (latest `origin/main`):
 
 - Honest logs (`c46535b`): one t3 line, one s3 line, one session line.
 - One S3 call per piece (`0f4ab05`), dummy pad `4299` × 3, acoustics persist, session reset on `begin_synthesis`. Server queues all pieces in one TCP session.
-- It also starts T3 of the next piece while S3 of this piece is still using the GPU. That overlap **raised Nano RTF**. Remove that fight; do not decorate it.
-- Vulkan patch (`3593cf2`): wait scoped to this backend’s last submit, counters `wait_us` / `submit_n` / `barrier_n`. Still one compute queue. Keep the patch. It is not a second GPU.
+- `last_piece` holds `pending_pcm` across pieces so cosine mix can run. `final` is dummy pad only.
+- Next T3 starts after this S3 returns. One Vulkan compute queue. Keep `ggml-vulkan-queue.patch`.
+- Vulkan wait scoped to this backend’s last submit, counters `wait_us` / `submit_n` / `barrier_n`.
 
-On Trident `runner-z`, `tts_nano.py` still packs with dots then 50 characters (`TTS._chunks`). That packing is **not** the product. Replace it with the CPU meaning-cutter. Keep the scripts short.
-
-Glue bug, concrete: `s3gen_synthesize` in `chatterbox_tts.cpp` uses `final=true` for the dummy pad **and** for “emit everything, empty pending.” So `pending_pcm` never mixes across pieces. Six mars-bars joins were holes of digital zeros. That is what you hear. Split “dummy pad” from “hold a tail for the next piece.” `pipeline_pieces` in `chatterbox_engine.cpp` is where next T3 is launched too early.
+On Trident `runner-z`, `tts_nano.py` asks `chunk.py` (SaT `sat-3l-sm`, CPU) for pieces. No `CHUNK_CHARS`. No regex packing. Fourteen duplication was T3 cooking several numbers in one packed piece (`f8045d4`).
 
 ---
 
