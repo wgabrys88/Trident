@@ -1,4 +1,4 @@
-import argparse, http.client, json, shutil, struct, subprocess, sys, threading, time, uuid, zipfile
+import argparse, http.client, json, shutil, struct, subprocess, sys, threading, time, uuid, wave, zipfile
 from pathlib import Path
 
 from main import ROOT, _download, _port_in_use, _kill_port, _drain, _wait_ready
@@ -124,13 +124,6 @@ def _stop() -> None:
         proc.stdout.close()
     _READY.clear()
     _kill_port(PORT)
-
-
-def _drain_parakeet(proc: subprocess.Popen, ready_event: threading.Event, tail: list) -> None:
-    for line in proc.stdout:
-        tail.append(line.rstrip())
-        if b"server.ready" in line or b"Listening" in line or b"listening on" in line:
-            ready_event.set()
 
 
 def _transcribe_cli(wav: Path) -> str:

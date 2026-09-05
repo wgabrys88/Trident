@@ -198,13 +198,24 @@ if __name__ == "__main__":
         with Brain() as brain:
             ready = time.perf_counter()
             first = None
+            chunks = []
             for chunk in brain.stream(args.request):
                 if first is None:
                     first = time.perf_counter()
-                print(chunk, end="", flush=True)
+                chunks.append(chunk)
             finished = time.perf_counter()
-        print()
-        print(f"startup_s={ready-started:.3f} ttft_s={(first or finished)-ready:.3f} inference_s={finished-ready:.3f}", file=sys.stderr)
+        answer = "".join(chunks).replace("\r", "").strip()
+        marker = "Assistant:\n"
+        if marker in answer:
+            answer = answer.rsplit(marker, 1)[-1].strip()
+        if not answer:
+            raise RuntimeError("Brain produced no spoken reply")
+        (ROOT / "brain_out.txt").write_text(answer, encoding="utf-8")
+        print(answer)
+        n_tokens = len(answer.split())
+        inf_s = finished - ready
+        tps = n_tokens / inf_s if inf_s > 0 else 0.0
+        print(f"[brain] startup_s={ready-started:.3f} ttft_s={(first or finished)-ready:.3f} inference_s={inf_s:.3f} tokens={n_tokens} tps={tps:.2f}", file=sys.stderr)
     else:
         _install()
         text = (ROOT / "pipe_in.txt").read_text(encoding="utf-8")
