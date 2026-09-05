@@ -254,6 +254,7 @@ if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
     p = argparse.ArgumentParser()
+    p.add_argument("--install", action="store_true")
     p.add_argument("--load", action="store_true")
     p.add_argument("--unload", action="store_true")
     text = p.add_mutually_exclusive_group()
@@ -261,6 +262,10 @@ if __name__ == "__main__":
     text.add_argument("--text-file", type=Path)
     args = p.parse_args()
     tts = TTS()
+    if args.install:
+        _install()
+        tts.start()
+        sys.exit(0)
     if args.load:
         _install()
         tts.start()

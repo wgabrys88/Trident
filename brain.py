@@ -176,10 +176,15 @@ if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
     p = argparse.ArgumentParser()
+    p.add_argument("--install", action="store_true")
     p.add_argument("--load", action="store_true")
     p.add_argument("--unload", action="store_true")
     p.add_argument("--request")
     args = p.parse_args()
+    if args.install:
+        _install()
+        _start()
+        sys.exit(0)
     if args.load:
         _install()
         _start()
