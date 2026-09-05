@@ -1,9 +1,53 @@
-import re, subprocess, sys, time
+import hashlib, re, shutil, socket, subprocess, sys, tempfile, threading, time, urllib.request, wave
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 
-def parse_rtf(text):
+def _download(url: str, path: Path, sha: str = "") -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_suffix(path.suffix + ".part")
+    partial.unlink(missing_ok=True)
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Trident/1"})
+        with urllib.request.urlopen(req, timeout=3600) as src, partial.open("wb") as dst:
+            shutil.copyfileobj(src, dst, 4 << 20)
+        if sha:
+            with partial.open("rb") as f:
+                if hashlib.file_digest(f, "sha256").hexdigest() != sha:
+                    raise RuntimeError(f"Checksum mismatch: {path.name}")
+        partial.replace(path)
+    finally:
+        partial.unlink(missing_ok=True)
+
+def _port_in_use(port: int) -> bool:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.2)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+def _kill_port(port: int) -> None:
+    subprocess.run(
+        ["powershell", "-NoProfile", "-Command",
+         f"Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue | "
+         "ForEach-Object {{ taskkill /F /PID $_.OwningProcess }}"],
+        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+def _drain(proc: subprocess.Popen, ready_event: threading.Event, ready_str: str, tail: list) -> None:
+    for line in proc.stdout:
+        tail.append(line.rstrip())
+        if ready_str in line:
+            ready_event.set()
+
+def _wait_ready(proc: subprocess.Popen, ready_event: threading.Event, tail: list,
+                timeout: float = 300) -> None:
+    deadline = time.monotonic() + timeout
+    while not ready_event.wait(0.05):
+        if proc.poll() is not None:
+            raise RuntimeError(f"Process died: {proc.returncode}\n" + "\n".join(tail))
+        if time.monotonic() >= deadline:
+            proc.kill()
+            raise TimeoutError(f"Startup timed out\n" + "\n".join(tail))
+
+def parse_rtf(text: str) -> dict:
     out = {}
     for m in re.finditer(r"\[rtf\]\s+([a-zA-Z_][\w]*)=([\d.]+)s", text):
         out[m.group(1)] = float(m.group(2))
@@ -20,7 +64,7 @@ def parse_rtf(text):
             out["brain_tps"] = float(m.group(1))
     return out
 
-def run(name, cmd):
+def run(name: str, cmd: list) -> tuple:
     t0 = time.perf_counter()
     print(f"[{name}] START", flush=True)
     r = subprocess.run(cmd, capture_output=True, text=True)
@@ -35,49 +79,3 @@ def run(name, cmd):
         if "[rtf]" in line or "startup_s=" in line or "inference_s=" in line:
             print("  " + line, flush=True)
     return out, dt, parse_rtf(out)
-
-args = sys.argv[1:]
-
-if args and args[0] in ("--load", "--unload"):
-    cmd = args[0]
-    for script in ("brain.py", "tts_nano.py", "parakeet.py"):
-        subprocess.run(["python", str(ROOT / script), cmd], check=True)
-    sys.exit(0)
-
-if args and not args[0].startswith("-"):
-    text = " ".join(args)
-    (ROOT / "pipe_in.txt").write_text(text, encoding="utf-8")
-    print(f"text: {text}")
-    print()
-
-    t_pipeline = time.perf_counter()
-    _, dt_brain, rtf_brain = run("brain",   ["python", str(ROOT / "brain.py")])
-    brain_out = (ROOT / "brain_out.txt").read_text(encoding="utf-8")
-    print(f"[brain]    answer_chars={len(brain_out)}")
-    print()
-    _, dt_tts, rtf_tts = run("tts",       ["python", str(ROOT / "tts_nano.py")])
-    wavs = sorted(ROOT.glob("tts_out*.wav"))
-    last_wav = wavs[-1] if wavs else None
-    print(f"[tts]      wav={last_wav}")
-    print()
-    _, dt_para, rtf_para = run("parakeet", ["python", str(ROOT / "parakeet.py"), str(last_wav)])
-    print()
-
-    print("=== RTF ===")
-    print(f"brain     outer={dt_brain:.3f}s | startup={rtf_brain.get('brain_startup','?')}s ttft={rtf_brain.get('brain_ttft','?')}s inference={rtf_brain.get('brain_inference','?')}s tokens={rtf_brain.get('brain_tokens','?')} tps={rtf_brain.get('brain_tps','?')}")
-    print(f"tts       outer={dt_tts:.3f}s | start={rtf_tts.get('tts_start','?')}s synth={rtf_tts.get('tts_synth','?')}s audio_s={rtf_tts.get('audio_s','?')}s")
-    print(f"parakeet  outer={dt_para:.3f}s | total={rtf_para.get('parakeet_total','?')}s audio_s={rtf_para.get('audio_s','?')}s")
-    pipe = time.perf_counter() - t_pipeline
-    print(f"pipeline  outer={pipe:.3f}s")
-    if rtf_brain.get("brain_inference") and rtf_tts.get("tts_synth"):
-        print(f"brain rtf = brain_inference/tts_synth = {rtf_brain['brain_inference']/rtf_tts['tts_synth']:.3f}x")
-    if rtf_tts.get("audio_s") and rtf_tts.get("tts_synth"):
-        print(f"tts rtf = synth/audio = {rtf_tts['tts_synth']/rtf_tts['audio_s']:.3f}x real-time")
-    if rtf_para.get("audio_s") and rtf_para.get("parakeet_total"):
-        print(f"parakeet rtf = total/audio = {rtf_para['parakeet_total']/rtf_para['audio_s']:.3f}x real-time")
-    sys.exit(0)
-
-print("usage:")
-print("  python main.py <text>           run full pipeline (brain -> tts -> parakeet)")
-print("  python main.py --load           install all 3 modules and keep them loaded")
-print("  python main.py --unload         stop all 3 modules")

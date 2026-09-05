@@ -1,7 +1,8 @@
-import argparse, hashlib, http.client, json, shutil, socket, struct, subprocess, sys, tempfile, threading, time, urllib.request, uuid, zipfile
+import argparse, http.client, json, shutil, struct, subprocess, sys, threading, time, uuid, zipfile
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+from main import ROOT, _download, _port_in_use, _kill_port, _drain, _wait_ready
+
 RUNTIME = ROOT / "tools/runtime/parakeet"
 EXE = RUNTIME / "parakeet-cli.exe"
 SERVER = RUNTIME / "parakeet-server.exe"
@@ -18,17 +19,7 @@ LANGUAGE = "auto"
 PORT = 17934
 TIMESTAMP_FORMAT = "%d-%m-%y-%H-%M-%S"
 
-_PROCESS, _READY, _READER = None, threading.Event(), None
-
-
-def _download(url: str, path: Path, sha: str = "") -> None:
-    req = urllib.request.Request(url, headers={"User-Agent": "Parakeet/1"})
-    with urllib.request.urlopen(req, timeout=1800) as src, path.open("wb") as dst:
-        shutil.copyfileobj(src, dst, 1 << 20)
-    if sha:
-        with path.open("rb") as f:
-            if hashlib.file_digest(f, "sha256").hexdigest() != sha:
-                raise RuntimeError(f"Download checksum mismatch: {path.name}")
+_PROCESS, _READY, _TAIL, _READER = None, threading.Event(), [], None
 
 
 def _checkout(url: str, rev: str, path: Path, patterns: tuple) -> None:
@@ -44,6 +35,7 @@ def _checkout(url: str, rev: str, path: Path, patterns: tuple) -> None:
 
 
 def _build(work: Path) -> None:
+    import tempfile
     source = work / "parakeet"
     _checkout("https://github.com/mudler/parakeet.cpp.git", PARAKEET_REV, source,
               ("/CMakeLists.txt", "/LICENSE", "/src/", "/include/", "/examples/",
@@ -72,6 +64,7 @@ def _build(work: Path) -> None:
 
 
 def _install() -> None:
+    import tempfile
     required = [EXE, SERVER, RUNTIME / "parakeet-LICENSE.txt", MODEL, MODEL_CARD]
     if all(p.is_file() for p in required):
         return
@@ -99,23 +92,11 @@ def _install() -> None:
             downloaded.replace(MODEL_CARD)
 
 
-def _port_in_use() -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(0.2)
-        return s.connect_ex(("127.0.0.1", PORT)) == 0
-
-
-def _drain() -> None:
-    for line in _PROCESS.stdout:
-        if b"server.ready" in line or b"Listening" in line or b"listening on" in line:
-            _READY.set()
-
-
 def _start() -> None:
     global _PROCESS, _READER
     if _PROCESS is not None and _PROCESS.poll() is None:
         return
-    if _port_in_use():
+    if _port_in_use(PORT):
         return
     cmd = [str(SERVER), "--model", str(MODEL), "--port", str(PORT),
            "--threads", str(THREADS)]
@@ -123,14 +104,10 @@ def _start() -> None:
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 creationflags=subprocess.CREATE_NO_WINDOW)
     _READY.clear()
-    _READER = threading.Thread(target=_drain, daemon=True)
+    _TAIL.clear()
+    _READER = threading.Thread(target=_drain, args=(_PROCESS, _READY, b"server.ready" if False else "server.ready", _TAIL), daemon=True)
     _READER.start()
-    deadline = time.monotonic() + 300
-    while not _READY.wait(.1):
-        if _PROCESS.poll() is not None:
-            raise RuntimeError("parakeet-server failed to start")
-        if time.monotonic() >= deadline:
-            raise TimeoutError("parakeet-server startup timed out")
+    _wait_ready(_PROCESS, _READY, _TAIL, 300)
 
 
 def _stop() -> None:
@@ -146,12 +123,14 @@ def _stop() -> None:
     if proc is not None and proc.stdout is not None:
         proc.stdout.close()
     _READY.clear()
-    if _port_in_use():
-        subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             f"Get-NetTCPConnection -LocalPort {PORT} -State Listen -ErrorAction SilentlyContinue | "
-             "ForEach-Object { taskkill /F /PID $_.OwningProcess }"],
-            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    _kill_port(PORT)
+
+
+def _drain_parakeet(proc: subprocess.Popen, ready_event: threading.Event, tail: list) -> None:
+    for line in proc.stdout:
+        tail.append(line.rstrip())
+        if b"server.ready" in line or b"Listening" in line or b"listening on" in line:
+            ready_event.set()
 
 
 def _transcribe_cli(wav: Path) -> str:
@@ -187,7 +166,7 @@ def _transcribe_http(wav: Path) -> str:
 
 def transcribe(wav: Path) -> str:
     wav = (wav if wav.is_absolute() else ROOT / wav).resolve()
-    if _port_in_use():
+    if _port_in_use(PORT):
         return _transcribe_http(wav)
     return _transcribe_cli(wav)
 
@@ -214,21 +193,19 @@ if __name__ == "__main__":
         _stop()
         sys.exit(0)
     if args.wav:
-        import wave as _w
         for wav_path in args.wav:
             t0 = time.perf_counter()
             transcript = transcribe(wav_path).strip()
             t1 = time.perf_counter()
-            with _w.open(str(wav_path)) as wf:
+            with wave.open(str(wav_path)) as wf:
                 dur = wf.getnframes() / wf.getframerate()
             print(transcript, flush=True)
             print(f"[rtf] parakeet_total={t1-t0:.3f}s", file=sys.stderr)
             print(f"[rtf] audio_s={dur:.3f}s", file=sys.stderr)
     else:
-        import wave as _w
         _install()
         wav = ROOT / "tts_out.wav"
-        with _w.open(str(wav)) as wf:
+        with wave.open(str(wav)) as wf:
             dur = wf.getnframes() / wf.getframerate()
         t0 = time.perf_counter()
         transcript = transcribe(wav).strip()

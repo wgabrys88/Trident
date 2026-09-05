@@ -1,9 +1,10 @@
 from __future__ import annotations
-import argparse, hashlib, http.client, json, shutil, socket, subprocess, sys, tempfile, threading, time, urllib.request, zipfile
+import argparse, http.client, json, shutil, subprocess, sys, tempfile, threading, time, zipfile
 from collections import deque
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+from main import ROOT, _download, _port_in_use, _kill_port, _drain, _wait_ready
+
 RUNTIME = ROOT / "tools/runtime/brain"
 EXE = RUNTIME / "llama-server.exe"
 RUNTIME_REVISION = RUNTIME / "REVISION"
@@ -44,43 +45,13 @@ _PROCESS, _READY_EVENT, _READER, _TAIL = None, None, None, deque(maxlen=80)
 
 
 def _sha(path: Path) -> str:
+    import hashlib
     with path.open("rb") as f:
         return hashlib.file_digest(f, "sha256").hexdigest()
 
 
-def _download(url: str, path: Path, size: int = 0, sha: str = "") -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    partial = path.with_suffix(path.suffix + ".part")
-    partial.unlink(missing_ok=True)
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "TridentBrain/1"})
-        with urllib.request.urlopen(req, timeout=3600) as src, partial.open("wb") as dst:
-            shutil.copyfileobj(src, dst, 4 << 20)
-        if size and partial.stat().st_size != size:
-            raise RuntimeError(f"Download size mismatch: {path.name}")
-        if sha and _sha(partial) != sha:
-            raise RuntimeError(f"Download checksum mismatch: {path.name}")
-        partial.replace(path)
-    finally:
-        partial.unlink(missing_ok=True)
-
-
-def _port_in_use() -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.settimeout(0.2)
-        return s.connect_ex((HOST, PORT)) == 0
-
-
-def _kill_port() -> None:
-    subprocess.run(
-        ["powershell", "-NoProfile", "-Command",
-         f"Get-NetTCPConnection -LocalPort {PORT} -State Listen -ErrorAction SilentlyContinue | "
-         "ForEach-Object { taskkill /F /PID $_.OwningProcess }"],
-        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-
 def _install() -> None:
-    _kill_port()
+    _kill_port(PORT)
     runtime_ok = EXE.is_file() and RUNTIME_REVISION.is_file() and RUNTIME_REVISION.read_text(encoding="utf-8").strip() == f"{LLAMA_REV} {RUNTIME_SHA}"
     model_ok = MODEL.is_file() and MODEL.stat().st_size == MODEL_SIZE and _sha(MODEL) == MODEL_SHA
     if MODEL.exists() and not model_ok:
@@ -89,7 +60,7 @@ def _install() -> None:
         work = Path(tmp)
         if not runtime_ok:
             archive = work / ARCHIVE
-            _download(RUNTIME_URL, archive, sha=RUNTIME_SHA)
+            _download(RUNTIME_URL, archive, RUNTIME_SHA)
             if RUNTIME.exists():
                 shutil.rmtree(RUNTIME)
             RUNTIME.mkdir(parents=True)
@@ -107,42 +78,11 @@ def _install() -> None:
             RUNTIME_REVISION.write_text(f"{LLAMA_REV} {RUNTIME_SHA}\n", encoding="utf-8")
         if not model_ok:
             downloaded = work / MODEL.name
-            _download(MODEL_URL, downloaded, MODEL_SIZE, MODEL_SHA)
+            _download(MODEL_URL, downloaded, MODEL_SHA)
             MODEL.parent.mkdir(parents=True, exist_ok=True)
             downloaded.replace(MODEL)
         if not MODEL_CARD.is_file():
             _download(MODEL_CARD_URL, MODEL_CARD)
-
-
-def _drain() -> None:
-    global _READY_EVENT
-    for line in _PROCESS.stdout:
-        _TAIL.append(line.rstrip())
-        if _READY in line:
-            _READY_EVENT.set()
-
-
-def _start() -> None:
-    global _PROCESS, _READY_EVENT, _READER
-    if _PROCESS is not None and _PROCESS.poll() is None:
-        return
-    if _port_in_use():
-        return
-    _PROCESS = subprocess.Popen(
-        [str(EXE), "--model", str(MODEL), *SERVER_ARGS],
-        cwd=RUNTIME, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, encoding="utf-8", errors="replace",
-        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform.startswith("win") else 0)
-    _READY_EVENT = threading.Event()
-    _READER = threading.Thread(target=_drain, daemon=True)
-    _READER.start()
-    deadline = time.monotonic() + STARTUP_TIMEOUT
-    while not _READY_EVENT.wait(0.05):
-        if _PROCESS.poll() is not None:
-            raise RuntimeError(f"llama-server exited with {_PROCESS.returncode}\n" + "\n".join(_TAIL))
-        if time.monotonic() >= deadline:
-            _stop()
-            raise TimeoutError("llama-server startup timed out\n" + "\n".join(_TAIL))
 
 
 def _stop() -> None:
@@ -159,7 +99,25 @@ def _stop() -> None:
         proc.stdout.close()
     if _READY_EVENT is not None:
         _READY_EVENT.clear()
-    _kill_port()
+    _kill_port(PORT)
+
+
+def _start() -> None:
+    global _PROCESS, _READY_EVENT, _READER
+    if _PROCESS is not None and _PROCESS.poll() is None:
+        return
+    if _port_in_use(PORT):
+        return
+    _PROCESS = subprocess.Popen(
+        [str(EXE), "--model", str(MODEL), *SERVER_ARGS],
+        cwd=RUNTIME, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace",
+        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform.startswith("win") else 0)
+    _READY_EVENT = threading.Event()
+    _TAIL.clear()
+    _READER = threading.Thread(target=_drain, args=(_PROCESS, _READY_EVENT, _READY, _TAIL), daemon=True)
+    _READER.start()
+    _wait_ready(_PROCESS, _READY_EVENT, _TAIL, STARTUP_TIMEOUT)
 
 
 class Brain:
