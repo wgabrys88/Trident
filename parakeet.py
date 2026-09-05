@@ -1,7 +1,7 @@
-import argparse, http.client, json, shutil, struct, subprocess, sys, threading, time, uuid, wave, zipfile
+import argparse, http.client, json, shutil, struct, subprocess, sys, time, uuid, wave, zipfile
 from pathlib import Path
 
-from main import ROOT, _download, _port_in_use, _kill_port, _drain, _wait_ready
+from main import ROOT, _download, _port_in_use, _kill_port
 
 RUNTIME = ROOT / "tools/runtime/parakeet"
 EXE = RUNTIME / "parakeet-cli.exe"
@@ -19,7 +19,7 @@ LANGUAGE = "auto"
 PORT = 17934
 TIMESTAMP_FORMAT = "%d-%m-%y-%H-%M-%S"
 
-_PROCESS, _READY, _TAIL, _READER = None, threading.Event(), [], None
+_PROCESS = None
 
 
 def _checkout(url: str, rev: str, path: Path, patterns: tuple) -> None:
@@ -93,36 +93,34 @@ def _install() -> None:
 
 
 def _start() -> None:
-    global _PROCESS, _READER
+    global _PROCESS
     if _PROCESS is not None and _PROCESS.poll() is None:
         return
     if _port_in_use(PORT):
         return
-    cmd = [str(SERVER), "--model", str(MODEL), "--port", str(PORT),
-           "--threads", str(THREADS)]
-    _PROCESS = subprocess.Popen(cmd, cwd=RUNTIME, stdin=subprocess.DEVNULL,
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    _PROCESS = subprocess.Popen([str(SERVER), "--model", str(MODEL),
+                                 "--port", str(PORT), "--threads", str(THREADS)],
+                                cwd=RUNTIME, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 creationflags=subprocess.CREATE_NO_WINDOW)
-    _READY.clear()
-    _TAIL.clear()
-    _READER = threading.Thread(target=_drain, args=(_PROCESS, _READY, b"server.ready" if False else "server.ready", _TAIL), daemon=True)
-    _READER.start()
-    _wait_ready(_PROCESS, _READY, _TAIL, 300)
+    deadline = time.monotonic() + 300
+    while time.monotonic() < deadline:
+        if _PROCESS.poll() is not None:
+            raise RuntimeError(f"parakeet-server died with code {_PROCESS.poll()}")
+        if _port_in_use(PORT):
+            return
+        time.sleep(0.1)
+    _PROCESS.kill()
+    raise TimeoutError("parakeet-server failed to open port 17934")
 
 
 def _stop() -> None:
-    global _PROCESS, _READER
+    global _PROCESS
     proc, _PROCESS = _PROCESS, None
     if proc is not None:
         if proc.poll() is None:
             proc.kill()
         proc.wait()
-    if _READER is not None:
-        _READER.join(timeout=5)
-        _READER = None
-    if proc is not None and proc.stdout is not None:
-        proc.stdout.close()
-    _READY.clear()
     _kill_port(PORT)
 
 
@@ -168,10 +166,15 @@ if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
     p = argparse.ArgumentParser()
+    p.add_argument("--install", action="store_true")
     p.add_argument("--load", action="store_true")
     p.add_argument("--unload", action="store_true")
     p.add_argument("wav", type=Path, nargs="*")
     args = p.parse_args()
+    if args.install:
+        _install()
+        _start()
+        sys.exit(0)
     if args.load:
         _install()
         _start()
