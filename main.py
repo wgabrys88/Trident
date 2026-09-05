@@ -1,10 +1,7 @@
-import hashlib, re, shutil, socket, subprocess, sys, tempfile, threading, time, urllib.request, wave
+import argparse, hashlib, shutil, socket, subprocess, sys, threading, time, urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-BRAIN = ROOT / "brain.py"
-TTS = ROOT / "tts_nano.py"
-PARAKEET = ROOT / "parakeet.py"
 
 
 def _download(url: str, path: Path, sha: str = "") -> None:
@@ -32,10 +29,11 @@ def _port_in_use(port: int) -> bool:
 
 def _kill_port(port: int) -> None:
     subprocess.run(
-        ["powershell", "-NoProfile", "-Command",
-         f"Get-NetTCPConnection -LocalPort {port} -State Listen -ErrorAction SilentlyContinue | "
-         "ForEach-Object {{ taskkill /F /PID $_.OwningProcess }}"],
-        check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+         "Get-NetTCPConnection -ErrorAction Stop | "
+         f"Where-Object {{ $_.LocalPort -eq {port} -and $_.State -eq 'Listen' }} | "
+         "Select-Object -ExpandProperty OwningProcess -Unique | "
+         "ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction Stop }"], check=True)
 
 
 def _drain(proc: subprocess.Popen, ready_event: threading.Event, ready_str: str, tail: list) -> None:
@@ -56,102 +54,38 @@ def _wait_ready(proc: subprocess.Popen, ready_event: threading.Event, tail: list
             raise TimeoutError(f"Startup timed out\n" + "\n".join(tail))
 
 
-def parse_rtf(text: str) -> dict:
-    out = {}
-    for m in re.finditer(r"\[rtf\]\s+([a-zA-Z_][\w]*)=([\d.]+)s", text):
-        out[m.group(1)] = float(m.group(2))
-    for m in re.finditer(r"(startup|ttft|inference)_s=([\d.]+)", text):
-        out["brain_" + m.group(1)] = float(m.group(2))
-    for m in re.finditer(r"audio_s=([\d.]+)", text):
-        if "audio_s" not in out:
-            out["audio_s"] = float(m.group(1))
-    for m in re.finditer(r"tokens=(\d+)", text):
-        if "brain_tokens" not in out:
-            out["brain_tokens"] = int(m.group(1))
-    for m in re.finditer(r"tps=([\d.]+)", text):
-        if "brain_tps" not in out:
-            out["brain_tps"] = float(m.group(1))
-    return out
-
-
-def run(name: str, cmd: list) -> tuple:
-    t0 = time.perf_counter()
-    print(f"[{name}] START", flush=True)
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    if r.returncode != 0:
-        print(r.stdout, end="")
-        print(r.stderr, end="", file=sys.stderr)
-        raise SystemExit(r.returncode)
-    out = r.stdout + r.stderr
-    dt = time.perf_counter() - t0
-    print(f"[{name}] END   outer_dt={dt:.3f}s", flush=True)
-    for line in r.stderr.splitlines():
-        if "[rtf]" in line or "startup_s=" in line or "inference_s=" in line:
-            print("  " + line, flush=True)
-    return out, dt, parse_rtf(out)
-
-
-def run_simple(script: Path, *args: str) -> subprocess.CompletedProcess:
-    r = subprocess.run([sys.executable, str(script), *args],
-                       capture_output=True, text=True)
-    if r.returncode != 0:
-        print(r.stdout, end="", file=sys.stderr)
-        print(r.stderr, end="", file=sys.stderr)
-        raise SystemExit(r.returncode)
-    return r
-
-
-def run(script: Path, *args: str) -> subprocess.CompletedProcess:
-    r = subprocess.run([sys.executable, str(script), *args],
-                       capture_output=True, text=True)
-    if r.returncode != 0:
-        print(r.stdout, end="", file=sys.stderr)
-        print(r.stderr, end="", file=sys.stderr)
-        raise SystemExit(r.returncode)
-    return r
-
-
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
-    query = sys.argv[1] if len(sys.argv) > 1 else None
+    parser = argparse.ArgumentParser(description="No arguments installs and loads all models.", allow_abbrev=False)
+    command = parser.add_mutually_exclusive_group()
+    command.add_argument("prompt", nargs="?", help="run Brain, TTS and Parakeet without installation")
+    command.add_argument("--unload", action="store_true", help="stop all three model servers")
+    args = parser.parse_args()
+    mode = "unload" if args.unload else "install" if args.prompt is None else "pipeline"
+    stages = (("brain", "brain.py", (f"--request={args.prompt}",)),
+              ("tts", "tts_nano.py", ()), ("parakeet", "parakeet.py", ("tts_out.wav",)))
+    started = time.perf_counter()
+    log_path = ROOT / ".runtime-logs/main.log"
+    log_path.parent.mkdir(exist_ok=True)
+    with log_path.open("a", encoding="utf-8", buffering=1) as log:
+        def emit(text: str) -> None:
+            print(text, flush=True)
+            print(text, file=log)
 
-    print("[install] brain...", flush=True)
-    run(BRAIN, "--install")
-    print("[install] tts...", flush=True)
-    run(TTS, "--install")
-    print("[install] parakeet...", flush=True)
-    run(PARAKEET, "--install")
-    print("[ready]")
-
-    if query:
-        t0 = time.perf_counter()
-        print(f"[brain] {query}", flush=True)
-        r = run(BRAIN, "--request", query)
-        for line in r.stdout.splitlines():
-            print(line, flush=True)
-        for line in r.stderr.splitlines():
-            if "[rtf]" in line:
-                print(f"  {line}", flush=True)
-        t1 = time.perf_counter()
-
-        print("[tts] synthesizing...", flush=True)
-        r = run(TTS)
-        for line in r.stdout.splitlines():
-            if line.strip():
-                print(f"  {line}", flush=True)
-        for line in r.stderr.splitlines():
-            if "[rtf]" in line:
-                print(f"  {line}", flush=True)
-        t2 = time.perf_counter()
-
-        print("[parakeet] transcribing...", flush=True)
-        r = run(PARAKEET, "tts_out.wav")
-        for line in r.stdout.splitlines():
-            print(line, flush=True)
-        for line in r.stderr.splitlines():
-            if "[rtf]" in line:
-                print(f"  {line}", flush=True)
-        t3 = time.perf_counter()
-
-        print(f"\n[rtf] brain={t1-t0:.3f}s  tts={t2-t1:.3f}s  parakeet={t3-t2:.3f}s  total={t3-t0:.3f}s", file=sys.stderr)
+        emit(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {mode} {args.prompt or ''}".rstrip())
+        for name, script, request in stages:
+            stage_started = time.perf_counter()
+            emit(f"[{name}] {mode}")
+            flags = request if mode == "pipeline" else (f"--{mode}",)
+            with subprocess.Popen([sys.executable, "-u", script, *flags], cwd=ROOT,
+                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  text=True, encoding="utf-8") as process:
+                for line in process.stdout:
+                    emit(line.rstrip("\n"))
+                code = process.wait()
+            emit(f"[{name}] exit={code} wall_s={time.perf_counter()-stage_started:.3f}")
+            if code:
+                emit(f"[{mode}] failed wall_s={time.perf_counter()-started:.3f}")
+                raise SystemExit(code)
+        emit(f"[{mode}] done wall_s={time.perf_counter()-started:.3f}")
