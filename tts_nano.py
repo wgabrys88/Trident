@@ -1,5 +1,5 @@
 from __future__ import annotations
-import argparse, re, shutil, socket, struct, subprocess, sys, tempfile, textwrap, time, venv, wave
+import argparse, json, shutil, socket, struct, subprocess, sys, tempfile, time, venv, wave
 from pathlib import Path
 
 from main import ROOT, _download, _port_in_use, _kill_port
@@ -30,7 +30,8 @@ KNOBS = {"n-gpu-layers": 99, "context": 2048, "threads": 4, "fastconv": 1, "seed
          "max-tokens": 1000, "top-k": 1000, "top-p": .95, "min-p": 0,
          "temperature": .8, "repeat-penalty": 1.2, "cfm-steps": 1,
          "cfg-weight": 0, "exaggeration": 0}
-RATE, CHUNK_CHARS, PORT = 24000, 50, 17933
+RATE, PORT = 24000, 17933
+CHUNKER = ROOT / "tools/runtime/chunker/Scripts/python.exe"
 MAGIC, VERSION = 0x32525454, 2
 REQUEST, RESPONSE = struct.Struct("<7I"), struct.Struct("<8I")
 LOG = ROOT / ".runtime-logs/tts.log"
@@ -109,29 +110,31 @@ def _install() -> None:
     voice_ok = all(p.is_file() for p in voice)
     if runtime_ok and models_ok and voice_ok:
         print(f"[tts] install | pin={NATIVE_PIN} skip")
-        return
-    print(f"[tts] install | runtime_ok={runtime_ok} models_ok={models_ok} voice_ok={voice_ok}")
-    with tempfile.TemporaryDirectory(prefix=".nano-install-", dir=ROOT) as tmp:
-        work = Path(tmp)
-        source = work / "chatterbox"
-        if not runtime_ok or not models_ok:
-            print(f"[tts] install | checkout {CHATTERBOX_REV}")
-            _checkout("https://github.com/wgabrys88/chatterbox.cpp.git", CHATTERBOX_REV, source,
-                      ("/CMakeLists.txt", "/LICENSE", "/src/", "/include/",
-                       *(f"/scripts/{n}" for n in CONVERTERS)))
-        if not runtime_ok:
-            print(f"[tts] install | building")
-            _build(work, source)
-            RUNTIME_REVISION.write_text(NATIVE_PIN + "\n", encoding="utf-8")
-        if not models_ok:
-            print(f"[tts] install | converting")
-            _convert(work, source)
-            _download(f"{NANO_URL}/README.md", MODELS / "nano-model-card.md")
-        if not voice_ok:
-            print(f"[tts] install | voice")
-            _download(f"{VOICE_URL}/audio/donald-trump.wav", VOICE, VOICE_SHA)
-            _download(f"{VOICE_URL}/README.md", VOICE.with_suffix(".md"))
-        print(f"[tts] install | done")
+    else:
+        print(f"[tts] install | runtime_ok={runtime_ok} models_ok={models_ok} voice_ok={voice_ok}")
+        with tempfile.TemporaryDirectory(prefix=".nano-install-", dir=ROOT) as tmp:
+            work = Path(tmp)
+            source = work / "chatterbox"
+            if not runtime_ok or not models_ok:
+                print(f"[tts] install | checkout {CHATTERBOX_REV}")
+                _checkout("https://github.com/wgabrys88/chatterbox.cpp.git", CHATTERBOX_REV, source,
+                          ("/CMakeLists.txt", "/LICENSE", "/src/", "/include/",
+                           *(f"/scripts/{n}" for n in CONVERTERS)))
+            if not runtime_ok:
+                print(f"[tts] install | building")
+                _build(work, source)
+                RUNTIME_REVISION.write_text(NATIVE_PIN + "\n", encoding="utf-8")
+            if not models_ok:
+                print(f"[tts] install | converting")
+                _convert(work, source)
+                _download(f"{NANO_URL}/README.md", MODELS / "nano-model-card.md")
+            if not voice_ok:
+                print(f"[tts] install | voice")
+                _download(f"{VOICE_URL}/audio/donald-trump.wav", VOICE, VOICE_SHA)
+                _download(f"{VOICE_URL}/README.md", VOICE.with_suffix(".md"))
+            print(f"[tts] install | done")
+    import chunk as chunker
+    chunker.install()
 
 
 def _command() -> list:
@@ -227,23 +230,19 @@ class TTS:
 
     @staticmethod
     def _chunks(text: str) -> list:
-        out, cur = [], ""
-        for sentence in re.split(r"(?<=[.!?\u2026])\s+", " ".join(text.split())):
-            if len(sentence) > CHUNK_CHARS:
-                if cur:
-                    out.append(cur)
-                    cur = ""
-                out.extend(textwrap.wrap(sentence, width=CHUNK_CHARS, break_on_hyphens=False))
-            elif len(c := f"{cur} {sentence}".strip()) <= CHUNK_CHARS:
-                cur = c
-            else:
-                out.append(cur)
-                cur = sentence
-        if cur:
-            out.append(cur)
-        if not out:
+        if not CHUNKER.is_file():
+            raise RuntimeError("CPU chunker not installed")
+        proc = subprocess.run([str(CHUNKER), str(ROOT / "chunk.py")], input=text,
+                              capture_output=True, text=True, encoding="utf-8")
+        if proc.stderr:
+            sys.stderr.write(proc.stderr)
+            sys.stderr.flush()
+        if proc.returncode:
+            raise RuntimeError(proc.stderr.strip() or "CPU chunker failed")
+        pieces = json.loads(proc.stdout)
+        if not pieces:
             raise ValueError("TTS input is empty")
-        return out
+        return pieces
 
     @staticmethod
     def _send(sock, kind: int, piece: int = 0, text: str = "") -> None:
