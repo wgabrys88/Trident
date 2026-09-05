@@ -12,7 +12,7 @@ VULKAN_SDK = Path("C:/VulkanSDK/1.4.357.0")
 BUILD_THREADS = 4
 LANGUAGE = "en"
 TIMESTAMP_FORMAT = "%d-%m-%y-%H-%M-%S"
-CHATTERBOX_REV = "acc8d360a3d4f6a779d619d2be5971b1f3f94558"
+CHATTERBOX_REV = "3593cf22d6d2a8d044e1af8968f1220fe6b03aa1"
 GGML_REV = "58c3805840b516b2a88ff867ccf7bb41dba79951"
 NANO_REV = "71ccd1d0081b430592cea481f4307e764e07bc64"
 NATIVE_PIN = f"{CHATTERBOX_REV} {GGML_REV}"
@@ -52,6 +52,8 @@ def _build(work: Path, source: Path) -> None:
     _checkout("https://github.com/ggml-org/ggml.git", GGML_REV, source / "ggml",
               ("/CMakeLists.txt", "/LICENSE", "/cmake/", "/include/", "/src/*", "!/src/*/",
                "/src/ggml-cpu/", "/src/ggml-vulkan/"))
+    patch = source / "src" / "ggml-vulkan-queue.patch"
+    subprocess.run(["git", "-C", str(source / "ggml"), "apply", "--whitespace=nowarn", str(patch)], check=True)
     build = work / "build"
     subprocess.run([
         CMAKE, "-S", str(source), "-B", str(build), "-G", "Visual Studio 17 2022", "-A", "x64",
