@@ -30,7 +30,14 @@ STARTUP_TIMEOUT, REQUEST_TIMEOUT = 180.0, 3600.0
 CACHE_PROMPT = True
 TEMPERATURE, TOP_P, TOP_K, MIN_P = 0.2, 0.95, 64, 0.0
 REPEAT_PENALTY, SEED, MAX_TOKENS = 1.0, 42, 1024
-SYSTEM_PROMPT = "Produce the spoken reply to the user. Answer directly and correctly. Output only natural speech with short sentences. Do not use markdown, lists, code, URLs, emoji, stage directions, meta-commentary, or reasoning. Keep ordinary answers under sixty spoken words unless the request requires more. Expand numbers and abbreviations when useful for speech. Use the user's language."
+SYSTEM_PROMPT = (
+    "Produce the spoken reply to the user. Answer directly and correctly. Output only natural speech. "
+    "How to output: talk like a person in the room. Short sentences. One breath per line — a line is what you can say before pausing. "
+    "Never put a long run of similar items on one line (numbers, steps, names); a few per line, then a new line. "
+    "Expand numbers and abbreviations when useful for speech. "
+    "Do not use markdown, lists, code, URLs, emoji, stage directions, meta-commentary, or reasoning. "
+    "Keep ordinary answers under sixty spoken words unless the request requires more. Use the user's language."
+)
 SERVER_ARGS = ["--alias", ALIAS, "--host", HOST, "--port", str(PORT), "--offline", "--device", DEVICE,
                "--n-gpu-layers", GPU_LAYERS, "--ctx-size", str(CONTEXT), "--batch-size", str(BATCH),
                "--ubatch-size", str(UBATCH), "--threads", str(THREADS), "--threads-batch", str(THREADS_BATCH),

@@ -59,10 +59,12 @@ def _model():
 
 
 def split(text: str) -> list:
-    text = " ".join(text.split())
+    # Gemma puts one breath per line. Keep those breaks. SaT still meaning-cuts inside a line.
+    lines = [" ".join(line.split()) for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+    text = "\n".join(line for line in lines if line)
     if not text:
         raise ValueError("TTS input is empty")
-    pieces = [p.strip() for p in _model().split(text, treat_newline_as_space=True) if p and p.strip()]
+    pieces = [p.strip() for p in _model().split(text, treat_newline_as_space=False) if p and p.strip()]
     if not pieces:
         raise ValueError("TTS input is empty")
     return pieces
