@@ -297,12 +297,13 @@ if __name__ == "__main__":
     src = (args.text if args.text is not None else
            (ROOT / args.text_file).read_text(encoding="utf-8") if args.text_file else
            (ROOT / "brain_out.txt").read_text(encoding="utf-8"))
-    t_start = time.perf_counter()
     with span(__file__):
+        tts.start(args.language)
+        t_synth = time.perf_counter()
         wav = tts.synthesize(src, args.language)
         t_done = time.perf_counter()
         (ROOT / "tts_out.wav").write_bytes(wav.read_bytes())
         wav_info = wave.open(str(wav))
         duration_s = wav_info.getnframes() / wav_info.getframerate()
         wav_info.close()
-        emit(f"[rtf] tts_synth={t_done-t_start:.3f}s audio_s={duration_s:.3f}s rtf={(t_done-t_start)/duration_s:.2f}")
+        emit(f"[rtf] tts_synth={t_done-t_synth:.3f}s audio_s={duration_s:.3f}s rtf={(t_done-t_synth)/duration_s:.2f}")
