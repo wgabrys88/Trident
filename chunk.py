@@ -2,7 +2,8 @@ from __future__ import annotations
 import json, os, subprocess, sys, venv
 from pathlib import Path
 
-from main import ROOT, _download
+from _runtime import ROOT, _download
+from _log import span, emit
 
 MODELS = ROOT / "models/sat-3l-sm"
 VENV = ROOT / "tools/runtime/chunker"
@@ -15,7 +16,6 @@ TOKENIZER_SHA = "a898ea75433890f6610f4e470b8ebeb0c21dce5c8dd61f892eb09eb5919d2e2
 SAT_ONNX_URL = "https://huggingface.co/segment-any-text/sat-3l-sm/resolve/main/model_optimized.onnx"
 SAT_CONFIG_URL = "https://huggingface.co/segment-any-text/sat-3l-sm/resolve/main/config.json"
 TOKENIZER_URL = "https://huggingface.co/FacebookAI/xlm-roberta-base/resolve/main/tokenizer.json"
-# CPU only. Dml/CUDA would steal the GPU from Nano/Gemma/Parakeet.
 ORT_PROVIDERS = ["CPUExecutionProvider"]
 _sat = None
 
@@ -76,7 +76,8 @@ if __name__ == "__main__":
     if "--install" in sys.argv:
         install()
         sys.exit(0)
-    pieces = split(sys.stdin.read())
-    print(f"[chunk] n={len(pieces)}", file=sys.stderr)
-    json.dump(pieces, sys.stdout, ensure_ascii=False)
-    sys.stdout.write("\n")
+    with span(__file__):
+        pieces = split(sys.stdin.read())
+        emit(f"[chunk] n={len(pieces)}")
+        json.dump(pieces, sys.stdout, ensure_ascii=False)
+        sys.stdout.write("\n")

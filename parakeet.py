@@ -1,7 +1,8 @@
 import argparse, http.client, json, shutil, struct, subprocess, sys, time, uuid, wave, zipfile
 from pathlib import Path
 
-from main import ROOT, _download, _port_in_use, _kill_port
+from _runtime import ROOT, _download, _port_in_use, _kill_port
+from _log import span, emit
 
 RUNTIME = ROOT / "tools/runtime/parakeet"
 EXE = RUNTIME / "parakeet-cli.exe"
@@ -190,22 +191,21 @@ if __name__ == "__main__":
         sys.exit(0)
     if args.wav:
         for wav_path in args.wav:
-            t0 = time.perf_counter()
-            transcript = transcribe(wav_path).strip()
-            t1 = time.perf_counter()
-            with wave.open(str(wav_path)) as wf:
-                dur = wf.getnframes() / wf.getframerate()
-            print(transcript, flush=True)
-            print(f"[rtf] parakeet_total={t1-t0:.3f}s", file=sys.stderr)
-            print(f"[rtf] audio_s={dur:.3f}s", file=sys.stderr)
+            with span(__file__):
+                t0 = time.perf_counter()
+                transcript = transcribe(wav_path).strip()
+                t1 = time.perf_counter()
+                with wave.open(str(wav_path)) as wf:
+                    dur = wf.getnframes() / wf.getframerate()
+                print(transcript, flush=True)
+                emit(f"[rtf] parakeet_total={t1-t0:.3f}s audio_s={dur:.3f}s rtf={(t1-t0)/dur:.2f}")
     else:
-        _install()
-        wav = ROOT / "tts_out.wav"
-        with wave.open(str(wav)) as wf:
-            dur = wf.getnframes() / wf.getframerate()
-        t0 = time.perf_counter()
-        transcript = transcribe(wav).strip()
-        t1 = time.perf_counter()
-        print(transcript)
-        print(f"[rtf] parakeet_total={t1-t0:.3f}s", file=sys.stderr)
-        print(f"[rtf] audio_s={dur:.3f}s", file=sys.stderr)
+        with span(__file__):
+            wav = ROOT / "tts_out.wav"
+            with wave.open(str(wav)) as wf:
+                dur = wf.getnframes() / wf.getframerate()
+            t0 = time.perf_counter()
+            transcript = transcribe(wav).strip()
+            t1 = time.perf_counter()
+            print(transcript)
+            emit(f"[rtf] parakeet_total={t1-t0:.3f}s audio_s={dur:.3f}s rtf={(t1-t0)/dur:.2f}")
