@@ -1,8 +1,10 @@
 *
-!/.gitignore
-!/.gitattributes
+!.gitignore
+!.gitattributes
 !/parakeet.py
 !/tts_nano.py
 !/brain.py
 !/main.py
 !/chunk.py
+!/tts_turbo.py
+!/tts_v3.py
