@@ -234,20 +234,26 @@ class TTS:
         self.start(language)
         pieces = self._chunks(text)
         output = ROOT / f"out_{time.strftime('%d-%m-%y-%H-%M-%S')}_{self.spec['output']}.wav"
+        print(f"[synth] pieces={len(pieces)} total_chars={sum(len(p) for p in pieces)}", flush=True)
         with socket.create_connection(("127.0.0.1", self.spec["port"]), timeout=300) as sock, sock.makefile("rb") as reader:
-            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            sock.setsockopt(socket.IPPROTO_TCP, socket.IPPROTO_TCP_NODELAY, 1)
             for piece_id, piece in enumerate(pieces):
+                print(f"[synth] sending piece={piece_id} chars={len(piece)} text='{piece[:50]}...'", flush=True)
                 self._send(sock, 1, piece_id, piece)
             pcm_bytes = 0
+            pieces_written = 0
             with output.open("xb") as target, wave.open(target, "wb") as wav:
                 wav.setparams((1, 2, TTS_RATE, 0, "NONE", "not compressed"))
                 for piece_id in range(len(pieces)):
                     before = pcm_bytes
+                    chunks_received = 0
+                    print(f"[synth] waiting for piece={piece_id}", flush=True)
                     while True:
                         kind, returned_piece, chunk, payload = self._receive(reader)
                         if returned_piece != piece_id:
                             raise RuntimeError("Unexpected TTS piece")
                         if kind == 2:
+                            print(f"[synth] piece={piece_id} done chunks={chunks_received} bytes_written={pcm_bytes-before}", flush=True)
                             break
                         if kind != 1:
                             raise RuntimeError(f"Unexpected TTS response kind: {kind}")
@@ -256,8 +262,11 @@ class TTS:
                             payload = payload[zeros:]
                         wav.writeframesraw(payload)
                         pcm_bytes += len(payload)
+                        chunks_received += 1
                     if pcm_bytes == before:
                         raise RuntimeError(f"TTS piece {piece_id} produced no audio")
+                    pieces_written += 1
+            print(f"[synth] total pieces_written={pieces_written} total_bytes={pcm_bytes} total_samples={pcm_bytes//2}", flush=True)
             sock.settimeout(10)
             self._send(sock, 3)
             if self._receive(reader)[0] != 5:
