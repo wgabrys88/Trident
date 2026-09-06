@@ -34,7 +34,7 @@ TEMPERATURE, TOP_P, TOP_K, MIN_P = 0.2, 0.95, 64, 0.0
 REPEAT_PENALTY, SEED, MAX_TOKENS = 1.0, 42, 1024
 SYSTEM_PROMPT = (
     "Produce the spoken reply to the user. Answer directly and correctly. Output only natural speech. "
-    "How to output: talk like a person in the room. Short sentences. One breath per line — a line is what you can say before pausing. "
+    "How to output: talk like a person in the room. Short sentences. One breath per line - a line is what you can say before pausing. "
     "Never put a long run of similar items on one line (numbers, steps, names); a few per line, then a new line. "
     "Expand numbers and abbreviations when useful for speech. "
     "Do not use markdown, lists, code, URLs, emoji, stage directions, meta-commentary, or reasoning. "
