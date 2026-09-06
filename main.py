@@ -66,9 +66,20 @@ if __name__ == "__main__":
     command.add_argument("prompt", nargs="?", help="run Brain, TTS and Parakeet without installation")
     command.add_argument("--unload", action="store_true", help="stop all three model servers")
     args = parser.parse_args()
-    mode = "unload" if args.unload else "install" if args.prompt is None else "pipeline"
-    stages = (("brain", "brain.py", (f"--request={args.prompt}",)),
-              ("tts", "tts_nano.py", ()), ("parakeet", "parakeet.py", ("tts_out.wav",)))
+    if args.unload:
+        mode = "unload"
+        stages = (("brain", "brain.py", ()), ("tts_nano", "tts_nano.py", ()),
+                  ("tts_turbo", "tts_turbo.py", ()), ("tts_v3", "tts_v3.py", ()),
+                  ("parakeet", "parakeet.py", ()))
+    elif args.prompt is None:
+        mode = "install"
+        stages = (("brain", "brain.py", ()), ("tts_nano", "tts_nano.py", ()),
+                  ("tts_turbo", "tts_turbo.py", ()), ("tts_v3", "tts_v3.py", ()),
+                  ("parakeet", "parakeet.py", ()))
+    else:
+        mode = "pipeline"
+        stages = (("brain", "brain.py", (f"--request={args.prompt}",)),
+                  ("tts_nano", "tts_nano.py", ()), ("parakeet", "parakeet.py", ("tts_out.wav",)))
     started = time.perf_counter()
     log_path = ROOT / ".runtime-logs/main.log"
     log_path.parent.mkdir(exist_ok=True)
