@@ -15,6 +15,7 @@ def main() -> None:
     p.add_argument("tts_model", nargs="?", default="nano", choices=["nano", "turbo", "v3"])
     p.add_argument("--unload", action="store_true")
     p.add_argument("--install", action="store_true")
+    p.add_argument("--from-hf", action="store_true")
     p.add_argument("--language", default="en")
     a = p.parse_args()
     if a.prompt:
@@ -30,6 +31,12 @@ def main() -> None:
                  or run("tts_turbo.py", "--install")
                  or run("tts_v3.py", "--install")
                  or run("parakeet.py", "--install"))
+    if a.from_hf:
+        sys.exit(run("brain.py", "--install", "--from-hf")
+                 or run("tts_nano.py", "--install", "--from-hf")
+                 or run("tts_turbo.py", "--install", "--from-hf")
+                 or run("tts_v3.py", "--install", "--from-hf")
+                 or run("parakeet.py", "--install", "--from-hf"))
     if a.unload:
         for s in ("brain.py", "tts_nano.py", "tts_turbo.py", "tts_v3.py", "parakeet.py"):
             run(s, "--unload")

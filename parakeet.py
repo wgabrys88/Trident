@@ -2,7 +2,8 @@ import argparse, http.client, json, shutil, struct, subprocess, sys, time, uuid,
 from pathlib import Path
 
 from _runtime import ROOT, _download, _port_in_use, _kill_port
-from _log import span, emit
+from _log import span
+from hf_pull import pull
 
 RUNTIME = ROOT / "tools/runtime/parakeet"
 EXE = RUNTIME / "parakeet-cli.exe"
@@ -62,6 +63,13 @@ def _build(work: Path) -> None:
     for dll in build.rglob("bin/*.dll"):
         shutil.copy2(dll, RUNTIME / dll.name)
     shutil.copy2(source / "LICENSE", RUNTIME / "parakeet-LICENSE.txt")
+
+
+def _from_hf() -> None:
+    MODEL.parent.mkdir(parents=True, exist_ok=True)
+    pull("parakeet", MODEL.name, MODEL, MODEL_SHA)
+    if not MODEL_CARD.is_file():
+        pull("parakeet", "README.md", MODEL_CARD)
 
 
 def _install() -> None:
@@ -170,10 +178,14 @@ if __name__ == "__main__":
     p.add_argument("--install", action="store_true")
     p.add_argument("--load", action="store_true")
     p.add_argument("--unload", action="store_true")
+    p.add_argument("--from-hf", action="store_true")
     p.add_argument("wav", type=Path, nargs="*")
     args = p.parse_args()
     if args.install:
-        _install()
+        if args.from_hf:
+            _from_hf()
+        else:
+            _install()
         _start()
         sys.exit(0)
     if args.load:

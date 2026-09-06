@@ -4,6 +4,7 @@ from pathlib import Path
 
 from _runtime import ROOT, _download, _port_in_use, _kill_port
 from _log import span, emit
+from hf_pull import pull
 
 RUNTIME = ROOT / "tools/runtime/tts"
 MODELS = ROOT / "models"
@@ -95,6 +96,19 @@ def _convert(work: Path, source: Path) -> None:
                        cwd=work, check=True)
         MODELS.mkdir(parents=True, exist_ok=True)
         converted.replace(output)
+
+
+def _from_hf() -> None:
+    MODELS.mkdir(parents=True, exist_ok=True)
+    VOICE.parent.mkdir(parents=True, exist_ok=True)
+    pull("nano", T3.name, T3)
+    pull("nano", S3.name, S3)
+    if not (MODELS / "nano-model-card.md").is_file():
+        pull("nano", "README.md", MODELS / "nano-model-card.md")
+    if not VOICE.is_file():
+        pull("voices", "ref-trump.wav", VOICE)
+    if not VOICE.with_suffix(".md").is_file():
+        pull("voices", "README.md", VOICE.with_suffix(".md"))
 
 
 def _install() -> None:
@@ -273,13 +287,17 @@ if __name__ == "__main__":
     p.add_argument("--install", action="store_true")
     p.add_argument("--load", action="store_true")
     p.add_argument("--unload", action="store_true")
+    p.add_argument("--from-hf", action="store_true")
     text = p.add_mutually_exclusive_group()
     text.add_argument("--text")
     text.add_argument("--text-file", type=Path)
     args = p.parse_args()
     tts = TTS()
     if args.install:
-        _install()
+        if args.from_hf:
+            _from_hf()
+        else:
+            _install()
         sys.exit(0)
     if args.load:
         _install()
