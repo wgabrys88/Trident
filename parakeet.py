@@ -1,9 +1,7 @@
 import argparse, http.client, json, shutil, struct, subprocess, sys, time, uuid, wave, zipfile
 from pathlib import Path
 
-from _runtime import ROOT, _download, _port_in_use, _kill_port
-from _log import span, emit
-from hf_pull import pull
+from main import ROOT, _download, _port_in_use, _kill_port
 
 RUNTIME = ROOT / "tools/runtime/parakeet"
 EXE = RUNTIME / "parakeet-cli.exe"
@@ -63,13 +61,6 @@ def _build(work: Path) -> None:
     for dll in build.rglob("bin/*.dll"):
         shutil.copy2(dll, RUNTIME / dll.name)
     shutil.copy2(source / "LICENSE", RUNTIME / "parakeet-LICENSE.txt")
-
-
-def _from_hf() -> None:
-    MODEL.parent.mkdir(parents=True, exist_ok=True)
-    pull("parakeet", MODEL.name, MODEL, MODEL_SHA)
-    if not MODEL_CARD.is_file():
-        pull("parakeet", "README.md", MODEL_CARD)
 
 
 def _install() -> None:
@@ -178,14 +169,10 @@ if __name__ == "__main__":
     p.add_argument("--install", action="store_true")
     p.add_argument("--load", action="store_true")
     p.add_argument("--unload", action="store_true")
-    p.add_argument("--from-hf", action="store_true")
     p.add_argument("wav", type=Path, nargs="*")
     args = p.parse_args()
     if args.install:
-        if args.from_hf:
-            _from_hf()
-        else:
-            _install()
+        _install()
         _start()
         sys.exit(0)
     if args.load:
@@ -203,21 +190,22 @@ if __name__ == "__main__":
         sys.exit(0)
     if args.wav:
         for wav_path in args.wav:
-            with span(__file__):
-                t0 = time.perf_counter()
-                transcript = transcribe(wav_path).strip()
-                t1 = time.perf_counter()
-                with wave.open(str(wav_path)) as wf:
-                    dur = wf.getnframes() / wf.getframerate()
-                print(transcript, flush=True)
-                emit(f"[rtf] parakeet_total={t1-t0:.3f}s audio_s={dur:.3f}s rtf={(t1-t0)/dur:.2f}")
-    else:
-        with span(__file__):
-            wav = ROOT / "tts_out.wav"
-            with wave.open(str(wav)) as wf:
-                dur = wf.getnframes() / wf.getframerate()
             t0 = time.perf_counter()
-            transcript = transcribe(wav).strip()
+            transcript = transcribe(wav_path).strip()
             t1 = time.perf_counter()
-            print(transcript)
-            emit(f"[rtf] parakeet_total={t1-t0:.3f}s audio_s={dur:.3f}s rtf={(t1-t0)/dur:.2f}")
+            with wave.open(str(wav_path)) as wf:
+                dur = wf.getnframes() / wf.getframerate()
+            print(transcript, flush=True)
+            print(f"[rtf] parakeet_total={t1-t0:.3f}s", file=sys.stderr)
+            print(f"[rtf] audio_s={dur:.3f}s", file=sys.stderr)
+    else:
+        _install()
+        wav = ROOT / "tts_out.wav"
+        with wave.open(str(wav)) as wf:
+            dur = wf.getnframes() / wf.getframerate()
+        t0 = time.perf_counter()
+        transcript = transcribe(wav).strip()
+        t1 = time.perf_counter()
+        print(transcript)
+        print(f"[rtf] parakeet_total={t1-t0:.3f}s", file=sys.stderr)
+        print(f"[rtf] audio_s={dur:.3f}s", file=sys.stderr)
