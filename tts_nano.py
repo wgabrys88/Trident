@@ -2,7 +2,7 @@ from main import ROOT, TTS as SharedTTS, run_tts
 
 MODELS = ROOT / "models"
 T3 = MODELS / "chatterbox-t3-nano-q4_0.gguf"
-S3 = MODELS / "chatterbox-s3gen-nano-irisxe-q4_0-rawf32-v1.gguf"
+S3 = MODELS / "chatterbox-s3gen-nano-q4_0.gguf"
 SPEC = {
     "family": "nano", "label": "tts", "models": (T3, S3), "language": "en",
     "multilingual": False, "port": 17933, "output": "tts",
