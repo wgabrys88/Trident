@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, os, subprocess, sys, venv
+import argparse, json, subprocess, sys, venv
 from pathlib import Path
 
 from _runtime import ROOT, _download
@@ -24,21 +24,27 @@ def _python() -> Path:
 
 
 def install() -> None:
+    changed = False
     py = _python()
     if not py.is_file():
+        changed = True
         venv.EnvBuilder(with_pip=True).create(VENV)
         pip = [str(py), "-m", "pip", "--isolated", "install", "--no-cache-dir",
                "--disable-pip-version-check", "--progress-bar", "off", "--no-input"]
         subprocess.run([*pip, "numpy==1.26.4", "onnxruntime==1.20.1", "tokenizers==0.21.4",
                         "huggingface-hub==0.34.4", "wtpsplit-lite==0.2.0"], check=True)
     if not ONNX.is_file():
+        changed = True
         print("[chunk] install | sat-3l-sm onnx", flush=True)
         _download(SAT_ONNX_URL, ONNX, ONNX_SHA)
     if not CONFIG.is_file():
+        changed = True
         _download(SAT_CONFIG_URL, CONFIG, CONFIG_SHA)
     if not TOKENIZER.is_file():
+        changed = True
         _download(TOKENIZER_URL, TOKENIZER, TOKENIZER_SHA)
-    print("[chunk] install | done", flush=True)
+    if changed:
+        print("[chunk] install | done", flush=True)
 
 
 def _model():
@@ -51,14 +57,12 @@ def _model():
         so.inter_op_num_threads = 1
         so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        os.environ["CUDA_VISIBLE_DEVICES"] = ""
         _sat = SaT(str(MODELS), tokenizer_name_or_path=str(TOKENIZER),
                    ort_providers=ORT_PROVIDERS, ort_kwargs={"sess_options": so})
     return _sat
 
 
-def split(text: str) -> list:
-    # Gemma puts one breath per line. Keep those breaks. SaT still meaning-cuts inside a line.
+def split(text: str, min_chars: int = 200) -> list:
     lines = [" ".join(line.split()) for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
     text = "\n".join(line for line in lines if line)
     if not text:
@@ -66,13 +70,22 @@ def split(text: str) -> list:
     pieces = [p.strip() for p in _model().split(text, treat_newline_as_space=False) if p and p.strip()]
     if not pieces:
         raise ValueError("TTS input is empty")
-    return pieces
+    merged = []
+    for p in pieces:
+        if merged and len(merged[-1]) < min_chars:
+            merged[-1] = merged[-1] + " " + p
+        else:
+            merged.append(p)
+    return merged
 
 
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
-    if "--install" in sys.argv:
+    p = argparse.ArgumentParser()
+    p.add_argument("--install", action="store_true")
+    args = p.parse_args()
+    if args.install:
         install()
         sys.exit(0)
     pieces = split(sys.stdin.read())
