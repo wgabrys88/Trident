@@ -5,6 +5,7 @@ from pathlib import Path
 
 from _runtime import ROOT, _download, _port_in_use, _kill_port, _drain, _wait_ready
 from _log import span
+from hf_pull import pull
 
 RUNTIME = ROOT / "tools/runtime/brain"
 EXE = RUNTIME / "llama-server.exe"
@@ -56,6 +57,12 @@ def _sha(path: Path) -> str:
     import hashlib
     with path.open("rb") as f:
         return hashlib.file_digest(f, "sha256").hexdigest()
+
+
+def _from_hf() -> None:
+    pull("brain", MODEL.name, MODEL, MODEL_SHA)
+    if not MODEL_CARD.is_file():
+        pull("brain", "README.md", MODEL_CARD)
 
 
 def _install() -> None:
@@ -187,10 +194,14 @@ if __name__ == "__main__":
     p.add_argument("--install", action="store_true")
     p.add_argument("--load", action="store_true")
     p.add_argument("--unload", action="store_true")
+    p.add_argument("--from-hf", action="store_true")
     p.add_argument("--request")
     args = p.parse_args()
     if args.install:
-        _install()
+        if args.from_hf:
+            _from_hf()
+        else:
+            _install()
         _start()
         sys.exit(0)
     if args.load:
