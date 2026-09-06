@@ -22,7 +22,7 @@ MTL_URL = f"https://huggingface.co/ResembleAI/chatterbox/resolve/{MTL_REV}"
 VOICE_URL = "https://huggingface.co/datasets/sdialog/voices-celebrities/resolve/57746b866d470be717097b87ba0428f8dd73e4f4"
 VOICE_SHA = "9d8b44d73192e9c04dd241f16177e4c5753bcefadde69e6e24b45e278b821f8c"
 T3 = MODELS / "chatterbox-t3-mtl-q4_0.gguf"
-S3 = MODELS / "chatterbox-s3gen-mtl-q4_0.gguf"
+S3 = MODELS / "chatterbox-s3gen-mtl-q5_0.gguf"
 RUNTIME_REVISION = RUNTIME / "REVISION"
 RUNTIME_FILES = ("chatterbox-server.exe", "ggml.dll", "ggml-base.dll", "ggml-cpu.dll", "ggml-vulkan.dll")
 CHECKPOINT_FILES = ("t3_mtl23ls_v3.safetensors", "s3gen.pt", "conds.pt",
@@ -82,13 +82,13 @@ def _convert(work: Path, source: Path) -> None:
                     "scipy==1.15.3", "librosa==0.11.0", "huggingface-hub==0.34.4"], check=True)
     for name in CHECKPOINT_FILES:
         _download(f"{MTL_URL}/{name}", checkpoint / name)
-    for script, model_args, output in (
-        (CONVERTERS[0], (), T3),
-        (CONVERTERS[1], ("--variant", "mtl"), S3),
+    for script, model_args, output, quant in (
+        (CONVERTERS[0], (), T3, "q4_0"),
+        (CONVERTERS[1], ("--variant", "mtl"), S3, "q5_0"),
     ):
         converted = work / output.name
         subprocess.run([python, str(source / "scripts" / script), *model_args,
-                        "--ckpt-dir", str(checkpoint), "--out", str(converted), "--quant", "q4_0"],
+                        "--ckpt-dir", str(checkpoint), "--out", str(converted), "--quant", quant],
                        cwd=work, check=True)
         MODELS.mkdir(parents=True, exist_ok=True)
         converted.replace(output)
@@ -152,7 +152,7 @@ def _command(language: str) -> list:
     cmd = [str(RUNTIME / "chatterbox-server.exe"), "--run-id", "v3", "--family", "v3",
            "--model", str(T3), "--s3gen-gguf", str(S3), "--reference", str(VOICE),
            "--language", language, "--port", str(PORT)]
-    knobs = {"n-gpu-layers": 99, "context": 2048, "threads": 4, "fastconv": 1, "seed": 42,
+    knobs = {"n-gpu-layers": 99, "context": 512, "threads": 4, "fastconv": 1, "seed": 42,
              "max-tokens": 1000, "top-k": 1000, "top-p": .95, "min-p": 0,
              "temperature": .8, "repeat-penalty": 1.2, "cfm-steps": 10,
              "cfg-weight": 0.7, "exaggeration": 0.5}
