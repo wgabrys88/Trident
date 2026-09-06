@@ -58,49 +58,64 @@ def _wait_ready(proc: subprocess.Popen, ready_event: threading.Event, tail: list
             raise TimeoutError(f"Startup timed out\n" + "\n".join(tail))
 
 
+def _run_stages(stages, log, started):
+    def emit(text: str) -> None:
+        print(text, flush=True)
+        print(text, file=log)
+    for name, script, flags in stages:
+        stage_started = time.perf_counter()
+        emit(f"[{name}]")
+        with subprocess.Popen([sys.executable, "-u", script, *flags], cwd=ROOT,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              text=True, encoding="utf-8") as process:
+            for line in process.stdout:
+                emit(line.rstrip("\n"))
+            code = process.wait()
+        emit(f"[{name}] exit={code} ({time.perf_counter()-stage_started:.1f}s)")
+        if code:
+            emit("FAILED")
+            return code
+    emit(f"Done. ({time.perf_counter()-started:.1f}s)")
+    return 0
+
+
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
-    parser = argparse.ArgumentParser(description="No arguments installs and loads all models.", allow_abbrev=False)
-    command = parser.add_mutually_exclusive_group()
-    command.add_argument("prompt", nargs="?", help="run Brain, TTS and Parakeet without installation")
-    command.add_argument("--unload", action="store_true", help="stop all three model servers")
+    parser = argparse.ArgumentParser(description="Trident pipeline runner.", allow_abbrev=False)
+    parser.add_argument("prompt", nargs="?", help="run Brain, TTS and Parakeet")
+    parser.add_argument("tts_model", nargs="?", default="nano", choices=["nano", "turbo", "v3"],
+                       help="TTS model to use (default: nano)")
+    parser.add_argument("--unload", action="store_true", help="stop all model servers")
     args = parser.parse_args()
-    if args.unload:
-        mode = "unload"
-        stages = (("brain", "brain.py", ()), ("tts_nano", "tts_nano.py", ()),
-                  ("tts_turbo", "tts_turbo.py", ()), ("tts_v3", "tts_v3.py", ()),
-                  ("parakeet", "parakeet.py", ()))
-    elif args.prompt is None:
-        mode = "install"
-        stages = (("brain", "brain.py", ()), ("tts_nano", "tts_nano.py", ()),
-                  ("tts_turbo", "tts_turbo.py", ()), ("tts_v3", "tts_v3.py", ()),
-                  ("parakeet", "parakeet.py", ()))
-    else:
-        mode = "pipeline"
-        stages = (("brain", "brain.py", (f"--request={args.prompt}",)),
-                  ("tts_nano", "tts_nano.py", ()), ("parakeet", "parakeet.py", ("tts_out.wav",)))
-    started = time.perf_counter()
     log_path = ROOT / ".runtime-logs/main.log"
     log_path.parent.mkdir(exist_ok=True)
+    started = time.perf_counter()
     with log_path.open("a", encoding="utf-8", buffering=1) as log:
-        def emit(text: str) -> None:
-            print(text, flush=True)
-            print(text, file=log)
-
-        emit(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {mode} {args.prompt or ''}".rstrip())
-        for name, script, request in stages:
-            stage_started = time.perf_counter()
-            emit(f"[{name}] {mode}")
-            flags = request if mode == "pipeline" else (f"--{mode}",)
-            with subprocess.Popen([sys.executable, "-u", script, *flags], cwd=ROOT,
-                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                  text=True, encoding="utf-8") as process:
-                for line in process.stdout:
-                    emit(line.rstrip("\n"))
-                code = process.wait()
-            emit(f"[{name}] exit={code} wall_s={time.perf_counter()-stage_started:.3f}")
-            if code:
-                emit(f"[{mode}] failed wall_s={time.perf_counter()-started:.3f}")
-                raise SystemExit(code)
-        emit(f"[{mode}] done wall_s={time.perf_counter()-started:.3f}")
+        if args.unload:
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] unload", flush=True, file=log)
+            stages = (("brain", "brain.py", ("--unload",)),
+                      ("tts_nano", "tts_nano.py", ("--unload",)),
+                      ("tts_turbo", "tts_turbo.py", ("--unload",)),
+                      ("tts_v3", "tts_v3.py", ("--unload",)),
+                      ("parakeet", "parakeet.py", ("--unload",)))
+        elif args.prompt:
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] pipeline tts={args.tts_model}", flush=True, file=log)
+            tts_script = {"nano": "tts_nano.py", "turbo": "tts_turbo.py", "v3": "tts_v3.py"}[args.tts_model]
+            stages = [
+                ("brain", "brain.py", (f"--request={args.prompt}",)),
+                ("brain.unload", "brain.py", ("--unload",)),
+                (args.tts_model, tts_script, ()),
+                ("tts.unload", tts_script, ("--unload",)),
+                ("parakeet", "parakeet.py", ("tts_out.wav",)),
+            ]
+        else:
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] install", flush=True, file=log)
+            stages = (("brain", "brain.py", ("--install",)),
+                      ("tts_nano", "tts_nano.py", ("--install",)),
+                      ("tts_turbo", "tts_turbo.py", ("--install",)),
+                      ("tts_v3", "tts_v3.py", ("--install",)),
+                      ("parakeet", "parakeet.py", ("--install",)))
+        code = _run_stages(stages, log, started)
+    if code:
+        raise SystemExit(code)

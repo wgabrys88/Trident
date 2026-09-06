@@ -137,7 +137,7 @@ def _command(language: str) -> list:
     cmd = [str(RUNTIME / "chatterbox-server.exe"), "--run-id", "v3", "--family", "v3",
            "--model", str(T3), "--s3gen-gguf", str(S3), "--reference", str(VOICE),
            "--language", language, "--port", str(PORT)]
-    knobs = {"n-gpu-layers": 99, "context": 8196, "threads": 4, "fastconv": 1, "seed": 42,
+    knobs = {"n-gpu-layers": 99, "context": 2048, "threads": 4, "fastconv": 1, "seed": 42,
              "max-tokens": 1000, "top-k": 1000, "top-p": .95, "min-p": 0,
              "temperature": .8, "repeat-penalty": 1.2, "cfm-steps": 10,
              "cfg-weight": 0.7, "exaggeration": 0.5}
@@ -282,7 +282,6 @@ if __name__ == "__main__":
     tts = TTS()
     if args.install:
         _install()
-        tts.start(args.language)
         sys.exit(0)
     if args.load:
         _install()
