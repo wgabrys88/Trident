@@ -3,7 +3,6 @@ import json, os, subprocess, sys, venv
 from pathlib import Path
 
 from _runtime import ROOT, _download
-from _log import span, emit
 
 MODELS = ROOT / "models/sat-3l-sm"
 VENV = ROOT / "tools/runtime/chunker"
@@ -76,8 +75,7 @@ if __name__ == "__main__":
     if "--install" in sys.argv:
         install()
         sys.exit(0)
-    with span(__file__):
-        pieces = split(sys.stdin.read())
-        emit(f"[chunk] n={len(pieces)}")
-        json.dump(pieces, sys.stdout, ensure_ascii=False)
-        sys.stdout.write("\n")
+    pieces = split(sys.stdin.read())
+    print(f"[chunk] n={len(pieces)}", file=sys.stderr)
+    json.dump(pieces, sys.stdout, ensure_ascii=False)
+    sys.stdout.write("\n")
