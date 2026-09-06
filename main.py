@@ -1,7 +1,48 @@
-import argparse, hashlib, shutil, socket, subprocess, sys, threading, time, urllib.request
+import argparse, hashlib, shutil, socket, subprocess, sys, tempfile, threading, time, urllib.request, venv
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+TTS_RUNTIME = ROOT / "tools/runtime/tts"
+TTS_MODELS = ROOT / "models"
+TTS_VOICE = ROOT / "data/ref-trump.wav"
+CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
+VULKAN_SDK = Path("C:/VulkanSDK/1.4.357.0")
+CHATTERBOX_REV = "c4e051e82f086b80c5379e4219e2693c15db90f8"
+GGML_REV = "58c3805840b516b2a88ff867ccf7bb41dba79951"
+NATIVE_PIN = f"{CHATTERBOX_REV} {GGML_REV}"
+VOICE_URL = "https://huggingface.co/datasets/sdialog/voices-celebrities/resolve/57746b866d470be717097b87ba0428f8dd73e4f4"
+VOICE_SHA = "9d8b44d73192e9c04dd241f16177e4c5753bcefadde69e6e24b45e278b821f8c"
+TTS_RUNTIME_FILES = ("chatterbox-server.exe", "ggml.dll", "ggml-base.dll", "ggml-cpu.dll", "ggml-vulkan.dll")
+TTS_INSTALLS = {
+    "nano": {
+        "label": "tts",
+        "url": "https://huggingface.co/ResembleAI/chatterbox-nano/resolve/71ccd1d0081b430592cea481f4307e764e07bc64",
+        "checkpoints": ("t3_nano_v1.safetensors", "s3gen_meanflow.safetensors", "conds.pt",
+                        "ve.safetensors", "vocab.json", "merges.txt", "added_tokens.json"),
+        "card": "nano-model-card.md",
+        "conversions": (("convert-t3-turbo-to-gguf.py", ("--model", "nano"), "q4_0"),
+                        ("convert-s3gen-to-gguf.py", ("--variant", "turbo"), "q4_0")),
+    },
+    "turbo": {
+        "label": "tts",
+        "url": "https://huggingface.co/ResembleAI/chatterbox-turbo/resolve/main",
+        "checkpoints": ("t3_turbo_v1.safetensors", "s3gen_meanflow.safetensors", "conds.pt",
+                        "ve.safetensors", "vocab.json", "merges.txt", "added_tokens.json",
+                        "tokenizer_config.json", "special_tokens_map.json"),
+        "card": "turbo-model-card.md",
+        "conversions": (("convert-t3-turbo-to-gguf.py", ("--model", "turbo"), "q4_0"),
+                        ("convert-s3gen-to-gguf.py", ("--variant", "turbo"), "q4_0")),
+    },
+    "v3": {
+        "label": "v3",
+        "url": "https://huggingface.co/ResembleAI/chatterbox/resolve/ef85ce7bef2f3f1a74d0d837d379d2fcb68203cd",
+        "checkpoints": ("t3_mtl23ls_v3.safetensors", "s3gen.pt", "conds.pt", "ve.pt",
+                        "grapheme_mtl_merged_expanded_v1.json", "Cangjie5_TC.json"),
+        "card": "mtl-model-card.md",
+        "conversions": (("convert-t3-mtl-to-gguf.py", (), "q4_0"),
+                        ("convert-s3gen-to-gguf.py", ("--variant", "mtl"), "q4_0")),
+    },
+}
 
 
 def _download(url: str, path: Path, sha: str = "") -> None:
@@ -56,6 +97,105 @@ def _wait_ready(proc: subprocess.Popen, ready_event: threading.Event, tail: list
         if time.monotonic() >= deadline:
             proc.kill()
             raise TimeoutError(f"Startup timed out\n" + "\n".join(tail))
+
+
+def _checkout(url: str, rev: str, path: Path, patterns: tuple) -> None:
+    subprocess.run(["git", "init", str(path)], check=True)
+    git = ["git", "-C", str(path)]
+    for args in (("remote", "add", "origin", url), ("config", "remote.origin.promisor", "true"),
+                 ("config", "remote.origin.partialclonefilter", "blob:none"),
+                 ("fetch", "--depth=1", "--filter=blob:none", "--no-tags", "origin", rev)):
+        subprocess.run([*git, *args], check=True)
+    subprocess.run([*git, "sparse-checkout", "set", "--no-cone", "--stdin"],
+                   input="\n".join(patterns) + "\n", text=True, check=True)
+    subprocess.run([*git, "checkout", "--detach", rev], check=True)
+
+
+def _build_tts(work: Path, source: Path) -> None:
+    _checkout("https://github.com/ggml-org/ggml.git", GGML_REV, source / "ggml",
+              ("/CMakeLists.txt", "/LICENSE", "/cmake/", "/include/", "/src/*", "!/src/*/",
+               "/src/ggml-cpu/", "/src/ggml-vulkan/"))
+    subprocess.run(["git", "-C", str(source / "ggml"), "apply", "--whitespace=nowarn",
+                    str(source / "src/ggml-vulkan-queue.patch")], check=True)
+    build = work / "build"
+    subprocess.run([
+        CMAKE, "-S", str(source), "-B", str(build), "-G", "Visual Studio 17 2022", "-A", "x64",
+        "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_NATIVE=ON", "-DGGML_CCACHE=OFF",
+        "-DBUILD_SHARED_LIBS=ON", "-DTTS_CPP_BUILD_EXECUTABLES=ON", "-DTTS_CPP_BUILD_TESTS=OFF",
+        "-DGGML_BUILD_TESTS=OFF", "-DGGML_BUILD_EXAMPLES=OFF",
+        f"-DVulkan_INCLUDE_DIR={VULKAN_SDK / 'Include'}", f"-DVulkan_LIBRARY={VULKAN_SDK / 'Lib/vulkan-1.lib'}",
+        f"-DVulkan_GLSLC_EXECUTABLE={VULKAN_SDK / 'Bin/glslc.exe'}",
+    ], check=True)
+    subprocess.run([CMAKE, "--build", str(build), "--config", "Release", "--target", "chatterbox-server",
+                    "--parallel", "4"], check=True)
+    TTS_RUNTIME.mkdir(parents=True, exist_ok=True)
+    for name in TTS_RUNTIME_FILES:
+        shutil.copy2(build / "bin" / name, TTS_RUNTIME / name)
+    shutil.copy2(source / "LICENSE", TTS_RUNTIME / "chatterbox-LICENSE.txt")
+    shutil.copy2(source / "ggml/LICENSE", TTS_RUNTIME / "ggml-LICENSE.txt")
+
+
+def _convert_tts(spec: dict, work: Path, source: Path, outputs: tuple) -> None:
+    converter, checkpoint = work / "converter", work / "checkpoint"
+    venv.EnvBuilder(with_pip=True).create(converter)
+    python = str(converter / "Scripts/python.exe")
+    pip = [python, "-m", "pip", "--isolated", "install", "--no-cache-dir",
+           "--disable-pip-version-check", "--progress-bar", "off", "--no-input"]
+    subprocess.run([*pip, "torch==2.6.0", "--index-url", "https://download.pytorch.org/whl/cpu"], check=True)
+    subprocess.run([*pip, "numpy==1.26.4", "gguf==0.19.0", "safetensors==0.5.3",
+                    "scipy==1.15.3", "librosa==0.11.0", "huggingface-hub==0.34.4"], check=True)
+    for name in spec["checkpoints"]:
+        _download(f"{spec['url']}/{name}", checkpoint / name)
+    for (script, model_args, quant), output in zip(spec["conversions"], outputs):
+        converted = work / output.name
+        subprocess.run([python, str(source / "scripts" / script), *model_args,
+                        "--ckpt-dir", str(checkpoint), "--out", str(converted), "--quant", quant],
+                       cwd=work, check=True)
+        TTS_MODELS.mkdir(parents=True, exist_ok=True)
+        converted.replace(output)
+
+
+def install_tts(family: str, t3: Path, s3: Path) -> None:
+    spec = TTS_INSTALLS[family]
+    label, outputs = spec["label"], (t3, s3)
+    revision = TTS_RUNTIME / "REVISION"
+    runtime = [*(TTS_RUNTIME / n for n in TTS_RUNTIME_FILES), TTS_RUNTIME / "chatterbox-LICENSE.txt",
+               TTS_RUNTIME / "ggml-LICENSE.txt"]
+    models = [*outputs, TTS_MODELS / spec["card"]]
+    voice = [TTS_VOICE, TTS_VOICE.with_suffix(".md")]
+    stamp = revision.read_text(encoding="utf-8").strip() if revision.is_file() else ""
+    runtime_ok = all(p.is_file() for p in runtime) and stamp == NATIVE_PIN
+    if all(p.is_file() for p in runtime) and not stamp:
+        revision.write_text(NATIVE_PIN + "\n", encoding="utf-8")
+        runtime_ok = True
+    models_ok, voice_ok = all(p.is_file() for p in models), all(p.is_file() for p in voice)
+    if runtime_ok and models_ok and voice_ok:
+        print(f"[{label}] install | pin={NATIVE_PIN} skip")
+    else:
+        print(f"[{label}] install | runtime_ok={runtime_ok} models_ok={models_ok} voice_ok={voice_ok}")
+        with tempfile.TemporaryDirectory(prefix=f".{family}-install-", dir=ROOT) as tmp:
+            work, source = Path(tmp), Path(tmp) / "chatterbox"
+            if not runtime_ok or not models_ok:
+                print(f"[{label}] install | checkout {CHATTERBOX_REV}")
+                converters = tuple(f"/scripts/{item[0]}" for item in spec["conversions"])
+                _checkout("https://github.com/wgabrys88/chatterbox.cpp.git", CHATTERBOX_REV, source,
+                          ("/CMakeLists.txt", "/LICENSE", "/src/", "/include/", *converters,
+                           "/scripts/quant_policy.py"))
+            if not runtime_ok:
+                print(f"[{label}] install | building")
+                _build_tts(work, source)
+                revision.write_text(NATIVE_PIN + "\n", encoding="utf-8")
+            if not models_ok:
+                print(f"[{label}] install | converting")
+                _convert_tts(spec, work, source, outputs)
+                _download(f"{spec['url']}/README.md", TTS_MODELS / spec["card"])
+            if not voice_ok:
+                print(f"[{label}] install | voice")
+                _download(f"{VOICE_URL}/audio/donald-trump.wav", TTS_VOICE, VOICE_SHA)
+                _download(f"{VOICE_URL}/README.md", TTS_VOICE.with_suffix(".md"))
+            print(f"[{label}] install | done")
+    import chunk as chunker
+    chunker.install()
 
 
 if __name__ == "__main__":
