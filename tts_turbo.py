@@ -273,7 +273,6 @@ if __name__ == "__main__":
     tts = TTS()
     if args.install:
         _install()
-        tts.start()
         sys.exit(0)
     if args.load:
         _install()
