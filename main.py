@@ -20,9 +20,10 @@ def main() -> None:
     a = p.parse_args()
     if a.prompt:
         tts = f"tts_{a.tts_model}.py"
+        lang_flag = [f"--language={a.language}"] if a.tts_model == "v3" else []
         sys.exit(run("brain.py", f"--request={a.prompt}")
                  or run("brain.py", "--unload")
-                 or run(tts, f"--language={a.language}")
+                 or run(tts, *lang_flag)
                  or run(tts, "--unload")
                  or run("parakeet.py", "tts_out.wav"))
     if a.install:

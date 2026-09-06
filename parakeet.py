@@ -2,7 +2,7 @@ import argparse, http.client, json, shutil, struct, subprocess, sys, time, uuid,
 from pathlib import Path
 
 from _runtime import ROOT, _download, _port_in_use, _kill_port
-from _log import span
+from _log import span, emit
 from hf_pull import pull
 
 RUNTIME = ROOT / "tools/runtime/parakeet"
