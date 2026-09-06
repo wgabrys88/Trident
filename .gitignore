@@ -8,3 +8,6 @@
 !/chunk.py
 !/tts_turbo.py
 !/tts_v3.py
+!/_log.py
+!/_runtime.py
+!/hf_pull.py

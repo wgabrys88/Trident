@@ -3,7 +3,8 @@ import argparse, http.client, json, shutil, subprocess, sys, tempfile, threading
 from collections import deque
 from pathlib import Path
 
-from main import ROOT, _download, _port_in_use, _kill_port, _drain, _wait_ready
+from _runtime import ROOT, _download, _port_in_use, _kill_port, _drain, _wait_ready
+from _log import span
 
 RUNTIME = ROOT / "tools/runtime/brain"
 EXE = RUNTIME / "llama-server.exe"
@@ -206,12 +207,16 @@ if __name__ == "__main__":
         _stop()
         sys.exit(0)
     if args.request is not None:
-        started = time.perf_counter()
+        _text = args.request
+    else:
+        _text = (ROOT / "pipe_in.txt").read_text(encoding="utf-8")
+    started = time.perf_counter()
+    with span(__file__):
         with Brain() as brain:
             ready = time.perf_counter()
             first = None
             chunks = []
-            for chunk in brain.stream(args.request):
+            for chunk in brain.stream(_text):
                 if first is None:
                     first = time.perf_counter()
                 chunks.append(chunk)
@@ -224,30 +229,6 @@ if __name__ == "__main__":
             raise RuntimeError("Brain produced no spoken reply")
         (ROOT / "brain_out.txt").write_text(answer, encoding="utf-8")
         print(answer)
-        n_tokens = len(answer.split())
-        inf_s = finished - ready
-        tps = n_tokens / inf_s if inf_s > 0 else 0.0
-        print(f"[brain] startup_s={ready-started:.3f} ttft_s={(first or finished)-ready:.3f} inference_s={inf_s:.3f} tokens={n_tokens} tps={tps:.2f}", file=sys.stderr)
-    else:
-        _install()
-        text = (ROOT / "pipe_in.txt").read_text(encoding="utf-8")
-        started = time.perf_counter()
-        with Brain() as brain:
-            ready = time.perf_counter()
-            first = None
-            chunks = []
-            for chunk in brain.stream(text):
-                if first is None:
-                    first = time.perf_counter()
-                chunks.append(chunk)
-            finished = time.perf_counter()
-        answer = "".join(chunks).replace("\r", "").strip()
-        marker = "Assistant:\n"
-        if marker in answer:
-            answer = answer.rsplit(marker, 1)[-1].strip()
-        if not answer:
-            raise RuntimeError("Brain produced no spoken reply")
-        (ROOT / "brain_out.txt").write_text(answer, encoding="utf-8")
         n_tokens = len(answer.split())
         inf_s = finished - ready
         tps = n_tokens / inf_s if inf_s > 0 else 0.0
