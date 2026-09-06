@@ -236,7 +236,7 @@ class TTS:
         output = ROOT / f"out_{time.strftime('%d-%m-%y-%H-%M-%S')}_{self.spec['output']}.wav"
         print(f"[synth] pieces={len(pieces)} total_chars={sum(len(p) for p in pieces)}", flush=True)
         with socket.create_connection(("127.0.0.1", self.spec["port"]), timeout=300) as sock, sock.makefile("rb") as reader:
-            sock.setsockopt(socket.IPPROTO_TCP, socket.IPPROTO_TCP_NODELAY, 1)
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             for piece_id, piece in enumerate(pieces):
                 print(f"[synth] sending piece={piece_id} chars={len(piece)} text='{piece[:50]}...'", flush=True)
                 self._send(sock, 1, piece_id, piece)
