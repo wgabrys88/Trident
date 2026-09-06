@@ -1,4 +1,4 @@
-import argparse, hashlib, shutil, socket, subprocess, sys, tempfile, threading, time, urllib.request, venv
+import argparse, hashlib, json, shutil, socket, struct, subprocess, sys, tempfile, threading, time, urllib.request, venv, wave
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -13,36 +13,10 @@ NATIVE_PIN = f"{CHATTERBOX_REV} {GGML_REV}"
 VOICE_URL = "https://huggingface.co/datasets/sdialog/voices-celebrities/resolve/57746b866d470be717097b87ba0428f8dd73e4f4"
 VOICE_SHA = "9d8b44d73192e9c04dd241f16177e4c5753bcefadde69e6e24b45e278b821f8c"
 TTS_RUNTIME_FILES = ("chatterbox-server.exe", "ggml.dll", "ggml-base.dll", "ggml-cpu.dll", "ggml-vulkan.dll")
-TTS_INSTALLS = {
-    "nano": {
-        "label": "tts",
-        "url": "https://huggingface.co/ResembleAI/chatterbox-nano/resolve/71ccd1d0081b430592cea481f4307e764e07bc64",
-        "checkpoints": ("t3_nano_v1.safetensors", "s3gen_meanflow.safetensors", "conds.pt",
-                        "ve.safetensors", "vocab.json", "merges.txt", "added_tokens.json"),
-        "card": "nano-model-card.md",
-        "conversions": (("convert-t3-turbo-to-gguf.py", ("--model", "nano"), "q4_0"),
-                        ("convert-s3gen-to-gguf.py", ("--variant", "turbo"), "q4_0")),
-    },
-    "turbo": {
-        "label": "tts",
-        "url": "https://huggingface.co/ResembleAI/chatterbox-turbo/resolve/main",
-        "checkpoints": ("t3_turbo_v1.safetensors", "s3gen_meanflow.safetensors", "conds.pt",
-                        "ve.safetensors", "vocab.json", "merges.txt", "added_tokens.json",
-                        "tokenizer_config.json", "special_tokens_map.json"),
-        "card": "turbo-model-card.md",
-        "conversions": (("convert-t3-turbo-to-gguf.py", ("--model", "turbo"), "q4_0"),
-                        ("convert-s3gen-to-gguf.py", ("--variant", "turbo"), "q4_0")),
-    },
-    "v3": {
-        "label": "v3",
-        "url": "https://huggingface.co/ResembleAI/chatterbox/resolve/ef85ce7bef2f3f1a74d0d837d379d2fcb68203cd",
-        "checkpoints": ("t3_mtl23ls_v3.safetensors", "s3gen.pt", "conds.pt", "ve.pt",
-                        "grapheme_mtl_merged_expanded_v1.json", "Cangjie5_TC.json"),
-        "card": "mtl-model-card.md",
-        "conversions": (("convert-t3-mtl-to-gguf.py", (), "q4_0"),
-                        ("convert-s3gen-to-gguf.py", ("--variant", "mtl"), "q4_0")),
-    },
-}
+TTS_RATE, TTS_MAGIC, TTS_VERSION = 24000, 0x32525454, 2
+TTS_REQUEST, TTS_RESPONSE = struct.Struct("<7I"), struct.Struct("<8I")
+TTS_CHUNKER = ROOT / "tools/runtime/chunker/Scripts/python.exe"
+TTS_LOG = ROOT / ".runtime-logs/tts.log"
 
 
 def _download(url: str, path: Path, sha: str = "") -> None:
@@ -155,9 +129,9 @@ def _convert_tts(spec: dict, work: Path, source: Path, outputs: tuple) -> None:
         converted.replace(output)
 
 
-def install_tts(family: str, t3: Path, s3: Path) -> None:
-    spec = TTS_INSTALLS[family]
-    label, outputs = spec["label"], (t3, s3)
+def install_tts(spec: dict) -> None:
+    family, label = spec["family"], spec["label"]
+    outputs = spec["models"]
     revision = TTS_RUNTIME / "REVISION"
     runtime = [*(TTS_RUNTIME / n for n in TTS_RUNTIME_FILES), TTS_RUNTIME / "chatterbox-LICENSE.txt",
                TTS_RUNTIME / "ggml-LICENSE.txt"]
@@ -198,7 +172,190 @@ def install_tts(family: str, t3: Path, s3: Path) -> None:
     chunker.install()
 
 
-if __name__ == "__main__":
+class TTS:
+    def __init__(self, spec: dict) -> None:
+        self.spec, self._proc, self._log_fh = spec, None, None
+
+    def _emit(self, text: str) -> None:
+        sys.stderr.write(f"[{time.strftime('%H:%M:%S')}] {text}\n")
+        sys.stderr.flush()
+
+    def _command(self, language: str) -> list:
+        spec = self.spec
+        t3, s3 = spec["models"]
+        command = [str(TTS_RUNTIME / "chatterbox-server.exe"), "--run-id", spec["family"],
+                   "--family", spec["family"], "--model", str(t3), "--s3gen-gguf", str(s3),
+                   "--reference", str(TTS_VOICE), "--language", language, "--port", str(spec["port"])]
+        command.extend(arg for name, value in spec["knobs"].items()
+                       for arg in (f"--{name}", str(value)))
+        return command
+
+    def start(self, language: str = None) -> "TTS":
+        language = self.spec["language"] if language is None else language
+        if self._proc is not None and self._proc.poll() is None:
+            return self
+        if _port_in_use(self.spec["port"]):
+            self._emit("start | port already listening")
+            return self
+        self._emit("start | spawning server")
+        TTS_LOG.parent.mkdir(parents=True, exist_ok=True)
+        self._log_fh = TTS_LOG.open("ab", buffering=0)
+        pre_size = self._log_fh.tell()
+        self._proc = subprocess.Popen(self._command(language), cwd=TTS_RUNTIME,
+                                      stdin=subprocess.DEVNULL, stdout=self._log_fh,
+                                      stderr=self._log_fh)
+        deadline = time.time() + 120
+        while time.time() < deadline:
+            time.sleep(0.5)
+            if self._proc.poll() is not None:
+                raise RuntimeError(f"server died with code {self._proc.poll()}")
+            self._log_fh.flush()
+            with TTS_LOG.open("r", encoding="utf-8", errors="replace") as log:
+                log.seek(pre_size)
+                for line in log:
+                    if " server.ready" in line and f"| {self.spec['family']}" in line:
+                        self._emit("start | ready")
+                        return self
+        self._proc.kill()
+        raise TimeoutError("server startup timed out")
+
+    def stop(self) -> None:
+        if self._proc is not None:
+            if self._proc.poll() is None:
+                self._proc.kill()
+            self._proc.wait()
+            self._proc = None
+        if self._log_fh:
+            self._log_fh.close()
+            self._log_fh = None
+        _kill_port(self.spec["port"])
+
+    def synthesize(self, text: str, language: str = None) -> Path:
+        self.start(language)
+        pieces = self._chunks(text)
+        output = ROOT / f"out_{time.strftime('%d-%m-%y-%H-%M-%S')}_{self.spec['output']}.wav"
+        with socket.create_connection(("127.0.0.1", self.spec["port"]), timeout=300) as sock, sock.makefile("rb") as reader:
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            for piece_id, piece in enumerate(pieces):
+                self._send(sock, 1, piece_id, piece)
+            pcm_bytes = 0
+            with output.open("xb") as target, wave.open(target, "wb") as wav:
+                wav.setparams((1, 2, TTS_RATE, 0, "NONE", "not compressed"))
+                for piece_id in range(len(pieces)):
+                    before = pcm_bytes
+                    while True:
+                        kind, returned_piece, chunk, payload = self._receive(reader)
+                        if returned_piece != piece_id:
+                            raise RuntimeError("Unexpected TTS piece")
+                        if kind == 2:
+                            break
+                        if kind != 1:
+                            raise RuntimeError(f"Unexpected TTS response kind: {kind}")
+                        zeros = TTS_RATE // 50 * 2
+                        if piece_id == 0 and chunk == 0 and len(payload) > zeros and payload[:zeros] == b"\0" * zeros:
+                            payload = payload[zeros:]
+                        wav.writeframesraw(payload)
+                        pcm_bytes += len(payload)
+                    if pcm_bytes == before:
+                        raise RuntimeError(f"TTS piece {piece_id} produced no audio")
+            sock.settimeout(10)
+            self._send(sock, 3)
+            if self._receive(reader)[0] != 5:
+                raise RuntimeError("TTS did not acknowledge close")
+        return output
+
+    @staticmethod
+    def _chunks(text: str) -> list:
+        if not TTS_CHUNKER.is_file():
+            raise RuntimeError("CPU chunker not installed")
+        process = subprocess.run([str(TTS_CHUNKER), str(ROOT / "chunk.py")], input=text,
+                                 capture_output=True, text=True, encoding="utf-8")
+        if process.stderr:
+            sys.stderr.write(process.stderr)
+            sys.stderr.flush()
+        if process.returncode:
+            raise RuntimeError(process.stderr.strip() or "CPU chunker failed")
+        pieces = json.loads(process.stdout)
+        if not pieces:
+            raise ValueError("TTS input is empty")
+        return pieces
+
+    @staticmethod
+    def _send(sock, kind: int, piece: int = 0, text: str = "") -> None:
+        payload = text.encode("utf-8")
+        sock.sendall(TTS_REQUEST.pack(TTS_MAGIC, TTS_VERSION, kind, 0, 0, piece, len(payload)) + payload)
+
+    @staticmethod
+    def _receive(reader) -> tuple:
+        header = reader.read(TTS_RESPONSE.size)
+        if len(header) != TTS_RESPONSE.size:
+            raise EOFError("Native TTS closed the connection")
+        magic, version, kind, epoch, response, piece, chunk, length = TTS_RESPONSE.unpack(header)
+        if (magic, version) != (TTS_MAGIC, TTS_VERSION) or (kind != 5 and (epoch, response) != (0, 0)):
+            raise RuntimeError("Unexpected TTS response header")
+        payload = reader.read(length)
+        if len(payload) != length:
+            raise EOFError("Incomplete native TTS audio frame")
+        if kind == 4:
+            raise RuntimeError(payload.decode("utf-8", errors="replace"))
+        return kind, piece, chunk, payload
+
+
+def run_tts(spec: dict, tts_type: type) -> None:
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--install", action="store_true")
+    parser.add_argument("--load", action="store_true")
+    parser.add_argument("--unload", action="store_true")
+    if spec["multilingual"]:
+        parser.add_argument("--language", default=spec["language"],
+                            help="ISO 639-1 language code (e.g. en, fr, zh)")
+    text = parser.add_mutually_exclusive_group()
+    text.add_argument("--text")
+    text.add_argument("--text-file", type=Path)
+    args = parser.parse_args()
+    language = args.language if spec["multilingual"] else spec["language"]
+    tts = tts_type()
+    if args.install:
+        install_tts(spec)
+        tts.start(language)
+        return
+    if args.load:
+        install_tts(spec)
+        tts.start(language)
+        print(f"[{spec['label']}] ready", flush=True)
+        input()
+        tts.stop()
+        return
+    if args.unload:
+        tts.stop()
+        return
+    source = (args.text if args.text is not None else
+              (ROOT / args.text_file).read_text(encoding="utf-8") if args.text_file else
+              (ROOT / "brain_out.txt").read_text(encoding="utf-8"))
+    started = time.perf_counter()
+    if not spec["multilingual"]:
+        tts.start()
+        synthesis = time.perf_counter()
+    wav_path = tts.synthesize(source, language)
+    finished = time.perf_counter()
+    (ROOT / "tts_out.wav").write_bytes(wav_path.read_bytes())
+    print(wav_path)
+    with wave.open(str(wav_path)) as wav:
+        duration = wav.getnframes() / wav.getframerate()
+    if spec["multilingual"]:
+        print(f"[rtf] v3_start={started:.3f}s", file=sys.stderr)
+        print(f"[rtf] v3_synth={finished-started:.3f}s", file=sys.stderr)
+        print(f"[rtf] v3_total={finished-started:.3f}s", file=sys.stderr)
+    else:
+        print(f"[rtf] tts_start={synthesis-started:.3f}s", file=sys.stderr)
+        print(f"[rtf] tts_synth={finished-synthesis:.3f}s", file=sys.stderr)
+        print(f"[rtf] tts_total={finished-started:.3f}s", file=sys.stderr)
+    print(f"[rtf] audio_s={duration:.3f}s", file=sys.stderr)
+
+
+def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description="No arguments installs and loads all models.", allow_abbrev=False)
@@ -206,20 +363,12 @@ if __name__ == "__main__":
     command.add_argument("prompt", nargs="?", help="run Brain, TTS and Parakeet without installation")
     command.add_argument("--unload", action="store_true", help="stop all three model servers")
     args = parser.parse_args()
-    if args.unload:
-        mode = "unload"
-        stages = (("brain", "brain.py", ()), ("tts_nano", "tts_nano.py", ()),
-                  ("tts_turbo", "tts_turbo.py", ()), ("tts_v3", "tts_v3.py", ()),
-                  ("parakeet", "parakeet.py", ()))
-    elif args.prompt is None:
-        mode = "install"
-        stages = (("brain", "brain.py", ()), ("tts_nano", "tts_nano.py", ()),
-                  ("tts_turbo", "tts_turbo.py", ()), ("tts_v3", "tts_v3.py", ()),
-                  ("parakeet", "parakeet.py", ()))
-    else:
-        mode = "pipeline"
-        stages = (("brain", "brain.py", (f"--request={args.prompt}",)),
-                  ("tts_nano", "tts_nano.py", ()), ("parakeet", "parakeet.py", ("tts_out.wav",)))
+    mode = "unload" if args.unload else "install" if args.prompt is None else "pipeline"
+    models = (("brain", "brain.py"), ("tts_nano", "tts_nano.py"), ("tts_turbo", "tts_turbo.py"),
+              ("tts_v3", "tts_v3.py"), ("parakeet", "parakeet.py"))
+    stages = ((("brain", "brain.py", (f"--request={args.prompt}",)),
+               ("tts_nano", "tts_nano.py", ()), ("parakeet", "parakeet.py", ("tts_out.wav",)))
+              if mode == "pipeline" else tuple((*model, ()) for model in models))
     started = time.perf_counter()
     log_path = ROOT / ".runtime-logs/main.log"
     log_path.parent.mkdir(exist_ok=True)
@@ -244,3 +393,7 @@ if __name__ == "__main__":
                 emit(f"[{mode}] failed wall_s={time.perf_counter()-started:.3f}")
                 raise SystemExit(code)
         emit(f"[{mode}] done wall_s={time.perf_counter()-started:.3f}")
+
+
+if __name__ == "__main__":
+    main()
