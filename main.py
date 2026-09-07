@@ -7,16 +7,25 @@ TTS_MODELS = ROOT / "models"
 TTS_VOICE = ROOT / "data/ref-trump.wav"
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 VULKAN_SDK = Path("C:/VulkanSDK/1.4.357.0")
-CHATTERBOX_REV = "dc15bd20430bd193b105aa059ee91d2b8dca0503"
+CHATTERBOX_REV = "c9fb8ec25928fd4a0efe8fb58500bf75c2a3beca"
 GGML_REV = "58c3805840b516b2a88ff867ccf7bb41dba79951"
 NATIVE_PIN = f"{CHATTERBOX_REV} {GGML_REV}"
 VOICE_URL = "https://huggingface.co/datasets/sdialog/voices-celebrities/resolve/57746b866d470be717097b87ba0428f8dd73e4f4"
 VOICE_SHA = "9d8b44d73192e9c04dd241f16177e4c5753bcefadde69e6e24b45e278b821f8c"
 TTS_RUNTIME_FILES = ("chatterbox-server.exe", "ggml.dll", "ggml-base.dll", "ggml-cpu.dll", "ggml-vulkan.dll")
-TTS_RATE, TTS_MAGIC, TTS_VERSION = 24000, 0x32525454, 3
-TTS_REQUEST, TTS_RESPONSE = struct.Struct("<8I"), struct.Struct("<8I")
+TTS_RUNTIME_REQUIRED = (*TTS_RUNTIME_FILES, "chatterbox-LICENSE.txt", "ggml-LICENSE.txt")
+TTS_RATE, TTS_MAGIC, TTS_VERSION = 24000, 0x32525454, 4
+TTS_FRAME = struct.Struct("<7I")
 TTS_CHUNKER = ROOT / "tools/runtime/chunker/Scripts/python.exe"
 TTS_LOG = ROOT / ".runtime-logs/tts.log"
+TTS_BASE_KNOBS = {"n-gpu-layers": 99, "fastconv": 1, "seed": 42, "max-tokens": 1000,
+                  "top-k": 1000, "top-p": .95, "min-p": 0.0, "temperature": .8}
+
+
+def tts_knobs(context: int, threads: int, cfm_steps: int, repeat_penalty: float = 1.2,
+              cfg_weight: float = 0.0, exaggeration: float = 0.0) -> dict:
+    return {**TTS_BASE_KNOBS, "context": context, "threads": threads, "repeat-penalty": repeat_penalty,
+            "cfm-steps": cfm_steps, "cfg-weight": cfg_weight, "exaggeration": exaggeration}
 
 
 def _download(url: str, path: Path, sha: str = "") -> None:
@@ -41,6 +50,12 @@ def _sha(path: Path) -> str:
         return hashlib.file_digest(f, "sha256").hexdigest()
 
 
+def _tts_runtime_ok() -> bool:
+    revision = TTS_RUNTIME / "REVISION"
+    return (len(CHATTERBOX_REV) == 40 and all((TTS_RUNTIME / name).is_file() for name in TTS_RUNTIME_REQUIRED)
+            and revision.is_file() and revision.read_text(encoding="utf-8").strip() == NATIVE_PIN)
+
+
 def _text_id(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
@@ -62,6 +77,18 @@ def _kill_port(port: int) -> None:
          f"Where-Object {{ $_.LocalPort -eq {port} -and $_.State -eq 'Listen' }} | "
          "Select-Object -ExpandProperty OwningProcess -Unique | "
          "ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction Stop }"], check=True)
+
+
+def _wait_port(proc: subprocess.Popen, port: int, timeout: float) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            raise RuntimeError(f"Process died: {proc.returncode}")
+        if _port_in_use(port):
+            return
+        time.sleep(.1)
+    proc.kill()
+    raise TimeoutError(f"Process did not open port {port}")
 
 
 def _drain(proc: subprocess.Popen, ready_event: threading.Event, ready_str: str, tail: list) -> None:
@@ -118,10 +145,11 @@ def _build_tts(work: Path, source: Path) -> None:
     shutil.copy2(source / "ggml/LICENSE", TTS_RUNTIME / "ggml-LICENSE.txt")
 
 
-def _convert_tts(spec: dict, work: Path, source: Path, outputs: tuple) -> None:
-    missing = [(conversion, output) for conversion, output in zip(spec["conversions"], outputs) if not output.is_file()]
-    if not missing:
-        return
+def _missing_conversions(spec: dict) -> list:
+    return [(conversion, output) for conversion, output in zip(spec["conversions"], spec["models"]) if not output.is_file()]
+
+
+def _convert_tts(spec: dict, work: Path, source: Path, missing: list) -> None:
     converter, checkpoint = work / "c", work / "k"
     venv.EnvBuilder(with_pip=True).create(converter)
     python = str(converter / "Scripts/python.exe")
@@ -130,10 +158,11 @@ def _convert_tts(spec: dict, work: Path, source: Path, outputs: tuple) -> None:
     subprocess.run([*pip, "torch==2.6.0", "--index-url", "https://download.pytorch.org/whl/cpu"], check=True)
     subprocess.run([*pip, "numpy==1.26.4", "gguf==0.19.0", "safetensors==0.5.3",
                     "scipy==1.15.3", "librosa==0.11.0", "huggingface-hub==0.34.4"], check=True)
-    for name in spec["checkpoints"]:
+    assets = dict.fromkeys(name for (script, model_args, quant, files), output in missing for name in files)
+    for name in assets:
         _download(f"{spec['url']}/{name}", checkpoint / name)
     TTS_MODELS.mkdir(parents=True, exist_ok=True)
-    for (script, model_args, quant), output in missing:
+    for (script, model_args, quant, files), output in missing:
         converted = work / output.name
         subprocess.run([python, str(source / "scripts" / script), *model_args,
                         "--ckpt-dir", str(checkpoint), "--out", str(converted), "--quant", quant],
@@ -146,14 +175,12 @@ def install_tts(spec: dict) -> None:
         raise RuntimeError("Set CHATTERBOX_REV to the pushed chatterbox.cpp commit SHA before install")
     family, label = spec["family"], spec["label"]
     outputs = spec["models"]
+    missing = _missing_conversions(spec)
     revision = TTS_RUNTIME / "REVISION"
-    runtime = [*(TTS_RUNTIME / n for n in TTS_RUNTIME_FILES), TTS_RUNTIME / "chatterbox-LICENSE.txt",
-               TTS_RUNTIME / "ggml-LICENSE.txt"]
     card = TTS_MODELS / spec["card"]
     voice_card = TTS_VOICE.with_suffix(".md")
-    stamp = revision.read_text(encoding="utf-8").strip() if revision.is_file() else ""
-    runtime_ok = all(p.is_file() for p in runtime) and stamp == NATIVE_PIN
-    models_ok = all(p.is_file() for p in outputs)
+    runtime_ok = _tts_runtime_ok()
+    models_ok = not missing
     card_ok, voice_ok = card.is_file(), TTS_VOICE.is_file() and voice_card.is_file()
     if runtime_ok and models_ok and card_ok and voice_ok:
         print(f"[{label}] install | pin={NATIVE_PIN} skip")
@@ -163,9 +190,11 @@ def install_tts(spec: dict) -> None:
             with tempfile.TemporaryDirectory(prefix=f".{family[0]}-", dir=ROOT) as tmp:
                 work, source = Path(tmp), Path(tmp) / "s"
                 print(f"[{label}] install | checkout {CHATTERBOX_REV}")
-                patterns = ["/CMakeLists.txt", "/LICENSE", "/src/", "/include/"]
-                if not models_ok:
-                    patterns += [*(f"/scripts/{item[0]}" for item in spec["conversions"]), "/scripts/quant_policy.py"]
+                patterns = []
+                if not runtime_ok:
+                    patterns += ["/CMakeLists.txt", "/LICENSE", "/src/", "/include/"]
+                if missing:
+                    patterns += [*(f"/scripts/{conversion[0]}" for conversion, output in missing), "/scripts/quant_policy.py"]
                 _checkout("https://github.com/wgabrys88/chatterbox.cpp.git", CHATTERBOX_REV, source, patterns)
                 if not runtime_ok:
                     print(f"[{label}] install | building")
@@ -173,7 +202,7 @@ def install_tts(spec: dict) -> None:
                     revision.write_text(NATIVE_PIN + "\n", encoding="utf-8")
                 if not models_ok:
                     print(f"[{label}] install | converting")
-                    _convert_tts(spec, work, source, outputs)
+                    _convert_tts(spec, work, source, missing)
         if not card_ok:
             _download(f"{spec['url']}/README.md", card)
         if not voice_ok:
@@ -206,6 +235,8 @@ class TTS:
         return command
 
     def start(self, language: str = None) -> "TTS":
+        if not _tts_runtime_ok():
+            raise RuntimeError("TTS runtime does not match the pinned chatterbox/GGML revision; run --install")
         language = self.spec["language"] if language is None else language
         if self._proc is not None and self._proc.poll() is None:
             return self
@@ -215,24 +246,11 @@ class TTS:
         self._emit("start | spawning server")
         TTS_LOG.parent.mkdir(parents=True, exist_ok=True)
         self._log_fh = TTS_LOG.open("ab", buffering=0)
-        pre_size = self._log_fh.tell()
-        self._proc = subprocess.Popen(self._command(language), cwd=TTS_RUNTIME,
-                                      stdin=subprocess.DEVNULL, stdout=self._log_fh,
-                                      stderr=self._log_fh)
-        deadline = time.time() + 120
-        while time.time() < deadline:
-            time.sleep(0.5)
-            if self._proc.poll() is not None:
-                raise RuntimeError(f"server died with code {self._proc.poll()}")
-            self._log_fh.flush()
-            with TTS_LOG.open("r", encoding="utf-8", errors="replace") as log:
-                log.seek(pre_size)
-                for line in log:
-                    if " server.ready" in line and f"| {self.spec['family']}" in line:
-                        self._emit("start | ready")
-                        return self
-        self._proc.kill()
-        raise TimeoutError("server startup timed out")
+        self._proc = subprocess.Popen(self._command(language), cwd=TTS_RUNTIME, stdin=subprocess.DEVNULL,
+                                      stdout=self._log_fh, stderr=self._log_fh)
+        _wait_port(self._proc, self.spec["port"], 120)
+        self._emit("start | ready")
+        return self
 
     def stop(self) -> None:
         if self._proc is not None:
@@ -245,7 +263,7 @@ class TTS:
             self._log_fh = None
         _kill_port(self.spec["port"])
 
-    def synthesize(self, text: str, language: str = None) -> Path:
+    def synthesize(self, text: str) -> Path:
         pieces = self._chunks(text)
         output = ROOT / f"out_{time.strftime('%d-%m-%y-%H-%M-%S')}_{self.spec['output']}.wav"
         self._response_id += 1
@@ -315,15 +333,15 @@ class TTS:
     @staticmethod
     def _send(sock, kind: int, response: int = 0, piece: int = 0, total: int = 0, text: str = "") -> None:
         payload = text.encode("utf-8")
-        sock.sendall(TTS_REQUEST.pack(TTS_MAGIC, TTS_VERSION, kind, 0, response, piece, total, len(payload)) + payload)
+        sock.sendall(TTS_FRAME.pack(TTS_MAGIC, TTS_VERSION, kind, response, piece, total, len(payload)) + payload)
 
     @staticmethod
     def _receive(reader) -> tuple:
-        header = reader.read(TTS_RESPONSE.size)
-        if len(header) != TTS_RESPONSE.size:
+        header = reader.read(TTS_FRAME.size)
+        if len(header) != TTS_FRAME.size:
             raise EOFError("Native TTS closed the connection")
-        magic, version, kind, epoch, response, piece, chunk, length = TTS_RESPONSE.unpack(header)
-        if (magic, version) != (TTS_MAGIC, TTS_VERSION) or (kind != 5 and epoch != 0):
+        magic, version, kind, response, piece, chunk, length = TTS_FRAME.unpack(header)
+        if (magic, version) != (TTS_MAGIC, TTS_VERSION):
             raise RuntimeError("Unexpected TTS response header")
         payload = reader.read(length)
         if len(payload) != length:
@@ -344,7 +362,7 @@ def _provenance(spec: dict) -> None:
         print(f"sha256={_sha(path)} bytes={path.stat().st_size} path={path.relative_to(ROOT)}")
 
 
-def run_tts(spec: dict, tts_type: type) -> None:
+def run_tts(spec: dict) -> None:
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser()
@@ -367,7 +385,7 @@ def run_tts(spec: dict, tts_type: type) -> None:
         if value is not None:
             spec["knobs"][name] = value
     language = args.language if spec["multilingual"] else spec["language"]
-    tts = tts_type(spec)
+    tts = TTS(spec)
     if args.provenance:
         _provenance(spec)
         return
@@ -391,7 +409,7 @@ def run_tts(spec: dict, tts_type: type) -> None:
     started = time.perf_counter()
     tts.start(language)
     synthesis = time.perf_counter()
-    wav_path = tts.synthesize(source, language)
+    wav_path = tts.synthesize(source)
     finished = time.perf_counter()
     (ROOT / "tts_out.wav").write_bytes(wav_path.read_bytes())
     print(wav_path)

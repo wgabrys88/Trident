@@ -3,7 +3,7 @@ import argparse, http.client, json, shutil, subprocess, sys, tempfile, threading
 from collections import deque
 from pathlib import Path
 
-from main import ROOT, _download, _port_in_use, _kill_port, _drain, _wait_ready
+from main import ROOT, _download, _drain, _kill_port, _port_in_use, _sha, _wait_ready
 
 RUNTIME = ROOT / "tools/runtime/brain"
 EXE = RUNTIME / "llama-server.exe"
@@ -49,12 +49,6 @@ REQUEST_ARGS = {"temperature": TEMPERATURE, "top_p": TOP_P, "top_k": TOP_K, "min
 _READY = "llama_server: listening on http://127.0.0.1:"
 
 _PROCESS, _READY_EVENT, _READER, _TAIL = None, None, None, deque(maxlen=80)
-
-
-def _sha(path: Path) -> str:
-    import hashlib
-    with path.open("rb") as f:
-        return hashlib.file_digest(f, "sha256").hexdigest()
 
 
 def _install() -> None:
