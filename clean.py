@@ -1,4 +1,4 @@
-"""Remove generated workspace data; keep Git, tracked source and models."""
+"""Remove generated data; keep Git, tracked source, models and ref-trump.wav."""
 
 import argparse
 import os
@@ -19,7 +19,7 @@ def main():
     ).split("\0")
     if not (root / ".git").exists() or "main.py" not in tracked:
         raise RuntimeError("Cannot identify the Trident checkout.")
-    keep = {".git", "models", "clean.py"}
+    keep = {".git", "models", "clean.py", "ref-trump.wav"}
     keep.update(name.split("/")[0] for name in tracked if name)
 
     if not args.dry_run:
@@ -57,7 +57,7 @@ def main():
                 shutil.rmtree(path)
             else:
                 path.unlink()
-    print("Source and models preserved. Next: python main.py")
+    print("Source, models and ref-trump.wav preserved. Next: python main.py")
 
 
 if __name__ == "__main__":
