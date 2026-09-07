@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, os, subprocess, sys, venv
+import json, subprocess, sys, venv
 from pathlib import Path
 
 from main import ROOT, _download
@@ -52,7 +52,6 @@ def _model():
         so.inter_op_num_threads = 1
         so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        os.environ["CUDA_VISIBLE_DEVICES"] = ""
         _sat = SaT(str(MODELS), tokenizer_name_or_path=str(TOKENIZER),
                    ort_providers=ORT_PROVIDERS, ort_kwargs={"sess_options": so})
     return _sat
