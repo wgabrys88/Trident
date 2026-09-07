@@ -57,7 +57,8 @@ def _install() -> None:
     model_ok = MODEL.is_file() and MODEL.stat().st_size == MODEL_SIZE and _sha(MODEL) == MODEL_SHA
     if MODEL.exists() and not model_ok:
         raise RuntimeError(f"Refusing unverified existing model: {MODEL}")
-    with tempfile.TemporaryDirectory(prefix=".brain-install-", dir=ROOT) as tmp:
+    (ROOT / "tools").mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".brain-install-", dir=ROOT / "tools") as tmp:
         work = Path(tmp)
         if not runtime_ok:
             archive = work / ARCHIVE

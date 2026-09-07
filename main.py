@@ -1,13 +1,14 @@
 import argparse, hashlib, json, shutil, socket, struct, subprocess, sys, tempfile, threading, time, urllib.request, venv, wave
+sys.dont_write_bytecode = True
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 TTS_RUNTIME = ROOT / "tools/runtime/tts"
 TTS_MODELS = ROOT / "models"
-TTS_VOICE = ROOT / "data/ref-trump.wav"
+TTS_VOICE = ROOT / "ref-trump.wav"
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 VULKAN_SDK = Path("C:/VulkanSDK/1.4.357.0")
-CHATTERBOX_REV = "f47ae6eb5f3a72df36123acb8f1def35d0fa6f84"
+CHATTERBOX_REV = "ef5fa38ba9b7b3cb11b9cf9cc8aa11b1b1ad4afb"
 GGML_REV = "58c3805840b516b2a88ff867ccf7bb41dba79951"
 NATIVE_PIN = f"{CHATTERBOX_REV} {GGML_REV}"
 VOICE_URL = "https://huggingface.co/datasets/sdialog/voices-celebrities/resolve/57746b866d470be717097b87ba0428f8dd73e4f4"
@@ -17,7 +18,7 @@ TTS_RUNTIME_REQUIRED = (*TTS_RUNTIME_FILES, "chatterbox-LICENSE.txt", "ggml-LICE
 TTS_RATE, TTS_MAGIC, TTS_VERSION = 24000, 0x32525454, 4
 TTS_FRAME = struct.Struct("<7I")
 TTS_CHUNKER = ROOT / "tools/runtime/chunker/Scripts/python.exe"
-TTS_LOG = ROOT / ".runtime-logs/tts.log"
+TTS_LOG = ROOT / "tts.log"
 TTS_BASE_KNOBS = {"n-gpu-layers": 99, "fastconv": 1, "seed": 42, "max-tokens": 1000,
                   "top-k": 1000, "top-p": .95, "min-p": 0.0, "temperature": .8}
 
@@ -195,7 +196,8 @@ def install_tts(spec: dict) -> None:
     else:
         print(f"[{label}] install | runtime_ok={runtime_ok} models_ok={models_ok} card_ok={card_ok} voice_ok={voice_ok}")
         if not runtime_ok or not models_ok:
-            with tempfile.TemporaryDirectory(prefix=f".{family[0]}-", dir=ROOT) as tmp:
+            (ROOT / "tools").mkdir(exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix=f".{family[0]}-", dir=ROOT / "tools") as tmp:
                 work, source = Path(tmp), Path(tmp) / "s"
                 print(f"[{label}] install | checkout {CHATTERBOX_REV}")
                 patterns = []
@@ -238,7 +240,7 @@ class TTS:
         command = [str(TTS_RUNTIME / "chatterbox-server.exe"), "--run-id", spec["family"],
                    "--family", spec["family"], "--model", str(t3), "--s3gen-gguf", str(s3),
                    "--reference", str(TTS_VOICE), "--language", language, "--port", str(spec["port"]),
-                   "--audit-dir", str(spec.get("audit_dir", ""))]
+                   "--audit-prefix", str(spec.get("audit_prefix", ""))]
         command.extend(arg for name, value in spec["knobs"].items()
                        for arg in (f"--{name}", str(value)))
         return command
@@ -250,11 +252,13 @@ class TTS:
         if self._proc is not None and self._proc.poll() is None:
             return self
         if _port_in_use(self.spec["port"]):
+            if self.spec.get("audit_prefix"):
+                raise RuntimeError("Audited synthesis requires its own server; unload the existing server first")
             self._emit("start | port already listening")
             return self
         self._emit("start | spawning server")
         TTS_LOG.parent.mkdir(parents=True, exist_ok=True)
-        self._log_fh = TTS_LOG.open("ab", buffering=0)
+        self._log_fh = TTS_LOG.open("wb", buffering=0)
         self._proc = subprocess.Popen(self._command(language), cwd=TTS_RUNTIME, stdin=subprocess.DEVNULL,
                                       stdout=self._log_fh, stderr=self._log_fh)
         _wait_port(self._proc, self.spec["port"], 120)
@@ -274,17 +278,17 @@ class TTS:
 
     def synthesize(self, text: str) -> Path:
         pieces = self._chunks(text)
-        output = ROOT / f"out_{time.strftime('%d-%m-%y-%H-%M-%S')}_{self.spec['output']}.wav"
+        output = ROOT / "tts_out.wav"
         self._response_id += 1
         response_id = self._response_id
-        audit_dir = Path(self.spec["audit_dir"]) if self.spec.get("audit_dir") else None
+        audit_prefix = Path(self.spec["audit_prefix"]) if self.spec.get("audit_prefix") else None
         print(f"[synth] response={response_id} pieces={len(pieces)} total_chars={sum(len(p) for p in pieces)} source_sha={_text_id(text)}", flush=True)
         with socket.create_connection(("127.0.0.1", self.spec["port"]), timeout=300) as sock, sock.makefile("rb") as reader:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             for piece_id, piece in enumerate(pieces):
                 encoded = piece.encode("utf-8")
-                if audit_dir:
-                    (audit_dir / f"python-r{response_id}_p{piece_id}.request.utf8").write_bytes(encoded)
+                if audit_prefix:
+                    (Path(str(audit_prefix) + f".python-r{response_id}_p{piece_id}.request.utf8")).write_bytes(encoded)
                 print(f"[synth] request response={response_id} piece={piece_id}/{len(pieces)} chars={len(piece)} "
                       f"text_sha={_text_id(piece)} wire_fnv64={_fnv64(encoded)} text={piece!r}", flush=True)
                 self._send(sock, 1, response_id, piece_id, len(pieces), piece)
@@ -305,8 +309,8 @@ class TTS:
                             break
                         if kind != 1:
                             raise RuntimeError(f"Unexpected TTS response kind: {kind}")
-                        if audit_dir:
-                            (audit_dir / f"python-r{response_id}_p{piece_id}_c{chunk}.pcm16").write_bytes(payload)
+                        if audit_prefix:
+                            (Path(str(audit_prefix) + f".python-r{response_id}_p{piece_id}_c{chunk}.pcm16")).write_bytes(payload)
                         print(f"[synth] wire response={response_id} piece={piece_id}/{len(pieces)} "
                               f"chunk={chunk} bytes={len(payload)} fnv64={_fnv64(payload)}", flush=True)
                         zeros = TTS_RATE // 50 * 2
@@ -401,14 +405,13 @@ def run_tts(spec: dict) -> None:
     args = parser.parse_args()
     spec = {**spec, "knobs": dict(spec["knobs"])}
     if args.audit:
-        audit_dir = ROOT / ".runtime-logs" / "audit" / (
+        audit_prefix = ROOT / ("audit-" +
             f"{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns() % 1_000_000_000:09d}-{spec['family']}"
         )
-        audit_dir.mkdir(parents=True, exist_ok=False)
-        spec["audit_dir"] = audit_dir
-        print(f"[audit] dir={audit_dir.relative_to(ROOT)}", flush=True)
+        spec["audit_prefix"] = audit_prefix
+        print(f"[audit] prefix={audit_prefix.relative_to(ROOT)}", flush=True)
     else:
-        spec["audit_dir"] = ""
+        spec["audit_prefix"] = ""
     for name in spec["knobs"]:
         value = getattr(args, name.replace("-", "_"))
         if value is not None:
@@ -435,22 +438,52 @@ def run_tts(spec: dict) -> None:
     source = (args.text if args.text is not None else
               (ROOT / args.text_file).read_text(encoding="utf-8") if args.text_file else
               (ROOT / "brain_out.txt").read_text(encoding="utf-8"))
+    from audit_log import pack
+    log_path = ROOT / "tts_out.log.zip"
+    (ROOT / "tts_out.wav").unlink(missing_ok=True)
+    log_path.unlink(missing_ok=True)
+    offset = TTS_LOG.stat().st_size if TTS_LOG.is_file() else 0
+    metadata = {"schema": 1, "family": spec["family"], "source": source, "settings": spec["knobs"],
+                "language": language, "protocol": TTS_VERSION, "status": "FAIL",
+                "reference_status": "INCONCLUSIVE", "cause_identified": False,
+                "native_pin": NATIVE_PIN, "artifacts_prefix": str(spec["audit_prefix"])}
+    if args.audit:
+        paths = [*(TTS_RUNTIME / name for name in TTS_RUNTIME_FILES), *spec["models"], TTS_VOICE]
+        metadata["provenance"] = [{"file": str(path), "sha256": _sha(path), "bytes": path.stat().st_size}
+                                  for path in paths if path.is_file()]
+        metadata["python_sources"] = [{"file": path.name, "sha256": _sha(path)} for path in sorted(ROOT.glob("*.py"))]
     started = time.perf_counter()
-    tts.start(language)
-    synthesis = time.perf_counter()
-    wav_path = tts.synthesize(source)
-    finished = time.perf_counter()
-    (ROOT / "tts_out.wav").write_bytes(wav_path.read_bytes())
-    print(wav_path)
-    with wave.open(str(wav_path)) as wav:
-        duration = wav.getnframes() / wav.getframerate()
-    prefix = spec["family"]
-    synth_s = finished - synthesis
-    print(f"[rtf] {prefix}_start={synthesis-started:.3f}s", file=sys.stderr)
-    print(f"[rtf] {prefix}_synth={synth_s:.3f}s", file=sys.stderr)
-    print(f"[rtf] {prefix}_total={finished-started:.3f}s", file=sys.stderr)
-    print(f"[rtf] audio_s={duration:.3f}s", file=sys.stderr)
-    print(f"[rtf] {prefix}_rtf={synth_s/duration:.3f}", file=sys.stderr)
+    try:
+        tts.start(language)
+        if tts._proc is not None:
+            offset = 0
+        synthesis = time.perf_counter()
+        wav_path = tts.synthesize(source)
+        finished = time.perf_counter()
+        with wave.open(str(wav_path)) as wav:
+            duration = wav.getnframes() / wav.getframerate()
+        metadata.update(status="SYNTHESIS_COMPLETE", wav_sha256=_sha(wav_path),
+                        audio_seconds=duration, synthesis_seconds=finished-synthesis,
+                        rtf=(finished-synthesis)/duration)
+        print(wav_path)
+        print(f"[rtf] {spec['family']}_rtf={metadata['rtf']:.3f}", file=sys.stderr)
+    except Exception as exc:
+        metadata["error"] = f"{type(exc).__name__}: {exc}"
+        raise
+    finally:
+        owned = tts._proc is not None
+        if owned:
+            offset = 0
+            tts.stop()
+        native_log = ""
+        if TTS_LOG.is_file():
+            with TTS_LOG.open("rb") as stream:
+                stream.seek(offset)
+                native_log = stream.read().decode("utf-8", "replace")
+        pack(log_path, metadata, native_log, Path(spec["audit_prefix"]) if spec["audit_prefix"] else None)
+        if owned:
+            TTS_LOG.unlink(missing_ok=True)
+        print(f"[diagnostic] {log_path.name}", flush=True)
 
 
 def main() -> None:
@@ -471,7 +504,7 @@ def main() -> None:
                ("parakeet", "parakeet.py", ("tts_out.wav",)))
               if mode == "pipeline" else tuple((*model, ()) for model in models))
     started = time.perf_counter()
-    log_path = ROOT / ".runtime-logs/main.log"
+    log_path = ROOT / "main.log"
     log_path.parent.mkdir(exist_ok=True)
     with log_path.open("a", encoding="utf-8", buffering=1) as log:
         def emit(text: str) -> None:
