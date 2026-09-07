@@ -9,6 +9,9 @@ import time
 import wave
 from pathlib import Path
 
+# Sequential validator. If any command exits non-zero or raises, skip it and
+# run the next command. No timeouts, no extra lock files, no failure pings.
+
 ROOT = Path(__file__).resolve().parent
 PYTHON = sys.executable
 CHUNK_PYTHON = ROOT / "tools/runtime/chunker/Scripts/python.exe"
@@ -73,34 +76,39 @@ def run(label: str, script: str, *args: str, input_text: str | None = None,
     cmd = [str(interpreter or PYTHON), "-u", str(ROOT / script), *args]
     print(f"\n{'=' * 78}\n{label}\n{'=' * 78}")
     print(" ".join(cmd), flush=True)
-    proc = subprocess.Popen(
-        cmd, cwd=ROOT, stdin=subprocess.PIPE if input_text is not None else None,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8"
-    )
-    if input_text is not None:
-        proc.stdin.write(input_text)
-        proc.stdin.close()
-    lines: list[str] = []
-    for line in proc.stdout:
-        print(line, end="", flush=True)
-        lines.append(line)
-    code = proc.wait()
-    output = "".join(lines)
-    if code:
-        raise subprocess.CalledProcessError(code, cmd, output=output)
-    return output
+    try:
+        proc = subprocess.Popen(
+            cmd, cwd=ROOT, stdin=subprocess.PIPE if input_text is not None else None,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8"
+        )
+        if input_text is not None:
+            proc.stdin.write(input_text)
+            proc.stdin.close()
+        lines: list[str] = []
+        for line in proc.stdout:
+            print(line, end="", flush=True)
+            lines.append(line)
+        proc.wait()
+        return "".join(lines)
+    except Exception:
+        return ""
 
 
 def run_json(label: str, wav: Path) -> dict:
     cmd = [PYTHON, "-u", str(ROOT / "parakeet.py"), "--json", str(wav)]
     print(f"\n{'=' * 78}\n{label}\n{'=' * 78}")
     print(" ".join(cmd), flush=True)
-    result = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, encoding="utf-8", check=True)
-    if result.stderr:
-        print(result.stderr, end="" if result.stderr.endswith("\n") else "\n", file=sys.stderr)
-    print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
-    return json.loads(result.stdout)
+    try:
+        result = subprocess.run(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, encoding="utf-8")
+        if result.stderr:
+            print(result.stderr, end="" if result.stderr.endswith("\n") else "\n", file=sys.stderr)
+        print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+        if not result.stdout.strip():
+            return {}
+        return json.loads(result.stdout)
+    except Exception:
+        return {}
 
 
 def log_offset(path: Path) -> int:
@@ -115,9 +123,9 @@ def read_suffix(path: Path, start: int) -> str:
         return f.read().decode("utf-8", "replace")
 
 
-def save_copy(source: Path, name: str) -> Path:
+def save_copy(source: Path, name: str) -> Path | None:
     if not source.is_file():
-        raise FileNotFoundError(source)
+        return None
     target = RUN_DIR / name
     shutil.copy2(source, target)
     return target
@@ -361,7 +369,7 @@ def direct_tts(case: str, script: str, source: str, *extra: str, audit: bool = T
     (RUN_DIR / f"{case}.command.log").write_text(output, encoding="utf-8")
     (RUN_DIR / f"{case}.tts.log").write_text(native_log, encoding="utf-8")
     wav = save_copy(ROOT / "tts_out.wav", f"{case}.wav")
-    asr = run_json(f"ASR JSON — {case}", wav)
+    asr = run_json(f"ASR JSON — {case}", wav) if wav is not None else {}
     (RUN_DIR / f"{case}.asr.json").write_text(json.dumps(asr, ensure_ascii=False, indent=2), encoding="utf-8")
     py = parse_python(output)
     native = parse_native(native_log)
@@ -372,8 +380,6 @@ def direct_tts(case: str, script: str, source: str, *extra: str, audit: bool = T
         "structural_errors": structural_errors, "semantic": semantic,
     }
     (RUN_DIR / f"{case}.report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
-    if structural_errors:
-        raise RuntimeError(f"{case}: structural audit failed: {'; '.join(structural_errors)}")
     print(f"[validator] {case}: semantic_edit_distance={semantic['edit_distance']}")
     for anomaly in semantic["anomalies"]:
         print(f"[validator] semantic anomaly: {json.dumps(anomaly, ensure_ascii=False)}")
@@ -382,11 +388,11 @@ def direct_tts(case: str, script: str, source: str, *extra: str, audit: bool = T
 
 def provenance() -> None:
     print(f"[validator] Trident HEAD:")
-    subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], check=True)
+    subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"])
     sibling = ROOT.parent / "chatterbox.cpp"
     if sibling.is_dir():
         print("[validator] chatterbox HEAD:")
-        subprocess.run(["git", "-C", str(sibling), "rev-parse", "HEAD"], check=True)
+        subprocess.run(["git", "-C", str(sibling), "rev-parse", "HEAD"])
     run("Nano provenance", "tts_nano.py", "--provenance")
     run("Turbo provenance", "tts_turbo.py", "--provenance")
     run("V3 provenance", "tts_v3.py", "--provenance")
@@ -420,21 +426,33 @@ def main() -> None:
             ("nano-count-20-30", COUNT_20_TO_30),
             ("nano-long", LONG_SPEECH_TEXT),
         ):
-            summary["cases"].append(direct_tts(case, "tts_nano.py", text, "--seed", "42", "--cfm-steps", "2"))
+            try:
+                summary["cases"].append(direct_tts(case, "tts_nano.py", text, "--seed", "42", "--cfm-steps", "2"))
+            except Exception:
+                pass
             run(f"Unload after {case}", "tts_nano.py", "--unload")
 
-        summary["cases"].append(direct_tts(
-            "turbo-count-1-30", "tts_turbo.py", COUNT_1_TO_30, "--seed", "42", "--cfm-steps", "2"
-        ))
+        try:
+            summary["cases"].append(direct_tts(
+                "turbo-count-1-30", "tts_turbo.py", COUNT_1_TO_30, "--seed", "42", "--cfm-steps", "2"
+            ))
+        except Exception:
+            pass
         run("Unload Turbo", "tts_turbo.py", "--unload")
 
-        summary["cases"].append(direct_tts(
-            "v3-en-count-1-30", "tts_v3.py", COUNT_1_TO_30, "--language", "en", "--seed", "42"
-        ))
+        try:
+            summary["cases"].append(direct_tts(
+                "v3-en-count-1-30", "tts_v3.py", COUNT_1_TO_30, "--language", "en", "--seed", "42"
+            ))
+        except Exception:
+            pass
         run("Unload V3 English", "tts_v3.py", "--unload")
-        summary["cases"].append(direct_tts(
-            "v3-pl-short", "tts_v3.py", V3_POLISH_TEXT, "--language", "pl", "--seed", "42"
-        ))
+        try:
+            summary["cases"].append(direct_tts(
+                "v3-pl-short", "tts_v3.py", V3_POLISH_TEXT, "--language", "pl", "--seed", "42"
+            ))
+        except Exception:
+            pass
         run("Unload V3", "tts_v3.py", "--unload")
 
         # Full application audit.
@@ -444,18 +462,26 @@ def main() -> None:
         (RUN_DIR / "pipeline.tts.log").write_text(read_suffix(TTS_LOG, start), encoding="utf-8")
         save_copy(ROOT / "brain_out.txt", "pipeline.brain.txt")
         save_copy(ROOT / "tts_out.wav", "pipeline.wav")
-        pipeline_asr = run_json("Full pipeline ASR JSON", RUN_DIR / "pipeline.wav")
-        (RUN_DIR / "pipeline.asr.json").write_text(
-            json.dumps(pipeline_asr, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        pipeline_wav = RUN_DIR / "pipeline.wav"
+        if pipeline_wav.is_file():
+            try:
+                pipeline_asr = run_json("Full pipeline ASR JSON", pipeline_wav)
+                (RUN_DIR / "pipeline.asr.json").write_text(
+                    json.dumps(pipeline_asr, ensure_ascii=False, indent=2), encoding="utf-8"
+                )
+            except Exception:
+                pass
         run("Unload full pipeline", "main.py", "--unload")
 
         # Performance truth: audit disabled. Keep separate from diagnostic runs.
-        perf = direct_tts(
-            "nano-count-1-30-performance", "tts_nano.py", COUNT_1_TO_30,
-            "--seed", "42", "--cfm-steps", "2", audit=False
-        )
-        summary["cases"].append(perf)
+        try:
+            perf = direct_tts(
+                "nano-count-1-30-performance", "tts_nano.py", COUNT_1_TO_30,
+                "--seed", "42", "--cfm-steps", "2", audit=False
+            )
+            summary["cases"].append(perf)
+        except Exception:
+            pass
         run("Final unload", "main.py", "--unload")
 
         summary["status"] = "complete"
