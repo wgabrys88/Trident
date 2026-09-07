@@ -1,7 +1,7 @@
-import argparse, http.client, json, shutil, struct, subprocess, sys, time, uuid, wave, zipfile
+import argparse, http.client, json, shutil, subprocess, sys, time, uuid, wave, zipfile
 from pathlib import Path
 
-from main import ROOT, _download, _port_in_use, _kill_port
+from main import CMAKE, ROOT, _checkout, _download, _kill_port, _port_in_use, _wait_port
 
 RUNTIME = ROOT / "tools/runtime/parakeet"
 EXE = RUNTIME / "parakeet-cli.exe"
@@ -22,43 +22,23 @@ TIMESTAMP_FORMAT = "%d-%m-%y-%H-%M-%S"
 _PROCESS = None
 
 
-def _checkout(url: str, rev: str, path: Path, patterns: tuple) -> None:
-    subprocess.run(["git", "init", str(path)], check=True)
-    git = ["git", "-C", str(path)]
-    for args in (("remote", "add", "origin", url), ("config", "remote.origin.promisor", "true"),
-                 ("config", "remote.origin.partialclonefilter", "blob:none"),
-                 ("fetch", "--depth=1", "--filter=blob:none", "--no-tags", "origin", rev)):
-        subprocess.run([*git, *args], check=True)
-    subprocess.run([*git, "sparse-checkout", "set", "--no-cone", "--stdin"],
-                   input="\n".join(patterns) + "\n", text=True, check=True)
-    subprocess.run([*git, "checkout", "--detach", rev], check=True)
-
-
 def _build(work: Path) -> None:
-    import tempfile
-    source = work / "parakeet"
+    source = work / "s"
     _checkout("https://github.com/mudler/parakeet.cpp.git", PARAKEET_REV, source,
               ("/CMakeLists.txt", "/LICENSE", "/src/", "/include/", "/examples/",
                "/third_party/", "/scripts/apply_ggml_patches.sh", "/scripts/requirements.txt"))
     subprocess.run(["git", "-C", str(source), "submodule", "update", "--init", "--depth=1",
                     "--filter=blob:none", "third_party/ggml"], check=True)
-    build = work / "build"
-    subprocess.run(["C:/Program Files/CMake/bin/cmake.exe", "-S", str(source), "-B", str(build),
+    build = work / "b"
+    subprocess.run([CMAKE, "-S", str(source), "-B", str(build),
                     "-G", "Visual Studio 17 2022", "-A", "x64", "-DPARAKEET_BUILD_TESTS=OFF",
                     "-DPARAKEET_BUILD_CLI=ON", "-DPARAKEET_BUILD_SERVER=ON",
                     "-DGGML_NATIVE=ON", "-DGGML_LLAMAFILE=ON"], check=True)
-    subprocess.run(["C:/Program Files/CMake/bin/cmake.exe", "--build", str(build),
+    subprocess.run([CMAKE, "--build", str(build),
                     "--config", "Release", "--target", "parakeet-server", "--parallel", "4"], check=True)
     RUNTIME.mkdir(parents=True, exist_ok=True)
-    for name in ("parakeet-server.exe", "parakeet-cli.exe"):
-        for sub in ("bin", "bin/Release", "examples/cli", "examples/cli/Release", "examples/server", "examples/server/Release"):
-            src = build / sub / name
-            if src.is_file():
-                shutil.copy2(src, RUNTIME / name)
-                break
-    for dll in build.rglob("bin/Release/*.dll"):
-        shutil.copy2(dll, RUNTIME / dll.name)
-    for dll in build.rglob("bin/*.dll"):
+    shutil.copy2(build / "examples/server/Release/parakeet-server.exe", SERVER)
+    for dll in (build / "bin/Release").glob("*.dll"):
         shutil.copy2(dll, RUNTIME / dll.name)
     shutil.copy2(source / "LICENSE", RUNTIME / "parakeet-LICENSE.txt")
 
@@ -68,7 +48,7 @@ def _install() -> None:
     required = [EXE, SERVER, RUNTIME / "parakeet-LICENSE.txt", MODEL, MODEL_CARD]
     if all(p.is_file() for p in required):
         return
-    with tempfile.TemporaryDirectory(prefix=".parakeet-install-", dir=ROOT) as tmp:
+    with tempfile.TemporaryDirectory(prefix=".p-", dir=ROOT) as tmp:
         work = Path(tmp)
         if not (EXE.is_file() and (RUNTIME / "parakeet-LICENSE.txt").is_file()):
             archive = work / ARCHIVE
@@ -103,15 +83,7 @@ def _start() -> None:
                                 cwd=RUNTIME, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                 creationflags=subprocess.CREATE_NO_WINDOW)
-    deadline = time.monotonic() + 300
-    while time.monotonic() < deadline:
-        if _PROCESS.poll() is not None:
-            raise RuntimeError(f"parakeet-server died with code {_PROCESS.poll()}")
-        if _port_in_use(PORT):
-            return
-        time.sleep(0.1)
-    _PROCESS.kill()
-    raise TimeoutError("parakeet-server failed to open port 17934")
+    _wait_port(_PROCESS, PORT, 300)
 
 
 def _stop() -> None:
