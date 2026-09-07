@@ -48,8 +48,7 @@ def _install() -> None:
     required = [EXE, SERVER, RUNTIME / "parakeet-LICENSE.txt", MODEL, MODEL_CARD]
     if all(p.is_file() for p in required):
         return
-    (ROOT / "tools").mkdir(exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".p-", dir=ROOT / "tools") as tmp:
+    with tempfile.TemporaryDirectory(prefix=".p-", dir=ROOT) as tmp:
         work = Path(tmp)
         if not (EXE.is_file() and (RUNTIME / "parakeet-LICENSE.txt").is_file()):
             archive = work / ARCHIVE
