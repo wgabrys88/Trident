@@ -8,7 +8,7 @@ TTS_MODELS = ROOT / "models"
 TTS_VOICE = ROOT / "ref-trump.wav"
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 VULKAN_SDK = Path("C:/VulkanSDK/1.4.357.0")
-CHATTERBOX_REV = "ef5fa38ba9b7b3cb11b9cf9cc8aa11b1b1ad4afb"
+CHATTERBOX_REV = "f78621ced9187e400ebddb2ae341664307a6836d"
 GGML_REV = "58c3805840b516b2a88ff867ccf7bb41dba79951"
 NATIVE_PIN = f"{CHATTERBOX_REV} {GGML_REV}"
 VOICE_URL = "https://huggingface.co/datasets/sdialog/voices-celebrities/resolve/57746b866d470be717097b87ba0428f8dd73e4f4"
@@ -18,7 +18,6 @@ TTS_RUNTIME_REQUIRED = (*TTS_RUNTIME_FILES, "chatterbox-LICENSE.txt", "ggml-LICE
 TTS_RATE, TTS_MAGIC, TTS_VERSION = 24000, 0x32525454, 4
 TTS_FRAME = struct.Struct("<7I")
 TTS_CHUNKER = ROOT / "tools/runtime/chunker/Scripts/python.exe"
-TTS_LOG = ROOT / "tts.log"
 TTS_BASE_KNOBS = {"n-gpu-layers": 99, "fastconv": 1, "seed": 42, "max-tokens": 1000,
                   "top-k": 1000, "top-p": .95, "min-p": 0.0, "temperature": .8}
 
@@ -55,18 +54,6 @@ def _tts_runtime_ok() -> bool:
     revision = TTS_RUNTIME / "REVISION"
     return (len(CHATTERBOX_REV) == 40 and all((TTS_RUNTIME / name).is_file() for name in TTS_RUNTIME_REQUIRED)
             and revision.is_file() and revision.read_text(encoding="utf-8").strip() == NATIVE_PIN)
-
-
-def _text_id(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
-
-
-def _fnv64(data: bytes) -> str:
-    value = 1469598103934665603
-    for byte in data:
-        value ^= byte
-        value = (value * 1099511628211) & 0xffffffffffffffff
-    return f"{value:016x}"
 
 
 def _port_in_use(port: int) -> bool:
@@ -179,7 +166,7 @@ def _convert_tts(spec: dict, work: Path, source: Path, missing: list) -> None:
         converted.replace(output)
 
 
-def install_tts(spec: dict) -> None:
+def install_tts(spec: dict, with_chunker: bool = True) -> None:
     if len(CHATTERBOX_REV) != 40:
         raise RuntimeError("Set CHATTERBOX_REV to the pushed chatterbox.cpp commit SHA before install")
     family, label = spec["family"], spec["label"]
@@ -222,23 +209,22 @@ def install_tts(spec: dict) -> None:
             if not voice_card.is_file():
                 _download(f"{VOICE_URL}/README.md", voice_card)
         print(f"[{label}] install | done")
-    import chunk as chunker
-    chunker.install()
+    if with_chunker:
+        import chunk as chunker
+        chunker.install()
 
 
 class TTS:
     def __init__(self, spec: dict) -> None:
         self.spec, self._proc, self._log_fh, self._response_id = spec, None, None, 0
-
-    def _emit(self, text: str) -> None:
-        sys.stderr.write(f"[{time.strftime('%H:%M:%S')}] {text}\n")
-        sys.stderr.flush()
+        self.stderr = b""
+        self.emission = []
+        self.pieces = []
 
     def _command(self, language: str) -> list:
         spec = self.spec
         t3, s3 = spec["models"]
-        command = [str(TTS_RUNTIME / "chatterbox-server.exe"), "--run-id", spec["family"],
-                   "--family", spec["family"], "--model", str(t3), "--s3gen-gguf", str(s3),
+        command = [str(TTS_RUNTIME / "chatterbox-server.exe"), "--model", str(t3), "--s3gen-gguf", str(s3),
                    "--reference", str(TTS_VOICE), "--language", language, "--port", str(spec["port"]),
                    "--audit-prefix", str(spec.get("audit_prefix", ""))]
         command.extend(arg for name, value in spec["knobs"].items()
@@ -254,86 +240,66 @@ class TTS:
         if _port_in_use(self.spec["port"]):
             if self.spec.get("audit_prefix"):
                 raise RuntimeError("Audited synthesis requires its own server; unload the existing server first")
-            self._emit("start | port already listening")
             return self
-        self._emit("start | spawning server")
-        TTS_LOG.parent.mkdir(parents=True, exist_ok=True)
-        self._log_fh = TTS_LOG.open("wb", buffering=0)
+        self._log_fh = tempfile.TemporaryFile() if self.spec.get("audit_prefix") else None
         self._proc = subprocess.Popen(self._command(language), cwd=TTS_RUNTIME, stdin=subprocess.DEVNULL,
                                       stdout=self._log_fh, stderr=self._log_fh)
         _wait_port(self._proc, self.spec["port"], 120)
-        self._emit("start | ready")
         return self
 
     def stop(self) -> None:
-        if self._proc is not None:
+        owned = self._proc is not None
+        if owned:
             if self._proc.poll() is None:
                 self._proc.kill()
             self._proc.wait()
             self._proc = None
         if self._log_fh:
+            self._log_fh.seek(0)
+            self.stderr = self._log_fh.read()
             self._log_fh.close()
             self._log_fh = None
-        _kill_port(self.spec["port"])
+        if not owned and _port_in_use(self.spec["port"]):
+            _kill_port(self.spec["port"])
 
     def synthesize(self, text: str) -> Path:
-        pieces = self._chunks(text)
+        self.pieces = [text] if self.spec.get("direct") else self._chunks(text)
         output = ROOT / "tts_out.wav"
         self._response_id += 1
-        response_id = self._response_id
-        audit_prefix = Path(self.spec["audit_prefix"]) if self.spec.get("audit_prefix") else None
-        print(f"[synth] response={response_id} pieces={len(pieces)} total_chars={sum(len(p) for p in pieces)} source_sha={_text_id(text)}", flush=True)
+        response = self._response_id
         with socket.create_connection(("127.0.0.1", self.spec["port"]), timeout=300) as sock, sock.makefile("rb") as reader:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            for piece_id, piece in enumerate(pieces):
-                encoded = piece.encode("utf-8")
-                if audit_prefix:
-                    (Path(str(audit_prefix) + f".python-r{response_id}_p{piece_id}.request.utf8")).write_bytes(encoded)
-                print(f"[synth] request response={response_id} piece={piece_id}/{len(pieces)} chars={len(piece)} "
-                      f"text_sha={_text_id(piece)} wire_fnv64={_fnv64(encoded)} text={piece!r}", flush=True)
-                self._send(sock, 1, response_id, piece_id, len(pieces), piece)
-            pcm_bytes = 0
-            pieces_written = 0
+            for piece, text_piece in enumerate(self.pieces):
+                self._send(sock, 1, response, piece, len(self.pieces), text_piece)
+            samples = 0
             with output.open("xb") as target, wave.open(target, "wb") as wav:
                 wav.setparams((1, 2, TTS_RATE, 0, "NONE", "not compressed"))
-                for piece_id in range(len(pieces)):
-                    before = pcm_bytes
-                    chunks_received = 0
-                    piece_hash = hashlib.sha256()
-                    leading_trim = 0
+                for piece in range(len(self.pieces)):
+                    before = samples
                     while True:
                         kind, returned_response, returned_piece, chunk, payload = self._receive(reader)
-                        if returned_response != response_id or returned_piece != piece_id:
+                        if (returned_response, returned_piece) != (response, piece):
                             raise RuntimeError("Unexpected TTS piece")
                         if kind == 2:
                             break
                         if kind != 1:
                             raise RuntimeError(f"Unexpected TTS response kind: {kind}")
-                        if audit_prefix:
-                            (Path(str(audit_prefix) + f".python-r{response_id}_p{piece_id}_c{chunk}.pcm16")).write_bytes(payload)
-                        print(f"[synth] wire response={response_id} piece={piece_id}/{len(pieces)} "
-                              f"chunk={chunk} bytes={len(payload)} fnv64={_fnv64(payload)}", flush=True)
-                        zeros = TTS_RATE // 50 * 2
-                        if piece_id == 0 and chunk == 0 and len(payload) > zeros and payload[:zeros] == b"\0" * zeros:
-                            payload = payload[zeros:]
-                            leading_trim = zeros
+                        wire_sha = hashlib.sha256(payload).hexdigest()
+                        trim = TTS_RATE // 50 * 2
+                        trim = trim if piece == 0 and chunk == 0 and len(payload) > trim and payload[:trim] == b"\\0" * trim else 0
+                        payload = payload[trim:]
                         wav.writeframesraw(payload)
-                        piece_hash.update(payload)
-                        pcm_bytes += len(payload)
-                        chunks_received += 1
-                    if pcm_bytes == before:
-                        raise RuntimeError(f"TTS piece {piece_id} produced no audio")
-                    print(
-                        f"[synth] pcm response={response_id} piece={piece_id}/{len(pieces)} chunks={chunks_received} "
-                        f"byte_start={before} byte_end={pcm_bytes} sample_start={before//2} sample_end={pcm_bytes//2} "
-                        f"trimmed_leading_bytes={leading_trim} pcm_sha={piece_hash.hexdigest()[:16]}", flush=True)
-                    pieces_written += 1
-            print(f"[synth] complete response={response_id} pieces={pieces_written} bytes={pcm_bytes} samples={pcm_bytes//2}", flush=True)
+                        self.emission.append({"response": response, "piece": piece, "chunk": chunk,
+                                              "utc_ns": time.time_ns(), "start": samples,
+                                              "end": samples + len(payload)//2, "trimmed_bytes": trim,
+                                              "wire_sha256": wire_sha})
+                        samples += len(payload)//2
+                    if samples == before:
+                        raise RuntimeError(f"TTS piece {piece} produced no audio")
             sock.settimeout(10)
             self._send(sock, 3)
             if self._receive(reader)[0] != 5:
                 raise RuntimeError("TTS did not acknowledge close")
-        print(f"[synth] wav path={output.name} sha256={_sha(output)}", flush=True)
         return output
 
     @staticmethod
@@ -392,8 +358,8 @@ def run_tts(spec: dict) -> None:
     parser.add_argument("--load", action="store_true")
     parser.add_argument("--unload", action="store_true")
     parser.add_argument("--provenance", action="store_true")
-    parser.add_argument("--audit", action="store_true",
-                        help="capture replayable native stage artifacts; do not use for RTF")
+    parser.add_argument("--audit", action="store_true", help="record raw replay inputs and outputs")
+    parser.add_argument("--direct", action="store_true", help="send exact text as one native piece, bypassing SaT")
     if spec["multilingual"]:
         parser.add_argument("--language", default=spec["language"],
                             help="ISO 639-1 language code (e.g. en, fr, zh)")
@@ -404,12 +370,12 @@ def run_tts(spec: dict) -> None:
         parser.add_argument(f"--{name}", dest=name.replace("-", "_"), type=type(default), default=None)
     args = parser.parse_args()
     spec = {**spec, "knobs": dict(spec["knobs"])}
+    spec["direct"] = args.direct
     if args.audit:
         audit_prefix = ROOT / ("audit-" +
             f"{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns() % 1_000_000_000:09d}-{spec['family']}"
         )
         spec["audit_prefix"] = audit_prefix
-        print(f"[audit] prefix={audit_prefix.relative_to(ROOT)}", flush=True)
     else:
         spec["audit_prefix"] = ""
     for name in spec["knobs"]:
@@ -422,11 +388,11 @@ def run_tts(spec: dict) -> None:
         _provenance(spec)
         return
     if args.install:
-        install_tts(spec)
+        install_tts(spec, with_chunker=not args.direct)
         tts.start(language)
         return
     if args.load:
-        install_tts(spec)
+        install_tts(spec, with_chunker=not args.direct)
         tts.start(language)
         print(f"[{spec['label']}] ready", flush=True)
         input()
@@ -435,55 +401,44 @@ def run_tts(spec: dict) -> None:
     if args.unload:
         tts.stop()
         return
+    import platform
+    from replay import pack
+    log_path = ROOT / "tts_out.log.zip"
+    wav_path = ROOT / "tts_out.wav"
+    wav_path.unlink(missing_ok=True)
+    log_path.unlink(missing_ok=True)
     source = (args.text if args.text is not None else
               (ROOT / args.text_file).read_text(encoding="utf-8") if args.text_file else
               (ROOT / "brain_out.txt").read_text(encoding="utf-8"))
-    from audit_log import pack
-    log_path = ROOT / "tts_out.log.zip"
-    (ROOT / "tts_out.wav").unlink(missing_ok=True)
-    log_path.unlink(missing_ok=True)
-    offset = TTS_LOG.stat().st_size if TTS_LOG.is_file() else 0
-    metadata = {"schema": 1, "family": spec["family"], "source": source, "settings": spec["knobs"],
-                "language": language, "protocol": TTS_VERSION, "status": "FAIL",
-                "reference_status": "INCONCLUSIVE", "cause_identified": False,
-                "native_pin": NATIVE_PIN, "artifacts_prefix": str(spec["audit_prefix"])}
-    if args.audit:
-        paths = [*(TTS_RUNTIME / name for name in TTS_RUNTIME_FILES), *spec["models"], TTS_VOICE]
-        metadata["provenance"] = [{"file": str(path), "sha256": _sha(path), "bytes": path.stat().st_size}
-                                  for path in paths if path.is_file()]
-        metadata["python_sources"] = [{"file": path.name, "sha256": _sha(path)} for path in sorted(ROOT.glob("*.py"))]
-    started = time.perf_counter()
+    metadata = {"schema": 2, "family": spec["family"], "source": source, "settings": spec["knobs"],
+                "language": language, "protocol": TTS_VERSION, "status": "FAILED",
+                "native_pin": NATIVE_PIN, "direct": args.direct, "utc_ns": time.time_ns(),
+                "platform": platform.platform(), "python": sys.version, "command": tts._command(language)}
     try:
+        if args.audit:
+            paths = [*(TTS_RUNTIME / name for name in TTS_RUNTIME_FILES), *spec["models"], TTS_VOICE]
+            metadata["provenance"] = [{"file": str(path), "sha256": _sha(path), "bytes": path.stat().st_size}
+                                      for path in paths]
+            metadata["python_sources"] = [{"file": path.name, "sha256": _sha(path)}
+                                          for path in sorted(ROOT.glob("*.py"))]
+            drivers = subprocess.run(["powershell.exe", "-NoProfile", "-Command",
+                "Get-CimInstance Win32_VideoController | Select-Object Name,DriverVersion,PNPDeviceID | ConvertTo-Json -Compress"],
+                capture_output=True, text=True, check=True)
+            metadata["display_drivers"] = json.loads(drivers.stdout)
         tts.start(language)
-        if tts._proc is not None:
-            offset = 0
-        synthesis = time.perf_counter()
         wav_path = tts.synthesize(source)
-        finished = time.perf_counter()
-        with wave.open(str(wav_path)) as wav:
-            duration = wav.getnframes() / wav.getframerate()
-        metadata.update(status="SYNTHESIS_COMPLETE", wav_sha256=_sha(wav_path),
-                        audio_seconds=duration, synthesis_seconds=finished-synthesis,
-                        rtf=(finished-synthesis)/duration)
-        print(wav_path)
-        print(f"[rtf] {spec['family']}_rtf={metadata['rtf']:.3f}", file=sys.stderr)
+        metadata.update(status="CAPTURED" if args.audit else "SYNTHESIS_COMPLETE", wav_sha256=_sha(wav_path))
     except Exception as exc:
         metadata["error"] = f"{type(exc).__name__}: {exc}"
+        wav_path.unlink(missing_ok=True)
         raise
     finally:
-        owned = tts._proc is not None
-        if owned:
-            offset = 0
+        if tts._proc is not None:
             tts.stop()
-        native_log = ""
-        if TTS_LOG.is_file():
-            with TTS_LOG.open("rb") as stream:
-                stream.seek(offset)
-                native_log = stream.read().decode("utf-8", "replace")
-        pack(log_path, metadata, native_log, Path(spec["audit_prefix"]) if spec["audit_prefix"] else None)
-        if owned:
-            TTS_LOG.unlink(missing_ok=True)
-        print(f"[diagnostic] {log_path.name}", flush=True)
+        metadata.update(pieces=tts.pieces, emission=tts.emission)
+        pack(log_path, metadata, tts.stderr, Path(str(spec["audit_prefix"]) + ".capture") if args.audit else None)
+    print(f"{wav_path.name}\n{log_path.name}")
+
 
 
 def main() -> None:
@@ -504,29 +459,25 @@ def main() -> None:
                ("parakeet", "parakeet.py", ("tts_out.wav",)))
               if mode == "pipeline" else tuple((*model, ()) for model in models))
     started = time.perf_counter()
-    log_path = ROOT / "main.log"
-    log_path.parent.mkdir(exist_ok=True)
-    with log_path.open("a", encoding="utf-8", buffering=1) as log:
-        def emit(text: str) -> None:
-            print(text, flush=True)
-            print(text, file=log)
+    def emit(text: str) -> None:
+        print(text, flush=True)
 
-        emit(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {mode} {args.prompt or ''}".rstrip())
-        for name, script, request in stages:
-            stage_started = time.perf_counter()
-            emit(f"[{name}] {mode}")
-            flags = request if mode == "pipeline" else (f"--{mode}",)
-            with subprocess.Popen([sys.executable, "-u", script, *flags], cwd=ROOT,
-                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                  text=True, encoding="utf-8") as process:
-                for line in process.stdout:
-                    emit(line.rstrip("\n"))
-                code = process.wait()
-            emit(f"[{name}] exit={code} wall_s={time.perf_counter()-stage_started:.3f}")
-            if code:
-                emit(f"[{mode}] failed wall_s={time.perf_counter()-started:.3f}")
-                raise SystemExit(code)
-        emit(f"[{mode}] done wall_s={time.perf_counter()-started:.3f}")
+    emit(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {mode} {args.prompt or ''}".rstrip())
+    for name, script, request in stages:
+        stage_started = time.perf_counter()
+        emit(f"[{name}] {mode}")
+        flags = request if mode == "pipeline" else (f"--{mode}",)
+        with subprocess.Popen([sys.executable, "-u", script, *flags], cwd=ROOT,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              text=True, encoding="utf-8") as process:
+            for line in process.stdout:
+                emit(line.rstrip("\n"))
+            code = process.wait()
+        emit(f"[{name}] exit={code} wall_s={time.perf_counter()-stage_started:.3f}")
+        if code:
+            emit(f"[{mode}] failed wall_s={time.perf_counter()-started:.3f}")
+            raise SystemExit(code)
+    emit(f"[{mode}] done wall_s={time.perf_counter()-started:.3f}")
 
 
 if __name__ == "__main__":
