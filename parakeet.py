@@ -103,6 +103,14 @@ def _transcribe_cli(wav: Path) -> str:
     return result.stdout
 
 
+def transcribe_json(wav: Path) -> dict:
+    wav = (wav if wav.is_absolute() else ROOT / wav).resolve()
+    cmd = [str(EXE), "transcribe", "--model", str(MODEL), "--input", str(wav),
+           "--lang", LANGUAGE, "--threads", str(THREADS), "--json"]
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, text=True, encoding="utf-8", check=True)
+    return json.loads(result.stdout)
+
+
 def _transcribe_http(wav: Path) -> str:
     boundary = uuid.uuid4().hex
     with wav.open("rb") as f:
@@ -141,6 +149,7 @@ if __name__ == "__main__":
     p.add_argument("--install", action="store_true")
     p.add_argument("--load", action="store_true")
     p.add_argument("--unload", action="store_true")
+    p.add_argument("--json", action="store_true", help="emit text plus per-word/per-token timestamps")
     p.add_argument("wav", type=Path, nargs="*")
     args = p.parse_args()
     if args.install:
@@ -163,11 +172,11 @@ if __name__ == "__main__":
     if args.wav:
         for wav_path in args.wav:
             t0 = time.perf_counter()
-            transcript = transcribe(wav_path).strip()
+            result = transcribe_json(wav_path) if args.json else transcribe(wav_path).strip()
             t1 = time.perf_counter()
             with wave.open(str(wav_path)) as wf:
                 dur = wf.getnframes() / wf.getframerate()
-            print(transcript, flush=True)
+            print(json.dumps(result, ensure_ascii=False) if args.json else result, flush=True)
             print(f"[rtf] parakeet_total={t1-t0:.3f}s", file=sys.stderr)
             print(f"[rtf] audio_s={dur:.3f}s", file=sys.stderr)
     else:

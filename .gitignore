@@ -1,7 +1,6 @@
 *
 !.gitignore
 !.gitattributes
-!/README.md
 !/parakeet.py
 !/tts_nano.py
 !/brain.py
@@ -9,5 +8,5 @@
 !/chunk.py
 !/tts_turbo.py
 !/tts_v3.py
-!/TTS_INVESTIGATION_KB.md
-!/TTS_FORENSIC_KB_2026-09-07.md
+!/validate.py
+!/TRIDENT_TTS_KNOWLEDGE_BASE.md
