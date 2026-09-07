@@ -7,9 +7,9 @@ SPEC = {
     "family": "turbo", "label": "tts", "models": (T3, S3), "language": "en",
     "multilingual": False, "port": 17935, "output": "tts",
     "knobs": {"n-gpu-layers": 99, "context": 8196, "threads": 4, "fastconv": 1, "seed": 42,
-              "max-tokens": 1000, "top-k": 1000, "top-p": .95, "min-p": 0,
+              "max-tokens": 1000, "top-k": 1000, "top-p": .95, "min-p": 0.0,
               "temperature": .8, "repeat-penalty": 1.2, "cfm-steps": 2,
-              "cfg-weight": 0, "exaggeration": 0},
+              "cfg-weight": 0.0, "exaggeration": 0.0},
     "url": "https://huggingface.co/ResembleAI/chatterbox-turbo/resolve/main",
     "checkpoints": ("t3_turbo_v1.safetensors", "s3gen_meanflow.safetensors", "conds.pt",
                     "ve.safetensors", "vocab.json", "merges.txt", "added_tokens.json",
@@ -21,8 +21,8 @@ SPEC = {
 
 
 class TTS(SharedTTS):
-    def __init__(self) -> None:
-        super().__init__(SPEC)
+    def __init__(self, spec=SPEC) -> None:
+        super().__init__(spec)
 
 
 if __name__ == "__main__":

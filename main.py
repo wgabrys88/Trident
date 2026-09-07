@@ -7,14 +7,14 @@ TTS_MODELS = ROOT / "models"
 TTS_VOICE = ROOT / "data/ref-trump.wav"
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 VULKAN_SDK = Path("C:/VulkanSDK/1.4.357.0")
-CHATTERBOX_REV = "335a94eb9d1211bee1b31e9df8bae24c684494dc"
+CHATTERBOX_REV = "dc15bd20430bd193b105aa059ee91d2b8dca0503"
 GGML_REV = "58c3805840b516b2a88ff867ccf7bb41dba79951"
 NATIVE_PIN = f"{CHATTERBOX_REV} {GGML_REV}"
 VOICE_URL = "https://huggingface.co/datasets/sdialog/voices-celebrities/resolve/57746b866d470be717097b87ba0428f8dd73e4f4"
 VOICE_SHA = "9d8b44d73192e9c04dd241f16177e4c5753bcefadde69e6e24b45e278b821f8c"
 TTS_RUNTIME_FILES = ("chatterbox-server.exe", "ggml.dll", "ggml-base.dll", "ggml-cpu.dll", "ggml-vulkan.dll")
-TTS_RATE, TTS_MAGIC, TTS_VERSION = 24000, 0x32525454, 2
-TTS_REQUEST, TTS_RESPONSE = struct.Struct("<7I"), struct.Struct("<8I")
+TTS_RATE, TTS_MAGIC, TTS_VERSION = 24000, 0x32525454, 3
+TTS_REQUEST, TTS_RESPONSE = struct.Struct("<8I"), struct.Struct("<8I")
 TTS_CHUNKER = ROOT / "tools/runtime/chunker/Scripts/python.exe"
 TTS_LOG = ROOT / ".runtime-logs/tts.log"
 
@@ -34,6 +34,15 @@ def _download(url: str, path: Path, sha: str = "") -> None:
         partial.replace(path)
     finally:
         partial.unlink(missing_ok=True)
+
+
+def _sha(path: Path) -> str:
+    with path.open("rb") as f:
+        return hashlib.file_digest(f, "sha256").hexdigest()
+
+
+def _text_id(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 def _port_in_use(port: int) -> bool:
@@ -91,7 +100,7 @@ def _build_tts(work: Path, source: Path) -> None:
                "/src/ggml-cpu/", "/src/ggml-vulkan/"))
     subprocess.run(["git", "-C", str(source / "ggml"), "apply", "--whitespace=nowarn",
                     str(source / "src/ggml-vulkan-queue.patch")], check=True)
-    build = work / "build"
+    build = work / "b"
     subprocess.run([
         CMAKE, "-S", str(source), "-B", str(build), "-G", "Visual Studio 17 2022", "-A", "x64",
         "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_NATIVE=ON", "-DGGML_CCACHE=OFF",
@@ -110,7 +119,10 @@ def _build_tts(work: Path, source: Path) -> None:
 
 
 def _convert_tts(spec: dict, work: Path, source: Path, outputs: tuple) -> None:
-    converter, checkpoint = work / "converter", work / "checkpoint"
+    missing = [(conversion, output) for conversion, output in zip(spec["conversions"], outputs) if not output.is_file()]
+    if not missing:
+        return
+    converter, checkpoint = work / "c", work / "k"
     venv.EnvBuilder(with_pip=True).create(converter)
     python = str(converter / "Scripts/python.exe")
     pip = [python, "-m", "pip", "--isolated", "install", "--no-cache-dir",
@@ -120,61 +132,64 @@ def _convert_tts(spec: dict, work: Path, source: Path, outputs: tuple) -> None:
                     "scipy==1.15.3", "librosa==0.11.0", "huggingface-hub==0.34.4"], check=True)
     for name in spec["checkpoints"]:
         _download(f"{spec['url']}/{name}", checkpoint / name)
-    for (script, model_args, quant), output in zip(spec["conversions"], outputs):
+    TTS_MODELS.mkdir(parents=True, exist_ok=True)
+    for (script, model_args, quant), output in missing:
         converted = work / output.name
         subprocess.run([python, str(source / "scripts" / script), *model_args,
                         "--ckpt-dir", str(checkpoint), "--out", str(converted), "--quant", quant],
                        cwd=work, check=True)
-        TTS_MODELS.mkdir(parents=True, exist_ok=True)
         converted.replace(output)
 
 
 def install_tts(spec: dict) -> None:
+    if len(CHATTERBOX_REV) != 40:
+        raise RuntimeError("Set CHATTERBOX_REV to the pushed chatterbox.cpp commit SHA before install")
     family, label = spec["family"], spec["label"]
     outputs = spec["models"]
     revision = TTS_RUNTIME / "REVISION"
     runtime = [*(TTS_RUNTIME / n for n in TTS_RUNTIME_FILES), TTS_RUNTIME / "chatterbox-LICENSE.txt",
                TTS_RUNTIME / "ggml-LICENSE.txt"]
-    models = [*outputs, TTS_MODELS / spec["card"]]
-    voice = [TTS_VOICE, TTS_VOICE.with_suffix(".md")]
+    card = TTS_MODELS / spec["card"]
+    voice_card = TTS_VOICE.with_suffix(".md")
     stamp = revision.read_text(encoding="utf-8").strip() if revision.is_file() else ""
     runtime_ok = all(p.is_file() for p in runtime) and stamp == NATIVE_PIN
-    if all(p.is_file() for p in runtime) and not stamp:
-        revision.write_text(NATIVE_PIN + "\n", encoding="utf-8")
-        runtime_ok = True
-    models_ok, voice_ok = all(p.is_file() for p in models), all(p.is_file() for p in voice)
-    if runtime_ok and models_ok and voice_ok:
+    models_ok = all(p.is_file() for p in outputs)
+    card_ok, voice_ok = card.is_file(), TTS_VOICE.is_file() and voice_card.is_file()
+    if runtime_ok and models_ok and card_ok and voice_ok:
         print(f"[{label}] install | pin={NATIVE_PIN} skip")
     else:
-        print(f"[{label}] install | runtime_ok={runtime_ok} models_ok={models_ok} voice_ok={voice_ok}")
-        with tempfile.TemporaryDirectory(prefix=f".{family}-install-", dir=ROOT) as tmp:
-            work, source = Path(tmp), Path(tmp) / "chatterbox"
-            if not runtime_ok or not models_ok:
+        print(f"[{label}] install | runtime_ok={runtime_ok} models_ok={models_ok} card_ok={card_ok} voice_ok={voice_ok}")
+        if not runtime_ok or not models_ok:
+            with tempfile.TemporaryDirectory(prefix=f".{family[0]}-", dir=ROOT) as tmp:
+                work, source = Path(tmp), Path(tmp) / "s"
                 print(f"[{label}] install | checkout {CHATTERBOX_REV}")
-                converters = tuple(f"/scripts/{item[0]}" for item in spec["conversions"])
-                _checkout("https://github.com/wgabrys88/chatterbox.cpp.git", CHATTERBOX_REV, source,
-                          ("/CMakeLists.txt", "/LICENSE", "/src/", "/include/", *converters,
-                           "/scripts/quant_policy.py"))
-            if not runtime_ok:
-                print(f"[{label}] install | building")
-                _build_tts(work, source)
-                revision.write_text(NATIVE_PIN + "\n", encoding="utf-8")
-            if not models_ok:
-                print(f"[{label}] install | converting")
-                _convert_tts(spec, work, source, outputs)
-                _download(f"{spec['url']}/README.md", TTS_MODELS / spec["card"])
-            if not voice_ok:
-                print(f"[{label}] install | voice")
+                patterns = ["/CMakeLists.txt", "/LICENSE", "/src/", "/include/"]
+                if not models_ok:
+                    patterns += [*(f"/scripts/{item[0]}" for item in spec["conversions"]), "/scripts/quant_policy.py"]
+                _checkout("https://github.com/wgabrys88/chatterbox.cpp.git", CHATTERBOX_REV, source, patterns)
+                if not runtime_ok:
+                    print(f"[{label}] install | building")
+                    _build_tts(work, source)
+                    revision.write_text(NATIVE_PIN + "\n", encoding="utf-8")
+                if not models_ok:
+                    print(f"[{label}] install | converting")
+                    _convert_tts(spec, work, source, outputs)
+        if not card_ok:
+            _download(f"{spec['url']}/README.md", card)
+        if not voice_ok:
+            print(f"[{label}] install | voice")
+            if not TTS_VOICE.is_file():
                 _download(f"{VOICE_URL}/audio/donald-trump.wav", TTS_VOICE, VOICE_SHA)
-                _download(f"{VOICE_URL}/README.md", TTS_VOICE.with_suffix(".md"))
-            print(f"[{label}] install | done")
+            if not voice_card.is_file():
+                _download(f"{VOICE_URL}/README.md", voice_card)
+        print(f"[{label}] install | done")
     import chunk as chunker
     chunker.install()
 
 
 class TTS:
     def __init__(self, spec: dict) -> None:
-        self.spec, self._proc, self._log_fh = spec, None, None
+        self.spec, self._proc, self._log_fh, self._response_id = spec, None, None, 0
 
     def _emit(self, text: str) -> None:
         sys.stderr.write(f"[{time.strftime('%H:%M:%S')}] {text}\n")
@@ -231,15 +246,16 @@ class TTS:
         _kill_port(self.spec["port"])
 
     def synthesize(self, text: str, language: str = None) -> Path:
-        self.start(language)
         pieces = self._chunks(text)
         output = ROOT / f"out_{time.strftime('%d-%m-%y-%H-%M-%S')}_{self.spec['output']}.wav"
-        print(f"[synth] pieces={len(pieces)} total_chars={sum(len(p) for p in pieces)}", flush=True)
+        self._response_id += 1
+        response_id = self._response_id
+        print(f"[synth] response={response_id} pieces={len(pieces)} total_chars={sum(len(p) for p in pieces)} source_sha={_text_id(text)}", flush=True)
         with socket.create_connection(("127.0.0.1", self.spec["port"]), timeout=300) as sock, sock.makefile("rb") as reader:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             for piece_id, piece in enumerate(pieces):
-                print(f"[synth] sending piece={piece_id} chars={len(piece)} text='{piece[:50]}...'", flush=True)
-                self._send(sock, 1, piece_id, piece)
+                print(f"[synth] request response={response_id} piece={piece_id}/{len(pieces)} chars={len(piece)} text_sha={_text_id(piece)} text={piece!r}", flush=True)
+                self._send(sock, 1, response_id, piece_id, len(pieces), piece)
             pcm_bytes = 0
             pieces_written = 0
             with output.open("xb") as target, wave.open(target, "wb") as wav:
@@ -247,30 +263,37 @@ class TTS:
                 for piece_id in range(len(pieces)):
                     before = pcm_bytes
                     chunks_received = 0
-                    print(f"[synth] waiting for piece={piece_id}", flush=True)
+                    piece_hash = hashlib.sha256()
+                    leading_trim = 0
                     while True:
-                        kind, returned_piece, chunk, payload = self._receive(reader)
-                        if returned_piece != piece_id:
+                        kind, returned_response, returned_piece, chunk, payload = self._receive(reader)
+                        if returned_response != response_id or returned_piece != piece_id:
                             raise RuntimeError("Unexpected TTS piece")
                         if kind == 2:
-                            print(f"[synth] piece={piece_id} done chunks={chunks_received} bytes_written={pcm_bytes-before}", flush=True)
                             break
                         if kind != 1:
                             raise RuntimeError(f"Unexpected TTS response kind: {kind}")
                         zeros = TTS_RATE // 50 * 2
                         if piece_id == 0 and chunk == 0 and len(payload) > zeros and payload[:zeros] == b"\0" * zeros:
                             payload = payload[zeros:]
+                            leading_trim = zeros
                         wav.writeframesraw(payload)
+                        piece_hash.update(payload)
                         pcm_bytes += len(payload)
                         chunks_received += 1
                     if pcm_bytes == before:
                         raise RuntimeError(f"TTS piece {piece_id} produced no audio")
+                    print(
+                        f"[synth] pcm response={response_id} piece={piece_id}/{len(pieces)} chunks={chunks_received} "
+                        f"byte_start={before} byte_end={pcm_bytes} sample_start={before//2} sample_end={pcm_bytes//2} "
+                        f"trimmed_leading_bytes={leading_trim} pcm_sha={piece_hash.hexdigest()[:16]}", flush=True)
                     pieces_written += 1
-            print(f"[synth] total pieces_written={pieces_written} total_bytes={pcm_bytes} total_samples={pcm_bytes//2}", flush=True)
+            print(f"[synth] complete response={response_id} pieces={pieces_written} bytes={pcm_bytes} samples={pcm_bytes//2}", flush=True)
             sock.settimeout(10)
             self._send(sock, 3)
             if self._receive(reader)[0] != 5:
                 raise RuntimeError("TTS did not acknowledge close")
+        print(f"[synth] wav path={output.name} sha256={_sha(output)}", flush=True)
         return output
 
     @staticmethod
@@ -290,9 +313,9 @@ class TTS:
         return pieces
 
     @staticmethod
-    def _send(sock, kind: int, piece: int = 0, text: str = "") -> None:
+    def _send(sock, kind: int, response: int = 0, piece: int = 0, total: int = 0, text: str = "") -> None:
         payload = text.encode("utf-8")
-        sock.sendall(TTS_REQUEST.pack(TTS_MAGIC, TTS_VERSION, kind, 0, 0, piece, len(payload)) + payload)
+        sock.sendall(TTS_REQUEST.pack(TTS_MAGIC, TTS_VERSION, kind, 0, response, piece, total, len(payload)) + payload)
 
     @staticmethod
     def _receive(reader) -> tuple:
@@ -300,14 +323,25 @@ class TTS:
         if len(header) != TTS_RESPONSE.size:
             raise EOFError("Native TTS closed the connection")
         magic, version, kind, epoch, response, piece, chunk, length = TTS_RESPONSE.unpack(header)
-        if (magic, version) != (TTS_MAGIC, TTS_VERSION) or (kind != 5 and (epoch, response) != (0, 0)):
+        if (magic, version) != (TTS_MAGIC, TTS_VERSION) or (kind != 5 and epoch != 0):
             raise RuntimeError("Unexpected TTS response header")
         payload = reader.read(length)
         if len(payload) != length:
             raise EOFError("Incomplete native TTS audio frame")
         if kind == 4:
             raise RuntimeError(payload.decode("utf-8", errors="replace"))
-        return kind, piece, chunk, payload
+        return kind, response, piece, chunk, payload
+
+
+def _provenance(spec: dict) -> None:
+    files = [TTS_RUNTIME / name for name in TTS_RUNTIME_FILES]
+    files += [*spec["models"], TTS_VOICE]
+    print(f"pin chatterbox={CHATTERBOX_REV} ggml={GGML_REV}")
+    for path in files:
+        if not path.is_file():
+            print(f"missing {path.relative_to(ROOT)}")
+            continue
+        print(f"sha256={_sha(path)} bytes={path.stat().st_size} path={path.relative_to(ROOT)}")
 
 
 def run_tts(spec: dict, tts_type: type) -> None:
@@ -317,15 +351,26 @@ def run_tts(spec: dict, tts_type: type) -> None:
     parser.add_argument("--install", action="store_true")
     parser.add_argument("--load", action="store_true")
     parser.add_argument("--unload", action="store_true")
+    parser.add_argument("--provenance", action="store_true")
     if spec["multilingual"]:
         parser.add_argument("--language", default=spec["language"],
                             help="ISO 639-1 language code (e.g. en, fr, zh)")
     text = parser.add_mutually_exclusive_group()
     text.add_argument("--text")
     text.add_argument("--text-file", type=Path)
+    for name, default in spec["knobs"].items():
+        parser.add_argument(f"--{name}", dest=name.replace("-", "_"), type=type(default), default=None)
     args = parser.parse_args()
+    spec = {**spec, "knobs": dict(spec["knobs"])}
+    for name in spec["knobs"]:
+        value = getattr(args, name.replace("-", "_"))
+        if value is not None:
+            spec["knobs"][name] = value
     language = args.language if spec["multilingual"] else spec["language"]
-    tts = tts_type()
+    tts = tts_type(spec)
+    if args.provenance:
+        _provenance(spec)
+        return
     if args.install:
         install_tts(spec)
         tts.start(language)
@@ -344,24 +389,21 @@ def run_tts(spec: dict, tts_type: type) -> None:
               (ROOT / args.text_file).read_text(encoding="utf-8") if args.text_file else
               (ROOT / "brain_out.txt").read_text(encoding="utf-8"))
     started = time.perf_counter()
-    if not spec["multilingual"]:
-        tts.start()
-        synthesis = time.perf_counter()
+    tts.start(language)
+    synthesis = time.perf_counter()
     wav_path = tts.synthesize(source, language)
     finished = time.perf_counter()
     (ROOT / "tts_out.wav").write_bytes(wav_path.read_bytes())
     print(wav_path)
     with wave.open(str(wav_path)) as wav:
         duration = wav.getnframes() / wav.getframerate()
-    if spec["multilingual"]:
-        print(f"[rtf] v3_start={started:.3f}s", file=sys.stderr)
-        print(f"[rtf] v3_synth={finished-started:.3f}s", file=sys.stderr)
-        print(f"[rtf] v3_total={finished-started:.3f}s", file=sys.stderr)
-    else:
-        print(f"[rtf] tts_start={synthesis-started:.3f}s", file=sys.stderr)
-        print(f"[rtf] tts_synth={finished-synthesis:.3f}s", file=sys.stderr)
-        print(f"[rtf] tts_total={finished-started:.3f}s", file=sys.stderr)
+    prefix = spec["family"]
+    synth_s = finished - synthesis
+    print(f"[rtf] {prefix}_start={synthesis-started:.3f}s", file=sys.stderr)
+    print(f"[rtf] {prefix}_synth={synth_s:.3f}s", file=sys.stderr)
+    print(f"[rtf] {prefix}_total={finished-started:.3f}s", file=sys.stderr)
     print(f"[rtf] audio_s={duration:.3f}s", file=sys.stderr)
+    print(f"[rtf] {prefix}_rtf={synth_s/duration:.3f}", file=sys.stderr)
 
 
 def main() -> None:

@@ -7,7 +7,7 @@ SPEC = {
     "family": "v3", "label": "v3", "models": (T3, S3), "language": "en",
     "multilingual": True, "port": 17936, "output": "v3",
     "knobs": {"n-gpu-layers": 99, "context": 2048, "threads": 6, "fastconv": 1, "seed": 42,
-              "max-tokens": 1000, "top-k": 1000, "top-p": .95, "min-p": 0,
+              "max-tokens": 1000, "top-k": 1000, "top-p": .95, "min-p": 0.0,
               "temperature": .8, "repeat-penalty": 1.5, "cfm-steps": 5,
               "cfg-weight": 0.3, "exaggeration": 0.5},
     "url": "https://huggingface.co/ResembleAI/chatterbox/resolve/ef85ce7bef2f3f1a74d0d837d379d2fcb68203cd",
@@ -20,8 +20,8 @@ SPEC = {
 
 
 class TTS(SharedTTS):
-    def __init__(self) -> None:
-        super().__init__(SPEC)
+    def __init__(self, spec=SPEC) -> None:
+        super().__init__(spec)
 
 
 if __name__ == "__main__":
