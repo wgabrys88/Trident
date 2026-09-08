@@ -7,7 +7,7 @@ TTS_MODELS = ROOT / "models"
 TTS_VOICE = ROOT / "data/ref-trump.wav"
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 VULKAN_SDK = Path("C:/VulkanSDK/1.4.357.0")
-CHATTERBOX_REV = "573e3ff33b3f45b91578d24f6803222365392946"
+CHATTERBOX_REV = "ac41675aefef56aabf3d445e4aa4baf144274643"
 GGML_REV = "58c3805840b516b2a88ff867ccf7bb41dba79951"
 NATIVE_PIN = f"{CHATTERBOX_REV} {GGML_REV}"
 VOICE_URL = "https://huggingface.co/datasets/sdialog/voices-celebrities/resolve/57746b866d470be717097b87ba0428f8dd73e4f4"
@@ -20,6 +20,56 @@ TTS_CHUNKER = ROOT / "tools/runtime/chunker/Scripts/python.exe"
 TTS_LOG = ROOT / ".runtime-logs/tts.log"
 TTS_BASE_KNOBS = {"n-gpu-layers": 99, "fastconv": 1, "seed": 42, "max-tokens": 1000,
                   "top-k": 1000, "top-p": .95, "min-p": 0.0, "temperature": .8}
+TTS_MIN_SPEECH_RATIO = 2.0
+TTS_MIN_SPEECH_TOKENS = 16
+
+
+def _dbg(hypothesis_id: str, location: str, message: str, **data) -> None:
+    # #region agent log
+    try:
+        with (ROOT / "debug-de999f.log").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"sessionId": "de999f", "hypothesisId": hypothesis_id, "location": location,
+                                 "message": message, "data": data, "timestamp": int(time.time() * 1000)},
+                                ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    # #endregion
+
+
+def _native_ledger(piece_id: int, since: int) -> dict:
+    if not TTS_LOG.is_file():
+        return {}
+    with TTS_LOG.open("rb") as fh:
+        fh.seek(since)
+        tail = fh.read().decode("utf-8", "replace")
+    found = {}
+    for line in tail.splitlines():
+        text = line.strip()
+        if not text.startswith("{"):
+            continue
+        try:
+            fields = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if fields.get("piece") == piece_id and "n_speech_tok" in fields:
+            found = fields
+    return found
+
+
+def _guard_native_piece(piece_id: int, since: int) -> dict:
+    native = _native_ledger(piece_id, since)
+    if not native:
+        return native
+    n_text = int(native.get("n_text_tok", 0))
+    n_speech = int(native.get("n_speech_tok", 0))
+    eos_min = int(native.get("eos_min_speech", 0))
+    floor = max(TTS_MIN_SPEECH_TOKENS, int(n_text * TTS_MIN_SPEECH_RATIO), eos_min)
+    _dbg("A", "main.py:_guard_native_piece", "native_metrics", piece=piece_id,
+         n_text_tok=n_text, n_speech_tok=n_speech, eos_min_speech=eos_min, floor=floor)
+    if n_text > 5 and n_speech < floor:
+        raise RuntimeError(
+            f"TTS piece {piece_id} collapsed: n_speech_tok={n_speech} n_text_tok={n_text} floor={floor}")
+    return native
 
 
 def jsonl(event: str, *, file=None, **fields) -> None:
@@ -290,6 +340,7 @@ class TTS:
             begin["audit_dir"] = str(audit_dir.relative_to(ROOT) if audit_dir.is_absolute() else audit_dir)
         print(json.dumps(begin, ensure_ascii=False), flush=True)
         synth_t0 = time.perf_counter()
+        tts_log_offset = TTS_LOG.stat().st_size if TTS_LOG.is_file() else 0
         with socket.create_connection(("127.0.0.1", self.spec["port"]), timeout=300) as sock, sock.makefile("rb") as reader:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             for piece_id, piece in enumerate(pieces):
@@ -318,6 +369,10 @@ class TTS:
                         pcm_bytes += len(payload)
                     if pcm_bytes == before:
                         raise RuntimeError(f"TTS piece {piece_id} produced no audio")
+                    native = _guard_native_piece(piece_id, tts_log_offset)
+                    piece_samples = (pcm_bytes - before) // 2
+                    _dbg("E", "main.py:synthesize", "piece_pcm", piece=piece_id, chars=len(pieces[piece_id]),
+                         pcm_samples=piece_samples, native=native)
                     jsonl("synth.piece", file=sys.stdout, response=response_id, piece=piece_id,
                           text=pieces[piece_id], chars=len(pieces[piece_id]),
                           sample_start=before // 2, sample_end=pcm_bytes // 2,
