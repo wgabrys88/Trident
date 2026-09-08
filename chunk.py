@@ -4,25 +4,24 @@ from pathlib import Path
 
 from main import ROOT, _download, jsonl
 
-# sat-12l-sm is the strongest official SM checkpoint. Tokenizer stays a local file.
-MODELS = ROOT / "models/sat-12l-sm"
+# sat-12l is the official non-SM 12-layer checkpoint. It scores newlines, not every sentence period.
+MODELS = ROOT / "models/sat-12l"
 VENV = ROOT / "tools/runtime/chunker"
 ONNX = MODELS / "model_optimized.onnx"
 CONFIG = MODELS / "config.json"
 TOKENIZER = MODELS / "tokenizer.json"
-ONNX_SHA = "0bb8cf275f98e1c337138bcecdf007876fb2a2b0eb4b5756ce627b2b0510c2c7"
-CONFIG_SHA = "ed9094a56926e0ca1302f6c7ca9b11cf2ea0eced84d0f330ad938cba0fcc6209"
+ONNX_SHA = "c8704f695246a12449ede8aaa8ef7deb107ac77c982d63bef15d7ac4a5a68968"
+CONFIG_SHA = "ee63fb740bd478f277e45a2beb6b011eeed797e7b8841786669721e0a53a8c84"
 TOKENIZER_SHA = "a898ea75433890f6610f4e470b8ebeb0c21dce5c8dd61f892eb09eb5919d2e2c"
-SAT_ONNX_URL = "https://huggingface.co/segment-any-text/sat-12l-sm/resolve/main/model_optimized.onnx"
-SAT_CONFIG_URL = "https://huggingface.co/segment-any-text/sat-12l-sm/resolve/main/config.json"
+SAT_ONNX_URL = "https://huggingface.co/segment-any-text/sat-12l/resolve/main/model_optimized.onnx"
+SAT_CONFIG_URL = "https://huggingface.co/segment-any-text/sat-12l/resolve/main/config.json"
 TOKENIZER_URL = "https://huggingface.co/FacebookAI/xlm-roberta-base/resolve/main/tokenizer.json"
 SAT_HUB_PREFIX = None
 SAT_LORA_PATH = None
 SAT_STYLE = None
 SAT_LANGUAGE = None
 
-# Native SaT knobs. Higher threshold = fewer cuts. No min/max character constraints.
-# 0.25 and 0.7 both made 167 sentence pieces; 0.99 is the native merge lever.
+# Native SaT knobs. Non-SM sat-12l scores newlines, not every sentence period.
 SAT_THRESHOLD = 0.99
 SAT_STRIDE = 64
 SAT_BLOCK_SIZE = 512
@@ -65,12 +64,14 @@ def install() -> None:
         subprocess.run([*pip, "numpy==1.26.4", "onnxruntime==1.20.1", "tokenizers==0.21.4",
                         "huggingface-hub==0.34.4", "wtpsplit-lite==0.2.0"], check=True)
     if not ONNX.is_file():
-        jsonl("chunk.install", model="sat-12l-sm")
+        jsonl("chunk.install", model="sat-12l")
         _download(SAT_ONNX_URL, ONNX, ONNX_SHA)
     if not CONFIG.is_file():
         _download(SAT_CONFIG_URL, CONFIG, CONFIG_SHA)
     if not TOKENIZER.is_file():
-        previous = ROOT / "models/sat-3l-sm/tokenizer.json"
+        previous = ROOT / "models/sat-12l-sm/tokenizer.json"
+        if not previous.is_file():
+            previous = ROOT / "models/sat-3l-sm/tokenizer.json"
         if previous.is_file():
             TOKENIZER.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(previous, TOKENIZER)
@@ -81,7 +82,7 @@ def install() -> None:
 
 def _knobs() -> dict:
     return {
-        "model": "sat-12l-sm", "library": "wtpsplit-lite", "threshold": SAT_THRESHOLD,
+        "model": "sat-12l", "library": "wtpsplit-lite", "threshold": SAT_THRESHOLD,
         "stride": SAT_STRIDE, "block_size": SAT_BLOCK_SIZE, "batch_size": SAT_BATCH_SIZE,
         "outer_batch_size": SAT_OUTER_BATCH_SIZE, "pad_last_batch": SAT_PAD_LAST_BATCH,
         "weighting": SAT_WEIGHTING, "remove_whitespace": SAT_REMOVE_WHITESPACE,
@@ -91,7 +92,6 @@ def _knobs() -> dict:
         "style": SAT_STYLE, "language": SAT_LANGUAGE, "providers": ORT_PROVIDERS,
         "ort_intra_threads": ORT_INTRA_THREADS, "ort_inter_threads": ORT_INTER_THREADS,
         "ort_sequential": ORT_SEQUENTIAL, "ort_graph_opt": ORT_GRAPH_OPT,
-        "char_constraints": False, "rtf_target": 0.25,
     }
 
 
@@ -167,29 +167,13 @@ def split(text: str) -> list:
         pad_last_batch=SAT_PAD_LAST_BATCH, weighting=SAT_WEIGHTING,
         remove_whitespace_before_inference=SAT_REMOVE_WHITESPACE,
         outer_batch_size=SAT_OUTER_BATCH_SIZE,
-        return_paragraph_probabilities=SAT_DO_PARAGRAPH, verbose=SAT_VERBOSE)
-    if SAT_DO_PARAGRAPH:
-        sentence_probs, newline_probs = probs
-        para_idx = np.where(newline_probs > SAT_PARAGRAPH_THRESHOLD)[0]
-        sent_idx = np.where(sentence_probs > SAT_THRESHOLD)[0]
-        raw = []
-        offset = 0
-        for paragraph in indices_to_sentences(text, para_idx):
-            raw.append(list(indices_to_sentences(
-                paragraph,
-                np.where(sentence_probs[offset:offset + len(paragraph)] > SAT_THRESHOLD)[0],
-                strip_whitespace=SAT_STRIP_WHITESPACE)))
-            offset += len(paragraph)
-        pieces = _flatten(raw)
-        score = _cut_scores(sentence_probs, sent_idx)
-        score["n_para_cuts"] = int(len(para_idx))
-    else:
-        cut_idx = np.where(probs > SAT_THRESHOLD)[0]
-        raw = list(indices_to_sentences(text, cut_idx, strip_whitespace=SAT_STRIP_WHITESPACE))
-        if not SAT_NEWLINE_IS_SPACE:
-            raw = [part for sentence in raw for part in sentence.split("\n")]
-        pieces = _flatten(raw)
-        score = _cut_scores(probs, cut_idx)
+        return_paragraph_probabilities=False, verbose=SAT_VERBOSE)
+    cut_idx = np.where(probs > SAT_THRESHOLD)[0]
+    raw = list(indices_to_sentences(text, cut_idx, strip_whitespace=SAT_STRIP_WHITESPACE))
+    if not SAT_NEWLINE_IS_SPACE:
+        raw = [part for sentence in raw for part in sentence.split("\n")]
+    pieces = _flatten(raw)
+    score = _cut_scores(probs, cut_idx)
     infer_ms = int((time.perf_counter() - t0) * 1000)
     if not pieces:
         raise ValueError("TTS input is empty")
