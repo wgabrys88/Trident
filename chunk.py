@@ -22,7 +22,8 @@ SAT_STYLE = None
 SAT_LANGUAGE = None
 
 # Native SaT knobs. Higher threshold = fewer cuts. No min/max character constraints.
-SAT_THRESHOLD = 0.7
+# 0.25 and 0.7 both made 167 sentence pieces; 0.99 is the native merge lever.
+SAT_THRESHOLD = 0.99
 SAT_STRIDE = 64
 SAT_BLOCK_SIZE = 512
 SAT_BATCH_SIZE = 32
@@ -31,12 +32,12 @@ SAT_PAD_LAST_BATCH = False
 SAT_WEIGHTING = "uniform"
 SAT_REMOVE_WHITESPACE = False
 SAT_STRIP_WHITESPACE = False
-SAT_NEWLINE_IS_SPACE = False
+SAT_NEWLINE_IS_SPACE = True
 SAT_DO_PARAGRAPH = False
-SAT_PARAGRAPH_THRESHOLD = 0.5
+SAT_PARAGRAPH_THRESHOLD = 0.99
 SAT_VERBOSE = False
 
-# CPU only. Dml/CUDA would steal the GPU from Nano/Gemma/Parakeet.
+# CPU ONNX. This 12-layer encoder is not a GGML Vulkan target.
 ORT_PROVIDERS = ["CPUExecutionProvider"]
 ORT_INTRA_THREADS = 1
 ORT_INTER_THREADS = 1
@@ -126,12 +127,27 @@ def _model():
 
 def _flatten(raw) -> list:
     if SAT_DO_PARAGRAPH:
-        return [s.strip() for para in raw for s in para if s and str(s).strip()]
+        out = []
+        for para in raw:
+            joined = " ".join(s.strip() for s in para if s and str(s).strip()) if isinstance(para, (list, tuple)) else str(para).strip()
+            if joined:
+                out.append(joined)
+        return out
     return [p.strip() for p in raw if p and p.strip()]
 
 
+def _dot_scores(text: str, probs) -> dict:
+    dots = [float(probs[i]) for i, ch in enumerate(text) if ch == "." and i < len(probs)]
+    if not dots:
+        return {"n_dot": 0, "dot_min": None, "dot_max": None, "dot_mean": None, "dot_median": None, "n_dot_gt_thr": 0}
+    return {
+        "n_dot": len(dots), "dot_min": round(min(dots), 5), "dot_max": round(max(dots), 5),
+        "dot_mean": round(statistics.mean(dots), 5), "dot_median": round(float(statistics.median(dots)), 5),
+        "n_dot_gt_thr": sum(p > SAT_THRESHOLD for p in dots),
+    }
+
+
 def split(text: str) -> list:
-    # Gemma puts one breath per line. Keep those breaks. SaT still meaning-cuts inside a line.
     source_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
     t0 = time.perf_counter()
     lines = [line for line in (" ".join(part.split()) for part in
@@ -143,14 +159,34 @@ def split(text: str) -> list:
     t0 = time.perf_counter()
     model = _model()
     load_ms = int((time.perf_counter() - t0) * 1000)
+    import numpy as np
+    from wtpsplit_lite._utils import indices_to_sentences
     t0 = time.perf_counter()
-    pieces = _flatten(model.split(
-        text, threshold=SAT_THRESHOLD, stride=SAT_STRIDE, block_size=SAT_BLOCK_SIZE,
-        batch_size=SAT_BATCH_SIZE, pad_last_batch=SAT_PAD_LAST_BATCH, weighting=SAT_WEIGHTING,
+    probs = model.predict_proba(
+        text, stride=SAT_STRIDE, block_size=SAT_BLOCK_SIZE, batch_size=SAT_BATCH_SIZE,
+        pad_last_batch=SAT_PAD_LAST_BATCH, weighting=SAT_WEIGHTING,
         remove_whitespace_before_inference=SAT_REMOVE_WHITESPACE,
-        outer_batch_size=SAT_OUTER_BATCH_SIZE, paragraph_threshold=SAT_PARAGRAPH_THRESHOLD,
-        strip_whitespace=SAT_STRIP_WHITESPACE, do_paragraph_segmentation=SAT_DO_PARAGRAPH,
-        treat_newline_as_space=SAT_NEWLINE_IS_SPACE, verbose=SAT_VERBOSE))
+        outer_batch_size=SAT_OUTER_BATCH_SIZE,
+        return_paragraph_probabilities=SAT_DO_PARAGRAPH, verbose=SAT_VERBOSE)
+    if SAT_DO_PARAGRAPH:
+        sentence_probs, newline_probs = probs
+        raw = []
+        offset = 0
+        for paragraph in indices_to_sentences(text, np.where(newline_probs > SAT_PARAGRAPH_THRESHOLD)[0]):
+            raw.append(list(indices_to_sentences(
+                paragraph,
+                np.where(sentence_probs[offset:offset + len(paragraph)] > SAT_THRESHOLD)[0],
+                strip_whitespace=SAT_STRIP_WHITESPACE)))
+            offset += len(paragraph)
+        pieces = _flatten(raw)
+        score = _dot_scores(text, sentence_probs)
+    else:
+        raw = list(indices_to_sentences(
+            text, np.where(probs > SAT_THRESHOLD)[0], strip_whitespace=SAT_STRIP_WHITESPACE))
+        if not SAT_NEWLINE_IS_SPACE:
+            raw = [part for sentence in raw for part in sentence.split("\n")]
+        pieces = _flatten(raw)
+        score = _dot_scores(text, probs)
     infer_ms = int((time.perf_counter() - t0) * 1000)
     if not pieces:
         raise ValueError("TTS input is empty")
@@ -159,7 +195,7 @@ def split(text: str) -> list:
           chars=sum(lengths), chars_min=min(lengths), chars_max=max(lengths),
           chars_mean=round(statistics.mean(lengths), 1),
           chars_median=statistics.median(lengths), n_lt_50=sum(n < 50 for n in lengths),
-          n_ge_200=sum(n >= 200 for n in lengths), prep_ms=prep_ms, load_ms=load_ms,
+          n_ge_200=sum(n >= 200 for n in lengths), **score, prep_ms=prep_ms, load_ms=load_ms,
           infer_ms=infer_ms, ms=prep_ms + load_ms + infer_ms)
     for i, piece in enumerate(pieces):
         jsonl("chunk.piece", i=i, chars=len(piece), text=piece)
