@@ -9,7 +9,7 @@ TTS_MODELS = ROOT / "models"
 TTS_VOICE = ROOT / "data/ref-trump.wav"
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 VULKAN_SDK = Path("C:/VulkanSDK/1.4.357.0")
-CHATTERBOX_REV = "4fe3c5d70993b307a4b2b3cc6297462bdb05d6da"
+CHATTERBOX_REV = "c5e01b304c6a6dd494c53c84bbe75f7e08f08972"
 GGML_REV = "58c3805840b516b2a88ff867ccf7bb41dba79951"
 NATIVE_PIN = f"{CHATTERBOX_REV} {GGML_REV}"
 CHATTERBOX_URL = "https://github.com/wgabrys88/chatterbox.cpp.git"
@@ -23,17 +23,9 @@ TTS_FRAME = struct.Struct("<7I")
 TTS_CHUNKER = ROOT / "tools/runtime/chunker/Scripts/python.exe"
 jsonl = trace
 TTS_BASE_KNOBS = {"n-gpu-layers": 99, "fastconv": 1, "seed": 42, "max-tokens": 1000,
-                  "top-k": 1000, "top-p": .95, "min-p": 0.0, "temperature": .8}
+                  "top-k": 1000, "top-p": .95, "min-p": 0.0, "temperature": .8, "s3-reset": 0}
 TTS_MIN_SPEECH_RATIO = 2.0
 TTS_MIN_SPEECH_TOKENS = 16
-
-
-def _pcm_stats(pcm: bytes) -> tuple:
-    n = len(pcm) // 2
-    if n <= 0:
-        return 0.0, 0
-    samples = struct.unpack_from(f"<{n}h", pcm)
-    return round((sum(s * s for s in samples) / n) ** 0.5, 1), max(abs(s) for s in samples)
 
 
 def _guard_native_piece(piece_id: int) -> dict:
@@ -44,9 +36,8 @@ def _guard_native_piece(piece_id: int) -> dict:
     n_speech = int(native.get("n_speech_tok", 0))
     eos_min = int(native.get("eos_min_speech", 0))
     floor = max(TTS_MIN_SPEECH_TOKENS, int(n_text * TTS_MIN_SPEECH_RATIO), eos_min)
-    dbg("A", "main.py:_guard_native_piece", "native_metrics", piece=piece_id,
-        n_text_tok=n_text, n_speech_tok=n_speech, eos_min_speech=eos_min, floor=floor,
-        pending_in=native.get("pending_in"), s3_history=native.get("s3_history"))
+    dbg("A", "main.py:_guard_native_piece", "native", piece=piece_id, n_text=n_text,
+        n_speech=n_speech, pending_in=native.get("pending_in"), s3_history=native.get("s3_history"))
     if n_text > 5 and n_speech < floor:
         raise RuntimeError(
             f"TTS piece {piece_id} collapsed: n_speech_tok={n_speech} n_text_tok={n_text} floor={floor}")
@@ -311,7 +302,7 @@ class TTS:
 
     def synthesize(self, text: str) -> Path:
         chunk_t0 = time.perf_counter()
-        pieces, scores = self._chunks(text)
+        pieces = self._chunks(text)
         self.chunk_s = time.perf_counter() - chunk_t0
         output = ROOT / f"out_{time.strftime('%d-%m-%y-%H-%M-%S')}_{self.spec['output']}.wav"
         self._response_id += 1
@@ -332,14 +323,12 @@ class TTS:
                 self._send(sock, 1, response_id, piece_id, len(pieces), piece)
             pcm_bytes = 0
             pieces_written = 0
-            prev_tail = b""
             with output.open("xb") as target, wave.open(target, "wb") as wav:
                 wav.setparams((1, 2, TTS_RATE, 0, "NONE", "not compressed"))
                 for piece_id in range(len(pieces)):
                     piece_t0 = time.perf_counter()
                     before = pcm_bytes
                     leading_trim = 0
-                    piece_pcm = b""
                     while True:
                         kind, returned_response, returned_piece, chunk, payload = self._receive(reader)
                         if returned_response != response_id or returned_piece != piece_id:
@@ -353,33 +342,17 @@ class TTS:
                             payload = payload[zeros:]
                             leading_trim = zeros
                         wav.writeframesraw(payload)
-                        piece_pcm += payload
                         pcm_bytes += len(payload)
                     if pcm_bytes == before:
                         raise RuntimeError(f"TTS piece {piece_id} produced no audio")
                     native = _guard_native_piece(piece_id)
-                    piece_samples = (pcm_bytes - before) // 2
-                    dbg("E", "main.py:synthesize", "piece_pcm", piece=piece_id, chars=len(pieces[piece_id]),
-                        pcm_samples=piece_samples, native=native)
-                    if piece_id:
-                        head = piece_pcm[:960]
-                        tail_rms, tail_peak = _pcm_stats(prev_tail)
-                        head_rms, head_peak = _pcm_stats(head)
-                        jsonl("synth.boundary", file=sys.stdout, piece=piece_id, sample_start=before // 2,
-                              prev_text_tail=pieces[piece_id - 1][-40:], next_text_head=pieces[piece_id][:40],
-                              chunk_cut_score=scores[piece_id - 1] if piece_id - 1 < len(scores) else None,
-                              pending_in=native.get("pending_in"), emit_begin=native.get("emit_begin"),
-                              s3_history=native.get("s3_history"),
-                              tail_rms=tail_rms, head_rms=head_rms, tail_peak=tail_peak, head_peak=head_peak)
-                        dbg("B1", "main.py:synthesize", "boundary", piece=piece_id, sample_start=before // 2,
-                            pending_in=native.get("pending_in"), s3_history=native.get("s3_history"),
-                            tail_rms=tail_rms, head_rms=head_rms, tail_peak=tail_peak, head_peak=head_peak)
                     jsonl("synth.piece", file=sys.stdout, response=response_id, piece=piece_id,
                           text=pieces[piece_id], chars=len(pieces[piece_id]),
                           sample_start=before // 2, sample_end=pcm_bytes // 2,
+                          n_speech_tok=native.get("n_speech_tok"), s3_history=native.get("s3_history"),
+                          pending_in=native.get("pending_in"),
                           trimmed_leading_bytes=leading_trim,
                           wall_ms=int((time.perf_counter() - piece_t0) * 1000))
-                    prev_tail = piece_pcm[-960:] if len(piece_pcm) >= 960 else piece_pcm
                     pieces_written += 1
             jsonl("synth.complete", file=sys.stdout, response=response_id,
                   pieces=pieces_written, samples=pcm_bytes // 2,
@@ -392,7 +365,7 @@ class TTS:
         return output
 
     @staticmethod
-    def _chunks(text: str) -> tuple:
+    def _chunks(text: str) -> list:
         if not TTS_CHUNKER.is_file():
             raise RuntimeError("CPU chunker not installed")
         env = os.environ.copy()
@@ -408,18 +381,7 @@ class TTS:
         pieces = json.loads(process.stdout)
         if not pieces:
             raise ValueError("TTS input is empty")
-        scores = []
-        for line in process.stderr.splitlines():
-            line = line.strip()
-            if not line.startswith("{"):
-                continue
-            try:
-                obj = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if obj.get("event") == "chunk.done":
-                scores = obj.get("cut_scores") or []
-        return pieces, scores
+        return pieces
 
     @staticmethod
     def _send(sock, kind: int, response: int = 0, piece: int = 0, total: int = 0, text: str = "") -> None:
