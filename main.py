@@ -10,6 +10,8 @@ VULKAN_SDK = Path("C:/VulkanSDK/1.4.357.0")
 CHATTERBOX_REV = "ac41675aefef56aabf3d445e4aa4baf144274643"
 GGML_REV = "58c3805840b516b2a88ff867ccf7bb41dba79951"
 NATIVE_PIN = f"{CHATTERBOX_REV} {GGML_REV}"
+CHATTERBOX_URL = "https://github.com/wgabrys88/chatterbox.cpp.git"
+CHATTERBOX_LOCAL = ROOT.parent / "chatterbox.cpp"
 VOICE_URL = "https://huggingface.co/datasets/sdialog/voices-celebrities/resolve/57746b866d470be717097b87ba0428f8dd73e4f4"
 VOICE_SHA = "9d8b44d73192e9c04dd241f16177e4c5753bcefadde69e6e24b45e278b821f8c"
 TTS_RUNTIME_FILES = ("chatterbox-server.exe", "ggml.dll", "ggml-base.dll", "ggml-cpu.dll", "ggml-vulkan.dll")
@@ -172,9 +174,16 @@ def _wait_ready(proc: subprocess.Popen, ready_event: threading.Event, tail: list
 
 
 def _checkout(url: str, rev: str, path: Path, patterns: tuple) -> None:
+    origin = url
+    if url == CHATTERBOX_URL and CHATTERBOX_LOCAL.is_dir():
+        local_ok = subprocess.run(["git", "-C", str(CHATTERBOX_LOCAL), "cat-file", "-e", f"{rev}^{{commit}}"],
+                                  capture_output=True).returncode == 0
+        if local_ok:
+            origin = str(CHATTERBOX_LOCAL.resolve())
+            jsonl("tts.install.checkout.local", rev=rev, path=str(CHATTERBOX_LOCAL))
     subprocess.run(["git", "init", str(path)], check=True)
     git = ["git", "-C", str(path)]
-    for args in (("remote", "add", "origin", url), ("config", "remote.origin.promisor", "true"),
+    for args in (("remote", "add", "origin", origin), ("config", "remote.origin.promisor", "true"),
                  ("config", "remote.origin.partialclonefilter", "blob:none"),
                  ("fetch", "--depth=1", "--filter=blob:none", "--no-tags", "origin", rev)):
         subprocess.run([*git, *args], check=True)
@@ -259,7 +268,7 @@ def install_tts(spec: dict) -> None:
                     patterns += ["/CMakeLists.txt", "/LICENSE", "/src/", "/include/"]
                 if missing:
                     patterns += [*(f"/scripts/{conversion[0]}" for conversion, output in missing), "/scripts/quant_policy.py"]
-                _checkout("https://github.com/wgabrys88/chatterbox.cpp.git", CHATTERBOX_REV, source, patterns)
+                _checkout(CHATTERBOX_URL, CHATTERBOX_REV, source, patterns)
                 if not runtime_ok:
                     jsonl("tts.install.build", family=family)
                     _build_tts(work, source)
