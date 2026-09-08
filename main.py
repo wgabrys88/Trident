@@ -7,7 +7,7 @@ TTS_MODELS = ROOT / "models"
 TTS_VOICE = ROOT / "data/ref-trump.wav"
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 VULKAN_SDK = Path("C:/VulkanSDK/1.4.357.0")
-CHATTERBOX_REV = "523205247ab38007cd1583dc1456fd9882ff010c"
+CHATTERBOX_REV = "519861682a187a2696fb98eb881052ad91a70470"
 GGML_REV = "58c3805840b516b2a88ff867ccf7bb41dba79951"
 NATIVE_PIN = f"{CHATTERBOX_REV} {GGML_REV}"
 VOICE_URL = "https://huggingface.co/datasets/sdialog/voices-celebrities/resolve/57746b866d470be717097b87ba0428f8dd73e4f4"
@@ -20,6 +20,10 @@ TTS_CHUNKER = ROOT / "tools/runtime/chunker/Scripts/python.exe"
 TTS_LOG = ROOT / ".runtime-logs/tts.log"
 TTS_BASE_KNOBS = {"n-gpu-layers": 99, "fastconv": 1, "seed": 42, "max-tokens": 1000,
                   "top-k": 1000, "top-p": .95, "min-p": 0.0, "temperature": .8}
+
+
+def jsonl(event: str, *, file=None, **fields) -> None:
+    print(json.dumps({"event": event, **fields}, ensure_ascii=False), file=file or sys.stderr, flush=True)
 
 
 def tts_knobs(context: int, threads: int, cfm_steps: int, repeat_penalty: float = 1.2,
@@ -182,7 +186,7 @@ def _convert_tts(spec: dict, work: Path, source: Path, missing: list) -> None:
 def install_tts(spec: dict) -> None:
     if len(CHATTERBOX_REV) != 40:
         raise RuntimeError("Set CHATTERBOX_REV to the pushed chatterbox.cpp commit SHA before install")
-    family, label = spec["family"], spec["label"]
+    family = spec["family"]
     outputs = spec["models"]
     missing = _missing_conversions(spec)
     revision = TTS_RUNTIME / "REVISION"
@@ -192,13 +196,14 @@ def install_tts(spec: dict) -> None:
     models_ok = not missing
     card_ok, voice_ok = card.is_file(), TTS_VOICE.is_file() and voice_card.is_file()
     if runtime_ok and models_ok and card_ok and voice_ok:
-        print(f"[{label}] install | pin={NATIVE_PIN} skip")
+        jsonl("tts.install", family=family, pin=NATIVE_PIN, skip=True)
     else:
-        print(f"[{label}] install | runtime_ok={runtime_ok} models_ok={models_ok} card_ok={card_ok} voice_ok={voice_ok}")
+        jsonl("tts.install", family=family, runtime_ok=runtime_ok, models_ok=models_ok,
+              card_ok=card_ok, voice_ok=voice_ok, skip=False)
         if not runtime_ok or not models_ok:
             with tempfile.TemporaryDirectory(prefix=f".{family[0]}-", dir=ROOT) as tmp:
                 work, source = Path(tmp), Path(tmp) / "s"
-                print(f"[{label}] install | checkout {CHATTERBOX_REV}")
+                jsonl("tts.install.checkout", family=family, rev=CHATTERBOX_REV)
                 patterns = []
                 if not runtime_ok:
                     patterns += ["/CMakeLists.txt", "/LICENSE", "/src/", "/include/"]
@@ -206,21 +211,21 @@ def install_tts(spec: dict) -> None:
                     patterns += [*(f"/scripts/{conversion[0]}" for conversion, output in missing), "/scripts/quant_policy.py"]
                 _checkout("https://github.com/wgabrys88/chatterbox.cpp.git", CHATTERBOX_REV, source, patterns)
                 if not runtime_ok:
-                    print(f"[{label}] install | building")
+                    jsonl("tts.install.build", family=family)
                     _build_tts(work, source)
                     revision.write_text(NATIVE_PIN + "\n", encoding="utf-8")
                 if not models_ok:
-                    print(f"[{label}] install | converting")
+                    jsonl("tts.install.convert", family=family)
                     _convert_tts(spec, work, source, missing)
         if not card_ok:
             _download(f"{spec['url']}/README.md", card)
         if not voice_ok:
-            print(f"[{label}] install | voice")
+            jsonl("tts.install.voice", family=family)
             if not TTS_VOICE.is_file():
                 _download(f"{VOICE_URL}/audio/donald-trump.wav", TTS_VOICE, VOICE_SHA)
             if not voice_card.is_file():
                 _download(f"{VOICE_URL}/README.md", voice_card)
-        print(f"[{label}] install | done")
+        jsonl("tts.install.done", family=family)
     import chunk as chunker
     chunker.install()
 
@@ -228,10 +233,7 @@ def install_tts(spec: dict) -> None:
 class TTS:
     def __init__(self, spec: dict) -> None:
         self.spec, self._proc, self._log_fh, self._response_id = spec, None, None, 0
-
-    def _emit(self, text: str) -> None:
-        sys.stderr.write(f"[{time.strftime('%H:%M:%S')}] {text}\n")
-        sys.stderr.flush()
+        self.chunk_s = self.synth_s = 0.0
 
     def _command(self, language: str) -> list:
         spec = self.spec
@@ -251,15 +253,15 @@ class TTS:
         if self._proc is not None and self._proc.poll() is None:
             return self
         if _port_in_use(self.spec["port"]):
-            self._emit("start | port already listening")
+            jsonl("tts.start", family=self.spec["family"], port=self.spec["port"], reused=True)
             return self
-        self._emit("start | spawning server")
+        jsonl("tts.start", family=self.spec["family"], port=self.spec["port"], spawning=True)
         TTS_LOG.parent.mkdir(parents=True, exist_ok=True)
         self._log_fh = TTS_LOG.open("ab", buffering=0)
         self._proc = subprocess.Popen(self._command(language), cwd=TTS_RUNTIME, stdin=subprocess.DEVNULL,
                                       stdout=self._log_fh, stderr=self._log_fh)
         _wait_port(self._proc, self.spec["port"], 120)
-        self._emit("start | ready")
+        jsonl("tts.ready", family=self.spec["family"], port=self.spec["port"])
         return self
 
     def stop(self) -> None:
@@ -274,16 +276,20 @@ class TTS:
         _kill_port(self.spec["port"])
 
     def synthesize(self, text: str) -> Path:
+        chunk_t0 = time.perf_counter()
         pieces = self._chunks(text)
+        self.chunk_s = time.perf_counter() - chunk_t0
         output = ROOT / f"out_{time.strftime('%d-%m-%y-%H-%M-%S')}_{self.spec['output']}.wav"
         self._response_id += 1
         response_id = self._response_id
         begin = {"event": "synth.begin", "response": response_id, "pieces": len(pieces),
-                 "total_chars": sum(len(p) for p in pieces), "source_sha": _text_id(text)}
+                 "total_chars": sum(len(p) for p in pieces), "source_sha": _text_id(text),
+                 "chunk_s": round(self.chunk_s, 3)}
         if self.spec.get("audit_dir"):
             audit_dir = Path(self.spec["audit_dir"])
             begin["audit_dir"] = str(audit_dir.relative_to(ROOT) if audit_dir.is_absolute() else audit_dir)
         print(json.dumps(begin, ensure_ascii=False), flush=True)
+        synth_t0 = time.perf_counter()
         with socket.create_connection(("127.0.0.1", self.spec["port"]), timeout=300) as sock, sock.makefile("rb") as reader:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             for piece_id, piece in enumerate(pieces):
@@ -293,6 +299,7 @@ class TTS:
             with output.open("xb") as target, wave.open(target, "wb") as wav:
                 wav.setparams((1, 2, TTS_RATE, 0, "NONE", "not compressed"))
                 for piece_id in range(len(pieces)):
+                    piece_t0 = time.perf_counter()
                     before = pcm_bytes
                     leading_trim = 0
                     while True:
@@ -311,20 +318,20 @@ class TTS:
                         pcm_bytes += len(payload)
                     if pcm_bytes == before:
                         raise RuntimeError(f"TTS piece {piece_id} produced no audio")
-                    print(json.dumps({
-                        "event": "synth.piece", "response": response_id, "piece": piece_id,
-                        "text": pieces[piece_id], "chars": len(pieces[piece_id]),
-                        "sample_start": before // 2, "sample_end": pcm_bytes // 2,
-                        "trimmed_leading_bytes": leading_trim,
-                    }, ensure_ascii=False), flush=True)
+                    jsonl("synth.piece", file=sys.stdout, response=response_id, piece=piece_id,
+                          text=pieces[piece_id], chars=len(pieces[piece_id]),
+                          sample_start=before // 2, sample_end=pcm_bytes // 2,
+                          trimmed_leading_bytes=leading_trim,
+                          wall_ms=int((time.perf_counter() - piece_t0) * 1000))
                     pieces_written += 1
-            print(json.dumps({"event": "synth.complete", "response": response_id,
-                              "pieces": pieces_written, "samples": pcm_bytes // 2,
-                              "wav": output.name, "sha256": _sha(output)}, ensure_ascii=False), flush=True)
+            jsonl("synth.complete", file=sys.stdout, response=response_id,
+                  pieces=pieces_written, samples=pcm_bytes // 2,
+                  wav=output.name, sha256=_sha(output))
             sock.settimeout(10)
             self._send(sock, 3)
             if self._receive(reader)[0] != 5:
                 raise RuntimeError("TTS did not acknowledge close")
+        self.synth_s = time.perf_counter() - synth_t0
         return output
 
     @staticmethod
@@ -367,12 +374,13 @@ class TTS:
 def _provenance(spec: dict) -> None:
     files = [TTS_RUNTIME / name for name in TTS_RUNTIME_FILES]
     files += [*spec["models"], TTS_VOICE]
-    print(f"pin chatterbox={CHATTERBOX_REV} ggml={GGML_REV}")
+    jsonl("tts.provenance", chatterbox=CHATTERBOX_REV, ggml=GGML_REV)
     for path in files:
+        rel = str(path.relative_to(ROOT))
         if not path.is_file():
-            print(f"missing {path.relative_to(ROOT)}")
+            jsonl("tts.provenance.file", path=rel, missing=True)
             continue
-        print(f"sha256={_sha(path)} bytes={path.stat().st_size} path={path.relative_to(ROOT)}")
+        jsonl("tts.provenance.file", path=rel, sha256=_sha(path), bytes=path.stat().st_size)
 
 
 def run_tts(spec: dict) -> None:
@@ -401,7 +409,7 @@ def run_tts(spec: dict) -> None:
         )
         audit_dir.mkdir(parents=True, exist_ok=False)
         spec["audit_dir"] = audit_dir
-        print(f"[audit] dir={audit_dir.relative_to(ROOT)}", flush=True)
+        jsonl("tts.audit", dir=str(audit_dir.relative_to(ROOT)))
     else:
         spec["audit_dir"] = ""
     for name in spec["knobs"]:
@@ -422,7 +430,7 @@ def run_tts(spec: dict) -> None:
         return
     if args.load:
         tts.start(language)
-        print(f"[{spec['label']}] ready", flush=True)
+        jsonl("tts.loaded", family=spec["family"], file=sys.stdout)
         input()
         tts.stop()
         return
@@ -431,20 +439,19 @@ def run_tts(spec: dict) -> None:
               (ROOT / "brain_out.txt").read_text(encoding="utf-8"))
     started = time.perf_counter()
     tts.start(language)
-    synthesis = time.perf_counter()
+    warmup_s = time.perf_counter() - started
     wav_path = tts.synthesize(source)
-    finished = time.perf_counter()
     (ROOT / "tts_out.wav").write_bytes(wav_path.read_bytes())
     print(wav_path)
     with wave.open(str(wav_path)) as wav:
         duration = wav.getnframes() / wav.getframerate()
-    prefix = spec["family"]
-    synth_s = finished - synthesis
-    print(f"[rtf] {prefix}_start={synthesis-started:.3f}s", file=sys.stderr)
-    print(f"[rtf] {prefix}_synth={synth_s:.3f}s", file=sys.stderr)
-    print(f"[rtf] {prefix}_total={finished-started:.3f}s", file=sys.stderr)
-    print(f"[rtf] audio_s={duration:.3f}s", file=sys.stderr)
-    print(f"[rtf] {prefix}_rtf={synth_s/duration:.3f}", file=sys.stderr)
+    synth_s = tts.synth_s
+    audit = bool(spec.get("audit_dir"))
+    jsonl("synth.rtf", file=sys.stdout, family=spec["family"],
+          warmup_s=round(warmup_s, 3), chunk_s=round(tts.chunk_s, 3),
+          synth_s=round(synth_s, 3), audio_s=round(duration, 3),
+          rtf=round(synth_s / duration, 3) if duration else None,
+          audit=audit, rtf_valid=not audit)
 
 
 def main() -> None:
@@ -470,26 +477,28 @@ def main() -> None:
     log_path = ROOT / ".runtime-logs/main.log"
     log_path.parent.mkdir(exist_ok=True)
     with log_path.open("a", encoding="utf-8", buffering=1) as log:
-        def emit(text: str) -> None:
-            print(text, flush=True)
-            print(text, file=log)
+        def emit(event: str, **fields) -> None:
+            line = json.dumps({"event": event, **fields}, ensure_ascii=False)
+            print(line, flush=True)
+            print(line, file=log)
 
-        emit(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {mode} {args.prompt or ''}".rstrip())
+        emit("main", mode=mode, prompt=args.prompt or "", t=time.strftime("%Y-%m-%d %H:%M:%S"))
         for name, script, request in stages:
             stage_started = time.perf_counter()
-            emit(f"[{name}] {mode}")
+            emit("main.stage", name=name, mode=mode)
             flags = request if mode == "pipeline" else (f"--{mode}",)
             with subprocess.Popen([sys.executable, "-u", script, *flags], cwd=ROOT,
                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                   text=True, encoding="utf-8") as process:
                 for line in process.stdout:
-                    emit(line.rstrip("\n"))
+                    print(line, end="" if line.endswith("\n") else "\n", flush=True)
+                    print(line, end="" if line.endswith("\n") else "\n", file=log)
                 code = process.wait()
-            emit(f"[{name}] exit={code} wall_s={time.perf_counter()-stage_started:.3f}")
+            emit("main.stage.done", name=name, exit=code, wall_s=round(time.perf_counter() - stage_started, 3))
             if code:
-                emit(f"[{mode}] failed wall_s={time.perf_counter()-started:.3f}")
+                emit("main.failed", mode=mode, wall_s=round(time.perf_counter() - started, 3))
                 raise SystemExit(code)
-        emit(f"[{mode}] done wall_s={time.perf_counter()-started:.3f}")
+        emit("main.done", mode=mode, wall_s=round(time.perf_counter() - started, 3))
 
 
 if __name__ == "__main__":

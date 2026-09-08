@@ -1,8 +1,8 @@
 from __future__ import annotations
-import json, shutil, subprocess, sys, venv
+import json, shutil, subprocess, sys, time, venv
 from pathlib import Path
 
-from main import ROOT, _download
+from main import ROOT, _download, jsonl
 
 MODELS = ROOT / "models/sat-12l-sm"
 VENV = ROOT / "tools/runtime/chunker"
@@ -15,8 +15,10 @@ TOKENIZER_SHA = "a898ea75433890f6610f4e470b8ebeb0c21dce5c8dd61f892eb09eb5919d2e2
 SAT_ONNX_URL = "https://huggingface.co/segment-any-text/sat-12l-sm/resolve/main/model_optimized.onnx"
 SAT_CONFIG_URL = "https://huggingface.co/segment-any-text/sat-12l-sm/resolve/main/config.json"
 TOKENIZER_URL = "https://huggingface.co/FacebookAI/xlm-roberta-base/resolve/main/tokenizer.json"
-# Sentence-boundary probability. The SM default 0.25 (and even 0.1) still packs
-# "Nineteen. ... Thirty." onto one piece. 0.025 is SaT's non-SM default.
+# Sentence-boundary probability. sat-12l-sm's SM default is 0.25; 0.025 is the
+# non-SM default and currently keeps each counted item as its own piece.
+# Do not add character/punctuation splitters. Longer SaT pieces would mean
+# fewer S3 history windows; that is a later experiment after a no-audit RTF run.
 SAT_THRESHOLD = 0.025
 # CPU only. Dml/CUDA would steal the GPU from Nano/Gemma/Parakeet.
 ORT_PROVIDERS = ["CPUExecutionProvider"]
@@ -42,7 +44,7 @@ def install() -> None:
         subprocess.run([*pip, "numpy==1.26.4", "onnxruntime==1.20.1", "tokenizers==0.21.4",
                         "huggingface-hub==0.34.4", "wtpsplit-lite==0.2.0"], check=True)
     if not ONNX.is_file():
-        print("[chunk] install | sat-12l-sm onnx", flush=True)
+        jsonl("chunk.install", model="sat-12l-sm")
         _download(SAT_ONNX_URL, ONNX, ONNX_SHA)
     if not CONFIG.is_file():
         _download(SAT_CONFIG_URL, CONFIG, CONFIG_SHA)
@@ -53,7 +55,7 @@ def install() -> None:
             shutil.copy2(previous, TOKENIZER)
         else:
             _download(TOKENIZER_URL, TOKENIZER, TOKENIZER_SHA)
-    print("[chunk] install | done", flush=True)
+    jsonl("chunk.install.done")
 
 
 def _model():
@@ -91,7 +93,8 @@ if __name__ == "__main__":
     if "--install" in sys.argv:
         install()
         sys.exit(0)
+    t0 = time.perf_counter()
     pieces = split(sys.stdin.read())
-    print(f"[chunk] n={len(pieces)}", file=sys.stderr)
+    jsonl("chunk.done", pieces=len(pieces), ms=int((time.perf_counter() - t0) * 1000))
     json.dump(pieces, sys.stdout, ensure_ascii=False)
     sys.stdout.write("\n")

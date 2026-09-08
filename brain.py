@@ -3,7 +3,7 @@ import argparse, http.client, json, shutil, subprocess, sys, tempfile, threading
 from collections import deque
 from pathlib import Path
 
-from main import ROOT, _download, _drain, _kill_port, _port_in_use, _sha, _wait_ready
+from main import ROOT, _download, _drain, _kill_port, _port_in_use, _sha, _wait_ready, jsonl
 
 RUNTIME = ROOT / "tools/runtime/brain"
 EXE = RUNTIME / "llama-server.exe"
@@ -224,7 +224,9 @@ if __name__ == "__main__":
         n_tokens = len(answer.split())
         inf_s = finished - ready
         tps = n_tokens / inf_s if inf_s > 0 else 0.0
-        print(f"[brain] startup_s={ready-started:.3f} ttft_s={(first or finished)-ready:.3f} inference_s={inf_s:.3f} tokens={n_tokens} tps={tps:.2f}", file=sys.stderr)
+        jsonl("brain.rtf", startup_s=round(ready - started, 3),
+              ttft_s=round((first or finished) - ready, 3),
+              inference_s=round(inf_s, 3), tokens=n_tokens, tps=round(tps, 2))
     else:
         text = (ROOT / "pipe_in.txt").read_text(encoding="utf-8")
         started = time.perf_counter()
@@ -247,4 +249,6 @@ if __name__ == "__main__":
         n_tokens = len(answer.split())
         inf_s = finished - ready
         tps = n_tokens / inf_s if inf_s > 0 else 0.0
-        print(f"[brain] startup_s={ready-started:.3f} ttft_s={(first or finished)-ready:.3f} inference_s={inf_s:.3f} tokens={n_tokens} tps={tps:.2f}", file=sys.stderr)
+        jsonl("brain.rtf", startup_s=round(ready - started, 3),
+              ttft_s=round((first or finished) - ready, 3),
+              inference_s=round(inf_s, 3), tokens=n_tokens, tps=round(tps, 2))
