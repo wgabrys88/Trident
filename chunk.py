@@ -4,7 +4,7 @@ from pathlib import Path
 
 from main import ROOT, _download, jsonl
 
-# Chonky modernbert-large: semantic paragraph cuts, not sentence periods.
+# Chonky modernbert-large: semantic cuts from token-class scores, not char caps.
 MODELS = ROOT / "models/chonky-modernbert-large-1"
 VENV = ROOT / "tools/runtime/chunker"
 STAMP = VENV / "chonky.ok"
@@ -20,10 +20,20 @@ TOKENIZER_CONFIG_SHA = "37542f45b201d188c1b4199c2e93078064224d4355d28479f6444cd8
 SPECIAL_TOKENS_SHA = "ea97ecdbcc73713039d8d64dbb05e3689495c96657fbd9a18f5bed381be81049"
 HUB = "https://huggingface.co/mirth/chonky_modernbert_large_1/resolve/main"
 CHONKY_DEVICE = "cpu"
-CHONKY_MAX_LENGTH = 1024
-CHONKY_STRIDE = 512
-CHONKY_AGGREGATION = "simple"
 CHONKY_THREADS = 4
+CHONKY_BATCH_SIZE = 1
+# Trained at 1024; ModernBERT can go to 8192 but this checkpoint was not.
+CHONKY_MAX_LENGTH = 1024
+# Overlap in tokens. Transformers only applies stride when aggregation != none.
+CHONKY_STRIDE = 512
+# none: per-token softmax so threshold can add cuts. simple/first/average/max: argmax groups.
+CHONKY_AGGREGATION = "none"
+# P(separator). Argmax is ~0.5 and made one 1497-char piece. Lower = more native cuts.
+CHONKY_THRESHOLD = 0.2
+# Empty so O tokens stay visible and 1-score is P(separator). Default pipeline hides O.
+CHONKY_IGNORE_LABELS = []
+# Official Chonky demo uses paul_graham_essay_no_new_line. Newlines hid cuts.
+CHONKY_NEWLINE_IS_SPACE = True
 _splitter = None
 
 
@@ -40,7 +50,9 @@ def _knobs() -> dict:
     return {
         "model": "chonky_modernbert_large_1", "library": "chonky", "device": CHONKY_DEVICE,
         "max_length": CHONKY_MAX_LENGTH, "stride": CHONKY_STRIDE,
-        "aggregation": CHONKY_AGGREGATION, "threads": CHONKY_THREADS,
+        "aggregation": CHONKY_AGGREGATION, "threshold": CHONKY_THRESHOLD,
+        "ignore_labels": CHONKY_IGNORE_LABELS, "newline_is_space": CHONKY_NEWLINE_IS_SPACE,
+        "batch_size": CHONKY_BATCH_SIZE, "threads": CHONKY_THREADS,
     }
 
 
@@ -77,6 +89,7 @@ def _model():
         install()
         os.environ["HF_HUB_OFFLINE"] = "1"
         os.environ["TRANSFORMERS_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_VERBOSITY"] = "error"
         import torch
         from transformers import AutoModelForTokenClassification, AutoTokenizer, pipeline
         torch.set_num_threads(CHONKY_THREADS)
@@ -85,10 +98,18 @@ def _model():
             MODELS, num_labels=2, id2label={0: "O", 1: "separator"},
             label2id={"O": 0, "separator": 1}, local_files_only=True)
         model.to(CHONKY_DEVICE)
-        _splitter = pipeline(
-            "ner", model=model, tokenizer=tokenizer, device=CHONKY_DEVICE,
-            aggregation_strategy=CHONKY_AGGREGATION, stride=CHONKY_STRIDE)
+        kwargs = dict(aggregation_strategy=CHONKY_AGGREGATION, ignore_labels=CHONKY_IGNORE_LABELS,
+                      batch_size=CHONKY_BATCH_SIZE)
+        if CHONKY_AGGREGATION != "none":
+            kwargs["stride"] = CHONKY_STRIDE
+        _splitter = pipeline("ner", model=model, tokenizer=tokenizer, device=CHONKY_DEVICE, **kwargs)
     return _splitter
+
+
+def _p_sep(ner: dict) -> float:
+    score = float(ner["score"])
+    name = str(ner.get("entity") or ner.get("entity_group") or "")
+    return score if name.endswith("separator") else 1.0 - score
 
 
 def split(text: str) -> list:
@@ -96,7 +117,7 @@ def split(text: str) -> list:
     t0 = time.perf_counter()
     lines = [line for line in (" ".join(part.split()) for part in
              text.replace("\r\n", "\n").replace("\r", "\n").split("\n")) if line]
-    text = "\n".join(lines)
+    text = (" " if CHONKY_NEWLINE_IS_SPACE else "\n").join(lines)
     prep_ms = int((time.perf_counter() - t0) * 1000)
     if not text:
         raise ValueError("TTS input is empty")
@@ -105,12 +126,22 @@ def split(text: str) -> list:
     load_ms = int((time.perf_counter() - t0) * 1000)
     t0 = time.perf_counter()
     ners = pipe(text)
-    pieces, begin = [], 0
+    by_end = {}
     for ner in ners:
-        chunk = text[begin:ner["end"]].strip()
+        end = int(ner["end"])
+        if end <= 0 or end >= len(text):
+            continue
+        p = _p_sep(ner)
+        if p >= CHONKY_THRESHOLD and p > by_end.get(end, 0.0):
+            by_end[end] = p
+    cuts = sorted(by_end)
+    pieces, begin, scores = [], 0, []
+    for end in cuts:
+        chunk = text[begin:end].strip()
         if chunk:
             pieces.append(chunk)
-        begin = ner["end"]
+            scores.append(round(by_end[end], 4))
+        begin = end
     tail = text[begin:].strip()
     if tail:
         pieces.append(tail)
@@ -122,7 +153,10 @@ def split(text: str) -> list:
           chars=sum(lengths), chars_min=min(lengths), chars_max=max(lengths),
           chars_mean=round(statistics.mean(lengths), 1),
           chars_median=statistics.median(lengths), n_lt_50=sum(n < 50 for n in lengths),
-          n_ge_200=sum(n >= 200 for n in lengths), n_cuts=len(ners),
+          n_ge_200=sum(n >= 200 for n in lengths), n_ge_400=sum(n >= 400 for n in lengths),
+          n_cuts=len(cuts), cut_scores=scores[:32],
+          cut_score_min=min(scores) if scores else None,
+          cut_score_max=max(scores) if scores else None,
           prep_ms=prep_ms, load_ms=load_ms, infer_ms=infer_ms, ms=prep_ms + load_ms + infer_ms)
     for i, piece in enumerate(pieces):
         jsonl("chunk.piece", i=i, chars=len(piece), text=piece)
