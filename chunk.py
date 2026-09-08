@@ -136,14 +136,14 @@ def _flatten(raw) -> list:
     return [p.strip() for p in raw if p and p.strip()]
 
 
-def _dot_scores(text: str, probs) -> dict:
-    dots = [float(probs[i]) for i, ch in enumerate(text) if ch == "." and i < len(probs)]
-    if not dots:
-        return {"n_dot": 0, "dot_min": None, "dot_max": None, "dot_mean": None, "dot_median": None, "n_dot_gt_thr": 0}
+def _cut_scores(probs, cut_idx) -> dict:
+    if len(cut_idx) == 0:
+        return {"n_cuts": 0, "cut_min": None, "cut_max": None, "cut_mean": None, "cut_median": None}
+    scores = [float(probs[int(i)]) for i in cut_idx]
     return {
-        "n_dot": len(dots), "dot_min": round(min(dots), 5), "dot_max": round(max(dots), 5),
-        "dot_mean": round(statistics.mean(dots), 5), "dot_median": round(float(statistics.median(dots)), 5),
-        "n_dot_gt_thr": sum(p > SAT_THRESHOLD for p in dots),
+        "n_cuts": len(scores), "cut_min": round(min(scores), 5), "cut_max": round(max(scores), 5),
+        "cut_mean": round(statistics.mean(scores), 5),
+        "cut_median": round(float(statistics.median(scores)), 5),
     }
 
 
@@ -170,23 +170,26 @@ def split(text: str) -> list:
         return_paragraph_probabilities=SAT_DO_PARAGRAPH, verbose=SAT_VERBOSE)
     if SAT_DO_PARAGRAPH:
         sentence_probs, newline_probs = probs
+        para_idx = np.where(newline_probs > SAT_PARAGRAPH_THRESHOLD)[0]
+        sent_idx = np.where(sentence_probs > SAT_THRESHOLD)[0]
         raw = []
         offset = 0
-        for paragraph in indices_to_sentences(text, np.where(newline_probs > SAT_PARAGRAPH_THRESHOLD)[0]):
+        for paragraph in indices_to_sentences(text, para_idx):
             raw.append(list(indices_to_sentences(
                 paragraph,
                 np.where(sentence_probs[offset:offset + len(paragraph)] > SAT_THRESHOLD)[0],
                 strip_whitespace=SAT_STRIP_WHITESPACE)))
             offset += len(paragraph)
         pieces = _flatten(raw)
-        score = _dot_scores(text, sentence_probs)
+        score = _cut_scores(sentence_probs, sent_idx)
+        score["n_para_cuts"] = int(len(para_idx))
     else:
-        raw = list(indices_to_sentences(
-            text, np.where(probs > SAT_THRESHOLD)[0], strip_whitespace=SAT_STRIP_WHITESPACE))
+        cut_idx = np.where(probs > SAT_THRESHOLD)[0]
+        raw = list(indices_to_sentences(text, cut_idx, strip_whitespace=SAT_STRIP_WHITESPACE))
         if not SAT_NEWLINE_IS_SPACE:
             raw = [part for sentence in raw for part in sentence.split("\n")]
         pieces = _flatten(raw)
-        score = _dot_scores(text, probs)
+        score = _cut_scores(probs, cut_idx)
     infer_ms = int((time.perf_counter() - t0) * 1000)
     if not pieces:
         raise ValueError("TTS input is empty")
