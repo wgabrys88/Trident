@@ -4,17 +4,20 @@ from pathlib import Path
 
 from main import ROOT, _download
 
-MODELS = ROOT / "models/sat-3l-sm"
+MODELS = ROOT / "models/sat-12l-sm"
 VENV = ROOT / "tools/runtime/chunker"
 ONNX = MODELS / "model_optimized.onnx"
 CONFIG = MODELS / "config.json"
 TOKENIZER = MODELS / "tokenizer.json"
-ONNX_SHA = "8573277b4dbea9c5fb1b4cfd8c21e5aa628069ac8258d1342ba664e1b64ada6d"
-CONFIG_SHA = "d61498bc239f773126ee794446cdcad88822967e0b02ae7bd070f725c98be791"
+ONNX_SHA = "0bb8cf275f98e1c337138bcecdf007876fb2a2b0eb4b5756ce627b2b0510c2c7"
+CONFIG_SHA = "ed9094a56926e0ca1302f6c7ca9b11cf2ea0eced84d0f330ad938cba0fcc6209"
 TOKENIZER_SHA = "a898ea75433890f6610f4e470b8ebeb0c21dce5c8dd61f892eb09eb5919d2e2c"
-SAT_ONNX_URL = "https://huggingface.co/segment-any-text/sat-3l-sm/resolve/main/model_optimized.onnx"
-SAT_CONFIG_URL = "https://huggingface.co/segment-any-text/sat-3l-sm/resolve/main/config.json"
+SAT_ONNX_URL = "https://huggingface.co/segment-any-text/sat-12l-sm/resolve/main/model_optimized.onnx"
+SAT_CONFIG_URL = "https://huggingface.co/segment-any-text/sat-12l-sm/resolve/main/config.json"
 TOKENIZER_URL = "https://huggingface.co/FacebookAI/xlm-roberta-base/resolve/main/tokenizer.json"
+# Sentence-boundary probability. The SM default 0.25 packs "Three. Four. Five. Six."
+# onto one piece. 0.1 is still SaT, not a character-length cut.
+SAT_THRESHOLD = 0.1
 # CPU only. Dml/CUDA would steal the GPU from Nano/Gemma/Parakeet.
 ORT_PROVIDERS = ["CPUExecutionProvider"]
 _sat = None
@@ -33,7 +36,7 @@ def install() -> None:
         subprocess.run([*pip, "numpy==1.26.4", "onnxruntime==1.20.1", "tokenizers==0.21.4",
                         "huggingface-hub==0.34.4", "wtpsplit-lite==0.2.0"], check=True)
     if not ONNX.is_file():
-        print("[chunk] install | sat-3l-sm onnx", flush=True)
+        print("[chunk] install | sat-12l-sm onnx", flush=True)
         _download(SAT_ONNX_URL, ONNX, ONNX_SHA)
     if not CONFIG.is_file():
         _download(SAT_CONFIG_URL, CONFIG, CONFIG_SHA)
@@ -63,7 +66,8 @@ def split(text: str) -> list:
     text = "\n".join(line for line in lines if line)
     if not text:
         raise ValueError("TTS input is empty")
-    pieces = [p.strip() for p in _model().split(text, treat_newline_as_space=False) if p and p.strip()]
+    pieces = [p.strip() for p in _model().split(
+        text, threshold=SAT_THRESHOLD, treat_newline_as_space=False) if p and p.strip()]
     if not pieces:
         raise ValueError("TTS input is empty")
     return pieces
