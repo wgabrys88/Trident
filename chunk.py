@@ -29,7 +29,7 @@ CHONKY_STRIDE = 256
 CHONKY_AGGREGATION = "simple"
 CHONKY_THRESHOLD = 0.0
 CHONKY_IGNORE_LABELS = ["O"]
-CHONKY_NEWLINE_IS_SPACE = False
+CHONKY_NEWLINE_IS_SPACE = True
 _splitter = None
 
 
@@ -137,13 +137,13 @@ def split(text: str) -> list:
         p = float(ner["score"])
         if end <= begin or end > len(text) or p < CHONKY_THRESHOLD:
             continue
-        chunk = text[begin:end].strip()
+        chunk = " ".join(text[begin:end].split())
         if chunk:
             pieces.append(chunk)
             scores.append(round(p, 4))
             cuts.append(end)
         begin = end
-    tail = text[begin:].strip()
+    tail = " ".join(text[begin:].split())
     if tail:
         pieces.append(tail)
     infer_ms = int((time.perf_counter() - t0) * 1000)
