@@ -3,7 +3,6 @@ import hashlib, json, os, statistics, subprocess, sys, time, venv
 from pathlib import Path
 
 from main import ROOT, _download, jsonl
-from trace import dbg
 
 # PRE MILESTONE: DistilBERT uncased native separator cuts. Replaces modernbert-large.
 MODELS = ROOT / "models/chonky-distilbert-base-uncased-1"
@@ -150,10 +149,6 @@ def split(text: str) -> list:
           prep_ms=prep_ms, load_ms=load_ms, infer_ms=infer_ms, ms=prep_ms + load_ms + infer_ms)
     for i, piece in enumerate(pieces):
         jsonl("chunk.piece", i=i, chars=len(piece), text=piece)
-        if i:
-            jsonl("chunk.boundary", i=i, score=scores[i - 1], prev=pieces[i - 1][-40:], head=piece[:40])
-    dbg("D", "chunk.py:split", "chunk_done", pieces=len(pieces), lengths=lengths,
-        newline_is_space=CHONKY_NEWLINE_IS_SPACE, threshold=CHONKY_THRESHOLD, cut_scores=scores[:32])
     return pieces
 
 
