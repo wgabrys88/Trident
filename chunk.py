@@ -15,9 +15,9 @@ TOKENIZER_SHA = "a898ea75433890f6610f4e470b8ebeb0c21dce5c8dd61f892eb09eb5919d2e2
 SAT_ONNX_URL = "https://huggingface.co/segment-any-text/sat-12l-sm/resolve/main/model_optimized.onnx"
 SAT_CONFIG_URL = "https://huggingface.co/segment-any-text/sat-12l-sm/resolve/main/config.json"
 TOKENIZER_URL = "https://huggingface.co/FacebookAI/xlm-roberta-base/resolve/main/tokenizer.json"
-# Sentence-boundary probability. The SM default 0.25 packs "Three. Four. Five. Six."
-# onto one piece. 0.1 is still SaT, not a character-length cut.
-SAT_THRESHOLD = 0.1
+# Sentence-boundary probability. The SM default 0.25 (and even 0.1) still packs
+# "Nineteen. ... Thirty." onto one piece. 0.025 is SaT's non-SM default.
+SAT_THRESHOLD = 0.025
 # CPU only. Dml/CUDA would steal the GPU from Nano/Gemma/Parakeet.
 ORT_PROVIDERS = ["CPUExecutionProvider"]
 _sat = None
