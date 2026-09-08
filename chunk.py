@@ -15,11 +15,10 @@ TOKENIZER_SHA = "a898ea75433890f6610f4e470b8ebeb0c21dce5c8dd61f892eb09eb5919d2e2
 SAT_ONNX_URL = "https://huggingface.co/segment-any-text/sat-12l-sm/resolve/main/model_optimized.onnx"
 SAT_CONFIG_URL = "https://huggingface.co/segment-any-text/sat-12l-sm/resolve/main/config.json"
 TOKENIZER_URL = "https://huggingface.co/FacebookAI/xlm-roberta-base/resolve/main/tokenizer.json"
-# Sentence-boundary probability. sat-12l-sm's SM default is 0.25; 0.025 is the
-# non-SM default and currently keeps each counted item as its own piece.
-# Do not add character/punctuation splitters. Longer SaT pieces would mean
-# fewer S3 history windows; that is a later experiment after a no-audit RTF run.
-SAT_THRESHOLD = 0.025
+# sat-12l-sm SM default. 0.025 forced one piece per counted word (64 pieces
+# on the probe): tiny pieces ran native RTF ~1.08, prose ~0.37. Longer SaT
+# pieces are the RTF and cadence lever. Newlines from Gemma still break.
+SAT_THRESHOLD = 0.25
 # CPU only. Dml/CUDA would steal the GPU from Nano/Gemma/Parakeet.
 ORT_PROVIDERS = ["CPUExecutionProvider"]
 _sat = None

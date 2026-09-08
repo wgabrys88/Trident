@@ -343,6 +343,10 @@ class TTS:
         if process.stderr:
             sys.stderr.write(process.stderr)
             sys.stderr.flush()
+            log = TTS_LOG.parent / "chunk.log"
+            log.parent.mkdir(parents=True, exist_ok=True)
+            with log.open("a", encoding="utf-8") as fh:
+                fh.write(process.stderr)
         if process.returncode:
             raise RuntimeError(process.stderr.strip() or "CPU chunker failed")
         pieces = json.loads(process.stdout)
