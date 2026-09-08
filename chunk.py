@@ -4,7 +4,7 @@ from pathlib import Path
 
 from main import ROOT, _download, jsonl
 
-# Chonky DistilBERT uncased: official ParagraphSplitter default. Replaces modernbert-large.
+# PRE MILESTONE: DistilBERT uncased native separator cuts. Replaces modernbert-large.
 MODELS = ROOT / "models/chonky-distilbert-base-uncased-1"
 VENV = ROOT / "tools/runtime/chunker"
 STAMP = VENV / "chonky.ok"
