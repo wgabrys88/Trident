@@ -7,7 +7,7 @@ TTS_MODELS = ROOT / "models"
 TTS_VOICE = ROOT / "data/ref-trump.wav"
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 VULKAN_SDK = Path("C:/VulkanSDK/1.4.357.0")
-CHATTERBOX_REV = "ac41675aefef56aabf3d445e4aa4baf144274643"
+CHATTERBOX_REV = "f2fa49f67f0e18437db810dc47ec085e8516f1be"
 GGML_REV = "58c3805840b516b2a88ff867ccf7bb41dba79951"
 NATIVE_PIN = f"{CHATTERBOX_REV} {GGML_REV}"
 CHATTERBOX_URL = "https://github.com/wgabrys88/chatterbox.cpp.git"
@@ -19,7 +19,8 @@ TTS_RUNTIME_REQUIRED = (*TTS_RUNTIME_FILES, "chatterbox-LICENSE.txt", "ggml-LICE
 TTS_RATE, TTS_MAGIC, TTS_VERSION = 24000, 0x32525454, 4
 TTS_FRAME = struct.Struct("<7I")
 TTS_CHUNKER = ROOT / "tools/runtime/chunker/Scripts/python.exe"
-TTS_LOG = ROOT / ".runtime-logs/tts.log"
+PIPELINE_LOG = ROOT / ".runtime-logs/pipeline.log"
+TTS_LOG = PIPELINE_LOG
 TTS_BASE_KNOBS = {"n-gpu-layers": 99, "fastconv": 1, "seed": 42, "max-tokens": 1000,
                   "top-k": 1000, "top-p": .95, "min-p": 0.0, "temperature": .8}
 TTS_MIN_SPEECH_RATIO = 2.0
@@ -53,7 +54,7 @@ def _native_ledger(piece_id: int, since: int) -> dict:
             fields = json.loads(text)
         except json.JSONDecodeError:
             continue
-        if fields.get("piece") == piece_id and "n_speech_tok" in fields:
+        if fields.get("event") == "tts.piece" or ("piece" in fields and "n_speech_tok" in fields):
             found = fields
     return found
 
@@ -75,7 +76,13 @@ def _guard_native_piece(piece_id: int, since: int) -> dict:
 
 
 def jsonl(event: str, *, file=None, **fields) -> None:
-    print(json.dumps({"event": event, **fields}, ensure_ascii=False), file=file or sys.stderr, flush=True)
+    line = json.dumps({"event": event, **fields}, ensure_ascii=False)
+    sink = file or sys.stderr
+    print(line, file=sink, flush=True)
+    if sink is sys.stderr:
+        PIPELINE_LOG.parent.mkdir(parents=True, exist_ok=True)
+        with PIPELINE_LOG.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
 
 
 def tts_knobs(context: int, threads: int, cfm_steps: int, repeat_penalty: float = 1.2,
@@ -114,14 +121,6 @@ def _tts_runtime_ok() -> bool:
 
 def _text_id(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
-
-
-def _fnv64(data: bytes) -> str:
-    value = 1469598103934665603
-    for byte in data:
-        value ^= byte
-        value = (value * 1099511628211) & 0xffffffffffffffff
-    return f"{value:016x}"
 
 
 def _port_in_use(port: int) -> bool:
@@ -407,9 +406,8 @@ class TTS:
         if process.stderr:
             sys.stderr.write(process.stderr)
             sys.stderr.flush()
-            log = TTS_LOG.parent / "chunk.log"
-            log.parent.mkdir(parents=True, exist_ok=True)
-            with log.open("a", encoding="utf-8") as fh:
+            PIPELINE_LOG.parent.mkdir(parents=True, exist_ok=True)
+            with PIPELINE_LOG.open("a", encoding="utf-8") as fh:
                 fh.write(process.stderr)
         if process.returncode:
             raise RuntimeError(process.stderr.strip() or "CPU chunker failed")
@@ -542,7 +540,7 @@ def main() -> None:
                ("parakeet", "parakeet.py", ("tts_out.wav",)))
               if mode == "pipeline" else tuple((*model, ()) for model in models))
     started = time.perf_counter()
-    log_path = ROOT / ".runtime-logs/main.log"
+    log_path = PIPELINE_LOG
     log_path.parent.mkdir(exist_ok=True)
     with log_path.open("a", encoding="utf-8", buffering=1) as log:
         def emit(event: str, **fields) -> None:
