@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, shutil, subprocess, sys, time, venv
+import hashlib, json, shutil, subprocess, sys, time, venv
 from pathlib import Path
 
 from main import ROOT, _download, jsonl
@@ -76,14 +76,29 @@ def _model():
 
 def split(text: str) -> list:
     # Gemma puts one breath per line. Keep those breaks. SaT still meaning-cuts inside a line.
-    lines = [" ".join(line.split()) for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
-    text = "\n".join(line for line in lines if line)
+    source_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+    t0 = time.perf_counter()
+    lines = [line for line in (" ".join(part.split()) for part in
+             text.replace("\r\n", "\n").replace("\r", "\n").split("\n")) if line]
+    text = "\n".join(lines)
+    prep_ms = int((time.perf_counter() - t0) * 1000)
     if not text:
         raise ValueError("TTS input is empty")
-    pieces = [p.strip() for p in _model().split(
+    t0 = time.perf_counter()
+    model = _model()
+    load_ms = int((time.perf_counter() - t0) * 1000)
+    t0 = time.perf_counter()
+    pieces = [p.strip() for p in model.split(
         text, threshold=SAT_THRESHOLD, treat_newline_as_space=False) if p and p.strip()]
+    infer_ms = int((time.perf_counter() - t0) * 1000)
     if not pieces:
         raise ValueError("TTS input is empty")
+    jsonl("chunk.done", model="sat-12l-sm", threshold=SAT_THRESHOLD, newline_is_space=False,
+          providers=ORT_PROVIDERS, source_sha=source_sha, lines=len(lines), pieces=len(pieces),
+          chars=sum(len(p) for p in pieces), prep_ms=prep_ms, load_ms=load_ms, infer_ms=infer_ms,
+          ms=prep_ms + load_ms + infer_ms)
+    for i, piece in enumerate(pieces):
+        jsonl("chunk.piece", i=i, chars=len(piece), text=piece)
     return pieces
 
 
@@ -93,8 +108,6 @@ if __name__ == "__main__":
     if "--install" in sys.argv:
         install()
         sys.exit(0)
-    t0 = time.perf_counter()
     pieces = split(sys.stdin.read())
-    jsonl("chunk.done", pieces=len(pieces), ms=int((time.perf_counter() - t0) * 1000))
     json.dump(pieces, sys.stdout, ensure_ascii=False)
     sys.stdout.write("\n")
