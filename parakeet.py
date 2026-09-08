@@ -1,7 +1,7 @@
 import argparse, http.client, json, shutil, subprocess, sys, time, uuid, wave, zipfile
 from pathlib import Path
 
-from main import CMAKE, ROOT, _checkout, _download, _kill_port, _port_in_use, _wait_port
+from main import CMAKE, ROOT, _checkout, _download, _kill_port, _port_in_use, _wait_port, jsonl
 
 RUNTIME = ROOT / "tools/runtime/parakeet"
 EXE = RUNTIME / "parakeet-cli.exe"
@@ -176,8 +176,7 @@ if __name__ == "__main__":
             with wave.open(str(wav_path)) as wf:
                 dur = wf.getnframes() / wf.getframerate()
             print(json.dumps(result, ensure_ascii=False) if args.json else result, flush=True)
-            print(f"[rtf] parakeet_total={t1-t0:.3f}s", file=sys.stderr)
-            print(f"[rtf] audio_s={dur:.3f}s", file=sys.stderr)
+            jsonl("parakeet.rtf", total_s=round(t1 - t0, 3), audio_s=round(dur, 3))
     else:
         wav = ROOT / "tts_out.wav"
         with wave.open(str(wav)) as wf:
@@ -186,5 +185,4 @@ if __name__ == "__main__":
         transcript = transcribe(wav).strip()
         t1 = time.perf_counter()
         print(transcript)
-        print(f"[rtf] parakeet_total={t1-t0:.3f}s", file=sys.stderr)
-        print(f"[rtf] audio_s={dur:.3f}s", file=sys.stderr)
+        jsonl("parakeet.rtf", total_s=round(t1 - t0, 3), audio_s=round(dur, 3))
