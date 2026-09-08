@@ -29,8 +29,20 @@ CHONKY_STRIDE = 256
 CHONKY_AGGREGATION = "simple"
 CHONKY_THRESHOLD = 0.0
 CHONKY_IGNORE_LABELS = ["O"]
-CHONKY_NEWLINE_IS_SPACE = True
+CHONKY_NEWLINE_IS_SPACE = False
 _splitter = None
+
+
+def _dbg(hypothesis_id: str, location: str, message: str, **data) -> None:
+    # #region agent log
+    try:
+        with (ROOT / "debug-de999f.log").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"sessionId": "de999f", "hypothesisId": hypothesis_id, "location": location,
+                                 "message": message, "data": data, "timestamp": int(time.time() * 1000)},
+                                ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    # #endregion
 
 
 def _python() -> Path:
@@ -149,6 +161,8 @@ def split(text: str) -> list:
           prep_ms=prep_ms, load_ms=load_ms, infer_ms=infer_ms, ms=prep_ms + load_ms + infer_ms)
     for i, piece in enumerate(pieces):
         jsonl("chunk.piece", i=i, chars=len(piece), text=piece)
+    _dbg("D", "chunk.py:split", "chunk_done", pieces=len(pieces), lengths=lengths,
+         newline_is_space=CHONKY_NEWLINE_IS_SPACE, threshold=CHONKY_THRESHOLD, cut_scores=scores[:32])
     return pieces
 
 
