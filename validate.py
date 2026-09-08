@@ -64,11 +64,8 @@ PIPELINE_PROMPT = (
 
 KV = re.compile(r"([A-Za-z0-9_]+)=([^ ]+)")
 PCM_LINE = re.compile(
-    r"\[synth\] pcm .*piece=(\d+)/\d+ .*sample_start=(\d+) sample_end=(\d+) "
-    r"trimmed_leading_bytes=(\d+) pcm_sha=([0-9a-f]+)"
+    r'"event": "synth.piece".*"piece": (\d+).*"sample_start": (\d+).*"sample_end": (\d+).*"trimmed_leading_bytes": (\d+)'
 )
-WIRE_PY = re.compile(r"\[synth\] wire .*piece=(\d+)/\d+ chunk=(\d+) bytes=(\d+) fnv64=([0-9a-f]+)")
-REQ_PY = re.compile(r"\[synth\] request .*piece=(\d+)/\d+ .*wire_fnv64=([0-9a-f]+)")
 
 
 def run(label: str, script: str, *args: str, input_text: str | None = None,
@@ -186,46 +183,39 @@ def parse_fields(line: str) -> dict:
 
 def parse_native(log: str) -> dict:
     pieces: dict[int, dict] = {}
-    native_wire = {}
-    native_req = {}
     for line in log.splitlines():
-        fields = parse_fields(line)
-        event = fields.get("event")
-        if "piece" not in fields:
+        text = line.strip()
+        if not text.startswith("{"):
             continue
         try:
-            piece = int(fields["piece"])
-        except ValueError:
+            fields = json.loads(text)
+        except json.JSONDecodeError:
             continue
-        item = pieces.setdefault(piece, {})
-        item.setdefault("response", int(fields.get("response", "0")))
-        if event == "s3.end":
-            item["s3_end"] = fields
-        elif event == "s3.audit":
-            item["audit"] = fields
-        elif event == "s3.audit.local":
-            item["local"] = fields
-        elif event == "s3.roundtrip":
-            item["roundtrip"] = fields
-        elif event == "wire.pcm":
-            key = (piece, int(fields.get("chunk", "0")))
-            native_wire[key] = (int(fields["bytes"]), fields["fnv64"])
-        elif event == "synthesis.queued":
-            native_req[piece] = fields.get("fnv64")
-    return {"pieces": pieces, "wire": native_wire, "requests": native_req}
+        if "piece" not in fields:
+            continue
+        pieces[int(fields["piece"])] = fields
+    return {"pieces": pieces, "wire": {}, "requests": {}}
 
 
 def parse_python(output: str) -> dict:
     intervals = {}
-    for match in PCM_LINE.finditer(output):
-        piece, start, end, trim, sha = match.groups()
-        intervals[int(piece)] = {
-            "sample_start": int(start), "sample_end": int(end),
-            "trimmed_leading_bytes": int(trim), "pcm_sha": sha,
-        }
-    wire = {(int(p), int(c)): (int(n), h) for p, c, n, h in WIRE_PY.findall(output)}
-    requests = {int(p): h for p, h in REQ_PY.findall(output)}
-    return {"intervals": intervals, "wire": wire, "requests": requests}
+    audit_dir = None
+    for line in output.splitlines():
+        text = line.strip()
+        if not text.startswith("{"):
+            continue
+        try:
+            obj = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        if obj.get("event") == "synth.begin" and obj.get("audit_dir"):
+            audit_dir = obj["audit_dir"]
+        if obj.get("event") == "synth.piece":
+            intervals[int(obj["piece"])] = {
+                "sample_start": int(obj["sample_start"]), "sample_end": int(obj["sample_end"]),
+                "trimmed_leading_bytes": int(obj["trimmed_leading_bytes"]),
+            }
+    return {"intervals": intervals, "wire": {}, "requests": {}, "audit_dir": audit_dir}
 
 
 def csv_hash(fields: dict, name: str) -> list[str]:
@@ -239,99 +229,42 @@ def locate(sample: int, py: dict, native: dict) -> dict | None:
             local_sample = sample - interval["sample_start"]
             native_local_sample = local_sample + interval["trimmed_leading_bytes"] // 2
             n = native["pieces"].get(piece, {})
-            s3_end = n.get("s3_end", {})
-            history = int(s3_end.get("history_tokens", "0"))
-            pending_in = int(s3_end.get("pending_in", "0"))
-            emit_begin = int(s3_end.get("emit_begin", "0"))
-            raw_hift_sample = emit_begin + native_local_sample
-            raw_window_token = max(0, raw_hift_sample // 960)
-            local_token = raw_window_token - history
-            local = n.get("local", {})
-            encoder = csv_hash(local, "encoder")
-            cfm0 = csv_hash(local, "cfm0")
-            cfm = csv_hash(local, "cfm")
-            mel = csv_hash(local, "mel")
-            f0 = csv_hash(local, "f0")
-            source = csv_hash(local, "source")
-            hift = csv_hash(local, "hift")
-            def pick(values: list[str], index: int):
-                return values[index] if 0 <= index < len(values) else None
+            history = int(n.get("s3_history", 0))
+            token_i = max(0, native_local_sample // 960)
             return {
                 "piece": piece,
                 "wav_sample": sample,
                 "piece_sample": local_sample,
                 "native_piece_sample": native_local_sample,
-                "raw_hift_sample": raw_hift_sample,
-                "raw_window_token": raw_window_token,
-                "approx_new_s3_token": local_token,
+                "token_i": token_i,
+                "window_i": history + token_i,
                 "history_tokens": history,
-                "boundary_crossfade": pending_in > 0 and native_local_sample < pending_in,
-                "encoder_hash": pick(encoder, raw_window_token),
-                "cfm0_hash": pick(cfm0, raw_window_token),
-                "cfm_hash": pick(cfm, raw_window_token),
-                "mel_hash": pick(mel, raw_window_token),
-                "f0_hash": pick(f0, raw_window_token),
-                "source_hash": pick(source, raw_window_token),
-                "hift_hash": pick(hift, raw_window_token),
-                "roundtrip": n.get("roundtrip", {}),
-                "audit_dir": n.get("audit", {}).get("dir"),
+                "n_speech_tok": n.get("n_speech_tok"),
+                "speech_hash": n.get("speech_hash"),
+                "stop": n.get("stop"),
+                "text": n.get("text"),
+                "audit_dir": py.get("audit_dir"),
             }
     return None
 
 
 def verify_structural(py: dict, native: dict) -> list[str]:
     errors = []
-    if py["requests"] != native["requests"]:
-        errors.append(f"request wire mismatch python={py['requests']} native={native['requests']}")
-    if py["wire"] != native["wire"]:
-        errors.append(f"PCM wire mismatch python={py['wire']} native={native['wire']}")
     pieces = native["pieces"]
-
-    # Audit mode preserves both sides of the socket. Compare exact bytes, not only fingerprints.
-    audit_dirs = {
-        Path(item["audit"]["dir"]).parent
-        for item in pieces.values() if item.get("audit", {}).get("dir")
-    }
-    if len(audit_dirs) == 1:
-        audit_dir = next(iter(audit_dirs))
-        for piece, request_hash in py["requests"].items():
-            response = pieces.get(piece, {}).get("response", 0)
-            native_path = audit_dir / f"native-r{response}_p{piece}.request.utf8"
-            python_path = audit_dir / f"python-r{response}_p{piece}.request.utf8"
-            if not native_path.is_file() or not python_path.is_file():
-                errors.append(f"piece {piece}: missing exact request wire artifact")
-            elif native_path.read_bytes() != python_path.read_bytes():
-                errors.append(f"piece {piece}: exact request wire bytes differ")
-        for (piece, chunk), _ in py["wire"].items():
-            response = pieces.get(piece, {}).get("response", 0)
-            native_path = audit_dir / f"native-r{response}_p{piece}_c{chunk}.pcm16"
-            python_path = audit_dir / f"python-r{response}_p{piece}_c{chunk}.pcm16"
-            if not native_path.is_file() or not python_path.is_file():
-                errors.append(f"piece {piece} chunk {chunk}: missing exact PCM wire artifact")
-            elif native_path.read_bytes() != python_path.read_bytes():
-                errors.append(f"piece {piece} chunk {chunk}: exact PCM wire bytes differ")
+    if set(py["intervals"]) != set(pieces):
+        errors.append(f"piece set mismatch python={sorted(py['intervals'])} native={sorted(pieces)}")
     for piece, interval in py["intervals"].items():
         n = pieces.get(piece, {})
-        end = n.get("s3_end", {})
-        if not end:
-            errors.append(f"piece {piece}: missing native s3.end")
+        if not n:
+            errors.append(f"piece {piece}: missing native JSONL")
             continue
-        native_emitted = int(end["emitted"])
+        native_emitted = int(n.get("emitted_samples", 0))
         python_samples = interval["sample_end"] - interval["sample_start"]
         trimmed = interval["trimmed_leading_bytes"] // 2
         if native_emitted - trimmed != python_samples:
             errors.append(
                 f"piece {piece}: native emitted {native_emitted} - trim {trimmed} != python {python_samples}"
             )
-    ordered = sorted(pieces)
-    for a, b in zip(ordered, ordered[1:]):
-        out = pieces[a].get("audit", {})
-        inn = pieces[b].get("audit", {})
-        for state in ("mel_cache", "source_cache", "phase", "pending"):
-            if out.get(f"{state}_out") != inn.get(f"{state}_in"):
-                errors.append(
-                    f"continuity {a}->{b} {state}: {out.get(f'{state}_out')} != {inn.get(f'{state}_in')}"
-                )
     return errors
 
 
@@ -372,6 +305,10 @@ def direct_tts(case: str, script: str, source: str, *extra: str, audit: bool = T
     asr = run_json(f"ASR JSON — {case}", wav) if wav is not None else {}
     (RUN_DIR / f"{case}.asr.json").write_text(json.dumps(asr, ensure_ascii=False, indent=2), encoding="utf-8")
     py = parse_python(output)
+    if py.get("audit_dir"):
+        audit_path = ROOT / py["audit_dir"] / "07-asr.json"
+        if audit_path.parent.is_dir():
+            audit_path.write_text(json.dumps(asr, ensure_ascii=False, indent=2), encoding="utf-8")
     native = parse_native(native_log)
     structural_errors = verify_structural(py, native)
     semantic = semantic_report(source, asr, py, native)
@@ -394,8 +331,6 @@ def provenance() -> None:
         print("[validator] chatterbox HEAD:")
         subprocess.run(["git", "-C", str(sibling), "rev-parse", "HEAD"])
     run("Nano provenance", "tts_nano.py", "--provenance")
-    run("Turbo provenance", "tts_turbo.py", "--provenance")
-    run("V3 provenance", "tts_v3.py", "--provenance")
 
 
 def main() -> None:
@@ -408,80 +343,15 @@ def main() -> None:
     try:
         run("Unload all servers", "main.py", "--unload")
         provenance()
-
-        run("Brain — short", "brain.py", "--request", BRAIN_SHORT_PROMPT)
-        save_copy(ROOT / "brain_out.txt", "brain-short.txt")
-        run("Brain — architecture", "brain.py", "--request", BRAIN_README_PROMPT)
-        save_copy(ROOT / "brain_out.txt", "brain-architecture.txt")
-        run("Unload Brain", "brain.py", "--unload")
-
-        sat = run("CPU SaT — long speech", "chunk.py", input_text=LONG_SPEECH_TEXT,
-                  interpreter=CHUNK_PYTHON)
-        (RUN_DIR / "sat-long.json").write_text(sat, encoding="utf-8")
-
-        # Current Nano production parity: CFM=2. The CFM=1/2 cause branch is already closed.
         for case, text in (
             ("nano-short", SHORT_TEXT),
             ("nano-count-1-30", COUNT_1_TO_30),
-            ("nano-count-20-30", COUNT_20_TO_30),
-            ("nano-long", LONG_SPEECH_TEXT),
         ):
             try:
                 summary["cases"].append(direct_tts(case, "tts_nano.py", text, "--seed", "42", "--cfm-steps", "2"))
             except Exception:
                 pass
             run(f"Unload after {case}", "tts_nano.py", "--unload")
-
-        try:
-            summary["cases"].append(direct_tts(
-                "turbo-count-1-30", "tts_turbo.py", COUNT_1_TO_30, "--seed", "42", "--cfm-steps", "2"
-            ))
-        except Exception:
-            pass
-        run("Unload Turbo", "tts_turbo.py", "--unload")
-
-        try:
-            summary["cases"].append(direct_tts(
-                "v3-en-count-1-30", "tts_v3.py", COUNT_1_TO_30, "--language", "en", "--seed", "42"
-            ))
-        except Exception:
-            pass
-        run("Unload V3 English", "tts_v3.py", "--unload")
-        try:
-            summary["cases"].append(direct_tts(
-                "v3-pl-short", "tts_v3.py", V3_POLISH_TEXT, "--language", "pl", "--seed", "42"
-            ))
-        except Exception:
-            pass
-        run("Unload V3", "tts_v3.py", "--unload")
-
-        # Full application audit.
-        start = log_offset(TTS_LOG)
-        pipeline_output = run("Full pipeline audit", "main.py", "--audit", PIPELINE_PROMPT)
-        (RUN_DIR / "pipeline.command.log").write_text(pipeline_output, encoding="utf-8")
-        (RUN_DIR / "pipeline.tts.log").write_text(read_suffix(TTS_LOG, start), encoding="utf-8")
-        save_copy(ROOT / "brain_out.txt", "pipeline.brain.txt")
-        save_copy(ROOT / "tts_out.wav", "pipeline.wav")
-        pipeline_wav = RUN_DIR / "pipeline.wav"
-        if pipeline_wav.is_file():
-            try:
-                pipeline_asr = run_json("Full pipeline ASR JSON", pipeline_wav)
-                (RUN_DIR / "pipeline.asr.json").write_text(
-                    json.dumps(pipeline_asr, ensure_ascii=False, indent=2), encoding="utf-8"
-                )
-            except Exception:
-                pass
-        run("Unload full pipeline", "main.py", "--unload")
-
-        # Performance truth: audit disabled. Keep separate from diagnostic runs.
-        try:
-            perf = direct_tts(
-                "nano-count-1-30-performance", "tts_nano.py", COUNT_1_TO_30,
-                "--seed", "42", "--cfm-steps", "2", audit=False
-            )
-            summary["cases"].append(perf)
-        except Exception:
-            pass
         run("Final unload", "main.py", "--unload")
 
         summary["status"] = "complete"

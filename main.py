@@ -7,7 +7,7 @@ TTS_MODELS = ROOT / "models"
 TTS_VOICE = ROOT / "data/ref-trump.wav"
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 VULKAN_SDK = Path("C:/VulkanSDK/1.4.357.0")
-CHATTERBOX_REV = "5c300394bedac05aee62120088d8578986a17bb5"
+CHATTERBOX_REV = "523205247ab38007cd1583dc1456fd9882ff010c"
 GGML_REV = "58c3805840b516b2a88ff867ccf7bb41dba79951"
 NATIVE_PIN = f"{CHATTERBOX_REV} {GGML_REV}"
 VOICE_URL = "https://huggingface.co/datasets/sdialog/voices-celebrities/resolve/57746b866d470be717097b87ba0428f8dd73e4f4"
@@ -140,6 +140,7 @@ def _build_tts(work: Path, source: Path) -> None:
         CMAKE, "-S", str(source), "-B", str(build), "-G", "Visual Studio 17 2022", "-A", "x64",
         "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_NATIVE=ON", "-DGGML_CCACHE=OFF",
         "-DBUILD_SHARED_LIBS=ON", "-DTTS_CPP_BUILD_EXECUTABLES=ON", "-DTTS_CPP_BUILD_TESTS=OFF",
+        "-DTTS_CPP_MTL=OFF",
         "-DGGML_BUILD_TESTS=OFF", "-DGGML_BUILD_EXAMPLES=OFF",
         f"-DVulkan_INCLUDE_DIR={VULKAN_SDK / 'Include'}", f"-DVulkan_LIBRARY={VULKAN_SDK / 'Lib/vulkan-1.lib'}",
         f"-DVulkan_GLSLC_EXECUTABLE={VULKAN_SDK / 'Bin/glslc.exe'}",
@@ -277,16 +278,14 @@ class TTS:
         output = ROOT / f"out_{time.strftime('%d-%m-%y-%H-%M-%S')}_{self.spec['output']}.wav"
         self._response_id += 1
         response_id = self._response_id
-        audit_dir = Path(self.spec["audit_dir"]) if self.spec.get("audit_dir") else None
-        print(f"[synth] response={response_id} pieces={len(pieces)} total_chars={sum(len(p) for p in pieces)} source_sha={_text_id(text)}", flush=True)
+        begin = {"event": "synth.begin", "response": response_id, "pieces": len(pieces),
+                 "total_chars": sum(len(p) for p in pieces), "source_sha": _text_id(text)}
+        if self.spec.get("audit_dir"):
+            begin["audit_dir"] = self.spec["audit_dir"]
+        print(json.dumps(begin, ensure_ascii=False), flush=True)
         with socket.create_connection(("127.0.0.1", self.spec["port"]), timeout=300) as sock, sock.makefile("rb") as reader:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             for piece_id, piece in enumerate(pieces):
-                encoded = piece.encode("utf-8")
-                if audit_dir:
-                    (audit_dir / f"python-r{response_id}_p{piece_id}.request.utf8").write_bytes(encoded)
-                print(f"[synth] request response={response_id} piece={piece_id}/{len(pieces)} chars={len(piece)} "
-                      f"text_sha={_text_id(piece)} wire_fnv64={_fnv64(encoded)} text={piece!r}", flush=True)
                 self._send(sock, 1, response_id, piece_id, len(pieces), piece)
             pcm_bytes = 0
             pieces_written = 0
@@ -294,8 +293,6 @@ class TTS:
                 wav.setparams((1, 2, TTS_RATE, 0, "NONE", "not compressed"))
                 for piece_id in range(len(pieces)):
                     before = pcm_bytes
-                    chunks_received = 0
-                    piece_hash = hashlib.sha256()
                     leading_trim = 0
                     while True:
                         kind, returned_response, returned_piece, chunk, payload = self._receive(reader)
@@ -305,31 +302,28 @@ class TTS:
                             break
                         if kind != 1:
                             raise RuntimeError(f"Unexpected TTS response kind: {kind}")
-                        if audit_dir:
-                            (audit_dir / f"python-r{response_id}_p{piece_id}_c{chunk}.pcm16").write_bytes(payload)
-                        print(f"[synth] wire response={response_id} piece={piece_id}/{len(pieces)} "
-                              f"chunk={chunk} bytes={len(payload)} fnv64={_fnv64(payload)}", flush=True)
                         zeros = TTS_RATE // 50 * 2
                         if piece_id == 0 and chunk == 0 and len(payload) > zeros and payload[:zeros] == b"\0" * zeros:
                             payload = payload[zeros:]
                             leading_trim = zeros
                         wav.writeframesraw(payload)
-                        piece_hash.update(payload)
                         pcm_bytes += len(payload)
-                        chunks_received += 1
                     if pcm_bytes == before:
                         raise RuntimeError(f"TTS piece {piece_id} produced no audio")
-                    print(
-                        f"[synth] pcm response={response_id} piece={piece_id}/{len(pieces)} chunks={chunks_received} "
-                        f"byte_start={before} byte_end={pcm_bytes} sample_start={before//2} sample_end={pcm_bytes//2} "
-                        f"trimmed_leading_bytes={leading_trim} pcm_sha={piece_hash.hexdigest()[:16]}", flush=True)
+                    print(json.dumps({
+                        "event": "synth.piece", "response": response_id, "piece": piece_id,
+                        "text": pieces[piece_id], "chars": len(pieces[piece_id]),
+                        "sample_start": before // 2, "sample_end": pcm_bytes // 2,
+                        "trimmed_leading_bytes": leading_trim,
+                    }, ensure_ascii=False), flush=True)
                     pieces_written += 1
-            print(f"[synth] complete response={response_id} pieces={pieces_written} bytes={pcm_bytes} samples={pcm_bytes//2}", flush=True)
+            print(json.dumps({"event": "synth.complete", "response": response_id,
+                              "pieces": pieces_written, "samples": pcm_bytes // 2,
+                              "wav": output.name, "sha256": _sha(output)}, ensure_ascii=False), flush=True)
             sock.settimeout(10)
             self._send(sock, 3)
             if self._receive(reader)[0] != 5:
                 raise RuntimeError("TTS did not acknowledge close")
-        print(f"[synth] wav path={output.name} sha256={_sha(output)}", flush=True)
         return output
 
     @staticmethod
@@ -456,7 +450,7 @@ def run_tts(spec: dict) -> None:
 def main() -> None:
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
-    parser = argparse.ArgumentParser(description="No arguments installs and loads all models.", allow_abbrev=False)
+    parser = argparse.ArgumentParser(description="No arguments installs and loads Brain, Nano TTS, and Parakeet.", allow_abbrev=False)
     command = parser.add_mutually_exclusive_group()
     command.add_argument("prompt", nargs="?", help="run Brain, TTS and Parakeet without installation")
     command.add_argument("--unload", action="store_true", help="stop all three model servers")
@@ -464,8 +458,10 @@ def main() -> None:
                         help="run Nano with replayable diagnostic artifacts; not for RTF")
     args = parser.parse_args()
     mode = "unload" if args.unload else "install" if args.prompt is None else "pipeline"
-    models = (("brain", "brain.py"), ("tts_nano", "tts_nano.py"), ("tts_turbo", "tts_turbo.py"),
-              ("tts_v3", "tts_v3.py"), ("parakeet", "parakeet.py"))
+    install_models = (("brain", "brain.py"), ("tts_nano", "tts_nano.py"), ("parakeet", "parakeet.py"))
+    unload_models = (("brain", "brain.py"), ("tts_nano", "tts_nano.py"), ("tts_turbo", "tts_turbo.py"),
+                     ("tts_v3", "tts_v3.py"), ("parakeet", "parakeet.py"))
+    models = unload_models if mode == "unload" else install_models
     stages = ((("brain", "brain.py", (f"--request={args.prompt}",)),
                ("tts_nano", "tts_nano.py", ("--audit",) if args.audit else ()),
                ("parakeet", "parakeet.py", ("tts_out.wav",)))
