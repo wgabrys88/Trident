@@ -281,7 +281,8 @@ class TTS:
         begin = {"event": "synth.begin", "response": response_id, "pieces": len(pieces),
                  "total_chars": sum(len(p) for p in pieces), "source_sha": _text_id(text)}
         if self.spec.get("audit_dir"):
-            begin["audit_dir"] = self.spec["audit_dir"]
+            audit_dir = Path(self.spec["audit_dir"])
+            begin["audit_dir"] = str(audit_dir.relative_to(ROOT) if audit_dir.is_absolute() else audit_dir)
         print(json.dumps(begin, ensure_ascii=False), flush=True)
         with socket.create_connection(("127.0.0.1", self.spec["port"]), timeout=300) as sock, sock.makefile("rb") as reader:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
