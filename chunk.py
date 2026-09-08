@@ -4,8 +4,8 @@ from pathlib import Path
 
 from main import ROOT, _download, jsonl
 
-# Chonky modernbert-large: semantic cuts from token-class scores, not char caps.
-MODELS = ROOT / "models/chonky-modernbert-large-1"
+# Chonky DistilBERT uncased: official ParagraphSplitter default. Replaces modernbert-large.
+MODELS = ROOT / "models/chonky-distilbert-base-uncased-1"
 VENV = ROOT / "tools/runtime/chunker"
 STAMP = VENV / "chonky.ok"
 WEIGHTS = MODELS / "model.safetensors"
@@ -13,26 +13,22 @@ CONFIG = MODELS / "config.json"
 TOKENIZER = MODELS / "tokenizer.json"
 TOKENIZER_CONFIG = MODELS / "tokenizer_config.json"
 SPECIAL_TOKENS = MODELS / "special_tokens_map.json"
-WEIGHTS_SHA = "097fd24eeafee40df5654b3870ebf9a6b1762b395bcdea94746a35fa60ebf35b"
-CONFIG_SHA = "a3cdad5d0fd67a9ecc4ea1a1f3b58793630711c24b1cab2f8271a7adb79a1470"
-TOKENIZER_SHA = "c7a995f78d60cc3c253902f4b5becfe2f9d0b44f78e6e2f81a343a0cb71789e6"
-TOKENIZER_CONFIG_SHA = "37542f45b201d188c1b4199c2e93078064224d4355d28479f6444cd86c586ea3"
-SPECIAL_TOKENS_SHA = "ea97ecdbcc73713039d8d64dbb05e3689495c96657fbd9a18f5bed381be81049"
-HUB = "https://huggingface.co/mirth/chonky_modernbert_large_1/resolve/main"
+VOCAB = MODELS / "vocab.txt"
+WEIGHTS_SHA = "9a2cd8b8d81b29612d5045430353e213df61f2e896fb834ce5eb7a8b6efd99ab"
+CONFIG_SHA = "70eeab02faefceae57ea6355a4d9aafd2c3f88fa8a1dc88012e6b0e0c9c365df"
+TOKENIZER_SHA = "435667fab0c06c165b1283ecb422497c37124f2d6a35b2ac73dc876332fc9518"
+TOKENIZER_CONFIG_SHA = "769fd5b8e7e5d12eca596adb3d90eae5003fcaf1e77926a61d1694dd49f90c62"
+SPECIAL_TOKENS_SHA = "5d5b662e421ea9fac075174bb0688ee0d9431699900b90662acd44b2a350503a"
+VOCAB_SHA = "07eced375cec144d27c900241f3e339478dec958f92fddbc551f295c992038a3"
+HUB = "https://huggingface.co/mirth/chonky_distilbert_base_uncased_1/resolve/main"
 CHONKY_DEVICE = "cpu"
 CHONKY_THREADS = 4
 CHONKY_BATCH_SIZE = 1
-# Trained at 1024; ModernBERT can go to 8192 but this checkpoint was not.
-CHONKY_MAX_LENGTH = 1024
-# Overlap in tokens. Transformers only applies stride when aggregation != none.
-CHONKY_STRIDE = 512
-# none: per-token softmax so threshold can add cuts. simple/first/average/max: argmax groups.
-CHONKY_AGGREGATION = "none"
-# P(separator). Argmax is ~0.5 and made one 1497-char piece. Lower = more native cuts.
-CHONKY_THRESHOLD = 0.2
-# Empty so O tokens stay visible and 1-score is P(separator). Default pipeline hides O.
-CHONKY_IGNORE_LABELS = []
-# Official Chonky demo uses paul_graham_essay_no_new_line. Newlines hid cuts.
+CHONKY_MAX_LENGTH = 512
+CHONKY_STRIDE = 256
+CHONKY_AGGREGATION = "simple"
+CHONKY_THRESHOLD = 0.0
+CHONKY_IGNORE_LABELS = ["O"]
 CHONKY_NEWLINE_IS_SPACE = True
 _splitter = None
 
@@ -43,12 +39,13 @@ def _python() -> Path:
 
 def _ready() -> bool:
     return (_python().is_file() and STAMP.is_file() and WEIGHTS.is_file() and CONFIG.is_file()
-            and TOKENIZER.is_file() and TOKENIZER_CONFIG.is_file() and SPECIAL_TOKENS.is_file())
+            and TOKENIZER.is_file() and TOKENIZER_CONFIG.is_file() and SPECIAL_TOKENS.is_file()
+            and VOCAB.is_file())
 
 
 def _knobs() -> dict:
     return {
-        "model": "chonky_modernbert_large_1", "library": "chonky", "device": CHONKY_DEVICE,
+        "model": "chonky_distilbert_base_uncased_1", "library": "chonky", "device": CHONKY_DEVICE,
         "max_length": CHONKY_MAX_LENGTH, "stride": CHONKY_STRIDE,
         "aggregation": CHONKY_AGGREGATION, "threshold": CHONKY_THRESHOLD,
         "ignore_labels": CHONKY_IGNORE_LABELS, "newline_is_space": CHONKY_NEWLINE_IS_SPACE,
@@ -63,7 +60,7 @@ def install() -> None:
     if not py.is_file():
         venv.EnvBuilder(with_pip=True).create(VENV)
     if not STAMP.is_file():
-        jsonl("chunk.install", model="chonky_modernbert_large_1", library="chonky")
+        jsonl("chunk.install", model="chonky_distilbert_base_uncased_1", library="chonky")
         pip = [str(py), "-m", "pip", "--isolated", "install", "--no-cache-dir",
                "--disable-pip-version-check", "--progress-bar", "off", "--no-input"]
         subprocess.run([*pip, "--index-url", "https://download.pytorch.org/whl/cpu", "torch"], check=True)
@@ -75,6 +72,7 @@ def install() -> None:
         (TOKENIZER, f"{HUB}/tokenizer.json", TOKENIZER_SHA),
         (TOKENIZER_CONFIG, f"{HUB}/tokenizer_config.json", TOKENIZER_CONFIG_SHA),
         (SPECIAL_TOKENS, f"{HUB}/special_tokens_map.json", SPECIAL_TOKENS_SHA),
+        (VOCAB, f"{HUB}/vocab.txt", VOCAB_SHA),
     )
     for path, url, sha in files:
         if not path.is_file():
@@ -98,18 +96,11 @@ def _model():
             MODELS, num_labels=2, id2label={0: "O", 1: "separator"},
             label2id={"O": 0, "separator": 1}, local_files_only=True)
         model.to(CHONKY_DEVICE)
-        kwargs = dict(aggregation_strategy=CHONKY_AGGREGATION, ignore_labels=CHONKY_IGNORE_LABELS,
-                      batch_size=CHONKY_BATCH_SIZE)
-        if CHONKY_AGGREGATION != "none":
-            kwargs["stride"] = CHONKY_STRIDE
-        _splitter = pipeline("ner", model=model, tokenizer=tokenizer, device=CHONKY_DEVICE, **kwargs)
+        _splitter = pipeline(
+            "ner", model=model, tokenizer=tokenizer, device=CHONKY_DEVICE,
+            aggregation_strategy=CHONKY_AGGREGATION, ignore_labels=CHONKY_IGNORE_LABELS,
+            stride=CHONKY_STRIDE, batch_size=CHONKY_BATCH_SIZE)
     return _splitter
-
-
-def _p_sep(ner: dict) -> float:
-    score = float(ner["score"])
-    name = str(ner.get("entity") or ner.get("entity_group") or "")
-    return score if name.endswith("separator") else 1.0 - score
 
 
 def split(text: str) -> list:
@@ -126,21 +117,19 @@ def split(text: str) -> list:
     load_ms = int((time.perf_counter() - t0) * 1000)
     t0 = time.perf_counter()
     ners = pipe(text)
-    by_end = {}
+    cuts, scores = [], []
+    begin = 0
+    pieces = []
     for ner in ners:
         end = int(ner["end"])
-        if end <= 0 or end >= len(text):
+        p = float(ner["score"])
+        if end <= begin or end > len(text) or p < CHONKY_THRESHOLD:
             continue
-        p = _p_sep(ner)
-        if p >= CHONKY_THRESHOLD and p > by_end.get(end, 0.0):
-            by_end[end] = p
-    cuts = sorted(by_end)
-    pieces, begin, scores = [], 0, []
-    for end in cuts:
         chunk = text[begin:end].strip()
         if chunk:
             pieces.append(chunk)
-            scores.append(round(by_end[end], 4))
+            scores.append(round(p, 4))
+            cuts.append(end)
         begin = end
     tail = text[begin:].strip()
     if tail:
