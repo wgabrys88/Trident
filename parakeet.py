@@ -152,21 +152,20 @@ if __name__ == "__main__":
     p.add_argument("--json", action="store_true", help="emit text plus per-word/per-token timestamps")
     p.add_argument("wav", type=Path, nargs="*")
     args = p.parse_args()
+    if args.unload:
+        _stop()
+        sys.exit(0)
+    _install()
     if args.install:
-        _install()
         _start()
         sys.exit(0)
     if args.load:
-        _install()
         _start()
         try:
             input("[parakeet] ready. Press Enter to stop...\n")
         except EOFError:
             while True:
                 time.sleep(3600)
-        _stop()
-        sys.exit(0)
-    if args.unload:
         _stop()
         sys.exit(0)
     if args.wav:
@@ -180,7 +179,6 @@ if __name__ == "__main__":
             print(f"[rtf] parakeet_total={t1-t0:.3f}s", file=sys.stderr)
             print(f"[rtf] audio_s={dur:.3f}s", file=sys.stderr)
     else:
-        _install()
         wav = ROOT / "tts_out.wav"
         with wave.open(str(wav)) as wf:
             dur = wf.getnframes() / wf.getframerate()

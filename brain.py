@@ -53,11 +53,14 @@ _PROCESS, _READY_EVENT, _READER, _TAIL = None, None, None, deque(maxlen=80)
 
 
 def _install() -> None:
-    _kill_port(PORT)
     runtime_ok = EXE.is_file() and RUNTIME_REVISION.is_file() and RUNTIME_REVISION.read_text(encoding="utf-8").strip() == f"{LLAMA_REV} {RUNTIME_SHA}"
     model_ok = MODEL.is_file() and MODEL.stat().st_size == MODEL_SIZE and _sha(MODEL) == MODEL_SHA
     if MODEL.exists() and not model_ok:
         raise RuntimeError(f"Refusing unverified existing model: {MODEL}")
+    if runtime_ok and model_ok and MODEL_CARD.is_file():
+        return
+    if not runtime_ok:
+        _kill_port(PORT)
     with tempfile.TemporaryDirectory(prefix=".brain-install-", dir=ROOT) as tmp:
         work = Path(tmp)
         if not runtime_ok:
@@ -183,21 +186,20 @@ if __name__ == "__main__":
     p.add_argument("--unload", action="store_true")
     p.add_argument("--request")
     args = p.parse_args()
+    if args.unload:
+        _stop()
+        sys.exit(0)
+    _install()
     if args.install:
-        _install()
         _start()
         sys.exit(0)
     if args.load:
-        _install()
         _start()
         try:
             input("[brain] ready. Press Enter to stop...\n")
         except EOFError:
             while True:
                 time.sleep(3600)
-        _stop()
-        sys.exit(0)
-    if args.unload:
         _stop()
         sys.exit(0)
     if args.request is not None:
@@ -224,7 +226,6 @@ if __name__ == "__main__":
         tps = n_tokens / inf_s if inf_s > 0 else 0.0
         print(f"[brain] startup_s={ready-started:.3f} ttft_s={(first or finished)-ready:.3f} inference_s={inf_s:.3f} tokens={n_tokens} tps={tps:.2f}", file=sys.stderr)
     else:
-        _install()
         text = (ROOT / "pipe_in.txt").read_text(encoding="utf-8")
         started = time.perf_counter()
         with Brain() as brain:
