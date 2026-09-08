@@ -410,21 +410,20 @@ def run_tts(spec: dict) -> None:
             spec["knobs"][name] = value
     language = args.language if spec["multilingual"] else spec["language"]
     tts = TTS(spec)
+    if args.unload:
+        tts.stop()
+        return
     if args.provenance:
         _provenance(spec)
         return
+    install_tts(spec)
     if args.install:
-        install_tts(spec)
         tts.start(language)
         return
     if args.load:
-        install_tts(spec)
         tts.start(language)
         print(f"[{spec['label']}] ready", flush=True)
         input()
-        tts.stop()
-        return
-    if args.unload:
         tts.stop()
         return
     source = (args.text if args.text is not None else

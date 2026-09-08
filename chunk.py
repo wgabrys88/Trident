@@ -1,5 +1,5 @@
 from __future__ import annotations
-import json, subprocess, sys, venv
+import json, shutil, subprocess, sys, venv
 from pathlib import Path
 
 from main import ROOT, _download
@@ -27,7 +27,13 @@ def _python() -> Path:
     return VENV / "Scripts/python.exe"
 
 
+def _ready() -> bool:
+    return _python().is_file() and ONNX.is_file() and CONFIG.is_file() and TOKENIZER.is_file()
+
+
 def install() -> None:
+    if _ready():
+        return
     py = _python()
     if not py.is_file():
         venv.EnvBuilder(with_pip=True).create(VENV)
@@ -41,13 +47,19 @@ def install() -> None:
     if not CONFIG.is_file():
         _download(SAT_CONFIG_URL, CONFIG, CONFIG_SHA)
     if not TOKENIZER.is_file():
-        _download(TOKENIZER_URL, TOKENIZER, TOKENIZER_SHA)
+        previous = ROOT / "models/sat-3l-sm/tokenizer.json"
+        if previous.is_file():
+            TOKENIZER.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(previous, TOKENIZER)
+        else:
+            _download(TOKENIZER_URL, TOKENIZER, TOKENIZER_SHA)
     print("[chunk] install | done", flush=True)
 
 
 def _model():
     global _sat
     if _sat is None:
+        install()
         import onnxruntime as ort
         from wtpsplit_lite import SaT
         so = ort.SessionOptions()
@@ -55,7 +67,7 @@ def _model():
         so.inter_op_num_threads = 1
         so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        _sat = SaT(str(MODELS), tokenizer_name_or_path=str(TOKENIZER),
+        _sat = SaT(str(MODELS), tokenizer_name_or_path=TOKENIZER,
                    ort_providers=ORT_PROVIDERS, ort_kwargs={"sess_options": so})
     return _sat
 
