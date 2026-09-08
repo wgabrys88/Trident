@@ -11,6 +11,7 @@ from main import PIPELINE_LOG, ROOT, jsonl
 PYTHON = sys.executable
 SHORT = "Trident turns written language into local speech. This short sample checks a simple synthesis request."
 COUNT = "One. Two. Three. Four. Five. Six. Seven. Eight. Nine. Ten."
+BOUNDARY = "Ask him when you are unsure. The wave file is the product."
 
 
 def run(label: str, *args: str) -> tuple[int, str]:
