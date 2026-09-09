@@ -340,7 +340,9 @@ def _chatterbox_source(work: Path) -> Path:
 def _checkout(url: str, rev: str, path: Path, patterns: tuple) -> None:
     _run_logged(["git", "init", str(path)], step="git-init")
     git = ["git", "-C", str(path)]
-    for step, args in (("git-remote", ("remote", "add", "origin", url)),
+    remote_cmd = ("remote", "set-url", "origin", url) if subprocess.run(
+        [*git, "remote", "get-url", "origin"], capture_output=True).returncode == 0 else ("remote", "add", "origin", url)
+    for step, args in (("git-remote", remote_cmd),
                        ("git-config", ("config", "remote.origin.promisor", "true")),
                        ("git-filter", ("config", "remote.origin.partialclonefilter", "blob:none")),
                        ("git-fetch", ("fetch", "--depth=1", "--filter=blob:none", "--no-tags", "origin", rev))):
