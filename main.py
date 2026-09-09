@@ -7,7 +7,7 @@ TTS_MODELS = ROOT / "models"
 TTS_VOICE = ROOT / "data/ref-trump.wav"
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 VULKAN_SDK = Path("C:/VulkanSDK/1.4.357.0")
-CHATTERBOX_REV = "ceff41c93215dff71fd04d4b82f3e3b6a1381869"
+CHATTERBOX_REV = "ff6e4794c52b60ef9a5b52960828d3f96ca8de1b"
 GGML_REV = "58c3805840b516b2a88ff867ccf7bb41dba79951"
 VOICE_URL = "https://huggingface.co/datasets/sdialog/voices-celebrities/resolve/57746b866d470be717097b87ba0428f8dd73e4f4"
 TTS_RUNTIME_FILES = ("chatterbox-server.exe", "ggml.dll", "ggml-base.dll", "ggml-cpu.dll", "ggml-vulkan.dll")
@@ -23,6 +23,28 @@ def jsonl(event: str, **fields) -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     with TRIDENT_LOG.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps({"event": event, **fields}, ensure_ascii=False) + "\n")
+
+
+def _read_tts_log_json(*, event: str | None = None, response: int | None = None,
+                       piece: int | None = None) -> dict | None:
+    if not TTS_LOG.is_file():
+        return None
+    for line in reversed(TTS_LOG.read_text(encoding="utf-8", errors="replace").splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event is not None and obj.get("event") != event:
+            continue
+        if response is not None and obj.get("response") != response:
+            continue
+        if piece is not None and obj.get("piece") != piece:
+            continue
+        return obj
+    return None
 
 
 def _run_logged(cmd, *, step, **kwargs) -> None:
@@ -240,20 +262,32 @@ class TTS:
             raise RuntimeError("TTS runtime missing; run --install")
         language = self.spec["language"] if language is None else language
         if self._proc is not None and self._proc.poll() is None:
+            jsonl("tts.reuse", family=self.spec["family"], port=self.spec["port"],
+                  pid=self._proc.pid, knobs=self.spec["knobs"])
             return self
         if _port_in_use(self.spec["port"]):
-            jsonl("tts.start", family=self.spec["family"], port=self.spec["port"], reused=True)
-            return self
+            jsonl("tts.port_blocked", family=self.spec["family"], port=self.spec["port"],
+                  knobs=self.spec["knobs"])
+            raise RuntimeError(
+                f"Port {self.spec['port']} is already in use by a process this TTS instance did not spawn. "
+                f"Unload the existing {self.spec['family']} server with --unload before starting with new sampler settings.")
+        command = self._command(language)
+        jsonl("tts.spawn", family=self.spec["family"], port=self.spec["port"],
+              chatterbox_rev=CHATTERBOX_REV, knobs=self.spec["knobs"], command=command)
         jsonl("tts.start", family=self.spec["family"], port=self.spec["port"], spawning=True)
         TTS_LOG.parent.mkdir(parents=True, exist_ok=True)
         self._log_fh = TTS_LOG.open("ab", buffering=0)
-        self._proc = subprocess.Popen(self._command(language), cwd=TTS_RUNTIME, stdin=subprocess.DEVNULL,
+        self._proc = subprocess.Popen(command, cwd=TTS_RUNTIME, stdin=subprocess.DEVNULL,
                                       stdout=self._log_fh, stderr=self._log_fh)
         _wait_port(self._proc, self.spec["port"], 120)
-        jsonl("tts.ready", family=self.spec["family"], port=self.spec["port"])
+        native_config = _read_tts_log_json(event="server.config")
+        jsonl("tts.ready", family=self.spec["family"], port=self.spec["port"],
+              pid=self._proc.pid, knobs=self.spec["knobs"], native_config=native_config)
         return self
 
     def stop(self) -> None:
+        pid = self._proc.pid if self._proc is not None else None
+        jsonl("tts.stop", family=self.spec["family"], port=self.spec["port"], pid=pid)
         if self._proc is not None:
             if self._proc.poll() is None:
                 self._proc.kill()
@@ -264,19 +298,27 @@ class TTS:
             self._log_fh = None
         _kill_port(self.spec["port"])
 
-    def synthesize(self, text: str) -> Path:
+    def synthesize(self, text: str, *, pieces: list | None = None) -> Path:
         chunk_t0 = time.perf_counter()
-        pieces = self._chunks(text)
+        one_piece = pieces is not None
+        if pieces is None:
+            pieces = self._chunks(text)
         self.chunk_s = time.perf_counter() - chunk_t0
         output = ROOT / f"out_{time.strftime('%d-%m-%y-%H-%M-%S')}_{self.spec['output']}.wav"
         self._response_id += 1
         response_id = self._response_id
         fields = dict(response=response_id, pieces=len(pieces),
-                      total_chars=sum(len(p) for p in pieces), chunk_s=round(self.chunk_s, 3))
+                      total_chars=sum(len(p) for p in pieces), chunk_s=round(self.chunk_s, 3),
+                      one_piece=one_piece)
+        if one_piece:
+            fields["chunk_bypassed"] = True
         if self.spec.get("audit_dir"):
             audit_dir = Path(self.spec["audit_dir"])
             fields["audit_dir"] = str(audit_dir.relative_to(ROOT) if audit_dir.is_absolute() else audit_dir)
         jsonl("synth.begin", **fields)
+        for piece_id, piece in enumerate(pieces):
+            jsonl("synth.piece.send", response=response_id, piece=piece_id, total=len(pieces),
+                  chars=len(piece), text=piece, one_piece=one_piece)
         synth_t0 = time.perf_counter()
         with socket.create_connection(("127.0.0.1", self.spec["port"]), timeout=300) as sock, sock.makefile("rb") as reader:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -314,14 +356,35 @@ class TTS:
                           trimmed_leading_bytes=leading_trim,
                           wall_ms=int((time.perf_counter() - piece_t0) * 1000))
                     pieces_written += 1
+            native_pieces = []
+            for piece_id in range(pieces_written):
+                native = _read_tts_log_json(response=response_id, piece=piece_id)
+                if native:
+                    native_pieces.append(native)
+                    jsonl("synth.native", response=response_id, piece=piece_id,
+                          n_text_tok=native.get("n_text_tok"),
+                          n_speech_tok=native.get("n_speech_tok"),
+                          stop=native.get("stop"),
+                          t3_ms=native.get("t3_ms"),
+                          s3_ms=native.get("s3_ms"),
+                          text_sha=native.get("text_sha"),
+                          speech_hash=native.get("speech_hash"))
             jsonl("synth.complete", response=response_id,
-                  pieces=pieces_written, samples=pcm_bytes // 2, wav=output.name)
+                  pieces=pieces_written, samples=pcm_bytes // 2, wav=output.name,
+                  native_pieces=native_pieces or None)
             sock.settimeout(10)
             self._send(sock, 3)
             if self._receive(reader)[0] != 5:
                 raise RuntimeError("TTS did not acknowledge close")
         self.synth_s = time.perf_counter() - synth_t0
         return output
+
+    @staticmethod
+    def _one_piece(text: str) -> list:
+        piece = text.strip()
+        if not piece:
+            raise ValueError("TTS one-piece input is empty")
+        return [piece]
 
     @staticmethod
     def _chunks(text: str) -> list:
@@ -366,6 +429,8 @@ def run_tts(spec: dict) -> None:
     parser.add_argument("--unload", action="store_true")
     parser.add_argument("--audit", action="store_true",
                         help="capture replayable native stage artifacts; do not use for RTF")
+    parser.add_argument("--one-piece", action="store_true",
+                        help="bypass SaT chunking; synthesize the supplied text as exactly one piece")
     if spec["multilingual"]:
         parser.add_argument("--language", default=spec["language"],
                             help="ISO 639-1 language code (e.g. en, fr, zh)")
@@ -407,10 +472,18 @@ def run_tts(spec: dict) -> None:
     source = (args.text if args.text is not None else
               (ROOT / args.text_file).read_text(encoding="utf-8") if args.text_file else
               (ROOT / "brain_out.txt").read_text(encoding="utf-8"))
+    jsonl("tts.run", family=spec["family"], one_piece=args.one_piece,
+          chatterbox_rev=CHATTERBOX_REV, knobs=spec["knobs"],
+          source_chars=len(source), text_file=str(args.text_file) if args.text_file else None)
     started = time.perf_counter()
     tts.start(language)
     warmup_s = time.perf_counter() - started
-    wav_path = tts.synthesize(source)
+    if args.one_piece:
+        pieces = TTS._one_piece(source)
+        jsonl("synth.chunk_bypass", pieces=1, chars=len(pieces[0]), text=pieces[0])
+        wav_path = tts.synthesize(source, pieces=pieces)
+    else:
+        wav_path = tts.synthesize(source)
     (ROOT / "tts_out.wav").write_bytes(wav_path.read_bytes())
     with wave.open(str(wav_path)) as wav:
         duration = wav.getnframes() / wav.getframerate()
