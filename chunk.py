@@ -62,13 +62,21 @@ def _model():
     return _sat
 
 
-def _spoken_lines(text: str) -> list:
-    lines = []
+def _sections(text: str) -> list:
+    sections, buf = [], []
     for part in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
         line = " ".join(part.split())
-        if line and not line.startswith("#"):
-            lines.append(line)
-    return lines
+        if not line:
+            continue
+        if line.startswith("#"):
+            if buf:
+                sections.append(buf)
+                buf = []
+            continue
+        buf.append(line)
+    if buf:
+        sections.append(buf)
+    return sections
 
 
 def _pack(pieces: list) -> list:
@@ -88,24 +96,27 @@ def _pack(pieces: list) -> list:
 
 def split(text: str) -> list:
     t0 = time.perf_counter()
-    lines = _spoken_lines(text)
-    text = "\n".join(lines)
+    sections = _sections(text)
     prep_ms = int((time.perf_counter() - t0) * 1000)
-    if not text:
+    if not sections:
         raise ValueError("TTS input is empty")
     t0 = time.perf_counter()
     model = _model()
     load_ms = int((time.perf_counter() - t0) * 1000)
     t0 = time.perf_counter()
-    cuts = [p.strip() for p in model.split(
-        text, threshold=SAT_THRESHOLD, treat_newline_as_space=False) if p and p.strip()]
-    pieces = _pack(cuts)
+    cuts, pieces = [], []
+    for lines in sections:
+        block = [p.strip() for p in model.split(
+            "\n".join(lines), threshold=SAT_THRESHOLD, treat_newline_as_space=False) if p and p.strip()]
+        cuts.extend(block)
+        pieces.extend(_pack(block))
     infer_ms = int((time.perf_counter() - t0) * 1000)
     if not pieces:
         raise ValueError("TTS input is empty")
     jsonl("chunk.done", model="sat-12l-sm", threshold=SAT_THRESHOLD, pack_chars=PACK_CHARS,
           newline_is_space=False, providers=ORT_PROVIDERS,
-          lines=len(lines), sat_pieces=len(cuts), pieces=len(pieces),
+          sections=len(sections), lines=sum(len(s) for s in sections),
+          sat_pieces=len(cuts), pieces=len(pieces),
           chars=sum(len(p) for p in pieces), prep_ms=prep_ms, load_ms=load_ms, infer_ms=infer_ms,
           ms=prep_ms + load_ms + infer_ms)
     for i, piece in enumerate(pieces):
