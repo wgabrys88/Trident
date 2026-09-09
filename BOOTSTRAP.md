@@ -37,7 +37,7 @@ The voice file is `data/ref-trump.wav`. That name does not change in code. Extra
 
 The wave is the evidence. Logs exist so speech can be traced. If speech is wrong, the pipeline is wrong. If speech is right, that path stays.
 
-`.runtime-logs/trident.log` is the Python JSONL (chunk, synth, install heartbeats). `tts.log` is the native server. `install.log` is cmake/git/pip. Console is heartbeats only: stage, `run`, `synth.begin` / `complete` / `rtf`. Piece text stays in the files. A failed piece may have no native JSON. RTF is synth time over audio time. Warmup and SaT are not RTF. `--audit` is for tokens, not for RTF.
+`.runtime-logs/trident.log` is the Python JSONL. `jsonl()` writes only that file. There is no console JSON. `chunk.py` stdout is the pieces array for `_chunks`. Mixing a heartbeat onto that pipe crashed the first nano-bench after the logging pin (`JSONDecodeError: Extra data`). `tts.log` is the native server. `install.log` is cmake/git/pip. A failed piece may have no native JSON. RTF is synth time over audio time. Warmup and SaT are not RTF. `--audit` is for tokens, not for RTF. `run_tts` still prints the wav path so the user can find the file.
 
 What actually spoke is the pin plus the built runtime (`tools/runtime/tts/REVISION`), not `git rev-parse HEAD`.
 
@@ -52,6 +52,8 @@ User ear override: **“chunk” repeats around the 6th second of that isolated 
 Long sentences already sound natural. Short sentences are understandable but not smooth. That is the live defect.
 
 Short A/B already ran. Newlines: `out_09-09-26-14-15-40_tts.wav`, 15 SaT pieces, RTF 1.879. Same words as one paragraph: `out_09-09-26-14-16-02_tts.wav`, 10 SaT pieces, RTF 1.385. Joining lines is not enough. SaT 0.25 still isolates many short sentences inside a line.
+
+The pin build succeeded. The first `python tts_nano.py --text-file data/nano-bench.txt` after it split 81 lines into 90 SaT pieces, then died in `json.loads` before any synth. No new wave. `tts.log` only has server start/ready.
 
 ## Failed experiments (knowledge, do not restore)
 
