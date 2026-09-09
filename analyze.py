@@ -2,7 +2,7 @@ from __future__ import annotations
 import json, subprocess, sys, venv, wave
 from pathlib import Path
 
-from main import LOG_DIR, ROOT, TRIDENT_LOG, TTS_LOG, TTS_RATE, _run_logged, jsonl
+from main import LOG_DIR, ROOT, TRIDENT_LOG, TTS_LOG, TTS_RATE, _compound_numbers, _run_logged, jsonl
 
 VENV = ROOT / ".venv"
 REPORT = LOG_DIR / "report"
@@ -26,6 +26,28 @@ def install() -> None:
                 step="pip-analyze")
 
 
+def finalize_run(run_dir: Path, wav_paths: list[Path], spec: dict, run_ctx: dict,
+                 chatterbox_rev: str, sampler_fn) -> None:
+    install()
+    events_path = run_dir / "events.jsonl"
+    if events_path.is_file():
+        subprocess.run([str(_python()), "-c",
+                        f"import pandas as pd; "
+                        f"pd.read_json(r'{events_path}', lines=True)"
+                        f".to_parquet(r'{run_dir / 'events.parquet'}', index=False)"],
+                       check=True)
+    manifest = {
+        "run_id": run_ctx["run_id"],
+        "family": spec["family"],
+        "wav_paths": [p.name for p in wav_paths],
+        "audit_dir": spec.get("audit_dir") or None,
+        "knobs": spec["knobs"],
+        "sampler": sampler_fn(spec["knobs"]),
+        "chatterbox_rev": chatterbox_rev,
+    }
+    (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+
 def report(wav: Path) -> None:
     wav = Path(wav)
     if not wav.is_file():
@@ -34,13 +56,97 @@ def report(wav: Path) -> None:
     subprocess.run([str(_python()), str(Path(__file__).resolve()), str(wav.resolve())], check=True)
 
 
+def _read_events() -> list[dict]:
+    if not TRIDENT_LOG.is_file():
+        return []
+    return [json.loads(line) for line in TRIDENT_LOG.read_text(encoding="utf-8").splitlines()]
+
+
+def spoken_sequence(asr) -> list[str]:
+    import pandas as pd
+    if isinstance(asr, pd.DataFrame):
+        words = asr["word_norm"].tolist() if "word_norm" in asr.columns else asr["word"].str.lower().str.strip(".,").tolist()
+    else:
+        words = list(asr)
+    return _compound_numbers(words)
+
+
+def load_run(run_id: str) -> dict:
+    import pandas as pd
+    run_dir = LOG_DIR / "runs" / run_id
+    parquet = run_dir / "events.parquet"
+    jsonl_path = run_dir / "events.jsonl"
+    if parquet.is_file():
+        events = pd.read_parquet(parquet)
+    elif jsonl_path.is_file():
+        events = pd.read_json(jsonl_path, lines=True)
+    else:
+        events = pd.DataFrame(_read_events())
+        if "run_id" in events.columns:
+            events = events[events.run_id == run_id]
+    if events.empty:
+        raise RuntimeError(f"no events for run_id {run_id}")
+    if "run_id" in events.columns:
+        events = events[events.run_id == run_id]
+    manifest_path = run_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {}
+    t3_steps = events[events.event == "t3.step"].copy()
+    if t3_steps.empty and manifest.get("audit_dir"):
+        audit_steps = ROOT / manifest["audit_dir"] / "04-t3-step.jsonl"
+        if audit_steps.is_file():
+            t3_steps = pd.read_json(audit_steps, lines=True)
+            t3_steps = t3_steps[t3_steps.event == "t3.step"] if "event" in t3_steps.columns else t3_steps
+    return {
+        "events": events,
+        "pieces": events[events.event == "synth.piece"].copy(),
+        "asr_words": events[events.event == "asr.word"].copy(),
+        "asr_diffs": events[events.event == "asr.diff"].copy(),
+        "t3_steps": t3_steps,
+        "manifest": manifest,
+    }
+
+
+def compare_runs(run_id_a: str, run_id_b: str) -> dict:
+    import pandas as pd
+    a, b = load_run(run_id_a), load_run(run_id_b)
+    rows = []
+    for label, run in (("a", a), ("b", b)):
+        manifest = run["manifest"]
+        for wav in manifest.get("wav_paths", []):
+            diff_rows = run["asr_diffs"]
+            diff = diff_rows[diff_rows.wav == wav].iloc[-1] if not diff_rows.empty and "wav" in diff_rows.columns else None
+            native = run["events"][(run["events"].event == "synth.native")]
+            if not native.empty and "wav" not in native.columns:
+                complete = run["events"][(run["events"].event == "synth.complete") & (run["events"].wav == wav)]
+                resp = int(complete.iloc[-1].response) if not complete.empty else None
+                native = native[native.response == resp] if resp is not None else native
+            row = {
+                "run": label,
+                "run_id": manifest.get("run_id", run_id_a if label == "a" else run_id_b),
+                "wav": wav,
+                "knobs": manifest.get("knobs"),
+                "deletions": diff.deletions if diff is not None else None,
+                "duplicates": diff.duplicates if diff is not None else None,
+            }
+            if not native.empty:
+                last = native.iloc[-1]
+                row["n_speech_tok"] = last.get("n_speech_tok")
+                row["stop"] = last.get("stop")
+            rows.append(row)
+    return {"comparison": pd.DataFrame(rows), "a": a, "b": b}
+
+
 def _load(wav: Path):
     import pandas as pd
-    events = [json.loads(line) for line in TRIDENT_LOG.read_text(encoding="utf-8").splitlines()]
+    events = _read_events()
     done = [e for e in events if e.get("event") == "synth.complete" and e.get("wav") == wav.name]
     if not done:
         raise RuntimeError(f"no synth.complete for {wav.name}")
-    rid = done[-1]["response"]
+    done_event = done[-1]
+    rid = done_event["response"]
+    run_id = done_event.get("run_id")
+    if run_id:
+        events = [e for e in events if e.get("run_id") in (run_id, None)]
     pieces = pd.DataFrame([e for e in events if e.get("event") == "synth.piece" and e.get("response") == rid])
     if pieces.empty:
         raise RuntimeError("synth.piece missing")
