@@ -37,7 +37,7 @@ The voice file is `data/ref-trump.wav`. That name does not change in code. Extra
 
 The wave is the evidence. Logs exist so speech can be traced. If speech is wrong, the pipeline is wrong. If speech is right, that path stays.
 
-`.runtime-logs/trident.log` is the Python JSONL. `jsonl` writes only that file. Console is optional and is not the log. Nano still prints the wav path. `chunk.py` stdout is the pieces array. A heartbeat on that pipe crashed the first nano-bench after the logging pin. `tts.log` is the native server. `install.log` is cmake/git/pip. A failed piece may have no native JSON. RTF is synth time over audio time. Warmup and SaT are not RTF. `--audit` is for tokens, not for RTF.
+`.runtime-logs/trident.log` is the Python JSONL. `jsonl` writes only that file. There is no console log. The wav name is `synth.complete`. `tts_out.wav` is the latest copy. `chunk.py` stdout is the pieces array, not a log. `tts.log` is the native server. `install.log` is cmake/git/pip. A failed piece may have no native JSON. RTF is synth time over audio time. Warmup and SaT are not RTF. `--audit` is for tokens, not for RTF.
 
 What actually spoke is the pin plus the built runtime (`tools/runtime/tts/REVISION`), not `git rev-parse HEAD`.
 
@@ -53,7 +53,7 @@ Long sentences already sound natural. Short sentences are understandable but not
 
 Short A/B already ran. Newlines: `out_09-09-26-14-15-40_tts.wav`, 15 SaT pieces, RTF 1.879. Same words as one paragraph: `out_09-09-26-14-16-02_tts.wav`, 10 SaT pieces, RTF 1.385. Joining lines is not enough. SaT 0.25 still isolates many short sentences inside a line.
 
-The pin already built. The first bench after it split 81 lines into 90 SaT pieces, then died in `json.loads` before synth. No new wave.
+The pin already built. The first bench after it split 81 lines into 90 SaT pieces, then died in `json.loads` before synth. File-only JSONL is the crash fix. No new wave yet.
 
 ## Failed experiments (knowledge, do not restore)
 
@@ -85,7 +85,7 @@ Untracked reading snapshot of the Nano path that actually ran, not a drop-in bui
 
 Job: make short Nano sentences as natural as long ones. Understandable is not enough. Do not restore Chonky, DistilBERT, EOS hold, KV clear, or S3-reset as a bundle. Piece isolation versus min-p is already proven. Filename over-speak is T3-internal.
 
-File-only JSONL is the crash fix. Next speech change: short pieces still isolate inside a line (10 SaT pieces on the paragraph A/B). Not sampling. Not a char/dot/max splitter. Not joining-as-a-splitter.
+Next speech change: short pieces still isolate inside a line (10 SaT pieces on the paragraph A/B). Not sampling. Not a char/dot/max splitter. Not joining-as-a-splitter.
 
 Later if asked: speech token ids on the existing native JSONL. Gold duration/RMS/F0/mel on `short` and `harvard-1`. Zip only if asked.
 

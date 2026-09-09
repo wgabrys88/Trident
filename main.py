@@ -456,7 +456,6 @@ def run_tts(spec: dict) -> None:
     warmup_s = time.perf_counter() - started
     wav_path = tts.synthesize(source)
     (ROOT / "tts_out.wav").write_bytes(wav_path.read_bytes())
-    print(wav_path)
     with wave.open(str(wav_path)) as wav:
         duration = wav.getnframes() / wav.getframerate()
     synth_s = tts.synth_s
