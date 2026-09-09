@@ -1,5 +1,5 @@
 from __future__ import annotations
-import hashlib, json, shutil, sys, time, venv
+import hashlib, json, sys, time, venv
 from pathlib import Path
 
 from main import ROOT, _download, _run_logged, jsonl
@@ -15,11 +15,8 @@ TOKENIZER_SHA = "a898ea75433890f6610f4e470b8ebeb0c21dce5c8dd61f892eb09eb5919d2e2
 SAT_ONNX_URL = "https://huggingface.co/segment-any-text/sat-12l-sm/resolve/main/model_optimized.onnx"
 SAT_CONFIG_URL = "https://huggingface.co/segment-any-text/sat-12l-sm/resolve/main/config.json"
 TOKENIZER_URL = "https://huggingface.co/FacebookAI/xlm-roberta-base/resolve/main/tokenizer.json"
-# sat-12l-sm SM default. 0.025 forced one piece per counted word (64 pieces
-# on the probe): tiny pieces ran native RTF ~1.08, prose ~0.37. Longer SaT
-# pieces are the RTF and cadence lever. Newlines from Gemma still break.
 SAT_THRESHOLD = 0.25
-# CPU only. Dml/CUDA would steal the GPU from Nano/Gemma/Parakeet.
+PACK_CHARS = 240
 ORT_PROVIDERS = ["CPUExecutionProvider"]
 _sat = None
 
@@ -48,12 +45,7 @@ def install() -> None:
     if not CONFIG.is_file():
         _download(SAT_CONFIG_URL, CONFIG, CONFIG_SHA)
     if not TOKENIZER.is_file():
-        previous = ROOT / "models/sat-3l-sm/tokenizer.json"
-        if previous.is_file():
-            TOKENIZER.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(previous, TOKENIZER)
-        else:
-            _download(TOKENIZER_URL, TOKENIZER, TOKENIZER_SHA)
+        _download(TOKENIZER_URL, TOKENIZER, TOKENIZER_SHA)
     jsonl("chunk.install.done")
 
 
@@ -73,12 +65,34 @@ def _model():
     return _sat
 
 
+def _spoken_lines(text: str) -> list:
+    lines = []
+    for part in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        line = " ".join(part.split())
+        if line and not line.startswith("#"):
+            lines.append(line)
+    return lines
+
+
+def _pack(pieces: list) -> list:
+    packed, buf = [], ""
+    for piece in pieces:
+        if not buf:
+            buf = piece
+        elif len(buf) + 1 + len(piece) <= PACK_CHARS:
+            buf = f"{buf} {piece}"
+        else:
+            packed.append(buf)
+            buf = piece
+    if buf:
+        packed.append(buf)
+    return packed
+
+
 def split(text: str) -> list:
-    # Gemma puts one breath per line. Keep those breaks. SaT still meaning-cuts inside a line.
     source_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
     t0 = time.perf_counter()
-    lines = [line for line in (" ".join(part.split()) for part in
-             text.replace("\r\n", "\n").replace("\r", "\n").split("\n")) if line]
+    lines = _spoken_lines(text)
     text = "\n".join(lines)
     prep_ms = int((time.perf_counter() - t0) * 1000)
     if not text:
@@ -87,13 +101,15 @@ def split(text: str) -> list:
     model = _model()
     load_ms = int((time.perf_counter() - t0) * 1000)
     t0 = time.perf_counter()
-    pieces = [p.strip() for p in model.split(
+    cuts = [p.strip() for p in model.split(
         text, threshold=SAT_THRESHOLD, treat_newline_as_space=False) if p and p.strip()]
+    pieces = _pack(cuts)
     infer_ms = int((time.perf_counter() - t0) * 1000)
     if not pieces:
         raise ValueError("TTS input is empty")
-    jsonl("chunk.done", model="sat-12l-sm", threshold=SAT_THRESHOLD, newline_is_space=False,
-          providers=ORT_PROVIDERS, source_sha=source_sha, lines=len(lines), pieces=len(pieces),
+    jsonl("chunk.done", model="sat-12l-sm", threshold=SAT_THRESHOLD, pack_chars=PACK_CHARS,
+          newline_is_space=False, providers=ORT_PROVIDERS, source_sha=source_sha,
+          lines=len(lines), sat_pieces=len(cuts), pieces=len(pieces),
           chars=sum(len(p) for p in pieces), prep_ms=prep_ms, load_ms=load_ms, infer_ms=infer_ms,
           ms=prep_ms + load_ms + infer_ms)
     for i, piece in enumerate(pieces):
@@ -107,6 +123,5 @@ if __name__ == "__main__":
     if "--install" in sys.argv:
         install()
         sys.exit(0)
-    pieces = split(sys.stdin.read())
-    json.dump(pieces, sys.stdout, ensure_ascii=False)
+    json.dump(split(sys.stdin.read()), sys.stdout, ensure_ascii=False)
     sys.stdout.write("\n")

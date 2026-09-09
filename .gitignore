@@ -1,7 +1,7 @@
 *
 !.gitignore
 !.gitattributes
-!/BOOTSTRAP.md
+!/analyze.py
 !/parakeet.py
 !/tts_nano.py
 !/brain.py
@@ -9,4 +9,3 @@
 !/chunk.py
 !/tts_turbo.py
 !/tts_v3.py
-!/validate.py

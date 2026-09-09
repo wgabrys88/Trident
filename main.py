@@ -80,14 +80,6 @@ def _text_id(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
-def _fnv64(data: bytes) -> str:
-    value = 1469598103934665603
-    for byte in data:
-        value ^= byte
-        value = (value * 1099511628211) & 0xffffffffffffffff
-    return f"{value:016x}"
-
-
 def _port_in_use(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
@@ -243,8 +235,9 @@ def install_tts(spec: dict) -> None:
             if not voice_card.is_file():
                 _download(f"{VOICE_URL}/README.md", voice_card)
         jsonl("tts.install.done", family=family)
-    import chunk as chunker
+    import analyze, chunk as chunker
     chunker.install()
+    analyze.install()
 
 
 class TTS:
@@ -335,9 +328,11 @@ class TTS:
                         pcm_bytes += len(payload)
                     if pcm_bytes == before:
                         raise RuntimeError(f"TTS piece {piece_id} produced no audio")
+                    start, end = before // 2, pcm_bytes // 2
                     jsonl("synth.piece", response=response_id, piece=piece_id,
                           text=pieces[piece_id], chars=len(pieces[piece_id]),
-                          sample_start=before // 2, sample_end=pcm_bytes // 2,
+                          sample_start=start, sample_end=end,
+                          t0=round(start / TTS_RATE, 3), t1=round(end / TTS_RATE, 3),
                           trimmed_leading_bytes=leading_trim,
                           wall_ms=int((time.perf_counter() - piece_t0) * 1000))
                     pieces_written += 1
@@ -465,6 +460,8 @@ def run_tts(spec: dict) -> None:
           synth_s=round(synth_s, 3), audio_s=round(duration, 3),
           rtf=round(synth_s / duration, 3) if duration else None,
           audit=audit, rtf_valid=not audit)
+    import analyze
+    analyze.report(wav_path)
 
 
 def main() -> None:
