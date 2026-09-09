@@ -2,7 +2,8 @@ from __future__ import annotations
 import json, subprocess, sys, venv, wave
 from pathlib import Path
 
-from main import LOG_DIR, ROOT, TRIDENT_LOG, TTS_LOG, TTS_RATE, _compound_numbers, _run_logged, jsonl
+from main import (LOG_DIR, ROOT, TRIDENT_LOG, TTS_LOG, TTS_RATE, _compound_numbers,
+                  _repair_forensic_json, _run_logged, jsonl)
 
 VENV = ROOT / ".venv"
 REPORT = LOG_DIR / "report"
@@ -94,7 +95,9 @@ def load_run(run_id: str) -> dict:
     if t3_steps.empty and manifest.get("audit_dir"):
         audit_steps = ROOT / manifest["audit_dir"] / "04-t3-step.jsonl"
         if audit_steps.is_file():
-            t3_steps = pd.read_json(audit_steps, lines=True)
+            lines = [_repair_forensic_json(line) for line in audit_steps.read_text(encoding="utf-8").splitlines()
+                     if line.strip()]
+            t3_steps = pd.read_json("\n".join(lines), lines=True)
             t3_steps = t3_steps[t3_steps.event == "t3.step"] if "event" in t3_steps.columns else t3_steps
     return {
         "events": events,
@@ -158,8 +161,11 @@ def _load(wav: Path):
         raise RuntimeError("tts.log missing")
     native = []
     for line in TTS_LOG.read_text(encoding="utf-8", errors="replace").splitlines():
-        if line.startswith("{") and '"piece"' in line:
-            native.append(json.loads(line))
+        if not line.startswith("{"):
+            continue
+        obj = json.loads(_repair_forensic_json(line))
+        if obj.get("n_speech_tok") is not None and obj.get("stop") is not None:
+            native.append(obj)
     if not native:
         raise RuntimeError("tts.log has no piece JSON")
     nd = pd.DataFrame(native)
