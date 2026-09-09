@@ -1,10 +1,9 @@
 from __future__ import annotations
-import hashlib, json, shutil, statistics, subprocess, sys, time, venv
+import hashlib, json, shutil, subprocess, sys, time, venv
 from pathlib import Path
 
 from main import ROOT, _download, jsonl
 
-# sat-12l-sm is the strongest official SM checkpoint. Tokenizer stays a local file.
 MODELS = ROOT / "models/sat-12l-sm"
 VENV = ROOT / "tools/runtime/chunker"
 ONNX = MODELS / "model_optimized.onnx"
@@ -16,32 +15,12 @@ TOKENIZER_SHA = "a898ea75433890f6610f4e470b8ebeb0c21dce5c8dd61f892eb09eb5919d2e2
 SAT_ONNX_URL = "https://huggingface.co/segment-any-text/sat-12l-sm/resolve/main/model_optimized.onnx"
 SAT_CONFIG_URL = "https://huggingface.co/segment-any-text/sat-12l-sm/resolve/main/config.json"
 TOKENIZER_URL = "https://huggingface.co/FacebookAI/xlm-roberta-base/resolve/main/tokenizer.json"
-SAT_HUB_PREFIX = None
-SAT_LORA_PATH = None
-SAT_STYLE = None
-SAT_LANGUAGE = None
-
-# Native SaT knobs. Higher threshold = fewer cuts. No min/max character constraints.
-SAT_THRESHOLD = 0.7
-SAT_STRIDE = 64
-SAT_BLOCK_SIZE = 512
-SAT_BATCH_SIZE = 32
-SAT_OUTER_BATCH_SIZE = 1000
-SAT_PAD_LAST_BATCH = False
-SAT_WEIGHTING = "uniform"
-SAT_REMOVE_WHITESPACE = False
-SAT_STRIP_WHITESPACE = False
-SAT_NEWLINE_IS_SPACE = False
-SAT_DO_PARAGRAPH = False
-SAT_PARAGRAPH_THRESHOLD = 0.5
-SAT_VERBOSE = False
-
+# sat-12l-sm SM default. 0.025 forced one piece per counted word (64 pieces
+# on the probe): tiny pieces ran native RTF ~1.08, prose ~0.37. Longer SaT
+# pieces are the RTF and cadence lever. Newlines from Gemma still break.
+SAT_THRESHOLD = 0.25
 # CPU only. Dml/CUDA would steal the GPU from Nano/Gemma/Parakeet.
 ORT_PROVIDERS = ["CPUExecutionProvider"]
-ORT_INTRA_THREADS = 1
-ORT_INTER_THREADS = 1
-ORT_SEQUENTIAL = True
-ORT_GRAPH_OPT = "all"
 _sat = None
 
 
@@ -78,22 +57,6 @@ def install() -> None:
     jsonl("chunk.install.done")
 
 
-def _knobs() -> dict:
-    return {
-        "model": "sat-12l-sm", "library": "wtpsplit-lite", "threshold": SAT_THRESHOLD,
-        "stride": SAT_STRIDE, "block_size": SAT_BLOCK_SIZE, "batch_size": SAT_BATCH_SIZE,
-        "outer_batch_size": SAT_OUTER_BATCH_SIZE, "pad_last_batch": SAT_PAD_LAST_BATCH,
-        "weighting": SAT_WEIGHTING, "remove_whitespace": SAT_REMOVE_WHITESPACE,
-        "strip_whitespace": SAT_STRIP_WHITESPACE, "newline_is_space": SAT_NEWLINE_IS_SPACE,
-        "do_paragraph": SAT_DO_PARAGRAPH, "paragraph_threshold": SAT_PARAGRAPH_THRESHOLD,
-        "verbose": SAT_VERBOSE, "hub_prefix": SAT_HUB_PREFIX, "lora_path": SAT_LORA_PATH,
-        "style": SAT_STYLE, "language": SAT_LANGUAGE, "providers": ORT_PROVIDERS,
-        "ort_intra_threads": ORT_INTRA_THREADS, "ort_inter_threads": ORT_INTER_THREADS,
-        "ort_sequential": ORT_SEQUENTIAL, "ort_graph_opt": ORT_GRAPH_OPT,
-        "char_constraints": False, "rtf_target": 0.25,
-    }
-
-
 def _model():
     global _sat
     if _sat is None:
@@ -101,33 +64,13 @@ def _model():
         import onnxruntime as ort
         from wtpsplit_lite import SaT
         so = ort.SessionOptions()
-        so.intra_op_num_threads = ORT_INTRA_THREADS
-        so.inter_op_num_threads = ORT_INTER_THREADS
-        so.execution_mode = (ort.ExecutionMode.ORT_SEQUENTIAL if ORT_SEQUENTIAL
-                             else ort.ExecutionMode.ORT_PARALLEL)
-        so.graph_optimization_level = {
-            "off": ort.GraphOptimizationLevel.ORT_DISABLE_ALL,
-            "basic": ort.GraphOptimizationLevel.ORT_ENABLE_BASIC,
-            "extended": ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED,
-            "all": ort.GraphOptimizationLevel.ORT_ENABLE_ALL,
-        }[ORT_GRAPH_OPT]
-        ctor = {"model_name_or_model": str(MODELS), "tokenizer_name_or_path": TOKENIZER,
-                "ort_providers": ORT_PROVIDERS, "ort_kwargs": {"sess_options": so},
-                "hub_prefix": SAT_HUB_PREFIX}
-        if SAT_STYLE:
-            ctor["style_or_domain"] = SAT_STYLE
-        if SAT_LANGUAGE:
-            ctor["language"] = SAT_LANGUAGE
-        if SAT_LORA_PATH:
-            ctor["lora_path"] = SAT_LORA_PATH
-        _sat = SaT(**ctor)
+        so.intra_op_num_threads = 1
+        so.inter_op_num_threads = 1
+        so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        _sat = SaT(str(MODELS), tokenizer_name_or_path=TOKENIZER,
+                   ort_providers=ORT_PROVIDERS, ort_kwargs={"sess_options": so})
     return _sat
-
-
-def _flatten(raw) -> list:
-    if SAT_DO_PARAGRAPH:
-        return [s.strip() for para in raw for s in para if s and str(s).strip()]
-    return [p.strip() for p in raw if p and p.strip()]
 
 
 def split(text: str) -> list:
@@ -144,23 +87,15 @@ def split(text: str) -> list:
     model = _model()
     load_ms = int((time.perf_counter() - t0) * 1000)
     t0 = time.perf_counter()
-    pieces = _flatten(model.split(
-        text, threshold=SAT_THRESHOLD, stride=SAT_STRIDE, block_size=SAT_BLOCK_SIZE,
-        batch_size=SAT_BATCH_SIZE, pad_last_batch=SAT_PAD_LAST_BATCH, weighting=SAT_WEIGHTING,
-        remove_whitespace_before_inference=SAT_REMOVE_WHITESPACE,
-        outer_batch_size=SAT_OUTER_BATCH_SIZE, paragraph_threshold=SAT_PARAGRAPH_THRESHOLD,
-        strip_whitespace=SAT_STRIP_WHITESPACE, do_paragraph_segmentation=SAT_DO_PARAGRAPH,
-        treat_newline_as_space=SAT_NEWLINE_IS_SPACE, verbose=SAT_VERBOSE))
+    pieces = [p.strip() for p in model.split(
+        text, threshold=SAT_THRESHOLD, treat_newline_as_space=False) if p and p.strip()]
     infer_ms = int((time.perf_counter() - t0) * 1000)
     if not pieces:
         raise ValueError("TTS input is empty")
-    lengths = [len(p) for p in pieces]
-    jsonl("chunk.done", **_knobs(), source_sha=source_sha, lines=len(lines), pieces=len(pieces),
-          chars=sum(lengths), chars_min=min(lengths), chars_max=max(lengths),
-          chars_mean=round(statistics.mean(lengths), 1),
-          chars_median=statistics.median(lengths), n_lt_50=sum(n < 50 for n in lengths),
-          n_ge_200=sum(n >= 200 for n in lengths), prep_ms=prep_ms, load_ms=load_ms,
-          infer_ms=infer_ms, ms=prep_ms + load_ms + infer_ms)
+    jsonl("chunk.done", model="sat-12l-sm", threshold=SAT_THRESHOLD, newline_is_space=False,
+          providers=ORT_PROVIDERS, source_sha=source_sha, lines=len(lines), pieces=len(pieces),
+          chars=sum(len(p) for p in pieces), prep_ms=prep_ms, load_ms=load_ms, infer_ms=infer_ms,
+          ms=prep_ms + load_ms + infer_ms)
     for i, piece in enumerate(pieces):
         jsonl("chunk.piece", i=i, chars=len(piece), text=piece)
     return pieces
