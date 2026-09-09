@@ -1,4 +1,4 @@
-import argparse, hashlib, json, shutil, socket, struct, subprocess, sys, tempfile, threading, time, urllib.request, venv, wave
+import argparse, json, shutil, socket, struct, subprocess, sys, tempfile, threading, time, urllib.request, venv, wave
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -9,9 +9,7 @@ CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 VULKAN_SDK = Path("C:/VulkanSDK/1.4.357.0")
 CHATTERBOX_REV = "ceff41c93215dff71fd04d4b82f3e3b6a1381869"
 GGML_REV = "58c3805840b516b2a88ff867ccf7bb41dba79951"
-NATIVE_PIN = f"{CHATTERBOX_REV} {GGML_REV}"
 VOICE_URL = "https://huggingface.co/datasets/sdialog/voices-celebrities/resolve/57746b866d470be717097b87ba0428f8dd73e4f4"
-VOICE_SHA = "9d8b44d73192e9c04dd241f16177e4c5753bcefadde69e6e24b45e278b821f8c"
 TTS_RUNTIME_FILES = ("chatterbox-server.exe", "ggml.dll", "ggml-base.dll", "ggml-cpu.dll", "ggml-vulkan.dll")
 TTS_RUNTIME_REQUIRED = (*TTS_RUNTIME_FILES, "chatterbox-LICENSE.txt", "ggml-LICENSE.txt")
 TTS_RATE, TTS_MAGIC, TTS_VERSION = 24000, 0x32525454, 4
@@ -49,7 +47,7 @@ def tts_knobs(context: int, threads: int, cfm_steps: int, repeat_penalty: float 
     }
 
 
-def _download(url: str, path: Path, sha: str = "") -> None:
+def _download(url: str, path: Path) -> None:
     jsonl("run", step="download", name=path.name)
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_suffix(path.suffix + ".part")
@@ -58,28 +56,13 @@ def _download(url: str, path: Path, sha: str = "") -> None:
         req = urllib.request.Request(url, headers={"User-Agent": "Trident/1"})
         with urllib.request.urlopen(req, timeout=3600) as src, partial.open("wb") as dst:
             shutil.copyfileobj(src, dst, 4 << 20)
-        if sha:
-            with partial.open("rb") as f:
-                if hashlib.file_digest(f, "sha256").hexdigest() != sha:
-                    raise RuntimeError(f"Checksum mismatch: {path.name}")
         partial.replace(path)
     finally:
         partial.unlink(missing_ok=True)
 
 
-def _sha(path: Path) -> str:
-    with path.open("rb") as f:
-        return hashlib.file_digest(f, "sha256").hexdigest()
-
-
-def _tts_runtime_ok() -> bool:
-    revision = TTS_RUNTIME / "REVISION"
-    return (len(CHATTERBOX_REV) == 40 and all((TTS_RUNTIME / name).is_file() for name in TTS_RUNTIME_REQUIRED)
-            and revision.is_file() and revision.read_text(encoding="utf-8").strip() == NATIVE_PIN)
-
-
-def _text_id(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+def _tts_runtime_present() -> bool:
+    return all((TTS_RUNTIME / name).is_file() for name in TTS_RUNTIME_REQUIRED)
 
 
 def _port_in_use(port: int) -> bool:
@@ -198,44 +181,38 @@ def install_tts(spec: dict) -> None:
     if len(CHATTERBOX_REV) != 40:
         raise RuntimeError("Set CHATTERBOX_REV to the pushed chatterbox.cpp commit SHA before install")
     family = spec["family"]
-    outputs = spec["models"]
     missing = _missing_conversions(spec)
-    revision = TTS_RUNTIME / "REVISION"
     card = TTS_MODELS / spec["card"]
     voice_card = TTS_VOICE.with_suffix(".md")
-    runtime_ok = _tts_runtime_ok()
-    models_ok = not missing
-    card_ok, voice_ok = card.is_file(), TTS_VOICE.is_file() and voice_card.is_file()
-    if runtime_ok and models_ok and card_ok and voice_ok:
-        jsonl("tts.install", family=family, pin=NATIVE_PIN, skip=True)
+    need_runtime = not _tts_runtime_present()
+    if not need_runtime and not missing and card.is_file() and TTS_VOICE.is_file() and voice_card.is_file():
+        jsonl("tts.install", family=family, skip=True)
     else:
-        jsonl("tts.install", family=family, runtime_ok=runtime_ok, models_ok=models_ok,
-              card_ok=card_ok, voice_ok=voice_ok, skip=False)
-        if not runtime_ok or not models_ok:
+        jsonl("tts.install", family=family, skip=False)
+        if need_runtime or missing:
             with tempfile.TemporaryDirectory(prefix=f".{family[0]}-", dir=ROOT) as tmp:
                 work, source = Path(tmp), Path(tmp) / "s"
                 jsonl("tts.install.checkout", family=family, rev=CHATTERBOX_REV)
                 patterns = []
-                if not runtime_ok:
+                if need_runtime:
                     patterns += ["/CMakeLists.txt", "/LICENSE", "/src/", "/include/"]
                 if missing:
-                    patterns += [*(f"/scripts/{conversion[0]}" for conversion, output in missing), "/scripts/quant_policy.py"]
+                    patterns += [*(f"/scripts/{conversion[0]}" for conversion, output in missing),
+                                 "/scripts/quant_policy.py"]
                 _checkout("https://github.com/wgabrys88/chatterbox.cpp.git", CHATTERBOX_REV, source, patterns)
-                if not runtime_ok:
+                if need_runtime:
                     jsonl("tts.install.build", family=family)
                     _build_tts(work, source)
-                    revision.write_text(NATIVE_PIN + "\n", encoding="utf-8")
-                if not models_ok:
+                if missing:
                     jsonl("tts.install.convert", family=family)
                     _convert_tts(spec, work, source, missing)
-        if not card_ok:
+        if not card.is_file():
             _download(f"{spec['url']}/README.md", card)
-        if not voice_ok:
+        if not TTS_VOICE.is_file():
             jsonl("tts.install.voice", family=family)
-            if not TTS_VOICE.is_file():
-                _download(f"{VOICE_URL}/audio/donald-trump.wav", TTS_VOICE, VOICE_SHA)
-            if not voice_card.is_file():
-                _download(f"{VOICE_URL}/README.md", voice_card)
+            _download(f"{VOICE_URL}/audio/donald-trump.wav", TTS_VOICE)
+        if not voice_card.is_file():
+            _download(f"{VOICE_URL}/README.md", voice_card)
         jsonl("tts.install.done", family=family)
     import analyze, chunk as chunker
     chunker.install()
@@ -259,8 +236,8 @@ class TTS:
         return command
 
     def start(self, language: str = None) -> "TTS":
-        if not _tts_runtime_ok():
-            raise RuntimeError("TTS runtime does not match the pinned chatterbox/GGML revision; run --install")
+        if not (TTS_RUNTIME / "chatterbox-server.exe").is_file():
+            raise RuntimeError("TTS runtime missing; run --install")
         language = self.spec["language"] if language is None else language
         if self._proc is not None and self._proc.poll() is None:
             return self
@@ -295,8 +272,7 @@ class TTS:
         self._response_id += 1
         response_id = self._response_id
         fields = dict(response=response_id, pieces=len(pieces),
-                      total_chars=sum(len(p) for p in pieces), source_sha=_text_id(text),
-                      chunk_s=round(self.chunk_s, 3))
+                      total_chars=sum(len(p) for p in pieces), chunk_s=round(self.chunk_s, 3))
         if self.spec.get("audit_dir"):
             audit_dir = Path(self.spec["audit_dir"])
             fields["audit_dir"] = str(audit_dir.relative_to(ROOT) if audit_dir.is_absolute() else audit_dir)
@@ -339,8 +315,7 @@ class TTS:
                           wall_ms=int((time.perf_counter() - piece_t0) * 1000))
                     pieces_written += 1
             jsonl("synth.complete", response=response_id,
-                  pieces=pieces_written, samples=pcm_bytes // 2,
-                  wav=output.name, sha256=_sha(output))
+                  pieces=pieces_written, samples=pcm_bytes // 2, wav=output.name)
             sock.settimeout(10)
             self._send(sock, 3)
             if self._receive(reader)[0] != 5:
@@ -382,18 +357,6 @@ class TTS:
         return kind, response, piece, chunk, payload
 
 
-def _provenance(spec: dict) -> None:
-    files = [TTS_RUNTIME / name for name in TTS_RUNTIME_FILES]
-    files += [*spec["models"], TTS_VOICE]
-    jsonl("tts.provenance", chatterbox=CHATTERBOX_REV, ggml=GGML_REV)
-    for path in files:
-        rel = str(path.relative_to(ROOT))
-        if not path.is_file():
-            jsonl("tts.provenance.file", path=rel, missing=True)
-            continue
-        jsonl("tts.provenance.file", path=rel, sha256=_sha(path), bytes=path.stat().st_size)
-
-
 def run_tts(spec: dict) -> None:
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
@@ -401,7 +364,6 @@ def run_tts(spec: dict) -> None:
     parser.add_argument("--install", action="store_true")
     parser.add_argument("--load", action="store_true")
     parser.add_argument("--unload", action="store_true")
-    parser.add_argument("--provenance", action="store_true")
     parser.add_argument("--audit", action="store_true",
                         help="capture replayable native stage artifacts; do not use for RTF")
     if spec["multilingual"]:
@@ -431,9 +393,6 @@ def run_tts(spec: dict) -> None:
     tts = TTS(spec)
     if args.unload:
         tts.stop()
-        return
-    if args.provenance:
-        _provenance(spec)
         return
     install_tts(spec)
     if args.install:

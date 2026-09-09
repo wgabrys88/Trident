@@ -44,33 +44,26 @@ def _load(wav: Path):
     pieces = pd.DataFrame([e for e in events if e.get("event") == "synth.piece" and e.get("response") == rid])
     if pieces.empty:
         raise RuntimeError("synth.piece missing")
-    if "t0" not in pieces.columns:
-        pieces["t0"] = pieces["sample_start"] / TTS_RATE
-        pieces["t1"] = pieces["sample_end"] / TTS_RATE
+    if "t0" not in pieces.columns or "t1" not in pieces.columns:
+        raise RuntimeError("synth.piece missing t0/t1")
     pieces["dur"] = pieces["t1"] - pieces["t0"]
-    pieces["kind"] = np_where(pieces)
+    pieces["kind"] = ["short" if c < 20 else "speech" for c in pieces["chars"]]
+    if not TTS_LOG.is_file():
+        raise RuntimeError("tts.log missing")
     native = []
-    if TTS_LOG.is_file():
-        for line in TTS_LOG.read_text(encoding="utf-8", errors="replace").splitlines():
-            if line.startswith("{") and '"piece"' in line:
-                native.append(json.loads(line))
-    if native:
-        nd = pd.DataFrame(native)
-        nd = nd[nd["response"] == rid][["piece", "n_speech_tok", "stop", "t3_ms", "s3_ms"]]
-        pieces = pieces.merge(nd, on="piece", how="left")
+    for line in TTS_LOG.read_text(encoding="utf-8", errors="replace").splitlines():
+        if line.startswith("{") and '"piece"' in line:
+            native.append(json.loads(line))
+    if not native:
+        raise RuntimeError("tts.log has no piece JSON")
+    nd = pd.DataFrame(native)
+    nd = nd[nd["response"] == rid][["piece", "n_speech_tok", "stop", "t3_ms", "s3_ms"]]
+    if nd.empty:
+        raise RuntimeError("native piece JSON missing for this response")
+    pieces = pieces.merge(nd, on="piece", how="left")
+    if pieces[["n_speech_tok", "stop"]].isna().any().any():
+        raise RuntimeError("native piece JSON incomplete")
     return pieces
-
-
-def np_where(pieces):
-    kind = []
-    for text, chars in zip(pieces["text"].astype(str), pieces["chars"]):
-        if text.startswith("#"):
-            kind.append("heading")
-        elif chars < 20:
-            kind.append("short")
-        else:
-            kind.append("speech")
-    return kind
 
 
 def _wave_rms(wav: Path, hop: int = 960):
@@ -94,7 +87,7 @@ def _charts(wav: Path, df) -> Path:
     out.mkdir(parents=True, exist_ok=True)
     df.to_csv(out / "pieces.csv", index=False)
     df.to_parquet(out / "pieces.parquet", index=False)
-    color = {"heading": "#c0392b", "short": "#e67e22", "speech": "#2980b9"}
+    color = {"short": "#e67e22", "speech": "#2980b9"}
     hover = [c for c in ("text", "chars", "t0", "t1", "n_speech_tok", "stop") if c in df.columns]
     bars = px.bar(
         df, x="dur", y="piece", base="t0", orientation="h", color="kind",
@@ -131,8 +124,7 @@ def _charts(wav: Path, df) -> Path:
     ax.set_title("how long each kind of piece occupies the ear")
     fig.tight_layout(); fig.savefig(out / "duration_hist.png", dpi=140); plt.close(fig)
     jsonl("analyze.done", wav=wav.name, dir=str(out.relative_to(ROOT)),
-          html="listen.html", pieces=int(len(df)),
-          headings=int((df.kind == "heading").sum()), shorts=int((df.kind == "short").sum()))
+          html="listen.html", pieces=int(len(df)), shorts=int((df.kind == "short").sum()))
     return out
 
 

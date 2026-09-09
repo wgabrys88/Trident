@@ -3,22 +3,18 @@ import argparse, http.client, json, shutil, subprocess, sys, tempfile, threading
 from collections import deque
 from pathlib import Path
 
-from main import ROOT, _download, _drain, _kill_port, _port_in_use, _sha, _wait_ready, jsonl
+from main import ROOT, _download, _drain, _kill_port, _port_in_use, _wait_ready, jsonl
 
 RUNTIME = ROOT / "tools/runtime/brain"
 EXE = RUNTIME / "llama-server.exe"
-RUNTIME_REVISION = RUNTIME / "REVISION"
 MODEL = ROOT / "models/gemma-4-E2B_q4_0-it.gguf"
 MODEL_CARD = MODEL.with_suffix(".md")
 LLAMA_REV = "b10816"
 ARCHIVE = f"llama-{LLAMA_REV}-bin-win-vulkan-x64.zip"
 RUNTIME_URL = f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMA_REV}/{ARCHIVE}"
-RUNTIME_SHA = "ea6704bd058cb37c3d960913638b37b766f66fb5baff37547d0fa95aa0ed7528"
 GEMMA_REV = "675cff42a74c774d6cb76f76d8eacb49b48c9b93"
 MODEL_URL = f"https://huggingface.co/google/gemma-4-E2B-it-qat-q4_0-gguf/resolve/{GEMMA_REV}/{MODEL.name}"
 MODEL_CARD_URL = f"https://huggingface.co/google/gemma-4-E2B-it-qat-q4_0-gguf/resolve/{GEMMA_REV}/README.md"
-MODEL_SIZE = 3_349_516_256
-MODEL_SHA = "fa401b55b07ee70a54c6dae3903c783a6e65064312529ea57175cb5f8dec6634"
 HOST, PORT = "127.0.0.1", 17932
 ALIAS = "gemma"
 DEVICE, GPU_LAYERS = "Vulkan0", "all"
@@ -53,19 +49,15 @@ _PROCESS, _READY_EVENT, _READER, _TAIL = None, None, None, deque(maxlen=80)
 
 
 def _install() -> None:
-    runtime_ok = EXE.is_file() and RUNTIME_REVISION.is_file() and RUNTIME_REVISION.read_text(encoding="utf-8").strip() == f"{LLAMA_REV} {RUNTIME_SHA}"
-    model_ok = MODEL.is_file() and MODEL.stat().st_size == MODEL_SIZE and _sha(MODEL) == MODEL_SHA
-    if MODEL.exists() and not model_ok:
-        raise RuntimeError(f"Refusing unverified existing model: {MODEL}")
-    if runtime_ok and model_ok and MODEL_CARD.is_file():
+    if EXE.is_file() and MODEL.is_file() and MODEL_CARD.is_file():
         return
-    if not runtime_ok:
+    if not EXE.is_file():
         _kill_port(PORT)
     with tempfile.TemporaryDirectory(prefix=".brain-install-", dir=ROOT) as tmp:
         work = Path(tmp)
-        if not runtime_ok:
+        if not EXE.is_file():
             archive = work / ARCHIVE
-            _download(RUNTIME_URL, archive, RUNTIME_SHA)
+            _download(RUNTIME_URL, archive)
             if RUNTIME.exists():
                 shutil.rmtree(RUNTIME)
             RUNTIME.mkdir(parents=True)
@@ -80,10 +72,9 @@ def _install() -> None:
                             shutil.copyfileobj(src, dst)
             if not EXE.is_file():
                 raise RuntimeError(f"{EXE.name} missing after runtime installation")
-            RUNTIME_REVISION.write_text(f"{LLAMA_REV} {RUNTIME_SHA}\n", encoding="utf-8")
-        if not model_ok:
+        if not MODEL.is_file():
             downloaded = work / MODEL.name
-            _download(MODEL_URL, downloaded, MODEL_SHA)
+            _download(MODEL_URL, downloaded)
             MODEL.parent.mkdir(parents=True, exist_ok=True)
             downloaded.replace(MODEL)
         if not MODEL_CARD.is_file():

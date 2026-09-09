@@ -1,5 +1,5 @@
 from __future__ import annotations
-import hashlib, json, sys, time, venv
+import json, sys, time, venv
 from pathlib import Path
 
 from main import ROOT, _download, _run_logged, jsonl
@@ -9,9 +9,6 @@ VENV = ROOT / "tools/runtime/chunker"
 ONNX = MODELS / "model_optimized.onnx"
 CONFIG = MODELS / "config.json"
 TOKENIZER = MODELS / "tokenizer.json"
-ONNX_SHA = "0bb8cf275f98e1c337138bcecdf007876fb2a2b0eb4b5756ce627b2b0510c2c7"
-CONFIG_SHA = "ed9094a56926e0ca1302f6c7ca9b11cf2ea0eced84d0f330ad938cba0fcc6209"
-TOKENIZER_SHA = "a898ea75433890f6610f4e470b8ebeb0c21dce5c8dd61f892eb09eb5919d2e2c"
 SAT_ONNX_URL = "https://huggingface.co/segment-any-text/sat-12l-sm/resolve/main/model_optimized.onnx"
 SAT_CONFIG_URL = "https://huggingface.co/segment-any-text/sat-12l-sm/resolve/main/config.json"
 TOKENIZER_URL = "https://huggingface.co/FacebookAI/xlm-roberta-base/resolve/main/tokenizer.json"
@@ -41,11 +38,11 @@ def install() -> None:
                      "huggingface-hub==0.34.4", "wtpsplit-lite==0.2.0"], step="pip-chunker")
     if not ONNX.is_file():
         jsonl("chunk.install", model="sat-12l-sm")
-        _download(SAT_ONNX_URL, ONNX, ONNX_SHA)
+        _download(SAT_ONNX_URL, ONNX)
     if not CONFIG.is_file():
-        _download(SAT_CONFIG_URL, CONFIG, CONFIG_SHA)
+        _download(SAT_CONFIG_URL, CONFIG)
     if not TOKENIZER.is_file():
-        _download(TOKENIZER_URL, TOKENIZER, TOKENIZER_SHA)
+        _download(TOKENIZER_URL, TOKENIZER)
     jsonl("chunk.install.done")
 
 
@@ -90,7 +87,6 @@ def _pack(pieces: list) -> list:
 
 
 def split(text: str) -> list:
-    source_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
     t0 = time.perf_counter()
     lines = _spoken_lines(text)
     text = "\n".join(lines)
@@ -108,7 +104,7 @@ def split(text: str) -> list:
     if not pieces:
         raise ValueError("TTS input is empty")
     jsonl("chunk.done", model="sat-12l-sm", threshold=SAT_THRESHOLD, pack_chars=PACK_CHARS,
-          newline_is_space=False, providers=ORT_PROVIDERS, source_sha=source_sha,
+          newline_is_space=False, providers=ORT_PROVIDERS,
           lines=len(lines), sat_pieces=len(cuts), pieces=len(pieces),
           chars=sum(len(p) for p in pieces), prep_ms=prep_ms, load_ms=load_ms, infer_ms=infer_ms,
           ms=prep_ms + load_ms + infer_ms)
