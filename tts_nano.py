@@ -3,7 +3,8 @@ from main import ROOT, run_tts, tts_knobs
 SPEC = {
     "family": "nano", "label": "tts", "language": "en", "multilingual": False, "port": 17933, "output": "tts",
     "models": (ROOT / "models/chatterbox-t3-nano-q4_0.gguf", ROOT / "models/chatterbox-s3gen-nano-q4_0.gguf"),
-    "knobs": {**tts_knobs(2048, 4, 2), "min-p": 0.05},
+    "knobs": tts_knobs(context=2048, threads=4, cfm_steps=2, repeat_penalty=1.2,
+                      cfg_weight=0.0, exaggeration=0.0, min_p=0.05),
     "url": "https://huggingface.co/ResembleAI/chatterbox-nano/resolve/71ccd1d0081b430592cea481f4307e764e07bc64",
     "card": "nano-model-card.md",
     "conversions": (
