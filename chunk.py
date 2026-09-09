@@ -12,7 +12,7 @@ TOKENIZER = MODELS / "tokenizer.json"
 SAT_ONNX_URL = "https://huggingface.co/segment-any-text/sat-12l-sm/resolve/main/model_optimized.onnx"
 SAT_CONFIG_URL = "https://huggingface.co/segment-any-text/sat-12l-sm/resolve/main/config.json"
 TOKENIZER_URL = "https://huggingface.co/FacebookAI/xlm-roberta-base/resolve/main/tokenizer.json"
-SAT_THRESHOLD = 0.25
+SAT_THRESHOLD = 0.4
 ORT_PROVIDERS = ["CPUExecutionProvider"]
 _sat = None
 
@@ -69,12 +69,12 @@ def split(text: str) -> list:
     load_ms = int((time.perf_counter() - t0) * 1000)
     t0 = time.perf_counter()
     pieces = [p.strip() for p in model.split(
-        text, threshold=SAT_THRESHOLD, treat_newline_as_space=False) if p and p.strip()]
+        text, threshold=SAT_THRESHOLD, treat_newline_as_space=True) if p and p.strip()]
     infer_ms = int((time.perf_counter() - t0) * 1000)
     if not pieces:
         raise ValueError("TTS input is empty")
     jsonl("chunk.done", model="sat-12l-sm", threshold=SAT_THRESHOLD,
-          newline_is_space=False, providers=ORT_PROVIDERS,
+          newline_is_space=True, providers=ORT_PROVIDERS,
           pieces=len(pieces), chars=sum(len(p) for p in pieces),
           load_ms=load_ms, infer_ms=infer_ms, ms=load_ms + infer_ms)
     for i, piece in enumerate(pieces):
