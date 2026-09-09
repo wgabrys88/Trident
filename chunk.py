@@ -13,7 +13,6 @@ SAT_ONNX_URL = "https://huggingface.co/segment-any-text/sat-12l-sm/resolve/main/
 SAT_CONFIG_URL = "https://huggingface.co/segment-any-text/sat-12l-sm/resolve/main/config.json"
 TOKENIZER_URL = "https://huggingface.co/FacebookAI/xlm-roberta-base/resolve/main/tokenizer.json"
 SAT_THRESHOLD = 0.25
-PACK_CHARS = 240
 ORT_PROVIDERS = ["CPUExecutionProvider"]
 _sat = None
 
@@ -62,52 +61,22 @@ def _model():
     return _sat
 
 
-def _spoken_lines(text: str) -> list:
-    lines = []
-    for part in text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-        line = " ".join(part.split())
-        if line and not line.startswith("#"):
-            lines.append(line)
-    return lines
-
-
-def _pack(pieces: list) -> list:
-    packed, buf = [], ""
-    for piece in pieces:
-        if not buf:
-            buf = piece
-        elif len(buf) + 1 + len(piece) <= PACK_CHARS:
-            buf = f"{buf} {piece}"
-        else:
-            packed.append(buf)
-            buf = piece
-    if buf:
-        packed.append(buf)
-    return packed
-
-
 def split(text: str) -> list:
-    t0 = time.perf_counter()
-    lines = _spoken_lines(text)
-    text = "\n".join(lines)
-    prep_ms = int((time.perf_counter() - t0) * 1000)
     if not text:
         raise ValueError("TTS input is empty")
     t0 = time.perf_counter()
     model = _model()
     load_ms = int((time.perf_counter() - t0) * 1000)
     t0 = time.perf_counter()
-    cuts = [p.strip() for p in model.split(
+    pieces = [p.strip() for p in model.split(
         text, threshold=SAT_THRESHOLD, treat_newline_as_space=False) if p and p.strip()]
-    pieces = _pack(cuts)
     infer_ms = int((time.perf_counter() - t0) * 1000)
     if not pieces:
         raise ValueError("TTS input is empty")
-    jsonl("chunk.done", model="sat-12l-sm", threshold=SAT_THRESHOLD, pack_chars=PACK_CHARS,
+    jsonl("chunk.done", model="sat-12l-sm", threshold=SAT_THRESHOLD,
           newline_is_space=False, providers=ORT_PROVIDERS,
-          lines=len(lines), sat_pieces=len(cuts), pieces=len(pieces),
-          chars=sum(len(p) for p in pieces), prep_ms=prep_ms, load_ms=load_ms, infer_ms=infer_ms,
-          ms=prep_ms + load_ms + infer_ms)
+          pieces=len(pieces), chars=sum(len(p) for p in pieces),
+          load_ms=load_ms, infer_ms=infer_ms, ms=load_ms + infer_ms)
     for i, piece in enumerate(pieces):
         jsonl("chunk.piece", i=i, chars=len(piece), text=piece)
     return pieces
