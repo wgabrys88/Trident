@@ -21,10 +21,6 @@ LOG_DIR = ROOT / ".runtime-logs"
 TRIDENT_LOG = LOG_DIR / "trident.log"
 INSTALL_LOG = LOG_DIR / "install.log"
 TTS_LOG = LOG_DIR / "tts.log"
-TTS_BASE_KNOBS = {"n-gpu-layers": 99, "fastconv": 1, "seed": 42, "max-tokens": 1000,
-                  "top-k": 1000, "top-p": .95, "min-p": 0.0, "temperature": .8}
-
-
 def jsonl(event: str, **fields) -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     with TRIDENT_LOG.open("a", encoding="utf-8") as fh:
@@ -42,9 +38,15 @@ def _run_logged(cmd, *, step, **kwargs) -> None:
 
 
 def tts_knobs(context: int, threads: int, cfm_steps: int, repeat_penalty: float = 1.2,
-              cfg_weight: float = 0.0, exaggeration: float = 0.0) -> dict:
-    return {**TTS_BASE_KNOBS, "context": context, "threads": threads, "repeat-penalty": repeat_penalty,
-            "cfm-steps": cfm_steps, "cfg-weight": cfg_weight, "exaggeration": exaggeration}
+              cfg_weight: float = 0.0, exaggeration: float = 0.0, min_p: float = 0.0,
+              n_gpu_layers: int = 99, fastconv: int = 1, seed: int = 42, max_tokens: int = 1000,
+              top_k: int = 1000, top_p: float = .95, temperature: float = .8) -> dict:
+    return {
+        "n-gpu-layers": n_gpu_layers, "fastconv": fastconv, "seed": seed, "max-tokens": max_tokens,
+        "top-k": top_k, "top-p": top_p, "min-p": min_p, "temperature": temperature,
+        "context": context, "threads": threads, "repeat-penalty": repeat_penalty,
+        "cfm-steps": cfm_steps, "cfg-weight": cfg_weight, "exaggeration": exaggeration,
+    }
 
 
 def _download(url: str, path: Path, sha: str = "") -> None:

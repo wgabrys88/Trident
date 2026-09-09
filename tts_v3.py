@@ -3,7 +3,8 @@ from main import ROOT, run_tts, tts_knobs
 SPEC = {
     "family": "v3", "label": "v3", "language": "en", "multilingual": True, "port": 17936, "output": "v3",
     "models": (ROOT / "models/chatterbox-t3-mtl-q4_0.gguf", ROOT / "models/chatterbox-s3gen-mtl-q4_0.gguf"),
-    "knobs": tts_knobs(2048, 6, 5, 1.5, .3, .5),
+    "knobs": tts_knobs(context=2048, threads=6, cfm_steps=5, repeat_penalty=1.5,
+                      cfg_weight=0.3, exaggeration=0.5, min_p=0.0),
     "url": "https://huggingface.co/ResembleAI/chatterbox/resolve/ef85ce7bef2f3f1a74d0d837d379d2fcb68203cd",
     "card": "mtl-model-card.md",
     "conversions": (

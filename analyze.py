@@ -6,6 +6,8 @@ from main import LOG_DIR, ROOT, TRIDENT_LOG, TTS_LOG, TTS_RATE, _run_logged, jso
 
 VENV = ROOT / ".venv"
 REPORT = LOG_DIR / "report"
+PACKAGES = ("numpy==2.2.6", "pandas==2.2.3", "pyarrow==19.0.1", "matplotlib==3.10.1",
+            "seaborn==0.13.2", "plotly==5.24.1")
 
 
 def _python() -> Path:
@@ -14,14 +16,14 @@ def _python() -> Path:
 
 def install() -> None:
     py = _python()
-    marker = VENV / "Lib/site-packages/matplotlib"
+    marker = VENV / "Lib/site-packages/plotly"
     if py.is_file() and marker.is_dir():
         return
     if not py.is_file():
         venv.EnvBuilder(with_pip=True).create(VENV)
     _run_logged([str(py), "-m", "pip", "--isolated", "install", "--no-cache-dir",
-                 "--disable-pip-version-check", "--progress-bar", "off", "--no-input",
-                 "numpy==2.2.6", "pandas==2.2.3", "matplotlib==3.10.1"], step="pip-analyze")
+                 "--disable-pip-version-check", "--progress-bar", "off", "--no-input", *PACKAGES],
+                step="pip-analyze")
 
 
 def report(wav: Path) -> None:
@@ -46,8 +48,7 @@ def _load(wav: Path):
         pieces["t0"] = pieces["sample_start"] / TTS_RATE
         pieces["t1"] = pieces["sample_end"] / TTS_RATE
     pieces["dur"] = pieces["t1"] - pieces["t0"]
-    pieces["heading"] = pieces["text"].astype(str).str.startswith("#")
-    pieces["short"] = pieces["chars"] < 20
+    pieces["kind"] = np_where(pieces)
     native = []
     if TTS_LOG.is_file():
         for line in TTS_LOG.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -60,50 +61,78 @@ def _load(wav: Path):
     return pieces
 
 
+def np_where(pieces):
+    kind = []
+    for text, chars in zip(pieces["text"].astype(str), pieces["chars"]):
+        if text.startswith("#"):
+            kind.append("heading")
+        elif chars < 20:
+            kind.append("short")
+        else:
+            kind.append("speech")
+    return kind
+
+
 def _wave_rms(wav: Path, hop: int = 960):
     import numpy as np
     with wave.open(str(wav), "rb") as fh:
-        n, width, rate = fh.getnframes(), fh.getsampwidth(), fh.getframerate()
+        n, width = fh.getnframes(), fh.getsampwidth()
         pcm = np.frombuffer(fh.readframes(n), dtype={1: np.int8, 2: np.int16}[width]).astype(np.float32)
     pcm /= 32768.0
     frames = pcm[: len(pcm) // hop * hop].reshape(-1, hop)
-    t = (np.arange(len(frames)) * hop + hop / 2) / rate
+    t = (np.arange(len(frames)) * hop + hop / 2) / TTS_RATE
     return t, np.sqrt((frames ** 2).mean(axis=1))
 
 
 def _charts(wav: Path, df) -> Path:
+    import matplotlib
+    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    import plotly.express as px
+    import seaborn as sns
     out = REPORT / wav.stem
     out.mkdir(parents=True, exist_ok=True)
     df.to_csv(out / "pieces.csv", index=False)
-    colors = ["#c0392b" if h else "#e67e22" if s else "#2980b9" for h, s in zip(df.heading, df.short)]
-    fig, ax = plt.subplots(figsize=(14, 4))
-    ax.barh(df.piece, df.dur, left=df.t0, color=colors, height=0.9)
-    ax.set_xlabel("seconds"); ax.set_ylabel("piece")
-    ax.set_title("red = markdown heading   orange = under 20 chars   blue = the rest")
-    fig.tight_layout(); fig.savefig(out / "timeline.png", dpi=120); plt.close(fig)
-    fig, ax = plt.subplots(figsize=(14, 4))
+    df.to_parquet(out / "pieces.parquet", index=False)
+    color = {"heading": "#c0392b", "short": "#e67e22", "speech": "#2980b9"}
+    hover = [c for c in ("text", "chars", "t0", "t1", "n_speech_tok", "stop") if c in df.columns]
+    bars = px.bar(
+        df, x="dur", y="piece", base="t0", orientation="h", color="kind",
+        hover_data=hover, color_discrete_map=color,
+        title=f"{wav.name} — hover, zoom, pan",
+    )
+    bars.update_yaxes(autorange="reversed", title="piece")
+    bars.update_xaxes(title="seconds")
     t, rms = _wave_rms(wav)
+    env = px.line(x=t, y=rms, labels={"x": "seconds", "y": "rms"}, title="waveform envelope")
+    for _, row in df.iterrows():
+        env.add_vline(x=row.t0, line_color=color[row.kind], line_width=1)
+    from plotly.subplots import make_subplots
+    page = make_subplots(rows=2, cols=1, subplot_titles=("pieces", "envelope"), shared_xaxes=True)
+    for trace in bars.data:
+        page.add_trace(trace, row=1, col=1)
+    for trace in env.data:
+        page.add_trace(trace, row=2, col=1)
+    page.update_layout(height=820, barmode="overlay",
+                       title=f"{wav.name} — open listen.html")
+    page.write_html(out / "listen.html", include_plotlyjs=True)
+    fig, ax = plt.subplots(figsize=(14, 4))
     ax.plot(t, rms, color="#2c3e50", linewidth=0.6)
     for _, row in df.iterrows():
-        ax.axvline(row.t0, color="#c0392b" if row.heading else "#95a5a6", linewidth=0.6, alpha=0.8)
-    ax.set_xlabel("seconds"); ax.set_ylabel("rms")
-    ax.set_title(wav.name)
-    fig.tight_layout(); fig.savefig(out / "envelope.png", dpi=120); plt.close(fig)
+        ax.axvline(row.t0, color=color[row.kind], linewidth=0.7, alpha=0.85)
+    ax.set_xlabel("seconds"); ax.set_ylabel("rms"); ax.set_title(wav.name)
+    fig.tight_layout(); fig.savefig(out / "envelope.png", dpi=140); plt.close(fig)
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.scatter(df.chars, df.dur, c=colors, s=36)
-    ax.set_xlabel("chars"); ax.set_ylabel("seconds")
+    sns.scatterplot(data=df, x="chars", y="dur", hue="kind", palette=color, s=42, ax=ax)
     ax.set_title("tiny text still costing a full utterance is isolation")
-    fig.tight_layout(); fig.savefig(out / "chars_vs_time.png", dpi=120); plt.close(fig)
-    window = df[(df.t1 >= 100) & (df.t0 <= 120)]
-    fig, ax = plt.subplots(figsize=(14, 3 + 0.28 * max(len(window), 1)))
-    if not window.empty:
-        ax.barh(window.text.str.slice(0, 72), window.dur, left=window.t0, color=[
-            "#c0392b" if h else "#e67e22" if s else "#2980b9" for h, s in zip(window.heading, window.short)])
-    ax.set_xlabel("seconds"); ax.set_title("1:40–2:00 (the Three. / count collision lives here)")
-    fig.tight_layout(); fig.savefig(out / "at_1m49.png", dpi=120); plt.close(fig)
-    jsonl("analyze.done", wav=wav.name, dir=str(out.relative_to(ROOT)), pieces=int(len(df)),
-          headings=int(df.heading.sum()), shorts=int(df.short.sum()))
+    fig.tight_layout(); fig.savefig(out / "chars_vs_time.png", dpi=140); plt.close(fig)
+    fig, ax = plt.subplots(figsize=(8, 4))
+    sns.histplot(data=df, x="dur", hue="kind", palette=color, multiple="stack", ax=ax)
+    ax.set_title("how long each kind of piece occupies the ear")
+    fig.tight_layout(); fig.savefig(out / "duration_hist.png", dpi=140); plt.close(fig)
+    jsonl("analyze.done", wav=wav.name, dir=str(out.relative_to(ROOT)),
+          html="listen.html", pieces=int(len(df)),
+          headings=int((df.kind == "heading").sum()), shorts=int((df.kind == "short").sum()))
     return out
 
 
