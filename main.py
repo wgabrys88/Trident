@@ -8,7 +8,7 @@ TTS_MODELS = ROOT / "models"
 TTS_VOICE = ROOT / "data/ref-trump.wav"
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 VULKAN_SDK = Path("C:/VulkanSDK/1.4.357.0")
-CHATTERBOX_REV = "3ccf093fdb3d155cf4218682e6885f3ea2898adb"
+CHATTERBOX_REV = "083ae6b80002cad03d70765a3c3aceacecc2e6c9"
 CHATTERBOX_SOURCE = ROOT.parent / "chatterbox.cpp"
 GGML_REV = "58c3805840b516b2a88ff867ccf7bb41dba79951"
 VOICE_URL = "https://huggingface.co/datasets/sdialog/voices-celebrities/resolve/57746b866d470be717097b87ba0428f8dd73e4f4"
@@ -27,6 +27,13 @@ _RUN_CTX: dict = {"run_id": None, "family": None, "run_dir": None}
 
 def _text_sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _repair_forensic_json(line: str) -> str:
+    """Repair malformed forensic JSON from forensic_head() nesting a second object."""
+    if ',{"run_id"' in line:
+        line = line.replace(',{"run_id"', ',"run_id"', 1)
+    return line.replace(":-inf", ":null").replace(",-inf", ",null")
 
 
 def _sampler_snapshot(knobs: dict) -> dict:
@@ -213,7 +220,9 @@ def _ingest_t3_steps(response_id: int, piece_id: int = 0, audit_dir: str | Path 
         sources.append([json.dumps(obj) for obj in _iter_tts_log(response=response_id, piece=piece_id)
                         if obj.get("event") in ("t3.step", "t3.repeat_abort", "t3.text_tokens")])
     for line in sources[0]:
-        obj = json.loads(line)
+        if not line.strip():
+            continue
+        obj = json.loads(_repair_forensic_json(line))
         if run_id and obj.get("run_id") not in (run_id, None):
             continue
         if obj.get("response") not in (response_id, None):
