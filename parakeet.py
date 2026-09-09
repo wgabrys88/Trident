@@ -1,7 +1,7 @@
 import argparse, http.client, json, shutil, subprocess, sys, time, uuid, wave, zipfile
 from pathlib import Path
 
-from main import CMAKE, ROOT, _checkout, _download, _kill_port, _port_in_use, _wait_port, jsonl
+from main import CMAKE, ROOT, _checkout, _download, _kill_port, _port_in_use, _run_logged, _wait_port, jsonl
 
 RUNTIME = ROOT / "tools/runtime/parakeet"
 EXE = RUNTIME / "parakeet-cli.exe"
@@ -27,15 +27,16 @@ def _build(work: Path) -> None:
     _checkout("https://github.com/mudler/parakeet.cpp.git", PARAKEET_REV, source,
               ("/CMakeLists.txt", "/LICENSE", "/src/", "/include/", "/examples/",
                "/third_party/", "/scripts/apply_ggml_patches.sh", "/scripts/requirements.txt"))
-    subprocess.run(["git", "-C", str(source), "submodule", "update", "--init", "--depth=1",
-                    "--filter=blob:none", "third_party/ggml"], check=True)
+    _run_logged(["git", "-C", str(source), "submodule", "update", "--init", "--depth=1",
+                 "--filter=blob:none", "third_party/ggml"], step="parakeet-submodule")
     build = work / "b"
-    subprocess.run([CMAKE, "-S", str(source), "-B", str(build),
-                    "-G", "Visual Studio 17 2022", "-A", "x64", "-DPARAKEET_BUILD_TESTS=OFF",
-                    "-DPARAKEET_BUILD_CLI=ON", "-DPARAKEET_BUILD_SERVER=ON",
-                    "-DGGML_NATIVE=ON", "-DGGML_LLAMAFILE=ON"], check=True)
-    subprocess.run([CMAKE, "--build", str(build),
-                    "--config", "Release", "--target", "parakeet-server", "--parallel", "4"], check=True)
+    _run_logged([CMAKE, "-S", str(source), "-B", str(build),
+                 "-G", "Visual Studio 17 2022", "-A", "x64", "-DPARAKEET_BUILD_TESTS=OFF",
+                 "-DPARAKEET_BUILD_CLI=ON", "-DPARAKEET_BUILD_SERVER=ON",
+                 "-DGGML_NATIVE=ON", "-DGGML_LLAMAFILE=ON"], step="parakeet-cmake")
+    _run_logged([CMAKE, "--build", str(build),
+                 "--config", "Release", "--target", "parakeet-server", "--parallel", "4"],
+                step="parakeet-msbuild")
     RUNTIME.mkdir(parents=True, exist_ok=True)
     shutil.copy2(build / "examples/server/Release/parakeet-server.exe", SERVER)
     for dll in (build / "bin/Release").glob("*.dll"):
