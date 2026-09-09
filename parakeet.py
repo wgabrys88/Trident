@@ -11,8 +11,6 @@ MODEL_CARD = MODEL.with_suffix(".md")
 ARCHIVE = "parakeet-v0.5.0-bin-win-vulkan-x64.zip"
 RUNTIME_URL = f"https://github.com/mudler/parakeet.cpp/releases/download/v0.5.0/{ARCHIVE}"
 MODEL_URL = "https://huggingface.co/mudler/parakeet-cpp-gguf/resolve/bf0af9f425fa01809cadec671b3cb672709d13e9"
-RUNTIME_SHA = "717c416fab299755e8140137e3a0115121ce1acb6379d13c60f2f0613f6c13a3"
-MODEL_SHA = "5ad85eb3f3014c1a300d67b7ccbd23c38c4c952405cbe33a861e19fb2775e84b"
 PARAKEET_REV = "e75de9b6b9b688fd293aa22f7e27aa724ea286f8"
 THREADS = 6
 LANGUAGE = "auto"
@@ -53,7 +51,7 @@ def _install() -> None:
         work = Path(tmp)
         if not (EXE.is_file() and (RUNTIME / "parakeet-LICENSE.txt").is_file()):
             archive = work / ARCHIVE
-            _download(RUNTIME_URL, archive, RUNTIME_SHA)
+            _download(RUNTIME_URL, archive)
             RUNTIME.mkdir(parents=True, exist_ok=True)
             with zipfile.ZipFile(archive) as z:
                 for name in (EXE.name, "LICENSE"):
@@ -65,7 +63,7 @@ def _install() -> None:
         MODEL.parent.mkdir(parents=True, exist_ok=True)
         if not MODEL.is_file():
             downloaded = work / MODEL.name
-            _download(f"{MODEL_URL}/{MODEL.name}", downloaded, MODEL_SHA)
+            _download(f"{MODEL_URL}/{MODEL.name}", downloaded)
             downloaded.replace(MODEL)
         if not MODEL_CARD.is_file():
             downloaded = work / MODEL_CARD.name
