@@ -4,7 +4,7 @@ You are the coding agent for Trident. The user installs, builds, runs, and liste
 
 Talk like a person telling a story. Short continuous sentences. No encyclopedias. Do not make the user compare hashes. If a SHA must be copied, give it once. Prefer “HEAD already has those files,” “the pin is six back,” “Trident downloads that commit, not HEAD.”
 
-One meaningful change. Then the user runs. Then you read the new wave and logs. PowerShell must be valid. Do not commit secrets, wav, models, exe, zip kits, or `data/`. Shrink code. Ask when you are unsure.
+One meaningful change. Then the user runs. Then you read the new wave and logs. PowerShell must be valid. Do not commit secrets, wav, models, exe, zip kits, or `data/`. Shrink code. Ask when you are unsure. Never use environment variables. Never patch a markdown file; write the whole file from scratch.
 
 ## Read, in this order
 
@@ -13,7 +13,7 @@ One meaningful change. Then the user runs. Then you read the new wave and logs. 
 3. `Trident/data/BENCH.md`, then `nano-bench.txt`, then `data/gold/SOURCES.md` and `manifest.json`. That is the speech gym.
 4. Every git-tracked file in Trident, in full.
 5. Then in full: Trident `chunk.py`, `main.py`, `tts_nano.py`. Chatterbox `chatterbox_engine.cpp`, `t3_turbo.cpp`, `chatterbox_t3_internal.h`, `server.cpp`, `s3gen_pipeline.h` at the pin, not a random HEAD.
-6. After any real run: the wave, stdout if present, `Trident/.runtime-logs/chunk.log`, `tts.log`. Ignore `main.log` unless this run wrote it. If `--audit` was used, also read that audit folder (`04-sample.jsonl`, `03-speech-tokens.bin`). Gold wavs live under `data/gold/`. Pair them with their `.txt`.
+6. After any real run: the wave, `.runtime-logs/trident.log`, `tts.log`. Install noise is `install.log`. If `--audit` was used, also read that audit folder (`04-sample.jsonl`, `03-speech-tokens.bin`). Gold wavs live under `data/gold/`. Pair them with their `.txt`.
 
 Do not re-litigate the last long run from scratch. The report already mapped it. The isolated filename audit already ran.
 
@@ -37,7 +37,7 @@ The voice file is `data/ref-trump.wav`. That name does not change in code. Extra
 
 The wave is the evidence. Logs exist so speech can be traced. If speech is wrong, the pipeline is wrong. If speech is right, that path stays.
 
-`chunk.log` is SaT. `tts.log` is the native server (human lines plus one JSON object per spoken piece). Python `synth.begin` / `synth.piece` / `synth.complete` / `synth.rtf` print to stdout and may not be on disk. A failed piece may have no JSON. RTF is synth time over audio time. Warmup and SaT are not RTF. `--audit` is for tokens, not for RTF.
+`.runtime-logs/trident.log` is the Python JSONL (chunk, synth, install heartbeats). `tts.log` is the native server. `install.log` is cmake/git/pip. Console is heartbeats only: stage, `run`, `synth.begin` / `complete` / `rtf`. Piece text stays in the files. A failed piece may have no native JSON. RTF is synth time over audio time. Warmup and SaT are not RTF. `--audit` is for tokens, not for RTF.
 
 What actually spoke is the pin plus the built runtime (`tools/runtime/tts/REVISION`), not `git rev-parse HEAD`.
 
@@ -50,6 +50,8 @@ An isolated `--audit` of only the filename sentence finished: `out_09-09-26-11-1
 User ear override: **“chunk” repeats around the 6th second of that isolated wave**, not the old 00:33 map. Strongest self-match is about 6.7 s with a 310 ms lag. T3 started a second chunk-like syllable after a filename-boundary pause. Around 13.6 s is silence: the comma after `in chatterbox,` before `chatterbox_engine.cpp`. Three chatterbox names in the source, three clusters in the wave. That part is the source.
 
 Long sentences already sound natural. Short sentences are understandable but not smooth. That is the live defect.
+
+Short A/B already ran. Newlines: `out_09-09-26-14-15-40_tts.wav`, 15 SaT pieces, RTF 1.879. Same words as one paragraph: `out_09-09-26-14-16-02_tts.wav`, 10 SaT pieces, RTF 1.385. Joining lines is not enough. SaT 0.25 still isolates many short sentences inside a line.
 
 ## Failed experiments (knowledge, do not restore)
 
@@ -79,6 +81,10 @@ Untracked reading snapshot of the Nano path that actually ran, not a drop-in bui
 
 ## After you have read
 
-Job: make short Nano sentences as natural as long ones. Understandable is not enough. Do not restore Chonky, DistilBERT, EOS hold, KV clear, or S3-reset as a bundle. Do not invent a rebuild, a pin bump, or a zip. Do not touch sampling first: prove piece isolation versus the min-p/repeat fork.
+Job: make short Nano sentences as natural as long ones. Understandable is not enough. Do not restore Chonky, DistilBERT, EOS hold, KV clear, or S3-reset as a bundle. Piece isolation versus min-p is already proven. Filename over-speak is T3-internal.
 
-Tell the user the smallest first change that could make short pieces less isolated without throwing away the freeze. Then wait. They run. You listen with the logs and, when they ask, the gold files.
+Next, one change at a time:
+- Speech: short pieces still isolate inside a line (10 SaT pieces on the paragraph A/B). Not sampling. Not a char/dot/max splitter. Not joining-as-a-splitter.
+- Later if asked: speech token ids on the existing native JSONL. Gold duration/RMS/F0/mel on `short` and `harvard-1`. Zip only if asked.
+
+Then wait. They run. You listen with `trident.log`, `tts.log`, and the wave.

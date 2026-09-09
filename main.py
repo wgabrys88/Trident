@@ -7,7 +7,7 @@ TTS_MODELS = ROOT / "models"
 TTS_VOICE = ROOT / "data/ref-trump.wav"
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 VULKAN_SDK = Path("C:/VulkanSDK/1.4.357.0")
-CHATTERBOX_REV = "afaad83edc1faae9f9d32fbc5744cf29e00e09a3"
+CHATTERBOX_REV = "43582dc3ba033412b77d261ce0f6a0a7e4a621f3"
 GGML_REV = "58c3805840b516b2a88ff867ccf7bb41dba79951"
 NATIVE_PIN = f"{CHATTERBOX_REV} {GGML_REV}"
 VOICE_URL = "https://huggingface.co/datasets/sdialog/voices-celebrities/resolve/57746b866d470be717097b87ba0428f8dd73e4f4"
@@ -17,13 +17,40 @@ TTS_RUNTIME_REQUIRED = (*TTS_RUNTIME_FILES, "chatterbox-LICENSE.txt", "ggml-LICE
 TTS_RATE, TTS_MAGIC, TTS_VERSION = 24000, 0x32525454, 4
 TTS_FRAME = struct.Struct("<7I")
 TTS_CHUNKER = ROOT / "tools/runtime/chunker/Scripts/python.exe"
-TTS_LOG = ROOT / ".runtime-logs/tts.log"
+LOG_DIR = ROOT / ".runtime-logs"
+TRIDENT_LOG = LOG_DIR / "trident.log"
+INSTALL_LOG = LOG_DIR / "install.log"
+TTS_LOG = LOG_DIR / "tts.log"
+CONSOLE_EVENTS = frozenset({
+    "main", "main.stage", "main.stage.done", "main.done", "main.failed",
+    "tts.install", "tts.install.checkout", "tts.install.build", "tts.install.convert",
+    "tts.install.voice", "tts.install.done", "tts.start", "tts.ready", "tts.audit", "tts.loaded",
+    "synth.begin", "synth.complete", "synth.rtf",
+    "chunk.install", "chunk.install.done", "chunk.done",
+    "brain.rtf", "parakeet.rtf", "run",
+})
 TTS_BASE_KNOBS = {"n-gpu-layers": 99, "fastconv": 1, "seed": 42, "max-tokens": 1000,
                   "top-k": 1000, "top-p": .95, "min-p": 0.0, "temperature": .8}
 
 
-def jsonl(event: str, *, file=None, **fields) -> None:
-    print(json.dumps({"event": event, **fields}, ensure_ascii=False), file=file or sys.stderr, flush=True)
+def jsonl(event: str, **fields) -> None:
+    line = json.dumps({"event": event, **fields}, ensure_ascii=False)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    with TRIDENT_LOG.open("a", encoding="utf-8") as fh:
+        fh.write(line + "\n")
+    if event in CONSOLE_EVENTS:
+        print(line, flush=True)
+
+
+def _run_logged(cmd, *, step, **kwargs) -> None:
+    jsonl("run", step=step)
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    kwargs.setdefault("text", True)
+    kwargs.setdefault("encoding", "utf-8")
+    kwargs.setdefault("errors", "replace")
+    with INSTALL_LOG.open("a", encoding="utf-8", errors="replace") as fh:
+        print(f"# {step}", file=fh, flush=True)
+        subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT, check=True, **kwargs)
 
 
 def tts_knobs(context: int, threads: int, cfm_steps: int, repeat_penalty: float = 1.2,
@@ -33,6 +60,7 @@ def tts_knobs(context: int, threads: int, cfm_steps: int, repeat_penalty: float 
 
 
 def _download(url: str, path: Path, sha: str = "") -> None:
+    jsonl("run", step="download", name=path.name)
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_suffix(path.suffix + ".part")
     partial.unlink(missing_ok=True)
@@ -122,25 +150,26 @@ def _wait_ready(proc: subprocess.Popen, ready_event: threading.Event, tail: list
 
 
 def _checkout(url: str, rev: str, path: Path, patterns: tuple) -> None:
-    subprocess.run(["git", "init", str(path)], check=True)
+    _run_logged(["git", "init", str(path)], step="git-init")
     git = ["git", "-C", str(path)]
-    for args in (("remote", "add", "origin", url), ("config", "remote.origin.promisor", "true"),
-                 ("config", "remote.origin.partialclonefilter", "blob:none"),
-                 ("fetch", "--depth=1", "--filter=blob:none", "--no-tags", "origin", rev)):
-        subprocess.run([*git, *args], check=True)
-    subprocess.run([*git, "sparse-checkout", "set", "--no-cone", "--stdin"],
-                   input="\n".join(patterns) + "\n", text=True, check=True)
-    subprocess.run([*git, "checkout", "--detach", rev], check=True)
+    for step, args in (("git-remote", ("remote", "add", "origin", url)),
+                       ("git-config", ("config", "remote.origin.promisor", "true")),
+                       ("git-filter", ("config", "remote.origin.partialclonefilter", "blob:none")),
+                       ("git-fetch", ("fetch", "--depth=1", "--filter=blob:none", "--no-tags", "origin", rev))):
+        _run_logged([*git, *args], step=step)
+    _run_logged([*git, "sparse-checkout", "set", "--no-cone", "--stdin"], step="git-sparse",
+                input="\n".join(patterns) + "\n", text=True)
+    _run_logged([*git, "checkout", "--detach", rev], step="git-checkout")
 
 
 def _build_tts(work: Path, source: Path) -> None:
     _checkout("https://github.com/ggml-org/ggml.git", GGML_REV, source / "ggml",
               ("/CMakeLists.txt", "/LICENSE", "/cmake/", "/include/", "/src/*", "!/src/*/",
                "/src/ggml-cpu/", "/src/ggml-vulkan/"))
-    subprocess.run(["git", "-C", str(source / "ggml"), "apply", "--whitespace=nowarn",
-                    str(source / "src/ggml-vulkan-queue.patch")], check=True)
+    _run_logged(["git", "-C", str(source / "ggml"), "apply", "--whitespace=nowarn",
+                 str(source / "src/ggml-vulkan-queue.patch")], step="ggml-patch")
     build = work / "b"
-    subprocess.run([
+    _run_logged([
         CMAKE, "-S", str(source), "-B", str(build), "-G", "Visual Studio 17 2022", "-A", "x64",
         "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_NATIVE=ON", "-DGGML_CCACHE=OFF",
         "-DBUILD_SHARED_LIBS=ON", "-DTTS_CPP_BUILD_EXECUTABLES=ON", "-DTTS_CPP_BUILD_TESTS=OFF",
@@ -148,9 +177,9 @@ def _build_tts(work: Path, source: Path) -> None:
         "-DGGML_BUILD_TESTS=OFF", "-DGGML_BUILD_EXAMPLES=OFF",
         f"-DVulkan_INCLUDE_DIR={VULKAN_SDK / 'Include'}", f"-DVulkan_LIBRARY={VULKAN_SDK / 'Lib/vulkan-1.lib'}",
         f"-DVulkan_GLSLC_EXECUTABLE={VULKAN_SDK / 'Bin/glslc.exe'}",
-    ], check=True)
-    subprocess.run([CMAKE, "--build", str(build), "--config", "Release", "--target", "chatterbox-server",
-                    "--parallel", "4"], check=True)
+    ], step="cmake")
+    _run_logged([CMAKE, "--build", str(build), "--config", "Release", "--target", "chatterbox-server",
+                 "--parallel", "4"], step="msbuild")
     TTS_RUNTIME.mkdir(parents=True, exist_ok=True)
     for name in TTS_RUNTIME_FILES:
         shutil.copy2(build / "bin" / name, TTS_RUNTIME / name)
@@ -168,18 +197,18 @@ def _convert_tts(spec: dict, work: Path, source: Path, missing: list) -> None:
     python = str(converter / "Scripts/python.exe")
     pip = [python, "-m", "pip", "--isolated", "install", "--no-cache-dir",
            "--disable-pip-version-check", "--progress-bar", "off", "--no-input"]
-    subprocess.run([*pip, "torch==2.6.0", "--index-url", "https://download.pytorch.org/whl/cpu"], check=True)
-    subprocess.run([*pip, "numpy==1.26.4", "gguf==0.19.0", "safetensors==0.5.3",
-                    "scipy==1.15.3", "librosa==0.11.0", "huggingface-hub==0.34.4"], check=True)
+    _run_logged([*pip, "torch==2.6.0", "--index-url", "https://download.pytorch.org/whl/cpu"], step="pip-torch")
+    _run_logged([*pip, "numpy==1.26.4", "gguf==0.19.0", "safetensors==0.5.3",
+                 "scipy==1.15.3", "librosa==0.11.0", "huggingface-hub==0.34.4"], step="pip-convert")
     assets = dict.fromkeys(name for (script, model_args, quant, files), output in missing for name in files)
     for name in assets:
         _download(f"{spec['url']}/{name}", checkpoint / name)
     TTS_MODELS.mkdir(parents=True, exist_ok=True)
     for (script, model_args, quant, files), output in missing:
         converted = work / output.name
-        subprocess.run([python, str(source / "scripts" / script), *model_args,
-                        "--ckpt-dir", str(checkpoint), "--out", str(converted), "--quant", quant],
-                       cwd=work, check=True)
+        _run_logged([python, str(source / "scripts" / script), *model_args,
+                     "--ckpt-dir", str(checkpoint), "--out", str(converted), "--quant", quant],
+                    step=script, cwd=work)
         converted.replace(output)
 
 
@@ -282,13 +311,13 @@ class TTS:
         output = ROOT / f"out_{time.strftime('%d-%m-%y-%H-%M-%S')}_{self.spec['output']}.wav"
         self._response_id += 1
         response_id = self._response_id
-        begin = {"event": "synth.begin", "response": response_id, "pieces": len(pieces),
-                 "total_chars": sum(len(p) for p in pieces), "source_sha": _text_id(text),
-                 "chunk_s": round(self.chunk_s, 3)}
+        fields = dict(response=response_id, pieces=len(pieces),
+                      total_chars=sum(len(p) for p in pieces), source_sha=_text_id(text),
+                      chunk_s=round(self.chunk_s, 3))
         if self.spec.get("audit_dir"):
             audit_dir = Path(self.spec["audit_dir"])
-            begin["audit_dir"] = str(audit_dir.relative_to(ROOT) if audit_dir.is_absolute() else audit_dir)
-        print(json.dumps(begin, ensure_ascii=False), flush=True)
+            fields["audit_dir"] = str(audit_dir.relative_to(ROOT) if audit_dir.is_absolute() else audit_dir)
+        jsonl("synth.begin", **fields)
         synth_t0 = time.perf_counter()
         with socket.create_connection(("127.0.0.1", self.spec["port"]), timeout=300) as sock, sock.makefile("rb") as reader:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -318,13 +347,13 @@ class TTS:
                         pcm_bytes += len(payload)
                     if pcm_bytes == before:
                         raise RuntimeError(f"TTS piece {piece_id} produced no audio")
-                    jsonl("synth.piece", file=sys.stdout, response=response_id, piece=piece_id,
+                    jsonl("synth.piece", response=response_id, piece=piece_id,
                           text=pieces[piece_id], chars=len(pieces[piece_id]),
                           sample_start=before // 2, sample_end=pcm_bytes // 2,
                           trimmed_leading_bytes=leading_trim,
                           wall_ms=int((time.perf_counter() - piece_t0) * 1000))
                     pieces_written += 1
-            jsonl("synth.complete", file=sys.stdout, response=response_id,
+            jsonl("synth.complete", response=response_id,
                   pieces=pieces_written, samples=pcm_bytes // 2,
                   wav=output.name, sha256=_sha(output))
             sock.settimeout(10)
@@ -340,13 +369,6 @@ class TTS:
             raise RuntimeError("CPU chunker not installed")
         process = subprocess.run([str(TTS_CHUNKER), str(ROOT / "chunk.py")], input=text,
                                  capture_output=True, text=True, encoding="utf-8")
-        if process.stderr:
-            sys.stderr.write(process.stderr)
-            sys.stderr.flush()
-            log = TTS_LOG.parent / "chunk.log"
-            log.parent.mkdir(parents=True, exist_ok=True)
-            with log.open("a", encoding="utf-8") as fh:
-                fh.write(process.stderr)
         if process.returncode:
             raise RuntimeError(process.stderr.strip() or "CPU chunker failed")
         pieces = json.loads(process.stdout)
@@ -434,7 +456,7 @@ def run_tts(spec: dict) -> None:
         return
     if args.load:
         tts.start(language)
-        jsonl("tts.loaded", family=spec["family"], file=sys.stdout)
+        jsonl("tts.loaded", family=spec["family"])
         input()
         tts.stop()
         return
@@ -451,7 +473,7 @@ def run_tts(spec: dict) -> None:
         duration = wav.getnframes() / wav.getframerate()
     synth_s = tts.synth_s
     audit = bool(spec.get("audit_dir"))
-    jsonl("synth.rtf", file=sys.stdout, family=spec["family"],
+    jsonl("synth.rtf", family=spec["family"],
           warmup_s=round(warmup_s, 3), chunk_s=round(tts.chunk_s, 3),
           synth_s=round(synth_s, 3), audio_s=round(duration, 3),
           rtf=round(synth_s / duration, 3) if duration else None,
@@ -478,31 +500,17 @@ def main() -> None:
                ("parakeet", "parakeet.py", ("tts_out.wav",)))
               if mode == "pipeline" else tuple((*model, ()) for model in models))
     started = time.perf_counter()
-    log_path = ROOT / ".runtime-logs/main.log"
-    log_path.parent.mkdir(exist_ok=True)
-    with log_path.open("a", encoding="utf-8", buffering=1) as log:
-        def emit(event: str, **fields) -> None:
-            line = json.dumps({"event": event, **fields}, ensure_ascii=False)
-            print(line, flush=True)
-            print(line, file=log)
-
-        emit("main", mode=mode, prompt=args.prompt or "", t=time.strftime("%Y-%m-%d %H:%M:%S"))
-        for name, script, request in stages:
-            stage_started = time.perf_counter()
-            emit("main.stage", name=name, mode=mode)
-            flags = request if mode == "pipeline" else (f"--{mode}",)
-            with subprocess.Popen([sys.executable, "-u", script, *flags], cwd=ROOT,
-                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                  text=True, encoding="utf-8") as process:
-                for line in process.stdout:
-                    print(line, end="" if line.endswith("\n") else "\n", flush=True)
-                    print(line, end="" if line.endswith("\n") else "\n", file=log)
-                code = process.wait()
-            emit("main.stage.done", name=name, exit=code, wall_s=round(time.perf_counter() - stage_started, 3))
-            if code:
-                emit("main.failed", mode=mode, wall_s=round(time.perf_counter() - started, 3))
-                raise SystemExit(code)
-        emit("main.done", mode=mode, wall_s=round(time.perf_counter() - started, 3))
+    jsonl("main", mode=mode, prompt=args.prompt or "", t=time.strftime("%Y-%m-%d %H:%M:%S"))
+    for name, script, request in stages:
+        stage_started = time.perf_counter()
+        jsonl("main.stage", name=name, mode=mode)
+        flags = request if mode == "pipeline" else (f"--{mode}",)
+        code = subprocess.run([sys.executable, "-u", script, *flags], cwd=ROOT).returncode
+        jsonl("main.stage.done", name=name, exit=code, wall_s=round(time.perf_counter() - stage_started, 3))
+        if code:
+            jsonl("main.failed", mode=mode, wall_s=round(time.perf_counter() - started, 3))
+            raise SystemExit(code)
+    jsonl("main.done", mode=mode, wall_s=round(time.perf_counter() - started, 3))
 
 
 if __name__ == "__main__":

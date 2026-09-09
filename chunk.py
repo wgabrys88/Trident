@@ -1,8 +1,8 @@
 from __future__ import annotations
-import hashlib, json, shutil, subprocess, sys, time, venv
+import hashlib, json, shutil, sys, time, venv
 from pathlib import Path
 
-from main import ROOT, _download, jsonl
+from main import ROOT, _download, _run_logged, jsonl
 
 MODELS = ROOT / "models/sat-12l-sm"
 VENV = ROOT / "tools/runtime/chunker"
@@ -40,8 +40,8 @@ def install() -> None:
         venv.EnvBuilder(with_pip=True).create(VENV)
         pip = [str(py), "-m", "pip", "--isolated", "install", "--no-cache-dir",
                "--disable-pip-version-check", "--progress-bar", "off", "--no-input"]
-        subprocess.run([*pip, "numpy==1.26.4", "onnxruntime==1.20.1", "tokenizers==0.21.4",
-                        "huggingface-hub==0.34.4", "wtpsplit-lite==0.2.0"], check=True)
+        _run_logged([*pip, "numpy==1.26.4", "onnxruntime==1.20.1", "tokenizers==0.21.4",
+                     "huggingface-hub==0.34.4", "wtpsplit-lite==0.2.0"], step="pip-chunker")
     if not ONNX.is_file():
         jsonl("chunk.install", model="sat-12l-sm")
         _download(SAT_ONNX_URL, ONNX, ONNX_SHA)
