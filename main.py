@@ -21,30 +21,18 @@ LOG_DIR = ROOT / ".runtime-logs"
 TRIDENT_LOG = LOG_DIR / "trident.log"
 INSTALL_LOG = LOG_DIR / "install.log"
 TTS_LOG = LOG_DIR / "tts.log"
-CONSOLE_EVENTS = frozenset({
-    "main", "main.stage", "main.stage.done", "main.done", "main.failed",
-    "tts.install", "tts.install.checkout", "tts.install.build", "tts.install.convert",
-    "tts.install.voice", "tts.install.done", "tts.start", "tts.ready", "tts.audit", "tts.loaded",
-    "synth.begin", "synth.complete", "synth.rtf",
-    "chunk.install", "chunk.install.done", "chunk.done",
-    "brain.rtf", "parakeet.rtf", "run",
-})
 TTS_BASE_KNOBS = {"n-gpu-layers": 99, "fastconv": 1, "seed": 42, "max-tokens": 1000,
                   "top-k": 1000, "top-p": .95, "min-p": 0.0, "temperature": .8}
 
 
 def jsonl(event: str, **fields) -> None:
-    line = json.dumps({"event": event, **fields}, ensure_ascii=False)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     with TRIDENT_LOG.open("a", encoding="utf-8") as fh:
-        fh.write(line + "\n")
-    if event in CONSOLE_EVENTS:
-        print(line, flush=True)
+        fh.write(json.dumps({"event": event, **fields}, ensure_ascii=False) + "\n")
 
 
 def _run_logged(cmd, *, step, **kwargs) -> None:
     jsonl("run", step=step)
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
     kwargs.setdefault("text", True)
     kwargs.setdefault("encoding", "utf-8")
     kwargs.setdefault("errors", "replace")
