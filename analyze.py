@@ -37,11 +37,14 @@ def finalize_run(run_dir: Path, wav_paths: list[Path], spec: dict, run_ctx: dict
                         f"pd.read_json(r'{events_path}', lines=True)"
                         f".to_parquet(r'{run_dir / 'events.parquet'}', index=False)"],
                        check=True)
+    audit_dir = spec.get("audit_dir")
+    if audit_dir:
+        audit_dir = str(Path(audit_dir).relative_to(ROOT) if Path(audit_dir).is_absolute() else audit_dir)
     manifest = {
         "run_id": run_ctx["run_id"],
         "family": spec["family"],
         "wav_paths": [p.name for p in wav_paths],
-        "audit_dir": spec.get("audit_dir") or None,
+        "audit_dir": audit_dir or None,
         "knobs": spec["knobs"],
         "sampler": sampler_fn(spec["knobs"]),
         "chatterbox_rev": chatterbox_rev,
