@@ -1,4 +1,5 @@
-import argparse, json, shutil, socket, struct, subprocess, sys, tempfile, threading, time, urllib.request, venv, wave
+import argparse, hashlib, json, shutil, socket, struct, subprocess, sys, tempfile, threading, time, urllib.request, uuid, venv, wave
+from difflib import SequenceMatcher
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -7,7 +8,8 @@ TTS_MODELS = ROOT / "models"
 TTS_VOICE = ROOT / "data/ref-trump.wav"
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 VULKAN_SDK = Path("C:/VulkanSDK/1.4.357.0")
-CHATTERBOX_REV = "ff6e4794c52b60ef9a5b52960828d3f96ca8de1b"
+CHATTERBOX_REV = "3ccf093fdb3d155cf4218682e6885f3ea2898adb"
+CHATTERBOX_SOURCE = ROOT.parent / "chatterbox.cpp"
 GGML_REV = "58c3805840b516b2a88ff867ccf7bb41dba79951"
 VOICE_URL = "https://huggingface.co/datasets/sdialog/voices-celebrities/resolve/57746b866d470be717097b87ba0428f8dd73e4f4"
 TTS_RUNTIME_FILES = ("chatterbox-server.exe", "ggml.dll", "ggml-base.dll", "ggml-cpu.dll", "ggml-vulkan.dll")
@@ -19,17 +21,163 @@ LOG_DIR = ROOT / ".runtime-logs"
 TRIDENT_LOG = LOG_DIR / "trident.log"
 INSTALL_LOG = LOG_DIR / "install.log"
 TTS_LOG = LOG_DIR / "tts.log"
+REPEAT_LAST_N = 4
+_RUN_CTX: dict = {"run_id": None, "family": None, "run_dir": None}
+
+
+def _text_sha(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _sampler_snapshot(knobs: dict) -> dict:
+    return {
+        "seed": knobs.get("seed"),
+        "temperature": knobs.get("temperature"),
+        "min_p": knobs.get("min-p"),
+        "top_p": knobs.get("top-p"),
+        "top_k": knobs.get("top-k"),
+        "repeat_penalty": knobs.get("repeat-penalty"),
+        "repeat_last_n": REPEAT_LAST_N,
+        "repeat_stop_consecutive": knobs.get("repeat-stop", 16),
+    }
+
+
+def begin_run(family: str) -> str:
+    run_id = uuid.uuid4().hex
+    run_dir = LOG_DIR / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    _RUN_CTX.update(run_id=run_id, family=family, run_dir=run_dir)
+    return run_id
+
+
+def end_run(wav_paths: list[Path], spec: dict) -> None:
+    run_dir = _RUN_CTX.get("run_dir")
+    if not run_dir:
+        return
+    import analyze
+    analyze.finalize_run(run_dir, wav_paths, spec, _RUN_CTX, CHATTERBOX_REV, _sampler_snapshot)
+    jsonl("run.end", wav_count=len(wav_paths), run_dir=str(run_dir.relative_to(ROOT)))
+
+
 def jsonl(event: str, **fields) -> None:
+    row = {
+        "event": event,
+        "ts": time.time(),
+        "run_id": _RUN_CTX.get("run_id"),
+        "family": fields.get("family", _RUN_CTX.get("family")),
+        "response": fields.get("response"),
+        "piece": fields.get("piece"),
+        **fields,
+    }
     LOG_DIR.mkdir(parents=True, exist_ok=True)
+    line = json.dumps(row, ensure_ascii=False) + "\n"
     with TRIDENT_LOG.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps({"event": event, **fields}, ensure_ascii=False) + "\n")
+        fh.write(line)
+    run_dir = _RUN_CTX.get("run_dir")
+    if run_dir:
+        with (run_dir / "events.jsonl").open("a", encoding="utf-8") as fh:
+            fh.write(line)
 
 
-def _read_tts_log_json(*, event: str | None = None, response: int | None = None,
-                       piece: int | None = None) -> dict | None:
+def parse_bench_file(path: Path) -> list[dict]:
+    items = []
+    section = None
+    for line_no, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("## "):
+            section = line[3:].strip()
+            continue
+        items.append({"section": section, "line_no": line_no, "text": line})
+    return items
+
+
+_TEENS = frozenset({"one", "two", "three", "four", "five", "six", "seven", "eight", "nine"})
+
+
+def _normalize_word(word: str) -> str:
+    return word.lower().strip(".,!?;:")
+
+
+def _compound_numbers(words: list[str]) -> list[str]:
+    spoken, i = [], 0
+    while i < len(words):
+        if words[i] == "twenty" and i + 1 < len(words) and words[i + 1] in _TEENS:
+            spoken.append(f"twenty-{words[i + 1]}")
+            i += 2
+        else:
+            spoken.append(words[i])
+            i += 1
+    return spoken
+
+
+def _expected_words(text: str) -> list[str]:
+    return [_normalize_word(w) for w in text.split() if w.strip()]
+
+
+def _spoken_words_from_asr(words: list[dict]) -> list[str]:
+    return _compound_numbers([_normalize_word(w["w"]) for w in words])
+
+
+def _asr_diff(expected: list[str], spoken: list[str]) -> dict:
+    deletions, insertions, substitutions = [], [], []
+    sm = SequenceMatcher(None, expected, spoken)
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "delete":
+            deletions.extend(expected[i1:i2])
+        elif tag == "insert":
+            insertions.extend(spoken[j1:j2])
+        elif tag == "replace":
+            for e, s in zip(expected[i1:i2], spoken[j1:j2]):
+                substitutions.append({"expected": e, "spoken": s})
+            if i2 - i1 > j2 - j1:
+                deletions.extend(expected[i1 + (j2 - j1):i2])
+            elif j2 - j1 > i2 - i1:
+                insertions.extend(spoken[j1 + (i2 - i1):j2])
+    from collections import Counter
+    counts = Counter(spoken)
+    duplicates = [w for w, n in counts.items() if n > 1]
+    return {
+        "expected_words": expected,
+        "spoken_words": spoken,
+        "deletions": deletions,
+        "insertions": insertions,
+        "substitutions": substitutions,
+        "duplicates": duplicates,
+    }
+
+
+def _run_asr(wav_path: Path, prompt_text: str, response_id: int, piece_id: int = 0) -> None:
+    import parakeet
+    parakeet._install()
+    jsonl("asr.begin", response=response_id, piece=piece_id, wav=wav_path.name)
+    t0 = time.perf_counter()
+    try:
+        data = parakeet.transcribe_json(wav_path)
+    except Exception as exc:
+        jsonl("asr.error", response=response_id, piece=piece_id, wav=wav_path.name, error=str(exc))
+        return
+    wall_s = round(time.perf_counter() - t0, 3)
+    words = [w for w in data.get("words", []) if not w.get("w", "").startswith("<")]
+    for idx, word in enumerate(words):
+        jsonl("asr.word", response=response_id, piece=piece_id, idx=idx,
+              word=word["w"], word_norm=_normalize_word(word["w"]),
+              start=word["start"], end=word["end"], conf=word.get("conf"))
+    jsonl("asr.complete", response=response_id, piece=piece_id, wav=wav_path.name,
+          word_count=len(words), wall_s=wall_s, transcript=data.get("text", ""))
+    expected = _expected_words(prompt_text)
+    spoken = _spoken_words_from_asr(words)
+    diff = _asr_diff(expected, spoken)
+    jsonl("asr.diff", response=response_id, piece=piece_id, wav=wav_path.name, **diff)
+
+
+def _iter_tts_log(*, event: str | None = None, response: int | None = None,
+                  piece: int | None = None, reverse: bool = False):
     if not TTS_LOG.is_file():
-        return None
-    for line in reversed(TTS_LOG.read_text(encoding="utf-8", errors="replace").splitlines()):
+        return
+    lines = TTS_LOG.read_text(encoding="utf-8", errors="replace").splitlines()
+    for line in reversed(lines) if reverse else lines:
         line = line.strip()
         if not line.startswith("{"):
             continue
@@ -43,8 +191,34 @@ def _read_tts_log_json(*, event: str | None = None, response: int | None = None,
             continue
         if piece is not None and obj.get("piece") != piece:
             continue
-        return obj
-    return None
+        yield obj
+
+
+def _read_tts_log_json(*, event: str | None = None, response: int | None = None,
+                       piece: int | None = None) -> dict | None:
+    return next(_iter_tts_log(event=event, response=response, piece=piece, reverse=True), None)
+
+
+def _ingest_t3_steps(response_id: int, piece_id: int = 0, audit_dir: str | Path | None = None) -> None:
+    run_id = _RUN_CTX.get("run_id")
+    sources = []
+    if audit_dir:
+        ledger = Path(audit_dir)
+        if not ledger.is_absolute():
+            ledger = ROOT / ledger
+        steps = ledger / "04-t3-step.jsonl"
+        if steps.is_file():
+            sources.append(steps.read_text(encoding="utf-8").splitlines())
+    if not sources:
+        sources.append([json.dumps(obj) for obj in _iter_tts_log(response=response_id, piece=piece_id)
+                        if obj.get("event") in ("t3.step", "t3.repeat_abort", "t3.text_tokens")])
+    for line in sources[0]:
+        obj = json.loads(line)
+        if run_id and obj.get("run_id") not in (run_id, None):
+            continue
+        if obj.get("response") not in (response_id, None):
+            continue
+        jsonl(obj["event"], **{k: v for k, v in obj.items() if k != "event"})
 
 
 def _run_logged(cmd, *, step, **kwargs) -> None:
@@ -58,14 +232,16 @@ def _run_logged(cmd, *, step, **kwargs) -> None:
 
 
 def tts_knobs(context: int, threads: int, cfm_steps: int, repeat_penalty: float = 1.2,
-              cfg_weight: float = 0.0, exaggeration: float = 0.0, min_p: float = 0.0,
-              n_gpu_layers: int = 99, fastconv: int = 1, seed: int = 42, max_tokens: int = 1000,
-              top_k: int = 1000, top_p: float = .95, temperature: float = .8) -> dict:
+              repeat_stop: int = 16, cfg_weight: float = 0.0, exaggeration: float = 0.0,
+              min_p: float = 0.0, n_gpu_layers: int = 99, fastconv: int = 1, seed: int = 42,
+              max_tokens: int = 1000, top_k: int = 1000, top_p: float = .95,
+              temperature: float = .8) -> dict:
     return {
         "n-gpu-layers": n_gpu_layers, "fastconv": fastconv, "seed": seed, "max-tokens": max_tokens,
         "top-k": top_k, "top-p": top_p, "min-p": min_p, "temperature": temperature,
         "context": context, "threads": threads, "repeat-penalty": repeat_penalty,
-        "cfm-steps": cfm_steps, "cfg-weight": cfg_weight, "exaggeration": exaggeration,
+        "repeat-stop": repeat_stop, "cfm-steps": cfm_steps, "cfg-weight": cfg_weight,
+        "exaggeration": exaggeration,
     }
 
 
@@ -85,6 +261,11 @@ def _download(url: str, path: Path) -> None:
 
 def _tts_runtime_present() -> bool:
     return all((TTS_RUNTIME / name).is_file() for name in TTS_RUNTIME_REQUIRED)
+
+
+def _purge_tts_runtime() -> None:
+    for name in TTS_RUNTIME_FILES:
+        (TTS_RUNTIME / name).unlink(missing_ok=True)
 
 
 def _port_in_use(port: int) -> bool:
@@ -134,6 +315,17 @@ def _wait_ready(proc: subprocess.Popen, ready_event: threading.Event, tail: list
         if time.monotonic() >= deadline:
             proc.kill()
             raise TimeoutError(f"Startup timed out\n" + "\n".join(tail))
+
+
+def _chatterbox_source(work: Path) -> Path:
+    local = CHATTERBOX_SOURCE
+    if local.is_dir() and (local / "CMakeLists.txt").is_file():
+        jsonl("tts.install.local_source", path=str(local))
+        return local.resolve()
+    source = work / "s"
+    _checkout("https://github.com/wgabrys88/chatterbox.cpp.git", CHATTERBOX_REV, source,
+              ("/CMakeLists.txt", "/LICENSE", "/src/", "/include/"))
+    return source
 
 
 def _checkout(url: str, rev: str, path: Path, patterns: tuple) -> None:
@@ -199,18 +391,21 @@ def _convert_tts(spec: dict, work: Path, source: Path, missing: list) -> None:
         converted.replace(output)
 
 
-def install_tts(spec: dict) -> None:
+def install_tts(spec: dict, *, force_rebuild: bool = False) -> None:
     if len(CHATTERBOX_REV) != 40:
         raise RuntimeError("Set CHATTERBOX_REV to the pushed chatterbox.cpp commit SHA before install")
     family = spec["family"]
     missing = _missing_conversions(spec)
     card = TTS_MODELS / spec["card"]
     voice_card = TTS_VOICE.with_suffix(".md")
+    if force_rebuild and _tts_runtime_present():
+        jsonl("tts.install.force_rebuild", family=family)
+        _purge_tts_runtime()
     need_runtime = not _tts_runtime_present()
     if not need_runtime and not missing and card.is_file() and TTS_VOICE.is_file() and voice_card.is_file():
-        jsonl("tts.install", family=family, skip=True)
+        jsonl("tts.install", family=family, skip=True, force_rebuild=force_rebuild)
     else:
-        jsonl("tts.install", family=family, skip=False)
+        jsonl("tts.install", family=family, skip=False, force_rebuild=force_rebuild)
         if need_runtime or missing:
             with tempfile.TemporaryDirectory(prefix=f".{family[0]}-", dir=ROOT) as tmp:
                 work, source = Path(tmp), Path(tmp) / "s"
@@ -221,10 +416,12 @@ def install_tts(spec: dict) -> None:
                 if missing:
                     patterns += [*(f"/scripts/{conversion[0]}" for conversion, output in missing),
                                  "/scripts/quant_policy.py"]
-                _checkout("https://github.com/wgabrys88/chatterbox.cpp.git", CHATTERBOX_REV, source, patterns)
                 if need_runtime:
+                    source = _chatterbox_source(work)
                     jsonl("tts.install.build", family=family)
                     _build_tts(work, source)
+                else:
+                    _checkout("https://github.com/wgabrys88/chatterbox.cpp.git", CHATTERBOX_REV, source, patterns)
                 if missing:
                     jsonl("tts.install.convert", family=family)
                     _convert_tts(spec, work, source, missing)
@@ -249,10 +446,13 @@ class TTS:
     def _command(self, language: str) -> list:
         spec = self.spec
         t3, s3 = spec["models"]
-        command = [str(TTS_RUNTIME / "chatterbox-server.exe"), "--run-id", spec["family"],
+        command = [str(TTS_RUNTIME / "chatterbox-server.exe"),
+                   "--run-id", _RUN_CTX.get("run_id") or spec["family"],
                    "--family", spec["family"], "--model", str(t3), "--s3gen-gguf", str(s3),
                    "--reference", str(TTS_VOICE), "--language", language, "--port", str(spec["port"]),
                    "--audit-dir", str(spec.get("audit_dir", ""))]
+        if spec.get("forensics"):
+            command.extend(["--forensics", "1"])
         command.extend(arg for name, value in spec["knobs"].items()
                        for arg in (f"--{name}", str(value)))
         return command
@@ -298,7 +498,9 @@ class TTS:
             self._log_fh = None
         _kill_port(self.spec["port"])
 
-    def synthesize(self, text: str, *, pieces: list | None = None) -> Path:
+    def synthesize(self, text: str, *, pieces: list | None = None,
+                   bench_file: str | None = None, bench_section: str | None = None,
+                   bench_line: int | None = None) -> Path:
         chunk_t0 = time.perf_counter()
         one_piece = pieces is not None
         if pieces is None:
@@ -307,11 +509,21 @@ class TTS:
         output = ROOT / f"out_{time.strftime('%d-%m-%y-%H-%M-%S')}_{self.spec['output']}.wav"
         self._response_id += 1
         response_id = self._response_id
-        fields = dict(response=response_id, pieces=len(pieces),
-                      total_chars=sum(len(p) for p in pieces), chunk_s=round(self.chunk_s, 3),
-                      one_piece=one_piece)
+        prompt_text = pieces[0] if len(pieces) == 1 else text
+        fields = dict(
+            response=response_id, pieces=len(pieces),
+            total_chars=sum(len(p) for p in pieces), chunk_s=round(self.chunk_s, 3),
+            one_piece=one_piece, text_sha=_text_sha(prompt_text),
+            sampler=_sampler_snapshot(self.spec["knobs"]),
+        )
         if one_piece:
             fields["chunk_bypassed"] = True
+        if bench_file is not None:
+            fields["bench_file"] = bench_file
+        if bench_section is not None:
+            fields["bench_section"] = bench_section
+        if bench_line is not None:
+            fields["bench_line"] = bench_line
         if self.spec.get("audit_dir"):
             audit_dir = Path(self.spec["audit_dir"])
             fields["audit_dir"] = str(audit_dir.relative_to(ROOT) if audit_dir.is_absolute() else audit_dir)
@@ -371,12 +583,17 @@ class TTS:
                           speech_hash=native.get("speech_hash"))
             jsonl("synth.complete", response=response_id,
                   pieces=pieces_written, samples=pcm_bytes // 2, wav=output.name,
-                  native_pieces=native_pieces or None)
+                  native_pieces=native_pieces or None,
+                  bench_file=bench_file, bench_section=bench_section, bench_line=bench_line,
+                  text_sha=_text_sha(prompt_text))
             sock.settimeout(10)
             self._send(sock, 3)
             if self._receive(reader)[0] != 5:
                 raise RuntimeError("TTS did not acknowledge close")
         self.synth_s = time.perf_counter() - synth_t0
+        if self.spec.get("forensics") or self.spec.get("audit_dir"):
+            _ingest_t3_steps(response_id, audit_dir=self.spec.get("audit_dir"))
+        _run_asr(output, prompt_text, response_id)
         return output
 
     @staticmethod
@@ -427,10 +644,18 @@ def run_tts(spec: dict) -> None:
     parser.add_argument("--install", action="store_true")
     parser.add_argument("--load", action="store_true")
     parser.add_argument("--unload", action="store_true")
+    parser.add_argument("--force-rebuild", action="store_true",
+                        help="rebuild native chatterbox-server even if runtime binaries exist")
     parser.add_argument("--audit", action="store_true",
                         help="capture replayable native stage artifacts; do not use for RTF")
+    parser.add_argument("--forensics", action="store_true",
+                        help="emit per-step T3 sampling logs (enabled automatically with --audit)")
     parser.add_argument("--one-piece", action="store_true",
                         help="bypass SaT chunking; synthesize the supplied text as exactly one piece")
+    parser.add_argument("--bench-section",
+                        help="synthesize only lines from this bench section (requires --text-file)")
+    parser.add_argument("--bench-line", type=int,
+                        help="synthesize only this bench file line number (requires --text-file)")
     if spec["multilingual"]:
         parser.add_argument("--language", default=spec["language"],
                             help="ISO 639-1 language code (e.g. en, fr, zh)")
@@ -441,13 +666,14 @@ def run_tts(spec: dict) -> None:
         parser.add_argument(f"--{name}", dest=name.replace("-", "_"), type=type(default), default=None)
     args = parser.parse_args()
     spec = {**spec, "knobs": dict(spec["knobs"])}
+    spec["forensics"] = args.forensics or args.audit
     if args.audit:
         audit_dir = ROOT / ".runtime-logs" / "audit" / (
             f"{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns() % 1_000_000_000:09d}-{spec['family']}"
         )
         audit_dir.mkdir(parents=True, exist_ok=False)
         spec["audit_dir"] = audit_dir
-        jsonl("tts.audit", dir=str(audit_dir.relative_to(ROOT)))
+        jsonl("tts.audit", dir=str(audit_dir.relative_to(ROOT)), forensics=spec["forensics"])
     else:
         spec["audit_dir"] = ""
     for name in spec["knobs"]:
@@ -459,7 +685,7 @@ def run_tts(spec: dict) -> None:
     if args.unload:
         tts.stop()
         return
-    install_tts(spec)
+    install_tts(spec, force_rebuild=args.force_rebuild)
     if args.install:
         tts.start(language)
         return
@@ -469,33 +695,88 @@ def run_tts(spec: dict) -> None:
         input()
         tts.stop()
         return
-    source = (args.text if args.text is not None else
-              (ROOT / args.text_file).read_text(encoding="utf-8") if args.text_file else
-              (ROOT / "brain_out.txt").read_text(encoding="utf-8"))
+    if (args.bench_section or args.bench_line) and not args.text_file:
+        parser.error("--bench-section and --bench-line require --text-file")
+    begin_run(spec["family"])
+    bench_file = str(args.text_file) if args.text_file else None
+    bench_items: list[dict] | None = None
+    def _bench_rows(items: list[dict]) -> list[dict]:
+        return [{"section": i["section"], "line_no": i["line_no"], "chars": len(i["text"]),
+                 "text_sha": _text_sha(i["text"])} for i in items]
+
+    if args.text_file:
+        all_items = parse_bench_file(ROOT / args.text_file)
+        if args.bench_line:
+            bench_items = [item for item in all_items if item["line_no"] == args.bench_line]
+            if not bench_items:
+                raise ValueError(f"bench line {args.bench_line} not found in {bench_file}")
+        elif args.bench_section:
+            bench_items = [item for item in all_items if item["section"] == args.bench_section]
+            if not bench_items:
+                raise ValueError(f"bench section {args.bench_section!r} not found in {bench_file}")
+        elif all_items and any(item["section"] for item in all_items):
+            jsonl("bench.matrix", bench_file=bench_file, items=_bench_rows(all_items))
+    if bench_items:
+        jsonl("bench.matrix", bench_file=bench_file, items=_bench_rows(bench_items))
+        source = "\n".join(item["text"] for item in bench_items)
+    else:
+        source = (args.text if args.text is not None else
+                  (ROOT / args.text_file).read_text(encoding="utf-8") if args.text_file else
+                  (ROOT / "brain_out.txt").read_text(encoding="utf-8"))
     jsonl("tts.run", family=spec["family"], one_piece=args.one_piece,
           chatterbox_rev=CHATTERBOX_REV, knobs=spec["knobs"],
-          source_chars=len(source), text_file=str(args.text_file) if args.text_file else None)
+          sampler=_sampler_snapshot(spec["knobs"]),
+          source_chars=len(source), text_file=bench_file,
+          bench_section=args.bench_section, bench_line=args.bench_line)
     started = time.perf_counter()
     tts.start(language)
     warmup_s = time.perf_counter() - started
-    if args.one_piece:
+    wav_paths: list[Path] = []
+    if bench_items:
+        for item in bench_items:
+            if args.one_piece:
+                pieces = TTS._one_piece(item["text"])
+                jsonl("synth.chunk_bypass", pieces=1, chars=len(pieces[0]), text=pieces[0],
+                      bench_section=item["section"], bench_line=item["line_no"])
+                wav_path = tts.synthesize(
+                    item["text"], pieces=pieces,
+                    bench_file=bench_file, bench_section=item["section"], bench_line=item["line_no"],
+                )
+            else:
+                wav_path = tts.synthesize(
+                    item["text"],
+                    bench_file=bench_file, bench_section=item["section"], bench_line=item["line_no"],
+                )
+            wav_paths.append(wav_path)
+    elif args.one_piece:
         pieces = TTS._one_piece(source)
         jsonl("synth.chunk_bypass", pieces=1, chars=len(pieces[0]), text=pieces[0])
-        wav_path = tts.synthesize(source, pieces=pieces)
+        wav_path = tts.synthesize(source, pieces=pieces, bench_file=bench_file)
+        wav_paths.append(wav_path)
     else:
-        wav_path = tts.synthesize(source)
+        wav_path = tts.synthesize(source, bench_file=bench_file)
+        wav_paths.append(wav_path)
+    wav_path = wav_paths[-1]
     (ROOT / "tts_out.wav").write_bytes(wav_path.read_bytes())
     with wave.open(str(wav_path)) as wav:
         duration = wav.getnframes() / wav.getframerate()
     synth_s = tts.synth_s
     audit = bool(spec.get("audit_dir"))
-    jsonl("synth.rtf", family=spec["family"],
+    jsonl("synth.rtf", family=spec["family"], wav=wav_path.name,
           warmup_s=round(warmup_s, 3), chunk_s=round(tts.chunk_s, 3),
           synth_s=round(synth_s, 3), audio_s=round(duration, 3),
           rtf=round(synth_s / duration, 3) if duration else None,
-          audit=audit, rtf_valid=not audit)
+          audit=audit, rtf_valid=not audit, wav_count=len(wav_paths))
+    if audit and spec.get("audit_dir"):
+        audit_dir = Path(spec["audit_dir"])
+        ledger_files = sorted(audit_dir.glob("*.jsonl")) if audit_dir.is_dir() else []
+        jsonl("audit.ready", audit_dir=str(audit_dir.relative_to(ROOT)),
+              files=[p.name for p in ledger_files])
+        jsonl("audit.ingest", audit_dir=str(audit_dir.relative_to(ROOT)),
+              ledger_counts={p.name: sum(1 for _ in p.open(encoding="utf-8")) for p in ledger_files})
     import analyze
     analyze.report(wav_path)
+    end_run(wav_paths, spec)
 
 
 def main() -> None:
@@ -507,14 +788,21 @@ def main() -> None:
     command.add_argument("--unload", action="store_true", help="stop all three model servers")
     parser.add_argument("--audit", action="store_true",
                         help="run Nano with replayable diagnostic artifacts; not for RTF")
+    parser.add_argument("--force-rebuild", action="store_true",
+                        help="rebuild native chatterbox-server before install/pipeline")
     args = parser.parse_args()
     mode = "unload" if args.unload else "install" if args.prompt is None else "pipeline"
     install_models = (("brain", "brain.py"), ("tts_nano", "tts_nano.py"), ("parakeet", "parakeet.py"))
     unload_models = (("brain", "brain.py"), ("tts_nano", "tts_nano.py"), ("tts_turbo", "tts_turbo.py"),
                      ("tts_v3", "tts_v3.py"), ("parakeet", "parakeet.py"))
     models = unload_models if mode == "unload" else install_models
+    nano_flags = []
+    if args.audit:
+        nano_flags.append("--audit")
+    if args.force_rebuild:
+        nano_flags.append("--force-rebuild")
     stages = ((("brain", "brain.py", (f"--request={args.prompt}",)),
-               ("tts_nano", "tts_nano.py", ("--audit",) if args.audit else ()),
+               ("tts_nano", "tts_nano.py", tuple(nano_flags)),
                ("parakeet", "parakeet.py", ("tts_out.wav",)))
               if mode == "pipeline" else tuple((*model, ()) for model in models))
     started = time.perf_counter()
