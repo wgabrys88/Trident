@@ -1,15 +1,18 @@
-import subprocess, sys, urllib.request, venv
+import hashlib, subprocess, sys, urllib.request, venv
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-CHATTERBOX_REV = "339053f3318a0d2468e21df746cc488ad34cfe19"
+CHATTERBOX_REV = "598c6078c731745b048f767fbb2efe95a9ec6766"
 CHATTERBOX = ROOT.parent / "chatterbox.cpp"
 MODELS = ROOT / "models"
 T3 = MODELS / "chatterbox-t3-nano-q8_0.gguf"
 S3 = MODELS / "chatterbox-s3gen-nano-q4_0.gguf"
 REF = ROOT / "reference.wav"
+STAMP = MODELS / "voice.sha256"
 BUILD = CHATTERBOX / "build"
-EXE = BUILD / "bin" / "chatterbox-server.exe"
+BIN = BUILD / "bin"
+EXE = BIN / "chatterbox-server.exe"
+BAKE = BIN / "chatterbox-bake.exe"
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 VULKAN = Path("C:/VulkanSDK/1.4.357.0")
 HF = "https://huggingface.co/ResembleAI/chatterbox-nano/resolve/71ccd1d0081b430592cea481f4307e764e07bc64"
@@ -23,6 +26,8 @@ def run(cmd, **kw):
     subprocess.run(cmd, check=True, **kw)
 
 def main():
+    if not REF.is_file():
+        raise FileNotFoundError(str(REF))
     ggml = CHATTERBOX / "ggml"
     run(["git", "-C", str(CHATTERBOX), "checkout", CHATTERBOX_REV])
     if not (ggml / "CMakeLists.txt").is_file():
@@ -38,7 +43,7 @@ def main():
         f"-DVulkan_LIBRARY={VULKAN / 'Lib/vulkan-1.lib'}",
         f"-DVulkan_GLSLC_EXECUTABLE={VULKAN / 'Bin/glslc.exe'}",
     ])
-    run([CMAKE, "--build", str(BUILD), "--config", "Release", "--target", "chatterbox-server", "--parallel"])
+    run([CMAKE, "--build", str(BUILD), "--config", "Release", "--target", "chatterbox-server", "--target", "chatterbox-bake", "--parallel"])
     venv_dir = ROOT / ".venv-convert"
     py = venv_dir / "Scripts" / "python.exe"
     if not py.is_file():
@@ -54,12 +59,20 @@ def main():
             urllib.request.urlretrieve(f"{HF}/{name}", dest)
     MODELS.mkdir(parents=True, exist_ok=True)
     scripts = CHATTERBOX / "scripts"
+    converted = False
     if not T3.is_file():
         run([str(py), str(scripts / "convert-t3-nano-to-gguf.py"), str(ckpt), str(T3)])
+        converted = True
     if not S3.is_file():
         run([str(py), str(scripts / "convert-s3gen-to-gguf.py"), str(ckpt), str(S3)])
+        converted = True
+    voice = hashlib.sha256(REF.read_bytes()).hexdigest()
+    stamp = STAMP.read_text(encoding="ascii").strip() if STAMP.is_file() else ""
+    if converted or stamp != voice:
+        run([str(BAKE), str(T3), str(S3), str(REF)], cwd=str(BIN))
+        STAMP.write_text(voice, encoding="ascii")
     out = ROOT / "tts_out.wav"
-    run([str(EXE), str(T3), str(S3), str(REF), str(out), sys.argv[1]], cwd=str(EXE.parent))
+    run([str(EXE), str(T3), str(S3), str(out), sys.argv[1]], cwd=str(BIN))
     print(out)
 
 if __name__ == "__main__":
