@@ -2,7 +2,7 @@ import subprocess, sys, urllib.request, venv
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-CHATTERBOX_REV = "f1a82bc0441bf7729d6b535fc734885d08a1b296"
+CHATTERBOX_REV = "339053f3318a0d2468e21df746cc488ad34cfe19"
 CHATTERBOX = ROOT.parent / "chatterbox.cpp"
 MODELS = ROOT / "models"
 T3 = MODELS / "chatterbox-t3-nano-q8_0.gguf"
@@ -31,7 +31,7 @@ def main():
     run([
         CMAKE, "-S", str(CHATTERBOX), "-B", str(BUILD),
         "-G", "Visual Studio 17 2022", "-A", "x64",
-        "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_OPENMP=OFF",
+        "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_CPU=OFF", "-DGGML_OPENMP=OFF",
         "-DBUILD_SHARED_LIBS=ON", "-DTTS_CPP_BUILD_EXECUTABLES=ON",
         "-DGGML_BUILD_TESTS=OFF", "-DGGML_BUILD_EXAMPLES=OFF",
         f"-DVulkan_INCLUDE_DIR={VULKAN / 'Include'}",
