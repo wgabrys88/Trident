@@ -168,6 +168,26 @@ class Brain:
         return ans.rsplit(marker, 1)[-1].strip() if marker in ans else ans
 
 
+def _spoken(request: str) -> tuple[str, float, float, float, float]:
+    started = time.perf_counter()
+    with Brain() as brain:
+        ready = time.perf_counter()
+        first = None
+        chunks = []
+        for chunk in brain.stream(request):
+            if first is None:
+                first = time.perf_counter()
+            chunks.append(chunk)
+        finished = time.perf_counter()
+    answer = "".join(chunks).replace("\r", "").strip()
+    marker = "Assistant:\n"
+    if marker in answer:
+        answer = answer.rsplit(marker, 1)[-1].strip()
+    if not answer:
+        raise RuntimeError("Brain produced no spoken reply")
+    return answer, started, ready, first or finished, finished
+
+
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
@@ -194,52 +214,13 @@ if __name__ == "__main__":
         _stop()
         sys.exit(0)
     if args.request is not None:
-        started = time.perf_counter()
-        with Brain() as brain:
-            ready = time.perf_counter()
-            first = None
-            chunks = []
-            for chunk in brain.stream(args.request):
-                if first is None:
-                    first = time.perf_counter()
-                chunks.append(chunk)
-            finished = time.perf_counter()
-        answer = "".join(chunks).replace("\r", "").strip()
-        marker = "Assistant:\n"
-        if marker in answer:
-            answer = answer.rsplit(marker, 1)[-1].strip()
-        if not answer:
-            raise RuntimeError("Brain produced no spoken reply")
-        (ROOT / "brain_out.txt").write_text(answer, encoding="utf-8")
-        print(answer)
-        n_tokens = len(answer.split())
-        inf_s = finished - ready
-        tps = n_tokens / inf_s if inf_s > 0 else 0.0
-        jsonl("brain.rtf", startup_s=round(ready - started, 3),
-              ttft_s=round((first or finished) - ready, 3),
-              inference_s=round(inf_s, 3), tokens=n_tokens, tps=round(tps, 2))
+        prompt = args.request
     else:
-        text = (ROOT / "pipe_in.txt").read_text(encoding="utf-8")
-        started = time.perf_counter()
-        with Brain() as brain:
-            ready = time.perf_counter()
-            first = None
-            chunks = []
-            for chunk in brain.stream(text):
-                if first is None:
-                    first = time.perf_counter()
-                chunks.append(chunk)
-            finished = time.perf_counter()
-        answer = "".join(chunks).replace("\r", "").strip()
-        marker = "Assistant:\n"
-        if marker in answer:
-            answer = answer.rsplit(marker, 1)[-1].strip()
-        if not answer:
-            raise RuntimeError("Brain produced no spoken reply")
-        (ROOT / "brain_out.txt").write_text(answer, encoding="utf-8")
-        n_tokens = len(answer.split())
-        inf_s = finished - ready
-        tps = n_tokens / inf_s if inf_s > 0 else 0.0
-        jsonl("brain.rtf", startup_s=round(ready - started, 3),
-              ttft_s=round((first or finished) - ready, 3),
-              inference_s=round(inf_s, 3), tokens=n_tokens, tps=round(tps, 2))
+        prompt = (ROOT / "pipe_in.txt").read_text(encoding="utf-8")
+    answer, started, ready, first, finished = _spoken(prompt)
+    (ROOT / "brain_out.txt").write_text(answer, encoding="utf-8")
+    print(answer)
+    inf_s = finished - ready
+    jsonl("brain.rtf", startup_s=round(ready - started, 3),
+          ttft_s=round(first - ready, 3), inference_s=round(inf_s, 3),
+          tokens=len(answer.split()), tps=round(len(answer.split()) / inf_s if inf_s > 0 else 0.0, 2))

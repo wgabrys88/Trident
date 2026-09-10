@@ -8,7 +8,7 @@ TTS_MODELS = ROOT / "models"
 TTS_VOICE = ROOT / "data/ref-trump.wav"
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 VULKAN_SDK = Path("C:/VulkanSDK/1.4.357.0")
-CHATTERBOX_REV = "7d9c73a3879c4cdf4e4fb1c7df17790f677bf6b2"
+CHATTERBOX_REV = "b9b2d4045f9603ae23f61658b303f8440edc4e0f"
 CHATTERBOX_SOURCE = ROOT.parent / "chatterbox.cpp"
 GGML_REV = "58c3805840b516b2a88ff867ccf7bb41dba79951"
 VOICE_URL = "https://huggingface.co/datasets/sdialog/voices-celebrities/resolve/57746b866d470be717097b87ba0428f8dd73e4f4"
@@ -39,7 +39,6 @@ def _sampler_snapshot(knobs: dict) -> dict:
         "repeat_penalty": knobs.get("repeat-penalty"),
         "repeat_last_n": REPEAT_LAST_N,
         "repeat_stop_consecutive": knobs.get("repeat-stop", 16),
-        "text_aligned_decode": knobs.get("text-aligned", 1),
     }
 
 
@@ -71,7 +70,7 @@ def jsonl(event: str, **fields) -> None:
         **fields,
     }
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    line = json.dumps(row, ensure_ascii=False) + "\n"
+    line = json.dumps({k: v for k, v in row.items() if v is not None}, ensure_ascii=False) + "\n"
     with TRIDENT_LOG.open("a", encoding="utf-8") as fh:
         fh.write(line)
     run_dir = _RUN_CTX.get("run_dir")
@@ -193,13 +192,13 @@ def tts_knobs(context: int, threads: int, cfm_steps: int, repeat_penalty: float 
               repeat_stop: int = 16, cfg_weight: float = 0.0, exaggeration: float = 0.0,
               min_p: float = 0.0, n_gpu_layers: int = 99, fastconv: int = 1, seed: int = 42,
               max_tokens: int = 1000, top_k: int = 1000, top_p: float = .95,
-              temperature: float = .8, text_aligned: int = 1) -> dict:
+              temperature: float = .8) -> dict:
     return {
         "n-gpu-layers": n_gpu_layers, "fastconv": fastconv, "seed": seed, "max-tokens": max_tokens,
         "top-k": top_k, "top-p": top_p, "min-p": min_p, "temperature": temperature,
         "context": context, "threads": threads, "repeat-penalty": repeat_penalty,
         "repeat-stop": repeat_stop, "cfm-steps": cfm_steps, "cfg-weight": cfg_weight,
-        "exaggeration": exaggeration, "text-aligned": text_aligned,
+        "exaggeration": exaggeration,
     }
 
 
@@ -439,8 +438,6 @@ class TTS:
                    "--family", spec["family"], "--model", str(t3), "--s3gen-gguf", str(s3),
                    "--reference", str(TTS_VOICE), "--language", language, "--port", str(spec["port"]),
                    "--audit-dir", str(spec.get("audit_dir", ""))]
-        if spec.get("forensics"):
-            command.extend(["--forensics", "1"])
         command.extend(arg for name, value in spec["knobs"].items()
                        for arg in (f"--{name}", str(value)))
         return command
@@ -497,24 +494,13 @@ class TTS:
         self._response_id += 1
         response_id = self._response_id
         prompt_text = pieces[0] if len(pieces) == 1 else text
-        fields = dict(
-            response=response_id, pieces=len(pieces),
-            total_chars=sum(len(p) for p in pieces), chunk_s=round(self.chunk_s, 3),
-            one_piece=one_piece, text_sha=_text_sha(prompt_text),
-            sampler=_sampler_snapshot(self.spec["knobs"]),
-        )
-        if one_piece:
-            fields["chunk_bypassed"] = True
-        if bench_file is not None:
-            fields["bench_file"] = bench_file
-        if bench_section is not None:
-            fields["bench_section"] = bench_section
-        if bench_line is not None:
-            fields["bench_line"] = bench_line
-        if self.spec.get("audit_dir"):
-            audit_dir = Path(self.spec["audit_dir"])
-            fields["audit_dir"] = str(audit_dir.relative_to(ROOT) if audit_dir.is_absolute() else audit_dir)
-        jsonl("synth.begin", **fields)
+        jsonl("synth.begin", response=response_id, pieces=len(pieces),
+              total_chars=sum(len(p) for p in pieces), chunk_s=round(self.chunk_s, 3),
+              one_piece=one_piece, text_sha=_text_sha(prompt_text),
+              sampler=_sampler_snapshot(self.spec["knobs"]),
+              chunk_bypassed=one_piece or None, bench_file=bench_file,
+              bench_section=bench_section, bench_line=bench_line,
+              audit_dir=str(Path(self.spec["audit_dir"]).relative_to(ROOT)) if self.spec.get("audit_dir") else None)
         synth_t0 = time.perf_counter()
         with socket.create_connection(("127.0.0.1", self.spec["port"]), timeout=300) as sock, sock.makefile("rb") as reader:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -619,8 +605,6 @@ def run_tts(spec: dict) -> None:
                         help="list cached native deliverables and exit")
     parser.add_argument("--audit", action="store_true",
                         help="capture replayable native stage artifacts; do not use for RTF")
-    parser.add_argument("--forensics", action="store_true",
-                        help="emit per-step T3 sampling logs (enabled automatically with --audit)")
     parser.add_argument("--one-piece", action="store_true",
                         help="bypass SaT chunking; synthesize the supplied text as exactly one piece")
     parser.add_argument("--bench-section",
@@ -645,14 +629,13 @@ def run_tts(spec: dict) -> None:
         spec["chatterbox_exe"] = str(args.chatterbox_exe.resolve())
     if args.chatterbox_source:
         spec["chatterbox_source"] = str(args.chatterbox_source.resolve())
-    spec["forensics"] = args.forensics or args.audit
     if args.audit:
         audit_dir = ROOT / ".runtime-logs" / "audit" / (
             f"{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns() % 1_000_000_000:09d}-{spec['family']}"
         )
         audit_dir.mkdir(parents=True, exist_ok=False)
         spec["audit_dir"] = audit_dir
-        jsonl("tts.audit", dir=str(audit_dir.relative_to(ROOT)), forensics=spec["forensics"])
+        jsonl("tts.audit", dir=str(audit_dir.relative_to(ROOT)))
     else:
         spec["audit_dir"] = ""
     for name in spec["knobs"]:
@@ -714,46 +697,31 @@ def run_tts(spec: dict) -> None:
     tts.start(language)
     warmup_s = time.perf_counter() - started
     wav_paths: list[Path] = []
-    if bench_items:
-        for item in bench_items:
-            if args.one_piece:
-                pieces = TTS._one_piece(item["text"])
-                jsonl("synth.chunk_bypass", pieces=1, chars=len(pieces[0]),
-                      bench_section=item["section"], bench_line=item["line_no"])
-                wav_path = tts.synthesize(
-                    item["text"], pieces=pieces,
-                    bench_file=bench_file, bench_section=item["section"], bench_line=item["line_no"],
-                )
-            else:
-                wav_path = tts.synthesize(
-                    item["text"],
-                    bench_file=bench_file, bench_section=item["section"], bench_line=item["line_no"],
-                )
-            wav_paths.append(wav_path)
-    elif args.one_piece:
-        pieces = TTS._one_piece(source)
-        jsonl("synth.chunk_bypass", pieces=1, chars=len(pieces[0]))
-        wav_path = tts.synthesize(source, pieces=pieces, bench_file=bench_file)
-        wav_paths.append(wav_path)
-    else:
-        wav_path = tts.synthesize(source, bench_file=bench_file)
-        wav_paths.append(wav_path)
+    jobs = bench_items or [{"text": source, "section": args.bench_section, "line_no": args.bench_line}]
+    for item in jobs:
+        text = item["text"] if bench_items else source
+        pieces = TTS._one_piece(text) if args.one_piece else None
+        if pieces:
+            jsonl("synth.chunk_bypass", pieces=1, chars=len(pieces[0]),
+                  bench_section=item.get("section"), bench_line=item.get("line_no"))
+        wav_paths.append(tts.synthesize(
+            text, pieces=pieces, bench_file=bench_file,
+            bench_section=item.get("section") if bench_items else None,
+            bench_line=item.get("line_no") if bench_items else args.bench_line,
+        ))
     wav_path = wav_paths[-1]
     (ROOT / "tts_out.wav").write_bytes(wav_path.read_bytes())
     with wave.open(str(wav_path)) as wav:
         duration = wav.getnframes() / wav.getframerate()
-    synth_s = tts.synth_s
-    audit = bool(spec.get("audit_dir"))
+    audit_dir = Path(spec["audit_dir"]) if spec.get("audit_dir") else None
     jsonl("synth.rtf", family=spec["family"], wav=wav_path.name,
           warmup_s=round(warmup_s, 3), chunk_s=round(tts.chunk_s, 3),
-          synth_s=round(synth_s, 3), audio_s=round(duration, 3),
-          rtf=round(synth_s / duration, 3) if duration else None,
-          audit=audit, rtf_valid=not audit, wav_count=len(wav_paths))
-    if audit and spec.get("audit_dir"):
-        audit_dir = Path(spec["audit_dir"])
-        ledger_files = sorted(audit_dir.glob("*.jsonl")) if audit_dir.is_dir() else []
+          synth_s=round(tts.synth_s, 3), audio_s=round(duration, 3),
+          rtf=round(tts.synth_s / duration, 3) if duration else None,
+          audit=bool(audit_dir), rtf_valid=not audit_dir, wav_count=len(wav_paths))
+    if audit_dir:
         jsonl("audit.ready", audit_dir=str(audit_dir.relative_to(ROOT)),
-              files=[p.name for p in ledger_files])
+              files=[p.name for p in sorted(audit_dir.glob("*.jsonl"))])
     end_run(wav_paths, spec)
 
 
