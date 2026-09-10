@@ -2,6 +2,7 @@ import socket, struct, subprocess, sys, time, urllib.request, venv, wave
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
+CHATTERBOX_REV = "94b16381640c7fe22481121da153d577213c0ef7"
 CHATTERBOX = ROOT.parent / "chatterbox.cpp"
 MODELS = ROOT / "models"
 T3 = MODELS / "chatterbox-t3-nano-q4_0.gguf"
