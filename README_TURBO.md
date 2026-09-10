@@ -23,7 +23,7 @@ The C++ pin is in `tts_turbo.py`. Source paths below refer to that pin.
 ## Launch and files
 
 Run `python tts_turbo.py "The billing issue is resolved."` on Trident `turbo`,
-with `reference.wav` in the Trident root and sibling `chatterbox-turbo.cpp`
+with `reference.wav` in the Trident root and sibling `chatterbox.cpp`
 on Chatterbox `turbo` at the pin above. No language argument is passed.
 
 | Artifact | Path or construction |
