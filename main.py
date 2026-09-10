@@ -297,15 +297,23 @@ def _checkout(url: str, rev: str, path: Path, patterns: tuple) -> None:
         _run_logged([*git, *args], step=step)
     _run_logged([*git, "sparse-checkout", "set", "--no-cone", "--stdin"], step="git-sparse",
                 input="\n".join(patterns) + "\n", text=True)
-    _run_logged([*git, "checkout", "--detach", rev], step="git-checkout")
+    _run_logged([*git, "checkout", "--detach", "--force", rev], step="git-checkout")
+    _run_logged([*git, "reset", "--hard", "HEAD"], step="git-reset")
 
 
 def _build_tts(work: Path, source: Path) -> None:
-    _checkout("https://github.com/ggml-org/ggml.git", GGML_REV, source / "ggml",
+    ggml = source / "ggml"
+    patch = source / "src/ggml-vulkan-queue.patch"
+    _checkout("https://github.com/ggml-org/ggml.git", GGML_REV, ggml,
               ("/CMakeLists.txt", "/LICENSE", "/cmake/", "/include/", "/src/*", "!/src/*/",
                "/src/ggml-cpu/", "/src/ggml-vulkan/"))
-    _run_logged(["git", "-C", str(source / "ggml"), "apply", "--whitespace=nowarn",
-                 str(source / "src/ggml-vulkan-queue.patch")], step="ggml-patch")
+    already = subprocess.run(
+        ["git", "-C", str(ggml), "apply", "--reverse", "--check", "--whitespace=nowarn", str(patch)],
+        capture_output=True).returncode == 0
+    if already:
+        jsonl("tts.install.ggml_patch", skip=True)
+    else:
+        _run_logged(["git", "-C", str(ggml), "apply", "--whitespace=nowarn", str(patch)], step="ggml-patch")
     build = work / "b"
     _run_logged([
         CMAKE, "-S", str(source), "-B", str(build), "-G", "Visual Studio 17 2022", "-A", "x64",
