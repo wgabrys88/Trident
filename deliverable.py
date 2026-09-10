@@ -8,26 +8,32 @@ PLATFORM, BUILD_RECIPE = "win-x64", ("vulkan", "shared")
 
 
 def resolve_source(override: str | Path | None, default: Path) -> Path:
-    path = Path(override).resolve() if override else default
-    if override and not (path / "CMakeLists.txt").is_file():
+    path = Path(override).resolve() if override else default.resolve()
+    if not (path / "CMakeLists.txt").is_file():
         raise FileNotFoundError(f"chatterbox source missing CMakeLists.txt: {path}")
-    return path.resolve() if path.is_dir() and (path / "CMakeLists.txt").is_file() else default.resolve()
+    return path
 
 
-def source_rev(source: Path, fallback_rev: str) -> str:
+def source_rev(source: Path) -> str:
     proc = subprocess.run(["git", "-C", str(source), "rev-parse", "HEAD"], capture_output=True, text=True)
-    head = proc.stdout.strip() if proc.returncode == 0 else fallback_rev
+    if proc.returncode != 0 or not proc.stdout.strip():
+        raise RuntimeError(f"git rev-parse failed in {source}")
+    head = proc.stdout.strip()
     diff = subprocess.run(
         ["git", "-C", str(source), "diff", "HEAD", "--", "src", "include", "CMakeLists.txt"],
         capture_output=True)
-    if diff.returncode == 0 and diff.stdout:
+    if diff.returncode != 0:
+        raise RuntimeError(f"git diff failed in {source}")
+    if diff.stdout:
         return f"{head}+{hashlib.sha256(diff.stdout).hexdigest()[:12]}"
     return head
 
 
-def fingerprint(source: Path, ggml_rev: str, patch_path: Path, fallback_rev: str) -> str:
-    patch_hash = hashlib.sha256(patch_path.read_bytes()).hexdigest()[:12] if patch_path.is_file() else "no-patch"
-    key = "|".join([source_rev(source, fallback_rev), ggml_rev, patch_hash, PLATFORM, *BUILD_RECIPE])
+def fingerprint(source: Path, ggml_rev: str, patch_path: Path) -> str:
+    if not patch_path.is_file():
+        raise FileNotFoundError(f"missing ggml vulkan patch: {patch_path}")
+    patch_hash = hashlib.sha256(patch_path.read_bytes()).hexdigest()[:12]
+    key = "|".join([source_rev(source), ggml_rev, patch_hash, PLATFORM, *BUILD_RECIPE])
     return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
@@ -59,7 +65,7 @@ def save_deliverable(fp: str, build_bin: Path, source: Path, runtime_files: tupl
     shutil.copy2(source / "LICENSE", dest / "licenses" / "chatterbox-LICENSE.txt")
     shutil.copy2(source / "ggml/LICENSE", dest / "licenses" / "ggml-LICENSE.txt")
     (dest / "manifest.json").write_text(json.dumps({
-        "fingerprint": fp, "source": str(source), "source_rev": source_rev(source, chatterbox_rev),
+        "source_rev": source_rev(source),
         "chatterbox_rev": chatterbox_rev, "ggml_rev": ggml_rev, "platform": PLATFORM,
         "recipe": list(BUILD_RECIPE), "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "files": list(runtime_files),
@@ -70,15 +76,10 @@ def purge_deliverable(fp: str) -> None:
     shutil.rmtree(deliverable_dir(fp), ignore_errors=True)
 
 
-def server_exe(spec: dict, runtime_dir: Path) -> Path:
-    if spec.get("chatterbox_exe"):
-        path = Path(spec["chatterbox_exe"]).resolve()
-        if not path.is_file():
-            raise FileNotFoundError(f"--chatterbox-exe not found: {path}")
-        return path
+def server_exe(runtime_dir: Path) -> Path:
     path = runtime_dir / "chatterbox-server.exe"
     if not path.is_file():
-        raise RuntimeError("TTS runtime missing; run --install or pass --chatterbox-exe")
+        raise RuntimeError("TTS runtime missing; run --install")
     return path
 
 
