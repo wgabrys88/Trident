@@ -1,18 +1,22 @@
 # Chatterbox V3 (Multilingual) — AI handover (Trident)
 
 Current handover (supersedes the historical status and next steps below):
-C++ v3 is f9bda80f8d64b03e0d5a631de8999ac62be1ee99, pushed to origin/v3.
-tts_v3.py pins that SHA, uses sibling chatterbox.cpp and S3Gen f16.
+C++ v3 is b8bf9ba232c715da7ef160fdd37b9f64dd72b2d9, pushed to origin/v3.
+tts_v3.py pins that SHA. Its original chatterbox-v3.cpp path and S3Gen
+q4_0 selection are retained; the local checkout is named chatterbox.cpp.
 Sentence A's 56 dropped tokens match v3_s3gen_hf.txt; jumping codebook
 IDs are not evidence of broken T3. Continue with S3Gen only.
 Fixed conv1d_f32: preserve batch through matmul, then permute to [T,C,B].
 The previous flattened [T*B,C] reshape scrambled the two CFG streams.
-Also retained finalized encoder length 2*n_total, no 3x4299 padding,
-trim_fade, and existing T3 instrumentation. Vulkan build and sentence A
-generation completed with the same 56 tokens; intelligibility remains
-unconfirmed. Before/after dumps are in models/v3_s3_dump_before and
-models/v3_s3_dump_after. Official source 5de7a54 was inspected statically;
-no official CPU inference was run. V3 process stopped and PID removed.
+Only the convolution fix is published relative to cbbbb8c. Pre-existing
+f16 conversion, finalized encoder length, silence-padding removal,
+trim_fade, T3 instrumentation and launcher path/model edits were removed
+by corrective commits and discarded locally at explicit request.
+The earlier Vulkan sentence A run included those now-removed edits;
+it does not validate the final published combination. Intelligibility
+remains unconfirmed. Before/after dumps remain in models/v3_s3_dump_before
+and models/v3_s3_dump_after. Official source 5de7a54 was inspected
+statically; no official CPU inference was run. V3 process stopped.
 No new harnesses, tests, fallbacks, or defensive code. Fix demonstrated
 errors directly; commit/push C++ v3, then pin/commit/push Trident v3.
 Do not reopen Nano/Turbo or merge upstream.
