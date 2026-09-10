@@ -8,7 +8,7 @@ TTS_MODELS = ROOT / "models"
 TTS_VOICE = ROOT / "data/ref-trump.wav"
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 VULKAN_SDK = Path("C:/VulkanSDK/1.4.357.0")
-CHATTERBOX_REV = "46a655b5d79e1db5b2cf83e2a79c27e7a7be2fe6"
+CHATTERBOX_REV = "d195d3c4fbd11ab264f96f43105b02867c00613a"
 CHATTERBOX_SOURCE = ROOT.parent / "chatterbox.cpp"
 GGML_REV = "58c3805840b516b2a88ff867ccf7bb41dba79951"
 VOICE_URL = "https://huggingface.co/datasets/sdialog/voices-celebrities/resolve/57746b866d470be717097b87ba0428f8dd73e4f4"
@@ -31,14 +31,14 @@ def _text_sha(text: str) -> str:
 
 def _sampler_snapshot(knobs: dict) -> dict:
     return {
-        "seed": knobs.get("seed"),
-        "temperature": knobs.get("temperature"),
-        "min_p": knobs.get("min-p"),
-        "top_p": knobs.get("top-p"),
-        "top_k": knobs.get("top-k"),
-        "repeat_penalty": knobs.get("repeat-penalty"),
+        "seed": knobs["seed"],
+        "temperature": knobs["temperature"],
+        "min_p": knobs["min-p"],
+        "top_p": knobs["top-p"],
+        "top_k": knobs["top-k"],
+        "repeat_penalty": knobs["repeat-penalty"],
         "repeat_last_n": REPEAT_LAST_N,
-        "repeat_stop_consecutive": knobs.get("repeat-stop", 16),
+        "repeat_stop_consecutive": knobs["repeat-stop"],
     }
 
 
@@ -268,24 +268,11 @@ def _wait_ready(proc: subprocess.Popen, ready_event: threading.Event, tail: list
             raise TimeoutError(f"Startup timed out\n" + "\n".join(tail))
 
 
-def _chatterbox_source(work: Path) -> Path:
-    local = CHATTERBOX_SOURCE
-    if local.is_dir() and (local / "CMakeLists.txt").is_file():
-        jsonl("tts.install.local_source", path=str(local))
-        return local.resolve()
-    source = work / "s"
-    _checkout("https://github.com/wgabrys88/chatterbox.cpp.git", CHATTERBOX_REV, source,
-              ("/CMakeLists.txt", "/LICENSE", "/src/", "/include/"))
-    return source
-
-
 def _checkout(url: str, rev: str, path: Path, patterns: tuple) -> None:
     _run_logged(["git", "init", str(path)], step="git-init")
     git = ["git", "-C", str(path)]
-    remote_cmd = ("remote", "set-url", "origin", url) if subprocess.run(
-        [*git, "remote", "get-url", "origin"], capture_output=True).returncode == 0 else ("remote", "add", "origin", url)
-    for step, args in (("git-remote", remote_cmd),
-                       ("git-config", ("config", "remote.origin.promisor", "true")),
+    _run_logged([*git, "remote", "add", "origin", url], step="git-remote")
+    for step, args in (("git-config", ("config", "remote.origin.promisor", "true")),
                        ("git-filter", ("config", "remote.origin.partialclonefilter", "blob:none")),
                        ("git-fetch", ("fetch", "--depth=1", "--filter=blob:none", "--no-tags", "origin", rev))):
         _run_logged([*git, *args], step=step)
@@ -301,13 +288,7 @@ def _build_tts(work: Path, source: Path) -> None:
     _checkout("https://github.com/ggml-org/ggml.git", GGML_REV, ggml,
               ("/CMakeLists.txt", "/LICENSE", "/cmake/", "/include/", "/src/*", "!/src/*/",
                "/src/ggml-cpu/", "/src/ggml-vulkan/"))
-    already = subprocess.run(
-        ["git", "-C", str(ggml), "apply", "--reverse", "--check", "--whitespace=nowarn", str(patch)],
-        capture_output=True).returncode == 0
-    if already:
-        jsonl("tts.install.ggml_patch", skip=True)
-    else:
-        _run_logged(["git", "-C", str(ggml), "apply", "--whitespace=nowarn", str(patch)], step="ggml-patch")
+    _run_logged(["git", "-C", str(ggml), "apply", "--whitespace=nowarn", str(patch)], step="ggml-patch")
     build = work / "b"
     _run_logged([
         CMAKE, "-S", str(source), "-B", str(build), "-G", "Visual Studio 17 2022", "-A", "x64",
@@ -339,13 +320,13 @@ def _convert_tts(spec: dict, work: Path, source: Path, missing: list) -> None:
     _run_logged([*pip, "torch==2.6.0", "--index-url", "https://download.pytorch.org/whl/cpu"], step="pip-torch")
     _run_logged([*pip, "numpy==1.26.4", "gguf==0.19.0", "safetensors==0.5.3",
                  "scipy==1.15.3", "librosa==0.11.0"], step="pip-convert")
-    assets = dict.fromkeys(name for (script, model_args, quant, files), output in missing for name in files)
+    assets = dict.fromkeys(name for (script, quant, files), output in missing for name in files)
     for name in assets:
         _download(f"{spec['url']}/{name}", checkpoint / name)
     TTS_MODELS.mkdir(parents=True, exist_ok=True)
-    for (script, model_args, quant, files), output in missing:
+    for (script, quant, files), output in missing:
         converted = work / output.name
-        _run_logged([python, str(source / "scripts" / script), *model_args,
+        _run_logged([python, str(source / "scripts" / script),
                      "--ckpt-dir", str(checkpoint), "--out", str(converted), "--quant", quant],
                     step=script, cwd=work)
         converted.replace(output)
@@ -360,19 +341,17 @@ def install_tts(spec: dict, *, force_rebuild: bool = False) -> None:
     card = TTS_MODELS / spec["card"]
     voice_card = TTS_VOICE.with_suffix(".md")
     source = dlvr.resolve_source(spec.get("chatterbox_source"), CHATTERBOX_SOURCE)
-    fp = dlvr.fingerprint(source, GGML_REV, source / "src/ggml-vulkan-queue.patch", CHATTERBOX_REV)
+    fp = dlvr.fingerprint(source, GGML_REV, source / "src/ggml-vulkan-queue.patch")
     spec["deliverable_fingerprint"] = fp
-    if spec.get("chatterbox_exe"):
-        jsonl("tts.install.exe_override", family=family, path=str(Path(spec["chatterbox_exe"]).resolve()))
-    elif force_rebuild:
+    if force_rebuild:
         jsonl("tts.install.force_rebuild", family=family, fingerprint=fp)
         dlvr.purge_deliverable(fp)
         _purge_tts_runtime()
-    cached = not spec.get("chatterbox_exe") and not force_rebuild and dlvr.is_complete(fp, TTS_RUNTIME_FILES)
+    cached = not force_rebuild and dlvr.is_complete(fp, TTS_RUNTIME_FILES)
     if cached:
         jsonl("tts.install.deliverable", family=family, fingerprint=fp, hit=True)
         dlvr.install_from_deliverable(fp, TTS_RUNTIME, TTS_RUNTIME_FILES)
-    need_runtime = not spec.get("chatterbox_exe") and not cached
+    need_runtime = not cached
     if need_runtime and _tts_runtime_present():
         jsonl("tts.install.stale_runtime", family=family, fingerprint=fp)
         _purge_tts_runtime()
@@ -384,27 +363,16 @@ def install_tts(spec: dict, *, force_rebuild: bool = False) -> None:
         if need_runtime or missing:
             with tempfile.TemporaryDirectory(prefix=f".{family[0]}-", dir=ROOT) as tmp:
                 work = Path(tmp)
-                checkout_source = work / "s"
                 jsonl("tts.install.checkout", family=family, rev=CHATTERBOX_REV, source=str(source))
-                patterns = []
                 if need_runtime:
-                    patterns += ["/CMakeLists.txt", "/LICENSE", "/src/", "/include/"]
-                if missing:
-                    patterns += [*(f"/scripts/{conversion[0]}" for conversion, output in missing),
-                                 "/scripts/quant_policy.py"]
-                if need_runtime:
-                    build_source = source if source.is_dir() else _chatterbox_source(work)
                     jsonl("tts.install.build", family=family, fingerprint=fp)
-                    _build_tts(work, build_source)
-                    dlvr.save_deliverable(fp, work / "b" / "bin", build_source, TTS_RUNTIME_FILES,
+                    _build_tts(work, source)
+                    dlvr.save_deliverable(fp, work / "b" / "bin", source, TTS_RUNTIME_FILES,
                                           chatterbox_rev=CHATTERBOX_REV, ggml_rev=GGML_REV)
                     dlvr.install_from_deliverable(fp, TTS_RUNTIME, TTS_RUNTIME_FILES)
-                else:
-                    _checkout("https://github.com/wgabrys88/chatterbox.cpp.git", CHATTERBOX_REV,
-                              checkout_source, patterns)
                 if missing:
                     jsonl("tts.install.convert", family=family)
-                    _convert_tts(spec, work, source if source.is_dir() else checkout_source, missing)
+                    _convert_tts(spec, work, source, missing)
         if not card.is_file():
             _download(f"{spec['url']}/README.md", card)
         if not TTS_VOICE.is_file():
@@ -427,18 +395,18 @@ class TTS:
         import deliverable as dlvr
         spec = self.spec
         t3, s3 = spec["models"]
-        command = [str(dlvr.server_exe(spec, TTS_RUNTIME)),
-                   "--run-id", _RUN_CTX.get("run_id") or spec["family"],
+        command = [str(dlvr.server_exe(TTS_RUNTIME)),
+                   "--run-id", _RUN_CTX["run_id"] or spec["family"],
                    "--family", spec["family"], "--model", str(t3), "--s3gen-gguf", str(s3),
                    "--reference", str(TTS_VOICE), "--port", str(spec["port"]),
-                   "--audit-dir", str(spec.get("audit_dir", ""))]
+                   "--audit-dir", str(spec["audit_dir"])]
         command.extend(arg for name, value in spec["knobs"].items()
                        for arg in (f"--{name}", str(value)))
         return command
 
     def start(self) -> "TTS":
         import deliverable as dlvr
-        dlvr.server_exe(self.spec, TTS_RUNTIME)
+        dlvr.server_exe(TTS_RUNTIME)
         if self._proc is not None and self._proc.poll() is None:
             jsonl("tts.reuse", family=self.spec["family"], port=self.spec["port"],
                   pid=self._proc.pid, knobs=self.spec["knobs"])
@@ -590,8 +558,6 @@ def run_tts(spec: dict) -> None:
     parser.add_argument("--unload", action="store_true")
     parser.add_argument("--force-rebuild", action="store_true",
                         help="purge deliverable cache for current source and rebuild native binaries")
-    parser.add_argument("--chatterbox-exe", type=Path,
-                        help="use a pre-built chatterbox-server.exe (skip install/build)")
     parser.add_argument("--chatterbox-source", type=Path,
                         help="chatterbox.cpp tree for fingerprinting and local builds")
     parser.add_argument("--deliverable-status", action="store_true",
@@ -615,8 +581,6 @@ def run_tts(spec: dict) -> None:
         dlvr.print_status(TTS_RUNTIME_FILES)
         return
     spec = {**spec, "knobs": dict(spec["knobs"])}
-    if args.chatterbox_exe:
-        spec["chatterbox_exe"] = str(args.chatterbox_exe.resolve())
     if args.chatterbox_source:
         spec["chatterbox_source"] = str(args.chatterbox_source.resolve())
     if args.audit:

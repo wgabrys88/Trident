@@ -7,9 +7,9 @@ SPEC = {
     "url": "https://huggingface.co/ResembleAI/chatterbox-nano/resolve/71ccd1d0081b430592cea481f4307e764e07bc64",
     "card": "nano-model-card.md",
     "conversions": (
-        ("convert-t3-turbo-to-gguf.py", (), "q4_0",
+        ("convert-t3-turbo-to-gguf.py", "q4_0",
          ("t3_nano_v1.safetensors", "conds.pt", "ve.safetensors", "vocab.json", "merges.txt", "added_tokens.json")),
-        ("convert-s3gen-to-gguf.py", (), "q4_0",
+        ("convert-s3gen-to-gguf.py", "q4_0",
          ("s3gen_meanflow.safetensors", "conds.pt"))),
 }
 
