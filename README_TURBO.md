@@ -1,303 +1,129 @@
-# Chatterbox TURBO — AI handover (Trident)
+# Turbo pipeline
 
-Same document shape as README_NANO.md / README_TURBO.md / README_V3.md.
-Read all three as columns of one table. Do not copy numbers, graphs, bake
-windows, tokenizers, or CFM schedules across families.
+This document describes Trident branch `turbo` and its pinned Chatterbox source.
+The source audit was performed on 2026-09-11. Each family README describes its
+named branch even when a copy is present on another branch.
 
-This file is for AI continuation and final handover. Human ear-check is the
-quality gate. File size, duration, and RMS are not a pass.
+## Working milestone and pins
 
-----------------------------------------------------------------------
-## 0. How to use this file
-----------------------------------------------------------------------
+The user reported all three pipelines working before the milestone tags were
+created. No new Turbo synthesis or benchmark was run for this source audit.
 
-Stay on chatterbox-turbo.cpp branch turbo and Trident branch turbo.
-Launcher is tts_turbo.py only. Do not edit nano or v3 trees from here.
-PowerShell only. Fail hard. No fallbacks. No force-push. No git checkout SHA.
-CONFIDENCE 100: if a number is not in THIS file / THIS tree / a GET this
-session, STOP.
+| Item | Value |
+| --- | --- |
+| Lightweight tag in both repositories | `MILESTONE-SET-turbo` |
+| Trident milestone | `35bee5e1cf491ed4e31998389e635a13385a645d` |
+| Chatterbox pin and milestone | `aec122a248b1fcc6670c0ef7b130d42671beb459` |
+| ggml requested revision | `7840aaba1989c6deeefede1d77d5aaf8f52b947e` |
+| Hugging Face repository | `ResembleAI/chatterbox-turbo` |
+| Hugging Face revision | `749d1c1a46eb10492095d68fbcf55691ccf137cd` |
 
-----------------------------------------------------------------------
-## 1. Identity
-----------------------------------------------------------------------
+The tag identifies the pre-audit state, not the latest documentation commit.
+The C++ pin is in `tts_turbo.py`. Source paths below refer to that pin.
 
-Family              TURBO
-Official name       Chatterbox Turbo
-C++ clone           C:\Users\eb-wjt\Downloads\synthesis\chatterbox-turbo.cpp
-C++ branch          turbo
-C++ HEAD            aec122a248b1fcc6670c0ef7b130d42671beb459
-C++ remote          https://github.com/wgabrys88/chatterbox.cpp.git
-Trident clone       C:\Users\eb-wjt\Downloads\synthesis\Trident
-Trident branch      turbo
-Trident HEAD        96def65688b3c7483aa25b32342252148e29b094
-Trident remote      https://github.com/wgabrys88/Trident.git
-Launcher            tts_turbo.py
-CHATTERBOX_REV      aec122a248b1fcc6670c0ef7b130d42671beb459
-Status              SHIPPED. Human ear-check A/B intelligible (prior campaign).
+## Launch and files
 
-Analogical rule:
-  chatterbox turbo  <->  Trident turbo  <->  tts_turbo.py
+Run `python tts_turbo.py "The billing issue is resolved."` on Trident `turbo`,
+with `reference.wav` in the Trident root and sibling `chatterbox-turbo.cpp`
+on Chatterbox `turbo` at the pin above. No language argument is passed.
 
-Turbo is the SAME GRAPH FAMILY as Nano (GPT-2 T3 + meanflow S3Gen),
-bigger T3 weights. It is NOT Llama. Do not treat Turbo as a V3 reference
-for attention, RoPE, perceiver, CFG, or classic CFM.
+| Artifact | Path or construction |
+| --- | --- |
+| T3 / S3Gen | `models/chatterbox-t3-turbo-q8_0.gguf` / `models/chatterbox-s3gen-turbo-q4_0.gguf` |
+| Checkpoints / conversion environment | `.ckpt-turbo` / `.venv-convert-turbo` |
+| Voice stamp / build revision / PID | `models/turbo.voice.sha256` / `models/turbo.rev` / `models/turbo.pid` |
+| Output | `tts_out_turbo.wav` |
+| Pipe | `\\.\pipe\chatterbox-turbo-` + first 12 hex characters of SHA256 of `str(ROOT).encode() + b"turbo"` |
+| Executables | sibling checkout's `build/bin/chatterbox-server.exe` and `chatterbox-bake.exe` |
 
-----------------------------------------------------------------------
-## 2. Product shape
-----------------------------------------------------------------------
+The launcher checks C++ branch and HEAD only when rebuilding because an
+executable/revision stamp is missing or the stamp differs from the pin.
+It clones and pins missing ggml, but does not verify an existing ggml checkout.
+Build commands use Visual Studio 2022 x64 Release, CMake at
+`C:/Program Files/CMake/bin/cmake.exe`, and Vulkan SDK `C:/VulkanSDK/1.4.357.0`.
 
-one Engine({t3,s3}).synthesize(text)
-one named-pipe server in server.cpp
-argv: exe  t3.gguf  s3.gguf  out.wav  pipe
-NO language argv
-one bake.exe overwrites ONLY turbo GGUFs
-compile-time sampler in turbo.h
-no runtime CFG / min_p / exaggeration knobs
-n_past = 0 at the start of every generate_t3
-throw std::runtime_error on failure
-CMake FATAL_ERROR unless Vulkan-only
-init_backend = ggml_backend_vk_init(0); throw if null
-weights, KV, graphs on THAT Vulkan backend
-Host RAM may hold wav bytes and the text string. Compute graphs do not.
-No TCP. No logs. No streaming PCM. No in-engine chunker. No CPU backend.
+Missing assets are downloaded and missing GGUFs converted. Bake runs after
+conversion or a change to the reference SHA256 stamp. Existing checkpoint and
+GGUF contents are not hash-verified. Conversion uses CPU PyTorch 2.6.0, NumPy
+1.26.4, gguf 0.19.0, safetensors 0.5.3, SciPy 1.15.3 and librosa 0.11.0.
 
-----------------------------------------------------------------------
-## 3. Pins
-----------------------------------------------------------------------
+The launcher waits for the pipe in one-second calls while the recorded PID is
+alive. The server holds one Engine, handles text lines sequentially, writes
+mono 24 kHz PCM16 through a temporary WAV, replaces the destination, then
+acknowledges `ok\n`. It remains alive after synthesis; launcher `kill()`
+terminates the recorded PID and removes its file. PID checks do not verify
+executable identity. There is no TCP service, PCM streaming, or text chunker.
 
-HF weights     ResembleAI/chatterbox
-               749d1c1a46eb10492095d68fbcf55691ccf137cd
-               (tts_turbo.py URL host path uses chatterbox-turbo resolve
-                on that sha; record the SHA actually downloaded)
-Official py    github.com/resemble-ai/chatterbox  tts_turbo.py / T3Config
-ggml           7840aaba1989c6deeefede1d77d5aaf8f52b947e
-               (detached in chatterbox-turbo.cpp/ggml is expected)
+## Model path
 
-HF assets:
-  t3_turbo_v1.safetensors
-  s3gen_meanflow.safetensors
-  conds.pt
-  ve.safetensors
-  vocab.json
-  merges.txt
-  added_tokens.json
+CMake compiles `src/t3_nano.cpp` and `src/gpt2_bpe.cpp` for Turbo.
+Despite the filename, that GPT-2 graph reads its dimensions from Turbo GGUF
+metadata and its learned position table. It uses LayerNorm, fused QKV,
+GELU and flash attention. It has no Llama RoPE, Perceiver or T3 CFG path.
 
-YAML t3_turbo_v1.yaml is NOT geometry. Python sets cond 375.
-n_transformer_layers: 30 in YAML is a LIE vs file (24 layers).
-Always take n_layer/n_embd/n_ctx from the safetensors.
+The Turbo converter derives layer count and width from checkpoint tensors,
+heads as width / 64, and context from the position table. It does not read
+a model YAML. It enforces a 50276-entry tokenizer, writes speech vocabulary
+6563 and start/stop IDs 6561/6562, skips `tfmr.wte.weight` and
+`text_head.weight`, and rejects other unmapped names.
+The GPT-2 tokenizer normalizes punctuation and applies byte mapping, regex
+splitting, added-token matching and BPE.
 
-----------------------------------------------------------------------
-## 4. T3
-----------------------------------------------------------------------
+`include/tts-cpp/chatterbox/turbo.h` sets seed 42, maximum predictions 1000,
+top-k 1000, top-p 0.95, temperature 0.8, repetition penalty 1.2 over the last
+1000 tokens, two CFM steps and three silence tokens of ID 4299.
+T3 resets RNG/context position each utterance, requires EOS, filters speech
+IDs and appends three silence tokens. S3Gen separately adds three lookahead
+tokens, then removes six encoder frames. Meanflow uses a two-step linear
+schedule, both endpoint time embeddings and `time_embed_mixer`, without CFG.
 
-Backbone            GPT-2 medium
-Layers              24  (tfmr.h.0 .. tfmr.h.23)
-Hidden              1024
-Heads               16  (1024 // 64)
-Head dim            64
-FF                  GPT-2 GELU MLP, fused c_attn
-Norm                LayerNorm + bias
-Position            GPT-2 wpe (8196, 1024). No RoPE. No Llama.
-Perceiver           NO  (use_perceiver_resampler=False)
-CFG on T3           NO  (official ignores CFG / min_p / exaggeration)
-Emotion adv         NO
-Speech codebook     6561 + start 6561 + stop 6562 = 6563
-Cond speech tokens  375
-n_ctx from GGUF     wpe table length 8196
-T3 sources          t3_nano.cpp graphs reused (read hparams from GGUF)
-                    gpt2_bpe.cpp
-                    include/tts-cpp/chatterbox/turbo.h
+## Conversion and reference bake
 
-Bigger planner, same graph family as Nano. Practical text: one English
-sentence up to ~40 words. Not a paragraph.
+The launcher invokes `scripts/convert-t3-turbo-to-gguf.py` and
+`scripts/convert-s3gen-to-gguf.py`. Inputs are `t3_turbo_v1.safetensors`
+and `s3gen_meanflow.safetensors`, plus `conds.pt`, `ve.safetensors`,
+`vocab.json`, `merges.txt` and `added_tokens.json`.
+Selected T3 matrices use Q8_0 and selected S3Gen weights use Q4_0;
+other tensors remain floating-point or integer.
+Both Turbo converters print checkpoint keys/shapes. The S3Gen converter
+checks allowed top-level prefixes; it is not an exhaustive shape validator.
 
-----------------------------------------------------------------------
-## 5. Tokenizer
-----------------------------------------------------------------------
+Bake rewrites the supplied T3/S3Gen GGUF paths, without a family-name check.
+It replaces T3 speaker embedding/conditioning tokens and S3Gen prompt tokens,
+mel features and speaker embedding. T3 conditioning uses up to 15 seconds at
+16 kHz, capped by GGUF metadata; S3Gen prompt and CAMPPlus windows are at most
+10 seconds. VoiceEncoder input is capped at 30 seconds after 16 kHz resampling.
+See `src/bake.cpp` and `src/main.cpp`.
 
-Family              GPT-2 BPE
-Vocab               50276  (convert SystemExit if length != 50276)
-Files               vocab.json  merges.txt  added_tokens.json
-Language id         unused
-English extras      none
+## Execution boundaries and isolation
 
-----------------------------------------------------------------------
-## 6. Conditioning and bake
-----------------------------------------------------------------------
+CMake forces ggml Vulkan on and CPU/CUDA/OpenMP off; backend initialization
+selects Vulkan device 0. Host C++ still handles tokenization, sampling,
+resampling, loudness normalization, portions of CAMPPlus, speech quantization,
+CFM integration and harmonic-source calculations. The implementation therefore
+does not support the old claim that host RAM holds only text and WAV bytes.
 
-ENC_COND_LEN        15 * S3_SR
-DEC_COND_LEN        10 * S3GEN_SR
-Bake VE cap         30s @ 16 kHz  (same bake.cpp family as Nano)
-Cond tokens         15s @ 16 kHz
-Prompt tokens       10s @ 16 kHz
-Prompt feat         10s @ 24 kHz
-Campplus emb        10s @ 16 kHz
-Empty wav           throw
-Voice tensors overwrite ONLY turbo GGUFs.
+Turbo has separate model, checkpoint, environment, PID, pipe, output and build
+paths. Its own `tts_turbo.py` is the pipeline entry point. The older
+`tts_nano.py` retained on this branch checks out its Nano SHA during rebuild;
+it does not use the branch-checking Nano launcher found on Trident `nano`.
 
-375 is the VOICE PROMPT PREFIX, same as Nano. It is not V3's 150.
+## Source reduction findings
 
-----------------------------------------------------------------------
-## 7. S3Gen / CFM
-----------------------------------------------------------------------
+These opportunities were identified without changing runtime source:
 
-Family              meanflow  (same file family as Nano)
-n_cfm_timesteps     2
-t_span              2-step linear (not cosine)
-CFG on CFM          NO
-time_embed_mixer    PRESENT (meanflow)
-S3_SR               16000   hop 160   token rate 25 Hz
-S3GEN_SR            24000
-kSamplesPerToken    960
-SILENCE_TOKEN       4299
-SPEECH_VOCAB_SIZE   6561
+- `include/tts-cpp/chatterbox/nano.h` and
+  `scripts/convert-t3-nano-to-gguf.py` are not used by the Turbo build/launcher:
+  140 lines, 7382 bytes in the milestone Git blobs.
+- The retained Trident `tts_nano.py` adds another 118 lines outside this
+  pipeline. Removing this obsolete entry point would leave Turbo independent.
+- `t3_nano.cpp` and `gpt2_bpe.cpp` are active Turbo sources and are not
+  removable leftovers.
+- The only estimator call passes `f16_kv_attn=false`; its option plumbing,
+  pass-through `s3_*` wrappers, unused counters and the tokenizer's identical
+  mel-buffer copy are reduction candidates within this branch.
+- True-or-throw bake helper chains contain redundant boolean propagation.
+  Functions with real false-return paths must be distinguished before editing.
 
-Convert STOP if listed keys/shapes are not the meanflow set the
-turbo-tree convert-s3gen-to-gguf.py requires.
-
-----------------------------------------------------------------------
-## 8. Sampler (compile-time turbo.h)
-----------------------------------------------------------------------
-
-SEED=42
-N_PREDICT=1000
-TOP_K=1000
-TOP_P=0.95
-TEMPERATURE=0.8
-REPEAT_PENALTY=1.2
-REPEAT_LAST_N=1000
-CFM_STEPS=2
-SILENCE_TOKEN=4299
-SILENCE_COUNT=3
-No CFG_WEIGHT. No MIN_P. No EXAGGERATION.
-
-turbo.h copies nano.h values. Do not add CFG. Do not switch N_PREDICT
-to 768 because of a third-party note. Ear-check first.
-
-----------------------------------------------------------------------
-## 9. Convert / GGUF
-----------------------------------------------------------------------
-
-scripts/convert-t3-turbo-to-gguf.py
-scripts/convert-s3gen-to-gguf.py
-T3 quant             Q8_0
-S3Gen quant          Q4_0
-Outputs              Trident/models/chatterbox-t3-turbo-q8_0.gguf
-                     Trident/models/chatterbox-s3gen-turbo-q4_0.gguf
-Skip                 tfmr.wte.weight (official deletes it)
-Skip                 text_head.weight (50276, 1024)
-                     PROVEN training-only: official inference_turbo never
-                     reads it. Safe skip for inference GGUF.
-STOP                 any other unknown name
-Do not put turbo weights through convert-t3-nano-to-gguf.py.
-
-T3 keys listed from t3_turbo_v1.safetensors:
-  tfmr.h.0 .. tfmr.h.23
-  tfmr.ln_f.weight/bias   n_embd=1024
-  tfmr.wpe.weight         (8196, 1024)
-  text_emb.weight         (50276, 1024)
-  speech_emb.weight       (6563, 1024)
-  speech_head.weight/bias (6563, ...)
-  cond_enc.spkr_enc.weight/bias  256 -> 1024
-
-----------------------------------------------------------------------
-## 10. Graph / ggml
-----------------------------------------------------------------------
-
-Same GPT-2 fused c_attn path as Nano t3_nano.cpp.
-Q/K/V views [HD, N, n_head].
-ggml_flash_attn_ext then reshape_2d(n_embd, N). No post-permute.
-V is NOT permuted.
-No RoPE. No CFG_BATCH. No Perceiver.
-
-KV: n_embd * n_layer * n_ctx = 1024 * 24 * 8196 (larger than Nano).
-If Vulkan alloc fails, throw. Do not move KV to CPU.
-CHBX_MAX_NODES = 8192. Prompt graph ran. Do not raise until a throw.
-
-This layout is NOT a license to copy it onto V3 Llama.
-
-----------------------------------------------------------------------
-## 11. Isolation names
-----------------------------------------------------------------------
-
-PIPE     \\.\pipe\chatterbox-turbo- + sha256(str(ROOT).encode() + b"turbo")[:12]
-PID      models/turbo.pid
-STAMP    models/turbo.voice.sha256
-REV      models/turbo.rev
-OUT      tts_out_turbo.wav
-CKPT     .ckpt-turbo
-venv     .venv-convert-turbo
-speak()  wait while running() + WaitNamedPipeW 1s loops;
-         RuntimeError("daemon") if PID dies; no 120s single shot
-require_pin: branch == "turbo" and HEAD == CHATTERBOX_REV
-never git checkout a SHA
-
-Do not cross-kill nano server.pid or v3.pid.
-
-----------------------------------------------------------------------
-## 12. Proven facts
-----------------------------------------------------------------------
-
-text_head.weight is training-only. Skip is correct.
-T3+S3Gen convert succeeded.
-Vulkan-only cmake --build Release succeeded.
-Bake + speak A/B intelligible (human ear, prior campaign).
-Second speak hot pipe.
-require_pin coded; no SHA checkout.
-Pushed origin/turbo aec122a NEVER --force.
-
-----------------------------------------------------------------------
-## 13. Problems found
-----------------------------------------------------------------------
-
-Launcher SHA checkout caused detached HEAD. Fixed: require_pin.
-t3_turbo_v1.yaml lies about n_layer (30 vs 24) and cond length
-(250 vs Python 375). Ignore YAML for geometry.
-text_head.weight stopped the first convert. Resolved: skip.
-
-----------------------------------------------------------------------
-## 14. Unread / investigate
-----------------------------------------------------------------------
-
-None blocking Turbo A/B. If a Turbo regression appears, re-GET the
-HF sha and re-read inference_turbo before changing graphs.
-
-----------------------------------------------------------------------
-## 15. Checklist
-----------------------------------------------------------------------
-
-[x] extra clone chatterbox-turbo.cpp, branch turbo
-[x] HF GET 749d1c1a
-[x] text_head resolved (skip)
-[x] T3 + S3Gen convert
-[x] tts_turbo.py isolated names + require_pin
-[x] Vulkan build, bake, speak A/B
-[x] human ear A/B pass
-[x] commit+push chatterbox turbo aec122a NEVER --force
-[x] pin FULL SHA; commit+push Trident turbo 96def65 NEVER --force
-
-----------------------------------------------------------------------
-## 16. What not to do
-----------------------------------------------------------------------
-
-New GitHub remotes. Force-push. reset --hard. rebase. amend unless asked.
-git checkout <40-char-sha> in chatterbox-turbo.cpp or Trident.
-Work on main. Checkout turbo inside chatterbox.cpp (Nano tree).
-Trust t3_turbo_v1.yaml for n_layer or cond length.
-Copy Turbo 15s ENC_COND or 375 prefix onto V3.
-Copy meanflow onto V3.
-Reintroduce runtime CFG knobs.
-GGML_CPU=ON. CUDA. Hybrid CPU+Vulkan.
-Raise N_PREDICT. Raise CHBX_MAX_NODES before a throw.
-Leave chatterbox-server.exe in VRAM after a work block.
-Claim a WAV is intelligible from RMS.
-PowerShell && or bash HEREDOC.
-git-add helper _*.py
-
-----------------------------------------------------------------------
-## 17. Next session
-----------------------------------------------------------------------
-
-Turbo is shipped. Do not start a Turbo rewrite unless a regression is
-proven on THIS tree. V3 is a different architecture. Turbo success does
-not prove V3 flash_attn / RoPE / CFM graphs.
+These counts exclude documentation and generated artifacts. No claim of
+runtime speedup follows from deleting unused source.
