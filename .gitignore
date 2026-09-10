@@ -3,3 +3,6 @@
 !.gitattributes
 !/tts_nano.py
 !/tts_turbo.py
+!/README_NANO.md
+!/README_TURBO.md
+!/README_V3.md
