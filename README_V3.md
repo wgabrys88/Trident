@@ -1,5 +1,22 @@
 # Chatterbox V3 (Multilingual) — AI handover (Trident)
 
+Current handover (supersedes the historical status and next steps below):
+C++ v3 is f9bda80f8d64b03e0d5a631de8999ac62be1ee99, pushed to origin/v3.
+tts_v3.py pins that SHA, uses sibling chatterbox.cpp and S3Gen f16.
+Sentence A's 56 dropped tokens match v3_s3gen_hf.txt; jumping codebook
+IDs are not evidence of broken T3. Continue with S3Gen only.
+Fixed conv1d_f32: preserve batch through matmul, then permute to [T,C,B].
+The previous flattened [T*B,C] reshape scrambled the two CFG streams.
+Also retained finalized encoder length 2*n_total, no 3x4299 padding,
+trim_fade, and existing T3 instrumentation. Vulkan build and sentence A
+generation completed with the same 56 tokens; intelligibility remains
+unconfirmed. Before/after dumps are in models/v3_s3_dump_before and
+models/v3_s3_dump_after. Official source 5de7a54 was inspected statically;
+no official CPU inference was run. V3 process stopped and PID removed.
+No new harnesses, tests, fallbacks, or defensive code. Fix demonstrated
+errors directly; commit/push C++ v3, then pin/commit/push Trident v3.
+Do not reopen Nano/Turbo or merge upstream.
+
 Same document shape as README_NANO.md / README_TURBO.md / README_V3.md.
 Read all three as columns of one table. Do not copy numbers, graphs, bake
 windows, tokenizers, or CFM schedules across families.
