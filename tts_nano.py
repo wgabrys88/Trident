@@ -7,9 +7,9 @@ TTS_MODELS = ROOT / "models"
 TTS_VOICE = ROOT / "data/ref-trump.wav"
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 VULKAN_SDK = Path("C:/VulkanSDK/1.4.357.0")
-CHATTERBOX_REV = "d195d3c4fbd11ab264f96f43105b02867c00613a"
+CHATTERBOX_REV = "02bd14f7d4d178e07b6becc2805358d73a8f5054"
 CHATTERBOX_SOURCE = ROOT.parent / "chatterbox.cpp"
-GGML_REV = "58c3805840b516b2a88ff867ccf7bb41dba79951"
+GGML_REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
 VOICE_URL = "https://huggingface.co/datasets/sdialog/voices-celebrities/resolve/57746b866d470be717097b87ba0428f8dd73e4f4"
 TTS_RUNTIME_FILES = ("chatterbox-server.exe", "ggml.dll", "ggml-base.dll", "ggml-cpu.dll", "ggml-vulkan.dll")
 TTS_RUNTIME_REQUIRED = (*TTS_RUNTIME_FILES, "chatterbox-LICENSE.txt", "ggml-LICENSE.txt")
@@ -21,19 +21,13 @@ INSTALL_LOG = LOG_DIR / "install.log"
 TTS_LOG = LOG_DIR / "tts.log"
 DELIVERABLES = ROOT / ".runtime-deliverables"
 PLATFORM, BUILD_RECIPE = "win-x64", ("vulkan", "shared")
-KNOBS = {
-    "n-gpu-layers": 99, "fastconv": 1, "seed": 42, "max-tokens": 1000,
-    "top-k": 1000, "top-p": .95, "min-p": 0.0, "temperature": 0.5,
-    "context": 2048, "threads": 4, "repeat-penalty": 1.2,
-    "repeat-stop": 16, "cfm-steps": 1,
-}
 SPEC = {
     "family": "nano", "port": 17933, "output": "tts",
     "models": (ROOT / "models/chatterbox-t3-nano-q4_0.gguf", ROOT / "models/chatterbox-s3gen-nano-q4_0.gguf"),
     "url": "https://huggingface.co/ResembleAI/chatterbox-nano/resolve/71ccd1d0081b430592cea481f4307e764e07bc64",
     "card": "nano-model-card.md",
     "conversions": (
-        ("convert-t3-turbo-to-gguf.py", "q4_0",
+        ("convert-t3-nano-to-gguf.py", "q4_0",
          ("t3_nano_v1.safetensors", "conds.pt", "ve.safetensors", "vocab.json", "merges.txt", "added_tokens.json")),
         ("convert-s3gen-to-gguf.py", "q4_0",
          ("s3gen_meanflow.safetensors", "conds.pt"))),
@@ -117,11 +111,8 @@ def _source_rev(source: Path) -> str:
     return head
 
 
-def _fingerprint(source: Path, patch_path: Path) -> str:
-    if not patch_path.is_file():
-        raise FileNotFoundError(f"missing ggml vulkan patch: {patch_path}")
-    patch_hash = hashlib.sha256(patch_path.read_bytes()).hexdigest()[:12]
-    key = "|".join([_source_rev(source), GGML_REV, patch_hash, PLATFORM, *BUILD_RECIPE])
+def _fingerprint(source: Path) -> str:
+    key = "|".join([_source_rev(source), GGML_REV, PLATFORM, *BUILD_RECIPE])
     return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
@@ -182,11 +173,9 @@ def _checkout(url: str, rev: str, path: Path, patterns: tuple) -> None:
 
 def _build_tts(work: Path, source: Path) -> None:
     ggml = source / "ggml"
-    patch = source / "src/ggml-vulkan-queue.patch"
     _checkout("https://github.com/ggml-org/ggml.git", GGML_REV, ggml,
               ("/CMakeLists.txt", "/LICENSE", "/cmake/", "/include/", "/src/*", "!/src/*/",
                "/src/ggml-cpu/", "/src/ggml-vulkan/"))
-    _run_logged(["git", "-C", str(ggml), "apply", "--whitespace=nowarn", str(patch)], step="ggml-patch")
     build = work / "b"
     _run_logged([
         CMAKE, "-S", str(source), "-B", str(build), "-G", "Visual Studio 17 2022", "-A", "x64",
@@ -235,7 +224,7 @@ def install_tts() -> None:
     missing = [(c, o) for c, o in zip(SPEC["conversions"], SPEC["models"]) if not o.is_file()]
     card = TTS_MODELS / SPEC["card"]
     voice_card = TTS_VOICE.with_suffix(".md")
-    fp = _fingerprint(source, source / "src/ggml-vulkan-queue.patch")
+    fp = _fingerprint(source)
     cached = _deliverable_complete(fp)
     if cached:
         jsonl("tts.install.deliverable", fingerprint=fp, hit=True)
@@ -296,10 +285,8 @@ class TTS:
         t3, s3 = SPEC["models"]
         command = [str(_server_exe()),
                    "--run-id", _RUN_ID or "nano",
-                   "--family", "nano", "--model", str(t3), "--s3gen-gguf", str(s3),
-                   "--reference", str(TTS_VOICE), "--port", str(SPEC["port"]),
-                   "--audit-dir", ""]
-        command.extend(arg for name, value in KNOBS.items() for arg in (f"--{name}", str(value)))
+                   "--model", str(t3), "--s3gen-gguf", str(s3),
+                   "--reference", str(TTS_VOICE), "--port", str(SPEC["port"])]
         return command
 
     def start(self) -> "TTS":
