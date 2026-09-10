@@ -2,3 +2,6 @@
 !.gitignore
 !.gitattributes
 !/tts_nano.py
+!/README_NANO.md
+!/README_TURBO.md
+!/README_V3.md
