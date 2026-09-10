@@ -23,6 +23,18 @@ VULKAN = Path("C:/VulkanSDK/1.4.357.0")
 def run(cmd, **kw):
     subprocess.run(cmd, check=True, **kw)
 
+def git_out(args):
+    p = subprocess.run(["git", "-C", str(CHATTERBOX), *args], check=True, capture_output=True, text=True)
+    return p.stdout.strip()
+
+def require_pin():
+    branch = git_out(["rev-parse", "--abbrev-ref", "HEAD"])
+    if branch != "turbo":
+        raise SystemExit(f"branch {branch} != turbo")
+    sha = git_out(["rev-parse", "HEAD"])
+    if sha != CHATTERBOX_REV:
+        raise SystemExit(f"HEAD {sha} != {CHATTERBOX_REV}")
+
 def kill():
     if not PID.is_file():
         return
@@ -68,7 +80,7 @@ def main():
     MODELS.mkdir(parents=True, exist_ok=True)
     ggml = CHATTERBOX / "ggml"
     if not EXE.is_file() or not BAKE.is_file() or not REV.is_file() or REV.read_text(encoding="ascii") != CHATTERBOX_REV:
-        run(["git", "-C", str(CHATTERBOX), "checkout", CHATTERBOX_REV])
+        require_pin()
         if not (ggml / "CMakeLists.txt").is_file():
             run(["git", "clone", "--filter=blob:none", "https://github.com/ggml-org/ggml.git", str(ggml)])
             run(["git", "-C", str(ggml), "checkout", GGML_REV])
