@@ -2,10 +2,10 @@ import ctypes, hashlib, subprocess, sys, urllib.request, venv
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-CHATTERBOX_REV = "cbbbb8c5941f54c3449f677a03d5adf04ad766a4"
-CHATTERBOX = ROOT.parent / "chatterbox-v3.cpp"
+CHATTERBOX_REV = "f9bda80f8d64b03e0d5a631de8999ac62be1ee99"
+CHATTERBOX = ROOT.parent / "chatterbox.cpp"
 MODELS, REF = ROOT / "models", ROOT / "reference.wav"
-T3, S3 = MODELS / "chatterbox-t3-v3-q8_0.gguf", MODELS / "chatterbox-s3gen-v3-q4_0.gguf"
+T3, S3 = MODELS / "chatterbox-t3-v3-q8_0.gguf", MODELS / "chatterbox-s3gen-v3-f16.gguf"
 STAMP, REV, PID = MODELS / "v3.voice.sha256", MODELS / "v3.rev", MODELS / "v3.pid"
 BIN = CHATTERBOX / "build" / "bin"
 EXE, BAKE = BIN / "chatterbox-server.exe", BIN / "chatterbox-bake.exe"
