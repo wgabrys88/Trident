@@ -8,7 +8,7 @@ TTS_MODELS = ROOT / "models"
 TTS_VOICE = ROOT / "data/ref-trump.wav"
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 VULKAN_SDK = Path("C:/VulkanSDK/1.4.357.0")
-CHATTERBOX_REV = "083ae6b80002cad03d70765a3c3aceacecc2e6c9"
+CHATTERBOX_REV = "7836647cb6664a49a54c2d14f3dfc53277c036ac"
 CHATTERBOX_SOURCE = ROOT.parent / "chatterbox.cpp"
 GGML_REV = "58c3805840b516b2a88ff867ccf7bb41dba79951"
 VOICE_URL = "https://huggingface.co/datasets/sdialog/voices-celebrities/resolve/57746b866d470be717097b87ba0428f8dd73e4f4"
@@ -29,13 +29,6 @@ def _text_sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
-def _repair_forensic_json(line: str) -> str:
-    """Repair malformed forensic JSON from forensic_head() nesting a second object."""
-    if ',{"run_id"' in line:
-        line = line.replace(',{"run_id"', ',"run_id"', 1)
-    return line.replace(":-inf", ":null").replace(",-inf", ",null")
-
-
 def _sampler_snapshot(knobs: dict) -> dict:
     return {
         "seed": knobs.get("seed"),
@@ -46,6 +39,7 @@ def _sampler_snapshot(knobs: dict) -> dict:
         "repeat_penalty": knobs.get("repeat-penalty"),
         "repeat_last_n": REPEAT_LAST_N,
         "repeat_stop_consecutive": knobs.get("repeat-stop", 16),
+        "text_aligned_decode": knobs.get("text-aligned", 1),
     }
 
 
@@ -100,23 +94,8 @@ def parse_bench_file(path: Path) -> list[dict]:
     return items
 
 
-_TEENS = frozenset({"one", "two", "three", "four", "five", "six", "seven", "eight", "nine"})
-
-
 def _normalize_word(word: str) -> str:
     return word.lower().strip(".,!?;:")
-
-
-def _compound_numbers(words: list[str]) -> list[str]:
-    spoken, i = [], 0
-    while i < len(words):
-        if words[i] == "twenty" and i + 1 < len(words) and words[i + 1] in _TEENS:
-            spoken.append(f"twenty-{words[i + 1]}")
-            i += 2
-        else:
-            spoken.append(words[i])
-            i += 1
-    return spoken
 
 
 def _expected_words(text: str) -> list[str]:
@@ -124,7 +103,15 @@ def _expected_words(text: str) -> list[str]:
 
 
 def _spoken_words_from_asr(words: list[dict]) -> list[str]:
-    return _compound_numbers([_normalize_word(w["w"]) for w in words])
+    return [_normalize_word(w["w"]) for w in words]
+
+
+def _word_span(words: list[str], start: str, end: str) -> list[str]:
+    if start not in words:
+        return words
+    i = words.index(start)
+    j = words.index(end, i) + 1 if end in words[i:] else len(words)
+    return words[i:j]
 
 
 def _asr_diff(expected: list[str], spoken: list[str]) -> dict:
@@ -142,41 +129,26 @@ def _asr_diff(expected: list[str], spoken: list[str]) -> dict:
                 deletions.extend(expected[i1 + (j2 - j1):i2])
             elif j2 - j1 > i2 - i1:
                 insertions.extend(spoken[j1 + (i2 - i1):j2])
-    from collections import Counter
-    counts = Counter(spoken)
-    duplicates = [w for w, n in counts.items() if n > 1]
-    return {
-        "expected_words": expected,
-        "spoken_words": spoken,
-        "deletions": deletions,
-        "insertions": insertions,
-        "substitutions": substitutions,
-        "duplicates": duplicates,
-    }
+    return {"deletions": deletions, "insertions": insertions, "substitutions": substitutions}
 
 
 def _run_asr(wav_path: Path, prompt_text: str, response_id: int, piece_id: int = 0) -> None:
     import parakeet
     parakeet._install()
-    jsonl("asr.begin", response=response_id, piece=piece_id, wav=wav_path.name)
     t0 = time.perf_counter()
     try:
         data = parakeet.transcribe_json(wav_path)
     except Exception as exc:
-        jsonl("asr.error", response=response_id, piece=piece_id, wav=wav_path.name, error=str(exc))
+        jsonl("asr.diff", response=response_id, piece=piece_id, wav=wav_path.name, error=str(exc))
         return
-    wall_s = round(time.perf_counter() - t0, 3)
     words = [w for w in data.get("words", []) if not w.get("w", "").startswith("<")]
-    for idx, word in enumerate(words):
-        jsonl("asr.word", response=response_id, piece=piece_id, idx=idx,
-              word=word["w"], word_norm=_normalize_word(word["w"]),
-              start=word["start"], end=word["end"], conf=word.get("conf"))
-    jsonl("asr.complete", response=response_id, piece=piece_id, wav=wav_path.name,
-          word_count=len(words), wall_s=wall_s, transcript=data.get("text", ""))
     expected = _expected_words(prompt_text)
     spoken = _spoken_words_from_asr(words)
-    diff = _asr_diff(expected, spoken)
-    jsonl("asr.diff", response=response_id, piece=piece_id, wav=wav_path.name, **diff)
+    teens = _asr_diff(_word_span(expected, "ten", "twenty-seven"),
+                      _word_span(spoken, "ten", "twenty-seven"))
+    jsonl("asr.diff", response=response_id, piece=piece_id, wav=wav_path.name,
+          wall_s=round(time.perf_counter() - t0, 3), transcript=data.get("text", ""),
+          teens=teens, pass_teens=not teens["deletions"] and not teens["substitutions"])
 
 
 def _iter_tts_log(*, event: str | None = None, response: int | None = None,
@@ -206,32 +178,7 @@ def _read_tts_log_json(*, event: str | None = None, response: int | None = None,
     return next(_iter_tts_log(event=event, response=response, piece=piece, reverse=True), None)
 
 
-def _ingest_t3_steps(response_id: int, piece_id: int = 0, audit_dir: str | Path | None = None) -> None:
-    run_id = _RUN_CTX.get("run_id")
-    sources = []
-    if audit_dir:
-        ledger = Path(audit_dir)
-        if not ledger.is_absolute():
-            ledger = ROOT / ledger
-        steps = ledger / "04-t3-step.jsonl"
-        if steps.is_file():
-            sources.append(steps.read_text(encoding="utf-8").splitlines())
-    if not sources:
-        sources.append([json.dumps(obj) for obj in _iter_tts_log(response=response_id, piece=piece_id)
-                        if obj.get("event") in ("t3.step", "t3.repeat_abort", "t3.text_tokens")])
-    for line in sources[0]:
-        if not line.strip():
-            continue
-        obj = json.loads(_repair_forensic_json(line))
-        if run_id and obj.get("run_id") not in (run_id, None):
-            continue
-        if obj.get("response") not in (response_id, None):
-            continue
-        jsonl(obj["event"], **{k: v for k, v in obj.items() if k != "event"})
-
-
 def _run_logged(cmd, *, step, **kwargs) -> None:
-    jsonl("run", step=step)
     kwargs.setdefault("text", True)
     kwargs.setdefault("encoding", "utf-8")
     kwargs.setdefault("errors", "replace")
@@ -244,18 +191,17 @@ def tts_knobs(context: int, threads: int, cfm_steps: int, repeat_penalty: float 
               repeat_stop: int = 16, cfg_weight: float = 0.0, exaggeration: float = 0.0,
               min_p: float = 0.0, n_gpu_layers: int = 99, fastconv: int = 1, seed: int = 42,
               max_tokens: int = 1000, top_k: int = 1000, top_p: float = .95,
-              temperature: float = .8) -> dict:
+              temperature: float = .8, text_aligned: int = 1) -> dict:
     return {
         "n-gpu-layers": n_gpu_layers, "fastconv": fastconv, "seed": seed, "max-tokens": max_tokens,
         "top-k": top_k, "top-p": top_p, "min-p": min_p, "temperature": temperature,
         "context": context, "threads": threads, "repeat-penalty": repeat_penalty,
         "repeat-stop": repeat_stop, "cfm-steps": cfm_steps, "cfg-weight": cfg_weight,
-        "exaggeration": exaggeration,
+        "exaggeration": exaggeration, "text-aligned": text_aligned,
     }
 
 
 def _download(url: str, path: Path) -> None:
-    jsonl("run", step="download", name=path.name)
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_suffix(path.suffix + ".part")
     partial.unlink(missing_ok=True)
@@ -521,8 +467,7 @@ class TTS:
                 f"Unload the existing {self.spec['family']} server with --unload before starting with new sampler settings.")
         command = self._command(language)
         jsonl("tts.spawn", family=self.spec["family"], port=self.spec["port"],
-              chatterbox_rev=CHATTERBOX_REV, knobs=self.spec["knobs"], command=command)
-        jsonl("tts.start", family=self.spec["family"], port=self.spec["port"], spawning=True)
+              chatterbox_rev=CHATTERBOX_REV, knobs=self.spec["knobs"])
         TTS_LOG.parent.mkdir(parents=True, exist_ok=True)
         self._log_fh = TTS_LOG.open("ab", buffering=0)
         self._proc = subprocess.Popen(command, cwd=TTS_RUNTIME, stdin=subprocess.DEVNULL,
@@ -576,9 +521,6 @@ class TTS:
             audit_dir = Path(self.spec["audit_dir"])
             fields["audit_dir"] = str(audit_dir.relative_to(ROOT) if audit_dir.is_absolute() else audit_dir)
         jsonl("synth.begin", **fields)
-        for piece_id, piece in enumerate(pieces):
-            jsonl("synth.piece.send", response=response_id, piece=piece_id, total=len(pieces),
-                  chars=len(piece), text=piece, one_piece=one_piece)
         synth_t0 = time.perf_counter()
         with socket.create_connection(("127.0.0.1", self.spec["port"]), timeout=300) as sock, sock.makefile("rb") as reader:
             sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -589,9 +531,7 @@ class TTS:
             with output.open("xb") as target, wave.open(target, "wb") as wav:
                 wav.setparams((1, 2, TTS_RATE, 0, "NONE", "not compressed"))
                 for piece_id in range(len(pieces)):
-                    piece_t0 = time.perf_counter()
                     before = pcm_bytes
-                    leading_trim = 0
                     while True:
                         kind, returned_response, returned_piece, chunk, payload = self._receive(reader)
                         if returned_response != response_id or returned_piece != piece_id:
@@ -603,44 +543,27 @@ class TTS:
                         zeros = TTS_RATE // 50 * 2
                         if piece_id == 0 and chunk == 0 and len(payload) > zeros and payload[:zeros] == b"\0" * zeros:
                             payload = payload[zeros:]
-                            leading_trim = zeros
                         wav.writeframesraw(payload)
                         pcm_bytes += len(payload)
                     if pcm_bytes == before:
                         raise RuntimeError(f"TTS piece {piece_id} produced no audio")
-                    start, end = before // 2, pcm_bytes // 2
-                    jsonl("synth.piece", response=response_id, piece=piece_id,
-                          text=pieces[piece_id], chars=len(pieces[piece_id]),
-                          sample_start=start, sample_end=end,
-                          t0=round(start / TTS_RATE, 3), t1=round(end / TTS_RATE, 3),
-                          trimmed_leading_bytes=leading_trim,
-                          wall_ms=int((time.perf_counter() - piece_t0) * 1000))
                     pieces_written += 1
-            native_pieces = []
-            for piece_id in range(pieces_written):
-                native = _read_tts_log_json(response=response_id, piece=piece_id)
-                if native:
-                    native_pieces.append(native)
-                    jsonl("synth.native", response=response_id, piece=piece_id,
-                          n_text_tok=native.get("n_text_tok"),
-                          n_speech_tok=native.get("n_speech_tok"),
-                          stop=native.get("stop"),
-                          t3_ms=native.get("t3_ms"),
-                          s3_ms=native.get("s3_ms"),
-                          text_sha=native.get("text_sha"),
-                          speech_hash=native.get("speech_hash"))
+            native = _read_tts_log_json(response=response_id, piece=0)
             jsonl("synth.complete", response=response_id,
                   pieces=pieces_written, samples=pcm_bytes // 2, wav=output.name,
-                  native_pieces=native_pieces or None,
+                  t0=0.0, t1=round(pcm_bytes / 2 / TTS_RATE, 3),
+                  wall_ms=int((time.perf_counter() - synth_t0) * 1000),
+                  n_text_tok=native.get("n_text_tok") if native else None,
+                  n_speech_tok=native.get("n_speech_tok") if native else None,
+                  stop=native.get("stop") if native else None,
                   bench_file=bench_file, bench_section=bench_section, bench_line=bench_line,
-                  text_sha=_text_sha(prompt_text))
+                  text_sha=_text_sha(prompt_text), one_piece=one_piece,
+                  chunk_bypassed=one_piece)
             sock.settimeout(10)
             self._send(sock, 3)
             if self._receive(reader)[0] != 5:
                 raise RuntimeError("TTS did not acknowledge close")
         self.synth_s = time.perf_counter() - synth_t0
-        if self.spec.get("forensics") or self.spec.get("audit_dir"):
-            _ingest_t3_steps(response_id, audit_dir=self.spec.get("audit_dir"))
         _run_asr(output, prompt_text, response_id)
         return output
 
@@ -798,7 +721,7 @@ def run_tts(spec: dict) -> None:
         for item in bench_items:
             if args.one_piece:
                 pieces = TTS._one_piece(item["text"])
-                jsonl("synth.chunk_bypass", pieces=1, chars=len(pieces[0]), text=pieces[0],
+                jsonl("synth.chunk_bypass", pieces=1, chars=len(pieces[0]),
                       bench_section=item["section"], bench_line=item["line_no"])
                 wav_path = tts.synthesize(
                     item["text"], pieces=pieces,
@@ -812,7 +735,7 @@ def run_tts(spec: dict) -> None:
             wav_paths.append(wav_path)
     elif args.one_piece:
         pieces = TTS._one_piece(source)
-        jsonl("synth.chunk_bypass", pieces=1, chars=len(pieces[0]), text=pieces[0])
+        jsonl("synth.chunk_bypass", pieces=1, chars=len(pieces[0]))
         wav_path = tts.synthesize(source, pieces=pieces, bench_file=bench_file)
         wav_paths.append(wav_path)
     else:
@@ -834,10 +757,6 @@ def run_tts(spec: dict) -> None:
         ledger_files = sorted(audit_dir.glob("*.jsonl")) if audit_dir.is_dir() else []
         jsonl("audit.ready", audit_dir=str(audit_dir.relative_to(ROOT)),
               files=[p.name for p in ledger_files])
-        jsonl("audit.ingest", audit_dir=str(audit_dir.relative_to(ROOT)),
-              ledger_counts={p.name: sum(1 for _ in p.open(encoding="utf-8")) for p in ledger_files})
-    import analyze
-    analyze.report(wav_path)
     end_run(wav_paths, spec)
 
 

@@ -73,12 +73,7 @@ def split(text: str) -> list:
     infer_ms = int((time.perf_counter() - t0) * 1000)
     if not pieces:
         raise ValueError("TTS input is empty")
-    jsonl("chunk.done", model="sat-12l-sm", threshold=SAT_THRESHOLD,
-          newline_is_space=True, providers=ORT_PROVIDERS,
-          pieces=len(pieces), chars=sum(len(p) for p in pieces),
-          load_ms=load_ms, infer_ms=infer_ms, ms=load_ms + infer_ms)
-    for i, piece in enumerate(pieces):
-        jsonl("chunk.piece", i=i, chars=len(piece), text=piece)
+    jsonl("chunk.done", pieces=len(pieces), chars=sum(len(p) for p in pieces), ms=load_ms + infer_ms)
     return pieces
 
 
