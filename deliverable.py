@@ -38,9 +38,14 @@ def source_rev(source: Path, fallback_rev: str) -> str:
         ["git", "-C", str(source), "rev-parse", "HEAD"],
         capture_output=True, text=True,
     )
-    if proc.returncode == 0:
-        return proc.stdout.strip()
-    return fallback_rev
+    head = proc.stdout.strip() if proc.returncode == 0 else fallback_rev
+    diff = subprocess.run(
+        ["git", "-C", str(source), "diff", "HEAD", "--", "src", "include", "CMakeLists.txt"],
+        capture_output=True,
+    )
+    if diff.returncode == 0 and diff.stdout:
+        return f"{head}+{hashlib.sha256(diff.stdout).hexdigest()[:12]}"
+    return head
 
 
 def fingerprint(source: Path, ggml_rev: str, patch_path: Path, fallback_rev: str) -> str:
@@ -85,42 +90,6 @@ def install_from_deliverable(fp: str, runtime_dir: Path, runtime_files: tuple[st
         shutil.copy2(src_bin / name, runtime_dir / name)
     for lic in src_lic.glob("*.txt"):
         shutil.copy2(lic, runtime_dir / lic.name)
-
-
-def save_from_runtime(
-    fp: str,
-    runtime_dir: Path,
-    source: Path,
-    runtime_files: tuple[str, ...],
-    *,
-    chatterbox_rev: str,
-    ggml_rev: str,
-) -> None:
-    dest = deliverable_dir(fp)
-    bin_dir = dest / BIN
-    lic_dir = dest / LICENSES
-    if dest.exists():
-        shutil.rmtree(dest)
-    bin_dir.mkdir(parents=True)
-    lic_dir.mkdir(parents=True)
-    for name in runtime_files:
-        shutil.copy2(runtime_dir / name, bin_dir / name)
-    for lic_name in ("chatterbox-LICENSE.txt", "ggml-LICENSE.txt"):
-        src = runtime_dir / lic_name
-        if src.is_file():
-            shutil.copy2(src, lic_dir / lic_name)
-    save_manifest(fp, {
-        "fingerprint": fp,
-        "source": str(source),
-        "source_rev": source_rev(source, chatterbox_rev),
-        "chatterbox_rev": chatterbox_rev,
-        "ggml_rev": ggml_rev,
-        "platform": PLATFORM,
-        "recipe": list(BUILD_RECIPE),
-        "built_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "files": list(runtime_files),
-        "seeded_from_runtime": True,
-    })
 
 
 def save_deliverable(

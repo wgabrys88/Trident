@@ -8,7 +8,7 @@ TTS_MODELS = ROOT / "models"
 TTS_VOICE = ROOT / "data/ref-trump.wav"
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 VULKAN_SDK = Path("C:/VulkanSDK/1.4.357.0")
-CHATTERBOX_REV = "23cfcea6f18efe561c2931f35b7a5577539a5475"
+CHATTERBOX_REV = "7d9c73a3879c4cdf4e4fb1c7df17790f677bf6b2"
 CHATTERBOX_SOURCE = ROOT.parent / "chatterbox.cpp"
 GGML_REV = "58c3805840b516b2a88ff867ccf7bb41dba79951"
 VOICE_URL = "https://huggingface.co/datasets/sdialog/voices-celebrities/resolve/57746b866d470be717097b87ba0428f8dd73e4f4"
@@ -106,12 +106,13 @@ def _spoken_words_from_asr(words: list[dict]) -> list[str]:
     return [_normalize_word(w["w"]) for w in words]
 
 
-def _word_span(words: list[str], start: str, end: str) -> list[str]:
+def _word_span(words: list[str], start: str, end: str) -> list[str] | None:
     if start not in words:
-        return words
+        return None
     i = words.index(start)
-    j = words.index(end, i) + 1 if end in words[i:] else len(words)
-    return words[i:j]
+    if end not in words[i:]:
+        return None
+    return words[i:words.index(end, i) + 1]
 
 
 def _asr_diff(expected: list[str], spoken: list[str]) -> dict:
@@ -144,11 +145,12 @@ def _run_asr(wav_path: Path, prompt_text: str, response_id: int, piece_id: int =
     words = [w for w in data.get("words", []) if not w.get("w", "").startswith("<")]
     expected = _expected_words(prompt_text)
     spoken = _spoken_words_from_asr(words)
-    teens = _asr_diff(_word_span(expected, "ten", "twenty-seven"),
-                      _word_span(spoken, "ten", "twenty-seven"))
+    exp, spk = _word_span(expected, "ten", "twenty-seven"), _word_span(spoken, "ten", "twenty-seven")
+    teens = _asr_diff(exp, spk) if exp and spk else {"deletions": [], "insertions": [], "substitutions": []}
     jsonl("asr.diff", response=response_id, piece=piece_id, wav=wav_path.name,
           wall_s=round(time.perf_counter() - t0, 3), transcript=data.get("text", ""),
-          teens=teens, pass_teens=not teens["deletions"] and not teens["substitutions"])
+          teens=teens, teens_window=bool(exp and spk),
+          pass_teens=bool(exp and spk) and not (teens["deletions"] or teens["insertions"] or teens["substitutions"]))
 
 
 def _iter_tts_log(*, event: str | None = None, response: int | None = None,
@@ -364,32 +366,18 @@ def install_tts(spec: dict, *, force_rebuild: bool = False) -> None:
     elif force_rebuild:
         jsonl("tts.install.force_rebuild", family=family, fingerprint=fp)
         dlvr.purge_deliverable(fp)
-        if _tts_runtime_present():
-            _purge_tts_runtime()
-    need_runtime = not spec.get("chatterbox_exe") and not _tts_runtime_present()
-    deliverable_hit = (
-        not spec.get("chatterbox_exe")
-        and not force_rebuild
-        and dlvr.is_complete(fp, TTS_RUNTIME_FILES)
-    )
-    if deliverable_hit and not _tts_runtime_present():
+        _purge_tts_runtime()
+    cached = not spec.get("chatterbox_exe") and not force_rebuild and dlvr.is_complete(fp, TTS_RUNTIME_FILES)
+    if cached:
         jsonl("tts.install.deliverable", family=family, fingerprint=fp, hit=True)
         dlvr.install_from_deliverable(fp, TTS_RUNTIME, TTS_RUNTIME_FILES)
-        lic_src = dlvr.deliverable_dir(fp) / dlvr.LICENSES
-        for lic in lic_src.glob("*.txt"):
-            shutil.copy2(lic, TTS_RUNTIME / lic.name)
-        need_runtime = False
-    if (
-        not spec.get("chatterbox_exe")
-        and _tts_runtime_present()
-        and not dlvr.is_complete(fp, TTS_RUNTIME_FILES)
-    ):
-        jsonl("tts.install.deliverable_seed", family=family, fingerprint=fp)
-        dlvr.save_from_runtime(fp, TTS_RUNTIME, source, TTS_RUNTIME_FILES,
-                               chatterbox_rev=CHATTERBOX_REV, ggml_rev=GGML_REV)
+    need_runtime = not spec.get("chatterbox_exe") and not cached
+    if need_runtime and _tts_runtime_present():
+        jsonl("tts.install.stale_runtime", family=family, fingerprint=fp)
+        _purge_tts_runtime()
     if not need_runtime and not missing and card.is_file() and TTS_VOICE.is_file() and voice_card.is_file():
         jsonl("tts.install", family=family, skip=True, force_rebuild=force_rebuild, fingerprint=fp,
-              deliverable_hit=deliverable_hit)
+              deliverable_hit=cached)
     else:
         jsonl("tts.install", family=family, skip=False, force_rebuild=force_rebuild, fingerprint=fp)
         if need_runtime or missing:
@@ -410,8 +398,6 @@ def install_tts(spec: dict, *, force_rebuild: bool = False) -> None:
                     dlvr.save_deliverable(fp, work / "b" / "bin", build_source, TTS_RUNTIME_FILES,
                                           chatterbox_rev=CHATTERBOX_REV, ggml_rev=GGML_REV)
                     dlvr.install_from_deliverable(fp, TTS_RUNTIME, TTS_RUNTIME_FILES)
-                    for lic in (dlvr.deliverable_dir(fp) / dlvr.LICENSES).glob("*.txt"):
-                        shutil.copy2(lic, TTS_RUNTIME / lic.name)
                 else:
                     _checkout("https://github.com/wgabrys88/chatterbox.cpp.git", CHATTERBOX_REV,
                               checkout_source, patterns)
@@ -548,14 +534,14 @@ class TTS:
                     if pcm_bytes == before:
                         raise RuntimeError(f"TTS piece {piece_id} produced no audio")
                     pieces_written += 1
-            native = _read_tts_log_json(response=response_id, piece=0)
+            native = [o for o in _iter_tts_log(response=response_id) if "n_speech_tok" in o][-pieces_written:]
             jsonl("synth.complete", response=response_id,
                   pieces=pieces_written, samples=pcm_bytes // 2, wav=output.name,
                   t0=0.0, t1=round(pcm_bytes / 2 / TTS_RATE, 3),
                   wall_ms=int((time.perf_counter() - synth_t0) * 1000),
-                  n_text_tok=native.get("n_text_tok") if native else None,
-                  n_speech_tok=native.get("n_speech_tok") if native else None,
-                  stop=native.get("stop") if native else None,
+                  n_text_tok=sum(r.get("n_text_tok") or 0 for r in native) or None,
+                  n_speech_tok=sum(r.get("n_speech_tok") or 0 for r in native) or None,
+                  stop=native[-1].get("stop") if native else None,
                   bench_file=bench_file, bench_section=bench_section, bench_line=bench_line,
                   text_sha=_text_sha(prompt_text), one_piece=one_piece,
                   chunk_bypassed=one_piece)
@@ -685,6 +671,7 @@ def run_tts(spec: dict) -> None:
     begin_run(spec["family"])
     bench_file = str(args.text_file) if args.text_file else None
     bench_items: list[dict] | None = None
+    parsed_source = None
     def _bench_rows(items: list[dict]) -> list[dict]:
         return [{"section": i["section"], "line_no": i["line_no"], "chars": len(i["text"]),
                  "text_sha": _text_sha(i["text"])} for i in items]
@@ -701,11 +688,13 @@ def run_tts(spec: dict) -> None:
                 raise ValueError(f"bench section {args.bench_section!r} not found in {bench_file}")
         elif all_items and any(item["section"] for item in all_items):
             jsonl("bench.matrix", bench_file=bench_file, items=_bench_rows(all_items))
+            parsed_source = "\n".join(item["text"] for item in all_items)
     if bench_items:
         jsonl("bench.matrix", bench_file=bench_file, items=_bench_rows(bench_items))
         source = "\n".join(item["text"] for item in bench_items)
     else:
         source = (args.text if args.text is not None else
+                  parsed_source if parsed_source is not None else
                   (ROOT / args.text_file).read_text(encoding="utf-8") if args.text_file else
                   (ROOT / "brain_out.txt").read_text(encoding="utf-8"))
     jsonl("tts.run", family=spec["family"], one_piece=args.one_piece,
