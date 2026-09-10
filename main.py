@@ -8,7 +8,7 @@ TTS_MODELS = ROOT / "models"
 TTS_VOICE = ROOT / "data/ref-trump.wav"
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 VULKAN_SDK = Path("C:/VulkanSDK/1.4.357.0")
-CHATTERBOX_REV = "b9b2d4045f9603ae23f61658b303f8440edc4e0f"
+CHATTERBOX_REV = "46a655b5d79e1db5b2cf83e2a79c27e7a7be2fe6"
 CHATTERBOX_SOURCE = ROOT.parent / "chatterbox.cpp"
 GGML_REV = "58c3805840b516b2a88ff867ccf7bb41dba79951"
 VOICE_URL = "https://huggingface.co/datasets/sdialog/voices-celebrities/resolve/57746b866d470be717097b87ba0428f8dd73e4f4"
@@ -188,17 +188,12 @@ def _run_logged(cmd, *, step, **kwargs) -> None:
         subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT, check=True, **kwargs)
 
 
-def tts_knobs(context: int, threads: int, cfm_steps: int, repeat_penalty: float = 1.2,
-              repeat_stop: int = 16, cfg_weight: float = 0.0, exaggeration: float = 0.0,
-              min_p: float = 0.0, n_gpu_layers: int = 99, fastconv: int = 1, seed: int = 42,
-              max_tokens: int = 1000, top_k: int = 1000, top_p: float = .95,
-              temperature: float = .8) -> dict:
+def tts_knobs() -> dict:
     return {
-        "n-gpu-layers": n_gpu_layers, "fastconv": fastconv, "seed": seed, "max-tokens": max_tokens,
-        "top-k": top_k, "top-p": top_p, "min-p": min_p, "temperature": temperature,
-        "context": context, "threads": threads, "repeat-penalty": repeat_penalty,
-        "repeat-stop": repeat_stop, "cfm-steps": cfm_steps, "cfg-weight": cfg_weight,
-        "exaggeration": exaggeration,
+        "n-gpu-layers": 99, "fastconv": 1, "seed": 42, "max-tokens": 1000,
+        "top-k": 1000, "top-p": .95, "min-p": 0.0, "temperature": 0.5,
+        "context": 2048, "threads": 4, "repeat-penalty": 1.2,
+        "repeat-stop": 16, "cfm-steps": 1,
     }
 
 
@@ -318,7 +313,6 @@ def _build_tts(work: Path, source: Path) -> None:
         CMAKE, "-S", str(source), "-B", str(build), "-G", "Visual Studio 17 2022", "-A", "x64",
         "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_NATIVE=ON", "-DGGML_CCACHE=OFF",
         "-DBUILD_SHARED_LIBS=ON", "-DTTS_CPP_BUILD_EXECUTABLES=ON", "-DTTS_CPP_BUILD_TESTS=OFF",
-        "-DTTS_CPP_MTL=OFF",
         "-DGGML_BUILD_TESTS=OFF", "-DGGML_BUILD_EXAMPLES=OFF",
         f"-DVulkan_INCLUDE_DIR={VULKAN_SDK / 'Include'}", f"-DVulkan_LIBRARY={VULKAN_SDK / 'Lib/vulkan-1.lib'}",
         f"-DVulkan_GLSLC_EXECUTABLE={VULKAN_SDK / 'Bin/glslc.exe'}",
@@ -344,7 +338,7 @@ def _convert_tts(spec: dict, work: Path, source: Path, missing: list) -> None:
            "--disable-pip-version-check", "--progress-bar", "off", "--no-input"]
     _run_logged([*pip, "torch==2.6.0", "--index-url", "https://download.pytorch.org/whl/cpu"], step="pip-torch")
     _run_logged([*pip, "numpy==1.26.4", "gguf==0.19.0", "safetensors==0.5.3",
-                 "scipy==1.15.3", "librosa==0.11.0", "huggingface-hub==0.34.4"], step="pip-convert")
+                 "scipy==1.15.3", "librosa==0.11.0"], step="pip-convert")
     assets = dict.fromkeys(name for (script, model_args, quant, files), output in missing for name in files)
     for name in assets:
         _download(f"{spec['url']}/{name}", checkpoint / name)
@@ -429,23 +423,22 @@ class TTS:
         self.spec, self._proc, self._log_fh, self._response_id = spec, None, None, 0
         self.chunk_s = self.synth_s = 0.0
 
-    def _command(self, language: str) -> list:
+    def _command(self) -> list:
         import deliverable as dlvr
         spec = self.spec
         t3, s3 = spec["models"]
         command = [str(dlvr.server_exe(spec, TTS_RUNTIME)),
                    "--run-id", _RUN_CTX.get("run_id") or spec["family"],
                    "--family", spec["family"], "--model", str(t3), "--s3gen-gguf", str(s3),
-                   "--reference", str(TTS_VOICE), "--language", language, "--port", str(spec["port"]),
+                   "--reference", str(TTS_VOICE), "--port", str(spec["port"]),
                    "--audit-dir", str(spec.get("audit_dir", ""))]
         command.extend(arg for name, value in spec["knobs"].items()
                        for arg in (f"--{name}", str(value)))
         return command
 
-    def start(self, language: str = None) -> "TTS":
+    def start(self) -> "TTS":
         import deliverable as dlvr
         dlvr.server_exe(self.spec, TTS_RUNTIME)
-        language = self.spec["language"] if language is None else language
         if self._proc is not None and self._proc.poll() is None:
             jsonl("tts.reuse", family=self.spec["family"], port=self.spec["port"],
                   pid=self._proc.pid, knobs=self.spec["knobs"])
@@ -456,7 +449,7 @@ class TTS:
             raise RuntimeError(
                 f"Port {self.spec['port']} is already in use by a process this TTS instance did not spawn. "
                 f"Unload the existing {self.spec['family']} server with --unload before starting with new sampler settings.")
-        command = self._command(language)
+        command = self._command()
         jsonl("tts.spawn", family=self.spec["family"], port=self.spec["port"],
               chatterbox_rev=CHATTERBOX_REV, knobs=self.spec["knobs"])
         TTS_LOG.parent.mkdir(parents=True, exist_ok=True)
@@ -611,9 +604,6 @@ def run_tts(spec: dict) -> None:
                         help="synthesize only lines from this bench section (requires --text-file)")
     parser.add_argument("--bench-line", type=int,
                         help="synthesize only this bench file line number (requires --text-file)")
-    if spec["multilingual"]:
-        parser.add_argument("--language", default=spec["language"],
-                            help="ISO 639-1 language code (e.g. en, fr, zh)")
     text = parser.add_mutually_exclusive_group()
     text.add_argument("--text")
     text.add_argument("--text-file", type=Path)
@@ -642,17 +632,16 @@ def run_tts(spec: dict) -> None:
         value = getattr(args, name.replace("-", "_"))
         if value is not None:
             spec["knobs"][name] = value
-    language = args.language if spec["multilingual"] else spec["language"]
     tts = TTS(spec)
     if args.unload:
         tts.stop()
         return
     install_tts(spec, force_rebuild=args.force_rebuild)
     if args.install:
-        tts.start(language)
+        tts.start()
         return
     if args.load:
-        tts.start(language)
+        tts.start()
         jsonl("tts.loaded", family=spec["family"])
         input()
         tts.stop()
@@ -694,7 +683,7 @@ def run_tts(spec: dict) -> None:
           source_chars=len(source), text_file=bench_file,
           bench_section=args.bench_section, bench_line=args.bench_line)
     started = time.perf_counter()
-    tts.start(language)
+    tts.start()
     warmup_s = time.perf_counter() - started
     wav_paths: list[Path] = []
     jobs = bench_items or [{"text": source, "section": args.bench_section, "line_no": args.bench_line}]
@@ -738,10 +727,7 @@ def main() -> None:
                         help="rebuild native chatterbox-server before install/pipeline")
     args = parser.parse_args()
     mode = "unload" if args.unload else "install" if args.prompt is None else "pipeline"
-    install_models = (("brain", "brain.py"), ("tts_nano", "tts_nano.py"), ("parakeet", "parakeet.py"))
-    unload_models = (("brain", "brain.py"), ("tts_nano", "tts_nano.py"), ("tts_turbo", "tts_turbo.py"),
-                     ("tts_v3", "tts_v3.py"), ("parakeet", "parakeet.py"))
-    models = unload_models if mode == "unload" else install_models
+    models = (("brain", "brain.py"), ("tts_nano", "tts_nano.py"), ("parakeet", "parakeet.py"))
     nano_flags = []
     if args.audit:
         nano_flags.append("--audit")

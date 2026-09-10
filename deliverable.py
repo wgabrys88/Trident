@@ -4,7 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 DELIVERABLES = ROOT / ".runtime-deliverables"
-PLATFORM, BUILD_RECIPE = "win-x64", ("vulkan", "mtl-off", "shared")
+PLATFORM, BUILD_RECIPE = "win-x64", ("vulkan", "shared")
 
 
 def resolve_source(override: str | Path | None, default: Path) -> Path:
