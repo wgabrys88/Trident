@@ -2,3 +2,4 @@
 !.gitignore
 !.gitattributes
 !/tts_nano.py
+!/tts_v3.py
