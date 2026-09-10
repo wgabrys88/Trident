@@ -1,8 +1,7 @@
 # V3 multilingual pipeline
 
 This document describes Trident branch `v3` and its pinned Chatterbox source.
-The source audit was performed on 2026-09-11. Each family README describes its
-named branch even when copied to another branch.
+The source audit was performed on 2026-09-11.
 
 ## Working milestone and pins
 
