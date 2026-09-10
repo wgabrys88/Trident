@@ -2,10 +2,10 @@ import socket, struct, subprocess, sys, time, urllib.request, venv, wave
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-CHATTERBOX_REV = "47e42e0d4c5367c016926999d6cb2bbfe69865fe"
+CHATTERBOX_REV = "fd83260798ea905f0768c82fdba47d528f2fe0fc"
 CHATTERBOX = ROOT.parent / "chatterbox.cpp"
 MODELS = ROOT / "models"
-T3 = MODELS / "chatterbox-t3-nano-q4_0.gguf"
+T3 = MODELS / "chatterbox-t3-nano-q8_0.gguf"
 S3 = MODELS / "chatterbox-s3gen-nano-q4_0.gguf"
 REF = ROOT / "reference.wav"
 BUILD = CHATTERBOX / "build"
@@ -66,7 +66,7 @@ def convert():
     scripts = CHATTERBOX / "scripts"
     if not T3.is_file():
         run([str(py), str(scripts / "convert-t3-nano-to-gguf.py"),
-             "--ckpt-dir", str(ckpt), "--out", str(T3), "--quant", "q4_0"])
+             "--ckpt-dir", str(ckpt), "--out", str(T3), "--quant", "q8_0"])
     if not S3.is_file():
         run([str(py), str(scripts / "convert-s3gen-to-gguf.py"),
              "--ckpt-dir", str(ckpt), "--out", str(S3), "--quant", "q4_0"])
