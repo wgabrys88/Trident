@@ -3,7 +3,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 CHATTERBOX_REV = "b8bf9ba232c715da7ef160fdd37b9f64dd72b2d9"
-CHATTERBOX = ROOT.parent / "chatterbox-v3.cpp"
+CHATTERBOX = ROOT.parent / "chatterbox.cpp"
 MODELS, REF = ROOT / "models", ROOT / "reference.wav"
 T3, S3 = MODELS / "chatterbox-t3-v3-q8_0.gguf", MODELS / "chatterbox-s3gen-v3-q4_0.gguf"
 STAMP, REV, PID = MODELS / "v3.voice.sha256", MODELS / "v3.rev", MODELS / "v3.pid"
