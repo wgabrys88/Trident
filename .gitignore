@@ -1,10 +1,4 @@
 *
 !.gitignore
 !.gitattributes
-!/analyze.py
-!/parakeet.py
 !/tts_nano.py
-!/brain.py
-!/main.py
-!/deliverable.py
-!/chunk.py
