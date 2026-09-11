@@ -1,0 +1,11 @@
+This is a comprehensive speech synthesis stress test designed to reveal any hidden weaknesses in the generation pipeline.
+
+First, I will count slowly from one to forty: one, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve, thirteen, fourteen, fifteen, sixteen, seventeen, eighteen, nineteen, twenty, twenty-one, twenty-two, twenty-three, twenty-four, twenty-five, twenty-six, twenty-seven, twenty-eight, twenty-nine, thirty, thirty-one, thirty-two, thirty-three, thirty-four, thirty-five, thirty-six, thirty-seven, thirty-eight, thirty-nine, forty.
+
+Now here is a completely natural paragraph with varied vocabulary and normal sentence structure, describing a peaceful morning walk through a small fishing village near the rocky coastline. The baker was opening his shop and the warm smell of fresh bread drifted across the cobblestone street, while children laughed and played beside the old stone fountain in the central square.
+
+Next, I will repeat the exact same short sentence many times in a row. The sun is shining over the garden. The sun is shining over the garden. The sun is shining over the garden. The sun is shining over the garden. The sun is shining over the garden. The sun is shining over the garden. The sun is shining over the garden. The sun is shining over the garden. The sun is shining over the garden. The sun is shining over the garden.
+
+Now I will count again from forty-one to fifty: forty-one, forty-two, forty-three, forty-four, forty-five, forty-six, forty-seven, forty-eight, forty-nine, fifty.
+
+Finally, let me finish with a longer natural sentence about science and technology, because the universe is vast and full of mysteries that curious minds continue to explore every single day.
