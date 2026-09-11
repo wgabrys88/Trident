@@ -12,7 +12,7 @@ created. No new Turbo synthesis or benchmark was run for this source audit.
 | --- | --- |
 | Lightweight tag in both repositories | `MILESTONE-SET-turbo` |
 | Trident milestone | `35bee5e1cf491ed4e31998389e635a13385a645d` |
-| Chatterbox pin and milestone | `aec122a248b1fcc6670c0ef7b130d42671beb459` |
+| Chatterbox pin and milestone | `f42e714fb2f3f8aa15b9713625b744aadafd7c33` |
 | ggml requested revision | `7840aaba1989c6deeefede1d77d5aaf8f52b947e` |
 | Hugging Face repository | `ResembleAI/chatterbox-turbo` |
 | Hugging Face revision | `749d1c1a46eb10492095d68fbcf55691ccf137cd` |
