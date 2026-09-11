@@ -2,21 +2,21 @@ import ctypes, hashlib, subprocess, sys, urllib.request, venv
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-CHATTERBOX_REV = "56b80874a8fcd61e312d25ddc49da38685a4771c"
+CHATTERBOX_REV = "f42e714fb2f3f8aa15b9713625b744aadafd7c33"
 CHATTERBOX = ROOT.parent / "chatterbox.cpp"
 MODELS, REF = ROOT / "models", ROOT / "reference.wav"
-T3, S3 = MODELS / "chatterbox-t3-nano-q8_0.gguf", MODELS / "chatterbox-s3gen-nano-q4_0.gguf"
-STAMP, REV, PID = MODELS / "voice.sha256", MODELS / "rev", MODELS / "server.pid"
-BUILD = CHATTERBOX / "build" / "nano"
+T3, S3 = MODELS / "chatterbox-t3-turbo-q8_0.gguf", MODELS / "chatterbox-s3gen-turbo-q4_0.gguf"
+STAMP, REV, PID = MODELS / "turbo.voice.sha256", MODELS / "turbo.rev", MODELS / "turbo.pid"
+BUILD = CHATTERBOX / "build" / "turbo"
 BIN = BUILD / "bin"
 EXE, BAKE = BIN / "chatterbox-server.exe", BIN / "chatterbox-bake.exe"
-PIPE = r"\\.\pipe\chatterbox-" + hashlib.sha256(str(ROOT).encode()).hexdigest()[:12]
+PIPE = r"\\.\pipe\chatterbox-turbo-" + hashlib.sha256(str(ROOT).encode() + b"turbo").hexdigest()[:12]
 K32 = ctypes.windll.kernel32
 K32.WaitNamedPipeW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint]
-HF = "https://huggingface.co/ResembleAI/chatterbox-nano/resolve/71ccd1d0081b430592cea481f4307e764e07bc64"
+HF = "https://huggingface.co/ResembleAI/chatterbox-turbo/resolve/749d1c1a46eb10492095d68fbcf55691ccf137cd"
 GGML_REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
 ASSETS = (
-    "t3_nano_v1.safetensors", "s3gen_meanflow.safetensors", "conds.pt",
+    "t3_turbo_v1.safetensors", "s3gen_meanflow.safetensors", "conds.pt",
     "ve.safetensors", "vocab.json", "merges.txt", "added_tokens.json",
 )
 VULKAN = Path("C:/VulkanSDK/1.4.357.0")
@@ -29,7 +29,7 @@ def git_out(args):
     return p.stdout.strip()
 
 def ensure_pin():
-    run(["git", "-C", str(CHATTERBOX), "checkout", "nano"])
+    run(["git", "-C", str(CHATTERBOX), "checkout", "turbo"])
     sha = git_out(["rev-parse", "HEAD"])
     if sha != CHATTERBOX_REV:
         raise SystemExit(f"HEAD {sha} != {CHATTERBOX_REV}")
@@ -61,8 +61,11 @@ def spawn(out):
     PID.write_text(str(p.pid), encoding="ascii")
 
 def speak(text):
-    if not K32.WaitNamedPipeW(PIPE, 120000):
-        raise RuntimeError("pipe")
+    while running():
+        if K32.WaitNamedPipeW(PIPE, 1000):
+            break
+    else:
+        raise RuntimeError("daemon")
     f = open(PIPE, "r+b", buffering=0)
     f.write((text.replace("\r", " ").replace("\n", " ") + "\n").encode())
     ack = f.readline()
@@ -95,13 +98,13 @@ def main():
              "--target", "chatterbox-server", "--target", "chatterbox-bake", "--parallel"])
         REV.write_text(CHATTERBOX_REV, encoding="ascii")
         kill()
-    py = ROOT / ".venv-convert" / "Scripts" / "python.exe"
+    py = ROOT / ".venv-convert-turbo" / "Scripts" / "python.exe"
     if not py.is_file():
-        venv.EnvBuilder(with_pip=True).create(ROOT / ".venv-convert")
+        venv.EnvBuilder(with_pip=True).create(ROOT / ".venv-convert-turbo")
         pip = [str(py), "-m", "pip", "install", "--disable-pip-version-check"]
         run([*pip, "torch==2.6.0", "--index-url", "https://download.pytorch.org/whl/cpu"])
         run([*pip, "numpy==1.26.4", "gguf==0.19.0", "safetensors==0.5.3", "scipy==1.15.3", "librosa==0.11.0"])
-    ckpt = ROOT / ".ckpt"
+    ckpt = ROOT / ".ckpt-turbo"
     ckpt.mkdir(parents=True, exist_ok=True)
     for name in ASSETS:
         dest = ckpt / name
@@ -109,13 +112,13 @@ def main():
             urllib.request.urlretrieve(f"{HF}/{name}", dest)
     converted = False
     scripts = CHATTERBOX / "scripts"
-    for dst, script in ((T3, "convert-t3-nano-to-gguf.py"), (S3, "convert-s3gen-to-gguf.py")):
+    for dst, script in ((T3, "convert-t3-turbo-to-gguf.py"), (S3, "convert-s3gen-to-gguf.py")):
         if not dst.is_file():
             run([str(py), str(scripts / script), str(ckpt), str(dst)])
             converted = True
     voice = hashlib.sha256(REF.read_bytes()).hexdigest()
     stamp = STAMP.read_text(encoding="ascii").strip() if STAMP.is_file() else ""
-    out = ROOT / "tts_out.wav"
+    out = ROOT / "tts_out_turbo.wav"
     if converted or stamp != voice:
         kill()
         run([str(BAKE), str(T3), str(S3), str(REF)], cwd=str(BIN))
