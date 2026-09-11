@@ -12,7 +12,7 @@ created. No new Turbo synthesis or benchmark was run for this source audit.
 | --- | --- |
 | Lightweight tag in both repositories | `MILESTONE-SET-turbo` |
 | Trident milestone | `35bee5e1cf491ed4e31998389e635a13385a645d` |
-| Chatterbox pin and milestone | `aec122a248b1fcc6670c0ef7b130d42671beb459` |
+| Chatterbox pin and milestone | `f42e714fb2f3f8aa15b9713625b744aadafd7c33` |
 | ggml requested revision | `7840aaba1989c6deeefede1d77d5aaf8f52b947e` |
 | Hugging Face repository | `ResembleAI/chatterbox-turbo` |
 | Hugging Face revision | `749d1c1a46eb10492095d68fbcf55691ccf137cd` |
@@ -22,9 +22,9 @@ The C++ pin is in `tts_turbo.py`. Source paths below refer to that pin.
 
 ## Launch and files
 
-Run `python tts_turbo.py "The billing issue is resolved."` on Trident `turbo`,
-with `reference.wav` in the Trident root and sibling `chatterbox.cpp`
-on Chatterbox `turbo` at the pin above. No language argument is passed.
+Run `python tts_turbo.py "The billing issue is resolved."` from Trident with
+`reference.wav` in the Trident root. The launcher checks out Chatterbox `turbo`
+at the pin above and builds into `build/turbo`. No language argument is passed.
 
 | Artifact | Path or construction |
 | --- | --- |
@@ -33,10 +33,10 @@ on Chatterbox `turbo` at the pin above. No language argument is passed.
 | Voice stamp / build revision / PID | `models/turbo.voice.sha256` / `models/turbo.rev` / `models/turbo.pid` |
 | Output | `tts_out_turbo.wav` |
 | Pipe | `\\.\pipe\chatterbox-turbo-` + first 12 hex characters of SHA256 of `str(ROOT).encode() + b"turbo"` |
-| Executables | sibling checkout's `build/bin/chatterbox-server.exe` and `chatterbox-bake.exe` |
+| Executables | sibling checkout's `build/turbo/bin/chatterbox-server.exe` and `chatterbox-bake.exe` |
 
-The launcher checks C++ branch and HEAD only when rebuilding because an
-executable/revision stamp is missing or the stamp differs from the pin.
+The launcher always checks out Chatterbox `turbo` at the pin. It rebuilds when
+an executable or revision stamp is missing, or the stamp differs from the pin.
 It clones and pins missing ggml, but does not verify an existing ggml checkout.
 Build commands use Visual Studio 2022 x64 Release, CMake at
 `C:/Program Files/CMake/bin/cmake.exe`, and Vulkan SDK `C:/VulkanSDK/1.4.357.0`.
@@ -102,22 +102,18 @@ resampling, loudness normalization, portions of CAMPPlus, speech quantization,
 CFM integration and harmonic-source calculations. The implementation therefore
 does not support the old claim that host RAM holds only text and WAV bytes.
 
-Turbo has separate model, checkpoint, environment, PID, pipe, output and build
-paths. Its own `tts_turbo.py` is the pipeline entry point. The older
-`tts_nano.py` retained on this branch checks out its Nano SHA during rebuild;
-it does not use the branch-checking Nano launcher found on Trident `nano`.
+Turbo has separate model, checkpoint, environment, PID, pipe, output and
+`build/turbo` paths. `tts_turbo.py` is the pipeline entry point. Nano, Turbo,
+and V3 launchers live on one Trident tree; do not switch Trident branches to
+pick a family.
 
 ## Source reduction findings
 
 These opportunities were identified without changing runtime source:
 
-- `include/tts-cpp/chatterbox/nano.h` and
-  `scripts/convert-t3-nano-to-gguf.py` are not used by the Turbo build/launcher:
-  140 lines, 7382 bytes in the milestone Git blobs.
-- The retained Trident `tts_nano.py` adds another 118 lines outside this
-  pipeline. Removing this obsolete entry point would leave Turbo independent.
 - `t3_nano.cpp` and `gpt2_bpe.cpp` are active Turbo sources and are not
-  removable leftovers.
+  removable leftovers. The unused `nano.h` and `convert-t3-nano-to-gguf.py`
+  were deleted from this branch.
 - The only estimator call passes `f16_kv_attn=false`; its option plumbing,
   pass-through `s3_*` wrappers, unused counters and the tokenizer's identical
   mel-buffer copy are reduction candidates within this branch.
