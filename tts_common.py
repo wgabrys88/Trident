@@ -153,6 +153,7 @@ def speak(pipe: str, pid: Path, out: Path, text: str):
             raise RuntimeError("daemon")
         if K32.WaitNamedPipeW(pipe, 1000):
             break
+        time.sleep(1)
     else:
         raise RuntimeError("daemon timeout")
     line = text.replace("\r", " ").replace("\n", " ")
@@ -184,6 +185,7 @@ def run_variant(cfg: Variant, text: str, language: str | None = None):
         or not rev.is_file()
         or rev.read_text(encoding="ascii").strip() != cfg.chatterbox_rev
     ):
+        kill(pid)
         if not (ggml / "CMakeLists.txt").is_file():
             run(["git", "clone", "--filter=blob:none", "https://github.com/ggml-org/ggml.git", str(ggml)])
             run(["git", "-C", str(ggml), "checkout", GGML_REV])
@@ -228,7 +230,6 @@ def run_variant(cfg: Variant, text: str, language: str | None = None):
             ]
         )
         rev.write_text(cfg.chatterbox_rev, encoding="ascii")
-        kill(pid)
     py = ROOT / cfg.venv_name / "Scripts" / "python.exe"
     if not py.is_file():
         venv.EnvBuilder(with_pip=True).create(ROOT / cfg.venv_name)
