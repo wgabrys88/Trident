@@ -32,9 +32,9 @@ establish whether generated speech tokens are correct.
 
 ## Launch and files
 
-Run `python tts_v3.py "The billing issue is resolved." en` on Trident `v3`,
-with `reference.wav` in the root and sibling `chatterbox.cpp` on Chatterbox
-`v3` at the full pin above.
+Run `python tts_v3.py "The billing issue is resolved." en` from Trident with
+`reference.wav` in the root. The launcher checks out Chatterbox `v3` at the
+full pin above and builds into `build/v3`.
 
 | Artifact | Path or construction |
 | --- | --- |
@@ -43,11 +43,11 @@ with `reference.wav` in the root and sibling `chatterbox.cpp` on Chatterbox
 | Voice stamp / build revision / PID | `models/v3.voice.sha256` / `models/v3.rev` / `models/v3.pid` |
 | Output / token dump | `tts_out_v3.wav` / `models/v3_t3_dump.txt` |
 | Pipe | `\\.\pipe\chatterbox-v3-` + first 12 hex characters of SHA256 of `str(ROOT).encode() + b"v3"` |
-| Executables | sibling checkout's `build/bin/chatterbox-server.exe` and `chatterbox-bake.exe` |
+| Executables | sibling checkout's `build/v3/bin/chatterbox-server.exe` and `chatterbox-bake.exe` |
 
-The launcher rebuilds when an executable/revision stamp is missing or the stamp
-differs from the pin. Only then does it check the C++ branch and HEAD, and
-verify existing ggml HEAD or clone/check out missing ggml.
+The launcher always checks out Chatterbox `v3` at the pin. It rebuilds when an
+executable or revision stamp is missing, or the stamp differs from the pin.
+On rebuild it verifies existing ggml HEAD or clones/checks out missing ggml.
 The stamp is not a hash of executable or source contents.
 Build commands use Visual Studio 2022 x64 Release, CMake at
 `C:/Program Files/CMake/bin/cmake.exe`, and Vulkan SDK `C:/VulkanSDK/1.4.357.0`.
@@ -136,20 +136,15 @@ Host C++ still performs tokenization, sampling, CFG-logit combination, CFM
 integration, harmonic-source calculation and parts of reference processing.
 The pinned code therefore does not perform every arithmetic operation on GPU.
 
-Nano and V3 name the same sibling checkout/build path. Their different model,
-pipe and stamp names do not make branch switching in that build directory
-independent. Separate workspace pairs preserve their binaries.
-The retained `tts_nano.py` on this branch is an older Nano entry point that
-checks out its SHA during rebuild.
+Nano, Turbo, and V3 share the sibling checkout `chatterbox.cpp` and keep
+separate model, pipe, stamp, and CMake build paths (`build/nano`, `build/turbo`,
+`build/v3`). Each launcher checks out its C++ branch. The three Trident
+launchers live on one tree; do not switch Trident branches to pick a family.
 
-Inspected source-reduction opportunities, not applied in this audit:
-
-- V3 does not build/use `src/t3_nano.cpp`, `src/gpt2_bpe.cpp`,
-  `src/gpt2_bpe.h`, `include/tts-cpp/chatterbox/nano.h`,
-  `scripts/convert-t3-nano-to-gguf.py`, or
-  `scripts/convert-s3gen-to-gguf.py`: 876 lines, 45916 bytes in Git.
-  Their active Nano equivalents remain on Nano's branch.
-- The obsolete Trident `tts_nano.py` adds 118 lines outside the V3 pipeline.
+Unused Nano leftovers (`t3_nano.cpp`, `gpt2_bpe.cpp/.h`, `nano.h`,
+`convert-t3-nano-to-gguf.py`, `convert-s3gen-to-gguf.py`) were deleted
+from this branch. Their active equivalents remain on Nano's branch.
+Remaining reduction opportunities, not applied:
 - `compute_time_mixed` and its cache are uncalled V3 leftovers. They are
   active in Nano/Turbo and cannot be removed there on the same grounds.
 - Top-k/top-p sampler branches and F16 CFM KV option plumbing are inactive
@@ -160,6 +155,6 @@ Inspected source-reduction opportunities, not applied in this audit:
 - Removing the mandatory T3 dump would reduce source and filesystem dependency,
   but also remove an existing diagnostic. That is a behavior change.
 
-No inference source, model, executable or pin was changed by this audit.
-No new synthesis, tests, harnesses, fallback paths or shared pipeline dispatcher
-were introduced. The milestone tags retain the known working state.
+Inference graphs, model pins, and the V3 launcher contract are otherwise
+unchanged. No dispatcher was introduced. The milestone tags retain the known
+working state.

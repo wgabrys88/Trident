@@ -2,22 +2,22 @@ import ctypes, hashlib, subprocess, sys, urllib.request, venv
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-CHATTERBOX_REV = "b8bf9ba232c715da7ef160fdd37b9f64dd72b2d9"
+CHATTERBOX_REV = "aec122a248b1fcc6670c0ef7b130d42671beb459"
 CHATTERBOX = ROOT.parent / "chatterbox.cpp"
 MODELS, REF = ROOT / "models", ROOT / "reference.wav"
-T3, S3 = MODELS / "chatterbox-t3-v3-q8_0.gguf", MODELS / "chatterbox-s3gen-v3-q4_0.gguf"
-STAMP, REV, PID = MODELS / "v3.voice.sha256", MODELS / "v3.rev", MODELS / "v3.pid"
-BUILD = CHATTERBOX / "build" / "v3"
+T3, S3 = MODELS / "chatterbox-t3-turbo-q8_0.gguf", MODELS / "chatterbox-s3gen-turbo-q4_0.gguf"
+STAMP, REV, PID = MODELS / "turbo.voice.sha256", MODELS / "turbo.rev", MODELS / "turbo.pid"
+BUILD = CHATTERBOX / "build" / "turbo"
 BIN = BUILD / "bin"
 EXE, BAKE = BIN / "chatterbox-server.exe", BIN / "chatterbox-bake.exe"
-PIPE = r"\\.\pipe\chatterbox-v3-" + hashlib.sha256(str(ROOT).encode() + b"v3").hexdigest()[:12]
+PIPE = r"\\.\pipe\chatterbox-turbo-" + hashlib.sha256(str(ROOT).encode() + b"turbo").hexdigest()[:12]
 K32 = ctypes.windll.kernel32
 K32.WaitNamedPipeW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint]
-HF = "https://huggingface.co/ResembleAI/chatterbox/resolve/5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18"
+HF = "https://huggingface.co/ResembleAI/chatterbox-turbo/resolve/749d1c1a46eb10492095d68fbcf55691ccf137cd"
 GGML_REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
 ASSETS = (
-    "t3_mtl23ls_v3.safetensors", "s3gen.safetensors", "conds.pt",
-    "ve.safetensors", "grapheme_mtl_merged_expanded_v1.json", "Cangjie5_TC.json",
+    "t3_turbo_v1.safetensors", "s3gen_meanflow.safetensors", "conds.pt",
+    "ve.safetensors", "vocab.json", "merges.txt", "added_tokens.json",
 )
 VULKAN = Path("C:/VulkanSDK/1.4.357.0")
 
@@ -29,7 +29,7 @@ def git_out(args):
     return p.stdout.strip()
 
 def ensure_pin():
-    run(["git", "-C", str(CHATTERBOX), "checkout", "v3"])
+    run(["git", "-C", str(CHATTERBOX), "checkout", "turbo"])
     sha = git_out(["rev-parse", "HEAD"])
     if sha != CHATTERBOX_REV:
         raise SystemExit(f"HEAD {sha} != {CHATTERBOX_REV}")
@@ -52,9 +52,9 @@ def running():
     K32.CloseHandle(h)
     return True
 
-def spawn(out, language):
+def spawn(out):
     p = subprocess.Popen(
-        [str(EXE), str(T3), str(S3), str(out), PIPE, language], cwd=str(BIN),
+        [str(EXE), str(T3), str(S3), str(out), PIPE], cwd=str(BIN),
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
     )
@@ -74,11 +74,8 @@ def speak(text):
         raise RuntimeError("synthesize")
 
 def main():
-    if len(sys.argv) < 3:
-        raise SystemExit("language")
     if not REF.is_file():
         raise FileNotFoundError(str(REF))
-    language = sys.argv[2].lower()
     ensure_pin()
     MODELS.mkdir(parents=True, exist_ok=True)
     ggml = CHATTERBOX / "ggml"
@@ -86,10 +83,6 @@ def main():
         if not (ggml / "CMakeLists.txt").is_file():
             run(["git", "clone", "--filter=blob:none", "https://github.com/ggml-org/ggml.git", str(ggml)])
             run(["git", "-C", str(ggml), "checkout", GGML_REV])
-        else:
-            p = subprocess.run(["git", "-C", str(ggml), "rev-parse", "HEAD"], check=True, capture_output=True, text=True)
-            if p.stdout.strip() != GGML_REV:
-                raise SystemExit(f"ggml {p.stdout.strip()} != {GGML_REV}")
         cmake = "C:/Program Files/CMake/bin/cmake.exe"
         run([
             cmake, "-S", str(CHATTERBOX), "-B", str(BUILD),
@@ -105,13 +98,13 @@ def main():
              "--target", "chatterbox-server", "--target", "chatterbox-bake", "--parallel"])
         REV.write_text(CHATTERBOX_REV, encoding="ascii")
         kill()
-    py = ROOT / ".venv-convert-v3" / "Scripts" / "python.exe"
+    py = ROOT / ".venv-convert-turbo" / "Scripts" / "python.exe"
     if not py.is_file():
-        venv.EnvBuilder(with_pip=True).create(ROOT / ".venv-convert-v3")
+        venv.EnvBuilder(with_pip=True).create(ROOT / ".venv-convert-turbo")
         pip = [str(py), "-m", "pip", "install", "--disable-pip-version-check"]
         run([*pip, "torch==2.6.0", "--index-url", "https://download.pytorch.org/whl/cpu"])
         run([*pip, "numpy==1.26.4", "gguf==0.19.0", "safetensors==0.5.3", "scipy==1.15.3", "librosa==0.11.0"])
-    ckpt = ROOT / ".ckpt-v3"
+    ckpt = ROOT / ".ckpt-turbo"
     ckpt.mkdir(parents=True, exist_ok=True)
     for name in ASSETS:
         dest = ckpt / name
@@ -119,19 +112,19 @@ def main():
             urllib.request.urlretrieve(f"{HF}/{name}", dest)
     converted = False
     scripts = CHATTERBOX / "scripts"
-    for dst, script in ((T3, "convert-t3-v3-to-gguf.py"), (S3, "convert-s3gen-v3-to-gguf.py")):
+    for dst, script in ((T3, "convert-t3-turbo-to-gguf.py"), (S3, "convert-s3gen-to-gguf.py")):
         if not dst.is_file():
             run([str(py), str(scripts / script), str(ckpt), str(dst)])
             converted = True
     voice = hashlib.sha256(REF.read_bytes()).hexdigest()
     stamp = STAMP.read_text(encoding="ascii").strip() if STAMP.is_file() else ""
-    out = ROOT / "tts_out_v3.wav"
+    out = ROOT / "tts_out_turbo.wav"
     if converted or stamp != voice:
         kill()
         run([str(BAKE), str(T3), str(S3), str(REF)], cwd=str(BIN))
         STAMP.write_text(voice, encoding="ascii")
     if not running():
-        spawn(out, language)
+        spawn(out)
     speak(sys.argv[1])
     print(out)
 
