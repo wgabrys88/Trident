@@ -34,12 +34,18 @@ The launchers are Windows-only (named pipes, ctypes.windll). No GPU is strictly
 required for analysis, but generation uses the Vulkan backend.
 
 ================================================================================
-3. CLONE (empty dir)
+3. CLONE + CHECKOUT (empty dir)
 ================================================================================
   git clone https://github.com/wgabrys88/chatterbox.cpp.git
   git clone https://github.com/wgabrys88/Trident.git
+  cd Trident && git checkout v3
 The two must be SIBLINGS:  <root>\chatterbox.cpp\  and  <root>\Trident\
 (Trident resolves the engine at `Path(__file__).parent.parent / "chatterbox.cpp"`).
+IMPORTANT: check out the `v3` branch of Trident — it holds this HANDOVER.md,
+the analysis scripts, and the launchers with the updated pins. Do NOT use
+Trident's `main` branch (it has stale pins and no handover). The chatterbox.cpp
+branch is auto-checked-out by each launcher (ensure_pin), so no manual step is
+needed there.
 
 ================================================================================
 4. PROVIDE A VOICE CLIP
