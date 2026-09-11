@@ -2,7 +2,7 @@ import ctypes, hashlib, subprocess, sys, time, urllib.request, venv
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-CHATTERBOX_REV = "0bc62ba0607819fe337934852c3c43e844aa1dac"
+CHATTERBOX_REV = "cce6da817e177efd8fc40462ec14afef46e6a234"
 CHATTERBOX = ROOT.parent / "chatterbox.cpp"
 MODELS, REF = ROOT / "models", ROOT / "reference.wav"
 T3, S3 = MODELS / "chatterbox-t3-nano-q8_0.gguf", MODELS / "chatterbox-s3gen-nano-q4_0.gguf"
