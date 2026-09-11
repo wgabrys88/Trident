@@ -1,4 +1,4 @@
-import ctypes, hashlib, subprocess, sys, urllib.request, venv
+import ctypes, hashlib, subprocess, sys, time, urllib.request, venv
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -15,33 +15,30 @@ K32 = ctypes.windll.kernel32
 K32.WaitNamedPipeW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint]
 HF = "https://huggingface.co/ResembleAI/chatterbox-turbo/resolve/749d1c1a46eb10492095d68fbcf55691ccf137cd"
 GGML_REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
-ASSETS = (
-    "t3_turbo_v1.safetensors", "s3gen_meanflow.safetensors", "conds.pt",
-    "ve.safetensors", "vocab.json", "merges.txt", "added_tokens.json",
-)
+ASSETS = ("t3_turbo_v1.safetensors", "s3gen_meanflow.safetensors", "conds.pt", "ve.safetensors", "vocab.json", "merges.txt", "added_tokens.json")
 VULKAN = Path("C:/VulkanSDK/1.4.357.0")
+CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
+DETACH = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
 
 def run(cmd, **kw):
     subprocess.run(cmd, check=True, **kw)
 
-def git_out(args):
-    p = subprocess.run(["git", "-C", str(CHATTERBOX), *args], check=True, capture_output=True, text=True)
-    return p.stdout.strip()
+def git_out(args, repo=CHATTERBOX):
+    return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True).stdout.strip()
 
 def ensure_pin():
     run(["git", "-C", str(CHATTERBOX), "checkout", "turbo"])
-    sha = git_out(["rev-parse", "HEAD"])
-    if sha != CHATTERBOX_REV:
+    if (sha := git_out(["rev-parse", "HEAD"])) != CHATTERBOX_REV:
         raise SystemExit(f"HEAD {sha} != {CHATTERBOX_REV}")
 
-def kill():
-    if not PID.is_file():
+def kill(pid=PID):
+    if not pid.is_file():
         return
-    h = K32.OpenProcess(1, False, int(PID.read_text(encoding="ascii")))
+    h = K32.OpenProcess(1, False, int(pid.read_text(encoding="ascii")))
     if h:
         K32.TerminateProcess(h, 1)
         K32.CloseHandle(h)
-    PID.unlink(missing_ok=True)
+    pid.unlink(missing_ok=True)
 
 def running():
     if not PID.is_file():
@@ -53,12 +50,10 @@ def running():
     return True
 
 def spawn(out):
-    p = subprocess.Popen(
+    PID.write_text(str(subprocess.Popen(
         [str(EXE), str(T3), str(S3), str(out), PIPE], cwd=str(BIN),
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW,
-    )
-    PID.write_text(str(p.pid), encoding="ascii")
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=DETACH,
+    ).pid), encoding="ascii")
 
 def speak(text):
     while running():
@@ -78,24 +73,21 @@ def main():
         raise FileNotFoundError(str(REF))
     ensure_pin()
     MODELS.mkdir(parents=True, exist_ok=True)
+    for p in ("server.pid", "v3.pid"):
+        kill(MODELS / p)
     ggml = CHATTERBOX / "ggml"
     if not EXE.is_file() or not BAKE.is_file() or not REV.is_file() or REV.read_text(encoding="ascii") != CHATTERBOX_REV:
         if not (ggml / "CMakeLists.txt").is_file():
             run(["git", "clone", "--filter=blob:none", "https://github.com/ggml-org/ggml.git", str(ggml)])
             run(["git", "-C", str(ggml), "checkout", GGML_REV])
-        cmake = "C:/Program Files/CMake/bin/cmake.exe"
-        run([
-            cmake, "-S", str(CHATTERBOX), "-B", str(BUILD),
-            "-G", "Visual Studio 17 2022", "-A", "x64",
-            "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_CPU=OFF", "-DGGML_OPENMP=OFF",
-            "-DBUILD_SHARED_LIBS=ON", "-DTTS_CPP_BUILD_EXECUTABLES=ON",
-            "-DGGML_BUILD_TESTS=OFF", "-DGGML_BUILD_EXAMPLES=OFF",
-            f"-DVulkan_INCLUDE_DIR={VULKAN / 'Include'}",
-            f"-DVulkan_LIBRARY={VULKAN / 'Lib/vulkan-1.lib'}",
-            f"-DVulkan_GLSLC_EXECUTABLE={VULKAN / 'Bin/glslc.exe'}",
-        ])
-        run([cmake, "--build", str(BUILD), "--config", "Release",
-             "--target", "chatterbox-server", "--target", "chatterbox-bake", "--parallel"])
+        elif git_out(["rev-parse", "HEAD"], ggml) != GGML_REV:
+            raise SystemExit(f"ggml {git_out(['rev-parse', 'HEAD'], ggml)} != {GGML_REV}")
+        run([CMAKE, "-S", str(CHATTERBOX), "-B", str(BUILD), "-G", "Visual Studio 17 2022", "-A", "x64",
+             "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_CPU=OFF", "-DGGML_OPENMP=OFF",
+             "-DBUILD_SHARED_LIBS=ON", "-DTTS_CPP_BUILD_EXECUTABLES=ON", "-DGGML_BUILD_TESTS=OFF", "-DGGML_BUILD_EXAMPLES=OFF",
+             f"-DVulkan_INCLUDE_DIR={VULKAN / 'Include'}", f"-DVulkan_LIBRARY={VULKAN / 'Lib/vulkan-1.lib'}",
+             f"-DVulkan_GLSLC_EXECUTABLE={VULKAN / 'Bin/glslc.exe'}"])
+        run([CMAKE, "--build", str(BUILD), "--config", "Release", "--target", "chatterbox-server", "--target", "chatterbox-bake", "--parallel"])
         REV.write_text(CHATTERBOX_REV, encoding="ascii")
         kill()
     py = ROOT / ".venv-convert-turbo" / "Scripts" / "python.exe"
@@ -111,14 +103,13 @@ def main():
         if not dest.is_file():
             urllib.request.urlretrieve(f"{HF}/{name}", dest)
     converted = False
-    scripts = CHATTERBOX / "scripts"
     for dst, script in ((T3, "convert-t3-turbo-to-gguf.py"), (S3, "convert-s3gen-to-gguf.py")):
         if not dst.is_file():
-            run([str(py), str(scripts / script), str(ckpt), str(dst)])
+            run([str(py), str(CHATTERBOX / "scripts" / script), str(ckpt), str(dst)])
             converted = True
     voice = hashlib.sha256(REF.read_bytes()).hexdigest()
     stamp = STAMP.read_text(encoding="ascii").strip() if STAMP.is_file() else ""
-    out = ROOT / "tts_out_turbo.wav"
+    out = ROOT / time.strftime("%Y%m%d-%H%M%S-turbo.wav")
     if converted or stamp != voice:
         kill()
         run([str(BAKE), str(T3), str(S3), str(REF)], cwd=str(BIN))
