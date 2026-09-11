@@ -5,7 +5,7 @@ from tts_common import Variant, run_variant, usage
 CFG = Variant(
     name="turbo",
     branch="turbo",
-    chatterbox_rev="f8bbb0cb5cf51dee065007666c4bebc9182d7798",
+    chatterbox_rev="7327ac41384b88926196325f48de1d6697c4b1d2",
     hf="https://huggingface.co/ResembleAI/chatterbox-turbo/resolve/749d1c1a46eb10492095d68fbcf55691ccf137cd",
     assets=(
         "t3_turbo_v1.safetensors",
