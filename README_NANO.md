@@ -24,9 +24,9 @@ pinned Chatterbox repository.
 
 ## Launch and files
 
-Run `python tts_nano.py "The billing issue is resolved."` on Trident `nano`,
-with `reference.wav` in the Trident root and sibling `chatterbox.cpp` on
-Chatterbox `nano` at the pin above. No language argument is passed.
+Run `python tts_nano.py "The billing issue is resolved."` from Trident with
+`reference.wav` in the Trident root. The launcher checks out Chatterbox `nano`
+at the pin above and builds into `build/nano`. No language argument is passed.
 
 | Artifact | Path or construction |
 | --- | --- |
@@ -35,10 +35,10 @@ Chatterbox `nano` at the pin above. No language argument is passed.
 | Voice stamp / build revision / PID | `models/voice.sha256` / `models/rev` / `models/server.pid` |
 | Output | `tts_out.wav` |
 | Pipe | `\\.\pipe\chatterbox-` + first 12 hex characters of SHA256 of `str(ROOT).encode()` |
-| Executables | sibling checkout's `build/bin/chatterbox-server.exe` and `chatterbox-bake.exe` |
+| Executables | sibling checkout's `build/nano/bin/chatterbox-server.exe` and `chatterbox-bake.exe` |
 
-The launcher builds when an executable or revision stamp is missing, or the
-stamp differs from the pin. Only on this path does it check C++ branch and HEAD.
+The launcher always checks out Chatterbox `nano` at the pin. It rebuilds when
+an executable or revision stamp is missing, or the stamp differs from the pin.
 It clones and checks out ggml if missing; it does not check an existing ggml
 checkout's revision. A matching stamp is not a source or executable hash check.
 
@@ -106,12 +106,10 @@ of CAMPPlus, speech quantization, CFM updates and harmonic-source calculations
 contain host C++ loops. Conversion also uses host PyTorch.
 There is no TCP service, PCM streaming protocol, or text chunker in this code.
 
-Nano and V3 both name their sibling checkout `chatterbox.cpp`. Their model,
-pipe and stamp names differ, but that shared checkout/build directory is not
-independent if branches are switched in place. Separate workspace pairs keep
-their binaries separate. The retained `tts_nano.py` on Trident `turbo` and
-`v3` is an older copy that checks out a SHA during rebuild; it is not the
-Nano launcher described here. Trident `main` also retains that older copy.
+Nano, Turbo, and V3 share the sibling checkout `chatterbox.cpp` and keep
+separate model, pipe, stamp, and CMake build paths (`build/nano`, `build/turbo`,
+`build/v3`). Each launcher checks out its C++ branch. The three Trident
+launchers live on one tree; do not switch Trident branches to pick a family.
 
 ## Source reduction findings
 
