@@ -16,7 +16,7 @@ not a claim that every language, reference or text has been validated.
 | --- | --- |
 | Lightweight tag in both repositories | `MILESTONE-SET-v3` |
 | Trident milestone | `0d95e514c1471f811632f66ccd19035a91c5a430` |
-| Chatterbox pin and milestone | `b8bf9ba232c715da7ef160fdd37b9f64dd72b2d9` |
+| Chatterbox pin and milestone | `eec82c24e13c8afb7d492127b3f8464378486d76` |
 | ggml revision | `7840aaba1989c6deeefede1d77d5aaf8f52b947e` |
 | Hugging Face repository | `ResembleAI/chatterbox` |
 | Hugging Face revision | `5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18` |
