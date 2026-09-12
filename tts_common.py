@@ -1,5 +1,6 @@
 import ctypes
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -213,7 +214,34 @@ def spawn(
     )
 
 
-def speak(pipe: str, pid: Path, out: Path, text: str):
+def utterances(text: str) -> list[str]:
+    parts = [p.strip() for p in text.split("|||")]
+    out = [p for p in parts if p]
+    if not out:
+        raise SystemExit("empty text")
+    return out
+
+
+def wav_duration_s(path: Path) -> float:
+    n = path.stat().st_size
+    if n <= 44:
+        raise RuntimeError("WAV Length")
+    return (n - 44) / 2.0 / 24000.0
+
+
+def play_wav(path: Path, duration_s: float):
+    sec = max(1, int(duration_s) + 1)
+    cmd = (
+        "$ErrorActionPreference = 'Stop'; $p = Start-Process -FilePath "
+        + json.dumps(str(path))
+        + " -PassThru; Start-Sleep -Seconds "
+        + str(sec)
+        + "; if ($null -ne $p) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }"
+    )
+    subprocess.run(["powershell", "-NoProfile", "-Command", cmd], check=True)
+
+
+def speak(pipe: str, pid: Path, out: Path, text: str) -> float:
     for _ in range(120):
         if not running(pid):
             raise RuntimeError("daemon")
@@ -223,18 +251,104 @@ def speak(pipe: str, pid: Path, out: Path, text: str):
     else:
         raise RuntimeError("daemon timeout")
     line = text.replace("\r", " ").replace("\n", " ")
+    if "|||" in line:
+        raise RuntimeError("delimiter")
+    t0 = time.perf_counter()
     with open(pipe, "r+b", buffering=0) as f:
         f.write(f"{out}\n{line}\n".encode("utf-8"))
         ack = f.readline()
     if ack != b"ok\n":
         raise RuntimeError("synthesize")
+    return time.perf_counter() - t0
+
+
+NANO_HELP = """
+Feed speakable English as one argv string. You are the chunker. This launcher
+is not a sentence splitter and the C++ engine is not a chunker.
+
+Piece length: write about 200 to 300 characters per piece. Never go over about
+300. Never pass a book, an article, or one huge blob. Reliable input sits near
+300 to 350 characters. Local Nano still spoke about 487 characters and
+collapsed at about 975. Gradio Turbo UI truncates to 300. Ship 200 to 300
+character flowing prose.
+
+Why not fill KV: quality ceiling is not n_ctx. Live KV is N_CTX 2024 in nano.h.
+t3_nano.cpp reads wpe then clamps if n_ctx is larger. Do not shrink the wpe
+table. Filling 2024 with text garbles speech while PCM continues. That is a
+content failure. prompt_len is 1 plus cond_prompt_len plus n_text_tokens plus 1
+and throws if that exceeds n_ctx. Generation also stops when n_past plus 1 is
+greater than n_ctx. N_PREDICT 1000 caps output speech tokens, about 40 seconds
+at 960 samples per token.
+
+Delimiter: join pieces with a line that is only |||. utterances() splits on
+that, strips, skips empty, then speak() each piece. speak() fails if a piece
+still contains |||. The C++ engine must never see ||| and must not chunk on
+punctuation. The named pipe receives one clean utterance: official tags plus
+raw text.
+
+Official tags only, including brackets and the space in [clear throat]. They
+are added_tokens.json ids 50257 through 50275. gpt2_bpe matches id >= 50257 as
+literal substrings. A tagged synth dump text line must show those ids. If the
+dump splits [laugh] into normal BPE, convert or BPE is wrong.
+
+Event tags: [clear throat] [sigh] [shush] [cough] [groan] [sniff] [gasp]
+[chuckle] [laugh]
+Style tags: [angry] [fear] [surprised] [whispering] [advertisement] [dramatic]
+[narration] [crying] [happy] [sarcastic]
+Put tags mid-sentence. Example shape: Oh, that's hilarious! [chuckle] Um
+anyway, we do have a new model. No [pause]. No extra tags. Emotion is the tag
+plus baked reference.wav.
+
+Empty models/nano.knobs values mean header defaults: SEED 42, N_PREDICT 1000,
+TOP_K 1000, TOP_P 0.95, TEMPERATURE 0.8, REPEAT_PENALTY 1.2, REPEAT_LAST_N 1000,
+CFM_STEPS 2, SILENCE_TOKEN 4299, SILENCE_COUNT 3. CFM_STEPS 2 matches turbo
+n_cfm_timesteps=2. Do not add MIN_P. Do not invent C++ argv knobs.
+
+Run from Trident with sibling chatterbox.cpp. Speaker is operator
+reference.wav, 16-bit PCM mono 24000 Hz. After each successful speak this
+launcher prints wall_s duration_s rtf on stderr, plays the WAV with the Windows
+associated player, waits duration plus one second, then prints the WAV path.
+Success is WAV Length greater than 44. Synth RTF is speak wall-clock after the
+pipe is ready, divided by WAV duration.
+"""
 
 
 def usage(cfg: Variant):
     flags = " ".join(f"[--{n} <v>]" for n in cfg.knobs)
     if cfg.needs_language:
-        return f"usage: python tts_{cfg.name}.py {flags} <text> <language>"
-    return f"usage: python tts_{cfg.name}.py {flags} <text>"
+        head = f"usage: python tts_{cfg.name}.py [-h] {flags} <text> <language>"
+    else:
+        head = f"usage: python tts_{cfg.name}.py [-h] {flags} <text>"
+    if cfg.name != "nano":
+        return head
+    return head + NANO_HELP
+
+
+def parse_variant_args(cfg: Variant, argv: list[str]) -> tuple[str, str | None, dict[str, str]]:
+    args = argv[1:]
+    cli: dict[str, str] = {}
+    i = 0
+    allowed = set(cfg.knobs)
+    while i < len(args):
+        a = args[i]
+        if a in ("-h", "--help", "-?"):
+            print(usage(cfg))
+            raise SystemExit(0)
+        if not a.startswith("--"):
+            break
+        name = a[2:]
+        if name not in allowed or i + 1 >= len(args):
+            raise SystemExit(usage(cfg))
+        cli[name] = args[i + 1]
+        i += 2
+    rest = args[i:]
+    if cfg.needs_language:
+        if len(rest) != 2:
+            raise SystemExit(usage(cfg))
+        return rest[0], rest[1].lower(), cli
+    if len(rest) != 1:
+        raise SystemExit(usage(cfg))
+    return rest[0], None, cli
 
 
 def normalize_knob(name: str, raw: str | None) -> str:
@@ -267,30 +381,6 @@ def wanted_knobs(cfg: Variant, cli: dict[str, str]) -> dict[str, str]:
 
 def knobs_blob(cfg: Variant, values: dict[str, str]) -> str:
     return "".join(f"{n}={values.get(n, '')}\n" for n in cfg.knobs)
-
-
-def parse_variant_args(cfg: Variant, argv: list[str]) -> tuple[str, str | None, dict[str, str]]:
-    args = argv[1:]
-    cli: dict[str, str] = {}
-    i = 0
-    allowed = set(cfg.knobs)
-    while i < len(args):
-        a = args[i]
-        if not a.startswith("--"):
-            break
-        name = a[2:]
-        if name not in allowed or i + 1 >= len(args):
-            raise SystemExit(usage(cfg))
-        cli[name] = args[i + 1]
-        i += 2
-    rest = args[i:]
-    if cfg.needs_language:
-        if len(rest) != 2:
-            raise SystemExit(usage(cfg))
-        return rest[0], rest[1].lower(), cli
-    if len(rest) != 1:
-        raise SystemExit(usage(cfg))
-    return rest[0], None, cli
 
 
 def run_variant(
@@ -381,7 +471,7 @@ def run_variant(
     lang_stamp = ""
     if lang_stamp_path and lang_stamp_path.is_file():
         lang_stamp = lang_stamp_path.read_text(encoding="ascii").strip()
-    out = ROOT / time.strftime(f"%Y%m%d-%H%M%S-{cfg.name}.wav")
+    pieces = utterances(text)
     lang = (language or "en").lower() if cfg.needs_language else ""
     if converted or voice_stamp != voice:
         kill(pid)
@@ -401,5 +491,13 @@ def run_variant(
     if not running(pid):
         wait_pipe_absent(pipe)
         spawn(cfg, exe, t3, s3, pipe, pid, lang or None, values)
-    speak(pipe, pid, out, text)
-    print(out)
+    for i, piece in enumerate(pieces):
+        stamp_t = time.strftime("%Y%m%d-%H%M%S")
+        name = f"{stamp_t}-{cfg.name}.wav" if len(pieces) == 1 else f"{stamp_t}-{cfg.name}-{i}.wav"
+        out = ROOT / name
+        wall = speak(pipe, pid, out, piece)
+        dur = wav_duration_s(out)
+        rtf = wall / dur if dur > 0 else 0.0
+        print(f"wall_s={wall:.3f} duration_s={dur:.3f} rtf={rtf:.3f}", file=sys.stderr)
+        play_wav(out, dur)
+        print(out)
