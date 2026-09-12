@@ -50,6 +50,7 @@ class Variant:
     other_pids: tuple[str, ...]
     t3_script: str
     s3_script: str
+    knobs: tuple[str, ...]
     needs_language: bool = False
 
 
@@ -144,6 +145,36 @@ def wait_pipe_absent(pipe: str):
     raise RuntimeError("pipe busy")
 
 
+KNOB_ENV = {
+    "repeat-penalty": ("CHATTERBOX_REPEAT_PENALTY", "f+"),
+    "temperature": ("CHATTERBOX_TEMPERATURE", "f"),
+    "top-k": ("CHATTERBOX_TOP_K", "i"),
+    "top-p": ("CHATTERBOX_TOP_P", "f"),
+    "repeat-last-n": ("CHATTERBOX_REPEAT_LAST_N", "i"),
+    "seed": ("CHATTERBOX_SEED", "i"),
+    "n-predict": ("CHATTERBOX_N_PREDICT", "i"),
+    "cfm-steps": ("CHATTERBOX_CFM_STEPS", "i"),
+    "silence-token": ("CHATTERBOX_SILENCE_TOKEN", "i"),
+    "silence-count": ("CHATTERBOX_SILENCE_COUNT", "i"),
+    "min-p": ("CHATTERBOX_MIN_P", "f"),
+    "cfg-weight": ("CHATTERBOX_CFG_WEIGHT", "f"),
+    "cfm-cfg": ("CHATTERBOX_CFM_CFG", "f"),
+}
+SHARED_KNOBS = (
+    "repeat-penalty",
+    "temperature",
+    "top-k",
+    "top-p",
+    "repeat-last-n",
+    "seed",
+    "n-predict",
+    "cfm-steps",
+    "silence-token",
+)
+GPT2_KNOBS = SHARED_KNOBS + ("silence-count",)
+V3_KNOBS = SHARED_KNOBS + ("min-p", "cfg-weight", "cfm-cfg")
+
+
 def spawn(
     cfg: Variant,
     exe: Path,
@@ -152,17 +183,20 @@ def spawn(
     pipe: str,
     pid: Path,
     language: str | None = None,
-    repeat_penalty: str = "",
+    knobs: dict[str, str] | None = None,
 ):
     args = [str(exe), str(t3), str(s3), pipe]
     if cfg.needs_language:
         args.append(language or "en")
     env = os.environ.copy()
     env.setdefault("CHATTERBOX_SAMPLER_LOG", "1")
-    if repeat_penalty:
-        env["CHATTERBOX_REPEAT_PENALTY"] = repeat_penalty
-    else:
-        env.pop("CHATTERBOX_REPEAT_PENALTY", None)
+    wanted = knobs or {}
+    for name, (var, _) in KNOB_ENV.items():
+        val = wanted.get(name, "") if name in cfg.knobs else ""
+        if val:
+            env[var] = val
+        else:
+            env.pop(var, None)
     pid.write_text(
         str(
             subprocess.Popen(
@@ -197,59 +231,73 @@ def speak(pipe: str, pid: Path, out: Path, text: str):
 
 
 def usage(cfg: Variant):
-    flags = "[--repeat-penalty <float>]"
+    flags = " ".join(f"[--{n} <v>]" for n in cfg.knobs)
     if cfg.needs_language:
         return f"usage: python tts_{cfg.name}.py {flags} <text> <language>"
     return f"usage: python tts_{cfg.name}.py {flags} <text>"
 
 
-def normalize_repeat_penalty(raw: str | None) -> str:
+def normalize_knob(name: str, raw: str | None) -> str:
     if raw is None or not str(raw).strip():
         return ""
+    kind = KNOB_ENV[name][1]
+    if kind == "i":
+        try:
+            return str(int(str(raw).strip(), 10))
+        except ValueError:
+            raise SystemExit(f"{name} must be an int")
     try:
         value = float(raw)
     except ValueError:
-        raise SystemExit("repeat-penalty must be a positive float")
-    if value <= 0:
-        raise SystemExit("repeat-penalty must be a positive float")
+        raise SystemExit(f"{name} must be a float")
+    if kind == "f+" and value <= 0:
+        raise SystemExit(f"{name} must be a positive float")
     return str(value)
 
 
-def wanted_repeat_penalty(cli: str | None) -> str:
-    if cli is not None:
-        return normalize_repeat_penalty(cli)
-    return normalize_repeat_penalty(os.environ.get("CHATTERBOX_REPEAT_PENALTY"))
+def wanted_knobs(cfg: Variant, cli: dict[str, str]) -> dict[str, str]:
+    out = {}
+    for name in cfg.knobs:
+        if name in cli:
+            out[name] = normalize_knob(name, cli[name])
+        else:
+            out[name] = normalize_knob(name, os.environ.get(KNOB_ENV[name][0]))
+    return out
 
 
-def parse_variant_args(cfg: Variant, argv: list[str]) -> tuple[str, str | None, str | None]:
+def knobs_blob(cfg: Variant, values: dict[str, str]) -> str:
+    return "".join(f"{n}={values.get(n, '')}\n" for n in cfg.knobs)
+
+
+def parse_variant_args(cfg: Variant, argv: list[str]) -> tuple[str, str | None, dict[str, str]]:
     args = argv[1:]
-    penalty = None
+    cli: dict[str, str] = {}
     i = 0
+    allowed = set(cfg.knobs)
     while i < len(args):
-        if args[i] == "--repeat-penalty":
-            if i + 1 >= len(args):
-                raise SystemExit(usage(cfg))
-            penalty = args[i + 1]
-            i += 2
-            continue
-        if args[i].startswith("--"):
+        a = args[i]
+        if not a.startswith("--"):
+            break
+        name = a[2:]
+        if name not in allowed or i + 1 >= len(args):
             raise SystemExit(usage(cfg))
-        break
+        cli[name] = args[i + 1]
+        i += 2
     rest = args[i:]
     if cfg.needs_language:
         if len(rest) != 2:
             raise SystemExit(usage(cfg))
-        return rest[0], rest[1].lower(), penalty
+        return rest[0], rest[1].lower(), cli
     if len(rest) != 1:
         raise SystemExit(usage(cfg))
-    return rest[0], None, penalty
+    return rest[0], None, cli
 
 
 def run_variant(
     cfg: Variant,
     text: str,
     language: str | None = None,
-    repeat_penalty: str | None = None,
+    knobs: dict[str, str] | None = None,
 ):
     if not REF.is_file():
         raise FileNotFoundError(str(REF))
@@ -343,14 +391,15 @@ def run_variant(
         kill(pid)
         if lang_stamp_path:
             lang_stamp_path.write_text(lang, encoding="ascii")
-    penalty = wanted_repeat_penalty(repeat_penalty)
-    penalty_stamp = MODELS / f"{cfg.name}.repeat_penalty"
-    prev_penalty = penalty_stamp.read_text(encoding="ascii").strip() if penalty_stamp.is_file() else ""
-    if prev_penalty != penalty:
+    values = wanted_knobs(cfg, knobs or {})
+    blob = knobs_blob(cfg, values)
+    knob_stamp = MODELS / f"{cfg.name}.knobs"
+    prev = knob_stamp.read_text(encoding="ascii") if knob_stamp.is_file() else ""
+    if prev != blob:
         kill(pid)
-        penalty_stamp.write_text(penalty, encoding="ascii")
+        knob_stamp.write_text(blob, encoding="ascii")
     if not running(pid):
         wait_pipe_absent(pipe)
-        spawn(cfg, exe, t3, s3, pipe, pid, lang or None, penalty)
+        spawn(cfg, exe, t3, s3, pipe, pid, lang or None, values)
     speak(pipe, pid, out, text)
     print(out)

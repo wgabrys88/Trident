@@ -1,6 +1,6 @@
 import sys
 
-from tts_common import Variant, parse_variant_args, run_variant
+from tts_common import V3_KNOBS, Variant, parse_variant_args, run_variant
 
 CFG = Variant(
     name="v3",
@@ -27,13 +27,14 @@ CFG = Variant(
     other_pids=("server.pid", "turbo.pid"),
     t3_script="convert-t3-v3-to-gguf.py",
     s3_script="convert-s3gen-v3-to-gguf.py",
+    knobs=V3_KNOBS,
     needs_language=True,
 )
 
 
 def main():
-    text, language, penalty = parse_variant_args(CFG, sys.argv)
-    run_variant(CFG, text, language, penalty)
+    text, language, knobs = parse_variant_args(CFG, sys.argv)
+    run_variant(CFG, text, language, knobs)
 
 
 if __name__ == "__main__":
