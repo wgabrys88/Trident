@@ -1,11 +1,11 @@
 import sys
 
-from tts_common import Variant, parse_variant_args, run_variant
+from tts_common import GPT2_KNOBS, Variant, parse_variant_args, run_variant
 
 CFG = Variant(
     name="nano",
     branch="nano",
-    chatterbox_rev="c7f060e07da0dcef5a4c53c24e555ae13fd7ac5a",
+    chatterbox_rev="41e1f684db75bfd7651c5d40ceabfd6507fc3599",
     hf="https://huggingface.co/ResembleAI/chatterbox-nano/resolve/71ccd1d0081b430592cea481f4307e764e07bc64",
     assets=(
         "t3_nano_v1.safetensors",
@@ -28,12 +28,13 @@ CFG = Variant(
     other_pids=("turbo.pid", "v3.pid"),
     t3_script="convert-t3-nano-to-gguf.py",
     s3_script="convert-s3gen-to-gguf.py",
+    knobs=GPT2_KNOBS,
 )
 
 
 def main():
-    text, language, penalty = parse_variant_args(CFG, sys.argv)
-    run_variant(CFG, text, language, penalty)
+    text, language, knobs = parse_variant_args(CFG, sys.argv)
+    run_variant(CFG, text, language, knobs)
 
 
 if __name__ == "__main__":
