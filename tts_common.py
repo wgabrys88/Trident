@@ -374,6 +374,67 @@ then prints the WAV path. Success is WAV Length greater than 44. Synth RTF
 is speak wall-clock after the pipe is ready, divided by WAV duration.
 """
 
+V3_HELP = """
+Feed speakable text as one argv string plus a language code. You are the
+chunker. This launcher is not a sentence splitter and the C++ engine is not
+a chunker.
+
+Usage: python tts_v3.py [-h] [knobs] <text> <language>
+Language is argv, not a tag in the text. One language per launch. Changing
+language kills models/v3.pid and respawns the server. Mixed German, Polish,
+and English means three launches: python tts_v3.py "<de text>" de then
+python tts_v3.py "<pl text>" pl then python tts_v3.py "<en text>" en. Do not
+put language into the named pipe. Do not put language into |||.
+
+Live C++ language ids: ar da de el en es fi fr hi it ms nl no pl pt sv sw tr.
+zh ja he ko ru throw language extras unread. Those need Cangjie, hiragana,
+Hebrew, Korean, or Russian extras this C++ does not run. Do not invent them.
+
+Piece length: write about 200 to 300 characters per piece. Never go over about
+300. Never pass a book, an article, or one huge blob. Gradio multilingual UI
+truncates to 300. Official max_text_tokens is 2048 and max_speech_tokens is
+4096. Filling those garbles speech while PCM continues. That is a content
+failure. Ship 200 to 300 character flowing prose. Break at . ! ? then comma
+then words.
+
+Why not fill KV: quality ceiling is not n_ctx. v3.h has no N_CTX constant.
+Live n_ctx comes from the GGUF key, not a GPT2 wpe table. Official V3 is
+Llama 520M: 30 layers, hidden 1024, text vocab 2454, speech vocab 8194,
+speech_cond_prompt_len 150, perceiver on, emotion_adv on. Generation stops
+when n_past plus 1 is greater than n_ctx. N_PREDICT 1000 caps output speech
+tokens. Dump path is v3_t3_dump.txt beside the T3 GGUF.
+
+Delimiter: join pieces of the SAME language with a line that is only |||.
+utterances() splits on that, strips, skips empty, then speak() each piece.
+speak() fails if a piece still contains |||. The C++ engine must never see
+||| and must not chunk on punctuation. The named pipe receives one clean
+utterance: raw text for that launch language.
+
+No Nano or Turbo paralinguistic tags. No [laugh] [chuckle] [happy]. V3
+emotion is baked builtin_emotion_adv plus live cfg-weight. Do not invent
+an exaggeration env knob. Do not add SILENCE_COUNT. Engine drops invalid
+tokens then trims the last speech token of PCM.
+
+Empty models/v3.knobs values mean header defaults: SEED 42, N_PREDICT 1000,
+TOP_K 0, TOP_P 1.0, MIN_P 0.05, TEMPERATURE 0.8, REPEAT_PENALTY 1.2,
+REPEAT_LAST_N 1000, CFG_WEIGHT 0.5, CFM_STEPS 10, CFM_CFG 0.7,
+SILENCE_TOKEN 4299. CFM_STEPS 10 is standard S3Gen, not turbo meanflow.
+CFG_BATCH is 2. Launcher flags wrap getenv only: --repeat-penalty
+--temperature --top-k --top-p --repeat-last-n --seed --n-predict --cfm-steps
+--silence-token --min-p --cfg-weight --cfm-cfg. Do not invent C++ argv knobs.
+
+Run from Trident with sibling chatterbox.cpp:
+python tts_v3.py "<text>" <language>
+GGUF names chatterbox-t3-v3-q8_0.gguf and chatterbox-s3gen-v3-q4_0.gguf.
+Kill via models/v3.pid. Pipe is \\\\.\\pipe\\chatterbox-v3-<tag>. Server argv
+is chatterbox-server.exe t3 s3 pipe language. argc less than 5 is fatal.
+Speaker is operator reference.wav, 16-bit PCM mono 24000 Hz. After each
+successful speak this launcher prints wall_s duration_s rtf on stderr, plays
+the WAV with the Windows associated player, waits duration plus one second,
+then prints the WAV path. Success is WAV Length greater than 44. Synth RTF
+is speak wall-clock after the pipe is ready, divided by WAV duration.
+"""
+
 
 def usage(cfg: Variant):
     flags = " ".join(f"[--{n} <v>]" for n in cfg.knobs)
@@ -385,6 +446,8 @@ def usage(cfg: Variant):
         return head + NANO_HELP
     if cfg.name == "turbo":
         return head + TURBO_HELP
+    if cfg.name == "v3":
+        return head + V3_HELP
     return head
 
 
