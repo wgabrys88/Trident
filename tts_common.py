@@ -17,8 +17,18 @@ GGML_REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
 VULKAN = Path("C:/VulkanSDK/1.4.357.0")
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 DETACH = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
-K32 = ctypes.windll.kernel32
+K32 = ctypes.WinDLL("kernel32", use_last_error=True)
 K32.WaitNamedPipeW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint]
+K32.WaitNamedPipeW.restype = ctypes.c_int
+K32.OpenProcess.argtypes = [ctypes.c_uint, ctypes.c_int, ctypes.c_uint]
+K32.OpenProcess.restype = ctypes.c_void_p
+K32.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+K32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+K32.CloseHandle.argtypes = [ctypes.c_void_p]
+PROCESS_TERMINATE = 0x0001
+SYNCHRONIZE = 0x00100000
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+ERROR_FILE_NOT_FOUND = 2
 
 
 @dataclass(frozen=True)
@@ -104,9 +114,10 @@ def kill(pid: Path):
     except ValueError:
         pid.unlink(missing_ok=True)
         return
-    h = K32.OpenProcess(1, False, proc)
+    h = K32.OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE, False, proc)
     if h:
         K32.TerminateProcess(h, 1)
+        K32.WaitForSingleObject(h, 15000)
         K32.CloseHandle(h)
     pid.unlink(missing_ok=True)
 
@@ -118,19 +129,40 @@ def running(pid: Path):
         proc = int(pid.read_text(encoding="ascii").strip())
     except ValueError:
         return False
-    h = K32.OpenProcess(0x1000, False, proc)
+    h = K32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, proc)
     if not h:
         return False
     K32.CloseHandle(h)
     return True
 
 
-def spawn(cfg: Variant, exe: Path, t3: Path, s3: Path, pipe: str, pid: Path, language: str | None = None):
+def wait_pipe_absent(pipe: str):
+    for _ in range(50):
+        if not K32.WaitNamedPipeW(pipe, 0) and ctypes.get_last_error() == ERROR_FILE_NOT_FOUND:
+            return
+        time.sleep(0.1)
+    raise RuntimeError("pipe busy")
+
+
+def spawn(
+    cfg: Variant,
+    exe: Path,
+    t3: Path,
+    s3: Path,
+    pipe: str,
+    pid: Path,
+    language: str | None = None,
+    repeat_penalty: str = "",
+):
     args = [str(exe), str(t3), str(s3), pipe]
     if cfg.needs_language:
         args.append(language or "en")
     env = os.environ.copy()
     env.setdefault("CHATTERBOX_SAMPLER_LOG", "1")
+    if repeat_penalty:
+        env["CHATTERBOX_REPEAT_PENALTY"] = repeat_penalty
+    else:
+        env.pop("CHATTERBOX_REPEAT_PENALTY", None)
     pid.write_text(
         str(
             subprocess.Popen(
@@ -165,12 +197,60 @@ def speak(pipe: str, pid: Path, out: Path, text: str):
 
 
 def usage(cfg: Variant):
+    flags = "[--repeat-penalty <float>]"
     if cfg.needs_language:
-        return f"usage: python {cfg.name}.py <text> <language>"
-    return f"usage: python {cfg.name}.py <text>"
+        return f"usage: python tts_{cfg.name}.py {flags} <text> <language>"
+    return f"usage: python tts_{cfg.name}.py {flags} <text>"
 
 
-def run_variant(cfg: Variant, text: str, language: str | None = None):
+def normalize_repeat_penalty(raw: str | None) -> str:
+    if raw is None or not str(raw).strip():
+        return ""
+    try:
+        value = float(raw)
+    except ValueError:
+        raise SystemExit("repeat-penalty must be a positive float")
+    if value <= 0:
+        raise SystemExit("repeat-penalty must be a positive float")
+    return str(value)
+
+
+def wanted_repeat_penalty(cli: str | None) -> str:
+    if cli is not None:
+        return normalize_repeat_penalty(cli)
+    return normalize_repeat_penalty(os.environ.get("CHATTERBOX_REPEAT_PENALTY"))
+
+
+def parse_variant_args(cfg: Variant, argv: list[str]) -> tuple[str, str | None, str | None]:
+    args = argv[1:]
+    penalty = None
+    i = 0
+    while i < len(args):
+        if args[i] == "--repeat-penalty":
+            if i + 1 >= len(args):
+                raise SystemExit(usage(cfg))
+            penalty = args[i + 1]
+            i += 2
+            continue
+        if args[i].startswith("--"):
+            raise SystemExit(usage(cfg))
+        break
+    rest = args[i:]
+    if cfg.needs_language:
+        if len(rest) != 2:
+            raise SystemExit(usage(cfg))
+        return rest[0], rest[1].lower(), penalty
+    if len(rest) != 1:
+        raise SystemExit(usage(cfg))
+    return rest[0], None, penalty
+
+
+def run_variant(
+    cfg: Variant,
+    text: str,
+    language: str | None = None,
+    repeat_penalty: str | None = None,
+):
     if not REF.is_file():
         raise FileNotFoundError(str(REF))
     ensure_pin(cfg)
@@ -263,7 +343,14 @@ def run_variant(cfg: Variant, text: str, language: str | None = None):
         kill(pid)
         if lang_stamp_path:
             lang_stamp_path.write_text(lang, encoding="ascii")
+    penalty = wanted_repeat_penalty(repeat_penalty)
+    penalty_stamp = MODELS / f"{cfg.name}.repeat_penalty"
+    prev_penalty = penalty_stamp.read_text(encoding="ascii").strip() if penalty_stamp.is_file() else ""
+    if prev_penalty != penalty:
+        kill(pid)
+        penalty_stamp.write_text(penalty, encoding="ascii")
     if not running(pid):
-        spawn(cfg, exe, t3, s3, pipe, pid, lang or None)
+        wait_pipe_absent(pipe)
+        spawn(cfg, exe, t3, s3, pipe, pid, lang or None, penalty)
     speak(pipe, pid, out, text)
     print(out)
