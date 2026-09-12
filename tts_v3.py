@@ -1,6 +1,6 @@
 import sys
 
-from tts_common import Variant, run_variant, usage
+from tts_common import Variant, parse_variant_args, run_variant
 
 CFG = Variant(
     name="v3",
@@ -32,9 +32,8 @@ CFG = Variant(
 
 
 def main():
-    if len(sys.argv) < 3:
-        raise SystemExit(usage(CFG))
-    run_variant(CFG, sys.argv[1], sys.argv[2].lower())
+    text, language, penalty = parse_variant_args(CFG, sys.argv)
+    run_variant(CFG, text, language, penalty)
 
 
 if __name__ == "__main__":
