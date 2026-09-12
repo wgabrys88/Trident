@@ -5,7 +5,13 @@
 !/tts_turbo.py
 !/tts_v3.py
 !/tts_common.py
+!/listen.py
+# Local handover. The * rule already ignores it. Keep these last so a later
+# !*.md cannot re-include it. Do not add !knowledgebase.md.
 knowledgebase.md
+/knowledgebase.md
 reference.wav
+listen.wav
+listen.txt
 models/
 models/**
