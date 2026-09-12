@@ -5,13 +5,7 @@
 !/tts_turbo.py
 !/tts_v3.py
 !/tts_common.py
-!knowledgebase.md
-!bootstrap_state.py
-!eval_tts.py
-!eval_out/
-!eval_out/**
-eval_out/dumps/
-eval_out/dumps/**
-eval_out/pip.log
-eval_out/_*
-eval_out/wav_*.json
+knowledgebase.md
+reference.wav
+models/
+models/**
