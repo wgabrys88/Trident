@@ -312,6 +312,68 @@ Success is WAV Length greater than 44. Synth RTF is speak wall-clock after the
 pipe is ready, divided by WAV duration.
 """
 
+TURBO_HELP = """
+Feed speakable English as one argv string. You are the chunker. This launcher
+is not a sentence splitter and the C++ engine is not a chunker.
+
+Piece length: write about 200 to 300 characters per piece. Never go over about
+300. Never pass a book, an article, or one huge blob. Reliable input sits near
+300 to 350 characters. Turbo issue 424 hallucinates past about 350. Gradio
+Turbo UI truncates to 300. Local Nano still spoke about 487 characters and
+collapsed at about 975. Ship 200 to 300 character flowing prose.
+
+Why not fill KV: quality ceiling is not n_ctx. turbo.h has no N_CTX constant.
+t3_nano.cpp on turbo reads wpe then hp.n_ctx = wpe ne[1]. Do not shrink the
+wpe table. Do not copy Nano's 2024 clamp. Official Turbo is GPT2_medium:
+n_ctx and n_positions 8196, n_embd 1024, n_head 16, n_layer 24, text vocab
+50276. Filling 8196 with text garbles speech while PCM continues. That is a
+content failure. prompt_len is 1 plus cond_prompt_len plus n_text_tokens plus 1
+and throws if that exceeds n_ctx. Generation also stops when n_past plus 1 is
+greater than n_ctx. N_PREDICT 1000 caps output speech tokens, about 40 seconds
+at 960 samples per token. Vendor speech_cond_prompt_len is 375. emotion_adv is
+false. Dump path is turbo_t3_dump.txt beside the T3 GGUF.
+
+Delimiter: join pieces with a line that is only |||. utterances() splits on
+that, strips, skips empty, then speak() each piece. speak() fails if a piece
+still contains |||. The C++ engine must never see ||| and must not chunk on
+punctuation. The named pipe receives one clean utterance: official tags plus
+raw text.
+
+Official tags only, including brackets and the space in [clear throat]. They
+are added_tokens.json ids 50257 through 50275. gpt2_bpe matches id >= 50257 as
+literal substrings. A tagged synth dump text line must show those ids. If the
+dump splits [laugh] into normal BPE, convert or BPE is wrong.
+
+Event tags: [clear throat] [sigh] [shush] [cough] [groan] [sniff] [gasp]
+[chuckle] [laugh]
+Style tags: [angry] [fear] [surprised] [whispering] [advertisement] [dramatic]
+[narration] [crying] [happy] [sarcastic]
+Put tags mid-sentence. Example shape: Oh, that's hilarious! [chuckle] Um
+anyway, we do have a new model. No [pause]. No [whisper]. No [breath]. Emotion
+is the tag plus baked reference.wav.
+
+Empty models/turbo.knobs values mean header defaults that match official
+Turbo generate and inference_turbo: SEED 42, N_PREDICT 1000, TOP_K 1000,
+TOP_P 0.95, TEMPERATURE 0.8, REPEAT_PENALTY 1.2, REPEAT_LAST_N 1000,
+CFM_STEPS 2, SILENCE_TOKEN 4299, SILENCE_COUNT 3. CFM_STEPS 2 matches
+n_cfm_timesteps=2 and meanflow, not the one-step slogan. Silence count 3
+matches three S3GEN_SIL tokens. Launcher flags wrap getenv only:
+--temperature --top-p --top-k --repeat-penalty --n-predict --seed
+--repeat-last-n --cfm-steps --silence-token --silence-count. Vendor Python
+accepts then ignores cfg_weight, min_p, and exaggeration. turbo.h has none
+of them. Do not add MIN_P. Do not add CFG. Do not add an exaggeration env
+knob. Do not invent C++ argv knobs.
+
+Run from Trident with sibling chatterbox.cpp: python tts_turbo.py "<text>".
+GGUF names chatterbox-t3-turbo-q8_0.gguf and chatterbox-s3gen-turbo-q4_0.gguf.
+Kill via models/turbo.pid. Pipe is \\\\.\\pipe\\chatterbox-turbo-<tag>.
+Speaker is operator reference.wav, 16-bit PCM mono 24000 Hz. After each
+successful speak this launcher prints wall_s duration_s rtf on stderr, plays
+the WAV with the Windows associated player, waits duration plus one second,
+then prints the WAV path. Success is WAV Length greater than 44. Synth RTF
+is speak wall-clock after the pipe is ready, divided by WAV duration.
+"""
+
 
 def usage(cfg: Variant):
     flags = " ".join(f"[--{n} <v>]" for n in cfg.knobs)
@@ -319,9 +381,11 @@ def usage(cfg: Variant):
         head = f"usage: python tts_{cfg.name}.py [-h] {flags} <text> <language>"
     else:
         head = f"usage: python tts_{cfg.name}.py [-h] {flags} <text>"
-    if cfg.name != "nano":
-        return head
-    return head + NANO_HELP
+    if cfg.name == "nano":
+        return head + NANO_HELP
+    if cfg.name == "turbo":
+        return head + TURBO_HELP
+    return head
 
 
 def parse_variant_args(cfg: Variant, argv: list[str]) -> tuple[str, str | None, dict[str, str]]:
