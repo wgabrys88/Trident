@@ -263,22 +263,21 @@ def speak(pipe: str, pid: Path, out: Path, text: str) -> float:
 
 
 NANO_HELP = """
-Feed speakable English as one argv string. You are the chunker. This launcher
-is not a sentence splitter and the C++ engine is not a chunker.
+Feed speakable English as one argv string. You are the chunker for quality.
+This launcher is not a sentence splitter and the C++ engine is not a chunker.
+Do not invent a character cap. Do not copy Gradio 300. Do not copy a V3
+text_pos budget onto Nano.
 
-Piece length: write about 200 to 300 characters per piece. Never go over about
-300. Never pass a book, an article, or one huge blob. Reliable input sits near
-300 to 350 characters. Local Nano still spoke about 487 characters and
-collapsed at about 975. Gradio Turbo UI truncates to 300. Ship 200 to 300
-character flowing prose.
-
-Why not fill KV: quality ceiling is not n_ctx. Live KV is N_CTX 2024 in nano.h.
-t3_nano.cpp reads wpe then clamps if n_ctx is larger. Do not shrink the wpe
-table. Filling 2024 with text garbles speech while PCM continues. That is a
-content failure. prompt_len is 1 plus cond_prompt_len plus n_text_tokens plus 1
-and throws if that exceeds n_ctx. Generation also stops when n_past plus 1 is
-greater than n_ctx. N_PREDICT 1000 caps output speech tokens, about 40 seconds
-at 960 samples per token.
+Native bounds, not characters. Convert writes chatterbox.n_ctx from
+tfmr.wpe.weight rows. Discover live wpe shape and chatterbox.cond_prompt_length
+on the T3 GGUF. This tree: wpe 768 by 8196, cond_prompt_length 375.
+t3_nano.cpp sets hp.n_ctx from wpe then clamps to N_CTX 2024 in nano.h.
+That clamp is the live KV. Do not shrink the wpe table. prompt_len is 1
+plus cond_prompt_len plus n_text_tokens plus 1. Engine throws T3 prompt
+exceeds context if prompt_len is greater than n_ctx. Generation also
+stops when n_past plus 1 is greater than n_ctx. N_PREDICT 1000 caps
+output speech tokens, about 40 seconds at 960 samples per token. Split
+with ||| only to speak separate utterances, not to fake a length limit.
 
 Delimiter: join pieces with a line that is only |||. utterances() splits on
 that, strips, skips empty, then speak() each piece. speak() fails if a piece
@@ -313,25 +312,23 @@ pipe is ready, divided by WAV duration.
 """
 
 TURBO_HELP = """
-Feed speakable English as one argv string. You are the chunker. This launcher
-is not a sentence splitter and the C++ engine is not a chunker.
+Feed speakable English as one argv string. You are the chunker for quality.
+This launcher is not a sentence splitter and the C++ engine is not a chunker.
+Do not invent a character cap. Do not copy Gradio 300. Do not copy Nano's
+2024 clamp. Do not copy a V3 text_pos budget onto Turbo.
 
-Piece length: write about 200 to 300 characters per piece. Never go over about
-300. Never pass a book, an article, or one huge blob. Reliable input sits near
-300 to 350 characters. Turbo issue 424 hallucinates past about 350. Gradio
-Turbo UI truncates to 300. Local Nano still spoke about 487 characters and
-collapsed at about 975. Ship 200 to 300 character flowing prose.
-
-Why not fill KV: quality ceiling is not n_ctx. turbo.h has no N_CTX constant.
-t3_nano.cpp on turbo reads wpe then hp.n_ctx = wpe ne[1]. Do not shrink the
-wpe table. Do not copy Nano's 2024 clamp. Official Turbo is GPT2_medium:
-n_ctx and n_positions 8196, n_embd 1024, n_head 16, n_layer 24, text vocab
-50276. Filling 8196 with text garbles speech while PCM continues. That is a
-content failure. prompt_len is 1 plus cond_prompt_len plus n_text_tokens plus 1
-and throws if that exceeds n_ctx. Generation also stops when n_past plus 1 is
-greater than n_ctx. N_PREDICT 1000 caps output speech tokens, about 40 seconds
-at 960 samples per token. Vendor speech_cond_prompt_len is 375. emotion_adv is
-false. Dump path is turbo_t3_dump.txt beside the T3 GGUF.
+Native bounds, not characters. Convert writes chatterbox.n_ctx from
+tfmr.wpe.weight rows. Discover live wpe shape and chatterbox.cond_prompt_length
+on the T3 GGUF. This tree: wpe 1024 by 8196, cond_prompt_length 375,
+n_embd 1024, n_head 16, n_layer 24, text vocab 50276. t3_nano.cpp on turbo
+sets hp.n_ctx from wpe with no header clamp. turbo.h has no N_CTX constant.
+Do not shrink the wpe table. prompt_len is 1 plus cond_prompt_len plus
+n_text_tokens plus 1. Engine throws T3 prompt exceeds context if prompt_len
+is greater than n_ctx. Generation also stops when n_past plus 1 is greater
+than n_ctx. N_PREDICT 1000 caps output speech tokens, about 40 seconds at
+960 samples per token. Vendor speech_cond_prompt_len is 375. emotion_adv is
+false. Dump path is turbo_t3_dump.txt beside the T3 GGUF. Split with |||
+only to speak separate utterances, not to fake a length limit.
 
 Delimiter: join pieces with a line that is only |||. utterances() splits on
 that, strips, skips empty, then speak() each piece. speak() fails if a piece
@@ -376,8 +373,10 @@ is speak wall-clock after the pipe is ready, divided by WAV duration.
 
 V3_HELP = """
 Feed speakable text as one argv string plus a language code. You are the
-chunker. This launcher is not a sentence splitter and the C++ engine is not
-a chunker.
+chunker for quality. This launcher is not a sentence splitter and the C++
+engine is not a chunker. Do not invent a character cap. Do not copy Gradio
+300. Do not copy Nano or Turbo wpe budgets onto V3. V3 is Llama, not a
+bigger Turbo.
 
 Usage: python tts_v3.py [-h] [knobs] <text> <language>
 Language is argv, not a tag in the text. One language per launch. Changing
@@ -390,19 +389,27 @@ Live C++ language ids: ar da de el en es fi fr hi it ms nl no pl pt sv sw tr.
 zh ja he ko ru throw language extras unread. Those need Cangjie, hiragana,
 Hebrew, Korean, or Russian extras this C++ does not run. Do not invent them.
 
-Piece length: write about 200 to 300 characters per piece. Never go over about
-300. Never pass a book, an article, or one huge blob. Gradio multilingual UI
-truncates to 300. Official max_text_tokens is 2048 and max_speech_tokens is
-4096. Filling those garbles speech while PCM continues. That is a content
-failure. Ship 200 to 300 character flowing prose. Break at . ! ? then comma
-then words.
-
-Why not fill KV: quality ceiling is not n_ctx. v3.h has no N_CTX constant.
-Live n_ctx comes from the GGUF key, not a GPT2 wpe table. Official V3 is
+Native bounds, not characters. convert-t3-v3-to-gguf.py reads tensors:
+perceiver_len from cond_enc.perceiver.pre_attention_query shape[1],
+text_pos_len from text_pos_emb.emb.weight shape[0], then n_ctx equals 1
+plus perceiver_len plus 1 plus text_pos_len plus 2 plus N_PREDICT.
+N_PREDICT in that formula is 1000, matching v3.h and official generate()
+max_new_tokens. Discover live GGUF keys and tensor rows. This tree:
+chatterbox.n_ctx 3086, perceiver_len 32, cond_prompt_length 150,
+text_pos_emb 1024 by 2050, speech_pos_emb 1024 by 4100. Official V3 is
 Llama 520M: 30 layers, hidden 1024, text vocab 2454, speech vocab 8194,
-speech_cond_prompt_len 150, perceiver on, emotion_adv on. Generation stops
-when n_past plus 1 is greater than n_ctx. N_PREDICT 1000 caps output speech
-tokens. Dump path is v3_t3_dump.txt beside the T3 GGUF.
+perceiver on, emotion_adv on. v3.h has no N_CTX constant. mtl_bpe prepends
+[lang] and [SPACE]. Engine wraps start_text plus BPE plus stop_text.
+text_pos indices are 0 through n_text_tokens minus 1 into text_pos_emb,
+so that vector must fit 2050 rows. prompt_len is 1 plus perceiver_len
+plus 1 plus n_text_tokens plus 2. Engine throws T3 prompt exceeds context
+if prompt_len is greater than n_ctx. Generation stops at N_PREDICT 1000
+or when n_past plus 1 is greater than n_ctx. Official T3Config
+max_text_tokens 2048 and max_speech_tokens 4096 are Python config. C++
+does not store those keys. generate() does not use 4096. Do not fill
+speech_pos 4100. Dump path is v3_t3_dump.txt beside the T3 GGUF. Split
+with ||| only for same-language separate utterances, not to fake a
+length limit.
 
 Delimiter: join pieces of the SAME language with a line that is only |||.
 utterances() splits on that, strips, skips empty, then speak() each piece.
