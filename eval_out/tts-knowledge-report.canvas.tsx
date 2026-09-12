@@ -18,9 +18,9 @@ import {
 } from "cursor/canvas";
 
 const D = {
-  session: "2026-09-12 · 62 synth runs · nano + turbo · Vulkan synth / CPU eval",
+  session: "2026-09-12 | 62 synth runs | nano + turbo | Vulkan synth / CPU eval",
   sweetSpot:
-    "Likely sweet spot for counting: repeat-penalty between 1.05 and 1.15 (not yet measured). At 1.0: longest output (+108 tokens) but silence-token collapse (171×4299). At 1.2 header: misses numbers 20–21. At 1.5: shortest, cleanest silence (5×4299), all numbers OK.",
+    "Likely sweet spot for counting: repeat-penalty between 1.05 and 1.15 (not yet measured). At 1.0: longest output (+108 tokens) but silence-token collapse (171x4299). At 1.2 header: misses numbers 20-21. At 1.5: shortest, cleanest silence (5x4299), all numbers OK.",
   knobBars: [
     { id: "header 1.2", pred: 582, sil: 34, utmos: 4.33, dur: 23.4 },
     { id: "repeat 1.0", pred: 690, sil: 171, utmos: 4.51, dur: 27.7 },
@@ -89,7 +89,7 @@ export default function TtsKnowledgeReport() {
         <H1>TTS Knob Sweep — Human and AI Knowledge Report</H1>
         <Text tone="secondary">{D.session}</Text>
         <Text>
-          Pins: nano 41e1f684 · turbo 6af3e8b2 · Trident v3 fc0d3e1f. Regenerate: python eval_out/knob_sweep.py
+          Pins: nano 41e1f684 | turbo 6af3e8b2 | Trident v3 d183ed3. Regenerate: python eval_out/knob_sweep.py --round3
         </Text>
       </Stack>
 
@@ -98,9 +98,9 @@ export default function TtsKnowledgeReport() {
       </Callout>
 
       <Grid columns={2} gap={16}>
-        <Stat label="Nano max good · 135 BPE · ~32s prose" value="790 tok" tone="success" />
-        <Stat label="Nano cliff · 436+ BPE · instant stop" value="15 tok" tone="danger" />
-        <Stat label="Turbo max trap text · 436 BPE degraded" value="145 tok" tone="warning" />
+        <Stat label="Nano max good 135 BPE ~32s prose" value="790 tok" tone="success" />
+        <Stat label="Nano cliff 436+ BPE instant stop" value="15 tok" tone="danger" />
+        <Stat label="Turbo max trap 436 BPE degraded" value="145 tok" tone="warning" />
         <Stat label="Full benchmark cliff both models" value="556 BPE" tone="danger" />
       </Grid>
 
@@ -122,9 +122,9 @@ export default function TtsKnowledgeReport() {
           <CardHeader>Nano maximum usable example</CardHeader>
           <CardBody>
             <Stack gap={8}>
-              <Text weight="semibold">long_25pct slice · 487 chars · 135 BPE</Text>
+              <Text weight="semibold">long_25pct slice 487 chars 135 BPE</Text>
               <Text size="small" tone="secondary">
-                First quarter of benchmark_text.txt — flowing prose.
+                First quarter of benchmark_text.txt, flowing prose.
               </Text>
               <Text size="small">
                 Header defaults: 790 speech tokens, 31.7 s, eos=1. Content can regress after ~14 s in long runs.
@@ -136,7 +136,7 @@ export default function TtsKnowledgeReport() {
           <CardHeader>Nano cliff example</CardHeader>
           <CardBody>
             <Stack gap={8}>
-              <Text weight="semibold">Full benchmark · 1951 chars · 556 BPE</Text>
+              <Text weight="semibold">Full benchmark 1951 chars 556 BPE</Text>
               <Text size="small" tone="secondary">eval_out/benchmark_text.txt entire string.</Text>
               <Text size="small">
                 15 speech tokens, 0.68 s, stop_speech at step 15. Not ctx overflow (933 slots). Knobs do not fix.
@@ -146,9 +146,9 @@ export default function TtsKnowledgeReport() {
         </Card>
       </Grid>
 
-      <H2>Round 1 — repeat-penalty vs length (count 10–27, nano)</H2>
+      <H2>Round 1 repeat-penalty vs length (count 10-27, nano)</H2>
       <Text size="small" tone="secondary">
-        Source: knob_sweep_report.jsonl · speech tokens and silence picks
+        Source: knob_sweep_report.jsonl, speech tokens and silence picks
       </Text>
       <BarChart
         height={260}
@@ -162,7 +162,7 @@ export default function TtsKnowledgeReport() {
         <BarChart
           height={220}
           categories={D.knobBars.map((k) => k.id)}
-          series={[{ name: "UTMOS (1–5)", data: D.knobBars.map((k) => k.utmos), tone: "success" }]}
+          series={[{ name: "UTMOS (1-5 scale)", data: D.knobBars.map((k) => k.utmos), tone: "success" }]}
           beginAtZero={false}
           yMin={3.8}
           yMax={4.7}
@@ -176,7 +176,7 @@ export default function TtsKnowledgeReport() {
 
       <H2>Input BPE vs speech output (threshold probe)</H2>
       <Text size="small" tone="secondary">
-        Source: threshold_report.json · reference line at 15-token cliff floor
+        Source: threshold_report.json, reference line at 15-token cliff floor
       </Text>
       <Grid columns={2} gap={16}>
         <Stack gap={4}>
@@ -205,9 +205,9 @@ export default function TtsKnowledgeReport() {
         </Stack>
       </Grid>
 
-      <H2>Sampler time series — P(silence token 4299)</H2>
+      <H2>Sampler time series P(silence token 4299)</H2>
       <Text size="small" tone="secondary">
-        count_10_27 nano · dump CSV sil4299_prob · downsampled every ~50 T3 steps
+        count_10_27 nano, dump CSV sil4299_prob, downsampled every 50 T3 steps
       </Text>
       <LineChart
         height={240}
@@ -220,7 +220,7 @@ export default function TtsKnowledgeReport() {
         yMax={1}
       />
       <Text size="small">
-        repeat=1.0 drives P(4299) above 0.9 for long stretches — silence collapse in the sampler, not VAD breath gaps.
+        repeat=1.0 drives P(4299) above 0.9 for long stretches. Silence collapse in the sampler, not VAD breath gaps.
       </Text>
 
       <H2>Analysis tools</H2>
@@ -257,14 +257,8 @@ export default function TtsKnowledgeReport() {
         columnAlign={["left", "right", "right", "right", "right"]}
       />
 
-      <Callout tone="warning" title="Phase 3 — edge knobs not yet swept">
-        <Stack gap={4}>
-          {D.phase3.map((p) => (
-            <Text key={p} size="small">
-              {p}
-            </Text>
-          ))}
-        </Stack>
+      <Callout tone="warning" title="Phase 3 edge knob sweep">
+        {D.phase3.join(" ")}
       </Callout>
 
       <Text size="small" tone="tertiary" style={{ borderTop: `1px solid ${theme.stroke.primary}`, paddingTop: 12 }}>

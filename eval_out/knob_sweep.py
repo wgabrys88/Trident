@@ -89,6 +89,67 @@ ROUND1 = [
     },
 ]
 
+R3_SUMMARY = ROOT / "eval_out" / "knob_sweep_round3_summary.json"
+
+ROUND3_REPEAT = [
+    {
+        "id": f"r3_repeat_{v.replace('.', '')}",
+        "knobs": {"repeat-penalty": v},
+        "hypothesis": f"repeat-penalty={v} on count_10_27; bisect sweet spot between length and 4299 collapse.",
+        "source": "phase3 repeat bisect",
+    }
+    for v in ("1.0", "1.05", "1.1", "1.15", "1.2")
+]
+
+ROUND3_EDGE = []
+for val in ("0", "50", "1000"):
+    ROUND3_EDGE.append(
+        {
+            "id": f"r3_topk_{val}",
+            "knobs": {"top-k": val},
+            "hypothesis": f"top-k={val} vs header 1000; tighter sampling may reduce 4299 collapse.",
+            "source": "phase3 edge top-k",
+        }
+    )
+for val in ("64", "256", "1000"):
+    ROUND3_EDGE.append(
+        {
+            "id": f"r3_repeatlastn_{val}",
+            "knobs": {"repeat-last-n": val},
+            "hypothesis": f"repeat-last-n={val} vs header 1000; shorter penalty window.",
+            "source": "phase3 edge repeat-last-n",
+        }
+    )
+for val in ("2", "4", "8", "10"):
+    ROUND3_EDGE.append(
+        {
+            "id": f"r3_cfm_{val}",
+            "knobs": {"cfm-steps": val},
+            "hypothesis": f"cfm-steps={val}; S3Gen quality vs speed, T3 length unchanged.",
+            "source": "phase3 edge cfm-steps",
+        }
+    )
+for val in ("0", "42", "123"):
+    ROUND3_EDGE.append(
+        {
+            "id": f"r3_seed_{val}",
+            "knobs": {"seed": val},
+            "hypothesis": f"seed={val} vs header 42; sampling stability.",
+            "source": "phase3 edge seed",
+        }
+    )
+for val in ("500", "1000", "2000"):
+    ROUND3_EDGE.append(
+        {
+            "id": f"r3_npredict_{val}",
+            "knobs": {"n-predict": val},
+            "hypothesis": f"n-predict={val}; validates output cap only, not eos early stop.",
+            "source": "phase3 edge n-predict",
+        }
+    )
+
+ROUND3 = ROUND3_REPEAT + ROUND3_EDGE
+
 
 def synth(launcher: str, text: str, knobs: dict | None = None) -> Path:
     cmd = ["python", launcher]
@@ -460,6 +521,44 @@ def kill_servers():
         kill(MODELS / pid_name)
 
 
+def summarize_round3(rows: list[dict]):
+    repeat = [r for r in rows if r["profile_id"].startswith("r3_repeat_")]
+    edge = [r for r in rows if not r["profile_id"].startswith("r3_repeat_")]
+    best = []
+    for fam in ("nano", "turbo"):
+        fam_r = [r for r in repeat if r["family"] == fam]
+        if not fam_r:
+            continue
+        scored = []
+        for r in fam_r:
+            ok = r["count_coverage"].get("count_ok") is True
+            sil_frac = r["chosen4299"] / max(r["predicted_count"], 1)
+            scored.append(
+                {
+                    "profile_id": r["profile_id"],
+                    "repeat_penalty": r["knobs"].get("repeat-penalty"),
+                    "predicted_count": r["predicted_count"],
+                    "chosen4299": r["chosen4299"],
+                    "sil_frac": round(sil_frac, 3),
+                    "count_ok": ok,
+                    "utmos": round(r["utmos"], 3),
+                    "duration_s": r["duration_s"],
+                }
+            )
+        scored.sort(key=lambda x: (-int(x["count_ok"]), x["sil_frac"], -x["predicted_count"]))
+        best.append({"family": fam, "repeat_ranked": scored})
+    out = {
+        "updated": datetime.now(timezone.utc).isoformat(),
+        "round": "round3",
+        "text_id": "count_10_27",
+        "repeat_bisect": best,
+        "edge_rows": len(edge),
+        "total_rows": len(rows),
+    }
+    R3_SUMMARY.write_text(json.dumps(out, indent=2), encoding="utf-8")
+    print(R3_SUMMARY)
+
+
 def load_rows() -> list[dict]:
     if not REPORT.is_file():
         return []
@@ -467,29 +566,46 @@ def load_rows() -> list[dict]:
 
 
 def main():
+    round3_only = len(sys.argv) > 1 and sys.argv[1] == "--round3"
     existing = load_rows()
     if existing:
         print(f"resume: {len(existing)} rows in {REPORT.name}")
-    else:
+    elif not round3_only:
         REPORT.write_text("", encoding="utf-8")
     kill_servers()
     families = (("nano", "tts_nano.py"), ("turbo", "tts_turbo.py"))
     scorer = Scorer()
+    rounds_done = {r["round"] for r in existing}
+
+    if round3_only:
+        r3_texts = {k: TEXTS[k] for k in ("count_10_27",)}
+        if "round3" in rounds_done:
+            r3_rows = [r for r in existing if r["round"] == "round3"]
+            print(f"skip round3 ({len(r3_rows)} rows)")
+        else:
+            r3_rows = run_round("round3", ROUND3, families, r3_texts, scorer)
+        summarize_round3(r3_rows)
+        return
+
     r1_texts = {k: TEXTS[k] for k in ("count_10_27", "prose_130")}
-    r1_done = {r["round"] for r in existing}
-    if "round1" in r1_done:
+    if "round1" in rounds_done:
         r1_rows = [r for r in existing if r["round"] == "round1"]
         print(f"skip round1 ({len(r1_rows)} rows)")
     else:
         r1_rows = run_round("round1", ROUND1, families, r1_texts, scorer)
     r2_profiles = plan_round2(r1_rows)
-    r2_texts = TEXTS
-    if "round2" in r1_done:
+    if "round2" in rounds_done:
         r2_rows = [r for r in existing if r["round"] == "round2"]
         print(f"skip round2 ({len(r2_rows)} rows)")
     else:
-        r2_rows = run_round("round2", r2_profiles, families, r2_texts, scorer)
-    summarize(r1_rows + r2_rows, r2_profiles)
+        r2_rows = run_round("round2", r2_profiles, families, TEXTS, scorer)
+    if "round3" in rounds_done:
+        r3_rows = [r for r in existing if r["round"] == "round3"]
+        print(f"skip round3 ({len(r3_rows)} rows)")
+    else:
+        r3_rows = run_round("round3", ROUND3, families, {"count_10_27": TEXTS["count_10_27"]}, scorer)
+        summarize_round3(r3_rows)
+    summarize(r1_rows + r2_rows + r3_rows, r2_profiles)
 
 
 if __name__ == "__main__":
