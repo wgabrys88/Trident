@@ -1,0 +1,348 @@
+{
+  "baseline_profile": "r1_header",
+  "confirmations": [
+    {
+      "profile_id": "r1_top_p_1",
+      "knobs": {
+        "top-p": "1.0"
+      },
+      "hypothesis": "Wider nucleus sampling may extend generation and reduce early stop_speech.",
+      "observations": [
+        {
+          "family": "nano",
+          "text_id": "count_10_27",
+          "delta_predicted": -82,
+          "delta_duration_s": -3.28,
+          "delta_utmos": -0.046,
+          "delta_chosen4299": -17,
+          "delta_f0_std": 1.04,
+          "count_ok": true
+        },
+        {
+          "family": "nano",
+          "text_id": "prose_130",
+          "delta_predicted": -17,
+          "delta_duration_s": -0.68,
+          "delta_utmos": 0.039,
+          "delta_chosen4299": 2,
+          "delta_f0_std": -3.69,
+          "count_ok": null
+        },
+        {
+          "family": "turbo",
+          "text_id": "count_10_27",
+          "delta_predicted": 8,
+          "delta_duration_s": 0.32,
+          "delta_utmos": -0.202,
+          "delta_chosen4299": -18,
+          "delta_f0_std": 5.45,
+          "count_ok": true
+        },
+        {
+          "family": "turbo",
+          "text_id": "prose_130",
+          "delta_predicted": -32,
+          "delta_duration_s": -1.28,
+          "delta_utmos": -0.211,
+          "delta_chosen4299": 0,
+          "delta_f0_std": -1.88,
+          "count_ok": null
+        }
+      ]
+    },
+    {
+      "profile_id": "r1_repeat_1",
+      "knobs": {
+        "repeat-penalty": "1.0"
+      },
+      "hypothesis": "Lower penalty on counting lists should raise predicted_count and reduce dropped numbers.",
+      "observations": [
+        {
+          "family": "nano",
+          "text_id": "count_10_27",
+          "delta_predicted": 108,
+          "delta_duration_s": 4.32,
+          "delta_utmos": 0.184,
+          "delta_chosen4299": 137,
+          "delta_f0_std": -1.48,
+          "count_ok": true
+        },
+        {
+          "family": "nano",
+          "text_id": "prose_130",
+          "delta_predicted": 2,
+          "delta_duration_s": 0.08,
+          "delta_utmos": 0.126,
+          "delta_chosen4299": 7,
+          "delta_f0_std": -4.55,
+          "count_ok": null
+        },
+        {
+          "family": "turbo",
+          "text_id": "count_10_27",
+          "delta_predicted": 216,
+          "delta_duration_s": 8.64,
+          "delta_utmos": -0.027,
+          "delta_chosen4299": 149,
+          "delta_f0_std": -0.5,
+          "count_ok": false
+        },
+        {
+          "family": "turbo",
+          "text_id": "prose_130",
+          "delta_predicted": 63,
+          "delta_duration_s": 2.52,
+          "delta_utmos": -0.318,
+          "delta_chosen4299": 16,
+          "delta_f0_std": 1.73,
+          "count_ok": null
+        }
+      ]
+    },
+    {
+      "profile_id": "r1_repeat_15",
+      "knobs": {
+        "repeat-penalty": "1.5"
+      },
+      "hypothesis": "Higher penalty shortens output and reduces phrase loops.",
+      "observations": [
+        {
+          "family": "nano",
+          "text_id": "count_10_27",
+          "delta_predicted": -112,
+          "delta_duration_s": -4.48,
+          "delta_utmos": -0.072,
+          "delta_chosen4299": -29,
+          "delta_f0_std": 5.6,
+          "count_ok": true
+        },
+        {
+          "family": "nano",
+          "text_id": "prose_130",
+          "delta_predicted": 14,
+          "delta_duration_s": 0.56,
+          "delta_utmos": -0.095,
+          "delta_chosen4299": 1,
+          "delta_f0_std": -2.78,
+          "count_ok": null
+        },
+        {
+          "family": "turbo",
+          "text_id": "count_10_27",
+          "delta_predicted": 34,
+          "delta_duration_s": 1.36,
+          "delta_utmos": -0.075,
+          "delta_chosen4299": -14,
+          "delta_f0_std": 6.99,
+          "count_ok": false
+        },
+        {
+          "family": "turbo",
+          "text_id": "prose_130",
+          "delta_predicted": 3,
+          "delta_duration_s": 0.12,
+          "delta_utmos": 0.01,
+          "delta_chosen4299": 0,
+          "delta_f0_std": -2.49,
+          "count_ok": null
+        }
+      ]
+    },
+    {
+      "profile_id": "r1_temp_06",
+      "knobs": {
+        "temperature": "0.6"
+      },
+      "hypothesis": "Steadier tone, better number fidelity, possibly shorter generation.",
+      "observations": [
+        {
+          "family": "nano",
+          "text_id": "count_10_27",
+          "delta_predicted": -93,
+          "delta_duration_s": -3.72,
+          "delta_utmos": -0.078,
+          "delta_chosen4299": -8,
+          "delta_f0_std": -12.27,
+          "count_ok": true
+        },
+        {
+          "family": "nano",
+          "text_id": "prose_130",
+          "delta_predicted": 16,
+          "delta_duration_s": 0.64,
+          "delta_utmos": -0.053,
+          "delta_chosen4299": 0,
+          "delta_f0_std": -3.33,
+          "count_ok": null
+        },
+        {
+          "family": "turbo",
+          "text_id": "count_10_27",
+          "delta_predicted": -22,
+          "delta_duration_s": -0.88,
+          "delta_utmos": 0.001,
+          "delta_chosen4299": -19,
+          "delta_f0_std": 6.31,
+          "count_ok": false
+        },
+        {
+          "family": "turbo",
+          "text_id": "prose_130",
+          "delta_predicted": -30,
+          "delta_duration_s": -1.2,
+          "delta_utmos": -0.108,
+          "delta_chosen4299": -4,
+          "delta_f0_std": -2.2,
+          "count_ok": null
+        }
+      ]
+    },
+    {
+      "profile_id": "r1_temp_10",
+      "knobs": {
+        "temperature": "1.0"
+      },
+      "hypothesis": "More prosodic variation, worse counting WER, higher f0_std.",
+      "observations": [
+        {
+          "family": "nano",
+          "text_id": "count_10_27",
+          "delta_predicted": -128,
+          "delta_duration_s": -5.12,
+          "delta_utmos": -0.3,
+          "delta_chosen4299": -27,
+          "delta_f0_std": 15.16,
+          "count_ok": false
+        },
+        {
+          "family": "nano",
+          "text_id": "prose_130",
+          "delta_predicted": -28,
+          "delta_duration_s": -1.12,
+          "delta_utmos": 0.045,
+          "delta_chosen4299": 2,
+          "delta_f0_std": -6.95,
+          "count_ok": null
+        },
+        {
+          "family": "turbo",
+          "text_id": "count_10_27",
+          "delta_predicted": -19,
+          "delta_duration_s": -0.76,
+          "delta_utmos": -0.079,
+          "delta_chosen4299": -5,
+          "delta_f0_std": -11.4,
+          "count_ok": false
+        },
+        {
+          "family": "turbo",
+          "text_id": "prose_130",
+          "delta_predicted": -24,
+          "delta_duration_s": -0.96,
+          "delta_utmos": -0.042,
+          "delta_chosen4299": -2,
+          "delta_f0_std": -4.68,
+          "count_ok": null
+        }
+      ]
+    },
+    {
+      "profile_id": "r1_silence_0",
+      "knobs": {
+        "silence-count": "0"
+      },
+      "hypothesis": "No trailing silence changes tail PCM and chosen4299 timeline only.",
+      "observations": [
+        {
+          "family": "nano",
+          "text_id": "count_10_27",
+          "delta_predicted": 0,
+          "delta_duration_s": -0.12,
+          "delta_utmos": 0.007,
+          "delta_chosen4299": 0,
+          "delta_f0_std": -0.13,
+          "count_ok": false
+        },
+        {
+          "family": "nano",
+          "text_id": "prose_130",
+          "delta_predicted": 0,
+          "delta_duration_s": -0.12,
+          "delta_utmos": -0.044,
+          "delta_chosen4299": 0,
+          "delta_f0_std": -0.1,
+          "count_ok": null
+        },
+        {
+          "family": "turbo",
+          "text_id": "count_10_27",
+          "delta_predicted": 0,
+          "delta_duration_s": -0.12,
+          "delta_utmos": -0.0,
+          "delta_chosen4299": 0,
+          "delta_f0_std": -0.04,
+          "count_ok": false
+        },
+        {
+          "family": "turbo",
+          "text_id": "prose_130",
+          "delta_predicted": 0,
+          "delta_duration_s": -0.12,
+          "delta_utmos": 0.006,
+          "delta_chosen4299": 0,
+          "delta_f0_std": 0.06,
+          "count_ok": null
+        }
+      ]
+    },
+    {
+      "profile_id": "r1_cfm_4",
+      "knobs": {
+        "cfm-steps": "4"
+      },
+      "hypothesis": "S3Gen quality up (UTMOS/PQ/CE); T3 predicted_count unchanged.",
+      "observations": [
+        {
+          "family": "nano",
+          "text_id": "count_10_27",
+          "delta_predicted": 0,
+          "delta_duration_s": 0.0,
+          "delta_utmos": 0.176,
+          "delta_chosen4299": 0,
+          "delta_f0_std": 0.18,
+          "count_ok": false
+        },
+        {
+          "family": "nano",
+          "text_id": "prose_130",
+          "delta_predicted": 0,
+          "delta_duration_s": 0.0,
+          "delta_utmos": -0.051,
+          "delta_chosen4299": 0,
+          "delta_f0_std": 1.76,
+          "count_ok": null
+        },
+        {
+          "family": "turbo",
+          "text_id": "count_10_27",
+          "delta_predicted": 0,
+          "delta_duration_s": 0.0,
+          "delta_utmos": -0.079,
+          "delta_chosen4299": 0,
+          "delta_f0_std": 0.15,
+          "count_ok": false
+        },
+        {
+          "family": "turbo",
+          "text_id": "prose_130",
+          "delta_predicted": 0,
+          "delta_duration_s": 0.0,
+          "delta_utmos": -0.026,
+          "delta_chosen4299": 0,
+          "delta_f0_std": -1.25,
+          "count_ok": null
+        }
+      ]
+    }
+  ]
+}
