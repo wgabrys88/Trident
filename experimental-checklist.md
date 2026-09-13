@@ -7,7 +7,7 @@ One tree, three families. Not a git-merge of nano/turbo/v3. Not onto main.
 | repo | branch | SHA | note |
 | --- | --- | --- | --- |
 | chatterbox.cpp | experimental | `2bb942bac8bd8653b6751d70be3766ba103c49f3` | parent `d83dbd3`; CMake TTS_FAMILY quotes |
-| Trident | experimental | (this commit) | all three launchers pin chatterbox `2bb942b` |
+| Trident | experimental | `9300f0e8165c21bbb5a54c865f5112833d54fdb5` | all three launchers pin chatterbox `2bb942b` |
 
 ## Done
 
@@ -20,7 +20,7 @@ One tree, three families. Not a git-merge of nano/turbo/v3. Not onto main.
 
 ## Now
 
-- [ ] Push `experimental` in **both** repos: `git push -u origin experimental`
+- [x] Push `experimental` in **both** repos (`origin/experimental` exists; no PR to main)
 - [ ] CMake configure actually succeeds for nano, turbo, v3
 - [ ] Speak nano
 - [ ] Speak turbo
