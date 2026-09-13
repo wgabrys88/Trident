@@ -5,7 +5,7 @@ from tts_common import GPT2_KNOBS, Variant, parse_variant_args, run_variant
 CFG = Variant(
     name="turbo",
     branch="experimental",
-    chatterbox_rev="3f0bd2dec35234e53f13d6b75c32d735e06a8f1e",
+    chatterbox_rev="8cf89e1acc1b5b81fe500ad0e3e0b838a21f0bdc",
     hf="https://huggingface.co/ResembleAI/chatterbox-turbo/resolve/749d1c1a46eb10492095d68fbcf55691ccf137cd",
     assets=(
         "t3_turbo_v1.safetensors",
@@ -34,8 +34,8 @@ CFG = Variant(
 
 
 def main():
-    text, language, knobs = parse_variant_args(CFG, sys.argv)
-    run_variant(CFG, text, language, knobs)
+    text, language, knobs, no_chunk = parse_variant_args(CFG, sys.argv)
+    run_variant(CFG, text, language, knobs, no_chunk)
 
 
 if __name__ == "__main__":

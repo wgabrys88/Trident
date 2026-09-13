@@ -294,13 +294,11 @@ def list_hi(text: str) -> int | None:
 
 
 def chunk_size(family: str, n: int) -> int:
-    if family == "nano":
-        return 13 if n <= 30 else 12
-    if family == "turbo":
-        return 18 if n <= 30 else 17
-    if family == "v3":
-        return 30 if n <= 30 else 22
-    return n
+    roof = ROOF_N.get(family, n)
+    sz = max(1, int(roof * 0.85))
+    if n > 30:
+        sz = max(1, sz - 1)
+    return sz
 
 
 def list_chunks(family: str, n: int) -> list[str]:
@@ -314,14 +312,56 @@ def list_chunks(family: str, n: int) -> list[str]:
     return out
 
 
-def speak_pieces(cfg: Variant, text: str) -> list[str]:
+def eld_mode() -> bool:
+    v = os.environ.get("CHATTERBOX_ELD", "").strip().lower()
+    return v in ("1", "true", "yes")
+
+
+ROOF_N = {"nano": 20, "turbo": 15, "v3": 20}
+PROSE_ROOF = {"nano": 280, "turbo": 280, "v3": 320}
+
+
+def prose_chunks(text: str, max_chars: int) -> list[str]:
+    t = text.strip()
+    if len(t) <= max_chars:
+        return [t]
+    parts = []
+    buf = ""
+    for ch in t:
+        buf += ch
+        if ch in ".!?" and len(buf.strip()) >= 10:
+            parts.append(buf.strip())
+            buf = ""
+    if buf.strip():
+        parts.append(buf.strip())
+    if not parts:
+        return [t]
+    out = []
+    cur = ""
+    for p in parts:
+        if not cur:
+            cur = p
+        elif len(cur) + 1 + len(p) <= max_chars:
+            cur = f"{cur} {p}"
+        else:
+            out.append(cur)
+            cur = p
+    if cur:
+        out.append(cur)
+    return out or [t]
+
+
+def speak_pieces(cfg: Variant, text: str, *, chunk: bool = True) -> list[str]:
+    if not chunk or eld_mode():
+        return utterances(text)
     out = []
     for piece in utterances(text):
         n = list_hi(piece)
         if n:
             out.extend(list_chunks(cfg.name, n))
         else:
-            out.append(piece)
+            roof = PROSE_ROOF.get(cfg.name, len(piece))
+            out.extend(prose_chunks(piece, roof))
     if not out:
         raise SystemExit("empty text")
     return out
@@ -363,9 +403,10 @@ def usage(cfg: Variant):
     return f"usage: python tts_{cfg.name}.py [-h] {flags} <text>"
 
 
-def parse_variant_args(cfg: Variant, argv: list[str]) -> tuple[str, str | None, dict[str, str]]:
+def parse_variant_args(cfg: Variant, argv: list[str]) -> tuple[str, str | None, dict[str, str], bool]:
     args = argv[1:]
     cli: dict[str, str] = {}
+    no_chunk = False
     i = 0
     allowed = set(cfg.knobs)
     while i < len(args):
@@ -373,6 +414,10 @@ def parse_variant_args(cfg: Variant, argv: list[str]) -> tuple[str, str | None, 
         if a in ("-h", "--help", "-?"):
             print(usage(cfg))
             raise SystemExit(0)
+        if a == "--no-chunk":
+            no_chunk = True
+            i += 1
+            continue
         if not a.startswith("--"):
             break
         name = a[2:]
@@ -384,10 +429,10 @@ def parse_variant_args(cfg: Variant, argv: list[str]) -> tuple[str, str | None, 
     if cfg.needs_language:
         if len(rest) != 2:
             raise SystemExit(usage(cfg))
-        return rest[0], rest[1].lower(), cli
+        return rest[0], rest[1].lower(), cli, no_chunk
     if len(rest) != 1:
         raise SystemExit(usage(cfg))
-    return rest[0], None, cli
+    return rest[0], None, cli, no_chunk
 
 
 def normalize_knob(name: str, raw: str | None) -> str:
@@ -427,6 +472,7 @@ def run_variant(
     text: str,
     language: str | None = None,
     knobs: dict[str, str] | None = None,
+    no_chunk: bool = False,
 ):
     if not REF.is_file():
         raise FileNotFoundError(str(REF))
@@ -525,7 +571,7 @@ def run_variant(
     lang_stamp = ""
     if lang_stamp_path and lang_stamp_path.is_file():
         lang_stamp = lang_stamp_path.read_text(encoding="ascii").strip()
-    pieces = speak_pieces(cfg, text)
+    pieces = speak_pieces(cfg, text, chunk=not no_chunk)
     lang = (language or "en").lower() if cfg.needs_language else ""
     if converted or voice_stamp != voice:
         kill(pid)
@@ -545,6 +591,7 @@ def run_variant(
     if not running(pid):
         wait_pipe_absent(pipe)
         spawn(cfg, exe, t3, s3, pipe, pid, lang or None, values)
+    wav_paths: list[Path] = []
     for i, piece in enumerate(pieces):
         stamp_t = time.strftime("%Y%m%d-%H%M%S")
         name = f"{stamp_t}-{cfg.name}.wav" if len(pieces) == 1 else f"{stamp_t}-{cfg.name}-{i}.wav"
@@ -554,3 +601,6 @@ def run_variant(
         rtf = wall / dur if dur > 0 else 0.0
         print(f"wall_s={wall:.3f} duration_s={dur:.3f} rtf={rtf:.3f}", file=sys.stderr, flush=True)
         print(out, flush=True)
+        wav_paths.append(out)
+    if len(wav_paths) > 1:
+        print("manifest " + " ".join(str(p) for p in wav_paths), flush=True)
