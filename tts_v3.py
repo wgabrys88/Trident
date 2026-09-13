@@ -5,7 +5,7 @@ from tts_common import V3_KNOBS, Variant, parse_variant_args, run_variant
 CFG = Variant(
     name="v3",
     branch="experimental",
-    chatterbox_rev="3f0bd2dec35234e53f13d6b75c32d735e06a8f1e",
+    chatterbox_rev="8cf89e1acc1b5b81fe500ad0e3e0b838a21f0bdc",
     hf="https://huggingface.co/ResembleAI/chatterbox/resolve/5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18",
     assets=(
         "t3_mtl23ls_v3.safetensors",
@@ -15,7 +15,7 @@ CFG = Variant(
         "grapheme_mtl_merged_expanded_v1.json",
         "Cangjie5_TC.json",
     ),
-    t3_name="chatterbox-t3-v3-q8_0.gguf",
+    t3_name="chatterbox-t3-v3-f16.gguf",
     s3_name="chatterbox-s3gen-v3-q4_0.gguf",
     stamp_name="v3.voice.sha256",
     rev_name="v3.rev",
@@ -26,6 +26,7 @@ CFG = Variant(
     pipe_tag=b"v3",
     other_pids=("server.pid", "turbo.pid"),
     t3_script="convert-t3-v3-to-gguf.py",
+    t3_convert_flags=("--f16",),
     s3_script="convert-s3gen-v3-to-gguf.py",
     knobs=V3_KNOBS,
     needs_language=True,
@@ -33,8 +34,8 @@ CFG = Variant(
 
 
 def main():
-    text, language, knobs = parse_variant_args(CFG, sys.argv)
-    run_variant(CFG, text, language, knobs)
+    text, language, knobs, no_chunk = parse_variant_args(CFG, sys.argv)
+    run_variant(CFG, text, language, knobs, no_chunk)
 
 
 if __name__ == "__main__":

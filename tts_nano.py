@@ -5,7 +5,7 @@ from tts_common import GPT2_KNOBS, Variant, parse_variant_args, run_variant
 CFG = Variant(
     name="nano",
     branch="experimental",
-    chatterbox_rev="3f0bd2dec35234e53f13d6b75c32d735e06a8f1e",
+    chatterbox_rev="8cf89e1acc1b5b81fe500ad0e3e0b838a21f0bdc",
     hf="https://huggingface.co/ResembleAI/chatterbox-nano/resolve/71ccd1d0081b430592cea481f4307e764e07bc64",
     assets=(
         "t3_nano_v1.safetensors",
@@ -16,7 +16,7 @@ CFG = Variant(
         "merges.txt",
         "added_tokens.json",
     ),
-    t3_name="chatterbox-t3-nano-q8_0.gguf",
+    t3_name="chatterbox-t3-nano-f16.gguf",
     s3_name="chatterbox-s3gen-nano-q4_0.gguf",
     stamp_name="voice.sha256",
     rev_name="rev",
@@ -27,14 +27,15 @@ CFG = Variant(
     pipe_tag=b"",
     other_pids=("turbo.pid", "v3.pid"),
     t3_script="convert-t3-nano-to-gguf.py",
+    t3_convert_flags=("--f16",),
     s3_script="convert-s3gen-to-gguf.py",
     knobs=GPT2_KNOBS,
 )
 
 
 def main():
-    text, language, knobs = parse_variant_args(CFG, sys.argv)
-    run_variant(CFG, text, language, knobs)
+    text, language, knobs, no_chunk = parse_variant_args(CFG, sys.argv)
+    run_variant(CFG, text, language, knobs, no_chunk)
 
 
 if __name__ == "__main__":
