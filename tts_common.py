@@ -51,6 +51,7 @@ class Variant:
     t3_script: str
     s3_script: str
     knobs: tuple[str, ...]
+    t3_convert_flags: tuple[str, ...] = ()
     needs_language: bool = False
 
 
@@ -411,10 +412,20 @@ def run_variant(
         if not dest.is_file():
             download(f"{cfg.hf}/{name}", dest)
     converted = False
-    for dst, script in ((t3, cfg.t3_script), (s3, cfg.s3_script)):
-        if not dst.is_file():
-            run([str(py), str(CHATTERBOX / "scripts" / script), str(ckpt), str(dst)])
-            converted = True
+    if not t3.is_file():
+        run(
+            [
+                str(py),
+                str(CHATTERBOX / "scripts" / cfg.t3_script),
+                str(ckpt),
+                str(t3),
+                *cfg.t3_convert_flags,
+            ]
+        )
+        converted = True
+    if not s3.is_file():
+        run([str(py), str(CHATTERBOX / "scripts" / cfg.s3_script), str(ckpt), str(s3)])
+        converted = True
     voice = hashlib.sha256(REF.read_bytes()).hexdigest()
     voice_stamp = stamp.read_text(encoding="ascii").strip() if stamp.is_file() else ""
     lang_stamp_path = MODELS / f"{cfg.name}.language" if cfg.needs_language else None

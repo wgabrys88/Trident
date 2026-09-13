@@ -5,7 +5,7 @@ from tts_common import GPT2_KNOBS, Variant, parse_variant_args, run_variant
 CFG = Variant(
     name="turbo",
     branch="experimental",
-    chatterbox_rev="5a605c268eb82ab86be9453f756c777b84f790f2",
+    chatterbox_rev="3f0bd2dec35234e53f13d6b75c32d735e06a8f1e",
     hf="https://huggingface.co/ResembleAI/chatterbox-turbo/resolve/749d1c1a46eb10492095d68fbcf55691ccf137cd",
     assets=(
         "t3_turbo_v1.safetensors",
@@ -16,7 +16,7 @@ CFG = Variant(
         "merges.txt",
         "added_tokens.json",
     ),
-    t3_name="chatterbox-t3-turbo-q8_0.gguf",
+    t3_name="chatterbox-t3-turbo-f16.gguf",
     s3_name="chatterbox-s3gen-turbo-q4_0.gguf",
     stamp_name="turbo.voice.sha256",
     rev_name="turbo.rev",
@@ -27,6 +27,7 @@ CFG = Variant(
     pipe_tag=b"turbo",
     other_pids=("server.pid", "v3.pid"),
     t3_script="convert-t3-turbo-to-gguf.py",
+    t3_convert_flags=("--f16",),
     s3_script="convert-s3gen-to-gguf.py",
     knobs=GPT2_KNOBS,
 )
