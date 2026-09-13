@@ -203,7 +203,6 @@ def spawn(
     if cfg.needs_language:
         args.append(language or "en")
     env = os.environ.copy()
-    env.setdefault("CHATTERBOX_SAMPLER_LOG", "1")
     wanted = knobs or {}
     for name, (var, _) in KNOB_ENV.items():
         val = wanted.get(name, "") if name in cfg.knobs else ""
@@ -255,8 +254,7 @@ def pad_wav_silence(path: Path, extra_s: float = 1.0):
     path.write_bytes(raw)
 
 
-def play_wav(path: Path, duration_s: float):
-    del duration_s
+def play_wav(path: Path):
     cmd = (
         "$ErrorActionPreference = 'Stop'; (New-Object System.Media.SoundPlayer "
         + json.dumps(str(path))
@@ -287,221 +285,11 @@ def speak(pipe: str, pid: Path, out: Path, text: str) -> float:
     return time.perf_counter() - t0
 
 
-NANO_HELP = """
-Feed speakable English as one argv string. You are the chunker for quality.
-This launcher is not a sentence splitter and the C++ engine is not a chunker.
-Do not invent a character cap. Do not copy Gradio 300. Do not copy a V3
-text_pos budget onto Nano.
-
-Native bounds, not characters. Convert writes chatterbox.n_ctx from
-tfmr.wpe.weight rows. Discover live wpe shape and chatterbox.cond_prompt_length
-on the T3 GGUF. This tree: wpe 768 by 8196, cond_prompt_length 375.
-t3_nano.cpp sets hp.n_ctx from wpe with no header clamp. nano.h has no N_CTX
-constant. Do not shrink the wpe table. prompt_len is 1 plus cond_prompt_len
-plus n_text_tokens plus 1. Engine throws T3 prompt exceeds context if
-prompt_len is greater than n_ctx. Generation also stops when n_past plus 1
-is greater than n_ctx. N_PREDICT 2000 caps output speech tokens, about 80
-seconds at 960 samples per token. N_PREDICT 2000 is ~80 s. Split with ||| only to speak separate
-utterances, not to fake a length limit.
-
-Delimiter: join pieces with a line that is only |||. utterances() splits on
-that, strips, skips empty, then speak() each piece. speak() fails if a piece
-still contains |||. The C++ engine must never see ||| and must not chunk on
-punctuation. The named pipe is path, then a decimal byte length, then that
-many UTF-8 bytes. Newlines and tabs in an utterance are kept. speak() must
-not flatten them to spaces.
-
-Official tags only, including brackets and the space in [clear throat]. They
-are added_tokens.json ids 50257 through 50275. gpt2_bpe matches id >= 50257 as
-literal substrings. A tagged synth dump text line must show those ids. If the
-dump splits [laugh] into normal BPE, convert or BPE is wrong.
-
-Event tags: [clear throat] [sigh] [shush] [cough] [groan] [sniff] [gasp]
-[chuckle] [laugh]
-Style tags: [angry] [fear] [surprised] [whispering] [advertisement] [dramatic]
-[narration] [crying] [happy] [sarcastic]
-Put tags mid-sentence. Example shape: Oh, that's hilarious! [chuckle] Um
-anyway, we do have a new model. No [pause]. No extra tags. Emotion is the tag
-plus baked reference.wav.
-
-Empty models/nano.knobs values mean header defaults: SEED 42, N_PREDICT 2000,
-TOP_K 1000, TOP_P 0.95, TEMPERATURE 0.8, REPEAT_PENALTY 1.2, REPEAT_LAST_N 200,
-RAS_WINDOW 10, RAS_TAU 0.1, CFM_STEPS 2, SILENCE_TOKEN 4299, SILENCE_COUNT 15.
-REPEAT_LAST_N 200 is the earlier lookahead window. N_PREDICT 2000 is the
-speech-token budget so a slow twenty-one-to-thirty list is not cut at thirty.
-Stop-speech after five silence tokens is treated as a pause, not the end, so a
-slow list can continue. A stop that follows speech is the end. Do not keep
-generating until a text-length quota; that padded a finished sentence with
-junk. generate_t3 zeros the KV buffer before each prompt. After EOS the engine appends 15 S3GEN_SIL tokens
-(~0.6 s) so the last word is not sitting in S3Gen pre_lookahead_len 3. Do not
-drop that pad. Split with ||| on utterance boundaries so T3 alignment does
-not skip or loop. PlaySync plus one second of PCM silence is playback only;
-it does not replace the token pad.
-Sampler order matches official turbo processors: repetition penalty, then
-temperature, then top-k, then top-p. After that pick, RAS (VALL-E 2 / CosyVoice)
-rejects the id if it already occurs RAS_WINDOW * RAS_TAU times in the last
-RAS_WINDOW speech tokens (once in 10) and draws once more. This GGUF has no Samsung
-phoneme-position head. Do not add MIN_P. Do not invent C++ argv knobs.
-
-Run from Trident with sibling chatterbox.cpp. Speaker is operator
-reference.wav, 16-bit PCM mono 24000 Hz. After each successful speak this
-launcher prints wall_s duration_s rtf on stderr, appends one second of PCM
-silence, plays the WAV with System.Media.SoundPlayer PlaySync so the last
-word cannot be killed, then prints the WAV path.
-Success is WAV Length greater than 44. Synth RTF is speak wall-clock after the
-pipe is ready, divided by WAV duration.
-"""
-
-TURBO_HELP = """
-Feed speakable English as one argv string. You are the chunker for quality.
-This launcher is not a sentence splitter and the C++ engine is not a chunker.
-Do not invent a character cap. Do not copy Gradio 300. Do not copy Nano's
-2024 clamp. Do not copy a V3 text_pos budget onto Turbo.
-
-Native bounds, not characters. Convert writes chatterbox.n_ctx from
-tfmr.wpe.weight rows. Discover live wpe shape and chatterbox.cond_prompt_length
-on the T3 GGUF. This tree: wpe 1024 by 8196, cond_prompt_length 375,
-n_embd 1024, n_head 16, n_layer 24, text vocab 50276. t3_nano.cpp on turbo
-sets hp.n_ctx from wpe with no header clamp. turbo.h has no N_CTX constant.
-Do not shrink the wpe table. prompt_len is 1 plus cond_prompt_len plus
-n_text_tokens plus 1. Engine throws T3 prompt exceeds context if prompt_len
-is greater than n_ctx. Generation also stops when n_past plus 1 is greater
-than n_ctx. N_PREDICT 1000 caps output speech tokens, about 40 seconds at
-960 samples per token. Vendor speech_cond_prompt_len is 375. emotion_adv is
-false. Dump path is turbo_t3_dump.txt beside the T3 GGUF. Split with |||
-only to speak separate utterances, not to fake a length limit.
-
-Delimiter: join pieces with a line that is only |||. utterances() splits on
-that, strips, skips empty, then speak() each piece. speak() fails if a piece
-still contains |||. The C++ engine must never see ||| and must not chunk on
-punctuation. The named pipe is path, then a decimal byte length, then that
-many UTF-8 bytes. Newlines and tabs in an utterance are kept. speak() must
-not flatten them to spaces.
-
-Official tags only, including brackets and the space in [clear throat]. They
-are added_tokens.json ids 50257 through 50275. gpt2_bpe matches id >= 50257 as
-literal substrings. A tagged synth dump text line must show those ids. If the
-dump splits [laugh] into normal BPE, convert or BPE is wrong.
-
-Event tags: [clear throat] [sigh] [shush] [cough] [groan] [sniff] [gasp]
-[chuckle] [laugh]
-Style tags: [angry] [fear] [surprised] [whispering] [advertisement] [dramatic]
-[narration] [crying] [happy] [sarcastic]
-Put tags mid-sentence. Example shape: Oh, that's hilarious! [chuckle] Um
-anyway, we do have a new model. No [pause]. No [whisper]. No [breath]. Emotion
-is the tag plus baked reference.wav.
-
-Empty models/turbo.knobs values mean header defaults that match official
-Turbo generate and inference_turbo: SEED 42, N_PREDICT 1000, TOP_K 1000,
-TOP_P 0.95, TEMPERATURE 0.8, REPEAT_PENALTY 1.2, REPEAT_LAST_N 1000,
-CFM_STEPS 2, SILENCE_TOKEN 4299, SILENCE_COUNT 3. CFM_STEPS 2 matches
-n_cfm_timesteps=2 and meanflow, not the one-step slogan. Silence count 3
-matches three S3GEN_SIL tokens. Launcher flags wrap getenv only:
---temperature --top-p --top-k --repeat-penalty --n-predict --seed
---repeat-last-n --cfm-steps --silence-token --silence-count. Vendor Python
-accepts then ignores cfg_weight, min_p, and exaggeration. turbo.h has none
-of them. Do not add MIN_P. Do not add CFG. Do not add an exaggeration env
-knob. Do not invent C++ argv knobs.
-
-Run from Trident with sibling chatterbox.cpp: python tts_turbo.py "<text>".
-GGUF names chatterbox-t3-turbo-q8_0.gguf and chatterbox-s3gen-turbo-q4_0.gguf.
-Kill via models/turbo.pid. Pipe is \\\\.\\pipe\\chatterbox-turbo-<tag>.
-Speaker is operator reference.wav, 16-bit PCM mono 24000 Hz. After each
-successful speak this launcher prints wall_s duration_s rtf on stderr,
-appends one second of PCM silence, plays the WAV with System.Media.SoundPlayer
-PlaySync so the last word cannot be killed, then prints the WAV path. Success
-is WAV Length greater than 44. Synth RTF is speak wall-clock after the pipe is
-ready, divided by WAV duration.
-"""
-
-V3_HELP = """
-Feed speakable text as one argv string plus a language code. You are the
-chunker for quality. This launcher is not a sentence splitter and the C++
-engine is not a chunker. Do not invent a character cap. Do not copy Gradio
-300. Do not copy Nano or Turbo wpe budgets onto V3. V3 is Llama, not a
-bigger Turbo.
-
-Usage: python tts_v3.py [-h] [knobs] <text> <language>
-Language is argv, not a tag in the text. One language per launch. Changing
-language kills models/v3.pid and respawns the server. Mixed German, Polish,
-and English means three launches: python tts_v3.py "<de text>" de then
-python tts_v3.py "<pl text>" pl then python tts_v3.py "<en text>" en. Do not
-put language into the named pipe. Do not put language into |||.
-
-Live C++ language ids: ar da de el en es fi fr hi it ms nl no pl pt sv sw tr.
-zh ja he ko ru throw language extras unread. Those need Cangjie, hiragana,
-Hebrew, Korean, or Russian extras this C++ does not run. Do not invent them.
-
-Native bounds, not characters. convert-t3-v3-to-gguf.py reads tensors:
-perceiver_len from cond_enc.perceiver.pre_attention_query shape[1],
-text_pos_len from text_pos_emb.emb.weight shape[0], then n_ctx equals 1
-plus perceiver_len plus 1 plus text_pos_len plus 2 plus N_PREDICT.
-N_PREDICT in that formula is 1000, matching v3.h and official generate()
-max_new_tokens. Discover live GGUF keys and tensor rows. This tree:
-chatterbox.n_ctx 3086, perceiver_len 32, cond_prompt_length 150,
-text_pos_emb 1024 by 2050, speech_pos_emb 1024 by 4100. Official V3 is
-Llama 520M: 30 layers, hidden 1024, text vocab 2454, speech vocab 8194,
-perceiver on, emotion_adv on. v3.h has no N_CTX constant. mtl_bpe prepends
-[lang] and [SPACE]. Engine wraps start_text plus BPE plus stop_text.
-text_pos indices are 0 through n_text_tokens minus 1 into text_pos_emb,
-so that vector must fit 2050 rows. prompt_len is 1 plus perceiver_len
-plus 1 plus n_text_tokens plus 2. Engine throws T3 prompt exceeds context
-if prompt_len is greater than n_ctx. Generation stops at N_PREDICT 1000
-or when n_past plus 1 is greater than n_ctx. Official T3Config
-max_text_tokens 2048 and max_speech_tokens 4096 are Python config. C++
-does not store those keys. generate() does not use 4096. Do not fill
-speech_pos 4100. Dump path is v3_t3_dump.txt beside the T3 GGUF. Split
-with ||| only for same-language separate utterances, not to fake a
-length limit.
-
-Delimiter: join pieces of the SAME language with a line that is only |||.
-utterances() splits on that, strips, skips empty, then speak() each piece.
-speak() fails if a piece still contains |||. The C++ engine must never see
-||| and must not chunk on punctuation. The named pipe is path, then a
-decimal byte length, then that many UTF-8 bytes. Newlines and tabs in an
-utterance are kept. speak() must not flatten them to spaces. Raw text for
-that launch language.
-
-No Nano or Turbo paralinguistic tags. No [laugh] [chuckle] [happy]. V3
-emotion is baked builtin_emotion_adv plus live cfg-weight. Do not invent
-an exaggeration env knob. Do not add SILENCE_COUNT. Engine drops invalid
-tokens then trims the last speech token of PCM.
-
-Empty models/v3.knobs values mean header defaults: SEED 42, N_PREDICT 1000,
-TOP_K 0, TOP_P 1.0, MIN_P 0.05, TEMPERATURE 0.8, REPEAT_PENALTY 1.2,
-REPEAT_LAST_N 1000, CFG_WEIGHT 0.5, CFM_STEPS 10, CFM_CFG 0.7,
-SILENCE_TOKEN 4299. CFM_STEPS 10 is standard S3Gen, not turbo meanflow.
-CFG_BATCH is 2. Launcher flags wrap getenv only: --repeat-penalty
---temperature --top-k --top-p --repeat-last-n --seed --n-predict --cfm-steps
---silence-token --min-p --cfg-weight --cfm-cfg. Do not invent C++ argv knobs.
-
-Run from Trident with sibling chatterbox.cpp:
-python tts_v3.py "<text>" <language>
-GGUF names chatterbox-t3-v3-q8_0.gguf and chatterbox-s3gen-v3-q4_0.gguf.
-Kill via models/v3.pid. Pipe is \\\\.\\pipe\\chatterbox-v3-<tag>. Server argv
-is chatterbox-server.exe t3 s3 pipe language. argc less than 5 is fatal.
-Speaker is operator reference.wav, 16-bit PCM mono 24000 Hz. After each
-successful speak this launcher prints wall_s duration_s rtf on stderr,
-appends one second of PCM silence, plays the WAV with System.Media.SoundPlayer
-PlaySync so the last word cannot be killed, then prints the WAV path. Success
-is WAV Length greater than 44. Synth RTF is speak wall-clock after the pipe is
-ready, divided by WAV duration.
-"""
-
-
 def usage(cfg: Variant):
     flags = " ".join(f"[--{n} <v>]" for n in cfg.knobs)
     if cfg.needs_language:
-        head = f"usage: python tts_{cfg.name}.py [-h] {flags} <text> <language>"
-    else:
-        head = f"usage: python tts_{cfg.name}.py [-h] {flags} <text>"
-    if cfg.name == "nano":
-        return head + NANO_HELP
-    if cfg.name == "turbo":
-        return head + TURBO_HELP
-    if cfg.name == "v3":
-        return head + V3_HELP
-    return head
+        return f"usage: python tts_{cfg.name}.py [-h] {flags} <text> <language>"
+    return f"usage: python tts_{cfg.name}.py [-h] {flags} <text>"
 
 
 def parse_variant_args(cfg: Variant, argv: list[str]) -> tuple[str, str | None, dict[str, str]]:
@@ -685,5 +473,5 @@ def run_variant(
         rtf = wall / dur if dur > 0 else 0.0
         print(f"wall_s={wall:.3f} duration_s={dur:.3f} rtf={rtf:.3f}", file=sys.stderr)
         pad_wav_silence(out, 1.0)
-        play_wav(out, dur)
+        play_wav(out)
         print(out)
