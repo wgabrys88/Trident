@@ -8,7 +8,7 @@ python tts_turbo.py "Your text."
 python tts_v3.py "Your text." en
 ```
 
-You do not switch Trident to pick a model. Each launcher checks out the matching Chatterbox branch by name and verifies its own pin (the SHA lives in that launcher). First run of a family builds into `chatterbox.cpp/build/<family>` (Visual Studio 2022 x64 Release, CMake, Vulkan SDK). Wait.
+`experimental` is the one-tree rehearsal. All three launchers pin the same chatterbox `experimental` SHA and checkout that branch, not `nano`/`turbo`/`v3`. CMake `-DTTS_FAMILY=<name>` selects the GPT-2 or Llama backend into `chatterbox.cpp/build/<family>` (Visual Studio 2022 x64 Release, Vulkan). Wait on first run. Production family branches are unchanged.
 
 Same family again: the named-pipe daemon stays loaded and the next sentence is immediate. A different family: the launcher kills the other two daemons first so only one model occupies VRAM. V3 language is fixed when that daemon starts.
 
@@ -37,6 +37,6 @@ Official Python: Nano is Turbo with a smaller GPT-2. V3 is a different stack. Tr
 | Silence tokens | T3 appends 3×4299; S3Gen adds 3 lookahead and drops 6 encoder frames | same | T3 does not append silence; S3Gen still has 3×4299 lookahead; audio resized to `max(1, n_tokens-1)*960` |
 | Languages | English | English | Official 23. This C++ tree rejects zh ja he ko ru. Accepted: en ar da de el es fi fr hi it ms nl no pl pt sv sw tr |
 | Local sampler | seed 42, N_PREDICT 1000, top-k 1000, top-p 0.95, temp 0.8, rep 1.2 | same | seed 42, N_PREDICT 1000, top-k 0, top-p 1, min-p 0.05, temp 0.8, rep 1.2, T3 CFG 0.5, CFM 10, CFM CFG 0.7 |
-| Local C++ | `t3_nano.cpp` + `gpt2_bpe`, `nano.h` | same GPT-2 graph (`turbo.h` is a leftover name) | `t3_v3.cpp` + `mtl_bpe`, `v3.h`. Do not compile Nano T3 here. |
+| Local C++ | `t3_nano.cpp` + `gpt2_bpe`, `nano.h`, RAS, KV clear, pause-vs-stop | same GPT-2 graph, `turbo.h`, no RAS | `t3_v3.cpp` + `mtl_bpe`, `v3.h`. Do not compile Nano T3 into a v3 build. |
 
-Isolation on disk: `build/nano`, `build/turbo`, `build/v3`; own GGUFs, pipes, pid files, voice/rev stamps. Never share `build/bin`. Family branches of this repo are the launchers only. This README lives on `main`.
+Isolation on disk: `build/nano`, `build/turbo`, `build/v3`; own GGUFs, pipes, pid files, voice/rev stamps. Never share `build/bin`. This README lives on `experimental` for the one-tree rehearsal. `main` still documents the three family forks.
