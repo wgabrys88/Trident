@@ -5,7 +5,7 @@ from tts_common import V3_KNOBS, Variant, parse_variant_args, run_variant
 CFG = Variant(
     name="v3",
     branch="experimental",
-    chatterbox_rev="0cbfe7ccfaea14f347549df32b4fed43dbb7d84b",
+    chatterbox_rev="aaafdb6e1d83ecb8fd963ac2e76bc5e5718074e5",
     hf="https://huggingface.co/ResembleAI/chatterbox/resolve/5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18",
     assets=(
         "t3_mtl23ls_v3.safetensors",
@@ -15,10 +15,8 @@ CFG = Variant(
         "grapheme_mtl_merged_expanded_v1.json",
         "Cangjie5_TC.json",
     ),
-    t3_name="chatterbox-t3-v3-f16.gguf",
+    t3_name="chatterbox-t3-v3-q8_0.gguf",
     s3_name="chatterbox-s3gen-v3-q4_0.gguf",
-    stamp_name="v3.voice.sha256",
-    rev_name="v3.rev",
     pid_name="v3.pid",
     build_name="v3",
     venv_name=".venv-convert-v3",
@@ -26,10 +24,15 @@ CFG = Variant(
     pipe_tag=b"v3",
     other_pids=("server.pid", "turbo.pid"),
     t3_script="convert-t3-v3-to-gguf.py",
-    t3_convert_flags=("--f16",),
+    t3_convert_flags=(),
     s3_script="convert-s3gen-v3-to-gguf.py",
     knobs=V3_KNOBS,
     needs_language=True,
+    count_roof=30,
+    count_chunk_short=30,
+    count_chunk_long=22,
+    prose_roof=320,
+    policy="V3: Q8_0 T3 selected because the strongest recorded V3 state passed the 1-30 ladder; Q4_0 V3 S3Gen. V3 remains a separate architecture/pipeline and keeps its own header defaults.",
 )
 
 
