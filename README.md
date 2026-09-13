@@ -12,7 +12,7 @@ python tts_v3.py "Your text." en
 
 Same family again: the named-pipe daemon stays loaded and the next sentence is immediate. A different family: the launcher kills the other two daemons first so only one model occupies VRAM. V3 language is fixed when that daemon starts.
 
-WAV path is `{YYYYMMDD-HHMMSS}-{nano|turbo|v3}.wav` in this root, named when that family's daemon starts. Reuse overwrites that file.
+WAV path is `{YYYYMMDD-HHMMSS}-{nano|turbo|v3}.wav` in this root, named at speak time. Each speak writes a new file.
 
 No TCP, no chunker, no dispatcher. Fail hard.
 
@@ -34,9 +34,9 @@ Official Python: Nano is Turbo with a smaller GPT-2. V3 is a different stack. Tr
 | Exaggeration | ignored | ignored | baked tensor; local `EXAGGERATION=0.5` unused at runtime |
 | S3Gen | meanflow | meanflow | classic CFM, no `time_embed_mixer` |
 | CFM steps | 2 Euler (`n_cfm_timesteps=2`; marketing “1-step” is wrong) | same 2 | 10 Euler, `t[i]=1-cos((i/10)*pi/2)`, CFM CFG 0.7 |
-| Silence tokens | T3 appends 3×4299; S3Gen adds 3 lookahead and drops 6 encoder frames | same | T3 does not append silence; S3Gen still has 3×4299 lookahead; audio resized to `max(1, n_tokens-1)*960` |
+| Silence tokens | T3 appends 15×4299; S3Gen adds 3 lookahead and drops 6 encoder frames | T3 appends 3×4299; S3Gen same lookahead | T3 does not append SILENCE_COUNT; S3Gen still has 3×4299 lookahead; audio resized to `max(1, n_tokens-1)*960` |
 | Languages | English | English | Official 23. This C++ tree rejects zh ja he ko ru. Accepted: en ar da de el es fi fr hi it ms nl no pl pt sv sw tr |
-| Local sampler | seed 42, N_PREDICT 1000, top-k 1000, top-p 0.95, temp 0.8, rep 1.2 | same | seed 42, N_PREDICT 1000, top-k 0, top-p 1, min-p 0.05, temp 0.8, rep 1.2, T3 CFG 0.5, CFM 10, CFM CFG 0.7 |
+| Local sampler | seed 42, N_PREDICT 2000, top-k 1000, top-p 0.95, temp 0.8, rep 1.2, REPEAT_LAST_N 200, RAS 10/0.1, CFM 2, SILENCE_COUNT 15 | seed 42, N_PREDICT 1000, top-k 1000, top-p 0.95, temp 0.8, rep 1.2, REPEAT_LAST_N 1000, no RAS, CFM 2, SILENCE_COUNT 3 | seed 42, N_PREDICT 1000, top-k 0, top-p 1, min-p 0.05, temp 0.8, rep 1.2, REPEAT_LAST_N 1000, T3 CFG 0.5, CFM 10, CFM CFG 0.7. No SILENCE_COUNT |
 | Local C++ | `t3_nano.cpp` + `gpt2_bpe`, `nano.h`, RAS, KV clear, pause-vs-stop | same GPT-2 graph, `turbo.h`, no RAS | `t3_v3.cpp` + `mtl_bpe`, `v3.h`. Do not compile Nano T3 into a v3 build. |
 
 Isolation on disk: `build/nano`, `build/turbo`, `build/v3`; own GGUFs, pipes, pid files, voice/rev stamps. Never share `build/bin`. This README lives on `experimental` for the one-tree rehearsal. `main` still documents the three family forks.
