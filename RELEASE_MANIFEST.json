@@ -7,15 +7,15 @@
   },
   "note": "No model weights or reference.wav are bundled. The original reference.wav remains required. Human documentation is the latest Trident git commit message, not markdown files.",
   "release_id": "trident-best-evidence-2026-09-13-v1",
-  "required_engine_revision": "20ea1cabf505d38a942b9e25b93f48d46ecd47b4",
+  "required_engine_revision": "243f3f64d169122e9553d7dd86096061aa799ca7",
   "source_files_sha256": {
     ".gitattributes": "d60f352d0db1404c70afb4bb8b2ca3fd1c610572aa40720e8a0b7baa7885418c",
     ".gitignore": "8c08799b36273359c589a9f89d425207ca56752df6d10bad584a2112f55f7059",
     "listen.py": "40e77c58547bef0082218de54c8d5e7a08e5142f2c7dbba7a541b21c447e8c9c",
-    "setup_engine_sibling.ps1": "477a69a3bfdedf097bd5786d239be674b344a31b19667a4979c1d8cea7928f9c",
-    "tts_common.py": "ea88d94bf69b0b62888bb9a2b9cfcccbd7c036ba0671c0c7cb05199f878b0b5e",
-    "tts_nano.py": "b7b0f6b0e94a93e17cfce8476dc0c45344199f53befffbfe36b2c7441452f7cd",
-    "tts_turbo.py": "027ef15e524d6f995cb5d2e06d47a4dce53e3521c7f77d484cfb9cd0ec35e61d",
-    "tts_v3.py": "22a6000779d6853b28ca17b69b898b5a1aac443060ffa5502357ffe1b2722e6f"
+    "setup_engine_sibling.ps1": "0d48bc86a48f54687479970c73fceafe0aa803d5d73694c2f2dc9ebfb817dab3",
+    "tts_common.py": "215a2f48421610814ed24d3583cda9c5b35c8c0ecff7bb5c16b2b5cbfedbf23e",
+    "tts_nano.py": "b6685e1d0d7053fda951792090d870fa1d05e3df3b6a41e8a93f5a8dc9987f6d",
+    "tts_turbo.py": "2fe789800a3867f393f0a375864ca703be639d445be6975017cdb566d96701cd",
+    "tts_v3.py": "a4b4d70f63ab9c5614ccab0492711bce8d4c836a59827234e6d05ab4cd57b489"
   }
 }
