@@ -6,9 +6,6 @@
 !/tts_v3.py
 !/tts_common.py
 !/listen.py
-!/README_FINAL.md
-!/MODEL_POLICY.md
-!/UPSTREAM_BASE.txt
 !/setup_engine_sibling.ps1
 !/RELEASE_MANIFEST.json
 # Do not add !knowledgebase.md.

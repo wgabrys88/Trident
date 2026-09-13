@@ -33,8 +33,8 @@ CFG = Variant(
 
 
 def main():
-    text, language, knobs = parse_variant_args(CFG, sys.argv)
-    run_variant(CFG, text, language, knobs)
+    text, language, knobs, play = parse_variant_args(CFG, sys.argv)
+    run_variant(CFG, text, language, knobs, play=play)
 
 
 if __name__ == "__main__":

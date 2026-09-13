@@ -1,26 +1,21 @@
 {
-  "base_trident_revision": "38e0c4947d236e239ffd8e2cd2b98a8c39848efc",
   "ggml_revision": "7840aaba1989c6deeefede1d77d5aaf8f52b947e",
   "model_policy": {
     "nano": "T3 F16 with text_emb/speech_emb/speech_head F32; S3Gen Q4_0",
     "turbo": "T3 F16 with text_emb/speech_emb/speech_head F32; S3Gen Q4_0",
     "v3": "T3 Q8_0; V3 S3Gen Q4_0"
   },
-  "note": "No model weights or reference.wav are bundled. The original reference.wav remains required.",
+  "note": "No model weights or reference.wav are bundled. The original reference.wav remains required. Human documentation is the latest Trident git commit message, not markdown files.",
   "release_id": "trident-best-evidence-2026-09-13-v1",
   "required_engine_revision": "aaafdb6e1d83ecb8fd963ac2e76bc5e5718074e5",
   "source_files_sha256": {
     ".gitattributes": "d60f352d0db1404c70afb4bb8b2ca3fd1c610572aa40720e8a0b7baa7885418c",
-    ".gitignore": "a4c5dc2b669b69bad0fbb3df3cd5aeadcb2e7eb441973c09c49cfc1095246ac0",
+    ".gitignore": "8c08799b36273359c589a9f89d425207ca56752df6d10bad584a2112f55f7059",
     "listen.py": "40e77c58547bef0082218de54c8d5e7a08e5142f2c7dbba7a541b21c447e8c9c",
-    "MODEL_POLICY.md": "e68e7d02f7f8f02c9406419876ee84d3f9aa43b692def375ed4a50fe4c40196c",
-    "README_FINAL.md": "c1f9a699bc27b0c738ab240fab16d2086104f59ce6befdb5f96cfc9749098250",
-    "RELEASE_MANIFEST.json": "3c3137ed6c471248948835a77d64df38891004f20aeee9159cf3f0a260ba280e",
     "setup_engine_sibling.ps1": "2e8c07f61994a0675c59e5e141e25b31e47ac1b6f84776d76fb0ca8c79c0cebf",
-    "tts_common.py": "59384a70795f17d0a6d1c1ad08934eb33cf41f4733d25c787cc461fd3baf290e",
-    "tts_nano.py": "487e79cf6e5c451c9180749d84fd61fb2bfd13916006e55e93a76793da79642a",
-    "tts_turbo.py": "a3cd2bb0e070a5c15b095568522b29f14707be978651a137f8cdd19c34e603ba",
-    "tts_v3.py": "ddba353bb1e7fbb24eb1b81c24d1ff706ad30fcacc43c71f8a98eb5ff6012c97",
-    "UPSTREAM_BASE.txt": "5d387adc73eb690f795f25a02a4c555f6beae2237b1433a4209a576b88e2059d"
+    "tts_common.py": "3babec7657ea546f2f3aea59a6d91444475ddb2338b49a8f85d622be76d81b6c",
+    "tts_nano.py": "590e7e538ea18ec7dcf8ad44469749fa9e0cf5dcd097d3f260970d5ac65184ce",
+    "tts_turbo.py": "49e3bd46b1d4845b39705d425fed5a8e5e9e589e29cbe26e444dd74317462bd1",
+    "tts_v3.py": "20ca7e3dc6e4578dd6e40fb6735e410b8d936968be5ba27babfcd0bf2ee95d71"
   }
 }

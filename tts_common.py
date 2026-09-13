@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 import venv
@@ -260,6 +261,97 @@ def utterances(text: str) -> list[str]:
     return out
 
 
+SPEAK_MAX = 260
+PLAYER_NAMES = {
+    "wmplayer.exe",
+    "microsoft.media.player.exe",
+    "music.ui.exe",
+    "video.ui.exe",
+    "groove.exe",
+    "groovemusic.exe",
+    "photos.exe",
+    "photosapp.exe",
+}
+
+
+def split_sentences(text: str) -> list[str]:
+    t = " ".join(text.split())
+    if not t:
+        return []
+    out = []
+    buf = ""
+    for ch in t:
+        buf += ch
+        if ch in ".!?" and len(buf.strip()) >= 8:
+            out.append(buf.strip())
+            buf = ""
+    if buf.strip():
+        out.append(buf.strip())
+    return out or [t]
+
+
+def split_spoken(text: str) -> list[str]:
+    units = []
+    for part in utterances(text):
+        for sentence in split_sentences(part):
+            cur = sentence
+            while len(cur) > SPEAK_MAX:
+                cut = cur.rfind(" ", 0, SPEAK_MAX)
+                if cut < 40:
+                    cut = SPEAK_MAX
+                units.append(cur[:cut].strip())
+                cur = cur[cut:].strip()
+            if cur:
+                units.append(cur)
+    if not units:
+        raise SystemExit("empty text")
+    return units
+
+
+def tasklist_rows():
+    out = subprocess.check_output(["tasklist", "/FO", "CSV", "/NH"], text=True, errors="ignore")
+    rows = []
+    for line in out.splitlines():
+        parts = [p.strip().strip('"') for p in line.split(",")]
+        if len(parts) < 2:
+            continue
+        try:
+            rows.append((parts[0], int(parts[1])))
+        except ValueError:
+            continue
+    return rows
+
+
+def kill_players(extra_pids=None):
+    extra = extra_pids or set()
+    for name, pid in tasklist_rows():
+        if name.lower() in PLAYER_NAMES or pid in extra:
+            subprocess.run(["taskkill", "/PID", str(pid), "/F", "/T"], capture_output=True)
+
+
+def play_wav(path: Path, duration_s: float):
+    before = {pid for _, pid in tasklist_rows()}
+    os.startfile(str(path))
+    time.sleep(1.0)
+    new_players = set()
+    for name, pid in tasklist_rows():
+        if name.lower() in PLAYER_NAMES and pid not in before:
+            new_players.add(pid)
+    time.sleep(max(0.4, duration_s + 0.35))
+    kill_players(new_players)
+
+
+def wav_out_path(cfg: Variant, index: int, total: int) -> Path:
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    base = f"{stamp}-{cfg.name}" if total == 1 else f"{stamp}-{cfg.name}-{index:02d}"
+    out = ROOT / f"{base}.wav"
+    n = 1
+    while out.exists():
+        out = ROOT / f"{base}-{n}.wav"
+        n += 1
+    return out
+
+
 def wav_duration_s(path: Path) -> float:
     n = path.stat().st_size
     if n <= 44:
@@ -292,13 +384,14 @@ def speak(pipe: str, pid: Path, out: Path, text: str) -> float:
 def usage(cfg: Variant):
     flags = " ".join(f"[--{n} <v>]" for n in cfg.knobs)
     if cfg.needs_language:
-        return f"usage: python tts_{cfg.name}.py [-h] {flags} <text> <language>"
-    return f"usage: python tts_{cfg.name}.py [-h] {flags} <text>"
+        return f"usage: python tts_{cfg.name}.py [-h] [--play] {flags} <text> <language>"
+    return f"usage: python tts_{cfg.name}.py [-h] [--play] {flags} <text>"
 
 
 def parse_variant_args(cfg: Variant, argv: list[str]):
     args = argv[1:]
     cli = {}
+    play = False
     i = 0
     allowed = set(cfg.knobs)
     while i < len(args):
@@ -306,6 +399,10 @@ def parse_variant_args(cfg: Variant, argv: list[str]):
         if a in ("-h", "--help", "-?"):
             print(usage(cfg))
             raise SystemExit(0)
+        if a == "--play":
+            play = True
+            i += 1
+            continue
         if not a.startswith("--"):
             break
         name = a[2:]
@@ -317,10 +414,10 @@ def parse_variant_args(cfg: Variant, argv: list[str]):
     if cfg.needs_language:
         if len(rest) != 2:
             raise SystemExit(usage(cfg))
-        return rest[0], rest[1].lower(), cli
+        return rest[0], rest[1].lower(), cli, play
     if len(rest) != 1:
         raise SystemExit(usage(cfg))
-    return rest[0], None, cli
+    return rest[0], None, cli, play
 
 
 def normalize_knob(name: str, raw: str | None) -> str:
@@ -551,7 +648,7 @@ def provenance(cfg: Variant, out: Path, original_text: str, piece: str, piece_in
     write_json(out.with_suffix(out.suffix + ".provenance.json"), obj)
 
 
-def run_variant(cfg: Variant, text: str, language=None, knobs=None):
+def run_variant(cfg: Variant, text: str, language=None, knobs=None, play: bool = False):
     if not REF.is_file():
         raise FileNotFoundError(str(REF))
     if cfg.chatterbox_rev != ENGINE_REV:
@@ -592,20 +689,33 @@ def run_variant(cfg: Variant, text: str, language=None, knobs=None):
         wait_pipe_absent(pipe)
         spawn(cfg, exe, t3, s3, pipe, pid, lang or None, values)
 
-    pieces = utterances(text)
-    wav_paths = []
-    for i, piece in enumerate(pieces):
-        stamp_t = time.strftime("%Y%m%d-%H%M%S")
-        name = f"{stamp_t}-{cfg.name}.wav" if len(pieces) == 1 else f"{stamp_t}-{cfg.name}-{i}.wav"
-        out = ROOT / name
+    pieces = split_spoken(text) if play else utterances(text)
+    n = len(pieces)
+
+    def synth_piece(i: int, piece: str):
+        out = wav_out_path(cfg, i, n)
         wall = speak(pipe, pid, out, piece)
         dur = wav_duration_s(out)
         rtf = wall / dur if dur > 0 else 0.0
-        provenance(cfg, out, text, piece, i, len(pieces), lang, values, t3, s3, exe, bake, t3_contract, s3_contract, bake_contract)
+        provenance(cfg, out, text, piece, i, n, lang, values, t3, s3, exe, bake, t3_contract, s3_contract, bake_contract)
         print(f"wall_s={wall:.3f} duration_s={dur:.3f} rtf={rtf:.3f}", file=sys.stderr, flush=True)
         print(out, flush=True)
+        return out, wall, dur
+
+    wav_paths = []
+    ready = synth_piece(0, pieces[0])
+    for i, piece in enumerate(pieces):
+        out, wall, dur = ready
         wav_paths.append(out)
-    if len(wav_paths) > 1:
+        player = None
+        if play:
+            player = threading.Thread(target=play_wav, args=(out, dur), daemon=False)
+            player.start()
+        if i + 1 < n:
+            ready = synth_piece(i + 1, pieces[i + 1])
+        if player:
+            player.join()
+    if n > 1:
         manifest = ROOT / f"{time.strftime('%Y%m%d-%H%M%S')}-{cfg.name}-manifest.json"
-        write_json(manifest, {"family": cfg.name, "release_id": RELEASE_ID, "files": [str(p) for p in wav_paths]})
+        write_json(manifest, {"family": cfg.name, "release_id": RELEASE_ID, "files": [str(p) for p in wav_paths], "play": play})
         print("manifest " + str(manifest), flush=True)
