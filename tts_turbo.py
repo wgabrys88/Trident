@@ -5,7 +5,7 @@ from tts_common import GPT2_KNOBS, Variant, parse_variant_args, run_variant
 CFG = Variant(
     name="turbo",
     branch="turbo",
-    chatterbox_rev="6af3e8b259ad93a38d0c65b95eccaf49015618aa",
+    chatterbox_rev="9646d90dbe07dc1fe315c4e3ad475efec5332e31",
     hf="https://huggingface.co/ResembleAI/chatterbox-turbo/resolve/749d1c1a46eb10492095d68fbcf55691ccf137cd",
     assets=(
         "t3_turbo_v1.safetensors",
