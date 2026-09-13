@@ -7,6 +7,7 @@
 !/tts_common.py
 !/listen.py
 !/README.md
+!/experimental-checklist.md
 # Local handover. The * rule already ignores it. Keep these last so a later
 # !*.md cannot re-include it. Do not add !knowledgebase.md.
 knowledgebase.md
