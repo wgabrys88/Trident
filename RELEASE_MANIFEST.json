@@ -1,21 +1,21 @@
 {
   "ggml_revision": "7840aaba1989c6deeefede1d77d5aaf8f52b947e",
   "model_policy": {
-    "nano": "T3 F16 with text_emb/speech_emb/speech_head F32; S3Gen Q4_0",
+    "nano": "T3 F32 under --f16 (not Q8_0); S3Gen Q4_0",
     "turbo": "T3 F16 with text_emb/speech_emb/speech_head F32; S3Gen Q4_0",
     "v3": "T3 Q8_0; V3 S3Gen Q4_0"
   },
   "note": "No model weights or reference.wav are bundled. The original reference.wav remains required. Human documentation is the latest Trident git commit message, not markdown files.",
   "release_id": "trident-best-evidence-2026-09-13-v1",
-  "required_engine_revision": "243f3f64d169122e9553d7dd86096061aa799ca7",
+  "required_engine_revision": "24138b6924bfae30f4e616559ae63948b3889695",
   "source_files_sha256": {
     ".gitattributes": "d60f352d0db1404c70afb4bb8b2ca3fd1c610572aa40720e8a0b7baa7885418c",
     ".gitignore": "8c08799b36273359c589a9f89d425207ca56752df6d10bad584a2112f55f7059",
     "listen.py": "40e77c58547bef0082218de54c8d5e7a08e5142f2c7dbba7a541b21c447e8c9c",
-    "setup_engine_sibling.ps1": "0d48bc86a48f54687479970c73fceafe0aa803d5d73694c2f2dc9ebfb817dab3",
-    "tts_common.py": "215a2f48421610814ed24d3583cda9c5b35c8c0ecff7bb5c16b2b5cbfedbf23e",
-    "tts_nano.py": "b6685e1d0d7053fda951792090d870fa1d05e3df3b6a41e8a93f5a8dc9987f6d",
-    "tts_turbo.py": "2fe789800a3867f393f0a375864ca703be639d445be6975017cdb566d96701cd",
-    "tts_v3.py": "a4b4d70f63ab9c5614ccab0492711bce8d4c836a59827234e6d05ab4cd57b489"
+    "setup_engine_sibling.ps1": "fba41320470a04c3d28ea725759b486a1c4a9f5e1af73cb88c25357b5227dda9",
+    "tts_common.py": "ee09eb68a8455aca8d59ef3226b0a965a563846ca577b08eebd431a507578c1a",
+    "tts_nano.py": "76256d4f0d041669a9726448f3348c473f6e1d96a7e0fa5473a60138e4303849",
+    "tts_turbo.py": "12cb9d20eafa6d2f80eb6f84280c60bffc9504d9dc3915b1fd658abbb5e6d031",
+    "tts_v3.py": "3949eff6d8febefb14b1bb9d2b9b2e729d550561a611bfd38c6d6f019424bca5"
   }
 }

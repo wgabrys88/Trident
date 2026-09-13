@@ -5,7 +5,7 @@ from tts_common import GPT2_KNOBS, Variant, parse_variant_args, run_variant
 CFG = Variant(
     name="nano",
     branch="experimental",
-    chatterbox_rev="243f3f64d169122e9553d7dd86096061aa799ca7",
+    chatterbox_rev="24138b6924bfae30f4e616559ae63948b3889695",
     hf="https://huggingface.co/ResembleAI/chatterbox-nano/resolve/71ccd1d0081b430592cea481f4307e764e07bc64",
     assets=(
         "t3_nano_v1.safetensors",
@@ -28,7 +28,7 @@ CFG = Variant(
     t3_convert_flags=("--f16",),
     s3_script="convert-s3gen-to-gguf.py",
     knobs=GPT2_KNOBS,
-    policy="Nano: F16 T3 with text_emb/speech_emb/speech_head retained F32 by engine aaafdb6; Q4_0 S3Gen.",
+    policy="Nano: T3 F32 under --f16 (not Q8_0) by engine 24138b6; Q4_0 S3Gen.",
 )
 
 
