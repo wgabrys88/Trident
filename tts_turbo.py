@@ -5,7 +5,7 @@ from tts_common import GPT2_KNOBS, Variant, parse_variant_args, run_variant
 CFG = Variant(
     name="turbo",
     branch="experimental",
-    chatterbox_rev="0cbfe7ccfaea14f347549df32b4fed43dbb7d84b",
+    chatterbox_rev="aaafdb6e1d83ecb8fd963ac2e76bc5e5718074e5",
     hf="https://huggingface.co/ResembleAI/chatterbox-turbo/resolve/749d1c1a46eb10492095d68fbcf55691ccf137cd",
     assets=(
         "t3_turbo_v1.safetensors",
@@ -16,10 +16,8 @@ CFG = Variant(
         "merges.txt",
         "added_tokens.json",
     ),
-    t3_name="chatterbox-t3-turbo-f16.gguf",
+    t3_name="chatterbox-t3-turbo-f16-mixed.gguf",
     s3_name="chatterbox-s3gen-turbo-q4_0.gguf",
-    stamp_name="turbo.voice.sha256",
-    rev_name="turbo.rev",
     pid_name="turbo.pid",
     build_name="turbo",
     venv_name=".venv-convert-turbo",
@@ -30,6 +28,11 @@ CFG = Variant(
     t3_convert_flags=("--f16",),
     s3_script="convert-s3gen-to-gguf.py",
     knobs=GPT2_KNOBS,
+    count_roof=15,
+    count_chunk_short=12,
+    count_chunk_long=11,
+    prose_roof=280,
+    policy="Turbo: F16 T3 with text_emb/speech_emb/speech_head retained F32 by engine aaafdb6; Q4_0 S3Gen. Conservative chunking because residual C++/Python parity gap remained.",
 )
 
 

@@ -1,6 +1,8 @@
 import ctypes
 import hashlib
+import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -14,6 +16,9 @@ CHATTERBOX = ROOT.parent / "chatterbox.cpp"
 MODELS = ROOT / "models"
 REF = ROOT / "reference.wav"
 GGML_REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
+ENGINE_REV = "aaafdb6e1d83ecb8fd963ac2e76bc5e5718074e5"
+BASE_TRIDENT_REV = "38e0c4947d236e239ffd8e2cd2b98a8c39848efc"
+RELEASE_ID = "trident-best-evidence-2026-09-13-v1"
 VULKAN = Path("C:/VulkanSDK/1.4.357.0")
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 DETACH = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
@@ -40,8 +45,6 @@ class Variant:
     assets: tuple[str, ...]
     t3_name: str
     s3_name: str
-    stamp_name: str
-    rev_name: str
     pid_name: str
     build_name: str
     venv_name: str
@@ -53,6 +56,11 @@ class Variant:
     knobs: tuple[str, ...]
     t3_convert_flags: tuple[str, ...] = ()
     needs_language: bool = False
+    count_roof: int = 0
+    count_chunk_short: int = 0
+    count_chunk_long: int = 0
+    prose_roof: int = 280
+    policy: str = ""
 
 
 def run(cmd, **kw):
@@ -65,36 +73,69 @@ def git_out(args, repo=CHATTERBOX):
     ).stdout.strip()
 
 
+def sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def json_text(obj) -> str:
+    return json.dumps(obj, sort_keys=True, indent=2, ensure_ascii=True) + "\n"
+
+
+def read_json(path: Path):
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def write_json(path: Path, obj):
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json_text(obj), encoding="utf-8")
+    tmp.replace(path)
+
+
+def contract_id(obj) -> str:
+    return sha256_bytes(json.dumps(obj, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+
+
 def ensure_pin(cfg: Variant):
     if not CHATTERBOX.is_dir():
         raise SystemExit(f"missing chatterbox.cpp sibling at {CHATTERBOX}")
-    current = git_out(["rev-parse", "--abbrev-ref", "HEAD"])
+    if not (CHATTERBOX / ".git").is_dir():
+        raise SystemExit(f"{CHATTERBOX} is not a Git checkout")
     dirty = subprocess.run(
         ["git", "-C", str(CHATTERBOX), "status", "--porcelain"],
         check=True,
         capture_output=True,
         text=True,
     ).stdout.strip()
-    if current != cfg.branch:
-        if dirty:
-            raise SystemExit(
-                f"chatterbox.cpp has uncommitted changes on {current}; "
-                f"stash or commit before running {cfg.name}"
-            )
-        run(["git", "-C", str(CHATTERBOX), "checkout", cfg.branch])
+    if dirty:
+        raise SystemExit("chatterbox.cpp has uncommitted changes; use the exact clean engine checkout")
     sha = git_out(["rev-parse", "HEAD"])
     if sha != cfg.chatterbox_rev:
-        raise SystemExit(f"HEAD {sha} != {cfg.chatterbox_rev}")
+        raise SystemExit(
+            f"chatterbox.cpp HEAD {sha} != required {cfg.chatterbox_rev}. "
+            "Checkout the exact detached commit; branch name is intentionally irrelevant."
+        )
 
 
 def download(url: str, dest: Path):
     tmp = dest.with_suffix(dest.suffix + ".part")
     try:
         with urllib.request.urlopen(url) as resp, open(tmp, "wb") as out:
-            data = resp.read()
-            if not data:
-                raise OSError("empty download")
-            out.write(data)
+            while True:
+                block = resp.read(1024 * 1024)
+                if not block:
+                    break
+                out.write(block)
+        if not tmp.is_file() or tmp.stat().st_size == 0:
+            raise OSError("empty download")
         tmp.replace(dest)
     except Exception:
         tmp.unlink(missing_ok=True)
@@ -104,8 +145,6 @@ def download(url: str, dest: Path):
 def paths(cfg: Variant):
     t3 = MODELS / cfg.t3_name
     s3 = MODELS / cfg.s3_name
-    stamp = MODELS / cfg.stamp_name
-    rev = MODELS / cfg.rev_name
     pid = MODELS / cfg.pid_name
     build = CHATTERBOX / "build" / cfg.build_name
     bin_dir = build / "bin"
@@ -118,7 +157,7 @@ def paths(cfg: Variant):
         pipe = rf"\\.\pipe\chatterbox-v3-{tag}"
     else:
         pipe = rf"\\.\pipe\chatterbox-{tag}"
-    return t3, s3, stamp, rev, pid, build, bin_dir, exe, bake, pipe
+    return t3, s3, pid, build, bin_dir, exe, bake, pipe
 
 
 def kill(pid: Path):
@@ -189,16 +228,7 @@ GPT2_KNOBS = SHARED_KNOBS + ("silence-count",)
 V3_KNOBS = SHARED_KNOBS + ("min-p", "cfg-weight", "cfm-cfg")
 
 
-def spawn(
-    cfg: Variant,
-    exe: Path,
-    t3: Path,
-    s3: Path,
-    pipe: str,
-    pid: Path,
-    language: str | None = None,
-    knobs: dict[str, str] | None = None,
-):
+def spawn(cfg: Variant, exe: Path, t3: Path, s3: Path, pipe: str, pid: Path, language=None, knobs=None):
     args = [str(exe), str(t3), str(s3), pipe]
     if cfg.needs_language:
         args.append(language or "en")
@@ -235,25 +265,8 @@ def utterances(text: str) -> list[str]:
 
 
 EN_ONES = [
-    "one",
-    "two",
-    "three",
-    "four",
-    "five",
-    "six",
-    "seven",
-    "eight",
-    "nine",
-    "ten",
-    "eleven",
-    "twelve",
-    "thirteen",
-    "fourteen",
-    "fifteen",
-    "sixteen",
-    "seventeen",
-    "eighteen",
-    "nineteen",
+    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+    "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen",
 ]
 EN_TENS = ["", "", "twenty", "thirty", "forty", "fifty"]
 
@@ -262,6 +275,8 @@ def en_phrase(n: int) -> str:
     if n < 20:
         return EN_ONES[n - 1]
     tens, ones = divmod(n, 10)
+    if tens >= len(EN_TENS):
+        raise ValueError("counting helper supports 1..59")
     if ones == 0:
         return EN_TENS[tens]
     return f"{EN_TENS[tens]}-{EN_ONES[ones - 1]}"
@@ -282,7 +297,7 @@ def list_hi(text: str) -> int | None:
     if not t.endswith("."):
         return None
     parts = [p.strip() for p in t[:-1].split(",") if p.strip()]
-    if not parts:
+    if not parts or len(parts) > 59:
         return None
     for i, p in enumerate(parts, 1):
         w = en_phrase(i)
@@ -293,16 +308,11 @@ def list_hi(text: str) -> int | None:
     return len(parts)
 
 
-def chunk_size(family: str, n: int) -> int:
-    roof = ROOF_N.get(family, n)
-    sz = max(1, int(roof * 0.85))
-    if n > 30:
-        sz = max(1, sz - 1)
-    return sz
-
-
-def list_chunks(family: str, n: int) -> list[str]:
-    sz = chunk_size(family, n)
+def list_chunks(cfg: Variant, n: int) -> list[str]:
+    if n <= cfg.count_roof:
+        return [en_list(1, n)]
+    sz = cfg.count_chunk_long if n > 30 else cfg.count_chunk_short
+    sz = max(1, sz)
     out = []
     lo = 1
     while lo <= n:
@@ -317,35 +327,31 @@ def eld_mode() -> bool:
     return v in ("1", "true", "yes")
 
 
-ROOF_N = {"nano": 20, "turbo": 15, "v3": 20}
-PROSE_ROOF = {"nano": 280, "turbo": 280, "v3": 320}
-
-
 def prose_chunks(text: str, max_chars: int) -> list[str]:
     t = text.strip()
     if len(t) <= max_chars:
         return [t]
-    parts = []
+    sentences = []
     buf = ""
     for ch in t:
         buf += ch
         if ch in ".!?" and len(buf.strip()) >= 10:
-            parts.append(buf.strip())
+            sentences.append(buf.strip())
             buf = ""
     if buf.strip():
-        parts.append(buf.strip())
-    if not parts:
+        sentences.append(buf.strip())
+    if not sentences:
         return [t]
     out = []
     cur = ""
-    for p in parts:
+    for sentence in sentences:
         if not cur:
-            cur = p
-        elif len(cur) + 1 + len(p) <= max_chars:
-            cur = f"{cur} {p}"
+            cur = sentence
+        elif len(cur) + 1 + len(sentence) <= max_chars:
+            cur = f"{cur} {sentence}"
         else:
             out.append(cur)
-            cur = p
+            cur = sentence
     if cur:
         out.append(cur)
     return out or [t]
@@ -358,10 +364,9 @@ def speak_pieces(cfg: Variant, text: str, *, chunk: bool = True) -> list[str]:
     for piece in utterances(text):
         n = list_hi(piece)
         if n:
-            out.extend(list_chunks(cfg.name, n))
+            out.extend(list_chunks(cfg, n))
         else:
-            roof = PROSE_ROOF.get(cfg.name, len(piece))
-            out.extend(prose_chunks(piece, roof))
+            out.extend(prose_chunks(piece, cfg.prose_roof))
     if not out:
         raise SystemExit("empty text")
     return out
@@ -370,7 +375,7 @@ def speak_pieces(cfg: Variant, text: str, *, chunk: bool = True) -> list[str]:
 def wav_duration_s(path: Path) -> float:
     n = path.stat().st_size
     if n <= 44:
-        raise RuntimeError("WAV Length")
+        raise RuntimeError("WAV length")
     return (n - 44) / 2.0 / 24000.0
 
 
@@ -399,13 +404,13 @@ def speak(pipe: str, pid: Path, out: Path, text: str) -> float:
 def usage(cfg: Variant):
     flags = " ".join(f"[--{n} <v>]" for n in cfg.knobs)
     if cfg.needs_language:
-        return f"usage: python tts_{cfg.name}.py [-h] {flags} <text> <language>"
-    return f"usage: python tts_{cfg.name}.py [-h] {flags} <text>"
+        return f"usage: python tts_{cfg.name}.py [-h] [--no-chunk] {flags} <text> <language>"
+    return f"usage: python tts_{cfg.name}.py [-h] [--no-chunk] {flags} <text>"
 
 
-def parse_variant_args(cfg: Variant, argv: list[str]) -> tuple[str, str | None, dict[str, str], bool]:
+def parse_variant_args(cfg: Variant, argv: list[str]):
     args = argv[1:]
-    cli: dict[str, str] = {}
+    cli = {}
     no_chunk = False
     i = 0
     allowed = set(cfg.knobs)
@@ -467,131 +472,252 @@ def knobs_blob(cfg: Variant, values: dict[str, str]) -> str:
     return "".join(f"{n}={values.get(n, '')}\n" for n in cfg.knobs)
 
 
-def run_variant(
-    cfg: Variant,
-    text: str,
-    language: str | None = None,
-    knobs: dict[str, str] | None = None,
-    no_chunk: bool = False,
-):
-    if not REF.is_file():
-        raise FileNotFoundError(str(REF))
-    ensure_pin(cfg)
-    MODELS.mkdir(parents=True, exist_ok=True)
-    t3, s3, stamp, rev, pid, build, bin_dir, exe, bake, pipe = paths(cfg)
-    for name in cfg.other_pids:
-        kill(MODELS / name)
-    pipe_stamp = MODELS / f"{cfg.name}.pipeproto"
-    if not pipe_stamp.is_file():
-        pipe_stamp.write_text("byte-length-v1", encoding="ascii")
+def build_contract(cfg: Variant):
+    return {
+        "engine_rev": cfg.chatterbox_rev,
+        "ggml_rev": GGML_REV,
+        "family": cfg.name,
+        "generator": "Visual Studio 17 2022 x64",
+        "cmake_flags": {
+            "GGML_VULKAN": "ON",
+            "GGML_CUDA": "OFF",
+            "GGML_CPU": "OFF",
+            "GGML_OPENMP": "OFF",
+            "BUILD_SHARED_LIBS": "ON",
+            "TTS_CPP_BUILD_EXECUTABLES": "ON",
+            "GGML_BUILD_TESTS": "OFF",
+            "GGML_BUILD_EXAMPLES": "OFF",
+            "TTS_FAMILY": cfg.name,
+            "VulkanSDK": str(VULKAN),
+        },
+    }
+
+
+def ensure_build(cfg: Variant, pid: Path, build: Path, exe: Path, bake: Path):
     ggml = CHATTERBOX / "ggml"
-    if (
-        not exe.is_file()
-        or not bake.is_file()
-        or not rev.is_file()
-        or not pipe_stamp.is_file()
-        or rev.read_text(encoding="ascii").strip() != cfg.chatterbox_rev
-    ):
-        kill(pid)
-        if not (ggml / "CMakeLists.txt").is_file():
-            run(["git", "clone", "--filter=blob:none", "https://github.com/ggml-org/ggml.git", str(ggml)])
-            run(["git", "-C", str(ggml), "checkout", GGML_REV])
-        elif git_out(["rev-parse", "HEAD"], ggml) != GGML_REV:
-            raise SystemExit(f"ggml {git_out(['rev-parse', 'HEAD'], ggml)} != {GGML_REV}")
-        run(
-            [
-                CMAKE,
-                "-S",
-                str(CHATTERBOX),
-                "-B",
-                str(build),
-                "-G",
-                "Visual Studio 17 2022",
-                "-A",
-                "x64",
-                "-DGGML_VULKAN=ON",
-                "-DGGML_CUDA=OFF",
-                "-DGGML_CPU=OFF",
-                "-DGGML_OPENMP=OFF",
-                "-DBUILD_SHARED_LIBS=ON",
-                "-DTTS_CPP_BUILD_EXECUTABLES=ON",
-                "-DGGML_BUILD_TESTS=OFF",
-                "-DGGML_BUILD_EXAMPLES=OFF",
-                f"-DTTS_FAMILY={cfg.name}",
-                f"-DVulkan_INCLUDE_DIR={VULKAN / 'Include'}",
-                f"-DVulkan_LIBRARY={VULKAN / 'Lib/vulkan-1.lib'}",
-                f"-DVulkan_GLSLC_EXECUTABLE={VULKAN / 'Bin/glslc.exe'}",
-            ]
-        )
-        run(
-            [
-                CMAKE,
-                "--build",
-                str(build),
-                "--config",
-                "Release",
-                "--target",
-                "chatterbox-server",
-                "--target",
-                "chatterbox-bake",
-                "--parallel",
-            ]
-        )
-        rev.write_text(cfg.chatterbox_rev, encoding="ascii")
+    stamp = MODELS / f"{cfg.name}.build-contract.json"
+    wanted = build_contract(cfg)
+    if exe.is_file() and bake.is_file() and read_json(stamp) == wanted:
+        return
+    kill(pid)
+    if not (ggml / "CMakeLists.txt").is_file():
+        run(["git", "clone", "--filter=blob:none", "https://github.com/ggml-org/ggml.git", str(ggml)])
+        run(["git", "-C", str(ggml), "checkout", "--detach", GGML_REV])
+    else:
+        actual = git_out(["rev-parse", "HEAD"], ggml)
+        if actual != GGML_REV:
+            raise SystemExit(f"ggml {actual} != required {GGML_REV}")
+        dirty = subprocess.run(
+            ["git", "-C", str(ggml), "status", "--porcelain"], check=True, capture_output=True, text=True
+        ).stdout.strip()
+        if dirty:
+            raise SystemExit("ggml checkout is dirty")
+    if build.exists():
+        shutil.rmtree(build)
+    run([
+        CMAKE, "-S", str(CHATTERBOX), "-B", str(build), "-G", "Visual Studio 17 2022", "-A", "x64",
+        "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_CPU=OFF", "-DGGML_OPENMP=OFF",
+        "-DBUILD_SHARED_LIBS=ON", "-DTTS_CPP_BUILD_EXECUTABLES=ON", "-DGGML_BUILD_TESTS=OFF",
+        "-DGGML_BUILD_EXAMPLES=OFF", f"-DTTS_FAMILY={cfg.name}",
+        f"-DVulkan_INCLUDE_DIR={VULKAN / 'Include'}", f"-DVulkan_LIBRARY={VULKAN / 'Lib/vulkan-1.lib'}",
+        f"-DVulkan_GLSLC_EXECUTABLE={VULKAN / 'Bin/glslc.exe'}",
+    ])
+    run([CMAKE, "--build", str(build), "--config", "Release", "--target", "chatterbox-server", "--target", "chatterbox-bake", "--parallel"])
+    write_json(stamp, wanted)
+
+
+def ensure_converter_venv(cfg: Variant) -> Path:
     py = ROOT / cfg.venv_name / "Scripts" / "python.exe"
-    if not py.is_file():
-        venv.EnvBuilder(with_pip=True).create(ROOT / cfg.venv_name)
-        pip = [str(py), "-m", "pip", "install", "--disable-pip-version-check"]
-        run([*pip, "torch==2.6.0", "--index-url", "https://download.pytorch.org/whl/cpu"])
-        run([*pip, "numpy==1.26.4", "gguf==0.19.0", "safetensors==0.5.3", "scipy==1.15.3", "librosa==0.11.0"])
+    if py.is_file():
+        return py
+    venv.EnvBuilder(with_pip=True).create(ROOT / cfg.venv_name)
+    pip = [str(py), "-m", "pip", "install", "--disable-pip-version-check"]
+    run([*pip, "torch==2.6.0", "--index-url", "https://download.pytorch.org/whl/cpu"])
+    run([*pip, "numpy==1.26.4", "gguf==0.19.0", "safetensors==0.5.3", "scipy==1.15.3", "librosa==0.11.0"])
+    return py
+
+
+def ensure_assets(cfg: Variant) -> Path:
     ckpt = ROOT / cfg.ckpt_name
     ckpt.mkdir(parents=True, exist_ok=True)
     for name in cfg.assets:
         dest = ckpt / name
         if not dest.is_file():
             download(f"{cfg.hf}/{name}", dest)
-    converted = False
-    if not t3.is_file():
-        run(
-            [
-                str(py),
-                str(CHATTERBOX / "scripts" / cfg.t3_script),
-                str(ckpt),
-                str(t3),
-                *cfg.t3_convert_flags,
-            ]
-        )
-        converted = True
-    if not s3.is_file():
-        run([str(py), str(CHATTERBOX / "scripts" / cfg.s3_script), str(ckpt), str(s3)])
-        converted = True
-    voice = hashlib.sha256(REF.read_bytes()).hexdigest()
-    voice_stamp = stamp.read_text(encoding="ascii").strip() if stamp.is_file() else ""
-    lang_stamp_path = MODELS / f"{cfg.name}.language" if cfg.needs_language else None
-    lang_stamp = ""
-    if lang_stamp_path and lang_stamp_path.is_file():
-        lang_stamp = lang_stamp_path.read_text(encoding="ascii").strip()
-    pieces = speak_pieces(cfg, text, chunk=not no_chunk)
+    return ckpt
+
+
+def asset_fingerprint(cfg: Variant, ckpt: Path):
+    cache_path = ckpt / ".asset-sha256.json"
+    cache = read_json(cache_path) or {}
+    changed = False
+    out = {}
+    for name in cfg.assets:
+        p = ckpt / name
+        st = p.stat()
+        row = cache.get(name) or {}
+        if row.get("size") == st.st_size and row.get("mtime_ns") == st.st_mtime_ns and row.get("sha256"):
+            digest = row["sha256"]
+        else:
+            digest = sha256_file(p)
+            cache[name] = {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "sha256": digest}
+            changed = True
+        out[name] = digest
+    if changed or not cache_path.is_file():
+        write_json(cache_path, cache)
+    return out
+
+
+def conversion_contract(cfg: Variant, ckpt: Path, script: Path, kind: str):
+    return {
+        "family": cfg.name,
+        "kind": kind,
+        "engine_rev": cfg.chatterbox_rev,
+        "hf_base": cfg.hf,
+        "assets_sha256": asset_fingerprint(cfg, ckpt),
+        "script": script.name,
+        "script_sha256": sha256_file(script),
+        "flags": list(cfg.t3_convert_flags) if kind == "t3" else [],
+    }
+
+
+def convert_t3(cfg: Variant, py: Path, ckpt: Path, t3: Path, contract):
+    t3.unlink(missing_ok=True)
+    run([str(py), str(CHATTERBOX / "scripts" / cfg.t3_script), str(ckpt), str(t3), *cfg.t3_convert_flags])
+    write_json(MODELS / f"{cfg.name}.t3-convert.json", contract)
+
+
+def convert_s3(cfg: Variant, py: Path, ckpt: Path, s3: Path, contract):
+    s3.unlink(missing_ok=True)
+    run([str(py), str(CHATTERBOX / "scripts" / cfg.s3_script), str(ckpt), str(s3)])
+    write_json(MODELS / f"{cfg.name}.s3-convert.json", contract)
+
+
+def ensure_converted(cfg: Variant, py: Path, ckpt: Path, t3: Path, s3: Path):
+    t3_script = CHATTERBOX / "scripts" / cfg.t3_script
+    s3_script = CHATTERBOX / "scripts" / cfg.s3_script
+    t3_contract = conversion_contract(cfg, ckpt, t3_script, "t3")
+    s3_contract = conversion_contract(cfg, ckpt, s3_script, "s3")
+    t3_stamp = MODELS / f"{cfg.name}.t3-convert.json"
+    s3_stamp = MODELS / f"{cfg.name}.s3-convert.json"
+    t3_changed = (not t3.is_file()) or read_json(t3_stamp) != t3_contract
+    s3_changed = (not s3.is_file()) or read_json(s3_stamp) != s3_contract
+    changed = t3_changed or s3_changed
+    if changed:
+        # Keep T3 and S3 as one clean conversion pair. If either contract changes,
+        # rebuild both before voice conditioning is baked into them.
+        convert_t3(cfg, py, ckpt, t3, t3_contract)
+        convert_s3(cfg, py, ckpt, s3, s3_contract)
+    return t3_contract, s3_contract, changed
+
+
+def ensure_baked(cfg: Variant, py: Path, ckpt: Path, t3: Path, s3: Path, bake: Path, bin_dir: Path, pid: Path, t3_contract, s3_contract, converted: bool):
+    ref_sha = sha256_file(REF)
+    bake_contract = {
+        "family": cfg.name,
+        "engine_rev": cfg.chatterbox_rev,
+        "reference_sha256": ref_sha,
+        "t3_conversion_id": contract_id(t3_contract),
+        "s3_conversion_id": contract_id(s3_contract),
+        "bake_exe_sha256": sha256_file(bake),
+    }
+    stamp = MODELS / f"{cfg.name}.bake-contract.json"
+    if not converted and read_json(stamp) == bake_contract:
+        return bake_contract
+    kill(pid)
+    if not converted:
+        # Recreate pristine GGUFs before changing baked conditioning. This avoids relying on in-place rebake semantics.
+        convert_t3(cfg, py, ckpt, t3, t3_contract)
+        convert_s3(cfg, py, ckpt, s3, s3_contract)
+    run([str(bake), str(t3), str(s3), str(REF)], cwd=str(bin_dir))
+    write_json(stamp, bake_contract)
+    return bake_contract
+
+
+def provenance(cfg: Variant, out: Path, original_text: str, piece: str, piece_index: int, piece_count: int, language: str, values: dict[str, str], t3: Path, s3: Path, exe: Path, bake: Path, t3_contract, s3_contract, bake_contract, no_chunk: bool):
+    obj = {
+        "release_id": RELEASE_ID,
+        "base_trident_revision": BASE_TRIDENT_REV,
+        "engine_revision": cfg.chatterbox_rev,
+        "ggml_revision": GGML_REV,
+        "family": cfg.name,
+        "family_policy": cfg.policy,
+        "hf_base": cfg.hf,
+        "t3_file": t3.name,
+        "t3_sha256": sha256_file(t3),
+        "s3_file": s3.name,
+        "s3_sha256": sha256_file(s3),
+        "reference_sha256": bake_contract["reference_sha256"],
+        "server_exe_sha256": sha256_file(exe),
+        "bake_exe_sha256": sha256_file(bake),
+        "t3_conversion": t3_contract,
+        "s3_conversion": s3_contract,
+        "language": language or None,
+        "knob_overrides": values,
+        "header_defaults_used_where_blank": True,
+        "chunking_disabled": bool(no_chunk or eld_mode()),
+        "count_policy": {
+            "roof": cfg.count_roof,
+            "chunk_21_to_30": cfg.count_chunk_short,
+            "chunk_over_30": cfg.count_chunk_long,
+            "prose_chars": cfg.prose_roof,
+        },
+        "original_text": original_text,
+        "original_text_sha256": sha256_bytes(original_text.encode("utf-8")),
+        "piece_index": piece_index,
+        "piece_count": piece_count,
+        "piece_text": piece,
+        "piece_text_sha256": sha256_bytes(piece.encode("utf-8")),
+        "wav": out.name,
+        "wav_sha256": sha256_file(out),
+        "generated_local_time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    write_json(out.with_suffix(out.suffix + ".provenance.json"), obj)
+
+
+def run_variant(cfg: Variant, text: str, language=None, knobs=None, no_chunk: bool = False):
+    if not REF.is_file():
+        raise FileNotFoundError(str(REF))
+    if cfg.chatterbox_rev != ENGINE_REV:
+        raise SystemExit(f"launcher engine pin {cfg.chatterbox_rev} != release engine pin {ENGINE_REV}")
+    ensure_pin(cfg)
+    MODELS.mkdir(parents=True, exist_ok=True)
+    t3, s3, pid, build, bin_dir, exe, bake, pipe = paths(cfg)
+    for name in cfg.other_pids:
+        kill(MODELS / name)
+    ensure_build(cfg, pid, build, exe, bake)
+    py = ensure_converter_venv(cfg)
+    ckpt = ensure_assets(cfg)
+    t3_contract, s3_contract, converted = ensure_converted(cfg, py, ckpt, t3, s3)
+    bake_contract = ensure_baked(cfg, py, ckpt, t3, s3, bake, bin_dir, pid, t3_contract, s3_contract, converted)
+
     lang = (language or "en").lower() if cfg.needs_language else ""
-    if converted or voice_stamp != voice:
-        kill(pid)
-        run([str(bake), str(t3), str(s3), str(REF)], cwd=str(bin_dir))
-        stamp.write_text(voice, encoding="ascii")
-    if cfg.needs_language and lang_stamp != lang:
-        kill(pid)
-        if lang_stamp_path:
-            lang_stamp_path.write_text(lang, encoding="ascii")
+    language_stamp = MODELS / f"{cfg.name}.language"
+    if cfg.needs_language:
+        previous = language_stamp.read_text(encoding="ascii").strip() if language_stamp.is_file() else ""
+        if previous != lang:
+            kill(pid)
+            language_stamp.write_text(lang, encoding="ascii")
+
     values = wanted_knobs(cfg, knobs or {})
     blob = knobs_blob(cfg, values)
     knob_stamp = MODELS / f"{cfg.name}.knobs"
-    prev = knob_stamp.read_text(encoding="ascii") if knob_stamp.is_file() else ""
-    if prev != blob:
+    previous_blob = knob_stamp.read_text(encoding="ascii") if knob_stamp.is_file() else ""
+    if previous_blob != blob:
         kill(pid)
         knob_stamp.write_text(blob, encoding="ascii")
+
+    pipe_stamp = MODELS / f"{cfg.name}.pipeproto"
+    if not pipe_stamp.is_file() or pipe_stamp.read_text(encoding="ascii").strip() != "byte-length-v1":
+        kill(pid)
+        pipe_stamp.write_text("byte-length-v1", encoding="ascii")
+
     if not running(pid):
         wait_pipe_absent(pipe)
         spawn(cfg, exe, t3, s3, pipe, pid, lang or None, values)
-    wav_paths: list[Path] = []
+
+    pieces = speak_pieces(cfg, text, chunk=not no_chunk)
+    wav_paths = []
     for i, piece in enumerate(pieces):
         stamp_t = time.strftime("%Y%m%d-%H%M%S")
         name = f"{stamp_t}-{cfg.name}.wav" if len(pieces) == 1 else f"{stamp_t}-{cfg.name}-{i}.wav"
@@ -599,8 +725,11 @@ def run_variant(
         wall = speak(pipe, pid, out, piece)
         dur = wav_duration_s(out)
         rtf = wall / dur if dur > 0 else 0.0
+        provenance(cfg, out, text, piece, i, len(pieces), lang, values, t3, s3, exe, bake, t3_contract, s3_contract, bake_contract, no_chunk)
         print(f"wall_s={wall:.3f} duration_s={dur:.3f} rtf={rtf:.3f}", file=sys.stderr, flush=True)
         print(out, flush=True)
         wav_paths.append(out)
     if len(wav_paths) > 1:
-        print("manifest " + " ".join(str(p) for p in wav_paths), flush=True)
+        manifest = ROOT / f"{time.strftime('%Y%m%d-%H%M%S')}-{cfg.name}-manifest.json"
+        write_json(manifest, {"family": cfg.name, "release_id": RELEASE_ID, "files": [str(p) for p in wav_paths]})
+        print("manifest " + str(manifest), flush=True)
