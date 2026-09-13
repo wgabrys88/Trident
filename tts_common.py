@@ -65,10 +65,104 @@ def git_out(args, repo=CHATTERBOX):
     ).stdout.strip()
 
 
+def _pop_stash_for_branch(branch: str):
+    needle = f"tts-pin-{branch}"
+    listing = subprocess.run(
+        ["git", "-C", str(CHATTERBOX), "stash", "list"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    for line in listing.splitlines():
+        if needle in line:
+            run(["git", "-C", str(CHATTERBOX), "stash", "pop"])
+            return
+
+
+BYTE_PIPE_MARK = "static bool read_exact(HANDLE h, char* buf, DWORD need)"
+
+
+def ensure_byte_pipe_server() -> bool:
+    path = CHATTERBOX / "src" / "server.cpp"
+    src = path.read_text(encoding="utf-8")
+    if BYTE_PIPE_MARK in src:
+        return False
+    if "#include <cstdlib>" not in src:
+        src = src.replace("#include <fstream>", "#include <fstream>\n#include <cstdlib>")
+    if BYTE_PIPE_MARK not in src:
+        src = src.replace(
+            "static std::string read_line(HANDLE h) {",
+            BYTE_PIPE_MARK
+            + """ {
+    DWORD got = 0;
+    while (got < need) {
+        DWORD n = 0;
+        if (!ReadFile(h, buf + got, need - got, &n, nullptr) || n == 0) return false;
+        got += n;
+    }
+    return true;
+}
+
+static std::string read_line(HANDLE h) {""",
+        )
+    old = """        std::string path = read_line(h);
+        std::string text = read_line(h);
+        if (!path.empty() && !text.empty()) {
+            write_wav(path.c_str(), tts.synthesize(text));
+            DWORD n = 0;
+            WriteFile(h, "ok\\n", 3, &n, nullptr);
+            FlushFileBuffers(h);
+        }"""
+    new = """        std::string path = read_line(h);
+        std::string len_s = read_line(h);
+        char* end = nullptr;
+        unsigned long nbytes = std::strtoul(len_s.c_str(), &end, 10);
+        if (!path.empty() && end != len_s.c_str() && nbytes > 0 && nbytes <= 1u << 20) {
+            std::string text(nbytes, '\\0');
+            if (read_exact(h, text.data(), (DWORD)nbytes)) {
+                write_wav(path.c_str(), tts.synthesize(text));
+                DWORD n = 0;
+                WriteFile(h, "ok\\n", 3, &n, nullptr);
+                FlushFileBuffers(h);
+            }
+        }"""
+    if old not in src:
+        raise SystemExit(f"server.cpp in {CHATTERBOX} lacks the legacy pipe read loop")
+    path.write_text(src.replace(old, new), encoding="utf-8")
+    return True
+
+
 def ensure_pin(cfg: Variant):
     if not CHATTERBOX.is_dir():
         raise SystemExit(f"missing chatterbox.cpp sibling at {CHATTERBOX}")
-    run(["git", "-C", str(CHATTERBOX), "checkout", cfg.branch])
+    current = git_out(["rev-parse", "--abbrev-ref", "HEAD"])
+    dirty = subprocess.run(
+        ["git", "-C", str(CHATTERBOX), "status", "--porcelain"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if current != cfg.branch:
+        if dirty:
+            run(
+                [
+                    "git",
+                    "-C",
+                    str(CHATTERBOX),
+                    "stash",
+                    "push",
+                    "-m",
+                    f"tts-pin-{current}",
+                ]
+            )
+        run(["git", "-C", str(CHATTERBOX), "checkout", cfg.branch])
+        if cfg.branch == "nano":
+            _pop_stash_for_branch("nano")
+    elif dirty and cfg.branch not in ("nano", "turbo", "v3"):
+        raise SystemExit(
+            f"chatterbox.cpp has uncommitted changes on {cfg.branch}; "
+            f"stash or commit before running {cfg.name}"
+        )
     sha = git_out(["rev-parse", "HEAD"])
     if sha != cfg.chatterbox_rev:
         raise SystemExit(f"HEAD {sha} != {cfg.chatterbox_rev}")
@@ -229,14 +323,25 @@ def wav_duration_s(path: Path) -> float:
     return (n - 44) / 2.0 / 24000.0
 
 
+def pad_wav_silence(path: Path, extra_s: float = 1.0):
+    raw = bytearray(path.read_bytes())
+    if len(raw) <= 44:
+        raise RuntimeError("WAV Length")
+    extra = int(round(float(extra_s) * 24000.0)) * 2
+    riff = int.from_bytes(raw[4:8], "little") + extra
+    data = int.from_bytes(raw[40:44], "little") + extra
+    raw[4:8] = riff.to_bytes(4, "little")
+    raw[40:44] = data.to_bytes(4, "little")
+    raw.extend(b"\x00" * extra)
+    path.write_bytes(raw)
+
+
 def play_wav(path: Path, duration_s: float):
-    sec = max(1, int(duration_s) + 1)
+    del duration_s
     cmd = (
-        "$ErrorActionPreference = 'Stop'; $p = Start-Process -FilePath "
+        "$ErrorActionPreference = 'Stop'; (New-Object System.Media.SoundPlayer "
         + json.dumps(str(path))
-        + " -PassThru; Start-Sleep -Seconds "
-        + str(sec)
-        + "; if ($null -ne $p) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }"
+        + ").PlaySync()"
     )
     subprocess.run(["powershell", "-NoProfile", "-Command", cmd], check=True)
 
@@ -250,12 +355,13 @@ def speak(pipe: str, pid: Path, out: Path, text: str) -> float:
         time.sleep(1)
     else:
         raise RuntimeError("daemon timeout")
-    line = text.replace("\r", " ").replace("\n", " ")
-    if "|||" in line:
+    body = text.replace("\r\n", "\n").replace("\r", "\n")
+    if "|||" in body:
         raise RuntimeError("delimiter")
+    payload = body.encode("utf-8")
     t0 = time.perf_counter()
     with open(pipe, "r+b", buffering=0) as f:
-        f.write(f"{out}\n{line}\n".encode("utf-8"))
+        f.write(f"{out}\n{len(payload)}\n".encode("utf-8") + payload)
         ack = f.readline()
     if ack != b"ok\n":
         raise RuntimeError("synthesize")
@@ -271,19 +377,20 @@ text_pos budget onto Nano.
 Native bounds, not characters. Convert writes chatterbox.n_ctx from
 tfmr.wpe.weight rows. Discover live wpe shape and chatterbox.cond_prompt_length
 on the T3 GGUF. This tree: wpe 768 by 8196, cond_prompt_length 375.
-t3_nano.cpp sets hp.n_ctx from wpe then clamps to N_CTX 2024 in nano.h.
-That clamp is the live KV. Do not shrink the wpe table. prompt_len is 1
-plus cond_prompt_len plus n_text_tokens plus 1. Engine throws T3 prompt
-exceeds context if prompt_len is greater than n_ctx. Generation also
-stops when n_past plus 1 is greater than n_ctx. N_PREDICT 1000 caps
-output speech tokens, about 40 seconds at 960 samples per token. Split
-with ||| only to speak separate utterances, not to fake a length limit.
+t3_nano.cpp sets hp.n_ctx from wpe with no header clamp. nano.h has no N_CTX
+constant. Do not shrink the wpe table. prompt_len is 1 plus cond_prompt_len
+plus n_text_tokens plus 1. Engine throws T3 prompt exceeds context if
+prompt_len is greater than n_ctx. Generation also stops when n_past plus 1
+is greater than n_ctx. N_PREDICT 2000 caps output speech tokens, about 80
+seconds at 960 samples per token. N_PREDICT 2000 is ~80 s. Split with ||| only to speak separate
+utterances, not to fake a length limit.
 
 Delimiter: join pieces with a line that is only |||. utterances() splits on
 that, strips, skips empty, then speak() each piece. speak() fails if a piece
 still contains |||. The C++ engine must never see ||| and must not chunk on
-punctuation. The named pipe receives one clean utterance: official tags plus
-raw text.
+punctuation. The named pipe is path, then a decimal byte length, then that
+many UTF-8 bytes. Newlines and tabs in an utterance are kept. speak() must
+not flatten them to spaces.
 
 Official tags only, including brackets and the space in [clear throat]. They
 are added_tokens.json ids 50257 through 50275. gpt2_bpe matches id >= 50257 as
@@ -298,15 +405,30 @@ Put tags mid-sentence. Example shape: Oh, that's hilarious! [chuckle] Um
 anyway, we do have a new model. No [pause]. No extra tags. Emotion is the tag
 plus baked reference.wav.
 
-Empty models/nano.knobs values mean header defaults: SEED 42, N_PREDICT 1000,
-TOP_K 1000, TOP_P 0.95, TEMPERATURE 0.8, REPEAT_PENALTY 1.2, REPEAT_LAST_N 1000,
-CFM_STEPS 2, SILENCE_TOKEN 4299, SILENCE_COUNT 3. CFM_STEPS 2 matches turbo
-n_cfm_timesteps=2. Do not add MIN_P. Do not invent C++ argv knobs.
+Empty models/nano.knobs values mean header defaults: SEED 42, N_PREDICT 2000,
+TOP_K 1000, TOP_P 0.95, TEMPERATURE 0.8, REPEAT_PENALTY 1.2, REPEAT_LAST_N 200,
+RAS_WINDOW 10, RAS_TAU 0.1, CFM_STEPS 2, SILENCE_TOKEN 4299, SILENCE_COUNT 15.
+REPEAT_LAST_N 200 is the earlier lookahead window. N_PREDICT 2000 is the
+speech-token budget so a slow twenty-one-to-thirty list is not cut at thirty.
+Stop-speech after five silence tokens is treated as a pause, not the end, so a
+slow list can continue. A stop that follows speech is the end. Do not keep
+generating until a text-length quota; that padded a finished sentence with
+junk. generate_t3 zeros the KV buffer before each prompt. After EOS the engine appends 15 S3GEN_SIL tokens
+(~0.6 s) so the last word is not sitting in S3Gen pre_lookahead_len 3. Do not
+drop that pad. Split with ||| on utterance boundaries so T3 alignment does
+not skip or loop. PlaySync plus one second of PCM silence is playback only;
+it does not replace the token pad.
+Sampler order matches official turbo processors: repetition penalty, then
+temperature, then top-k, then top-p. After that pick, RAS (VALL-E 2 / CosyVoice)
+rejects the id if it already occurs RAS_WINDOW * RAS_TAU times in the last
+RAS_WINDOW speech tokens (once in 10) and draws once more. This GGUF has no Samsung
+phoneme-position head. Do not add MIN_P. Do not invent C++ argv knobs.
 
 Run from Trident with sibling chatterbox.cpp. Speaker is operator
 reference.wav, 16-bit PCM mono 24000 Hz. After each successful speak this
-launcher prints wall_s duration_s rtf on stderr, plays the WAV with the Windows
-associated player, waits duration plus one second, then prints the WAV path.
+launcher prints wall_s duration_s rtf on stderr, appends one second of PCM
+silence, plays the WAV with System.Media.SoundPlayer PlaySync so the last
+word cannot be killed, then prints the WAV path.
 Success is WAV Length greater than 44. Synth RTF is speak wall-clock after the
 pipe is ready, divided by WAV duration.
 """
@@ -333,8 +455,9 @@ only to speak separate utterances, not to fake a length limit.
 Delimiter: join pieces with a line that is only |||. utterances() splits on
 that, strips, skips empty, then speak() each piece. speak() fails if a piece
 still contains |||. The C++ engine must never see ||| and must not chunk on
-punctuation. The named pipe receives one clean utterance: official tags plus
-raw text.
+punctuation. The named pipe is path, then a decimal byte length, then that
+many UTF-8 bytes. Newlines and tabs in an utterance are kept. speak() must
+not flatten them to spaces.
 
 Official tags only, including brackets and the space in [clear throat]. They
 are added_tokens.json ids 50257 through 50275. gpt2_bpe matches id >= 50257 as
@@ -365,10 +488,11 @@ Run from Trident with sibling chatterbox.cpp: python tts_turbo.py "<text>".
 GGUF names chatterbox-t3-turbo-q8_0.gguf and chatterbox-s3gen-turbo-q4_0.gguf.
 Kill via models/turbo.pid. Pipe is \\\\.\\pipe\\chatterbox-turbo-<tag>.
 Speaker is operator reference.wav, 16-bit PCM mono 24000 Hz. After each
-successful speak this launcher prints wall_s duration_s rtf on stderr, plays
-the WAV with the Windows associated player, waits duration plus one second,
-then prints the WAV path. Success is WAV Length greater than 44. Synth RTF
-is speak wall-clock after the pipe is ready, divided by WAV duration.
+successful speak this launcher prints wall_s duration_s rtf on stderr,
+appends one second of PCM silence, plays the WAV with System.Media.SoundPlayer
+PlaySync so the last word cannot be killed, then prints the WAV path. Success
+is WAV Length greater than 44. Synth RTF is speak wall-clock after the pipe is
+ready, divided by WAV duration.
 """
 
 V3_HELP = """
@@ -414,8 +538,10 @@ length limit.
 Delimiter: join pieces of the SAME language with a line that is only |||.
 utterances() splits on that, strips, skips empty, then speak() each piece.
 speak() fails if a piece still contains |||. The C++ engine must never see
-||| and must not chunk on punctuation. The named pipe receives one clean
-utterance: raw text for that launch language.
+||| and must not chunk on punctuation. The named pipe is path, then a
+decimal byte length, then that many UTF-8 bytes. Newlines and tabs in an
+utterance are kept. speak() must not flatten them to spaces. Raw text for
+that launch language.
 
 No Nano or Turbo paralinguistic tags. No [laugh] [chuckle] [happy]. V3
 emotion is baked builtin_emotion_adv plus live cfg-weight. Do not invent
@@ -436,10 +562,11 @@ GGUF names chatterbox-t3-v3-q8_0.gguf and chatterbox-s3gen-v3-q4_0.gguf.
 Kill via models/v3.pid. Pipe is \\\\.\\pipe\\chatterbox-v3-<tag>. Server argv
 is chatterbox-server.exe t3 s3 pipe language. argc less than 5 is fatal.
 Speaker is operator reference.wav, 16-bit PCM mono 24000 Hz. After each
-successful speak this launcher prints wall_s duration_s rtf on stderr, plays
-the WAV with the Windows associated player, waits duration plus one second,
-then prints the WAV path. Success is WAV Length greater than 44. Synth RTF
-is speak wall-clock after the pipe is ready, divided by WAV duration.
+successful speak this launcher prints wall_s duration_s rtf on stderr,
+appends one second of PCM silence, plays the WAV with System.Media.SoundPlayer
+PlaySync so the last word cannot be killed, then prints the WAV path. Success
+is WAV Length greater than 44. Synth RTF is speak wall-clock after the pipe is
+ready, divided by WAV duration.
 """
 
 
@@ -530,11 +657,16 @@ def run_variant(
     t3, s3, stamp, rev, pid, build, bin_dir, exe, bake, pipe = paths(cfg)
     for name in cfg.other_pids:
         kill(MODELS / name)
+    pipe_stamp = MODELS / f"{cfg.name}.pipeproto"
+    ensure_byte_pipe_server()
+    if not pipe_stamp.is_file():
+        pipe_stamp.write_text("byte-length-v1", encoding="ascii")
     ggml = CHATTERBOX / "ggml"
     if (
         not exe.is_file()
         or not bake.is_file()
         or not rev.is_file()
+        or not pipe_stamp.is_file()
         or rev.read_text(encoding="ascii").strip() != cfg.chatterbox_rev
     ):
         kill(pid)
@@ -633,5 +765,6 @@ def run_variant(
         dur = wav_duration_s(out)
         rtf = wall / dur if dur > 0 else 0.0
         print(f"wall_s={wall:.3f} duration_s={dur:.3f} rtf={rtf:.3f}", file=sys.stderr)
+        pad_wav_silence(out, 1.0)
         play_wav(out, dur)
         print(out)
