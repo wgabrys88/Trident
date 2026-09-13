@@ -28,17 +28,13 @@ CFG = Variant(
     s3_script="convert-s3gen-v3-to-gguf.py",
     knobs=V3_KNOBS,
     needs_language=True,
-    count_roof=30,
-    count_chunk_short=30,
-    count_chunk_long=22,
-    prose_roof=320,
     policy="V3: Q8_0 T3 selected because the strongest recorded V3 state passed the 1-30 ladder; Q4_0 V3 S3Gen. V3 remains a separate architecture/pipeline and keeps its own header defaults.",
 )
 
 
 def main():
-    text, language, knobs, no_chunk = parse_variant_args(CFG, sys.argv)
-    run_variant(CFG, text, language, knobs, no_chunk)
+    text, language, knobs = parse_variant_args(CFG, sys.argv)
+    run_variant(CFG, text, language, knobs)
 
 
 if __name__ == "__main__":

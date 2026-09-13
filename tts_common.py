@@ -56,10 +56,6 @@ class Variant:
     knobs: tuple[str, ...]
     t3_convert_flags: tuple[str, ...] = ()
     needs_language: bool = False
-    count_roof: int = 0
-    count_chunk_short: int = 0
-    count_chunk_long: int = 0
-    prose_roof: int = 280
     policy: str = ""
 
 
@@ -264,114 +260,6 @@ def utterances(text: str) -> list[str]:
     return out
 
 
-EN_ONES = [
-    "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
-    "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen",
-]
-EN_TENS = ["", "", "twenty", "thirty", "forty", "fifty"]
-
-
-def en_phrase(n: int) -> str:
-    if n < 20:
-        return EN_ONES[n - 1]
-    tens, ones = divmod(n, 10)
-    if tens >= len(EN_TENS):
-        raise ValueError("counting helper supports 1..59")
-    if ones == 0:
-        return EN_TENS[tens]
-    return f"{EN_TENS[tens]}-{EN_ONES[ones - 1]}"
-
-
-def en_list(lo: int, hi: int) -> str:
-    parts = [en_phrase(i) for i in range(lo, hi + 1)]
-    parts[0] = parts[0].capitalize()
-    return ", ".join(parts) + "."
-
-
-def _norm_word(s: str) -> str:
-    return s.lower().replace("-", " ")
-
-
-def list_hi(text: str) -> int | None:
-    t = text.strip()
-    if not t.endswith("."):
-        return None
-    parts = [p.strip() for p in t[:-1].split(",") if p.strip()]
-    if not parts or len(parts) > 59:
-        return None
-    for i, p in enumerate(parts, 1):
-        w = en_phrase(i)
-        if i == 1:
-            w = w.capitalize()
-        if _norm_word(p) != _norm_word(w):
-            return None
-    return len(parts)
-
-
-def list_chunks(cfg: Variant, n: int) -> list[str]:
-    if n <= cfg.count_roof:
-        return [en_list(1, n)]
-    sz = cfg.count_chunk_long if n > 30 else cfg.count_chunk_short
-    sz = max(1, sz)
-    out = []
-    lo = 1
-    while lo <= n:
-        hi = min(lo + sz - 1, n)
-        out.append(en_list(lo, hi))
-        lo = hi + 1
-    return out
-
-
-def eld_mode() -> bool:
-    v = os.environ.get("CHATTERBOX_ELD", "").strip().lower()
-    return v in ("1", "true", "yes")
-
-
-def prose_chunks(text: str, max_chars: int) -> list[str]:
-    t = text.strip()
-    if len(t) <= max_chars:
-        return [t]
-    sentences = []
-    buf = ""
-    for ch in t:
-        buf += ch
-        if ch in ".!?" and len(buf.strip()) >= 10:
-            sentences.append(buf.strip())
-            buf = ""
-    if buf.strip():
-        sentences.append(buf.strip())
-    if not sentences:
-        return [t]
-    out = []
-    cur = ""
-    for sentence in sentences:
-        if not cur:
-            cur = sentence
-        elif len(cur) + 1 + len(sentence) <= max_chars:
-            cur = f"{cur} {sentence}"
-        else:
-            out.append(cur)
-            cur = sentence
-    if cur:
-        out.append(cur)
-    return out or [t]
-
-
-def speak_pieces(cfg: Variant, text: str, *, chunk: bool = True) -> list[str]:
-    if not chunk or eld_mode():
-        return utterances(text)
-    out = []
-    for piece in utterances(text):
-        n = list_hi(piece)
-        if n:
-            out.extend(list_chunks(cfg, n))
-        else:
-            out.extend(prose_chunks(piece, cfg.prose_roof))
-    if not out:
-        raise SystemExit("empty text")
-    return out
-
-
 def wav_duration_s(path: Path) -> float:
     n = path.stat().st_size
     if n <= 44:
@@ -404,14 +292,13 @@ def speak(pipe: str, pid: Path, out: Path, text: str) -> float:
 def usage(cfg: Variant):
     flags = " ".join(f"[--{n} <v>]" for n in cfg.knobs)
     if cfg.needs_language:
-        return f"usage: python tts_{cfg.name}.py [-h] [--no-chunk] {flags} <text> <language>"
-    return f"usage: python tts_{cfg.name}.py [-h] [--no-chunk] {flags} <text>"
+        return f"usage: python tts_{cfg.name}.py [-h] {flags} <text> <language>"
+    return f"usage: python tts_{cfg.name}.py [-h] {flags} <text>"
 
 
 def parse_variant_args(cfg: Variant, argv: list[str]):
     args = argv[1:]
     cli = {}
-    no_chunk = False
     i = 0
     allowed = set(cfg.knobs)
     while i < len(args):
@@ -419,10 +306,6 @@ def parse_variant_args(cfg: Variant, argv: list[str]):
         if a in ("-h", "--help", "-?"):
             print(usage(cfg))
             raise SystemExit(0)
-        if a == "--no-chunk":
-            no_chunk = True
-            i += 1
-            continue
         if not a.startswith("--"):
             break
         name = a[2:]
@@ -434,10 +317,10 @@ def parse_variant_args(cfg: Variant, argv: list[str]):
     if cfg.needs_language:
         if len(rest) != 2:
             raise SystemExit(usage(cfg))
-        return rest[0], rest[1].lower(), cli, no_chunk
+        return rest[0], rest[1].lower(), cli
     if len(rest) != 1:
         raise SystemExit(usage(cfg))
-    return rest[0], None, cli, no_chunk
+    return rest[0], None, cli
 
 
 def normalize_knob(name: str, raw: str | None) -> str:
@@ -634,7 +517,7 @@ def ensure_baked(cfg: Variant, py: Path, ckpt: Path, t3: Path, s3: Path, bake: P
     return bake_contract
 
 
-def provenance(cfg: Variant, out: Path, original_text: str, piece: str, piece_index: int, piece_count: int, language: str, values: dict[str, str], t3: Path, s3: Path, exe: Path, bake: Path, t3_contract, s3_contract, bake_contract, no_chunk: bool):
+def provenance(cfg: Variant, out: Path, original_text: str, piece: str, piece_index: int, piece_count: int, language: str, values: dict[str, str], t3: Path, s3: Path, exe: Path, bake: Path, t3_contract, s3_contract, bake_contract):
     obj = {
         "release_id": RELEASE_ID,
         "base_trident_revision": BASE_TRIDENT_REV,
@@ -655,13 +538,6 @@ def provenance(cfg: Variant, out: Path, original_text: str, piece: str, piece_in
         "language": language or None,
         "knob_overrides": values,
         "header_defaults_used_where_blank": True,
-        "chunking_disabled": bool(no_chunk or eld_mode()),
-        "count_policy": {
-            "roof": cfg.count_roof,
-            "chunk_21_to_30": cfg.count_chunk_short,
-            "chunk_over_30": cfg.count_chunk_long,
-            "prose_chars": cfg.prose_roof,
-        },
         "original_text": original_text,
         "original_text_sha256": sha256_bytes(original_text.encode("utf-8")),
         "piece_index": piece_index,
@@ -675,7 +551,7 @@ def provenance(cfg: Variant, out: Path, original_text: str, piece: str, piece_in
     write_json(out.with_suffix(out.suffix + ".provenance.json"), obj)
 
 
-def run_variant(cfg: Variant, text: str, language=None, knobs=None, no_chunk: bool = False):
+def run_variant(cfg: Variant, text: str, language=None, knobs=None):
     if not REF.is_file():
         raise FileNotFoundError(str(REF))
     if cfg.chatterbox_rev != ENGINE_REV:
@@ -716,7 +592,7 @@ def run_variant(cfg: Variant, text: str, language=None, knobs=None, no_chunk: bo
         wait_pipe_absent(pipe)
         spawn(cfg, exe, t3, s3, pipe, pid, lang or None, values)
 
-    pieces = speak_pieces(cfg, text, chunk=not no_chunk)
+    pieces = utterances(text)
     wav_paths = []
     for i, piece in enumerate(pieces):
         stamp_t = time.strftime("%Y%m%d-%H%M%S")
@@ -725,7 +601,7 @@ def run_variant(cfg: Variant, text: str, language=None, knobs=None, no_chunk: bo
         wall = speak(pipe, pid, out, piece)
         dur = wav_duration_s(out)
         rtf = wall / dur if dur > 0 else 0.0
-        provenance(cfg, out, text, piece, i, len(pieces), lang, values, t3, s3, exe, bake, t3_contract, s3_contract, bake_contract, no_chunk)
+        provenance(cfg, out, text, piece, i, len(pieces), lang, values, t3, s3, exe, bake, t3_contract, s3_contract, bake_contract)
         print(f"wall_s={wall:.3f} duration_s={dur:.3f} rtf={rtf:.3f}", file=sys.stderr, flush=True)
         print(out, flush=True)
         wav_paths.append(out)
