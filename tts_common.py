@@ -234,6 +234,99 @@ def utterances(text: str) -> list[str]:
     return out
 
 
+EN_ONES = [
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+]
+EN_TENS = ["", "", "twenty", "thirty", "forty", "fifty"]
+
+
+def en_phrase(n: int) -> str:
+    if n < 20:
+        return EN_ONES[n - 1]
+    tens, ones = divmod(n, 10)
+    if ones == 0:
+        return EN_TENS[tens]
+    return f"{EN_TENS[tens]}-{EN_ONES[ones - 1]}"
+
+
+def en_list(lo: int, hi: int) -> str:
+    parts = [en_phrase(i) for i in range(lo, hi + 1)]
+    parts[0] = parts[0].capitalize()
+    return ", ".join(parts) + "."
+
+
+def _norm_word(s: str) -> str:
+    return s.lower().replace("-", " ")
+
+
+def list_hi(text: str) -> int | None:
+    t = text.strip()
+    if not t.endswith("."):
+        return None
+    parts = [p.strip() for p in t[:-1].split(",") if p.strip()]
+    if not parts:
+        return None
+    for i, p in enumerate(parts, 1):
+        w = en_phrase(i)
+        if i == 1:
+            w = w.capitalize()
+        if _norm_word(p) != _norm_word(w):
+            return None
+    return len(parts)
+
+
+def chunk_size(family: str, n: int) -> int:
+    if family == "nano":
+        return 13 if n <= 30 else 12
+    if family == "turbo":
+        return 18 if n <= 30 else 17
+    if family == "v3":
+        return 30 if n <= 30 else 22
+    return n
+
+
+def list_chunks(family: str, n: int) -> list[str]:
+    sz = chunk_size(family, n)
+    out = []
+    lo = 1
+    while lo <= n:
+        hi = min(lo + sz - 1, n)
+        out.append(en_list(lo, hi))
+        lo = hi + 1
+    return out
+
+
+def speak_pieces(cfg: Variant, text: str) -> list[str]:
+    out = []
+    for piece in utterances(text):
+        n = list_hi(piece)
+        if n:
+            out.extend(list_chunks(cfg.name, n))
+        else:
+            out.append(piece)
+    if not out:
+        raise SystemExit("empty text")
+    return out
+
+
 def wav_duration_s(path: Path) -> float:
     n = path.stat().st_size
     if n <= 44:
@@ -432,7 +525,7 @@ def run_variant(
     lang_stamp = ""
     if lang_stamp_path and lang_stamp_path.is_file():
         lang_stamp = lang_stamp_path.read_text(encoding="ascii").strip()
-    pieces = utterances(text)
+    pieces = speak_pieces(cfg, text)
     lang = (language or "en").lower() if cfg.needs_language else ""
     if converted or voice_stamp != voice:
         kill(pid)
