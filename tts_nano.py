@@ -28,17 +28,13 @@ CFG = Variant(
     t3_convert_flags=("--f16",),
     s3_script="convert-s3gen-to-gguf.py",
     knobs=GPT2_KNOBS,
-    count_roof=20,
-    count_chunk_short=17,
-    count_chunk_long=16,
-    prose_roof=280,
     policy="Nano: F16 T3 with text_emb/speech_emb/speech_head retained F32 by engine aaafdb6; Q4_0 S3Gen.",
 )
 
 
 def main():
-    text, language, knobs, no_chunk = parse_variant_args(CFG, sys.argv)
-    run_variant(CFG, text, language, knobs, no_chunk)
+    text, language, knobs = parse_variant_args(CFG, sys.argv)
+    run_variant(CFG, text, language, knobs)
 
 
 if __name__ == "__main__":

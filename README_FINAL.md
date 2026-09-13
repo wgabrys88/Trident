@@ -30,8 +30,7 @@ The reference file is part of the effective model state. Do not substitute a gen
   - `speech_emb.weight`
   - `speech_head.weight`
 - S3Gen: Q4_0
-- Known-good single-pass region includes the attached historical 1-20 result.
-- Automatic count chunking only begins above 20.
+- Known-good single-pass region is 1-20. Longer counts are separate Python calls, not launcher splitting.
 
 ### Turbo
 
@@ -40,7 +39,7 @@ The reference file is part of the effective model state. Do not substitute a gen
 - Same F32 interface tensors as Nano
 - S3Gen: Q4_0
 - F16 was decisively better than the earlier Q8_0 Turbo state.
-- Conservative automatic count chunking is used because the C++ path still had a residual parity gap versus official Python on the n=20 ladder.
+- C++ single-pass counting envelope is 15. Official Python passed n=20; this C++ path still skipped nineteen.
 
 ### V3
 
@@ -60,7 +59,7 @@ This repository fixes several reproducibility weaknesses in the historical launc
 4. T3 and S3 are treated as one conversion pair. If either conversion contract changes, both are regenerated from source checkpoints before baking.
 5. Voice baking is fingerprinted against the reference WAV hash, conversion identities, and bake executable hash.
 6. If the reference or bake contract changes, pristine GGUFs are regenerated before rebaking. The launcher does not depend on repeated in-place mutation semantics.
-7. Every generated WAV receives a `.provenance.json` sidecar containing the complete effective state: model hashes, reference hash, engine/ggml pins, converter policy, build hashes, sampler overrides, text, chunking, and output hash.
+7. Every generated WAV receives a `.provenance.json` sidecar containing the complete effective state: model hashes, reference hash, engine/ggml pins, converter policy, build hashes, sampler overrides, text, and output hash.
 8. One family server runs at a time.
 9. Empty sampler overrides preserve the family header defaults rather than silently applying a shared cross-family tuning profile.
 
@@ -84,11 +83,7 @@ V3:
 python tts_v3.py "Hello from V3." en
 ```
 
-For a deliberate single-pass experiment, bypass automatic chunking:
-
-```powershell
-python tts_nano.py --no-chunk "One, two, three, four, five, six, seven, eight, nine, ten, eleven, twelve, thirteen, fourteen, fifteen, sixteen, seventeen, eighteen, nineteen, twenty."
-```
+The launcher speaks the text you pass, as one generation. It does not split counts. Use a separate invocation for the next window (Nano 1-20, then 21-40; Turbo 1-15, then 16-30; V3 1-30, then 31-60). `|||` still starts a new generation only when you put that delimiter in the text yourself.
 
 ## Toolchain
 
