@@ -7,7 +7,7 @@ One tree, three families. Not a git-merge of nano/turbo/v3. Not onto main.
 | repo | branch | SHA | note |
 | --- | --- | --- | --- |
 | chatterbox.cpp | experimental | `2bb942bac8bd8653b6751d70be3766ba103c49f3` | parent `d83dbd3`; CMake TTS_FAMILY quotes |
-| Trident | experimental | `9300f0e8165c21bbb5a54c865f5112833d54fdb5` | all three launchers pin chatterbox `2bb942b` |
+| Trident | experimental | `origin/experimental` | all three launchers pin chatterbox `2bb942b` |
 
 ## Done
 
@@ -21,11 +21,13 @@ One tree, three families. Not a git-merge of nano/turbo/v3. Not onto main.
 ## Now
 
 - [x] Push `experimental` in **both** repos (`origin/experimental` exists; no PR to main)
-- [ ] CMake configure actually succeeds for nano, turbo, v3
-- [ ] Speak nano
-- [ ] Speak turbo
-- [ ] Speak v3 (`python tts_v3.py "<text>" <language>`)
-- [ ] First speak of a family rebuilds `build/<family>` — that is expected
+- [x] CMake configure nano (`TTS_FAMILY=nano`, compiled `t3_nano` + `chatterbox_engine_gpt2`)
+- [x] CMake configure turbo (`TTS_FAMILY=turbo`, compiling GPT-2 sources into `build/turbo`)
+- [x] CMake configure v3 (`TTS_FAMILY=v3`, compiled `t3_v3` + `mtl_bpe` + `chatterbox_engine_v3`)
+- [x] Speak nano `20260913-103828-nano.wav` 217004 bytes, wall 2.966s, dur 3.520s, rtf 0.843
+- [x] Speak turbo `20260913-103932-turbo.wav` 178604 bytes, wall 4.005s, dur 2.720s, rtf 1.472
+- [x] Speak v3 `20260913-104009-v3.wav` 220844 bytes, wall 12.275s, dur 3.600s, rtf 3.410
+- [x] First speak of each family rebuilt `build/<family>` as expected
 
 ## Do not
 
@@ -42,6 +44,6 @@ One tree, three families. Not a git-merge of nano/turbo/v3. Not onto main.
 
 - [ ] Nano “thirty” missing on the 21–30 cold-start chunk — reproduce before debug
 - [ ] `origin/v3` sibling pins stay stale on purpose
-- [ ] `models/*.rev` rewrite on first successful experimental launch
+- [x] `models/*.rev` rewritten to `2bb942b` after experimental launch
 
 Leave both repos on `experimental`. To return to production: `git checkout v3` in both.
