@@ -1,6 +1,5 @@
 import ctypes
 import hashlib
-import json
 import os
 import subprocess
 import sys
@@ -241,28 +240,6 @@ def wav_duration_s(path: Path) -> float:
     return (n - 44) / 2.0 / 24000.0
 
 
-def pad_wav_silence(path: Path, extra_s: float = 1.0):
-    raw = bytearray(path.read_bytes())
-    if len(raw) <= 44:
-        raise RuntimeError("WAV Length")
-    extra = int(round(float(extra_s) * 24000.0)) * 2
-    riff = int.from_bytes(raw[4:8], "little") + extra
-    data = int.from_bytes(raw[40:44], "little") + extra
-    raw[4:8] = riff.to_bytes(4, "little")
-    raw[40:44] = data.to_bytes(4, "little")
-    raw.extend(b"\x00" * extra)
-    path.write_bytes(raw)
-
-
-def play_wav(path: Path):
-    cmd = (
-        "$ErrorActionPreference = 'Stop'; (New-Object System.Media.SoundPlayer "
-        + json.dumps(str(path))
-        + ").PlaySync()"
-    )
-    subprocess.run(["powershell", "-NoProfile", "-Command", cmd], check=True)
-
-
 def speak(pipe: str, pid: Path, out: Path, text: str) -> float:
     for _ in range(120):
         if not running(pid):
@@ -471,7 +448,5 @@ def run_variant(
         wall = speak(pipe, pid, out, piece)
         dur = wav_duration_s(out)
         rtf = wall / dur if dur > 0 else 0.0
-        print(f"wall_s={wall:.3f} duration_s={dur:.3f} rtf={rtf:.3f}", file=sys.stderr)
-        pad_wav_silence(out, 1.0)
-        play_wav(out)
-        print(out)
+        print(f"wall_s={wall:.3f} duration_s={dur:.3f} rtf={rtf:.3f}", file=sys.stderr, flush=True)
+        print(out, flush=True)
