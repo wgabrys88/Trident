@@ -415,8 +415,6 @@ def speak_nano(pipe: str, pid: Path, out: Path, text: str) -> float:
     else:
         raise RuntimeError("daemon timeout")
     body = text.replace("\r\n", "\n").replace("\r", "\n")
-    if "|||" in body:
-        raise RuntimeError("delimiter")
     payload = body.encode("utf-8")
     tmp = out.with_suffix(out.suffix + ".tmp")
     t0 = time.perf_counter()
@@ -441,9 +439,10 @@ def speak_nano(pipe: str, pid: Path, out: Path, text: str) -> float:
 
 def usage(cfg: Variant):
     flags = " ".join(f"[--{n} <v>]" for n in cfg.knobs)
+    play = "" if cfg.name == "nano" else " [--play]"
     if cfg.needs_language:
-        return f"usage: python tts_{cfg.name}.py [-h] [--play] {flags} <text> <language>"
-    return f"usage: python tts_{cfg.name}.py [-h] [--play] {flags} <text>"
+        return f"usage: python tts_{cfg.name}.py [-h]{play} {flags} <text> <language>"
+    return f"usage: python tts_{cfg.name}.py [-h]{play} {flags} <text>"
 
 
 def parse_variant_args(cfg: Variant, argv: list[str]):
@@ -458,6 +457,8 @@ def parse_variant_args(cfg: Variant, argv: list[str]):
             print(usage(cfg))
             raise SystemExit(0)
         if a == "--play":
+            if cfg.name == "nano":
+                raise SystemExit(usage(cfg))
             play = True
             i += 1
             continue
@@ -748,7 +749,13 @@ def run_variant(cfg: Variant, text: str, language=None, knobs=None, play: bool =
         wait_pipe_absent(pipe)
         spawn(cfg, exe, t3, s3, pipe, pid, lang or None, values)
 
-    pieces = split_spoken(text) if play else utterances(text)
+    if cfg.name == "nano":
+        piece = text.strip()
+        if not piece:
+            raise SystemExit("empty text")
+        pieces = [piece]
+    else:
+        pieces = split_spoken(text) if play else utterances(text)
     n = len(pieces)
 
     def synth_piece(i: int, piece: str):
