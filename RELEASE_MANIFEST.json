@@ -7,15 +7,15 @@
   },
   "note": "No model weights or reference.wav are bundled. The original reference.wav remains required. Human documentation is the latest Trident git commit message, not markdown files. Product baseline is C++ Nano seed 42 that produced mixed_cpp_nano_seed42.wav. Tag MILESTONE-NANO-FREEZE remains the Nano freeze; experimental may move.",
   "release_id": "trident-nano-freeze-2026-09-14",
-  "required_engine_revision": "45896e61cd9eb539bdd6bd8135644dce39ac5f62",
+  "required_engine_revision": "456297e112520a776e73ede9323c6c4786f8cf46",
   "source_files_sha256": {
     ".gitattributes": "d60f352d0db1404c70afb4bb8b2ca3fd1c610572aa40720e8a0b7baa7885418c",
     ".gitignore": "8c08799b36273359c589a9f89d425207ca56752df6d10bad584a2112f55f7059",
     "listen.py": "40e77c58547bef0082218de54c8d5e7a08e5142f2c7dbba7a541b21c447e8c9c",
-    "setup_engine_sibling.ps1": "090fad29af5a776b0bf985976eb0eb2bd5bc7031c50b73991e5738f17315566c",
-    "tts_common.py": "4c6702b2f218d4669cc87e6bddbc03416c2487fa3509f5110ece2cf6642abd43",
-    "tts_nano.py": "d4f99fb5d13315ad2ceb3685cb412b1a8033b4dbf24a6d484a66d95ddc273992",
-    "tts_turbo.py": "87e338b7e26c2bb3f9f2bd23c67294b65b56d8eaca6fe5492a51116113298c11",
-    "tts_v3.py": "350897d0776f39da36a82a33d7e45a2da5ac738ecbd4d4816d557b8402e705dd"
+    "setup_engine_sibling.ps1": "9a2978f518589b9b409091fcc91134787ddaacaa4569e8c65c541dd036703547",
+    "tts_common.py": "4882a5d76897e1871d687484394ad0686cb152c2df4bbe985aedea3b51f510ff",
+    "tts_nano.py": "2382f3e1797ebbc821f2b7362095bd10796f380f4ce969ec15c36e4159ebcc51",
+    "tts_turbo.py": "d8def07074e00f80f6e543096fd07c6fc8655f409eed58f00542764b96b4ce25",
+    "tts_v3.py": "923727964eeae2fcdacf29616fd28258a673592ed9816db8e6156e353a033cbc"
   }
 }
