@@ -5,7 +5,7 @@ from tts_common import GPT2_KNOBS, Variant, parse_variant_args, run_variant
 CFG = Variant(
     name="turbo",
     branch="experimental",
-    chatterbox_rev="dc0e83d2666d6f0ce5560466b9da737467cf47fa",
+    chatterbox_rev="cdefaa95c5c980efe633ebf3d3483913710e8eed",
     hf="https://huggingface.co/ResembleAI/chatterbox-turbo/resolve/749d1c1a46eb10492095d68fbcf55691ccf137cd",
     assets=(
         "t3_turbo_v1.safetensors",
@@ -28,7 +28,7 @@ CFG = Variant(
     t3_convert_flags=("--f16",),
     s3_script="convert-s3gen-to-gguf.py",
     knobs=GPT2_KNOBS,
-    policy="Turbo: T3 F32 under --f16 (attn/mlp no longer F16) by engine 4fa717d; Q4_0 S3Gen.",
+    policy="Turbo: same Nano delta (T3 F32 under --f16, N_PREDICT=wpe 8196, Q4_0 meanflow). Convert asserts GPT2_medium 1024/24/16/8196.",
 )
 
 
