@@ -5,7 +5,7 @@ from tts_common import V3_KNOBS, Variant, parse_variant_args, run_variant
 CFG = Variant(
     name="v3",
     branch="experimental",
-    chatterbox_rev="ac68ce98f632a2cddbea994e84829f01c9f92f80",
+    chatterbox_rev="69d7e9581852085fd09eabb21034ff8dd80cb7f9",
     hf="https://huggingface.co/ResembleAI/chatterbox/resolve/5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18",
     assets=(
         "t3_mtl23ls_v3.safetensors",
