@@ -430,7 +430,7 @@ WINMM.waveOutUnprepareHeader.restype = ctypes.c_uint
 WINMM.waveOutClose.argtypes = [ctypes.c_void_p]
 WINMM.waveOutClose.restype = ctypes.c_uint
 WHDR_DONE = 0x00000001
-WAVE_MAPPER = ctypes.c_size_t(-1).value
+WAVE_MAPPER = 0xFFFFFFFF
 
 
 class NanoWaveOut:
