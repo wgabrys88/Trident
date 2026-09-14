@@ -1,21 +1,21 @@
 {
   "ggml_revision": "7840aaba1989c6deeefede1d77d5aaf8f52b947e",
   "model_policy": {
-    "nano": "T3 F32 under --f16 (not Q8_0); S3Gen Q4_0",
+    "nano": "T3 F32 under --f16 (not Q8_0); S3Gen Q4_0 MeanFlow; native framed-PCM streaming with one persistent T3 sequence",
     "turbo": "Same Nano delta: T3 F32 under --f16, N_PREDICT=wpe 8196, Q4_0 meanflow; convert asserts GPT2_medium 1024/24/16/8196",
     "v3": "Llama analog of Nano delta: T3 F32 under --f16, N_PREDICT=4096 from speech_pos (n_ctx formula), Q4_0 vanilla S3Gen"
   },
   "note": "No model weights or reference.wav are bundled. The original reference.wav remains required. Human documentation is the latest Trident git commit message, not markdown files. Product baseline is C++ Nano seed 42 that produced mixed_cpp_nano_seed42.wav. Tag MILESTONE-NANO-FREEZE remains the Nano freeze; experimental may move.",
   "release_id": "trident-nano-freeze-2026-09-14",
-  "required_engine_revision": "94ccc6348c921787e58ac86021e076a10ffe6e49",
+  "required_engine_revision": "0c33cbb76eed949da51d47369da35fb0b1c6a1df",
   "source_files_sha256": {
     ".gitattributes": "d60f352d0db1404c70afb4bb8b2ca3fd1c610572aa40720e8a0b7baa7885418c",
     ".gitignore": "8c08799b36273359c589a9f89d425207ca56752df6d10bad584a2112f55f7059",
     "listen.py": "40e77c58547bef0082218de54c8d5e7a08e5142f2c7dbba7a541b21c447e8c9c",
-    "setup_engine_sibling.ps1": "9929067cdc6a65a6bb3ba68919b1414b0907dbe60b75848dbd3378bf4da07c41",
-    "tts_common.py": "23522c067bfb090e8384460f062d74480e0ce5a91cc93ffedfebcbdd7602d1f8",
-    "tts_nano.py": "10230002a3f8cd88a6f0069c6e1c82946aef3992e5ebe0e3f6d60983db237164",
-    "tts_turbo.py": "433ff2d934547650235c6fd2e69551aff305b7b987593277a1db8f75fac56295",
-    "tts_v3.py": "b04967fa74a58a33be18fac4baed9b982cf61618508a159fae390fabc950016a"
+    "setup_engine_sibling.ps1": "bc56ea3485e5a692b91ba19565eb8cdbfdee3c37488ecf96b44daf306495ea89",
+    "tts_common.py": "fd09f9414f0e4328b3dc8469d889616b5eecb62a9cc0eddd2ee6d0788ef2180a",
+    "tts_nano.py": "471a36a9b69df85fe1162698be23b2406ced6b9b240c7b3593d6df39a0fc4a7d",
+    "tts_turbo.py": "d2ff922fb04680656bdeabd00056739cf72797fe7c98dc5a32db74e43f66df87",
+    "tts_v3.py": "0645b9366b4bbdb2ddc1d06f22b44527a0a6f4d11127ee36b1e50a1ea094a91c"
   }
 }
