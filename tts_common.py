@@ -18,7 +18,7 @@ CHATTERBOX = ROOT.parent / "chatterbox.cpp"
 MODELS = ROOT / "models"
 REF = ROOT / "reference.wav"
 GGML_REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
-ENGINE_REV = "456297e112520a776e73ede9323c6c4786f8cf46"
+ENGINE_REV = "2f46f9059af6ee5a59908a39e04a42e7dbd592ad"
 BASE_TRIDENT_REV = "38e0c4947d236e239ffd8e2cd2b98a8c39848efc"
 RELEASE_ID = "trident-nano-freeze-2026-09-14"
 VULKAN = Path("C:/VulkanSDK/1.4.357.0")
@@ -201,7 +201,6 @@ KNOB_ENV = {
     "temperature": ("CHATTERBOX_TEMPERATURE", "f"),
     "top-k": ("CHATTERBOX_TOP_K", "i"),
     "top-p": ("CHATTERBOX_TOP_P", "f"),
-    "repeat-last-n": ("CHATTERBOX_REPEAT_LAST_N", "i"),
     "seed": ("CHATTERBOX_SEED", "i"),
     "n-predict": ("CHATTERBOX_N_PREDICT", "i"),
     "cfm-steps": ("CHATTERBOX_CFM_STEPS", "i"),
@@ -216,7 +215,6 @@ SHARED_KNOBS = (
     "temperature",
     "top-k",
     "top-p",
-    "repeat-last-n",
     "seed",
     "n-predict",
     "cfm-steps",
