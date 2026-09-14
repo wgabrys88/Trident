@@ -5,7 +5,7 @@ from tts_common import GPT2_KNOBS, Variant, parse_variant_args, run_variant
 CFG = Variant(
     name="nano",
     branch="experimental",
-    chatterbox_rev="0c33cbb76eed949da51d47369da35fb0b1c6a1df",
+    chatterbox_rev="3ca5487da54ff10443d09d2dfb7f1fc203bdce86",
     hf="https://huggingface.co/ResembleAI/chatterbox-nano/resolve/71ccd1d0081b430592cea481f4307e764e07bc64",
     assets=(
         "t3_nano_v1.safetensors",
