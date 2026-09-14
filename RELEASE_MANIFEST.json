@@ -1,7 +1,7 @@
 {
   "ggml_revision": "7840aaba1989c6deeefede1d77d5aaf8f52b947e",
   "model_policy": {
-    "nano": "T3 F32 under --f16 (not Q8_0); S3Gen Q4_0 MeanFlow; native framed-PCM streaming with one persistent T3 sequence",
+    "nano": "T3 F32 under --f16 (not Q8_0); S3Gen Q4_0 MeanFlow; native framed-PCM streaming; one input is one continuous T3 utterance with no Trident text chunker",
     "turbo": "Same Nano delta: T3 F32 under --f16, N_PREDICT=wpe 8196, Q4_0 meanflow; convert asserts GPT2_medium 1024/24/16/8196",
     "v3": "Llama analog of Nano delta: T3 F32 under --f16, N_PREDICT=4096 from speech_pos (n_ctx formula), Q4_0 vanilla S3Gen"
   },
@@ -13,8 +13,8 @@
     ".gitignore": "8c08799b36273359c589a9f89d425207ca56752df6d10bad584a2112f55f7059",
     "listen.py": "40e77c58547bef0082218de54c8d5e7a08e5142f2c7dbba7a541b21c447e8c9c",
     "setup_engine_sibling.ps1": "090fad29af5a776b0bf985976eb0eb2bd5bc7031c50b73991e5738f17315566c",
-    "tts_common.py": "0186b466cd8194f60582e2b835f7a833021bedc0e98b5da76f205e5878f64b63",
-    "tts_nano.py": "1b720dd8a64b48c1e38777234103e6ab3c7b85ed4d92f6e892d92fb325a46b8f",
+    "tts_common.py": "4c6702b2f218d4669cc87e6bddbc03416c2487fa3509f5110ece2cf6642abd43",
+    "tts_nano.py": "d4f99fb5d13315ad2ceb3685cb412b1a8033b4dbf24a6d484a66d95ddc273992",
     "tts_turbo.py": "87e338b7e26c2bb3f9f2bd23c67294b65b56d8eaca6fe5492a51116113298c11",
     "tts_v3.py": "350897d0776f39da36a82a33d7e45a2da5ac738ecbd4d4816d557b8402e705dd"
   }
