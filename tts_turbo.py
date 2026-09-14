@@ -5,7 +5,7 @@ from tts_common import GPT2_KNOBS, Variant, parse_variant_args, run_variant
 CFG = Variant(
     name="turbo",
     branch="experimental",
-    chatterbox_rev="69d7e9581852085fd09eabb21034ff8dd80cb7f9",
+    chatterbox_rev="4fa717d1de4f3a945d2efd5796c18e1f7c4773d4",
     hf="https://huggingface.co/ResembleAI/chatterbox-turbo/resolve/749d1c1a46eb10492095d68fbcf55691ccf137cd",
     assets=(
         "t3_turbo_v1.safetensors",
@@ -28,7 +28,7 @@ CFG = Variant(
     t3_convert_flags=("--f16",),
     s3_script="convert-s3gen-to-gguf.py",
     knobs=GPT2_KNOBS,
-    policy="Turbo: F16 T3 with text_emb/speech_emb/speech_head retained F32 by engine aaafdb6; Q4_0 S3Gen.",
+    policy="Turbo: T3 F32 under --f16 (attn/mlp no longer F16) by engine 4fa717d; Q4_0 S3Gen.",
 )
 
 
