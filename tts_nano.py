@@ -28,7 +28,7 @@ CFG = Variant(
     t3_convert_flags=("--f16",),
     s3_script="convert-s3gen-to-gguf.py",
     knobs=GPT2_KNOBS,
-    policy="Nano: T3 F32 under --f16 (not Q8_0), Q4_0 MeanFlow S3Gen, native framed-PCM streaming; one input is one continuous T3 utterance.",
+    policy="Nano: T3 F32 under --f16 (not Q8_0), Q4_0 MeanFlow S3Gen, native framed-PCM streaming; --play renders arriving PCM directly; one input is one continuous T3 utterance.",
 )
 
 
