@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 $Parent = Split-Path -Parent $PSScriptRoot
 $Engine = Join-Path $Parent "chatterbox.cpp"
 $EngineUrl = "https://github.com/wgabrys88/chatterbox.cpp.git"
-$EngineCommit = "4fa717d1de4f3a945d2efd5796c18e1f7c4773d4"
+$EngineCommit = "dc0e83d2666d6f0ce5560466b9da737467cf47fa"
 
 if (-not (Test-Path $Engine)) {
     git clone -b experimental $EngineUrl $Engine
