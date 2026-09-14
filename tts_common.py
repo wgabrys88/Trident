@@ -380,7 +380,7 @@ def speak(pipe: str, pid: Path, out: Path, text: str) -> float:
     return time.perf_counter() - t0
 
 
-def _read_exact(f, n: int) -> bytes:
+def _read_exact(f, n: int) -> bytearray:
     out = bytearray(n)
     view = memoryview(out)
     got = 0
@@ -390,20 +390,87 @@ def _read_exact(f, n: int) -> bytes:
             raise RuntimeError("stream ended")
         view[got:got + len(block)] = block
         got += len(block)
-    return bytes(out)
+    return out
 
 
-def _copy_exact(src, dst, n: int):
-    left = n
-    while left:
-        block = src.read(min(left, 65536))
-        if not block:
-            raise RuntimeError("stream ended")
-        dst.write(block)
-        left -= len(block)
+class _WaveFormatEx(ctypes.Structure):
+    _fields_ = [
+        ("wFormatTag", ctypes.c_ushort),
+        ("nChannels", ctypes.c_ushort),
+        ("nSamplesPerSec", ctypes.c_uint32),
+        ("nAvgBytesPerSec", ctypes.c_uint32),
+        ("nBlockAlign", ctypes.c_ushort),
+        ("wBitsPerSample", ctypes.c_ushort),
+        ("cbSize", ctypes.c_ushort),
+    ]
 
 
-def speak_nano(pipe: str, pid: Path, out: Path, text: str) -> float:
+class _WaveHdr(ctypes.Structure):
+    _fields_ = [
+        ("lpData", ctypes.c_void_p),
+        ("dwBufferLength", ctypes.c_uint32),
+        ("dwBytesRecorded", ctypes.c_uint32),
+        ("dwUser", ctypes.c_size_t),
+        ("dwFlags", ctypes.c_uint32),
+        ("dwLoops", ctypes.c_uint32),
+        ("lpNext", ctypes.c_void_p),
+        ("reserved", ctypes.c_size_t),
+    ]
+
+
+WINMM = ctypes.WinDLL("winmm", use_last_error=True)
+WINMM.waveOutOpen.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t, ctypes.POINTER(_WaveFormatEx), ctypes.c_size_t, ctypes.c_size_t, ctypes.c_uint]
+WINMM.waveOutOpen.restype = ctypes.c_uint
+WINMM.waveOutPrepareHeader.argtypes = [ctypes.c_void_p, ctypes.POINTER(_WaveHdr), ctypes.c_uint]
+WINMM.waveOutPrepareHeader.restype = ctypes.c_uint
+WINMM.waveOutWrite.argtypes = [ctypes.c_void_p, ctypes.POINTER(_WaveHdr), ctypes.c_uint]
+WINMM.waveOutWrite.restype = ctypes.c_uint
+WINMM.waveOutUnprepareHeader.argtypes = [ctypes.c_void_p, ctypes.POINTER(_WaveHdr), ctypes.c_uint]
+WINMM.waveOutUnprepareHeader.restype = ctypes.c_uint
+WINMM.waveOutClose.argtypes = [ctypes.c_void_p]
+WINMM.waveOutClose.restype = ctypes.c_uint
+WHDR_DONE = 0x00000001
+WAVE_MAPPER = ctypes.c_size_t(-1).value
+
+
+class NanoWaveOut:
+    def __init__(self):
+        fmt = _WaveFormatEx(1, 1, 24000, 48000, 2, 16, 0)
+        self.handle = ctypes.c_void_p()
+        if WINMM.waveOutOpen(ctypes.byref(self.handle), WAVE_MAPPER, ctypes.byref(fmt), 0, 0, 0):
+            raise RuntimeError("waveOutOpen")
+        self.queued = []
+
+    def _reap(self, wait: bool):
+        while self.queued:
+            pcm, view, hdr = self.queued[0]
+            if not (hdr.dwFlags & WHDR_DONE):
+                if not wait:
+                    break
+                time.sleep(0.002)
+                continue
+            if WINMM.waveOutUnprepareHeader(self.handle, ctypes.byref(hdr), ctypes.sizeof(hdr)):
+                raise RuntimeError("waveOutUnprepareHeader")
+            self.queued.pop(0)
+
+    def write(self, pcm: bytearray):
+        self._reap(False)
+        view = (ctypes.c_char * len(pcm)).from_buffer(pcm)
+        hdr = _WaveHdr(ctypes.addressof(view), len(pcm), 0, 0, 0, 0, None, 0)
+        if WINMM.waveOutPrepareHeader(self.handle, ctypes.byref(hdr), ctypes.sizeof(hdr)):
+            raise RuntimeError("waveOutPrepareHeader")
+        if WINMM.waveOutWrite(self.handle, ctypes.byref(hdr), ctypes.sizeof(hdr)):
+            raise RuntimeError("waveOutWrite")
+        self.queued.append((pcm, view, hdr))
+
+    def close(self):
+        self._reap(True)
+        if WINMM.waveOutClose(self.handle):
+            raise RuntimeError("waveOutClose")
+        self.handle = None
+
+
+def speak_nano(pipe: str, pid: Path, out: Path, text: str, play: bool = False) -> float:
     for _ in range(120):
         if not running(pid):
             raise RuntimeError("daemon")
@@ -417,27 +484,36 @@ def speak_nano(pipe: str, pid: Path, out: Path, text: str) -> float:
     tmp = out.with_suffix(out.suffix + ".tmp")
     t0 = time.perf_counter()
     data_bytes = 0
-    with open(tmp, "w+b", buffering=0) as wav, open(pipe, "r+b", buffering=0) as f:
-        wav.write(struct.pack("<4sI4s4sIHHIIHH4sI",
-            b"RIFF", 36, b"WAVE", b"fmt ", 16, 1, 1, 24000, 48000, 2, 16, b"data", 0))
-        f.write(f"{len(payload)}\n".encode("ascii") + payload)
-        while True:
-            nbytes = struct.unpack("<I", _read_exact(f, 4))[0]
-            if nbytes == 0:
-                break
-            _copy_exact(f, wav, nbytes)
-            data_bytes += nbytes
-        wav.seek(4)
-        wav.write(struct.pack("<I", 36 + data_bytes))
-        wav.seek(40)
-        wav.write(struct.pack("<I", data_bytes))
+    player = NanoWaveOut() if play else None
+    try:
+        with open(tmp, "w+b", buffering=0) as wav, open(pipe, "r+b", buffering=0) as f:
+            wav.write(struct.pack("<4sI4s4sIHHIIHH4sI",
+                b"RIFF", 36, b"WAVE", b"fmt ", 16, 1, 1, 24000, 48000, 2, 16, b"data", 0))
+            f.write(f"{len(payload)}\n".encode("ascii") + payload)
+            while True:
+                nbytes = struct.unpack("<I", _read_exact(f, 4))[0]
+                if nbytes == 0:
+                    break
+                pcm = _read_exact(f, nbytes)
+                wav.write(pcm)
+                if player:
+                    player.write(pcm)
+                data_bytes += nbytes
+            wav.seek(4)
+            wav.write(struct.pack("<I", 36 + data_bytes))
+            wav.seek(40)
+            wav.write(struct.pack("<I", data_bytes))
+            wall = time.perf_counter() - t0
+    finally:
+        if player:
+            player.close()
     tmp.replace(out)
-    return time.perf_counter() - t0
+    return wall
 
 
 def usage(cfg: Variant):
     flags = " ".join(f"[--{n} <v>]" for n in cfg.knobs)
-    play = "" if cfg.name == "nano" else " [--play]"
+    play = " [--play]"
     if cfg.needs_language:
         return f"usage: python tts_{cfg.name}.py [-h]{play} {flags} <text> <language>"
     return f"usage: python tts_{cfg.name}.py [-h]{play} {flags} <text>"
@@ -455,8 +531,6 @@ def parse_variant_args(cfg: Variant, argv: list[str]):
             print(usage(cfg))
             raise SystemExit(0)
         if a == "--play":
-            if cfg.name == "nano":
-                raise SystemExit(usage(cfg))
             play = True
             i += 1
             continue
@@ -758,7 +832,7 @@ def run_variant(cfg: Variant, text: str, language=None, knobs=None, play: bool =
 
     def synth_piece(i: int, piece: str):
         out = wav_out_path(cfg, i, n)
-        wall = speak_nano(pipe, pid, out, piece) if cfg.name == "nano" else speak(pipe, pid, out, piece)
+        wall = speak_nano(pipe, pid, out, piece, play=play) if cfg.name == "nano" else speak(pipe, pid, out, piece)
         dur = wav_duration_s(out)
         rtf = wall / dur if dur > 0 else 0.0
         provenance(cfg, out, text, piece, i, n, lang, values, t3, s3, exe, bake, t3_contract, s3_contract, bake_contract)
@@ -772,7 +846,7 @@ def run_variant(cfg: Variant, text: str, language=None, knobs=None, play: bool =
         out, wall, dur = ready
         wav_paths.append(out)
         player = None
-        if play:
+        if play and cfg.name != "nano":
             player = threading.Thread(target=play_wav, args=(out, dur), daemon=False)
             player.start()
         if i + 1 < n:
