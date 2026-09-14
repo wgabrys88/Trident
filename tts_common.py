@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import threading
@@ -17,7 +18,7 @@ CHATTERBOX = ROOT.parent / "chatterbox.cpp"
 MODELS = ROOT / "models"
 REF = ROOT / "reference.wav"
 GGML_REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
-ENGINE_REV = "94ccc6348c921787e58ac86021e076a10ffe6e49"
+ENGINE_REV = "0c33cbb76eed949da51d47369da35fb0b1c6a1df"
 BASE_TRIDENT_REV = "38e0c4947d236e239ffd8e2cd2b98a8c39848efc"
 RELEASE_ID = "trident-nano-freeze-2026-09-14"
 VULKAN = Path("C:/VulkanSDK/1.4.357.0")
@@ -381,6 +382,63 @@ def speak(pipe: str, pid: Path, out: Path, text: str) -> float:
     return time.perf_counter() - t0
 
 
+def _read_exact(f, n: int) -> bytes:
+    out = bytearray(n)
+    view = memoryview(out)
+    got = 0
+    while got < n:
+        block = f.read(n - got)
+        if not block:
+            raise RuntimeError("stream ended")
+        view[got:got + len(block)] = block
+        got += len(block)
+    return bytes(out)
+
+
+def _copy_exact(src, dst, n: int):
+    left = n
+    while left:
+        block = src.read(min(left, 65536))
+        if not block:
+            raise RuntimeError("stream ended")
+        dst.write(block)
+        left -= len(block)
+
+
+def speak_nano(pipe: str, pid: Path, out: Path, text: str) -> float:
+    for _ in range(120):
+        if not running(pid):
+            raise RuntimeError("daemon")
+        if K32.WaitNamedPipeW(pipe, 1000):
+            break
+        time.sleep(1)
+    else:
+        raise RuntimeError("daemon timeout")
+    body = text.replace("\r\n", "\n").replace("\r", "\n")
+    if "|||" in body:
+        raise RuntimeError("delimiter")
+    payload = body.encode("utf-8")
+    tmp = out.with_suffix(out.suffix + ".tmp")
+    t0 = time.perf_counter()
+    data_bytes = 0
+    with open(tmp, "w+b", buffering=0) as wav, open(pipe, "r+b", buffering=0) as f:
+        wav.write(struct.pack("<4sI4s4sIHHIIHH4sI",
+            b"RIFF", 36, b"WAVE", b"fmt ", 16, 1, 1, 24000, 48000, 2, 16, b"data", 0))
+        f.write(f"{len(payload)}\n".encode("ascii") + payload)
+        while True:
+            nbytes = struct.unpack("<I", _read_exact(f, 4))[0]
+            if nbytes == 0:
+                break
+            _copy_exact(f, wav, nbytes)
+            data_bytes += nbytes
+        wav.seek(4)
+        wav.write(struct.pack("<I", 36 + data_bytes))
+        wav.seek(40)
+        wav.write(struct.pack("<I", data_bytes))
+    tmp.replace(out)
+    return time.perf_counter() - t0
+
+
 def usage(cfg: Variant):
     flags = " ".join(f"[--{n} <v>]" for n in cfg.knobs)
     if cfg.needs_language:
@@ -681,9 +739,10 @@ def run_variant(cfg: Variant, text: str, language=None, knobs=None, play: bool =
         knob_stamp.write_text(blob, encoding="ascii")
 
     pipe_stamp = MODELS / f"{cfg.name}.pipeproto"
-    if not pipe_stamp.is_file() or pipe_stamp.read_text(encoding="ascii").strip() != "byte-length-v1":
+    pipe_proto = "nano-pcm-v1" if cfg.name == "nano" else "byte-length-v1"
+    if not pipe_stamp.is_file() or pipe_stamp.read_text(encoding="ascii").strip() != pipe_proto:
         kill(pid)
-        pipe_stamp.write_text("byte-length-v1", encoding="ascii")
+        pipe_stamp.write_text(pipe_proto, encoding="ascii")
 
     if not running(pid):
         wait_pipe_absent(pipe)
@@ -694,7 +753,7 @@ def run_variant(cfg: Variant, text: str, language=None, knobs=None, play: bool =
 
     def synth_piece(i: int, piece: str):
         out = wav_out_path(cfg, i, n)
-        wall = speak(pipe, pid, out, piece)
+        wall = speak_nano(pipe, pid, out, piece) if cfg.name == "nano" else speak(pipe, pid, out, piece)
         dur = wav_duration_s(out)
         rtf = wall / dur if dur > 0 else 0.0
         provenance(cfg, out, text, piece, i, n, lang, values, t3, s3, exe, bake, t3_contract, s3_contract, bake_contract)
