@@ -18,7 +18,7 @@ CHATTERBOX = ROOT.parent / "chatterbox.cpp"
 MODELS = ROOT / "models"
 REF = ROOT / "reference.wav"
 GGML_REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
-ENGINE_REV = "7bd097a9a59a736a59d75be31bc4f279a1d88f15"
+ENGINE_REV = "f645f119b4c6f2fb8002fc4e7707c226140db94e"
 BASE_TRIDENT_REV = "38e0c4947d236e239ffd8e2cd2b98a8c39848efc"
 RELEASE_ID = "trident-nano-freeze-2026-09-14"
 VULKAN = Path("C:/VulkanSDK/1.4.357.0")
@@ -63,6 +63,21 @@ class Variant:
 
 def run(cmd, **kw):
     subprocess.run(cmd, check=True, **kw)
+
+
+def build_target(build: Path, target: str):
+    # Build the two product executables separately. This avoids compiling the
+    # large inference and bake libraries concurrently on MSVC and, if a native
+    # failure remains, keeps the real compiler/linker diagnostic adjacent to
+    # the target that failed instead of burying it under a generic traceback.
+    try:
+        run([CMAKE, "--build", str(build), "--config", "Release",
+             "--target", target, "--parallel", "2"])
+    except subprocess.CalledProcessError as exc:
+        raise SystemExit(
+            f"native build failed for {target} (exit {exc.returncode}); "
+            "the MSVC/CMake diagnostic is immediately above"
+        ) from None
 
 
 def git_out(args, repo=CHATTERBOX):
@@ -589,6 +604,8 @@ def build_contract(cfg: Variant):
         "ggml_rev": GGML_REV,
         "family": cfg.name,
         "generator": "Visual Studio 17 2022 x64",
+        "build_targets": ["chatterbox-server", "chatterbox-bake"],
+        "build_parallel": 2,
         "cmake_flags": {
             "GGML_VULKAN": "ON",
             "GGML_CUDA": "OFF",
@@ -633,7 +650,8 @@ def ensure_build(cfg: Variant, pid: Path, build: Path, exe: Path, bake: Path):
         f"-DVulkan_INCLUDE_DIR={VULKAN / 'Include'}", f"-DVulkan_LIBRARY={VULKAN / 'Lib/vulkan-1.lib'}",
         f"-DVulkan_GLSLC_EXECUTABLE={VULKAN / 'Bin/glslc.exe'}",
     ])
-    run([CMAKE, "--build", str(build), "--config", "Release", "--target", "chatterbox-server", "--target", "chatterbox-bake", "--parallel"])
+    build_target(build, "chatterbox-server")
+    build_target(build, "chatterbox-bake")
     write_json(stamp, wanted)
 
 
