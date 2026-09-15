@@ -6,7 +6,6 @@ import shutil
 import struct
 import subprocess
 import sys
-import threading
 import time
 import urllib.request
 import venv
@@ -18,6 +17,9 @@ CHATTERBOX = ROOT.parent / "chatterbox.cpp"
 MODELS = ROOT / "models"
 REF = ROOT / "reference.wav"
 GGML_REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
+# chatterbox.cpp experimental commit this Trident revision was measured with.
+# Bump it in the same commit that adapts to an engine change.
+ENGINE_REV = "3f01dfd6c0f13e03be28ff654d836f03da07485b"
 VULKAN = Path("C:/VulkanSDK/1.4.357.0")
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 DETACH = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
@@ -82,9 +84,6 @@ class LaunchArgs:
     text: str
     language: str | None
     knobs: dict[str, str]
-    play: bool
-    engine_rev: str | None
-    quality: bool
     mode: str
 
 
@@ -136,7 +135,7 @@ def write_json(path: Path, obj):
     tmp.replace(path)
 
 
-def ensure_engine(wanted: str | None) -> str:
+def ensure_engine() -> str:
     if not CHATTERBOX.is_dir():
         raise SystemExit(f"missing chatterbox.cpp sibling at {CHATTERBOX}")
     if not (CHATTERBOX / ".git").is_dir():
@@ -150,8 +149,8 @@ def ensure_engine(wanted: str | None) -> str:
     if dirty:
         raise SystemExit("chatterbox.cpp has uncommitted changes")
     sha = git_out(["rev-parse", "HEAD"])
-    if wanted and sha != wanted:
-        raise SystemExit(f"chatterbox.cpp HEAD {sha} != --engine-rev {wanted}")
+    if sha != ENGINE_REV:
+        raise SystemExit(f"chatterbox.cpp HEAD {sha} != pinned ENGINE_REV {ENGINE_REV}")
     return sha
 
 
@@ -260,7 +259,7 @@ GPT2_KNOBS = SHARED_KNOBS + ("silence-count",)
 V3_KNOBS = SHARED_KNOBS + ("min-p", "cfg-weight", "cfm-cfg")
 
 
-def spawn(cfg: Variant, exe: Path, t3: Path, s3: Path, pipe: str, pid: Path, language: str | None, knobs: dict[str, str], quality: bool, mode: str):
+def spawn(cfg: Variant, exe: Path, t3: Path, s3: Path, pipe: str, pid: Path, language: str | None, knobs: dict[str, str], mode: str):
     args = [str(exe), str(t3), str(s3), pipe, "--mode", mode]
     if cfg.needs_language:
         args += ["--language", language or "en"]
@@ -268,8 +267,6 @@ def spawn(cfg: Variant, exe: Path, t3: Path, s3: Path, pipe: str, pid: Path, lan
         val = knobs.get(name, "")
         if val:
             args += [f"--{name}", val]
-    if quality:
-        args.append("--sampler-log")
     log_path = MODELS / f"{cfg.name}.server.log"
     log = open(log_path, "ab", buffering=0)
     try:
@@ -296,51 +293,6 @@ def utterances(text: str) -> list[str]:
     if not out:
         raise SystemExit("empty text")
     return out
-
-
-PLAYER_NAMES = {
-    "wmplayer.exe",
-    "microsoft.media.player.exe",
-    "music.ui.exe",
-    "video.ui.exe",
-    "groove.exe",
-    "groovemusic.exe",
-    "photos.exe",
-    "photosapp.exe",
-}
-
-
-def tasklist_rows():
-    out = subprocess.check_output(["tasklist", "/FO", "CSV", "/NH"], text=True, errors="ignore")
-    rows = []
-    for line in out.splitlines():
-        parts = [p.strip().strip('"') for p in line.split(",")]
-        if len(parts) < 2:
-            continue
-        try:
-            rows.append((parts[0], int(parts[1])))
-        except ValueError:
-            continue
-    return rows
-
-
-def kill_players(extra_pids=None):
-    extra = extra_pids or set()
-    for name, pid in tasklist_rows():
-        if name.lower() in PLAYER_NAMES or pid in extra:
-            subprocess.run(["taskkill", "/PID", str(pid), "/F", "/T"], capture_output=True)
-
-
-def play_wav(path: Path, duration_s: float):
-    before = {pid for _, pid in tasklist_rows()}
-    os.startfile(str(path))
-    time.sleep(1.0)
-    new_players = set()
-    for name, pid in tasklist_rows():
-        if name.lower() in PLAYER_NAMES and pid not in before:
-            new_players.add(pid)
-    time.sleep(max(0.4, duration_s + 0.35))
-    kill_players(new_players)
 
 
 def wav_out_path(cfg: Variant, index: int, total: int) -> Path:
@@ -437,84 +389,7 @@ def _read_exact(f, n: int) -> bytearray:
     return out
 
 
-class _WaveFormatEx(ctypes.Structure):
-    _fields_ = [
-        ("wFormatTag", ctypes.c_ushort),
-        ("nChannels", ctypes.c_ushort),
-        ("nSamplesPerSec", ctypes.c_uint32),
-        ("nAvgBytesPerSec", ctypes.c_uint32),
-        ("nBlockAlign", ctypes.c_ushort),
-        ("wBitsPerSample", ctypes.c_ushort),
-        ("cbSize", ctypes.c_ushort),
-    ]
-
-
-class _WaveHdr(ctypes.Structure):
-    _fields_ = [
-        ("lpData", ctypes.c_void_p),
-        ("dwBufferLength", ctypes.c_uint32),
-        ("dwBytesRecorded", ctypes.c_uint32),
-        ("dwUser", ctypes.c_size_t),
-        ("dwFlags", ctypes.c_uint32),
-        ("dwLoops", ctypes.c_uint32),
-        ("lpNext", ctypes.c_void_p),
-        ("reserved", ctypes.c_size_t),
-    ]
-
-
-WINMM = ctypes.WinDLL("winmm", use_last_error=True)
-WINMM.waveOutOpen.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_size_t, ctypes.POINTER(_WaveFormatEx), ctypes.c_size_t, ctypes.c_size_t, ctypes.c_uint]
-WINMM.waveOutOpen.restype = ctypes.c_uint
-WINMM.waveOutPrepareHeader.argtypes = [ctypes.c_void_p, ctypes.POINTER(_WaveHdr), ctypes.c_uint]
-WINMM.waveOutPrepareHeader.restype = ctypes.c_uint
-WINMM.waveOutWrite.argtypes = [ctypes.c_void_p, ctypes.POINTER(_WaveHdr), ctypes.c_uint]
-WINMM.waveOutWrite.restype = ctypes.c_uint
-WINMM.waveOutUnprepareHeader.argtypes = [ctypes.c_void_p, ctypes.POINTER(_WaveHdr), ctypes.c_uint]
-WINMM.waveOutUnprepareHeader.restype = ctypes.c_uint
-WINMM.waveOutClose.argtypes = [ctypes.c_void_p]
-WINMM.waveOutClose.restype = ctypes.c_uint
-WHDR_DONE = 0x00000001
-WAVE_MAPPER = 0xFFFFFFFF
-
-
-class WaveOut:
-    def __init__(self):
-        fmt = _WaveFormatEx(1, 1, 24000, 48000, 2, 16, 0)
-        self.handle = ctypes.c_void_p()
-        if WINMM.waveOutOpen(ctypes.byref(self.handle), WAVE_MAPPER, ctypes.byref(fmt), 0, 0, 0):
-            raise RuntimeError("waveOutOpen")
-        self.queued = []
-
-    def _reap(self, wait: bool):
-        while self.queued:
-            pcm, view, hdr = self.queued[0]
-            if not (hdr.dwFlags & WHDR_DONE):
-                if not wait:
-                    break
-                time.sleep(0.002)
-                continue
-            if WINMM.waveOutUnprepareHeader(self.handle, ctypes.byref(hdr), ctypes.sizeof(hdr)):
-                raise RuntimeError("waveOutUnprepareHeader")
-            self.queued.pop(0)
-
-    def write(self, pcm: bytearray):
-        self._reap(False)
-        view = (ctypes.c_char * len(pcm)).from_buffer(pcm)
-        hdr = _WaveHdr(ctypes.addressof(view), len(pcm), 0, 0, 0, 0, None, 0)
-        if WINMM.waveOutPrepareHeader(self.handle, ctypes.byref(hdr), ctypes.sizeof(hdr)):
-            raise RuntimeError("waveOutPrepareHeader")
-        if WINMM.waveOutWrite(self.handle, ctypes.byref(hdr), ctypes.sizeof(hdr)):
-            raise RuntimeError("waveOutWrite")
-        self.queued.append((pcm, view, hdr))
-
-    def close(self):
-        self._reap(True)
-        if WINMM.waveOutClose(self.handle):
-            raise RuntimeError("waveOutClose")
-        self.handle = None
-
-
-def speak_stream(pipe: str, pid: Path, out: Path, text: str, play: bool = False) -> SpeakResult:
+def speak_stream(pipe: str, pid: Path, out: Path, text: str) -> SpeakResult:
     for _ in range(120):
         if not running(pid):
             raise RuntimeError("daemon")
@@ -530,42 +405,35 @@ def speak_stream(pipe: str, pid: Path, out: Path, text: str, play: bool = False)
     data_bytes = 0
     pcm_frames = 0
     first_pcm_s = None
-    player = WaveOut() if play else None
     replaced = False
     try:
-        try:
-            with open(tmp, "w+b", buffering=0) as wav, open(pipe, "r+b", buffering=0) as f:
-                wav.write(struct.pack("<4sI4s4sIHHIIHH4sI",
-                    b"RIFF", 36, b"WAVE", b"fmt ", 16, 1, 1, 24000, 48000, 2, 16, b"data", 0))
-                f.write(f"{len(payload)}\n".encode("ascii") + payload)
-                while True:
-                    nbytes = struct.unpack("<I", _read_exact(f, 4))[0]
-                    if nbytes == STREAM_PCM_ERROR:
-                        msglen = struct.unpack("<I", _read_exact(f, 4))[0]
-                        msg = bytes(_read_exact(f, msglen)).decode("utf-8", errors="replace") if msglen else "synthesize"
-                        raise RuntimeError(msg)
-                    if nbytes == 0:
-                        break
-                    pcm = _read_exact(f, nbytes)
-                    if first_pcm_s is None:
-                        first_pcm_s = time.perf_counter() - t0
-                    wav.write(pcm)
-                    if player:
-                        player.write(pcm)
-                    data_bytes += nbytes
-                    pcm_frames += 1
-                stats = parse_synth_stats(f.readline())
-                wav.seek(4)
-                wav.write(struct.pack("<I", 36 + data_bytes))
-                wav.seek(40)
-                wav.write(struct.pack("<I", data_bytes))
-                wall = time.perf_counter() - t0
-            tmp.replace(out)
-            replaced = True
-            return speak_result_from_stats(wall, first_pcm_s, pcm_frames, stats)
-        finally:
-            if player:
-                player.close()
+        with open(tmp, "w+b", buffering=0) as wav, open(pipe, "r+b", buffering=0) as f:
+            wav.write(struct.pack("<4sI4s4sIHHIIHH4sI",
+                b"RIFF", 36, b"WAVE", b"fmt ", 16, 1, 1, 24000, 48000, 2, 16, b"data", 0))
+            f.write(f"{len(payload)}\n".encode("ascii") + payload)
+            while True:
+                nbytes = struct.unpack("<I", _read_exact(f, 4))[0]
+                if nbytes == STREAM_PCM_ERROR:
+                    msglen = struct.unpack("<I", _read_exact(f, 4))[0]
+                    msg = bytes(_read_exact(f, msglen)).decode("utf-8", errors="replace") if msglen else "synthesize"
+                    raise RuntimeError(msg)
+                if nbytes == 0:
+                    break
+                pcm = _read_exact(f, nbytes)
+                if first_pcm_s is None:
+                    first_pcm_s = time.perf_counter() - t0
+                wav.write(pcm)
+                data_bytes += nbytes
+                pcm_frames += 1
+            stats = parse_synth_stats(f.readline())
+            wav.seek(4)
+            wav.write(struct.pack("<I", 36 + data_bytes))
+            wav.seek(40)
+            wav.write(struct.pack("<I", data_bytes))
+            wall = time.perf_counter() - t0
+        tmp.replace(out)
+        replaced = True
+        return speak_result_from_stats(wall, first_pcm_s, pcm_frames, stats)
     finally:
         if not replaced:
             tmp.unlink(missing_ok=True)
@@ -573,7 +441,7 @@ def speak_stream(pipe: str, pid: Path, out: Path, text: str, play: bool = False)
 
 def usage(cfg: Variant):
     flags = " ".join(f"[--{n} <v>]" for n in cfg.knobs)
-    extra = f" [--mode streaming|batching (default {cfg.mode_default})] [--play] [--quality] [--engine-rev <sha>]"
+    extra = f" [--mode streaming|batching (default {cfg.mode_default})]"
     if cfg.needs_language:
         return f"usage: python tts_{cfg.name}.py [-h]{extra} {flags} <text> <language>"
     return f"usage: python tts_{cfg.name}.py [-h]{extra} {flags} <text>"
@@ -582,9 +450,6 @@ def usage(cfg: Variant):
 def parse_variant_args(cfg: Variant, argv: list[str]) -> LaunchArgs:
     args = argv[1:]
     cli = {}
-    play = False
-    quality = False
-    engine_rev = None
     mode = cfg.mode_default
     i = 0
     allowed = set(cfg.knobs)
@@ -593,23 +458,11 @@ def parse_variant_args(cfg: Variant, argv: list[str]) -> LaunchArgs:
         if a in ("-h", "--help", "-?"):
             print(usage(cfg))
             raise SystemExit(0)
-        if a == "--play":
-            play = True
-            i += 1
-            continue
-        if a == "--quality":
-            quality = True
-            i += 1
-            continue
         if not a.startswith("--"):
             break
         if i + 1 >= len(args):
             raise SystemExit(usage(cfg))
         name = a[2:]
-        if name == "engine-rev":
-            engine_rev = args[i + 1]
-            i += 2
-            continue
         if name == "mode":
             mode = args[i + 1].lower()
             if mode not in MODES:
@@ -624,10 +477,10 @@ def parse_variant_args(cfg: Variant, argv: list[str]) -> LaunchArgs:
     if cfg.needs_language:
         if len(rest) != 2:
             raise SystemExit(usage(cfg))
-        return LaunchArgs(rest[0], rest[1].lower(), cli, play, engine_rev, quality, mode)
+        return LaunchArgs(rest[0], rest[1].lower(), cli, mode)
     if len(rest) != 1:
         raise SystemExit(usage(cfg))
-    return LaunchArgs(rest[0], None, cli, play, engine_rev, quality, mode)
+    return LaunchArgs(rest[0], None, cli, mode)
 
 
 def normalize_knob(name: str, raw: str) -> str:
@@ -888,7 +741,6 @@ def provenance(cfg: Variant, engine_rev: str, out: Path, original_text: str, pie
         "units": metrics.get("units"),
         "text_tokens": metrics.get("text_tokens"),
         "max_unit_predicted": metrics.get("max_unit_predicted"),
-        "quality": metrics.get("quality"),
         "server_log": f"{cfg.name}.server.log",
         "pipe_proto": "stream-pcm-v3" if mode == "streaming" else "batch-wav-v3",
     }
@@ -898,7 +750,7 @@ def provenance(cfg: Variant, engine_rev: str, out: Path, original_text: str, pie
 def run_variant(cfg: Variant, args: LaunchArgs):
     if not REF.is_file():
         raise FileNotFoundError(str(REF))
-    engine_rev = ensure_engine(args.engine_rev)
+    engine_rev = ensure_engine()
     MODELS.mkdir(parents=True, exist_ok=True)
     t3, s3, pid, build, bin_dir, exe, bake, pipe = paths(cfg)
     for name in cfg.other_pids:
@@ -916,14 +768,12 @@ def run_variant(cfg: Variant, args: LaunchArgs):
         f"t3={t3.name} {t3_types.get('tensor_types')}\n"
         f"s3={s3.name} {s3_types.get('tensor_types')}\n"
         f"knobs_cli={values or '(none; C++ header defaults)'}\n"
-        f"mode={args.mode}\n"
-        f"quality={int(args.quality)}",
+        f"mode={args.mode}",
         file=sys.stderr,
         flush=True,
     )
     wait_pipe_absent(pipe)
-    spawn(cfg, exe, t3, s3, pipe, pid, lang or None, values, args.quality, args.mode)
-    play = args.play
+    spawn(cfg, exe, t3, s3, pipe, pid, lang or None, values, args.mode)
     text = args.text
     streaming = args.mode == "streaming"
     # Splitting into utterances is the engine's job (--split-tokens); the
@@ -933,7 +783,7 @@ def run_variant(cfg: Variant, args: LaunchArgs):
 
     def synth_piece(i: int, piece: str):
         out = wav_out_path(cfg, i, n)
-        result = speak_stream(pipe, pid, out, piece, play=play) if streaming else speak_batch(pipe, pid, out, piece)
+        result = speak_stream(pipe, pid, out, piece) if streaming else speak_batch(pipe, pid, out, piece)
         dur = wav_duration_s(out)
         rtf = result.wall_s / dur if dur > 0 else 0.0
         provenance(
@@ -952,7 +802,6 @@ def run_variant(cfg: Variant, args: LaunchArgs):
                 "text_tokens": result.text_tokens,
                 "max_unit_predicted": result.max_unit_predicted,
                 "knobs": result.knobs,
-                "quality": args.quality,
             },
             args.mode,
         )
@@ -972,15 +821,9 @@ def run_variant(cfg: Variant, args: LaunchArgs):
     for i, piece in enumerate(pieces):
         out, wall, dur = ready
         wav_paths.append(out)
-        player = None
-        if play and not streaming:
-            player = threading.Thread(target=play_wav, args=(out, dur), daemon=False)
-            player.start()
         if i + 1 < n:
             ready = synth_piece(i + 1, pieces[i + 1])
-        if player:
-            player.join()
     if n > 1:
         manifest = ROOT / f"{time.strftime('%Y%m%d-%H%M%S')}-{cfg.name}-manifest.json"
-        write_json(manifest, {"family": cfg.name, "files": [str(p) for p in wav_paths], "play": play})
+        write_json(manifest, {"family": cfg.name, "files": [str(p) for p in wav_paths]})
         print("manifest " + str(manifest), flush=True)
