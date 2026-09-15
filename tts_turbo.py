@@ -26,8 +26,7 @@ CFG = Variant(
     t3_convert_flags=("--f16",),
     s3_script="convert-s3gen-to-gguf.py",
     knobs=GPT2_KNOBS,
-    pipe_proto="byte-length-v2",
-    framed_pcm=False,
+    mode_default="batching",
 )
 
 

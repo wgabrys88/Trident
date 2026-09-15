@@ -53,8 +53,13 @@ class Variant:
     knobs: tuple[str, ...]
     t3_convert_flags: tuple[str, ...] = ()
     needs_language: bool = False
-    pipe_proto: str = "byte-length-v2"
-    framed_pcm: bool = False
+    # One product flag. The engine's family header holds the default; this
+    # mirrors it so the client speaks the matching pipe protocol.
+    mode_default: str = "batching"
+
+
+MODES = ("streaming", "batching")
+STATS_KEYS = ("predicted", "dropped", "eos", "n_past", "units", "text_tokens", "max_unit_predicted")
 
 
 @dataclass
@@ -66,6 +71,9 @@ class SpeakResult:
     dropped_count: int | None = None
     eos: int | None = None
     n_past: int | None = None
+    units: int | None = None
+    text_tokens: int | None = None
+    max_unit_predicted: int | None = None
     knobs: dict | None = None
 
 
@@ -77,9 +85,10 @@ class LaunchArgs:
     play: bool
     engine_rev: str | None
     quality: bool
+    mode: str
 
 
-NANO_PCM_ERROR = 0xFFFFFFFF
+STREAM_PCM_ERROR = 0xFFFFFFFF
 CONVERT_STAMP_EXTRA = ("tensor_types", "n_tensors", "nbytes")
 
 
@@ -232,6 +241,8 @@ KNOB_KIND = {
     "min-p": "f",
     "cfg-weight": "f",
     "cfm-cfg": "f",
+    "split-tokens": "i",
+    "n-ctx": "i",
 }
 SHARED_KNOBS = (
     "repeat-penalty",
@@ -242,13 +253,15 @@ SHARED_KNOBS = (
     "n-predict",
     "cfm-steps",
     "silence-token",
+    "split-tokens",
+    "n-ctx",
 )
 GPT2_KNOBS = SHARED_KNOBS + ("silence-count",)
 V3_KNOBS = SHARED_KNOBS + ("min-p", "cfg-weight", "cfm-cfg")
 
 
-def spawn(cfg: Variant, exe: Path, t3: Path, s3: Path, pipe: str, pid: Path, language: str | None, knobs: dict[str, str], quality: bool):
-    args = [str(exe), str(t3), str(s3), pipe]
+def spawn(cfg: Variant, exe: Path, t3: Path, s3: Path, pipe: str, pid: Path, language: str | None, knobs: dict[str, str], quality: bool, mode: str):
+    args = [str(exe), str(t3), str(s3), pipe, "--mode", mode]
     if cfg.needs_language:
         args += ["--language", language or "en"]
     for name in cfg.knobs:
@@ -285,7 +298,6 @@ def utterances(text: str) -> list[str]:
     return out
 
 
-SPEAK_MAX = 260
 PLAYER_NAMES = {
     "wmplayer.exe",
     "microsoft.media.player.exe",
@@ -296,40 +308,6 @@ PLAYER_NAMES = {
     "photos.exe",
     "photosapp.exe",
 }
-
-
-def split_sentences(text: str) -> list[str]:
-    t = " ".join(text.split())
-    if not t:
-        return []
-    out = []
-    buf = ""
-    for ch in t:
-        buf += ch
-        if ch in ".!?" and len(buf.strip()) >= 8:
-            out.append(buf.strip())
-            buf = ""
-    if buf.strip():
-        out.append(buf.strip())
-    return out or [t]
-
-
-def split_spoken(text: str) -> list[str]:
-    units = []
-    for part in utterances(text):
-        for sentence in split_sentences(part):
-            cur = sentence
-            while len(cur) > SPEAK_MAX:
-                cut = cur.rfind(" ", 0, SPEAK_MAX)
-                if cut < 40:
-                    cut = SPEAK_MAX
-                units.append(cur[:cut].strip())
-                cur = cur[cut:].strip()
-            if cur:
-                units.append(cur)
-    if not units:
-        raise SystemExit("empty text")
-    return units
 
 
 def tasklist_rows():
@@ -405,7 +383,7 @@ def parse_synth_stats(line: bytes) -> dict:
 
 
 def speak_result_from_stats(wall_s: float, first_pcm_s: float | None, pcm_frames: int, stats: dict) -> SpeakResult:
-    knobs = {k: v for k, v in stats.items() if k not in ("predicted", "dropped", "eos", "n_past")}
+    knobs = {k: v for k, v in stats.items() if k not in STATS_KEYS}
     return SpeakResult(
         wall_s=wall_s,
         first_pcm_s=first_pcm_s,
@@ -414,11 +392,14 @@ def speak_result_from_stats(wall_s: float, first_pcm_s: float | None, pcm_frames
         dropped_count=stats.get("dropped"),
         eos=stats.get("eos"),
         n_past=stats.get("n_past"),
+        units=stats.get("units"),
+        text_tokens=stats.get("text_tokens"),
+        max_unit_predicted=stats.get("max_unit_predicted"),
         knobs=knobs or None,
     )
 
 
-def speak(pipe: str, pid: Path, out: Path, text: str) -> SpeakResult:
+def speak_batch(pipe: str, pid: Path, out: Path, text: str) -> SpeakResult:
     for _ in range(120):
         if not running(pid):
             raise RuntimeError("daemon")
@@ -496,7 +477,7 @@ WHDR_DONE = 0x00000001
 WAVE_MAPPER = 0xFFFFFFFF
 
 
-class NanoWaveOut:
+class WaveOut:
     def __init__(self):
         fmt = _WaveFormatEx(1, 1, 24000, 48000, 2, 16, 0)
         self.handle = ctypes.c_void_p()
@@ -533,7 +514,7 @@ class NanoWaveOut:
         self.handle = None
 
 
-def speak_nano(pipe: str, pid: Path, out: Path, text: str, play: bool = False) -> SpeakResult:
+def speak_stream(pipe: str, pid: Path, out: Path, text: str, play: bool = False) -> SpeakResult:
     for _ in range(120):
         if not running(pid):
             raise RuntimeError("daemon")
@@ -549,7 +530,7 @@ def speak_nano(pipe: str, pid: Path, out: Path, text: str, play: bool = False) -
     data_bytes = 0
     pcm_frames = 0
     first_pcm_s = None
-    player = NanoWaveOut() if play else None
+    player = WaveOut() if play else None
     replaced = False
     try:
         try:
@@ -559,7 +540,7 @@ def speak_nano(pipe: str, pid: Path, out: Path, text: str, play: bool = False) -
                 f.write(f"{len(payload)}\n".encode("ascii") + payload)
                 while True:
                     nbytes = struct.unpack("<I", _read_exact(f, 4))[0]
-                    if nbytes == NANO_PCM_ERROR:
+                    if nbytes == STREAM_PCM_ERROR:
                         msglen = struct.unpack("<I", _read_exact(f, 4))[0]
                         msg = bytes(_read_exact(f, msglen)).decode("utf-8", errors="replace") if msglen else "synthesize"
                         raise RuntimeError(msg)
@@ -592,7 +573,7 @@ def speak_nano(pipe: str, pid: Path, out: Path, text: str, play: bool = False) -
 
 def usage(cfg: Variant):
     flags = " ".join(f"[--{n} <v>]" for n in cfg.knobs)
-    extra = " [--play] [--quality] [--engine-rev <sha>]"
+    extra = f" [--mode streaming|batching (default {cfg.mode_default})] [--play] [--quality] [--engine-rev <sha>]"
     if cfg.needs_language:
         return f"usage: python tts_{cfg.name}.py [-h]{extra} {flags} <text> <language>"
     return f"usage: python tts_{cfg.name}.py [-h]{extra} {flags} <text>"
@@ -604,6 +585,7 @@ def parse_variant_args(cfg: Variant, argv: list[str]) -> LaunchArgs:
     play = False
     quality = False
     engine_rev = None
+    mode = cfg.mode_default
     i = 0
     allowed = set(cfg.knobs)
     while i < len(args):
@@ -628,6 +610,12 @@ def parse_variant_args(cfg: Variant, argv: list[str]) -> LaunchArgs:
             engine_rev = args[i + 1]
             i += 2
             continue
+        if name == "mode":
+            mode = args[i + 1].lower()
+            if mode not in MODES:
+                raise SystemExit(usage(cfg))
+            i += 2
+            continue
         if name not in allowed:
             raise SystemExit(usage(cfg))
         cli[name] = args[i + 1]
@@ -636,10 +624,10 @@ def parse_variant_args(cfg: Variant, argv: list[str]) -> LaunchArgs:
     if cfg.needs_language:
         if len(rest) != 2:
             raise SystemExit(usage(cfg))
-        return LaunchArgs(rest[0], rest[1].lower(), cli, play, engine_rev, quality)
+        return LaunchArgs(rest[0], rest[1].lower(), cli, play, engine_rev, quality, mode)
     if len(rest) != 1:
         raise SystemExit(usage(cfg))
-    return LaunchArgs(rest[0], None, cli, play, engine_rev, quality)
+    return LaunchArgs(rest[0], None, cli, play, engine_rev, quality, mode)
 
 
 def normalize_knob(name: str, raw: str) -> str:
@@ -753,13 +741,30 @@ def ensure_assets(cfg: Variant) -> Path:
     return ckpt
 
 
+CONVERT_DEPS = ("quant_policy.py",)
+BAKE_SOURCES = (
+    "src/bake.cpp", "src/bake_native.h", "src/main.cpp", "src/voice_features.cpp", "src/voice_features.h",
+    "src/mel_extract_stft.cpp", "src/voice_encoder.cpp", "src/voice_encoder.h", "src/campplus.cpp",
+    "src/campplus.h", "src/s3tokenizer.cpp", "src/s3tokenizer.h",
+)
+
+
+def blob_rev(path: str) -> str:
+    # Git blob id of one engine file at HEAD. GGUF conversion and bake depend
+    # on these files, not on the engine commit id, so an engine commit that
+    # only touches inference must not trigger a reconvert or rebake.
+    return git_out(["rev-parse", f"HEAD:{path}"])
+
+
 def conversion_contract(cfg: Variant, engine_rev: str, kind: str):
+    script = cfg.t3_script if kind == "t3" else cfg.s3_script
     return {
         "family": cfg.name,
         "kind": kind,
-        "engine_rev": engine_rev,
         "hf_base": cfg.hf,
-        "script": cfg.t3_script if kind == "t3" else cfg.s3_script,
+        "script": script,
+        "script_blob": blob_rev(f"scripts/{script}"),
+        "deps_blob": [blob_rev(f"scripts/{d}") for d in CONVERT_DEPS],
         "flags": list(cfg.t3_convert_flags) if kind == "t3" else [],
     }
 
@@ -833,7 +838,7 @@ def ensure_baked(cfg: Variant, engine_rev: str, py: Path, ckpt: Path, t3: Path, 
     st = REF.stat()
     bake_contract = {
         "family": cfg.name,
-        "engine_rev": engine_rev,
+        "bake_blob": [blob_rev(p) for p in BAKE_SOURCES],
         "reference": {"size": st.st_size, "mtime_ns": st.st_mtime_ns},
         "t3_conversion": t3_contract,
         "s3_conversion": s3_contract,
@@ -850,11 +855,12 @@ def ensure_baked(cfg: Variant, engine_rev: str, py: Path, ckpt: Path, t3: Path, 
     return bake_contract
 
 
-def provenance(cfg: Variant, engine_rev: str, out: Path, original_text: str, piece: str, piece_index: int, piece_count: int, language: str, cli_knobs: dict[str, str], t3: Path, s3: Path, t3_types, s3_types, cmake: dict, metrics: dict):
+def provenance(cfg: Variant, engine_rev: str, out: Path, original_text: str, piece: str, piece_index: int, piece_count: int, language: str, cli_knobs: dict[str, str], t3: Path, s3: Path, t3_types, s3_types, cmake: dict, metrics: dict, mode: str):
     obj = {
         "engine": engine_rev,
         "ggml": GGML_REV,
         "family": cfg.name,
+        "mode": mode,
         "hf_base": cfg.hf,
         "t3_file": t3.name,
         "s3_file": s3.name,
@@ -879,9 +885,12 @@ def provenance(cfg: Variant, engine_rev: str, out: Path, original_text: str, pie
         "dropped_count": metrics.get("dropped_count"),
         "eos": metrics.get("eos"),
         "n_past": metrics.get("n_past"),
+        "units": metrics.get("units"),
+        "text_tokens": metrics.get("text_tokens"),
+        "max_unit_predicted": metrics.get("max_unit_predicted"),
         "quality": metrics.get("quality"),
         "server_log": f"{cfg.name}.server.log",
-        "pipe_proto": cfg.pipe_proto,
+        "pipe_proto": "stream-pcm-v3" if mode == "streaming" else "batch-wav-v3",
     }
     write_json(out.with_suffix(out.suffix + ".provenance.json"), obj)
 
@@ -907,26 +916,24 @@ def run_variant(cfg: Variant, args: LaunchArgs):
         f"t3={t3.name} {t3_types.get('tensor_types')}\n"
         f"s3={s3.name} {s3_types.get('tensor_types')}\n"
         f"knobs_cli={values or '(none; C++ header defaults)'}\n"
+        f"mode={args.mode}\n"
         f"quality={int(args.quality)}",
         file=sys.stderr,
         flush=True,
     )
     wait_pipe_absent(pipe)
-    spawn(cfg, exe, t3, s3, pipe, pid, lang or None, values, args.quality)
+    spawn(cfg, exe, t3, s3, pipe, pid, lang or None, values, args.quality, args.mode)
     play = args.play
     text = args.text
-    if cfg.framed_pcm:
-        piece = text.strip()
-        if not piece:
-            raise SystemExit("empty text")
-        pieces = [piece]
-    else:
-        pieces = split_spoken(text) if play else utterances(text)
+    streaming = args.mode == "streaming"
+    # Splitting into utterances is the engine's job (--split-tokens); the
+    # client only honours explicit ||| segments as separate dest WAVs.
+    pieces = utterances(text)
     n = len(pieces)
 
     def synth_piece(i: int, piece: str):
         out = wav_out_path(cfg, i, n)
-        result = speak_nano(pipe, pid, out, piece, play=play) if cfg.framed_pcm else speak(pipe, pid, out, piece)
+        result = speak_stream(pipe, pid, out, piece, play=play) if streaming else speak_batch(pipe, pid, out, piece)
         dur = wav_duration_s(out)
         rtf = result.wall_s / dur if dur > 0 else 0.0
         provenance(
@@ -941,11 +948,20 @@ def run_variant(cfg: Variant, args: LaunchArgs):
                 "dropped_count": result.dropped_count,
                 "eos": result.eos,
                 "n_past": result.n_past,
+                "units": result.units,
+                "text_tokens": result.text_tokens,
+                "max_unit_predicted": result.max_unit_predicted,
                 "knobs": result.knobs,
                 "quality": args.quality,
             },
+            args.mode,
         )
-        print(f"wall_s={result.wall_s:.3f} duration_s={dur:.3f} rtf={rtf:.3f}", file=sys.stderr, flush=True)
+        print(
+            f"wall_s={result.wall_s:.3f} duration_s={dur:.3f} rtf={rtf:.3f} "
+            f"predicted={result.predicted_count} eos={result.eos} n_past={result.n_past} "
+            f"units={result.units} text_tokens={result.text_tokens} max_unit_predicted={result.max_unit_predicted}",
+            file=sys.stderr, flush=True,
+        )
         if result.knobs:
             print("knobs " + " ".join(f"{k}={v}" for k, v in result.knobs.items()), file=sys.stderr, flush=True)
         print(out, flush=True)
@@ -957,7 +973,7 @@ def run_variant(cfg: Variant, args: LaunchArgs):
         out, wall, dur = ready
         wav_paths.append(out)
         player = None
-        if play and not cfg.framed_pcm:
+        if play and not streaming:
             player = threading.Thread(target=play_wav, args=(out, dur), daemon=False)
             player.start()
         if i + 1 < n:

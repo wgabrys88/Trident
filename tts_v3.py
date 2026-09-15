@@ -26,8 +26,7 @@ CFG = Variant(
     s3_script="convert-s3gen-v3-to-gguf.py",
     knobs=V3_KNOBS,
     needs_language=True,
-    pipe_proto="byte-length-v2",
-    framed_pcm=False,
+    mode_default="batching",
 )
 
 
