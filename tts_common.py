@@ -19,7 +19,7 @@ REF = ROOT / "reference.wav"
 GGML_REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
 # chatterbox.cpp experimental commit this Trident revision was measured with.
 # Bump it in the same commit that adapts to an engine change.
-ENGINE_REV = "3f01dfd6c0f13e03be28ff654d836f03da07485b"
+ENGINE_REV = "971f79d3aeb18d17fd02ddfe572b282f4c7f8ea7"
 VULKAN = Path("C:/VulkanSDK/1.4.357.0")
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 DETACH = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
