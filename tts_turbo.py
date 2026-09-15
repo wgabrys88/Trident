@@ -4,8 +4,6 @@ from tts_common import GPT2_KNOBS, Variant, parse_variant_args, run_variant
 
 CFG = Variant(
     name="turbo",
-    branch="experimental",
-    chatterbox_rev="aa55efc5bdf7a4496e14f67d540a23256a3ccb48",
     hf="https://huggingface.co/ResembleAI/chatterbox-turbo/resolve/749d1c1a46eb10492095d68fbcf55691ccf137cd",
     assets=(
         "t3_turbo_v1.safetensors",
@@ -28,15 +26,13 @@ CFG = Variant(
     t3_convert_flags=("--f16",),
     s3_script="convert-s3gen-to-gguf.py",
     knobs=GPT2_KNOBS,
-    policy="Turbo: same Nano delta (T3 F32 under --f16, N_PREDICT=wpe 8196, Q4_0 meanflow). Convert asserts GPT2_medium 1024/24/16/8196.",
     pipe_proto="byte-length-v2",
     framed_pcm=False,
 )
 
 
 def main():
-    text, language, knobs, play = parse_variant_args(CFG, sys.argv)
-    run_variant(CFG, text, language, knobs, play=play)
+    run_variant(CFG, parse_variant_args(CFG, sys.argv))
 
 
 if __name__ == "__main__":
