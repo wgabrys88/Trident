@@ -5,7 +5,7 @@ from tts_common import V3_KNOBS, Variant, parse_variant_args, run_variant
 CFG = Variant(
     name="v3",
     branch="experimental",
-    chatterbox_rev="f645f119b4c6f2fb8002fc4e7707c226140db94e",
+    chatterbox_rev="aa55efc5bdf7a4496e14f67d540a23256a3ccb48",
     hf="https://huggingface.co/ResembleAI/chatterbox/resolve/5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18",
     assets=(
         "t3_mtl23ls_v3.safetensors",
@@ -29,6 +29,8 @@ CFG = Variant(
     knobs=V3_KNOBS,
     needs_language=True,
     policy="V3 Llama analog of Nano delta: T3 F32 under --f16 (not Q8/F16), N_PREDICT=4096 from speech_pos/max_speech_tokens (n_ctx formula, not a GPT-2 8196 copy), Q4_0 vanilla S3Gen. Keep penalty-first sampler, ENC 6s, CFM 10, CFG 0.5.",
+    pipe_proto="byte-length-v2",
+    framed_pcm=False,
 )
 
 

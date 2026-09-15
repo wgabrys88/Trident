@@ -18,7 +18,7 @@ CHATTERBOX = ROOT.parent / "chatterbox.cpp"
 MODELS = ROOT / "models"
 REF = ROOT / "reference.wav"
 GGML_REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
-ENGINE_REV = "f645f119b4c6f2fb8002fc4e7707c226140db94e"
+ENGINE_REV = "aa55efc5bdf7a4496e14f67d540a23256a3ccb48"
 BASE_TRIDENT_REV = "38e0c4947d236e239ffd8e2cd2b98a8c39848efc"
 RELEASE_ID = "trident-nano-freeze-2026-09-14"
 VULKAN = Path("C:/VulkanSDK/1.4.357.0")
@@ -59,6 +59,23 @@ class Variant:
     t3_convert_flags: tuple[str, ...] = ()
     needs_language: bool = False
     policy: str = ""
+    pipe_proto: str = "byte-length-v2"
+    framed_pcm: bool = False
+
+
+@dataclass
+class SpeakResult:
+    wall_s: float
+    first_pcm_s: float | None = None
+    pcm_frames: int = 0
+    predicted_count: int | None = None
+    dropped_count: int | None = None
+    eos: int | None = None
+    n_past: int | None = None
+
+
+NANO_PCM_ERROR = 0xFFFFFFFF
+CONVERT_STAMP_EXTRA = ("tensor_types", "n_tensors", "nbytes")
 
 
 def run(cmd, **kw):
@@ -239,6 +256,14 @@ GPT2_KNOBS = SHARED_KNOBS + ("silence-count",)
 V3_KNOBS = SHARED_KNOBS + ("min-p", "cfg-weight", "cfm-cfg")
 
 
+def sampler_log_wanted() -> bool:
+    q = os.environ.get("TRIDENT_QUALITY_GATE", "").strip().lower()
+    if q in ("1", "true", "yes", "y"):
+        return True
+    s = os.environ.get("CHATTERBOX_SAMPLER_LOG", "").strip()
+    return bool(s) and s[0] in "1yY"
+
+
 def spawn(cfg: Variant, exe: Path, t3: Path, s3: Path, pipe: str, pid: Path, language=None, knobs=None):
     args = [str(exe), str(t3), str(s3), pipe]
     if cfg.needs_language:
@@ -251,20 +276,29 @@ def spawn(cfg: Variant, exe: Path, t3: Path, s3: Path, pipe: str, pid: Path, lan
             env[var] = val
         else:
             env.pop(var, None)
-    pid.write_text(
-        str(
-            subprocess.Popen(
-                args,
-                cwd=str(exe.parent),
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=DETACH,
-                env=env,
-            ).pid
-        ),
-        encoding="ascii",
-    )
+    if sampler_log_wanted():
+        env["CHATTERBOX_SAMPLER_LOG"] = "1"
+    else:
+        env.pop("CHATTERBOX_SAMPLER_LOG", None)
+    log_path = MODELS / f"{cfg.name}.server.log"
+    log = open(log_path, "ab", buffering=0)
+    try:
+        log.write(
+            f"# spawn {time.strftime('%Y-%m-%dT%H:%M:%S%z')} family={cfg.name} exe={exe.name}\n".encode("ascii")
+        )
+        log.flush()
+        proc = subprocess.Popen(
+            args,
+            cwd=str(exe.parent),
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=log,
+            creationflags=DETACH,
+            env=env,
+        )
+    finally:
+        log.close()
+    pid.write_text(str(proc.pid), encoding="ascii")
 
 
 def utterances(text: str) -> list[str]:
@@ -373,7 +407,33 @@ def wav_duration_s(path: Path) -> float:
     return (n - 44) / 2.0 / 24000.0
 
 
-def speak(pipe: str, pid: Path, out: Path, text: str) -> float:
+def parse_synth_stats(line: bytes) -> dict[str, int]:
+    text = line.decode("ascii", errors="replace").strip()
+    if text.startswith("err "):
+        raise RuntimeError(text[4:])
+    if text.startswith("ok"):
+        text = text[2:].lstrip()
+    out: dict[str, int] = {}
+    for part in text.split():
+        key, sep, raw = part.partition("=")
+        if sep and key in ("predicted", "dropped", "eos", "n_past"):
+            out[key] = int(raw, 10)
+    return out
+
+
+def speak_result_from_stats(wall_s: float, first_pcm_s: float | None, pcm_frames: int, stats: dict[str, int]) -> SpeakResult:
+    return SpeakResult(
+        wall_s=wall_s,
+        first_pcm_s=first_pcm_s,
+        pcm_frames=pcm_frames,
+        predicted_count=stats.get("predicted"),
+        dropped_count=stats.get("dropped"),
+        eos=stats.get("eos"),
+        n_past=stats.get("n_past"),
+    )
+
+
+def speak(pipe: str, pid: Path, out: Path, text: str) -> SpeakResult:
     for _ in range(120):
         if not running(pid):
             raise RuntimeError("daemon")
@@ -390,9 +450,12 @@ def speak(pipe: str, pid: Path, out: Path, text: str) -> float:
     with open(pipe, "r+b", buffering=0) as f:
         f.write(f"{out}\n{len(payload)}\n".encode("utf-8") + payload)
         ack = f.readline()
-    if ack != b"ok\n":
+    wall = time.perf_counter() - t0
+    if not ack.startswith(b"ok"):
+        if ack.startswith(b"err "):
+            raise RuntimeError(ack[4:].decode("utf-8", errors="replace").strip())
         raise RuntimeError("synthesize")
-    return time.perf_counter() - t0
+    return speak_result_from_stats(wall, None, 1, parse_synth_stats(ack))
 
 
 def _read_exact(f, n: int) -> bytearray:
@@ -485,7 +548,7 @@ class NanoWaveOut:
         self.handle = None
 
 
-def speak_nano(pipe: str, pid: Path, out: Path, text: str, play: bool = False) -> float:
+def speak_nano(pipe: str, pid: Path, out: Path, text: str, play: bool = False) -> SpeakResult:
     for _ in range(120):
         if not running(pid):
             raise RuntimeError("daemon")
@@ -499,31 +562,47 @@ def speak_nano(pipe: str, pid: Path, out: Path, text: str, play: bool = False) -
     tmp = out.with_suffix(out.suffix + ".tmp")
     t0 = time.perf_counter()
     data_bytes = 0
+    pcm_frames = 0
+    first_pcm_s = None
     player = NanoWaveOut() if play else None
+    replaced = False
     try:
-        with open(tmp, "w+b", buffering=0) as wav, open(pipe, "r+b", buffering=0) as f:
-            wav.write(struct.pack("<4sI4s4sIHHIIHH4sI",
-                b"RIFF", 36, b"WAVE", b"fmt ", 16, 1, 1, 24000, 48000, 2, 16, b"data", 0))
-            f.write(f"{len(payload)}\n".encode("ascii") + payload)
-            while True:
-                nbytes = struct.unpack("<I", _read_exact(f, 4))[0]
-                if nbytes == 0:
-                    break
-                pcm = _read_exact(f, nbytes)
-                wav.write(pcm)
-                if player:
-                    player.write(pcm)
-                data_bytes += nbytes
-            wav.seek(4)
-            wav.write(struct.pack("<I", 36 + data_bytes))
-            wav.seek(40)
-            wav.write(struct.pack("<I", data_bytes))
-            wall = time.perf_counter() - t0
+        try:
+            with open(tmp, "w+b", buffering=0) as wav, open(pipe, "r+b", buffering=0) as f:
+                wav.write(struct.pack("<4sI4s4sIHHIIHH4sI",
+                    b"RIFF", 36, b"WAVE", b"fmt ", 16, 1, 1, 24000, 48000, 2, 16, b"data", 0))
+                f.write(f"{len(payload)}\n".encode("ascii") + payload)
+                while True:
+                    nbytes = struct.unpack("<I", _read_exact(f, 4))[0]
+                    if nbytes == NANO_PCM_ERROR:
+                        msglen = struct.unpack("<I", _read_exact(f, 4))[0]
+                        msg = bytes(_read_exact(f, msglen)).decode("utf-8", errors="replace") if msglen else "synthesize"
+                        raise RuntimeError(msg)
+                    if nbytes == 0:
+                        break
+                    pcm = _read_exact(f, nbytes)
+                    if first_pcm_s is None:
+                        first_pcm_s = time.perf_counter() - t0
+                    wav.write(pcm)
+                    if player:
+                        player.write(pcm)
+                    data_bytes += nbytes
+                    pcm_frames += 1
+                stats = parse_synth_stats(f.readline())
+                wav.seek(4)
+                wav.write(struct.pack("<I", 36 + data_bytes))
+                wav.seek(40)
+                wav.write(struct.pack("<I", data_bytes))
+                wall = time.perf_counter() - t0
+            tmp.replace(out)
+            replaced = True
+            return speak_result_from_stats(wall, first_pcm_s, pcm_frames, stats)
+        finally:
+            if player:
+                player.close()
     finally:
-        if player:
-            player.close()
-    tmp.replace(out)
-    return wall
+        if not replaced:
+            tmp.unlink(missing_ok=True)
 
 
 def usage(cfg: Variant):
@@ -710,6 +789,41 @@ def conversion_contract(cfg: Variant, ckpt: Path, script: Path, kind: str):
     }
 
 
+def conversion_identity(obj):
+    if not obj:
+        return None
+    return {k: v for k, v in obj.items() if k not in CONVERT_STAMP_EXTRA}
+
+
+def gguf_type_histogram(py: Path, path: Path) -> dict:
+    script = (
+        "import json,sys\n"
+        "from collections import Counter\n"
+        "from gguf import GGUFReader\n"
+        "r=GGUFReader(sys.argv[1],'r')\n"
+        "c=Counter()\n"
+        "nbytes=0\n"
+        "for t in r.tensors:\n"
+        "    c[t.tensor_type.name]+=1\n"
+        "    nbytes+=int(t.n_bytes)\n"
+        "print(json.dumps({'n_tensors':len(r.tensors),'nbytes':nbytes,"
+        "'tensor_types':dict(sorted(c.items()))}))\n"
+    )
+    out = subprocess.run(
+        [str(py), "-c", script, str(path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(out.stdout)
+
+
+def write_convert_stamp(path: Path, contract: dict, types: dict) -> dict:
+    obj = {**contract, **types}
+    write_json(path, obj)
+    return obj
+
+
 def convert_t3(cfg: Variant, py: Path, ckpt: Path, t3: Path, contract):
     t3.unlink(missing_ok=True)
     run([str(py), str(CHATTERBOX / "scripts" / cfg.t3_script), str(ckpt), str(t3), *cfg.t3_convert_flags])
@@ -729,15 +843,19 @@ def ensure_converted(cfg: Variant, py: Path, ckpt: Path, t3: Path, s3: Path):
     s3_contract = conversion_contract(cfg, ckpt, s3_script, "s3")
     t3_stamp = MODELS / f"{cfg.name}.t3-convert.json"
     s3_stamp = MODELS / f"{cfg.name}.s3-convert.json"
-    t3_changed = (not t3.is_file()) or read_json(t3_stamp) != t3_contract
-    s3_changed = (not s3.is_file()) or read_json(s3_stamp) != s3_contract
+    t3_changed = (not t3.is_file()) or conversion_identity(read_json(t3_stamp)) != t3_contract
+    s3_changed = (not s3.is_file()) or conversion_identity(read_json(s3_stamp)) != s3_contract
     changed = t3_changed or s3_changed
     if changed:
         # Keep T3 and S3 as one clean conversion pair. If either contract changes,
         # rebuild both before voice conditioning is baked into them.
         convert_t3(cfg, py, ckpt, t3, t3_contract)
         convert_s3(cfg, py, ckpt, s3, s3_contract)
-    return t3_contract, s3_contract, changed
+    t3_types = gguf_type_histogram(py, t3)
+    s3_types = gguf_type_histogram(py, s3)
+    write_convert_stamp(t3_stamp, t3_contract, t3_types)
+    write_convert_stamp(s3_stamp, s3_contract, s3_types)
+    return t3_contract, s3_contract, changed, t3_types, s3_types
 
 
 def ensure_baked(cfg: Variant, py: Path, ckpt: Path, t3: Path, s3: Path, bake: Path, bin_dir: Path, pid: Path, t3_contract, s3_contract, converted: bool):
@@ -763,7 +881,7 @@ def ensure_baked(cfg: Variant, py: Path, ckpt: Path, t3: Path, s3: Path, bake: P
     return bake_contract
 
 
-def provenance(cfg: Variant, out: Path, original_text: str, piece: str, piece_index: int, piece_count: int, language: str, values: dict[str, str], t3: Path, s3: Path, exe: Path, bake: Path, t3_contract, s3_contract, bake_contract):
+def provenance(cfg: Variant, out: Path, original_text: str, piece: str, piece_index: int, piece_count: int, language: str, values: dict[str, str], t3: Path, s3: Path, exe: Path, bake: Path, t3_contract, s3_contract, bake_contract, t3_types, s3_types, metrics: dict):
     obj = {
         "release_id": RELEASE_ID,
         "base_trident_revision": BASE_TRIDENT_REV,
@@ -781,6 +899,8 @@ def provenance(cfg: Variant, out: Path, original_text: str, piece: str, piece_in
         "bake_exe_sha256": sha256_file(bake),
         "t3_conversion": t3_contract,
         "s3_conversion": s3_contract,
+        "t3_tensor_types": t3_types,
+        "s3_tensor_types": s3_types,
         "language": language or None,
         "knob_overrides": values,
         "header_defaults_used_where_blank": True,
@@ -793,6 +913,18 @@ def provenance(cfg: Variant, out: Path, original_text: str, piece: str, piece_in
         "wav": out.name,
         "wav_sha256": sha256_file(out),
         "generated_local_time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "wall_s": metrics.get("wall_s"),
+        "duration_s": metrics.get("duration_s"),
+        "rtf": metrics.get("rtf"),
+        "first_pcm_s": metrics.get("first_pcm_s"),
+        "pcm_frames": metrics.get("pcm_frames"),
+        "predicted_count": metrics.get("predicted_count"),
+        "dropped_count": metrics.get("dropped_count"),
+        "eos": metrics.get("eos"),
+        "n_past": metrics.get("n_past"),
+        "sampler_log": metrics.get("sampler_log"),
+        "server_log": f"{cfg.name}.server.log",
+        "pipe_proto": cfg.pipe_proto,
     }
     write_json(out.with_suffix(out.suffix + ".provenance.json"), obj)
 
@@ -810,7 +942,7 @@ def run_variant(cfg: Variant, text: str, language=None, knobs=None, play: bool =
     ensure_build(cfg, pid, build, exe, bake)
     py = ensure_converter_venv(cfg)
     ckpt = ensure_assets(cfg)
-    t3_contract, s3_contract, converted = ensure_converted(cfg, py, ckpt, t3, s3)
+    t3_contract, s3_contract, converted, t3_types, s3_types = ensure_converted(cfg, py, ckpt, t3, s3)
     bake_contract = ensure_baked(cfg, py, ckpt, t3, s3, bake, bin_dir, pid, t3_contract, s3_contract, converted)
 
     lang = (language or "en").lower() if cfg.needs_language else ""
@@ -830,16 +962,23 @@ def run_variant(cfg: Variant, text: str, language=None, knobs=None, play: bool =
         knob_stamp.write_text(blob, encoding="ascii")
 
     pipe_stamp = MODELS / f"{cfg.name}.pipeproto"
-    pipe_proto = "nano-pcm-v1" if cfg.name == "nano" else "byte-length-v1"
-    if not pipe_stamp.is_file() or pipe_stamp.read_text(encoding="ascii").strip() != pipe_proto:
+    if not pipe_stamp.is_file() or pipe_stamp.read_text(encoding="ascii").strip() != cfg.pipe_proto:
         kill(pid)
-        pipe_stamp.write_text(pipe_proto, encoding="ascii")
+        pipe_stamp.write_text(cfg.pipe_proto, encoding="ascii")
+
+    sampler_on = sampler_log_wanted()
+    sampler_stamp = MODELS / f"{cfg.name}.samplerlog"
+    sampler_blob = "1" if sampler_on else "0"
+    previous_sampler = sampler_stamp.read_text(encoding="ascii").strip() if sampler_stamp.is_file() else ""
+    if previous_sampler != sampler_blob:
+        kill(pid)
+        sampler_stamp.write_text(sampler_blob, encoding="ascii")
 
     if not running(pid):
         wait_pipe_absent(pipe)
         spawn(cfg, exe, t3, s3, pipe, pid, lang or None, values)
 
-    if cfg.name == "nano":
+    if cfg.framed_pcm:
         piece = text.strip()
         if not piece:
             raise SystemExit("empty text")
@@ -850,13 +989,28 @@ def run_variant(cfg: Variant, text: str, language=None, knobs=None, play: bool =
 
     def synth_piece(i: int, piece: str):
         out = wav_out_path(cfg, i, n)
-        wall = speak_nano(pipe, pid, out, piece, play=play) if cfg.name == "nano" else speak(pipe, pid, out, piece)
+        result = speak_nano(pipe, pid, out, piece, play=play) if cfg.framed_pcm else speak(pipe, pid, out, piece)
         dur = wav_duration_s(out)
-        rtf = wall / dur if dur > 0 else 0.0
-        provenance(cfg, out, text, piece, i, n, lang, values, t3, s3, exe, bake, t3_contract, s3_contract, bake_contract)
-        print(f"wall_s={wall:.3f} duration_s={dur:.3f} rtf={rtf:.3f}", file=sys.stderr, flush=True)
+        rtf = result.wall_s / dur if dur > 0 else 0.0
+        provenance(
+            cfg, out, text, piece, i, n, lang, values, t3, s3, exe, bake,
+            t3_contract, s3_contract, bake_contract, t3_types, s3_types,
+            {
+                "wall_s": result.wall_s,
+                "duration_s": dur,
+                "rtf": rtf,
+                "first_pcm_s": result.first_pcm_s,
+                "pcm_frames": result.pcm_frames,
+                "predicted_count": result.predicted_count,
+                "dropped_count": result.dropped_count,
+                "eos": result.eos,
+                "n_past": result.n_past,
+                "sampler_log": sampler_on,
+            },
+        )
+        print(f"wall_s={result.wall_s:.3f} duration_s={dur:.3f} rtf={rtf:.3f}", file=sys.stderr, flush=True)
         print(out, flush=True)
-        return out, wall, dur
+        return out, result.wall_s, dur
 
     wav_paths = []
     ready = synth_piece(0, pieces[0])
@@ -864,7 +1018,7 @@ def run_variant(cfg: Variant, text: str, language=None, knobs=None, play: bool =
         out, wall, dur = ready
         wav_paths.append(out)
         player = None
-        if play and cfg.name != "nano":
+        if play and not cfg.framed_pcm:
             player = threading.Thread(target=play_wav, args=(out, dur), daemon=False)
             player.start()
         if i + 1 < n:
