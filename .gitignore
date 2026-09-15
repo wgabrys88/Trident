@@ -7,7 +7,6 @@
 !/tts_common.py
 !/listen.py
 !/setup_engine_sibling.ps1
-!/RELEASE_MANIFEST.json
 # Do not add !knowledgebase.md.
 knowledgebase.md
 /knowledgebase.md

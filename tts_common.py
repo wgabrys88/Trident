@@ -18,9 +18,6 @@ CHATTERBOX = ROOT.parent / "chatterbox.cpp"
 MODELS = ROOT / "models"
 REF = ROOT / "reference.wav"
 GGML_REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
-ENGINE_REV = "aa55efc5bdf7a4496e14f67d540a23256a3ccb48"
-BASE_TRIDENT_REV = "38e0c4947d236e239ffd8e2cd2b98a8c39848efc"
-RELEASE_ID = "trident-nano-freeze-2026-09-14"
 VULKAN = Path("C:/VulkanSDK/1.4.357.0")
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 DETACH = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
@@ -41,8 +38,6 @@ ERROR_FILE_NOT_FOUND = 2
 @dataclass(frozen=True)
 class Variant:
     name: str
-    branch: str
-    chatterbox_rev: str
     hf: str
     assets: tuple[str, ...]
     t3_name: str
@@ -58,7 +53,6 @@ class Variant:
     knobs: tuple[str, ...]
     t3_convert_flags: tuple[str, ...] = ()
     needs_language: bool = False
-    policy: str = ""
     pipe_proto: str = "byte-length-v2"
     framed_pcm: bool = False
 
@@ -72,6 +66,17 @@ class SpeakResult:
     dropped_count: int | None = None
     eos: int | None = None
     n_past: int | None = None
+    knobs: dict | None = None
+
+
+@dataclass
+class LaunchArgs:
+    text: str
+    language: str | None
+    knobs: dict[str, str]
+    play: bool
+    engine_rev: str | None
+    quality: bool
 
 
 NANO_PCM_ERROR = 0xFFFFFFFF
@@ -103,14 +108,6 @@ def git_out(args, repo=CHATTERBOX):
     ).stdout.strip()
 
 
-def sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-def sha256_file(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 def json_text(obj) -> str:
     return json.dumps(obj, sort_keys=True, indent=2, ensure_ascii=True) + "\n"
 
@@ -130,11 +127,7 @@ def write_json(path: Path, obj):
     tmp.replace(path)
 
 
-def contract_id(obj) -> str:
-    return sha256_bytes(json.dumps(obj, sort_keys=True, separators=(",", ":")).encode("utf-8"))
-
-
-def ensure_pin(cfg: Variant):
+def ensure_engine(wanted: str | None) -> str:
     if not CHATTERBOX.is_dir():
         raise SystemExit(f"missing chatterbox.cpp sibling at {CHATTERBOX}")
     if not (CHATTERBOX / ".git").is_dir():
@@ -146,13 +139,11 @@ def ensure_pin(cfg: Variant):
         text=True,
     ).stdout.strip()
     if dirty:
-        raise SystemExit("chatterbox.cpp has uncommitted changes; use the exact clean engine checkout")
+        raise SystemExit("chatterbox.cpp has uncommitted changes")
     sha = git_out(["rev-parse", "HEAD"])
-    if sha != cfg.chatterbox_rev:
-        raise SystemExit(
-            f"chatterbox.cpp HEAD {sha} != required {cfg.chatterbox_rev}. "
-            "Checkout the exact detached commit; branch name is intentionally irrelevant."
-        )
+    if wanted and sha != wanted:
+        raise SystemExit(f"chatterbox.cpp HEAD {sha} != --engine-rev {wanted}")
+    return sha
 
 
 def download(url: str, dest: Path):
@@ -228,19 +219,19 @@ def wait_pipe_absent(pipe: str):
     raise RuntimeError("pipe busy")
 
 
-KNOB_ENV = {
-    "repeat-penalty": ("CHATTERBOX_REPEAT_PENALTY", "f+"),
-    "temperature": ("CHATTERBOX_TEMPERATURE", "f"),
-    "top-k": ("CHATTERBOX_TOP_K", "i"),
-    "top-p": ("CHATTERBOX_TOP_P", "f"),
-    "seed": ("CHATTERBOX_SEED", "i"),
-    "n-predict": ("CHATTERBOX_N_PREDICT", "i"),
-    "cfm-steps": ("CHATTERBOX_CFM_STEPS", "i"),
-    "silence-token": ("CHATTERBOX_SILENCE_TOKEN", "i"),
-    "silence-count": ("CHATTERBOX_SILENCE_COUNT", "i"),
-    "min-p": ("CHATTERBOX_MIN_P", "f"),
-    "cfg-weight": ("CHATTERBOX_CFG_WEIGHT", "f"),
-    "cfm-cfg": ("CHATTERBOX_CFM_CFG", "f"),
+KNOB_KIND = {
+    "repeat-penalty": "f+",
+    "temperature": "f",
+    "top-k": "i",
+    "top-p": "f",
+    "seed": "i",
+    "n-predict": "i",
+    "cfm-steps": "i",
+    "silence-token": "i",
+    "silence-count": "i",
+    "min-p": "f",
+    "cfg-weight": "f",
+    "cfm-cfg": "f",
 }
 SHARED_KNOBS = (
     "repeat-penalty",
@@ -256,35 +247,21 @@ GPT2_KNOBS = SHARED_KNOBS + ("silence-count",)
 V3_KNOBS = SHARED_KNOBS + ("min-p", "cfg-weight", "cfm-cfg")
 
 
-def sampler_log_wanted() -> bool:
-    q = os.environ.get("TRIDENT_QUALITY_GATE", "").strip().lower()
-    if q in ("1", "true", "yes", "y"):
-        return True
-    s = os.environ.get("CHATTERBOX_SAMPLER_LOG", "").strip()
-    return bool(s) and s[0] in "1yY"
-
-
-def spawn(cfg: Variant, exe: Path, t3: Path, s3: Path, pipe: str, pid: Path, language=None, knobs=None):
+def spawn(cfg: Variant, exe: Path, t3: Path, s3: Path, pipe: str, pid: Path, language: str | None, knobs: dict[str, str], quality: bool):
     args = [str(exe), str(t3), str(s3), pipe]
     if cfg.needs_language:
-        args.append(language or "en")
-    env = os.environ.copy()
-    wanted = knobs or {}
-    for name, (var, _) in KNOB_ENV.items():
-        val = wanted.get(name, "") if name in cfg.knobs else ""
+        args += ["--language", language or "en"]
+    for name in cfg.knobs:
+        val = knobs.get(name, "")
         if val:
-            env[var] = val
-        else:
-            env.pop(var, None)
-    if sampler_log_wanted():
-        env["CHATTERBOX_SAMPLER_LOG"] = "1"
-    else:
-        env.pop("CHATTERBOX_SAMPLER_LOG", None)
+            args += [f"--{name}", val]
+    if quality:
+        args.append("--sampler-log")
     log_path = MODELS / f"{cfg.name}.server.log"
     log = open(log_path, "ab", buffering=0)
     try:
         log.write(
-            f"# spawn {time.strftime('%Y-%m-%dT%H:%M:%S%z')} family={cfg.name} exe={exe.name}\n".encode("ascii")
+            f"# spawn {time.strftime('%Y-%m-%dT%H:%M:%S%z')} family={cfg.name} {' '.join(args)}\n".encode("utf-8")
         )
         log.flush()
         proc = subprocess.Popen(
@@ -294,7 +271,6 @@ def spawn(cfg: Variant, exe: Path, t3: Path, s3: Path, pipe: str, pid: Path, lan
             stdout=log,
             stderr=log,
             creationflags=DETACH,
-            env=env,
         )
     finally:
         log.close()
@@ -407,21 +383,29 @@ def wav_duration_s(path: Path) -> float:
     return (n - 44) / 2.0 / 24000.0
 
 
-def parse_synth_stats(line: bytes) -> dict[str, int]:
+def parse_synth_stats(line: bytes) -> dict:
     text = line.decode("ascii", errors="replace").strip()
     if text.startswith("err "):
         raise RuntimeError(text[4:])
     if text.startswith("ok"):
         text = text[2:].lstrip()
-    out: dict[str, int] = {}
+    out = {}
     for part in text.split():
         key, sep, raw = part.partition("=")
-        if sep and key in ("predicted", "dropped", "eos", "n_past"):
+        if not sep:
+            continue
+        try:
             out[key] = int(raw, 10)
+        except ValueError:
+            try:
+                out[key] = float(raw)
+            except ValueError:
+                out[key] = raw
     return out
 
 
-def speak_result_from_stats(wall_s: float, first_pcm_s: float | None, pcm_frames: int, stats: dict[str, int]) -> SpeakResult:
+def speak_result_from_stats(wall_s: float, first_pcm_s: float | None, pcm_frames: int, stats: dict) -> SpeakResult:
+    knobs = {k: v for k, v in stats.items() if k not in ("predicted", "dropped", "eos", "n_past")}
     return SpeakResult(
         wall_s=wall_s,
         first_pcm_s=first_pcm_s,
@@ -430,6 +414,7 @@ def speak_result_from_stats(wall_s: float, first_pcm_s: float | None, pcm_frames
         dropped_count=stats.get("dropped"),
         eos=stats.get("eos"),
         n_past=stats.get("n_past"),
+        knobs=knobs or None,
     )
 
 
@@ -607,16 +592,18 @@ def speak_nano(pipe: str, pid: Path, out: Path, text: str, play: bool = False) -
 
 def usage(cfg: Variant):
     flags = " ".join(f"[--{n} <v>]" for n in cfg.knobs)
-    play = " [--play]"
+    extra = " [--play] [--quality] [--engine-rev <sha>]"
     if cfg.needs_language:
-        return f"usage: python tts_{cfg.name}.py [-h]{play} {flags} <text> <language>"
-    return f"usage: python tts_{cfg.name}.py [-h]{play} {flags} <text>"
+        return f"usage: python tts_{cfg.name}.py [-h]{extra} {flags} <text> <language>"
+    return f"usage: python tts_{cfg.name}.py [-h]{extra} {flags} <text>"
 
 
-def parse_variant_args(cfg: Variant, argv: list[str]):
+def parse_variant_args(cfg: Variant, argv: list[str]) -> LaunchArgs:
     args = argv[1:]
     cli = {}
     play = False
+    quality = False
+    engine_rev = None
     i = 0
     allowed = set(cfg.knobs)
     while i < len(args):
@@ -628,10 +615,20 @@ def parse_variant_args(cfg: Variant, argv: list[str]):
             play = True
             i += 1
             continue
+        if a == "--quality":
+            quality = True
+            i += 1
+            continue
         if not a.startswith("--"):
             break
+        if i + 1 >= len(args):
+            raise SystemExit(usage(cfg))
         name = a[2:]
-        if name not in allowed or i + 1 >= len(args):
+        if name == "engine-rev":
+            engine_rev = args[i + 1]
+            i += 2
+            continue
+        if name not in allowed:
             raise SystemExit(usage(cfg))
         cli[name] = args[i + 1]
         i += 2
@@ -639,16 +636,14 @@ def parse_variant_args(cfg: Variant, argv: list[str]):
     if cfg.needs_language:
         if len(rest) != 2:
             raise SystemExit(usage(cfg))
-        return rest[0], rest[1].lower(), cli, play
+        return LaunchArgs(rest[0], rest[1].lower(), cli, play, engine_rev, quality)
     if len(rest) != 1:
         raise SystemExit(usage(cfg))
-    return rest[0], None, cli, play
+    return LaunchArgs(rest[0], None, cli, play, engine_rev, quality)
 
 
-def normalize_knob(name: str, raw: str | None) -> str:
-    if raw is None or not str(raw).strip():
-        return ""
-    kind = KNOB_ENV[name][1]
+def normalize_knob(name: str, raw: str) -> str:
+    kind = KNOB_KIND[name]
     if kind == "i":
         try:
             return str(int(str(raw).strip(), 10))
@@ -664,71 +659,74 @@ def normalize_knob(name: str, raw: str | None) -> str:
 
 
 def wanted_knobs(cfg: Variant, cli: dict[str, str]) -> dict[str, str]:
-    out = {}
-    for name in cfg.knobs:
-        if name in cli:
-            out[name] = normalize_knob(name, cli[name])
-        else:
-            out[name] = normalize_knob(name, os.environ.get(KNOB_ENV[name][0]))
-    return out
+    return {name: normalize_knob(name, cli[name]) for name in cfg.knobs if name in cli}
 
 
-def knobs_blob(cfg: Variant, values: dict[str, str]) -> str:
-    return "".join(f"{n}={values.get(n, '')}\n" for n in cfg.knobs)
+CMAKE_FLAGS = {
+    "GGML_VULKAN": "ON",
+    "GGML_CUDA": "OFF",
+    "GGML_CPU": "OFF",
+    "GGML_OPENMP": "OFF",
+    "BUILD_SHARED_LIBS": "ON",
+    "TTS_CPP_BUILD_EXECUTABLES": "ON",
+    "GGML_BUILD_TESTS": "OFF",
+    "GGML_BUILD_EXAMPLES": "OFF",
+}
 
 
 def build_contract(cfg: Variant):
     return {
-        "engine_rev": cfg.chatterbox_rev,
         "ggml_rev": GGML_REV,
         "family": cfg.name,
         "generator": "Visual Studio 17 2022 x64",
-        "build_targets": ["chatterbox-server", "chatterbox-bake"],
-        "build_parallel": 2,
-        "cmake_flags": {
-            "GGML_VULKAN": "ON",
-            "GGML_CUDA": "OFF",
-            "GGML_CPU": "OFF",
-            "GGML_OPENMP": "OFF",
-            "BUILD_SHARED_LIBS": "ON",
-            "TTS_CPP_BUILD_EXECUTABLES": "ON",
-            "GGML_BUILD_TESTS": "OFF",
-            "GGML_BUILD_EXAMPLES": "OFF",
-            "TTS_FAMILY": cfg.name,
-            "VulkanSDK": str(VULKAN),
-        },
+        "cmake_flags": {**CMAKE_FLAGS, "TTS_FAMILY": cfg.name, "VulkanSDK": str(VULKAN)},
     }
 
 
-def ensure_build(cfg: Variant, pid: Path, build: Path, exe: Path, bake: Path):
+def cmake_identity(obj):
+    if not obj:
+        return None
+    return {
+        "family": obj.get("family"),
+        "ggml_rev": obj.get("ggml_rev"),
+        "generator": obj.get("generator"),
+        "cmake_flags": obj.get("cmake_flags"),
+    }
+
+
+def ensure_ggml():
     ggml = CHATTERBOX / "ggml"
-    stamp = MODELS / f"{cfg.name}.build-contract.json"
-    wanted = build_contract(cfg)
-    if exe.is_file() and bake.is_file() and read_json(stamp) == wanted:
-        return
-    kill(pid)
     if not (ggml / "CMakeLists.txt").is_file():
         run(["git", "clone", "--filter=blob:none", "https://github.com/ggml-org/ggml.git", str(ggml)])
         run(["git", "-C", str(ggml), "checkout", "--detach", GGML_REV])
-    else:
-        actual = git_out(["rev-parse", "HEAD"], ggml)
-        if actual != GGML_REV:
-            raise SystemExit(f"ggml {actual} != required {GGML_REV}")
-        dirty = subprocess.run(
-            ["git", "-C", str(ggml), "status", "--porcelain"], check=True, capture_output=True, text=True
-        ).stdout.strip()
-        if dirty:
-            raise SystemExit("ggml checkout is dirty")
-    if build.exists():
-        shutil.rmtree(build)
-    run([
-        CMAKE, "-S", str(CHATTERBOX), "-B", str(build), "-G", "Visual Studio 17 2022", "-A", "x64",
-        "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_CPU=OFF", "-DGGML_OPENMP=OFF",
-        "-DBUILD_SHARED_LIBS=ON", "-DTTS_CPP_BUILD_EXECUTABLES=ON", "-DGGML_BUILD_TESTS=OFF",
-        "-DGGML_BUILD_EXAMPLES=OFF", f"-DTTS_FAMILY={cfg.name}",
-        f"-DVulkan_INCLUDE_DIR={VULKAN / 'Include'}", f"-DVulkan_LIBRARY={VULKAN / 'Lib/vulkan-1.lib'}",
-        f"-DVulkan_GLSLC_EXECUTABLE={VULKAN / 'Bin/glslc.exe'}",
-    ])
+        return
+    actual = git_out(["rev-parse", "HEAD"], ggml)
+    if actual != GGML_REV:
+        raise SystemExit(f"ggml {actual} != required {GGML_REV}")
+    dirty = subprocess.run(
+        ["git", "-C", str(ggml), "status", "--porcelain"], check=True, capture_output=True, text=True
+    ).stdout.strip()
+    if dirty:
+        raise SystemExit("ggml checkout is dirty")
+
+
+def ensure_build(cfg: Variant, pid: Path, build: Path, exe: Path, bake: Path):
+    stamp = MODELS / f"{cfg.name}.build-contract.json"
+    wanted = build_contract(cfg)
+    kill(pid)
+    ensure_ggml()
+    need_configure = cmake_identity(read_json(stamp)) != cmake_identity(wanted) or not (build / "CMakeCache.txt").is_file()
+    if need_configure:
+        if build.exists():
+            shutil.rmtree(build)
+        run([
+            CMAKE, "-S", str(CHATTERBOX), "-B", str(build), "-G", "Visual Studio 17 2022", "-A", "x64",
+            "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_CPU=OFF", "-DGGML_OPENMP=OFF",
+            "-DBUILD_SHARED_LIBS=ON", "-DTTS_CPP_BUILD_EXECUTABLES=ON", "-DGGML_BUILD_TESTS=OFF",
+            "-DGGML_BUILD_EXAMPLES=OFF", f"-DTTS_FAMILY={cfg.name}",
+            f"-DVulkan_INCLUDE_DIR={VULKAN / 'Include'}", f"-DVulkan_LIBRARY={VULKAN / 'Lib/vulkan-1.lib'}",
+            f"-DVulkan_GLSLC_EXECUTABLE={VULKAN / 'Bin/glslc.exe'}",
+        ])
     build_target(build, "chatterbox-server")
     build_target(build, "chatterbox-bake")
     write_json(stamp, wanted)
@@ -755,36 +753,13 @@ def ensure_assets(cfg: Variant) -> Path:
     return ckpt
 
 
-def asset_fingerprint(cfg: Variant, ckpt: Path):
-    cache_path = ckpt / ".asset-sha256.json"
-    cache = read_json(cache_path) or {}
-    changed = False
-    out = {}
-    for name in cfg.assets:
-        p = ckpt / name
-        st = p.stat()
-        row = cache.get(name) or {}
-        if row.get("size") == st.st_size and row.get("mtime_ns") == st.st_mtime_ns and row.get("sha256"):
-            digest = row["sha256"]
-        else:
-            digest = sha256_file(p)
-            cache[name] = {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "sha256": digest}
-            changed = True
-        out[name] = digest
-    if changed or not cache_path.is_file():
-        write_json(cache_path, cache)
-    return out
-
-
-def conversion_contract(cfg: Variant, ckpt: Path, script: Path, kind: str):
+def conversion_contract(cfg: Variant, engine_rev: str, kind: str):
     return {
         "family": cfg.name,
         "kind": kind,
-        "engine_rev": cfg.chatterbox_rev,
+        "engine_rev": engine_rev,
         "hf_base": cfg.hf,
-        "assets_sha256": asset_fingerprint(cfg, ckpt),
-        "script": script.name,
-        "script_sha256": sha256_file(script),
+        "script": cfg.t3_script if kind == "t3" else cfg.s3_script,
         "flags": list(cfg.t3_convert_flags) if kind == "t3" else [],
     }
 
@@ -836,19 +811,15 @@ def convert_s3(cfg: Variant, py: Path, ckpt: Path, s3: Path, contract):
     write_json(MODELS / f"{cfg.name}.s3-convert.json", contract)
 
 
-def ensure_converted(cfg: Variant, py: Path, ckpt: Path, t3: Path, s3: Path):
-    t3_script = CHATTERBOX / "scripts" / cfg.t3_script
-    s3_script = CHATTERBOX / "scripts" / cfg.s3_script
-    t3_contract = conversion_contract(cfg, ckpt, t3_script, "t3")
-    s3_contract = conversion_contract(cfg, ckpt, s3_script, "s3")
+def ensure_converted(cfg: Variant, engine_rev: str, py: Path, ckpt: Path, t3: Path, s3: Path):
+    t3_contract = conversion_contract(cfg, engine_rev, "t3")
+    s3_contract = conversion_contract(cfg, engine_rev, "s3")
     t3_stamp = MODELS / f"{cfg.name}.t3-convert.json"
     s3_stamp = MODELS / f"{cfg.name}.s3-convert.json"
     t3_changed = (not t3.is_file()) or conversion_identity(read_json(t3_stamp)) != t3_contract
     s3_changed = (not s3.is_file()) or conversion_identity(read_json(s3_stamp)) != s3_contract
     changed = t3_changed or s3_changed
     if changed:
-        # Keep T3 and S3 as one clean conversion pair. If either contract changes,
-        # rebuild both before voice conditioning is baked into them.
         convert_t3(cfg, py, ckpt, t3, t3_contract)
         convert_s3(cfg, py, ckpt, s3, s3_contract)
     t3_types = gguf_type_histogram(py, t3)
@@ -858,22 +829,20 @@ def ensure_converted(cfg: Variant, py: Path, ckpt: Path, t3: Path, s3: Path):
     return t3_contract, s3_contract, changed, t3_types, s3_types
 
 
-def ensure_baked(cfg: Variant, py: Path, ckpt: Path, t3: Path, s3: Path, bake: Path, bin_dir: Path, pid: Path, t3_contract, s3_contract, converted: bool):
-    ref_sha = sha256_file(REF)
+def ensure_baked(cfg: Variant, engine_rev: str, py: Path, ckpt: Path, t3: Path, s3: Path, bake: Path, bin_dir: Path, pid: Path, t3_contract, s3_contract, converted: bool):
+    st = REF.stat()
     bake_contract = {
         "family": cfg.name,
-        "engine_rev": cfg.chatterbox_rev,
-        "reference_sha256": ref_sha,
-        "t3_conversion_id": contract_id(t3_contract),
-        "s3_conversion_id": contract_id(s3_contract),
-        "bake_exe_sha256": sha256_file(bake),
+        "engine_rev": engine_rev,
+        "reference": {"size": st.st_size, "mtime_ns": st.st_mtime_ns},
+        "t3_conversion": t3_contract,
+        "s3_conversion": s3_contract,
     }
     stamp = MODELS / f"{cfg.name}.bake-contract.json"
     if not converted and read_json(stamp) == bake_contract:
         return bake_contract
     kill(pid)
     if not converted:
-        # Recreate pristine GGUFs before changing baked conditioning. This avoids relying on in-place rebake semantics.
         convert_t3(cfg, py, ckpt, t3, t3_contract)
         convert_s3(cfg, py, ckpt, s3, s3_contract)
     run([str(bake), str(t3), str(s3), str(REF)], cwd=str(bin_dir))
@@ -881,37 +850,25 @@ def ensure_baked(cfg: Variant, py: Path, ckpt: Path, t3: Path, s3: Path, bake: P
     return bake_contract
 
 
-def provenance(cfg: Variant, out: Path, original_text: str, piece: str, piece_index: int, piece_count: int, language: str, values: dict[str, str], t3: Path, s3: Path, exe: Path, bake: Path, t3_contract, s3_contract, bake_contract, t3_types, s3_types, metrics: dict):
+def provenance(cfg: Variant, engine_rev: str, out: Path, original_text: str, piece: str, piece_index: int, piece_count: int, language: str, cli_knobs: dict[str, str], t3: Path, s3: Path, t3_types, s3_types, cmake: dict, metrics: dict):
     obj = {
-        "release_id": RELEASE_ID,
-        "base_trident_revision": BASE_TRIDENT_REV,
-        "engine_revision": cfg.chatterbox_rev,
-        "ggml_revision": GGML_REV,
+        "engine": engine_rev,
+        "ggml": GGML_REV,
         "family": cfg.name,
-        "family_policy": cfg.policy,
         "hf_base": cfg.hf,
         "t3_file": t3.name,
-        "t3_sha256": sha256_file(t3),
         "s3_file": s3.name,
-        "s3_sha256": sha256_file(s3),
-        "reference_sha256": bake_contract["reference_sha256"],
-        "server_exe_sha256": sha256_file(exe),
-        "bake_exe_sha256": sha256_file(bake),
-        "t3_conversion": t3_contract,
-        "s3_conversion": s3_contract,
         "t3_tensor_types": t3_types,
         "s3_tensor_types": s3_types,
+        "cmake": cmake,
         "language": language or None,
-        "knob_overrides": values,
-        "header_defaults_used_where_blank": True,
+        "knobs": metrics.get("knobs"),
+        "knobs_cli": cli_knobs,
         "original_text": original_text,
-        "original_text_sha256": sha256_bytes(original_text.encode("utf-8")),
         "piece_index": piece_index,
         "piece_count": piece_count,
         "piece_text": piece,
-        "piece_text_sha256": sha256_bytes(piece.encode("utf-8")),
         "wav": out.name,
-        "wav_sha256": sha256_file(out),
         "generated_local_time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "wall_s": metrics.get("wall_s"),
         "duration_s": metrics.get("duration_s"),
@@ -922,19 +879,17 @@ def provenance(cfg: Variant, out: Path, original_text: str, piece: str, piece_in
         "dropped_count": metrics.get("dropped_count"),
         "eos": metrics.get("eos"),
         "n_past": metrics.get("n_past"),
-        "sampler_log": metrics.get("sampler_log"),
+        "quality": metrics.get("quality"),
         "server_log": f"{cfg.name}.server.log",
         "pipe_proto": cfg.pipe_proto,
     }
     write_json(out.with_suffix(out.suffix + ".provenance.json"), obj)
 
 
-def run_variant(cfg: Variant, text: str, language=None, knobs=None, play: bool = False):
+def run_variant(cfg: Variant, args: LaunchArgs):
     if not REF.is_file():
         raise FileNotFoundError(str(REF))
-    if cfg.chatterbox_rev != ENGINE_REV:
-        raise SystemExit(f"launcher engine pin {cfg.chatterbox_rev} != release engine pin {ENGINE_REV}")
-    ensure_pin(cfg)
+    engine_rev = ensure_engine(args.engine_rev)
     MODELS.mkdir(parents=True, exist_ok=True)
     t3, s3, pid, build, bin_dir, exe, bake, pipe = paths(cfg)
     for name in cfg.other_pids:
@@ -942,42 +897,24 @@ def run_variant(cfg: Variant, text: str, language=None, knobs=None, play: bool =
     ensure_build(cfg, pid, build, exe, bake)
     py = ensure_converter_venv(cfg)
     ckpt = ensure_assets(cfg)
-    t3_contract, s3_contract, converted, t3_types, s3_types = ensure_converted(cfg, py, ckpt, t3, s3)
-    bake_contract = ensure_baked(cfg, py, ckpt, t3, s3, bake, bin_dir, pid, t3_contract, s3_contract, converted)
-
-    lang = (language or "en").lower() if cfg.needs_language else ""
-    language_stamp = MODELS / f"{cfg.name}.language"
-    if cfg.needs_language:
-        previous = language_stamp.read_text(encoding="ascii").strip() if language_stamp.is_file() else ""
-        if previous != lang:
-            kill(pid)
-            language_stamp.write_text(lang, encoding="ascii")
-
-    values = wanted_knobs(cfg, knobs or {})
-    blob = knobs_blob(cfg, values)
-    knob_stamp = MODELS / f"{cfg.name}.knobs"
-    previous_blob = knob_stamp.read_text(encoding="ascii") if knob_stamp.is_file() else ""
-    if previous_blob != blob:
-        kill(pid)
-        knob_stamp.write_text(blob, encoding="ascii")
-
-    pipe_stamp = MODELS / f"{cfg.name}.pipeproto"
-    if not pipe_stamp.is_file() or pipe_stamp.read_text(encoding="ascii").strip() != cfg.pipe_proto:
-        kill(pid)
-        pipe_stamp.write_text(cfg.pipe_proto, encoding="ascii")
-
-    sampler_on = sampler_log_wanted()
-    sampler_stamp = MODELS / f"{cfg.name}.samplerlog"
-    sampler_blob = "1" if sampler_on else "0"
-    previous_sampler = sampler_stamp.read_text(encoding="ascii").strip() if sampler_stamp.is_file() else ""
-    if previous_sampler != sampler_blob:
-        kill(pid)
-        sampler_stamp.write_text(sampler_blob, encoding="ascii")
-
-    if not running(pid):
-        wait_pipe_absent(pipe)
-        spawn(cfg, exe, t3, s3, pipe, pid, lang or None, values)
-
+    t3_contract, s3_contract, converted, t3_types, s3_types = ensure_converted(cfg, engine_rev, py, ckpt, t3, s3)
+    ensure_baked(cfg, engine_rev, py, ckpt, t3, s3, bake, bin_dir, pid, t3_contract, s3_contract, converted)
+    cmake = build_contract(cfg)
+    values = wanted_knobs(cfg, args.knobs)
+    lang = (args.language or "en").lower() if cfg.needs_language else ""
+    print(
+        f"engine={engine_rev}\nggml={GGML_REV}\nfamily={cfg.name}\n"
+        f"t3={t3.name} {t3_types.get('tensor_types')}\n"
+        f"s3={s3.name} {s3_types.get('tensor_types')}\n"
+        f"knobs_cli={values or '(none; C++ header defaults)'}\n"
+        f"quality={int(args.quality)}",
+        file=sys.stderr,
+        flush=True,
+    )
+    wait_pipe_absent(pipe)
+    spawn(cfg, exe, t3, s3, pipe, pid, lang or None, values, args.quality)
+    play = args.play
+    text = args.text
     if cfg.framed_pcm:
         piece = text.strip()
         if not piece:
@@ -993,8 +930,7 @@ def run_variant(cfg: Variant, text: str, language=None, knobs=None, play: bool =
         dur = wav_duration_s(out)
         rtf = result.wall_s / dur if dur > 0 else 0.0
         provenance(
-            cfg, out, text, piece, i, n, lang, values, t3, s3, exe, bake,
-            t3_contract, s3_contract, bake_contract, t3_types, s3_types,
+            cfg, engine_rev, out, text, piece, i, n, lang, values, t3, s3, t3_types, s3_types, cmake,
             {
                 "wall_s": result.wall_s,
                 "duration_s": dur,
@@ -1005,10 +941,13 @@ def run_variant(cfg: Variant, text: str, language=None, knobs=None, play: bool =
                 "dropped_count": result.dropped_count,
                 "eos": result.eos,
                 "n_past": result.n_past,
-                "sampler_log": sampler_on,
+                "knobs": result.knobs,
+                "quality": args.quality,
             },
         )
         print(f"wall_s={result.wall_s:.3f} duration_s={dur:.3f} rtf={rtf:.3f}", file=sys.stderr, flush=True)
+        if result.knobs:
+            print("knobs " + " ".join(f"{k}={v}" for k, v in result.knobs.items()), file=sys.stderr, flush=True)
         print(out, flush=True)
         return out, result.wall_s, dur
 
@@ -1027,5 +966,5 @@ def run_variant(cfg: Variant, text: str, language=None, knobs=None, play: bool =
             player.join()
     if n > 1:
         manifest = ROOT / f"{time.strftime('%Y%m%d-%H%M%S')}-{cfg.name}-manifest.json"
-        write_json(manifest, {"family": cfg.name, "release_id": RELEASE_ID, "files": [str(p) for p in wav_paths], "play": play})
+        write_json(manifest, {"family": cfg.name, "files": [str(p) for p in wav_paths], "play": play})
         print("manifest " + str(manifest), flush=True)

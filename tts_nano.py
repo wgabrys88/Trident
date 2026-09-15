@@ -4,8 +4,6 @@ from tts_common import GPT2_KNOBS, Variant, parse_variant_args, run_variant
 
 CFG = Variant(
     name="nano",
-    branch="experimental",
-    chatterbox_rev="aa55efc5bdf7a4496e14f67d540a23256a3ccb48",
     hf="https://huggingface.co/ResembleAI/chatterbox-nano/resolve/71ccd1d0081b430592cea481f4307e764e07bc64",
     assets=(
         "t3_nano_v1.safetensors",
@@ -28,15 +26,13 @@ CFG = Variant(
     t3_convert_flags=("--f16",),
     s3_script="convert-s3gen-to-gguf.py",
     knobs=GPT2_KNOBS,
-    policy="Nano: T3 F32 under --f16 (not Q8_0), Q4_0 MeanFlow S3Gen, native framed-PCM streaming; --play renders arriving PCM directly; one input is one continuous T3 utterance.",
     pipe_proto="nano-pcm-v2",
     framed_pcm=True,
 )
 
 
 def main():
-    text, language, knobs, play = parse_variant_args(CFG, sys.argv)
-    run_variant(CFG, text, language, knobs, play=play)
+    run_variant(CFG, parse_variant_args(CFG, sys.argv))
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 $Parent = Split-Path -Parent $PSScriptRoot
 $Engine = Join-Path $Parent "chatterbox.cpp"
 $EngineUrl = "https://github.com/wgabrys88/chatterbox.cpp.git"
-$EngineCommit = "aa55efc5bdf7a4496e14f67d540a23256a3ccb48"
+$Commit = $args[0]
 
 if (-not (Test-Path $Engine)) {
     git clone -b experimental $EngineUrl $Engine
@@ -14,18 +14,19 @@ if (git -C $Engine status --porcelain) {
     throw "Engine checkout is dirty."
 }
 
-# A full delivery archive already contains the exact engine commit locally.
-# Use it without requiring the commit to have been published yet. If the object
-# is absent, fetch that exact commit from origin and fail normally if origin does
-# not contain it.
-git -C $Engine cat-file -e "$EngineCommit^{commit}" 2>$null
-if ($LASTEXITCODE -ne 0) {
-    git -C $Engine fetch origin $EngineCommit
+if ($Commit) {
+    git -C $Engine cat-file -e "$Commit^{commit}" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        git -C $Engine fetch origin $Commit
+    }
+    git -C $Engine checkout --detach $Commit
+} else {
+    git -C $Engine checkout experimental
 }
-git -C $Engine checkout --detach $EngineCommit
+
 $Actual = (git -C $Engine rev-parse HEAD).Trim()
-if ($Actual -ne $EngineCommit) {
-    throw "Engine SHA mismatch: $Actual != $EngineCommit"
+if ($Commit -and $Actual -ne $Commit) {
+    throw "Engine SHA mismatch: $Actual != $Commit"
 }
 if (git -C $Engine status --porcelain) {
     throw "Engine checkout is dirty."
