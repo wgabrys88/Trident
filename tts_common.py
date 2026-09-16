@@ -17,7 +17,7 @@ REF = ROOT / "reference.wav"
 GGML_REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
 # Required chatterbox.cpp experimental source commit; measurements are pending.
 # Bump it in the same commit that adapts to an engine change.
-ENGINE_REV = "667951685ff983e5358f7fdca4098629f711532f"
+ENGINE_REV = "6eadc2ccd4b00a1a609976abf83beed30b2ba1df"
 VULKAN = Path("C:/VulkanSDK/1.4.357.0")
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 DETACH = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
