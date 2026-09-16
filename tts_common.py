@@ -24,9 +24,10 @@ CHATTERBOX = ROOT.parent / "chatterbox.cpp"
 MODELS = ROOT / "models"
 REF = ROOT / "reference.wav"
 GGML_REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
-# Required chatterbox.cpp experimental source commit; measurements are pending.
-# Bump it in the same commit that adapts to an engine change.
-ENGINE_REV = "5c48d99b0d680dd10e73d577db34d1768e8a4f52"
+# Required chatterbox.cpp experimental source commit. The GOLD utterance
+# ceilings live in that commit's message. Bump ENGINE_REV in the same
+# Trident commit that adapts to an engine change.
+ENGINE_REV = "6382de473edfee04771ad49b033330e579ad6b68"
 VULKAN = Path("C:/VulkanSDK/1.4.357.0")
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 DETACH = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
