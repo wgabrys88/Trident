@@ -24,10 +24,9 @@ CHATTERBOX = ROOT.parent / "chatterbox.cpp"
 MODELS = ROOT / "models"
 REF = ROOT / "reference.wav"
 GGML_REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
-# Required chatterbox.cpp experimental source commit. Native vchunker
-# architecture lives in that commit's message. Bump ENGINE_REV in the
-# same Trident commit that adapts to an engine change.
-ENGINE_REV = "8a3e6d1c54a9b97aa4c806332c27941ad3109d9f"
+# Required chatterbox.cpp experimental source commit; measurements are pending.
+# Bump it in the same commit that adapts to an engine change.
+ENGINE_REV = "ef6869d8f5a372861ac79c34510baf07e218bc4d"
 VULKAN = Path("C:/VulkanSDK/1.4.357.0")
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 DETACH = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
@@ -62,11 +61,11 @@ class Variant:
     t3_script: str
     s3_script: str
     knobs: tuple[str, ...]
+    split_tokens: int
     needs_language: bool = False
 
 
-STATS_KEYS = ("predicted", "dropped", "eos", "n_past", "units", "text_tokens", "max_unit_predicted",
-              "stop_code", "n_speech", "cut_at", "cut_reason", "n_chunks", "stage")
+STATS_KEYS = ("predicted", "dropped", "eos", "n_past", "units", "text_tokens", "max_unit_predicted")
 
 
 @dataclass
@@ -79,12 +78,6 @@ class SpeakResult:
     units: int | None = None
     text_tokens: int | None = None
     max_unit_predicted: int | None = None
-    stop_code: int | None = None
-    n_speech: int | None = None
-    cut_at: int | None = None
-    cut_reason: int | None = None
-    n_chunks: int | None = None
-    stage: int | None = None
     knobs: dict | None = None
 
 
@@ -397,28 +390,19 @@ KNOB_KIND = {
     "temperature": "f",
     "top-k": "i",
     "top-p": "f",
-    "min-p": "f",
     "seed": "i",
     "n-predict": "i",
+    "split-tokens": "i",
+    "min-p": "f",
     "cfg-weight": "f",
-    "exaggeration": "f",
-    "cfm-steps": "i",
-    "cfm-cfg": "f",
-    "trim-fade": "i",
-    "sil-count": "i",
-    "s3gen-sil": "i",
-    "stage": "i",
-    "cut-x": "i",
 }
 GPT2_KNOBS = (
-    "repeat-penalty", "temperature", "top-k", "top-p", "min-p", "seed",
-    "n-predict", "cfm-steps", "trim-fade", "sil-count", "s3gen-sil",
-    "stage", "cut-x",
+    "repeat-penalty", "temperature", "top-k", "top-p", "seed",
+    "n-predict", "split-tokens",
 )
 V3_KNOBS = (
-    "repeat-penalty", "temperature", "top-p", "min-p", "seed", "n-predict",
-    "cfg-weight", "exaggeration", "cfm-steps", "cfm-cfg", "trim-fade",
-    "stage", "cut-x",
+    "repeat-penalty", "temperature", "top-p", "seed", "n-predict",
+    "split-tokens", "min-p", "cfg-weight",
 )
 
 
@@ -428,6 +412,8 @@ def spawn(cfg: Variant, exe: Path, t3: Path, s3: Path, pipe: str, pid: Path, lan
         if not language:
             raise SystemExit("language is required")
         args += ["--language", language]
+    if "split-tokens" not in knobs:
+        args += ["--split-tokens", str(cfg.split_tokens)]
     for name in cfg.knobs:
         val = knobs.get(name, "")
         if val:
@@ -504,12 +490,6 @@ def speak_result_from_stats(wall_s: float, stats: dict) -> SpeakResult:
         units=stats.get("units"),
         text_tokens=stats.get("text_tokens"),
         max_unit_predicted=stats.get("max_unit_predicted"),
-        stop_code=stats.get("stop_code"),
-        n_speech=stats.get("n_speech"),
-        cut_at=stats.get("cut_at"),
-        cut_reason=stats.get("cut_reason"),
-        n_chunks=stats.get("n_chunks"),
-        stage=stats.get("stage"),
         knobs=knobs or None,
     )
 
@@ -602,15 +582,10 @@ def normalize_knob(name: str, raw: str) -> str:
             value = float(raw)
             if not math.isfinite(value):
                 raise ValueError("non-finite value")
-        if name in ("top-k", "temperature", "cfg-weight", "exaggeration", "cfm-cfg",
-                    "trim-fade", "sil-count", "s3gen-sil") and value < 0:
+        if name in ("split-tokens", "top-k", "temperature", "cfg-weight") and value < 0:
             raise ValueError("must be nonnegative")
-        if name in ("n-predict", "repeat-penalty", "cfm-steps") and value <= 0:
+        if name in ("n-predict", "repeat-penalty") and value <= 0:
             raise ValueError("must be positive")
-        if name == "stage" and value not in (0, 1, 2, 3):
-            raise ValueError("must be 0 burn, 1 tape, 2 gauge, 3 vchunker")
-        if name == "cut-x" and value < 0:
-            raise ValueError("must be nonnegative")
         if name == "top-p" and not 0 < value <= 1:
             raise ValueError("must be in (0,1]")
         if name == "min-p" and not 0 <= value <= 1:
@@ -905,6 +880,7 @@ def host_inventory():
 def run_variant(cfg: Variant, args: LaunchArgs):
     evidence = ACTIVE_RUN
     values = wanted_knobs(cfg, args.knobs)
+    values.setdefault("split-tokens", str(cfg.split_tokens))
     text = args.text.replace("\r\n", "\n").replace("\r", "\n")
     evidence.summary.update(original_text=args.text, transport_text=text,
                             input_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
@@ -960,36 +936,11 @@ def run_variant(cfg: Variant, args: LaunchArgs):
         spawn(cfg, exe, t3, s3, pipe, pid, args.language, values)
     with evidence.stage("request"):
         result = speak_batch(pipe, pid, evidence.out, text)
-        stage = int(values.get("stage", "0"), 10)
-        tape = Path(str(evidence.out) + ".tape.gguf")
+        duration = wav_duration_s(evidence.out)
         engine_log = Path(str(evidence.out) + ".engine.jsonl")
         events = [json.loads(line) for line in engine_log.read_text(encoding="utf-8").splitlines()]
         if not any(e["event"] == "request_complete" for e in events):
             raise RuntimeError("missing engine completion evidence")
-        if not tape.is_file():
-            raise RuntimeError("missing utterance GGUF tape")
-        evidence.summary["tape"] = file_identity(tape)
-        if stage in (1, 2):
-            duration = max(result.n_speech or 0, 0) * 0.040
-            synth = next(e for e in reversed(events) if e["event"] == "synthesis_complete")
-            evidence.summary["metrics"] = {**vars(result), "duration_s": duration,
-                "request_wall_rtf": (result.wall_s / duration) if duration else None,
-                "synthesis_host_wall_s": synth["host_wall_s"],
-                "rtf_definition": "tape stage has no WAV; duration_s is n_speech * 0.040"}
-            evidence.emit("output_verified", "output", tape=evidence.summary["tape"], metrics=evidence.summary["metrics"])
-            write_json(evidence.directory / "review.json", {"run_id": evidence.id, "wav_sha256": None,
-                "tape_sha256": evidence.summary["tape"]["sha256"],
-                "input_sha256": evidence.summary["input_sha256"], "reviewer": None, "verdict": "pending",
-                "every_sentence": None, "order": None, "omissions": None, "repetitions": None,
-                "ending": None, "seams": None, "numeric_readings": None, "notes": ["tape/gauge stage"]})
-            print(f"text_tokens={result.text_tokens} predicted={result.predicted_count} eos={result.eos} "
-                  f"n_speech={result.n_speech} cut_at={result.cut_at} cut_reason={result.cut_reason} "
-                  f"stage={result.stage} duration_s={duration:.3f} wall_s={result.wall_s:.3f} tape={tape}",
-                  file=sys.stderr, flush=True)
-            print(tape, flush=True)
-            print(f"Logs and pending human review: {evidence.directory}", file=sys.stderr, flush=True)
-            return
-        duration = wav_duration_s(evidence.out)
         output_event = next(e for e in reversed(events) if e["event"] == "output_write_end")
         output = file_identity(evidence.out)
         if output["sha256"] != output_event["wav_sha256"]:
