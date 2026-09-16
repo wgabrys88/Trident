@@ -2,7 +2,6 @@ import ctypes
 import hashlib
 import json
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -430,9 +429,9 @@ CMAKE_FLAGS = {
 def build_contract(cfg: Variant):
     return {
         "ggml_rev": GGML_REV,
-        "family": cfg.name,
+        "family": cfg.build_name,
         "generator": "Visual Studio 17 2022 x64",
-        "cmake_flags": {**CMAKE_FLAGS, "TTS_FAMILY": cfg.name, "VulkanSDK": str(VULKAN)},
+        "cmake_flags": {**CMAKE_FLAGS, "TTS_FAMILY": cfg.build_name, "VulkanSDK": str(VULKAN)},
     }
 
 
@@ -464,19 +463,19 @@ def ensure_ggml():
 
 
 def ensure_build(cfg: Variant, pid: Path, build: Path, exe: Path, bake: Path):
-    stamp = MODELS / f"{cfg.name}.build-contract.json"
+    stamp = MODELS / f"{cfg.build_name}.build-contract.json"
     wanted = build_contract(cfg)
     kill(pid)
+    for name in cfg.other_pids:
+        kill(MODELS / name)
     ensure_ggml()
     need_configure = cmake_identity(read_json(stamp)) != cmake_identity(wanted) or not (build / "CMakeCache.txt").is_file()
     if need_configure:
-        if build.exists():
-            shutil.rmtree(build)
         run([
             CMAKE, "-S", str(CHATTERBOX), "-B", str(build), "-G", "Visual Studio 17 2022", "-A", "x64",
             "-DGGML_VULKAN=ON", "-DGGML_CUDA=OFF", "-DGGML_CPU=OFF", "-DGGML_OPENMP=OFF",
             "-DBUILD_SHARED_LIBS=ON", "-DTTS_CPP_BUILD_EXECUTABLES=ON", "-DGGML_BUILD_TESTS=OFF",
-            "-DGGML_BUILD_EXAMPLES=OFF", f"-DTTS_FAMILY={cfg.name}",
+            "-DGGML_BUILD_EXAMPLES=OFF", f"-DTTS_FAMILY={cfg.build_name}",
             f"-DVulkan_INCLUDE_DIR={VULKAN / 'Include'}", f"-DVulkan_LIBRARY={VULKAN / 'Lib/vulkan-1.lib'}",
             f"-DVulkan_GLSLC_EXECUTABLE={VULKAN / 'Bin/glslc.exe'}",
         ])
@@ -671,13 +670,16 @@ def run_variant(cfg: Variant, args: LaunchArgs):
     engine_rev = ensure_engine()
     MODELS.mkdir(parents=True, exist_ok=True)
     t3, s3, pid, build, bin_dir, exe, bake, pipe = paths(cfg)
-    for name in cfg.other_pids:
-        kill(MODELS / name)
     ensure_build(cfg, pid, build, exe, bake)
     py = ensure_converter_venv(cfg)
     ckpt = ensure_assets(cfg)
     t3_contract, s3_contract, converted, t3_types, s3_types = ensure_converted(cfg, engine_rev, py, ckpt, t3, s3)
     ensure_baked(cfg, engine_rev, py, ckpt, t3, s3, bake, bin_dir, pid, t3_contract, s3_contract, converted)
+    if cfg.name == "nano":
+        if not t3.is_file():
+            raise SystemExit(f"missing replacement Nano T3: {t3}")
+        (MODELS / "chatterbox-t3-nano-f16-mixed.gguf").unlink(missing_ok=True)
+        (MODELS / "nano.t3-convert.json").unlink(missing_ok=True)
     cmake = build_contract(cfg)
     values = wanted_knobs(cfg, args.knobs)
     if cfg.needs_language and not args.language:
