@@ -1,6 +1,6 @@
 import sys
 
-from tts_common import V3_KNOBS, Variant, parse_variant_args, run_variant
+from tts_common import V3_KNOBS, Variant, launch_variant
 
 CFG = Variant(
     name="v3",
@@ -31,7 +31,7 @@ CFG = Variant(
 
 
 def main():
-    run_variant(CFG, parse_variant_args(CFG, sys.argv))
+    launch_variant(CFG, sys.argv)
 
 
 if __name__ == "__main__":
