@@ -25,9 +25,9 @@ MODELS = ROOT / "models"
 REF = ROOT / "reference.wav"
 GGML_REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
 # Required chatterbox.cpp experimental source commit. The GOLD utterance
-# ceilings live in that commit's message. Bump ENGINE_REV in the same
-# Trident commit that adapts to an engine change.
-ENGINE_REV = "6382de473edfee04771ad49b033330e579ad6b68"
+# ceilings and the runtime-knob list live in that commit's message.
+# Bump ENGINE_REV in the same Trident commit that adapts to an engine change.
+ENGINE_REV = "737b8f844e328316d451eafba9341958e460ac51"
 VULKAN = Path("C:/VulkanSDK/1.4.357.0")
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 DETACH = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
@@ -390,18 +390,24 @@ KNOB_KIND = {
     "temperature": "f",
     "top-k": "i",
     "top-p": "f",
+    "min-p": "f",
     "seed": "i",
     "n-predict": "i",
-    "min-p": "f",
     "cfg-weight": "f",
+    "exaggeration": "f",
+    "cfm-steps": "i",
+    "cfm-cfg": "f",
+    "trim-fade": "i",
+    "sil-count": "i",
+    "s3gen-sil": "i",
 }
 GPT2_KNOBS = (
-    "repeat-penalty", "temperature", "top-k", "top-p", "seed",
-    "n-predict",
+    "repeat-penalty", "temperature", "top-k", "top-p", "min-p", "seed",
+    "n-predict", "cfm-steps", "trim-fade", "sil-count", "s3gen-sil",
 )
 V3_KNOBS = (
-    "repeat-penalty", "temperature", "top-p", "seed", "n-predict",
-    "min-p", "cfg-weight",
+    "repeat-penalty", "temperature", "top-p", "min-p", "seed", "n-predict",
+    "cfg-weight", "exaggeration", "cfm-steps", "cfm-cfg", "trim-fade",
 )
 
 
@@ -579,9 +585,10 @@ def normalize_knob(name: str, raw: str) -> str:
             value = float(raw)
             if not math.isfinite(value):
                 raise ValueError("non-finite value")
-        if name in ("top-k", "temperature", "cfg-weight") and value < 0:
+        if name in ("top-k", "temperature", "cfg-weight", "exaggeration", "cfm-cfg",
+                    "trim-fade", "sil-count", "s3gen-sil") and value < 0:
             raise ValueError("must be nonnegative")
-        if name in ("n-predict", "repeat-penalty") and value <= 0:
+        if name in ("n-predict", "repeat-penalty", "cfm-steps") and value <= 0:
             raise ValueError("must be positive")
         if name == "top-p" and not 0 < value <= 1:
             raise ValueError("must be in (0,1]")
