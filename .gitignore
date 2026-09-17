@@ -6,6 +6,7 @@
 !/tts_v3.py
 !/tts_common.py
 !/setup_engine_sibling.ps1
+!/asr_parakeet.py
 # Do not add !knowledgebase.md.
 knowledgebase.md
 /knowledgebase.md
