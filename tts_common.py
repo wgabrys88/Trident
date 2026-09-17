@@ -710,7 +710,7 @@ def ensure_ggml():
         raise SystemExit("ggml checkout is dirty")
     actual = git_out(["rev-parse", "HEAD"], ggml)
     if actual != GGML_REV:
-        run(["git", "-C", str(ggml), "checkout", "-B", "pin", GGML_REV])
+        run(["git", "-C", str(ggml), "reset", "--hard", GGML_REV])
         actual = git_out(["rev-parse", "HEAD"], ggml)
         if actual != GGML_REV:
             raise SystemExit(f"ggml {actual} != required {GGML_REV}")
