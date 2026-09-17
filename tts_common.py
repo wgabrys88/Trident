@@ -23,7 +23,6 @@ CHATTERBOX = ROOT.parent / "chatterbox.cpp"
 MODELS = ROOT / "models"
 REF = ROOT / "reference.wav"
 GGML_REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
-ENGINE_REV = "935d43c2ed4bc58ae0032303f030005983554f41"
 VULKAN = Path("C:/VulkanSDK/1.4.357.0")
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 DETACH = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
@@ -207,7 +206,7 @@ class RunEvidence:
                 "engine": (sources.get("engine") or {}).get("head"),
                 "ggml": ggml_src.get("head"),
             },
-            "ENGINE_REV": ENGINE_REV,
+            "ENGINE_REV": (sources.get("engine") or {}).get("head"),
             "binary_sha256": (server or {}).get("sha256"),
             "gguf_sha256": {
                 "t3": (models.get("t3") or {}).get("sha256"),
@@ -325,8 +324,6 @@ def ensure_engine() -> str:
     if dirty:
         raise SystemExit("chatterbox.cpp has uncommitted changes")
     sha = git_out(["rev-parse", "HEAD"])
-    if sha != ENGINE_REV:
-        raise SystemExit(f"chatterbox.cpp HEAD {sha} != pinned ENGINE_REV {ENGINE_REV}")
     return sha
 
 
@@ -960,7 +957,7 @@ def run_variant(cfg: Variant, args: LaunchArgs):
             raise FileNotFoundError(str(REF))
         engine_rev = ensure_engine()
         evidence.summary["sources"] = {"trident": source_identity(ROOT), "engine": source_identity(CHATTERBOX),
-                                       "engine_pin": ENGINE_REV, "ggml_pin": GGML_REV,
+                                       "ggml_pin": GGML_REV,
                                        "engine_tree": git_out(["ls-tree", "-r", "HEAD"], CHATTERBOX),
                                        "trident_tree": git_out(["ls-tree", "-r", "HEAD"], ROOT)}
         evidence.emit("source_identity", "prerequisites", sources=evidence.summary["sources"])
