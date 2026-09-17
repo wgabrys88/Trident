@@ -12,7 +12,6 @@ CFG = Variant(
         "conds.pt",
         "ve.safetensors",
         "grapheme_mtl_merged_expanded_v1.json",
-        "Cangjie5_TC.json",
     ),
     t3_name="chatterbox-t3-v3-f16-mixed.gguf",
     s3_name="chatterbox-s3gen-v3-q4_0.gguf",

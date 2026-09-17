@@ -7,6 +7,9 @@
 !/tts_common.py
 !/setup_engine_sibling.ps1
 !/asr_parakeet.py
+!/tools/
+!/tools/compare_runs.py
+!/tools/log_analysis.requirements.txt
 # Do not add !knowledgebase.md.
 knowledgebase.md
 /knowledgebase.md
