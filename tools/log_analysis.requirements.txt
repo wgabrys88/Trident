@@ -1,7 +1,16 @@
-# Pinned for Windows CPython 3.11 after a successful install on this host.
-# 0.1.8 is not on PyPI for CPython 3.11; 0.1.4 is the visible installable pin.
+# Host install lives in tools/.venv-log (Windows CPython 3.11). Reuse it.
+# Do not pip-install these into the launcher interpreter.
+# 0.1.8 is not on PyPI for CPython 3.11; 0.1.4 is the visible installable pin
+# for fast-bss-eval and resemblyzer.
 # pesq and webrtcvad (resemblyzer) have no wheels: pip install --no-build-isolation
 # after vcvars64.bat, setuptools, wheel, cython, and numpy. Isolated pip cannot see MSVC.
+# Used by tools/run_tables.py and tools/compare_runs.py: pandas, pyarrow, numpy,
+# scipy, soundfile, soxr, librosa, pyloudnorm, praat-parselmouth, pesq, pystoi,
+# fast-bss-eval, resemblyzer, editdistance, dtw-python, xxhash, matplotlib.
+# torchaudio: not imported; resample is soxr.
+# auraloss: not imported; SI-SDR is fast-bss-eval.
+# pyworld and torchcrepe: not imported; F0 is praat-parselmouth with librosa.pyin fallback.
+# phonemizer: needs espeak-ng on PATH; not part of the numeric gate.
 
 pandas==2.2.3
 pyarrow==18.1.0

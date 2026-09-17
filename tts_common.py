@@ -6,7 +6,6 @@ import re
 import uuid
 import wave
 from contextlib import contextmanager
-from datetime import datetime, timezone
 from urllib.parse import urlsplit, urlunsplit
 import hashlib
 import json
@@ -24,7 +23,7 @@ CHATTERBOX = ROOT.parent / "chatterbox.cpp"
 MODELS = ROOT / "models"
 REF = ROOT / "reference.wav"
 GGML_REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
-ENGINE_REV = "ebf8b55820bc0e81269263bcf5496e1536bf87b3"
+ENGINE_REV = "935d43c2ed4bc58ae0032303f030005983554f41"
 VULKAN = Path("C:/VulkanSDK/1.4.357.0")
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 DETACH = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
@@ -133,28 +132,60 @@ class RunEvidence:
         self.out = self.directory / f"{cfg.name}.wav"
         self.start = time.perf_counter()
         self.seq = 0
-        self.summary = {"schema_version": 2, "run_id": self.id, "variant": cfg.name,
+        for name in ("events.jsonl", "text_tokens.jsonl", "t3_tokens.jsonl", "s3_tokens.jsonl"):
+            (self.directory / name).write_bytes(b"")
+        self.summary = {"schema_version": 3, "run_id": self.id, "variant": cfg.name,
                         "engine_family": cfg.build_name, "argv": argv, "status": "running",
                         "sr": 24000,
                         "logs": {"events": "events.jsonl", "text_tokens": "text_tokens.jsonl",
                                  "t3_tokens": "t3_tokens.jsonl", "s3_tokens": "s3_tokens.jsonl",
-                                 "meta": "meta.json", "setup": "setup.log", "server": "server.log"}}
-        self.log = (self.directory / "client.jsonl").open("a", encoding="utf-8")
+                                 "features": "features.parquet", "meta": "meta.json"}}
+        self.log = (self.directory / "events.jsonl").open("a", encoding="utf-8")
         self.emit("request_received", "request", argv=argv, cwd=str(Path.cwd()),
                   python=sys.version, host=platform.platform(), machine=platform.machine())
         self.persist()
 
     def emit(self, event, stage, **data):
-        event_data = {"schema_version": 2, "run_id": self.id, "component": "client",
-                      "seq": self.seq, "event": event, "stage": stage,
-                      "utc": datetime.now(timezone.utc).isoformat(),
-                      "monotonic_elapsed_s": time.perf_counter() - self.start, **data}
+        event_data = {"schema_version": 3, "component": "client", "run_id": self.id,
+                      "seq": self.seq, "event": event, "stage": stage, "unit_index": None,
+                      "monotonic_elapsed_s": time.perf_counter() - self.start}
+        for key, value in data.items():
+            if key not in event_data:
+                event_data[key] = value
         self.log.write(json.dumps(event_data, ensure_ascii=True, allow_nan=False) + "\n")
         self.log.flush()
         self.seq += 1
 
     def persist(self):
-        write_json(self.directory / "meta.json", self.meta())
+        existing = read_json(self.directory / "meta.json") or {}
+        ours = self.meta()
+        merged = {**existing, **ours}
+        engine_knobs = existing.get("knobs") if isinstance(existing.get("knobs"), dict) else {}
+        ours_knobs = ours.get("knobs") if isinstance(ours.get("knobs"), dict) else {}
+        knobs = {**engine_knobs, **ours_knobs}
+        if knobs:
+            merged["knobs"] = knobs
+            if "seed" in knobs:
+                merged["seed"] = knobs["seed"]
+        if ours.get("wav_sha256"):
+            merged["wav_sha256"] = ours["wav_sha256"]
+        elif existing.get("wav_sha256"):
+            merged["wav_sha256"] = existing["wav_sha256"]
+        if ours.get("duration_s") is not None:
+            merged["duration_s"] = ours["duration_s"]
+        elif existing.get("duration_s") is not None:
+            merged["duration_s"] = existing["duration_s"]
+        if ours.get("git_heads") and any((ours["git_heads"] or {}).values()):
+            merged["git_heads"] = ours["git_heads"]
+        if ours.get("ENGINE_REV"):
+            merged["ENGINE_REV"] = ours["ENGINE_REV"]
+        if ours.get("binary_sha256"):
+            merged["binary_sha256"] = ours["binary_sha256"]
+        if ours.get("gguf_sha256") and any((ours.get("gguf_sha256") or {}).values()):
+            merged["gguf_sha256"] = ours["gguf_sha256"]
+        merged["schema_version"] = 3
+        merged["run_id"] = self.id
+        write_json(self.directory / "meta.json", merged)
 
     def meta(self):
         knobs = self.summary.get("knobs_cli") or (self.summary.get("metrics") or {}).get("knobs") or {}
@@ -164,8 +195,9 @@ class RunEvidence:
         server = next((b for b in binaries if str(b.get("path", "")).endswith("chatterbox-server.exe")), None)
         out = self.summary.get("output") or {}
         metrics = self.summary.get("metrics") or {}
+        ggml_src = sources.get("ggml") or {}
         return {
-            "schema_version": 2,
+            "schema_version": 3,
             "run_id": self.id,
             "seed": knobs.get("seed", "42"),
             "knobs": knobs,
@@ -173,7 +205,7 @@ class RunEvidence:
             "git_heads": {
                 "trident": (sources.get("trident") or {}).get("head"),
                 "engine": (sources.get("engine") or {}).get("head"),
-                "ggml": (sources.get("ggml") or {}).get("head"),
+                "ggml": ggml_src.get("head"),
             },
             "ENGINE_REV": ENGINE_REV,
             "binary_sha256": (server or {}).get("sha256"),
@@ -269,6 +301,14 @@ def write_json(path: Path, obj):
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json_text(obj), encoding="utf-8")
     tmp.replace(path)
+
+
+def finalize_run_tables(run_dir: Path):
+    py = ROOT / "tools" / ".venv-log" / "Scripts" / "python.exe"
+    script = ROOT / "tools" / "run_tables.py"
+    if not py.is_file():
+        raise SystemExit(f"missing analysis venv {py}; reuse tools/.venv-log")
+    subprocess.run([str(py), str(script), str(run_dir)], check=True)
 
 
 def ensure_engine() -> str:
@@ -533,19 +573,24 @@ def speak_batch(pipe: str, pid: Path, out: Path, text: str) -> SpeakResult:
     if any(c in str(out) for c in "\r\n\0"):
         raise RuntimeError("invalid output path")
     t0 = time.perf_counter()
-    with open(pipe, "r+b", buffering=0) as f:
-        ACTIVE_RUN.emit("pipe_connected", "transport", pipe=pipe)
-        message = memoryview(f"{out}\n{len(payload)}\n".encode("utf-8") + payload)
-        while message:
-            sent = f.write(message)
-            if not sent:
-                raise RuntimeError("pipe write incomplete")
-            message = message[sent:]
-        ACTIVE_RUN.emit("request_sent", "transport", utf8_bytes=len(payload), input_sha256=hashlib.sha256(payload).hexdigest())
-        ack = f.readline(32769)
-        if len(ack) > 32768 or not ack.endswith(b"\n"):
-            raise RuntimeError("invalid or truncated acknowledgement")
-        ACTIVE_RUN.emit("reply_received", "transport", reply=ack.decode("utf-8", errors="strict"))
+    ACTIVE_RUN.emit("pipe_connected", "transport", pipe=pipe)
+    ACTIVE_RUN.log.flush()
+    ACTIVE_RUN.log.close()
+    try:
+        with open(pipe, "r+b", buffering=0) as f:
+            message = memoryview(f"{out}\n{len(payload)}\n".encode("utf-8") + payload)
+            while message:
+                sent = f.write(message)
+                if not sent:
+                    raise RuntimeError("pipe write incomplete")
+                message = message[sent:]
+            ack = f.readline(32769)
+    finally:
+        ACTIVE_RUN.log = (ACTIVE_RUN.directory / "events.jsonl").open("a", encoding="utf-8")
+    if len(ack) > 32768 or not ack.endswith(b"\n"):
+        raise RuntimeError("invalid or truncated acknowledgement")
+    ACTIVE_RUN.emit("request_sent", "transport", utf8_bytes=len(payload), input_sha256=hashlib.sha256(payload).hexdigest())
+    ACTIVE_RUN.emit("reply_received", "transport", reply=ack.decode("utf-8", errors="strict"))
     wall = time.perf_counter() - t0
     if not ack.startswith(b"ok "):
         if ack.startswith(b"err "):
@@ -721,7 +766,7 @@ def ensure_assets(cfg: Variant) -> Path:
 
 CONVERT_DEPS = ("quant_policy.py",)
 BAKE_SOURCES = (
-    "src/bake.cpp", "src/bake_native.h", "src/execution_trace.cpp", "src/execution_trace.h", "src/main.cpp", "src/voice_features.cpp", "src/voice_features.h",
+    "src/bake.cpp", "src/bake_native.h", "src/main.cpp", "src/voice_features.cpp", "src/voice_features.h",
     "src/mel_extract_stft.cpp", "src/voice_encoder.cpp", "src/voice_encoder.h", "src/campplus.cpp",
     "src/campplus.h", "src/s3tokenizer.cpp", "src/s3tokenizer.h",
 )
@@ -974,6 +1019,8 @@ def run_variant(cfg: Variant, args: LaunchArgs):
             "rtf_definition": "host wall seconds / final WAV duration; request includes cold load; synthesis excludes model load"}
         evidence.summary["output"] = output
         evidence.emit("output_verified", "output", identity=output, metrics=evidence.summary["metrics"])
+        evidence.persist()
+        finalize_run_tables(evidence.directory)
         print(f"text_tokens={result.text_tokens} predicted={result.predicted_count} eos={result.eos} "
               f"units={result.units} max_unit_predicted={result.max_unit_predicted} duration_s={duration:.3f} "
               f"wall_s={result.wall_s:.3f} request_wall_rtf={result.wall_s / duration:.3f} "
@@ -1009,6 +1056,11 @@ def launch_variant(cfg: Variant, argv: list[str]):
     finally:
         try:
             evidence.persist()
+            if evidence.out.exists() or (evidence.directory / "events.jsonl").stat().st_size:
+                try:
+                    finalize_run_tables(evidence.directory)
+                except Exception:
+                    pass
         finally:
             evidence.log.close()
             ACTIVE_RUN = None
