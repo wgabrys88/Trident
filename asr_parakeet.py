@@ -126,10 +126,12 @@ def install_runtime_and_model(quant: str = DEFAULT_QUANT) -> tuple[Path, Path]:
 
 
 def lang_from_run_dir(run_dir: Path) -> str:
-    for prov in run_dir.glob("*.provenance.json"):
-        argv = json.loads(prov.read_text(encoding="utf-8")).get("argv") or []
-        if argv and argv[0] == "tts_v3.py" and len(argv) >= 2:
-            return str(argv[-1]).strip().lower()
+    meta_path = run_dir / "meta.json"
+    if meta_path.is_file():
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        language = meta.get("language_id")
+        if language:
+            return str(language).strip().lower()
     return "en"
 
 
