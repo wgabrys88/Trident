@@ -24,7 +24,7 @@ CHATTERBOX = ROOT.parent / "chatterbox.cpp"
 MODELS = ROOT / "models"
 REF = ROOT / "reference.wav"
 GGML_REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
-ENGINE_REV = "ead17824fa818e781db39b10804384bcf261a44d"
+ENGINE_REV = "5d3d51cad05e64fd3d75ddc47c1f76578eb232ee"
 VULKAN = Path("C:/VulkanSDK/1.4.357.0")
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 DETACH = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
@@ -59,6 +59,7 @@ class Variant:
     t3_script: str
     s3_script: str
     knobs: tuple[str, ...]
+    split_tokens: int
     needs_language: bool = False
 
 
@@ -387,24 +388,19 @@ KNOB_KIND = {
     "temperature": "f",
     "top-k": "i",
     "top-p": "f",
-    "min-p": "f",
     "seed": "i",
     "n-predict": "i",
+    "split-tokens": "i",
+    "min-p": "f",
     "cfg-weight": "f",
-    "exaggeration": "f",
-    "cfm-steps": "i",
-    "cfm-cfg": "f",
-    "trim-fade": "i",
-    "sil-count": "i",
-    "s3gen-sil": "i",
 }
 GPT2_KNOBS = (
-    "repeat-penalty", "temperature", "top-k", "top-p", "min-p", "seed",
-    "n-predict", "cfm-steps", "trim-fade", "sil-count", "s3gen-sil",
+    "repeat-penalty", "temperature", "top-k", "top-p", "seed",
+    "n-predict", "split-tokens",
 )
 V3_KNOBS = (
-    "repeat-penalty", "temperature", "top-p", "min-p", "seed", "n-predict",
-    "cfg-weight", "exaggeration", "cfm-steps", "cfm-cfg", "trim-fade",
+    "repeat-penalty", "temperature", "top-p", "seed", "n-predict",
+    "split-tokens", "min-p", "cfg-weight",
 )
 
 
@@ -414,6 +410,8 @@ def spawn(cfg: Variant, exe: Path, t3: Path, s3: Path, pipe: str, pid: Path, lan
         if not language:
             raise SystemExit("language is required")
         args += ["--language", language]
+    if "split-tokens" not in knobs:
+        args += ["--split-tokens", str(cfg.split_tokens)]
     for name in cfg.knobs:
         val = knobs.get(name, "")
         if val:
@@ -582,10 +580,9 @@ def normalize_knob(name: str, raw: str) -> str:
             value = float(raw)
             if not math.isfinite(value):
                 raise ValueError("non-finite value")
-        if name in ("top-k", "temperature", "cfg-weight", "exaggeration", "cfm-cfg",
-                    "trim-fade", "sil-count", "s3gen-sil") and value < 0:
+        if name in ("split-tokens", "top-k", "temperature", "cfg-weight") and value < 0:
             raise ValueError("must be nonnegative")
-        if name in ("n-predict", "repeat-penalty", "cfm-steps") and value <= 0:
+        if name in ("n-predict", "repeat-penalty") and value <= 0:
             raise ValueError("must be positive")
         if name == "top-p" and not 0 < value <= 1:
             raise ValueError("must be in (0,1]")
@@ -881,6 +878,7 @@ def host_inventory():
 def run_variant(cfg: Variant, args: LaunchArgs):
     evidence = ACTIVE_RUN
     values = wanted_knobs(cfg, args.knobs)
+    values.setdefault("split-tokens", str(cfg.split_tokens))
     text = args.text.replace("\r\n", "\n").replace("\r", "\n")
     evidence.summary.update(original_text=args.text, transport_text=text,
                             input_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
