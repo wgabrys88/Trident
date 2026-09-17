@@ -5,7 +5,6 @@ from tts_common import V3_KNOBS, Variant, launch_variant
 CFG = Variant(
     name="v3",
     t3_ckpt="t3_mtl23ls_v3.safetensors",
-    split_tokens=0,
     hf="https://huggingface.co/ResembleAI/chatterbox/resolve/5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18",
     assets=(
         "t3_mtl23ls_v3.safetensors",
