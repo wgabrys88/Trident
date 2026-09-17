@@ -660,19 +660,8 @@ def normalize_knob(name: str, raw: str) -> str:
         raise SystemExit(f"invalid {name}: {exc}") from exc
 
 
-# chatterbox.mtl_tts.generate() defaults when the CLI omits a knob.
-MTL_V3_GENERATE_DEFAULTS = {
-    "repeat-penalty": "2",
-}
-
-
 def wanted_knobs(cfg: Variant, cli: dict[str, str]) -> dict[str, str]:
-    out = {name: normalize_knob(name, cli[name]) for name in cfg.knobs if name in cli}
-    if cfg.name == "v3":
-        for name, val in MTL_V3_GENERATE_DEFAULTS.items():
-            if name in cfg.knobs and name not in out:
-                out[name] = val
-    return out
+    return {name: normalize_knob(name, cli[name]) for name in cfg.knobs if name in cli}
 
 
 CMAKE_FLAGS = {
