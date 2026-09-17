@@ -703,16 +703,17 @@ def ensure_ggml():
     ggml = CHATTERBOX / "ggml"
     if not (ggml / "CMakeLists.txt").is_file():
         run(["git", "clone", "--filter=blob:none", "https://github.com/ggml-org/ggml.git", str(ggml)])
-        run(["git", "-C", str(ggml), "checkout", "--detach", GGML_REV])
-        return
-    actual = git_out(["rev-parse", "HEAD"], ggml)
-    if actual != GGML_REV:
-        raise SystemExit(f"ggml {actual} != required {GGML_REV}")
     dirty = subprocess.run(
         ["git", "-C", str(ggml), "status", "--porcelain"], check=True, capture_output=True, text=True
     ).stdout.strip()
     if dirty:
         raise SystemExit("ggml checkout is dirty")
+    actual = git_out(["rev-parse", "HEAD"], ggml)
+    if actual != GGML_REV:
+        run(["git", "-C", str(ggml), "checkout", "-B", "pin", GGML_REV])
+        actual = git_out(["rev-parse", "HEAD"], ggml)
+        if actual != GGML_REV:
+            raise SystemExit(f"ggml {actual} != required {GGML_REV}")
 
 
 def ensure_build(cfg: Variant, pid: Path, build: Path, exe: Path, bake: Path):
