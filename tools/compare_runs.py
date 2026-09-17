@@ -61,8 +61,24 @@ def _pesq_stoi_sisdr(a: np.ndarray, b: np.ndarray, sr: int) -> tuple[float, floa
         xb16 = soxr.resample(xb, sr, 16000)
         p = float(pesq(16000, xa16, xb16, "wb"))
     s = float(stoi(xa, xb, sr, extended=False))
-    sisdr = float(np.asarray(fast_bss_eval.si_sdr(xb[None, :], xa[None, :])).reshape(-1)[0])
-    return p, s, _clip_sdr(sisdr)
+    ref = xa
+    est = xb
+    denom = float(np.dot(ref, ref))
+    if denom <= 0.0:
+        sisdr = SDR_CLIP if float(np.dot(est, est)) <= 0.0 else -SDR_CLIP
+    else:
+        scale = float(np.dot(est, ref)) / denom
+        target = scale * ref
+        noise = est - target
+        noise_p = float(np.dot(noise, noise))
+        if noise_p <= 0.0:
+            sisdr = SDR_CLIP
+        else:
+            try:
+                sisdr = _clip_sdr(float(np.asarray(fast_bss_eval.si_sdr(est[None, :], ref[None, :])).reshape(-1)[0]))
+            except (ValueError, FloatingPointError):
+                sisdr = _clip_sdr(10.0 * np.log10(float(np.dot(target, target)) / noise_p))
+    return p, s, sisdr
 
 
 def _lufs(pcm: np.ndarray, sr: int) -> float:

@@ -24,9 +24,9 @@ if (git -C $Engine status --porcelain) {
 
 git -C $Engine cat-file -e "$Commit^{commit}" 2>$null
 if ($LASTEXITCODE -ne 0) {
-    git -C $Engine fetch origin $Commit
+    git -C $Engine fetch origin
 }
-git -C $Engine checkout --detach $Commit
+git -C $Engine checkout -B main $Commit
 
 $Actual = (git -C $Engine rev-parse HEAD).Trim()
 if ($Actual -ne $Commit) {
