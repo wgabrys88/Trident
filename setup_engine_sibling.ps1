@@ -8,9 +8,6 @@ if (-not $Pin) {
     throw "ENGINE_REV missing from tts_common.py"
 }
 $Commit = $Pin.Matches[0].Groups[1].Value
-if ($args.Count -gt 0 -and $args[0]) {
-    $Commit = $args[0]
-}
 
 if (-not (Test-Path $Engine)) {
     git clone $EngineUrl $Engine
@@ -22,18 +19,9 @@ if (git -C $Engine status --porcelain) {
     throw "Engine checkout is dirty."
 }
 
-git -C $Engine cat-file -e "$Commit^{commit}" 2>$null
-if ($LASTEXITCODE -ne 0) {
-    git -C $Engine fetch origin
-}
-git -C $Engine checkout -B main $Commit
-
 $Actual = (git -C $Engine rev-parse HEAD).Trim()
 if ($Actual -ne $Commit) {
-    throw "Engine SHA mismatch: $Actual != $Commit"
-}
-if (git -C $Engine status --porcelain) {
-    throw "Engine checkout is dirty."
+    throw "chatterbox.cpp HEAD $Actual != ENGINE_REV $Commit. Clone or pull origin/main so it matches Trident/tts_common.py."
 }
 Write-Host "Engine ready at $Actual"
 Write-Host "Copy the original voice prompt to $(Join-Path $PSScriptRoot 'reference.wav') before synthesis."
