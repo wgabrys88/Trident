@@ -24,7 +24,7 @@ CHATTERBOX = ROOT.parent / "chatterbox.cpp"
 MODELS = ROOT / "models"
 REF = ROOT / "reference.wav"
 GGML_REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
-ENGINE_REV = "c41583acdacc928d6bde3a52cc7232b4c5c229e0"
+ENGINE_REV = "b7536dfc8b023bf54c4230069bcc50819c2de20d"
 VULKAN = Path("C:/VulkanSDK/1.4.357.0")
 CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
 DETACH = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
@@ -59,7 +59,6 @@ class Variant:
     t3_script: str
     s3_script: str
     knobs: tuple[str, ...]
-    split_tokens: int
     needs_language: bool = False
 
 
@@ -390,17 +389,16 @@ KNOB_KIND = {
     "top-p": "f",
     "seed": "i",
     "n-predict": "i",
-    "split-tokens": "i",
     "min-p": "f",
     "cfg-weight": "f",
 }
 GPT2_KNOBS = (
     "repeat-penalty", "temperature", "top-k", "top-p", "seed",
-    "n-predict", "split-tokens",
+    "n-predict",
 )
 V3_KNOBS = (
     "repeat-penalty", "temperature", "top-p", "seed", "n-predict",
-    "split-tokens", "min-p", "cfg-weight",
+    "min-p", "cfg-weight",
 )
 
 
@@ -410,8 +408,6 @@ def spawn(cfg: Variant, exe: Path, t3: Path, s3: Path, pipe: str, pid: Path, lan
         if not language:
             raise SystemExit("language is required")
         args += ["--language", language]
-    if "split-tokens" not in knobs:
-        args += ["--split-tokens", str(cfg.split_tokens)]
     for name in cfg.knobs:
         val = knobs.get(name, "")
         if val:
@@ -580,7 +576,7 @@ def normalize_knob(name: str, raw: str) -> str:
             value = float(raw)
             if not math.isfinite(value):
                 raise ValueError("non-finite value")
-        if name in ("split-tokens", "top-k", "temperature", "cfg-weight") and value < 0:
+        if name in ("top-k", "temperature", "cfg-weight") and value < 0:
             raise ValueError("must be nonnegative")
         if name in ("n-predict", "repeat-penalty") and value <= 0:
             raise ValueError("must be positive")
@@ -878,7 +874,6 @@ def host_inventory():
 def run_variant(cfg: Variant, args: LaunchArgs):
     evidence = ACTIVE_RUN
     values = wanted_knobs(cfg, args.knobs)
-    values.setdefault("split-tokens", str(cfg.split_tokens))
     text = args.text.replace("\r\n", "\n").replace("\r", "\n")
     evidence.summary.update(original_text=args.text, transport_text=text,
                             input_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
