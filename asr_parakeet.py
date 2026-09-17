@@ -374,20 +374,13 @@ def process_run_dir(run_dir: Path, model_override: Path | None, quant: str, thre
 def main() -> int:
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
-    p = argparse.ArgumentParser(description="Nemotron 3.5 ASR for Trident run WAVs (parakeet-cli)")
-    sub = p.add_subparsers(dest="command")
-    pinst = sub.add_parser("install")
-    pinst.add_argument("--quant", choices=tuple(NEMOTRON_QUANTS), default=DEFAULT_QUANT)
-    p.add_argument("wav", nargs="?", type=Path)
-    p.add_argument("--run-dir", type=Path)
-    p.add_argument("--runs-root", type=Path, action="append")
-    p.add_argument("--model", type=Path, help="Override GGUF path")
-    p.add_argument("--quant", choices=tuple(NEMOTRON_QUANTS), default=DEFAULT_QUANT)
-    p.add_argument("--threads", type=int, default=DEFAULT_THREADS, help="ggml CPU threads for parakeet-cli")
-    p.add_argument("--lang", default="en")
-    args = p.parse_args()
-    if args.command == "install":
-        exe, model = install_runtime_and_model(args.quant)
+    argv = sys.argv[1:]
+    if argv and argv[0] == "install":
+        pinst = argparse.ArgumentParser(prog="asr_parakeet.py install")
+        pinst.add_argument("command")
+        pinst.add_argument("--quant", choices=tuple(NEMOTRON_QUANTS), default=DEFAULT_QUANT)
+        inst = pinst.parse_args(argv)
+        exe, model = install_runtime_and_model(inst.quant)
         print(
             json.dumps(
                 {
@@ -400,6 +393,15 @@ def main() -> int:
             )
         )
         return 0
+    p = argparse.ArgumentParser(description="Nemotron 3.5 ASR for Trident run WAVs (parakeet-cli)")
+    p.add_argument("wav", nargs="?", type=Path)
+    p.add_argument("--run-dir", type=Path)
+    p.add_argument("--runs-root", type=Path, action="append")
+    p.add_argument("--model", type=Path, help="Override GGUF path")
+    p.add_argument("--quant", choices=tuple(NEMOTRON_QUANTS), default=DEFAULT_QUANT)
+    p.add_argument("--threads", type=int, default=DEFAULT_THREADS, help="ggml CPU threads for parakeet-cli")
+    p.add_argument("--lang", default="en")
+    args = p.parse_args(argv)
     if args.runs_root:
         code = 0
         for root in args.runs_root:
