@@ -12,6 +12,7 @@ CFG = Variant(
         "conds.pt",
         "ve.safetensors",
         "grapheme_mtl_merged_expanded_v1.json",
+        "Cangjie5_TC.json",
     ),
     t3_name="chatterbox-t3-v3-f16-mixed.gguf",
     s3_name="chatterbox-s3gen-v3-q4_0.gguf",
@@ -25,6 +26,11 @@ CFG = Variant(
     s3_script="convert-s3gen-v3-to-gguf.py",
     knobs=V3_KNOBS,
     needs_language=True,
+    external_assets=(
+        ("official_mtl_tokenizer.py", "https://raw.githubusercontent.com/resemble-ai/chatterbox/5de7a54aa4e5e2baadb0182dde554908b48b85c2/src/chatterbox/models/tokenizers/tokenizer.py"),
+        ("official_mtl_tts.py", "https://raw.githubusercontent.com/resemble-ai/chatterbox/5de7a54aa4e5e2baadb0182dde554908b48b85c2/src/chatterbox/mtl_tts.py"),
+        ("dicta-1.0.int8.onnx", "https://github.com/thewh1teagle/dicta-onnx/releases/download/model-files-v1.0/dicta-1.0.int8.onnx"),
+    ),
 )
 
 
