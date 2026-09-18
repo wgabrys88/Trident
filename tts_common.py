@@ -26,7 +26,7 @@ REF = ROOT / "reference.wav"
 GGML_REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
 VULKAN = Path(os.environ.get("VULKAN_SDK", "C:/VulkanSDK/1.4.357.0"))
 CMAKE = Path(os.environ.get("CMAKE_EXE", "C:/Program Files/CMake/bin/cmake.exe"))
-ENGINE_PIN = "b15ef53ddaf2347bf1dbf8e8fb02f9b8176537fc"
+ENGINE_PIN = "f4da465f8ac091755d2dcd504aaa6e8cb2e5a703"
 DETACH = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
 K32 = ctypes.WinDLL("kernel32", use_last_error=True)
 K32.WaitNamedPipeW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint]
@@ -357,14 +357,6 @@ def requirements_venv(directory: Path, requirements: Path, msvc: bool = False) -
             run([*pip, "-r", str(requirements)])
         stamp.write_text(fingerprint + "\n", encoding="ascii")
     return py
-
-def normalize_transport_text(text: str, language: str) -> dict:
-    if not any(c.isdigit() for c in text):
-        return {"policy": "no_numeric_input", "language": language, "original_text": text, "transport_text": text, "changes": []}
-    py = requirements_venv(ROOT / ".venv-text-normalize", ROOT / "text_normalization.requirements.txt")
-    proc = subprocess.run([str(py), str(ROOT / "text_normalize.py"), language], input=text, capture_output=True,
-                          text=True, encoding="utf-8", check=True)
-    return json.loads(proc.stdout)
 
 def analyze_run(evidence: RunEvidence):
     py = requirements_venv(ROOT / "tools/.venv-log", ROOT / "tools/log_analysis.requirements.txt", msvc=True)
@@ -993,17 +985,11 @@ def run_variant(cfg: Variant, args: LaunchArgs):
             "git": subprocess.run(["git", "--version"], capture_output=True, text=True, check=True).stdout,
             "vulkan_sdk": str(VULKAN), "vcvars64": str(vcvars)}
         evidence.emit("source_identity", "prerequisites", sources=evidence.summary["sources"], tools=evidence.summary["tool_versions"])
-    with evidence.stage("normalization"):
-        normalization = normalize_transport_text(original, args.language) if cfg.needs_language else {
-            "policy": "engine_english_prepare_text", "language": "en", "original_text": original,
-            "transport_text": original, "changes": []}
-        text = normalization["transport_text"]
-        evidence.summary.update(transport_text=text, normalization=normalization,
-                                input_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+    text = original
+    with evidence.stage("input"):
+        evidence.summary.update(transport_text=text, input_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
                                 utf8_bytes=len(text.encode("utf-8")), characters=len(text))
-        write_json(evidence.directory / "normalization.json", normalization)
-        evidence.emit("text_normalized", "normalization", policy=normalization["policy"],
-                      changes=normalization["changes"], original_text=original, transport_text=text)
+        evidence.emit("text_transport", "input", policy="verbatim_utf8_to_engine", original_text=original, transport_text=text)
         evidence.persist()
     t3, s3, pid, build, bin_dir, exe, bake, pipe = paths(cfg)
     with evidence.stage("build"):
@@ -1042,6 +1028,19 @@ def run_variant(cfg: Variant, args: LaunchArgs):
         events = [json.loads(line) for line in (evidence.directory / "events.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
         if not any(e.get("event") == "request_complete" and e.get("component") == "engine" for e in events):
             raise RuntimeError("missing engine completion evidence")
+        if cfg.needs_language:
+            front = next(e for e in reversed(events) if e.get("event") == "number_verbalized" and e.get("component") == "engine")
+            normalization = {
+                "policy": front["policy"], "provider": front["provider"], "language": front["language_id"],
+                "original_text": front["original_text"], "transport_text": front["transport_text"],
+                "changes": front.get("changes") or [],
+            }
+        else:
+            normalization = {"policy": "engine_english_prepare_text", "language": "en",
+                             "original_text": original, "transport_text": original, "changes": []}
+        write_json(evidence.directory / "normalization.json", normalization)
+        evidence.summary.update(transport_text=normalization["transport_text"], normalization=normalization)
+        evidence.emit("text_frontend_observed", "request", **normalization)
         output_event = next(e for e in reversed(events) if e.get("event") == "output_write_end")
         generated = file_identity(evidence.work_out)
         if generated["sha256"] != output_event["wav_sha256"]:
