@@ -1,7 +1,3 @@
-"""Offline WAV transcription for TTS diagnosis via parakeet-cli + Nemotron 3.5 ASR (not chatterbox-server).
-
-Default backend is CPU so batch ASR can run concurrently with Vulkan TTS on the same host.
-"""
 import argparse
 import hashlib
 import json
@@ -349,7 +345,10 @@ def process_wav(
 
 
 def process_run_dir(run_dir: Path, model_override: Path | None, quant: str, threads: int) -> int:
-    wavs = sorted(run_dir.glob("*.wav"))
+    meta_path = run_dir / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else {}
+    output = meta.get("output_path") or (meta.get("output") or {}).get("path")
+    wavs = [Path(output)] if output and Path(output).is_file() else sorted(run_dir.glob("*.wav"))
     lang = lang_from_run_dir(run_dir)
     if not wavs:
         write_json(

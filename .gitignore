@@ -6,9 +6,13 @@
 !/tts_v3.py
 !/tts_common.py
 !/asr_parakeet.py
+!/text_normalize.py
+!/text_normalization.requirements.txt
 !/tools/
 !/tools/compare_runs.py
 !/tools/run_tables.py
+!/tools/analyze_run.py
+!/tools/report_html.py
 !/tools/log_analysis.requirements.txt
 # PARENT handover runbook. Never add a ! exception for this name.
 # The file lives beside the clones, not inside this tree.

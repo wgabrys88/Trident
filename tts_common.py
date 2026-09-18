@@ -3,7 +3,7 @@ import math
 import struct
 import platform
 import re
-import uuid
+import shutil
 import wave
 from contextlib import contextmanager
 from urllib.parse import urlsplit, urlunsplit
@@ -16,6 +16,7 @@ import time
 import urllib.request
 import venv
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -23,8 +24,9 @@ CHATTERBOX = ROOT.parent / "chatterbox.cpp"
 MODELS = ROOT / "models"
 REF = ROOT / "reference.wav"
 GGML_REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
-VULKAN = Path("C:/VulkanSDK/1.4.357.0")
-CMAKE = "C:/Program Files/CMake/bin/cmake.exe"
+VULKAN = Path(os.environ.get("VULKAN_SDK", "C:/VulkanSDK/1.4.357.0"))
+CMAKE = Path(os.environ.get("CMAKE_EXE", "C:/Program Files/CMake/bin/cmake.exe"))
+ENGINE_PIN = "b15ef53ddaf2347bf1dbf8e8fb02f9b8176537fc"
 DETACH = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
 K32 = ctypes.WinDLL("kernel32", use_last_error=True)
 K32.WaitNamedPipeW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint]
@@ -114,27 +116,36 @@ def source_identity(repo: Path) -> dict:
 
 class RunEvidence:
     def __init__(self, cfg, argv):
-        self.id = uuid.uuid4().hex
-        self.directory = MODELS / "runs" / self.id
-        self.directory.mkdir(parents=True, exist_ok=False)
-        self.out = self.directory / f"{cfg.name}.wav"
+        now = datetime.now().astimezone()
+        self.started_at = now.isoformat()
+        self.output_root = Path.cwd().resolve()
+        self.id = now.strftime("%S-%M-%H-%d-%m-%y") + f"_{cfg.name}"
+        self.directory = self.output_root / f"{self.id}_log"
+        self.out = self.output_root / f"{self.id}.wav"
+        self.work_out = self.directory / f"{self.id}.wav"
+        if self.directory.exists() or self.out.exists():
+            raise SystemExit(f"output collision: {self.id}")
+        self.directory.mkdir(parents=True)
         self.start = time.perf_counter()
         self.seq = 0
         for name in ("events.jsonl", "text_tokens.jsonl", "t3_tokens.jsonl", "s3_tokens.jsonl"):
             (self.directory / name).write_bytes(b"")
-        self.summary = {"schema_version": 3, "run_id": self.id, "variant": cfg.name,
+        self.summary = {"schema_version": 4, "run_id": self.id, "variant": cfg.name,
                         "engine_family": cfg.build_name, "argv": argv, "status": "running",
-                        "sr": 24000,
+                        "started_at": self.started_at, "output_root": str(self.output_root),
+                        "output_path": str(self.out), "log_dir": str(self.directory), "sr": 24000,
                         "logs": {"events": "events.jsonl", "text_tokens": "text_tokens.jsonl",
                                  "t3_tokens": "t3_tokens.jsonl", "s3_tokens": "s3_tokens.jsonl",
-                                 "features": "features.parquet", "meta": "meta.json"}}
+                                 "features": "features.parquet", "meta": "meta.json",
+                                 "analysis": "analysis.jsonl", "asr": "asr_parakeet.json",
+                                 "report": "report.html"}}
         self.log = (self.directory / "events.jsonl").open("a", encoding="utf-8")
-        self.emit("request_received", "request", argv=argv, cwd=str(Path.cwd()),
+        self.emit("request_received", "request", argv=argv, cwd=str(self.output_root),
                   python=sys.version, host=platform.platform(), machine=platform.machine())
         self.persist()
 
     def emit(self, event, stage, **data):
-        event_data = {"schema_version": 3, "component": "client", "run_id": self.id,
+        event_data = {"schema_version": 4, "component": "client", "run_id": self.id,
                       "seq": self.seq, "event": event, "stage": stage, "unit_index": None,
                       "monotonic_elapsed_s": time.perf_counter() - self.start}
         for key, value in data.items():
@@ -171,7 +182,7 @@ class RunEvidence:
             merged["binary_sha256"] = ours["binary_sha256"]
         if ours.get("gguf_sha256") and any((ours.get("gguf_sha256") or {}).values()):
             merged["gguf_sha256"] = ours["gguf_sha256"]
-        merged["schema_version"] = 3
+        merged["schema_version"] = 4
         merged["run_id"] = self.id
         write_json(self.directory / "meta.json", merged)
 
@@ -185,11 +196,18 @@ class RunEvidence:
         metrics = self.summary.get("metrics") or {}
         ggml_src = sources.get("ggml") or {}
         return {
-            "schema_version": 3,
+            "schema_version": 4,
             "run_id": self.id,
             "seed": knobs.get("seed", "42"),
             "knobs": knobs,
             "language_id": self.summary.get("language"),
+            "started_at": self.started_at,
+            "output_path": str(self.out),
+            "log_dir": str(self.directory),
+            "original_text": self.summary.get("original_text"),
+            "transport_text": self.summary.get("transport_text"),
+            "normalization": self.summary.get("normalization"),
+            "reference": (self.summary.get("assets") or {}).get("reference"),
             "git_heads": {
                 "trident": (sources.get("trident") or {}).get("head"),
                 "engine": (sources.get("engine") or {}).get("head"),
@@ -281,28 +299,95 @@ def write_json(path: Path, obj):
     tmp.write_text(json_text(obj), encoding="utf-8")
     tmp.replace(path)
 
-def finalize_run_tables(run_dir: Path):
-    py = ROOT / "tools" / ".venv-log" / "Scripts" / "python.exe"
-    script = ROOT / "tools" / "run_tables.py"
+def winget_install(package: str, override: str | None = None):
+    cmd = ["winget", "install", "--id", package, "-e", "--silent", "--accept-package-agreements", "--accept-source-agreements"]
+    if override:
+        cmd += ["--override", override]
+    run(cmd)
+
+def vs_installation() -> Path | None:
+    vswhere = Path("C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe")
+    if not vswhere.is_file():
+        return None
+    proc = subprocess.run([str(vswhere), "-latest", "-products", "*", "-requires",
+                           "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath"],
+                          check=True, capture_output=True, text=True)
+    value = proc.stdout.strip()
+    return Path(value) if value else None
+
+def resolve_windows_tools() -> Path:
+    global CMAKE, VULKAN
+    found_cmake = shutil.which("cmake")
+    if found_cmake:
+        CMAKE = Path(found_cmake)
+    if not CMAKE.is_file():
+        winget_install("Kitware.CMake")
+        CMAKE = Path("C:/Program Files/CMake/bin/cmake.exe")
+    if not (VULKAN / "Bin/glslc.exe").is_file():
+        candidates = sorted(Path("C:/VulkanSDK").glob("*/Bin/glslc.exe"),
+                            key=lambda x: tuple(int(v) for v in re.findall(r"\d+", x.parts[-3])), reverse=True)
+        if not candidates:
+            winget_install("KhronosGroup.VulkanSDK")
+            candidates = sorted(Path("C:/VulkanSDK").glob("*/Bin/glslc.exe"),
+                                key=lambda x: tuple(int(v) for v in re.findall(r"\d+", x.parts[-3])), reverse=True)
+        VULKAN = candidates[0].parents[1]
+    install = vs_installation()
+    if install is None:
+        winget_install("Microsoft.VisualStudio.2022.BuildTools",
+                       "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended")
+        install = vs_installation()
+    return install / "VC/Auxiliary/Build/vcvars64.bat"
+
+def requirements_venv(directory: Path, requirements: Path, msvc: bool = False) -> Path:
+    py = directory / "Scripts/python.exe"
     if not py.is_file():
-        raise SystemExit(f"missing analysis venv {py}; reuse tools/.venv-log")
-    subprocess.run([str(py), str(script), str(run_dir)], check=True)
+        venv.EnvBuilder(with_pip=True).create(directory)
+    stamp = directory / ".requirements.sha256"
+    fingerprint = sha256(requirements)
+    if not stamp.is_file() or stamp.read_text(encoding="ascii").strip() != fingerprint:
+        pip = [str(py), "-m", "pip", "install", "--disable-pip-version-check"]
+        if msvc:
+            run([*pip, "torch==2.5.1", "torchaudio==2.5.1", "--index-url", "https://download.pytorch.org/whl/cpu"])
+            pre = [*pip, "setuptools==80.9.0", "wheel==0.45.1", "Cython==3.1.3", "numpy==2.1.3"]
+            run(pre)
+            vcvars = resolve_windows_tools()
+            command = subprocess.list2cmdline([*pip, "--no-build-isolation", "-r", str(requirements)])
+            run(["cmd.exe", "/d", "/s", "/c", f'call "{vcvars}" >nul && {command}'])
+        else:
+            run([*pip, "-r", str(requirements)])
+        stamp.write_text(fingerprint + "\n", encoding="ascii")
+    return py
+
+def normalize_transport_text(text: str, language: str) -> dict:
+    if not any(c.isdigit() for c in text):
+        return {"policy": "no_numeric_input", "language": language, "original_text": text, "transport_text": text, "changes": []}
+    py = requirements_venv(ROOT / ".venv-text-normalize", ROOT / "text_normalization.requirements.txt")
+    proc = subprocess.run([str(py), str(ROOT / "text_normalize.py"), language], input=text, capture_output=True,
+                          text=True, encoding="utf-8", check=True)
+    return json.loads(proc.stdout)
+
+def analyze_run(evidence: RunEvidence):
+    py = requirements_venv(ROOT / "tools/.venv-log", ROOT / "tools/log_analysis.requirements.txt", msvc=True)
+    run([str(py), str(ROOT / "tools/run_tables.py"), str(evidence.directory)])
+    run([sys.executable, str(ROOT / "asr_parakeet.py"), "--run-dir", str(evidence.directory)])
+    run([str(py), str(ROOT / "tools/analyze_run.py"), str(evidence.directory), str(REF)])
+    self_compare = subprocess.run([str(py), str(ROOT / "tools/compare_runs.py"), str(evidence.directory), str(evidence.directory)],
+                                  check=True, capture_output=True, text=True, encoding="utf-8")
+    (evidence.directory / "self_compare.json").write_text(self_compare.stdout, encoding="utf-8")
+    run([str(py), str(ROOT / "tools/report_html.py"), str(evidence.directory), str(evidence.output_root)])
+    freeze = subprocess.run([str(py), "-m", "pip", "freeze", "--all"], check=True, capture_output=True, text=True).stdout
+    (evidence.directory / "analysis_packages.txt").write_text(freeze, encoding="utf-8")
+    evidence.summary["analysis_packages_sha256"] = sha256(evidence.directory / "analysis_packages.txt")
 
 def ensure_engine() -> str:
-    """Return sibling chatterbox.cpp HEAD. Tree must be clean. That SHA is meta.json ENGINE_REV."""
-    if not CHATTERBOX.is_dir():
-        raise SystemExit(f"missing chatterbox.cpp sibling at {CHATTERBOX}")
-    if not (CHATTERBOX / ".git").is_dir():
-        raise SystemExit(f"{CHATTERBOX} is not a Git checkout")
-    dirty = subprocess.run(
-        ["git", "-C", str(CHATTERBOX), "status", "--porcelain"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
+    if not CHATTERBOX.is_dir() or not (CHATTERBOX / ".git").is_dir():
+        raise SystemExit(f"missing chatterbox.cpp Git sibling at {CHATTERBOX}")
+    dirty = subprocess.run(["git", "-C", str(CHATTERBOX), "status", "--porcelain"], check=True, capture_output=True, text=True).stdout.strip()
     if dirty:
         raise SystemExit("chatterbox.cpp has uncommitted changes")
     sha = git_out(["rev-parse", "HEAD"])
+    if sha != ENGINE_PIN:
+        raise SystemExit(f"chatterbox.cpp HEAD {sha} != pinned {ENGINE_PIN}")
     return sha
 
 def download(url: str, dest: Path):
@@ -427,14 +512,18 @@ KNOB_KIND = {
     "n-predict": "i",
     "min-p": "f",
     "cfg-weight": "f",
+    "exaggeration": "f",
+    "cfm-steps": "i",
+    "cfm-cfg": "f",
+    "trim-fade-samples": "i",
 }
 GPT2_KNOBS = (
     "repeat-penalty", "temperature", "top-k", "top-p", "seed",
-    "n-predict",
+    "n-predict", "cfm-steps", "trim-fade-samples",
 )
 V3_KNOBS = (
     "repeat-penalty", "temperature", "top-p", "seed", "n-predict",
-    "min-p", "cfg-weight",
+    "min-p", "cfg-weight", "exaggeration", "cfm-steps", "cfm-cfg", "trim-fade-samples",
 )
 
 def spawn(cfg: Variant, exe: Path, t3: Path, s3: Path, pipe: str, pid: Path, language: str | None, knobs: dict[str, str]):
@@ -609,9 +698,9 @@ def normalize_knob(name: str, raw: str) -> str:
             value = float(raw)
             if not math.isfinite(value):
                 raise ValueError("non-finite value")
-        if name in ("top-k", "temperature", "cfg-weight") and value < 0:
+        if name in ("top-k", "temperature", "trim-fade-samples") and value < 0:
             raise ValueError("must be nonnegative")
-        if name in ("n-predict", "repeat-penalty") and value <= 0:
+        if name in ("n-predict", "repeat-penalty", "cfm-steps") and value <= 0:
             raise ValueError("must be positive")
         if name == "top-p" and not 0 < value <= 1:
             raise ValueError("must be in (0,1]")
@@ -885,27 +974,37 @@ def host_inventory():
 def run_variant(cfg: Variant, args: LaunchArgs):
     evidence = ACTIVE_RUN
     values = wanted_knobs(cfg, args.knobs)
-    text = args.text.replace("\r\n", "\n").replace("\r", "\n")
-    evidence.summary.update(original_text=args.text, transport_text=text,
-                            input_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
-                            utf8_bytes=len(text.encode("utf-8")), characters=len(text),
-                            language=args.language, knobs_cli=values)
+    original = args.text.replace("\r\n", "\n").replace("\r", "\n")
+    evidence.summary.update(original_text=args.text, language=args.language, knobs_cli=values)
     evidence.persist()
     with evidence.stage("prerequisites"):
+        MODELS.mkdir(parents=True, exist_ok=True)
         if not REF.is_file():
             raise FileNotFoundError(str(REF))
         engine_rev = ensure_engine()
+        vcvars = resolve_windows_tools()
         evidence.summary["sources"] = {"trident": source_identity(ROOT), "engine": source_identity(CHATTERBOX),
                                        "ggml_pin": GGML_REV,
                                        "engine_tree": git_out(["ls-tree", "-r", "HEAD"], CHATTERBOX),
                                        "trident_tree": git_out(["ls-tree", "-r", "HEAD"], ROOT)}
-        evidence.emit("source_identity", "prerequisites", sources=evidence.summary["sources"])
         evidence.summary["host_inventory"] = host_inventory()
-        if not Path(CMAKE).is_file() or not (VULKAN / "Bin/glslc.exe").is_file():
-            raise RuntimeError("Configured CMAKE/VULKAN paths are missing; set the installed SDK paths in tts_common.py and commit them before running")
         evidence.summary["tool_versions"] = {
-            "cmake": subprocess.run([CMAKE, "--version"], capture_output=True, text=True, check=True).stdout,
-            "git": subprocess.run(["git", "--version"], capture_output=True, text=True, check=True).stdout}
+            "cmake": subprocess.run([str(CMAKE), "--version"], capture_output=True, text=True, check=True).stdout,
+            "git": subprocess.run(["git", "--version"], capture_output=True, text=True, check=True).stdout,
+            "vulkan_sdk": str(VULKAN), "vcvars64": str(vcvars)}
+        evidence.emit("source_identity", "prerequisites", sources=evidence.summary["sources"], tools=evidence.summary["tool_versions"])
+    with evidence.stage("normalization"):
+        normalization = normalize_transport_text(original, args.language) if cfg.needs_language else {
+            "policy": "engine_english_prepare_text", "language": "en", "original_text": original,
+            "transport_text": original, "changes": []}
+        text = normalization["transport_text"]
+        evidence.summary.update(transport_text=text, normalization=normalization,
+                                input_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+                                utf8_bytes=len(text.encode("utf-8")), characters=len(text))
+        write_json(evidence.directory / "normalization.json", normalization)
+        evidence.emit("text_normalized", "normalization", policy=normalization["policy"],
+                      changes=normalization["changes"], original_text=original, transport_text=text)
+        evidence.persist()
     t3, s3, pid, build, bin_dir, exe, bake, pipe = paths(cfg)
     with evidence.stage("build"):
         ensure_build(cfg, pid, build, exe, bake)
@@ -913,7 +1012,6 @@ def run_variant(cfg: Variant, args: LaunchArgs):
         evidence.summary["build_contract"] = build_contract(cfg)
         evidence.summary["binaries"] = [file_identity(x) for x in sorted(bin_dir.iterdir()) if x.suffix.lower() in (".exe", ".dll")]
         evidence.summary["cmake_cache"] = file_identity(build / "CMakeCache.txt")
-
         (evidence.directory / "CMakeCache.txt").write_bytes((build / "CMakeCache.txt").read_bytes())
     with evidence.stage("assets"):
         py = ensure_converter_venv(cfg)
@@ -921,7 +1019,7 @@ def run_variant(cfg: Variant, args: LaunchArgs):
         evidence.summary["assets"] = {"hf_base": cfg.hf, "files": [file_identity(ckpt / name) for name in cfg.assets],
                                       "reference": file_identity(REF),
                                       "safetensors": [safetensors_inventory(ckpt / name) for name in cfg.assets if name.endswith(".safetensors")]}
-        versions = subprocess.run([str(py), "-m", "pip", "freeze"], check=True, capture_output=True, text=True).stdout
+        versions = subprocess.run([str(py), "-m", "pip", "freeze", "--all"], check=True, capture_output=True, text=True).stdout
         evidence.summary["converter_packages"] = versions
         evidence.emit("assets", "assets", identity=evidence.summary["assets"], converter_packages=versions)
     with evidence.stage("conversion"):
@@ -931,7 +1029,7 @@ def run_variant(cfg: Variant, args: LaunchArgs):
     with evidence.stage("bake"):
         evidence.summary["bake"] = ensure_baked(cfg, engine_rev, py, ckpt, t3, s3, bake, bin_dir, pid, t3_contract, s3_contract, converted)
         evidence.summary["models"] = {"t3": {**file_identity(t3), **gguf_type_histogram(py, t3)},
-                                       "s3": {**file_identity(s3), **gguf_type_histogram(py, s3)}}
+                                      "s3": {**file_identity(s3), **gguf_type_histogram(py, s3)}}
         if cfg.name == "nano":
             (MODELS / "chatterbox-t3-nano-f16-mixed.gguf").unlink(missing_ok=True)
             (MODELS / "nano.t3-convert.json").unlink(missing_ok=True)
@@ -939,64 +1037,71 @@ def run_variant(cfg: Variant, args: LaunchArgs):
         wait_pipe_absent(pipe)
         spawn(cfg, exe, t3, s3, pipe, pid, args.language, values)
     with evidence.stage("request"):
-        result = speak_batch(pipe, pid, evidence.out, text)
-        duration = wav_duration_s(evidence.out)
-        engine_log = evidence.directory / "events.jsonl"
-        events = [json.loads(line) for line in engine_log.read_text(encoding="utf-8").splitlines() if line.strip()]
+        result = speak_batch(pipe, pid, evidence.work_out, text)
+        duration = wav_duration_s(evidence.work_out)
+        events = [json.loads(line) for line in (evidence.directory / "events.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
         if not any(e.get("event") == "request_complete" and e.get("component") == "engine" for e in events):
             raise RuntimeError("missing engine completion evidence")
         output_event = next(e for e in reversed(events) if e.get("event") == "output_write_end")
-        output = file_identity(evidence.out)
-        if output["sha256"] != output_event["wav_sha256"]:
+        generated = file_identity(evidence.work_out)
+        if generated["sha256"] != output_event["wav_sha256"]:
             raise RuntimeError("WAV hash differs from engine evidence")
         synth = next(e for e in reversed(events) if e.get("event") == "synthesis_complete")
+        evidence.work_out.replace(evidence.out)
+        output = file_identity(evidence.out)
         evidence.summary["metrics"] = {**vars(result), "duration_s": duration,
             "request_wall_rtf": result.wall_s / duration,
             "synthesis_host_wall_s": synth["host_wall_s"], "synthesis_host_wall_rtf": synth["host_wall_s"] / duration,
             "rtf_definition": "host wall seconds / final WAV duration; request includes cold load; synthesis excludes model load"}
         evidence.summary["output"] = output
-        evidence.emit("output_verified", "output", identity=output, metrics=evidence.summary["metrics"])
+        evidence.summary["status"] = "audio_complete"
+        evidence.emit("output_verified", "output", identity=output, metrics=evidence.summary["metrics"], output_path=str(evidence.out))
         evidence.persist()
-        finalize_run_tables(evidence.directory)
-        print(f"text_tokens={result.text_tokens} predicted={result.predicted_count} eos={result.eos} "
-              f"units={result.units} max_unit_predicted={result.max_unit_predicted} duration_s={duration:.3f} "
-              f"wall_s={result.wall_s:.3f} request_wall_rtf={result.wall_s / duration:.3f} "
-              f"synthesis_host_wall_rtf={synth['host_wall_s'] / duration:.3f}", file=sys.stderr, flush=True)
-        print(evidence.out, flush=True)
-        print(evidence.directory, file=sys.stderr, flush=True)
+    with evidence.stage("analysis"):
+        analyze_run(evidence)
+        artifacts = ["events.parquet", "text_tokens.parquet", "t3_tokens.parquet", "s3_tokens.parquet",
+                     "features.parquet", "acoustic_frames.parquet", "analysis_metrics.json", "asr_parakeet.json",
+                     "normalization_alignment.json", "librosa.jsonl", "parselmouth.jsonl", "pyworld.jsonl",
+                     "torchaudio.jsonl", "torchcrepe.jsonl", "pyloudnorm.jsonl", "scipy.jsonl", "resemblyzer.jsonl",
+                     "editdistance.jsonl", "waveform_tokens.png", "spectrogram_tokens.png", "f0_estimators.png",
+                     "energy_spectral.png", "report.html", "analysis_packages.txt", "self_compare.json"]
+        evidence.summary["analysis_artifacts"] = {name: file_identity(evidence.directory / name)
+                                                  for name in artifacts if (evidence.directory / name).is_file()}
+        dashboard = evidence.output_root / "tts_dashboard.html"
+        if dashboard.is_file():
+            evidence.summary["dashboard"] = file_identity(dashboard)
+        evidence.persist()
+    print(f"text_tokens={result.text_tokens} predicted={result.predicted_count} eos={result.eos} "
+          f"units={result.units} max_unit_predicted={result.max_unit_predicted} duration_s={duration:.3f} "
+          f"wall_s={result.wall_s:.3f} request_wall_rtf={result.wall_s / duration:.3f} "
+          f"synthesis_host_wall_rtf={synth['host_wall_s'] / duration:.3f}", file=sys.stderr, flush=True)
+    print(evidence.out, flush=True)
+    print(evidence.directory, file=sys.stderr, flush=True)
 
 def launch_variant(cfg: Variant, argv: list[str]):
     global ACTIVE_RUN
+    args = parse_variant_args(cfg, argv)
     ACTIVE_RUN = RunEvidence(cfg, argv)
     evidence = ACTIVE_RUN
     print(f"Run evidence: {evidence.directory}", file=sys.stderr, flush=True)
     try:
-        args = parse_variant_args(cfg, argv)
         run_variant(cfg, args)
         evidence.summary.update(status="execution_complete", exit_code=0, launcher_wall_s=time.perf_counter() - evidence.start,
                                 active_stage="complete")
-        evidence.emit("request_complete", "request", status=evidence.summary.get("status"))
+        evidence.emit("request_complete", "request", status=evidence.summary["status"])
     except BaseException as exc:
         code = exc.code if isinstance(exc, SystemExit) and isinstance(exc.code, int) else 1
-        evidence.summary.update(status="help" if code == 0 else "failed", error=str(exc),
-                                error_type=type(exc).__name__, exit_code=code,
+        evidence.summary.update(status="failed", error=str(exc), error_type=type(exc).__name__, exit_code=code,
                                 launcher_wall_s=time.perf_counter() - evidence.start)
-        engine_log = evidence.directory / "events.jsonl"
-        if engine_log.exists():
-            evidence.summary["engine_trace"] = str(engine_log)
-        if evidence.out.exists():
-            evidence.summary["unacknowledged_output"] = file_identity(evidence.out)
+        for path, key in ((evidence.work_out, "unacknowledged_work_output"), (evidence.out, "unacknowledged_output")):
+            if path.exists():
+                evidence.summary[key] = file_identity(path)
         evidence.emit("request_failed", evidence.summary.get("active_stage", "parse"),
                       error=str(exc), error_type=type(exc).__name__, exit_code=code)
         raise
     finally:
         try:
             evidence.persist()
-            if evidence.out.exists() or (evidence.directory / "events.jsonl").stat().st_size:
-                try:
-                    finalize_run_tables(evidence.directory)
-                except Exception:
-                    pass
         finally:
             evidence.log.close()
             ACTIVE_RUN = None
