@@ -2,22 +2,13 @@ from __future__ import annotations
 
 
 def normalize_binary_records(value) -> list[dict]:
-    """Return the canonical list-of-file-identity records for build metadata.
-
-    Broken release stamps used a path-keyed dict while RunEvidence expected a list.
-    Accept both so existing caches remain usable, but callers should write the list form.
-    """
     if value is None:
         return []
-    if isinstance(value, dict):
-        records = list(value.values())
-    elif isinstance(value, (list, tuple)):
-        records = list(value)
-    else:
+    if not isinstance(value, list):
         raise TypeError(f"invalid binaries metadata type: {type(value).__name__}")
-    if not all(isinstance(record, dict) for record in records):
+    if not all(isinstance(record, dict) for record in value):
         raise TypeError("invalid binaries metadata record")
-    return records
+    return value
 
 
 def find_binary_record(value, suffix: str) -> dict | None:

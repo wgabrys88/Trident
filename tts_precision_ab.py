@@ -6,7 +6,7 @@ from tts_common import ROOT, analysis_python
 from tts_settings import WEIGHT_TYPES
 
 def run_profile(variant,text,language,reference,t3_type,s3_type):
-    cmd=[sys.executable,str(ROOT/f"tts_{variant}.py"),"--t3-weight-type",t3_type,"--s3-weight-type",s3_type,"--reference",str(reference),"--analysis","none","--determinism-repeats","0","--watermark","off",text]
+    cmd=[sys.executable,str(ROOT/f"tts_{variant}.py"),"--t3-weight-type",t3_type,"--s3-weight-type",s3_type,"--reference",str(reference),"--analysis","none","--determinism-repeats","0",text]
     if language is not None: cmd.append(language)
     proc=subprocess.run(cmd,cwd=str(ROOT),stdout=subprocess.PIPE,text=True)
     if proc.returncode: raise SystemExit(proc.returncode)

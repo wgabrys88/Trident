@@ -5,7 +5,6 @@ from types import MappingProxyType
 _ENGINE_PRECISION_POLICY = Path(__file__).resolve().parent.parent / "chatterbox.cpp/scripts/precision_policy.json"
 WEIGHT_TYPES = tuple(json.loads(_ENGINE_PRECISION_POLICY.read_text(encoding="utf-8"))["weight_types"])
 ANALYSIS_MODES = ("none", "quick", "full")
-WATERMARK_MODES = ("on", "off")
 
 # kind: i=integer, f=finite float, f+=strictly-positive finite float
 _RUNTIME_SPEC = {
@@ -47,7 +46,6 @@ CONVERSION_DEFAULTS = MappingProxyType({
 CONTROL_DEFAULTS = MappingProxyType({
     "analysis": "full",
     "determinism-repeats": "2",
-    "watermark": "on",
 })
 
 CMAKE_GENERATOR = "Visual Studio 17 2022"
@@ -68,5 +66,4 @@ PYTHON_ENV_BOOTSTRAP = MappingProxyType({
         "pre": ("setuptools==80.9.0", "wheel==0.45.1", "Cython==3.1.3", "numpy==2.1.3"),
         "msvc": True,
     }),
-    "watermark": MappingProxyType({"torch": ("torch==2.5.1",), "pre": (), "msvc": False}),
 })

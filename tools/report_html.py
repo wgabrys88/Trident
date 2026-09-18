@@ -64,7 +64,6 @@ def render_run(run_dir: Path) -> str:
     metrics = html.escape(json.dumps(analysis, ensure_ascii=False, indent=2))
     knobs = html.escape(json.dumps(meta.get("knobs") or {}, ensure_ascii=False, indent=2))
     determinism_text = html.escape(json.dumps(determinism, ensure_ascii=False, indent=2))
-    watermark_text = html.escape(json.dumps(meta.get("watermark") or {}, ensure_ascii=False, indent=2))
     conversion_text = html.escape(json.dumps(meta.get("conversion_types") or {}, ensure_ascii=False, indent=2))
     return f'''<article class="run" data-run="{html.escape(run_id)}">
 <header><h2>{html.escape(run_id)}</h2><span>{html.escape(str(meta.get("variant", "")))} / {html.escape(str(meta.get("language_id") or "en"))}</span></header>
@@ -73,7 +72,7 @@ def render_run(run_dir: Path) -> str:
 <details open><summary>Engine number frontend and ASR alignment</summary><table><thead><tr><th>Kind</th><th>Source</th><th>Spoken transport</th><th>Similarity</th><th>Best transcript window</th></tr></thead><tbody>{change_rows}</tbody></table></details>
 <div class="plots">{img(run_dir, "spectrogram_tokens.png")}{img(run_dir, "waveform_tokens.png")}{img(run_dir, "f0_estimators.png")}{img(run_dir, "energy_spectral.png")}</div>
 <div class="interactive">{f0_plot(run_dir, run_id)}</div>
-<details><summary>Metrics</summary><pre>{metrics}</pre></details><details><summary>Runtime knobs</summary><pre>{knobs}</pre></details><details><summary>Determinism</summary><pre>{determinism_text}</pre></details><details><summary>Watermark</summary><pre>{watermark_text}</pre></details><details><summary>Conversion precision</summary><pre>{conversion_text}</pre></details>
+<details><summary>Metrics</summary><pre>{metrics}</pre></details><details><summary>Runtime knobs</summary><pre>{knobs}</pre></details><details><summary>Determinism</summary><pre>{determinism_text}</pre></details><details><summary>Conversion precision</summary><pre>{conversion_text}</pre></details>
 </article>'''
 
 
