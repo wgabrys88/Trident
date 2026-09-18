@@ -32,7 +32,7 @@ GGML_REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
 VULKAN: Path | None = None
 CMAKE: Path | None = None
 VCVARS: Path | None = None
-ENGINE_PIN = "4e9892d6c49d8cdf52e211dbcbee31d95843d3c2"
+ENGINE_PIN = "e3c45765030e6c43e6c6d56182d64a9b3d0c9ebd"
 DETACH = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
 K32 = ctypes.WinDLL("kernel32", use_last_error=True)
 K32.WaitNamedPipeW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint]
@@ -412,6 +412,7 @@ def _requirements_fingerprint(requirements: Path, bootstrap: dict) -> str:
         "torch": list(bootstrap["torch"]),
         "pre": list(bootstrap["pre"]),
         "msvc": bool(bootstrap["msvc"]),
+        "no_binary": list(bootstrap.get("no_binary", ())),
         "torch_index": PYTORCH_CPU_INDEX,
     }, sort_keys=True, separators=(",", ":")).encode("utf-8"))
     return h.hexdigest()
@@ -434,8 +435,18 @@ def requirements_venv(directory: Path, requirements: Path, environment: str) -> 
             run([*pip, *bootstrap["pre"]])
         if bootstrap["msvc"]:
             vcvars = resolve_windows_tools()
-            command = subprocess.list2cmdline([*pip, "--no-build-isolation", "-r", str(requirements)])
-            run(["cmd.exe", "/d", "/s", "/c", f'call "{vcvars}" >nul && {command}'])
+            pip_req = [*pip, "--no-build-isolation"]
+            no_binary = tuple(bootstrap.get("no_binary", ()))
+            if no_binary:
+                pip_req.extend(["--no-binary", ",".join(no_binary)])
+            pip_req.extend(["-r", str(requirements)])
+            command = subprocess.list2cmdline(pip_req)
+            wrapper = directory / "_msvc_pip.cmd"
+            wrapper.write_bytes(f'@echo off\r\ncall "{vcvars}" >nul && {command}\r\n'.encode("ascii"))
+            try:
+                run(["cmd.exe", "/d", "/c", str(wrapper)])
+            finally:
+                wrapper.unlink(missing_ok=True)
         else:
             run([*pip, "-r", str(requirements)])
         stamp.write_text(fingerprint + "\n", encoding="ascii")
@@ -506,7 +517,11 @@ def compare_repeat(primary: Path, repeat: Path, dest: Path) -> dict:
     )
     if proc.returncode not in (0, 1):
         raise RuntimeError(f"determinism comparison failed: {proc.stderr.strip()}")
-    result = json.loads(proc.stdout)
+    payload = proc.stdout
+    start, end = payload.find("{"), payload.rfind("}")
+    if start < 0 or end < start:
+        raise RuntimeError(f"determinism comparison produced no JSON: {(proc.stderr or payload).strip()}")
+    result = json.loads(payload[start:end + 1])
     result["exact_match"] = bool(result.get("exact_match"))
     result["compare_exit_code"] = proc.returncode
     return result
