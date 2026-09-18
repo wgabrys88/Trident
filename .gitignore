@@ -6,8 +6,6 @@
 !/tts_v3.py
 !/tts_common.py
 !/asr_parakeet.py
-!/text_normalize.py
-!/text_normalization.requirements.txt
 !/tools/
 !/tools/compare_runs.py
 !/tools/run_tables.py

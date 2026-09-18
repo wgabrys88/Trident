@@ -66,7 +66,7 @@ def render_run(run_dir: Path) -> str:
 <header><h2>{html.escape(run_id)}</h2><span>{html.escape(str(meta.get("variant", "")))} / {html.escape(str(meta.get("language_id") or "en"))}</span></header>
 <div class="audio"><audio controls preload="metadata" src="{audio}"></audio><button class="play">Play</button><button class="loop">Loop off</button></div>
 <section class="texts"><div><h3>Original</h3><p>{html.escape(original)}</p></div><div><h3>Transport</h3><p>{html.escape(transport)}</p></div><div><h3>Parakeet</h3><p>{html.escape(transcript)}</p></div></section>
-<details open><summary>Number normalization and ASR alignment</summary><table><thead><tr><th>Kind</th><th>Source</th><th>Spoken transport</th><th>Similarity</th><th>Best transcript window</th></tr></thead><tbody>{change_rows}</tbody></table></details>
+<details open><summary>Engine number frontend and ASR alignment</summary><table><thead><tr><th>Kind</th><th>Source</th><th>Spoken transport</th><th>Similarity</th><th>Best transcript window</th></tr></thead><tbody>{change_rows}</tbody></table></details>
 <div class="plots">{img(run_dir, "spectrogram_tokens.png")}{img(run_dir, "waveform_tokens.png")}{img(run_dir, "f0_estimators.png")}{img(run_dir, "energy_spectral.png")}</div>
 <div class="interactive">{f0_plot(run_dir, run_id)}</div>
 <details><summary>Metrics</summary><pre>{metrics}</pre></details><details><summary>Runtime knobs</summary><pre>{knobs}</pre></details>
