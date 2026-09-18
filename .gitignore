@@ -28,3 +28,15 @@ models/**
 __pycache__/
 
 !/tools/mtl_tokenizer.requirements.txt
+!/tts_settings.py
+!/tts_metadata.py
+!/tts_client.py
+!/tts_precision_ab.py
+!/tools/watermark.py
+!/tools/watermark.requirements.txt
+!/tools/converter.requirements.txt
+!/tests/
+!/tests/test_metadata_schema.py
+!/tests/test_settings_contract.py
+
+!/tests/test_run_evidence_schema.py
