@@ -1,4 +1,3 @@
-"""Compare two Trident run directories. Numeric gate only."""
 from __future__ import annotations
 
 import json
