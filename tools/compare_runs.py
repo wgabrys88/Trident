@@ -112,64 +112,34 @@ def _close(a: float, b: float, abs_tol: float = 1e-9) -> bool:
 
 def gate(a: dict, b: dict) -> dict:
     from scipy.linalg import norm
-
     ta, tb = _ids(a["text_tokens"]), _ids(b["text_tokens"])
     t3a, t3b = _ids(a["t3_tokens"]), _ids(b["t3_tokens"])
     s3a, s3b = _ids(a["s3_tokens"]), _ids(b["s3_tokens"])
-    same = a["wav_sha256"] == b["wav_sha256"]
-    out = {
-        "wav_sha_equal": same,
-        "wav_sha_a": a["wav_sha256"],
-        "wav_sha_b": b["wav_sha256"],
-        "xxh64_equal": a["xxh64"] == b["xxh64"],
-        "xxh64_a": a["xxh64"],
-        "xxh64_b": b["xxh64"],
-        "text_edit": _edit(ta, tb),
-        "t3_edit": _edit(t3a, t3b),
-        "s3_edit": _edit(s3a, s3b),
-        "text_dtw": _dtw(ta, tb),
-        "t3_dtw": _dtw(t3a, t3b),
-        "s3_dtw": _dtw(s3a, s3b),
-        "duration_a_s": float(a["pcm"].size / a["sr"]),
-        "duration_b_s": float(b["pcm"].size / b["sr"]),
-        "sr_a": a["sr"],
-        "sr_b": b["sr"],
-    }
-    ma, mb = extract_mel(a["pcm"], a["sr"]), extract_mel(b["pcm"], b["sr"])
-    t = min(ma.shape[1], mb.shape[1])
-    out["mel_l2"] = float(norm((ma[:, :t] - mb[:, :t]).reshape(-1)))
-    fa, fb = extract_f0(a["pcm"], a["sr"]), extract_f0(b["pcm"], b["sr"])
-    n = min(fa.size, fb.size)
-    out["f0_l2"] = float(norm(fa[:n] - fb[:n])) if n else 0.0
-    pesq_v, stoi_v, sisdr_v = _pesq_stoi_sisdr(a["pcm"], b["pcm"], a["sr"])
-    out["pesq"] = pesq_v
-    out["stoi"] = stoi_v
-    out["si_sdr"] = sisdr_v
-    out["lufs_a"] = _lufs(a["pcm"], a["sr"])
-    out["lufs_b"] = _lufs(b["pcm"], b["sr"])
-    out["speaker_cosine"] = _speaker(a["pcm"], b["pcm"], a["sr"])
+    wav_sha_equal = a["wav_sha256"] == b["wav_sha256"]
     pcm_equal = a["pcm"].tobytes() == b["pcm"].tobytes()
-    out["exact_match"] = bool(
-        same
-        and out["xxh64_equal"]
-        and out["text_edit"] == 0
-        and out["t3_edit"] == 0
-        and out["s3_edit"] == 0
-        and out["text_dtw"] == 0.0
-        and out["t3_dtw"] == 0.0
-        and out["s3_dtw"] == 0.0
-        and out["mel_l2"] == 0.0
-        and out["f0_l2"] == 0.0
-        and pcm_equal
-        and a["sr"] == b["sr"]
-        and _close(out["duration_a_s"], out["duration_b_s"], 1e-12)
-        and _close(out["lufs_a"], out["lufs_b"], 1e-6)
-        and _close(out["stoi"], 1.0, 1e-6)
-        and out["speaker_cosine"] >= 0.999
-        and math.isfinite(out["pesq"])
-        and out["pesq"] >= IDENTICAL_PESQ_WB_MIN
-        and out["si_sdr"] >= SDR_CLIP - 1e-6
-    )
+    text_edit, t3_edit, s3_edit = _edit(ta, tb), _edit(t3a, t3b), _edit(s3a, s3b)
+    out = {
+        "wav_sha_equal": wav_sha_equal, "wav_sha_a": a["wav_sha256"], "wav_sha_b": b["wav_sha256"],
+        "xxh64_equal": a["xxh64"] == b["xxh64"], "xxh64_a": a["xxh64"], "xxh64_b": b["xxh64"],
+        "text_edit": text_edit, "t3_edit": t3_edit, "s3_edit": s3_edit,
+        "text_dtw": _dtw(ta, tb), "t3_dtw": _dtw(t3a, t3b), "s3_dtw": _dtw(s3a, s3b),
+        "duration_a_s": float(a["pcm"].size / a["sr"]), "duration_b_s": float(b["pcm"].size / b["sr"]),
+        "sr_a": a["sr"], "sr_b": b["sr"],
+    }
+    exact = bool(wav_sha_equal and out["xxh64_equal"] and pcm_equal and a["sr"] == b["sr"] and
+                 text_edit == 0 and t3_edit == 0 and s3_edit == 0 and out["text_dtw"] == 0.0 and
+                 out["t3_dtw"] == 0.0 and out["s3_dtw"] == 0.0 and
+                 _close(out["duration_a_s"], out["duration_b_s"], 1e-12))
+    if exact:
+        out.update({"exact_match": True, "acoustic_metrics_skipped_exact": True, "mel_l2": 0.0, "f0_l2": 0.0})
+        return out
+    ma, mb = extract_mel(a["pcm"], a["sr"]), extract_mel(b["pcm"], b["sr"]); t=min(ma.shape[1],mb.shape[1])
+    out["mel_l2"] = float(norm((ma[:,:t]-mb[:,:t]).reshape(-1)))
+    fa, fb = extract_f0(a["pcm"],a["sr"]), extract_f0(b["pcm"],b["sr"]); n=min(fa.size,fb.size)
+    out["f0_l2"] = float(norm(fa[:n]-fb[:n])) if n else 0.0
+    p,s,sisdr=_pesq_stoi_sisdr(a["pcm"],b["pcm"],a["sr"]); out.update({"pesq":p,"stoi":s,"si_sdr":sisdr})
+    out["lufs_a"]=_lufs(a["pcm"],a["sr"]); out["lufs_b"]=_lufs(b["pcm"],b["sr"]); out["speaker_cosine"]=_speaker(a["pcm"],b["pcm"],a["sr"])
+    out["acoustic_metrics_skipped_exact"] = False; out["exact_match"] = False
     return out
 
 
