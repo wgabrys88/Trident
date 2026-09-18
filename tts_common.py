@@ -39,7 +39,6 @@ SYNCHRONIZE = 0x00100000
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 ERROR_FILE_NOT_FOUND = 2
 
-
 @dataclass(frozen=True)
 class Variant:
     name: str
@@ -59,9 +58,7 @@ class Variant:
     knobs: tuple[str, ...]
     needs_language: bool = False
 
-
 STATS_KEYS = ("predicted", "dropped", "eos", "n_past", "units", "text_tokens", "max_unit_predicted")
-
 
 @dataclass
 class SpeakResult:
@@ -75,19 +72,15 @@ class SpeakResult:
     max_unit_predicted: int | None = None
     knobs: dict | None = None
 
-
 @dataclass
 class LaunchArgs:
     text: str
     language: str | None
     knobs: dict[str, str]
 
-
 CONVERT_STAMP_EXTRA = ("tensor_types", "n_tensors", "nbytes")
 
-
 ACTIVE_RUN = None
-
 
 def sha256(path: Path) -> str:
     h = hashlib.sha256()
@@ -96,10 +89,8 @@ def sha256(path: Path) -> str:
             h.update(block)
     return h.hexdigest()
 
-
 def file_identity(path: Path) -> dict:
     return {"path": str(path), "bytes": path.stat().st_size, "sha256": sha256(path)}
-
 
 def safetensors_inventory(path: Path) -> dict:
     with path.open("rb") as f:
@@ -112,7 +103,6 @@ def safetensors_inventory(path: Path) -> dict:
         header = json.loads(f.read(length))
     return {"path": str(path), "metadata": header.pop("__metadata__", {}), "tensors": header}
 
-
 def source_identity(repo: Path) -> dict:
     remote = git_out(["remote", "get-url", "origin"], repo)
     parsed = urlsplit(remote)
@@ -121,7 +111,6 @@ def source_identity(repo: Path) -> dict:
     return {"head": git_out(["rev-parse", "HEAD"], repo),
             "branch": git_out(["rev-parse", "--abbrev-ref", "HEAD"], repo),
             "dirty": git_out(["status", "--porcelain"], repo), "origin": remote}
-
 
 class RunEvidence:
     def __init__(self, cfg, argv):
@@ -234,7 +223,6 @@ class RunEvidence:
         else:
             self.emit(name + "_end", name, host_wall_s=time.perf_counter() - start)
 
-
 def run(cmd, **kw):
     if ACTIVE_RUN is None:
         subprocess.run(cmd, check=True, **kw)
@@ -261,12 +249,8 @@ def run(cmd, **kw):
     if code:
         raise subprocess.CalledProcessError(code, cmd)
 
-
 def build_target(build: Path, target: str):
-    # Build the two product executables separately. This avoids compiling the
-    # large inference and bake libraries concurrently on MSVC and, if a native
-    # failure remains, keeps the real compiler/linker diagnostic adjacent to
-    # the target that failed instead of burying it under a generic traceback.
+
     try:
         run([CMAKE, "--build", str(build), "--config", "Release",
              "--target", target, "--parallel", "2"])
@@ -276,16 +260,13 @@ def build_target(build: Path, target: str):
             "the MSVC/CMake diagnostic is immediately above"
         ) from None
 
-
 def git_out(args, repo=CHATTERBOX):
     return subprocess.run(
         ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
     ).stdout.strip()
 
-
 def json_text(obj) -> str:
     return json.dumps(obj, sort_keys=True, indent=2, ensure_ascii=True, allow_nan=False) + "\n"
-
 
 def read_json(path: Path):
     if not path.is_file():
@@ -295,12 +276,10 @@ def read_json(path: Path):
     except (OSError, ValueError) as exc:
         raise SystemExit(f"invalid JSON file {path}: {exc}") from exc
 
-
 def write_json(path: Path, obj):
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json_text(obj), encoding="utf-8")
     tmp.replace(path)
-
 
 def finalize_run_tables(run_dir: Path):
     py = ROOT / "tools" / ".venv-log" / "Scripts" / "python.exe"
@@ -308,7 +287,6 @@ def finalize_run_tables(run_dir: Path):
     if not py.is_file():
         raise SystemExit(f"missing analysis venv {py}; reuse tools/.venv-log")
     subprocess.run([str(py), str(script), str(run_dir)], check=True)
-
 
 def ensure_engine() -> str:
     """Return sibling chatterbox.cpp HEAD. Tree must be clean. That SHA is meta.json ENGINE_REV."""
@@ -327,7 +305,6 @@ def ensure_engine() -> str:
     sha = git_out(["rev-parse", "HEAD"])
     return sha
 
-
 def download(url: str, dest: Path):
     tmp = dest.with_suffix(dest.suffix + ".part")
     try:
@@ -343,7 +320,6 @@ def download(url: str, dest: Path):
     except Exception:
         tmp.unlink(missing_ok=True)
         raise
-
 
 def paths(cfg: Variant):
     t3 = MODELS / cfg.t3_name
@@ -362,14 +338,12 @@ def paths(cfg: Variant):
         pipe = rf"\\.\pipe\chatterbox-{tag}"
     return t3, s3, pid, build, bin_dir, exe, bake, pipe
 
-
 K32.QueryFullProcessImageNameW.argtypes = [ctypes.c_void_p, ctypes.c_uint, ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_uint)]
 K32.QueryFullProcessImageNameW.restype = ctypes.c_int
 K32.GetProcessTimes.argtypes = [ctypes.c_void_p] + [ctypes.POINTER(ctypes.c_ulonglong)] * 4
 K32.GetProcessTimes.restype = ctypes.c_int
 K32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint)]
 K32.GetExitCodeProcess.restype = ctypes.c_int
-
 
 def process_identity(handle):
     size = ctypes.c_uint(32768)
@@ -380,7 +354,6 @@ def process_identity(handle):
     if not K32.GetProcessTimes(handle, ctypes.byref(creation), ctypes.byref(exit_time), ctypes.byref(kernel), ctypes.byref(user)):
         raise ctypes.WinError(ctypes.get_last_error())
     return {"image": str(Path(image.value).resolve()), "creation_time": creation.value}
-
 
 def owned_process(pid: Path, terminate=False):
     if not pid.is_file():
@@ -396,7 +369,7 @@ def owned_process(pid: Path, terminate=False):
     handle = K32.OpenProcess(access, False, number)
     if not handle:
         error = ctypes.get_last_error()
-        if error == 87:  # ERROR_INVALID_PARAMETER: PID no longer exists.
+        if error == 87:
             pid.unlink(missing_ok=True)
             return None
         raise ctypes.WinError(error)
@@ -418,7 +391,6 @@ def owned_process(pid: Path, terminate=False):
         K32.CloseHandle(handle)
         raise
 
-
 def kill(pid: Path):
     handle = owned_process(pid, terminate=True)
     if handle is None:
@@ -432,7 +404,6 @@ def kill(pid: Path):
         K32.CloseHandle(handle)
     pid.unlink(missing_ok=True)
 
-
 def running(pid: Path):
     handle = owned_process(pid)
     if handle is None:
@@ -440,14 +411,12 @@ def running(pid: Path):
     K32.CloseHandle(handle)
     return True
 
-
 def wait_pipe_absent(pipe: str):
     for _ in range(50):
         if not K32.WaitNamedPipeW(pipe, 0) and ctypes.get_last_error() == ERROR_FILE_NOT_FOUND:
             return
         time.sleep(0.1)
     raise RuntimeError("pipe busy")
-
 
 KNOB_KIND = {
     "repeat-penalty": "f+",
@@ -467,7 +436,6 @@ V3_KNOBS = (
     "repeat-penalty", "temperature", "top-p", "seed", "n-predict",
     "min-p", "cfg-weight",
 )
-
 
 def spawn(cfg: Variant, exe: Path, t3: Path, s3: Path, pipe: str, pid: Path, language: str | None, knobs: dict[str, str]):
     args = [str(exe), str(t3), str(s3), pipe]
@@ -506,7 +474,6 @@ def spawn(cfg: Variant, exe: Path, t3: Path, s3: Path, pipe: str, pid: Path, lan
     write_json(pid, {"pid": proc.pid, **identity})
     ACTIVE_RUN.emit("server_start", "server", argv=args, pid=proc.pid, identity=identity, log=str(log_path))
 
-
 def wav_duration_s(path: Path) -> float:
     with wave.open(str(path), "rb") as f:
         if f.getnchannels() != 1 or f.getsampwidth() != 2 or f.getframerate() != 24000 or f.getcomptype() != "NONE":
@@ -515,7 +482,6 @@ def wav_duration_s(path: Path) -> float:
         if frames <= 0 or len(f.readframes(frames)) != frames * 2:
             raise RuntimeError("empty or truncated WAV")
         return frames / 24000.0
-
 
 def parse_synth_stats(line: bytes) -> dict:
     text = line.decode("ascii", errors="replace").strip()
@@ -539,7 +505,6 @@ def parse_synth_stats(line: bytes) -> dict:
         raise RuntimeError("missing or invalid engine stats")
     return out
 
-
 def speak_result_from_stats(wall_s: float, stats: dict) -> SpeakResult:
     knobs = {k: v for k, v in stats.items() if k not in STATS_KEYS}
     return SpeakResult(
@@ -553,7 +518,6 @@ def speak_result_from_stats(wall_s: float, stats: dict) -> SpeakResult:
         max_unit_predicted=stats.get("max_unit_predicted"),
         knobs=knobs or None,
     )
-
 
 def speak_batch(pipe: str, pid: Path, out: Path, text: str) -> SpeakResult:
     for _ in range(120):
@@ -596,13 +560,11 @@ def speak_batch(pipe: str, pid: Path, out: Path, text: str) -> SpeakResult:
         raise RuntimeError("synthesize")
     return speak_result_from_stats(wall, parse_synth_stats(ack))
 
-
 def usage(cfg: Variant):
     flags = " ".join(f"[--{n} <v>]" for n in cfg.knobs)
     if cfg.needs_language:
         return f"usage: python tts_{cfg.name}.py [-h] {flags} <text> <language>"
     return f"usage: python tts_{cfg.name}.py [-h] {flags} <text>"
-
 
 def parse_variant_args(cfg: Variant, argv: list[str]) -> LaunchArgs:
     args = argv[1:]
@@ -634,7 +596,6 @@ def parse_variant_args(cfg: Variant, argv: list[str]) -> LaunchArgs:
         raise SystemExit(usage(cfg))
     return LaunchArgs(rest[0], None, cli)
 
-
 def normalize_knob(name: str, raw: str) -> str:
     kind = KNOB_KIND[name]
     try:
@@ -660,10 +621,8 @@ def normalize_knob(name: str, raw: str) -> str:
     except ValueError as exc:
         raise SystemExit(f"invalid {name}: {exc}") from exc
 
-
 def wanted_knobs(cfg: Variant, cli: dict[str, str]) -> dict[str, str]:
     return {name: normalize_knob(name, cli[name]) for name in cfg.knobs if name in cli}
-
 
 CMAKE_FLAGS = {
     "GGML_VULKAN": "ON",
@@ -676,7 +635,6 @@ CMAKE_FLAGS = {
     "GGML_BUILD_EXAMPLES": "OFF",
 }
 
-
 def build_contract(cfg: Variant):
     return {
         "ggml_rev": GGML_REV,
@@ -684,7 +642,6 @@ def build_contract(cfg: Variant):
         "generator": "Visual Studio 17 2022 x64",
         "cmake_flags": {**CMAKE_FLAGS, "TTS_FAMILY": cfg.build_name, "VulkanSDK": str(VULKAN)},
     }
-
 
 def cmake_identity(obj):
     if not obj:
@@ -695,7 +652,6 @@ def cmake_identity(obj):
         "generator": obj.get("generator"),
         "cmake_flags": obj.get("cmake_flags"),
     }
-
 
 def ensure_ggml():
     ggml = CHATTERBOX / "ggml"
@@ -712,7 +668,6 @@ def ensure_ggml():
         actual = git_out(["rev-parse", "HEAD"], ggml)
         if actual != GGML_REV:
             raise SystemExit(f"ggml {actual} != required {GGML_REV}")
-
 
 def ensure_build(cfg: Variant, pid: Path, build: Path, exe: Path, bake: Path):
     stamp = MODELS / f"{cfg.build_name}.build-contract.json"
@@ -736,7 +691,6 @@ def ensure_build(cfg: Variant, pid: Path, build: Path, exe: Path, bake: Path):
     build_target(build, "chatterbox-bake")
     write_json(stamp, wanted)
 
-
 def ensure_converter_venv(cfg: Variant) -> Path:
     py = ROOT / cfg.venv_name / "Scripts" / "python.exe"
     if py.is_file():
@@ -747,7 +701,6 @@ def ensure_converter_venv(cfg: Variant) -> Path:
     run([*pip, "torch==2.6.0", "--index-url", "https://download.pytorch.org/whl/cpu"])
     run([*pip, "numpy==1.26.4", "gguf==0.19.0", "safetensors==0.5.3", "scipy==1.15.3", "librosa==0.11.0"])
     return py
-
 
 def ensure_assets(cfg: Variant) -> Path:
     ckpt = ROOT / cfg.ckpt_name
@@ -762,7 +715,6 @@ def ensure_assets(cfg: Variant) -> Path:
                         verification="downloaded from configured immutable URL" if not reused else "local bytes hashed; cached origin not independently verified")
     return ckpt
 
-
 CONVERT_DEPS = ("quant_policy.py",)
 BAKE_SOURCES = (
     "src/bake.cpp", "src/bake_native.h", "src/main.cpp", "src/voice_features.cpp", "src/voice_features.h",
@@ -770,13 +722,9 @@ BAKE_SOURCES = (
     "src/campplus.h", "src/s3tokenizer.cpp", "src/s3tokenizer.h",
 )
 
-
 def blob_rev(path: str) -> str:
-    # Git blob id of one engine file at HEAD. GGUF conversion and bake depend
-    # on these files, not on the engine commit id, so an engine commit that
-    # only touches inference must not trigger a reconvert or rebake.
-    return git_out(["rev-parse", f"HEAD:{path}"])
 
+    return git_out(["rev-parse", f"HEAD:{path}"])
 
 def conversion_contract(cfg: Variant, engine_rev: str, kind: str):
     if kind not in ("t3", "s3"):
@@ -796,7 +744,6 @@ def conversion_contract(cfg: Variant, engine_rev: str, kind: str):
         contract["t3_ckpt"] = cfg.t3_ckpt
     return contract
 
-
 def conversion_identity(obj):
     if obj is None:
         return None
@@ -806,7 +753,6 @@ def conversion_identity(obj):
     if obj["kind"] == "t3":
         keys += ("t3_ckpt",)
     return {key: obj[key] for key in keys}
-
 
 def gguf_type_histogram(py: Path, path: Path) -> dict:
     script = (
@@ -836,12 +782,10 @@ def gguf_type_histogram(py: Path, path: Path) -> dict:
     )
     return json.loads(out.stdout)
 
-
 def write_convert_stamp(path: Path, contract: dict, types: dict) -> dict:
     obj = {**contract, **types}
     write_json(path, obj)
     return obj
-
 
 def convert_t3(cfg: Variant, py: Path, ckpt: Path, t3: Path, contract):
     tmp = t3.with_suffix(".gguf.converting")
@@ -849,7 +793,6 @@ def convert_t3(cfg: Variant, py: Path, ckpt: Path, t3: Path, contract):
     gguf_type_histogram(py, tmp)
     tmp.replace(t3)
     write_json(MODELS / f"{t3.stem}.convert.json", contract)
-
 
 def convert_s3(cfg: Variant, py: Path, ckpt: Path, s3: Path, contract):
     if s3.exists():
@@ -859,7 +802,6 @@ def convert_s3(cfg: Variant, py: Path, ckpt: Path, s3: Path, contract):
     gguf_type_histogram(py, tmp)
     tmp.replace(s3)
     write_json(MODELS / f"{s3.stem}.convert.json", contract)
-
 
 def ensure_converted(cfg: Variant, engine_rev: str, py: Path, ckpt: Path, t3: Path, s3: Path):
     t3_contract = conversion_contract(cfg, engine_rev, "t3")
@@ -883,7 +825,6 @@ def ensure_converted(cfg: Variant, engine_rev: str, py: Path, ckpt: Path, t3: Pa
     write_convert_stamp(s3_stamp, s3_contract, s3_types)
     return t3_contract, s3_contract, changed, t3_types, s3_types
 
-
 def ensure_baked(cfg: Variant, engine_rev: str, py: Path, ckpt: Path, t3: Path, s3: Path, bake: Path, bin_dir: Path, pid: Path, t3_contract, s3_contract, converted: bool):
     wanted = {"family": cfg.name, "bake_blob": [blob_rev(p) for p in BAKE_SOURCES],
               "bake_binary": file_identity(bake), "reference": file_identity(REF),
@@ -906,7 +847,6 @@ def ensure_baked(cfg: Variant, engine_rev: str, py: Path, ckpt: Path, t3: Path, 
     write_json(stamp, result)
     pending.unlink()
     return result
-
 
 def migrate_nano_s3(cfg, engine_rev):
     if cfg.build_name != "gpt2":
@@ -933,7 +873,6 @@ def migrate_nano_s3(cfg, engine_rev):
     old_stamp.unlink()
     ACTIVE_RUN.emit("s3_migration", "conversion", status="renamed_without_reconversion", output=file_identity(new))
 
-
 def host_inventory():
     cmd = ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
            "Get-CimInstance Win32_VideoController | Select-Object Name,PNPDeviceID,DriverVersion,DriverDate,AdapterRAM | ConvertTo-Json -Compress"]
@@ -942,7 +881,6 @@ def host_inventory():
             "cpu": platform.processor(), "python": sys.version,
             "video_controllers": json.loads(result.stdout),
             "selected_device_source": "engine backend_identity event; inventory alone does not identify the selected Vulkan device"}
-
 
 def run_variant(cfg: Variant, args: LaunchArgs):
     evidence = ACTIVE_RUN
@@ -975,7 +913,7 @@ def run_variant(cfg: Variant, args: LaunchArgs):
         evidence.summary["build_contract"] = build_contract(cfg)
         evidence.summary["binaries"] = [file_identity(x) for x in sorted(bin_dir.iterdir()) if x.suffix.lower() in (".exe", ".dll")]
         evidence.summary["cmake_cache"] = file_identity(build / "CMakeCache.txt")
-        # Preserve compiler/toolchain cache details along with the complete build transcript.
+
         (evidence.directory / "CMakeCache.txt").write_bytes((build / "CMakeCache.txt").read_bytes())
     with evidence.stage("assets"):
         py = ensure_converter_venv(cfg)
@@ -1026,7 +964,6 @@ def run_variant(cfg: Variant, args: LaunchArgs):
               f"synthesis_host_wall_rtf={synth['host_wall_s'] / duration:.3f}", file=sys.stderr, flush=True)
         print(evidence.out, flush=True)
         print(evidence.directory, file=sys.stderr, flush=True)
-
 
 def launch_variant(cfg: Variant, argv: list[str]):
     global ACTIVE_RUN
