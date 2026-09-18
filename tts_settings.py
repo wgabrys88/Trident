@@ -65,5 +65,6 @@ PYTHON_ENV_BOOTSTRAP = MappingProxyType({
         "torch": ("torch==2.5.1", "torchaudio==2.5.1"),
         "pre": ("setuptools==80.9.0", "wheel==0.45.1", "Cython==3.1.3", "numpy==2.1.3"),
         "msvc": True,
+        "no_binary": ("pyworld",),
     }),
 })

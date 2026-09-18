@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import math
 import sys
@@ -148,12 +150,13 @@ def main(argv: list[str]) -> int:
         raise SystemExit("usage: compare_runs.py A B")
     a_path = Path(argv[1]).resolve()
     b_path = Path(argv[2]).resolve()
-    a = load_run(a_path)
-    b = load_run(b_path)
-    if a_path != b_path:
-        write_spectrogram_png(a["pcm"], a["sr"], Path.cwd() / "spectrogram_a.png")
-        write_spectrogram_png(b["pcm"], b["sr"], Path.cwd() / "spectrogram_b.png")
-    result = gate(a, b)
+    with contextlib.redirect_stdout(io.StringIO()):
+        a = load_run(a_path)
+        b = load_run(b_path)
+        if a_path != b_path:
+            write_spectrogram_png(a["pcm"], a["sr"], Path.cwd() / "spectrogram_a.png")
+            write_spectrogram_png(b["pcm"], b["sr"], Path.cwd() / "spectrogram_b.png")
+        result = gate(a, b)
     print(json.dumps(result, indent=2, sort_keys=True, allow_nan=False))
     return 0 if result["exact_match"] else 1
 
