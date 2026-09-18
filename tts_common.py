@@ -311,6 +311,7 @@ def finalize_run_tables(run_dir: Path):
 
 
 def ensure_engine() -> str:
+    """Return sibling chatterbox.cpp HEAD. Tree must be clean. That SHA is meta.json ENGINE_REV."""
     if not CHATTERBOX.is_dir():
         raise SystemExit(f"missing chatterbox.cpp sibling at {CHATTERBOX}")
     if not (CHATTERBOX / ".git").is_dir():
