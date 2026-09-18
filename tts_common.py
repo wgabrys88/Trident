@@ -21,7 +21,7 @@ from tts_metadata import find_binary_record, normalize_binary_records
 from tts_settings import (
     ANALYSIS_MODES, CMAKE_ARCH, CMAKE_FLAGS, CMAKE_GENERATOR, CONTROL_DEFAULTS,
     CONVERSION_DEFAULTS, PYTHON_ENV_BOOTSTRAP, PYTORCH_CPU_INDEX, RUNTIME_DEFAULTS,
-    RUNTIME_KINDS, WATERMARK_MODES, WEIGHT_TYPES,
+    RUNTIME_KINDS, WEIGHT_TYPES,
 )
 
 ROOT = Path(__file__).resolve().parent
@@ -32,7 +32,7 @@ GGML_REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
 VULKAN: Path | None = None
 CMAKE: Path | None = None
 VCVARS: Path | None = None
-ENGINE_PIN = "5a82e154bd9e3cb819f3619fcfa1d241e50f6f26"
+ENGINE_PIN = "4e9892d6c49d8cdf52e211dbcbee31d95843d3c2"
 DETACH = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
 K32 = ctypes.WinDLL("kernel32", use_last_error=True)
 K32.WaitNamedPipeW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint]
@@ -88,7 +88,6 @@ class LaunchArgs:
     reference: Path
     analysis: str
     determinism_repeats: int
-    watermark: str
 
 CONVERT_STAMP_EXTRA = ("tensor_types", "n_tensors", "nbytes")
 
@@ -243,7 +242,6 @@ class RunEvidence:
             "duration_s": metrics.get("duration_s"),
             "conversion_types": self.summary.get("conversion_types"),
             "analysis_mode": self.summary.get("analysis_mode"),
-            "watermark": self.summary.get("watermark"),
             "determinism": self.summary.get("determinism"),
             "sr": 24000,
             "status": self.summary.get("status"),
@@ -445,7 +443,6 @@ def requirements_venv(directory: Path, requirements: Path, environment: str) -> 
 
 
 _ANALYSIS_PY = None
-_WATERMARK_PY = None
 
 
 def analysis_python() -> Path:
@@ -453,28 +450,6 @@ def analysis_python() -> Path:
     if _ANALYSIS_PY is None:
         _ANALYSIS_PY = requirements_venv(ROOT / "tools/.venv-log", ROOT / "tools/log_analysis.requirements.txt", "analysis")
     return _ANALYSIS_PY
-
-
-def watermark_python() -> Path:
-    global _WATERMARK_PY
-    if _WATERMARK_PY is None:
-        _WATERMARK_PY = requirements_venv(ROOT / ".venv-watermark", ROOT / "tools/watermark.requirements.txt", "watermark")
-    return _WATERMARK_PY
-
-
-def apply_watermark(evidence: RunEvidence, wav: Path) -> dict:
-    py = watermark_python()
-    raw_copy = evidence.directory / "engine_raw.wav"
-    shutil.copy2(wav, raw_copy)
-    proc = subprocess.run(
-        [str(py), str(ROOT / "tools/watermark.py"), str(wav)],
-        check=True, capture_output=True, text=True, encoding="utf-8",
-    )
-    result = json.loads(proc.stdout)
-    result["engine_raw"] = file_identity(raw_copy)
-    result["final"] = file_identity(wav)
-    evidence.emit("watermark_complete", "watermark", **result)
-    return result
 
 
 def _run_wav(run_dir: Path) -> Path:
@@ -891,8 +866,7 @@ def usage(cfg: Variant):
     runtime = " ".join(f"[--{n} <v>]" for n in runtime_names(cfg))
     weight_types = "|".join(WEIGHT_TYPES)
     analysis_modes = "|".join(ANALYSIS_MODES)
-    watermark_modes = "|".join(WATERMARK_MODES)
-    controls = f"[--t3-weight-type {weight_types}] [--s3-weight-type {weight_types}] [--reference <wav>] [--analysis {analysis_modes}] [--determinism-repeats 0|1|2] [--watermark {watermark_modes}]"
+    controls = f"[--t3-weight-type {weight_types}] [--s3-weight-type {weight_types}] [--reference <wav>] [--analysis {analysis_modes}] [--determinism-repeats 0|1|2]"
     tail = "<text> <language>" if cfg.needs_language else "<text>"
     return f"usage: python tts_{cfg.name}.py [-h] {runtime} {controls} {tail}"
 
@@ -948,9 +922,6 @@ def parse_variant_args(cfg: Variant, argv: list[str]) -> LaunchArgs:
         elif name == "analysis":
             if raw not in ANALYSIS_MODES: raise SystemExit(f"invalid analysis mode: {raw}")
             control[name] = raw
-        elif name == "watermark":
-            if raw not in WATERMARK_MODES: raise SystemExit(f"invalid watermark mode: {raw}")
-            control[name] = raw
         elif name == "determinism-repeats":
             try: repeats = int(raw)
             except ValueError as exc: raise SystemExit("invalid determinism-repeats") from exc
@@ -967,7 +938,7 @@ def parse_variant_args(cfg: Variant, argv: list[str]) -> LaunchArgs:
         if len(rest) != 1: raise SystemExit(usage(cfg))
         text, language = rest[0], None
     return LaunchArgs(text, language, runtime, conversion["t3-weight-type"], conversion["s3-weight-type"],
-                      reference, control["analysis"], int(control["determinism-repeats"]), control["watermark"])
+                      reference, control["analysis"], int(control["determinism-repeats"]))
 
 def cmake_definitions(cfg: Variant) -> dict[str, str]:
     if VULKAN is None:
@@ -1024,10 +995,8 @@ def ensure_ggml():
     ggml = CHATTERBOX / "ggml"
     if not (ggml / ".git").exists():
         run(["git", "clone", "--filter=blob:none", "https://github.com/ggml-org/ggml.git", str(ggml)])
-    # Populate an empty or incomplete worktree before cleanliness checks.
     if not (ggml / "CMakeLists.txt").is_file():
-        run(["git", "-C", str(ggml), "fetch", "origin", GGML_REV, "--depth", "1"])
-        run(["git", "-C", str(ggml), "checkout", "--detach", "-f", GGML_REV])
+        raise SystemExit("ggml checkout is incomplete")
     dirty = subprocess.run(
         ["git", "-C", str(ggml), "status", "--porcelain"], check=True, capture_output=True, text=True
     ).stdout.strip()
@@ -1070,8 +1039,6 @@ def ensure_build(cfg: Variant, pid: Path, build: Path, exe: Path, bake: Path):
     )
     if reusable:
         result = {"identity": wanted, "binaries": prior_records}
-        if prior.get("binaries") != prior_records:
-            write_json(stamp, result)
         ACTIVE_RUN.emit("build_decision", "build", reused=True, configure=False, compile=False, contract=wanted)
         return result
     kill(pid)
@@ -1311,7 +1278,6 @@ def run_variant(cfg: Variant, args: LaunchArgs):
         knobs_cli=values,
         analysis_mode=args.analysis,
         determinism_level=args.determinism_repeats,
-        watermark_mode=args.watermark,
         conversion_types={"t3": args.t3_weight_type, "s3": args.s3_weight_type},
     )
     evidence.persist()
@@ -1434,12 +1400,7 @@ def run_variant(cfg: Variant, args: LaunchArgs):
             evidence, args.determinism_repeats, cfg, text, pipe, pid, exe, t3, s3, args.language, values, tokenizer_py, ckpt
         )
         evidence.persist()
-    with evidence.stage("watermark"):
-        if args.watermark == "on":
-            evidence.summary["watermark"] = apply_watermark(evidence, evidence.out)
-        else:
-            evidence.summary["watermark"] = {"enabled": False}
-            evidence.emit("watermark_skipped", "watermark")
+    with evidence.stage("output"):
         final_duration = wav_duration_s(evidence.out)
         evidence.summary["metrics"]["duration_s"] = final_duration
         evidence.summary["output"] = file_identity(evidence.out)
@@ -1455,7 +1416,7 @@ def run_variant(cfg: Variant, args: LaunchArgs):
             "librosa.jsonl", "parselmouth.jsonl", "pyworld.jsonl", "torchaudio.jsonl", "torchcrepe.jsonl",
             "pyloudnorm.jsonl", "scipy.jsonl", "resemblyzer.jsonl", "editdistance.jsonl", "waveform_tokens.png",
             "spectrogram_tokens.png", "f0_estimators.png", "energy_spectral.png", "report.html", "analysis_packages.txt",
-            "determinism.json", "engine_raw.wav",
+            "determinism.json",
         ]
         evidence.summary["analysis_artifacts"] = {
             name: file_identity(evidence.directory / name) for name in artifacts if (evidence.directory / name).is_file()
