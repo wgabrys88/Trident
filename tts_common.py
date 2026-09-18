@@ -26,7 +26,7 @@ REF = ROOT / "reference.wav"
 GGML_REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
 VULKAN = Path(os.environ.get("VULKAN_SDK", "C:/VulkanSDK/1.4.357.0"))
 CMAKE = Path(os.environ.get("CMAKE_EXE", "C:/Program Files/CMake/bin/cmake.exe"))
-ENGINE_PIN = "f4da465f8ac091755d2dcd504aaa6e8cb2e5a703"
+ENGINE_PIN = "aac426ba450c4d09f535ba9a96b1f4318c9b481d"
 DETACH = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
 K32 = ctypes.WinDLL("kernel32", use_last_error=True)
 K32.WaitNamedPipeW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint]
@@ -59,6 +59,7 @@ class Variant:
     s3_script: str
     knobs: tuple[str, ...]
     needs_language: bool = False
+    external_assets: tuple[tuple[str, str], ...] = ()
 
 STATS_KEYS = ("predicted", "dropped", "eos", "n_past", "units", "text_tokens", "max_unit_predicted")
 
@@ -518,12 +519,21 @@ V3_KNOBS = (
     "min-p", "cfg-weight", "exaggeration", "cfm-steps", "cfm-cfg", "trim-fade-samples",
 )
 
-def spawn(cfg: Variant, exe: Path, t3: Path, s3: Path, pipe: str, pid: Path, language: str | None, knobs: dict[str, str]):
+def spawn(cfg: Variant, exe: Path, t3: Path, s3: Path, pipe: str, pid: Path, language: str | None, knobs: dict[str, str], tokenizer_py: Path | None = None, ckpt: Path | None = None):
     args = [str(exe), str(t3), str(s3), pipe]
     if cfg.needs_language:
-        if not language:
-            raise SystemExit("language is required")
-        args += ["--language", language]
+        if not language or tokenizer_py is None or ckpt is None:
+            raise SystemExit("multilingual tokenizer runtime is required")
+        args += [
+            "--language", language,
+            "--tokenizer-python", str(tokenizer_py),
+            "--tokenizer-script", str(CHATTERBOX / "scripts/mtl-tokenize-runtime.py"),
+            "--tokenizer-source", str(ckpt / "official_mtl_tokenizer.py"),
+            "--tokenizer-tts-source", str(ckpt / "official_mtl_tts.py"),
+            "--tokenizer-json", str(ckpt / "grapheme_mtl_merged_expanded_v1.json"),
+            "--cangjie-json", str(ckpt / "Cangjie5_TC.json"),
+            "--dicta-model", str(ckpt / "dicta-1.0.int8.onnx"),
+        ]
     for name in cfg.knobs:
         val = knobs.get(name, "")
         if val:
@@ -775,12 +785,43 @@ def ensure_build(cfg: Variant, pid: Path, build: Path, exe: Path, bake: Path):
 def ensure_converter_venv(cfg: Variant) -> Path:
     py = ROOT / cfg.venv_name / "Scripts" / "python.exe"
     if py.is_file():
+        check = subprocess.run([str(py), "-c", "import tokenizers"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if check.returncode != 0:
+            run([str(py), "-m", "pip", "install", "--disable-pip-version-check", "tokenizers==0.23.2"])
         ACTIVE_RUN.emit("converter_environment", "assets", reused=True, python=str(py))
         return py
     venv.EnvBuilder(with_pip=True).create(ROOT / cfg.venv_name)
     pip = [str(py), "-m", "pip", "install", "--disable-pip-version-check"]
     run([*pip, "torch==2.6.0", "--index-url", "https://download.pytorch.org/whl/cpu"])
-    run([*pip, "numpy==1.26.4", "gguf==0.19.0", "safetensors==0.5.3", "scipy==1.15.3", "librosa==0.11.0"])
+    run([*pip, "numpy==1.26.4", "gguf==0.19.0", "safetensors==0.5.3", "scipy==1.15.3", "librosa==0.11.0", "tokenizers==0.23.2"])
+    return py
+
+def python311() -> Path:
+    probe = subprocess.run(["py", "-3.11", "-c", "import sys;print(sys.executable)"], capture_output=True, text=True)
+    if probe.returncode == 0:
+        path = Path(probe.stdout.strip())
+        if path.is_file():
+            return path
+    for path in (Path(os.environ.get("LOCALAPPDATA", "")) / "Programs/Python/Python311/python.exe", Path("C:/Program Files/Python311/python.exe")):
+        if path.is_file():
+            return path
+    winget_install("Python.Python.3.11")
+    probe = subprocess.run(["py", "-3.11", "-c", "import sys;print(sys.executable)"], check=True, capture_output=True, text=True)
+    return Path(probe.stdout.strip())
+
+def ensure_tokenizer_venv() -> Path:
+    directory = ROOT / ".venv-tokenizer-v3"
+    py = directory / "Scripts/python.exe"
+    requirements = ROOT / "tools/mtl_tokenizer.requirements.txt"
+    fingerprint = sha256(requirements)
+    stamp = directory / ".requirements.sha256"
+    if not py.is_file():
+        run([str(python311()), "-m", "venv", str(directory)])
+    if not stamp.is_file() or stamp.read_text(encoding="ascii").strip() != fingerprint:
+        pip = [str(py), "-m", "pip", "install", "--disable-pip-version-check"]
+        run([*pip, "torch==2.6.0", "--index-url", "https://download.pytorch.org/whl/cpu"])
+        run([*pip, "-r", str(requirements)])
+        stamp.write_text(fingerprint + "\n", encoding="ascii")
     return py
 
 def ensure_assets(cfg: Variant) -> Path:
@@ -789,11 +830,16 @@ def ensure_assets(cfg: Variant) -> Path:
     for name in cfg.assets:
         dest = ckpt / name
         reused = dest.is_file()
+        source = f"{cfg.hf}/{name}"
         if not reused:
-            download(f"{cfg.hf}/{name}", dest)
-        ACTIVE_RUN.emit("asset_resolved", "assets", name=name, configured_source=f"{cfg.hf}/{name}",
-                        reused=reused, origin_verified=not reused,
-                        verification="downloaded from configured immutable URL" if not reused else "local bytes hashed; cached origin not independently verified")
+            download(source, dest)
+        ACTIVE_RUN.emit("asset_resolved", "assets", name=name, configured_source=source, reused=reused, origin_verified=not reused, verification="downloaded from configured immutable URL" if not reused else "local bytes hashed; cached origin not independently verified")
+    for name, source in cfg.external_assets:
+        dest = ckpt / name
+        reused = dest.is_file()
+        if not reused:
+            download(source, dest)
+        ACTIVE_RUN.emit("asset_resolved", "assets", name=name, configured_source=source, reused=reused, origin_verified=not reused, verification="downloaded from configured immutable URL" if not reused else "local bytes hashed; cached origin not independently verified")
     return ckpt
 
 CONVERT_DEPS = ("quant_policy.py",)
@@ -807,7 +853,7 @@ def blob_rev(path: str) -> str:
 
     return git_out(["rev-parse", f"HEAD:{path}"])
 
-def conversion_contract(cfg: Variant, engine_rev: str, kind: str):
+def conversion_contract(cfg: Variant, engine_rev: str, kind: str, ckpt: Path | None = None):
     if kind not in ("t3", "s3"):
         raise SystemExit(f"unknown conversion kind: {kind}")
     script = cfg.t3_script if kind == "t3" else cfg.s3_script
@@ -823,6 +869,10 @@ def conversion_contract(cfg: Variant, engine_rev: str, kind: str):
     }
     if kind == "t3":
         contract["t3_ckpt"] = cfg.t3_ckpt
+        if cfg.needs_language:
+            if ckpt is None:
+                raise RuntimeError("v3 conversion requires tokenizer assets")
+            contract["frontend_assets"] = {name: sha256(ckpt / name) for name in ("grapheme_mtl_merged_expanded_v1.json", "Cangjie5_TC.json", "official_mtl_tokenizer.py", "official_mtl_tts.py")}
     return contract
 
 def conversion_identity(obj):
@@ -833,6 +883,8 @@ def conversion_identity(obj):
         raise SystemExit("substantive legacy conversion flags require inspection")
     if obj["kind"] == "t3":
         keys += ("t3_ckpt",)
+        if "frontend_assets" in obj:
+            keys += ("frontend_assets",)
     return {key: obj[key] for key in keys}
 
 def gguf_type_histogram(py: Path, path: Path) -> dict:
@@ -845,7 +897,7 @@ def gguf_type_histogram(py: Path, path: Path) -> dict:
         "inventory=[]\n"
         "metadata={}\n"
         "for key,f in r.fields.items():\n"
-        "    if key.startswith('tokenizer.'): continue\n"
+        "    if key.startswith('tokenizer.') or key == 'chatterbox.tokenizer.json': continue\n"
         "    metadata[key]={'types':[str(t) for t in f.types],'data':[f.parts[i].tolist() for i in f.data]}\n"
         "nbytes=0\n"
         "for t in r.tensors:\n"
@@ -885,8 +937,8 @@ def convert_s3(cfg: Variant, py: Path, ckpt: Path, s3: Path, contract):
     write_json(MODELS / f"{s3.stem}.convert.json", contract)
 
 def ensure_converted(cfg: Variant, engine_rev: str, py: Path, ckpt: Path, t3: Path, s3: Path):
-    t3_contract = conversion_contract(cfg, engine_rev, "t3")
-    s3_contract = conversion_contract(cfg, engine_rev, "s3")
+    t3_contract = conversion_contract(cfg, engine_rev, "t3", ckpt)
+    s3_contract = conversion_contract(cfg, engine_rev, "s3", ckpt)
     t3_stamp = MODELS / f"{t3.stem}.convert.json"
     s3_stamp = MODELS / f"{s3.stem}.convert.json"
     t3_changed = (not t3.is_file()) or conversion_identity(read_json(t3_stamp)) != t3_contract
@@ -942,7 +994,7 @@ def migrate_nano_s3(cfg, engine_rev):
     if contract is None:
         raise RuntimeError("old Nano S3 has no contract; refusing guessed migration")
     contract.pop("family", None)
-    if conversion_identity(contract) != conversion_contract(cfg, engine_rev, "s3"):
+    if conversion_identity(contract) != conversion_contract(cfg, engine_rev, "s3", ROOT / cfg.ckpt_name):
         raise RuntimeError("old Nano S3 contract mismatch; preserve original and inspect")
     if new.exists():
         if sha256(old) != sha256(new) or conversion_identity(read_json(new_stamp)) != conversion_identity(contract):
@@ -1002,12 +1054,17 @@ def run_variant(cfg: Variant, args: LaunchArgs):
     with evidence.stage("assets"):
         py = ensure_converter_venv(cfg)
         ckpt = ensure_assets(cfg)
-        evidence.summary["assets"] = {"hf_base": cfg.hf, "files": [file_identity(ckpt / name) for name in cfg.assets],
+        tokenizer_py = ensure_tokenizer_venv() if cfg.needs_language else None
+        all_assets = [*cfg.assets, *(name for name, _ in cfg.external_assets)]
+        evidence.summary["assets"] = {"hf_base": cfg.hf, "files": [file_identity(ckpt / name) for name in all_assets],
                                       "reference": file_identity(REF),
                                       "safetensors": [safetensors_inventory(ckpt / name) for name in cfg.assets if name.endswith(".safetensors")]}
         versions = subprocess.run([str(py), "-m", "pip", "freeze", "--all"], check=True, capture_output=True, text=True).stdout
         evidence.summary["converter_packages"] = versions
-        evidence.emit("assets", "assets", identity=evidence.summary["assets"], converter_packages=versions)
+        if tokenizer_py is not None:
+            tokenizer_versions = subprocess.run([str(tokenizer_py), "-m", "pip", "freeze", "--all"], check=True, capture_output=True, text=True).stdout
+            evidence.summary["tokenizer_packages"] = tokenizer_versions
+        evidence.emit("assets", "assets", identity=evidence.summary["assets"], converter_packages=versions, tokenizer_packages=evidence.summary.get("tokenizer_packages"))
     with evidence.stage("conversion"):
         migrate_nano_s3(cfg, engine_rev)
         t3_contract, s3_contract, converted, _, _ = ensure_converted(cfg, engine_rev, py, ckpt, t3, s3)
@@ -1021,7 +1078,7 @@ def run_variant(cfg: Variant, args: LaunchArgs):
             (MODELS / "nano.t3-convert.json").unlink(missing_ok=True)
     with evidence.stage("server"):
         wait_pipe_absent(pipe)
-        spawn(cfg, exe, t3, s3, pipe, pid, args.language, values)
+        spawn(cfg, exe, t3, s3, pipe, pid, args.language, values, tokenizer_py, ckpt)
     with evidence.stage("request"):
         result = speak_batch(pipe, pid, evidence.work_out, text)
         duration = wav_duration_s(evidence.work_out)

@@ -26,3 +26,5 @@ models/**
 .ckpt*/
 .venv*/
 __pycache__/
+
+!/tools/mtl_tokenizer.requirements.txt
