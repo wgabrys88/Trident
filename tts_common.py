@@ -32,7 +32,7 @@ GGML_REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
 VULKAN: Path | None = None
 CMAKE: Path | None = None
 VCVARS: Path | None = None
-ENGINE_PIN = "2e82a262091eee0a04b69ab944e0119a8fd7c1cc"
+ENGINE_PIN = "9bfd8d74ab7a20c1e43f6d9950d28b55e6276fb2"
 DETACH = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
 K32 = ctypes.WinDLL("kernel32", use_last_error=True)
 K32.WaitNamedPipeW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint]
