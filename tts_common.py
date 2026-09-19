@@ -521,12 +521,16 @@ def build_contract(cfg: Variant):
 
 def ensure_ggml():
     ggml = CHATTERBOX / "ggml"
-    if not (ggml / ".git").exists() or not (ggml / "CMakeLists.txt").is_file():
-        raise SystemExit("ggml checkout is missing")
+    if not (ggml / ".git").exists():
+        run(["git", "clone", "--filter=blob:none", "https://github.com/ggml-org/ggml.git", str(ggml)])
     dirty = subprocess.run(["git", "-C", str(ggml), "status", "--porcelain"], check=True, capture_output=True, text=True).stdout.strip()
     if dirty:
         raise SystemExit("ggml checkout is dirty")
     actual = git_out(["rev-parse", "HEAD"], ggml)
+    if actual != GGML_REV:
+        run(["git", "-C", str(ggml), "fetch", "origin", GGML_REV, "--depth", "1"])
+        run(["git", "-C", str(ggml), "checkout", "--detach", GGML_REV])
+        actual = git_out(["rev-parse", "HEAD"], ggml)
     if actual != GGML_REV:
         raise SystemExit(f"ggml {actual} != required {GGML_REV}")
 
