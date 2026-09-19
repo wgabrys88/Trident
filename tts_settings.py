@@ -1,57 +1,47 @@
 import json
 from pathlib import Path
-from types import MappingProxyType
 
 _ENGINE_PRECISION_POLICY = Path(__file__).resolve().parent.parent / "chatterbox.cpp/scripts/precision_policy.json"
 WEIGHT_TYPES = tuple(json.loads(_ENGINE_PRECISION_POLICY.read_text(encoding="utf-8"))["weight_types"])
 
-_RUNTIME_SPEC = {
+RUNTIME_DEFAULTS = {
     "gpt2": {
-        "seed": ("i", "42"),
-        "temperature": ("f", "0.8"),
-        "top-k": ("i", "1000"),
-        "top-p": ("f", "0.95"),
-        "repeat-penalty": ("f+", "1.2"),
-        "n-predict": ("i", "1000"),
-        "cfm-steps": ("i", "2"),
-        "trim-fade-samples": ("i", "480"),
+        "seed": "42",
+        "temperature": "0.8",
+        "top-k": "1000",
+        "top-p": "0.95",
+        "repeat-penalty": "1.2",
+        "n-predict": "1000",
+        "cfm-steps": "2",
+        "trim-fade-samples": "480",
     },
     "v3": {
-        "seed": ("i", "42"),
-        "temperature": ("f", "0.8"),
-        "top-p": ("f", "1.0"),
-        "repeat-penalty": ("f+", "1.2"),
-        "n-predict": ("i", "1000"),
-        "min-p": ("f", "0.05"),
-        "cfg-weight": ("f", "0.5"),
-        "exaggeration": ("f", "0.5"),
-        "cfm-steps": ("i", "10"),
-        "cfm-cfg": ("f", "0.7"),
-        "trim-fade-samples": ("i", "480"),
+        "seed": "42",
+        "temperature": "0.8",
+        "top-p": "1.0",
+        "repeat-penalty": "1.2",
+        "n-predict": "1000",
+        "min-p": "0.05",
+        "cfg-weight": "0.5",
+        "exaggeration": "0.5",
+        "cfm-steps": "10",
+        "cfm-cfg": "0.7",
+        "trim-fade-samples": "480",
     },
 }
-RUNTIME_DEFAULTS = MappingProxyType({
-    family: MappingProxyType({name: default for name, (_, default) in spec.items()})
-    for family, spec in _RUNTIME_SPEC.items()
-})
-RUNTIME_KINDS = MappingProxyType({
-    name: kind for spec in _RUNTIME_SPEC.values() for name, (kind, _) in spec.items()
-})
-CONVERSION_DEFAULTS = MappingProxyType({
-    "gpt2": MappingProxyType({"t3-weight-type": "f32", "s3-weight-type": "f32"}),
-    "v3": MappingProxyType({"t3-weight-type": "f32", "s3-weight-type": "f32"}),
-})
+CONVERSION_DEFAULTS = {"t3-weight-type": "f32", "s3-weight-type": "f32"}
 
 CMAKE_GENERATOR = "Visual Studio 17 2022"
 CMAKE_ARCH = "x64"
-CMAKE_FLAGS = MappingProxyType({
+CMAKE_FLAGS = {
     "BUILD_SHARED_LIBS": "ON",
     "TTS_CPP_BUILD_EXECUTABLES": "ON",
     "GGML_BUILD_TESTS": "OFF",
     "GGML_BUILD_EXAMPLES": "OFF",
-})
+    "CMAKE_SKIP_INSTALL_RULES": "ON",
+}
 
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
-PYTHON_ENV_BOOTSTRAP = MappingProxyType({
+PYTHON_ENV_BOOTSTRAP = {
     "torch": ("torch==2.6.0",),
-})
+}
