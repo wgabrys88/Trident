@@ -1,5 +1,4 @@
 import ctypes
-import hashlib
 import json
 import math
 import platform
@@ -27,7 +26,7 @@ GGML_REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
 VULKAN: Path | None = None
 CMAKE: Path | None = None
 VCVARS: Path | None = None
-ENGINE_PIN = "e06bee73733e1b9a7100863e25403acb47a2a6a4"
+ENGINE_PIN = "df60b60034fdd1aca2c65f9264338d4fb6f12c8b"
 DETACH = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
 K32 = ctypes.WinDLL("kernel32", use_last_error=True)
 K32.WaitNamedPipeW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint]
@@ -48,13 +47,6 @@ SYNCHRONIZE = 0x00100000
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 ERROR_FILE_NOT_FOUND = 2
 STATS_KEYS = ("predicted", "dropped", "eos", "n_past", "units", "text_tokens", "max_unit_predicted")
-CONVERT_DEPS = ("quant_policy.py", "precision_policy.json")
-BAKE_SOURCES = (
-    "src/bake.cpp", "src/bake_native.h", "src/main.cpp", "src/voice_features.cpp", "src/voice_features.h",
-    "src/mel_extract_stft.cpp", "src/voice_encoder.cpp", "src/voice_encoder.h", "src/campplus.cpp",
-    "src/campplus.h", "src/s3tokenizer.cpp", "src/s3tokenizer.h",
-)
-_SHA256_CACHE = {}
 
 
 @dataclass(frozen=True)
@@ -66,7 +58,6 @@ class Variant:
     pid_name: str
     build_name: str
     ckpt_name: str
-    pipe_tag: bytes
     other_pids: tuple[str, ...]
     t3_script: str
     s3_script: str
@@ -84,26 +75,6 @@ class LaunchArgs:
     reference: Path
 
 
-def sha256(path: Path) -> str:
-    path = path.resolve()
-    stat = path.stat()
-    key = (str(path), stat.st_size, stat.st_mtime_ns)
-    cached = _SHA256_CACHE.get(key)
-    if cached is not None:
-        return cached
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for block in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(block)
-    digest = h.hexdigest()
-    _SHA256_CACHE[key] = digest
-    return digest
-
-
-def file_identity(path: Path) -> dict:
-    return {"path": str(path), "bytes": path.stat().st_size, "sha256": sha256(path)}
-
-
 def run(cmd, **kw):
     subprocess.run(cmd, check=True, **kw)
 
@@ -119,10 +90,7 @@ def json_text(obj) -> str:
 def read_json(path: Path):
     if not path.is_file():
         return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
-        raise SystemExit(f"invalid JSON file {path}: {exc}") from exc
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def write_json(path: Path, obj):
@@ -131,115 +99,70 @@ def write_json(path: Path, obj):
     tmp.replace(path)
 
 
-def winget_install(package: str, override: str | None = None):
-    cmd = ["winget", "install", "--id", package, "-e", "--silent", "--accept-package-agreements", "--accept-source-agreements"]
-    if override:
-        cmd += ["--override", override]
-    run(cmd)
+def file_stamp(path: Path) -> dict:
+    stat = path.stat()
+    return {"path": str(path.resolve()), "bytes": stat.st_size, "mtime": stat.st_mtime_ns}
 
 
-def vs_installation() -> Path | None:
+def vs_installation() -> Path:
     vswhere = Path("C:/Program Files (x86)/Microsoft Visual Studio/Installer/vswhere.exe")
     if not vswhere.is_file():
-        return None
+        raise SystemExit("vswhere.exe not found")
     proc = subprocess.run([str(vswhere), "-latest", "-products", "*", "-requires",
                            "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "-property", "installationPath"],
                           check=True, capture_output=True, text=True)
     value = proc.stdout.strip()
-    return Path(value) if value else None
+    if not value:
+        raise SystemExit("Visual Studio Build Tools installation not found")
+    return Path(value)
 
 
 def resolve_windows_tools() -> Path:
     global CMAKE, VULKAN, VCVARS
-    found_cmake = shutil.which("cmake")
-    CMAKE = Path(found_cmake) if found_cmake else Path("C:/Program Files/CMake/bin/cmake.exe")
-    if not CMAKE.is_file():
-        winget_install("Kitware.CMake")
-        CMAKE = Path("C:/Program Files/CMake/bin/cmake.exe")
+    found = shutil.which("cmake")
+    if not found:
+        raise SystemExit("cmake not on PATH")
+    CMAKE = Path(found)
     candidates = sorted(
         Path("C:/VulkanSDK").glob("*/Bin/glslc.exe"),
         key=lambda x: tuple(int(v) for v in re.findall(r"\d+", x.parts[-3])), reverse=True,
     )
     if not candidates:
-        winget_install("KhronosGroup.VulkanSDK")
-        candidates = sorted(
-            Path("C:/VulkanSDK").glob("*/Bin/glslc.exe"),
-            key=lambda x: tuple(int(v) for v in re.findall(r"\d+", x.parts[-3])), reverse=True,
-        )
-    if not candidates:
         raise SystemExit("Vulkan SDK installation not found")
     VULKAN = candidates[0].parents[1]
-    install = vs_installation()
-    if install is None:
-        winget_install(
-            "Microsoft.VisualStudio.2022.BuildTools",
-            "--wait --quiet --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended",
-        )
-        install = vs_installation()
-    if install is None:
-        raise SystemExit("Visual Studio Build Tools installation not found")
-    VCVARS = install / "VC/Auxiliary/Build/vcvars64.bat"
+    VCVARS = vs_installation() / "VC/Auxiliary/Build/vcvars64.bat"
     if not VCVARS.is_file():
         raise SystemExit(f"vcvars64.bat not found: {VCVARS}")
     return VCVARS
 
 
 def python311() -> Path:
-    if sys.version_info[:2] == (3, 11):
-        return Path(sys.executable).resolve()
-    launcher = shutil.which("py")
-    if launcher:
-        probe = subprocess.run([launcher, "-3.11", "-c", "import sys;print(sys.executable)"], capture_output=True, text=True)
-        if probe.returncode == 0:
-            path = Path(probe.stdout.strip())
-            if path.is_file():
-                return path
-    direct = shutil.which("python3.11") or shutil.which("python3.11-64.exe")
-    if direct and Path(direct).is_file():
-        return Path(direct).resolve()
-    candidates = (
-        Path.home() / "AppData/Local/Programs/Python/Python311/python.exe",
-        Path.home() / "AppData/Local/Python/pythoncore-3.11-64/python.exe",
-        Path("C:/Program Files/Python311/python.exe"),
-    )
-    for path in candidates:
-        if path.is_file():
-            return path
-    winget_install("Python.Python.3.11")
-    for path in candidates:
-        if path.is_file():
-            return path
-    if launcher:
-        probe = subprocess.run([launcher, "-3.11", "-c", "import sys;print(sys.executable)"], check=True, capture_output=True, text=True)
-        return Path(probe.stdout.strip())
-    raise SystemExit("Python 3.11 was installed but no interpreter path was found; reopen PowerShell and rerun")
+    if sys.version_info[:2] != (3, 11):
+        raise SystemExit("need Python 3.11")
+    return Path(sys.executable).resolve()
 
 
-def _venv_fingerprint() -> str:
-    h = hashlib.sha256()
-    h.update((ROOT / "requirements.txt").read_bytes())
-    h.update(b"\0")
-    h.update(json.dumps({
+def _venv_stamp() -> str:
+    return (ROOT / "requirements.txt").read_text(encoding="utf-8") + json.dumps({
         "torch": list(PYTHON_ENV_BOOTSTRAP["torch"]),
         "torch_index": PYTORCH_CPU_INDEX,
-    }, sort_keys=True, separators=(",", ":")).encode("utf-8"))
-    return h.hexdigest()
+    }, sort_keys=True, separators=(",", ":"))
 
 
 def ensure_venv() -> Path:
     directory = ROOT / ".venv"
     py = directory / "Scripts/python.exe"
-    stamp = directory / ".requirements.sha256"
-    fingerprint = _venv_fingerprint()
-    current = stamp.read_text(encoding="ascii").strip() if stamp.is_file() else None
-    if not py.is_file() or current != fingerprint:
+    stamp = directory / ".requirements.stamp"
+    wanted = _venv_stamp()
+    current = stamp.read_text(encoding="utf-8") if stamp.is_file() else None
+    if not py.is_file() or current != wanted:
         if directory.exists():
             shutil.rmtree(directory)
         run([str(python311()), "-m", "venv", str(directory)])
         pip = [str(py), "-m", "pip", "install", "--disable-pip-version-check"]
         run([*pip, *PYTHON_ENV_BOOTSTRAP["torch"], "--index-url", PYTORCH_CPU_INDEX])
         run([*pip, "-r", str(ROOT / "requirements.txt")])
-        stamp.write_text(fingerprint + "\n", encoding="ascii")
+        stamp.write_text(wanted, encoding="utf-8")
     return py
 
 
@@ -257,19 +180,16 @@ def ensure_engine() -> str:
 
 def download(url: str, dest: Path):
     tmp = dest.with_suffix(dest.suffix + ".part")
-    try:
-        with urllib.request.urlopen(url) as resp, open(tmp, "wb") as out:
-            while True:
-                block = resp.read(1024 * 1024)
-                if not block:
-                    break
-                out.write(block)
-        if not tmp.is_file() or tmp.stat().st_size == 0:
-            raise OSError("empty download")
-        tmp.replace(dest)
-    except Exception:
+    with urllib.request.urlopen(url) as resp, open(tmp, "wb") as out:
+        while True:
+            block = resp.read(1024 * 1024)
+            if not block:
+                break
+            out.write(block)
+    if not tmp.is_file() or tmp.stat().st_size == 0:
         tmp.unlink(missing_ok=True)
-        raise
+        raise OSError("empty download")
+    tmp.replace(dest)
 
 
 def pid_path(cfg: Variant) -> Path:
@@ -277,12 +197,7 @@ def pid_path(cfg: Variant) -> Path:
 
 
 def pipe_name(cfg: Variant) -> str:
-    tag = hashlib.sha256(str(ROOT).encode() + cfg.pipe_tag).hexdigest()[:12]
-    if cfg.pipe_tag == b"turbo":
-        return rf"\\.\pipe\chatterbox-turbo-{tag}"
-    if cfg.pipe_tag == b"v3":
-        return rf"\\.\pipe\chatterbox-v3-{tag}"
-    return rf"\\.\pipe\chatterbox-{tag}"
+    return rf"\\.\pipe\chatterbox-{cfg.name}"
 
 
 def paths(cfg: Variant, args: LaunchArgs):
@@ -308,11 +223,7 @@ def process_identity(handle):
 def owned_process(pid: Path, terminate=False):
     if not pid.is_file():
         return None
-    raw = pid.read_text(encoding="ascii").strip()
-    try:
-        record = json.loads(raw)
-    except ValueError as exc:
-        raise RuntimeError(f"invalid PID record: {pid}") from exc
+    record = json.loads(pid.read_text(encoding="ascii").strip())
     number = record["pid"]
     access = PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE | (PROCESS_TERMINATE if terminate else 0)
     handle = K32.OpenProcess(access, False, number)
@@ -419,9 +330,9 @@ def server_contract(cfg: Variant, exe: Path, t3: Path, s3: Path, language: str |
                     tokenizer_py: Path | None, ckpt: Path | None) -> dict:
     contract = {
         "variant": cfg.name,
-        "server": file_identity(exe),
-        "t3": file_identity(t3),
-        "s3": file_identity(s3),
+        "server": str(exe.resolve()),
+        "t3": str(t3.resolve()),
+        "s3": str(s3.resolve()),
         "language": language,
         "knobs": dict(knobs),
     }
@@ -430,12 +341,12 @@ def server_contract(cfg: Variant, exe: Path, t3: Path, s3: Path, language: str |
             raise RuntimeError("missing tokenizer runtime")
         contract["tokenizer"] = {
             "python": str(tokenizer_py.resolve()),
-            "adapter": file_identity(CHATTERBOX / "scripts/mtl-tokenize-runtime.py"),
-            "source": file_identity(ckpt / "official_mtl_tokenizer.py"),
-            "tts_source": file_identity(ckpt / "official_mtl_tts.py"),
-            "json": file_identity(ckpt / "grapheme_mtl_merged_expanded_v1.json"),
-            "cangjie": file_identity(ckpt / "Cangjie5_TC.json"),
-            "dicta": file_identity(ckpt / "dicta-1.0.int8.onnx"),
+            "adapter": str((CHATTERBOX / "scripts/mtl-tokenize-runtime.py").resolve()),
+            "source": str((ckpt / "official_mtl_tokenizer.py").resolve()),
+            "tts_source": str((ckpt / "official_mtl_tts.py").resolve()),
+            "json": str((ckpt / "grapheme_mtl_merged_expanded_v1.json").resolve()),
+            "cangjie": str((ckpt / "Cangjie5_TC.json").resolve()),
+            "dicta": str((ckpt / "dicta-1.0.int8.onnx").resolve()),
         }
     return contract
 
@@ -626,129 +537,50 @@ def cmake_definitions(cfg: Variant) -> dict[str, str]:
     }
 
 
-def blob_rev(path: str) -> str:
-    return git_out(["rev-parse", f"HEAD:{path}"])
-
-
-def _git_tree_digest(paths: tuple[str, ...]) -> str:
-    listing = git_out(["ls-tree", "-r", "HEAD", "--", *paths], CHATTERBOX)
-    return hashlib.sha256(listing.encode("utf-8")).hexdigest()
-
-
 def build_contract(cfg: Variant):
-    if CMAKE is None or VULKAN is None or VCVARS is None:
-        raise RuntimeError("Windows build tools were not resolved")
     return {
-        "native_tree": _git_tree_digest(("include", "src", "CMakeLists.txt")),
-        "cmake_blob": blob_rev("CMakeLists.txt"),
-        "ggml_rev": git_out(["rev-parse", "HEAD"], CHATTERBOX / "ggml"),
+        "engine": ENGINE_PIN,
+        "ggml": GGML_REV,
         "family": cfg.build_name,
         "generator": CMAKE_GENERATOR,
         "architecture": CMAKE_ARCH,
-        "toolchain": {
-            "cmake": file_identity(CMAKE),
-            "glslc": file_identity(VULKAN / "Bin/glslc.exe"),
-            "vulkan_library": file_identity(VULKAN / "Lib/vulkan-1.lib"),
-            "vcvars64": file_identity(VCVARS),
-        },
         "cmake_definitions": cmake_definitions(cfg),
-    }
-
-
-def cmake_identity(obj):
-    if not obj:
-        return None
-    return {
-        "cmake_blob": obj.get("cmake_blob"),
-        "ggml_rev": obj.get("ggml_rev"),
-        "family": obj.get("family"),
-        "generator": obj.get("generator"),
-        "architecture": obj.get("architecture"),
-        "toolchain": obj.get("toolchain"),
-        "cmake_definitions": obj.get("cmake_definitions"),
     }
 
 
 def ensure_ggml():
     ggml = CHATTERBOX / "ggml"
-    if not (ggml / ".git").exists():
-        run(["git", "clone", "--filter=blob:none", "https://github.com/ggml-org/ggml.git", str(ggml)])
-    if not (ggml / "CMakeLists.txt").is_file():
-        raise SystemExit("ggml checkout is incomplete")
+    if not (ggml / ".git").exists() or not (ggml / "CMakeLists.txt").is_file():
+        raise SystemExit("ggml checkout is missing")
     dirty = subprocess.run(["git", "-C", str(ggml), "status", "--porcelain"], check=True, capture_output=True, text=True).stdout.strip()
     if dirty:
         raise SystemExit("ggml checkout is dirty")
     actual = git_out(["rev-parse", "HEAD"], ggml)
     if actual != GGML_REV:
-        run(["git", "-C", str(ggml), "fetch", "origin", GGML_REV, "--depth", "1"])
-        run(["git", "-C", str(ggml), "checkout", "--detach", GGML_REV])
-        actual = git_out(["rev-parse", "HEAD"], ggml)
-    if actual != GGML_REV:
         raise SystemExit(f"ggml {actual} != required {GGML_REV}")
-    dirty = subprocess.run(["git", "-C", str(ggml), "status", "--porcelain"], check=True, capture_output=True, text=True).stdout.strip()
-    if dirty:
-        raise SystemExit("ggml checkout is dirty after pinning")
-
-
-def _identity_matches(record: dict) -> bool:
-    try:
-        path = Path(record["path"])
-        return path.is_file() and path.stat().st_size == record.get("bytes") and sha256(path) == record.get("sha256")
-    except (KeyError, OSError, TypeError):
-        return False
-
-
-def _binaries(value) -> list[dict]:
-    if value is None:
-        return []
-    if not isinstance(value, list) or not all(isinstance(record, dict) for record in value):
-        raise TypeError("invalid binaries metadata")
-    return value
-
-
-def _binary(records, suffix: str) -> dict | None:
-    suffix = suffix.lower()
-    for record in records:
-        if str(record.get("path", "")).lower().endswith(suffix):
-            return record
-    return None
 
 
 def ensure_build(cfg: Variant, pid: Path, build: Path, exe: Path, bake: Path):
     ensure_ggml()
     stamp = MODELS / f"{cfg.build_name}.build-contract.json"
     wanted = build_contract(cfg)
-    prior = read_json(stamp) or {}
-    prior_records = _binaries(prior.get("binaries"))
-    reusable = (
-        prior.get("identity") == wanted
-        and _binary(prior_records, "chatterbox-server.exe") is not None
-        and _binary(prior_records, "chatterbox-bake.exe") is not None
-        and all(_identity_matches(record) for record in prior_records)
-    )
-    if reusable:
-        return {"identity": wanted, "binaries": prior_records}
+    if read_json(stamp) == wanted and exe.is_file() and bake.is_file():
+        return
     kill(pid)
     for name in cfg.other_pids:
         kill(MODELS / name)
-    need_configure = cmake_identity(prior.get("identity")) != cmake_identity(wanted) or not (build / "CMakeCache.txt").is_file()
-    if need_configure:
-        definitions = cmake_definitions(cfg)
-        run([
-            CMAKE, "-S", str(CHATTERBOX), "-B", str(build), "-G", CMAKE_GENERATOR, "-A", CMAKE_ARCH,
-            *(f"-D{name}={value}" for name, value in definitions.items()),
-        ])
-    try:
-        run([CMAKE, "--build", str(build), "--config", "Release", "--target", "chatterbox-server", "--parallel", "2"])
-        run([CMAKE, "--build", str(build), "--config", "Release", "--target", "chatterbox-bake", "--parallel", "2"])
-    except subprocess.CalledProcessError as exc:
-        raise SystemExit(f"native build failed (exit {exc.returncode})") from None
+    if CMAKE is None:
+        raise RuntimeError("cmake was not resolved")
+    definitions = cmake_definitions(cfg)
+    run([
+        CMAKE, "-S", str(CHATTERBOX), "-B", str(build), "-G", CMAKE_GENERATOR, "-A", CMAKE_ARCH,
+        *(f"-D{name}={value}" for name, value in definitions.items()),
+    ])
+    run([CMAKE, "--build", str(build), "--config", "Release", "--target", "chatterbox-server", "--parallel", "2"])
+    run([CMAKE, "--build", str(build), "--config", "Release", "--target", "chatterbox-bake", "--parallel", "2"])
     if not exe.is_file() or not bake.is_file():
         raise RuntimeError("native build did not produce required executables")
-    records = [file_identity(path) for path in sorted(exe.parent.iterdir()) if path.suffix.lower() in (".exe", ".dll")]
-    result = {"identity": wanted, "binaries": records}
-    write_json(stamp, result)
-    return result
+    write_json(stamp, wanted)
 
 
 def ensure_assets(cfg: Variant) -> Path:
@@ -765,39 +597,15 @@ def ensure_assets(cfg: Variant) -> Path:
     return ckpt
 
 
-def conversion_input_names(cfg: Variant, kind: str) -> tuple[str, ...]:
-    if kind == "t3":
-        base = (cfg.t3_ckpt, "conds.pt", "ve.safetensors")
-        if cfg.needs_language:
-            return base + ("grapheme_mtl_merged_expanded_v1.json", "Cangjie5_TC.json", "official_mtl_tokenizer.py", "official_mtl_tts.py")
-        return base + ("vocab.json", "merges.txt", "added_tokens.json")
-    if cfg.needs_language:
-        return ("s3gen.safetensors", "conds.pt")
-    return ("s3gen_meanflow.safetensors", "conds.pt")
-
-
-def conversion_contract(cfg: Variant, kind: str, weight_type: str, ckpt: Path):
-    script = cfg.t3_script if kind == "t3" else cfg.s3_script
-    return {
+def conversion_contract(cfg: Variant, kind: str, weight_type: str):
+    contract = {
+        "engine": ENGINE_PIN,
         "kind": kind,
-        "hf_base": cfg.hf,
-        "script": script,
-        "script_blob": blob_rev(f"scripts/{script}"),
-        "deps_blob": [blob_rev(f"scripts/{d}") for d in CONVERT_DEPS],
-        "converter_environment_fingerprint": _venv_fingerprint(),
         "weight_type": weight_type,
-        "input_assets": {name: sha256(ckpt / name) for name in conversion_input_names(cfg, kind)},
-        **({"t3_ckpt": cfg.t3_ckpt} if kind == "t3" else {}),
     }
-
-
-def conversion_identity(obj):
-    if obj is None:
-        return None
-    keys = ("kind", "hf_base", "script", "script_blob", "deps_blob", "converter_environment_fingerprint", "weight_type", "input_assets")
-    if obj.get("kind") == "t3":
-        keys += ("t3_ckpt",)
-    return {key: obj.get(key) for key in keys}
+    if kind == "t3":
+        contract["t3_ckpt"] = cfg.t3_ckpt
+    return contract
 
 
 def convert_t3(cfg: Variant, py: Path, ckpt: Path, t3: Path, contract, weight_type: str):
@@ -817,13 +625,11 @@ def convert_s3(cfg: Variant, py: Path, ckpt: Path, s3: Path, contract, weight_ty
 
 
 def ensure_converted(cfg: Variant, py: Path, ckpt: Path, t3: Path, s3: Path, args: LaunchArgs):
-    t3_contract = conversion_contract(cfg, "t3", args.t3_weight_type, ckpt)
-    s3_contract = conversion_contract(cfg, "s3", args.s3_weight_type, ckpt)
-    t3_stamp = MODELS / f"{t3.stem}.convert.json"
-    s3_stamp = MODELS / f"{s3.stem}.convert.json"
-    if (not t3.is_file()) or conversion_identity(read_json(t3_stamp)) != t3_contract:
+    t3_contract = conversion_contract(cfg, "t3", args.t3_weight_type)
+    s3_contract = conversion_contract(cfg, "s3", args.s3_weight_type)
+    if (not t3.is_file()) or read_json(MODELS / f"{t3.stem}.convert.json") != t3_contract:
         convert_t3(cfg, py, ckpt, t3, t3_contract, args.t3_weight_type)
-    if (not s3.is_file()) or conversion_identity(read_json(s3_stamp)) != s3_contract:
+    if (not s3.is_file()) or read_json(MODELS / f"{s3.stem}.convert.json") != s3_contract:
         convert_s3(cfg, py, ckpt, s3, s3_contract, args.s3_weight_type)
     return t3_contract, s3_contract
 
@@ -832,23 +638,17 @@ def ensure_baked(cfg: Variant, reference: Path, base_t3: Path, base_s3: Path, ba
     if not reference.is_file():
         raise FileNotFoundError(str(reference))
     wanted = {
-        "family": cfg.name,
-        "bake_blob": [blob_rev(p) for p in BAKE_SOURCES],
-        "bake_binary": file_identity(bake),
-        "reference": file_identity(reference),
-        "base_t3": file_identity(base_t3),
-        "base_s3": file_identity(base_s3),
+        "engine": ENGINE_PIN,
+        "variant": cfg.name,
         "t3_conversion": t3_contract,
         "s3_conversion": s3_contract,
+        "reference": file_stamp(reference),
     }
-    key = hashlib.sha256(json.dumps(wanted, sort_keys=True, separators=(",", ":")).encode("ascii")).hexdigest()[:24]
-    voice_dir = MODELS / "voices" / cfg.name / key
+    voice_dir = MODELS / "voices" / cfg.name
     t3 = voice_dir / "t3.gguf"
     s3 = voice_dir / "s3.gguf"
     stamp = voice_dir / "bake.json"
-    prior = read_json(stamp)
-    actual = {"t3": file_identity(t3), "s3": file_identity(s3)} if t3.is_file() and s3.is_file() else None
-    if prior and prior.get("identity") == wanted and prior.get("outputs") == actual:
+    if read_json(stamp) == wanted and t3.is_file() and s3.is_file():
         return t3, s3
     tmp = voice_dir.with_name(voice_dir.name + ".baking")
     if tmp.exists():
@@ -859,8 +659,7 @@ def ensure_baked(cfg: Variant, reference: Path, base_t3: Path, base_s3: Path, ba
     shutil.copy2(base_s3, tmp_s3)
     try:
         run([str(bake), str(tmp_t3), str(tmp_s3), str(reference)], cwd=str(ROOT))
-        outputs = {"t3": file_identity(tmp_t3), "s3": file_identity(tmp_s3)}
-        write_json(tmp / "bake.json", {"identity": wanted, "outputs": outputs})
+        write_json(tmp / "bake.json", wanted)
         voice_dir.parent.mkdir(parents=True, exist_ok=True)
         if voice_dir.exists():
             shutil.rmtree(voice_dir)

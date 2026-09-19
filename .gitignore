@@ -5,10 +5,6 @@
 !/tts_common.py
 !/tts_settings.py
 !/requirements.txt
-!/tests/
-!/tests/test_settings_contract.py
-!/tests/test_gpt2_converter_contract.py
-!/tests/test_cli.py
 knowledgebase.md
 /knowledgebase.md
 **/knowledgebase.md
