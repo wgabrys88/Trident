@@ -1,19 +1,14 @@
 *
 !.gitignore
 !.gitattributes
-!/tts_nano.py
-!/tts_turbo.py
-!/tts_v3.py
+!/tts.py
 !/tts_common.py
-!/asr_parakeet.py
-!/tools/
-!/tools/compare_runs.py
-!/tools/run_tables.py
-!/tools/analyze_run.py
-!/tools/report_html.py
-!/tools/log_analysis.requirements.txt
-# PARENT handover runbook. Never add a ! exception for this name.
-# The file lives beside the clones, not inside this tree.
+!/tts_settings.py
+!/requirements.txt
+!/tests/
+!/tests/test_settings_contract.py
+!/tests/test_gpt2_converter_contract.py
+!/tests/test_cli.py
 knowledgebase.md
 /knowledgebase.md
 **/knowledgebase.md
@@ -26,19 +21,3 @@ models/**
 .ckpt*/
 .venv*/
 __pycache__/
-
-!/tools/mtl_tokenizer.requirements.txt
-!/tts_settings.py
-!/tts_metadata.py
-!/tts_client.py
-!/tts_split.py
-!/tts_speak.py
-!/tts_precision_ab.py
-!/tools/converter.requirements.txt
-!/tests/
-!/tests/test_metadata_schema.py
-!/tests/test_settings_contract.py
-
-!/tests/test_run_evidence_schema.py
-!/tests/test_gpt2_converter_contract.py
-!/tests/test_speak_split.py
