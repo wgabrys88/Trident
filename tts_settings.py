@@ -24,12 +24,12 @@ RUNTIME_DEFAULTS = {
         "min-p": "0.05",
         "cfg-weight": "0.5",
         "exaggeration": "0.5",
-        "cfm-steps": "10",
+        "cfm-steps": "5",
         "cfm-cfg": "0.7",
         "trim-fade-samples": "480",
     },
 }
-CONVERSION_DEFAULTS = {"t3-weight-type": "f32", "s3-weight-type": "f32"}
+CONVERSION_DEFAULTS = {"t3-weight-type": "q4_0", "s3-weight-type": "q4_0"}
 
 CMAKE_GENERATOR = "Visual Studio 17 2022"
 CMAKE_ARCH = "x64"
