@@ -54,6 +54,4 @@ CMAKE_FLAGS = MappingProxyType({
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 PYTHON_ENV_BOOTSTRAP = MappingProxyType({
     "torch": ("torch==2.6.0",),
-    "pre": (),
-    "msvc": False,
 })
