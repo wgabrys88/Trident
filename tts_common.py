@@ -1,6 +1,5 @@
 import ctypes
 import json
-import math
 import platform
 import re
 import shutil
@@ -15,7 +14,7 @@ from pathlib import Path
 
 from tts_settings import (
     CMAKE_ARCH, CMAKE_FLAGS, CMAKE_GENERATOR, CONVERSION_DEFAULTS,
-    PYTHON_ENV_BOOTSTRAP, PYTORCH_CPU_INDEX, RUNTIME_DEFAULTS, RUNTIME_KINDS, WEIGHT_TYPES,
+    PYTHON_ENV_BOOTSTRAP, PYTORCH_CPU_INDEX, RUNTIME_DEFAULTS, WEIGHT_TYPES,
 )
 
 ROOT = Path(__file__).resolve().parent
@@ -26,7 +25,7 @@ GGML_REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
 VULKAN: Path | None = None
 CMAKE: Path | None = None
 VCVARS: Path | None = None
-ENGINE_PIN = "df60b60034fdd1aca2c65f9264338d4fb6f12c8b"
+ENGINE_PIN = "92f04db4c49a367451d68a85a630b881c7153ad7"
 DETACH = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
 K32 = ctypes.WinDLL("kernel32", use_last_error=True)
 K32.WaitNamedPipeW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint]
@@ -47,6 +46,22 @@ SYNCHRONIZE = 0x00100000
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 ERROR_FILE_NOT_FOUND = 2
 STATS_KEYS = ("predicted", "dropped", "eos", "n_past", "units", "text_tokens", "max_unit_predicted")
+FAMILY = {
+    "gpt2": {
+        "t3_script": "convert-t3-gpt2-to-gguf.py",
+        "s3_script": "convert-s3gen-to-gguf.py",
+        "ckpt": ".ckpt",
+        "s3_family": "meanflow",
+        "siblings": ("nano", "turbo"),
+    },
+    "v3": {
+        "t3_script": "convert-t3-v3-to-gguf.py",
+        "s3_script": "convert-s3gen-v3-to-gguf.py",
+        "ckpt": ".ckpt-v3",
+        "s3_family": "v3",
+        "siblings": ("v3",),
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -55,12 +70,7 @@ class Variant:
     hf: str
     assets: tuple[str, ...]
     t3_ckpt: str
-    pid_name: str
     build_name: str
-    ckpt_name: str
-    other_pids: tuple[str, ...]
-    t3_script: str
-    s3_script: str
     needs_language: bool = False
     external_assets: tuple[tuple[str, str], ...] = ()
 
@@ -84,7 +94,7 @@ def git_out(args, repo=CHATTERBOX):
 
 
 def json_text(obj) -> str:
-    return json.dumps(obj, sort_keys=True, indent=2, ensure_ascii=True, allow_nan=False) + "\n"
+    return json.dumps(obj, sort_keys=True, ensure_ascii=True, allow_nan=False) + "\n"
 
 
 def read_json(path: Path):
@@ -193,7 +203,7 @@ def download(url: str, dest: Path):
 
 
 def pid_path(cfg: Variant) -> Path:
-    return MODELS / cfg.pid_name
+    return MODELS / f"{cfg.name}.pid"
 
 
 def pipe_name(cfg: Variant) -> str:
@@ -202,8 +212,7 @@ def pipe_name(cfg: Variant) -> str:
 
 def paths(cfg: Variant, args: LaunchArgs):
     t3 = MODELS / f"chatterbox-t3-{cfg.name}-precision1-{args.t3_weight_type}.gguf"
-    s3_family = "v3" if cfg.build_name == "v3" else "meanflow"
-    s3 = MODELS / f"chatterbox-s3gen-{s3_family}-precision1-{args.s3_weight_type}.gguf"
+    s3 = MODELS / f"chatterbox-s3gen-{FAMILY[cfg.build_name]['s3_family']}-precision1-{args.s3_weight_type}.gguf"
     build = CHATTERBOX / "build" / cfg.build_name
     bin_dir = build / "bin"
     return t3, s3, pid_path(cfg), build, bin_dir / "chatterbox-server.exe", bin_dir / "chatterbox-bake.exe", pipe_name(cfg)
@@ -375,12 +384,7 @@ def ensure_server(cfg: Variant, exe: Path, t3: Path, s3: Path, pipe: str, pid: P
 
 def wav_duration_s(path: Path) -> float:
     with wave.open(str(path), "rb") as f:
-        if f.getnchannels() != 1 or f.getsampwidth() != 2 or f.getframerate() != 24000 or f.getcomptype() != "NONE":
-            raise RuntimeError("WAV format mismatch")
-        frames = f.getnframes()
-        if frames <= 0 or len(f.readframes(frames)) != frames * 2:
-            raise RuntimeError("empty or truncated WAV")
-        return frames / 24000.0
+        return f.getnframes() / f.getframerate()
 
 
 def parse_synth_stats(line: bytes) -> dict:
@@ -392,17 +396,10 @@ def parse_synth_stats(line: bytes) -> dict:
     out = {}
     for part in text.split():
         key, sep, raw = part.partition("=")
-        if not sep:
-            continue
-        try:
+        if sep:
             out[key] = int(raw, 10)
-        except ValueError:
-            try:
-                out[key] = float(raw)
-            except ValueError:
-                out[key] = raw
-    if any(key not in out or not isinstance(out[key], int) for key in STATS_KEYS):
-        raise RuntimeError("missing or invalid engine stats")
+    if any(key not in out for key in STATS_KEYS):
+        raise RuntimeError("missing engine stats")
     return out
 
 
@@ -451,36 +448,10 @@ def usage(cfg: Variant):
     return f"usage: python tts.py {cfg.name} {runtime} {controls} {tail}"
 
 
-def normalize_knob(name: str, raw: str) -> str:
-    kind = RUNTIME_KINDS[name]
-    try:
-        if kind == "i":
-            if not re.fullmatch(r"[+-]?[0-9]+", raw):
-                raise ValueError("integer syntax")
-            value = int(raw, 10)
-            if not -2147483648 <= value <= 2147483647:
-                raise ValueError("integer range")
-        else:
-            value = float(raw)
-            if not math.isfinite(value):
-                raise ValueError("non-finite value")
-        if name in ("top-k", "temperature", "trim-fade-samples") and value < 0:
-            raise ValueError("must be nonnegative")
-        if name in ("n-predict", "repeat-penalty", "cfm-steps") and value <= 0:
-            raise ValueError("must be positive")
-        if name == "top-p" and not 0 < value <= 1:
-            raise ValueError("must be in (0,1]")
-        if name == "min-p" and not 0 <= value <= 1:
-            raise ValueError("must be in [0,1]")
-        return str(value)
-    except ValueError as exc:
-        raise SystemExit(f"invalid {name}: {exc}") from exc
-
-
 def parse_args(cfg: Variant, argv: list[str]) -> LaunchArgs:
     args = argv[1:]
     runtime = dict(RUNTIME_DEFAULTS[cfg.build_name])
-    conversion = dict(CONVERSION_DEFAULTS[cfg.build_name])
+    conversion = dict(CONVERSION_DEFAULTS)
     reference = REF
     seen = set()
     i = 0
@@ -499,7 +470,7 @@ def parse_args(cfg: Variant, argv: list[str]) -> LaunchArgs:
             raise SystemExit(f"duplicate flag: --{name}")
         seen.add(name)
         if name in allowed_runtime:
-            runtime[name] = normalize_knob(name, raw)
+            runtime[name] = raw
         elif name == "t3-weight-type":
             if raw not in WEIGHT_TYPES:
                 raise SystemExit(f"invalid t3-weight-type: {raw}")
@@ -517,7 +488,7 @@ def parse_args(cfg: Variant, argv: list[str]) -> LaunchArgs:
     if cfg.needs_language:
         if len(rest) != 2:
             raise SystemExit(usage(cfg))
-        text, language = rest[0], rest[1].lower()
+        text, language = rest[0], rest[1]
     else:
         if len(rest) != 1:
             raise SystemExit(usage(cfg))
@@ -529,7 +500,7 @@ def cmake_definitions(cfg: Variant) -> dict[str, str]:
     if VULKAN is None:
         raise RuntimeError("Vulkan SDK was not resolved")
     return {
-        **dict(CMAKE_FLAGS),
+        **CMAKE_FLAGS,
         "TTS_FAMILY": cfg.build_name,
         "Vulkan_INCLUDE_DIR": str((VULKAN / "Include").resolve()),
         "Vulkan_LIBRARY": str((VULKAN / "Lib/vulkan-1.lib").resolve()),
@@ -560,15 +531,30 @@ def ensure_ggml():
         raise SystemExit(f"ggml {actual} != required {GGML_REV}")
 
 
+def prune_build(build: Path, bin_dir: Path):
+    for child in list(build.iterdir()):
+        if child.resolve() == bin_dir.resolve():
+            continue
+        if child.is_dir():
+            shutil.rmtree(child)
+        else:
+            child.unlink()
+    umbrella = bin_dir / "ggml.dll"
+    if umbrella.is_file():
+        umbrella.unlink()
+
+
 def ensure_build(cfg: Variant, pid: Path, build: Path, exe: Path, bake: Path):
     ensure_ggml()
     stamp = MODELS / f"{cfg.build_name}.build-contract.json"
     wanted = build_contract(cfg)
     if read_json(stamp) == wanted and exe.is_file() and bake.is_file():
+        prune_build(build, exe.parent)
         return
     kill(pid)
-    for name in cfg.other_pids:
-        kill(MODELS / name)
+    for sibling in FAMILY[cfg.build_name]["siblings"]:
+        if sibling != cfg.name:
+            kill(MODELS / f"{sibling}.pid")
     if CMAKE is None:
         raise RuntimeError("cmake was not resolved")
     definitions = cmake_definitions(cfg)
@@ -580,11 +566,12 @@ def ensure_build(cfg: Variant, pid: Path, build: Path, exe: Path, bake: Path):
     run([CMAKE, "--build", str(build), "--config", "Release", "--target", "chatterbox-bake", "--parallel", "2"])
     if not exe.is_file() or not bake.is_file():
         raise RuntimeError("native build did not produce required executables")
+    prune_build(build, exe.parent)
     write_json(stamp, wanted)
 
 
 def ensure_assets(cfg: Variant) -> Path:
-    ckpt = ROOT / cfg.ckpt_name
+    ckpt = ROOT / FAMILY[cfg.build_name]["ckpt"]
     ckpt.mkdir(parents=True, exist_ok=True)
     for name in cfg.assets:
         dest = ckpt / name
@@ -611,7 +598,7 @@ def conversion_contract(cfg: Variant, kind: str, weight_type: str):
 def convert_t3(cfg: Variant, py: Path, ckpt: Path, t3: Path, contract, weight_type: str):
     tmp = t3.with_suffix(".gguf.converting")
     tmp.unlink(missing_ok=True)
-    run([str(py), str(CHATTERBOX / "scripts" / cfg.t3_script), str(ckpt), str(tmp), cfg.t3_ckpt, "--matrix-type", weight_type])
+    run([str(py), str(CHATTERBOX / "scripts" / FAMILY[cfg.build_name]["t3_script"]), str(ckpt), str(tmp), cfg.t3_ckpt, "--matrix-type", weight_type])
     tmp.replace(t3)
     write_json(MODELS / f"{t3.stem}.convert.json", contract)
 
@@ -619,7 +606,7 @@ def convert_t3(cfg: Variant, py: Path, ckpt: Path, t3: Path, contract, weight_ty
 def convert_s3(cfg: Variant, py: Path, ckpt: Path, s3: Path, contract, weight_type: str):
     tmp = s3.with_suffix(".gguf.converting")
     tmp.unlink(missing_ok=True)
-    run([str(py), str(CHATTERBOX / "scripts" / cfg.s3_script), str(ckpt), str(tmp), "--weight-type", weight_type])
+    run([str(py), str(CHATTERBOX / "scripts" / FAMILY[cfg.build_name]["s3_script"]), str(ckpt), str(tmp), "--weight-type", weight_type])
     tmp.replace(s3)
     write_json(MODELS / f"{s3.stem}.convert.json", contract)
 
