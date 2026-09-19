@@ -31,6 +31,8 @@ __pycache__/
 !/tts_settings.py
 !/tts_metadata.py
 !/tts_client.py
+!/tts_split.py
+!/tts_speak.py
 !/tts_precision_ab.py
 !/tools/converter.requirements.txt
 !/tests/
@@ -39,3 +41,4 @@ __pycache__/
 
 !/tests/test_run_evidence_schema.py
 !/tests/test_gpt2_converter_contract.py
+!/tests/test_speak_split.py
