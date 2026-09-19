@@ -17,7 +17,7 @@ Graph::Graph(const VulkanBackend& backend, size_t nodes)
       allocator_(ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend.get())), ggml_gallocr_free),
       backend_(backend), graph(ggml_new_graph_custom(context_.get(), nodes, false)) {}
 void Graph::allocate() {
-    if (!ggml_gallocr_alloc_graph(allocator_.get(), graph))
+    if (!ggml_gallocr_reserve(allocator_.get(), graph) || !ggml_gallocr_alloc_graph(allocator_.get(), graph))
         throw std::runtime_error("Vulkan graph allocation failed");
 }
 void Graph::compute() const { backend_.compute(graph); }

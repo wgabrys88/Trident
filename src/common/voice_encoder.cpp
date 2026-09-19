@@ -77,14 +77,21 @@ std::vector<float> VoiceEncoder::embed(const Audio& audio) const {
         float* values = embeddings.data() + size_t(i) * embedding_;
         double square = 0;
         for (int j = 0; j < embedding_; ++j) square += double(values[j]) * double(values[j]);
-        float scale = float(1.0 / std::sqrt(square));
-        for (int j = 0; j < embedding_; ++j) result[j] += values[j] * scale;
+        double norm = std::sqrt(square);
+        if (norm > 1e-12) {
+            float scale = float(1.0 / norm);
+            for (int j = 0; j < embedding_; ++j) values[j] *= scale;
+        }
+        for (int j = 0; j < embedding_; ++j) result[j] += values[j];
     }
     float inverse_windows = 1.f / windows;
     double square = 0;
     for (auto& value : result) { value *= inverse_windows; square += double(value) * double(value); }
-    float scale = float(1.0 / std::sqrt(square));
-    for (auto& value : result) value *= scale;
+    double norm = std::sqrt(square);
+    if (norm > 1e-12) {
+        float scale = float(1.0 / norm);
+        for (auto& value : result) value *= scale;
+    }
     return result;
 }
 }

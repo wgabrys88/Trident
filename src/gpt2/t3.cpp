@@ -8,11 +8,12 @@ Gpt2T3::Gpt2T3(const std::string& path, const VulkanBackend& backend, Knobs knob
     : backend_(backend), knobs_(knobs), file_(path), weights_(file_, backend), penalty_(knobs.repeat_penalty),
       kv_context_(nullptr, ggml_free), kv_buffer_(nullptr, ggml_backend_buffer_free),
       width_(file_.u32("chatterbox.n_embd")), heads_(file_.u32("chatterbox.n_head")),
-      layers_(file_.u32("chatterbox.n_layer")), context_(file_.u32("chatterbox.n_ctx")),
+      layers_(file_.u32("chatterbox.n_layer")), context_(0),
       vocabulary_(file_.u32("chatterbox.speech_vocab_size")), start_(file_.u32("chatterbox.start_speech_token")),
       stop_(file_.u32("chatterbox.stop_speech_token")), conditioning_(file_.u32("chatterbox.cond_prompt_length")),
       epsilon_(file_.f32("chatterbox.layer_norm_eps")) {
     conditioning_ = int(ggml_nelements(weights_.at("chatterbox/builtin/cond_prompt_speech_tokens")));
+    context_ = int(weights_.at("model/wpe")->ne[1]);
 }
 void Gpt2T3::reserve(int prompt) {
     int rows = int(std::min<int64_t>(int64_t(prompt) + knobs_.n_predict + 1, context_));
