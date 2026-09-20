@@ -261,6 +261,6 @@ std::vector<float> Audio::kaldi(const std::vector<float>& filters, const VulkanB
         frame[0] *= 1.f - 0.97f;
         for (int i = 0; i < 400; ++i) frame[i] *= window[i];
     }
-    return spectrum(frames, filters, backend, count, 512, 80, 2.f, std::numeric_limits<float>::epsilon());
+    return spectrum(frames, filters, backend, count, 512, int(filters.size() / 257), 2.f, std::numeric_limits<float>::epsilon());
 }
 }

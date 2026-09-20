@@ -158,7 +158,7 @@ ggml_tensor* MeanflowS3::transformer(ggml_context* ctx, ggml_tensor* x, const st
 }
 ggml_tensor* MeanflowS3::stack(ggml_context* ctx, ggml_tensor* x, const std::string& name, int frames) const {
     x = transpose(ctx, x);
-    for (int i = 0; i < 4; ++i) x = transformer(ctx, x, name + "/" + std::to_string(i), frames);
+    for (int i = 0; i < weights_.count(name + "/", "/attn1/to_q/weight"); ++i) x = transformer(ctx, x, name + "/" + std::to_string(i), frames);
     return transpose(ctx, x);
 }
 std::vector<float> MeanflowS3::time(float value) {
@@ -205,7 +205,7 @@ std::vector<float> MeanflowS3::estimate(const std::vector<float>& state, const s
         x = stack(ctx, resnet(ctx, x, t, "cfm/down_blocks/0/0"), "cfm/down_blocks/0/1", frames);
         auto* residual = x;
         x = convolution(ctx, pad(ctx, x, 2, 0), "cfm/down_blocks/0/2", 1, 0);
-        for (int i = 0; i < 12; ++i) {
+        for (int i = 0; i < weights_.count("cfm/mid_blocks/", "/0/res_conv/weight"); ++i) {
             std::string name = "cfm/mid_blocks/" + std::to_string(i);
             x = stack(ctx, resnet(ctx, x, t, name + "/0"), name + "/1", frames);
         }
@@ -224,32 +224,32 @@ std::vector<float> MeanflowS3::pitch(const std::vector<float>& mel, int frames) 
     auto* ctx = graph.context();
     auto* x = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, frames, mels_);
     ggml_set_name(x, "mel"); ggml_set_input(x);
-    for (int i = 0; i < 5; ++i)
+    for (int i = 0; i < weights_.count("hift/f0_predictor/condnet/", "/weight"); ++i)
         x = ggml_unary(ctx, convolution(ctx, x, "hift/f0_predictor/condnet/" + std::to_string(i * 2), 1, 1), GGML_UNARY_OP_ELU);
     x = ggml_reshape_1d(ctx, ggml_abs(ctx, linear(ctx, transpose(ctx, x), "hift/f0_predictor/classifier")), frames);
     finish(graph, x); set(graph, "mel", mel); graph.compute(); return graph.read("out");
 }
 std::vector<float> MeanflowS3::source(const std::vector<float>& pitch) const {
-    int frames = int(pitch.size()) * 480;
+    int frames = int(pitch.size()) * 480, harmonics = int(source_weight_.size());
     uint32_t seed = uint32_t(knobs_.seed + 1);
     std::mt19937 random(seed);
     std::uniform_real_distribution<float> uniform(-float(M_PI), float(M_PI));
-    std::vector<float> phases(9, 0.f), waves(size_t(9) * frames, 0.f), result(frames);
-    std::vector<double> accumulated(9, 0.0);
-    for (int harmonic = 1; harmonic < 9; ++harmonic) phases[harmonic] = uniform(random);
+    std::vector<float> phases(harmonics, 0.f), waves(size_t(harmonics) * frames, 0.f), result(frames);
+    std::vector<double> accumulated(harmonics, 0.0);
+    for (int harmonic = 1; harmonic < harmonics; ++harmonic) phases[harmonic] = uniform(random);
     for (int t = 0; t < frames; ++t) {
         float frequency = pitch[t / 480]; bool voiced = frequency > 10.f;
-        for (int h = 0; h < 9; ++h) {
+        for (int h = 0; h < harmonics; ++h) {
             accumulated[h] += double(frequency) * (h + 1) / 24000.0;
             double angle = 2.0 * M_PI * (accumulated[h] - std::floor(accumulated[h]));
             float sine = 0.1f * std::sin(float(angle) + phases[h]);
             float amplitude = voiced ? 0.003f : 0.1f / 3.f;
-            waves[size_t(h) * frames + t] = sine * (voiced ? 1.f : 0.f) + amplitude * S3Dsp::positioned_noise(seed, uint64_t(t) * 9 + h);
+            waves[size_t(h) * frames + t] = sine * (voiced ? 1.f : 0.f) + amplitude * S3Dsp::positioned_noise(seed, uint64_t(t) * harmonics + h);
         }
     }
     for (int t = 0; t < frames; ++t) {
         float sum = source_bias_;
-        for (int h = 0; h < 9; ++h) sum += source_weight_[h] * waves[size_t(h) * frames + t];
+        for (int h = 0; h < harmonics; ++h) sum += source_weight_[h] * waves[size_t(h) * frames + t];
         result[t] = std::tanh(sum);
     }
     return result;
@@ -288,20 +288,21 @@ std::vector<float> MeanflowS3::hift(const std::vector<float>& mel, int frames, c
         auto* sine = ggml_sin(ctx, multiplied);
         return ggml_add(ctx, x, ggml_mul(ctx, ggml_mul(ctx, sine, sine), ggml_reshape_2d(ctx, inverse, 1, inverse->ne[0])));
     };
-    auto residual = [&](ggml_tensor* x, const std::string& name, int kernel) {
-        for (int i = 0; i < 3; ++i) {
+    auto residual = [&](ggml_tensor* x, const std::string& name) {
+        for (int i = 0; i < weights_.count(name + "/convs1/", "/weight"); ++i) {
             std::string index = std::to_string(i); int dilation = 2 * i + 1;
+            int kernel = int(weight(name + "/convs1/" + index + "/weight")->ne[0]);
             auto* hidden = snake(x, name + "/activations1/" + index + "/alpha");
             hidden = convolution(ctx, hidden, name + "/convs1/" + index, 1, (kernel * dilation - dilation) / 2, dilation);
             hidden = snake(hidden, name + "/activations2/" + index + "/alpha");
-            hidden = convolution(ctx, hidden, name + "/convs2/" + index, 1, (kernel - 1) / 2);
+            hidden = convolution(ctx, hidden, name + "/convs2/" + index, 1, (int(weight(name + "/convs2/" + index + "/weight")->ne[0]) - 1) / 2);
             x = ggml_add(ctx, x, hidden);
         }
         return x;
     };
     auto* x = convolution(ctx, input, "hift/conv_pre", 1, 3);
     const int rates[] = {8, 5, 3};
-    const int source_kernels[] = {7, 7, 11}, source_strides[] = {15, 3, 1}, source_padding[] = {7, 1, 0}, residual_kernels[] = {3, 7, 11};
+    const int source_strides[] = {15, 3, 1}, source_padding[] = {7, 1, 0};
     for (int i = 0; i < 3; ++i) {
         std::string index = std::to_string(i);
         x = ggml_leaky_relu(ctx, x, 0.1f, false);
@@ -314,10 +315,10 @@ std::vector<float> MeanflowS3::hift(const std::vector<float>& mel, int frames, c
             x = ggml_concat(ctx, first, x, 0);
         }
         auto* injected = convolution(ctx, source, "hift/source_downs/" + index, source_strides[i], source_padding[i]);
-        injected = residual(injected, "hift/source_resblocks/" + index, source_kernels[i]);
+        injected = residual(injected, "hift/source_resblocks/" + index);
         x = ggml_add(ctx, x, injected);
-        auto* combined = residual(x, "hift/resblocks/" + std::to_string(i * 3), residual_kernels[0]);
-        for (int j = 1; j < 3; ++j) combined = ggml_add(ctx, combined, residual(x, "hift/resblocks/" + std::to_string(i * 3 + j), residual_kernels[j]));
+        auto* combined = residual(x, "hift/resblocks/" + std::to_string(i * 3));
+        for (int j = 1; j < 3; ++j) combined = ggml_add(ctx, combined, residual(x, "hift/resblocks/" + std::to_string(i * 3 + j)));
         x = ggml_scale(ctx, combined, 1.f / 3.f);
     }
     x = convolution(ctx, ggml_leaky_relu(ctx, x, 0.01f, false), "hift/conv_post", 1, 3);

@@ -35,5 +35,6 @@ class Weights {
 public:
     Weights(const GgufFile&, const VulkanBackend&, bool expand_convolutions = false, const std::string& prefix = "");
     ggml_tensor* at(const std::string& name) const { return tensors_.at(name); }
+    int count(const std::string& prefix, const std::string& suffix) const;
 };
 }

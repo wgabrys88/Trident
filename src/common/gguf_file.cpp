@@ -66,6 +66,15 @@ void GgufFile::rewrite(const std::string& path, const std::vector<TensorReplacem
     if (!MoveFileExW(std::filesystem::u8path(temporary).c_str(), std::filesystem::u8path(path).c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
         throw std::runtime_error("GGUF replace failed: " + path);
 }
+int Weights::count(const std::string& prefix, const std::string& suffix) const {
+    int result = 0;
+    for (const auto& entry : tensors_) {
+        const auto& name = entry.first;
+        result += name.size() >= suffix.size() && name.compare(0, prefix.size(), prefix) == 0
+            && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
+    }
+    return result;
+}
 Weights::Weights(const GgufFile& file, const VulkanBackend& backend, bool expand_convolutions, const std::string& prefix)
     : context_(ggml_init({ggml_tensor_overhead() * size_t(gguf_get_n_tensors(file.get())), nullptr, true}), ggml_free),
       buffer_(nullptr, ggml_backend_buffer_free) {

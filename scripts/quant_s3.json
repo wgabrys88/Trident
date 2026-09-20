@@ -1,6 +1,7 @@
 {"rules": [
   {"prefix": "flow/input_embedding", "type": "f32"},
   {"prefix": "flow/spk_embed_affine/", "type": "f32"},
+  {"contains": "/attn/pos_bias_", "type": "f32"},
   {"prefix": "s3gen/builtin/", "type": "f32"},
   {"prefix": "s3gen/mel_fb/", "type": "f32"},
   {"prefix": "campplus/", "type": "f32"},
