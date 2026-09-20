@@ -1,5 +1,5 @@
 #pragma once
-#include "trident/llama_engine.h"
+#include "../engine.h"
 #include "common/pipe.h"
 #include <cstdint>
 

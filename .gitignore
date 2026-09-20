@@ -9,4 +9,3 @@ __pycache__/
 *.gguf
 *.wav
 *.log
-REWRITE-UNIFICATION-PLAN.md

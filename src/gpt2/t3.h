@@ -1,7 +1,6 @@
 #pragma once
 #include "common/gguf_file.h"
-#include "trident/knobs.h"
-#include "trident/stats.h"
+#include "../engine.h"
 #include "common/repeat_penalty.h"
 #include <random>
 
@@ -15,7 +14,7 @@ class Gpt2T3 {
     Context kv_context_;
     Buffer kv_buffer_;
     ggml_tensor *keys_ = nullptr, *values_ = nullptr;
-    int width_, heads_, layers_, context_, vocabulary_, start_, stop_, conditioning_, rows_ = 0;
+    int width_, heads_, layers_, context_, vocabulary_, start_, stop_, pad_token_, pad_count_, conditioning_, rows_ = 0;
     float epsilon_;
     void reserve(int prompt);
     void transformer(Graph&, ggml_tensor*, int past, int count) const;
@@ -25,6 +24,7 @@ public:
     Gpt2T3(const std::string&, const VulkanBackend&, Knobs);
     std::vector<std::string> vocabulary() const { return file_.strings("tokenizer.ggml.tokens"); }
     std::vector<std::string> merges() const { return file_.strings("tokenizer.ggml.merges"); }
-    std::vector<int32_t> generate(const std::vector<int32_t>&, SynthesizeStats&);
+    std::vector<int32_t> types() const { return file_.ints("tokenizer.ggml.token_type"); }
+    std::vector<int32_t> generate(const std::vector<int32_t>&);
 };
 }

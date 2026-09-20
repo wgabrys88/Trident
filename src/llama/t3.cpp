@@ -235,7 +235,7 @@ int32_t LlamaT3::sample(const std::vector<float>& logits, const std::vector<int3
     auto probs = probabilities(scores);
     return std::discrete_distribution<int32_t>(probs.begin(), probs.end())(rng);
 }
-std::vector<int32_t> LlamaT3::generate(const std::vector<int32_t>& text, SynthesizeStats& stats) {
+std::vector<int32_t> LlamaT3::generate(const std::vector<int32_t>& text) {
     int past = 1 + perceiver_ + 1 + int(text.size()) + 2;
     reserve(past);
     std::mt19937 rng(knobs_.seed);
@@ -251,8 +251,6 @@ std::vector<int32_t> LlamaT3::generate(const std::vector<int32_t>& text, Synthes
     size_t begin = 0, end = predicted.size();
     for (size_t i = 0; i < predicted.size(); ++i) if (predicted[i] == start_) { begin = i + 1; break; }
     for (size_t i = 0; i < predicted.size(); ++i) if (predicted[i] == stop_) { end = i; break; }
-    stats.predicted_count = int(predicted.size()); stats.dropped_count = int(end - begin);
-    stats.eos = predicted.back() == stop_; stats.n_past = past; stats.text_tokens = int(text.size());
     return std::vector<int32_t>(predicted.begin() + begin, predicted.begin() + end);
 }
 }

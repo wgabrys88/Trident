@@ -92,8 +92,15 @@ class S3Converter:
                     continue
                 mean = value.float()
                 variance = state[prefix + ".running_var"].float()
-                gamma = state[prefix + ".weight"].float()
-                beta = state[prefix + ".bias"].float()
+                weight_key, bias_key = prefix + ".weight", prefix + ".bias"
+                if (weight_key in state) != (bias_key in state):
+                    raise KeyError(weight_key if weight_key not in state else bias_key)
+                if weight_key in state:
+                    gamma = state[weight_key].float()
+                    beta = state[bias_key].float()
+                else:
+                    gamma = torch.ones(mean.shape)
+                    beta = torch.zeros(mean.shape)
                 scale = gamma / torch.sqrt(variance + 1e-5)
                 self.add(target + "/s", scale)
                 self.add(target + "/b", beta - mean * scale)

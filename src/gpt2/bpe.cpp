@@ -5,10 +5,13 @@
 #include <tuple>
 
 namespace trident::gpt2 {
-Gpt2Bpe::Gpt2Bpe(const std::vector<std::string>& tokens, const std::vector<std::string>& merges)
+Gpt2Bpe::Gpt2Bpe(const std::vector<std::string>& tokens, const std::vector<int32_t>& types, const std::vector<std::string>& merges)
     : words_(R"('s|'t|'re|'ve|'m|'ll|'d| ?[[:alpha:]]+| ?[[:digit:]]+| ?[^\s[:alpha:][:digit:]]+|\s+(?!\S)|\s+)", std::regex::optimize) {
     if (tokens.empty()) throw std::runtime_error("Empty GPT-2 vocabulary");
-    for (size_t i = 0; i < tokens.size(); ++i) vocabulary_[tokens[i]] = int32_t(i);
+    for (size_t i = 0; i < tokens.size(); ++i) {
+        vocabulary_[tokens[i]] = int32_t(i);
+        if (types[i] == 4) added_[tokens[i]] = int32_t(i);
+    }
     for (size_t i = 0; i < merges.size(); ++i) ranks_[merges[i]] = int(i);
     int extra = 0;
     for (int byte = 0; byte < 256; ++byte) {
@@ -39,8 +42,8 @@ void Gpt2Bpe::fragment(const std::string& text, std::vector<int32_t>& ids) const
 std::vector<int32_t> Gpt2Bpe::tokenize(const std::string& text) const {
     struct Span { size_t start, length; int32_t id; };
     std::vector<Span> spans;
-    for (const auto& entry : vocabulary_) {
-        if (entry.second < 50257 || entry.first.empty()) continue;
+    for (const auto& entry : added_) {
+        if (entry.first.empty()) continue;
         size_t position = 0;
         while ((position = text.find(entry.first, position)) != std::string::npos) {
             spans.push_back({position, entry.first.size(), entry.second}); position += entry.first.size();

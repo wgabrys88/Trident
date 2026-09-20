@@ -1,7 +1,6 @@
 #pragma once
 #include "audio.h"
-#include "trident/stats.h"
-#include <cstdio>
+#include "../engine.h"
 #include <map>
 #include <stdexcept>
 #include <string>
@@ -64,21 +63,19 @@ public:
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 1, 4096, 4096, 0, nullptr)) {
         if (pipe_.get() == INVALID_HANDLE_VALUE) throw std::runtime_error("Pipe creation failed");
     }
-    template<class Engine> void serve(Engine& engine) {
+    void serve(Synth& engine) {
         for (;;) {
             if (!ConnectNamedPipe(pipe_.get(), nullptr) && GetLastError() != ERROR_PIPE_CONNECTED) throw std::runtime_error("Pipe connection failed");
             auto path = Pipe::line(pipe_.get());
             std::string text(std::stoul(Pipe::line(pipe_.get())), '\0');
             Pipe::read(pipe_.get(), text.data(), DWORD(text.size()));
-            SynthesizeStats stats;
-            std::vector<float> pcm;
-            engine.synthesize(text, pcm, stats);
-            Audio(std::move(pcm), 24000).write(path);
-            char response[256];
-            int count = std::snprintf(response, sizeof(response),
-                "ok predicted=%d dropped=%d eos=%d n_past=%d units=%d text_tokens=%d max_unit_predicted=%d \n",
-                stats.predicted_count, stats.dropped_count, stats.eos, stats.n_past, stats.units, stats.text_tokens, stats.max_unit_predicted);
-            Pipe::write(pipe_.get(), response, DWORD(count));
+            try {
+                Audio(engine.synthesize(text), 24000).write(path);
+                Pipe::write(pipe_.get(), "ok\n", 3);
+            } catch (const std::exception& e) {
+                std::string reply = std::string("error ") + e.what() + "\n";
+                Pipe::write(pipe_.get(), reply.data(), DWORD(reply.size()));
+            }
             if (!FlushFileBuffers(pipe_.get()) || !DisconnectNamedPipe(pipe_.get())) throw std::runtime_error("Pipe completion failed");
         }
     }

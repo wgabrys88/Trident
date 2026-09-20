@@ -1,19 +1,25 @@
 #include "s3.h"
-#include "common/s3_dsp.h"
+#include "s3_dsp.h"
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <random>
+#include <stdexcept>
 
-namespace trident::llama {
-CfgS3::CfgS3(const std::string& path, const VulkanBackend& backend, Knobs knobs)
+namespace trident {
+S3::S3(const std::string& path, const VulkanBackend& backend, Knobs knobs)
     : backend_(backend), knobs_(knobs), file_(path), weights_(file_, backend, true),
+      meanflow_(false), batches_(0),
       width_(int(file_.tensor("flow/input_embedding")->ne[0])), mels_(int(file_.tensor("flow/spk_embed_affine/b")->ne[0])),
       speaker_size_(int(file_.tensor("flow/spk_embed_affine/w")->ne[0])),
       embeddings_(file_.floats("flow/input_embedding")), speaker_weight_(file_.floats("flow/spk_embed_affine/w")),
       speaker_bias_(file_.floats("flow/spk_embed_affine/b")), prompt_features_(file_.floats("s3gen/builtin/prompt_feat")),
       speaker_(file_.floats("s3gen/builtin/embedding")), source_weight_(file_.floats("hift/m_source/l_linear/weight")),
       source_bias_(file_.floats("hift/m_source/l_linear/bias").at(0)) {
+    auto family = file_.string("general.architecture");
+    meanflow_ = family == "chatterbox-s3gen-meanflow";
+    if (!meanflow_ && family != "chatterbox-s3gen-cfg") throw std::runtime_error("Unsupported architecture: " + family);
+    batches_ = meanflow_ ? 1 : 2;
     auto* tokens = file_.tensor("s3gen/builtin/prompt_token");
     prompt_tokens_.resize(ggml_nelements(tokens));
     std::memcpy(prompt_tokens_.data(), ggml_get_data(tokens), ggml_nbytes(tokens));
@@ -26,13 +32,13 @@ CfgS3::CfgS3(const std::string& path, const VulkanBackend& backend, Knobs knobs)
         }
     }
 }
-ggml_tensor* CfgS3::conv(ggml_context* ctx, ggml_tensor* kernel, ggml_tensor* input, int stride, int padding, int dilation) const {
+ggml_tensor* S3::conv(ggml_context* ctx, ggml_tensor* kernel, ggml_tensor* input, int stride, int padding, int dilation) const {
     auto* columns = ggml_im2col(ctx, kernel, input, stride, 0, padding, 0, dilation, 0, false, GGML_TYPE_F32);
     auto* flattened = ggml_reshape_2d(ctx, kernel, kernel->ne[0] * kernel->ne[1], kernel->ne[2]);
     auto* result = ggml_mul_mat(ctx, flattened, columns);
     return ggml_cont(ctx, ggml_permute(ctx, result, 1, 0, 2, 3));
 }
-ggml_tensor* CfgS3::pad(ggml_context* ctx, ggml_tensor* input, int front, int back) const {
+ggml_tensor* S3::pad(ggml_context* ctx, ggml_tensor* input, int front, int back) const {
     auto* result = input;
     if (front > 0) {
         auto* head = ggml_view_4d(ctx, input, front, input->ne[1], input->ne[2], input->ne[3], input->nb[1], input->nb[2], input->nb[3], 0);
@@ -44,22 +50,22 @@ ggml_tensor* CfgS3::pad(ggml_context* ctx, ggml_tensor* input, int front, int ba
     }
     return result;
 }
-ggml_tensor* CfgS3::transpose(ggml_context* ctx, ggml_tensor* x) const { return ggml_cont(ctx, ggml_permute(ctx, x, 1, 0, 2, 3)); }
-ggml_tensor* CfgS3::linear(ggml_context* ctx, ggml_tensor* x, const std::string& name, const char* w, const char* b) const {
+ggml_tensor* S3::transpose(ggml_context* ctx, ggml_tensor* x) const { return ggml_cont(ctx, ggml_permute(ctx, x, 1, 0, 2, 3)); }
+ggml_tensor* S3::linear(ggml_context* ctx, ggml_tensor* x, const std::string& name, const char* w, const char* b) const {
     return ggml_add(ctx, ggml_mul_mat(ctx, weight(name + w), x), weight(name + b));
 }
-ggml_tensor* CfgS3::norm(ggml_context* ctx, ggml_tensor* x, const std::string& name, float epsilon, const char* w, const char* b) const {
+ggml_tensor* S3::norm(ggml_context* ctx, ggml_tensor* x, const std::string& name, float epsilon, const char* w, const char* b) const {
     return ggml_add(ctx, ggml_mul(ctx, ggml_norm(ctx, x, epsilon), weight(name + w)), weight(name + b));
 }
-ggml_tensor* CfgS3::convolution(ggml_context* ctx, ggml_tensor* x, const std::string& name, int stride, int padding, int dilation, const char* w, const char* b) const {
+ggml_tensor* S3::convolution(ggml_context* ctx, ggml_tensor* x, const std::string& name, int stride, int padding, int dilation, const char* w, const char* b) const {
     auto* kernel = weight(name + w);
     return ggml_add(ctx, conv(ctx, kernel, x, stride, padding, dilation), ggml_reshape_2d(ctx, weight(name + b), 1, kernel->ne[2]));
 }
-void CfgS3::finish(Graph& graph, ggml_tensor* output, const char* name) const {
+void S3::finish(Graph& graph, ggml_tensor* output, const char* name) const {
     ggml_set_name(output, name); ggml_set_output(output); ggml_build_forward_expand(graph.graph, output); graph.allocate();
 }
-void CfgS3::set(Graph& graph, const char* name, const std::vector<float>& values) const { graph.set(name, values.data(), values.size() * sizeof(float)); }
-ggml_tensor* CfgS3::conformer(ggml_context* ctx, ggml_tensor* x, ggml_tensor* positions, const std::string& name, int frames) const {
+void S3::set(Graph& graph, const char* name, const std::vector<float>& values) const { graph.set(name, values.data(), values.size() * sizeof(float)); }
+ggml_tensor* S3::conformer(ggml_context* ctx, ggml_tensor* x, ggml_tensor* positions, const std::string& name, int frames) const {
     int head = int(weight(name + "/attn/pos_bias_u")->ne[0]), heads = int(weight(name + "/attn/pos_bias_u")->ne[1]), width = head * heads;
     auto* normalized = norm(ctx, x, name + "/norm_mha", 1e-12f, "/w", "/b");
     auto projection = [&](const char* suffix) {
@@ -82,27 +88,24 @@ ggml_tensor* CfgS3::conformer(ggml_context* ctx, ggml_tensor* x, ggml_tensor* po
     auto* ff = linear(ctx, norm(ctx, x, name + "/norm_ff", 1e-12f, "/w", "/b"), name + "/ff/w1", "/w", "/b");
     return ggml_add(ctx, x, linear(ctx, ggml_silu(ctx, ff), name + "/ff/w2", "/w", "/b"));
 }
-std::vector<float> CfgS3::positions(int frames) const {
+std::vector<float> S3::positions(int frames) const {
     int width = width_;
-    std::vector<float> result(size_t(2 * frames - 1) * width, 0.f), divisors(width / 2);
-    std::vector<std::vector<float>> positive(frames, std::vector<float>(width, 0.f));
-    std::vector<std::vector<float>> negative(frames, std::vector<float>(width, 0.f));
+    std::vector<float> result(size_t(2 * frames - 1) * width), divisors(width / 2);
     float logarithm = std::log(10000.f);
     for (int k = 0; k < width / 2; ++k) divisors[k] = std::exp(-(float(2 * k) * logarithm / float(width)));
     for (int t = 0; t < frames; ++t)
         for (int k = 0; k < width / 2; ++k) {
-            positive[t][2 * k] = std::sin(float(t) * divisors[k]);
-            positive[t][2 * k + 1] = std::cos(float(t) * divisors[k]);
-            negative[t][2 * k] = std::sin(-float(t) * divisors[k]);
-            negative[t][2 * k + 1] = std::cos(-float(t) * divisors[k]);
+            float position = float(frames - 1 - t);
+            result[t * width + 2 * k] = std::sin(position * divisors[k]); result[t * width + 2 * k + 1] = std::cos(position * divisors[k]);
         }
-    for (int t = 0; t < frames; ++t)
-        for (int d = 0; d < width; ++d) result[t * width + d] = positive[frames - 1 - t][d];
     for (int t = 1; t < frames; ++t)
-        for (int d = 0; d < width; ++d) result[(frames - 1 + t) * width + d] = negative[t][d];
+        for (int k = 0; k < width / 2; ++k) {
+            size_t row = size_t(frames - 1 + t) * width;
+            result[row + 2 * k] = std::sin(-float(t) * divisors[k]); result[row + 2 * k + 1] = std::cos(-float(t) * divisors[k]);
+        }
     return result;
 }
-std::vector<float> CfgS3::encode(const std::vector<float>& input, int frames) {
+std::vector<float> S3::encode(const std::vector<float>& input, int frames) {
     if (encoder_frames_ != frames) {
         encoder_ = std::make_unique<Graph>(backend_, 32768); encoder_frames_ = frames;
         auto* ctx = encoder_->context();
@@ -128,16 +131,16 @@ std::vector<float> CfgS3::encode(const std::vector<float>& input, int frames) {
         for (int i = 0; i < weights_.count("flow/encoder/up_block", "/attn/pos_bias_u"); ++i) x = conformer(ctx, x, pos2, "flow/encoder/up_block" + std::to_string(i), 2 * frames);
         x = norm(ctx, x, "flow/encoder/after_norm", 1e-5f, "/w", "/b");
         finish(*encoder_, linear(ctx, x, "flow/encoder_proj", "/w", "/b"));
+        set(*encoder_, "pos1", positions(frames)); set(*encoder_, "pos2", positions(2 * frames));
     }
-    set(*encoder_, "pos1", positions(frames)); set(*encoder_, "pos2", positions(2 * frames));
     set(*encoder_, "input", input); encoder_->compute(); return encoder_->read("out");
 }
-ggml_tensor* CfgS3::causal(ggml_context* ctx, ggml_tensor* x, const std::string& name) const {
+ggml_tensor* S3::causal(ggml_context* ctx, ggml_tensor* x, const std::string& name) const {
     auto* y = convolution(ctx, pad(ctx, x, 2, 0), name + "/block/0", 1, 0);
     y = transpose(ctx, norm(ctx, transpose(ctx, y), name + "/block/2"));
     return ggml_mul(ctx, y, ggml_tanh(ctx, ggml_unary(ctx, y, GGML_UNARY_OP_SOFTPLUS)));
 }
-ggml_tensor* CfgS3::resnet(ggml_context* ctx, ggml_tensor* x, ggml_tensor* time, const std::string& name) const {
+ggml_tensor* S3::resnet(ggml_context* ctx, ggml_tensor* x, ggml_tensor* time, const std::string& name) const {
     auto* hidden = causal(ctx, x, name + "/block1");
     auto* feature = ggml_mul(ctx, time, ggml_tanh(ctx, ggml_unary(ctx, time, GGML_UNARY_OP_SOFTPLUS)));
     auto* projected = linear(ctx, feature, name + "/mlp/1");
@@ -145,7 +148,7 @@ ggml_tensor* CfgS3::resnet(ggml_context* ctx, ggml_tensor* x, ggml_tensor* time,
     hidden = causal(ctx, hidden, name + "/block2");
     return ggml_add(ctx, hidden, convolution(ctx, x, name + "/res_conv", 1, 0));
 }
-ggml_tensor* CfgS3::transformer(ggml_context* ctx, ggml_tensor* x, const std::string& name, int frames) const {
+ggml_tensor* S3::transformer(ggml_context* ctx, ggml_tensor* x, const std::string& name, int frames) const {
     int head = int(weight("flow/encoder/block0/attn/pos_bias_u")->ne[0]), width = int(weight(name + "/attn1/to_q/weight")->ne[1]), heads = width / head;
     auto* normalized = norm(ctx, x, name + "/norm1");
     auto projection = [&](const char* suffix) {
@@ -159,12 +162,12 @@ ggml_tensor* CfgS3::transformer(ggml_context* ctx, ggml_tensor* x, const std::st
     auto* ff = ggml_gelu_erf(ctx, linear(ctx, norm(ctx, x, name + "/norm3"), name + "/ff/net/0/proj"));
     return ggml_add(ctx, x, linear(ctx, ff, name + "/ff/net/2"));
 }
-ggml_tensor* CfgS3::stack(ggml_context* ctx, ggml_tensor* x, const std::string& name, int frames) const {
+ggml_tensor* S3::stack(ggml_context* ctx, ggml_tensor* x, const std::string& name, int frames) const {
     x = transpose(ctx, x);
     for (int i = 0; i < weights_.count(name + "/", "/attn1/to_q/weight"); ++i) x = transformer(ctx, x, name + "/" + std::to_string(i), frames);
     return transpose(ctx, x);
 }
-std::vector<float> CfgS3::time(float value) {
+std::vector<float> S3::time(float value) {
     if (!time_) {
         time_ = std::make_unique<Graph>(backend_, 128);
         auto* ctx = time_->context();
@@ -181,7 +184,18 @@ std::vector<float> CfgS3::time(float value) {
     }
     set(*time_, "input", input); time_->compute(); return time_->read("out");
 }
-std::vector<float> CfgS3::estimate(const std::vector<float>& state, const std::vector<float>& mu,
+std::vector<float> S3::mix(const std::vector<float>& first, const std::vector<float>& second) {
+    if (!mixer_) {
+        mixer_ = std::make_unique<Graph>(backend_, 128);
+        auto* ctx = mixer_->context();
+        auto* t = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, first.size());
+        auto* r = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, second.size());
+        ggml_set_name(t, "t"); ggml_set_input(t); ggml_set_name(r, "r"); ggml_set_input(r);
+        finish(*mixer_, ggml_mul_mat(ctx, weight("cfm/time_embed_mixer/weight"), ggml_concat(ctx, t, r, 0)));
+    }
+    set(*mixer_, "t", first); set(*mixer_, "r", second); mixer_->compute(); return mixer_->read("out");
+}
+std::vector<float> S3::estimate(const std::vector<float>& state, const std::vector<float>& mu,
     const std::vector<float>& time, const std::vector<float>& speaker, const std::vector<float>& condition, int frames) {
     if (estimator_frames_ != frames) {
         estimator_ = std::make_unique<Graph>(backend_, 65536); estimator_frames_ = frames;
@@ -190,9 +204,9 @@ std::vector<float> CfgS3::estimate(const std::vector<float>& state, const std::v
             auto* value = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, width, channels, batches);
             ggml_set_name(value, name); ggml_set_input(value); return value;
         };
-        auto* x = input("x", frames, mels_, 2); auto* mean = input("mu", frames, mels_, 2);
-        auto* spk = input("speaker", mels_, 2, 1); auto* cond = input("condition", frames, mels_, 2); auto* t = input("time", int(time.size()), 1, 1);
-        auto* repeated = ggml_repeat(ctx, ggml_reshape_3d(ctx, spk, 1, mels_, 2), x);
+        auto* x = input("x", frames, mels_, batches_); auto* mean = input("mu", frames, mels_, batches_);
+        auto* spk = input("speaker", mels_, batches_, 1); auto* cond = input("condition", frames, mels_, batches_); auto* t = input("time", int(time.size()), 1, 1);
+        auto* repeated = ggml_repeat(ctx, ggml_reshape_3d(ctx, spk, 1, mels_, batches_), x);
         x = ggml_concat(ctx, ggml_concat(ctx, ggml_concat(ctx, x, mean, 1), repeated, 1), cond, 1);
         x = stack(ctx, resnet(ctx, x, t, "cfm/down_blocks/0/0"), "cfm/down_blocks/0/1", frames);
         auto* residual = x;
@@ -211,7 +225,7 @@ std::vector<float> CfgS3::estimate(const std::vector<float>& state, const std::v
     set(*estimator_, "speaker", speaker); set(*estimator_, "condition", condition);
     estimator_->compute(); return estimator_->read("out");
 }
-std::vector<float> CfgS3::pitch(const std::vector<float>& mel, int frames) const {
+std::vector<float> S3::pitch(const std::vector<float>& mel, int frames) const {
     Graph graph(backend_, 1024);
     auto* ctx = graph.context();
     auto* x = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, frames, mels_);
@@ -221,7 +235,7 @@ std::vector<float> CfgS3::pitch(const std::vector<float>& mel, int frames) const
     x = ggml_reshape_1d(ctx, ggml_abs(ctx, linear(ctx, transpose(ctx, x), "hift/f0_predictor/classifier")), frames);
     finish(graph, x); set(graph, "mel", mel); graph.compute(); return graph.read("out");
 }
-std::vector<float> CfgS3::source(const std::vector<float>& pitch) const {
+std::vector<float> S3::source(const std::vector<float>& pitch) const {
     int frames = int(pitch.size()) * 480, harmonics = int(source_weight_.size());
     uint32_t seed = uint32_t(knobs_.seed + 1);
     std::mt19937 random(seed);
@@ -246,7 +260,7 @@ std::vector<float> CfgS3::source(const std::vector<float>& pitch) const {
     }
     return result;
 }
-std::vector<float> CfgS3::stft(const std::vector<float>& signal) const {
+std::vector<float> S3::stft(const std::vector<float>& signal) const {
     Graph graph(backend_, 8192);
     auto* ctx = graph.context();
     auto* input = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, signal.size(), 1);
@@ -265,7 +279,7 @@ std::vector<float> CfgS3::stft(const std::vector<float>& signal) const {
     set(graph, "input", signal); set(graph, "kernel", S3Dsp::stft(16, S3Dsp::hann(16)));
     graph.compute(); return graph.read("out");
 }
-std::vector<float> CfgS3::hift(const std::vector<float>& mel, int frames, const std::vector<float>& spectrum, int stft_frames) const {
+std::vector<float> S3::hift(const std::vector<float>& mel, int frames, const std::vector<float>& spectrum, int stft_frames) const {
     Graph graph(backend_, 131072);
     auto* ctx = graph.context();
     auto* input = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, frames, mels_);
@@ -331,7 +345,7 @@ std::vector<float> CfgS3::hift(const std::vector<float>& mel, int frames, const 
     for (const auto& name : inverses) set(graph, ("inv_" + name).c_str(), inverse_alpha_.at(name));
     graph.compute(); return graph.read("out");
 }
-std::vector<float> CfgS3::synthesize(const std::vector<int32_t>& speech) {
+std::vector<float> S3::synthesize(const std::vector<int32_t>& speech) {
     auto tokens = prompt_tokens_;
     for (int32_t token : speech) if (token >= 0 && token < int(embeddings_.size() / size_t(width_))) tokens.push_back(token);
     std::vector<float> embedded(tokens.size() * width_);
@@ -357,23 +371,32 @@ std::vector<float> CfgS3::synthesize(const std::vector<int32_t>& speech) {
         speaker[m] = accumulator;
         for (int t = 0; t < prompt_frames; ++t) condition[m * frames + t] = prompt_features_[t * mels_ + m];
     }
-    std::vector<float> times(knobs_.cfm_steps + 1);
-    for (int i = 0; i <= knobs_.cfm_steps; ++i) {
-        float fraction = float(i) / float(knobs_.cfm_steps);
-        times[i] = 1.f - std::cos(fraction * 0.5f * float(M_PI));
-    }
-    std::vector<float> doubled(state.size() * 2), mu2(mu.size() * 2, 0.f);
-    std::vector<float> condition2(condition.size() * 2, 0.f), speaker2(size_t(2 * mels_), 0.f);
-    for (int step = 0; step < knobs_.cfm_steps; ++step) {
-        std::copy(state.begin(), state.end(), doubled.begin());
-        std::copy(state.begin(), state.end(), doubled.begin() + state.size());
-        std::copy(mu.begin(), mu.end(), mu2.begin());
-        std::copy(condition.begin(), condition.end(), condition2.begin());
-        std::copy(speaker.begin(), speaker.end(), speaker2.begin());
-        auto delta = estimate(doubled, mu2, time(times[step]), speaker2, condition2, frames);
-        float dt = times[step + 1] - times[step];
-        for (size_t i = 0; i < state.size(); ++i)
-            state[i] += dt * ((1.f + knobs_.cfm_cfg) * delta[i] - knobs_.cfm_cfg * delta[i + state.size()]);
+    if (meanflow_) {
+        for (int step = 0; step < knobs_.cfm_steps; ++step) {
+            float t = float(step) / float(knobs_.cfm_steps), r = float(step + 1) / float(knobs_.cfm_steps);
+            auto t_embedding = time(t), r_embedding = time(r);
+            auto delta = estimate(state, mu, mix(t_embedding, r_embedding), speaker, condition, frames);
+            for (size_t i = 0; i < state.size(); ++i) state[i] += (r - t) * delta[i];
+        }
+    } else {
+        std::vector<float> times(knobs_.cfm_steps + 1);
+        for (int i = 0; i <= knobs_.cfm_steps; ++i) {
+            float fraction = float(i) / float(knobs_.cfm_steps);
+            times[i] = 1.f - std::cos(fraction * 0.5f * float(M_PI));
+        }
+        std::vector<float> doubled(state.size() * 2), mu2(mu.size() * 2, 0.f);
+        std::vector<float> condition2(condition.size() * 2, 0.f), speaker2(size_t(2 * mels_), 0.f);
+        for (int step = 0; step < knobs_.cfm_steps; ++step) {
+            std::copy(state.begin(), state.end(), doubled.begin());
+            std::copy(state.begin(), state.end(), doubled.begin() + state.size());
+            std::copy(mu.begin(), mu.end(), mu2.begin());
+            std::copy(condition.begin(), condition.end(), condition2.begin());
+            std::copy(speaker.begin(), speaker.end(), speaker2.begin());
+            auto delta = estimate(doubled, mu2, time(times[step]), speaker2, condition2, frames);
+            float dt = times[step + 1] - times[step];
+            for (size_t i = 0; i < state.size(); ++i)
+                state[i] += dt * ((1.f + knobs_.cfm_cfg) * delta[i] - knobs_.cfm_cfg * delta[i + state.size()]);
+        }
     }
     int mel_frames = frames - prompt_frames;
     std::vector<float> mel(mels_ * mel_frames);

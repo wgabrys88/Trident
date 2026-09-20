@@ -30,7 +30,7 @@ MtlTokenizer::MtlTokenizer(const TokenizerPaths& paths) {
     if (!SetHandleInformation(input_.get(), HANDLE_FLAG_INHERIT, 0) || !SetHandleInformation(output_.get(), HANDLE_FLAG_INHERIT, 0))
         throw std::runtime_error("Tokenizer pipe inheritance failed");
     std::vector<std::string> arguments = {paths.python, paths.script, "--source", paths.source, "--tts-source", paths.tts_source,
-        "--tokenizer", paths.tokenizer_json, "--cangjie", paths.cangjie_json, "--dicta-model", paths.dicta_model, "--language", paths.language_id};
+        "--tokenizer", paths.tokenizer_json, "--cangjie", paths.cangjie_json, "--dicta-model", paths.dicta_model, "--language", paths.language};
     std::wstring command;
     for (const auto& argument : arguments) { if (!command.empty()) command += L' '; command += quote(wide(argument)); }
     STARTUPINFOW startup{};

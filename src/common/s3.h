@@ -1,16 +1,18 @@
 #pragma once
-#include "common/gguf_file.h"
-#include "trident/knobs.h"
+#include "gguf_file.h"
+#include "../engine.h"
 #include <map>
 
-namespace trident::llama {
-class CfgS3 {
+namespace trident {
+class S3 {
     const VulkanBackend& backend_;
     Knobs knobs_;
     GgufFile file_;
     Weights weights_;
+    bool meanflow_;
+    int batches_;
     int width_, mels_, speaker_size_;
-    std::unique_ptr<Graph> encoder_, time_, estimator_;
+    std::unique_ptr<Graph> encoder_, time_, mixer_, estimator_;
     int encoder_frames_ = 0, estimator_frames_ = 0;
     std::vector<float> embeddings_, speaker_weight_, speaker_bias_, prompt_features_, speaker_, source_weight_;
     std::vector<int32_t> prompt_tokens_;
@@ -33,6 +35,7 @@ class CfgS3 {
     std::vector<float> positions(int frames) const;
     std::vector<float> encode(const std::vector<float>&, int frames);
     std::vector<float> time(float value);
+    std::vector<float> mix(const std::vector<float>&, const std::vector<float>&);
     std::vector<float> estimate(const std::vector<float>&, const std::vector<float>&,
         const std::vector<float>&, const std::vector<float>&, const std::vector<float>&, int frames);
     std::vector<float> pitch(const std::vector<float>&, int frames) const;
@@ -40,7 +43,7 @@ class CfgS3 {
     std::vector<float> stft(const std::vector<float>&) const;
     std::vector<float> hift(const std::vector<float>&, int frames, const std::vector<float>&, int stft_frames) const;
 public:
-    CfgS3(const std::string&, const VulkanBackend&, Knobs);
+    S3(const std::string&, const VulkanBackend&, Knobs);
     std::vector<float> synthesize(const std::vector<int32_t>&);
 };
 }

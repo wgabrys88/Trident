@@ -10,7 +10,8 @@ Gpt2T3::Gpt2T3(const std::string& path, const VulkanBackend& backend, Knobs knob
       width_(file_.u32("chatterbox.n_embd")), heads_(file_.u32("chatterbox.n_head")),
       layers_(file_.u32("chatterbox.n_layer")), context_(int(file_.tensor("model/wpe")->ne[1])),
       vocabulary_(file_.u32("chatterbox.speech_vocab_size")), start_(file_.u32("chatterbox.start_speech_token")),
-      stop_(file_.u32("chatterbox.stop_speech_token")), conditioning_(int(ggml_nelements(file_.tensor("chatterbox/builtin/cond_prompt_speech_tokens")))),
+      stop_(file_.u32("chatterbox.stop_speech_token")), pad_token_(file_.u32("chatterbox.speech_pad_token")),
+      pad_count_(file_.u32("chatterbox.speech_pad_count")), conditioning_(int(ggml_nelements(file_.tensor("chatterbox/builtin/cond_prompt_speech_tokens")))),
       epsilon_(file_.f32("chatterbox.layer_norm_eps")) {}
 void Gpt2T3::reserve(int prompt) {
     int rows = int(std::min<int64_t>(int64_t(prompt) + knobs_.n_predict + 1, context_));
@@ -130,7 +131,7 @@ int32_t Gpt2T3::sample(const std::vector<float>& logits, const std::vector<int32
     for (auto& score : scores) score /= sum;
     return std::discrete_distribution<int32_t>(scores.begin(), scores.end())(rng);
 }
-std::vector<int32_t> Gpt2T3::generate(const std::vector<int32_t>& text, SynthesizeStats& stats) {
+std::vector<int32_t> Gpt2T3::generate(const std::vector<int32_t>& text) {
     int past = 1 + conditioning_ + int(text.size()) + 1;
     reserve(past);
     std::mt19937 rng(knobs_.seed);
@@ -143,9 +144,7 @@ std::vector<int32_t> Gpt2T3::generate(const std::vector<int32_t>& text, Synthesi
     }
     std::vector<int32_t> speech;
     for (int32_t value : predicted) if (value >= 0 && value < start_) speech.push_back(value);
-    speech.insert(speech.end(), 3, 4299);
-    stats.predicted_count = int(predicted.size()); stats.dropped_count = int(speech.size());
-    stats.eos = predicted.back() == stop_; stats.n_past = past; stats.text_tokens = int(text.size());
+    speech.insert(speech.end(), pad_count_, pad_token_);
     return speech;
 }
 }

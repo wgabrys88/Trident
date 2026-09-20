@@ -1,7 +1,6 @@
 #pragma once
 #include "common/gguf_file.h"
-#include "trident/knobs.h"
-#include "trident/stats.h"
+#include "../engine.h"
 #include "common/repeat_penalty.h"
 #include <random>
 
@@ -35,6 +34,7 @@ public:
     LlamaT3(const std::string&, const VulkanBackend&, Knobs);
     int32_t start_text() const { return start_text_; }
     int32_t stop_text() const { return stop_text_; }
-    std::vector<int32_t> generate(const std::vector<int32_t>&, SynthesizeStats&);
+    std::string languages() const { return file_.string("chatterbox.tokenizer.language_tokens"); }
+    std::vector<int32_t> generate(const std::vector<int32_t>&);
 };
 }

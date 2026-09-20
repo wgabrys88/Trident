@@ -1,34 +1,33 @@
-#include "trident/llama_engine.h"
-#include "mtl_numbers.h"
-#include "mtl_tokenizer.h"
-#include "t3.h"
-#include "s3.h"
+#include "engine.h"
 #include "common/audio.h"
+#include <stdexcept>
 
 namespace trident::llama {
-class Engine::Impl {
-public:
-    Knobs knobs;
-    VulkanBackend backend;
-    LlamaT3 t3;
-    CfgS3 s3;
-    MtlTokenizer tokenizer;
-    MtlNumbers numbers;
-    Impl(const std::string& t3_path, const std::string& s3_path, Knobs settings, TokenizerPaths paths)
-        : knobs(settings), backend(knobs.gpu), t3(t3_path, backend, knobs), s3(s3_path, backend, knobs),
-          tokenizer(paths), numbers(paths.language_id) {}
-};
-Engine::Engine(std::string t3, std::string s3, Knobs knobs, TokenizerPaths paths)
-    : impl_(std::make_unique<Impl>(t3, s3, knobs, std::move(paths))) {}
-Engine::~Engine() = default;
-void Engine::synthesize(const std::string& text, std::vector<float>& pcm, SynthesizeStats& stats) {
-    stats = {};
-    auto tokens = impl_->tokenizer.tokenize(impl_->numbers.verbalize(impl_->tokenizer.punctuation(text)));
-    tokens.insert(tokens.begin(), impl_->t3.start_text());
-    tokens.push_back(impl_->t3.stop_text());
-    pcm = impl_->s3.synthesize(impl_->t3.generate(tokens, stats));
+Engine::Engine(const std::string& t3_path, const std::string& s3_path, Flags& flags)
+    : knobs{
+          flags.integer("--gpu"), flags.integer("--seed"), flags.integer("--n-predict"),
+          flags.integer("--cfm-steps"), flags.integer("--trim-fade-samples"), {},
+          flags.real("--temperature"), flags.real("--top-p"), flags.real("--repeat-penalty"),
+          flags.real("--min-p"), flags.real("--cfg-weight"), flags.real("--exaggeration"), flags.real("--cfm-cfg")
+      },
+      backend(knobs.gpu), t3(t3_path, backend, knobs), s3(s3_path, backend, knobs),
+      paths{
+          flags.string("--tokenizer-python"), flags.string("--tokenizer-script"),
+          flags.string("--tokenizer-source"), flags.string("--tokenizer-tts-source"),
+          flags.string("--tokenizer-json"), flags.string("--cangjie-json"), flags.string("--dicta-model"),
+          flags.string("--language")
+      },
+      tokenizer(paths), numbers(paths.language) {
+    if (("," + t3.languages() + ",").find(",[" + paths.language + "],") == std::string::npos)
+        throw std::runtime_error("Unsupported language: " + paths.language + "; GGUF offers " + t3.languages());
+}
+std::vector<float> Engine::synthesize(const std::string& text) {
+    auto tokens = tokenizer.tokenize(numbers.verbalize(tokenizer.punctuation(text)));
+    tokens.insert(tokens.begin(), t3.start_text());
+    tokens.push_back(t3.stop_text());
+    auto pcm = s3.synthesize(t3.generate(tokens));
     pcm.resize(pcm.size() - 960);
-    Audio::fade(pcm, impl_->knobs.trim_fade);
-    stats.units = 1; stats.max_unit_predicted = stats.predicted_count;
+    Audio::fade(pcm, knobs.trim_fade);
+    return pcm;
 }
 }

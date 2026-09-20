@@ -1,5 +1,6 @@
 #include "gguf_file.h"
 #include <cstring>
+#include <memory>
 #include <stdexcept>
 #include <filesystem>
 #include <windows.h>
@@ -11,6 +12,13 @@ GgufFile::GgufFile(const std::string& path)
     file_.reset(gguf_init_from_file(path.c_str(), {false, &context}));
     context_.reset(context);
     if (!file_) throw std::runtime_error("Cannot open GGUF: " + path);
+}
+std::string GgufFile::architecture(const std::string& path) {
+    std::unique_ptr<gguf_context, decltype(&gguf_free)> file(gguf_init_from_file(path.c_str(), {true, nullptr}), gguf_free);
+    if (!file) throw std::runtime_error("Cannot open GGUF: " + path);
+    auto index = gguf_find_key(file.get(), "general.architecture");
+    if (index < 0) throw std::runtime_error("Missing GGUF key: general.architecture");
+    return gguf_get_val_str(file.get(), index);
 }
 int64_t GgufFile::key(const char* name) const {
     auto index = gguf_find_key(get(), name);
@@ -26,6 +34,12 @@ std::vector<std::string> GgufFile::strings(const char* name) const {
     for (size_t i = 0; i < gguf_get_arr_n(get(), index); ++i)
         result.emplace_back(gguf_get_arr_str(get(), index, i));
     return result;
+}
+std::vector<int32_t> GgufFile::ints(const char* name) const {
+    auto index = key(name);
+    size_t count = gguf_get_arr_n(get(), index);
+    auto* data = static_cast<const int32_t*>(gguf_get_arr_data(get(), index));
+    return {data, data + count};
 }
 ggml_tensor* GgufFile::tensor(const char* name) const {
     auto* result = ggml_get_tensor(context_.get(), name);

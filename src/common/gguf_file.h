@@ -1,6 +1,7 @@
 #pragma once
 #include "vulkan_backend.h"
 #include "gguf.h"
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 
@@ -16,12 +17,14 @@ class GgufFile {
     std::unique_ptr<gguf_context, decltype(&gguf_free)> file_;
 public:
     explicit GgufFile(const std::string& path);
+    static std::string architecture(const std::string& path);
     gguf_context* get() const { return file_.get(); }
     int64_t key(const char* name) const;
     uint32_t u32(const char* name) const;
     float f32(const char* name) const;
     std::string string(const char* name) const;
     std::vector<std::string> strings(const char* name) const;
+    std::vector<int32_t> ints(const char* name) const;
     ggml_tensor* tensor(const char* name) const;
     std::vector<float> floats(const char* name) const;
     void rewrite(const std::string& path, const std::vector<TensorReplacement>&,
