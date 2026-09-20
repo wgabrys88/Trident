@@ -13,7 +13,7 @@ using Allocator = std::unique_ptr<ggml_gallocr, decltype(&ggml_gallocr_free)>;
 class VulkanBackend {
     std::unique_ptr<ggml_backend, decltype(&ggml_backend_free)> backend_;
 public:
-    VulkanBackend();
+    explicit VulkanBackend(int device);
     ggml_backend_t get() const { return backend_.get(); }
     void compute(ggml_cgraph* graph) const;
 };

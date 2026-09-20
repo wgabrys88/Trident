@@ -4,7 +4,7 @@
 int main(int argc, char** argv) {
     trident::Flags flags(argc, argv);
     trident::llama::Knobs knobs{
-        flags.integer("--seed"), flags.integer("--n-predict"), flags.integer("--cfm-steps"),
+        flags.integer("--gpu"), flags.integer("--seed"), flags.integer("--n-predict"), flags.integer("--cfm-steps"),
         flags.integer("--trim-fade-samples"),
         flags.real("--temperature"), flags.real("--top-p"), flags.real("--repeat-penalty"),
         flags.real("--min-p"), flags.real("--cfg-weight"), flags.real("--exaggeration"), flags.real("--cfm-cfg"),

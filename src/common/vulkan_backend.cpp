@@ -3,10 +3,10 @@
 #include <stdexcept>
 
 namespace trident {
-VulkanBackend::VulkanBackend() : backend_(nullptr, ggml_backend_free) {
+VulkanBackend::VulkanBackend(int device) : backend_(nullptr, ggml_backend_free) {
     ggml_log_set([](ggml_log_level, const char*, void*) {}, nullptr);
-    backend_.reset(ggml_backend_vk_init(0));
-    if (!backend_) throw std::runtime_error("Vulkan device 0 initialization failed");
+    backend_.reset(ggml_backend_vk_init(device));
+    if (!backend_) throw std::runtime_error("Vulkan device initialization failed: " + std::to_string(device));
 }
 void VulkanBackend::compute(ggml_cgraph* graph) const {
     if (ggml_backend_graph_compute(get(), graph) != GGML_STATUS_SUCCESS)

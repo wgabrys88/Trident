@@ -16,7 +16,7 @@ public:
     MtlTokenizer tokenizer;
     MtlNumbers numbers;
     Impl(const std::string& t3_path, const std::string& s3_path, Knobs settings, TokenizerPaths paths)
-        : knobs(settings), t3(t3_path, backend, knobs), s3(s3_path, backend, knobs),
+        : knobs(settings), backend(knobs.gpu), t3(t3_path, backend, knobs), s3(s3_path, backend, knobs),
           tokenizer(paths), numbers(paths.language_id) {}
 };
 Engine::Engine(std::string t3, std::string s3, Knobs knobs, TokenizerPaths paths)

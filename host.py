@@ -1,6 +1,7 @@
 import argparse
 import ctypes
 import json
+import hashlib
 import re
 import shutil
 import subprocess
@@ -11,10 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from settings import (
-    ARCHITECTURES, CMAKE_ARCH, CMAKE_FLAGS, CMAKE_GENERATOR, CONVERSION_DEFAULTS,
-    PYTHON_ENV_BOOTSTRAP, PYTORCH_CPU_INDEX, RUNTIME_DEFAULTS, WEIGHT_TYPES,
-)
+from settings import ARCHITECTURES, CMAKE_ARCH, CMAKE_GENERATOR, FLAGS, PYTHON_ENV_BOOTSTRAP, PYTORCH_CPU_INDEX
 
 ROOT = Path(__file__).resolve().parent
 MODELS = ROOT / "models"
@@ -142,7 +140,7 @@ class EngineBuild:
         family = ARCHITECTURES[architecture]
         server, bake = bin_dir / family["server"], bin_dir / family["bake"]
         outputs = tuple(bin_dir / name for spec in ARCHITECTURES.values() for name in (spec["server"], spec["bake"]))
-        wanted = {"ggml": GgmlPin.REV, "generator": CMAKE_GENERATOR, "architecture": CMAKE_ARCH, "flags": CMAKE_FLAGS}
+        wanted = {"ggml": GgmlPin.REV, "generator": CMAKE_GENERATOR, "architecture": CMAKE_ARCH, "cmake": hashlib.sha256((ROOT / "CMakeLists.txt").read_bytes()).hexdigest()}
         stamp = MODELS / "build-contract.json"
         if Contract(wanted, *outputs).matches(stamp):
             return server, bake
@@ -150,7 +148,7 @@ class EngineBuild:
         kill(MODELS / "server.pid")
         vulkan = max(Path("C:/VulkanSDK").glob("*/Bin/glslc.exe"),
                      key=lambda path: tuple(map(int, re.findall(r"\d+", path.parts[-3])))).parents[1]
-        definitions = {**CMAKE_FLAGS,
+        definitions = {
                        "Vulkan_INCLUDE_DIR": str(vulkan / "Include"),
                        "Vulkan_LIBRARY": str(vulkan / "Lib/vulkan-1.lib"),
                        "Vulkan_GLSLC_EXECUTABLE": str(vulkan / "Bin/glslc.exe")}
@@ -283,21 +281,34 @@ class PipeServer:
 
 
 class Host:
+    def parser(self, cfg=None):
+        parser = argparse.ArgumentParser(prog="python tts.py" + (f" {cfg.name}" if cfg else ""),
+                                         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+        groups = {name: parser.add_argument_group(title) for name, title in
+                  (("model", "Model"), ("conversion", "GGUF conversion"), ("server", "Server"))} if cfg else {"model": parser}
+        for row in FLAGS:
+            name = row["name"]
+            if (cfg is None) != (name == "variant"):
+                continue
+            if cfg and row["architecture"] not in ("both", cfg.architecture):
+                continue
+            default = row["default"]
+            if isinstance(default, dict):
+                default = default[cfg.architecture]
+            options = {"help": row["help"], "default": default}
+            for key in ("choices", "metavar"):
+                if key in row:
+                    options[key] = row[key]
+            groups[row["group"]].add_argument(name if row.get("positional") else f"--{name}", **options)
+        return parser
+
     def parse(self, cfg: Variant, argv: list[str]) -> LaunchArgs:
-        parser = argparse.ArgumentParser(prog=f"python tts.py {cfg.name}")
-        parser.add_argument("-?", action="help")
-        for name, value in RUNTIME_DEFAULTS[cfg.architecture].items():
-            parser.add_argument(f"--{name}", default=value)
-        for name, value in CONVERSION_DEFAULTS.items():
-            parser.add_argument(f"--{name}", default=value, choices=WEIGHT_TYPES)
-        parser.add_argument("--reference", type=lambda value: Path(value).expanduser().resolve(), default=REF)
-        parser.add_argument("text")
-        if cfg.needs_language:
-            parser.add_argument("language")
-        values = vars(parser.parse_args(argv[1:]))
+        values = vars(self.parser(cfg).parse_args(argv[1:]))
         return LaunchArgs(values["text"], values.get("language"),
-                          {name: values[name.replace("-", "_")] for name in RUNTIME_DEFAULTS[cfg.architecture]},
-                          values["t3_weight_type"], values["s3_weight_type"], values["reference"])
+                          {row["name"]: str(values[row["name"].replace("-", "_")]) for row in FLAGS
+                           if row["group"] == "server" and row["architecture"] in ("both", cfg.architecture)},
+                          values["t3_weight_type"], values["s3_weight_type"],
+                          Path(values["reference"]).expanduser().resolve())
 
     def run(self, variant: Variant, argv: list[str]) -> Path:
         args = self.parse(variant, argv)

@@ -8,7 +8,7 @@ namespace trident::gpt2 {
 Baker::Baker(std::string t3, std::string s3, std::string reference)
     : t3_(std::move(t3)), s3_(std::move(s3)), reference_(std::move(reference)) {}
 void Baker::bake() {
-    VulkanBackend backend;
+    VulkanBackend backend(0);
     Audio reference(reference_);
     auto normalized = reference;
     normalized.normalize();

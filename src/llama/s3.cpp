@@ -326,7 +326,7 @@ std::vector<float> CfgS3::hift(const std::vector<float>& mel, int frames, const 
 }
 std::vector<float> CfgS3::synthesize(const std::vector<int32_t>& speech) {
     auto tokens = prompt_tokens_;
-    for (int32_t token : speech) if (token >= 0 && token < 6561) tokens.push_back(token);
+    for (int32_t token : speech) if (token >= 0 && token < file_.u32("s3gen.speech_vocab_size")) tokens.push_back(token);
     std::vector<float> embedded(tokens.size() * 512);
     for (size_t i = 0; i < tokens.size(); ++i) std::memcpy(embedded.data() + i * 512, embeddings_.data() + size_t(tokens[i]) * 512, 512 * sizeof(float));
     auto encoded = encode(embedded, int(tokens.size()));

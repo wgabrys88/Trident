@@ -29,10 +29,8 @@ VARIANTS = {
 
 def main():
     argv = list(sys.argv)
-    if len(argv) < 2 or argv[1] in ("-h", "--help", "-?"):
-        print("usage: python tts.py nano|turbo|v3 [knobs] [--t3-weight-type f32|f16|q4_0] [--s3-weight-type f32|f16|q4_0] [--reference wav] TEXT [language]")
-        raise SystemExit(0)
-    name = argv[1]
+    selection, remaining = Host().parser().parse_known_args(argv[1:2])
+    name = selection.variant
     if name not in VARIANTS:
         raise SystemExit("variant must be nano, turbo, or v3")
     print(Host().run(VARIANTS[name], [argv[0], *argv[2:]]), flush=True)

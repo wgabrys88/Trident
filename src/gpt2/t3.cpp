@@ -145,7 +145,7 @@ std::vector<int32_t> Gpt2T3::generate(const std::vector<int32_t>& text, Synthesi
         token = sample(logits, predicted, rng); predicted.push_back(token);
     }
     std::vector<int32_t> speech;
-    for (int32_t value : predicted) if (value >= 0 && value < 6561) speech.push_back(value);
+    for (int32_t value : predicted) if (value >= 0 && value < start_) speech.push_back(value);
     speech.insert(speech.end(), 3, 4299);
     stats.predicted_count = int(predicted.size()); stats.dropped_count = int(speech.size());
     stats.eos = predicted.back() == stop_; stats.n_past = past; stats.text_tokens = int(text.size());

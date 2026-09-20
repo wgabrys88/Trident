@@ -9,7 +9,7 @@ LlamaT3::LlamaT3(const std::string& path, const VulkanBackend& backend, Knobs kn
     : backend_(backend), knobs_(knobs), file_(path), weights_(file_, backend), penalty_(knobs.repeat_penalty),
       kv_context_(nullptr, ggml_free), kv_buffer_(nullptr, ggml_backend_buffer_free),
       width_(file_.u32("chatterbox.n_embd")), heads_(file_.u32("chatterbox.n_head")),
-      layers_(file_.u32("chatterbox.n_layer")), context_(file_.u32("chatterbox.n_ctx")),
+      layers_(file_.u32("chatterbox.n_layer")), context_(1 + file_.u32("chatterbox.perceiver_len") + 1 + file_.u32("chatterbox.text_positions") + 2 + knobs.n_predict),
       vocabulary_(file_.u32("chatterbox.speech_vocab_size")), start_(file_.u32("chatterbox.start_speech_token")),
       stop_(file_.u32("chatterbox.stop_speech_token")), start_text_(file_.u32("chatterbox.start_text_token")),
       stop_text_(file_.u32("chatterbox.stop_text_token")), conditioning_(file_.u32("chatterbox.cond_prompt_length")),

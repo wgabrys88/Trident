@@ -7,6 +7,7 @@ import librosa
 import numpy as np
 import torch
 from safetensors.torch import load_file
+from safetensors import safe_open
 
 
 class QuantPolicy:
@@ -38,6 +39,9 @@ class T3Converter:
         self.state = load_file(self.checkpoint / safetensors)
         self.conditions = torch.load(self.checkpoint / "conds.pt", map_location="cpu", weights_only=True)["t3"]
         self.writer = gguf.GGUFWriter(str(output), "chatterbox")
+        s3 = "s3gen_meanflow.safetensors" if "tfmr.wpe.weight" in self.state else "s3gen.safetensors"
+        with safe_open(self.checkpoint / s3, framework="pt") as source:
+            self.speech_tokens = source.get_slice("flow.input_embedding.weight").get_shape()[0]
         self.policy = QuantPolicy(matrix_type)
         self.writer.add_string("chatterbox.conversion.matrix_type", matrix_type)
 

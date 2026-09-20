@@ -16,7 +16,7 @@ public:
     Gpt2Bpe bpe;
     EnglishText english;
     Impl(const std::string& t3_path, const std::string& s3_path, Knobs settings)
-        : knobs(settings), t3(t3_path, backend, knobs), s3(s3_path, backend, knobs), bpe(t3.vocabulary(), t3.merges()) {}
+        : knobs(settings), backend(knobs.gpu), t3(t3_path, backend, knobs), s3(s3_path, backend, knobs), bpe(t3.vocabulary(), t3.merges()) {}
 };
 Engine::Engine(std::string t3, std::string s3, Knobs knobs) : impl_(std::make_unique<Impl>(t3, s3, knobs)) {}
 Engine::~Engine() = default;

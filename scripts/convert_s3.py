@@ -94,7 +94,6 @@ class S3Converter:
                     continue
                 mean = value.float()
                 variance = state[prefix + ".running_var"].float()
-                # Non-affine BatchNorm has unit gamma and zero beta by definition.
                 gamma = state[prefix + ".weight"].float() if prefix + ".weight" in state else torch.ones_like(mean)
                 beta = state[prefix + ".bias"].float() if prefix + ".bias" in state else torch.zeros_like(mean)
                 scale = gamma / torch.sqrt(variance + 1e-5)
@@ -133,7 +132,7 @@ class S3Converter:
             sample_rate=16000, rope_max_pos=2048), dict(rope_theta=10000.0))
 
     def convert(self):
-        self.metadata("s3gen", {"speech_vocab_size": 6561, "input_size": 512, "output_size": 80,
+        self.metadata("s3gen", {"speech_vocab_size": self.state["flow.input_embedding.weight"].shape[0], "input_size": 512, "output_size": 80,
             "encoder.n_blocks": 6, "encoder.up_n_blocks": 4, "encoder.attention_heads": 8,
             "encoder.head_dim": 64, "encoder.ff_size": 2048, "encoder.token_mel_ratio": 2,
             "encoder.pre_lookahead_len": 3, "spk_embed_dim": 192}, {"layer_norm_eps": 1e-12})
