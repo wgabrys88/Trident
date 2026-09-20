@@ -1,0 +1,40 @@
+{
+  "rules": [
+    {
+      "prefix": "chatterbox/",
+      "type": "f32"
+    },
+    {
+      "prefix": "voice_encoder/",
+      "type": "f32"
+    },
+    {
+      "prefix": "model/wpe",
+      "type": "f32"
+    },
+    {
+      "prefix": "model/ln_f/",
+      "type": "f32"
+    },
+    {
+      "prefix": "model/norm/",
+      "type": "f32"
+    },
+    {
+      "prefix": "model/rope_freq_factors",
+      "type": "f32"
+    },
+    {
+      "suffix": "/b",
+      "type": "f32"
+    },
+    {
+      "suffix": "/g",
+      "type": "f32"
+    },
+    {
+      "ndim": 1,
+      "type": "f32"
+    }
+  ]
+}

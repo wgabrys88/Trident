@@ -1,4 +1,5 @@
 import argparse
+import json
 import re
 from pathlib import Path
 
@@ -7,7 +8,7 @@ import librosa
 import numpy as np
 import torch
 from safetensors.torch import load_file
-from quant_policy import QuantPolicy
+from quant import Policy, TYPES
 
 
 class S3Converter:
@@ -23,14 +24,13 @@ class S3Converter:
            for suffix, target in (("weight", "w"), ("bias", "b"))},
     }
 
-    def __init__(self, directory, output, checkpoint, weight_type):
+    def __init__(self, directory, output, checkpoint, weight_type, quant_policy):
         directory = Path(directory)
         Path(output).parent.mkdir(parents=True, exist_ok=True)
         self.state = load_file(directory / checkpoint)
         self.conditions = torch.load(directory / "conds.pt", map_location="cpu", weights_only=True)["gen"]
         self.writer = gguf.GGUFWriter(str(output), "chatterbox-s3gen")
-        self.policy = QuantPolicy(weight_type)
-        self.writer.add_string("s3gen.conversion.weight_type", weight_type)
+        self.policy = Policy(weight_type, json.loads(Path(quant_policy).read_text())["rules"])
         prefixes = {match[1] for name in self.state
                     if (match := re.fullmatch(r"(.+)\.parametrizations\.weight\.original0", name))}
         for prefix in prefixes:
@@ -41,10 +41,7 @@ class S3Converter:
 
     def add(self, name, value):
         array = value.detach().cpu().numpy() if isinstance(value, torch.Tensor) else value
-        force = array.ndim <= 1 or any(part in name for part in (
-            "flow/input_embedding", "flow/spk_embed_affine/", "/builtin/", "s3gen/mel_fb/",
-            "campplus/", "s3tokv2/", "cfm/", "hift/"))
-        self.policy.add(self.writer, name, array, force_f32=force)
+        self.policy.add(self.writer, name, array)
 
     def metadata(self, prefix, integers, floats=None):
         for name, value in integers.items():
@@ -160,6 +157,7 @@ if __name__ == "__main__":
     parser.add_argument("directory")
     parser.add_argument("output")
     parser.add_argument("--checkpoint", required=True, choices=("s3gen_meanflow.safetensors", "s3gen.safetensors"))
-    parser.add_argument("--weight-type", required=True, choices=QuantPolicy.WEIGHT_TYPES)
+    parser.add_argument("--weight-type", required=True, choices=TYPES)
+    parser.add_argument("--quant-policy", required=True)
     args = parser.parse_args()
-    S3Converter(args.directory, args.output, args.checkpoint, args.weight_type).convert()
+    S3Converter(args.directory, args.output, args.checkpoint, args.weight_type, args.quant_policy).convert()

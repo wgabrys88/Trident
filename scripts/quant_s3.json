@@ -1,0 +1,52 @@
+{
+  "rules": [
+    {
+      "prefix": "flow/input_embedding",
+      "type": "f32"
+    },
+    {
+      "prefix": "flow/spk_embed_affine/",
+      "type": "f32"
+    },
+    {
+      "prefix": "s3gen/builtin/",
+      "type": "f32"
+    },
+    {
+      "prefix": "s3gen/mel_fb/",
+      "type": "f32"
+    },
+    {
+      "prefix": "campplus/",
+      "type": "f32"
+    },
+    {
+      "prefix": "s3tokv2/",
+      "type": "f32"
+    },
+    {
+      "prefix": "cfm/",
+      "type": "f32"
+    },
+    {
+      "prefix": "hift/",
+      "type": "f32"
+    },
+    {
+      "suffix": "/b",
+      "type": "f32"
+    },
+    {
+      "ndim": 1,
+      "type": "f32"
+    },
+    {
+      "ndim": 3,
+      "type": "f32"
+    },
+    {
+      "ndim": 4,
+      "type": "f32"
+    }
+  ]
+}

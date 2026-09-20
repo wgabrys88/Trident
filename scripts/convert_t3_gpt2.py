@@ -3,7 +3,8 @@ import json
 import re
 
 import gguf
-from quant_policy import QuantPolicy, T3Converter
+from quant import TYPES
+from convert_t3 import T3Converter
 
 
 class Gpt2Converter(T3Converter):
@@ -50,7 +51,7 @@ class Gpt2Converter(T3Converter):
             elif (match := self.LAYER.match(name)) and match[2] in self.BLOCK:
                 suffix = self.BLOCK[match[2]]
                 matrix = suffix.endswith("/w")
-                self.tensor(f"model/h{int(match[1])}/{suffix}", tensor, matrix=matrix, transpose=matrix)
+                self.tensor(f"model/h{int(match[1])}/{suffix}", tensor, transpose=matrix)
         self.finish()
 
 
@@ -59,6 +60,7 @@ if __name__ == "__main__":
     parser.add_argument("checkpoint")
     parser.add_argument("output")
     parser.add_argument("safetensors")
-    parser.add_argument("--matrix-type", required=True, choices=QuantPolicy.WEIGHT_TYPES)
+    parser.add_argument("--matrix-type", required=True, choices=TYPES)
+    parser.add_argument("--quant-policy", required=True)
     args = parser.parse_args()
-    Gpt2Converter(args.checkpoint, args.output, args.safetensors, args.matrix_type).convert()
+    Gpt2Converter(args.checkpoint, args.output, args.safetensors, args.matrix_type, args.quant_policy).convert()

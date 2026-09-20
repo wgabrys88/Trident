@@ -34,6 +34,7 @@ ggml_tensor* GgufFile::tensor(const char* name) const {
 }
 std::vector<float> GgufFile::floats(const char* name) const {
     auto* value = tensor(name);
+    if (value->type != GGML_TYPE_F32) throw std::runtime_error(std::string("Expected F32 tensor: ") + name);
     std::vector<float> result(ggml_nelements(value));
     std::memcpy(result.data(), ggml_get_data(value), result.size() * sizeof(float));
     return result;

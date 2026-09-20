@@ -4,7 +4,8 @@ import re
 
 import numpy as np
 from tokenizers import Tokenizer
-from quant_policy import QuantPolicy, T3Converter
+from quant import TYPES
+from convert_t3 import T3Converter
 
 
 class LlamaConverter(T3Converter):
@@ -40,7 +41,7 @@ class LlamaConverter(T3Converter):
                 blend = (8192 / wavelength - 1) / 3
                 scaled = (1 - blend) * inverse / 8 + blend * inverse
             factors[index] = np.float32(inverse / scaled)
-        self.writer.add_tensor("model/rope_freq_factors", factors)
+        self.policy.add(self.writer, "model/rope_freq_factors", factors)
 
     def convert(self):
         state = self.state
@@ -64,7 +65,7 @@ class LlamaConverter(T3Converter):
                 self.tensor(self.DIRECT[name], tensor)
             elif (match := self.LAYER.match(name)) and match[2] in self.BLOCK:
                 suffix = self.BLOCK[match[2]]
-                self.tensor(f"model/h{int(match[1])}/{suffix}", tensor, matrix=suffix.endswith("/w"))
+                self.tensor(f"model/h{int(match[1])}/{suffix}", tensor)
         self.rope()
         self.finish()
 
@@ -74,6 +75,7 @@ if __name__ == "__main__":
     parser.add_argument("checkpoint")
     parser.add_argument("output")
     parser.add_argument("safetensors")
-    parser.add_argument("--matrix-type", required=True, choices=QuantPolicy.WEIGHT_TYPES)
+    parser.add_argument("--matrix-type", required=True, choices=TYPES)
+    parser.add_argument("--quant-policy", required=True)
     args = parser.parse_args()
-    LlamaConverter(args.checkpoint, args.output, args.safetensors, args.matrix_type).convert()
+    LlamaConverter(args.checkpoint, args.output, args.safetensors, args.matrix_type, args.quant_policy).convert()

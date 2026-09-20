@@ -46,6 +46,17 @@ class LaunchArgs:
     t3_weight_type: str
     s3_weight_type: str
     reference: Path
+    t3_quant_policy: Path
+    s3_quant_policy: Path
+
+    def policy(self, kind):
+        return {"default": getattr(self, kind + "_weight_type"),
+                "rules": json.loads(getattr(self, kind + "_quant_policy").read_text())["rules"]}
+
+    def gguf(self, kind, family):
+        policy = self.policy("s3" if kind == "s3gen" else kind)
+        digest = hashlib.sha256(json.dumps(policy["rules"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:8]
+        return MODELS / f"chatterbox-{kind}-{family}-{policy['default']}-{digest}.gguf"
 
 
 class Contract:
@@ -181,19 +192,19 @@ class Converter:
     def ensure(self, cfg: Variant, py: Path, ckpt: Path, t3: Path, s3: Path, args: LaunchArgs) -> tuple[dict, dict]:
         family = ARCHITECTURES[cfg.architecture]
         scripts = ROOT / "scripts"
-        t3_payload = {"kind": "t3", "weight_type": args.t3_weight_type, "t3_ckpt": cfg.t3_ckpt}
-        s3_payload = {"kind": "s3", "weight_type": args.s3_weight_type, "checkpoint": family["s3_checkpoint"]}
+        t3_payload = {"kind": "t3", "policy": args.policy("t3"), "t3_ckpt": cfg.t3_ckpt}
+        s3_payload = {"kind": "s3", "policy": args.policy("s3"), "checkpoint": family["s3_checkpoint"]}
         t3_stamp, s3_stamp = MODELS / f"{t3.stem}.convert.json", MODELS / f"{s3.stem}.convert.json"
         t3_contract, s3_contract = Contract(t3_payload, t3), Contract(s3_payload, s3)
         if not t3_contract.matches(t3_stamp):
             tmp = t3.with_suffix(".gguf.converting")
-            run([str(py), str(scripts / family["t3_script"]), str(ckpt), str(tmp), cfg.t3_ckpt, "--matrix-type", args.t3_weight_type])
+            run([str(py), str(scripts / family["t3_script"]), str(ckpt), str(tmp), cfg.t3_ckpt, "--matrix-type", args.t3_weight_type, "--quant-policy", str(args.t3_quant_policy)])
             tmp.replace(t3)
             t3_contract.write(t3_stamp)
         if not s3_contract.matches(s3_stamp):
             tmp = s3.with_suffix(".gguf.converting")
             run([str(py), str(scripts / "convert_s3.py"), str(ckpt), str(tmp),
-                 "--checkpoint", family["s3_checkpoint"], "--weight-type", args.s3_weight_type])
+                 "--checkpoint", family["s3_checkpoint"], "--weight-type", args.s3_weight_type, "--quant-policy", str(args.s3_quant_policy)])
             tmp.replace(s3)
             s3_contract.write(s3_stamp)
         return t3_payload, s3_payload
@@ -308,7 +319,8 @@ class Host:
                           {row["name"]: str(values[row["name"].replace("-", "_")]) for row in FLAGS
                            if row["group"] == "server" and row["architecture"] in ("both", cfg.architecture)},
                           values["t3_weight_type"], values["s3_weight_type"],
-                          Path(values["reference"]).expanduser().resolve())
+                          Path(values["reference"]).expanduser().resolve(),
+                          (ROOT / values["t3_quant_policy"]).resolve(), (ROOT / values["s3_quant_policy"]).resolve())
 
     def run(self, variant: Variant, argv: list[str]) -> Path:
         args = self.parse(variant, argv)
@@ -319,8 +331,8 @@ class Host:
             server, bake = EngineBuild().ensure(variant.architecture)
             py = Venv().ensure()
             ckpt = Checkpoints().ensure(variant)
-            base_t3 = MODELS / f"chatterbox-t3-{variant.name}-precision1-{args.t3_weight_type}.gguf"
-            base_s3 = MODELS / f"chatterbox-s3gen-{family['s3_family']}-precision1-{args.s3_weight_type}.gguf"
+            base_t3 = args.gguf("t3", variant.name)
+            base_s3 = args.gguf("s3gen", family["s3_family"])
             t3_contract, s3_contract = Converter().ensure(variant, py, ckpt, base_t3, base_s3, args)
             t3, s3, voice = VoiceBake().ensure(variant, args.reference, base_t3, base_s3, bake, t3_contract, s3_contract)
             pipes = PipeServer()
