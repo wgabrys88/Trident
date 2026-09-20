@@ -295,7 +295,7 @@ class Host:
     def parser(self, cfg=None):
         parser = argparse.ArgumentParser(prog="python tts.py" + (f" {cfg.name}" if cfg else ""),
                                          formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-        groups = {name: parser.add_argument_group(title) for name, title in
+        groups = {name: parser.add_argument_group(title, next(row["help"] for row in FLAGS if row["name"] == "variant") if name == "model" else None) for name, title in
                   (("model", "Model"), ("conversion", "GGUF conversion"), ("server", "Server"))} if cfg else {"model": parser}
         for row in FLAGS:
             name = row["name"]

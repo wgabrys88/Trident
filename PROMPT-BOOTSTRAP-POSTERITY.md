@@ -1,4 +1,4 @@
-phase-C removable quantization
+phase-D table-generated help
 
 Implement Trident in C:\Users\eb-wjt\Downloads\3-way\Trident on real Windows. Continue immediately through remaining phases without permission requests. Python entry: python tts.py nano|turbo|v3 [flags] TEXT [language]. Download, convert, bake, reuse or start one detached named-pipe Vulkan server, synthesize one WAV, print its path.
 
@@ -9,8 +9,9 @@ Completed:
 
 - [x] C: Removable scripts/quant.py Policy(default,rules), TYPES from GGMLQuantizationType; first matching prefix/suffix/contains/ndim rule, integers preserved, f32/f16/bf16 or gguf quantize, errors propagate. Shipped quant_t3.json and quant_s3.json preserve f32 nonmatrices and sensitive prefixes; CLI overrides default and policy path replaces rules. Split converter from quant_policy.py; delete old policy JSON and force_f32. Contracts contain resolved policy and filenames include default and canonical rules sha8. GgufFile::floats requires F32; native Vulkan weights and F16 convolution expansion remain.
 
+- [x] D: Complete three-group table-generated help: Model, GGUF conversion, Server. Explain rebuild/rebake/restart, all quant types, JSON mixing, integer preservation, Q4_K_M not a type; server changes restart, matching GGUF reused.
+
 Remaining:
-- [ ] D: Complete three-group table-generated help: Model, GGUF conversion, Server. Explain rebuild/rebake/restart, all quant types, JSON mixing, integer preservation, Q4_K_M not a type; server changes restart, matching GGUF reused.
 - [ ] E: Shared repeat_penalty.h and Audio::fade, retaining Llama 960 tail. Remove duplicate glue and narrating comments. First-party lines down excluding help.
 - [ ] F: Build locally; exercise nano, turbo, v3, same-contract reuse, changed flags, q8_0 and layer-zero JSON policy. Confirm one live server and no competing CLI metadata. Rewrite this file to maintenance only with empty work checklist only after all conditions hold.
 
