@@ -17,11 +17,10 @@ Engine::Engine(const std::string& t3_path, const std::string& s3_path, Flags& fl
           flags.string("--tokenizer-json"), flags.string("--cangjie-json"), flags.string("--dicta-model"),
           flags.string("--language")
       },
-      tokenizer(paths), numbers(paths.language) {
+      tokenizer(paths), numbers(paths.language) {}
+std::vector<float> Engine::synthesize(const std::string& text) {
     if (("," + t3.languages() + ",").find(",[" + paths.language + "],") == std::string::npos)
         throw std::runtime_error("Unsupported language: " + paths.language + "; GGUF offers " + t3.languages());
-}
-std::vector<float> Engine::synthesize(const std::string& text) {
     auto tokens = tokenizer.tokenize(numbers.verbalize(tokenizer.punctuation(text)));
     tokens.insert(tokens.begin(), t3.start_text());
     tokens.push_back(t3.stop_text());
