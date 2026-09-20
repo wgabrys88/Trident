@@ -10,6 +10,12 @@
 #include <stdexcept>
 
 namespace trident {
+void Audio::fade(std::vector<float>& pcm, size_t length) {
+    std::fill_n(pcm.begin(), std::min(pcm.size(), length), 0.f);
+    for (size_t i = length; i < std::min(pcm.size(), 2 * length); ++i)
+        pcm[i] *= length > 1 ? 0.5f * (1.f - std::cos(float(M_PI) * float(i - length) / float(length - 1))) : 1.f;
+}
+
 namespace {
 class Bytes {
 public:

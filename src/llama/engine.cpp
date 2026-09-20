@@ -3,8 +3,7 @@
 #include "mtl_tokenizer.h"
 #include "t3.h"
 #include "s3.h"
-#include <algorithm>
-#include <cmath>
+#include "common/audio.h"
 
 namespace trident::llama {
 class Engine::Impl {
@@ -29,10 +28,7 @@ void Engine::synthesize(const std::string& text, std::vector<float>& pcm, Synthe
     tokens.push_back(impl_->t3.stop_text());
     pcm = impl_->s3.synthesize(impl_->t3.generate(tokens, stats));
     pcm.resize(pcm.size() - 960);
-    size_t fade = size_t(impl_->knobs.trim_fade);
-    std::fill_n(pcm.begin(), std::min(pcm.size(), fade), 0.f);
-    for (size_t i = fade; i < std::min(pcm.size(), 2 * fade); ++i)
-        pcm[i] *= fade > 1 ? 0.5f * (1.f - std::cos(float(M_PI) * float(i - fade) / float(fade - 1))) : 1.f;
+    Audio::fade(pcm, impl_->knobs.trim_fade);
     stats.units = 1; stats.max_unit_predicted = stats.predicted_count;
 }
 }

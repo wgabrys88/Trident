@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <vector>
 
-namespace trident::gpt2 {
+namespace trident {
 class RepeatPenalty {
     float penalty_;
 public:

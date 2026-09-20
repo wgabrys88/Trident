@@ -1,4 +1,4 @@
-phase-D table-generated help
+phase-E shared engine glue
 
 Implement Trident in C:\Users\eb-wjt\Downloads\3-way\Trident on real Windows. Continue immediately through remaining phases without permission requests. Python entry: python tts.py nano|turbo|v3 [flags] TEXT [language]. Download, convert, bake, reuse or start one detached named-pipe Vulkan server, synthesize one WAV, print its path.
 
@@ -11,8 +11,9 @@ Completed:
 
 - [x] D: Complete three-group table-generated help: Model, GGUF conversion, Server. Explain rebuild/rebake/restart, all quant types, JSON mixing, integer preservation, Q4_K_M not a type; server changes restart, matching GGUF reused.
 
+- [x] E: Shared repeat_penalty.h and Audio::fade, retaining Llama 960 tail. Remove duplicate glue and narrating comments. First-party lines down excluding help.
+
 Remaining:
-- [ ] E: Shared repeat_penalty.h and Audio::fade, retaining Llama 960 tail. Remove duplicate glue and narrating comments. First-party lines down excluding help.
 - [ ] F: Build locally; exercise nano, turbo, v3, same-contract reuse, changed flags, q8_0 and layer-zero JSON policy. Confirm one live server and no competing CLI metadata. Rewrite this file to maintenance only with empty work checklist only after all conditions hold.
 
 Standing constraints:

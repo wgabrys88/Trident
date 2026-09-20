@@ -2,7 +2,7 @@
 #include "common/gguf_file.h"
 #include "trident/knobs.h"
 #include "trident/stats.h"
-#include "repeat_penalty.h"
+#include "common/repeat_penalty.h"
 #include <random>
 
 namespace trident::llama {
