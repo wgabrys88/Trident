@@ -98,6 +98,17 @@ def download(url: str, dest: Path):
     tmp.replace(dest)
 
 
+def alive(pid: int) -> bool:
+    handle = K32.OpenProcess(0x00100000, False, pid)
+    if not handle:
+        return False
+    status = K32.WaitForSingleObject(handle, 0)
+    K32.CloseHandle(handle)
+    if status == 0xFFFFFFFF:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return status == 258
+
+
 def kill(pid: Path):
     if not pid.is_file():
         return
@@ -268,8 +279,11 @@ class PipeServer:
         for legacy in MODELS.glob("*.pid"):
             if legacy != pid:
                 kill(legacy)
-        if pid.is_file() and json.loads(pid.read_text(encoding="utf-8"))["contract"] == wanted:
-            if K32.WaitNamedPipeW(pipe, 1000):
+        if pid.is_file():
+            record = json.loads(pid.read_text(encoding="utf-8"))
+            if record["contract"] == wanted and alive(record["pid"]):
+                if not K32.WaitNamedPipeW(pipe, 0xFFFFFFFF):
+                    raise ctypes.WinError(ctypes.get_last_error())
                 return pipe
         kill(pid)
         proc = subprocess.Popen(command, cwd=exe.parent, stdin=subprocess.DEVNULL,
@@ -320,6 +334,20 @@ class Host:
             groups[row["group"]].add_argument(name if row.get("positional") else f"--{name}", **options)
         return parser
 
+    def bind_quant_types(self, py: Path) -> None:
+        site_packages = py.resolve().parent.parent / "Lib" / "site-packages"
+        if not site_packages.is_dir():
+            raise FileNotFoundError(site_packages)
+        path = str(site_packages)
+        if sys.path[:1] != [path]:
+            sys.path.insert(0, path)
+        from scripts.quant import TYPES
+        listing = ", ".join(TYPES)
+        for row in FLAGS:
+            if row["name"] in ("t3-weight-type", "s3-weight-type"):
+                row["choices"] = TYPES
+                row["help"] = row["help"].split(" Types:")[0].rstrip(".") + ". Types: " + listing + "."
+
     def parse(self, cfg: Variant, argv: list[str]) -> LaunchArgs:
         values = vars(self.parser(cfg).parse_args(argv[1:]))
         return LaunchArgs(values["text"], values.get("language"),
@@ -330,6 +358,8 @@ class Host:
                           (ROOT / values["t3_quant_policy"]).resolve(), (ROOT / values["s3_quant_policy"]).resolve())
 
     def run(self, variant: Variant, argv: list[str]) -> Path:
+        py = Venv().ensure()
+        self.bind_quant_types(py)
         args = self.parse(variant, argv)
         wav = ROOT / f"{datetime.now().strftime('%S-%M-%H-%d-%m-%y')}_{variant.name}.wav"
         family = ARCHITECTURES[variant.architecture]
@@ -337,7 +367,6 @@ class Host:
             MODELS.mkdir(parents=True, exist_ok=True)
             engine = EngineBuild()
             server, bake = engine.ensure()
-            py = Venv().ensure()
             ckpt = Checkpoints().ensure(variant)
             base_t3 = args.gguf("t3", variant.name)
             base_s3 = args.gguf("s3gen", family["s3_family"])
