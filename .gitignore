@@ -3,7 +3,6 @@
 !/.gitattributes
 !/CMakeLists.txt
 !/LICENSE
-!/PROMPT-BOOTSTRAP-POSTERITY.md
 !/host.py
 !/requirements.txt
 !/settings.py
