@@ -56,7 +56,6 @@ ARCHITECTURES = {
         "t3_script": "convert_t3_gpt2.py",
         "server": "chatterbox-server-gpt2.exe",
         "bake": "chatterbox-bake-gpt2.exe",
-        "siblings": ("nano", "turbo"),
     },
     "llama": {
         "ckpt": ".ckpt-v3",
@@ -65,6 +64,5 @@ ARCHITECTURES = {
         "t3_script": "convert_t3_llama.py",
         "server": "chatterbox-server-llama.exe",
         "bake": "chatterbox-bake-llama.exe",
-        "siblings": ("v3",),
     },
 }

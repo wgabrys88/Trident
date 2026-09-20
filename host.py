@@ -25,7 +25,6 @@ K32.WaitNamedPipeW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint]
 K32.WaitNamedPipeW.restype = ctypes.c_int
 K32.OpenProcess.argtypes = [ctypes.c_uint, ctypes.c_int, ctypes.c_uint]
 K32.OpenProcess.restype = ctypes.c_void_p
-K32.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint]
 K32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint]
 K32.CloseHandle.argtypes = [ctypes.c_void_p]
 
@@ -93,9 +92,8 @@ def kill(pid: Path):
     record = json.loads(pid.read_text(encoding="utf-8"))
     subprocess.run(["taskkill", "/F", "/T", "/PID", str(record["pid"])],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    handle = K32.OpenProcess(0x00100001, False, record["pid"])
+    handle = K32.OpenProcess(0x00100000, False, record["pid"])
     if handle:
-        K32.TerminateProcess(handle, 1)
         if K32.WaitForSingleObject(handle, 0xFFFFFFFF) != 0:
             K32.CloseHandle(handle)
             raise RuntimeError(f"server pid {record['pid']} did not exit")
@@ -149,9 +147,7 @@ class EngineBuild:
         if Contract(wanted, *outputs).matches(stamp):
             return server, bake
         GgmlPin().ensure()
-        for spec in ARCHITECTURES.values():
-            for sibling in spec["siblings"]:
-                kill(MODELS / f"{sibling}.pid")
+        kill(MODELS / "server.pid")
         vulkan = max(Path("C:/VulkanSDK").glob("*/Bin/glslc.exe"),
                      key=lambda path: tuple(map(int, re.findall(r"\d+", path.parts[-3])))).parents[1]
         definitions = {**CMAKE_FLAGS,
@@ -215,7 +211,7 @@ class VoiceBake:
         stamp = voice_dir / "bake.json"
         if Contract(wanted, t3, s3).matches(stamp):
             return t3, s3, wanted
-        kill(MODELS / f"{cfg.name}.pid")
+        kill(MODELS / "server.pid")
         tmp = voice_dir.with_name(voice_dir.name + ".baking")
         if tmp.exists():
             shutil.rmtree(tmp)
@@ -236,7 +232,7 @@ class PipeServer:
     def ensure(self, cfg: Variant, exe: Path, t3: Path, s3: Path, language: str | None,
                knobs: dict[str, str], py: Path, ckpt: Path, voice: dict) -> str:
         pipe = rf"\\.\pipe\chatterbox-{cfg.name}"
-        pid = MODELS / f"{cfg.name}.pid"
+        pid = MODELS / "server.pid"
         flags = dict(knobs)
         if cfg.needs_language:
             flags.update({
@@ -252,8 +248,11 @@ class PipeServer:
         command = [str(exe), str(t3), str(s3), pipe]
         command += [value for name, raw in flags.items() for value in (f"--{name}", raw)]
         wanted = {"command": command, "voice": voice}
+        for legacy in MODELS.glob("*.pid"):
+            if legacy != pid:
+                kill(legacy)
         if pid.is_file() and json.loads(pid.read_text(encoding="utf-8"))["contract"] == wanted:
-            if K32.WaitNamedPipeW(pipe, 30000):
+            if K32.WaitNamedPipeW(pipe, 1000):
                 return pipe
         kill(pid)
         proc = subprocess.Popen(command, cwd=exe.parent, stdin=subprocess.DEVNULL,
