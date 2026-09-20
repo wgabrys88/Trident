@@ -1,9 +1,7 @@
-import argparse
 import json
 import re
 
 import gguf
-from quant import TYPES
 from convert_t3 import T3Converter
 
 
@@ -56,11 +54,4 @@ class Gpt2Converter(T3Converter):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("checkpoint")
-    parser.add_argument("output")
-    parser.add_argument("safetensors")
-    parser.add_argument("--matrix-type", required=True, choices=TYPES)
-    parser.add_argument("--quant-policy", required=True)
-    args = parser.parse_args()
-    Gpt2Converter(args.checkpoint, args.output, args.safetensors, args.matrix_type, args.quant_policy).convert()
+    Gpt2Converter.main()

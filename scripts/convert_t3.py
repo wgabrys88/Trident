@@ -1,7 +1,8 @@
+import argparse
 import json
 from pathlib import Path
 
-from quant import Policy
+from quant import Policy, TYPES
 import gguf
 import librosa
 import numpy as np
@@ -11,6 +12,16 @@ from safetensors import safe_open
 
 
 class T3Converter:
+    @classmethod
+    def main(cls):
+        parser = argparse.ArgumentParser()
+        parser.add_argument("checkpoint")
+        parser.add_argument("output")
+        parser.add_argument("safetensors")
+        parser.add_argument("--matrix-type", required=True, choices=TYPES)
+        parser.add_argument("--quant-policy", required=True)
+        cls(**vars(parser.parse_args())).convert()
+
     def __init__(self, checkpoint, output, safetensors, matrix_type, quant_policy):
         self.checkpoint = Path(checkpoint)
         Path(output).parent.mkdir(parents=True, exist_ok=True)
@@ -36,18 +47,20 @@ class T3Converter:
         tokens = self.conditions["cond_prompt_speech_tokens"].reshape(-1).to(torch.int32)
         self.metadata({"cond_prompt_max": tokens.numel(), "cond_prompt_length": tokens.numel()}, {})
         self.policy.add(self.writer, "chatterbox/builtin/cond_prompt_speech_tokens", tokens.numpy())
-        self.tensor("chatterbox/builtin/speaker_emb", self.conditions["speaker_emb"].reshape(1, 256))
-        integers = dict(n_mels=40, hidden_size=256, num_layers=3, embedding_size=256,
+        self.tensor("chatterbox/builtin/speaker_emb", self.conditions["speaker_emb"].reshape(1, -1))
+        voice = load_file(self.checkpoint / "ve.safetensors")
+        integers = dict(n_mels=voice["lstm.weight_ih_l0"].shape[1], hidden_size=voice["lstm.weight_hh_l0"].shape[1],
+                        num_layers=sum(name.startswith("lstm.weight_ih_l") for name in voice), embedding_size=voice["proj.weight"].shape[0],
                         partial_frames=160, sample_rate=16000, n_fft=400, hop_size=160, win_size=400)
         for name, value in integers.items():
             self.writer.add_uint32("voice_encoder." + name, value)
         for name, value in dict(overlap=0.5, rate=1.3, min_coverage=0.8).items():
             self.writer.add_float32("voice_encoder." + name, value)
-        for name, tensor in load_file(self.checkpoint / "ve.safetensors").items():
+        for name, tensor in voice.items():
             if not name.startswith("similarity_"):
                 self.tensor("voice_encoder/" + name.replace(".", "/"), tensor)
         self.policy.add(self.writer, "voice_encoder/mel_fb", np.ascontiguousarray(librosa.filters.mel(
-            sr=16000, n_fft=400, n_mels=40, fmin=0, fmax=8000).astype(np.float32)))
+            sr=16000, n_fft=400, n_mels=integers["n_mels"], fmin=0, fmax=8000).astype(np.float32)))
         self.writer.write_header_to_file()
         self.writer.write_kv_data_to_file()
         self.writer.write_tensors_to_file()

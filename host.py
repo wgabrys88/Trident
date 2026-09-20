@@ -16,7 +16,6 @@ from settings import ARCHITECTURES, CMAKE_ARCH, CMAKE_GENERATOR, FLAGS, PYTHON_E
 
 ROOT = Path(__file__).resolve().parent
 MODELS = ROOT / "models"
-REF = ROOT / "reference.wav"
 DETACH = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
 K32 = ctypes.WinDLL("kernel32", use_last_error=True)
 K32.WaitNamedPipeW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint]

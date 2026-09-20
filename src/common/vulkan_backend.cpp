@@ -1,6 +1,7 @@
 #include "vulkan_backend.h"
 #include "ggml-vulkan.h"
 #include <stdexcept>
+#include <string>
 
 namespace trident {
 VulkanBackend::VulkanBackend(int device) : backend_(nullptr, ggml_backend_free) {

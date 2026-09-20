@@ -9,6 +9,7 @@ class MeanflowS3 {
     Knobs knobs_;
     GgufFile file_;
     Weights weights_;
+    int width_, mels_, speaker_size_;
     std::unique_ptr<Graph> encoder_, time_, mixer_, estimator_;
     int encoder_frames_ = 0, estimator_frames_ = 0;
     std::vector<float> embeddings_, speaker_weight_, speaker_bias_, prompt_features_, speaker_, source_weight_;

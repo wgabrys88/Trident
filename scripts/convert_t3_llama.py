@@ -1,10 +1,8 @@
-import argparse
 import math
 import re
 
 import numpy as np
 from tokenizers import Tokenizer
-from quant import TYPES
 from convert_t3 import T3Converter
 
 
@@ -54,7 +52,7 @@ class LlamaConverter(T3Converter):
         self.metadata(dict(text_positions=text_positions,
                            n_embd=width, n_head=width // 64, n_layer=depth,
                            n_ff=state["tfmr.layers.0.mlp.gate_proj.weight"].shape[0], n_batch=2,
-                           perceiver_len=perceiver, text_vocab_size=state["text_emb.weight"].shape[0],
+                           perceiver_len=perceiver, perceiver_heads=4, text_vocab_size=state["text_emb.weight"].shape[0],
                            speech_vocab_size=state["speech_emb.weight"].shape[0], start_text_token=vocab["[START]"], stop_text_token=vocab["[STOP]"],
                            start_speech_token=self.speech_tokens, stop_speech_token=self.speech_tokens + 1, speaker_embed_size=self.conditions["speaker_emb"].shape[-1],
                            rope_orig_ctx=8192, text_frontend_version=4),
@@ -71,11 +69,4 @@ class LlamaConverter(T3Converter):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("checkpoint")
-    parser.add_argument("output")
-    parser.add_argument("safetensors")
-    parser.add_argument("--matrix-type", required=True, choices=TYPES)
-    parser.add_argument("--quant-policy", required=True)
-    args = parser.parse_args()
-    LlamaConverter(args.checkpoint, args.output, args.safetensors, args.matrix_type, args.quant_policy).convert()
+    LlamaConverter.main()

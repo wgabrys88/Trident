@@ -30,17 +30,19 @@ void Baker::bake() {
     }
     auto at24 = reference.resample(24000);
     at24.normalize().take_seconds(10);
-    auto features = at24.mel(GgufFile(s3_).floats("s3gen/mel_fb/24k_80"), backend, 1920, 480, 80, false, 1.f, 1e-5f);
+    GgufFile s3(s3_);
+    int mels = int(s3.tensor("s3gen/mel_fb/24k_80")->ne[1]);
+    auto features = at24.mel(s3.floats("s3gen/mel_fb/24k_80"), backend, 1920, 480, mels, false, 1.f, 1e-5f);
     std::vector<float> embedding;
     { CampPlus camp(s3_, backend); embedding = camp.embed(prompt_audio); }
     GgufFile(t3_).rewrite(t3_, {
-        {"chatterbox/builtin/speaker_emb", GGML_TYPE_F32, {256, 1}, speaker.data()},
+        {"chatterbox/builtin/speaker_emb", GGML_TYPE_F32, {int64_t(speaker.size()), 1}, speaker.data()},
         {"chatterbox/builtin/cond_prompt_speech_tokens", GGML_TYPE_I32, {int64_t(condition.size())}, condition.data()},
     }, {{"chatterbox.cond_prompt_max", maximum}, {"chatterbox.cond_prompt_length", uint32_t(condition.size())}});
     GgufFile(s3_).rewrite(s3_, {
         {"s3gen/builtin/prompt_token", GGML_TYPE_I32, {int64_t(prompt.size())}, prompt.data()},
-        {"s3gen/builtin/prompt_feat", GGML_TYPE_F32, {80, int64_t(features.size() / 80)}, features.data()},
+        {"s3gen/builtin/prompt_feat", GGML_TYPE_F32, {mels, int64_t(features.size() / mels)}, features.data()},
         {"s3gen/builtin/embedding", GGML_TYPE_F32, {int64_t(embedding.size())}, embedding.data()},
-    }, {{"s3gen.builtin.prompt_token_len", uint32_t(prompt.size())}, {"s3gen.builtin.prompt_feat_frames", uint32_t(features.size() / 80)}});
+    }, {{"s3gen.builtin.prompt_token_len", uint32_t(prompt.size())}, {"s3gen.builtin.prompt_feat_frames", uint32_t(features.size() / mels)}});
 }
 }

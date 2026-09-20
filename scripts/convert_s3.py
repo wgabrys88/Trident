@@ -68,7 +68,8 @@ class S3Converter:
             ("flow.encoder.after_norm", "flow/encoder/after_norm"),
         ):
             self.affine(source, target)
-        for source, target, count in (("encoders", "block", 6), ("up_encoders", "up_block", 4)):
+        for source, target in (("encoders", "block"), ("up_encoders", "up_block")):
+            count = sum(name.startswith(f"flow.encoder.{source}.") and name.endswith(".self_attn.pos_bias_u") for name in self.state)
             for index in range(count):
                 for suffix, destination in self.CONFORMER.items():
                     self.add(f"flow/encoder/{target}{index}/{destination}",
@@ -98,8 +99,8 @@ class S3Converter:
                 self.add(target + "/b", beta - mean * scale)
             else:
                 self.add("campplus/" + name.replace(".", "/"), value.float())
-        self.metadata("campplus", dict(feat_dim=80, embedding_size=192, growth_rate=32, bn_size=4,
-            init_channels=128, block1_layers=12, block2_layers=24, block3_layers=16,
+        self.metadata("campplus", dict(feat_dim=80, embedding_size=state["xvector.dense.linear.weight"].shape[0],
+            **{f"block{i}_layers": sum(name.startswith(f"xvector.block{i}.") and name.endswith(".linear1.weight") and ".cam_layer." not in name for name in state) for i in (1, 2, 3)},
             block1_dilation=1, block2_dilation=2, block3_dilation=2, kernel_size=3,
             seg_pool_len=100, sample_rate=16000))
         low = 1127.0 * np.log(1 + 20.0 / 700.0)
@@ -122,17 +123,25 @@ class S3Converter:
                 suffix = name.removeprefix("tokenizer.")
                 if suffix not in ("window", "_mel_filters"):
                     self.add("s3tokv2/" + suffix.replace(".", "/"), value.float())
-        self.mel("s3tokv2/mel_fb", 16000, 400, 128)
-        self.metadata("s3tokv2", dict(n_mels=128, n_audio_state=1280, n_audio_head=20,
-            n_audio_layer=6, head_dim=64, mlp_ratio=4, fsmn_kernel=31, fsq_levels=3,
-            fsq_dim=8, codebook_size=3 ** 8, conv_stride=2, n_fft=400, hop=160,
+        self.add("s3tokv2/mel_fb", self.state["tokenizer._mel_filters"])
+        self.metadata("s3tokv2", dict(n_mels=self.state["tokenizer.encoder.conv1.weight"].shape[1],
+            n_audio_state=self.state["tokenizer.encoder.conv1.weight"].shape[0],
+            n_audio_head=self.state["tokenizer.encoder.conv1.weight"].shape[0] // 64,
+            n_audio_layer=sum(name.startswith("tokenizer.encoder.blocks.") and name.endswith(".attn.query.weight") for name in self.state),
+            head_dim=64, mlp_ratio=self.state["tokenizer.encoder.blocks.0.mlp.0.weight"].shape[0] // self.state["tokenizer.encoder.conv1.weight"].shape[0],
+            fsmn_kernel=self.state["tokenizer.encoder.blocks.0.attn.fsmn_block.weight"].shape[-1], fsq_levels=3,
+            fsq_dim=self.state["tokenizer.quantizer._codebook.project_down.weight"].shape[0],
+            codebook_size=self.state["flow.input_embedding.weight"].shape[0], conv_stride=2, n_fft=400, hop=160,
             sample_rate=16000, rope_max_pos=2048), dict(rope_theta=10000.0))
 
     def convert(self):
-        self.metadata("s3gen", {"speech_vocab_size": self.state["flow.input_embedding.weight"].shape[0], "input_size": 512, "output_size": 80,
-            "encoder.n_blocks": 6, "encoder.up_n_blocks": 4, "encoder.attention_heads": 8,
-            "encoder.head_dim": 64, "encoder.ff_size": 2048, "encoder.token_mel_ratio": 2,
-            "encoder.pre_lookahead_len": 3, "spk_embed_dim": 192}, {"layer_norm_eps": 1e-12})
+        self.metadata("s3gen", {"speech_vocab_size": self.state["flow.input_embedding.weight"].shape[0], "input_size": self.state["flow.input_embedding.weight"].shape[1], "output_size": self.state["flow.encoder_proj.weight"].shape[0],
+            "encoder.n_blocks": sum(name.startswith("flow.encoder.encoders.") and name.endswith(".self_attn.pos_bias_u") for name in self.state),
+            "encoder.up_n_blocks": sum(name.startswith("flow.encoder.up_encoders.") and name.endswith(".self_attn.pos_bias_u") for name in self.state),
+            "encoder.attention_heads": self.state["flow.encoder.encoders.0.self_attn.pos_bias_u"].shape[0],
+            "encoder.head_dim": self.state["flow.encoder.encoders.0.self_attn.pos_bias_u"].shape[1],
+            "encoder.ff_size": self.state["flow.encoder.encoders.0.feed_forward.w_1.weight"].shape[0], "encoder.token_mel_ratio": 2,
+            "cfm.head_dim": 64, "encoder.pre_lookahead_len": self.state["flow.encoder.pre_lookahead_layer.conv1.weight"].shape[-1] - 1, "spk_embed_dim": self.state["flow.spk_embed_affine_layer.weight"].shape[1]}, {"layer_norm_eps": 1e-12})
         tokens = self.conditions["prompt_token"].reshape(-1).to(torch.int32)
         features = self.conditions["prompt_feat"].squeeze(0).float()
         self.metadata("s3gen.builtin", dict(prompt_token_len=tokens.numel(), prompt_feat_frames=features.shape[0]))
@@ -143,7 +152,7 @@ class S3Converter:
         for prefix, target in (("flow.decoder.estimator.", "cfm/"), ("mel2wav.", "hift/")):
             for name in sorted(name for name in self.state if name.startswith(prefix)):
                 self.add(target + name.removeprefix(prefix).replace(".", "/"), self.state[name].float())
-        self.mel("s3gen/mel_fb/24k_80", 24000, 1920, 80)
+        self.mel("s3gen/mel_fb/24k_80", 24000, 1920, features.shape[1])
         self.campplus()
         self.tokenizer()
         self.writer.write_header_to_file()

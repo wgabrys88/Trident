@@ -25,7 +25,7 @@ ggml_tensor* LlamaT3::rms(ggml_context* ctx, ggml_tensor* x, ggml_tensor* scale)
     return ggml_mul(ctx, ggml_rms_norm(ctx, x, epsilon_), scale);
 }
 ggml_tensor* LlamaT3::perceiver(ggml_context* ctx, ggml_tensor* query, ggml_tensor* memory) const {
-    int embedding = int(query->ne[0]), queries = int(query->ne[1]), keys = int(memory->ne[1]), head = embedding / 4;
+    int embedding = int(query->ne[0]), queries = int(query->ne[1]), keys = int(memory->ne[1]), heads = file_.u32("chatterbox.perceiver_heads"), head = embedding / heads;
     auto* gamma = weight("chatterbox/perceiver/attn/norm/g");
     auto* beta = weight("chatterbox/perceiver/attn/norm/b");
     auto normalize = [&](ggml_tensor* x) {
@@ -34,7 +34,7 @@ ggml_tensor* LlamaT3::perceiver(ggml_context* ctx, ggml_tensor* query, ggml_tens
     auto project = [&](ggml_tensor* x, const char* name, int tokens) {
         auto* value = linear(ctx, weight(std::string("chatterbox/perceiver/attn/") + name + "/w"), x,
             weight(std::string("chatterbox/perceiver/attn/") + name + "/b"));
-        return ggml_cont(ctx, ggml_permute(ctx, ggml_reshape_3d(ctx, value, head, 4, tokens), 0, 2, 1, 3));
+        return ggml_cont(ctx, ggml_permute(ctx, ggml_reshape_3d(ctx, value, head, heads, tokens), 0, 2, 1, 3));
     };
     auto* q = project(normalize(query), "to_q", queries);
     auto* k = project(normalize(memory), "to_k", keys);
