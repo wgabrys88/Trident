@@ -29,7 +29,7 @@ class S3Converter:
         Path(output).parent.mkdir(parents=True, exist_ok=True)
         self.state = load_file(directory / checkpoint)
         self.conditions = torch.load(directory / "conds.pt", map_location="cpu", weights_only=True)["gen"]
-        self.writer = gguf.GGUFWriter(str(output), "chatterbox-s3gen")
+        self.writer = gguf.GGUFWriter(str(output), "chatterbox-s3gen-meanflow" if "flow.decoder.estimator.time_embed_mixer.weight" in self.state else "chatterbox-s3gen-cfg")
         self.policy = Policy(weight_type, json.loads(Path(quant_policy).read_text())["rules"])
         prefixes = {match[1] for name in self.state
                     if (match := re.fullmatch(r"(.+)\.parametrizations\.weight\.original0", name))}
@@ -92,8 +92,8 @@ class S3Converter:
                     continue
                 mean = value.float()
                 variance = state[prefix + ".running_var"].float()
-                gamma = state[prefix + ".weight"].float() if prefix + ".weight" in state else torch.ones_like(mean)
-                beta = state[prefix + ".bias"].float() if prefix + ".bias" in state else torch.zeros_like(mean)
+                gamma = state[prefix + ".weight"].float()
+                beta = state[prefix + ".bias"].float()
                 scale = gamma / torch.sqrt(variance + 1e-5)
                 self.add(target + "/s", scale)
                 self.add(target + "/b", beta - mean * scale)

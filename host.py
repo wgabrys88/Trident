@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from settings import ARCHITECTURES, CMAKE_ARCH, CMAKE_GENERATOR, FLAGS, PYTHON_ENV_BOOTSTRAP, PYTORCH_CPU_INDEX
+from settings import ARCHITECTURES, CMAKE_ARCH, CMAKE_GENERATOR, FLAGS, PYTHON_ENV_BOOTSTRAP, PYTORCH_CPU_INDEX, Variant
 
 ROOT = Path(__file__).resolve().parent
 MODELS = ROOT / "models"
@@ -24,17 +24,6 @@ K32.OpenProcess.argtypes = [ctypes.c_uint, ctypes.c_int, ctypes.c_uint]
 K32.OpenProcess.restype = ctypes.c_void_p
 K32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint]
 K32.CloseHandle.argtypes = [ctypes.c_void_p]
-
-
-@dataclass(frozen=True)
-class Variant:
-    name: str
-    hf: str
-    assets: tuple[str, ...]
-    t3_ckpt: str
-    architecture: str
-    needs_language: bool = False
-    external_assets: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass
@@ -85,6 +74,21 @@ def git_out(args, repo: Path) -> str:
 def file_stamp(path: Path) -> dict:
     stat = path.stat()
     return {"path": str(path.resolve()), "bytes": stat.st_size, "mtime": stat.st_mtime_ns}
+
+
+def digest(*paths) -> str:
+    hasher = hashlib.sha256()
+    files = []
+    for item in paths:
+        item = Path(item)
+        if item.is_file():
+            files.append(item)
+        else:
+            files.extend(path for path in item.rglob("*") if path.is_file())
+    for path in sorted(files, key=lambda p: p.relative_to(ROOT).as_posix()):
+        hasher.update(path.relative_to(ROOT).as_posix().encode())
+        hasher.update(path.read_bytes())
+    return hasher.hexdigest()
 
 
 def download(url: str, dest: Path):
@@ -142,18 +146,19 @@ class GgmlPin:
 
 
 class EngineBuild:
-    TARGETS = ("chatterbox-server-gpt2", "chatterbox-bake-gpt2",
-               "chatterbox-server-llama", "chatterbox-bake-llama")
+    TARGETS = ("chatterbox-server", "chatterbox-bake")
 
-    def ensure(self, architecture: str) -> tuple[Path, Path]:
+    def wanted(self) -> dict:
+        return {"ggml": GgmlPin.REV, "generator": CMAKE_GENERATOR, "architecture": CMAKE_ARCH,
+                "source": digest(ROOT / "CMakeLists.txt", ROOT / "src")}
+
+    def ensure(self) -> tuple[Path, Path]:
         bin_dir = ROOT / "build" / "bin"
-        family = ARCHITECTURES[architecture]
-        server, bake = bin_dir / family["server"], bin_dir / family["bake"]
-        outputs = tuple(bin_dir / name for spec in ARCHITECTURES.values() for name in (spec["server"], spec["bake"]))
-        wanted = {"ggml": GgmlPin.REV, "generator": CMAKE_GENERATOR, "architecture": CMAKE_ARCH, "cmake": hashlib.sha256((ROOT / "CMakeLists.txt").read_bytes()).hexdigest()}
+        outputs = tuple(bin_dir / f"{name}.exe" for name in self.TARGETS)
+        wanted = self.wanted()
         stamp = MODELS / "build-contract.json"
         if Contract(wanted, *outputs).matches(stamp):
-            return server, bake
+            return outputs
         GgmlPin().ensure()
         kill(MODELS / "server.pid")
         vulkan = max(Path("C:/VulkanSDK").glob("*/Bin/glslc.exe"),
@@ -173,7 +178,7 @@ class EngineBuild:
         if umbrella.is_file():
             umbrella.unlink()
         Contract(wanted, *outputs).write(stamp)
-        return server, bake
+        return outputs
 
 
 class Checkpoints:
@@ -191,13 +196,17 @@ class Converter:
     def ensure(self, cfg: Variant, py: Path, ckpt: Path, t3: Path, s3: Path, args: LaunchArgs) -> tuple[dict, dict]:
         family = ARCHITECTURES[cfg.architecture]
         scripts = ROOT / "scripts"
-        t3_payload = {"kind": "t3", "policy": args.policy("t3"), "t3_ckpt": cfg.t3_ckpt}
-        s3_payload = {"kind": "s3", "policy": args.policy("s3"), "checkpoint": family["s3_checkpoint"]}
+        t3_payload = {"kind": "t3", "policy": args.policy("t3"), "t3_ckpt": cfg.t3_ckpt,
+                      "converter": digest(scripts / "convert_t3.py", scripts / "quant.py")}
+        s3_payload = {"kind": "s3", "policy": args.policy("s3"), "checkpoint": family["s3_checkpoint"],
+                      "converter": digest(scripts / "convert_s3.py", scripts / "quant.py")}
         t3_stamp, s3_stamp = MODELS / f"{t3.stem}.convert.json", MODELS / f"{s3.stem}.convert.json"
         t3_contract, s3_contract = Contract(t3_payload, t3), Contract(s3_payload, s3)
         if not t3_contract.matches(t3_stamp):
             tmp = t3.with_suffix(".gguf.converting")
-            run([str(py), str(scripts / family["t3_script"]), str(ckpt), str(tmp), cfg.t3_ckpt, "--matrix-type", args.t3_weight_type, "--quant-policy", str(args.t3_quant_policy)])
+            run([str(py), str(scripts / "convert_t3.py"), str(ckpt), str(tmp), cfg.t3_ckpt,
+                 "--matrix-type", args.t3_weight_type, "--quant-policy", str(args.t3_quant_policy),
+                 "--s3-checkpoint", family["s3_checkpoint"]])
             tmp.replace(t3)
             t3_contract.write(t3_stamp)
         if not s3_contract.matches(s3_stamp):
@@ -211,9 +220,9 @@ class Converter:
 
 class VoiceBake:
     def ensure(self, cfg: Variant, reference: Path, base_t3: Path, base_s3: Path, bake: Path,
-               t3_contract: dict, s3_contract: dict) -> tuple[Path, Path, dict]:
+               t3_contract: dict, s3_contract: dict, build: dict) -> tuple[Path, Path, dict]:
         wanted = {"variant": cfg.name, "t3_conversion": t3_contract, "s3_conversion": s3_contract,
-                  "reference": file_stamp(reference)}
+                  "reference": file_stamp(reference), "build": build}
         voice_dir = MODELS / "voices" / cfg.name
         t3, s3 = voice_dir / "t3.gguf", voice_dir / "s3.gguf"
         stamp = voice_dir / "bake.json"
@@ -242,7 +251,7 @@ class PipeServer:
         pipe = rf"\\.\pipe\chatterbox-{cfg.name}"
         pid = MODELS / "server.pid"
         flags = dict(knobs)
-        if cfg.needs_language:
+        if language is not None:
             flags.update({
                 "language": language,
                 "tokenizer-python": str(py),
@@ -285,9 +294,8 @@ class PipeServer:
                     raise BrokenPipeError(pipe)
                 message = message[sent:]
             ack = stream.readline().decode("utf-8").strip()
-        status, body = ack.split(" ", 1)
-        if status != "ok":
-            raise RuntimeError(body)
+        if ack != "ok":
+            raise RuntimeError(ack or "server closed the pipe")
 
 
 class Host:
@@ -327,17 +335,19 @@ class Host:
         family = ARCHITECTURES[variant.architecture]
         try:
             MODELS.mkdir(parents=True, exist_ok=True)
-            server, bake = EngineBuild().ensure(variant.architecture)
+            engine = EngineBuild()
+            server, bake = engine.ensure()
             py = Venv().ensure()
             ckpt = Checkpoints().ensure(variant)
             base_t3 = args.gguf("t3", variant.name)
             base_s3 = args.gguf("s3gen", family["s3_family"])
             t3_contract, s3_contract = Converter().ensure(variant, py, ckpt, base_t3, base_s3, args)
-            t3, s3, voice = VoiceBake().ensure(variant, args.reference, base_t3, base_s3, bake, t3_contract, s3_contract)
+            t3, s3, voice = VoiceBake().ensure(variant, args.reference, base_t3, base_s3, bake, t3_contract, s3_contract, engine.wanted())
             pipes = PipeServer()
             pipe = pipes.ensure(variant, server, t3, s3, args.language, args.knobs, py, ckpt, voice)
             pipes.synthesize(pipe, wav, args.text)
             return wav
         except BaseException:
-            wav.unlink(missing_ok=True)
+            if wav.is_file():
+                wav.unlink()
             raise
