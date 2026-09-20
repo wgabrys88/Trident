@@ -5,7 +5,7 @@
 namespace trident {
 CampPlus::CampPlus(const std::string& path, const VulkanBackend& backend)
     : backend_(backend), file_(path), weights_(file_, backend, false, "campplus/"),
-      features_(file_.u32("campplus.feat_dim")), segment_(file_.u32("campplus.seg_pool_len")) {}
+      features_(int(file_.tensor("campplus/mel_fb_kaldi_80")->ne[1])), segment_(file_.u32("campplus.seg_pool_len")) {}
 std::vector<float> CampPlus::conv1(const std::vector<float>& values, int time, const std::string& name,
     int kernel, int stride, int padding, int dilation, bool bias) const {
     Graph graph(backend_, 32);
@@ -80,22 +80,26 @@ std::vector<float> CampPlus::embed(const Audio& audio) const {
     int height = features_;
     values = conv2(values, height, time, "head/conv1");
     norm(values, height * time, "head/bn1", true);
-    for (int layer = 1; layer <= 2; ++layer)
-        for (int block = 0; block < 2; ++block) {
+    for (int layer = 1;; ++layer) {
+        int blocks = weights_.count("campplus/head/layer" + std::to_string(layer) + "/", "/conv1/weight");
+        if (blocks == 0) break;
+        for (int block = 0; block < blocks; ++block) {
             int stride = block == 0 ? 2 : 1;
             values = residual(values, height, time, "head/layer" + std::to_string(layer) + "/" + std::to_string(block), stride);
             height = (height - 1) / stride + 1;
         }
+    }
     values = conv2(values, height, time, "head/conv2", 2);
     height = (height - 1) / 2 + 1;
     norm(values, height * time, "head/bn2", true);
     values = conv1(values, time, "xvector/tdnn/linear", 5, 2, 2);
     time = (time - 1) / 2 + 1;
     norm(values, time, "xvector/tdnn/nonlinear/batchnorm", true);
-    int kernel = file_.u32("campplus.kernel_size");
-    for (int block = 1; block <= 3; ++block) {
+    int kernel = int(weights_.at("campplus/xvector/block1/tdnnd1/cam_layer/linear_local/weight")->ne[0]);
+    for (int block = 1;; ++block) {
         std::string number = std::to_string(block), base = "xvector/block" + number;
-        int layers = file_.u32(("campplus.block" + number + "_layers").c_str());
+        int layers = weights_.count("campplus/" + base + "/", "/cam_layer/linear_local/weight");
+        if (layers == 0) break;
         int dilation = file_.u32(("campplus.block" + number + "_dilation").c_str());
         for (int layer = 1; layer <= layers; ++layer) {
             std::string name = base + "/tdnnd" + std::to_string(layer);

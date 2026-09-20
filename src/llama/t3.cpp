@@ -8,15 +8,13 @@ namespace trident::llama {
 LlamaT3::LlamaT3(const std::string& path, const VulkanBackend& backend, Knobs knobs)
     : backend_(backend), knobs_(knobs), file_(path), weights_(file_, backend), penalty_(knobs.repeat_penalty),
       kv_context_(nullptr, ggml_free), kv_buffer_(nullptr, ggml_backend_buffer_free),
-      width_(file_.u32("chatterbox.n_embd")), heads_(file_.u32("chatterbox.n_head")),
+      width_(file_.u32("chatterbox.n_embd")), heads_(file_.u32("chatterbox.n_embd") / (2 * int(file_.tensor("model/rope_freq_factors")->ne[0]))),
       layers_(file_.u32("chatterbox.n_layer")), context_(1 + file_.u32("chatterbox.perceiver_len") + 1 + file_.u32("chatterbox.text_positions") + 2 + knobs.n_predict),
       vocabulary_(file_.u32("chatterbox.speech_vocab_size")), start_(file_.u32("chatterbox.start_speech_token")),
       stop_(file_.u32("chatterbox.stop_speech_token")), start_text_(file_.u32("chatterbox.start_text_token")),
-      stop_text_(file_.u32("chatterbox.stop_text_token")), conditioning_(file_.u32("chatterbox.cond_prompt_length")),
+      stop_text_(file_.u32("chatterbox.stop_text_token")), conditioning_(int(ggml_nelements(file_.tensor("chatterbox/builtin/cond_prompt_speech_tokens")))),
       perceiver_(file_.u32("chatterbox.perceiver_len")), original_(file_.u32("chatterbox.rope_orig_ctx")),
-      epsilon_(file_.f32("chatterbox.layer_norm_eps")), theta_(file_.f32("chatterbox.rope_theta")) {
-    conditioning_ = int(ggml_nelements(weight("chatterbox/builtin/cond_prompt_speech_tokens")));
-}
+      epsilon_(file_.f32("chatterbox.layer_norm_eps")), theta_(file_.f32("chatterbox.rope_theta")) {}
 ggml_tensor* LlamaT3::linear(ggml_context* ctx, ggml_tensor* matrix, ggml_tensor* x, ggml_tensor* bias) const {
     auto* y = ggml_mul_mat(ctx, matrix, x);
     return bias ? ggml_add(ctx, y, bias) : y;

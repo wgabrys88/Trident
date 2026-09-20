@@ -39,8 +39,8 @@ class Gpt2Converter(T3Converter):
         width = self.state["tfmr.ln_f.weight"].shape[0]
         depth = 1 + max(int(match[1]) for name in self.state if (match := self.LAYER.match(name)))
         self.metadata(dict(n_embd=width, n_head=width // 64,
-                           n_layer=depth, text_vocab_size=self.state["text_emb.weight"].shape[0], speech_vocab_size=self.state["speech_emb.weight"].shape[0],
-                           start_speech_token=self.speech_tokens, stop_speech_token=self.speech_tokens + 1, speaker_embed_size=self.conditions["speaker_emb"].shape[-1]),
+                           n_layer=depth, speech_vocab_size=self.state["speech_emb.weight"].shape[0],
+                           start_speech_token=self.speech_tokens, stop_speech_token=self.speech_tokens + 1),
                       dict(layer_norm_eps=1e-5))
         self.tokenizer()
         for name, tensor in self.state.items():

@@ -8,7 +8,8 @@
 namespace trident::llama {
 CfgS3::CfgS3(const std::string& path, const VulkanBackend& backend, Knobs knobs)
     : backend_(backend), knobs_(knobs), file_(path), weights_(file_, backend, true),
-      width_(file_.u32("s3gen.input_size")), mels_(file_.u32("s3gen.output_size")), speaker_size_(file_.u32("s3gen.spk_embed_dim")),
+      width_(int(file_.tensor("flow/input_embedding")->ne[0])), mels_(int(file_.tensor("flow/spk_embed_affine/b")->ne[0])),
+      speaker_size_(int(file_.tensor("flow/spk_embed_affine/w")->ne[0])),
       embeddings_(file_.floats("flow/input_embedding")), speaker_weight_(file_.floats("flow/spk_embed_affine/w")),
       speaker_bias_(file_.floats("flow/spk_embed_affine/b")), prompt_features_(file_.floats("s3gen/builtin/prompt_feat")),
       speaker_(file_.floats("s3gen/builtin/embedding")), source_weight_(file_.floats("hift/m_source/l_linear/weight")),
@@ -116,7 +117,7 @@ std::vector<float> CfgS3::encode(const std::vector<float>& input, int frames) {
         lookahead = ggml_leaky_relu(ctx, lookahead, 0.01f, false);
         lookahead = convolution(ctx, pad(ctx, lookahead, 2, 0), "flow/encoder/pre_lookahead/conv2", 1, 0, 1, "/w", "/b");
         x = ggml_add(ctx, transpose(ctx, lookahead), residual);
-        for (int i = 0; i < int(file_.u32("s3gen.encoder.n_blocks")); ++i) x = conformer(ctx, x, pos1, "flow/encoder/block" + std::to_string(i), frames);
+        for (int i = 0; i < weights_.count("flow/encoder/block", "/attn/pos_bias_u"); ++i) x = conformer(ctx, x, pos1, "flow/encoder/block" + std::to_string(i), frames);
         auto* up = transpose(ctx, x);
         up = ggml_reshape_3d(ctx, up, 1, up->ne[0], up->ne[1]);
         auto* doubled = ggml_concat(ctx, up, up, 0);
@@ -124,7 +125,7 @@ std::vector<float> CfgS3::encode(const std::vector<float>& input, int frames) {
         up = convolution(ctx, pad(ctx, up, 4, 0), "flow/encoder/up_layer/conv", 1, 0, 1, "/w", "/b");
         x = linear(ctx, transpose(ctx, up), "flow/encoder/up_embed/linear", "/w", "/b");
         x = ggml_scale(ctx, norm(ctx, x, "flow/encoder/up_embed/norm", 1e-5f, "/w", "/b"), std::sqrt(float(width_)));
-        for (int i = 0; i < int(file_.u32("s3gen.encoder.up_n_blocks")); ++i) x = conformer(ctx, x, pos2, "flow/encoder/up_block" + std::to_string(i), 2 * frames);
+        for (int i = 0; i < weights_.count("flow/encoder/up_block", "/attn/pos_bias_u"); ++i) x = conformer(ctx, x, pos2, "flow/encoder/up_block" + std::to_string(i), 2 * frames);
         x = norm(ctx, x, "flow/encoder/after_norm", 1e-5f, "/w", "/b");
         finish(*encoder_, linear(ctx, x, "flow/encoder_proj", "/w", "/b"));
     }
@@ -145,7 +146,7 @@ ggml_tensor* CfgS3::resnet(ggml_context* ctx, ggml_tensor* x, ggml_tensor* time,
     return ggml_add(ctx, hidden, convolution(ctx, x, name + "/res_conv", 1, 0));
 }
 ggml_tensor* CfgS3::transformer(ggml_context* ctx, ggml_tensor* x, const std::string& name, int frames) const {
-    int head = file_.u32("s3gen.cfm.head_dim"), width = int(weight(name + "/attn1/to_q/weight")->ne[1]), heads = width / head;
+    int head = int(weight("flow/encoder/block0/attn/pos_bias_u")->ne[0]), width = int(weight(name + "/attn1/to_q/weight")->ne[1]), heads = width / head;
     auto* normalized = norm(ctx, x, name + "/norm1");
     auto projection = [&](const char* suffix) {
         auto* value = ggml_mul_mat(ctx, weight(name + suffix), normalized);
@@ -292,25 +293,27 @@ std::vector<float> CfgS3::hift(const std::vector<float>& mel, int frames, const 
         return x;
     };
     auto* x = convolution(ctx, input, "hift/conv_pre", 1, 3);
-    const int rates[] = {8, 5, 3};
-    const int source_strides[] = {15, 3, 1}, source_padding[] = {7, 1, 0};
-    for (int i = 0; i < 3; ++i) {
+    int ups = weights_.count("hift/ups/", "/weight"), groups = weights_.count("hift/resblocks/", "/convs1/0/weight") / ups;
+    for (int i = 0; i < ups; ++i) {
         std::string index = std::to_string(i);
+        auto* upsample = weight("hift/ups/" + index + "/weight");
+        int rate = int(upsample->ne[0]) / 2;
         x = ggml_leaky_relu(ctx, x, 0.1f, false);
-        x = ggml_conv_transpose_1d(ctx, weight("hift/ups/" + index + "/weight"), x, rates[i], 0, 1);
-        int padding = (int(weight("hift/ups/" + index + "/weight")->ne[0]) - rates[i]) / 2;
+        x = ggml_conv_transpose_1d(ctx, upsample, x, rate, 0, 1);
+        int padding = (int(upsample->ne[0]) - rate) / 2;
         x = ggml_cont(ctx, ggml_view_3d(ctx, x, x->ne[0] - 2 * padding, x->ne[1], x->ne[2], x->nb[1], x->nb[2], padding * x->nb[0]));
         x = ggml_add(ctx, x, ggml_reshape_2d(ctx, weight("hift/ups/" + index + "/bias"), 1, weight("hift/ups/" + index + "/bias")->ne[0]));
-        if (i == 2) {
+        if (i + 1 == ups) {
             auto* first = ggml_cont(ctx, ggml_view_3d(ctx, x, 1, x->ne[1], x->ne[2], x->nb[1], x->nb[2], x->nb[0]));
             x = ggml_concat(ctx, first, x, 0);
         }
-        auto* injected = convolution(ctx, source, "hift/source_downs/" + index, source_strides[i], source_padding[i]);
+        int stride = std::max(int(weight("hift/source_downs/" + index + "/weight")->ne[0]) / 2, 1);
+        auto* injected = convolution(ctx, source, "hift/source_downs/" + index, stride, (stride - 1) / 2);
         injected = residual(injected, "hift/source_resblocks/" + index);
         x = ggml_add(ctx, x, injected);
-        auto* combined = residual(x, "hift/resblocks/" + std::to_string(i * 3));
-        for (int j = 1; j < 3; ++j) combined = ggml_add(ctx, combined, residual(x, "hift/resblocks/" + std::to_string(i * 3 + j)));
-        x = ggml_scale(ctx, combined, 1.f / 3.f);
+        auto* combined = residual(x, "hift/resblocks/" + std::to_string(i * groups));
+        for (int j = 1; j < groups; ++j) combined = ggml_add(ctx, combined, residual(x, "hift/resblocks/" + std::to_string(i * groups + j)));
+        x = ggml_scale(ctx, combined, 1.f / float(groups));
     }
     x = convolution(ctx, ggml_leaky_relu(ctx, x, 0.01f, false), "hift/conv_post", 1, 3);
     auto* magnitude = ggml_cont(ctx, ggml_view_2d(ctx, x, stft_frames, 9, x->nb[1], 0));
@@ -330,7 +333,7 @@ std::vector<float> CfgS3::hift(const std::vector<float>& mel, int frames, const 
 }
 std::vector<float> CfgS3::synthesize(const std::vector<int32_t>& speech) {
     auto tokens = prompt_tokens_;
-    for (int32_t token : speech) if (token >= 0 && token < file_.u32("s3gen.speech_vocab_size")) tokens.push_back(token);
+    for (int32_t token : speech) if (token >= 0 && token < int(embeddings_.size() / size_t(width_))) tokens.push_back(token);
     std::vector<float> embedded(tokens.size() * width_);
     for (size_t i = 0; i < tokens.size(); ++i) std::memcpy(embedded.data() + i * width_, embeddings_.data() + size_t(tokens[i]) * width_, width_ * sizeof(float));
     auto encoded = encode(embedded, int(tokens.size()));
@@ -360,7 +363,7 @@ std::vector<float> CfgS3::synthesize(const std::vector<int32_t>& speech) {
         times[i] = 1.f - std::cos(fraction * 0.5f * float(M_PI));
     }
     std::vector<float> doubled(state.size() * 2), mu2(mu.size() * 2, 0.f);
-    std::vector<float> condition2(condition.size() * 2, 0.f), speaker2(160, 0.f);
+    std::vector<float> condition2(condition.size() * 2, 0.f), speaker2(size_t(2 * mels_), 0.f);
     for (int step = 0; step < knobs_.cfm_steps; ++step) {
         std::copy(state.begin(), state.end(), doubled.begin());
         std::copy(state.begin(), state.end(), doubled.begin() + state.size());

@@ -20,7 +20,8 @@ add_subdirectory(ggml)
 add_library(trident-common STATIC
     src/common/gguf_file.cpp src/common/vulkan_backend.cpp
     src/common/audio.cpp src/common/voice_encoder.cpp
-    src/common/campplus.cpp src/common/s3_tokenizer.cpp src/common/s3_dsp.cpp)
+    src/common/campplus.cpp src/common/s3_tokenizer.cpp src/common/s3_dsp.cpp
+    src/common/bake.h)
 target_include_directories(trident-common PUBLIC include src ggml/include)
 target_link_libraries(trident-common PUBLIC ggml Vulkan::Vulkan)
 

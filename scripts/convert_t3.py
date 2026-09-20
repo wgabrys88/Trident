@@ -45,16 +45,16 @@ class T3Converter:
 
     def finish(self):
         tokens = self.conditions["cond_prompt_speech_tokens"].reshape(-1).to(torch.int32)
-        self.metadata({"cond_prompt_max": tokens.numel(), "cond_prompt_length": tokens.numel()}, {})
+        self.metadata({"cond_prompt_max": tokens.numel()}, {})
         self.policy.add(self.writer, "chatterbox/builtin/cond_prompt_speech_tokens", tokens.numpy())
         self.tensor("chatterbox/builtin/speaker_emb", self.conditions["speaker_emb"].reshape(1, -1))
         voice = load_file(self.checkpoint / "ve.safetensors")
         integers = dict(n_mels=voice["lstm.weight_ih_l0"].shape[1], hidden_size=voice["lstm.weight_hh_l0"].shape[1],
                         num_layers=sum(name.startswith("lstm.weight_ih_l") for name in voice), embedding_size=voice["proj.weight"].shape[0],
-                        partial_frames=160, sample_rate=16000, n_fft=400, hop_size=160, win_size=400)
+                        partial_frames=160, sample_rate=16000)
         for name, value in integers.items():
             self.writer.add_uint32("voice_encoder." + name, value)
-        for name, value in dict(overlap=0.5, rate=1.3, min_coverage=0.8).items():
+        for name, value in dict(rate=1.3, min_coverage=0.8).items():
             self.writer.add_float32("voice_encoder." + name, value)
         for name, tensor in voice.items():
             if not name.startswith("similarity_"):

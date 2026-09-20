@@ -9,7 +9,7 @@ S3Tokenizer::S3Tokenizer(const std::string& path, const VulkanBackend& backend)
     : backend_(backend), file_(path), weights_(file_, backend, false, "s3tokv2/"),
       mels_(file_.u32("s3tokv2.n_mels")), width_(file_.u32("s3tokv2.n_audio_state")),
       heads_(file_.u32("s3tokv2.n_audio_head")), layers_(file_.u32("s3tokv2.n_audio_layer")),
-      head_dim_(file_.u32("s3tokv2.head_dim")), kernel_(file_.u32("s3tokv2.fsmn_kernel")),
+      head_dim_(file_.u32("s3tokv2.n_audio_state") / file_.u32("s3tokv2.n_audio_head")), kernel_(file_.u32("s3tokv2.fsmn_kernel")),
       stride_(file_.u32("s3tokv2.conv_stride")), fft_(file_.u32("s3tokv2.n_fft")), hop_(file_.u32("s3tokv2.hop")),
       dimensions_(file_.u32("s3tokv2.fsq_dim")), levels_(file_.u32("s3tokv2.fsq_levels")),
       max_position_(file_.u32("s3tokv2.rope_max_pos")), theta_(file_.f32("s3tokv2.rope_theta")) {}

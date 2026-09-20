@@ -44,20 +44,17 @@ class LlamaConverter(T3Converter):
     def convert(self):
         state = self.state
         vocab = Tokenizer.from_file(str(self.checkpoint / "grapheme_mtl_merged_expanded_v1.json")).get_vocab()
-        languages = sorted(token for token in vocab if re.fullmatch(r"\[[a-z]{2,3}\]", token))
         width = state["tfmr.norm.weight"].shape[0]
         perceiver = state["cond_enc.perceiver.pre_attention_query"].shape[1]
         text_positions = state["text_pos_emb.emb.weight"].shape[0]
         depth = 1 + max(int(match[1]) for name in state if (match := self.LAYER.match(name)))
         self.metadata(dict(text_positions=text_positions,
-                           n_embd=width, n_head=width // 64, n_layer=depth,
-                           n_ff=state["tfmr.layers.0.mlp.gate_proj.weight"].shape[0], n_batch=2,
-                           perceiver_len=perceiver, perceiver_heads=4, text_vocab_size=state["text_emb.weight"].shape[0],
+                           n_embd=width, n_layer=depth,
+                           perceiver_len=perceiver, perceiver_heads=4,
                            speech_vocab_size=state["speech_emb.weight"].shape[0], start_text_token=vocab["[START]"], stop_text_token=vocab["[STOP]"],
-                           start_speech_token=self.speech_tokens, stop_speech_token=self.speech_tokens + 1, speaker_embed_size=self.conditions["speaker_emb"].shape[-1],
-                           rope_orig_ctx=8192, text_frontend_version=4),
+                           start_speech_token=self.speech_tokens, stop_speech_token=self.speech_tokens + 1,
+                           rope_orig_ctx=8192),
                       dict(layer_norm_eps=1e-5, rope_theta=500000.0))
-        self.writer.add_string("chatterbox.tokenizer.language_tokens", ",".join(languages))
         for name, tensor in state.items():
             if name in self.DIRECT:
                 self.tensor(self.DIRECT[name], tensor)
