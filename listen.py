@@ -1,4 +1,3 @@
-import json
 import queue
 import re
 import subprocess
@@ -166,8 +165,8 @@ class Brain:
                          n_gpu_layers=BRAIN["n_gpu_layers"], verbose=False)
 
     def prompt(self, system, user, closed):
-        text = f"<|im_start|>system\n{system}<|im_end|>\n<|im_start|>user\n{user}"
-        return text + "<|im_end|>\n<|im_start|>assistant\n" if closed else text
+        text = f"<bos><|turn>system\n{system}<turn|>\n<|turn>user\n{user}"
+        return text + "<turn|>\n<|turn>model\n" if closed else text
 
     def prefill(self, system, user):
         tokens = self.llm.tokenize(self.prompt(system, user, False).encode("utf-8"), special=True)
@@ -180,17 +179,13 @@ class Brain:
         self.llm.n_tokens = common
         self.llm.eval(tokens[common:])
 
-    def complete(self, system, user, max_tokens, schema_name):
-        from llama_cpp import LlamaGrammar
-        grammar = LlamaGrammar.from_json_schema(json.dumps(BRAIN["schema"][schema_name]), verbose=False)
-        out = self.llm(self.prompt(system, user, True), max_tokens=max_tokens, temperature=0.0,
-                       stop=["<|im_end|>"], grammar=grammar)
-        data = json.loads(out["choices"][0]["text"].strip())
-        if schema_name == "code":
-            return data["script"].strip()
-        if schema_name == "speak_llama":
-            return "\n".join(item["language"] + "|" + item["text"] for item in data["lines"])
-        return "\n".join(item["text"] for item in data["lines"])
+    def complete(self, system, user, mode):
+        knobs = BRAIN["decode"][mode]
+        out = self.llm(self.prompt(system, user, True), stop=["<turn|>"], **knobs)
+        text = out["choices"][0]["text"]
+        if "<channel|>" in text:
+            text = text.split("<channel|>")[-1]
+        return text.strip()
 
 
 class Mouth:
@@ -228,7 +223,6 @@ class Session:
         self.brain = Brain()
         self.ear = Ear(speaking, args.text).start()
         self.speak_prompt = self.voice.prompt(self.limit)
-        self.speak_schema = "speak_llama" if self.voice.architecture == "llama" else "speak_gpt2"
         self.mode = "idle"
         self.transcript = []
 
@@ -268,12 +262,10 @@ class Session:
     def finalize(self):
         request = " ".join(self.transcript)
         if self.mode == "speak":
-            self.mouth.say(self.parse(self.brain.complete(self.speak_prompt, request, 512, self.speak_schema)))
+            self.mouth.say(self.parse(self.brain.complete(self.speak_prompt, request, "speak")))
             self.mode = "idle"
             return
-        code = self.brain.complete(PROMPTS["code"], request, 768, "code")
-        if code.startswith("```"):
-            code = code.split("\n", 1)[1].rsplit("```", 1)[0]
+        code = self.brain.complete(PROMPTS["code"], request, "code")
         intent = code.strip().splitlines()[0]
         if not intent.startswith("# I will "):
             raise RuntimeError("brain: script has no intent line: " + intent)
@@ -283,7 +275,7 @@ class Session:
 
     def approve(self):
         run = subprocess.run([str(self.py), str(MODELS / "tool.py")], cwd=str(ROOT), capture_output=True, text=True, timeout=self.timeout)
-        report = self.brain.complete(self.speak_prompt + PROMPTS["report"], run.stdout + run.stderr, 256, self.speak_schema)
+        report = self.brain.complete(self.speak_prompt + PROMPTS["report"], run.stdout + run.stderr, "report")
         self.mouth.say(self.parse(report))
         self.mode = "idle"
 

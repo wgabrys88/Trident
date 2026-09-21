@@ -97,55 +97,20 @@ EAR = {
     "vad_threshold": 0.5, "min_silence": 0.25, "min_speech": 0.25, "max_speech": 20,
 }
 BRAIN = {
-    "url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/91cad51170dc346986eccefdc2dd33a9da36ead9/qwen2.5-1.5b-instruct-q4_k_m.gguf",
-    "file": "brain-qwen2.5-1.5b-instruct-q4_k_m.gguf",
-    "n_ctx": 4096, "n_threads": 4, "n_gpu_layers": 0,
-    "schema": {
-        "speak_gpt2": {
-            "type": "object",
-            "properties": {
-                "lines": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {
-                        "type": "object",
-                        "properties": {"text": {"type": "string"}},
-                        "required": ["text"],
-                    },
-                },
-            },
-            "required": ["lines"],
-        },
-        "speak_llama": {
-            "type": "object",
-            "properties": {
-                "lines": {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "language": {"type": "string"},
-                            "text": {"type": "string"},
-                        },
-                        "required": ["language", "text"],
-                    },
-                },
-            },
-            "required": ["lines"],
-        },
-        "code": {
-            "type": "object",
-            "properties": {"script": {"type": "string"}},
-            "required": ["script"],
-        },
+    "url": "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/0314792d7f1f7e229411f620751375812bb9faf2/gemma-4-E2B-it-Q4_K_M.gguf",
+    "file": "brain-gemma-4-e2b-it-q4_k_m.gguf",
+    "n_ctx": 8192, "n_threads": 4, "n_gpu_layers": -1,
+    "decode": {
+        "speak": {"max_tokens": 4096, "temperature": 1.0, "top_p": 0.95, "top_k": 64},
+        "code": {"max_tokens": 768, "temperature": 0.0, "top_p": 0.95, "top_k": 64},
+        "report": {"max_tokens": 256, "temperature": 1.0, "top_p": 0.95, "top_k": 64},
     },
 }
 PROMPTS = {
     "speak": {
-        "gpt2": "Reply with JSON: {{\"lines\":[{{\"text\":\"...\"}}]}}. Each text is spoken English under {limit} characters, a complete thought. Write numbers, symbols and abbreviations as words. A line may start with one tag from: {tags}. Keep the user's meaning.",
-        "llama": "Reply with JSON: {{\"lines\":[{{\"language\":\"xx\",\"text\":\"...\"}}]}}. Keep the user's language. English is language en. Polish is language pl. Each text is a spoken chunk under {limit} characters. Allowed codes: {languages}. English user Hello from Trident. -> {{\"lines\":[{{\"language\":\"en\",\"text\":\"Hello from Trident.\"}}]}}. Polish user Dzien dobry tu Trident. -> {{\"lines\":[{{\"language\":\"pl\",\"text\":\"Dzien dobry tu Trident.\"}}]}}.",
+        "gpt2": "Each line is one spoken English chunk. Two or three sentences per line, under {limit} characters. Write numbers, symbols and abbreviations as words. A line may start with one tag from: {tags}. Keep the user's meaning. No markdown.",
+        "llama": "Each line is language|text. language is from: {languages}. One language per line; split mixed-language input. Two or three sentences per text, under {limit} characters. Keep the user's meaning. Hello from Trident. -> en|Hello from Trident. Dzien dobry tu Trident. -> pl|Dzien dobry tu Trident. No markdown.",
     },
-    "code": "Reply with JSON: {\"script\":\"...\"}. script is a Python 3 file for Windows. The first line of script is a comment that starts with '# I will ' and states the action in one sentence. Then runnable code that prints the result. User print hello -> {\"script\":\"# I will print hello.\\nprint(\\\"hello\\\")\"}. User print the current time -> {\"script\":\"# I will print the current time.\\nimport datetime\\nprint(datetime.datetime.now())\"}.",
-    "report": " The program output follows. JSON text is one spoken sentence that states what the program printed.",
+    "code": "A Python 3 file for Windows. First line is a comment that starts with '# I will ' and states the action in one sentence. Then runnable code that prints the result. No markdown. User print hello ->\n# I will print hello.\nprint(\"hello\")\nUser print the current time ->\n# I will print the current time.\nimport datetime\nprint(datetime.datetime.now())",
+    "report": " The program output follows. Reply with the same line format, one spoken sentence that states what the program printed.",
 }

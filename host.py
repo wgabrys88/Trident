@@ -2,6 +2,7 @@ import argparse
 import ctypes
 import json
 import hashlib
+import os
 import re
 import shutil
 import subprocess
@@ -134,6 +135,7 @@ class Venv:
         stamp = directory / ".requirements.stamp"
         wanted = (ROOT / "requirements.txt").read_text(encoding="utf-8") + json.dumps({
             "torch": list(PYTHON_ENV_BOOTSTRAP["torch"]), "torch_index": PYTORCH_CPU_INDEX,
+            "llama_cpp": "vulkan",
         }, sort_keys=True, separators=(",", ":"))
         current = stamp.read_text(encoding="utf-8") if stamp.is_file() else None
         if not py.is_file() or current != wanted:
@@ -142,7 +144,10 @@ class Venv:
             run([sys.executable, "-m", "venv", str(directory)])
             pip = [str(py), "-m", "pip", "install", "--disable-pip-version-check"]
             run([*pip, *PYTHON_ENV_BOOTSTRAP["torch"], "--index-url", PYTORCH_CPU_INDEX])
-            run([*pip, "-r", str(ROOT / "requirements.txt")])
+            env = os.environ.copy()
+            env["CMAKE_ARGS"] = "-DGGML_VULKAN=ON"
+            env["FORCE_CMAKE"] = "1"
+            run([*pip, "-r", str(ROOT / "requirements.txt"), "--no-binary", "llama-cpp-python"], env=env)
             stamp.write_text(wanted, encoding="utf-8")
         return py
 
