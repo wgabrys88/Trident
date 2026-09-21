@@ -282,5 +282,4 @@ class Host:
         if args.listen:
             from listen import Session
             Session(pipe, args).run()
-            raise SystemExit
         return write_wav(PipeServer().synthesize(pipe, args.language or "", args.text), variant.name)
