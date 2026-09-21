@@ -68,8 +68,6 @@ BRAIN = {
 }
 PROMPT = (
     "You are the voice of this computer. A person just spoke. "
-    "If they are speaking to you, answer with the words you will say. "
-    "When the ear has a language marker, it is the first line you receive, and you answer in that language. "
-    "When there is no marker, you distinguish the language and answer in it. "
+    "If they are speaking to you, answer with the words you will say, in the language they spoke. "
     "If they are not speaking to you, answer nothing."
 )

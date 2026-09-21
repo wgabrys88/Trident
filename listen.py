@@ -3,12 +3,6 @@ from pathlib import Path
 import numpy as np
 from host import MODELS, PipeServer, download, write_wav
 from settings import BRAIN, EAR, PROMPT
-class Voice:
-    def __init__(self, t3):
-        import gguf
-        reader = gguf.GGUFReader(str(t3))
-        field = reader.fields["general.architecture"]
-        self.multilingual = bytes(field.parts[field.data[0]]).decode() != "chatterbox-gpt2"
 class Ear:
     def __init__(self, speaking, feed=None):
         self.speaking, self.feed, self.texts, self.wavs = speaking, feed, queue.Queue(), []
@@ -77,13 +71,13 @@ class Ear:
             self.recognizer.decode_stream(stream)
             text = stream.result.text.strip()
             if text:
-                self.texts.put((stream.result.lang, text))
+                self.texts.put(text)
     def inject(self):
         lines = sys.stdin if self.feed == "-" else (
             Path(self.feed).read_text(encoding="utf-8").splitlines() if Path(self.feed).is_file() else self.feed.splitlines())
         for line in lines:
             if line.strip():
-                self.texts.put(("", line.strip()))
+                self.texts.put(line.strip())
         self.texts.put(None)
     def inject_wav(self):
         for path in self.wavs:
@@ -114,12 +108,12 @@ class Brain:
                        stop=["<turn|>"], **BRAIN["decode"])
         return out["choices"][0]["text"].strip()
 class Mouth:
-    def __init__(self, pipe, speaking, multilingual):
-        self.pipe, self.speaking, self.multilingual, self.n = pipe, speaking, multilingual, 0
-    def say(self, language, text):
+    def __init__(self, pipe, speaking):
+        self.pipe, self.speaking, self.n = pipe, speaking, 0
+    def say(self, text):
         import sounddevice as sd
         self.speaking.set()
-        pcm = np.frombuffer(PipeServer().synthesize(self.pipe, language if self.multilingual else "", text), dtype=np.int16)
+        pcm = np.frombuffer(PipeServer().synthesize(self.pipe, "", text), dtype=np.int16)
         self.n += 1
         print(write_wav(pcm.tobytes(), str(self.n)), flush=True)
         print(text, flush=True)
@@ -127,20 +121,17 @@ class Mouth:
         sd.wait()
         self.speaking.clear()
 class Session:
-    def __init__(self, pipe, t3, args):
+    def __init__(self, pipe, args):
         speaking = threading.Event()
-        self.mouth = Mouth(pipe, speaking, Voice(t3).multilingual)
+        self.mouth = Mouth(pipe, speaking)
         self.brain = Brain()
         self.ear = Ear(speaking, args.text).start()
-    def step(self, heard):
-        lang, text = heard
+    def step(self, text):
         print(f"hear {text}", flush=True)
-        if lang:
-            print(f"lang {lang}", flush=True)
-        out = self.brain.complete(f"{lang}\n{text}" if lang else text)
+        out = self.brain.complete(text)
         if not out:
             return
-        self.mouth.say(lang, out)
+        self.mouth.say(out)
     def run(self):
         print("listening", flush=True)
         while True:

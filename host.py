@@ -281,6 +281,6 @@ class Host:
         pipe = PipeServer().ensure(variant, server, t3, s3, args.knobs, py, ckpt, voice)
         if args.listen:
             from listen import Session
-            Session(pipe, t3, args).run()
+            Session(pipe, args).run()
             raise SystemExit
         return write_wav(PipeServer().synthesize(pipe, args.language or "", args.text), variant.name)
