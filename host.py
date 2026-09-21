@@ -18,6 +18,18 @@ from settings import ARCHITECTURES, CMAKE_ARCH, CMAKE_GENERATOR, FLAGS, PYTHON_E
 
 ROOT = Path(__file__).resolve().parent
 MODELS = ROOT / "models"
+
+
+def write_wav(pcm: bytes, stem: str) -> Path:
+    wav = ROOT / f"{datetime.now().strftime('%S-%M-%H-%d-%m-%y')}_{stem}.wav"
+    with wave.open(str(wav), "wb") as out:
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(24000)
+        out.writeframes(pcm)
+    return wav
+
+
 DETACH = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
 K32 = ctypes.WinDLL("kernel32", use_last_error=True)
 K32.WaitNamedPipeW.argtypes = [ctypes.c_wchar_p, ctypes.c_uint]
@@ -396,10 +408,4 @@ class Host:
             from listen import Session
             Session(pipe, t3, args, py).run()
         pcm = PipeServer().synthesize(pipe, args.language or "", args.text)
-        wav = ROOT / f"{datetime.now().strftime('%S-%M-%H-%d-%m-%y')}_{variant.name}.wav"
-        with wave.open(str(wav), "wb") as out:
-            out.setnchannels(1)
-            out.setsampwidth(2)
-            out.setframerate(24000)
-            out.writeframes(pcm)
-        return wav
+        return write_wav(pcm, variant.name)

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
-from host import MODELS, ROOT, PipeServer, download
+from host import MODELS, ROOT, PipeServer, download, write_wav
 from settings import BRAIN, EAR, PROMPTS
 
 
@@ -197,6 +197,7 @@ class Mouth:
         self.pipe = pipe
         self.speaking = speaking
         self.pool = ThreadPoolExecutor(max_workers=1)
+        self.n = 0
 
     def synthesize(self, language, text):
         return np.frombuffer(PipeServer().synthesize(self.pipe, language, text), dtype=np.int16)
@@ -209,6 +210,8 @@ class Mouth:
             pcm = pending.result()
             if index + 1 < len(lines):
                 pending = self.pool.submit(self.synthesize, *lines[index + 1])
+            self.n += 1
+            print(write_wav(pcm.tobytes(), str(self.n)), flush=True)
             print(f"say {line[0]}|{line[1]}" if line[0] else f"say {line[1]}", flush=True)
             sd.play(pcm, 24000)
             sd.wait()
