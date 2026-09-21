@@ -12,9 +12,12 @@ K32.WaitForSingleObject.argtypes, K32.CloseHandle.argtypes = [ctypes.c_void_p, c
 def write_wav(pcm: bytes, stem: str) -> Path:
     home = ROOT / "wav"
     home.mkdir(parents=True, exist_ok=True)
-    wav = home / f"{datetime.now().strftime('%S-%M-%H-%d-%m-%y')}_{stem}.wav"
+    wav = home / f"{datetime.now():%y%m%d-%H%M%S}_{stem}.wav"
     with wave.open(str(wav), "wb") as out:
-        out.setnchannels(1); out.setsampwidth(2); out.setframerate(24000); out.writeframes(pcm)
+        out.setnchannels(1)
+        out.setsampwidth(2)
+        out.setframerate(24000)
+        out.writeframes(pcm)
     return wav
 @dataclass
 class LaunchArgs:
@@ -55,7 +58,7 @@ def digest(*paths) -> str:
     return hasher.hexdigest()
 def download(url: str, dest: Path):
     tmp = dest.with_suffix(dest.suffix + ".part")
-    with urllib.request.urlopen(url) as resp, open(tmp, "wb") as out:
+    with urllib.request.urlopen(url, timeout=60) as resp, open(tmp, "wb") as out:
         shutil.copyfileobj(resp, out)
     tmp.replace(dest)
 def alive(pid: int) -> bool:
@@ -74,7 +77,8 @@ def kill(pid: Path):
     subprocess.run(["taskkill", "/F", "/T", "/PID", str(record["pid"])], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     handle = K32.OpenProcess(0x00100000, False, record["pid"])
     if handle:
-        K32.WaitForSingleObject(handle, 0xFFFFFFFF); K32.CloseHandle(handle)
+        K32.WaitForSingleObject(handle, 10000)
+        K32.CloseHandle(handle)
     pid.unlink()
 class Venv:
     def ensure(self) -> Path:
@@ -193,9 +197,8 @@ class PipeServer:
         if pid.is_file():
             record = json.loads(pid.read_text(encoding="utf-8"))
             if record["contract"] == wanted and alive(record["pid"]):
-                if not K32.WaitNamedPipeW(pipe, 0xFFFFFFFF):
-                    raise ctypes.WinError(ctypes.get_last_error())
-                return pipe
+                if K32.WaitNamedPipeW(pipe, 3000):
+                    return pipe
         kill(pid)
         proc = subprocess.Popen(command, cwd=exe.parent, stdin=subprocess.DEVNULL,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=DETACH)
@@ -209,8 +212,8 @@ class PipeServer:
             time.sleep(0.05)
         return pipe
     def synthesize(self, pipe: str, language: str, text: str) -> bytes:
-        if not K32.WaitNamedPipeW(pipe, 0xFFFFFFFF):
-            raise ctypes.WinError(ctypes.get_last_error())
+        if not K32.WaitNamedPipeW(pipe, 60000):
+            raise RuntimeError("mouth: pipe " + pipe)
         payload = text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
         with open(pipe, "r+b", buffering=0) as stream:
             message = memoryview(f"{language}\n{len(payload)}\n".encode("utf-8") + payload)
