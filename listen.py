@@ -1,9 +1,11 @@
+import json
 import queue
 import re
 import subprocess
 import sys
 import tarfile
 import threading
+import wave
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -45,7 +47,19 @@ class Ear:
         self.speaking = speaking
         self.texts = queue.Queue()
         self.feed = feed
-        if feed is not None:
+        self.wavs = []
+        if feed not in (None, "-"):
+            path = Path(feed)
+            if path.is_dir():
+                self.wavs = sorted(item for item in path.iterdir() if item.suffix.lower() == ".wav")
+                if not self.wavs:
+                    raise RuntimeError("ear: no wav in " + feed)
+            elif path.suffix.lower() == ".wav":
+                if not path.is_file():
+                    raise FileNotFoundError(feed)
+                self.wavs = [path]
+        self.wav = bool(self.wavs)
+        if feed is not None and not self.wav:
             return
         import sherpa_onnx
         home = MODELS / "ear"
@@ -57,14 +71,17 @@ class Ear:
             with tarfile.open(archive, "r:bz2") as tar:
                 tar.extractall(home, filter="data")
             archive.unlink()
-        vad = home / "silero_vad.onnx"
-        if not vad.is_file():
-            download(EAR["vad"], vad)
         self.recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
             encoder=str(model / EAR["files"][0]), decoder=str(model / EAR["files"][1]),
             joiner=str(model / EAR["files"][2]), tokens=str(model / EAR["files"][3]),
             num_threads=EAR["threads"], sample_rate=EAR["sample_rate"], feature_dim=80,
             decoding_method="greedy_search", model_type="nemo_transducer", provider=EAR["provider"])
+        self.segments = queue.Queue()
+        if self.wav:
+            return
+        vad = home / "silero_vad.onnx"
+        if not vad.is_file():
+            download(EAR["vad"], vad)
         config = sherpa_onnx.VadModelConfig()
         config.silero_vad.model = str(vad)
         config.silero_vad.threshold = EAR["vad_threshold"]
@@ -75,7 +92,6 @@ class Ear:
         config.num_threads = 1
         config.provider = EAR["provider"]
         self.vad = sherpa_onnx.VoiceActivityDetector(config, buffer_size_in_seconds=100)
-        self.segments = queue.Queue()
 
     def capture(self):
         import sounddevice as sd
@@ -114,8 +130,25 @@ class Ear:
             if line:
                 self.texts.put(line)
 
+    def inject_wav(self):
+        for path in self.wavs:
+            with wave.open(str(path), "rb") as wav:
+                if wav.getnchannels() != 1:
+                    raise RuntimeError("ear: wav must be mono")
+                if wav.getsampwidth() != 2:
+                    raise RuntimeError("ear: wav must be pcm16")
+                rate = wav.getframerate()
+                pcm = np.frombuffer(wav.readframes(wav.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
+            if rate != EAR["sample_rate"]:
+                n = int(round(len(pcm) * EAR["sample_rate"] / rate))
+                pcm = np.interp(np.linspace(0, len(pcm) - 1, n), np.arange(len(pcm)), pcm).astype(np.float32)
+            self.segments.put(pcm)
+
     def start(self):
-        if self.feed is not None:
+        if self.wav:
+            for target in (self.inject_wav, self.decode):
+                threading.Thread(target=target, daemon=True).start()
+        elif self.feed is not None:
             threading.Thread(target=self.inject, daemon=True).start()
         else:
             for target in (self.capture, self.decode):
@@ -147,9 +180,17 @@ class Brain:
         self.llm.n_tokens = common
         self.llm.eval(tokens[common:])
 
-    def complete(self, system, user, max_tokens):
-        out = self.llm(self.prompt(system, user, True), max_tokens=max_tokens, temperature=0.0, stop=["<|im_end|>"])
-        return out["choices"][0]["text"].strip()
+    def complete(self, system, user, max_tokens, schema_name):
+        from llama_cpp import LlamaGrammar
+        grammar = LlamaGrammar.from_json_schema(json.dumps(BRAIN["schema"][schema_name]), verbose=False)
+        out = self.llm(self.prompt(system, user, True), max_tokens=max_tokens, temperature=0.0,
+                       stop=["<|im_end|>"], grammar=grammar)
+        data = json.loads(out["choices"][0]["text"].strip())
+        if schema_name == "code":
+            return data["script"].strip()
+        if schema_name == "speak_llama":
+            return "\n".join(item["language"] + "|" + item["text"] for item in data["lines"])
+        return "\n".join(item["text"] for item in data["lines"])
 
 
 class Mouth:
@@ -187,6 +228,7 @@ class Session:
         self.brain = Brain()
         self.ear = Ear(speaking, args.text).start()
         self.speak_prompt = self.voice.prompt(self.limit)
+        self.speak_schema = "speak_llama" if self.voice.architecture == "llama" else "speak_gpt2"
         self.mode = "idle"
         self.transcript = []
 
@@ -226,22 +268,22 @@ class Session:
     def finalize(self):
         request = " ".join(self.transcript)
         if self.mode == "speak":
-            self.mouth.say(self.parse(self.brain.complete(self.speak_prompt, request, 512)))
+            self.mouth.say(self.parse(self.brain.complete(self.speak_prompt, request, 512, self.speak_schema)))
             self.mode = "idle"
             return
-        code = self.brain.complete(PROMPTS["code"], request, 768)
+        code = self.brain.complete(PROMPTS["code"], request, 768, "code")
         if code.startswith("```"):
             code = code.split("\n", 1)[1].rsplit("```", 1)[0]
         intent = code.strip().splitlines()[0]
         if not intent.startswith("# I will "):
             raise RuntimeError("brain: script has no intent line: " + intent)
         (MODELS / "tool.py").write_text(code.strip() + "\n", encoding="utf-8")
-        self.mouth.say([self.line(intent[2:]), self.line("Say trident roger or trident negative.")])
+        self.mouth.say([self.line(intent[2:]), self.line("Say carry out the order or this transmission rejects the proposal.")])
         self.mode = "approval"
 
     def approve(self):
         run = subprocess.run([str(self.py), str(MODELS / "tool.py")], cwd=str(ROOT), capture_output=True, text=True, timeout=self.timeout)
-        report = self.brain.complete(self.speak_prompt + PROMPTS["report"], run.stdout + run.stderr, 256)
+        report = self.brain.complete(self.speak_prompt + PROMPTS["report"], run.stdout + run.stderr, 256, self.speak_schema)
         self.mouth.say(self.parse(report))
         self.mode = "idle"
 

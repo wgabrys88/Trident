@@ -2,15 +2,15 @@ from dataclasses import dataclass
 
 FLAGS = [
     {'name': 'variant', 'default': None, 'help': 'nano/turbo: GPT-2 meanflow; v3: Llama CFG. Pick a variant for its flags.', 'group': 'model', 'architecture': 'both', 'positional': True, 'choices': ('nano', 'turbo', 'v3')},
-    {'name': 'text', 'default': None, 'help': 'Text to synthesize.', 'group': 'model', 'architecture': 'both', 'positional': True, 'metavar': 'TEXT', 'nargs': '?'},
+    {'name': 'text', 'default': None, 'help': 'Text to synthesize; with --listen, a wav, a wav directory, a text file, - for stdin, or a string.', 'group': 'model', 'architecture': 'both', 'positional': True, 'metavar': 'TEXT', 'nargs': '?'},
     {'name': 'language', 'default': None, 'help': 'Language code for the v3 tokenizer.', 'group': 'model', 'architecture': 'llama', 'positional': True, 'nargs': '?'},
     {'name': 'reference', 'default': 'reference.wav', 'help': 'Reference voice WAV.', 'group': 'model', 'architecture': 'both'},
-    {'name': 'listen', 'default': False, 'help': 'Voice loop: ear, brain, mouth. TEXT feeds ear lines (file, - for stdin, or a string); without TEXT the microphone is used.', 'group': 'model', 'architecture': 'both', 'action': 'store_true'},
-    {'name': 'wake-phrase', 'default': 'trident alpha bravo charlie', 'help': 'NATO radio activation (alphabet) that starts a request, not casual English.', 'group': 'session', 'architecture': 'both'},
-    {'name': 'stop-phrase', 'default': 'trident over', 'help': 'NATO radio activation (proword) that ends a request, not casual English.', 'group': 'session', 'architecture': 'both'},
-    {'name': 'tool-phrase', 'default': 'trident delta oscar', 'help': 'NATO radio activation (alphabet) after the wake phrase that asks for a script instead of speech, not casual English.', 'group': 'session', 'architecture': 'both'},
-    {'name': 'approve-phrase', 'default': 'trident roger', 'help': 'NATO radio activation (proword) that runs the proposed script, not casual English.', 'group': 'session', 'architecture': 'both'},
-    {'name': 'reject-phrase', 'default': 'trident negative', 'help': 'NATO radio activation (proword) that discards the proposed script, not casual English.', 'group': 'session', 'architecture': 'both'},
+    {'name': 'listen', 'default': False, 'help': 'Voice loop: ear, brain, mouth. TEXT feeds the ear (wav or wav directory through decode, text file / - / string as lines); without TEXT the microphone is used.', 'group': 'model', 'architecture': 'both', 'action': 'store_true'},
+    {'name': 'wake-phrase', 'default': 'this is a human this is a human', 'help': 'Radio sentence that starts a request, not casual English.', 'group': 'session', 'architecture': 'both'},
+    {'name': 'stop-phrase', 'default': 'this is the end of my transmission', 'help': 'Radio sentence that ends a request, not casual English.', 'group': 'session', 'architecture': 'both'},
+    {'name': 'tool-phrase', 'default': 'execute', 'help': 'Radio sentence after the wake phrase that asks for a script instead of speech, not casual English.', 'group': 'session', 'architecture': 'both'},
+    {'name': 'approve-phrase', 'default': 'carry out the order', 'help': 'Radio sentence that runs the proposed script, not casual English.', 'group': 'session', 'architecture': 'both'},
+    {'name': 'reject-phrase', 'default': 'this transmission rejects the proposal', 'help': 'Radio sentence that discards the proposed script, not casual English.', 'group': 'session', 'architecture': 'both'},
     {'name': 'chunk-chars', 'default': '300', 'help': 'Maximum characters per spoken line produced by the brain.', 'group': 'session', 'architecture': 'both'},
     {'name': 'tool-timeout', 'default': '60', 'help': 'Seconds a tool script may run.', 'group': 'session', 'architecture': 'both'},
     {'name': 't3-weight-type', 'default': 'q4_0', 'help': 'Matrix GGUF type; changing conversion rebuilds GGUF, rebakes, restarts. Mix tensor types in JSON; integers never quantized; Q4_K_M is not a type.', 'group': 'conversion', 'architecture': 'both', 'metavar': 'TYPE'},
@@ -97,15 +97,55 @@ EAR = {
     "vad_threshold": 0.5, "min_silence": 0.25, "min_speech": 0.25, "max_speech": 20,
 }
 BRAIN = {
-    "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/6dd44a1fb35d11b5d1b28902876ce3cc9e882d0e/qwen2.5-0.5b-instruct-q4_k_m.gguf",
-    "file": "brain-qwen2.5-0.5b-instruct-q4_k_m.gguf",
-    "n_ctx": 2048, "n_threads": 4, "n_gpu_layers": 0,
+    "url": "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/91cad51170dc346986eccefdc2dd33a9da36ead9/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+    "file": "brain-qwen2.5-1.5b-instruct-q4_k_m.gguf",
+    "n_ctx": 4096, "n_threads": 4, "n_gpu_layers": 0,
+    "schema": {
+        "speak_gpt2": {
+            "type": "object",
+            "properties": {
+                "lines": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "properties": {"text": {"type": "string"}},
+                        "required": ["text"],
+                    },
+                },
+            },
+            "required": ["lines"],
+        },
+        "speak_llama": {
+            "type": "object",
+            "properties": {
+                "lines": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "language": {"type": "string"},
+                            "text": {"type": "string"},
+                        },
+                        "required": ["language", "text"],
+                    },
+                },
+            },
+            "required": ["lines"],
+        },
+        "code": {
+            "type": "object",
+            "properties": {"script": {"type": "string"}},
+            "required": ["script"],
+        },
+    },
 }
 PROMPTS = {
     "speak": {
-        "gpt2": "You prepare text for an English speech synthesizer. Rewrite the user's message as natural spoken English. Split it into short chunks, one per line, each a complete thought under {limit} characters. Write numbers, symbols and abbreviations as words. A line may start with one tag from: {tags}. Output only the lines.",
-        "llama": "You prepare text for a multilingual speech synthesizer. Keep the user's language. Split the message into short chunks, one per line, each a complete thought under {limit} characters. Start every line with the language code of that line and a vertical bar, for example: pl|Dzien dobry. Allowed codes: {languages}. Output only the lines.",
+        "gpt2": "Reply with JSON: {{\"lines\":[{{\"text\":\"...\"}}]}}. Each text is spoken English under {limit} characters, a complete thought. Write numbers, symbols and abbreviations as words. A line may start with one tag from: {tags}. Keep the user's meaning.",
+        "llama": "Reply with JSON: {{\"lines\":[{{\"language\":\"xx\",\"text\":\"...\"}}]}}. Keep the user's language. English is language en. Polish is language pl. Each text is a spoken chunk under {limit} characters. Allowed codes: {languages}. English user Hello from Trident. -> {{\"lines\":[{{\"language\":\"en\",\"text\":\"Hello from Trident.\"}}]}}. Polish user Dzien dobry tu Trident. -> {{\"lines\":[{{\"language\":\"pl\",\"text\":\"Dzien dobry tu Trident.\"}}]}}.",
     },
-    "code": "Write a Python 3 script for Windows that does what the user asks. The first line is a comment that starts with '# I will ' and states the action in one sentence. Print the result. Output only the code.",
-    "report": " The user ran a program. Its output follows. Say in one sentence what happened.",
+    "code": "Reply with JSON: {\"script\":\"...\"}. script is a Python 3 file for Windows. The first line of script is a comment that starts with '# I will ' and states the action in one sentence. Then runnable code that prints the result. User print hello -> {\"script\":\"# I will print hello.\\nprint(\\\"hello\\\")\"}. User print the current time -> {\"script\":\"# I will print the current time.\\nimport datetime\\nprint(datetime.datetime.now())\"}.",
+    "report": " The program output follows. JSON text is one spoken sentence that states what the program printed.",
 }
