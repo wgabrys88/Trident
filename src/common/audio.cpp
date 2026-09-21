@@ -190,18 +190,6 @@ Audio& Audio::take_seconds(int seconds) {
     samples.resize(std::min(samples.size(), size_t(seconds) * sample_rate));
     return *this;
 }
-void Audio::write(const std::string& path) const {
-    std::vector<int16_t> pcm(samples.size());
-    for (size_t i = 0; i < samples.size(); ++i) pcm[i] = int16_t(std::clamp(samples[i], -1.f, 1.f) * 32767.f);
-    std::ofstream output(std::filesystem::u8path(path), std::ios::binary);
-    output.exceptions(std::ios::badbit | std::ios::failbit);
-    auto u16 = [&](uint16_t value) { output.write(reinterpret_cast<const char*>(&value), 2); };
-    auto u32 = [&](uint32_t value) { output.write(reinterpret_cast<const char*>(&value), 4); };
-    uint32_t bytes = uint32_t(pcm.size() * 2);
-    output.write("RIFF", 4); u32(36 + bytes); output.write("WAVEfmt ", 8);
-    u32(16); u16(1); u16(1); u32(24000); u32(48000); u16(2); u16(16);
-    output.write("data", 4); u32(bytes); output.write(reinterpret_cast<const char*>(pcm.data()), bytes);
-}
 std::vector<float> Audio::spectrum(const std::vector<float>& frames, const std::vector<float>& filters,
     const VulkanBackend& backend, int count, int fft, int channels, float power, float floor) {
     int frequencies = fft / 2 + 1;

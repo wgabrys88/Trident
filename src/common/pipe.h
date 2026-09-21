@@ -1,9 +1,11 @@
 #pragma once
-#include "audio.h"
 #include "../engine.h"
+#include <algorithm>
+#include <cstdint>
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <vector>
 #include <windows.h>
 
 namespace trident {
@@ -66,12 +68,16 @@ public:
     void serve(Synth& engine) {
         for (;;) {
             if (!ConnectNamedPipe(pipe_.get(), nullptr) && GetLastError() != ERROR_PIPE_CONNECTED) throw std::runtime_error("Pipe connection failed");
-            auto path = Pipe::line(pipe_.get());
+            auto language = Pipe::line(pipe_.get());
             std::string text(std::stoul(Pipe::line(pipe_.get())), '\0');
             Pipe::read(pipe_.get(), text.data(), DWORD(text.size()));
             try {
-                Audio(engine.synthesize(text), 24000).write(path);
-                Pipe::write(pipe_.get(), "ok\n", 3);
+                auto pcm = engine.synthesize(text, language);
+                std::vector<int16_t> samples(pcm.size());
+                for (size_t i = 0; i < pcm.size(); ++i) samples[i] = int16_t(std::clamp(pcm[i], -1.f, 1.f) * 32767.f);
+                std::string head = "ok " + std::to_string(samples.size()) + "\n";
+                Pipe::write(pipe_.get(), head.data(), DWORD(head.size()));
+                Pipe::write(pipe_.get(), samples.data(), DWORD(samples.size() * sizeof(int16_t)));
             } catch (const std::exception& e) {
                 std::string reply = std::string("error ") + e.what() + "\n";
                 Pipe::write(pipe_.get(), reply.data(), DWORD(reply.size()));

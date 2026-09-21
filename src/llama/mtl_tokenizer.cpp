@@ -30,7 +30,7 @@ MtlTokenizer::MtlTokenizer(const TokenizerPaths& paths) {
     if (!SetHandleInformation(input_.get(), HANDLE_FLAG_INHERIT, 0) || !SetHandleInformation(output_.get(), HANDLE_FLAG_INHERIT, 0))
         throw std::runtime_error("Tokenizer pipe inheritance failed");
     std::vector<std::string> arguments = {paths.python, paths.script, "--source", paths.source, "--tts-source", paths.tts_source,
-        "--tokenizer", paths.tokenizer_json, "--cangjie", paths.cangjie_json, "--dicta-model", paths.dicta_model, "--language", paths.language};
+        "--tokenizer", paths.tokenizer_json, "--cangjie", paths.cangjie_json, "--dicta-model", paths.dicta_model};
     std::wstring command;
     for (const auto& argument : arguments) { if (!command.empty()) command += L' '; command += quote(wide(argument)); }
     STARTUPINFOW startup{};
@@ -62,8 +62,8 @@ std::vector<uint8_t> MtlTokenizer::request(char mode, const std::string& text) {
 std::string MtlTokenizer::punctuation(const std::string& text) {
     auto payload = request('P', text); return std::string(payload.begin(), payload.end());
 }
-std::vector<int32_t> MtlTokenizer::tokenize(const std::string& text) {
-    auto payload = request('T', text);
+std::vector<int32_t> MtlTokenizer::tokenize(const std::string& text, const std::string& language) {
+    auto payload = request('T', language + "\n" + text);
     uint32_t count; std::memcpy(&count, payload.data(), sizeof(count));
     std::vector<int32_t> ids(count);
     std::memcpy(ids.data(), payload.data() + sizeof(count), count * sizeof(int32_t)); return ids;

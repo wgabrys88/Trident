@@ -16,6 +16,6 @@ class Engine : public Synth {
     EnglishText english;
 public:
     Engine(const std::string& t3_path, const std::string& s3_path, Flags& flags);
-    std::vector<float> synthesize(const std::string& text) override;
+    std::vector<float> synthesize(const std::string& text, const std::string& language) override;
 };
 }

@@ -9,7 +9,6 @@ from pathlib import Path
 
 class TokenizerWorker:
     def __init__(self, args):
-        self.language = args.language
         source = Path(args.tts_source).resolve()
         tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
         punctuation = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "punc_norm")
@@ -29,20 +28,28 @@ class TokenizerWorker:
                 instance.cj2word.setdefault(code, []).append(word)
 
         module.ChineseCangjieConverter._load_cangjie_mapping = load_cangjie
-        if self.language == "he":
-            from dicta_onnx import Dicta
-            module._dicta = Dicta(str(Path(args.dicta_model).resolve()))
-        elif self.language == "ja":
-            import pykakasi
-            module._kakasi = pykakasi.kakasi()
-        elif self.language == "ru":
-            from russian_text_stresser.text_stresser import RussianTextStresser
-            module._russian_stresser = RussianTextStresser()
-        elif self.language == "zh":
-            import spacy_pkuseg
+        self.module = module
+        self.dicta = args.dicta_model
+        self.loaded = set()
         self.tokenizer = module.MTLTokenizer(str(Path(args.tokenizer).resolve()))
         self.input = sys.stdin.buffer
         self.output = sys.stdout.buffer
+
+    def prepare(self, language):
+        if language in self.loaded:
+            return
+        if language == "he":
+            from dicta_onnx import Dicta
+            self.module._dicta = Dicta(str(Path(self.dicta).resolve()))
+        elif language == "ja":
+            import pykakasi
+            self.module._kakasi = pykakasi.kakasi()
+        elif language == "ru":
+            from russian_text_stresser.text_stresser import RussianTextStresser
+            self.module._russian_stresser = RussianTextStresser()
+        elif language == "zh":
+            import spacy_pkuseg
+        self.loaded.add(language)
 
     def read(self, size):
         data = bytearray()
@@ -59,7 +66,9 @@ class TokenizerWorker:
         if mode == b"P":
             return self.punctuation(text).encode("utf-8")
         if mode == b"T":
-            tokens = self.tokenizer.encode(text, language_id=self.language)
+            language, text = text.split("\n", 1)
+            self.prepare(language)
+            tokens = self.tokenizer.encode(text, language_id=language)
             return struct.pack(f"<I{len(tokens)}i", len(tokens), *tokens)
         raise ValueError("unknown tokenizer request mode")
 
@@ -73,6 +82,6 @@ class TokenizerWorker:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    for name in ("source", "tts-source", "tokenizer", "cangjie", "dicta-model", "language"):
+    for name in ("source", "tts-source", "tokenizer", "cangjie", "dicta-model"):
         parser.add_argument("--" + name, required=True)
     TokenizerWorker(parser.parse_args()).serve()

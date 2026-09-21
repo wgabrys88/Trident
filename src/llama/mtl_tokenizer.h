@@ -13,6 +13,6 @@ public:
     explicit MtlTokenizer(const TokenizerPaths&);
     ~MtlTokenizer();
     std::string punctuation(const std::string&);
-    std::vector<int32_t> tokenize(const std::string&);
+    std::vector<int32_t> tokenize(const std::string& text, const std::string& language);
 };
 }

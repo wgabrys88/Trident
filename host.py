@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 import urllib.request
+import wave
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -257,14 +258,12 @@ class VoiceBake:
 
 
 class PipeServer:
-    def ensure(self, cfg: Variant, exe: Path, t3: Path, s3: Path, language: str | None,
-               knobs: dict[str, str], py: Path, ckpt: Path, voice: dict) -> str:
+    def ensure(self, cfg: Variant, exe: Path, t3: Path, s3: Path, knobs: dict[str, str], py: Path, ckpt: Path, voice: dict) -> str:
         pipe = rf"\\.\pipe\chatterbox-{cfg.name}"
         pid = MODELS / "server.pid"
         flags = dict(knobs)
-        if language is not None:
+        if cfg.architecture == 'llama':
             flags.update({
-                "language": language,
                 "tokenizer-python": str(py),
                 "tokenizer-script": str(ROOT / "scripts/mtl_tokenize_runtime.py"),
                 "tokenizer-source": str(ckpt / "official_mtl_tokenizer.py"),
@@ -298,18 +297,27 @@ class PipeServer:
             time.sleep(0.05)
         return pipe
 
-    def synthesize(self, pipe: str, out: Path, text: str):
+    def synthesize(self, pipe: str, language: str, text: str) -> bytes:
         payload = text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
         with open(pipe, "r+b", buffering=0) as stream:
-            message = memoryview(f"{out}\n{len(payload)}\n".encode("utf-8") + payload)
+            message = memoryview(f"{language}\n{len(payload)}\n".encode("utf-8") + payload)
             while message:
                 sent = stream.write(message)
                 if not sent:
                     raise BrokenPipeError(pipe)
                 message = message[sent:]
             ack = stream.readline().decode("utf-8").strip()
-        if ack != "ok":
-            raise RuntimeError(ack or "server closed the pipe")
+            if not ack.startswith("ok "):
+                raise RuntimeError(ack or "server closed the pipe")
+            pcm = bytearray()
+            remaining = int(ack[3:]) * 2
+            while remaining:
+                chunk = stream.read(remaining)
+                if not chunk:
+                    raise BrokenPipeError(pipe)
+                pcm += chunk
+                remaining -= len(chunk)
+        return bytes(pcm)
 
 
 class Host:
@@ -328,7 +336,7 @@ class Host:
             if isinstance(default, dict):
                 default = default[cfg.architecture]
             options = {"help": row["help"], "default": default}
-            for key in ("choices", "metavar"):
+            for key in ("choices", "metavar", "nargs", "action"):
                 if key in row:
                     options[key] = row[key]
             groups[row["group"]].add_argument(name if row.get("positional") else f"--{name}", **options)
@@ -361,22 +369,21 @@ class Host:
         py = Venv().ensure()
         self.bind_quant_types(py)
         args = self.parse(variant, argv)
-        wav = ROOT / f"{datetime.now().strftime('%S-%M-%H-%d-%m-%y')}_{variant.name}.wav"
         family = ARCHITECTURES[variant.architecture]
-        try:
-            MODELS.mkdir(parents=True, exist_ok=True)
-            engine = EngineBuild()
-            server, bake = engine.ensure()
-            ckpt = Checkpoints().ensure(variant)
-            base_t3 = args.gguf("t3", variant.name)
-            base_s3 = args.gguf("s3gen", family["s3_family"])
-            t3_contract, s3_contract = Converter().ensure(variant, py, ckpt, base_t3, base_s3, args)
-            t3, s3, voice = VoiceBake().ensure(variant, args.reference, base_t3, base_s3, bake, t3_contract, s3_contract, engine.wanted())
-            pipes = PipeServer()
-            pipe = pipes.ensure(variant, server, t3, s3, args.language, args.knobs, py, ckpt, voice)
-            pipes.synthesize(pipe, wav, args.text)
-            return wav
-        except BaseException:
-            if wav.is_file():
-                wav.unlink()
-            raise
+        MODELS.mkdir(parents=True, exist_ok=True)
+        engine = EngineBuild()
+        server, bake = engine.ensure()
+        ckpt = Checkpoints().ensure(variant)
+        base_t3 = args.gguf("t3", variant.name)
+        base_s3 = args.gguf("s3gen", family["s3_family"])
+        t3_contract, s3_contract = Converter().ensure(variant, py, ckpt, base_t3, base_s3, args)
+        t3, s3, voice = VoiceBake().ensure(variant, args.reference, base_t3, base_s3, bake, t3_contract, s3_contract, engine.wanted())
+        pipe = PipeServer().ensure(variant, server, t3, s3, args.knobs, py, ckpt, voice)
+        pcm = PipeServer().synthesize(pipe, args.language or "", args.text)
+        wav = ROOT / f"{datetime.now().strftime('%S-%M-%H-%d-%m-%y')}_{variant.name}.wav"
+        with wave.open(str(wav), "wb") as out:
+            out.setnchannels(1)
+            out.setsampwidth(2)
+            out.setframerate(24000)
+            out.writeframes(pcm)
+        return wav

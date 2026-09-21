@@ -15,7 +15,6 @@ public:
     Audio& trim(float top_db = 20.f);
     Audio& take_seconds(int seconds);
     static void fade(std::vector<float>& pcm, size_t length);
-    void write(const std::string& path) const;
     std::vector<float> mel(const std::vector<float>& filters, const VulkanBackend& backend,
                            int fft, int hop, int channels, bool centered, float power, float floor) const;
     std::vector<float> kaldi(const std::vector<float>& filters, const VulkanBackend& backend) const;
