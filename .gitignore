@@ -8,7 +8,6 @@
 !/requirements.txt
 !/settings.py
 !/tts.py
-!/README.md
 !/reference.wav
 !/scripts/
 !/scripts/convert_s3.py
