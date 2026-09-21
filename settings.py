@@ -67,8 +67,7 @@ BRAIN = {
     "file": "brain-gemma-4-e2b-it-q4_k_m.gguf",
     "n_ctx": 8192, "n_threads": 4, "n_gpu_layers": -1,
     "decode": {"speak": {"max_tokens": 4096, "temperature": 1.0, "top_p": 0.95, "top_k": 64},
-               "consent": {"max_tokens": 32, "temperature": 0.0, "top_p": 0.95, "top_k": 64},
-               "report": {"max_tokens": 256, "temperature": 1.0, "top_p": 0.95, "top_k": 64}},
+               "consent": {"max_tokens": 32, "temperature": 0.0, "top_p": 0.95, "top_k": 64}},
 }
 _OFF = "If the hear means power off, shut down, quit, exit, switch off, or the same in any language, reply off. One word.\n"
 _TASK = "If the hear is a task to run on this Windows computer, reply with only a Python 3 file. First line '# I will ' plus the action, then code that prints the result. User print hello ->\n# I will print hello.\nprint(\"hello\")\nUser print the current time ->\n# I will print the current time.\nimport datetime\nprint(datetime.datetime.now())\n"

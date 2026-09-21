@@ -4,8 +4,9 @@ import numpy as np
 from host import MODELS, ROOT, PipeServer, download, kill, write_wav
 from settings import BRAIN, EAR, PROMPTS
 class Voice:
-    def __init__(self, t3):
+    def __init__(self, t3, limit):
         import gguf
+        self.limit = limit
         reader = gguf.GGUFReader(str(t3))
         field = reader.fields["general.architecture"]
         self.architecture = "gpt2" if bytes(field.parts[field.data[0]]).decode() == "chatterbox-gpt2" else "llama"
@@ -17,8 +18,9 @@ class Voice:
             field = reader.fields["chatterbox.tokenizer.language_tokens"]
             self.languages = [code.strip("[]") for code in bytes(field.parts[field.data[0]]).decode().split(",")]
             self.tags = []
-    def prompt(self, limit):
-        return PROMPTS["open"][self.architecture].format(limit=limit, tags=" ".join(self.tags), languages=" ".join(self.languages))
+    def prompt(self, name):
+        template = PROMPTS["open"][self.architecture] if name == "open" else PROMPTS[name]
+        return template.format(limit=self.limit, tags=" ".join(self.tags), languages=" ".join(self.languages))
 class Ear:
     def __init__(self, speaking, feed=None):
         self.speaking, self.feed, self.texts, self.wavs = speaking, feed, queue.Queue(), []
@@ -78,8 +80,12 @@ class Ear:
                     self.vad.pop()
     def decode(self):
         while True:
+            segment = self.segments.get()
+            if segment is None:
+                self.texts.put(None)
+                return
             stream = self.recognizer.create_stream()
-            stream.accept_waveform(EAR["sample_rate"], self.segments.get())
+            stream.accept_waveform(EAR["sample_rate"], segment)
             self.recognizer.decode_stream(stream)
             text = stream.result.text.strip()
             if text:
@@ -90,6 +96,7 @@ class Ear:
         for line in lines:
             if line.strip():
                 self.texts.put(line.strip())
+        self.texts.put(None)
     def inject_wav(self):
         for path in self.wavs:
             with wave.open(str(path), "rb") as wav:
@@ -100,6 +107,7 @@ class Ear:
                 n = int(round(len(pcm) * EAR["sample_rate"] / rate))
                 pcm = np.interp(np.linspace(0, len(pcm) - 1, n), np.arange(len(pcm)), pcm).astype(np.float32)
             self.segments.put(pcm)
+        self.segments.put(None)
     def start(self):
         targets = (self.inject_wav, self.decode) if self.wav else ((self.inject,) if self.feed is not None else (self.capture, self.decode))
         for target in targets:
@@ -133,12 +141,12 @@ class Mouth:
         self.speaking.clear()
 class Session:
     def __init__(self, pipe, t3, args, py):
-        self.voice, self.limit, self.timeout, self.py = Voice(t3), int(args.session["chunk-chars"]), int(args.session["tool-timeout"]), py
+        self.voice = Voice(t3, int(args.session["chunk-chars"]))
+        self.limit, self.timeout, self.py = self.voice.limit, int(args.session["tool-timeout"]), py
         speaking = threading.Event()
         self.mouth, self.brain = Mouth(pipe, speaking), Brain()
-        self.ear, self.open_prompt, self.pending = Ear(speaking, args.text).start(), self.voice.prompt(self.limit), None
-    def line(self, text):
-        return ("en", text) if self.voice.architecture == "llama" else ("", text)
+        self.ear = Ear(speaking, args.text).start()
+        self.open_prompt, self.report_prompt, self.pending = self.voice.prompt("open"), self.voice.prompt("report"), None
     def parse(self, out):
         lines = []
         for raw in (r.strip() for r in out.splitlines() if r.strip()):
@@ -166,13 +174,13 @@ class Session:
         raise SystemExit
     def approve(self):
         run = subprocess.run([str(self.py), str(MODELS / "tool.py")], cwd=str(ROOT), capture_output=True, text=True, timeout=self.timeout)
-        self.mouth.say(self.parse(self.brain.complete(self.open_prompt, PROMPTS["report"] + "\n" + run.stdout + run.stderr, "report")))
+        tail = (run.stdout + run.stderr)[-2000:]
+        self.mouth.say(self.parse(self.brain.complete(self.report_prompt, tail, "speak")))
         self.pending = None
     def step(self, text):
         print(f"hear {text}", flush=True)
         if self.pending:
-            parts = self.brain.complete(PROMPTS["consent"].format(intent=self.pending), text, "consent").split()
-            word = parts[0].lower() if parts else ""
+            word = self.brain.complete(PROMPTS["consent"].format(intent=self.pending), text, "consent").strip().lower().rstrip(".")
             if word == "off":
                 self.halt()
             if word == "yes":
@@ -180,17 +188,19 @@ class Session:
             elif word == "no":
                 self.pending = None
             else:
-                raise RuntimeError("brain: empty consent" if not word else "brain: consent is not yes, no, or off: " + word)
+                raise RuntimeError("brain: consent " + word)
             return
         out = self.brain.complete(self.open_prompt, text, "speak")
         if not out:
             return
-        if out.split()[0].lower() == "off":
+        word = out.strip().lower().rstrip(".")
+        if word == "off":
             self.halt()
-        if out.lstrip().startswith("# I will "):
+        if out.startswith("# I will "):
             intent = out.strip().splitlines()[0]
             (MODELS / "tool.py").write_text(out.strip() + "\n", encoding="utf-8")
-            self.mouth.say([self.line(intent[2:])])
+            lang = self.voice.languages[0] if self.voice.languages else ""
+            self.mouth.say([(lang, intent[2:])])
             self.pending = intent[2:]
             return
         self.mouth.say(self.parse(out))
@@ -198,8 +208,10 @@ class Session:
         print("listening", flush=True)
         while True:
             try:
-                self.step(self.ear.texts.get())
-            except (RuntimeError, OSError) as error:
+                text = self.ear.texts.get()
+                if text is None:
+                    raise SystemExit
+                self.step(text)
+            except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
                 print(f"error {error}", flush=True)
                 self.pending = None
-                self.mouth.say([self.line(str(error))])
