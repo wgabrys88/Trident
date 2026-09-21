@@ -3,10 +3,12 @@
 !/.gitattributes
 !/CMakeLists.txt
 !/LICENSE
-!/host.py
-!/listen.py
+!/asr.py
+!/brain.py
+!/install.py
 !/requirements.txt
 !/settings.py
+!/trident.py
 !/tts.py
 !/reference.wav
 !/scripts/

@@ -72,7 +72,7 @@ TOOLS = [
         "parameters": {"type": "object", "properties": {"text": {"type": "array", "items": {"type": "string"}, "description": "Pieces to speak, in order."}}, "required": ["text"]}}},
     {"type": "function", "function": {
         "name": "listen",
-        "description": "Open the microphone and leave it open.",
+        "description": "The microphone is already open. Call listen to receive speech as user turns.",
         "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {
         "name": "quit",
