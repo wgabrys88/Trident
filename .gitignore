@@ -4,6 +4,7 @@
 !/CMakeLists.txt
 !/LICENSE
 !/host.py
+!/listen.py
 !/requirements.txt
 !/settings.py
 !/tts.py

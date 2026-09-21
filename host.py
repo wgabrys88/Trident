@@ -37,6 +37,8 @@ class LaunchArgs:
     reference: Path
     t3_quant_policy: Path
     s3_quant_policy: Path
+    listen: bool
+    session: dict[str, str]
 
     def policy(self, kind):
         return {"default": getattr(self, kind + "_weight_type"),
@@ -325,7 +327,7 @@ class Host:
         parser = argparse.ArgumentParser(prog="python tts.py" + (f" {cfg.name}" if cfg else ""),
                                          formatter_class=argparse.ArgumentDefaultsHelpFormatter)
         groups = {name: parser.add_argument_group(title, next(row["help"] for row in FLAGS if row["name"] == "variant") if name == "model" else None) for name, title in
-                  (("model", "Model"), ("conversion", "GGUF conversion"), ("server", "Server"))} if cfg else {"model": parser}
+                  (("model", "Model"), ("conversion", "GGUF conversion"), ("server", "Server"), ("session", "Voice session"))} if cfg else {"model": parser}
         for row in FLAGS:
             name = row["name"]
             if (cfg is None) != (name == "variant"):
@@ -363,12 +365,16 @@ class Host:
                            if row["group"] == "server" and row["architecture"] in ("both", cfg.architecture)},
                           values["t3_weight_type"], values["s3_weight_type"],
                           Path(values["reference"]).expanduser().resolve(),
-                          (ROOT / values["t3_quant_policy"]).resolve(), (ROOT / values["s3_quant_policy"]).resolve())
+                          (ROOT / values["t3_quant_policy"]).resolve(), (ROOT / values["s3_quant_policy"]).resolve(),
+                          values["listen"],
+                          {row["name"]: str(values[row["name"].replace("-", "_")]) for row in FLAGS if row["group"] == "session"})
 
     def run(self, variant: Variant, argv: list[str]) -> Path:
         py = Venv().ensure()
         self.bind_quant_types(py)
         args = self.parse(variant, argv)
+        if not args.listen and args.text is None:
+            raise SystemExit("TEXT is required without --listen")
         family = ARCHITECTURES[variant.architecture]
         MODELS.mkdir(parents=True, exist_ok=True)
         engine = EngineBuild()
@@ -379,6 +385,9 @@ class Host:
         t3_contract, s3_contract = Converter().ensure(variant, py, ckpt, base_t3, base_s3, args)
         t3, s3, voice = VoiceBake().ensure(variant, args.reference, base_t3, base_s3, bake, t3_contract, s3_contract, engine.wanted())
         pipe = PipeServer().ensure(variant, server, t3, s3, args.knobs, py, ckpt, voice)
+        if args.listen:
+            from listen import Session
+            Session(pipe, t3, args, py).run()
         pcm = PipeServer().synthesize(pipe, args.language or "", args.text)
         wav = ROOT / f"{datetime.now().strftime('%S-%M-%H-%d-%m-%y')}_{variant.name}.wav"
         with wave.open(str(wav), "wb") as out:

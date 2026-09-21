@@ -5,6 +5,14 @@ FLAGS = [
     {'name': 'text', 'default': None, 'help': 'Text to synthesize.', 'group': 'model', 'architecture': 'both', 'positional': True, 'metavar': 'TEXT', 'nargs': '?'},
     {'name': 'language', 'default': None, 'help': 'Language code for the v3 tokenizer.', 'group': 'model', 'architecture': 'llama', 'positional': True, 'nargs': '?'},
     {'name': 'reference', 'default': 'reference.wav', 'help': 'Reference voice WAV.', 'group': 'model', 'architecture': 'both'},
+    {'name': 'listen', 'default': False, 'help': 'Voice loop: ear, brain, mouth. TEXT is not used.', 'group': 'model', 'architecture': 'both', 'action': 'store_true'},
+    {'name': 'wake-phrase', 'default': 'hey trident', 'help': 'Spoken phrase that starts a request.', 'group': 'session', 'architecture': 'both'},
+    {'name': 'stop-phrase', 'default': 'over', 'help': 'Spoken phrase that ends a request.', 'group': 'session', 'architecture': 'both'},
+    {'name': 'tool-phrase', 'default': 'trident do', 'help': 'Spoken phrase after the wake phrase that asks for a script instead of speech.', 'group': 'session', 'architecture': 'both'},
+    {'name': 'approve-phrase', 'default': 'approve', 'help': 'Spoken phrase that runs the proposed script.', 'group': 'session', 'architecture': 'both'},
+    {'name': 'reject-phrase', 'default': 'reject', 'help': 'Spoken phrase that discards the proposed script.', 'group': 'session', 'architecture': 'both'},
+    {'name': 'chunk-chars', 'default': '300', 'help': 'Maximum characters per spoken line produced by the brain.', 'group': 'session', 'architecture': 'both'},
+    {'name': 'tool-timeout', 'default': '60', 'help': 'Seconds a tool script may run.', 'group': 'session', 'architecture': 'both'},
     {'name': 't3-weight-type', 'default': 'q4_0', 'help': 'Matrix GGUF type; changing conversion rebuilds GGUF, rebakes, restarts. Mix tensor types in JSON; integers never quantized; Q4_K_M is not a type.', 'group': 'conversion', 'architecture': 'both', 'metavar': 'TYPE'},
     {'name': 's3-weight-type', 'default': 'q4_0', 'help': 'Matrix GGUF type; changing conversion rebuilds GGUF, rebakes, restarts. Mix tensor types in JSON; integers never quantized; Q4_K_M is not a type.', 'group': 'conversion', 'architecture': 'both', 'metavar': 'TYPE'},
     {'name': 't3-quant-policy', 'default': 'scripts/quant_t3.json', 'help': 'Per-tensor JSON rules; replaces shipped rules. Mix tensor types in JSON; integers never quantized; Q4_K_M is not a type. Changes rebuild GGUF, rebake, restart.', 'group': 'conversion', 'architecture': 'both'},
@@ -78,4 +86,26 @@ ARCHITECTURES = {
         "s3_checkpoint": "s3gen.safetensors",
         "s3_family": "v3",
     },
+}
+
+EAR = {
+    "archive": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2",
+    "dir": "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
+    "files": ("encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"),
+    "vad": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
+    "sample_rate": 16000, "threads": 2, "provider": "cpu",
+    "vad_threshold": 0.5, "min_silence": 0.25, "min_speech": 0.25, "max_speech": 20,
+}
+BRAIN = {
+    "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/6dd44a1fb35d11b5d1b28902876ce3cc9e882d0e/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+    "file": "brain-qwen2.5-0.5b-instruct-q4_k_m.gguf",
+    "n_ctx": 2048, "n_threads": 4, "n_gpu_layers": 0,
+}
+PROMPTS = {
+    "speak": {
+        "gpt2": "You prepare text for an English speech synthesizer. Rewrite the user's message as natural spoken English. Split it into short chunks, one per line, each a complete thought under {limit} characters. Write numbers, symbols and abbreviations as words. A line may start with one tag from: {tags}. Output only the lines.",
+        "llama": "You prepare text for a multilingual speech synthesizer. Keep the user's language. Split the message into short chunks, one per line, each a complete thought under {limit} characters. Start every line with the language code of that line and a vertical bar, for example: pl|Dzien dobry. Allowed codes: {languages}. Output only the lines.",
+    },
+    "code": "Write a Python 3 script for Windows that does what the user asks. The first line is a comment that starts with '# I will ' and states the action in one sentence. Print the result. Output only the code.",
+    "report": " The user ran a program. Its output follows. Say in one sentence what happened.",
 }
