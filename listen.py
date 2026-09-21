@@ -1,6 +1,7 @@
 import queue
 import re
 import subprocess
+import sys
 import tarfile
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -40,7 +41,12 @@ class Voice:
 
 
 class Ear:
-    def __init__(self, speaking):
+    def __init__(self, speaking, feed=None):
+        self.speaking = speaking
+        self.texts = queue.Queue()
+        self.feed = feed
+        if feed is not None:
+            return
         import sherpa_onnx
         home = MODELS / "ear"
         home.mkdir(parents=True, exist_ok=True)
@@ -69,9 +75,7 @@ class Ear:
         config.num_threads = 1
         config.provider = EAR["provider"]
         self.vad = sherpa_onnx.VoiceActivityDetector(config, buffer_size_in_seconds=100)
-        self.speaking = speaking
         self.segments = queue.Queue()
-        self.texts = queue.Queue()
 
     def capture(self):
         import sounddevice as sd
@@ -99,9 +103,23 @@ class Ear:
             if text:
                 self.texts.put(text)
 
+    def inject(self):
+        if self.feed == "-":
+            lines = sys.stdin
+        else:
+            path = Path(self.feed)
+            lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else self.feed.splitlines()
+        for line in lines:
+            line = line.strip()
+            if line:
+                self.texts.put(line)
+
     def start(self):
-        for target in (self.capture, self.decode):
-            threading.Thread(target=target, daemon=True).start()
+        if self.feed is not None:
+            threading.Thread(target=self.inject, daemon=True).start()
+        else:
+            for target in (self.capture, self.decode):
+                threading.Thread(target=target, daemon=True).start()
         return self
 
 
@@ -167,7 +185,7 @@ class Session:
         speaking = threading.Event()
         self.mouth = Mouth(pipe, speaking)
         self.brain = Brain()
-        self.ear = Ear(speaking).start()
+        self.ear = Ear(speaking, args.text).start()
         self.speak_prompt = self.voice.prompt(self.limit)
         self.mode = "idle"
         self.transcript = []
@@ -218,7 +236,7 @@ class Session:
         if not intent.startswith("# I will "):
             raise RuntimeError("brain: script has no intent line: " + intent)
         (MODELS / "tool.py").write_text(code.strip() + "\n", encoding="utf-8")
-        self.mouth.say([self.line(intent[2:]), self.line("Say approve or reject.")])
+        self.mouth.say([self.line(intent[2:]), self.line("Say trident roger or trident negative.")])
         self.mode = "approval"
 
     def approve(self):
