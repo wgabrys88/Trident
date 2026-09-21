@@ -165,7 +165,7 @@ class Brain:
                          n_gpu_layers=BRAIN["n_gpu_layers"], verbose=False)
 
     def prompt(self, system, user, closed):
-        text = f"<bos><|turn>system\n{system}<turn|>\n<|turn>user\n{user}"
+        text = f"<|turn>system\n{system}<turn|>\n<|turn>user\n{user}"
         return text + "<turn|>\n<|turn>model\n" if closed else text
 
     def prefill(self, system, user):
@@ -182,10 +182,7 @@ class Brain:
     def complete(self, system, user, mode):
         knobs = BRAIN["decode"][mode]
         out = self.llm(self.prompt(system, user, True), stop=["<turn|>"], **knobs)
-        text = out["choices"][0]["text"]
-        if "<channel|>" in text:
-            text = text.split("<channel|>")[-1]
-        return text.strip()
+        return out["choices"][0]["text"].strip()
 
 
 class Mouth:
