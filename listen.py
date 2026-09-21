@@ -14,21 +14,6 @@ from host import MODELS, ROOT, PipeServer, download, write_wav
 from settings import BRAIN, EAR, PROMPTS
 
 
-def clean(text):
-    return " ".join(re.sub(r"[^\w\s]", " ", text.lower()).split())
-
-
-def find(text, phrase):
-    return re.search(r"\b" + re.escape(phrase) + r"\b", text)
-
-
-def cut(text, phrase):
-    match = re.search(r"(?i)\b" + re.escape(phrase) + r"\b", text)
-    if not match:
-        raise RuntimeError("ear: phrase missing: " + phrase)
-    return text[:match.start()], text[match.end():]
-
-
 class Voice:
     def __init__(self, t3):
         import gguf
@@ -45,7 +30,7 @@ class Voice:
             self.tags = []
 
     def prompt(self, limit):
-        return PROMPTS["speak"][self.architecture].format(limit=limit, tags=" ".join(self.tags), languages=" ".join(self.languages))
+        return PROMPTS["open"][self.architecture].format(limit=limit, tags=" ".join(self.tags), languages=" ".join(self.languages))
 
 
 class Ear:
@@ -175,17 +160,6 @@ class Brain:
         text = f"<|turn>system\n{system}<turn|>\n<|turn>user\n{user}"
         return text + "<turn|>\n<|turn>model\n" if closed else text
 
-    def prefill(self, system, user):
-        tokens = self.llm.tokenize(self.prompt(system, user, False).encode("utf-8"), special=True)
-        fed = self.llm.input_ids[: self.llm.n_tokens].tolist()
-        common = 0
-        for a, b in zip(fed, tokens):
-            if a != b:
-                break
-            common += 1
-        self.llm.n_tokens = common
-        self.llm.eval(tokens[common:])
-
     def complete(self, system, user, mode):
         knobs = BRAIN["decode"][mode]
         out = self.llm(self.prompt(system, user, True), stop=["<turn|>"], **knobs)
@@ -221,7 +195,6 @@ class Mouth:
 class Session:
     def __init__(self, pipe, t3, args, py):
         self.voice = Voice(t3)
-        self.phrases = args.session
         self.limit = int(args.session["chunk-chars"])
         self.timeout = int(args.session["tool-timeout"])
         self.py = py
@@ -229,9 +202,8 @@ class Session:
         self.mouth = Mouth(pipe, speaking)
         self.brain = Brain()
         self.ear = Ear(speaking, args.text).start()
-        self.speak_prompt = self.voice.prompt(self.limit)
-        self.mode = "idle"
-        self.transcript = []
+        self.open_prompt = self.voice.prompt(self.limit)
+        self.pending = None
 
     def line(self, text):
         return ("en", text) if self.voice.architecture == "llama" else ("", text)
@@ -263,60 +235,36 @@ class Session:
             raise RuntimeError("brain: empty answer")
         return lines
 
-    def system(self):
-        return PROMPTS["code"] if self.mode == "tool" else self.speak_prompt
-
-    def finalize(self):
-        request = " ".join(self.transcript)
-        if self.mode == "speak":
-            self.mouth.say(self.parse(self.brain.complete(self.speak_prompt, request, "speak")))
-            self.mode = "idle"
-            return
-        code = self.brain.complete(PROMPTS["code"], request, "code")
-        intent = code.strip().splitlines()[0]
-        if not intent.startswith("# I will "):
-            raise RuntimeError("brain: script has no intent line: " + intent)
-        (MODELS / "tool.py").write_text(code.strip() + "\n", encoding="utf-8")
-        self.mouth.say([self.line(intent[2:]), self.line("Say carry out the order or this transmission rejects the proposal.")])
-        self.mode = "approval"
-
     def approve(self):
         run = subprocess.run([str(self.py), str(MODELS / "tool.py")], cwd=str(ROOT), capture_output=True, text=True, timeout=self.timeout)
-        report = self.brain.complete(self.speak_prompt + PROMPTS["report"], run.stdout + run.stderr, "report")
+        report = self.brain.complete(self.open_prompt + PROMPTS["report"], run.stdout + run.stderr, "report")
         self.mouth.say(self.parse(report))
-        self.mode = "idle"
+        self.pending = None
 
     def step(self, text):
         print(f"hear {text}", flush=True)
-        folded = clean(text)
-        if self.mode == "idle":
-            if not find(folded, self.phrases["wake-phrase"]):
-                return
-            _, text = cut(text, self.phrases["wake-phrase"])
-            folded = clean(text)
-            tool = folded.startswith(self.phrases["tool-phrase"])
-            self.mode = "tool" if tool else "speak"
-            self.transcript = []
-            self.brain.llm.reset()
-            if tool:
-                _, text = cut(text, self.phrases["tool-phrase"])
-        if self.mode in ("speak", "tool"):
-            stop = find(clean(text), self.phrases["stop-phrase"])
-            piece = text
-            if stop:
-                piece, _ = cut(text, self.phrases["stop-phrase"])
-            piece = piece.strip()
-            if piece:
-                self.transcript.append(piece)
-            if stop:
-                self.finalize()
+        if self.pending:
+            parts = self.brain.complete(self.open_prompt + PROMPTS["consent"].format(intent=self.pending), text, "consent").split()
+            if not parts:
+                raise RuntimeError("brain: empty consent")
+            word = parts[0].lower()
+            if word == "yes":
+                self.approve()
+            elif word == "no":
+                self.pending = None
             else:
-                self.brain.prefill(self.system(), " ".join(self.transcript))
+                raise RuntimeError("brain: consent is not yes or no: " + word)
             return
-        if find(folded, self.phrases["approve-phrase"]):
-            self.approve()
-        elif find(folded, self.phrases["reject-phrase"]):
-            self.mode = "idle"
+        out = self.brain.complete(self.open_prompt, text, "speak")
+        if not out:
+            return
+        if out.lstrip().startswith("# I will "):
+            intent = out.strip().splitlines()[0]
+            (MODELS / "tool.py").write_text(out.strip() + "\n", encoding="utf-8")
+            self.mouth.say([self.line(intent[2:])])
+            self.pending = intent[2:]
+            return
+        self.mouth.say(self.parse(out))
 
     def run(self):
         print("listening", flush=True)
@@ -326,5 +274,5 @@ class Session:
                 self.step(text)
             except (RuntimeError, OSError) as error:
                 print(f"error {error}", flush=True)
-                self.mode = "idle"
+                self.pending = None
                 self.mouth.say([self.line(str(error))])

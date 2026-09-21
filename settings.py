@@ -5,12 +5,7 @@ FLAGS = [
     {'name': 'text', 'default': None, 'help': 'Text to synthesize; with --listen, a wav, a wav directory, a text file, - for stdin, or a string.', 'group': 'model', 'architecture': 'both', 'positional': True, 'metavar': 'TEXT', 'nargs': '?'},
     {'name': 'language', 'default': None, 'help': 'Language code for the v3 tokenizer.', 'group': 'model', 'architecture': 'llama', 'positional': True, 'nargs': '?'},
     {'name': 'reference', 'default': 'reference.wav', 'help': 'Reference voice WAV.', 'group': 'model', 'architecture': 'both'},
-    {'name': 'listen', 'default': False, 'help': 'Voice loop: ear, brain, mouth. TEXT feeds the ear (wav or wav directory through decode, text file / - / string as lines); without TEXT the microphone is used.', 'group': 'model', 'architecture': 'both', 'action': 'store_true'},
-    {'name': 'wake-phrase', 'default': 'this is a human this is a human', 'help': 'Radio sentence that starts a request, not casual English.', 'group': 'session', 'architecture': 'both'},
-    {'name': 'stop-phrase', 'default': 'this is the end of my transmission', 'help': 'Radio sentence that ends a request, not casual English.', 'group': 'session', 'architecture': 'both'},
-    {'name': 'tool-phrase', 'default': 'execute', 'help': 'Radio sentence after the wake phrase that asks for a script instead of speech, not casual English.', 'group': 'session', 'architecture': 'both'},
-    {'name': 'approve-phrase', 'default': 'carry out the order', 'help': 'Radio sentence that runs the proposed script, not casual English.', 'group': 'session', 'architecture': 'both'},
-    {'name': 'reject-phrase', 'default': 'this transmission rejects the proposal', 'help': 'Radio sentence that discards the proposed script, not casual English.', 'group': 'session', 'architecture': 'both'},
+    {'name': 'listen', 'default': False, 'help': 'Voice loop: ear, brain, mouth. Each hear is one request. TEXT feeds the ear (wav or wav directory through decode, text file / - / string as lines); without TEXT the microphone is used.', 'group': 'model', 'architecture': 'both', 'action': 'store_true'},
     {'name': 'chunk-chars', 'default': '300', 'help': 'Maximum characters per spoken line produced by the brain.', 'group': 'session', 'architecture': 'both'},
     {'name': 'tool-timeout', 'default': '60', 'help': 'Seconds a tool script may run.', 'group': 'session', 'architecture': 'both'},
     {'name': 't3-weight-type', 'default': 'q4_0', 'help': 'Matrix GGUF type; changing conversion rebuilds GGUF, rebakes, restarts. Mix tensor types in JSON; integers never quantized; Q4_K_M is not a type.', 'group': 'conversion', 'architecture': 'both', 'metavar': 'TYPE'},
@@ -102,15 +97,15 @@ BRAIN = {
     "n_ctx": 8192, "n_threads": 4, "n_gpu_layers": -1,
     "decode": {
         "speak": {"max_tokens": 4096, "temperature": 1.0, "top_p": 0.95, "top_k": 64},
-        "code": {"max_tokens": 768, "temperature": 0.0, "top_p": 0.95, "top_k": 64},
+        "consent": {"max_tokens": 32, "temperature": 0.0, "top_p": 0.95, "top_k": 64},
         "report": {"max_tokens": 256, "temperature": 1.0, "top_p": 0.95, "top_k": 64},
     },
 }
 PROMPTS = {
-    "speak": {
-        "gpt2": "Each line is one spoken English chunk: a complete thought, two or three sentences, about {limit} characters. Split only where the meaning pauses, never mid-sentence, never by counting letters. Many lines. Write numbers, symbols and abbreviations as words. A line may start with one tag from: {tags}. Keep every fact. Do not summarize. Do not copy example wording. No markdown.",
-        "llama": "Each line is language|text. language is from: {languages}. Each text is one spoken chunk: two or three sentences in one language, about {limit} characters. If the next sentence is another language, start a new line. Never put English on a pl| line. Never put Polish on an en| line. Never mid-sentence. Never by counting letters. Keep the original words. Do not translate. Keep source order. Many lines. Keep every fact. Do not summarize. Do not copy example wording. Format: pl|Ala ma kota. en|The ship is at the dock. pl|Kot pije mleko. No markdown.",
+    "open": {
+        "gpt2": "If the hear is a task to run on this Windows computer, reply with only a Python 3 file. First line '# I will ' plus the action, then code that prints the result. User print hello ->\n# I will print hello.\nprint(\"hello\")\nUser print the current time ->\n# I will print the current time.\nimport datetime\nprint(datetime.datetime.now())\nIf the hear is speech to read or answer, each line is one spoken English chunk: a complete thought, two or three sentences, about {limit} characters. Split only where the meaning pauses, never mid-sentence, never by counting letters. Many lines. Write numbers, symbols and abbreviations as words. A line may start with one tag from: {tags}. Keep every fact. Do not summarize. Do not copy example wording. If the hear is not for you, reply with nothing. No markdown.",
+        "llama": "If the hear is a task to run on this Windows computer, reply with only a Python 3 file. First line '# I will ' plus the action, then code that prints the result. User print hello ->\n# I will print hello.\nprint(\"hello\")\nUser print the current time ->\n# I will print the current time.\nimport datetime\nprint(datetime.datetime.now())\nIf the hear is speech to read or answer, each line is language|text. language is from: {languages}. Each text is one spoken chunk: two or three sentences in one language, about {limit} characters. If the next sentence is another language, start a new line. Never put English on a pl| line. Never put Polish on an en| line. Never mid-sentence. Never by counting letters. Keep the original words. Do not translate. Keep source order. Many lines. Keep every fact. Do not summarize. Do not copy example wording. Format: pl|Ala ma kota. en|The ship is at the dock. pl|Kot pije mleko. If the hear is not for you, reply with nothing. No markdown.",
     },
-    "code": "A Python 3 file for Windows. First line is a comment that starts with '# I will ' and states the action in one sentence. Then runnable code that prints the result. No markdown. User print hello ->\n# I will print hello.\nprint(\"hello\")\nUser print the current time ->\n# I will print the current time.\nimport datetime\nprint(datetime.datetime.now())",
-    "report": " The program output follows. Reply with the same line format, one spoken sentence that states what the program printed.",
+    "consent": "The proposed action is: {intent}. The human spoke. If they consent, reply yes. If they refuse, reply no. One word. No markdown.",
+    "report": " The program output follows. Reply with spoken lines in the same format, one sentence that states what the program printed. Not a Python file.",
 }
