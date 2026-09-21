@@ -407,5 +407,6 @@ class Host:
         if args.listen:
             from listen import Session
             Session(pipe, t3, args, py).run()
+            raise SystemExit
         pcm = PipeServer().synthesize(pipe, args.language or "", args.text)
         return write_wav(pcm, variant.name)

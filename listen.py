@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-from host import MODELS, ROOT, PipeServer, download, write_wav
+from host import MODELS, ROOT, PipeServer, download, kill, write_wav
 from settings import BRAIN, EAR, PROMPTS
 
 
@@ -226,6 +226,10 @@ class Session:
             raise RuntimeError("brain: empty answer")
         return lines
 
+    def halt(self):
+        kill(MODELS / "server.pid")
+        raise SystemExit
+
     def approve(self):
         run = subprocess.run([str(self.py), str(MODELS / "tool.py")], cwd=str(ROOT), capture_output=True, text=True, timeout=self.timeout)
         report = self.brain.complete(self.open_prompt, PROMPTS["report"] + "\n" + run.stdout + run.stderr, "report")
@@ -239,6 +243,8 @@ class Session:
             if not parts:
                 raise RuntimeError("brain: empty consent")
             word = parts[0].lower()
+            if word == "off":
+                self.halt()
             if word == "yes":
                 self.approve()
             elif word == "no":
@@ -249,6 +255,8 @@ class Session:
         out = self.brain.complete(self.open_prompt, text, "speak")
         if not out:
             return
+        if out.split()[0].lower() == "off":
+            self.halt()
         if out.lstrip().startswith("# I will "):
             intent = out.strip().splitlines()[0]
             (MODELS / "tool.py").write_text(out.strip() + "\n", encoding="utf-8")
