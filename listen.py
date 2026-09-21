@@ -1,18 +1,8 @@
-import queue
-import re
-import subprocess
-import sys
-import tarfile
-import threading
-import wave
+﻿import queue, re, subprocess, sys, tarfile, threading, wave
 from pathlib import Path
-
 import numpy as np
-
 from host import MODELS, ROOT, PipeServer, download, kill, write_wav
 from settings import BRAIN, EAR, PROMPTS
-
-
 class Voice:
     def __init__(self, t3):
         import gguf
@@ -27,17 +17,11 @@ class Voice:
             field = reader.fields["chatterbox.tokenizer.language_tokens"]
             self.languages = [code.strip("[]") for code in bytes(field.parts[field.data[0]]).decode().split(",")]
             self.tags = []
-
     def prompt(self, limit):
         return PROMPTS["open"][self.architecture].format(limit=limit, tags=" ".join(self.tags), languages=" ".join(self.languages))
-
-
 class Ear:
     def __init__(self, speaking, feed=None):
-        self.speaking = speaking
-        self.texts = queue.Queue()
-        self.feed = feed
-        self.wavs = []
+        self.speaking, self.feed, self.texts, self.wavs = speaking, feed, queue.Queue(), []
         if feed not in (None, "-"):
             path = Path(feed)
             if path.is_dir():
@@ -73,20 +57,14 @@ class Ear:
         if not vad.is_file():
             download(EAR["vad"], vad)
         config = sherpa_onnx.VadModelConfig()
-        config.silero_vad.model = str(vad)
-        config.silero_vad.threshold = EAR["vad_threshold"]
-        config.silero_vad.min_silence_duration = EAR["min_silence"]
-        config.silero_vad.min_speech_duration = EAR["min_speech"]
-        config.silero_vad.max_speech_duration = EAR["max_speech"]
-        config.sample_rate = EAR["sample_rate"]
-        config.num_threads = 1
-        config.provider = EAR["provider"]
+        s = config.silero_vad
+        s.model, s.threshold, s.min_silence_duration, s.min_speech_duration, s.max_speech_duration = (
+            str(vad), EAR["vad_threshold"], EAR["min_silence"], EAR["min_speech"], EAR["max_speech"])
+        config.sample_rate, config.num_threads, config.provider = EAR["sample_rate"], 1, EAR["provider"]
         self.vad = sherpa_onnx.VoiceActivityDetector(config, buffer_size_in_seconds=100)
-
     def capture(self):
         import sounddevice as sd
-        window = self.vad.config.silero_vad.window_size
-        buffer = np.array([], dtype=np.float32)
+        window, buffer = self.vad.config.silero_vad.window_size, np.array([], dtype=np.float32)
         with sd.InputStream(channels=1, dtype="float32", samplerate=EAR["sample_rate"]) as stream:
             while True:
                 samples, _ = stream.read(EAR["sample_rate"] // 10)
@@ -98,54 +76,35 @@ class Ear:
                     if not self.speaking.is_set():
                         self.segments.put(np.array(self.vad.front.samples, dtype=np.float32))
                     self.vad.pop()
-
     def decode(self):
         while True:
-            samples = self.segments.get()
             stream = self.recognizer.create_stream()
-            stream.accept_waveform(EAR["sample_rate"], samples)
+            stream.accept_waveform(EAR["sample_rate"], self.segments.get())
             self.recognizer.decode_stream(stream)
             text = stream.result.text.strip()
             if text:
                 self.texts.put(text)
-
     def inject(self):
-        if self.feed == "-":
-            lines = sys.stdin
-        else:
-            path = Path(self.feed)
-            lines = path.read_text(encoding="utf-8").splitlines() if path.is_file() else self.feed.splitlines()
+        lines = sys.stdin if self.feed == "-" else (
+            Path(self.feed).read_text(encoding="utf-8").splitlines() if Path(self.feed).is_file() else self.feed.splitlines())
         for line in lines:
-            line = line.strip()
-            if line:
-                self.texts.put(line)
-
+            if line.strip():
+                self.texts.put(line.strip())
     def inject_wav(self):
         for path in self.wavs:
             with wave.open(str(path), "rb") as wav:
-                if wav.getnchannels() != 1:
-                    raise RuntimeError("ear: wav must be mono")
-                if wav.getsampwidth() != 2:
-                    raise RuntimeError("ear: wav must be pcm16")
-                rate = wav.getframerate()
-                pcm = np.frombuffer(wav.readframes(wav.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
+                if wav.getnchannels() != 1 or wav.getsampwidth() != 2:
+                    raise RuntimeError("ear: wav must be mono pcm16")
+                rate, pcm = wav.getframerate(), np.frombuffer(wav.readframes(wav.getnframes()), dtype=np.int16).astype(np.float32) / 32768.0
             if rate != EAR["sample_rate"]:
                 n = int(round(len(pcm) * EAR["sample_rate"] / rate))
                 pcm = np.interp(np.linspace(0, len(pcm) - 1, n), np.arange(len(pcm)), pcm).astype(np.float32)
             self.segments.put(pcm)
-
     def start(self):
-        if self.wav:
-            for target in (self.inject_wav, self.decode):
-                threading.Thread(target=target, daemon=True).start()
-        elif self.feed is not None:
-            threading.Thread(target=self.inject, daemon=True).start()
-        else:
-            for target in (self.capture, self.decode):
-                threading.Thread(target=target, daemon=True).start()
+        targets = (self.inject_wav, self.decode) if self.wav else ((self.inject,) if self.feed is not None else (self.capture, self.decode))
+        for target in targets:
+            threading.Thread(target=target, daemon=True).start()
         return self
-
-
 class Brain:
     def __init__(self):
         from llama_cpp import Llama
@@ -154,20 +113,13 @@ class Brain:
             download(BRAIN["url"], path)
         self.llm = Llama(model_path=str(path), n_ctx=BRAIN["n_ctx"], n_threads=BRAIN["n_threads"],
                          n_gpu_layers=BRAIN["n_gpu_layers"], verbose=False)
-
     def complete(self, system, user, mode):
-        out = self.llm(
-            f"<|turn>system\n{system}<turn|>\n<|turn>user\n{user}<turn|>\n<|turn>model\n",
-            stop=["<turn|>"], **BRAIN["decode"][mode])
+        out = self.llm(f"<|turn>system\n{system}<turn|>\n<|turn>user\n{user}<turn|>\n<|turn>model\n",
+                       stop=["<turn|>"], **BRAIN["decode"][mode])
         return out["choices"][0]["text"].strip()
-
-
 class Mouth:
     def __init__(self, pipe, speaking):
-        self.pipe = pipe
-        self.speaking = speaking
-        self.n = 0
-
+        self.pipe, self.speaking, self.n = pipe, speaking, 0
     def say(self, lines):
         import sounddevice as sd
         self.speaking.set()
@@ -179,30 +131,17 @@ class Mouth:
             sd.play(pcm, 24000)
             sd.wait()
         self.speaking.clear()
-
-
 class Session:
     def __init__(self, pipe, t3, args, py):
-        self.voice = Voice(t3)
-        self.limit = int(args.session["chunk-chars"])
-        self.timeout = int(args.session["tool-timeout"])
-        self.py = py
+        self.voice, self.limit, self.timeout, self.py = Voice(t3), int(args.session["chunk-chars"]), int(args.session["tool-timeout"]), py
         speaking = threading.Event()
-        self.mouth = Mouth(pipe, speaking)
-        self.brain = Brain()
-        self.ear = Ear(speaking, args.text).start()
-        self.open_prompt = self.voice.prompt(self.limit)
-        self.pending = None
-
+        self.mouth, self.brain = Mouth(pipe, speaking), Brain()
+        self.ear, self.open_prompt, self.pending = Ear(speaking, args.text).start(), self.voice.prompt(self.limit), None
     def line(self, text):
         return ("en", text) if self.voice.architecture == "llama" else ("", text)
-
     def parse(self, out):
         lines = []
-        for raw in out.splitlines():
-            raw = raw.strip()
-            if not raw:
-                continue
+        for raw in (r.strip() for r in out.splitlines() if r.strip()):
             if self.voice.architecture == "gpt2":
                 rest = raw
                 while rest.startswith("["):
@@ -210,37 +149,30 @@ class Session:
                     if tag + "]" not in self.voice.tags:
                         raise RuntimeError("brain: unknown tag " + tag + "] in line: " + raw)
                     rest = rest.lstrip()
-                if len(rest) > self.limit:
-                    raise RuntimeError("brain: line too long: " + raw)
-                lines.append(("", raw))
+                item, body = ("", raw), rest
             else:
                 match = re.fullmatch(r"([a-z]{2,3})\|(.+)", raw)
                 if not match or match[1] not in self.voice.languages:
                     raise RuntimeError("brain: bad language line: " + raw)
-                if len(match[2]) > self.limit:
-                    raise RuntimeError("brain: line too long: " + raw)
-                lines.append((match[1], match[2].strip()))
+                item, body = (match[1], match[2].strip()), match[2]
+            if not body or len(body) > self.limit:
+                raise RuntimeError("brain: bad line: " + raw)
+            lines.append(item)
         if not lines:
             raise RuntimeError("brain: empty answer")
         return lines
-
     def halt(self):
         kill(MODELS / "server.pid")
         raise SystemExit
-
     def approve(self):
         run = subprocess.run([str(self.py), str(MODELS / "tool.py")], cwd=str(ROOT), capture_output=True, text=True, timeout=self.timeout)
-        report = self.brain.complete(self.open_prompt, PROMPTS["report"] + "\n" + run.stdout + run.stderr, "report")
-        self.mouth.say(self.parse(report))
+        self.mouth.say(self.parse(self.brain.complete(self.open_prompt, PROMPTS["report"] + "\n" + run.stdout + run.stderr, "report")))
         self.pending = None
-
     def step(self, text):
         print(f"hear {text}", flush=True)
         if self.pending:
             parts = self.brain.complete(PROMPTS["consent"].format(intent=self.pending), text, "consent").split()
-            if not parts:
-                raise RuntimeError("brain: empty consent")
-            word = parts[0].lower()
+            word = parts[0].lower() if parts else ""
             if word == "off":
                 self.halt()
             if word == "yes":
@@ -248,7 +180,7 @@ class Session:
             elif word == "no":
                 self.pending = None
             else:
-                raise RuntimeError("brain: consent is not yes, no, or off: " + word)
+                raise RuntimeError("brain: empty consent" if not word else "brain: consent is not yes, no, or off: " + word)
             return
         out = self.brain.complete(self.open_prompt, text, "speak")
         if not out:
@@ -262,13 +194,11 @@ class Session:
             self.pending = intent[2:]
             return
         self.mouth.say(self.parse(out))
-
     def run(self):
         print("listening", flush=True)
         while True:
-            text = self.ear.texts.get()
             try:
-                self.step(text)
+                self.step(self.ear.texts.get())
             except (RuntimeError, OSError) as error:
                 print(f"error {error}", flush=True)
                 self.pending = None
