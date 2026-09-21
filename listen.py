@@ -1,4 +1,5 @@
-﻿import queue, sys, tarfile, threading, wave
+﻿import io, queue, sys, tarfile, threading, wave
+from contextlib import redirect_stdout
 from pathlib import Path
 import numpy as np
 from host import MODELS, PipeServer, download, write_wav
@@ -103,10 +104,17 @@ class Brain:
             download(BRAIN["url"], path)
         self.llm = Llama(model_path=str(path), n_ctx=BRAIN["n_ctx"], n_threads=BRAIN["n_threads"],
                          n_gpu_layers=BRAIN["n_gpu_layers"], verbose=False)
-    def complete(self, user):
-        out = self.llm(f"<|turn>system\n{PROMPT}<turn|>\n<|turn>user\n{user}<turn|>\n<|turn>model\n",
-                       stop=["<turn|>"], **BRAIN["decode"])
-        return out["choices"][0]["text"].strip()
+    def complete(self, user, say):
+        piece = self.llm(f"<|turn>system\n{PROMPT}<turn|>\n<|turn>user\n{user}<turn|>\n<|turn>model\n",
+                         stop=["<turn|>"], **BRAIN["decode"])["choices"][0]["text"]
+        if not piece.strip():
+            return
+        def python(source):
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                exec(compile(source, "<python>", "exec"), {"__name__": "__main__"})
+            return buffer.getvalue()
+        exec(compile(piece, "<brain>", "exec"), {"__name__": "__main__", "say": say, "python": python})
 class Mouth:
     def __init__(self, pipe, speaking):
         self.pipe, self.speaking, self.n = pipe, speaking, 0
@@ -128,10 +136,7 @@ class Session:
         self.ear = Ear(speaking, args.text).start()
     def step(self, text):
         print(f"hear {text}", flush=True)
-        out = self.brain.complete(text)
-        if not out:
-            return
-        self.mouth.say(out)
+        self.brain.complete(text, self.mouth.say)
     def run(self):
         print("listening", flush=True)
         while True:

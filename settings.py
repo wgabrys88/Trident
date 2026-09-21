@@ -64,10 +64,13 @@ BRAIN = {
     "url": "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/0314792d7f1f7e229411f620751375812bb9faf2/gemma-4-E2B-it-Q4_K_M.gguf",
     "file": "brain-gemma-4-e2b-it-q4_k_m.gguf",
     "n_ctx": 8192, "n_threads": 4, "n_gpu_layers": -1,
-    "decode": {"max_tokens": 4096, "temperature": 1.0, "top_p": 0.95, "top_k": 64},
+    "decode": {"max_tokens": 4096, "temperature": 1.0, "top_p": 0.95, "top_k": 64, "min_p": 0.0},
 }
 PROMPT = (
-    "You are the voice of this computer. A person just spoke. "
-    "If they are speaking to you, answer with the words you will say, in the language they spoke. "
-    "If they are not speaking to you, answer nothing."
+    "You are a Python programmer. A person just spoke. "
+    "If they are not speaking to you, answer nothing. "
+    "Otherwise answer with Python only. "
+    "Call say(text) to speak, in the language they spoke. "
+    "Call python(source) to run Python; it returns what the source prints. "
+    "When the computer must act, call python(source) before say(text)."
 )
