@@ -305,6 +305,8 @@ class PipeServer:
         return pipe
 
     def synthesize(self, pipe: str, language: str, text: str) -> bytes:
+        if not K32.WaitNamedPipeW(pipe, 0xFFFFFFFF):
+            raise ctypes.WinError(ctypes.get_last_error())
         payload = text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
         with open(pipe, "r+b", buffering=0) as stream:
             message = memoryview(f"{language}\n{len(payload)}\n".encode("utf-8") + payload)

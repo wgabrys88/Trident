@@ -22,6 +22,13 @@ def find(text, phrase):
     return re.search(r"\b" + re.escape(phrase) + r"\b", text)
 
 
+def cut(text, phrase):
+    match = re.search(r"(?i)\b" + re.escape(phrase) + r"\b", text)
+    if not match:
+        raise RuntimeError("ear: phrase missing: " + phrase)
+    return text[:match.start()], text[match.end():]
+
+
 class Voice:
     def __init__(self, t3):
         import gguf
@@ -278,31 +285,34 @@ class Session:
 
     def step(self, text):
         print(f"hear {text}", flush=True)
-        words = clean(text)
+        folded = clean(text)
         if self.mode == "idle":
-            wake = find(words, self.phrases["wake-phrase"])
-            if not wake:
+            if not find(folded, self.phrases["wake-phrase"]):
                 return
-            rest = words[wake.end():].strip()
-            tool = rest.startswith(self.phrases["tool-phrase"])
+            _, text = cut(text, self.phrases["wake-phrase"])
+            folded = clean(text)
+            tool = folded.startswith(self.phrases["tool-phrase"])
             self.mode = "tool" if tool else "speak"
             self.transcript = []
             self.brain.llm.reset()
-            words = rest[len(self.phrases["tool-phrase"]):].strip() if tool else rest
+            if tool:
+                _, text = cut(text, self.phrases["tool-phrase"])
         if self.mode in ("speak", "tool"):
-            stop = find(words, self.phrases["stop-phrase"])
+            stop = find(clean(text), self.phrases["stop-phrase"])
+            piece = text
             if stop:
-                words = words[: stop.start()].strip()
-            if words:
-                self.transcript.append(words)
+                piece, _ = cut(text, self.phrases["stop-phrase"])
+            piece = piece.strip()
+            if piece:
+                self.transcript.append(piece)
             if stop:
                 self.finalize()
             else:
                 self.brain.prefill(self.system(), " ".join(self.transcript))
             return
-        if find(words, self.phrases["approve-phrase"]):
+        if find(folded, self.phrases["approve-phrase"]):
             self.approve()
-        elif find(words, self.phrases["reject-phrase"]):
+        elif find(folded, self.phrases["reject-phrase"]):
             self.mode = "idle"
 
     def run(self):
@@ -311,7 +321,7 @@ class Session:
             text = self.ear.texts.get()
             try:
                 self.step(text)
-            except RuntimeError as error:
+            except (RuntimeError, OSError) as error:
                 print(f"error {error}", flush=True)
                 self.mode = "idle"
                 self.mouth.say([self.line(str(error))])

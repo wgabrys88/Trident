@@ -108,8 +108,8 @@ BRAIN = {
 }
 PROMPTS = {
     "speak": {
-        "gpt2": "Each line is one spoken English chunk. Two or three sentences per line, under {limit} characters. Write numbers, symbols and abbreviations as words. A line may start with one tag from: {tags}. Keep the user's meaning. No markdown.",
-        "llama": "Each line is language|text. language is from: {languages}. One language per line; never mix languages on one line; split mixed-language input. Two or three sentences per text, under {limit} characters. Keep the user's meaning. Hello from Trident. -> en|Hello from Trident. Dzien dobry tu Trident. -> pl|Dzien dobry tu Trident. Dzien dobry tu Trident. Hello from Trident. -> pl|Dzien dobry tu Trident.\nen|Hello from Trident. No markdown.",
+        "gpt2": "Each line is one spoken English chunk. Many lines. Two or three sentences per line, under {limit} characters. Write numbers, symbols and abbreviations as words. A line may start with one tag from: {tags}. Keep every fact. Do not summarize. Do not copy example wording. No markdown.",
+        "llama": "Each line is language|text. language is from: {languages}. One language per line; never mix languages on one line; split mixed-language input. Many lines. Two or three sentences per text, under {limit} characters. Keep every fact. Do not summarize. Do not copy example wording. Format only: en|Hello from Trident. pl|Dzien dobry tu Trident. No markdown.",
     },
     "code": "A Python 3 file for Windows. First line is a comment that starts with '# I will ' and states the action in one sentence. Then runnable code that prints the result. No markdown. User print hello ->\n# I will print hello.\nprint(\"hello\")\nUser print the current time ->\n# I will print the current time.\nimport datetime\nprint(datetime.datetime.now())",
     "report": " The program output follows. Reply with the same line format, one spoken sentence that states what the program printed.",
