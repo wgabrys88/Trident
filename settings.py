@@ -2,10 +2,8 @@ from dataclasses import dataclass
 
 FLAGS = [
     {'name': 'variant', 'default': None, 'help': 'nano/turbo: GPT-2; v3: Llama.', 'group': 'model', 'architecture': 'both', 'positional': True, 'choices': ('nano', 'turbo', 'v3')},
-    {'name': 'text', 'default': None, 'help': 'One-shot text; with --listen: wav, wav dir, file, - , or string.', 'group': 'model', 'architecture': 'both', 'positional': True, 'metavar': 'TEXT', 'nargs': '?'},
-    {'name': 'language', 'default': None, 'help': 'v3 tokenizer language.', 'group': 'model', 'architecture': 'llama', 'positional': True, 'nargs': '?'},
+    {'name': 'text', 'default': None, 'help': 'Query for the brain.', 'group': 'model', 'architecture': 'both', 'positional': True, 'metavar': 'QUERY'},
     {'name': 'reference', 'default': 'reference.wav', 'help': 'Reference voice WAV.', 'group': 'model', 'architecture': 'both'},
-    {'name': 'listen', 'default': False, 'help': 'Ear, brain, mouth. No TEXT = microphone.', 'group': 'model', 'architecture': 'both', 'action': 'store_true'},
     {'name': 't3-weight-type', 'default': 'q4_0', 'help': 'T3 GGUF type. Rebuilds conversion.', 'group': 'conversion', 'architecture': 'both', 'metavar': 'TYPE'},
     {'name': 's3-weight-type', 'default': 'q4_0', 'help': 'S3 GGUF type. Rebuilds conversion.', 'group': 'conversion', 'architecture': 'both', 'metavar': 'TYPE'},
     {'name': 't3-quant-policy', 'default': 'scripts/quant_t3.json', 'help': 'T3 per-tensor JSON.', 'group': 'conversion', 'architecture': 'both'},
@@ -63,14 +61,21 @@ EAR = {
 BRAIN = {
     "url": "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/0314792d7f1f7e229411f620751375812bb9faf2/gemma-4-E2B-it-Q4_K_M.gguf",
     "file": "brain-gemma-4-e2b-it-q4_k_m.gguf",
-    "n_ctx": 8192, "n_threads": 4, "n_gpu_layers": -1,
+    "n_ctx": 32768, "n_threads": 4, "n_gpu_layers": -1,
     "decode": {"max_tokens": 4096, "temperature": 1.0, "top_p": 0.95, "top_k": 64, "min_p": 0.0},
+    "flush": 3, "watchdog_arm": 10, "watchdog_repeat": 5,
 }
-PROMPT = (
-    "You are a Python programmer. A person just spoke. "
-    "If they are not speaking to you, answer nothing. "
-    "Otherwise answer with Python only. "
-    "Call say(text) to speak, in the language they spoke. "
-    "Call python(source) to run Python; it returns what the source prints. "
-    "When the computer must act, call python(source) before say(text)."
-)
+TOOLS = [
+    {"type": "function", "function": {
+        "name": "say",
+        "description": "Speak words a person can hear. text is an array of strings, each at most 300 characters. Split a long utterance into pieces of about 200 to 300 characters. A short answer is one shorter piece. Describe code, paths, and other non-speech in words. If a request is missing a detail, ask.",
+        "parameters": {"type": "object", "properties": {"text": {"type": "array", "items": {"type": "string"}, "description": "Pieces to speak, in order."}}, "required": ["text"]}}},
+    {"type": "function", "function": {
+        "name": "listen",
+        "description": "Open the microphone and leave it open.",
+        "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "quit",
+        "description": "End the process. If the user text does not already say a quit was proposed, call quit and also call say to ask for confirmation. That call does not exit. On the next turn the user text says a quit was proposed. Call quit then only if this request agrees.",
+        "parameters": {"type": "object", "properties": {}}}},
+]

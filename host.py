@@ -22,14 +22,12 @@ def write_wav(pcm: bytes, stem: str) -> Path:
 @dataclass
 class LaunchArgs:
     text: str
-    language: str | None
     knobs: dict[str, str]
     t3_weight_type: str
     s3_weight_type: str
     reference: Path
     t3_quant_policy: Path
     s3_quant_policy: Path
-    listen: bool
     def policy(self, kind):
         return {"default": getattr(self, kind + "_weight_type"),
                 "rules": json.loads(getattr(self, kind + "_quant_policy").read_text())["rules"]}
@@ -260,17 +258,16 @@ class Host:
                 row["choices"] = TYPES
     def parse(self, cfg: Variant, argv: list[str]) -> LaunchArgs:
         values = vars(self.parser(cfg).parse_args(argv[1:]))
-        return LaunchArgs(values["text"], values.get("language"),
+        return LaunchArgs(values["text"],
                           {row["name"]: str(values[row["name"].replace("-", "_")]) for row in FLAGS
                            if row["group"] == "server" and row["architecture"] in ("both", cfg.architecture)},
                           values["t3_weight_type"], values["s3_weight_type"],
                           Path(values["reference"]).expanduser().resolve(),
-                          (ROOT / values["t3_quant_policy"]).resolve(), (ROOT / values["s3_quant_policy"]).resolve(),
-                          values["listen"])
-    def run(self, variant: Variant, argv: list[str]) -> Path:
+                          (ROOT / values["t3_quant_policy"]).resolve(), (ROOT / values["s3_quant_policy"]).resolve())
+    def run(self, variant: Variant, argv: list[str]) -> None:
         py = Venv().ensure(); self.bind_quant_types(py); args = self.parse(variant, argv)
-        if not args.listen and args.text is None:
-            raise SystemExit("TEXT is required without --listen")
+        if not args.text:
+            raise SystemExit("query is required")
         family = ARCHITECTURES[variant.architecture]
         MODELS.mkdir(parents=True, exist_ok=True)
         engine = EngineBuild(); server, bake = engine.ensure()
@@ -279,7 +276,5 @@ class Host:
         t3_contract, s3_contract = Converter().ensure(variant, py, ckpt, base_t3, base_s3, args)
         t3, s3, voice = VoiceBake().ensure(variant, args.reference, base_t3, base_s3, bake, t3_contract, s3_contract, engine.wanted())
         pipe = PipeServer().ensure(variant, server, t3, s3, args.knobs, py, ckpt, voice)
-        if args.listen:
-            from listen import Session
-            Session(pipe, args).run()
-        return write_wav(PipeServer().synthesize(pipe, args.language or "", args.text), variant.name)
+        from listen import Session
+        Session(pipe).run(args.text)
