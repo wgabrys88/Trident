@@ -69,14 +69,23 @@ BRAIN = {
     "decode": {"speak": {"max_tokens": 4096, "temperature": 1.0, "top_p": 0.95, "top_k": 64},
                "consent": {"max_tokens": 32, "temperature": 0.0, "top_p": 0.95, "top_k": 64}},
 }
-_OFF = "If the hear means power off, shut down, quit, exit, switch off, or the same in any language, reply off. One word.\n"
-_TASK = "If the hear is a task to run on this Windows computer, reply with only a Python 3 file. First line '# I will ' plus the action, then code that prints the result. User print hello ->\n# I will print hello.\nprint(\"hello\")\nUser print the current time ->\n# I will print the current time.\nimport datetime\nprint(datetime.datetime.now())\n"
-_READ = "If the hear is speech to read or answer, every sentence of the hear is spoken in hear order, none omitted. Do not regroup by language. One sentence per line, about {limit} characters. First, middle, and last sentences all appear. Never mid-sentence. Never by counting letters. Keep the original words. Do not translate. Do not summarize. Do not copy example wording. "
-PROMPTS = {
-    "open": {
-        "gpt2": _OFF + _TASK + _READ + "A line may start with one tag from: {tags}. If the hear is not for you, reply with nothing. No markdown.",
-        "llama": _OFF + _READ + "Each line is language|text. language is from: {languages}. Language change is a new line. Never English on pl|. Never Polish on en|. en| only for a sentence that is already English in the hear. Format: pl|Ala ma kota. pl|Kot pije mleko. pl|Ptak siedzi na drzewie. en|The ship is at the dock. pl|Dzieci bawia sie. " + _TASK + "If the hear is not for you, reply with nothing. No markdown.",
-    },
-    "consent": "The proposed action is: {intent}. Map the human's meaning to yes, no, or off. One word. No markdown. tak means yes. nie means no. yes means yes. no means no. Power off, shut down, quit, switch off, or the same in any language means off.",
-    "report": "The program output follows. Reply with spoken lines in the same format, one sentence that states what the program printed. Not a Python file.",
-}
+SESSION = {"chunk_chars": 300, "tool_timeout": 60}
+PROMPT_TAGS = " The text of a line may begin with one tag from: {tags}. A tag never stands alone; a sentence follows it."
+PROMPT_OPEN = (
+    "You are the voice of this Windows computer. You receive one hear: what a human just said. Answer in exactly one of four ways.\n"
+    "1. If the hear means power off, shut down, quit, exit, or switch off, in any language: answer the single word off and nothing else.\n"
+    "2. If the hear is speech to read aloud or to answer: answer one line per sentence, in hear order, every sentence, none omitted. Do not regroup by language. Keep the original words. Do not translate. Do not summarize. Never cut a sentence. At most {limit} characters per line. Each line is language|text. language is one of: {languages}. A line changes language only when the sentence changes language. Example of four lines:\n"
+    "pl|Ala ma kota.\n"
+    "pl|Kot pije mleko.\n"
+    "en|The ship is at the dock.\n"
+    "pl|Dzieci bawia sie.\n"
+    "3. If the hear asks this computer to do something: answer only a Python 3 file. Line 1 is \"# I will \" followed by the action in a few words. The code prints its result. Hear: print the current time\n"
+    "# I will print the current time.\n"
+    "import datetime\n"
+    "print(datetime.datetime.now())\n"
+    "4. If the hear is not addressed to you: answer nothing.\n"
+    "No markdown. No explanation. Never copy the example sentences.{tags}"
+)
+PROMPT_CONSENT = "The proposed action is: {intent}. The human answered. Map the answer to one word: yes, no, or off. tak means yes. nie means no. Power off, shut down, quit, exit, switch off, or the same meaning in any language means off. Answer the one word only."
+PROMPT_REPORT = "A program just ran on this computer. Its output follows. Answer one line: language|one sentence that tells the human what the program printed. language is one of: {languages}. Use the printed values. No code. No markdown.{tags}"
+PROMPTS = {"open": PROMPT_OPEN, "consent": PROMPT_CONSENT, "report": PROMPT_REPORT}
