@@ -5,7 +5,6 @@ import sys
 import tarfile
 import threading
 import wave
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -161,8 +160,7 @@ class Brain:
         return text + "<turn|>\n<|turn>model\n" if closed else text
 
     def complete(self, system, user, mode):
-        knobs = BRAIN["decode"][mode]
-        out = self.llm(self.prompt(system, user, True), stop=["<turn|>"], **knobs)
+        out = self.llm(self.prompt(system, user, True), stop=["<turn|>"], **BRAIN["decode"][mode])
         return out["choices"][0]["text"].strip()
 
 
@@ -170,20 +168,13 @@ class Mouth:
     def __init__(self, pipe, speaking):
         self.pipe = pipe
         self.speaking = speaking
-        self.pool = ThreadPoolExecutor(max_workers=1)
         self.n = 0
-
-    def synthesize(self, language, text):
-        return np.frombuffer(PipeServer().synthesize(self.pipe, language, text), dtype=np.int16)
 
     def say(self, lines):
         import sounddevice as sd
         self.speaking.set()
-        pending = self.pool.submit(self.synthesize, *lines[0])
-        for index, line in enumerate(lines):
-            pcm = pending.result()
-            if index + 1 < len(lines):
-                pending = self.pool.submit(self.synthesize, *lines[index + 1])
+        for line in lines:
+            pcm = np.frombuffer(PipeServer().synthesize(self.pipe, *line), dtype=np.int16)
             self.n += 1
             print(write_wav(pcm.tobytes(), str(self.n)), flush=True)
             print(f"say {line[0]}|{line[1]}" if line[0] else f"say {line[1]}", flush=True)
@@ -237,14 +228,14 @@ class Session:
 
     def approve(self):
         run = subprocess.run([str(self.py), str(MODELS / "tool.py")], cwd=str(ROOT), capture_output=True, text=True, timeout=self.timeout)
-        report = self.brain.complete(self.open_prompt + PROMPTS["report"], run.stdout + run.stderr, "report")
+        report = self.brain.complete(self.open_prompt, PROMPTS["report"] + "\n" + run.stdout + run.stderr, "report")
         self.mouth.say(self.parse(report))
         self.pending = None
 
     def step(self, text):
         print(f"hear {text}", flush=True)
         if self.pending:
-            parts = self.brain.complete(self.open_prompt + PROMPTS["consent"].format(intent=self.pending), text, "consent").split()
+            parts = self.brain.complete(PROMPTS["consent"].format(intent=self.pending), text, "consent").split()
             if not parts:
                 raise RuntimeError("brain: empty consent")
             word = parts[0].lower()
