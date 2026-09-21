@@ -27,7 +27,6 @@ class LaunchArgs:
     t3_quant_policy: Path
     s3_quant_policy: Path
     listen: bool
-    session: dict[str, str]
     def policy(self, kind):
         return {"default": getattr(self, kind + "_weight_type"),
                 "rules": json.loads(getattr(self, kind + "_quant_policy").read_text())["rules"]}
@@ -235,7 +234,7 @@ class Host:
         parser = argparse.ArgumentParser(prog="python tts.py" + (f" {cfg.name}" if cfg else ""),
                                          formatter_class=argparse.ArgumentDefaultsHelpFormatter)
         groups = {name: parser.add_argument_group(title, next(row["help"] for row in FLAGS if row["name"] == "variant") if name == "model" else None)
-                  for name, title in (("model", "Model"), ("conversion", "GGUF conversion"), ("server", "Server"), ("session", "Voice session"))} if cfg else {"model": parser}
+                  for name, title in (("model", "Model"), ("conversion", "GGUF conversion"), ("server", "Server"))} if cfg else {"model": parser}
         for row in FLAGS:
             if (cfg is None) != (row["name"] == "variant"):
                 continue
@@ -264,8 +263,7 @@ class Host:
                           values["t3_weight_type"], values["s3_weight_type"],
                           Path(values["reference"]).expanduser().resolve(),
                           (ROOT / values["t3_quant_policy"]).resolve(), (ROOT / values["s3_quant_policy"]).resolve(),
-                          values["listen"],
-                          {row["name"]: str(values[row["name"].replace("-", "_")]) for row in FLAGS if row["group"] == "session"})
+                          values["listen"])
     def run(self, variant: Variant, argv: list[str]) -> Path:
         py = Venv().ensure(); self.bind_quant_types(py); args = self.parse(variant, argv)
         if not args.listen and args.text is None:
@@ -280,6 +278,6 @@ class Host:
         pipe = PipeServer().ensure(variant, server, t3, s3, args.knobs, py, ckpt, voice)
         if args.listen:
             from listen import Session
-            Session(pipe, t3, args, py).run()
+            Session(pipe, t3, args).run()
             raise SystemExit
         return write_wav(PipeServer().synthesize(pipe, args.language or "", args.text), variant.name)

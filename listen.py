@@ -1,25 +1,14 @@
-﻿import queue, re, subprocess, sys, tarfile, threading, wave
+﻿import queue, sys, tarfile, threading, wave
 from pathlib import Path
 import numpy as np
-from host import MODELS, ROOT, PipeServer, download, kill, write_wav
-from settings import BRAIN, EAR, PROMPTS, PROMPT_TAGS, SESSION
+from host import MODELS, PipeServer, download, write_wav
+from settings import BRAIN, EAR, PROMPT
 class Voice:
     def __init__(self, t3):
         import gguf
         reader = gguf.GGUFReader(str(t3))
         field = reader.fields["general.architecture"]
-        self.architecture = "gpt2" if bytes(field.parts[field.data[0]]).decode() == "chatterbox-gpt2" else "llama"
-        if self.architecture == "gpt2":
-            tokens, types = reader.fields["tokenizer.ggml.tokens"], reader.fields["tokenizer.ggml.token_type"]
-            self.tags = [bytes(tokens.parts[i]).decode() for i, j in zip(tokens.data, types.data) if int(types.parts[j][0]) == 4]
-            self.languages = ["en"]
-        else:
-            field = reader.fields["chatterbox.tokenizer.language_tokens"]
-            self.languages = [code.strip("[]") for code in bytes(field.parts[field.data[0]]).decode().split(",")]
-            self.tags = []
-    def prompt(self, name):
-        tags = PROMPT_TAGS.format(tags=" ".join(self.tags)) if self.tags else ""
-        return PROMPTS[name].format(limit=SESSION["chunk_chars"], languages=" ".join(self.languages), tags=tags)
+        self.multilingual = bytes(field.parts[field.data[0]]).decode() != "chatterbox-gpt2"
 class Ear:
     def __init__(self, speaking, feed=None):
         self.speaking, self.feed, self.texts, self.wavs = speaking, feed, queue.Queue(), []
@@ -88,13 +77,13 @@ class Ear:
             self.recognizer.decode_stream(stream)
             text = stream.result.text.strip()
             if text:
-                self.texts.put(text)
+                self.texts.put((stream.result.lang, text))
     def inject(self):
         lines = sys.stdin if self.feed == "-" else (
             Path(self.feed).read_text(encoding="utf-8").splitlines() if Path(self.feed).is_file() else self.feed.splitlines())
         for line in lines:
             if line.strip():
-                self.texts.put(line.strip())
+                self.texts.put(("", line.strip()))
         self.texts.put(None)
     def inject_wav(self):
         for path in self.wavs:
@@ -120,92 +109,42 @@ class Brain:
             download(BRAIN["url"], path)
         self.llm = Llama(model_path=str(path), n_ctx=BRAIN["n_ctx"], n_threads=BRAIN["n_threads"],
                          n_gpu_layers=BRAIN["n_gpu_layers"], verbose=False)
-    def complete(self, system, user, mode):
-        out = self.llm(f"<|turn>system\n{system}<turn|>\n<|turn>user\n{user}<turn|>\n<|turn>model\n",
-                       stop=["<turn|>"], **BRAIN["decode"][mode])
+    def complete(self, user):
+        out = self.llm(f"<|turn>system\n{PROMPT}<turn|>\n<|turn>user\n{user}<turn|>\n<|turn>model\n",
+                       stop=["<turn|>"], **BRAIN["decode"])
         return out["choices"][0]["text"].strip()
 class Mouth:
     def __init__(self, pipe, speaking, multilingual):
         self.pipe, self.speaking, self.multilingual, self.n = pipe, speaking, multilingual, 0
-    def say(self, lines):
+    def say(self, language, text):
         import sounddevice as sd
         self.speaking.set()
-        for language, text in lines:
-            pcm = np.frombuffer(PipeServer().synthesize(self.pipe, language if self.multilingual else "", text), dtype=np.int16)
-            self.n += 1
-            print(write_wav(pcm.tobytes(), str(self.n)), flush=True)
-            print(f"say {language}|{text}", flush=True)
-            sd.play(pcm, 24000)
-            sd.wait()
+        pcm = np.frombuffer(PipeServer().synthesize(self.pipe, language if self.multilingual else "", text), dtype=np.int16)
+        self.n += 1
+        print(write_wav(pcm.tobytes(), str(self.n)), flush=True)
+        print(text, flush=True)
+        sd.play(pcm, 24000)
+        sd.wait()
         self.speaking.clear()
 class Session:
-    def __init__(self, pipe, t3, args, py):
-        self.voice = Voice(t3)
-        self.timeout, self.py = int(args.session["tool-timeout"]), py
+    def __init__(self, pipe, t3, args):
         speaking = threading.Event()
-        self.mouth = Mouth(pipe, speaking, self.voice.architecture == "llama")
+        self.mouth = Mouth(pipe, speaking, Voice(t3).multilingual)
         self.brain = Brain()
         self.ear = Ear(speaking, args.text).start()
-        self.open_prompt, self.report_prompt, self.pending = self.voice.prompt("open"), self.voice.prompt("report"), None
-    def parse(self, out):
-        lines = []
-        for line in (raw.strip() for raw in out.splitlines() if raw.strip()):
-            match = re.fullmatch(r"([a-z]{2,3})\|(.+)", line)
-            if not match or match[1] not in self.voice.languages:
-                raise RuntimeError("brain: bad line: " + line)
-            text = match[2].strip()
-            tags_found = re.findall(r"\[[^\]]*\]", text)
-            if any(tag not in self.voice.tags for tag in tags_found):
-                raise RuntimeError("brain: unknown tag in line: " + line)
-            body = re.sub(r"\[[^\]]*\]", "", text).strip()
-            if not body or len(body) > SESSION["chunk_chars"]:
-                raise RuntimeError("brain: bad line: " + line)
-            lines.append((match[1], text))
-        if not lines:
-            raise RuntimeError("brain: empty answer")
-        return lines
-    def halt(self):
-        kill(MODELS / "server.pid")
-        raise SystemExit
-    def approve(self):
-        run = subprocess.run([str(self.py), str(MODELS / "tool.py")], cwd=str(ROOT), capture_output=True, text=True, timeout=self.timeout)
-        tail = (run.stdout + run.stderr)[-2000:]
-        self.mouth.say(self.parse(self.brain.complete(self.report_prompt, tail, "speak")))
-        self.pending = None
-    def step(self, text):
+    def step(self, heard):
+        lang, text = heard
         print(f"hear {text}", flush=True)
-        if self.pending:
-            word = self.brain.complete(PROMPTS["consent"].format(intent=self.pending), text, "consent").strip().lower().rstrip(".")
-            if word == "off":
-                self.halt()
-            if word == "yes":
-                self.approve()
-            elif word == "no":
-                self.pending = None
-            else:
-                raise RuntimeError("brain: consent " + word)
-            return
-        out = self.brain.complete(self.open_prompt, text, "speak")
+        if lang:
+            print(f"lang {lang}", flush=True)
+        out = self.brain.complete(f"{lang}\n{text}" if lang else text)
         if not out:
             return
-        word = out.strip().lower().rstrip(".")
-        if word == "off":
-            self.halt()
-        if out.startswith("# I will "):
-            intent = out.strip().splitlines()[0]
-            (MODELS / "tool.py").write_text(out.strip() + "\n", encoding="utf-8")
-            self.mouth.say([(self.voice.languages[0], intent[2:])])
-            self.pending = intent[2:]
-            return
-        self.mouth.say(self.parse(out))
+        self.mouth.say(lang, out)
     def run(self):
         print("listening", flush=True)
         while True:
-            try:
-                text = self.ear.texts.get()
-                if text is None:
-                    raise SystemExit
-                self.step(text)
-            except (RuntimeError, OSError, subprocess.TimeoutExpired) as error:
-                print(f"error {error}", flush=True)
-                self.pending = None
+            heard = self.ear.texts.get()
+            if heard is None:
+                raise SystemExit
+            self.step(heard)

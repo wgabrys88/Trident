@@ -6,8 +6,6 @@ FLAGS = [
     {'name': 'language', 'default': None, 'help': 'v3 tokenizer language.', 'group': 'model', 'architecture': 'llama', 'positional': True, 'nargs': '?'},
     {'name': 'reference', 'default': 'reference.wav', 'help': 'Reference voice WAV.', 'group': 'model', 'architecture': 'both'},
     {'name': 'listen', 'default': False, 'help': 'Ear, brain, mouth. No TEXT = microphone.', 'group': 'model', 'architecture': 'both', 'action': 'store_true'},
-    {'name': 'chunk-chars', 'default': '300', 'help': 'Max characters per spoken line.', 'group': 'session', 'architecture': 'both'},
-    {'name': 'tool-timeout', 'default': '60', 'help': 'Seconds a tool script may run.', 'group': 'session', 'architecture': 'both'},
     {'name': 't3-weight-type', 'default': 'q4_0', 'help': 'T3 GGUF type. Rebuilds conversion.', 'group': 'conversion', 'architecture': 'both', 'metavar': 'TYPE'},
     {'name': 's3-weight-type', 'default': 'q4_0', 'help': 'S3 GGUF type. Rebuilds conversion.', 'group': 'conversion', 'architecture': 'both', 'metavar': 'TYPE'},
     {'name': 't3-quant-policy', 'default': 'scripts/quant_t3.json', 'help': 'T3 per-tensor JSON.', 'group': 'conversion', 'architecture': 'both'},
@@ -66,26 +64,12 @@ BRAIN = {
     "url": "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/0314792d7f1f7e229411f620751375812bb9faf2/gemma-4-E2B-it-Q4_K_M.gguf",
     "file": "brain-gemma-4-e2b-it-q4_k_m.gguf",
     "n_ctx": 8192, "n_threads": 4, "n_gpu_layers": -1,
-    "decode": {"speak": {"max_tokens": 4096, "temperature": 1.0, "top_p": 0.95, "top_k": 64},
-               "consent": {"max_tokens": 32, "temperature": 0.0, "top_p": 0.95, "top_k": 64}},
+    "decode": {"max_tokens": 4096, "temperature": 1.0, "top_p": 0.95, "top_k": 64},
 }
-SESSION = {"chunk_chars": 300, "tool_timeout": 60}
-PROMPT_TAGS = " The text of a line may begin with one tag from: {tags}. A tag never stands alone; a sentence follows it."
-PROMPT_OPEN = (
-    "You are the voice of this Windows computer. You receive one hear: what a human just said. Answer in exactly one of four ways.\n"
-    "1. If the hear means power off, shut down, quit, exit, or switch off, in any language: answer the single word off and nothing else.\n"
-    "2. If the hear is speech to read aloud or to answer: answer one line per sentence, in hear order, every sentence, none omitted. Do not regroup by language. Keep the original words. Do not translate. Do not summarize. Never cut a sentence. At most {limit} characters per line. Each line is language|text. language is one of: {languages}. A line changes language only when the sentence changes language. Example of four lines:\n"
-    "pl|Ala ma kota.\n"
-    "pl|Kot pije mleko.\n"
-    "en|The ship is at the dock.\n"
-    "pl|Dzieci bawia sie.\n"
-    "3. If the hear asks this computer to do something: answer only a Python 3 file. Line 1 is \"# I will \" followed by the action in a few words. The code prints its result. Hear: print the current time\n"
-    "# I will print the current time.\n"
-    "import datetime\n"
-    "print(datetime.datetime.now())\n"
-    "4. If the hear is not addressed to you: answer nothing.\n"
-    "No markdown. No explanation. Never copy the example sentences.{tags}"
+PROMPT = (
+    "You are the voice of this computer. A person just spoke. "
+    "If they are speaking to you, answer with the words you will say. "
+    "When the ear has a language marker, it is the first line you receive, and you answer in that language. "
+    "When there is no marker, you distinguish the language and answer in it. "
+    "If they are not speaking to you, answer nothing."
 )
-PROMPT_CONSENT = "The proposed action is: {intent}. The human answered. Map the answer to one word: yes, no, or off. tak means yes. nie means no. Power off, shut down, quit, exit, switch off, or the same meaning in any language means off. Answer the one word only."
-PROMPT_REPORT = "A program just ran on this computer. Its output follows. Answer one line: language|one sentence that tells the human what the program printed. language is one of: {languages}. Use the printed values. No code. No markdown.{tags}"
-PROMPTS = {"open": PROMPT_OPEN, "consent": PROMPT_CONSENT, "report": PROMPT_REPORT}
