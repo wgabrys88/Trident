@@ -21,7 +21,9 @@ MODELS = ROOT / "models"
 
 
 def write_wav(pcm: bytes, stem: str) -> Path:
-    wav = ROOT / f"{datetime.now().strftime('%S-%M-%H-%d-%m-%y')}_{stem}.wav"
+    home = ROOT / "wav"
+    home.mkdir(parents=True, exist_ok=True)
+    wav = home / f"{datetime.now().strftime('%S-%M-%H-%d-%m-%y')}_{stem}.wav"
     with wave.open(str(wav), "wb") as out:
         out.setnchannels(1)
         out.setsampwidth(2)
@@ -133,9 +135,7 @@ def kill(pid: Path):
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     handle = K32.OpenProcess(0x00100000, False, record["pid"])
     if handle:
-        if K32.WaitForSingleObject(handle, 0xFFFFFFFF) != 0:
-            K32.CloseHandle(handle)
-            raise RuntimeError(f"server pid {record['pid']} did not exit")
+        K32.WaitForSingleObject(handle, 0xFFFFFFFF)
         K32.CloseHandle(handle)
     pid.unlink()
 

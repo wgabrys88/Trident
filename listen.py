@@ -155,12 +155,10 @@ class Brain:
         self.llm = Llama(model_path=str(path), n_ctx=BRAIN["n_ctx"], n_threads=BRAIN["n_threads"],
                          n_gpu_layers=BRAIN["n_gpu_layers"], verbose=False)
 
-    def prompt(self, system, user, closed):
-        text = f"<|turn>system\n{system}<turn|>\n<|turn>user\n{user}"
-        return text + "<turn|>\n<|turn>model\n" if closed else text
-
     def complete(self, system, user, mode):
-        out = self.llm(self.prompt(system, user, True), stop=["<turn|>"], **BRAIN["decode"][mode])
+        out = self.llm(
+            f"<|turn>system\n{system}<turn|>\n<|turn>user\n{user}<turn|>\n<|turn>model\n",
+            stop=["<turn|>"], **BRAIN["decode"][mode])
         return out["choices"][0]["text"].strip()
 
 
@@ -250,7 +248,7 @@ class Session:
             elif word == "no":
                 self.pending = None
             else:
-                raise RuntimeError("brain: consent is not yes or no: " + word)
+                raise RuntimeError("brain: consent is not yes, no, or off: " + word)
             return
         out = self.brain.complete(self.open_prompt, text, "speak")
         if not out:
