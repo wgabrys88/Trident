@@ -3,6 +3,7 @@
 !/.gitattributes
 !/CMakeLists.txt
 !/LICENSE
+!/README.md
 !/asr.py
 !/brain.py
 !/install.py
