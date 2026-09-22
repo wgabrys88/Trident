@@ -1,7 +1,7 @@
 import json, subprocess, sys, time
 from brain import ask
 from install import MODELS, ROOT, reexec, venv_python
-from settings import DELIVER, VARIANTS
+from settings import CHUNK, DELIVER, VARIANTS
 LINES, PAGE = MODELS / "ear" / "lines.txt", ROOT / DELIVER
 class Scan:
     def __init__(self, text):
@@ -103,6 +103,21 @@ class Lines:
         return [line for line in data.decode("utf-8").splitlines() if line]
 def speak(variant, text, language):
     subprocess.run([str(venv_python()), str(ROOT / "tts.py"), variant, text, language], check=True)
+def parts(text):
+    words = text.split()
+    if len(words) <= CHUNK:
+        return [text]
+    out, start = [], 0
+    while start < len(words):
+        end = min(start + CHUNK, len(words))
+        if end < len(words):
+            for cut in range(end, start, -1):
+                if words[cut - 1][-1:] in ".?!":
+                    end = cut
+                    break
+        out.append(" ".join(words[start:end]))
+        start = end
+    return out
 class Session:
     def __init__(self, variant):
         self.variant = variant
@@ -127,7 +142,10 @@ class Session:
                 text, language = tool["text"], tool["language"]
                 if not isinstance(text, list) or not isinstance(language, str) or not language:
                     raise RuntimeError("say")
-                for piece in text:
+                said = " ".join(piece for piece in text if isinstance(piece, str) and piece)
+                if not said:
+                    raise RuntimeError("say")
+                for piece in parts(said):
                     self.said = f"{self.said} {piece}".strip() if self.said else piece
                     speak(self.variant, piece, language)
             elif name == "note":

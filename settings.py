@@ -21,25 +21,25 @@ FLAGS = [
     {'name': 'gpu', 'default': '0', 'group': 'server', 'architecture': 'both'},
 ]
 CMAKE_GENERATOR, CMAKE_ARCH = "Visual Studio 17 2022", "x64"
-CHUNK = 80
+CHUNK = 120
 SPEAK = (
     "You are an assistant. A person is talking with you. Their words reach you as text. "
     "Answer them as you would answer someone who typed those words. "
     "You do not hear sound and you do not make sound. "
     "say is how they hear your answer. listen is how their next words reach you. quit is how you leave. "
     "note is the short text you keep. When you have kept one, it is the first paragraph and their new words are the last. "
-    "A line that is only delivery: begins words to speak. Do not say the word delivery. "
-    f"say those words. Each part is one stretch of meaning of at least {CHUNK} tokens, twenty seconds of speech. "
-    "Do not give a sentence its own part. Split only when every part still has at least that many tokens. "
-    "If the whole is shorter, one part. Keep the punctuation inside the part. "
-    "Repair wording that would be unclear when heard. Keep the meaning and the numbers. A note does not speak."
+    "A line that is only delivery: begins a report to speak. Do not say the word delivery. "
+    "Say that report in its own words. Do not answer it. Do not add sentences. "
+    f"Each part is {CHUNK} tokens, thirty seconds of speech, and not longer. "
+    "Split a longer report at a sentence so every part is that length. A shorter remainder is still one part. "
+    "Keep the punctuation inside the part. Keep the meaning and the numbers. A note does not speak."
 )
 TOOLS = [
     {"type": "function", "function": {
         "name": "say",
-        "description": f"Speak your answer aloud. One call is one language and the whole of what they should hear in that language. text is that answer in order. Each part is at least {CHUNK} tokens. language is en or pl. A different language is another call.",
+        "description": f"Speak the words aloud. One call is one language. text is those words in order. Each part is {CHUNK} tokens, thirty seconds of speech, and not longer. Do not answer a report. Do not add sentences. Split a longer text at a sentence so every part is that length. A shorter remainder is still one part. language is en or pl. A different language is another call.",
         "parameters": {"type": "object", "properties": {
-            "text": {"type": "array", "items": {"type": "string"}, "description": f"One stretch of meaning, at least {CHUNK} tokens. A shorter whole answer is the only part."},
+            "text": {"type": "array", "items": {"type": "string"}, "description": f"One part. {CHUNK} tokens, thirty seconds of speech, and not longer. A shorter remainder is still one part."},
             "language": {"type": "string", "description": "en or pl."}},
             "required": ["text", "language"]}}},
     {"type": "function", "function": {
