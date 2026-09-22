@@ -227,7 +227,7 @@ def ensure_venv() -> Path:
     return py
 def install_asr():
     py = venv_python()
-    pip(py, "asr-packages", specs("numpy", "sounddevice", "transformers"))
+    pip(py, "asr-packages", specs("numpy", "transformers"))
     home = MODELS / "ear" / EAR["dir"]
     home.mkdir(parents=True, exist_ok=True)
     files = tuple(home / name for name in EAR["files"])
@@ -242,7 +242,7 @@ def install_tts(name: str):
         raise SystemExit("variant is nano, turbo, or v3")
     cfg, py = VARIANTS[name], venv_python()
     pip(py, "tts-torch", [*PYTHON_ENV_BOOTSTRAP["torch"], "--index-url", PYTORCH_CPU_INDEX])
-    pip(py, "tts-packages", specs("gguf", "safetensors", "librosa", "tokenizers", "pykakasi", "spacy-pkuseg", "dicta-onnx", "add-stress-to-epub"))
+    pip(py, "tts-packages", specs("sounddevice", "gguf", "safetensors", "librosa", "tokenizers", "pykakasi", "spacy-pkuseg", "dicta-onnx", "add-stress-to-epub"))
     MODELS.mkdir(parents=True, exist_ok=True)
     args = launch_args(cfg)
     family = ARCHITECTURES[cfg.architecture]

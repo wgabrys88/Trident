@@ -87,7 +87,6 @@ EAR = {
     "dir": "nemotron-3.5-asr-streaming-0.6b",
     "files": ("config.json", "generation_config.json", "processor_config.json", "tokenizer_config.json", "tokenizer.json", "model.safetensors"),
     "sample_rate": 16000, "threads": 4, "language": "auto", "lookahead": 3,
-    "min_silence": 0.5, "min_speech": 0.25, "max_speech": 20, "level": 0.01, "preroll": 0.3,
 }
 BRAIN = {
     "url": "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/0314792d7f1f7e229411f620751375812bb9faf2/gemma-4-E2B-it-Q4_K_M.gguf",
