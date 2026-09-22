@@ -5,15 +5,11 @@ from install import MODELS, ROOT, alive, kill, launch_args, venv_python
 from settings import ARCHITECTURES, VARIANTS, WAV
 K32 = ctypes.WinDLL("kernel32", use_last_error=True)
 K32.WaitNamedPipeW.argtypes, K32.WaitNamedPipeW.restype = [ctypes.c_wchar_p, ctypes.c_uint], ctypes.c_int
-def cable():
-    import sounddevice as sd
-    return next(i for i, item in enumerate(sd.query_devices())
-                if str(item["name"]).startswith("CABLE Input") and item["max_output_channels"] and item["default_samplerate"] == 48000)
 def play(pcm):
     import numpy as np
     import sounddevice as sd
     ctypes.windll.ole32.CoInitializeEx(None, 0)
-    sd.play(np.repeat(pcm, 2), 48000, device=cable())
+    sd.play(np.repeat(pcm, 2), 48000)
     sd.wait()
 def write_wav(pcm: bytes) -> Path:
     home = ROOT / WAV

@@ -1,8 +1,8 @@
-import sys, time
+import sys
 from pathlib import Path
 import torch
-from install import MODELS, ROOT, reexec
-from settings import EAR, WAV
+from install import MODELS, reexec
+from settings import EAR
 LINES = MODELS / "ear" / "lines.txt"
 class Ear:
     def __init__(self):
@@ -30,33 +30,44 @@ class Ear:
         text = self.transcribe(load_audio(str(file), sampling_rate=EAR["sample_rate"], backend="librosa"))
         if not text:
             raise RuntimeError("ear heard nothing")
+        self.line(text)
+    def line(self, text):
         LINES.parent.mkdir(parents=True, exist_ok=True)
         with LINES.open("a", encoding="utf-8") as out:
             out.write(text + "\n")
             out.flush()
         print(text, flush=True)
-    def watch(self):
-        home = ROOT / WAV
-        seen = {item.name for item in home.glob("*.wav")} if home.is_dir() else set()
-        sizes = {}
+    def listen(self):
+        import numpy as np
+        import sounddevice as sd
+        rate, hop = EAR["sample_rate"], int(EAR["sample_rate"] * 0.05)
+        pause, level = max(1, int(EAR["pause"] / 0.05)), EAR["level"]
+        speech, quiet, hot = [], 0, False
         print("ready", flush=True)
-        while True:
-            if home.is_dir():
-                for path in sorted(home.glob("*.wav")):
-                    if path.name in seen:
-                        continue
-                    size = path.stat().st_size
-                    if size == 0 or sizes.get(path.name) != size:
-                        sizes[path.name] = size
-                        continue
-                    seen.add(path.name)
-                    del sizes[path.name]
-                    self.hear(path)
-            time.sleep(0.05)
+        with sd.InputStream(samplerate=rate, channels=1, dtype="float32", blocksize=hop) as stream:
+            while True:
+                frame, _ = stream.read(hop)
+                if float(np.abs(frame).mean()) >= level:
+                    hot, quiet = True, 0
+                    speech.append(frame.copy())
+                    continue
+                if not hot:
+                    continue
+                speech.append(frame.copy())
+                quiet += 1
+                if quiet < pause:
+                    continue
+                audio = np.concatenate(speech).reshape(-1)
+                speech, quiet, hot = [], 0, False
+                if len(audio) < rate // 2:
+                    continue
+                text = self.transcribe(audio)
+                if text:
+                    self.line(text)
 if __name__ == "__main__":
     reexec()
     if len(sys.argv) == 1:
-        Ear().watch()
+        Ear().listen()
     elif len(sys.argv) == 2 and sys.argv[1]:
         Ear().hear(sys.argv[1])
     else:

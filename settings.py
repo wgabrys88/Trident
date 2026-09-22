@@ -85,6 +85,7 @@ EAR = {
     "dir": "nemotron-3.5-asr-streaming-0.6b",
     "files": ("config.json", "generation_config.json", "processor_config.json", "tokenizer_config.json", "tokenizer.json", "model.safetensors"),
     "sample_rate": 16000, "threads": 4, "language": "auto", "lookahead": 3,
+    "pause": 0.8, "level": 0.02,
 }
 WAV = "wav"
 BRAIN = {

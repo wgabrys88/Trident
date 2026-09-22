@@ -147,13 +147,14 @@ class Session:
             if heard:
                 return " ".join(heard)
             time.sleep(0.05)
-    def run(self):
+    def run(self, text):
         self.lines = Lines()
         print("ready", flush=True)
+        self.turn(text)
         while True:
             self.turn(self.wait())
 if __name__ == "__main__":
     reexec()
-    if len(sys.argv) != 2 or sys.argv[1] not in VARIANTS:
-        raise SystemExit("usage: python trident.py <variant>")
-    Session(sys.argv[1]).run()
+    if len(sys.argv) != 3 or sys.argv[1] not in VARIANTS or not sys.argv[2]:
+        raise SystemExit("usage: python trident.py <variant> <text>")
+    Session(sys.argv[1]).run(sys.argv[2])
