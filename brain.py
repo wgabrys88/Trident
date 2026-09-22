@@ -31,8 +31,7 @@ def load():
                 chat_format="chat_template.default", verbose=False, logits_all=False)
     grammar = LlamaGrammar.from_string("root ::= call+\n" + RULES)
     spoken = LlamaGrammar.from_string("root ::= say\n" + RULES)
-    closed = LlamaGrammar.from_string("root ::= (say | idle | noted | distilled)+\n" + RULES)
-    return llm, grammar, spoken, closed
+    return llm, grammar, spoken, spoken
 
 def ask(llm, grammar, text: str) -> str:
     if not text.strip():
