@@ -57,6 +57,24 @@ public:
     float real(const char* name) { return std::stof(string(name)); }
     void finish() const { if (!values_.empty()) throw std::runtime_error("Unknown flag: " + values_.begin()->first); }
 };
+inline Knobs knobs_from(Flags& flags, bool llama) {
+    Knobs knobs{};
+    knobs.gpu = flags.integer("--gpu");
+    knobs.seed = flags.integer("--seed");
+    knobs.n_predict = flags.integer("--n-predict");
+    knobs.cfm_steps = flags.integer("--cfm-steps");
+    knobs.trim_fade = flags.integer("--trim-fade-samples");
+    knobs.temperature = flags.real("--temperature");
+    knobs.top_p = flags.real("--top-p");
+    knobs.repeat_penalty = flags.real("--repeat-penalty");
+    if (llama) {
+        knobs.min_p = flags.real("--min-p");
+        knobs.cfg_weight = flags.real("--cfg-weight");
+        knobs.exaggeration = flags.real("--exaggeration");
+        knobs.cfm_cfg = flags.real("--cfm-cfg");
+    } else knobs.top_k = flags.integer("--top-k");
+    return knobs;
+}
 class PipeServer {
     Handle pipe_;
 public:
@@ -71,17 +89,12 @@ public:
             auto language = Pipe::line(pipe_.get());
             std::string text(std::stoul(Pipe::line(pipe_.get())), '\0');
             Pipe::read(pipe_.get(), text.data(), DWORD(text.size()));
-            try {
-                auto pcm = engine.synthesize(text, language);
-                std::vector<int16_t> samples(pcm.size());
-                for (size_t i = 0; i < pcm.size(); ++i) samples[i] = int16_t(std::clamp(pcm[i], -1.f, 1.f) * 32767.f);
-                std::string head = "ok " + std::to_string(samples.size()) + "\n";
-                Pipe::write(pipe_.get(), head.data(), DWORD(head.size()));
-                Pipe::write(pipe_.get(), samples.data(), DWORD(samples.size() * sizeof(int16_t)));
-            } catch (const std::exception& e) {
-                std::string reply = std::string("error ") + e.what() + "\n";
-                Pipe::write(pipe_.get(), reply.data(), DWORD(reply.size()));
-            }
+            auto pcm = engine.synthesize(text, language);
+            std::vector<int16_t> samples(pcm.size());
+            for (size_t i = 0; i < pcm.size(); ++i) samples[i] = int16_t(std::clamp(pcm[i], -1.f, 1.f) * 32767.f);
+            std::string head = "ok " + std::to_string(samples.size()) + "\n";
+            Pipe::write(pipe_.get(), head.data(), DWORD(head.size()));
+            Pipe::write(pipe_.get(), samples.data(), DWORD(samples.size() * sizeof(int16_t)));
             if (!FlushFileBuffers(pipe_.get()) || !DisconnectNamedPipe(pipe_.get())) throw std::runtime_error("Pipe completion failed");
         }
     }

@@ -1,27 +1,26 @@
 from dataclasses import dataclass
 
 FLAGS = [
-    {'name': 'variant', 'default': None, 'help': 'nano/turbo: GPT-2; v3: Llama.', 'group': 'model', 'architecture': 'both', 'positional': True, 'choices': ('nano', 'turbo', 'v3')},
-    {'name': 'text', 'default': None, 'help': 'Query for the brain.', 'group': 'model', 'architecture': 'both', 'positional': True, 'metavar': 'QUERY'},
-    {'name': 'reference', 'default': 'reference.wav', 'help': 'Reference voice WAV.', 'group': 'model', 'architecture': 'both'},
-    {'name': 't3-weight-type', 'default': 'q4_0', 'help': 'T3 GGUF type. Rebuilds conversion.', 'group': 'conversion', 'architecture': 'both', 'metavar': 'TYPE'},
-    {'name': 's3-weight-type', 'default': 'q4_0', 'help': 'S3 GGUF type. Rebuilds conversion.', 'group': 'conversion', 'architecture': 'both', 'metavar': 'TYPE'},
-    {'name': 't3-quant-policy', 'default': 'scripts/quant_t3.json', 'help': 'T3 per-tensor JSON.', 'group': 'conversion', 'architecture': 'both'},
-    {'name': 's3-quant-policy', 'default': 'scripts/quant_s3.json', 'help': 'S3 per-tensor JSON.', 'group': 'conversion', 'architecture': 'both'},
-    {'name': 'seed', 'default': '42', 'help': 'Sampling seed. Restarts server.', 'group': 'server', 'architecture': 'both'},
-    {'name': 'temperature', 'default': '0.8', 'help': 'Sampling temperature. Restarts server.', 'group': 'server', 'architecture': 'both'},
-    {'name': 'top-k', 'default': '1000', 'help': 'Top-k. Restarts server.', 'group': 'server', 'architecture': 'gpt2'},
-    {'name': 'top-p', 'default': {'gpt2': '0.95', 'llama': '1.0'}, 'help': 'Nucleus p. Restarts server.', 'group': 'server', 'architecture': 'both'},
-    {'name': 'repeat-penalty', 'default': '1.2', 'help': 'Repeat penalty. Restarts server.', 'group': 'server', 'architecture': 'both'},
-    {'name': 'n-predict', 'default': '1000', 'help': 'Max speech tokens. Restarts server.', 'group': 'server', 'architecture': 'both'},
-    {'name': 'cfm-steps', 'default': {'gpt2': '2', 'llama': '5'}, 'help': 'Flow steps. Restarts server.', 'group': 'server', 'architecture': 'both'},
-    {'name': 'trim-fade-samples', 'default': '480', 'help': 'Lead silence samples. Restarts server.', 'group': 'server', 'architecture': 'both'},
-    {'name': 'min-p', 'default': '0.05', 'help': 'Min-p. Restarts server.', 'group': 'server', 'architecture': 'llama'},
-    {'name': 'cfg-weight', 'default': '0.5', 'help': 'T3 CFG. Restarts server.', 'group': 'server', 'architecture': 'llama'},
-    {'name': 'exaggeration', 'default': '0.5', 'help': 'Emotion. Restarts server.', 'group': 'server', 'architecture': 'llama'},
-    {'name': 'cfm-cfg', 'default': '0.7', 'help': 'S3 CFG. Restarts server.', 'group': 'server', 'architecture': 'llama'},
-    {'name': 'gpu', 'default': '0', 'help': 'Vulkan device. Restarts server.', 'group': 'server', 'architecture': 'both'},
+    {'name': 'reference', 'default': 'reference.wav', 'group': 'conversion', 'architecture': 'both'},
+    {'name': 't3-weight-type', 'default': 'q4_0', 'group': 'conversion', 'architecture': 'both'},
+    {'name': 's3-weight-type', 'default': 'q4_0', 'group': 'conversion', 'architecture': 'both'},
+    {'name': 't3-quant-policy', 'default': 'scripts/quant_t3.json', 'group': 'conversion', 'architecture': 'both'},
+    {'name': 's3-quant-policy', 'default': 'scripts/quant_s3.json', 'group': 'conversion', 'architecture': 'both'},
+    {'name': 'seed', 'default': '42', 'group': 'server', 'architecture': 'both'},
+    {'name': 'temperature', 'default': '0.8', 'group': 'server', 'architecture': 'both'},
+    {'name': 'top-k', 'default': '1000', 'group': 'server', 'architecture': 'gpt2'},
+    {'name': 'top-p', 'default': {'gpt2': '0.95', 'llama': '1.0'}, 'group': 'server', 'architecture': 'both'},
+    {'name': 'repeat-penalty', 'default': '1.2', 'group': 'server', 'architecture': 'both'},
+    {'name': 'n-predict', 'default': '1000', 'group': 'server', 'architecture': 'both'},
+    {'name': 'cfm-steps', 'default': {'gpt2': '2', 'llama': '5'}, 'group': 'server', 'architecture': 'both'},
+    {'name': 'trim-fade-samples', 'default': '480', 'group': 'server', 'architecture': 'both'},
+    {'name': 'min-p', 'default': '0.05', 'group': 'server', 'architecture': 'llama'},
+    {'name': 'cfg-weight', 'default': '0.5', 'group': 'server', 'architecture': 'llama'},
+    {'name': 'exaggeration', 'default': '0.5', 'group': 'server', 'architecture': 'llama'},
+    {'name': 'cfm-cfg', 'default': '0.7', 'group': 'server', 'architecture': 'llama'},
+    {'name': 'gpu', 'default': '0', 'group': 'server', 'architecture': 'both'},
 ]
+PIECE_LIMIT = 300
 CMAKE_GENERATOR, CMAKE_ARCH = "Visual Studio 17 2022", "x64"
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 PYTHON_ENV_BOOTSTRAP = {"torch": ("torch==2.6.0",)}
@@ -68,8 +67,8 @@ BRAIN = {
 TOOLS = [
     {"type": "function", "function": {
         "name": "say",
-        "description": "Speak words a person can hear. text is an array of strings, each at most 300 characters. Split a long utterance into pieces of about 200 to 300 characters. A short answer is one shorter piece. Describe code, paths, and other non-speech in words. If a request is missing a detail, ask.",
-        "parameters": {"type": "object", "properties": {"text": {"type": "array", "items": {"type": "string"}, "description": "Pieces to speak, in order."}}, "required": ["text"]}}},
+        "description": f"Speak words a person can hear. text is an array of strings, each at most {PIECE_LIMIT} characters. Split a long utterance into pieces of about 200 to {PIECE_LIMIT} characters. A short answer is one shorter piece. Describe code, paths, and other non-speech in words. If a request is missing a detail, ask.",
+        "parameters": {"type": "object", "properties": {"text": {"type": "array", "items": {"type": "string"}, "description": f"Pieces to speak, in order. Each piece is at most {PIECE_LIMIT} characters."}}, "required": ["text"]}}},
     {"type": "function", "function": {
         "name": "listen",
         "description": "The microphone is already open. Call listen to receive speech as user turns.",

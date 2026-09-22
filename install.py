@@ -30,15 +30,17 @@ class LaunchArgs:
         digest = hashlib.sha256(json.dumps(policy["rules"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:8]
         return MODELS / f"chatterbox-{kind}-{family}-{policy['default']}-{digest}.gguf"
 def launch_args(cfg: Variant) -> LaunchArgs:
-    knobs = {}
+    knobs, conv = {}, {}
     for row in FLAGS:
-        if row["group"] != "server" or row["architecture"] not in ("both", cfg.architecture):
+        if row["architecture"] not in ("both", cfg.architecture):
             continue
         default = row["default"][cfg.architecture] if isinstance(row["default"], dict) else row["default"]
-        knobs[row["name"]] = str(default)
-    weight = {row["name"]: row["default"] for row in FLAGS if row["name"] in ("t3-weight-type", "s3-weight-type")}
-    return LaunchArgs(knobs, weight["t3-weight-type"], weight["s3-weight-type"],
-                      (ROOT / "reference.wav").resolve(), (ROOT / "scripts/quant_t3.json").resolve(), (ROOT / "scripts/quant_s3.json").resolve())
+        if row["group"] == "server":
+            knobs[row["name"]] = str(default)
+        else:
+            conv[row["name"]] = default
+    return LaunchArgs(knobs, conv["t3-weight-type"], conv["s3-weight-type"],
+                      (ROOT / conv["reference"]).resolve(), (ROOT / conv["t3-quant-policy"]).resolve(), (ROOT / conv["s3-quant-policy"]).resolve())
 class Contract:
     def __init__(self, payload: dict, *outputs: Path):
         self.payload, self.outputs = payload, outputs
@@ -76,7 +78,10 @@ def kill(pid: Path):
     if not pid.is_file():
         return
     record = json.loads(pid.read_text(encoding="utf-8"))
-    subprocess.run(["taskkill", "/F", "/T", "/PID", str(record["pid"])], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if not alive(record["pid"]):
+        pid.unlink()
+        return
+    subprocess.run(["taskkill", "/F", "/T", "/PID", str(record["pid"])], check=True)
     handle = K32.OpenProcess(0x00100000, False, record["pid"])
     if handle:
         K32.WaitForSingleObject(handle, 10000)
@@ -104,10 +109,6 @@ def pip(py: Path, name: str, args: list[str], env=None):
 def kept(name: str, payload: dict, *outputs: Path) -> bool:
     stamp, contract = MODELS / f"{name}.json", Contract(payload, *outputs)
     if contract.matches(stamp):
-        print("skip " + name, flush=True)
-        return True
-    if not stamp.is_file() and outputs and all(item.is_file() for item in outputs):
-        contract.write(stamp)
         print("skip " + name, flush=True)
         return True
     print("install " + name, flush=True)
@@ -147,7 +148,6 @@ class EngineBuild:
         for child in list(build.iterdir()):
             if child.resolve() != bin_dir.resolve():
                 shutil.rmtree(child) if child.is_dir() else child.unlink()
-        (bin_dir / "ggml.dll").unlink(missing_ok=True)
         Contract(wanted, *outputs).write(stamp)
         return outputs
 def re_digits(text: str):
@@ -233,9 +233,7 @@ def install_asr():
     model, vad = home / EAR["dir"], home / "silero_vad.onnx"
     files = tuple(model / name for name in EAR["files"])
     payload = {"archive": EAR["archive"], "vad": EAR["vad"]}
-    if kept("parakeet", {"archive": payload["archive"]}, *files):
-        pass
-    else:
+    if not kept("parakeet", {"archive": payload["archive"]}, *files):
         archive = home / "parakeet.tar.bz2"
         download(EAR["archive"], archive)
         with tarfile.open(archive, "r:bz2") as tar:

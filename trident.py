@@ -1,9 +1,8 @@
 import json, sys, time
 from brain import ask
 from install import MODELS, reexec
-from settings import BRAIN, VARIANTS
+from settings import BRAIN, PIECE_LIMIT, VARIANTS
 from tts import say
-LIMIT = 300
 LINES = MODELS / "ear" / "lines.txt"
 class Scan:
     def __init__(self, text):
@@ -156,8 +155,8 @@ class Session:
         content = ask(self.user(kind, body))
         print(content, flush=True)
         memory, tools = read_turn(content)
-        if len(memory) > LIMIT:
-            raise RuntimeError("memory exceeds 300 characters")
+        if len(memory) > PIECE_LIMIT:
+            raise RuntimeError(f"memory exceeds {PIECE_LIMIT} characters")
         print(json.dumps({"memory": memory, "tools": tools}, ensure_ascii=False), flush=True)
         self.memory = memory
         called = False

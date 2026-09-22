@@ -2,11 +2,9 @@ import ctypes, json, subprocess, sys, time, wave
 from datetime import datetime
 from pathlib import Path
 from install import MODELS, ROOT, alive, kill, launch_args, venv_python
-from settings import ARCHITECTURES, VARIANTS
-DETACH = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+from settings import ARCHITECTURES, PIECE_LIMIT, VARIANTS
 K32 = ctypes.WinDLL("kernel32", use_last_error=True)
 K32.WaitNamedPipeW.argtypes, K32.WaitNamedPipeW.restype = [ctypes.c_wchar_p, ctypes.c_uint], ctypes.c_int
-LIMIT = 300
 def cable():
     import sounddevice as sd
     return next(i for i, item in enumerate(sd.query_devices())
@@ -55,8 +53,8 @@ def say(pipe: str, text, n: int) -> int:
         raise RuntimeError("say text is not an array")
     clips = []
     for piece in text:
-        if not isinstance(piece, str) or len(piece) > LIMIT:
-            raise RuntimeError("say piece exceeds 300 characters")
+        if not isinstance(piece, str) or len(piece) > PIECE_LIMIT:
+            raise RuntimeError(f"say piece exceeds {PIECE_LIMIT} characters")
         pcm = np.frombuffer(synthesize(pipe, piece), dtype=np.int16)
         n += 1
         print(write_wav(pcm.tobytes(), str(n)), flush=True)
@@ -98,8 +96,7 @@ def serve(name: str) -> str:
             if K32.WaitNamedPipeW(pipe, 3000):
                 return pipe
     kill(pid)
-    proc = subprocess.Popen(command, cwd=exe.parent, stdin=subprocess.DEVNULL,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=DETACH)
+    proc = subprocess.Popen(command, cwd=exe.parent, stdin=subprocess.DEVNULL, creationflags=subprocess.CREATE_NEW_CONSOLE)
     from install import Contract
     Contract({"pid": proc.pid, "contract": wanted}).write(pid)
     deadline = time.monotonic() + 30

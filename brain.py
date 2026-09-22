@@ -64,36 +64,30 @@ def serve():
     path = MODELS / BRAIN["file"]
     if not path.is_file():
         raise RuntimeError("missing " + str(path))
-    if BRAIN["n_ctx"] != 32768 or BRAIN["n_gpu_layers"] != -1:
-        raise RuntimeError("brain config")
     from llama_cpp import Llama
     llm = Llama(model_path=str(path), n_ctx=BRAIN["n_ctx"], n_threads=BRAIN["n_threads"],
                 n_gpu_layers=BRAIN["n_gpu_layers"], chat_format="chat_template.default", verbose=False)
     llm.create_chat_completion(messages=[{"role": "user", "content": "."}], tools=TOOLS, max_tokens=1)
     handle = K32.CreateNamedPipeW(PIPE, 3, 8, 1, 1 << 20, 1 << 20, 0, None)
     if handle is None or handle == INVALID:
-        err = ctypes.get_last_error()
-        if err == 231 and K32.WaitNamedPipeW(PIPE, 1000):
-            print("ready", flush=True)
-            return
-        raise ctypes.WinError(err)
+        raise ctypes.WinError(ctypes.get_last_error())
     print("ready", flush=True)
     while True:
         if not K32.ConnectNamedPipe(handle, None) and ctypes.get_last_error() != 535:
             raise ctypes.WinError(ctypes.get_last_error())
-        try:
-            count = int(read_line(handle))
-            user = read_exact(handle, count).decode("utf-8")
-            content = llm.create_chat_completion(
-                messages=[{"role": "user", "content": user}], tools=TOOLS, stop=["<turn|>"], **BRAIN["decode"]
-            )["choices"][0]["message"]["content"]
-            if not isinstance(content, str):
-                raise RuntimeError("brain completion")
-            payload = content.encode("utf-8")
-            write_all(handle, f"{len(payload)}\n".encode("utf-8") + payload)
-            K32.FlushFileBuffers(handle)
-        finally:
-            K32.DisconnectNamedPipe(handle)
+        count = int(read_line(handle))
+        user = read_exact(handle, count).decode("utf-8")
+        content = llm.create_chat_completion(
+            messages=[{"role": "user", "content": user}], tools=TOOLS, stop=["<turn|>"], **BRAIN["decode"]
+        )["choices"][0]["message"]["content"]
+        if not isinstance(content, str):
+            raise RuntimeError("brain completion")
+        payload = content.encode("utf-8")
+        write_all(handle, f"{len(payload)}\n".encode("utf-8") + payload)
+        if not K32.FlushFileBuffers(handle):
+            raise ctypes.WinError(ctypes.get_last_error())
+        if not K32.DisconnectNamedPipe(handle):
+            raise ctypes.WinError(ctypes.get_last_error())
 if __name__ == "__main__":
     reexec()
     serve()

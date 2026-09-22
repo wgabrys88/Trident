@@ -4,12 +4,7 @@
 
 namespace trident::llama {
 Engine::Engine(const std::string& t3_path, const std::string& s3_path, Flags& flags)
-    : knobs{
-          flags.integer("--gpu"), flags.integer("--seed"), flags.integer("--n-predict"),
-          flags.integer("--cfm-steps"), flags.integer("--trim-fade-samples"), {},
-          flags.real("--temperature"), flags.real("--top-p"), flags.real("--repeat-penalty"),
-          flags.real("--min-p"), flags.real("--cfg-weight"), flags.real("--exaggeration"), flags.real("--cfm-cfg")
-      },
+    : knobs(knobs_from(flags, true)),
       backend(knobs.gpu), t3(t3_path, backend, knobs), s3(s3_path, backend, knobs),
       paths{
           flags.string("--tokenizer-python"), flags.string("--tokenizer-script"),

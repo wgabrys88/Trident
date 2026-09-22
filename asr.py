@@ -40,29 +40,23 @@ class Ear:
         self.transcribe(np.zeros(EAR["sample_rate"], dtype=np.float32))
     def capture(self):
         import sounddevice as sd
-        import traceback
         ctypes.windll.ole32.CoInitializeEx(None, 0)
         window = self.vad.config.silero_vad.window_size
-        while True:
-            try:
-                buffer = np.array([], dtype=np.float32)
-                with sd.InputStream(device=device(), channels=1, dtype="float32", samplerate=48000, blocksize=4800) as stream:
-                    while True:
-                        samples, _ = stream.read(4800)
-                        flat = np.asarray(samples, dtype=np.float32).reshape(-1)
-                        flat = flat[:len(flat) - (len(flat) % 3)]
-                        buffer = np.concatenate([buffer, flat.reshape(-1, 3).mean(axis=1)])
-                        while len(buffer) >= window:
-                            self.vad.accept_waveform(buffer[:window])
-                            buffer = buffer[window:]
-                        while not self.vad.empty():
-                            segment = np.array(self.vad.front.samples, dtype=np.float32)
-                            self.vad.pop()
-                            with self.lock:
-                                self.segments.append(segment)
-            except Exception:
-                traceback.print_exc()
-                time.sleep(0.2)
+        buffer = np.array([], dtype=np.float32)
+        with sd.InputStream(device=device(), channels=1, dtype="float32", samplerate=48000, blocksize=4800) as stream:
+            while True:
+                samples, _ = stream.read(4800)
+                flat = np.asarray(samples, dtype=np.float32).reshape(-1)
+                flat = flat[:len(flat) - (len(flat) % 3)]
+                buffer = np.concatenate([buffer, flat.reshape(-1, 3).mean(axis=1)])
+                while len(buffer) >= window:
+                    self.vad.accept_waveform(buffer[:window])
+                    buffer = buffer[window:]
+                while not self.vad.empty():
+                    segment = np.array(self.vad.front.samples, dtype=np.float32)
+                    self.vad.pop()
+                    with self.lock:
+                        self.segments.append(segment)
     def write(self, text):
         LINES.parent.mkdir(parents=True, exist_ok=True)
         with LINES.open("a", encoding="utf-8") as out:
