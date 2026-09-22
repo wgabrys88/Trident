@@ -15,10 +15,10 @@ def play(pcm):
     ctypes.windll.ole32.CoInitializeEx(None, 0)
     sd.play(np.repeat(pcm, 2), 48000, device=cable())
     sd.wait()
-def write_wav(pcm: bytes, stem: str) -> Path:
+def write_wav(pcm: bytes) -> Path:
     home = ROOT / WAV
     home.mkdir(parents=True, exist_ok=True)
-    path = home / f"{datetime.now():%y%m%d-%H%M%S}_{stem}.wav"
+    path = home / f"{datetime.now():%y%m%d-%H%M%S%f}.wav"
     with wave.open(str(path), "wb") as out:
         out.setnchannels(1)
         out.setsampwidth(2)
@@ -49,22 +49,12 @@ def synthesize(pipe: str, text: str, language: str = "") -> bytes:
             pcm += chunk
             remaining -= len(chunk)
     return bytes(pcm)
-def say(pipe: str, text, n: int, language: str = "") -> int:
+def say(pipe: str, text: str, language: str = ""):
     import numpy as np
-    if not isinstance(text, list):
-        raise RuntimeError("say text is not an array")
-    clips = []
-    for piece in text:
-        if not isinstance(piece, str) or not piece:
-            raise RuntimeError("say piece")
-        pcm = np.frombuffer(synthesize(pipe, piece, language), dtype=np.int16)
-        n += 1
-        print(write_wav(pcm.tobytes(), str(n)), flush=True)
-        print(piece, flush=True)
-        clips.append(pcm)
-    if clips:
-        play(np.concatenate(clips))
-    return n
+    pcm = np.frombuffer(synthesize(pipe, text, language), dtype=np.int16)
+    print(write_wav(pcm.tobytes()), flush=True)
+    print(text, flush=True)
+    play(pcm)
 def serve(name: str) -> str:
     if name not in VARIANTS:
         raise SystemExit("variant is nano, turbo, or v3")
@@ -121,10 +111,10 @@ if __name__ == "__main__":
     from install import reexec
     reexec()
     argv = sys.argv
-    if len(argv) in (4, 5) and argv[2] == "--hear":
-        say(serve(argv[1]), [argv[3]], 0, argv[4] if len(argv) == 5 else "")
-    elif len(argv) == 2:
+    if len(argv) == 2:
         serve(argv[1])
         stay()
+    elif len(argv) in (3, 4) and argv[2]:
+        say(serve(argv[1]), argv[2], argv[3] if len(argv) == 4 else "")
     else:
-        raise SystemExit("usage: python tts.py <variant> [--hear <text> [language]]")
+        raise SystemExit("usage: python tts.py <variant> [text] [language]")

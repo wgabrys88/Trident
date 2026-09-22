@@ -1,4 +1,4 @@
-import ctypes
+import ctypes, sys
 from ctypes import wintypes
 from install import MODELS, reexec
 from settings import BRAIN, SPEAK, TOOLS
@@ -103,4 +103,9 @@ chars ::= [^<]*
             raise ctypes.WinError(ctypes.get_last_error())
 if __name__ == "__main__":
     reexec()
-    serve()
+    if len(sys.argv) == 1:
+        serve()
+    elif len(sys.argv) == 2 and sys.argv[1]:
+        print(ask(sys.argv[1]), flush=True)
+    else:
+        raise SystemExit("usage: python brain.py [text]")

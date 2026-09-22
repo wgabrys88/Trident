@@ -55,11 +55,9 @@ class Ear:
             time.sleep(0.05)
 if __name__ == "__main__":
     reexec()
-    argv = sys.argv
-    if len(argv) > 2 or (len(argv) == 2 and not argv[1]):
-        raise SystemExit("usage: python asr.py [wav]")
-    ear = Ear()
-    if len(argv) == 2:
-        ear.hear(argv[1])
+    if len(sys.argv) == 1:
+        Ear().watch()
+    elif len(sys.argv) == 2 and sys.argv[1]:
+        Ear().hear(sys.argv[1])
     else:
-        ear.watch()
+        raise SystemExit("usage: python asr.py [wav]")
