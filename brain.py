@@ -79,7 +79,6 @@ lang ::= mark ("en" | "pl") mark
 mark ::= "<|\"|>"
 chars ::= [^<]*
 ''')
-    llm.create_chat_completion(messages=[{"role": "system", "content": SPEAK}, {"role": "user", "content": "."}], tools=TOOLS, max_tokens=1)
     handle = K32.CreateNamedPipeW(PIPE, 3, 8, 1, 1 << 20, 1 << 20, 0, None)
     if handle is None or handle == INVALID:
         raise ctypes.WinError(ctypes.get_last_error())
