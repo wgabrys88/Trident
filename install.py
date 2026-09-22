@@ -1,4 +1,4 @@
-import ctypes, hashlib, json, os, shutil, subprocess, sys, tarfile, urllib.request
+import ctypes, hashlib, json, os, shutil, subprocess, sys, urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from settings import ARCHITECTURES, BRAIN, CMAKE_ARCH, CMAKE_GENERATOR, EAR, FLAGS, PYTHON_ENV_BOOTSTRAP, PYTORCH_CPU_INDEX, VARIANTS, Variant
@@ -227,22 +227,16 @@ def ensure_venv() -> Path:
     return py
 def install_asr():
     py = venv_python()
-    pip(py, "asr-packages", specs("numpy", "sherpa-onnx", "sounddevice"))
-    home = MODELS / "ear"
+    pip(py, "asr-packages", specs("numpy", "sounddevice", "transformers"))
+    home = MODELS / "ear" / EAR["dir"]
     home.mkdir(parents=True, exist_ok=True)
-    model, vad = home / EAR["dir"], home / "silero_vad.onnx"
-    files = tuple(model / name for name in EAR["files"])
-    payload = {"archive": EAR["archive"], "vad": EAR["vad"]}
-    if not kept("parakeet", {"archive": payload["archive"]}, *files):
-        archive = home / "parakeet.tar.bz2"
-        download(EAR["archive"], archive)
-        with tarfile.open(archive, "r:bz2") as tar:
-            tar.extractall(home, filter="data")
-        archive.unlink()
-        Contract({"archive": payload["archive"]}, *files).write(MODELS / "parakeet.json")
-    if not kept("silero", {"vad": payload["vad"]}, vad):
-        download(EAR["vad"], vad)
-        Contract({"vad": payload["vad"]}, vad).write(MODELS / "silero.json")
+    files = tuple(home / name for name in EAR["files"])
+    if kept("nemotron", {"repo": EAR["repo"]}, *files):
+        return
+    for name in EAR["files"]:
+        print(name, flush=True)
+        download(EAR["repo"] + "/" + name, home / name)
+    Contract({"repo": EAR["repo"]}, *files).write(MODELS / "nemotron.json")
 def install_tts(name: str):
     if name not in VARIANTS:
         raise SystemExit("variant is nano, turbo, or v3")

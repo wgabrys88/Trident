@@ -83,10 +83,11 @@ ARCHITECTURES = {
     "llama": {"ckpt": ".ckpt-v3", "s3_checkpoint": "s3gen.safetensors", "s3_family": "v3"},
 }
 EAR = {
-    "archive": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2",
-    "dir": "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8", "files": ("encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx", "tokens.txt"),
-    "vad": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx",
-    "sample_rate": 16000, "threads": 2, "provider": "cpu", "vad_threshold": 0.5, "min_silence": 0.25, "min_speech": 0.25, "max_speech": 20,
+    "repo": "https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b/resolve/ea30d66debe3740a08b573244286791d423d6b3e",
+    "dir": "nemotron-3.5-asr-streaming-0.6b",
+    "files": ("config.json", "generation_config.json", "processor_config.json", "tokenizer_config.json", "tokenizer.json", "model.safetensors"),
+    "sample_rate": 16000, "threads": 4, "language": "auto", "lookahead": 3,
+    "min_silence": 0.5, "min_speech": 0.25, "max_speech": 20, "level": 0.01, "preroll": 0.3,
 }
 BRAIN = {
     "url": "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/0314792d7f1f7e229411f620751375812bb9faf2/gemma-4-E2B-it-Q4_K_M.gguf",
