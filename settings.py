@@ -97,60 +97,51 @@ def user_text() -> str:
     return memory or live
 
 SPEAK = (
-    "You are Jarvis. Analyze the user text. Act only through tools. "
-    "If nothing requires action, pass."
+    "You are Jarvis. The user text is memory, then unread live text. "
+    "Act only by calling tools. "
+    "pass writes nothing: the live text is unfinished or needs no action. "
+    "say speaks. note appends one fact and does not speak. distill replaces memory, clears the live text, and does not speak. "
+    "run_python runs one script. Its result is the next lines, and those lines start with exit. "
+    "When a line starts with exit, do not call run_python again. If the person asked to hear the result, say. "
+    "quit ends you."
 )
 ALOUD = (
-    "Say the following text aloud. Do not add sentences. Do not answer it. "
-    "Do not summarize. Use say. language is en unless the text is Polish."
+    "The user text is the words to speak. Call say. "
+    "language is en, or pl when the words are Polish. Do not add words."
 )
 TOOLS = [
     {"type": "function", "function": {
         "name": "pass",
-        "description": "Do nothing. Use this when the text is incomplete, a pause in a longer thought, small talk that needs no answer, or already handled. Default when unsure.",
+        "description": "Write nothing. The live text is unfinished or needs no action.",
         "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {
         "name": "say",
-        "description": (
-            "Speak to the person. text is the full answer in one string. language is en or pl. "
-            "About 60 words is fifteen seconds of speech. You may write a longer answer; "
-            "the system splits it on sentence ends into fifteen-second ranks and plays them in order. "
-            "Use only when the accumulated text is something you must answer or do aloud."
-        ),
+        "description": "Speak text. language is en or pl. Sixty words is one stretch. Longer text is split on sentence ends and played in order.",
         "parameters": {"type": "object", "properties": {
-            "text": {"type": "string", "description": "The full spoken answer."},
+            "text": {"type": "string", "description": "Words to speak."},
             "language": {"type": "string", "description": "en or pl."}},
             "required": ["text", "language"]}}},
     {"type": "function", "function": {
         "name": "note",
-        "description": "Append one short durable fact to long-term memory. Does not speak. Use for a name, a decision, a constraint that must survive later turns.",
+        "description": "Append one fact to memory. A name, a decision, or a constraint. Does not speak.",
         "parameters": {"type": "object", "properties": {
             "text": {"type": "string", "description": "One fact."}},
             "required": ["text"]}}},
     {"type": "function", "function": {
         "name": "distill",
-        "description": (
-            "Replace long-term memory with this text. Use when live text has grown or the person asked you to concatenate or compress memory. "
-            "Keep names, decisions, open tasks, numbers. Drop greetings and repeated asides. "
-            "After this call the live buffer is cleared; the next request starts from the new memory plus new speech."
-        ),
+        "description": "Replace memory with text. Keep names and decisions. Clears the live text. Does not speak.",
         "parameters": {"type": "object", "properties": {
-            "text": {"type": "string", "description": "The full new memory document."}},
+            "text": {"type": "string", "description": "The new memory."}},
             "required": ["text"]}}},
     {"type": "function", "function": {
         "name": "run_python",
-        "description": (
-            "Run Python on this machine. code is a complete script. cwd is workspace/; write pong.txt not workspace/pong.txt. "
-            "stdout and stderr come back as new user text on the next look. "
-            "Use when you must compute, write a file in workspace, or inspect workspace. "
-            "Wrap the script in the same <|\"|> ... <|\"|> markers as note text."
-        ),
+        "description": "Run code once. The working directory is the workspace folder. Write pong.txt in that folder. The next look adds lines that start with exit. Do not call run_python after those lines. Say on that look when the person asked to hear the result.",
         "parameters": {"type": "object", "properties": {
-            "code": {"type": "string", "description": "A complete Python script."}},
+            "code": {"type": "string", "description": "One complete Python script."}},
             "required": ["code"]}}},
     {"type": "function", "function": {
         "name": "quit",
-        "description": "Leave. Ends the Jarvis process.",
+        "description": "End the Jarvis process.",
         "parameters": {"type": "object", "properties": {}}}},
 ]
 

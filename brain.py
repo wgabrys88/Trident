@@ -1,4 +1,4 @@
-import json, re, subprocess, sys, time
+import re, subprocess, sys, time
 from pathlib import Path
 from install import MODELS, reexec, venv_python
 from settings import (
@@ -31,7 +31,8 @@ def load():
                 chat_format="chat_template.default", verbose=False, logits_all=False)
     grammar = LlamaGrammar.from_string("root ::= call+\n" + RULES)
     spoken = LlamaGrammar.from_string("root ::= say\n" + RULES)
-    return llm, grammar, spoken
+    closed = LlamaGrammar.from_string("root ::= (say | idle | noted | distilled)+\n" + RULES)
+    return llm, grammar, spoken, closed
 
 def ask(llm, grammar, text: str) -> str:
     if not text.strip():
@@ -97,7 +98,7 @@ def run_python(code: str) -> str:
 
 def apply(found, exact=None):
     again = False
-    saw_run_python = False
+    spoke = False
     for tool in found:
         name = tool["name"]
         if name == "pass":
@@ -105,8 +106,7 @@ def apply(found, exact=None):
         elif name == "say":
             body = exact if exact is not None else tool.get("text", "")
             speak(body, tool.get("language") or "en")
-            if not saw_run_python:
-                clear_live()
+            spoke = True
         elif name == "note":
             if not tool.get("text"):
                 raise RuntimeError("note")
@@ -121,25 +121,29 @@ def apply(found, exact=None):
         elif name == "run_python":
             result = run_python(tool.get("code", ""))
             append_live(result)
-            saw_run_python = True
-            again = True
+            again = "done" if result.startswith("exit 0\n") else True
         elif name == "quit":
             raise SystemExit
         else:
             raise RuntimeError("unknown tool " + name)
+    if spoke:
+        clear_live()
+        return False
     return again
 
-def think(llm, grammar):
+def think(llm, grammar, closed):
     hops = 0
+    step = grammar
     while True:
         blob = user_text()
         print(blob, flush=True)
-        content = ask(llm, grammar, blob)
+        content = ask(llm, step, blob)
         print(content, flush=True)
         again = apply(tools(content))
         hops += 1
         if not again or hops >= 3:
             return
+        step = closed if again == "done" else grammar
 
 def mouth(variant: str):
     from tts import serve, say
@@ -172,7 +176,7 @@ def aloud(llm, spoken, payload: str, variant: str):
 def serve():
     bus()
     clear_live()
-    llm, grammar, _spoken = load()
+    llm, grammar, _spoken, closed = load()
     print("ready", flush=True)
     while True:
         files = waiting("transcription")
@@ -188,7 +192,7 @@ def serve():
         if own(heard, said):
             continue
         append_live(heard)
-        think(llm, grammar)
+        think(llm, grammar, closed)
 
 if __name__ == "__main__":
     reexec()
@@ -198,10 +202,10 @@ if __name__ == "__main__":
     elif len(argv) == 2 and argv[1] not in VARIANTS:
         bus()
         append_live(read_payload(argv[1]))
-        llm, grammar, _spoken = load()
-        think(llm, grammar)
+        llm, grammar, _spoken, closed = load()
+        think(llm, grammar, closed)
     elif len(argv) == 4 and argv[1] in VARIANTS and argv[2] == "--say" and argv[3]:
-        llm, _grammar, spoken = load()
+        llm, _grammar, spoken, _closed = load()
         aloud(llm, spoken, read_payload(argv[3]), argv[1])
     else:
         raise SystemExit("usage: python brain.py [text|file] | python brain.py <variant> --say <text|file>")

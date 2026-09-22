@@ -13,9 +13,13 @@ def play(pcm):
     ctypes.windll.ole32.CoInitializeEx(None, 0)
     seconds = len(pcm) / 2 / 24000
     sd.play(np.repeat(pcm, 2), 48000)
-    if not sd.wait(timeout=seconds + 120):
-        sd.stop()
-        raise RuntimeError("play timeout")
+    callback = sd._last_callback
+    if callback.event.wait(seconds + 120):
+        callback.stream.close()
+        return
+    callback.stream.stop()
+    callback.stream.close()
+    raise RuntimeError("play timeout")
 
 def write_wav(pcm: bytes) -> Path:
     home = ROOT / WAV
