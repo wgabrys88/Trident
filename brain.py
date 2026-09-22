@@ -1,7 +1,7 @@
 import ctypes
 from ctypes import wintypes
 from install import MODELS, reexec
-from settings import BRAIN, TOOLS
+from settings import BRAIN, SPEAK, TOOLS
 PIPE = r"\\.\pipe\trident-brain"
 K32 = ctypes.WinDLL("kernel32", use_last_error=True)
 K32.WaitNamedPipeW.argtypes, K32.WaitNamedPipeW.restype = [ctypes.c_wchar_p, ctypes.c_uint], ctypes.c_int
@@ -64,10 +64,22 @@ def serve():
     path = MODELS / BRAIN["file"]
     if not path.is_file():
         raise RuntimeError("missing " + str(path))
-    from llama_cpp import Llama
+    from llama_cpp import Llama, LlamaGrammar
     llm = Llama(model_path=str(path), n_ctx=BRAIN["n_ctx"], n_threads=BRAIN["n_threads"],
                 n_gpu_layers=BRAIN["n_gpu_layers"], chat_format="chat_template.default", verbose=False)
-    llm.create_chat_completion(messages=[{"role": "user", "content": "."}], tools=TOOLS, max_tokens=1)
+    grammar = LlamaGrammar.from_string(r'''
+root ::= call+
+call ::= say | bare
+say ::= "<|tool_call>call:say{" saybody "}" "<tool_call|>"
+bare ::= "<|tool_call>call:" ("listen" | "quit") "{}" "<tool_call|>"
+saybody ::= "text:" parts ",language:" lang | "language:" lang ",text:" parts
+parts ::= "[" piece ("," piece)* "]"
+piece ::= mark chars mark
+lang ::= mark ("en" | "pl") mark
+mark ::= "<|\"|>"
+chars ::= [^<]*
+''')
+    llm.create_chat_completion(messages=[{"role": "system", "content": SPEAK}, {"role": "user", "content": "."}], tools=TOOLS, max_tokens=1)
     handle = K32.CreateNamedPipeW(PIPE, 3, 8, 1, 1 << 20, 1 << 20, 0, None)
     if handle is None or handle == INVALID:
         raise ctypes.WinError(ctypes.get_last_error())
@@ -78,7 +90,8 @@ def serve():
         count = int(read_line(handle))
         user = read_exact(handle, count).decode("utf-8")
         content = llm.create_chat_completion(
-            messages=[{"role": "user", "content": user}], tools=TOOLS, stop=["<turn|>"], **BRAIN["decode"]
+            messages=[{"role": "system", "content": SPEAK}, {"role": "user", "content": user}],
+            tools=TOOLS, stop=["<turn|>"], grammar=grammar, **BRAIN["decode"]
         )["choices"][0]["message"]["content"]
         if not isinstance(content, str):
             raise RuntimeError("brain completion")

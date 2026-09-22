@@ -1,8 +1,7 @@
-import json, sys, time
+import json, subprocess, sys, time
 from brain import ask
-from install import MODELS, reexec
-from settings import BRAIN, PIECE_LIMIT, VARIANTS
-from tts import say
+from install import MODELS, ROOT, reexec, venv_python
+from settings import BRAIN, VARIANTS
 LINES = MODELS / "ear" / "lines.txt"
 class Scan:
     def __init__(self, text):
@@ -66,6 +65,11 @@ class Scan:
         start = self.i
         if self.peek() == "-":
             self.i += 1
+        if self.peek().isalpha():
+            start = self.i
+            while self.i < len(self.text) and self.text[self.i].isalpha():
+                self.i += 1
+            return self.text[start:self.i]
         while self.i < len(self.text) and self.text[self.i] in "0123456789.":
             self.i += 1
         if self.i == start:
@@ -139,44 +143,57 @@ class Lines:
             data = data[:cut + 1]
         self.offset += len(data)
         return [line for line in data.decode("utf-8").splitlines() if line]
+def speak(variant, text, language):
+    subprocess.run([str(venv_python()), str(ROOT / "tts.py"), variant, "--hear", text, language], check=True)
 class Session:
-    def __init__(self, pipe):
-        self.pipe, self.n = pipe, 0
-        self.memory, self.speech, self.quit_armed = "", "", False
+    def __init__(self, variant):
+        self.variant = variant
+        self.memory, self.speech, self.said, self.quit_armed = "", "", "", False
         self.sent, self.watchdog_at, self.flush_at = 0.0, None, None
         self.lines = None
-    def user(self, kind, body):
+    def user(self, body):
         lead = "A quit was proposed.\n" if self.quit_armed else ""
-        return f"{lead}memory\n{self.memory}\n\n{kind}\n{body}"
+        note = f"{self.memory}\n\n" if self.memory else ""
+        return f"{lead}{note}{body}"
+    def own(self, text):
+        heard = " ".join(text.casefold().split())
+        said = " ".join(self.said.casefold().split())
+        return bool(heard) and bool(said) and heard in said
     def turn(self, kind, body):
         proposed = self.quit_armed
         print(kind, flush=True)
         print(body, flush=True)
-        content = ask(self.user(kind, body))
+        content = ask(self.user(body))
         print(content, flush=True)
         memory, tools = read_turn(content)
-        if len(memory) > PIECE_LIMIT:
-            raise RuntimeError(f"memory exceeds {PIECE_LIMIT} characters")
         print(json.dumps({"memory": memory, "tools": tools}, ensure_ascii=False), flush=True)
         self.memory = memory
+        self.said = ""
         called = False
         for tool in tools:
             name = tool["name"]
             if name == "say":
-                self.n = say(self.pipe, tool["text"], self.n)
+                text, language = tool["text"], tool["language"]
+                if isinstance(text, str):
+                    text = [text]
+                if not isinstance(text, list) or not isinstance(language, str) or not language:
+                    raise RuntimeError("say")
+                for piece in text:
+                    self.said = f"{self.said} {piece}".strip() if self.said else piece
+                    speak(self.variant, piece, language)
             elif name == "listen":
                 if self.lines is None:
                     self.lines = Lines()
             elif name == "quit":
                 called = True
-                if proposed:
+                if proposed and kind == "speech":
                     raise SystemExit
                 self.quit_armed = True
                 if self.lines is None:
                     self.lines = Lines()
             else:
                 raise RuntimeError("unknown tool " + name)
-        if not called:
+        if not called and kind == "speech":
             self.quit_armed = False
         if kind == "watchdog":
             self.watchdog_at = time.monotonic() + BRAIN["watchdog_repeat"]
@@ -194,7 +211,10 @@ class Session:
                 time.sleep(0.05)
             now = time.monotonic()
             if lines:
-                for text in lines:
+                heard = [text for text in lines if not self.own(text)]
+                if not heard:
+                    continue
+                for text in heard:
                     self.speech = f"{self.speech} {text}".strip() if self.speech else text
                 self.flush_at = now + flush
                 continue
@@ -214,4 +234,4 @@ if __name__ == "__main__":
     argv = sys.argv
     if len(argv) != 3 or argv[1] not in VARIANTS or not argv[2]:
         raise SystemExit("query is required")
-    Session(rf"\\.\pipe\chatterbox-{argv[1]}").run(argv[2])
+    Session(argv[1]).run(argv[2])

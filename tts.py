@@ -2,7 +2,7 @@ import ctypes, json, subprocess, sys, time, wave
 from datetime import datetime
 from pathlib import Path
 from install import MODELS, ROOT, alive, kill, launch_args, venv_python
-from settings import ARCHITECTURES, PIECE_LIMIT, VARIANTS
+from settings import ARCHITECTURES, VARIANTS
 K32 = ctypes.WinDLL("kernel32", use_last_error=True)
 K32.WaitNamedPipeW.argtypes, K32.WaitNamedPipeW.restype = [ctypes.c_wchar_p, ctypes.c_uint], ctypes.c_int
 def cable():
@@ -25,12 +25,14 @@ def write_wav(pcm: bytes, stem: str) -> Path:
         out.setframerate(24000)
         out.writeframes(pcm)
     return path
-def synthesize(pipe: str, text: str) -> bytes:
+def synthesize(pipe: str, text: str, language: str = "") -> bytes:
+    if "\n" in language or "\r" in language:
+        raise RuntimeError("say language")
     if not K32.WaitNamedPipeW(pipe, 60000):
         raise RuntimeError("mouth: pipe " + pipe)
     payload = text.replace("\r\n", "\n").replace("\r", "\n").encode("utf-8")
     with open(pipe, "r+b", buffering=0) as stream:
-        message = memoryview(f"\n{len(payload)}\n".encode("utf-8") + payload)
+        message = memoryview(f"{language}\n{len(payload)}\n".encode("utf-8") + payload)
         while message:
             sent = stream.write(message)
             if not sent:
@@ -47,15 +49,15 @@ def synthesize(pipe: str, text: str) -> bytes:
             pcm += chunk
             remaining -= len(chunk)
     return bytes(pcm)
-def say(pipe: str, text, n: int) -> int:
+def say(pipe: str, text, n: int, language: str = "") -> int:
     import numpy as np
     if not isinstance(text, list):
         raise RuntimeError("say text is not an array")
     clips = []
     for piece in text:
-        if not isinstance(piece, str) or len(piece) > PIECE_LIMIT:
-            raise RuntimeError(f"say piece exceeds {PIECE_LIMIT} characters")
-        pcm = np.frombuffer(synthesize(pipe, piece), dtype=np.int16)
+        if not isinstance(piece, str) or not piece:
+            raise RuntimeError("say piece")
+        pcm = np.frombuffer(synthesize(pipe, piece, language), dtype=np.int16)
         n += 1
         print(write_wav(pcm.tobytes(), str(n)), flush=True)
         print(piece, flush=True)
@@ -119,11 +121,10 @@ if __name__ == "__main__":
     from install import reexec
     reexec()
     argv = sys.argv
-    if len(argv) == 4 and argv[2] == "--hear":
-        import numpy as np
-        play(np.frombuffer(synthesize(serve(argv[1]), argv[3]), dtype=np.int16))
+    if len(argv) in (4, 5) and argv[2] == "--hear":
+        say(serve(argv[1]), [argv[3]], 0, argv[4] if len(argv) == 5 else "")
     elif len(argv) == 2:
         serve(argv[1])
         stay()
     else:
-        raise SystemExit("usage: python tts.py <variant> [--hear <text>]")
+        raise SystemExit("usage: python tts.py <variant> [--hear <text> [language]]")
