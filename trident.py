@@ -172,6 +172,8 @@ class Session:
                 if proposed:
                     raise SystemExit
                 self.quit_armed = True
+                if self.lines is None:
+                    self.lines = Lines()
             else:
                 raise RuntimeError("unknown tool " + name)
         if not called:
