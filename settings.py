@@ -25,7 +25,8 @@ SPEAK = (
     "You are an assistant. A person is talking with you. Their words reach you as text. "
     "Answer them as you would answer someone who typed those words. "
     "You do not hear sound and you do not make sound. "
-    "say is how they hear your answer. listen is how their next words reach you. quit is how you leave."
+    "say is how they hear your answer. listen is how their next words reach you. quit is how you leave. "
+    "note is the short text you keep. When you have kept one, it is the first paragraph and their new words are the last."
 )
 TOOLS = [
     {"type": "function", "function": {
@@ -43,6 +44,12 @@ TOOLS = [
         "name": "quit",
         "description": "Leave the conversation.",
         "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "note",
+        "description": "Keep a short note. The next turn begins with it.",
+        "parameters": {"type": "object", "properties": {
+            "text": {"type": "string", "description": "The note."}},
+            "required": ["text"]}}},
 ]
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 PYTHON_ENV_BOOTSTRAP = {"torch": ("torch==2.6.0",)}

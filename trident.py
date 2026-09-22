@@ -106,7 +106,7 @@ def speak(variant, text, language):
 class Session:
     def __init__(self, variant):
         self.variant = variant
-        self.said = ""
+        self.said, self.note = "", ""
         self.lines = None
     def own(self, text):
         def words(value):
@@ -114,8 +114,9 @@ class Session:
         heard, said = words(text), words(self.said)
         return bool(heard) and bool(said) and heard in said
     def turn(self, body):
-        print(body, flush=True)
-        content = ask(body)
+        message = f"{self.note}\n\n{body}" if self.note else body
+        print(message, flush=True)
+        content = ask(message)
         print(content, flush=True)
         tools = read_turn(content)
         print(json.dumps(tools, ensure_ascii=False), flush=True)
@@ -129,6 +130,11 @@ class Session:
                 for piece in text:
                     self.said = f"{self.said} {piece}".strip() if self.said else piece
                     speak(self.variant, piece, language)
+            elif name == "note":
+                text = tool["text"]
+                if not isinstance(text, str) or not text:
+                    raise RuntimeError("note")
+                self.note = text
             elif name == "listen":
                 pass
             elif name == "quit":

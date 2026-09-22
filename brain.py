@@ -69,9 +69,10 @@ def serve():
                 n_gpu_layers=BRAIN["n_gpu_layers"], chat_format="chat_template.default", verbose=False)
     grammar = LlamaGrammar.from_string(r'''
 root ::= call+
-call ::= say | bare
+call ::= say | bare | noted
 say ::= "<|tool_call>call:say{" saybody "}" "<tool_call|>"
 bare ::= "<|tool_call>call:" ("listen" | "quit") "{}" "<tool_call|>"
+noted ::= "<|tool_call>call:note{text:" piece "}" "<tool_call|>"
 saybody ::= "text:" parts ",language:" lang | "language:" lang ",text:" parts
 parts ::= "[" piece ("," piece)* "]"
 piece ::= mark chars mark
