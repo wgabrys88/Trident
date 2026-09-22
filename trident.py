@@ -1,8 +1,8 @@
 import json, subprocess, sys, time
 from brain import ask
 from install import MODELS, ROOT, reexec, venv_python
-from settings import VARIANTS
-LINES = MODELS / "ear" / "lines.txt"
+from settings import DELIVER, VARIANTS
+LINES, PAGE = MODELS / "ear" / "lines.txt", ROOT / DELIVER
 class Scan:
     def __init__(self, text):
         self.text, self.i = text, 0
@@ -106,7 +106,7 @@ def speak(variant, text, language):
 class Session:
     def __init__(self, variant):
         self.variant = variant
-        self.said, self.note = "", ""
+        self.said, self.note, self.seen = "", "", None
         self.lines = None
     def own(self, text):
         def words(value):
@@ -141,20 +141,39 @@ class Session:
                 raise SystemExit
             else:
                 raise RuntimeError("unknown tool " + name)
-    def wait(self):
+    def page(self):
+        try:
+            size = PAGE.stat().st_size
+        except FileNotFoundError:
+            self.seen = None
+            return ""
+        if size == 0 or size != self.seen:
+            self.seen = size
+            return ""
+        try:
+            text = PAGE.read_text(encoding="utf-8-sig").strip()
+            PAGE.unlink()
+        except FileNotFoundError:
+            self.seen = None
+            return ""
+        self.seen = None
+        return "delivery:\n" + text if text else ""
+    def pull(self):
         while True:
+            body = self.page()
+            if body:
+                return body
             heard = [text for text in self.lines.take() if not self.own(text)]
             if heard:
                 return " ".join(heard)
             time.sleep(0.05)
-    def run(self, text):
+    def run(self):
         self.lines = Lines()
         print("ready", flush=True)
-        self.turn(text)
         while True:
-            self.turn(self.wait())
+            self.turn(self.pull())
 if __name__ == "__main__":
     reexec()
-    if len(sys.argv) != 3 or sys.argv[1] not in VARIANTS or not sys.argv[2]:
-        raise SystemExit("usage: python trident.py <variant> <text>")
-    Session(sys.argv[1]).run(sys.argv[2])
+    if len(sys.argv) != 2 or sys.argv[1] not in VARIANTS:
+        raise SystemExit("usage: python trident.py <variant>")
+    Session(sys.argv[1]).run()

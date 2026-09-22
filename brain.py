@@ -67,8 +67,7 @@ def serve():
     from llama_cpp import Llama, LlamaGrammar
     llm = Llama(model_path=str(path), n_ctx=BRAIN["n_ctx"], n_threads=BRAIN["n_threads"],
                 n_gpu_layers=BRAIN["n_gpu_layers"], chat_format="chat_template.default", verbose=False)
-    grammar = LlamaGrammar.from_string(r'''
-root ::= call+
+    rules = r'''
 call ::= say | bare | noted
 say ::= "<|tool_call>call:say{" saybody "}" "<tool_call|>"
 bare ::= "<|tool_call>call:" ("listen" | "quit") "{}" "<tool_call|>"
@@ -79,7 +78,9 @@ piece ::= mark chars mark
 lang ::= mark ("en" | "pl") mark
 mark ::= "<|\"|>"
 chars ::= [^<]*
-''')
+'''
+    grammar = LlamaGrammar.from_string("root ::= call+\n" + rules)
+    spoken = LlamaGrammar.from_string("root ::= say call*\n" + rules)
     handle = K32.CreateNamedPipeW(PIPE, 3, 8, 1, 1 << 20, 1 << 20, 0, None)
     if handle is None or handle == INVALID:
         raise ctypes.WinError(ctypes.get_last_error())
@@ -91,7 +92,7 @@ chars ::= [^<]*
         user = read_exact(handle, count).decode("utf-8")
         content = llm.create_chat_completion(
             messages=[{"role": "system", "content": SPEAK}, {"role": "user", "content": user}],
-            tools=TOOLS, stop=["<turn|>"], grammar=grammar, **BRAIN["decode"]
+            tools=TOOLS, stop=["<turn|>"], grammar=spoken if "delivery:\n" in user else grammar, **BRAIN["decode"]
         )["choices"][0]["message"]["content"]
         if not isinstance(content, str):
             raise RuntimeError("brain completion")

@@ -21,19 +21,25 @@ FLAGS = [
     {'name': 'gpu', 'default': '0', 'group': 'server', 'architecture': 'both'},
 ]
 CMAKE_GENERATOR, CMAKE_ARCH = "Visual Studio 17 2022", "x64"
+CHUNK = 80
 SPEAK = (
     "You are an assistant. A person is talking with you. Their words reach you as text. "
     "Answer them as you would answer someone who typed those words. "
     "You do not hear sound and you do not make sound. "
     "say is how they hear your answer. listen is how their next words reach you. quit is how you leave. "
-    "note is the short text you keep. When you have kept one, it is the first paragraph and their new words are the last."
+    "note is the short text you keep. When you have kept one, it is the first paragraph and their new words are the last. "
+    "A line that is only delivery: begins words to speak. Do not say the word delivery. "
+    f"say those words. Each part is one stretch of meaning of at least {CHUNK} tokens, twenty seconds of speech. "
+    "Do not give a sentence its own part. Split only when every part still has at least that many tokens. "
+    "If the whole is shorter, one part. Keep the punctuation inside the part. "
+    "Repair wording that would be unclear when heard. Keep the meaning and the numbers. A note does not speak."
 )
 TOOLS = [
     {"type": "function", "function": {
         "name": "say",
-        "description": "Speak your answer aloud. One call is one language and the whole of what they should hear in that language. text is that answer split where the meaning splits, in order. language is en or pl. A different language is another call.",
+        "description": f"Speak your answer aloud. One call is one language and the whole of what they should hear in that language. text is that answer in order. Each part is at least {CHUNK} tokens. language is en or pl. A different language is another call.",
         "parameters": {"type": "object", "properties": {
-            "text": {"type": "array", "items": {"type": "string"}, "description": "One meaning part. The parts of this call are spoken in order."},
+            "text": {"type": "array", "items": {"type": "string"}, "description": f"One stretch of meaning, at least {CHUNK} tokens. A shorter whole answer is the only part."},
             "language": {"type": "string", "description": "en or pl."}},
             "required": ["text", "language"]}}},
     {"type": "function", "function": {
@@ -87,7 +93,7 @@ EAR = {
     "sample_rate": 16000, "threads": 4, "language": "auto", "lookahead": 3,
     "pause": 0.8, "level": 0.02,
 }
-WAV = "wav"
+WAV, DELIVER = "wav", "deliver.txt"
 BRAIN = {
     "url": "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/0314792d7f1f7e229411f620751375812bb9faf2/gemma-4-E2B-it-Q4_K_M.gguf",
     "file": "brain-gemma-4-e2b-it-q4_k_m.gguf",
