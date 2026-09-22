@@ -65,7 +65,8 @@ def tools(text: str):
             raise RuntimeError("tool call")
         name, body = call[5:].split("{", 1)
         body = body[:-1]
-        args = {key: value for key, value in re.findall(rf"(\w+):{re.escape(MARK)}(.*?){re.escape(MARK)}", body)}
+        args = {key: value for key, value in re.findall(
+            rf"(\w+):{re.escape(MARK)}(.*?){re.escape(MARK)}", body, flags=re.DOTALL)}
         found.append({"name": name, **args})
 
 def own(heard: str, said: str) -> bool:
