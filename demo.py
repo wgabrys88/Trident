@@ -1,12 +1,11 @@
-import subprocess, sys, time
+import subprocess, time
 from pathlib import Path
+from settings import MEMORY, sweep_queue
 
 ROOT = Path(__file__).resolve().parent
-INBOX = ROOT / "workspace" / "inbox"
-INBOX.mkdir(parents=True, exist_ok=True)
 
 def ps(command):
-    print(">>", command[:120].replace("\n", " "), flush=True)
+    print(">>", command[:160].replace("\n", " "), flush=True)
     subprocess.run(["powershell", "-NoProfile", "-Command", command], check=False)
 
 def drop(name, text):
@@ -17,11 +16,18 @@ def drop(name, text):
     ps(command)
     time.sleep(10)
 
-ps("Start-Process python -ArgumentList '.\\trident.py','nano' -WorkingDirectory (Get-Location)")
+print("zero wipe leftover queue", flush=True)
+sweep_queue()
+MEMORY.write_text("", encoding="utf-8")
+
+print("zero install asr brain turbo v3", flush=True)
+subprocess.run(["python", str(ROOT / "install.py"), "all"], check=False)
+time.sleep(10)
+
+ps("Start-Process python -ArgumentList '.\\trident.py','v3' -WorkingDirectory (Get-Location)")
 time.sleep(10)
 
 drop("short.txt", "Please say this aloud.\n\nHello Jarvis. Say only this sentence and then be quiet.")
-
 drop(
     "ezekiel.txt",
     "Please say this aloud.\n\n"
@@ -41,12 +47,10 @@ drop(
     "called the light Day, and the darkness he called Night. And the evening and the morning "
     "were the first day.",
 )
-
 drop("ask.txt", "What is a named pipe? Answer aloud, short.")
 drop("pl.txt", "Powiedz to glosno po polsku. Jestem Jarvis. To tylko jeden krotki test mowy.")
 drop("name.txt", "My name is Wojciech. Keep that. Do not speak unless you must.")
-drop("distill.txt", "Concatenate your memory. Distill live speech into long-term memory. Do not speak.")
+drop("distill.txt", "Concatenate your memory. Distill only names and decisions. Do not keep pages that were only to be spoken. Do not speak.")
 drop("py.txt", "Run Python that writes workspace\\pong.txt with the text pong and prints the folder listing. Then say one sentence that it worked.")
 drop("stop.txt", "Quit. Leave now.")
-
 print("done", flush=True)

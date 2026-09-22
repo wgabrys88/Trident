@@ -1,10 +1,10 @@
 *
 !/.gitignore
 !/.gitattributes
-!/demo.py
 !/CMakeLists.txt
 !/LICENSE
 !/asr.py
+!/demo.py
 !/brain.py
 !/install.py
 !/requirements.txt

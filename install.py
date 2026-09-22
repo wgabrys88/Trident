@@ -290,7 +290,16 @@ if __name__ == "__main__":
         install_brain()
     elif argv[1] == "tts" and len(argv) == 3:
         install_tts(argv[2])
+    elif argv[1] == "all" and len(argv) == 2:
+        print("asr", flush=True)
+        install_asr()
+        print("brain", flush=True)
+        install_brain()
+        print("tts turbo", flush=True)
+        install_tts("turbo")
+        print("tts v3", flush=True)
+        install_tts("v3")
     elif len(argv) == 2 and argv[1] in VARIANTS:
         install_all(argv[1])
     else:
-        raise SystemExit("usage: python install.py [asr | brain | tts <variant> | <variant>]")
+        raise SystemExit("usage: python install.py [asr | brain | tts <variant> | <variant> | all]")

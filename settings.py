@@ -8,8 +8,8 @@ LIVE = WORK / "live.txt"
 MEMORY = WORK / "memory.md"
 SAID = WORK / "said.txt"
 INBOX = WORK / "inbox"
-CHUNK = 120
-MAX_LIVE = 80000
+CHUNK = 60
+MAX_LIVE = 12000
 
 def bus() -> Path:
     WORK.mkdir(parents=True, exist_ok=True)
@@ -77,6 +77,17 @@ def append_live(text: str) -> None:
     with LIVE.open("a", encoding="utf-8") as handle:
         handle.write(text.rstrip() + "\n")
 
+def clear_live() -> None:
+    bus()
+    LIVE.write_text("", encoding="utf-8")
+
+def sweep_queue() -> None:
+    bus()
+    for path in list(INBOX.glob("*.txt")) + list(WORK.glob("transcription-*.txt")) + list(WORK.glob("speech-*.txt")):
+        path.unlink()
+    SAID.write_text("", encoding="utf-8")
+    clear_live()
+
 def user_text() -> str:
     bus()
     memory = MEMORY.read_text(encoding="utf-8").strip()
@@ -102,8 +113,8 @@ TOOLS = [
         "name": "say",
         "description": (
             "Speak to the person. text is the full answer in one string. language is en or pl. "
-            "About 120 words is thirty seconds of speech. You may write a longer answer; "
-            "the system splits it on sentence ends into thirty-second ranks and plays them in order. "
+            "About 60 words is fifteen seconds of speech. You may write a longer answer; "
+            "the system splits it on sentence ends into fifteen-second ranks and plays them in order. "
             "Use only when the accumulated text is something you must answer or do aloud."
         ),
         "parameters": {"type": "object", "properties": {
@@ -198,12 +209,13 @@ EAR = {
     "dir": "nemotron-3.5-asr-streaming-0.6b",
     "files": ("config.json", "generation_config.json", "processor_config.json", "tokenizer_config.json", "tokenizer.json", "model.safetensors"),
     "sample_rate": 16000, "threads": 4, "language": "auto", "lookahead": 3,
-    "pause": 0.8, "level": 0.02,
+    "pause": 3.0, "level": 0.03,
 }
 WAV = "wav"
 BRAIN = {
     "url": "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/0314792d7f1f7e229411f620751375812bb9faf2/gemma-4-E2B-it-Q4_K_M.gguf",
     "file": "brain-gemma-4-e2b-it-q4_k_m.gguf",
-    "n_ctx": 32768, "n_threads": 4, "n_gpu_layers": -1,
-    "decode": {"temperature": 1.0, "top_p": 0.95, "top_k": 64, "min_p": 0.0},
+    "n_ctx": 4096, "n_batch": 512, "n_threads": 4, "n_gpu_layers": -1,
+    "flash_attn": True,
+    "decode": {"temperature": 1.0, "top_p": 0.95, "top_k": 64, "min_p": 0.0, "max_tokens": 1024},
 }

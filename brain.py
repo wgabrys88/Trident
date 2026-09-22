@@ -2,7 +2,7 @@ import json, re, subprocess, sys, time
 from pathlib import Path
 from install import MODELS, reexec, venv_python
 from settings import (
-    ALOUD, BRAIN, LIVE, MEMORY, SAID, SPEAK, TOOLS, VARIANTS, append_live, bus,
+    ALOUD, BRAIN, LIVE, MEMORY, SAID, SPEAK, TOOLS, VARIANTS, append_live, bus, clear_live,
     next_path, parts, put, take, user_text, waiting,
 )
 
@@ -27,8 +27,13 @@ def load():
     if not path.is_file():
         raise RuntimeError("missing " + str(path))
     from llama_cpp import Llama, LlamaGrammar
-    llm = Llama(model_path=str(path), n_ctx=BRAIN["n_ctx"], n_threads=BRAIN["n_threads"],
-                n_gpu_layers=BRAIN["n_gpu_layers"], chat_format="chat_template.default", verbose=False)
+    knobs = dict(model_path=str(path), n_ctx=BRAIN["n_ctx"], n_batch=BRAIN["n_batch"],
+                 n_threads=BRAIN["n_threads"], n_gpu_layers=BRAIN["n_gpu_layers"],
+                 chat_format="chat_template.default", verbose=False, logits_all=False)
+    try:
+        llm = Llama(flash_attn=BRAIN["flash_attn"], **knobs)
+    except TypeError:
+        llm = Llama(**knobs)
     grammar = LlamaGrammar.from_string("root ::= call+\n" + RULES)
     spoken = LlamaGrammar.from_string("root ::= say\n" + RULES)
     return llm, grammar, spoken
@@ -109,6 +114,7 @@ def apply(found, exact=None):
         elif name == "say":
             body = exact if exact is not None else tool.get("text", "")
             speak(body, tool.get("language") or "en")
+            clear_live()
         elif name == "note":
             if not tool.get("text"):
                 raise RuntimeError("note")
@@ -172,6 +178,7 @@ def aloud(llm, spoken, payload: str, variant: str):
 
 def serve():
     bus()
+    clear_live()
     llm, grammar, _spoken = load()
     print("ready", flush=True)
     while True:
