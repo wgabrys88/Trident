@@ -11,8 +11,11 @@ def play(pcm):
     import numpy as np
     import sounddevice as sd
     ctypes.windll.ole32.CoInitializeEx(None, 0)
+    seconds = len(pcm) / 2 / 24000
     sd.play(np.repeat(pcm, 2), 48000)
-    sd.wait()
+    if not sd.wait(timeout=seconds + 120):
+        sd.stop()
+        raise RuntimeError("play timeout")
 
 def write_wav(pcm: bytes) -> Path:
     home = ROOT / WAV

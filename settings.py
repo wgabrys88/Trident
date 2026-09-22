@@ -140,7 +140,7 @@ TOOLS = [
     {"type": "function", "function": {
         "name": "run_python",
         "description": (
-            "Run Python on this machine. code is a complete script. It runs with the workspace folder as the current directory. "
+            "Run Python on this machine. code is a complete script. cwd is workspace/; write pong.txt not workspace/pong.txt. "
             "stdout and stderr come back as new user text on the next look. "
             "Use when you must compute, write a file in workspace, or inspect workspace. "
             "Wrap the script in the same <|\"|> ... <|\"|> markers as note text."
