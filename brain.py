@@ -13,13 +13,12 @@ say ::= "<|tool_call>call:say{" saybody "}" "<tool_call|>"
 idle ::= "<|tool_call>call:" ("pass" | "quit") "{}" "<tool_call|>"
 noted ::= "<|tool_call>call:note{text:" piece "}" "<tool_call|>"
 distilled ::= "<|tool_call>call:distill{text:" piece "}" "<tool_call|>"
-py ::= "<|tool_call>call:run_python{code:" jstr "}" "<tool_call|>"
+py ::= "<|tool_call>call:run_python{code:" piece "}" "<tool_call|>"
 saybody ::= "text:" piece ",language:" lang | "language:" lang ",text:" piece
 piece ::= mark chars mark
 lang ::= mark ("en" | "pl") mark
 mark ::= "<|\"|>"
 chars ::= [^<]*
-jstr ::= "\"" ( [^"\\] | "\\" ["\\n] )* "\""
 """
 
 def load():
@@ -66,12 +65,7 @@ def tools(text: str):
             raise RuntimeError("tool call")
         name, body = call[5:].split("{", 1)
         body = body[:-1]
-        args = {}
-        if name == "run_python":
-            raw = body[5:] if body.startswith("code:") else body
-            args["code"] = json.loads(raw)
-        else:
-            args = {key: value for key, value in re.findall(rf"(\w+):{re.escape(MARK)}(.*?){re.escape(MARK)}", body)}
+        args = {key: value for key, value in re.findall(rf"(\w+):{re.escape(MARK)}(.*?){re.escape(MARK)}", body)}
         found.append({"name": name, **args})
 
 def own(heard: str, said: str) -> bool:
@@ -102,6 +96,7 @@ def run_python(code: str) -> str:
 
 def apply(found, exact=None):
     again = False
+    saw_run_python = False
     for tool in found:
         name = tool["name"]
         if name == "pass":
@@ -109,7 +104,8 @@ def apply(found, exact=None):
         elif name == "say":
             body = exact if exact is not None else tool.get("text", "")
             speak(body, tool.get("language") or "en")
-            clear_live()
+            if not saw_run_python:
+                clear_live()
         elif name == "note":
             if not tool.get("text"):
                 raise RuntimeError("note")
@@ -124,6 +120,7 @@ def apply(found, exact=None):
         elif name == "run_python":
             result = run_python(tool.get("code", ""))
             append_live(result)
+            saw_run_python = True
             again = True
         elif name == "quit":
             raise SystemExit

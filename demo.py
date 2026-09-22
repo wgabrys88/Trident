@@ -1,8 +1,10 @@
-import subprocess, time
+import json, subprocess, sys, time
 from pathlib import Path
 from settings import MEMORY, sweep_queue
 
 ROOT = Path(__file__).resolve().parent
+MODELS = ROOT / "models"
+TRIDENT_PID = MODELS / "trident.pid"
 
 def ps(command):
     print(">>", command[:160].replace("\n", " "), flush=True)
@@ -21,10 +23,12 @@ sweep_queue()
 MEMORY.write_text("", encoding="utf-8")
 
 print("zero install asr brain turbo v3", flush=True)
-subprocess.run(["python", str(ROOT / "install.py"), "all"], check=False)
+subprocess.run([sys.executable, str(ROOT / "install.py"), "all"], check=False)
 time.sleep(10)
 
-ps("Start-Process python -ArgumentList '.\\trident.py','v3' -WorkingDirectory (Get-Location)")
+MODELS.mkdir(parents=True, exist_ok=True)
+trident = subprocess.Popen([sys.executable, str(ROOT / "trident.py"), "v3"], cwd=str(ROOT))
+TRIDENT_PID.write_text(json.dumps({"pid": trident.pid}) + "\n", encoding="utf-8")
 time.sleep(10)
 
 drop("short.txt", "Please say this aloud.\n\nHello Jarvis. Say only this sentence and then be quiet.")

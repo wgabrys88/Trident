@@ -81,8 +81,9 @@ def serve(name: str) -> str:
                       "dicta-model": str(ckpt / "dicta-1.0.int8.onnx")})
     command = [str(exe), str(t3), str(s3), pipe] + [item for pair in flags.items() for item in (f"--{pair[0]}", pair[1])]
     wanted = {"command": command, "voice": json.loads(baked.read_text(encoding="utf-8"))}
+    keep = {pid, MODELS / "trident.pid"}
     for legacy in MODELS.glob("*.pid"):
-        if legacy != pid:
+        if legacy not in keep:
             kill(legacy)
     if pid.is_file():
         record = json.loads(pid.read_text(encoding="utf-8"))

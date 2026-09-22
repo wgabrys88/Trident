@@ -1,6 +1,12 @@
 import subprocess, sys, time
-from install import ROOT, reexec
+from install import MODELS, ROOT, kill, reexec
 from settings import VARIANTS, bus
+
+def stop(workers):
+    for proc in workers:
+        if proc.poll() is None:
+            proc.terminate()
+    kill(MODELS / "server.pid")
 
 def main(variant: str):
     bus()
@@ -16,15 +22,11 @@ def main(variant: str):
             for proc in workers:
                 code = proc.poll()
                 if code is not None:
-                    for other in workers:
-                        if other.poll() is None:
-                            other.terminate()
+                    stop(workers)
                     raise SystemExit(code)
             time.sleep(0.25)
     except KeyboardInterrupt:
-        for proc in workers:
-            if proc.poll() is None:
-                proc.terminate()
+        stop(workers)
 
 if __name__ == "__main__":
     reexec()
