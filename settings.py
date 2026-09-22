@@ -85,6 +85,4 @@ BRAIN = {
     "file": "brain-gemma-4-e2b-it-q4_k_m.gguf",
     "n_ctx": 32768, "n_threads": 4, "n_gpu_layers": -1,
     "decode": {"temperature": 1.0, "top_p": 0.95, "top_k": 64, "min_p": 0.0},
-    "tool_choice": "required",
-    "flush": 3,
 }

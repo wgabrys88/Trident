@@ -90,7 +90,7 @@ chars ::= [^<]*
         user = read_exact(handle, count).decode("utf-8")
         content = llm.create_chat_completion(
             messages=[{"role": "system", "content": SPEAK}, {"role": "user", "content": user}],
-            tools=TOOLS, tool_choice=BRAIN["tool_choice"], stop=["<turn|>"], grammar=grammar, **BRAIN["decode"]
+            tools=TOOLS, stop=["<turn|>"], grammar=grammar, **BRAIN["decode"]
         )["choices"][0]["message"]["content"]
         if not isinstance(content, str):
             raise RuntimeError("brain completion")

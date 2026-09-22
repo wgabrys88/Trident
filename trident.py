@@ -1,7 +1,7 @@
 import json, subprocess, sys, time
 from brain import ask
 from install import MODELS, ROOT, reexec, venv_python
-from settings import BRAIN, VARIANTS
+from settings import VARIANTS
 LINES = MODELS / "ear" / "lines.txt"
 class Scan:
     def __init__(self, text):
@@ -106,8 +106,7 @@ def speak(variant, text, language):
 class Session:
     def __init__(self, variant):
         self.variant = variant
-        self.speech, self.said = "", ""
-        self.flush_at = None
+        self.said = ""
         self.lines = None
     def own(self, text):
         def words(value):
@@ -137,25 +136,11 @@ class Session:
             else:
                 raise RuntimeError("unknown tool " + name)
     def wait(self):
-        flush = BRAIN["flush"]
         while True:
-            while True:
-                lines = self.lines.take()
-                if lines or (self.speech and self.flush_at is not None and time.monotonic() >= self.flush_at):
-                    break
-                time.sleep(0.05)
-            now = time.monotonic()
-            if lines:
-                heard = [text for text in lines if not self.own(text)]
-                if not heard:
-                    continue
-                for text in heard:
-                    self.speech = f"{self.speech} {text}".strip() if self.speech else text
-                self.flush_at = now + flush
-                continue
-            body, self.speech = self.speech, ""
-            self.flush_at = None
-            return body
+            heard = [text for text in self.lines.take() if not self.own(text)]
+            if heard:
+                return " ".join(heard)
+            time.sleep(0.05)
     def run(self):
         self.lines = Lines()
         print("ready", flush=True)
