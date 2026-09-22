@@ -1,8 +1,8 @@
-import sys
+import sys, time
 from pathlib import Path
 import torch
-from install import MODELS, reexec
-from settings import EAR
+from install import MODELS, ROOT, reexec
+from settings import EAR, WAV
 LINES = MODELS / "ear" / "lines.txt"
 class Ear:
     def __init__(self):
@@ -35,9 +35,31 @@ class Ear:
             out.write(text + "\n")
             out.flush()
         print(text, flush=True)
+    def watch(self):
+        home = ROOT / WAV
+        seen = {item.name for item in home.glob("*.wav")} if home.is_dir() else set()
+        sizes = {}
+        print("ready", flush=True)
+        while True:
+            if home.is_dir():
+                for path in sorted(home.glob("*.wav")):
+                    if path.name in seen:
+                        continue
+                    size = path.stat().st_size
+                    if size == 0 or sizes.get(path.name) != size:
+                        sizes[path.name] = size
+                        continue
+                    seen.add(path.name)
+                    del sizes[path.name]
+                    self.hear(path)
+            time.sleep(0.05)
 if __name__ == "__main__":
     reexec()
     argv = sys.argv
-    if len(argv) != 2 or not argv[1]:
-        raise SystemExit("usage: python asr.py <wav>")
-    Ear().hear(argv[1])
+    if len(argv) > 2 or (len(argv) == 2 and not argv[1]):
+        raise SystemExit("usage: python asr.py [wav]")
+    ear = Ear()
+    if len(argv) == 2:
+        ear.hear(argv[1])
+    else:
+        ear.watch()

@@ -2,7 +2,7 @@ import ctypes, json, subprocess, sys, time, wave
 from datetime import datetime
 from pathlib import Path
 from install import MODELS, ROOT, alive, kill, launch_args, venv_python
-from settings import ARCHITECTURES, VARIANTS
+from settings import ARCHITECTURES, VARIANTS, WAV
 K32 = ctypes.WinDLL("kernel32", use_last_error=True)
 K32.WaitNamedPipeW.argtypes, K32.WaitNamedPipeW.restype = [ctypes.c_wchar_p, ctypes.c_uint], ctypes.c_int
 def cable():
@@ -16,7 +16,7 @@ def play(pcm):
     sd.play(np.repeat(pcm, 2), 48000, device=cable())
     sd.wait()
 def write_wav(pcm: bytes, stem: str) -> Path:
-    home = ROOT / "wav"
+    home = ROOT / WAV
     home.mkdir(parents=True, exist_ok=True)
     path = home / f"{datetime.now():%y%m%d-%H%M%S}_{stem}.wav"
     with wave.open(str(path), "wb") as out:

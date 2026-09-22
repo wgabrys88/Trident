@@ -148,19 +148,17 @@ def speak(variant, text, language):
 class Session:
     def __init__(self, variant):
         self.variant = variant
-        self.memory, self.speech, self.said, self.quit_armed = "", "", "", False
-        self.sent, self.watchdog_at, self.flush_at = 0.0, None, None
+        self.memory, self.speech, self.said = "", "", ""
+        self.flush_at = None
         self.lines = None
     def user(self, body):
-        lead = "A quit was proposed.\n" if self.quit_armed else ""
         note = f"{self.memory}\n\n" if self.memory else ""
-        return f"{lead}{note}{body}"
+        return f"{note}{body}"
     def own(self, text):
         heard = " ".join(text.casefold().split())
         said = " ".join(self.said.casefold().split())
         return bool(heard) and bool(said) and heard in said
     def turn(self, kind, body):
-        proposed = self.quit_armed
         print(kind, flush=True)
         print(body, flush=True)
         content = ask(self.user(body))
@@ -169,7 +167,6 @@ class Session:
         print(json.dumps({"memory": memory, "tools": tools}, ensure_ascii=False), flush=True)
         self.memory = memory
         self.said = ""
-        called = False
         for tool in tools:
             name = tool["name"]
             if name == "say":
@@ -185,28 +182,15 @@ class Session:
                 if self.lines is None:
                     self.lines = Lines()
             elif name == "quit":
-                called = True
-                if proposed and kind == "speech":
-                    raise SystemExit
-                self.quit_armed = True
-                if self.lines is None:
-                    self.lines = Lines()
+                raise SystemExit
             else:
                 raise RuntimeError("unknown tool " + name)
-        if not called and kind == "speech":
-            self.quit_armed = False
-        if kind == "watchdog":
-            self.watchdog_at = time.monotonic() + BRAIN["watchdog_repeat"]
-        else:
-            self.sent, self.watchdog_at = time.monotonic(), None
     def wait(self):
-        arm, flush = BRAIN["watchdog_arm"], BRAIN["flush"]
+        flush = BRAIN["flush"]
         while True:
-            due = self.flush_at if self.speech else (self.watchdog_at if self.watchdog_at is not None else self.sent + arm)
-            lines = []
             while True:
                 lines = self.lines.take()
-                if lines or time.monotonic() >= due:
+                if lines or (self.speech and self.flush_at is not None and time.monotonic() >= self.flush_at):
                     break
                 time.sleep(0.05)
             now = time.monotonic()
@@ -218,10 +202,9 @@ class Session:
                     self.speech = f"{self.speech} {text}".strip() if self.speech else text
                 self.flush_at = now + flush
                 continue
-            if self.speech:
-                body, self.speech = self.speech, ""
-                return "speech", body
-            return "watchdog", "No new speech."
+            body, self.speech = self.speech, ""
+            self.flush_at = None
+            return "speech", body
     def run(self, query):
         kind, body = "query", query
         while True:

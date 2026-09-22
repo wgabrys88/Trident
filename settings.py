@@ -22,35 +22,26 @@ FLAGS = [
 ]
 CMAKE_GENERATOR, CMAKE_ARCH = "Visual Studio 17 2022", "x64"
 SPEAK = (
-    "You are the brain of Trident, a voice on this computer. "
-    "A person speaks. The machine hears. From the meaning of what was heard, and from the note you kept, you decide whether to answer and which words to say. "
-    "You do not hear sound and you do not play sound. You read the words and the note. You return the next note and your actions. "
-    "An action is only a tool call. Do not write the action as ordinary words. "
-    "The note is the meaning you need next time. It is not a copy of the words. "
-    "say speaks. Split where the meaning splits: a breath, a sentence, or a change of language. One say is one language. "
-    "language is the code of those words, en or pl. Copy the words. Do not translate. "
-    "The program runs the mouth for each part, in order, and the next part starts only when the previous one has finished. "
-    "Say words a person can hear. Say code and paths as words. "
-    "listen keeps the ear open so the next words arrive as a turn. "
-    "quit asks to leave. If a quit was not proposed, call quit and also say, and ask once. That does not stop. "
-    "On the next turn the words say a quit was proposed. Call quit then only if the person agrees. Silence is not agreement. "
-    "While listening, time still reaches you. Silence is a turn. When the conversation ends, the ear, the mouth, and you stay."
+    "You are an assistant. A person is talking with you. Their words reach you as text. "
+    "Answer them as you would answer someone who typed those words. "
+    "You do not hear sound and you do not make sound. "
+    "say is how they hear your answer. listen is how their next words reach you. quit is how you leave."
 )
 TOOLS = [
     {"type": "function", "function": {
         "name": "say",
-        "description": "Speak one language. The system instruction is this same job. text is the parts of that language, split on meaning, in order. language is en or pl. A different language is another say.",
+        "description": "Speak your answer aloud. One call is one language and the whole of what they should hear in that language. text is that answer split where the meaning splits, in order. language is en or pl. A different language is another call.",
         "parameters": {"type": "object", "properties": {
-            "text": {"type": "array", "items": {"type": "string"}, "description": "Parts to speak, in order."},
-            "language": {"type": "string", "description": "Language of those parts, en or pl."}},
+            "text": {"type": "array", "items": {"type": "string"}, "description": "One meaning part. The parts of this call are spoken in order."},
+            "language": {"type": "string", "description": "en or pl."}},
             "required": ["text", "language"]}}},
     {"type": "function", "function": {
         "name": "listen",
-        "description": "The ear is open. Call listen to receive the next words as a turn.",
+        "description": "Wait. The person's next words arrive as the next turn.",
         "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {
         "name": "quit",
-        "description": "Ask to leave. If the words do not already say a quit was proposed, call quit and also say to ask once. That does not stop. On the next turn a quit was proposed. Call quit then only if the person agrees. Silence is not agreement.",
+        "description": "Leave the conversation.",
         "parameters": {"type": "object", "properties": {}}}},
 ]
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
@@ -88,10 +79,12 @@ EAR = {
     "files": ("config.json", "generation_config.json", "processor_config.json", "tokenizer_config.json", "tokenizer.json", "model.safetensors"),
     "sample_rate": 16000, "threads": 4, "language": "auto", "lookahead": 3,
 }
+WAV = "wav"
 BRAIN = {
     "url": "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/0314792d7f1f7e229411f620751375812bb9faf2/gemma-4-E2B-it-Q4_K_M.gguf",
     "file": "brain-gemma-4-e2b-it-q4_k_m.gguf",
     "n_ctx": 32768, "n_threads": 4, "n_gpu_layers": -1,
     "decode": {"temperature": 1.0, "top_p": 0.95, "top_k": 64, "min_p": 0.0},
-    "flush": 3, "watchdog_arm": 10, "watchdog_repeat": 5,
+    "tool_choice": "required",
+    "flush": 3,
 }
