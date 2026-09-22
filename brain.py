@@ -27,13 +27,9 @@ def load():
     if not path.is_file():
         raise RuntimeError("missing " + str(path))
     from llama_cpp import Llama, LlamaGrammar
-    knobs = dict(model_path=str(path), n_ctx=BRAIN["n_ctx"], n_batch=BRAIN["n_batch"],
-                 n_threads=BRAIN["n_threads"], n_gpu_layers=BRAIN["n_gpu_layers"],
-                 chat_format="chat_template.default", verbose=False, logits_all=False)
-    try:
-        llm = Llama(flash_attn=BRAIN["flash_attn"], **knobs)
-    except TypeError:
-        llm = Llama(**knobs)
+    llm = Llama(model_path=str(path), n_ctx=BRAIN["n_ctx"], n_batch=BRAIN["n_batch"],
+                n_threads=BRAIN["n_threads"], n_gpu_layers=BRAIN["n_gpu_layers"],
+                chat_format="chat_template.default", verbose=False, logits_all=False)
     grammar = LlamaGrammar.from_string("root ::= call+\n" + RULES)
     spoken = LlamaGrammar.from_string("root ::= say\n" + RULES)
     return llm, grammar, spoken
@@ -42,7 +38,6 @@ def ask(llm, grammar, text: str) -> str:
     if not text.strip():
         return '<|tool_call>call:pass{}<tool_call|>'
     decode = dict(BRAIN["decode"])
-    decode["max_tokens"] = max(decode.get("max_tokens", 0), 4096)
     content = llm.create_chat_completion(
         messages=[{"role": "system", "content": SPEAK}, {"role": "user", "content": text}],
         tools=TOOLS, stop=["<turn|>"], grammar=grammar, **decode
