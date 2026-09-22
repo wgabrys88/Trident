@@ -14,6 +14,8 @@ def reexec():
         raise RuntimeError("missing " + str(py))
     if Path(sys.executable).resolve() != py.resolve():
         raise SystemExit(subprocess.call([str(py), *sys.argv]))
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
 @dataclass
 class LaunchArgs:
     knobs: dict[str, str]
