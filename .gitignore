@@ -1,6 +1,7 @@
 *
 !/.gitignore
 !/.gitattributes
+!/demo.py
 !/CMakeLists.txt
 !/LICENSE
 !/asr.py
