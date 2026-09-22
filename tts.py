@@ -2,15 +2,18 @@ import ctypes, json, subprocess, sys, time, wave
 from datetime import datetime
 from pathlib import Path
 from install import MODELS, ROOT, alive, kill, launch_args, venv_python
-from settings import ARCHITECTURES, VARIANTS, WAV
+from settings import ARCHITECTURES, VARIANTS, WAV, take, waiting
+
 K32 = ctypes.WinDLL("kernel32", use_last_error=True)
 K32.WaitNamedPipeW.argtypes, K32.WaitNamedPipeW.restype = [ctypes.c_wchar_p, ctypes.c_uint], ctypes.c_int
+
 def play(pcm):
     import numpy as np
     import sounddevice as sd
     ctypes.windll.ole32.CoInitializeEx(None, 0)
     sd.play(np.repeat(pcm, 2), 48000)
     sd.wait()
+
 def write_wav(pcm: bytes) -> Path:
     home = ROOT / WAV
     home.mkdir(parents=True, exist_ok=True)
@@ -21,6 +24,7 @@ def write_wav(pcm: bytes) -> Path:
         out.setframerate(24000)
         out.writeframes(pcm)
     return path
+
 def synthesize(pipe: str, text: str, language: str = "") -> bytes:
     if "\n" in language or "\r" in language:
         raise RuntimeError("say language")
@@ -45,12 +49,14 @@ def synthesize(pipe: str, text: str, language: str = "") -> bytes:
             pcm += chunk
             remaining -= len(chunk)
     return bytes(pcm)
+
 def say(pipe: str, text: str, language: str = ""):
     import numpy as np
     pcm = np.frombuffer(synthesize(pipe, text, language), dtype=np.int16)
     print(write_wav(pcm.tobytes()), flush=True)
     print(text, flush=True)
     play(pcm)
+
 def serve(name: str) -> str:
     if name not in VARIANTS:
         raise SystemExit("variant is nano, turbo, or v3")
@@ -95,21 +101,26 @@ def serve(name: str) -> str:
             raise TimeoutError("server startup")
         time.sleep(0.05)
     return pipe
-def stay():
-    pid = MODELS / "server.pid"
+
+def watch(pipe: str):
     print("ready", flush=True)
-    while pid.is_file():
-        record = json.loads(pid.read_text(encoding="utf-8"))
-        if not alive(record["pid"]):
-            return
-        time.sleep(1)
+    while True:
+        files = waiting("speech")
+        if not files:
+            time.sleep(0.05)
+            continue
+        body = take(files[0])
+        language, _, text = body.partition("\n")
+        language, text = language.strip(), text.strip()
+        if text:
+            say(pipe, text, language)
+
 if __name__ == "__main__":
     from install import reexec
     reexec()
     argv = sys.argv
     if len(argv) == 2:
-        serve(argv[1])
-        stay()
+        watch(serve(argv[1]))
     elif len(argv) in (3, 4) and argv[2]:
         say(serve(argv[1]), argv[2], argv[3] if len(argv) == 4 else "")
     else:

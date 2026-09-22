@@ -1,4 +1,147 @@
 from dataclasses import dataclass
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+WORK = ROOT / "workspace"
+DONE = WORK / "done"
+LIVE = WORK / "live.txt"
+MEMORY = WORK / "memory.md"
+SAID = WORK / "said.txt"
+INBOX = WORK / "inbox"
+CHUNK = 120
+MAX_LIVE = 80000
+
+def bus() -> Path:
+    WORK.mkdir(parents=True, exist_ok=True)
+    DONE.mkdir(exist_ok=True)
+    INBOX.mkdir(exist_ok=True)
+    if not LIVE.exists():
+        LIVE.write_text("", encoding="utf-8")
+    if not MEMORY.exists():
+        MEMORY.write_text("", encoding="utf-8")
+    return WORK
+
+def put(path: Path, text: str) -> Path:
+    bus()
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+    return path
+
+def take(path: Path) -> str:
+    text = path.read_text(encoding="utf-8-sig")
+    dest = DONE / path.name
+    n = 1
+    while dest.exists():
+        dest = DONE / f"{path.stem}-{n}{path.suffix}"
+        n += 1
+    path.replace(dest)
+    return text
+
+def next_path(prefix: str) -> Path:
+    n = 1
+    while True:
+        name = f"{prefix}-{n}.txt"
+        if not (bus() / name).exists() and not (DONE / name).exists():
+            return bus() / name
+        n += 1
+
+def waiting(prefix: str) -> list[Path]:
+    return sorted(bus().glob(f"{prefix}-*.txt"), key=lambda p: int(p.stem.split("-")[-1]))
+
+def parts(text: str) -> list[str]:
+    words = text.split()
+    if len(words) <= CHUNK:
+        return [text] if text.strip() else []
+    out, start = [], 0
+    while start < len(words):
+        end = min(start + CHUNK, len(words))
+        if end < len(words):
+            for cut in range(end, start, -1):
+                if words[cut - 1][-1:] in ".?!":
+                    end = cut
+                    break
+        out.append(" ".join(words[start:end]))
+        start = end
+    return out
+
+def read_live() -> str:
+    bus()
+    text = LIVE.read_text(encoding="utf-8")
+    if len(text) > MAX_LIVE:
+        text = text[-MAX_LIVE:]
+    return text
+
+def append_live(text: str) -> None:
+    bus()
+    with LIVE.open("a", encoding="utf-8") as handle:
+        handle.write(text.rstrip() + "\n")
+
+def user_text() -> str:
+    bus()
+    memory = MEMORY.read_text(encoding="utf-8").strip()
+    live = read_live()
+    if memory and live:
+        return memory + "\n\n" + live
+    return memory or live
+
+SPEAK = (
+    "You are Jarvis. Analyze the user text. Act only through tools. "
+    "If nothing requires action, pass."
+)
+ALOUD = (
+    "Say the following text aloud. Do not add sentences. Do not answer it. "
+    "Do not summarize. Use say. language is en unless the text is Polish."
+)
+TOOLS = [
+    {"type": "function", "function": {
+        "name": "pass",
+        "description": "Do nothing. Use this when the text is incomplete, a pause in a longer thought, small talk that needs no answer, or already handled. Default when unsure.",
+        "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "say",
+        "description": (
+            "Speak to the person. text is the full answer in one string. language is en or pl. "
+            "About 120 words is thirty seconds of speech. You may write a longer answer; "
+            "the system splits it on sentence ends into thirty-second ranks and plays them in order. "
+            "Use only when the accumulated text is something you must answer or do aloud."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "text": {"type": "string", "description": "The full spoken answer."},
+            "language": {"type": "string", "description": "en or pl."}},
+            "required": ["text", "language"]}}},
+    {"type": "function", "function": {
+        "name": "note",
+        "description": "Append one short durable fact to long-term memory. Does not speak. Use for a name, a decision, a constraint that must survive later turns.",
+        "parameters": {"type": "object", "properties": {
+            "text": {"type": "string", "description": "One fact."}},
+            "required": ["text"]}}},
+    {"type": "function", "function": {
+        "name": "distill",
+        "description": (
+            "Replace long-term memory with this text. Use when live text has grown or the person asked you to concatenate or compress memory. "
+            "Keep names, decisions, open tasks, numbers. Drop greetings and repeated asides. "
+            "After this call the live buffer is cleared; the next request starts from the new memory plus new speech."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "text": {"type": "string", "description": "The full new memory document."}},
+            "required": ["text"]}}},
+    {"type": "function", "function": {
+        "name": "run_python",
+        "description": (
+            "Run Python on this machine. code is a complete script. It runs with the workspace folder as the current directory. "
+            "stdout and stderr come back as new user text on the next look. "
+            "Use when you must compute, write a file in workspace, or inspect workspace. "
+            "In code strings, escape double quotes as \\\" and backslashes as \\\\."
+        ),
+        "parameters": {"type": "object", "properties": {
+            "code": {"type": "string", "description": "A complete Python script."}},
+            "required": ["code"]}}},
+    {"type": "function", "function": {
+        "name": "quit",
+        "description": "Leave. Ends the Jarvis process.",
+        "parameters": {"type": "object", "properties": {}}}},
+]
 
 FLAGS = [
     {'name': 'reference', 'default': 'reference.wav', 'group': 'conversion', 'architecture': 'both'},
@@ -21,42 +164,6 @@ FLAGS = [
     {'name': 'gpu', 'default': '0', 'group': 'server', 'architecture': 'both'},
 ]
 CMAKE_GENERATOR, CMAKE_ARCH = "Visual Studio 17 2022", "x64"
-CHUNK = 120
-SPEAK = (
-    "You are an assistant. A person is talking with you. Their words reach you as text. "
-    "Answer them as you would answer someone who typed those words. "
-    "You do not hear sound and you do not make sound. "
-    "say is how they hear your answer. listen is how their next words reach you. quit is how you leave. "
-    "note is the short text you keep. When you have kept one, it is the first paragraph and their new words are the last. "
-    "A line that is only delivery: begins a report to speak. Do not say the word delivery. "
-    "Say that report in its own words. Do not answer it. Do not add sentences. "
-    f"Each part is {CHUNK} tokens, thirty seconds of speech, and not longer. "
-    "Split a longer report at a sentence so every part is that length. A shorter remainder is still one part. "
-    "Keep the punctuation inside the part. Keep the meaning and the numbers. A note does not speak."
-)
-TOOLS = [
-    {"type": "function", "function": {
-        "name": "say",
-        "description": f"Speak the words aloud. One call is one language. text is those words in order. Each part is {CHUNK} tokens, thirty seconds of speech, and not longer. Do not answer a report. Do not add sentences. Split a longer text at a sentence so every part is that length. A shorter remainder is still one part. language is en or pl. A different language is another call.",
-        "parameters": {"type": "object", "properties": {
-            "text": {"type": "array", "items": {"type": "string"}, "description": f"One part. {CHUNK} tokens, thirty seconds of speech, and not longer. A shorter remainder is still one part."},
-            "language": {"type": "string", "description": "en or pl."}},
-            "required": ["text", "language"]}}},
-    {"type": "function", "function": {
-        "name": "listen",
-        "description": "Wait. The person's next words arrive as the next turn.",
-        "parameters": {"type": "object", "properties": {}}}},
-    {"type": "function", "function": {
-        "name": "quit",
-        "description": "Leave the conversation.",
-        "parameters": {"type": "object", "properties": {}}}},
-    {"type": "function", "function": {
-        "name": "note",
-        "description": "Keep a short note. The next turn begins with it.",
-        "parameters": {"type": "object", "properties": {
-            "text": {"type": "string", "description": "The note."}},
-            "required": ["text"]}}},
-]
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
 PYTHON_ENV_BOOTSTRAP = {"torch": ("torch==2.6.0",)}
 
@@ -93,7 +200,7 @@ EAR = {
     "sample_rate": 16000, "threads": 4, "language": "auto", "lookahead": 3,
     "pause": 0.8, "level": 0.02,
 }
-WAV, DELIVER = "wav", "deliver.txt"
+WAV = "wav"
 BRAIN = {
     "url": "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/0314792d7f1f7e229411f620751375812bb9faf2/gemma-4-E2B-it-Q4_K_M.gguf",
     "file": "brain-gemma-4-e2b-it-q4_k_m.gguf",

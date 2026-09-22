@@ -2,10 +2,14 @@ import sys
 from pathlib import Path
 import torch
 from install import MODELS, reexec
-from settings import EAR
-LINES = MODELS / "ear" / "lines.txt"
+from settings import EAR, INBOX, bus, next_path, put, take
+
 class Ear:
-    def __init__(self):
+    def __init__(self, model=True):
+        self.ready = False
+        if not model:
+            bus()
+            return
         from transformers import AutoModelForRNNT, AutoProcessor
         home = MODELS / "ear" / EAR["dir"]
         missing = [home / name for name in EAR["files"] if not (home / name).is_file()]
@@ -16,12 +20,26 @@ class Ear:
         self.processor.set_num_lookahead_tokens(EAR["lookahead"])
         self.model = AutoModelForRNNT.from_pretrained(home)
         self.model.eval()
+        self.ready = True
+
     def transcribe(self, audio):
         inputs = self.processor(audio, sampling_rate=EAR["sample_rate"], language=EAR["language"])
         with torch.inference_mode():
             output = self.model.generate(**inputs, return_dict_in_generate=True)
         text = self.processor.batch_decode(output.sequences, skip_special_tokens=True)
         return (text[0] if text else "").strip()
+
+    def line(self, text):
+        path = put(next_path("transcription"), text + "\n")
+        print(path.name, text, flush=True)
+
+    def drain_inbox(self):
+        bus()
+        for path in sorted(INBOX.glob("*.txt")):
+            text = take(path).strip()
+            if text:
+                self.line(text)
+
     def hear(self, path):
         from transformers.audio_utils import load_audio
         file = Path(path)
@@ -31,21 +49,24 @@ class Ear:
         if not text:
             raise RuntimeError("ear heard nothing")
         self.line(text)
-    def line(self, text):
-        LINES.parent.mkdir(parents=True, exist_ok=True)
-        with LINES.open("a", encoding="utf-8") as out:
-            out.write(text + "\n")
-            out.flush()
-        print(text, flush=True)
-    def listen(self):
+
+    def listen(self, mic=True):
+        import time
+        bus()
+        print("ready", flush=True)
+        if not mic:
+            while True:
+                self.drain_inbox()
+                time.sleep(0.05)
+            return
         import numpy as np
         import sounddevice as sd
         rate, hop = EAR["sample_rate"], int(EAR["sample_rate"] * 0.05)
         pause, level = max(1, int(EAR["pause"] / 0.05)), EAR["level"]
         speech, quiet, hot = [], 0, False
-        print("ready", flush=True)
         with sd.InputStream(samplerate=rate, channels=1, dtype="float32", blocksize=hop) as stream:
             while True:
+                self.drain_inbox()
                 frame, _ = stream.read(hop)
                 if float(np.abs(frame).mean()) >= level:
                     hot, quiet = True, 0
@@ -64,11 +85,14 @@ class Ear:
                 text = self.transcribe(audio)
                 if text:
                     self.line(text)
+
 if __name__ == "__main__":
     reexec()
     if len(sys.argv) == 1:
         Ear().listen()
+    elif len(sys.argv) == 2 and sys.argv[1] == "--inbox":
+        Ear(model=False).listen(mic=False)
     elif len(sys.argv) == 2 and sys.argv[1]:
         Ear().hear(sys.argv[1])
     else:
-        raise SystemExit("usage: python asr.py [wav]")
+        raise SystemExit("usage: python asr.py [wav | --inbox]")
