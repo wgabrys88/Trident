@@ -155,7 +155,7 @@ FLAGS = [
     {'name': 'temperature', 'default': '0.8', 'group': 'server', 'architecture': 'both'},
     {'name': 'top-k', 'default': '1000', 'group': 'server', 'architecture': 'gpt2'},
     {'name': 'top-p', 'default': {'gpt2': '0.95', 'llama': '1.0'}, 'group': 'server', 'architecture': 'both'},
-    {'name': 'repeat-penalty', 'default': {'gpt2': '1.2', 'llama': '2.0'}, 'group': 'server', 'architecture': 'both'},
+    {'name': 'repeat-penalty', 'default': {'gpt2': '1.2', 'llama': '1.2'}, 'group': 'server', 'architecture': 'both'},
     {'name': 'n-predict', 'default': '1000', 'group': 'server', 'architecture': 'both'},
     {'name': 'cfm-steps', 'default': {'gpt2': '2', 'llama': '10'}, 'group': 'server', 'architecture': 'both'},
     {'name': 'trim-fade-samples', 'default': '480', 'group': 'server', 'architecture': 'both'},
