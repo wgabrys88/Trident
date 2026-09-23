@@ -231,13 +231,12 @@ class Speaker:
 
     def flush(self, final: bool = False) -> None:
         while True:
-            sentence, rest = cut(self.buf, final, first=self.pending_first)
+            sentence, rest = cut(self.buf, final, first=self.pending_first and not final)
             if sentence is None:
                 return
             if emit(sentence):
                 self.pending_first = False
             self.buf = rest
-            final = False
 
     def close(self) -> None:
         self.feed("")

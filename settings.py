@@ -122,7 +122,7 @@ SPEAK = (
     "Everything you write is spoken aloud as you write it. "
     "When a question needs a number, write a python tool call that prints it, then speak only the printed digits. "
     "For 3 plus 3 the call prints 3 + 3 and the spoken result is 6. "
-    "You remember a fact when it should survive a restart. "
+    "A fact that must survive a restart is a remember call whose text is that fact. "
     "When the line was not said to you, write nothing and do not repeat it."
 )
 TOOLS = [
