@@ -416,7 +416,6 @@ def called(words: str) -> bool:
         " jarvis", " please ", " hello", " hi",
         " could you ", " can you ", " would you ", " will you ", " tell me ",
         " what ", " what's ", " when ", " where ", " who ", " why ", " how ",
-        " answer ", " say ", " count ",
     )
     return any(cue in text for cue in cues)
 
