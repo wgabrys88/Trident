@@ -1,8 +1,8 @@
 import ctypes, json, subprocess, sys, time, wave
 from datetime import datetime
 from pathlib import Path
-from install import MODELS, ROOT, alive, kill, launch_args, venv_python
-from settings import ARCHITECTURES, VARIANTS, WAV, retire, waiting
+from runtime import MODELS, ROOT, Contract, alive, kill, launch_args, reexec, venv_python
+from settings import ARCHITECTURES, VARIANTS, WAV, ready, retire, waiting
 
 K32 = ctypes.WinDLL("kernel32", use_last_error=True)
 K32.WaitNamedPipeW.argtypes, K32.WaitNamedPipeW.restype = [ctypes.c_wchar_p, ctypes.c_uint], ctypes.c_int
@@ -64,7 +64,9 @@ def loose_wavs() -> None:
     for path in list(home.glob("*.wav")):
         retire(path, "wav")
 
-def say(pipe: str, text: str, language: str = ""):
+def say(pipe: str, text: str, language: str = "", architecture: str = ""):
+    if architecture == "gpt2" and language != "en":
+        raise RuntimeError("Unsupported language: " + language)
     import numpy as np
     loose_wavs()
     pcm = np.frombuffer(synthesize(pipe, text, language), dtype=np.int16)
@@ -113,7 +115,6 @@ def serve(name: str) -> str:
                 return pipe
     kill(pid)
     proc = subprocess.Popen(command, cwd=exe.parent, stdin=subprocess.DEVNULL, creationflags=subprocess.CREATE_NEW_CONSOLE)
-    from install import Contract
     Contract({"pid": proc.pid, "contract": wanted}).write(pid)
     deadline = time.monotonic() + 30
     while not K32.WaitNamedPipeW(pipe, 1000):
@@ -124,8 +125,8 @@ def serve(name: str) -> str:
         time.sleep(0.05)
     return pipe
 
-def watch(pipe: str):
-    print("ready", flush=True)
+def watch(pipe: str, architecture: str):
+    ready("mouth")
     while True:
         files = waiting("speech")
         if not files:
@@ -138,16 +139,15 @@ def watch(pipe: str):
         if not text:
             retire(path, "speech")
             continue
-        say(pipe, text, language)
+        say(pipe, text, language, architecture)
         retire(path, "speech")
 
 if __name__ == "__main__":
-    from install import reexec
     reexec()
     argv = sys.argv
-    if len(argv) == 2:
-        watch(serve(argv[1]))
-    elif len(argv) in (3, 4) and argv[2]:
-        say(serve(argv[1]), argv[2], argv[3] if len(argv) == 4 else "")
+    if len(argv) == 2 and argv[1] in VARIANTS:
+        watch(serve(argv[1]), VARIANTS[argv[1]].architecture)
+    elif len(argv) in (3, 4) and argv[1] in VARIANTS and argv[2]:
+        say(serve(argv[1]), argv[2], argv[3] if len(argv) == 4 else "en", VARIANTS[argv[1]].architecture)
     else:
         raise SystemExit("usage: python tts.py <variant> [text] [language]")

@@ -1,8 +1,8 @@
 import sys
 from pathlib import Path
 import torch
-from install import MODELS, reexec
-from settings import EAR, INBOX, bus, next_path, put, take
+from runtime import MODELS, reexec
+from settings import EAR, INBOX, bus, next_path, put, ready, take
 
 class Ear:
     def __init__(self, model=True):
@@ -53,7 +53,7 @@ class Ear:
     def listen(self, mic=True):
         import time
         bus()
-        print("ready", flush=True)
+        ready("ear")
         if not mic:
             while True:
                 self.drain_inbox()

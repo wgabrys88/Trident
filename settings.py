@@ -76,9 +76,14 @@ def parts(text: str) -> list[str]:
 def read_live() -> str:
     bus()
     text = LIVE.read_text(encoding="utf-8")
-    if len(text) > MAX_LIVE:
-        text = text[-MAX_LIVE:]
-    return text
+    if len(text) <= MAX_LIVE:
+        return text
+    head, tail = text[:len(text) - MAX_LIVE], text[-MAX_LIVE:]
+    src = next_path("live")
+    put(src, head)
+    retire(src, "live")
+    put(LIVE, tail)
+    return tail
 
 def append_live(text: str) -> None:
     bus()
@@ -93,6 +98,13 @@ def slot(path: Path, text: str) -> None:
 
 def clear_live() -> None:
     slot(LIVE, "")
+
+def ready(name: str) -> None:
+    bus()
+    folder = WORK / "ready"
+    folder.mkdir(exist_ok=True)
+    print("ready", flush=True)
+    put(folder / name, "")
 
 def user_text() -> str:
     bus()
@@ -110,10 +122,6 @@ SPEAK = (
     "run_python runs one script. Its result is the next lines, and those lines start with exit. "
     "When a line starts with exit, do not call run_python again. If the person asked to hear the result, say. "
     "quit ends you."
-)
-ALOUD = (
-    "The user text is the words to speak. Call say. "
-    "language is en, or pl when the words are Polish. Do not add words."
 )
 TOOLS = [
     {"type": "function", "function": {

@@ -1,57 +1,7 @@
-import ctypes, hashlib, json, os, shutil, subprocess, sys, urllib.request
-from dataclasses import dataclass
+import hashlib, json, os, shutil, subprocess, sys, urllib.request
 from pathlib import Path
-from settings import ARCHITECTURES, BRAIN, CMAKE_ARCH, CMAKE_GENERATOR, EAR, FLAGS, PYTHON_ENV_BOOTSTRAP, PYTORCH_CPU_INDEX, VARIANTS, Variant
-ROOT, MODELS = Path(__file__).resolve().parent, Path(__file__).resolve().parent / "models"
-K32 = ctypes.WinDLL("kernel32", use_last_error=True)
-K32.OpenProcess.argtypes, K32.OpenProcess.restype = [ctypes.c_uint, ctypes.c_int, ctypes.c_uint], ctypes.c_void_p
-K32.WaitForSingleObject.argtypes, K32.CloseHandle.argtypes = [ctypes.c_void_p, ctypes.c_uint], [ctypes.c_void_p]
-def venv_python() -> Path:
-    return ROOT / ".venv" / "Scripts" / "python.exe"
-def reexec():
-    py = venv_python()
-    if not py.is_file():
-        raise RuntimeError("missing " + str(py))
-    if Path(sys.executable).resolve() != py.resolve():
-        raise SystemExit(subprocess.call([str(py), *sys.argv]))
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
-@dataclass
-class LaunchArgs:
-    knobs: dict[str, str]
-    t3_weight_type: str
-    s3_weight_type: str
-    reference: Path
-    t3_quant_policy: Path
-    s3_quant_policy: Path
-    def policy(self, kind):
-        return {"default": getattr(self, kind + "_weight_type"),
-                "rules": json.loads(getattr(self, kind + "_quant_policy").read_text(encoding="utf-8"))["rules"]}
-    def gguf(self, kind, family):
-        policy = self.policy("s3" if kind == "s3gen" else kind)
-        digest = hashlib.sha256(json.dumps(policy["rules"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:8]
-        return MODELS / f"chatterbox-{kind}-{family}-{policy['default']}-{digest}.gguf"
-def launch_args(cfg: Variant) -> LaunchArgs:
-    knobs, conv = {}, {}
-    for row in FLAGS:
-        if row["architecture"] not in ("both", cfg.architecture):
-            continue
-        default = row["default"][cfg.architecture] if isinstance(row["default"], dict) else row["default"]
-        if row["group"] == "server":
-            knobs[row["name"]] = str(default)
-        else:
-            conv[row["name"]] = default
-    return LaunchArgs(knobs, conv["t3-weight-type"], conv["s3-weight-type"],
-                      (ROOT / conv["reference"]).resolve(), (ROOT / conv["t3-quant-policy"]).resolve(), (ROOT / conv["s3-quant-policy"]).resolve())
-class Contract:
-    def __init__(self, payload: dict, *outputs: Path):
-        self.payload, self.outputs = payload, outputs
-    def matches(self, path: Path) -> bool:
-        return path.is_file() and json.loads(path.read_text(encoding="utf-8")) == self.payload and all(item.is_file() for item in self.outputs)
-    def write(self, path: Path) -> None:
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(json.dumps(self.payload, sort_keys=True) + "\n", encoding="utf-8")
-        tmp.replace(path)
+from runtime import MODELS, ROOT, Contract, LaunchArgs, kill, launch_args, venv_python
+from settings import ARCHITECTURES, BRAIN, CMAKE_ARCH, CMAKE_GENERATOR, EAR, PYTHON_ENV_BOOTSTRAP, PYTORCH_CPU_INDEX, VARIANTS, Variant
 def run(cmd, **kw):
     subprocess.run(cmd, check=True, **kw)
 def digest(*paths) -> str:
@@ -67,28 +17,6 @@ def download(url: str, dest: Path):
     with urllib.request.urlopen(url, timeout=60) as resp, open(tmp, "wb") as out:
         shutil.copyfileobj(resp, out)
     tmp.replace(dest)
-def alive(pid: int) -> bool:
-    handle = K32.OpenProcess(0x00100000, False, pid)
-    if not handle:
-        return False
-    status = K32.WaitForSingleObject(handle, 0)
-    K32.CloseHandle(handle)
-    if status == 0xFFFFFFFF:
-        raise ctypes.WinError(ctypes.get_last_error())
-    return status == 258
-def kill(pid: Path):
-    if not pid.is_file():
-        return
-    record = json.loads(pid.read_text(encoding="utf-8"))
-    if not alive(record["pid"]):
-        pid.unlink()
-        return
-    subprocess.run(["taskkill", "/F", "/T", "/PID", str(record["pid"])], check=True)
-    handle = K32.OpenProcess(0x00100000, False, record["pid"])
-    if handle:
-        K32.WaitForSingleObject(handle, 10000)
-        K32.CloseHandle(handle)
-    pid.unlink()
 def specs(*names: str) -> list[str]:
     lines = [line.strip() for line in (ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines() if line.strip()]
     found = {}
@@ -131,7 +59,7 @@ class EngineBuild:
         return {"ggml": GgmlPin.REV, "generator": CMAKE_GENERATOR, "architecture": CMAKE_ARCH,
                 "source": digest(ROOT / "CMakeLists.txt", ROOT / "src")}
     def ensure(self) -> tuple[Path, Path]:
-        bin_dir, outputs, wanted, stamp = ROOT / "build" / "bin", tuple(ROOT / "build" / "bin" / f"{n}.exe" for n in self.TARGETS), self.wanted(), MODELS / "build-contract.json"
+        outputs, wanted, stamp = tuple(ROOT / "build" / "bin" / f"{n}.exe" for n in self.TARGETS), self.wanted(), MODELS / "build-contract.json"
         if Contract(wanted, *outputs).matches(stamp):
             print("skip ggml", flush=True)
             print("skip engine", flush=True)
@@ -147,9 +75,6 @@ class EngineBuild:
              f"-DVulkan_INCLUDE_DIR={vulkan / 'Include'}", f"-DVulkan_LIBRARY={vulkan / 'Lib/vulkan-1.lib'}",
              f"-DVulkan_GLSLC_EXECUTABLE={vulkan / 'Bin/glslc.exe'}"])
         run(["cmake", "--build", str(build), "--config", "Release", "--target", *self.TARGETS, "--parallel", "2"])
-        for child in list(build.iterdir()):
-            if child.resolve() != bin_dir.resolve():
-                shutil.rmtree(child) if child.is_dir() else child.unlink()
         Contract(wanted, *outputs).write(stamp)
         return outputs
 def re_digits(text: str):
@@ -227,9 +152,17 @@ def ensure_venv() -> Path:
         shutil.rmtree(directory)
     run([sys.executable, "-m", "venv", str(directory)])
     return py
-def install_asr():
-    py = venv_python()
-    pip(py, "asr-packages", specs("numpy", "transformers"))
+def python_packages(py: Path, ear: bool, mouth: bool) -> None:
+    names = ["numpy"]
+    if ear:
+        names.append("transformers")
+    if mouth:
+        names += ["sounddevice", "gguf", "safetensors", "librosa", "tokenizers", "pykakasi", "spacy-pkuseg", "dicta-onnx", "add-stress-to-epub"]
+    args = specs(*names)
+    if mouth:
+        args += [*PYTHON_ENV_BOOTSTRAP["torch"], "--index-url", PYTORCH_CPU_INDEX, "--extra-index-url", "https://pypi.org/simple"]
+    pip(py, "packages" if ear and mouth else "asr-packages" if ear else "tts-packages", args)
+def install_ear():
     home = MODELS / "ear" / EAR["dir"]
     home.mkdir(parents=True, exist_ok=True)
     files = tuple(home / name for name in EAR["files"])
@@ -239,12 +172,13 @@ def install_asr():
         print(name, flush=True)
         download(EAR["repo"] + "/" + name, home / name)
     Contract({"repo": EAR["repo"]}, *files).write(MODELS / "nemotron.json")
-def install_tts(name: str):
+def install_asr():
+    python_packages(venv_python(), True, False)
+    install_ear()
+def install_mouth(name: str):
     if name not in VARIANTS:
         raise SystemExit("variant is nano, turbo, or v3")
     cfg, py = VARIANTS[name], venv_python()
-    pip(py, "tts-torch", [*PYTHON_ENV_BOOTSTRAP["torch"], "--index-url", PYTORCH_CPU_INDEX])
-    pip(py, "tts-packages", specs("sounddevice", "gguf", "safetensors", "librosa", "tokenizers", "pykakasi", "spacy-pkuseg", "dicta-onnx", "add-stress-to-epub"))
     MODELS.mkdir(parents=True, exist_ok=True)
     args = launch_args(cfg)
     family = ARCHITECTURES[cfg.architecture]
@@ -255,6 +189,9 @@ def install_tts(name: str):
     t3_contract, s3_contract = Converter().ensure(cfg, py, ckpt, base_t3, base_s3, args)
     VoiceBake().ensure(cfg, args.reference, base_t3, base_s3, bake, t3_contract, s3_contract, engine.wanted())
     return server
+def install_tts(name: str):
+    python_packages(venv_python(), False, True)
+    return install_mouth(name)
 def install_brain():
     py = venv_python()
     env = os.environ.copy()
@@ -266,9 +203,10 @@ def install_brain():
         Contract({"url": BRAIN["url"]}, path).write(MODELS / "gemma.json")
 def install_all(name: str):
     print("asr", flush=True)
-    install_asr()
+    python_packages(venv_python(), True, True)
+    install_ear()
     print("tts " + name, flush=True)
-    install_tts(name)
+    install_mouth(name)
     print("brain", flush=True)
     install_brain()
 if __name__ == "__main__":
@@ -294,13 +232,14 @@ if __name__ == "__main__":
         install_tts(argv[2])
     elif argv[1] == "all" and len(argv) == 2:
         print("asr", flush=True)
-        install_asr()
+        python_packages(venv_python(), True, True)
+        install_ear()
         print("brain", flush=True)
         install_brain()
         print("tts turbo", flush=True)
-        install_tts("turbo")
+        install_mouth("turbo")
         print("tts v3", flush=True)
-        install_tts("v3")
+        install_mouth("v3")
     elif len(argv) == 2 and argv[1] in VARIANTS:
         install_all(argv[1])
     else:

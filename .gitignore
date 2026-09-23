@@ -9,6 +9,7 @@
 !/install.py
 !/requirements.txt
 !/settings.py
+!/runtime.py
 !/trident.py
 !/tts.py
 !/reference.wav

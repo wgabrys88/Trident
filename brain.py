@@ -1,9 +1,9 @@
 import re, subprocess, sys, time
 from pathlib import Path
-from install import MODELS, reexec, venv_python
+from runtime import MODELS, reexec, venv_python
 from settings import (
-    ALOUD, BRAIN, LIVE, MEMORY, SAID, SPEAK, TOOLS, VARIANTS, append_live, bus, clear_live,
-    next_path, parts, put, slot, take, user_text, waiting,
+    BRAIN, LIVE, MEMORY, SAID, SPEAK, TOOLS, VARIANTS, append_live, bus, clear_live,
+    next_path, parts, put, ready, retire, slot, take, user_text, waiting,
 )
 
 MARK = '<|"|>'
@@ -30,8 +30,7 @@ def load():
                 n_threads=BRAIN["n_threads"], n_gpu_layers=BRAIN["n_gpu_layers"],
                 chat_format="chat_template.default", verbose=False, logits_all=False)
     grammar = LlamaGrammar.from_string("root ::= call+\n" + RULES)
-    spoken = LlamaGrammar.from_string("root ::= say\n" + RULES)
-    return llm, grammar, spoken, spoken
+    return llm, grammar
 
 def ask(llm, grammar, text: str) -> str:
     if not text.strip():
@@ -85,26 +84,37 @@ def speak(text: str, language: str):
 def run_python(code: str) -> str:
     if not isinstance(code, str) or not code.strip():
         raise RuntimeError("run_python")
-    script = bus() / "job.py"
+    script = next_path("job", ".py")
     script.write_text(code, encoding="utf-8")
     try:
         proc = subprocess.run([str(venv_python()), str(script)], cwd=str(bus()), capture_output=True, text=True, timeout=60)
-    except subprocess.TimeoutExpired:
-        return "exit timeout\n"
-    out = proc.stdout or ""
-    err = proc.stderr or ""
-    return f"exit {proc.returncode}\n{out}{err}"
+        result = f"exit {proc.returncode}\n{proc.stdout or ''}{proc.stderr or ''}"
+    except subprocess.TimeoutExpired as err:
+        result = f"exit timeout\n{err.stdout or ''}{err.stderr or ''}"
+    record = script.with_name(script.stem + ".result.txt")
+    record.write_text(result, encoding="utf-8")
+    append_live(result)
+    retire(script, "job")
+    retire(record, "job")
+    return result
 
-def apply(found, exact=None):
+def clean_exit(text: str) -> bool:
+    for line in text.splitlines():
+        piece = line.split()
+        if line.startswith("exit") and len(piece) > 1 and piece[1] == "0":
+            return True
+    return False
+
+def apply(found):
     again = False
     spoke = False
+    blocked = clean_exit(LIVE.read_text(encoding="utf-8") if LIVE.is_file() else "")
     for tool in found:
         name = tool["name"]
         if name == "pass":
             pass
         elif name == "say":
-            body = exact if exact is not None else tool.get("text", "")
-            speak(body, tool.get("language") or "en")
+            speak(tool.get("text", ""), tool.get("language") or "en")
             spoke = True
         elif name == "note":
             if not tool.get("text"):
@@ -118,9 +128,10 @@ def apply(found, exact=None):
             slot(MEMORY, tool["text"].strip() + "\n")
             clear_live()
         elif name == "run_python":
-            result = run_python(tool.get("code", ""))
-            append_live(result)
-            again = "done" if result.startswith("exit 0\n") else True
+            if blocked:
+                continue
+            run_python(tool.get("code", ""))
+            again = True
         elif name == "quit":
             raise SystemExit
         else:
@@ -130,29 +141,27 @@ def apply(found, exact=None):
         return False
     return again
 
-def think(llm, grammar, closed):
+def decide(content: str):
+    path = put(next_path("decision"), content if content.endswith("\n") else content + "\n")
+    try:
+        again = apply(tools(content))
+    except SystemExit:
+        retire(path, "decision")
+        raise
+    retire(path, "decision")
+    return again
+
+def think(llm, grammar):
     hops = 0
-    step = grammar
     while True:
         blob = user_text()
         print(blob, flush=True)
-        content = ask(llm, step, blob)
+        content = ask(llm, grammar, blob)
         print(content, flush=True)
-        again = apply(tools(content))
+        again = decide(content)
         hops += 1
         if not again or hops >= 3:
             return
-        step = closed if again == "done" else grammar
-
-def mouth(variant: str):
-    from tts import serve, say
-    pipe = serve(variant)
-    for path in waiting("speech"):
-        body = take(path, "speech")
-        language, _, text = body.partition("\n")
-        language, text = language.strip(), text.strip()
-        if text:
-            say(pipe, text, language)
 
 def read_payload(value: str) -> str:
     path = Path(value)
@@ -160,23 +169,11 @@ def read_payload(value: str) -> str:
         return path.read_text(encoding="utf-8-sig")
     return value
 
-def aloud(llm, spoken, payload: str, variant: str):
-    bus()
-    payload = payload.strip()
-    if not payload:
-        raise RuntimeError("empty say text")
-    blob = ALOUD + "\n\n" + payload
-    print(blob, flush=True)
-    content = ask(llm, spoken, blob)
-    print(content, flush=True)
-    apply(tools(content), exact=payload)
-    mouth(variant)
-
 def serve():
     bus()
     clear_live()
-    llm, grammar, _spoken, closed = load()
-    print("ready", flush=True)
+    llm, grammar = load()
+    ready("brain")
     while True:
         files = waiting("transcription")
         if not files:
@@ -191,7 +188,7 @@ def serve():
         if own(heard, said):
             continue
         append_live(heard)
-        think(llm, grammar, closed)
+        think(llm, grammar)
 
 if __name__ == "__main__":
     reexec()
@@ -201,10 +198,10 @@ if __name__ == "__main__":
     elif len(argv) == 2 and argv[1] not in VARIANTS:
         bus()
         append_live(read_payload(argv[1]))
-        llm, grammar, _spoken, closed = load()
-        think(llm, grammar, closed)
+        llm, grammar = load()
+        think(llm, grammar)
     elif len(argv) == 4 and argv[1] in VARIANTS and argv[2] == "--say" and argv[3]:
-        llm, _grammar, spoken, _closed = load()
-        aloud(llm, spoken, read_payload(argv[3]), argv[1])
+        bus()
+        speak(read_payload(argv[3]).strip(), "en")
     else:
         raise SystemExit("usage: python brain.py [text|file] | python brain.py <variant> --say <text|file>")
