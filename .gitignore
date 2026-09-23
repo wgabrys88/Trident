@@ -3,14 +3,12 @@
 !/.gitattributes
 !/CMakeLists.txt
 !/LICENSE
-!/asr.py
+!/ear.py
 !/brain.py
+!/mouth.py
+!/trident.py
 !/install.py
 !/requirements.txt
-!/settings.py
-!/runtime.py
-!/trident.py
-!/tts.py
 !/reference.wav
 !/scripts/
 !/scripts/convert_s3.py

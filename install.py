@@ -1,22 +1,104 @@
-import hashlib, json, os, shutil, subprocess, sys, urllib.request
+import hashlib, json, os, re, shutil, subprocess, sys, urllib.request
+from dataclasses import dataclass
 from pathlib import Path
-from runtime import MODELS, ROOT, Contract, LaunchArgs, kill, launch_args, venv_python
-from settings import ARCHITECTURES, BRAIN, CMAKE_ARCH, CMAKE_GENERATOR, EAR, PYTHON_ENV_BOOTSTRAP, PYTORCH_CPU_INDEX, VARIANTS, Variant
+
+ROOT = Path(__file__).resolve().parent
+MODELS = ROOT / "models"
+CMAKE_GENERATOR, CMAKE_ARCH = "Visual Studio 17 2022", "x64"
+PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
+BRAIN_URL = "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/0314792d7f1f7e229411f620751375812bb9faf2/gemma-4-E2B-it-Q4_K_M.gguf"
+BRAIN_FILE = "brain-gemma-4-e2b-it-q4_k_m.gguf"
+EAR_REPO = "https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b/resolve/ea30d66debe3740a08b573244286791d423d6b3e"
+EAR_DIR = "nemotron-3.5-asr-streaming-0.6b"
+EAR_FILES = ("config.json", "generation_config.json", "processor_config.json", "tokenizer_config.json", "tokenizer.json", "model.safetensors")
+
+
+@dataclass(frozen=True)
+class Variant:
+    name: str
+    hf: str
+    assets: tuple[str, ...]
+    t3_ckpt: str
+    architecture: str
+    external_assets: tuple[tuple[str, str], ...] = ()
+
+
+_GPT2 = ("s3gen_meanflow.safetensors", "conds.pt", "ve.safetensors", "vocab.json", "merges.txt", "added_tokens.json")
+VARIANTS = {
+    "nano": Variant("nano", "https://huggingface.co/ResembleAI/chatterbox-nano/resolve/71ccd1d0081b430592cea481f4307e764e07bc64", ("t3_nano_v1.safetensors",) + _GPT2, "t3_nano_v1.safetensors", "gpt2"),
+    "turbo": Variant("turbo", "https://huggingface.co/ResembleAI/chatterbox-turbo/resolve/749d1c1a46eb10492095d68fbcf55691ccf137cd", ("t3_turbo_v1.safetensors",) + _GPT2, "t3_turbo_v1.safetensors", "gpt2"),
+    "v3": Variant("v3", "https://huggingface.co/ResembleAI/chatterbox/resolve/5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18", ("t3_mtl23ls_v3.safetensors", "s3gen.safetensors", "conds.pt", "ve.safetensors", "grapheme_mtl_merged_expanded_v1.json", "Cangjie5_TC.json"), "t3_mtl23ls_v3.safetensors", "llama", (("official_mtl_tokenizer.py", "https://raw.githubusercontent.com/resemble-ai/chatterbox/5de7a54aa4e5e2baadb0182dde554908b48b85c2/src/chatterbox/models/tokenizers/tokenizer.py"), ("official_mtl_tts.py", "https://raw.githubusercontent.com/resemble-ai/chatterbox/5de7a54aa4e5e2baadb0182dde554908b48b85c2/src/chatterbox/mtl_tts.py"), ("dicta-1.0.int8.onnx", "https://github.com/thewh1teagle/dicta-onnx/releases/download/model-files-v1.0/dicta-1.0.int8.onnx"))),
+}
+ARCH = {
+    "gpt2": {"ckpt": ".ckpt", "s3_checkpoint": "s3gen_meanflow.safetensors", "s3_family": "meanflow"},
+    "llama": {"ckpt": ".ckpt-v3", "s3_checkpoint": "s3gen.safetensors", "s3_family": "v3"},
+}
+FLAGS = [
+    ("reference", "reference.wav", "conversion", "both"),
+    ("t3-weight-type", "q4_0", "conversion", "both"),
+    ("s3-weight-type", "q4_0", "conversion", "both"),
+    ("t3-quant-policy", "scripts/quant_t3.json", "conversion", "both"),
+    ("s3-quant-policy", "scripts/quant_s3.json", "conversion", "both"),
+]
+
+
 def run(cmd, **kw):
     subprocess.run(cmd, check=True, **kw)
+
+
+def venv_python() -> Path:
+    return ROOT / ".venv" / "Scripts" / "python.exe"
+
+
+def kill_server() -> None:
+    path = MODELS / "server.pid"
+    if not path.is_file():
+        return
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(record["pid"])], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def atomic_json(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(payload, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def matches(stamp: Path, payload: dict, *outputs: Path) -> bool:
+    return stamp.is_file() and json.loads(stamp.read_text(encoding="utf-8")) == payload and all(path.is_file() for path in outputs)
+
+
+def kept(name: str, payload: dict, *outputs: Path) -> bool:
+    if matches(MODELS / f"{name}.json", payload, *outputs):
+        print("skip " + name, flush=True)
+        return True
+    print("install " + name, flush=True)
+    return False
+
+
 def digest(*paths) -> str:
     hasher, files = hashlib.sha256(), []
     for item in paths:
         item = Path(item)
         files.append(item) if item.is_file() else files.extend(path for path in item.rglob("*") if path.is_file())
     for path in sorted(files, key=lambda p: p.relative_to(ROOT).as_posix()):
-        hasher.update(path.relative_to(ROOT).as_posix().encode()); hasher.update(path.read_bytes())
+        hasher.update(path.relative_to(ROOT).as_posix().encode())
+        hasher.update(path.read_bytes())
     return hasher.hexdigest()
-def download(url: str, dest: Path):
+
+
+def download(url: str, dest: Path) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix(dest.suffix + ".part")
-    with urllib.request.urlopen(url, timeout=60) as resp, open(tmp, "wb") as out:
-        shutil.copyfileobj(resp, out)
+    with urllib.request.urlopen(url, timeout=60) as response, tmp.open("wb") as out:
+        shutil.copyfileobj(response, out)
     tmp.replace(dest)
+
+
 def specs(*names: str) -> list[str]:
     lines = [line.strip() for line in (ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines() if line.strip()]
     found = {}
@@ -27,189 +109,200 @@ def specs(*names: str) -> list[str]:
     if missing:
         raise RuntimeError("requirements missing " + ", ".join(missing))
     return [found[name] for name in names]
-def pip(py: Path, name: str, args: list[str], env=None):
+
+
+def pip(py: Path, name: str, args: list[str], env=None) -> None:
     MODELS.mkdir(parents=True, exist_ok=True)
-    stamp, payload = MODELS / f"{name}.stamp", json.dumps(args)
+    stamp = MODELS / f"{name}.stamp"
+    payload = json.dumps(args)
     if stamp.is_file() and stamp.read_text(encoding="utf-8") == payload:
         print("skip " + name, flush=True)
         return
     print("install " + name, flush=True)
     run([str(py), "-m", "pip", "install", "--disable-pip-version-check", *args], env=env)
     stamp.write_text(payload, encoding="utf-8")
-def kept(name: str, payload: dict, *outputs: Path) -> bool:
-    stamp, contract = MODELS / f"{name}.json", Contract(payload, *outputs)
-    if contract.matches(stamp):
-        print("skip " + name, flush=True)
-        return True
-    print("install " + name, flush=True)
-    return False
-class GgmlPin:
+
+
+class Ggml:
     REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
-    def ensure(self):
-        ggml = ROOT / "ggml"
-        if not (ggml / ".git").exists():
-            run(["git", "clone", "--filter=blob:none", "https://github.com/ggml-org/ggml.git", str(ggml)])
-        head = subprocess.run(["git", "-C", str(ggml), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
-        if head != self.REV:
-            run(["git", "-C", str(ggml), "fetch", "origin", self.REV, "--depth", "1"])
-            run(["git", "-C", str(ggml), "checkout", "--detach", self.REV])
-class EngineBuild:
-    TARGETS = ("chatterbox-server", "chatterbox-bake")
-    def wanted(self) -> dict:
-        return {"ggml": GgmlPin.REV, "generator": CMAKE_GENERATOR, "architecture": CMAKE_ARCH,
-                "source": digest(ROOT / "CMakeLists.txt", ROOT / "src")}
-    def ensure(self) -> tuple[Path, Path]:
-        outputs, wanted, stamp = tuple(ROOT / "build" / "bin" / f"{n}.exe" for n in self.TARGETS), self.wanted(), MODELS / "build-contract.json"
-        if Contract(wanted, *outputs).matches(stamp):
-            print("skip ggml", flush=True)
-            print("skip engine", flush=True)
-            return outputs
-        print("install ggml", flush=True)
-        GgmlPin().ensure()
-        print("install engine", flush=True)
-        kill(MODELS / "server.pid")
-        vulkan = max(Path("C:/VulkanSDK").glob("*/Bin/glslc.exe"),
-                     key=lambda path: tuple(map(int, re_digits(path.parts[-3])))).parents[1]
-        build = ROOT / "build"
-        run(["cmake", "-S", str(ROOT), "-B", str(build), "-G", CMAKE_GENERATOR, "-A", CMAKE_ARCH,
-             f"-DVulkan_INCLUDE_DIR={vulkan / 'Include'}", f"-DVulkan_LIBRARY={vulkan / 'Lib/vulkan-1.lib'}",
-             f"-DVulkan_GLSLC_EXECUTABLE={vulkan / 'Bin/glslc.exe'}"])
-        run(["cmake", "--build", str(build), "--config", "Release", "--target", *self.TARGETS, "--parallel", "2"])
-        Contract(wanted, *outputs).write(stamp)
-        return outputs
-def re_digits(text: str):
-    import re
-    return re.findall(r"\d+", text)
-class Checkpoints:
-    def ensure(self, cfg: Variant) -> Path:
-        ckpt = ROOT / ARCHITECTURES[cfg.architecture]["ckpt"]
-        ckpt.mkdir(parents=True, exist_ok=True)
-        assets = [(asset, f"{cfg.hf}/{asset}") for asset in cfg.assets] + list(cfg.external_assets)
-        if all((ckpt / name).is_file() for name, _ in assets):
-            print("skip checkpoints", flush=True)
-            return ckpt
-        print("install checkpoints", flush=True)
-        for name, source in assets:
-            dest = ckpt / name
-            if not dest.is_file():
-                download(source, dest)
-        return ckpt
-class Converter:
-    def ensure(self, cfg: Variant, py: Path, ckpt: Path, t3: Path, s3: Path, args: LaunchArgs) -> tuple[dict, dict]:
-        family, scripts = ARCHITECTURES[cfg.architecture], ROOT / "scripts"
-        t3_payload = {"kind": "t3", "policy": args.policy("t3"), "t3_ckpt": cfg.t3_ckpt,
-                      "converter": digest(scripts / "convert_t3.py", scripts / "quant.py")}
-        s3_payload = {"kind": "s3", "policy": args.policy("s3"), "checkpoint": family["s3_checkpoint"],
-                      "converter": digest(scripts / "convert_s3.py", scripts / "quant.py")}
-        jobs = (
-            (Contract(t3_payload, t3), MODELS / f"{t3.stem}.convert.json", t3,
-             [str(py), str(scripts / "convert_t3.py"), str(ckpt), str(t3.with_suffix(".gguf.converting")), cfg.t3_ckpt,
-              "--matrix-type", args.t3_weight_type, "--quant-policy", str(args.t3_quant_policy), "--s3-checkpoint", family["s3_checkpoint"]]),
-            (Contract(s3_payload, s3), MODELS / f"{s3.stem}.convert.json", s3,
-             [str(py), str(scripts / "convert_s3.py"), str(ckpt), str(s3.with_suffix(".gguf.converting")),
-              "--checkpoint", family["s3_checkpoint"], "--weight-type", args.s3_weight_type, "--quant-policy", str(args.s3_quant_policy)]),
-        )
-        for contract, stamp, dest, cmd in jobs:
-            if contract.matches(stamp):
-                print("skip " + dest.name, flush=True)
-                continue
-            print("install " + dest.name, flush=True)
-            tmp = dest.with_suffix(".gguf.converting")
-            run(cmd)
-            tmp.replace(dest)
-            contract.write(stamp)
-        return t3_payload, s3_payload
-class VoiceBake:
-    def ensure(self, cfg: Variant, reference: Path, base_t3: Path, base_s3: Path, bake: Path,
-               t3_contract: dict, s3_contract: dict, build: dict) -> tuple[Path, Path, dict]:
-        wanted = {"variant": cfg.name, "t3_conversion": t3_contract, "s3_conversion": s3_contract,
-                  "reference": {"path": str(reference.resolve()), "bytes": reference.stat().st_size, "mtime": reference.stat().st_mtime_ns}, "build": build}
-        voice_dir, t3, s3, stamp = MODELS / "voices" / cfg.name, MODELS / "voices" / cfg.name / "t3.gguf", MODELS / "voices" / cfg.name / "s3.gguf", MODELS / "voices" / cfg.name / "bake.json"
-        if Contract(wanted, t3, s3).matches(stamp):
-            print("skip voice", flush=True)
-            return t3, s3, wanted
-        print("install voice", flush=True)
-        kill(MODELS / "server.pid")
-        tmp = voice_dir.with_name(voice_dir.name + ".baking")
-        if tmp.exists():
-            shutil.rmtree(tmp)
-        tmp.mkdir(parents=True, exist_ok=False)
-        tmp_t3, tmp_s3 = tmp / "t3.gguf", tmp / "s3.gguf"
-        shutil.copy2(base_t3, tmp_t3); shutil.copy2(base_s3, tmp_s3)
-        run([str(bake), str(tmp_t3), str(tmp_s3), str(reference)], cwd=str(ROOT))
-        Contract(wanted, tmp_t3, tmp_s3).write(tmp / "bake.json")
-        voice_dir.parent.mkdir(parents=True, exist_ok=True)
-        if voice_dir.exists():
-            shutil.rmtree(voice_dir)
-        tmp.replace(voice_dir)
-        return t3, s3, wanted
+
+    @staticmethod
+    def ensure() -> None:
+        home = ROOT / "ggml"
+        if not (home / ".git").exists():
+            run(["git", "clone", "--filter=blob:none", "https://github.com/ggml-org/ggml.git", str(home)])
+        head = subprocess.run(["git", "-C", str(home), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+        if head != Ggml.REV:
+            run(["git", "-C", str(home), "fetch", "origin", Ggml.REV, "--depth", "1"])
+            run(["git", "-C", str(home), "checkout", "--detach", Ggml.REV])
+
+
+def build_engine() -> tuple[Path, Path, dict]:
+    outputs = ROOT / "build" / "bin" / "chatterbox-server.exe", ROOT / "build" / "bin" / "chatterbox-bake.exe"
+    wanted = {"ggml": Ggml.REV, "generator": CMAKE_GENERATOR, "architecture": CMAKE_ARCH, "source": digest(ROOT / "CMakeLists.txt", ROOT / "src")}
+    stamp = MODELS / "build-contract.json"
+    if stamp.is_file() and json.loads(stamp.read_text(encoding="utf-8")) == wanted and all(path.is_file() for path in outputs):
+        print("skip ggml", flush=True)
+        print("skip engine", flush=True)
+        return *outputs, wanted
+    print("install ggml", flush=True)
+    Ggml.ensure()
+    print("install engine", flush=True)
+    kill_server()
+    sdk = max(Path("C:/VulkanSDK").glob("*/Bin/glslc.exe"), key=lambda path: tuple(map(int, re.findall(r"\d+", path.parts[-3])))).parents[1]
+    build = ROOT / "build"
+    run(["cmake", "-S", str(ROOT), "-B", str(build), "-G", CMAKE_GENERATOR, "-A", CMAKE_ARCH, f"-DVulkan_INCLUDE_DIR={sdk / 'Include'}", f"-DVulkan_LIBRARY={sdk / 'Lib/vulkan-1.lib'}", f"-DVulkan_GLSLC_EXECUTABLE={sdk / 'Bin/glslc.exe'}"])
+    run(["cmake", "--build", str(build), "--config", "Release", "--target", "chatterbox-server", "chatterbox-bake", "--parallel", "2"])
+    atomic_json(stamp, wanted)
+    return *outputs, wanted
+
+
+def launch_conversion(cfg: Variant):
+    conv = {}
+    for name, default, group, arch in FLAGS:
+        if arch in ("both", cfg.architecture) and group == "conversion":
+            conv[name] = default
+    return conv
+
+
+def policy(path: Path, default: str) -> dict:
+    return {"default": default, "rules": json.loads(path.read_text(encoding="utf-8"))["rules"]}
+
+
+def gguf_name(kind: str, family: str, spec: dict) -> Path:
+    digest8 = hashlib.sha256(json.dumps(spec["rules"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:8]
+    return MODELS / f"chatterbox-{kind}-{family}-{spec['default']}-{digest8}.gguf"
+
+
+def checkpoints(cfg: Variant) -> Path:
+    home = ROOT / ARCH[cfg.architecture]["ckpt"]
+    home.mkdir(parents=True, exist_ok=True)
+    assets = [(asset, cfg.hf + "/" + asset) for asset in cfg.assets] + list(cfg.external_assets)
+    if all((home / name).is_file() for name, _ in assets):
+        print("skip checkpoints", flush=True)
+        return home
+    print("install checkpoints", flush=True)
+    for name, url in assets:
+        if not (home / name).is_file():
+            download(url, home / name)
+    return home
+
+
+def convert(cfg: Variant, py: Path, ckpt: Path, conv: dict):
+    family = ARCH[cfg.architecture]
+    t3_policy = policy(ROOT / conv["t3-quant-policy"], conv["t3-weight-type"])
+    s3_policy = policy(ROOT / conv["s3-quant-policy"], conv["s3-weight-type"])
+    t3 = gguf_name("t3", cfg.name, t3_policy)
+    s3 = gguf_name("s3gen", family["s3_family"], s3_policy)
+    jobs = [
+        (t3, {"kind": "t3", "policy": t3_policy, "t3_ckpt": cfg.t3_ckpt, "converter": digest(ROOT / "scripts" / "convert_t3.py", ROOT / "scripts" / "quant.py")}, [str(py), str(ROOT / "scripts" / "convert_t3.py"), str(ckpt), str(t3.with_suffix(".gguf.converting")), cfg.t3_ckpt, "--matrix-type", conv["t3-weight-type"], "--quant-policy", str(ROOT / conv["t3-quant-policy"]), "--s3-checkpoint", family["s3_checkpoint"]]),
+        (s3, {"kind": "s3", "policy": s3_policy, "checkpoint": family["s3_checkpoint"], "converter": digest(ROOT / "scripts" / "convert_s3.py", ROOT / "scripts" / "quant.py")}, [str(py), str(ROOT / "scripts" / "convert_s3.py"), str(ckpt), str(s3.with_suffix(".gguf.converting")), "--checkpoint", family["s3_checkpoint"], "--weight-type", conv["s3-weight-type"], "--quant-policy", str(ROOT / conv["s3-quant-policy"])]),
+    ]
+    contracts = []
+    for dest, wanted, cmd in jobs:
+        stamp = MODELS / f"{dest.stem}.convert.json"
+        if matches(stamp, wanted, dest):
+            print("skip " + dest.name, flush=True)
+            contracts.append(wanted)
+            continue
+        print("install " + dest.name, flush=True)
+        tmp = dest.with_suffix(".gguf.converting")
+        run(cmd)
+        tmp.replace(dest)
+        atomic_json(stamp, wanted)
+        contracts.append(wanted)
+    return t3, s3, contracts
+
+
+def bake_voice(cfg: Variant, base_t3: Path, base_s3: Path, bake: Path, contracts: list[dict], build: dict, conv: dict):
+    reference = (ROOT / conv["reference"]).resolve()
+    voice = MODELS / "voices" / cfg.name
+    t3, s3, stamp = voice / "t3.gguf", voice / "s3.gguf", voice / "bake.json"
+    wanted = {"variant": cfg.name, "conversions": contracts, "reference": {"path": str(reference), "bytes": reference.stat().st_size, "mtime": reference.stat().st_mtime_ns}, "build": build}
+    if matches(stamp, wanted, t3, s3):
+        print("skip voice", flush=True)
+        return
+    print("install voice", flush=True)
+    kill_server()
+    temp = voice.with_name(voice.name + ".baking")
+    if temp.exists():
+        shutil.rmtree(temp)
+    temp.mkdir(parents=True)
+    shutil.copy2(base_t3, temp / "t3.gguf")
+    shutil.copy2(base_s3, temp / "s3.gguf")
+    run([str(bake), str(temp / "t3.gguf"), str(temp / "s3.gguf"), str(reference)], cwd=ROOT)
+    atomic_json(temp / "bake.json", wanted)
+    voice.parent.mkdir(parents=True, exist_ok=True)
+    if voice.exists():
+        shutil.rmtree(voice)
+    temp.replace(voice)
+
+
 def ensure_venv() -> Path:
-    py, directory = venv_python(), ROOT / ".venv"
+    py = venv_python()
     if py.is_file():
         return py
     print("install venv", flush=True)
-    if directory.exists():
-        shutil.rmtree(directory)
-    run([sys.executable, "-m", "venv", str(directory)])
+    home = ROOT / ".venv"
+    if home.exists():
+        shutil.rmtree(home)
+    run([sys.executable, "-m", "venv", str(home)])
     return py
+
+
 def python_packages(py: Path, ear: bool, mouth: bool) -> None:
     names = ["numpy"]
     if ear:
-        names.append("transformers")
+        names += ["transformers", "sounddevice", "librosa"]
     if mouth:
-        names += ["sounddevice", "gguf", "safetensors", "librosa", "tokenizers", "pykakasi", "spacy-pkuseg", "dicta-onnx", "add-stress-to-epub"]
+        names += ["gguf", "safetensors", "librosa", "sounddevice", "tokenizers", "pykakasi", "spacy-pkuseg", "dicta-onnx", "add-stress-to-epub"]
+    names = list(dict.fromkeys(names))
     args = specs(*names)
-    if mouth:
-        args += [*PYTHON_ENV_BOOTSTRAP["torch"], "--index-url", PYTORCH_CPU_INDEX, "--extra-index-url", "https://pypi.org/simple"]
+    if ear or mouth:
+        args += ["torch==2.6.0", "--index-url", PYTORCH_CPU_INDEX, "--extra-index-url", "https://pypi.org/simple"]
     pip(py, "packages" if ear and mouth else "asr-packages" if ear else "tts-packages", args)
-def install_ear():
-    home = MODELS / "ear" / EAR["dir"]
+
+
+def install_ear() -> None:
+    home = MODELS / "ear" / EAR_DIR
     home.mkdir(parents=True, exist_ok=True)
-    files = tuple(home / name for name in EAR["files"])
-    if kept("nemotron", {"repo": EAR["repo"]}, *files):
+    files = tuple(home / name for name in EAR_FILES)
+    if kept("nemotron", {"repo": EAR_REPO}, *files):
         return
-    for name in EAR["files"]:
+    for name in EAR_FILES:
         print(name, flush=True)
-        download(EAR["repo"] + "/" + name, home / name)
-    Contract({"repo": EAR["repo"]}, *files).write(MODELS / "nemotron.json")
-def install_asr():
-    python_packages(venv_python(), True, False)
-    install_ear()
-def install_mouth(name: str):
-    if name not in VARIANTS:
-        raise SystemExit("variant is nano, turbo, or v3")
+        download(EAR_REPO + "/" + name, home / name)
+    atomic_json(MODELS / "nemotron.json", {"repo": EAR_REPO})
+
+
+def install_mouth(name: str) -> None:
     cfg, py = VARIANTS[name], venv_python()
-    MODELS.mkdir(parents=True, exist_ok=True)
-    args = launch_args(cfg)
-    family = ARCHITECTURES[cfg.architecture]
-    engine = EngineBuild()
-    server, bake = engine.ensure()
-    ckpt = Checkpoints().ensure(cfg)
-    base_t3, base_s3 = args.gguf("t3", cfg.name), args.gguf("s3gen", family["s3_family"])
-    t3_contract, s3_contract = Converter().ensure(cfg, py, ckpt, base_t3, base_s3, args)
-    VoiceBake().ensure(cfg, args.reference, base_t3, base_s3, bake, t3_contract, s3_contract, engine.wanted())
-    return server
-def install_tts(name: str):
-    python_packages(venv_python(), False, True)
-    return install_mouth(name)
-def install_brain():
+    server, bake, build = build_engine()
+    ckpt = checkpoints(cfg)
+    conv = launch_conversion(cfg)
+    t3, s3, contracts = convert(cfg, py, ckpt, conv)
+    bake_voice(cfg, t3, s3, bake, contracts, build, conv)
+
+
+def install_brain() -> None:
     py = venv_python()
     env = os.environ.copy()
     env["CMAKE_ARGS"], env["FORCE_CMAKE"] = "-DGGML_VULKAN=ON", "1"
-    pip(py, "brain-packages", [*specs("llama-cpp-python"), "--no-binary", "llama-cpp-python"], env)
-    path = MODELS / BRAIN["file"]
-    if not kept("gemma", {"url": BRAIN["url"]}, path):
-        download(BRAIN["url"], path)
-        Contract({"url": BRAIN["url"]}, path).write(MODELS / "gemma.json")
-def install_all(name: str):
-    print("asr", flush=True)
+    pip(py, "brain-packages", [*specs("gguf", "llama-cpp-python"), "--no-binary", "llama-cpp-python"], env)
+    path = MODELS / BRAIN_FILE
+    if not kept("gemma", {"url": BRAIN_URL}, path):
+        download(BRAIN_URL, path)
+        atomic_json(MODELS / "gemma.json", {"url": BRAIN_URL})
+
+
+def install_all(name: str) -> None:
     python_packages(venv_python(), True, True)
     install_ear()
-    print("tts " + name, flush=True)
     install_mouth(name)
-    print("brain", flush=True)
     install_brain()
-if __name__ == "__main__":
+
+
+def main() -> None:
     argv = sys.argv
     created = not venv_python().is_file()
     ensure_venv()
@@ -218,29 +311,29 @@ if __name__ == "__main__":
         if created:
             env["TRIDENT_VENV_NEW"] = "1"
         raise SystemExit(subprocess.call([str(venv_python()), *argv], env=env))
-    if os.environ.pop("TRIDENT_VENV_NEW", None) == "1":
-        print("install venv", flush=True)
-    else:
-        print("skip venv", flush=True)
+    print("install venv" if os.environ.pop("TRIDENT_VENV_NEW", None) == "1" else "skip venv", flush=True)
     if len(argv) == 1:
         install_all("nano")
-    elif argv[1] == "asr" and len(argv) == 2:
-        install_asr()
-    elif argv[1] == "brain" and len(argv) == 2:
-        install_brain()
-    elif argv[1] == "tts" and len(argv) == 3:
-        install_tts(argv[2])
-    elif argv[1] == "all" and len(argv) == 2:
-        print("asr", flush=True)
-        python_packages(venv_python(), True, True)
+    elif len(argv) == 2 and argv[1] == "ear":
+        python_packages(venv_python(), True, False)
         install_ear()
-        print("brain", flush=True)
+    elif len(argv) == 2 and argv[1] == "brain":
         install_brain()
-        print("tts turbo", flush=True)
-        install_mouth("turbo")
-        print("tts v3", flush=True)
-        install_mouth("v3")
+    elif len(argv) == 3 and argv[1] == "mouth" and argv[2] in VARIANTS:
+        python_packages(venv_python(), False, True)
+        install_mouth(argv[2])
     elif len(argv) == 2 and argv[1] in VARIANTS:
         install_all(argv[1])
+    elif len(argv) == 2 and argv[1] == "all":
+        python_packages(venv_python(), True, True)
+        install_ear()
+        install_brain()
+        install_mouth("nano")
+        install_mouth("turbo")
+        install_mouth("v3")
     else:
-        raise SystemExit("usage: python install.py [asr | brain | tts <variant> | <variant> | all]")
+        raise SystemExit("usage: python install.py [ear | brain | mouth <variant> | nano | turbo | v3 | all]")
+
+
+if __name__ == "__main__":
+    main()

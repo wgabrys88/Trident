@@ -1,281 +1,84 @@
-import json, re, subprocess, sys, time
+import json, re, subprocess, sys, urllib.request
 from pathlib import Path
-from runtime import MODELS, reexec, venv_python, vulkan
-from settings import (
-    BRAIN, CHUNK, IDLE, MEMORY, SPEAK, STOP, TOOLS, TURNS, VARIANTS, WORK,
-    bus, next_path, parts, put, read_memory, ready, retire, take, waiting,
-)
 
+ROOT = Path(__file__).resolve().parent
+WORK = ROOT / "workspace"
+DONE = WORK / "done"
+MODELS = ROOT / "models"
+MODEL = "brain-gemma-4-e2b-it-q4_k_m.gguf"
+CURSOR = WORK / "brain.cursor"
 MARK = '<|"|>'
 OPEN, CLOSE = "<|tool_call>", "<tool_call|>"
-NAMES = {"python", "remember", "wake", "stop"}
-CAP = 6144
-SPOKEN = []
-LANG = "en"
-WAKE_AT = None
-LAST_HUMAN = None
-LAST_CODE = ""
-LAST_COMPLETION = ""
-PRINTED = False
 BOS = "<bos>"
 TEMPLATE = None
+TOOLS = [
+    {"type": "function", "function": {"name": "speak", "description": "Say something aloud. Use this for all speech, including proactive speech and short progress updates.", "parameters": {"type": "object", "properties": {"text": {"type": "string"}, "language": {"type": "string", "description": "Two-letter language code such as en, fr, pl."}}, "required": ["text", "language"]}}},
+    {"type": "function", "function": {"name": "python", "description": "Run one complete Python script on the local computer. The exact exit code, stdout and stderr return to you as data.", "parameters": {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}}},
+    {"type": "function", "function": {"name": "remember", "description": "Append durable memory that should survive process restarts and loss of recent event context.", "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}}},
+    {"type": "function", "function": {"name": "wake", "description": "Schedule a future wake when you want to reconsider unfinished work without waiting for a person to speak.", "parameters": {"type": "object", "properties": {"seconds": {"type": "string"}, "reason": {"type": "string"}}, "required": ["seconds"]}}},
+    {"type": "function", "function": {"name": "stop", "description": "Stop Trident intentionally.", "parameters": {"type": "object", "properties": {}, "required": []}}},
+]
+SYSTEM = """You are Jarvis, the brain of a local computer assistant.
+You receive an ordered event journal. Every heard event is context, not automatically a command. Decide meaning yourself. Being addressed as Jarvis is strong evidence that speech is intended for you, but there is no wake-word rule. Background conversation can be useful context; usually remain silent unless speaking or acting is genuinely useful. Recent speech events tell you what you yourself asked the mouth to say, so use context to recognize likely speaker echo rather than treating every heard sentence as a fresh human instruction.
+You own all semantic decisions. Python code outside you does not decide whether something is a request, whether a number needs a tool, or whether you may speak.
+Use speak for every audible response. You may initiate speech on clock and wake events when there is a useful reason. Before meaningful computer work, normally speak one short present-tense progress sentence, then use python. Use python freely for computer work and exact calculation. Never invent a tool result. When an exact short Python stdout is the answer, speak those exact characters rather than paraphrasing them. Use remember for durable facts, preferences, commitments, or unfinished work that should survive a restart. Use wake when future attention is useful. Use stop only when ending Trident is actually intended.
+After a tool result, continue reasoning until the work is complete. Do not repeat a tool call that the current-cycle transcript already says completed. If nothing useful should happen, make no tool call. Do not emit ordinary assistant prose for the user; audible communication must go through speak."""
 
 
-def load():
+def venv_python() -> Path:
+    return ROOT / ".venv" / "Scripts" / "python.exe"
+
+
+def reexec() -> None:
+    py = venv_python()
+    if not py.is_file():
+        raise RuntimeError("missing " + str(py))
+    if Path(sys.executable).resolve() != py.resolve():
+        raise SystemExit(subprocess.call([str(py), *sys.argv]))
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
+
+def http(server: str, method: str, path: str, payload=None, timeout=70):
+    raw = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(server + path, data=raw, method=method, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    if isinstance(data, dict) and data.get("error"):
+        raise RuntimeError(data["error"])
+    return data
+
+
+def unique(kind: str, suffix: str) -> Path:
+    folder = DONE / kind
+    folder.mkdir(parents=True, exist_ok=True)
+    n = 1
+    while (folder / f"{kind}-{n}{suffix}").exists():
+        n += 1
+    return folder / f"{kind}-{n}{suffix}"
+
+
+def record(kind: str, suffix: str, text: str) -> Path:
+    path = unique(kind, suffix)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8", newline="\n")
+    tmp.replace(path)
+    return path
+
+
+def load_model(server: str):
     global BOS, TEMPLATE
-    path = MODELS / BRAIN["file"]
+    path = MODELS / MODEL
     if not path.is_file():
         raise RuntimeError("missing " + str(path))
-    device = vulkan()
+    config = http(server, "GET", "/config")
     from llama_cpp import Llama
-    llm = Llama(
-        model_path=str(path), n_ctx=BRAIN["n_ctx"], n_batch=BRAIN["n_batch"], n_ubatch=BRAIN["n_ubatch"],
-        n_threads=BRAIN["n_threads"], n_gpu_layers=BRAIN["n_gpu_layers"], main_gpu=device,
-        swa_full=BRAIN["swa_full"], verbose=True, logits_all=False,
-    )
+    llm = Llama(model_path=str(path), n_ctx=8192, n_batch=1024, n_ubatch=1024, n_threads=4, n_gpu_layers=-1, main_gpu=int(config["vulkan_device"]), swa_full=True, verbose=True, logits_all=False)
     BOS = llm.detokenize([llm.token_bos()], special=True).decode("utf-8") or "<bos>"
-    TEMPLATE = chat_template(path)
-    return llm
-
-
-def chat_template(path: Path) -> str:
     from gguf import GGUFReader
     field = GGUFReader(str(path)).fields["tokenizer.chat_template"]
-    return bytes(field.parts[-1].tolist()).decode("utf-8")
-
-
-def read_turns() -> list:
-    bus()
-    if not TURNS.is_file():
-        return []
-    rows = []
-    for line in TURNS.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            rows.append(json.loads(line))
-    return rows
-
-
-def write_turns(rows: list) -> None:
-    bus()
-    text = "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows)
-    put(TURNS, text)
-
-
-def append_turn(row: dict) -> None:
-    row = dict(row)
-    row["at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    bus()
-    with TURNS.open("a", encoding="utf-8", newline="\n") as handle:
-        handle.write(json.dumps(row, ensure_ascii=False) + "\n")
-
-
-def seed_memory() -> None:
-    text = read_memory().strip()
-    if text and not read_turns():
-        append_turn({"role": "user", "content": "memory:\n" + text})
-
-
-def render(rows: list) -> str:
-    import jinja2
-    messages = [{"role": "system", "content": SPEAK}]
-    for turn in rows:
-        item = {"role": turn["role"], "content": turn.get("content") or ""}
-        if turn.get("tool_calls"):
-            item["tool_calls"] = []
-            for call in turn["tool_calls"]:
-                name = call["name"]
-                arguments = call.get("arguments") or {}
-                item["tool_calls"].append({"function": {"name": name, "arguments": arguments}})
-        if turn["role"] == "tool":
-            item["name"] = turn.get("name") or "unknown"
-        messages.append(item)
-    text = jinja2.Environment().from_string(TEMPLATE).render(
-        messages=messages, tools=TOOLS, add_generation_prompt=True, bos_token=BOS, eos_token="",
-    )
-    if not text.startswith(BOS):
-        text = BOS + text
-    return text
-
-
-def trim(llm) -> None:
-    rows = read_turns()
-    changed = False
-    while rows:
-        prompt = render(rows)
-        count = len(llm.tokenize(prompt.encode("utf-8"), add_bos=False, special=True))
-        if count <= CAP:
-            break
-        index = next((i for i, row in enumerate(rows) if not str(row.get("content", "")).startswith("memory:")), None)
-        if index is None:
-            break
-        end = index + 1
-        if rows[index]["role"] == "assistant" and rows[index].get("tool_calls"):
-            end += len(rows[index]["tool_calls"])
-        dropped = rows[index:end]
-        del rows[index:end]
-        changed = True
-        folder = bus() / "done" / "turns"
-        folder.mkdir(parents=True, exist_ok=True)
-        n = 1
-        while (folder / f"turns-{n}.jsonl").exists():
-            n += 1
-        put(folder / f"turns-{n}.jsonl", "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in dropped))
-    if changed:
-        write_turns(rows)
-
-
-def letters(value: str) -> str:
-    value = re.sub(r"<[^>]*>", " ", value)
-    return " ".join("".join(ch for ch in value.casefold() if ch.isalpha() or ch.isspace()).split())
-
-
-def own(heard: str) -> bool:
-    heard_words = letters(heard)
-    said = letters(" ".join(SPOKEN[-3:]))
-    return bool(heard_words) and bool(said) and heard_words in said
-
-
-def note_language(text: str) -> None:
-    global LANG
-    match = re.search(r"<([A-Za-z]{2,3})-[A-Za-z]{2}>", text)
-    if match:
-        LANG = match.group(1).lower()[:2]
-
-
-SPEAK_THIS = True
-
-
-def is_request(words: str) -> bool:
-    text = " ".join(re.sub(r"<[^>]*>", " ", words).casefold().split())
-    return "?" in words or "remember" in text or text.startswith("please say aloud the following text")
-
-
-def number_question(words: str) -> bool:
-    if "?" not in words:
-        return False
-    text = words.casefold()
-    if re.search(r"\d", text):
-        return True
-    return any(word in text.split() for word in ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"))
-
-
-def emit(sentence: str, always: bool = False) -> bool:
-    if not always and not SPEAK_THIS:
-        return False
-    sentence = re.sub(r"^\d{1,2}:\d{2}:\d{2}\s+\S+\.?\s*", "", sentence.strip()).strip()
-    bare = sentence.strip(".,")
-    if re.fullmatch(r"\d{1,2}:\d{2}:\d{2}", bare) or re.fullmatch(r"[A-Za-z]{2,3}-[A-Za-z]{2}", bare):
-        return False
-    if not sentence:
-        return False
-    put(next_path("speech"), LANG + "\n" + sentence)
-    SPOKEN.append(sentence)
-    del SPOKEN[:-3]
-    return True
-
-
-def cut(buf: str, final: bool = False, first: bool = False):
-    words = 0
-    i = 0
-    while i < len(buf):
-        while i < len(buf) and buf[i].isspace():
-            i += 1
-        if i >= len(buf):
-            break
-        j = i
-        while j < len(buf) and not buf[j].isspace():
-            j += 1
-        words += 1
-        ended = buf[j - 1] in ".?!" or (j < len(buf) and buf[j] == "\n")
-        if first and j < len(buf):
-            return buf[:j].strip(), buf[j:]
-        if words >= 8 and ended:
-            return buf[:j].strip(), buf[j:]
-        if words >= CHUNK:
-            return buf[:j].strip(), buf[j:]
-        i = j
-    if final and buf.strip():
-        return buf.strip(), ""
-    return None, buf
-
-
-class Speaker:
-    def __init__(self):
-        self.hold = ""
-        self.buf = ""
-        self.inside = False
-        self.pending_first = True
-        self.pre = ""
-        self.drop = False
-
-    def feed(self, text: str) -> None:
-        self.hold += text
-        while self.hold:
-            if not self.inside:
-                at = self.hold.find(OPEN)
-                if at < 0:
-                    keep = next((OPEN[:n] for n in range(len(OPEN) - 1, 0, -1) if self.hold.endswith(OPEN[:n])), "")
-                    body, self.hold = (self.hold[:-len(keep)], keep) if keep else (self.hold, "")
-                    self.buf += body
-                    self.release()
-                    return
-                self.pre = (self.buf + self.hold[:at]).strip()
-                self.buf = ""
-                self.hold = self.hold[at + len(OPEN):]
-                self.inside = True
-            else:
-                at = self.hold.find(CLOSE)
-                if at < 0:
-                    return
-                call = self.hold[:at].strip()
-                self.hold = self.hold[at + len(CLOSE):]
-                self.inside = False
-                name = call[5:].partition("{")[0] if call.startswith("call:") else ""
-                if name == "python":
-                    self.pre = ""
-                    self.buf = ""
-                    self.drop = True
-                elif name == "remember":
-                    self.pre = ""
-                elif self.pre:
-                    self.buf = (self.pre + "\n" + self.buf).strip()
-                    self.pre = ""
-                self.release()
-
-    def release(self) -> None:
-        if self.drop:
-            self.buf = ""
-            return
-        while True:
-            sentence, rest = cut(self.buf, False, first=False)
-            if sentence is None:
-                return
-            if not rest.lstrip() or rest.lstrip().startswith("<"):
-                return
-            if emit(sentence):
-                self.pending_first = False
-            self.buf = rest
-
-    def flush(self, final: bool = False) -> None:
-        if self.drop:
-            self.buf = ""
-            return
-        while True:
-            sentence, rest = cut(self.buf, final, first=self.pending_first and not final)
-            if sentence is None:
-                return
-            if emit(sentence):
-                self.pending_first = False
-            self.buf = rest
-
-    def close(self) -> None:
-        self.feed("")
-        if self.inside:
-            return
-        if self.pre:
-            self.buf = (self.pre + "\n" + self.buf).strip()
-            self.pre = ""
-        self.flush(final=True)
+    TEMPLATE = bytes(field.parts[-1].tolist()).decode("utf-8")
+    return llm
 
 
 def parse_one(call: str) -> dict:
@@ -283,261 +86,178 @@ def parse_one(call: str) -> dict:
         return {"error": "tool call"}
     name, _, body = call[5:].partition("{")
     body = body[:-1]
-    if name not in NAMES:
+    names = {tool["function"]["name"] for tool in TOOLS}
+    if name not in names:
         return {"error": "unknown tool " + name}
     args = {key: value for key, value in re.findall(rf"(\w+):{re.escape(MARK)}(.*?){re.escape(MARK)}", body, flags=re.DOTALL)}
-    for key, value in re.findall(r"(\w+):(\d+)", body):
+    for key, value in re.findall(r"(\w+):([0-9.]+)", body):
         args.setdefault(key, value)
     return {"name": name, "arguments": args}
 
 
-def parse_calls(text: str) -> list:
-    found, rest = [], text
+def parse_calls(text: str) -> list[dict]:
+    out, rest = [], text
     while True:
         at = rest.find(OPEN)
         if at < 0:
-            return found
+            return out
         rest = rest[at + len(OPEN):]
         end = rest.find(CLOSE)
         if end < 0:
-            found.append({"error": "open tool call"})
-            return found
-        found.append(parse_one(rest[:end].strip()))
+            out.append({"error": "open tool call"})
+            return out
+        out.append(parse_one(rest[:end].strip()))
         rest = rest[end + len(CLOSE):]
 
 
-def tool_line(name: str, content: str) -> None:
-    append_turn({"role": "tool", "name": name, "content": content})
+def format_event(row: dict) -> str:
+    data = row.get("data") or {}
+    kind = row.get("type", "event")
+    at = row.get("at", "")
+    if kind == "heard":
+        language = data.get("language") or "unknown"
+        return f"[{row['id']}] {at} HEARD language={language}: {data.get('text', '')}"
+    if kind == "clock":
+        return f"[{row['id']}] {at} CLOCK: {data.get('seconds_since_heard', 0)} seconds since heard speech"
+    if kind == "wake":
+        return f"[{row['id']}] {at} WAKE: {data.get('reason', '')}"
+    if kind == "speech_queued":
+        return f"[{row['id']}] {at} YOU_ASKED_MOUTH_TO_SAY language={data.get('language', '')}: {data.get('text', '')}"
+    if kind == "speech_done":
+        return f"[{row['id']}] {at} MOUTH_FINISHED: {data.get('speech', '')} wav={data.get('wav', '')}"
+    if kind == "tool_result":
+        return f"[{row['id']}] {at} TOOL {data.get('name', '')}: {data.get('result', '')}"
+    if kind == "memory":
+        return f"[{row['id']}] {at} MEMORY_APPENDED: {data.get('text', '')}"
+    if kind == "start":
+        return f"[{row['id']}] {at} START variant={data.get('variant', '')}"
+    return f"[{row['id']}] {at} {kind.upper()}: {json.dumps(data, ensure_ascii=False)}"
 
 
-def remember(text: str) -> None:
-    if not text.strip():
-        raise RuntimeError("remember")
-    bus()
-    prev = MEMORY.read_text(encoding="utf-8")
-    fact = text.strip()
-    MEMORY.write_text((prev.rstrip() + "\n" if prev.strip() else "") + fact + "\n", encoding="utf-8")
-    read_memory()
-    tool_line("remember", "remembered\n" + fact)
+def render(llm, memory: str, events: list[dict], current: dict, cycle: list[str]) -> list[int]:
+    import jinja2
+    event_text = "\n".join(format_event(row) for row in events)
+    cycle_text = "\n".join(cycle) if cycle else "(none yet)"
+    content = f"Durable memory:\n{memory.strip() or '(empty)'}\n\nRecent event journal:\n{event_text or '(empty)'}\n\nCurrent trigger:\n{format_event(current)}\n\nCurrent-cycle completed actions and results:\n{cycle_text}"
+    messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": content}]
+    text = jinja2.Environment().from_string(TEMPLATE).render(messages=messages, tools=TOOLS, add_generation_prompt=True, bos_token=BOS, eos_token="")
+    if not text.startswith(BOS):
+        text = BOS + text
+    tokens = llm.tokenize(text.encode("utf-8"), add_bos=False, special=True)
+    print("prompt tokens", len(tokens), flush=True)
+    return tokens
 
 
-def arm(seconds: str) -> None:
-    global WAKE_AT
-    digits = "".join(ch for ch in str(seconds) if ch.isdigit())
-    if not digits:
-        raise RuntimeError("wake")
-    n = min(86400, max(5, int(digits)))
-    WAKE_AT = time.monotonic() + n
-
-
-def run_python(code: str) -> str:
-    global LAST_CODE
+def run_python(server: str, code: str) -> str:
     if not isinstance(code, str) or not code.strip():
-        raise RuntimeError("python")
-    body = code.strip()
-    if body == LAST_CODE:
-        tool_line("python", "already ran, see above")
-        return ""
-    LAST_CODE = body
-    script = next_path("job", ".py")
-    script.write_text(code, encoding="utf-8")
-    try:
-        proc = subprocess.run([str(venv_python()), str(script)], cwd=str(bus()), capture_output=True, text=True, timeout=60)
-        printed = proc.stdout or ""
-        result = f"exit {proc.returncode}\n{printed}{proc.stderr or ''}"
-    except subprocess.TimeoutExpired as err:
-        printed = ""
-        result = f"exit timeout\n{err.stdout or ''}{err.stderr or ''}"
-    record = script.with_name(script.stem + ".result.txt")
-    record.write_text(result, encoding="utf-8")
-    retire(script, "job")
-    retire(record, "job")
-    tool_line("python", result)
-    return printed.strip()
+        raise RuntimeError("empty python")
+    script = unique("job", ".py")
+    script.write_text(code, encoding="utf-8", newline="\n")
+    proc = subprocess.run([str(venv_python()), str(script)], cwd=str(WORK), capture_output=True, text=True)
+    result = f"exit {proc.returncode}\n{proc.stdout or ''}{proc.stderr or ''}"
+    result_path = script.with_name(script.stem + ".result.txt")
+    result_path.write_text(result, encoding="utf-8", newline="\n")
+    http(server, "POST", "/event", {"type": "tool_result", "source": "brain", "data": {"name": "python", "result": result, "script": str(script.relative_to(ROOT)), "artifact": str(result_path.relative_to(ROOT))}})
+    return result
 
 
-def drain() -> None:
-    put(STOP, "")
-    deadline = time.monotonic() + 60
-    quiet = None
-    while time.monotonic() < deadline:
-        if waiting("speech"):
-            quiet = None
-        elif quiet is None:
-            quiet = time.monotonic()
-        elif time.monotonic() - quiet >= 2:
-            return
-        time.sleep(0.05)
-
-
-def apply(found: list) -> bool:
-    again = False
-    for tool in found:
-        if "error" in tool and "name" not in tool:
-            tool_line("error", "error: " + tool["error"])
-            again = True
+def apply(server: str, calls: list[dict], cycle: list[str]) -> bool:
+    acted = False
+    for call in calls:
+        acted = True
+        if "error" in call:
+            result = "error: " + call["error"]
+            http(server, "POST", "/event", {"type": "tool_result", "source": "brain", "data": {"name": "parser", "result": result}})
+            cycle.append("parser -> " + result)
             continue
-        name, args = tool["name"], tool.get("arguments") or {}
+        name, args = call["name"], call.get("arguments") or {}
         try:
-            if name == "python":
-                printed = run_python(args.get("code", ""))
-                if printed:
-                    emit(printed, always=True)
+            if name == "speak":
+                text = str(args.get("text", "")).strip()
+                language = str(args.get("language", "")).strip().lower()
+                if not text or not language:
+                    raise RuntimeError("speak requires text and language")
+                reply = http(server, "POST", "/speech", {"text": text, "language": language})
+                result = "queued " + reply["name"]
+            elif name == "python":
+                result = run_python(server, args.get("code", ""))
             elif name == "remember":
-                remember(args.get("text", ""))
-                again = True
+                text = str(args.get("text", "")).strip()
+                if not text:
+                    raise RuntimeError("empty memory")
+                http(server, "POST", "/memory", {"text": text})
+                result = "remembered: " + text
             elif name == "wake":
-                arm(args.get("seconds", ""))
+                seconds = float(args.get("seconds", "0"))
+                reason = str(args.get("reason", ""))
+                http(server, "POST", "/wake", {"seconds": seconds, "reason": reason})
+                result = f"wake scheduled in {seconds:g} seconds" + (": " + reason if reason else "")
             elif name == "stop":
-                drain()
-                raise SystemExit
+                http(server, "POST", "/stop", {"source": "brain"})
+                raise SystemExit(0)
             else:
-                tool_line("error", "error: unknown tool " + name)
-                again = True
+                result = "error: unknown tool " + name
         except SystemExit:
             raise
         except Exception as err:
-            tool_line(name, "error: " + str(err))
-            again = True
-    return again
+            result = "error: " + str(err)
+            http(server, "POST", "/event", {"type": "tool_result", "source": "brain", "data": {"name": name, "result": result}})
+        cycle.append(name + " -> " + result)
+    return acted
 
 
-def store_assistant(content: str, calls: list) -> None:
-    spoken = speech_of(content)
-    if any(call.get("name") in {"python", "remember"} for call in calls):
-        spoken = ""
-    row = {"role": "assistant", "content": spoken}
-    stored = []
-    for call in calls:
-        if "name" in call:
-            stored.append({"name": call["name"], "arguments": call.get("arguments") or {}})
-        else:
-            stored.append({"name": "error", "arguments": {"text": call.get("error", "tool call")}})
-    if stored:
-        row["tool_calls"] = stored
-    append_turn(row)
-
-
-def speech_of(content: str) -> str:
-    parts_out, rest = [], content
+def think(server: str, llm, current: dict) -> None:
+    cycle = []
     while True:
-        at = rest.find(OPEN)
-        if at < 0:
-            parts_out.append(rest)
-            break
-        parts_out.append(rest[:at])
-        rest = rest[at + len(OPEN):]
-        end = rest.find(CLOSE)
-        if end < 0:
-            break
-        rest = rest[end + len(CLOSE):]
-    return "".join(parts_out).strip()
-
-
-def think(llm) -> None:
-    global LAST_COMPLETION, PRINTED
-    while True:
-        trim(llm)
-        rows = read_turns()
-        prompt = render(rows)
-        if not PRINTED:
-            print(prompt, flush=True)
-            PRINTED = True
-        tokens = llm.tokenize(prompt.encode("utf-8"), add_bos=False, special=True)
-        print("prompt tokens", len(tokens), flush=True)
-        speaker, pieces = Speaker(), []
-        for chunk in llm.create_completion(prompt=tokens, stream=True, stop=["<turn|>"], **BRAIN["decode"]):
-            text = chunk["choices"][0].get("text") or ""
-            pieces.append(text)
-            speaker.feed(text)
-        speaker.close()
-        content = "".join(pieces)
-        print(content, flush=True)
-        calls = parse_calls(content)
-        path = put(next_path("decision"), content if content.endswith("\n") else content + "\n")
-        retire(path, "decision")
-        store_assistant(content, calls)
-        if content == LAST_COMPLETION:
+        memory = http(server, "GET", "/memory")["text"]
+        events = http(server, "GET", "/events/recent?limit=80")["events"]
+        prompt = render(llm, memory, events, current, cycle)
+        completion = llm.create_completion(prompt=prompt, stop=["<turn|>"], temperature=1.0, top_p=0.95, top_k=64, min_p=0.0, max_tokens=1024)["choices"][0]["text"]
+        print(completion, flush=True)
+        decision = record("decision", ".txt", completion if completion.endswith("\n") else completion + "\n")
+        http(server, "POST", "/event", {"type": "decision", "source": "brain", "data": {"artifact": str(decision.relative_to(ROOT)), "text": completion}})
+        calls = parse_calls(completion)
+        if not calls:
             return
-        LAST_COMPLETION = content
-        if not apply(calls):
+        if not apply(server, calls, cycle):
             return
 
 
-def clock_line(kind_seconds: int) -> None:
-    append_turn({"role": "user", "content": time.strftime("%H:%M:%S") + " silence for " + str(kind_seconds) + " s"})
+def cursor() -> int:
+    try:
+        return int(CURSOR.read_text(encoding="utf-8").strip())
+    except (FileNotFoundError, ValueError):
+        return 0
 
 
-def serve():
-    global LAST_HUMAN, WAKE_AT
-    bus()
-    seed_memory()
-    for row in read_turns():
-        if row["role"] == "assistant" and row.get("content"):
-            SPOKEN.append(row["content"])
-    del SPOKEN[:-3]
-    llm = load()
-    ready("brain")
-    started = time.monotonic()
-    idle_mark = None
+def set_cursor(value: int) -> None:
+    CURSOR.parent.mkdir(parents=True, exist_ok=True)
+    tmp = CURSOR.with_name(CURSOR.name + ".tmp")
+    tmp.write_text(str(value) + "\n", encoding="utf-8")
+    tmp.replace(CURSOR)
+
+
+def serve(server: str) -> None:
+    llm = load_model(server)
+    http(server, "POST", "/ready", {"name": "brain"})
+    position = cursor()
     while True:
-        files = waiting("transcription")
-        if files:
-            name = files[0].name
-            heard = take(files[0], "transcription").strip()
-            print("read", name, flush=True)
-            if not heard:
-                continue
-            words = heard.split("\n", 1)[0].strip()
-            if own(words):
-                continue
-            global SPEAK_THIS
-            SPEAK_THIS = is_request(words) and not number_question(words)
-            note_language(words)
-            LAST_HUMAN = time.monotonic()
-            idle_mark = None
-            append_turn({"role": "user", "content": time.strftime("%H:%M:%S") + " " + words})
-            think(llm)
+        rows = http(server, "GET", "/events?after=" + str(position) + "&timeout=30", timeout=40)["events"]
+        if not rows:
             continue
-        now = time.monotonic()
-        if WAKE_AT is not None and now >= WAKE_AT:
-            base = LAST_HUMAN or started
-            WAKE_AT = None
-            clock_line(int(now - base))
-            think(llm)
-            continue
-        base = LAST_HUMAN or started
-        if WAKE_AT is None and now - base >= IDLE and (idle_mark is None or now - idle_mark >= IDLE):
-            idle_mark = now
-            clock_line(int(now - base))
-            think(llm)
-            continue
-        time.sleep(0.05)
+        for row in rows:
+            position = int(row["id"])
+            set_cursor(position)
+            if row.get("trigger"):
+                think(server, llm, row)
 
 
-def read_payload(value: str) -> str:
-    path = Path(value)
-    if path.is_file():
-        return path.read_text(encoding="utf-8-sig")
-    return value
+def main():
+    reexec()
+    if len(sys.argv) != 2:
+        raise SystemExit("usage: python brain.py <server>")
+    serve(sys.argv[1].rstrip("/"))
 
 
 if __name__ == "__main__":
-    reexec()
-    argv = sys.argv
-    if len(argv) == 1:
-        serve()
-    elif len(argv) == 2 and argv[1] not in VARIANTS:
-        bus()
-        seed_memory()
-        heard = read_payload(argv[1]).strip()
-        note_language(heard)
-        LAST_HUMAN = time.monotonic()
-        append_turn({"role": "user", "content": time.strftime("%H:%M:%S") + " " + heard})
-        think(load())
-    elif len(argv) == 4 and argv[1] in VARIANTS and argv[2] == "--say" and argv[3]:
-        bus()
-        for piece in parts(read_payload(argv[3]).strip()):
-            put(next_path("speech"), "en\n" + piece)
-    else:
-        raise SystemExit("usage: python brain.py [text|file] | python brain.py <variant> --say <text|file>")
+    main()
