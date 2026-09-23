@@ -2,7 +2,7 @@ import json, re, subprocess, sys, time
 from pathlib import Path
 from runtime import MODELS, reexec, venv_python, vulkan
 from settings import (
-    BRAIN, CHUNK, EAR, IDLE, MEMORY, ROOT, SPEAK, STOP, TOOLS, TURNS, VARIANTS, WAV, WORK,
+    BRAIN, CHUNK, IDLE, MEMORY, SPEAK, STOP, TOOLS, TURNS, VARIANTS, WORK,
     bus, next_path, parts, put, read_memory, ready, retire, take, waiting,
 )
 
@@ -419,25 +419,6 @@ def called(words: str) -> bool:
     return any(cue in padded for cue in (" could you ", " can you ", " would you ", " will you ", " tell me ", " jarvis"))
 
 
-def heard_during_playback(when: float) -> bool:
-    import wave
-    pad = EAR["pause"]
-    for folder in (ROOT / WAV, WORK / "done" / "wav"):
-        if not folder.is_dir():
-            continue
-        for path in folder.glob("*.wav"):
-            try:
-                start = path.stat().st_mtime
-                with wave.open(str(path), "rb") as handle:
-                    rate = handle.getframerate()
-                    span = handle.getnframes() / rate if rate else 0.0
-            except (wave.Error, OSError, EOFError):
-                continue
-            if start <= when <= start + span + pad:
-                return True
-    return False
-
-
 def serve():
     global LAST_HUMAN, WAKE_AT
     bus()
@@ -453,7 +434,6 @@ def serve():
     while True:
         files = waiting("transcription")
         if files:
-            when = files[0].stat().st_mtime
             name = files[0].name
             heard = take(files[0], "transcription").strip()
             print("read", name, flush=True)
@@ -461,10 +441,7 @@ def serve():
                 continue
             words, _, times = heard.partition("\n")
             words, times = words.strip(), times.strip()
-            if times and heard_during_playback(when):
-                print("quiet", name, flush=True)
-                continue
-            if own(words) or not called(words):
+            if times or own(words) or not called(words):
                 print("quiet", name, flush=True)
                 continue
             note_language(words)
