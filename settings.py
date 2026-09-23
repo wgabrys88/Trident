@@ -28,21 +28,29 @@ def put(path: Path, text: str) -> Path:
     tmp.replace(path)
     return path
 
-def take(path: Path) -> str:
-    text = path.read_text(encoding="utf-8-sig")
-    dest = DONE / path.name
+def retire(path: Path, kind: str) -> Path:
+    bus()
+    folder = DONE / kind
+    folder.mkdir(exist_ok=True)
+    dest = folder / path.name
     n = 1
     while dest.exists():
-        dest = DONE / f"{path.stem}-{n}{path.suffix}"
+        dest = folder / f"{path.stem}-{n}{path.suffix}"
         n += 1
     path.replace(dest)
+    return dest
+
+def take(path: Path, kind: str) -> str:
+    text = path.read_text(encoding="utf-8-sig")
+    retire(path, kind)
     return text
 
-def next_path(prefix: str) -> Path:
+def next_path(prefix: str, suffix: str = ".txt") -> Path:
     n = 1
+    folder = DONE / prefix
     while True:
-        name = f"{prefix}-{n}.txt"
-        if not (bus() / name).exists() and not (DONE / name).exists():
+        name = f"{prefix}-{n}{suffix}"
+        if not (bus() / name).exists() and not (folder / name).exists():
             return bus() / name
         n += 1
 
@@ -77,16 +85,14 @@ def append_live(text: str) -> None:
     with LIVE.open("a", encoding="utf-8") as handle:
         handle.write(text.rstrip() + "\n")
 
-def clear_live() -> None:
-    bus()
-    LIVE.write_text("", encoding="utf-8")
+def slot(path: Path, text: str) -> None:
+    kind = {LIVE: "live", MEMORY: "memory", SAID: "said"}[path]
+    if path.is_file() and path.stat().st_size:
+        retire(path, kind)
+    put(path, text)
 
-def sweep_queue() -> None:
-    bus()
-    for path in list(INBOX.glob("*.txt")) + list(WORK.glob("transcription-*.txt")) + list(WORK.glob("speech-*.txt")):
-        path.unlink()
-    SAID.write_text("", encoding="utf-8")
-    clear_live()
+def clear_live() -> None:
+    slot(LIVE, "")
 
 def user_text() -> str:
     bus()

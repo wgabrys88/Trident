@@ -11,7 +11,7 @@ flowchart LR
   brain["Brain · brain.py"]
   speech["speech-N.txt"]
   mouth["Mouth · tts.py"]
-  wav["wav/"]
+  wav["done/wav/"]
   speaker --> inbox --> ear --> heard --> brain --> speech --> mouth --> wav
 ```
 
@@ -28,10 +28,16 @@ The ear also opens the microphone. A microphone utterance and an inbox file beco
 | `speech-N.txt` | the brain | the mouth |
 | `said.txt` | the brain, last spoken answer | the brain, as an echo filter |
 | `job.py` | the brain, last script | the script runner |
-| `done/` | the consumer, after the file is taken | anyone reading the record |
-| `wav/` | the mouth | anyone listening to the record |
+| `done/inbox/` | the ear, after it has read the file | anyone reading the record |
+| `done/transcription/` | the brain, after it has read the file | anyone reading the record |
+| `done/speech/` | the mouth, after it has spoken the file | anyone reading the record |
+| `done/live/` | the brain, when `live.txt` is replaced | anyone reading the record |
+| `done/memory/` | the brain, when distill replaces memory | anyone reading the record |
+| `done/said/` | the brain, when say replaces `said.txt` | anyone reading the record |
+| `wav/` | the mouth, while it writes and plays | the mouth |
+| `done/wav/` | the mouth, after the wav exists | anyone listening to the record |
 
-A consumed inbox file, transcription file, or speech file leaves the live folder and sits in `done/`.
+A consumed file is renamed into `done/<kind>/`. The name and the bytes stay. A wav moves to `done/wav/` and is never removed.
 
 ```mermaid
 flowchart TB
@@ -62,7 +68,7 @@ python trident.py nano
 
 `python trident.py <variant>` opens the microphone and still reads `inbox/` files. `python trident.py <variant> inbox` leaves the microphone closed. The variant is `nano`, `turbo`, or `v3`.
 
-Wait until the ear, the brain, and the mouth have each printed ready. Then an inbox file is renamed into place, or a person speaks and stays quiet long enough for the ear to cut. The proof of a run is the supervisor log and the files left in `workspace/` and `wav/`.
+Wait until the ear, the brain, and the mouth have each printed ready. Then an inbox file is renamed into place, or a person speaks and stays quiet long enough for the ear to cut. The proof of a run is the files left under `workspace/done/`, including `done/wav/`.
 
 The brain is CPU only (`n_gpu_layers` is 0). Both mouths use repeat penalty 1.2. The llama mouth, v3, uses 10 diffusion steps and `gpu` 0.
 

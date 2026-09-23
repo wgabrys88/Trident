@@ -3,7 +3,7 @@ from pathlib import Path
 from install import MODELS, reexec, venv_python
 from settings import (
     ALOUD, BRAIN, LIVE, MEMORY, SAID, SPEAK, TOOLS, VARIANTS, append_live, bus, clear_live,
-    next_path, parts, put, take, user_text, waiting,
+    next_path, parts, put, slot, take, user_text, waiting,
 )
 
 MARK = '<|"|>'
@@ -78,7 +78,7 @@ def own(heard: str, said: str) -> bool:
 def speak(text: str, language: str):
     if language not in ("en", "pl") or not text.strip():
         raise RuntimeError("say")
-    put(SAID, text)
+    slot(SAID, text)
     for piece in parts(text):
         put(next_path("speech"), language + "\n" + piece)
 
@@ -115,8 +115,8 @@ def apply(found, exact=None):
         elif name == "distill":
             if not tool.get("text"):
                 raise RuntimeError("distill")
-            MEMORY.write_text(tool["text"].strip() + "\n", encoding="utf-8")
-            LIVE.write_text("", encoding="utf-8")
+            slot(MEMORY, tool["text"].strip() + "\n")
+            clear_live()
         elif name == "run_python":
             result = run_python(tool.get("code", ""))
             append_live(result)
@@ -148,7 +148,7 @@ def mouth(variant: str):
     from tts import serve, say
     pipe = serve(variant)
     for path in waiting("speech"):
-        body = take(path)
+        body = take(path, "speech")
         language, _, text = body.partition("\n")
         language, text = language.strip(), text.strip()
         if text:
@@ -183,7 +183,7 @@ def serve():
             time.sleep(0.05)
             continue
         name = files[0].name
-        heard = take(files[0]).strip()
+        heard = take(files[0], "transcription").strip()
         print("read", name, flush=True)
         if not heard:
             continue

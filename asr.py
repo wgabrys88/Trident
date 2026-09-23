@@ -36,7 +36,7 @@ class Ear:
     def drain_inbox(self):
         bus()
         for path in sorted(INBOX.glob("*.txt")):
-            text = take(path).strip()
+            text = take(path, "inbox").strip()
             if text:
                 self.line(text)
 

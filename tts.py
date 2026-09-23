@@ -2,7 +2,7 @@ import ctypes, json, subprocess, sys, time, wave
 from datetime import datetime
 from pathlib import Path
 from install import MODELS, ROOT, alive, kill, launch_args, venv_python
-from settings import ARCHITECTURES, VARIANTS, WAV, take, waiting
+from settings import ARCHITECTURES, VARIANTS, WAV, retire, waiting
 
 K32 = ctypes.WinDLL("kernel32", use_last_error=True)
 K32.WaitNamedPipeW.argtypes, K32.WaitNamedPipeW.restype = [ctypes.c_wchar_p, ctypes.c_uint], ctypes.c_int
@@ -57,12 +57,26 @@ def synthesize(pipe: str, text: str, language: str = "") -> bytes:
             remaining -= len(chunk)
     return bytes(pcm)
 
+def loose_wavs() -> None:
+    home = ROOT / WAV
+    if not home.is_dir():
+        return
+    for path in list(home.glob("*.wav")):
+        retire(path, "wav")
+
 def say(pipe: str, text: str, language: str = ""):
     import numpy as np
+    loose_wavs()
     pcm = np.frombuffer(synthesize(pipe, text, language), dtype=np.int16)
-    print(write_wav(pcm.tobytes()), flush=True)
+    wav = write_wav(pcm.tobytes())
     print(text, flush=True)
-    play(pcm)
+    try:
+        play(pcm)
+    except Exception:
+        if wav.is_file():
+            retire(wav, "wav")
+        raise
+    print(retire(wav, "wav"), flush=True)
 
 def serve(name: str) -> str:
     if name not in VARIANTS:
@@ -117,11 +131,15 @@ def watch(pipe: str):
         if not files:
             time.sleep(0.05)
             continue
-        body = take(files[0])
+        path = files[0]
+        body = path.read_text(encoding="utf-8-sig")
         language, _, text = body.partition("\n")
         language, text = language.strip(), text.strip()
-        if text:
-            say(pipe, text, language)
+        if not text:
+            retire(path, "speech")
+            continue
+        say(pipe, text, language)
+        retire(path, "speech")
 
 if __name__ == "__main__":
     from install import reexec
