@@ -30,13 +30,14 @@ class Ear:
 
     def tag(self, sequences, durations=None):
         ids = sequences[0]
+        flat = [int(x) for x in ids.tolist()]
         raw = self.processor.decode(ids, skip_special_tokens=False)
         if not isinstance(raw, str):
             raw = raw[0]
         match = TAG.search(str(raw).strip())
         lang = "<" + match.group(1) + ">" if match else ""
         if not lang:
-            pieces = self.processor.tokenizer.convert_ids_to_tokens([int(x) for x in ids.tolist()])
+            pieces = self.processor.tokenizer.convert_ids_to_tokens(flat)
             for piece in reversed(pieces):
                 found = re.search(r"[A-Za-z]{2,3}-[A-Za-z]{2}", str(piece))
                 if found:
@@ -46,28 +47,36 @@ class Ear:
         if not isinstance(text, str):
             text = text[0]
         text = TAG.sub("", text).strip()
+        shape = None if durations is None else tuple(durations.shape)
+        print("lang_token", lang or "none", "durations", shape, "has_en_us", 2947 in flat, flush=True)
         times = ""
-        if durations is not None:
+        if durations is None or durations.numel() == 0:
+            print("timestamps skipped empty durations", flush=True)
+        else:
             try:
-                _decoded, stamps = self.processor.decode(ids, durations=durations, skip_special_tokens=True)
+                batch = sequences if sequences.ndim == 2 else sequences.unsqueeze(0)
+                spans = durations if durations.ndim == 2 else durations.unsqueeze(0)
+                width = min(batch.shape[1], spans.shape[1])
+                _decoded, stamps = self.processor.decode(
+                    batch[:, :width], durations=spans[:, :width], skip_special_tokens=True
+                )
                 words = []
-                for item in stamps:
+                for item in stamps[0]:
                     token = item["token"]
-                    if not words or token.startswith(" "):
-                        words.append([token.strip(), item["start"]])
+                    if not words or token[:1] == " ":
+                        words.append([token.strip(), float(item["start"])])
                     else:
                         words[-1][0] += token
                 times = " ".join(f"{word} {start:.2f}" for word, start in words if word)
             except Exception as err:
-                print("timestamps skipped", err, flush=True)
+                print("timestamps skipped", type(err).__name__, err, flush=True)
         return (lang + " " + text).strip(), times
 
     def transcribe_batch(self, audio):
         inputs = self.processor(audio, sampling_rate=EAR["sample_rate"], language=EAR["language"])
         with torch.inference_mode():
             output = self.model.generate(**inputs, return_dict_in_generate=True)
-        durations = output.durations[0] if getattr(output, "durations", None) is not None else None
-        return self.tag(output.sequences, durations)
+        return self.tag(output.sequences, getattr(output, "durations", None))
 
     def transcribe_stream(self, pull):
         first_n = self.processor.num_samples_first_audio_chunk
@@ -106,13 +115,7 @@ class Ear:
 
         with torch.inference_mode():
             output = self.model.generate(input_features=chunks(), num_lookahead_tokens=EAR["lookahead"], prompt_ids=self.prompt_ids)
-        durations = None
-        if getattr(output, "durations", None) is not None:
-            durations = output.durations
-            if durations.ndim == 1:
-                durations = durations.unsqueeze(0)
-            durations = durations[0]
-        text, times = self.tag(output.sequences, durations)
+        text, times = self.tag(output.sequences, getattr(output, "durations", None))
         return text, times, state["last"]
 
     def line(self, text, times="", last=None):

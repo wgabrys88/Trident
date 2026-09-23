@@ -151,8 +151,8 @@ def emit(sentence: str) -> None:
     del SPOKEN[:-3]
 
 
-def cut(buf: str, final: bool = False):
-    words, start, last = 0, 0, None
+def cut(buf: str, final: bool = False, first: bool = False):
+    words = 0
     i = 0
     while i < len(buf):
         while i < len(buf) and buf[i].isspace():
@@ -163,9 +163,11 @@ def cut(buf: str, final: bool = False):
         while j < len(buf) and not buf[j].isspace():
             j += 1
         words += 1
-        if words >= 8 and (buf[j - 1] in ".?!" or (j < len(buf) and buf[j] == "\n")):
-            last = j
-            return buf[:last].strip(), buf[last:]
+        ended = buf[j - 1] in ".?!" or (j < len(buf) and buf[j] == "\n")
+        if first and (ended or words >= 8):
+            return buf[:j].strip(), buf[j:]
+        if words >= 8 and ended:
+            return buf[:j].strip(), buf[j:]
         if words >= CHUNK:
             return buf[:j].strip(), buf[j:]
         i = j
@@ -179,6 +181,7 @@ class Speaker:
         self.hold = ""
         self.buf = ""
         self.inside = False
+        self.pending_first = True
 
     def feed(self, text: str) -> None:
         self.hold += text
@@ -204,10 +207,11 @@ class Speaker:
 
     def flush(self, final: bool = False) -> None:
         while True:
-            sentence, rest = cut(self.buf, final)
+            sentence, rest = cut(self.buf, final, first=self.pending_first)
             if sentence is None:
                 return
             emit(sentence)
+            self.pending_first = False
             self.buf = rest
             final = False
 

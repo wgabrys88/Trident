@@ -389,7 +389,7 @@ The echo check runs after the transcription has already been renamed into `done/
 
 ### Caps
 
-`CHUNK` is 40. While the model streams, a sentence of at least 8 words, or 40 words, is written as `speech-N.txt` before generation ends. The first line is the two-letter language of the last ear tag (`en-US` becomes `en`). `python brain.py <variant> --say` still splits on the same 40-word cap. The mouth plays one stretch and synthesizes the next speech file while that stretch is still coming out of the speakers.
+`CHUNK` is 40. The first speech file is the first sentence, or 8 words if that sentence is longer, so the mouth can start. Later files are a sentence of at least 8 words, or 40 words. The first line is the two-letter language of the last ear tag (`en-US` becomes `en`). `python brain.py <variant> --say` still splits on the same 40-word cap. The mouth plays one stretch and synthesizes the next speech file while that stretch is still coming out of the speakers.
 
 `IDLE` is 1800 seconds. `MAX_MEMORY` is 8000. The memory check is `len` of the Python string from `read_text`. When `memory.md` is over the cap, the head is renamed into `done/memory/` and the tail stays. The model does not see `live.txt`.
 
