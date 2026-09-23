@@ -411,13 +411,12 @@ def clock_line(kind_seconds: int) -> None:
 def called(words: str) -> bool:
     if "?" in words:
         return True
-    text = " " + re.sub(r"<[^>]*>", " ", words).casefold() + " "
-    cues = (
-        " jarvis", " please ", " hello", " hi",
-        " could you ", " can you ", " would you ", " will you ", " tell me ",
-        " what ", " what's ", " when ", " where ", " who ", " why ", " how ",
-    )
-    return any(cue in text for cue in cues)
+    text = re.sub(r"<[^>]*>", " ", words).casefold()
+    text = " ".join(text.split())
+    if text.startswith(("jarvis", "please ", "hello", "hi ", "hi,", "what ", "what's ", "when ", "where ", "who ", "why ", "how ")):
+        return True
+    padded = " " + text + " "
+    return any(cue in padded for cue in (" could you ", " can you ", " would you ", " will you ", " tell me ", " jarvis"))
 
 
 def heard_during_playback(when: float) -> bool:
