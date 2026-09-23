@@ -166,7 +166,7 @@ def cut(buf: str, final: bool = False, first: bool = False):
             j += 1
         words += 1
         ended = buf[j - 1] in ".?!" or (j < len(buf) and buf[j] == "\n")
-        if first and (ended or words >= 4):
+        if first and j < len(buf):
             return buf[:j].strip(), buf[j:]
         if words >= 8 and ended:
             return buf[:j].strip(), buf[j:]
