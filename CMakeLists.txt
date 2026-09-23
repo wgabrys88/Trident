@@ -33,11 +33,12 @@ target_link_libraries(chatterbox PRIVATE trident_engine)
 target_link_libraries(chatterbox-bake PRIVATE trident_engine)
 
 set(LLAMA_VENDOR "${CMAKE_SOURCE_DIR}/gemma/llama.cpp/vendor")
+set(HTTPLIB_SRC "${LLAMA_VENDOR}/cpp-httplib/httplib.cpp")
 set(HOST_SRC
     src/host/bus.cpp src/host/journal.cpp src/host/store.cpp
     src/host/devices.cpp src/host/supervisor.cpp src/host/trident.cpp)
-add_executable(trident-host ${HOST_SRC})
-add_executable(trident-mouth src/host/mouth_worker.cpp)
+add_executable(trident-host ${HOST_SRC} ${HTTPLIB_SRC})
+add_executable(trident-mouth src/host/mouth_worker.cpp ${HTTPLIB_SRC})
 target_include_directories(trident-host PRIVATE
     "${LLAMA_VENDOR}/cpp-httplib" "${LLAMA_VENDOR}"
     ${CMAKE_SOURCE_DIR}/ggml/include src)
