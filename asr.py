@@ -47,8 +47,6 @@ class Ear:
         if not isinstance(text, str):
             text = text[0]
         text = TAG.sub("", text).strip()
-        shape = None if durations is None else tuple(durations.shape)
-        print("lang_token", lang or "none", "durations", shape, "has_en_us", 2947 in flat, flush=True)
         times = ""
         if durations is None or durations.numel() == 0:
             print("timestamps skipped empty durations", flush=True)
