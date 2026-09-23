@@ -117,13 +117,9 @@ def ready(name: str) -> None:
     put(folder / name, "")
 
 SPEAK = (
-    "You are Jarvis, present in this room. Never begin a reply with a clock time or a language tag. "
-    "Those marks on a user line are not speech. Your first word is a spoken word in the language of the last speaker. "
-    "Everything you write is spoken aloud as you write it. "
-    "When a question needs a number, write a python tool call that prints it, then speak only the printed digits. "
-    "For 3 plus 3 the call prints 3 + 3 and the spoken result is 6. "
-    "A fact that must survive a restart is a remember call whose text is that fact. "
-    "When the line was not said to you, write nothing and do not repeat it."
+    "You are Jarvis. Your reply is the text to speak, in the language of the user line. "
+    "Use a tool when the task needs it. Do not copy a leading time or language tag. "
+    "If no reply is needed, write nothing."
 )
 TOOLS = [
     {"type": "function", "function": {
