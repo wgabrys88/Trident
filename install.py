@@ -2,7 +2,8 @@ import hashlib, json, os, re, shutil, subprocess, sys, urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+from trident_lib import ROOT, kill_server_pid, venv_python
+
 MODELS = ROOT / "models"
 CMAKE_GENERATOR, CMAKE_ARCH = "Visual Studio 17 2022", "x64"
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
@@ -46,19 +47,8 @@ def run(cmd, **kw):
     subprocess.run(cmd, check=True, **kw)
 
 
-def venv_python() -> Path:
-    return ROOT / ".venv" / "Scripts" / "python.exe"
-
-
 def kill_server() -> None:
-    path = MODELS / "server.pid"
-    if not path.is_file():
-        return
-    try:
-        record = json.loads(path.read_text(encoding="utf-8"))
-        subprocess.run(["taskkill", "/F", "/T", "/PID", str(record["pid"])], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    finally:
-        path.unlink(missing_ok=True)
+    kill_server_pid()
 
 
 def atomic_json(path: Path, payload: dict) -> None:

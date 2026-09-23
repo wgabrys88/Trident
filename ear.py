@@ -1,8 +1,8 @@
-import json, re, subprocess, sys, time, urllib.request
+import re, sys, time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
-WORK = ROOT / "workspace"
+from trident_lib import ROOT, WORK, http, reexec
+
 MODELS = ROOT / "models"
 EAR = {
     "dir": "nemotron-3.5-asr-streaming-0.6b",
@@ -15,39 +15,6 @@ EAR = {
     "level": 0.03,
 }
 TAG = re.compile(r"<([A-Za-z]{2,3}-[A-Za-z]{2})>\s*$")
-
-
-def venv_python() -> Path:
-    return ROOT / ".venv" / "Scripts" / "python.exe"
-
-
-def reexec() -> None:
-    py = venv_python()
-    if not py.is_file():
-        raise RuntimeError("missing " + str(py))
-    if Path(sys.executable).resolve() != py.resolve():
-        raise SystemExit(subprocess.call([str(py), *sys.argv]))
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
-
-
-def request(server: str, method: str, path: str, payload=None):
-    raw = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(server + path, data=raw, method=method, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=70) as resp:
-        return json.loads(resp.read().decode("utf-8"))
-
-
-def retire(path: Path, kind: str) -> Path:
-    folder = WORK / "done" / kind
-    folder.mkdir(parents=True, exist_ok=True)
-    dest = folder / path.name
-    n = 1
-    while dest.exists():
-        dest = folder / f"{path.stem}-{n}{path.suffix}"
-        n += 1
-    path.replace(dest)
-    return dest
 
 
 class Ear:
@@ -156,7 +123,7 @@ class Ear:
         text = text.strip()
         if not text:
             return
-        row = request(self.server, "POST", "/heard", {"text": text, "language": language, "timestamps": timestamps})
+        row = http(self.server, "POST", "/heard", {"text": text, "language": language, "timestamps": timestamps})
         if last is not None:
             print("last_hot", f"{last:.3f}", "event", row.get("id"), flush=True)
         print("heard", row.get("id"), language, text, flush=True)
@@ -167,13 +134,23 @@ class Ear:
         for path in sorted(inbox.glob("*.txt")):
             body = path.read_text(encoding="utf-8-sig").strip()
             if not body:
-                retire(path, "inbox")
+                http(self.server, "POST", "/archive", {"path": str(path.relative_to(ROOT)), "kind": "inbox"})
                 continue
             match = re.match(r"<([A-Za-z]{2,3}-[A-Za-z]{2})>\s*", body)
             language = match.group(1) if match else ""
             text = body[match.end():] if match else body
             self.send(text, language)
-            retire(path, "inbox")
+            http(self.server, "POST", "/archive", {"path": str(path.relative_to(ROOT)), "kind": "inbox"})
+
+    def transcribe_utterance(self, utterance, pull):
+        import numpy as np
+        try:
+            return self.transcribe_stream(pull)
+        except Exception as err:
+            print("stream failed", err, flush=True)
+            audio = np.concatenate(utterance) if utterance else np.zeros(0, dtype=np.float32)
+            language, text, times = self.transcribe_batch(audio)
+            return language, text, times, time.time()
 
     def hear(self, path: str):
         import numpy as np
@@ -182,28 +159,24 @@ class Ear:
         if not file.is_file():
             raise RuntimeError("missing " + str(file))
         audio = np.asarray(load_audio(str(file), sampling_rate=EAR["sample_rate"], backend="librosa"), dtype=np.float32)
+        utterance = [audio]
         cursor = {"i": 0}
+        hop = int(EAR["sample_rate"] * 0.05)
 
         def pull():
-            hop = int(EAR["sample_rate"] * 0.05)
             if cursor["i"] >= len(audio):
                 return None
             nxt = audio[cursor["i"]:cursor["i"] + hop]
             cursor["i"] += hop
             return nxt
 
-        try:
-            language, text, times, last = self.transcribe_stream(pull)
-        except Exception as err:
-            print("stream failed", err, flush=True)
-            language, text, times = self.transcribe_batch(audio)
-            last = None
+        language, text, times, last = self.transcribe_utterance(utterance, pull)
         if not text:
             raise RuntimeError("ear heard nothing")
         self.send(text, language, times, last)
 
     def listen(self, mic=True):
-        request(self.server, "POST", "/ready", {"name": "ear"})
+        http(self.server, "POST", "/ready", {"name": "ear"})
         if not mic:
             while True:
                 self.drain_inbox()
@@ -218,35 +191,25 @@ class Ear:
                 frame, _ = stream.read(hop)
                 if float(np.abs(frame).mean()) < level:
                     continue
-                pending = [frame.reshape(-1).copy()]
+                utterance = [frame.reshape(-1).copy()]
                 quiet = {"n": 0}
+                pending = list(utterance)
 
                 def pull():
-                    self.drain_inbox()
                     if pending:
                         return pending.pop(0)
                     item, _ = stream.read(hop)
-                    if float(np.abs(item).mean()) >= level:
+                    chunk = item.reshape(-1).copy()
+                    utterance.append(chunk)
+                    if float(np.abs(chunk).mean()) >= level:
                         quiet["n"] = 0
-                        return item.reshape(-1).copy()
+                        return chunk
                     quiet["n"] += 1
                     if quiet["n"] >= pause:
                         return None
-                    return item.reshape(-1).copy()
+                    return chunk
 
-                try:
-                    language, text, times, last = self.transcribe_stream(pull)
-                except Exception as err:
-                    print("stream failed", err, flush=True)
-                    chunks = []
-                    item = pull()
-                    while item is not None:
-                        chunks.append(item)
-                        item = pull()
-                    if not chunks:
-                        continue
-                    language, text, times = self.transcribe_batch(np.concatenate(chunks))
-                    last = time.time()
+                language, text, times, last = self.transcribe_utterance(utterance, pull)
                 if text:
                     self.send(text, language, times, last)
 

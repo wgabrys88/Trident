@@ -1,63 +1,16 @@
-import ctypes, json, subprocess, sys, time, urllib.request, wave
+import ctypes, json, subprocess, sys, time, wave
 from datetime import datetime
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+from trident_lib import MODELS, ROOT, kill_server_pid, http, reexec, venv_python
+
 WORK = ROOT / "workspace"
-DONE = WORK / "done"
-MODELS = ROOT / "models"
+GPT2_FLAGS = {"seed": "42", "temperature": "0.8", "top-k": "1000", "top-p": "0.95", "repeat-penalty": "1.2", "n-predict": "1000", "cfm-steps": "2", "trim-fade-samples": "480"}
 VARIANTS = {
-    "nano": {"arch": "gpt2", "flags": {"seed": "42", "temperature": "0.8", "top-k": "1000", "top-p": "0.95", "repeat-penalty": "1.2", "n-predict": "1000", "cfm-steps": "2", "trim-fade-samples": "480"}},
-    "turbo": {"arch": "gpt2", "flags": {"seed": "42", "temperature": "0.8", "top-k": "1000", "top-p": "0.95", "repeat-penalty": "1.2", "n-predict": "1000", "cfm-steps": "2", "trim-fade-samples": "480"}},
-    "v3": {"arch": "llama", "flags": {"seed": "42", "temperature": "0.8", "top-p": "1.0", "repeat-penalty": "1.2", "n-predict": "1000", "cfm-steps": "10", "trim-fade-samples": "480", "min-p": "0.05", "cfg-weight": "0.5", "exaggeration": "0.5", "cfm-cfg": "0.7"}},
+    "nano": {"arch": "gpt2", "flags": GPT2_FLAGS, "spoken_languages": ("en",)},
+    "turbo": {"arch": "gpt2", "flags": GPT2_FLAGS, "spoken_languages": ("en",)},
+    "v3": {"arch": "llama", "flags": {"seed": "42", "temperature": "0.8", "top-p": "1.0", "repeat-penalty": "1.2", "n-predict": "1000", "cfm-steps": "10", "trim-fade-samples": "480", "min-p": "0.05", "cfg-weight": "0.5", "exaggeration": "0.5", "cfm-cfg": "0.7"}, "spoken_languages": None},
 }
-
-
-def venv_python() -> Path:
-    return ROOT / ".venv" / "Scripts" / "python.exe"
-
-
-def reexec() -> None:
-    py = venv_python()
-    if not py.is_file():
-        raise RuntimeError("missing " + str(py))
-    if Path(sys.executable).resolve() != py.resolve():
-        raise SystemExit(subprocess.call([str(py), *sys.argv]))
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
-
-
-def http(server: str, method: str, path: str, payload=None, timeout=70):
-    raw = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(server + path, data=raw, method=method, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-    if isinstance(data, dict) and data.get("error"):
-        raise RuntimeError(data["error"])
-    return data
-
-
-def retire(path: Path, kind: str) -> Path:
-    folder = DONE / kind
-    folder.mkdir(parents=True, exist_ok=True)
-    dest = folder / path.name
-    n = 1
-    while dest.exists():
-        dest = folder / f"{path.stem}-{n}{path.suffix}"
-        n += 1
-    path.replace(dest)
-    return dest
-
-
-def kill_old_server() -> None:
-    path = MODELS / "server.pid"
-    if not path.is_file():
-        return
-    try:
-        record = json.loads(path.read_text(encoding="utf-8"))
-        subprocess.run(["taskkill", "/F", "/T", "/PID", str(record["pid"])], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    finally:
-        path.unlink(missing_ok=True)
 
 
 def pipe_api():
@@ -98,7 +51,7 @@ def server_command(name: str, gpu: int) -> tuple[list[str], str]:
 
 
 def start_engine(name: str, gpu: int):
-    kill_old_server()
+    kill_server_pid()
     command, pipe = server_command(name, gpu)
     exe = Path(command[0])
     proc = subprocess.Popen(command, cwd=exe.parent, stdin=subprocess.DEVNULL, creationflags=subprocess.CREATE_NEW_CONSOLE)
@@ -157,23 +110,24 @@ def play(pcm: bytes) -> None:
     import sounddevice as sd
     ctypes.windll.ole32.CoInitializeEx(None, 0)
     audio = np.frombuffer(pcm, dtype=np.int16)
-    sd.play(np.repeat(audio, 2), 48000)
+    sd.play(audio, 24000)
     sd.wait()
 
 
-def archive_loose_wavs() -> None:
+def archive_loose_wavs(server: str) -> None:
     home = ROOT / "wav"
     if home.is_dir():
         for path in list(home.glob("*.wav")):
-            retire(path, "wav")
+            http(server, "POST", "/archive", {"path": str(path.relative_to(ROOT)), "kind": "wav"})
 
 
 def serve(name: str, server: str) -> None:
     cfg = VARIANTS[name]
     gpu = int(http(server, "GET", "/config")["vulkan_device"])
     engine, pipe = start_engine(name, gpu)
-    archive_loose_wavs()
+    archive_loose_wavs(server)
     http(server, "POST", "/ready", {"name": "mouth"})
+    spoken = cfg.get("spoken_languages")
     try:
         while True:
             item = http(server, "GET", "/speech/next?timeout=30", timeout=40).get("speech")
@@ -181,7 +135,7 @@ def serve(name: str, server: str) -> None:
                 continue
             language, text = item["language"], item["text"]
             spoken_language = language
-            if cfg["arch"] == "gpt2" and language not in ("", "en"):
+            if spoken is not None and language not in ("", *spoken):
                 spoken_language = "en"
                 http(server, "POST", "/event", {"type": "mouth_language", "source": "mouth", "data": {"requested": language, "spoken_as": "en", "speech": item["name"]}})
             pcm = synthesize(pipe, text, spoken_language)
@@ -190,8 +144,8 @@ def serve(name: str, server: str) -> None:
             try:
                 play(pcm)
             finally:
-                archived = retire(wav, "wav") if wav.is_file() else wav
-            http(server, "POST", "/speech/done", {"name": item["name"], "wav": str(archived.relative_to(ROOT))})
+                pass
+            http(server, "POST", "/speech/done", {"name": item["name"], "wav": str(wav.relative_to(ROOT))})
     finally:
         if engine.poll() is None:
             subprocess.run(["taskkill", "/F", "/T", "/PID", str(engine.pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

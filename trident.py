@@ -2,10 +2,9 @@ import json, os, subprocess, sys, threading, time, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
-WORK = ROOT / "workspace"
+from trident_lib import MODELS, ROOT, WORK, kill_server_pid, reexec, venv_python
+
 DONE = WORK / "done"
-MODELS = ROOT / "models"
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("TRIDENT_PORT", "8765"))
 IDLE = int(os.environ.get("TRIDENT_IDLE_SECONDS", "1800"))
@@ -16,20 +15,7 @@ VARIANT = "turbo"
 LAST_HEARD = time.time()
 LAST_CLOCK = LAST_HEARD
 NEXT_EVENT = 1
-
-
-def venv_python() -> Path:
-    return ROOT / ".venv" / "Scripts" / "python.exe"
-
-
-def reexec() -> None:
-    py = venv_python()
-    if not py.is_file():
-        raise RuntimeError("missing " + str(py) + "; run python install.py first")
-    if Path(sys.executable).resolve() != py.resolve():
-        raise SystemExit(subprocess.call([str(py), *sys.argv]))
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
+EVENTS: list[dict] = []
 
 
 def bus() -> None:
@@ -37,7 +23,7 @@ def bus() -> None:
     DONE.mkdir(exist_ok=True)
     (WORK / "inbox").mkdir(exist_ok=True)
     (WORK / "ready").mkdir(exist_ok=True)
-    for kind in ("inbox", "transcription", "speech", "wav", "job", "decision", "wake", "ready"):
+    for kind in ("inbox", "transcription", "speech", "wav", "job", "wake", "ready"):
         (DONE / kind).mkdir(exist_ok=True)
     memory = WORK / "memory.md"
     if not memory.exists():
@@ -74,20 +60,18 @@ def numbered(prefix: str, suffix: str = ".txt", folder: Path = WORK) -> Path:
 
 def event_rows() -> list[dict]:
     with LOCK:
-        path = WORK / "events.jsonl"
-        if not path.is_file():
-            return []
-        out = []
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if line.strip():
-                out.append(json.loads(line))
-        return out
+        return list(EVENTS)
 
 
 def init_event_counter() -> None:
-    global NEXT_EVENT
-    rows = event_rows()
-    NEXT_EVENT = (rows[-1]["id"] + 1) if rows else 1
+    global NEXT_EVENT, EVENTS
+    path = WORK / "events.jsonl"
+    EVENTS = []
+    if path.is_file():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                EVENTS.append(json.loads(line))
+    NEXT_EVENT = (EVENTS[-1]["id"] + 1) if EVENTS else 1
 
 
 def add_event(kind: str, source: str, data=None, trigger: bool = False) -> dict:
@@ -103,6 +87,7 @@ def add_event(kind: str, source: str, data=None, trigger: bool = False) -> dict:
             "data": data if data is not None else {},
         }
         NEXT_EVENT += 1
+        EVENTS.append(row)
         with (WORK / "events.jsonl").open("a", encoding="utf-8", newline="\n") as handle:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
         if kind == "heard":
@@ -112,15 +97,15 @@ def add_event(kind: str, source: str, data=None, trigger: bool = False) -> dict:
 
 
 def recent_events(limit: int) -> list[dict]:
-    rows = event_rows()
-    return rows[-max(1, min(limit, 500)):]
+    with LOCK:
+        return EVENTS[-max(1, min(limit, 500)):]
 
 
 def next_event(after: int, timeout: float) -> list[dict]:
     deadline = time.monotonic() + timeout
     with CHANGED:
         while True:
-            rows = [row for row in event_rows() if row["id"] > after]
+            rows = [row for row in EVENTS if row["id"] > after]
             if rows or STOP.is_set():
                 return rows[:100]
             left = deadline - time.monotonic()
@@ -205,7 +190,7 @@ class Handler(BaseHTTPRequestHandler):
         query = urllib.parse.parse_qs(url.query)
         try:
             if url.path == "/health":
-                send(self, 200, {"ok": True})
+                send(self, 200, {"ok": True, "stop": STOP.is_set()})
             elif url.path == "/config":
                 send(self, 200, {"variant": VARIANT, "vulkan_device": self.server.vulkan, "idle_seconds": IDLE})
             elif url.path == "/memory":
@@ -251,6 +236,20 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/event":
                 row = add_event(str(data["type"]), str(data.get("source", "unknown")), data.get("data", {}), bool(data.get("trigger", False)))
                 send(self, 200, row)
+            elif url.path == "/archive":
+                rel = str(data.get("path", "")).strip()
+                kind = str(data.get("kind", "")).strip()
+                if not rel or not kind:
+                    raise RuntimeError("archive path and kind required")
+                path = (ROOT / rel).resolve()
+                try:
+                    path.relative_to(ROOT.resolve())
+                except ValueError:
+                    raise RuntimeError("archive path outside root")
+                if not path.is_file():
+                    raise RuntimeError("missing " + rel)
+                archived = retire(path, kind)
+                send(self, 200, {"artifact": str(archived.relative_to(ROOT))})
             elif url.path == "/speech":
                 text = str(data.get("text", "")).strip()
                 if not text:
@@ -265,7 +264,15 @@ class Handler(BaseHTTPRequestHandler):
                 name = Path(str(data["name"])).name
                 path = WORK / name
                 archived = retire(path, "speech") if path.is_file() else DONE / "speech" / name
-                row = add_event("speech_done", "mouth", {"speech": str(archived.relative_to(ROOT)), "wav": str(data.get("wav", ""))}, False)
+                wav_rel = str(data.get("wav", "")).strip()
+                wav_archived = ""
+                if wav_rel:
+                    wav_path = (ROOT / wav_rel).resolve()
+                    if wav_path.is_file():
+                        wav_archived = str(retire(wav_path, "wav").relative_to(ROOT))
+                    else:
+                        wav_archived = wav_rel
+                row = add_event("speech_done", "mouth", {"speech": str(archived.relative_to(ROOT)), "wav": wav_archived}, False)
                 send(self, 200, row)
             elif url.path == "/memory":
                 text = str(data.get("text", "")).strip()
@@ -303,25 +310,17 @@ def timer_loop() -> None:
     while not STOP.is_set():
         now = time.time()
         for path in list(WORK.glob("wake-*.json")):
-            payload = json.loads(path.read_text(encoding="utf-8"))
-            if now >= float(payload["due"]):
-                archived = retire(path, "wake")
-                add_event("wake", "clock", {"reason": payload.get("reason", ""), "artifact": str(archived.relative_to(ROOT))}, True)
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                if now >= float(payload["due"]):
+                    add_event("wake", "clock", {"reason": payload.get("reason", ""), "artifact": str(path.relative_to(ROOT))}, True)
+                    retire(path, "wake")
+            except Exception as err:
+                print("wake skipped", path.name, err, flush=True)
         if now - LAST_HEARD >= IDLE and now - LAST_CLOCK >= IDLE:
             LAST_CLOCK = now
             add_event("clock", "clock", {"seconds_since_heard": int(now - LAST_HEARD)}, True)
         STOP.wait(0.25)
-
-
-def kill_server_pid() -> None:
-    path = MODELS / "server.pid"
-    if not path.is_file():
-        return
-    try:
-        record = json.loads(path.read_text(encoding="utf-8"))
-        subprocess.run(["taskkill", "/F", "/T", "/PID", str(record["pid"])], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    finally:
-        path.unlink(missing_ok=True)
 
 
 def workers(variant: str, inbox_only: bool) -> list[tuple[str, subprocess.Popen]]:
@@ -332,6 +331,20 @@ def workers(variant: str, inbox_only: bool) -> list[tuple[str, subprocess.Popen]
         ("mouth", subprocess.Popen([py, str(ROOT / "mouth.py"), variant, url])),
         ("ear", subprocess.Popen([py, str(ROOT / "ear.py"), url, "--inbox"] if inbox_only else [py, str(ROOT / "ear.py"), url])),
     ]
+
+
+def drain_speech(items: list[tuple[str, subprocess.Popen]], timeout: float = 600.0) -> None:
+    mouth = next((proc for name, proc in items if name == "mouth"), None)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        pending = list(WORK.glob("speech-*.txt"))
+        if not pending:
+            return
+        if mouth is not None and mouth.poll() is not None:
+            print("mouth exited before speech drained", flush=True)
+            return
+        STOP.wait(0.25)
+    print("speech drain timeout", flush=True)
 
 
 def supervise(items: list[tuple[str, subprocess.Popen]]) -> None:
@@ -349,10 +362,8 @@ def supervise(items: list[tuple[str, subprocess.Popen]]) -> None:
         for name, proc in items:
             code = proc.poll()
             if code is not None:
-                if name == "brain" and code == 0:
-                    STOP.set()
-                    return
                 raise RuntimeError(f"{name} exited {code}")
+    drain_speech(items)
 
 
 def clear_ready() -> None:
