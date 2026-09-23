@@ -117,10 +117,12 @@ def user_text() -> str:
 SPEAK = (
     "You are Jarvis. The user text is memory, then unread live text. "
     "Act only by calling tools. "
+    "The last live line is the only request. Earlier live lines are already handled. "
     "pass writes nothing: the live text is unfinished or needs no action. "
     "say speaks. note appends one fact and does not speak. distill replaces memory, clears the live text, and does not speak. "
     "run_python runs one script. Its result is the next lines, and those lines start with exit. "
-    "When a line starts with exit, do not call run_python again. If the person asked to hear the result, say. "
+    "When a line starts with exit, the allowed calls are say, pass, note, distill, and quit. "
+    "If the person asked to hear the result, say. "
     "quit ends you."
 )
 TOOLS = [
@@ -149,7 +151,7 @@ TOOLS = [
             "required": ["text"]}}},
     {"type": "function", "function": {
         "name": "run_python",
-        "description": "Run code once. The working directory is the workspace folder. Write pong.txt in that folder. The next look adds lines that start with exit. Do not call run_python after those lines. Say on that look when the person asked to hear the result.",
+        "description": "Run code once. The working directory is the workspace folder. The last live line is the only request. Earlier live lines are already handled. The next look adds lines that start with exit. When a line starts with exit, the allowed calls are say, pass, note, distill, and quit.",
         "parameters": {"type": "object", "properties": {
             "code": {"type": "string", "description": "One complete Python script."}},
             "required": ["code"]}}},

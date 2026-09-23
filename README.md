@@ -230,7 +230,7 @@ To hear speech, the mouth has to be running when the speech file is still in `wo
 python brain.py
 ```
 
-Runs the brain alone, in the same serve loop [trident.py](trident.py) uses. It clears `workspace/live.txt` first (the previous body is renamed into `done/live/` when the file is non-empty), loads Gemma, writes `ready/brain`, and waits for `transcription-N.txt`. It does not start the ear or the mouth. `memory.md` and `said.txt` stay.
+Runs the brain alone, in the same serve loop [trident.py](trident.py) uses. It clears `workspace/live.txt` first (the previous body is renamed into `done/live/` when the file is non-empty), loads Gemma, writes `ready/brain`, and waits for `transcription-N.txt`. Before it appends a transcription that is not the mouth's own words, an `exit 0` line already in `live.txt` renames that file into `done/live/` and writes an empty `live.txt`. The new sentence is then the only live text. The previous request is not copied into `memory.md`. It does not start the ear or the mouth. `memory.md` and `said.txt` stay.
 
 ```powershell
 python brain.py hello
@@ -370,7 +370,7 @@ flowchart TB
 | --- | --- | --- | --- |
 | `workspace/inbox/*.txt` | anyone | the ear | the ear renames it into `done/inbox/` as soon as it sees the name, then writes a transcription if the text is not empty |
 | `workspace/transcription-N.txt` | the ear | the brain | the brain renames it into `done/transcription/` before it decides |
-| `workspace/live.txt` | the brain | the brain, on the next look | the head is renamed into `done/live/` when the Python string is longer than 12000 characters; `say` and `distill` rename the whole file into `done/live/` and write an empty `live.txt`; starting `python brain.py` with no arguments does that clear as well |
+| `workspace/live.txt` | the brain | the brain, on the next look | the head is renamed into `done/live/` when the Python string is longer than 12000 characters; `say` and `distill` rename the whole file into `done/live/` and write an empty `live.txt`; starting `python brain.py` with no arguments does that clear as well; before appending a transcription that is not the mouth's own words, `exit 0` already in the file does that same clear |
 | `workspace/memory.md` | the brain | the brain, as the prefix of the user text | `distill` renames a non-empty file into `done/memory/` and writes the new memory; `note` rewrites the file in place and does not archive it; a restart leaves it |
 | `workspace/said.txt` | the brain, the full text of the last `say` | the brain, as the echo filter | the next `say` renames a non-empty file into `done/said/` |
 | `workspace/speech-N.txt` | the brain, or `python brain.py <variant> --say` | the mouth | the mouth renames it into `done/speech/` after a successful play; an empty body is renamed with no play |
@@ -385,7 +385,7 @@ flowchart TB
 
 Inbox order is filename sort. `transcription-N.txt`, `speech-N.txt`, `job-N`, and `decision-N.txt` are taken in numeric order. The ear does not wait for a writer to finish. It reads every `workspace/inbox/*.txt` on the pass that first sees the name. Write the file somewhere else and rename it into `inbox/` when the bytes are complete. That is the same publish pattern `put()` uses inside the program.
 
-The echo filter runs after the transcription has already been renamed into `done/transcription/`. The brain keeps letters and whitespace, casefolds, and collapses spaces. If both strings are non-empty and the heard string is a substring of `said.txt`, the line is not appended and `think` is not called. That is how the microphone hears the speaker and the brain drops it.
+The echo filter runs after the transcription has already been renamed into `done/transcription/`. The brain keeps letters and whitespace, casefolds, and collapses spaces. If both strings are non-empty and the heard string is a substring of `said.txt`, the line is not appended and `think` is not called. That is how the microphone hears the speaker and the brain drops it. A dropped line does not clear `live.txt`. When the line is kept and a live line starts with `exit` and its second field is `0`, the brain renames the whole live file into `done/live/` and writes an empty `live.txt` before the append. The new sentence is the only live text. The previous request is not written into `memory.md`. Looks that follow a script inside the same transcription still see the result, because that clear runs in `serve` and not between looks.
 
 ### Caps
 
@@ -448,14 +448,14 @@ Empty user text, after strip, never calls the model. The completion is a `pass`.
 The system text in `SPEAK` is:
 
 ```text
-You are Jarvis. The user text is memory, then unread live text. Act only by calling tools. pass writes nothing: the live text is unfinished or needs no action. say speaks. note appends one fact and does not speak. distill replaces memory, clears the live text, and does not speak. run_python runs one script. Its result is the next lines, and those lines start with exit. When a line starts with exit, do not call run_python again. If the person asked to hear the result, say. quit ends you.
+You are Jarvis. The user text is memory, then unread live text. Act only by calling tools. The last live line is the only request. Earlier live lines are already handled. pass writes nothing: the live text is unfinished or needs no action. say speaks. note appends one fact and does not speak. distill replaces memory, clears the live text, and does not speak. run_python runs one script. Its result is the next lines, and those lines start with exit. When a line starts with exit, the allowed calls are say, pass, note, distill, and quit. If the person asked to hear the result, say. quit ends you.
 ```
 
 The user message is `memory.md`, then a blank line, then `live.txt`, when both are non-empty. Otherwise it is whichever one is non-empty.
 
-The tool descriptions also tell the model: `say` language is `en` or `pl`; sixty words is one stretch; `note` is one fact; `distill` keeps names and decisions; `run_python` should write `pong.txt` in the workspace folder. `run_python` in code does not look for `pong.txt`. It runs the script and records the streams.
+The tool descriptions also tell the model: `say` language is `en` or `pl`; sixty words is one stretch; `note` is one fact; `distill` keeps names and decisions; `run_python` runs one script in the workspace folder. The last live line is the only request. Earlier live lines are already handled. When a live line starts with `exit`, the allowed calls are `say`, `pass`, `note`, `distill`, and `quit`. The runner records the streams.
 
-The same system text tells the model not to call `run_python` again once any live line starts with `exit`. The code blocks a narrower case, below.
+The same system text tells the model that a line starting with `exit` leaves `say`, `pass`, `note`, `distill`, and `quit`. The code blocks a narrower case, below.
 
 ### What the code does
 
@@ -482,7 +482,7 @@ The same system text tells the model not to call `run_python` again once any liv
 
 If `say` and `run_python` are in one completion, the script runs, its result is appended, then `say` empties `live.txt`. There is no follow-up look. The result file is already in `done/job/`.
 
-On the third look, a `run_python` still runs and appends, and then the loop returns because three looks have been used. The result stays in `live.txt` for a later transcription. It does not get its own fourth completion.
+On the third look, a `run_python` still runs and appends, and then the loop returns because three looks have been used. The result stays in `live.txt` until another transcription is taken. A transcription that is not the mouth's own words, and that arrives while `live.txt` already contains `exit 0`, renames that live file into `done/live/`, writes an empty `live.txt`, and appends only the new sentence. The old request is not copied into `memory.md`. The finished script does not get a fourth completion.
 
 A completion that is not a closed run of tool calls raises. The decision file stays in `workspace/`. The brain process exits, and the supervisor stops the others.
 

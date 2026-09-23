@@ -188,6 +188,8 @@ def serve():
         said = SAID.read_text(encoding="utf-8") if SAID.exists() else ""
         if own(heard, said):
             continue
+        if clean_exit(LIVE.read_text(encoding="utf-8") if LIVE.is_file() else ""):
+            clear_live()
         append_live(heard)
         think(llm, grammar)
 
