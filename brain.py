@@ -142,7 +142,17 @@ def note_language(text: str) -> None:
         LANG = match.group(1).lower()[:2]
 
 
+SPEAK_THIS = True
+
+
+def is_request(words: str) -> bool:
+    text = " ".join(re.sub(r"<[^>]*>", " ", words).casefold().split())
+    return "?" in words or "remember" in text or text.startswith("please say aloud the following text")
+
+
 def emit(sentence: str) -> bool:
+    if not SPEAK_THIS:
+        return False
     sentence = re.sub(r"^\d{1,2}:\d{2}:\d{2}\s+\S+\.?\s*", "", sentence.strip()).strip()
     bare = sentence.strip(".,")
     if re.fullmatch(r"\d{1,2}:\d{2}:\d{2}", bare) or re.fullmatch(r"[A-Za-z]{2,3}-[A-Za-z]{2}", bare):
@@ -472,6 +482,8 @@ def serve():
             words = heard.split("\n", 1)[0].strip()
             if own(words):
                 continue
+            global SPEAK_THIS
+            SPEAK_THIS = is_request(words)
             note_language(words)
             LAST_HUMAN = time.monotonic()
             idle_mark = None

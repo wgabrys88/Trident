@@ -385,7 +385,7 @@ flowchart TB
 
 Inbox order is filename sort. `transcription-N.txt`, `speech-N.txt`, `job-N`, and `decision-N.txt` are taken in numeric order. The ear does not wait for a writer to finish. It reads every `workspace/inbox/*.txt` on the pass that first sees the name. Write the file somewhere else and rename it into `inbox/` when the bytes are complete. That is the same publish pattern `put()` uses inside the program.
 
-The echo check runs after the transcription has already been renamed into `done/transcription/`. The brain keeps letters and whitespace, casefolds, and collapses spaces. If the heard string is a substring of the last three spoken sentences, it is not appended and it does not cause a look. Every other line is given to the model. The model is the one that stays silent. The words on the first line become the user line. A second line of word times is not shown to the model.
+The echo check runs after the transcription has already been renamed into `done/transcription/`. The brain keeps letters and whitespace, casefolds, and collapses spaces. If the heard string is a substring of the last three spoken sentences, it is not appended and it does not cause a look. Every other line is given to the model. A speech file is written only when the line has a question mark, contains remember, or starts with "please say aloud the following text". The words on the first line become the user line. A second line of word times is not shown to the model.
 
 ### Caps
 
