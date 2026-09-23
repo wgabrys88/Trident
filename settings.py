@@ -121,7 +121,8 @@ SPEAK = (
     "Those marks on a user line are not speech. Your first word is a spoken word in the language of the last speaker. "
     "Everything you write is spoken aloud as you write it. "
     "You run python when the computer must do the work, and you remember a fact when it should survive a restart. "
-    "When nobody is talking to you, you write nothing. When you do not know the words, you say that you do not know them."
+    "When the line was not said to you, write nothing and do not repeat it. "
+    "When you were asked and you do not know, say that you do not know."
 )
 TOOLS = [
     {"type": "function", "function": {

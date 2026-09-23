@@ -142,7 +142,7 @@ The code supports three mouths. nano and turbo are the gpt2 architecture. v3 is 
 
 nano and turbo also download `s3gen_meanflow.safetensors`, `conds.pt`, `ve.safetensors`, `vocab.json`, `merges.txt`, and `added_tokens.json` into `.ckpt`. Both gpt2 mouths share that directory. v3 downloads `s3gen.safetensors`, `conds.pt`, `ve.safetensors`, `grapheme_mtl_merged_expanded_v1.json`, and `Cangjie5_TC.json` into `.ckpt-v3`, plus `official_mtl_tokenizer.py`, `official_mtl_tts.py`, and `dicta-1.0.int8.onnx` from the URLs in `Variant.external_assets`.
 
-Weights are not in git. After install, the server loads `models/voices/<variant>/t3.gguf` and `models/voices/<variant>/s3.gguf`. On the tree this file was written from, `models/voices/` contains `nano` only. `models/voices/turbo`, `models/voices/v3`, and `.ckpt-v3` are not there. `.ckpt` holds the nano download. The commands above are what install turbo and v3. Speech produced on this machine used the nano mouth.
+Weights are not in git. After install, the server loads `models/voices/<variant>/t3.gguf` and `models/voices/<variant>/s3.gguf`. On the tree this file was written from, `models/voices/` contains `nano` and `turbo`. `models/voices/v3` and `.ckpt-v3` are not there. `.ckpt` holds the nano download. The commands above are what install v3. Speech produced on this machine has used the turbo mouth.
 
 The ear weights land in `models/ear/nemotron-3.5-asr-streaming-0.6b/`: `config.json`, `generation_config.json`, `processor_config.json`, `tokenizer_config.json`, `tokenizer.json`, and `model.safetensors`, from `nvidia/nemotron-3.5-asr-streaming-0.6b` at `ea30d66debe3740a08b573244286791d423d6b3e`.
 
@@ -385,7 +385,7 @@ flowchart TB
 
 Inbox order is filename sort. `transcription-N.txt`, `speech-N.txt`, `job-N`, and `decision-N.txt` are taken in numeric order. The ear does not wait for a writer to finish. It reads every `workspace/inbox/*.txt` on the pass that first sees the name. Write the file somewhere else and rename it into `inbox/` when the bytes are complete. That is the same publish pattern `put()` uses inside the program.
 
-The echo check runs after the transcription has already been renamed into `done/transcription/`. The brain keeps letters and whitespace, casefolds, and collapses spaces. If the heard string is a substring of the last three spoken sentences, it is not appended and it does not cause a look. Otherwise it becomes a user line and the brain looks.
+The echo check runs after the transcription has already been renamed into `done/transcription/`. The brain keeps letters and whitespace, casefolds, and collapses spaces. If the heard string is a substring of the last three spoken sentences, it is not appended and it does not cause a look. A microphone transcription has a second line of word times. When that file's mtime falls between a wav's mtime and that mtime plus the wav's duration plus the ear pause (1.2 s), the brain prints `quiet` and does not look. The wav may still be in `wav/` or already in `done/wav/`. An inbox transcription has no times line, so it is still heard while a wav is playing. The words on the first line become the user line. The times do not.
 
 ### Caps
 
@@ -443,7 +443,7 @@ flowchart TB
 The system text in `SPEAK` is under 120 words:
 
 ```text
-You are Jarvis, present in this room. Never begin a reply with a clock time or a language tag. Those marks on a user line are not speech. Your first word is a spoken word in the language of the last speaker. Everything you write is spoken aloud as you write it. You run python when the computer must do the work, and you remember a fact when it should survive a restart. When nobody is talking to you, you write nothing. When you do not know the words, you say that you do not know them.
+You are Jarvis, present in this room. Never begin a reply with a clock time or a language tag. Those marks on a user line are not speech. Your first word is a spoken word in the language of the last speaker. Everything you write is spoken aloud as you write it. You run python when the computer must do the work, and you remember a fact when it should survive a restart. When the line was not said to you, write nothing and do not repeat it. When you were asked and you do not know, say that you do not know.
 ```
 
 The prompt is rendered from the GGUF key `tokenizer.chat_template` with jinja2. Messages are the system text, then `turns.jsonl`. Tools are `python`, `remember`, `wake`, and `stop`. Each description is one sentence. There is no grammar.

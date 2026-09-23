@@ -2,7 +2,7 @@ import json, re, subprocess, sys, time
 from pathlib import Path
 from runtime import MODELS, reexec, venv_python, vulkan
 from settings import (
-    BRAIN, CHUNK, IDLE, MEMORY, SPEAK, STOP, TOOLS, TURNS, VARIANTS, WORK,
+    BRAIN, CHUNK, EAR, IDLE, MEMORY, ROOT, SPEAK, STOP, TOOLS, TURNS, VARIANTS, WAV, WORK,
     bus, next_path, parts, put, read_memory, ready, retire, take, waiting,
 )
 
@@ -408,6 +408,25 @@ def clock_line(kind_seconds: int) -> None:
     append_turn({"role": "user", "content": time.strftime("%H:%M:%S") + " silence for " + str(kind_seconds) + " s"})
 
 
+def heard_during_playback(when: float) -> bool:
+    import wave
+    pad = EAR["pause"]
+    for folder in (ROOT / WAV, WORK / "done" / "wav"):
+        if not folder.is_dir():
+            continue
+        for path in folder.glob("*.wav"):
+            try:
+                start = path.stat().st_mtime
+                with wave.open(str(path), "rb") as handle:
+                    rate = handle.getframerate()
+                    span = handle.getnframes() / rate if rate else 0.0
+            except (wave.Error, OSError, EOFError):
+                continue
+            if start <= when <= start + span + pad:
+                return True
+    return False
+
+
 def serve():
     global LAST_HUMAN, WAKE_AT
     bus()
@@ -423,16 +442,23 @@ def serve():
     while True:
         files = waiting("transcription")
         if files:
+            when = files[0].stat().st_mtime
+            name = files[0].name
             heard = take(files[0], "transcription").strip()
-            print("read", files[0].name, flush=True)
+            print("read", name, flush=True)
             if not heard:
                 continue
-            if own(heard):
+            words, _, times = heard.partition("\n")
+            words, times = words.strip(), times.strip()
+            if times and heard_during_playback(when):
+                print("quiet", name, flush=True)
                 continue
-            note_language(heard)
+            if own(words):
+                continue
+            note_language(words)
             LAST_HUMAN = time.monotonic()
             idle_mark = None
-            append_turn({"role": "user", "content": time.strftime("%H:%M:%S") + " " + heard})
+            append_turn({"role": "user", "content": time.strftime("%H:%M:%S") + " " + words})
             think(llm)
             continue
         now = time.monotonic()
