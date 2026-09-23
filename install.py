@@ -2,7 +2,7 @@ import hashlib, json, os, re, shutil, subprocess, sys, urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from trident_lib import ROOT, kill_server_pid, venv_python
+from components.runtime import ROOT, kill_chatterbox, venv_python
 
 MODELS = ROOT / "models"
 CMAKE_GENERATOR, CMAKE_ARCH = "Visual Studio 17 2022", "x64"
@@ -48,7 +48,7 @@ def run(cmd, **kw):
 
 
 def kill_server() -> None:
-    kill_server_pid()
+    kill_chatterbox()
 
 
 def atomic_json(path: Path, payload: dict) -> None:
@@ -128,7 +128,12 @@ class Ggml:
 
 
 def build_engine() -> tuple[Path, Path, dict]:
-    outputs = ROOT / "build" / "bin" / "chatterbox-server.exe", ROOT / "build" / "bin" / "chatterbox-bake.exe"
+    outputs = (
+        ROOT / "build" / "bin" / "chatterbox.exe",
+        ROOT / "build" / "bin" / "chatterbox-bake.exe",
+        ROOT / "build" / "bin" / "trident-host.exe",
+        ROOT / "build" / "bin" / "trident-mouth.exe",
+    )
     wanted = {"ggml": Ggml.REV, "generator": CMAKE_GENERATOR, "architecture": CMAKE_ARCH, "source": digest(ROOT / "CMakeLists.txt", ROOT / "src")}
     stamp = MODELS / "build-contract.json"
     if stamp.is_file() and json.loads(stamp.read_text(encoding="utf-8")) == wanted and all(path.is_file() for path in outputs):
@@ -142,7 +147,22 @@ def build_engine() -> tuple[Path, Path, dict]:
     sdk = max(Path("C:/VulkanSDK").glob("*/Bin/glslc.exe"), key=lambda path: tuple(map(int, re.findall(r"\d+", path.parts[-3])))).parents[1]
     build = ROOT / "build"
     run(["cmake", "-S", str(ROOT), "-B", str(build), "-G", CMAKE_GENERATOR, "-A", CMAKE_ARCH, f"-DVulkan_INCLUDE_DIR={sdk / 'Include'}", f"-DVulkan_LIBRARY={sdk / 'Lib/vulkan-1.lib'}", f"-DVulkan_GLSLC_EXECUTABLE={sdk / 'Bin/glslc.exe'}"])
-    run(["cmake", "--build", str(build), "--config", "Release", "--target", "chatterbox-server", "chatterbox-bake", "--parallel", "2"])
+    run(
+        [
+            "cmake",
+            "--build",
+            str(build),
+            "--config",
+            "Release",
+            "--target",
+            "chatterbox",
+            "chatterbox-bake",
+            "trident-host",
+            "trident-mouth",
+            "--parallel",
+            "2",
+        ]
+    )
     atomic_json(stamp, wanted)
     return *outputs, wanted
 

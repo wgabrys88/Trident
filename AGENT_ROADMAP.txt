@@ -1,0 +1,122 @@
+================================================================================
+TRIDENT + GEMMA + CHATTERBOX  --  AGENT ROADMAP (read this before any code change)
+================================================================================
+Target machine: Windows x64, Intel host (AVX2), NVIDIA GTX 1060 6GB (Pascal sm_61).
+Philosophy: bare-metal inference, one GPU backend per workload, no fallbacks, no
+defensive coding, no duplicate paths, no legacy wrappers. Delete dead code; do not
+comment it out. Hard work over shortcuts.
+
+--------------------------------------------------------------------------------
+WHY TWO GPU STACKS (not one API for everything)
+--------------------------------------------------------------------------------
+[BRAIN / GEMMA]  CUDA only (ggml-cuda), sm_61-real, CUDA toolkit <= 12.6.
+  - Pascal consumer GPUs: FP16/BF16 matmul is slow; use Q4_0 (or similar) + MMQ.
+  - Flash Attention tile path on Pascal (GGML_CUDA_FA); full GPU offload n_gpu_layers=999.
+  - GGML_CPU=ON is required for llama.cpp buffer registration; inference still on GPU.
+  - Binary: gemma/build/Release/gemma-brain.exe (NOT python llama for production brain).
+
+[TTS / CHATTERBOX]  Vulkan only (ggml-vulkan), same physical GTX 1060.
+  - TTS graphs are smaller; Vulkan on Pascal is fine; shares VRAM with CUDA brain.
+  - Do NOT port Chatterbox to CUDA until brain+TTS VRAM scheduling is designed.
+  - Binary: build/bin/chatterbox.exe (replaces deleted chatterbox-server + named pipe).
+
+[ASR / EAR]  Next bare-metal target (not done in this commit).
+  - Today: python ear.py + Nemotron streaming (models/ear/).
+  - Goal: C++ Vulkan or CUDA ASR executable, same style as chatterbox.exe, no pipe.
+
+VRAM rule: 6GB cannot hold full multimodal Gemma + long TTS + ASR simultaneously.
+Serialize heavy jobs or shrink n_ctx / clip TTS text per call.
+
+--------------------------------------------------------------------------------
+REPO LAYOUT (what matters)
+--------------------------------------------------------------------------------
+Trident/          C++ bus (trident-host), mouth (trident-mouth), Chatterbox engine
+  src/chatterbox.cpp          CLI: chatterbox <nano|turbo|v3> -t "..." -o out.wav
+  src/common/chatterbox_runtime.*   engine factory, wav write
+  src/host/*                  HTTP bus, journal, supervisor, mouth worker
+  build/bin/                  chatterbox.exe, trident-host.exe, trident-mouth.exe
+  models/voices/{nano,turbo,v3}/t3.gguf + s3.gguf
+  scripts/tts_direct.ps1      direct TTS test (no brain)
+
+gemma/            Separate CMake project: gemma-brain (multimodal Gemma 4 E2B)
+  cmake/Pascal1060.cmake      CUDA + MMQ + FA + CPU host threads
+  src/brain.cpp               multimodal CLI
+  llama.cpp/                  submodule or clone (NOT committed as full tree here)
+  models/                     GGUF downloads (gitignored)
+
+Python (legacy orchestration, being rewired):
+  trident-host.exe spawns brain.py, trident-mouth.exe, ear.py
+  brain.py / ear.py may point at components.* -- WIRE or replace with gemma-brain
+
+--------------------------------------------------------------------------------
+PHASE 1 -- DONE (verify on clean machine)
+--------------------------------------------------------------------------------
+[ ] gemma: scripts/configure.ps1 + build.ps1 (ggml-cuda parallel 1 on Windows)
+[ ] gemma-brain loads Q4_0 + mmproj BF16, CUDA 12.6 on PATH
+[ ] chatterbox: cmake --build build --target chatterbox trident-mouth
+[ ] chatterbox.exe turbo -t "test" -o wav/test.wav  (expect wall << audio for long text)
+
+--------------------------------------------------------------------------------
+PHASE 2 -- CHATTERBOX HARDEN (next coding agent)
+--------------------------------------------------------------------------------
+[ ] Strip CMake bloat: GGML_BUILD_TESTS OFF, no unused ggml backends, trim ICU if possible
+[ ] Remove src/common/pipe.h PipeServer (dead); keep only tokenizer subprocess pipes in mtl_tokenizer
+[ ] v3: eliminate Python mtl_tokenize_runtime.py OR accept as single isolated subprocess
+[ ] Long-text TTS: chunk by sentence; one engine load per mouth process (already in-process)
+[ ] Update README.md (chatterbox.exe not chatterbox-server)
+[ ] install.py targets: chatterbox not chatterbox-server
+
+--------------------------------------------------------------------------------
+PHASE 3 -- ASR BARE METAL (before full Trident wire-up)
+--------------------------------------------------------------------------------
+[ ] C++ ear binary wrapping Nemotron streaming GGUF (Vulkan on 1060)
+[ ] CLI: trident-ear.exe <wav|mic> -> text on stdout or POST /heard to bus
+[ ] No python ear.py in production path after this
+
+--------------------------------------------------------------------------------
+PHASE 4 -- WIRE FULL TRIDENT (after Phase 2+3)
+--------------------------------------------------------------------------------
+[ ] brain: exec gemma-brain.exe OR embed lib; POST /speech with tool speak -> bus /speech
+[ ] mouth: trident-mouth uses chatterbox_make_engine in-process (done); test via /speech
+[ ] ear: trident-ear -> POST /heard
+[ ] Supervisor: trident-host.exe <nano|turbo|v3> starts bus + mouth + brain + ear
+[ ] End-to-end: inbox scenario scripts/inbox_scenarios.py OR Polish mic path
+[ ] Remove trident.py monolith if superseded; single entry trident-host.exe
+[ ] Delete: server.cpp, chatterbox-server, pipe TTS protocol, kill_chatterbox server.pid hacks
+
+--------------------------------------------------------------------------------
+PHASE 5 -- GEMMA IN TRIDENT BRAIN
+--------------------------------------------------------------------------------
+[ ] Point brain at gemma/build/Release/gemma-brain.exe (not models/brain-gemma old path)
+[ ] Models: gemma-4-E2B-it-Q4_0.gguf + mmproj-gemma-4-E2B-it-BF16.gguf (HF names exact)
+[ ] Tool speak: pass text to POST /speech (language pl/en); no double TTS in python
+[ ] n_ctx 2048 default on 6GB multimodal
+
+--------------------------------------------------------------------------------
+IGNORE / NEVER COMMIT
+--------------------------------------------------------------------------------
+build/, gemma/build/, models/*.gguf, workspace/, wav/, .venv/, .ckpt-v3/ (except docs),
+gemma/llama.cpp/ (clone separately), gemma/models/, gemma/output/, ggml/ (clone ggml-org/ggml)
+
+--------------------------------------------------------------------------------
+CLONE DEPS (not in git)
+--------------------------------------------------------------------------------
+[ ] Trident: git clone https://github.com/ggml-org/ggml.git  (into Trident/ggml)
+[ ] gemma:   git clone https://github.com/ggml-org/llama.cpp.git gemma/llama.cpp
+[ ] trident-host/mouth: httplib + nlohmann from gemma/llama.cpp/vendor (not committed)
+
+--------------------------------------------------------------------------------
+VALIDATION (copy-paste)
+--------------------------------------------------------------------------------
+cd gemma && .\scripts\build.ps1
+$env:PATH="C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6\bin;$env:PATH"
+.\build\Release\gemma-brain.exe -m models\gemma-4-E2B-it-Q4_0.gguf --mmproj models\mmproj-gemma-4-E2B-it-BF16.gguf -p "Hi" -n 32
+
+cd ..
+cmake --build build --config Release --target chatterbox trident-host trident-mouth
+cd build\bin
+.\chatterbox.exe nano -t "Nano test." -o ..\..\wav\nano.wav
+
+================================================================================
+END ROADMAP
+================================================================================

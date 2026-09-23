@@ -1,0 +1,16 @@
+# Host CPU tuning (media decode, tokenizer threads). Included before llama.cpp when generated.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/cmake/HostCpu.generated.cmake")
+    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/HostCpu.generated.cmake")
+else()
+    include(ProcessorCount)
+    ProcessorCount(N)
+    if(NOT N)
+        set(N 4)
+    endif()
+    set(GEMMA_HOST_THREADS ${N} CACHE STRING "Host thread pool (run scripts/detect_cpu.ps1)" FORCE)
+    set(GEMMA_MSVC_ARCH_FLAG "" CACHE STRING "" FORCE)
+    set(GEMMA_HOST_OPENMP ON CACHE BOOL "" FORCE)
+    message(STATUS "HostCpu: no HostCpu.generated.cmake — run gemma/scripts/detect_cpu.ps1")
+endif()
+
+message(STATUS "Host CPU: threads=${GEMMA_HOST_THREADS} isa=${GEMMA_HOST_ISA} arch=${GEMMA_MSVC_ARCH_FLAG}")
