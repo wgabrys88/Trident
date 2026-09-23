@@ -143,8 +143,10 @@ def note_language(text: str) -> None:
 
 
 def emit(sentence: str) -> bool:
-    sentence = re.sub(r"^\d{1,2}:\d{2}:\d{2}\s+\S+\.?\s*", "", sentence.strip())
-    sentence = sentence.strip()
+    sentence = re.sub(r"^\d{1,2}:\d{2}:\d{2}\s+\S+\.?\s*", "", sentence.strip()).strip()
+    bare = sentence.strip(".,")
+    if re.fullmatch(r"\d{1,2}:\d{2}:\d{2}", bare) or re.fullmatch(r"[A-Za-z]{2,3}-[A-Za-z]{2}", bare):
+        return False
     if not sentence:
         return False
     put(next_path("speech"), LANG + "\n" + sentence)
