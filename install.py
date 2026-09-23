@@ -166,7 +166,7 @@ class Ggml:
             run(["git", "-C", str(home), "checkout", "--detach", Ggml.REV])
 
 
-def build_engine() -> tuple[Path, Path, dict]:
+def build_engine() -> tuple[Path, Path, Path, Path, dict]:
     outputs = (
         ROOT / "build" / "bin" / "chatterbox.exe",
         ROOT / "build" / "bin" / "chatterbox-bake.exe",
@@ -335,7 +335,7 @@ def install_ear() -> None:
 
 def install_mouth(name: str) -> None:
     cfg, py = VARIANTS[name], venv_python()
-    server, bake, build = build_engine()
+    _, bake, _, _, build = build_engine()
     ckpt = checkpoints(cfg)
     conv = launch_conversion(cfg)
     t3, s3, contracts = convert(cfg, py, ckpt, conv)
