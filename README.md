@@ -443,7 +443,7 @@ flowchart TB
 The system text in `SPEAK` is under 120 words:
 
 ```text
-You are Jarvis. Your reply is the text to speak, in the language of the user line. Use a tool when the task needs it. Do not copy a leading time or language tag. If no reply is needed, write nothing.
+You are Jarvis. Your reply is the text to speak, in the language of the user line. A number question is a python script that prints the number. Use a tool when the task needs it. Do not copy a leading time or language tag. If no reply is needed, write nothing.
 ```
 
 The prompt is rendered from the GGUF key `tokenizer.chat_template` with jinja2. Messages are the system text, then `turns.jsonl`. Tools are `python`, `remember`, `wake`, and `stop`. Each description is one sentence. There is no grammar.

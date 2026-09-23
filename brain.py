@@ -150,8 +150,17 @@ def is_request(words: str) -> bool:
     return "?" in words or "remember" in text or text.startswith("please say aloud the following text")
 
 
-def emit(sentence: str) -> bool:
-    if not SPEAK_THIS:
+def number_question(words: str) -> bool:
+    if "?" not in words:
+        return False
+    text = words.casefold()
+    if re.search(r"\d", text):
+        return True
+    return any(word in text.split() for word in ("zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"))
+
+
+def emit(sentence: str, always: bool = False) -> bool:
+    if not always and not SPEAK_THIS:
         return False
     sentence = re.sub(r"^\d{1,2}:\d{2}:\d{2}\s+\S+\.?\s*", "", sentence.strip()).strip()
     bare = sentence.strip(".,")
@@ -373,7 +382,7 @@ def apply(found: list) -> bool:
             if name == "python":
                 printed = run_python(args.get("code", ""))
                 if printed:
-                    emit(printed)
+                    emit(printed, always=True)
             elif name == "remember":
                 remember(args.get("text", ""))
                 again = True
@@ -483,7 +492,7 @@ def serve():
             if own(words):
                 continue
             global SPEAK_THIS
-            SPEAK_THIS = is_request(words)
+            SPEAK_THIS = is_request(words) and not number_question(words)
             note_language(words)
             LAST_HUMAN = time.monotonic()
             idle_mark = None

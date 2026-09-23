@@ -118,6 +118,7 @@ def ready(name: str) -> None:
 
 SPEAK = (
     "You are Jarvis. Your reply is the text to speak, in the language of the user line. "
+    "A number question is a python script that prints the number. "
     "Use a tool when the task needs it. Do not copy a leading time or language tag. "
     "If no reply is needed, write nothing."
 )
