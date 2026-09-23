@@ -77,7 +77,7 @@ python trident.py nano
 
 trident.py moves a stale ready file into `done/ready/`, waits until `ready/ear`, `ready/brain`, and `ready/mouth` exist, and then prints `jarvis ready`. An inbox file is renamed into place, or a person speaks and stays quiet long enough for the ear to cut. The proof of a run is the files left under `workspace/done/`, including `done/wav/`.
 
-The brain is CPU only (`n_gpu_layers` is 0). Both mouths use repeat penalty 1.2. The llama mouth, v3, uses 10 diffusion steps and `gpu` 0. `python brain.py <variant> --say <text>` writes speech files and returns. The mouth is the only reader of those files.
+The brain offloads every layer (`n_gpu_layers` is -1). Both mouths use repeat penalty 1.2. The llama mouth, v3, uses 10 diffusion steps and `gpu` 0. `python brain.py <variant> --say <text>` writes speech files and returns. The mouth is the only reader of those files.
 
 ## Layout
 

@@ -1,6 +1,6 @@
 import re, subprocess, sys, time
 from pathlib import Path
-from runtime import MODELS, reexec, venv_python
+from runtime import MODELS, reexec, venv_python, vulkan
 from settings import (
     BRAIN, LIVE, MEMORY, SAID, SPEAK, TOOLS, VARIANTS, append_live, bus, clear_live,
     next_path, parts, put, ready, retire, slot, take, user_text, waiting,
@@ -25,6 +25,7 @@ def load():
     path = MODELS / BRAIN["file"]
     if not path.is_file():
         raise RuntimeError("missing " + str(path))
+    vulkan()
     from llama_cpp import Llama, LlamaGrammar
     llm = Llama(model_path=str(path), n_ctx=BRAIN["n_ctx"], n_batch=BRAIN["n_batch"],
                 n_threads=BRAIN["n_threads"], n_gpu_layers=BRAIN["n_gpu_layers"],

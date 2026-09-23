@@ -1,4 +1,4 @@
-import ctypes, hashlib, json, subprocess, sys
+import ctypes, hashlib, json, os, subprocess, sys
 from dataclasses import dataclass
 from pathlib import Path
 from settings import FLAGS, Variant
@@ -7,6 +7,11 @@ ROOT, MODELS = Path(__file__).resolve().parent, Path(__file__).resolve().parent 
 K32 = ctypes.WinDLL("kernel32", use_last_error=True)
 K32.OpenProcess.argtypes, K32.OpenProcess.restype = [ctypes.c_uint, ctypes.c_int, ctypes.c_uint], ctypes.c_void_p
 K32.WaitForSingleObject.argtypes, K32.CloseHandle.argtypes = [ctypes.c_void_p, ctypes.c_uint], [ctypes.c_void_p]
+
+def vulkan():
+    os.environ["GGML_VK_DISABLE_COOPMAT"] = "1"
+    os.environ["GGML_VK_VISIBLE_DEVICES"] = "0"
+    os.environ.pop("GGML_VK_PREFER_HOST_MEMORY", None)
 
 def venv_python() -> Path:
     return ROOT / ".venv" / "Scripts" / "python.exe"

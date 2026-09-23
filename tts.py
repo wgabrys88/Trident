@@ -1,7 +1,7 @@
 import ctypes, json, subprocess, sys, time, wave
 from datetime import datetime
 from pathlib import Path
-from runtime import MODELS, ROOT, Contract, alive, kill, launch_args, reexec, venv_python
+from runtime import MODELS, ROOT, Contract, alive, kill, launch_args, reexec, venv_python, vulkan
 from settings import ARCHITECTURES, VARIANTS, WAV, ready, retire, waiting
 
 K32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -114,6 +114,7 @@ def serve(name: str) -> str:
             if K32.WaitNamedPipeW(pipe, 3000):
                 return pipe
     kill(pid)
+    vulkan()
     proc = subprocess.Popen(command, cwd=exe.parent, stdin=subprocess.DEVNULL, creationflags=subprocess.CREATE_NEW_CONSOLE)
     Contract({"pid": proc.pid, "contract": wanted}).write(pid)
     deadline = time.monotonic() + 30
