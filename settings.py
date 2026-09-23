@@ -9,7 +9,8 @@ MEMORY = WORK / "memory.md"
 SAID = WORK / "said.txt"
 INBOX = WORK / "inbox"
 CHUNK = 60
-MAX_LIVE = 12000
+MAX_LIVE = 32000
+MAX_MEMORY = 8000
 
 def bus() -> Path:
     WORK.mkdir(parents=True, exist_ok=True)
@@ -73,17 +74,24 @@ def parts(text: str) -> list[str]:
         start = end
     return out
 
+def _tail(path: Path, kind: str, cap: int) -> str:
+    text = path.read_text(encoding="utf-8")
+    if len(text) <= cap:
+        return text
+    head, tail = text[:len(text) - cap], text[-cap:]
+    src = next_path(kind)
+    put(src, head)
+    retire(src, kind)
+    put(path, tail)
+    return tail
+
 def read_live() -> str:
     bus()
-    text = LIVE.read_text(encoding="utf-8")
-    if len(text) <= MAX_LIVE:
-        return text
-    head, tail = text[:len(text) - MAX_LIVE], text[-MAX_LIVE:]
-    src = next_path("live")
-    put(src, head)
-    retire(src, "live")
-    put(LIVE, tail)
-    return tail
+    return _tail(LIVE, "live", MAX_LIVE)
+
+def read_memory() -> str:
+    bus()
+    return _tail(MEMORY, "memory", MAX_MEMORY)
 
 def append_live(text: str) -> None:
     bus()
@@ -106,57 +114,44 @@ def ready(name: str) -> None:
     print("ready", flush=True)
     put(folder / name, "")
 
-def user_text() -> str:
-    bus()
-    memory = MEMORY.read_text(encoding="utf-8").strip()
-    live = read_live()
-    if memory and live:
-        return memory + "\n\n" + live
-    return memory or live
-
 SPEAK = (
-    "You are Jarvis. The user text is memory, then unread live text. "
-    "Act only by calling tools. "
-    "The last live line is the only request. Earlier live lines are already handled. "
-    "pass writes nothing: the live text is unfinished or needs no action. "
-    "say speaks. note appends one fact and does not speak. distill replaces memory, clears the live text, and does not speak. "
-    "run_python runs one script. Its result is the next lines, and those lines start with exit. "
-    "When a line starts with exit, the allowed calls are say, pass, note, distill, and quit. "
-    "If the person asked to hear the result, say. "
-    "quit ends you."
+    "You are Jarvis. You stay loaded. The user text is memory, then the clock, then the journal. "
+    "now is the local time. silent is how many seconds since a person spoke, or none when no person has spoken. "
+    "The journal lines are heard, echo, said, and python. heard is a person or the room. echo is your own speaker. "
+    "said is what you spoke. python is a script result. The machine writes the line that starts with exit. The script prints the answer. "
+    "Act only by calling tools. Words that address you are a request. Other words are the room: remember them, act on them, or wait. "
+    "wait sleeps until someone speaks or the seconds end. speak says the words. remember appends one fact and does not speak. The clock is not a fact. "
+    "python runs one new script in the workspace folder, then you see the result and look again. When that result is already in the journal, speak it if the person asked to hear it. "
+    "Before a script that does real work, speak one short present-tense line. When nothing needs you, wait sixty seconds. stop ends you."
 )
 TOOLS = [
     {"type": "function", "function": {
-        "name": "pass",
-        "description": "Write nothing. The live text is unfinished or needs no action.",
-        "parameters": {"type": "object", "properties": {}}}},
+        "name": "wait",
+        "description": "Sleep this many seconds, or until someone speaks. When nothing needs you, pass 60.",
+        "parameters": {"type": "object", "properties": {
+            "seconds": {"type": "string", "description": "How many seconds to sleep."}},
+            "required": ["seconds"]}}},
     {"type": "function", "function": {
-        "name": "say",
-        "description": "Speak text. language is en or pl. Sixty words is one stretch. Longer text is split on sentence ends and played in order.",
+        "name": "speak",
+        "description": "Speak text. language is en or pl. Sixty words is one stretch. The next stretch is synthesized while the current stretch plays.",
         "parameters": {"type": "object", "properties": {
             "text": {"type": "string", "description": "Words to speak."},
             "language": {"type": "string", "description": "en or pl."}},
             "required": ["text", "language"]}}},
     {"type": "function", "function": {
-        "name": "note",
-        "description": "Append one fact to memory. A name, a decision, or a constraint. Does not speak.",
+        "name": "remember",
+        "description": "Append one fact to memory. A name, a commitment, or a task. Does not speak.",
         "parameters": {"type": "object", "properties": {
             "text": {"type": "string", "description": "One fact."}},
             "required": ["text"]}}},
     {"type": "function", "function": {
-        "name": "distill",
-        "description": "Replace memory with text. Keep names and decisions. Clears the live text. Does not speak.",
-        "parameters": {"type": "object", "properties": {
-            "text": {"type": "string", "description": "The new memory."}},
-            "required": ["text"]}}},
-    {"type": "function", "function": {
-        "name": "run_python",
-        "description": "Run code once. The working directory is the workspace folder. The last live line is the only request. Earlier live lines are already handled. The next look adds lines that start with exit. When a line starts with exit, the allowed calls are say, pass, note, distill, and quit.",
+        "name": "python",
+        "description": "Run one new script in the workspace folder. Print the answer. The machine writes the exit line. The result is journaled and you look again. If that result is already in the journal, speak it instead.",
         "parameters": {"type": "object", "properties": {
             "code": {"type": "string", "description": "One complete Python script."}},
             "required": ["code"]}}},
     {"type": "function", "function": {
-        "name": "quit",
+        "name": "stop",
         "description": "End the Jarvis process.",
         "parameters": {"type": "object", "properties": {}}}},
 ]
@@ -222,6 +217,6 @@ WAV = "wav"
 BRAIN = {
     "url": "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/0314792d7f1f7e229411f620751375812bb9faf2/gemma-4-E2B-it-Q4_K_M.gguf",
     "file": "brain-gemma-4-e2b-it-q4_k_m.gguf",
-    "n_ctx": 4096, "n_batch": 512, "n_threads": 4, "n_gpu_layers": -1,
+    "n_ctx": 16384, "n_batch": 1024, "n_threads": 4, "n_gpu_layers": -1,
     "decode": {"temperature": 1.0, "top_p": 0.95, "top_k": 64, "min_p": 0.0, "max_tokens": 1024},
 }

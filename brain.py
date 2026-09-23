@@ -2,24 +2,27 @@ import re, subprocess, sys, time
 from pathlib import Path
 from runtime import MODELS, reexec, venv_python, vulkan
 from settings import (
-    BRAIN, LIVE, MEMORY, SAID, SPEAK, TOOLS, VARIANTS, append_live, bus, clear_live,
-    next_path, parts, put, ready, retire, slot, take, user_text, waiting,
+    BRAIN, MEMORY, SAID, SPEAK, TOOLS, VARIANTS, append_live, bus, clear_live,
+    next_path, parts, put, read_live, read_memory, ready, retire, slot, take, waiting,
 )
 
 MARK = '<|"|>'
 RULES = r"""
-call ::= say | idle | noted | distilled | py
-say ::= "<|tool_call>call:say{" saybody "}" "<tool_call|>"
-idle ::= "<|tool_call>call:" ("pass" | "quit") "{}" "<tool_call|>"
-noted ::= "<|tool_call>call:note{text:" piece "}" "<tool_call|>"
-distilled ::= "<|tool_call>call:distill{text:" piece "}" "<tool_call|>"
-py ::= "<|tool_call>call:run_python{code:" piece "}" "<tool_call|>"
-saybody ::= "text:" piece ",language:" lang | "language:" lang ",text:" piece
+call ::= speak | wait | remember | py | stop
+speak ::= "<|tool_call>call:speak{" speakbody "}" "<tool_call|>"
+wait ::= "<|tool_call>call:wait{seconds:" piece "}" "<tool_call|>"
+remember ::= "<|tool_call>call:remember{text:" piece "}" "<tool_call|>"
+py ::= "<|tool_call>call:python{code:" piece "}" "<tool_call|>"
+stop ::= "<|tool_call>call:stop{}" "<tool_call|>"
+speakbody ::= "text:" piece ",language:" lang | "language:" lang ",text:" piece
 piece ::= mark chars mark
 lang ::= mark ("en" | "pl") mark
 mark ::= "<|\"|>"
-chars ::= [^<]*
+chars ::= ([^<] | "<" [^|])*
 """
+DEADLINE = 0.0
+LAST_HUMAN = None
+LAST_CODE = ""
 
 def load():
     path = MODELS / BRAIN["file"]
@@ -34,8 +37,6 @@ def load():
     return llm, grammar
 
 def ask(llm, grammar, text: str) -> str:
-    if not text.strip():
-        return '<|tool_call>call:pass{}<tool_call|>'
     decode = dict(BRAIN["decode"])
     content = llm.create_chat_completion(
         messages=[{"role": "system", "content": SPEAK}, {"role": "user", "content": text}],
@@ -75,16 +76,49 @@ def own(heard: str, said: str) -> bool:
     a, b = words(heard), words(said)
     return bool(a) and bool(b) and a in b
 
-def speak(text: str, language: str):
+def journal(kind: str, text: str) -> None:
+    append_live(time.strftime("%Y-%m-%d %H:%M:%S") + " " + kind + ": " + text.strip())
+
+def scene() -> str:
+    memory = read_memory().strip()
+    live = read_live().strip()
+    silent = "none" if LAST_HUMAN is None else str(int(time.monotonic() - LAST_HUMAN))
+    clock = "now: " + time.strftime("%Y-%m-%d %H:%M:%S") + "\nsilent: " + silent
+    return "\n\n".join(part for part in (memory, clock, live) if part)
+
+def arm(seconds: str) -> None:
+    global DEADLINE
+    digits = "".join(ch for ch in seconds if ch.isdigit())
+    n = int(digits) if digits else 60
+    if n < 1:
+        n = 60
+    DEADLINE = time.monotonic() + min(3600, n)
+
+def speak(text: str, language: str, record: bool = True):
     if language not in ("en", "pl") or not text.strip():
-        raise RuntimeError("say")
+        raise RuntimeError("speak")
     slot(SAID, text)
+    if record:
+        journal("said", text)
     for piece in parts(text):
         put(next_path("speech"), language + "\n" + piece)
 
-def run_python(code: str) -> str:
+def remember(text: str) -> None:
+    if not text.strip():
+        raise RuntimeError("remember")
+    bus()
+    prev = MEMORY.read_text(encoding="utf-8")
+    MEMORY.write_text((prev.rstrip() + "\n" if prev.strip() else "") + text.strip() + "\n", encoding="utf-8")
+
+def run_python(code: str) -> bool:
+    global LAST_CODE
     if not isinstance(code, str) or not code.strip():
-        raise RuntimeError("run_python")
+        raise RuntimeError("python")
+    body = code.strip()
+    if body == LAST_CODE:
+        journal("python", "already ran")
+        return False
+    LAST_CODE = body
     script = next_path("job", ".py")
     script.write_text(code, encoding="utf-8")
     try:
@@ -94,53 +128,35 @@ def run_python(code: str) -> str:
         result = f"exit timeout\n{err.stdout or ''}{err.stderr or ''}"
     record = script.with_name(script.stem + ".result.txt")
     record.write_text(result, encoding="utf-8")
-    append_live(result)
+    journal("python", result)
     retire(script, "job")
     retire(record, "job")
-    return result
-
-def clean_exit(text: str) -> bool:
-    for line in text.splitlines():
-        piece = line.split()
-        if line.startswith("exit") and len(piece) > 1 and piece[1] == "0":
-            return True
-    return False
+    return True
 
 def apply(found):
     again = False
-    spoke = False
-    blocked = clean_exit(LIVE.read_text(encoding="utf-8") if LIVE.is_file() else "")
+    waited = False
     for tool in found:
         name = tool["name"]
-        if name == "pass":
-            pass
-        elif name == "say":
+        if name == "wait":
+            arm(tool.get("seconds", ""))
+            waited = True
+        elif name == "speak":
             speak(tool.get("text", ""), tool.get("language") or "en")
-            spoke = True
-        elif name == "note":
-            if not tool.get("text"):
-                raise RuntimeError("note")
-            bus()
-            prev = MEMORY.read_text(encoding="utf-8")
-            MEMORY.write_text((prev.rstrip() + "\n" if prev.strip() else "") + tool["text"].strip() + "\n", encoding="utf-8")
-        elif name == "distill":
-            if not tool.get("text"):
-                raise RuntimeError("distill")
-            slot(MEMORY, tool["text"].strip() + "\n")
-            clear_live()
-        elif name == "run_python":
-            if blocked:
-                continue
-            run_python(tool.get("code", ""))
-            again = True
-        elif name == "quit":
+        elif name == "remember":
+            remember(tool.get("text", ""))
+        elif name == "python":
+            if run_python(tool.get("code", "")):
+                again = True
+        elif name == "stop":
             raise SystemExit
         else:
             raise RuntimeError("unknown tool " + name)
-    if spoke:
-        clear_live()
-        return False
-    return again
+    if again:
+        return True
+    if not waited:
+        arm("60")
+    return False
 
 def decide(content: str):
     path = put(next_path("decision"), content if content.endswith("\n") else content + "\n")
@@ -153,15 +169,12 @@ def decide(content: str):
     return again
 
 def think(llm, grammar):
-    hops = 0
     while True:
-        blob = user_text()
+        blob = scene()
         print(blob, flush=True)
         content = ask(llm, grammar, blob)
         print(content, flush=True)
-        again = decide(content)
-        hops += 1
-        if not again or hops >= 3:
+        if not decide(content):
             return
 
 def read_payload(value: str) -> str:
@@ -171,27 +184,32 @@ def read_payload(value: str) -> str:
     return value
 
 def serve():
+    global DEADLINE, LAST_HUMAN
     bus()
     clear_live()
     llm, grammar = load()
     ready("brain")
+    DEADLINE = time.monotonic()
     while True:
         files = waiting("transcription")
-        if not files:
-            time.sleep(0.05)
+        if files:
+            name = files[0].name
+            heard = take(files[0], "transcription").strip()
+            print("read", name, flush=True)
+            if not heard:
+                continue
+            said = SAID.read_text(encoding="utf-8") if SAID.exists() else ""
+            if own(heard, said):
+                journal("echo", heard)
+            else:
+                journal("heard", heard)
+                LAST_HUMAN = time.monotonic()
+            think(llm, grammar)
             continue
-        name = files[0].name
-        heard = take(files[0], "transcription").strip()
-        print("read", name, flush=True)
-        if not heard:
+        if time.monotonic() >= DEADLINE:
+            think(llm, grammar)
             continue
-        said = SAID.read_text(encoding="utf-8") if SAID.exists() else ""
-        if own(heard, said):
-            continue
-        if clean_exit(LIVE.read_text(encoding="utf-8") if LIVE.is_file() else ""):
-            clear_live()
-        append_live(heard)
-        think(llm, grammar)
+        time.sleep(min(0.05, DEADLINE - time.monotonic()))
 
 if __name__ == "__main__":
     reexec()
@@ -200,11 +218,12 @@ if __name__ == "__main__":
         serve()
     elif len(argv) == 2 and argv[1] not in VARIANTS:
         bus()
-        append_live(read_payload(argv[1]))
+        journal("heard", read_payload(argv[1]))
+        LAST_HUMAN = time.monotonic()
         llm, grammar = load()
         think(llm, grammar)
     elif len(argv) == 4 and argv[1] in VARIANTS and argv[2] == "--say" and argv[3]:
         bus()
-        speak(read_payload(argv[3]).strip(), "en")
+        speak(read_payload(argv[3]).strip(), "en", False)
     else:
         raise SystemExit("usage: python brain.py [text|file] | python brain.py <variant> --say <text|file>")

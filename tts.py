@@ -7,14 +7,23 @@ from settings import ARCHITECTURES, VARIANTS, WAV, ready, retire, waiting
 K32 = ctypes.WinDLL("kernel32", use_last_error=True)
 K32.WaitNamedPipeW.argtypes, K32.WaitNamedPipeW.restype = [ctypes.c_wchar_p, ctypes.c_uint], ctypes.c_int
 
-def play(pcm):
+def play(pcm, during=None):
     import numpy as np
     import sounddevice as sd
     ctypes.windll.ole32.CoInitializeEx(None, 0)
-    seconds = len(pcm) / 2 / 24000
+    span = len(pcm) / 24000
     sd.play(np.repeat(pcm, 2), 48000)
     callback = sd._last_callback
-    if callback.event.wait(seconds + 120):
+    started = time.monotonic()
+    try:
+        if during is not None:
+            during(started + span)
+    except Exception:
+        callback.stream.stop()
+        callback.stream.close()
+        raise
+    left = span / 2 - (time.monotonic() - started)
+    if callback.event.wait(max(left, 0) + 120):
         callback.stream.close()
         return
     callback.stream.stop()
@@ -126,22 +135,57 @@ def serve(name: str) -> str:
         time.sleep(0.05)
     return pipe
 
-def watch(pipe: str, architecture: str):
-    ready("mouth")
-    while True:
-        files = waiting("speech")
-        if not files:
-            time.sleep(0.05)
-            continue
-        path = files[0]
-        body = path.read_text(encoding="utf-8-sig")
-        language, _, text = body.partition("\n")
-        language, text = language.strip(), text.strip()
-        if not text:
-            retire(path, "speech")
-            continue
-        say(pipe, text, language, architecture)
+def render(pipe: str, path: Path, architecture: str):
+    body = path.read_text(encoding="utf-8-sig")
+    language, _, text = body.partition("\n")
+    language, text = language.strip(), text.strip()
+    if not text:
         retire(path, "speech")
+        return None
+    if architecture == "gpt2" and language != "en":
+        raise RuntimeError("Unsupported language: " + language)
+    import numpy as np
+    pcm = np.frombuffer(synthesize(pipe, text, language), dtype=np.int16)
+    wav = write_wav(pcm.tobytes())
+    print(text, flush=True)
+    return path, pcm, wav
+
+def watch(pipe: str, architecture: str):
+    loose_wavs()
+    ready("mouth")
+    primed = None
+    while True:
+        item = primed
+        primed = None
+        if item is None:
+            files = waiting("speech")
+            if not files:
+                time.sleep(0.05)
+                continue
+            item = render(pipe, files[0], architecture)
+            if item is None:
+                continue
+        path, pcm, wav = item
+        box = [None]
+        def during(deadline, box=box, path=path):
+            while time.monotonic() < deadline and box[0] is None:
+                files = [p for p in waiting("speech") if p != path]
+                if not files:
+                    time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
+                    continue
+                box[0] = render(pipe, files[0], architecture)
+        try:
+            play(pcm, during)
+        except Exception:
+            if wav.is_file():
+                retire(wav, "wav")
+            nxt = box[0]
+            if nxt is not None and nxt[2].is_file():
+                retire(nxt[2], "wav")
+            raise
+        print(retire(wav, "wav"), flush=True)
+        retire(path, "speech")
+        primed = box[0]
 
 if __name__ == "__main__":
     reexec()
