@@ -385,7 +385,7 @@ flowchart TB
 
 Inbox order is filename sort. `transcription-N.txt`, `speech-N.txt`, `job-N`, and `decision-N.txt` are taken in numeric order. The ear does not wait for a writer to finish. It reads every `workspace/inbox/*.txt` on the pass that first sees the name. Write the file somewhere else and rename it into `inbox/` when the bytes are complete. That is the same publish pattern `put()` uses inside the program.
 
-The echo check runs after the transcription has already been renamed into `done/transcription/`. The brain keeps letters and whitespace, casefolds, and collapses spaces. If the heard string is a substring of the last three spoken sentences, it is not appended and it does not cause a look. A line is taken up when it has a question mark, or, with the language tag removed, it starts with jarvis, please, hello, hi, what, when, where, who, why, or how, or it contains could you, can you, would you, will you, tell me, or jarvis. A question word in the middle of a fragment is not a request. The name is not required. Anything else prints `quiet` and does not look. A microphone transcription has a second line of word times. That line is the room, including other audio, so the brain prints `quiet` and does not look. An inbox transcription has no times line. The words on its first line are the text path, and they are taken up when they are a request. The times are not shown to the model.
+The echo check runs after the transcription has already been renamed into `done/transcription/`. The brain keeps letters and whitespace, casefolds, and collapses spaces. If the heard string is a substring of the last three spoken sentences, it is not appended and it does not cause a look. Every other line is given to the model. The model is the one that stays silent. The words on the first line become the user line. A second line of word times is not shown to the model.
 
 ### Caps
 
@@ -422,7 +422,7 @@ the kettle is on.
 
 ## Tools
 
-The model's own words are the speech. There is no `speak` tool and no grammar. Text outside `<|tool_call>...<tool_call|>` is written to speech files as it streams. Words before a `python` or `remember` call are not spoken and are not kept on the assistant line, so the next look starts from the tool result. If that look is empty, the spoken words are the script's printed output. Tool calls run after the stream ends, in order. A `python`, `remember`, or error result asks for another look. A script whose body matches the previous run appends `already ran, see above` and still looks. A bad call appends `error: ...` and the process stays up. The brain exits only through `stop`.
+The model's own words are the speech. There is no `speak` tool and no grammar. Text outside `<|tool_call>...<tool_call|>` is written to speech files as it streams. Words before a `python` or `remember` call are not spoken and are not kept on the assistant line, so the next look starts from the tool result. Tool calls run after the stream ends, in order. A `python`, `remember`, or error result asks for another look. A script whose body matches the previous run appends `already ran, see above` and still looks. A bad call appends `error: ...` and the process stays up. The brain exits only through `stop`.
 
 ```mermaid
 flowchart TB

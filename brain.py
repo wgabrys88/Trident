@@ -187,7 +187,6 @@ class Speaker:
         self.inside = False
         self.pending_first = True
         self.pre = ""
-        self.emitted = False
 
     def feed(self, text: str) -> None:
         self.hold += text
@@ -227,7 +226,6 @@ class Speaker:
             if not rest.lstrip() or rest.lstrip().startswith("<"):
                 return
             if emit(sentence):
-                self.emitted = True
                 self.pending_first = False
             self.buf = rest
 
@@ -237,7 +235,6 @@ class Speaker:
             if sentence is None:
                 return
             if emit(sentence):
-                self.emitted = True
                 self.pending_first = False
             self.buf = rest
             final = False
@@ -372,14 +369,6 @@ def apply(found: list) -> bool:
     return again
 
 
-def python_text() -> str:
-    rows = read_turns()
-    if not rows or rows[-1].get("role") != "tool" or rows[-1].get("name") != "python":
-        return ""
-    lines = [line for line in (rows[-1].get("content") or "").splitlines() if not line.startswith("exit ")]
-    return "\n".join(lines).strip()
-
-
 def store_assistant(content: str, calls: list) -> None:
     spoken = speech_of(content)
     if any(call.get("name") in {"python", "remember"} for call in calls):
@@ -432,11 +421,6 @@ def think(llm) -> None:
         content = "".join(pieces)
         print(content, flush=True)
         calls = parse_calls(content)
-        if not speaker.emitted and not speech_of(content).strip() and not any(call.get("name") in {"python", "remember"} for call in calls):
-            result = python_text()
-            if result:
-                emit(result)
-                content = result
         path = put(next_path("decision"), content if content.endswith("\n") else content + "\n")
         retire(path, "decision")
         store_assistant(content, calls)
@@ -449,17 +433,6 @@ def think(llm) -> None:
 
 def clock_line(kind_seconds: int) -> None:
     append_turn({"role": "user", "content": time.strftime("%H:%M:%S") + " silence for " + str(kind_seconds) + " s"})
-
-
-def called(words: str) -> bool:
-    if "?" in words:
-        return True
-    text = re.sub(r"<[^>]*>", " ", words).casefold()
-    text = " ".join(text.split())
-    if text.startswith(("jarvis", "please ", "hello", "hi ", "hi,", "what ", "what's ", "when ", "where ", "who ", "why ", "how ")):
-        return True
-    padded = " " + text + " "
-    return any(cue in padded for cue in (" could you ", " can you ", " would you ", " will you ", " tell me ", " jarvis"))
 
 
 def serve():
@@ -482,10 +455,8 @@ def serve():
             print("read", name, flush=True)
             if not heard:
                 continue
-            words, _, times = heard.partition("\n")
-            words, times = words.strip(), times.strip()
-            if times or own(words) or not called(words):
-                print("quiet", name, flush=True)
+            words = heard.split("\n", 1)[0].strip()
+            if own(words):
                 continue
             note_language(words)
             LAST_HUMAN = time.monotonic()
