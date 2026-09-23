@@ -74,8 +74,9 @@ def loose_wavs() -> None:
         retire(path, "wav")
 
 def say(pipe: str, text: str, language: str = "", architecture: str = ""):
-    if architecture == "gpt2" and language != "en":
-        raise RuntimeError("Unsupported language: " + language)
+    if architecture == "gpt2" and language not in ("", "en"):
+        print("mouth: language", language, "spoken as en", flush=True)
+        language = "en"
     import numpy as np
     loose_wavs()
     pcm = np.frombuffer(synthesize(pipe, text, language), dtype=np.int16)
@@ -102,6 +103,7 @@ def serve(name: str) -> str:
         if not path.is_file():
             raise RuntimeError("missing " + str(path))
     pipe, pid, flags = rf"\\.\pipe\chatterbox-{cfg.name}", MODELS / "server.pid", dict(args.knobs)
+    flags["gpu"] = str(vulkan())
     if cfg.architecture == "llama":
         for path in (ckpt / "official_mtl_tokenizer.py", ckpt / "official_mtl_tts.py", ckpt / "grapheme_mtl_merged_expanded_v1.json",
                      ckpt / "Cangjie5_TC.json", ckpt / "dicta-1.0.int8.onnx"):
@@ -123,7 +125,6 @@ def serve(name: str) -> str:
             if K32.WaitNamedPipeW(pipe, 3000):
                 return pipe
     kill(pid)
-    vulkan()
     proc = subprocess.Popen(command, cwd=exe.parent, stdin=subprocess.DEVNULL, creationflags=subprocess.CREATE_NEW_CONSOLE)
     Contract({"pid": proc.pid, "contract": wanted}).write(pid)
     deadline = time.monotonic() + 30
@@ -142,8 +143,9 @@ def render(pipe: str, path: Path, architecture: str):
     if not text:
         retire(path, "speech")
         return None
-    if architecture == "gpt2" and language != "en":
-        raise RuntimeError("Unsupported language: " + language)
+    if architecture == "gpt2" and language not in ("", "en"):
+        print("mouth: language", language, "spoken as en", flush=True)
+        language = "en"
     import numpy as np
     pcm = np.frombuffer(synthesize(pipe, text, language), dtype=np.int16)
     wav = write_wav(pcm.tobytes())

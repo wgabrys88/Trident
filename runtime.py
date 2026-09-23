@@ -9,9 +9,45 @@ K32.OpenProcess.argtypes, K32.OpenProcess.restype = [ctypes.c_uint, ctypes.c_int
 K32.WaitForSingleObject.argtypes, K32.CloseHandle.argtypes = [ctypes.c_void_p, ctypes.c_uint], [ctypes.c_void_p]
 
 def vulkan():
-    os.environ["GGML_VK_DISABLE_COOPMAT"] = "1"
-    os.environ["GGML_VK_VISIBLE_DEVICES"] = "0"
+    os.environ.pop("GGML_VK_DISABLE_COOPMAT", None)
     os.environ.pop("GGML_VK_PREFER_HOST_MEMORY", None)
+    from settings import VULKAN_DEVICE
+    devices = vulkan_devices()
+    if VULKAN_DEVICE is not None:
+        os.environ["GGML_VK_VISIBLE_DEVICES"] = str(VULKAN_DEVICE)
+        chosen = devices[int(VULKAN_DEVICE)]
+        print(f"vulkan device {chosen['index']} {chosen['name']} {chosen['total']}", flush=True)
+        return 0
+    chosen = max(devices, key=lambda item: item["total"])
+    print(f"vulkan device {chosen['index']} {chosen['name']} {chosen['total']}", flush=True)
+    return chosen["index"]
+
+
+def vulkan_devices():
+    script = r"""
+import ctypes, json
+from pathlib import Path
+dll = Path(r""" + '"' + str(ROOT / ".venv" / "Lib" / "site-packages" / "llama_cpp" / "lib" / "ggml-vulkan.dll") + '"' + r""")
+lib = ctypes.CDLL(str(dll))
+lib.ggml_backend_vk_get_device_count.restype = ctypes.c_int
+lib.ggml_backend_vk_get_device_description.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_size_t]
+lib.ggml_backend_vk_get_device_memory.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_size_t), ctypes.POINTER(ctypes.c_size_t)]
+devices = []
+for index in range(lib.ggml_backend_vk_get_device_count()):
+    name = ctypes.create_string_buffer(256)
+    lib.ggml_backend_vk_get_device_description(index, name, 256)
+    free, total = ctypes.c_size_t(), ctypes.c_size_t()
+    lib.ggml_backend_vk_get_device_memory(index, ctypes.byref(free), ctypes.byref(total))
+    devices.append({"index": index, "name": name.value.decode("utf-8", "replace"), "total": total.value})
+print(json.dumps(devices))
+"""
+    proc = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or "vulkan device list")
+    devices = json.loads(proc.stdout.strip().splitlines()[-1])
+    if not devices:
+        raise RuntimeError("no vulkan device")
+    return devices
 
 def venv_python() -> Path:
     return ROOT / ".venv" / "Scripts" / "python.exe"

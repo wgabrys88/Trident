@@ -1,6 +1,8 @@
 #include "t3.h"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <iostream>
 #include <numeric>
 
 namespace trident::gpt2 {
@@ -135,13 +137,18 @@ std::vector<int32_t> Gpt2T3::generate(const std::vector<int32_t>& text) {
     int past = 1 + conditioning_ + int(text.size()) + 1;
     reserve(past);
     std::mt19937 rng(knobs_.seed);
+    auto clock = std::chrono::steady_clock::now();
     auto logits = evaluate(text, 0, start_, true);
     int32_t token = sample(logits, {start_}, rng);
     std::vector<int32_t> predicted{token};
+    int steps = 1;
     for (int step = 1; step < knobs_.n_predict && token != stop_ && past + 1 <= context_; ++step) {
         logits = evaluate({}, past++, token, false);
         token = sample(logits, predicted, rng); predicted.push_back(token);
+        steps++;
     }
+    double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - clock).count();
+    std::cerr << (ms / steps) << " ms/token\n";
     std::vector<int32_t> speech;
     for (int32_t value : predicted) if (value >= 0 && value < start_) speech.push_back(value);
     speech.insert(speech.end(), pad_count_, pad_token_);

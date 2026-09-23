@@ -219,9 +219,9 @@ python trident.py v3 inbox
 
 Those four are the turbo and v3 mouths. The brain load is unchanged.
 
-[trident.py](trident.py) moves any existing `workspace/ready/ear`, `workspace/ready/brain`, and `workspace/ready/mouth` into `workspace/done/ready/`, then starts the three processes. Each child prints `ready` and writes its empty ready file after it can serve. When all three files exist, the supervisor prints `jarvis ready`. If a child exits before or after that, the supervisor terminates the three and taskkills `models/server.pid`, then exits with that child's code. Ctrl+C does the same stop. A second argument other than `inbox` prints `usage: python trident.py <variant> [inbox]`.
+[trident.py](trident.py) moves any existing `workspace/ready/ear`, `workspace/ready/brain`, and `workspace/ready/mouth` into `workspace/done/ready/`, then starts the three processes. Each child prints `ready` and writes its empty ready file after it can serve. When all three files exist, the supervisor prints `jarvis ready`. A brain exit with code 0 is a normal end: the supervisor stops the ear, the mouth, and the server and returns. Any other child exit prints the child name and the code, then stops the others and exits with that code. Ctrl+C stops the three. A second argument other than `inbox` prints `usage: python trident.py <variant> [inbox]`.
 
-To hear speech, the mouth has to be running when the speech file is still in `workspace/`. `speak` writes that file. The mouth reads it, writes a wav, plays it, and renames both the wav and the speech file into `done/`. See [The folder](#the-folder).
+To hear speech, the mouth has to be running when the speech file is still in `workspace/`. The brain writes that file while it is still generating. The mouth reads it, writes a wav, plays it, and renames both the wav and the speech file into `done/`. See [The folder](#the-folder).
 
 > [!IMPORTANT]
 > A wav is renamed from `wav/` into `workspace/done/wav/` and stays there. The ear, the brain, the mouth, and the supervisor do not remove bus files or wavs.
@@ -230,13 +230,13 @@ To hear speech, the mouth has to be running when the speech file is still in `wo
 python brain.py
 ```
 
-Runs the brain alone, in the same serve loop [trident.py](trident.py) uses. It clears `workspace/live.txt` first (the previous body is renamed into `done/live/` when the file is non-empty), loads Gemma, writes `ready/brain`, and looks once before any transcription. After that it sleeps until a transcription arrives or the clock it armed runs out. A hearing is journaled and looked at immediately. It does not start the ear or the mouth. `memory.md` and `said.txt` stay.
+Runs the brain alone, in the same serve loop [trident.py](trident.py) uses. It loads Gemma, writes `ready/brain`, and sleeps until a transcription arrives, an armed `wake` fires, or `IDLE` seconds (1800) pass with nothing heard and no wake armed. It does not look at startup. It does not start the ear or the mouth. `memory.md` stays.
 
 ```powershell
 python brain.py hello
 ```
 
-`python brain.py <text-or-file>` is one shot. The single argument must not be `nano`, `turbo`, or `v3`. If it is a path to a file, the file is read as UTF-8 with a BOM accepted. Otherwise the argument is the text. The text is journaled as `heard`. Gemma loads and looks until the completion does not run a new script. The process then exits. It does not write `ready/brain`, does not clear `live.txt` first, and does not wait for more transcriptions.
+`python brain.py <text-or-file>` is one shot. The single argument must not be `nano`, `turbo`, or `v3`. If it is a path to a file, the file is read as UTF-8 with a BOM accepted. Otherwise the argument is the text. The text is appended to `turns.jsonl` as a user line. Gemma loads and looks until the completion does not ask for another look. The process then exits. It does not write `ready/brain` and does not wait for more transcriptions.
 
 ```powershell
 python brain.py nano --say "the kettle is on."
@@ -313,7 +313,7 @@ The microphone joins at the same transcription file. The ear cuts after the leve
 
 ## The folder
 
-[settings.py](settings.py) calls the folder the bus. `bus()` creates `workspace/`, `workspace/done/`, and `workspace/inbox/`, and creates empty `workspace/live.txt` and `workspace/memory.md` when they are missing. Publishing a bus file uses a temporary name in the same directory and then `replace`, except the job script, the job result, and a `remember` rewrite of `memory.md`, which use `write_text` directly.
+[settings.py](settings.py) calls the folder the bus. `bus()` creates `workspace/`, `workspace/done/`, and `workspace/inbox/`, and creates empty `workspace/memory.md` when it is missing. `workspace/turns.jsonl` is the history the model sees. Publishing a bus file uses a temporary name in the same directory and then `replace`, except the job script, the job result, a `remember` rewrite of `memory.md`, and an appended turn, which write directly.
 
 A consumer renames a file into `workspace/done/<kind>/`. The name and the bytes stay. If that destination name is already there, the new name gets `-1`, `-2`, and so on before the suffix. Numbered live files start at 1 and skip a name that is already in `workspace/` or in `done/<kind>/`.
 
@@ -326,7 +326,7 @@ flowchart TB
   subgraph liveNames ["Names in workspace while they are in play"]
     inb["inbox/*.txt"]
     tx["transcription-N.txt"]
-    live["live.txt"]
+    turns["turns.jsonl"]
     mem["memory.md"]
     said["said.txt"]
     sp["speech-N.txt"]
@@ -352,8 +352,8 @@ flowchart TB
   inb --> di
   inb --> tx
   tx --> dt
-  tx --> live
-  live --> dl
+  tx --> turns
+  turns --> dl
   mem --> dm
   said --> dsaid
   sp --> dsp
@@ -370,13 +370,13 @@ flowchart TB
 | --- | --- | --- | --- |
 | `workspace/inbox/*.txt` | anyone | the ear | the ear renames it into `done/inbox/` as soon as it sees the name, then writes a transcription if the text is not empty |
 | `workspace/transcription-N.txt` | the ear | the brain | the brain renames it into `done/transcription/` before it decides |
-| `workspace/live.txt` | the brain | the brain, on the next look | the head is renamed into `done/live/` when the Python string is longer than 32000 characters; starting `python brain.py` with no arguments renames a non-empty file into `done/live/` and writes an empty `live.txt`; `speak` does not clear it |
-| `workspace/memory.md` | the brain | the brain, as the prefix of the user text | `remember` appends one line in place; the head is renamed into `done/memory/` when the Python string is longer than 8000 characters; a restart leaves the tail |
-| `workspace/said.txt` | the brain, the full text of the last `speak` | the brain, to label an echo | the next `speak` renames a non-empty file into `done/said/` |
+| `workspace/turns.jsonl` | the brain, one JSON object per line | the brain, on the next look | append only, except a trim that moves the oldest lines into `done/turns/turns-N.jsonl` when the rendered prompt exceeds 6144 tokens |
+| `workspace/memory.md` | the brain | the brain, as the first user line at startup when the file is not empty | `remember` appends one line in place; the head is renamed into `done/memory/` when the Python string is longer than 8000 characters |
+| `workspace/stop` | the brain, when `stop` runs | the record | left in place; the brain exits after speech files have been gone for 2 seconds, or after 60 seconds |
 | `workspace/speech-N.txt` | the brain, or `python brain.py <variant> --say` | the mouth | the mouth renames it into `done/speech/` after a successful play; an empty body is renamed with no play |
-| `workspace/job-N.py` | the brain | the venv Python, working directory `workspace/` | renamed into `done/job/` after the result is appended to `live.txt` |
-| `workspace/job-N.result.txt` | the brain, from the script's stdout, stderr, and status | the brain, because the same text was appended to `live.txt` | renamed into `done/job/` with the script |
-| `workspace/decision-N.txt` | the brain, the raw tool-call text, before apply | the brain | renamed into `done/decision/` after apply returns, and also when `stop` raises; a failed parse leaves the file in `workspace/` |
+| `workspace/job-N.py` | the brain | the venv Python, working directory `workspace/` | renamed into `done/job/` after the result is appended as a tool line |
+| `workspace/job-N.result.txt` | the brain, from the script's stdout, stderr, and status | the brain, because the same text is the tool line | renamed into `done/job/` with the script |
+| `workspace/decision-N.txt` | the brain, the raw completion, when the stream ends | the record | renamed into `done/decision/` before the tools run |
 | `workspace/ready/ear` | the ear, after it prints `ready` | [trident.py](trident.py) | the supervisor renames a stale file into `done/ready/` at the next start |
 | `workspace/ready/brain` | the brain serve loop, after Gemma is loaded | [trident.py](trident.py) | same |
 | `workspace/ready/mouth` | the mouth watch loop, after the server pipe answers | [trident.py](trident.py) | same |
@@ -385,13 +385,13 @@ flowchart TB
 
 Inbox order is filename sort. `transcription-N.txt`, `speech-N.txt`, `job-N`, and `decision-N.txt` are taken in numeric order. The ear does not wait for a writer to finish. It reads every `workspace/inbox/*.txt` on the pass that first sees the name. Write the file somewhere else and rename it into `inbox/` when the bytes are complete. That is the same publish pattern `put()` uses inside the program.
 
-The echo check runs after the transcription has already been renamed into `done/transcription/`. The brain keeps letters and whitespace, casefolds, and collapses spaces. If both strings are non-empty and the heard string is a substring of `said.txt`, the line is journaled as `echo` and the silence clock does not move. Otherwise it is journaled as `heard` and the silence clock resets. Both kinds wake a look. The journal stays. A python result is another journal line, and a new script causes another look.
+The echo check runs after the transcription has already been renamed into `done/transcription/`. The brain keeps letters and whitespace, casefolds, and collapses spaces. If the heard string is a substring of the last three spoken sentences, it is not appended and it does not cause a look. Otherwise it becomes a user line and the brain looks.
 
 ### Caps
 
-`CHUNK` is 60. `speak` splits the tool text on whitespace into stretches of 60 words. A stretch at or under 60 words is one speech file. Past that, the cut walks backward for a word whose last character is `.`, `?`, or `!`. If none is in the window, the cut is at 60 words. Each speech file is the language, a newline, and the stretch. `said.txt` keeps the unsplit text. The mouth plays one stretch and synthesizes the next speech file while that stretch is still coming out of the speakers.
+`CHUNK` is 40. While the model streams, a sentence of at least 8 words, or 40 words, is written as `speech-N.txt` before generation ends. The first line is the two-letter language of the last ear tag (`en-US` becomes `en`). `python brain.py <variant> --say` still splits on the same 40-word cap. The mouth plays one stretch and synthesizes the next speech file while that stretch is still coming out of the speakers.
 
-`MAX_LIVE` is 32000. `MAX_MEMORY` is 8000. The check is `len` of the Python string from `read_text`, which turns Windows newlines into `\n` before the count. On Windows, `write_text` writes `\n` as CRLF, so the file can be longer on disk than the cap and still be under it. The cap is not a byte cap. When the string is over the cap, the head is written to a new numbered file and renamed into `done/live/` or `done/memory/`. The tail stays. This runs at the start of a look, inside `scene`, not on every append.
+`IDLE` is 1800 seconds. `MAX_MEMORY` is 8000. The memory check is `len` of the Python string from `read_text`. When `memory.md` is over the cap, the head is renamed into `done/memory/` and the tail stays. The model does not see `live.txt`.
 
 Tracked source files are stored as LF (`.gitattributes` is `* text=auto eol=lf`). The bus is untracked. The bus follows Python's Windows newlines.
 
@@ -422,81 +422,58 @@ the kettle is on.
 
 ## Tools
 
-The brain acts only by tool calls under one grammar. There is no second mode and no reasoning flag. One completion may contain more than one call. The calls run in order. A look is one completion. A new `python` script asks for another look. The same script body as the previous run does not. There is no look cap.
+The model's own words are the speech. There is no `speak` tool and no grammar. Text outside `<|tool_call>...<tool_call|>` is written to speech files as it streams. Tool calls run after the stream ends, in order. A `python`, `remember`, or error result asks for another look. A script whose body matches the previous run appends `already ran, see above` and still looks. A bad call appends `error: ...` and the process stays up. The brain exits only through `stop`.
 
 ```mermaid
 flowchart TB
-  comp["One completion: one or more calls"]
-  comp --> wait["wait"]
-  comp --> speak["speak"]
-  comp --> remember["remember"]
+  comp["One completion"]
+  comp --> words["words outside tool calls become speech files while the stream runs"]
   comp --> py["python"]
+  comp --> remember["remember"]
+  comp --> wake["wake"]
   comp --> stop["stop"]
-  wait --> sleep["arm the clock; the journal stays"]
-  speak --> speech["speech files, replace said.txt, journal said"]
-  remember --> mem["append memory.md; the journal stays"]
-  py --> job["a new script is journaled and looked at again"]
-  stop --> halt["rename the decision file, then exit"]
+  py --> job["tool line with exit and output, then another look"]
+  remember --> mem["append memory.md and a tool line, then another look"]
+  wake --> clock["one clock line after the seconds"]
+  stop --> halt["wait until speech files are gone, then exit 0"]
 ```
-
-The user text is never empty. `scene` always includes the clock.
 
 ### What the model is told
 
-The system text in `SPEAK` is:
+The system text in `SPEAK` is under 120 words:
 
 ```text
-You are Jarvis. You stay loaded. The user text is memory, then the clock, then the journal. now is the local time. silent is how many seconds since a person spoke, or none when no person has spoken. The journal lines are heard, echo, said, and python. heard is a person or the room. echo is your own speaker. said is what you spoke. python is a script result. The machine writes the line that starts with exit. The script prints the answer. Act only by calling tools. Words that address you are a request. Other words are the room: remember them, act on them, or wait. wait sleeps until someone speaks or the seconds end. speak says the words. remember appends one fact and does not speak. The clock is not a fact. python runs one new script in the workspace folder, then you see the result and look again. When that result is already in the journal, speak it if the person asked to hear it. Before a script that does real work, speak one short present-tense line. When nothing needs you, wait sixty seconds. stop ends you.
+You are Jarvis, present in this room. A user line that starts with a time and a language tag is what you just heard. Everything you write is spoken aloud as you write it, in the language of the last speaker. You run python when the computer must do the work, and you remember a fact when it should survive a restart. When nobody is talking to you, you write nothing. When you do not know the words, you say that you do not know them.
 ```
 
-The user message is `memory.md`, then a blank line, then `now` and `silent`, then a blank line, then `live.txt`, omitting any piece that is empty. The clock piece is never empty.
-
-The tool descriptions name the same five calls. `wait` sleeps until someone speaks or the seconds end. `speak` uses `en` or `pl`, sixty words to a stretch, and the mouth synthesizes the next stretch during playback. `remember` appends one fact. `python` prints the answer, the machine writes the exit line, the result is journaled, and a new script looks again. A result already in the journal is spoken when the person asked to hear it. `stop` ends the process.
+The prompt is rendered from the GGUF key `tokenizer.chat_template` with jinja2. Messages are the system text, then `turns.jsonl`. Tools are `python`, `remember`, `wake`, and `stop`. Each description is one sentence. There is no grammar.
 
 ### What the code does
 
-| Tool | live.txt | memory.md | speech and said | jobs | next look |
+| Tool | turns.jsonl | memory.md | speech | jobs | next look |
 | --- | --- | --- | --- | --- | --- |
-| `wait` | unchanged | unchanged | none | none | no; the clock is armed to that many seconds, and a value below 1 becomes 60; the ceiling is 3600 |
-| `speak` | one `said` line is appended | unchanged | replaces `said.txt`; writes `speech-N.txt` | none | no, unless `python` in the same completion ran a new script |
-| `remember` | unchanged | appends one trimmed line | none | none | no |
-| `python` | the result is appended as a `python` line | unchanged | none | `job-N.py` and `job-N.result.txt`, then both renamed to `done/job/` | yes when the script body differs from the previous run |
-| `stop` | unchanged | unchanged | a `speak` earlier in the same completion has already written speech files | a `python` earlier in the same completion has already run | the process exits |
+| words | the assistant line keeps them | unchanged | one file per sentence, first line the two-letter language | none | no |
+| `python` | a tool line `exit N` plus the output, or `already ran, see above` | unchanged | none | `job-N.py` and `job-N.result.txt`, then both renamed to `done/job/` | yes |
+| `remember` | a tool line `remembered` plus the fact | appends the fact | none | none | yes |
+| `wake` | unchanged until the clock fires | unchanged | none | none | one user line `HH:MM:SS silence for N s` when the seconds elapse |
+| `stop` | the assistant line keeps the call | unchanged | speech already written during the stream | none | the brain writes `workspace/stop`, waits until no `speech-N.txt` has been present for 2 seconds or 60 seconds pass, then exits 0 |
 
-`speak` requires `text` that is not blank and a language of `en` or `pl`. A missing language is treated as `en`. The grammar already requires both fields. `python brain.py <variant> --say` calls the same writer and does not append a `said` line.
-
-`remember` requires non-empty `text`.
-
-`python` requires non-empty code. The script runs with `.venv\Scripts\python.exe`, current directory `workspace/`, captured stdout and stderr, and a 60 second timeout. The result text is `exit <returncode>`, a newline, then stdout and stderr. A timeout is `exit timeout`, a newline, then whatever output the timeout object carries. Both files are renamed into `done/job/` before the function returns. The journal line is what the next look sees. A script whose stripped body equals the previous script is not run. The journal gets `already ran`, and that call does not ask for another look.
-
-A completion that does not call `wait` and does not run a new script arms the clock for 60 seconds. A hearing still wakes the brain sooner. `wait` with no digits, or with a value below 1, arms 60 seconds as well. The ceiling is 3600.
-
-`stop` raises `SystemExit` inside the tool loop. [brain.py](brain.py) renames the decision file into `done/decision/` and then lets the process exit. Tools listed after `stop` in that completion do not run. [trident.py](trident.py) sees the exit, including exit code 0, and stops the ear, the mouth, and the server.
-
-`speak` and `stop` in one completion: if `speak` is first, the speech files are written and `said.txt` is replaced. The decision file is retired. The brain exits. The supervisor stops the mouth. The speech file can still be `workspace/speech-N.txt` when the mouth is gone. The mouth speaks a live speech file when it is running. It does not come back later for a file it never reached. To get a wav, run a mouth and call `speak` without `stop` in that completion, or speak with `python tts.py nano "words" en` while you do not need the brain.
-
-If `speak` and `python` are in one completion, the calls run in order. A new script asks for another look after the speech files have been written. The journal is not cleared.
-
-A completion that is not a closed run of tool calls raises. The decision file stays in `workspace/`. The brain process exits, and the supervisor stops the others.
+`wake` clamps seconds to 5 through 86400. With no `wake` armed and nothing heard for `IDLE` seconds (1800), the brain appends one silence line and looks once. A completion that is not a closed tool call becomes a tool line `error: ...`. The brain does not exit on model output except through `stop`.
 
 ### Looks
 
-`think` prints the user text and the completion. `serve` prints `read` and the transcription file name. The loop continues when apply ran a new script. A clock look with nothing to do returns after one completion. Hearing is checked before the clock, so a transcription that arrives during a wait is the next look.
+`think` prints the rendered prompt once, the prompt token count, and the completion. `serve` prints `read` and the transcription file name. Hearing is checked before the clock. After a completion the brain sleeps until a transcription arrives or an armed wake fires.
 
 ## Language
 
-The first line of a speech file is the language. The rest is the words.
+The first line of a speech file is the language. The rest is the words. The brain writes the two-letter code of the last ear tag.
 
 | Mouth | Where a language is accepted |
 | --- | --- |
-| nano, turbo | [tts.py](tts.py) rejects anything other than `en` before the pipe, with `Unsupported language:`. [src/gpt2/engine.cpp](src/gpt2/engine.cpp) `gpt2::Engine::synthesize` rejects anything other than `en` the same way |
-| v3 | [tts.py](tts.py) does not check the language tag, except that a newline in the tag fails in the pipe writer. [src/llama/engine.cpp](src/llama/engine.cpp) rejects a language that is not listed in the GGUF string `chatterbox.tokenizer.language_tokens`. The error is `Unsupported language: <tag>; GGUF offers <that string>`. This tree has no v3 GGUF, so this file does not list those tags |
+| nano, turbo | [tts.py](tts.py) speaks `en` and prints `mouth: language <tag> spoken as en` when the tag is not `en`. The pipe then receives `en`. [src/gpt2/engine.cpp](src/gpt2/engine.cpp) still accepts only `en` |
+| v3 | [src/llama/engine.cpp](src/llama/engine.cpp) rejects a language that is not listed in the GGUF string `chatterbox.tokenizer.language_tokens` |
 
-The brain's grammar and `speak()` allow `en` and `pl` only. nano and turbo will refuse `pl` when the mouth runs. v3 accepts `pl` only when that GGUF lists it.
-
-`python brain.py <variant> --say` always writes `en`. It cannot write `pl`.
-
-A one-shot `python tts.py nano "words"` omits the language argument and uses `en`.
+`python brain.py <variant> --say` always writes `en`.
 
 ## Ear
 
@@ -504,171 +481,55 @@ The ear is [asr.py](asr.py). Constants are `EAR` in [settings.py](settings.py).
 
 | Constant | Value | Role |
 | --- | --- | --- |
-| sample rate | 16000 | model input, mic stream, and wav-file load |
-| threads | 4 | `torch.set_num_threads` |
+| sample rate | 16000 | model input and the mic stream |
+| threads | 4 | `torch.set_num_threads`. The ear owns the CPU |
 | language | `auto` | passed to the processor |
-| lookahead | 3 | `set_num_lookahead_tokens` |
-| pause | 3.0 seconds | quiet time that ends an utterance |
+| lookahead | 13 | `set_num_lookahead_tokens`, and the same value passed to streaming `generate` |
+| pause | 1.2 seconds | quiet time that ends an utterance |
 | level | 0.03 | mean absolute sample of a frame |
 
-The mic stream is the default input, one channel, float32, block size `16000 * 0.05` (50 ms). A frame at or above `0.03` makes the utterance hot and resets the quiet count. After it is hot, 60 quiet frames (3.0 seconds) end it. Audio shorter than half a second (`16000 // 2` samples) is dropped. The transcript is stripped. Empty mic text is not written. Inbox text that strips to empty is still renamed into `done/inbox/` and does not become a transcription.
+The model is `nvidia/nemotron-3.5-asr-streaming-0.6b`, class `AutoModelForRNNT`. At start the ear prints `streaming_latency_ms`. An utterance is read in frames of `num_samples_first_audio_chunk` then `num_samples_per_audio_chunk` and fed as a generator of mel chunks to `model.generate(..., num_lookahead_tokens=13)`. The amplitude gate only decides when the utterance starts and ends. Decode uses `skip_special_tokens=False` and writes the trailing `<xx-YY>` tag in front of the text. When `decode(..., durations)` returns token times, a second line holds word start times in seconds. If streaming raises, that utterance falls back to one batch decode and the log line starts with `stream failed`.
 
-Each mic loop drains the inbox before it reads the next frame. Inbox-only mode drains and sleeps 0.05 seconds. The model class is `AutoModelForRNNT` from the local `models/ear/nemotron-3.5-asr-streaming-0.6b` directory. A missing weight raises `missing` and that path. The ear does not use Vulkan.
-
-`python asr.py <wav>` loads the file with the transformers audio loader at 16000 Hz and backend `librosa`. That import is not in the ear-only pip list. It is in the mouth package list.
+The mic stream is the default input, one channel, float32, block size 50 ms. Empty text is not written. Inbox text is copied as written; the inbox path does not run the model.
 
 ## Mouth
 
-The mouth is [tts.py](tts.py) plus [src/server.cpp](src/server.cpp). The Python process watches the bus, writes the wav, and plays it. The executable synthesizes. The mouth is Vulkan only, because the CMake file turns the CPU backend off.
+The mouth is [tts.py](tts.py) plus [src/server.cpp](src/server.cpp). The Python process watches the bus, writes the wav, and plays it. The executable synthesizes. `--gpu` is the device index `vulkan()` prints. Each utterance prints milliseconds per T3 token to stderr.
 
-Watch mode polls every 0.05 seconds. It reads the first `speech-N.txt` as UTF-8 with a BOM accepted, splits on the first newline, and strips the language and the text. No text: the speech file is renamed into `done/speech/` and nothing is played.
+Watch mode polls every 0.05 seconds. It reads the first `speech-N.txt` as UTF-8 with a BOM accepted, splits on the first newline, and strips the language and the text. No text: the speech file is renamed into `done/speech/` and nothing is played. While a stretch plays, the next speech file is synthesized.
 
-### Pipe and server
-
-The pipe name is `\\.\pipe\chatterbox-<variant>`. The server creates it with one instance and `PIPE_REJECT_REMOTE_CLIENTS`. The working directory of the server process is `build\bin`, so the ggml DLLs beside the exe load. The process is created with a new console.
-
-The command is `chatterbox-server.exe`, the voice `t3.gguf`, the voice `s3.gguf`, the pipe, then flag pairs. Flags come from `FLAGS` in [settings.py](settings.py). There is no Python switch to override them. [src/common/pipe.h](src/common/pipe.h) requires every flag to be consumed. A duplicate or an unknown flag throws. Architecture is the GGUF field `general.architecture`: `chatterbox-gpt2` or `chatterbox-llama`.
-
-| Flag | nano and turbo | v3 |
-| --- | --- | --- |
-| `--gpu` | `0` | `0` |
-| `--seed` | `42` | `42` |
-| `--temperature` | `0.8` | `0.8` |
-| `--top-p` | `0.95` | `1.0` |
-| `--repeat-penalty` | `1.2` | `1.2` |
-| `--n-predict` | `1000` | `1000` |
-| `--cfm-steps` | `2` | `10` |
-| `--trim-fade-samples` | `480` | `480` |
-| `--top-k` | `1000` | not passed |
-| `--min-p` | not passed | `0.05` |
-| `--cfg-weight` | not passed | `0.5` |
-| `--exaggeration` | not passed | `0.5` |
-| `--cfm-cfg` | not passed | `0.7` |
-
-Repeat penalty `1.2` is applied in [src/common/repeat_penalty.h](src/common/repeat_penalty.h): for each distinct token already generated, a positive score is divided by `1.2` and any other finite score is multiplied by `1.2`.
-
-v3 also receives `--tokenizer-python`, `--tokenizer-script` ([scripts/mtl_tokenize_runtime.py](scripts/mtl_tokenize_runtime.py)), `--tokenizer-source`, `--tokenizer-tts-source`, `--tokenizer-json`, `--cangjie-json`, and `--dicta-model`. Those paths are the venv interpreter and the files under `.ckpt-v3`. A missing file raises `missing` before the server starts.
-
-The Python side waits up to 60 seconds for the pipe. The request is the language, a newline, the UTF-8 byte length, a newline, and the UTF-8 text. The reply is `ok <sample count>`, a newline, then that many little-endian int16 samples. The server clamps each float to [-1, 1] and multiplies by 32767. The Python reader treats the count as samples and reads twice that many bytes.
-
-Startup waits up to 30 seconds for the pipe. `models/server.pid` stores the pid and the command contract, including the baked voice JSON. Any other `models/*.pid` except `models/trident.pid` is taskkilled first. This code writes `server.pid`. It does not write `trident.pid`.
-
-The watch loop renames every leftover `wav/*.wav` into `done/wav/` once, when the mouth becomes ready, and does not play those files. While a stretch plays, the next `speech-N.txt` is synthesized and its wav is written. That wav stays in `wav/` until that stretch is played. A one-shot `python tts.py <variant> <text>` still renames leftovers before its single synthesis.
-
-### Playback
-
-The wav header is mono, 16-bit, 24000 Hz. The file name is local time from `datetime.now()` as `YYMMDD-HHMMSSffffff.wav`. The mouth prints the text, plays, then prints the `done/wav/` path.
-
-Playback initializes COM with `CoInitializeEx(None, 0)` and calls sounddevice on the default output. Each int16 sample is repeated once and the stream rate is 48000 Hz, which holds every 24000 Hz sample for two output samples. The play starts, and the watch loop may synthesize the next speech file until the samples would have finished at 24000 Hz. The timeout after that work is half of that span, plus 120 seconds. `pcm` is the int16 array, so `len` is the sample count and the span is `len / 24000`. If the callback does not finish in time, the stream is stopped and the mouth raises `play timeout`.
-
-If play raises, the wav that was playing is renamed into `done/wav/` when the file exists, and a wav already written for the next stretch is renamed too. The exception continues. The speech files stay in `workspace/` because a file is renamed only after its play returns. If play returns, that wav is renamed and then its speech file is renamed. The next stretch, if it was already synthesized, plays without a second synthesis.
-
-### nano and turbo
-
-[src/gpt2/engine.cpp](src/gpt2/engine.cpp) refuses a language other than `en`, then runs the English normalizer in [src/gpt2/text_en.cpp](src/gpt2/text_en.cpp). That pass rewrites month-day-year dates, dollar amounts, clock times, phone numbers when the text before them matches the phone context, day-of-month ordinals, seat labels, decimals, and integers. Tokens that contain `://`, `@`, or `_`, and mixed letter-digit tokens outside the seat and ordinal cases, are left alone. The BPE then tokenizes the punctuated text. S3 synthesizes the T3 tokens. The fade is the last `trim-fade-samples` (480) of the PCM. The diffusion step count is `--cfm-steps` 2.
-
-### v3
-
-[src/llama/engine.cpp](src/llama/engine.cpp) checks the language against the GGUF list, spells numbers with ICU `UNUM_SPELLOUT` for that language tag, normalizes punctuation with `punc_norm` taken from the official `mtl_tts.py`, and tokenizes in the side Python worker. The worker loads the official MTL tokenizer and the Dicta ONNX model. T3 generation is wrapped with the model's start and stop text tokens. After S3, the engine drops the last 960 samples, then applies the same 480-sample fade. The diffusion step count is `--cfm-steps` 10, with `--cfm-cfg` 0.7.
+On `stop`, the brain stays up until the mouth has renamed the speech files. [trident.py](trident.py) stops the mouth after the brain has exited.
 
 ## Brain
 
-The brain is [brain.py](brain.py). The model path, context, and sampling dict are `BRAIN` in [settings.py](settings.py). Tool schemas and the system text are `TOOLS` and `SPEAK` in the same file.
+The brain is [brain.py](brain.py). The model path, context, and sampling dict are `BRAIN` in [settings.py](settings.py).
+
+On this machine Gemma 4 E2B Q4_K_M generated 16.2 tok/s without a GBNF grammar and 5.5 tok/s with it. The grammar walks the whole 262144-word vocabulary on one CPU thread, which is why the GPU sat near 40 percent. The brain therefore renders the chat template itself and calls `create_completion` with no grammar. A 2315-token prompt cost 7.05 s to re-evaluate when the clock stood in front of the journal and 0.38 s when only the suffix changed, because llama.cpp reuses the longest common token prefix. History is appended, so the prefix stays. `swa_full` is true because prefix reuse under the sliding-window cache needs the full SWA cache. `flash_attn` is left at the library default. It did not change the measured speed (17.6 versus 16.2 tok/s).
 
 ### Load
 
-`load()` checks that `models/brain-gemma-4-e2b-it-q4_k_m.gguf` exists, calls `vulkan()` in [runtime.py](runtime.py), then constructs `llama_cpp.Llama` with:
-
 | Argument | Value |
 | --- | --- |
-| `n_ctx` | 16384 |
+| `n_ctx` | 8192 |
 | `n_batch` | 1024 |
+| `n_ubatch` | 1024 |
 | `n_threads` | 4 |
-| `n_gpu_layers` | -1. A measured load printed `offloaded 36/36 layers to GPU` |
-| `chat_format` | `chat_template.default` |
-| `verbose` | `False` |
-| `logits_all` | `False` |
+| `n_gpu_layers` | -1 |
+| `main_gpu` | the index `vulkan()` returns |
+| `swa_full` | true |
+| `verbose` | true, so a prefix-match hit is printed |
 
-`flash_attn` is not passed. The library default is `False`, and that selects flash attention disabled. `offload_kqv` is not passed. The library default is `True`.
+Sampling is temperature 1.0, top_p 0.95, top_k 64, min_p 0.0, max_tokens 1024, stop on the turn closer. Before each look, while the rendered prompt exceeds 6144 tokens, the oldest turn that is not the memory line is moved to `done/turns/` together with its tool lines.
 
-The completion uses `temperature` 1.0, `top_p` 0.95, `top_k` 64, `min_p` 0.0, and `max_tokens` 1024. Those three sampling numbers are the Gemma 4 defaults. The call passes `stop=["<turn|>"]`. The chat formatter also stops on the model EOS token. `tools` is the five-tool list. `grammar` is the GBNF below. `n_ctx` is 16384 because the GGUF context length is 131072 and a resident journal plus memory does not fit in 4096 tokens, while a dense key-value cache for every layer at 16384 still fits beside the mouth on a 6GB device. Flash attention stays off. The pinned library defaults it to false, and the hybrid cache is already small.
-
-Serve mode prints `ready` and writes `workspace/ready/brain` only after that load returns.
-
-### Template and thinking
-
-`chat_format="chat_template.default"` renders the GGUF key `tokenizer.chat_template`. This program does not pass `enable_thinking` or `preserve_thinking`. In the template stored in `models/brain-gemma-4-e2b-it-q4_k_m.gguf`, both default to false:
-
-```text
-enable_thinking = enable_thinking | default(false)
-preserve_thinking = preserve_thinking | default(false)
-```
-
-The template contains a thought channel. `<|think|>` is written only when `enable_thinking` is true. `<|channel>thought` is opened on the generation prompt only when the previous turn was a tool response and `enable_thinking` is true, and a message's `reasoning` or `reasoning_content` is rendered into that channel only under the template's own gate. This code never sets those inputs. Thinking stays off. The template is still used.
-
-Because `tools` is passed and the first message is `system`, the template opens `<|turn>system`, writes the system text, writes each tool as `<|tool>` plus a declaration plus `<tool|>`, closes the turn, writes the user text, and ends the prompt with `<|turn>model` and a newline. That is the generation prompt this program actually builds.
-
-There is still only one way to think: the grammar, then another look when a new script ran.
-
-### Grammar
-
-The grammar root is `call+`. A completion is one or more calls and nothing in front of them. String bodies are wrapped in `<|"|>`. A `<` inside a string is allowed when the next character is not `|`.
-
-```text
-root ::= call+
-
-call ::= speak | wait | remember | py | stop
-speak ::= "<|tool_call>call:speak{" speakbody "}" "<tool_call|>"
-wait ::= "<|tool_call>call:wait{seconds:" piece "}" "<tool_call|>"
-remember ::= "<|tool_call>call:remember{text:" piece "}" "<tool_call|>"
-py ::= "<|tool_call>call:python{code:" piece "}" "<tool_call|>"
-stop ::= "<|tool_call>call:stop{}" "<tool_call|>"
-speakbody ::= "text:" piece ",language:" lang | "language:" lang ",text:" piece
-piece ::= mark chars mark
-lang ::= mark ("en" | "pl") mark
-mark ::= "<|\"|>"
-chars ::= ([^<] | "<" [^|])*
-```
-
-`stop` has empty `{}`. `speak` may put `text` or `language` first. The parser in [brain.py](brain.py) reads `name` and the marked fields. Prose outside the calls raises `tool call`. An unclosed call raises `open tool call`.
+When `memory.md` is not empty at startup and `turns.jsonl` is empty, the first user line is `memory:` plus the file. Later `remember` calls are tool lines, so the front of the prompt does not change.
 
 ## Vulkan
 
-> [!IMPORTANT]
-> The brain and the mouth are two processes. Each opens its own Vulkan device. Both are pinned to physical device 0. A display on that GPU does not put the brain on the CPU. `n_gpu_layers` stays -1. This program does not change `TdrDelay`.
+The brain and the mouth are two processes. Each opens its own Vulkan device. `vulkan()` does not set `GGML_VK_DISABLE_COOPMAT` and does not pin `GGML_VK_VISIBLE_DEVICES`. It lists devices from `ggml_backend_vk_get_device_memory`, prints the one with the most device-local memory, and passes that index as `main_gpu` and as `--gpu`. `VULKAN_DEVICE` in [settings.py](settings.py) is `None`. An integer there pins `GGML_VK_VISIBLE_DEVICES` to that index and passes `--gpu 0`. This program does not change `TdrDelay`, does not add CUDA, and does not add a CPU backend to the mouth.
 
-`vulkan()` in [runtime.py](runtime.py) runs in the brain before `Llama()`, and in the mouth before it starts `chatterbox-server.exe`. The server inherits the environment. The function does three things:
+On the machine this was written for, the only device is Intel Iris Xe Graphics, 17012209664 bytes. Cooperative matrices are unused there. Leaving the coopmat path enabled is the fast path on NVIDIA and a no-op here.
 
-| Environment variable | What the code does |
-| --- | --- |
-| `GGML_VK_DISABLE_COOPMAT` | sets it to `1` |
-| `GGML_VK_VISIBLE_DEVICES` | sets it to `0` |
-| `GGML_VK_PREFER_HOST_MEMORY` | removes it if it is set |
-
-The code does not set `GGML_VK_PREFER_HOST_MEMORY`. On a machine whose GPU reports `uma` 1, an integrated GPU that needs that variable has to have it set outside this program. As written, `vulkan()` will remove it again when the brain loads and when the mouth starts the server.
-
-The mouth device is `ggml_backend_vk_init` in [src/common/vulkan_backend.cpp](src/common/vulkan_backend.cpp), with the `--gpu` value, which is 0. Bake uses device 0 as well, and bake does not call `vulkan()`. The brain device is the one llama.cpp opens inside the brain process under the same visible-device variable. Two processes, two `VkDevice` objects, one physical GPU.
-
-The ear stays on CPU torch. The CPU torch wheel is the ear and the conversion scripts. It is not the mouth synthesizer.
-
-```mermaid
-flowchart TB
-  gpu["Physical GPU 0, GGML_VK_VISIBLE_DEVICES=0"]
-  subgraph brainProc ["brain.py"]
-    coop1["GGML_VK_DISABLE_COOPMAT=1"]
-    dev1["llama.cpp VkDevice"]
-    gemma["Gemma, n_gpu_layers -1"]
-    coop1 --> dev1 --> gemma
-  end
-  subgraph mouthProc ["chatterbox-server.exe"]
-    coop2["GGML_VK_DISABLE_COOPMAT=1"]
-    dev2["ggml_backend_vk_init device 0"]
-    voice["nano, turbo, or v3"]
-    coop2 --> dev2 --> voice
-  end
-  gpu --> dev1
-  gpu --> dev2
-```
+The mouth device is `ggml_backend_vk_init` in [src/common/vulkan_backend.cpp](src/common/vulkan_backend.cpp). The ear stays on CPU torch.
 
 ## Layout
 

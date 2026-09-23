@@ -18,6 +18,7 @@ def main(variant: str, inbox_only: bool = False):
             retire(path, "ready")
     py = sys.executable
     asr = [py, str(ROOT / "asr.py"), "--inbox"] if inbox_only else [py, str(ROOT / "asr.py")]
+    names = ("brain", "mouth", "ear")
     workers = [
         subprocess.Popen([py, str(ROOT / "brain.py")]),
         subprocess.Popen([py, str(ROOT / "tts.py"), variant]),
@@ -25,19 +26,25 @@ def main(variant: str, inbox_only: bool = False):
     ]
     try:
         while not all((folder / name).is_file() for name in ("ear", "brain", "mouth")):
-            for proc in workers:
+            for name, proc in zip(names, workers):
                 code = proc.poll()
                 if code is not None:
+                    print(name, "exited", code, flush=True)
                     stop(workers)
                     raise SystemExit(code)
             time.sleep(0.05)
         print("jarvis ready", flush=True)
         while True:
-            for proc in workers:
+            for name, proc in zip(names, workers):
                 code = proc.poll()
-                if code is not None:
+                if code is None:
+                    continue
+                if name == "brain" and code == 0:
                     stop(workers)
-                    raise SystemExit(code)
+                    return
+                print(name, "exited", code, flush=True)
+                stop(workers)
+                raise SystemExit(code)
             time.sleep(0.25)
     except KeyboardInterrupt:
         stop(workers)

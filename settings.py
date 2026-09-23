@@ -4,20 +4,22 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 WORK = ROOT / "workspace"
 DONE = WORK / "done"
+TURNS = WORK / "turns.jsonl"
 LIVE = WORK / "live.txt"
 MEMORY = WORK / "memory.md"
 SAID = WORK / "said.txt"
+STOP = WORK / "stop"
 INBOX = WORK / "inbox"
-CHUNK = 60
+CHUNK = 40
+IDLE = 1800
 MAX_LIVE = 32000
 MAX_MEMORY = 8000
+VULKAN_DEVICE = None
 
 def bus() -> Path:
     WORK.mkdir(parents=True, exist_ok=True)
     DONE.mkdir(exist_ok=True)
     INBOX.mkdir(exist_ok=True)
-    if not LIVE.exists():
-        LIVE.write_text("", encoding="utf-8")
     if not MEMORY.exists():
         MEMORY.write_text("", encoding="utf-8")
     return WORK
@@ -115,45 +117,34 @@ def ready(name: str) -> None:
     put(folder / name, "")
 
 SPEAK = (
-    "You are Jarvis. You stay loaded. The user text is memory, then the clock, then the journal. "
-    "now is the local time. silent is how many seconds since a person spoke, or none when no person has spoken. "
-    "The journal lines are heard, echo, said, and python. heard is a person or the room. echo is your own speaker. "
-    "said is what you spoke. python is a script result. The machine writes the line that starts with exit. The script prints the answer. "
-    "Act only by calling tools. Words that address you are a request. Other words are the room: remember them, act on them, or wait. "
-    "wait sleeps until someone speaks or the seconds end. speak says the words. remember appends one fact and does not speak. The clock is not a fact. "
-    "python runs one new script in the workspace folder, then you see the result and look again. When that result is already in the journal, speak it if the person asked to hear it. "
-    "Before a script that does real work, speak one short present-tense line. When nothing needs you, wait sixty seconds. stop ends you."
+    "You are Jarvis, present in this room. A user line that starts with a time and a language tag is what you just heard. "
+    "Everything you write is spoken aloud as you write it, in the language of the last speaker. "
+    "You run python when the computer must do the work, and you remember a fact when it should survive a restart. "
+    "When nobody is talking to you, you write nothing. When you do not know the words, you say that you do not know them."
 )
 TOOLS = [
     {"type": "function", "function": {
-        "name": "wait",
-        "description": "Sleep this many seconds, or until someone speaks. When nothing needs you, pass 60.",
+        "name": "python",
+        "description": "Run one Python script in the workspace folder and return its exit code and output.",
         "parameters": {"type": "object", "properties": {
-            "seconds": {"type": "string", "description": "How many seconds to sleep."}},
-            "required": ["seconds"]}}},
-    {"type": "function", "function": {
-        "name": "speak",
-        "description": "Speak text. language is en or pl. Sixty words is one stretch. The next stretch is synthesized while the current stretch plays.",
-        "parameters": {"type": "object", "properties": {
-            "text": {"type": "string", "description": "Words to speak."},
-            "language": {"type": "string", "description": "en or pl."}},
-            "required": ["text", "language"]}}},
+            "code": {"type": "string", "description": "One complete Python script."},
+        }, "required": ["code"]}}},
     {"type": "function", "function": {
         "name": "remember",
-        "description": "Append one fact to memory. A name, a commitment, or a task. Does not speak.",
+        "description": "Append one fact to memory that should survive a restart.",
         "parameters": {"type": "object", "properties": {
-            "text": {"type": "string", "description": "One fact."}},
-            "required": ["text"]}}},
+            "text": {"type": "string", "description": "One fact."},
+        }, "required": ["text"]}}},
     {"type": "function", "function": {
-        "name": "python",
-        "description": "Run one new script in the workspace folder. Print the answer. The machine writes the exit line. The result is journaled and you look again. If that result is already in the journal, speak it instead.",
+        "name": "wake",
+        "description": "Wake once after this many seconds, from 5 to 86400.",
         "parameters": {"type": "object", "properties": {
-            "code": {"type": "string", "description": "One complete Python script."}},
-            "required": ["code"]}}},
+            "seconds": {"type": "string", "description": "Seconds until the wake."},
+        }, "required": ["seconds"]}}},
     {"type": "function", "function": {
         "name": "stop",
-        "description": "End the Jarvis process.",
-        "parameters": {"type": "object", "properties": {}}}},
+        "description": "End the process after the spoken words have played.",
+        "parameters": {"type": "object", "properties": {}, "required": []}}},
 ]
 
 FLAGS = [
@@ -210,13 +201,13 @@ EAR = {
     "repo": "https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b/resolve/ea30d66debe3740a08b573244286791d423d6b3e",
     "dir": "nemotron-3.5-asr-streaming-0.6b",
     "files": ("config.json", "generation_config.json", "processor_config.json", "tokenizer_config.json", "tokenizer.json", "model.safetensors"),
-    "sample_rate": 16000, "threads": 4, "language": "auto", "lookahead": 3,
-    "pause": 3.0, "level": 0.03,
+    "sample_rate": 16000, "threads": 4, "language": "auto", "lookahead": 13,
+    "pause": 1.2, "level": 0.03,
 }
 WAV = "wav"
 BRAIN = {
     "url": "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/0314792d7f1f7e229411f620751375812bb9faf2/gemma-4-E2B-it-Q4_K_M.gguf",
     "file": "brain-gemma-4-e2b-it-q4_k_m.gguf",
-    "n_ctx": 16384, "n_batch": 1024, "n_threads": 4, "n_gpu_layers": -1,
+    "n_ctx": 8192, "n_batch": 1024, "n_ubatch": 1024, "n_threads": 4, "n_gpu_layers": -1, "swa_full": True,
     "decode": {"temperature": 1.0, "top_p": 0.95, "top_k": 64, "min_p": 0.0, "max_tokens": 1024},
 }

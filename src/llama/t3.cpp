@@ -1,6 +1,8 @@
 #include "t3.h"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <iostream>
 #include <numeric>
 #include <set>
 
@@ -239,14 +241,21 @@ std::vector<int32_t> LlamaT3::generate(const std::vector<int32_t>& text) {
     int past = 1 + perceiver_ + 1 + int(text.size()) + 2;
     reserve(past);
     std::mt19937 rng(knobs_.seed);
+    auto clock = std::chrono::steady_clock::now();
     auto scores = prompt(text);
     std::vector<int32_t> generated{start_}, predicted;
+    int steps = 0;
     for (int i = 0; i < knobs_.n_predict && past + 1 <= context_; ++i) {
+        steps++;
         int32_t token = sample(scores, generated, rng);
         predicted.push_back(token);
         generated.push_back(token);
         if (token == stop_) break;
         scores = step(past++, token, i + 1);
+    }
+    if (steps) {
+        double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - clock).count();
+        std::cerr << (ms / steps) << " ms/token\n";
     }
     size_t begin = 0, end = predicted.size();
     for (size_t i = 0; i < predicted.size(); ++i) if (predicted[i] == start_) { begin = i + 1; break; }
