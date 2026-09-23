@@ -142,13 +142,15 @@ def note_language(text: str) -> None:
         LANG = match.group(1).lower()[:2]
 
 
-def emit(sentence: str) -> None:
+def emit(sentence: str) -> bool:
+    sentence = re.sub(r"^\d{1,2}:\d{2}:\d{2}\s+\S+\.?\s*", "", sentence.strip())
     sentence = sentence.strip()
     if not sentence:
-        return
+        return False
     put(next_path("speech"), LANG + "\n" + sentence)
     SPOKEN.append(sentence)
     del SPOKEN[:-3]
+    return True
 
 
 def cut(buf: str, final: bool = False, first: bool = False):
@@ -210,8 +212,8 @@ class Speaker:
             sentence, rest = cut(self.buf, final, first=self.pending_first)
             if sentence is None:
                 return
-            emit(sentence)
-            self.pending_first = False
+            if emit(sentence):
+                self.pending_first = False
             self.buf = rest
             final = False
 
