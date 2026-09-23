@@ -33,8 +33,15 @@ class Ear:
         raw = self.processor.decode(ids, skip_special_tokens=False)
         if not isinstance(raw, str):
             raw = raw[0]
-        match = TAG.search(raw.strip())
+        match = TAG.search(str(raw).strip())
         lang = "<" + match.group(1) + ">" if match else ""
+        if not lang:
+            pieces = self.processor.tokenizer.convert_ids_to_tokens([int(x) for x in ids.tolist()])
+            for piece in reversed(pieces):
+                found = re.search(r"[A-Za-z]{2,3}-[A-Za-z]{2}", str(piece))
+                if found:
+                    lang = "<" + found.group(0) + ">"
+                    break
         text = self.processor.decode(ids, skip_special_tokens=True)
         if not isinstance(text, str):
             text = text[0]
@@ -70,8 +77,14 @@ class Ear:
 
         def features(samples, first):
             feat = self.processor(samples, sampling_rate=EAR["sample_rate"], language=EAR["language"],
-                                  is_streaming=True, is_first_audio_chunk=first)
-            return feat["input_features"]
+                                  is_streaming=True, is_first_audio_chunk=first)["input_features"]
+            need = self.processor.num_mel_frames_first_audio_chunk if first else self.processor.num_mel_frames_per_audio_chunk
+            if feat.shape[1] > need:
+                feat = feat[:, :need]
+            elif feat.shape[1] < need:
+                pad = feat.new_zeros(feat.shape[0], need - feat.shape[1], *feat.shape[2:])
+                feat = torch.cat([feat, pad], dim=1)
+            return feat
 
         def chunks():
             while True:
@@ -93,7 +106,12 @@ class Ear:
 
         with torch.inference_mode():
             output = self.model.generate(input_features=chunks(), num_lookahead_tokens=EAR["lookahead"], prompt_ids=self.prompt_ids)
-        durations = output.durations[0] if getattr(output, "durations", None) is not None else None
+        durations = None
+        if getattr(output, "durations", None) is not None:
+            durations = output.durations
+            if durations.ndim == 1:
+                durations = durations.unsqueeze(0)
+            durations = durations[0]
         text, times = self.tag(output.sequences, durations)
         return text, times, state["last"]
 

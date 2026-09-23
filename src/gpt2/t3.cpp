@@ -68,7 +68,9 @@ void Gpt2T3::transformer(Graph& graph, ggml_tensor* hidden, int past, int count)
 }
 std::vector<float> Gpt2T3::evaluate(const std::vector<int32_t>& text, int past, int32_t speech, bool prompt) {
     int count = prompt ? 1 + conditioning_ + int(text.size()) + 1 : 1;
-    Graph graph(backend_, 8192);
+    if (!compute_) compute_ = std::make_unique<Graph>(backend_, 8192);
+    compute_->begin();
+    Graph& graph = *compute_;
     auto* ctx = graph.context();
     auto* speech_token = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
     auto* position = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, count);

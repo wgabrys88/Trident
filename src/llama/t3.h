@@ -2,6 +2,7 @@
 #include "common/gguf_file.h"
 #include "../engine.h"
 #include "common/repeat_penalty.h"
+#include <memory>
 #include <random>
 
 namespace trident::llama {
@@ -12,6 +13,7 @@ class LlamaT3 {
     GgufFile file_;
     Weights weights_;
     RepeatPenalty penalty_;
+    std::unique_ptr<Graph> compute_;
     Context kv_context_;
     Buffer kv_buffer_;
     ggml_tensor *keys_ = nullptr, *values_ = nullptr;

@@ -126,7 +126,9 @@ std::vector<float> LlamaT3::logits(Graph& graph, int count) const {
 }
 std::vector<float> LlamaT3::prompt(const std::vector<int32_t>& text) {
     int condition = 1 + perceiver_ + 1, count = condition + int(text.size()) + 2;
-    Graph graph(backend_, 8192);
+    if (!compute_) compute_ = std::make_unique<Graph>(backend_, 8192);
+    compute_->begin();
+    Graph& graph = *compute_;
     auto* ctx = graph.context();
     auto* text_tokens = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, text.size());
     auto* text_pos = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, text.size());
@@ -176,7 +178,9 @@ std::vector<float> LlamaT3::prompt(const std::vector<int32_t>& text) {
     return logits(graph, count);
 }
 std::vector<float> LlamaT3::step(int past, int32_t token, int speech) {
-    Graph graph(backend_, 8192);
+    if (!compute_) compute_ = std::make_unique<Graph>(backend_, 8192);
+    compute_->begin();
+    Graph& graph = *compute_;
     auto* ctx = graph.context();
     auto* speech_token = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);
     auto* speech_pos = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, 1);

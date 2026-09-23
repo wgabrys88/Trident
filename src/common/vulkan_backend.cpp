@@ -13,12 +13,26 @@ void VulkanBackend::compute(ggml_cgraph* graph) const {
         throw std::runtime_error("Vulkan graph computation failed");
 }
 Graph::Graph(const VulkanBackend& backend, size_t nodes)
-    : context_(ggml_init({ggml_tensor_overhead() * nodes + ggml_graph_overhead_custom(nodes, false), nullptr, true}), ggml_free),
+    : context_(nullptr, ggml_free),
       allocator_(ggml_gallocr_new(ggml_backend_get_default_buffer_type(backend.get())), ggml_gallocr_free),
-      backend_(backend), graph(ggml_new_graph_custom(context_.get(), nodes, false)) {}
+      backend_(backend), nodes_(nodes), graph(nullptr) { begin(); }
+void Graph::begin() {
+    context_.reset(ggml_init({ggml_tensor_overhead() * nodes_ + ggml_graph_overhead_custom(nodes_, false), nullptr, true}));
+    graph = ggml_new_graph_custom(context_.get(), nodes_, false);
+}
 void Graph::allocate() {
-    if (!ggml_gallocr_reserve(allocator_.get(), graph) || !ggml_gallocr_alloc_graph(allocator_.get(), graph))
-        throw std::runtime_error("Vulkan graph allocation failed");
+    int nodes = ggml_graph_n_nodes(graph);
+    auto place = [&] {
+        if (nodes > reserved_) {
+            if (!ggml_gallocr_reserve(allocator_.get(), graph)) return false;
+            reserved_ = nodes;
+        }
+        return ggml_gallocr_alloc_graph(allocator_.get(), graph) != 0;
+    };
+    if (!place()) {
+        reserved_ = 0;
+        if (!place()) throw std::runtime_error("Vulkan graph allocation failed");
+    }
 }
 void Graph::compute() const { backend_.compute(graph); }
 ggml_tensor* Graph::tensor(const char* name) const {

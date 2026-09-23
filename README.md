@@ -488,13 +488,13 @@ The ear is [asr.py](asr.py). Constants are `EAR` in [settings.py](settings.py).
 | pause | 1.2 seconds | quiet time that ends an utterance |
 | level | 0.03 | mean absolute sample of a frame |
 
-The model is `nvidia/nemotron-3.5-asr-streaming-0.6b`, class `AutoModelForRNNT`. At start the ear prints `streaming_latency_ms`. An utterance is read in frames of `num_samples_first_audio_chunk` then `num_samples_per_audio_chunk` and fed as a generator of mel chunks to `model.generate(..., num_lookahead_tokens=13)`. The amplitude gate only decides when the utterance starts and ends. Decode uses `skip_special_tokens=False` and writes the trailing `<xx-YY>` tag in front of the text. When `decode(..., durations)` returns token times, a second line holds word start times in seconds. If streaming raises, that utterance falls back to one batch decode and the log line starts with `stream failed`.
+The model is `nvidia/nemotron-3.5-asr-streaming-0.6b`, class `AutoModelForRNNT`. At start the ear prints `streaming_latency_ms` (1120 with lookahead 13). An utterance is read in frames of `num_samples_first_audio_chunk` then `num_samples_per_audio_chunk` and fed as a generator of mel chunks to `model.generate(..., num_lookahead_tokens=13)`. Mel frames are sliced to the exact count that lookahead requires, because the extractor returns one extra frame. The amplitude gate only decides when the utterance starts and ends. On an 18.5 s wav fed through that path, the transcription was written 0.617 s after the last hot frame. Offline decode writes a trailing `<en-US>` tag. Streaming token ids end in `<pad>` and do not contain that tag, so a streaming transcription has no language prefix. `decode(..., durations)` raises `iteration over a 0-d tensor` on this build, so word timestamps are not written. If streaming raises, that utterance falls back to one batch decode and the log line starts with `stream failed`.
 
 The mic stream is the default input, one channel, float32, block size 50 ms. Empty text is not written. Inbox text is copied as written; the inbox path does not run the model.
 
 ## Mouth
 
-The mouth is [tts.py](tts.py) plus [src/server.cpp](src/server.cpp). The Python process watches the bus, writes the wav, and plays it. The executable synthesizes. `--gpu` is the device index `vulkan()` prints. Each utterance prints milliseconds per T3 token to stderr.
+The mouth is [tts.py](tts.py) plus [src/server.cpp](src/server.cpp). The Python process watches the bus, writes the wav, and plays it. The executable synthesizes. `--gpu` is the device index `vulkan()` prints. Each utterance prints milliseconds per T3 token to stderr. Before graph reuse a short utterance measured 17.7 ms/token. After one retained graph and allocator, the same kind of utterance measured 15.8 ms/token. The allocator is reserved again only when the node count grows.
 
 Watch mode polls every 0.05 seconds. It reads the first `speech-N.txt` as UTF-8 with a BOM accepted, splits on the first newline, and strips the language and the text. No text: the speech file is renamed into `done/speech/` and nothing is played. While a stretch plays, the next speech file is synthesized.
 

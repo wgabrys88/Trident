@@ -22,9 +22,12 @@ class Graph {
     Context context_;
     Allocator allocator_;
     const VulkanBackend& backend_;
+    size_t nodes_;
+    int reserved_ = 0;
 public:
     ggml_cgraph* graph;
     Graph(const VulkanBackend&, size_t nodes);
+    void begin();
     ggml_context* context() const { return context_.get(); }
     void allocate();
     void compute() const;
