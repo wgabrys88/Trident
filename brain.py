@@ -408,6 +408,19 @@ def clock_line(kind_seconds: int) -> None:
     append_turn({"role": "user", "content": time.strftime("%H:%M:%S") + " silence for " + str(kind_seconds) + " s"})
 
 
+def called(words: str) -> bool:
+    if "?" in words:
+        return True
+    text = " " + re.sub(r"<[^>]*>", " ", words).casefold() + " "
+    cues = (
+        " jarvis", " please ", " hello", " hi",
+        " could you ", " can you ", " would you ", " will you ", " tell me ",
+        " what ", " what's ", " when ", " where ", " who ", " why ", " how ",
+        " answer ", " say ", " count ",
+    )
+    return any(cue in text for cue in cues)
+
+
 def heard_during_playback(when: float) -> bool:
     import wave
     pad = EAR["pause"]
@@ -453,7 +466,8 @@ def serve():
             if times and heard_during_playback(when):
                 print("quiet", name, flush=True)
                 continue
-            if own(words):
+            if own(words) or not called(words):
+                print("quiet", name, flush=True)
                 continue
             note_language(words)
             LAST_HUMAN = time.monotonic()
