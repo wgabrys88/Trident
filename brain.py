@@ -187,6 +187,7 @@ class Speaker:
         self.inside = False
         self.pending_first = True
         self.pre = ""
+        self.drop = False
 
     def feed(self, text: str) -> None:
         self.hold += text
@@ -211,7 +212,11 @@ class Speaker:
                 self.hold = self.hold[at + len(CLOSE):]
                 self.inside = False
                 name = call[5:].partition("{")[0] if call.startswith("call:") else ""
-                if name in {"python", "remember"}:
+                if name == "python":
+                    self.pre = ""
+                    self.buf = ""
+                    self.drop = True
+                elif name == "remember":
                     self.pre = ""
                 elif self.pre:
                     self.buf = (self.pre + "\n" + self.buf).strip()
@@ -219,6 +224,9 @@ class Speaker:
                 self.release()
 
     def release(self) -> None:
+        if self.drop:
+            self.buf = ""
+            return
         while True:
             sentence, rest = cut(self.buf, False, first=False)
             if sentence is None:
@@ -230,6 +238,9 @@ class Speaker:
             self.buf = rest
 
     def flush(self, final: bool = False) -> None:
+        if self.drop:
+            self.buf = ""
+            return
         while True:
             sentence, rest = cut(self.buf, final, first=self.pending_first and not final)
             if sentence is None:
@@ -300,27 +311,30 @@ def arm(seconds: str) -> None:
     WAKE_AT = time.monotonic() + n
 
 
-def run_python(code: str) -> None:
+def run_python(code: str) -> str:
     global LAST_CODE
     if not isinstance(code, str) or not code.strip():
         raise RuntimeError("python")
     body = code.strip()
     if body == LAST_CODE:
         tool_line("python", "already ran, see above")
-        return
+        return ""
     LAST_CODE = body
     script = next_path("job", ".py")
     script.write_text(code, encoding="utf-8")
     try:
         proc = subprocess.run([str(venv_python()), str(script)], cwd=str(bus()), capture_output=True, text=True, timeout=60)
-        result = f"exit {proc.returncode}\n{proc.stdout or ''}{proc.stderr or ''}"
+        printed = proc.stdout or ""
+        result = f"exit {proc.returncode}\n{printed}{proc.stderr or ''}"
     except subprocess.TimeoutExpired as err:
+        printed = ""
         result = f"exit timeout\n{err.stdout or ''}{err.stderr or ''}"
     record = script.with_name(script.stem + ".result.txt")
     record.write_text(result, encoding="utf-8")
     retire(script, "job")
     retire(record, "job")
     tool_line("python", result)
+    return printed.strip()
 
 
 def drain() -> None:
@@ -347,8 +361,9 @@ def apply(found: list) -> bool:
         name, args = tool["name"], tool.get("arguments") or {}
         try:
             if name == "python":
-                run_python(args.get("code", ""))
-                again = True
+                printed = run_python(args.get("code", ""))
+                if printed:
+                    emit(printed)
             elif name == "remember":
                 remember(args.get("text", ""))
                 again = True
