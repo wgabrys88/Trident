@@ -2,13 +2,16 @@ import hashlib, json, os, re, shutil, subprocess, sys, urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from components.runtime import ROOT, kill_chatterbox, venv_python
+from trident_lib import ROOT, kill_server_pid, venv_python
+
+GEMMA_MODELS = (
+    ("gemma-4-E2B-it-Q4_0.gguf", "https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_0.gguf"),
+    ("mmproj-gemma-4-E2B-it-BF16.gguf", "https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/mmproj-gemma-4-E2B-it-BF16.gguf"),
+)
 
 MODELS = ROOT / "models"
 CMAKE_GENERATOR, CMAKE_ARCH = "Visual Studio 17 2022", "x64"
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
-BRAIN_URL = "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/0314792d7f1f7e229411f620751375812bb9faf2/gemma-4-E2B-it-Q4_K_M.gguf"
-BRAIN_FILE = "brain-gemma-4-e2b-it-q4_k_m.gguf"
 EAR_REPO = "https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b/resolve/ea30d66debe3740a08b573244286791d423d6b3e"
 EAR_DIR = "nemotron-3.5-asr-streaming-0.6b"
 EAR_FILES = ("config.json", "generation_config.json", "processor_config.json", "tokenizer_config.json", "tokenizer.json", "model.safetensors")
@@ -48,7 +51,22 @@ def run(cmd, **kw):
 
 
 def kill_server() -> None:
-    kill_chatterbox()
+    kill_server_pid()
+
+
+def ensure_components() -> None:
+    seed = ROOT / "scripts" / "component_seed"
+    dest = ROOT / "components"
+    if not seed.is_dir():
+        raise RuntimeError("missing " + str(seed))
+    for path in seed.rglob("*"):
+        if not path.is_file():
+            continue
+        out = dest / path.relative_to(seed)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        data = path.read_bytes()
+        if not out.is_file() or out.read_bytes() != data:
+            out.write_bytes(data)
 
 
 def atomic_json(path: Path, payload: dict) -> None:
@@ -113,6 +131,27 @@ def pip(py: Path, name: str, args: list[str], env=None) -> None:
     stamp.write_text(payload, encoding="utf-8")
 
 
+class LlamaCpp:
+    HOME = ROOT / "gemma" / "llama.cpp"
+
+    @staticmethod
+    def rev() -> str:
+        return subprocess.run(["git", "-C", str(LlamaCpp.HOME), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+
+    @staticmethod
+    def ensure() -> str:
+        home = LlamaCpp.HOME
+        if not (home / ".git").exists():
+            run(["git", "clone", "--filter=blob:none", "https://github.com/ggml-org/llama.cpp.git", str(home)])
+        run(["git", "-C", str(home), "fetch", "origin", "master"])
+        run(["git", "-C", str(home), "checkout", "master"])
+        run(["git", "-C", str(home), "pull", "--ff-only", "origin", "master"])
+        for rel in ("vendor/cpp-httplib/httplib.h", "vendor/nlohmann/json.hpp"):
+            if not (home / rel).is_file():
+                raise RuntimeError("missing " + str(home / rel))
+        return LlamaCpp.rev()
+
+
 class Ggml:
     REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
 
@@ -134,12 +173,21 @@ def build_engine() -> tuple[Path, Path, dict]:
         ROOT / "build" / "bin" / "trident-host.exe",
         ROOT / "build" / "bin" / "trident-mouth.exe",
     )
-    wanted = {"ggml": Ggml.REV, "generator": CMAKE_GENERATOR, "architecture": CMAKE_ARCH, "source": digest(ROOT / "CMakeLists.txt", ROOT / "src")}
+    llama = LlamaCpp.ensure()
+    wanted = {
+        "ggml": Ggml.REV,
+        "llama": llama,
+        "generator": CMAKE_GENERATOR,
+        "architecture": CMAKE_ARCH,
+        "source": digest(ROOT / "CMakeLists.txt", ROOT / "src"),
+    }
     stamp = MODELS / "build-contract.json"
     if stamp.is_file() and json.loads(stamp.read_text(encoding="utf-8")) == wanted and all(path.is_file() for path in outputs):
+        print("skip llama.cpp", flush=True)
         print("skip ggml", flush=True)
         print("skip engine", flush=True)
         return *outputs, wanted
+    print("install llama.cpp", flush=True)
     print("install ggml", flush=True)
     Ggml.ensure()
     print("install engine", flush=True)
@@ -294,15 +342,30 @@ def install_mouth(name: str) -> None:
     bake_voice(cfg, t3, s3, bake, contracts, build, conv)
 
 
+def install_gemma_brain() -> None:
+    gemma = ROOT / "gemma"
+    exe = gemma / "build" / "Release" / "gemma-brain.exe"
+    llama = LlamaCpp.ensure()
+    wanted = {"llama": llama, "source": digest(gemma / "CMakeLists.txt", gemma / "src" / "brain.cpp")}
+    models = gemma / "models"
+    models.mkdir(parents=True, exist_ok=True)
+    for name, url in GEMMA_MODELS:
+        dest = models / name
+        if not dest.is_file():
+            print("install " + name, flush=True)
+            download(url, dest)
+    stamp = MODELS / "gemma-brain-build.json"
+    if matches(stamp, wanted, exe):
+        print("skip gemma-brain", flush=True)
+        return
+    print("install gemma-brain", flush=True)
+    ps = shutil.which("powershell") or "powershell.exe"
+    run([ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(gemma / "scripts" / "build.ps1")], cwd=gemma)
+    atomic_json(stamp, wanted)
+
+
 def install_brain() -> None:
-    py = venv_python()
-    env = os.environ.copy()
-    env["CMAKE_ARGS"], env["FORCE_CMAKE"] = "-DGGML_VULKAN=ON", "1"
-    pip(py, "brain-packages", [*specs("gguf", "llama-cpp-python"), "--no-binary", "llama-cpp-python"], env)
-    path = MODELS / BRAIN_FILE
-    if not kept("gemma", {"url": BRAIN_URL}, path):
-        download(BRAIN_URL, path)
-        atomic_json(MODELS / "gemma.json", {"url": BRAIN_URL})
+    install_gemma_brain()
 
 
 def install_all(name: str) -> None:
@@ -322,6 +385,7 @@ def main() -> None:
             env["TRIDENT_VENV_NEW"] = "1"
         raise SystemExit(subprocess.call([str(venv_python()), *argv], env=env))
     print("install venv" if os.environ.pop("TRIDENT_VENV_NEW", None) == "1" else "skip venv", flush=True)
+    ensure_components()
     if len(argv) == 1:
         install_all("nano")
     elif len(argv) == 2 and argv[1] == "ear":

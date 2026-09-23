@@ -101,8 +101,7 @@ gemma/llama.cpp/ (clone separately), gemma/models/, gemma/output/, ggml/ (clone 
 --------------------------------------------------------------------------------
 CLONE DEPS (not in git)
 --------------------------------------------------------------------------------
-[ ] Trident: git clone https://github.com/ggml-org/ggml.git  (into Trident/ggml)
-[ ] gemma:   git clone https://github.com/ggml-org/llama.cpp.git gemma/llama.cpp
+[ ] install.py clones ggml/, gemma/llama.cpp/, materializes components/ from scripts/component_seed/
 [ ] trident-host/mouth: httplib + nlohmann from gemma/llama.cpp/vendor (not committed)
 
 --------------------------------------------------------------------------------

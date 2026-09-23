@@ -15,7 +15,9 @@
 !/trident.py
 !/trident_lib.py
 !/scripts/
+!/scripts/**
 !/src/
+!/src/**
 !/gemma/
 /gemma/build/
 /gemma/models/
@@ -28,6 +30,7 @@
 /.venv/
 /.ckpt-v3/
 /ggml/
+/components/
 COMMIT_MSG.txt
 commit_subject.txt
 __pycache__/
