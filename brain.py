@@ -186,6 +186,8 @@ class Speaker:
         self.buf = ""
         self.inside = False
         self.pending_first = True
+        self.pre = ""
+        self.emitted = False
 
     def feed(self, text: str) -> None:
         self.hold += text
@@ -196,18 +198,38 @@ class Speaker:
                     keep = next((OPEN[:n] for n in range(len(OPEN) - 1, 0, -1) if self.hold.endswith(OPEN[:n])), "")
                     body, self.hold = (self.hold[:-len(keep)], keep) if keep else (self.hold, "")
                     self.buf += body
-                    self.flush()
+                    self.release()
                     return
-                self.buf += self.hold[:at]
-                self.flush(final=True)
+                self.pre = (self.buf + self.hold[:at]).strip()
+                self.buf = ""
                 self.hold = self.hold[at + len(OPEN):]
                 self.inside = True
             else:
                 at = self.hold.find(CLOSE)
                 if at < 0:
                     return
+                call = self.hold[:at].strip()
                 self.hold = self.hold[at + len(CLOSE):]
                 self.inside = False
+                name = call[5:].partition("{")[0] if call.startswith("call:") else ""
+                if name in {"python", "remember"}:
+                    self.pre = ""
+                elif self.pre:
+                    self.buf = (self.pre + "\n" + self.buf).strip()
+                    self.pre = ""
+                self.release()
+
+    def release(self) -> None:
+        while True:
+            sentence, rest = cut(self.buf, False, first=False)
+            if sentence is None:
+                return
+            if not rest.lstrip() or rest.lstrip().startswith("<"):
+                return
+            if emit(sentence):
+                self.emitted = True
+                self.pending_first = False
+            self.buf = rest
 
     def flush(self, final: bool = False) -> None:
         while True:
@@ -215,14 +237,19 @@ class Speaker:
             if sentence is None:
                 return
             if emit(sentence):
+                self.emitted = True
                 self.pending_first = False
             self.buf = rest
             final = False
 
     def close(self) -> None:
         self.feed("")
-        if not self.inside:
-            self.flush(final=True)
+        if self.inside:
+            return
+        if self.pre:
+            self.buf = (self.pre + "\n" + self.buf).strip()
+            self.pre = ""
+        self.flush(final=True)
 
 
 def parse_one(call: str) -> dict:
@@ -345,8 +372,19 @@ def apply(found: list) -> bool:
     return again
 
 
+def python_text() -> str:
+    rows = read_turns()
+    if not rows or rows[-1].get("role") != "tool" or rows[-1].get("name") != "python":
+        return ""
+    lines = [line for line in (rows[-1].get("content") or "").splitlines() if not line.startswith("exit ")]
+    return "\n".join(lines).strip()
+
+
 def store_assistant(content: str, calls: list) -> None:
-    row = {"role": "assistant", "content": speech_of(content)}
+    spoken = speech_of(content)
+    if any(call.get("name") in {"python", "remember"} for call in calls):
+        spoken = ""
+    row = {"role": "assistant", "content": spoken}
     stored = []
     for call in calls:
         if "name" in call:
@@ -393,9 +431,14 @@ def think(llm) -> None:
         speaker.close()
         content = "".join(pieces)
         print(content, flush=True)
+        calls = parse_calls(content)
+        if not speaker.emitted and not speech_of(content).strip() and not any(call.get("name") in {"python", "remember"} for call in calls):
+            result = python_text()
+            if result:
+                emit(result)
+                content = result
         path = put(next_path("decision"), content if content.endswith("\n") else content + "\n")
         retire(path, "decision")
-        calls = parse_calls(content)
         store_assistant(content, calls)
         if content == LAST_COMPLETION:
             return

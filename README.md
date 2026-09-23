@@ -422,7 +422,7 @@ the kettle is on.
 
 ## Tools
 
-The model's own words are the speech. There is no `speak` tool and no grammar. Text outside `<|tool_call>...<tool_call|>` is written to speech files as it streams. Tool calls run after the stream ends, in order. A `python`, `remember`, or error result asks for another look. A script whose body matches the previous run appends `already ran, see above` and still looks. A bad call appends `error: ...` and the process stays up. The brain exits only through `stop`.
+The model's own words are the speech. There is no `speak` tool and no grammar. Text outside `<|tool_call>...<tool_call|>` is written to speech files as it streams. Words before a `python` or `remember` call are not spoken and are not kept on the assistant line, so the next look starts from the tool result. If that look is empty, the spoken words are the script's printed output. Tool calls run after the stream ends, in order. A `python`, `remember`, or error result asks for another look. A script whose body matches the previous run appends `already ran, see above` and still looks. A bad call appends `error: ...` and the process stays up. The brain exits only through `stop`.
 
 ```mermaid
 flowchart TB
