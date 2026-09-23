@@ -39,10 +39,10 @@ set(HOST_SRC
 add_executable(trident-host ${HOST_SRC})
 add_executable(trident-mouth src/host/mouth_worker.cpp)
 target_include_directories(trident-host PRIVATE
-    "${LLAMA_VENDOR}/cpp-httplib" "${LLAMA_VENDOR}/nlohmann"
+    "${LLAMA_VENDOR}/cpp-httplib" "${LLAMA_VENDOR}"
     ${CMAKE_SOURCE_DIR}/ggml/include src)
 target_include_directories(trident-mouth PRIVATE
-    "${LLAMA_VENDOR}/cpp-httplib" "${LLAMA_VENDOR}/nlohmann" src)
+    "${LLAMA_VENDOR}/cpp-httplib" "${LLAMA_VENDOR}" src)
 target_link_libraries(trident-host PRIVATE trident_engine ws2_32)
 target_link_libraries(trident-mouth PRIVATE trident_engine ws2_32 winmm)
 foreach(target trident-host trident-mouth)
