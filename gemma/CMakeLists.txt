@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(gemma-brain LANGUAGES C CXX CUDA)
+project(gemma-brain LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -9,27 +9,52 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-set(CMAKE_CUDA_STANDARD 17)
-set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-
-if(NOT CMAKE_CUDA_COMPILER)
-    message(FATAL_ERROR
-        "CUDA compiler (nvcc) is required. GPU-only build.\n"
-        "  Install CUDA 12.6 + Visual Studio CUDA integration.\n"
-        "  cmake -D CMAKE_CUDA_COMPILER=\"C:/.../CUDA/v12.6/bin/nvcc.exe\" ...")
-endif()
-
-if(MSVC AND CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL "12.7")
-    message(WARNING "CUDA ${CMAKE_CUDA_COMPILER_VERSION}: Pascal (GTX 1060) needs CUDA <= 12.6.")
-endif()
-
+set(GEMMA_BACKEND "vulkan" CACHE STRING "vulkan or cuda")
 include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/HostCpu.cmake)
-include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/Pascal1060.cmake)
+
+if(GEMMA_BACKEND STREQUAL "cuda")
+    enable_language(CUDA)
+    set(CMAKE_CUDA_STANDARD 17)
+    set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+    if(NOT CMAKE_CUDA_ARCHITECTURES)
+        set(CMAKE_CUDA_ARCHITECTURES 61-real CACHE STRING "" FORCE)
+    endif()
+    set(GGML_CUDA ON CACHE BOOL "")
+    set(GGML_VULKAN OFF CACHE BOOL "")
+    set(GGML_CUDA_FORCE_MMQ ON CACHE BOOL "")
+    set(GGML_CUDA_FORCE_CUBLAS OFF CACHE BOOL "")
+    set(GGML_CUDA_FA ON CACHE BOOL "")
+    set(GGML_CUDA_FA_ALL_QUANTS OFF CACHE BOOL "")
+    set(GGML_CUDA_GRAPHS ON CACHE BOOL "")
+    set(GGML_CUDA_NCCL OFF CACHE BOOL "")
+else()
+    find_package(Vulkan REQUIRED)
+    set(GGML_VULKAN ON CACHE BOOL "")
+    set(GGML_CUDA OFF CACHE BOOL "")
+endif()
+set(GGML_CPU ON CACHE BOOL "")
+set(GGML_METAL OFF CACHE BOOL "")
+set(GGML_OPENMP ON CACHE BOOL "")
+set(GGML_BLAS OFF CACHE BOOL "")
+set(GGML_ACCELERATE OFF CACHE BOOL "")
+set(GGML_NATIVE ON CACHE BOOL "")
+set(LLAMA_BUILD_COMMON ON CACHE BOOL "")
+set(LLAMA_BUILD_TOOLS OFF CACHE BOOL "")
+set(LLAMA_BUILD_MTMD ON CACHE BOOL "")
+set(LLAMA_BUILD_TESTS OFF CACHE BOOL "")
+set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "")
+set(LLAMA_BUILD_SERVER OFF CACHE BOOL "")
+set(LLAMA_CURL OFF CACHE BOOL "")
+set(LLAMA_OPENSSL OFF CACHE BOOL "")
+set(LLAMA_SUBPROCESS OFF CACHE BOOL "")
+set(MTMD_VIDEO OFF CACHE BOOL "")
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "")
+set(GGML_CCACHE ON CACHE BOOL "")
 
 add_subdirectory(llama.cpp)
 
 if(NOT TARGET mtmd)
-    message(FATAL_ERROR "mtmd library missing — set LLAMA_BUILD_MTMD=ON in Pascal1060.cmake")
+    message(FATAL_ERROR "mtmd library missing — LLAMA_BUILD_MTMD is ON")
 endif()
 
 add_executable(gemma-brain src/brain.cpp)
@@ -39,7 +64,10 @@ target_include_directories(gemma-brain PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/ggml/include
     ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/common
     ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/tools/mtmd)
-target_compile_definitions(gemma-brain PRIVATE GEMMA_GPU_ONLY=1 NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_definitions(gemma-brain PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+if(GEMMA_BACKEND STREQUAL "cuda")
+    target_compile_definitions(gemma-brain PRIVATE GEMMA_CUDA=1)
+endif()
 
 if(MSVC)
     target_link_options(gemma-brain PRIVATE "/MANIFEST:EMBED" "/MANIFESTINPUT:${CMAKE_CURRENT_SOURCE_DIR}/../utf8.manifest")
@@ -54,5 +82,4 @@ if(MSVC)
             target_compile_options(${t} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${_gemma_host_opts}>)
         endif()
     endforeach()
-    # ggml-cuda: CUDA flags come only from upstream ggml (PascalCuda.cmake + Pascal1060.cmake).
 endif()

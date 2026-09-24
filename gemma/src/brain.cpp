@@ -3,7 +3,11 @@
 
 #include "common.h"
 #include "ggml-cpu.h"
+#if defined(GEMMA_CUDA)
 #include "ggml-cuda.h"
+#else
+#include "ggml-vulkan.h"
+#endif
 #include "mtmd-helper.h"
 #include "mtmd.h"
 #include "sampling.h"
@@ -12,8 +16,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <thread>
 #include <vector>
 
@@ -25,88 +31,43 @@ static int host_thread_count() {
     return hw;
 }
 
-static void require_cuda_gpu0() {
-    if (ggml_backend_cuda_get_device_count() <= 0) die("no CUDA device (GPU-only build)");
+static void require_gpu(int device) {
+#if defined(GEMMA_CUDA)
+    const int count = ggml_backend_cuda_get_device_count();
+    if (count <= 0) die("no CUDA device");
+    if (device < 0 || device >= count) die_fmt("CUDA device %d is outside 0..%d", device, count - 1);
     char name[256];
     size_t free_b = 0, total_b = 0;
-    ggml_backend_cuda_get_device_description(0, name, sizeof(name));
-    ggml_backend_cuda_get_device_memory(0, &free_b, &total_b);
-    std::fprintf(stderr, "cuda[0] %s | free %zu MiB / total %zu MiB\n", name, free_b / (1024 * 1024),
+    ggml_backend_cuda_get_device_description(device, name, sizeof(name));
+    ggml_backend_cuda_get_device_memory(device, &free_b, &total_b);
+    std::fprintf(stderr, "cuda[%d] %s | free %zu MiB / total %zu MiB\n", device, name, free_b / (1024 * 1024),
                  total_b / (1024 * 1024));
+#else
+    const int count = ggml_backend_vk_get_device_count();
+    if (count <= 0) die("no Vulkan device");
+    if (device < 0 || device >= count) die_fmt("Vulkan device %d is outside 0..%d", device, count - 1);
+    char name[256];
+    size_t free_b = 0, total_b = 0;
+    ggml_backend_vk_get_device_description(device, name, sizeof(name));
+    ggml_backend_vk_get_device_memory(device, &free_b, &total_b);
+    std::fprintf(stderr, "vulkan[%d] %s | free %zu MiB / total %zu MiB\n", device, name, free_b / (1024 * 1024),
+                 total_b / (1024 * 1024));
+#endif
 }
 
-static ggml_type cache_type(const char * name) {
-    if (!std::strcmp(name, "q8_0")) return GGML_TYPE_Q8_0;
-    if (!std::strcmp(name, "q4_0")) return GGML_TYPE_Q4_0;
-    if (!std::strcmp(name, "f16")) return GGML_TYPE_F16;
-    if (!std::strcmp(name, "bf16")) return GGML_TYPE_BF16;
-    if (!std::strcmp(name, "f32")) return GGML_TYPE_F32;
-    die_fmt("cache type %s is not q8_0, q4_0, f16, bf16, or f32", name);
+template <class T>
+static T pick(const char * value, std::initializer_list<std::pair<const char *, T>> items, const char * name) {
+    for (const auto & item : items)
+        if (!std::strcmp(value, item.first)) return item.second;
+    die_fmt("%s value %s is not valid", name, value);
+}
+
+static ggml_type cache_type(const char * value) {
+    return pick<ggml_type>(value, {{"q8_0", GGML_TYPE_Q8_0}, {"q4_0", GGML_TYPE_Q4_0}, {"f16", GGML_TYPE_F16}, {"bf16", GGML_TYPE_BF16}, {"f32", GGML_TYPE_F32}}, "cache type");
 }
 
 static bool on_off(const char * value, const char * name) {
-    if (!std::strcmp(value, "on") || !std::strcmp(value, "1")) return true;
-    if (!std::strcmp(value, "off") || !std::strcmp(value, "0")) return false;
-    die_fmt("%s is on or off", name);
-}
-
-static llama_flash_attn_type flash_attn(const char * value) {
-    if (!std::strcmp(value, "auto")) return LLAMA_FLASH_ATTN_TYPE_AUTO;
-    if (!std::strcmp(value, "on") || !std::strcmp(value, "1")) return LLAMA_FLASH_ATTN_TYPE_ENABLED;
-    if (!std::strcmp(value, "off") || !std::strcmp(value, "0")) return LLAMA_FLASH_ATTN_TYPE_DISABLED;
-    die_fmt("flash attention %s is auto, on, or off", value);
-}
-
-static llama_split_mode split_mode(const char * value) {
-    if (!std::strcmp(value, "none")) return LLAMA_SPLIT_MODE_NONE;
-    if (!std::strcmp(value, "layer")) return LLAMA_SPLIT_MODE_LAYER;
-    if (!std::strcmp(value, "row")) return LLAMA_SPLIT_MODE_ROW;
-    if (!std::strcmp(value, "tensor")) return LLAMA_SPLIT_MODE_TENSOR;
-    die_fmt("split %s is none, layer, row, or tensor", value);
-}
-
-static llama_load_mode load_mode(const char * value) {
-    if (!std::strcmp(value, "auto")) return LLAMA_LOAD_MODE_AUTO;
-    if (!std::strcmp(value, "none")) return LLAMA_LOAD_MODE_NONE;
-    if (!std::strcmp(value, "mmap")) return LLAMA_LOAD_MODE_MMAP;
-    if (!std::strcmp(value, "mlock")) return LLAMA_LOAD_MODE_MLOCK;
-    if (!std::strcmp(value, "mmap-mlock")) return LLAMA_LOAD_MODE_MMAP_MLOCK;
-    if (!std::strcmp(value, "direct-io")) return LLAMA_LOAD_MODE_DIRECT_IO;
-    die_fmt("load mode %s is auto, none, mmap, mlock, mmap-mlock, or direct-io", value);
-}
-
-static llama_lazy_mode lazy_mode(const char * value) {
-    if (!std::strcmp(value, "off")) return LLAMA_LAZY_MODE_OFF;
-    if (!std::strcmp(value, "auto")) return LLAMA_LAZY_MODE_AUTO;
-    if (!std::strcmp(value, "on")) return LLAMA_LAZY_MODE_ON;
-    die_fmt("lazy mode %s is off, auto, or on", value);
-}
-
-static llama_rope_scaling_type rope_scaling(const char * value) {
-    if (!std::strcmp(value, "unspecified")) return LLAMA_ROPE_SCALING_TYPE_UNSPECIFIED;
-    if (!std::strcmp(value, "none")) return LLAMA_ROPE_SCALING_TYPE_NONE;
-    if (!std::strcmp(value, "linear")) return LLAMA_ROPE_SCALING_TYPE_LINEAR;
-    if (!std::strcmp(value, "yarn")) return LLAMA_ROPE_SCALING_TYPE_YARN;
-    if (!std::strcmp(value, "longrope")) return LLAMA_ROPE_SCALING_TYPE_LONGROPE;
-    die_fmt("rope scaling %s is unspecified, none, linear, yarn, or longrope", value);
-}
-
-static ggml_numa_strategy numa_strategy(const char * value) {
-    if (!std::strcmp(value, "disabled")) return GGML_NUMA_STRATEGY_DISABLED;
-    if (!std::strcmp(value, "distribute")) return GGML_NUMA_STRATEGY_DISTRIBUTE;
-    if (!std::strcmp(value, "isolate")) return GGML_NUMA_STRATEGY_ISOLATE;
-    if (!std::strcmp(value, "numactl")) return GGML_NUMA_STRATEGY_NUMACTL;
-    if (!std::strcmp(value, "mirror")) return GGML_NUMA_STRATEGY_MIRROR;
-    die_fmt("numa %s is disabled, distribute, isolate, numactl, or mirror", value);
-}
-
-static ggml_sched_priority priority_of(const char * value) {
-    if (!std::strcmp(value, "low")) return GGML_SCHED_PRIO_LOW;
-    if (!std::strcmp(value, "normal")) return GGML_SCHED_PRIO_NORMAL;
-    if (!std::strcmp(value, "medium")) return GGML_SCHED_PRIO_MEDIUM;
-    if (!std::strcmp(value, "high")) return GGML_SCHED_PRIO_HIGH;
-    if (!std::strcmp(value, "realtime")) return GGML_SCHED_PRIO_REALTIME;
-    die_fmt("priority %s is low, normal, medium, high, or realtime", value);
+    return pick<bool>(value, {{"on", true}, {"1", true}, {"off", false}, {"0", false}}, name);
 }
 
 static void cpu_mask(common_cpu_params & cpu, const char * text) {
@@ -137,7 +98,7 @@ static const char * need(int & i, int argc, char ** argv, const char * name) {
 static void usage() {
     std::fprintf(stderr,
                  "usage: gemma-brain [knobs] <prompt> [image]\n"
-                 "omitted knobs keep the GTX 1060 starting values below.\n"
+                 "omitted knobs keep the values below.\n"
                  "  --model models/gemma-4-E2B-it-Q4_0.gguf\n"
                  "  --mmproj models/mmproj-gemma-4-E2B-it-Q8_0.gguf --mmproj-gpu on --mmproj-timings on\n"
                  "  --cache-type-k q8_0 --cache-type-v q8_0\n"
@@ -170,7 +131,7 @@ static void usage() {
                  "--seed -1 is LLAMA_DEFAULT_SEED. build flags that need a rebuild are install.py knobs.\n");
 }
 
-static common_params params_gtx1060() {
+static common_params default_params() {
     common_params p;
     p.model.path = "models/gemma-4-E2B-it-Q4_0.gguf";
     p.mmproj.path = "models/mmproj-gemma-4-E2B-it-Q8_0.gguf";
@@ -347,7 +308,7 @@ int main(int argc, char ** argv) {
     }
     ggml_time_init();
     common_init();
-    common_params params = params_gtx1060();
+    common_params params = default_params();
     bool mmproj_timings = true;
     std::string prompt;
     std::string image;
@@ -401,21 +362,21 @@ int main(int argc, char ** argv) {
         else if (a == "--tensor-split")
             tensor_split(params, need(i, argc, argv, "--tensor-split"));
         else if (a == "--split")
-            params.split_mode = split_mode(need(i, argc, argv, "--split"));
+            params.split_mode = pick<llama_split_mode>(need(i, argc, argv, "--split"), {{"none", LLAMA_SPLIT_MODE_NONE}, {"layer", LLAMA_SPLIT_MODE_LAYER}, {"row", LLAMA_SPLIT_MODE_ROW}, {"tensor", LLAMA_SPLIT_MODE_TENSOR}}, "--split");
         else if (a == "--load-mode")
-            params.load_mode = load_mode(need(i, argc, argv, "--load-mode"));
+            params.load_mode = pick<llama_load_mode>(need(i, argc, argv, "--load-mode"), {{"auto", LLAMA_LOAD_MODE_AUTO}, {"none", LLAMA_LOAD_MODE_NONE}, {"mmap", LLAMA_LOAD_MODE_MMAP}, {"mlock", LLAMA_LOAD_MODE_MLOCK}, {"mmap-mlock", LLAMA_LOAD_MODE_MMAP_MLOCK}, {"direct-io", LLAMA_LOAD_MODE_DIRECT_IO}}, "--load-mode");
         else if (a == "--lazy-mode")
-            params.lazy_mode = lazy_mode(need(i, argc, argv, "--lazy-mode"));
+            params.lazy_mode = pick<llama_lazy_mode>(need(i, argc, argv, "--lazy-mode"), {{"off", LLAMA_LAZY_MODE_OFF}, {"auto", LLAMA_LAZY_MODE_AUTO}, {"on", LLAMA_LAZY_MODE_ON}}, "--lazy-mode");
         else if (a == "--numa")
-            params.numa = numa_strategy(need(i, argc, argv, "--numa"));
+            params.numa = pick<ggml_numa_strategy>(need(i, argc, argv, "--numa"), {{"disabled", GGML_NUMA_STRATEGY_DISABLED}, {"distribute", GGML_NUMA_STRATEGY_DISTRIBUTE}, {"isolate", GGML_NUMA_STRATEGY_ISOLATE}, {"numactl", GGML_NUMA_STRATEGY_NUMACTL}, {"mirror", GGML_NUMA_STRATEGY_MIRROR}}, "--numa");
         else if (a == "--threads")
             params.cpuparams.n_threads = std::atoi(need(i, argc, argv, "--threads"));
         else if (a == "--threads-batch")
             params.cpuparams_batch.n_threads = std::atoi(need(i, argc, argv, "--threads-batch"));
         else if (a == "--priority")
-            params.cpuparams.priority = priority_of(need(i, argc, argv, "--priority"));
+            params.cpuparams.priority = pick<ggml_sched_priority>(need(i, argc, argv, "--priority"), {{"low", GGML_SCHED_PRIO_LOW}, {"normal", GGML_SCHED_PRIO_NORMAL}, {"medium", GGML_SCHED_PRIO_MEDIUM}, {"high", GGML_SCHED_PRIO_HIGH}, {"realtime", GGML_SCHED_PRIO_REALTIME}}, "--priority");
         else if (a == "--priority-batch")
-            params.cpuparams_batch.priority = priority_of(need(i, argc, argv, "--priority-batch"));
+            params.cpuparams_batch.priority = pick<ggml_sched_priority>(need(i, argc, argv, "--priority-batch"), {{"low", GGML_SCHED_PRIO_LOW}, {"normal", GGML_SCHED_PRIO_NORMAL}, {"medium", GGML_SCHED_PRIO_MEDIUM}, {"high", GGML_SCHED_PRIO_HIGH}, {"realtime", GGML_SCHED_PRIO_REALTIME}}, "--priority-batch");
         else if (a == "--poll")
             params.cpuparams.poll = (uint32_t)std::atoi(need(i, argc, argv, "--poll"));
         else if (a == "--poll-batch")
@@ -435,13 +396,13 @@ int main(int argc, char ** argv) {
         else if (a == "--fit-min-ctx")
             params.fit_params_min_ctx = std::atoi(need(i, argc, argv, "--fit-min-ctx"));
         else if (a == "--flash-attn")
-            params.flash_attn_type = flash_attn(need(i, argc, argv, "--flash-attn"));
+            params.flash_attn_type = pick<llama_flash_attn_type>(need(i, argc, argv, "--flash-attn"), {{"auto", LLAMA_FLASH_ATTN_TYPE_AUTO}, {"on", LLAMA_FLASH_ATTN_TYPE_ENABLED}, {"1", LLAMA_FLASH_ATTN_TYPE_ENABLED}, {"off", LLAMA_FLASH_ATTN_TYPE_DISABLED}, {"0", LLAMA_FLASH_ATTN_TYPE_DISABLED}}, "--flash-attn");
         else if (a == "--warmup")
             params.warmup = on_off(need(i, argc, argv, "--warmup"), "--warmup");
         else if (a == "--verbosity")
             params.verbosity = std::atoi(need(i, argc, argv, "--verbosity"));
         else if (a == "--rope-scaling")
-            params.rope_scaling_type = rope_scaling(need(i, argc, argv, "--rope-scaling"));
+            params.rope_scaling_type = pick<llama_rope_scaling_type>(need(i, argc, argv, "--rope-scaling"), {{"unspecified", LLAMA_ROPE_SCALING_TYPE_UNSPECIFIED}, {"none", LLAMA_ROPE_SCALING_TYPE_NONE}, {"linear", LLAMA_ROPE_SCALING_TYPE_LINEAR}, {"yarn", LLAMA_ROPE_SCALING_TYPE_YARN}, {"longrope", LLAMA_ROPE_SCALING_TYPE_LONGROPE}}, "--rope-scaling");
         else if (a == "--rope-freq-base")
             params.rope_freq_base = (float)std::atof(need(i, argc, argv, "--rope-freq-base"));
         else if (a == "--rope-freq-scale")
@@ -558,7 +519,7 @@ int main(int argc, char ** argv) {
         return 2;
     }
     ggml_backend_load_all();
-    require_cuda_gpu0();
+    require_gpu(params.main_gpu);
     Gemma gemma(params);
     if (!image.empty()) {
         gemma.open_mmproj(params, mmproj_timings);

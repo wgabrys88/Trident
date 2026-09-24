@@ -1,6 +1,5 @@
 #pragma once
 #include "../engine.h"
-#include "common/pipe.h"
 #include "t3.h"
 #include "common/s3.h"
 #include "mtl_tokenizer.h"
@@ -16,7 +15,7 @@ class Engine : public Synth {
     MtlTokenizer tokenizer;
     std::map<std::string, MtlNumbers> numbers;
 public:
-    Engine(const std::string& t3_path, const std::string& s3_path, Flags& flags);
+    Engine(const std::string& t3_path, const std::string& s3_path, Knobs knobs);
     std::vector<float> synthesize(const std::string& text, const std::string& language) override;
 };
 }

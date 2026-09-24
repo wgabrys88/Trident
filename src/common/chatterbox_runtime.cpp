@@ -1,6 +1,5 @@
 #include "chatterbox_runtime.h"
 #include "gguf_file.h"
-#include "pipe.h"
 #include "../gpt2/engine.h"
 #include "../llama/engine.h"
 #include <algorithm>
@@ -18,47 +17,6 @@ std::filesystem::path exe_dir() {
     return std::filesystem::path(buf, buf + n).parent_path();
 }
 
-std::vector<char*> argv_with_flags(const std::string& t3, const std::string& s3, const std::vector<std::string>& flags) {
-    static thread_local std::vector<std::string> storage;
-    static thread_local std::vector<char*> ptrs;
-    storage.clear();
-    ptrs.clear();
-    storage.push_back("chatterbox");
-    storage.push_back(t3);
-    storage.push_back(s3);
-    storage.push_back("-");
-    for (const auto& f : flags) storage.push_back(f);
-    for (auto& s : storage) ptrs.push_back(s.data());
-    return ptrs;
-}
-
-std::vector<std::string> gpt2_flags(int gpu) {
-    return {"--seed",       "42",
-            "--temperature", "0.8",
-            "--top-k",       "1000",
-            "--top-p",       "0.95",
-            "--repeat-penalty", "1.2",
-            "--n-predict",   "1000",
-            "--cfm-steps",   "2",
-            "--trim-fade-samples", "480",
-            "--gpu",         std::to_string(gpu)};
-}
-
-std::vector<std::string> v3_flags(int gpu) {
-    return {"--seed",           "42",
-            "--temperature",    "0.8",
-            "--top-p",          "1.0",
-            "--repeat-penalty", "1.2",
-            "--n-predict",      "1000",
-            "--cfm-steps",      "10",
-            "--trim-fade-samples", "480",
-            "--min-p",          "0.05",
-            "--cfg-weight",     "0.5",
-            "--exaggeration",   "0.5",
-            "--cfm-cfg",        "0.7",
-            "--gpu",            std::to_string(gpu)};
-}
-
 } // namespace
 
 std::filesystem::path chatterbox_repo_root() { return std::filesystem::weakly_canonical(exe_dir() / ".." / ".."); }
@@ -73,39 +31,19 @@ VoiceBundle chatterbox_voice_bundle(const std::string& variant) {
     return b;
 }
 
-void apply_overrides(std::vector<std::string>& flags, const std::vector<std::pair<std::string, std::string>>& overrides) {
-    for (const auto& [name, value] : overrides) {
-        bool found = false;
-        for (size_t i = 0; i + 1 < flags.size(); i += 2) {
-            if (flags[i] == name) {
-                flags[i + 1] = value;
-                found = true;
-                break;
-            }
-        }
-        if (!found) throw std::runtime_error("unknown flag for this architecture: " + name);
-    }
-}
-
 std::unique_ptr<Synth> chatterbox_make_engine_paths(const std::filesystem::path& t3, const std::filesystem::path& s3,
                                                     int gpu,
                                                     const std::vector<std::pair<std::string, std::string>>& overrides) {
     if (!std::filesystem::is_regular_file(t3) || !std::filesystem::is_regular_file(s3))
         throw std::runtime_error("missing t3 or s3 gguf");
     auto family = GgufFile::architecture(t3.string());
-    auto flags_vec = (family == "chatterbox-llama") ? v3_flags(gpu) : gpt2_flags(gpu);
-    apply_overrides(flags_vec, overrides);
-    auto ptrs = argv_with_flags(t3.string(), s3.string(), flags_vec);
-    Flags flags(int(ptrs.size()), ptrs.data());
-    std::unique_ptr<Synth> engine;
-    if (family == "chatterbox-gpt2")
-        engine = std::make_unique<gpt2::Engine>(t3.string(), s3.string(), flags);
-    else if (family == "chatterbox-llama")
-        engine = std::make_unique<llama::Engine>(t3.string(), s3.string(), flags);
-    else
-        throw std::runtime_error("unsupported architecture: " + family);
-    flags.finish();
-    return engine;
+    const bool llama = family == "chatterbox-llama";
+    Knobs knobs = llama ? Knobs::v3() : Knobs::gpt2();
+    knobs.gpu = gpu;
+    for (const auto& [name, value] : overrides) knobs.set(name, value, llama);
+    if (family == "chatterbox-gpt2") return std::make_unique<gpt2::Engine>(t3.string(), s3.string(), knobs);
+    if (llama) return std::make_unique<llama::Engine>(t3.string(), s3.string(), knobs);
+    throw std::runtime_error("unsupported architecture: " + family);
 }
 
 std::unique_ptr<Synth> chatterbox_make_engine(const std::string& variant, int gpu,

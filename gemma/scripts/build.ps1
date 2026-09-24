@@ -1,27 +1,25 @@
 param(
-    [string]$CudaRoot = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6",
-    [string]$Generator = "Visual Studio 17 2022",
-    [string]$Arch = "x64",
-    [string]$Toolset = "cuda=12.6",
-    [int]$CudaParallel = 1,
-    [int]$BrainParallel = 4,
-    [switch]$CleanCuda,
-    [string]$Def = ""
+    [string]$VulkanSdk = "",
+    [int]$BrainParallel = 4
 )
 $ErrorActionPreference = "Stop"
-$defs = @()
-if ($Def) { $defs = $Def -split [char]0x1E, 0 }
+$Generator = if ($env:TRIDENT_GENERATOR) { $env:TRIDENT_GENERATOR } else { "Visual Studio 17 2022" }
+$Arch = if ($env:TRIDENT_ARCH) { $env:TRIDENT_ARCH } else { "x64" }
 $gemmaRoot = Split-Path $PSScriptRoot -Parent
-& (Join-Path $PSScriptRoot "configure.ps1") -CudaRoot $CudaRoot -Generator $Generator -Arch $Arch -Toolset $Toolset -Def $defs
+$Backend = if ($env:TRIDENT_GEMMA_BACKEND) { $env:TRIDENT_GEMMA_BACKEND } else { "vulkan" }
+$params = @{ Generator = $Generator; Arch = $Arch; Backend = $Backend }
+if ($VulkanSdk) { $params.VulkanSdk = $VulkanSdk }
+if ($env:TRIDENT_CUDA_ROOT) { $params.CudaRoot = $env:TRIDENT_CUDA_ROOT }
+if ($env:TRIDENT_CUDA_TOOLSET) { $params.Toolset = $env:TRIDENT_CUDA_TOOLSET }
+$defs = @($env:TRIDENT_GEMMA_DEFS -split "`n" | Where-Object { $_ })
+if ($defs.Count) { $params.Def = $defs }
+& (Join-Path $PSScriptRoot "configure.ps1") @params
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-$env:CUDA_PATH = $CudaRoot
-$env:CUDA_PATH_V12_6 = $CudaRoot
 
 $build = Join-Path $gemmaRoot "build"
-$cudaBuild = @("--build", $build, "--config", "Release", "--target", "ggml-cuda", "--parallel", "$CudaParallel")
-if ($CleanCuda) { $cudaBuild += "--clean-first" }
-cmake @cudaBuild
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+if ($Backend -eq "cuda") {
+    cmake --build $build --config Release --target ggml-cuda --parallel 1
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
 cmake --build $build --config Release --target gemma-brain --parallel $BrainParallel
 exit $LASTEXITCODE

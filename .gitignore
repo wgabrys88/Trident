@@ -41,9 +41,8 @@
 !/gemma/.gitignore
 !/gemma/CMakeLists.txt
 !/gemma/cmake/HostCpu.cmake
-!/gemma/cmake/Pascal1060.cmake
-!/gemma/cmake/PascalCuda.cmake
 !/gemma/scripts/build.ps1
 !/gemma/scripts/configure.ps1
 !/gemma/scripts/detect_cpu.ps1
+!/gemma/scripts/detect_gpu.ps1
 !/gemma/src/brain.cpp

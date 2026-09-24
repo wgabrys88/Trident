@@ -1,5 +1,4 @@
-# Probes this machine's CPU and writes cmake/HostCpu.generated.cmake for host-side work
-# (media decode, tokenization threads, MSVC ISA flags). GPU inference stays CUDA-only.
+# Probes this machine's CPU and writes cmake/HostCpu.generated.cmake for host-side work.
 $ErrorActionPreference = "Stop"
 $gemmaRoot = Split-Path $PSScriptRoot -Parent
 $outFile = Join-Path $gemmaRoot "cmake\HostCpu.generated.cmake"
@@ -14,29 +13,23 @@ if ($hostThreads -lt 1) { $hostThreads = 4 }
 
 $archFlag = ""
 $isa = "baseline"
-$openMp = "ON"
 
 $isaCode = @"
 using System;
-using System.Runtime.Intrinsics.X86;
+using System.Runtime.InteropServices;
 public static class GemmaCpuIsa {
+    [DllImport("kernel32.dll")]
+    static extern bool IsProcessorFeaturePresent(uint feature);
     public static string Detect() {
-        if (Avx512F.IsSupported) return "AVX512";
-        if (Avx2.IsSupported) return "AVX2";
-        if (Avx.IsSupported) return "AVX";
+        if (IsProcessorFeaturePresent(41)) return "AVX512";
+        if (IsProcessorFeaturePresent(40)) return "AVX2";
+        if (IsProcessorFeaturePresent(39)) return "AVX";
         return "baseline";
     }
 }
 "@
-try {
-    Add-Type -TypeDefinition $isaCode -Language CSharp -ErrorAction Stop
-    $isa = [GemmaCpuIsa]::Detect()
-} catch {
-    Write-Warning "ISA probe via .NET intrinsics failed; using name heuristics"
-    if ($name -match "AVX512|Xeon.*[5-9][0-9]{3}") { $isa = "AVX512" }
-    elseif ($name -match "Ryzen|Core.*i[3579]-[4-9]|Core.*i[3579]-[1-9][0-9]{2,}") { $isa = "AVX2" }
-    elseif ($name -match "Core.*i[3579]-[23][0-9]{3}") { $isa = "AVX" }
-}
+Add-Type -TypeDefinition $isaCode -Language CSharp
+$isa = [GemmaCpuIsa]::Detect()
 
 switch ($isa) {
     "AVX512" { $archFlag = "/arch:AVX512" }

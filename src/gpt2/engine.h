@@ -1,6 +1,5 @@
 #pragma once
 #include "../engine.h"
-#include "common/pipe.h"
 #include "t3.h"
 #include "common/s3.h"
 #include "bpe.h"
@@ -15,7 +14,7 @@ class Engine : public Synth {
     Gpt2Bpe bpe;
     EnglishText english;
 public:
-    Engine(const std::string& t3_path, const std::string& s3_path, Flags& flags);
+    Engine(const std::string& t3_path, const std::string& s3_path, Knobs knobs);
     std::vector<float> synthesize(const std::string& text, const std::string& language) override;
 };
 }

@@ -32,18 +32,8 @@ ARCH = {
     "llama": {"ckpt": ".ckpt-v3", "s3_checkpoint": "s3gen.safetensors", "s3_family": "v3"},
 }
 BRAIN_DEFS = (
-    ("cuda_architectures", "CMAKE_CUDA_ARCHITECTURES"),
-    ("cuda_flags_release", "CMAKE_CUDA_FLAGS_RELEASE"),
-    ("brain_ggml_cuda", "GGML_CUDA"),
-    ("brain_ggml_cuda_force_mmq", "GGML_CUDA_FORCE_MMQ"),
-    ("brain_ggml_cuda_force_cublas", "GGML_CUDA_FORCE_CUBLAS"),
-    ("brain_ggml_cuda_fa", "GGML_CUDA_FA"),
-    ("brain_ggml_cuda_fa_all_quants", "GGML_CUDA_FA_ALL_QUANTS"),
-    ("brain_ggml_cuda_graphs", "GGML_CUDA_GRAPHS"),
-    ("brain_ggml_cuda_nccl", "GGML_CUDA_NCCL"),
-    ("brain_ggml_cuda_no_peer_copy", "GGML_CUDA_NO_PEER_COPY"),
-    ("brain_ggml_cuda_no_vmm", "GGML_CUDA_NO_VMM"),
     ("brain_ggml_cpu", "GGML_CPU"),
+    ("brain_ggml_cuda", "GGML_CUDA"),
     ("brain_ggml_vulkan", "GGML_VULKAN"),
     ("brain_ggml_metal", "GGML_METAL"),
     ("brain_ggml_openmp", "GGML_OPENMP"),
@@ -158,16 +148,32 @@ class Ggml:
             run(["git", "-C", str(home), "checkout", "--detach", OPT["ggml_rev"]])
 
 
+def host_msvc_arch() -> str:
+    if OPT["msvc_arch"]:
+        return OPT["msvc_arch"]
+    if "_host_arch" in OPT:
+        return OPT["_host_arch"]
+    ps = shutil.which("powershell") or "powershell.exe"
+    run([ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "gemma" / "scripts" / "detect_cpu.ps1")])
+    text = (ROOT / "gemma" / "cmake" / "HostCpu.generated.cmake").read_text(encoding="utf-8")
+    found = re.search(r'GEMMA_MSVC_ARCH_FLAG "([^"]*)"', text)
+    OPT["_host_arch"] = found.group(1) if found else ""
+    return OPT["_host_arch"]
+
+
 def mouth_defs() -> list[str]:
-    return [
+    defs = [
         f"-DGGML_VULKAN={OPT['mouth_ggml_vulkan']}",
         f"-DGGML_CPU={OPT['mouth_ggml_cpu']}",
-        f"-DGGML_CUDA={OPT['mouth_ggml_cuda']}",
         f"-DGGML_OPENMP={OPT['mouth_ggml_openmp']}",
         f"-DGGML_BUILD_TESTS={OPT['mouth_ggml_build_tests']}",
         f"-DGGML_BUILD_EXAMPLES={OPT['mouth_ggml_build_examples']}",
         f"-DBUILD_SHARED_LIBS={OPT['mouth_build_shared']}",
     ]
+    arch = host_msvc_arch()
+    if arch:
+        defs.append(f"-DMSVC_ARCH_FLAG={arch}")
+    return defs
 
 
 def build_engine() -> tuple[Path, Path, dict]:
@@ -409,27 +415,45 @@ def install_mouth(name: str) -> None:
     bake_voice(cfg, t3, s3, bake, contracts, build, conv)
 
 
+def gemma_backend() -> str:
+    choice = OPT["gemma_backend"]
+    if choice != "auto":
+        return choice
+    ps = shutil.which("powershell") or "powershell.exe"
+    out = subprocess.run([ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "gemma" / "scripts" / "detect_gpu.ps1")], check=True, capture_output=True, text=True)
+    for line in reversed(out.stdout.splitlines()):
+        if line.strip() in ("cuda", "vulkan"):
+            return line.strip()
+    raise RuntimeError("detect_gpu.ps1 did not print cuda or vulkan")
+
+
 def install_gemma_brain() -> None:
     gemma = ROOT / "gemma"
     exe = gemma / "build" / "Release" / "gemma-brain.exe"
     llama = LlamaCpp.ensure()
+    backend = gemma_backend()
+    OPT["brain_ggml_cuda"] = "ON" if backend == "cuda" else "OFF"
+    OPT["brain_ggml_vulkan"] = "ON" if backend == "vulkan" else "OFF"
     defs = [f"{cmake}={OPT[key]}" for key, cmake in BRAIN_DEFS]
-    if OPT["msvc_arch"]:
-        defs.append("GEMMA_MSVC_ARCH_FLAG=" + OPT["msvc_arch"])
+    defs.append("GEMMA_BACKEND=" + backend)
+    if backend == "cuda":
+        defs.append("CMAKE_CUDA_ARCHITECTURES=" + OPT["cuda_architectures"])
+    arch = host_msvc_arch()
+    if arch:
+        defs.append("GEMMA_MSVC_ARCH_FLAG=" + arch)
     wanted = {
         "llama": llama,
         "source": digest(
             gemma / "CMakeLists.txt",
             gemma / "src" / "brain.cpp",
             gemma / "cmake" / "HostCpu.cmake",
-            gemma / "cmake" / "Pascal1060.cmake",
-            gemma / "cmake" / "PascalCuda.cmake",
             gemma / "scripts" / "build.ps1",
             gemma / "scripts" / "configure.ps1",
+            gemma / "scripts" / "detect_gpu.ps1",
         ),
         "cmake": defs,
-        "cuda_root": OPT["cuda_root"],
-        "toolset": OPT["cuda_toolset"],
+        "vulkan_sdk": OPT["vulkan_sdk"],
+        "backend": backend,
     }
     models = gemma / "models"
     models.mkdir(parents=True, exist_ok=True)
@@ -444,12 +468,17 @@ def install_gemma_brain() -> None:
         return
     print("install gemma-brain", flush=True)
     ps = shutil.which("powershell") or "powershell.exe"
-    command = [ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(gemma / "scripts" / "build.ps1"), "-CudaRoot", OPT["cuda_root"], "-Generator", OPT["generator"], "-Arch", OPT["arch"], "-Toolset", OPT["cuda_toolset"], "-CudaParallel", OPT["cuda_parallel"], "-BrainParallel", OPT["brain_parallel"]]
-    if on("clean_cuda"):
-        command.append("-CleanCuda")
-    if defs:
-        command += ["-Def", "\x1e".join(defs)]
-    run(command, cwd=gemma)
+    command = [ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(gemma / "scripts" / "build.ps1"), "-BrainParallel", OPT["brain_parallel"]]
+    if OPT["vulkan_sdk"]:
+        command += ["-VulkanSdk", OPT["vulkan_sdk"]]
+    env = os.environ.copy()
+    env["TRIDENT_GENERATOR"] = OPT["generator"]
+    env["TRIDENT_ARCH"] = OPT["arch"]
+    env["TRIDENT_GEMMA_BACKEND"] = backend
+    env["TRIDENT_CUDA_ROOT"] = OPT["cuda_root"]
+    env["TRIDENT_CUDA_TOOLSET"] = OPT["cuda_toolset"]
+    env["TRIDENT_GEMMA_DEFS"] = "\n".join(defs)
+    run(command, cwd=gemma, env=env)
     atomic_json(stamp, wanted)
 
 
@@ -477,7 +506,6 @@ def parse_args(argv: list[str]) -> dict:
     p.add_argument("--s3-quant-policy", default="scripts/quant_s3.json")
     p.add_argument("--mouth-ggml-vulkan", default="ON")
     p.add_argument("--mouth-ggml-cpu", default="OFF")
-    p.add_argument("--mouth-ggml-cuda", default="OFF")
     p.add_argument("--mouth-ggml-openmp", default="OFF")
     p.add_argument("--mouth-ggml-build-tests", default="OFF")
     p.add_argument("--mouth-ggml-build-examples", default="OFF")
@@ -485,11 +513,11 @@ def parse_args(argv: list[str]) -> dict:
     p.add_argument("--hf-nano", default="")
     p.add_argument("--hf-turbo", default="")
     p.add_argument("--hf-v3", default="")
+    p.add_argument("--brain-parallel", default="4")
+    p.add_argument("--gemma-backend", default="auto", choices=["auto", "vulkan", "cuda"])
     p.add_argument("--cuda-root", default=r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6")
     p.add_argument("--cuda-toolset", default="cuda=12.6")
-    p.add_argument("--cuda-parallel", default="1")
-    p.add_argument("--brain-parallel", default="4")
-    p.add_argument("--clean-cuda", default="off")
+    p.add_argument("--cuda-architectures", default="61-real")
     p.add_argument("--msvc-arch", default="")
     p.add_argument("--text-model-name", default="gemma-4-E2B-it-Q4_0.gguf")
     p.add_argument("--text-model-url", default="https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_0.gguf")
@@ -497,18 +525,8 @@ def parse_args(argv: list[str]) -> dict:
     p.add_argument("--mmproj-url", default="https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/mmproj-gemma-4-E2B-it-Q8_0.gguf")
     p.add_argument("--llama-repo", default="https://github.com/ggml-org/llama.cpp.git")
     p.add_argument("--llama-rev", default="")
-    p.add_argument("--cuda-architectures", default="61-real")
-    p.add_argument("--cuda-flags-release", default="-DNDEBUG")
-    p.add_argument("--brain-ggml-cuda", default="ON")
-    p.add_argument("--brain-ggml-cuda-force-mmq", default="ON")
-    p.add_argument("--brain-ggml-cuda-force-cublas", default="OFF")
-    p.add_argument("--brain-ggml-cuda-fa", default="ON")
-    p.add_argument("--brain-ggml-cuda-fa-all-quants", default="OFF")
-    p.add_argument("--brain-ggml-cuda-graphs", default="ON")
-    p.add_argument("--brain-ggml-cuda-nccl", default="OFF")
-    p.add_argument("--brain-ggml-cuda-no-peer-copy", default="OFF")
-    p.add_argument("--brain-ggml-cuda-no-vmm", default="OFF")
     p.add_argument("--brain-ggml-cpu", default="ON")
+    p.add_argument("--brain-ggml-cuda", default="OFF")
     p.add_argument("--brain-ggml-vulkan", default="OFF")
     p.add_argument("--brain-ggml-metal", default="OFF")
     p.add_argument("--brain-ggml-openmp", default="ON")
