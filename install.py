@@ -9,7 +9,7 @@ def venv_python() -> Path:
 
 GEMMA_MODELS = (
     ("gemma-4-E2B-it-Q4_0.gguf", "https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_0.gguf"),
-    ("mmproj-gemma-4-E2B-it-BF16.gguf", "https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/mmproj-gemma-4-E2B-it-BF16.gguf"),
+    ("mmproj-gemma-4-E2B-it-Q8_0.gguf", "https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/mmproj-gemma-4-E2B-it-Q8_0.gguf"),
 )
 
 MODELS = ROOT / "models"

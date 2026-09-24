@@ -47,7 +47,9 @@ static void require_cuda_gpu0() {
 static common_params params_gtx1060() {
     common_params p;
     p.model.path = "models/gemma-4-E2B-it-Q4_0.gguf";
-    p.mmproj.path = "models/mmproj-gemma-4-E2B-it-BF16.gguf";
+    p.mmproj.path = "models/mmproj-gemma-4-E2B-it-Q8_0.gguf";
+    p.cache_type_k = GGML_TYPE_Q8_0;
+    p.cache_type_v = GGML_TYPE_Q8_0;
     p.mmproj_use_gpu = true;
     p.n_ctx = 2048;
     p.n_batch = 512;
