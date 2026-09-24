@@ -60,6 +60,7 @@ endif()
 add_executable(gemma-brain src/brain.cpp)
 target_link_libraries(gemma-brain PRIVATE llama-common mtmd)
 target_include_directories(gemma-brain PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src
     ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/include
     ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/ggml/include
     ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/common

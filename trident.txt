@@ -1,0 +1,179 @@
+# Trident settings. The programs read this file at start.
+# Paths are relative to this file. Edit the values here. There is no knob CLI.
+# A value that ends with << continues until a line that is only <<.
+
+# Install. python install.py [ear | brain | mouth | nano | turbo | v3 | all | release]
+install.cmd turbo
+install.generator Visual Studio 17 2022
+install.arch x64
+install.parallel 2
+install.vulkan_sdk
+install.ggml_repo https://github.com/ggml-org/ggml.git
+install.ggml_rev 7840aaba1989c6deeefede1d77d5aaf8f52b947e
+install.reference reference.wav
+install.t3_weight_type q4_0
+install.s3_weight_type q4_0
+install.t3_quant_policy scripts/quant_t3.json
+install.s3_quant_policy scripts/quant_s3.json
+install.mouth_ggml_vulkan ON
+install.mouth_ggml_cpu OFF
+install.mouth_ggml_openmp OFF
+install.mouth_ggml_build_tests OFF
+install.mouth_ggml_build_examples OFF
+install.mouth_build_shared ON
+install.hf_nano
+install.hf_turbo
+install.hf_v3
+install.brain_parallel 4
+install.gemma_backend auto
+install.cuda_root C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6
+install.cuda_toolset cuda=12.6
+install.cuda_architectures 61-real
+install.msvc_arch
+install.text_model_name gemma-4-E2B-it-Q4_0.gguf
+install.text_model_url https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_0.gguf
+install.mmproj_name mmproj-gemma-4-E2B-it-Q8_0.gguf
+install.mmproj_url https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/mmproj-gemma-4-E2B-it-Q8_0.gguf
+install.llama_repo https://github.com/ggml-org/llama.cpp.git
+install.llama_rev
+install.brain_ggml_cpu ON
+install.brain_ggml_cuda OFF
+install.brain_ggml_vulkan OFF
+install.brain_ggml_metal OFF
+install.brain_ggml_openmp ON
+install.brain_ggml_blas OFF
+install.brain_ggml_accelerate OFF
+install.brain_ggml_native ON
+install.llama_build_common ON
+install.llama_build_tools OFF
+install.llama_build_mtmd ON
+install.llama_build_tests OFF
+install.llama_build_examples OFF
+install.llama_build_server OFF
+install.llama_curl OFF
+install.llama_openssl OFF
+install.llama_subprocess OFF
+install.mtmd_video OFF
+install.brain_build_shared OFF
+install.ggml_ccache ON
+install.nemo_repo https://github.com/NVIDIA/NeMo-Speech.cpp.git
+install.nemo_rev
+install.ear_gguf_name nemotron-3.5-asr-streaming-0.6b.q8_0.gguf
+install.ear_gguf_url
+install.ear_backend cpu
+install.ear_profile core
+install.ear_config Release
+install.ear_cuda_arch native
+install.ear_architecture auto
+install.ear_compiler auto
+install.ear_jobs 0
+install.ear_build_dir
+install.ear_vcpkg_root
+install.ear_vcpkg_triplet
+install.ear_asr_only on
+install.ear_grpc off
+install.ear_nmt off
+install.ear_flashlight off
+install.ear_http off
+install.ear_http_tls off
+install.ear_tts_ja off
+install.ear_tts_zh off
+install.ear_tests off
+install.ear_cublas_shim off
+install.publish off
+
+# Gemma brain. gemma-brain "prompt" [image]
+# gemma.model and gemma.mmproj are the GGUF files under gemma/models.
+gemma.model gemma/models/gemma-4-E2B-it-Q4_0.gguf
+gemma.mmproj gemma/models/mmproj-gemma-4-E2B-it-Q8_0.gguf
+gemma.ctx 2048
+gemma.batch 512
+gemma.ubatch 512
+gemma.n-predict 512
+gemma.gpu-layers 999
+gemma.gpu 0
+gemma.threads 0
+gemma.temp 0.8
+gemma.top-k 40
+gemma.top-p 0.95
+gemma.min-p 0.05
+gemma.repeat-penalty 1.0
+gemma.seed -1
+gemma.flash-attn on
+gemma.warmup on
+gemma.cache-type-k q8_0
+gemma.cache-type-v q8_0
+gemma.image-min-tokens -1
+gemma.image-max-tokens -1
+gemma.prompt-file gemma.prompt.txt
+gemma.response-file gemma.response.txt
+gemma.system Call one tool and stop.
+gemma.tok.tool <|tool>
+gemma.tok.tool_end <tool|>
+gemma.tok.str <|"|>
+gemma.tools respond code
+gemma.tool.respond.description Write the response text to a file.
+gemma.tool.respond.params text
+gemma.tool.respond.text.type STRING
+gemma.tool.respond.text.description Response text.
+gemma.tool.respond.text.required yes
+gemma.tool.code.description Write a Python program to disk.
+gemma.tool.code.params source
+gemma.tool.code.source.type STRING
+gemma.tool.code.source.description Complete Python source.
+gemma.tool.code.source.required yes
+# {system} {tools} {text} are filled from the keys above. {text} is the command argument.
+gemma.prompt <<
+<|turn>system
+<|think|>
+{system}{tools}<turn|>
+<|turn>user
+{text}<turn|>
+<|turn>model
+<<
+
+# Chatterbox. chatterbox <nano|turbo|v3> -t "text" [-o out.wav] [-l en]
+# --persist keeps the voice loaded. --unload stops it. The request is chatterbox.prompt-file.
+chatterbox.prompt-file chatterbox.prompt.txt
+chatterbox.response-file chatterbox.response.txt
+# Voices are models/voices/<variant>/t3.gguf and s3.gguf. Sample rate 24000.
+chatterbox.gpu 0
+chatterbox.seed 42
+chatterbox.temperature 0.8
+chatterbox.repeat-penalty 1.2
+chatterbox.n-predict 1000
+chatterbox.trim-fade-samples 480
+chatterbox.top-p 0.95
+chatterbox.top-p-v3 1.0
+chatterbox.cfm-steps 2
+chatterbox.cfm-steps-v3 5
+chatterbox.top-k 1000
+chatterbox.min-p 0.05
+chatterbox.cfg-weight 0.5
+chatterbox.exaggeration 0.5
+chatterbox.cfm-cfg 0.7
+
+# Bake. chatterbox-bake <t3.gguf> <s3.gguf>
+# bake.reference is the speaker sample written into those two files.
+bake.reference reference.wav
+bake.gpu 0
+bake.cond-seconds -1
+bake.normalize-lufs -27
+bake.trim-db 20
+bake.voice-seconds 30
+bake.prompt-seconds 10
+bake.mel-seconds 10
+bake.voice-rate 16000
+bake.mel-rate 24000
+bake.mel-fft 1920
+bake.mel-hop 480
+bake.mel-power 1
+bake.mel-floor 1e-5
+bake.mel-centered off
+
+# Ear. ear transcribe <audio>
+# --persist keeps the process up. --unload stops it. The request file holds the audio path.
+ear.prompt-file ear.prompt.txt
+ear.response-file ear.response.txt
+# ear.model is passed as --model when the command does not already have one.
+ear.model models/ear/nemotron-3.5-asr-streaming-0.6b.q8_0.gguf
