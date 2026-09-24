@@ -2,10 +2,11 @@ import hashlib, json, os, re, shutil, subprocess, sys, urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
-from trident_lib import ROOT, kill_server_pid, venv_python
+ROOT = Path(__file__).resolve().parent
 
-BRAIN_GGUF = "brain-gemma-4-e2b-it-q4_k_m.gguf"
-BRAIN_URL = "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/0314792d7f1f7e229411f620751375812bb9faf2/gemma-4-E2B-it-Q4_K_M.gguf"
+def venv_python() -> Path:
+    return ROOT / ".venv" / "Scripts" / "python.exe"
+
 GEMMA_MODELS = (
     ("gemma-4-E2B-it-Q4_0.gguf", "https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_0.gguf"),
     ("mmproj-gemma-4-E2B-it-BF16.gguf", "https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/mmproj-gemma-4-E2B-it-BF16.gguf"),
@@ -14,9 +15,8 @@ GEMMA_MODELS = (
 MODELS = ROOT / "models"
 CMAKE_GENERATOR, CMAKE_ARCH = "Visual Studio 17 2022", "x64"
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
-EAR_REPO = "https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b/resolve/ea30d66debe3740a08b573244286791d423d6b3e"
-EAR_DIR = "nemotron-3.5-asr-streaming-0.6b"
-EAR_FILES = ("config.json", "generation_config.json", "processor_config.json", "tokenizer_config.json", "tokenizer.json", "model.safetensors")
+EAR_GGUF = "nemotron-3.5-asr-streaming-0.6b.q8_0.gguf"
+EAR_URL = "https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b/resolve/main/" + EAR_GGUF
 
 
 @dataclass(frozen=True)
@@ -33,7 +33,7 @@ _GPT2 = ("s3gen_meanflow.safetensors", "conds.pt", "ve.safetensors", "vocab.json
 VARIANTS = {
     "nano": Variant("nano", "https://huggingface.co/ResembleAI/chatterbox-nano/resolve/71ccd1d0081b430592cea481f4307e764e07bc64", ("t3_nano_v1.safetensors",) + _GPT2, "t3_nano_v1.safetensors", "gpt2"),
     "turbo": Variant("turbo", "https://huggingface.co/ResembleAI/chatterbox-turbo/resolve/749d1c1a46eb10492095d68fbcf55691ccf137cd", ("t3_turbo_v1.safetensors",) + _GPT2, "t3_turbo_v1.safetensors", "gpt2"),
-    "v3": Variant("v3", "https://huggingface.co/ResembleAI/chatterbox/resolve/5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18", ("t3_mtl23ls_v3.safetensors", "s3gen.safetensors", "conds.pt", "ve.safetensors", "grapheme_mtl_merged_expanded_v1.json", "Cangjie5_TC.json"), "t3_mtl23ls_v3.safetensors", "llama", (("official_mtl_tokenizer.py", "https://raw.githubusercontent.com/resemble-ai/chatterbox/5de7a54aa4e5e2baadb0182dde554908b48b85c2/src/chatterbox/models/tokenizers/tokenizer.py"), ("official_mtl_tts.py", "https://raw.githubusercontent.com/resemble-ai/chatterbox/5de7a54aa4e5e2baadb0182dde554908b48b85c2/src/chatterbox/mtl_tts.py"), ("dicta-1.0.int8.onnx", "https://github.com/thewh1teagle/dicta-onnx/releases/download/model-files-v1.0/dicta-1.0.int8.onnx"))),
+    "v3": Variant("v3", "https://huggingface.co/ResembleAI/chatterbox/resolve/5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18", ("t3_mtl23ls_v3.safetensors", "s3gen.safetensors", "conds.pt", "ve.safetensors", "grapheme_mtl_merged_expanded_v1.json"), "t3_mtl23ls_v3.safetensors", "llama"),
 }
 ARCH = {
     "gpt2": {"ckpt": ".ckpt", "s3_checkpoint": "s3gen_meanflow.safetensors", "s3_family": "meanflow"},
@@ -52,33 +52,6 @@ def run(cmd, **kw):
     subprocess.run(cmd, check=True, **kw)
 
 
-def kill_server() -> None:
-    kill_server_pid()
-
-
-def ensure_layout() -> None:
-    (ROOT / "wav").mkdir(parents=True, exist_ok=True)
-    bus = ROOT / "workspace"
-    bus.mkdir(parents=True, exist_ok=True)
-    for name in ("inbox", "ready"):
-        (bus / name).mkdir(parents=True, exist_ok=True)
-
-
-def ensure_components() -> None:
-    seed = ROOT / "scripts" / "component_seed"
-    dest = ROOT / "components"
-    if not seed.is_dir():
-        raise RuntimeError("missing " + str(seed))
-    for path in seed.rglob("*"):
-        if not path.is_file():
-            continue
-        out = dest / path.relative_to(seed)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        data = path.read_bytes()
-        if not out.is_file() or out.read_bytes() != data:
-            out.write_bytes(data)
-
-
 def atomic_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
@@ -88,14 +61,6 @@ def atomic_json(path: Path, payload: dict) -> None:
 
 def matches(stamp: Path, payload: dict, *outputs: Path) -> bool:
     return stamp.is_file() and json.loads(stamp.read_text(encoding="utf-8")) == payload and all(path.is_file() for path in outputs)
-
-
-def kept(name: str, payload: dict, *outputs: Path) -> bool:
-    if matches(MODELS / f"{name}.json", payload, *outputs):
-        print("skip " + name, flush=True)
-        return True
-    print("install " + name, flush=True)
-    return False
 
 
 def digest(*paths) -> str:
@@ -156,9 +121,6 @@ class LlamaCpp:
         run(["git", "-C", str(home), "fetch", "origin", "master"])
         run(["git", "-C", str(home), "checkout", "master"])
         run(["git", "-C", str(home), "pull", "--ff-only", "origin", "master"])
-        for rel in ("vendor/cpp-httplib/httplib.h", "vendor/nlohmann/json.hpp"):
-            if not (home / rel).is_file():
-                raise RuntimeError("missing " + str(home / rel))
         return LlamaCpp.rev()
 
 
@@ -176,32 +138,25 @@ class Ggml:
             run(["git", "-C", str(home), "checkout", "--detach", Ggml.REV])
 
 
-def build_engine() -> tuple[Path, Path, Path, Path, dict]:
+def build_engine() -> tuple[Path, Path, dict]:
     outputs = (
         ROOT / "build" / "bin" / "chatterbox.exe",
         ROOT / "build" / "bin" / "chatterbox-bake.exe",
-        ROOT / "build" / "bin" / "trident-host.exe",
-        ROOT / "build" / "bin" / "trident-mouth.exe",
     )
-    llama = LlamaCpp.ensure()
     wanted = {
         "ggml": Ggml.REV,
-        "llama": llama,
         "generator": CMAKE_GENERATOR,
         "architecture": CMAKE_ARCH,
         "source": digest(ROOT / "CMakeLists.txt", ROOT / "src"),
     }
     stamp = MODELS / "build-contract.json"
     if stamp.is_file() and json.loads(stamp.read_text(encoding="utf-8")) == wanted and all(path.is_file() for path in outputs):
-        print("skip llama.cpp", flush=True)
         print("skip ggml", flush=True)
         print("skip engine", flush=True)
         return *outputs, wanted
-    print("install llama.cpp", flush=True)
     print("install ggml", flush=True)
     Ggml.ensure()
     print("install engine", flush=True)
-    kill_server()
     sdk = max(Path("C:/VulkanSDK").glob("*/Bin/glslc.exe"), key=lambda path: tuple(map(int, re.findall(r"\d+", path.parts[-3])))).parents[1]
     build = ROOT / "build"
     run(["cmake", "-S", str(ROOT), "-B", str(build), "-G", CMAKE_GENERATOR, "-A", CMAKE_ARCH, f"-DVulkan_INCLUDE_DIR={sdk / 'Include'}", f"-DVulkan_LIBRARY={sdk / 'Lib/vulkan-1.lib'}", f"-DVulkan_GLSLC_EXECUTABLE={sdk / 'Bin/glslc.exe'}"])
@@ -215,8 +170,6 @@ def build_engine() -> tuple[Path, Path, Path, Path, dict]:
             "--target",
             "chatterbox",
             "chatterbox-bake",
-            "trident-host",
-            "trident-mouth",
             "--parallel",
             "2",
         ]
@@ -291,7 +244,6 @@ def bake_voice(cfg: Variant, base_t3: Path, base_s3: Path, bake: Path, contracts
         print("skip voice", flush=True)
         return
     print("install voice", flush=True)
-    kill_server()
     temp = voice.with_name(voice.name + ".baking")
     if temp.exists():
         shutil.rmtree(temp)
@@ -318,36 +270,41 @@ def ensure_venv() -> Path:
     return py
 
 
-def python_packages(py: Path, ear: bool, mouth: bool, brain: bool = False) -> None:
-    names = ["numpy"]
-    if brain:
-        names += ["gguf", "llama-cpp-python"]
-    if ear:
-        names += ["transformers", "sounddevice", "librosa"]
-    if mouth:
-        names += ["gguf", "safetensors", "librosa", "sounddevice", "tokenizers", "pykakasi", "spacy-pkuseg", "dicta-onnx", "add-stress-to-epub"]
-    names = list(dict.fromkeys(names))
-    args = specs(*names)
-    if ear or mouth:
-        args += ["torch==2.6.0", "--index-url", PYTORCH_CPU_INDEX, "--extra-index-url", "https://pypi.org/simple"]
-    pip(py, "packages" if ear and mouth else "asr-packages" if ear else "tts-packages", args)
+def python_packages(py: Path) -> None:
+    args = specs("numpy", "gguf", "safetensors", "librosa", "tokenizers")
+    args += ["torch==2.6.0", "--index-url", PYTORCH_CPU_INDEX, "--extra-index-url", "https://pypi.org/simple"]
+    pip(py, "tts-packages", args)
 
 
 def install_ear() -> None:
-    home = MODELS / "ear" / EAR_DIR
-    home.mkdir(parents=True, exist_ok=True)
-    files = tuple(home / name for name in EAR_FILES)
-    if kept("nemotron", {"repo": EAR_REPO}, *files):
+    dest = MODELS / "ear" / EAR_GGUF
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if not dest.is_file():
+        print("install " + EAR_GGUF, flush=True)
+        download(EAR_URL, dest)
+    home = ROOT / "nemo-speech"
+    exe = ROOT / "build" / "bin" / "ear.exe"
+    if not (home / ".git").exists():
+        print("install nemo-speech", flush=True)
+        run(["git", "clone", "--filter=blob:none", "https://github.com/NVIDIA/NeMo-Speech.cpp.git", str(home)])
+    rev = subprocess.run(["git", "-C", str(home), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    stamp = MODELS / "ear-build.json"
+    wanted = {"rev": rev, "gguf": EAR_GGUF}
+    if matches(stamp, wanted, exe, dest):
+        print("skip ear", flush=True)
         return
-    for name in EAR_FILES:
-        print(name, flush=True)
-        download(EAR_REPO + "/" + name, home / name)
-    atomic_json(MODELS / "nemotron.json", {"repo": EAR_REPO})
+    print("install ear", flush=True)
+    ps = shutil.which("powershell") or "powershell.exe"
+    run([ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(home / "scripts" / "windows" / "build.ps1"), "-Backend", "cpu", "-AsrOnly"], cwd=home)
+    built = next(home.rglob("nemo-speech.exe"))
+    exe.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(built, exe)
+    atomic_json(stamp, wanted)
 
 
 def install_mouth(name: str) -> None:
     cfg, py = VARIANTS[name], venv_python()
-    _, bake, _, _, build = build_engine()
+    _, bake, build = build_engine()
     ckpt = checkpoints(cfg)
     conv = launch_conversion(cfg)
     t3, s3, contracts = convert(cfg, py, ckpt, conv)
@@ -376,22 +333,12 @@ def install_gemma_brain() -> None:
     atomic_json(stamp, wanted)
 
 
-def install_python_brain() -> None:
-    dest = MODELS / BRAIN_GGUF
-    if kept("brain-gguf", {"url": BRAIN_URL}, dest):
-        return
-    download(BRAIN_URL, dest)
-    atomic_json(MODELS / "brain-gguf.json", {"url": BRAIN_URL})
-
-
 def install_brain() -> None:
-    python_packages(venv_python(), False, False, brain=True)
-    install_python_brain()
     install_gemma_brain()
 
 
 def install_all(name: str) -> None:
-    python_packages(venv_python(), True, True, brain=True)
+    python_packages(venv_python())
     install_ear()
     install_mouth(name)
     install_brain()
@@ -407,22 +354,19 @@ def main() -> None:
             env["TRIDENT_VENV_NEW"] = "1"
         raise SystemExit(subprocess.call([str(venv_python()), *argv], env=env))
     print("install venv" if os.environ.pop("TRIDENT_VENV_NEW", None) == "1" else "skip venv", flush=True)
-    ensure_components()
-    ensure_layout()
     if len(argv) == 1:
-        install_all("nano")
+        install_all("turbo")
     elif len(argv) == 2 and argv[1] == "ear":
-        python_packages(venv_python(), True, False)
         install_ear()
     elif len(argv) == 2 and argv[1] == "brain":
         install_brain()
     elif len(argv) == 3 and argv[1] == "mouth" and argv[2] in VARIANTS:
-        python_packages(venv_python(), False, True)
+        python_packages(venv_python())
         install_mouth(argv[2])
     elif len(argv) == 2 and argv[1] in VARIANTS:
         install_all(argv[1])
     elif len(argv) == 2 and argv[1] == "all":
-        python_packages(venv_python(), True, True, brain=True)
+        python_packages(venv_python())
         install_ear()
         install_brain()
         install_mouth("nano")

@@ -145,9 +145,27 @@ class LlamaConverter(T3Converter):
             factors[index] = np.float32(inverse / scaled)
         self.policy.add(self.writer, "model/rope_freq_factors", factors)
 
+    def tokenizer(self, vocab):
+        data = json.loads((self.checkpoint / "grapheme_mtl_merged_expanded_v1.json").read_text(encoding="utf-8"))
+        by_id = {int(index): token for token, index in vocab.items()}
+        added = set()
+        for item in data.get("added_tokens", []):
+            by_id[int(item["id"])] = item["content"]
+            added.add(item["content"])
+        tokens = [by_id.get(index, "[UNK]") for index in range(max(by_id) + 1)]
+        types = [int(gguf.TokenType.CONTROL if token in added else gguf.TokenType.NORMAL) for token in tokens]
+        merges = []
+        for merge in data["model"]["merges"]:
+            merges.append(merge if isinstance(merge, str) else merge[0] + " " + merge[1])
+        self.writer.add_tokenizer_model("bpe")
+        self.writer.add_token_list(tokens)
+        self.writer.add_token_types(types)
+        self.writer.add_token_merges(merges)
+
     def convert(self):
         state = self.state
         vocab = Tokenizer.from_file(str(self.checkpoint / "grapheme_mtl_merged_expanded_v1.json")).get_vocab()
+        self.tokenizer(vocab)
         width = state["tfmr.norm.weight"].shape[0]
         perceiver = state["cond_enc.perceiver.pre_attention_query"].shape[1]
         text_positions = state["text_pos_emb.emb.weight"].shape[0]

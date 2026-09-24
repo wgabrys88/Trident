@@ -32,25 +32,6 @@ add_executable(chatterbox-bake src/bake.cpp)
 target_link_libraries(chatterbox PRIVATE trident_engine)
 target_link_libraries(chatterbox-bake PRIVATE trident_engine)
 
-set(LLAMA_VENDOR "${CMAKE_SOURCE_DIR}/gemma/llama.cpp/vendor")
-set(HTTPLIB_SRC "${LLAMA_VENDOR}/cpp-httplib/httplib.cpp")
-set(HOST_SRC
-    src/host/bus.cpp src/host/journal.cpp src/host/store.cpp
-    src/host/devices.cpp src/host/supervisor.cpp src/host/trident.cpp)
-add_executable(trident-host ${HOST_SRC} ${HTTPLIB_SRC})
-add_executable(trident-mouth src/host/mouth_worker.cpp ${HTTPLIB_SRC})
-target_include_directories(trident-host PRIVATE
-    "${LLAMA_VENDOR}/cpp-httplib" "${LLAMA_VENDOR}"
-    ${CMAKE_SOURCE_DIR}/ggml/include src)
-target_include_directories(trident-mouth PRIVATE
-    "${LLAMA_VENDOR}/cpp-httplib" "${LLAMA_VENDOR}" src)
-target_link_libraries(trident-host PRIVATE trident_engine ws2_32)
-target_link_libraries(trident-mouth PRIVATE trident_engine ws2_32 winmm)
-foreach(target trident-host trident-mouth)
-    target_compile_definitions(${target} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
-    target_compile_options(${target} PRIVATE /O2 /DNDEBUG)
-endforeach()
-
 foreach(target trident_engine chatterbox chatterbox-bake)
     target_compile_definitions(${target} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN
         GGML_USE_VULKAN _USE_MATH_DEFINES _CRT_SECURE_NO_WARNINGS)

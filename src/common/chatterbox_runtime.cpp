@@ -44,9 +44,7 @@ std::vector<std::string> gpt2_flags(int gpu) {
             "--gpu",         std::to_string(gpu)};
 }
 
-std::vector<std::string> v3_flags(int gpu, const std::filesystem::path& repo) {
-    auto py = repo / ".venv" / "Scripts" / "python.exe";
-    auto ckpt = repo / ".ckpt-v3";
+std::vector<std::string> v3_flags(int gpu) {
     return {"--seed",           "42",
             "--temperature",    "0.8",
             "--top-p",          "1.0",
@@ -58,14 +56,7 @@ std::vector<std::string> v3_flags(int gpu, const std::filesystem::path& repo) {
             "--cfg-weight",     "0.5",
             "--exaggeration",   "0.5",
             "--cfm-cfg",        "0.7",
-            "--gpu",            std::to_string(gpu),
-            "--tokenizer-python", py.string(),
-            "--tokenizer-script", (repo / "scripts" / "mtl_tokenize_runtime.py").string(),
-            "--tokenizer-source", (ckpt / "official_mtl_tokenizer.py").string(),
-            "--tokenizer-tts-source", (ckpt / "official_mtl_tts.py").string(),
-            "--tokenizer-json", (ckpt / "grapheme_mtl_merged_expanded_v1.json").string(),
-            "--cangjie-json", (ckpt / "Cangjie5_TC.json").string(),
-            "--dicta-model",  (ckpt / "dicta-1.0.int8.onnx").string()};
+            "--gpu",            std::to_string(gpu)};
 }
 
 } // namespace
@@ -87,7 +78,7 @@ std::unique_ptr<Synth> chatterbox_make_engine_paths(const std::filesystem::path&
     if (!std::filesystem::is_regular_file(t3) || !std::filesystem::is_regular_file(s3))
         throw std::runtime_error("missing t3 or s3 gguf");
     auto family = GgufFile::architecture(t3.string());
-    auto flags_vec = (family == "chatterbox-llama") ? v3_flags(gpu, chatterbox_repo_root()) : gpt2_flags(gpu);
+    auto flags_vec = (family == "chatterbox-llama") ? v3_flags(gpu) : gpt2_flags(gpu);
     auto ptrs = argv_with_flags(t3.string(), s3.string(), flags_vec);
     Flags flags(int(ptrs.size()), ptrs.data());
     std::unique_ptr<Synth> engine;

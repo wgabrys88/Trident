@@ -13,7 +13,6 @@ class Engine : public Synth {
     VulkanBackend backend;
     LlamaT3 t3;
     S3 s3;
-    TokenizerPaths paths;
     MtlTokenizer tokenizer;
     std::map<std::string, MtlNumbers> numbers;
 public:
