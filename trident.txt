@@ -91,7 +91,7 @@ install.publish off
 # gemma.unload on stops that process and exits. The prompt file is the request.
 # gemma.image is optional. Empty means text only. A set path is used for one shot.
 # gemma.model and gemma.mmproj are the GGUF files under gemma/models.
-gemma.persist off
+gemma.persist on
 gemma.unload off
 gemma.image
 gemma.model gemma/models/gemma-4-E2B-it-Q4_0.gguf
@@ -103,16 +103,16 @@ gemma.n-predict 512
 gemma.gpu-layers 999
 gemma.gpu 0
 gemma.threads 0
-gemma.temp 0.8
-gemma.top-k 40
+gemma.temp 1.0
+gemma.top-k 64
 gemma.top-p 0.95
 gemma.min-p 0.05
 gemma.repeat-penalty 1.0
 gemma.seed -1
-gemma.flash-attn on
+gemma.flash-attn off
 gemma.warmup on
-gemma.cache-type-k q8_0
-gemma.cache-type-v q8_0
+gemma.cache-type-k f16
+gemma.cache-type-v f16
 gemma.image-min-tokens -1
 gemma.image-max-tokens -1
 gemma.poll-ms 100
@@ -267,7 +267,7 @@ gemma.prompt <<
 # chatterbox.persist on keeps the voice loaded and watches chatterbox.prompt-file.
 # chatterbox.unload on stops that process. The prompt file is the sentence.
 # The wav path is written to chatterbox.response-file. Sample rate 24000.
-chatterbox.persist off
+chatterbox.persist on
 chatterbox.unload off
 chatterbox.variant turbo
 chatterbox.language en
@@ -318,7 +318,7 @@ bake.mel-centered off
 # Ear. Run ear.exe with no arguments.
 # ear.persist on keeps the watcher up. ear.unload on stops it.
 # ear.prompt-file holds the audio path. The transcript goes to ear.response-file.
-ear.persist off
+ear.persist on
 ear.unload off
 ear.poll-ms 200
 ear.opt.--format text

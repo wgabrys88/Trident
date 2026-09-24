@@ -47,3 +47,12 @@
 !/gemma/scripts/detect_cpu.ps1
 !/gemma/scripts/detect_gpu.ps1
 !/gemma/src/brain.cpp
+
+# Resident slots and run logs. A later un-ignore must not commit these.
+/*.pid
+/*.stop
+/*.prompt.txt
+/*.response.txt
+/*.response.wav
+/*.run.log
+/*.run.err
