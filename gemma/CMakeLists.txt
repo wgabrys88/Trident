@@ -40,9 +40,6 @@ target_include_directories(gemma-brain PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/common
     ${CMAKE_CURRENT_SOURCE_DIR}/llama.cpp/tools/mtmd)
 target_compile_definitions(gemma-brain PRIVATE GEMMA_GPU_ONLY=1 NOMINMAX WIN32_LEAN_AND_MEAN)
-if(DEFINED GEMMA_HOST_THREADS)
-    target_compile_definitions(gemma-brain PRIVATE GEMMA_HOST_THREADS=${GEMMA_HOST_THREADS})
-endif()
 
 if(MSVC)
     target_link_options(gemma-brain PRIVATE "/MANIFEST:EMBED" "/MANIFESTINPUT:${CMAKE_CURRENT_SOURCE_DIR}/../utf8.manifest")

@@ -145,10 +145,4 @@ void chatterbox_write_wav(const std::filesystem::path& path, const std::vector<f
     out.write(reinterpret_cast<const char*>(samples.data()), data_size);
 }
 
-std::vector<float> chatterbox_synthesize(const std::string& variant, int gpu, const std::string& text,
-                                         const std::string& language) {
-    auto engine = chatterbox_make_engine(variant, gpu);
-    return engine->synthesize(text, language);
-}
-
 } // namespace trident

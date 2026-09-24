@@ -1,19 +1,33 @@
 $ErrorActionPreference = "Stop"
+param(
+    [string]$CudaRoot = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6",
+    [string]$Generator = "Visual Studio 17 2022",
+    [string]$Arch = "x64",
+    [string]$Toolset = "cuda=12.6",
+    [string[]]$Def = @()
+)
 $gemmaRoot = Split-Path $PSScriptRoot -Parent
 & (Join-Path $PSScriptRoot "detect_cpu.ps1")
 
-$cudaRoot = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6"
-$nvcc = Join-Path $cudaRoot "bin\nvcc.exe"
+$nvcc = Join-Path $CudaRoot "bin\nvcc.exe"
 if (-not (Test-Path $nvcc)) {
-    Write-Error "CUDA 12.6 nvcc not found at $nvcc (install toolkit first)."
+    Write-Error "CUDA nvcc not found at $nvcc"
 }
-$env:CUDA_PATH = $cudaRoot
-$env:CUDA_PATH_V12_6 = $cudaRoot
+$env:CUDA_PATH = $CudaRoot
+$env:CUDA_PATH_V12_6 = $CudaRoot
 
 $build = Join-Path $gemmaRoot "build"
-cmake -S $gemmaRoot -B $build -G "Visual Studio 17 2022" -A x64 -T "cuda=12.6" `
-    -DCMAKE_CUDA_COMPILER="$nvcc" `
-    -DCMAKE_CUDA_TOOLKIT_ROOT_DIR="$cudaRoot" `
-    -DCMAKE_BUILD_TYPE=Release
+$cmakeArgs = @(
+    "-S", $gemmaRoot,
+    "-B", $build,
+    "-G", $Generator,
+    "-A", $Arch,
+    "-T", $Toolset,
+    "-DCMAKE_CUDA_COMPILER=$nvcc",
+    "-DCMAKE_CUDA_TOOLKIT_ROOT_DIR=$CudaRoot",
+    "-DCMAKE_BUILD_TYPE=Release"
+)
+foreach ($item in $Def) { $cmakeArgs += "-D$item" }
+cmake @cmakeArgs
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Write-Host "configure ok - build: cmake --build $build --config Release --target gemma-brain -j"

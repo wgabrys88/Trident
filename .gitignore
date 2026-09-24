@@ -7,6 +7,7 @@
 # !*/ would otherwise expose a nested clone as an embedded gitlink.
 /ggml/
 /nemo-speech/
+/llama-vulkan/
 /build/
 /models/
 /.venv/

@@ -1,4 +1,4 @@
-import hashlib, json, os, re, shutil, subprocess, sys, urllib.request
+import argparse, hashlib, json, os, re, shutil, subprocess, sys, urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -7,16 +7,9 @@ ROOT = Path(__file__).resolve().parent
 def venv_python() -> Path:
     return ROOT / ".venv" / "Scripts" / "python.exe"
 
-GEMMA_MODELS = (
-    ("gemma-4-E2B-it-Q4_0.gguf", "https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_0.gguf"),
-    ("mmproj-gemma-4-E2B-it-Q8_0.gguf", "https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/mmproj-gemma-4-E2B-it-Q8_0.gguf"),
-)
-
 MODELS = ROOT / "models"
-CMAKE_GENERATOR, CMAKE_ARCH = "Visual Studio 17 2022", "x64"
+OPT = {}
 PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
-EAR_GGUF = "nemotron-3.5-asr-streaming-0.6b.q8_0.gguf"
-EAR_URL = "https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b/resolve/main/" + EAR_GGUF
 
 
 @dataclass(frozen=True)
@@ -26,7 +19,6 @@ class Variant:
     assets: tuple[str, ...]
     t3_ckpt: str
     architecture: str
-    external_assets: tuple[tuple[str, str], ...] = ()
 
 
 _GPT2 = ("s3gen_meanflow.safetensors", "conds.pt", "ve.safetensors", "vocab.json", "merges.txt", "added_tokens.json")
@@ -39,13 +31,38 @@ ARCH = {
     "gpt2": {"ckpt": ".ckpt", "s3_checkpoint": "s3gen_meanflow.safetensors", "s3_family": "meanflow"},
     "llama": {"ckpt": ".ckpt-v3", "s3_checkpoint": "s3gen.safetensors", "s3_family": "v3"},
 }
-FLAGS = [
-    ("reference", "reference.wav", "conversion", "both"),
-    ("t3-weight-type", "q4_0", "conversion", "both"),
-    ("s3-weight-type", "q4_0", "conversion", "both"),
-    ("t3-quant-policy", "scripts/quant_t3.json", "conversion", "both"),
-    ("s3-quant-policy", "scripts/quant_s3.json", "conversion", "both"),
-]
+BRAIN_DEFS = (
+    ("cuda_architectures", "CMAKE_CUDA_ARCHITECTURES"),
+    ("cuda_flags_release", "CMAKE_CUDA_FLAGS_RELEASE"),
+    ("brain_ggml_cuda", "GGML_CUDA"),
+    ("brain_ggml_cuda_force_mmq", "GGML_CUDA_FORCE_MMQ"),
+    ("brain_ggml_cuda_force_cublas", "GGML_CUDA_FORCE_CUBLAS"),
+    ("brain_ggml_cuda_fa", "GGML_CUDA_FA"),
+    ("brain_ggml_cuda_fa_all_quants", "GGML_CUDA_FA_ALL_QUANTS"),
+    ("brain_ggml_cuda_graphs", "GGML_CUDA_GRAPHS"),
+    ("brain_ggml_cuda_nccl", "GGML_CUDA_NCCL"),
+    ("brain_ggml_cuda_no_peer_copy", "GGML_CUDA_NO_PEER_COPY"),
+    ("brain_ggml_cuda_no_vmm", "GGML_CUDA_NO_VMM"),
+    ("brain_ggml_cpu", "GGML_CPU"),
+    ("brain_ggml_vulkan", "GGML_VULKAN"),
+    ("brain_ggml_metal", "GGML_METAL"),
+    ("brain_ggml_openmp", "GGML_OPENMP"),
+    ("brain_ggml_blas", "GGML_BLAS"),
+    ("brain_ggml_accelerate", "GGML_ACCELERATE"),
+    ("brain_ggml_native", "GGML_NATIVE"),
+    ("llama_build_common", "LLAMA_BUILD_COMMON"),
+    ("llama_build_tools", "LLAMA_BUILD_TOOLS"),
+    ("llama_build_mtmd", "LLAMA_BUILD_MTMD"),
+    ("llama_build_tests", "LLAMA_BUILD_TESTS"),
+    ("llama_build_examples", "LLAMA_BUILD_EXAMPLES"),
+    ("llama_build_server", "LLAMA_BUILD_SERVER"),
+    ("llama_curl", "LLAMA_CURL"),
+    ("llama_openssl", "LLAMA_OPENSSL"),
+    ("llama_subprocess", "LLAMA_SUBPROCESS"),
+    ("mtmd_video", "MTMD_VIDEO"),
+    ("brain_build_shared", "BUILD_SHARED_LIBS"),
+    ("ggml_ccache", "GGML_CCACHE"),
+)
 
 
 def run(cmd, **kw):
@@ -117,7 +134,12 @@ class LlamaCpp:
     def ensure() -> str:
         home = LlamaCpp.HOME
         if not (home / ".git").exists():
-            run(["git", "clone", "--filter=blob:none", "https://github.com/ggml-org/llama.cpp.git", str(home)])
+            run(["git", "clone", "--filter=blob:none", OPT["llama_repo"], str(home)])
+        rev = OPT["llama_rev"]
+        if rev:
+            run(["git", "-C", str(home), "fetch", "origin", rev, "--depth", "1"])
+            run(["git", "-C", str(home), "checkout", "--detach", rev])
+            return rev
         run(["git", "-C", str(home), "fetch", "origin", "master"])
         run(["git", "-C", str(home), "checkout", "master"])
         run(["git", "-C", str(home), "pull", "--ff-only", "origin", "master"])
@@ -125,28 +147,41 @@ class LlamaCpp:
 
 
 class Ggml:
-    REV = "7840aaba1989c6deeefede1d77d5aaf8f52b947e"
-
     @staticmethod
     def ensure() -> None:
         home = ROOT / "ggml"
         if not (home / ".git").exists():
-            run(["git", "clone", "--filter=blob:none", "https://github.com/ggml-org/ggml.git", str(home)])
+            run(["git", "clone", "--filter=blob:none", OPT["ggml_repo"], str(home)])
         head = subprocess.run(["git", "-C", str(home), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
-        if head != Ggml.REV:
-            run(["git", "-C", str(home), "fetch", "origin", Ggml.REV, "--depth", "1"])
-            run(["git", "-C", str(home), "checkout", "--detach", Ggml.REV])
+        if head != OPT["ggml_rev"]:
+            run(["git", "-C", str(home), "fetch", "origin", OPT["ggml_rev"], "--depth", "1"])
+            run(["git", "-C", str(home), "checkout", "--detach", OPT["ggml_rev"]])
+
+
+def mouth_defs() -> list[str]:
+    return [
+        f"-DGGML_VULKAN={OPT['mouth_ggml_vulkan']}",
+        f"-DGGML_CPU={OPT['mouth_ggml_cpu']}",
+        f"-DGGML_CUDA={OPT['mouth_ggml_cuda']}",
+        f"-DGGML_OPENMP={OPT['mouth_ggml_openmp']}",
+        f"-DGGML_BUILD_TESTS={OPT['mouth_ggml_build_tests']}",
+        f"-DGGML_BUILD_EXAMPLES={OPT['mouth_ggml_build_examples']}",
+        f"-DBUILD_SHARED_LIBS={OPT['mouth_build_shared']}",
+    ]
 
 
 def build_engine() -> tuple[Path, Path, dict]:
     outputs = (
         ROOT / "build" / "bin" / "chatterbox.exe",
         ROOT / "build" / "bin" / "chatterbox-bake.exe",
+        ROOT / "build" / "bin" / "ear.exe",
     )
+    defs = mouth_defs()
     wanted = {
-        "ggml": Ggml.REV,
-        "generator": CMAKE_GENERATOR,
-        "architecture": CMAKE_ARCH,
+        "ggml": OPT["ggml_rev"],
+        "generator": OPT["generator"],
+        "architecture": OPT["arch"],
+        "cmake": defs,
         "source": digest(ROOT / "CMakeLists.txt", ROOT / "src"),
     }
     stamp = MODELS / "build-contract.json"
@@ -157,9 +192,12 @@ def build_engine() -> tuple[Path, Path, dict]:
     print("install ggml", flush=True)
     Ggml.ensure()
     print("install engine", flush=True)
-    sdk = max(Path("C:/VulkanSDK").glob("*/Bin/glslc.exe"), key=lambda path: tuple(map(int, re.findall(r"\d+", path.parts[-3])))).parents[1]
+    if OPT["vulkan_sdk"]:
+        sdk = Path(OPT["vulkan_sdk"])
+    else:
+        sdk = max(Path("C:/VulkanSDK").glob("*/Bin/glslc.exe"), key=lambda path: tuple(map(int, re.findall(r"\d+", path.parts[-3])))).parents[1]
     build = ROOT / "build"
-    run(["cmake", "-S", str(ROOT), "-B", str(build), "-G", CMAKE_GENERATOR, "-A", CMAKE_ARCH, f"-DVulkan_INCLUDE_DIR={sdk / 'Include'}", f"-DVulkan_LIBRARY={sdk / 'Lib/vulkan-1.lib'}", f"-DVulkan_GLSLC_EXECUTABLE={sdk / 'Bin/glslc.exe'}"])
+    run(["cmake", "-S", str(ROOT), "-B", str(build), "-G", OPT["generator"], "-A", OPT["arch"], f"-DVulkan_INCLUDE_DIR={sdk / 'Include'}", f"-DVulkan_LIBRARY={sdk / 'Lib/vulkan-1.lib'}", f"-DVulkan_GLSLC_EXECUTABLE={sdk / 'Bin/glslc.exe'}", *defs])
     run(
         [
             "cmake",
@@ -170,8 +208,9 @@ def build_engine() -> tuple[Path, Path, dict]:
             "--target",
             "chatterbox",
             "chatterbox-bake",
+            "ear",
             "--parallel",
-            "2",
+            OPT["parallel"],
         ]
     )
     atomic_json(stamp, wanted)
@@ -179,11 +218,13 @@ def build_engine() -> tuple[Path, Path, dict]:
 
 
 def launch_conversion(cfg: Variant):
-    conv = {}
-    for name, default, group, arch in FLAGS:
-        if arch in ("both", cfg.architecture) and group == "conversion":
-            conv[name] = default
-    return conv
+    return {
+        "reference": OPT["reference"],
+        "t3-weight-type": OPT["t3_weight_type"],
+        "s3-weight-type": OPT["s3_weight_type"],
+        "t3-quant-policy": OPT["t3_quant_policy"],
+        "s3-quant-policy": OPT["s3_quant_policy"],
+    }
 
 
 def policy(path: Path, default: str) -> dict:
@@ -198,7 +239,8 @@ def gguf_name(kind: str, family: str, spec: dict) -> Path:
 def checkpoints(cfg: Variant) -> Path:
     home = ROOT / ARCH[cfg.architecture]["ckpt"]
     home.mkdir(parents=True, exist_ok=True)
-    assets = [(asset, cfg.hf + "/" + asset) for asset in cfg.assets] + list(cfg.external_assets)
+    root_url = OPT["hf_" + cfg.name] or cfg.hf
+    assets = [(asset, root_url + "/" + asset) for asset in cfg.assets]
     if all((home / name).is_file() for name, _ in assets):
         print("skip checkpoints", flush=True)
         return home
@@ -288,41 +330,79 @@ def embed_utf8(exe: Path) -> None:
     merged.unlink()
 
 
+def on(name: str) -> bool:
+    return OPT[name] in ("on", "1", "ON", "true")
+
+
 def install_ear() -> None:
-    dest = MODELS / "ear" / EAR_GGUF
+    gguf = OPT["ear_gguf_name"]
+    url = OPT["ear_gguf_url"] or ("https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b/resolve/main/" + gguf)
+    dest = MODELS / "ear" / gguf
     dest.parent.mkdir(parents=True, exist_ok=True)
     if not dest.is_file():
-        print("install " + EAR_GGUF, flush=True)
-        download(EAR_URL, dest)
+        print("install " + gguf, flush=True)
+        download(url, dest)
     home = ROOT / "nemo-speech"
-    exe = ROOT / "build" / "bin" / "ear" / "ear.exe"
+    exe = ROOT / "build" / "bin" / "ear" / "nemo-speech.exe"
     if not (home / ".git").exists():
         print("install nemo-speech", flush=True)
-        run(["git", "clone", "--filter=blob:none", "https://github.com/NVIDIA/NeMo-Speech.cpp.git", str(home)])
+        run(["git", "clone", "--filter=blob:none", OPT["nemo_repo"], str(home)])
+    if OPT["nemo_rev"]:
+        run(["git", "-C", str(home), "fetch", "origin", OPT["nemo_rev"], "--depth", "1"])
+        run(["git", "-C", str(home), "checkout", "--detach", OPT["nemo_rev"]])
     rev = subprocess.run(["git", "-C", str(home), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
     stamp = MODELS / "ear-build.json"
-    wanted = {"rev": rev, "gguf": EAR_GGUF}
+    build_choice = {key: OPT[key] for key in OPT if key.startswith("ear_") or key in ("nemo_repo", "nemo_rev")}
+    wanted = {"rev": rev, "gguf": gguf, "build": build_choice}
     if matches(stamp, wanted, exe, dest):
         print("skip ear", flush=True)
         embed_utf8(exe)
         return
     print("install ear", flush=True)
     ps = shutil.which("powershell") or "powershell.exe"
-    run([ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(home / "scripts" / "windows" / "build.ps1"), "-Backend", "cpu", "-AsrOnly"], cwd=home)
-    built = home / "build-cpu-asr" / "bin" / "nemo-speech.exe"
+    command = [ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(home / "scripts" / "windows" / "build.ps1"), "-Backend", OPT["ear_backend"], "-Profile", OPT["ear_profile"], "-Config", OPT["ear_config"], "-CudaArch", OPT["ear_cuda_arch"], "-Architecture", OPT["ear_architecture"], "-Compiler", OPT["ear_compiler"], "-Jobs", OPT["ear_jobs"]]
+    if OPT["ear_build_dir"]:
+        command += ["-BuildDir", OPT["ear_build_dir"]]
+    if OPT["ear_vcpkg_root"]:
+        command += ["-VcpkgRoot", OPT["ear_vcpkg_root"]]
+    if OPT["ear_vcpkg_triplet"]:
+        command += ["-VcpkgTriplet", OPT["ear_vcpkg_triplet"]]
+    for flag, switch in (
+        ("ear_asr_only", "-AsrOnly"),
+        ("ear_grpc", "-Grpc"),
+        ("ear_nmt", "-Nmt"),
+        ("ear_flashlight", "-Flashlight"),
+        ("ear_http", "-Http"),
+        ("ear_http_tls", "-HttpTls"),
+        ("ear_tts_ja", "-TtsJa"),
+        ("ear_tts_zh", "-TtsZh"),
+        ("ear_tests", "-Tests"),
+        ("ear_cublas_shim", "-CublasShim"),
+    ):
+        if on(flag):
+            command.append(switch)
+    run(command, cwd=home)
+    if OPT["ear_build_dir"]:
+        built_dir = Path(OPT["ear_build_dir"])
+    else:
+        profile = "asr" if on("ear_asr_only") else OPT["ear_profile"]
+        profile_suffix = "" if profile == "core" else "-" + profile
+        arch_suffix = "" if OPT["ear_architecture"] == "auto" else "-" + OPT["ear_architecture"]
+        built_dir = home / f"build-{OPT['ear_backend']}{profile_suffix}{arch_suffix}"
+    built = built_dir / "bin" / "nemo-speech.exe"
     if exe.parent.exists():
         shutil.rmtree(exe.parent)
     exe.parent.mkdir(parents=True)
     for item in built.parent.iterdir():
         if item.suffix.lower() in {".exe", ".dll"}:
-            shutil.copy2(item, exe.parent / ("ear.exe" if item.name == "nemo-speech.exe" else item.name))
+            shutil.copy2(item, exe.parent / item.name)
     embed_utf8(exe)
     atomic_json(stamp, wanted)
 
 
 def install_mouth(name: str) -> None:
     cfg, py = VARIANTS[name], venv_python()
-    _, bake, build = build_engine()
+    _, bake, _, build = build_engine()
     ckpt = checkpoints(cfg)
     conv = launch_conversion(cfg)
     t3, s3, contracts = convert(cfg, py, ckpt, conv)
@@ -333,10 +413,27 @@ def install_gemma_brain() -> None:
     gemma = ROOT / "gemma"
     exe = gemma / "build" / "Release" / "gemma-brain.exe"
     llama = LlamaCpp.ensure()
-    wanted = {"llama": llama, "source": digest(gemma / "CMakeLists.txt", gemma / "src" / "brain.cpp")}
+    defs = [f"{cmake}={OPT[key]}" for key, cmake in BRAIN_DEFS]
+    if OPT["msvc_arch"]:
+        defs.append("GEMMA_MSVC_ARCH_FLAG=" + OPT["msvc_arch"])
+    wanted = {
+        "llama": llama,
+        "source": digest(
+            gemma / "CMakeLists.txt",
+            gemma / "src" / "brain.cpp",
+            gemma / "cmake" / "HostCpu.cmake",
+            gemma / "cmake" / "Pascal1060.cmake",
+            gemma / "cmake" / "PascalCuda.cmake",
+            gemma / "scripts" / "build.ps1",
+            gemma / "scripts" / "configure.ps1",
+        ),
+        "cmake": defs,
+        "cuda_root": OPT["cuda_root"],
+        "toolset": OPT["cuda_toolset"],
+    }
     models = gemma / "models"
     models.mkdir(parents=True, exist_ok=True)
-    for name, url in GEMMA_MODELS:
+    for name, url in ((OPT["text_model_name"], OPT["text_model_url"]), (OPT["mmproj_name"], OPT["mmproj_url"])):
         dest = models / name
         if not dest.is_file():
             print("install " + name, flush=True)
@@ -347,22 +444,118 @@ def install_gemma_brain() -> None:
         return
     print("install gemma-brain", flush=True)
     ps = shutil.which("powershell") or "powershell.exe"
-    run([ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(gemma / "scripts" / "build.ps1")], cwd=gemma)
+    command = [ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(gemma / "scripts" / "build.ps1"), "-CudaRoot", OPT["cuda_root"], "-Generator", OPT["generator"], "-Arch", OPT["arch"], "-Toolset", OPT["cuda_toolset"], "-CudaParallel", OPT["cuda_parallel"], "-BrainParallel", OPT["brain_parallel"]]
+    if on("clean_cuda"):
+        command.append("-CleanCuda")
+    for item in defs:
+        command += ["-Def", item]
+    run(command, cwd=gemma)
     atomic_json(stamp, wanted)
-
-
-def install_brain() -> None:
-    install_gemma_brain()
 
 
 def install_all(name: str) -> None:
     python_packages(venv_python())
     install_ear()
     install_mouth(name)
-    install_brain()
+    install_gemma_brain()
+
+
+def parse_args(argv: list[str]) -> dict:
+    p = argparse.ArgumentParser(prog="install.py")
+    p.add_argument("cmd", nargs="?", default="turbo", choices=["ear", "brain", "mouth", "nano", "turbo", "v3", "all"])
+    p.add_argument("name", nargs="?")
+    p.add_argument("--generator", default="Visual Studio 17 2022")
+    p.add_argument("--arch", default="x64")
+    p.add_argument("--parallel", default="2")
+    p.add_argument("--vulkan-sdk", default="")
+    p.add_argument("--ggml-repo", default="https://github.com/ggml-org/ggml.git")
+    p.add_argument("--ggml-rev", default="7840aaba1989c6deeefede1d77d5aaf8f52b947e")
+    p.add_argument("--reference", default="reference.wav")
+    p.add_argument("--t3-weight-type", default="q4_0")
+    p.add_argument("--s3-weight-type", default="q4_0")
+    p.add_argument("--t3-quant-policy", default="scripts/quant_t3.json")
+    p.add_argument("--s3-quant-policy", default="scripts/quant_s3.json")
+    p.add_argument("--mouth-ggml-vulkan", default="ON")
+    p.add_argument("--mouth-ggml-cpu", default="OFF")
+    p.add_argument("--mouth-ggml-cuda", default="OFF")
+    p.add_argument("--mouth-ggml-openmp", default="OFF")
+    p.add_argument("--mouth-ggml-build-tests", default="OFF")
+    p.add_argument("--mouth-ggml-build-examples", default="OFF")
+    p.add_argument("--mouth-build-shared", default="ON")
+    p.add_argument("--hf-nano", default="")
+    p.add_argument("--hf-turbo", default="")
+    p.add_argument("--hf-v3", default="")
+    p.add_argument("--cuda-root", default=r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6")
+    p.add_argument("--cuda-toolset", default="cuda=12.6")
+    p.add_argument("--cuda-parallel", default="1")
+    p.add_argument("--brain-parallel", default="4")
+    p.add_argument("--clean-cuda", default="off")
+    p.add_argument("--msvc-arch", default="")
+    p.add_argument("--text-model-name", default="gemma-4-E2B-it-Q4_0.gguf")
+    p.add_argument("--text-model-url", default="https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_0.gguf")
+    p.add_argument("--mmproj-name", default="mmproj-gemma-4-E2B-it-Q8_0.gguf")
+    p.add_argument("--mmproj-url", default="https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/mmproj-gemma-4-E2B-it-Q8_0.gguf")
+    p.add_argument("--llama-repo", default="https://github.com/ggml-org/llama.cpp.git")
+    p.add_argument("--llama-rev", default="")
+    p.add_argument("--cuda-architectures", default="61-real")
+    p.add_argument("--cuda-flags-release", default="-DNDEBUG")
+    p.add_argument("--brain-ggml-cuda", default="ON")
+    p.add_argument("--brain-ggml-cuda-force-mmq", default="ON")
+    p.add_argument("--brain-ggml-cuda-force-cublas", default="OFF")
+    p.add_argument("--brain-ggml-cuda-fa", default="ON")
+    p.add_argument("--brain-ggml-cuda-fa-all-quants", default="OFF")
+    p.add_argument("--brain-ggml-cuda-graphs", default="ON")
+    p.add_argument("--brain-ggml-cuda-nccl", default="OFF")
+    p.add_argument("--brain-ggml-cuda-no-peer-copy", default="OFF")
+    p.add_argument("--brain-ggml-cuda-no-vmm", default="OFF")
+    p.add_argument("--brain-ggml-cpu", default="ON")
+    p.add_argument("--brain-ggml-vulkan", default="OFF")
+    p.add_argument("--brain-ggml-metal", default="OFF")
+    p.add_argument("--brain-ggml-openmp", default="ON")
+    p.add_argument("--brain-ggml-blas", default="OFF")
+    p.add_argument("--brain-ggml-accelerate", default="OFF")
+    p.add_argument("--brain-ggml-native", default="ON")
+    p.add_argument("--llama-build-common", default="ON")
+    p.add_argument("--llama-build-tools", default="OFF")
+    p.add_argument("--llama-build-mtmd", default="ON")
+    p.add_argument("--llama-build-tests", default="OFF")
+    p.add_argument("--llama-build-examples", default="OFF")
+    p.add_argument("--llama-build-server", default="OFF")
+    p.add_argument("--llama-curl", default="OFF")
+    p.add_argument("--llama-openssl", default="OFF")
+    p.add_argument("--llama-subprocess", default="OFF")
+    p.add_argument("--mtmd-video", default="OFF")
+    p.add_argument("--brain-build-shared", default="OFF")
+    p.add_argument("--ggml-ccache", default="ON")
+    p.add_argument("--nemo-repo", default="https://github.com/NVIDIA/NeMo-Speech.cpp.git")
+    p.add_argument("--nemo-rev", default="")
+    p.add_argument("--ear-gguf-name", default="nemotron-3.5-asr-streaming-0.6b.q8_0.gguf")
+    p.add_argument("--ear-gguf-url", default="")
+    p.add_argument("--ear-backend", default="cpu", choices=["cpu", "cuda", "vulkan"])
+    p.add_argument("--ear-profile", default="core", choices=["core", "asr", "server", "full", "developer"])
+    p.add_argument("--ear-config", default="Release", choices=["Release", "RelWithDebInfo", "Debug"])
+    p.add_argument("--ear-cuda-arch", default="native")
+    p.add_argument("--ear-architecture", default="auto", choices=["auto", "x64", "arm64"])
+    p.add_argument("--ear-compiler", default="auto", choices=["auto", "msvc", "clang-cl"])
+    p.add_argument("--ear-jobs", default="0")
+    p.add_argument("--ear-build-dir", default="")
+    p.add_argument("--ear-vcpkg-root", default="")
+    p.add_argument("--ear-vcpkg-triplet", default="")
+    p.add_argument("--ear-asr-only", default="on")
+    p.add_argument("--ear-grpc", default="off")
+    p.add_argument("--ear-nmt", default="off")
+    p.add_argument("--ear-flashlight", default="off")
+    p.add_argument("--ear-http", default="off")
+    p.add_argument("--ear-http-tls", default="off")
+    p.add_argument("--ear-tts-ja", default="off")
+    p.add_argument("--ear-tts-zh", default="off")
+    p.add_argument("--ear-tests", default="off")
+    p.add_argument("--ear-cublas-shim", default="off")
+    return vars(p.parse_args(argv[1:]))
 
 
 def main() -> None:
+    global OPT
     argv = sys.argv
     created = not venv_python().is_file()
     ensure_venv()
@@ -372,26 +565,28 @@ def main() -> None:
             env["TRIDENT_VENV_NEW"] = "1"
         raise SystemExit(subprocess.call([str(venv_python()), *argv], env=env))
     print("install venv" if os.environ.pop("TRIDENT_VENV_NEW", None) == "1" else "skip venv", flush=True)
-    if len(argv) == 1:
-        install_all("turbo")
-    elif len(argv) == 2 and argv[1] == "ear":
-        install_ear()
-    elif len(argv) == 2 and argv[1] == "brain":
-        install_brain()
-    elif len(argv) == 3 and argv[1] == "mouth" and argv[2] in VARIANTS:
+    OPT = parse_args(argv)
+    cmd, name = OPT["cmd"], OPT["name"]
+    if cmd == "mouth":
+        if name not in VARIANTS:
+            raise SystemExit("usage: python install.py mouth <nano|turbo|v3> [knobs]")
         python_packages(venv_python())
-        install_mouth(argv[2])
-    elif len(argv) == 2 and argv[1] in VARIANTS:
-        install_all(argv[1])
-    elif len(argv) == 2 and argv[1] == "all":
+        install_mouth(name)
+    elif cmd == "ear":
+        install_ear()
+    elif cmd == "brain":
+        install_gemma_brain()
+    elif cmd == "all":
         python_packages(venv_python())
         install_ear()
-        install_brain()
+        install_gemma_brain()
         install_mouth("nano")
         install_mouth("turbo")
         install_mouth("v3")
+    elif cmd in VARIANTS:
+        install_all(cmd)
     else:
-        raise SystemExit("usage: python install.py [ear | brain | mouth <variant> | nano | turbo | v3 | all]")
+        raise SystemExit("usage: python install.py [ear | brain | mouth <variant> | nano | turbo | v3 | all] [knobs]")
 
 
 if __name__ == "__main__":

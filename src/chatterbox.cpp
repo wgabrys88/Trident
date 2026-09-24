@@ -39,7 +39,6 @@ int main(int argc, char** argv) {
     std::string out_path;
     int gpu = 0;
     std::vector<std::pair<std::string, std::string>> overrides;
-    if (const char* env = std::getenv("TRIDENT_VULKAN_DEVICE")) gpu = std::atoi(env);
 
     const std::string a1 = argv[1];
     const bool by_variant = (a1 == "nano" || a1 == "turbo" || a1 == "v3");

@@ -27,7 +27,4 @@ std::unique_ptr<Synth> chatterbox_make_engine_paths(const std::filesystem::path&
 
 void chatterbox_write_wav(const std::filesystem::path& path, const std::vector<float>& pcm, int sample_rate = 24000);
 
-std::vector<float> chatterbox_synthesize(const std::string& variant, int gpu, const std::string& text,
-                                         const std::string& language);
-
 } // namespace trident
