@@ -482,6 +482,51 @@ def install_gemma_brain() -> None:
     atomic_json(stamp, wanted)
 
 
+def host_isa() -> str:
+    host_msvc_arch()
+    text = (ROOT / "gemma" / "cmake" / "HostCpu.generated.cmake").read_text(encoding="utf-8")
+    found = re.search(r'GEMMA_HOST_ISA "([^"]*)"', text)
+    return (found.group(1) if found else "host").lower()
+
+
+def stage_release() -> Path:
+    backend, isa = gemma_backend(), host_isa()
+    dest = ROOT / "release" / f"{backend}-{isa}"
+    if dest.exists():
+        shutil.rmtree(dest)
+    dest.mkdir(parents=True)
+    bin_dir = ROOT / "build" / "bin"
+    for name in ("chatterbox.exe", "ear.exe"):
+        src = bin_dir / name
+        if not src.is_file():
+            raise SystemExit("missing " + str(src))
+        shutil.copy2(src, dest / name)
+    for dll in bin_dir.glob("*.dll"):
+        shutil.copy2(dll, dest / dll.name)
+    ear_home = bin_dir / "ear"
+    if ear_home.is_dir():
+        shutil.copytree(ear_home, dest / "ear")
+    brain = ROOT / "gemma" / "build" / "Release" / "gemma-brain.exe"
+    if not brain.is_file():
+        raise SystemExit("missing " + str(brain))
+    shutil.copy2(brain, dest / brain.name)
+    for dll in brain.parent.glob("*.dll"):
+        shutil.copy2(dll, dest / dll.name)
+    print("release " + dest.name, flush=True)
+    return dest
+
+
+def publish_release(folder: Path) -> None:
+    tag = "trident-" + folder.name
+    notes = "Executables for this computer. Runtime knobs do not need a rebuild."
+    viewed = subprocess.run(["gh", "release", "view", tag], capture_output=True, text=True)
+    if viewed.returncode != 0:
+        run(["gh", "release", "create", tag, "--title", tag, "--notes", notes])
+    files = [str(path) for path in folder.rglob("*") if path.is_file()]
+    run(["gh", "release", "upload", tag, *files, "--clobber"])
+    print("published " + tag, flush=True)
+
+
 def install_all(name: str) -> None:
     python_packages(venv_python())
     install_ear()
@@ -491,7 +536,7 @@ def install_all(name: str) -> None:
 
 def parse_args(argv: list[str]) -> dict:
     p = argparse.ArgumentParser(prog="install.py")
-    p.add_argument("cmd", nargs="?", default="turbo", choices=["ear", "brain", "mouth", "nano", "turbo", "v3", "all"])
+    p.add_argument("cmd", nargs="?", default="turbo", choices=["ear", "brain", "mouth", "nano", "turbo", "v3", "all", "release"])
     p.add_argument("name", nargs="?")
     p.add_argument("--generator", default="Visual Studio 17 2022")
     p.add_argument("--arch", default="x64")
@@ -569,6 +614,7 @@ def parse_args(argv: list[str]) -> dict:
     p.add_argument("--ear-tts-zh", default="off")
     p.add_argument("--ear-tests", default="off")
     p.add_argument("--ear-cublas-shim", default="off")
+    p.add_argument("--publish", default="off")
     return vars(p.parse_args(argv[1:]))
 
 
@@ -594,6 +640,10 @@ def main() -> None:
         install_ear()
     elif cmd == "brain":
         install_gemma_brain()
+    elif cmd == "release":
+        folder = stage_release()
+        if on("publish"):
+            publish_release(folder)
     elif cmd == "all":
         python_packages(venv_python())
         install_ear()
@@ -604,7 +654,7 @@ def main() -> None:
     elif cmd in VARIANTS:
         install_all(cmd)
     else:
-        raise SystemExit("usage: python install.py [ear | brain | mouth <variant> | nano | turbo | v3 | all] [knobs]")
+        raise SystemExit("usage: python install.py [ear | brain | mouth <variant> | nano | turbo | v3 | all | release] [knobs]")
 
 
 if __name__ == "__main__":

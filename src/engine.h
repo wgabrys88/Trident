@@ -13,7 +13,7 @@ struct Knobs {
     static Knobs v3() {
         Knobs knobs;
         knobs.top_p = 1.f;
-        knobs.cfm_steps = 10;
+        knobs.cfm_steps = 5;
         return knobs;
     }
 

@@ -14,7 +14,7 @@ void usage(const char* argv0) {
                  "       %s <t3.gguf> <s3.gguf> -t <text> [-o out.wav] [-l language] [knobs]\n"
                  "knobs, current defaults (gpt2 nano/turbo | llama v3):\n"
                  "  --gpu 0 --seed 42 --temperature 0.8 --repeat-penalty 1.2 --n-predict 1000\n"
-                 "  --trim-fade-samples 480 --top-p 0.95|1.0 --cfm-steps 2|10\n"
+                 "  --trim-fade-samples 480 --top-p 0.95|1.0 --cfm-steps 2|5\n"
                  "  gpt2: --top-k 1000\n"
                  "  v3: --min-p 0.05 --cfg-weight 0.5 --exaggeration 0.5 --cfm-cfg 0.7\n",
                  argv0, argv0);
