@@ -11,13 +11,13 @@
 namespace trident::host {
 static std::wstring quote(const std::wstring& s) { return L"\"" + s + L"\""; }
 
-static bool spawn(const std::wstring& cmd, PROCESS_INFORMATION& pi) {
+static bool spawn(const std::wstring& cmd, const std::filesystem::path& cwd, PROCESS_INFORMATION& pi) {
     STARTUPINFOW si{};
     si.cb = sizeof(si);
     ZeroMemory(&pi, sizeof(pi));
     std::vector<wchar_t> buf(cmd.begin(), cmd.end());
     buf.push_back(L'\0');
-    return CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+    return CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, cwd.wstring().c_str(), &si, &pi);
 }
 
 Supervisor::Supervisor(Bus& bus, std::string variant, bool inbox_only)
@@ -70,19 +70,19 @@ void Supervisor::start(int port) {
     PROCESS_INFORMATION pi{};
     std::wstring brain_cmd =
         quote(py.wstring()) + L" " + quote((repo / "brain.py").wstring()) + L" " + wurl;
-    if (!spawn(brain_cmd, pi)) throw std::runtime_error("brain spawn failed");
+    if (!spawn(brain_cmd, repo, pi)) throw std::runtime_error("brain spawn failed");
     workers_.emplace_back("brain", pi);
 
     auto mouth_exe = exe_dir() / "trident-mouth.exe";
     std::wstring mouth_cmd = quote(mouth_exe.wstring()) + L" " + std::wstring(variant_.begin(), variant_.end()) + L" " + wurl;
     ZeroMemory(&pi, sizeof(pi));
-    if (!spawn(mouth_cmd, pi)) throw std::runtime_error("mouth spawn failed");
+    if (!spawn(mouth_cmd, repo, pi)) throw std::runtime_error("mouth spawn failed");
     workers_.emplace_back("mouth", pi);
 
     std::wstring ear_cmd = quote(py.wstring()) + L" " + quote((repo / "ear.py").wstring()) + L" " + wurl;
     if (inbox_only_) ear_cmd += L" --inbox";
     ZeroMemory(&pi, sizeof(pi));
-    if (!spawn(ear_cmd, pi)) throw std::runtime_error("ear spawn failed");
+    if (!spawn(ear_cmd, repo, pi)) throw std::runtime_error("ear spawn failed");
     workers_.emplace_back("ear", pi);
 
     auto ready = work() / "ready";

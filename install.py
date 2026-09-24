@@ -4,6 +4,8 @@ from pathlib import Path
 
 from trident_lib import ROOT, kill_server_pid, venv_python
 
+BRAIN_GGUF = "brain-gemma-4-e2b-it-q4_k_m.gguf"
+BRAIN_URL = "https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/0314792d7f1f7e229411f620751375812bb9faf2/gemma-4-E2B-it-Q4_K_M.gguf"
 GEMMA_MODELS = (
     ("gemma-4-E2B-it-Q4_0.gguf", "https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_0.gguf"),
     ("mmproj-gemma-4-E2B-it-BF16.gguf", "https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/mmproj-gemma-4-E2B-it-BF16.gguf"),
@@ -52,6 +54,14 @@ def run(cmd, **kw):
 
 def kill_server() -> None:
     kill_server_pid()
+
+
+def ensure_layout() -> None:
+    (ROOT / "wav").mkdir(parents=True, exist_ok=True)
+    bus = ROOT / "workspace"
+    bus.mkdir(parents=True, exist_ok=True)
+    for name in ("inbox", "ready"):
+        (bus / name).mkdir(parents=True, exist_ok=True)
 
 
 def ensure_components() -> None:
@@ -308,8 +318,10 @@ def ensure_venv() -> Path:
     return py
 
 
-def python_packages(py: Path, ear: bool, mouth: bool) -> None:
+def python_packages(py: Path, ear: bool, mouth: bool, brain: bool = False) -> None:
     names = ["numpy"]
+    if brain:
+        names += ["gguf", "llama-cpp-python"]
     if ear:
         names += ["transformers", "sounddevice", "librosa"]
     if mouth:
@@ -364,12 +376,22 @@ def install_gemma_brain() -> None:
     atomic_json(stamp, wanted)
 
 
+def install_python_brain() -> None:
+    dest = MODELS / BRAIN_GGUF
+    if kept("brain-gguf", {"url": BRAIN_URL}, dest):
+        return
+    download(BRAIN_URL, dest)
+    atomic_json(MODELS / "brain-gguf.json", {"url": BRAIN_URL})
+
+
 def install_brain() -> None:
+    python_packages(venv_python(), False, False, brain=True)
+    install_python_brain()
     install_gemma_brain()
 
 
 def install_all(name: str) -> None:
-    python_packages(venv_python(), True, True)
+    python_packages(venv_python(), True, True, brain=True)
     install_ear()
     install_mouth(name)
     install_brain()
@@ -386,6 +408,7 @@ def main() -> None:
         raise SystemExit(subprocess.call([str(venv_python()), *argv], env=env))
     print("install venv" if os.environ.pop("TRIDENT_VENV_NEW", None) == "1" else "skip venv", flush=True)
     ensure_components()
+    ensure_layout()
     if len(argv) == 1:
         install_all("nano")
     elif len(argv) == 2 and argv[1] == "ear":
@@ -399,7 +422,7 @@ def main() -> None:
     elif len(argv) == 2 and argv[1] in VARIANTS:
         install_all(argv[1])
     elif len(argv) == 2 and argv[1] == "all":
-        python_packages(venv_python(), True, True)
+        python_packages(venv_python(), True, True, brain=True)
         install_ear()
         install_brain()
         install_mouth("nano")

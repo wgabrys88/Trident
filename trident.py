@@ -19,6 +19,7 @@ EVENTS: list[dict] = []
 
 
 def bus() -> None:
+    (ROOT / "wav").mkdir(parents=True, exist_ok=True)
     WORK.mkdir(parents=True, exist_ok=True)
     DONE.mkdir(exist_ok=True)
     (WORK / "inbox").mkdir(exist_ok=True)

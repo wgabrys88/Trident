@@ -93,7 +93,9 @@ int main(int argc, char** argv) {
         return 1;
     }
     try {
-        for (const auto& entry : std::filesystem::directory_iterator(root() / "wav")) {
+        auto wav_dir = root() / "wav";
+        std::filesystem::create_directories(wav_dir);
+        for (const auto& entry : std::filesystem::directory_iterator(wav_dir)) {
             if (entry.path().extension() == ".wav") {
                 json body = {{"path", std::filesystem::relative(entry.path(), root()).generic_string()}, {"kind", "wav"}};
                 http_json(client, "POST", "/archive", body);
