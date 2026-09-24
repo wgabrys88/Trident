@@ -447,8 +447,8 @@ def install_gemma_brain() -> None:
     command = [ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(gemma / "scripts" / "build.ps1"), "-CudaRoot", OPT["cuda_root"], "-Generator", OPT["generator"], "-Arch", OPT["arch"], "-Toolset", OPT["cuda_toolset"], "-CudaParallel", OPT["cuda_parallel"], "-BrainParallel", OPT["brain_parallel"]]
     if on("clean_cuda"):
         command.append("-CleanCuda")
-    for item in defs:
-        command += ["-Def", item]
+    if defs:
+        command += ["-Def", "\x1e".join(defs)]
     run(command, cwd=gemma)
     atomic_json(stamp, wanted)
 

@@ -1,4 +1,3 @@
-$ErrorActionPreference = "Stop"
 param(
     [string]$CudaRoot = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6",
     [string]$Generator = "Visual Studio 17 2022",
@@ -6,6 +5,7 @@ param(
     [string]$Toolset = "cuda=12.6",
     [string[]]$Def = @()
 )
+$ErrorActionPreference = "Stop"
 $gemmaRoot = Split-Path $PSScriptRoot -Parent
 & (Join-Path $PSScriptRoot "detect_cpu.ps1")
 

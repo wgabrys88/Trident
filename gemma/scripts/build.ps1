@@ -1,4 +1,3 @@
-$ErrorActionPreference = "Stop"
 param(
     [string]$CudaRoot = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6",
     [string]$Generator = "Visual Studio 17 2022",
@@ -7,17 +6,13 @@ param(
     [int]$CudaParallel = 1,
     [int]$BrainParallel = 4,
     [switch]$CleanCuda,
-    [string[]]$Def = @()
+    [string]$Def = ""
 )
+$ErrorActionPreference = "Stop"
+$defs = @()
+if ($Def) { $defs = $Def -split [char]0x1E, 0 }
 $gemmaRoot = Split-Path $PSScriptRoot -Parent
-$configure = @(
-    "-CudaRoot", $CudaRoot,
-    "-Generator", $Generator,
-    "-Arch", $Arch,
-    "-Toolset", $Toolset
-)
-foreach ($item in $Def) { $configure += @("-Def", $item) }
-& (Join-Path $PSScriptRoot "configure.ps1") @configure
+& (Join-Path $PSScriptRoot "configure.ps1") -CudaRoot $CudaRoot -Generator $Generator -Arch $Arch -Toolset $Toolset -Def $defs
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $env:CUDA_PATH = $CudaRoot
