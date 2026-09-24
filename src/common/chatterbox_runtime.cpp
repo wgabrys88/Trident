@@ -73,12 +73,28 @@ VoiceBundle chatterbox_voice_bundle(const std::string& variant) {
     return b;
 }
 
+void apply_overrides(std::vector<std::string>& flags, const std::vector<std::pair<std::string, std::string>>& overrides) {
+    for (const auto& [name, value] : overrides) {
+        bool found = false;
+        for (size_t i = 0; i + 1 < flags.size(); i += 2) {
+            if (flags[i] == name) {
+                flags[i + 1] = value;
+                found = true;
+                break;
+            }
+        }
+        if (!found) throw std::runtime_error("unknown flag for this architecture: " + name);
+    }
+}
+
 std::unique_ptr<Synth> chatterbox_make_engine_paths(const std::filesystem::path& t3, const std::filesystem::path& s3,
-                                                    int gpu) {
+                                                    int gpu,
+                                                    const std::vector<std::pair<std::string, std::string>>& overrides) {
     if (!std::filesystem::is_regular_file(t3) || !std::filesystem::is_regular_file(s3))
         throw std::runtime_error("missing t3 or s3 gguf");
     auto family = GgufFile::architecture(t3.string());
     auto flags_vec = (family == "chatterbox-llama") ? v3_flags(gpu) : gpt2_flags(gpu);
+    apply_overrides(flags_vec, overrides);
     auto ptrs = argv_with_flags(t3.string(), s3.string(), flags_vec);
     Flags flags(int(ptrs.size()), ptrs.data());
     std::unique_ptr<Synth> engine;
@@ -92,9 +108,10 @@ std::unique_ptr<Synth> chatterbox_make_engine_paths(const std::filesystem::path&
     return engine;
 }
 
-std::unique_ptr<Synth> chatterbox_make_engine(const std::string& variant, int gpu) {
+std::unique_ptr<Synth> chatterbox_make_engine(const std::string& variant, int gpu,
+                                            const std::vector<std::pair<std::string, std::string>>& overrides) {
     auto bundle = chatterbox_voice_bundle(variant);
-    return chatterbox_make_engine_paths(bundle.t3, bundle.s3, gpu);
+    return chatterbox_make_engine_paths(bundle.t3, bundle.s3, gpu, overrides);
 }
 
 void chatterbox_write_wav(const std::filesystem::path& path, const std::vector<float>& pcm, int sample_rate) {

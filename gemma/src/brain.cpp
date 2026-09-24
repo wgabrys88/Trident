@@ -44,6 +44,40 @@ static void require_cuda_gpu0() {
                  total_b / (1024 * 1024));
 }
 
+static ggml_type cache_type(const char * name) {
+    if (!std::strcmp(name, "q8_0")) return GGML_TYPE_Q8_0;
+    if (!std::strcmp(name, "q4_0")) return GGML_TYPE_Q4_0;
+    if (!std::strcmp(name, "f16")) return GGML_TYPE_F16;
+    if (!std::strcmp(name, "bf16")) return GGML_TYPE_BF16;
+    if (!std::strcmp(name, "f32")) return GGML_TYPE_F32;
+    die_fmt("cache type %s is not q8_0, q4_0, f16, bf16, or f32", name);
+}
+
+static bool on_off(const char * value, const char * name) {
+    if (!std::strcmp(value, "on") || !std::strcmp(value, "1")) return true;
+    if (!std::strcmp(value, "off") || !std::strcmp(value, "0")) return false;
+    die_fmt("%s is on or off", name);
+}
+
+static const char * need(int & i, int argc, char ** argv, const char * name) {
+    if (i + 1 >= argc) die_fmt("%s needs a value", name);
+    return argv[++i];
+}
+
+static void usage() {
+    std::fprintf(stderr,
+                 "usage: gemma-brain [knobs] <prompt> [image]\n"
+                 "defaults are the current GTX 1060 run:\n"
+                 "  --model models/gemma-4-E2B-it-Q4_0.gguf\n"
+                 "  --mmproj models/mmproj-gemma-4-E2B-it-Q8_0.gguf --mmproj-gpu on\n"
+                 "  --cache-type-k q8_0 --cache-type-v q8_0\n"
+                 "  --ctx 2048 --batch 512 --ubatch 512 --n-predict 512\n"
+                 "  --gpu-layers 999 --gpu 0 --fit off --flash-attn on --warmup on\n"
+                 "  --threads 0 (0 keeps the host count) --image-min-tokens -1 --image-max-tokens -1\n"
+                 "  --temp 0.8 --top-k 40 --top-p 0.95 --min-p 0.05 --repeat-penalty 1.0\n"
+                 "image tokens use the GGUF budget when min and max stay -1\n");
+}
+
 static common_params params_gtx1060() {
     common_params p;
     p.model.path = "models/gemma-4-E2B-it-Q4_0.gguf";
@@ -100,13 +134,15 @@ struct Gemma {
         common_sampler_free(smpl);
     }
 
-    void open_mmproj(const common_params & params) {
+    void open_mmproj(const common_params & params, int image_min, int image_max) {
         mtmd_context_params mp = mtmd_context_params_default();
-        mp.use_gpu = true;
+        mp.use_gpu = params.mmproj_use_gpu;
         mp.print_timings = true;
-        mp.n_threads = host_thread_count();
-        mp.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
-        mp.warmup = true;
+        mp.n_threads = params.cpuparams.n_threads;
+        mp.flash_attn_type = params.flash_attn_type;
+        mp.warmup = params.warmup;
+        mp.image_min_tokens = image_min;
+        mp.image_max_tokens = image_max;
         mtmd_ctx.reset(mtmd_init_from_file(params.mmproj.path.c_str(), model, mp));
         if (!mtmd_ctx) die_fmt("mmproj load failed: %s", params.mmproj.path.c_str());
     }
@@ -210,17 +246,91 @@ struct Gemma {
 } // namespace
 
 int main(int argc, char ** argv) {
-    if (argc < 2 || argc > 3) die("gemma-brain <prompt> [image]");
+    if (argc < 2) {
+        usage();
+        return 2;
+    }
     ggml_time_init();
     common_init();
     common_params params = params_gtx1060();
+    int image_min = -1;
+    int image_max = -1;
+    std::string prompt;
+    std::string image;
+    for (int i = 1; i < argc; ++i) {
+        const std::string a = argv[i];
+        if (a == "-h" || a == "--help") {
+            usage();
+            return 0;
+        } else if (a == "--model")
+            params.model.path = need(i, argc, argv, "--model");
+        else if (a == "--mmproj")
+            params.mmproj.path = need(i, argc, argv, "--mmproj");
+        else if (a == "--mmproj-gpu")
+            params.mmproj_use_gpu = on_off(need(i, argc, argv, "--mmproj-gpu"), "--mmproj-gpu");
+        else if (a == "--cache-type-k")
+            params.cache_type_k = cache_type(need(i, argc, argv, "--cache-type-k"));
+        else if (a == "--cache-type-v")
+            params.cache_type_v = cache_type(need(i, argc, argv, "--cache-type-v"));
+        else if (a == "--ctx")
+            params.n_ctx = std::atoi(need(i, argc, argv, "--ctx"));
+        else if (a == "--batch")
+            params.n_batch = std::atoi(need(i, argc, argv, "--batch"));
+        else if (a == "--ubatch")
+            params.n_ubatch = std::atoi(need(i, argc, argv, "--ubatch"));
+        else if (a == "--n-predict")
+            params.n_predict = std::atoi(need(i, argc, argv, "--n-predict"));
+        else if (a == "--gpu-layers")
+            params.n_gpu_layers = std::atoi(need(i, argc, argv, "--gpu-layers"));
+        else if (a == "--gpu")
+            params.main_gpu = std::atoi(need(i, argc, argv, "--gpu"));
+        else if (a == "--threads") {
+            const int n = std::atoi(need(i, argc, argv, "--threads"));
+            if (n > 0) {
+                params.cpuparams.n_threads = n;
+                params.cpuparams_batch.n_threads = n;
+            }
+        } else if (a == "--fit")
+            params.fit_params = on_off(need(i, argc, argv, "--fit"), "--fit");
+        else if (a == "--flash-attn")
+            params.flash_attn_type = on_off(need(i, argc, argv, "--flash-attn"), "--flash-attn")
+                                         ? LLAMA_FLASH_ATTN_TYPE_ENABLED
+                                         : LLAMA_FLASH_ATTN_TYPE_DISABLED;
+        else if (a == "--warmup")
+            params.warmup = on_off(need(i, argc, argv, "--warmup"), "--warmup");
+        else if (a == "--image-min-tokens")
+            image_min = std::atoi(need(i, argc, argv, "--image-min-tokens"));
+        else if (a == "--image-max-tokens")
+            image_max = std::atoi(need(i, argc, argv, "--image-max-tokens"));
+        else if (a == "--temp")
+            params.sampling.temp = std::atof(need(i, argc, argv, "--temp"));
+        else if (a == "--top-k")
+            params.sampling.top_k = std::atoi(need(i, argc, argv, "--top-k"));
+        else if (a == "--top-p")
+            params.sampling.top_p = std::atof(need(i, argc, argv, "--top-p"));
+        else if (a == "--min-p")
+            params.sampling.min_p = std::atof(need(i, argc, argv, "--min-p"));
+        else if (a == "--repeat-penalty")
+            params.sampling.penalty_repeat = std::atof(need(i, argc, argv, "--repeat-penalty"));
+        else if (a[0] == '-')
+            die_fmt("unknown argument: %s", a.c_str());
+        else if (prompt.empty())
+            prompt = a;
+        else if (image.empty())
+            image = a;
+        else
+            die("usage: gemma-brain [knobs] <prompt> [image]");
+    }
+    if (prompt.empty()) {
+        usage();
+        return 2;
+    }
     ggml_backend_load_all();
     require_cuda_gpu0();
     Gemma gemma(params);
-    std::string prompt = argv[1];
-    if (argc == 3) {
-        gemma.open_mmproj(params);
-        gemma.load_media(argv[2]);
+    if (!image.empty()) {
+        gemma.open_mmproj(params, image_min, image_max);
+        gemma.load_media(image.c_str());
         const std::string marker = mtmd_default_marker();
         if (prompt.find(marker) == std::string::npos) prompt = marker + prompt;
         gemma.eval_media(prompt);

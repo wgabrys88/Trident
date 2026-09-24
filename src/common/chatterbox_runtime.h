@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace trident {
@@ -17,10 +18,12 @@ struct VoiceBundle {
 
 VoiceBundle chatterbox_voice_bundle(const std::string& variant);
 
-std::unique_ptr<Synth> chatterbox_make_engine(const std::string& variant, int gpu);
+std::unique_ptr<Synth> chatterbox_make_engine(const std::string& variant, int gpu,
+    const std::vector<std::pair<std::string, std::string>>& overrides = {});
 
 std::unique_ptr<Synth> chatterbox_make_engine_paths(const std::filesystem::path& t3, const std::filesystem::path& s3,
-                                                    int gpu);
+                                                    int gpu,
+    const std::vector<std::pair<std::string, std::string>>& overrides = {});
 
 void chatterbox_write_wav(const std::filesystem::path& path, const std::vector<float>& pcm, int sample_rate = 24000);
 
