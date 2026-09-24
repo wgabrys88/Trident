@@ -3,127 +3,41 @@
 #include "common/campplus.h"
 #include "common/s3_tokenizer.h"
 #include "common/gguf_file.h"
-#include <cstdio>
-#include <cstdlib>
-#include <cstring>
+#include "common/config.h"
 #include <stdexcept>
 #include <string>
 #include <vector>
 
-namespace {
-void usage() {
-    std::fprintf(stderr,
-                 "usage: chatterbox-bake <t3.gguf> <s3.gguf> <reference.wav> [knobs]\n"
-                 "example: chatterbox-bake models\\chatterbox-t3-turbo-q4_0.gguf models\\chatterbox-s3gen-meanflow-q4_0.gguf reference.wav\n"
-                 "Rewrites the two GGUF files in place, baking the reference voice into them.\n"
-                 "install.py then copies the result to models/voices/<variant>/t3.gguf and s3.gguf.\n"
-                 "  t3.gguf\n"
-                 "      Unbaked text-to-speech GGUF. Required.\n"
-                 "  s3.gguf\n"
-                 "      Unbaked speech-token GGUF. Required.\n"
-                 "  reference.wav\n"
-                 "      Speaker sample. The repo ships reference.wav at the root.\n"
-                 "  --gpu 0\n"
-                 "      Vulkan device used while encoding the reference.\n"
-                 "  --cond-seconds 15 for gpt2, 6 for llama\n"
-                 "      Seconds of reference audio used as the condition prompt. -1 selects that default from the file.\n"
-                 "  --normalize-lufs -27\n"
-                 "      Loudness target for the reference, in LUFS.\n"
-                 "  --trim-db 20\n"
-                 "      Trim silence quieter than this many dB below the peak.\n"
-                 "  --voice-seconds 30\n"
-                 "      Maximum seconds fed to the speaker encoder.\n"
-                 "  --prompt-seconds 10\n"
-                 "      Maximum seconds tokenized as the style prompt.\n"
-                 "  --mel-seconds 10\n"
-                 "      Maximum seconds converted to mel features.\n"
-                 "  --voice-rate 16000\n"
-                 "      Sample rate of the speaker-encoder audio.\n"
-                 "  --mel-rate 24000\n"
-                 "      Sample rate of the mel features.\n"
-                 "  --mel-fft 1920\n"
-                 "      FFT size of the mel spectrogram.\n"
-                 "  --mel-hop 480\n"
-                 "      Hop length of the mel spectrogram.\n"
-                 "  --mel-power 1\n"
-                 "      Power applied to the mel magnitudes.\n"
-                 "  --mel-floor 1e-5\n"
-                 "      Minimum mel energy before the log.\n"
-                 "  --mel-centered off\n"
-                 "      Center the FFT window. on or off.\n");
-}
-
-const char* need(int& i, int argc, char** argv, const char* name) {
-    if (i + 1 >= argc) throw std::runtime_error(std::string(name) + " needs a value");
-    return argv[++i];
-}
-
-bool on_off(const char* value, const char* name) {
-    if (!std::strcmp(value, "on") || !std::strcmp(value, "1")) return true;
-    if (!std::strcmp(value, "off") || !std::strcmp(value, "0")) return false;
-    throw std::runtime_error(std::string(name) + " is on or off");
-}
-}
-
 int main(int argc, char** argv) {
-    std::vector<std::string> positional;
-    int gpu = 0;
-    int cond_seconds = -1;
-    double lufs = -27;
-    float trim_db = 20.f;
-    int voice_seconds = 30;
-    int prompt_seconds = 10;
-    int mel_seconds = 10;
-    int voice_rate = 16000;
-    int mel_rate = 24000;
-    int mel_fft = 1920;
-    int mel_hop = 480;
-    float mel_power = 1.f;
-    float mel_floor = 1e-5f;
-    bool mel_centered = false;
-    for (int i = 1; i < argc; ++i) {
-        const std::string a = argv[i];
-        if (a == "-h" || a == "--help") {
-            usage();
-            return 0;
-        } else if (a == "--gpu")
-            gpu = std::atoi(need(i, argc, argv, "--gpu"));
-        else if (a == "--cond-seconds")
-            cond_seconds = std::atoi(need(i, argc, argv, "--cond-seconds"));
-        else if (a == "--normalize-lufs")
-            lufs = std::atof(need(i, argc, argv, "--normalize-lufs"));
-        else if (a == "--trim-db")
-            trim_db = std::atof(need(i, argc, argv, "--trim-db"));
-        else if (a == "--voice-seconds")
-            voice_seconds = std::atoi(need(i, argc, argv, "--voice-seconds"));
-        else if (a == "--prompt-seconds")
-            prompt_seconds = std::atoi(need(i, argc, argv, "--prompt-seconds"));
-        else if (a == "--mel-seconds")
-            mel_seconds = std::atoi(need(i, argc, argv, "--mel-seconds"));
-        else if (a == "--voice-rate")
-            voice_rate = std::atoi(need(i, argc, argv, "--voice-rate"));
-        else if (a == "--mel-rate")
-            mel_rate = std::atoi(need(i, argc, argv, "--mel-rate"));
-        else if (a == "--mel-fft")
-            mel_fft = std::atoi(need(i, argc, argv, "--mel-fft"));
-        else if (a == "--mel-hop")
-            mel_hop = std::atoi(need(i, argc, argv, "--mel-hop"));
-        else if (a == "--mel-power")
-            mel_power = std::atof(need(i, argc, argv, "--mel-power"));
-        else if (a == "--mel-floor")
-            mel_floor = std::atof(need(i, argc, argv, "--mel-floor"));
-        else if (a == "--mel-centered")
-            mel_centered = on_off(need(i, argc, argv, "--mel-centered"), "--mel-centered");
-        else if (a[0] == '-')
-            throw std::runtime_error("unknown argument: " + a);
-        else
-            positional.push_back(a);
+    const auto values = trident::load_trident();
+    const int gpu = trident::cfg_int(values, "bake.gpu", 0);
+    const int cond_seconds = trident::cfg_int(values, "bake.cond-seconds", -1);
+    const double lufs = trident::cfg_float(values, "bake.normalize-lufs", -27);
+    const float trim_db = trident::cfg_float(values, "bake.trim-db", 20);
+    const int voice_seconds = trident::cfg_int(values, "bake.voice-seconds", 30);
+    const int prompt_seconds = trident::cfg_int(values, "bake.prompt-seconds", 10);
+    const int mel_seconds = trident::cfg_int(values, "bake.mel-seconds", 10);
+    const int voice_rate = trident::cfg_int(values, "bake.voice-rate", 16000);
+    const int mel_rate = trident::cfg_int(values, "bake.mel-rate", 24000);
+    const int mel_fft = trident::cfg_int(values, "bake.mel-fft", 1920);
+    const int mel_hop = trident::cfg_int(values, "bake.mel-hop", 480);
+    const float mel_power = trident::cfg_float(values, "bake.mel-power", 1);
+    const float mel_floor = trident::cfg_float(values, "bake.mel-floor", 1e-5f);
+    const bool mel_centered = trident::cfg_on(values, "bake.mel-centered");
+    std::string t3_path, s3_path, reference_path;
+    if (argc == 4) {
+        t3_path = argv[1];
+        s3_path = argv[2];
+        reference_path = argv[3];
+    } else if (argc == 1) {
+        if (trident::cfg(values, "bake.t3").empty() || trident::cfg(values, "bake.s3").empty() || trident::cfg(values, "bake.reference").empty())
+            throw std::runtime_error("bake.t3, bake.s3, and bake.reference are empty");
+        t3_path = trident::cfg_path(values, "bake.t3").string();
+        s3_path = trident::cfg_path(values, "bake.s3").string();
+        reference_path = trident::cfg_path(values, "bake.reference").string();
+    } else {
+        throw std::runtime_error("chatterbox-bake takes the t3, s3, and reference paths, or no arguments");
     }
-    if (positional.size() != 3) {
-        usage();
-        return 2;
-    }
-    const std::string t3_path = positional[0], s3_path = positional[1], reference_path = positional[2];
     auto family = trident::GgufFile(t3_path).string("general.architecture");
     if (family != "chatterbox-gpt2" && family != "chatterbox-llama")
         throw std::runtime_error("Unsupported architecture: " + family);

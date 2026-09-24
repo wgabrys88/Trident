@@ -3,6 +3,10 @@
 # A value that ends with << continues until a line that is only <<.
 
 # Install. python install.py [ear | brain | mouth | nano | turbo | v3 | all | release]
+# runtime.unload-wait-ms is the pause between checks while --unload is a file key.
+# runtime.unload-tries is how many waits happen before the process is terminated.
+runtime.unload-wait-ms 100
+runtime.unload-tries 50
 install.cmd turbo
 install.generator Visual Studio 17 2022
 install.arch x64
@@ -82,8 +86,14 @@ install.ear_tests off
 install.ear_cublas_shim off
 install.publish off
 
-# Gemma brain. gemma-brain "prompt" [image]
+# Gemma brain. Run gemma-brain.exe with no arguments.
+# gemma.persist on keeps the weights loaded and watches gemma.prompt-file.
+# gemma.unload on stops that process and exits. The prompt file is the request.
+# gemma.image is optional. Empty means text only. A set path is used for one shot.
 # gemma.model and gemma.mmproj are the GGUF files under gemma/models.
+gemma.persist off
+gemma.unload off
+gemma.image
 gemma.model gemma/models/gemma-4-E2B-it-Q4_0.gguf
 gemma.mmproj gemma/models/mmproj-gemma-4-E2B-it-Q8_0.gguf
 gemma.ctx 2048
@@ -105,13 +115,134 @@ gemma.cache-type-k q8_0
 gemma.cache-type-v q8_0
 gemma.image-min-tokens -1
 gemma.image-max-tokens -1
+gemma.poll-ms 100
+gemma.reset-every 1
+gemma.reset-ms 0
+gemma.mmproj-gpu on
+gemma.mmproj-timings on
+gemma.n-keep 0
+gemma.n-chunks -1
+gemma.n-parallel 1
+gemma.n-sequences 1
+gemma.n-outputs-max 0
+gemma.n-outputs-max-per-seq 1
+gemma.grp-attn-n 1
+gemma.grp-attn-w 512
+gemma.n-print -1
+gemma.tensor-split
+gemma.split none
+gemma.fit off
+gemma.fit-print off
+gemma.fit-min-ctx 4096
+gemma.load-mode auto
+gemma.lazy-mode auto
+gemma.numa disabled
+gemma.threads-batch 0
+gemma.priority high
+gemma.priority-batch high
+gemma.poll 50
+gemma.poll-batch 50
+gemma.strict-cpu off
+gemma.strict-cpu-batch off
+gemma.cpu-mask
+gemma.cpu-mask-batch
+gemma.rope-scaling unspecified
+gemma.rope-freq-base 0
+gemma.rope-freq-scale 0
+gemma.yarn-ext-factor -1
+gemma.yarn-attn-factor -1
+gemma.yarn-beta-fast -1
+gemma.yarn-beta-slow -1
+gemma.yarn-orig-ctx 0
+gemma.ctx-shift off
+gemma.swa-full off
+gemma.kv-unified off
+gemma.no-kv-offload off
+gemma.check-tensors off
+gemma.no-op-offload off
+gemma.no-extra-bufts off
+gemma.no-host off
+gemma.show-timings on
+gemma.no-perf off
+gemma.sampler-no-perf off
+gemma.mtmd-batch 1024
+gemma.verbosity 2
+gemma.n-prev 64
+gemma.n-probs 0
+gemma.min-keep 0
+gemma.xtc-probability 0
+gemma.xtc-threshold 0.1
+gemma.typical 1
+gemma.dynatemp-range 0
+gemma.dynatemp-exponent 1
+gemma.repeat-last-n 64
+gemma.frequency-penalty 0
+gemma.presence-penalty 0
+gemma.dry-multiplier 0
+gemma.dry-base 1.75
+gemma.dry-allowed-length 2
+gemma.dry-penalty-last-n 64
+gemma.adaptive-target -1
+gemma.adaptive-decay 0.9
+gemma.mirostat 0
+gemma.top-n-sigma -1
+gemma.mirostat-tau 5
+gemma.mirostat-eta 0.1
+gemma.ignore-eos off
+gemma.timing-per-token off
+gemma.backend-sampling off
 gemma.prompt-file gemma.prompt.txt
 gemma.response-file gemma.response.txt
-gemma.system Call one tool and stop.
+gemma.system <<
+You control this signed-in user's own Windows desktop. Observe the screen, call exactly one tool, then stop and wait for the tool result.
+x and y are pixels of the last screenshot. The origin is the top-left. x increases right. y increases down.
+Call screenshot before the first action and again whenever the screen may have changed. One desktop action per turn.
+When the task is finished, call respond with the final text. Use code only when the user asked for a Python program.
+<<
 gemma.tok.tool <|tool>
 gemma.tok.tool_end <tool|>
 gemma.tok.str <|"|>
-gemma.tools respond code
+gemma.tools screenshot click type_text key scroll focus_window respond code
+gemma.tool.screenshot.description Capture the current desktop. Take this before acting and after the screen may have changed. No arguments.
+gemma.tool.click.description Click a point on the last screenshot. Aim at the center of the control.
+gemma.tool.click.params x y button
+gemma.tool.click.x.type INTEGER
+gemma.tool.click.x.description Horizontal pixel on the last screenshot.
+gemma.tool.click.x.required yes
+gemma.tool.click.y.type INTEGER
+gemma.tool.click.y.description Vertical pixel on the last screenshot.
+gemma.tool.click.y.required yes
+gemma.tool.click.button.type STRING
+gemma.tool.click.button.description Mouse button: left, right, or middle. Default left.
+gemma.tool.type_text.description Type literal text into the focused control. Does not press Enter.
+gemma.tool.type_text.params text
+gemma.tool.type_text.text.type STRING
+gemma.tool.type_text.text.description Characters to type, exactly as they should appear.
+gemma.tool.type_text.text.required yes
+gemma.tool.key.description Press one key or a plus-joined combination, such as enter or ctrl+s.
+gemma.tool.key.params text
+gemma.tool.key.text.type STRING
+gemma.tool.key.text.description Key name or combination. Use plus between modifiers and the key.
+gemma.tool.key.text.required yes
+gemma.tool.scroll.description Scroll at a point on the last screenshot.
+gemma.tool.scroll.params x y direction amount
+gemma.tool.scroll.x.type INTEGER
+gemma.tool.scroll.x.description Horizontal pixel on the last screenshot.
+gemma.tool.scroll.x.required yes
+gemma.tool.scroll.y.type INTEGER
+gemma.tool.scroll.y.description Vertical pixel on the last screenshot.
+gemma.tool.scroll.y.required yes
+gemma.tool.scroll.direction.type STRING
+gemma.tool.scroll.direction.description Scroll direction: up, down, left, or right.
+gemma.tool.scroll.direction.required yes
+gemma.tool.scroll.amount.type INTEGER
+gemma.tool.scroll.amount.description Number of wheel clicks, usually 1 to 5.
+gemma.tool.scroll.amount.required yes
+gemma.tool.focus_window.description Bring a visible window of this session to the foreground by its title.
+gemma.tool.focus_window.params window_name
+gemma.tool.focus_window.window_name.type STRING
+gemma.tool.focus_window.window_name.description Substring of the window title to match.
+gemma.tool.focus_window.window_name.required yes
 gemma.tool.respond.description Write the response text to a file.
 gemma.tool.respond.params text
 gemma.tool.respond.text.type STRING
@@ -132,8 +263,18 @@ gemma.prompt <<
 <|turn>model
 <<
 
-# Chatterbox. chatterbox <nano|turbo|v3> -t "text" [-o out.wav] [-l en]
-# --persist keeps the voice loaded. --unload stops it. The request is chatterbox.prompt-file.
+# Chatterbox. Run chatterbox.exe with no arguments.
+# chatterbox.persist on keeps the voice loaded and watches chatterbox.prompt-file.
+# chatterbox.unload on stops that process. The prompt file is the sentence.
+# The wav path is written to chatterbox.response-file. Sample rate 24000.
+chatterbox.persist off
+chatterbox.unload off
+chatterbox.variant turbo
+chatterbox.language en
+chatterbox.poll-ms 100
+chatterbox.sample-rate 24000
+chatterbox.graph-nodes 8192
+chatterbox.end-trim-samples 960
 chatterbox.prompt-file chatterbox.prompt.txt
 chatterbox.response-file chatterbox.response.txt
 # Voices are models/voices/<variant>/t3.gguf and s3.gguf. Sample rate 24000.
@@ -153,8 +294,11 @@ chatterbox.cfg-weight 0.5
 chatterbox.exaggeration 0.5
 chatterbox.cfm-cfg 0.7
 
-# Bake. chatterbox-bake <t3.gguf> <s3.gguf>
-# bake.reference is the speaker sample written into those two files.
+# Bake. install.py passes the temporary t3, s3, and reference paths.
+# A bare chatterbox-bake.exe reads bake.t3, bake.s3, and bake.reference.
+# Knobs below are the only bake settings.
+bake.t3
+bake.s3
 bake.reference reference.wav
 bake.gpu 0
 bake.cond-seconds -1
@@ -171,8 +315,89 @@ bake.mel-power 1
 bake.mel-floor 1e-5
 bake.mel-centered off
 
-# Ear. ear transcribe <audio>
-# --persist keeps the process up. --unload stops it. The request file holds the audio path.
+# Ear. Run ear.exe with no arguments.
+# ear.persist on keeps the watcher up. ear.unload on stops it.
+# ear.prompt-file holds the audio path. The transcript goes to ear.response-file.
+ear.persist off
+ear.unload off
+ear.poll-ms 200
+ear.opt.--format text
+ear.opt.--device cpu
+ear.opt.--language
+ear.opt.--backend
+ear.opt.--concurrency
+ear.opt.--output-dir
+ear.opt.--recursive off
+ear.opt.--word-times off
+ear.opt.--vad-model
+ear.opt.--vad-masking off
+ear.opt.--diarize off
+ear.opt.--diar-model
+ear.opt.--itn-model-dir
+ear.opt.--pnc-model
+ear.opt.--no-punctuation off
+ear.opt.--verbatim off
+ear.opt.--stream off
+ear.opt.--endpointing off
+ear.opt.--stop-history-eou-ms
+ear.opt.--max-alternatives
+ear.opt.--speech-context
+ear.opt.--speech-context-boost
+ear.opt.--profanity-filter off
+ear.opt.--config
+ear.opt.--no-warmup off
+ear.opt.--no-batching off
+ear.opt.--force off
+ear.opt.--json off
+ear.opt.--quiet off
+ear.opt.--verbose off
+ear.opt.--live off
+ear.opt.--translate-to
+ear.opt.--nmt-model
+ear.opt.--gpu
+ear.opt.--chunk-sec
+ear.opt.--left-pad-sec
+ear.opt.--right-pad-sec
+ear.opt.--asr.streaming.rnnt_right_context
+ear.opt.--asr.batching.enabled
+ear.opt.--asr.batching.max_batch_size
+ear.opt.--asr.batching.max_queue_delay_us
+ear.opt.--asr.batching.max_queue_depth
+ear.opt.--asr.batching.ingress_cohort_delay_us
+ear.opt.--asr.batching.state_arena_slots
+ear.opt.--asr.batching.offline_bucket_ms
+ear.opt.--asr.decoder.kind
+ear.opt.--lm-path
+ear.opt.--lexicon
+ear.opt.--tokenizer
+ear.opt.--beam-size
+ear.opt.--asr.decoder.beam_size_token
+ear.opt.--beam-threshold
+ear.opt.--lm-weight
+ear.opt.--word-score
+ear.opt.--max-boost
+ear.opt.--boosting-tree-alpha
+ear.opt.--boosting-max-boost
+ear.opt.--boosting-depth-scaling
+ear.opt.--vad-onset
+ear.opt.--vad-offset
+ear.opt.--vad-pad-ms
+ear.opt.--asr.vad.masker.pad_onset_ms
+ear.opt.--asr.vad.masker.pad_offset_ms
+ear.opt.--vad-min-duration-off-ms
+ear.opt.--vad-stddev-floor
+ear.opt.--vad-mask-value
+ear.opt.--diar-preset
+ear.opt.--diar-chunk
+ear.opt.--diar-rc
+ear.opt.--diar-lc
+ear.opt.--diar-fifo
+ear.opt.--diar-spkcache
+ear.opt.--diar-update-period
+ear.opt.--vad-based-eou off
+ear.opt.--profanity-list
+ear.opt.--asr.postproc.cpu_workers
+ear.opt.--asr.postproc.max_queue_depth
 ear.prompt-file ear.prompt.txt
 ear.response-file ear.response.txt
 # ear.model is passed as --model when the command does not already have one.

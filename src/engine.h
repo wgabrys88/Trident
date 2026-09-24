@@ -5,7 +5,7 @@
 
 namespace trident {
 struct Knobs {
-    int gpu = 0, seed = 42, n_predict = 1000, cfm_steps = 2, trim_fade = 480, top_k = 1000;
+    int gpu = 0, seed = 42, n_predict = 1000, cfm_steps = 2, trim_fade = 480, top_k = 1000, graph_nodes = 8192, end_trim = 960;
     float temperature = 0.8f, top_p = 0.95f, repeat_penalty = 1.2f;
     float min_p = 0.05f, cfg_weight = 0.5f, exaggeration = 0.5f, cfm_cfg = 0.7f;
 
@@ -27,6 +27,8 @@ struct Knobs {
         else if (name == "--n-predict") n_predict = integer();
         else if (name == "--cfm-steps") cfm_steps = integer();
         else if (name == "--trim-fade-samples") trim_fade = integer();
+        else if (name == "--graph-nodes") graph_nodes = integer();
+        else if (name == "--end-trim-samples") end_trim = integer();
         else if (!llama && name == "--top-k") top_k = integer();
         else if (llama && name == "--min-p") min_p = real();
         else if (llama && name == "--cfg-weight") cfg_weight = real();

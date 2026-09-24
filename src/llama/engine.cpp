@@ -15,7 +15,7 @@ std::vector<float> Engine::synthesize(const std::string& text, const std::string
     tokens.insert(tokens.begin(), t3.start_text());
     tokens.push_back(t3.stop_text());
     auto pcm = s3.synthesize(t3.generate(tokens));
-    pcm.resize(pcm.size() - 960);
+    if (knobs.end_trim > 0 && pcm.size() > size_t(knobs.end_trim)) pcm.resize(pcm.size() - knobs.end_trim);
     Audio::fade(pcm, knobs.trim_fade);
     return pcm;
 }

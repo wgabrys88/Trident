@@ -1,8 +1,10 @@
 #pragma once
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <sstream>
 #include <string>
 #include <windows.h>
 
@@ -60,6 +62,34 @@ inline std::filesystem::path cfg_path(const std::map<std::string, std::string> &
     return trident_file().parent_path() / cfg(values, key);
 }
 
+inline bool cfg_on(const std::map<std::string, std::string> & values, const std::string & key, bool fallback = false) {
+    const auto text = cfg(values, key);
+    if (text.empty()) return fallback;
+    if (text == "on" || text == "1") return true;
+    if (text == "off" || text == "0") return false;
+    return fallback;
+}
+
+inline int cfg_int(const std::map<std::string, std::string> & values, const std::string & key, int fallback) {
+    const auto text = cfg(values, key);
+    return text.empty() ? fallback : std::atoi(text.c_str());
+}
+
+inline float cfg_float(const std::map<std::string, std::string> & values, const std::string & key, float fallback) {
+    const auto text = cfg(values, key);
+    return text.empty() ? fallback : (float)std::atof(text.c_str());
+}
+
+inline std::string read_text(const std::filesystem::path & path) {
+    std::ifstream in(path);
+    std::stringstream buffer;
+    buffer << in.rdbuf();
+    auto text = buffer.str();
+    if (!text.empty() && text.back() == '\n') text.pop_back();
+    if (!text.empty() && text.back() == '\r') text.pop_back();
+    return text;
+}
+
 inline std::filesystem::path slot(const std::string & name, const char * kind) {
     return trident_file().parent_path() / (name + "." + kind);
 }
@@ -91,7 +121,10 @@ inline void write_pid(const std::string & name) {
 inline int unload_named(const std::string & name) {
     std::ofstream(slot(name, "stop"), std::ios::trunc) << "1";
     const DWORD pid = read_pid(name);
-    for (int i = 0; i < 50 && pid_alive(pid); ++i) Sleep(100);
+    const auto values = load_trident();
+    const int tries = cfg_int(values, "runtime.unload-tries", 50);
+    const int wait_ms = cfg_int(values, "runtime.unload-wait-ms", 100);
+    for (int i = 0; i < tries && pid_alive(pid); ++i) Sleep(wait_ms);
     if (pid_alive(pid)) {
         HANDLE handle = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
         if (handle) {

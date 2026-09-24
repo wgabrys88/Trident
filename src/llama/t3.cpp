@@ -126,7 +126,7 @@ std::vector<float> LlamaT3::logits(Graph& graph, int count) const {
 }
 std::vector<float> LlamaT3::prompt(const std::vector<int32_t>& text) {
     int condition = 1 + perceiver_ + 1, count = condition + int(text.size()) + 2;
-    if (!compute_) compute_ = std::make_unique<Graph>(backend_, 8192);
+    if (!compute_) compute_ = std::make_unique<Graph>(backend_, knobs_.graph_nodes);
     compute_->begin();
     Graph& graph = *compute_;
     auto* ctx = graph.context();
@@ -178,7 +178,7 @@ std::vector<float> LlamaT3::prompt(const std::vector<int32_t>& text) {
     return logits(graph, count);
 }
 std::vector<float> LlamaT3::step(int past, int32_t token, int speech) {
-    if (!compute_) compute_ = std::make_unique<Graph>(backend_, 8192);
+    if (!compute_) compute_ = std::make_unique<Graph>(backend_, knobs_.graph_nodes);
     compute_->begin();
     Graph& graph = *compute_;
     auto* ctx = graph.context();

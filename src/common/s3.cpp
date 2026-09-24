@@ -261,7 +261,7 @@ std::vector<float> S3::source(const std::vector<float>& pitch) const {
     return result;
 }
 std::vector<float> S3::stft(const std::vector<float>& signal) const {
-    Graph graph(backend_, 8192);
+    Graph graph(backend_, knobs_.graph_nodes);
     auto* ctx = graph.context();
     auto* input = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, signal.size(), 1);
     auto* kernel = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 16, 1, 18);
