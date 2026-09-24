@@ -45,6 +45,7 @@ if(DEFINED GEMMA_HOST_THREADS)
 endif()
 
 if(MSVC)
+    target_link_options(gemma-brain PRIVATE "/MANIFEST:EMBED" "/MANIFESTINPUT:${CMAKE_CURRENT_SOURCE_DIR}/../utf8.manifest")
     set(_gemma_host_opts /O2 /Ob2 /Oi /Ot /GL /fp:fast /Gy /Gw)
     if(GEMMA_MSVC_ARCH_FLAG)
         list(APPEND _gemma_host_opts ${GEMMA_MSVC_ARCH_FLAG})

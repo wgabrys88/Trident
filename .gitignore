@@ -23,6 +23,7 @@
 !/CMakeLists.txt
 !/LICENSE
 !/install.py
+!/utf8.manifest
 !/reference.wav
 !/requirements.txt
 

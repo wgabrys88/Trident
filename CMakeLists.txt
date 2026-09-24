@@ -31,6 +31,9 @@ add_executable(chatterbox src/chatterbox.cpp)
 add_executable(chatterbox-bake src/bake.cpp)
 target_link_libraries(chatterbox PRIVATE trident_engine)
 target_link_libraries(chatterbox-bake PRIVATE trident_engine)
+foreach(target chatterbox chatterbox-bake)
+    target_link_options(${target} PRIVATE "/MANIFEST:EMBED" "/MANIFESTINPUT:${CMAKE_SOURCE_DIR}/utf8.manifest")
+endforeach()
 
 foreach(target trident_engine chatterbox chatterbox-bake)
     target_compile_definitions(${target} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN

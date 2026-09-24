@@ -276,6 +276,18 @@ def python_packages(py: Path) -> None:
     pip(py, "tts-packages", args)
 
 
+def windows_mt() -> Path:
+    return max(Path("C:/Program Files (x86)/Windows Kits/10/bin").glob("*/x64/mt.exe"), key=lambda path: tuple(int(part) for part in re.findall(r"\d+", path.parts[-3])))
+
+
+def embed_utf8(exe: Path) -> None:
+    merged = exe.with_suffix(".manifest")
+    mt = str(windows_mt())
+    run([mt, "-nologo", f"-inputresource:{exe};#1", "-manifest", str(ROOT / "utf8.manifest"), "-out:" + str(merged)])
+    run([mt, "-nologo", "-manifest", str(merged), f"-outputresource:{exe};#1"])
+    merged.unlink()
+
+
 def install_ear() -> None:
     dest = MODELS / "ear" / EAR_GGUF
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -292,6 +304,7 @@ def install_ear() -> None:
     wanted = {"rev": rev, "gguf": EAR_GGUF}
     if matches(stamp, wanted, exe, dest):
         print("skip ear", flush=True)
+        embed_utf8(exe)
         return
     print("install ear", flush=True)
     ps = shutil.which("powershell") or "powershell.exe"
@@ -303,6 +316,7 @@ def install_ear() -> None:
     for item in built.parent.iterdir():
         if item.suffix.lower() in {".exe", ".dll"}:
             shutil.copy2(item, exe.parent / ("ear.exe" if item.name == "nemo-speech.exe" else item.name))
+    embed_utf8(exe)
     atomic_json(stamp, wanted)
 
 
