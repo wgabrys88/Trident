@@ -4,6 +4,20 @@
 # Allow Git to descend into directories. Files stay ignored until named.
 !*/
 
+# !*/ would otherwise expose a nested clone as an embedded gitlink.
+/ggml/
+/nemo-speech/
+/build/
+/models/
+/.venv/
+/.ckpt/
+/.ckpt-v3/
+/wav/
+/gemma/llama.cpp/
+/gemma/build/
+/gemma/models/
+/gemma/cmake/HostCpu.generated.cmake
+
 !/.gitignore
 !/.gitattributes
 !/CMakeLists.txt

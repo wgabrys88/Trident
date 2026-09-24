@@ -283,7 +283,7 @@ def install_ear() -> None:
         print("install " + EAR_GGUF, flush=True)
         download(EAR_URL, dest)
     home = ROOT / "nemo-speech"
-    exe = ROOT / "build" / "bin" / "ear.exe"
+    exe = ROOT / "build" / "bin" / "ear" / "ear.exe"
     if not (home / ".git").exists():
         print("install nemo-speech", flush=True)
         run(["git", "clone", "--filter=blob:none", "https://github.com/NVIDIA/NeMo-Speech.cpp.git", str(home)])
@@ -296,9 +296,13 @@ def install_ear() -> None:
     print("install ear", flush=True)
     ps = shutil.which("powershell") or "powershell.exe"
     run([ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(home / "scripts" / "windows" / "build.ps1"), "-Backend", "cpu", "-AsrOnly"], cwd=home)
-    built = next(home.rglob("nemo-speech.exe"))
-    exe.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(built, exe)
+    built = home / "build-cpu-asr" / "bin" / "nemo-speech.exe"
+    if exe.parent.exists():
+        shutil.rmtree(exe.parent)
+    exe.parent.mkdir(parents=True)
+    for item in built.parent.iterdir():
+        if item.suffix.lower() in {".exe", ".dll"}:
+            shutil.copy2(item, exe.parent / ("ear.exe" if item.name == "nemo-speech.exe" else item.name))
     atomic_json(stamp, wanted)
 
 
