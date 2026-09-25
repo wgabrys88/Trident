@@ -29,5 +29,5 @@ if ($Backend -eq "cuda") {
     cmake --build $BuildDir --config Release --target ggml-cuda --parallel $CudaCodegenParallel
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
-cmake --build $BuildDir --config Release --target gemma-brain --parallel $BrainParallel
+cmake --build $BuildDir --config Release --target gemma-brain --target sense --parallel $BrainParallel
 exit $LASTEXITCODE

@@ -1,4 +1,4 @@
-import hashlib, json, os, re, shutil, subprocess, sys, urllib.request
+import hashlib, json, os, re, shutil, subprocess, sys, urllib.request, zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -333,6 +333,28 @@ def embed_utf8(exe: Path) -> None:
     merged.unlink()
 
 
+def onnx_root() -> Path:
+    given = opt("install.onnxruntime_root")
+    if given:
+        path = Path(given)
+        return path if path.is_absolute() else (ROOT / path).resolve()
+    dest = place("install.cache") / "onnxruntime"
+    if (dest / "lib" / "onnxruntime.dll").is_file() and (dest / "include" / "onnxruntime_c_api.h").is_file():
+        return dest
+    archive = place("install.cache") / "onnxruntime.zip"
+    download(need("install.onnxruntime_url"), archive)
+    extracted_root = place("install.cache") / "onnxruntime-src"
+    if extracted_root.exists():
+        shutil.rmtree(extracted_root)
+    with zipfile.ZipFile(archive) as packed:
+        packed.extractall(extracted_root)
+    found = next(extracted_root.glob("onnxruntime-win-x64-*"))
+    if dest.exists():
+        shutil.rmtree(dest)
+    found.rename(dest)
+    return dest
+
+
 def build_mouth(sdk: Path) -> None:
     build = place("install.build_mouth")
     arch = msvc_arch()
@@ -352,14 +374,15 @@ def build_mouth(sdk: Path) -> None:
         f"-DVulkan_INCLUDE_DIR={sdk / 'Include'}",
         f"-DVulkan_LIBRARY={sdk / 'Lib' / 'vulkan-1.lib'}",
         f"-DVulkan_GLSLC_EXECUTABLE={sdk / 'Bin' / 'glslc.exe'}",
+        "-DONNXRUNTIME_DIR=" + str(onnx_root()),
     ]
-    outputs = tuple(build / "bin" / name for name in ("chatterbox.exe", "chatterbox-bake.exe", "ear.exe"))
+    outputs = tuple(build / "bin" / name for name in ("chatterbox.exe", "chatterbox-bake.exe", "ear.exe", "vad.exe"))
     wanted = {"ggml": need("install.ggml_rev"), "cmake": defs, "source": digest(ROOT / "CMakeLists.txt", ROOT / "src")}
     stamp = stamps() / "mouth.json"
     if not matches(stamp, wanted, *outputs):
         print("install mouth", flush=True)
         run(["cmake", "-S", str(ROOT), "-B", str(build), "-G", need("install.generator"), "-A", need("install.arch"), *defs])
-        run(["cmake", "--build", str(build), "--config", need("install.config"), "--target", "chatterbox", "chatterbox-bake", "ear", "--parallel", need("install.parallel")])
+        run(["cmake", "--build", str(build), "--config", need("install.config"), "--target", "chatterbox", "chatterbox-bake", "ear", "vad", "--parallel", need("install.parallel")])
         atomic_json(stamp, wanted)
     else:
         print("skip mouth", flush=True)
@@ -370,6 +393,7 @@ def build_mouth(sdk: Path) -> None:
         dest = ROOT / exe.name
         shutil.copy2(exe, dest)
         embed_utf8(dest)
+    shutil.copy2(onnx_root() / "lib" / "onnxruntime.dll", ROOT / "onnxruntime.dll")
 
 
 def apply_nemo_stay(home: Path) -> None:
@@ -422,6 +446,7 @@ def build_gemma(sdk: Path) -> None:
     backend = gemma_backend()
     build = place("install.build_gemma")
     exe = build / need("install.config") / "gemma-brain.exe"
+    sense = build / need("install.config") / "sense.exe"
     llama = subprocess.run(["git", "-C", str(place("install.src_llama")), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
     defs = [f"{cmake}={cmake_on(key)}" for key, cmake in BRAIN_DEFS]
     defs.append("GEMMA_BACKEND=" + backend)
@@ -440,10 +465,10 @@ def build_gemma(sdk: Path) -> None:
         "llama": llama,
         "backend": backend,
         "cmake": defs,
-        "source": digest(ROOT / "gemma" / "CMakeLists.txt", ROOT / "gemma" / "src" / "brain.cpp", ROOT / "gemma" / "cmake" / "HostCpu.cmake", ROOT / "gemma" / "scripts", ROOT / "src" / "common" / "config.h"),
+        "source": digest(ROOT / "gemma" / "CMakeLists.txt", ROOT / "gemma" / "src" / "brain.cpp", ROOT / "gemma" / "src" / "sense.cpp", ROOT / "gemma" / "cmake" / "HostCpu.cmake", ROOT / "gemma" / "scripts", ROOT / "src" / "common" / "config.h"),
     }
     stamp = stamps() / "gemma.json"
-    if not matches(stamp, wanted, exe):
+    if not matches(stamp, wanted, exe, sense):
         print("install gemma-brain", flush=True)
         ps = shutil.which("powershell") or "powershell.exe"
         command = [ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "gemma" / "scripts" / "build.ps1"), "-BuildDir", str(build), "-BrainParallel", need("install.brain_parallel"), "-CudaCodegenParallel", need("install.cuda_codegen_parallel")]
@@ -464,6 +489,9 @@ def build_gemma(sdk: Path) -> None:
     dest = ROOT / "gemma-brain.exe"
     shutil.copy2(exe, dest)
     embed_utf8(dest)
+    sense_dest = ROOT / "sense.exe"
+    shutil.copy2(sense, sense_dest)
+    embed_utf8(sense_dest)
 
 
 def policy(path: Path, default: str) -> dict:
@@ -601,6 +629,7 @@ def main() -> None:
     fetch_model("install.mmproj_name", "install.mmproj_url", "gemma.mmproj")
     fetch_model("install.ear_gguf_name", "install.ear_gguf_url", "ear.model")
     fetch_model("install.sense_name", "install.sense_url", "sense.model")
+    fetch_model("install.silero_onnx_name", "install.silero_onnx_url", "vad.model")
     publish()
 
 

@@ -2,7 +2,7 @@
 # Five parts: Silero VAD ends an utterance, ear.exe transcribes it, Qwen3-0.6B on CPU
 # decides whether Gemma should hear that original line, gemma-brain.exe works, chatterbox.exe speaks.
 # The small model never rewrites. tool pass forwards the recognizer text unchanged.
-# Processes: .venv\Scripts\python.exe scripts\vad.py ; .venv\Scripts\python.exe scripts\sense.py ; ear.exe ; gemma-brain.exe ; chatterbox.exe
+# Processes: vad.exe ; ear.exe ; sense.exe ; gemma-brain.exe ; chatterbox.exe
 # gemma.image is read only when gemma-brain starts. Gemma 4 E2B-it sampling is temp 1.0, top-p 0.95, top-k 64.
 # Iris: gemma.flash-attn off and f16 KV. Lowering gemma.temp empties <|think|> turns.
 # Paths are relative to this file. Booleans are on or off. A missing required key exits.
@@ -117,6 +117,10 @@ install.ear_tts_zh off
 install.ear_tests off
 install.ear_cublas_shim off
 install.publish off
+install.silero_onnx_name silero_vad.onnx
+install.silero_onnx_url https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx
+install.onnxruntime_url https://github.com/microsoft/onnxruntime/releases/download/v1.20.1/onnxruntime-win-x64-1.20.1.zip
+install.onnxruntime_root
 install.torch torch==2.6.0
 install.torch_index https://download.pytorch.org/whl/cpu
 install.torch_extra_index https://pypi.org/simple
@@ -126,8 +130,6 @@ gguf==0.19.0
 safetensors==0.8.0
 librosa==0.11.0
 tokenizers==0.23.2
-sounddevice==0.5.2
-llama-cpp-python==0.3.16
 <<
 
 # Gemma. gemma-brain.exe takes no arguments. gemma.prompt-file is the original line.
@@ -252,9 +254,12 @@ see
 Look at the image tokens attached to this user turn. Call this before speaking about the picture. Then call speak with what those pixels show now.
 <<
 
-# Sense. Qwen3-0.6B, CPU only. It keeps its own memory and does not speak.
+# Sense. sense.exe. Qwen3-0.6B, CPU only. It keeps its own memory and does not speak.
 # Each transcript arrives as the ear wrote it. The pass tool sends that text on unchanged.
 # sense.memory-max is the only limit. Sampler knobs are sense.temp, sense.top-k, sense.top-p.
+sense.persist on
+sense.unload off
+sense.gpu-layers 0
 sense.model sense.gguf
 sense.ctx 4096
 sense.threads 4
@@ -323,7 +328,12 @@ bake.mel-power 1
 bake.mel-floor 1e-5
 bake.mel-centered off
 
-# VAD. Silero VADIterator only. vad.window 512 is the 16 kHz frame the model requires.
+# VAD. vad.exe. Silero on CPU through ONNX Runtime. vad.window 512 is the 16 kHz frame.
+# Capture is resampled with the polyphase FIR in Audio::resample, not linear interpolation.
+vad.persist on
+vad.unload off
+vad.model silero_vad.onnx
+vad.chunks-dir .install/vad
 vad.rate 16000
 vad.device CABLE Output (VB-Audio Virtual Cable), Windows WASAPI
 vad.window 512

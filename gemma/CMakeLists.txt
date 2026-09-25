@@ -44,25 +44,35 @@ separate_arguments(gemma_link NATIVE_COMMAND "${GEMMA_LINK}")
 separate_arguments(gemma_definitions NATIVE_COMMAND "${GEMMA_DEFINITIONS}")
 
 add_executable(gemma-brain src/brain.cpp)
+add_executable(sense src/sense.cpp)
 target_link_libraries(gemma-brain PRIVATE llama-common mtmd)
+target_link_libraries(sense PRIVATE llama-common)
 target_include_directories(gemma-brain PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../src
     ${LLAMA_SRC}/include
     ${LLAMA_SRC}/ggml/include
     ${LLAMA_SRC}/common
     ${LLAMA_SRC}/tools/mtmd)
+target_include_directories(sense PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src
+    ${LLAMA_SRC}/include
+    ${LLAMA_SRC}/ggml/include
+    ${LLAMA_SRC}/common)
 target_compile_definitions(gemma-brain PRIVATE ${gemma_definitions})
+target_compile_definitions(sense PRIVATE ${gemma_definitions})
 if(GEMMA_BACKEND STREQUAL "cuda")
     target_compile_definitions(gemma-brain PRIVATE GEMMA_CUDA=1)
 endif()
 
 if(MSVC)
     target_link_options(gemma-brain PRIVATE "/MANIFEST:EMBED" "/MANIFESTINPUT:${TRIDENT_UTF8_MANIFEST}" ${gemma_link})
+    target_link_options(sense PRIVATE "/MANIFEST:EMBED" "/MANIFESTINPUT:${TRIDENT_UTF8_MANIFEST}" ${gemma_link})
     set(_gemma_host_opts ${gemma_compile})
     if(GEMMA_MSVC_ARCH_FLAG)
         list(APPEND _gemma_host_opts ${GEMMA_MSVC_ARCH_FLAG})
     endif()
     target_compile_options(gemma-brain PRIVATE ${_gemma_host_opts})
+    target_compile_options(sense PRIVATE ${_gemma_host_opts})
     foreach(t llama-common llama ggml mtmd)
         if(TARGET ${t})
             target_compile_options(${t} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${_gemma_host_opts}>)
