@@ -115,19 +115,16 @@ def unload_all():
 def gemma_ask(proc, prompt: str) -> str:
     req = ROOT / "gemma.prompt.txt"
     resp = ROOT / "gemma.response.txt"
-    stamp = resp.stat().st_mtime if resp.exists() else 0
     try:
         resp.unlink(missing_ok=True)
-        stamp = 0
     except OSError:
         pass
+    started = time.time()
     req.write_text(prompt, encoding="utf-8")
-    deadline = time.time() + 600
-    while time.time() < deadline:
+    while time.time() < started + 600:
         text = closed_text(resp)
-        if text is not None and resp.exists() and resp.stat().st_mtime > stamp:
-            if text.strip():
-                return text
+        if text and text.strip() and resp.exists() and resp.stat().st_mtime >= started - 1:
+            return text
         if proc.poll() is not None:
             break
         time.sleep(0.2)
@@ -138,12 +135,15 @@ def mouth_speak(proc, text: str):
     prompt = ROOT / "chatterbox.prompt.txt"
     wav = ROOT / "chatterbox.response.wav"
     reply = ROOT / "chatterbox.response.txt"
-    wav.unlink(missing_ok=True)
-    reply.unlink(missing_ok=True)
+    try:
+        wav.unlink(missing_ok=True)
+        reply.unlink(missing_ok=True)
+    except OSError:
+        pass
+    started = time.time()
     prompt.write_text(text, encoding="utf-8")
-    deadline = time.time() + 300
-    while time.time() < deadline:
-        if closed_text(reply) is not None and wav.exists() and wav.stat().st_size > 44:
+    while time.time() < started + 300:
+        if closed_text(reply) is not None and wav.exists() and wav.stat().st_size > 44 and wav.stat().st_mtime >= started - 1:
             return wav
         if proc.poll() is not None:
             break
