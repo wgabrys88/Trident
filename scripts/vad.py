@@ -42,14 +42,28 @@ def listen(prompt: Path, stop, busy) -> None:
     CHUNKS.mkdir(parents=True, exist_ok=True)
     speech = []
     index = 0
-    with sd.InputStream(samplerate=rate, channels=1, dtype="float32", blocksize=window) as stream:
+    device = cfg.get("vad.device", "").strip()
+    which = int(device) if device.isdigit() else (device or None)
+    native = int(sd.query_devices(which if which is not None else sd.default.device[0], "input")["default_samplerate"])
+    block = int(round(window * native / rate))
+    stream_args = {"samplerate": native, "channels": 1, "dtype": "float32", "blocksize": block}
+    if which is not None:
+        stream_args["device"] = which
+
+    def to_vad(frame):
+        mono = np.squeeze(frame).astype(np.float32)
+        if native == rate and len(mono) == window:
+            return mono
+        return np.interp(np.linspace(0, max(len(mono) - 1, 0), window), np.arange(len(mono)), mono).astype(np.float32)
+
+    with sd.InputStream(**stream_args) as stream:
         while not stop.is_set():
-            frame, _ = stream.read(window)
+            frame, _ = stream.read(block)
             if busy.is_set():
                 speech = []
                 iterator.reset_states()
                 continue
-            clip = np.squeeze(frame).astype(np.float32)
+            clip = to_vad(frame)
             event = iterator(torch.from_numpy(clip), return_seconds=False)
             if event and "start" in event:
                 speech = [clip]

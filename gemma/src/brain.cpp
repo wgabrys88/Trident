@@ -244,6 +244,7 @@ struct Gemma {
     }
 
     void load_media(const char * path) {
+        pending_media.entries.clear();
         auto res = mtmd_helper_bitmap_init_from_file(mtmd_ctx.get(), path, false, media_opt);
         if (!res.bitmap) die_fmt("media load failed: %s", path);
         pending_media.entries.emplace_back(res.bitmap);
@@ -325,6 +326,7 @@ int main(int, char **) {
     int served = 0;
     ULONGLONG reset_at = GetTickCount64();
     auto run = [&](const std::string & prompt) {
+        const auto stamp = std::filesystem::last_write_time(request);
         const bool by_count = reset_every > 0 && served % reset_every == 0;
         const bool by_time = reset_ms > 0 && GetTickCount64() - reset_at >= (ULONGLONG)reset_ms;
         if (by_count || by_time) {
@@ -340,7 +342,10 @@ int main(int, char **) {
         } else {
             gemma.eval_text(prompt);
         }
-        std::ofstream(response, std::ios::binary | std::ios::trunc) << gemma.generate(params.n_predict);
+        const auto out = gemma.generate(params.n_predict);
+        // Drop a reply if a newer prompt replaced this one while we were generating.
+        if (!std::filesystem::is_regular_file(request) || std::filesystem::last_write_time(request) != stamp) return;
+        std::ofstream(response, std::ios::binary | std::ios::trunc) << out;
     };
     if (trident::cfg_on(values, "gemma.persist")) return trident::watch("gemma", request, poll_ms, run);
     const auto prompt = trident::read_text(request);

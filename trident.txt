@@ -239,15 +239,15 @@ gemma.response-file gemma.response.txt
 gemma.history-file gemma.history.txt
 gemma.history-max 4000
 gemma.system <<
-You are heard only through the speak tool. One sentence about what is happening.
+You are in the room, not in a chat. The room hears you only when speak ends with <tool_call|>. One sentence about what is happening.
 <<
 gemma.tools <<
 speak
-Say these words aloud on the speakers. This is the only way you are heard in the room.
-text: the words to say
+Say one sentence aloud about what is happening. Close the call with <tool_call|>.
+text: the sentence to say
 
 see
-Look at the picture already in front of you. Call this when the words are about an image. Then call speak and tell the room what the picture shows.
+Look at the picture already in front of you when the words are about an image. Then call speak and close it with <tool_call|>.
 <<
 
 # Sense. Qwen3-0.6B, CPU only. It keeps its own memory and does not speak.
@@ -322,6 +322,7 @@ bake.mel-centered off
 
 # VAD. Silero VADIterator only. vad.window 512 is the 16 kHz frame the model requires.
 vad.rate 16000
+vad.device 17
 vad.window 512
 vad.threshold 0.5
 vad.min-silence-ms 400

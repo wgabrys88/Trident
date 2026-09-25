@@ -119,12 +119,13 @@ def gemma_ask(proc, prompt: str) -> str:
         resp.unlink(missing_ok=True)
     except OSError:
         pass
-    started = time.time()
     req.write_text(prompt, encoding="utf-8")
+    prompt_mtime = req.stat().st_mtime
+    started = time.time()
     while time.time() < started + 600:
-        if resp.exists() and resp.stat().st_mtime >= started - 1:
+        if resp.exists() and resp.stat().st_mtime >= prompt_mtime:
             text = closed_text(resp)
-            if text is not None:
+            if text:
                 return text
         if proc.poll() is not None:
             break

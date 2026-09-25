@@ -68,7 +68,7 @@ def format_tool_response(name: str, fields: dict) -> str:
 
 def parse_calls(text: str):
     out = []
-    for match in re.finditer(r"<\|tool_call>call:(\w+)\{(.*?)\}<tool_call\|>", text, flags=re.DOTALL):
+    for match in re.finditer(r"<\|tool_call>call:(\w+)\{(.*?)\}(?:<tool_call\|>|<turn\|>)", text, flags=re.DOTALL):
         args = {}
         for part in re.finditer(r"(\w+):(?:<\|\"\|>(.*?)<\|\"\|>|([^,}]+))", match.group(2)):
             value = part.group(2) if part.group(2) is not None else part.group(3)
