@@ -8,11 +8,14 @@
 #        images/pc_6f79b56c-2b0f-471d-9f9d-93932c69a0ce.png
 #        labels: ScreenSpot_combined.json for that filename
 
+import ctypes
+import re
 import signal
 import subprocess
 import sys
 import threading
 import time
+from ctypes import wintypes
 from datetime import datetime
 from pathlib import Path
 
@@ -162,7 +165,7 @@ class Trace:
         self.alive = False
         if self.proc.poll() is None:
             self.proc.kill()
-        self.thread.join(timeout=3)
+        self.thread.join()
         self.csv.close()
 
 
@@ -235,18 +238,26 @@ def set_key(key, value):
     CFG.write_text("\n".join(out) + "\n", encoding="utf-8")
 
 
-def stop(name):
+def closed_text(path):
+    if not path.exists():
+        return None
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel32.CreateFileW(str(path), 0x80000000, 0, None, 3, 0x80, None)
+    if handle == wintypes.HANDLE(-1).value:
+        return None
+    kernel32.CloseHandle(handle)
+    return path.read_text(encoding="utf-8")
+
+
+def stop(name, proc):
     (ROOT / (name + ".stop")).write_text("1", encoding="ascii")
-    deadline = time.time() + 40
-    while time.time() < deadline:
-        alive = subprocess.run(
-            ["tasklist", "/FI", "IMAGENAME eq " + name + ".exe", "/NH"],
-            capture_output=True, text=True,
-        ).stdout
-        if name + ".exe" not in alive:
-            return
-        time.sleep(0.2)
-    raise SystemExit(name + " still running")
+    proc.wait()
 
 
 def fetch():
@@ -306,26 +317,26 @@ def ear(audio, expected):
         cwd=ROOT, stdout=subprocess.DEVNULL, stderr=err,
         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
     )
-    deadline = time.time() + 90
-    while time.time() < deadline:
+    while True:
         heard = err_path.read_text(encoding="utf-8", errors="replace") if err_path.exists() else ""
         if 'listening on "CABLE Output' in heard:
             break
         if proc.poll() is not None:
+            raise SystemExit("ear exited before listening")
+        time.sleep(0.2)
+    play(audio)
+    span = sf.info(str(audio)).duration
+    while True:
+        heard = err_path.read_text(encoding="utf-8", errors="replace")
+        times = [float(item) for item in re.findall(r"live final @ ([0-9.]+)s", heard)]
+        if times and max(times) >= span:
+            break
+        if proc.poll() is not None:
             break
         time.sleep(0.2)
-    else:
-        raise SystemExit("ear never listened on CABLE Output")
-    if 'listening on "CABLE Output' not in heard:
-        raise SystemExit("ear never listened on CABLE Output")
-    play(audio)
-    time.sleep(2)
-    proc.send_signal(signal.CTRL_BREAK_EVENT)
-    try:
-        proc.wait(timeout=15)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=10)
+    if proc.poll() is None:
+        proc.send_signal(signal.CTRL_BREAK_EVENT)
+        proc.wait()
     heard = err_path.read_text(encoding="utf-8", errors="replace")
     say("EXPECT " + expected)
     finals = [line.strip() for line in heard.splitlines() if "live final" in line]
@@ -339,14 +350,12 @@ def ear(audio, expected):
 
 def ready(name, proc):
     pid = ROOT / (name + ".pid")
-    deadline = time.time() + 600
-    while time.time() < deadline:
+    while True:
         if pid.exists() and pid.stat().st_size > 0:
             return
         if proc.poll() is not None:
             raise SystemExit(name + " exited before watching")
         time.sleep(0.2)
-    raise SystemExit(name + " never started watching")
 
 
 def mouth(variant, language, sentence):
@@ -367,18 +376,15 @@ def mouth(variant, language, sentence):
     try:
         ready("chatterbox", proc)
         prompt.write_text(sentence, encoding="utf-8")
-        now = time.time()
-        deadline = time.time() + 180
-        size = 0
-        while time.time() < deadline:
-            if reply.exists() and reply.stat().st_mtime >= now - 1 and wav.exists() and wav.stat().st_size > 44:
-                size = wav.stat().st_size
+        while True:
+            if closed_text(reply) is not None and wav.exists() and wav.stat().st_size > 44:
                 break
             if proc.poll() is not None:
                 break
             time.sleep(0.2)
-        if not size:
+        if not wav.exists() or wav.stat().st_size <= 44:
             raise SystemExit("MOUTH " + variant + " no wav")
+        size = wav.stat().st_size
         audio_bytes = wav.read_bytes()
         (CACHE / (variant + ".wav")).write_bytes(audio_bytes)
         (TRACE.folder / ("mouth-" + variant) / "response.wav").write_bytes(audio_bytes)
@@ -386,30 +392,33 @@ def mouth(variant, language, sentence):
         say("MOUTH " + variant + " " + language + " wav_bytes=" + str(size) + " " + (tail[-1][:160] if tail else ""))
         TRACE.output("mouth-" + variant, "sentence: " + sentence + "\nwav_bytes: " + str(size) + "\n" + (tail[-1] if tail else "") + "\n")
     finally:
-        stop("chatterbox")
-        proc.wait(timeout=20)
+        stop("chatterbox", proc)
 
 
-def ask(label, prompt, timeout, why):
+def ask(label, prompt, proc, why):
     folder = TRACE.begin("gemma-" + label, why)
     (folder / "prompt.txt").write_bytes(prompt.encode("utf-8"))
     resp = ROOT / "gemma.response.txt"
     if resp.exists():
         resp.unlink()
     (ROOT / "gemma.prompt.txt").write_bytes(prompt.encode("utf-8"))
-    now = time.time()
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if resp.exists() and resp.stat().st_mtime >= now - 1 and resp.stat().st_size > 0:
-            text = resp.read_text(encoding="utf-8")
-            (CACHE / ("gemma-" + label + ".txt")).write_text(text, encoding="utf-8")
-            TRACE.output("gemma-" + label, text)
-            say("GEMMA " + label + " saved")
-            say(text)
-            return
+    text = None
+    while True:
+        text = closed_text(resp)
+        if text is not None:
+            break
+        if proc.poll() is not None:
+            break
         time.sleep(0.2)
-    TRACE.output("gemma-" + label, "no reply\n")
-    raise SystemExit("GEMMA " + label + " no reply")
+    if text is None:
+        TRACE.output("gemma-" + label, "process exited without a reply\n")
+        raise SystemExit("GEMMA " + label + " process exited without a reply")
+    (CACHE / ("gemma-" + label + ".txt")).write_text(text, encoding="utf-8")
+    TRACE.output("gemma-" + label, text if text else "empty reply\n")
+    say("GEMMA " + label + " saved")
+    say(text)
+    if not text.strip():
+        raise SystemExit("GEMMA " + label + " empty reply")
 
 
 def gemma(image, labels):
@@ -423,11 +432,10 @@ def gemma(image, labels):
     proc = subprocess.Popen([str(ROOT / "gemma-brain.exe")], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=err)
     try:
         ready("gemma", proc)
-        ask("think", "<|turn>system\n<|think|>Reply with digits only after the thought.<turn|>\n<|turn>user\nWhat is 17 plus 4?<turn|>\n<|turn>model\n", 600, "Gemma thinking turn. The reply is kept whole, after the process is watching.")
-        ask("tool", "<|turn>system\n<|think|>You are a helpful assistant.<|tool>declaration:add{a:<|\"|>number<|\"|>,b:<|\"|>number<|\"|>}<tool|><turn|>\n<|turn>user\nAdd 17 and 4.<turn|>\n<|turn>model\n", 600, "Gemma tool turn. The reply is the tool call, kept after the think reply was saved.")
+        ask("think", "<|turn>system\n<|think|>Reply with digits only after the thought.<turn|>\n<|turn>user\nWhat is 17 plus 4?<turn|>\n<|turn>model\n", proc, "Gemma thinking turn. The reply is the closed response file.")
+        ask("tool", "<|turn>system\n<|think|>You are a helpful assistant.<|tool>declaration:add{a:<|\"|>number<|\"|>,b:<|\"|>number<|\"|>}<tool|><turn|>\n<|turn>user\nAdd 17 and 4.<turn|>\n<|turn>model\n", proc, "Gemma tool turn. The reply is the closed response file.")
     finally:
-        stop("gemma")
-        proc.wait(timeout=30)
+        stop("gemma", proc)
     set_key("gemma.image", str(image))
     (ROOT / "gemma.prompt.txt").write_text("", encoding="utf-8")
     err = open(err_path, "ab")
@@ -435,10 +443,9 @@ def gemma(image, labels):
     try:
         ready("gemma", proc)
         say("EXPECT screen " + " | ".join(labels))
-        ask("image", "<|turn>user\nWhat application is this screen, and which controls can be clicked?<turn|>\n<|turn>model\n", 600, "Gemma image turn. gemma.image in settings.txt is the ScreenSpot file. The reply is the whole generation.")
+        ask("image", "<|turn>user\nWhat application is this screen, and which controls can be clicked?<turn|>\n<|turn>model\n", proc, "Gemma image turn. gemma.image in settings.txt is the ScreenSpot file. The reply is the closed response file.")
     finally:
-        stop("gemma")
-        proc.wait(timeout=30)
+        stop("gemma", proc)
 
 
 def main():
