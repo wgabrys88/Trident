@@ -1,8 +1,8 @@
 # Trident settings. python install.py and the executables read this file and take no arguments.
 # Five parts: Silero VAD ends an utterance, ear.exe transcribes it, Qwen3-0.6B on CPU
 # decides whether Gemma should hear that original line, gemma-brain.exe works, chatterbox.exe speaks.
-# The small model never rewrites. yes forwards the recognizer text unchanged.
-# Always-on: .venv\Scripts\python.exe scripts\host.py
+# The small model never rewrites. tool pass forwards the recognizer text unchanged.
+# Processes: .venv\Scripts\python.exe scripts\vad.py ; .venv\Scripts\python.exe scripts\sense.py ; ear.exe ; gemma-brain.exe ; chatterbox.exe
 # gemma.image is read only when gemma-brain starts. Gemma 4 E2B-it sampling is temp 1.0, top-p 0.95, top-k 64.
 # Iris: gemma.flash-attn off and f16 KV. Lowering gemma.temp empties <|think|> turns.
 # Paths are relative to this file. Booleans are on or off. A missing required key exits.
@@ -130,8 +130,8 @@ sounddevice==0.5.2
 llama-cpp-python==0.3.16
 <<
 
-# Gemma. gemma-brain.exe takes no arguments. gemma.prompt-file is the full prompt.
-# This binary does not render a chat template. scripts/host.py owns turns and gemma.tools.
+# Gemma. gemma-brain.exe takes no arguments. gemma.prompt-file is the original line.
+# This binary wraps the turn, calls speak and see, and writes chatterbox.prompt-file.
 gemma.persist on
 gemma.unload off
 gemma.image
@@ -235,19 +235,19 @@ gemma.timing-per-token off
 gemma.backend-sampling off
 gemma.prompt-file gemma.prompt.txt
 gemma.response-file gemma.response.txt
-# One memory file. Reasoning stays in it. Compacted to this many characters before every Gemma call, including tool rounds.
+# One memory file. Compacted to this many characters once per turn.
 gemma.history-file gemma.history.txt
 gemma.history-max 4000
 gemma.system <<
-You are in the room, not in a chat. The room hears you only when speak ends with <tool_call|>. One sentence about what is happening.
+You are heard only through the speak tool. One sentence about what is happening.
 <<
 gemma.tools <<
 speak
-Say one sentence aloud about what is happening. Close the call with <tool_call|>.
-text: the sentence to say
+Say these words aloud on the speakers. This is the only way you are heard in the room.
+text: the words to say
 
 see
-Look at the picture already in front of you when the words are about an image. Then call speak and close it with <tool_call|>.
+Look at the picture already in front of you. Call this when the words are about an image. Then call speak and tell the room what the picture shows.
 <<
 
 # Sense. Qwen3-0.6B, CPU only. It keeps its own memory and does not speak.
@@ -262,6 +262,7 @@ sense.top-k 20
 sense.top-p 0.8
 sense.memory-file sense.memory.txt
 sense.memory-max 1000
+sense.poll-ms 200
 sense.system <<
 If someone is speaking to you, reply tool pass. Otherwise stay silent.
 <<

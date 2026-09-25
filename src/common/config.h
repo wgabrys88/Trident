@@ -180,7 +180,6 @@ template <class F>
 int watch(const std::string & name, const std::filesystem::path & request, int poll_ms, F fn) {
     write_pid(name);
     std::filesystem::remove(slot(name, "stop"));
-    // Ignore a request already on disk. The first turn is the next write after watch begins.
     auto seen = std::filesystem::file_time_type::min();
     if (std::filesystem::is_regular_file(request)) seen = std::filesystem::last_write_time(request);
     while (!std::filesystem::exists(slot(name, "stop"))) {

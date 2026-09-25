@@ -157,10 +157,7 @@ int main(int, char**) {
         return 1;
     }
     const int code = trident::watch("ear", request, poll_ms, [&](const std::string& audio) {
-        const auto stamp = std::filesystem::last_write_time(request);
-        const auto text = stay_ask(stay, audio_path(audio));
-        if (!std::filesystem::is_regular_file(request) || std::filesystem::last_write_time(request) != stamp) return;
-        std::ofstream(response, std::ios::binary | std::ios::trunc) << text;
+        std::ofstream(response, std::ios::binary | std::ios::trunc) << stay_ask(stay, audio_path(audio));
     });
     close_stay(stay);
     return code;

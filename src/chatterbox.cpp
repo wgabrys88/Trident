@@ -1,10 +1,11 @@
 #include "common/chatterbox_runtime.h"
 #include "common/config.h"
-#include <chrono>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <mmsystem.h>
 #include <string>
+#pragma comment(lib, "winmm.lib")
 
 namespace {
 
@@ -48,28 +49,21 @@ int main(int, char**) {
     const auto response = trident::cfg_path(values, "chatterbox.response-file");
     const auto t3 = trident::cfg_path(values, variant + ".t3");
     const auto s3 = trident::cfg_path(values, variant + ".s3");
-    try {
-        auto engine = trident::chatterbox_make_engine(t3, s3, knobs_from(values, llama));
-        auto speak = [&](const std::string& text) {
-            auto wav = response;
-            wav.replace_extension(".wav");
-            trident::chatterbox_write_wav(wav, engine->synthesize(text, language), rate);
-            std::ofstream(response, std::ios::binary | std::ios::trunc) << trident::path_u8(wav);
-        };
-        if (trident::cfg_on(values, "chatterbox.persist"))
-            return trident::watch("chatterbox", request, poll_ms, speak);
-        const auto text = trident::read_text(request);
-        if (text.empty()) {
-            std::fprintf(stderr, "chatterbox.prompt-file is empty\n");
-            return 2;
-        }
-        auto t0 = std::chrono::steady_clock::now();
-        speak(text);
-        auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-        std::fprintf(stderr, "chatterbox ok | wall %.0f ms\n", ms);
-        return 0;
-    } catch (const std::exception& err) {
-        std::fprintf(stderr, "chatterbox error: %s\n", err.what());
-        return 1;
+    auto engine = trident::chatterbox_make_engine(t3, s3, knobs_from(values, llama));
+    auto speak = [&](const std::string& text) {
+        auto wav = response;
+        wav.replace_extension(".wav");
+        trident::chatterbox_write_wav(wav, engine->synthesize(text, language), rate);
+        std::ofstream(response, std::ios::binary | std::ios::trunc) << trident::path_u8(wav);
+        PlaySoundW(wav.wstring().c_str(), nullptr, SND_FILENAME);
+    };
+    if (trident::cfg_on(values, "chatterbox.persist"))
+        return trident::watch("chatterbox", request, poll_ms, speak);
+    const auto text = trident::read_text(request);
+    if (text.empty()) {
+        std::fprintf(stderr, "chatterbox.prompt-file is empty\n");
+        return 2;
     }
+    speak(text);
+    return 0;
 }

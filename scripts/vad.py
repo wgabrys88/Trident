@@ -1,7 +1,4 @@
-# Silero VAD on CPU. Language-agnostic. An utterance ends when the model reports speech end.
-# The wav path is written to ear.prompt.txt. The recognizer stays idle until then.
-# Knobs are trident.txt vad.* and they are VADIterator's own arguments.
-
+import os
 import wave
 from pathlib import Path
 
@@ -21,16 +18,21 @@ def knob(cfg, key):
     return cfg[key]
 
 
-def listen(prompt: Path, stop, busy) -> None:
+def main():
     cfg = read_cfg()
     rate = int(knob(cfg, "vad.rate"))
     window = int(knob(cfg, "vad.window"))
+    device = knob(cfg, "vad.device")
+    which = int(device) if device.isdigit() else device
+    native = int(sd.query_devices(which, "input")["default_samplerate"])
+    block = int(round(window * native / rate))
+    prompt = ROOT / knob(cfg, "ear.prompt-file")
+    stop = ROOT / "vad.stop"
+    pid = ROOT / "vad.pid"
+    stop.unlink(missing_ok=True)
+    pid.write_text(str(os.getpid()), encoding="ascii")
     torch.set_num_threads(1)
-    model, utils = torch.hub.load(
-        repo_or_dir="snakers4/silero-vad",
-        model="silero_vad",
-        trust_repo=True,
-    )
+    model, utils = torch.hub.load(repo_or_dir="snakers4/silero-vad", model="silero_vad", trust_repo=True)
     model.to("cpu")
     iterator = utils[3](
         model,
@@ -42,28 +44,15 @@ def listen(prompt: Path, stop, busy) -> None:
     CHUNKS.mkdir(parents=True, exist_ok=True)
     speech = []
     index = 0
-    device = cfg.get("vad.device", "").strip()
-    which = int(device) if device.isdigit() else (device or None)
-    native = int(sd.query_devices(which if which is not None else sd.default.device[0], "input")["default_samplerate"])
-    block = int(round(window * native / rate))
-    stream_args = {"samplerate": native, "channels": 1, "dtype": "float32", "blocksize": block}
-    if which is not None:
-        stream_args["device"] = which
-
-    def to_vad(frame):
-        mono = np.squeeze(frame).astype(np.float32)
-        if native == rate and len(mono) == window:
-            return mono
-        return np.interp(np.linspace(0, max(len(mono) - 1, 0), window), np.arange(len(mono)), mono).astype(np.float32)
-
-    with sd.InputStream(**stream_args) as stream:
-        while not stop.is_set():
+    positions = np.linspace(0, 1, window)
+    with sd.InputStream(device=which, samplerate=native, channels=1, dtype="float32", blocksize=block) as stream:
+        while not stop.exists():
             frame, _ = stream.read(block)
-            if busy.is_set():
-                speech = []
-                iterator.reset_states()
-                continue
-            clip = to_vad(frame)
+            mono = np.squeeze(frame).astype(np.float32)
+            if len(mono) == window and native == rate:
+                clip = mono
+            else:
+                clip = np.interp(positions * max(len(mono) - 1, 0), np.arange(len(mono)), mono).astype(np.float32)
             event = iterator(torch.from_numpy(clip), return_seconds=False)
             if event and "start" in event:
                 speech = [clip]
@@ -74,18 +63,20 @@ def listen(prompt: Path, stop, busy) -> None:
             if not (event and "end" in event):
                 continue
             iterator.reset_states()
-            if busy.is_set():
-                speech = []
-                continue
             audio = np.concatenate(speech)
             speech = []
             index += 1
             wav = CHUNKS / f"utt-{index}.wav"
-            pcm = np.clip(audio, -1.0, 1.0)
-            pcm = (pcm * 32767.0).astype(np.int16)
+            pcm = (np.clip(audio, -1.0, 1.0) * 32767.0).astype(np.int16)
             with wave.open(str(wav), "wb") as handle:
                 handle.setnchannels(1)
                 handle.setsampwidth(2)
                 handle.setframerate(rate)
                 handle.writeframes(pcm.tobytes())
             prompt.write_text(str(wav.relative_to(ROOT)).replace("\\", "/"), encoding="utf-8")
+    pid.unlink(missing_ok=True)
+    stop.unlink(missing_ok=True)
+
+
+if __name__ == "__main__":
+    main()
