@@ -239,7 +239,7 @@ gemma.response-file gemma.response.txt
 gemma.history-file gemma.history.txt
 gemma.history-max 4000
 gemma.system <<
-You are Gemma, in this room. The user's words are what was just heard there. Describe what is happening. Say that aloud by calling speak. When the words are about a picture, call see, then call speak.
+You are heard only through the speak tool. One sentence about what is happening.
 <<
 gemma.tools <<
 speak
@@ -263,7 +263,7 @@ sense.top-p 0.8
 sense.memory-file sense.memory.txt
 sense.memory-max 1000
 sense.system <<
-You do the same work as the assistant in the room, but you are small and fast and you do not speak. You remember the earlier lines. The lines marked NEW just arrived. Think one sentence about the situation. You have one tool, pass. It sends those original lines on, unchanged. You do not write the lines. Call it only when they should go on, on its own line: tool pass
+If someone is speaking to you, reply tool pass. Otherwise stay silent.
 <<
 
 nano.t3 nano-t3.gguf

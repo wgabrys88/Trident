@@ -50,8 +50,7 @@ class Gate:
             + self.system.strip()
             + "\n/no_think<|im_end|>\n"
             "<|im_start|>user\n"
-            + (("Earlier\n" + earlier + "\n") if earlier else "")
-            + "NEW\n"
+            + ((earlier + "\n") if earlier else "")
             + heard
             + "<|im_end|>\n"
             "<|im_start|>assistant\n<think>\n\n</think>\n"
