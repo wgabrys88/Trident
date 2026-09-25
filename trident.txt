@@ -134,7 +134,7 @@ llama-cpp-python==0.3.16
 # This binary wraps the turn, calls speak and see, and writes chatterbox.prompt-file.
 gemma.persist on
 gemma.unload off
-gemma.image
+gemma.image picture.png
 gemma.model gemma.gguf
 gemma.mmproj gemma-mmproj.gguf
 gemma.ctx 8192
