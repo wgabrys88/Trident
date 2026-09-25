@@ -4,10 +4,29 @@ import re
 
 Q = '<|"|>'
 
-SYSTEM = (
-    "<|turn>system\n<|think|>You are Trident, a concise voice assistant."
-    f"<|tool>declaration:add{{a:{Q}number{Q},b:{Q}number{Q}}}<tool|><turn|>\n"
-)
+
+def tool_decls(spec: str) -> str:
+    blocks = []
+    for line in spec.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        name, _, rest = line.partition(" ")
+        fields = []
+        for part in rest.split():
+            key, typ = part.split(":")
+            fields.append(f"{key}:{Q}{typ}{Q}")
+        body = "{" + ",".join(fields) + "}" if fields else "{}"
+        blocks.append(f"<|tool>declaration:{name}{body}<tool|>")
+    return "".join(blocks)
+
+
+def system_turn(spec: str) -> str:
+    return (
+        "<|turn>system\n<|think|>You are Trident, a concise voice assistant."
+        + tool_decls(spec)
+        + "<turn|>\n"
+    )
 
 
 def append_history(history: list, user: str, model_raw: str) -> list:
@@ -16,10 +35,6 @@ def append_history(history: list, user: str, model_raw: str) -> list:
         body += "<turn|>"
     history.append(user_turn(user) + model_open() + body + "\n")
     return history
-
-
-def prompt_with_history(history: list, user: str) -> str:
-    return SYSTEM + "".join(history) + user_turn(user) + model_open()
 
 
 def normalize_model(text: str) -> str:
@@ -37,20 +52,18 @@ def model_open() -> str:
     return "<|turn>model\n"
 
 
-def prompt_continue(user: str, model_so_far: str, tool_responses: str, history=None) -> str:
-    head = SYSTEM + ("".join(history) if history else "") + user_turn(user) + model_open()
-    return head + normalize_model(model_so_far) + tool_responses
-
-
-def prompt_for_user(user: str, history=None) -> str:
-    if history:
-        return prompt_with_history(history, user)
-    return SYSTEM + user_turn(user) + model_open()
+def prompt_body(spec: str, history, user: str, model_body: str) -> str:
+    return system_turn(spec) + "".join(history or []) + user_turn(user) + model_open() + model_body
 
 
 def format_tool_response(name: str, fields: dict) -> str:
-    body = ",".join(f"{k}:{v}" for k, v in fields.items())
-    return f"<|tool_response>response:{name}{{{body}}}<tool_response|>"
+    parts = []
+    for key, value in fields.items():
+        if isinstance(value, str):
+            parts.append(f"{key}:{Q}{value}{Q}")
+        else:
+            parts.append(f"{key}:{value}")
+    return f"<|tool_response>response:{name}{{{','.join(parts)}}}<tool_response|>"
 
 
 def strip_thought(text: str) -> str:
@@ -90,21 +103,29 @@ def parse_calls(text: str):
 def run_tool(name: str, args: dict):
     if name == "add":
         return {"sum": int(args["a"]) + int(args["b"])}
+    if name == "sub":
+        return {"difference": int(args["a"]) - int(args["b"])}
+    if name == "now":
+        from datetime import datetime
+        return {"time": datetime.now().strftime("%H:%M")}
     return {"error": "unknown_tool"}
 
 
-def converse(gemma_proc, user_text: str) -> str:
+def converse(gemma_proc, user_text: str, spec: str, history: list) -> str:
     from trident_runtime import gemma_ask
 
     user_text = user_text.strip()
-    model = gemma_ask(gemma_proc, prompt_for_user(user_text))
+    latest = normalize_model(gemma_ask(gemma_proc, prompt_body(spec, history, user_text, "")))
+    body = strip_thought(latest)
     for _ in range(4):
-        calls = parse_calls(model)
+        calls = parse_calls(latest)
         if not calls:
             break
-        chunks = [format_tool_response(n, run_tool(n, a)) for n, a in calls]
-        model = gemma_ask(gemma_proc, prompt_continue(user_text, model, "".join(chunks)))
-    line = speakable(model)
+        body += "".join(format_tool_response(n, run_tool(n, a)) for n, a in calls)
+        latest = normalize_model(gemma_ask(gemma_proc, prompt_body(spec, history, user_text, body)))
+        body += strip_thought(latest)
+    append_history(history, user_text, body)
+    line = speakable(body)
     if not line:
         raise SystemExit("gemma produced no speakable text")
     return line

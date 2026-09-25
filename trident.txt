@@ -1,6 +1,7 @@
 # Trident settings. python install.py and the executables read this file and take no arguments.
 # Product loop (ear or text -> Gemma tools -> mouth): .venv\Scripts\python.exe scripts\host.py
-# Always-on orchestrator: scripts\host.py --serve  (drop utterances in user.prompt.txt)
+# Always-on: scripts\host.py --live  (ear stays resident, finals land in ear.response.txt)
+# Text inbox: scripts\host.py --serve  (user.prompt.txt)
 # Component demo battery: scripts\harness.py. gemma.image is fixed at gemma-brain startup.
 # Paths are relative to this file. Booleans are on or off. A missing required key exits.
 # A value ending in << runs until a line that is only <<.
@@ -124,7 +125,7 @@ tokenizers==0.23.2
 <<
 
 # Gemma. gemma-brain.exe takes no arguments. gemma.prompt-file is the full prompt.
-# This binary does not render a chat template and does not read a tool list.
+# This binary does not render a chat template. scripts/host.py owns turns and gemma.tools.
 gemma.persist on
 gemma.unload off
 gemma.image
@@ -228,6 +229,11 @@ gemma.timing-per-token off
 gemma.backend-sampling off
 gemma.prompt-file gemma.prompt.txt
 gemma.response-file gemma.response.txt
+gemma.tools <<
+add a:number b:number
+sub a:number b:number
+now
+<<
 
 nano.t3 nano-t3.gguf
 nano.s3 nano-s3.gguf
@@ -285,8 +291,9 @@ bake.mel-centered off
 
 # Ear. ear.exe takes no arguments. ear.prompt-file is an audio path, relative paths beside this file.
 # ear.opt.<flag> forwards to nemo-speech: off or empty is omitted, on is the bare flag, any other value is the argument.
-# The ear starts nemo-speech.exe once per file. A live microphone is nemo-speech.exe transcribe --live.
+# ear.live off watches ear.prompt-file and transcribes that path. ear.live on keeps nemo resident and writes each final into ear.response-file.
 ear.persist on
+ear.live off
 ear.unload off
 ear.poll-ms 200
 ear.model ear.gguf

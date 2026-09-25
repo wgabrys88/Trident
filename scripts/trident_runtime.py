@@ -10,6 +10,56 @@ ROOT = Path(__file__).resolve().parents[1]
 CFG = ROOT / "trident.txt"
 
 
+def read_cfg():
+    out = {}
+    lines = CFG.read_text(encoding="utf-8-sig").splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        i += 1
+        if not line or line.startswith("#"):
+            continue
+        if line.endswith("<<"):
+            key = line[:-2].strip()
+            body = []
+            while i < len(lines) and lines[i] != "<<":
+                body.append(lines[i])
+                i += 1
+            i += 1
+            out[key] = "\n".join(body)
+            continue
+        if " " not in line:
+            out[line] = ""
+        else:
+            key, value = line.split(" ", 1)
+            out[key] = value
+    return out
+
+
+def require_gemma():
+    cfg = read_cfg()
+    if cfg.get("gemma.temp") != "1.0" or cfg.get("gemma.top-p") != "0.95" or cfg.get("gemma.top-k") != "64":
+        raise SystemExit("gemma sampling must stay temp 1.0 top-p 0.95 top-k 64")
+    if cfg.get("gemma.flash-attn") != "off" or cfg.get("gemma.cache-type-k") != "f16" or cfg.get("gemma.cache-type-v") != "f16":
+        raise SystemExit("Iris needs gemma.flash-attn off and f16 KV")
+    return cfg
+
+
+def set_key(key, value):
+    lines = CFG.read_text(encoding="utf-8").splitlines()
+    out = []
+    hit = False
+    for line in lines:
+        if line == key or (line.startswith(key + " ") and not line.startswith(key + "-")):
+            out.append(key if value == "" else key + " " + value)
+            hit = True
+        else:
+            out.append(line)
+    if not hit:
+        raise SystemExit("missing " + key)
+    CFG.write_text("\n".join(out) + "\n", encoding="utf-8")
+
+
 def closed_text(path: Path):
     if not path.exists():
         return None
