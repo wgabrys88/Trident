@@ -239,7 +239,9 @@ gemma.response-file gemma.response.txt
 gemma.history-file gemma.history.txt
 gemma.history-max 4000
 gemma.tools <<
-speak text:string
+speak
+Say these words aloud on the speakers. This is the only way you are heard in the room.
+text: the words to say
 <<
 
 # Sense. Qwen3-0.6B, CPU only. yes sends the original transcript to Gemma. no sends nothing.
@@ -302,11 +304,8 @@ bake.mel-power 1
 bake.mel-floor 1e-5
 bake.mel-centered off
 
-# Ear. ear.exe takes no arguments. ear.prompt-file is an audio path, relative paths beside this file.
-# ear.opt.<flag> forwards to nemo-speech: off or empty is omitted, on is the bare flag, any other value is the argument.
-# ear.live off: Silero VAD on CPU ends an utterance, then ear.exe transcribes that wav. The recognizer is idle in silence.
-ear.persist on
-ear.live off
+# Ear. ear.exe takes no arguments. VAD writes a wav path into ear.prompt-file.
+# The recognizer stays loaded and transcribes that wav. ear.opt.<flag> forwards to nemo-speech.
 ear.unload off
 ear.poll-ms 200
 ear.model ear.gguf
