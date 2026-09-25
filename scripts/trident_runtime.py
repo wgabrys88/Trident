@@ -36,30 +36,6 @@ def read_cfg():
     return out
 
 
-def require_gemma():
-    cfg = read_cfg()
-    if cfg.get("gemma.temp") != "1.0" or cfg.get("gemma.top-p") != "0.95" or cfg.get("gemma.top-k") != "64":
-        raise SystemExit("gemma sampling must stay temp 1.0 top-p 0.95 top-k 64")
-    if cfg.get("gemma.flash-attn") != "off" or cfg.get("gemma.cache-type-k") != "f16" or cfg.get("gemma.cache-type-v") != "f16":
-        raise SystemExit("Iris needs gemma.flash-attn off and f16 KV")
-    return cfg
-
-
-def set_key(key, value):
-    lines = CFG.read_text(encoding="utf-8").splitlines()
-    out = []
-    hit = False
-    for line in lines:
-        if line == key or (line.startswith(key + " ") and not line.startswith(key + "-")):
-            out.append(key if value == "" else key + " " + value)
-            hit = True
-        else:
-            out.append(line)
-    if not hit:
-        raise SystemExit("missing " + key)
-    CFG.write_text("\n".join(out) + "\n", encoding="utf-8")
-
-
 def closed_text(path: Path):
     if not path.exists():
         return None
@@ -80,18 +56,6 @@ def closed_text(path: Path):
         return None
     kernel32.CloseHandle(handle)
     return path.read_text(encoding="utf-8")
-
-
-def wait_closed(path: Path, proc, timeout=600):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        text = closed_text(path)
-        if text is not None:
-            return text
-        if proc.poll() is not None:
-            return None
-        time.sleep(0.2)
-    return None
 
 
 def wait_pid(name: str, proc, timeout=180):
@@ -185,21 +149,3 @@ def mouth_speak(proc, text: str):
             break
         time.sleep(0.2)
     raise SystemExit("mouth missing wav")
-
-
-def ear_transcribe(audio: Path) -> str:
-    req = ROOT / "ear.prompt.txt"
-    resp = ROOT / "ear.response.txt"
-    resp.unlink(missing_ok=True)
-    rel = audio if not audio.is_absolute() else audio.relative_to(ROOT)
-    req.write_text(str(rel).replace("\\", "/"), encoding="utf-8")
-    proc = subprocess.Popen([str(ROOT / "ear.exe")], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    try:
-        wait_pid("ear", proc, timeout=60)
-        text = wait_closed(resp, proc, timeout=120)
-        if not text or not text.strip():
-            raise SystemExit("ear empty transcript")
-        return text.strip()
-    finally:
-        if proc.poll() is None:
-            stop_resident("ear", proc)

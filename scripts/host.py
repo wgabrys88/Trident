@@ -1,8 +1,6 @@
 # Always-on loop. Ear, Gemma, and chatterbox stay resident.
-#   .venv\Scripts\python.exe scripts\host.py
-# One shot: .venv\Scripts\python.exe scripts\host.py --text "Add 17 and 4."
+# .venv\Scripts\python.exe scripts\host.py
 
-import argparse
 import sys
 import time
 from pathlib import Path
@@ -11,16 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from trident_gemma import converse
-from trident_runtime import (
-    closed_text,
-    ear_transcribe,
-    mouth_speak,
-    require_gemma,
-    set_key,
-    start_resident,
-    stop_resident,
-    unload_all,
-)
+from trident_runtime import closed_text, mouth_speak, read_cfg, start_resident, stop_resident, unload_all
 
 USER_PROMPT = ROOT / "user.prompt.txt"
 EAR_RESPONSE = ROOT / "ear.response.txt"
@@ -44,16 +33,14 @@ def turn(gemma, mouth, spec, history, user):
     mouth_speak(mouth, reply)
 
 
-def residents():
-    return start_resident("gemma-brain.exe", "gemma"), start_resident("chatterbox.exe", "chatterbox")
-
-
-def always(spec):
+def main():
+    spec = read_cfg().get("gemma.tools", "")
     unload_all()
     USER_PROMPT.write_text("", encoding="utf-8")
     EAR_RESPONSE.write_text("", encoding="utf-8")
     ear = start_resident("ear.exe", "ear")
-    gemma, mouth = residents()
+    gemma = start_resident("gemma-brain.exe", "gemma")
+    mouth = start_resident("chatterbox.exe", "chatterbox")
     history = []
     heard_seen = ""
     typed_seen = 0.0
@@ -75,33 +62,6 @@ def always(spec):
             time.sleep(0.2)
     finally:
         stop_resident("ear", ear)
-        stop_resident("chatterbox", mouth)
-        stop_resident("gemma", gemma)
-
-
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--text", help="One utterance, then exit")
-    ap.add_argument("--audio", type=Path, help="One audio file via ear.exe, then exit")
-    args = ap.parse_args()
-    spec = require_gemma().get("gemma.tools", "")
-    if not args.text and not args.audio:
-        always(spec)
-        return
-    if bool(args.text) == bool(args.audio):
-        raise SystemExit("pass only one of --text or --audio")
-    unload_all()
-    if args.audio:
-        set_key("ear.live", "off")
-    try:
-        user = args.text.strip() if args.text else ear_transcribe(args.audio.resolve())
-    finally:
-        if args.audio:
-            set_key("ear.live", "on")
-    gemma, mouth = residents()
-    try:
-        turn(gemma, mouth, spec, [], user)
-    finally:
         stop_resident("chatterbox", mouth)
         stop_resident("gemma", gemma)
 

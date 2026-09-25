@@ -1,7 +1,8 @@
 # Trident settings. python install.py and the executables read this file and take no arguments.
-# Product loop (ear or text -> Gemma tools -> mouth): .venv\Scripts\python.exe scripts\host.py
-# Always-on: scripts\host.py  (ear, Gemma, and chatterbox stay resident; mic finals and user.prompt.txt both wake a turn)
-# Component demo battery: scripts\harness.py. gemma.image is fixed at gemma-brain startup.
+# Always-on: .venv\Scripts\python.exe scripts\host.py
+# Ear, Gemma, and chatterbox stay resident. Mic finals and user.prompt.txt wake a turn.
+# gemma.image is read only when gemma-brain starts. Gemma 4 E2B-it sampling is temp 1.0, top-p 0.95, top-k 64.
+# Iris: gemma.flash-attn off and f16 KV. Lowering gemma.temp empties <|think|> turns.
 # Paths are relative to this file. Booleans are on or off. A missing required key exits.
 # A value ending in << runs until a line that is only <<.
 # Deliverables land next to this file. Clones, cmake trees, and checkpoints stay under .install.
