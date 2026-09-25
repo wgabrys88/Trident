@@ -33,14 +33,18 @@ def main():
     history_path = ROOT / cfg.get("gemma.history-file", "gemma.history.txt")
     unload_all()
     EAR_RESPONSE.write_text("", encoding="utf-8")
+    (ROOT / "ear.prompt.txt").write_text("", encoding="utf-8")
     ear = start_resident("ear.exe", "ear")
     gemma = start_resident("gemma-brain.exe", "gemma")
     mouth = start_resident("chatterbox.exe", "chatterbox")
+    interval = float(cfg.get("sense.interval", "5"))
     gate = Gate(
         ROOT / cfg.get("sense.model", "sense.gguf"),
         int(cfg.get("sense.threads", "4")),
         int(cfg.get("sense.ctx", "512")),
-        int(cfg.get("sense.n-predict", "2")),
+        int(cfg.get("sense.n-predict", "4")),
+        ROOT / cfg.get("sense.memory-file", "sense.memory.txt"),
+        int(cfg.get("sense.memory-max", "2000")),
     )
     mouth_busy = threading.Event()
     vad_stop = threading.Event()
@@ -49,7 +53,8 @@ def main():
     raw = history_path.read_text(encoding="utf-8") if history_path.exists() else ""
     history = ["<|turn>" + part for part in raw.split("<|turn>") if part.strip()]
     heard_stamp = 0.0
-    waiting = []
+    pending = []
+    window_at = time.monotonic()
 
     def act(name, args):
         if name == "see":
@@ -80,17 +85,21 @@ def main():
                     text = closed_text(EAR_RESPONSE)
                     heard = text.strip() if text else ""
                     if heard:
-                        waiting.append(heard)
-            if waiting:
-                heard = waiting.pop(0)
-                log("HEARD", heard)
-                original = gate.pass_original(heard)
-                if not original:
-                    log("HOLD", heard)
-                else:
-                    log("FORWARD", original)
-                    converse(gemma, original, spec, history, limit, history_path, act)
-            time.sleep(0.05 if waiting else 0.2)
+                        log("HEARD", heard)
+                        pending.append(heard)
+            if time.monotonic() - window_at >= interval:
+                window_at = time.monotonic()
+                if pending:
+                    block = "\n".join(pending)
+                    pending = []
+                    log("WINDOW", block)
+                    original = gate.pass_original(block)
+                    if not original:
+                        log("HOLD", block)
+                    else:
+                        log("FORWARD", original)
+                        converse(gemma, original, spec, history, limit, history_path, act)
+            time.sleep(0.05 if pending else 0.2)
     finally:
         vad_stop.set()
         vad.join(timeout=2)

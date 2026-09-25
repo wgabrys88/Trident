@@ -1,5 +1,5 @@
 diff --git a/app/transcribe.cpp b/app/transcribe.cpp
-index 8ba4f1f..24d845c 100644
+index 8ba4f1f..3913e5b 100644
 --- a/app/transcribe.cpp
 +++ b/app/transcribe.cpp
 @@ -14,6 +14,7 @@
@@ -50,6 +50,15 @@ index 8ba4f1f..24d845c 100644
          "  --no-warmup               Skip model warmup\n"
          "  --no-batching             Disable dynamic batching\n"
          "  --force                   Replace existing output files\n",
+@@ -671,7 +678,7 @@ command_transcribe(int argc, char** argv) {
+         Options options = parse_options(argc, argv);
+         std::vector<fs::path> inputs;
+         bool directory = false;
+-        if (!options.live) {
++        if (!options.live && !options.stay) {
+             inputs = collect_wav_inputs(options.input, options.recursive);
+             directory = fs::is_directory(options.input);
+         }
 @@ -782,6 +789,33 @@ command_transcribe(int argc, char** argv) {
          if (options.warmup)
              engines.warmup();

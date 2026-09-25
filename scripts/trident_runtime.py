@@ -122,9 +122,10 @@ def gemma_ask(proc, prompt: str) -> str:
     started = time.time()
     req.write_text(prompt, encoding="utf-8")
     while time.time() < started + 600:
-        text = closed_text(resp)
-        if text and text.strip() and resp.exists() and resp.stat().st_mtime >= started - 1:
-            return text
+        if resp.exists() and resp.stat().st_mtime >= started - 1:
+            text = closed_text(resp)
+            if text is not None:
+                return text
         if proc.poll() is not None:
             break
         time.sleep(0.2)

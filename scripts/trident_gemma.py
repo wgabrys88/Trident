@@ -47,13 +47,9 @@ def tool_decls(spec: str) -> str:
 
 def system_turn(spec: str) -> str:
     return (
-        "<|turn>system\n<|think|>You are Gemma, the assistant in this room. "
-        "A line reaches you only when the small model answered yes, and the line is the original speech. "
-        "Keep that memory. From its meaning, do the thing. "
-        "Before you act, call speak and say what you are doing and what you plan. "
-        "When the meaning is a picture, call see, then call speak and say what the picture shows. "
-        "When you finish, call speak with the result. "
-        "You are heard only through your tools."
+        "<|turn>system\n<|think|>You are Gemma. "
+        "Say the user's words aloud, exactly as received, by calling speak. "
+        "Do not add words. Do not call any other tool."
         + tool_decls(spec)
         + "<turn|>\n"
     )

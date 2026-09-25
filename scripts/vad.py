@@ -22,13 +22,17 @@ def listen(prompt: Path, stop, busy) -> None:
         trust_repo=True,
     )
     model.to("cpu")
-    iterator = utils[3](model, sampling_rate=RATE)
+    iterator = utils[3](model, sampling_rate=RATE, min_silence_duration_ms=800)
     CHUNKS.mkdir(parents=True, exist_ok=True)
     speech = []
     index = 0
     with sd.InputStream(samplerate=RATE, channels=1, dtype="float32", blocksize=WINDOW) as stream:
         while not stop.is_set():
             frame, _ = stream.read(WINDOW)
+            if busy.is_set():
+                speech = []
+                iterator.reset_states()
+                continue
             clip = np.squeeze(frame).astype(np.float32)
             event = iterator(torch.from_numpy(clip), return_seconds=False)
             if event and "start" in event:

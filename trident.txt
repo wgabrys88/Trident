@@ -96,7 +96,7 @@ install.ggml_cuda_nccl off
 install.ear_gguf_name ear.gguf
 install.ear_gguf_url https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b/resolve/main/nemotron-3.5-asr-streaming-0.6b.q8_0.gguf
 install.sense_name sense.gguf
-install.sense_url https://huggingface.co/bartowski/Qwen_Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q4_K_M.gguf
+install.sense_url https://huggingface.co/bartowski/Qwen_Qwen3-0.6B-GGUF/resolve/main/Qwen_Qwen3-0.6B-Q4_K_M.gguf
 install.ear_backend cpu
 install.ear_profile core
 install.ear_config Release
@@ -247,11 +247,16 @@ see
 Look at the picture already in front of you. Call this when the words are about an image. Then call speak and tell the room what the picture shows.
 <<
 
-# Sense. Qwen3-0.6B, CPU only. yes sends the original transcript to Gemma. no sends nothing.
+# Sense. Qwen3-0.6B, CPU only. It keeps its own memory and never hears about Gemma.
+# Every sense.interval seconds, finished transcripts from that window go to it as one block.
+# yes passes that block on unchanged. no passes nothing. sense.memory-max is the only limit.
 sense.model sense.gguf
 sense.ctx 512
 sense.threads 4
-sense.n-predict 2
+sense.n-predict 4
+sense.interval 5
+sense.memory-file sense.memory.txt
+sense.memory-max 2000
 
 nano.t3 nano-t3.gguf
 nano.s3 nano-s3.gguf

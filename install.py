@@ -374,9 +374,15 @@ def build_mouth(sdk: Path) -> None:
 
 def apply_nemo_stay(home: Path) -> None:
     target = home / "app" / "transcribe.cpp"
-    if "TRIDENT_STAY" in target.read_text(encoding="utf-8"):
+    marker = home / "app" / ".trident-stay"
+    patch = ROOT / "src" / "nemo-stay.patch"
+    current = digest(patch)
+    applied = marker.read_text(encoding="utf-8").strip() if marker.is_file() else ""
+    if applied == current and "TRIDENT_STAY" in target.read_text(encoding="utf-8"):
         return
-    run(["git", "-C", str(home), "apply", "--whitespace=nowarn", str(ROOT / "src" / "nemo-stay.patch")])
+    run(["git", "-C", str(home), "checkout", "--", "app/transcribe.cpp"])
+    run(["git", "-C", str(home), "apply", "--whitespace=nowarn", str(patch)])
+    marker.write_text(current + "\n", encoding="utf-8")
 
 
 def build_ear() -> None:
