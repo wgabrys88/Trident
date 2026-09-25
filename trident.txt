@@ -1,4 +1,6 @@
 # Trident settings. python install.py and the executables read this file and take no arguments.
+# Product loop (ear or text -> Gemma tools -> mouth): .venv\Scripts\python.exe scripts\host.py
+# Component demo battery: scripts\harness.py. gemma.image is fixed at gemma-brain startup.
 # Paths are relative to this file. Booleans are on or off. A missing required key exits.
 # A value ending in << runs until a line that is only <<.
 # Deliverables land next to this file. Clones, cmake trees, and checkpoints stay under .install.

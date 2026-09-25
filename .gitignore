@@ -32,6 +32,9 @@
 !/scripts/convert_s3.py
 !/scripts/convert_t3.py
 !/scripts/harness.py
+!/scripts/host.py
+!/scripts/trident_gemma.py
+!/scripts/trident_runtime.py
 !/scripts/quant.py
 !/scripts/quant_s3.json
 !/scripts/quant_t3.json

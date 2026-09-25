@@ -1,18 +1,18 @@
 # Trident demo harness. Run from repo root: .venv\Scripts\python.exe scripts\harness.py
 # Fixtures live under .install/harness. Each demo_* function matches a manual scenario.
 
-import ctypes
 import re
 import signal
 import subprocess
 import sys
 import threading
 import time
-from ctypes import wintypes
 from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from trident_runtime import closed_text, stop_resident, wait_closed, wait_pid
 CACHE = ROOT / ".install" / "harness"
 CFG = ROOT / "trident.txt"
 TRACE = None
@@ -257,55 +257,23 @@ def set_key(key, value):
     CFG.write_text("\n".join(out) + "\n", encoding="utf-8")
 
 
-def closed_text(path):
-    if not path.exists():
-        return None
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CreateFileW.argtypes = [
-        wintypes.LPCWSTR,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.LPVOID,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.HANDLE,
-    ]
-    kernel32.CreateFileW.restype = wintypes.HANDLE
-    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-    handle = kernel32.CreateFileW(str(path), 0x80000000, 0, None, 3, 0x80, None)
-    if handle == wintypes.HANDLE(-1).value:
-        return None
-    kernel32.CloseHandle(handle)
-    return path.read_text(encoding="utf-8")
-
-
-def wait_closed(path, proc, timeout=600):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        text = closed_text(path)
-        if text is not None:
-            return text
-        if proc.poll() is not None:
-            return None
-        time.sleep(0.2)
-    return None
-
-
-def stop_resident(name, proc):
-    (ROOT / (name + ".stop")).write_text("1", encoding="ascii")
-    proc.wait()
-
-
-def wait_pid(name, proc, timeout=120):
-    pid = ROOT / (name + ".pid")
-    deadline = time.time() + timeout
-    while time.time() < deadline:
-        if pid.exists() and pid.stat().st_size > 0:
-            return
-        if proc.poll() is not None:
-            raise SystemExit(name + " exited before watching")
-        time.sleep(0.2)
-    raise SystemExit(name + " pid timeout")
+def demo_assistant_loop():
+    TRACE.begin("assistant", "host.py text -> Gemma tool loop -> chatterbox turbo")
+    done = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "host.py"), "--text", "Add 17 and 4."],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    out = done.stdout + done.stderr
+    TRACE.output("assistant", out)
+    if done.returncode != 0:
+        raise SystemExit("assistant loop failed")
+    if "21" not in out:
+        raise SystemExit("assistant loop missing answer")
+    say("ASSISTANT ok")
 
 
 def fetch_fixtures():
@@ -528,6 +496,7 @@ def main():
         demo_mouth("v3", "pl", "Pięć żółtych łodzi płynie wzdłuż rzeki.")
         demo_gemma_text()
         demo_gemma_image(image, labels)
+        demo_assistant_loop()
     finally:
         CFG.write_text(original, encoding="utf-8")
         ps("set", laptop)

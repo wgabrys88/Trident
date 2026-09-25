@@ -1,0 +1,155 @@
+# Shared file-watch helpers for Trident residents. No CLI flags on the exes.
+
+import ctypes
+import subprocess
+import time
+from ctypes import wintypes
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+CFG = ROOT / "trident.txt"
+
+
+def closed_text(path: Path):
+    if not path.exists():
+        return None
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel32.CreateFileW(str(path), 0x80000000, 0, None, 3, 0x80, None)
+    if handle == wintypes.HANDLE(-1).value:
+        return None
+    kernel32.CloseHandle(handle)
+    return path.read_text(encoding="utf-8")
+
+
+def wait_closed(path: Path, proc, timeout=600):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        text = closed_text(path)
+        if text is not None:
+            return text
+        if proc.poll() is not None:
+            return None
+        time.sleep(0.2)
+    return None
+
+
+def wait_pid(name: str, proc, timeout=180):
+    pid = ROOT / (name + ".pid")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if pid.exists() and pid.stat().st_size > 0:
+            return
+        if proc.poll() is not None:
+            raise SystemExit(name + " exited before watching")
+        time.sleep(0.2)
+    raise SystemExit(name + " pid timeout")
+
+
+def stop_resident(name: str, proc):
+    (ROOT / (name + ".stop")).write_text("1", encoding="ascii")
+    proc.wait()
+
+
+def start_resident(exe: str, name: str):
+    proc = subprocess.Popen(
+        [str(ROOT / exe)],
+        cwd=ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    wait_pid(name, proc)
+    return proc
+
+
+def unload_slot(unload_key: str, exe: str):
+    lines = CFG.read_text(encoding="utf-8").splitlines()
+    out = []
+    for line in lines:
+        if line.startswith(unload_key + " "):
+            out.append(unload_key + " on")
+        else:
+            out.append(line)
+    CFG.write_text("\n".join(out) + "\n", encoding="utf-8")
+    subprocess.run([str(ROOT / exe)], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    restored = []
+    for line in lines:
+        restored.append(line)
+    CFG.write_text("\n".join(restored) + "\n", encoding="utf-8")
+
+
+def unload_all():
+    for name, key, exe in (
+        ("gemma", "gemma.unload", "gemma-brain.exe"),
+        ("chatterbox", "chatterbox.unload", "chatterbox.exe"),
+        ("ear", "ear.unload", "ear.exe"),
+    ):
+        if (ROOT / f"{name}.pid").exists():
+            unload_slot(key, exe)
+
+
+def gemma_ask(proc, prompt: str) -> str:
+    req = ROOT / "gemma.prompt.txt"
+    resp = ROOT / "gemma.response.txt"
+    stamp = resp.stat().st_mtime if resp.exists() else 0
+    try:
+        resp.unlink(missing_ok=True)
+        stamp = 0
+    except OSError:
+        pass
+    req.write_text(prompt, encoding="utf-8")
+    deadline = time.time() + 600
+    while time.time() < deadline:
+        text = closed_text(resp)
+        if text is not None and resp.exists() and resp.stat().st_mtime > stamp:
+            if text.strip():
+                return text
+        if proc.poll() is not None:
+            break
+        time.sleep(0.2)
+    raise SystemExit("gemma empty reply")
+
+
+def mouth_speak(proc, text: str):
+    prompt = ROOT / "chatterbox.prompt.txt"
+    wav = ROOT / "chatterbox.response.wav"
+    reply = ROOT / "chatterbox.response.txt"
+    wav.unlink(missing_ok=True)
+    reply.unlink(missing_ok=True)
+    prompt.write_text(text, encoding="utf-8")
+    deadline = time.time() + 300
+    while time.time() < deadline:
+        if closed_text(reply) is not None and wav.exists() and wav.stat().st_size > 44:
+            return wav
+        if proc.poll() is not None:
+            break
+        time.sleep(0.2)
+    raise SystemExit("mouth missing wav")
+
+
+def ear_transcribe(audio: Path) -> str:
+    req = ROOT / "ear.prompt.txt"
+    resp = ROOT / "ear.response.txt"
+    resp.unlink(missing_ok=True)
+    rel = audio if not audio.is_absolute() else audio.relative_to(ROOT)
+    req.write_text(str(rel).replace("\\", "/"), encoding="utf-8")
+    proc = subprocess.Popen([str(ROOT / "ear.exe")], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        wait_pid("ear", proc, timeout=60)
+        text = wait_closed(resp, proc, timeout=120)
+        if not text or not text.strip():
+            raise SystemExit("ear empty transcript")
+        return text.strip()
+    finally:
+        if proc.poll() is None:
+            stop_resident("ear", proc)
