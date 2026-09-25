@@ -52,6 +52,10 @@ def main():
     waiting = []
 
     def act(name, args):
+        if name == "see":
+            path = cfg.get("gemma.image", "").strip()
+            log("SEE", path or "none")
+            return {"image": path or "none"}
         if name != "speak":
             return {"error": "unknown"}
         text = str(args.get("text", "")).strip()

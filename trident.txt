@@ -242,6 +242,9 @@ gemma.tools <<
 speak
 Say these words aloud on the speakers. This is the only way you are heard in the room.
 text: the words to say
+
+see
+Look at the picture already in front of you. Call this when the words are about an image. Then call speak and tell the room what the picture shows.
 <<
 
 # Sense. Qwen3-0.6B, CPU only. yes sends the original transcript to Gemma. no sends nothing.
