@@ -31,7 +31,7 @@ install.src_ggml .install/src/ggml
 install.src_llama .install/src/llama.cpp
 install.src_nemo .install/src/nemo-speech
 install.build_mouth .install/build/mouth
-install.build_gemma .install/build/gemma
+install.build_gemma C:\tgemma
 install.build_ear .install/build/ear
 install.cache .install/cache
 install.ggml_repo https://github.com/ggml-org/ggml.git
@@ -323,7 +323,7 @@ bake.mel-centered off
 
 # VAD. Silero VADIterator only. vad.window 512 is the 16 kHz frame the model requires.
 vad.rate 16000
-vad.device 17
+vad.device CABLE Output (VB-Audio Virtual Cable), Windows WASAPI
 vad.window 512
 vad.threshold 0.5
 vad.min-silence-ms 400
