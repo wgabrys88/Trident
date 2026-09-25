@@ -1,7 +1,6 @@
 # Trident settings. python install.py and the executables read this file and take no arguments.
 # Product loop (ear or text -> Gemma tools -> mouth): .venv\Scripts\python.exe scripts\host.py
-# Always-on: scripts\host.py --live  (ear stays resident, finals land in ear.response.txt)
-# Text inbox: scripts\host.py --serve  (user.prompt.txt)
+# Always-on: scripts\host.py  (ear, Gemma, and chatterbox stay resident; mic finals and user.prompt.txt both wake a turn)
 # Component demo battery: scripts\harness.py. gemma.image is fixed at gemma-brain startup.
 # Paths are relative to this file. Booleans are on or off. A missing required key exits.
 # A value ending in << runs until a line that is only <<.
@@ -293,7 +292,7 @@ bake.mel-centered off
 # ear.opt.<flag> forwards to nemo-speech: off or empty is omitted, on is the bare flag, any other value is the argument.
 # ear.live off watches ear.prompt-file and transcribes that path. ear.live on keeps nemo resident and writes each final into ear.response-file.
 ear.persist on
-ear.live off
+ear.live on
 ear.unload off
 ear.poll-ms 200
 ear.model ear.gguf

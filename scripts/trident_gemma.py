@@ -67,7 +67,8 @@ def format_tool_response(name: str, fields: dict) -> str:
 
 
 def strip_thought(text: str) -> str:
-    return re.sub(r"<\|channel>thought\n.*?<channel\|>", "", text, flags=re.DOTALL)
+    text = re.sub(r"<\|channel>thought\n.*?<channel\|>", "", text, flags=re.DOTALL)
+    return re.sub(r"<\|channel>thought\n.*", "", text, flags=re.DOTALL)
 
 
 def speakable(text: str) -> str:
@@ -125,7 +126,4 @@ def converse(gemma_proc, user_text: str, spec: str, history: list) -> str:
         latest = normalize_model(gemma_ask(gemma_proc, prompt_body(spec, history, user_text, body)))
         body += strip_thought(latest)
     append_history(history, user_text, body)
-    line = speakable(body)
-    if not line:
-        raise SystemExit("gemma produced no speakable text")
-    return line
+    return speakable(body)
