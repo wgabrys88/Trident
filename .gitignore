@@ -32,6 +32,7 @@
 !/scripts/convert_s3.py
 !/scripts/convert_t3.py
 !/scripts/host.py
+!/scripts/vad.py
 !/scripts/trident_gemma.py
 !/scripts/trident_runtime.py
 !/scripts/quant.py
@@ -57,5 +58,6 @@
 /*.prompt.txt
 /*.response.txt
 /*.response.wav
+/*.history.txt
 /*.run.log
 /*.run.err

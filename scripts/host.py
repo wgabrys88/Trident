@@ -2,6 +2,7 @@
 # .venv\Scripts\python.exe scripts\host.py
 
 import sys
+import threading
 import time
 import winsound
 from pathlib import Path
@@ -11,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from trident_gemma import converse
 from trident_runtime import closed_text, mouth_speak, read_cfg, start_resident, stop_resident, unload_all
+from vad import listen
 
 USER_PROMPT = ROOT / "user.prompt.txt"
 EAR_RESPONSE = ROOT / "ear.response.txt"
@@ -46,12 +48,15 @@ def main():
     ear = start_resident("ear.exe", "ear")
     gemma = start_resident("gemma-brain.exe", "gemma")
     mouth = start_resident("chatterbox.exe", "chatterbox")
+    vad_stop = threading.Event()
+    vad = threading.Thread(target=listen, args=(ROOT / "ear.prompt.txt", vad_stop), daemon=True)
+    vad.start()
     raw = history_path.read_text(encoding="utf-8") if history_path.exists() else ""
     history = ["<|turn>" + part for part in raw.split("<|turn>") if part.strip()]
     heard_seen = ""
     typed_seen = 0.0
     try:
-        log("ON", "ear.response.txt + user.prompt.txt")
+        log("ON", "silero vad -> ear.prompt.txt")
         while True:
             text = closed_text(EAR_RESPONSE)
             heard = text.strip() if text else ""
@@ -67,6 +72,8 @@ def main():
                         turn(gemma, mouth, spec, history, user, limit, history_path)
             time.sleep(0.2)
     finally:
+        vad_stop.set()
+        vad.join(timeout=2)
         stop_resident("ear", ear)
         stop_resident("chatterbox", mouth)
         stop_resident("gemma", gemma)
