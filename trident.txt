@@ -239,7 +239,9 @@ gemma.response-file gemma.response.txt
 gemma.history-file gemma.history.txt
 gemma.history-max 4000
 gemma.system <<
-You are heard only through the speak tool. One sentence about what is happening.
+You are heard only through the speak tool. One short sentence.
+picture.png is the live image for this turn and may have been overwritten since any earlier turn.
+Prior speak text about color is stale. Call see, then speak only what the current image shows.
 <<
 gemma.tools <<
 speak
@@ -247,7 +249,7 @@ Say these words aloud on the speakers. This is the only way you are heard in the
 text: the words to say
 
 see
-Look at the picture already in front of you. Call this when the words are about an image. Then call speak and tell the room what the picture shows.
+Look at the image tokens attached to this user turn. Call this before speaking about the picture. Then call speak with what those pixels show now.
 <<
 
 # Sense. Qwen3-0.6B, CPU only. It keeps its own memory and does not speak.

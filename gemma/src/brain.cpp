@@ -283,6 +283,7 @@ struct Gemma {
 
     std::string generate(int max_tokens) {
         std::string out;
+        const std::string call_end = "}<tool_call|>";
         for (int i = 0; i < max_tokens; ++i) {
             const llama_token id = common_sampler_sample(smpl, lctx, -1);
             common_sampler_accept(smpl, id, true);
@@ -294,6 +295,7 @@ struct Gemma {
             common_batch_clear(batch);
             common_batch_add(batch, id, n_past++, {0}, true);
             if (llama_decode(lctx, batch) != 0) die("llama_decode failed");
+            if (out.size() >= call_end.size() && out.compare(out.size() - call_end.size(), call_end.size(), call_end) == 0) break;
         }
         std::fputc('\n', stdout);
         return out;
@@ -308,16 +310,26 @@ static std::string trim(std::string text) {
 }
 
 static std::string tool_decls(const std::string & spec) {
-    std::string blocks, name, description, params, fields;
+    std::string blocks, name, description;
+    std::vector<std::pair<std::string, std::string>> props;
     auto flush = [&]() {
         if (name.empty()) return;
-        std::string note = description;
-        if (!params.empty()) note += (note.empty() ? std::string() : " ") + params;
-        blocks += "<|tool>declaration:" + name + (fields.empty() ? "{}" : "{" + fields + "}") + "<tool|>" + note;
+        std::string body = "description:<|\"|>" + description + "<|\"|>";
+        if (!props.empty()) {
+            body += ",parameters:{properties:{";
+            std::string required;
+            for (size_t i = 0; i < props.size(); ++i) {
+                if (i) body += ",";
+                body += props[i].first + ":{description:<|\"|>" + props[i].second + "<|\"|>,type:<|\"|>STRING<|\"|>}";
+                if (!required.empty()) required += ",";
+                required += "<|\"|>" + props[i].first + "<|\"|>";
+            }
+            body += "},required:[" + required + "],type:<|\"|>OBJECT<|\"|>}";
+        }
+        blocks += "<|tool>declaration:" + name + "{" + body + "}<tool|>";
         name.clear();
         description.clear();
-        params.clear();
-        fields.clear();
+        props.clear();
     };
     std::stringstream stream(spec);
     std::string line;
@@ -337,23 +349,64 @@ static std::string tool_decls(const std::string & spec) {
             description = line;
             continue;
         }
-        const auto key = trim(line.substr(0, colon));
-        const auto note = trim(line.substr(colon + 1));
-        if (!fields.empty()) fields += ",";
-        fields += key + ":<|\"|>string<|\"|>";
-        if (!params.empty()) params += " ";
-        params += key + " is " + note;
+        props.emplace_back(trim(line.substr(0, colon)), trim(line.substr(colon + 1)));
     }
     flush();
     return blocks;
 }
 
 static std::string system_turn(const std::string & spec, const std::string & instructions) {
-    return "<|turn>system\n<|think|>" + trim(instructions) + "\n" + tool_decls(spec) + "<turn|>\n";
+    return "<|turn>system\n<|think|>" + trim(instructions) + tool_decls(spec) + "<turn|>\n";
 }
 
-static std::string user_turn(const std::string & text) {
-    return "<|turn>user\n" + trim(text) + "<turn|>\n";
+static std::string user_turn(const std::string & text, const std::string & media_marker = {}) {
+    if (media_marker.empty()) return "<|turn>user\n" + trim(text) + "<turn|>\n";
+    return "<|turn>user\n" + media_marker + trim(text) + "<turn|>\n";
+}
+
+static std::string strip_thoughts(std::string text) {
+    const std::string open = "<|channel>";
+    const std::string close = "<channel|>";
+    for (;;) {
+        const auto a = text.find(open);
+        if (a == std::string::npos) break;
+        const auto b = text.find(close, a);
+        if (b == std::string::npos) {
+            text.erase(a);
+            break;
+        }
+        text.erase(a, b + close.size() - a);
+    }
+    return text;
+}
+
+static std::string history_model_body(std::string body) {
+    body = strip_thoughts(std::move(body));
+    const std::string tr_end = "<tool_response|>";
+    const auto last_tr = body.rfind(tr_end);
+    if (last_tr != std::string::npos) body.resize(last_tr + tr_end.size());
+    const std::string open = "<|tool_call>call:speak{";
+    const std::string q = "<|\"|>";
+    const std::string closer = "}<tool_call|>";
+    const std::string replacement = "{text:" + q + "done" + q + "}<tool_call|>";
+    for (size_t at = 0; (at = body.find(open, at)) != std::string::npos;) {
+        const auto brace = body.find('{', at);
+        if (brace == std::string::npos) break;
+        auto end = body.find(closer, brace);
+        std::string put = replacement;
+        size_t replace_len = 0;
+        if (end != std::string::npos) {
+            replace_len = end + closer.size() - brace;
+        } else {
+            end = body.find('}', brace);
+            if (end == std::string::npos) break;
+            replace_len = end + 1 - brace;
+            put = "{text:" + q + "done" + q + "}";
+        }
+        body.replace(brace, replace_len, put);
+        at = brace + put.size();
+    }
+    return body;
 }
 
 struct Call {
@@ -369,13 +422,42 @@ static std::vector<Call> parse_calls(const std::string & text) {
         at += open.size();
         const auto brace = text.find('{', at);
         if (brace == std::string::npos) break;
-        const auto end_tool = text.find("}<tool_call|>", brace);
-        const auto end_turn = text.find("}<turn|>", brace);
-        const auto end = std::min(end_tool, end_turn);
-        if (end == std::string::npos) break;
+        size_t end = text.find("}<tool_call|>", brace);
+        size_t body_end = std::string::npos;
+        if (end != std::string::npos) {
+            body_end = end;
+            end = end + std::string("}<tool_call|>").size();
+        } else {
+            end = text.find("}<turn|>", brace);
+            if (end != std::string::npos) {
+                body_end = end;
+                end = end + std::string("}<turn|>").size();
+            } else {
+                size_t i = brace + 1;
+                while (i < text.size()) {
+                    if (text.compare(i, q.size(), q) == 0) {
+                        i += q.size();
+                        const auto stop = text.find(q, i);
+                        if (stop == std::string::npos) {
+                            i = text.size();
+                            break;
+                        }
+                        i = stop + q.size();
+                        continue;
+                    }
+                    if (text[i] == '}') {
+                        body_end = i;
+                        end = i + 1;
+                        break;
+                    }
+                    ++i;
+                }
+            }
+        }
+        if (body_end == std::string::npos) break;
         Call call;
         call.name = trim(text.substr(at, brace - at));
-        const auto body = text.substr(brace + 1, end - brace - 1);
+        const auto body = text.substr(brace + 1, body_end - brace - 1);
         for (size_t i = 0; i < body.size();) {
             const auto colon = body.find(':', i);
             if (colon == std::string::npos) break;
@@ -397,7 +479,7 @@ static std::vector<Call> parse_calls(const std::string & text) {
             }
         }
         out.push_back(std::move(call));
-        at = end + 1;
+        at = end;
     }
     return out;
 }
@@ -477,23 +559,26 @@ int main(int, char **) {
         }
         ++served;
         auto history = load_history(history_path);
+        for (auto & part : history) part = strip_thoughts(part);
         compact_history(history, history_max);
-        const auto user = user_turn(heard);
+        const std::string media = image.empty() ? std::string() : mtmd_default_marker();
+        const auto user = user_turn(heard, media);
         std::string prefix = system_turn(tools, instructions);
         for (const auto & part : history) prefix += part;
         prefix += user + model_open;
         auto once = [&](const std::string & text, bool first) {
             if (first && !image.empty()) {
                 gemma.load_media(image.c_str());
-                const std::string marker = mtmd_default_marker();
-                gemma.eval_media(text.find(marker) == std::string::npos ? marker + text : text);
+                gemma.eval_media(text);
             } else gemma.eval_text(text, first);
             return gemma.generate(params.n_predict);
         };
         auto act = [&](const Call & call) {
             std::map<std::string, std::string> fields;
-            if (call.name == "see") fields["image"] = image_key.empty() ? "none" : image_key;
-            else if (call.name != "speak") fields["error"] = "unknown";
+            if (call.name == "see") {
+                fields["image"] = image_key.empty() ? "none" : image_key;
+                fields["pixels"] = "attached in this turn";
+            } else if (call.name != "speak") fields["error"] = "unknown";
             else {
                 const auto it = call.args.find("text");
                 const auto words = it == call.args.end() ? std::string() : trim(it->second);
@@ -516,10 +601,10 @@ int main(int, char **) {
             latest = once(extra, false);
             body += latest;
         }
-        auto stored = body;
+        auto stored = history_model_body(body);
         while (!stored.empty() && (stored.back() == ' ' || stored.back() == '\t' || stored.back() == '\n' || stored.back() == '\r')) stored.pop_back();
         if (stored.size() < 8 || stored.compare(stored.size() - 8, 8, "<turn|>") != 0) stored += "<turn|>";
-        history.push_back(user + model_open + stored + "\n");
+        history.push_back(user_turn(heard) + model_open + stored + "\n");
         compact_history(history, history_max);
         {
             std::ofstream out(history_path, std::ios::binary | std::ios::trunc);
