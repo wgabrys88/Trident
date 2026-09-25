@@ -1,12 +1,5 @@
-# Run after python install.py. No arguments.
-# Downloads stay under .install/harness and are not committed.
-# Both machines have VB-Cable. The ear hears only CABLE Output.
-#
-# Audio: https://huggingface.co/datasets/hf-internal-testing/librispeech_asr_dummy
-#        clean/validation-00000-of-00001.parquet  id 1272-128104-0004
-# Image: https://huggingface.co/datasets/benwiesel/ScreenSpot
-#        images/pc_6f79b56c-2b0f-471d-9f9d-93932c69a0ce.png
-#        labels: ScreenSpot_combined.json for that filename
+# Trident demo harness. Run from repo root: .venv\Scripts\python.exe scripts\harness.py
+# Fixtures live under .install/harness. Each demo_* function matches a manual scenario.
 
 import ctypes
 import re
@@ -23,6 +16,24 @@ ROOT = Path(__file__).resolve().parents[1]
 CACHE = ROOT / ".install" / "harness"
 CFG = ROOT / "trident.txt"
 TRACE = None
+
+AUDIO_ID = "1272-128104-0004"
+IMAGE_NAME = "pc_6f79b56c-2b0f-471d-9f9d-93932c69a0ce.png"
+
+PROMPT_THINK = (
+    "<|turn>system\n<|think|>Reply with digits only after the thought.<turn|>\n"
+    "<|turn>user\nWhat is 17 plus 4?<turn|>\n<|turn>model\n"
+)
+PROMPT_TOOL = (
+    "<|turn>system\n<|think|>You are a helpful assistant."
+    "<|tool>declaration:add{a:<|\"|>number<|\"|>,b:<|\"|>number<|\"|>}<tool|><turn|>\n"
+    "<|turn>user\nAdd 17 and 4.<turn|>\n<|turn>model\n"
+)
+PROMPT_IMAGE = (
+    "<|turn>user\nWhat application is this screen, and which controls can be clicked?<turn|>\n"
+    "<|turn>model\n"
+)
+
 SAMPLE_PS = r'''
 $os = Get-CimInstance Win32_OperatingSystem
 $total = [int]($os.TotalVisibleMemorySize / 1024)
@@ -40,8 +51,7 @@ while ($true) {
   '{0:0.0},{1:0.0},{2},{3:0.0},{4:0.0},{5:0.0}' -f $cpu, ($total - $avail), $total, $gpu, ($ded/1MB), ($shr/1MB)
 }
 '''
-AUDIO_ID = "1272-128104-0004"
-IMAGE_NAME = "pc_6f79b56c-2b0f-471d-9f9d-93932c69a0ce.png"
+
 MIC_PS = r'''
 param([Parameter(Mandatory=$true)][string]$Mode, [string]$Id)
 $src = @"
@@ -118,21 +128,23 @@ class Trace:
         self.lock = threading.Lock()
         self.alive = True
         (folder / "run.txt").write_text(
-            "Each folder is one scenario.\n"
-            "settings.txt is the exact trident.txt used while that scenario ran.\n"
-            "output.txt is what those settings produced.\n"
-            "usage.csv is one row about every second for the whole run.\n"
-            "Columns: time, scenario, cpu_pct, ram_used_mib, ram_total_mib, gpu_3d_pct, vram_dedicated_mib, vram_shared_mib.\n"
-            "The scenario column is the folder that was active.\n",
-            encoding="utf-8")
+            "Demo run. Each subfolder is one scenario with settings.txt, output.txt, and optional artifacts.\n",
+            encoding="utf-8",
+        )
         self.csv = open(folder / "usage.csv", "w", encoding="utf-8", newline="")
-        self.csv.write("time,scenario,cpu_pct,ram_used_mib,ram_total_mib,gpu_3d_pct,vram_dedicated_mib,vram_shared_mib\n")
+        self.csv.write(
+            "time,scenario,cpu_pct,ram_used_mib,ram_total_mib,gpu_3d_pct,vram_dedicated_mib,vram_shared_mib\n"
+        )
         self.csv.flush()
         script = folder / "sample.ps1"
         script.write_text(SAMPLE_PS, encoding="utf-8")
         self.proc = subprocess.Popen(
             ["powershell", "-NoProfile", "-File", str(script)],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            bufsize=1,
+        )
         self.thread = threading.Thread(target=self._read, daemon=True)
         self.thread.start()
 
@@ -170,11 +182,13 @@ class Trace:
 
 
 def ps(mode, device=""):
+    CACHE.mkdir(parents=True, exist_ok=True)
     script = CACHE / "mic.ps1"
     script.write_text(MIC_PS, encoding="utf-8")
     done = subprocess.run(
         ["powershell", "-NoProfile", "-File", str(script), "-Mode", mode, "-Id", device],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if done.returncode != 0:
         raise SystemExit(done.stderr.strip() or "mic switch failed")
@@ -183,17 +197,22 @@ def ps(mode, device=""):
 
 def cable_capture_id():
     done = subprocess.run(
-        ["powershell", "-NoProfile", "-Command",
-         "$base='HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\MMDevices\\Audio\\Capture';"
-         "Get-ChildItem $base | ForEach-Object {"
-         "$p=Get-ItemProperty (Join-Path $_.PSPath 'Properties');"
-         "$n=$p.'{a45c254e-df1c-4efd-8020-67d146a850e0},2';"
-         "if ($n -is [byte[]]) { $n=[Text.Encoding]::Unicode.GetString($n) };"
-         "$n=($n -replace \"`0\", '').Trim();"
-         "$state=(Get-ItemProperty $_.PSPath).DeviceState;"
-         "if ($state -eq 1 -and $n -eq 'CABLE Output') { '{0.0.1.00000000}.' + $_.PSChildName }"
-         "}"],
-        capture_output=True, text=True,
+        [
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "$base='HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\MMDevices\\Audio\\Capture';"
+            "Get-ChildItem $base | ForEach-Object {"
+            "$p=Get-ItemProperty (Join-Path $_.PSPath 'Properties');"
+            "$n=$p.'{a45c254e-df1c-4efd-8020-67d146a850e0},2';"
+            "if ($n -is [byte[]]) { $n=[Text.Encoding]::Unicode.GetString($n) };"
+            "$n=($n -replace \"`0\", '').Trim();"
+            "$state=(Get-ItemProperty $_.PSPath).DeviceState;"
+            "if ($state -eq 1 -and $n -eq 'CABLE Output') { '{0.0.1.00000000}.' + $_.PSChildName }",
+            "}",
+        ],
+        capture_output=True,
+        text=True,
     )
     found = [line.strip() for line in done.stdout.splitlines() if line.strip().startswith("{0.0.1.")]
     if not found:
@@ -243,8 +262,13 @@ def closed_text(path):
         return None
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.CreateFileW.argtypes = [
-        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
-        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
     ]
     kernel32.CreateFileW.restype = wintypes.HANDLE
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
@@ -255,12 +279,36 @@ def closed_text(path):
     return path.read_text(encoding="utf-8")
 
 
-def stop(name, proc):
+def wait_closed(path, proc, timeout=600):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        text = closed_text(path)
+        if text is not None:
+            return text
+        if proc.poll() is not None:
+            return None
+        time.sleep(0.2)
+    return None
+
+
+def stop_resident(name, proc):
     (ROOT / (name + ".stop")).write_text("1", encoding="ascii")
     proc.wait()
 
 
-def fetch():
+def wait_pid(name, proc, timeout=120):
+    pid = ROOT / (name + ".pid")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if pid.exists() and pid.stat().st_size > 0:
+            return
+        if proc.poll() is not None:
+            raise SystemExit(name + " exited before watching")
+        time.sleep(0.2)
+    raise SystemExit(name + " pid timeout")
+
+
+def fetch_fixtures():
     CACHE.mkdir(parents=True, exist_ok=True)
     parquet = hf_hub_download(
         repo_id="hf-internal-testing/librispeech_asr_dummy",
@@ -290,6 +338,7 @@ def fetch():
         repo_type="dataset",
     )
     import json
+
     labels = []
     source = ""
     for row in json.loads(Path(listing).read_text(encoding="utf-8")):
@@ -301,20 +350,33 @@ def fetch():
         break
     if not labels:
         raise SystemExit("missing ScreenSpot labels for " + IMAGE_NAME)
-    say("FETCH audio " + AUDIO_ID + " " + expected)
-    say("FETCH image " + IMAGE_NAME + " " + source + " " + " | ".join(labels))
+    say("FETCH audio " + AUDIO_ID)
+    say("FETCH image " + IMAGE_NAME + " " + source)
     return audio_path, image_path, expected, labels
 
 
-def ear(audio, expected):
-    TRACE.begin("ear", "Live ear over CABLE Output. Fixture " + AUDIO_ID + ". The output is every live-final line.")
+def demo_ear_live(audio, expected):
+    TRACE.begin("ear", "Live ASR on CABLE Output; fixture " + AUDIO_ID)
     err_path = CACHE / "ear.err"
     err = open(err_path, "wb")
     proc = subprocess.Popen(
-        [str(ROOT / "nemo-speech.exe"), "transcribe", "--live",
-         "--model", str(ROOT / "ear.gguf"), "--device", "cpu",
-         "--format", "text", "--output", str(CACHE / "ear.txt"), "--force"],
-        cwd=ROOT, stdout=subprocess.DEVNULL, stderr=err,
+        [
+            str(ROOT / "nemo-speech.exe"),
+            "transcribe",
+            "--live",
+            "--model",
+            str(ROOT / "ear.gguf"),
+            "--device",
+            "cpu",
+            "--format",
+            "text",
+            "--output",
+            str(CACHE / "ear.txt"),
+            "--force",
+        ],
+        cwd=ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=err,
         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
     )
     while True:
@@ -338,43 +400,27 @@ def ear(audio, expected):
         proc.send_signal(signal.CTRL_BREAK_EVENT)
         proc.wait()
     heard = err_path.read_text(encoding="utf-8", errors="replace")
-    say("EXPECT " + expected)
     finals = [line.strip() for line in heard.splitlines() if "live final" in line]
     if not finals:
         raise SystemExit("ear heard nothing")
-    (CACHE / "ear-finals.txt").write_text("\n".join(finals) + "\n", encoding="utf-8")
     for line in finals:
         say("EAR " + line)
     TRACE.output("ear", "EXPECT " + expected + "\n" + "\n".join(finals) + "\n")
 
 
-def ready(name, proc):
-    pid = ROOT / (name + ".pid")
-    while True:
-        if pid.exists() and pid.stat().st_size > 0:
-            return
-        if proc.poll() is not None:
-            raise SystemExit(name + " exited before watching")
-        time.sleep(0.2)
-
-
-def mouth(variant, language, sentence):
+def demo_mouth(variant, language, sentence):
     set_key("chatterbox.variant", variant)
     set_key("chatterbox.language", language)
-    TRACE.begin("mouth-" + variant, "Mouth variant " + variant + " language " + language + " speaks: " + sentence)
+    TRACE.begin("mouth-" + variant, variant + " / " + language + ": " + sentence)
     prompt = ROOT / "chatterbox.prompt.txt"
     wav = ROOT / "chatterbox.response.wav"
     reply = ROOT / "chatterbox.response.txt"
     prompt.write_text("", encoding="utf-8")
-    if wav.exists():
-        wav.unlink()
-    if reply.exists():
-        reply.unlink()
-    err_path = CACHE / (variant + ".err")
-    err = open(err_path, "wb")
-    proc = subprocess.Popen([str(ROOT / "chatterbox.exe")], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=err)
+    wav.unlink(missing_ok=True)
+    reply.unlink(missing_ok=True)
+    proc = subprocess.Popen([str(ROOT / "chatterbox.exe")], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
-        ready("chatterbox", proc)
+        wait_pid("chatterbox", proc)
         prompt.write_text(sentence, encoding="utf-8")
         while True:
             if closed_text(reply) is not None and wav.exists() and wav.stat().st_size > 44:
@@ -383,79 +429,88 @@ def mouth(variant, language, sentence):
                 break
             time.sleep(0.2)
         if not wav.exists() or wav.stat().st_size <= 44:
-            raise SystemExit("MOUTH " + variant + " no wav")
+            raise SystemExit("mouth " + variant + " missing wav")
         size = wav.stat().st_size
-        audio_bytes = wav.read_bytes()
-        (CACHE / (variant + ".wav")).write_bytes(audio_bytes)
-        (TRACE.folder / ("mouth-" + variant) / "response.wav").write_bytes(audio_bytes)
-        tail = err_path.read_text(encoding="utf-8", errors="replace").strip().splitlines()
-        say("MOUTH " + variant + " " + language + " wav_bytes=" + str(size) + " " + (tail[-1][:160] if tail else ""))
-        TRACE.output("mouth-" + variant, "sentence: " + sentence + "\nwav_bytes: " + str(size) + "\n" + (tail[-1] if tail else "") + "\n")
+        (TRACE.folder / ("mouth-" + variant) / "response.wav").write_bytes(wav.read_bytes())
+        say("MOUTH " + variant + " wav_bytes=" + str(size))
+        TRACE.output("mouth-" + variant, sentence + "\nwav_bytes: " + str(size) + "\n")
     finally:
-        stop("chatterbox", proc)
+        stop_resident("chatterbox", proc)
 
 
-def ask(label, prompt, proc, why):
+def demo_gemma_prompt(label, prompt, proc, why, check=None):
     folder = TRACE.begin("gemma-" + label, why)
     (folder / "prompt.txt").write_bytes(prompt.encode("utf-8"))
     resp = ROOT / "gemma.response.txt"
-    if resp.exists():
-        resp.unlink()
+    resp.unlink(missing_ok=True)
     (ROOT / "gemma.prompt.txt").write_bytes(prompt.encode("utf-8"))
-    text = None
-    while True:
-        text = closed_text(resp)
-        if text is not None:
-            break
-        if proc.poll() is not None:
-            break
-        time.sleep(0.2)
+    text = wait_closed(resp, proc, timeout=600)
     if text is None:
-        TRACE.output("gemma-" + label, "process exited without a reply\n")
-        raise SystemExit("GEMMA " + label + " process exited without a reply")
-    (CACHE / ("gemma-" + label + ".txt")).write_text(text, encoding="utf-8")
-    TRACE.output("gemma-" + label, text if text else "empty reply\n")
-    say("GEMMA " + label + " saved")
-    say(text)
+        raise SystemExit("gemma " + label + " exited without reply")
     if not text.strip():
-        raise SystemExit("GEMMA " + label + " empty reply")
+        raise SystemExit("gemma " + label + " empty reply")
+    if check and not check(text):
+        raise SystemExit("gemma " + label + " failed check")
+    TRACE.output("gemma-" + label, text)
+    say("GEMMA " + label + " ok len=" + str(len(text)))
 
 
-def gemma(image, labels):
-    set_key("gemma.temp", "0.2")
-    set_key("gemma.seed", "1")
-    set_key("gemma.n-predict", "512")
+def demo_gemma_text():
+    """One resident, text-only. Uses trident sampling (Gemma 4: temp 1.0 top_p 0.95 top_k 64)."""
     set_key("gemma.image", "")
     (ROOT / "gemma.prompt.txt").write_text("", encoding="utf-8")
-    err_path = CACHE / "gemma.err"
-    err = open(err_path, "wb")
-    proc = subprocess.Popen([str(ROOT / "gemma-brain.exe")], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=err)
+    proc = subprocess.Popen([str(ROOT / "gemma-brain.exe")], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
-        ready("gemma", proc)
-        ask("think", "<|turn>system\n<|think|>Reply with digits only after the thought.<turn|>\n<|turn>user\nWhat is 17 plus 4?<turn|>\n<|turn>model\n", proc, "Gemma thinking turn. The reply is the closed response file.")
-        ask("tool", "<|turn>system\n<|think|>You are a helpful assistant.<|tool>declaration:add{a:<|\"|>number<|\"|>,b:<|\"|>number<|\"|>}<tool|><turn|>\n<|turn>user\nAdd 17 and 4.<turn|>\n<|turn>model\n", proc, "Gemma tool turn. The reply is the closed response file.")
+        wait_pid("gemma", proc)
+        demo_gemma_prompt(
+            "think",
+            PROMPT_THINK,
+            proc,
+            "Thinking math. Keep trident.txt sampling; do not lower temperature for think.",
+            check=lambda t: "21" in t,
+        )
+        demo_gemma_prompt(
+            "tool",
+            PROMPT_TOOL,
+            proc,
+            "Tool add 17+4.",
+            check=lambda t: "tool_call" in t and "17" in t and "4" in t,
+        )
     finally:
-        stop("gemma", proc)
-    set_key("gemma.image", str(image))
+        stop_resident("gemma", proc)
+
+
+def demo_gemma_image(image_path, labels):
+    """Separate process: gemma.image is read only at startup."""
+    rel = image_path.relative_to(ROOT)
+    set_key("gemma.image", str(rel).replace("\\", "/"))
     (ROOT / "gemma.prompt.txt").write_text("", encoding="utf-8")
-    err = open(err_path, "ab")
-    proc = subprocess.Popen([str(ROOT / "gemma-brain.exe")], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=err)
+    proc = subprocess.Popen([str(ROOT / "gemma-brain.exe")], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
-        ready("gemma", proc)
-        say("EXPECT screen " + " | ".join(labels))
-        ask("image", "<|turn>user\nWhat application is this screen, and which controls can be clicked?<turn|>\n<|turn>model\n", proc, "Gemma image turn. gemma.image in settings.txt is the ScreenSpot file. The reply is the closed response file.")
+        wait_pid("gemma", proc, timeout=180)
+        say("EXPECT labels " + " | ".join(labels))
+        demo_gemma_prompt(
+            "image",
+            PROMPT_IMAGE,
+            proc,
+            "ScreenSpot image at gemma.image in settings.txt",
+            check=lambda t: len(t.strip()) > 80,
+        )
     finally:
-        stop("gemma", proc)
+        stop_resident("gemma", proc)
 
 
 def main():
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "sounddevice==0.5.6", "pyarrow==25.0.1"])
+    subprocess.check_call(
+        [sys.executable, "-m", "pip", "install", "sounddevice==0.5.6", "soundfile", "pyarrow==25.0.1", "huggingface_hub"]
+    )
     global np, sd, sf, pq, hf_hub_download
     import numpy as np
     import sounddevice as sd
     import soundfile as sf
     import pyarrow.parquet as pq
     from huggingface_hub import hf_hub_download
+
     CACHE.mkdir(parents=True, exist_ok=True)
     global TRACE
     TRACE = Trace(CACHE / ("run-" + datetime.now().strftime("%Y%m%d-%H%M%S")))
@@ -464,21 +519,20 @@ def main():
     laptop = ps("get")
     cable = cable_capture_id()
     try:
-        audio, image, expected, labels = fetch()
+        audio, image, expected, labels = fetch_fixtures()
         ps("set", cable)
-        ear(audio, expected)
+        demo_ear_live(audio, expected)
         ps("set", laptop)
-        mouth("nano", "en", "The tray is red.")
-        mouth("turbo", "en", "The tray is red.")
-        mouth("v3", "pl", "Pięć żółtych łodzi płynie wzdłuż rzeki.")
-        gemma(image, labels)
+        demo_mouth("nano", "en", "The tray is red.")
+        demo_mouth("turbo", "en", "The tray is red.")
+        demo_mouth("v3", "pl", "Pięć żółtych łodzi płynie wzdłuż rzeki.")
+        demo_gemma_text()
+        demo_gemma_image(image, labels)
     finally:
         CFG.write_text(original, encoding="utf-8")
         ps("set", laptop)
-        if TRACE:
-            TRACE.close()
-        say("HARNESS restored trident.txt and the microphone")
-        say("RUN " + str(TRACE.folder))
+        TRACE.close()
+        say("DONE " + str(TRACE.folder))
 
 
 if __name__ == "__main__":

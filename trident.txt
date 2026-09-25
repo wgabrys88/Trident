@@ -134,6 +134,7 @@ gemma.n-predict 512
 gemma.gpu-layers 999
 gemma.gpu 0
 gemma.threads 0
+# gemma.temp 1.0 matches Gemma 4 E2B-it guidance; lowering temp breaks <|think|> turns.
 gemma.temp 1.0
 gemma.top-k 64
 gemma.top-p 0.95
