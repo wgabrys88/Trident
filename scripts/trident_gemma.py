@@ -23,12 +23,12 @@ def tool_decls(spec: str) -> str:
 
 def system_turn(spec: str) -> str:
     return (
-        "<|turn>system\n<|think|>You are Trident, the assistant in this room. A human is here and may or may not be speaking to you. "
-        "You keep the whole conversation. From its meaning, decide whether there is something for you to do. "
-        "If what you hear is silence or not addressed to you, reply with only the word nothing. "
-        "If there is something to do, do it in one or two spoken sentences. "
-        "Call a tool only when that meaning requires the tool. "
-        "Your own earlier replies may come back through the microphone; that is you, not a new request."
+        "<|turn>system\n<|think|>You are Gemma, the assistant in this room. "
+        "A line reaches you only after it was let through, and it is the original speech, not a rewrite. "
+        "Keep that memory. From its meaning, do the thing. "
+        "Before you do it, call speak and say what you are doing and what you plan, including a coding task. "
+        "When you finish, call speak again with the result. "
+        "Sound happens only through speak."
         + tool_decls(spec)
         + "<turn|>\n"
     )
@@ -71,19 +71,6 @@ def format_tool_response(name: str, fields: dict) -> str:
     return f"<|tool_response>response:{name}{{{','.join(parts)}}}<tool_response|>"
 
 
-def strip_thought(text: str) -> str:
-    text = re.sub(r"<\|channel>thought\n.*?<channel\|>", "", text, flags=re.DOTALL)
-    return re.sub(r"<\|channel>thought\n.*", "", text, flags=re.DOTALL)
-
-
-def speakable(text: str) -> str:
-    t = strip_thought(normalize_model(text))
-    t = re.sub(r"<\|tool_call>.*?<tool_call\|>", "", t, flags=re.DOTALL)
-    t = re.sub(r"<\|tool_response>.*?<tool_response\|>", "", t, flags=re.DOTALL)
-    t = re.sub(r"<\|tool_response>.*?$", "", t, flags=re.DOTALL)
-    return t.strip()
-
-
 def parse_calls(text: str):
     norm = normalize_model(text)
     out = []
@@ -106,17 +93,6 @@ def parse_calls(text: str):
     return out
 
 
-def run_tool(name: str, args: dict):
-    if name == "add":
-        return {"sum": int(args["a"]) + int(args["b"])}
-    if name == "sub":
-        return {"difference": int(args["a"]) - int(args["b"])}
-    if name == "now":
-        from datetime import datetime
-        return {"time": datetime.now().strftime("%H:%M")}
-    return {"error": "unknown_tool"}
-
-
 def compact_history(history: list, limit: int) -> list:
     while len(history) > 1 and sum(len(part) for part in history) > limit:
         history.pop(0)
@@ -128,7 +104,7 @@ def write_memory(history: list, limit: int, path) -> None:
     path.write_text("".join(history), encoding="utf-8")
 
 
-def converse(gemma_proc, user_text: str, spec: str, history: list, limit: int, path) -> str:
+def converse(gemma_proc, user_text: str, spec: str, history: list, limit: int, path, act) -> None:
     from trident_runtime import gemma_ask
 
     write_memory(history, limit, path)
@@ -139,13 +115,9 @@ def converse(gemma_proc, user_text: str, spec: str, history: list, limit: int, p
         calls = parse_calls(latest)
         if not calls:
             break
-        body += "".join(format_tool_response(n, run_tool(n, a)) for n, a in calls)
+        body += "".join(format_tool_response(n, act(n, a)) for n, a in calls)
         write_memory(history, limit, path)
         latest = normalize_model(gemma_ask(gemma_proc, prompt_body(spec, history, user_text, body)))
         body += latest
     append_history(history, user_text, body)
     write_memory(history, limit, path)
-    line = speakable(body)
-    if line.lower() == "nothing":
-        return ""
-    return line

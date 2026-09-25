@@ -14,7 +14,7 @@ RATE = 16000
 WINDOW = 512
 
 
-def listen(prompt: Path, stop) -> None:
+def listen(prompt: Path, stop, busy) -> None:
     torch.set_num_threads(1)
     model, utils = torch.hub.load(
         repo_or_dir="snakers4/silero-vad",
@@ -38,6 +38,9 @@ def listen(prompt: Path, stop) -> None:
                 continue
             speech.append(clip)
             if not (event and "end" in event):
+                continue
+            if busy.is_set():
+                speech = []
                 continue
             audio = np.concatenate(speech)
             speech = []

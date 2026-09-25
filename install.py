@@ -372,13 +372,21 @@ def build_mouth(sdk: Path) -> None:
         embed_utf8(dest)
 
 
+def apply_nemo_stay(home: Path) -> None:
+    target = home / "app" / "transcribe.cpp"
+    if "TRIDENT_STAY" in target.read_text(encoding="utf-8"):
+        return
+    run(["git", "-C", str(home), "apply", "--whitespace=nowarn", str(ROOT / "src" / "nemo-stay.patch")])
+
+
 def build_ear() -> None:
     home = place("install.src_nemo")
+    apply_nemo_stay(home)
     build = place("install.build_ear")
     exe = build / "bin" / "nemo-speech.exe"
     rev = subprocess.run(["git", "-C", str(home), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
     choice = {key: FILE[key] for key in FILE if key.startswith("install.ear_") or key.startswith("install.nemo_")}
-    wanted = {"rev": rev, "build": choice, "dir": str(build)}
+    wanted = {"rev": rev, "build": choice, "dir": str(build), "stay": digest(ROOT / "src" / "nemo-stay.patch")}
     stamp = stamps() / "ear.json"
     if not matches(stamp, wanted, exe):
         print("install ear", flush=True)
@@ -586,6 +594,7 @@ def main() -> None:
     fetch_model("install.text_model_name", "install.text_model_url", "gemma.model")
     fetch_model("install.mmproj_name", "install.mmproj_url", "gemma.mmproj")
     fetch_model("install.ear_gguf_name", "install.ear_gguf_url", "ear.model")
+    fetch_model("install.sense_name", "install.sense_url", "sense.model")
     publish()
 
 

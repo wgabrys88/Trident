@@ -35,6 +35,94 @@ std::string audio_path(const std::string& text) {
 
 std::wstring nemo_command(const std::filesystem::path& nemo, const std::map<std::string, std::string>& values, const std::wstring& head);
 
+struct Stay {
+    HANDLE write = nullptr;
+    HANDLE read = nullptr;
+    HANDLE nul = nullptr;
+    PROCESS_INFORMATION process{};
+};
+
+std::string read_line(HANDLE handle) {
+    std::string line;
+    char byte = 0;
+    DWORD got = 0;
+    while (ReadFile(handle, &byte, 1, &got, nullptr) && got == 1) {
+        if (byte == '\n') break;
+        if (byte != '\r') line.push_back(byte);
+    }
+    return line;
+}
+
+bool write_all(HANDLE handle, const std::string& text) {
+    DWORD done = 0;
+    while (done < text.size()) {
+        DWORD wrote = 0;
+        if (!WriteFile(handle, text.data() + done, (DWORD)(text.size() - done), &wrote, nullptr) || !wrote) return false;
+        done += wrote;
+    }
+    return true;
+}
+
+Stay open_stay(const std::filesystem::path& nemo, const std::map<std::string, std::string>& values) {
+    SECURITY_ATTRIBUTES inherit{};
+    inherit.nLength = sizeof(inherit);
+    inherit.bInheritHandle = TRUE;
+    HANDLE in_read = nullptr, in_write = nullptr, out_read = nullptr, out_write = nullptr;
+    if (!CreatePipe(&in_read, &in_write, &inherit, 0) || !CreatePipe(&out_read, &out_write, &inherit, 0))
+        return {};
+    SetHandleInformation(in_write, HANDLE_FLAG_INHERIT, 0);
+    SetHandleInformation(out_read, HANDLE_FLAG_INHERIT, 0);
+    HANDLE nul = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_WRITE, &inherit, OPEN_EXISTING, 0, nullptr);
+    auto command = nemo_command(nemo, values, L"--quiet transcribe --stay");
+    std::vector<wchar_t> mutable_command(command.begin(), command.end());
+    mutable_command.push_back(0);
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = in_read;
+    startup.hStdOutput = out_write;
+    startup.hStdError = nul;
+    PROCESS_INFORMATION process{};
+    if (!CreateProcessW(nemo.c_str(), mutable_command.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process)) {
+        CloseHandle(in_read);
+        CloseHandle(in_write);
+        CloseHandle(out_read);
+        CloseHandle(out_write);
+        if (nul) CloseHandle(nul);
+        return {};
+    }
+    CloseHandle(in_read);
+    CloseHandle(out_write);
+    Stay stay;
+    stay.write = in_write;
+    stay.read = out_read;
+    stay.nul = nul;
+    stay.process = process;
+    for (int i = 0; i < 8; ++i) {
+        if (read_line(out_read) == "ready") return stay;
+        DWORD code = 0;
+        if (GetExitCodeProcess(process.hProcess, &code) && code != STILL_ACTIVE) break;
+    }
+    return {};
+}
+
+void close_stay(Stay& stay) {
+    if (stay.write) CloseHandle(stay.write);
+    if (stay.read) CloseHandle(stay.read);
+    if (stay.nul) CloseHandle(stay.nul);
+    if (stay.process.hProcess) {
+        WaitForSingleObject(stay.process.hProcess, 15000);
+        CloseHandle(stay.process.hThread);
+        CloseHandle(stay.process.hProcess);
+    }
+    stay = {};
+}
+
+std::string stay_ask(Stay& stay, const std::string& audio) {
+    if (!write_all(stay.write, audio + "\n")) return {};
+    return read_line(stay.read);
+}
+
 int transcribe(const std::filesystem::path& nemo, const std::map<std::string, std::string>& values, const std::string& audio) {
     const auto response = trident::cfg_path(values, "ear.response-file");
     auto command = nemo_command(nemo, values, quote(L"transcribe") + L" " + quote(widen(audio))
@@ -149,10 +237,21 @@ int main(int, char**) {
     if (trident::cfg_on(values, "ear.live")) return live(nemo, values);
     const auto request = trident::cfg_path(values, "ear.prompt-file");
     const int poll_ms = trident::cfg_int(values, "ear.poll-ms");
-    if (trident::cfg_on(values, "ear.persist"))
-        return trident::watch("ear", request, poll_ms, [&](const std::string& audio) {
-            transcribe(nemo, values, audio_path(audio));
+    if (trident::cfg_on(values, "ear.persist")) {
+        const auto response = trident::cfg_path(values, "ear.response-file");
+        Stay stay = open_stay(nemo, values);
+        if (!stay.process.hProcess) {
+            std::fprintf(stderr, "ear error: recognizer did not stay warm\n");
+            close_stay(stay);
+            return 1;
+        }
+        const int code = trident::watch("ear", request, poll_ms, [&](const std::string& audio) {
+            const auto text = stay_ask(stay, audio_path(audio));
+            std::ofstream(response, std::ios::binary | std::ios::trunc) << text;
         });
+        close_stay(stay);
+        return code;
+    }
     const auto audio = trident::read_text(request);
     if (audio.empty()) {
         std::fprintf(stderr, "ear.prompt-file is empty\n");

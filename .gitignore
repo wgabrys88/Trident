@@ -33,6 +33,7 @@
 !/scripts/convert_t3.py
 !/scripts/host.py
 !/scripts/vad.py
+!/scripts/sense.py
 !/scripts/trident_gemma.py
 !/scripts/trident_runtime.py
 !/scripts/quant.py
@@ -40,6 +41,7 @@
 !/scripts/quant_t3.json
 
 !/src/**/*.cpp
+!/src/nemo-stay.patch
 !/src/**/*.h
 !/src/**/*.hpp
 
