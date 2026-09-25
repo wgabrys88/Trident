@@ -229,6 +229,9 @@ gemma.timing-per-token off
 gemma.backend-sampling off
 gemma.prompt-file gemma.prompt.txt
 gemma.response-file gemma.response.txt
+# One memory file. Reasoning stays in it. Compacted to this many characters before every Gemma call, including tool rounds.
+gemma.history-file gemma.history.txt
+gemma.history-max 4000
 gemma.tools <<
 add a:number b:number
 sub a:number b:number
@@ -301,3 +304,5 @@ ear.prompt-file ear.prompt.txt
 ear.response-file ear.response.txt
 ear.opt.--format text
 ear.opt.--device cpu
+ear.opt.--endpointing on
+ear.opt.--stop-history-eou-ms 800

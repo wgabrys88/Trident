@@ -112,7 +112,7 @@ int live(const std::filesystem::path& nemo, const std::map<std::string, std::str
             if (!ReadFile(read, buf, sizeof(buf), &got, nullptr) || !got) break;
             pending.append(buf, buf + got);
             for (;;) {
-                const auto cut = pending.find_first_of("\r\n");
+                const auto cut = pending.find('\n');
                 if (cut == std::string::npos) break;
                 const auto line = pending.substr(0, cut);
                 pending.erase(0, cut + 1);

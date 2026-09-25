@@ -23,14 +23,19 @@ def tool_decls(spec: str) -> str:
 
 def system_turn(spec: str) -> str:
     return (
-        "<|turn>system\n<|think|>You are Trident, a concise voice assistant."
+        "<|turn>system\n<|think|>You are Trident, the assistant in this room. A human is here and may or may not be speaking to you. "
+        "You keep the whole conversation. From its meaning, decide whether there is something for you to do. "
+        "If what you hear is silence or not addressed to you, reply with only the word nothing. "
+        "If there is something to do, do it in one or two spoken sentences. "
+        "Call a tool only when that meaning requires the tool. "
+        "Your own earlier replies may come back through the microphone; that is you, not a new request."
         + tool_decls(spec)
         + "<turn|>\n"
     )
 
 
 def append_history(history: list, user: str, model_raw: str) -> list:
-    body = strip_thought(normalize_model(model_raw)).rstrip()
+    body = normalize_model(model_raw).rstrip()
     if not body.endswith("<turn|>"):
         body += "<turn|>"
     history.append(user_turn(user) + model_open() + body + "\n")
@@ -112,18 +117,35 @@ def run_tool(name: str, args: dict):
     return {"error": "unknown_tool"}
 
 
-def converse(gemma_proc, user_text: str, spec: str, history: list) -> str:
+def compact_history(history: list, limit: int) -> list:
+    while len(history) > 1 and sum(len(part) for part in history) > limit:
+        history.pop(0)
+    return history
+
+
+def write_memory(history: list, limit: int, path) -> None:
+    compact_history(history, limit)
+    path.write_text("".join(history), encoding="utf-8")
+
+
+def converse(gemma_proc, user_text: str, spec: str, history: list, limit: int, path) -> str:
     from trident_runtime import gemma_ask
 
+    write_memory(history, limit, path)
     user_text = user_text.strip()
     latest = normalize_model(gemma_ask(gemma_proc, prompt_body(spec, history, user_text, "")))
-    body = strip_thought(latest)
+    body = latest
     for _ in range(4):
         calls = parse_calls(latest)
         if not calls:
             break
         body += "".join(format_tool_response(n, run_tool(n, a)) for n, a in calls)
+        write_memory(history, limit, path)
         latest = normalize_model(gemma_ask(gemma_proc, prompt_body(spec, history, user_text, body)))
-        body += strip_thought(latest)
+        body += latest
     append_history(history, user_text, body)
-    return speakable(body)
+    write_memory(history, limit, path)
+    line = speakable(body)
+    if line.lower() == "nothing":
+        return ""
+    return line
