@@ -11,12 +11,32 @@
 import signal
 import subprocess
 import sys
+import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CACHE = ROOT / ".install" / "harness"
 CFG = ROOT / "trident.txt"
+TRACE = None
+SAMPLE_PS = r'''
+$os = Get-CimInstance Win32_OperatingSystem
+$total = [int]($os.TotalVisibleMemorySize / 1024)
+while ($true) {
+  $c = Get-Counter -Counter '\Processor(_Total)\% Processor Time','\Memory\Available MBytes','\GPU Engine(*engtype_3D)\Utilization Percentage','\GPU Adapter Memory(*)\Dedicated Usage','\GPU Adapter Memory(*)\Shared Usage'
+  $cpu = 0; $avail = 0; $gpu = 0; $ded = 0; $shr = 0
+  foreach ($s in $c.CounterSamples) {
+    $p = $s.Path
+    if ($p -match 'processor') { $cpu = $s.CookedValue }
+    elseif ($p -match 'available') { $avail = $s.CookedValue }
+    elseif ($p -match 'engtype_3d') { $gpu += $s.CookedValue }
+    elseif ($p -match 'dedicated') { $ded += $s.CookedValue }
+    elseif ($p -match 'shared') { $shr += $s.CookedValue }
+  }
+  '{0:0.0},{1:0.0},{2},{3:0.0},{4:0.0},{5:0.0}' -f $cpu, ($total - $avail), $total, $gpu, ($ded/1MB), ($shr/1MB)
+}
+'''
 AUDIO_ID = "1272-128104-0004"
 IMAGE_NAME = "pc_6f79b56c-2b0f-471d-9f9d-93932c69a0ce.png"
 MIC_PS = r'''
@@ -85,6 +105,65 @@ else { [MicSwitch]::Set($Id); [MicSwitch]::Current() }
 
 def say(text):
     print(text, flush=True)
+
+
+class Trace:
+    def __init__(self, folder):
+        folder.mkdir(parents=True, exist_ok=True)
+        self.folder = folder
+        self.scenario = "setup"
+        self.lock = threading.Lock()
+        self.alive = True
+        (folder / "run.txt").write_text(
+            "Each folder is one scenario.\n"
+            "settings.txt is the exact trident.txt used while that scenario ran.\n"
+            "output.txt is what those settings produced.\n"
+            "usage.csv is one row about every second for the whole run.\n"
+            "Columns: time, scenario, cpu_pct, ram_used_mib, ram_total_mib, gpu_3d_pct, vram_dedicated_mib, vram_shared_mib.\n"
+            "The scenario column is the folder that was active.\n",
+            encoding="utf-8")
+        self.csv = open(folder / "usage.csv", "w", encoding="utf-8", newline="")
+        self.csv.write("time,scenario,cpu_pct,ram_used_mib,ram_total_mib,gpu_3d_pct,vram_dedicated_mib,vram_shared_mib\n")
+        self.csv.flush()
+        script = folder / "sample.ps1"
+        script.write_text(SAMPLE_PS, encoding="utf-8")
+        self.proc = subprocess.Popen(
+            ["powershell", "-NoProfile", "-File", str(script)],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
+        self.thread = threading.Thread(target=self._read, daemon=True)
+        self.thread.start()
+
+    def _read(self):
+        for line in self.proc.stdout:
+            line = line.strip()
+            if not line or not line[0].isdigit():
+                continue
+            with self.lock:
+                name = self.scenario
+            stamp = datetime.now().isoformat(timespec="seconds")
+            self.csv.write(stamp + "," + name + "," + line + "\n")
+            self.csv.flush()
+            if not self.alive:
+                break
+
+    def begin(self, name, why):
+        with self.lock:
+            self.scenario = name
+        path = self.folder / name
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "why.txt").write_text(why.strip() + "\n", encoding="utf-8")
+        (path / "settings.txt").write_bytes(CFG.read_bytes())
+        return path
+
+    def output(self, name, text):
+        (self.folder / name / "output.txt").write_text(text, encoding="utf-8")
+
+    def close(self):
+        self.alive = False
+        if self.proc.poll() is None:
+            self.proc.kill()
+        self.thread.join(timeout=3)
+        self.csv.close()
 
 
 def ps(mode, device=""):
@@ -217,6 +296,7 @@ def fetch():
 
 
 def ear(audio, expected):
+    TRACE.begin("ear", "Live ear over CABLE Output. Fixture " + AUDIO_ID + ". The output is every live-final line.")
     err_path = CACHE / "ear.err"
     err = open(err_path, "wb")
     proc = subprocess.Popen(
@@ -234,6 +314,10 @@ def ear(audio, expected):
         if proc.poll() is not None:
             break
         time.sleep(0.2)
+    else:
+        raise SystemExit("ear never listened on CABLE Output")
+    if 'listening on "CABLE Output' not in heard:
+        raise SystemExit("ear never listened on CABLE Output")
     play(audio)
     time.sleep(2)
     proc.send_signal(signal.CTRL_BREAK_EVENT)
@@ -244,39 +328,71 @@ def ear(audio, expected):
         proc.wait(timeout=10)
     heard = err_path.read_text(encoding="utf-8", errors="replace")
     say("EXPECT " + expected)
-    for line in heard.splitlines():
-        if "live final" in line:
-            say("EAR " + line.strip())
+    finals = [line.strip() for line in heard.splitlines() if "live final" in line]
+    if not finals:
+        raise SystemExit("ear heard nothing")
+    (CACHE / "ear-finals.txt").write_text("\n".join(finals) + "\n", encoding="utf-8")
+    for line in finals:
+        say("EAR " + line)
+    TRACE.output("ear", "EXPECT " + expected + "\n" + "\n".join(finals) + "\n")
+
+
+def ready(name, proc):
+    pid = ROOT / (name + ".pid")
+    deadline = time.time() + 600
+    while time.time() < deadline:
+        if pid.exists() and pid.stat().st_size > 0:
+            return
+        if proc.poll() is not None:
+            raise SystemExit(name + " exited before watching")
+        time.sleep(0.2)
+    raise SystemExit(name + " never started watching")
 
 
 def mouth(variant, language, sentence):
     set_key("chatterbox.variant", variant)
     set_key("chatterbox.language", language)
+    TRACE.begin("mouth-" + variant, "Mouth variant " + variant + " language " + language + " speaks: " + sentence)
     prompt = ROOT / "chatterbox.prompt.txt"
     wav = ROOT / "chatterbox.response.wav"
+    reply = ROOT / "chatterbox.response.txt"
+    prompt.write_text("", encoding="utf-8")
     if wav.exists():
         wav.unlink()
-    prompt.write_text(sentence, encoding="utf-8")
-    now = time.time()
+    if reply.exists():
+        reply.unlink()
     err_path = CACHE / (variant + ".err")
     err = open(err_path, "wb")
     proc = subprocess.Popen([str(ROOT / "chatterbox.exe")], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=err)
-    deadline = time.time() + 180
-    size = 0
-    while time.time() < deadline:
-        if wav.exists() and wav.stat().st_mtime >= now - 1 and wav.stat().st_size > 44:
-            size = wav.stat().st_size
-            break
-        time.sleep(0.2)
-    if size:
-        (CACHE / (variant + ".wav")).write_bytes(wav.read_bytes())
-    stop("chatterbox")
-    proc.wait(timeout=20)
-    tail = err_path.read_text(encoding="utf-8", errors="replace").strip().splitlines()
-    say("MOUTH " + variant + " " + language + " wav_bytes=" + str(size) + " " + (tail[-1][:160] if tail else ""))
+    try:
+        ready("chatterbox", proc)
+        prompt.write_text(sentence, encoding="utf-8")
+        now = time.time()
+        deadline = time.time() + 180
+        size = 0
+        while time.time() < deadline:
+            if reply.exists() and reply.stat().st_mtime >= now - 1 and wav.exists() and wav.stat().st_size > 44:
+                size = wav.stat().st_size
+                break
+            if proc.poll() is not None:
+                break
+            time.sleep(0.2)
+        if not size:
+            raise SystemExit("MOUTH " + variant + " no wav")
+        audio_bytes = wav.read_bytes()
+        (CACHE / (variant + ".wav")).write_bytes(audio_bytes)
+        (TRACE.folder / ("mouth-" + variant) / "response.wav").write_bytes(audio_bytes)
+        tail = err_path.read_text(encoding="utf-8", errors="replace").strip().splitlines()
+        say("MOUTH " + variant + " " + language + " wav_bytes=" + str(size) + " " + (tail[-1][:160] if tail else ""))
+        TRACE.output("mouth-" + variant, "sentence: " + sentence + "\nwav_bytes: " + str(size) + "\n" + (tail[-1] if tail else "") + "\n")
+    finally:
+        stop("chatterbox")
+        proc.wait(timeout=20)
 
 
-def ask(label, prompt, timeout):
+def ask(label, prompt, timeout, why):
+    folder = TRACE.begin("gemma-" + label, why)
+    (folder / "prompt.txt").write_bytes(prompt.encode("utf-8"))
     resp = ROOT / "gemma.response.txt"
     if resp.exists():
         resp.unlink()
@@ -285,31 +401,44 @@ def ask(label, prompt, timeout):
     deadline = time.time() + timeout
     while time.time() < deadline:
         if resp.exists() and resp.stat().st_mtime >= now - 1 and resp.stat().st_size > 0:
-            say("GEMMA " + label + " " + resp.read_text(encoding="utf-8").replace("\n", " | "))
+            text = resp.read_text(encoding="utf-8")
+            (CACHE / ("gemma-" + label + ".txt")).write_text(text, encoding="utf-8")
+            TRACE.output("gemma-" + label, text)
+            say("GEMMA " + label + " saved")
+            say(text)
             return
         time.sleep(0.2)
-    say("GEMMA " + label + " empty")
+    TRACE.output("gemma-" + label, "no reply\n")
+    raise SystemExit("GEMMA " + label + " no reply")
 
 
 def gemma(image, labels):
     set_key("gemma.temp", "0.2")
     set_key("gemma.seed", "1")
-    set_key("gemma.n-predict", "80")
+    set_key("gemma.n-predict", "512")
     set_key("gemma.image", "")
+    (ROOT / "gemma.prompt.txt").write_text("", encoding="utf-8")
     err_path = CACHE / "gemma.err"
     err = open(err_path, "wb")
     proc = subprocess.Popen([str(ROOT / "gemma-brain.exe")], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=err)
-    ask("think", "<|turn>system\n<|think|>Reply with digits only after the thought.<turn|>\n<|turn>user\nWhat is 17 plus 4?<turn|>\n<|turn>model\n", 240)
-    ask("tool", "<|turn>system\n<|think|>You are a helpful assistant.<|tool>declaration:add{a:<|\"|>number<|\"|>,b:<|\"|>number<|\"|>}<tool|><turn|>\n<|turn>user\nAdd 17 and 4.<turn|>\n<|turn>model\n", 180)
-    stop("gemma")
-    proc.wait(timeout=30)
+    try:
+        ready("gemma", proc)
+        ask("think", "<|turn>system\n<|think|>Reply with digits only after the thought.<turn|>\n<|turn>user\nWhat is 17 plus 4?<turn|>\n<|turn>model\n", 600, "Gemma thinking turn. The reply is kept whole, after the process is watching.")
+        ask("tool", "<|turn>system\n<|think|>You are a helpful assistant.<|tool>declaration:add{a:<|\"|>number<|\"|>,b:<|\"|>number<|\"|>}<tool|><turn|>\n<|turn>user\nAdd 17 and 4.<turn|>\n<|turn>model\n", 600, "Gemma tool turn. The reply is the tool call, kept after the think reply was saved.")
+    finally:
+        stop("gemma")
+        proc.wait(timeout=30)
     set_key("gemma.image", str(image))
+    (ROOT / "gemma.prompt.txt").write_text("", encoding="utf-8")
     err = open(err_path, "ab")
     proc = subprocess.Popen([str(ROOT / "gemma-brain.exe")], cwd=ROOT, stdout=subprocess.DEVNULL, stderr=err)
-    say("EXPECT screen " + " | ".join(labels))
-    ask("image", "<|turn>user\nWhat application is this screen, and which controls can be clicked?<turn|>\n<|turn>model\n", 240)
-    stop("gemma")
-    proc.wait(timeout=30)
+    try:
+        ready("gemma", proc)
+        say("EXPECT screen " + " | ".join(labels))
+        ask("image", "<|turn>user\nWhat application is this screen, and which controls can be clicked?<turn|>\n<|turn>model\n", 600, "Gemma image turn. gemma.image in settings.txt is the ScreenSpot file. The reply is the whole generation.")
+    finally:
+        stop("gemma")
+        proc.wait(timeout=30)
 
 
 def main():
@@ -321,6 +450,9 @@ def main():
     import pyarrow.parquet as pq
     from huggingface_hub import hf_hub_download
     CACHE.mkdir(parents=True, exist_ok=True)
+    global TRACE
+    TRACE = Trace(CACHE / ("run-" + datetime.now().strftime("%Y%m%d-%H%M%S")))
+    say("RUN " + str(TRACE.folder))
     original = CFG.read_text(encoding="utf-8")
     laptop = ps("get")
     cable = cable_capture_id()
@@ -336,7 +468,10 @@ def main():
     finally:
         CFG.write_text(original, encoding="utf-8")
         ps("set", laptop)
+        if TRACE:
+            TRACE.close()
         say("HARNESS restored trident.txt and the microphone")
+        say("RUN " + str(TRACE.folder))
 
 
 if __name__ == "__main__":
