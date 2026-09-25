@@ -137,10 +137,10 @@ gemma.unload off
 gemma.image
 gemma.model gemma.gguf
 gemma.mmproj gemma-mmproj.gguf
-gemma.ctx 2048
+gemma.ctx 8192
 gemma.batch 512
 gemma.ubatch 512
-gemma.n-predict 512
+gemma.n-predict 1024
 gemma.gpu-layers 999
 gemma.gpu 0
 gemma.threads 0
@@ -238,6 +238,9 @@ gemma.response-file gemma.response.txt
 # One memory file. Reasoning stays in it. Compacted to this many characters before every Gemma call, including tool rounds.
 gemma.history-file gemma.history.txt
 gemma.history-max 4000
+gemma.system <<
+You are Gemma, in this room. The user's words are what was just heard there. Describe what is happening. Say that aloud by calling speak. When the words are about a picture, call see, then call speak.
+<<
 gemma.tools <<
 speak
 Say these words aloud on the speakers. This is the only way you are heard in the room.
@@ -247,16 +250,21 @@ see
 Look at the picture already in front of you. Call this when the words are about an image. Then call speak and tell the room what the picture shows.
 <<
 
-# Sense. Qwen3-0.6B, CPU only. It keeps its own memory and never hears about Gemma.
-# Every sense.interval seconds, finished transcripts from that window go to it as one block.
-# yes passes that block on unchanged. no passes nothing. sense.memory-max is the only limit.
+# Sense. Qwen3-0.6B, CPU only. It keeps its own memory and does not speak.
+# Each transcript arrives as the ear wrote it. The pass tool sends that text on unchanged.
+# sense.memory-max is the only limit. Sampler knobs are sense.temp, sense.top-k, sense.top-p.
 sense.model sense.gguf
-sense.ctx 512
+sense.ctx 4096
 sense.threads 4
-sense.n-predict 4
-sense.interval 5
+sense.n-predict 128
+sense.temp 0.7
+sense.top-k 20
+sense.top-p 0.8
 sense.memory-file sense.memory.txt
-sense.memory-max 2000
+sense.memory-max 1000
+sense.system <<
+You do the same work as the assistant in the room, but you are small and fast and you do not speak. You remember the earlier lines. The lines marked NEW just arrived. Think one sentence about the situation. You have one tool, pass. It sends those original lines on, unchanged. You do not write the lines. Call it only when they should go on, on its own line: tool pass
+<<
 
 nano.t3 nano-t3.gguf
 nano.s3 nano-s3.gguf
@@ -312,6 +320,13 @@ bake.mel-power 1
 bake.mel-floor 1e-5
 bake.mel-centered off
 
+# VAD. Silero VADIterator only. vad.window 512 is the 16 kHz frame the model requires.
+vad.rate 16000
+vad.window 512
+vad.threshold 0.5
+vad.min-silence-ms 400
+vad.speech-pad-ms 120
+
 # Ear. ear.exe takes no arguments. VAD writes a wav path into ear.prompt-file.
 # The recognizer stays loaded and transcribes that wav. ear.opt.<flag> forwards to nemo-speech.
 ear.unload off
@@ -321,3 +336,6 @@ ear.prompt-file ear.prompt.txt
 ear.response-file ear.response.txt
 ear.opt.--format text
 ear.opt.--device cpu
+ear.opt.--stream on
+ear.opt.--endpointing on
+ear.opt.--stop-history-eou-ms 1200

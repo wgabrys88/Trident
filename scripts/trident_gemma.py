@@ -45,14 +45,8 @@ def tool_decls(spec: str) -> str:
     return "".join(blocks)
 
 
-def system_turn(spec: str) -> str:
-    return (
-        "<|turn>system\n<|think|>You are Gemma. "
-        "Say the user's words aloud, exactly as received, by calling speak. "
-        "Do not add words. Do not call any other tool."
-        + tool_decls(spec)
-        + "<turn|>\n"
-    )
+def system_turn(spec: str, instructions: str) -> str:
+    return "<|turn>system\n<|think|>" + instructions.strip() + "\n" + tool_decls(spec) + "<turn|>\n"
 
 
 def user_turn(text: str) -> str:
@@ -63,8 +57,8 @@ def model_open() -> str:
     return "<|turn>model\n"
 
 
-def prompt_body(spec: str, history, user: str, model_body: str) -> str:
-    return system_turn(spec) + "".join(history or []) + user_turn(user) + model_open() + model_body
+def prompt_body(spec: str, history, user: str, model_body: str, instructions: str) -> str:
+    return system_turn(spec, instructions) + "".join(history or []) + user_turn(user) + model_open() + model_body
 
 
 def format_tool_response(name: str, fields: dict) -> str:
@@ -94,28 +88,20 @@ def write_memory(history: list, limit: int, path) -> None:
     path.write_text("".join(history), encoding="utf-8")
 
 
-def converse(gemma_proc, user_text: str, spec: str, history: list, limit: int, path, act) -> None:
+def converse(gemma_proc, user_text: str, spec: str, history: list, limit: int, path, act, instructions: str) -> None:
     from trident_runtime import gemma_ask
 
     write_memory(history, limit, path)
     user_text = user_text.strip()
-    latest = gemma_ask(gemma_proc, prompt_body(spec, history, user_text, ""))
+    latest = gemma_ask(gemma_proc, prompt_body(spec, history, user_text, "", instructions))
     body = latest
-    seen = set()
     while True:
         calls = parse_calls(latest)
-        fresh = []
-        for name, args in calls:
-            mark = (name, tuple(sorted(args.items())))
-            if mark in seen:
-                continue
-            seen.add(mark)
-            fresh.append((name, args))
-        if not fresh:
+        if not calls:
             break
-        body += "".join(format_tool_response(name, act(name, args)) for name, args in fresh)
+        body += "".join(format_tool_response(name, act(name, args)) for name, args in calls)
         write_memory(history, limit, path)
-        latest = gemma_ask(gemma_proc, prompt_body(spec, history, user_text, body))
+        latest = gemma_ask(gemma_proc, prompt_body(spec, history, user_text, body, instructions))
         body += latest
     stored = body.rstrip()
     if not stored.endswith("<turn|>"):

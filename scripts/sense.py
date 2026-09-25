@@ -5,13 +5,18 @@ from pathlib import Path
 
 
 class Gate:
-    def __init__(self, model: Path, threads: int, ctx: int, n_predict: int, memory: Path, memory_max: int):
+    def __init__(self, model: Path, threads: int, ctx: int, n_predict: int, memory: Path, memory_max: int, system: str, temperature: float, top_k: int, top_p: float):
         from llama_cpp import Llama
 
         self.n_predict = n_predict
+        self.system = system
+        self.temperature = temperature
+        self.top_k = top_k
+        self.top_p = top_p
         self.memory_path = memory
         self.memory_max = memory_max
         self.room = []
+        self.said = ""
         if memory.exists():
             raw = memory.read_text(encoding="utf-8")
             self.room = [part.strip() for part in raw.split("\n\n") if part.strip()]
@@ -42,10 +47,8 @@ class Gate:
         self._save()
         prompt = (
             "<|im_start|>system\n"
-            "You remember the earlier lines. The lines marked NEW just arrived. "
-            "Reply yes if those new lines should be passed on. Reply no if they should not. "
-            "Never rewrite them. One word: yes or no.\n"
-            "/no_think<|im_end|>\n"
+            + self.system.strip()
+            + "\n/no_think<|im_end|>\n"
             "<|im_start|>user\n"
             + (("Earlier\n" + earlier + "\n") if earlier else "")
             + "NEW\n"
@@ -55,13 +58,14 @@ class Gate:
         )
         out = self.llm(
             prompt,
-            max_tokens=max(self.n_predict, 4),
-            temperature=0.0,
-            top_k=20,
-            top_p=0.8,
+            max_tokens=self.n_predict,
+            temperature=self.temperature,
+            top_k=self.top_k,
+            top_p=self.top_p,
             stop=["<|im_end|>"],
         )
-        word = out["choices"][0]["text"].strip().split()
-        if word and word[0].lower().strip(".,!") == "yes":
-            return heard
+        self.said = out["choices"][0]["text"].strip()
+        for line in self.said.splitlines():
+            if line.strip().lower().strip(".,!") == "tool pass":
+                return heard
         return ""
