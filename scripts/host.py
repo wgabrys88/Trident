@@ -50,7 +50,6 @@ def residents():
 
 def always(spec):
     unload_all()
-    set_key("ear.live", "on")
     USER_PROMPT.write_text("", encoding="utf-8")
     EAR_RESPONSE.write_text("", encoding="utf-8")
     ear = start_resident("ear.exe", "ear")
@@ -78,7 +77,6 @@ def always(spec):
         stop_resident("ear", ear)
         stop_resident("chatterbox", mouth)
         stop_resident("gemma", gemma)
-        set_key("ear.live", "off")
 
 
 def main():
@@ -93,7 +91,13 @@ def main():
     if bool(args.text) == bool(args.audio):
         raise SystemExit("pass only one of --text or --audio")
     unload_all()
-    user = args.text.strip() if args.text else ear_transcribe(args.audio.resolve())
+    if args.audio:
+        set_key("ear.live", "off")
+    try:
+        user = args.text.strip() if args.text else ear_transcribe(args.audio.resolve())
+    finally:
+        if args.audio:
+            set_key("ear.live", "on")
     gemma, mouth = residents()
     try:
         turn(gemma, mouth, spec, [], user)
