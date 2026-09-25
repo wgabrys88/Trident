@@ -1,69 +1,94 @@
-# Trident settings. The programs read this file at start.
-# Paths are relative to this file. Edit the values here. There is no knob CLI.
-# A value that ends with << continues until a line that is only <<.
+# Trident settings. python install.py and the executables read this file and take no arguments.
+# Paths are relative to this file. Booleans are on or off. A missing required key exits.
+# A value ending in << runs until a line that is only <<.
+# Deliverables land next to this file. Clones, cmake trees, and checkpoints stay under .install.
+# Text is UTF-8. A leading BOM is ignored. Polish and the other languages pass through as UTF-8.
+# install.vulkan_sdk empty uses the newest C:\VulkanSDK. install.msvc_arch empty detects this CPU.
+# Clearing install.llama_rev tracks llama.cpp master. Clearing install.nemo_rev keeps the cloned revision.
+# install.ear_vcpkg_root and install.ear_vcpkg_triplet empty skip vcpkg.
+# gemma.image, gemma.tensor-split, gemma.cpu-mask, and gemma.cpu-mask-batch may be empty.
+# gemma.threads 0 and gemma.threads-batch 0 use the host thread count.
+# bake.cond-seconds -1 uses 15 seconds for nano and turbo, and 6 seconds for v3.
 
-# Install. python install.py [ear | brain | mouth | nano | turbo | v3 | all | release]
-# runtime.unload-wait-ms is the pause between checks while --unload is a file key.
-# runtime.unload-tries is how many waits happen before the process is terminated.
 runtime.unload-wait-ms 100
 runtime.unload-tries 50
-install.cmd turbo
+
 install.generator Visual Studio 17 2022
 install.arch x64
+install.config Release
 install.parallel 2
+install.brain_parallel 4
 install.vulkan_sdk
+install.msvc_arch
+install.utf8_manifest utf8.manifest
+install.src_ggml .install/src/ggml
+install.src_llama .install/src/llama.cpp
+install.src_nemo .install/src/nemo-speech
+install.build_mouth .install/build/mouth
+install.build_gemma .install/build/gemma
+install.build_ear .install/build/ear
+install.cache .install/cache
 install.ggml_repo https://github.com/ggml-org/ggml.git
 install.ggml_rev 7840aaba1989c6deeefede1d77d5aaf8f52b947e
+install.llama_repo https://github.com/ggml-org/llama.cpp.git
+install.llama_rev 84e76d8a23162eca70490da131945ebec1f09bf4
+install.nemo_repo https://github.com/NVIDIA/NeMo-Speech.cpp.git
+install.nemo_rev 97a15afa5caa9bce5baaa86c1184103877af4101
 install.reference reference.wav
 install.t3_weight_type q4_0
 install.s3_weight_type q4_0
 install.t3_quant_policy scripts/quant_t3.json
 install.s3_quant_policy scripts/quant_s3.json
-install.mouth_ggml_vulkan ON
-install.mouth_ggml_cpu OFF
-install.mouth_ggml_openmp OFF
-install.mouth_ggml_build_tests OFF
-install.mouth_ggml_build_examples OFF
-install.mouth_build_shared ON
-install.hf_nano
-install.hf_turbo
-install.hf_v3
-install.brain_parallel 4
+install.hf_nano https://huggingface.co/ResembleAI/chatterbox-nano/resolve/71ccd1d0081b430592cea481f4307e764e07bc64
+install.hf_turbo https://huggingface.co/ResembleAI/chatterbox-turbo/resolve/749d1c1a46eb10492095d68fbcf55691ccf137cd
+install.hf_v3 https://huggingface.co/ResembleAI/chatterbox/resolve/5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18
+install.mouth_ggml_vulkan on
+install.mouth_ggml_cpu off
+install.mouth_ggml_openmp off
+install.mouth_ggml_build_tests off
+install.mouth_ggml_build_examples off
+install.mouth_build_shared off
+install.mouth_compile /O2 /bigobj /utf-8
+install.mouth_definitions NOMINMAX WIN32_LEAN_AND_MEAN GGML_USE_VULKAN _USE_MATH_DEFINES _CRT_SECURE_NO_WARNINGS
 install.gemma_backend auto
 install.cuda_root C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6
 install.cuda_toolset cuda=12.6
 install.cuda_architectures 61-real
-install.msvc_arch
-install.text_model_name gemma-4-E2B-it-Q4_0.gguf
+install.cuda_max 12.6
+install.cuda_codegen_parallel 1
+install.gemma_compile /O2 /Ob2 /Oi /Ot /GL /fp:fast /Gy /Gw /utf-8
+install.gemma_link /LTCG
+install.gemma_definitions NOMINMAX WIN32_LEAN_AND_MEAN
+install.text_model_name gemma.gguf
 install.text_model_url https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_0.gguf
-install.mmproj_name mmproj-gemma-4-E2B-it-Q8_0.gguf
+install.mmproj_name gemma-mmproj.gguf
 install.mmproj_url https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/mmproj-gemma-4-E2B-it-Q8_0.gguf
-install.llama_repo https://github.com/ggml-org/llama.cpp.git
-install.llama_rev
-install.brain_ggml_cpu ON
-install.brain_ggml_cuda OFF
-install.brain_ggml_vulkan OFF
-install.brain_ggml_metal OFF
-install.brain_ggml_openmp ON
-install.brain_ggml_blas OFF
-install.brain_ggml_accelerate OFF
-install.brain_ggml_native ON
-install.llama_build_common ON
-install.llama_build_tools OFF
-install.llama_build_mtmd ON
-install.llama_build_tests OFF
-install.llama_build_examples OFF
-install.llama_build_server OFF
-install.llama_curl OFF
-install.llama_openssl OFF
-install.llama_subprocess OFF
-install.mtmd_video OFF
-install.brain_build_shared OFF
-install.ggml_ccache ON
-install.nemo_repo https://github.com/NVIDIA/NeMo-Speech.cpp.git
-install.nemo_rev
-install.ear_gguf_name nemotron-3.5-asr-streaming-0.6b.q8_0.gguf
-install.ear_gguf_url
+install.brain_ggml_cpu on
+install.brain_ggml_metal off
+install.brain_ggml_openmp on
+install.brain_ggml_blas off
+install.brain_ggml_accelerate off
+install.brain_ggml_native on
+install.llama_build_common on
+install.llama_build_tools off
+install.llama_build_mtmd on
+install.llama_build_tests off
+install.llama_build_examples off
+install.llama_build_server off
+install.llama_curl off
+install.llama_openssl off
+install.llama_subprocess off
+install.mtmd_video off
+install.brain_build_shared off
+install.ggml_ccache on
+install.ggml_cuda_force_mmq on
+install.ggml_cuda_force_cublas off
+install.ggml_cuda_fa on
+install.ggml_cuda_fa_all_quants off
+install.ggml_cuda_graphs on
+install.ggml_cuda_nccl off
+install.ear_gguf_name ear.gguf
+install.ear_gguf_url https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b/resolve/main/nemotron-3.5-asr-streaming-0.6b.q8_0.gguf
 install.ear_backend cpu
 install.ear_profile core
 install.ear_config Release
@@ -71,7 +96,6 @@ install.ear_cuda_arch native
 install.ear_architecture auto
 install.ear_compiler auto
 install.ear_jobs 0
-install.ear_build_dir
 install.ear_vcpkg_root
 install.ear_vcpkg_triplet
 install.ear_asr_only on
@@ -85,17 +109,24 @@ install.ear_tts_zh off
 install.ear_tests off
 install.ear_cublas_shim off
 install.publish off
+install.torch torch==2.6.0
+install.torch_index https://download.pytorch.org/whl/cpu
+install.torch_extra_index https://pypi.org/simple
+install.pip <<
+numpy==1.26.4
+gguf==0.19.0
+safetensors==0.8.0
+librosa==0.11.0
+tokenizers==0.23.2
+<<
 
-# Gemma brain. Run gemma-brain.exe with no arguments.
-# gemma.persist on keeps the weights loaded and watches gemma.prompt-file.
-# gemma.unload on stops that process and exits. The prompt file is the request.
-# gemma.image is optional. Empty means text only. A set path is used for one shot.
-# gemma.model and gemma.mmproj are the GGUF files under gemma/models.
+# Gemma. gemma-brain.exe takes no arguments. gemma.prompt-file is the full prompt.
+# This binary does not render a chat template and does not read a tool list.
 gemma.persist on
 gemma.unload off
 gemma.image
-gemma.model gemma/models/gemma-4-E2B-it-Q4_0.gguf
-gemma.mmproj gemma/models/mmproj-gemma-4-E2B-it-Q8_0.gguf
+gemma.model gemma.gguf
+gemma.mmproj gemma-mmproj.gguf
 gemma.ctx 2048
 gemma.batch 512
 gemma.ubatch 512
@@ -193,80 +224,16 @@ gemma.timing-per-token off
 gemma.backend-sampling off
 gemma.prompt-file gemma.prompt.txt
 gemma.response-file gemma.response.txt
-gemma.system <<
-You control this signed-in user's own Windows desktop. Observe the screen, call exactly one tool, then stop and wait for the tool result.
-x and y are pixels of the last screenshot. The origin is the top-left. x increases right. y increases down.
-Call screenshot before the first action and again whenever the screen may have changed. One desktop action per turn.
-When the task is finished, call respond with the final text. Use code only when the user asked for a Python program.
-<<
-gemma.tok.tool <|tool>
-gemma.tok.tool_end <tool|>
-gemma.tok.str <|"|>
-gemma.tools screenshot click type_text key scroll focus_window respond code
-gemma.tool.screenshot.description Capture the current desktop. Take this before acting and after the screen may have changed. No arguments.
-gemma.tool.click.description Click a point on the last screenshot. Aim at the center of the control.
-gemma.tool.click.params x y button
-gemma.tool.click.x.type INTEGER
-gemma.tool.click.x.description Horizontal pixel on the last screenshot.
-gemma.tool.click.x.required yes
-gemma.tool.click.y.type INTEGER
-gemma.tool.click.y.description Vertical pixel on the last screenshot.
-gemma.tool.click.y.required yes
-gemma.tool.click.button.type STRING
-gemma.tool.click.button.description Mouse button: left, right, or middle. Default left.
-gemma.tool.type_text.description Type literal text into the focused control. Does not press Enter.
-gemma.tool.type_text.params text
-gemma.tool.type_text.text.type STRING
-gemma.tool.type_text.text.description Characters to type, exactly as they should appear.
-gemma.tool.type_text.text.required yes
-gemma.tool.key.description Press one key or a plus-joined combination, such as enter or ctrl+s.
-gemma.tool.key.params text
-gemma.tool.key.text.type STRING
-gemma.tool.key.text.description Key name or combination. Use plus between modifiers and the key.
-gemma.tool.key.text.required yes
-gemma.tool.scroll.description Scroll at a point on the last screenshot.
-gemma.tool.scroll.params x y direction amount
-gemma.tool.scroll.x.type INTEGER
-gemma.tool.scroll.x.description Horizontal pixel on the last screenshot.
-gemma.tool.scroll.x.required yes
-gemma.tool.scroll.y.type INTEGER
-gemma.tool.scroll.y.description Vertical pixel on the last screenshot.
-gemma.tool.scroll.y.required yes
-gemma.tool.scroll.direction.type STRING
-gemma.tool.scroll.direction.description Scroll direction: up, down, left, or right.
-gemma.tool.scroll.direction.required yes
-gemma.tool.scroll.amount.type INTEGER
-gemma.tool.scroll.amount.description Number of wheel clicks, usually 1 to 5.
-gemma.tool.scroll.amount.required yes
-gemma.tool.focus_window.description Bring a visible window of this session to the foreground by its title.
-gemma.tool.focus_window.params window_name
-gemma.tool.focus_window.window_name.type STRING
-gemma.tool.focus_window.window_name.description Substring of the window title to match.
-gemma.tool.focus_window.window_name.required yes
-gemma.tool.respond.description Write the response text to a file.
-gemma.tool.respond.params text
-gemma.tool.respond.text.type STRING
-gemma.tool.respond.text.description Response text.
-gemma.tool.respond.text.required yes
-gemma.tool.code.description Write a Python program to disk.
-gemma.tool.code.params source
-gemma.tool.code.source.type STRING
-gemma.tool.code.source.description Complete Python source.
-gemma.tool.code.source.required yes
-# {system} {tools} {text} are filled from the keys above. {text} is the command argument.
-gemma.prompt <<
-<|turn>system
-<|think|>
-{system}{tools}<turn|>
-<|turn>user
-{text}<turn|>
-<|turn>model
-<<
 
-# Chatterbox. Run chatterbox.exe with no arguments.
-# chatterbox.persist on keeps the voice loaded and watches chatterbox.prompt-file.
-# chatterbox.unload on stops that process. The prompt file is the sentence.
-# The wav path is written to chatterbox.response-file. Sample rate 24000.
+nano.t3 nano-t3.gguf
+nano.s3 nano-s3.gguf
+turbo.t3 turbo-t3.gguf
+turbo.s3 turbo-s3.gguf
+v3.t3 v3-t3.gguf
+v3.s3 v3-s3.gguf
+
+# Chatterbox. chatterbox.exe takes no arguments. v3 reads the -v3 sampler keys.
+# nano and turbo are English. v3 speaks the languages stored in its GGUF, including Polish.
 chatterbox.persist on
 chatterbox.unload off
 chatterbox.variant turbo
@@ -277,7 +244,6 @@ chatterbox.graph-nodes 8192
 chatterbox.end-trim-samples 960
 chatterbox.prompt-file chatterbox.prompt.txt
 chatterbox.response-file chatterbox.response.txt
-# Voices are models/voices/<variant>/t3.gguf and s3.gguf. Sample rate 24000.
 chatterbox.gpu 0
 chatterbox.seed 42
 chatterbox.temperature 0.8
@@ -294,9 +260,7 @@ chatterbox.cfg-weight 0.5
 chatterbox.exaggeration 0.5
 chatterbox.cfm-cfg 0.7
 
-# Bake. install.py passes the temporary t3, s3, and reference paths.
-# A bare chatterbox-bake.exe reads bake.t3, bake.s3, and bake.reference.
-# Knobs below are the only bake settings.
+# chatterbox-bake.exe with three paths bakes those files. With no paths it reads bake.t3, bake.s3, and bake.reference.
 bake.t3
 bake.s3
 bake.reference reference.wav
@@ -315,90 +279,14 @@ bake.mel-power 1
 bake.mel-floor 1e-5
 bake.mel-centered off
 
-# Ear. Run ear.exe with no arguments.
-# ear.persist on keeps the watcher up. ear.unload on stops it.
-# ear.prompt-file holds the audio path. The transcript goes to ear.response-file.
+# Ear. ear.exe takes no arguments. ear.prompt-file is an audio path, relative paths beside this file.
+# ear.opt.<flag> forwards to nemo-speech: off or empty is omitted, on is the bare flag, any other value is the argument.
+# The ear starts nemo-speech.exe once per file. A live microphone is nemo-speech.exe transcribe --live.
 ear.persist on
 ear.unload off
 ear.poll-ms 200
-ear.opt.--format text
-ear.opt.--device cpu
-ear.opt.--language
-ear.opt.--backend
-ear.opt.--concurrency
-ear.opt.--output-dir
-ear.opt.--recursive off
-ear.opt.--word-times off
-ear.opt.--vad-model
-ear.opt.--vad-masking off
-ear.opt.--diarize off
-ear.opt.--diar-model
-ear.opt.--itn-model-dir
-ear.opt.--pnc-model
-ear.opt.--no-punctuation off
-ear.opt.--verbatim off
-ear.opt.--stream off
-ear.opt.--endpointing off
-ear.opt.--stop-history-eou-ms
-ear.opt.--max-alternatives
-ear.opt.--speech-context
-ear.opt.--speech-context-boost
-ear.opt.--profanity-filter off
-ear.opt.--config
-ear.opt.--no-warmup off
-ear.opt.--no-batching off
-ear.opt.--force off
-ear.opt.--json off
-ear.opt.--quiet off
-ear.opt.--verbose off
-ear.opt.--live off
-ear.opt.--translate-to
-ear.opt.--nmt-model
-ear.opt.--gpu
-ear.opt.--chunk-sec
-ear.opt.--left-pad-sec
-ear.opt.--right-pad-sec
-ear.opt.--asr.streaming.rnnt_right_context
-ear.opt.--asr.batching.enabled
-ear.opt.--asr.batching.max_batch_size
-ear.opt.--asr.batching.max_queue_delay_us
-ear.opt.--asr.batching.max_queue_depth
-ear.opt.--asr.batching.ingress_cohort_delay_us
-ear.opt.--asr.batching.state_arena_slots
-ear.opt.--asr.batching.offline_bucket_ms
-ear.opt.--asr.decoder.kind
-ear.opt.--lm-path
-ear.opt.--lexicon
-ear.opt.--tokenizer
-ear.opt.--beam-size
-ear.opt.--asr.decoder.beam_size_token
-ear.opt.--beam-threshold
-ear.opt.--lm-weight
-ear.opt.--word-score
-ear.opt.--max-boost
-ear.opt.--boosting-tree-alpha
-ear.opt.--boosting-max-boost
-ear.opt.--boosting-depth-scaling
-ear.opt.--vad-onset
-ear.opt.--vad-offset
-ear.opt.--vad-pad-ms
-ear.opt.--asr.vad.masker.pad_onset_ms
-ear.opt.--asr.vad.masker.pad_offset_ms
-ear.opt.--vad-min-duration-off-ms
-ear.opt.--vad-stddev-floor
-ear.opt.--vad-mask-value
-ear.opt.--diar-preset
-ear.opt.--diar-chunk
-ear.opt.--diar-rc
-ear.opt.--diar-lc
-ear.opt.--diar-fifo
-ear.opt.--diar-spkcache
-ear.opt.--diar-update-period
-ear.opt.--vad-based-eou off
-ear.opt.--profanity-list
-ear.opt.--asr.postproc.cpu_workers
-ear.opt.--asr.postproc.max_queue_depth
+ear.model ear.gguf
 ear.prompt-file ear.prompt.txt
 ear.response-file ear.response.txt
-# ear.model is passed as --model when the command does not already have one.
-ear.model models/ear/nemotron-3.5-asr-streaming-0.6b.q8_0.gguf
+ear.opt.--format text
+ear.opt.--device cpu

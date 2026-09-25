@@ -1,7 +1,8 @@
-# Probes this machine's CPU and writes cmake/HostCpu.generated.cmake for host-side work.
+param(
+    [Parameter(Mandatory = $true)][string]$OutFile
+)
 $ErrorActionPreference = "Stop"
-$gemmaRoot = Split-Path $PSScriptRoot -Parent
-$outFile = Join-Path $gemmaRoot "cmake\HostCpu.generated.cmake"
+$outFile = $OutFile
 
 $proc = Get-CimInstance Win32_Processor | Select-Object -First 1
 $name = $proc.Name.Trim()

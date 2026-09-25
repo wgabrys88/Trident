@@ -1,21 +1,16 @@
-import argparse, hashlib, json, os, re, shutil, subprocess, sys, urllib.request
+import hashlib, json, os, re, shutil, subprocess, sys, urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-
-def venv_python() -> Path:
-    return ROOT / ".venv" / "Scripts" / "python.exe"
-
-MODELS = ROOT / "models"
-OPT = {}
-PYTORCH_CPU_INDEX = "https://download.pytorch.org/whl/cpu"
+FILE = {}
+ARCH_FLAG = None
+BACKEND = None
 
 
 @dataclass(frozen=True)
 class Variant:
     name: str
-    hf: str
     assets: tuple[str, ...]
     t3_ckpt: str
     architecture: str
@@ -23,36 +18,121 @@ class Variant:
 
 _GPT2 = ("s3gen_meanflow.safetensors", "conds.pt", "ve.safetensors", "vocab.json", "merges.txt", "added_tokens.json")
 VARIANTS = {
-    "nano": Variant("nano", "https://huggingface.co/ResembleAI/chatterbox-nano/resolve/71ccd1d0081b430592cea481f4307e764e07bc64", ("t3_nano_v1.safetensors",) + _GPT2, "t3_nano_v1.safetensors", "gpt2"),
-    "turbo": Variant("turbo", "https://huggingface.co/ResembleAI/chatterbox-turbo/resolve/749d1c1a46eb10492095d68fbcf55691ccf137cd", ("t3_turbo_v1.safetensors",) + _GPT2, "t3_turbo_v1.safetensors", "gpt2"),
-    "v3": Variant("v3", "https://huggingface.co/ResembleAI/chatterbox/resolve/5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18", ("t3_mtl23ls_v3.safetensors", "s3gen.safetensors", "conds.pt", "ve.safetensors", "grapheme_mtl_merged_expanded_v1.json"), "t3_mtl23ls_v3.safetensors", "llama"),
+    "nano": Variant("nano", ("t3_nano_v1.safetensors",) + _GPT2, "t3_nano_v1.safetensors", "gpt2"),
+    "turbo": Variant("turbo", ("t3_turbo_v1.safetensors",) + _GPT2, "t3_turbo_v1.safetensors", "gpt2"),
+    "v3": Variant("v3", ("t3_mtl23ls_v3.safetensors", "s3gen.safetensors", "conds.pt", "ve.safetensors", "grapheme_mtl_merged_expanded_v1.json"), "t3_mtl23ls_v3.safetensors", "llama"),
 }
 ARCH = {
-    "gpt2": {"ckpt": ".ckpt", "s3_checkpoint": "s3gen_meanflow.safetensors", "s3_family": "meanflow"},
-    "llama": {"ckpt": ".ckpt-v3", "s3_checkpoint": "s3gen.safetensors", "s3_family": "v3"},
+    "gpt2": {"ckpt": "ckpt", "s3_checkpoint": "s3gen_meanflow.safetensors", "s3_family": "meanflow"},
+    "llama": {"ckpt": "ckpt-v3", "s3_checkpoint": "s3gen.safetensors", "s3_family": "v3"},
 }
 BRAIN_DEFS = (
-    ("brain_ggml_cpu", "GGML_CPU"),
-    ("brain_ggml_cuda", "GGML_CUDA"),
-    ("brain_ggml_vulkan", "GGML_VULKAN"),
-    ("brain_ggml_metal", "GGML_METAL"),
-    ("brain_ggml_openmp", "GGML_OPENMP"),
-    ("brain_ggml_blas", "GGML_BLAS"),
-    ("brain_ggml_accelerate", "GGML_ACCELERATE"),
-    ("brain_ggml_native", "GGML_NATIVE"),
-    ("llama_build_common", "LLAMA_BUILD_COMMON"),
-    ("llama_build_tools", "LLAMA_BUILD_TOOLS"),
-    ("llama_build_mtmd", "LLAMA_BUILD_MTMD"),
-    ("llama_build_tests", "LLAMA_BUILD_TESTS"),
-    ("llama_build_examples", "LLAMA_BUILD_EXAMPLES"),
-    ("llama_build_server", "LLAMA_BUILD_SERVER"),
-    ("llama_curl", "LLAMA_CURL"),
-    ("llama_openssl", "LLAMA_OPENSSL"),
-    ("llama_subprocess", "LLAMA_SUBPROCESS"),
-    ("mtmd_video", "MTMD_VIDEO"),
-    ("brain_build_shared", "BUILD_SHARED_LIBS"),
-    ("ggml_ccache", "GGML_CCACHE"),
+    ("install.brain_ggml_cpu", "GGML_CPU"),
+    ("install.brain_ggml_metal", "GGML_METAL"),
+    ("install.brain_ggml_openmp", "GGML_OPENMP"),
+    ("install.brain_ggml_blas", "GGML_BLAS"),
+    ("install.brain_ggml_accelerate", "GGML_ACCELERATE"),
+    ("install.brain_ggml_native", "GGML_NATIVE"),
+    ("install.llama_build_common", "LLAMA_BUILD_COMMON"),
+    ("install.llama_build_tools", "LLAMA_BUILD_TOOLS"),
+    ("install.llama_build_mtmd", "LLAMA_BUILD_MTMD"),
+    ("install.llama_build_tests", "LLAMA_BUILD_TESTS"),
+    ("install.llama_build_examples", "LLAMA_BUILD_EXAMPLES"),
+    ("install.llama_build_server", "LLAMA_BUILD_SERVER"),
+    ("install.llama_curl", "LLAMA_CURL"),
+    ("install.llama_openssl", "LLAMA_OPENSSL"),
+    ("install.llama_subprocess", "LLAMA_SUBPROCESS"),
+    ("install.mtmd_video", "MTMD_VIDEO"),
+    ("install.brain_build_shared", "BUILD_SHARED_LIBS"),
+    ("install.ggml_ccache", "GGML_CCACHE"),
 )
+CUDA_DEFS = (
+    ("install.ggml_cuda_force_mmq", "GGML_CUDA_FORCE_MMQ"),
+    ("install.ggml_cuda_force_cublas", "GGML_CUDA_FORCE_CUBLAS"),
+    ("install.ggml_cuda_fa", "GGML_CUDA_FA"),
+    ("install.ggml_cuda_fa_all_quants", "GGML_CUDA_FA_ALL_QUANTS"),
+    ("install.ggml_cuda_graphs", "GGML_CUDA_GRAPHS"),
+    ("install.ggml_cuda_nccl", "GGML_CUDA_NCCL"),
+)
+EAR_SWITCHES = (
+    ("install.ear_asr_only", "-AsrOnly"),
+    ("install.ear_grpc", "-Grpc"),
+    ("install.ear_nmt", "-Nmt"),
+    ("install.ear_flashlight", "-Flashlight"),
+    ("install.ear_http", "-Http"),
+    ("install.ear_http_tls", "-HttpTls"),
+    ("install.ear_tts_ja", "-TtsJa"),
+    ("install.ear_tts_zh", "-TtsZh"),
+    ("install.ear_tests", "-Tests"),
+    ("install.ear_cublas_shim", "-CublasShim"),
+)
+
+
+def load_trident() -> dict:
+    path = ROOT / "trident.txt"
+    if not path.is_file():
+        raise SystemExit("trident.txt missing")
+    lines = path.read_text(encoding="utf-8-sig").splitlines()
+    out = {}
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        index += 1
+        if line.startswith("\ufeff"):
+            line = line.lstrip("\ufeff")
+        stripped = line.lstrip(" \t")
+        if not stripped or stripped.startswith("#"):
+            continue
+        if len(stripped) >= 2 and stripped.endswith("<<"):
+            key = stripped[:-2].rstrip(" \t")
+            body = []
+            while index < len(lines):
+                part = lines[index]
+                index += 1
+                if part == "<<":
+                    break
+                body.append(part)
+            out[key] = "\n".join(body)
+            continue
+        space = stripped.find(" ")
+        if space < 0:
+            out[stripped] = ""
+        else:
+            out[stripped[:space]] = stripped[space + 1 :]
+    return out
+
+
+def need(key: str) -> str:
+    if key not in FILE or FILE[key] == "":
+        raise SystemExit("trident.txt missing " + key)
+    return FILE[key]
+
+
+def opt(key: str) -> str:
+    return FILE.get(key, "")
+
+
+def on(key: str) -> bool:
+    text = need(key)
+    if text == "on":
+        return True
+    if text == "off":
+        return False
+    raise SystemExit("trident.txt " + key + " must be on or off")
+
+
+def cmake_on(key: str) -> str:
+    return "ON" if on(key) else "OFF"
+
+
+def place(key: str) -> Path:
+    return (ROOT / need(key)).resolve()
+
+
+def stamps() -> Path:
+    path = place("install.cache") / "stamps"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def run(cmd, **kw):
@@ -89,221 +169,8 @@ def download(url: str, dest: Path) -> None:
     tmp.replace(dest)
 
 
-def specs(*names: str) -> list[str]:
-    lines = [line.strip() for line in (ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines() if line.strip()]
-    found = {}
-    for line in lines:
-        key = line.split("/")[-1].split(".git")[0] if line.startswith("git+") else line.split("==")[0].split(">=")[0]
-        found[key] = line
-    missing = [name for name in names if name not in found]
-    if missing:
-        raise RuntimeError("requirements missing " + ", ".join(missing))
-    return [found[name] for name in names]
-
-
-def pip(py: Path, name: str, args: list[str], env=None) -> None:
-    MODELS.mkdir(parents=True, exist_ok=True)
-    stamp = MODELS / f"{name}.stamp"
-    payload = json.dumps(args)
-    if stamp.is_file() and stamp.read_text(encoding="utf-8") == payload:
-        print("skip " + name, flush=True)
-        return
-    print("install " + name, flush=True)
-    run([str(py), "-m", "pip", "install", "--disable-pip-version-check", *args], env=env)
-    stamp.write_text(payload, encoding="utf-8")
-
-
-class LlamaCpp:
-    HOME = ROOT / "gemma" / "llama.cpp"
-
-    @staticmethod
-    def rev() -> str:
-        return subprocess.run(["git", "-C", str(LlamaCpp.HOME), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
-
-    @staticmethod
-    def ensure() -> str:
-        home = LlamaCpp.HOME
-        if not (home / ".git").exists():
-            run(["git", "clone", "--filter=blob:none", OPT["llama_repo"], str(home)])
-        rev = OPT["llama_rev"]
-        if rev:
-            run(["git", "-C", str(home), "fetch", "origin", rev, "--depth", "1"])
-            run(["git", "-C", str(home), "checkout", "--detach", rev])
-            return rev
-        run(["git", "-C", str(home), "fetch", "origin", "master"])
-        run(["git", "-C", str(home), "checkout", "master"])
-        run(["git", "-C", str(home), "pull", "--ff-only", "origin", "master"])
-        return LlamaCpp.rev()
-
-
-class Ggml:
-    @staticmethod
-    def ensure() -> None:
-        home = ROOT / "ggml"
-        if not (home / ".git").exists():
-            run(["git", "clone", "--filter=blob:none", OPT["ggml_repo"], str(home)])
-        head = subprocess.run(["git", "-C", str(home), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
-        if head != OPT["ggml_rev"]:
-            run(["git", "-C", str(home), "fetch", "origin", OPT["ggml_rev"], "--depth", "1"])
-            run(["git", "-C", str(home), "checkout", "--detach", OPT["ggml_rev"]])
-
-
-def host_msvc_arch() -> str:
-    if OPT["msvc_arch"]:
-        return OPT["msvc_arch"]
-    if "_host_arch" in OPT:
-        return OPT["_host_arch"]
-    ps = shutil.which("powershell") or "powershell.exe"
-    run([ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "gemma" / "scripts" / "detect_cpu.ps1")])
-    text = (ROOT / "gemma" / "cmake" / "HostCpu.generated.cmake").read_text(encoding="utf-8")
-    found = re.search(r'GEMMA_MSVC_ARCH_FLAG "([^"]*)"', text)
-    OPT["_host_arch"] = found.group(1) if found else ""
-    return OPT["_host_arch"]
-
-
-def mouth_defs() -> list[str]:
-    defs = [
-        f"-DGGML_VULKAN={OPT['mouth_ggml_vulkan']}",
-        f"-DGGML_CPU={OPT['mouth_ggml_cpu']}",
-        f"-DGGML_OPENMP={OPT['mouth_ggml_openmp']}",
-        f"-DGGML_BUILD_TESTS={OPT['mouth_ggml_build_tests']}",
-        f"-DGGML_BUILD_EXAMPLES={OPT['mouth_ggml_build_examples']}",
-        f"-DBUILD_SHARED_LIBS={OPT['mouth_build_shared']}",
-    ]
-    arch = host_msvc_arch()
-    if arch:
-        defs.append(f"-DMSVC_ARCH_FLAG={arch}")
-    return defs
-
-
-def build_engine() -> tuple[Path, Path, dict]:
-    outputs = (
-        ROOT / "build" / "bin" / "chatterbox.exe",
-        ROOT / "build" / "bin" / "chatterbox-bake.exe",
-        ROOT / "build" / "bin" / "ear.exe",
-    )
-    defs = mouth_defs()
-    wanted = {
-        "ggml": OPT["ggml_rev"],
-        "generator": OPT["generator"],
-        "architecture": OPT["arch"],
-        "cmake": defs,
-        "source": digest(ROOT / "CMakeLists.txt", ROOT / "src"),
-    }
-    stamp = MODELS / "build-contract.json"
-    if stamp.is_file() and json.loads(stamp.read_text(encoding="utf-8")) == wanted and all(path.is_file() for path in outputs):
-        print("skip ggml", flush=True)
-        print("skip engine", flush=True)
-        return *outputs, wanted
-    print("install ggml", flush=True)
-    Ggml.ensure()
-    print("install engine", flush=True)
-    if OPT["vulkan_sdk"]:
-        sdk = Path(OPT["vulkan_sdk"])
-    else:
-        sdk = max(Path("C:/VulkanSDK").glob("*/Bin/glslc.exe"), key=lambda path: tuple(map(int, re.findall(r"\d+", path.parts[-3])))).parents[1]
-    build = ROOT / "build"
-    run(["cmake", "-S", str(ROOT), "-B", str(build), "-G", OPT["generator"], "-A", OPT["arch"], f"-DVulkan_INCLUDE_DIR={sdk / 'Include'}", f"-DVulkan_LIBRARY={sdk / 'Lib/vulkan-1.lib'}", f"-DVulkan_GLSLC_EXECUTABLE={sdk / 'Bin/glslc.exe'}", *defs])
-    run(
-        [
-            "cmake",
-            "--build",
-            str(build),
-            "--config",
-            "Release",
-            "--target",
-            "chatterbox",
-            "chatterbox-bake",
-            "ear",
-            "--parallel",
-            OPT["parallel"],
-        ]
-    )
-    atomic_json(stamp, wanted)
-    return *outputs, wanted
-
-
-def launch_conversion(cfg: Variant):
-    return {
-        "reference": OPT["reference"],
-        "t3-weight-type": OPT["t3_weight_type"],
-        "s3-weight-type": OPT["s3_weight_type"],
-        "t3-quant-policy": OPT["t3_quant_policy"],
-        "s3-quant-policy": OPT["s3_quant_policy"],
-    }
-
-
-def policy(path: Path, default: str) -> dict:
-    return {"default": default, "rules": json.loads(path.read_text(encoding="utf-8"))["rules"]}
-
-
-def gguf_name(kind: str, family: str, spec: dict) -> Path:
-    digest8 = hashlib.sha256(json.dumps(spec["rules"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:8]
-    return MODELS / f"chatterbox-{kind}-{family}-{spec['default']}-{digest8}.gguf"
-
-
-def checkpoints(cfg: Variant) -> Path:
-    home = ROOT / ARCH[cfg.architecture]["ckpt"]
-    home.mkdir(parents=True, exist_ok=True)
-    root_url = OPT["hf_" + cfg.name] or cfg.hf
-    assets = [(asset, root_url + "/" + asset) for asset in cfg.assets]
-    if all((home / name).is_file() for name, _ in assets):
-        print("skip checkpoints", flush=True)
-        return home
-    print("install checkpoints", flush=True)
-    for name, url in assets:
-        if not (home / name).is_file():
-            download(url, home / name)
-    return home
-
-
-def convert(cfg: Variant, py: Path, ckpt: Path, conv: dict):
-    family = ARCH[cfg.architecture]
-    t3_policy = policy(ROOT / conv["t3-quant-policy"], conv["t3-weight-type"])
-    s3_policy = policy(ROOT / conv["s3-quant-policy"], conv["s3-weight-type"])
-    t3 = gguf_name("t3", cfg.name, t3_policy)
-    s3 = gguf_name("s3gen", family["s3_family"], s3_policy)
-    jobs = [
-        (t3, {"kind": "t3", "policy": t3_policy, "t3_ckpt": cfg.t3_ckpt, "converter": digest(ROOT / "scripts" / "convert_t3.py", ROOT / "scripts" / "quant.py")}, [str(py), str(ROOT / "scripts" / "convert_t3.py"), str(ckpt), str(t3.with_suffix(".gguf.converting")), cfg.t3_ckpt, "--matrix-type", conv["t3-weight-type"], "--quant-policy", str(ROOT / conv["t3-quant-policy"]), "--s3-checkpoint", family["s3_checkpoint"]]),
-        (s3, {"kind": "s3", "policy": s3_policy, "checkpoint": family["s3_checkpoint"], "converter": digest(ROOT / "scripts" / "convert_s3.py", ROOT / "scripts" / "quant.py")}, [str(py), str(ROOT / "scripts" / "convert_s3.py"), str(ckpt), str(s3.with_suffix(".gguf.converting")), "--checkpoint", family["s3_checkpoint"], "--weight-type", conv["s3-weight-type"], "--quant-policy", str(ROOT / conv["s3-quant-policy"])]),
-    ]
-    contracts = []
-    for dest, wanted, cmd in jobs:
-        stamp = MODELS / f"{dest.stem}.convert.json"
-        if matches(stamp, wanted, dest):
-            print("skip " + dest.name, flush=True)
-            contracts.append(wanted)
-            continue
-        print("install " + dest.name, flush=True)
-        tmp = dest.with_suffix(".gguf.converting")
-        run(cmd)
-        tmp.replace(dest)
-        atomic_json(stamp, wanted)
-        contracts.append(wanted)
-    return t3, s3, contracts
-
-
-def bake_voice(cfg: Variant, base_t3: Path, base_s3: Path, bake: Path, contracts: list[dict], build: dict, conv: dict):
-    reference = (ROOT / conv["reference"]).resolve()
-    voice = MODELS / "voices" / cfg.name
-    t3, s3, stamp = voice / "t3.gguf", voice / "s3.gguf", voice / "bake.json"
-    wanted = {"variant": cfg.name, "conversions": contracts, "reference": {"path": str(reference), "bytes": reference.stat().st_size, "mtime": reference.stat().st_mtime_ns}, "build": build}
-    if matches(stamp, wanted, t3, s3):
-        print("skip voice", flush=True)
-        return
-    print("install voice", flush=True)
-    temp = voice.with_name(voice.name + ".baking")
-    if temp.exists():
-        shutil.rmtree(temp)
-    temp.mkdir(parents=True)
-    shutil.copy2(base_t3, temp / "t3.gguf")
-    shutil.copy2(base_s3, temp / "s3.gguf")
-    run([str(bake), str(temp / "t3.gguf"), str(temp / "s3.gguf"), str(reference)], cwd=ROOT)
-    atomic_json(temp / "bake.json", wanted)
-    voice.parent.mkdir(parents=True, exist_ok=True)
-    if voice.exists():
-        shutil.rmtree(voice)
-    temp.replace(voice)
+def venv_python() -> Path:
+    return ROOT / ".venv" / "Scripts" / "python.exe"
 
 
 def ensure_venv() -> Path:
@@ -318,10 +185,139 @@ def ensure_venv() -> Path:
     return py
 
 
+def pip(py: Path, name: str, args: list[str]) -> None:
+    stamp = stamps() / (name + ".json")
+    payload = {"args": args}
+    if matches(stamp, payload):
+        print("skip " + name, flush=True)
+        return
+    print("install " + name, flush=True)
+    run([str(py), "-m", "pip", "install", "--disable-pip-version-check", *args])
+    atomic_json(stamp, payload)
+
+
 def python_packages(py: Path) -> None:
-    args = specs("numpy", "gguf", "safetensors", "librosa", "tokenizers")
-    args += ["torch==2.6.0", "--index-url", PYTORCH_CPU_INDEX, "--extra-index-url", "https://pypi.org/simple"]
+    packages = [line.strip() for line in need("install.pip").splitlines() if line.strip()]
+    args = packages + [need("install.torch"), "--index-url", need("install.torch_index"), "--extra-index-url", need("install.torch_extra_index")]
     pip(py, "tts-packages", args)
+
+
+def pin(home: Path, url: str, rev: str, track: str) -> str:
+    if not (home / ".git").exists():
+        run(["git", "clone", "--filter=blob:none", url, str(home)])
+    if rev:
+        run(["git", "-C", str(home), "fetch", "origin", rev, "--depth", "1"])
+        run(["git", "-C", str(home), "checkout", "--detach", rev])
+    elif track:
+        run(["git", "-C", str(home), "fetch", "origin", track])
+        run(["git", "-C", str(home), "checkout", track])
+        run(["git", "-C", str(home), "pull", "--ff-only", "origin", track])
+    return subprocess.run(["git", "-C", str(home), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+
+
+def pin_sources() -> None:
+    pin(place("install.src_ggml"), need("install.ggml_repo"), need("install.ggml_rev"), "")
+    pin(place("install.src_llama"), need("install.llama_repo"), opt("install.llama_rev"), "master")
+    pin(place("install.src_nemo"), need("install.nemo_repo"), opt("install.nemo_rev"), "")
+
+
+def msvc_arch() -> str:
+    global ARCH_FLAG
+    if ARCH_FLAG is not None:
+        return ARCH_FLAG
+    place("install.cache").mkdir(parents=True, exist_ok=True)
+    out = place("install.cache") / "HostCpu.generated.cmake"
+    ps = shutil.which("powershell") or "powershell.exe"
+    run([ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "gemma" / "scripts" / "detect_cpu.ps1"), "-OutFile", str(out)])
+    text = out.read_text(encoding="utf-8-sig")
+    found = re.search(r'GEMMA_MSVC_ARCH_FLAG "([^"]*)"', text)
+    detected = found.group(1) if found else ""
+    ARCH_FLAG = opt("install.msvc_arch") or detected
+    return ARCH_FLAG
+
+
+def host_isa() -> str:
+    msvc_arch()
+    text = (place("install.cache") / "HostCpu.generated.cmake").read_text(encoding="utf-8-sig")
+    found = re.search(r'GEMMA_HOST_ISA "([^"]*)"', text)
+    return (found.group(1) if found else "host").lower()
+
+
+def find_vulkan() -> Path:
+    given = opt("install.vulkan_sdk")
+    if given:
+        path = Path(given)
+        return path if path.is_absolute() else (ROOT / path).resolve()
+    hits = list(Path("C:/VulkanSDK").glob("*/Bin/glslc.exe"))
+    if not hits:
+        raise SystemExit("Vulkan SDK not found")
+
+    def version(path: Path):
+        return tuple(int(part) for part in re.findall(r"\d+", path.parts[-3]))
+
+    return max(hits, key=version).parents[1]
+
+
+def gemma_backend() -> str:
+    global BACKEND
+    if BACKEND:
+        return BACKEND
+    choice = need("install.gemma_backend")
+    if choice != "auto":
+        if choice not in ("cuda", "vulkan"):
+            raise SystemExit("trident.txt install.gemma_backend must be auto, cuda, or vulkan")
+        BACKEND = choice
+        return BACKEND
+    ps = shutil.which("powershell") or "powershell.exe"
+    out = subprocess.run([ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "gemma" / "scripts" / "detect_gpu.ps1")], check=True, capture_output=True, text=True)
+    for line in reversed(out.stdout.splitlines()):
+        if line.strip() in ("cuda", "vulkan"):
+            BACKEND = line.strip()
+            return BACKEND
+    raise SystemExit("detect_gpu.ps1 did not print cuda or vulkan")
+
+
+def pe_import_dlls(path: Path) -> set[str]:
+    data = path.read_bytes()
+    if data[:2] != b"MZ":
+        raise SystemExit("not a PE " + path.name)
+    offset = int.from_bytes(data[0x3C:0x40], "little")
+    if data[offset : offset + 4] != b"PE\0\0":
+        raise SystemExit("not a PE " + path.name)
+    sections = int.from_bytes(data[offset + 6 : offset + 8], "little")
+    opt_size = int.from_bytes(data[offset + 20 : offset + 22], "little")
+    opt = offset + 24
+    magic = int.from_bytes(data[opt : opt + 2], "little")
+    data_directory = opt + (112 if magic == 0x20B else 96)
+    if magic not in (0x10B, 0x20B):
+        raise SystemExit("unknown PE " + path.name)
+    import_rva = int.from_bytes(data[data_directory + 8 : data_directory + 12], "little")
+    section = opt + opt_size
+
+    def rva_off(rva: int) -> int:
+        for index in range(sections):
+            start = section + index * 40
+            virtual = int.from_bytes(data[start + 12 : start + 16], "little")
+            raw_size = int.from_bytes(data[start + 16 : start + 20], "little")
+            raw = int.from_bytes(data[start + 20 : start + 24], "little")
+            span = max(int.from_bytes(data[start + 8 : start + 12], "little"), raw_size)
+            if virtual <= rva < virtual + span:
+                return raw + (rva - virtual)
+        raise SystemExit("import rva missing in " + path.name)
+
+    if import_rva == 0:
+        return set()
+    cursor = rva_off(import_rva)
+    names = set()
+    while True:
+        name_rva = int.from_bytes(data[cursor + 12 : cursor + 16], "little")
+        if name_rva == 0:
+            break
+        start = rva_off(name_rva)
+        end = data.index(b"\0", start)
+        names.add(data[start:end].decode("ascii").lower())
+        cursor += 20
+    return names
 
 
 def windows_mt() -> Path:
@@ -330,331 +326,267 @@ def windows_mt() -> Path:
 
 def embed_utf8(exe: Path) -> None:
     merged = exe.with_suffix(".manifest")
+    manifest = str((ROOT / need("install.utf8_manifest")).resolve())
     mt = str(windows_mt())
-    run([mt, "-nologo", f"-inputresource:{exe};#1", "-manifest", str(ROOT / "utf8.manifest"), "-out:" + str(merged)])
+    run([mt, "-nologo", f"-inputresource:{exe};#1", "-manifest", manifest, "-out:" + str(merged)])
     run([mt, "-nologo", "-manifest", str(merged), f"-outputresource:{exe};#1"])
     merged.unlink()
 
 
-def on(name: str) -> bool:
-    return OPT[name] in ("on", "1", "ON", "true")
-
-
-def install_ear() -> None:
-    gguf = OPT["ear_gguf_name"]
-    url = OPT["ear_gguf_url"] or ("https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b/resolve/main/" + gguf)
-    dest = MODELS / "ear" / gguf
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    if not dest.is_file():
-        print("install " + gguf, flush=True)
-        download(url, dest)
-    home = ROOT / "nemo-speech"
-    exe = ROOT / "build" / "bin" / "ear" / "nemo-speech.exe"
-    if not (home / ".git").exists():
-        print("install nemo-speech", flush=True)
-        run(["git", "clone", "--filter=blob:none", OPT["nemo_repo"], str(home)])
-    if OPT["nemo_rev"]:
-        run(["git", "-C", str(home), "fetch", "origin", OPT["nemo_rev"], "--depth", "1"])
-        run(["git", "-C", str(home), "checkout", "--detach", OPT["nemo_rev"]])
-    rev = subprocess.run(["git", "-C", str(home), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
-    stamp = MODELS / "ear-build.json"
-    build_choice = {key: OPT[key] for key in OPT if key.startswith("ear_") or key in ("nemo_repo", "nemo_rev")}
-    wanted = {"rev": rev, "gguf": gguf, "build": build_choice}
-    if matches(stamp, wanted, exe, dest):
-        print("skip ear", flush=True)
-        embed_utf8(exe)
-        return
-    print("install ear", flush=True)
-    ps = shutil.which("powershell") or "powershell.exe"
-    command = [ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(home / "scripts" / "windows" / "build.ps1"), "-Backend", OPT["ear_backend"], "-Profile", OPT["ear_profile"], "-Config", OPT["ear_config"], "-CudaArch", OPT["ear_cuda_arch"], "-Architecture", OPT["ear_architecture"], "-Compiler", OPT["ear_compiler"], "-Jobs", OPT["ear_jobs"]]
-    if OPT["ear_build_dir"]:
-        command += ["-BuildDir", OPT["ear_build_dir"]]
-    if OPT["ear_vcpkg_root"]:
-        command += ["-VcpkgRoot", OPT["ear_vcpkg_root"]]
-    if OPT["ear_vcpkg_triplet"]:
-        command += ["-VcpkgTriplet", OPT["ear_vcpkg_triplet"]]
-    for flag, switch in (
-        ("ear_asr_only", "-AsrOnly"),
-        ("ear_grpc", "-Grpc"),
-        ("ear_nmt", "-Nmt"),
-        ("ear_flashlight", "-Flashlight"),
-        ("ear_http", "-Http"),
-        ("ear_http_tls", "-HttpTls"),
-        ("ear_tts_ja", "-TtsJa"),
-        ("ear_tts_zh", "-TtsZh"),
-        ("ear_tests", "-Tests"),
-        ("ear_cublas_shim", "-CublasShim"),
-    ):
-        if on(flag):
-            command.append(switch)
-    run(command, cwd=home)
-    if OPT["ear_build_dir"]:
-        built_dir = Path(OPT["ear_build_dir"])
+def build_mouth(sdk: Path) -> None:
+    build = place("install.build_mouth")
+    arch = msvc_arch()
+    defs = [
+        f"-DGGML_VULKAN={cmake_on('install.mouth_ggml_vulkan')}",
+        f"-DGGML_CPU={cmake_on('install.mouth_ggml_cpu')}",
+        f"-DGGML_OPENMP={cmake_on('install.mouth_ggml_openmp')}",
+        f"-DGGML_BUILD_TESTS={cmake_on('install.mouth_ggml_build_tests')}",
+        f"-DGGML_BUILD_EXAMPLES={cmake_on('install.mouth_ggml_build_examples')}",
+        f"-DBUILD_SHARED_LIBS={cmake_on('install.mouth_build_shared')}",
+        "-DTRIDENT_CONFIG=" + need("install.config"),
+        "-DGGML_SRC=" + str(place("install.src_ggml")),
+        "-DTRIDENT_UTF8_MANIFEST=" + str((ROOT / need("install.utf8_manifest")).resolve()),
+        "-DTRIDENT_MOUTH_COMPILE=" + need("install.mouth_compile"),
+        "-DTRIDENT_MOUTH_DEFINITIONS=" + need("install.mouth_definitions"),
+        "-DMSVC_ARCH_FLAG=" + arch,
+        f"-DVulkan_INCLUDE_DIR={sdk / 'Include'}",
+        f"-DVulkan_LIBRARY={sdk / 'Lib' / 'vulkan-1.lib'}",
+        f"-DVulkan_GLSLC_EXECUTABLE={sdk / 'Bin' / 'glslc.exe'}",
+    ]
+    outputs = tuple(build / "bin" / name for name in ("chatterbox.exe", "chatterbox-bake.exe", "ear.exe"))
+    wanted = {"ggml": need("install.ggml_rev"), "cmake": defs, "source": digest(ROOT / "CMakeLists.txt", ROOT / "src")}
+    stamp = stamps() / "mouth.json"
+    if not matches(stamp, wanted, *outputs):
+        print("install mouth", flush=True)
+        run(["cmake", "-S", str(ROOT), "-B", str(build), "-G", need("install.generator"), "-A", need("install.arch"), *defs])
+        run(["cmake", "--build", str(build), "--config", need("install.config"), "--target", "chatterbox", "chatterbox-bake", "ear", "--parallel", need("install.parallel")])
+        atomic_json(stamp, wanted)
     else:
-        profile = "asr" if on("ear_asr_only") else OPT["ear_profile"]
-        profile_suffix = "" if profile == "core" else "-" + profile
-        arch_suffix = "" if OPT["ear_architecture"] == "auto" else "-" + OPT["ear_architecture"]
-        built_dir = home / f"build-{OPT['ear_backend']}{profile_suffix}{arch_suffix}"
-    built = built_dir / "bin" / "nemo-speech.exe"
-    if exe.parent.exists():
-        shutil.rmtree(exe.parent)
-    exe.parent.mkdir(parents=True)
-    for item in built.parent.iterdir():
+        print("skip mouth", flush=True)
+    for exe in outputs:
+        imports = pe_import_dlls(exe)
+        if "ggml.dll" in imports or "ggml-base.dll" in imports:
+            raise SystemExit(exe.name + " links ggml.dll; the mouth must stay static so the ear can keep its own ggml.dll")
+        dest = ROOT / exe.name
+        shutil.copy2(exe, dest)
+        embed_utf8(dest)
+
+
+def build_ear() -> None:
+    home = place("install.src_nemo")
+    build = place("install.build_ear")
+    exe = build / "bin" / "nemo-speech.exe"
+    rev = subprocess.run(["git", "-C", str(home), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    choice = {key: FILE[key] for key in FILE if key.startswith("install.ear_") or key.startswith("install.nemo_")}
+    wanted = {"rev": rev, "build": choice, "dir": str(build)}
+    stamp = stamps() / "ear.json"
+    if not matches(stamp, wanted, exe):
+        print("install ear", flush=True)
+        ps = shutil.which("powershell") or "powershell.exe"
+        command = [ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(home / "scripts" / "windows" / "build.ps1"), "-Backend", need("install.ear_backend"), "-Profile", need("install.ear_profile"), "-Config", need("install.ear_config"), "-CudaArch", need("install.ear_cuda_arch"), "-Architecture", need("install.ear_architecture"), "-Compiler", need("install.ear_compiler"), "-Jobs", need("install.ear_jobs"), "-BuildDir", str(build)]
+        if opt("install.ear_vcpkg_root"):
+            command += ["-VcpkgRoot", opt("install.ear_vcpkg_root")]
+        if opt("install.ear_vcpkg_triplet"):
+            command += ["-VcpkgTriplet", opt("install.ear_vcpkg_triplet")]
+        for key, switch in EAR_SWITCHES:
+            if on(key):
+                command.append(switch)
+        run(command, cwd=home)
+        atomic_json(stamp, wanted)
+    else:
+        print("skip ear", flush=True)
+    built = exe.parent
+    for item in built.iterdir():
         if item.suffix.lower() in {".exe", ".dll"}:
-            shutil.copy2(item, exe.parent / item.name)
-    embed_utf8(exe)
-    atomic_json(stamp, wanted)
+            dest = ROOT / item.name
+            shutil.copy2(item, dest)
+            if dest.suffix.lower() == ".exe":
+                embed_utf8(dest)
 
 
-def install_mouth(name: str) -> None:
-    cfg, py = VARIANTS[name], venv_python()
-    _, bake, _, build = build_engine()
-    ckpt = checkpoints(cfg)
-    conv = launch_conversion(cfg)
-    t3, s3, contracts = convert(cfg, py, ckpt, conv)
-    bake_voice(cfg, t3, s3, bake, contracts, build, conv)
-
-
-def gemma_backend() -> str:
-    choice = OPT["gemma_backend"]
-    if choice != "auto":
-        return choice
-    ps = shutil.which("powershell") or "powershell.exe"
-    out = subprocess.run([ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "gemma" / "scripts" / "detect_gpu.ps1")], check=True, capture_output=True, text=True)
-    for line in reversed(out.stdout.splitlines()):
-        if line.strip() in ("cuda", "vulkan"):
-            return line.strip()
-    raise RuntimeError("detect_gpu.ps1 did not print cuda or vulkan")
-
-
-def install_gemma_brain() -> None:
-    gemma = ROOT / "gemma"
-    exe = gemma / "build" / "Release" / "gemma-brain.exe"
-    llama = LlamaCpp.ensure()
+def build_gemma(sdk: Path) -> None:
     backend = gemma_backend()
-    OPT["brain_ggml_cuda"] = "ON" if backend == "cuda" else "OFF"
-    OPT["brain_ggml_vulkan"] = "ON" if backend == "vulkan" else "OFF"
-    defs = [f"{cmake}={OPT[key]}" for key, cmake in BRAIN_DEFS]
+    build = place("install.build_gemma")
+    exe = build / need("install.config") / "gemma-brain.exe"
+    llama = subprocess.run(["git", "-C", str(place("install.src_llama")), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    defs = [f"{cmake}={cmake_on(key)}" for key, cmake in BRAIN_DEFS]
     defs.append("GEMMA_BACKEND=" + backend)
+    defs.append("GGML_CUDA=" + ("ON" if backend == "cuda" else "OFF"))
+    defs.append("GGML_VULKAN=" + ("ON" if backend == "vulkan" else "OFF"))
+    defs.append("LLAMA_SRC=" + str(place("install.src_llama")))
+    defs.append("TRIDENT_UTF8_MANIFEST=" + str((ROOT / need("install.utf8_manifest")).resolve()))
+    defs.append("GEMMA_COMPILE=" + need("install.gemma_compile"))
+    defs.append("GEMMA_LINK=" + need("install.gemma_link"))
+    defs.append("GEMMA_DEFINITIONS=" + need("install.gemma_definitions"))
+    defs.append("GEMMA_MSVC_ARCH_FLAG=" + msvc_arch())
     if backend == "cuda":
-        defs.append("CMAKE_CUDA_ARCHITECTURES=" + OPT["cuda_architectures"])
-    arch = host_msvc_arch()
-    if arch:
-        defs.append("GEMMA_MSVC_ARCH_FLAG=" + arch)
+        defs.append("CMAKE_CUDA_ARCHITECTURES=" + need("install.cuda_architectures"))
+        defs.extend(f"{cmake}={cmake_on(key)}" for key, cmake in CUDA_DEFS)
     wanted = {
         "llama": llama,
-        "source": digest(
-            gemma / "CMakeLists.txt",
-            gemma / "src" / "brain.cpp",
-            gemma / "cmake" / "HostCpu.cmake",
-            gemma / "scripts" / "build.ps1",
-            gemma / "scripts" / "configure.ps1",
-            gemma / "scripts" / "detect_gpu.ps1",
-        ),
-        "cmake": defs,
-        "vulkan_sdk": OPT["vulkan_sdk"],
         "backend": backend,
+        "cmake": defs,
+        "source": digest(ROOT / "gemma" / "CMakeLists.txt", ROOT / "gemma" / "src" / "brain.cpp", ROOT / "gemma" / "cmake" / "HostCpu.cmake", ROOT / "gemma" / "scripts", ROOT / "src" / "common" / "config.h"),
     }
-    models = gemma / "models"
-    models.mkdir(parents=True, exist_ok=True)
-    for name, url in ((OPT["text_model_name"], OPT["text_model_url"]), (OPT["mmproj_name"], OPT["mmproj_url"])):
-        dest = models / name
-        if not dest.is_file():
-            print("install " + name, flush=True)
-            download(url, dest)
-    stamp = MODELS / "gemma-brain-build.json"
-    if matches(stamp, wanted, exe):
+    stamp = stamps() / "gemma.json"
+    if not matches(stamp, wanted, exe):
+        print("install gemma-brain", flush=True)
+        ps = shutil.which("powershell") or "powershell.exe"
+        command = [ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "gemma" / "scripts" / "build.ps1"), "-BuildDir", str(build), "-BrainParallel", need("install.brain_parallel"), "-CudaCodegenParallel", need("install.cuda_codegen_parallel")]
+        if backend == "vulkan":
+            command += ["-VulkanSdk", str(sdk)]
+        env = os.environ.copy()
+        env["TRIDENT_GENERATOR"] = need("install.generator")
+        env["TRIDENT_ARCH"] = need("install.arch")
+        env["TRIDENT_GEMMA_BACKEND"] = backend
+        env["TRIDENT_CUDA_MAX"] = need("install.cuda_max")
+        env["TRIDENT_CUDA_ROOT"] = need("install.cuda_root")
+        env["TRIDENT_CUDA_TOOLSET"] = need("install.cuda_toolset")
+        env["TRIDENT_GEMMA_DEFS"] = "\n".join(defs)
+        run(command, cwd=ROOT / "gemma", env=env)
+        atomic_json(stamp, wanted)
+    else:
         print("skip gemma-brain", flush=True)
+    dest = ROOT / "gemma-brain.exe"
+    shutil.copy2(exe, dest)
+    embed_utf8(dest)
+
+
+def policy(path: Path, default: str) -> dict:
+    return {"default": default, "rules": json.loads(path.read_text(encoding="utf-8"))["rules"]}
+
+
+def gguf_name(kind: str, family: str, spec: dict) -> Path:
+    digest8 = hashlib.sha256(json.dumps(spec["rules"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:8]
+    path = place("install.cache") / "gguf" / f"chatterbox-{kind}-{family}-{spec['default']}-{digest8}.gguf"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def checkpoints(cfg: Variant) -> Path:
+    home = place("install.cache") / ARCH[cfg.architecture]["ckpt"]
+    home.mkdir(parents=True, exist_ok=True)
+    root_url = need("install.hf_" + cfg.name)
+    assets = [(asset, root_url + "/" + asset) for asset in cfg.assets]
+    if all((home / name).is_file() for name, _ in assets):
+        print("skip checkpoints " + cfg.name, flush=True)
+        return home
+    print("install checkpoints " + cfg.name, flush=True)
+    for name, url in assets:
+        if not (home / name).is_file():
+            download(url, home / name)
+    return home
+
+
+def convert(cfg: Variant, py: Path, ckpt: Path) -> tuple[Path, Path, list[dict]]:
+    family = ARCH[cfg.architecture]
+    t3_policy = policy(ROOT / need("install.t3_quant_policy"), need("install.t3_weight_type"))
+    s3_policy = policy(ROOT / need("install.s3_quant_policy"), need("install.s3_weight_type"))
+    t3 = gguf_name("t3", cfg.name, t3_policy)
+    s3 = gguf_name("s3gen", family["s3_family"], s3_policy)
+    jobs = [
+        (t3, {"kind": "t3", "policy": t3_policy, "t3_ckpt": cfg.t3_ckpt, "converter": digest(ROOT / "scripts" / "convert_t3.py", ROOT / "scripts" / "quant.py")}, [str(py), str(ROOT / "scripts" / "convert_t3.py"), str(ckpt), str(t3.with_suffix(".gguf.converting")), cfg.t3_ckpt, "--matrix-type", need("install.t3_weight_type"), "--quant-policy", str(ROOT / need("install.t3_quant_policy")), "--s3-checkpoint", family["s3_checkpoint"]]),
+        (s3, {"kind": "s3", "policy": s3_policy, "checkpoint": family["s3_checkpoint"], "converter": digest(ROOT / "scripts" / "convert_s3.py", ROOT / "scripts" / "quant.py")}, [str(py), str(ROOT / "scripts" / "convert_s3.py"), str(ckpt), str(s3.with_suffix(".gguf.converting")), "--checkpoint", family["s3_checkpoint"], "--weight-type", need("install.s3_weight_type"), "--quant-policy", str(ROOT / need("install.s3_quant_policy"))]),
+    ]
+    contracts = []
+    for dest, wanted, cmd in jobs:
+        stamp = stamps() / (dest.stem + ".json")
+        if matches(stamp, wanted, dest):
+            print("skip " + dest.name, flush=True)
+            contracts.append(wanted)
+            continue
+        print("install " + dest.name, flush=True)
+        tmp = dest.with_suffix(".gguf.converting")
+        run(cmd)
+        tmp.replace(dest)
+        atomic_json(stamp, wanted)
+        contracts.append(wanted)
+    return t3, s3, contracts
+
+
+def bake_voice(cfg: Variant, base_t3: Path, base_s3: Path, contracts: list[dict]) -> None:
+    reference = (ROOT / need("install.reference")).resolve()
+    t3_out = ROOT / need(cfg.name + ".t3")
+    s3_out = ROOT / need(cfg.name + ".s3")
+    stamp = stamps() / (cfg.name + "-voice.json")
+    wanted = {"variant": cfg.name, "conversions": contracts, "reference": {"path": str(reference), "bytes": reference.stat().st_size, "mtime": reference.stat().st_mtime_ns}}
+    if matches(stamp, wanted, t3_out, s3_out):
+        print("skip voice " + cfg.name, flush=True)
         return
-    print("install gemma-brain", flush=True)
-    ps = shutil.which("powershell") or "powershell.exe"
-    command = [ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(gemma / "scripts" / "build.ps1"), "-BrainParallel", OPT["brain_parallel"]]
-    if OPT["vulkan_sdk"]:
-        command += ["-VulkanSdk", OPT["vulkan_sdk"]]
-    env = os.environ.copy()
-    env["TRIDENT_GENERATOR"] = OPT["generator"]
-    env["TRIDENT_ARCH"] = OPT["arch"]
-    env["TRIDENT_GEMMA_BACKEND"] = backend
-    env["TRIDENT_CUDA_ROOT"] = OPT["cuda_root"]
-    env["TRIDENT_CUDA_TOOLSET"] = OPT["cuda_toolset"]
-    env["TRIDENT_GEMMA_DEFS"] = "\n".join(defs)
-    run(command, cwd=gemma, env=env)
+    print("install voice " + cfg.name, flush=True)
+    temp = place("install.cache") / "baking" / cfg.name
+    if temp.exists():
+        shutil.rmtree(temp)
+    temp.mkdir(parents=True)
+    shutil.copy2(base_t3, temp / "t3.gguf")
+    shutil.copy2(base_s3, temp / "s3.gguf")
+    run([str(ROOT / "chatterbox-bake.exe"), str(temp / "t3.gguf"), str(temp / "s3.gguf"), str(reference)], cwd=ROOT)
+    shutil.copy2(temp / "t3.gguf", t3_out)
+    shutil.copy2(temp / "s3.gguf", s3_out)
+    shutil.rmtree(temp)
     atomic_json(stamp, wanted)
 
 
-def host_isa() -> str:
-    host_msvc_arch()
-    text = (ROOT / "gemma" / "cmake" / "HostCpu.generated.cmake").read_text(encoding="utf-8")
-    found = re.search(r'GEMMA_HOST_ISA "([^"]*)"', text)
-    return (found.group(1) if found else "host").lower()
+def install_voice(name: str) -> None:
+    cfg = VARIANTS[name]
+    ckpt = checkpoints(cfg)
+    t3, s3, contracts = convert(cfg, venv_python(), ckpt)
+    bake_voice(cfg, t3, s3, contracts)
 
 
-def stage_release() -> Path:
-    backend, isa = gemma_backend(), host_isa()
-    dest = ROOT / "release" / f"{backend}-{isa}"
-    if dest.exists():
-        shutil.rmtree(dest)
-    dest.mkdir(parents=True)
-    bin_dir = ROOT / "build" / "bin"
-    for name in ("chatterbox.exe", "ear.exe"):
-        src = bin_dir / name
-        if not src.is_file():
-            raise SystemExit("missing " + str(src))
-        shutil.copy2(src, dest / name)
-    for dll in bin_dir.glob("*.dll"):
-        shutil.copy2(dll, dest / dll.name)
-    ear_home = bin_dir / "ear"
-    if ear_home.is_dir():
-        shutil.copytree(ear_home, dest / "ear")
-    brain = ROOT / "gemma" / "build" / "Release" / "gemma-brain.exe"
-    if not brain.is_file():
-        raise SystemExit("missing " + str(brain))
-    shutil.copy2(brain, dest / brain.name)
-    for dll in brain.parent.glob("*.dll"):
-        shutil.copy2(dll, dest / dll.name)
-    print("release " + dest.name, flush=True)
-    return dest
+def fetch_model(name_key: str, url_key: str, runtime_key: str) -> None:
+    if need(name_key) != need(runtime_key):
+        raise SystemExit(name_key + " and " + runtime_key + " must name the same file")
+    dest = ROOT / need(name_key)
+    url = need(url_key)
+    stamp = stamps() / (dest.name + ".download.json")
+    wanted = {"url": url}
+    if matches(stamp, wanted, dest):
+        print("skip " + dest.name, flush=True)
+        return
+    print("install " + dest.name, flush=True)
+    download(url, dest)
+    atomic_json(stamp, wanted)
 
 
-def publish_release(folder: Path) -> None:
-    tag = "trident-" + folder.name
-    notes = "Executables for this computer. Runtime knobs do not need a rebuild."
+def publish() -> None:
+    if not on("install.publish"):
+        return
+    tag = "trident-" + gemma_backend() + "-" + host_isa()
+    notes = "Executables for this computer. Runtime knobs are trident.txt."
     viewed = subprocess.run(["gh", "release", "view", tag], capture_output=True, text=True)
     if viewed.returncode != 0:
         run(["gh", "release", "create", tag, "--title", tag, "--notes", notes])
-    files = [str(path) for path in folder.rglob("*") if path.is_file()]
+    files = [str(path) for path in ROOT.iterdir() if path.suffix.lower() in {".exe", ".dll"}]
     run(["gh", "release", "upload", tag, *files, "--clobber"])
     print("published " + tag, flush=True)
 
 
-def install_all(name: str) -> None:
-    python_packages(venv_python())
-    install_ear()
-    install_mouth(name)
-    install_gemma_brain()
-
-
-def parse_args(argv: list[str]) -> dict:
-    p = argparse.ArgumentParser(prog="install.py")
-    p.add_argument("cmd", nargs="?", default="turbo", choices=["ear", "brain", "mouth", "nano", "turbo", "v3", "all", "release"])
-    p.add_argument("name", nargs="?")
-    p.add_argument("--generator", default="Visual Studio 17 2022")
-    p.add_argument("--arch", default="x64")
-    p.add_argument("--parallel", default="2")
-    p.add_argument("--vulkan-sdk", default="")
-    p.add_argument("--ggml-repo", default="https://github.com/ggml-org/ggml.git")
-    p.add_argument("--ggml-rev", default="7840aaba1989c6deeefede1d77d5aaf8f52b947e")
-    p.add_argument("--reference", default="reference.wav")
-    p.add_argument("--t3-weight-type", default="q4_0")
-    p.add_argument("--s3-weight-type", default="q4_0")
-    p.add_argument("--t3-quant-policy", default="scripts/quant_t3.json")
-    p.add_argument("--s3-quant-policy", default="scripts/quant_s3.json")
-    p.add_argument("--mouth-ggml-vulkan", default="ON")
-    p.add_argument("--mouth-ggml-cpu", default="OFF")
-    p.add_argument("--mouth-ggml-openmp", default="OFF")
-    p.add_argument("--mouth-ggml-build-tests", default="OFF")
-    p.add_argument("--mouth-ggml-build-examples", default="OFF")
-    p.add_argument("--mouth-build-shared", default="ON")
-    p.add_argument("--hf-nano", default="")
-    p.add_argument("--hf-turbo", default="")
-    p.add_argument("--hf-v3", default="")
-    p.add_argument("--brain-parallel", default="4")
-    p.add_argument("--gemma-backend", default="auto", choices=["auto", "vulkan", "cuda"])
-    p.add_argument("--cuda-root", default=r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6")
-    p.add_argument("--cuda-toolset", default="cuda=12.6")
-    p.add_argument("--cuda-architectures", default="61-real")
-    p.add_argument("--msvc-arch", default="")
-    p.add_argument("--text-model-name", default="gemma-4-E2B-it-Q4_0.gguf")
-    p.add_argument("--text-model-url", default="https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_0.gguf")
-    p.add_argument("--mmproj-name", default="mmproj-gemma-4-E2B-it-Q8_0.gguf")
-    p.add_argument("--mmproj-url", default="https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/mmproj-gemma-4-E2B-it-Q8_0.gguf")
-    p.add_argument("--llama-repo", default="https://github.com/ggml-org/llama.cpp.git")
-    p.add_argument("--llama-rev", default="")
-    p.add_argument("--brain-ggml-cpu", default="ON")
-    p.add_argument("--brain-ggml-cuda", default="OFF")
-    p.add_argument("--brain-ggml-vulkan", default="OFF")
-    p.add_argument("--brain-ggml-metal", default="OFF")
-    p.add_argument("--brain-ggml-openmp", default="ON")
-    p.add_argument("--brain-ggml-blas", default="OFF")
-    p.add_argument("--brain-ggml-accelerate", default="OFF")
-    p.add_argument("--brain-ggml-native", default="ON")
-    p.add_argument("--llama-build-common", default="ON")
-    p.add_argument("--llama-build-tools", default="OFF")
-    p.add_argument("--llama-build-mtmd", default="ON")
-    p.add_argument("--llama-build-tests", default="OFF")
-    p.add_argument("--llama-build-examples", default="OFF")
-    p.add_argument("--llama-build-server", default="OFF")
-    p.add_argument("--llama-curl", default="OFF")
-    p.add_argument("--llama-openssl", default="OFF")
-    p.add_argument("--llama-subprocess", default="OFF")
-    p.add_argument("--mtmd-video", default="OFF")
-    p.add_argument("--brain-build-shared", default="OFF")
-    p.add_argument("--ggml-ccache", default="ON")
-    p.add_argument("--nemo-repo", default="https://github.com/NVIDIA/NeMo-Speech.cpp.git")
-    p.add_argument("--nemo-rev", default="")
-    p.add_argument("--ear-gguf-name", default="nemotron-3.5-asr-streaming-0.6b.q8_0.gguf")
-    p.add_argument("--ear-gguf-url", default="")
-    p.add_argument("--ear-backend", default="cpu", choices=["cpu", "cuda", "vulkan"])
-    p.add_argument("--ear-profile", default="core", choices=["core", "asr", "server", "full", "developer"])
-    p.add_argument("--ear-config", default="Release", choices=["Release", "RelWithDebInfo", "Debug"])
-    p.add_argument("--ear-cuda-arch", default="native")
-    p.add_argument("--ear-architecture", default="auto", choices=["auto", "x64", "arm64"])
-    p.add_argument("--ear-compiler", default="auto", choices=["auto", "msvc", "clang-cl"])
-    p.add_argument("--ear-jobs", default="0")
-    p.add_argument("--ear-build-dir", default="")
-    p.add_argument("--ear-vcpkg-root", default="")
-    p.add_argument("--ear-vcpkg-triplet", default="")
-    p.add_argument("--ear-asr-only", default="on")
-    p.add_argument("--ear-grpc", default="off")
-    p.add_argument("--ear-nmt", default="off")
-    p.add_argument("--ear-flashlight", default="off")
-    p.add_argument("--ear-http", default="off")
-    p.add_argument("--ear-http-tls", default="off")
-    p.add_argument("--ear-tts-ja", default="off")
-    p.add_argument("--ear-tts-zh", default="off")
-    p.add_argument("--ear-tests", default="off")
-    p.add_argument("--ear-cublas-shim", default="off")
-    p.add_argument("--publish", default="off")
-    return vars(p.parse_args(argv[1:]))
-
-
 def main() -> None:
-    global OPT
-    argv = sys.argv
+    global FILE
+    if len(sys.argv) != 1:
+        raise SystemExit("edit trident.txt")
     created = not venv_python().is_file()
     ensure_venv()
     if Path(sys.executable).resolve() != venv_python().resolve():
         env = os.environ.copy()
         if created:
             env["TRIDENT_VENV_NEW"] = "1"
-        raise SystemExit(subprocess.call([str(venv_python()), *argv], env=env))
+        raise SystemExit(subprocess.call([str(venv_python()), *sys.argv], env=env))
     print("install venv" if os.environ.pop("TRIDENT_VENV_NEW", None) == "1" else "skip venv", flush=True)
-    OPT = parse_args(argv)
-    cmd, name = OPT["cmd"], OPT["name"]
-    if cmd == "mouth":
-        if name not in VARIANTS:
-            raise SystemExit("usage: python install.py mouth <nano|turbo|v3> [knobs]")
-        python_packages(venv_python())
-        install_mouth(name)
-    elif cmd == "ear":
-        install_ear()
-    elif cmd == "brain":
-        install_gemma_brain()
-    elif cmd == "release":
-        folder = stage_release()
-        if on("publish"):
-            publish_release(folder)
-    elif cmd == "all":
-        python_packages(venv_python())
-        install_ear()
-        install_gemma_brain()
-        install_mouth("nano")
-        install_mouth("turbo")
-        install_mouth("v3")
-    elif cmd in VARIANTS:
-        install_all(cmd)
-    else:
-        raise SystemExit("usage: python install.py [ear | brain | mouth <variant> | nano | turbo | v3 | all | release] [knobs]")
+    FILE = load_trident()
+    python_packages(venv_python())
+    pin_sources()
+    sdk = find_vulkan()
+    build_mouth(sdk)
+    build_ear()
+    build_gemma(sdk)
+    for name in ("nano", "turbo", "v3"):
+        install_voice(name)
+    fetch_model("install.text_model_name", "install.text_model_url", "gemma.model")
+    fetch_model("install.mmproj_name", "install.mmproj_url", "gemma.mmproj")
+    fetch_model("install.ear_gguf_name", "install.ear_gguf_url", "ear.model")
+    publish()
 
 
 if __name__ == "__main__":

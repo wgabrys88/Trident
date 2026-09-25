@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -10,10 +11,23 @@
 
 namespace trident {
 
-inline std::filesystem::path trident_file() {
+inline void fail(const std::string & text) {
+    std::fprintf(stderr, "%s\n", text.c_str());
+    std::exit(2);
+}
+
+inline std::filesystem::path exe_dir() {
     wchar_t buf[MAX_PATH];
     const DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
-    auto dir = std::filesystem::path(buf, buf + n).parent_path();
+    return std::filesystem::path(buf, buf + n).parent_path();
+}
+
+inline std::string path_u8(const std::filesystem::path & path) {
+    return path.u8string();
+}
+
+inline std::filesystem::path trident_file() {
+    auto dir = exe_dir();
     for (;;) {
         auto candidate = dir / "trident.txt";
         if (std::filesystem::is_regular_file(candidate)) return candidate;
@@ -24,11 +38,19 @@ inline std::filesystem::path trident_file() {
 }
 
 inline std::map<std::string, std::string> load_trident() {
+    const auto file = trident_file();
+    if (file.empty()) fail("trident.txt missing");
+    std::ifstream in(file, std::ios::binary);
     std::map<std::string, std::string> out;
-    std::ifstream in(trident_file());
     std::string line;
+    bool first = true;
     while (std::getline(in, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (first) {
+            first = false;
+            if (line.size() >= 3 && (unsigned char)line[0] == 0xEF && (unsigned char)line[1] == 0xBB && (unsigned char)line[2] == 0xBF)
+                line.erase(0, 3);
+        }
         std::size_t i = 0;
         while (i < line.size() && (line[i] == ' ' || line[i] == '\t')) ++i;
         if (i >= line.size() || line[i] == '#') continue;
@@ -53,45 +75,62 @@ inline std::map<std::string, std::string> load_trident() {
     return out;
 }
 
-inline std::string cfg(const std::map<std::string, std::string> & values, const std::string & key, const std::string & fallback = {}) {
+inline const std::string & need(const std::map<std::string, std::string> & values, const std::string & key) {
     const auto it = values.find(key);
-    return it == values.end() ? fallback : it->second;
+    if (it == values.end() || it->second.empty()) fail("trident.txt missing " + key);
+    return it->second;
+}
+
+inline std::string cfg_opt(const std::map<std::string, std::string> & values, const std::string & key) {
+    const auto it = values.find(key);
+    return it == values.end() ? std::string() : it->second;
 }
 
 inline std::filesystem::path cfg_path(const std::map<std::string, std::string> & values, const std::string & key) {
-    return trident_file().parent_path() / cfg(values, key);
+    const auto file = trident_file();
+    if (file.empty()) fail("trident.txt missing");
+    return file.parent_path() / std::filesystem::u8path(need(values, key));
 }
 
-inline bool cfg_on(const std::map<std::string, std::string> & values, const std::string & key, bool fallback = false) {
-    const auto text = cfg(values, key);
-    if (text.empty()) return fallback;
-    if (text == "on" || text == "1") return true;
-    if (text == "off" || text == "0") return false;
-    return fallback;
+inline bool cfg_on(const std::map<std::string, std::string> & values, const std::string & key) {
+    const auto & text = need(values, key);
+    if (text == "on") return true;
+    if (text == "off") return false;
+    fail("trident.txt " + key + " must be on or off");
 }
 
-inline int cfg_int(const std::map<std::string, std::string> & values, const std::string & key, int fallback) {
-    const auto text = cfg(values, key);
-    return text.empty() ? fallback : std::atoi(text.c_str());
+inline int cfg_int(const std::map<std::string, std::string> & values, const std::string & key) {
+    const auto & text = need(values, key);
+    char * end = nullptr;
+    const long value = std::strtol(text.c_str(), &end, 10);
+    if (end == text.c_str() || *end) fail("trident.txt " + key + " must be an integer");
+    return (int)value;
 }
 
-inline float cfg_float(const std::map<std::string, std::string> & values, const std::string & key, float fallback) {
-    const auto text = cfg(values, key);
-    return text.empty() ? fallback : (float)std::atof(text.c_str());
+inline float cfg_float(const std::map<std::string, std::string> & values, const std::string & key) {
+    const auto & text = need(values, key);
+    char * end = nullptr;
+    const float value = std::strtof(text.c_str(), &end);
+    if (end == text.c_str() || *end) fail("trident.txt " + key + " must be a number");
+    return value;
 }
 
 inline std::string read_text(const std::filesystem::path & path) {
-    std::ifstream in(path);
+    std::ifstream in(path, std::ios::binary);
     std::stringstream buffer;
     buffer << in.rdbuf();
     auto text = buffer.str();
+    if (text.size() >= 3 && (unsigned char)text[0] == 0xEF && (unsigned char)text[1] == 0xBB && (unsigned char)text[2] == 0xBF)
+        text.erase(0, 3);
     if (!text.empty() && text.back() == '\n') text.pop_back();
     if (!text.empty() && text.back() == '\r') text.pop_back();
     return text;
 }
 
 inline std::filesystem::path slot(const std::string & name, const char * kind) {
-    return trident_file().parent_path() / (name + "." + kind);
+    const auto file = trident_file();
+    if (file.empty()) fail("trident.txt missing");
+    return file.parent_path() / (name + "." + kind);
 }
 
 inline DWORD read_pid(const std::string & name) {
@@ -122,8 +161,8 @@ inline int unload_named(const std::string & name) {
     std::ofstream(slot(name, "stop"), std::ios::trunc) << "1";
     const DWORD pid = read_pid(name);
     const auto values = load_trident();
-    const int tries = cfg_int(values, "runtime.unload-tries", 50);
-    const int wait_ms = cfg_int(values, "runtime.unload-wait-ms", 100);
+    const int tries = cfg_int(values, "runtime.unload-tries");
+    const int wait_ms = cfg_int(values, "runtime.unload-wait-ms");
     for (int i = 0; i < tries && pid_alive(pid); ++i) Sleep(wait_ms);
     if (pid_alive(pid)) {
         HANDLE handle = OpenProcess(PROCESS_TERMINATE, FALSE, pid);
@@ -131,6 +170,27 @@ inline int unload_named(const std::string & name) {
             TerminateProcess(handle, 0);
             CloseHandle(handle);
         }
+    }
+    std::filesystem::remove(slot(name, "pid"));
+    std::filesystem::remove(slot(name, "stop"));
+    return 0;
+}
+
+template <class F>
+int watch(const std::string & name, const std::filesystem::path & request, int poll_ms, F fn) {
+    write_pid(name);
+    std::filesystem::remove(slot(name, "stop"));
+    auto seen = std::filesystem::file_time_type::min();
+    while (!std::filesystem::exists(slot(name, "stop"))) {
+        if (std::filesystem::is_regular_file(request)) {
+            const auto stamp = std::filesystem::last_write_time(request);
+            if (stamp != seen) {
+                seen = stamp;
+                const auto text = read_text(request);
+                if (!text.empty()) fn(text);
+            }
+        }
+        Sleep(poll_ms);
     }
     std::filesystem::remove(slot(name, "pid"));
     std::filesystem::remove(slot(name, "stop"));

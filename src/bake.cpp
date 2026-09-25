@@ -10,19 +10,19 @@
 
 int main(int argc, char** argv) {
     const auto values = trident::load_trident();
-    const int gpu = trident::cfg_int(values, "bake.gpu", 0);
-    const int cond_seconds = trident::cfg_int(values, "bake.cond-seconds", -1);
-    const double lufs = trident::cfg_float(values, "bake.normalize-lufs", -27);
-    const float trim_db = trident::cfg_float(values, "bake.trim-db", 20);
-    const int voice_seconds = trident::cfg_int(values, "bake.voice-seconds", 30);
-    const int prompt_seconds = trident::cfg_int(values, "bake.prompt-seconds", 10);
-    const int mel_seconds = trident::cfg_int(values, "bake.mel-seconds", 10);
-    const int voice_rate = trident::cfg_int(values, "bake.voice-rate", 16000);
-    const int mel_rate = trident::cfg_int(values, "bake.mel-rate", 24000);
-    const int mel_fft = trident::cfg_int(values, "bake.mel-fft", 1920);
-    const int mel_hop = trident::cfg_int(values, "bake.mel-hop", 480);
-    const float mel_power = trident::cfg_float(values, "bake.mel-power", 1);
-    const float mel_floor = trident::cfg_float(values, "bake.mel-floor", 1e-5f);
+    const int gpu = trident::cfg_int(values, "bake.gpu");
+    const int cond_seconds = trident::cfg_int(values, "bake.cond-seconds");
+    const double lufs = trident::cfg_float(values, "bake.normalize-lufs");
+    const float trim_db = trident::cfg_float(values, "bake.trim-db");
+    const int voice_seconds = trident::cfg_int(values, "bake.voice-seconds");
+    const int prompt_seconds = trident::cfg_int(values, "bake.prompt-seconds");
+    const int mel_seconds = trident::cfg_int(values, "bake.mel-seconds");
+    const int voice_rate = trident::cfg_int(values, "bake.voice-rate");
+    const int mel_rate = trident::cfg_int(values, "bake.mel-rate");
+    const int mel_fft = trident::cfg_int(values, "bake.mel-fft");
+    const int mel_hop = trident::cfg_int(values, "bake.mel-hop");
+    const float mel_power = trident::cfg_float(values, "bake.mel-power");
+    const float mel_floor = trident::cfg_float(values, "bake.mel-floor");
     const bool mel_centered = trident::cfg_on(values, "bake.mel-centered");
     std::string t3_path, s3_path, reference_path;
     if (argc == 4) {
@@ -30,11 +30,9 @@ int main(int argc, char** argv) {
         s3_path = argv[2];
         reference_path = argv[3];
     } else if (argc == 1) {
-        if (trident::cfg(values, "bake.t3").empty() || trident::cfg(values, "bake.s3").empty() || trident::cfg(values, "bake.reference").empty())
-            throw std::runtime_error("bake.t3, bake.s3, and bake.reference are empty");
-        t3_path = trident::cfg_path(values, "bake.t3").string();
-        s3_path = trident::cfg_path(values, "bake.s3").string();
-        reference_path = trident::cfg_path(values, "bake.reference").string();
+        t3_path = trident::path_u8(trident::cfg_path(values, "bake.t3"));
+        s3_path = trident::path_u8(trident::cfg_path(values, "bake.s3"));
+        reference_path = trident::path_u8(trident::cfg_path(values, "bake.reference"));
     } else {
         throw std::runtime_error("chatterbox-bake takes the t3, s3, and reference paths, or no arguments");
     }

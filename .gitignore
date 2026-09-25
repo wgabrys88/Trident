@@ -18,6 +18,7 @@
 /gemma/build/
 /gemma/models/
 /gemma/cmake/HostCpu.generated.cmake
+/.install/
 
 !/.gitignore
 !/.gitattributes
@@ -27,7 +28,6 @@
 !/utf8.manifest
 !/trident.txt
 !/reference.wav
-!/requirements.txt
 
 !/scripts/convert_s3.py
 !/scripts/convert_t3.py

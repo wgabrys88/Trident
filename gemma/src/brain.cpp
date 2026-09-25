@@ -90,61 +90,61 @@ static void tensor_split(common_params & params, const std::string & text) {
 }
 
 static void apply_config(common_params & params, const std::map<std::string, std::string> & v) {
-    params.model.path = trident::cfg_path(v, "gemma.model").string();
-    params.mmproj.path = trident::cfg_path(v, "gemma.mmproj").string();
-    params.mmproj_use_gpu = trident::cfg_on(v, "gemma.mmproj-gpu", true);
-    params.cache_type_k = cache_type(trident::cfg(v, "gemma.cache-type-k", "q8_0"));
-    params.cache_type_v = cache_type(trident::cfg(v, "gemma.cache-type-v", "q8_0"));
-    params.n_ctx = trident::cfg_int(v, "gemma.ctx", params.n_ctx);
-    params.n_batch = trident::cfg_int(v, "gemma.batch", params.n_batch);
-    params.n_ubatch = trident::cfg_int(v, "gemma.ubatch", params.n_ubatch);
-    params.n_predict = trident::cfg_int(v, "gemma.n-predict", params.n_predict);
-    params.n_keep = trident::cfg_int(v, "gemma.n-keep", params.n_keep);
-    params.n_chunks = trident::cfg_int(v, "gemma.n-chunks", params.n_chunks);
-    params.n_parallel = trident::cfg_int(v, "gemma.n-parallel", params.n_parallel);
-    params.n_sequences = trident::cfg_int(v, "gemma.n-sequences", params.n_sequences);
-    params.n_outputs_max = trident::cfg_int(v, "gemma.n-outputs-max", params.n_outputs_max);
-    params.n_outputs_max_per_seq = trident::cfg_int(v, "gemma.n-outputs-max-per-seq", params.n_outputs_max_per_seq);
-    params.grp_attn_n = trident::cfg_int(v, "gemma.grp-attn-n", params.grp_attn_n);
-    params.grp_attn_w = trident::cfg_int(v, "gemma.grp-attn-w", params.grp_attn_w);
-    params.n_print = trident::cfg_int(v, "gemma.n-print", params.n_print);
-    params.n_gpu_layers = trident::cfg_int(v, "gemma.gpu-layers", params.n_gpu_layers);
-    params.main_gpu = trident::cfg_int(v, "gemma.gpu", params.main_gpu);
-    tensor_split(params, trident::cfg(v, "gemma.tensor-split"));
-    params.split_mode = pick<llama_split_mode>(trident::cfg(v, "gemma.split", "none"), {{"none", LLAMA_SPLIT_MODE_NONE}, {"layer", LLAMA_SPLIT_MODE_LAYER}, {"row", LLAMA_SPLIT_MODE_ROW}, {"tensor", LLAMA_SPLIT_MODE_TENSOR}}, "gemma.split");
-    params.load_mode = pick<llama_load_mode>(trident::cfg(v, "gemma.load-mode", "auto"), {{"auto", LLAMA_LOAD_MODE_AUTO}, {"none", LLAMA_LOAD_MODE_NONE}, {"mmap", LLAMA_LOAD_MODE_MMAP}, {"mlock", LLAMA_LOAD_MODE_MLOCK}, {"mmap-mlock", LLAMA_LOAD_MODE_MMAP_MLOCK}, {"direct-io", LLAMA_LOAD_MODE_DIRECT_IO}}, "gemma.load-mode");
-    params.lazy_mode = pick<llama_lazy_mode>(trident::cfg(v, "gemma.lazy-mode", "auto"), {{"off", LLAMA_LAZY_MODE_OFF}, {"auto", LLAMA_LAZY_MODE_AUTO}, {"on", LLAMA_LAZY_MODE_ON}}, "gemma.lazy-mode");
-    params.numa = pick<ggml_numa_strategy>(trident::cfg(v, "gemma.numa", "disabled"), {{"disabled", GGML_NUMA_STRATEGY_DISABLED}, {"distribute", GGML_NUMA_STRATEGY_DISTRIBUTE}, {"isolate", GGML_NUMA_STRATEGY_ISOLATE}, {"numactl", GGML_NUMA_STRATEGY_NUMACTL}, {"mirror", GGML_NUMA_STRATEGY_MIRROR}}, "gemma.numa");
-    const int threads = trident::cfg_int(v, "gemma.threads", 0);
+    params.model.path = trident::path_u8(trident::cfg_path(v, "gemma.model"));
+    params.mmproj.path = trident::path_u8(trident::cfg_path(v, "gemma.mmproj"));
+    params.mmproj_use_gpu = trident::cfg_on(v, "gemma.mmproj-gpu");
+    params.cache_type_k = cache_type(trident::need(v, "gemma.cache-type-k"));
+    params.cache_type_v = cache_type(trident::need(v, "gemma.cache-type-v"));
+    params.n_ctx = trident::cfg_int(v, "gemma.ctx");
+    params.n_batch = trident::cfg_int(v, "gemma.batch");
+    params.n_ubatch = trident::cfg_int(v, "gemma.ubatch");
+    params.n_predict = trident::cfg_int(v, "gemma.n-predict");
+    params.n_keep = trident::cfg_int(v, "gemma.n-keep");
+    params.n_chunks = trident::cfg_int(v, "gemma.n-chunks");
+    params.n_parallel = trident::cfg_int(v, "gemma.n-parallel");
+    params.n_sequences = trident::cfg_int(v, "gemma.n-sequences");
+    params.n_outputs_max = trident::cfg_int(v, "gemma.n-outputs-max");
+    params.n_outputs_max_per_seq = trident::cfg_int(v, "gemma.n-outputs-max-per-seq");
+    params.grp_attn_n = trident::cfg_int(v, "gemma.grp-attn-n");
+    params.grp_attn_w = trident::cfg_int(v, "gemma.grp-attn-w");
+    params.n_print = trident::cfg_int(v, "gemma.n-print");
+    params.n_gpu_layers = trident::cfg_int(v, "gemma.gpu-layers");
+    params.main_gpu = trident::cfg_int(v, "gemma.gpu");
+    tensor_split(params, trident::cfg_opt(v, "gemma.tensor-split"));
+    params.split_mode = pick<llama_split_mode>(trident::need(v, "gemma.split"), {{"none", LLAMA_SPLIT_MODE_NONE}, {"layer", LLAMA_SPLIT_MODE_LAYER}, {"row", LLAMA_SPLIT_MODE_ROW}, {"tensor", LLAMA_SPLIT_MODE_TENSOR}}, "gemma.split");
+    params.load_mode = pick<llama_load_mode>(trident::need(v, "gemma.load-mode"), {{"auto", LLAMA_LOAD_MODE_AUTO}, {"none", LLAMA_LOAD_MODE_NONE}, {"mmap", LLAMA_LOAD_MODE_MMAP}, {"mlock", LLAMA_LOAD_MODE_MLOCK}, {"mmap-mlock", LLAMA_LOAD_MODE_MMAP_MLOCK}, {"direct-io", LLAMA_LOAD_MODE_DIRECT_IO}}, "gemma.load-mode");
+    params.lazy_mode = pick<llama_lazy_mode>(trident::need(v, "gemma.lazy-mode"), {{"off", LLAMA_LAZY_MODE_OFF}, {"auto", LLAMA_LAZY_MODE_AUTO}, {"on", LLAMA_LAZY_MODE_ON}}, "gemma.lazy-mode");
+    params.numa = pick<ggml_numa_strategy>(trident::need(v, "gemma.numa"), {{"disabled", GGML_NUMA_STRATEGY_DISABLED}, {"distribute", GGML_NUMA_STRATEGY_DISTRIBUTE}, {"isolate", GGML_NUMA_STRATEGY_ISOLATE}, {"numactl", GGML_NUMA_STRATEGY_NUMACTL}, {"mirror", GGML_NUMA_STRATEGY_MIRROR}}, "gemma.numa");
+    const int threads = trident::cfg_int(v, "gemma.threads");
     if (threads > 0) params.cpuparams.n_threads = threads;
-    const int threads_batch = trident::cfg_int(v, "gemma.threads-batch", 0);
+    const int threads_batch = trident::cfg_int(v, "gemma.threads-batch");
     if (threads_batch > 0) params.cpuparams_batch.n_threads = threads_batch;
     else if (threads > 0) params.cpuparams_batch.n_threads = threads;
-    auto priority = [](const std::string & value) {
-        return pick<ggml_sched_priority>(value, {{"low", GGML_SCHED_PRIO_LOW}, {"normal", GGML_SCHED_PRIO_NORMAL}, {"medium", GGML_SCHED_PRIO_MEDIUM}, {"high", GGML_SCHED_PRIO_HIGH}, {"realtime", GGML_SCHED_PRIO_REALTIME}}, "gemma.priority");
+    auto priority = [](const std::string & value, const char * name) {
+        return pick<ggml_sched_priority>(value, {{"low", GGML_SCHED_PRIO_LOW}, {"normal", GGML_SCHED_PRIO_NORMAL}, {"medium", GGML_SCHED_PRIO_MEDIUM}, {"high", GGML_SCHED_PRIO_HIGH}, {"realtime", GGML_SCHED_PRIO_REALTIME}}, name);
     };
-    params.cpuparams.priority = priority(trident::cfg(v, "gemma.priority", "high"));
-    params.cpuparams_batch.priority = priority(trident::cfg(v, "gemma.priority-batch", "high"));
-    params.cpuparams.poll = (uint32_t)trident::cfg_int(v, "gemma.poll", 50);
-    params.cpuparams_batch.poll = (uint32_t)trident::cfg_int(v, "gemma.poll-batch", 50);
+    params.cpuparams.priority = priority(trident::need(v, "gemma.priority"), "gemma.priority");
+    params.cpuparams_batch.priority = priority(trident::need(v, "gemma.priority-batch"), "gemma.priority-batch");
+    params.cpuparams.poll = (uint32_t)trident::cfg_int(v, "gemma.poll");
+    params.cpuparams_batch.poll = (uint32_t)trident::cfg_int(v, "gemma.poll-batch");
     params.cpuparams.strict_cpu = trident::cfg_on(v, "gemma.strict-cpu");
     params.cpuparams_batch.strict_cpu = trident::cfg_on(v, "gemma.strict-cpu-batch");
-    cpu_mask(params.cpuparams, trident::cfg(v, "gemma.cpu-mask"));
-    cpu_mask(params.cpuparams_batch, trident::cfg(v, "gemma.cpu-mask-batch"));
+    cpu_mask(params.cpuparams, trident::cfg_opt(v, "gemma.cpu-mask"));
+    cpu_mask(params.cpuparams_batch, trident::cfg_opt(v, "gemma.cpu-mask-batch"));
     params.fit_params = trident::cfg_on(v, "gemma.fit");
     params.fit_params_print = trident::cfg_on(v, "gemma.fit-print");
-    params.fit_params_min_ctx = trident::cfg_int(v, "gemma.fit-min-ctx", params.fit_params_min_ctx);
-    params.flash_attn_type = pick<llama_flash_attn_type>(trident::cfg(v, "gemma.flash-attn", "on"), {{"auto", LLAMA_FLASH_ATTN_TYPE_AUTO}, {"on", LLAMA_FLASH_ATTN_TYPE_ENABLED}, {"1", LLAMA_FLASH_ATTN_TYPE_ENABLED}, {"off", LLAMA_FLASH_ATTN_TYPE_DISABLED}, {"0", LLAMA_FLASH_ATTN_TYPE_DISABLED}}, "gemma.flash-attn");
-    params.warmup = trident::cfg_on(v, "gemma.warmup", true);
-    params.verbosity = trident::cfg_int(v, "gemma.verbosity", params.verbosity);
-    params.rope_scaling_type = pick<llama_rope_scaling_type>(trident::cfg(v, "gemma.rope-scaling", "unspecified"), {{"unspecified", LLAMA_ROPE_SCALING_TYPE_UNSPECIFIED}, {"none", LLAMA_ROPE_SCALING_TYPE_NONE}, {"linear", LLAMA_ROPE_SCALING_TYPE_LINEAR}, {"yarn", LLAMA_ROPE_SCALING_TYPE_YARN}, {"longrope", LLAMA_ROPE_SCALING_TYPE_LONGROPE}}, "gemma.rope-scaling");
-    params.rope_freq_base = trident::cfg_float(v, "gemma.rope-freq-base", params.rope_freq_base);
-    params.rope_freq_scale = trident::cfg_float(v, "gemma.rope-freq-scale", params.rope_freq_scale);
-    params.yarn_ext_factor = trident::cfg_float(v, "gemma.yarn-ext-factor", params.yarn_ext_factor);
-    params.yarn_attn_factor = trident::cfg_float(v, "gemma.yarn-attn-factor", params.yarn_attn_factor);
-    params.yarn_beta_fast = trident::cfg_float(v, "gemma.yarn-beta-fast", params.yarn_beta_fast);
-    params.yarn_beta_slow = trident::cfg_float(v, "gemma.yarn-beta-slow", params.yarn_beta_slow);
-    params.yarn_orig_ctx = trident::cfg_int(v, "gemma.yarn-orig-ctx", params.yarn_orig_ctx);
+    params.fit_params_min_ctx = trident::cfg_int(v, "gemma.fit-min-ctx");
+    params.flash_attn_type = pick<llama_flash_attn_type>(trident::need(v, "gemma.flash-attn"), {{"auto", LLAMA_FLASH_ATTN_TYPE_AUTO}, {"on", LLAMA_FLASH_ATTN_TYPE_ENABLED}, {"off", LLAMA_FLASH_ATTN_TYPE_DISABLED}}, "gemma.flash-attn");
+    params.warmup = trident::cfg_on(v, "gemma.warmup");
+    params.verbosity = trident::cfg_int(v, "gemma.verbosity");
+    params.rope_scaling_type = pick<llama_rope_scaling_type>(trident::need(v, "gemma.rope-scaling"), {{"unspecified", LLAMA_ROPE_SCALING_TYPE_UNSPECIFIED}, {"none", LLAMA_ROPE_SCALING_TYPE_NONE}, {"linear", LLAMA_ROPE_SCALING_TYPE_LINEAR}, {"yarn", LLAMA_ROPE_SCALING_TYPE_YARN}, {"longrope", LLAMA_ROPE_SCALING_TYPE_LONGROPE}}, "gemma.rope-scaling");
+    params.rope_freq_base = trident::cfg_float(v, "gemma.rope-freq-base");
+    params.rope_freq_scale = trident::cfg_float(v, "gemma.rope-freq-scale");
+    params.yarn_ext_factor = trident::cfg_float(v, "gemma.yarn-ext-factor");
+    params.yarn_attn_factor = trident::cfg_float(v, "gemma.yarn-attn-factor");
+    params.yarn_beta_fast = trident::cfg_float(v, "gemma.yarn-beta-fast");
+    params.yarn_beta_slow = trident::cfg_float(v, "gemma.yarn-beta-slow");
+    params.yarn_orig_ctx = trident::cfg_int(v, "gemma.yarn-orig-ctx");
     params.ctx_shift = trident::cfg_on(v, "gemma.ctx-shift");
     params.swa_full = trident::cfg_on(v, "gemma.swa-full");
     params.kv_unified = trident::cfg_on(v, "gemma.kv-unified");
@@ -153,40 +153,40 @@ static void apply_config(common_params & params, const std::map<std::string, std
     params.no_op_offload = trident::cfg_on(v, "gemma.no-op-offload");
     params.no_extra_bufts = trident::cfg_on(v, "gemma.no-extra-bufts");
     params.no_host = trident::cfg_on(v, "gemma.no-host");
-    params.show_timings = trident::cfg_on(v, "gemma.show-timings", true);
+    params.show_timings = trident::cfg_on(v, "gemma.show-timings");
     params.no_perf = trident::cfg_on(v, "gemma.no-perf");
     params.sampling.no_perf = trident::cfg_on(v, "gemma.sampler-no-perf");
-    params.image_min_tokens = trident::cfg_int(v, "gemma.image-min-tokens", params.image_min_tokens);
-    params.image_max_tokens = trident::cfg_int(v, "gemma.image-max-tokens", params.image_max_tokens);
-    params.mtmd_batch_max_tokens = trident::cfg_int(v, "gemma.mtmd-batch", params.mtmd_batch_max_tokens);
-    params.sampling.temp = trident::cfg_float(v, "gemma.temp", params.sampling.temp);
-    params.sampling.top_k = trident::cfg_int(v, "gemma.top-k", params.sampling.top_k);
-    params.sampling.top_p = trident::cfg_float(v, "gemma.top-p", params.sampling.top_p);
-    params.sampling.min_p = trident::cfg_float(v, "gemma.min-p", params.sampling.min_p);
-    params.sampling.penalty_repeat = trident::cfg_float(v, "gemma.repeat-penalty", params.sampling.penalty_repeat);
-    const auto seed = trident::cfg(v, "gemma.seed", "-1");
+    params.image_min_tokens = trident::cfg_int(v, "gemma.image-min-tokens");
+    params.image_max_tokens = trident::cfg_int(v, "gemma.image-max-tokens");
+    params.mtmd_batch_max_tokens = trident::cfg_int(v, "gemma.mtmd-batch");
+    params.sampling.temp = trident::cfg_float(v, "gemma.temp");
+    params.sampling.top_k = trident::cfg_int(v, "gemma.top-k");
+    params.sampling.top_p = trident::cfg_float(v, "gemma.top-p");
+    params.sampling.min_p = trident::cfg_float(v, "gemma.min-p");
+    params.sampling.penalty_repeat = trident::cfg_float(v, "gemma.repeat-penalty");
+    const auto & seed = trident::need(v, "gemma.seed");
     params.sampling.seed = seed == "-1" ? LLAMA_DEFAULT_SEED : (uint32_t)std::strtoul(seed.c_str(), nullptr, 10);
-    params.sampling.n_prev = trident::cfg_int(v, "gemma.n-prev", params.sampling.n_prev);
-    params.sampling.n_probs = trident::cfg_int(v, "gemma.n-probs", params.sampling.n_probs);
-    params.sampling.min_keep = trident::cfg_int(v, "gemma.min-keep", params.sampling.min_keep);
-    params.sampling.xtc_probability = trident::cfg_float(v, "gemma.xtc-probability", params.sampling.xtc_probability);
-    params.sampling.xtc_threshold = trident::cfg_float(v, "gemma.xtc-threshold", params.sampling.xtc_threshold);
-    params.sampling.typ_p = trident::cfg_float(v, "gemma.typical", params.sampling.typ_p);
-    params.sampling.dynatemp_range = trident::cfg_float(v, "gemma.dynatemp-range", params.sampling.dynatemp_range);
-    params.sampling.dynatemp_exponent = trident::cfg_float(v, "gemma.dynatemp-exponent", params.sampling.dynatemp_exponent);
-    params.sampling.penalty_last_n = trident::cfg_int(v, "gemma.repeat-last-n", params.sampling.penalty_last_n);
-    params.sampling.penalty_freq = trident::cfg_float(v, "gemma.frequency-penalty", params.sampling.penalty_freq);
-    params.sampling.penalty_present = trident::cfg_float(v, "gemma.presence-penalty", params.sampling.penalty_present);
-    params.sampling.dry_multiplier = trident::cfg_float(v, "gemma.dry-multiplier", params.sampling.dry_multiplier);
-    params.sampling.dry_base = trident::cfg_float(v, "gemma.dry-base", params.sampling.dry_base);
-    params.sampling.dry_allowed_length = trident::cfg_int(v, "gemma.dry-allowed-length", params.sampling.dry_allowed_length);
-    params.sampling.dry_penalty_last_n = trident::cfg_int(v, "gemma.dry-penalty-last-n", params.sampling.dry_penalty_last_n);
-    params.sampling.adaptive_target = trident::cfg_float(v, "gemma.adaptive-target", params.sampling.adaptive_target);
-    params.sampling.adaptive_decay = trident::cfg_float(v, "gemma.adaptive-decay", params.sampling.adaptive_decay);
-    params.sampling.mirostat = trident::cfg_int(v, "gemma.mirostat", params.sampling.mirostat);
-    params.sampling.top_n_sigma = trident::cfg_float(v, "gemma.top-n-sigma", params.sampling.top_n_sigma);
-    params.sampling.mirostat_tau = trident::cfg_float(v, "gemma.mirostat-tau", params.sampling.mirostat_tau);
-    params.sampling.mirostat_eta = trident::cfg_float(v, "gemma.mirostat-eta", params.sampling.mirostat_eta);
+    params.sampling.n_prev = trident::cfg_int(v, "gemma.n-prev");
+    params.sampling.n_probs = trident::cfg_int(v, "gemma.n-probs");
+    params.sampling.min_keep = trident::cfg_int(v, "gemma.min-keep");
+    params.sampling.xtc_probability = trident::cfg_float(v, "gemma.xtc-probability");
+    params.sampling.xtc_threshold = trident::cfg_float(v, "gemma.xtc-threshold");
+    params.sampling.typ_p = trident::cfg_float(v, "gemma.typical");
+    params.sampling.dynatemp_range = trident::cfg_float(v, "gemma.dynatemp-range");
+    params.sampling.dynatemp_exponent = trident::cfg_float(v, "gemma.dynatemp-exponent");
+    params.sampling.penalty_last_n = trident::cfg_int(v, "gemma.repeat-last-n");
+    params.sampling.penalty_freq = trident::cfg_float(v, "gemma.frequency-penalty");
+    params.sampling.penalty_present = trident::cfg_float(v, "gemma.presence-penalty");
+    params.sampling.dry_multiplier = trident::cfg_float(v, "gemma.dry-multiplier");
+    params.sampling.dry_base = trident::cfg_float(v, "gemma.dry-base");
+    params.sampling.dry_allowed_length = trident::cfg_int(v, "gemma.dry-allowed-length");
+    params.sampling.dry_penalty_last_n = trident::cfg_int(v, "gemma.dry-penalty-last-n");
+    params.sampling.adaptive_target = trident::cfg_float(v, "gemma.adaptive-target");
+    params.sampling.adaptive_decay = trident::cfg_float(v, "gemma.adaptive-decay");
+    params.sampling.mirostat = trident::cfg_int(v, "gemma.mirostat");
+    params.sampling.top_n_sigma = trident::cfg_float(v, "gemma.top-n-sigma");
+    params.sampling.mirostat_tau = trident::cfg_float(v, "gemma.mirostat-tau");
+    params.sampling.mirostat_eta = trident::cfg_float(v, "gemma.mirostat-eta");
     params.sampling.ignore_eos = trident::cfg_on(v, "gemma.ignore-eos");
     params.sampling.timing_per_token = trident::cfg_on(v, "gemma.timing-per-token");
     params.sampling.backend_sampling = trident::cfg_on(v, "gemma.backend-sampling");
@@ -194,29 +194,9 @@ static void apply_config(common_params & params, const std::map<std::string, std
 
 static common_params default_params() {
     common_params p;
-    p.model.path = "";
-    p.mmproj.path = "";
-    p.cache_type_k = GGML_TYPE_Q8_0;
-    p.cache_type_v = GGML_TYPE_Q8_0;
-    p.mmproj_use_gpu = true;
-    p.n_ctx = 2048;
-    p.n_batch = 512;
-    p.n_ubatch = 512;
-    p.n_predict = 512;
-    p.n_gpu_layers = 999;
-    p.main_gpu = 0;
-    p.split_mode = LLAMA_SPLIT_MODE_NONE;
-    p.fit_params = false;
-    p.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
-    p.warmup = true;
     const int nth = host_thread_count();
     p.cpuparams.n_threads = nth;
     p.cpuparams_batch.n_threads = nth;
-    p.cpuparams.priority = GGML_SCHED_PRIO_HIGH;
-    p.cpuparams_batch.priority = GGML_SCHED_PRIO_HIGH;
-    p.verbosity = 2;
-    p.image_min_tokens = -1;
-    p.image_max_tokens = -1;
     return p;
 }
 
@@ -231,7 +211,6 @@ struct Gemma {
     llama_pos n_past = 0;
     mtmd::context_ptr mtmd_ctx;
     mtmd::bitmaps pending_media;
-    mtmd::batch_ptr mbatch;
     mtmd_helper_init_opt media_opt = mtmd_helper_init_opt_default();
 
     explicit Gemma(common_params & params)
@@ -283,66 +262,16 @@ struct Gemma {
     }
 
     void eval_media(const std::string & formatted) {
-        const std::string marker = mtmd_default_marker();
-        std::vector<std::string> segments;
-        size_t start = 0;
-        for (;;) {
-            const size_t pos = formatted.find(marker, start);
-            if (pos == std::string::npos) {
-                segments.push_back(formatted.substr(start));
-                break;
-            }
-            segments.push_back(formatted.substr(start, pos - start));
-            start = pos + marker.size();
-        }
-        auto bitmaps = pending_media.c_ptr();
-        if (segments.size() - 1 != bitmaps.size())
-            die_fmt("media markers (%zu) != loaded media (%zu)", segments.size() - 1, bitmaps.size());
-        std::vector<mtmd_input_text> texts(segments.size());
-        std::vector<mtmd_input_part> parts;
-        for (size_t i = 0; i < segments.size(); ++i) {
-            texts[i] = {segments[i].data(), segments[i].size(), false, true};
-            parts.push_back({&texts[i], nullptr});
-            if (i < bitmaps.size()) parts.push_back({nullptr, bitmaps[i]});
-        }
-        std::vector<const mtmd_input_part *> part_ptrs;
-        for (const auto & part : parts) part_ptrs.push_back(&part);
         mtmd::input_chunks chunks(mtmd_input_chunks_init());
-        const int32_t tok = mtmd_tokenize_from_parts(mtmd_ctx.get(), chunks.ptr.get(), part_ptrs.data(),
-                                                     (int32_t)part_ptrs.size(), true);
-        if (tok != 0) die_fmt("mtmd_tokenize_from_parts failed (%d)", tok);
+        mtmd_input_text text{formatted.data(), formatted.size(), true, true};
+        auto bitmaps = pending_media.c_ptr();
+        const int32_t tok = mtmd_tokenize(mtmd_ctx.get(), chunks.ptr.get(), &text, bitmaps.data(), bitmaps.size());
+        if (tok != 0) die_fmt("mtmd_tokenize failed (%d)", tok);
         pending_media.entries.clear();
-        const size_t n_chunks = mtmd_input_chunks_size(chunks.ptr.get());
-        for (size_t i = 0; i < n_chunks; ++i) {
-            const mtmd_input_chunk * chunk = mtmd_input_chunks_get(chunks.ptr.get(), i);
-            if (mtmd_input_chunk_get_type(chunk) == MTMD_INPUT_CHUNK_TYPE_TEXT) {
-                llama_pos new_n_past = n_past;
-                const int32_t res = mtmd_helper_eval_chunk_single(mtmd_ctx.get(), lctx, chunk, n_past, 0, n_batch,
-                                                                  i == n_chunks - 1, &new_n_past);
-                if (res != 0) die_fmt("text chunk eval failed at %zu (%d)", i, res);
-                n_past = new_n_past;
-                continue;
-            }
-            float * embd = nullptr;
-            if (mbatch) embd = mtmd_batch_get_output_embd(mbatch.get(), chunk);
-            if (!embd) {
-                mbatch.reset(mtmd_batch_init(mtmd_ctx.get()));
-                if (mtmd_batch_add_chunk(mbatch.get(), chunk) != 0) die("mtmd_batch_add_chunk");
-                for (size_t j = i + 1; j < n_chunks; ++j) {
-                    const mtmd_input_chunk * next = mtmd_input_chunks_get(chunks.ptr.get(), j);
-                    if (mtmd_input_chunk_get_type(next) == MTMD_INPUT_CHUNK_TYPE_TEXT) break;
-                    if (mtmd_batch_add_chunk(mbatch.get(), next) != 0) break;
-                }
-                if (mtmd_batch_encode(mbatch.get()) != 0) die("mtmd_batch_encode failed");
-                embd = mtmd_batch_get_output_embd(mbatch.get(), chunk);
-            }
-            if (!embd) die("missing mtmd embedding");
-            llama_pos new_n_past = n_past;
-            const int32_t res = mtmd_helper_decode_image_chunk(mtmd_ctx.get(), lctx, chunk, embd, n_past, 0, n_batch,
-                                                              &new_n_past, nullptr, nullptr);
-            if (res != 0) die_fmt("media chunk decode failed at %zu (%d)", i, res);
-            n_past = new_n_past;
-        }
+        llama_pos new_n_past = n_past;
+        const int32_t res = mtmd_helper_eval_chunks(mtmd_ctx.get(), lctx, chunks.ptr.get(), n_past, 0, n_batch, true, &new_n_past);
+        if (res != 0) die_fmt("mtmd_helper_eval_chunks failed (%d)", res);
+        n_past = new_n_past;
     }
 
     void reset() {
@@ -350,7 +279,6 @@ struct Gemma {
         n_past = 0;
         common_sampler_reset(smpl);
         pending_media.entries.clear();
-        mbatch.reset();
     }
 
     std::string generate(int max_tokens) {
@@ -382,15 +310,14 @@ int main(int, char **) {
     if (trident::resident("gemma")) return 0;
     common_params params = default_params();
     apply_config(params, values);
-    const bool timings = trident::cfg_on(values, "gemma.mmproj-timings", true);
-    const bool persist = trident::cfg_on(values, "gemma.persist");
-    const int poll_ms = trident::cfg_int(values, "gemma.poll-ms", 100);
-    const int reset_every = trident::cfg_int(values, "gemma.reset-every", 1);
-    const int reset_ms = trident::cfg_int(values, "gemma.reset-ms", 0);
+    const bool timings = trident::cfg_on(values, "gemma.mmproj-timings");
+    const int poll_ms = trident::cfg_int(values, "gemma.poll-ms");
+    const int reset_every = trident::cfg_int(values, "gemma.reset-every");
+    const int reset_ms = trident::cfg_int(values, "gemma.reset-ms");
     const auto request = trident::cfg_path(values, "gemma.prompt-file");
     const auto response = trident::cfg_path(values, "gemma.response-file");
-    const auto image_key = trident::cfg(values, "gemma.image");
-    const auto image = image_key.empty() ? std::string() : trident::cfg_path(values, "gemma.image").string();
+    const auto image_key = trident::cfg_opt(values, "gemma.image");
+    const auto image = image_key.empty() ? std::string() : trident::path_u8(trident::trident_file().parent_path() / std::filesystem::u8path(image_key));
     ggml_backend_load_all();
     require_gpu(params.main_gpu);
     Gemma gemma(params);
@@ -413,27 +340,9 @@ int main(int, char **) {
         } else {
             gemma.eval_text(prompt);
         }
-        std::ofstream(response, std::ios::trunc) << gemma.generate(params.n_predict);
+        std::ofstream(response, std::ios::binary | std::ios::trunc) << gemma.generate(params.n_predict);
     };
-    if (persist) {
-        trident::write_pid("gemma");
-        std::filesystem::remove(trident::slot("gemma", "stop"));
-        auto seen = std::filesystem::file_time_type::min();
-        while (!std::filesystem::exists(trident::slot("gemma", "stop"))) {
-            if (std::filesystem::is_regular_file(request)) {
-                const auto stamp = std::filesystem::last_write_time(request);
-                if (stamp != seen) {
-                    seen = stamp;
-                    const auto prompt = trident::read_text(request);
-                    if (!prompt.empty()) run(prompt);
-                }
-            }
-            Sleep(poll_ms);
-        }
-        std::filesystem::remove(trident::slot("gemma", "pid"));
-        std::filesystem::remove(trident::slot("gemma", "stop"));
-        return 0;
-    }
+    if (trident::cfg_on(values, "gemma.persist")) return trident::watch("gemma", request, poll_ms, run);
     const auto prompt = trident::read_text(request);
     if (prompt.empty()) die("gemma.prompt-file is empty");
     run(prompt);
