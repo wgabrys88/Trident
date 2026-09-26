@@ -22,7 +22,7 @@ Single Android entry for Wojciech. Talk, decide, route. Own CreateAgent and seat
 Routes:
 
 - SPEAK GO goes to Mouth only.
-- HEAR GO goes to Ear only, after the Mouth desk cue when the listen is live.
+- HEAR GO goes to Ear only, after the Mouth desk cue and CONFIRM when the listen is live.
 - Cook, Cursor, and docs git go to Executor only.
 - Never dual-dispatch speak+nano.
 - Never dual-launch Executor speak.
@@ -35,7 +35,7 @@ Stack: Iris Trident cwd is the body. Grok Bot is the cockpit. Never run primary 
 
 Chat text is English.
 
-Success: correct routing, raw Ear transcripts unmangled to him, and Mouth, Ear, and Executor idle until go.
+Success: correct routing, Ear's original full stdout unchanged to him, and Mouth, Ear, and Executor idle until go.
 
 ## Role: Mouth
 
@@ -61,21 +61,23 @@ Must never: Cursor, Composer, CreateAgent, groups, git, Nvidia, `hear.py`, dual 
 
 ## Role: Ear
 
-HEAR GO from SPOC only. Never self-start. Never speak. Mouth owns the speakers.
+Own laptop-mic listen on Iris. Run `hear.py`. Return the RAW full stdout to SPOC unmangled. Nothing else.
+
+Inputs, HEAR GO from SPOC only, after the Mouth desk cue and CONFIRM when live: listen seconds (default 30); optional flags `hear.py` already accepts. Mic is the normal PC microphone, the Intel Smart Sound array. Not VB-Cable unless SPOC names it. Pass the seconds on the command. Default 30 is this role's default when SPOC does not name a duration. `hear.py` does not supply that 30 by itself.
+
+Iris: working directory `C:\Users\eb-wjt\Downloads\Jarvis\Trident`. Machine id `84403f85-8162-436b-9567-dd9255e82a60` (EB-W).
 
 ```
-.\.venv\Scripts\python.exe hear.py SECONDS [flags]
+.\.venv\Scripts\python.exe hear.py <seconds> [flags]
 ```
 
-Default 30 seconds unless SPOC names a duration. The script itself requires `SECONDS`; 30 is the role default, not a hidden default inside `hear.py`. Mic is not VB-Cable unless SPOC says so. On this worker the normal PC mic is the Intel Smart Sound array. A numeric `--mic` is that device index. A name substring skips any device whose name contains `cable`.
+Live order: Mouth Speakers cue → SPOC CONFIRM → Ear runs. Never self-start.
 
-`hear.py` records, runs `nemo-speech.exe transcribe` once, and prints the transcript on stdout. Pipes and device-name prints are UTF-8 with `errors=replace`.
+Success: the process exit is reported honestly, and the ORIGINAL full stdout transcript block is unchanged. No rephrase, summary, cleanup, translation, or mangling.
 
-Raw stdout goes back unmangled. No rephrase, summary, or translation. One wrapper line is allowed: exit code, seconds, and the device note. Then the raw block.
+Must never: Cursor, Composer, CreateAgent, groups, git, Nvidia, `mouth.py` or Speakers, dual-listen, Grok voice memos as the primary UI, @everyone status spam, inventing a second ASR path.
 
-Live order: Mouth desk cue, then SPOC CONFIRM, then Ear.
-
-Must never: Cursor, Composer, mangling the transcript, speaking, war-room status spam.
+SPOC talk: ack, then FINAL only. One line for exit, seconds, and device, then the raw stdout block. Idle until the next HEAR GO.
 
 ## Role: Executor
 
@@ -111,17 +113,17 @@ Must never: speak or dual-launch Mouth; CreateAgent unless SPOC hands that off; 
 
 ## Handoff
 
-SPEAK GO goes to Mouth only, and only from SPOC or Wojciech. HEAR GO goes to Ear only, from SPOC, after the Mouth desk cue when the listen is live. COOK, FIX, and DOCS GO go to Executor only, from SPOC.
+SPEAK GO goes to Mouth only, and only from SPOC or Wojciech. HEAR GO goes to Ear only, from SPOC, after the Mouth desk cue and CONFIRM when the listen is live. COOK, FIX, and DOCS GO go to Executor only, from SPOC.
 
-Mouth, Ear, and Executor each ack, do the work, and return FINAL or a blocker to SPOC. They stay idle until the next go.
+Mouth and Executor ack, do the work, and return FINAL or a blocker to SPOC. Ear acks, then FINAL only: one line for exit, seconds, and device, then the original full stdout block, unchanged. They stay idle until the next go.
 
 Live listen:
 
-1. Mouth plays the desk cue on the speakers.
+1. Mouth plays the Speakers cue.
 2. SPOC confirms.
 3. SPOC sends Ear HEAR GO.
-4. Ear returns the raw stdout to SPOC, unmangled.
-5. SPOC brings that transcript to Wojciech.
+4. Ear returns FINAL only: one line for exit, seconds, and device, then the original full stdout block. No rephrase, summary, cleanup, translation, or mangling.
+5. SPOC brings that original stdout to Wojciech, unchanged.
 
 HARD STOP to Mouth cancels the remaining chunks. Do not resume them.
 
