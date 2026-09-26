@@ -138,7 +138,8 @@ std::wstring nemo_command(const std::filesystem::path& nemo, const std::map<std:
 
 } // namespace
 
-int main(int, char**) {
+int main(int argc, char** argv) {
+    trident::no_args(argc, argv);
     const auto values = trident::load_trident();
     if (trident::cfg_on(values, "ear.unload")) return trident::unload_named("ear");
     if (trident::resident("ear")) return 0;

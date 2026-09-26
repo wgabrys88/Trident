@@ -243,10 +243,64 @@ struct Gemma {
         if (!mtmd_ctx) die_fmt("mmproj load failed: %s", params.mmproj.path.c_str());
     }
 
-    void load_media(const char * path) {
-        auto res = mtmd_helper_bitmap_init_from_file(mtmd_ctx.get(), path, false, media_opt);
-        if (!res.bitmap) die_fmt("media load failed: %s", path);
-        pending_media.entries.emplace_back(res.bitmap);
+    static int b64_value(unsigned char c) {
+        if (c >= 'A' && c <= 'Z') return c - 'A';
+        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+        if (c >= '0' && c <= '9') return c - '0' + 52;
+        if (c == '+') return 62;
+        if (c == '/') return 63;
+        return -1;
+    }
+
+    static std::vector<unsigned char> b64_decode(const std::string & text) {
+        std::vector<unsigned char> out;
+        int value = 0, bits = 0;
+        for (unsigned char c : text) {
+            if (c == '\n' || c == '\r' || c == ' ' || c == '\t') continue;
+            if (c == '=') break;
+            const int digit = b64_value(c);
+            if (digit < 0) die("prompt image is not base64");
+            value = (value << 6) | digit;
+            bits += 6;
+            if (bits >= 8) {
+                bits -= 8;
+                out.push_back((unsigned char)((value >> bits) & 0xFF));
+            }
+        }
+        return out;
+    }
+
+    std::string take_images(std::string text) {
+        const std::string key = "base64,";
+        std::string out;
+        size_t i = 0;
+        while (i < text.size()) {
+            const auto at = text.find("data:image/", i);
+            if (at == std::string::npos) {
+                out.append(text, i, std::string::npos);
+                break;
+            }
+            const auto b64 = text.find(key, at);
+            if (b64 == std::string::npos || b64 > at + 80) {
+                out.append(text, i, at + 1 - i);
+                i = at + 1;
+                continue;
+            }
+            size_t end = b64 + key.size();
+            while (end < text.size()) {
+                const unsigned char c = (unsigned char)text[end];
+                if (b64_value(c) >= 0 || c == '=' || c == '\n' || c == '\r') ++end;
+                else break;
+            }
+            const auto bytes = b64_decode(text.substr(b64 + key.size(), end - (b64 + key.size())));
+            auto res = mtmd_helper_bitmap_init_from_buf(mtmd_ctx.get(), bytes.data(), bytes.size(), false, media_opt);
+            if (!res.bitmap) die("prompt image is not a bitmap");
+            pending_media.entries.emplace_back(res.bitmap);
+            out.append(text, i, at - i);
+            out += mtmd_default_marker();
+            i = end;
+        }
+        return out;
     }
 
     void eval_text(const std::string & text, bool bos) {
@@ -283,7 +337,6 @@ struct Gemma {
 
     std::string generate(int max_tokens) {
         std::string out;
-        const std::string call_end = "}<tool_call|>";
         for (int i = 0; i < max_tokens; ++i) {
             const llama_token id = common_sampler_sample(smpl, lctx, -1);
             common_sampler_accept(smpl, id, true);
@@ -295,234 +348,24 @@ struct Gemma {
             common_batch_clear(batch);
             common_batch_add(batch, id, n_past++, {0}, true);
             if (llama_decode(lctx, batch) != 0) die("llama_decode failed");
-            if (out.size() >= call_end.size() && out.compare(out.size() - call_end.size(), call_end.size(), call_end) == 0) break;
         }
         std::fputc('\n', stdout);
         return out;
     }
+
+    std::string answer(const std::string & text, int max_tokens) {
+        reset();
+        const auto prompt = take_images(text);
+        if (pending_media.entries.empty()) eval_text(prompt, true);
+        else eval_media(prompt);
+        return generate(max_tokens);
+    }
 };
-
-static std::string trim(std::string text) {
-    auto sp = [](unsigned char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; };
-    while (!text.empty() && sp((unsigned char)text.front())) text.erase(text.begin());
-    while (!text.empty() && sp((unsigned char)text.back())) text.pop_back();
-    return text;
-}
-
-static std::string tool_decls(const std::string & spec) {
-    std::string blocks, name, description;
-    std::vector<std::pair<std::string, std::string>> props;
-    auto flush = [&]() {
-        if (name.empty()) return;
-        std::string body = "description:<|\"|>" + description + "<|\"|>";
-        if (!props.empty()) {
-            body += ",parameters:{properties:{";
-            std::string required;
-            for (size_t i = 0; i < props.size(); ++i) {
-                if (i) body += ",";
-                body += props[i].first + ":{description:<|\"|>" + props[i].second + "<|\"|>,type:<|\"|>STRING<|\"|>}";
-                if (!required.empty()) required += ",";
-                required += "<|\"|>" + props[i].first + "<|\"|>";
-            }
-            body += "},required:[" + required + "],type:<|\"|>OBJECT<|\"|>}";
-        }
-        blocks += "<|tool>declaration:" + name + "{" + body + "}<tool|>";
-        name.clear();
-        description.clear();
-        props.clear();
-    };
-    std::stringstream stream(spec);
-    std::string line;
-    while (std::getline(stream, line)) {
-        if (!line.empty() && line.back() == '\r') line.pop_back();
-        line = trim(line);
-        if (line.empty()) {
-            flush();
-            continue;
-        }
-        if (name.empty()) {
-            name = line;
-            continue;
-        }
-        const auto colon = line.find(':');
-        if (colon == std::string::npos) {
-            description = line;
-            continue;
-        }
-        props.emplace_back(trim(line.substr(0, colon)), trim(line.substr(colon + 1)));
-    }
-    flush();
-    return blocks;
-}
-
-static std::string system_turn(const std::string & spec, const std::string & instructions) {
-    return "<|turn>system\n<|think|>" + trim(instructions) + tool_decls(spec) + "<turn|>\n";
-}
-
-static std::string user_turn(const std::string & text, const std::string & media_marker = {}) {
-    if (media_marker.empty()) return "<|turn>user\n" + trim(text) + "<turn|>\n";
-    return "<|turn>user\n" + media_marker + trim(text) + "<turn|>\n";
-}
-
-static std::string strip_thoughts(std::string text) {
-    const std::string open = "<|channel>";
-    const std::string close = "<channel|>";
-    for (;;) {
-        const auto a = text.find(open);
-        if (a == std::string::npos) break;
-        const auto b = text.find(close, a);
-        if (b == std::string::npos) {
-            text.erase(a);
-            break;
-        }
-        text.erase(a, b + close.size() - a);
-    }
-    return text;
-}
-
-static std::string history_model_body(std::string body) {
-    body = strip_thoughts(std::move(body));
-    const std::string tr_end = "<tool_response|>";
-    const auto last_tr = body.rfind(tr_end);
-    if (last_tr != std::string::npos) body.resize(last_tr + tr_end.size());
-    const std::string open = "<|tool_call>call:speak{";
-    const std::string q = "<|\"|>";
-    const std::string closer = "}<tool_call|>";
-    const std::string replacement = "{text:" + q + "done" + q + "}<tool_call|>";
-    for (size_t at = 0; (at = body.find(open, at)) != std::string::npos;) {
-        const auto brace = body.find('{', at);
-        if (brace == std::string::npos) break;
-        auto end = body.find(closer, brace);
-        std::string put = replacement;
-        size_t replace_len = 0;
-        if (end != std::string::npos) {
-            replace_len = end + closer.size() - brace;
-        } else {
-            end = body.find('}', brace);
-            if (end == std::string::npos) break;
-            replace_len = end + 1 - brace;
-            put = "{text:" + q + "done" + q + "}";
-        }
-        body.replace(brace, replace_len, put);
-        at = brace + put.size();
-    }
-    return body;
-}
-
-struct Call {
-    std::string name;
-    std::map<std::string, std::string> args;
-};
-
-static std::vector<Call> parse_calls(const std::string & text) {
-    std::vector<Call> out;
-    const std::string open = "<|tool_call>call:";
-    const std::string q = "<|\"|>";
-    for (size_t at = 0; (at = text.find(open, at)) != std::string::npos;) {
-        at += open.size();
-        const auto brace = text.find('{', at);
-        if (brace == std::string::npos) break;
-        size_t end = text.find("}<tool_call|>", brace);
-        size_t body_end = std::string::npos;
-        if (end != std::string::npos) {
-            body_end = end;
-            end = end + std::string("}<tool_call|>").size();
-        } else {
-            end = text.find("}<turn|>", brace);
-            if (end != std::string::npos) {
-                body_end = end;
-                end = end + std::string("}<turn|>").size();
-            } else {
-                size_t i = brace + 1;
-                while (i < text.size()) {
-                    if (text.compare(i, q.size(), q) == 0) {
-                        i += q.size();
-                        const auto stop = text.find(q, i);
-                        if (stop == std::string::npos) {
-                            i = text.size();
-                            break;
-                        }
-                        i = stop + q.size();
-                        continue;
-                    }
-                    if (text[i] == '}') {
-                        body_end = i;
-                        end = i + 1;
-                        break;
-                    }
-                    ++i;
-                }
-            }
-        }
-        if (body_end == std::string::npos) break;
-        Call call;
-        call.name = trim(text.substr(at, brace - at));
-        const auto body = text.substr(brace + 1, body_end - brace - 1);
-        for (size_t i = 0; i < body.size();) {
-            const auto colon = body.find(':', i);
-            if (colon == std::string::npos) break;
-            auto key = trim(body.substr(i, colon - i));
-            const auto comma = key.rfind(',');
-            if (comma != std::string::npos) key = trim(key.substr(comma + 1));
-            size_t v = colon + 1;
-            if (body.compare(v, q.size(), q) == 0) {
-                v += q.size();
-                const auto stop = body.find(q, v);
-                if (stop == std::string::npos) break;
-                call.args[key] = trim(body.substr(v, stop - v));
-                i = stop + q.size();
-            } else {
-                auto stop = body.find(',', v);
-                if (stop == std::string::npos) stop = body.size();
-                call.args[key] = trim(body.substr(v, stop - v));
-                i = stop + 1;
-            }
-        }
-        out.push_back(std::move(call));
-        at = end;
-    }
-    return out;
-}
-
-static std::string tool_response(const std::string & name, const std::map<std::string, std::string> & fields) {
-    std::string parts;
-    for (const auto & field : fields) {
-        if (!parts.empty()) parts += ",";
-        parts += field.first + ":<|\"|>" + field.second + "<|\"|>";
-    }
-    return "<|tool_response>response:" + name + "{" + parts + "}<tool_response|>";
-}
-
-static std::vector<std::string> load_history(const std::filesystem::path & path) {
-    std::vector<std::string> history;
-    std::ifstream in(path, std::ios::binary);
-    std::stringstream buffer;
-    buffer << in.rdbuf();
-    const auto raw = buffer.str();
-    const std::string marker = "<|turn>";
-    size_t start = 0;
-    while (start <= raw.size()) {
-        const auto found = raw.find(marker, start);
-        const auto part = raw.substr(start, found == std::string::npos ? std::string::npos : found - start);
-        if (!trim(part).empty()) history.push_back(marker + part);
-        if (found == std::string::npos) break;
-        start = found + marker.size();
-    }
-    return history;
-}
-
-static void compact_history(std::vector<std::string> & history, int limit) {
-    auto total = [&]() {
-        size_t n = 0;
-        for (const auto & part : history) n += part.size();
-        return n;
-    };
-    while (history.size() > 1 && total() > (size_t)limit) history.erase(history.begin());
-}
 
 } // namespace
 
-int main(int, char **) {
+int main(int argc, char ** argv) {
+    trident::no_args(argc, argv);
     ggml_time_init();
     common_init();
     const auto values = trident::load_trident();
@@ -532,85 +375,14 @@ int main(int, char **) {
     apply_config(params, values);
     const bool timings = trident::cfg_on(values, "gemma.mmproj-timings");
     const int poll_ms = trident::cfg_int(values, "gemma.poll-ms");
-    const int reset_every = trident::cfg_int(values, "gemma.reset-every");
-    const int reset_ms = trident::cfg_int(values, "gemma.reset-ms");
     const auto request = trident::cfg_path(values, "gemma.prompt-file");
     const auto response = trident::cfg_path(values, "gemma.response-file");
-    const auto history_path = trident::cfg_path(values, "gemma.history-file");
-    const auto mouth = trident::cfg_path(values, "chatterbox.prompt-file");
-    const int history_max = trident::cfg_int(values, "gemma.history-max");
-    const auto tools = trident::cfg_opt(values, "gemma.tools");
-    const auto instructions = trident::cfg_opt(values, "gemma.system");
-    const auto image_key = trident::cfg_opt(values, "gemma.image");
-    const auto image = image_key.empty() ? std::string() : trident::path_u8(trident::trident_file().parent_path() / std::filesystem::u8path(image_key));
-    const char * model_open = "<|turn>model\n";
     ggml_backend_load_all();
     require_gpu(params.main_gpu);
     Gemma gemma(params);
-    if (!image.empty()) gemma.open_mmproj(params, timings);
-    int served = 0;
-    ULONGLONG reset_at = GetTickCount64();
+    gemma.open_mmproj(params, timings);
     auto turn = [&](const std::string & heard) {
-        const bool by_count = reset_every > 0 && served % reset_every == 0;
-        const bool by_time = reset_ms > 0 && GetTickCount64() - reset_at >= (ULONGLONG)reset_ms;
-        if (by_count || by_time) {
-            gemma.reset();
-            reset_at = GetTickCount64();
-        }
-        ++served;
-        auto history = load_history(history_path);
-        for (auto & part : history) part = strip_thoughts(part);
-        compact_history(history, history_max);
-        const std::string media = image.empty() ? std::string() : mtmd_default_marker();
-        const auto user = user_turn(heard, media);
-        std::string prefix = system_turn(tools, instructions);
-        for (const auto & part : history) prefix += part;
-        prefix += user + model_open;
-        auto once = [&](const std::string & text, bool first) {
-            if (first && !image.empty()) {
-                gemma.load_media(image.c_str());
-                gemma.eval_media(text);
-            } else gemma.eval_text(text, first);
-            return gemma.generate(params.n_predict);
-        };
-        auto act = [&](const Call & call) {
-            std::map<std::string, std::string> fields;
-            if (call.name == "see") {
-                fields["image"] = image_key.empty() ? "none" : image_key;
-                fields["pixels"] = "attached in this turn";
-            } else if (call.name != "speak") fields["error"] = "unknown";
-            else {
-                const auto it = call.args.find("text");
-                const auto words = it == call.args.end() ? std::string() : trim(it->second);
-                if (words.empty()) fields["spoken"] = "0";
-                else {
-                    std::ofstream(mouth, std::ios::binary | std::ios::trunc) << words;
-                    fields["spoken"] = "1";
-                }
-            }
-            return fields;
-        };
-        auto latest = once(prefix, true);
-        std::string body = latest;
-        for (;;) {
-            const auto calls = parse_calls(latest);
-            if (calls.empty()) break;
-            std::string extra;
-            for (const auto & call : calls) extra += tool_response(call.name, act(call));
-            body += extra;
-            latest = once(extra, false);
-            body += latest;
-        }
-        auto stored = history_model_body(body);
-        while (!stored.empty() && (stored.back() == ' ' || stored.back() == '\t' || stored.back() == '\n' || stored.back() == '\r')) stored.pop_back();
-        if (stored.size() < 8 || stored.compare(stored.size() - 8, 8, "<turn|>") != 0) stored += "<turn|>";
-        history.push_back(user_turn(heard) + model_open + stored + "\n");
-        compact_history(history, history_max);
-        {
-            std::ofstream out(history_path, std::ios::binary | std::ios::trunc);
-            for (const auto & part : history) out << part;
-        }
-        std::ofstream(response, std::ios::binary | std::ios::trunc) << body;
+        std::ofstream(response, std::ios::binary | std::ios::trunc) << gemma.answer(heard, params.n_predict);
     };
     if (trident::cfg_on(values, "gemma.persist")) return trident::watch("gemma", request, poll_ms, turn);
     const auto prompt = trident::read_text(request);

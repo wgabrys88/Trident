@@ -5,6 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 FILE = {}
 ARCH_FLAG = None
+HOST_ISA = None
 BACKEND = None
 
 
@@ -139,6 +140,10 @@ def run(cmd, **kw):
     subprocess.run(cmd, check=True, **kw)
 
 
+def powershell(*args: str) -> list[str]:
+    return [shutil.which("powershell") or "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", *args]
+
+
 def atomic_json(path: Path, payload: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
@@ -221,26 +226,29 @@ def pin_sources() -> None:
     pin(place("install.src_nemo"), need("install.nemo_repo"), opt("install.nemo_rev"), "")
 
 
-def msvc_arch() -> str:
-    global ARCH_FLAG
+def cpu_probe() -> None:
+    global ARCH_FLAG, HOST_ISA
     if ARCH_FLAG is not None:
-        return ARCH_FLAG
-    place("install.cache").mkdir(parents=True, exist_ok=True)
-    out = place("install.cache") / "HostCpu.generated.cmake"
-    ps = shutil.which("powershell") or "powershell.exe"
-    run([ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "gemma" / "scripts" / "detect_cpu.ps1"), "-OutFile", str(out)])
-    text = out.read_text(encoding="utf-8-sig")
-    found = re.search(r'GEMMA_MSVC_ARCH_FLAG "([^"]*)"', text)
-    detected = found.group(1) if found else ""
-    ARCH_FLAG = opt("install.msvc_arch") or detected
+        return
+    out = subprocess.run(powershell("-File", str(ROOT / "gemma" / "scripts" / "detect_cpu.ps1")), check=True, capture_output=True, text=True)
+    arch, isa = "", "host"
+    for line in out.stdout.splitlines():
+        if line.startswith("msvc_arch="):
+            arch = line.split("=", 1)[1]
+        elif line.startswith("host_isa="):
+            isa = line.split("=", 1)[1]
+    ARCH_FLAG = opt("install.msvc_arch") or arch
+    HOST_ISA = isa.lower()
+
+
+def msvc_arch() -> str:
+    cpu_probe()
     return ARCH_FLAG
 
 
 def host_isa() -> str:
-    msvc_arch()
-    text = (place("install.cache") / "HostCpu.generated.cmake").read_text(encoding="utf-8-sig")
-    found = re.search(r'GEMMA_HOST_ISA "([^"]*)"', text)
-    return (found.group(1) if found else "host").lower()
+    cpu_probe()
+    return HOST_ISA
 
 
 def find_vulkan() -> Path:
@@ -268,8 +276,7 @@ def gemma_backend() -> str:
             raise SystemExit("trident.txt install.gemma_backend must be auto, cuda, or vulkan")
         BACKEND = choice
         return BACKEND
-    ps = shutil.which("powershell") or "powershell.exe"
-    out = subprocess.run([ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "gemma" / "scripts" / "detect_gpu.ps1")], check=True, capture_output=True, text=True)
+    out = subprocess.run(powershell("-File", str(ROOT / "gemma" / "scripts" / "detect_gpu.ps1")), check=True, capture_output=True, text=True)
     for line in reversed(out.stdout.splitlines()):
         if line.strip() in ("cuda", "vulkan"):
             BACKEND = line.strip()
@@ -355,6 +362,65 @@ def onnx_root() -> Path:
     return dest
 
 
+def recorded_source(build: Path) -> str:
+    cache = build / "CMakeCache.txt"
+    if not cache.is_file():
+        return ""
+    prefix = "CMAKE_HOME_DIRECTORY:"
+    for line in cache.read_text(encoding="utf-8", errors="replace").splitlines():
+        if line.startswith(prefix) and "=" in line:
+            return line.split("=", 1)[1].strip()
+    return ""
+
+
+def claim_build(build: Path, source: Path) -> None:
+    recorded = recorded_source(build)
+    if not recorded:
+        return
+    if os.path.normcase(os.path.abspath(recorded)) == os.path.normcase(str(source.resolve())):
+        return
+    print("reset " + str(build), flush=True)
+    shutil.rmtree(build)
+
+
+def vulkan_defs(sdk: Path) -> list[str]:
+    return [
+        f"-DVulkan_INCLUDE_DIR={sdk / 'Include'}",
+        f"-DVulkan_LIBRARY={sdk / 'Lib' / 'vulkan-1.lib'}",
+        f"-DVulkan_GLSLC_EXECUTABLE={sdk / 'Bin' / 'glslc.exe'}",
+    ]
+
+
+def vulkan_env(sdk: Path) -> dict:
+    env = os.environ.copy()
+    env["VULKAN_SDK"] = str(sdk)
+    return env
+
+
+def cuda_env() -> dict:
+    root = need("install.cuda_root")
+    nvcc = Path(root) / "bin" / "nvcc.exe"
+    if not nvcc.is_file():
+        raise SystemExit("CUDA nvcc not found at " + str(nvcc))
+    banner = subprocess.run([str(nvcc), "--version"], check=True, capture_output=True, text=True).stdout
+    found = re.search(r"release (\d+)\.(\d+)", banner)
+    major, minor = (int(part) for part in need("install.cuda_max").split("."))
+    if found and (int(found.group(1)), int(found.group(2))) > (major, minor):
+        raise SystemExit("CUDA " + found.group(1) + "." + found.group(2) + " is above install.cuda_max " + need("install.cuda_max"))
+    env = os.environ.copy()
+    env["CUDA_PATH"] = root
+    return env
+
+
+def cmake_configure(source: Path, build: Path, args: list[str], env: dict | None = None) -> None:
+    claim_build(build, source)
+    run(["cmake", "-S", str(source), "-B", str(build), "-G", need("install.generator"), "-A", need("install.arch"), *args], env=env)
+
+
+def cmake_targets(build: Path, targets: list[str], parallel: str) -> None:
+    run(["cmake", "--build", str(build), "--config", need("install.config"), "--target", *targets, "--parallel", parallel])
+
+
 def build_mouth(sdk: Path) -> None:
     build = place("install.build_mouth")
     arch = msvc_arch()
@@ -371,9 +437,7 @@ def build_mouth(sdk: Path) -> None:
         "-DTRIDENT_MOUTH_COMPILE=" + need("install.mouth_compile"),
         "-DTRIDENT_MOUTH_DEFINITIONS=" + need("install.mouth_definitions"),
         "-DMSVC_ARCH_FLAG=" + arch,
-        f"-DVulkan_INCLUDE_DIR={sdk / 'Include'}",
-        f"-DVulkan_LIBRARY={sdk / 'Lib' / 'vulkan-1.lib'}",
-        f"-DVulkan_GLSLC_EXECUTABLE={sdk / 'Bin' / 'glslc.exe'}",
+        *vulkan_defs(sdk),
         "-DONNXRUNTIME_DIR=" + str(onnx_root()),
     ]
     outputs = tuple(build / "bin" / name for name in ("chatterbox.exe", "chatterbox-bake.exe", "ear.exe", "vad.exe"))
@@ -381,8 +445,8 @@ def build_mouth(sdk: Path) -> None:
     stamp = stamps() / "mouth.json"
     if not matches(stamp, wanted, *outputs):
         print("install mouth", flush=True)
-        run(["cmake", "-S", str(ROOT), "-B", str(build), "-G", need("install.generator"), "-A", need("install.arch"), *defs])
-        run(["cmake", "--build", str(build), "--config", need("install.config"), "--target", "chatterbox", "chatterbox-bake", "ear", "vad", "--parallel", need("install.parallel")])
+        cmake_configure(ROOT, build, defs, vulkan_env(sdk))
+        cmake_targets(build, ["chatterbox", "chatterbox-bake", "ear", "vad"], need("install.parallel"))
         atomic_json(stamp, wanted)
     else:
         print("skip mouth", flush=True)
@@ -390,9 +454,7 @@ def build_mouth(sdk: Path) -> None:
         imports = pe_import_dlls(exe)
         if "ggml.dll" in imports or "ggml-base.dll" in imports:
             raise SystemExit(exe.name + " links ggml.dll; the mouth must stay static so the ear can keep its own ggml.dll")
-        dest = ROOT / exe.name
-        shutil.copy2(exe, dest)
-        embed_utf8(dest)
+        shutil.copy2(exe, ROOT / exe.name)
     shutil.copy2(onnx_root() / "lib" / "onnxruntime.dll", ROOT / "onnxruntime.dll")
 
 
@@ -420,8 +482,8 @@ def build_ear() -> None:
     stamp = stamps() / "ear.json"
     if not matches(stamp, wanted, exe):
         print("install ear", flush=True)
-        ps = shutil.which("powershell") or "powershell.exe"
-        command = [ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(home / "scripts" / "windows" / "build.ps1"), "-Backend", need("install.ear_backend"), "-Profile", need("install.ear_profile"), "-Config", need("install.ear_config"), "-CudaArch", need("install.ear_cuda_arch"), "-Architecture", need("install.ear_architecture"), "-Compiler", need("install.ear_compiler"), "-Jobs", need("install.ear_jobs"), "-BuildDir", str(build)]
+        claim_build(build, home)
+        command = powershell("-File", str(home / "scripts" / "windows" / "build.ps1"), "-Backend", need("install.ear_backend"), "-Profile", need("install.ear_profile"), "-Config", need("install.ear_config"), "-CudaArch", need("install.ear_cuda_arch"), "-Architecture", need("install.ear_architecture"), "-Compiler", need("install.ear_compiler"), "-Jobs", need("install.ear_jobs"), "-BuildDir", str(build))
         if opt("install.ear_vcpkg_root"):
             command += ["-VcpkgRoot", opt("install.ear_vcpkg_root")]
         if opt("install.ear_vcpkg_triplet"):
@@ -445,53 +507,51 @@ def build_ear() -> None:
 def build_gemma(sdk: Path) -> None:
     backend = gemma_backend()
     build = place("install.build_gemma")
-    exe = build / need("install.config") / "gemma-brain.exe"
-    sense = build / need("install.config") / "sense.exe"
+    config = need("install.config")
+    exe = build / config / "gemma-brain.exe"
+    sense = build / config / "sense.exe"
     llama = subprocess.run(["git", "-C", str(place("install.src_llama")), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
-    defs = [f"{cmake}={cmake_on(key)}" for key, cmake in BRAIN_DEFS]
-    defs.append("GEMMA_BACKEND=" + backend)
-    defs.append("GGML_CUDA=" + ("ON" if backend == "cuda" else "OFF"))
-    defs.append("GGML_VULKAN=" + ("ON" if backend == "vulkan" else "OFF"))
-    defs.append("LLAMA_SRC=" + str(place("install.src_llama")))
-    defs.append("TRIDENT_UTF8_MANIFEST=" + str((ROOT / need("install.utf8_manifest")).resolve()))
-    defs.append("GEMMA_COMPILE=" + need("install.gemma_compile"))
-    defs.append("GEMMA_LINK=" + need("install.gemma_link"))
-    defs.append("GEMMA_DEFINITIONS=" + need("install.gemma_definitions"))
-    defs.append("GEMMA_MSVC_ARCH_FLAG=" + msvc_arch())
+    source = ROOT / "gemma"
+    args = ["-DCMAKE_BUILD_TYPE=" + config, "-DGEMMA_BACKEND=" + backend]
     if backend == "cuda":
-        defs.append("CMAKE_CUDA_ARCHITECTURES=" + need("install.cuda_architectures"))
-        defs.extend(f"{cmake}={cmake_on(key)}" for key, cmake in CUDA_DEFS)
+        nvcc = Path(need("install.cuda_root")) / "bin" / "nvcc.exe"
+        args += ["-T", need("install.cuda_toolset"), "-DCMAKE_CUDA_COMPILER=" + str(nvcc), "-DCMAKE_CUDA_TOOLKIT_ROOT_DIR=" + need("install.cuda_root")]
+        env = cuda_env()
+    else:
+        args += ["-DCMAKE_PREFIX_PATH=" + str(sdk), *vulkan_defs(sdk)]
+        env = vulkan_env(sdk)
+    defs = [f"-D{cmake}={cmake_on(key)}" for key, cmake in BRAIN_DEFS]
+    defs += [
+        "-DGGML_CUDA=" + ("ON" if backend == "cuda" else "OFF"),
+        "-DGGML_VULKAN=" + ("ON" if backend == "vulkan" else "OFF"),
+        "-DLLAMA_SRC=" + str(place("install.src_llama")),
+        "-DTRIDENT_UTF8_MANIFEST=" + str((ROOT / need("install.utf8_manifest")).resolve()),
+        "-DGEMMA_COMPILE=" + need("install.gemma_compile"),
+        "-DGEMMA_LINK=" + need("install.gemma_link"),
+        "-DGEMMA_DEFINITIONS=" + need("install.gemma_definitions"),
+        "-DGEMMA_MSVC_ARCH_FLAG=" + msvc_arch(),
+    ]
+    if backend == "cuda":
+        defs.append("-DCMAKE_CUDA_ARCHITECTURES=" + need("install.cuda_architectures"))
+        defs.extend(f"-D{cmake}={cmake_on(key)}" for key, cmake in CUDA_DEFS)
     wanted = {
         "llama": llama,
         "backend": backend,
-        "cmake": defs,
-        "source": digest(ROOT / "gemma" / "CMakeLists.txt", ROOT / "gemma" / "src" / "brain.cpp", ROOT / "gemma" / "src" / "sense.cpp", ROOT / "gemma" / "cmake" / "HostCpu.cmake", ROOT / "gemma" / "scripts", ROOT / "src" / "common" / "config.h"),
+        "cmake": args + defs,
+        "source": digest(source / "CMakeLists.txt", source / "src" / "brain.cpp", source / "src" / "sense.cpp", source / "cmake" / "HostCpu.cmake", ROOT / "src" / "common" / "config.h"),
     }
     stamp = stamps() / "gemma.json"
     if not matches(stamp, wanted, exe, sense):
         print("install gemma-brain", flush=True)
-        ps = shutil.which("powershell") or "powershell.exe"
-        command = [ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ROOT / "gemma" / "scripts" / "build.ps1"), "-BuildDir", str(build), "-BrainParallel", need("install.brain_parallel"), "-CudaCodegenParallel", need("install.cuda_codegen_parallel")]
-        if backend == "vulkan":
-            command += ["-VulkanSdk", str(sdk)]
-        env = os.environ.copy()
-        env["TRIDENT_GENERATOR"] = need("install.generator")
-        env["TRIDENT_ARCH"] = need("install.arch")
-        env["TRIDENT_GEMMA_BACKEND"] = backend
-        env["TRIDENT_CUDA_MAX"] = need("install.cuda_max")
-        env["TRIDENT_CUDA_ROOT"] = need("install.cuda_root")
-        env["TRIDENT_CUDA_TOOLSET"] = need("install.cuda_toolset")
-        env["TRIDENT_GEMMA_DEFS"] = "\n".join(defs)
-        run(command, cwd=ROOT / "gemma", env=env)
+        cmake_configure(source, build, args + defs, env)
+        if backend == "cuda":
+            cmake_targets(build, ["ggml-cuda"], need("install.cuda_codegen_parallel"))
+        cmake_targets(build, ["gemma-brain", "sense"], need("install.brain_parallel"))
         atomic_json(stamp, wanted)
     else:
         print("skip gemma-brain", flush=True)
-    dest = ROOT / "gemma-brain.exe"
-    shutil.copy2(exe, dest)
-    embed_utf8(dest)
-    sense_dest = ROOT / "sense.exe"
-    shutil.copy2(sense, sense_dest)
-    embed_utf8(sense_dest)
+    shutil.copy2(exe, ROOT / "gemma-brain.exe")
+    shutil.copy2(sense, ROOT / "sense.exe")
 
 
 def policy(path: Path, default: str) -> dict:

@@ -123,30 +123,4 @@ std::vector<int32_t> MtlTokenizer::tokenize(const std::string& text, const std::
     piece(prepared.substr(cursor), ids);
     return ids;
 }
-std::string MtlTokenizer::punctuation(std::string text) {
-    if (text.empty()) throw std::runtime_error("Empty punctuation input");
-    if (text[0] >= 'a' && text[0] <= 'z') text[0] += 'A' - 'a';
-    std::string collapsed;
-    bool space = false;
-    for (char c : text) {
-        if (c != ' ' || !space) collapsed += c;
-        space = c == ' ';
-    }
-    text = std::move(collapsed);
-    const std::pair<std::string, std::string> replacements[] = {
-        {"\xe2\x80\xa6", ", "}, {":", ","}, {"\xe2\x80\x94", "-"}, {"\xe2\x80\x93", "-"},
-        {" ,", ","}, {"\xe2\x80\x9c", "\""}, {"\xe2\x80\x9d", "\""}, {"\xe2\x80\x98", "'"}, {"\xe2\x80\x99", "'"},
-    };
-    for (const auto& replacement : replacements) {
-        size_t position = 0;
-        while ((position = text.find(replacement.first, position)) != std::string::npos) {
-            text.replace(position, replacement.first.size(), replacement.second);
-            position += replacement.second.size();
-        }
-    }
-    text.erase(text.find_last_not_of(" \t\n\r") + 1);
-    if (text.empty()) throw std::runtime_error("Empty normalized punctuation input");
-    if (std::string(".!?-,").find(text.back()) == std::string::npos) text += '.';
-    return text;
-}
 }

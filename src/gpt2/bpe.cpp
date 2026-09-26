@@ -2,11 +2,14 @@
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
-#include <tuple>
 
 namespace trident::gpt2 {
-Gpt2Bpe::Gpt2Bpe(const std::vector<std::string>& tokens, const std::vector<int32_t>& types, const std::vector<std::string>& merges)
-    : words_(R"('s|'t|'re|'ve|'m|'ll|'d| ?[[:alpha:]]+| ?[[:digit:]]+| ?[^\s[:alpha:][:digit:]]+|\s+(?!\S)|\s+)", std::regex::optimize) {
+namespace {
+bool letter(unsigned char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c >= 0x80; }
+bool digit(unsigned char c) { return c >= '0' && c <= '9'; }
+bool gap(unsigned char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; }
+}
+Gpt2Bpe::Gpt2Bpe(const std::vector<std::string>& tokens, const std::vector<int32_t>& types, const std::vector<std::string>& merges) {
     if (tokens.empty()) throw std::runtime_error("Empty GPT-2 vocabulary");
     for (size_t i = 0; i < tokens.size(); ++i) {
         vocabulary_[tokens[i]] = int32_t(i);
@@ -22,9 +25,9 @@ Gpt2Bpe::Gpt2Bpe(const std::vector<std::string>& tokens, const std::vector<int32
     }
 }
 void Gpt2Bpe::fragment(const std::string& text, std::vector<int32_t>& ids) const {
-    for (auto word = std::sregex_iterator(text.begin(), text.end(), words_); word != std::sregex_iterator(); ++word) {
+    auto emit = [&](size_t begin, size_t end) {
         std::vector<std::string> pieces;
-        for (unsigned char byte : word->str()) pieces.push_back(bytes_[byte]);
+        for (size_t i = begin; i < end; ++i) pieces.push_back(bytes_[(unsigned char)text[i]]);
         while (pieces.size() >= 2) {
             int best = std::numeric_limits<int>::max();
             size_t position = 0;
@@ -37,6 +40,27 @@ void Gpt2Bpe::fragment(const std::string& text, std::vector<int32_t>& ids) const
             pieces.erase(pieces.begin() + position + 1);
         }
         for (const auto& piece : pieces) ids.push_back(vocabulary_.at(piece));
+    };
+    const char* contractions[] = {"'re", "'ve", "'ll", "'s", "'t", "'m", "'d"};
+    for (size_t i = 0; i < text.size();) {
+        bool contraction = false;
+        for (const char* item : contractions) {
+            const size_t n = std::char_traits<char>::length(item);
+            if (text.compare(i, n, item) != 0) continue;
+            emit(i, i + n);
+            i += n;
+            contraction = true;
+            break;
+        }
+        if (contraction) continue;
+        size_t start = i;
+        if (text[i] == ' ' && i + 1 < text.size() && !gap((unsigned char)text[i + 1])) ++i;
+        const unsigned char kind = (unsigned char)text[i];
+        if (letter(kind)) while (i < text.size() && letter((unsigned char)text[i])) ++i;
+        else if (digit(kind)) while (i < text.size() && digit((unsigned char)text[i])) ++i;
+        else if (!gap(kind)) while (i < text.size() && !gap((unsigned char)text[i]) && !letter((unsigned char)text[i]) && !digit((unsigned char)text[i])) ++i;
+        else while (i < text.size() && gap((unsigned char)text[i])) ++i;
+        emit(start, i);
     }
 }
 std::vector<int32_t> Gpt2Bpe::tokenize(const std::string& text) const {
@@ -63,30 +87,5 @@ std::vector<int32_t> Gpt2Bpe::tokenize(const std::string& text) const {
     }
     fragment(text.substr(cursor), ids);
     return ids;
-}
-std::string Gpt2Bpe::punc_norm(std::string text) const {
-    if (text.empty()) throw std::runtime_error("Empty punctuation input");
-    if (text[0] >= 'a' && text[0] <= 'z') text[0] += 'A' - 'a';
-    std::string collapsed;
-    bool space = false;
-    for (char c : text) {
-        if (c != ' ' || !space) collapsed += c;
-        space = c == ' ';
-    }
-    text = std::move(collapsed);
-    const std::pair<std::string, std::string> replacements[] = {
-        {"\xe2\x80\xa6", ", "}, {":", ","}, {"\xe2\x80\x94", "-"}, {"\xe2\x80\x93", "-"},
-        {" ,", ","}, {"\xe2\x80\x9c", "\""}, {"\xe2\x80\x9d", "\""}, {"\xe2\x80\x98", "'"}, {"\xe2\x80\x99", "'"},
-    };
-    for (const auto& replacement : replacements) {
-        size_t position = 0;
-        while ((position = text.find(replacement.first, position)) != std::string::npos) {
-            text.replace(position, replacement.first.size(), replacement.second); position += replacement.second.size();
-        }
-    }
-    text.erase(text.find_last_not_of(" \t\n\r") + 1);
-    if (text.empty()) throw std::runtime_error("Empty normalized punctuation input");
-    if (std::string(".!?-,").find(text.back()) == std::string::npos) text += '.';
-    return text;
 }
 }

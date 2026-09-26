@@ -9,7 +9,7 @@
 
 namespace {
 
-trident::Knobs knobs_from(const std::map<std::string, std::string>& values, bool llama) {
+trident::Knobs knobs_from(const std::map<std::string, std::string>& values) {
     trident::Knobs knobs;
     knobs.gpu = trident::cfg_int(values, "chatterbox.gpu");
     knobs.seed = trident::cfg_int(values, "chatterbox.seed");
@@ -19,37 +19,32 @@ trident::Knobs knobs_from(const std::map<std::string, std::string>& values, bool
     knobs.trim_fade = trident::cfg_int(values, "chatterbox.trim-fade-samples");
     knobs.graph_nodes = trident::cfg_int(values, "chatterbox.graph-nodes");
     knobs.end_trim = trident::cfg_int(values, "chatterbox.end-trim-samples");
-    if (llama) {
-        knobs.top_p = trident::cfg_float(values, "chatterbox.top-p-v3");
-        knobs.cfm_steps = trident::cfg_int(values, "chatterbox.cfm-steps-v3");
-        knobs.min_p = trident::cfg_float(values, "chatterbox.min-p");
-        knobs.cfg_weight = trident::cfg_float(values, "chatterbox.cfg-weight");
-        knobs.exaggeration = trident::cfg_float(values, "chatterbox.exaggeration");
-        knobs.cfm_cfg = trident::cfg_float(values, "chatterbox.cfm-cfg");
-    } else {
-        knobs.top_p = trident::cfg_float(values, "chatterbox.top-p");
-        knobs.cfm_steps = trident::cfg_int(values, "chatterbox.cfm-steps");
-        knobs.top_k = trident::cfg_int(values, "chatterbox.top-k");
-    }
+    knobs.top_p = trident::cfg_float(values, "chatterbox.top-p");
+    knobs.cfm_steps = trident::cfg_int(values, "chatterbox.cfm-steps");
+    knobs.top_k = trident::cfg_int(values, "chatterbox.top-k");
+    knobs.min_p = trident::cfg_float(values, "chatterbox.min-p");
+    knobs.cfg_weight = trident::cfg_float(values, "chatterbox.cfg-weight");
+    knobs.exaggeration = trident::cfg_float(values, "chatterbox.exaggeration");
+    knobs.cfm_cfg = trident::cfg_float(values, "chatterbox.cfm-cfg");
     return knobs;
 }
 
 } // namespace
 
-int main(int, char**) {
+int main(int argc, char** argv) {
+    trident::no_args(argc, argv);
     const auto values = trident::load_trident();
     if (trident::cfg_on(values, "chatterbox.unload")) return trident::unload_named("chatterbox");
     if (trident::resident("chatterbox")) return 0;
     const auto variant = trident::need(values, "chatterbox.variant");
     const auto language = trident::need(values, "chatterbox.language");
-    const bool llama = variant == "v3";
     const int rate = trident::cfg_int(values, "chatterbox.sample-rate");
     const int poll_ms = trident::cfg_int(values, "chatterbox.poll-ms");
     const auto request = trident::cfg_path(values, "chatterbox.prompt-file");
     const auto response = trident::cfg_path(values, "chatterbox.response-file");
     const auto t3 = trident::cfg_path(values, variant + ".t3");
     const auto s3 = trident::cfg_path(values, variant + ".s3");
-    auto engine = trident::chatterbox_make_engine(t3, s3, knobs_from(values, llama));
+    auto engine = trident::chatterbox_make_engine(t3, s3, knobs_from(values));
     auto speak = [&](const std::string& text) {
         auto wav = response;
         wav.replace_extension(".wav");

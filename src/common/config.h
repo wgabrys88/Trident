@@ -16,6 +16,17 @@ inline void fail(const std::string & text) {
     std::exit(2);
 }
 
+inline void no_args(int argc, char ** argv) {
+    if (argc <= 1) return;
+    const std::string arg = argv[1] ? argv[1] : "";
+    const char * text = "this program reads trident.txt and takes no arguments";
+    if (arg == "--help" || arg == "-h" || arg == "/?") {
+        std::fprintf(stderr, "%s\n", text);
+        std::exit(0);
+    }
+    fail(text);
+}
+
 inline std::filesystem::path exe_dir() {
     wchar_t buf[MAX_PATH];
     const DWORD n = GetModuleFileNameW(nullptr, buf, MAX_PATH);
@@ -27,14 +38,9 @@ inline std::string path_u8(const std::filesystem::path & path) {
 }
 
 inline std::filesystem::path trident_file() {
-    auto dir = exe_dir();
-    for (;;) {
-        auto candidate = dir / "trident.txt";
-        if (std::filesystem::is_regular_file(candidate)) return candidate;
-        auto parent = dir.parent_path();
-        if (parent == dir) return {};
-        dir = parent;
-    }
+    auto file = exe_dir() / "trident.txt";
+    if (!std::filesystem::is_regular_file(file)) return {};
+    return file;
 }
 
 inline std::map<std::string, std::string> load_trident() {

@@ -34,7 +34,7 @@ int main(int argc, char** argv) {
         s3_path = trident::path_u8(trident::cfg_path(values, "bake.s3"));
         reference_path = trident::path_u8(trident::cfg_path(values, "bake.reference"));
     } else {
-        throw std::runtime_error("chatterbox-bake takes the t3, s3, and reference paths, or no arguments");
+        trident::fail("chatterbox-bake takes the t3, s3, and reference paths, or no arguments");
     }
     auto family = trident::GgufFile(t3_path).string("general.architecture");
     if (family != "chatterbox-gpt2" && family != "chatterbox-llama")

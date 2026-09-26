@@ -60,7 +60,8 @@ std::vector<float> pull_16k(std::vector<float>& native, int native_rate, int rat
 
 }
 
-int main(int, char**) {
+int main(int argc, char** argv) {
+    trident::no_args(argc, argv);
     const auto values = trident::load_trident();
     if (trident::cfg_on(values, "vad.unload")) return trident::unload_named("vad");
     if (trident::resident("vad")) return 0;

@@ -14,7 +14,6 @@ class MtlTokenizer {
     void piece(const std::string& text, std::vector<int32_t>& ids) const;
 public:
     explicit MtlTokenizer(const std::string& t3_path);
-    static std::string punctuation(std::string text);
     std::vector<int32_t> tokenize(const std::string& text, const std::string& language) const;
 };
 }

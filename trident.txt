@@ -1,18 +1,17 @@
 # Trident settings. python install.py and the executables read this file and take no arguments.
-# Five parts: Silero VAD ends an utterance, ear.exe transcribes it, Qwen3-0.6B on CPU
-# decides whether Gemma should hear that original line, gemma-brain.exe works, chatterbox.exe speaks.
-# The small model never rewrites. tool pass forwards the recognizer text unchanged.
-# Processes: vad.exe ; ear.exe ; sense.exe ; gemma-brain.exe ; chatterbox.exe
-# gemma.image is read only when gemma-brain starts. Gemma 4 E2B-it sampling is temp 1.0, top-p 0.95, top-k 64.
+# Five programs: vad.exe, ear.exe, sense.exe, gemma-brain.exe, chatterbox.exe.
+# Each model reads one text file and writes one text file. The file is the whole prompt.
+# An image, if present, is a data:image/...;base64, payload inside that prompt.
+# Gemma 4 E2B-it sampling is temp 1.0, top-p 0.95, top-k 64.
 # Iris: gemma.flash-attn off and f16 KV. Lowering gemma.temp empties <|think|> turns.
-# Paths are relative to this file. Booleans are on or off. A missing required key exits.
+# This file sits next to the executables. Paths in it are names in that same directory. Booleans are on or off. A missing required key exits.
 # A value ending in << runs until a line that is only <<.
 # Deliverables land next to this file. Clones, cmake trees, and checkpoints stay under .install.
 # Text is UTF-8. A leading BOM is ignored. Polish and the other languages pass through as UTF-8.
 # install.vulkan_sdk empty uses the newest C:\VulkanSDK. install.msvc_arch empty detects this CPU.
 # Clearing install.llama_rev tracks llama.cpp master. Clearing install.nemo_rev keeps the cloned revision.
 # install.ear_vcpkg_root and install.ear_vcpkg_triplet empty skip vcpkg.
-# gemma.image, gemma.tensor-split, gemma.cpu-mask, and gemma.cpu-mask-batch may be empty.
+# gemma.tensor-split, gemma.cpu-mask, and gemma.cpu-mask-batch may be empty.
 # gemma.threads 0 and gemma.threads-batch 0 use the host thread count.
 # bake.cond-seconds -1 uses 15 seconds for nano and turbo, and 6 seconds for v3.
 
@@ -132,11 +131,10 @@ librosa==0.11.0
 tokenizers==0.23.2
 <<
 
-# Gemma. gemma-brain.exe takes no arguments. gemma.prompt-file is the original line.
-# This binary wraps the turn, calls speak and see, and writes chatterbox.prompt-file.
+# Gemma. gemma-brain.exe takes no arguments. gemma.prompt-file is the whole prompt.
+# The generation is written unchanged to gemma.response-file.
 gemma.persist on
 gemma.unload off
-gemma.image picture.png
 gemma.model gemma.gguf
 gemma.mmproj gemma-mmproj.gguf
 gemma.ctx 8192
@@ -160,8 +158,6 @@ gemma.cache-type-v f16
 gemma.image-min-tokens -1
 gemma.image-max-tokens -1
 gemma.poll-ms 100
-gemma.reset-every 1
-gemma.reset-ms 0
 gemma.mmproj-gpu on
 gemma.mmproj-timings on
 gemma.n-keep 0
@@ -237,26 +233,10 @@ gemma.timing-per-token off
 gemma.backend-sampling off
 gemma.prompt-file gemma.prompt.txt
 gemma.response-file gemma.response.txt
-# One memory file. Compacted to this many characters once per turn.
-gemma.history-file gemma.history.txt
-gemma.history-max 4000
-gemma.system <<
-You are heard only through the speak tool. One short sentence.
-picture.png is the live image for this turn and may have been overwritten since any earlier turn.
-Prior speak text about color is stale. Call see, then speak only what the current image shows.
-<<
-gemma.tools <<
-speak
-Say these words aloud on the speakers. This is the only way you are heard in the room.
-text: the words to say
 
-see
-Look at the image tokens attached to this user turn. Call this before speaking about the picture. Then call speak with what those pixels show now.
-<<
-
-# Sense. sense.exe. Qwen3-0.6B, CPU only. It keeps its own memory and does not speak.
-# Each transcript arrives as the ear wrote it. The pass tool sends that text on unchanged.
-# sense.memory-max is the only limit. Sampler knobs are sense.temp, sense.top-k, sense.top-p.
+# Sense. sense.exe. Qwen3-0.6B, CPU only. It does not speak.
+# ear.response-file is the whole prompt. The generation is written to gemma.prompt-file.
+# Sampler knobs are sense.temp, sense.top-k, sense.top-p, sense.batch.
 sense.persist on
 sense.unload off
 sense.gpu-layers 0
@@ -264,15 +244,11 @@ sense.model sense.gguf
 sense.ctx 4096
 sense.threads 4
 sense.n-predict 128
+sense.batch 512
 sense.temp 0.7
 sense.top-k 20
 sense.top-p 0.8
-sense.memory-file sense.memory.txt
-sense.memory-max 1000
 sense.poll-ms 200
-sense.system <<
-If someone is speaking to you, reply tool pass. Otherwise stay silent.
-<<
 
 nano.t3 nano-t3.gguf
 nano.s3 nano-s3.gguf
@@ -281,8 +257,8 @@ turbo.s3 turbo-s3.gguf
 v3.t3 v3-t3.gguf
 v3.s3 v3-s3.gguf
 
-# Chatterbox. chatterbox.exe takes no arguments. v3 reads the -v3 sampler keys.
-# nano and turbo are English. v3 speaks the languages stored in its GGUF, including Polish.
+# Chatterbox. chatterbox.exe takes no arguments.
+# The sentence is spoken as written. The language tag must be one stored in the GGUF.
 chatterbox.persist on
 chatterbox.unload off
 chatterbox.variant turbo
@@ -291,7 +267,7 @@ chatterbox.poll-ms 100
 chatterbox.sample-rate 24000
 chatterbox.graph-nodes 8192
 chatterbox.end-trim-samples 960
-chatterbox.prompt-file chatterbox.prompt.txt
+chatterbox.prompt-file gemma.response.txt
 chatterbox.response-file chatterbox.response.txt
 chatterbox.gpu 0
 chatterbox.seed 42
@@ -300,9 +276,7 @@ chatterbox.repeat-penalty 1.2
 chatterbox.n-predict 1000
 chatterbox.trim-fade-samples 480
 chatterbox.top-p 0.95
-chatterbox.top-p-v3 1.0
 chatterbox.cfm-steps 2
-chatterbox.cfm-steps-v3 5
 chatterbox.top-k 1000
 chatterbox.min-p 0.05
 chatterbox.cfg-weight 0.5

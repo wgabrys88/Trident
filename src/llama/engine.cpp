@@ -10,8 +10,7 @@ Engine::Engine(const std::string& t3_path, const std::string& s3_path, Knobs kno
 std::vector<float> Engine::synthesize(const std::string& text, const std::string& language) {
     if (("," + t3.languages() + ",").find(",[" + language + "],") == std::string::npos)
         throw std::runtime_error("Unsupported language: " + language + "; GGUF offers " + t3.languages());
-    auto& spell = numbers.try_emplace(language, language).first->second;
-    auto tokens = tokenizer.tokenize(spell.verbalize(MtlTokenizer::punctuation(text)), language);
+    auto tokens = tokenizer.tokenize(text, language);
     tokens.insert(tokens.begin(), t3.start_text());
     tokens.push_back(t3.stop_text());
     auto pcm = s3.synthesize(t3.generate(tokens));

@@ -30,8 +30,8 @@ add_library(trident_engine STATIC
     src/common/audio.cpp src/common/voice_encoder.cpp
     src/common/campplus.cpp src/common/s3_tokenizer.cpp src/common/s3_dsp.cpp
     src/common/s3.cpp src/common/chatterbox_runtime.cpp
-    src/gpt2/t3.cpp src/gpt2/bpe.cpp src/gpt2/text_en.cpp src/gpt2/engine.cpp
-    src/llama/t3.cpp src/llama/mtl_tokenizer.cpp src/llama/mtl_numbers.cpp src/llama/engine.cpp)
+    src/gpt2/t3.cpp src/gpt2/bpe.cpp src/gpt2/engine.cpp
+    src/llama/t3.cpp src/llama/mtl_tokenizer.cpp src/llama/engine.cpp)
 target_include_directories(trident_engine PUBLIC src ${GGML_SRC}/include)
 target_link_libraries(trident_engine PUBLIC ggml Vulkan::Vulkan icu)
 
