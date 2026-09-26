@@ -1,7 +1,7 @@
 #include "silero_vad.h"
 #include "config.h"
 #include <onnxruntime_c_api.h>
-#include <cctype>
+#include <algorithm>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -14,12 +14,12 @@ struct SileroVad::Impl {
     OrtAllocator* allocator = nullptr;
     std::string audio_name, state_name, rate_name, out_name, state_out_name;
     std::vector<float> state;
+    std::vector<float> context;
     int64_t state_shape[3] = {2, 1, 128};
     int window = 512;
     int rate = 16000;
     float threshold = 0.5f;
     int min_silence_samples = 0;
-    int speech_pad_samples = 0;
     bool triggered = false;
     int temp_end = 0;
     int current_sample = 0;
@@ -40,13 +40,32 @@ static std::string ort_name(const OrtApi* api, OrtAllocator* allocator, char* ra
     return name;
 }
 
-SileroVad::SileroVad(const std::filesystem::path& onnx, int rate, int window, float threshold, int min_silence_ms, int speech_pad_ms) {
+static bool whole_name(const std::string& seen, const char* name) {
+    const std::string token = std::string(" ") + name + " ";
+    return (" " + seen + " ").find(token) != std::string::npos;
+}
+
+static std::string session_names(const OrtApi* api, OrtSession* session, OrtAllocator* allocator, bool input, size_t count) {
+    std::string seen;
+    for (size_t i = 0; i < count; ++i) {
+        char* raw = nullptr;
+        OrtStatus* status = input
+            ? api->SessionGetInputName(session, i, allocator, &raw)
+            : api->SessionGetOutputName(session, i, allocator, &raw);
+        ort_fail(api, status, input ? "onnx input name" : "onnx output name");
+        if (!seen.empty()) seen.push_back(' ');
+        seen += ort_name(api, allocator, raw);
+    }
+    return seen;
+}
+
+SileroVad::SileroVad(const std::filesystem::path& onnx, int rate, int window, float threshold, int min_silence_ms) {
     impl = new Impl;
     impl->window = window;
     impl->rate = rate;
     impl->threshold = threshold;
     impl->min_silence_samples = rate * min_silence_ms / 1000;
-    impl->speech_pad_samples = rate * speech_pad_ms / 1000;
+    impl->context.assign(window / 8, 0.f);
     impl->api = OrtGetApiBase()->GetApi(ORT_API_VERSION);
     if (!impl->api) fail("ONNX Runtime API missing");
     ort_fail(impl->api, impl->api->CreateEnv(ORT_LOGGING_LEVEL_WARNING, "vad", &impl->env), "onnx env");
@@ -56,31 +75,18 @@ SileroVad::SileroVad(const std::filesystem::path& onnx, int rate, int window, fl
     impl->api->ReleaseSessionOptions(options);
     ort_fail(impl->api, impl->api->GetAllocatorWithDefaultOptions(&impl->allocator), "onnx allocator");
     size_t inputs = 0;
-    ort_fail(impl->api, impl->api->SessionGetInputCount(impl->session, &inputs), "onnx inputs");
-    for (size_t i = 0; i < inputs; ++i) {
-        char* raw = nullptr;
-        ort_fail(impl->api, impl->api->SessionGetInputName(impl->session, i, impl->allocator, &raw), "onnx input name");
-        std::string name = ort_name(impl->api, impl->allocator, raw);
-        std::string lower = name;
-        for (char& c : lower) c = (char)std::tolower((unsigned char)c);
-        if (lower.find("sr") != std::string::npos || lower.find("sample") != std::string::npos) impl->rate_name = name;
-        else if (lower.find("state") != std::string::npos || lower == "h" || lower == "c") {
-            if (impl->state_name.empty()) impl->state_name = name;
-        } else impl->audio_name = name;
-    }
     size_t outputs = 0;
+    ort_fail(impl->api, impl->api->SessionGetInputCount(impl->session, &inputs), "onnx inputs");
     ort_fail(impl->api, impl->api->SessionGetOutputCount(impl->session, &outputs), "onnx outputs");
-    for (size_t i = 0; i < outputs; ++i) {
-        char* raw = nullptr;
-        ort_fail(impl->api, impl->api->SessionGetOutputName(impl->session, i, impl->allocator, &raw), "onnx output name");
-        std::string name = ort_name(impl->api, impl->allocator, raw);
-        std::string lower = name;
-        for (char& c : lower) c = (char)std::tolower((unsigned char)c);
-        if (lower.find("state") != std::string::npos) impl->state_out_name = name;
-        else if (impl->out_name.empty()) impl->out_name = name;
-    }
-    if (impl->audio_name.empty() || impl->state_name.empty() || impl->rate_name.empty() || impl->out_name.empty() || impl->state_out_name.empty())
-        fail("silero onnx inputs are not input/state/sr");
+    const std::string in_seen = session_names(impl->api, impl->session, impl->allocator, true, inputs);
+    const std::string out_seen = session_names(impl->api, impl->session, impl->allocator, false, outputs);
+    if (inputs != 3 || outputs != 2 || !whole_name(in_seen, "input") || !whole_name(in_seen, "state") || !whole_name(in_seen, "sr") || !whole_name(out_seen, "output") || !whole_name(out_seen, "stateN"))
+        fail("silero onnx inputs are not input/state/sr " + in_seen + " " + out_seen);
+    impl->audio_name = "input";
+    impl->state_name = "state";
+    impl->rate_name = "sr";
+    impl->out_name = "output";
+    impl->state_out_name = "stateN";
     impl->state.assign(2 * 128, 0.f);
 }
 
@@ -93,6 +99,7 @@ SileroVad::~SileroVad() {
 
 void SileroVad::reset() {
     std::fill(impl->state.begin(), impl->state.end(), 0.f);
+    std::fill(impl->context.begin(), impl->context.end(), 0.f);
     impl->triggered = false;
     impl->temp_end = 0;
     impl->current_sample = 0;
@@ -100,8 +107,11 @@ void SileroVad::reset() {
 
 VadEvent SileroVad::feed(const float* samples, int count) {
     if (count != impl->window) fail("silero frame is not vad.window");
-    std::vector<float> audio_copy(samples, samples + count);
-    int64_t audio_shape[2] = {1, count};
+    std::vector<float> audio_copy;
+    audio_copy.reserve(impl->context.size() + count);
+    audio_copy.insert(audio_copy.end(), impl->context.begin(), impl->context.end());
+    audio_copy.insert(audio_copy.end(), samples, samples + count);
+    int64_t audio_shape[2] = {1, (int64_t)audio_copy.size()};
     int64_t rate_shape[1] = {1};
     int64_t rate_value = impl->rate;
     OrtMemoryInfo* memory = nullptr;
@@ -122,6 +132,7 @@ VadEvent SileroVad::feed(const float* samples, int count) {
     ort_fail(impl->api, impl->api->GetTensorMutableData(out_values[0], (void**)&prob), "onnx prob");
     ort_fail(impl->api, impl->api->GetTensorMutableData(out_values[1], (void**)&next), "onnx next state");
     std::memcpy(impl->state.data(), next, sizeof(float) * impl->state.size());
+    std::copy(audio_copy.end() - impl->context.size(), audio_copy.end(), impl->context.begin());
     float speech = prob[0];
     impl->api->ReleaseValue(out_values[0]);
     impl->api->ReleaseValue(out_values[1]);

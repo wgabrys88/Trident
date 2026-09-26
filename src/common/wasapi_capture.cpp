@@ -3,13 +3,16 @@
 #include <filesystem>
 #include <audioclient.h>
 #include <ksmedia.h>
-#include <cctype>
-#include <functiondiscoverykeys_devpkey.h>
 #include <mmdeviceapi.h>
 #include <propvarutil.h>
 #include <vector>
 
 namespace trident {
+static const PROPERTYKEY device_friendly_name = {
+    { 0xa45c254e, 0xdf1c, 0x4efd, { 0x80, 0x20, 0x67, 0xd1, 0x46, 0xa8, 0x50, 0xe0 } },
+    14
+};
+
 struct CaptureDevice::Impl {
     IMMDeviceEnumerator* enumerator = nullptr;
     IAudioClient* client = nullptr;
@@ -18,27 +21,13 @@ struct CaptureDevice::Impl {
     std::vector<float> pending;
 };
 
-static std::string lower_copy(std::string text) {
-    for (char& c : text) c = (char)std::tolower((unsigned char)c);
-    return text;
-}
-
-static bool name_matches(const std::string& query, const std::string& friendly) {
-    const std::string q = lower_copy(query);
-    const std::string name = lower_copy(friendly);
-    if (q == name) return true;
-    if (q.find(name) != std::string::npos) return true;
-    std::string host = name + ", windows wasapi";
-    return q == host;
-}
-
 static std::string friendly_name(IMMDevice* device) {
     IPropertyStore* store = nullptr;
     if (FAILED(device->OpenPropertyStore(STGM_READ, &store))) return {};
     PROPVARIANT value;
     PropVariantInit(&value);
     std::string name;
-    if (SUCCEEDED(store->GetValue(PKEY_Device_FriendlyName, &value)) && value.vt == VT_LPWSTR && value.pwszVal)
+    if (SUCCEEDED(store->GetValue(device_friendly_name, &value)) && value.vt == VT_LPWSTR && value.pwszVal)
         name = path_u8(std::filesystem::path(value.pwszVal));
     PropVariantClear(&value);
     store->Release();
@@ -48,8 +37,7 @@ static std::string friendly_name(IMMDevice* device) {
 CaptureDevice CaptureDevice::open(const std::string& device) {
     CaptureDevice out;
     out.impl = new Impl;
-    if (FAILED(CoInitializeEx(nullptr, COINIT_MULTITHREADED)) && FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)))
-        fail("WASAPI init failed");
+    if (FAILED(CoInitializeEx(nullptr, COINIT_MULTITHREADED))) fail("WASAPI init failed");
     if (FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), (void**)&out.impl->enumerator)))
         fail("WASAPI enumerator failed");
     IMMDeviceCollection* devices = nullptr;
@@ -68,7 +56,7 @@ CaptureDevice CaptureDevice::open(const std::string& device) {
         for (UINT i = 0; i < count; ++i) {
             IMMDevice* item = nullptr;
             devices->Item(i, &item);
-            if (name_matches(device, friendly_name(item))) {
+            if (friendly_name(item) == device) {
                 chosen = item;
                 break;
             }

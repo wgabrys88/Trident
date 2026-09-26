@@ -68,13 +68,14 @@ int main(int, char**) {
     const int window = trident::cfg_int(values, "vad.window");
     auto device = trident::CaptureDevice::open(trident::need(values, "vad.device"));
     trident::SileroVad vad(trident::cfg_path(values, "vad.model"), rate, window, trident::cfg_float(values, "vad.threshold"),
-        trident::cfg_int(values, "vad.min-silence-ms"), trident::cfg_int(values, "vad.speech-pad-ms"));
+        trident::cfg_int(values, "vad.min-silence-ms"));
+    const int pad = rate * trident::cfg_int(values, "vad.speech-pad-ms") / 1000;
     const auto prompt = trident::cfg_path(values, "ear.prompt-file");
     const auto chunks = trident::trident_file().parent_path() / std::filesystem::u8path(trident::need(values, "vad.chunks-dir"));
     std::filesystem::create_directories(chunks);
     trident::write_pid("vad");
     std::filesystem::remove(trident::slot("vad", "stop"));
-    std::vector<float> native, pcm, speech;
+    std::vector<float> native, pcm, speech, lead;
     bool talking = false;
     int index = 0;
     const int block = std::max(window, window * device.native_rate / rate);
@@ -90,11 +91,18 @@ int main(int, char**) {
             std::vector<float> hop(pcm.begin(), pcm.begin() + window);
             pcm.erase(pcm.begin(), pcm.begin() + window);
             if (event.start) {
-                speech = std::move(hop);
+                const int n = pad < (int)lead.size() ? pad : (int)lead.size();
+                speech.assign(lead.end() - n, lead.end());
+                speech.insert(speech.end(), hop.begin(), hop.end());
+                lead.clear();
                 talking = true;
                 continue;
             }
-            if (!talking) continue;
+            if (!talking) {
+                lead.insert(lead.end(), hop.begin(), hop.end());
+                if ((int)lead.size() > pad) lead.erase(lead.begin(), lead.end() - pad);
+                continue;
+            }
             speech.insert(speech.end(), hop.begin(), hop.end());
             if (!event.end) continue;
             vad.reset();

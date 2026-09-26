@@ -11,7 +11,7 @@ struct VadEvent {
 
 class SileroVad {
 public:
-    SileroVad(const std::filesystem::path& onnx, int rate, int window, float threshold, int min_silence_ms, int speech_pad_ms);
+    SileroVad(const std::filesystem::path& onnx, int rate, int window, float threshold, int min_silence_ms);
     ~SileroVad();
     SileroVad(const SileroVad&) = delete;
     SileroVad& operator=(const SileroVad&) = delete;
