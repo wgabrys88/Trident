@@ -40,11 +40,13 @@ When the brain's file includes an image, that image is the base64 the user wrote
 
 ## Mouth one-shot
 
-From the repository root:
+From the repository root, one process, every chunk a positional argument:
 
 ```
-python mouth.py [--model nano|turbo|v3] [--lang TAG] TEXT [TEXT ...]
+.\.venv\Scripts\python.exe mouth.py [--model nano|turbo|v3] [--lang TAG] TEXT [TEXT ...]
 ```
+
+The seated Mouth role uses that one process. A separate process per chunk is a reported fallback, not a silent one.
 
 `--model` is `nano`, `turbo`, or `v3`. The default is `nano`. When `--lang` is omitted, `nano` and `turbo` use `en`, and `v3` uses `pl`. A passed `--lang` is written as given. The same model and language apply to every chunk.
 

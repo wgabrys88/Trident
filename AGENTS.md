@@ -68,7 +68,7 @@ Each resident takes one text file and no flags. The usage line is `usage: progra
 | `gemma-brain.exe gemma.txt` | `gemma.text`, the whole prompt in Gemma 4's own form. `gemma.image` is raw base64 or empty. When the image is set, the prompt must already contain `<__media__>`. | `HH-MM-SS-mmm_gemma_out_NNN.txt`, the generation unchanged. |
 | `chatterbox.exe chatterbox.txt` | `chatterbox.variant` is `nano`, `turbo`, or `v3`. The GGUF architecture selects the engine. `chatterbox.text` is spoken as written. `chatterbox.play` is `on` or `off`. | `HH-MM-SS-mmm_chatterbox_out_NNN.txt` names the wav. `on` plays that wav on the default speakers. `off` skips PlaySound. |
 | `chatterbox-bake.exe bake.txt` | `bake.t3`, `bake.s3`, `bake.reference`. `bake.cond-seconds` is 15 for nano and turbo, 6 for v3. | Rewrites those two model files in place, writes `HH-MM-SS-mmm_bake_out_NNN.txt` with both paths, and exits. |
-| `python mouth.py TEXT [TEXT ...]` | `chatterbox.txt` for the GGUF pairs and numeric knobs. The sentences, `--model`, and `--lang` come from the command. | For each TEXT: overwrites `mouth.txt` with `chatterbox.play off`, then one `chatterbox.exe mouth.txt`. `mouth.py` plays the wavs and overlaps the next synthesize. |
+| `.\.venv\Scripts\python.exe mouth.py TEXT [TEXT ...]` | `chatterbox.txt` for the GGUF pairs and numeric knobs. The sentences, `--model`, and `--lang` come from the command. One process takes every chunk. | For each TEXT: overwrites `mouth.txt` with `chatterbox.play off`, then one `chatterbox.exe mouth.txt`. `mouth.py` plays the wavs and overlaps the next synthesize. |
 | `.\.venv\Scripts\python.exe hear.py SECONDS` | The PC mic for `SECONDS`, then `nemo-speech.exe transcribe` once. | Transcript on stdout. Exit code is the recognizer's. No resident output file. |
 
 The resident output file is created with `CREATE_NEW`. The number starts at `000`. An existing name is kept and the next number is used. Nothing in the program watches another program.
@@ -80,8 +80,10 @@ To run the chain, connect the files yourself. Play known speech into `CABLE Inpu
 `mouth.py` is the speak entry. It does not synthesize. The Lego contract stays settings file, then `chatterbox.exe`.
 
 ```
-python mouth.py [--model nano|turbo|v3] [--lang TAG] "First sentence." "Second sentence."
+.\.venv\Scripts\python.exe mouth.py [--model nano|turbo|v3] [--lang TAG] "First sentence." "Second sentence."
 ```
+
+One process takes every chunk. A separate process per chunk is a reported fallback, not a silent one. SPEAK GO for that role comes from SPOC or Wojciech. The role kit is `BOTS.md`.
 
 `--model` defaults to `nano`. When `--lang` is omitted, `nano` and `turbo` use `en`, and `v3` uses `pl`. A passed `--lang` is written as given and shared by every chunk. Empty text, an unknown model, an empty language, and any text line whose entire content is `<<` are rejected with exit code 2 before the first `chatterbox.exe`.
 
