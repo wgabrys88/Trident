@@ -1,4 +1,4 @@
-# AGENTS
+﻿# AGENTS
 
 Read `GOAL.md`, this file, and `RULES.md` before editing. This is the handoff for a session with no earlier chat. Commit messages carry only the delta for that change. Do not reconstruct the project by copying old commit bodies forward.
 
@@ -73,6 +73,19 @@ The output file is created with `CREATE_NEW`. The number starts at `000`. An exi
 
 To run the chain, connect the files yourself. Play known speech into `CABLE Input`. Point `vad.device` at `CABLE Output`. Put the wav name `vad.exe` wrote into `ear.input`. Put the recognizer text into the next prompt file as that model's own prompt, still unchanged by code. Put the sentence the brain wrote into `chatterbox.text`, or pass that sentence to `mouth.py`. Judge each step by the file that step wrote.
 
+
+## Hearing one-shot
+
+hear.py records the normal PC microphone (not VB-Cable) for a fixed number of seconds, then runs 
+emo-speech.exe transcribe once and prints the transcript to stdout.
+
+`
+python hear.py SECONDS [--model PATH] [--device cpu] [--language TAG] [--mic NAME_OR_INDEX]
+`
+
+Useful flags mirror the ear/NeMo surface: --format, --endpointing on|off, --stop-history-eou-ms, --verbatim, --no-punctuation, --stream. Default model is ear.gguf beside the script. Default mic prefers the Windows default input when it is not a cable, else the first non-cable microphone.
+
+!/hear.py keeps the script tracked. Do not commit temp wavs under the repo root.
 ## Mouth one-shot
 
 `mouth.py` is the speak entry. It does not synthesize. The Lego contract stays settings file, then `chatterbox.exe`.
@@ -112,3 +125,4 @@ Leave `mouth.txt`, generated audio, `*_out_*.txt`, `*_chatterbox_out_*`, models,
 ## Autonomy
 
 You have this PC for the job: PowerShell, the compilers, the installer, and the proofs. Stay inside the Trident workspace except for a read-only lookup of the toolchain or the WASAPI friendly names. Follow `RULES.md` for commits and history. Iris commits only, on `runner-h`. Do not open a pull request.
+

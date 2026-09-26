@@ -1,4 +1,4 @@
-# GOAL
+﻿# GOAL
 
 Trident is a voice assistant that stays in memory.
 
@@ -20,7 +20,7 @@ Five residents. Each role is one executable. When they run together they meet on
 
 `mouth.py` is the speak entry for a Mouth one-shot. It accepts one or more TEXT arguments. For each chunk it writes `mouth.txt` and runs `chatterbox.exe` once, in order. The executable speaks. The script does not synthesize, and it does not start capture, the recognizer, the gate, or the brain.
 
-The residents have no orchestrator, no supervisor, no harness, no message bus, and no service manager. Nothing starts the five or carries their messages. `install.py` builds the tree. The converters it uses are part of building. `mouth.py` is only the one-shot speak entry.
+The residents have no orchestrator, no supervisor, no harness, no message bus, and no service manager. Nothing starts the five or carries their messages. `install.py` builds the tree. The converters it uses are part of building. `mouth.py` is only the one-shot speak entry. `hear.py` is the one-shot hearing entry: record the PC mic, then `nemo-speech.exe`.
 
 ## How they meet
 
@@ -75,3 +75,4 @@ Stop when all of this is true on the computer where the work is running:
 5. A new session with no prior chat can continue from `GOAL.md`, `AGENTS.md`, and `RULES.md`.
 
 On the tip that introduced one text file per program, each executable still performs one unit of work and exits. Closing that gap means the same executable stays loaded. It does not mean adding a second program to supervise the five. `mouth.py` does not close that gap.
+

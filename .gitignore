@@ -1,4 +1,4 @@
-# Whitelist. A path is committed only if a rule below un-ignores it.
+﻿# Whitelist. A path is committed only if a rule below un-ignores it.
 *
 
 # Allow Git to descend into directories. Files stay ignored until named.
@@ -34,6 +34,7 @@
 !/chatterbox.txt
 !/bake.txt
 !/mouth.py
+!/hear.py
 !/reference.wav
 !/CODE_REVIEW_CHECKLIST.md
 
