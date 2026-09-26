@@ -1,4 +1,4 @@
-"""Qwen (sense) brain one-shot. Text question → stdout generation. Image needs C++ vision (parked)."""
+"""Qwen (sense) brain one-shot. Text question → stdout generation. Vision is N/A (text-only Qwen3-0.6B)."""
 
 import argparse
 import subprocess
@@ -90,16 +90,13 @@ def main():
     parser.add_argument(
         "--image",
         metavar="PATH",
-        help="not supported: sense.exe has no image input (needs Wojciech C++ go)",
+        help="not supported: Qwen3-0.6B is text-only (vision N/A)",
     )
     args = parser.parse_args()
     if not args.question.strip():
         die("empty question")
     if args.image:
-        die(
-            "qwen/sense has no vision: sense.exe reads sense.text only. "
-            "Image analysis needs C++ / .cpp go from Wojciech. Use gemma.py --image on Nvidia."
-        )
+        die("qwen/sense vision is N/A: Qwen3-0.6B is text-only. Use gemma.py --image on Nvidia.")
     exe = ROOT / "sense.exe"
     if not exe.is_file():
         die("missing sense.exe")
@@ -121,6 +118,10 @@ def main():
         raise SystemExit(completed.returncode)
     out_txt = newest_out(before)
     text = out_txt.read_text(encoding="utf-8")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     sys.stdout.write(text)
     if not text.endswith("\n"):
         sys.stdout.write("\n")
