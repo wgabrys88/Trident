@@ -18,7 +18,7 @@ Five residents. Each role is one executable. When they run together they meet on
 
 `chatterbox-bake.exe` bakes one reference voice into the mouth's model files and exits. It is not a resident.
 
-`mouth.py` is the speak entry for a Mouth one-shot. It accepts one or more TEXT arguments. For each chunk it writes `mouth.txt` and runs `chatterbox.exe` once, in order. The executable speaks. The script does not synthesize, and it does not start capture, the recognizer, the gate, or the brain.
+`mouth.py` is the speak entry for a Mouth one-shot. It accepts one or more TEXT arguments. Each chunk is a cold `chatterbox.exe` synthesize (`chatterbox.play off`); `mouth.py` plays the wavs on Speakers and overlaps the next synthesize during playback. The script does not synthesize in Python, and it does not start capture, the recognizer, the gate, or the brain.
 
 The residents have no orchestrator, no supervisor, no harness, no message bus, and no service manager. Nothing starts the five or carries their messages. `install.py` builds the tree. The converters it uses are part of building. `mouth.py` is only the one-shot speak entry. `hear.py` is the one-shot hearing entry: record the PC mic, then `nemo-speech.exe`.
 
@@ -48,7 +48,7 @@ python mouth.py [--model nano|turbo|v3] [--lang TAG] TEXT [TEXT ...]
 
 `mouth.py` requires at least one text argument. It rejects empty text, an unknown `--model`, an empty `--lang`, and any text line whose entire content is `<<`. All chunks are validated before the first `chatterbox.exe` run. The same `--model` and `--lang` apply to every chunk.
 
-It reads `chatterbox.txt` beside itself. It copies every line, including the six GGUF pair lines and the numeric knobs. It drops only `chatterbox.variant`, `chatterbox.language`, and the existing `chatterbox.text` block. It writes UTF-8 with no BOM to `mouth.txt`, overwriting `mouth.txt` only. It never overwrites `chatterbox.txt`. It appends `chatterbox.variant` and `chatterbox.language` from the flags, then:
+It reads `chatterbox.txt` beside itself. It copies every line, including the six GGUF pair lines and the numeric knobs. It drops `chatterbox.variant`, `chatterbox.language`, `chatterbox.play`, and the existing `chatterbox.text` block. It writes UTF-8 with no BOM to `mouth.txt`, overwriting `mouth.txt` only. It never overwrites `chatterbox.txt`. It appends `chatterbox.variant`, `chatterbox.language`, and `chatterbox.play off`, then:
 
 ```
 chatterbox.text <<
@@ -56,9 +56,9 @@ TEXT
 <<
 ```
 
-For each TEXT, in order, it overwrites `mouth.txt` and runs `.\chatterbox.exe mouth.txt` once per chunk, current directory the repository root, no shell. It waits for each run to finish before the next. On a non-zero exit it stops and exits with that code. If every run returns 0, it exits 0. `mouth.txt` then holds the last chunk.
+For each TEXT it runs `.\chatterbox.exe mouth.txt` once per chunk with `chatterbox.play off` (cold start/stop synthesize). `mouth.py` plays each wav on Speakers with PlaySoundW and synthesizes the next chunk while the current wav plays, starting the next wav as soon as playback ends. On a non-zero synthesize exit it stops. `mouth.txt` holds the last chunk.
 
-This speak entry did not change any C++ file. The mouth that speaks is still `chatterbox.exe`.
+`chatterbox.play` is `on` or `off` in the settings file. Direct `chatterbox.exe` with `on` still plays itself. `mouth.py` uses `off` so it can overlap Speakers playback with the next synthesize.
 
 ## Tools
 
@@ -69,7 +69,7 @@ A tool does not exist until the user names it. Do not invent tools. Do not build
 Stop when all of this is true on the computer where the work is running:
 
 1. The five residents stay in memory. The microphone stays open. Voice activity detection runs by itself.
-2. Each role is still one executable. Nothing starts the five or carries their messages. They still meet only through the text files above. A Mouth one-shot is `mouth.py` driving `chatterbox.exe` once per chunk, in order.
+2. Each role is still one executable. Nothing starts the five or carries their messages. They still meet only through the text files above. A Mouth one-shot is `mouth.py` synthesizing via `chatterbox.exe` once per chunk and playing wavs with one-chunk overlap.
 3. The source matches the templates. Duplicate and unused paths are gone. No code overrides a value the user wrote.
 4. A virtual-audio-cable proof passes for each program and for the whole chain. Speech goes in on the cable, the text files carry the words, and one utterance comes out of the real speakers because the mouth spoke. During that proof the mouth is not playing into the cable, so capture does not hear the mouth.
 5. A new session with no prior chat can continue from `GOAL.md`, `AGENTS.md`, and `RULES.md`.

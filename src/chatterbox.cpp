@@ -34,6 +34,7 @@ int main(int argc, char** argv) {
     const auto variant = trident::need(values, "chatterbox.variant");
     const auto language = trident::need(values, "chatterbox.language");
     const int rate = trident::cfg_int(values, "chatterbox.sample-rate");
+    const bool play = trident::cfg_on(values, "chatterbox.play");
     const auto t3 = trident::cfg_path(values, variant + ".t3");
     const auto s3 = trident::cfg_path(values, variant + ".s3");
     auto engine = trident::chatterbox_make_engine(t3, s3, knobs_from(values));
@@ -45,6 +46,8 @@ int main(int argc, char** argv) {
     trident::chatterbox_write_wav(wav, std::move(pcm), rate);
     const auto name = trident::path_u8(wav.filename());
     trident::write_named(txt, name);
-    if (!PlaySoundW(wav.wstring().c_str(), nullptr, SND_FILENAME)) return 1;
+    if (play) {
+        if (!PlaySoundW(wav.wstring().c_str(), nullptr, SND_FILENAME)) return 1;
+    }
     return 0;
 }

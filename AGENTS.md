@@ -96,15 +96,15 @@ python mouth.py [--model nano|turbo|v3] [--lang TAG] "First sentence." "Second s
 
 `--model` defaults to `nano`. When `--lang` is omitted, `nano` and `turbo` use `en`, and `v3` uses `pl`. A passed `--lang` is written as given and shared by every chunk. Empty text, an unknown model, an empty language, and any text line whose entire content is `<<` are rejected with exit code 2 before the first `chatterbox.exe` start.
 
-For each TEXT, the script re-reads `chatterbox.txt` in the repository root, copies every line through (the six GGUF pair lines and the numeric knobs included), and drops only `chatterbox.variant`, `chatterbox.language`, and the existing `chatterbox.text` block. It writes UTF-8 with no BOM to `mouth.txt` (overwrites `mouth.txt` only; `chatterbox.txt` stays untouched), appends `chatterbox.variant`, `chatterbox.language`, and a `chatterbox.text` block for that chunk, then runs `.\chatterbox.exe mouth.txt` once per chunk, in order, current directory the repository root, no shell. It waits for each run. A non-zero code stops the loop. All zeros exit 0.
+For each TEXT, the script re-reads `chatterbox.txt`, drops `chatterbox.variant`, `chatterbox.language`, `chatterbox.play`, and the text block, writes `mouth.txt` with those keys plus `chatterbox.play off`, and runs `.\chatterbox.exe mouth.txt` once per chunk (synthesize only). `mouth.py` plays each wav with PlaySoundW on the default Speakers and overlaps the next synthesize while the current wav plays. A non-zero synthesize code stops the loop.
 
-The C++ sources were not edited for this entry.
+`chatterbox.exe` gained `chatterbox.play on|off` so synthesize can finish without Speakers playback when `mouth.py` owns the play queue.
 
 ## Prove
 
 Prove on Windows, on this machine, with the real executables.
 
-1. Prove one program at a time. A pass is that executable writing the file its template describes. A Mouth one-shot pass is `mouth.py` writing `mouth.txt` and `chatterbox.exe` writing `HH-MM-SS-mmm_chatterbox_out_NNN.txt` plus the wav, played on the real speakers.
+1. Prove one program at a time. A pass is that executable writing the file its template describes. A Mouth one-shot pass is `mouth.py` writing `mouth.txt`, `chatterbox.exe` writing `HH-MM-SS-mmm_chatterbox_out_NNN.txt` plus the wav with play off, and `mouth.py` playing those wavs on the real speakers with overlap across chunks.
 2. Then prove the whole chain on the same cable. Speech goes in through `CABLE Input`. The text files carry the words. One utterance comes out of the real speakers because `chatterbox.exe` played it. Those speakers are not the cable input.
 3. Run a failed proof once more. If it fails again, leave the system able to start, write what happened and what will change into the commit delta, and change approach. Do not add a harness, a mock, or a script that pretends a program ran.
 

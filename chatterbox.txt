@@ -33,6 +33,7 @@ chatterbox.min-p 0.05
 chatterbox.cfg-weight 0.5
 chatterbox.exaggeration 0.5
 chatterbox.cfm-cfg 0.7
+chatterbox.play on
 chatterbox.text <<
 Say one short sentence.
 <<

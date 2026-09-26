@@ -1,6 +1,8 @@
-"""Mouth speak entry. For each TEXT, write mouth.txt and run chatterbox.exe once."""
+"""Mouth speak entry. Synthesize each TEXT with chatterbox.exe; play on Speakers with one-chunk overlap."""
 
 import argparse
+import concurrent.futures
+import ctypes
 import os
 import subprocess
 import sys
@@ -8,7 +10,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 MODELS = ("nano", "turbo", "v3")
-DROP_KEYS = ("chatterbox.variant", "chatterbox.language")
+DROP_KEYS = ("chatterbox.variant", "chatterbox.language", "chatterbox.play")
+SND_FILENAME = 0x00020000
+SND_NODEFAULT = 0x0002
 
 
 def die(message):
@@ -51,7 +55,7 @@ def kept_lines(raw):
     return kept
 
 
-def settings_text(model, lang, sentence):
+def settings_text(model, lang, sentence, play):
     source = ROOT / "chatterbox.txt"
     if not source.is_file():
         die("missing chatterbox.txt")
@@ -63,11 +67,53 @@ def settings_text(model, lang, sentence):
     body += (
         "chatterbox.variant " + model + "\n"
         "chatterbox.language " + lang + "\n"
+        "chatterbox.play " + play + "\n"
         "chatterbox.text <<\n"
         + block
         + "\n<<\n"
     )
     return body
+
+
+def play_wav(path):
+    path = Path(path).resolve()
+    if not path.is_file():
+        die("missing wav: " + str(path))
+    ok = ctypes.windll.winmm.PlaySoundW(str(path), None, SND_FILENAME | SND_NODEFAULT)
+    if not ok:
+        die("PlaySoundW failed: " + str(path))
+
+
+def synthesize(model, lang, sentence):
+    mouth = ROOT / "mouth.txt"
+    payload = settings_text(model, lang, sentence, "off")
+    try:
+        mouth.write_bytes(payload.encode("utf-8"))
+    except OSError as exc:
+        die("cannot write mouth.txt: " + str(exc))
+    before = set(ROOT.glob("*_chatterbox_out_*.txt"))
+    try:
+        completed = subprocess.run(
+            [".\\chatterbox.exe", "mouth.txt"],
+            cwd=ROOT,
+            shell=False,
+        )
+    except OSError as exc:
+        die("cannot run chatterbox.exe: " + str(exc))
+    if completed.returncode != 0:
+        raise SystemExit(completed.returncode)
+    after = set(ROOT.glob("*_chatterbox_out_*.txt"))
+    new_files = sorted(after - before)
+    if not new_files:
+        die("chatterbox wrote no output text")
+    out_txt = new_files[-1]
+    name = out_txt.read_text(encoding="utf-8").strip()
+    if not name:
+        die("empty chatterbox output text")
+    wav = ROOT / name
+    if not wav.is_file():
+        die("missing wav named by chatterbox: " + name)
+    return wav
 
 
 def main():
@@ -93,23 +139,14 @@ def main():
             die("text line is only <<")
 
     os.chdir(ROOT)
-    mouth = ROOT / "mouth.txt"
-    for sentence in args.text:
-        payload = settings_text(args.model, lang, sentence)
-        try:
-            mouth.write_bytes(payload.encode("utf-8"))
-        except OSError as exc:
-            die("cannot write mouth.txt: " + str(exc))
-        try:
-            completed = subprocess.run(
-                [".\\chatterbox.exe", "mouth.txt"],
-                cwd=ROOT,
-                shell=False,
-            )
-        except OSError as exc:
-            die("cannot run chatterbox.exe: " + str(exc))
-        if completed.returncode != 0:
-            raise SystemExit(completed.returncode)
+    chunks = list(args.text)
+    ready = synthesize(args.model, lang, chunks[0])
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        for index, sentence in enumerate(chunks):
+            play_future = pool.submit(play_wav, ready)
+            if index + 1 < len(chunks):
+                ready = synthesize(args.model, lang, chunks[index + 1])
+            play_future.result()
     raise SystemExit(0)
 
 
