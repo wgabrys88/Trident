@@ -35,6 +35,9 @@
 !/bake.txt
 !/mouth.py
 !/hear.py
+!/gemma.py
+!/qwen.py
+!/CPP_DELTA_FINDINGS.md
 !/reference.wav
 !/CODE_REVIEW_CHECKLIST.md
 !/BOTS.md
@@ -60,6 +63,8 @@
 # Resident slots, one-shot artifacts, and run logs.
 # mouth.py, hear.py, and BOTS.md stay tracked. A later un-ignore must not commit these.
 /mouth.txt
+/gemma_run.txt
+/sense_run.txt
 /*_out_*.txt
 /*_chatterbox_out_*
 /*.pid

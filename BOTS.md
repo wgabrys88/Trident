@@ -106,7 +106,7 @@ Cursor agents have no Grok memory. Point them at the docs every time.
 
 Nvidia is review-only when SPOC routes it. Iris-first failure: on a block, stop and report. After a routed NVIDIA review, one Iris fix and one rerun. Stop after the second Iris attempt. No third Nvidia spin. No pull request.
 
-When seats or behavior change, rewrite the living docs from zero so they match the tree. Keep them atemporal. After a recreate wins, Executor alone owns the DOCS GO that names the live seats here before any wipe announcement.
+Brain one-shots shipped beside Mouth/Ear: `gemma.py` (Gemma on Nvidia preferred; Iris Vulkan OK) and `qwen.py` (Qwen/sense on Iris, text only). Image analysis uses `gemma.py --image`; Qwen vision waits on C++ go. When seats or behavior change, rewrite the living docs from zero so they match the tree. Keep them atemporal. After a recreate wins, Executor alone owns the DOCS GO that names the live seats here before any wipe announcement.
 
 Success: the tip on `origin/runner-h` matches the ask. Docs are atemporal and true to the code. FINAL to SPOC includes the evidence (paths, tip SHA when docs or git moved).
 

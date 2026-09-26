@@ -72,6 +72,20 @@ The microphone is the normal PC input. With no `--mic`, the Windows default inpu
 
 The script records for `SECONDS`, writes a temporary wav under the repo root, runs `nemo-speech.exe transcribe` once, prints that process's stdout, and exits with that process's code. Subprocess pipes and device-name prints use UTF-8 with `errors=replace`. It does not speak.
 
+
+## Brain one-shots
+
+`gemma.py` is the Gemma brain one-shot on a GPU worker (prefer Nvidia; Iris Vulkan works). It does not load the model in Python. It rewrites a sidecar `gemma_run.txt` from `gemma.txt` knobs, sets `gemma.text` to a Gemma 4 turn that opens the thought channel, and sets `gemma.image` to raw base64 of an image file or empty. When an image is passed, the prompt already contains `<__media__>`. It runs `gemma-brain.exe gemma_run.txt` once and prints the generation file to stdout, including thinking.
+
+`
+.\.venv\Scripts\python.exe gemma.py [--image PATH] "Question."
+`
+
+`qwen.py` is the Qwen (sense) brain one-shot on Iris. It rewrites `sense_run.txt` from `sense.txt`, wraps the question in Qwen3 turn markers, runs `sense.exe sense_run.txt`, and prints the generation to stdout. `sense.exe` has no image input. `qwen.py --image` exits 2 until Wojciech authorizes a C++ vision path.
+
+`
+.\.venv\Scripts\python.exe qwen.py "Question."
+`
 ## Tools
 
 A tool does not exist until the user names it. Do not invent tools. Do not build a tool framework, a registry, or a parser that chooses a call. Until the user names one, a turn is text in and text out. When the user names one, that tool is text the model can write and work that one program performs. The files stay the only meeting place.
@@ -81,7 +95,7 @@ A tool does not exist until the user names it. Do not invent tools. Do not build
 Stop when all of this is true on the computer where the work is running:
 
 1. The five residents stay in memory. The microphone stays open. Voice activity detection runs by itself.
-2. Each role is still one executable. Nothing starts the five or carries their messages. They still meet only through the text files above. A Mouth one-shot is `mouth.py` driving `chatterbox.exe` once per chunk with `chatterbox.play off`, playing wavs on the speakers with one-chunk overlap. A hearing one-shot is `hear.py` recording the PC mic and printing one `nemo-speech.exe` transcript.
+2. Each role is still one executable. Nothing starts the five or carries their messages. They still meet only through the text files above. A Mouth one-shot is `mouth.py` driving `chatterbox.exe` once per chunk with `chatterbox.play off`, playing wavs on the speakers with one-chunk overlap. A hearing one-shot is `hear.py` recording the PC mic and printing one `nemo-speech.exe` transcript. A Gemma brain one-shot is `gemma.py` driving `gemma-brain.exe`. A Qwen brain one-shot is `qwen.py` driving `sense.exe` (text only).
 3. The source matches the templates. Duplicate and unused paths are gone. No code overrides a value the user wrote.
 4. A virtual-audio-cable proof passes for each program and for the whole chain. Speech goes in on the cable, the text files carry the words, and one utterance comes out of the real speakers because the mouth spoke. During that proof the mouth is not playing into the cable.
 5. A new session with no prior chat can continue from `GOAL.md`, `AGENTS.md`, `RULES.md`, and `BOTS.md`. Use `CODE_REVIEW_CHECKLIST.md` when reviewing.

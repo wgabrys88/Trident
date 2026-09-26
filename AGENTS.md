@@ -70,6 +70,8 @@ Each resident takes one text file and no flags. The usage line is `usage: progra
 | `chatterbox-bake.exe bake.txt` | `bake.t3`, `bake.s3`, `bake.reference`. `bake.cond-seconds` is 15 for nano and turbo, 6 for v3. | Rewrites those two model files in place, writes `HH-MM-SS-mmm_bake_out_NNN.txt` with both paths, and exits. |
 | `.\.venv\Scripts\python.exe mouth.py TEXT [TEXT ...]` | `chatterbox.txt` for the GGUF pairs and numeric knobs. The sentences, `--model`, and `--lang` come from the command. One process takes every chunk. | For each TEXT: overwrites `mouth.txt` with `chatterbox.play off`, then one `chatterbox.exe mouth.txt`. `mouth.py` plays the wavs and overlaps the next synthesize. |
 | `.\.venv\Scripts\python.exe hear.py SECONDS` | The PC mic for `SECONDS`, then `nemo-speech.exe transcribe` once. | Transcript on stdout. Exit code is the recognizer's. No resident output file. |
+| `.\.venv\Scripts\python.exe gemma.py [--image PATH] QUESTION` | `gemma.txt` knobs via `gemma_run.txt`. Question and optional image file (base64). | Prints `*_gemma_out_*.txt` generation to stdout (thinking included). |
+| `.\.venv\Scripts\python.exe qwen.py QUESTION` | `sense.txt` knobs via `sense_run.txt`. Text only. | Prints `*_sense_out_*.txt` generation to stdout. `--image` exits 2 (no vision in sense). |
 
 The resident output file is created with `CREATE_NEW`. The number starts at `000`. An existing name is kept and the next number is used. Nothing in the program watches another program.
 
@@ -105,6 +107,14 @@ Mic choice: no `--mic` uses the Windows default input when it has input channels
 
 Subprocess pipes use UTF-8 with `errors=replace`. Device-name prints do the same, so a cp1252 console does not drop a friendly name that contains a trademark byte. The temporary wav lives in a `hear_*` directory under the repo root and is removed when the process exits. `!/hear.py` keeps the script tracked. Do not commit those temp wavs.
 
+
+## Brain one-shots
+
+`gemma.py` drives `gemma-brain.exe`. Prefer the Nvidia worker for speed; Iris Vulkan also runs it. Never overwrite `gemma.txt` knobs; write `gemma_run.txt`. Image input is a file path on the CLI; the script stores raw base64 in `gemma.image` and puts `<__media__>` in `gemma.text`. Not a path, not a URL, not `data:image` in the settings file.
+
+`qwen.py` drives `sense.exe` (Qwen3) on Iris. Text only. `sense.exe` has no `sense.image`. Until Wojciech authorizes C++ vision, `qwen.py --image` exits 2 and points at `gemma.py --image`.
+
+Seat: COOK GO via Executor. Not Mouth. Not Ear.
 ## Prove
 
 Prove on Windows, on this machine, with the real executables.
@@ -125,7 +135,7 @@ When behavior changes, rewrite `GOAL.md`, `AGENTS.md`, `RULES.md`, `CODE_REVIEW_
 
 ## What Git will take
 
-`.gitignore` is a whitelist. `*` ignores everything until a later `!` rule names it. Tracked files stay tracked. A brand-new path is committed only after a whitelist rule names it, or it is not in the commit. `!/mouth.py` is the speak entry. `!/hear.py` is the hearing entry. `!/BOTS.md` is the role kit. All three stay in the repository.
+`.gitignore` is a whitelist. `*` ignores everything until a later `!` rule names it. Tracked files stay tracked. A brand-new path is committed only after a whitelist rule names it, or it is not in the commit. `!/mouth.py` is the speak entry. `!/hear.py` is the hearing entry. `!/gemma.py` and `!/qwen.py` are the brain one-shots. `!/BOTS.md` is the role kit. `!/CPP_DELTA_FINDINGS.md` parks C++ review notes. All stay in the repository.
 
 Leave `mouth.txt`, generated audio, `hear_*` leftovers, `*_out_*.txt`, `*_chatterbox_out_*`, models, `.install`, `.venv`, `C:\tgemma`, and the other build trees uncommitted. Do not commit `*.pid`, `*.stop`, or run logs. The patterns at the bottom of `.gitignore` exist to keep those out even if a broader rule would have allowed them.
 
