@@ -46,22 +46,14 @@ CaptureDevice CaptureDevice::open(const std::string& device) {
     UINT count = 0;
     devices->GetCount(&count);
     IMMDevice* chosen = nullptr;
-    bool digits = !device.empty();
-    for (char c : device) if (c < '0' || c > '9') digits = false;
-    if (digits) {
-        unsigned index = (unsigned)std::stoul(device);
-        if (index >= count) fail("vad.device index is outside the capture list");
-        devices->Item(index, &chosen);
-    } else {
-        for (UINT i = 0; i < count; ++i) {
-            IMMDevice* item = nullptr;
-            devices->Item(i, &item);
-            if (friendly_name(item) == device) {
-                chosen = item;
-                break;
-            }
-            item->Release();
+    for (UINT i = 0; i < count; ++i) {
+        IMMDevice* item = nullptr;
+        devices->Item(i, &item);
+        if (friendly_name(item) == device) {
+            chosen = item;
+            break;
         }
+        item->Release();
     }
     devices->Release();
     if (!chosen) fail("vad.device capture endpoint was not found: " + device);

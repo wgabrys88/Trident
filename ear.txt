@@ -1,0 +1,20 @@
+# ear.exe takes this file as its only argument.
+# The values below are used as written. Nothing in the program replaces them.
+# It runs once and writes HH-MM-SS-mmm_ear_out_NNN.txt in the current directory.
+# NNN starts at 000. An existing name is kept and the next number is used.
+# Paths are names in this file's directory.
+# ear.input is one wav. The text file is the recognizer's text.
+# ear.language empty omits --language.
+# ear.stream, ear.verbatim, and ear.no-punctuation pass their flag only when on.
+# ear.endpointing is passed as on or off.
+
+ear.model ear.gguf
+ear.input utterance.wav
+ear.device cpu
+ear.language
+ear.format text
+ear.stream off
+ear.endpointing on
+ear.stop-history-eou-ms 1200
+ear.verbatim off
+ear.no-punctuation off

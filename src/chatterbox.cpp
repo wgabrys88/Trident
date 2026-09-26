@@ -1,8 +1,6 @@
 #include "common/chatterbox_runtime.h"
 #include "common/config.h"
-#include <cstdio>
-#include <filesystem>
-#include <fstream>
+#include <utility>
 #include <mmsystem.h>
 #include <string>
 #pragma comment(lib, "winmm.lib")
@@ -32,33 +30,21 @@ trident::Knobs knobs_from(const std::map<std::string, std::string>& values) {
 } // namespace
 
 int main(int argc, char** argv) {
-    trident::no_args(argc, argv);
-    const auto values = trident::load_trident();
-    if (trident::cfg_on(values, "chatterbox.unload")) return trident::unload_named("chatterbox");
-    if (trident::resident("chatterbox")) return 0;
+    const auto values = trident::load_settings(argc, argv);
     const auto variant = trident::need(values, "chatterbox.variant");
     const auto language = trident::need(values, "chatterbox.language");
     const int rate = trident::cfg_int(values, "chatterbox.sample-rate");
-    const int poll_ms = trident::cfg_int(values, "chatterbox.poll-ms");
-    const auto request = trident::cfg_path(values, "chatterbox.prompt-file");
-    const auto response = trident::cfg_path(values, "chatterbox.response-file");
     const auto t3 = trident::cfg_path(values, variant + ".t3");
     const auto s3 = trident::cfg_path(values, variant + ".s3");
     auto engine = trident::chatterbox_make_engine(t3, s3, knobs_from(values));
-    auto speak = [&](const std::string& text) {
-        auto wav = response;
-        wav.replace_extension(".wav");
-        trident::chatterbox_write_wav(wav, engine->synthesize(text, language), rate);
-        std::ofstream(response, std::ios::binary | std::ios::trunc) << trident::path_u8(wav);
-        PlaySoundW(wav.wstring().c_str(), nullptr, SND_FILENAME);
-    };
-    if (trident::cfg_on(values, "chatterbox.persist"))
-        return trident::watch("chatterbox", request, poll_ms, speak);
-    const auto text = trident::read_text(request);
-    if (text.empty()) {
-        std::fprintf(stderr, "chatterbox.prompt-file is empty\n");
-        return 2;
-    }
-    speak(text);
+    const auto text = trident::cfg_key(values, "chatterbox.text");
+    auto pcm = engine->synthesize(text, language);
+    auto txt = trident::reserve_output("chatterbox");
+    auto wav = txt;
+    wav.replace_extension(".wav");
+    trident::chatterbox_write_wav(wav, std::move(pcm), rate);
+    const auto name = trident::path_u8(wav.filename());
+    trident::write_named(txt, name);
+    if (!PlaySoundW(wav.wstring().c_str(), nullptr, SND_FILENAME)) return 1;
     return 0;
 }

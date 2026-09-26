@@ -1,0 +1,119 @@
+# gemma-brain.exe takes this file as its only argument.
+# The values below are used as written. Nothing in the program replaces them.
+# It runs once and writes HH-MM-SS-mmm_gemma_out_NNN.txt in the current directory.
+# NNN starts at 000. An existing name is kept and the next number is used.
+# Paths are names in this file's directory. A value ending in << runs until a line that is only <<.
+# gemma.text is the whole prompt. gemma.image is raw base64, or empty.
+# When gemma.image is set, gemma.text must already contain <__media__>. The prompt is not edited.
+# gemma.threads and gemma.threads-batch are passed through as written.
+
+# Gemma. gemma-brain.exe. gemma.text is the whole prompt, unchanged.
+# gemma.image is raw base64, or empty. The prompt is not edited to find a picture.
+# When gemma.image is set, gemma.text must already contain <__media__>.
+# Gemma 4 E2B-it sampling is temp 1.0, top-p 0.95, top-k 64.
+# gemma.flash-attn off and f16 KV.
+gemma.model gemma.gguf
+gemma.mmproj gemma-mmproj.gguf
+gemma.ctx 8192
+gemma.batch 512
+gemma.ubatch 512
+gemma.n-predict 1024
+gemma.gpu-layers 999
+gemma.gpu 0
+gemma.threads 4
+# gemma.temp 1.0 matches Gemma 4 E2B-it guidance. A lower temperature collapses the turn.
+gemma.temp 1.0
+gemma.top-k 64
+gemma.top-p 0.95
+gemma.min-p 0.05
+gemma.repeat-penalty 1.0
+gemma.seed -1
+gemma.flash-attn off
+gemma.warmup on
+gemma.cache-type-k f16
+gemma.cache-type-v f16
+gemma.image-min-tokens -1
+gemma.image-max-tokens -1
+gemma.mmproj-gpu on
+gemma.mmproj-timings on
+gemma.n-keep 0
+gemma.n-chunks -1
+gemma.n-parallel 1
+gemma.n-sequences 1
+gemma.n-outputs-max 0
+gemma.n-outputs-max-per-seq 1
+gemma.grp-attn-n 1
+gemma.grp-attn-w 512
+gemma.n-print -1
+gemma.tensor-split
+gemma.split none
+gemma.fit off
+gemma.fit-print off
+gemma.fit-min-ctx 4096
+gemma.load-mode auto
+gemma.lazy-mode auto
+gemma.numa disabled
+gemma.threads-batch 4
+gemma.priority high
+gemma.priority-batch high
+gemma.poll 50
+gemma.poll-batch 50
+gemma.strict-cpu off
+gemma.strict-cpu-batch off
+gemma.cpu-mask
+gemma.cpu-mask-batch
+gemma.rope-scaling unspecified
+gemma.rope-freq-base 0
+gemma.rope-freq-scale 0
+gemma.yarn-ext-factor -1
+gemma.yarn-attn-factor -1
+gemma.yarn-beta-fast -1
+gemma.yarn-beta-slow -1
+gemma.yarn-orig-ctx 0
+gemma.ctx-shift off
+gemma.swa-full off
+gemma.kv-unified off
+gemma.no-kv-offload off
+gemma.check-tensors off
+gemma.no-op-offload off
+gemma.no-extra-bufts off
+gemma.no-host off
+gemma.show-timings on
+gemma.no-perf off
+gemma.sampler-no-perf off
+gemma.mtmd-batch 1024
+gemma.verbosity 2
+gemma.n-prev 64
+gemma.n-probs 0
+gemma.min-keep 0
+gemma.xtc-probability 0
+gemma.xtc-threshold 0.1
+gemma.typical 1
+gemma.dynatemp-range 0
+gemma.dynatemp-exponent 1
+gemma.repeat-last-n 64
+gemma.frequency-penalty 0
+gemma.presence-penalty 0
+gemma.dry-multiplier 0
+gemma.dry-base 1.75
+gemma.dry-allowed-length 2
+gemma.dry-penalty-last-n 64
+gemma.adaptive-target -1
+gemma.adaptive-decay 0.9
+gemma.mirostat 0
+gemma.top-n-sigma -1
+gemma.mirostat-tau 5
+gemma.mirostat-eta 0.1
+gemma.ignore-eos off
+gemma.timing-per-token off
+gemma.backend-sampling off
+# gemma.text is the native prompt. These tokens are Gemma 4's own turn markers.
+gemma.text <<
+<bos><|turn>user
+Say one short sentence.<turn|>
+<|turn>model
+<|channel>thought
+<channel|>
+<<
+gemma.image <<
+<<

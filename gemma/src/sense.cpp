@@ -1,7 +1,6 @@
 #include "common.h"
 #include "sampling.h"
 #include "common/config.h"
-#include <fstream>
 #include <string>
 
 namespace {
@@ -43,11 +42,10 @@ struct Gate {
         return out;
     }
     std::string answer(const std::string& text) {
-        if (text.empty()) return {};
         llama_memory_clear(llama_get_memory(lctx), true);
         n_past = 0;
         common_sampler_reset(smpl);
-        const auto tokens = common_tokenize(lctx, text, true, true);
+        const auto tokens = common_tokenize(lctx, text, false, true);
         for (size_t i = 0; i < tokens.size();) {
             const size_t n = std::min(size_t(n_batch), tokens.size() - i);
             common_batch_clear(batch);
@@ -63,11 +61,8 @@ struct Gate {
 }
 
 int main(int argc, char** argv) {
-    trident::no_args(argc, argv);
+    const auto values = trident::load_settings(argc, argv);
     common_init();
-    const auto values = trident::load_trident();
-    if (trident::cfg_on(values, "sense.unload")) return trident::unload_named("sense");
-    if (trident::resident("sense")) return 0;
     common_params params;
     params.model.path = trident::path_u8(trident::cfg_path(values, "sense.model"));
     params.n_ctx = trident::cfg_int(values, "sense.ctx");
@@ -80,15 +75,6 @@ int main(int argc, char** argv) {
     params.sampling.top_p = trident::cfg_float(values, "sense.top-p");
     ggml_backend_load_all();
     Gate gate(params);
-    const auto heard = trident::cfg_path(values, "ear.response-file");
-    const auto out = trident::cfg_path(values, "gemma.prompt-file");
-    const int poll = trident::cfg_int(values, "sense.poll-ms");
-    if (!trident::cfg_on(values, "sense.persist")) {
-        const auto text = trident::read_text(heard);
-        std::ofstream(out, std::ios::binary | std::ios::trunc) << gate.answer(text);
-        return 0;
-    }
-    return trident::watch("sense", heard, poll, [&](const std::string& text) {
-        std::ofstream(out, std::ios::binary | std::ios::trunc) << gate.answer(text);
-    });
+    trident::write_output("sense", gate.answer(trident::cfg_key(values, "sense.text")));
+    return 0;
 }

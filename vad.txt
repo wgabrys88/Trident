@@ -1,0 +1,18 @@
+# vad.exe takes this file as its only argument.
+# The values below are used as written. Nothing in the program replaces them.
+# It runs once and writes HH-MM-SS-mmm_vad_out_NNN.txt in the current directory.
+# NNN starts at 000. An existing name is kept and the next number is used.
+# Paths are names in this file's directory. A value ending in << runs until a line that is only <<.
+# vad.device is the capture endpoint friendly name.
+# One finished utterance is written, then the program exits. The text file contains the wav file name.
+
+# VAD. vad.exe. Silero on CPU through ONNX Runtime. vad.window 512 is the 16 kHz frame.
+# Capture is resampled with the polyphase FIR in Audio::resample, not linear interpolation.
+# vad.device is the capture endpoint's friendly name. A finished utterance is a wav beside the text file.
+vad.model silero_vad.onnx
+vad.rate 16000
+vad.device CABLE Output (VB-Audio Virtual Cable)
+vad.window 512
+vad.threshold 0.5
+vad.min-silence-ms 400
+vad.speech-pad-ms 120

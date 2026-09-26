@@ -9,9 +9,9 @@
 #include <vector>
 
 int main(int argc, char** argv) {
-    const auto values = trident::load_trident();
+    const auto values = trident::load_settings(argc, argv);
     const int gpu = trident::cfg_int(values, "bake.gpu");
-    const int cond_seconds = trident::cfg_int(values, "bake.cond-seconds");
+    const int seconds = trident::cfg_int(values, "bake.cond-seconds");
     const double lufs = trident::cfg_float(values, "bake.normalize-lufs");
     const float trim_db = trident::cfg_float(values, "bake.trim-db");
     const int voice_seconds = trident::cfg_int(values, "bake.voice-seconds");
@@ -24,22 +24,12 @@ int main(int argc, char** argv) {
     const float mel_power = trident::cfg_float(values, "bake.mel-power");
     const float mel_floor = trident::cfg_float(values, "bake.mel-floor");
     const bool mel_centered = trident::cfg_on(values, "bake.mel-centered");
-    std::string t3_path, s3_path, reference_path;
-    if (argc == 4) {
-        t3_path = argv[1];
-        s3_path = argv[2];
-        reference_path = argv[3];
-    } else if (argc == 1) {
-        t3_path = trident::path_u8(trident::cfg_path(values, "bake.t3"));
-        s3_path = trident::path_u8(trident::cfg_path(values, "bake.s3"));
-        reference_path = trident::path_u8(trident::cfg_path(values, "bake.reference"));
-    } else {
-        trident::fail("chatterbox-bake takes the t3, s3, and reference paths, or no arguments");
-    }
+    const auto t3_path = trident::path_u8(trident::cfg_path(values, "bake.t3"));
+    const auto s3_path = trident::path_u8(trident::cfg_path(values, "bake.s3"));
+    const auto reference_path = trident::path_u8(trident::cfg_path(values, "bake.reference"));
     auto family = trident::GgufFile(t3_path).string("general.architecture");
     if (family != "chatterbox-gpt2" && family != "chatterbox-llama")
         throw std::runtime_error("Unsupported architecture: " + family);
-    int seconds = cond_seconds >= 0 ? cond_seconds : (family == "chatterbox-gpt2" ? 15 : 6);
     trident::VulkanBackend backend(gpu);
     trident::Audio reference(reference_path);
     auto normalized = reference;
@@ -76,4 +66,5 @@ int main(int argc, char** argv) {
         {"s3gen/builtin/prompt_feat", GGML_TYPE_F32, {mels, int64_t(features.size() / mels)}, features.data()},
         {"s3gen/builtin/embedding", GGML_TYPE_F32, {int64_t(embedding.size())}, embedding.data()},
     }, {});
+    trident::write_output("bake", t3_path + "\n" + s3_path);
 }

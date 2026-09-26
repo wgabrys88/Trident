@@ -1,0 +1,38 @@
+# chatterbox.exe takes this file as its only argument.
+# The values below are used as written. Nothing in the program replaces them.
+# It runs once and writes HH-MM-SS-mmm_chatterbox_out_NNN.txt in the current directory.
+# NNN starts at 000. An existing name is kept and the next number is used.
+# Paths are names in this file's directory. A value ending in << runs until a line that is only <<.
+# chatterbox.text is spoken as written.
+# chatterbox.language is passed to the model file as written.
+
+nano.t3 nano-t3.gguf
+nano.s3 nano-s3.gguf
+turbo.t3 turbo-t3.gguf
+turbo.s3 turbo-s3.gguf
+v3.t3 v3-t3.gguf
+v3.s3 v3-s3.gguf
+
+# Chatterbox. chatterbox.exe. chatterbox.text is spoken as written.
+# chatterbox.language must be a tag stored in that GGUF. The text is not rewritten into English.
+chatterbox.variant turbo
+chatterbox.language en
+chatterbox.sample-rate 24000
+chatterbox.graph-nodes 8192
+chatterbox.end-trim-samples 960
+chatterbox.gpu 0
+chatterbox.seed 42
+chatterbox.temperature 0.8
+chatterbox.repeat-penalty 1.2
+chatterbox.n-predict 1000
+chatterbox.trim-fade-samples 480
+chatterbox.top-p 0.95
+chatterbox.cfm-steps 2
+chatterbox.top-k 1000
+chatterbox.min-p 0.05
+chatterbox.cfg-weight 0.5
+chatterbox.exaggeration 0.5
+chatterbox.cfm-cfg 0.7
+chatterbox.text <<
+Say one short sentence.
+<<

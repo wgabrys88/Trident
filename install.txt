@@ -1,0 +1,118 @@
+# python install.py install.txt
+# This file is only the installer's parameters. Each program has its own text file.
+# A value ending in << runs until a line that is only <<. An empty value is empty.
+# install.vulkan_sdk empty uses the newest Vulkan SDK. install.msvc_arch empty detects this CPU.
+# install.build_gemma is a short directory because the Vulkan shader step fails on a long path.
+# Clearing install.llama_rev tracks llama.cpp master. Clearing install.nemo_rev keeps the cloned revision.
+# install.ear_vcpkg_root and install.ear_vcpkg_triplet empty skip vcpkg.
+# The cond-seconds values are the reference length baked into that voice.
+
+install.generator Visual Studio 17 2022
+install.arch x64
+install.config Release
+install.parallel 2
+install.brain_parallel 4
+install.vulkan_sdk
+install.msvc_arch
+install.utf8_manifest utf8.manifest
+install.src_ggml .install/src/ggml
+install.src_llama .install/src/llama.cpp
+install.src_nemo .install/src/nemo-speech
+install.build_mouth .install/build/mouth
+install.build_gemma C:\tgemma
+install.build_ear .install/build/ear
+install.cache .install/cache
+install.ggml_repo https://github.com/ggml-org/ggml.git
+install.ggml_rev 7840aaba1989c6deeefede1d77d5aaf8f52b947e
+install.llama_repo https://github.com/ggml-org/llama.cpp.git
+install.llama_rev 84e76d8a23162eca70490da131945ebec1f09bf4
+install.nemo_repo https://github.com/NVIDIA/NeMo-Speech.cpp.git
+install.nemo_rev 97a15afa5caa9bce5baaa86c1184103877af4101
+install.t3_weight_type q4_0
+install.s3_weight_type q4_0
+install.t3_quant_policy scripts/quant_t3.json
+install.s3_quant_policy scripts/quant_s3.json
+install.hf_nano https://huggingface.co/ResembleAI/chatterbox-nano/resolve/71ccd1d0081b430592cea481f4307e764e07bc64
+install.hf_turbo https://huggingface.co/ResembleAI/chatterbox-turbo/resolve/749d1c1a46eb10492095d68fbcf55691ccf137cd
+install.hf_v3 https://huggingface.co/ResembleAI/chatterbox/resolve/5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18
+install.mouth_ggml_vulkan on
+install.mouth_ggml_cpu off
+install.mouth_ggml_openmp off
+install.mouth_ggml_build_tests off
+install.mouth_ggml_build_examples off
+install.mouth_build_shared off
+install.mouth_compile /O2 /bigobj /utf-8
+install.mouth_definitions NOMINMAX WIN32_LEAN_AND_MEAN GGML_USE_VULKAN _USE_MATH_DEFINES _CRT_SECURE_NO_WARNINGS
+install.gemma_backend auto
+install.cuda_root C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6
+install.cuda_toolset cuda=12.6
+install.cuda_architectures 61-real
+install.cuda_max 12.6
+install.cuda_codegen_parallel 1
+install.gemma_compile /O2 /Ob2 /Oi /Ot /GL /fp:fast /Gy /Gw /utf-8
+install.gemma_link /LTCG
+install.gemma_definitions NOMINMAX WIN32_LEAN_AND_MEAN
+install.text_model_url https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_0.gguf
+install.mmproj_url https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/mmproj-gemma-4-E2B-it-Q8_0.gguf
+install.brain_ggml_cpu on
+install.brain_ggml_metal off
+install.brain_ggml_openmp on
+install.brain_ggml_blas off
+install.brain_ggml_accelerate off
+install.brain_ggml_native on
+install.llama_build_common on
+install.llama_build_tools off
+install.llama_build_mtmd on
+install.llama_build_tests off
+install.llama_build_examples off
+install.llama_build_server off
+install.llama_curl off
+install.llama_openssl off
+install.llama_subprocess off
+install.mtmd_video off
+install.brain_build_shared off
+install.ggml_ccache on
+install.ggml_cuda_force_mmq on
+install.ggml_cuda_force_cublas off
+install.ggml_cuda_fa on
+install.ggml_cuda_fa_all_quants off
+install.ggml_cuda_graphs on
+install.ggml_cuda_nccl off
+install.ear_gguf_url https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b/resolve/main/nemotron-3.5-asr-streaming-0.6b.q8_0.gguf
+install.sense_url https://huggingface.co/bartowski/Qwen_Qwen3-0.6B-GGUF/resolve/main/Qwen_Qwen3-0.6B-Q4_K_M.gguf
+install.ear_backend cpu
+install.ear_profile core
+install.ear_config Release
+install.ear_cuda_arch native
+install.ear_architecture auto
+install.ear_compiler auto
+install.ear_jobs 0
+install.ear_vcpkg_root
+install.ear_vcpkg_triplet
+install.ear_asr_only on
+install.ear_grpc off
+install.ear_nmt off
+install.ear_flashlight off
+install.ear_http off
+install.ear_http_tls off
+install.ear_tts_ja off
+install.ear_tts_zh off
+install.ear_tests off
+install.ear_cublas_shim off
+install.publish off
+install.silero_onnx_url https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx
+install.onnxruntime_url https://github.com/microsoft/onnxruntime/releases/download/v1.20.1/onnxruntime-win-x64-1.20.1.zip
+install.onnxruntime_root
+install.torch torch==2.6.0
+install.torch_index https://download.pytorch.org/whl/cpu
+install.torch_extra_index https://pypi.org/simple
+install.nano_cond_seconds 15
+install.turbo_cond_seconds 15
+install.v3_cond_seconds 6
+install.pip <<
+numpy==1.26.4
+gguf==0.19.0
+safetensors==0.8.0
+librosa==0.11.0
+tokenizers==0.23.2
+<<

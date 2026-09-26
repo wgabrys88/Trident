@@ -1,0 +1,23 @@
+# sense.exe takes this file as its only argument.
+# The values below are used as written. Nothing in the program replaces them.
+# It runs once and writes HH-MM-SS-mmm_sense_out_NNN.txt in the current directory.
+# NNN starts at 000. An existing name is kept and the next number is used.
+# Paths are names in this file's directory. A value ending in << runs until a line that is only <<.
+# sense.text is the whole prompt.
+
+# Sense. sense.exe. Qwen3-0.6B, CPU only. sense.text is the whole prompt, unchanged.
+sense.gpu-layers 0
+sense.model sense.gguf
+sense.ctx 4096
+sense.threads 4
+sense.n-predict 128
+sense.batch 512
+sense.temp 0.7
+sense.top-k 20
+sense.top-p 0.8
+# sense.text is the native prompt. These tokens are Qwen3's own turn markers.
+sense.text <<
+<|im_start|>user
+Say one short sentence.<|im_end|>
+<|im_start|>assistant
+<<

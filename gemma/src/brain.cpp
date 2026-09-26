@@ -13,24 +13,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <filesystem>
-#include <fstream>
 #include <initializer_list>
 #include <sstream>
 #include <string>
 #include <utility>
-#include <thread>
 #include <vector>
-#include <windows.h>
 #include "common/config.h"
 
 namespace {
-
-static int host_thread_count() {
-    const int hw = (int)std::thread::hardware_concurrency();
-    if (hw <= 0) die("--threads is required when the host thread count is unknown");
-    return hw;
-}
 
 static void require_gpu(int device) {
 #if defined(GEMMA_CUDA)
@@ -110,16 +100,13 @@ static void apply_config(common_params & params, const std::map<std::string, std
     params.n_print = trident::cfg_int(v, "gemma.n-print");
     params.n_gpu_layers = trident::cfg_int(v, "gemma.gpu-layers");
     params.main_gpu = trident::cfg_int(v, "gemma.gpu");
-    tensor_split(params, trident::cfg_opt(v, "gemma.tensor-split"));
+    tensor_split(params, trident::cfg_key(v, "gemma.tensor-split"));
     params.split_mode = pick<llama_split_mode>(trident::need(v, "gemma.split"), {{"none", LLAMA_SPLIT_MODE_NONE}, {"layer", LLAMA_SPLIT_MODE_LAYER}, {"row", LLAMA_SPLIT_MODE_ROW}, {"tensor", LLAMA_SPLIT_MODE_TENSOR}}, "gemma.split");
     params.load_mode = pick<llama_load_mode>(trident::need(v, "gemma.load-mode"), {{"auto", LLAMA_LOAD_MODE_AUTO}, {"none", LLAMA_LOAD_MODE_NONE}, {"mmap", LLAMA_LOAD_MODE_MMAP}, {"mlock", LLAMA_LOAD_MODE_MLOCK}, {"mmap-mlock", LLAMA_LOAD_MODE_MMAP_MLOCK}, {"direct-io", LLAMA_LOAD_MODE_DIRECT_IO}}, "gemma.load-mode");
     params.lazy_mode = pick<llama_lazy_mode>(trident::need(v, "gemma.lazy-mode"), {{"off", LLAMA_LAZY_MODE_OFF}, {"auto", LLAMA_LAZY_MODE_AUTO}, {"on", LLAMA_LAZY_MODE_ON}}, "gemma.lazy-mode");
     params.numa = pick<ggml_numa_strategy>(trident::need(v, "gemma.numa"), {{"disabled", GGML_NUMA_STRATEGY_DISABLED}, {"distribute", GGML_NUMA_STRATEGY_DISTRIBUTE}, {"isolate", GGML_NUMA_STRATEGY_ISOLATE}, {"numactl", GGML_NUMA_STRATEGY_NUMACTL}, {"mirror", GGML_NUMA_STRATEGY_MIRROR}}, "gemma.numa");
-    const int threads = trident::cfg_int(v, "gemma.threads");
-    if (threads > 0) params.cpuparams.n_threads = threads;
-    const int threads_batch = trident::cfg_int(v, "gemma.threads-batch");
-    if (threads_batch > 0) params.cpuparams_batch.n_threads = threads_batch;
-    else if (threads > 0) params.cpuparams_batch.n_threads = threads;
+    params.cpuparams.n_threads = trident::cfg_int(v, "gemma.threads");
+    params.cpuparams_batch.n_threads = trident::cfg_int(v, "gemma.threads-batch");
     auto priority = [](const std::string & value, const char * name) {
         return pick<ggml_sched_priority>(value, {{"low", GGML_SCHED_PRIO_LOW}, {"normal", GGML_SCHED_PRIO_NORMAL}, {"medium", GGML_SCHED_PRIO_MEDIUM}, {"high", GGML_SCHED_PRIO_HIGH}, {"realtime", GGML_SCHED_PRIO_REALTIME}}, name);
     };
@@ -129,8 +116,8 @@ static void apply_config(common_params & params, const std::map<std::string, std
     params.cpuparams_batch.poll = (uint32_t)trident::cfg_int(v, "gemma.poll-batch");
     params.cpuparams.strict_cpu = trident::cfg_on(v, "gemma.strict-cpu");
     params.cpuparams_batch.strict_cpu = trident::cfg_on(v, "gemma.strict-cpu-batch");
-    cpu_mask(params.cpuparams, trident::cfg_opt(v, "gemma.cpu-mask"));
-    cpu_mask(params.cpuparams_batch, trident::cfg_opt(v, "gemma.cpu-mask-batch"));
+    cpu_mask(params.cpuparams, trident::cfg_key(v, "gemma.cpu-mask"));
+    cpu_mask(params.cpuparams_batch, trident::cfg_key(v, "gemma.cpu-mask-batch"));
     params.fit_params = trident::cfg_on(v, "gemma.fit");
     params.fit_params_print = trident::cfg_on(v, "gemma.fit-print");
     params.fit_params_min_ctx = trident::cfg_int(v, "gemma.fit-min-ctx");
@@ -164,8 +151,7 @@ static void apply_config(common_params & params, const std::map<std::string, std
     params.sampling.top_p = trident::cfg_float(v, "gemma.top-p");
     params.sampling.min_p = trident::cfg_float(v, "gemma.min-p");
     params.sampling.penalty_repeat = trident::cfg_float(v, "gemma.repeat-penalty");
-    const auto & seed = trident::need(v, "gemma.seed");
-    params.sampling.seed = seed == "-1" ? LLAMA_DEFAULT_SEED : (uint32_t)std::strtoul(seed.c_str(), nullptr, 10);
+    params.sampling.seed = (uint32_t)trident::cfg_int(v, "gemma.seed");
     params.sampling.n_prev = trident::cfg_int(v, "gemma.n-prev");
     params.sampling.n_probs = trident::cfg_int(v, "gemma.n-probs");
     params.sampling.min_keep = trident::cfg_int(v, "gemma.min-keep");
@@ -193,11 +179,7 @@ static void apply_config(common_params & params, const std::map<std::string, std
 }
 
 static common_params default_params() {
-    common_params p;
-    const int nth = host_thread_count();
-    p.cpuparams.n_threads = nth;
-    p.cpuparams_batch.n_threads = nth;
-    return p;
+    return {};
 }
 
 struct Gemma {
@@ -259,7 +241,7 @@ struct Gemma {
             if (c == '\n' || c == '\r' || c == ' ' || c == '\t') continue;
             if (c == '=') break;
             const int digit = b64_value(c);
-            if (digit < 0) die("prompt image is not base64");
+            if (digit < 0) die("gemma.image is not base64");
             value = (value << 6) | digit;
             bits += 6;
             if (bits >= 8) {
@@ -270,41 +252,8 @@ struct Gemma {
         return out;
     }
 
-    std::string take_images(std::string text) {
-        const std::string key = "base64,";
-        std::string out;
-        size_t i = 0;
-        while (i < text.size()) {
-            const auto at = text.find("data:image/", i);
-            if (at == std::string::npos) {
-                out.append(text, i, std::string::npos);
-                break;
-            }
-            const auto b64 = text.find(key, at);
-            if (b64 == std::string::npos || b64 > at + 80) {
-                out.append(text, i, at + 1 - i);
-                i = at + 1;
-                continue;
-            }
-            size_t end = b64 + key.size();
-            while (end < text.size()) {
-                const unsigned char c = (unsigned char)text[end];
-                if (b64_value(c) >= 0 || c == '=' || c == '\n' || c == '\r') ++end;
-                else break;
-            }
-            const auto bytes = b64_decode(text.substr(b64 + key.size(), end - (b64 + key.size())));
-            auto res = mtmd_helper_bitmap_init_from_buf(mtmd_ctx.get(), bytes.data(), bytes.size(), false, media_opt);
-            if (!res.bitmap) die("prompt image is not a bitmap");
-            pending_media.entries.emplace_back(res.bitmap);
-            out.append(text, i, at - i);
-            out += mtmd_default_marker();
-            i = end;
-        }
-        return out;
-    }
-
-    void eval_text(const std::string & text, bool bos) {
-        const auto tokens = common_tokenize(lctx, text, bos, true);
+    void eval_text(const std::string & text) {
+        const auto tokens = common_tokenize(lctx, text, false, true);
         for (size_t i = 0; i < tokens.size();) {
             const size_t n = std::min(size_t(n_batch), tokens.size() - i);
             common_batch_clear(batch);
@@ -317,7 +266,7 @@ struct Gemma {
 
     void eval_media(const std::string & formatted) {
         mtmd::input_chunks chunks(mtmd_input_chunks_init());
-        mtmd_input_text text{formatted.data(), formatted.size(), true, true};
+        mtmd_input_text text{formatted.data(), formatted.size(), false, true};
         auto bitmaps = pending_media.c_ptr();
         const int32_t tok = mtmd_tokenize(mtmd_ctx.get(), chunks.ptr.get(), &text, bitmaps.data(), bitmaps.size());
         if (tok != 0) die_fmt("mtmd_tokenize failed (%d)", tok);
@@ -343,21 +292,29 @@ struct Gemma {
             if (llama_vocab_is_eog(vocab, id)) break;
             const auto piece = common_token_to_piece(lctx, id);
             out += piece;
-            std::fputs(piece.c_str(), stdout);
-            std::fflush(stdout);
             common_batch_clear(batch);
             common_batch_add(batch, id, n_past++, {0}, true);
             if (llama_decode(lctx, batch) != 0) die("llama_decode failed");
         }
-        std::fputc('\n', stdout);
         return out;
     }
 
-    std::string answer(const std::string & text, int max_tokens) {
+    static bool filled(const std::string & text) {
+        for (unsigned char c : text)
+            if (c != ' ' && c != '\n' && c != '\r' && c != '\t') return true;
+        return false;
+    }
+
+    std::string answer(const std::string & text, const std::string & image, int max_tokens) {
         reset();
-        const auto prompt = take_images(text);
-        if (pending_media.entries.empty()) eval_text(prompt, true);
-        else eval_media(prompt);
+        if (!filled(image)) eval_text(text);
+        else {
+            const auto bytes = b64_decode(image);
+            auto res = mtmd_helper_bitmap_init_from_buf(mtmd_ctx.get(), bytes.data(), bytes.size(), false, media_opt);
+            if (!res.bitmap) die("gemma.image is not a bitmap");
+            pending_media.entries.emplace_back(res.bitmap);
+            eval_media(text);
+        }
         return generate(max_tokens);
     }
 };
@@ -365,29 +322,16 @@ struct Gemma {
 } // namespace
 
 int main(int argc, char ** argv) {
-    trident::no_args(argc, argv);
+    const auto values = trident::load_settings(argc, argv);
     ggml_time_init();
     common_init();
-    const auto values = trident::load_trident();
-    if (trident::cfg_on(values, "gemma.unload")) return trident::unload_named("gemma");
-    if (trident::resident("gemma")) return 0;
     common_params params = default_params();
     apply_config(params, values);
     const bool timings = trident::cfg_on(values, "gemma.mmproj-timings");
-    const int poll_ms = trident::cfg_int(values, "gemma.poll-ms");
-    const auto request = trident::cfg_path(values, "gemma.prompt-file");
-    const auto response = trident::cfg_path(values, "gemma.response-file");
     ggml_backend_load_all();
     require_gpu(params.main_gpu);
     Gemma gemma(params);
     gemma.open_mmproj(params, timings);
-    auto turn = [&](const std::string & heard) {
-        std::ofstream(response, std::ios::binary | std::ios::trunc) << gemma.answer(heard, params.n_predict);
-    };
-    if (trident::cfg_on(values, "gemma.persist")) return trident::watch("gemma", request, poll_ms, turn);
-    const auto prompt = trident::read_text(request);
-    if (prompt.empty()) die("gemma.prompt-file is empty");
-    turn(prompt);
-    llama_perf_context_print(gemma.lctx);
+    trident::write_output("gemma", gemma.answer(trident::cfg_key(values, "gemma.text"), trident::cfg_key(values, "gemma.image"), params.n_predict));
     return 0;
 }

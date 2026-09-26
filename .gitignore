@@ -26,7 +26,13 @@
 !/LICENSE
 !/install.py
 !/utf8.manifest
-!/trident.txt
+!/install.txt
+!/vad.txt
+!/ear.txt
+!/sense.txt
+!/gemma.txt
+!/chatterbox.txt
+!/bake.txt
 !/reference.wav
 
 !/scripts/convert_s3.py
@@ -36,15 +42,12 @@
 !/scripts/quant_t3.json
 
 !/src/**/*.cpp
-!/src/nemo-stay.patch
 !/src/**/*.h
 !/src/**/*.hpp
 
 !/gemma/.gitignore
 !/gemma/CMakeLists.txt
 !/gemma/cmake/HostCpu.cmake
-!/gemma/scripts/build.ps1
-!/gemma/scripts/configure.ps1
 !/gemma/scripts/detect_cpu.ps1
 !/gemma/scripts/detect_gpu.ps1
 !/gemma/src/brain.cpp

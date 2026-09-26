@@ -1,0 +1,26 @@
+# chatterbox-bake.exe takes this file as its only argument.
+# The values below are used as written. Nothing in the program replaces them.
+# It runs once and writes HH-MM-SS-mmm_bake_out_NNN.txt in the current directory.
+# NNN starts at 000. An existing name is kept and the next number is used.
+# Paths are names in this file's directory. A value ending in << runs until a line that is only <<.
+# bake.cond-seconds is the reference length baked into the model.
+
+# chatterbox-bake.exe reads bake.t3, bake.s3, and bake.reference.
+# bake.cond-seconds is the reference length baked into the model. Nano and turbo use 15. v3 uses 6.
+bake.t3 turbo-t3.gguf
+bake.s3 turbo-s3.gguf
+bake.reference reference.wav
+bake.gpu 0
+bake.cond-seconds 15
+bake.normalize-lufs -27
+bake.trim-db 20
+bake.voice-seconds 30
+bake.prompt-seconds 10
+bake.mel-seconds 10
+bake.voice-rate 16000
+bake.mel-rate 24000
+bake.mel-fft 1920
+bake.mel-hop 480
+bake.mel-power 1
+bake.mel-floor 1e-5
+bake.mel-centered off

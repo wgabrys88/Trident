@@ -4,6 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 FILE = {}
+SETTINGS = ROOT / "install.txt"
 ARCH_FLAG = None
 HOST_ISA = None
 BACKEND = None
@@ -69,10 +70,9 @@ EAR_SWITCHES = (
 )
 
 
-def load_trident() -> dict:
-    path = ROOT / "trident.txt"
+def load_file(path: Path) -> dict:
     if not path.is_file():
-        raise SystemExit("trident.txt missing")
+        raise SystemExit("missing " + str(path))
     lines = path.read_text(encoding="utf-8-sig").splitlines()
     out = {}
     index = 0
@@ -103,9 +103,17 @@ def load_trident() -> dict:
     return out
 
 
+def module_need(filename: str, key: str) -> str:
+    values = load_file(ROOT / filename)
+    value = values.get(key, "")
+    if value == "":
+        raise SystemExit(filename + " missing " + key)
+    return value
+
+
 def need(key: str) -> str:
     if key not in FILE or FILE[key] == "":
-        raise SystemExit("trident.txt missing " + key)
+        raise SystemExit(str(SETTINGS.name) + " missing " + key)
     return FILE[key]
 
 
@@ -119,7 +127,7 @@ def on(key: str) -> bool:
         return True
     if text == "off":
         return False
-    raise SystemExit("trident.txt " + key + " must be on or off")
+    raise SystemExit(str(SETTINGS.name) + " " + key + " must be on or off")
 
 
 def cmake_on(key: str) -> str:
@@ -273,7 +281,7 @@ def gemma_backend() -> str:
     choice = need("install.gemma_backend")
     if choice != "auto":
         if choice not in ("cuda", "vulkan"):
-            raise SystemExit("trident.txt install.gemma_backend must be auto, cuda, or vulkan")
+            raise SystemExit(str(SETTINGS.name) + " install.gemma_backend must be auto, cuda, or vulkan")
         BACKEND = choice
         return BACKEND
     out = subprocess.run(powershell("-File", str(ROOT / "gemma" / "scripts" / "detect_gpu.ps1")), check=True, capture_output=True, text=True)
@@ -458,27 +466,25 @@ def build_mouth(sdk: Path) -> None:
     shutil.copy2(onnx_root() / "lib" / "onnxruntime.dll", ROOT / "onnxruntime.dll")
 
 
-def apply_nemo_stay(home: Path) -> None:
-    target = home / "app" / "transcribe.cpp"
-    marker = home / "app" / ".trident-stay"
-    patch = ROOT / "src" / "nemo-stay.patch"
-    current = digest(patch)
-    applied = marker.read_text(encoding="utf-8").strip() if marker.is_file() else ""
-    if applied == current and "TRIDENT_STAY" in target.read_text(encoding="utf-8"):
-        return
-    run(["git", "-C", str(home), "checkout", "--", "app/transcribe.cpp"])
-    run(["git", "-C", str(home), "apply", "--whitespace=nowarn", str(patch)])
-    marker.write_text(current + "\n", encoding="utf-8")
+def restore_nemo(home: Path) -> None:
+    for relative, needle in (("app/transcribe.cpp", "TRIDENT_STAY"), ("app/live_terminal.cpp", "TRIDENT_FLUSH")):
+        target = home / relative
+        if target.is_file() and needle in target.read_text(encoding="utf-8"):
+            run(["git", "-C", str(home), "checkout", "--", relative])
+    for name in (".trident-stay", ".trident-flush"):
+        marker = home / "app" / name
+        if marker.is_file():
+            marker.unlink()
 
 
 def build_ear() -> None:
     home = place("install.src_nemo")
-    apply_nemo_stay(home)
+    restore_nemo(home)
     build = place("install.build_ear")
     exe = build / "bin" / "nemo-speech.exe"
     rev = subprocess.run(["git", "-C", str(home), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
     choice = {key: FILE[key] for key in FILE if key.startswith("install.ear_") or key.startswith("install.nemo_")}
-    wanted = {"rev": rev, "build": choice, "dir": str(build), "stay": digest(ROOT / "src" / "nemo-stay.patch")}
+    wanted = {"rev": rev, "build": choice, "dir": str(build)}
     stamp = stamps() / "ear.json"
     if not matches(stamp, wanted, exe):
         print("install ear", flush=True)
@@ -606,10 +612,29 @@ def convert(cfg: Variant, py: Path, ckpt: Path) -> tuple[Path, Path, list[dict]]
     return t3, s3, contracts
 
 
+def write_bake_file(path: Path, t3: str, s3: str, reference: str, seconds: str) -> None:
+    values = load_file(ROOT / "bake.txt")
+    values["bake.t3"] = t3
+    values["bake.s3"] = s3
+    values["bake.reference"] = reference
+    values["bake.cond-seconds"] = seconds
+    lines = []
+    for key, value in values.items():
+        if "\n" in value:
+            lines.append(key + " <<")
+            lines.append(value)
+            lines.append("<<")
+        elif value == "":
+            lines.append(key)
+        else:
+            lines.append(key + " " + value)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def bake_voice(cfg: Variant, base_t3: Path, base_s3: Path, contracts: list[dict]) -> None:
-    reference = (ROOT / need("install.reference")).resolve()
-    t3_out = ROOT / need(cfg.name + ".t3")
-    s3_out = ROOT / need(cfg.name + ".s3")
+    reference = (ROOT / module_need("bake.txt", "bake.reference")).resolve()
+    t3_out = ROOT / module_need("chatterbox.txt", cfg.name + ".t3")
+    s3_out = ROOT / module_need("chatterbox.txt", cfg.name + ".s3")
     stamp = stamps() / (cfg.name + "-voice.json")
     wanted = {"variant": cfg.name, "conversions": contracts, "reference": {"path": str(reference), "bytes": reference.stat().st_size, "mtime": reference.stat().st_mtime_ns}}
     if matches(stamp, wanted, t3_out, s3_out):
@@ -622,7 +647,9 @@ def bake_voice(cfg: Variant, base_t3: Path, base_s3: Path, contracts: list[dict]
     temp.mkdir(parents=True)
     shutil.copy2(base_t3, temp / "t3.gguf")
     shutil.copy2(base_s3, temp / "s3.gguf")
-    run([str(ROOT / "chatterbox-bake.exe"), str(temp / "t3.gguf"), str(temp / "s3.gguf"), str(reference)], cwd=ROOT)
+    bake_file = temp / "bake.txt"
+    write_bake_file(bake_file, "t3.gguf", "s3.gguf", str(reference), need("install." + cfg.name + "_cond_seconds"))
+    run([str(ROOT / "chatterbox-bake.exe"), str(bake_file)], cwd=temp)
     shutil.copy2(temp / "t3.gguf", t3_out)
     shutil.copy2(temp / "s3.gguf", s3_out)
     shutil.rmtree(temp)
@@ -636,10 +663,8 @@ def install_voice(name: str) -> None:
     bake_voice(cfg, t3, s3, contracts)
 
 
-def fetch_model(name_key: str, url_key: str, runtime_key: str) -> None:
-    if need(name_key) != need(runtime_key):
-        raise SystemExit(name_key + " and " + runtime_key + " must name the same file")
-    dest = ROOT / need(name_key)
+def fetch_model(url_key: str, module: str, key: str) -> None:
+    dest = ROOT / module_need(module, key)
     url = need(url_key)
     stamp = stamps() / (dest.name + ".download.json")
     wanted = {"url": url}
@@ -655,7 +680,7 @@ def publish() -> None:
     if not on("install.publish"):
         return
     tag = "trident-" + gemma_backend() + "-" + host_isa()
-    notes = "Executables for this computer. Runtime knobs are trident.txt."
+    notes = "Executables for this computer. Each program reads its own text file."
     viewed = subprocess.run(["gh", "release", "view", tag], capture_output=True, text=True)
     if viewed.returncode != 0:
         run(["gh", "release", "create", tag, "--title", tag, "--notes", notes])
@@ -665,9 +690,11 @@ def publish() -> None:
 
 
 def main() -> None:
-    global FILE
-    if len(sys.argv) != 1:
-        raise SystemExit("edit trident.txt")
+    global FILE, SETTINGS
+    if len(sys.argv) != 2:
+        raise SystemExit("usage: python install.py install.txt")
+    SETTINGS = Path(sys.argv[1]).resolve()
+    sys.argv[1] = str(SETTINGS)
     created = not venv_python().is_file()
     ensure_venv()
     if Path(sys.executable).resolve() != venv_python().resolve():
@@ -676,7 +703,7 @@ def main() -> None:
             env["TRIDENT_VENV_NEW"] = "1"
         raise SystemExit(subprocess.call([str(venv_python()), *sys.argv], env=env))
     print("install venv" if os.environ.pop("TRIDENT_VENV_NEW", None) == "1" else "skip venv", flush=True)
-    FILE = load_trident()
+    FILE = load_file(SETTINGS)
     python_packages(venv_python())
     pin_sources()
     sdk = find_vulkan()
@@ -685,11 +712,11 @@ def main() -> None:
     build_gemma(sdk)
     for name in ("nano", "turbo", "v3"):
         install_voice(name)
-    fetch_model("install.text_model_name", "install.text_model_url", "gemma.model")
-    fetch_model("install.mmproj_name", "install.mmproj_url", "gemma.mmproj")
-    fetch_model("install.ear_gguf_name", "install.ear_gguf_url", "ear.model")
-    fetch_model("install.sense_name", "install.sense_url", "sense.model")
-    fetch_model("install.silero_onnx_name", "install.silero_onnx_url", "vad.model")
+    fetch_model("install.text_model_url", "gemma.txt", "gemma.model")
+    fetch_model("install.mmproj_url", "gemma.txt", "gemma.mmproj")
+    fetch_model("install.ear_gguf_url", "ear.txt", "ear.model")
+    fetch_model("install.sense_url", "sense.txt", "sense.model")
+    fetch_model("install.silero_onnx_url", "vad.txt", "vad.model")
     publish()
 
 

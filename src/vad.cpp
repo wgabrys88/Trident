@@ -61,28 +61,20 @@ std::vector<float> pull_16k(std::vector<float>& native, int native_rate, int rat
 }
 
 int main(int argc, char** argv) {
-    trident::no_args(argc, argv);
-    const auto values = trident::load_trident();
-    if (trident::cfg_on(values, "vad.unload")) return trident::unload_named("vad");
-    if (trident::resident("vad")) return 0;
+    const auto values = trident::load_settings(argc, argv);
     const int rate = trident::cfg_int(values, "vad.rate");
     const int window = trident::cfg_int(values, "vad.window");
     auto device = trident::CaptureDevice::open(trident::need(values, "vad.device"));
     trident::SileroVad vad(trident::cfg_path(values, "vad.model"), rate, window, trident::cfg_float(values, "vad.threshold"),
         trident::cfg_int(values, "vad.min-silence-ms"));
     const int pad = rate * trident::cfg_int(values, "vad.speech-pad-ms") / 1000;
-    const auto prompt = trident::cfg_path(values, "ear.prompt-file");
-    const auto chunks = trident::trident_file().parent_path() / std::filesystem::u8path(trident::need(values, "vad.chunks-dir"));
-    std::filesystem::create_directories(chunks);
-    trident::write_pid("vad");
-    std::filesystem::remove(trident::slot("vad", "stop"));
     std::vector<float> native, pcm, speech, lead;
     bool talking = false;
-    int index = 0;
+    bool done = false;
     const int block = std::max(window, window * device.native_rate / rate);
     std::vector<float> frame(block);
     const int keep = 960;
-    while (!std::filesystem::exists(trident::slot("vad", "stop"))) {
+    while (!done) {
         device.read(frame.data(), block);
         native.insert(native.end(), frame.begin(), frame.end());
         auto converted = pull_16k(native, device.native_rate, rate, keep);
@@ -108,17 +100,16 @@ int main(int argc, char** argv) {
             if (!event.end) continue;
             vad.reset();
             talking = false;
-            ++index;
-            auto wav = chunks / ("utt-" + std::to_string(index) + ".wav");
+            auto txt = trident::reserve_output("vad");
+            auto wav = txt;
+            wav.replace_extension(".wav");
             write_wav(wav, speech, rate);
             speech.clear();
-            auto relative = std::filesystem::relative(wav, trident::trident_file().parent_path());
-            std::string text = relative.generic_string();
-            std::ofstream(prompt, std::ios::binary | std::ios::trunc) << text;
+            trident::write_named(txt, trident::path_u8(wav.filename()));
+            done = true;
+            break;
         }
     }
     device.close();
-    std::filesystem::remove(trident::slot("vad", "pid"));
-    std::filesystem::remove(trident::slot("vad", "stop"));
     return 0;
 }
