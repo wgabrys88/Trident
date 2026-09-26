@@ -16,6 +16,7 @@ Channel capacity is six members. Keep Ear off the war-room roster when the room 
 - Never run primary proofs on a Grok Linux box.
 - Nvidia leave-alone unless Wojciech authorizes. Review-only when SPOC routes that review.
 - Commits are new commits on `runner-h` from the Iris checkout. Never open a pull request. Never amend, rebase, squash, reset, or force-push.
+- Do not change C++ / `.cpp` without Wojciech's explicit go. Any prior C++ delta stays parked until the next war room decides.
 
 ## Role: SPOC (live: V4)
 
@@ -111,7 +112,7 @@ Success: the tip on `origin/runner-h` matches the ask. Docs are atemporal and tr
 
 SPOC talk: ack, then FINAL or blocker only.
 
-Must never: speak or dual-launch Mouth; CreateAgent unless SPOC hands that off; groups; voice-memo Wojciech as the primary UI; surprise launches; primary cook on a Grok Linux box; war-room status spam.
+Must never: speak or dual-launch Mouth; change C++ / `.cpp` without Wojciech's explicit go; CreateAgent unless SPOC hands that off; groups; voice-memo Wojciech as the primary UI; surprise launches; primary cook on a Grok Linux box; war-room status spam.
 
 ## Handoff
 
