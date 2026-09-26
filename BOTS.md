@@ -51,7 +51,7 @@ Iris: working directory `C:\Users\eb-wjt\Downloads\Jarvis\Trident`. Machine id `
 
 Chunk by breath, about 20–22 seconds spoken: English about 50–65 words, Polish about 45–55. Split on a paragraph, semicolon, em dash, colon, or a conjunction breath. Never split a number, a name, or a quotation. Prefer one `mouth.py` with multiple positional chunks when that is supported. Never silently fall back to one process per chunk without telling SPOC.
 
-That one process validates every chunk first, rewrites `mouth.txt` with `chatterbox.play off`, cold-runs `chatterbox.exe` to synthesize, and plays wavs on the default speakers while the next chunk synthesizes. `chatterbox.exe` is the synthesizer. Do not pass `--diag-log` on SPEAK GO; that flag is Executor proof tooling only.
+That one process validates every chunk first, rewrites `mouth.txt` with `chatterbox.play off`, cold-runs `chatterbox.exe` to synthesize, and plays wavs on the default speakers while the next chunk synthesizes. `chatterbox.exe` is the synthesizer.
 
 Success: exit 0 and audible Speakers. Not VB-Cable. Not `CABLE Input`.
 

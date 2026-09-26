@@ -43,7 +43,7 @@ When the brain's file includes an image, that image is the base64 the user wrote
 From the repository root, one process, every chunk a positional argument:
 
 ```
-.\.venv\Scripts\python.exe mouth.py [--model nano|turbo|v3] [--lang TAG] [--diag-log DIR_OR_PATH] TEXT [TEXT ...]
+.\.venv\Scripts\python.exe mouth.py [--model nano|turbo|v3] [--lang TAG] TEXT [TEXT ...]
 ```
 
 The seated Mouth role uses that one process. A separate process per chunk is a reported fallback, not a silent one.
@@ -54,7 +54,7 @@ At least one TEXT argument is required. Empty text, an unknown model, an empty l
 
 For each chunk the script reads `chatterbox.txt`, copies every line (the six GGUF pair lines and the numeric knobs included), and drops `chatterbox.variant`, `chatterbox.language`, `chatterbox.play`, and the existing `chatterbox.text` block. It writes UTF-8 with no BOM to `mouth.txt`, overwriting `mouth.txt` only. `chatterbox.txt` stays untouched. It appends the variant, the language, `chatterbox.play off`, and a `chatterbox.text` block holding that chunk. It then runs `.\chatterbox.exe mouth.txt` once, current directory the repository root, no shell. That run synthesizes and writes the wav. `chatterbox.play off` skips PlaySound inside `chatterbox.exe`.
 
-`mouth.py` plays each wav with `PlaySoundW` on the default waveform device (`SND_FILENAME | SND_NODEFAULT`). It synthesizes the next chunk while the current wav plays, about one chunk ahead. The next wav starts when the current play returns. A non-zero synthesize exit stops the loop. `mouth.txt` holds the last chunk. There is no second synthesizer in Python or in C++. Optional `--diag-log DIR_OR_PATH` writes phase timestamps and a 0.5s Iris Xe GPU Engine (3D/Compute) utilization log under that directory; omit it for a quiet SPEAK run.
+`mouth.py` plays each wav with `PlaySoundW` on the default waveform device (`SND_FILENAME | SND_NODEFAULT`). It synthesizes the next chunk while the current wav plays, about one chunk ahead. The next wav starts when the current play returns. A non-zero synthesize exit stops the loop. `mouth.txt` holds the last chunk. There is no second synthesizer in Python or in C++.
 
 `chatterbox.play` is required in the settings file and is `on` or `off`. Direct `chatterbox.exe` with `on` plays the wav itself. A Mouth one-shot is heard on the real speakers. Those speakers are not the virtual-cable input.
 

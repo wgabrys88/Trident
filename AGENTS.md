@@ -80,7 +80,7 @@ To run the chain, connect the files yourself. Play known speech into `CABLE Inpu
 `mouth.py` is the speak entry. It does not synthesize. The Lego contract stays settings file, then `chatterbox.exe`.
 
 ```
-.\.venv\Scripts\python.exe mouth.py [--model nano|turbo|v3] [--lang TAG] [--diag-log DIR_OR_PATH] "First sentence." "Second sentence."
+.\.venv\Scripts\python.exe mouth.py [--model nano|turbo|v3] [--lang TAG] "First sentence." "Second sentence."
 ```
 
 One process takes every chunk. A separate process per chunk is a reported fallback, not a silent one. SPEAK GO for that role comes from SPOC or Wojciech. The role kit is `BOTS.md`.
@@ -89,7 +89,7 @@ One process takes every chunk. A separate process per chunk is a reported fallba
 
 For each TEXT, the script re-reads `chatterbox.txt`, drops `chatterbox.variant`, `chatterbox.language`, `chatterbox.play`, and the text block, writes `mouth.txt` with those keys plus `chatterbox.play off`, and runs `.\chatterbox.exe mouth.txt` once (synthesize only). `mouth.py` plays each wav with `PlaySoundW` (`SND_FILENAME | SND_NODEFAULT`) on the default speakers and synthesizes the next chunk while the current wav plays. A non-zero synthesize code stops the loop. Success is exit 0 and sound from the real speakers.
 
-`chatterbox.play off` is how synthesize finishes without Speakers playback inside `chatterbox.exe`, so `mouth.py` owns the play queue and can overlap it with the next chunk. Optional `--diag-log DIR_OR_PATH` is Executor-facing proof tooling: phase markers plus a background GPU util sampler; default SPEAK stays quiet without it.
+`chatterbox.play off` is how synthesize finishes without Speakers playback inside `chatterbox.exe`, so `mouth.py` owns the play queue and can overlap it with the next chunk.
 
 ## Hearing one-shot
 
