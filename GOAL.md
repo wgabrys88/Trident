@@ -85,16 +85,16 @@ The script records for `SECONDS`, writes a temporary wav in a `hear_*` directory
 
 ## Brain one-shots
 
-`gemma.py` drives `gemma-brain.exe`. Prefer an Nvidia GPU. A Vulkan build runs the same executable where CUDA is absent. The script does not load the model in Python. It copies knobs from `gemma.txt` into `gemma_run.txt` and leaves `gemma.txt` untouched. `gemma.text` is a Gemma 4 turn that opens the thought channel. `--image PATH` is a file on disk. The script stores raw base64 in `gemma.image` and puts `<__media__>` in the prompt when that marker is absent. The settings value is that raw base64. It runs `gemma-brain.exe gemma_run.txt` once and prints the generation to stdout, thinking included. An empty question exits 2.
+`gemma.py` drives `gemma-brain.exe`. Prefer an Nvidia GPU. A Vulkan build runs the same executable where CUDA is absent. The script does not load the model in Python. It copies knobs from `gemma.txt` into `gemma_run.txt` and leaves `gemma.txt` untouched. `gemma.text` is a Gemma 4 turn that opens the thought channel. `--image PATH` is a file on disk. The script stores raw base64 in `gemma.image` and puts `<__media__>` in the prompt when that marker is absent. The settings value is that raw base64. It runs `gemma-brain.exe gemma_run.txt` once and prints the generation to stdout, thinking included. The child's stdout and stderr are discarded, so stdout is only that generation file. `--verbose` passes the child's stderr through. An empty question exits 2.
 
 ```
-.\.venv\Scripts\python.exe gemma.py [--image PATH] "Question."
+.\.venv\Scripts\python.exe gemma.py [--image PATH] [--verbose] "Question."
 ```
 
-`qwen.py` drives `sense.exe`. Text only. Qwen3-0.6B has no vision. The script copies knobs from `sense.txt` into `sense_run.txt`, wraps the question in Qwen3 turn markers, runs `sense.exe sense_run.txt` once, and prints the generation to stdout. `qwen.py --image` exits 2. An empty question exits 2. `sense.exe` has no image key.
+`qwen.py` drives `sense.exe`. Text only. Qwen3-0.6B has no vision. The script copies knobs from `sense.txt` into `sense_run.txt`, wraps the question in Qwen3 turn markers, runs `sense.exe sense_run.txt` once, and prints the generation to stdout. The child's stdout and stderr are discarded, so stdout is only that generation file. `--verbose` passes the child's stderr through. `qwen.py --image` exits 2. An empty question exits 2. `sense.exe` has no image key.
 
 ```
-.\.venv\Scripts\python.exe qwen.py "Question."
+.\.venv\Scripts\python.exe qwen.py [--verbose] "Question."
 ```
 
 `sense.exe` must set `cpuparams_batch.n_threads` to `cpuparams.n_threads`; otherwise the batch path access-violates.

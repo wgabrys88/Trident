@@ -1,6 +1,6 @@
 # AGENTS
 
-Read `GOAL.md`, this file, `RULES.md`, and `BOTS.md` before editing. This is the handoff for a session with no earlier chat. `BOTS.md` seats roles; this file does not restate that kit. `CODE_REVIEW_CHECKLIST.md` is the review procedure. A commit message carries only the delta for that change.
+Read `GOAL.md`, this file, `RULES.md`, and `BOTS.md` before editing. This is the handoff for a session with no earlier chat. `BOTS.md` seats roles. Ask's firing law is in this file, `RULES.md`, and `BOTS.md`. `CODE_REVIEW_CHECKLIST.md` is the review procedure. A commit message carries only the delta for that change.
 
 ## Branch
 
@@ -72,21 +72,25 @@ One-shots from the repository root:
 ```
 .\.venv\Scripts\python.exe mouth.py [--model nano|turbo|v3] [--lang TAG] TEXT [TEXT ...]
 .\.venv\Scripts\python.exe hear.py SECONDS [--model PATH] [--device cpu] [--language TAG] [--mic NAME_OR_INDEX]
-.\.venv\Scripts\python.exe gemma.py [--image PATH] "Question."
-.\.venv\Scripts\python.exe qwen.py "Question."
+.\.venv\Scripts\python.exe gemma.py [--image PATH] [--verbose] "Question."
+.\.venv\Scripts\python.exe qwen.py [--verbose] "Question."
 ```
 
 `mouth.py` does not synthesize. One process takes every TEXT chunk. `--model` defaults to `nano`. Omitted `--lang` is `en` for nano and turbo, and `pl` for v3. It rewrites `mouth.txt` with `chatterbox.play off`, runs `.\chatterbox.exe mouth.txt` once per chunk, and plays each wav on the default speakers while the next chunk synthesizes. `chatterbox.txt` stays untouched. Empty text, an unknown model, an empty language, and a text line whose entire content is `<<` exit 2 before the first `chatterbox.exe`.
 
 `hear.py` records the PC microphone for `SECONDS`, runs `nemo-speech.exe transcribe` once, and prints the transcript on stdout. Further flags (`--format`, `--rate`, `--endpointing`, `--stop-history-eou-ms`, `--verbatim`, `--no-punctuation`, `--stream`) match that recognizer. Default model is `ear.gguf` beside the script. Cable proofs stay on the virtual cable.
 
-`gemma.py` copies `gemma.txt` knobs into `gemma_run.txt` and leaves `gemma.txt` untouched. It opens the Gemma 4 thought channel, runs `gemma-brain.exe gemma_run.txt`, and prints the generation, thinking included. Prefer `trident-nvidia` for speed; Iris Vulkan runs the same executable. `--image` is a file path stored as raw base64 in `gemma.image`. The script inserts `<__media__>` when the question lacks it.
+`gemma.py` copies `gemma.txt` knobs into `gemma_run.txt` and leaves `gemma.txt` untouched. It opens the Gemma 4 thought channel, runs `gemma-brain.exe gemma_run.txt`, and prints the generation, thinking included. The child's stdout and stderr are discarded. `--verbose` passes that stderr through. Prefer `trident-nvidia` for speed; Iris Vulkan runs the same executable. `--image` is a file path stored as raw base64 in `gemma.image`. The script inserts `<__media__>` when the question lacks it.
 
-`qwen.py` copies `sense.txt` knobs into `sense_run.txt`, wraps the question as Qwen3 turns, and runs `sense.exe sense_run.txt`. Stdout is the generation. Qwen3-0.6B has no vision. `qwen.py --image` exits 2. Image input is `gemma.py --image`.
+`qwen.py` copies `sense.txt` knobs into `sense_run.txt`, wraps the question as Qwen3 turns, and runs `sense.exe sense_run.txt`. Stdout is the generation file only. The child's stdout and stderr are discarded. `--verbose` passes that stderr through. Qwen3-0.6B has no vision. `qwen.py --image` exits 2. Image input is `gemma.py --image` on Nvidia.
 
 Sense sets batch threads from `sense.threads`. There is no `sense.threads-batch` key. Gemma reads `gemma.threads-batch` from its file.
 
 The resident output file is created with `CREATE_NEW`. The number starts at `000`. An existing name is kept and the next number is used. Nothing in a program watches another program. Connect the chain by editing text files. Judge each resident by the file it wrote. Judge a one-shot by its stdout, and a Mouth one-shot by the speakers as well.
+
+## Ask
+
+Trident Ask is V2. On Iris (`trident-iris`), run `qwen.py` in this shell. Do not launch a Cloud Agent or a Cursor coding agent for an Iris ask. Nvidia (`trident-nvidia`) is one Cloud Agent only, model `composer-2.5`, `fast` false, and only when the go names Nvidia. That prompt is the exact PowerShell or cmd line. The return is the exit code, the stdout answer, and a short stderr summary: at most 20 non-tensor lines, or a byte count plus the first and last 5 lines. A loader log is not a result. Repo edits, commits, pull requests, recovery agents, and multi-agent chains are out. An image ask is `gemma.py --image` on Nvidia.
 
 ## Prove
 

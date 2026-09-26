@@ -116,6 +116,11 @@ def main():
         metavar="PATH",
         help="image file (png/jpeg/...); encoded as raw base64 into gemma.image",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="pass gemma-brain.exe stderr through; default discards it",
+    )
     args = parser.parse_args()
     if not args.question.strip():
         die("empty question")
@@ -134,6 +139,8 @@ def main():
             [".\\gemma-brain.exe", "gemma_run.txt"],
             cwd=ROOT,
             shell=False,
+            stdout=subprocess.DEVNULL,
+            stderr=None if args.verbose else subprocess.DEVNULL,
         )
     except OSError as exc:
         die("cannot run gemma-brain.exe: " + str(exc))

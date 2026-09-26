@@ -34,11 +34,11 @@ Record defects. Do not add an orchestrator, a harness, a mock, or a second copy 
   **Pass:** C++ does not open a filename as the picture and does not insert the marker.
   **Fail:** a path walk or a kept previous bitmap.
 
-- [ ] **7. `gemma.py`.** From the repo root, venv Python: `gemma.py [--image PATH] "Question."` rewrites `gemma_run.txt` from `gemma.txt`, opens the Gemma 4 thought channel, runs `gemma-brain.exe gemma_run.txt` once with `shell=False`, and prints the generation including thinking. `--image` stores raw base64 in `gemma.image` and inserts `<__media__>` when the question lacks it.
+- [ ] **7. `gemma.py`.** From the repo root, venv Python: `gemma.py [--image PATH] [--verbose] "Question."` rewrites `gemma_run.txt` from `gemma.txt`, opens the Gemma 4 thought channel, runs `gemma-brain.exe gemma_run.txt` once with `shell=False`, discards the child's stdout and stderr, and prints the generation including thinking. `--verbose` passes the child's stderr through. `--image` stores raw base64 in `gemma.image` and inserts `<__media__>` when the question lacks it.
   **Pass:** stdout is that generation file. `gemma_run.txt` stays untracked.
   **Fail:** a Python model load, or a committed sidecar.
 
-- [ ] **8. `qwen.py`.** `qwen.py "Question."` rewrites `sense_run.txt` from `sense.txt`, wraps Qwen3 turn markers, runs `sense.exe sense_run.txt` once, and prints the generation. `--image` exits 2.
+- [ ] **8. `qwen.py`.** `qwen.py [--verbose] "Question."` rewrites `sense_run.txt` from `sense.txt`, wraps Qwen3 turn markers, runs `sense.exe sense_run.txt` once, discards the child's stdout and stderr, and prints the generation. `--verbose` passes the child's stderr through. `--image` exits 2.
   **Pass:** text-only, stdout is the generation, `sense_run.txt` untracked.
   **Fail:** a vision path or a Python model load.
 

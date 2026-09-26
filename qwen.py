@@ -92,6 +92,11 @@ def main():
         metavar="PATH",
         help="not supported: Qwen3-0.6B is text-only (vision N/A)",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="pass sense.exe stderr through; default discards it",
+    )
     args = parser.parse_args()
     if not args.question.strip():
         die("empty question")
@@ -111,6 +116,8 @@ def main():
             [".\\sense.exe", "sense_run.txt"],
             cwd=ROOT,
             shell=False,
+            stdout=subprocess.DEVNULL,
+            stderr=None if args.verbose else subprocess.DEVNULL,
         )
     except OSError as exc:
         die("cannot run sense.exe: " + str(exc))
