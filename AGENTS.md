@@ -1,42 +1,31 @@
 # AGENTS
 
-Read `GOAL.md`, this file, `RULES.md`, and `BOTS.md` before editing. This is the handoff for a session with no earlier chat. `BOTS.md` seats the Grok Bot roles. This file does not restate that kit. `CODE_REVIEW_CHECKLIST.md` is the review procedure. Commit messages carry only the delta for that change. Do not reconstruct the project by copying old commit bodies forward.
+Read `GOAL.md`, this file, `RULES.md`, and `BOTS.md` before editing. This is the handoff for a session with no earlier chat. `BOTS.md` seats roles; this file does not restate that kit. `CODE_REVIEW_CHECKLIST.md` is the review procedure. A commit message carries only the delta for that change.
 
-Work on branch `runner-h` in the local clone of https://github.com/wgabrys88/Trident. Fetch and update `origin/runner-h` before changing anything. The final commit stays on `runner-h`. Iris commits only: make the commit on this Iris checkout. Do not open a pull request.
+## Branch
+
+Work on `runner-h` in the local clone of https://github.com/wgabrys88/Trident. Fetch and pull `origin/runner-h` before changing anything. The commit stays on `runner-h`. Iris commits only: the commit is made on this Iris checkout. Never open a pull request. Never set `starting_ref`. Never amend, rebase, squash, reset, or force-push.
+
+## Paths
+
+Primary cook, proofs, and commits are this Iris checkout.
+
+- Iris path: `C:\Users\eb-wjt\Downloads\Jarvis\Trident`. Cursor worker: `trident-iris`.
+- Nvidia Cursor worker: `trident-nvidia`. Rablet checkout: `C:\Users\px-wjt\Downloads\Jarvis\Trident`. Leave it alone unless Wojciech authorizes. Review-only when that review is routed.
+- A Grok Linux box is not a primary for cook or proofs.
 
 ## This machine
 
-This checkout is Wojciech's private Windows worker. Re-measure if the machine changes. A note from another computer is memory of that computer.
+PowerShell on this PC does not accept `&&`. Use `;` or separate commands. Re-measure if the machine changes. A note from another computer is memory of that computer.
 
-- PowerShell on this PC does not accept `&&` as a statement separator. Use `;` or separate commands.
 - `python` is Python 3.11.9. The `py` launcher is not on `PATH`.
 - CMake 4.4.2 and Git are on `PATH`.
 - Visual Studio Build Tools 2022 (17.14) are at `C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools`. `install.txt` asks for generator `Visual Studio 17 2022`, architecture `x64`.
-- Vulkan SDK lives under `C:\VulkanSDK`. The measured SDK is `C:\VulkanSDK\1.4.357.0`. `install.vulkan_sdk` is empty, so the installer picks the newest SDK that contains `Bin\glslc.exe`.
-- The GPU is Intel Iris Xe. There is no CUDA toolkit. `gemma\scripts\detect_gpu.ps1` prints `cuda` only when an NVIDIA adapter and `nvcc` are both present; otherwise it prints `vulkan`. With `install.gemma_backend` set to `auto`, this machine builds the brain and the gate with Vulkan.
+- Vulkan SDK: `C:\VulkanSDK\1.4.357.0`. `install.vulkan_sdk` is empty, so the installer picks the newest SDK that contains `Bin\glslc.exe`.
+- The GPU is Intel Iris Xe. There is no CUDA toolkit. `gemma\scripts\detect_gpu.ps1` prints `cuda` only when an NVIDIA adapter and `nvcc` are both present; otherwise `vulkan`. With `install.gemma_backend` set to `auto`, this machine builds the brain and the gate with Vulkan.
 - `install.build_gemma` is `C:\tgemma`. The Vulkan shader step fails on a long path. Leave that short path in place.
 
-Primary cook, proofs, and commits stay on this Iris checkout, branch `runner-h`. Do not open a pull request.
-
-## Audio on this machine
-
-Two capture truths. Cable proofs and `hear.py` are different entries.
-
-Enumerate endpoints yourself. `vad.exe` matches `vad.device` to the WASAPI capture friendly name (`PKEY_Device_FriendlyName`) and fails if that string is not an active capture endpoint. It does not use a device index. It opens the device in shared mode, reads the mix format, and resamples with `Audio::resample` to `vad.rate` (16000 in `vad.txt`).
-
-Names on this worker, re-enumerate before a proof:
-
-- Capture for cable proofs: `CABLE Output (VB-Audio Virtual Cable)`. That string is `vad.device` in `vad.txt`.
-- Playback into the cable: `CABLE Input (VB-Audio Virtual Cable)`.
-- Also present, and not the proof pair: `CABLE In 16ch (VB-Audio Virtual Cable)`.
-- Real speakers: `Speakers (Realtek(R) Audio)`.
-- Room microphone: the Intel Smart Sound microphone array. Cable proofs leave it unused. `hear.py` uses the normal PC mic, which on this worker is that array.
-
-`chatterbox.exe` with `chatterbox.play on` plays the wav with `PlaySoundW` on the default waveform device. `mouth.py` plays with `PlaySoundW` on that same default. There is no device flag on `mouth.py` or in `chatterbox.txt`. Before a chain proof or a Mouth one-shot, set that default to the real speakers, `Speakers (Realtek(R) Audio)` on this worker, so the mouth is not the next thing capture hears.
-
-If the virtual cable is missing, install VB-Audio Virtual Cable. The person may call it a BB cable. Do not switch a cable proof to the room microphone.
-
-## Clone, update, install
+## Install
 
 ```
 git clone https://github.com/wgabrys88/Trident.git
@@ -45,100 +34,82 @@ git pull origin runner-h
 python install.py install.txt
 ```
 
-On an existing checkout, fetch and pull `runner-h` instead of cloning again. `python install.py install.txt` is the only install command. The installer reads that file and nothing else for its parameters. It creates `.venv` when needed and re-runs itself with that interpreter. It clones the pinned ggml, llama.cpp, and NeMo-Speech trees under `.install`, configures CMake, builds, downloads the models named in `install.txt`, and bakes nano, turbo, and v3 with `chatterbox-bake.exe`. `install.publish` is `off`. Leave it off. Publishing would create a GitHub release.
+On an existing checkout, pull `runner-h`. `python install.py install.txt` is the only install command. The installer reads `install.txt` and nothing else for its parameters. It creates `.venv` when needed and re-runs itself with that interpreter. It clones the pinned ggml, llama.cpp, and NeMo-Speech trees under `.install`, configures CMake, builds, downloads the models named in `install.txt`, and bakes nano, turbo, and v3 with `chatterbox-bake.exe`. `install.publish` is `off`. Leave it off.
 
-What the installer copies to the repository root:
+What lands in the repository root: `vad.exe`, `ear.exe`, `chatterbox.exe`, `chatterbox-bake.exe`, `onnxruntime.dll`, `nemo-speech.exe` and the DLLs beside it, plus `gemma-brain.exe` and `sense.exe` copied from `C:\tgemma`, and the model files the templates name. The mouth links ggml statically. `ear.exe` and `hear.py` launch `nemo-speech.exe transcribe`.
 
-- `chatterbox.exe`, `chatterbox-bake.exe`, `ear.exe`, `vad.exe`, and `onnxruntime.dll`. The mouth links ggml statically so it does not import `ggml.dll`; the ear build keeps its own ggml DLL.
-- `nemo-speech.exe` and the DLLs beside it. `ear.exe` launches `nemo-speech.exe transcribe` and writes the captured stdout. `hear.py` launches the same executable once and prints that stdout.
-- `gemma-brain.exe` and `sense.exe` from `C:\tgemma`.
-- Model files named by the templates (`vad.model`, `ear.model`, `sense.model`, `gemma.model`, `gemma.mmproj`, and the nano, turbo, and v3 GGUF pairs). `hear.py` defaults to `ear.gguf` beside the script.
+This checkout already has those outputs, `.venv`, and `.install`. They are local. Do not commit them. If a build directory's CMake cache was generated for a different source tree, remove that cache and configure this source. Fix a compile error in this repository's source. Do not add a library path that exists only on one computer.
 
-This checkout already has those outputs, `.venv`, and `.install`. They are local. Do not commit them. If a build directory's CMake cache was generated for a different source tree, remove that cache and configure this source. A compile error is fixed in this repository's source by reading the error back to the include or the call that caused it. Do not satisfy a broken system header by adding a library path that exists only on one computer.
+## Audio
 
-## Run one program
+Cable proofs and `hear.py` are different entries. Enumerate endpoints before a proof. `vad.exe` matches `vad.device` to the WASAPI capture friendly name (`PKEY_Device_FriendlyName`) and fails if that string is not an active capture endpoint. It uses no device index. Shared mode, mix format, resample to `vad.rate` (16000 in `vad.txt`).
 
-Each resident takes one text file and no flags. The usage line is `usage: program file.txt`. Run it from the directory where the result should appear. Paths inside the text file are resolved from that file's directory, not from the current directory.
+- Cable capture: `CABLE Output (VB-Audio Virtual Cable)`. That string is `vad.device` in `vad.txt`.
+- Cable playback: `CABLE Input (VB-Audio Virtual Cable)`.
+- Also present: `CABLE In 16ch (VB-Audio Virtual Cable)`. Proofs use the Output/Input pair.
+- Real speakers: `Speakers (Realtek(R) Audio)`.
+- Room microphone: the Intel Smart Sound microphone array. Cable proofs leave it unused. `hear.py` uses that array.
+
+`chatterbox.exe` with `chatterbox.play on` plays the wav with `PlaySoundW` on the default waveform device. `mouth.py` plays with `PlaySoundW` on that same default (`SND_FILENAME | SND_NODEFAULT`). There is no device flag. Before a chain proof or a Mouth one-shot, set that default to `Speakers (Realtek(R) Audio)`.
+
+If the virtual cable is missing, install VB-Audio Virtual Cable. The person may call it a BB cable. Keep cable proofs on that cable.
+
+## Run
+
+Each resident takes one text file and no flags. Usage is `usage: program file.txt`. Run it from the directory where the result should appear. Paths inside the text file resolve from that file's directory.
 
 | Command | Reads | Writes in the current directory |
 | --- | --- | --- |
-| `vad.exe vad.txt` | WASAPI capture named by `vad.device`. Silero ONNX, window 512. | One finished utterance, then exit. `HH-MM-SS-mmm_vad_out_NNN.txt` contains the wav file name. The wav sits beside it. |
-| `ear.exe ear.txt` | `ear.input`, one wav. | `HH-MM-SS-mmm_ear_out_NNN.txt`, the recognizer text unchanged. Empty `ear.language` omits `--language`. |
-| `sense.exe sense.txt` | `sense.text`, the whole prompt, including the Qwen3 turn markers the user wrote. CPU, `sense.gpu-layers` 0. | `HH-MM-SS-mmm_sense_out_NNN.txt`, the generation unchanged. |
-| `gemma-brain.exe gemma.txt` | `gemma.text`, the whole prompt in Gemma 4's own form. `gemma.image` is raw base64 or empty. When the image is set, the prompt must already contain `<__media__>`. | `HH-MM-SS-mmm_gemma_out_NNN.txt`, the generation unchanged. |
-| `chatterbox.exe chatterbox.txt` | `chatterbox.variant` is `nano`, `turbo`, or `v3`. The GGUF architecture selects the engine. `chatterbox.text` is spoken as written. `chatterbox.play` is `on` or `off`. | `HH-MM-SS-mmm_chatterbox_out_NNN.txt` names the wav. `on` plays that wav on the default speakers. `off` skips PlaySound. |
-| `chatterbox-bake.exe bake.txt` | `bake.t3`, `bake.s3`, `bake.reference`. `bake.cond-seconds` is 15 for nano and turbo, 6 for v3. | Rewrites those two model files in place, writes `HH-MM-SS-mmm_bake_out_NNN.txt` with both paths, and exits. |
-| `.\.venv\Scripts\python.exe mouth.py TEXT [TEXT ...]` | `chatterbox.txt` for the GGUF pairs and numeric knobs. The sentences, `--model`, and `--lang` come from the command. One process takes every chunk. | For each TEXT: overwrites `mouth.txt` with `chatterbox.play off`, then one `chatterbox.exe mouth.txt`. `mouth.py` plays the wavs and overlaps the next synthesize. |
-| `.\.venv\Scripts\python.exe hear.py SECONDS` | The PC mic for `SECONDS`, then `nemo-speech.exe transcribe` once. | Transcript on stdout. Exit code is the recognizer's. No resident output file. |
-| `.\.venv\Scripts\python.exe gemma.py [--image PATH] QUESTION` | `gemma.txt` knobs via `gemma_run.txt`. Question and optional image file (base64). | Prints `*_gemma_out_*.txt` generation to stdout (thinking included). |
-| `.\.venv\Scripts\python.exe qwen.py QUESTION` | `sense.txt` knobs via `sense_run.txt`. Text only. | Prints `*_sense_out_*.txt` generation to stdout. `--image` exits 2 (no vision in sense). |
+| `vad.exe vad.txt` | WASAPI capture named by `vad.device`. Silero ONNX, window 512. | One utterance, then exit. `HH-MM-SS-mmm_vad_out_NNN.txt` names the wav. |
+| `ear.exe ear.txt` | `ear.input`, one wav. | `HH-MM-SS-mmm_ear_out_NNN.txt`, recognizer text unchanged. Empty `ear.language` omits `--language`. |
+| `sense.exe sense.txt` | `sense.text`, the whole prompt. CPU, `sense.gpu-layers` 0. | `HH-MM-SS-mmm_sense_out_NNN.txt`, generation unchanged. |
+| `gemma-brain.exe gemma.txt` | `gemma.text` in Gemma 4 form. `gemma.image` is raw base64 or empty. An image requires `<__media__>` already in the prompt. | `HH-MM-SS-mmm_gemma_out_NNN.txt`, generation unchanged. |
+| `chatterbox.exe chatterbox.txt` | Variant `nano`, `turbo`, or `v3`. `chatterbox.text` spoken as written. `chatterbox.play` is `on` or `off`. | `HH-MM-SS-mmm_chatterbox_out_NNN.txt` names the wav. `on` plays it on the default speakers. `off` skips PlaySound. |
+| `chatterbox-bake.exe bake.txt` | `bake.t3`, `bake.s3`, `bake.reference`. Cond-seconds 15 for nano and turbo, 6 for v3. | Rewrites those two model files. `HH-MM-SS-mmm_bake_out_NNN.txt`. |
 
-The resident output file is created with `CREATE_NEW`. The number starts at `000`. An existing name is kept and the next number is used. Nothing in the program watches another program.
-
-To run the chain, connect the files yourself. Play known speech into `CABLE Input`. Point `vad.device` at `CABLE Output`. Put the wav name `vad.exe` wrote into `ear.input`. Put the recognizer text into the next prompt file as that model's own prompt, still unchanged by code. Put the sentence the brain wrote into `chatterbox.text`, or pass that sentence to `mouth.py`. Judge each step by the file that step wrote. Judge `hear.py` by its stdout.
-
-## Mouth one-shot
-
-`mouth.py` is the speak entry. It does not synthesize. The Lego contract stays settings file, then `chatterbox.exe`.
+One-shots from the repository root:
 
 ```
-.\.venv\Scripts\python.exe mouth.py [--model nano|turbo|v3] [--lang TAG] "First sentence." "Second sentence."
+.\.venv\Scripts\python.exe mouth.py [--model nano|turbo|v3] [--lang TAG] TEXT [TEXT ...]
+.\.venv\Scripts\python.exe hear.py SECONDS [--model PATH] [--device cpu] [--language TAG] [--mic NAME_OR_INDEX]
+.\.venv\Scripts\python.exe gemma.py [--image PATH] "Question."
+.\.venv\Scripts\python.exe qwen.py "Question."
 ```
 
-One process takes every chunk. A separate process per chunk is a reported fallback, not a silent one. SPEAK GO for that role comes from SPOC or Wojciech. The role kit is `BOTS.md`.
+`mouth.py` does not synthesize. One process takes every TEXT chunk. `--model` defaults to `nano`. Omitted `--lang` is `en` for nano and turbo, and `pl` for v3. It rewrites `mouth.txt` with `chatterbox.play off`, runs `.\chatterbox.exe mouth.txt` once per chunk, and plays each wav on the default speakers while the next chunk synthesizes. `chatterbox.txt` stays untouched. Empty text, an unknown model, an empty language, and a text line whose entire content is `<<` exit 2 before the first `chatterbox.exe`.
 
-`--model` defaults to `nano`. When `--lang` is omitted, `nano` and `turbo` use `en`, and `v3` uses `pl`. A passed `--lang` is written as given and shared by every chunk. Empty text, an unknown model, an empty language, and any text line whose entire content is `<<` are rejected with exit code 2 before the first `chatterbox.exe`.
+`hear.py` records the PC microphone for `SECONDS`, runs `nemo-speech.exe transcribe` once, and prints the transcript on stdout. Further flags (`--format`, `--rate`, `--endpointing`, `--stop-history-eou-ms`, `--verbatim`, `--no-punctuation`, `--stream`) match that recognizer. Default model is `ear.gguf` beside the script. Cable proofs stay on the virtual cable.
 
-For each TEXT, the script re-reads `chatterbox.txt`, drops `chatterbox.variant`, `chatterbox.language`, `chatterbox.play`, and the text block, writes `mouth.txt` with those keys plus `chatterbox.play off`, and runs `.\chatterbox.exe mouth.txt` once (synthesize only). `mouth.py` plays each wav with `PlaySoundW` (`SND_FILENAME | SND_NODEFAULT`) on the default speakers and synthesizes the next chunk while the current wav plays. A non-zero synthesize code stops the loop. Success is exit 0 and sound from the real speakers.
+`gemma.py` copies `gemma.txt` knobs into `gemma_run.txt` and leaves `gemma.txt` untouched. It opens the Gemma 4 thought channel, runs `gemma-brain.exe gemma_run.txt`, and prints the generation, thinking included. Prefer `trident-nvidia` for speed; Iris Vulkan runs the same executable. `--image` is a file path stored as raw base64 in `gemma.image`. The script inserts `<__media__>` when the question lacks it.
 
-`chatterbox.play off` is how synthesize finishes without Speakers playback inside `chatterbox.exe`, so `mouth.py` owns the play queue and can overlap it with the next chunk.
+`qwen.py` copies `sense.txt` knobs into `sense_run.txt`, wraps the question as Qwen3 turns, and runs `sense.exe sense_run.txt`. Stdout is the generation. Qwen3-0.6B has no vision. `qwen.py --image` exits 2. Image input is `gemma.py --image`.
 
-## Hearing one-shot
+Sense sets batch threads from `sense.threads`. There is no `sense.threads-batch` key. Gemma reads `gemma.threads-batch` from its file.
 
-`hear.py` records the normal PC microphone for a fixed number of seconds, then runs `nemo-speech.exe transcribe` once and prints the transcript to stdout. Cable proofs still use VB-Audio. This entry is the laptop mic.
+The resident output file is created with `CREATE_NEW`. The number starts at `000`. An existing name is kept and the next number is used. Nothing in a program watches another program. Connect the chain by editing text files. Judge each resident by the file it wrote. Judge a one-shot by its stdout, and a Mouth one-shot by the speakers as well.
 
-```
-.\.venv\Scripts\python.exe hear.py SECONDS [--model PATH] [--device cpu] [--language TAG] [--mic NAME_OR_INDEX] [--format text] [--rate 16000] [--endpointing on|off] [--stop-history-eou-ms 1200] [--verbatim] [--no-punctuation] [--stream]
-```
-
-Defaults in the script: model `ear.gguf` beside the script, device `cpu`, format `text`, rate `16000`, endpointing `on`, stop-history end-of-utterance `1200`. The recognizer command always includes `--quiet`. `--language` is added only when the tag is non-empty. `--verbatim`, `--no-punctuation`, and `--stream` are added only when those flags are set. `SECONDS` must be greater than 0. Rate below 8000 is rejected.
-
-Mic choice: no `--mic` uses the Windows default input when it has input channels and the name does not contain `cable`, otherwise the first input whose name contains `microphone` or `mic` and does not contain `cable`. A numeric `--mic` is that device index. A name substring matches only devices whose names do not contain `cable`.
-
-Subprocess pipes use UTF-8 with `errors=replace`. Device-name prints do the same, so a cp1252 console does not drop a friendly name that contains a trademark byte. The temporary wav lives in a `hear_*` directory under the repo root and is removed when the process exits. `!/hear.py` keeps the script tracked. Do not commit those temp wavs.
-
-
-## Brain one-shots
-
-`gemma.py` drives `gemma-brain.exe`. Prefer the Nvidia worker for speed; Iris Vulkan also runs it. Never overwrite `gemma.txt` knobs; write `gemma_run.txt`. Image input is a file path on the CLI; the script stores raw base64 in `gemma.image` and puts `<__media__>` in `gemma.text`. Not a path, not a URL, not `data:image` in the settings file.
-
-`qwen.py` drives `sense.exe` (Qwen3) on Iris. Text only. `sense.exe` has no `sense.image`. Until Wojciech authorizes C++ vision, `qwen.py --image` exits 2 and points at `gemma.py --image`.
-
-Seat: COOK GO via Executor. Not Mouth. Not Ear.
 ## Prove
 
-Prove on Windows, on this machine, with the real executables.
+Prove on this Windows machine with the real executables.
 
-1. Prove one program at a time. A pass is that executable writing the file its template describes. A Mouth one-shot pass is `mouth.py` writing `mouth.txt` with `chatterbox.play off`, `chatterbox.exe` writing `HH-MM-SS-mmm_chatterbox_out_NNN.txt` plus the wav, and `mouth.py` playing those wavs on the real speakers with the next synthesize overlapped. A hearing one-shot pass is `hear.py` printing a transcript from the PC mic. It does not replace the cable proof.
-2. Then prove the whole chain on the same cable. Speech goes in through `CABLE Input`. The text files carry the words. One utterance comes out of the real speakers because `chatterbox.exe` played it. Those speakers are not the cable input.
+1. One program at a time. A pass is that executable writing the file its template describes. A Mouth pass is `mouth.py` writing `mouth.txt` with `chatterbox.play off`, `chatterbox.exe` writing the out file and the wav, and sound from the real speakers. A hear pass is `hear.py` printing a transcript from the PC mic.
+2. Then the whole chain on the cable. Speech goes in through `CABLE Input`. The text files carry the words. One utterance comes out of `Speakers (Realtek(R) Audio)` because the mouth played it.
 3. Run a failed proof once more. If it fails again, leave the system able to start, write what happened and what will change into the commit delta, and change approach. Do not add a harness, a mock, or a script that pretends a program ran.
 
 ## Change the code
 
-Read the source of every program you edit, in full, and every helper it calls, in full. Follow each call to the function it names. Follow each key in each template to the line that reads it. Follow each comment, printed line, and usage line to the behavior it describes. A description that does not match the code is an error. An illogical branch, a second way to do the same work, and an unused path are errors.
+Read the source of every program you edit, in full, and every helper it calls, in full. Follow each key to the line that reads it. A description that does not match the code is an error. Delete duplicated logic, unused parameters, and any code that overrides the text file. One behavior has one owner.
 
-Delete duplicated logic, unused parameters, and any code that overrides the text file. One behavior has one owner. Prefer fewer lines. What should remain is the executable, the text file it reads, and the files it writes.
-
-The mouth one-shot is `mouth.py` plus the existing `chatterbox.exe`. The hearing one-shot is `hear.py` plus the existing `nemo-speech.exe`. Do not add a second synthesizer or a second recognizer. The finish line in `GOAL.md` says the five residents stay loaded. This tip still exits after one result. Reach that finish line inside the same executable. Do not add a process that starts the others.
+The mouth one-shot is `mouth.py` plus `chatterbox.exe`. The hearing one-shot is `hear.py` plus `nemo-speech.exe`. The brain one-shots are `gemma.py` plus `gemma-brain.exe`, and `qwen.py` plus `sense.exe`. Do not add a second synthesizer or a second recognizer. Do not add a process that starts the five residents. The finish line in `GOAL.md` is those residents staying loaded, inside the same executable.
 
 When behavior changes, rewrite `GOAL.md`, `AGENTS.md`, `RULES.md`, `CODE_REVIEW_CHECKLIST.md`, and `BOTS.md` from zero so they match the tree. Keep them atemporal.
 
-## What Git will take
+## Git
 
-`.gitignore` is a whitelist. `*` ignores everything until a later `!` rule names it. Tracked files stay tracked. A brand-new path is committed only after a whitelist rule names it, or it is not in the commit. `!/mouth.py` is the speak entry. `!/hear.py` is the hearing entry. `!/gemma.py` and `!/qwen.py` are the brain one-shots. `!/BOTS.md` is the role kit. `!/CPP_DELTA_FINDINGS.md` parks C++ review notes. All stay in the repository.
+`.gitignore` is a whitelist. `*` ignores everything until a later `!` rule names it. Tracked files stay tracked. A new path is committed only after a whitelist rule names it. `!/mouth.py`, `!/hear.py`, `!/gemma.py`, and `!/qwen.py` keep those one-shots in the repository.
 
-Leave `mouth.txt`, generated audio, `hear_*` leftovers, `*_out_*.txt`, `*_chatterbox_out_*`, models, `.install`, `.venv`, `C:\tgemma`, and the other build trees uncommitted. Do not commit `*.pid`, `*.stop`, or run logs. The patterns at the bottom of `.gitignore` exist to keep those out even if a broader rule would have allowed them.
+Leave `mouth.txt`, `gemma_run.txt`, `sense_run.txt`, generated audio, `hear_*` leftovers, `*_out_*.txt`, `*_chatterbox_out_*`, models, `.install`, `.venv`, `C:\tgemma`, and the other build trees uncommitted. Do not commit `*.pid`, `*.stop`, or run logs.
 
 ## Autonomy
 
-You have this PC for the job: PowerShell, the compilers, the installer, and the proofs. Stay inside the Trident workspace except for a read-only lookup of the toolchain or the WASAPI friendly names. Follow `RULES.md` for commits and history. Iris commits only, on `runner-h`. Do not open a pull request. Role seating, speak, hear, and cook routing live in `BOTS.md`.
+You have this PC: PowerShell, the compilers, the installer, and the proofs. Stay inside the Trident workspace except for a read-only lookup of the toolchain or the WASAPI friendly names. Follow `RULES.md`. Iris commits only, on `runner-h`. Do not open a pull request.

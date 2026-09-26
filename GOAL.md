@@ -1,103 +1,116 @@
 # GOAL
 
-Trident is a voice assistant that stays in memory.
+Trident is a voice assistant that stays in memory. The microphone stays open. Voice activity detection notices speech. The recognizer writes the words. The gate and the brain each read one whole prompt and write the generation unchanged. The mouth speaks that text on the real speakers. The person hears the assistant because the mouth spoke.
 
-The microphone stays open. Voice activity detection notices speech by itself. The recognizer writes the words. The gate and the brain are each one model: the text they read is the whole prompt, and the text they write is the generation, unchanged. The mouth speaks that text on the real speakers. The person hears the assistant because the mouth spoke.
+Files are the only meeting place. One role, one executable, one settings file. Nothing starts the five residents or carries their messages. There is no orchestrator, supervisor, harness, message bus, or service manager.
 
 ## Programs
 
-Five residents. Each role is one executable. When they run together they meet only through files.
+Five residents. Each takes one text file and no flags. Usage is `usage: program file.txt`. Run from the directory where the result should appear. Paths inside a settings file resolve from that file's directory.
 
-| Role | Executable | Job |
+| Role | Executable | Settings | Writes |
+| --- | --- | --- | --- |
+| Capture | `vad.exe` | `vad.txt` | `HH-MM-SS-mmm_vad_out_NNN.txt` names the wav; the wav sits beside it |
+| Recognizer | `ear.exe` | `ear.txt` | `HH-MM-SS-mmm_ear_out_NNN.txt`, recognizer text unchanged |
+| Gate | `sense.exe` | `sense.txt` | `HH-MM-SS-mmm_sense_out_NNN.txt`, generation unchanged |
+| Brain | `gemma-brain.exe` | `gemma.txt` | `HH-MM-SS-mmm_gemma_out_NNN.txt`, generation unchanged |
+| Mouth | `chatterbox.exe` | `chatterbox.txt` | `HH-MM-SS-mmm_chatterbox_out_NNN.txt` names the wav |
+
+`vad.exe` captures WASAPI by friendly name (`PKEY_Device_FriendlyName`), shared mode. Silero ONNX, window 512. It resamples to `vad.rate` and exits after one finished utterance.
+
+`ear.exe` reads `ear.input` (one wav) and launches `nemo-speech.exe transcribe`. Empty `ear.language` omits `--language`.
+
+`sense.exe` reads `sense.text` as the whole prompt, including the Qwen3 turn markers the user wrote. CPU, `sense.gpu-layers` 0. The model is Qwen3-0.6B. It has no vision input.
+
+`gemma-brain.exe` reads `gemma.text` in Gemma 4's own form. `gemma.image` is raw base64 or empty. When the image is set, the prompt already contains `<__media__>`.
+
+`chatterbox.exe` speaks `chatterbox.text` as written. `chatterbox.variant` is `nano`, `turbo`, or `v3`. The GGUF architecture selects the engine. `chatterbox.play` is `on` or `off`. `on` plays the wav with `PlaySoundW` on the default speakers. `off` writes the wav and skips PlaySound.
+
+`chatterbox-bake.exe` bakes one reference voice into the mouth models and exits. It is not a resident. `bake.txt` names `bake.t3`, `bake.s3`, and `bake.reference`. `bake.cond-seconds` is 15 for nano and turbo, 6 for v3. It rewrites those two model files in place and writes `HH-MM-SS-mmm_bake_out_NNN.txt` with both paths.
+
+`install.py` builds the tree. The only install command is `python install.py install.txt`. It reads `install.txt` and nothing else for its parameters. It creates `.venv` when needed, clones the pinned ggml, llama.cpp, and NeMo-Speech trees under `.install`, configures CMake, builds, downloads the models named in `install.txt`, and bakes nano, turbo, and v3 with `chatterbox-bake.exe`. `install.publish` stays `off`. The installer does not start the residents.
+
+One-shots exit after one result. They do not stay loaded, and they do not start the five.
+
+| Entry | Drives | Job |
 | --- | --- | --- |
-| Capture | `vad.exe` | WASAPI capture by friendly name. Silero notices the utterance. Writes the wav and a text file that names that wav. |
-| Recognizer | `ear.exe` | Transcribes that wav. Writes the recognizer's text, unchanged. |
-| Gate | `sense.exe` | Its own model. The text in its file is the whole prompt. Writes the generation, unchanged. |
-| Brain | `gemma-brain.exe` | The text in its file is the whole prompt, in the model's own form. Writes the generation, unchanged. |
-| Mouth | `chatterbox.exe` | Speaks the text in its settings file as written. When `chatterbox.play` is `on`, plays the wav on the default speakers. |
+| `mouth.py` | `chatterbox.exe` | Speak one or more sentences. Playback stays in `mouth.py`. |
+| `hear.py` | `nemo-speech.exe` | Record the PC mic, print one transcript. |
+| `gemma.py` | `gemma-brain.exe` | Gemma question, optional image file. Prefer an Nvidia GPU. |
+| `qwen.py` | `sense.exe` | Qwen3 text question. |
 
-`chatterbox-bake.exe` bakes one reference voice into the mouth's model files and exits. It is not a resident.
+## Lego
 
-`mouth.py` is the speak one-shot. It does not synthesize. Each chunk is a cold `chatterbox.exe` run with `chatterbox.play off`. `mouth.py` plays the wavs on the default speakers and synthesizes the next chunk while the current wav plays.
+The repository root holds one filled template per program: `vad.txt`, `ear.txt`, `sense.txt`, `gemma.txt`, `chatterbox.txt`, and `bake.txt`.
 
-`hear.py` is the hearing one-shot. It records the PC microphone, runs `nemo-speech.exe transcribe` once, and prints the transcript. It is not a resident. Cable proofs stay on the virtual cable. `hear.py` is the laptop-mic entry.
+That file is the only source of the program's parameters. Each value is used as written. The program does not replace a number, fill a value the file left empty, or keep a second default that wins over the file. A missing required key is an error. An empty value is empty. There is no shared settings file.
 
-`install.py` builds the tree. The converters it uses are part of building. Nothing starts the five residents or carries their messages. There is no orchestrator, supervisor, harness, message bus, or service manager.
+The result file is created in the current directory with `CREATE_NEW`. The name is local time `HH-MM-SS-mmm`, an underscore, the role, `_out_`, and a number that starts at `000`. The name carries clock time only. If that name exists, the number increases. An existing file is kept. The person connects one program's result to the next program's input by editing text files. The code does not watch a neighbor, and it keeps no pid file and no stop file.
 
-## How they meet
+Text is UTF-8. A text block is the model's own prompt or sentence, passed through unchanged. Letters outside ASCII, including Polish, pass through. The language value is a parameter of that model file. The mouth speaks the sentence as written.
 
-The Lego piece is one settings file handed to one executable. `vad.exe`, `ear.exe`, `sense.exe`, `gemma-brain.exe`, and `chatterbox.exe` each take that text file and no flags. Usage is `usage: program file.txt`.
+A tool does not exist until the user names it. Until then a turn is text in and text out. When the user names one, that tool is text the model can write and work that one program performs. The files stay the only meeting place.
 
-The repository root holds one filled template for each program: `vad.txt`, `ear.txt`, `sense.txt`, `gemma.txt`, `chatterbox.txt`, and `bake.txt`. The installer reads `install.txt` and nothing else for its own parameters.
+## Mouth
 
-That file is the only source of the program's parameters. The program uses each value as written. It does not replace a number, fill a value the file left empty, or keep a second default that wins over the file. A missing required key is an error. An empty value is empty. There is no shared settings file. Paths in a file are names in that file's directory.
-
-The result is a text file in the current directory. Its name is the local time as `HH-MM-SS-mmm`, an underscore, the role, `_out_`, and a number that starts at `000`. The year, the month, and the day are not in the name. The file is created with `CREATE_NEW`. If that name exists, the number increases. An existing file is never replaced. Those files are the history of the run. The person connects one program's result to the next program's input by editing text files. The code does not watch a neighbor, keep a pid file, or keep a stop file.
-
-Text is UTF-8. A text block is the model's own prompt or sentence, passed through unchanged. Letters outside ASCII, including Polish, pass through. The mouth does not rewrite a sentence into English. The language value is a parameter of that model file.
-
-When the brain's file includes an image, that image is the base64 the user wrote, and the prompt already contains the marker that model needs. When it does not, the turn is text only. The code does not add a token the user did not write, does not build a tool schema, and does not search the disk for a picture.
-
-## Mouth one-shot
-
-From the repository root, one process, every chunk a positional argument:
+From the repository root:
 
 ```
 .\.venv\Scripts\python.exe mouth.py [--model nano|turbo|v3] [--lang TAG] TEXT [TEXT ...]
 ```
 
-The seated Mouth role uses that one process. A separate process per chunk is a reported fallback, not a silent one.
+One process takes every chunk. A separate process per chunk is only a reported fallback. `--model` defaults to `nano`. Omitted `--lang` is `en` for `nano` and `turbo`, and `pl` for `v3`. A passed `--lang` is written as given and shared by every chunk.
 
-`--model` is `nano`, `turbo`, or `v3`. The default is `nano`. When `--lang` is omitted, `nano` and `turbo` use `en`, and `v3` uses `pl`. A passed `--lang` is written as given. The same model and language apply to every chunk.
+At least one TEXT is required. Empty text, an unknown model, an empty language, and any text line whose entire content is `<<` exit 2 before the first `chatterbox.exe`. Every chunk is validated first.
 
-At least one TEXT argument is required. Empty text, an unknown model, an empty language, and any text line whose entire content is `<<` exit 2 before the first `chatterbox.exe`. Every chunk is validated first.
+For each chunk the script re-reads `chatterbox.txt`, keeps the GGUF pair lines and the numeric knobs, and drops `chatterbox.variant`, `chatterbox.language`, `chatterbox.play`, and the existing `chatterbox.text` block. It writes UTF-8 with no BOM to `mouth.txt`. `chatterbox.txt` stays untouched. It appends the variant, the language, `chatterbox.play off`, and a `chatterbox.text` block holding that chunk, then runs `.\chatterbox.exe mouth.txt` once, current directory the repository root, no shell.
 
-For each chunk the script reads `chatterbox.txt`, copies every line (the six GGUF pair lines and the numeric knobs included), and drops `chatterbox.variant`, `chatterbox.language`, `chatterbox.play`, and the existing `chatterbox.text` block. It writes UTF-8 with no BOM to `mouth.txt`, overwriting `mouth.txt` only. `chatterbox.txt` stays untouched. It appends the variant, the language, `chatterbox.play off`, and a `chatterbox.text` block holding that chunk. It then runs `.\chatterbox.exe mouth.txt` once, current directory the repository root, no shell. That run synthesizes and writes the wav. `chatterbox.play off` skips PlaySound inside `chatterbox.exe`.
+`mouth.py` plays each wav with `PlaySoundW` (`SND_FILENAME | SND_NODEFAULT`) on the default speakers and synthesizes the next chunk while the current wav plays. The next wav starts when the current play returns. A non-zero synthesize exit stops the loop. `mouth.txt` holds the last chunk. Synthesis stays inside `chatterbox.exe`.
 
-`mouth.py` plays each wav with `PlaySoundW` on the default waveform device (`SND_FILENAME | SND_NODEFAULT`). It synthesizes the next chunk while the current wav plays, about one chunk ahead. The next wav starts when the current play returns. A non-zero synthesize exit stops the loop. `mouth.txt` holds the last chunk. There is no second synthesizer in Python or in C++.
+Direct `chatterbox.exe` with `chatterbox.play on` plays the wav itself. A Mouth one-shot is heard on the real speakers. Chain playback uses those speakers. The cable input stays free of the mouth.
 
-`chatterbox.play` is required in the settings file and is `on` or `off`. Direct `chatterbox.exe` with `on` plays the wav itself. A Mouth one-shot is heard on the real speakers. Those speakers are not the virtual-cable input.
-
-## Hear one-shot
+## Hear
 
 From the repository root, with the repo virtualenv so `sounddevice` is present:
 
 ```
-.\.venv\Scripts\python.exe hear.py SECONDS [--model PATH] [--device cpu] [--language TAG] [--mic NAME_OR_INDEX]
+.\.venv\Scripts\python.exe hear.py SECONDS [--model PATH] [--device cpu] [--language TAG] [--mic NAME_OR_INDEX] [--format text] [--rate 16000] [--endpointing on|off] [--stop-history-eou-ms 1200] [--verbatim] [--no-punctuation] [--stream]
 ```
 
-Further flags match the ear/NeMo surface: `--format`, `--rate`, `--endpointing on|off`, `--stop-history-eou-ms`, `--verbatim`, `--no-punctuation`, `--stream`. The default model is `ear.gguf` beside the script. The default device argument is `cpu`. Omitted or blank `--language` omits `--language` on the recognizer command. `SECONDS` is required and must be greater than 0.
+`SECONDS` must be greater than 0. Rate below 8000 is rejected. Defaults: model `ear.gguf` beside the script, device `cpu`, format `text`, rate `16000`, endpointing `on`, stop-history end-of-utterance `1200`. The recognizer command always includes `--quiet`. `--language` is added only when the tag is non-empty. `--verbatim`, `--no-punctuation`, and `--stream` are added only when those flags are set.
 
-The microphone is the normal PC input. With no `--mic`, the Windows default input is used when its name does not contain `cable`; otherwise the first non-cable input whose name contains `microphone` or `mic`. A numeric `--mic` is that device index. A name substring skips any device whose name contains `cable`. On this worker the usual mic is the Intel Smart Sound array.
+With no `--mic`, the Windows default input is used when it has input channels and the name does not contain `cable`; otherwise the first input whose name contains `microphone` or `mic` and does not contain `cable`. A numeric `--mic` is that device index. A name substring matches only devices whose names do not contain `cable`.
 
-The script records for `SECONDS`, writes a temporary wav under the repo root, runs `nemo-speech.exe transcribe` once, prints that process's stdout, and exits with that process's code. Subprocess pipes and device-name prints use UTF-8 with `errors=replace`. It does not speak.
-
+The script records for `SECONDS`, writes a temporary wav in a `hear_*` directory under the repo root, runs `nemo-speech.exe transcribe` once, prints that stdout, and exits with that process's code. Subprocess pipes and device-name prints use UTF-8 with `errors=replace`. The temporary directory is removed when the process exits. `hear.py` does not speak. Cable proofs stay on the virtual cable. This entry is the PC microphone.
 
 ## Brain one-shots
 
-`gemma.py` is the Gemma brain one-shot on a GPU worker (prefer Nvidia; Iris Vulkan works). It does not load the model in Python. It rewrites a sidecar `gemma_run.txt` from `gemma.txt` knobs, sets `gemma.text` to a Gemma 4 turn that opens the thought channel, and sets `gemma.image` to raw base64 of an image file or empty. When an image is passed, the prompt already contains `<__media__>`. It runs `gemma-brain.exe gemma_run.txt` once and prints the generation file to stdout, including thinking.
+`gemma.py` drives `gemma-brain.exe`. Prefer an Nvidia GPU. A Vulkan build runs the same executable where CUDA is absent. The script does not load the model in Python. It copies knobs from `gemma.txt` into `gemma_run.txt` and leaves `gemma.txt` untouched. `gemma.text` is a Gemma 4 turn that opens the thought channel. `--image PATH` is a file on disk. The script stores raw base64 in `gemma.image` and puts `<__media__>` in the prompt when that marker is absent. The settings value is that raw base64. It runs `gemma-brain.exe gemma_run.txt` once and prints the generation to stdout, thinking included. An empty question exits 2.
 
-`
+```
 .\.venv\Scripts\python.exe gemma.py [--image PATH] "Question."
-`
+```
 
-`qwen.py` is the Qwen (sense) brain one-shot on Iris. It rewrites `sense_run.txt` from `sense.txt`, wraps the question in Qwen3 turn markers, runs `sense.exe sense_run.txt`, and prints the generation to stdout. `sense.exe` has no image input. `qwen.py --image` exits 2 until Wojciech authorizes a C++ vision path.
+`qwen.py` drives `sense.exe`. Text only. Qwen3-0.6B has no vision. The script copies knobs from `sense.txt` into `sense_run.txt`, wraps the question in Qwen3 turn markers, runs `sense.exe sense_run.txt` once, and prints the generation to stdout. `qwen.py --image` exits 2. An empty question exits 2. `sense.exe` has no image key.
 
-`
+```
 .\.venv\Scripts\python.exe qwen.py "Question."
-`
-## Tools
+```
 
-A tool does not exist until the user names it. Do not invent tools. Do not build a tool framework, a registry, or a parser that chooses a call. Until the user names one, a turn is text in and text out. When the user names one, that tool is text the model can write and work that one program performs. The files stay the only meeting place.
+`sense.exe` must set `cpuparams_batch.n_threads` to `cpuparams.n_threads`; otherwise the batch path access-violates.
+
+## Chain
+
+Connect the files by hand. Play known speech into the virtual-cable input. Point `vad.device` at the cable output. Put the wav name `vad.exe` wrote into `ear.input`. Put the recognizer text into the next prompt file as that model's own prompt, still unchanged. Put the sentence the brain wrote into `chatterbox.text`, or pass that sentence to `mouth.py`. Judge each resident by the file it wrote. Judge `hear.py`, `gemma.py`, and `qwen.py` by stdout.
 
 ## Finish line
 
 Stop when all of this is true on the computer where the work is running:
 
 1. The five residents stay in memory. The microphone stays open. Voice activity detection runs by itself.
-2. Each role is still one executable. Nothing starts the five or carries their messages. They still meet only through the text files above. A Mouth one-shot is `mouth.py` driving `chatterbox.exe` once per chunk with `chatterbox.play off`, playing wavs on the speakers with one-chunk overlap. A hearing one-shot is `hear.py` recording the PC mic and printing one `nemo-speech.exe` transcript. A Gemma brain one-shot is `gemma.py` driving `gemma-brain.exe`. A Qwen brain one-shot is `qwen.py` driving `sense.exe` (text only).
+2. Each role is still one executable and one settings file. They meet only through those files. One-shots remain `mouth.py`, `hear.py`, `gemma.py`, and `qwen.py` as specified above.
 3. The source matches the templates. Duplicate and unused paths are gone. No code overrides a value the user wrote.
-4. A virtual-audio-cable proof passes for each program and for the whole chain. Speech goes in on the cable, the text files carry the words, and one utterance comes out of the real speakers because the mouth spoke. During that proof the mouth is not playing into the cable.
+4. A virtual-audio-cable proof passes for each program and for the whole chain. Speech goes in on the cable, the text files carry the words, and one utterance comes out of the real speakers because the mouth spoke. During that proof the mouth stays off the cable input. `hear.py` is a separate PC-mic proof.
 5. A new session with no prior chat can continue from `GOAL.md`, `AGENTS.md`, `RULES.md`, and `BOTS.md`. Use `CODE_REVIEW_CHECKLIST.md` when reviewing.
 
-Each executable still performs one unit of work and exits. Closing that gap means the same executable stays loaded. It does not mean adding a second program to supervise the five. `mouth.py` and `hear.py` do not close that gap.
+Each executable still performs one unit of work and exits. Closing that gap means the same executable stays loaded. It does not mean a second program that supervises the five. The one-shots do not close that gap.
