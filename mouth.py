@@ -1,4 +1,4 @@
-"""Mouth one-shot. Write mouth.txt and run chatterbox.exe once."""
+"""Mouth speak entry. For each TEXT, write mouth.txt and run chatterbox.exe once."""
 
 import argparse
 import os
@@ -72,14 +72,12 @@ def settings_text(model, lang, sentence):
 
 def main():
     parser = argparse.ArgumentParser(prog="mouth.py")
-    parser.add_argument("text", nargs="?")
+    parser.add_argument("text", nargs="*")
     parser.add_argument("--model", default="nano")
     parser.add_argument("--lang", default=None)
     args = parser.parse_args()
-    if args.text is None:
-        die("usage: mouth.py [--model nano|turbo|v3] [--lang TAG] TEXT")
-    if args.text.strip() == "":
-        die("empty text")
+    if not args.text:
+        die("usage: mouth.py [--model nano|turbo|v3] [--lang TAG] TEXT [TEXT ...]")
     if args.model not in MODELS:
         die("unknown model")
     if args.lang is None:
@@ -88,26 +86,31 @@ def main():
         die("empty language")
     else:
         lang = args.lang
-    if any(line == "<<" for line in physical_lines(args.text)):
-        die("text line is only <<")
-
-    payload = settings_text(args.model, lang, args.text)
-    mouth = ROOT / "mouth.txt"
-    try:
-        mouth.write_bytes(payload.encode("utf-8"))
-    except OSError as exc:
-        die("cannot write mouth.txt: " + str(exc))
+    for sentence in args.text:
+        if sentence.strip() == "":
+            die("empty text")
+        if any(line == "<<" for line in physical_lines(sentence)):
+            die("text line is only <<")
 
     os.chdir(ROOT)
-    try:
-        completed = subprocess.run(
-            [".\\chatterbox.exe", "mouth.txt"],
-            cwd=ROOT,
-            shell=False,
-        )
-    except OSError as exc:
-        die("cannot run chatterbox.exe: " + str(exc))
-    raise SystemExit(completed.returncode)
+    mouth = ROOT / "mouth.txt"
+    for sentence in args.text:
+        payload = settings_text(args.model, lang, sentence)
+        try:
+            mouth.write_bytes(payload.encode("utf-8"))
+        except OSError as exc:
+            die("cannot write mouth.txt: " + str(exc))
+        try:
+            completed = subprocess.run(
+                [".\\chatterbox.exe", "mouth.txt"],
+                cwd=ROOT,
+                shell=False,
+            )
+        except OSError as exc:
+            die("cannot run chatterbox.exe: " + str(exc))
+        if completed.returncode != 0:
+            raise SystemExit(completed.returncode)
+    raise SystemExit(0)
 
 
 if __name__ == "__main__":

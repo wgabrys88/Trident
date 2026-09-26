@@ -67,7 +67,7 @@ Each resident takes one text file and no flags. The usage line is `usage: progra
 | `gemma-brain.exe gemma.txt` | `gemma.text`, the whole prompt in Gemma 4's own form. `gemma.image` is raw base64 or empty. When the image is set, the prompt must already contain `<__media__>`. | `HH-MM-SS-mmm_gemma_out_NNN.txt`, the generation unchanged. |
 | `chatterbox.exe chatterbox.txt` | `chatterbox.variant` is `nano`, `turbo`, or `v3`. The GGUF architecture selects the engine. `chatterbox.text` is spoken as written. | `HH-MM-SS-mmm_chatterbox_out_NNN.txt` names the wav. The wav is played on the default speakers. |
 | `chatterbox-bake.exe bake.txt` | `bake.t3`, `bake.s3`, `bake.reference`. `bake.cond-seconds` is 15 for nano and turbo, 6 for v3. | Rewrites those two model files in place, writes `HH-MM-SS-mmm_bake_out_NNN.txt` with both paths, and exits. |
-| `python mouth.py TEXT` | `chatterbox.txt` for the GGUF pairs and numeric knobs. The sentence, `--model`, and `--lang` come from the command. | Overwrites `mouth.txt`, then the same chatterbox outputs as one `chatterbox.exe mouth.txt` run. |
+| `python mouth.py TEXT [TEXT ...]` | `chatterbox.txt` for the GGUF pairs and numeric knobs. The sentences, `--model`, and `--lang` come from the command. | For each TEXT: overwrites `mouth.txt`, then one `chatterbox.exe mouth.txt` run. |
 
 The output file is created with `CREATE_NEW`. The number starts at `000`. An existing name is kept and the next number is used. Nothing in the program watches another program.
 
@@ -78,12 +78,12 @@ To run the chain, connect the files yourself. Play known speech into `CABLE Inpu
 `mouth.py` is the speak entry. It does not synthesize. The Lego contract stays settings file, then `chatterbox.exe`.
 
 ```
-python mouth.py [--model nano|turbo|v3] [--lang TAG] "The sentence to speak."
+python mouth.py [--model nano|turbo|v3] [--lang TAG] "First sentence." "Second sentence."
 ```
 
-`--model` defaults to `nano`. When `--lang` is omitted, `nano` and `turbo` use `en`, and `v3` uses `pl`. A passed `--lang` is written as given. Empty text, an unknown model, an empty language, and any text line whose entire content is `<<` are rejected with exit code 2, and `chatterbox.exe` is not started.
+`--model` defaults to `nano`. When `--lang` is omitted, `nano` and `turbo` use `en`, and `v3` uses `pl`. A passed `--lang` is written as given and shared by every chunk. Empty text, an unknown model, an empty language, and any text line whose entire content is `<<` are rejected with exit code 2 before the first `chatterbox.exe` start.
 
-The script reads `chatterbox.txt` in the repository root, copies every line through (the six GGUF pair lines and the numeric knobs included), and drops only `chatterbox.variant`, `chatterbox.language`, and the existing `chatterbox.text` block. It writes UTF-8 with no BOM to `mouth.txt`. That write overwrites `mouth.txt` only. `chatterbox.txt` stays untouched. It appends `chatterbox.variant`, `chatterbox.language`, and a `chatterbox.text` block holding the sentence. It then runs `.\chatterbox.exe mouth.txt` once, current directory the repository root, no shell, and exits with that process's exit code. It does not rerun.
+For each TEXT, the script re-reads `chatterbox.txt` in the repository root, copies every line through (the six GGUF pair lines and the numeric knobs included), and drops only `chatterbox.variant`, `chatterbox.language`, and the existing `chatterbox.text` block. It writes UTF-8 with no BOM to `mouth.txt` (overwrites `mouth.txt` only; `chatterbox.txt` stays untouched), appends `chatterbox.variant`, `chatterbox.language`, and a `chatterbox.text` block for that chunk, then runs `.\chatterbox.exe mouth.txt` once per chunk, in order, current directory the repository root, no shell. It waits for each run. A non-zero code stops the loop. All zeros exit 0.
 
 The C++ sources were not edited for this entry.
 
