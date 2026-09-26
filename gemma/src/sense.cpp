@@ -69,6 +69,7 @@ int main(int argc, char** argv) {
     params.n_predict = trident::cfg_int(values, "sense.n-predict");
     params.n_batch = trident::cfg_int(values, "sense.batch");
     params.cpuparams.n_threads = trident::cfg_int(values, "sense.threads");
+    params.cpuparams_batch.n_threads = params.cpuparams.n_threads;
     params.n_gpu_layers = trident::cfg_int(values, "sense.gpu-layers");
     params.sampling.temp = trident::cfg_float(values, "sense.temp");
     params.sampling.top_k = trident::cfg_int(values, "sense.top-k");
