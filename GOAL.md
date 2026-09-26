@@ -20,7 +20,7 @@ Five residents. Each role is one executable. When they run together they meet on
 
 `mouth.py` is the speak entry for a Mouth one-shot. It accepts one or more TEXT arguments. Each chunk is a cold `chatterbox.exe` synthesize (`chatterbox.play off`); `mouth.py` plays the wavs on Speakers and overlaps the next synthesize during playback. The script does not synthesize in Python, and it does not start capture, the recognizer, the gate, or the brain.
 
-The residents have no orchestrator, no supervisor, no harness, no message bus, and no service manager. Nothing starts the five or carries their messages. `install.py` builds the tree. The converters it uses are part of building. `mouth.py` is only the one-shot speak entry. `hear.py` is the one-shot hearing entry: record the PC mic, then `nemo-speech.exe`.
+The residents have no orchestrator, no supervisor, no harness, no message bus, and no service manager. Nothing starts the five or carries their messages. `install.py` builds the tree. The converters it uses are part of building. `mouth.py` is only the one-shot speak entry. `hear.py` is the one-shot hearing entry: record the PC mic, then `nemo-speech.exe` (UTF-8 subprocess pipes / device-name prints so cp1252 consoles do not drop the transcript).
 
 ## How they meet
 

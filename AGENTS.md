@@ -76,16 +76,17 @@ To run the chain, connect the files yourself. Play known speech into `CABLE Inpu
 
 ## Hearing one-shot
 
-hear.py records the normal PC microphone (not VB-Cable) for a fixed number of seconds, then runs 
-emo-speech.exe transcribe once and prints the transcript to stdout.
+`hear.py` records the normal PC microphone (not VB-Cable) for a fixed number of seconds, then runs `nemo-speech.exe transcribe` once and prints the transcript to stdout.
 
-`
+```
 python hear.py SECONDS [--model PATH] [--device cpu] [--language TAG] [--mic NAME_OR_INDEX]
-`
+```
 
 Useful flags mirror the ear/NeMo surface: --format, --endpointing on|off, --stop-history-eou-ms, --verbatim, --no-punctuation, --stream. Default model is ear.gguf beside the script. Default mic prefers the Windows default input when it is not a cable, else the first non-cable microphone.
 
-!/hear.py keeps the script tracked. Do not commit temp wavs under the repo root.
+Subprocess pipes and console prints use UTF-8 with `errors=replace` so WASAPI friendly names that contain trademark bytes do not raise `UnicodeDecodeError` on cp1252 Windows consoles.
+
+`!/hear.py` keeps the script tracked. Do not commit temp wavs under the repo root.
 ## Mouth one-shot
 
 `mouth.py` is the speak entry. It does not synthesize. The Lego contract stays settings file, then `chatterbox.exe`.

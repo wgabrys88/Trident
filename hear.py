@@ -11,9 +11,37 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 
 
+def configure_stdio_utf8():
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
 def die(message):
     print(message, file=sys.stderr)
     raise SystemExit(2)
+
+
+def emit(message, file=sys.stderr):
+    """Print device names / banners without crashing on non-UTF-8 consoles."""
+    try:
+        print(message, file=file)
+        return
+    except UnicodeEncodeError:
+        pass
+    encoding = getattr(file, "encoding", None) or "utf-8"
+    data = (message + "\n").encode(encoding, errors="replace")
+    buffer = getattr(file, "buffer", None)
+    if buffer is not None:
+        buffer.write(data)
+        buffer.flush()
+    else:
+        file.write(data.decode(encoding, errors="replace"))
+        file.flush()
 
 
 def pick_mic(prefer: str | None):
@@ -70,6 +98,7 @@ def record_wav(path: Path, seconds: float, mic_index: int, rate: int):
 
 
 def main():
+    configure_stdio_utf8()
     parser = argparse.ArgumentParser(prog="hear.py")
     parser.add_argument("seconds", type=float, help="how long to listen on the PC mic")
     parser.add_argument("--model", default=str(ROOT / "ear.gguf"))
@@ -98,7 +127,7 @@ def main():
         die("missing model: " + str(model))
 
     mic_index, mic_name = pick_mic(args.mic)
-    print("hear mic: " + mic_name, file=sys.stderr)
+    emit("hear mic: " + mic_name, file=sys.stderr)
 
     os.chdir(ROOT)
     with tempfile.TemporaryDirectory(prefix="hear_", dir=str(ROOT)) as tmp:
@@ -131,11 +160,19 @@ def main():
         if args.stream:
             command.append("--stream")
         try:
-            completed = subprocess.run(command, cwd=ROOT, shell=False, capture_output=True, text=True)
+            completed = subprocess.run(
+                command,
+                cwd=ROOT,
+                shell=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
         except OSError as exc:
             die("cannot run nemo-speech.exe: " + str(exc))
         if completed.stderr:
-            print(completed.stderr, file=sys.stderr, end="")
+            emit(completed.stderr.rstrip("\n"), file=sys.stderr)
         text = completed.stdout
         if text is None:
             text = ""
