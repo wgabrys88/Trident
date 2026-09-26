@@ -208,7 +208,7 @@ Do this before trusting `gemma-brain.exe` or `sense.exe` in the repo root.
 
 - [ ] **I6. Secrets and releases.** No tokens belong in the templates or the commit. Model URLs are public Hugging Face pins. **Pass:** `install.publish` is off and the diff has no credentials. **Fail:** a token, a local model, or a release upload is committed.
 
-- [ ] **I7. Generated files stay out.** Do not commit wavs, `*_out_*.txt`, `.install`, `.venv`, `C:\tgemma`, `*.pid`, `*.stop`, or run logs. `reference.wav` is the tracked bake reference, not a run output. **Pass:** `git status` shows only the review's intended files. **Fail:** a proof artifact is staged.
+- [ ] **I7. Generated files stay out.** Do not commit wavs, `*_out_*.txt`, `.install`, `.venv`, `C:\tgemma`, `*.pid`, `*.stop`, or run logs. `reference.wav` is the tracked bake reference, not a run output. Section L is the disk check for leftovers the installer never removes. **Pass:** `git status` shows only the review's intended files. **Fail:** a proof artifact is staged.
 
 - [ ] **I8. Process law.** No pull request. No amend, rebase, squash, reset, or force-push. Commit messages do not paste `GOAL.md`, this checklist, or another computer's endpoint list. **Pass:** the branch is `runner-h` and the new commit is a delta. **Fail:** history is rewritten or a PR is opened.
 
@@ -245,6 +245,49 @@ Confirm each one. Do not treat this list as a patch set. A fix that adds an orch
 - [ ] **K8. Cable proof for this tip is not on record.** G11.
 
 - [ ] **K9. Iris binaries and `C:\tgemma` may already sit on a shared disk or in this checkout.** H3. Do not judge them as the NVIDIA build.
+
+- [ ] **K10. The installer does not fully clean up after itself.** L3. A finished install still leaves empty staging directories, the ONNX Runtime zip, and converter bytecode. The skip caches are a separate, intentional retention.
+
+## L. Workspace and install cleanup
+
+Re-measure on this machine. An Iris listing is not a Pass here. Do not delete the skip caches in L4 as if they were crashed downloads. Do not commit any of them.
+
+`install.py` removes some temps only on the success path of that step. It has no final cleanup pass.
+
+Removed when that step succeeds:
+
+- `download` writes `dest` plus `.part`, then replaces the destination with the part file.
+- GGUF conversion writes `*.gguf.converting`, then replaces the destination with that file.
+- `bake_voice` deletes `.install\cache\baking\<variant>` after the baked GGUFs are copied out.
+- `embed_utf8` deletes the temporary manifest it wrote beside an ear exe.
+- `onnx_root` renames the inner `onnxruntime-win-x64-*` folder onto `.install\cache\onnxruntime`.
+
+Not removed by any step: the parent `.install\cache\baking`, the empty `.install\cache\onnxruntime-src`, `.install\cache\onnxruntime.zip`, and `scripts\__pycache__`.
+
+Kept so the next `python install.py install.txt` can skip work: `.venv`, `.install\src`, `.install\build`, `.install\cache\ckpt`, `.install\cache\ckpt-v3`, `.install\cache\gguf`, `.install\cache\onnxruntime`, `.install\cache\stamps`, and the directory in `install.build_gemma`.
+
+- [ ] **L1. No proof debris in the workspace.** From the repo root, look for `*_out_*.txt`, `*.pid`, `*.stop`, `*.run.log`, `*.run.err`, and `*.wav` other than the tracked `reference.wav`. Also look for a root `build\`, `models\`, `wav\`, `gemma\build\`, `gemma\models\`, or `gemma\llama.cpp\`. **Pass:** none of those are present, and `git status` does not stage install trees or run outputs. **Fail:** any of them are present, or a proof wav other than `reference.wav` is treated as source.
+
+- [ ] **L2. No abandoned partials.** Search the repo and the `install.build_gemma` directory for files ending in `.part`, `.gguf.converting`, or `.tmp` (not the upstream `*.tmpl` shader templates inside the pinned ggml trees), and for a non-empty `.install\cache\baking\<variant>` that still holds `t3.gguf`, `s3.gguf`, or `bake.txt`. **Pass:** none of those files or variant directories exist. **Fail:** any exist. They are a crashed install, not a skip cache.
+
+- [ ] **L3. Staging the success path leaves behind.** After a finished install, check these three paths. **Pass:** each one is either absent, or it is recorded as a Fail of `install.py` with the path and size. **Fail:** the review calls the workspace clean while any of them remain.
+
+  - `.install\cache\baking` — parent directory. `bake_voice` deletes only `baking\<variant>`.
+  - `.install\cache\onnxruntime-src` — empty shell left after `onnx_root` renames the extracted folder away.
+  - `.install\cache\onnxruntime.zip` — the download archive. `onnx_root` never deletes it once `.install\cache\onnxruntime` is complete.
+
+- [ ] **L4. Skip caches stay local and are named.** List `.venv`, `.install\src`, `.install\build`, `.install\cache\ckpt`, `.install\cache\ckpt-v3`, `.install\cache\gguf`, `.install\cache\onnxruntime`, `.install\cache\stamps`, and the `install.build_gemma` directory. Record that they exist and their sizes. **Pass:** they are untracked, they match a finished install on this machine, and the gemma build directory is the backend from H2 rather than a stale Iris Vulkan cache used as the CUDA binary. **Fail:** they are committed, or they are deleted in order to mark L3 Pass.
+
+- [ ] **L5. Converter bytecode.** `scripts\__pycache__` is created when the voice converters import `quant.py`. The installer never deletes it. **Pass:** the directory is absent, or it is recorded as an uncleaned side effect and it is not staged. **Fail:** it is committed, or a `.pyc` is cited as part of the running assistant.
+
+- [ ] **L6. Root products versus junk.** A finished install copies executables, `onnxruntime.dll`, the NeMo DLLs, and the model files named by the templates into the repo root. Those are local products. **Pass:** the root contains those products and the tracked sources, and nothing else that L1–L3 would flag. **Fail:** a second copy of a role, a log, or a partial download sits in the root and is ignored.
+
+Iris measurement when L was added. Not binding on the NVIDIA worker. Re-run L1–L6 there.
+
+- Git status on `runner-h` was clean. No `*_out_*`, pid, stop, log, `.part`, or `.gguf.converting` files. No root `build\`, `models\`, `wav\`, `gemma\build\`, `gemma\models\`, or `gemma\llama.cpp\`. The only root wav was the tracked `reference.wav`.
+- L3 leftovers were present: empty `.install\cache\baking` (0 files), empty `.install\cache\onnxruntime-src` (0 files), `.install\cache\onnxruntime.zip` (65,585,496 bytes).
+- L5 leftover: `scripts\__pycache__\quant.cpython-311.pyc` only.
+- L4 caches were present and untracked: `.install\cache\gguf` 3,042,185,536 bytes, `.install\cache\ckpt` 3,857,575,452, `.install\cache\ckpt-v3` 3,206,347,695, `.install\cache\onnxruntime` 317,625,044, `.install\cache\stamps` 11,181, `.install\build` 2,393,786,769, `.install\src` 972,855,959, `.venv` 1,784,504,907, `C:\tgemma` 1,708,432,406. `C:\tgemma\Release` still held `gemma-brain.exe`, `sense.exe`, and `vulkan-shaders-gen.exe`.
 
 ## Review closeout
 
