@@ -34,6 +34,7 @@
 !/chatterbox.txt
 !/bake.txt
 !/reference.wav
+!/CODE_REVIEW_CHECKLIST.md
 
 !/scripts/convert_s3.py
 !/scripts/convert_t3.py
