@@ -1,4 +1,4 @@
-﻿# Whitelist. A path is committed only if a rule below un-ignores it.
+# Whitelist. A path is committed only if a rule below un-ignores it.
 *
 
 # Allow Git to descend into directories. Files stay ignored until named.
@@ -37,6 +37,7 @@
 !/hear.py
 !/reference.wav
 !/CODE_REVIEW_CHECKLIST.md
+!/BOTS.md
 
 !/scripts/convert_s3.py
 !/scripts/convert_t3.py
@@ -56,8 +57,8 @@
 !/gemma/src/brain.cpp
 !/gemma/src/sense.cpp
 
-# Resident slots, mouth one-shot artifacts, and run logs.
-# mouth.py stays tracked. A later un-ignore must not commit these.
+# Resident slots, one-shot artifacts, and run logs.
+# mouth.py, hear.py, and BOTS.md stay tracked. A later un-ignore must not commit these.
 /mouth.txt
 /*_out_*.txt
 /*_chatterbox_out_*
