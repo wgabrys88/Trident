@@ -1,8 +1,8 @@
 # AGENTS
 
-Read `GOAL.md`, this file, and `RULES.md` before editing. This is the handoff for a session with no earlier chat. Commit messages after the commit that added these files carry only the delta for that change. Do not reconstruct the project by copying old commit bodies forward.
+Read `GOAL.md`, this file, and `RULES.md` before editing. This is the handoff for a session with no earlier chat. Commit messages carry only the delta for that change. Do not reconstruct the project by copying old commit bodies forward.
 
-Work on branch `runner-h` in the local clone of https://github.com/wgabrys88/Trident. Fetch and update `origin/runner-h` before changing anything. The final commit stays on `runner-h`.
+Work on branch `runner-h` in the local clone of https://github.com/wgabrys88/Trident. Fetch and update `origin/runner-h` before changing anything. The final commit stays on `runner-h`. Iris commits only: make the commit on this Iris checkout. Do not open a pull request.
 
 ## This machine
 
@@ -31,7 +31,7 @@ Endpoints present when these docs were written:
 - Real speakers: `Speakers (Realtek(R) Audio)`.
 - Room microphone: the Intel Smart Sound microphone array. Do not use it.
 
-`chatterbox.exe` plays the wav with `PlaySoundW` on the default waveform device. Before a chain proof, that default must be the real speakers, not `CABLE Input`, so the mouth is not the next thing capture hears.
+`chatterbox.exe` plays the wav with `PlaySoundW` on the default waveform device. There is no device flag on `mouth.py` or in `chatterbox.txt`. Before a chain proof or a Mouth one-shot, that default must be the real speakers, not `CABLE Input`, so the mouth is not the next thing capture hears. When `mouth.py` was added, the console, multimedia, and communications defaults were all `Speakers (Realtek(R) Audio)`.
 
 If the virtual cable is missing, install VB-Audio Virtual Cable. The person may call it a BB cable. Do not switch the proof to the room microphone.
 
@@ -57,7 +57,7 @@ This checkout already has those outputs, `.venv`, and `.install`. They are local
 
 ## Run one program
 
-Each program takes one text file and no flags. The usage line is `usage: program file.txt`. Run it from the directory where the result should appear. Paths inside the text file are resolved from that file's directory, not from the current directory.
+Each resident takes one text file and no flags. The usage line is `usage: program file.txt`. Run it from the directory where the result should appear. Paths inside the text file are resolved from that file's directory, not from the current directory.
 
 | Command | Reads | Writes in the current directory |
 | --- | --- | --- |
@@ -67,16 +67,31 @@ Each program takes one text file and no flags. The usage line is `usage: program
 | `gemma-brain.exe gemma.txt` | `gemma.text`, the whole prompt in Gemma 4's own form. `gemma.image` is raw base64 or empty. When the image is set, the prompt must already contain `<__media__>`. | `HH-MM-SS-mmm_gemma_out_NNN.txt`, the generation unchanged. |
 | `chatterbox.exe chatterbox.txt` | `chatterbox.variant` is `nano`, `turbo`, or `v3`. The GGUF architecture selects the engine. `chatterbox.text` is spoken as written. | `HH-MM-SS-mmm_chatterbox_out_NNN.txt` names the wav. The wav is played on the default speakers. |
 | `chatterbox-bake.exe bake.txt` | `bake.t3`, `bake.s3`, `bake.reference`. `bake.cond-seconds` is 15 for nano and turbo, 6 for v3. | Rewrites those two model files in place, writes `HH-MM-SS-mmm_bake_out_NNN.txt` with both paths, and exits. |
+| `python mouth.py TEXT` | `chatterbox.txt` for the GGUF pairs and numeric knobs. The sentence, `--model`, and `--lang` come from the command. | Overwrites `mouth.txt`, then the same chatterbox outputs as one `chatterbox.exe mouth.txt` run. |
 
 The output file is created with `CREATE_NEW`. The number starts at `000`. An existing name is kept and the next number is used. Nothing in the program watches another program.
 
-To run the chain, connect the files yourself. Play known speech into `CABLE Input`. Point `vad.device` at `CABLE Output`. Put the wav name `vad.exe` wrote into `ear.input`. Put the recognizer text into the next prompt file as that model's own prompt, still unchanged by code. Put the sentence the brain wrote into `chatterbox.text`. Judge each step by the file that step wrote.
+To run the chain, connect the files yourself. Play known speech into `CABLE Input`. Point `vad.device` at `CABLE Output`. Put the wav name `vad.exe` wrote into `ear.input`. Put the recognizer text into the next prompt file as that model's own prompt, still unchanged by code. Put the sentence the brain wrote into `chatterbox.text`, or pass that sentence to `mouth.py`. Judge each step by the file that step wrote.
+
+## Mouth one-shot
+
+`mouth.py` is the speak entry. It does not synthesize. The Lego contract stays settings file, then `chatterbox.exe`.
+
+```
+python mouth.py [--model nano|turbo|v3] [--lang TAG] "The sentence to speak."
+```
+
+`--model` defaults to `nano`. When `--lang` is omitted, `nano` and `turbo` use `en`, and `v3` uses `pl`. A passed `--lang` is written as given. Empty text, an unknown model, an empty language, and any text line whose entire content is `<<` are rejected with exit code 2, and `chatterbox.exe` is not started.
+
+The script reads `chatterbox.txt` in the repository root, copies every line through (the six GGUF pair lines and the numeric knobs included), and drops only `chatterbox.variant`, `chatterbox.language`, and the existing `chatterbox.text` block. It writes UTF-8 with no BOM to `mouth.txt`. That write overwrites `mouth.txt` only. `chatterbox.txt` stays untouched. It appends `chatterbox.variant`, `chatterbox.language`, and a `chatterbox.text` block holding the sentence. It then runs `.\chatterbox.exe mouth.txt` once, current directory the repository root, no shell, and exits with that process's exit code. It does not rerun.
+
+The C++ sources were not edited for this entry.
 
 ## Prove
 
 Prove on Windows, on this machine, with the real executables.
 
-1. Prove one program at a time. A pass is that executable writing the file its template describes.
+1. Prove one program at a time. A pass is that executable writing the file its template describes. A Mouth one-shot pass is `mouth.py` writing `mouth.txt` and `chatterbox.exe` writing `HH-MM-SS-mmm_chatterbox_out_NNN.txt` plus the wav, played on the real speakers.
 2. Then prove the whole chain on the same cable. Speech goes in through `CABLE Input`. The text files carry the words. One utterance comes out of the real speakers because `chatterbox.exe` played it. Those speakers are not the cable input.
 3. Run a failed proof once more. If it fails again, leave the system able to start, write what happened and what will change into the commit delta, and change approach. Do not add a harness, a mock, or a script that pretends a program ran.
 
@@ -86,14 +101,14 @@ Read the source of every program you edit, in full, and every helper it calls, i
 
 Delete duplicated logic, unused parameters, and any code that overrides the text file. One behavior has one owner. Prefer fewer lines. What should remain is the executable, the text file it reads, and the files it writes.
 
-The finish line in `GOAL.md` says the five residents stay loaded. This tip still exits after one result. Reach that finish line inside the same executable. Do not add a process that starts the others.
+The mouth one-shot is `mouth.py` plus the existing `chatterbox.exe`. Do not add a second synthesizer in Python or in C++. The finish line in `GOAL.md` says the five residents stay loaded. This tip still exits after one result. Reach that finish line inside the same executable. Do not add a process that starts the others.
 
 ## What Git will take
 
-`.gitignore` is a whitelist. `*` ignores everything until a later `!` rule names it. Tracked files stay tracked, which is why edits to these three documents show up after this commit. A brand-new path is committed only after a whitelist rule names it, or it is not in the commit.
+`.gitignore` is a whitelist. `*` ignores everything until a later `!` rule names it. Tracked files stay tracked. A brand-new path is committed only after a whitelist rule names it, or it is not in the commit. `!/mouth.py` is that rule for the speak entry. `mouth.py` must stay in the repository.
 
-Leave generated audio, `*_out_*.txt`, models, `.install`, `.venv`, `C:\tgemma`, and the other build trees uncommitted. Do not commit `*.pid`, `*.stop`, or run logs. The patterns at the bottom of `.gitignore` exist to keep those out even if a broader rule would have allowed them.
+Leave `mouth.txt`, generated audio, `*_out_*.txt`, `*_chatterbox_out_*`, models, `.install`, `.venv`, `C:\tgemma`, and the other build trees uncommitted. Do not commit `*.pid`, `*.stop`, or run logs. The patterns at the bottom of `.gitignore` exist to keep those out even if a broader rule would have allowed them.
 
 ## Autonomy
 
-You have this PC for the job: PowerShell, the compilers, the installer, and the proofs. Stay inside the Trident workspace except for a read-only lookup of the toolchain or the WASAPI friendly names. Follow `RULES.md` for commits and history. Do not open a pull request.
+You have this PC for the job: PowerShell, the compilers, the installer, and the proofs. Stay inside the Trident workspace except for a read-only lookup of the toolchain or the WASAPI friendly names. Follow `RULES.md` for commits and history. Iris commits only, on `runner-h`. Do not open a pull request.

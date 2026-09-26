@@ -33,6 +33,7 @@
 !/gemma.txt
 !/chatterbox.txt
 !/bake.txt
+!/mouth.py
 !/reference.wav
 !/CODE_REVIEW_CHECKLIST.md
 
@@ -54,7 +55,11 @@
 !/gemma/src/brain.cpp
 !/gemma/src/sense.cpp
 
-# Resident slots and run logs. A later un-ignore must not commit these.
+# Resident slots, mouth one-shot artifacts, and run logs.
+# mouth.py stays tracked. A later un-ignore must not commit these.
+/mouth.txt
+/*_out_*.txt
+/*_chatterbox_out_*
 /*.pid
 /*.stop
 /*.prompt.txt

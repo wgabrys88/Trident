@@ -38,9 +38,9 @@ Check these before judging a binary. The left column is what Iris recorded. The 
 
 ## A. Architecture and contracts
 
-- [ ] **A1. Five residents, one baker.** The running roles are `vad.exe`, `ear.exe`, `sense.exe`, `gemma-brain.exe`, and `chatterbox.exe`. `chatterbox-bake.exe` bakes one reference voice and exits. **Pass:** each role is still one executable, and the baker is not started as a resident. **Fail:** a second executable or a script implements the same role, or the baker stays running.
+- [ ] **A1. Five residents, one baker.** The running roles are `vad.exe`, `ear.exe`, `sense.exe`, `gemma-brain.exe`, and `chatterbox.exe`. `chatterbox-bake.exe` bakes one reference voice and exits. `mouth.py` is the one-shot speak entry: it writes `mouth.txt` and runs `chatterbox.exe` once. It does not synthesize. **Pass:** each role is still one executable, the baker is not a resident, and `mouth.py` only drives `chatterbox.exe`. **Fail:** a second synthesizer, a second resident, or a baker that stays running.
 
-- [ ] **A2. No orchestrator.** Nothing in the running system starts the five or carries their messages. `install.py` is the installer, not a resident. `scripts\convert_t3.py`, `scripts\convert_s3.py`, and `scripts\quant.py` are converters used at build time. **Pass:** no supervisor, harness, message bus, service, pid file, or stop file exists in the source. **Fail:** any of those return, including a Python loop that launches the five.
+- [ ] **A2. No orchestrator.** Nothing in the running system starts the five or carries their messages. `install.py` is the installer, not a resident. `mouth.py` starts only `chatterbox.exe`, once, then exits with that process's code. `scripts\convert_t3.py`, `scripts\convert_s3.py`, and `scripts\quant.py` are converters used at build time. **Pass:** no supervisor, harness, message bus, service, pid file, or stop file exists in the source, and `mouth.py` does not launch vad, ear, sense, or the brain. **Fail:** any of those return, including a Python loop that launches the five.
 
 - [ ] **A3. `ear.exe` may spawn only its recognizer.** `src\ear.cpp` starts `nemo-speech.exe transcribe` and writes that process's stdout. That child is the recognizer's engine, not a sixth role. **Pass:** the child is `nemo-speech.exe` beside `ear.exe`, and ear does not start vad, sense, gemma, or chatterbox. **Fail:** ear becomes a supervisor, or a second transcriber (a script, or a patched NeMo resident) does the same job.
 
@@ -100,7 +100,7 @@ The finish line in `GOAL.md` says the five residents stay loaded, the microphone
 
 - [ ] **D3. Body is unchanged bytes.** `write_output` and `write_named` write the buffer as binary. Ear writes the captured stdout. Sense and gemma write the concatenated generation, skipping only end-of-generation tokens. **Pass:** an empty recognizer stdout on exit 0 still creates the file. Polish and other non-ASCII bytes are preserved. **Fail:** the text is re-encoded lossy, a think block or tool call is stripped, or an empty transcript is treated as "no turn" and no file is written.
 
-- [ ] **D4. Chain is manual.** The person copies the wav name from the vad output into `ear.input`, copies the recognizer text into the next prompt as that model's own prompt, and copies the spoken sentence into `chatterbox.text`. **Pass:** the review can do that with the templates and no extra program. **Fail:** the code performs that copy, or the proof depends on a script that does it.
+- [ ] **D4. Chain is manual.** The person copies the wav name from the vad output into `ear.input`, copies the recognizer text into the next prompt as that model's own prompt, and copies the spoken sentence into `chatterbox.text` when driving the mouth from the template. A one-shot sentence can instead go through `mouth.py`, which writes that sentence into `mouth.txt` and runs `chatterbox.exe` once. **Pass:** the resident chain still has no program that watches a neighbor, and `mouth.py` does not read vad, ear, sense, or gemma output. **Fail:** code copies one resident's output into the next role, or a chain proof depends on a script that does that copy.
 
 - [ ] **D5. Parser contract.** Both `src\common\config.h` and `install.py` `load_file` strip a UTF-8 BOM, skip comments, split on the first space, and accept a `<<` block ended by a line that is only `<<`. **Pass:** the six templates and `install.txt` parse under both readers the same way for the keys they share in form. **Fail:** a template key is swallowed by an unclosed `<<`, a duplicate key silently changes which value wins, or the C++ reader and the installer disagree on a key the installer rewrites (`write_bake_file`).
 
@@ -146,7 +146,7 @@ The finish line in `GOAL.md` says the five residents stay loaded, the microphone
 
 - [ ] **F8. What is copied to the root.** Installer copies `chatterbox.exe`, `chatterbox-bake.exe`, `ear.exe`, `vad.exe`, `onnxruntime.dll`, `nemo-speech.exe` and its DLLs, `gemma-brain.exe`, `sense.exe`, and the model files named by the templates. **Pass:** the review lists the root DLLs after a build on this machine and C5 still holds. **Fail:** models, `.install`, `.venv`, or `C:\tgemma` are committed.
 
-- [ ] **F9. Whitelist gitignore.** `*` ignores everything until a `!` rule names it. Tracked files stay tracked. Generated audio, `*_out_*.txt`, models, `.install`, `.venv`, pid files, and stop files stay untracked. **Pass:** a new root file is named by a `!` rule or it is not in the commit. **Fail:** `git add -A` picks up a wav, a model, or a run log.
+- [ ] **F9. Whitelist gitignore.** `*` ignores everything until a `!` rule names it. Tracked files stay tracked. `!/mouth.py` is what lets the speak entry be committed. `mouth.txt`, generated audio, `*_out_*.txt`, `*_chatterbox_out_*`, models, `.install`, `.venv`, pid files, and stop files stay untracked. **Pass:** a new root file is named by a `!` rule or it is not in the commit, and `mouth.py` is not excluded. **Fail:** `git add -A` picks up a wav, a model, a run log, or `mouth.txt`, or a rule hides `mouth.py`.
 
 ## G. Windows audio and the cable proof
 
@@ -216,7 +216,7 @@ Do this before trusting `gemma-brain.exe` or `sense.exe` in the repo root.
 
 There is no unit-test suite. `install.llama_build_tests`, `install.ear_tests`, and `install.mouth_ggml_build_tests` are `off`. That is the contract. The proof is the executable and the file it writes.
 
-- [ ] **J1. No harness.** **Pass:** the review does not add a test runner, a mock exe, or a Python stand-in for a role. **Fail:** any of those appear so a box can be checked without the real binary.
+- [ ] **J1. No harness.** **Pass:** the review does not add a test runner, a mock exe, or a Python synthesizer. `mouth.py` is the speak entry and the proof still runs `chatterbox.exe`. **Fail:** a mock exe or a Python stand-in speaks without the real binary.
 
 - [ ] **J2. One program, then the chain.** Order is G5, G6, G7, G8, then G9. **Pass:** each step's file exists before the next step is judged. **Fail:** the chain is judged from memory or from an Iris log.
 
