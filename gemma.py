@@ -148,6 +148,10 @@ def main():
         raise SystemExit(completed.returncode)
     out_txt = newest_out(before)
     text = out_txt.read_text(encoding="utf-8")
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     sys.stdout.write(text)
     if not text.endswith("\n"):
         sys.stdout.write("\n")
