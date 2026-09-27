@@ -1,7 +1,12 @@
-"""Gemma brain one-shot. Text question, or question + image file → stdout generation (thinking included)."""
+"""Gemma brain one-shot. Text question, or question + image file → stdout generation (thinking included).
+
+Text turns declare one local tool, hello. A Gemma 4 <|tool_call> is run here, then the brain
+is asked once more with the tool result so the spoken answer can follow.
+"""
 
 import argparse
 import base64
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -9,7 +14,44 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 DROP_KEYS = ("gemma.text", "gemma.image")
 SIDECAR = ROOT / "gemma_run.txt"
+HELLO_PATH = ROOT / "tool_hello.txt"
 MEDIA = "<__media__>"
+Q = '<|"|>'
+HELLO_DECL = (
+    "<|tool>declaration:hello{description:"
+    + Q
+    + "Write one line into tool_hello.txt. Call this when the user asks to write Hello World or to use the hello tool."
+    + Q
+    + ",parameters:{properties:{line:{description:"
+    + Q
+    + "Exact line to write. Use Hello World when asked to write Hello World."
+    + Q
+    + ",type:"
+    + Q
+    + "STRING"
+    + Q
+    + "}},required:["
+    + Q
+    + "line"
+    + Q
+    + "],type:"
+    + Q
+    + "OBJECT"
+    + Q
+    + "}}<tool|>"
+)
+CALL_RE = re.compile(
+    r"<\|tool_call>\s*call:([A-Za-z_][A-Za-z0-9_]*)\s*\{(.*?)\}\s*<tool_call\|>",
+    re.DOTALL,
+)
+ARG_RE = re.compile(
+    r"(\w+)\s*:\s*(?:<\|\"\|>(.*?)<\|\"\|>|([^,}\n]*))",
+    re.DOTALL,
+)
+TOOL_MARKUP_RE = re.compile(
+    r"<\|tool_call>.*?<tool_call\|>|<\|tool_response>.*?<tool_response\|>",
+    re.DOTALL,
+)
 
 
 def die(message):
@@ -52,14 +94,27 @@ def kept_lines(raw):
     return kept
 
 
-def gemma_prompt(question, with_image):
+def user_body(question, with_image):
     q = question.strip("\r\n")
     if with_image and MEDIA not in q:
-        user = MEDIA + "\n" + q
-    else:
-        user = q
+        return MEDIA + "\n" + q
+    return q
+
+
+def tool_header():
+    return "<|turn>system\nYou are a helpful assistant." + HELLO_DECL + "<turn|>\n"
+
+
+def gemma_prompt(question, with_image):
+    user = user_body(question, with_image)
+    # Image turns stay on the old prompt. Text turns declare hello and still
+    # close an empty thought channel, which is Gemma 4's thinking-off prefill.
+    head = "<bos>"
+    if not with_image:
+        head += tool_header()
     return (
-        "<bos><|turn>user\n"
+        head
+        + "<|turn>user\n"
         + user
         + "<turn|>\n"
         "<|turn>model\n"
@@ -68,7 +123,67 @@ def gemma_prompt(question, with_image):
     )
 
 
-def settings_text(question, image_b64):
+def follow_prompt(question, call_markup, line):
+    response = (
+        "<|tool_response>response:hello{path:"
+        + Q
+        + "tool_hello.txt"
+        + Q
+        + ",text:"
+        + Q
+        + line
+        + Q
+        + "}<tool_response|>"
+    )
+    return (
+        "<bos>"
+        + tool_header()
+        + "<|turn>user\n"
+        + question.strip("\r\n")
+        + "<turn|>\n"
+        "<|turn>model\n"
+        + call_markup
+        + response
+    )
+
+
+def parse_tool_call(text):
+    match = CALL_RE.search(text)
+    if not match:
+        return None
+    args = {}
+    for key, quoted, bare in ARG_RE.findall(match.group(2)):
+        value = quoted if quoted else bare
+        args[key] = value.strip()
+    return match.group(1), args, match.group(0)
+
+
+def clean_line(raw):
+    text = (raw or "").strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        text = text[1:-1].strip()
+    text = " ".join(text.split())
+    text = text.replace(Q, "'")
+    if len(text) > 200:
+        text = text[:200].rstrip()
+    if not text:
+        text = "Hello World"
+    return text
+
+
+def write_hello(line):
+    try:
+        HELLO_PATH.write_text(line + "\n", encoding="utf-8")
+    except OSError as exc:
+        die("cannot write tool_hello.txt: " + str(exc))
+    print("gemma: tool hello wrote tool_hello.txt (" + line + ")", file=sys.stderr, flush=True)
+
+
+def strip_tool_markup(text):
+    return TOOL_MARKUP_RE.sub("", text)
+
+
+def settings_text(prompt, image_b64):
     source = ROOT / "gemma.txt"
     if not source.is_file():
         die("missing gemma.txt")
@@ -76,7 +191,6 @@ def settings_text(question, image_b64):
     body = "\n".join(kept_lines(raw))
     if body:
         body += "\n"
-    prompt = gemma_prompt(question, bool(image_b64))
     body += "gemma.text <<\n" + prompt
     if not prompt.endswith("\n"):
         body += "\n"
@@ -108,6 +222,32 @@ def newest_out(before):
     return new_files[-1]
 
 
+def run_brain(prompt, image_b64, verbose):
+    exe = ROOT / "gemma-brain.exe"
+    if not exe.is_file():
+        die("missing gemma-brain.exe")
+    payload = settings_text(prompt, image_b64)
+    try:
+        SIDECAR.write_bytes(payload.encode("utf-8"))
+    except OSError as exc:
+        die("cannot write gemma_run.txt: " + str(exc))
+    before = set(ROOT.glob("*_gemma_out_*.txt"))
+    try:
+        completed = subprocess.run(
+            [".\\gemma-brain.exe", "gemma_run.txt"],
+            cwd=ROOT,
+            shell=False,
+            stdout=subprocess.DEVNULL,
+            stderr=None if verbose else subprocess.DEVNULL,
+        )
+    except OSError as exc:
+        die("cannot run gemma-brain.exe: " + str(exc))
+    if completed.returncode != 0:
+        raise SystemExit(completed.returncode)
+    out_txt = newest_out(before)
+    return out_txt.read_text(encoding="utf-8")
+
+
 def main():
     parser = argparse.ArgumentParser(prog="gemma.py")
     parser.add_argument("question", help="text question / analysis prompt")
@@ -124,34 +264,22 @@ def main():
     args = parser.parse_args()
     if not args.question.strip():
         die("empty question")
-    image_b64 = image_to_b64(args.image) if args.image else ""
-    exe = ROOT / "gemma-brain.exe"
-    if not exe.is_file():
-        die("missing gemma-brain.exe")
-    payload = settings_text(args.question, image_b64)
-    try:
-        SIDECAR.write_bytes(payload.encode("utf-8"))
-    except OSError as exc:
-        die("cannot write gemma_run.txt: " + str(exc))
-    before = set(ROOT.glob("*_gemma_out_*.txt"))
-    try:
-        completed = subprocess.run(
-            [".\\gemma-brain.exe", "gemma_run.txt"],
-            cwd=ROOT,
-            shell=False,
-            stdout=subprocess.DEVNULL,
-            stderr=None if args.verbose else subprocess.DEVNULL,
-        )
-    except OSError as exc:
-        die("cannot run gemma-brain.exe: " + str(exc))
-    if completed.returncode != 0:
-        raise SystemExit(completed.returncode)
-    out_txt = newest_out(before)
-    text = out_txt.read_text(encoding="utf-8")
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    image_b64 = image_to_b64(args.image) if args.image else ""
+    text = run_brain(gemma_prompt(args.question, bool(image_b64)), image_b64, args.verbose)
+    if not image_b64:
+        call = parse_tool_call(text)
+        if call and call[0] == "hello":
+            line = clean_line(call[1].get("line"))
+            write_hello(line)
+            text = strip_tool_markup(
+                run_brain(follow_prompt(args.question, call[2], line), "", args.verbose)
+            )
+        elif call:
+            print("gemma: tool skip " + call[0], file=sys.stderr, flush=True)
     sys.stdout.write(text)
     if not text.endswith("\n"):
         sys.stdout.write("\n")

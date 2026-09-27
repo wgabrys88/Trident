@@ -81,8 +81,8 @@ def run_child(stage, argv, keep_stdout, keep_stderr):
     except OSError as exc:
         print("assistant: " + stage + " failed to start: " + str(exc), file=sys.stderr)
         raise SystemExit(2)
+    err = completed.stderr or ""
     if completed.returncode != 0:
-        err = completed.stderr or ""
         if err.strip():
             print(err.rstrip("\n"), file=sys.stderr)
         print(
@@ -90,6 +90,9 @@ def run_child(stage, argv, keep_stdout, keep_stderr):
             file=sys.stderr,
         )
         raise SystemExit(completed.returncode)
+    for line in err.splitlines():
+        if line.startswith("gemma: tool"):
+            print(line, file=sys.stderr)
     return completed.stdout or ""
 
 

@@ -344,6 +344,8 @@ Text plus image:
 
 The wrapper base64-encodes the image, constructs the Gemma-native turn form already expected by the C++ executable, writes `gemma_run.txt`, runs the native brain, and prints the newly produced generation.
 
+Text turns also declare one Gemma 4 tool, `hello`. If the generation contains `<|tool_call>call:hello{...}<tool_call|>`, `gemma.py` writes that line to `tool_hello.txt` and runs `gemma-brain.exe` once more with the tool result so the spoken answer can follow. Image turns keep the previous prompt.
+
 ### `mouth.py`
 
 Human/agent-friendly TTS wrapper around `chatterbox.exe`.
