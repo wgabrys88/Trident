@@ -4,7 +4,7 @@ Read `GOAL.md`, this file, `RULES.md`, and `BOTS.md` before editing. This is the
 
 ## Branch
 
-Work on `runner-h` in the local clone of https://github.com/wgabrys88/Trident. Fetch and pull `origin/runner-h` before changing anything. The commit stays on `runner-h`. Iris commits only: the commit is made on this Iris checkout. Never open a pull request. Never set `starting_ref`. Never amend, rebase, squash, reset, or force-push.
+Work on `runner-h` in the local clone of https://github.com/wgabrys88/Trident. Fetch and pull `origin/runner-h` before changing anything. The commit stays on `runner-h`. Iris commits only: the commit is made on this Iris checkout. Never open a pull request. Never set `starting_ref`. Never amend, rebase, squash, or force-push. Never reset, except the local Nvidia Ask teardown in the Ask section.
 
 ## Paths
 
@@ -91,6 +91,8 @@ The resident output file is created with `CREATE_NEW`. The number starts at `000
 ## Ask
 
 Trident Ask is V2. On Iris (`trident-iris`), run `qwen.py` in this shell. Do not launch a Cloud Agent or a Cursor coding agent for an Iris ask. Nvidia (`trident-nvidia`) is one Cloud Agent only, model `composer-2.5`, `fast` false, and only when the go names Nvidia. That prompt is the exact PowerShell or cmd line. The return is the exit code, the stdout answer, and a short stderr summary: at most 20 non-tensor lines, or a byte count plus the first and last 5 lines. A loader log is not a result. Repo edits, commits, pull requests, recovery agents, and multi-agent chains are out. An image ask is `gemma.py --image` on Nvidia.
+
+After every Nvidia ASK GO Cloud Agent run, success or fail, tear that checkout down before FINAL. On the trident-nvidia Trident cwd: `git fetch origin runner-h`, then `git status -sb` and `git status --porcelain`. If HEAD is not `origin/runner-h` or porcelain is non-empty: `git checkout runner-h`, then `git reset --hard origin/runner-h`. Local reset only. Never force-push. Do not keep agent churn. Re-check that porcelain is empty and HEAD matches `origin/runner-h`. FINAL includes the tip SHA, the exit code, stdout, the short stderr summary, and nvidia git clean yes/no (before, then after, when a reset ran). A Cursor UI line such as `Changes +N/−M across N files` is not proof of a good ask and does not replace git status. `git status --porcelain` is the source of truth. Ask does not commit, push, open a pull request, create a recovery agent, or fix the tree. Teardown is reset to origin, not a second cook. Ask runs it on the worker shell after the Cloud Agent finishes. The agent prompt stays the exact command. If Ask cannot run git on that worker, FINAL is BLOCKER dirty-unknown so Executor can COOK the same reset. Prefer Ask running the hard reset on the same worker shell when the Cloud Agent path cannot.
 
 ## Prove
 

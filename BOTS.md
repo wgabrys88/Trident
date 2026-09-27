@@ -15,7 +15,7 @@ Channel capacity is six. Keep Ear off the war-room roster when the room is full;
 - Shell is PowerShell. `Set-Location` to the cwd, then run the command. PowerShell on this PC does not accept `&&`.
 - Primary proofs run on Iris. A Grok Linux box is out of that path.
 - Nvidia stays leave-alone unless a route names it. Review-only when SPOC routes that review.
-- Commits are new commits on `runner-h` from the Iris checkout. Never open a pull request. Never set `starting_ref`. Never amend, rebase, squash, reset, or force-push.
+- Commits are new commits on `runner-h` from the Iris checkout. Never open a pull request. Never set `starting_ref`. Never amend, rebase, squash, or force-push. Never reset, except the local Nvidia Ask teardown (`git reset --hard origin/runner-h` on trident-nvidia only).
 - No C++ / `.cpp` edit without Wojciech's explicit go. The PlaySound C++ delta stays parked.
 - `sense.exe` sets batch threads from `sense.threads`. There is no `sense.threads-batch` key.
 
@@ -94,7 +94,7 @@ Iris Shell first. Machine id `84403f85-8162-436b-9567-dd9255e82a60`. Cursor on `
 - The prompt names branch `runner-h`.
 - Never set `starting_ref`.
 - Never open a pull request.
-- Never amend, rebase, squash, reset, or force-push.
+- Never amend, rebase, squash, or force-push. Never reset, except a COOK of the Nvidia Ask teardown when Ask reports BLOCKER dirty-unknown: local `git reset --hard origin/runner-h` on trident-nvidia only.
 - Full Windows is acceptable.
 - Prepend the Trident rules, a short brief, and pointers to `GOAL.md`, `AGENTS.md`, `RULES.md`, and, when they apply, `CODE_REVIEW_CHECKLIST.md` and this file.
 
@@ -118,6 +118,19 @@ Iris (`trident-iris`): direct fire only. Run `qwen.py` in the worker shell on `C
 
 Nvidia (`trident-nvidia`): one Cloud Agent only, and only when the go names Nvidia. Model `composer-2.5`, `fast` false. The prompt is the exact PowerShell or cmd line. Demand only the exit code, stdout, and a short stderr summary. Forbidden: repo edits, commits, pull requests, a full `clip_model_loader` tensor dump, recovery agents, and multi-agent chains.
 
+Mandatory Nvidia Ask teardown, after every Nvidia ASK GO Cloud Agent run, success or fail, before FINAL. Ask runs it on the trident-nvidia Trident cwd, on the worker shell. The Cloud Agent prompt stays the exact command.
+
+1. `git fetch origin runner-h`, then `git status -sb` and `git status --porcelain`.
+2. If HEAD is not `origin/runner-h` or porcelain is non-empty: `git checkout runner-h`, then `git reset --hard origin/runner-h`. Local reset only. Never force-push. Do not keep agent churn.
+3. Re-check that porcelain is empty and HEAD matches `origin/runner-h` before FINAL.
+4. FINAL includes the tip SHA, the exit code, stdout, the short stderr summary, and nvidia git clean yes/no (before, then after, when a reset ran).
+5. A Cursor UI line `Changes +N/−M across N files` is not proof of a good ask and does not replace git status. `git status --porcelain` is the source of truth.
+6. Ask does not commit, push, open a pull request, create a recovery agent, or fix the tree. Teardown is reset to origin, not a second cook.
+
+Private-worker Cloud Agents may show large change stats when git is clean, including after an execute-only command. Porcelain is the source of truth. The mandatory reset closes that hole.
+
+If Ask cannot run git on that worker, FINAL is BLOCKER dirty-unknown so Executor can COOK the same reset. Prefer Ask running the hard reset on the same worker shell when the Cloud Agent path cannot.
+
 Stderr hygiene: do not paste a gemma or qwen loader log into FINAL. Cap the stderr report at 20 non-tensor lines, or a byte count plus the first and last 5 lines. Stdout in FINAL is the answer only.
 
 Image: `qwen.py --image` exits 2. An image ask is `gemma.py --image` on Nvidia only.
@@ -129,17 +142,17 @@ Image: `qwen.py --image` exits 2. An image ask is `gemma.py --image` on Nvidia o
 
 `qwen.py` is text-only. It rewrites `sense_run.txt`, runs `sense.exe sense_run.txt`, and prints the generation. The child's stdout and stderr are discarded. `--verbose` passes that stderr through. `gemma.py` rewrites `gemma_run.txt`, runs `gemma-brain.exe gemma_run.txt`, and prints the generation, thinking included, with the same stderr rule. An image is raw base64 in `gemma.image`, and `<__media__>` is inserted when the question lacks it. Leave `gemma_run.txt` and `sense_run.txt` uncommitted.
 
-SPOC talk: ack, then FINAL. FINAL is the exit code, the generation stdout, and the short stderr summary. Idle until the next ASK GO.
+SPOC talk: ack, then FINAL. An Iris FINAL is the exit code, the generation stdout, and the short stderr summary. A Nvidia FINAL adds the tip SHA and nvidia git clean yes/no (before, then after, when a reset ran). Idle until the next ASK GO.
 
 Token-light: one command, the answer, no essay, no loader dump. Leave C++ alone unless the question is certainly a `.cpp` change, then stop and say so. Wojciech's go is required before any edit.
 
-Must never: a Cloud Agent or Cursor coding agent for an Iris ask; a second Nvidia agent; pasting a loader tensor dump; `mouth.py` or a second speaker beside Mouth; cook or git on an ask; CreateAgent; groups; a Python model load; a Grok Linux box as the run host; Nvidia when the go did not name it; `qwen.py --image`.
+Must never: a Cloud Agent or Cursor coding agent for an Iris ask; a second Nvidia agent; pasting a loader tensor dump; `mouth.py` or a second speaker beside Mouth; commit, push, a pull request, or a cook on an ask; a recovery agent or a second cook that "fixes" the tree; CreateAgent; groups; a Python model load; a Grok Linux box as the run host; Nvidia when the go did not name it; `qwen.py --image`. Git on an ask is the teardown only.
 
 ## Handoff
 
 SPEAK GO goes to Mouth, from SPOC or Wojciech. HEAR GO goes to Ear, from SPOC, after the Mouth Speakers cue and CONFIRM. COOK, FIX, and DOCS GO go to Executor, from SPOC. ASK GO goes to Trident Ask V2, from SPOC or Wojciech.
 
-Mouth, Executor, and Ask ack, do the work, and return FINAL or a blocker to SPOC. Ear acks, then FINAL only: one line for exit, seconds, and device, then the original full stdout. Ask's FINAL is the exit code, the generation stdout, and a short stderr summary. They stay idle until the next go.
+Mouth, Executor, and Ask ack, do the work, and return FINAL or a blocker to SPOC. Ear acks, then FINAL only: one line for exit, seconds, and device, then the original full stdout. An Iris Ask FINAL is the exit code, the generation stdout, and a short stderr summary. A Nvidia Ask FINAL adds the tip SHA and nvidia git clean yes/no after the teardown. They stay idle until the next go.
 
 Live listen: Mouth plays the Speakers cue. SPOC confirms. SPOC sends Ear HEAR GO. Ear returns the raw stdout. SPOC brings that stdout to Wojciech unchanged.
 
