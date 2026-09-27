@@ -1,0 +1,920 @@
+# Trident
+
+**Local Windows voice-assistant runtime built from small native engines and thin Python entry points.**
+
+Trident turns local microphone or text input into a local model response and local speech output. The project keeps the expensive model/runtime work in focused C++ executables, keeps their configuration explicit in text files, and uses small Python wrappers to make the native programs convenient for humans and automation.
+
+The long-term goal is an immediate, modular assistant whose major engines can remain loaded and communicate through simple boundaries. The current code is deliberately more conservative: each native engine is one-shot, while `assistant.py` composes the working Python path today. The repository is Windows-first and is intended to be built and proven on the real machines that own the relevant audio/GPU hardware.
+
+> **Source of truth:** the checked-in source and configuration files outrank this README. If code and documentation disagree, trace the code, fix the discrepancy, and update this file in the same coherent change.
+
+---
+
+## Contents
+
+- [System at a glance](#system-at-a-glance)
+- [Current architecture](#current-architecture)
+- [Native programs](#native-programs)
+- [Python entry points](#python-entry-points)
+- [Root-flat runtime](#root-flat-runtime)
+- [Installation](#installation)
+- [Running Trident](#running-trident)
+- [Configuration contracts](#configuration-contracts)
+- [Audio and model flow](#audio-and-model-flow)
+- [Repository layout](#repository-layout)
+- [Two-machine development model](#two-machine-development-model)
+- [Current state versus target state](#current-state-versus-target-state)
+- [Rules for coding agents](#rules-for-coding-agents)
+- [Change discipline](#change-discipline)
+- [Troubleshooting](#troubleshooting)
+- [License](#license)
+
+---
+
+## System at a glance
+
+The working high-level path is:
+
+```mermaid
+flowchart LR
+    U[Human / caller] --> A[assistant.py]
+    A --> H[hear.py]
+    H --> N[nemo-speech.exe]
+    N -->|transcript| A
+
+    A -->|default| Q[qwen.py]
+    Q --> S[sense.exe<br/>Qwen3-0.6B]
+    S -->|generation| A
+
+    A -.->|optional| G[gemma.py]
+    G --> B[gemma-brain.exe<br/>Gemma + optional image]
+    B -->|generation| A
+
+    A --> M[mouth.py]
+    M --> C[chatterbox.exe]
+    C --> W[WAV]
+    M --> SP[Windows speakers]
+```
+
+The installer also builds native VAD and native ASR orchestration paths that are not currently used by `assistant.py`:
+
+```mermaid
+flowchart LR
+    MIC[Capture endpoint] --> V[vad.exe]
+    V -->|utterance WAV + result TXT| E[ear.exe]
+    E --> NS[nemo-speech.exe]
+    NS -->|transcript| OUT[ear output TXT]
+```
+
+The project intentionally does **not** require a server, database, message broker, or network protocol for its core local path.
+
+---
+
+## Current architecture
+
+Trident has three layers:
+
+```mermaid
+flowchart TB
+    subgraph UX[Human / automation layer]
+        AS[assistant.py]
+        HP[hear.py]
+        QP[qwen.py]
+        GP[gemma.py]
+        MP[mouth.py]
+    end
+
+    subgraph Native[Native runtime layer]
+        VAD[vad.exe]
+        EAR[ear.exe]
+        SENSE[sense.exe]
+        GEMMA[gemma-brain.exe]
+        CHAT[chatterbox.exe]
+        BAKE[chatterbox-bake.exe]
+        NEMO[nemo-speech.exe]
+    end
+
+    subgraph Data[Explicit file contracts]
+        VT[vad.txt]
+        ET[ear.txt]
+        ST[sense.txt]
+        GT[gemma.txt]
+        CT[chatterbox.txt]
+        BT[bake.txt]
+        MODELS[GGUF / ONNX / WAV assets]
+    end
+
+    AS --> HP --> NEMO
+    AS --> QP --> SENSE
+    AS --> GP --> GEMMA
+    AS --> MP --> CHAT
+
+    VT --> VAD
+    ET --> EAR --> NEMO
+    ST --> SENSE
+    GT --> GEMMA
+    CT --> CHAT
+    BT --> BAKE
+    MODELS --> Native
+```
+
+### Design principles
+
+1. **One native role, one executable.** Model/runtime responsibility stays narrow.
+2. **One explicit settings file per native program.** Configuration is visible and inspectable.
+3. **Thin Python wrappers.** Python makes native engines easy to invoke; it does not reimplement their inference cores.
+4. **Simple boundaries.** Files, stdout, WAV files, and process execution are preferred over hidden service machinery.
+5. **Local-first inference.** The installed assistant path is designed to run locally after required assets are present.
+6. **Real-hardware proof.** Audio, Vulkan, CUDA, and Windows behavior must be tested where those capabilities actually exist.
+7. **Current code before historical intent.** Old diagrams and bot workflows are context, not proof of implementation.
+
+---
+
+## Native programs
+
+### `vad.exe` — voice activity detection
+
+Source: `src/vad.cpp`
+
+Configuration: `vad.txt`
+
+Current behavior:
+
+- opens the Windows capture endpoint named by `vad.device`;
+- captures through WASAPI;
+- resamples to the configured VAD rate using Trident audio code;
+- evaluates Silero VAD through ONNX Runtime;
+- waits for one completed utterance;
+- writes the utterance as a WAV in the current working directory;
+- writes a `*_vad_out_*.txt` file containing the WAV filename;
+- exits.
+
+It is a one-shot executable today. The historical always-open microphone/resident design remains future work.
+
+### `ear.exe` — native ASR orchestration
+
+Source: `src/ear.cpp`
+
+Configuration: `ear.txt`
+
+Current behavior:
+
+- reads one input WAV path from settings;
+- finds `nemo-speech.exe` beside `ear.exe`;
+- invokes NeMo Speech with the configured model/options;
+- captures recognizer stdout;
+- writes the transcript unchanged to `*_ear_out_*.txt`;
+- exits.
+
+The executable-location lookup is intentional: keeping `ear.exe` and `nemo-speech.exe` together in the root runtime makes this path independent of a module subdirectory.
+
+### `sense.exe` — Qwen text brain
+
+Source: `gemma/src/sense.cpp`
+
+Configuration: `sense.txt`
+
+Current behavior:
+
+- loads the Qwen model named by `sense.model`;
+- takes the complete prompt from `sense.text`;
+- runs text generation;
+- writes the generation to `*_sense_out_*.txt`;
+- exits.
+
+The checked-in configuration currently uses Qwen3-0.6B as a CPU text model.
+
+### `gemma-brain.exe` — Gemma multimodal brain
+
+Source: `gemma/src/brain.cpp`
+
+Configuration: `gemma.txt`
+
+Current behavior:
+
+- loads the Gemma text model and multimodal projector;
+- accepts the complete native prompt from `gemma.text`;
+- accepts optional raw base64 image data from `gemma.image`;
+- expects the prompt itself to contain the model media marker when an image is present;
+- runs with the backend selected at install/build time;
+- writes the generation to `*_gemma_out_*.txt`;
+- exits.
+
+The installer chooses the Gemma backend automatically unless configured otherwise: CUDA when the machine has NVIDIA hardware plus a usable CUDA compiler, otherwise Vulkan.
+
+### `chatterbox.exe` — text-to-speech engine
+
+Source: `src/chatterbox.cpp`
+
+Configuration: `chatterbox.txt`
+
+Current behavior:
+
+- selects `nano`, `turbo`, or `v3` from configuration;
+- loads the matching baked T3/S3 GGUF pair;
+- synthesizes `chatterbox.text` using the supplied language tag;
+- writes a root-level WAV plus a `*_chatterbox_out_*.txt` file naming that WAV;
+- optionally plays the WAV natively when `chatterbox.play on`;
+- exits.
+
+`mouth.py` normally sets native playback off and owns playback scheduling itself.
+
+### `chatterbox-bake.exe` — voice preparation utility
+
+Source: `src/bake.cpp`
+
+Configuration: `bake.txt`
+
+This is an installation/preparation program, not one of the intended five assistant residents. It bakes reusable voice conditioning into the model files derived from `reference.wav`.
+
+### `nemo-speech.exe` — external ASR runtime
+
+This executable is built from the pinned NeMo Speech source by `install.py`. It is not authored by this repository, but it is a required installed runtime for both `hear.py` and `ear.exe`.
+
+---
+
+## Python entry points
+
+### `hear.py`
+
+Records the normal PC microphone for a requested number of seconds, writes a temporary WAV, runs `nemo-speech.exe transcribe`, prints the transcript, and removes the temporary recording directory.
+
+Typical use:
+
+```powershell
+.\.venv\Scripts\python.exe .\hear.py 8
+```
+
+Useful options include microphone selection, language, sample rate, endpointing, verbatim mode, punctuation control, and streaming mode. Run `--help` for the exact current CLI.
+
+### `qwen.py`
+
+Human/agent-friendly one-shot wrapper around `sense.exe`.
+
+```powershell
+.\.venv\Scripts\python.exe .\qwen.py "Explain the difference between RAM and VRAM."
+```
+
+The wrapper:
+
+- reads the canonical `sense.txt`;
+- replaces only the runtime prompt field in a generated sidecar;
+- invokes `sense.exe` in the repository root;
+- reads the newly produced sense output file;
+- prints the generation to stdout.
+
+The current Qwen model is text-only. Image input is rejected explicitly.
+
+### `gemma.py`
+
+Human/agent-friendly one-shot wrapper around `gemma-brain.exe`.
+
+Text:
+
+```powershell
+.\.venv\Scripts\python.exe .\gemma.py "Give a one-sentence summary of Trident."
+```
+
+Text plus image:
+
+```powershell
+.\.venv\Scripts\python.exe .\gemma.py "Describe this image." --image .\image.png
+```
+
+The wrapper base64-encodes the image, constructs the Gemma-native turn form already expected by the C++ executable, writes `gemma_run.txt`, runs the native brain, and prints the newly produced generation.
+
+### `mouth.py`
+
+Human/agent-friendly TTS wrapper around `chatterbox.exe`.
+
+```powershell
+.\.venv\Scripts\python.exe .\mouth.py "Hello from Trident."
+.\.venv\Scripts\python.exe .\mouth.py --model v3 --lang pl "Dzień dobry."
+```
+
+It can accept multiple already-chunked text arguments. It synthesizes one chunk while the previous chunk is playing, using a single playback worker so speech remains ordered.
+
+Current default language behavior:
+
+- `nano`: English when `--lang` is omitted;
+- `turbo`: English when `--lang` is omitted;
+- `v3`: Polish when `--lang` is omitted.
+
+### `assistant.py`
+
+The current high-level assistant composition layer.
+
+Microphone loop:
+
+```powershell
+.\.venv\Scripts\python.exe .\assistant.py
+```
+
+One microphone turn:
+
+```powershell
+.\.venv\Scripts\python.exe .\assistant.py --once
+```
+
+Text-only turn:
+
+```powershell
+.\.venv\Scripts\python.exe .\assistant.py --text "What is Trident?"
+```
+
+Gemma image turn:
+
+```powershell
+.\.venv\Scripts\python.exe .\assistant.py --brain gemma --text "Describe this." --image .\image.png
+```
+
+The current default brain is Qwen. The current default mouth model is Nano.
+
+`assistant.py` also removes known model-control/thought markers before speech and chunks long responses at natural boundaries. Current approximate chunk limits are 65 words for English and 55 for Polish, with lower preferred split floors of 50 and 45 words respectively.
+
+---
+
+## Root-flat runtime
+
+The **installed runtime surface is intentionally flat**.
+
+After a successful installation, the files a human, wrapper, or native executable needs to launch normal work are in the repository root. There is no Gemma runtime folder, Qwen runtime folder, Mouth runtime folder, or Ear runtime folder.
+
+```mermaid
+flowchart TB
+    ROOT[Repository root / runtime workspace]
+
+    ROOT --> EXE[Executables<br/>vad.exe<br/>ear.exe<br/>nemo-speech.exe<br/>sense.exe<br/>gemma-brain.exe<br/>chatterbox.exe<br/>chatterbox-bake.exe]
+    ROOT --> PY[Python entry points<br/>assistant.py<br/>hear.py<br/>qwen.py<br/>gemma.py<br/>mouth.py]
+    ROOT --> CFG[Configuration<br/>install.txt<br/>vad.txt<br/>ear.txt<br/>sense.txt<br/>gemma.txt<br/>chatterbox.txt<br/>bake.txt]
+    ROOT --> MODEL[Models/assets<br/>ear.gguf<br/>sense.gguf<br/>gemma.gguf<br/>gemma-mmproj.gguf<br/>*-t3.gguf<br/>*-s3.gguf<br/>silero_vad.onnx<br/>reference.wav]
+    ROOT --> DLL[Runtime DLLs<br/>onnxruntime.dll<br/>NeMo runtime DLLs]
+    ROOT --> RUN[Generated sidecars/results<br/>mouth.txt<br/>sense_run.txt<br/>gemma_run.txt<br/>*_out_*.txt<br/>*.wav]
+```
+
+### Expected model filenames
+
+The current checked-in settings/install contract stages these model assets in the root:
+
+```text
+silero_vad.onnx
+ear.gguf
+sense.gguf
+gemma.gguf
+gemma-mmproj.gguf
+nano-t3.gguf
+nano-s3.gguf
+turbo-t3.gguf
+turbo-s3.gguf
+v3-t3.gguf
+v3-s3.gguf
+```
+
+### Flat-runtime invariant
+
+A change should preserve these rules unless the architecture is deliberately changed:
+
+- final executables are staged in the repository root;
+- final runtime DLLs are staged in the repository root;
+- downloaded runtime models named by the checked-in settings files are stored in the repository root;
+- baked Chatterbox model files are stored in the repository root;
+- Python wrappers resolve their native executables from the repository root;
+- generated wrapper sidecars and native result files are root-level and ignored by Git;
+- native configuration paths remain relative to the settings file that contains them.
+
+### What may still be a directory
+
+“Root-flat runtime” does **not** mean flattening source code or corrupting build-system requirements.
+
+The repository still contains source directories such as `src/`, `gemma/`, and `scripts/`. The installer also maintains hidden implementation state:
+
+```text
+.venv/          Python environment used by installation and wrappers
+.install/src/   pinned third-party source checkouts
+.install/cache/ downloaded checkpoints, converted GGUF cache, stamps
+```
+
+CMake/NeMo build directories are temporary. They are removed after their required runtime files have been staged successfully in the root. Gemma retains the short `C:\tgemma` build path during compilation because the Vulkan shader build historically failed on long paths, but that directory is no longer part of the post-install workspace.
+
+The checked-in `gemma/` directory is **source code**, not the installed Gemma runtime.
+
+---
+
+## Installation
+
+### Target environment
+
+The installer targets Windows x64 and is configured around:
+
+- Python;
+- Git;
+- CMake;
+- Visual Studio 2022 C/C++ toolchain;
+- Vulkan SDK;
+- optional NVIDIA CUDA 12.6 path for the current CUDA configuration;
+- internet access while downloading pinned third-party sources and model assets.
+
+Review `install.txt` before running on a machine with different toolchain locations or backend requirements.
+
+### Install command
+
+From the repository root:
+
+```powershell
+python .\install.py .\install.txt
+```
+
+The installer creates `.venv` and re-executes itself inside that environment. Its pinned Python package set includes the conversion dependencies plus `sounddevice`, which `hear.py` uses for microphone capture.
+
+### Install pipeline
+
+```mermaid
+flowchart TD
+    I[python install.py install.txt] --> VENV[Create/use .venv]
+    VENV --> PIP[Install pinned Python packages]
+    PIP --> SRC[Clone/pin ggml, llama.cpp, NeMo Speech]
+    SRC --> DETECT[Detect CPU ISA + Gemma backend]
+
+    DETECT --> MB[Build mouth / VAD / native ear]
+    DETECT --> EB[Build NeMo Speech]
+    DETECT --> GB[Build Gemma + Sense]
+
+    MB --> STAGE[Stage EXE/DLL files in root]
+    EB --> STAGE
+    GB --> STAGE
+
+    STAGE --> CLEAN[Remove successful build trees]
+    CLEAN --> CKPT[Download Chatterbox checkpoints]
+    CKPT --> CONVERT[Convert + quantize T3/S3 assets]
+    CONVERT --> BAKE[Bake Nano/Turbo/v3 voice models]
+    BAKE --> MODELS[Download Gemma/Qwen/ASR/VAD runtime models]
+    MODELS --> READY[Flat root runtime ready]
+```
+
+### Build cache behavior
+
+The installer keeps input stamps and reusable source/model caches under `.install`. A native target can therefore be skipped when its input contract is unchanged and its staged root runtime files still exist, even though the large intermediate build tree was removed after the previous successful install.
+
+For NeMo Speech, the installer records the root-level EXE/DLL runtime manifest in its stamp so the build can be skipped only when the files copied by the previous successful build are still present.
+
+---
+
+## Running Trident
+
+### Full local assistant
+
+```powershell
+.\.venv\Scripts\python.exe .\assistant.py
+```
+
+Flow:
+
+```text
+microphone
+  -> hear.py
+  -> nemo-speech.exe
+  -> transcript
+  -> qwen.py / sense.exe            [default]
+     or gemma.py / gemma-brain.exe  [optional]
+  -> model generation
+  -> assistant speech cleanup/chunking
+  -> mouth.py
+  -> chatterbox.exe
+  -> Windows speakers
+```
+
+### Direct native programs
+
+Each Trident-authored native executable takes exactly one settings-file argument:
+
+```powershell
+.\vad.exe .\vad.txt
+.\ear.exe .\ear.txt
+.\sense.exe .\sense.txt
+.\gemma-brain.exe .\gemma.txt
+.\chatterbox.exe .\chatterbox.txt
+.\chatterbox-bake.exe .\bake.txt
+```
+
+`nemo-speech.exe` is external and uses its own command-line interface.
+
+### Direct wrappers
+
+```powershell
+.\.venv\Scripts\python.exe .\hear.py 8
+.\.venv\Scripts\python.exe .\qwen.py "Question"
+.\.venv\Scripts\python.exe .\gemma.py "Question"
+.\.venv\Scripts\python.exe .\mouth.py "Text to speak"
+```
+
+Use `--help` on the Python entry points instead of relying on an old command example.
+
+---
+
+## Configuration contracts
+
+The checked-in configuration files are part of the executable interface:
+
+| File | Owner | Purpose |
+|---|---|---|
+| `install.txt` | `install.py` | source pins, build options, download URLs, conversion settings |
+| `vad.txt` | `vad.exe` | capture device, VAD model, thresholds/timing |
+| `ear.txt` | `ear.exe` | ASR model, input WAV, NeMo transcription options |
+| `sense.txt` | `sense.exe` | Qwen model and generation parameters |
+| `gemma.txt` | `gemma-brain.exe` | Gemma model/projector and generation parameters |
+| `chatterbox.txt` | `chatterbox.exe` | voice model pairs, synthesis parameters, text/language |
+| `bake.txt` | `chatterbox-bake.exe` | reference voice and bake parameters |
+
+The common native settings reader lives in `src/common/config.h`.
+
+Important semantics:
+
+- a native Trident executable receives one settings filename;
+- normal entries are `key value`;
+- multiline values use `key <<` followed by content and a line containing only `<<`;
+- UTF-8 BOM is tolerated;
+- required keys fail when missing;
+- paths read through `cfg_path` are resolved relative to the settings-file directory;
+- boolean-style values are literal `on` or `off`;
+- native output names are reserved without overwriting an existing result file.
+
+Treat a configuration-key rename as an API change. Trace every reader and update the matching template in the same commit.
+
+---
+
+## Audio and model flow
+
+### Hearing path used by `assistant.py`
+
+`assistant.py` currently uses fixed-duration `hear.py`, not native `vad.exe` + `ear.exe`.
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant A as assistant.py
+    participant H as hear.py
+    participant N as nemo-speech.exe
+    participant B as Qwen/Gemma wrapper
+    participant X as Native brain
+    participant M as mouth.py
+    participant C as chatterbox.exe
+    participant S as Speakers
+
+    A->>H: listen for N seconds
+    H->>U: record microphone
+    H->>N: transcribe temporary WAV
+    N-->>H: transcript
+    H-->>A: stdout transcript
+    A->>B: question
+    B->>X: generated settings sidecar
+    X-->>B: root output TXT
+    B-->>A: generation
+    A->>A: strip control/thought markers + chunk
+    A->>M: speech chunks
+    M->>C: synthesize chunk
+    C-->>M: WAV filename
+    M->>S: play WAV
+    Note over M,C: playback of current chunk can overlap synthesis of next chunk
+```
+
+### Native VAD/ear path
+
+The lower-level native path is already present but is not wired into the current assistant orchestrator:
+
+```text
+vad.exe -> utterance WAV -> ear.exe -> nemo-speech.exe -> transcript TXT
+```
+
+A future resident assistant may build on this path, but current one-shot behavior must not be documented as a daemon.
+
+---
+
+## Repository layout
+
+Tracked source is intentionally small:
+
+```text
+Trident/
+├─ README.md
+├─ LICENSE
+├─ CMakeLists.txt
+├─ install.py
+├─ install.txt
+├─ assistant.py
+├─ hear.py
+├─ qwen.py
+├─ gemma.py
+├─ mouth.py
+├─ vad.txt
+├─ ear.txt
+├─ sense.txt
+├─ gemma.txt
+├─ chatterbox.txt
+├─ bake.txt
+├─ reference.wav
+├─ utf8.manifest
+├─ src/
+│  ├─ vad.cpp
+│  ├─ ear.cpp
+│  ├─ chatterbox.cpp
+│  ├─ bake.cpp
+│  ├─ common/
+│  ├─ gpt2/
+│  └─ llama/
+├─ gemma/
+│  ├─ CMakeLists.txt
+│  ├─ cmake/HostCpu.cmake
+│  ├─ scripts/detect_cpu.ps1
+│  ├─ scripts/detect_gpu.ps1
+│  └─ src/
+│     ├─ brain.cpp
+│     └─ sense.cpp
+└─ scripts/
+   ├─ convert_t3.py
+   ├─ convert_s3.py
+   ├─ quant.py
+   ├─ quant_t3.json
+   └─ quant_s3.json
+```
+
+The conversion/quantization scripts are build dependencies. They are not runtime bloat merely because they are absent from the normal inference loop.
+
+---
+
+## Two-machine development model
+
+Trident is designed to be worked on with two real Windows machines when useful:
+
+```mermaid
+flowchart LR
+    USER[User] --> COORD[Small coordination layer]
+    COORD --> IRIS[Integrated-GPU Windows machine<br/>I/O + integration]
+    COORD --> NV[NVIDIA Windows machine<br/>CUDA + heavy GPU work]
+
+    IRIS --> REPO1[Real Trident checkout]
+    NV --> REPO2[Real Trident checkout]
+
+    REPO1 --> AUDIO[Microphone / speakers / Vulkan proof]
+    REPO2 --> CUDA[CUDA / Gemma / GPU-specific proof]
+```
+
+Conceptual roles:
+
+### Integrated-GPU machine (“Iris” in historical notes)
+
+- primary integration checkout;
+- microphone and speaker proof;
+- normal user-facing assistant verification;
+- Qwen CPU path;
+- Vulkan/integrated-GPU work where applicable.
+
+### NVIDIA machine
+
+- CUDA-specific Gemma work;
+- heavier GPU debugging/profiling;
+- independent reproduction or read-only review when useful.
+
+Exact machine names, IP addresses, usernames, GPU models, and checkout paths are environment facts. Detect them from the current machines; do not hard-code old values into Trident.
+
+For development automation, the important boundary is not the brand of coordinator. Nontrivial source reasoning, edits, builds, and hardware tests should execute against the real checkout on the real target machine when correctness depends on that environment.
+
+### Grok Bot / Cursor operating preference
+
+When Grok Bot is used as the coordination layer, keep its permanent role set small and its token use low. It should route work, maintain concise state, and perform only narrow local actions that genuinely belong at that layer. Source reading, refactoring, building, debugging, and hardware validation belong to Cursor-style coding agents operating on the real Trident checkout.
+
+Recommended operating pattern:
+
+- one primary coordinator/SPOC rather than many overlapping permanent coding bots;
+- direct local Ear/Mouth actions only when a bot actually needs to hear or speak;
+- spawn task-specific Cursor workers on the integrated-GPU machine or NVIDIA machine as required;
+- use temporary multi-agent/war-room discussion only for decisions that genuinely benefit from it;
+- do not spend Grok context repeatedly reading the repository when a coding agent can inspect the checkout directly;
+- do not silently substitute a hosted/managed development VM when the task requires the physical Windows/audio/GPU environment;
+- hand back compact evidence: changed files, build/run results, commit, and any unresolved hardware proof.
+
+This is an operations preference, not a Trident runtime dependency. Trident must remain runnable without Grok Bot or Cursor.
+
+---
+
+## Current state versus target state
+
+### Current, implemented
+
+- one-shot native executables;
+- one settings file per native executable;
+- root-level runtime artifacts;
+- fixed-duration Python microphone capture for `assistant.py`;
+- local NeMo speech recognition;
+- Qwen text brain;
+- Gemma text/image brain;
+- Nano/Turbo/v3 Chatterbox TTS;
+- Python response cleanup and speech chunking;
+- overlapping TTS synthesis/playback scheduling;
+- native VAD and native ear executable paths available separately;
+- installer-driven dependency/model/build preparation.
+
+### Future direction, not current behavior
+
+Historical work explored or proposed:
+
+- five continuously resident native assistant processes;
+- always-open native VAD feeding native ASR automatically;
+- keeping model weights loaded between turns;
+- transparent LAN placement/offload across the two PCs;
+- a device-router API;
+- multilingual automatic speech-chunk language detection;
+- desktop visual grounding/control loops;
+- richer persistent assistant memory/persona services.
+
+Do not claim these features exist because an old diagram or commit message described them. Implement them only as explicit future changes with code and proof.
+
+### Intended resident set
+
+The historical five-resident target is:
+
+```text
+vad.exe
+  -> ear.exe
+  -> sense.exe and/or gemma-brain.exe
+  -> chatterbox.exe
+```
+
+`chatterbox-bake.exe` remains a preparation utility, and `nemo-speech.exe` remains the underlying external recognizer runtime.
+
+---
+
+## Rules for coding agents
+
+This README is intended to be sufficient context for a new coding agent to begin safely.
+
+### Start here
+
+1. Read `README.md`.
+2. Run `git status --short --branch` and `git log -5 --oneline --decorate`.
+3. Inspect the actual files involved in the task before proposing edits.
+4. Trace callers, callees, configuration keys, generated files, and build targets.
+5. Use Git history only when current intent is ambiguous.
+6. Keep implementation proof on the real Windows hardware when the task depends on Windows/audio/Vulkan/CUDA behavior.
+
+### Architecture rules
+
+- Keep native roles narrow.
+- Do not duplicate a native model engine in Python.
+- Keep wrappers thin and explicit.
+- Preserve one-settings-file native contracts unless a task intentionally redesigns them.
+- Preserve root-flat runtime placement unless a task explicitly changes the deployment model.
+- Do not introduce a database, service bus, daemon framework, web server, or network protocol without a concrete requirement.
+- Do not turn future historical diagrams into current assumptions.
+- Prefer deletion/simplification over parallel abstractions when equivalent behavior already exists.
+
+### Path rules
+
+- Runtime executables and required runtime assets belong in the repository root.
+- `gemma/` is source, not the destination for installed Gemma artifacts.
+- Python wrappers resolve sibling runtime files from their own repository root.
+- C++ settings paths are relative to the settings file.
+- `ear.exe` expects `nemo-speech.exe` beside the executable.
+- Installer build trees are temporary; reusable source/checkpoint caches live under hidden installer state.
+
+### Configuration rules
+
+- Never invent a configuration default that contradicts the checked-in `.txt` file.
+- When adding/removing/renaming a C++ configuration key, update the corresponding template.
+- When a Python wrapper rewrites a runtime field, preserve unrelated canonical settings.
+- Do not silently change model prompts or language content in native code.
+
+### Git rules
+
+- Keep a task coherent enough to explain in one commit message.
+- Avoid committing generated models, executables, DLLs, sidecars, WAV results, logs, virtual environments, or installer caches.
+- Do not rewrite published history unless explicitly instructed.
+- Before committing, inspect `git diff --check`, `git diff`, and `git status`.
+
+### Proof rules
+
+A source edit is not proven merely because it parses.
+
+Use the strongest applicable evidence available:
+
+```text
+Python-only change
+    -> syntax/CLI/unit-level checks
+
+CMake/C++ contract change
+    -> configure/build affected target on Windows
+
+Audio change
+    -> real microphone/speaker run on the I/O machine
+
+Vulkan change
+    -> real Vulkan build/run on the applicable machine
+
+CUDA/Gemma change
+    -> real NVIDIA/CUDA build/run
+
+Installer change
+    -> fresh or controlled reinstall path, then root-runtime inventory
+```
+
+When an environment is unavailable, report exactly which proof remains outstanding instead of pretending a static check is hardware validation.
+
+---
+
+## Change discipline
+
+Before changing a path, identify both producer and consumer.
+
+Examples:
+
+- changing `sense.exe` output naming affects `qwen.py`;
+- changing `gemma-brain.exe` output naming affects `gemma.py`;
+- changing Chatterbox output naming affects `mouth.py`;
+- changing a model filename in a `.txt` file affects installer download/bake placement;
+- moving `nemo-speech.exe` would break `ear.exe` because it resolves the recognizer beside itself;
+- moving runtime configuration files changes how relative model paths resolve.
+
+Before deleting a file, determine whether it is:
+
+```text
+runtime source
+build source
+conversion tooling
+configuration
+runtime asset
+generated output
+historical/documentation-only material
+```
+
+Only the last two categories are usually deletion candidates without architecture changes, and generated output should normally be ignored rather than tracked.
+
+---
+
+## Troubleshooting
+
+### `assistant.py` says `.venv` Python is missing
+
+Run the installer first:
+
+```powershell
+python .\install.py .\install.txt
+```
+
+### `hear.py` cannot import `sounddevice`
+
+Re-run the current installer so the pinned runtime dependency is installed into `.venv`, then invoke `hear.py` with that environment.
+
+### `hear.py` chooses the wrong microphone
+
+Use its `--mic` option with a device index or name substring. By default it deliberately avoids VB-Cable when choosing the normal microphone.
+
+### `qwen.py` rejects `--image`
+
+The current Qwen/Sense model is text-only. Use `gemma.py --image ...` or `assistant.py --brain gemma --image ...`.
+
+### `gemma-brain.exe` is missing
+
+Run the installer on a machine with the configured build prerequisites. The final executable must be staged in the repository root; `gemma/` is not a runtime destination.
+
+### A `C:\tgemma` directory remains after a failed build
+
+That location is a short temporary Gemma build tree. A successful current installer run removes it after staging `gemma-brain.exe` and `sense.exe` into the repository root. A failed build may intentionally leave intermediate files for diagnosis.
+
+### Native program says a model is missing
+
+Check the matching `.txt` file first. Native relative paths are resolved from that settings file's directory.
+
+### Output files accumulate in the root
+
+One-shot result text/WAV files are runtime artifacts and are ignored by Git. Remove them when no longer needed; do not commit them.
+
+---
+
+## Minimal mental model
+
+If everything else is forgotten, retain this:
+
+```mermaid
+flowchart LR
+    INSTALL[install.py] --> ROOT[Flat root runtime]
+    ROOT --> HEAR[Hear]
+    HEAR --> BRAIN[Qwen or Gemma]
+    BRAIN --> MOUTH[Mouth]
+    MOUTH --> USER[User hears answer]
+
+    SOURCE[C++ + Python + TXT source contracts] --> INSTALL
+    CACHE[Hidden source/model cache] -. build-time only .-> INSTALL
+```
+
+- C++ owns the native inference/audio engines.
+- Python owns convenient invocation and current orchestration.
+- Text files are explicit configuration contracts.
+- Installed runtime artifacts live together at the repository root.
+- Hidden build/source caches are implementation details, not module-specific runtime trees.
+- The current assistant is one-shot/process-composed; the resident architecture is still a future optimization.
+- Hardware-dependent work is proven on the actual Windows machine that owns the hardware.
+
+---
+
+## License
+
+Trident is licensed under the MIT License. See [`LICENSE`](LICENSE) for the project license and third-party notices.

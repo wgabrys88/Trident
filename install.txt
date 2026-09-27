@@ -2,7 +2,8 @@
 # This file is only the installer's parameters. Each program has its own text file.
 # A value ending in << runs until a line that is only <<. An empty value is empty.
 # install.vulkan_sdk empty uses the newest Vulkan SDK. install.msvc_arch empty detects this CPU.
-# install.build_gemma is a short directory because the Vulkan shader step fails on a long path.
+# Build directories are temporary and removed after their runtime files are staged in the repository root.
+# install.build_gemma stays short because the Vulkan shader step fails on a long path.
 # Clearing install.llama_rev tracks llama.cpp master. Clearing install.nemo_rev keeps the cloned revision.
 # install.ear_vcpkg_root and install.ear_vcpkg_triplet empty skip vcpkg.
 # The cond-seconds values are the reference length baked into that voice.
@@ -111,6 +112,7 @@ install.turbo_cond_seconds 15
 install.v3_cond_seconds 6
 install.pip <<
 numpy==1.26.4
+sounddevice==0.5.6
 gguf==0.19.0
 safetensors==0.8.0
 librosa==0.11.0

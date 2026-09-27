@@ -4,13 +4,14 @@
 # Allow Git to descend into directories. Files stay ignored until named.
 !*/
 
-# !*/ would otherwise expose a nested clone as an embedded gitlink.
+# Generated/install-only directories.
+/.venv/
+/.install/
+/build/
+/models/
 /ggml/
 /nemo-speech/
 /llama-vulkan/
-/build/
-/models/
-/.venv/
 /.ckpt/
 /.ckpt-v3/
 /wav/
@@ -18,44 +19,42 @@
 /gemma/build/
 /gemma/models/
 /gemma/cmake/HostCpu.generated.cmake
-/.install/
 
+# Repository root.
 !/.gitignore
 !/.gitattributes
+!/README.md
 !/CMakeLists.txt
 !/LICENSE
 !/install.py
-!/utf8.manifest
 !/install.txt
+!/utf8.manifest
 !/vad.txt
 !/ear.txt
 !/sense.txt
 !/gemma.txt
 !/chatterbox.txt
 !/bake.txt
-!/mouth.py
-!/lan-recon/collect_iris_inventory.py
-!/hear.py
-!/gemma.py
-!/qwen.py
 !/assistant.py
-!/CPP_DELTA_FINDINGS.md
+!/hear.py
+!/qwen.py
+!/gemma.py
+!/mouth.py
 !/reference.wav
-!/CODE_REVIEW_CHECKLIST.md
-!/BOTS.md
-!/GROK_BOT_MASTER_PROMPT.md
 
+# Installer conversion/quantization tools.
 !/scripts/convert_s3.py
 !/scripts/convert_t3.py
 !/scripts/quant.py
 !/scripts/quant_s3.json
 !/scripts/quant_t3.json
 
+# Native source.
 !/src/**/*.cpp
 !/src/**/*.h
 !/src/**/*.hpp
 
-!/gemma/.gitignore
+# Gemma/Qwen native build source.
 !/gemma/CMakeLists.txt
 !/gemma/cmake/HostCpu.cmake
 !/gemma/scripts/detect_cpu.ps1
@@ -63,45 +62,10 @@
 !/gemma/src/brain.cpp
 !/gemma/src/sense.cpp
 
-!/artifacts/reference/desktop_ui_reference.png
-!/artifacts/reference/DESKTOP_UI_REFERENCE.md
-!/artifacts/reference/tts_chunk_mixed_pl_en.txt
-!/artifacts/reference/TTS_CHUNK_MIXED_PL_EN.md
-!/artifacts/reference/wave3_fixtures.json
-!/artifacts/reference/wave3_lexicon.json
-!/artifacts/reference/WAVE3_PLAN.md
-!/artifacts/reference/HISTORIA_SESJI_PL.md
-
-!/artifacts/reference/design/README.md
-!/artifacts/reference/design/arch_today_spoc_iris_nvidia.png
-!/artifacts/reference/design/arch_multi_device_ready.png
-!/artifacts/reference/design/arch_two_tracks_assistant_and_bots.png
-!/artifacts/reference/design/arch_phases_0_to_3.png
-!/artifacts/reference/design/arch_target_local_historical.png
-
-!/artifacts/reference/tracks/IRIS_ASSISTANT.md
-!/artifacts/reference/tracks/DEVICE_ROUTER.md
-
-!/artifacts/reference/seats/SPOC.md
-!/artifacts/reference/seats/MOUTH.md
-!/artifacts/reference/seats/EAR.md
-!/artifacts/reference/seats/ASK.md
-!/artifacts/reference/seats/EXECUTOR.md
-!/artifacts/reference/seats/LOCAL_IT_GUY.md
-!/artifacts/reference/seats/WAR_ROOM.md
-
-!/wave3_harness.py
-!/wave3_split.py
-
 # Resident slots, one-shot artifacts, and run logs.
-# mouth.py, hear.py, gemma.py, qwen.py, assistant.py, and BOTS.md stay tracked. A later un-ignore must not commit these.
 /mouth.txt
 /gemma_run.txt
 /sense_run.txt
-/wave3_sense.txt
-/wave3_run.json
-/wave3_chunks.json
-/wave3_mouth_argv.json
 /*_out_*.txt
 /*_chatterbox_out_*
 /*.pid

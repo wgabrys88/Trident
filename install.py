@@ -163,6 +163,28 @@ def matches(stamp: Path, payload: dict, *outputs: Path) -> bool:
     return stamp.is_file() and json.loads(stamp.read_text(encoding="utf-8")) == payload and all(path.is_file() for path in outputs)
 
 
+def runtime_manifest_matches(stamp: Path, inputs: dict) -> bool:
+    if not stamp.is_file():
+        return False
+    try:
+        payload = json.loads(stamp.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    runtime = payload.get("runtime", [])
+    return payload.get("inputs") == inputs and bool(runtime) and all((ROOT / name).is_file() for name in runtime)
+
+
+def clean_build(build: Path) -> None:
+    build = build.resolve()
+    root = ROOT.resolve()
+    if build == root or build in root.parents:
+        raise SystemExit("refusing to remove unsafe build directory " + str(build))
+    if build.exists():
+        shutil.rmtree(build)
+
+
 def digest(*paths) -> str:
     hasher, files = hashlib.sha256(), []
     for item in paths:
@@ -448,23 +470,25 @@ def build_mouth(sdk: Path) -> None:
         *vulkan_defs(sdk),
         "-DONNXRUNTIME_DIR=" + str(onnx_root()),
     ]
-    outputs = tuple(build / "bin" / name for name in ("chatterbox.exe", "chatterbox-bake.exe", "ear.exe", "vad.exe"))
+    names = ("chatterbox.exe", "chatterbox-bake.exe", "ear.exe", "vad.exe")
+    built = tuple(build / "bin" / name for name in names)
+    runtime = tuple(ROOT / name for name in names) + (ROOT / "onnxruntime.dll",)
     wanted = {"ggml": need("install.ggml_rev"), "cmake": defs, "source": digest(ROOT / "CMakeLists.txt", ROOT / "src")}
     stamp = stamps() / "mouth.json"
-    if not matches(stamp, wanted, *outputs):
+    if not matches(stamp, wanted, *runtime):
         print("install mouth", flush=True)
         cmake_configure(ROOT, build, defs, vulkan_env(sdk))
         cmake_targets(build, ["chatterbox", "chatterbox-bake", "ear", "vad"], need("install.parallel"))
+        for exe in built:
+            imports = pe_import_dlls(exe)
+            if "ggml.dll" in imports or "ggml-base.dll" in imports:
+                raise SystemExit(exe.name + " links ggml.dll; the mouth must stay static so the ear can keep its own ggml.dll")
+            shutil.copy2(exe, ROOT / exe.name)
+        shutil.copy2(onnx_root() / "lib" / "onnxruntime.dll", ROOT / "onnxruntime.dll")
         atomic_json(stamp, wanted)
     else:
         print("skip mouth", flush=True)
-    for exe in outputs:
-        imports = pe_import_dlls(exe)
-        if "ggml.dll" in imports or "ggml-base.dll" in imports:
-            raise SystemExit(exe.name + " links ggml.dll; the mouth must stay static so the ear can keep its own ggml.dll")
-        shutil.copy2(exe, ROOT / exe.name)
-    shutil.copy2(onnx_root() / "lib" / "onnxruntime.dll", ROOT / "onnxruntime.dll")
-
+    clean_build(build)
 
 def restore_nemo(home: Path) -> None:
     for relative, needle in (("app/transcribe.cpp", "TRIDENT_STAY"), ("app/live_terminal.cpp", "TRIDENT_FLUSH")):
@@ -486,7 +510,7 @@ def build_ear() -> None:
     choice = {key: FILE[key] for key in FILE if key.startswith("install.ear_") or key.startswith("install.nemo_")}
     wanted = {"rev": rev, "build": choice, "dir": str(build)}
     stamp = stamps() / "ear.json"
-    if not matches(stamp, wanted, exe):
+    if not runtime_manifest_matches(stamp, wanted):
         print("install ear", flush=True)
         claim_build(build, home)
         command = powershell("-File", str(home / "scripts" / "windows" / "build.ps1"), "-Backend", need("install.ear_backend"), "-Profile", need("install.ear_profile"), "-Config", need("install.ear_config"), "-CudaArch", need("install.ear_cuda_arch"), "-Architecture", need("install.ear_architecture"), "-Compiler", need("install.ear_compiler"), "-Jobs", need("install.ear_jobs"), "-BuildDir", str(build))
@@ -498,17 +522,20 @@ def build_ear() -> None:
             if on(key):
                 command.append(switch)
         run(command, cwd=home)
-        atomic_json(stamp, wanted)
+        runtime = []
+        for item in exe.parent.iterdir():
+            if item.suffix.lower() in {".exe", ".dll"}:
+                dest = ROOT / item.name
+                shutil.copy2(item, dest)
+                runtime.append(item.name)
+                if dest.suffix.lower() == ".exe":
+                    embed_utf8(dest)
+        if "nemo-speech.exe" not in runtime:
+            raise SystemExit("nemo-speech.exe missing from ear build output")
+        atomic_json(stamp, {"inputs": wanted, "runtime": sorted(runtime)})
     else:
         print("skip ear", flush=True)
-    built = exe.parent
-    for item in built.iterdir():
-        if item.suffix.lower() in {".exe", ".dll"}:
-            dest = ROOT / item.name
-            shutil.copy2(item, dest)
-            if dest.suffix.lower() == ".exe":
-                embed_utf8(dest)
-
+    clean_build(build)
 
 def build_gemma(sdk: Path) -> None:
     backend = gemma_backend()
@@ -516,6 +543,8 @@ def build_gemma(sdk: Path) -> None:
     config = need("install.config")
     exe = build / config / "gemma-brain.exe"
     sense = build / config / "sense.exe"
+    runtime_brain = ROOT / "gemma-brain.exe"
+    runtime_sense = ROOT / "sense.exe"
     llama = subprocess.run(["git", "-C", str(place("install.src_llama")), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
     source = ROOT / "gemma"
     args = ["-DCMAKE_BUILD_TYPE=" + config, "-DGEMMA_BACKEND=" + backend]
@@ -547,17 +576,18 @@ def build_gemma(sdk: Path) -> None:
         "source": digest(source / "CMakeLists.txt", source / "src" / "brain.cpp", source / "src" / "sense.cpp", source / "cmake" / "HostCpu.cmake", ROOT / "src" / "common" / "config.h"),
     }
     stamp = stamps() / "gemma.json"
-    if not matches(stamp, wanted, exe, sense):
+    if not matches(stamp, wanted, runtime_brain, runtime_sense):
         print("install gemma-brain", flush=True)
         cmake_configure(source, build, args + defs, env)
         if backend == "cuda":
             cmake_targets(build, ["ggml-cuda"], need("install.cuda_codegen_parallel"))
         cmake_targets(build, ["gemma-brain", "sense"], need("install.brain_parallel"))
+        shutil.copy2(exe, runtime_brain)
+        shutil.copy2(sense, runtime_sense)
         atomic_json(stamp, wanted)
     else:
         print("skip gemma-brain", flush=True)
-    shutil.copy2(exe, ROOT / "gemma-brain.exe")
-    shutil.copy2(sense, ROOT / "sense.exe")
+    clean_build(build)
 
 
 def policy(path: Path, default: str) -> dict:
