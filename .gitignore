@@ -64,6 +64,8 @@
 
 !/artifacts/reference/desktop_ui_reference.png
 !/artifacts/reference/DESKTOP_UI_REFERENCE.md
+!/artifacts/reference/tts_chunk_mixed_pl_en.txt
+!/artifacts/reference/TTS_CHUNK_MIXED_PL_EN.md
 
 # Resident slots, one-shot artifacts, and run logs.
 # mouth.py, hear.py, gemma.py, qwen.py, assistant.py, and BOTS.md stay tracked. A later un-ignore must not commit these.
