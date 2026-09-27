@@ -37,6 +37,7 @@
 !/hear.py
 !/gemma.py
 !/qwen.py
+!/assistant.py
 !/CPP_DELTA_FINDINGS.md
 !/reference.wav
 !/CODE_REVIEW_CHECKLIST.md
@@ -64,7 +65,7 @@
 !/artifacts/reference/DESKTOP_UI_REFERENCE.md
 
 # Resident slots, one-shot artifacts, and run logs.
-# mouth.py, hear.py, and BOTS.md stay tracked. A later un-ignore must not commit these.
+# mouth.py, hear.py, gemma.py, qwen.py, assistant.py, and BOTS.md stay tracked. A later un-ignore must not commit these.
 /mouth.txt
 /gemma_run.txt
 /sense_run.txt

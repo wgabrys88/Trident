@@ -8,7 +8,7 @@ Channel capacity is six. Keep Ear off the war-room roster when the room is full;
 
 ## Shared stack
 
-- Iris cwd: `C:\Users\eb-wjt\Downloads\Jarvis\Trident`. That checkout is the body. Grok Bot is the cockpit.
+- Iris cwd: `C:\Users\eb-wjt\Downloads\Jarvis\Trident`. That checkout is the body. Grok Bot is the optional remote cockpit. The local voice loop does not need it.
 - Repo: https://github.com/wgabrys88/Trident , branch `runner-h`.
 - Living laws: `GOAL.md`, `AGENTS.md`, `RULES.md`, this file, and `CODE_REVIEW_CHECKLIST.md` when reviewing.
 - Iris Shell machine id: `84403f85-8162-436b-9567-dd9255e82a60` (EB-W).
@@ -18,6 +18,17 @@ Channel capacity is six. Keep Ear off the war-room roster when the room is full;
 - Commits are new commits on `runner-h` from the Iris checkout. Never open a pull request. Never set `starting_ref`. Never amend, rebase, squash, or force-push. Never reset, except the local Nvidia Ask teardown (`git reset --hard origin/runner-h` on trident-nvidia only).
 - No C++ / `.cpp` edit without Wojciech's explicit go.
 - `sense.exe` sets batch threads from `sense.threads`. There is no `sense.threads-batch` key.
+
+## Local assistant
+
+On Iris, from the cwd above. Inference stays on this machine once the weights are local. Grok Bot is not on this path.
+
+```
+.\.venv\Scripts\python.exe assistant.py
+.\.venv\Scripts\python.exe assistant.py --once --text "Say only: ready." --model nano
+```
+
+`assistant.py` chains `hear.py`, then `qwen.py` (default) or `gemma.py`, then `mouth.py`. It is not a seat. It does not start the five residents, does not keep them loaded, and does not carry resident messages. Files stay the residents' only meeting place. `--seconds` defaults to 8. `--brain gemma` is opt-in and prefers an Nvidia GPU; Iris Vulkan can run it and can be slow. Image asks are `--brain gemma --image PATH`. Mouth defaults match Mouth below: model `nano`, omitted `--lang` is `en` for nano and turbo and `pl` for v3. A dry prove is the `--text` command. It skips the mic. Speakers are the default playback device.
 
 ## Trident_Android_SPOC V4
 

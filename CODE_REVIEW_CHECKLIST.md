@@ -6,7 +6,7 @@ Pass, Fail, or Blocked on the tree in front of you. Read `GOAL.md`, `AGENTS.md`,
 
 No pull request. New commits only. Never amend, rebase, squash, reset, or force-push. A commit body is the delta plus a pointer to the living docs. Iris is the commit checkout.
 
-Record defects. Do not add an orchestrator, a harness, a mock, or a second copy of a role.
+Record defects. Do not add a resident supervisor, a harness, a mock, or a second copy of a role. `assistant.py` chains the one-shots. It is not that supervisor.
 
 ## Items
 
@@ -18,13 +18,13 @@ Record defects. Do not add an orchestrator, a harness, a mock, or a second copy 
   **Pass:** the file text is what the call uses.
   **Fail:** a C++ default, a llama.cpp default, or a member initializer replaces a written value.
 
-- [ ] **3. Five residents, no orchestrator.** Roles are `vad.exe`, `ear.exe`, `sense.exe`, `gemma-brain.exe`, and `chatterbox.exe`. `chatterbox-bake.exe` bakes and exits. `install.py` builds. `mouth.py` starts only `chatterbox.exe`. `hear.py` starts only `nemo-speech.exe transcribe` once. `gemma.py` starts only `gemma-brain.exe`. `qwen.py` starts only `sense.exe`.
-  **Pass:** nothing starts the five or carries their messages.
-  **Fail:** a supervisor, harness, message bus, service, pid file, stop file, or a second synthesizer or recognizer.
+- [ ] **3. Five residents, no resident supervisor.** Roles are `vad.exe`, `ear.exe`, `sense.exe`, `gemma-brain.exe`, and `chatterbox.exe`. `chatterbox-bake.exe` bakes and exits. `install.py` builds. `mouth.py` starts only `chatterbox.exe`. `hear.py` starts only `nemo-speech.exe transcribe` once. `gemma.py` starts only `gemma-brain.exe`. `qwen.py` starts only `sense.exe`. `assistant.py` starts only `hear.py`, then `qwen.py` or `gemma.py`, then `mouth.py`, through the repo virtualenv. It does not start the five itself.
+  **Pass:** nothing starts the five as a supervisor or carries messages between them. `assistant.py` runs those one-shots and lets them exit. It does not keep the residents loaded.
+  **Fail:** a resident supervisor, harness, message bus, service, pid file, stop file, or a second synthesizer or recognizer.
 
-- [ ] **4. Files are the meeting place.** Each resident takes one text file and no flags (`usage: program file.txt`). Output is `HH-MM-SS-mmm_<role>_out_NNN` via `CREATE_NEW` in the current directory. The person copies text between files.
-  **Pass:** no program watches a neighbor.
-  **Fail:** code copies one role's output into the next, or replaces an existing output file.
+- [ ] **4. Files are the meeting place.** Each resident takes one text file and no flags (`usage: program file.txt`). Output is `HH-MM-SS-mmm_<role>_out_NNN` via `CREATE_NEW` in the current directory. The person copies text between resident files. `assistant.py` is outside that path: it passes one-shot stdout into the next one-shot's arguments.
+  **Pass:** no resident watches a neighbor.
+  **Fail:** a resident copies another role's output into the next, or replaces an existing output file.
 
 - [ ] **5. Text passes through.** Gate and brain write the generation unchanged. Ear writes recognizer stdout unchanged. `hear.py` prints that stdout. The mouth speaks `chatterbox.text` as written.
   **Pass:** the bytes written are the generation or the transcript.
@@ -72,7 +72,7 @@ Record defects. Do not add an orchestrator, a harness, a mock, or a second copy 
   **Pass:** a cold session can continue from those files.
   **Fail:** a doc describes behavior the code does not have.
 
-- [ ] **16. Git whitelist.** `.gitignore` ignores `*` until a `!` rule. `mouth.py`, `hear.py`, `gemma.py`, `qwen.py`, `BOTS.md`, and this file stay tracked. Models, `.install`, `.venv`, `C:\tgemma`, `mouth.txt`, `gemma_run.txt`, `sense_run.txt`, wavs, and `*_out_*.txt` stay untracked.
+- [ ] **16. Git whitelist.** `.gitignore` ignores `*` until a `!` rule. `mouth.py`, `hear.py`, `gemma.py`, `qwen.py`, `assistant.py`, `BOTS.md`, and this file stay tracked. Models, `.install`, `.venv`, `C:\tgemma`, `mouth.txt`, `gemma_run.txt`, `sense_run.txt`, `hear_*` leftovers, wavs, and `*_out_*.txt` stay untracked.
   **Pass:** `git status` shows only the intended files.
   **Fail:** a proof artifact or a model is staged.
 
@@ -81,13 +81,18 @@ Record defects. Do not add an orchestrator, a harness, a mock, or a second copy 
   **Fail:** a mock, or a script that pretends an exe ran. A cable item marked Pass from the room mic.
   **Blocked:** no cable or no build here.
 
-- [ ] **18. Residency stays inside the executable.** Each program still does one unit of work and exits. A later stay-loaded change is that same executable.
-  **Pass:** the review adds no supervisor.
+- [ ] **18. Residency stays inside the executable.** Each resident still does one unit of work and exits. A later stay-loaded change is that same executable. `assistant.py` repeats one-shot turns and does not become that resident.
+  **Pass:** the review adds no resident supervisor.
   **Fail:** a watcher or a second process is the proposed resident.
 
 - [ ] **19. Publish stays off.** `install.publish` is `off`.
   **Pass:** the key is off.
   **Fail:** a review step publishes a release.
+
+- [ ] **20. `assistant.py`.** From the repo root, venv Python. Interactive: `hear.py` for `--seconds` (default 8), then `qwen.py` unless `--brain gemma`, then one `mouth.py` with every chunk. `--once` is one heard turn. `--text` skips the mic and runs one brain-then-mouth round. `--image` requires `--brain gemma` and otherwise exits 2. Omitted `--lang` matches `mouth.py` (`en`, or `pl` for `v3`). Brain stdout is printed unchanged. `--verbose` is passed to the brain one-shot and that stderr is printed only on a non-zero exit. The mouth gets the speakable span: after the last `</think>`, else after the last `<channel|>`, else the generation with control tokens removed. An unclosed `<think>` is not spoken. Chunk cap is 65 words, or 55 when the mouth language is `pl`. A non-zero child exit is the assistant exit, with the stage on stderr. No network call.
+  **Pass:** the dry command `assistant.py --once --text` runs the real `qwen.py` and `mouth.py`.
+  **Fail:** a Python model load, a second recognizer or synthesizer, a resident supervisor, or a mock that pretends an exe ran.
+  **Blocked:** `sense.exe` or `chatterbox.exe` missing. Speakers not checked from this agent is a manual Speakers confirm, not a mock.
 
 ## Closeout
 

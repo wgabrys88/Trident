@@ -2,7 +2,9 @@
 
 Trident is a voice assistant that stays in memory. The microphone stays open. Voice activity detection notices speech. The recognizer writes the words. The gate and the brain each read one whole prompt and write the generation unchanged. The mouth speaks that text on the real speakers. The person hears the assistant because the mouth spoke.
 
-Files are the only meeting place. One role, one executable, one settings file. Nothing starts the five residents or carries their messages. There is no orchestrator, supervisor, harness, message bus, or service manager.
+Files are the only meeting place for the five residents. One role, one executable, one settings file. Nothing starts those residents or carries messages between them. There is no resident supervisor, harness, message bus, or service manager.
+
+`assistant.py` is one Python one-shot beside the others. It runs `hear.py`, then `qwen.py` or `gemma.py`, then `mouth.py`, and passes their text on the command line. It does not start the five residents, and it does not close the stay-loaded finish line.
 
 ## Programs
 
@@ -30,7 +32,7 @@ Five residents. Each takes one text file and no flags. Usage is `usage: program 
 
 `install.py` builds the tree. The only install command is `python install.py install.txt`. It reads `install.txt` and nothing else for its parameters. It creates `.venv` when needed, clones the pinned ggml, llama.cpp, and NeMo-Speech trees under `.install`, configures CMake, builds, downloads the models named in `install.txt`, and bakes nano, turbo, and v3 with `chatterbox-bake.exe`. `install.publish` stays `off`. The installer does not start the residents.
 
-One-shots exit after one result. They do not stay loaded, and they do not start the five.
+`mouth.py`, `hear.py`, `gemma.py`, and `qwen.py` exit after one result. `assistant.py` repeats that chain until quit or Ctrl-C. Each turn starts those one-shots fresh. None of them stay loaded, and none of them start the five residents.
 
 | Entry | Drives | Job |
 | --- | --- | --- |
@@ -38,6 +40,7 @@ One-shots exit after one result. They do not stay loaded, and they do not start 
 | `hear.py` | `nemo-speech.exe` | Record the PC mic, print one transcript. |
 | `gemma.py` | `gemma-brain.exe` | Gemma question, optional image file. Prefer an Nvidia GPU. |
 | `qwen.py` | `sense.exe` | Qwen3 text question. |
+| `assistant.py` | `hear.py`, `qwen.py` or `gemma.py`, `mouth.py` | One local voice turn. Hear or `--text`, then the brain, then the mouth. |
 
 ## Lego
 
@@ -99,18 +102,43 @@ The script records for `SECONDS`, writes a temporary wav in a `hear_*` directory
 
 `sense.exe` must set `cpuparams_batch.n_threads` to `cpuparams.n_threads`; otherwise the batch path access-violates.
 
+## Assistant
+
+From the repository root, with the repo virtualenv:
+
+```
+.\.venv\Scripts\python.exe assistant.py [--once] [--seconds N] [--brain qwen|gemma] [--model nano|turbo|v3] [--lang TAG] [--image PATH]
+.\.venv\Scripts\python.exe assistant.py --once --text "Say only: ready." --model nano
+```
+
+`assistant.py` runs those one-shots with `.venv\Scripts\python.exe`. It does not load a model. It does not start `vad.exe`, `ear.exe`, `sense.exe`, `gemma-brain.exe`, or `chatterbox.exe`. Those executables start only inside `hear.py`, `qwen.py`, `gemma.py`, and `mouth.py`, as they already do.
+
+The default brain is `qwen.py`: Qwen3-0.6B, text only, the Iris path. `--brain gemma` is opt-in and runs `gemma.py`. Prefer an Nvidia GPU for Gemma. On Iris the Vulkan build can run it and can be slow. `--image PATH` requires `--brain gemma`. An image with the default brain exits 2. The script makes no network call. Grok Bot stays an optional remote path and is not on this inference path.
+
+With no `--text`, each turn runs `hear.py` for `--seconds` (default 8), then the brain, then `mouth.py`. The loop repeats until the heard transcript is `quit`, `exit`, or `stop`, or until Ctrl-C. `--once` is a single heard turn. `--text` skips the microphone and runs one brain-then-mouth round. `--seconds` is unused on that round.
+
+`--model` defaults to `nano`. Omitted `--lang` is `en` for nano and turbo, and `pl` for v3. A passed `--lang` is written through to `mouth.py` and shared by every chunk.
+
+The brain child's stdout is printed unchanged. `mouth.py` receives the speakable span of that stdout. When `</think>` is present, the span is the text after the last one. Otherwise, when `<channel|>` is present, the span is the text after the last one. An unclosed `<think>` and no answer span is not spoken. With neither marker, the span is the generation with control tokens removed. `**`, `__`, and backticks are dropped so the mouth does not speak those marks. The words stay the model's.
+
+That span is one `mouth.py` argument when it is at most 65 words, or 55 when the mouth language is `pl`. A longer span is split on a paragraph, on `.` `!` `?` `;`, on an em dash, or on a colon that is not inside a time. A conjunction is preferred once the piece is already at least 50 English words or 45 Polish words. A quotation is kept whole unless that quotation itself exceeds the cap. One `mouth.py` process takes every chunk.
+
+A non-zero child exit is a non-zero assistant exit. The stage name and the child exit code go to stderr. The wrapper passes `--verbose` to the brain one-shot and prints that stderr only when the child exits non-zero. `mouth.txt`, `sense_run.txt`, `gemma_run.txt`, and `hear_*` stay untracked.
+
+This one-shot does not supervise the five residents and does not keep them loaded.
+
 ## Chain
 
-Connect the files by hand. Play known speech into the virtual-cable input. Point `vad.device` at the cable output. Put the wav name `vad.exe` wrote into `ear.input`. Put the recognizer text into the next prompt file as that model's own prompt, still unchanged. Put the sentence the brain wrote into `chatterbox.text`, or pass that sentence to `mouth.py`. Judge each resident by the file it wrote. Judge `hear.py`, `gemma.py`, and `qwen.py` by stdout.
+The five residents still connect by hand. `assistant.py` is not that path. Play known speech into the virtual-cable input. Point `vad.device` at the cable output. Put the wav name `vad.exe` wrote into `ear.input`. Put the recognizer text into the next prompt file as that model's own prompt, still unchanged. Put the sentence the brain wrote into `chatterbox.text`, or pass that sentence to `mouth.py`. Judge each resident by the file it wrote. Judge `hear.py`, `gemma.py`, `qwen.py`, and the brain stage of `assistant.py` by stdout. Judge the mouth stage by the speakers.
 
 ## Finish line
 
 Stop when all of this is true on the computer where the work is running:
 
 1. The five residents stay in memory. The microphone stays open. Voice activity detection runs by itself.
-2. Each role is still one executable and one settings file. They meet only through those files. One-shots remain `mouth.py`, `hear.py`, `gemma.py`, and `qwen.py` as specified above.
+2. Each role is still one executable and one settings file. They meet only through those files. One-shots remain `mouth.py`, `hear.py`, `gemma.py`, `qwen.py`, and `assistant.py` as specified above. `assistant.py` only chains the other one-shots.
 3. The source matches the templates. Duplicate and unused paths are gone. No code overrides a value the user wrote.
 4. A virtual-audio-cable proof passes for each program and for the whole chain. Speech goes in on the cable, the text files carry the words, and one utterance comes out of the real speakers because the mouth spoke. During that proof the mouth stays off the cable input. `hear.py` is a separate PC-mic proof.
 5. A new session with no prior chat can continue from `GOAL.md`, `AGENTS.md`, `RULES.md`, and `BOTS.md`. Use `CODE_REVIEW_CHECKLIST.md` when reviewing.
 
-Each executable still performs one unit of work and exits. Closing that gap means the same executable stays loaded. It does not mean a second program that supervises the five. The one-shots do not close that gap.
+Each executable still performs one unit of work and exits. Closing that gap means the same executable stays loaded. It does not mean a second program that supervises the five. `assistant.py` chains one-shots and exits. The one-shots do not close that gap.

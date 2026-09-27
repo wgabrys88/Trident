@@ -74,6 +74,8 @@ One-shots from the repository root:
 .\.venv\Scripts\python.exe hear.py SECONDS [--model PATH] [--device cpu] [--language TAG] [--mic NAME_OR_INDEX]
 .\.venv\Scripts\python.exe gemma.py [--image PATH] [--verbose] "Question."
 .\.venv\Scripts\python.exe qwen.py [--verbose] "Question."
+.\.venv\Scripts\python.exe assistant.py [--once] [--seconds N] [--brain qwen|gemma] [--model nano|turbo|v3] [--lang TAG] [--image PATH]
+.\.venv\Scripts\python.exe assistant.py --once --text "Say only: ready." --model nano
 ```
 
 `mouth.py` does not synthesize. One process takes every TEXT chunk. `--model` defaults to `nano`. Omitted `--lang` is `en` for nano and turbo, and `pl` for v3. It rewrites `mouth.txt` with `chatterbox.play off`, runs `.\chatterbox.exe mouth.txt` once per chunk, and plays each wav on the default speakers while the next chunk synthesizes. `chatterbox.txt` stays untouched. Empty text, an unknown model, an empty language, and a text line whose entire content is `<<` exit 2 before the first `chatterbox.exe`.
@@ -84,9 +86,11 @@ One-shots from the repository root:
 
 `qwen.py` copies `sense.txt` knobs into `sense_run.txt`, wraps the question as Qwen3 turns, and runs `sense.exe sense_run.txt`. Stdout is the generation file only. The child's stdout and stderr are discarded. `--verbose` passes that stderr through. Qwen3-0.6B has no vision. `qwen.py --image` exits 2. Image input is `gemma.py --image` on Nvidia.
 
+`assistant.py` is the local voice loop on Iris. It calls the repo virtualenv to run `hear.py`, then `qwen.py` or `gemma.py`, then `mouth.py`. Default brain is `qwen`. `--brain gemma` is opt-in: prefer Nvidia; Iris Vulkan can run it and can be slow. `--image` requires `--brain gemma`. `--seconds` defaults to 8 and is the `hear.py` duration. `--text` skips the mic and runs one brain-then-mouth round. `--once` is one heard turn. With neither flag, it loops until a heard `quit`, `exit`, or `stop`, or until Ctrl-C. Mouth language defaults match `mouth.py`: omitted `--lang` is `en` for nano and turbo, and `pl` for v3. The brain stdout is printed unchanged. The wrapper passes `--verbose` to the brain one-shot and prints that stderr only when the child exits non-zero. The mouth receives the speakable span of that stdout, chunked at 65 English words or 55 Polish words, in one `mouth.py` process. The script does not start the five residents, does not keep them loaded, and makes no network call. Grok Bot stays optional and is off this path.
+
 Sense sets batch threads from `sense.threads`. There is no `sense.threads-batch` key. Gemma reads `gemma.threads-batch` from its file.
 
-The resident output file is created with `CREATE_NEW`. The number starts at `000`. An existing name is kept and the next number is used. Nothing in a program watches another program. Connect the chain by editing text files. Judge each resident by the file it wrote. Judge a one-shot by its stdout, and a Mouth one-shot by the speakers as well.
+The resident output file is created with `CREATE_NEW`. The number starts at `000`. An existing name is kept and the next number is used. Nothing in a resident watches another resident. Connect that chain by editing text files. Judge each resident by the file it wrote. Judge `hear.py`, `gemma.py`, and `qwen.py` by stdout, and a Mouth one-shot by the speakers as well. Judge `assistant.py` by the brain stdout and by `mouth.py` on the speakers. `assistant.py` passes one-shot text on the command line. That is not the residents' meeting place.
 
 ## Ask
 
@@ -98,7 +102,7 @@ After every Nvidia ASK GO Cloud Agent run, success or fail, tear that checkout d
 
 Prove on this Windows machine with the real executables.
 
-1. One program at a time. A pass is that executable writing the file its template describes. A Mouth pass is `mouth.py` writing `mouth.txt` with `chatterbox.play off`, `chatterbox.exe` writing the out file and the wav, and sound from the real speakers. A hear pass is `hear.py` printing a transcript from the PC mic.
+1. One program at a time. A pass is that executable writing the file its template describes. A Mouth pass is `mouth.py` writing `mouth.txt` with `chatterbox.play off`, `chatterbox.exe` writing the out file and the wav, and sound from the real speakers. A hear pass is `hear.py` printing a transcript from the PC mic. An assistant dry pass is `assistant.py --once --text` printing the brain stdout and `mouth.py` reaching the speakers. That dry pass does not use the mic.
 2. Then the whole chain on the cable. Speech goes in through `CABLE Input`. The text files carry the words. One utterance comes out of `Speakers (Realtek(R) Audio)` because the mouth played it.
 3. Run a failed proof once more. If it fails again, leave the system able to start, write what happened and what will change into the commit delta, and change approach. Do not add a harness, a mock, or a script that pretends a program ran.
 
@@ -106,13 +110,13 @@ Prove on this Windows machine with the real executables.
 
 Read the source of every program you edit, in full, and every helper it calls, in full. Follow each key to the line that reads it. A description that does not match the code is an error. Delete duplicated logic, unused parameters, and any code that overrides the text file. One behavior has one owner.
 
-The mouth one-shot is `mouth.py` plus `chatterbox.exe`. The hearing one-shot is `hear.py` plus `nemo-speech.exe`. The brain one-shots are `gemma.py` plus `gemma-brain.exe`, and `qwen.py` plus `sense.exe`. Do not add a second synthesizer or a second recognizer. Do not add a process that starts the five residents. The finish line in `GOAL.md` is those residents staying loaded, inside the same executable.
+The mouth one-shot is `mouth.py` plus `chatterbox.exe`. The hearing one-shot is `hear.py` plus `nemo-speech.exe`. The brain one-shots are `gemma.py` plus `gemma-brain.exe`, and `qwen.py` plus `sense.exe`. `assistant.py` only runs those Python one-shots. Do not add a second synthesizer or a second recognizer. Do not add a process that starts the five residents. The finish line in `GOAL.md` is those residents staying loaded, inside the same executable. `assistant.py` does not close that gap.
 
 When behavior changes, rewrite `GOAL.md`, `AGENTS.md`, `RULES.md`, `CODE_REVIEW_CHECKLIST.md`, and `BOTS.md` from zero so they match the tree. Keep them atemporal.
 
 ## Git
 
-`.gitignore` is a whitelist. `*` ignores everything until a later `!` rule names it. Tracked files stay tracked. A new path is committed only after a whitelist rule names it. `!/mouth.py`, `!/hear.py`, `!/gemma.py`, and `!/qwen.py` keep those one-shots in the repository.
+`.gitignore` is a whitelist. `*` ignores everything until a later `!` rule names it. Tracked files stay tracked. A new path is committed only after a whitelist rule names it. `!/mouth.py`, `!/hear.py`, `!/gemma.py`, `!/qwen.py`, and `!/assistant.py` keep those one-shots in the repository.
 
 Leave `mouth.txt`, `gemma_run.txt`, `sense_run.txt`, generated audio, `hear_*` leftovers, `*_out_*.txt`, `*_chatterbox_out_*`, models, `.install`, `.venv`, `C:\tgemma`, and the other build trees uncommitted. Do not commit `*.pid`, `*.stop`, or run logs.
 
