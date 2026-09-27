@@ -43,6 +43,7 @@
 !/reference.wav
 !/CODE_REVIEW_CHECKLIST.md
 !/BOTS.md
+!/GROK_BOT_MASTER_PROMPT.md
 
 !/scripts/convert_s3.py
 !/scripts/convert_t3.py
