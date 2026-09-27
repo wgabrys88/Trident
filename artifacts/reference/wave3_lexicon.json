@@ -1,0 +1,41 @@
+{
+  "pl_diacritics": "ąćęłńóśźż",
+  "pl": [
+    "oraz",
+    "ale",
+    "lub",
+    "albo",
+    "więc",
+    "wiec",
+    "jednak",
+    "się",
+    "sie",
+    "że",
+    "ze",
+    "jest",
+    "są",
+    "sa",
+    "potem",
+    "jedziemy",
+    "nie",
+    "tak",
+    "na"
+  ],
+  "en": [
+    "the",
+    "and",
+    "but",
+    "we",
+    "then",
+    "hello",
+    "lamp",
+    "desk",
+    "keyboard",
+    "meeting",
+    "start",
+    "stop",
+    "now",
+    "yellow"
+  ],
+  "excluded": ["i", "a", "to", "do", "me", "bo"]
+}

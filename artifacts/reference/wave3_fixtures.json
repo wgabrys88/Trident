@@ -1,0 +1,184 @@
+{
+  "prompts": {
+    "S1": {
+      "document_lang": "en",
+      "body": "Return one JSON object and nothing else. No markdown. Schema: {\"answer\":\"<speech>\"}\nThe speech is English, two sentences, 25 to 40 words, no Polish words, no list."
+    },
+    "S2": {
+      "document_lang": "pl",
+      "body": "Return one JSON object and nothing else. No markdown. Schema: {\"answer\":\"<speech>\"}\nThe speech is Polish, two sentences, 25 to 40 words, uses Polish letters such as ł or ę, and contains no English word."
+    },
+    "S3": {
+      "document_lang": "en",
+      "body": "Return one JSON object and nothing else. No markdown. Schema: {\"answer\":\"<speech>\"}\nThe speech is three sentences in this order. Sentence 1 is English. Sentence 2 is Polish and contains at least two words with a Polish letter from ąćęłńóśźż. Sentence 3 is English. Under 45 words total."
+    },
+    "S4": {
+      "document_lang": "en",
+      "body": "Return one JSON object and nothing else. No markdown. Schema: {\"answer\":\"<speech>\"}\nThe speech is one English sentence of 12 to 25 words and contains the Polish word żółty exactly once. No other word uses a Polish letter."
+    }
+  },
+  "gold": [
+    {
+      "id": "F1",
+      "source": "Meet at 12:30 today.",
+      "document_lang": "en",
+      "b0": [
+        "Meet at 12:30 today."
+      ],
+      "b1": [
+        {
+          "text": "Meet at 12:30 today.",
+          "lang": "en",
+          "kind": "whole"
+        }
+      ]
+    },
+    {
+      "id": "F2",
+      "source": "She said \"keep the whole quotation here\" and left.",
+      "document_lang": "en",
+      "b0": [
+        "She said \"keep the whole quotation here\" and left."
+      ],
+      "b1": [
+        {
+          "text": "She said \"keep the whole quotation here\" and left.",
+          "lang": "en",
+          "kind": "whole"
+        }
+      ]
+    },
+    {
+      "id": "F3",
+      "source": "word00 word01 word02 word03 word04 word05 word06 word07 word08 word09 word10 word11 word12 word13 word14 word15 word16 word17 word18 word19 word20 word21 word22 word23 word24 word25 word26 word27 word28 word29 word30 word31 word32 word33 word34 word35 word36 word37 word38 word39 word40 word41 word42 word43 word44 word45 word46 word47 word48 word49 word50 word51 word52 word53 word54 word55 word56 word57 word58 word59 and word61 word62 word63 word64 word65 word66 word67 word68 word69",
+      "document_lang": "en",
+      "b0": [
+        "word00 word01 word02 word03 word04 word05 word06 word07 word08 word09 word10 word11 word12 word13 word14 word15 word16 word17 word18 word19 word20 word21 word22 word23 word24 word25 word26 word27 word28 word29 word30 word31 word32 word33 word34 word35 word36 word37 word38 word39 word40 word41 word42 word43 word44 word45 word46 word47 word48 word49 word50 word51 word52 word53 word54 word55 word56 word57 word58 word59",
+        "and word61 word62 word63 word64 word65 word66 word67 word68 word69"
+      ],
+      "b1": [
+        {
+          "text": "word00 word01 word02 word03 word04 word05 word06 word07 word08 word09 word10 word11 word12 word13 word14 word15 word16 word17 word18 word19 word20 word21 word22 word23 word24 word25 word26 word27 word28 word29 word30 word31 word32 word33 word34 word35 word36 word37 word38 word39 word40 word41 word42 word43 word44 word45 word46 word47 word48 word49 word50 word51 word52 word53 word54 word55 word56 word57 word58 word59",
+          "lang": "en",
+          "kind": "breath"
+        },
+        {
+          "text": "and word61 word62 word63 word64 word65 word66 word67 word68 word69",
+          "lang": "en",
+          "kind": "whole"
+        }
+      ]
+    },
+    {
+      "id": "F4",
+      "source": "tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak ale tak tak tak tak tak tak tak tak tak",
+      "document_lang": "pl",
+      "b0": [
+        "tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak",
+        "ale tak tak tak tak tak tak tak tak tak"
+      ],
+      "b1": [
+        {
+          "text": "tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak tak",
+          "lang": "pl",
+          "kind": "breath"
+        },
+        {
+          "text": "ale tak tak tak tak tak tak tak tak tak",
+          "lang": "pl",
+          "kind": "whole"
+        }
+      ]
+    },
+    {
+      "id": "F5",
+      "source": "The lamp is żółty on the desk.",
+      "document_lang": "en",
+      "b0": [
+        "The lamp is żółty on the desk."
+      ],
+      "b1": [
+        {
+          "text": "The lamp is",
+          "lang": "en",
+          "kind": "whole"
+        },
+        {
+          "text": "żółty",
+          "lang": "pl",
+          "kind": "foreign-word"
+        },
+        {
+          "text": "on the desk.",
+          "lang": "en",
+          "kind": "whole"
+        }
+      ]
+    },
+    {
+      "id": "F6",
+      "source": "We start now. Żółta łódź płynie. Then we stop.",
+      "document_lang": "en",
+      "b0": [
+        "We start now. Żółta łódź płynie. Then we stop."
+      ],
+      "b1": [
+        {
+          "text": "We start now.",
+          "lang": "en",
+          "kind": "whole"
+        },
+        {
+          "text": "Żółta łódź płynie.",
+          "lang": "pl",
+          "kind": "switch"
+        },
+        {
+          "text": "Then we stop.",
+          "lang": "en",
+          "kind": "whole"
+        }
+      ]
+    },
+    {
+      "id": "F7",
+      "source": "Potem jest the biurko.",
+      "document_lang": "pl",
+      "b0": [
+        "Potem jest the biurko."
+      ],
+      "b1": [
+        {
+          "text": "Potem jest",
+          "lang": "pl",
+          "kind": "whole"
+        },
+        {
+          "text": "the",
+          "lang": "en",
+          "kind": "foreign-word"
+        },
+        {
+          "text": "biurko.",
+          "lang": "pl",
+          "kind": "whole"
+        }
+      ]
+    },
+    {
+      "id": "F8",
+      "source": "Żółta do łodzi",
+      "document_lang": "en",
+      "b0": [
+        "Żółta do łodzi"
+      ],
+      "b1": [
+        {
+          "text": "Żółta do łodzi",
+          "lang": "pl",
+          "kind": "whole"
+        }
+      ]
+    }
+  ]
+}

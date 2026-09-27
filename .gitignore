@@ -66,12 +66,22 @@
 !/artifacts/reference/DESKTOP_UI_REFERENCE.md
 !/artifacts/reference/tts_chunk_mixed_pl_en.txt
 !/artifacts/reference/TTS_CHUNK_MIXED_PL_EN.md
+!/artifacts/reference/wave3_fixtures.json
+!/artifacts/reference/wave3_lexicon.json
+!/artifacts/reference/WAVE3_PLAN.md
+
+!/wave3_harness.py
+!/wave3_split.py
 
 # Resident slots, one-shot artifacts, and run logs.
 # mouth.py, hear.py, gemma.py, qwen.py, assistant.py, and BOTS.md stay tracked. A later un-ignore must not commit these.
 /mouth.txt
 /gemma_run.txt
 /sense_run.txt
+/wave3_sense.txt
+/wave3_run.json
+/wave3_chunks.json
+/wave3_mouth_argv.json
 /*_out_*.txt
 /*_chatterbox_out_*
 /*.pid
