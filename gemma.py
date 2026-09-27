@@ -135,6 +135,9 @@ def follow_prompt(question, call_markup, line):
         + Q
         + "}<tool_response|>"
     )
+    # Same empty thought close as the first turn, then the call the model just
+    # emitted, then the tool result. Gemma stops on <|tool_response> and continues
+    # the answer after <tool_response|>.
     return (
         "<bos>"
         + tool_header()
@@ -142,6 +145,8 @@ def follow_prompt(question, call_markup, line):
         + question.strip("\r\n")
         + "<turn|>\n"
         "<|turn>model\n"
+        "<|channel>thought\n"
+        "<channel|>\n"
         + call_markup
         + response
     )
@@ -181,6 +186,15 @@ def write_hello(line):
 
 def strip_tool_markup(text):
     return TOOL_MARKUP_RE.sub("", text)
+
+
+def answer_text(text):
+    cleaned = strip_tool_markup(text).replace("\r\n", "\n").replace("\r", "\n")
+    if "<channel|>" in cleaned:
+        cleaned = cleaned.split("<channel|>")[-1]
+    for token in ("<turn|>", "<|turn>", "<bos>", "<eos>", "`"):
+        cleaned = cleaned.replace(token, "")
+    return " ".join(cleaned.split())
 
 
 def settings_text(prompt, image_b64):
@@ -275,9 +289,16 @@ def main():
         if call and call[0] == "hello":
             line = clean_line(call[1].get("line"))
             write_hello(line)
-            text = strip_tool_markup(
-                run_brain(follow_prompt(args.question, call[2], line), "", args.verbose)
-            )
+            follow = follow_prompt(args.question, call[2], line)
+            spoken = ""
+            for _ in range(3):
+                spoken = answer_text(run_brain(follow, "", args.verbose))
+                if spoken:
+                    break
+            if not spoken:
+                print("gemma: tool follow-up empty", file=sys.stderr, flush=True)
+                spoken = "Wrote " + line + " to tool_hello.txt."
+            text = spoken
         elif call:
             print("gemma: tool skip " + call[0], file=sys.stderr, flush=True)
     sys.stdout.write(text)
