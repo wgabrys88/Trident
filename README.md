@@ -1094,6 +1094,14 @@ That forwards to `gemma.py --image`, which base64-encodes the file into `gemma.i
 
 `vad.exe` is still the separate one-shot that opens `vad.device` and waits for a live utterance. `vad.txt` currently names VB-Cable. Assistant does not call it. Tonight's non-live hear proof is `--wav`. VB-Cable was not opened.
 
+Proof, Iris Xe, 2026-09-27, no microphone and no speakers:
+
+- `nvidia_client.py` with no URL wrote `nvidia_turn.request.txt` and exited 0. `sense.exe`, `chatterbox.exe`, `gemma-brain.exe`, `nemo-speech.exe`, and `vad.exe` stayed down.
+- `assistant.py --nvidia --text` logged `nvidia request only` and did not call mouth.
+- A POST to a closed port wrote an `err` response and exited 2. A POST to a local JSON stub printed `worker-ok`.
+- `hear.py --wav` on one second of silence exited 0 in 2414 ms with an empty transcript. `assistant.py --nvidia --wav` on that file stopped at `hear returned no transcript`.
+- `assistant.py --nvidia --wav reference.wav` transcribed the file in 6788 ms, wrote that text into the request, and did not call mouth.
+
 ---
 
 ## License
