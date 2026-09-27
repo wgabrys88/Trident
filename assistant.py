@@ -2,6 +2,8 @@
 
 qwen.py keeps sense.exe loaded across turns. mouth.py keeps chatterbox.exe loaded across turns.
 Hear and Gemma still exit after each turn.
+--wav feeds hear.py a file instead of the mic. --nvidia hands the turn to nvidia_client.py
+and skips the local brain. An empty client stdout means the request file was left and mouth is not called.
 """
 
 import argparse
@@ -251,15 +253,7 @@ def is_quit(text):
     return word in QUIT_WORDS
 
 
-def say(py, args, question):
-    script = "qwen.py" if args.brain == "qwen" else "gemma.py"
-    argv = [py, str(ROOT / script), "--verbose"]
-    if args.image:
-        argv.extend(["--image", args.image])
-    argv.extend(["--", question])
-    print("assistant: " + args.brain, file=sys.stderr)
-    raw = run_child(args.brain, argv, keep_stdout=True, keep_stderr=True)
-    show(raw)
+def speak_raw(py, args, raw):
     spoken = speakable(raw)
     lang = resolved_lang(args.model, args.lang)
     parts = chunks_for_mouth(spoken, lang) if spoken else []
@@ -275,6 +269,32 @@ def say(py, args, question):
     run_child("mouth", argv, keep_stdout=False, keep_stderr=False)
 
 
+def say(py, args, question):
+    script = "qwen.py" if args.brain == "qwen" else "gemma.py"
+    argv = [py, str(ROOT / script), "--verbose"]
+    if args.image:
+        argv.extend(["--image", args.image])
+    argv.extend(["--", question])
+    print("assistant: " + args.brain, file=sys.stderr)
+    raw = run_child(args.brain, argv, keep_stdout=True, keep_stderr=True)
+    show(raw)
+    speak_raw(py, args, raw)
+
+
+def offload(py, args, question):
+    argv = [py, str(ROOT / "nvidia_client.py")]
+    if args.image:
+        argv.extend(["--image", args.image])
+    argv.extend(["--", question])
+    print("assistant: nvidia", file=sys.stderr)
+    raw = run_child("nvidia", argv, keep_stdout=True, keep_stderr=False)
+    if not raw.strip():
+        print("assistant: nvidia request only", file=sys.stderr)
+        return
+    show(raw)
+    speak_raw(py, args, raw)
+
+
 def listen(py, seconds):
     print("assistant: listening " + format(seconds, "g") + "s", file=sys.stderr)
     raw = run_child(
@@ -287,16 +307,45 @@ def listen(py, seconds):
     return raw.strip()
 
 
+def listen_wav(py, wav):
+    print("assistant: hear wav", file=sys.stderr)
+    raw = run_child(
+        "hear",
+        [py, str(ROOT / "hear.py"), "--wav", wav],
+        keep_stdout=True,
+        keep_stderr=False,
+    )
+    show(raw)
+    return raw.strip()
+
+
+def one_turn(py, args, question):
+    if is_quit(question):
+        print("assistant: quit", file=sys.stderr)
+        return True
+    if args.nvidia:
+        offload(py, args, question)
+        return False
+    say(py, args, question)
+    return False
+
+
 def main():
     configure_stdio_utf8()
     parser = argparse.ArgumentParser(prog="assistant.py")
     parser.add_argument("--once", action="store_true", help="one turn, then exit")
     parser.add_argument("--text", default=None, help="skip the mic; one brain then mouth round")
+    parser.add_argument("--wav", default=None, help="transcribe this wav through hear.py; skip the mic; one turn")
     parser.add_argument("--seconds", type=float, default=8, help="hear.py seconds (default 8)")
     parser.add_argument("--brain", default="qwen", choices=BRAINS, help="default qwen")
     parser.add_argument("--model", default="nano", choices=MODELS, help="mouth model, default nano")
     parser.add_argument("--lang", default=None, help="mouth language; omit for en, or pl when model is v3")
-    parser.add_argument("--image", default=None, help="image file; requires --brain gemma")
+    parser.add_argument("--image", default=None, help="image file; local gemma, or a path on an --nvidia turn")
+    parser.add_argument(
+        "--nvidia",
+        action="store_true",
+        help="send the turn through nvidia_client.py instead of the local brain",
+    )
     args = parser.parse_args()
 
     if args.seconds <= 0:
@@ -305,14 +354,25 @@ def main():
         die("empty language")
     if args.image is not None and args.image.strip() == "":
         die("empty image")
-    if args.image and args.brain != "gemma":
+    if args.image and args.brain != "gemma" and not args.nvidia:
         die("image asks use --brain gemma")
     if args.text is not None and args.text.strip() == "":
         die("empty text")
+    if args.wav is not None and args.wav.strip() == "":
+        die("empty wav")
+    if args.text is not None and args.wav is not None:
+        die("use text or wav, not both")
 
     py = venv_python()
     if args.text is not None:
-        say(py, args, args.text.strip())
+        one_turn(py, args, args.text.strip())
+        return
+    if args.wav is not None:
+        question = listen_wav(py, args.wav.strip())
+        if not question:
+            print("assistant: hear returned no transcript", file=sys.stderr)
+            return
+        one_turn(py, args, question)
         return
 
     while True:
@@ -322,11 +382,7 @@ def main():
             if args.once:
                 return
             continue
-        if is_quit(question):
-            print("assistant: quit", file=sys.stderr)
-            return
-        say(py, args, question)
-        if args.once:
+        if one_turn(py, args, question) or args.once:
             return
 
 

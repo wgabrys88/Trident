@@ -1,4 +1,7 @@
-"""Hearing one-shot. Record the PC mic for SECONDS, then run nemo-speech once; print transcript to stdout."""
+"""Hearing one-shot. Record the PC mic for SECONDS, or transcribe --wav, then run nemo-speech once.
+
+Prints the transcript to stdout. --wav does not open the microphone.
+"""
 
 import argparse
 import os
@@ -81,6 +84,54 @@ def pick_mic(prefer: str | None):
     die("no non-cable microphone found")
 
 
+def transcribe_wav(wav: Path, args):
+    command = [
+        str(ROOT / "nemo-speech.exe"),
+        "transcribe",
+        str(wav),
+        "--model",
+        str(Path(args.model)),
+        "--device",
+        args.device,
+        "--format",
+        args.format,
+        "--stop-history-eou-ms",
+        str(args.stop_history_eou_ms),
+        "--quiet",
+    ]
+    if args.language is not None and args.language.strip() != "":
+        command.extend(["--language", args.language])
+    if args.endpointing == "off":
+        command.append("--endpointing=false")
+    else:
+        command.append("--endpointing=true")
+    if args.verbatim:
+        command.append("--verbatim")
+    if args.no_punctuation:
+        command.append("--no-punctuation")
+    if args.stream:
+        command.append("--stream")
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=ROOT,
+            shell=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except OSError as exc:
+        die("cannot run nemo-speech.exe: " + str(exc))
+    if completed.stderr:
+        emit(completed.stderr.rstrip("\n"), file=sys.stderr)
+    text = completed.stdout or ""
+    sys.stdout.write(text)
+    if text and not text.endswith("\n"):
+        sys.stdout.write("\n")
+    raise SystemExit(completed.returncode)
+
+
 def record_wav(path: Path, seconds: float, mic_index: int, rate: int):
     import numpy as np
     import sounddevice as sd
@@ -100,7 +151,8 @@ def record_wav(path: Path, seconds: float, mic_index: int, rate: int):
 def main():
     configure_stdio_utf8()
     parser = argparse.ArgumentParser(prog="hear.py")
-    parser.add_argument("seconds", type=float, help="how long to listen on the PC mic")
+    parser.add_argument("seconds", nargs="?", type=float, default=None, help="how long to listen on the PC mic")
+    parser.add_argument("--wav", default=None, help="transcribe this wav and skip the mic")
     parser.add_argument("--model", default=str(ROOT / "ear.gguf"))
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--language", default=None)
@@ -114,7 +166,15 @@ def main():
     parser.add_argument("--stream", action="store_true")
     args = parser.parse_args()
 
-    if args.seconds <= 0:
+    if args.wav is not None and args.wav.strip() == "":
+        die("empty wav")
+    wav_path = None
+    if args.wav is not None:
+        wav_path = Path(args.wav).expanduser()
+        if not wav_path.is_file():
+            die("missing wav: " + str(wav_path))
+        wav_path = wav_path.resolve()
+    elif args.seconds is None or args.seconds <= 0:
         die("seconds must be > 0")
     if args.rate < 8000:
         die("rate too low")
@@ -126,6 +186,11 @@ def main():
     if not model.is_file():
         die("missing model: " + str(model))
 
+    if wav_path is not None:
+        emit("hear wav: " + str(wav_path), file=sys.stderr)
+        os.chdir(ROOT)
+        transcribe_wav(wav_path, args)
+
     mic_index, mic_name = pick_mic(args.mic)
     emit("hear mic: " + mic_name, file=sys.stderr)
 
@@ -133,53 +198,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="hear_", dir=str(ROOT)) as tmp:
         wav = Path(tmp) / "utterance.wav"
         record_wav(wav, args.seconds, mic_index, args.rate)
-        command = [
-            str(nemo),
-            "transcribe",
-            str(wav),
-            "--model",
-            str(model),
-            "--device",
-            args.device,
-            "--format",
-            args.format,
-            "--stop-history-eou-ms",
-            str(args.stop_history_eou_ms),
-            "--quiet",
-        ]
-        if args.language is not None and args.language.strip() != "":
-            command.extend(["--language", args.language])
-        if args.endpointing == "off":
-            command.append("--endpointing=false")
-        else:
-            command.append("--endpointing=true")
-        if args.verbatim:
-            command.append("--verbatim")
-        if args.no_punctuation:
-            command.append("--no-punctuation")
-        if args.stream:
-            command.append("--stream")
-        try:
-            completed = subprocess.run(
-                command,
-                cwd=ROOT,
-                shell=False,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-            )
-        except OSError as exc:
-            die("cannot run nemo-speech.exe: " + str(exc))
-        if completed.stderr:
-            emit(completed.stderr.rstrip("\n"), file=sys.stderr)
-        text = completed.stdout
-        if text is None:
-            text = ""
-        sys.stdout.write(text)
-        if text and not text.endswith("\n"):
-            sys.stdout.write("\n")
-        raise SystemExit(completed.returncode)
+        transcribe_wav(wav, args)
 
 
 if __name__ == "__main__":

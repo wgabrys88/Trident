@@ -27,6 +27,7 @@ The long-term goal is an immediate, modular assistant whose major engines can re
 - [Rules for coding agents](#rules-for-coding-agents)
 - [Change discipline](#change-discipline)
 - [Troubleshooting](#troubleshooting)
+- [Scratch: Iris transcript toward NVIDIA](#scratch-iris-transcript-toward-nvidia)
 - [License](#license)
 
 ---
@@ -709,6 +710,7 @@ Trident/
 ├─ qwen.py
 ├─ gemma.py
 ├─ mouth.py
+├─ nvidia_client.py
 ├─ vad.txt
 ├─ ear.txt
 ├─ sense.txt
@@ -1038,6 +1040,59 @@ flowchart LR
 - Hidden build/source caches are implementation details, not module-specific runtime trees.
 - Hear and Gemma still start a process per turn. Qwen stays resident between sense turns, and Chatterbox stays resident between mouth turns.
 - Hardware-dependent work is proven on the actual Windows machine that owns the hardware.
+
+---
+
+## Scratch: Iris transcript toward NVIDIA
+
+Skeleton from the Iris seat, 2026-09-27. Not a resident, not a listener, and not a claim that the NVIDIA worker exists yet.
+
+Iris keeps the microphone, the file hear path, and the mouth. Heavy Gemma stays on the NVIDIA machine. The bridge is one request file, plus an HTTP POST only when a URL is set.
+
+```text
+transcript or --text
+  -> nvidia_client.py
+  -> nvidia_turn.request.txt
+  -> (only if TRIDENT_NVIDIA_URL or --url) POST JSON
+  -> worker text on stdout, also nvidia_turn.response.txt
+```
+
+Request file:
+
+```text
+id <time-ns>
+text <<
+<transcript>
+<<
+image <<
+<path, or empty>
+<<
+```
+
+A line that is only `<<` inside the transcript would end the text block early. Spoken turns do not need that.
+
+JSON body when a URL is set: `{"id","text","image"}`. `image` is a path string or JSON null. The file bytes are not copied. The worker answer is printed as plain text, or as the `text` field when the body is a JSON object. `nvidia_turn.response.txt` is `id`, then `ok` and the text, or `err` and a reason. No URL deletes a stale response file, writes the request, and exits 0.
+
+```powershell
+.\.venv\Scripts\python.exe .\nvidia_client.py "What is Trident?"
+.\.venv\Scripts\python.exe .\assistant.py --nvidia --text "What is Trident?"
+.\.venv\Scripts\python.exe .\hear.py --wav .\utterance.wav
+.\.venv\Scripts\python.exe .\assistant.py --wav .\utterance.wav --nvidia
+```
+
+`--nvidia` replaces qwen.py and gemma.py for that turn. Empty client stdout means the request was left and mouth is not called. A worker body is spoken through the existing mouth path.
+
+`--wav` transcribes one file through hear.py and does not open the mic. `--text` and `--wav` together are rejected. The live loop is still fixed-duration hear.py.
+
+Image entry for a local Gemma turn is unchanged:
+
+```powershell
+.\.venv\Scripts\python.exe .\assistant.py --brain gemma --text "Describe this." --image .\image.png
+```
+
+That forwards to `gemma.py --image`, which base64-encodes the file into `gemma.image` in `gemma_run.txt` and runs `gemma-brain.exe`. `--nvidia --image FILE` only stores that path in the request. Vision proofs stay on the NVIDIA machine.
+
+`vad.exe` is still the separate one-shot that opens `vad.device` and waits for a live utterance. `vad.txt` currently names VB-Cable. Assistant does not call it. Tonight's non-live hear proof is `--wav`. VB-Cable was not opened.
 
 ---
 

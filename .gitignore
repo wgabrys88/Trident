@@ -40,6 +40,7 @@
 !/qwen.py
 !/gemma.py
 !/mouth.py
+!/nvidia_client.py
 !/reference.wav
 
 # Installer conversion/quantization tools.
@@ -66,6 +67,10 @@
 /mouth.txt
 /gemma_run.txt
 /sense_run.txt
+/nvidia_turn.request.txt
+/nvidia_turn.request.txt.tmp
+/nvidia_turn.response.txt
+/nvidia_turn.response.txt.tmp
 /*_out_*.txt
 /*_chatterbox_out_*
 /*.pid
