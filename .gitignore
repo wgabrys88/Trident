@@ -41,6 +41,8 @@
 !/gemma.py
 !/mouth.py
 !/nvidia_client.py
+!/nvidia_worker.py
+!/seq_agents.py
 !/reference.wav
 
 # Installer conversion/quantization tools.

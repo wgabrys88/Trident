@@ -1,0 +1,319 @@
+"""Local Gemma worker for one NVIDIA turn.
+
+POST JSON {"id","text","image"} and return {"text": ...}. gemma.py runs the
+text. A readable image path on this machine is passed as --image.
+--drop reads nvidia_turn.request.txt and writes nvidia_turn.response.txt.
+"""
+
+import argparse
+import json
+import subprocess
+import sys
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+REQUEST = ROOT / "nvidia_turn.request.txt"
+RESPONSE = ROOT / "nvidia_turn.response.txt"
+RESPONSE_TMP = ROOT / "nvidia_turn.response.txt.tmp"
+MAX_BODY = 1_000_000
+
+
+class WorkerError(Exception):
+    pass
+
+
+def die(message):
+    print(message, file=sys.stderr)
+    raise SystemExit(2)
+
+
+def configure_stdio_utf8():
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+
+def venv_python():
+    path = ROOT / ".venv" / "Scripts" / "python.exe"
+    if not path.is_file():
+        die("missing .venv python: " + str(path))
+    return str(path)
+
+
+def run_gemma(text, image, timeout, verbose):
+    if not str(text).strip():
+        raise WorkerError("empty text")
+    argv = [venv_python(), str(ROOT / "gemma.py")]
+    if verbose:
+        argv.append("--verbose")
+    used = False
+    if image:
+        path = Path(str(image))
+        if path.is_file():
+            argv.extend(["--image", str(path.resolve())])
+            used = True
+        else:
+            print(
+                "nvidia worker: image not readable, text only: " + str(image),
+                file=sys.stderr,
+                flush=True,
+            )
+    argv.extend(["--", text])
+    print("nvidia worker: gemma" + (" image" if used else ""), file=sys.stderr, flush=True)
+    started = time.perf_counter()
+    try:
+        completed = subprocess.run(
+            argv,
+            cwd=ROOT,
+            shell=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise WorkerError("gemma timed out")
+    except OSError as exc:
+        raise WorkerError("cannot run gemma.py: " + str(exc))
+    elapsed = int((time.perf_counter() - started) * 1000)
+    err = (completed.stderr or "").strip()
+    if err:
+        print(err, file=sys.stderr, flush=True)
+    if completed.returncode != 0:
+        raise WorkerError("gemma exit " + str(completed.returncode))
+    out = completed.stdout or ""
+    if not out.strip():
+        raise WorkerError("gemma returned empty")
+    print("nvidia worker: gemma " + str(elapsed) + " ms", file=sys.stderr, flush=True)
+    return out
+
+
+def response_body(ident, ok, payload):
+    if ok:
+        text = payload
+        if not text.endswith("\n"):
+            text += "\n"
+        return "id " + ident + "\nok\n" + text
+    reason = " ".join(str(payload).split())
+    if not reason:
+        reason = "failed"
+    return "id " + ident + "\nerr " + reason + "\n"
+
+
+def write_response(ident, ok, payload):
+    body = response_body(ident, ok, payload)
+    try:
+        RESPONSE_TMP.write_bytes(body.encode("utf-8"))
+        RESPONSE_TMP.replace(RESPONSE)
+    except OSError as exc:
+        die("cannot write nvidia_turn.response.txt: " + str(exc))
+
+
+def parse_request(raw):
+    lines = raw.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    ident = ""
+    blocks = {}
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if line.startswith("id ") and "text" not in blocks:
+            ident = line[3:].strip()
+            index += 1
+            continue
+        stripped = line.rstrip(" \t")
+        if stripped.endswith("<<") and stripped[:-2].strip():
+            key = stripped[:-2].strip()
+            index += 1
+            buf = []
+            while index < len(lines) and lines[index] != "<<":
+                buf.append(lines[index])
+                index += 1
+            if index < len(lines) and lines[index] == "<<":
+                index += 1
+            blocks[key] = "\n".join(buf)
+            continue
+        index += 1
+    image = blocks.get("image", "").strip()
+    return ident, blocks.get("text", ""), image or None
+
+
+def read_request():
+    if not REQUEST.is_file():
+        die("missing nvidia_turn.request.txt")
+    try:
+        raw = REQUEST.read_text(encoding="utf-8")
+    except OSError as exc:
+        die("cannot read nvidia_turn.request.txt: " + str(exc))
+    ident, text, image = parse_request(raw)
+    if not ident:
+        ident = "0"
+    return ident, text, image
+
+
+def serve_drop(once, timeout, verbose):
+    seen = None
+    if not once and REQUEST.is_file():
+        try:
+            seen = REQUEST.read_bytes()
+        except OSError:
+            seen = None
+    while True:
+        if once:
+            ident, text, image = read_request()
+            finish_drop(ident, text, image, timeout, verbose, True)
+            return
+        if REQUEST.is_file():
+            try:
+                raw = REQUEST.read_bytes()
+            except OSError:
+                raw = None
+            if raw is not None and raw != seen:
+                seen = raw
+                ident, text, image = parse_request(raw.decode("utf-8", errors="replace"))
+                if not ident:
+                    ident = "0"
+                finish_drop(ident, text, image, timeout, verbose, False)
+        time.sleep(0.25)
+
+
+def finish_drop(ident, text, image, timeout, verbose, once):
+    print("nvidia worker: drop id " + ident, file=sys.stderr, flush=True)
+    try:
+        out = run_gemma(text, image, timeout, verbose)
+    except WorkerError as exc:
+        write_response(ident, False, str(exc))
+        print("nvidia worker: " + str(exc), file=sys.stderr, flush=True)
+        if once:
+            raise SystemExit(2)
+        return
+    write_response(ident, True, out)
+    sys.stdout.write(out)
+    if not out.endswith("\n"):
+        sys.stdout.write("\n")
+    sys.stdout.flush()
+
+
+def send_bytes(handler, code, payload, content_type):
+    handler.send_response(code)
+    handler.send_header("Content-Type", content_type)
+    handler.send_header("Content-Length", str(len(payload)))
+    handler.end_headers()
+    handler.wfile.write(payload)
+
+
+class TurnHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, fmt, *args):
+        print("nvidia worker: " + (fmt % args), file=sys.stderr, flush=True)
+
+    def do_POST(self):
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            send_bytes(self, 400, b"bad length\n", "text/plain; charset=utf-8")
+            return
+        if length <= 0 or length > MAX_BODY:
+            send_bytes(self, 400, b"bad length\n", "text/plain; charset=utf-8")
+            return
+        raw = self.rfile.read(length)
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            send_bytes(self, 400, b"bad json\n", "text/plain; charset=utf-8")
+            return
+        if not isinstance(data, dict):
+            send_bytes(self, 400, b"json object required\n", "text/plain; charset=utf-8")
+            return
+        text = data.get("text")
+        image = data.get("image", None)
+        if not isinstance(text, str) or not text.strip():
+            send_bytes(self, 400, b"empty text\n", "text/plain; charset=utf-8")
+            return
+        if image is not None and not isinstance(image, str):
+            send_bytes(self, 400, b"image must be a string or null\n", "text/plain; charset=utf-8")
+            return
+        ident = data.get("id", "")
+        print("nvidia worker: post id " + str(ident), file=sys.stderr, flush=True)
+        try:
+            out = run_gemma(text, image, self.server.gemma_timeout, self.server.verbose)
+        except WorkerError as exc:
+            message = (str(exc) + "\n").encode("utf-8")
+            send_bytes(self, 500, message, "text/plain; charset=utf-8")
+            return
+        except Exception as exc:
+            message = ("worker failed: " + str(exc) + "\n").encode("utf-8", errors="replace")
+            try:
+                send_bytes(self, 500, message, "text/plain; charset=utf-8")
+            except Exception:
+                print("nvidia worker: " + str(exc), file=sys.stderr, flush=True)
+            return
+        payload = json.dumps({"text": out}, ensure_ascii=False).encode("utf-8")
+        send_bytes(self, 200, payload, "application/json; charset=utf-8")
+
+
+class WorkerServer(HTTPServer):
+    allow_reuse_address = True
+
+    def __init__(self, address, gemma_timeout, verbose):
+        super().__init__(address, TurnHandler)
+        self.gemma_timeout = gemma_timeout
+        self.verbose = verbose
+
+
+def serve_http(host, port, timeout, verbose):
+    try:
+        server = WorkerServer((host, port), timeout, verbose)
+    except OSError as exc:
+        die("cannot listen on " + host + ":" + str(port) + ": " + str(exc))
+    print(
+        "nvidia worker: listening http://" + host + ":" + str(port) + "/",
+        file=sys.stderr,
+        flush=True,
+    )
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("nvidia worker: stopped", file=sys.stderr)
+        raise SystemExit(0)
+
+
+def main():
+    configure_stdio_utf8()
+    parser = argparse.ArgumentParser(prog="nvidia_worker.py")
+    parser.add_argument("--host", default="127.0.0.1", help="bind address (default 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=8765, help="bind port (default 8765)")
+    parser.add_argument("--drop", action="store_true", help="read nvidia_turn.request.txt instead of HTTP")
+    parser.add_argument("--once", action="store_true", help="with --drop, handle the current request and exit")
+    parser.add_argument("--timeout", type=float, default=600, help="gemma.py seconds before kill (default 600)")
+    parser.add_argument("--verbose", action="store_true", help="pass gemma-brain.exe stderr through gemma.py")
+    args = parser.parse_args()
+    if args.once and not args.drop:
+        die("--once asks for --drop")
+    if args.port < 1 or args.port > 65535:
+        die("port out of range")
+    if not args.host.strip():
+        die("empty host")
+    if args.timeout <= 0:
+        die("timeout must be > 0")
+    if args.drop:
+        try:
+            serve_drop(args.once, args.timeout, args.verbose)
+        except KeyboardInterrupt:
+            print("nvidia worker: stopped", file=sys.stderr)
+            raise SystemExit(0)
+        return
+    serve_http(args.host, args.port, args.timeout, args.verbose)
+
+
+if __name__ == "__main__":
+    main()

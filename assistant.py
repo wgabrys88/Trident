@@ -3,7 +3,8 @@
 qwen.py keeps sense.exe loaded across turns. mouth.py keeps chatterbox.exe loaded across turns.
 Hear and Gemma still exit after each turn.
 --wav feeds hear.py a file instead of the mic. --nvidia hands the turn to nvidia_client.py
-and skips the local brain. An empty client stdout means the request file was left and mouth is not called.
+and skips the local brain. --url and --timeout are forwarded to that client. An empty client stdout
+means the request file was left and mouth is not called.
 """
 
 import argparse
@@ -283,6 +284,10 @@ def say(py, args, question):
 
 def offload(py, args, question):
     argv = [py, str(ROOT / "nvidia_client.py")]
+    if args.url:
+        argv.extend(["--url", args.url])
+    if args.timeout is not None:
+        argv.extend(["--timeout", format(args.timeout, "g")])
     if args.image:
         argv.extend(["--image", args.image])
     argv.extend(["--", question])
@@ -346,6 +351,13 @@ def main():
         action="store_true",
         help="send the turn through nvidia_client.py instead of the local brain",
     )
+    parser.add_argument("--url", default=None, help="NVIDIA worker URL; forwarded to nvidia_client.py")
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="NVIDIA HTTP timeout seconds; forwarded when --nvidia",
+    )
     args = parser.parse_args()
 
     if args.seconds <= 0:
@@ -362,6 +374,14 @@ def main():
         die("empty wav")
     if args.text is not None and args.wav is not None:
         die("use text or wav, not both")
+    if args.url is not None and args.url.strip() == "":
+        die("empty url")
+    if args.url and not args.nvidia:
+        die("url asks for --nvidia")
+    if args.timeout is not None and not args.nvidia:
+        die("timeout asks for --nvidia")
+    if args.timeout is not None and args.timeout <= 0:
+        die("timeout must be > 0")
 
     py = venv_python()
     if args.text is not None:
