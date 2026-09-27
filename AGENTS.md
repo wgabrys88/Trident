@@ -1,6 +1,6 @@
 # AGENTS
 
-Read `GOAL.md`, this file, `RULES.md`, and `BOTS.md` before editing. This is the handoff for a session with no earlier chat. `BOTS.md` seats roles. Ask's firing law is in this file, `RULES.md`, and `BOTS.md`. `CODE_REVIEW_CHECKLIST.md` is the review procedure. A commit message carries only the delta for that change.
+Read `GOAL.md`, this file, `RULES.md`, and `BOTS.md` before editing. This is the handoff for a session with no earlier chat. `BOTS.md` is the seat index and the routes. Recreate a seat from `artifacts/reference/seats/` only. The local assistant track is `artifacts/reference/tracks/IRIS_ASSISTANT.md`. The LAN job router in `artifacts/reference/tracks/DEVICE_ROUTER.md` is not built. The five drawings are captioned in `artifacts/reference/design/README.md`. `CODE_REVIEW_CHECKLIST.md` is the review procedure. A commit message carries only the delta for that change.
 
 ## Branch
 
@@ -10,9 +10,10 @@ Work on `runner-h` in the local clone of https://github.com/wgabrys88/Trident. F
 
 Primary cook, proofs, and commits are this Iris checkout.
 
-- Iris path: `C:\Users\eb-wjt\Downloads\Jarvis\Trident`. Cursor worker: `trident-iris`.
-- Nvidia Cursor worker: `trident-nvidia`. Rablet checkout: `C:\Users\px-wjt\Downloads\Jarvis\Trident`. Leave it alone unless Wojciech authorizes. Review-only when that review is routed.
+- Iris path: `C:\Users\eb-wjt\Downloads\Jarvis\Trident`. Cursor worker: `trident-iris`. EB-W machine id: `84403f85-8162-436b-9567-dd9255e82a60`.
+- Nvidia Cursor worker: `trident-nvidia`. Checkout: `C:\Users\px-wjt\Downloads\Jarvis\Trident`. Leave it alone unless Wojciech authorizes. Review-only when that review is routed. Ask uses it only when the go names Nvidia.
 - A Grok Linux box is not a primary for cook or proofs.
+- Locked LAN addresses live in `artifacts/reference/tracks/DEVICE_ROUTER.md`. That router is not built. Do not implement it from a drawing.
 
 ## This machine
 
@@ -86,7 +87,7 @@ One-shots from the repository root:
 
 `qwen.py` copies `sense.txt` knobs into `sense_run.txt`, wraps the question as Qwen3 turns, and runs `sense.exe sense_run.txt`. Stdout is the generation file only. The child's stdout and stderr are discarded. `--verbose` passes that stderr through. Qwen3-0.6B has no vision. `qwen.py --image` exits 2. Image input is `gemma.py --image` on Nvidia.
 
-`assistant.py` is the local voice loop on Iris. It calls the repo virtualenv to run `hear.py`, then `qwen.py` or `gemma.py`, then `mouth.py`. Default brain is `qwen`. `--brain gemma` is opt-in: prefer Nvidia; Iris Vulkan can run it and can be slow. `--image` requires `--brain gemma`. `--seconds` defaults to 8 and is the `hear.py` duration. `--text` skips the mic and runs one brain-then-mouth round. `--once` is one heard turn. With neither flag, it loops until a heard `quit`, `exit`, or `stop`, or until Ctrl-C. Mouth language defaults match `mouth.py`: omitted `--lang` is `en` for nano and turbo, and `pl` for v3. The brain stdout is printed unchanged. The wrapper passes `--verbose` to the brain one-shot and prints that stderr only when the child exits non-zero. The mouth receives the speakable span of that stdout, chunked at 65 English words or 55 Polish words, in one `mouth.py` process. The script does not start the five residents, does not keep them loaded, and makes no network call. Grok Bot stays optional and is off this path.
+`assistant.py` is the local voice loop on Iris. It calls the repo virtualenv to run `hear.py`, then `qwen.py` or `gemma.py`, then `mouth.py`. Default brain is `qwen`. `--brain gemma` is opt-in: prefer Nvidia; Iris Vulkan can run it and can be slow. `--image` requires `--brain gemma`. `--seconds` defaults to 8 and is the `hear.py` duration. `--text` skips the mic and runs one brain-then-mouth round. `--once` is one heard turn. With neither flag, it loops until a heard `quit`, `exit`, or `stop`, or until Ctrl-C. Mouth language defaults match `mouth.py`: omitted `--lang` is `en` for nano and turbo, and `pl` for v3. The brain stdout is printed unchanged. The wrapper passes `--verbose` to the brain one-shot and prints that stderr only when the child exits non-zero. The mouth receives the speakable span of that stdout, chunked at 65 English words or 55 Polish words, in one `mouth.py` process. The script does not start the five residents, does not keep them loaded, and makes no network call. Grok stays off this path.
 
 Sense sets batch threads from `sense.threads`. There is no `sense.threads-batch` key. Gemma reads `gemma.threads-batch` from its file.
 
@@ -94,9 +95,9 @@ The resident output file is created with `CREATE_NEW`. The number starts at `000
 
 ## Ask
 
-Trident Ask is V2. On Iris (`trident-iris`), run `qwen.py` in this shell. Do not launch a Cloud Agent or a Cursor coding agent for an Iris ask. Nvidia (`trident-nvidia`) is one Cloud Agent only, model `composer-2.5`, `fast` false, and only when the go names Nvidia. That prompt is the exact PowerShell or cmd line. The return is the exit code, the stdout answer, and a short stderr summary: at most 20 non-tensor lines, or a byte count plus the first and last 5 lines. A loader log is not a result. Repo edits, commits, pull requests, recovery agents, and multi-agent chains are out. An image ask is `gemma.py --image` on Nvidia.
+Trident Ask is V2. The recreate file is `artifacts/reference/seats/ASK.md`. On Iris (`trident-iris`), run `qwen.py` in this shell. Do not launch a Cloud Agent or a Cursor coding agent for an Iris ask. Nvidia (`trident-nvidia`) is one Cloud Agent only, model `composer-2.5`, `fast` false, and only when the go names Nvidia. That prompt is the exact PowerShell or cmd line. The return is the exit code, the stdout answer, and a short stderr summary: at most 20 non-tensor lines, or a byte count plus the first and last 5 lines. A loader log is not a result. Repo edits, commits, pull requests, recovery agents, and multi-agent chains are out. An image ask is `gemma.py --image` on Nvidia.
 
-After every Nvidia ASK GO Cloud Agent run, success or fail, tear that checkout down before FINAL. On the trident-nvidia Trident cwd: `git fetch origin runner-h`, then `git status -sb` and `git status --porcelain`. If HEAD is not `origin/runner-h` or porcelain is non-empty: `git checkout runner-h`, then `git reset --hard origin/runner-h`. Local reset only. Never force-push. Do not keep agent churn. Re-check that porcelain is empty and HEAD matches `origin/runner-h`. FINAL includes the tip SHA, the exit code, stdout, the short stderr summary, and nvidia git clean yes/no (before, then after, when a reset ran). A Cursor UI line such as `Changes +N/−M across N files` is not proof of a good ask and does not replace git status. `git status --porcelain` is the source of truth. Ask does not commit, push, open a pull request, create a recovery agent, or fix the tree. Teardown is reset to origin, not a second cook. Ask runs it on the worker shell after the Cloud Agent finishes. The agent prompt stays the exact command. If Ask cannot run git on that worker, FINAL is BLOCKER dirty-unknown so Executor can COOK the same reset. Prefer Ask running the hard reset on the same worker shell when the Cloud Agent path cannot.
+After every Nvidia ASK GO Cloud Agent run, success or fail, tear that checkout down before FINAL. On the trident-nvidia Trident cwd: `git fetch origin runner-h`, then `git status -sb` and `git status --porcelain`. If HEAD is not `origin/runner-h` or porcelain is non-empty: `git checkout runner-h`, then `git reset --hard origin/runner-h`. Local reset only. Never force-push. Do not keep agent churn. Re-check that porcelain is empty and HEAD matches `origin/runner-h`. FINAL includes the tip SHA, the exit code, stdout, the short stderr summary, and nvidia git clean yes/no (before, then after, when a reset ran). A Cursor UI line such as `Changes +N/-M across N files` is not proof of a good ask and does not replace git status. `git status --porcelain` is the source of truth. Ask does not commit, push, open a pull request, create a recovery agent, or fix the tree. Teardown is reset to origin, not a second cook. Ask runs it on the worker shell after the Cloud Agent finishes. The agent prompt stays the exact command. If Ask cannot run git on that worker, FINAL is BLOCKER dirty-unknown so Executor can COOK the same reset. Prefer Ask running the hard reset on the same worker shell when the Cloud Agent path cannot.
 
 ## Prove
 
@@ -110,13 +111,13 @@ Prove on this Windows machine with the real executables.
 
 Read the source of every program you edit, in full, and every helper it calls, in full. Follow each key to the line that reads it. A description that does not match the code is an error. Delete duplicated logic, unused parameters, and any code that overrides the text file. One behavior has one owner.
 
-The mouth one-shot is `mouth.py` plus `chatterbox.exe`. The hearing one-shot is `hear.py` plus `nemo-speech.exe`. The brain one-shots are `gemma.py` plus `gemma-brain.exe`, and `qwen.py` plus `sense.exe`. `assistant.py` only runs those Python one-shots. Do not add a second synthesizer or a second recognizer. Do not add a process that starts the five residents. The finish line in `GOAL.md` is those residents staying loaded, inside the same executable. `assistant.py` does not close that gap.
+The mouth one-shot is `mouth.py` plus `chatterbox.exe`. The hearing one-shot is `hear.py` plus `nemo-speech.exe`. The brain one-shots are `gemma.py` plus `gemma-brain.exe`, and `qwen.py` plus `sense.exe`. `assistant.py` only runs those Python one-shots. Do not add a second synthesizer or a second recognizer. Do not add a process that starts the five residents. The finish line in `GOAL.md` is those residents staying loaded, inside the same executable. `assistant.py` does not close that gap. The device router does not close that gap.
 
-When behavior changes, rewrite `GOAL.md`, `AGENTS.md`, `RULES.md`, `CODE_REVIEW_CHECKLIST.md`, and `BOTS.md` from zero so they match the tree. Keep them atemporal.
+When behavior changes, rewrite `GOAL.md`, `AGENTS.md`, `RULES.md`, `CODE_REVIEW_CHECKLIST.md`, and `BOTS.md` from zero so they match the tree. Rewrite the seat file and the track file that state the same behavior in the same change. Keep them atemporal.
 
 ## Git
 
-`.gitignore` is a whitelist. `*` ignores everything until a later `!` rule names it. Tracked files stay tracked. A new path is committed only after a whitelist rule names it. `!/mouth.py`, `!/hear.py`, `!/gemma.py`, `!/qwen.py`, and `!/assistant.py` keep those one-shots in the repository.
+`.gitignore` is a whitelist. `*` ignores everything until a later `!` rule names it. Tracked files stay tracked. A new path is committed only after a whitelist rule names it. `!/mouth.py`, `!/hear.py`, `!/gemma.py`, `!/qwen.py`, and `!/assistant.py` keep those one-shots in the repository. The design PNGs, track files, and seat files stay tracked by the `!` rules that name them.
 
 Leave `mouth.txt`, `gemma_run.txt`, `sense_run.txt`, generated audio, `hear_*` leftovers, `*_out_*.txt`, `*_chatterbox_out_*`, models, `.install`, `.venv`, `C:\tgemma`, and the other build trees uncommitted. Do not commit `*.pid`, `*.stop`, or run logs.
 

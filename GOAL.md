@@ -1,10 +1,8 @@
 # GOAL
 
-Trident is a voice assistant that stays in memory. The microphone stays open. Voice activity detection notices speech. The recognizer writes the words. The gate and the brain each read one whole prompt and write the generation unchanged. The mouth speaks that text on the real speakers. The person hears the assistant because the mouth spoke.
+Trident is a local voice assistant. The microphone hears, a brain reads one whole prompt, and the mouth speaks on the real speakers. The person hears the assistant because the mouth spoke.
 
-Files are the only meeting place for the five residents. One role, one executable, one settings file. Nothing starts those residents or carries messages between them. There is no resident supervisor, harness, message bus, or service manager.
-
-`assistant.py` is one Python one-shot beside the others. It runs `hear.py`, then `qwen.py` or `gemma.py`, then `mouth.py`, and passes their text on the command line. It does not start the five residents, and it does not close the stay-loaded finish line.
+Two tracks stay apart. The assistant track runs on this PC and makes no network call. Grok is off that path. The seat track is the Grok roster. `BOTS.md` is the index and the routes. Each live seat is recreated from one file in `artifacts/reference/seats/`. The assistant track is `artifacts/reference/tracks/IRIS_ASSISTANT.md`. A LAN job router is specified in `artifacts/reference/tracks/DEVICE_ROUTER.md` and is not built. The five architecture drawings are captioned in `artifacts/reference/design/README.md`. A drawing does not ship a program.
 
 ## Programs
 
@@ -22,7 +20,7 @@ Five residents. Each takes one text file and no flags. Usage is `usage: program 
 
 `ear.exe` reads `ear.input` (one wav) and launches `nemo-speech.exe transcribe`. Empty `ear.language` omits `--language`.
 
-`sense.exe` reads `sense.text` as the whole prompt, including the Qwen3 turn markers the user wrote. CPU, `sense.gpu-layers` 0. The model is Qwen3-0.6B. It has no vision input.
+`sense.exe` reads `sense.text` as the whole prompt, including the Qwen3 turn markers the user wrote. CPU, `sense.gpu-layers` 0. The model is Qwen3-0.6B. It has no vision input. It sets `cpuparams_batch.n_threads` to `cpuparams.n_threads`. There is no `sense.threads-batch` key.
 
 `gemma-brain.exe` reads `gemma.text` in Gemma 4's own form. `gemma.image` is raw base64 or empty. When the image is set, the prompt already contains `<__media__>`.
 
@@ -31,6 +29,10 @@ Five residents. Each takes one text file and no flags. Usage is `usage: program 
 `chatterbox-bake.exe` bakes one reference voice into the mouth models and exits. It is not a resident. `bake.txt` names `bake.t3`, `bake.s3`, and `bake.reference`. `bake.cond-seconds` is 15 for nano and turbo, 6 for v3. It rewrites those two model files in place and writes `HH-MM-SS-mmm_bake_out_NNN.txt` with both paths.
 
 `install.py` builds the tree. The only install command is `python install.py install.txt`. It reads `install.txt` and nothing else for its parameters. It creates `.venv` when needed, clones the pinned ggml, llama.cpp, and NeMo-Speech trees under `.install`, configures CMake, builds, downloads the models named in `install.txt`, and bakes nano, turbo, and v3 with `chatterbox-bake.exe`. `install.publish` stays `off`. The installer does not start the residents.
+
+Files are the only meeting place for the five residents. One role, one executable, one settings file. Nothing starts those residents or carries messages between them. There is no resident supervisor, harness, message bus, or service manager.
+
+## One-shots
 
 `mouth.py`, `hear.py`, `gemma.py`, and `qwen.py` exit after one result. `assistant.py` repeats that chain until quit or Ctrl-C. Each turn starts those one-shots fresh. None of them stay loaded, and none of them start the five residents.
 
@@ -100,8 +102,6 @@ The script records for `SECONDS`, writes a temporary wav in a `hear_*` directory
 .\.venv\Scripts\python.exe qwen.py [--verbose] "Question."
 ```
 
-`sense.exe` must set `cpuparams_batch.n_threads` to `cpuparams.n_threads`; otherwise the batch path access-violates.
-
 ## Assistant
 
 From the repository root, with the repo virtualenv:
@@ -113,7 +113,7 @@ From the repository root, with the repo virtualenv:
 
 `assistant.py` runs those one-shots with `.venv\Scripts\python.exe`. It does not load a model. It does not start `vad.exe`, `ear.exe`, `sense.exe`, `gemma-brain.exe`, or `chatterbox.exe`. Those executables start only inside `hear.py`, `qwen.py`, `gemma.py`, and `mouth.py`, as they already do.
 
-The default brain is `qwen.py`: Qwen3-0.6B, text only, the Iris path. `--brain gemma` is opt-in and runs `gemma.py`. Prefer an Nvidia GPU for Gemma. On Iris the Vulkan build can run it and can be slow. `--image PATH` requires `--brain gemma`. An image with the default brain exits 2. The script makes no network call. Grok Bot stays an optional remote path and is not on this inference path.
+The default brain is `qwen.py`: Qwen3-0.6B, text only, the Iris path. `--brain gemma` is opt-in and runs `gemma.py`. Prefer an Nvidia GPU for Gemma. On Iris the Vulkan build can run it and can be slow. `--image PATH` requires `--brain gemma`. An image with the default brain exits 2. The script makes no network call. Grok stays off this path.
 
 With no `--text`, each turn runs `hear.py` for `--seconds` (default 8), then the brain, then `mouth.py`. The loop repeats until the heard transcript is `quit`, `exit`, or `stop`, or until Ctrl-C. `--once` is a single heard turn. `--text` skips the microphone and runs one brain-then-mouth round. `--seconds` is unused on that round.
 
@@ -125,7 +125,7 @@ That span is one `mouth.py` argument when it is at most 65 words, or 55 when the
 
 A non-zero child exit is a non-zero assistant exit. The stage name and the child exit code go to stderr. The wrapper passes `--verbose` to the brain one-shot and prints that stderr only when the child exits non-zero. `mouth.txt`, `sense_run.txt`, `gemma_run.txt`, and `hear_*` stay untracked.
 
-This one-shot does not supervise the five residents and does not keep them loaded.
+This one-shot does not supervise the five residents and does not keep them loaded. Track law for this loop is `artifacts/reference/tracks/IRIS_ASSISTANT.md`.
 
 ## Chain
 
@@ -139,6 +139,6 @@ Stop when all of this is true on the computer where the work is running:
 2. Each role is still one executable and one settings file. They meet only through those files. One-shots remain `mouth.py`, `hear.py`, `gemma.py`, `qwen.py`, and `assistant.py` as specified above. `assistant.py` only chains the other one-shots.
 3. The source matches the templates. Duplicate and unused paths are gone. No code overrides a value the user wrote.
 4. A virtual-audio-cable proof passes for each program and for the whole chain. Speech goes in on the cable, the text files carry the words, and one utterance comes out of the real speakers because the mouth spoke. During that proof the mouth stays off the cable input. `hear.py` is a separate PC-mic proof.
-5. A new session with no prior chat can continue from `GOAL.md`, `AGENTS.md`, `RULES.md`, and `BOTS.md`. Use `CODE_REVIEW_CHECKLIST.md` when reviewing.
+5. A new session with no prior chat can continue from `GOAL.md`, `AGENTS.md`, `RULES.md`, and `BOTS.md`, and can recreate each live seat from `artifacts/reference/seats/` alone. Use `CODE_REVIEW_CHECKLIST.md` when reviewing.
 
-Each executable still performs one unit of work and exits. Closing that gap means the same executable stays loaded. It does not mean a second program that supervises the five. `assistant.py` chains one-shots and exits. The one-shots do not close that gap.
+Each executable still performs one unit of work and exits. Closing that gap means the same executable stays loaded. It does not mean a second program that supervises the five. `assistant.py` chains one-shots and exits. The one-shots do not close that gap. The device router does not close that gap.

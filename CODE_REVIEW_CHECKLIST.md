@@ -1,12 +1,12 @@
 # Code review checklist
 
-Pass, Fail, or Blocked on the tree in front of you. Read `GOAL.md`, `AGENTS.md`, `RULES.md`, and `BOTS.md` first.
+Pass, Fail, or Blocked on the tree in front of you. Read `GOAL.md`, `AGENTS.md`, `RULES.md`, and `BOTS.md` first. For a seat, read `artifacts/reference/seats/`. For the assistant track, read `artifacts/reference/tracks/IRIS_ASSISTANT.md`. For the LAN drawing, read `artifacts/reference/tracks/DEVICE_ROUTER.md` and treat it as not built.
 
 **Pass** cites the source line or the command output. **Fail** names the file, the line, and the contract it breaks. **Blocked** names the missing fact (no cable, no build, no mic). Source wins when this file disagrees. Another machine's run is not a Pass.
 
 No pull request. New commits only. Never amend, rebase, squash, reset, or force-push. A commit body is the delta plus a pointer to the living docs. Iris is the commit checkout.
 
-Record defects. Do not add a resident supervisor, a harness, a mock, or a second copy of a role. `assistant.py` chains the one-shots. It is not that supervisor.
+Record defects. Do not add a resident supervisor, a harness, a mock, or a second copy of a role. `assistant.py` chains the one-shots. It is not that supervisor. The device router is not that supervisor.
 
 ## Items
 
@@ -68,13 +68,13 @@ Record defects. Do not add a resident supervisor, a harness, a mock, or a second
   **Pass:** history is intact.
   **Fail:** a PR, rewritten history, or a commit that pastes the living docs.
 
-- [ ] **15. Docs are atemporal.** `GOAL.md`, `AGENTS.md`, `RULES.md`, `BOTS.md`, and this file match the tree: current contracts, no incident log, no commit hash as law.
-  **Pass:** a cold session can continue from those files.
-  **Fail:** a doc describes behavior the code does not have.
+- [ ] **15. Docs are atemporal.** `GOAL.md`, `AGENTS.md`, `RULES.md`, `BOTS.md`, and this file match the tree: current contracts, no incident log, no commit hash as law. Seat files and track files that state the same behavior match them.
+  **Pass:** a cold session can continue from those files and can recreate a seat from its file alone.
+  **Fail:** a doc describes behavior the code does not have, or two files state two routes for one go.
 
-- [ ] **16. Git whitelist.** `.gitignore` ignores `*` until a `!` rule. `mouth.py`, `hear.py`, `gemma.py`, `qwen.py`, `assistant.py`, `BOTS.md`, and this file stay tracked. Models, `.install`, `.venv`, `C:\tgemma`, `mouth.txt`, `gemma_run.txt`, `sense_run.txt`, `hear_*` leftovers, wavs, and `*_out_*.txt` stay untracked.
-  **Pass:** `git status` shows only the intended files.
-  **Fail:** a proof artifact or a model is staged.
+- [ ] **16. Git whitelist.** `.gitignore` ignores `*` until a `!` rule. `mouth.py`, `hear.py`, `gemma.py`, `qwen.py`, `assistant.py`, `BOTS.md`, and this file stay tracked. The five design PNGs, `artifacts/reference/design/README.md`, `artifacts/reference/tracks/IRIS_ASSISTANT.md`, `artifacts/reference/tracks/DEVICE_ROUTER.md`, and the seven files in `artifacts/reference/seats/` stay tracked by `!` rules that name them. Models, `.install`, `.venv`, `C:\tgemma`, `mouth.txt`, `gemma_run.txt`, `sense_run.txt`, `hear_*` leftovers, wavs, and `*_out_*.txt` stay untracked.
+  **Pass:** `git status` shows only the intended files, and `git ls-files` lists the five design PNGs.
+  **Fail:** a proof artifact or a model is staged, or a design PNG is missing from the index.
 
 - [ ] **17. Proofs use the real executables.** One program, then the cable chain: speech in on the cable, text files carry the words, one utterance out of the real speakers. `hear.py` is a separate PC-mic proof.
   **Pass:** files from this machine.
@@ -89,10 +89,22 @@ Record defects. Do not add a resident supervisor, a harness, a mock, or a second
   **Pass:** the key is off.
   **Fail:** a review step publishes a release.
 
-- [ ] **20. `assistant.py`.** From the repo root, venv Python. Interactive: `hear.py` for `--seconds` (default 8), then `qwen.py` unless `--brain gemma`, then one `mouth.py` with every chunk. `--once` is one heard turn. `--text` skips the mic and runs one brain-then-mouth round. `--image` requires `--brain gemma` and otherwise exits 2. Omitted `--lang` matches `mouth.py` (`en`, or `pl` for `v3`). Brain stdout is printed unchanged. `--verbose` is passed to the brain one-shot and that stderr is printed only on a non-zero exit. The mouth gets the speakable span: after the last `</think>`, else after the last `<channel|>`, else the generation with control tokens removed. An unclosed `<think>` is not spoken. Chunk cap is 65 words, or 55 when the mouth language is `pl`. A non-zero child exit is the assistant exit, with the stage on stderr. No network call.
-  **Pass:** the dry command `assistant.py --once --text` runs the real `qwen.py` and `mouth.py`.
-  **Fail:** a Python model load, a second recognizer or synthesizer, a resident supervisor, or a mock that pretends an exe ran.
+- [ ] **20. `assistant.py`.** From the repo root, venv Python. Interactive: `hear.py` for `--seconds` (default 8), then `qwen.py` unless `--brain gemma`, then one `mouth.py` with every chunk. `--once` is one heard turn. `--text` skips the mic and runs one brain-then-mouth round. `--image` requires `--brain gemma` and otherwise exits 2. Omitted `--lang` matches `mouth.py` (`en`, or `pl` for `v3`). Brain stdout is printed unchanged. `--verbose` is passed to the brain one-shot and that stderr is printed only on a non-zero exit. The mouth gets the speakable span: after the last `</think>`, else after the last `<channel|>`, else the generation with control tokens removed. An unclosed `<think>` is not spoken. Chunk cap is 65 words, or 55 when the mouth language is `pl`. A non-zero child exit is the assistant exit, with the stage on stderr. No network call. Grok is off this path.
+  **Pass:** the dry command `assistant.py --once --text` runs the real `qwen.py` and `mouth.py`. `artifacts/reference/tracks/IRIS_ASSISTANT.md` states the same defaults.
+  **Fail:** a Python model load, a second recognizer or synthesizer, a resident supervisor, a network call on this path, or a mock that pretends an exe ran.
   **Blocked:** `sense.exe` or `chatterbox.exe` missing. Speakers not checked from this agent is a manual Speakers confirm, not a mock.
+
+- [ ] **21. Seats recreate from the repo.** `BOTS.md` names seven recreate files: `SPOC.md`, `MOUTH.md`, `EAR.md`, `ASK.md`, `EXECUTOR.md`, `LOCAL_IT_GUY.md`, `WAR_ROOM.md`. Each file has the display name, a paste-ready title, description, and profile, the cwd `C:\Users\eb-wjt\Downloads\Jarvis\Trident`, machine id `84403f85-8162-436b-9567-dd9255e82a60`, workers `trident-iris` and `trident-nvidia`, command patterns, success, must-never, tool allow/deny, the route for that seat, and Hide-over-Delete.
+  **Pass:** a blank session can recreate that seat from the one file.
+  **Fail:** a seat that exists only in chat, or a profile that contradicts `BOTS.md`.
+
+- [ ] **22. Device router is not built.** `artifacts/reference/tracks/DEVICE_ROUTER.md` says the router is not built. It records Iris `192.168.16.45`, Nvidia `192.168.16.31`, gateway `192.168.16.4`, same subnet, DHCP reserved. Pools are Iris CPU, Iris Vulkan iGPU, and Nvidia CUDA (GTX 1060 6GB). The router does not replace cloud SPOC routing. Peer shuttle Phase 0-1 is text and small files, identical peers, LAN-only, and held until Wojciech GO. A local Grok-bot proof of concept is a separate track from the Trident assistant.
+  **Pass:** the file states those facts and gives no build procedure.
+  **Fail:** a claim that the router or the shuttle is shipped, or a patch that adds that router without Wojciech's GO.
+
+- [ ] **23. Design pictures.** `artifacts/reference/design/README.md` captions, as first-class sections, `arch_today_spoc_iris_nvidia.png`, `arch_multi_device_ready.png`, `arch_two_tracks_assistant_and_bots.png`, `arch_phases_0_to_3.png`, and `arch_target_local_historical.png`.
+  **Pass:** each caption says what the drawing is for, and the multi-device and phase drawings are labeled not built / held.
+  **Fail:** a caption that treats a future drawing as shipped code, or a PNG that is not tracked.
 
 ## Closeout
 
