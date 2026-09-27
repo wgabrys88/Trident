@@ -1,6 +1,6 @@
-"""Local voice one-shot. Chain hear.py, qwen.py or gemma.py, and mouth.py.
+"""Local voice turns. Chain hear.py, qwen.py or gemma.py, and mouth.py.
 
-Does not start the five residents and does not keep them loaded.
+mouth.py keeps chatterbox.exe loaded across turns. Hear and the brains still exit after each turn.
 """
 
 import argparse

@@ -4,7 +4,7 @@
 
 Trident turns local microphone or text input into a local model response and local speech output. The project keeps the expensive model/runtime work in focused C++ executables, keeps their configuration explicit in text files, and uses small Python wrappers to make the native programs convenient for humans and automation.
 
-The long-term goal is an immediate, modular assistant whose major engines can remain loaded and communicate through simple boundaries. The current code is deliberately more conservative: each native engine is one-shot, while `assistant.py` composes the working Python path today. The repository is Windows-first and is intended to be built and proven on the real machines that own the relevant audio/GPU hardware.
+The long-term goal is an immediate, modular assistant whose major engines can remain loaded and communicate through simple boundaries. Hear, Qwen, and Gemma still start a process per turn. Chatterbox stays loaded between mouth turns. `assistant.py` composes that path. The repository is Windows-first and is intended to be built and proven on the real machines that own the relevant audio/GPU hardware.
 
 > **Source of truth:** the checked-in source and configuration files outrank this README. If code and documentation disagree, trace the code, fix the discrepancy, and update this file in the same coherent change.
 
@@ -208,7 +208,7 @@ Source: `src/chatterbox.cpp`
 
 Configuration: `chatterbox.txt`
 
-Current behavior:
+One-shot behavior (`chatterbox.exe file.txt`):
 
 - selects `nano`, `turbo`, or `v3` from configuration;
 - loads the matching baked T3/S3 GGUF pair;
@@ -217,7 +217,16 @@ Current behavior:
 - optionally plays the WAV natively when `chatterbox.play on`;
 - exits.
 
-`mouth.py` normally sets native playback off and owns playback scheduling itself.
+Resident behavior (`chatterbox.exe --resident file.txt`):
+
+- loads that same settings file and the GGUF pair once;
+- writes `mouth.pid` (`pid`, variant, language) and waits;
+- each `mouth.prompt.txt` is one UTF-8 phrase: a decimal request id, a newline, then the text;
+- writes the same WAV and `*_chatterbox_out_*.txt`, then `mouth.response.txt` (`id`, then `ok <wav-name>` or `err <message>`);
+- leaves the process up until `mouth.stop` appears, then deletes `mouth.pid` and exits;
+- does not reread settings between phrases.
+
+`mouth.py` sets native playback off and plays the WAV itself. A model, language, or other settings change is a new process, because the resident keeps the settings it loaded at start.
 
 ### `chatterbox-bake.exe` — voice preparation utility
 
@@ -295,11 +304,30 @@ Human/agent-friendly TTS wrapper around `chatterbox.exe`.
 
 It can accept multiple already-chunked text arguments. It synthesizes one chunk while the previous chunk is playing, using a single playback worker so speech remains ordered.
 
+By default the wrapper starts or reuses one resident `chatterbox.exe`. `--once` is the old one-shot process. `--stop` asks the resident to exit.
+
+```powershell
+.\.venv\Scripts\python.exe .\mouth.py --stop
+.\.venv\Scripts\python.exe .\mouth.py --once "Hello once."
+```
+
 Current default language behavior:
 
 - `nano`: English when `--lang` is omitted;
 - `turbo`: English when `--lang` is omitted;
 - `v3`: Polish when `--lang` is omitted.
+
+### Resident mouth
+
+`chatterbox.exe` is the resident process. `mouth.py` is the client. Hear, Qwen, Gemma, VAD, and ear stay one-shot.
+
+Start. The first normal `mouth.py` call writes `mouth.txt` from `chatterbox.txt` (requested model, language, `chatterbox.play off`, empty text) and starts `chatterbox.exe --resident mouth.txt` in the repository root. That process loads the voice and Vulkan once. A later `mouth.py` or `assistant.py` turn reuses it when `mouth.pid` is still that executable and `mouth.txt` still matches the model, language, and other settings. A mismatch stops the old pid and starts another. `mouth.py --stop` writes `mouth.stop` and waits until the pid is gone. The resident finishes a phrase it has already read, then exits. Settings are loaded only at process start.
+
+Text. `mouth.py` writes one `mouth.prompt.txt` and waits until `mouth.response.txt` carries the same request id. Chunk N+1 is sent only after chunk N's wav name comes back, so chunks stay ordered. Playback of N overlaps synthesis of N+1. The server polls the slot about every 20 ms; that wait is not a second process. One mouth client at a time: two overlapping `mouth.py` processes would share that slot.
+
+`assistant.py` still launches `mouth.py` once per turn. It does not own the chatterbox lifetime. The resident survives `mouth.py` exiting. `--once` does not attach to it.
+
+Proof. Residency is the same pid in `mouth.pid` across turns, one `resident ready` line in `mouth.run.err`, and a later turn whose wall time no longer includes model and Vulkan load. `resident speak` lines are synthesis only.
 
 ### `assistant.py`
 
@@ -329,7 +357,7 @@ Gemma image turn:
 .\.venv\Scripts\python.exe .\assistant.py --brain gemma --text "Describe this." --image .\image.png
 ```
 
-The current default brain is Qwen. The current default mouth model is Nano.
+The current default brain is Qwen. The current default mouth model is Nano. Each assistant turn still starts hear and the brain, then calls `mouth.py`. The mouth reuses the resident Chatterbox when one is already loaded.
 
 `assistant.py` also removes known model-control/thought markers before speech and chunks long responses at natural boundaries. Current approximate chunk limits are 65 words for English and 55 for Polish, with lower preferred split floors of 50 and 45 words respectively.
 
@@ -350,7 +378,7 @@ flowchart TB
     ROOT --> CFG[Configuration<br/>install.txt<br/>vad.txt<br/>ear.txt<br/>sense.txt<br/>gemma.txt<br/>chatterbox.txt<br/>bake.txt]
     ROOT --> MODEL[Models/assets<br/>ear.gguf<br/>sense.gguf<br/>gemma.gguf<br/>gemma-mmproj.gguf<br/>*-t3.gguf<br/>*-s3.gguf<br/>silero_vad.onnx<br/>reference.wav]
     ROOT --> DLL[Runtime DLLs<br/>onnxruntime.dll<br/>NeMo runtime DLLs]
-    ROOT --> RUN[Generated sidecars/results<br/>mouth.txt<br/>sense_run.txt<br/>gemma_run.txt<br/>*_out_*.txt<br/>*.wav]
+    ROOT --> RUN[Generated sidecars/results<br/>mouth.txt<br/>mouth.pid<br/>sense_run.txt<br/>gemma_run.txt<br/>*_out_*.txt<br/>*.wav]
 ```
 
 ### Expected model filenames
@@ -486,7 +514,7 @@ microphone
 
 ### Direct native programs
 
-Each Trident-authored native executable takes exactly one settings-file argument:
+Each Trident-authored native executable takes one settings file. `chatterbox.exe` is the exception that also accepts `--resident` in front of that file:
 
 ```powershell
 .\vad.exe .\vad.txt
@@ -494,6 +522,7 @@ Each Trident-authored native executable takes exactly one settings-file argument
 .\sense.exe .\sense.txt
 .\gemma-brain.exe .\gemma.txt
 .\chatterbox.exe .\chatterbox.txt
+.\chatterbox.exe --resident .\mouth.txt
 .\chatterbox-bake.exe .\bake.txt
 ```
 
@@ -530,7 +559,7 @@ The common native settings reader lives in `src/common/config.h`.
 
 Important semantics:
 
-- a native Trident executable receives one settings filename;
+- a native Trident executable receives one settings filename (`chatterbox.exe --resident` is the same file, plus that mode flag);
 - normal entries are `key value`;
 - multiline values use `key <<` followed by content and a line containing only `<<`;
 - UTF-8 BOM is tolerated;
@@ -576,6 +605,7 @@ sequenceDiagram
     C-->>M: WAV filename
     M->>S: play WAV
     Note over M,C: playback of current chunk can overlap synthesis of next chunk
+    Note over C: chatterbox.exe stays loaded across mouth.py turns
 ```
 
 ### Native VAD/ear path
@@ -701,7 +731,7 @@ This is an operations preference, not a Trident runtime dependency. Trident must
 
 ### Current, implemented
 
-- one-shot native executables;
+- one-shot native executables, except resident Chatterbox between mouth turns;
 - one settings file per native executable;
 - root-level runtime artifacts;
 - fixed-duration Python microphone capture for `assistant.py`;
@@ -711,6 +741,7 @@ This is an operations preference, not a Trident runtime dependency. Trident must
 - Nano/Turbo/v3 Chatterbox TTS;
 - Python response cleanup and speech chunking;
 - overlapping TTS synthesis/playback scheduling;
+- one resident `chatterbox.exe` serving later `mouth.py` turns through `mouth.prompt.txt` / `mouth.response.txt`;
 - native VAD and native ear executable paths available separately;
 - installer-driven dependency/model/build preparation.
 
@@ -718,9 +749,9 @@ This is an operations preference, not a Trident runtime dependency. Trident must
 
 Historical work explored or proposed:
 
-- five continuously resident native assistant processes;
+- resident vad, ear, and sense/gemma (Chatterbox mouth is already resident);
 - always-open native VAD feeding native ASR automatically;
-- keeping model weights loaded between turns;
+- keeping Qwen/Gemma weights loaded between turns;
 - transparent LAN placement/offload across the two PCs;
 - a device-router API;
 - multilingual automatic speech-chunk language detection;
@@ -884,6 +915,16 @@ That location is a short temporary Gemma build tree. A successful current instal
 
 Check the matching `.txt` file first. Native relative paths are resolved from that settings file's directory.
 
+### Chatterbox is still running after mouth.py returns
+
+That is the resident mouth. Stop it with:
+
+```powershell
+.\.venv\Scripts\python.exe .\mouth.py --stop
+```
+
+`mouth.pid` is the process id. `mouth.run.err` has `resident ready` once per process and one `resident speak` line per phrase.
+
 ### Output files accumulate in the root
 
 One-shot result text/WAV files are runtime artifacts and are ignored by Git. Remove them when no longer needed; do not commit them.
@@ -911,7 +952,7 @@ flowchart LR
 - Text files are explicit configuration contracts.
 - Installed runtime artifacts live together at the repository root.
 - Hidden build/source caches are implementation details, not module-specific runtime trees.
-- The current assistant is one-shot/process-composed; the resident architecture is still a future optimization.
+- Hear, Qwen, and Gemma still start a process per turn. Chatterbox stays resident between mouth turns.
 - Hardware-dependent work is proven on the actual Windows machine that owns the hardware.
 
 ---

@@ -1,10 +1,13 @@
-# chatterbox.exe takes this file as its only argument.
+# One-shot: chatterbox.exe file.txt speaks chatterbox.text and exits.
+# Resident: chatterbox.exe --resident file.txt loads this file once and stays up.
+# The resident reads mouth.prompt.txt and writes the wav name to mouth.response.txt.
+# mouth.py starts and reuses that process. A bare file argument stays one-shot.
 # The values below are used as written. Nothing in the program replaces them.
-# It runs once and writes HH-MM-SS-mmm_chatterbox_out_NNN.txt in the current directory.
+# Each phrase writes HH-MM-SS-mmm_chatterbox_out_NNN.txt in the current directory.
 # NNN starts at 000. An existing name is kept and the next number is used.
 # Paths are names in this file's directory. A value ending in << runs until a line that is only <<.
-# chatterbox.text is spoken as written.
-# chatterbox.language is passed to the model file as written.
+# chatterbox.text is spoken as written in one-shot mode. Resident mode ignores it and speaks each prompt.
+# chatterbox.language is passed to the model file as written. The resident keeps that language until restart.
 
 nano.t3 nano-t3.gguf
 nano.s3 nano-s3.gguf
@@ -13,7 +16,7 @@ turbo.s3 turbo-s3.gguf
 v3.t3 v3-t3.gguf
 v3.s3 v3-s3.gguf
 
-# Chatterbox. chatterbox.exe. chatterbox.text is spoken as written.
+# Chatterbox. chatterbox.exe. One-shot speaks chatterbox.text. The resident speaks each mouth.prompt.txt.
 # chatterbox.language must be a tag stored in that GGUF. The text is not rewritten into English.
 chatterbox.variant turbo
 chatterbox.language en
