@@ -28,6 +28,7 @@ The long-term goal is an immediate, modular assistant whose major engines can re
 - [Change discipline](#change-discipline)
 - [Troubleshooting](#troubleshooting)
 - [Scratch: Iris transcript toward NVIDIA](#scratch-iris-transcript-toward-nvidia)
+- [Scratch: NVIDIA worker on this seat](#scratch-nvidia-worker-on-this-seat)
 - [License](#license)
 
 ---
@@ -1101,6 +1102,22 @@ Proof, Iris Xe, 2026-09-27, no microphone and no speakers:
 - A POST to a closed port wrote an `err` response and exited 2. A POST to a local JSON stub printed `worker-ok`.
 - `hear.py --wav` on one second of silence exited 0 in 2414 ms with an empty transcript. `assistant.py --nvidia --wav` on that file stopped at `hear returned no transcript`.
 - `assistant.py --nvidia --wav reference.wav` transcribed the file in 6788 ms, wrote that text into the request, and did not call mouth.
+
+---
+
+## Scratch: NVIDIA worker on this seat
+
+GTX 1060 6GB, CUDA 12.6, 2026-09-27. Localhost. No microphone. Mouth was not started.
+
+STATUS PASS
+
+`nvidia_worker.py` listened on `http://127.0.0.1:8765/`. `nvidia_client.py --url` returned a text turn in 4465 ms (`I am ready to assist you with your requests.`) and wrote `ok` into `nvidia_turn.response.txt`. The same client with `--image vision_sample.jpg` logged `gemma image` and returned in 5638 ms. `--drop --once` on a no-URL request returned in 4317 ms (`The paperwork has been officially filed.`).
+
+Vision: `gemma.py --image vision_sample.jpg` (Hugging Face `transformers/tasks/car.jpg`, 39080 bytes). Question: `What is in this image? Answer in one short sentence.` Exit 0 in 9458 ms. Answer: `A light green classic car is parked on a street in front of a yellow wall.`
+
+Sequential: `seq_agents.py` exit 0. Step 1 4289 ms, step 2 4394 ms. `seq_agents.txt` ends with `result ok`.
+
+`assistant.py --nvidia --url` forwards to the client. It was not run: a successful turn calls mouth and plays audio.
 
 ---
 
