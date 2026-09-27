@@ -299,6 +299,33 @@ Text. `qwen.py` writes one `sense.prompt.txt` and waits until `sense.response.tx
 
 `assistant.py` still launches `qwen.py` once per turn. It does not own the sense lifetime. The resident survives `qwen.py` exiting. `--once` does not attach to it.
 
+Proof, Iris Xe (i5-1145G7), 2026-09-27 20:24 +02, question `Say one short sentence.`:
+
+| Run | Wall | Sense |
+|---|---|---|
+| `qwen.py --once` | 1574 ms | process exits; no `sense.pid` |
+| `qwen.py --once` while a resident is up | 1508 ms | pid 10788 unchanged |
+| first resident turn | 1349 ms | pid 10788, started 20:24:31.236, `resident load` 796 ms, `resident generate` 306 ms |
+| second resident turn | 503 ms | same pid and start time, `resident generate` 351 ms |
+| third resident turn | 468 ms | same pid, `resident generate` 355 ms |
+
+`sense.run.err` for pid 10788 had one llama threadpool init, one `resident load`, one `resident ready pid 10788`, and one `resident generate` per turn. The second turn was 846 ms shorter; that process logged `resident load` 796 ms once. An earlier one-shot measurement on `70a14509` was about 1.36–1.39 s wall with about 0.8 s of that in process load.
+
+`assistant.py --text "Say one short sentence."` stayed on pid 10788 (`resident generate` went from 5 to 6, still one load). The first call left `<think>` unclosed, so assistant reported no speakable answer and did not call mouth. The next call on the same pid closed the tag, logged `assistant: mouth 1 chunk(s)`, started chatterbox pid 5264, and wrote `20-25-47-044_chatterbox_out_000.wav` (197804 bytes). That sense turn's `resident generate` was 361 ms. Mouth logged `resident ready pid 5264 nano en` and `resident speak` 2242 ms. `mouth.py --stop` then logged `resident stop pid 5264`.
+
+Review-fix proof, same machine, 2026-09-27 20:26 +02:
+
+| Check | Result |
+|---|---|
+| prompt with no newline | 41 ms, `err bad prompt`, pid 10788 stayed |
+| non-decimal id | 44 ms, `err bad prompt id`, same pid |
+| empty body | 41 ms, `err empty`, same pid |
+| body over 1MB | 42 ms, `err prompt too long`, same pid |
+| `sense.temp` 0.7 to 0.71 | `settings changed`; pid 10788 replaced by pid 9144 |
+| temp restored to 0.7 | `settings changed`; pid 2900 with the original fingerprint |
+| `qwen.py --stop` | 302 ms; `resident stop pid 2900`; process and `sense.pid` gone |
+| `qwen.py --stop` during load | pid 7704 was `loading` at 95 ms; stop returned in 140 ms; loader exited 1 before `resident ready`; no `sense.pid` remained |
+
 ### `gemma.py`
 
 Human/agent-friendly one-shot wrapper around `gemma-brain.exe`.
