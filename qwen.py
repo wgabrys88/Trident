@@ -52,6 +52,9 @@ def kept_lines(raw):
 
 def qwen_prompt(question):
     q = question.strip("\r\n")
+    # Qwen3 otherwise opens <think> and spends sense.n-predict before any answer.
+    if "/no_think" not in q and "/think" not in q:
+        q = q.rstrip() + " /no_think"
     return (
         "<|im_start|>user\n"
         + q

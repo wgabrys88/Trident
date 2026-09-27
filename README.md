@@ -259,6 +259,7 @@ The wrapper:
 
 - reads the canonical `sense.txt`;
 - replaces only the runtime prompt field in a generated sidecar;
+- appends `/no_think` to the user turn unless the question already contains `/think` or `/no_think`, so a short spoken answer is not consumed by an open think block;
 - invokes `sense.exe` in the repository root;
 - reads the newly produced sense output file;
 - prints the generation to stdout.
