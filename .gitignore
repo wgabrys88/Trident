@@ -60,6 +60,9 @@
 !/gemma/src/brain.cpp
 !/gemma/src/sense.cpp
 
+!/artifacts/reference/desktop_ui_reference.png
+!/artifacts/reference/DESKTOP_UI_REFERENCE.md
+
 # Resident slots, one-shot artifacts, and run logs.
 # mouth.py, hear.py, and BOTS.md stay tracked. A later un-ignore must not commit these.
 /mouth.txt
