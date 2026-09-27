@@ -56,9 +56,9 @@ Record defects. Do not add an orchestrator, a harness, a mock, or a second copy 
   **Fail:** a rewritten transcript, or the script speaks.
   **Blocked:** no mic, or `nemo-speech.exe` is missing.
 
-- [ ] **12. PlaySound C++ stays parked.** `chatterbox.play` is `on` or `off`. `on` plays inside `chatterbox.exe`. `off` skips that call. Further PlaySound C++ stays parked until Wojciech gives a go.
-  **Pass:** the diff has no new `.cpp` playback change.
-  **Fail:** a C++ playback edit without that go.
+- [ ] **12. PlaySound gate is shipped.** `chatterbox.play` is `on` or `off`. `on` calls `PlaySoundW` inside `chatterbox.exe`. `off` writes the wav and skips PlaySound. `mouth.py` owns Speakers with `PlaySoundW`.
+  **Pass:** that contract matches `src/chatterbox.cpp` and `mouth.py`. The diff adds no `.cpp`.
+  **Fail:** play left on for a Mouth one-shot, or a new C++ playback edit without Wojciech's go.
 
 - [ ] **13. C++ is gated.**
   **Pass:** the diff is Python and markdown, or the task records Wojciech's explicit go for `.cpp`.

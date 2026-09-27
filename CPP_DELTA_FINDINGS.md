@@ -1,28 +1,22 @@
-# CPP delta findings (parked)
+# CPP delta findings
 
-Review only. No `.cpp` edits in this cook. Window: last ~2 hours on `runner-h` relative to tip `ebfcbeb`.
+Status: CLOSED. Shipped.
 
-## Commits touching C++
+`chatterbox.play` is the playback gate. It shipped in `647a16f` on `src/chatterbox.cpp`.
 
-One: `647a16f` (2026-09-26 22:31 +0200) — Overlap mouth playback with next-chunk synthesize.
+## Contract
 
-File: `src/chatterbox.cpp` (+4 / -1).
+`chatterbox.exe` reads `chatterbox.play` with `trident::cfg_on`. The value is `on` or `off`.
 
-### What changed
+- `on`: the wav is written and named, then `PlaySoundW` plays it on the default speakers. A failed `PlaySoundW` returns 1.
+- `off`: the wav is still written and named. PlaySound is skipped.
 
-- Reads `chatterbox.play` via `trident::cfg_on` into `bool play`.
-- `PlaySoundW` runs only when `play` is true.
-- When `play` is false, the wav is still written and named in the output text; PlaySound is skipped.
+`mouth.py` owns Speakers. It writes `chatterbox.play off` and plays each wav with `PlaySoundW` (`SND_FILENAME | SND_NODEFAULT`) while the next chunk synthesizes. Direct `chatterbox.exe` with `chatterbox.play on` plays the wav itself.
 
-### Why
+## What shipped
 
-Lets `mouth.py` cold-run `chatterbox.exe` with `chatterbox.play off` so synthesize and Speakers playback can overlap in Python. Direct `chatterbox.exe` with `play on` still plays itself.
+`647a16f` gates `PlaySoundW` on `chatterbox.play`. When play is false, synthesize still writes the wav and the output text names it. `mouth.py` uses that off path so playback and the next synthesize overlap.
 
-### Findings
-
-1. Contract matches the Mouth one-shot: synthesize-only versus play-on-default-speakers is one settings key.
-2. When play is on, PlaySoundW failure still returns 1.
-3. No other `.cpp` files moved in the window. Nearby commits were docs and Python (`mouth.py`, `hear.py`, living docs).
-4. No fix in this cook. RULES.md item 10: do not change C++ / `.cpp` without Wojciech's explicit go. Prior C++ delta stays parked for the next war room.
+Further `.cpp` edits still need Wojciech's explicit go.
 
 See GOAL.md, AGENTS.md, RULES.md, BOTS.md.

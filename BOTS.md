@@ -16,7 +16,7 @@ Channel capacity is six. Keep Ear off the war-room roster when the room is full;
 - Primary proofs run on Iris. A Grok Linux box is out of that path.
 - Nvidia stays leave-alone unless a route names it. Review-only when SPOC routes that review.
 - Commits are new commits on `runner-h` from the Iris checkout. Never open a pull request. Never set `starting_ref`. Never amend, rebase, squash, or force-push. Never reset, except the local Nvidia Ask teardown (`git reset --hard origin/runner-h` on trident-nvidia only).
-- No C++ / `.cpp` edit without Wojciech's explicit go. The PlaySound C++ delta stays parked.
+- No C++ / `.cpp` edit without Wojciech's explicit go.
 - `sense.exe` sets batch threads from `sense.threads`. There is no `sense.threads-batch` key.
 
 ## Trident_Android_SPOC V4
