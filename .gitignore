@@ -34,6 +34,7 @@
 !/chatterbox.txt
 !/bake.txt
 !/mouth.py
+!/lan-recon/collect_iris_inventory.py
 !/hear.py
 !/gemma.py
 !/qwen.py
