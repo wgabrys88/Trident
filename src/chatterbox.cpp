@@ -1,6 +1,7 @@
 #include "common/chatterbox_runtime.h"
 #include "common/config.h"
 #include <chrono>
+#include <cstdlib>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -93,6 +94,69 @@ void reply(const std::filesystem::path& dir, const std::string& id, const std::s
     publish(dir / "mouth.response.txt", id + "\n" + line + "\n");
 }
 
+std::string trim_cr(std::string text) {
+    if (!text.empty() && text.back() == '\r') text.pop_back();
+    return text;
+}
+
+bool readable_id(const std::string& id) {
+    return !id.empty() && id.size() <= 64;
+}
+
+std::string first_line(const std::filesystem::path& path, bool& got_nl) {
+    got_nl = false;
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return {};
+    std::string line;
+    char c;
+    while (in.get(c)) {
+        if (c == '\n') {
+            got_nl = true;
+            break;
+        }
+        if (line.size() >= 64) break;
+        line.push_back(c);
+    }
+    return trim_cr(line);
+}
+
+bool hex64(const std::string& text) {
+    if (text.size() != 64) return false;
+    for (unsigned char c : text) {
+        if (c >= '0' && c <= '9') continue;
+        if (c >= 'a' && c <= 'f') continue;
+        return false;
+    }
+    return true;
+}
+
+std::string loaded_fingerprint(const std::filesystem::path& path, unsigned long pid) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return {};
+    std::string lines[5];
+    int count = 0;
+    std::string line;
+    while (count < 5 && std::getline(in, line)) {
+        lines[count++] = trim_cr(line);
+    }
+    if (count < 4) return {};
+    char* end = nullptr;
+    const unsigned long have = std::strtoul(lines[0].c_str(), &end, 10);
+    if (end == lines[0].c_str() || *end || have != pid) return {};
+    if (!hex64(lines[3])) return {};
+    return lines[3];
+}
+
+void replace_pid_file(const std::filesystem::path& path, const std::string& body) {
+    const auto tmp = path.parent_path() / "mouth.pid.tmp";
+    trident::write_named(tmp, body);
+    if (!MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        std::error_code ec;
+        std::filesystem::remove(tmp, ec);
+        trident::fail("cannot publish " + trident::path_u8(path));
+    }
+}
+
 void handle_prompt(const std::filesystem::path& dir, trident::Synth& engine, const std::string& language, int rate, bool play) {
     const auto path = dir / "mouth.prompt.txt";
     if (!is_file(path)) return;
@@ -100,9 +164,13 @@ void handle_prompt(const std::filesystem::path& dir, trident::Synth& engine, con
     const auto size = std::filesystem::file_size(path, ec);
     if (ec) return;
     if (size > 1000000) {
+        bool nl = false;
+        const auto id = first_line(path, nl);
         std::filesystem::remove(path, ec);
         std::fprintf(stderr, "resident error prompt too long\n");
         std::fflush(stderr);
+        if (nl && decimal_id(id)) reply(dir, id, "err prompt too long");
+        else if (readable_id(id)) reply(dir, id, "err prompt too long");
         return;
     }
     std::ifstream in(path, std::ios::binary);
@@ -115,16 +183,19 @@ void handle_prompt(const std::filesystem::path& dir, trident::Synth& engine, con
     if (ec) return;
     const auto split = body.find('\n');
     if (split == std::string::npos) {
+        const auto id = trim_cr(body);
         std::fprintf(stderr, "resident error bad prompt\n");
         std::fflush(stderr);
+        if (readable_id(id)) reply(dir, id, "err bad prompt");
         return;
     }
-    auto id = body.substr(0, split);
-    if (!id.empty() && id.back() == '\r') id.pop_back();
+    auto id = trim_cr(body.substr(0, split));
     auto text = body.substr(split + 1);
     if (!decimal_id(id)) {
         std::fprintf(stderr, "resident error bad prompt id\n");
         std::fflush(stderr);
+        if (readable_id(id)) reply(dir, id, "err bad prompt id");
+        else reply(dir, "0", "err bad prompt id");
         return;
     }
     if (text.empty()) {
@@ -160,6 +231,9 @@ int serve(trident::Synth& engine, const std::string& variant, const std::string&
     if (variant.find_first_of(" \t\r\n") != std::string::npos || language.find_first_of(" \t\r\n") != std::string::npos)
         trident::fail("chatterbox.variant and chatterbox.language must be single tokens");
     const auto dir = std::filesystem::current_path();
+    const auto pid = GetCurrentProcessId();
+    resident_pid_path = dir / "mouth.pid";
+    std::atexit(remove_resident_pid);
     if (is_file(dir / "mouth.stop")) {
         std::error_code ec;
         std::filesystem::remove(dir / "mouth.stop", ec);
@@ -167,10 +241,11 @@ int serve(trident::Synth& engine, const std::string& variant, const std::string&
         std::fflush(stderr);
         return 0;
     }
-    resident_pid_path = dir / "mouth.pid";
-    std::atexit(remove_resident_pid);
-    trident::write_named(resident_pid_path, std::to_string(GetCurrentProcessId()) + "\n" + variant + "\n" + language + "\n");
-    std::fprintf(stderr, "resident ready pid %lu %s %s\n", static_cast<unsigned long>(GetCurrentProcessId()), variant.c_str(), language.c_str());
+    const auto fp = loaded_fingerprint(resident_pid_path, pid);
+    std::string body = std::to_string(pid) + "\n" + variant + "\n" + language + "\n";
+    if (!fp.empty()) body += fp + "\nready\n";
+    replace_pid_file(resident_pid_path, body);
+    std::fprintf(stderr, "resident ready pid %lu %s %s\n", static_cast<unsigned long>(pid), variant.c_str(), language.c_str());
     std::fflush(stderr);
     for (;;) {
         handle_prompt(dir, engine, language, rate, play);

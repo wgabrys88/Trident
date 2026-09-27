@@ -220,8 +220,9 @@ One-shot behavior (`chatterbox.exe file.txt`):
 Resident behavior (`chatterbox.exe --resident file.txt`):
 
 - loads that same settings file and the GGUF pair once;
-- writes `mouth.pid` (`pid`, variant, language) and waits;
+- `mouth.py` writes `mouth.pid` at spawn (`pid`, variant, language, a sha256 of the loaded settings with `chatterbox.text` removed, and `loading`); the process marks that file `ready` after the model loads;
 - each `mouth.prompt.txt` is one UTF-8 phrase: a decimal request id, a newline, then the text;
+- a prompt with no newline, a non-decimal id, or a body over 1MB is answered with `err` and that id when the id can be read;
 - writes the same WAV and `*_chatterbox_out_*.txt`, then `mouth.response.txt` (`id`, then `ok <wav-name>` or `err <message>`);
 - leaves the process up until `mouth.stop` appears, then deletes `mouth.pid` and exits;
 - does not reread settings between phrases.
@@ -321,11 +322,11 @@ Current default language behavior:
 
 `chatterbox.exe` is the resident process. `mouth.py` is the client. Hear, Qwen, Gemma, VAD, and ear stay one-shot.
 
-Start. The first normal `mouth.py` call writes `mouth.txt` from `chatterbox.txt` (requested model, language, `chatterbox.play off`, empty text) and starts `chatterbox.exe --resident mouth.txt` in the repository root. That process loads the voice and Vulkan once. A later `mouth.py` or `assistant.py` turn reuses it when `mouth.pid` is still that executable and `mouth.txt` still matches the model, language, and other settings. A mismatch stops the old pid and starts another. `mouth.py --stop` writes `mouth.stop` and waits until the pid is gone. The resident finishes a phrase it has already read, then exits. Settings are loaded only at process start.
+Start. The first normal `mouth.py` call writes `mouth.txt` from `chatterbox.txt` (requested model, language, `chatterbox.play off`, empty text) and starts `chatterbox.exe --resident mouth.txt` in the repository root. It writes `mouth.pid` immediately, with a sha256 of those settings excluding the phrase text, while the model is still loading. The process loads the voice and Vulkan once, then marks that pid file `ready`. A later `mouth.py` or `assistant.py` turn reuses it when `mouth.pid` is still that executable and the stored fingerprint matches the settings that would be loaded now. Sample rate, gpu, seed, exaggeration, GGUF paths, and the other loaded lines are part of that hash. A mismatch stops the old pid and starts another. Rewriting `mouth.txt` after spawn, including `mouth.py --once`, does not by itself make the running process match. `mouth.py --stop` terminates a loader that is not ready yet, and asks a ready resident to finish the phrase it already read and then exit. If the loader never becomes ready, that wait kills it. One `mouth.lock` file lets only one loader start. Settings are loaded only at process start.
 
 Text. `mouth.py` writes one `mouth.prompt.txt` and waits until `mouth.response.txt` carries the same request id. Chunk N+1 is sent only after chunk N's wav name comes back, so chunks stay ordered. Playback of N overlaps synthesis of N+1. The server polls the slot about every 20 ms; that wait is not a second process. One mouth client at a time: two overlapping `mouth.py` processes would share that slot.
 
-`assistant.py` still launches `mouth.py` once per turn. It does not own the chatterbox lifetime. The resident survives `mouth.py` exiting. `--once` does not attach to it.
+`assistant.py` still launches `mouth.py` once per turn. It does not own the chatterbox lifetime. The resident survives `mouth.py` exiting. `--once` does not attach to it. It runs that one-shot exe in a private directory and moves the wav back, so a resident output written in the same moment is not selected.
 
 Proof, Iris Xe (i5-1145G7), 2026-09-27 18:29 +02, phrase `Say one short sentence.`:
 
@@ -931,7 +932,7 @@ That is the resident mouth. Stop it with:
 .\.venv\Scripts\python.exe .\mouth.py --stop
 ```
 
-`mouth.pid` is the process id. `mouth.run.err` has `resident ready` once per process and one `resident speak` line per phrase.
+`mouth.pid` is the process id, the variant, the language, and the fingerprint of the settings loaded at spawn. `mouth.run.err` has `resident ready` once per process and one `resident speak` line per phrase.
 
 ### Output files accumulate in the root
 
