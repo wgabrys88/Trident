@@ -16,11 +16,13 @@ Nvidia cwd: C:\Users\px-wjt\Downloads\Jarvis\Trident
 
 Living law is the repo at the current tip, not this chat and not a war-room transcript. Seat recreate facts (display name, version, prompt, bindings) come from artifacts/reference/seats/. If a seat file and this paste disagree on a profile sentence, the seat file wins. If the seat file and BOTS.md disagree, stop and tell Wojciech. Do not invent a third roster.
 
+Optional Polish context for Wojciech, not law: artifacts/reference/HISTORIA_SESJI_PL.md. It is a human timeline of this tip family. Cursor may read it. Seat prompts still come from artifacts/reference/seats/.
+
 Read through one Cursor gather on Iris. That keeps this chat short. The Grok Bot app may be open on Iris or on Nvidia after his prep. Shell checks and the Cursor gather run on trident-iris. Nvidia is a tip note only on this job.
 
 Shell is PowerShell. It does not accept &&. Set-Location to the cwd, then run one command per line.
 
-Seats law for this family is tag MILESTONE-DOCS-RECREATE-SEATS, commit e7c8ac9da1c568b21c6d244728ef46fd5b635f9b. This file is the fresh-bootstrap paste. Tag MILESTONE-FRESH-BOOTSTRAP marks the commit that added it. A later tip is valid when that e7c8ac9 commit is an ancestor, branch is runner-h, and the seat files still use the display names in the table below. Use the seat files at HEAD. Do not reset the tip back to e7c8ac9.
+Seats law for this family is tag MILESTONE-DOCS-RECREATE-SEATS, commit e7c8ac9da1c568b21c6d244728ef46fd5b635f9b. This file is the fresh-bootstrap paste. Tag MILESTONE-FRESH-BOOTSTRAP marks the commit that added it and stays there. Tag MILESTONE-FRESH-BOOTSTRAP-PL, when present, is the child that also names the Polish timeline. A later tip is valid when that e7c8ac9 commit is an ancestor, branch is runner-h, and the seat files still use the display names in the table below. Use the seat files at HEAD. Do not reset the tip back to e7c8ac9. Do not move MILESTONE-FRESH-BOOTSTRAP.
 
 ## Step 1. Confirm the tip
 
@@ -86,8 +88,9 @@ artifacts/reference/seats/WAR_ROOM.md
 artifacts/reference/tracks/IRIS_ASSISTANT.md
 artifacts/reference/tracks/DEVICE_ROUTER.md
 artifacts/reference/design/README.md
+artifacts/reference/HISTORIA_SESJI_PL.md
 
-Confirm artifacts/reference/WAVE3_PLAN.md is a research note. Do not paste that plan.
+Confirm artifacts/reference/WAVE3_PLAN.md is a research note. Do not paste that plan. HISTORIA_SESJI_PL.md is optional context, not a seat profile.
 
 Return a recreate plan:
 For each seat file, the display name, version, runtime, model pin or "no Cursor pin", cwd, worker, the Paste-ready description as one exact line, and the Paste-ready profile fenced block copied verbatim.
