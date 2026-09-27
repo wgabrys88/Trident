@@ -338,6 +338,15 @@ Proof, Iris Xe (i5-1145G7), 2026-09-27 18:29 +02, phrase `Say one short sentence
 
 `mouth.run.err` has one Vulkan device line and one `resident ready pid 6712`. Both wavs are 78764 bytes (~1.64 s), so the 659 ms wall-clock drop is the load the second turn skips. A two-chunk call and `assistant.py --text` stayed on pid 6712. `mouth.py --stop` then logged `resident stop pid 6712` and the process and `mouth.pid` were gone. An earlier one-shot measurement on `70a14509` was 3432–3476 ms for a shorter clip (~0.9 s of audio).
 
+Review-fix proof, same machine, 2026-09-27 19:26 +02, after the fingerprint and loader changes, phrase `Say one short sentence.`:
+
+| Run | Wall | Chatterbox |
+|---|---|---|
+| first resident turn | 4679 ms | pid 3548, `resident speak` 1424 ms |
+| second resident turn | 3642 ms | same pid, one `resident ready`, `resident speak` 1467 ms |
+
+`mouth.py --stop` during load saw pid 4896 with state `loading`, returned in 206 ms, and the loader exited 1 before `resident ready`. No `chatterbox.exe` and no `mouth.pid` remained. With the resident on pid 328, changing `chatterbox.exaggeration` from 0.5 to 0.55 and running `mouth.py --once` left that pid in place; the next normal call logged `settings changed` and started pid 10404. A bad id, a prompt with no newline, and a prompt over 1MB were answered in 50 ms, 44 ms, and 45 ms. A resident phrase and a `--once` phrase that overlapped wrote different wavs (138284 bytes and 69164 bytes).
+
 ### `assistant.py`
 
 The current high-level assistant composition layer.
