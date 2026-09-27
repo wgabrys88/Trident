@@ -4,7 +4,7 @@
 
 Trident turns local microphone or text input into a local model response and local speech output. The project keeps the expensive model/runtime work in focused C++ executables, keeps their configuration explicit in text files, and uses small Python wrappers to make the native programs convenient for humans and automation.
 
-The long-term goal is an immediate, modular assistant whose major engines can remain loaded and communicate through simple boundaries. Hear, Qwen, and Gemma still start a process per turn. Chatterbox stays loaded between mouth turns. `assistant.py` composes that path. The repository is Windows-first and is intended to be built and proven on the real machines that own the relevant audio/GPU hardware.
+The long-term goal is an immediate, modular assistant whose major engines can remain loaded and communicate through simple boundaries. Hear and Gemma still start a process per turn. Qwen stays loaded between sense turns, and Chatterbox stays loaded between mouth turns. `assistant.py` composes that path. The repository is Windows-first and is intended to be built and proven on the real machines that own the relevant audio/GPU hardware.
 
 > **Source of truth:** the checked-in source and configuration files outrank this README. If code and documentation disagree, trace the code, fix the discrepancy, and update this file in the same coherent change.
 
@@ -174,7 +174,7 @@ Source: `gemma/src/sense.cpp`
 
 Configuration: `sense.txt`
 
-Current behavior:
+One-shot behavior (`sense.exe file.txt`):
 
 - loads the Qwen model named by `sense.model`;
 - takes the complete prompt from `sense.text`;
@@ -182,7 +182,17 @@ Current behavior:
 - writes the generation to `*_sense_out_*.txt`;
 - exits.
 
-The checked-in configuration currently uses Qwen3-0.6B as a CPU text model.
+Resident behavior (`sense.exe --resident file.txt`):
+
+- loads that same settings file and the GGUF once;
+- `qwen.py` writes `sense.pid` at spawn (`pid`, a sha256 of the loaded settings with `sense.text` removed, and `loading`); the process marks that file `ready` after the model loads;
+- each `sense.prompt.txt` is one UTF-8 prompt: a decimal request id, a newline, then the text;
+- a prompt with no newline, a non-decimal id, or a body over 1MB is answered with `err` and that id when the id can be read;
+- writes `sense.response.txt` (`id`, then `ok` and the generation, or `err` and a message);
+- leaves the process up until `sense.stop` appears, then deletes `sense.pid` and exits;
+- does not reread settings between prompts.
+
+The checked-in configuration currently uses Qwen3-0.6B as a CPU text model. A model or sampling change is a new process, because the resident keeps the settings it loaded at start.
 
 ### `gemma-brain.exe` — Gemma multimodal brain
 
@@ -259,22 +269,35 @@ Useful options include microphone selection, language, sample rate, endpointing,
 
 ### `qwen.py`
 
-Human/agent-friendly one-shot wrapper around `sense.exe`.
+Human/agent-friendly wrapper around `sense.exe`.
 
 ```powershell
 .\.venv\Scripts\python.exe .\qwen.py "Explain the difference between RAM and VRAM."
+.\.venv\Scripts\python.exe .\qwen.py --once "Explain the difference between RAM and VRAM."
+.\.venv\Scripts\python.exe .\qwen.py --stop
 ```
+
+By default the wrapper starts or reuses one resident `sense.exe`. `--once` is the old one-shot process. `--stop` asks the resident to exit.
 
 The wrapper:
 
 - reads the canonical `sense.txt`;
-- replaces only the runtime prompt field in a generated sidecar;
+- replaces only the runtime prompt field in `sense_run.txt`;
 - appends `/no_think` to the user turn unless the question already contains `/think` or `/no_think`, so a short spoken answer is not consumed by an open think block;
-- invokes `sense.exe` in the repository root;
-- reads the newly produced sense output file;
-- prints the generation to stdout.
+- in resident mode, sends that same prompt through `sense.prompt.txt` and prints the generation from `sense.response.txt`;
+- in `--once` mode, invokes `sense.exe` in the repository root and prints the newly produced sense output file.
 
 The current Qwen model is text-only. Image input is rejected explicitly.
+
+### Resident sense
+
+`sense.exe` is the resident process. `qwen.py` is the client. Hear, Gemma, VAD, and ear stay one-shot.
+
+Start. The first normal `qwen.py` call writes `sense_run.txt` from `sense.txt` (the canonical model and sampling lines, with empty `sense.text`) and starts `sense.exe --resident sense_run.txt` in the repository root. It writes `sense.pid` immediately (`pid`, a sha256 of those settings excluding `sense.text`, and `loading`) while the model is still loading. The process loads Qwen once, then marks that pid file `ready`. A later `qwen.py` or `assistant.py` turn reuses it when `sense.pid` is still that executable and the stored fingerprint matches the settings that would be loaded now. Context, threads, batch, gpu-layers, the GGUF path, `n-predict`, temperature, top-k, top-p, and the other loaded lines are part of that hash. A mismatch stops the old pid and starts another. Rewriting `sense_run.txt` after spawn, including `qwen.py --once`, does not by itself make the running process match. `qwen.py --stop` terminates a loader that is not ready yet, and asks a ready resident to finish the prompt it already read and then exit. If the loader never becomes ready, that wait kills it. One `sense.lock` file lets only one loader start. Settings are loaded only at process start.
+
+Text. `qwen.py` writes one `sense.prompt.txt` and waits until `sense.response.txt` carries the same request id. The prompt body is the same string one-shot mode stores in `sense.text`. The resident clears the context and answers that prompt only. It does not write `*_sense_out_*.txt`. One sense client at a time: two overlapping `qwen.py` processes would share that slot.
+
+`assistant.py` still launches `qwen.py` once per turn. It does not own the sense lifetime. The resident survives `qwen.py` exiting. `--once` does not attach to it.
 
 ### `gemma.py`
 
@@ -320,7 +343,7 @@ Current default language behavior:
 
 ### Resident mouth
 
-`chatterbox.exe` is the resident process. `mouth.py` is the client. Hear, Qwen, Gemma, VAD, and ear stay one-shot.
+`chatterbox.exe` is the resident process. `mouth.py` is the client. Hear, Gemma, VAD, and ear stay one-shot. Qwen is resident through `sense.exe`.
 
 Start. The first normal `mouth.py` call writes `mouth.txt` from `chatterbox.txt` (requested model, language, `chatterbox.play off`, empty text) and starts `chatterbox.exe --resident mouth.txt` in the repository root. It writes `mouth.pid` immediately, with a sha256 of those settings excluding the phrase text, while the model is still loading. The process loads the voice and Vulkan once, then marks that pid file `ready`. A later `mouth.py` or `assistant.py` turn reuses it when `mouth.pid` is still that executable and the stored fingerprint matches the settings that would be loaded now. Sample rate, gpu, seed, exaggeration, GGUF paths, and the other loaded lines are part of that hash. A mismatch stops the old pid and starts another. Rewriting `mouth.txt` after spawn, including `mouth.py --once`, does not by itself make the running process match. `mouth.py --stop` terminates a loader that is not ready yet, and asks a ready resident to finish the phrase it already read and then exit. If the loader never becomes ready, that wait kills it. One `mouth.lock` file lets only one loader start. Settings are loaded only at process start.
 
@@ -375,7 +398,7 @@ Gemma image turn:
 .\.venv\Scripts\python.exe .\assistant.py --brain gemma --text "Describe this." --image .\image.png
 ```
 
-The current default brain is Qwen. The current default mouth model is Nano. Each assistant turn still starts hear and the brain, then calls `mouth.py`. The mouth reuses the resident Chatterbox when one is already loaded.
+The current default brain is Qwen. The current default mouth model is Nano. Each assistant turn still starts hear, then the brain, then mouth. Qwen reuses the resident `sense.exe`. Mouth reuses the resident Chatterbox. Gemma still starts a process per turn.
 
 `assistant.py` also removes known model-control/thought markers before speech and chunks long responses at natural boundaries. Current approximate chunk limits are 65 words for English and 55 for Polish, with lower preferred split floors of 50 and 45 words respectively.
 
@@ -396,7 +419,7 @@ flowchart TB
     ROOT --> CFG[Configuration<br/>install.txt<br/>vad.txt<br/>ear.txt<br/>sense.txt<br/>gemma.txt<br/>chatterbox.txt<br/>bake.txt]
     ROOT --> MODEL[Models/assets<br/>ear.gguf<br/>sense.gguf<br/>gemma.gguf<br/>gemma-mmproj.gguf<br/>*-t3.gguf<br/>*-s3.gguf<br/>silero_vad.onnx<br/>reference.wav]
     ROOT --> DLL[Runtime DLLs<br/>onnxruntime.dll<br/>NeMo runtime DLLs]
-    ROOT --> RUN[Generated sidecars/results<br/>mouth.txt<br/>mouth.pid<br/>sense_run.txt<br/>gemma_run.txt<br/>*_out_*.txt<br/>*.wav]
+    ROOT --> RUN[Generated sidecars/results<br/>mouth.txt<br/>mouth.pid<br/>sense_run.txt<br/>sense.pid<br/>gemma_run.txt<br/>*_out_*.txt<br/>*.wav]
 ```
 
 ### Expected model filenames
@@ -532,12 +555,13 @@ microphone
 
 ### Direct native programs
 
-Each Trident-authored native executable takes one settings file. `chatterbox.exe` is the exception that also accepts `--resident` in front of that file:
+Each Trident-authored native executable takes one settings file. `sense.exe` and `chatterbox.exe` also accept `--resident` in front of that file:
 
 ```powershell
 .\vad.exe .\vad.txt
 .\ear.exe .\ear.txt
 .\sense.exe .\sense.txt
+.\sense.exe --resident .\sense_run.txt
 .\gemma-brain.exe .\gemma.txt
 .\chatterbox.exe .\chatterbox.txt
 .\chatterbox.exe --resident .\mouth.txt
@@ -551,6 +575,7 @@ Each Trident-authored native executable takes one settings file. `chatterbox.exe
 ```powershell
 .\.venv\Scripts\python.exe .\hear.py 8
 .\.venv\Scripts\python.exe .\qwen.py "Question"
+.\.venv\Scripts\python.exe .\qwen.py --stop
 .\.venv\Scripts\python.exe .\gemma.py "Question"
 .\.venv\Scripts\python.exe .\mouth.py "Text to speak"
 ```
@@ -577,7 +602,7 @@ The common native settings reader lives in `src/common/config.h`.
 
 Important semantics:
 
-- a native Trident executable receives one settings filename (`chatterbox.exe --resident` is the same file, plus that mode flag);
+- a native Trident executable receives one settings filename (`sense.exe --resident` and `chatterbox.exe --resident` are the same file, plus that mode flag);
 - normal entries are `key value`;
 - multiline values use `key <<` followed by content and a line containing only `<<`;
 - UTF-8 BOM is tolerated;
@@ -614,8 +639,8 @@ sequenceDiagram
     N-->>H: transcript
     H-->>A: stdout transcript
     A->>B: question
-    B->>X: generated settings sidecar
-    X-->>B: root output TXT
+    B->>X: prompt or settings sidecar
+    X-->>B: generation
     B-->>A: generation
     A->>A: strip control/thought markers + chunk
     A->>M: speech chunks
@@ -623,6 +648,7 @@ sequenceDiagram
     C-->>M: WAV filename
     M->>S: play WAV
     Note over M,C: playback of current chunk can overlap synthesis of next chunk
+    Note over B,X: sense.exe stays loaded across qwen.py turns; gemma-brain.exe still exits
     Note over C: chatterbox.exe stays loaded across mouth.py turns
 ```
 
@@ -749,7 +775,7 @@ This is an operations preference, not a Trident runtime dependency. Trident must
 
 ### Current, implemented
 
-- one-shot native executables, except resident Chatterbox between mouth turns;
+- one-shot native executables, except resident Sense between qwen turns and resident Chatterbox between mouth turns;
 - one settings file per native executable;
 - root-level runtime artifacts;
 - fixed-duration Python microphone capture for `assistant.py`;
@@ -759,6 +785,7 @@ This is an operations preference, not a Trident runtime dependency. Trident must
 - Nano/Turbo/v3 Chatterbox TTS;
 - Python response cleanup and speech chunking;
 - overlapping TTS synthesis/playback scheduling;
+- one resident `sense.exe` serving later `qwen.py` turns through `sense.prompt.txt` / `sense.response.txt`;
 - one resident `chatterbox.exe` serving later `mouth.py` turns through `mouth.prompt.txt` / `mouth.response.txt`;
 - native VAD and native ear executable paths available separately;
 - installer-driven dependency/model/build preparation.
@@ -767,9 +794,9 @@ This is an operations preference, not a Trident runtime dependency. Trident must
 
 Historical work explored or proposed:
 
-- resident vad, ear, and sense/gemma (Chatterbox mouth is already resident);
+- resident vad, ear, and gemma (Sense and Chatterbox mouth are already resident);
 - always-open native VAD feeding native ASR automatically;
-- keeping Qwen/Gemma weights loaded between turns;
+- keeping Gemma weights loaded between turns;
 - transparent LAN placement/offload across the two PCs;
 - a device-router API;
 - multilingual automatic speech-chunk language detection;
@@ -789,7 +816,7 @@ vad.exe
   -> chatterbox.exe
 ```
 
-`chatterbox-bake.exe` remains a preparation utility, and `nemo-speech.exe` remains the underlying external recognizer runtime.
+`sense.exe` and `chatterbox.exe` are resident today. `vad.exe`, `ear.exe`, and `gemma-brain.exe` are still one-shot. `chatterbox-bake.exe` remains a preparation utility, and `nemo-speech.exe` remains the underlying external recognizer runtime.
 
 ---
 
@@ -933,6 +960,16 @@ That location is a short temporary Gemma build tree. A successful current instal
 
 Check the matching `.txt` file first. Native relative paths are resolved from that settings file's directory.
 
+### Sense is still running after qwen.py returns
+
+That is the resident brain. Stop it with:
+
+```powershell
+.\.venv\Scripts\python.exe .\qwen.py --stop
+```
+
+`sense.pid` is the process id, the fingerprint of the settings loaded at spawn, and `loading` or `ready`. `sense.run.err` has `resident load` and `resident ready` once per process and one `resident generate` line per prompt.
+
 ### Chatterbox is still running after mouth.py returns
 
 That is the resident mouth. Stop it with:
@@ -970,7 +1007,7 @@ flowchart LR
 - Text files are explicit configuration contracts.
 - Installed runtime artifacts live together at the repository root.
 - Hidden build/source caches are implementation details, not module-specific runtime trees.
-- Hear, Qwen, and Gemma still start a process per turn. Chatterbox stays resident between mouth turns.
+- Hear and Gemma still start a process per turn. Qwen stays resident between sense turns, and Chatterbox stays resident between mouth turns.
 - Hardware-dependent work is proven on the actual Windows machine that owns the hardware.
 
 ---

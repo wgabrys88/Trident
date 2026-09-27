@@ -1,6 +1,7 @@
 """Local voice turns. Chain hear.py, qwen.py or gemma.py, and mouth.py.
 
-mouth.py keeps chatterbox.exe loaded across turns. Hear and the brains still exit after each turn.
+qwen.py keeps sense.exe loaded across turns. mouth.py keeps chatterbox.exe loaded across turns.
+Hear and Gemma still exit after each turn.
 """
 
 import argparse
