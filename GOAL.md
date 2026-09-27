@@ -2,7 +2,7 @@
 
 Trident is a local voice assistant. The microphone hears, a brain reads one whole prompt, and the mouth speaks on the real speakers. The person hears the assistant because the mouth spoke.
 
-Two tracks stay apart. The assistant track runs on this PC and makes no network call. Grok is off that path. The seat track is the Grok roster. `BOTS.md` is the index and the routes. Each live seat is recreated from one file in `artifacts/reference/seats/`. The assistant track is `artifacts/reference/tracks/IRIS_ASSISTANT.md`. A LAN job router is specified in `artifacts/reference/tracks/DEVICE_ROUTER.md` and is not built. The five architecture drawings are captioned in `artifacts/reference/design/README.md`. A drawing does not ship a program.
+Two tracks stay apart. The assistant track runs on this PC and makes no network call. Grok is off that path. Near term, `assistant.py` runs only on Iris. The seat track is the Grok roster. Live seats are Trident_Android_SPOC V4, Trident Mouth V6, Trident Ear V2, Trident Ask V2, Trident Executor V4, and the design seat Local_IT_Guy. The war room holds those six. `BOTS.md` is the index and the routes. Each live seat is recreated from one file in `artifacts/reference/seats/`. The assistant track is `artifacts/reference/tracks/IRIS_ASSISTANT.md`. A LAN job router is specified in `artifacts/reference/tracks/DEVICE_ROUTER.md` and is not built. The five architecture drawings are captioned in `artifacts/reference/design/README.md`. A drawing does not ship a program. `artifacts/reference/WAVE3_PLAN.md` is a research note, not the product path.
 
 ## Programs
 
@@ -113,7 +113,7 @@ From the repository root, with the repo virtualenv:
 
 `assistant.py` runs those one-shots with `.venv\Scripts\python.exe`. It does not load a model. It does not start `vad.exe`, `ear.exe`, `sense.exe`, `gemma-brain.exe`, or `chatterbox.exe`. Those executables start only inside `hear.py`, `qwen.py`, `gemma.py`, and `mouth.py`, as they already do.
 
-The default brain is `qwen.py`: Qwen3-0.6B, text only, the Iris path. `--brain gemma` is opt-in and runs `gemma.py`. Prefer an Nvidia GPU for Gemma. On Iris the Vulkan build can run it and can be slow. `--image PATH` requires `--brain gemma`. An image with the default brain exits 2. The script makes no network call. Grok stays off this path.
+The default brain is `qwen.py`: Qwen3-0.6B, text only, on Iris. `--brain gemma` is opt-in and runs `gemma.py` on this same Iris machine. The Vulkan build can be slow. The assistant loop does not move to Nvidia. `--image PATH` requires `--brain gemma`. An image with the default brain exits 2. The script makes no network call. Grok stays off this path. Wave 3 is not this path.
 
 With no `--text`, each turn runs `hear.py` for `--seconds` (default 8), then the brain, then `mouth.py`. The loop repeats until the heard transcript is `quit`, `exit`, or `stop`, or until Ctrl-C. `--once` is a single heard turn. `--text` skips the microphone and runs one brain-then-mouth round. `--seconds` is unused on that round.
 

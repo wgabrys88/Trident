@@ -25,7 +25,7 @@ File: `arch_multi_device_ready.png`
 
 ![Multi-device ready shape, not built](arch_multi_device_ready.png)
 
-This is the ready shape for a job router across three pools: Iris CPU, Iris Vulkan iGPU, and Nvidia CUDA (GTX 1060 6GB). Iris keeps the microphone and the speakers. A heavy job, for example TTS, is drawn as running on Nvidia and returning a file. Locked addresses are Iris 192.168.16.45, Nvidia 192.168.16.31, and gateway 192.168.16.4.
+This is the ready shape for a job router across three pools: `iris_cpu`, `iris_vulkan`, and `nvidia_cuda` (Iris CPU, Iris Vulkan iGPU, Nvidia CUDA on a GTX 1060 6GB). Iris keeps the microphone and the speakers. Transparent TTS offload is drawn as a wav returning to Iris Speakers. Locked addresses are Iris 192.168.16.45, Nvidia 192.168.16.31, and gateway 192.168.16.4.
 
 That router is not built. It does not replace cloud SPOC routing. Do not implement it from this picture. See `DEVICE_ROUTER.md`.
 
@@ -37,11 +37,11 @@ File: `arch_two_tracks_assistant_and_bots.png`
 
 Two tracks stay apart.
 
-The assistant track is on this PC. `assistant.py` runs hear, then the brain, then the mouth. The default brain is `qwen`. The path makes no network call. Grok is off that path.
+The assistant track is on this PC. Near term, `assistant.py` runs only on Iris: hear, then the brain, then the mouth. The default brain is `qwen`. The path makes no network call. Grok is off that path.
 
-The bot track is the Grok roster. SPOC routes SPEAK to Mouth, HEAR to Ear, COOK to Executor, and ASK to Ask. Those seats do not replace the assistant loop, and the assistant loop does not call them.
+The bot track is the Grok roster. SPOC V4 routes SPEAK to Mouth V6, HEAR to Ear V2, COOK to Executor V4, and ASK to Ask V2. Local_IT_Guy is the design seat. Those seats do not replace the assistant loop, and the assistant loop does not call them.
 
-A local Grok-bot proof of concept is a further separate track. It is not the assistant, and it is not SPOC. See `IRIS_ASSISTANT.md`, `BOTS.md`, and `DEVICE_ROUTER.md`.
+A `local_bots` proof of concept would be a separate package. It may share transport only with the assistant track. It is not built, it is not `assistant.py`, and it is not SPOC. See `IRIS_ASSISTANT.md`, `BOTS.md`, and `DEVICE_ROUTER.md`.
 
 ## Phases 0 to 3
 
