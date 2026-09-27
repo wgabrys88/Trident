@@ -107,7 +107,9 @@ void handle_prompt(const std::filesystem::path& dir, trident::Synth& engine, con
     }
     std::ifstream in(path, std::ios::binary);
     if (!in) return;
-    std::string body(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    const auto begin = std::istreambuf_iterator<char>(in);
+    const auto end = std::istreambuf_iterator<char>();
+    std::string body(begin, end);
     in.close();
     std::filesystem::remove(path, ec);
     if (ec) return;
