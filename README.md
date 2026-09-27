@@ -327,7 +327,15 @@ Text. `mouth.py` writes one `mouth.prompt.txt` and waits until `mouth.response.t
 
 `assistant.py` still launches `mouth.py` once per turn. It does not own the chatterbox lifetime. The resident survives `mouth.py` exiting. `--once` does not attach to it.
 
-Proof. Residency is the same pid in `mouth.pid` across turns, one `resident ready` line in `mouth.run.err`, and a later turn whose wall time no longer includes model and Vulkan load. `resident speak` lines are synthesis only.
+Proof, Iris Xe (i5-1145G7), 2026-09-27 18:29 +02, phrase `Say one short sentence.`:
+
+| Run | Wall | Chatterbox |
+|---|---|---|
+| `mouth.py --once` | 4842 ms | process exits; no `mouth.pid` |
+| first resident turn | 4239 ms | pid 6712, started 18:29:36.592, `resident speak` 1424 ms |
+| second resident turn | 3580 ms | same pid and start time, `resident speak` 1467 ms |
+
+`mouth.run.err` has one Vulkan device line and one `resident ready pid 6712`. Both wavs are 78764 bytes (~1.64 s), so the 659 ms wall-clock drop is the load the second turn skips. A two-chunk call and `assistant.py --text` stayed on pid 6712. `mouth.py --stop` then logged `resident stop pid 6712` and the process and `mouth.pid` were gone. An earlier one-shot measurement on `70a14509` was 3432–3476 ms for a shorter clip (~0.9 s of audio).
 
 ### `assistant.py`
 
