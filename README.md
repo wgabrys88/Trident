@@ -1154,7 +1154,7 @@ Artifacts: `loopback-proof/intent.txt`, `loopback-proof/transcript.txt`, `loopba
 
 ## Scratch: parallel agents on this seat
 
-`parallel_agents.py` sits beside `seq_agents.py`. Two threads start together: one summarizes a sentence, one lists 3 keywords, then the script joins both texts. A concurrent pair of `gemma-brain.exe` is probed with separate sidecar files (`parallel_probe_*.txt`, removed after). `gemma.py` still shares `gemma_run.txt`. Gemma weights are about 2.8 GB plus mmproj on a 6 GB GTX 1060, so a failed probe continues with a lock around each `gemma.py` call (staggered). No microphone and no mouth. `seq_agents.py` is unchanged.
+`parallel_agents.py` sits beside `seq_agents.py`. Two threads each run `gemma-brain.exe` in its own working directory so the pair does not share `gemma_run.txt` or `*_gemma_out_*.txt`. One step summarizes a sentence, the other lists 3 keywords, then the script joins both texts and times a `gemma.py` sequential baseline. If either concurrent brain fails, the same prompts run through `gemma.py` behind one lock (staggered). No microphone and no mouth. `seq_agents.py` is unchanged.
 
 ```powershell
 .\.venv\Scripts\python.exe .\parallel_agents.py

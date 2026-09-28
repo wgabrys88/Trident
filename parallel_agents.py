@@ -1,15 +1,15 @@
 """Two agent steps overlapped, then a join.
 
 seq_agents.py stays sequential. This skeleton starts both steps together.
-Gemma is still one gemma-brain.exe per call, and gemma.py shares gemma_run.txt
-plus *_gemma_out_*.txt. A short concurrent probe uses two sidecar files. If
-that pair does not both return text, the same prompts run on threads with a
-lock around gemma.py (staggered model calls).
+Each concurrent step runs gemma-brain.exe in its own working directory so
+the pair does not share gemma_run.txt or *_gemma_out_*.txt. If either step
+fails, the same prompts run on threads with a lock around gemma.py.
 
 No microphone and no playback. Writes parallel_agents.txt and parallel_agents.log.
 Exits 0 when both joined steps return text.
 """
 
+import shutil
 import subprocess
 import sys
 import threading
@@ -22,6 +22,7 @@ import gemma
 ROOT = Path(__file__).resolve().parent
 EVIDENCE = ROOT / "parallel_agents.txt"
 LOG = ROOT / "parallel_agents.log"
+RUN_DIR = ROOT / "parallel_run"
 AGENTS = (
     (
         "summarize",
@@ -32,9 +33,7 @@ AGENTS = (
         "List exactly 3 keywords separated by commas and nothing else for this sentence: Parallel agents join their results after overlapping work.",
     ),
 )
-# Probe-only markers so two sidecar outputs can be told apart.
-PROBE_MARK = {"summarize": "harbor", "keywords": "keel"}
-PROBE_SECONDS = 90
+HELLO_LOCK = threading.Lock()
 
 
 def die(message):
@@ -95,7 +94,10 @@ def gpu_line():
         return ""
     if completed.returncode != 0:
         return ""
-    return (completed.stdout or "").strip().splitlines()[0].strip()
+    lines = (completed.stdout or "").strip().splitlines()
+    if not lines:
+        return ""
+    return lines[0].strip()
 
 
 def gpu_used_mib(line):
@@ -108,20 +110,157 @@ def gpu_used_mib(line):
         return None
 
 
-def tail_file(path, limit=6000):
+def tail_text(text, limit=12):
+    lines = (text or "").splitlines()
+    return "\n".join(lines[-limit:])
+
+
+def spans_overlap(spans):
+    if len(spans) < 2:
+        return False
+    (a0, a1), (b0, b1) = spans[0], spans[1]
+    return a0 < b1 and b0 < a1
+
+
+def results_ok(rows):
+    return bool(rows) and all(row["code"] == 0 and (row["text"] or "").strip() for row in rows)
+
+
+def run_brain(workdir, prompt):
+    """One gemma-brain.exe. Output stays in workdir, not the repo root."""
     try:
-        size = path.stat().st_size
-        with path.open("rb") as handle:
-            if size > limit:
-                handle.seek(size - limit)
-            data = handle.read().decode("utf-8", errors="replace")
+        workdir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return 2, "", "cannot create " + str(workdir) + ": " + str(exc)
+    side = workdir / "gemma_run.txt"
+    err_path = workdir / "brain.err"
+    try:
+        payload = gemma.settings_text(prompt, "")
+        side.write_bytes(payload.encode("utf-8"))
+    except OSError as exc:
+        return 2, "", "cannot write sidecar: " + str(exc)
+    before = set(workdir.glob("*_gemma_out_*.txt"))
+    try:
+        err_handle = err_path.open("w", encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return 2, "", "cannot write stderr: " + str(exc)
+    try:
+        completed = subprocess.run(
+            [str(ROOT / "gemma-brain.exe"), str(side)],
+            cwd=workdir,
+            shell=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=err_handle,
+            timeout=600,
+        )
+    except subprocess.TimeoutExpired:
+        return 2, "", "gemma-brain timed out"
+    except OSError as exc:
+        return 2, "", "cannot run gemma-brain.exe: " + str(exc)
+    finally:
+        err_handle.close()
+    err = ""
+    try:
+        err = tail_text(err_path.read_text(encoding="utf-8", errors="replace"))
     except OSError:
-        return ""
-    return "\n".join(data.splitlines()[-12:])
+        err = ""
+    if completed.returncode != 0:
+        return completed.returncode, "", err or ("gemma-brain exit " + str(completed.returncode))
+    new_files = sorted(set(workdir.glob("*_gemma_out_*.txt")) - before)
+    if not new_files:
+        return 2, "", err or "gemma-brain wrote no output text"
+    try:
+        text = new_files[-1].read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return 2, "", "cannot read output: " + str(exc)
+    return 0, text, err
 
 
-def snapshot_outs():
-    return set(ROOT.glob("*_gemma_out_*.txt"))
+def finish_tool(workdir, question, text, err):
+    call = gemma.parse_tool_call(text)
+    if not call:
+        return 0, text, err
+    if call[0] != "hello":
+        log("parallel: tool skip " + call[0])
+        return 0, text, err
+    line = gemma.clean_line(call[1].get("line"))
+    with HELLO_LOCK:
+        gemma.write_hello(line)
+    follow = gemma.follow_prompt(question, call[2], line)
+    spoken = ""
+    follow_err = err
+    for _ in range(3):
+        code, raw, ferr = run_brain(workdir, follow)
+        if ferr:
+            follow_err = ferr
+        if code != 0:
+            return code, "", follow_err
+        spoken = gemma.answer_text(raw)
+        if spoken:
+            break
+    if not spoken:
+        log("parallel: tool follow-up empty")
+        spoken = "Wrote " + line + " to tool_hello.txt."
+    return 0, spoken, follow_err
+
+
+def concurrent_agents(origin):
+    peak = {"mib": None}
+    stop = threading.Event()
+
+    def poll():
+        while not stop.is_set():
+            used = gpu_used_mib(gpu_line())
+            if used is not None and (peak["mib"] is None or used > peak["mib"]):
+                peak["mib"] = used
+            stop.wait(0.4)
+
+    poller = threading.Thread(target=poll, daemon=True)
+    poller.start()
+
+    def work(index, name, question):
+        log("parallel: concurrent " + name)
+        born = time.perf_counter()
+        workdir = RUN_DIR / name
+        code, text, err = run_brain(workdir, gemma.gemma_prompt(question, False))
+        if code == 0 and text.strip():
+            code, text, err = finish_tool(workdir, question, text, err)
+        done = time.perf_counter()
+        log(
+            "parallel: concurrent "
+            + name
+            + " exit "
+            + str(code)
+            + " "
+            + str(int((done - born) * 1000))
+            + " ms"
+        )
+        return {
+            "index": index,
+            "name": name,
+            "question": question,
+            "code": code,
+            "text": text,
+            "ms": int((done - born) * 1000),
+            "err": err,
+            "born": born - origin,
+            "done": done - origin,
+            "gemma": (born - origin, done - origin),
+        }
+
+    try:
+        with ThreadPoolExecutor(max_workers=len(AGENTS)) as pool:
+            futures = [
+                pool.submit(work, index, name, question)
+                for index, (name, question) in enumerate(AGENTS)
+            ]
+            rows = [future.result() for future in futures]
+    finally:
+        stop.set()
+        poller.join(timeout=2)
+    rows.sort(key=lambda row: row["index"])
+    return rows, peak["mib"]
 
 
 def run_gemma(py, name, question):
@@ -161,149 +300,7 @@ def run_gemma(py, name, question):
     return completed.returncode, completed.stdout or "", ms, err
 
 
-def spans_overlap(spans):
-    if len(spans) < 2:
-        return False
-    (a0, a1), (b0, b1) = spans[0], spans[1]
-    return a0 < b1 and b0 < a1
-
-
-def probe_question(name, question):
-    mark = PROBE_MARK[name]
-    return question + " Your reply must contain the word " + mark + "."
-
-
-def probe_concurrent():
-    """Two gemma-brain.exe processes, distinct sidecars. Does not call gemma.py."""
-    exe = ROOT / "gemma-brain.exe"
-    if not exe.is_file():
-        return {"ok": False, "note": "missing gemma-brain.exe", "peak": None, "spans": []}
-    before = snapshot_outs()
-    started = []
-    peak = {"mib": None}
-    stop = threading.Event()
-
-    def poll():
-        while not stop.is_set():
-            used = gpu_used_mib(gpu_line())
-            if used is not None and (peak["mib"] is None or used > peak["mib"]):
-                peak["mib"] = used
-            stop.wait(0.4)
-
-    poller = threading.Thread(target=poll, daemon=True)
-    poller.start()
-    note = "concurrent probe"
-    texts = {}
-    try:
-        for name, question in AGENTS:
-            side = ROOT / ("parallel_probe_" + name + ".txt")
-            err_path = ROOT / ("parallel_probe_" + name + ".err")
-            payload = gemma.settings_text(gemma.gemma_prompt(probe_question(name, question), False), "")
-            payload += "gemma.n-predict 48\n"
-            side.write_bytes(payload.encode("utf-8"))
-            err_handle = err_path.open("w", encoding="utf-8", errors="replace")
-            row = {
-                "name": name,
-                "proc": None,
-                "err_handle": err_handle,
-                "err_path": err_path,
-                "side": side,
-                "born": time.perf_counter(),
-                "done": None,
-            }
-            started.append(row)
-            row["proc"] = subprocess.Popen(
-                [".\\gemma-brain.exe", side.name],
-                cwd=ROOT,
-                shell=False,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=err_handle,
-            )
-        deadline = time.perf_counter() + PROBE_SECONDS
-        for row in started:
-            remaining = deadline - time.perf_counter()
-            if remaining <= 0:
-                row["proc"].kill()
-                row["proc"].wait(timeout=15)
-            else:
-                try:
-                    row["proc"].wait(timeout=remaining)
-                except subprocess.TimeoutExpired:
-                    row["proc"].kill()
-                    row["proc"].wait(timeout=15)
-            row["done"] = time.perf_counter()
-            row["err_handle"].close()
-        spans = [(row["born"], row["done"]) for row in started]
-        codes = []
-        tails = []
-        for row in started:
-            code = row["proc"].returncode
-            codes.append(row["name"] + "=" + str(code))
-            tail = tail_file(row["err_path"])
-            if tail:
-                tails.append(row["name"] + " stderr <<\n" + tail + "\n<<")
-            log(
-                "parallel: probe "
-                + row["name"]
-                + " exit "
-                + str(code)
-                + " "
-                + str(int((row["done"] - row["born"]) * 1000))
-                + " ms"
-            )
-        new_files = sorted(snapshot_outs() - before, key=lambda path: path.name)
-        fresh = []
-        for path in new_files:
-            try:
-                fresh.append(path.read_text(encoding="utf-8", errors="replace"))
-            except OSError:
-                fresh.append("")
-        assigned = {}
-        for text in fresh:
-            hits = [name for name, mark in PROBE_MARK.items() if mark in text.lower()]
-            if len(hits) == 1 and hits[0] not in assigned and text.strip():
-                assigned[hits[0]] = text
-        both_codes = all(row["proc"].returncode == 0 for row in started)
-        overlap = spans_overlap(spans)
-        attributed = set(assigned) == {name for name, _question in AGENTS}
-        note = "codes " + " ".join(codes) + " overlap " + ("yes" if overlap else "no")
-        if peak["mib"] is not None:
-            note += " peak_used_mib " + str(peak["mib"])
-        if tails:
-            note += "\n" + "\n".join(tails)
-        ok = both_codes and overlap and attributed
-        if ok:
-            texts = assigned
-        elif both_codes and overlap and not attributed:
-            note += "\nunattributed outputs " + str(len(fresh))
-        return {"ok": ok, "note": note, "peak": peak["mib"], "spans": spans, "texts": texts}
-    except OSError as exc:
-        return {"ok": False, "note": "probe failed: " + str(exc), "peak": peak["mib"], "spans": [], "texts": {}}
-    finally:
-        stop.set()
-        poller.join(timeout=2)
-        for row in started:
-            proc = row.get("proc")
-            if proc is not None and proc.poll() is None:
-                proc.kill()
-                try:
-                    proc.wait(timeout=15)
-                except subprocess.TimeoutExpired:
-                    pass
-            handle = row.get("err_handle")
-            if handle is not None and not handle.closed:
-                handle.close()
-            for key in ("side", "err_path"):
-                path = row.get(key)
-                if path is not None:
-                    try:
-                        path.unlink()
-                    except OSError:
-                        pass
-
-
-def staggered(py, origin):
+def staggered_agents(py, origin):
     lock = threading.Lock()
 
     def work(index, name, question):
@@ -331,26 +328,40 @@ def staggered(py, origin):
             pool.submit(work, index, name, question)
             for index, (name, question) in enumerate(AGENTS)
         ]
-        results = [future.result() for future in futures]
-    results.sort(key=lambda row: row["index"])
-    return results
+        rows = [future.result() for future in futures]
+    rows.sort(key=lambda row: row["index"])
+    return rows
 
 
-def sequential(py):
+def sequential_agents(py):
     rows = []
     wall_start = time.perf_counter()
     for name, question in AGENTS:
         code, text, ms, err = run_gemma(py, "seq-" + name, question)
-        rows.append({"name": name, "code": code, "text": text, "ms": ms, "err": err})
+        rows.append(
+            {
+                "name": name,
+                "question": question,
+                "code": code,
+                "text": text,
+                "ms": ms,
+                "err": err,
+            }
+        )
     wall = int((time.perf_counter() - wall_start) * 1000)
     return rows, wall
 
 
 def one_line(text):
-    body = " ".join((text or "").split())
+    body = gemma.answer_text(text) or " ".join((text or "").split())
     if len(body) > 500:
         body = body[:500].rstrip()
     return body
+
+
+def cleanup_run_dir():
+    if RUN_DIR.exists():
+        shutil.rmtree(RUN_DIR, ignore_errors=True)
 
 
 def write_evidence(parts):
@@ -372,9 +383,12 @@ def agent_blocks(rows):
         parts.append(block("text", row["text"]))
         err = row.get("err") or ""
         if err:
-            tail = "\n".join(err.splitlines()[-20:])
-            parts.append(block("stderr", tail + "\n"))
+            parts.append(block("stderr", tail_text(err, 20) + "\n"))
     return parts
+
+
+def wall_ms(rows):
+    return int((max(row["done"] for row in rows) - min(row["born"] for row in rows)) * 1000)
 
 
 def main():
@@ -384,51 +398,46 @@ def main():
     except OSError as exc:
         print("cannot write parallel_agents.log: " + str(exc), file=sys.stderr)
         raise SystemExit(2)
+    if not (ROOT / "gemma-brain.exe").is_file():
+        die("missing gemma-brain.exe")
     py = venv_python()
     gpu = gpu_line()
     log("parallel: gpu " + (gpu or "unknown"))
-    log("parallel: probe start")
+    cleanup_run_dir()
     origin = time.perf_counter()
-    probe = probe_concurrent()
-    log("parallel: probe ok " + ("yes" if probe["ok"] else "no"))
-    mode = "concurrent" if probe["ok"] else "staggered"
-    if probe["ok"]:
-        rows = []
-        for index, (name, question) in enumerate(AGENTS):
-            text = probe["texts"][name]
-            span = probe["spans"][index]
-            rows.append(
-                {
-                    "index": index,
-                    "name": name,
-                    "question": probe_question(name, question),
-                    "code": 0,
-                    "text": text,
-                    "ms": int((span[1] - span[0]) * 1000),
-                    "err": "",
-                    "born": span[0] - origin,
-                    "done": span[1] - origin,
-                    "gemma": (span[0] - origin, span[1] - origin),
-                }
-            )
-        parallel_wall = int((max(row["done"] for row in rows) - min(row["born"] for row in rows)) * 1000)
+    log("parallel: concurrent start")
+    try:
+        rows, peak = concurrent_agents(origin)
+    except OSError as exc:
+        log("parallel: concurrent failed " + str(exc))
+        rows, peak = [], None
+    cleanup_run_dir()
+    note = "isolated gemma-brain.exe"
+    if peak is not None:
+        note += " peak_used_mib " + str(peak)
+        log("parallel: peak_used_mib " + str(peak))
+    if results_ok(rows):
+        mode = "concurrent"
+        log("parallel: concurrent ok")
     else:
-        log("parallel: staggered gemma.py")
-        stagger_origin = time.perf_counter()
-        rows = staggered(py, stagger_origin)
-        parallel_wall = int((max(row["done"] for row in rows) - min(row["born"] for row in rows)) * 1000)
-    joined_ok = all(row["code"] == 0 and row["text"].strip() for row in rows)
-    thread_overlap = spans_overlap([(row["born"], row["done"]) for row in rows])
-    gemma_overlap = spans_overlap([row["gemma"] for row in rows])
+        mode = "staggered"
+        why = " ".join(row["name"] + "=" + str(row["code"]) for row in rows) or "no rows"
+        note += " fallback " + why
+        log("parallel: staggered gemma.py (" + why + ")")
+        rows = staggered_agents(py, time.perf_counter())
+    joined_ok = results_ok(rows)
+    parallel_wall = wall_ms(rows) if rows else 0
+    thread_overlap = spans_overlap([(row["born"], row["done"]) for row in rows]) if rows else False
+    gemma_overlap = spans_overlap([row["gemma"] for row in rows]) if rows else False
     seq_rows = []
     seq_wall = 0
     if joined_ok:
         log("parallel: sequential baseline")
-        seq_rows, seq_wall = sequential(py)
+        seq_rows, seq_wall = sequential_agents(py)
     parts = []
     parts.append("mode " + mode + "\n")
     parts.append("gpu " + (gpu or "unknown") + "\n")
-    parts.append(block("probe", (probe.get("note") or "") + "\n"))
+    parts.append(block("note", note + "\n"))
     parts.append("thread_overlap " + ("yes" if thread_overlap else "no") + "\n")
     parts.append("gemma_overlap " + ("yes" if gemma_overlap else "no") + "\n")
     parts.append("parallel_wall_ms " + str(parallel_wall) + "\n")
@@ -443,7 +452,16 @@ def main():
     payload = write_evidence(parts)
     sys.stdout.write(payload)
     log("parallel: wrote " + str(EVIDENCE))
-    log("parallel: mode " + mode + " result " + ("ok" if joined_ok else "fail"))
+    log(
+        "parallel: mode "
+        + mode
+        + " result "
+        + ("ok" if joined_ok else "fail")
+        + " parallel_wall_ms "
+        + str(parallel_wall)
+        + " sequential_wall_ms "
+        + str(seq_wall)
+    )
     raise SystemExit(0 if joined_ok else 2)
 
 
