@@ -63,7 +63,7 @@ A reply rendered on the PE machine is a failed telling of this story. A reply re
 
 VB-Cable as the default thing a person hears is a failed telling. Cable playback and cable capture are opt-in. The flags are `--vb-cable` on hear and mouth, the `loopback.py` harness, and the device line inside `vad.txt` for `vad.exe` only. `hear.py` will not pick a cable device unless that flag is set. `mouth.py` plays the default wave device unless the cable flag or an explicit output device is set.
 
-`ear.txt` still opens with an `ear.exe` one-shot story. That header is obsolete. `hear.py` runs `nemo-speech.exe transcribe`. The installer still reads `ear.model` from `ear.txt` so it knows where to put `ear.gguf`. Keep the file. Do not follow the header.
+`ear.txt` still opens on the `ear.exe` one-shot (`src/ear.cpp` runs `nemo-speech.exe transcribe` and writes `*_ear_out_NNN.txt`); `hear.py` does not read `ear.txt` and does not run `ear.exe`.
 
 `chatterbox.txt` says `chatterbox.play on`. `mouth.py` turns play off for the synthesis it writes, then plays the wav itself, or skips playback with `--no-play`. The template flag is not the speaker switch.
 
@@ -189,7 +189,7 @@ One writer per checkout.
 
 Checked-in code outranks this file.
 
-Do not delete tool configs, `LICENSE`, `install.txt`, the `grok_bot_*` runtime files, `iris-door.txt`, `reference.wav`, or `loopback-proof/`. Obsolete words in `ear.txt` stay until a Cursor agent rewrites that header in place. Spock assigns Composer or Grok 4.7 for that edit. Composer is the usual choice, because it is low-priority.
+Do not delete tool configs, `LICENSE`, `install.txt`, the `grok_bot_*` runtime files, `iris-door.txt`, `reference.wav`, or `loopback-proof/`. #20 already rewrote the `ear.txt` header in place; keep the file, and do not use `ear.exe` as the hearing path.
 
 ## Role cards
 
@@ -304,7 +304,7 @@ If a new house uses a different LAN address, change the URL you export. Keep por
 
 `install.py` and `install.txt` are the installer. Keep both.
 
-`hear.py` is the recognizer entry. `ear.txt` is the model-path card the installer still reads. The `ear.exe` header is obsolete.
+`hear.py` is the recognizer entry. `ear.txt` is the model-path card the installer still reads. The header still opens on the `ear.exe` one-shot; do not use `ear.exe` as the hearing path.
 
 `mouth.py` and `chatterbox.txt` are the mouth. `reference.wav` is the baked voice and the wav the door proof used. Keep it.
 
