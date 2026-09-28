@@ -1164,6 +1164,12 @@ STATUS PASS. 2026-09-28. Exit 0. Mode concurrent (`gemma_overlap yes`). Parallel
 
 ---
 
+## Scratch: LAN vision image bytes
+
+`nvidia_client.py --image FILE` POSTs `image_b64` (standard base64 of the file bytes) plus the existing `image` path. `nvidia_worker.py` decodes `image_b64` to a temp file and passes that to `gemma.py --image`, so the picture does not have to already sit on the worker disk. A JSON body with only `image` still uses a path on the worker. Iris `assistant.py --nvidia --image` already calls this client. STATUS PASS. 2026-09-28. Worker: `.\.venv\Scripts\python.exe .\nvidia_worker.py --host 0.0.0.0 --port 8765`. Client: `.\.venv\Scripts\python.exe .\nvidia_client.py --url http://127.0.0.1:8765/ --timeout 300 --image $env:TEMP\trident-car-0867.jpg "What is in this image? Answer in one short sentence."` File is Hugging Face `transformers/tasks/car.jpg` (39080 bytes) at that unique temp path, not `vision_sample.jpg`. Worker log: `image_b64 39080 bytes -> C:\Users\px-wjt\AppData\Local\Temp\trident-nvidia-di_f1k8l.jpg`, then `gemma image_b64` in 7223 ms. Reply: `A light blue vintage Volkswagen Beetle is parked on a street in front of a tan building.` Proof HEAD `9e094cfe0c15727686f6b2afa6de579e328d2a95`.
+
+---
+
 ## License
 
 Trident is licensed under the MIT License. See [`LICENSE`](LICENSE) for the project license and third-party notices.

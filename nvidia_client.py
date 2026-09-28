@@ -3,9 +3,14 @@
 Writes nvidia_turn.request.txt. If --url or TRIDENT_NVIDIA_URL is set, POST
 JSON and print the worker text. With no URL, leave the request and exit 0.
 Does not start gemma-brain.exe and does not listen for a connection.
+
+--image reads the local file and POSTs image_b64 (standard base64 of those
+bytes) plus the path in image. The worker can vision the bytes without that
+path existing on its disk. A path-only POST still works on the worker.
 """
 
 import argparse
+import base64
 import json
 import os
 import sys
@@ -81,11 +86,21 @@ def generation_from_body(raw):
     return raw
 
 
-def post_turn(url, ident, text, image, timeout):
-    payload = json.dumps(
-        {"id": ident, "text": text, "image": image},
-        ensure_ascii=False,
-    ).encode("utf-8")
+def file_b64(path):
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        die("cannot read image: " + str(exc))
+    if not data:
+        die("empty image: " + str(path))
+    return base64.b64encode(data).decode("ascii"), len(data)
+
+
+def post_turn(url, ident, text, image, image_b64, timeout):
+    body = {"id": ident, "text": text, "image": image}
+    if image_b64:
+        body["image_b64"] = image_b64
+    payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=payload,
@@ -124,13 +139,19 @@ def main():
     configure_stdio_utf8()
     parser = argparse.ArgumentParser(prog="nvidia_client.py")
     parser.add_argument("text", help="transcript or text turn")
-    parser.add_argument("--image", default=None, help="image file path stored for a later Gemma worker")
+    parser.add_argument(
+        "--image",
+        default=None,
+        help="local image file; POST sends image_b64 bytes and the path",
+    )
     parser.add_argument("--url", default=None, help="NVIDIA worker POST url; else TRIDENT_NVIDIA_URL")
     parser.add_argument("--timeout", type=float, default=30, help="HTTP timeout seconds (default 30)")
     args = parser.parse_args()
     if not args.text.strip():
         die("empty text")
     image = None
+    image_b64 = None
+    image_bytes = 0
     if args.image is not None:
         if args.image.strip() == "":
             die("empty image")
@@ -138,6 +159,7 @@ def main():
         if not path.is_file():
             die("missing image: " + str(path))
         image = str(path)
+        image_b64, image_bytes = file_b64(path)
     if args.url is not None:
         url = args.url.strip()
     else:
@@ -156,7 +178,9 @@ def main():
                 die("cannot remove nvidia_turn.response.txt: " + str(exc))
         print("nvidia: worker unset; request " + str(REQUEST), file=sys.stderr)
         return
-    post_turn(url, ident, args.text, image, args.timeout)
+    if image_b64:
+        print("nvidia: image_b64 " + str(image_bytes) + " bytes", file=sys.stderr)
+    post_turn(url, ident, args.text, image, image_b64, args.timeout)
 
 
 if __name__ == "__main__":
