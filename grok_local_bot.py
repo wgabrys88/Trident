@@ -912,11 +912,14 @@ def run_inbox_reasoner(url, drop, timeout):
     if not wid:
         wid = ident
     text_out = payload if ok else ""
-    role_ok = bool(ok and text_out.strip() and calls == 1)
+    # --drop --once writes *_gemma_out_*.txt next to this client. A URL worker
+    # writes that file in the worker cwd, so the POST ok body is the call.
+    call_ok = calls == 1 if drop else True
+    role_ok = bool(ok and text_out.strip() and call_ok)
     if role_ok:
         write_text(RESPONSE, team_response(wid, "reasoner", text_out))
     else:
-        if ok and calls != 1:
+        if drop and ok and calls != 1:
             reason = "gemma calls " + str(calls)
         else:
             reason = payload if not ok else "empty"
@@ -933,7 +936,7 @@ def run_inbox_reasoner(url, drop, timeout):
     if role_ok:
         parts.append(block("text", text_out))
     else:
-        if ok and calls != 1:
+        if drop and ok and calls != 1:
             err = "gemma calls " + str(calls)
         else:
             err = " ".join(str(payload).split()) or "empty"
