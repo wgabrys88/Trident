@@ -1152,6 +1152,18 @@ Artifacts: `loopback-proof/intent.txt`, `loopback-proof/transcript.txt`, `loopba
 
 ---
 
+## Scratch: parallel agents on this seat
+
+`parallel_agents.py` sits beside `seq_agents.py`. Two threads each run `gemma-brain.exe` in its own working directory so the pair does not share `gemma_run.txt` or `*_gemma_out_*.txt`. One step summarizes a sentence, the other lists 3 keywords, then the script joins both texts and times a `gemma.py` sequential baseline. If either concurrent brain fails, the same prompts run through `gemma.py` behind one lock (staggered). No microphone and no mouth. `seq_agents.py` is unchanged.
+
+```powershell
+.\.venv\Scripts\python.exe .\parallel_agents.py
+```
+
+STATUS PASS. 2026-09-28. Exit 0. Mode concurrent (`gemma_overlap yes`). Parallel wall 16463 ms, sequential `gemma.py` baseline 19798 ms. GPU at start 1474 MiB used, 4556 free, 6144 total. Peak during the pair 5976 MiB. Summarize: `The local assistant runs Gemma on an NVIDIA card while keeping the microphone unused.` Keywords: `Parallel, agents, overlapping.` Transcript `parallel_agents.txt`, log `parallel_agents.log`.
+
+---
+
 ## License
 
 Trident is licensed under the MIT License. See [`LICENSE`](LICENSE) for the project license and third-party notices.
