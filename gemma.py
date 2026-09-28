@@ -1,12 +1,15 @@
 """Gemma brain one-shot. Text question, or question + image file → stdout generation (thinking included).
 
-Text turns declare one local tool, hello. A Gemma 4 <|tool_call> is run here, then the brain
-is asked once more with the tool result so the spoken answer can follow.
+Text turns declare two local tools, hello and cursor. A Gemma 4 <|tool_call> is run here,
+then the brain is asked once more with the tool result so the spoken answer can follow.
+cursor launches the Cursor CLI once and writes grok_bot_spawn.txt. If the CLI is missing
+the tool writes BLOCKED and does not start a follow-up turn.
 """
 
 import argparse
 import base64
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -15,6 +18,7 @@ ROOT = Path(__file__).resolve().parent
 DROP_KEYS = ("gemma.text", "gemma.image")
 SIDECAR = ROOT / "gemma_run.txt"
 HELLO_PATH = ROOT / "tool_hello.txt"
+SPAWN_PATH = ROOT / "grok_bot_spawn.txt"
 MEDIA = "<__media__>"
 Q = '<|"|>'
 HELLO_DECL = (
@@ -33,6 +37,29 @@ HELLO_DECL = (
     + "}},required:["
     + Q
     + "line"
+    + Q
+    + "],type:"
+    + Q
+    + "OBJECT"
+    + Q
+    + "}}<tool|>"
+)
+CURSOR_DECL = (
+    "<|tool>declaration:cursor{description:"
+    + Q
+    + "Launch the Cursor CLI once and write grok_bot_spawn.txt. Call this when the user asks to run Cursor or the cursor tool. Do not use this to write Hello World."
+    + Q
+    + ",parameters:{properties:{job:{description:"
+    + Q
+    + "Short job label. Use extensions to list installed Cursor extensions."
+    + Q
+    + ",type:"
+    + Q
+    + "STRING"
+    + Q
+    + "}},required:["
+    + Q
+    + "job"
     + Q
     + "],type:"
     + Q
@@ -102,13 +129,13 @@ def user_body(question, with_image):
 
 
 def tool_header():
-    return "<|turn>system\nYou are a helpful assistant." + HELLO_DECL + "<turn|>\n"
+    return "<|turn>system\nYou are a helpful assistant." + HELLO_DECL + CURSOR_DECL + "<turn|>\n"
 
 
 def gemma_prompt(question, with_image):
     user = user_body(question, with_image)
-    # Image turns stay on the old prompt. Text turns declare hello and still
-    # close an empty thought channel, which is Gemma 4's thinking-off prefill.
+    # Image turns stay on the old prompt. Text turns declare hello and cursor
+    # and still close an empty thought channel, which is Gemma 4's thinking-off prefill.
     head = "<bos>"
     if not with_image:
         head += tool_header()
@@ -123,18 +150,7 @@ def gemma_prompt(question, with_image):
     )
 
 
-def follow_prompt(question, call_markup, line):
-    response = (
-        "<|tool_response>response:hello{path:"
-        + Q
-        + "tool_hello.txt"
-        + Q
-        + ",text:"
-        + Q
-        + line
-        + Q
-        + "}<tool_response|>"
-    )
+def continue_prompt(question, call_markup, response):
     # Same empty thought close as the first turn, then the call the model just
     # emitted, then the tool result. Gemma stops on <|tool_response> and continues
     # the answer after <tool_response|>.
@@ -150,6 +166,39 @@ def follow_prompt(question, call_markup, line):
         + call_markup
         + response
     )
+
+
+def follow_prompt(question, call_markup, line):
+    response = (
+        "<|tool_response>response:hello{path:"
+        + Q
+        + "tool_hello.txt"
+        + Q
+        + ",text:"
+        + Q
+        + line
+        + Q
+        + "}<tool_response|>"
+    )
+    return continue_prompt(question, call_markup, response)
+
+
+def follow_cursor_prompt(question, call_markup, summary):
+    line = " ".join(str(summary).split()).replace(Q, "'")
+    if not line:
+        line = "cursor"
+    response = (
+        "<|tool_response>response:cursor{path:"
+        + Q
+        + "grok_bot_spawn.txt"
+        + Q
+        + ",text:"
+        + Q
+        + line
+        + Q
+        + "}<tool_response|>"
+    )
+    return continue_prompt(question, call_markup, response)
 
 
 def parse_tool_call(text):
@@ -182,6 +231,127 @@ def write_hello(line):
     except OSError as exc:
         die("cannot write tool_hello.txt: " + str(exc))
     print("gemma: tool hello wrote tool_hello.txt (" + line + ")", file=sys.stderr, flush=True)
+
+
+def clean_job(raw):
+    text = (raw or "").strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        text = text[1:-1].strip()
+    text = " ".join(text.split())
+    text = text.replace(Q, "'")
+    if len(text) > 200:
+        text = text[:200].rstrip()
+    if not text:
+        text = "extensions"
+    return text
+
+
+def log_block(title, body):
+    text = body if body.endswith("\n") or body == "" else body + "\n"
+    return title + " <<\n" + text + "<<\n"
+
+
+def write_spawn(body):
+    try:
+        SPAWN_PATH.write_text(body, encoding="utf-8")
+    except OSError as exc:
+        die("cannot write grok_bot_spawn.txt: " + str(exc))
+
+
+def find_cursor():
+    found = shutil.which("cursor")
+    if not found:
+        return None
+    path = Path(found)
+    if path.suffix.lower() in (".cmd", ".exe", ".bat"):
+        return str(path)
+    cmd = Path(str(path) + ".cmd")
+    if cmd.is_file():
+        return str(cmd)
+    if path.is_file():
+        return str(path)
+    return None
+
+
+def cursor_argv(cursor, job):
+    # cursor 3.22.7 lists `agent` in help, but this build's cli.js does not
+    # dispatch it and passes unknown flags to Electron. One exiting CLI job:
+    # list extensions, or --version when the job asks for the version.
+    folded = job.lower()
+    if "version" in folded and "extension" not in folded:
+        return [cursor, "--version"]
+    return [cursor, "--list-extensions", "--show-versions"]
+
+
+def clip_lines(text, limit):
+    lines = (text or "").splitlines()
+    if len(lines) > limit:
+        lines = lines[-limit:]
+    return "\n".join(lines)
+
+
+def run_cursor_job(job):
+    label = clean_job(job)
+    cursor = find_cursor()
+    if not cursor:
+        write_spawn("BLOCKED\ncursor cli missing\n")
+        print("gemma: tool cursor BLOCKED", file=sys.stderr, flush=True)
+        return "BLOCKED"
+    argv = cursor_argv(cursor, label)
+    command = subprocess.list2cmdline(argv)
+    print("gemma: tool cursor " + command, file=sys.stderr, flush=True)
+    try:
+        proc = subprocess.Popen(
+            argv,
+            cwd=ROOT,
+            shell=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except OSError as exc:
+        body = "job " + label + "\n"
+        body += log_block("command", command + "\n")
+        body += "fail cannot start: " + str(exc) + "\n"
+        write_spawn(body)
+        print("gemma: tool cursor fail", file=sys.stderr, flush=True)
+        return "fail"
+    pid = proc.pid
+    try:
+        out_b, err_b = proc.communicate(timeout=60)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        body = "job " + label + "\n"
+        body += log_block("command", command + "\n")
+        body += "pid " + str(pid) + "\n"
+        body += "fail timed out\n"
+        write_spawn(body)
+        print("gemma: tool cursor timed out pid " + str(pid), file=sys.stderr, flush=True)
+        return "fail timed out"
+    code = proc.returncode
+    if code is None:
+        code = 1
+    out = (out_b or b"").decode("utf-8", errors="replace")
+    err = (err_b or b"").decode("utf-8", errors="replace")
+    body = "job " + label + "\n"
+    body += log_block("command", command + "\n")
+    body += "pid " + str(pid) + "\n"
+    body += "exit " + str(code) + "\n"
+    shown = clip_lines(out, 40)
+    body += log_block("stdout", (shown + "\n") if shown else "")
+    if code != 0 and err.strip():
+        body += log_block("stderr", clip_lines(err.strip(), 20) + "\n")
+    write_spawn(body)
+    print(
+        "gemma: tool cursor pid " + str(pid) + " exit " + str(code),
+        file=sys.stderr,
+        flush=True,
+    )
+    return "pid " + str(pid) + " exit " + str(code)
 
 
 def strip_tool_markup(text):
@@ -299,6 +469,23 @@ def main():
                 print("gemma: tool follow-up empty", file=sys.stderr, flush=True)
                 spoken = "Wrote " + line + " to tool_hello.txt."
             text = spoken
+        elif call and call[0] == "cursor":
+            job = clean_job(call[1].get("job"))
+            summary = run_cursor_job(job)
+            if summary == "BLOCKED":
+                print("gemma: tool cursor stopped", file=sys.stderr, flush=True)
+                text = "BLOCKED cursor cli missing\n"
+            else:
+                follow = follow_cursor_prompt(args.question, call[2], summary)
+                spoken = ""
+                for _ in range(3):
+                    spoken = answer_text(run_brain(follow, "", args.verbose))
+                    if spoken:
+                        break
+                if not spoken:
+                    print("gemma: tool follow-up empty", file=sys.stderr, flush=True)
+                    spoken = "Cursor job logged in grok_bot_spawn.txt."
+                text = spoken
         elif call:
             print("gemma: tool skip " + call[0], file=sys.stderr, flush=True)
     sys.stdout.write(text)
