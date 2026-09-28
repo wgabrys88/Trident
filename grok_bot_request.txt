@@ -1,10 +1,10 @@
-id 1790583831750464600
+id 1790584822971988600
 role reasoner
 text <<
 Coordinator handoff:
 next role reasoner
-cursor job: extensions
-Use the cursor tool now. Set job to extensions. Then reply with one short sentence that contains the word reasoner.
+heard: Now let's make my mum's favourite. So three miles bars into the pan then we add the tuna and just stir for a bit. Just let the chocolate and fish infuse. A sprinkle of olive oil and some tomato ketchup now smell that oh boy this is going to be incredible.
+Reply in one or two short spoken sentences.
 <<
 image <<
 <<
