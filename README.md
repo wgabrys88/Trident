@@ -30,6 +30,7 @@ The long-term goal is an immediate, modular assistant whose major engines can re
 - [Scratch: Iris transcript toward NVIDIA](#scratch-iris-transcript-toward-nvidia)
 - [Scratch: NVIDIA worker on this seat](#scratch-nvidia-worker-on-this-seat)
 - [Scratch: VB-Cable loopback on Iris](#scratch-vb-cable-loopback-on-iris)
+- [Scratch: VB-Cable into NVIDIA](#scratch-vb-cable-into-nvidia)
 - [License](#license)
 
 ---
@@ -1167,6 +1168,30 @@ STATUS PASS. 2026-09-28. Exit 0. Mode concurrent (`gemma_overlap yes`). Parallel
 ## Scratch: LAN vision image bytes
 
 `nvidia_client.py --image FILE` POSTs `image_b64` (standard base64 of the file bytes) plus the existing `image` path. `nvidia_worker.py` decodes `image_b64` to a temp file and passes that to `gemma.py --image`, so the picture does not have to already sit on the worker disk. A JSON body with only `image` still uses a path on the worker. Iris `assistant.py --nvidia --image` already calls this client. STATUS PASS. 2026-09-28. Worker: `.\.venv\Scripts\python.exe .\nvidia_worker.py --host 0.0.0.0 --port 8765`. Client: `.\.venv\Scripts\python.exe .\nvidia_client.py --url http://127.0.0.1:8765/ --timeout 300 --image $env:TEMP\trident-car-0867.jpg "What is in this image? Answer in one short sentence."` File is Hugging Face `transformers/tasks/car.jpg` (39080 bytes) at that unique temp path, not `vision_sample.jpg`. Worker log: `image_b64 39080 bytes -> C:\Users\px-wjt\AppData\Local\Temp\trident-nvidia-di_f1k8l.jpg`, then `gemma image_b64` in 7223 ms. Reply: `A light blue vintage Volkswagen Beetle is parked on a street in front of a tan building.` Proof HEAD `9e094cfe0c15727686f6b2afa6de579e328d2a95`.
+
+---
+
+## Scratch: VB-Cable into NVIDIA
+
+Iris Jarvis path. `assistant.py --vb-cable` is the entrypoint. It runs `loopback.py` so mouth plays a phrase into CABLE Input and hear transcribes CABLE Output, then posts that transcript with `nvidia_client.py` when `--nvidia` is set. The live microphone is not opened. `--mouth` synthesizes the reply through `mouth.py --no-play` and does not open the speakers. `--text` is the spoken phrase on this path. Omit it and the phrase is `Trident cable loopback`.
+
+```powershell
+.\.venv\Scripts\python.exe .\assistant.py --vb-cable --nvidia --url http://192.168.16.31:8765/ --timeout 180 --text "Trident cable loopback"
+.\.venv\Scripts\python.exe .\assistant.py --vb-cable --nvidia --url http://192.168.16.31:8765/ --mouth --text "Trident cable loopback"
+```
+
+Chain result: `loopback-proof/jarvis.txt`. Cable capture stays in the other `loopback-proof/*.txt` files. The worker reply is also `loopback-proof/nvidia.txt`.
+
+STATUS PASS. 2026-09-28. Iris Wi-Fi `192.168.16.45`. Worker `http://192.168.16.31:8765/` was already listening and was left running. Assistant exit 0. Loopback 0, synth 0, play 0, hear 0, nvidia 0. `--mouth` was not passed (`mouth_exit skipped`).
+
+- play: `CABLE Input (VB-Audio Virtual Cable)` (this run index 15)
+- capture: `CABLE Output (VB-Audio Virtual Cable)` (this run index 17)
+- phrase: `Trident cable loopback`
+- transcript: `Trydam cable loop back` (ratio 0.821)
+- reply: `I have written "Trydam cable loop back" to a file named tool_hello.txt. Is there anything else I can help you with regarding that cable loop?`
+- spoken wav: `07-26-36-345_chatterbox_out_000.wav`
+- hear wav: `loopback-proof/hear.wav` (not committed)
+- HEAD at the run: `a06c2f30780ff26937aeda8b88434afd0f6a168c`
 
 ---
 

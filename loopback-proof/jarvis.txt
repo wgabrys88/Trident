@@ -1,0 +1,50 @@
+STATUS PASS
+cmd: .\assistant.py --vb-cable --nvidia --url http://192.168.16.31:8765/ --timeout 180 --text "Trident cable loopback"
+loopback_cmd: C:\Users\eb-wjt\Downloads\Jarvis\Trident\.venv\Scripts\python.exe C:\Users\eb-wjt\Downloads\Jarvis\Trident\loopback.py --phrase "Trident cable loopback"
+phrase: Trident cable loopback
+transcript: Trydam cable loop back
+ratio: 0.821
+loopback_exit: 0
+synth_exit: 0
+play_exit: 0
+hear_exit: 0
+nvidia_exit: 0
+mouth_exit: skipped
+mouth_wavs: 
+play_device: CABLE Input (VB-Audio Virtual Cable)
+capture_device: CABLE Output (VB-Audio Virtual Cable)
+spoken_wav: C:\Users\eb-wjt\Downloads\Jarvis\Trident\07-26-36-345_chatterbox_out_000.wav
+hear_wav: C:\Users\eb-wjt\Downloads\Jarvis\Trident\loopback-proof\hear.wav
+url: http://192.168.16.31:8765/
+request: C:\Users\eb-wjt\Downloads\Jarvis\Trident\nvidia_turn.request.txt
+response: C:\Users\eb-wjt\Downloads\Jarvis\Trident\nvidia_turn.response.txt
+head: a06c2f30780ff26937aeda8b88434afd0f6a168c
+reasons: 
+
+nvidia reply:
+I have written "Trydam cable loop back" to a file named tool_hello.txt. Is there anything else I can help you with regarding that cable loop?
+
+nvidia response file:
+id 1790573203938998800
+ok
+I have written "Trydam cable loop back" to a file named tool_hello.txt. Is there anything else I can help you with regarding that cable loop?
+
+loopback status:
+STATUS PASS
+phrase: Trident cable loopback
+transcript: Trydam cable loop back
+ratio: 0.821
+synth_exit: 0
+play_exit: 0
+hear_exit: 0
+play_device: CABLE Input (VB-Audio Virtual Cable)
+capture_device: CABLE Output (VB-Audio Virtual Cable)
+spoken_wav: C:\Users\eb-wjt\Downloads\Jarvis\Trident\07-26-36-345_chatterbox_out_000.wav
+hear_wav: C:\Users\eb-wjt\Downloads\Jarvis\Trident\loopback-proof\hear.wav
+peak: 0.34259
+rms: 0.03183
+seconds: 4.06
+head: a06c2f30780ff26937aeda8b88434afd0f6a168c
+synth_cmd: C:\Users\eb-wjt\Downloads\Jarvis\Trident\.venv\Scripts\python.exe C:\Users\eb-wjt\Downloads\Jarvis\Trident\mouth.py --no-play "Trident cable loopback"
+hear_cmd: C:\Users\eb-wjt\Downloads\Jarvis\Trident\.venv\Scripts\python.exe C:\Users\eb-wjt\Downloads\Jarvis\Trident\hear.py --vb-cable --language en --save-wav C:\Users\eb-wjt\Downloads\Jarvis\Trident\loopback-proof\hear.wav 4.06
+play_cmd: C:\Users\eb-wjt\Downloads\Jarvis\Trident\.venv\Scripts\python.exe C:\Users\eb-wjt\Downloads\Jarvis\Trident\mouth.py --play-wav C:\Users\eb-wjt\Downloads\Jarvis\Trident\07-26-36-345_chatterbox_out_000.wav --vb-cable

@@ -5,18 +5,24 @@ Hear and Gemma still exit after each turn.
 --wav feeds hear.py a file instead of the mic. --nvidia hands the turn to nvidia_client.py
 and skips the local brain. --url and --timeout are forwarded to that client. An empty client stdout
 means the request file was left and mouth is not called.
+--vb-cable is the cable entrypoint: loopback.py plays a phrase into CABLE Input and hears CABLE Output,
+then that transcript is the turn. The live microphone is not opened. --mouth writes reply wavs and
+does not play them.
 """
 
 import argparse
+import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 MODELS = ("nano", "turbo", "v3")
 BRAINS = ("qwen", "gemma")
 QUIT_WORDS = {"quit", "exit", "stop"}
+CABLE_PHRASE = "Trident cable loopback"
 EN_LIMIT = 65
 PL_LIMIT = 55
 EN_FLOOR = 50
@@ -254,23 +260,29 @@ def is_quit(text):
     return word in QUIT_WORDS
 
 
-def speak_raw(py, args, raw):
+def speak_raw(py, args, raw, play=True):
     spoken = speakable(raw)
     lang = resolved_lang(args.model, args.lang)
     parts = chunks_for_mouth(spoken, lang) if spoken else []
     if not parts:
         print("assistant: no speakable answer", file=sys.stderr)
-        return
+        return []
     print("assistant: mouth " + str(len(parts)) + " chunk(s)", file=sys.stderr)
     argv = [py, str(ROOT / "mouth.py"), "--model", args.model]
+    if not play:
+        argv.append("--no-play")
     if args.lang is not None:
         argv.extend(["--lang", args.lang])
     argv.append("--")
     argv.extend(parts)
-    run_child("mouth", argv, keep_stdout=False, keep_stderr=False)
+    if play:
+        run_child("mouth", argv, keep_stdout=False, keep_stderr=False)
+        return []
+    out = run_child("mouth", argv, keep_stdout=True, keep_stderr=False)
+    return [line.strip() for line in out.splitlines() if line.strip()]
 
 
-def say(py, args, question):
+def say(py, args, question, speak=True):
     script = "qwen.py" if args.brain == "qwen" else "gemma.py"
     argv = [py, str(ROOT / script), "--verbose"]
     if args.image:
@@ -279,10 +291,12 @@ def say(py, args, question):
     print("assistant: " + args.brain, file=sys.stderr)
     raw = run_child(args.brain, argv, keep_stdout=True, keep_stderr=True)
     show(raw)
-    speak_raw(py, args, raw)
+    if speak:
+        speak_raw(py, args, raw)
+    return raw
 
 
-def offload(py, args, question):
+def offload(py, args, question, speak=True):
     argv = [py, str(ROOT / "nvidia_client.py")]
     if args.url:
         argv.extend(["--url", args.url])
@@ -295,9 +309,11 @@ def offload(py, args, question):
     raw = run_child("nvidia", argv, keep_stdout=True, keep_stderr=False)
     if not raw.strip():
         print("assistant: nvidia request only", file=sys.stderr)
-        return
+        return ""
     show(raw)
-    speak_raw(py, args, raw)
+    if speak:
+        speak_raw(py, args, raw)
+    return raw
 
 
 def listen(py, seconds):
@@ -335,12 +351,190 @@ def one_turn(py, args, question):
     return False
 
 
+def status_value(text, key):
+    prefix = key + ": "
+    for line in text.splitlines():
+        if line.startswith(prefix):
+            return line[len(prefix):].strip()
+    return ""
+
+
+def fresh_proof(name, started):
+    path = ROOT / "loopback-proof" / name
+    if not path.is_file():
+        return ""
+    if path.stat().st_mtime < started - 2:
+        return ""
+    return path.read_text(encoding="utf-8")
+
+
+def git_head():
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            shell=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if completed.returncode != 0:
+        return ""
+    return (completed.stdout or "").strip()
+
+
+def write_proof(name, text):
+    folder = ROOT / "loopback-proof"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / name).write_text(text, encoding="utf-8")
+
+
+def cable_turn(py, args):
+    phrase = CABLE_PHRASE if args.text is None else args.text.strip()
+    argv = [py, str(ROOT / "loopback.py"), "--phrase", phrase]
+    print("assistant: vb-cable", file=sys.stderr)
+    started = time.time()
+    try:
+        completed = subprocess.run(
+            argv,
+            cwd=ROOT,
+            shell=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=None,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        )
+    except OSError as exc:
+        print("assistant: loopback failed to start: " + str(exc), file=sys.stderr)
+        raise SystemExit(2)
+    loop_out = completed.stdout or ""
+    if loop_out:
+        sys.stdout.write(loop_out if loop_out.endswith("\n") else loop_out + "\n")
+        sys.stdout.flush()
+    transcript = fresh_proof("transcript.txt", started).strip()
+    loop_status = fresh_proof("status.txt", started)
+    reply = ""
+    nvidia_exit = "skipped"
+    mouth_exit = "skipped"
+    mouth_paths = []
+    reasons = []
+    if completed.returncode != 0:
+        reasons.append("loopback exit " + str(completed.returncode))
+    if not transcript:
+        reasons.append("no transcript")
+    else:
+        try:
+            if args.nvidia:
+                reply = offload(py, args, transcript, speak=False)
+                nvidia_exit = "0"
+                if args.url and not reply.strip():
+                    reasons.append("empty nvidia reply")
+            else:
+                reply = say(py, args, transcript, speak=False)
+                nvidia_exit = "local"
+        except SystemExit as exc:
+            code = exc.code if isinstance(exc.code, int) else 2
+            if args.nvidia:
+                nvidia_exit = str(code)
+            reasons.append("brain exit " + str(code))
+    if args.mouth and not reasons:
+        if not reply.strip():
+            reasons.append("no reply to speak")
+        else:
+            try:
+                mouth_paths = speak_raw(py, args, reply, play=False)
+            except SystemExit as exc:
+                code = exc.code if isinstance(exc.code, int) else 2
+                mouth_exit = str(code)
+                reasons.append("mouth exit " + str(code))
+            else:
+                if mouth_paths:
+                    mouth_exit = "0"
+                    for path in mouth_paths:
+                        show(path)
+                else:
+                    mouth_exit = "1"
+                    reasons.append("no mouth wav")
+    response_text = ""
+    if args.nvidia and nvidia_exit != "skipped":
+        response_path = ROOT / "nvidia_turn.response.txt"
+        if response_path.is_file():
+            response_text = response_path.read_text(encoding="utf-8")
+    passed = not reasons
+    reply_text = reply if reply.endswith("\n") or not reply else reply + "\n"
+    lines = [
+        "STATUS " + ("PASS" if passed else "FAIL"),
+        "cmd: " + subprocess.list2cmdline(sys.argv),
+        "loopback_cmd: " + subprocess.list2cmdline(argv),
+        "phrase: " + phrase,
+        "transcript: " + transcript,
+        "ratio: " + status_value(loop_status, "ratio"),
+        "loopback_exit: " + str(completed.returncode),
+        "synth_exit: " + status_value(loop_status, "synth_exit"),
+        "play_exit: " + status_value(loop_status, "play_exit"),
+        "hear_exit: " + status_value(loop_status, "hear_exit"),
+        "nvidia_exit: " + nvidia_exit,
+        "mouth_exit: " + mouth_exit,
+        "mouth_wavs: " + " ".join(mouth_paths),
+        "play_device: " + status_value(loop_status, "play_device"),
+        "capture_device: " + status_value(loop_status, "capture_device"),
+        "spoken_wav: " + status_value(loop_status, "spoken_wav"),
+        "hear_wav: " + status_value(loop_status, "hear_wav"),
+        "url: " + (args.url or ""),
+        "request: " + str(ROOT / "nvidia_turn.request.txt"),
+        "response: " + str(ROOT / "nvidia_turn.response.txt"),
+        "head: " + (status_value(loop_status, "head") or git_head()),
+        "reasons: " + "; ".join(reasons),
+        "",
+        "nvidia reply:",
+        reply_text.rstrip("\n"),
+        "",
+        "nvidia response file:",
+        response_text.rstrip("\n"),
+        "",
+        "loopback status:",
+        loop_status.rstrip("\n"),
+        "",
+    ]
+    body = "\n".join(lines)
+    write_proof("jarvis.txt", body)
+    nvidia_body = "exit " + nvidia_exit + "\nurl " + (args.url or "") + "\n\n" + reply_text
+    if response_text:
+        nvidia_body += "\nresponse file:\n" + response_text
+        if not response_text.endswith("\n"):
+            nvidia_body += "\n"
+    write_proof("nvidia.txt", nvidia_body)
+    print(body, end="" if body.endswith("\n") else "\n")
+    raise SystemExit(0 if passed else 1)
+
+
 def main():
     configure_stdio_utf8()
     parser = argparse.ArgumentParser(prog="assistant.py")
     parser.add_argument("--once", action="store_true", help="one turn, then exit")
-    parser.add_argument("--text", default=None, help="skip the mic; one brain then mouth round")
+    parser.add_argument(
+        "--text",
+        default=None,
+        help="skip the mic; one brain then mouth round. With --vb-cable, the phrase played into CABLE Input",
+    )
     parser.add_argument("--wav", default=None, help="transcribe this wav through hear.py; skip the mic; one turn")
+    parser.add_argument(
+        "--vb-cable",
+        action="store_true",
+        help="play a phrase into CABLE Input, hear CABLE Output, then one turn. Does not open the live mic",
+    )
+    parser.add_argument(
+        "--mouth",
+        action="store_true",
+        help="with --vb-cable, synthesize the reply to wavs and do not play them",
+    )
     parser.add_argument("--seconds", type=float, default=8, help="hear.py seconds (default 8)")
     parser.add_argument("--brain", default="qwen", choices=BRAINS, help="default qwen")
     parser.add_argument("--model", default="nano", choices=MODELS, help="mouth model, default nano")
@@ -374,6 +568,10 @@ def main():
         die("empty wav")
     if args.text is not None and args.wav is not None:
         die("use text or wav, not both")
+    if args.vb_cable and args.wav is not None:
+        die("use vb-cable or wav, not both")
+    if args.mouth and not args.vb_cable:
+        die("--mouth asks for --vb-cable")
     if args.url is not None and args.url.strip() == "":
         die("empty url")
     if args.url and not args.nvidia:
@@ -384,6 +582,9 @@ def main():
         die("timeout must be > 0")
 
     py = venv_python()
+    if args.vb_cable:
+        cable_turn(py, args)
+        return
     if args.text is not None:
         one_turn(py, args, args.text.strip())
         return

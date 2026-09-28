@@ -1,7 +1,7 @@
 exit 0
 
 stdout:
-Trident cable loop back
+Trydam cable loop back
 
 stderr:
 hear mic: CABLE Output (VB-Audio Virtual Cable)
