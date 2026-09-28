@@ -45,6 +45,9 @@
 !/nvidia_client.py
 !/nvidia_worker.py
 !/seq_agents.py
+!/parallel_agents.py
+!/parallel_agents.txt
+!/parallel_agents.log
 !/reference.wav
 
 # Installer conversion/quantization tools.

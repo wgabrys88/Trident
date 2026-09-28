@@ -1152,6 +1152,16 @@ Artifacts: `loopback-proof/intent.txt`, `loopback-proof/transcript.txt`, `loopba
 
 ---
 
+## Scratch: parallel agents on this seat
+
+`parallel_agents.py` sits beside `seq_agents.py`. Two threads start together: one summarizes a sentence, one lists 3 keywords, then the script joins both texts. A concurrent pair of `gemma-brain.exe` is probed with separate sidecar files (`parallel_probe_*.txt`, removed after). `gemma.py` still shares `gemma_run.txt`. Gemma weights are about 2.8 GB plus mmproj on a 6 GB GTX 1060, so a failed probe continues with a lock around each `gemma.py` call (staggered). No microphone and no mouth. `seq_agents.py` is unchanged.
+
+```powershell
+.\.venv\Scripts\python.exe .\parallel_agents.py
+```
+
+---
+
 ## License
 
 Trident is licensed under the MIT License. See [`LICENSE`](LICENSE) for the project license and third-party notices.
