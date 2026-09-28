@@ -126,13 +126,17 @@ def results_ok(rows):
     return bool(rows) and all(row["code"] == 0 and (row["text"] or "").strip() for row in rows)
 
 
-def run_brain(workdir, prompt):
-    """One gemma-brain.exe. Output stays in workdir, not the repo root."""
+def run_brain(workdir, prompt, side_name):
+    """One gemma-brain.exe.
+
+    The sidecar stays in the repo root so gemma.model resolves next to gemma.txt.
+    cwd is the agent directory, which is where *_gemma_out_*.txt is written.
+    """
     try:
         workdir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         return 2, "", "cannot create " + str(workdir) + ": " + str(exc)
-    side = workdir / "gemma_run.txt"
+    side = ROOT / side_name
     err_path = workdir / "brain.err"
     try:
         payload = gemma.settings_text(prompt, "")
@@ -143,6 +147,10 @@ def run_brain(workdir, prompt):
     try:
         err_handle = err_path.open("w", encoding="utf-8", errors="replace")
     except OSError as exc:
+        try:
+            side.unlink()
+        except OSError:
+            pass
         return 2, "", "cannot write stderr: " + str(exc)
     try:
         completed = subprocess.run(
@@ -160,6 +168,10 @@ def run_brain(workdir, prompt):
         return 2, "", "cannot run gemma-brain.exe: " + str(exc)
     finally:
         err_handle.close()
+        try:
+            side.unlink()
+        except OSError:
+            pass
     err = ""
     try:
         err = tail_text(err_path.read_text(encoding="utf-8", errors="replace"))
@@ -177,7 +189,7 @@ def run_brain(workdir, prompt):
     return 0, text, err
 
 
-def finish_tool(workdir, question, text, err):
+def finish_tool(workdir, question, text, err, side_name):
     call = gemma.parse_tool_call(text)
     if not call:
         return 0, text, err
@@ -191,7 +203,7 @@ def finish_tool(workdir, question, text, err):
     spoken = ""
     follow_err = err
     for _ in range(3):
-        code, raw, ferr = run_brain(workdir, follow)
+        code, raw, ferr = run_brain(workdir, follow, side_name)
         if ferr:
             follow_err = ferr
         if code != 0:
@@ -223,9 +235,12 @@ def concurrent_agents(origin):
         log("parallel: concurrent " + name)
         born = time.perf_counter()
         workdir = RUN_DIR / name
-        code, text, err = run_brain(workdir, gemma.gemma_prompt(question, False))
+        side_name = "parallel_" + name + "_run.txt"
+        code, text, err = run_brain(workdir, gemma.gemma_prompt(question, False), side_name)
         if code == 0 and text.strip():
-            code, text, err = finish_tool(workdir, question, text, err)
+            code, text, err = finish_tool(workdir, question, text, err, side_name)
+        if code != 0 and err:
+            log("parallel: " + name + " err " + " | ".join(err.splitlines()[-4:]))
         done = time.perf_counter()
         log(
             "parallel: concurrent "
