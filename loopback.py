@@ -1,9 +1,3 @@
-"""VB-Cable loopback. Mouth plays a known phrase into CABLE Input; hear transcribes CABLE Output.
-
-Writes loopback-proof/*.txt. Exit 0 when the transcript matches the phrase.
-The live Intel microphone is not used.
-"""
-
 import difflib
 import os
 import re

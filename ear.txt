@@ -1,9 +1,10 @@
 # ear.exe takes this file as its only argument.
-# The values below are used as written. Nothing in the program replaces them.
-# It runs once and writes HH-MM-SS-mmm_ear_out_NNN.txt in the current directory.
+# It runs nemo-speech.exe transcribe once with the keys below.
+# hear.py uses the same nemo-speech flags for --wav or a timed mic capture; transcript goes to stdout.
+# ear.exe writes HH-MM-SS-mmm_ear_out_NNN.txt in the current directory instead of stdout.
 # NNN starts at 000. An existing name is kept and the next number is used.
 # Paths are names in this file's directory.
-# ear.input is one wav. The text file is the recognizer's text.
+# ear.input is one wav passed to transcribe.
 # ear.language empty omits --language.
 # ear.stream, ear.verbatim, and ear.no-punctuation pass their flag only when on.
 # ear.endpointing is passed as on or off.

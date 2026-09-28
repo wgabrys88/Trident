@@ -1,9 +1,3 @@
-"""Two sequential Gemma text steps, then a written transcript.
-
-No microphone and no playback. Mouth stays unused so speakers stay quiet.
-Writes seq_agents.txt and exits 0 when both steps return text.
-"""
-
 import subprocess
 import sys
 import time

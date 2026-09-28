@@ -1,10 +1,3 @@
-"""Qwen (sense) brain. Text question → stdout generation. Vision is N/A (text-only Qwen3-0.6B).
-
-The first call starts sense.exe --resident and leaves it loaded. Later calls reuse that process
-when the settings fingerprint in sense.pid still matches. qwen.py --once keeps the old one-shot process.
-qwen.py --stop shuts the resident down, including a loader that is not ready yet.
-"""
-
 import argparse
 import ctypes
 import hashlib
@@ -116,7 +109,6 @@ def without_spoken_text(raw):
 
 def qwen_prompt(question):
     q = question.strip("\r\n")
-    # Qwen3 otherwise opens <think> and spends sense.n-predict before any answer.
     if "/no_think" not in q and "/think" not in q:
         q = q.rstrip() + " /no_think"
     return (

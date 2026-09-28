@@ -1,11 +1,3 @@
-"""Mouth speak entry. Synthesize each TEXT with chatterbox.exe; play on Speakers with one-chunk overlap.
-
-The first call starts chatterbox.exe --resident and leaves it loaded. Later calls reuse that process
-when the settings fingerprint in mouth.pid still matches. mouth.py --once keeps the old one-shot process.
-mouth.py --stop shuts the resident down, including a loader that is not ready yet.
---vb-cable plays into CABLE Input instead of the default speakers. --no-play only prints the wav path.
-"""
-
 import argparse
 import concurrent.futures
 import ctypes

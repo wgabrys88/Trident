@@ -1,29 +1,3 @@
-"""File-backed Grok-bot team. One role per turn.
-
-The coordinator is a thin handoff in the history file. The reasoner is the
-NVIDIA Gemma role: one POST, or one nvidia_worker.py --drop --once. The worker
-stays stateless. Role and memory stay in grok_bot_history.txt, grok_bot_request.txt,
-and grok_bot_response.txt.
-
---proof runs coordinator then reasoner on that same history and exits 0 when
-both roles land and the cursor tool's spawn log records exit 0.
-
---wav is the Iris voice door into this same team. hear.py transcribes the file.
-Coordinator then reasoner append to the history file. The reasoner POSTs to
-TRIDENT_NVIDIA_URL or --url. mouth.py --no-play writes the reply wav. The door
-checks that the worker port is already open. It does not bind a port and does
-not start nvidia_worker.py.
-
---inbox reads a user file (text and an optional image path). The coordinator
-writes the handoff. The reasoner makes one stateless Gemma call. If 0.0.0.0:8765
-is already listening, that call is a POST and this process does not bind a port.
-If nothing is listening, it runs nvidia_worker.py --drop --once. History is
-appended.
-
-No microphone and no speaker playback. Does not bind a port and does not restart
-the existing worker.
-"""
-
 import argparse
 import io
 import os
@@ -474,8 +448,6 @@ def run_reasoner(url, drop, timeout):
     kind = spawn_kind(spawn_raw)
     origin = "none"
     if ok and kind == "missing":
-        # One POST already finished. Temp 1.0 may skip the tool. The same
-        # launcher still runs one Cursor CLI job for this turn.
         print("grok-bot: cursor tool direct", file=sys.stderr, flush=True)
         gemma.run_cursor_job(CURSOR_JOB)
         spawn_raw = read_text(gemma.SPAWN_PATH) if gemma.SPAWN_PATH.is_file() else ""
@@ -912,8 +884,6 @@ def run_inbox_reasoner(url, drop, timeout):
     if not wid:
         wid = ident
     text_out = payload if ok else ""
-    # --drop --once writes *_gemma_out_*.txt next to this client. A URL worker
-    # writes that file in the worker cwd, so the POST ok body is the call.
     call_ok = calls == 1 if drop else True
     role_ok = bool(ok and text_out.strip() and call_ok)
     if role_ok:
