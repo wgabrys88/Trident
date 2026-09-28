@@ -1,14 +1,20 @@
 """Local Gemma worker for one NVIDIA turn.
 
-POST JSON {"id","text","image"} and return {"text": ...}. gemma.py runs the
-text. A readable image path on this machine is passed as --image.
+POST JSON {"id","text","image","image_b64"} and return {"text": ...}.
+gemma.py runs the text. image_b64 is standard base64 of the image bytes; it
+is decoded to a temp file and passed as --image. If image_b64 is absent, a
+readable image path on this machine is passed as --image.
 --drop reads nvidia_turn.request.txt and writes nvidia_turn.response.txt.
 """
 
 import argparse
+import base64
+import binascii
 import json
+import os
 import subprocess
 import sys
+import tempfile
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -17,7 +23,7 @@ ROOT = Path(__file__).resolve().parent
 REQUEST = ROOT / "nvidia_turn.request.txt"
 RESPONSE = ROOT / "nvidia_turn.response.txt"
 RESPONSE_TMP = ROOT / "nvidia_turn.response.txt.tmp"
-MAX_BODY = 1_000_000
+MAX_BODY = 16_000_000
 
 
 class WorkerError(Exception):
@@ -46,7 +52,48 @@ def venv_python():
     return str(path)
 
 
-def run_gemma(text, image, timeout, verbose):
+def image_suffix(data):
+    if data.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if data.startswith(b"GIF87a") or data.startswith(b"GIF89a"):
+        return ".gif"
+    if len(data) >= 12 and data.startswith(b"RIFF") and data[8:12] == b"WEBP":
+        return ".webp"
+    return ".bin"
+
+
+def write_image_b64(image_b64):
+    compact = "".join(str(image_b64).split())
+    if not compact:
+        raise WorkerError("empty image_b64")
+    try:
+        data = base64.b64decode(compact, validate=True)
+    except (ValueError, binascii.Error):
+        raise WorkerError("bad image_b64")
+    if not data:
+        raise WorkerError("empty image_b64")
+    fd, name = tempfile.mkstemp(prefix="trident-nvidia-", suffix=image_suffix(data))
+    os.close(fd)
+    path = Path(name)
+    try:
+        path.write_bytes(data)
+    except OSError as exc:
+        try:
+            path.unlink()
+        except OSError:
+            pass
+        raise WorkerError("cannot write image: " + str(exc))
+    print(
+        "nvidia worker: image_b64 " + str(len(data)) + " bytes -> " + str(path),
+        file=sys.stderr,
+        flush=True,
+    )
+    return path
+
+
+def run_gemma(text, image, timeout, verbose, via_b64=False):
     if not str(text).strip():
         raise WorkerError("empty text")
     argv = [venv_python(), str(ROOT / "gemma.py")]
@@ -65,7 +112,13 @@ def run_gemma(text, image, timeout, verbose):
                 flush=True,
             )
     argv.extend(["--", text])
-    print("nvidia worker: gemma" + (" image" if used else ""), file=sys.stderr, flush=True)
+    if via_b64 and used:
+        label = " image_b64"
+    elif used:
+        label = " image"
+    else:
+        label = ""
+    print("nvidia worker: gemma" + label, file=sys.stderr, flush=True)
     started = time.perf_counter()
     try:
         completed = subprocess.run(
@@ -236,29 +289,52 @@ class TurnHandler(BaseHTTPRequestHandler):
             return
         text = data.get("text")
         image = data.get("image", None)
+        image_b64 = data.get("image_b64", None)
         if not isinstance(text, str) or not text.strip():
             send_bytes(self, 400, b"empty text\n", "text/plain; charset=utf-8")
             return
         if image is not None and not isinstance(image, str):
             send_bytes(self, 400, b"image must be a string or null\n", "text/plain; charset=utf-8")
             return
+        if image_b64 is not None and not isinstance(image_b64, str):
+            send_bytes(self, 400, b"image_b64 must be a string or null\n", "text/plain; charset=utf-8")
+            return
         ident = data.get("id", "")
         print("nvidia worker: post id " + str(ident), file=sys.stderr, flush=True)
-        try:
-            out = run_gemma(text, image, self.server.gemma_timeout, self.server.verbose)
-        except WorkerError as exc:
-            message = (str(exc) + "\n").encode("utf-8")
-            send_bytes(self, 500, message, "text/plain; charset=utf-8")
-            return
-        except Exception as exc:
-            message = ("worker failed: " + str(exc) + "\n").encode("utf-8", errors="replace")
+        temp_path = None
+        via_b64 = False
+        if isinstance(image_b64, str) and "".join(image_b64.split()):
             try:
+                temp_path = write_image_b64(image_b64)
+            except WorkerError as exc:
+                message = (str(exc) + "\n").encode("utf-8")
+                code = 400 if str(exc) in ("bad image_b64", "empty image_b64") else 500
+                send_bytes(self, code, message, "text/plain; charset=utf-8")
+                return
+            image = str(temp_path)
+            via_b64 = True
+        try:
+            try:
+                out = run_gemma(text, image, self.server.gemma_timeout, self.server.verbose, via_b64)
+            except WorkerError as exc:
+                message = (str(exc) + "\n").encode("utf-8")
                 send_bytes(self, 500, message, "text/plain; charset=utf-8")
-            except Exception:
-                print("nvidia worker: " + str(exc), file=sys.stderr, flush=True)
-            return
-        payload = json.dumps({"text": out}, ensure_ascii=False).encode("utf-8")
-        send_bytes(self, 200, payload, "application/json; charset=utf-8")
+                return
+            except Exception as exc:
+                message = ("worker failed: " + str(exc) + "\n").encode("utf-8", errors="replace")
+                try:
+                    send_bytes(self, 500, message, "text/plain; charset=utf-8")
+                except Exception:
+                    print("nvidia worker: " + str(exc), file=sys.stderr, flush=True)
+                return
+            payload = json.dumps({"text": out}, ensure_ascii=False).encode("utf-8")
+            send_bytes(self, 200, payload, "application/json; charset=utf-8")
+        finally:
+            if temp_path is not None:
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
 
 
 class WorkerServer(HTTPServer):
