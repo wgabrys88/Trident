@@ -1182,6 +1182,17 @@ Iris Jarvis path. `assistant.py --vb-cable` is the entrypoint. It runs `loopback
 
 Chain result: `loopback-proof/jarvis.txt`. Cable capture stays in the other `loopback-proof/*.txt` files. The worker reply is also `loopback-proof/nvidia.txt`.
 
+STATUS PASS. 2026-09-28. Iris Wi-Fi `192.168.16.45`. Worker `http://192.168.16.31:8765/` was already listening and was left running. Assistant exit 0. Loopback 0, synth 0, play 0, hear 0, nvidia 0. `--mouth` was not passed (`mouth_exit skipped`).
+
+- play: `CABLE Input (VB-Audio Virtual Cable)` (this run index 15)
+- capture: `CABLE Output (VB-Audio Virtual Cable)` (this run index 17)
+- phrase: `Trident cable loopback`
+- transcript: `Trydam cable loop back` (ratio 0.821)
+- reply: `I have written "Trydam cable loop back" to a file named tool_hello.txt. Is there anything else I can help you with regarding that cable loop?`
+- spoken wav: `07-26-36-345_chatterbox_out_000.wav`
+- hear wav: `loopback-proof/hear.wav` (not committed)
+- HEAD at the run: `a06c2f30780ff26937aeda8b88434afd0f6a168c`
+
 ---
 
 ## License

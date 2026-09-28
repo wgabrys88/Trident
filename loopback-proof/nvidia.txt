@@ -1,0 +1,9 @@
+exit 0
+url http://192.168.16.31:8765/
+
+I have written "Trydam cable loop back" to a file named tool_hello.txt. Is there anything else I can help you with regarding that cable loop?
+
+response file:
+id 1790573203938998800
+ok
+I have written "Trydam cable loop back" to a file named tool_hello.txt. Is there anything else I can help you with regarding that cable loop?

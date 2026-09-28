@@ -1,18 +1,18 @@
 STATUS PASS
 phrase: Trident cable loopback
-transcript: Trident cable loop back
-ratio: 1.000
+transcript: Trydam cable loop back
+ratio: 0.821
 synth_exit: 0
 play_exit: 0
 hear_exit: 0
 play_device: CABLE Input (VB-Audio Virtual Cable)
 capture_device: CABLE Output (VB-Audio Virtual Cable)
-spoken_wav: C:\Users\eb-wjt\Downloads\Jarvis\Trident\07-07-09-433_chatterbox_out_000.wav
+spoken_wav: C:\Users\eb-wjt\Downloads\Jarvis\Trident\07-26-36-345_chatterbox_out_000.wav
 hear_wav: C:\Users\eb-wjt\Downloads\Jarvis\Trident\loopback-proof\hear.wav
-peak: 0.37946
-rms: 0.02109
+peak: 0.34259
+rms: 0.03183
 seconds: 4.06
-head: 9e26994a5cbdde1bf0d85804504963b095c7cb08
+head: a06c2f30780ff26937aeda8b88434afd0f6a168c
 synth_cmd: C:\Users\eb-wjt\Downloads\Jarvis\Trident\.venv\Scripts\python.exe C:\Users\eb-wjt\Downloads\Jarvis\Trident\mouth.py --no-play "Trident cable loopback"
 hear_cmd: C:\Users\eb-wjt\Downloads\Jarvis\Trident\.venv\Scripts\python.exe C:\Users\eb-wjt\Downloads\Jarvis\Trident\hear.py --vb-cable --language en --save-wav C:\Users\eb-wjt\Downloads\Jarvis\Trident\loopback-proof\hear.wav 4.06
-play_cmd: C:\Users\eb-wjt\Downloads\Jarvis\Trident\.venv\Scripts\python.exe C:\Users\eb-wjt\Downloads\Jarvis\Trident\mouth.py --play-wav C:\Users\eb-wjt\Downloads\Jarvis\Trident\07-07-09-433_chatterbox_out_000.wav --vb-cable
+play_cmd: C:\Users\eb-wjt\Downloads\Jarvis\Trident\.venv\Scripts\python.exe C:\Users\eb-wjt\Downloads\Jarvis\Trident\mouth.py --play-wav C:\Users\eb-wjt\Downloads\Jarvis\Trident\07-26-36-345_chatterbox_out_000.wav --vb-cable
