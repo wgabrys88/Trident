@@ -1,7 +1,7 @@
 """Gemma brain one-shot. Text question, or question + image file → stdout generation (thinking included).
 
 Text turns declare two local tools, hello and cursor. A Gemma 4 <|tool_call> is run here,
-then the brain is asked once more with the tool result so the spoken answer can follow.
+then the brain is asked once more with the tool result so the follow-up generation can complete.
 cursor launches the Cursor CLI once and writes grok_bot_spawn.txt. If the CLI is missing
 the tool writes BLOCKED and does not start a follow-up turn.
 
@@ -482,15 +482,15 @@ def main():
             line = clean_line(call[1].get("line"))
             write_hello(line)
             follow = follow_prompt(question, call[2], line)
-            spoken = ""
+            reply = ""
             for _ in range(3):
-                spoken = answer_text(run_brain(follow, "", args.verbose))
-                if spoken:
+                reply = answer_text(run_brain(follow, "", args.verbose))
+                if reply:
                     break
-            if not spoken:
+            if not reply:
                 print("gemma: tool follow-up empty", file=sys.stderr, flush=True)
-                spoken = "Wrote " + line + " to tool_hello.txt."
-            text = spoken
+                reply = "Wrote " + line + " to tool_hello.txt."
+            text = reply
         elif call and call[0] == "cursor":
             job = clean_job(call[1].get("job"))
             summary = run_cursor_job(job)
@@ -499,15 +499,15 @@ def main():
                 text = "BLOCKED cursor cli missing\n"
             else:
                 follow = follow_cursor_prompt(question, call[2], summary)
-                spoken = ""
+                reply = ""
                 for _ in range(3):
-                    spoken = answer_text(run_brain(follow, "", args.verbose))
-                    if spoken:
+                    reply = answer_text(run_brain(follow, "", args.verbose))
+                    if reply:
                         break
-                if not spoken:
+                if not reply:
                     print("gemma: tool follow-up empty", file=sys.stderr, flush=True)
-                    spoken = "Cursor job logged in grok_bot_spawn.txt."
-                text = spoken
+                    reply = "Cursor job logged in grok_bot_spawn.txt."
+                text = reply
         elif call:
             print("gemma: tool skip " + call[0], file=sys.stderr, flush=True)
     sys.stdout.write(text)
