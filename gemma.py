@@ -4,6 +4,9 @@ Text turns declare two local tools, hello and cursor. A Gemma 4 <|tool_call> is 
 then the brain is asked once more with the tool result so the spoken answer can follow.
 cursor launches the Cursor CLI once and writes grok_bot_spawn.txt. If the CLI is missing
 the tool writes BLOCKED and does not start a follow-up turn.
+
+A question that starts with <<trident-inbox>> is one stateless inbox turn: the marker
+is removed, tools are not declared, and the thought channel stays open.
 """
 
 import argparse
@@ -21,6 +24,7 @@ HELLO_PATH = ROOT / "tool_hello.txt"
 SPAWN_PATH = ROOT / "grok_bot_spawn.txt"
 MEDIA = "<__media__>"
 Q = '<|"|>'
+INBOX_MARK = "<<trident-inbox>>"
 HELLO_DECL = (
     "<|tool>declaration:hello{description:"
     + Q
@@ -132,21 +136,34 @@ def tool_header():
     return "<|turn>system\nYou are a helpful assistant." + HELLO_DECL + CURSOR_DECL + "<turn|>\n"
 
 
-def gemma_prompt(question, with_image):
+def prepare_question(question):
+    text = question.replace("\r\n", "\n").replace("\r", "\n")
+    if text.startswith(INBOX_MARK):
+        rest = text[len(INBOX_MARK):]
+        if rest.startswith("\n"):
+            rest = rest[1:]
+        return True, rest
+    return False, question
+
+
+def gemma_prompt(question, with_image, reason=False):
     user = user_body(question, with_image)
     # Image turns stay on the old prompt. Text turns declare hello and cursor
     # and still close an empty thought channel, which is Gemma 4's thinking-off prefill.
+    # Inbox turns leave that channel open and declare no tools, so the brain runs once.
     head = "<bos>"
-    if not with_image:
+    if not with_image and not reason:
         head += tool_header()
+    tail = "<|channel>thought\n"
+    if not reason:
+        tail += "<channel|>\n"
     return (
         head
         + "<|turn>user\n"
         + user
         + "<turn|>\n"
         "<|turn>model\n"
-        "<|channel>thought\n"
-        "<channel|>\n"
+        + tail
     )
 
 
@@ -448,18 +465,23 @@ def main():
     args = parser.parse_args()
     if not args.question.strip():
         die("empty question")
+    reason, question = prepare_question(args.question)
+    if not question.strip():
+        die("empty question")
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    if reason:
+        print("gemma: inbox reasoning on", file=sys.stderr, flush=True)
     image_b64 = image_to_b64(args.image) if args.image else ""
-    text = run_brain(gemma_prompt(args.question, bool(image_b64)), image_b64, args.verbose)
-    if not image_b64:
+    text = run_brain(gemma_prompt(question, bool(image_b64), reason), image_b64, args.verbose)
+    if not image_b64 and not reason:
         call = parse_tool_call(text)
         if call and call[0] == "hello":
             line = clean_line(call[1].get("line"))
             write_hello(line)
-            follow = follow_prompt(args.question, call[2], line)
+            follow = follow_prompt(question, call[2], line)
             spoken = ""
             for _ in range(3):
                 spoken = answer_text(run_brain(follow, "", args.verbose))
@@ -476,7 +498,7 @@ def main():
                 print("gemma: tool cursor stopped", file=sys.stderr, flush=True)
                 text = "BLOCKED cursor cli missing\n"
             else:
-                follow = follow_cursor_prompt(args.question, call[2], summary)
+                follow = follow_cursor_prompt(question, call[2], summary)
                 spoken = ""
                 for _ in range(3):
                     spoken = answer_text(run_brain(follow, "", args.verbose))
