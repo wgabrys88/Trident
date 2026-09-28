@@ -14,10 +14,13 @@
 # gemma.flash-attn off and f16 KV.
 gemma.model gemma.gguf
 gemma.mmproj gemma-mmproj.gguf
-gemma.ctx 8192
+# Native context_length is 131072. 8192 left KV unused on the GTX 1060 6GB.
+# 65536 keeps gpu-layers 999 and this mmproj. An image turn peaked near 5672 MiB of 6144.
+gemma.ctx 65536
 gemma.batch 512
 gemma.ubatch 512
-gemma.n-predict 1024
+# Room for an open thought channel plus the answer. A short reply still stops on EOS.
+gemma.n-predict 2048
 gemma.gpu-layers 999
 gemma.gpu 0
 gemma.threads 4

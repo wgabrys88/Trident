@@ -37,9 +37,21 @@ $env:TRIDENT_NVIDIA_URL = "http://192.168.16.31:8765/"; .\.venv\Scripts\python.e
 
 `hear.py --wav` transcribes the file. Coordinator, then reasoner, append `grok_bot_history.txt`. Reasoner POSTs to `TRIDENT_NVIDIA_URL`. `mouth.py --no-play` writes the reply wav. Microphone stays closed. Speakers stay closed.
 
+## File inbox
+
+One user turn from files. No microphone. Coordinator reads `grok_bot_inbox.txt`, then one stateless Gemma call appends `grok_bot_history.txt`. The reply is `grok_bot_response.txt`.
+
+If `0.0.0.0:8765` is already listening, the reasoner POSTs to it and does not bind a port. If nothing is listening, it runs `nvidia_worker.py --drop --once`.
+
+```powershell
+.\.venv\Scripts\python.exe .\grok_local_bot.py --inbox
+```
+
+`grok_bot_inbox.txt` is `text <<` / `image <<` blocks. The image value is a local path, or empty. Gemma stays on `gemma.gpu-layers 999` and `gemma-mmproj.gguf`. Inbox turns leave the thought channel open.
+
 ## Key files
 
-- `grok_local_bot.py` — file team (`--proof`, `--role`) and the door (`--wav`)
+- `grok_local_bot.py` — file team (`--proof`, `--role`), the door (`--wav`), and the file inbox (`--inbox`)
 - `nvidia_worker.py` — stateless Gemma worker on NVIDIA
 - `nvidia_client.py` — request file plus POST
 - `gemma.py` — brain; tools `hello` and `cursor` (log `grok_bot_spawn.txt`)
@@ -51,7 +63,8 @@ $env:TRIDENT_NVIDIA_URL = "http://192.168.16.31:8765/"; .\.venv\Scripts\python.e
 
 ## Proven
 
-- PROVEN: file team (`grok_local_bot.py --proof`) and the unattended wav door (`--wav` with the worker already up). Both are on `runner-h`.
+- PROVEN: file team (`grok_local_bot.py --proof`) and the unattended wav door (`--wav` with the worker already up).
+- PROVEN on this seat: file inbox (`--inbox`) for a text file and for an image file. One Gemma call each. The `0.0.0.0:8765` listener stays up.
 - UNPROVEN: live mic 30s auto pipeline. Do not claim it. Do not run it.
 
 ## While the user is away

@@ -14,6 +14,12 @@ TRIDENT_NVIDIA_URL or --url. mouth.py --no-play writes the reply wav. The door
 checks that the worker port is already open. It does not bind a port and does
 not start nvidia_worker.py.
 
+--inbox reads a user file (text and an optional image path). The coordinator
+writes the handoff. The reasoner makes one stateless Gemma call. If 0.0.0.0:8765
+is already listening, that call is a POST and this process does not bind a port.
+If nothing is listening, it runs nvidia_worker.py --drop --once. History is
+appended.
+
 No microphone and no speaker playback. Does not bind a port and does not restart
 the existing worker.
 """
@@ -36,6 +42,7 @@ ROOT = Path(__file__).resolve().parent
 HISTORY = ROOT / "grok_bot_history.txt"
 REQUEST = ROOT / "grok_bot_request.txt"
 RESPONSE = ROOT / "grok_bot_response.txt"
+INBOX = ROOT / "grok_bot_inbox.txt"
 STATUS = ROOT / "grok_bot.txt"
 DOOR = ROOT / "iris-door.txt"
 CURSOR_JOB = "extensions"
@@ -94,12 +101,17 @@ def append_history(parts):
     write_text(HISTORY, prev + "".join(parts))
 
 
-def team_request(ident, role, text):
+def team_request(ident, role, text, image=None):
     body = "id " + ident + "\nrole " + role + "\ntext <<\n"
     body += text
     if not text.endswith("\n"):
         body += "\n"
-    body += "<<\nimage <<\n<<\n"
+    body += "<<\nimage <<\n"
+    if image:
+        body += image
+        if not image.endswith("\n"):
+            body += "\n"
+    body += "<<\n"
     return body
 
 
@@ -367,14 +379,18 @@ def reasoner_text(history):
     )
 
 
-def call_post(ident, text, url, timeout):
-    nvidia_client.write_request(nvidia_client.request_body(ident, text, None))
+def call_post(ident, text, url, timeout, image=None):
+    image_b64 = None
+    if image:
+        image_b64, nbytes = nvidia_client.file_b64(Path(image))
+        print("grok-bot: image_b64 " + str(nbytes) + " bytes", file=sys.stderr, flush=True)
+    nvidia_client.write_request(nvidia_client.request_body(ident, text, image))
     buf = io.StringIO()
     old = sys.stdout
     sys.stdout = buf
     code = 0
     try:
-        nvidia_client.post_turn(url, ident, text, None, None, timeout)
+        nvidia_client.post_turn(url, ident, text, image, image_b64, timeout)
     except SystemExit as exc:
         code = exc.code if isinstance(exc.code, int) else 2
     finally:
@@ -382,8 +398,8 @@ def call_post(ident, text, url, timeout):
     return code, buf.getvalue()
 
 
-def call_drop(ident, text, timeout):
-    nvidia_client.write_request(nvidia_client.request_body(ident, text, None))
+def call_drop(ident, text, timeout, image=None):
+    nvidia_client.write_request(nvidia_client.request_body(ident, text, image))
     if nvidia_client.RESPONSE.is_file():
         try:
             nvidia_client.RESPONSE.unlink()
@@ -422,13 +438,13 @@ def call_drop(ident, text, timeout):
     return completed.returncode, completed.stdout or ""
 
 
-def call_worker(ident, text, url, drop, timeout, watch):
+def call_worker(ident, text, url, drop, timeout, watch, image=None):
     watch.start()
     try:
         if drop:
-            return call_drop(ident, text, timeout)
+            return call_drop(ident, text, timeout, image)
         print("grok-bot: post " + url, file=sys.stderr, flush=True)
-        return call_post(ident, text, url, timeout)
+        return call_post(ident, text, url, timeout, image)
     finally:
         watch.finish()
 
@@ -775,6 +791,237 @@ def door(args):
     raise SystemExit(0 if passed else 2)
 
 
+def inbox_path(value):
+    path = Path(value)
+    if not path.is_absolute():
+        path = ROOT / path
+    return path
+
+
+def inbox_has_blocks(raw):
+    for line in raw.split("\n"):
+        stripped = line.rstrip(" \t")
+        if stripped.endswith("<<") and stripped[:-2].strip() in ("text", "image"):
+            return True
+    return False
+
+
+def flatten_user(text):
+    flat = " ".join(text.split())
+    if "<<" in flat:
+        flat = " ".join(flat.replace("<<", " ").split())
+    return flat
+
+
+def load_inbox(path):
+    if not path.is_file():
+        die("missing inbox: " + str(path))
+    raw = read_text(path).replace("\r\n", "\n").replace("\r", "\n")
+    if not raw.strip():
+        die("empty inbox")
+    if inbox_has_blocks(raw):
+        text = last_block(raw, "text")
+        image = last_block(raw, "image").strip()
+    else:
+        text = raw.strip("\n")
+        image = ""
+    lines = [line for line in text.split("\n") if line != "<<"]
+    text = "\n".join(lines).strip()
+    if image == "":
+        image = None
+    else:
+        image_path = Path(image)
+        if not image_path.is_file():
+            die("missing inbox image: " + image)
+        image = str(image_path.resolve())
+    if not text and image:
+        text = "What is in this picture?"
+    if not text:
+        die("inbox needs text or an image")
+    return text, image
+
+
+def inbox_handoff(user_text, image):
+    body = "next role reasoner\n"
+    body += "user: " + flatten_user(user_text) + "\n"
+    body += "image: " + (image if image else "none") + "\n"
+    return body
+
+
+def inbox_fields(handoff):
+    user = ""
+    image = None
+    for line in handoff.splitlines():
+        if line.startswith("user: "):
+            user = line[6:].strip()
+        elif line.startswith("image: "):
+            value = line[7:].strip()
+            if value and value != "none":
+                image = value
+    return user, image
+
+
+def inbox_reasoner_text(history):
+    handoff = last_block(history, "handoff").strip()
+    if not handoff:
+        die("inbox missing coordinator handoff")
+    user, image = inbox_fields(handoff)
+    if not user:
+        die("inbox handoff missing user text")
+    text = gemma.INBOX_MARK + "\n"
+    text += "Coordinator handoff:\n" + handoff + "\n"
+    if image:
+        text += "The user attached an image. Look at the image and answer the user. Name what is shown.\n"
+    else:
+        text += "Answer the user.\n"
+    return text, image
+
+
+def gemma_setting(key):
+    path = ROOT / "gemma.txt"
+    if not path.is_file():
+        return ""
+    try:
+        raw = path.read_text(encoding="utf-8-sig")
+    except OSError:
+        return ""
+    prefix = key + " "
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(prefix):
+            return stripped[len(prefix):].strip()
+    return ""
+
+
+def run_inbox_reasoner(url, drop, timeout):
+    print("grok-bot: role reasoner", file=sys.stderr, flush=True)
+    started = time.perf_counter()
+    history = read_text(HISTORY) if HISTORY.is_file() else ""
+    question, image = inbox_reasoner_text(history)
+    ident = str(time.time_ns())
+    write_text(REQUEST, team_request(ident, "reasoner", question, image))
+    before_outs = set(ROOT.glob("*_gemma_out_*.txt"))
+    watch = GpuWatch()
+    code, _out = call_worker(ident, question, url, drop, timeout, watch, image)
+    calls = len(set(ROOT.glob("*_gemma_out_*.txt")) - before_outs)
+    ms = int((time.perf_counter() - started) * 1000)
+    raw = ""
+    if nvidia_client.RESPONSE.is_file():
+        raw = read_text(nvidia_client.RESPONSE)
+    wid, ok, payload = parse_worker_response(raw)
+    if not wid:
+        wid = ident
+    text_out = payload if ok else ""
+    role_ok = bool(ok and text_out.strip() and calls == 1)
+    if role_ok:
+        write_text(RESPONSE, team_response(wid, "reasoner", text_out))
+    else:
+        if ok and calls != 1:
+            reason = "gemma calls " + str(calls)
+        else:
+            reason = payload if not ok else "empty"
+        write_text(RESPONSE, team_error(wid, "reasoner", reason))
+    parts = [
+        "role reasoner\n",
+        "id " + wid + "\n",
+        "exit " + ("0" if role_ok else "2") + "\n",
+        "ms " + str(ms) + "\n",
+        "via " + ("drop" if drop else "post") + "\n",
+        "calls " + str(calls) + "\n",
+        "image " + (image if image else "none") + "\n",
+    ]
+    if role_ok:
+        parts.append(block("text", text_out))
+    else:
+        if ok and calls != 1:
+            err = "gemma calls " + str(calls)
+        else:
+            err = " ".join(str(payload).split()) or "empty"
+        parts.append("err " + err + "\n")
+    if code not in (0, None) and role_ok:
+        parts.append("worker_exit " + str(code) + "\n")
+    base, util, used = gpu_peak(watch.samples)
+    if util is not None:
+        parts.append("gpu_peak_util " + str(util) + "\n")
+    if used is not None:
+        parts.append("gpu_peak_mib " + str(used) + "\n")
+    append_history(parts)
+    print(
+        "grok-bot: role reasoner exit "
+        + ("0" if role_ok else "2")
+        + " "
+        + str(ms)
+        + " ms calls "
+        + str(calls),
+        file=sys.stderr,
+        flush=True,
+    )
+    return role_ok, ms, text_out, watch, base, util, used
+
+
+def run_inbox(args):
+    path = inbox_path(args.inbox)
+    user_text, image = load_inbox(path)
+    pid = lan_pid(listeners_8765())
+    drop = not bool(pid)
+    url = None
+    if not drop:
+        url = (args.url or "http://127.0.0.1:8765/").strip()
+        if not (url.startswith("http://") or url.startswith("https://")):
+            die("nvidia url must start with http:// or https://")
+        up, where = probe_worker(url)
+        print(
+            "grok-bot: listener 0.0.0.0:8765 pid "
+            + pid
+            + " "
+            + ("up " + where if up else "down " + where),
+            file=sys.stderr,
+            flush=True,
+        )
+        if not up:
+            die("0.0.0.0:8765 pid " + pid + " is not reachable at " + url)
+    else:
+        print("grok-bot: listener missing, drop once", file=sys.stderr, flush=True)
+    print(
+        "grok-bot: gemma.ctx "
+        + gemma_setting("gemma.ctx")
+        + " gemma.n-predict "
+        + gemma_setting("gemma.n-predict")
+        + " gemma.gpu-layers "
+        + gemma_setting("gemma.gpu-layers")
+        + " gemma.mmproj "
+        + gemma_setting("gemma.mmproj"),
+        file=sys.stderr,
+        flush=True,
+    )
+    run_coordinator(inbox_handoff(user_text, image))
+    role_ok, ms, reply, _watch, _base, util, used = run_inbox_reasoner(url, drop, args.timeout)
+    after_pid = lan_pid(listeners_8765())
+    listener_ok = (not pid) or (after_pid == pid)
+    passed = bool(role_ok and listener_ok)
+    append_history(["inbox ok\n" if passed else "inbox fail\n"])
+    if util is not None:
+        print("grok-bot: gpu_peak_util " + str(util), file=sys.stderr, flush=True)
+    if used is not None:
+        print("grok-bot: gpu_peak_mib " + str(used), file=sys.stderr, flush=True)
+    if pid:
+        print(
+            "grok-bot: listener_after "
+            + ("0.0.0.0:8765 pid " + after_pid if after_pid else "missing"),
+            file=sys.stderr,
+            flush=True,
+        )
+    print(
+        "grok-bot: reasoner_ms " + str(ms) + " via " + ("drop" if drop else "post"),
+        file=sys.stderr,
+        flush=True,
+    )
+    if reply:
+        sys.stdout.write(reply if reply.endswith("\n") else reply + "\n")
+    print("grok-bot: " + ("PASS" if passed else "FAIL"), file=sys.stderr, flush=True)
+    raise SystemExit(0 if passed else 2)
+
+
 def reset_team_files():
     write_text(HISTORY, "")
     if gemma.SPAWN_PATH.is_file():
@@ -862,6 +1109,13 @@ def main():
         help="Iris voice door: hear this wav, team turn over LAN, mouth wav with --no-play",
     )
     parser.add_argument(
+        "--inbox",
+        nargs="?",
+        const=str(INBOX),
+        default=None,
+        help="file inbox turn: text file with optional image path (default grok_bot_inbox.txt)",
+    )
+    parser.add_argument(
         "--drop",
         action="store_true",
         help="reasoner uses nvidia_worker.py --drop --once instead of POST",
@@ -875,9 +1129,15 @@ def main():
     args = parser.parse_args()
     if args.wav is not None and args.wav.strip() == "":
         die("empty wav")
-    modes = sum(1 for flag in (args.proof, bool(args.role), args.wav is not None) if flag)
+    if args.inbox is not None and str(args.inbox).strip() == "":
+        die("empty inbox")
+    modes = sum(
+        1
+        for flag in (args.proof, bool(args.role), args.wav is not None, args.inbox is not None)
+        if flag
+    )
     if modes != 1:
-        die("pass one of --proof, --role, or --wav")
+        die("pass one of --proof, --role, --wav, or --inbox")
     if args.wav is not None and args.drop:
         die("--wav posts to the NVIDIA worker")
     if args.timeout <= 0:
@@ -887,6 +1147,9 @@ def main():
     venv_python()
     if args.wav is not None:
         door(args)
+        return
+    if args.inbox is not None:
+        run_inbox(args)
         return
     if not args.drop:
         url = (args.url or "http://127.0.0.1:8765/").strip()
