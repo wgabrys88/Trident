@@ -1195,6 +1195,18 @@ STATUS PASS. 2026-09-28. Iris Wi-Fi `192.168.16.45`. Worker `http://192.168.16.3
 
 ---
 
+## Scratch: Grok-bot team on this seat
+
+`grok_local_bot.py` is a file-backed team, one role per turn. The coordinator writes a handoff into `grok_bot_history.txt`. The reasoner is one POST to the stateless NVIDIA worker (`{"id","text","image"}`, no `image_b64`), or `nvidia_worker.py --drop --once`. Gemma is the reasoning role. `gemma.py` still has `hello`, and adds `cursor` beside it. That tool launches Cursor CLI once and writes `grok_bot_spawn.txt` (command, pid or fail, exit). `cursor` 3.22.7 lists `agent`, but this build does not dispatch it, so the job is `cursor --list-extensions --show-versions` (or `--version` when the job asks for that). Missing `cursor` writes `BLOCKED` and stops the tool path. No mouth, no hear, no new listener.
+
+```powershell
+.\.venv\Scripts\python.exe .\grok_local_bot.py --proof
+```
+
+STATUS PASS. 2026-09-28. Exit 0. History `grok_bot_history.txt` is role coordinator then role reasoner. Reasoner POST `http://127.0.0.1:8765/` in 10138 ms. Spawn `model` (Gemma called the tool), pid 7552, exit 0. Reply: `The Cursor job for extensions has been set, and I will use the reasoner to process this information.` GPU base 1559 MiB util 0%, peak 4678 MiB util 88%. Listener left at `0.0.0.0:8765` PID 12672. HEAD at the run: `c8245e957cb4a6fd1c5593682b39d0d139dc76b9`.
+
+---
+
 ## License
 
 Trident is licensed under the MIT License. See [`LICENSE`](LICENSE) for the project license and third-party notices.

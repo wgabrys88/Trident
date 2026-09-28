@@ -1,0 +1,10 @@
+job extensions
+command <<
+C:\Users\px-wjt\AppData\Local\Programs\cursor\resources\app\bin\cursor.CMD --list-extensions --show-versions
+<<
+pid 7552
+exit 0
+stdout <<
+anysphere.remote-ssh@1.1.16
+anysphere.remote-wsl@1.0.13
+<<

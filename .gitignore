@@ -88,3 +88,11 @@
 /*.history.txt
 /*.run.log
 /*.run.err
+
+# Grok-bot team. Role and memory live in these files. The worker stays stateless.
+!/grok_local_bot.py
+!/grok_bot.txt
+!/grok_bot_history.txt
+!/grok_bot_request.txt
+!/grok_bot_response.txt
+!/grok_bot_spawn.txt
