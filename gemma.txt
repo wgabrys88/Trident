@@ -15,7 +15,7 @@
 gemma.model gemma.gguf
 gemma.mmproj gemma-mmproj.gguf
 # Native context_length is 131072. 8192 left KV unused on the GTX 1060 6GB.
-# 65536 keeps gpu-layers 999 and this mmproj, and uses more of that headroom.
+# 65536 keeps gpu-layers 999 and this mmproj. An image turn peaked near 5672 MiB of 6144.
 gemma.ctx 65536
 gemma.batch 512
 gemma.ubatch 512

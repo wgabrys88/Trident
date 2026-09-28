@@ -63,7 +63,8 @@ If `0.0.0.0:8765` is already listening, the reasoner POSTs to it and does not bi
 
 ## Proven
 
-- PROVEN: file team (`grok_local_bot.py --proof`) and the unattended wav door (`--wav` with the worker already up). Both are on `runner-h`.
+- PROVEN: file team (`grok_local_bot.py --proof`) and the unattended wav door (`--wav` with the worker already up).
+- PROVEN on this seat: file inbox (`--inbox`) for a text file and for an image file. One Gemma call each. The `0.0.0.0:8765` listener stays up.
 - UNPROVEN: live mic 30s auto pipeline. Do not claim it. Do not run it.
 
 ## While the user is away
