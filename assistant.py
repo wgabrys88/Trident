@@ -1,15 +1,3 @@
-"""Local voice turns. Chain hear.py, qwen.py or gemma.py, and mouth.py.
-
-qwen.py keeps sense.exe loaded across turns. mouth.py keeps chatterbox.exe loaded across turns.
-Hear and Gemma still exit after each turn.
---wav feeds hear.py a file instead of the mic. --nvidia hands the turn to nvidia_client.py
-and skips the local brain. --url and --timeout are forwarded to that client. An empty client stdout
-means the request file was left and mouth is not called.
---vb-cable is the cable entrypoint: loopback.py plays a phrase into CABLE Input and hears CABLE Output,
-then that transcript is the turn. The live microphone is not opened. --mouth writes reply wavs and
-does not play them.
-"""
-
 import argparse
 import os
 import re

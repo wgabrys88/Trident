@@ -1,9 +1,3 @@
-"""Hearing one-shot. Record the PC mic for SECONDS, or transcribe --wav, then run nemo-speech once.
-
-Prints the transcript to stdout. --wav does not open the microphone.
---vb-cable records CABLE Output instead of the live microphone.
-"""
-
 import argparse
 import os
 import shutil
@@ -32,7 +26,6 @@ def die(message):
 
 
 def emit(message, file=sys.stderr):
-    """Print device names / banners without crashing on non-UTF-8 consoles."""
     try:
         print(message, file=file, flush=True)
         return
@@ -121,7 +114,6 @@ def pick_mic(prefer: str | None, allow_cable: bool = False):
         if not hits:
             die("VB-Cable capture device not found")
         return prefer_wasapi(hits, sd)
-    # Prefer default input when it is not VB-Cable; else first non-cable mic.
     if default_in is not None and 0 <= default_in < len(devices):
         name = devices[default_in]["name"]
         if devices[default_in]["max_input_channels"] >= 1 and "cable" not in name.lower():

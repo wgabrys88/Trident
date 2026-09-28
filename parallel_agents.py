@@ -1,14 +1,3 @@
-"""Two agent steps overlapped, then a join.
-
-seq_agents.py stays sequential. This skeleton starts both steps together.
-Each concurrent step runs gemma-brain.exe in its own working directory so
-the pair does not share gemma_run.txt or *_gemma_out_*.txt. If either step
-fails, the same prompts run on threads with a lock around gemma.py.
-
-No microphone and no playback. Writes parallel_agents.txt and parallel_agents.log.
-Exits 0 when both joined steps return text.
-"""
-
 import shutil
 import subprocess
 import sys
@@ -127,11 +116,6 @@ def results_ok(rows):
 
 
 def run_brain(workdir, prompt, side_name):
-    """One gemma-brain.exe.
-
-    The sidecar stays in the repo root so gemma.model resolves next to gemma.txt.
-    cwd is the agent directory, which is where *_gemma_out_*.txt is written.
-    """
     try:
         workdir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
