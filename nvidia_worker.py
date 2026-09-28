@@ -4,7 +4,7 @@ POST JSON {"id","text","image","image_b64"} and return {"text": ...}.
 gemma.py runs the text. image_b64 is standard base64 of the image bytes; it
 is decoded to a temp file and passed as --image. If image_b64 is absent, a
 readable image path on this machine is passed as --image.
---drop reads nvidia_turn.request.txt and writes nvidia_turn.response.txt.
+--drop is a local nvidia_turn.* file inbox, not the production LAN HTTP path.
 """
 
 import argparse
@@ -366,9 +366,9 @@ def serve_http(host, port, timeout, verbose):
 def main():
     configure_stdio_utf8()
     parser = argparse.ArgumentParser(prog="nvidia_worker.py")
-    parser.add_argument("--host", default="127.0.0.1", help="bind address (default 127.0.0.1)")
+    parser.add_argument("--host", default="0.0.0.0", help="bind address (default 0.0.0.0 for LAN)")
     parser.add_argument("--port", type=int, default=8765, help="bind port (default 8765)")
-    parser.add_argument("--drop", action="store_true", help="read nvidia_turn.request.txt instead of HTTP")
+    parser.add_argument("--drop", action="store_true", help="local nvidia_turn.* file inbox (not LAN HTTP)")
     parser.add_argument("--once", action="store_true", help="with --drop, handle the current request and exit")
     parser.add_argument("--timeout", type=float, default=600, help="gemma.py seconds before kill (default 600)")
     parser.add_argument("--verbose", action="store_true", help="pass gemma-brain.exe stderr through gemma.py")
