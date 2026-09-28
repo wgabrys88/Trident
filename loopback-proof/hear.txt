@@ -1,9 +1,0 @@
-exit 0
-
-stdout:
-Trydam cable loop back
-
-stderr:
-hear mic: CABLE Output (VB-Audio Virtual Cable)
-hear rate: device 48000 -> wav 16000
-hear wav saved: C:\Users\eb-wjt\Downloads\Jarvis\Trident\loopback-proof\hear.wav

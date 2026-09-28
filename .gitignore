@@ -24,7 +24,6 @@
 !/.gitignore
 !/.gitattributes
 !/README.md
-!/RESURRECTION.md
 !/CMakeLists.txt
 !/LICENSE
 !/install.py
@@ -42,12 +41,8 @@
 !/gemma.py
 !/mouth.py
 !/loopback.py
-!/loopback-proof/*.txt
 !/nvidia_client.py
 !/nvidia_worker.py
-!/seq_agents.py
-!/parallel_agents.py
-!/parallel_agents.txt
 !/reference.wav
 
 # Installer conversion/quantization tools.
@@ -88,13 +83,21 @@
 /*.history.txt
 /*.run.log
 /*.run.err
+/tool_hello.txt
+/seq_agents.txt
+/parallel_agents.txt
+/parallel_agents.log
+/parallel_run/
 
-# Grok-bot team. Role and memory live in these files. The worker stays stateless.
+# Door, file-team, and cable proofs. The programs rewrite these. README holds the record.
+/grok_bot.txt
+/grok_bot_history.txt
+/grok_bot_inbox.txt
+/grok_bot_request.txt
+/grok_bot_response.txt
+/grok_bot_spawn.txt
+/iris-door.txt
+/loopback-proof/
+
+# Grok-bot team program. Role files above are runtime, not sources.
 !/grok_local_bot.py
-!/grok_bot.txt
-!/grok_bot_history.txt
-!/grok_bot_inbox.txt
-!/grok_bot_request.txt
-!/grok_bot_response.txt
-!/grok_bot_spawn.txt
-!/iris-door.txt

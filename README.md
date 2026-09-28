@@ -4,7 +4,9 @@ Trident is a voice assistant on two home Windows PCs. Iris hears and speaks. NVI
 
 Checked-in code outranks this file. If `ear.txt`, `vad.txt`, `chatterbox.txt`, or an older sentence here disagrees with `hear.py`, `mouth.py`, `assistant.py`, `grok_local_bot.py`, `nvidia_client.py`, `nvidia_worker.py`, or `gemma.py`, follow the code and the run files.
 
-The branch of record is `runner-h`. Clone `https://github.com/wgabrys88/Trident.git` and check out `runner-h`. `main` is an ancestor of this branch (they matched at `e4dc33d` on 2026-09-28). Do not start work from `main`. Do not fast-forward `main` without Wojciech.
+Flags, card keys, and environment variables are in [Flags and knobs](#flags-and-knobs). The text cards stay in the tree because install and the programs read them. Read this file for what a key means. Open a card when you are changing the value the program loads.
+
+The branch of record is `runner-h`. Clone `https://github.com/wgabrys88/Trident.git` and check out `runner-h`. `main` is an ancestor of this branch. Do not start work from `main`. Do not fast-forward `main` without Wojciech.
 
 License: MIT. Copyright (c) 2026 Gianfranco Cordella. See `LICENSE`. The build also uses ggml and a C++/ggml port of Resemble AI Chatterbox, named in that file.
 
@@ -101,7 +103,7 @@ Command, from the Iris checkout, venv python:
 .\.venv\Scripts\python.exe .\assistant.py --nvidia --url http://192.168.16.31:8765/ --seconds 30 --timeout 180
 ```
 
-No `--once`. No `--lang`. `scenario-c-scout-iris.txt` records the shell log `57315.txt`: started 2026-09-28T16:58:47Z, ended 17:25:22Z, tip `e4dc33d`. The process then ended `status: failed`, exit `4294967295` (the tree was killed). There is no `STATUS PASS` file for this session. The win is the session itself.
+No `--once`. No `--lang`. The Iris scout log started 2026-09-28T16:58:47Z and ended 17:25:22Z. The process then ended `status: failed`, exit `4294967295` (the tree was killed). There is no `STATUS PASS` file for this session. The win is the session itself.
 
 Evidence still on the Iris disk, outside git (`.gitignore` ignores these names):
 
@@ -127,9 +129,9 @@ At 15:05, mic closed, the saved 14:57 transcript was replayed:
 
 `live-mic-oneshot-continue-meta.txt`: exit 0, elapsed 39.3 s, mic not opened. Stderr: `assistant: mouth 1 chunk(s)`, `mouth out: default`, chatterbox pid 4664. Wav `15-05-30-405_chatterbox_out_000.wav` (13.0 s, 24 kHz mono). The log names the default wave device. It does not name EB-W Speakers, X-Fi, or the LG TV.
 
-### Unattended wav door — tracked `STATUS PASS`
+### Unattended wav door — `STATUS PASS`
 
-`iris-door.txt`, head `7248a1c`, command `grok_local_bot.py --wav` on `reference.wav`. Worker up before and after at `192.168.16.31:8765`. `local_8765: none`. Hear, coordinator, reasoner, and mouth exits 0. Reasoner 8236 ms. Mouth wav `C:\Users\eb-wjt\Downloads\Jarvis\Trident\10-40-35-223_chatterbox_out_000.wav` via `mouth.py --model nano --no-play`. Speakers stayed closed.
+The door writes `iris-door.txt` on the Iris disk. That file is a run record, so it is not in git. The 2026-09-28 run was `grok_local_bot.py --wav` on `reference.wav`. Worker up before and after at `192.168.16.31:8765`. `local_8765: none`. Hear, coordinator, reasoner, and mouth exits 0. Reasoner 8236 ms. Mouth wav `C:\Users\eb-wjt\Downloads\Jarvis\Trident\10-40-35-223_chatterbox_out_000.wav` via `mouth.py --model nano --no-play`. Speakers stayed closed.
 
 Transcript of record, copied from that file:
 
@@ -141,19 +143,19 @@ Reply of record:
 
 ### File team and inbox — on the listener seat
 
-`grok_bot.txt`, head `c8245e9`: `STATUS PASS`. Listener `0.0.0.0:8765` pid 12672 before and after. Reasoner 10138 ms via POST. Cursor spawn exit 0 (`grok_bot_spawn.txt` lists extensions). GPU base 1559 MiB, peak 4678 MiB, peak util 88. `--proof` requires the pid to stay and clears history first.
+`--proof` writes `grok_bot.txt` on the listener seat. That file is a run record, so it is not in git. The 2026-09-28 proof was `STATUS PASS`. Listener `0.0.0.0:8765` pid 12672 before and after. Reasoner 10138 ms via POST. Cursor spawn exit 0 (the spawn log listed extensions). GPU base 1559 MiB, peak 4678 MiB, peak util 88. `--proof` requires the pid to stay and clears history first.
 
 `grok_bot_history.txt` has two `inbox ok` turns, each one Gemma call via POST. Text turn, image none, peak 5604 MiB. Image turn, `C:\Users\px-wjt\Downloads\Jarvis\Trident\recon-hf-vision\coco_sample.png`, the reply names a cat in the first sentence, peak 5672 MiB of the 6144 MiB nameplate. `gemma.txt` documents that image fit at context 65536, `gpu-layers` 999, f16 KV, flash-attn off.
 
 ### VB-Cable harness — tracked, not the speakers
 
-`loopback-proof/status.txt` and `jarvis.txt`, head `a06c2f3`: `STATUS PASS`. Mouth played `Trident cable loopback` into `CABLE Input (VB-Audio Virtual Cable)`. Hear transcribed `CABLE Output` as `Trydam cable loop back` (ratio 0.821). The live microphone was not used. `assistant.py --vb-cable` returns before the mic loop. `--mouth` on that path writes reply wavs and is rejected unless `--vb-cable` is also set. The `--timeout 180` line in `loopback-proof/jarvis.txt` is this cable run, with `mouth_exit: skipped`. It is not the 15:05 speaker replay and it is not Scenario C.
+`loopback.py` and `assistant.py --vb-cable` write `loopback-proof/`. Those files are run records, so the directory is not in git. The harness was `STATUS PASS`. Mouth played `Trident cable loopback` into `CABLE Input (VB-Audio Virtual Cable)`. Hear transcribed `CABLE Output` as `Trydam cable loop back` (ratio 0.821). The worker reply began `I have written "Trydam cable loop back" to a file named tool_hello.txt.` The live microphone was not used. `assistant.py --vb-cable` returns before the mic loop. `--mouth` on that path writes reply wavs and is rejected unless `--vb-cable` is also set. The `--timeout 180` on that cable command had `mouth_exit: skipped`. It is the cable run. It is separate from the 15:05 speaker replay and from Scenario C.
 
 `hear.py` skips a device whose name contains `cable` unless `--vb-cable` or an explicit mic choice allows it. `mouth.py` plays the default wave device unless `--vb-cable` or `--out` is set.
 
 ### Overlap experiment — not an isolated Gemma fit
 
-An overlap run put two Gemma jobs on the 1060 at once, then a sequential baseline. Concurrent peak `5976` MiB. That number is the overlap run. It is not the inbox image turn (5672) and not the file-team proof (4678). The run log is not in git. Do not run `parallel_agents.py` while the worker holds the model. `seq_agents.py` is the older sequential batch. Neither script is the Grok Bot team.
+An overlap run put two Gemma jobs on the 1060 at once, then a sequential baseline. Concurrent peak `5976` MiB. That number is the overlap run. It is separate from the inbox image turn (5672) and from the file-team proof (4678). The batch scripts and their log are not in the tree. Do not start a second Gemma beside the worker. Those batches are not the Grok Bot team.
 
 ## Install
 
@@ -230,6 +232,503 @@ If the house LAN address changes, change the URL. Keep port 8765.
 
 While Wojciech is away: no speaker playback, no microphone, no new listener. Unattended speech is a wav file and an exit code (`mouth.py --no-play`). Use the GPU that is already loaded.
 
+## Flags and knobs
+
+Checked-in values below are the values in the cards on `runner-h`. A program that copies a card and rewrites a few keys uses the card for everything it does not rewrite. Change the card, then run. The exes do not keep a second set of defaults.
+
+### Card grammar
+
+`install.py` and the C++ programs share one text format.
+
+- A `#` line is a comment. Blank lines are skipped.
+- `key value` sets that key. The value is the rest of the line after the first space.
+- `key` with nothing after it is the empty string.
+- `key <<` starts a block. The value is every following line until a line that is only `<<`.
+- Boolean keys are the words `on` and `off`. Anything else fails.
+- Paths are names beside the card file (the card's directory), unless a Python wrapper puts an absolute path in the run file it writes.
+
+`gemma-brain.exe`, `chatterbox-bake.exe`, `ear.exe`, and `vad.exe` take exactly one argument, the card path. Usage text is `program file.txt`. `chatterbox.exe` and `sense.exe` take `card.txt` for one shot, or `--resident card.txt` to stay up.
+
+### Environment
+
+| Variable | Who reads it | Meaning |
+| --- | --- | --- |
+| `TRIDENT_NVIDIA_URL` | `nvidia_client.py` when `--url` is omitted. `grok_local_bot.py --wav` when `--url` is omitted. | Worker POST URL, for example `http://192.168.16.31:8765/`. The door exits if both `--url` and this variable are empty. `--proof`, `--role`, and `--inbox` do not read it. Those modes use `--url` or `http://127.0.0.1:8765/`. |
+| `TRIDENT_VENV_NEW` | `install.py` | Internal. The installer sets it to `1` only for the re-exec into a venv it just created. Leave it unset. |
+| `CUDA_PATH` | `gemma/scripts/detect_gpu.ps1` | One place that script looks for `nvcc.exe` when `install.gemma_backend` is `auto`. |
+| `PYTHONUNBUFFERED` | Set to `1` by `assistant.py` and `loopback.py` on some children | Child-process plumbing. Leave it alone. |
+
+### `assistant.py`
+
+Live hear / brain / mouth loop. Default brain is local Qwen. `--nvidia` posts one turn and does not send history.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--once` | off | One turn, then exit. The live Scenario C command omits this and loops. |
+| `--text TEXT` | none | Skip the microphone. One brain turn, then the mouth. With `--vb-cable`, this string is the phrase played into CABLE Input. Empty text fails. |
+| `--wav PATH` | none | Transcribe this wav through `hear.py`, skip the mic, one turn. Empty path fails. Cannot combine with `--text` or `--vb-cable`. |
+| `--vb-cable` | off | Play a phrase into `CABLE Input (VB-Audio Virtual Cable)`, hear `CABLE Output`, then one turn. Returns before the live mic loop. |
+| `--mouth` | off | With `--vb-cable` only: synthesize the reply to wavs and do not play them. Without `--vb-cable` the process exits. |
+| `--seconds N` | `8` | Mic window passed to `hear.py`. Must be `> 0`. Scenario C used `30`. The mic closes when the window ends, including during the POST and playback. |
+| `--brain` | `qwen` | `qwen` or `gemma`. Local brains only. `--nvidia` uses the worker instead. |
+| `--model` | `nano` | Mouth model: `nano`, `turbo`, or `v3`. |
+| `--lang TAG` | omit | Mouth language. Omit and `resolved_lang` returns `en` for `nano` and `turbo`, `pl` for `v3`. Empty tag fails. |
+| `--image PATH` | none | Image file. Local path requires `--brain gemma` unless `--nvidia` is set. On `--nvidia` the path is sent to `nvidia_client.py`. |
+| `--nvidia` | off | One POST through `nvidia_client.py`. The worker stores no conversation. |
+| `--url URL` | none | Forwarded to `nvidia_client.py`. Requires `--nvidia`. Empty URL fails. |
+| `--timeout SEC` | none | Forwarded only with `--nvidia`. Must be `> 0`. Omit it and the client default is 30 s, which is shorter than a slow Gemma turn. The proven commands pass `180`. |
+
+A transcript that is only `quit`, `exit`, or `stop` ends this loop. It does not stop port 8765.
+
+The chunker is `chunks_for_mouth`. It flushes on `.!?;:` and dashes, then a word limit: English 65 with a conjunction split down to 50 (`and but or so because however`); Polish 55 and 45 (`i oraz ale lub albo więc wiec bo jednak`). Polish limits apply when the resolved language is `pl`. Omitted `--lang` on `nano` uses the English limits.
+
+`speakable` keeps the text after `<channel|>`, or after `</think>` when that tag is present. An unclosed `<think>` with no channel split is silence.
+
+### `hear.py`
+
+Microphone window or a wav, then `nemo-speech.exe transcribe`. It does not read `ear.txt` and it does not run `ear.exe`.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `seconds` | required unless `--wav` | Positional. How long to record. Must be `> 0`. |
+| `--wav PATH` | none | Transcribe this file and skip the mic. |
+| `--model PATH` | `ear.gguf` beside the script | NeMo GGUF. Missing file fails. |
+| `--device` | `cpu` | Passed to `nemo-speech.exe --device`. |
+| `--language TAG` | omit | Passed as `--language` when the tag is non-empty. |
+| `--format` | `text` | Passed as `--format`. |
+| `--rate` | `16000` | Wav rate. Below 8000 fails. Live capture uses `numpy.interp` (`resample_linear`) when the device rate differs. |
+| `--mic` | none | Device index or name substring. A name containing `cable` is skipped unless `--vb-cable` is set or this choice selects it. |
+| `--vb-cable` | off | Record `CABLE Output (VB-Audio Virtual Cable)`. |
+| `--save-wav PATH` | none | Copy the recording here before transcribe. |
+| `--endpointing` | `on` | `on` sends `--endpointing=true`. `off` sends `--endpointing=false`. Endpointing runs on the finished wav. |
+| `--stop-history-eou-ms` | `1200` | Passed through. |
+| `--verbatim` | off | Adds `--verbatim`. |
+| `--no-punctuation` | off | Adds `--no-punctuation`. |
+| `--stream` | off | Adds `--stream`. |
+
+`hear.py` also always passes `--quiet`. WASAPI is preferred when several devices share a name.
+
+### `mouth.py`
+
+Speaks the sentences it is given. It does not split them. `assistant.py` and the door chunk first.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `TEXT ...` | required unless `--stop` or `--play-wav` | One or more sentences. A line that is only `<<` fails. |
+| `--model` | `nano` | `nano`, `turbo`, or `v3`. Selects `nano.t3` / `nano.s3` (and the turbo and v3 pairs) from the card. |
+| `--lang TAG` | omit | Omit and the language is `pl` for `v3`, `en` otherwise. Empty tag fails. The tag must exist in that GGUF. Chatterbox does not translate the text. |
+| `--once` | off | One-shot `chatterbox.exe`, then exit. The default keeps `chatterbox.exe --resident` when the settings fingerprint matches. |
+| `--stop` | off | Stop the resident. Must be the only flag. |
+| `--vb-cable` | off | Play into `CABLE Input (VB-Audio Virtual Cable)`. |
+| `--out DEVICE` | none | Playback device index or name substring. WASAPI is preferred. |
+| `--no-play` | off | Synthesize and print each wav path. Requires text. The door uses this. |
+| `--play-wav FILE` | none | Play this wav and skip synthesis. Cannot combine with text or `--no-play`. |
+
+Default playback is `PlaySoundW` on the Windows default wave device. The log line is `mouth out: default`. `--vb-cable` and `--out` use the sounddevice path and print the device name.
+
+`mouth.py` reads `chatterbox.txt`, drops `chatterbox.variant`, `chatterbox.language`, `chatterbox.play`, and `chatterbox.text`, then writes those four itself into `mouth.txt`. Variant comes from `--model`. Language comes from `--lang` or the default above. `chatterbox.play` is written `off`. Python plays the wav. The `chatterbox.play on` line in the template is not the speaker switch. Sampling keys in the template (temperature, top-p, seed, and the rest) are passed through. Change those in `chatterbox.txt` to change the voice.
+
+Resident prompts go to `mouth.prompt.txt`. The resident writes the wav name to `mouth.response.txt`. One-shot output is `HH-MM-SS-mmm_chatterbox_out_NNN.txt` plus a wav of the same stamp. `mouth.pid`, `mouth.run.err`, `mouth.stop`, and `mouth.lock` are runtime files.
+
+### `nvidia_client.py`
+
+Iris-side POST. One turn. NVIDIA owns this file.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `text` | required | The turn text. Empty text fails. |
+| `--image PATH` | none | Local image. The POST body includes `image` (the path) and `image_b64` (standard base64 of the bytes). |
+| `--url URL` | `TRIDENT_NVIDIA_URL` | Must start with `http://` or `https://` when set. With no URL the client writes `nvidia_turn.request.txt` and exits 0. It does not start Gemma. |
+| `--timeout SEC` | `30` | HTTP timeout. Must be `> 0`. `assistant.py` forwards its own `--timeout` only when you pass one. |
+
+Success prints the worker text and writes `nvidia_turn.response.txt` (`id`, `ok`, then the text). Errors from the worker are `text/plain`.
+
+### `nvidia_worker.py`
+
+PE listener. One Gemma on the 1060. If `0.0.0.0:8765` is already listening, do not start another copy.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--host` | `0.0.0.0` | Bind address. Empty host fails. Production is `0.0.0.0` so Iris can POST. |
+| `--port` | `8765` | Bind port, 1–65535. |
+| `--drop` | off | Read `nvidia_turn.request.txt` and write `nvidia_turn.response.txt`. This is the local inbox. It is not the LAN path. Do not use it on Iris. |
+| `--once` | off | With `--drop` only: handle the current request and exit. |
+| `--timeout SEC` | `600` | Kill `gemma.py` after this many seconds. Must be `> 0`. This clock is around Gemma, separate from the Iris HTTP timeout. |
+| `--verbose` | off | Pass `gemma-brain.exe` stderr through `gemma.py`. |
+
+`do_POST` reads JSON `id`, `text`, `image`, and `image_b64`. It runs `gemma.py` once and returns `{"text": out}`. There is no `do_GET`. A browser GET is not a health check. Body cap is 16_000_000 bytes. `image_b64` is decoded to a temp file. If it is absent and `image` is a readable path on this machine, that path is passed to `gemma.py --image`.
+
+### `gemma.py`
+
+One question, then stdout generation, thinking included.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `question` | required | Text prompt. A question that starts with `<<trident-inbox>>` drops that marker, skips tools, and leaves the thought channel open. |
+| `--image PATH` | none | Encoded as raw base64 into `gemma.image`. The prompt must contain `<__media__>` or `gemma.py` inserts that token. |
+| `--verbose` | off | Show `gemma-brain.exe` stderr. The default discards it. |
+
+Ordinary text turns declare two tools, `hello` and `cursor`, and close an empty thought channel. `hello` appends one line to `tool_hello.txt` on the machine that ran `gemma.py`, then asks the brain again (up to three follow-ups). `cursor` runs the Cursor CLI once: `--version` when the job asks for a version, otherwise `--list-extensions --show-versions`. It writes `grok_bot_spawn.txt`. A missing CLI writes `BLOCKED` and does not edit the repo. Unknown tool names are skipped. Image prompts do not add the tool header.
+
+`gemma.py` copies `gemma.txt`, drops `gemma.text` and `gemma.image`, writes the prompt and the image block, and runs `gemma-brain.exe gemma_run.txt`. Output is `HH-MM-SS-mmm_gemma_out_NNN.txt`.
+
+### `qwen.py`
+
+Local Qwen3 0.6B through `sense.exe`. Text only.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `question` | required unless `--stop` | The user text. Wrapped in Qwen3 `<|im_start|>` markers. |
+| `--image PATH` | none | Refused. Message: `qwen/sense vision is N/A`. Use `gemma.py --image` on the NVIDIA seat. |
+| `--verbose` | off | Show one-shot `sense.exe` stderr. Resident logs are `sense.run.err`. |
+| `--once` | off | One-shot `sense.exe`, then exit. The default keeps `sense.exe --resident`. |
+| `--stop` | off | Stop the resident. Must be the only flag. |
+
+`qwen.py` copies `sense.txt` and replaces `sense.text`. Context, threads, `n-predict`, batch, temperature, top-k, and top-p in `sense.txt` are the live sampling knobs. Resident files: `sense.pid`, `sense.prompt.txt`, `sense.response.txt`, `sense.stop`, `sense.lock`, `sense_run.txt`.
+
+### `grok_local_bot.py`
+
+File team and the unattended wav door. Pass exactly one of `--proof`, `--role`, `--wav`, or `--inbox`.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--proof` | off | On the listener seat. Clears `grok_bot_history.txt`, runs coordinator then reasoner, writes `grok_bot.txt`. Requires a local `0.0.0.0:8765` whose pid stays. |
+| `--role` | none | `coordinator` or `reasoner`. One role, then exit. |
+| `--wav PATH` | none | Iris door. Hear this wav, one team turn over the LAN, mouth with `--model nano --no-play`. Refuses `--drop`. |
+| `--inbox PATH` | flag absent | File inbox. `--inbox` with no path reads `grok_bot_inbox.txt`. The file is an input you write. It is not shipped in git. |
+| `--drop` | off | Reasoner uses `nvidia_worker.py --drop --once` instead of POST. Illegal with `--wav`. |
+| `--url URL` | see below | Worker POST URL. |
+| `--timeout SEC` | `600` | Worker seconds for the reasoner. Must be `> 0`. The door's hear cap is 180 s and its mouth cap is 300 s, separate from this clock. |
+
+`--wav` URL is `--url` or `TRIDENT_NVIDIA_URL`. `--proof`, `--role`, and `--inbox` use `--url` or `http://127.0.0.1:8765/` when `--drop` is off.
+
+`--inbox` file: either plain text, or blocks `text <<` … `<<` and optional `image <<` … `<<`. An image path must exist on the machine that reads the inbox. Empty text with an image becomes `What is in this picture?`.
+
+The door and `--proof` create `grok_bot_history.txt`, `grok_bot_request.txt`, and `grok_bot_response.txt` if they are missing. `--proof` also writes `grok_bot.txt`. The `cursor` tool writes `grok_bot_spawn.txt`. The door writes `iris-door.txt`. None of those run records are in git.
+
+### `loopback.py`
+
+Cable harness. Writes `loopback-proof/` (devices, intent, synth, play, hear, transcript, status). `assistant.py --vb-cable` then writes `jarvis.txt` and `nvidia.txt` in that directory. The directory is not in git.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--phrase TEXT` | `Trident cable loopback` | Sentence synthesized into CABLE Input and heard from CABLE Output. |
+| `--once` | off | One-shot Chatterbox for the spoken wav. |
+
+Needs `chatterbox.exe`, `nemo-speech.exe`, and `ear.gguf`. Ratio in `status.txt` is a difflib match of the phrase against the transcript.
+
+### `install.py`
+
+```powershell
+python install.py install.txt
+```
+
+The only argument is the card path. There are no flags. If the current interpreter is not `.venv\Scripts\python.exe`, the script creates the venv when needed and re-execs itself there. It installs the CPU torch pin and the `install.pip` block, pins ggml, llama.cpp, and NeMo-Speech.cpp, builds the mouth (`chatterbox.exe`, `chatterbox-bake.exe`, `ear.exe`, `vad.exe`), builds `nemo-speech.exe`, builds `gemma-brain.exe` and `sense.exe`, downloads Gemma, the mmproj, `ear.gguf`, `sense.gguf`, and Silero VAD, and bakes nano, turbo, and v3 from `reference.wav`.
+
+`scripts/convert_t3.py` and `scripts/convert_s3.py` are install tools, not voice-path entrypoints.
+
+| Script | Arguments |
+| --- | --- |
+| `convert_t3.py` | `checkpoint output safetensors --matrix-type TYPE --quant-policy JSON --s3-checkpoint NAME` |
+| `convert_s3.py` | `directory output --checkpoint {s3gen_meanflow.safetensors\|s3gen.safetensors} --weight-type TYPE --quant-policy JSON` |
+| `quant.py` | Imported by the converters. No CLI. A policy JSON lists rules (`prefix`, `suffix`, `contains`, `ndim`, `type`). The first match wins. Other tensors use the default type from `install.txt`. |
+
+`TYPE` is a ggml quant name (`q4_0` in the checked-in card).
+
+### `install.txt`
+
+`install.py` reads every key below. Empty means empty, and the installer documents what an empty value does.
+
+| Key | Checked-in | Meaning |
+| --- | --- | --- |
+| `install.generator` | Visual Studio 17 2022 | CMake generator. |
+| `install.arch` | `x64` | CMake `-A`. |
+| `install.config` | `Release` | CMake config and mouth `TRIDENT_CONFIG`. |
+| `install.parallel` | `2` | Mouth `--parallel` (chatterbox, bake, ear, vad). |
+| `install.brain_parallel` | `4` | Gemma/sense `--parallel` after the CUDA codegen step. |
+| `install.vulkan_sdk` | empty | Empty uses the newest SDK under `C:/VulkanSDK`. A path forces that SDK. |
+| `install.msvc_arch` | empty | Empty runs `gemma/scripts/detect_cpu.ps1` (`/arch:AVX512`, `AVX2`, `AVX`, or nothing). A value such as `/arch:AVX2` forces it. |
+| `install.utf8_manifest` | `utf8.manifest` | Embedded in the exes so the active code page is UTF-8. |
+| `install.src_ggml` | `.install/src/ggml` | ggml pin checkout. |
+| `install.src_llama` | `.install/src/llama.cpp` | llama.cpp pin checkout. |
+| `install.src_nemo` | `.install/src/nemo-speech` | NeMo-Speech.cpp pin checkout. |
+| `install.build_mouth` | `.install/build/mouth` | Mouth build tree. |
+| `install.build_gemma` | `C:\tgemma` | Gemma build tree. Short on purpose: the Vulkan shader step fails on a long path. |
+| `install.build_ear` | `.install/build/ear` | NeMo build tree. |
+| `install.cache` | `.install/cache` | Downloads, stamps, ONNX Runtime, bake temps. |
+| `install.ggml_repo` / `install.ggml_rev` | ggml URL and a full rev | Pinned ggml commit. |
+| `install.llama_repo` / `install.llama_rev` | llama.cpp URL and a full rev | Clearing `install.llama_rev` tracks `master`. |
+| `install.nemo_repo` / `install.nemo_rev` | NeMo URL and a full rev | Clearing `install.nemo_rev` keeps the revision already cloned. |
+| `install.t3_weight_type` | `q4_0` | Default T3 quant type. |
+| `install.s3_weight_type` | `q4_0` | Default S3 quant type. |
+| `install.t3_quant_policy` | `scripts/quant_t3.json` | Tensors forced to f32 (norms, biases, voice encoder, and 1-D). |
+| `install.s3_quant_policy` | `scripts/quant_s3.json` | Tensors forced to f32 (flow embeddings, campplus, CFM, HiFT, biases, ndim 1/3/4). |
+| `install.hf_nano` / `install.hf_turbo` / `install.hf_v3` | Hugging Face resolve URLs | Chatterbox checkpoint roots for those three voices. |
+| `install.mouth_ggml_vulkan` | `on` | Mouth ggml Vulkan. |
+| `install.mouth_ggml_cpu` | `off` | Mouth ggml CPU backend. |
+| `install.mouth_ggml_openmp` | `off` | Mouth OpenMP. |
+| `install.mouth_ggml_build_tests` | `off` | ggml tests. |
+| `install.mouth_ggml_build_examples` | `off` | ggml examples. |
+| `install.mouth_build_shared` | `off` | Static mouth build. |
+| `install.mouth_compile` | `/O2 /bigobj /utf-8` | MSVC flags for the mouth. |
+| `install.mouth_definitions` | `NOMINMAX WIN32_LEAN_AND_MEAN GGML_USE_VULKAN _USE_MATH_DEFINES _CRT_SECURE_NO_WARNINGS` | Mouth preprocessor definitions. |
+| `install.gemma_backend` | `auto` | `auto`, `cuda`, or `vulkan`. `auto` runs `detect_gpu.ps1`: `cuda` when a NVIDIA controller and `nvcc` both exist, otherwise `vulkan`. PE production is CUDA. |
+| `install.cuda_root` | `C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6` | CUDA toolkit. Used when the backend is CUDA. |
+| `install.cuda_toolset` | `cuda=12.6` | CMake `-T`. |
+| `install.cuda_architectures` | `61-real` | `CMAKE_CUDA_ARCHITECTURES`. The 1060 is 61. A different card means a new architecture before reusing this value. |
+| `install.cuda_max` | `12.6` | Install refuses a newer CUDA than this pair. |
+| `install.cuda_codegen_parallel` | `1` | Parallelism for the `ggml-cuda` target only. |
+| `install.gemma_compile` | `/O2 /Ob2 /Oi /Ot /GL /fp:fast /Gy /Gw /utf-8` | Host compile flags for Gemma and sense. |
+| `install.gemma_link` | `/LTCG` | Link flags. |
+| `install.gemma_definitions` | `NOMINMAX WIN32_LEAN_AND_MEAN` | Gemma preprocessor definitions. |
+| `install.text_model_url` | Gemma 4 E2B-it Q4_0 GGUF URL | Saved as the `gemma.model` name from `gemma.txt` (`gemma.gguf`). |
+| `install.mmproj_url` | matching mmproj Q8_0 URL | Saved as `gemma.mmproj` (`gemma-mmproj.gguf`). |
+| `install.brain_ggml_cpu` | `on` | `GGML_CPU`. |
+| `install.brain_ggml_metal` | `off` | `GGML_METAL`. Windows stays off. |
+| `install.brain_ggml_openmp` | `on` | `GGML_OPENMP`. |
+| `install.brain_ggml_blas` | `off` | `GGML_BLAS`. |
+| `install.brain_ggml_accelerate` | `off` | `GGML_ACCELERATE`. |
+| `install.brain_ggml_native` | `on` | `GGML_NATIVE`. |
+| `install.llama_build_common` | `on` | `LLAMA_BUILD_COMMON`. Gemma needs it. |
+| `install.llama_build_tools` | `off` | `LLAMA_BUILD_TOOLS`. |
+| `install.llama_build_mtmd` | `on` | `LLAMA_BUILD_MTMD`. Vision needs it. |
+| `install.llama_build_tests` | `off` | Tests. |
+| `install.llama_build_examples` | `off` | Examples. |
+| `install.llama_build_server` | `off` | llama server. Trident uses `gemma-brain.exe`. |
+| `install.llama_curl` | `off` | `LLAMA_CURL`. |
+| `install.llama_openssl` | `off` | `LLAMA_OPENSSL`. |
+| `install.llama_subprocess` | `off` | `LLAMA_SUBPROCESS`. |
+| `install.mtmd_video` | `off` | `MTMD_VIDEO`. |
+| `install.brain_build_shared` | `off` | `BUILD_SHARED_LIBS` for the brain. |
+| `install.ggml_ccache` | `on` | `GGML_CCACHE`. |
+| `install.ggml_cuda_force_mmq` | `on` | `GGML_CUDA_FORCE_MMQ`. |
+| `install.ggml_cuda_force_cublas` | `off` | `GGML_CUDA_FORCE_CUBLAS`. |
+| `install.ggml_cuda_fa` | `on` | `GGML_CUDA_FA`. |
+| `install.ggml_cuda_fa_all_quants` | `off` | Flash-attn for every quant. |
+| `install.ggml_cuda_graphs` | `on` | `GGML_CUDA_GRAPHS`. |
+| `install.ggml_cuda_nccl` | `off` | `GGML_CUDA_NCCL`. One GPU. |
+| `install.ear_gguf_url` | Nemotron streaming ASR q8_0 URL | Saved as `ear.model` from `ear.txt` (`ear.gguf`). |
+| `install.sense_url` | Qwen3-0.6B Q4_K_M URL | Saved as `sense.model` (`sense.gguf`). |
+| `install.ear_backend` | `cpu` | NeMo `build.ps1 -Backend`. Iris ASR is CPU. |
+| `install.ear_profile` | `core` | `-Profile`. |
+| `install.ear_config` | `Release` | `-Config`. |
+| `install.ear_cuda_arch` | `native` | `-CudaArch`. Unused while the backend is `cpu`. |
+| `install.ear_architecture` | `auto` | `-Architecture`. |
+| `install.ear_compiler` | `auto` | `-Compiler`. |
+| `install.ear_jobs` | `0` | `-Jobs`. `0` lets the NeMo script choose. |
+| `install.ear_vcpkg_root` | empty | Empty skips vcpkg. |
+| `install.ear_vcpkg_triplet` | empty | Empty skips the triplet flag. |
+| `install.ear_asr_only` | `on` | `-AsrOnly`. |
+| `install.ear_grpc` | `off` | `-Grpc`. |
+| `install.ear_nmt` | `off` | `-Nmt`. |
+| `install.ear_flashlight` | `off` | `-Flashlight`. |
+| `install.ear_http` | `off` | `-Http`. |
+| `install.ear_http_tls` | `off` | `-HttpTls`. |
+| `install.ear_tts_ja` | `off` | `-TtsJa`. |
+| `install.ear_tts_zh` | `off` | `-TtsZh`. |
+| `install.ear_tests` | `off` | `-Tests`. |
+| `install.ear_cublas_shim` | `off` | `-CublasShim`. |
+| `install.publish` | `off` | `on` runs `gh release` upload of root `*.exe` and `*.dll`, tag `trident-<backend>-<isa>`. Leave `off`. |
+| `install.silero_onnx_url` | Silero VAD onnx URL | Saved as `vad.model` (`silero_vad.onnx`). |
+| `install.onnxruntime_url` | ONNX Runtime 1.20.1 win-x64 zip | Used by `vad.exe`. |
+| `install.onnxruntime_root` | empty | Empty downloads and unpacks the zip into the cache. A path uses that tree. |
+| `install.torch` | `torch==2.6.0` | CPU torch pin. |
+| `install.torch_index` | `https://download.pytorch.org/whl/cpu` | Pip `--index-url` for that pin. |
+| `install.torch_extra_index` | `https://pypi.org/simple` | Pip `--extra-index-url`. |
+| `install.nano_cond_seconds` | `15` | Reference seconds baked into nano. Overrides `bake.cond-seconds` for that voice. |
+| `install.turbo_cond_seconds` | `15` | Same for turbo. |
+| `install.v3_cond_seconds` | `6` | Same for v3. |
+| `install.pip` | block | `numpy==1.26.4`, `sounddevice==0.5.6`, `gguf==0.19.0`, `safetensors==0.8.0`, `librosa==0.11.0`, `tokenizers==0.23.2`. |
+
+A new GPU is a change to `install.cuda_architectures` and to `gemma.ctx` / `gemma.gpu-layers` before anyone reuses the 1060 numbers.
+
+### `gemma.txt`
+
+`gemma-brain.exe` reads this card as its only argument. `gemma.py` keeps every key except `gemma.text` and `gemma.image`, which it rewrites per turn. Lower `gemma.temp` collapses the turn. On this 1060 the fit that held an image was context `65536`, `gpu-layers` `999`, KV f16, flash-attn `off` (peak 5672 MiB of 6144). Native context length is 131072. `8192` left KV unused on that card.
+
+| Key | Checked-in | Meaning |
+| --- | --- | --- |
+| `gemma.model` | `gemma.gguf` | Text GGUF. Install writes this filename. |
+| `gemma.mmproj` | `gemma-mmproj.gguf` | Vision projector. Install writes this filename. |
+| `gemma.ctx` | `65536` | Context length. Re-check on a new GPU. |
+| `gemma.batch` / `gemma.ubatch` | `512` / `512` | Logical batch and physical batch. |
+| `gemma.n-predict` | `2048` | Max new tokens. A short reply still stops on EOS. Room for an open thought channel plus the answer. |
+| `gemma.gpu-layers` | `999` | Layers stored in VRAM. `999` is more layers than this model has, so the model is fully offloaded. |
+| `gemma.gpu` | `0` | Main GPU index. |
+| `gemma.threads` / `gemma.threads-batch` | `4` / `4` | CPU threads for generation and for batch. |
+| `gemma.temp` | `1.0` | Gemma 4 E2B-it sampling. Keep 1.0. |
+| `gemma.top-k` | `64` | Top-k. |
+| `gemma.top-p` | `0.95` | Top-p. |
+| `gemma.min-p` | `0.05` | Min-p. |
+| `gemma.repeat-penalty` | `1.0` | Repeat penalty. `1.0` is off. |
+| `gemma.seed` | `-1` | `-1` is the random seed. |
+| `gemma.flash-attn` | `off` | `auto`, `on`, or `off`. |
+| `gemma.warmup` | `on` | Warmup pass. |
+| `gemma.cache-type-k` / `gemma.cache-type-v` | `f16` / `f16` | KV cache types. f16 is the measured fit. |
+| `gemma.image-min-tokens` / `gemma.image-max-tokens` | `-1` / `-1` | Vision token bounds. `-1` leaves the mmproj default. |
+| `gemma.mmproj-gpu` | `on` | Run the projector on GPU. |
+| `gemma.mmproj-timings` | `on` | Print mmproj timings. |
+| `gemma.n-keep` | `0` | Tokens kept from the prompt on a shift. |
+| `gemma.n-chunks` | `-1` | Chunk limit. `-1` is unlimited. |
+| `gemma.n-parallel` | `1` | Parallel sequences. One turn. |
+| `gemma.n-sequences` | `1` | Sequence slots. |
+| `gemma.n-outputs-max` | `0` | Max outputs in a batch. `0` means `gemma.batch`. |
+| `gemma.n-outputs-max-per-seq` | `1` | Max outputs per sequence. |
+| `gemma.grp-attn-n` / `gemma.grp-attn-w` | `1` / `512` | Group-attention factor and width. |
+| `gemma.n-print` | `-1` | Print a token count every n tokens. `-1` disables the print. |
+| `gemma.tensor-split` | empty | Comma-separated split across GPUs. Empty is one GPU. |
+| `gemma.split` | `none` | `none`, `layer`, `row`, or `tensor`. |
+| `gemma.fit` / `gemma.fit-print` | `off` / `off` | Fit unset parameters to free device memory, and whether to print that estimate. Leave fit off so the card's context stays `65536`. |
+| `gemma.fit-min-ctx` | `4096` | Floor if fit is turned on. |
+| `gemma.load-mode` | `auto` | `auto`, `none`, `mmap`, `mlock`, `mmap-mlock`, or `direct-io`. |
+| `gemma.lazy-mode` | `auto` | `off`, `auto`, or `on`. |
+| `gemma.numa` | `disabled` | `disabled`, `distribute`, `isolate`, `numactl`, or `mirror`. |
+| `gemma.priority` / `gemma.priority-batch` | `high` / `high` | Process priority for generation and batch. |
+| `gemma.poll` / `gemma.poll-batch` | `50` / `50` | Busy-poll level, 0–100. |
+| `gemma.strict-cpu` / `gemma.strict-cpu-batch` | `off` / `off` | Pin threads to the CPU mask. |
+| `gemma.cpu-mask` / `gemma.cpu-mask-batch` | empty | Hex mask. Empty means no mask. |
+| `gemma.rope-scaling` | `unspecified` | `unspecified`, `none`, `linear`, `yarn`, or `longrope`. |
+| `gemma.rope-freq-base` / `gemma.rope-freq-scale` | `0` / `0` | RoPE overrides. `0` keeps the model value. |
+| `gemma.yarn-ext-factor` / `gemma.yarn-attn-factor` / `gemma.yarn-beta-fast` / `gemma.yarn-beta-slow` | `-1` | YaRN overrides. `-1` keeps the model value. |
+| `gemma.yarn-orig-ctx` | `0` | Original context for YaRN. `0` keeps the model value. |
+| `gemma.ctx-shift` | `off` | Context shift when the window fills. |
+| `gemma.swa-full` | `off` | Use a full-size sliding-window attention cache. |
+| `gemma.kv-unified` | `off` | Unified KV buffer. |
+| `gemma.no-kv-offload` | `off` | Keep KV on the CPU. |
+| `gemma.check-tensors` | `off` | Validate tensors on load. |
+| `gemma.no-op-offload` | `off` | Disable offload of host tensor operations to the device. |
+| `gemma.no-extra-bufts` | `off` | Disable extra buffer types used for weight repacking. |
+| `gemma.no-host` | `off` | Bypass the host buffer so extra buffers can be used. |
+| `gemma.show-timings` | `on` | Print timings. |
+| `gemma.no-perf` | `off` | Hide the perf print. |
+| `gemma.sampler-no-perf` | `off` | Hide sampler perf. |
+| `gemma.mtmd-batch` | `1024` | Vision batch token cap. |
+| `gemma.verbosity` | `2` | llama log level. |
+| `gemma.n-prev` | `64` | Tokens kept for the sampler history. |
+| `gemma.n-probs` | `0` | When greater than 0, report probabilities for that many top tokens. |
+| `gemma.min-keep` | `0` | Samplers keep at least this many tokens. `0` disables the floor. |
+| `gemma.xtc-probability` / `gemma.xtc-threshold` | `0` / `0.1` | XTC sampler. Probability `0` disables it. A threshold above `0.5` also disables it. |
+| `gemma.typical` | `1` | Typical-p. `1` is off. |
+| `gemma.dynatemp-range` / `gemma.dynatemp-exponent` | `0` / `1` | Dynamic temperature. Range `0` is off. |
+| `gemma.repeat-last-n` | `64` | How far back the repeat penalty looks. |
+| `gemma.frequency-penalty` / `gemma.presence-penalty` | `0` / `0` | Frequency and presence penalties. |
+| `gemma.dry-multiplier` | `0` | DRY penalty. `0` is off. |
+| `gemma.dry-base` | `1.75` | DRY base, used when the multiplier is on. |
+| `gemma.dry-allowed-length` | `2` | DRY allowed repeat length. |
+| `gemma.dry-penalty-last-n` | `64` | DRY lookback. |
+| `gemma.adaptive-target` / `gemma.adaptive-decay` | `-1` / `0.9` | Pick tokens near this probability. A negative target disables it. Decay is the EMA factor. |
+| `gemma.mirostat` | `0` | `0` off, `1` or `2` for the two Mirostat modes. |
+| `gemma.top-n-sigma` | `-1` | Top-n-sigma. `-1` is off. |
+| `gemma.mirostat-tau` / `gemma.mirostat-eta` | `5` / `0.1` | Mirostat target entropy and learning rate. |
+| `gemma.ignore-eos` | `off` | Keep generating through EOS. |
+| `gemma.timing-per-token` | `off` | Per-token timing. |
+| `gemma.backend-sampling` | `off` | Sample on the backend. |
+| `gemma.text` | sample prompt | Whole prompt. `gemma.py` replaces it. Tokens in the template are Gemma 4 turn markers. |
+| `gemma.image` | empty | Raw base64, or empty. `gemma.py` replaces it. When set, the text must already contain `<__media__>`. The exe does not edit the prompt to find a picture. |
+
+### `sense.txt`
+
+`sense.exe` reads this card. `qwen.py` replaces `sense.text` and keeps the rest. One-shot answers `sense.text`. The resident ignores that block and answers `sense.prompt.txt`.
+
+| Key | Checked-in | Meaning |
+| --- | --- | --- |
+| `sense.gpu-layers` | `0` | CPU. Raising this asks for GPU layers the local Qwen path does not use. |
+| `sense.model` | `sense.gguf` | Qwen3-0.6B. Install writes this filename. |
+| `sense.ctx` | `4096` | Context. |
+| `sense.threads` | `4` | CPU threads. |
+| `sense.n-predict` | `128` | Max new tokens. |
+| `sense.batch` | `512` | Batch. |
+| `sense.temp` | `0.7` | Temperature. |
+| `sense.top-k` | `20` | Top-k. |
+| `sense.top-p` | `0.8` | Top-p. |
+| `sense.text` | sample prompt | One-shot prompt. Qwen3 `<|im_start|>` markers. `qwen.py` replaces it. |
+
+### `chatterbox.txt`
+
+Voice paths and sampling for `chatterbox.exe`. `mouth.py` overwrites variant, language, play, and text. The other keys are the live voice.
+
+| Key | Checked-in | Meaning |
+| --- | --- | --- |
+| `nano.t3` / `nano.s3` | `nano-t3.gguf` / `nano-s3.gguf` | Baked nano pair. Install writes these names. |
+| `turbo.t3` / `turbo.s3` | `turbo-t3.gguf` / `turbo-s3.gguf` | Baked turbo pair. |
+| `v3.t3` / `v3.s3` | `v3-t3.gguf` / `v3-s3.gguf` | Baked v3 pair. |
+| `chatterbox.variant` | `turbo` | Which pair to load. `mouth.py` sets this from `--model`. Live and door commands use `nano`. |
+| `chatterbox.language` | `en` | Tag stored in that GGUF. `mouth.py` sets this from `--lang` or the model default. The text is not rewritten. |
+| `chatterbox.sample-rate` | `24000` | Output wav rate. |
+| `chatterbox.graph-nodes` | `8192` | ggml graph size. |
+| `chatterbox.end-trim-samples` | `960` | Samples dropped from the end. The llama engine uses this. `0` keeps the tail. |
+| `chatterbox.gpu` | `0` | Vulkan device. On Iris that is Iris Xe, device 0. |
+| `chatterbox.seed` | `42` | Sampler seed. |
+| `chatterbox.temperature` | `0.8` | Sampling temperature. |
+| `chatterbox.repeat-penalty` | `1.2` | Repeat penalty. |
+| `chatterbox.n-predict` | `1000` | Max speech tokens. |
+| `chatterbox.trim-fade-samples` | `480` | Fade length applied to the pcm tail. |
+| `chatterbox.top-p` | `0.95` | Top-p. |
+| `chatterbox.cfm-steps` | `2` | Flow matching steps. |
+| `chatterbox.top-k` | `1000` | Top-k. |
+| `chatterbox.min-p` | `0.05` | Min-p. |
+| `chatterbox.cfg-weight` | `0.5` | Classifier-free guidance on the v3 llama T3. The gpt2 engine (nano, turbo) does not read it. |
+| `chatterbox.exaggeration` | `0.5` | The v3 llama engine feeds this to the emotion tensor. Nano and turbo use the gpt2 engine, which does not read it. |
+| `chatterbox.cfm-cfg` | `0.7` | CFG scale on the flow step. |
+| `chatterbox.play` | `on` | Template only. `mouth.py` writes `off` and plays with `PlaySoundW` or sounddevice. A bare `chatterbox.exe card.txt` would honor `on` and call `PlaySoundW` itself. |
+| `chatterbox.text` | `Say one short sentence.` | One-shot text. The resident ignores it and speaks each `mouth.prompt.txt`. `mouth.py` replaces it. |
+
+### `ear.txt`
+
+Install reads `ear.model` and downloads `ear.gguf` to that name. `hear.py` does not read this file. `ear.exe ear.txt` runs `nemo-speech.exe transcribe` once and writes `HH-MM-SS-mmm_ear_out_NNN.txt`.
+
+| Key | Checked-in | Meaning |
+| --- | --- | --- |
+| `ear.model` | `ear.gguf` | NeMo GGUF path. Also the install destination name. |
+| `ear.input` | `utterance.wav` | Wav passed to transcribe. |
+| `ear.device` | `cpu` | `--device`. |
+| `ear.language` | empty | Empty omits `--language`. |
+| `ear.format` | `text` | `--format`. |
+| `ear.stream` | `off` | `on` adds `--stream`. |
+| `ear.endpointing` | `on` | Passed as `on` or `off` (`--endpointing=`). |
+| `ear.stop-history-eou-ms` | `1200` | Endpointing window. |
+| `ear.verbatim` | `off` | `on` adds `--verbatim`. |
+| `ear.no-punctuation` | `off` | `on` adds `--no-punctuation`. |
+
+### `vad.txt`
+
+Install reads `vad.model` and downloads Silero to that name. `vad.exe` is not in the `hear.py` loop. `vad.exe vad.txt` captures one finished utterance and writes `HH-MM-SS-mmm_vad_out_NNN.txt` whose body is the wav file name. Capture resample is the polyphase FIR in `Audio::resample`.
+
+| Key | Checked-in | Meaning |
+| --- | --- | --- |
+| `vad.model` | `silero_vad.onnx` | ONNX file. CPU, through ONNX Runtime. |
+| `vad.rate` | `16000` | Rate after resample. |
+| `vad.device` | `CABLE Output (VB-Audio Virtual Cable)` | Capture endpoint friendly name. |
+| `vad.window` | `512` | Frame size at 16 kHz. |
+| `vad.threshold` | `0.5` | Speech probability threshold. |
+| `vad.min-silence-ms` | `400` | Silence that ends the utterance. |
+| `vad.speech-pad-ms` | `120` | Audio kept before the detected start. |
+
+### `bake.txt`
+
+`chatterbox-bake.exe` reads this card. Install loads it, then overrides `bake.t3`, `bake.s3`, `bake.reference`, and `bake.cond-seconds` in a temp card. Cond-seconds for the three voices come from `install.nano_cond_seconds` (15), `install.turbo_cond_seconds` (15), and `install.v3_cond_seconds` (6). The reference path install uses is `bake.reference` (`reference.wav`). The other bake keys are the mel and voice-encoder settings baked into the GGUF. Change them only when you mean to rebake.
+
+| Key | Checked-in | Meaning |
+| --- | --- | --- |
+| `bake.t3` / `bake.s3` | `turbo-t3.gguf` / `turbo-s3.gguf` | Pair to rewrite. Install points these at the temp copies. |
+| `bake.reference` | `reference.wav` | Speaker reference. Also the door wav. |
+| `bake.gpu` | `0` | Vulkan device for the bake. |
+| `bake.cond-seconds` | `15` | Reference length stored as the condition. Install replaces this per voice. |
+| `bake.normalize-lufs` | `-27` | Loudness target before embedding. |
+| `bake.trim-db` | `20` | Trim threshold in dB. |
+| `bake.voice-seconds` | `30` | Seconds fed to the voice encoder. |
+| `bake.prompt-seconds` | `10` | Seconds tokenized as the S3 prompt. |
+| `bake.mel-seconds` | `10` | Seconds used for the mel prompt. |
+| `bake.voice-rate` | `16000` | Rate for the voice encoder and the tokenizer. |
+| `bake.mel-rate` | `24000` | Rate for the mel. |
+| `bake.mel-fft` | `1920` | Mel FFT size. |
+| `bake.mel-hop` | `480` | Mel hop. |
+| `bake.mel-power` | `1` | Mel power. |
+| `bake.mel-floor` | `1e-5` | Mel floor. |
+| `bake.mel-centered` | `off` | Center the mel frames. |
+
+Output is `HH-MM-SS-mmm_bake_out_NNN.txt` listing the rewritten T3 and S3 paths.
+
 ## Leave the worker alone
 
 If PE already shows `0.0.0.0:8765` listening, leave that process alone. Do not kill it. Do not start another `nvidia_worker.py`. Do not restart it so a code edit can load. Iris stays off that port. The door's probe is a TCP connect. A failed GET does not mean the worker is down.
@@ -254,14 +753,12 @@ Do not commit to `main`. Do not fast-forward `main` without Wojciech. Do not for
 | `nvidia_worker.py`, `gemma.py`, `gemma.txt` | PE HTTP worker and one-shot Gemma. NVIDIA owns them. Iris does not edit them. |
 | `qwen.py`, `sense.txt`, `gemma/src/sense.cpp` | Local CPU Qwen. `sense.exe`. |
 | `gemma/src/brain.cpp` | `gemma-brain.exe`. |
-| `grok_local_bot.py`, `grok_bot_*.txt`, `iris-door.txt` | File team, inbox, proof, door record. |
-| `loopback.py`, `loopback-proof/` | Cable harness and its text proof. |
+| `grok_local_bot.py` | File team, inbox, proof, door. Writes `grok_bot.txt`, `grok_bot_history.txt`, `grok_bot_request.txt`, `grok_bot_response.txt`, `grok_bot_spawn.txt`, and `iris-door.txt`. Those outputs are not in git. `--inbox` reads a text file you supply (default name `grok_bot_inbox.txt`). |
+| `loopback.py` | Cable harness. Writes `loopback-proof/`. That directory is not in git. |
 | `vad.txt`, `src/vad.cpp` | Silero `vad.exe`. Cable device. Not the live `hear.py` loop. |
 | `bake.txt`, `reference.wav`, `scripts/convert_*.py`, `scripts/quant*.json` | Voice bake. `reference.wav` is also the door wav. |
 | `src/`, root `CMakeLists.txt` | Mouth engine: chatterbox, bake, ear, vad. Vulkan. |
 | `install.py`, `install.txt`, `utf8.manifest` | Installer and the UTF-8 manifest embedded in the exes. |
-| `seq_agents.py`, `parallel_agents.py` | Old Gemma batches. The overlap log is not in git. Concurrent peak was 5976 MiB. |
-| `RESURRECTION.md` | The rebirth appendix, same text as the section below. |
 
 Iris measured playback and the Realtek default. PE measured the 1060, the listener pid, the whole Gemma dumps, the X-Fi console default, and the LG TV endpoint. PE files do not by themselves prove that Iris played audio. The Iris wavs and the 15:05 `mouth out: default` log do. The seat digs and the Iris comment-strip report are not in this tree.
 
@@ -290,9 +787,9 @@ Iris measured playback and the Realtek default. PE measured the 1060, the listen
 
 You are a fresh empty Grok Bot with no prior history. This appendix alone rebuilds the Trident Grok Bot team. Read it, create the seats below, join War Room, and write durable rules on each seat's first message. You do not write Trident code. Coding is Cursor My Machines only.
 
-The file-team roles inside `grok_local_bot.py` (coordinator / reasoner) are lines in `grok_bot_history.txt`, not people. Do not spawn a person named Coordinator. Older notes said SPOC merges. That chair is Spock. Do not spawn SPOC as a second manager. `seq_agents.py` and `parallel_agents.py` are old Gemma batch runners, not this team.
+The file-team roles inside `grok_local_bot.py` (coordinator / reasoner) are lines in `grok_bot_history.txt`, not people. Do not spawn a person named Coordinator. Older notes said SPOC merges. That chair is Spock. Do not spawn SPOC as a second manager. Old Gemma batch runners are not in this tree and are not this team.
 
-The body of `README.md` is the program manual (seats, voice path, install, commands, proof). This appendix is the team. If a sentence here and a sentence in an older README disagree, follow `README.md` plus the code. `RESURRECTION.md` is this appendix.
+The body of `README.md` is the program manual (seats, voice path, install, commands, proof, flags). This appendix is the team. If a sentence here and a sentence in an older README disagree, follow `README.md` plus the code. Wojciech keeps a rebirth paste on Downloads. That paste is outside git. This appendix is the in-tree copy.
 
 ## Team (exactly 4 bots + one War Room)
 
@@ -330,8 +827,8 @@ The body of `README.md` is the program manual (seats, voice path, install, comma
 - **Tools are thin.** `hello` writes `tool_hello.txt` on the worker machine. `cursor` lists extensions or prints a version into `grok_bot_spawn.txt` and does not edit the repo.
 - **VOICE = invoke-on-ask only.** No default VOICE Cursor scout.
 - **Worker bind.** `nvidia_worker.py --host` defaults to `0.0.0.0`, port 8765, PE only. Iris `local_8765: none`. Health probe is TCP connect or a real POST. GET is not implemented.
-- **VRAM.** One Gemma on the 1060. Image inbox peaked 5672 MiB of 6144. File-team proof peaked 4678. An overlap experiment peaked at 5976 MiB concurrent. Do not run `parallel_agents.py` beside the worker.
-- **Door proof** is `iris-door.txt` (`STATUS PASS`, speakers closed, `--no-play`). Copy that transcript. Do not rephrase it.
+- **VRAM.** One Gemma on the 1060. Image inbox peaked 5672 MiB of 6144. File-team proof peaked 4678. An overlap experiment peaked at 5976 MiB concurrent. Do not start a second Gemma beside the worker.
+- **Door proof** is the transcript in the unattended-wav section above, and the `iris-door.txt` a new door writes (`STATUS PASS`, speakers closed, `--no-play`). Copy that transcript. Do not rephrase it.
 
 ## Direct switches
 
@@ -389,7 +886,7 @@ You are TRIDENT_NVIDIA. Worker `trident-nvidia`, machine PE-DMLW, account `px-wj
 
 **Role card:**
 
-You are TRIDENT_VOICE. Bridge only. When Spock asks: invoke Iris hear/mouth on EB-W at `C:\Users\eb-wjt\Downloads\Jarvis\Trident` via venv python. Never invent ASR or replies — copy real transcripts and wav paths only. The door transcript of record is `iris-door.txt`. Human playback is PlaySound on the Iris default device, measured as Speakers (Realtek(R) Audio). PE X-Fi and the LG TV are not that path. VB-Cable is opt-in. On the live play path `mouth.py` prints `mouth out: default` and does not print the wav path; Chatterbox sidecars name the wav. No default Cursor scout. No Grok-Bot coding. War Room short. First message: write durable rules; idle until Spock asks.
+You are TRIDENT_VOICE. Bridge only. When Spock asks: invoke Iris hear/mouth on EB-W at `C:\Users\eb-wjt\Downloads\Jarvis\Trident` via venv python. Never invent ASR or replies — copy real transcripts and wav paths only. The door transcript of record is the unattended-wav section of `README.md`. A new door also writes `iris-door.txt` on the Iris disk. Human playback is PlaySound on the Iris default device, measured as Speakers (Realtek(R) Audio). PE X-Fi and the LG TV are not that path. VB-Cable is opt-in. On the live play path `mouth.py` prints `mouth out: default` and does not print the wav path; Chatterbox sidecars name the wav. No default Cursor scout. No Grok-Bot coding. War Room short. First message: write durable rules; idle until Spock asks.
 
 ## War Room ack shape
 

@@ -1,6 +1,0 @@
-text <<
-What animal is in this picture? Name it in the first sentence.
-<<
-image <<
-C:\Users\px-wjt\Downloads\Jarvis\Trident\recon-hf-vision\coco_sample.png
-<<
