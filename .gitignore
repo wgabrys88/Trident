@@ -40,6 +40,8 @@
 !/qwen.py
 !/gemma.py
 !/mouth.py
+!/loopback.py
+!/loopback-proof/*.txt
 !/nvidia_client.py
 !/nvidia_worker.py
 !/seq_agents.py

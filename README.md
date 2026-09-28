@@ -29,6 +29,7 @@ The long-term goal is an immediate, modular assistant whose major engines can re
 - [Troubleshooting](#troubleshooting)
 - [Scratch: Iris transcript toward NVIDIA](#scratch-iris-transcript-toward-nvidia)
 - [Scratch: NVIDIA worker on this seat](#scratch-nvidia-worker-on-this-seat)
+- [Scratch: VB-Cable loopback on Iris](#scratch-vb-cable-loopback-on-iris)
 - [License](#license)
 
 ---
@@ -1118,6 +1119,36 @@ Vision: `gemma.py --image vision_sample.jpg` (Hugging Face `transformers/tasks/c
 Sequential: `seq_agents.py` exit 0. Step 1 4289 ms, step 2 4394 ms. `seq_agents.txt` ends with `result ok`.
 
 `assistant.py --nvidia --url` forwards to the client. It was not run: a successful turn calls mouth and plays audio.
+
+---
+
+## Scratch: VB-Cable loopback on Iris
+
+Iris, 2026-09-28. Intel mic was not opened. Mouth played into the cable; hear transcribed the cable capture.
+
+STATUS PASS
+
+PortAudio names (MME truncates). Chosen pair is WASAPI, by name, not by a fixed index:
+
+- play: `CABLE Input (VB-Audio Virtual Cable)` (this run index 15, 2 ch, 48000)
+- capture: `CABLE Output (VB-Audio Virtual Cable)` (this run index 17, 2 ch, 48000)
+- also present: `CABLE In 16ch (VB-Audio Virtual Cable)`, DirectSound copies of the same names, WDM-KS `CABLE Output (VB-Audio Point)` / `Output (VB-Audio Point)` / `Input (VB-Audio Point)`
+- full dump: `loopback-proof/devices.txt`
+
+Phrase spoken: `Trident cable loopback`
+Transcript: `Trident cable loop back`
+Exits: synth 0, play 0, hear 0, loopback 0
+Capture peak 0.37946. Hear resampled device 48000 down to wav 16000.
+Proof HEAD: `9e26994a5cbdde1bf0d85804504963b095c7cb08`
+
+```powershell
+.\.venv\Scripts\python.exe .\loopback.py
+.\.venv\Scripts\python.exe .\mouth.py --no-play "Trident cable loopback"
+.\.venv\Scripts\python.exe .\mouth.py --play-wav .\07-07-09-433_chatterbox_out_000.wav --vb-cable
+.\.venv\Scripts\python.exe .\hear.py --vb-cable --language en --save-wav .\loopback-proof\hear.wav 4.06
+```
+
+Artifacts: `loopback-proof/intent.txt`, `loopback-proof/transcript.txt`, `loopback-proof/status.txt`, `loopback-proof/synth.txt`, `loopback-proof/play.txt`, `loopback-proof/hear.txt`, `loopback-proof/hear.wav` (wav not committed). Spoken wav: `07-07-09-433_chatterbox_out_000.wav`.
 
 ---
 

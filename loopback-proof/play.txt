@@ -1,0 +1,6 @@
+exit 0
+
+stdout:
+
+stderr:
+mouth out: CABLE Input (VB-Audio Virtual Cable)

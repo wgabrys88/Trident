@@ -1,10 +1,12 @@
 """Hearing one-shot. Record the PC mic for SECONDS, or transcribe --wav, then run nemo-speech once.
 
 Prints the transcript to stdout. --wav does not open the microphone.
+--vb-cable records CABLE Output instead of the live microphone.
 """
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -32,7 +34,7 @@ def die(message):
 def emit(message, file=sys.stderr):
     """Print device names / banners without crashing on non-UTF-8 consoles."""
     try:
-        print(message, file=file)
+        print(message, file=file, flush=True)
         return
     except UnicodeEncodeError:
         pass
@@ -47,7 +49,45 @@ def emit(message, file=sys.stderr):
         file.flush()
 
 
-def pick_mic(prefer: str | None):
+def hostapi_name(sd, info):
+    try:
+        return sd.query_hostapis(int(info["hostapi"]))["name"]
+    except Exception:
+        return ""
+
+
+def prefer_wasapi(matches, sd):
+    ranked = []
+    for index, info in matches:
+        api = hostapi_name(sd, info).lower()
+        if "wasapi" in api:
+            rank = 0
+        elif "directsound" in api:
+            rank = 1
+        elif "mme" in api:
+            rank = 2
+        else:
+            rank = 3
+        ranked.append((rank, index, info))
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    index, info = ranked[0][1], ranked[0][2]
+    return index, info["name"]
+
+
+def cable_capture_hits(devices):
+    hits = []
+    for index, info in enumerate(devices):
+        if info["max_input_channels"] < 1:
+            continue
+        name = info["name"].lower()
+        if "cable output" not in name or "vb-audio" not in name:
+            continue
+        hits.append((index, info))
+    virtual = [item for item in hits if "virtual" in item[1]["name"].lower()]
+    return virtual or hits
+
+
+def pick_mic(prefer: str | None, allow_cable: bool = False):
     try:
         import sounddevice as sd
     except ImportError:
@@ -61,13 +101,26 @@ def pick_mic(prefer: str | None):
             if index < 0 or index >= len(devices) or devices[index]["max_input_channels"] < 1:
                 die("unknown mic: " + prefer)
             return index, devices[index]["name"]
+        matches = []
         for index, info in enumerate(devices):
             if info["max_input_channels"] < 1:
                 continue
             name = info["name"]
-            if prefer_l in name.lower() and "cable" not in name.lower():
-                return index, name
-        die("unknown mic: " + prefer)
+            if prefer_l not in name.lower():
+                continue
+            if not allow_cable and "cable" in name.lower():
+                continue
+            matches.append((index, info))
+        if not matches:
+            die("unknown mic: " + prefer)
+        if allow_cable and len(matches) > 1:
+            return prefer_wasapi(matches, sd)
+        return matches[0][0], matches[0][1]["name"]
+    if allow_cable:
+        hits = cable_capture_hits(devices)
+        if not hits:
+            die("VB-Cable capture device not found")
+        return prefer_wasapi(hits, sd)
     # Prefer default input when it is not VB-Cable; else first non-cable mic.
     if default_in is not None and 0 <= default_in < len(devices):
         name = devices[default_in]["name"]
@@ -132,14 +185,50 @@ def transcribe_wav(wav: Path, args):
     raise SystemExit(completed.returncode)
 
 
+def resample_linear(pcm, src_rate, dst_rate):
+    import numpy as np
+
+    pcm = np.asarray(pcm, dtype=np.float32)
+    if src_rate == dst_rate or len(pcm) == 0:
+        return pcm
+    new_len = max(1, int(round(len(pcm) * float(dst_rate) / float(src_rate))))
+    if len(pcm) == 1:
+        return np.full(new_len, pcm[0], dtype=np.float32)
+    x_old = np.linspace(0.0, 1.0, num=len(pcm), endpoint=False)
+    x_new = np.linspace(0.0, 1.0, num=new_len, endpoint=False)
+    return np.interp(x_new, x_old, pcm.astype(np.float64)).astype(np.float32)
+
+
 def record_wav(path: Path, seconds: float, mic_index: int, rate: int):
     import numpy as np
     import sounddevice as sd
 
-    frames = int(seconds * rate)
-    audio = sd.rec(frames, samplerate=rate, channels=1, dtype="float32", device=mic_index)
-    sd.wait()
+    info = sd.query_devices(mic_index)
+    device_rate = int(round(float(info["default_samplerate"])))
+
+    def capture(sample_rate):
+        frames = int(seconds * sample_rate)
+        audio = sd.rec(frames, samplerate=sample_rate, channels=1, dtype="float32", device=mic_index)
+        sd.wait()
+        return audio
+
+    capture_rate = rate
+    try:
+        audio = capture(capture_rate)
+    except sd.PortAudioError as first:
+        sd.stop()
+        if device_rate == rate:
+            die("cannot record: " + str(first))
+        capture_rate = device_rate
+        emit("hear rate: device " + str(capture_rate) + " -> wav " + str(rate))
+        try:
+            audio = capture(capture_rate)
+        except sd.PortAudioError as second:
+            die("cannot record: " + str(second))
     pcm = np.clip(audio.reshape(-1), -1.0, 1.0)
+    if capture_rate != rate:
+        pcm = resample_linear(pcm, capture_rate, rate)
+        pcm = np.clip(pcm, -1.0, 1.0)
     pcm16 = (pcm * 32767.0).astype("<i2")
     with wave.open(str(path), "wb") as out:
         out.setnchannels(1)
@@ -159,6 +248,8 @@ def main():
     parser.add_argument("--format", default="text")
     parser.add_argument("--rate", type=int, default=16000)
     parser.add_argument("--mic", default=None, help="device index or name substring (never VB-Cable by default)")
+    parser.add_argument("--vb-cable", action="store_true", help="record CABLE Output (VB-Audio Virtual Cable)")
+    parser.add_argument("--save-wav", default=None, help="copy the recording to this path before transcribe")
     parser.add_argument("--endpointing", default="on", choices=("on", "off"))
     parser.add_argument("--stop-history-eou-ms", default="1200")
     parser.add_argument("--verbatim", action="store_true")
@@ -191,13 +282,20 @@ def main():
         os.chdir(ROOT)
         transcribe_wav(wav_path, args)
 
-    mic_index, mic_name = pick_mic(args.mic)
+    mic_index, mic_name = pick_mic(args.mic, allow_cable=args.vb_cable)
     emit("hear mic: " + mic_name, file=sys.stderr)
 
     os.chdir(ROOT)
     with tempfile.TemporaryDirectory(prefix="hear_", dir=str(ROOT)) as tmp:
         wav = Path(tmp) / "utterance.wav"
         record_wav(wav, args.seconds, mic_index, args.rate)
+        if args.save_wav:
+            dest = Path(args.save_wav).expanduser()
+            if not dest.is_absolute():
+                dest = (ROOT / dest).resolve()
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(wav, dest)
+            emit("hear wav saved: " + str(dest), file=sys.stderr)
         transcribe_wav(wav, args)
 
 

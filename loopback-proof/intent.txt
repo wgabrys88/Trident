@@ -1,0 +1,5 @@
+phrase Trident cable loopback
+play_index 15
+play_device CABLE Input (VB-Audio Virtual Cable)
+capture_index 17
+capture_device CABLE Output (VB-Audio Virtual Cable)
