@@ -1,4 +1,4 @@
-"""Iris-side stub that hands one text turn to a later NVIDIA Gemma worker.
+"""Iris-side stub that POSTs one text turn to the NVIDIA Gemma worker.
 
 Writes nvidia_turn.request.txt. If --url or TRIDENT_NVIDIA_URL is set, POST
 JSON and print the worker text. With no URL, leave the request and exit 0.
