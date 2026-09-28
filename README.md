@@ -1160,6 +1160,8 @@ Artifacts: `loopback-proof/intent.txt`, `loopback-proof/transcript.txt`, `loopba
 .\.venv\Scripts\python.exe .\parallel_agents.py
 ```
 
+STATUS PASS. 2026-09-28. Exit 0. Mode concurrent (`gemma_overlap yes`). Parallel wall 16463 ms, sequential `gemma.py` baseline 19798 ms. GPU at start 1474 MiB used, 4556 free, 6144 total. Peak during the pair 5976 MiB. Summarize: `The local assistant runs Gemma on an NVIDIA card while keeping the microphone unused.` Keywords: `Parallel, agents, overlapping.` Transcript `parallel_agents.txt`, log `parallel_agents.log`.
+
 ---
 
 ## License
