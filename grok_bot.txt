@@ -1,0 +1,19 @@
+STATUS PASS
+date: 2026-09-28
+head: c8245e957cb4a6fd1c5593682b39d0d139dc76b9
+coordinator_exit: 0
+reasoner_exit: 0
+reasoner_ms: 10138
+via: post
+spawn: model
+spawn_exit: 0
+listener: 0.0.0.0:8765 pid 12672
+listener_after: 0.0.0.0:8765 pid 12672
+history: grok_bot_history.txt
+request: grok_bot_request.txt
+response: grok_bot_response.txt
+spawn_log: grok_bot_spawn.txt
+gpu_base_util: 0
+gpu_base_mib: 1559
+gpu_peak_util: 88
+gpu_peak_mib: 4678
