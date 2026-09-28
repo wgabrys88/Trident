@@ -1,0 +1,7 @@
+exit 0
+
+stdout:
+C:\Users\eb-wjt\Downloads\Jarvis\Trident\07-07-09-433_chatterbox_out_000.wav
+
+stderr:
+mouth: chatterbox pid 4664 resident
