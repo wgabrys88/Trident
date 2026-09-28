@@ -2,7 +2,7 @@
 
 Trident is a voice assistant on two home Windows PCs. Iris hears and speaks. NVIDIA thinks and returns text. Iris turns that text into speech.
 
-Checked-in code outranks this file. If `ear.txt`, `vad.txt`, `chatterbox.txt`, `README_Iris.md`, `README_NVIDIA.md`, or an older sentence here disagrees with `hear.py`, `mouth.py`, `assistant.py`, `grok_local_bot.py`, `nvidia_client.py`, `nvidia_worker.py`, or `gemma.py`, follow the code and the run files.
+Checked-in code outranks this file. If `ear.txt`, `vad.txt`, `chatterbox.txt`, or an older sentence here disagrees with `hear.py`, `mouth.py`, `assistant.py`, `grok_local_bot.py`, `nvidia_client.py`, `nvidia_worker.py`, or `gemma.py`, follow the code and the run files.
 
 The branch of record is `runner-h`. Clone `https://github.com/wgabrys88/Trident.git` and check out `runner-h`. `main` is an ancestor of this branch (they matched at `e4dc33d` on 2026-09-28). Do not start work from `main`. Do not fast-forward `main` without Wojciech.
 
@@ -55,7 +55,7 @@ Chunk sizes on the English path: flush on `.!?;:` and dashes, then a 65-word lim
 
 ### `--nvidia` is one turn
 
-The worker stores no conversation. `do_POST` reads `id`, `text`, `image`, and `image_b64` only. `assistant.py --nvidia` posts the current question and does not attach `grok_bot_history.txt`. A mid-session reply of "We have not had a conversation yet" matches the code. Both seat digs record that sentence from the 2026-09-28 evening (Iris chatterbox wav `19-16-15-588`; PE `19-16-31-164_gemma_out_000.txt`).
+The worker stores no conversation. `do_POST` reads `id`, `text`, `image`, and `image_b64` only. `assistant.py --nvidia` posts the current question and does not attach `grok_bot_history.txt`. A mid-session reply of "We have not had a conversation yet" matches the code. The 2026-09-28 evening recorded that sentence (Iris chatterbox wav `19-16-15-588`; PE `19-16-31-164_gemma_out_000.txt`).
 
 `nvidia_client.py` always writes `nvidia_turn.request.txt` on the caller, then the response file after HTTP. Those same names are the `--drop` inbox inside `nvidia_worker.py`. `--drop` writes plain `id` / `ok` or `err` text. HTTP success is JSON. While `0.0.0.0:8765` is already listening, production is POST. The door never starts the worker. `--drop` is the fallback when this computer is not already listening. Do not use that fallback on Iris. An Iris `--inbox` with no local listener would try to run Gemma on Iris.
 
@@ -153,7 +153,7 @@ Reply of record:
 
 ### Overlap experiment — not an isolated Gemma fit
 
-`parallel_agents.log`: two Gemma jobs at once on the 1060, then a sequential baseline. Concurrent peak `5976` MiB. That number is the overlap run. It is not the inbox image turn (5672) and not the file-team proof (4678). Do not run `parallel_agents.py` while the worker holds the model. `seq_agents.py` is the older sequential batch. Neither script is the Grok Bot team.
+An overlap run put two Gemma jobs on the 1060 at once, then a sequential baseline. Concurrent peak `5976` MiB. That number is the overlap run. It is not the inbox image turn (5672) and not the file-team proof (4678). The run log is not in git. Do not run `parallel_agents.py` while the worker holds the model. `seq_agents.py` is the older sequential batch. Neither script is the Grok Bot team.
 
 ## Install
 
@@ -260,12 +260,10 @@ Do not commit to `main`. Do not fast-forward `main` without Wojciech. Do not for
 | `bake.txt`, `reference.wav`, `scripts/convert_*.py`, `scripts/quant*.json` | Voice bake. `reference.wav` is also the door wav. |
 | `src/`, root `CMakeLists.txt` | Mouth engine: chatterbox, bake, ear, vad. Vulkan. |
 | `install.py`, `install.txt`, `utf8.manifest` | Installer and the UTF-8 manifest embedded in the exes. |
-| `seq_agents.py`, `parallel_agents.py`, `parallel_agents.log` | Old Gemma batches. |
-| `README_Iris.md`, `README_NVIDIA.md` | Seat-by-seat claim digs from Scenario C. This file is the reconciled story. |
+| `seq_agents.py`, `parallel_agents.py` | Old Gemma batches. The overlap log is not in git. Concurrent peak was 5976 MiB. |
 | `RESURRECTION.md` | The rebirth appendix, same text as the section below. |
-| `wave2a-code-iris-report.txt` | Iris comment-strip report. It did not edit the NVIDIA worker files. |
 
-`README_Iris.md` and `README_NVIDIA.md` were written when `origin/main` and `origin/runner-h` were both `e4dc33d`. Where they disagree, this file follows code and the run files. Iris measured playback and the Realtek default. PE measured the 1060, the listener pid, the whole Gemma dumps, the X-Fi console default, and the LG TV endpoint. PE files do not by themselves prove that Iris played audio. The Iris wavs and the 15:05 `mouth out: default` log do.
+Iris measured playback and the Realtek default. PE measured the 1060, the listener pid, the whole Gemma dumps, the X-Fi console default, and the LG TV endpoint. PE files do not by themselves prove that Iris played audio. The Iris wavs and the 15:05 `mouth out: default` log do. The seat digs and the Iris comment-strip report are not in this tree.
 
 ## Retired claims
 
@@ -279,7 +277,7 @@ Do not commit to `main`. Do not fast-forward `main` without Wojciech. Do not for
 - `ear.exe` as the hearing path. `hear.py` calls `nemo-speech.exe`.
 - `chatterbox.play on` as the speaker switch.
 - A reply rendered on PE, or on a device named NVIDIA Speakers.
-- 5976 MiB as an isolated image fit. That peak is `parallel_agents.log` concurrent. The image inbox peak is 5672 MiB.
+- 5976 MiB as an isolated image fit. That peak is the overlap experiment (two Gemma jobs at once). The image inbox peak is 5672 MiB.
 - Grok Bots coding Trident. Cursor agents on `trident-iris` or `trident-nvidia` only.
 - VOICE as a coder or a default scout. Invoke-on-ask bridge.
 - A fifth bot, a person named Coordinator, or a second manager named SPOC. The chair is Spock.
@@ -332,7 +330,7 @@ The body of `README.md` is the program manual (seats, voice path, install, comma
 - **Tools are thin.** `hello` writes `tool_hello.txt` on the worker machine. `cursor` lists extensions or prints a version into `grok_bot_spawn.txt` and does not edit the repo.
 - **VOICE = invoke-on-ask only.** No default VOICE Cursor scout.
 - **Worker bind.** `nvidia_worker.py --host` defaults to `0.0.0.0`, port 8765, PE only. Iris `local_8765: none`. Health probe is TCP connect or a real POST. GET is not implemented.
-- **VRAM.** One Gemma on the 1060. Image inbox peaked 5672 MiB of 6144. File-team proof peaked 4678. `parallel_agents.log` concurrent peak 5976 is an overlap experiment. Do not run it beside the worker.
+- **VRAM.** One Gemma on the 1060. Image inbox peaked 5672 MiB of 6144. File-team proof peaked 4678. An overlap experiment peaked at 5976 MiB concurrent. Do not run `parallel_agents.py` beside the worker.
 - **Door proof** is `iris-door.txt` (`STATUS PASS`, speakers closed, `--no-play`). Copy that transcript. Do not rephrase it.
 
 ## Direct switches

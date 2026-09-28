@@ -24,6 +24,7 @@
 !/.gitignore
 !/.gitattributes
 !/README.md
+!/RESURRECTION.md
 !/CMakeLists.txt
 !/LICENSE
 !/install.py
@@ -47,7 +48,6 @@
 !/seq_agents.py
 !/parallel_agents.py
 !/parallel_agents.txt
-!/parallel_agents.log
 !/reference.wav
 
 # Installer conversion/quantization tools.
@@ -98,4 +98,3 @@
 !/grok_bot_response.txt
 !/grok_bot_spawn.txt
 !/iris-door.txt
-!/wave2a-code-iris-report.txt

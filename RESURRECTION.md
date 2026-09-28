@@ -42,7 +42,7 @@ The body of `README.md` is the program manual (seats, voice path, install, comma
 - **Tools are thin.** `hello` writes `tool_hello.txt` on the worker machine. `cursor` lists extensions or prints a version into `grok_bot_spawn.txt` and does not edit the repo.
 - **VOICE = invoke-on-ask only.** No default VOICE Cursor scout.
 - **Worker bind.** `nvidia_worker.py --host` defaults to `0.0.0.0`, port 8765, PE only. Iris `local_8765: none`. Health probe is TCP connect or a real POST. GET is not implemented.
-- **VRAM.** One Gemma on the 1060. Image inbox peaked 5672 MiB of 6144. File-team proof peaked 4678. `parallel_agents.log` concurrent peak 5976 is an overlap experiment. Do not run it beside the worker.
+- **VRAM.** One Gemma on the 1060. Image inbox peaked 5672 MiB of 6144. File-team proof peaked 4678. An overlap experiment peaked at 5976 MiB concurrent. Do not run `parallel_agents.py` beside the worker.
 - **Door proof** is `iris-door.txt` (`STATUS PASS`, speakers closed, `--no-play`). Copy that transcript. Do not rephrase it.
 
 ## Direct switches
