@@ -1207,6 +1207,19 @@ STATUS PASS. 2026-09-28. Exit 0. History `grok_bot_history.txt` is role coordina
 
 ---
 
+## Scratch: Iris voice door into the Grok-bot team
+
+`grok_local_bot.py --wav` is the door on Iris. `hear.py` transcribes the file. The same file team appends coordinator, then reasoner, in `grok_bot_history.txt`. The reasoner POSTs to the worker already named by `TRIDENT_NVIDIA_URL`. `mouth.py --no-play` writes the reply wav. The microphone stays closed and the speakers stay closed.
+
+```powershell
+$env:TRIDENT_NVIDIA_URL = "http://192.168.16.31:8765/"
+.\.venv\Scripts\python.exe .\grok_local_bot.py --wav .\reference.wav
+```
+
+The command checks that the worker port is already open. It leaves that listener where it is. The first door turn starts resident `chatterbox.exe` through `mouth.py` when `mouth.pid` is not already that voice. Later turns reuse it. `mouth.py --stop` stops that resident.
+
+---
+
 ## License
 
 Trident is licensed under the MIT License. See [`LICENSE`](LICENSE) for the project license and third-party notices.
