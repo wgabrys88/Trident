@@ -3,10 +3,12 @@
 The default keeps one gemma-brain.exe for this checkout. --once is the old single card run.
 --stop unloads it. --stream writes a speakable sentence when it ends.
 
-Text turns replay gemma.memory.txt and declare remember, devices, cursor, and next. Past model
+Text turns replay gemma.memory.txt and declare remember, devices, cursor, next, and stop.
+Past model
 turns are the speakable text only. The current turn starts at <|turn>model with thinking
 left off. A Gemma 4 <|tool_call> is run here. remember, devices, and next ask the brain once
-more. The speakable answer is appended to that file. remember adds one fact.
+more. stop does not. It leaves the call in the answer and does not kill this brain.
+The speakable answer is appended to that file. remember adds one fact.
 devices reports the CUDA and Vulkan adapters on this computer, whether port
 8765 accepts here, and whether a mouth on this computer would share that GPU.
 place() is that same decision for a turn: one TCP connect, no computer name,
@@ -70,6 +72,7 @@ SYSTEM = (
     "devices reports the CUDA device, the Vulkan device, whether they are the same adapter, and whether a mouth on this computer would share the brain GPU. "
     "cursor starts one local Cursor agent when the owner asks for a code change. "
     "next stores one line of work for when you are idle and nobody is speaking. "
+    "stop shuts down the local voice when the owner wants it to stop listening. It does not stop the brain. "
     "Call a tool only by its tool call. The spoken sentence has no channels or file names."
 )
 REMEMBER_DECL = (
@@ -152,6 +155,17 @@ NEXT_DECL = (
     + Q
     + "}}<tool|>"
 )
+STOP_DECL = (
+    "<|tool>declaration:stop{description:"
+    + Q
+    + "Stop the local voice organism when the owner wants this computer voice to shut down, go quiet, or stop listening. Does not stop the brain."
+    + Q
+    + ",parameters:{properties:{},required:[],type:"
+    + Q
+    + "OBJECT"
+    + Q
+    + "}}<tool|>"
+)
 TASK_SUFFIX = (
     " Work on branch runner-h. Open the pull request into runner-h."
     " Do not push main. Do not force-push. Do not kill a listening port 8765."
@@ -222,7 +236,16 @@ def tool_header(facts):
     body = SYSTEM
     if facts:
         body += "\nRemembered:\n" + "\n".join(facts)
-    return "<|turn>system\n" + body + REMEMBER_DECL + DEVICES_DECL + CURSOR_DECL + NEXT_DECL + "<turn|>\n"
+    return (
+        "<|turn>system\n"
+        + body
+        + REMEMBER_DECL
+        + DEVICES_DECL
+        + CURSOR_DECL
+        + NEXT_DECL
+        + STOP_DECL
+        + "<turn|>\n"
+    )
 
 
 def prepare_question(question):
@@ -1721,6 +1744,11 @@ def tool_turn(name, args, raw, spawn_path=None, memory_path=None):
             print("gemma: tool next stopped", file=sys.stderr, flush=True)
             return None, "fail empty work\n", None
         return raw + tool_response("next", [("line", line)]), None, line
+    if name == "stop":
+        # The voice seat ends the organism. Do not kill the brain that emitted this call.
+        print("gemma: tool stop", file=sys.stderr, flush=True)
+        body = raw if raw.endswith("\n") else raw + "\n"
+        return None, body, None
     print("gemma: tool unknown " + name, file=sys.stderr, flush=True)
     return None, "unknown tool " + name + "\n", None
 
