@@ -47,4 +47,4 @@ A live second answer that uses the first. That needs a generate on the resident,
 
 ## Later
 
-The live second answer is in `proof/g429-pe-memory-live.md`. This note's offline check is unchanged.
+This offline check is the memory record. A later live note named the tool `devices`. That name is not the tip. The tool is `place` (`proof/g429-pe-brain-finish.md`).

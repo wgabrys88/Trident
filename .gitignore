@@ -24,8 +24,6 @@
 !/.gitignore
 !/.gitattributes
 !/README.md
-!/IRIS_README.md
-!/NVIDIA_README.md
 !/CMakeLists.txt
 !/LICENSE
 !/install.py
@@ -99,18 +97,14 @@
 /iris_outbox.txt.tmp
 /iris_status.txt
 /iris_status.txt.tmp
-!/proof/g429-pe-memory-live.md
 !/proof/g429-pe-stream-flush.md
 !/proof/g429-pe-memory.md
-!/proof/g429-pe-tools.md
 !/proof/g429-pe-idle.md
 !/proof/g429-pe-idle-quiet.md
 !/proof/g429-pe-quiet-live.md
 !/proof/g429-pe-seat-forward.md
 !/proof/g429-pe-brain-finish.md
 !/proof/README.md
-!/proof/g429-pe-place.md
-!/proof/g429-pe-merge.md
 /seq_agents.txt
 /parallel_agents.txt
 /parallel_agents.log
@@ -126,16 +120,13 @@
 /iris-door.txt
 /loopback-proof/
 
-# Grok-bot team program. Role files above are runtime, not sources.
+# Local brain turn. The files above are runtime, not sources.
 !/grok_local_bot.py
-!/proof/voice-g429.md
 !/proof/voice-act.md
 !/proof/g429-closed-mic-loop.md
-!/proof/g429-iris-start-stop.md
 !/proof/g429-iris-outbox-consume.md
 !/proof/g429-live-mic.md
 !/proof/g429-run-stop.md
 !/proof/span-mouth.md
 !/proof/voice-seat.md
 !/proof/voice_seat_check.py
-!/proof/iris-merge-runner-h.md
