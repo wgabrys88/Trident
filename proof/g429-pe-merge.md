@@ -36,7 +36,9 @@ Parents:
 - `521a88e7ec3d4cb3f0808a634949944f1a6e8b59` — PE stack note
 - `d24cbe3ef24e52e78fb78a4a5ffc37e2867c18ff` — Iris `runner-h` tip at the fetch
 
-After the push, `runner-h` is the commit that contains this paragraph. Its parent is that second merge.
+`runner-h` before this sentence was `6f8e52f3195ca7a11d6aa30c4d2e52e1f93b7a38`. Its parent is the second merge. After the push, `runner-h` is the commit that contains this sentence, and that commit's parent is `6f8e52f3195ca7a11d6aa30c4d2e52e1f93b7a38`.
+
+GitHub closed PRs 22, 23, and 24 as merged when `runner-h` moved (`merged` true). PRs 26 and 28 stayed open because their bases are the older stack branches. Retarget onto `runner-h` was rejected: no new commits between that base and those heads. They were then closed the same way Iris closed 25 and 27. `merged` stays false. The commits are on `runner-h`.
 
 ## Left with the Iris twin
 
