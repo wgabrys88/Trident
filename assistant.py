@@ -16,6 +16,9 @@ ROOT = Path(__file__).resolve().parent
 MODELS = ("nano", "turbo", "v3")
 BRAINS = ("qwen", "gemma")
 QUIT_WORDS = {"quit", "exit", "stop"}
+ACT_LINE = re.compile(r"^act:\s*(.*)$", re.IGNORECASE)
+NOTE_PATH = ROOT / "assistant.note.txt"
+NOTE_LIMIT = 200
 CABLE_PHRASE = "Trident cable loopback"
 EN_LIMIT = 65
 PL_LIMIT = 55
@@ -585,6 +588,104 @@ def posted_text(code, words):
     return body
 
 
+def split_act(text):
+    """Question text, then one trailing act. No act line leaves the question unchanged."""
+    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    raw_lines = normalized.split("\n")
+    act_at = None
+    for index, line in enumerate(raw_lines):
+        if ACT_LINE.match(line.strip()):
+            if act_at is not None:
+                die("one act")
+            act_at = index
+    if act_at is None:
+        return text.strip(), None
+    if any(line.strip() for line in raw_lines[act_at + 1 :]):
+        die("act line last")
+    rest = ACT_LINE.match(raw_lines[act_at].strip()).group(1).strip()
+    if not rest:
+        die("empty act")
+    name, _, arg = rest.partition(" ")
+    question = "\n".join(raw_lines[:act_at]).strip()
+    return question, (name.casefold(), arg.strip())
+
+
+def act_user_line(name, arg):
+    if arg:
+        return "act: " + name + " " + arg
+    return "act: " + name
+
+
+def note_lines():
+    if not NOTE_PATH.is_file():
+        die("no note")
+    try:
+        stored = NOTE_PATH.read_text(encoding="utf-8")
+    except OSError as exc:
+        die("cannot read assistant.note.txt: " + str(exc))
+    lines = [item.strip() for item in stored.splitlines() if item.strip()]
+    if not lines:
+        die("no note")
+    return lines
+
+
+def prepare_act(name, arg):
+    if name == "time":
+        if arg:
+            die("time takes no words")
+        return "time", ""
+    if name == "note":
+        line = " ".join(arg.split())
+        if not line:
+            die("empty note")
+        if len(line) > NOTE_LIMIT:
+            die("note over 200 characters")
+        return "note", line
+    if name == "next":
+        if arg:
+            die("next takes no words")
+        note_lines()
+        return "next", ""
+    die("unknown act " + name)
+
+
+def commit_act(name, arg):
+    print("assistant: act " + name, file=sys.stderr, flush=True)
+    if name == "time":
+        return time.strftime("The time is %H:%M.")
+    if name == "note":
+        try:
+            with NOTE_PATH.open("a", encoding="utf-8", newline="\n") as handle:
+                handle.write(arg + "\n")
+        except OSError as exc:
+            die("cannot write assistant.note.txt: " + str(exc))
+        return "Noted. " + arg
+    said = note_lines()[-1]
+    if said[-1] not in ".!?":
+        said += "."
+    return "The note is " + said
+
+
+def run_local_act(args, act, local):
+    name, arg = prepare_act(act[0], act[1])
+    if local:
+        print("assistant: local act", file=sys.stderr, flush=True)
+    sentence = commit_act(name, arg)
+    show(sentence)
+    speak_raw(args, sentence, play=True, flip=False)
+    return sentence, act_user_line(name, arg)
+
+
+def speak_act(args, act, local, hold):
+    if not hold:
+        return run_local_act(args, act, local)
+    set_hold(True)
+    try:
+        return run_local_act(args, act, local)
+    finally:
+        set_hold(False)
+
+
 def write_session():
     body = "mouth " + TRACK["mouth"] + "\nqwen " + TRACK["qwen"] + "\n"
     tmp = ROOT / "assistant.session.txt.tmp"
@@ -597,6 +698,12 @@ def init_track():
     TRACK["mouth"] = "adopted" if (ROOT / "mouth.pid").is_file() else "off"
     TRACK["qwen"] = "adopted" if (ROOT / "sense.pid").is_file() else "off"
     write_session()
+
+
+def own_turn():
+    global OWN
+    OWN = True
+    init_track()
 
 
 def note_qwen():
@@ -843,6 +950,31 @@ def turn_place(args):
     if found.brain == "missing":
         die("peer missing")
     return found
+
+
+def place_turn(args):
+    found = turn_place(args)
+    if args.image and brain_script(found, args.brain) == "qwen.py":
+        die("image asks use --brain gemma")
+    return found
+
+
+def injected_turn(py, args, question, act):
+    if not question and not act:
+        die("empty text")
+    if act:
+        prepare_act(act[0], act[1])
+    if not question:
+        if args.image:
+            die("image asks for a question")
+        own_turn()
+        run_local_act(args, act, True)
+        return
+    found = place_turn(args)
+    own_turn()
+    answer(py, found, args, question)
+    if act:
+        run_local_act(args, act, False)
 
 
 def brain_script(found, brain_flag):
@@ -1209,26 +1341,45 @@ def listen_loop(py, found, args):
         if is_quit(words):
             print("assistant: quit", file=sys.stderr)
             return
-        question = posted_text(code, words)
+        question, act = split_act(words)
+        if question and is_quit(question):
+            print("assistant: quit", file=sys.stderr)
+            return
+        if act:
+            prepare_act(act[0], act[1])
+        if not question:
+            if act is None:
+                print("assistant: hear returned no transcript", file=sys.stderr)
+                if args.once:
+                    return
+                continue
+            sentence, line = speak_act(args, act, True, True)
+            write_history(line, sentence)
+            if args.once:
+                return
+            continue
+        posted = posted_text(code, question)
         if found.brain == "post" and not found.flip:
-            reply = remote_speak(found, args, question, True)
+            reply = remote_speak(found, args, posted, True)
         else:
-            reply = answer(py, found, args, question, speak=False)
+            reply = answer(py, found, args, posted, speak=False)
             speak_live(args, reply, found.flip)
-        write_history(words, speakable(reply))
+        write_history(question, speakable(reply))
+        if act:
+            sentence, line = speak_act(args, act, False, True)
+            write_history(line, sentence)
         if args.once:
             return
 
 
 def main():
-    global OWN
     configure_stdio_utf8()
     parser = argparse.ArgumentParser(prog="assistant.py")
     parser.add_argument("--once", action="store_true", help="one turn, then exit")
     parser.add_argument(
         "--text",
         default=None,
-        help="skip the mic; one brain then mouth round. With --vb-cable, the phrase played into CABLE Input",
+        help="skip the mic; one brain then mouth round. A final act: line runs on this PC. With --vb-cable, the phrase played into CABLE Input",
     )
     parser.add_argument("--wav", default=None, help="transcribe this wav through hear.py; skip the mic; one turn")
     parser.add_argument(
@@ -1296,25 +1447,26 @@ def main():
         die("timeout must be > 0")
 
     py = venv_python()
-    found = turn_place(args)
-    if args.image and brain_script(found, args.brain) == "qwen.py":
-        die("image asks use --brain gemma")
-    OWN = True
-    init_track()
     if args.vb_cable:
+        found = place_turn(args)
+        own_turn()
         cable_turn(py, args, found)
         return
     if args.text is not None:
-        answer(py, found, args, args.text.strip())
+        question, act = split_act(args.text.strip())
+        injected_turn(py, args, question, act)
         return
     if args.wav is not None:
-        question = transcribe(py, args.wav.strip(), live=False).strip()
-        show(question)
-        if not question:
+        heard = transcribe(py, args.wav.strip(), live=False).strip()
+        show(heard)
+        if not heard:
             print("assistant: hear returned no transcript", file=sys.stderr)
             return
-        answer(py, found, args, question)
+        question, act = split_act(heard)
+        injected_turn(py, args, question, act)
         return
+    found = place_turn(args)
+    own_turn()
     listen_loop(py, found, args)
 
 

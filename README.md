@@ -275,7 +275,7 @@ Live hear / brain / mouth loop. No `--seconds`. The brain is the placement in "W
 | Flag | Default | Meaning |
 | --- | --- | --- |
 | `--once` | off | One turn, then exit. The live command omits this and loops. |
-| `--text TEXT` | none | Skip the microphone. One brain turn, then the mouth. English spans use nano unless `--model turbo`. With `--vb-cable`, this string is the phrase played into CABLE Input. Empty text fails. |
+| `--text TEXT` | none | Skip the microphone. One brain turn, then the mouth, unless the text is only a local act. A final `act:` line runs on this PC after a question. With `--vb-cable`, this string is the phrase played into CABLE Input and is not parsed as an act. Empty text fails. |
 | `--wav PATH` | none | Transcribe this wav through `hear.py`, skip the mic, one turn. Empty path fails. Cannot combine with `--text` or `--vb-cable`. |
 | `--vb-cable` | off | Play a phrase into `CABLE Input (VB-Audio Virtual Cable)`, hear `CABLE Output`, then one turn. Returns before the live mic loop. |
 | `--mouth` | off | With `--vb-cable` only: synthesize the reply to wavs and do not play them. Without `--vb-cable` the process exits. |
@@ -293,6 +293,8 @@ A transcript that is only `quit`, `exit`, or `stop` ends this loop. It does not 
 The chunker flushes atoms on `.!?` and a blank line, not on `:`, `;`, or dashes. It then splits each atom by language. English budget 65. Any other tag 55. A finished reply packs short spans of the same language up to that budget (`chunks_for_mouth`). `--nvidia` uses `StreamFeed` and speaks each closed atom while later text can still be arriving. One span over the budget is cut into word windows. Text before `<channel|>`, or an unclosed `<think>`, is not spoken.
 
 `speakable` keeps the text after `<channel|>`, or after `</think>` when that tag is present. An unclosed `<think>` with no channel split is silence.
+
+A line that is only `act: time`, `act: note <fact>`, or `act: next` is a voice-seat act. The act line is not sent to the brain. `time` speaks the local hour and minute. `note` appends one fact, at most 200 characters, to `assistant.note.txt` on this PC and speaks `Noted.` plus that fact. `next` speaks the last stored fact. An empty note, extra words on `time` or `next`, a second act line, words after the act line, an unknown name, or `next` with no note exits 2 and does not speak a success. A turn that is only the act does not place the brain and does not POST. A question with one trailing act line uses the usual brain and mouth path, then runs the act. A bad act fails before that POST. If the brain turn fails, the act does not run. The listen loop uses the same split and holds the mic while the act is spoken. `--vb-cable` does not parse the phrase as an act.
 
 ### `hear.py`
 

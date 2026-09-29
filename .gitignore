@@ -82,6 +82,7 @@
 /*.response.txt
 /*.response.wav
 /*.history.txt
+/assistant.note.txt
 /*.run.log
 /*.run.err
 /tool_hello.txt
@@ -112,5 +113,6 @@
 # Grok-bot team program. Role files above are runtime, not sources.
 !/grok_local_bot.py
 !/proof/voice-g429.md
+!/proof/voice-act.md
 !/proof/span-mouth.md
 !/proof/iris-merge-runner-h.md
