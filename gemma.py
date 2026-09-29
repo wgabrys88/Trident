@@ -3,19 +3,26 @@
 The default keeps one gemma-brain.exe for this checkout. --once is the old single card run.
 --stop unloads it. --stream writes a speakable sentence when it ends.
 
-Text turns replay gemma.memory.txt and declare remember, devices, and cursor. Past model
+Text turns replay gemma.memory.txt and declare remember, devices, cursor, and next. Past model
 turns are the speakable text only. The current turn starts at <|turn>model with thinking
-left off. A Gemma 4 <|tool_call> is run here. remember and devices ask the brain once
+left off. A Gemma 4 <|tool_call> is run here. remember, devices, and next ask the brain once
 more. The speakable answer is appended to that file. remember adds one fact.
 devices reports the CUDA and Vulkan adapters on this computer, whether port
 8765 accepts here, and whether a mouth on this computer would share that GPU.
 place() is that same decision for a turn: one TCP connect, no computer name,
 no second URL. Trim drops the oldest
 turns first. A fact drops only after every turn is gone and the prompt still does not fit.
+next stores one work line in that same file. A spoken turn does not list those lines.
 
 cursor starts one local `agent` process when the model calls it, writes grok_bot_spawn.txt,
 and does not wait. A missing agent writes BLOCKED and does not start a follow-up. This
 file does not call a tool the model did not emit, and it does not run the Cursor IDE shim.
+
+--idle is one notice, not a loop. No work line prints idle and does not generate. One work
+line is one prompt. A tool runs only when that generation contains the call. The line is
+dropped after a speakable answer. A failed tool leaves the line. An empty generation is an
+error and leaves the line. An empty follow-up is replaced by the tool's own result, never
+by a made-up sentence. --idle does not listen and does not start a second brain.
 
 A question that starts with <<trident-inbox>> is one stateless inbox turn: the marker
 is removed, tools are not declared, the thought channel stays open, and gemma.memory.txt
@@ -57,6 +64,7 @@ SYSTEM = (
     "remember stores one fact that stays after old turns are dropped. "
     "devices reports the CUDA device, the Vulkan device, whether they are the same adapter, and whether a mouth on this computer would share the brain GPU. "
     "cursor starts one local Cursor agent when the owner asks for a code change. "
+    "next stores one line of work for when you are idle and nobody is speaking. "
     "Call a tool only by its tool call. The spoken sentence has no channels or file names."
 )
 REMEMBER_DECL = (
@@ -109,6 +117,29 @@ CURSOR_DECL = (
     + "}},required:["
     + Q
     + "task"
+    + Q
+    + "],type:"
+    + Q
+    + "OBJECT"
+    + Q
+    + "}}<tool|>"
+)
+NEXT_DECL = (
+    "<|tool>declaration:next{description:"
+    + Q
+    + "Store one line of work for an idle turn, when the owner leaves something for later. This does not run the work."
+    + Q
+    + ",parameters:{properties:{line:{description:"
+    + Q
+    + "The work, one short line."
+    + Q
+    + ",type:"
+    + Q
+    + "STRING"
+    + Q
+    + "}},required:["
+    + Q
+    + "line"
     + Q
     + "],type:"
     + Q
@@ -186,7 +217,7 @@ def tool_header(facts):
     body = SYSTEM
     if facts:
         body += "\nRemembered:\n" + "\n".join(facts)
-    return "<|turn>system\n" + body + REMEMBER_DECL + DEVICES_DECL + CURSOR_DECL + "<turn|>\n"
+    return "<|turn>system\n" + body + REMEMBER_DECL + DEVICES_DECL + CURSOR_DECL + NEXT_DECL + "<turn|>\n"
 
 
 def prepare_question(question):
@@ -269,12 +300,13 @@ def clip_fact(raw):
 def parse_store(raw):
     facts = []
     pairs = []
+    works = []
     pending = None
     lines = physical_lines(raw)
     index = 0
     while index < len(lines):
         stripped = lines[index].rstrip(" \t")
-        if stripped.endswith("<<") and stripped[:-2].strip() in ("fact", "user", "model"):
+        if stripped.endswith("<<") and stripped[:-2].strip() in ("fact", "user", "model", "work"):
             key = stripped[:-2].strip()
             index += 1
             buf = []
@@ -287,6 +319,9 @@ def parse_store(raw):
             if key == "fact":
                 if body:
                     facts.append(body)
+            elif key == "work":
+                if body:
+                    works.append(body)
             elif key == "user":
                 if pending is not None:
                     pairs.append((pending, ""))
@@ -300,13 +335,15 @@ def parse_store(raw):
         index += 1
     if pending is not None:
         pairs.append((pending, ""))
-    return facts, pairs
+    return facts, pairs, works
 
 
-def render_store(facts, pairs):
+def render_store(facts, pairs, works):
     parts = []
     for fact in facts:
         parts.append("fact <<\n" + fact + "\n<<\n")
+    for line in works:
+        parts.append("work <<\n" + line + "\n<<\n")
     for user, model in pairs:
         parts.append("user <<\n" + user + "\n<<\n")
         parts.append("model <<\n" + model + "\n<<\n")
@@ -315,7 +352,7 @@ def render_store(facts, pairs):
 
 def read_memory(path):
     if not path.is_file():
-        return [], []
+        return [], [], []
     try:
         raw = path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -323,8 +360,13 @@ def read_memory(path):
     return parse_store(raw)
 
 
-def write_memory(path, facts, pairs):
-    body = render_store(facts, pairs)
+def write_memory(path, facts, pairs, works=None):
+    if works is None:
+        if path.is_file():
+            _facts, _pairs, works = read_memory(path)
+        else:
+            works = []
+    body = render_store(facts, pairs, works)
     tmp = path.with_name(path.name + ".tmp")
     try:
         tmp.write_bytes(body.encode("utf-8"))
@@ -336,7 +378,7 @@ def write_memory(path, facts, pairs):
 def fit_memory(question, suffix, path=None, limit=None):
     path = MEMORY_PATH if path is None else path
     limit = PROMPT_CHARS if limit is None else limit
-    facts, pairs = read_memory(path)
+    facts, pairs, works = read_memory(path)
     kept = list(pairs)
     prompt = memory_prompt(facts, kept, question, suffix)
     dropped = False
@@ -351,7 +393,7 @@ def fit_memory(question, suffix, path=None, limit=None):
     if len(prompt) > limit:
         die("prompt too long")
     if dropped:
-        write_memory(path, facts, kept)
+        write_memory(path, facts, kept, works)
     return prompt, facts, kept
 
 
@@ -360,13 +402,28 @@ def store_fact(path, line):
     if not text:
         print("gemma: tool remember empty", file=sys.stderr, flush=True)
         return ""
-    facts, pairs = read_memory(path)
+    facts, pairs, works = read_memory(path)
     if text in facts:
         print("gemma: tool remember kept " + path.name + " (" + text + ")", file=sys.stderr, flush=True)
         return text
     facts.append(text)
-    write_memory(path, facts, pairs)
+    write_memory(path, facts, pairs, works)
     print("gemma: tool remember wrote " + path.name + " (" + text + ")", file=sys.stderr, flush=True)
+    return text
+
+
+def store_work(path, line):
+    text = clip_fact(line)
+    if not text:
+        print("gemma: tool next empty", file=sys.stderr, flush=True)
+        return ""
+    facts, pairs, works = read_memory(path)
+    if text in works:
+        print("gemma: tool next kept " + path.name + " (" + text + ")", file=sys.stderr, flush=True)
+        return text
+    works.append(text)
+    write_memory(path, facts, pairs, works)
+    print("gemma: tool next wrote " + path.name + " (" + text + ")", file=sys.stderr, flush=True)
     return text
 
 
@@ -375,9 +432,9 @@ def append_memory(path, question, reply):
     model = clip_words(reply, TURN_WORDS)
     if not user or not model:
         return
-    facts, pairs = read_memory(path)
+    facts, pairs, works = read_memory(path)
     pairs.append((user, model))
-    write_memory(path, facts, pairs)
+    write_memory(path, facts, pairs, works)
 
 
 def clean_task(raw):
@@ -1547,9 +1604,83 @@ def note_prompt(prompt, facts, pairs):
         print("gemma: cannot write gemma.lastprompt.txt: " + str(exc), file=sys.stderr, flush=True)
 
 
-def tool_turn(name, args, raw, spawn_path=None):
+def idle_question(line):
+    return (
+        "You are idle. Nobody is speaking. Next work: "
+        + line
+        + ". If this needs a tool, call it. Use cursor when it is a code change. "
+        "If it needs no tool, answer in one or two sentences. Do not invent other work."
+    )
+
+
+def oldest_work(path):
+    _facts, _pairs, works = read_memory(path)
+    for line in works:
+        if line:
+            return line
+    return ""
+
+
+def drop_work(path, line):
+    facts, pairs, works = read_memory(path)
+    if line not in works:
+        print("gemma: idle work missing", file=sys.stderr, flush=True)
+        return False
+    works.remove(line)
+    write_memory(path, facts, pairs, works)
+    return True
+
+
+def idle_notice(generate, path=None, spawn_path=None):
+    # One stored line, one prompt. generate(prompt) is the resident. No line
+    # does not call it. Python does not pick the tool.
+    path = MEMORY_PATH if path is None else path
+    line = oldest_work(path)
+    if not line:
+        print("gemma: idle none", file=sys.stderr, flush=True)
+        return "idle"
+    print("gemma: idle work " + line, file=sys.stderr, flush=True)
+    question = idle_question(line)
+    prompt, facts, kept = fit_memory(question, "", path)
+    note_prompt(prompt, facts, kept)
+    text = generate(prompt)
+    if not (text or "").strip():
+        die("gemma: idle empty")
+    call = parse_tool_call(text)
+    if call:
+        print("gemma: idle tool " + call[0], file=sys.stderr, flush=True)
+        suffix, blocked, fallback = tool_turn(
+            call[0], call[1], call[2], spawn_path=spawn_path, memory_path=path
+        )
+        if blocked:
+            print("gemma: idle kept", file=sys.stderr, flush=True)
+            return blocked if blocked.endswith("\n") else blocked + "\n"
+        if not suffix:
+            die("gemma: idle empty")
+        follow, facts, kept = fit_memory(question, suffix, path)
+        note_prompt(follow, facts, kept)
+        reply = answer_text(generate(follow))
+        if not reply:
+            print("gemma: idle follow-up empty", file=sys.stderr, flush=True)
+            reply = fallback or ""
+        if not reply:
+            die("gemma: idle follow-up empty")
+        text = reply
+    else:
+        print("gemma: idle no tool", file=sys.stderr, flush=True)
+    spoken = answer_text(text)
+    if not spoken:
+        die("gemma: idle empty")
+    append_memory(path, "idle: " + line, spoken)
+    drop_work(path, line)
+    print("gemma: idle done", file=sys.stderr, flush=True)
+    return text
+
+
+def tool_turn(name, args, raw, spawn_path=None, memory_path=None):
+    memory_path = MEMORY_PATH if memory_path is None else memory_path
     if name == "remember":
-        line = store_fact(MEMORY_PATH, args.get("line")) or "empty"
+        line = store_fact(memory_path, args.get("line")) or "empty"
         return raw + tool_response("remember", [("line", line)]), None, line
     if name == "devices":
         fields, spoken = run_devices()
@@ -1563,6 +1694,12 @@ def tool_turn(name, args, raw, spawn_path=None):
         line = plain(summary) or "cursor"
         suffix = raw + tool_response("cursor", [("text", line)])
         return suffix, None, line
+    if name == "next":
+        line = store_work(memory_path, args.get("line"))
+        if not line:
+            print("gemma: tool next stopped", file=sys.stderr, flush=True)
+            return None, "fail empty work\n", None
+        return raw + tool_response("next", [("line", line)]), None, line
     print("gemma: tool unknown " + name, file=sys.stderr, flush=True)
     return None, "unknown tool " + name + "\n", None
 
@@ -1583,6 +1720,11 @@ def main():
     parser.add_argument("--once", action="store_true", help="one-shot gemma-brain.exe, then exit")
     parser.add_argument("--stop", action="store_true", help="stop the resident gemma-brain.exe")
     parser.add_argument("--stream", action="store_true", help="write token pieces to stdout as they are sampled")
+    parser.add_argument(
+        "--idle",
+        action="store_true",
+        help="one notice of the oldest work line; prints idle when there is none",
+    )
     args = parser.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -1590,12 +1732,24 @@ def main():
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     os.chdir(ROOT)
     if args.stop:
-        if args.once or args.question or args.image or args.verbose or args.stream:
+        if args.once or args.question or args.image or args.verbose or args.stream or args.idle:
             die("usage: gemma.py --stop")
         if stop_resident():
             print("gemma: stopped", file=sys.stderr, flush=True)
         else:
             print("gemma: not running", file=sys.stderr, flush=True)
+        raise SystemExit(0)
+    if args.idle:
+        if args.once or args.question or args.image or args.verbose or args.stream:
+            die("usage: gemma.py --idle")
+
+        def run_idle(prompt):
+            return resident_generate(prompt, "", False)
+
+        text = idle_notice(run_idle)
+        sys.stdout.write(text)
+        if text and not text.endswith("\n"):
+            sys.stdout.write("\n")
         raise SystemExit(0)
     if args.question is None or not args.question.strip():
         die("usage: gemma.py [--once] [--stream] [--verbose] QUESTION")
