@@ -8,6 +8,12 @@ the image bytes; it is decoded to a temp file and passed as --image. If
 image_b64 is absent, a readable image path on this machine is passed as --image.
 --drop is a local nvidia_turn.* file inbox, not the production LAN HTTP path.
 If the port is already accepting a connection, this process leaves it alone.
+
+When no POST has arrived for 60 seconds and no connection is waiting, the HTTP
+accept loop runs one `gemma.py --idle`. That is the same notice, not a second
+listener and not a second brain. A speakable result is written to this
+process's stdout. The word idle is not. `--drop` does not run it. The notice
+does not run while a request is being handled.
 """
 
 import argparse
@@ -16,6 +22,7 @@ import binascii
 import json
 import os
 import queue
+import select
 import socket
 import subprocess
 import sys
@@ -30,6 +37,7 @@ REQUEST = ROOT / "nvidia_turn.request.txt"
 RESPONSE = ROOT / "nvidia_turn.response.txt"
 RESPONSE_TMP = ROOT / "nvidia_turn.response.txt.tmp"
 MAX_BODY = 16_000_000
+QUIET_S = 60
 
 
 class WorkerError(Exception):
@@ -391,6 +399,94 @@ def send_bytes(handler, code, payload, content_type):
     handler.wfile.write(payload)
 
 
+def resident_busy():
+    return (ROOT / "gemma.busy").is_file() or (ROOT / "gemma.prompt.txt").is_file()
+
+
+def connection_pending(sock):
+    readable, _, _ = select.select([sock], [], [], 0)
+    return bool(readable)
+
+
+def quiet_due(last_post, now, interval, pending):
+    if pending or interval <= 0:
+        return False
+    return (now - last_post) >= interval
+
+
+def run_quiet_idle(timeout, run=None):
+    argv = [venv_python(), str(ROOT / "gemma.py"), "--idle"]
+    print("nvidia worker: idle", file=sys.stderr, flush=True)
+    started = time.perf_counter()
+    try:
+        if run is None:
+            completed = subprocess.run(
+                argv,
+                cwd=ROOT,
+                shell=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+            )
+        else:
+            completed = run(argv)
+    except subprocess.TimeoutExpired:
+        raise WorkerError("idle timed out")
+    except OSError as exc:
+        raise WorkerError("cannot run gemma.py --idle: " + str(exc))
+    elapsed = int((time.perf_counter() - started) * 1000)
+    err = (completed.stderr or "").strip()
+    if err:
+        print(err, file=sys.stderr, flush=True)
+    if completed.returncode != 0:
+        print(
+            "nvidia worker: idle exit " + str(completed.returncode),
+            file=sys.stderr,
+            flush=True,
+        )
+        return ""
+    print("nvidia worker: idle " + str(elapsed) + " ms", file=sys.stderr, flush=True)
+    return completed.stdout or ""
+
+
+def show_idle(text):
+    stripped = (text or "").strip()
+    if not stripped or stripped == "idle":
+        return
+    sys.stdout.write(text)
+    if not text.endswith("\n"):
+        sys.stdout.write("\n")
+    sys.stdout.flush()
+
+
+def pump_quiet(server, now=None):
+    # One notice after a quiet stretch. A waiting connection or a resident
+    # prompt already in flight keeps the line for the next stretch.
+    now = time.monotonic() if now is None else now
+    if server.busy_fn is not None:
+        busy = server.busy_fn()
+    else:
+        busy = resident_busy()
+    if server.pending_fn is not None:
+        pending = server.pending_fn()
+    else:
+        pending = connection_pending(server.socket)
+    if busy or not quiet_due(server.last_post, now, server.quiet_s, pending):
+        return False
+    server.last_post = now
+    try:
+        text = run_quiet_idle(server.gemma_timeout, server.idle_run)
+    except WorkerError as exc:
+        print("nvidia worker: " + str(exc), file=sys.stderr, flush=True)
+        return False
+    show_idle(text)
+    return True
+
+
 class TurnHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -398,6 +494,12 @@ class TurnHandler(BaseHTTPRequestHandler):
         print("nvidia worker: " + (fmt % args), file=sys.stderr, flush=True)
 
     def do_POST(self):
+        try:
+            self.handle_post()
+        finally:
+            self.server.note_activity()
+
+    def handle_post(self):
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
@@ -535,10 +637,21 @@ def end_chunks(handler):
 class WorkerServer(HTTPServer):
     allow_reuse_address = False
 
-    def __init__(self, address, gemma_timeout, verbose):
+    def __init__(self, address, gemma_timeout, verbose, quiet_s=QUIET_S):
         super().__init__(address, TurnHandler)
         self.gemma_timeout = gemma_timeout
         self.verbose = verbose
+        self.quiet_s = quiet_s
+        self.last_post = time.monotonic()
+        self.idle_run = None
+        self.busy_fn = None
+        self.pending_fn = None
+
+    def note_activity(self):
+        self.last_post = time.monotonic()
+
+    def service_actions(self):
+        pump_quiet(self)
 
 
 def listener_up(host, port):
@@ -561,7 +674,7 @@ def port_in_use(exc):
     return exc.errno in (98, 48, 10048)
 
 
-def serve_http(host, port, timeout, verbose):
+def serve_http(host, port, timeout, verbose, quiet_s=QUIET_S):
     if listener_up(host, port):
         print(
             "nvidia worker: already listening on " + host + ":" + str(port) + "; leaving it alone",
@@ -570,7 +683,7 @@ def serve_http(host, port, timeout, verbose):
         )
         return
     try:
-        server = WorkerServer((host, port), timeout, verbose)
+        server = WorkerServer((host, port), timeout, verbose, quiet_s)
     except OSError as exc:
         if port_in_use(exc):
             print(
