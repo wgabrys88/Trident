@@ -977,6 +977,86 @@ def injected_turn(py, args, question, act):
         run_local_act(args, act, False)
 
 
+def iter_inject_turns(path):
+    if path is None:
+        yield from _inject_blocks_from_stream(sys.stdin)
+        return
+    file_path = Path(path)
+    if not file_path.is_file():
+        die("missing inject: " + str(file_path))
+    raw = file_path.read_text(encoding="utf-8")
+    normalized = raw.replace("\r\n", "\n").replace("\r", "\n")
+    if "\n---\n" in normalized or normalized.strip() == "---":
+        for part in normalized.split("\n---\n"):
+            text = part.strip()
+            if text:
+                yield text
+        return
+    lines = [item.strip() for item in normalized.splitlines() if item.strip()]
+    if not lines:
+        die("empty inject")
+    if len(lines) == 1:
+        yield lines[0]
+        return
+    for line in lines:
+        yield line
+
+
+def _inject_blocks_from_stream(stream):
+    buf = []
+    while True:
+        line = stream.readline()
+        if line == "":
+            block = "\n".join(buf).strip()
+            if block:
+                yield block
+            return
+        stripped = line.rstrip("\r\n")
+        if stripped == "---":
+            block = "\n".join(buf).strip()
+            buf = []
+            if block:
+                yield block
+        else:
+            buf.append(stripped)
+
+
+def process_inject_turn(py, args, found, text):
+    stripped = text.strip()
+    if not stripped:
+        return True
+    if is_quit(stripped):
+        print("assistant: quit", file=sys.stderr)
+        return False
+    question, act = split_act(stripped)
+    if not question and not act:
+        print("assistant: empty turn", file=sys.stderr)
+        return True
+    if act:
+        prepare_act(act[0], act[1])
+    if not question:
+        if args.image:
+            die("image asks for a question")
+        sentence, line = run_local_act(args, act, True)
+        write_history(line, sentence)
+        return not args.once
+    reply = answer(py, found, args, question)
+    write_history(question, speakable(reply))
+    if act:
+        sentence, line = run_local_act(args, act, False)
+        write_history(line, sentence)
+    return not args.once
+
+
+def inject_loop(py, args, path):
+    found = place_turn(args)
+    own_turn()
+    (ROOT / "assistant.pid").write_text(str(os.getpid()) + "\n", encoding="utf-8")
+    for text in iter_inject_turns(path):
+        if not process_inject_turn(py, args, found, text):
+            return
+
+
 def brain_script(found, brain_flag):
     if found.brain == "missing":
         die("peer missing")
@@ -1381,6 +1461,14 @@ def main():
         default=None,
         help="skip the mic; one brain then mouth round. A final act: line runs on this PC. With --vb-cable, the phrase played into CABLE Input",
     )
+    parser.add_argument(
+        "--inject",
+        nargs="?",
+        const="-",
+        metavar="PATH",
+        default=None,
+        help="closed-mic loop: PATH is one turn per non-empty line, or blocks split by a --- line; flag alone reads stdin until EOF. No live mic",
+    )
     parser.add_argument("--wav", default=None, help="transcribe this wav through hear.py; skip the mic; one turn")
     parser.add_argument(
         "--vb-cable",
@@ -1435,6 +1523,11 @@ def main():
         die("empty wav")
     if args.text is not None and args.wav is not None:
         die("use text or wav, not both")
+    if args.inject is not None:
+        if args.text is not None or args.wav is not None or args.vb_cable:
+            die("inject asks for no text, wav, or vb-cable")
+        if str(args.inject).strip() == "":
+            die("empty inject path")
     if args.vb_cable and args.wav is not None:
         die("use vb-cable or wav, not both")
     if args.mouth and not args.vb_cable:
@@ -1451,6 +1544,10 @@ def main():
         found = place_turn(args)
         own_turn()
         cable_turn(py, args, found)
+        return
+    if args.inject is not None:
+        path = None if args.inject == "-" else str(args.inject).strip()
+        inject_loop(py, args, path)
         return
     if args.text is not None:
         question, act = split_act(args.text.strip())
