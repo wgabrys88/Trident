@@ -29,8 +29,8 @@ The file keeps the last 40 lines. No hostname. No JSON.
 
 **Iris contract (consumer on Iris):**
 
-1. Point at the PE file (`TRIDENT_IRIS_OUTBOX` or SMB path) or a local `iris_outbox.txt` for proof. `TRIDENT_IRIS_SEAT` is the same exchange with `status`, `work`, and `say` blocks.
-2. A plain line is `say`. Iris claims the file, speaks `say` through the mouth, and asks the brain about `status` and `work`. A failed act writes the signal back. No audio comes from the brain.
+1. `iris_outbox.txt` is one spoken line (`TRIDENT_IRIS_OUTBOX` or a local file). `iris_status.txt` lines are `say`, `work`, and `stop` (`TRIDENT_IRIS_STATUS`). `TRIDENT_IRIS_SEAT` still accepts `status`, `work`, `say`, and `stop` blocks.
+2. A plain outbox line is `say`. Iris claims the file and speaks it. `stop voice` ends this PC's voice and leaves the brain up. `stop <line>` drops that waiting work and does not speak. `status` and `work` ask the brain. A failed act writes the signal back. No audio comes from the brain.
 3. Missing or empty file exits 0 with `iris outbox missing` / `iris outbox empty` on stderr (no fake speak).
 
 The running `:8765` worker loads `gemma.py` from disk at start. After a code cutover, the quiet idle path both drains `work` lines and updates `iris_outbox.txt`. Leave-healthy: do not restart `:8765` unless cutover is intentional.

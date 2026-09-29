@@ -505,7 +505,7 @@ def tool_decls():
     return "\n".join(
         (
             gemma.REMEMBER_DECL,
-            gemma.DEVICES_DECL,
+            gemma.PLACE_DECL,
             gemma.CURSOR_DECL,
             gemma.NEXT_DECL,
             gemma.STOP_DECL,
@@ -538,10 +538,6 @@ def memory_preface():
 
 
 def voice_question(code, words):
-    # The inbox marker keeps the brain process from applying the call a second time.
-    # This seat applies the call gemma.parse_tool_call finds.
-    import gemma
-
     shown = code if code else "en"
     parts = [
         "You are Jarvis. Speak one or two short sentences.",
@@ -555,12 +551,10 @@ def voice_question(code, words):
         "Call stop when the owner wants this local voice to shut down or stop listening. "
         "Otherwise answer. Do not call stop for anything else."
     )
-    return gemma.INBOX_MARK + "\n" + "\n".join(parts)
+    return "\n".join(parts)
 
 
 def signal_question(kind, text):
-    import gemma
-
     parts = [
         "You are Jarvis. Nobody is speaking. A seat signal arrived.",
         "Kind: " + kind,
@@ -574,13 +568,11 @@ def signal_question(kind, text):
         "If work should wait, call next. "
         "Do not call stop for a seat signal. Do not invent other work."
     )
-    return gemma.INBOX_MARK + "\n" + "\n".join(parts)
+    return "\n".join(parts)
 
 
 def voice_follow(name, result):
-    import gemma
-
-    return gemma.INBOX_MARK + "\n" + "\n".join(
+    return "\n".join(
         (
             "You are Jarvis. The tool " + name + " finished.",
             "Result: " + (result or ""),
@@ -1051,6 +1043,18 @@ def act_signal(py, args, found, sig, hold):
     text = " ".join(sig.text.split())
     if not text:
         return True
+    if sig.kind == "stop":
+        print("assistant: stop " + text, file=sys.stderr, flush=True)
+        if text == "voice":
+            release_mouth()
+            return False
+        facts, pairs, works = gemma.read_memory(VOICE_MEMORY)
+        target = gemma.clip_fact(text)
+        if target and target in works:
+            works = [item for item in works if item != target]
+            gemma.write_memory(VOICE_MEMORY, facts, pairs, works)
+            print("assistant: work dropped", file=sys.stderr, flush=True)
+        return True
     if sig.kind == "say":
         print("assistant: say " + text, file=sys.stderr, flush=True)
         say_text(args, text, hold, found.flip, True)
@@ -1101,7 +1105,16 @@ def drain_file(py, args, path, hold):
 
 
 def drain_seat(py, args, hold):
-    for path in (seat.seat_path(None), seat.outbox_path(None)):
+    seen = set()
+    paths = (seat.seat_path(None), seat.outbox_path(None), seat.status_path(None))
+    for path in paths:
+        try:
+            key = str(Path(path).resolve())
+        except OSError:
+            key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
         if not drain_file(py, args, path, hold):
             return False
     return True
@@ -1450,7 +1463,7 @@ def main():
         const="-",
         metavar="PATH",
         default=None,
-        help="claim PE iris_outbox or TRIDENT_IRIS_OUTBOX and act. say speaks. status and work ask the brain. A failed act puts the signal back. No audio from the brain",
+        help="claim PE iris_outbox or TRIDENT_IRIS_OUTBOX and act. say speaks. status and work ask the brain. stop voice ends this PC voice and leaves the brain up. A failed act puts the signal back. No audio from the brain",
     )
     parser.add_argument("--wav", default=None, help="transcribe this wav through hear.py; skip the mic; one turn")
     parser.add_argument(

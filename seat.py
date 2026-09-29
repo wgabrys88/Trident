@@ -1,7 +1,7 @@
 """Text seat between Iris and the brain PC.
 
-Signals are status, work, and say. The brain PC does not send audio.
-Iris claims the file, acts, and writes a signal back only when the act fails.
+Signals are status, work, say, and stop. The brain PC does not send audio.
+iris_status.txt is say, work, and stop lines. A failed act writes the signal back.
 """
 
 import os
@@ -9,9 +9,9 @@ from collections import namedtuple
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-KINDS = ("status", "work", "say")
+KINDS = ("status", "work", "say", "stop")
 Signal = namedtuple("Signal", "kind text")
-STATUS_PATH = ROOT / "iris_status.txt"
+HEARD_PATH = ROOT / "iris_heard.txt"
 TEXT_CHARS = 2000
 
 
@@ -33,11 +33,43 @@ def clip(text):
     return flat
 
 
+def _marked_blocks(lines):
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "<<":
+            return True
+        if stripped.endswith("<<") and stripped[:-2].strip() in KINDS:
+            return True
+    return False
+
+
+def _line_signals(lines):
+    found = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        kind, sep, rest = stripped.partition(" ")
+        if sep != " " or kind not in KINDS:
+            return None
+        body = clip(rest)
+        if not body:
+            return None
+        found.append(Signal(kind, body))
+    if not found:
+        return None
+    return found
+
+
 def parse_signals(raw):
     text = raw or ""
     if text.startswith("\ufeff"):
         text = text[1:]
     lines = physical_lines(text)
+    if not _marked_blocks(lines):
+        lined = _line_signals(lines)
+        if lined is not None:
+            return lined
     signals = []
     saw = False
     index = 0
@@ -73,6 +105,13 @@ def render(signals):
     return "".join(parts)
 
 
+def render_lines(signals):
+    parts = []
+    for sig in signals:
+        parts.append(sig.kind + " " + " ".join(sig.text.split()) + "\n")
+    return "".join(parts)
+
+
 def seat_path(override=None):
     if override:
         return Path(override)
@@ -91,7 +130,23 @@ def outbox_path(override=None):
     return ROOT / "iris_outbox.txt"
 
 
-def store(path, signals):
+def status_path(override=None):
+    if override:
+        return Path(override)
+    env = os.environ.get("TRIDENT_IRIS_STATUS", "").strip()
+    if env:
+        return Path(env)
+    return ROOT / "iris_status.txt"
+
+
+def _same_file(left, right):
+    try:
+        return Path(left).resolve() == Path(right).resolve()
+    except OSError:
+        return Path(left) == Path(right)
+
+
+def store(path, signals, lines=False):
     path = Path(path)
     if not signals:
         try:
@@ -100,7 +155,7 @@ def store(path, signals):
         except OSError as exc:
             die("cannot clear " + path.name + ": " + str(exc))
         return
-    body = render(signals)
+    body = render_lines(signals) if lines else render(signals)
     tmp = path.with_name(path.name + ".tmp")
     try:
         tmp.write_bytes(body.encode("utf-8"))
@@ -138,24 +193,25 @@ def give_back(path, signals):
     if not signals:
         return
     arrived = claim(path)
-    store(path, list(signals) + list(arrived))
+    store(path, list(signals) + list(arrived), lines=_same_file(path, status_path(None)))
 
 
 def record_status(text):
+    # Heard notes stay off iris_status.txt. That file is the brain PC's line log.
     line = clip(text)
     if not line:
         return
     prev = ""
-    if STATUS_PATH.is_file():
+    if HEARD_PATH.is_file():
         try:
-            prev = STATUS_PATH.read_text(encoding="utf-8")
+            prev = HEARD_PATH.read_text(encoding="utf-8")
         except OSError as exc:
-            die("cannot read " + STATUS_PATH.name + ": " + str(exc))
+            die("cannot read " + HEARD_PATH.name + ": " + str(exc))
     if prev and not prev.endswith("\n"):
         prev += "\n"
-    tmp = STATUS_PATH.with_name(STATUS_PATH.name + ".tmp")
+    tmp = HEARD_PATH.with_name(HEARD_PATH.name + ".tmp")
     try:
         tmp.write_bytes((prev + line + "\n").encode("utf-8"))
-        tmp.replace(STATUS_PATH)
+        tmp.replace(HEARD_PATH)
     except OSError as exc:
-        die("cannot write " + STATUS_PATH.name + ": " + str(exc))
+        die("cannot write " + HEARD_PATH.name + ": " + str(exc))

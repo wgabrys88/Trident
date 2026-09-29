@@ -1,6 +1,7 @@
 """Offline checks for the voice seat. No microphone. No port bind."""
 
 import argparse
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -36,6 +37,16 @@ def check_seat():
     kinds = [item.kind for item in seat.parse_signals(raw)]
     if kinds != ["status", "work", "say"]:
         fail("blocks " + " ".join(kinds))
+    lined = seat.parse_signals("say The door is shut.\nwork kettle\nstop voice\nstop kettle\n")
+    got = [(item.kind, item.text) for item in lined]
+    want = [
+        ("say", "The door is shut."),
+        ("work", "kettle"),
+        ("stop", "voice"),
+        ("stop", "kettle"),
+    ]
+    if got != want:
+        fail("pe lines " + " ".join(kind + ":" + text for kind, text in got))
     with tempfile.TemporaryDirectory(prefix="seat_") as tmp:
         path = Path(tmp) / "iris_seat.txt"
         seat.store(path, seat.parse_signals(raw))
@@ -47,6 +58,17 @@ def check_seat():
         seat.give_back(path, claimed[:1])
         if [item.kind for item in seat.claim(path)] != ["status"]:
             fail("give back")
+        status = Path(tmp) / "iris_status.txt"
+        status.write_text("say The door is shut.\nstop voice\n", encoding="utf-8")
+        os.environ["TRIDENT_IRIS_STATUS"] = str(status)
+        try:
+            held = seat.claim(status)
+            seat.give_back(status, held)
+            body = status.read_text(encoding="utf-8")
+        finally:
+            os.environ.pop("TRIDENT_IRIS_STATUS", None)
+        if "<<" in body or body != "say The door is shut.\nstop voice\n":
+            fail("status give back " + body)
     print("ok seat")
 
 

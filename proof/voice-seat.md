@@ -86,4 +86,8 @@ Exit 0. `qwen: sense stopped`, `mouth: chatterbox stopped`, `iris: stopped`. `as
 
 ## Remote branches
 
-`main` and `runner-h` were not moved. No force-push. `origin/cursor/pe-brain-finish-df7c` stays: `81a90a5` and `d7f279c` are not on `runner-h`. Nineteen other `cursor/*` tips were ancestors of `origin/runner-h` and were deleted.
+`main` was not moved. No force-push of `main` or `runner-h`. `81a90a5` and `d7f279c` are on `runner-h` tip. `origin/cursor/pe-brain-finish-df7c` stays. Nineteen other `cursor/*` tips were ancestors of `origin/runner-h` and were deleted.
+
+## Status lines
+
+`iris_status.txt` lines are `say <sentence>`, `work <line>`, `stop voice`, and `stop <line>`. A plain sentence stays one `say`. `stop voice` ends this PC's voice and leaves the brain up. `stop <line>` drops that work from `voice.memory.txt` and does not speak. Heard notes go to `iris_heard.txt`.
