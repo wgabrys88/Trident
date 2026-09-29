@@ -64,8 +64,35 @@ TCP to `http://192.168.16.31:8765/` succeeded. One POST, `stream: true`, timeout
 
 A local worker flushed `Hello there. ` and held the second sentence until v3 synth started. Chatterbox pid 10360, `mouth out: default`, model v3, chunk text `[en] Hello there.` Synth of that sentence started, and `Second sentence is here.` was then written on the still-open body. Synth of sentence 1 finished about 7.2 s later. Second chunk: `[en] Second sentence is here.` The mouth was stopped after the proof. No wav left this PC.
 
+### Injected text on the speakers (15:03)
+
+Closed mic. Head `940d50ff11fc2e626a115b29cd8ad6db2f25a8d0`. Default playback device: Speakers (Realtek(R) Audio). Chatterbox nano was already resident (pid 12716, started 15:01:23, no clip). The turn adopted it.
+
+```powershell
+.\.venv\Scripts\python.exe .\assistant.py --nvidia --text "Reply with exactly two short sentences. The lamp is on. The door is shut." --timeout 180
+```
+
+Exit 0. Stderr: `assistant: remote Gemma, local Vulkan http://192.168.16.31:8765/`, `assistant: nvidia stream`, `mouth out: default`, `mouth: chatterbox pid 12716 resident`, `assistant: mouth`, `assistant: mouth 2 chunk(s)`. Reply text: `The lamp is on. The door is shut.` No wav was posted. `--nvidia` did not call `qwen.py` or `gemma.py`.
+
+| File | Time | What |
+| --- | --- | --- |
+| `nvidia_turn.request.txt` | 15:03:07.863 | the injected sentence |
+| `nvidia_turn.response.txt` | 15:03:08.813 | `ok` plus both sentences |
+| `15-03-10-144_chatterbox_out_000.wav` | 15:03:10.144 | 24 kHz mono, 1.0 s |
+| `15-03-11-462_chatterbox_out_000.wav` | 15:03:11.462 | 24 kHz mono, 1.2 s |
+
+PlaySoundW ran for both clips (`speak_chunks` returns only after `PlaySoundW` succeeds). The process elapsed 5.811 s, which covers both clips after the body arrived. A parent pipe read coalesced stdout and stderr at process exit, so those `+5.811s` stamps are not piece times. The file times above are the clock.
+
+One late blob. The response file held both sentences 1.331 s before the first wav existed, so the first PlaySound started after the body was stored. A second POST of the same sentence, through `nvidia_client.iter_stream` and no mouth, got one HTTP chunk at +1.048 s (`The lamp is on. The door is shut.`, 33 bytes), then `\n\n` (2 bytes), then EOF. One yield. No earlier piece.
+
+The second wav was written 1.318 s after the first, while the 1.0 s clip was in PlaySound. That is the mouth synthesizing the next clip during playback.
+
+No single-PC edit. `--text` without `--nvidia` already uses `answer()`. The port was open, so that route is the same POST. This PC has no CUDA device. `--nvidia` with the port closed still exits before a local brain. No hostname branch.
+
+`mouth.py --stop` after the proof stopped pid 12716. It did not open `:8765`. TCP to `192.168.16.31:8765` was still open. Raw stamps: `proof/injected-text.log`.
+
 ## Blockers
 
-The live `:8765` accepts `stream: true` and returns one chunk after the whole generation. Until that worker flushes token pieces, a two-PC turn still speaks only after the body arrives.
+The live `:8765` accepts `stream: true` and returns one chunk after the whole generation. The 15:03 spoken turn did the same: one blob, then the mouth. Until that worker flushes an earlier piece, a two-PC turn speaks after the body arrives.
 
 This PC has no CUDA device, so the same-GPU flip does not run. `gemma-brain.exe` here is still one-shot. That is the brain seat.
