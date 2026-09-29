@@ -25,7 +25,7 @@ Parents:
 
 `origin/main` stayed `d535349a8b99fcdd0e42efb14ec269e0d59c54b1`.
 
-This note is the child of that merge. After the push, `runner-h` is this note's commit. Its parent is the merge above.
+Note commit: `b85f8293e41c385bd209c03387b9344460100322`. The commit that names that id is its child. After the push, that child is `runner-h`.
 
 ## Left with the Iris twin
 
