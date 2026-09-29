@@ -43,6 +43,8 @@
 !/loopback.py
 !/nvidia_client.py
 !/nvidia_worker.py
+!/nvidia_start.py
+!/nvidia_stop.py
 !/reference.wav
 
 # Installer conversion/quantization tools.

@@ -233,10 +233,16 @@ Cable harness, on Iris. Not the human speakers.
 .\.venv\Scripts\python.exe .\loopback.py
 ```
 
-Worker, on PE, only when the port is free. With no `--host`, the process binds `0.0.0.0` port 8765. If the port is already listening, do not run this.
+Worker, on PE. `nvidia_start.py` runs `.venv\Scripts\python.exe nvidia_worker.py --host 0.0.0.0 --port 8765` only when port 8765 is free, then leaves that listener up. If the port is already listening, the script exits 2 and does not spawn.
 
 ```powershell
-.\.venv\Scripts\python.exe .\nvidia_worker.py --host 0.0.0.0 --port 8765
+.\.venv\Scripts\python.exe .\nvidia_start.py
+```
+
+Stop that listener only for an owner or PM intentional cutover. Digs, scouts, and cleanup do not run this. Without `--cutover` the script exits 2 and stops nothing. It does not stop `gemma-brain.exe`.
+
+```powershell
+.\.venv\Scripts\python.exe .\nvidia_stop.py --cutover
 ```
 
 If the house LAN address changes, change the URL. Keep port 8765.
@@ -823,7 +829,7 @@ The body of `README.md` is the program manual (seats, voice path, install, comma
 - **No Grok Bot coding.** Cursor agents only, on `trident-iris` or `trident-nvidia`.
 - **Models.** Composer 2.5 (`fast=false`) for scouts, inventories, claim digs, and low-priority edits. Grok 4.7, model `grok-4.7`, `reasoning_effort=xhigh`, `fast=false`, context `256k` for a normal final, or `500k` when the pass has to hold the whole tree, for final READMEs, ledgers, and other finals. One pass.
 - **Disk over chat.** Prefer maps and proof files on the seat. Do not dump huge files into War Room.
-- **Leave healthy `:8765` alone.** Never kill or restart a listening worker for a dig, a default flag, or a code edit.
+- **Leave healthy `:8765` alone.** Never kill or restart a listening worker for a dig, a default flag, or a code edit. The only stop is `nvidia_stop.py --cutover`, and only for an owner or PM intentional cutover.
 - **Branch `runner-h` only.** Agents open PRs into `runner-h` and stop. Spock merges. No force-push. No `main` fast-forward without Wojciech. No deleting `main` or `runner-h`. One writer per checkout.
 - **Checked-in code outranks this file.**
 
@@ -845,7 +851,7 @@ The body of `README.md` is the program manual (seats, voice path, install, comma
 - **`--nvidia` posts one turn** (`id`, `text`, `image`, `image_b64`, and `stream: true` on the listen loop when there is no flip). The door does not set `stream`. The listen loop puts the last 4 history pairs inside `text`. No wav crosses the network. The worker does not store a session. `gemma.memory.txt` on the brain machine is the next text prompt's memory.
 - **Mouth target = Iris default PlaySound device**, measured that day as **Speakers (Realtek(R) Audio)**. The mouth prints `mouth out: default`. PE console default in the NVIDIA notes is Speakers (Creative SB X-Fi). LG TV (NVIDIA High Definition Audio) is on PE and is not the default. Neither is the live mouth. There is no NVIDIA Speakers endpoint.
 - **Language spans.** English spans use nano (turbo only with `--model turbo`). Other languages use v3 for that span. The fast resident stays up; v3 synthesizes the span when it is known and then exits. The hear tag is not written onto the spoken text.
-- **Stop.** `assistant.py --stop` kills the assistant tree on this PC. Leave `:8765` up. Heard `quit` / `exit` / `stop` ends the assistant loop only. Gemma has no quit tool.
+- **Stop.** `assistant.py --stop` kills the assistant tree on this PC. Leave `:8765` up. Heard `quit` / `exit` / `stop` ends the assistant loop only. Gemma has no quit tool. `nvidia_stop.py` without `--cutover` does not stop the worker. `--cutover` is an owner or PM intentional cutover.
 - **Tools.** `remember` appends one fact to `gemma.memory.txt` on the worker machine. `next` appends one work line there and does not run it. `gemma.py --idle` notices that line, or prints `idle` without generating. `devices` reports the CUDA and Vulkan adapters on that computer, whether `127.0.0.1:8765` is accepting, and whether a mouth there would share that GPU. `cursor` starts one local `agent` on `composer-2.5` when the model calls it, and a missing CLI is `BLOCKED`. Python does not call it otherwise. The 2026-09-28 `hello` write is gone. The HTTP worker runs one `--idle` after 60 seconds with no POST. `--idle` itself does not poll.
 - **VOICE = invoke-on-ask only.** No default VOICE Cursor scout.
 - **Worker bind.** `nvidia_worker.py --host` defaults to `0.0.0.0`, port 8765, PE only. Iris `local_8765: none`. Health probe is TCP connect or a real POST. GET is not implemented.
@@ -864,10 +870,16 @@ The body of `README.md` is the program manual (seats, voice path, install, comma
   .\.venv\Scripts\python.exe .\grok_local_bot.py --wav .\reference.wav
   ```
 
-- **Worker bring-up,** PE only, only if the port is free, then leave it:
+- **Worker bring-up,** PE only, only if port 8765 is free, then leave it:
 
   ```powershell
-  .\.venv\Scripts\python.exe .\nvidia_worker.py --host 0.0.0.0 --port 8765
+  .\.venv\Scripts\python.exe .\nvidia_start.py
+  ```
+
+- **Worker stop,** owner or PM intentional cutover only. Digs and scouts do not run this:
+
+  ```powershell
+  .\.venv\Scripts\python.exe .\nvidia_stop.py --cutover
   ```
 
 ## CreateAgent — Trident Spock V2
