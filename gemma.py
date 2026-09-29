@@ -24,6 +24,7 @@ dropped after a speakable answer. A failed tool leaves the line. An empty genera
 error and leaves the line. An empty follow-up is replaced by the tool's own result, never
 by a made-up sentence. --idle does not listen and does not start a second brain.
 The HTTP worker runs this notice once after a quiet stretch with no POST.
+A speakable idle answer is also written as one line to iris_outbox.txt for Iris.
 
 A question that starts with <<trident-inbox>> is one stateless inbox turn: the marker
 is removed, tools are not declared, the thought channel stays open, and gemma.memory.txt
@@ -52,6 +53,9 @@ SIDECAR = ROOT / "gemma_run.txt"
 MEMORY_PATH = ROOT / "gemma.memory.txt"
 LAST_PROMPT = ROOT / "gemma.lastprompt.txt"
 SPAWN_PATH = ROOT / "grok_bot_spawn.txt"
+IRIS_OUTBOX = ROOT / "iris_outbox.txt"
+IRIS_OUTBOX_TMP = ROOT / "iris_outbox.txt.tmp"
+IRIS_OUTBOX_CHARS = 2000
 MEDIA = "<__media__>"
 Q = '<|"|>'
 INBOX_MARK = "<<trident-inbox>>"
@@ -426,6 +430,21 @@ def store_work(path, line):
     write_memory(path, facts, pairs, works)
     print("gemma: tool next wrote " + path.name + " (" + text + ")", file=sys.stderr, flush=True)
     return text
+
+
+def write_iris_outbox(line):
+    text = " ".join((line or "").split())
+    if not text:
+        return
+    if len(text) > IRIS_OUTBOX_CHARS:
+        text = text[:IRIS_OUTBOX_CHARS]
+    try:
+        IRIS_OUTBOX_TMP.write_text(text + "\n", encoding="utf-8")
+        IRIS_OUTBOX_TMP.replace(IRIS_OUTBOX)
+    except OSError as exc:
+        print("gemma: iris outbox fail " + str(exc), file=sys.stderr, flush=True)
+        return
+    print("gemma: iris outbox wrote " + IRIS_OUTBOX.name, file=sys.stderr, flush=True)
 
 
 def append_memory(path, question, reply):
@@ -1674,6 +1693,7 @@ def idle_notice(generate, path=None, spawn_path=None):
         die("gemma: idle empty")
     append_memory(path, "idle: " + line, spoken)
     drop_work(path, line)
+    write_iris_outbox(spoken)
     print("gemma: idle done", file=sys.stderr, flush=True)
     return text
 
