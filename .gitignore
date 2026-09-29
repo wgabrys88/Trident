@@ -24,6 +24,7 @@
 !/.gitignore
 !/.gitattributes
 !/README.md
+!/NVIDIA_README.md
 !/CMakeLists.txt
 !/LICENSE
 !/install.py
