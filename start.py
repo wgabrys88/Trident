@@ -3,9 +3,12 @@
 Default runs `assistant.py --nvidia --timeout 180 --inject` and waits.
 No microphone and no VAD.
 
-`--live` runs `assistant.py --nvidia --timeout 180 --cue`.
-One beep, wait 10 seconds, two beeps, then the default mic and VAD.
-Three beeps after the turn. `--once` is allowed only with `--live`.
+`--live` runs `assistant.py --nvidia --timeout 180` on the default mic.
+Resident VAD, free speech, brain POST, mouth. No canned phrase.
+
+`--live --cue` holds the mic closed until the speak cue:
+one beep, wait 10 seconds, two beeps, then capture.
+Three beeps after the turn. `--once` and `--cue` require `--live`.
 
 Does not bind, stop, or restart port 8765.
 
@@ -99,14 +102,21 @@ def parse_start_args(argv):
     url = ""
     live = False
     once = False
+    cue = False
     index = 0
-    usage = "usage: start.py [--url URL] [--live] [--once]"
+    usage = "usage: start.py [--url URL] [--live] [--cue] [--once]"
     while index < len(argv):
         arg = argv[index]
         if arg == "--live":
             if live:
                 die(usage)
             live = True
+            index += 1
+            continue
+        if arg == "--cue":
+            if cue:
+                die(usage)
+            cue = True
             index += 1
             continue
         if arg == "--once":
@@ -128,11 +138,13 @@ def parse_start_args(argv):
         index += 2
     if once and not live:
         die(usage)
+    if cue and not live:
+        die(usage)
     if not url:
         url = os.environ.get("TRIDENT_NVIDIA_URL", "").strip() or DEFAULT_URL
     if not (url.startswith("http://") or url.startswith("https://")):
         die("url must start with http:// or https://")
-    return url, live, once
+    return url, live, once, cue
 
 
 def already_up():
@@ -198,7 +210,7 @@ def wait_ready(proc, before):
 def main():
     os.environ["PYTHONUNBUFFERED"] = "1"
     reexec()
-    url, live, once = parse_start_args(sys.argv[1:])
+    url, live, once, cue = parse_start_args(sys.argv[1:])
     if already_up():
         return
     py = venv_python()
@@ -215,8 +227,11 @@ def main():
         url,
         "--timeout",
         "180",
-        "--cue" if live else "--inject",
     ]
+    if not live:
+        command.append("--inject")
+    elif cue:
+        command.append("--cue")
     if once:
         command.append("--once")
     proc = subprocess.Popen(

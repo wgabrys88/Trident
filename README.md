@@ -221,10 +221,16 @@ Live mic, on the PC with the microphone. One command. VAD stays up. `--nvidia` r
 .\.venv\Scripts\python.exe .\assistant.py --nvidia
 ```
 
-Cued live mic, on Iris. One beep, ten seconds, two beeps, then the default microphone. Capture stays closed until the two beeps finish. After the mouth, three beeps. `--once` is one turn. `start.py` without `--live` stays the closed-mic inject loop. Leave `:8765` alone.
+Everyday live mic, on Iris. Resident VAD on the default microphone, free speech, one brain POST, then the mouth. No canned phrase. `start.py` without `--live` stays the closed-mic inject loop. Leave `:8765` alone.
 
 ```powershell
-.\.venv\Scripts\python.exe .\start.py --live --once
+.\.venv\Scripts\python.exe .\start.py --live
+```
+
+Presence cue for a person at the mic. One beep, ten seconds, two beeps, then capture opens. Three beeps after the turn. The mic stays closed until the two beeps finish. `--once` is one turn. Whatever was said is the turn. Nothing in this path matches a scripted sentence.
+
+```powershell
+.\.venv\Scripts\python.exe .\start.py --live --cue --once
 ```
 
 Stop that tree, and not the brain. `stop.py` stops a `start.py` inject or live process and the mouth. It does not contact the brain.
