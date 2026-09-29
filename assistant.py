@@ -14,7 +14,6 @@ import seat
 ROOT = Path(__file__).resolve().parent
 MODELS = ("nano", "turbo", "v3")
 BRAINS = ("qwen", "gemma")
-CABLE_PHRASE = "Trident cable loopback"
 EN_LIMIT = 65
 PL_LIMIT = 55
 TOKENS = (
@@ -606,23 +605,20 @@ def fetch_reply(py, found, args, question):
     return local_turn(py, script, args, question)
 
 
-def say_text(args, raw, hold, flip, play=True):
-    if not play:
-        return speak_raw(args, raw, play=False, flip=flip)
+def say_text(args, raw, hold, flip):
     if hold:
         speak_live(args, raw, flip)
-        return []
-    speak_raw(args, raw, play=True, flip=flip)
-    return []
+    else:
+        speak_raw(args, raw, flip)
 
 
-def apply_reply(py, found, args, raw, hold, play=True, follow=True):
+def apply_reply(py, found, args, raw, hold, follow=True):
     import gemma
 
     if organism_stop(raw):
         print("assistant: tool stop", file=sys.stderr, flush=True)
         release_mouth()
-        return False, "", []
+        return False, ""
     call = gemma.parse_tool_call(raw or "")
     if call and follow:
         name = call[0]
@@ -632,22 +628,20 @@ def apply_reply(py, found, args, raw, hold, play=True, follow=True):
         )
         if blocked and not fallback:
             spoken = speakable(blocked)
-            paths = []
             if spoken:
-                paths = say_text(args, spoken, hold, found.flip, play)
+                say_text(args, spoken, hold, found.flip)
             elif blocked.strip():
                 print("assistant: no speakable answer", file=sys.stderr)
-            return (not args.once), spoken, paths
+            return (not args.once), spoken
         raw2 = fetch_reply(py, found, args, voice_follow(name, fallback or ""))
         show(raw2)
-        return apply_reply(py, found, args, raw2, hold, play, False)
+        return apply_reply(py, found, args, raw2, hold, False)
     spoken = speakable(raw)
-    paths = []
     if spoken:
-        paths = say_text(args, raw, hold, found.flip, play)
+        say_text(args, raw, hold, found.flip)
     else:
         print("assistant: no speakable answer", file=sys.stderr)
-    return (not args.once), spoken, paths
+    return (not args.once), spoken
 
 
 def run_voice_turn(py, found, args, words, code, hold):
@@ -657,7 +651,7 @@ def run_voice_turn(py, found, args, words, code, hold):
         return not args.once
     reply = fetch_reply(py, found, args, voice_question(code, text))
     show(reply)
-    cont, spoken, _paths = apply_reply(py, found, args, reply, hold, True, True)
+    cont, spoken = apply_reply(py, found, args, reply, hold, True)
     if cont:
         remember_turn(text, spoken)
     return cont
@@ -1113,14 +1107,6 @@ def _inject_blocks_from_stream(stream):
             buf.append(stripped)
 
 
-def process_inject_turn(py, args, found, text):
-    del found
-    stripped = text.strip()
-    if not stripped:
-        return True
-    return turn_after_transcript(py, args, stripped, None, False)
-
-
 def act_signal(py, args, found, sig, hold):
     import gemma
 
@@ -1148,13 +1134,13 @@ def act_signal(py, args, found, sig, hold):
         print("assistant: status " + text, file=sys.stderr, flush=True)
         raw = fetch_reply(py, found, args, signal_question("status", text))
         show(raw)
-        cont, _spoken, _paths = apply_reply(py, found, args, raw, hold, True, True)
+        cont, _spoken = apply_reply(py, found, args, raw, hold, True)
         return cont
     if sig.kind == "work":
         print("assistant: work " + text, file=sys.stderr, flush=True)
         raw = fetch_reply(py, found, args, signal_question("work", text))
         show(raw)
-        cont, spoken, _paths = apply_reply(py, found, args, raw, hold, True, True)
+        cont, spoken = apply_reply(py, found, args, raw, hold, True)
         if cont and not spoken and gemma.parse_tool_call(raw) is None:
             kept = gemma.store_work(VOICE_MEMORY, text)
             if kept:
@@ -1271,22 +1257,19 @@ def brain_script(found, brain_flag):
     return "qwen.py"
 
 
-def speak_raw(args, raw, play=True, flip=False):
+def speak_raw(args, raw, flip=False):
     import mouth
 
     spoken = speakable(raw)
     parts = chunks_for_mouth(spoken, fast_model(args.model)) if spoken else []
     if not parts:
         print("assistant: no speakable answer", file=sys.stderr)
-        return []
+        return
     release_shared_gpu(flip)
     print("assistant: mouth " + str(len(parts)) + " chunk(s)", file=sys.stderr)
     note_mouth()
-    if play:
-        print("mouth out: default", file=sys.stderr, flush=True)
-        mouth.speak_pieces(parts, mouth.play_wav)
-        return []
-    return [str(Path(path).resolve()) for path in mouth.speak_pieces(parts, None)]
+    print("mouth out: default", file=sys.stderr, flush=True)
+    mouth.speak_pieces(parts, mouth.play_wav)
 
 
 def prepare_remote(args, question):
@@ -1333,192 +1316,12 @@ def local_turn(py, script, args, question):
     return run_child(label, argv, keep_stdout=True, keep_stderr=True)
 
 
-def answer(py, found, args, question, speak=True):
-    if found.brain == "post":
-        raw = remote_whole(found, args, question)
-        show(raw)
-        if speak:
-            speak_raw(args, raw, play=True, flip=found.flip)
-        return raw
-    script = brain_script(found, args.brain)
-    if args.image and script == "qwen.py":
-        die("image asks use --brain gemma")
-    raw = local_turn(py, script, args, question)
-    show(raw)
-    if speak:
-        speak_raw(args, raw, play=True, flip=found.flip)
-    return raw
-
-
 def speak_live(args, raw, flip=False):
     set_hold(True)
     try:
-        speak_raw(args, raw, play=True, flip=flip)
+        speak_raw(args, raw, flip)
     finally:
         set_hold(False)
-
-
-def status_value(text, key):
-    prefix = key + ": "
-    for line in text.splitlines():
-        if line.startswith(prefix):
-            return line[len(prefix):].strip()
-    return ""
-
-
-def fresh_proof(name, started):
-    path = ROOT / "loopback-proof" / name
-    if not path.is_file():
-        return ""
-    if path.stat().st_mtime < started - 2:
-        return ""
-    return path.read_text(encoding="utf-8")
-
-
-def git_head():
-    try:
-        completed = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            cwd=ROOT,
-            shell=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=15,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return ""
-    if completed.returncode != 0:
-        return ""
-    return (completed.stdout or "").strip()
-
-
-def write_proof(name, text):
-    folder = ROOT / "loopback-proof"
-    folder.mkdir(parents=True, exist_ok=True)
-    (folder / name).write_text(text, encoding="utf-8")
-
-
-def cable_turn(py, found, args):
-    phrase = CABLE_PHRASE if args.text is None else args.text.strip()
-    argv = [py, str(ROOT / "loopback.py"), "--phrase", phrase]
-    print("assistant: vb-cable", file=sys.stderr)
-    started = time.time()
-    try:
-        completed = subprocess.run(
-            argv,
-            cwd=ROOT,
-            shell=False,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=None,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env={**os.environ, "PYTHONUNBUFFERED": "1"},
-        )
-    except OSError as exc:
-        print("assistant: loopback failed to start: " + str(exc), file=sys.stderr)
-        raise SystemExit(2)
-    loop_out = completed.stdout or ""
-    if loop_out:
-        sys.stdout.write(loop_out if loop_out.endswith("\n") else loop_out + "\n")
-        sys.stdout.flush()
-    transcript = fresh_proof("transcript.txt", started).strip()
-    loop_status = fresh_proof("status.txt", started)
-    reply = ""
-    nvidia_exit = "skipped"
-    mouth_exit = "skipped"
-    mouth_paths = []
-    reasons = []
-    if completed.returncode != 0:
-        reasons.append("loopback exit " + str(completed.returncode))
-    if not transcript:
-        reasons.append("no transcript")
-    else:
-        try:
-            reply = answer(py, found, args, transcript, speak=False)
-            if found.brain == "post":
-                nvidia_exit = "0"
-                if not reply.strip():
-                    reasons.append("empty nvidia reply")
-            else:
-                nvidia_exit = found.brain
-        except SystemExit as exc:
-            code = exc.code if isinstance(exc.code, int) else 2
-            if found.brain == "post":
-                nvidia_exit = str(code)
-            reasons.append("brain exit " + str(code))
-    if args.mouth and not reasons:
-        if not reply.strip():
-            reasons.append("no reply to speak")
-        else:
-            try:
-                mouth_paths = speak_raw(args, reply, play=False, flip=found.flip)
-            except SystemExit as exc:
-                code = exc.code if isinstance(exc.code, int) else 2
-                mouth_exit = str(code)
-                reasons.append("mouth exit " + str(code))
-            else:
-                if mouth_paths:
-                    mouth_exit = "0"
-                    for path in mouth_paths:
-                        show(path)
-                else:
-                    mouth_exit = "1"
-                    reasons.append("no mouth wav")
-    response_text = ""
-    if found.brain == "post" and nvidia_exit != "skipped":
-        response_path = ROOT / "nvidia_turn.response.txt"
-        if response_path.is_file():
-            response_text = response_path.read_text(encoding="utf-8")
-    passed = not reasons
-    reply_text = reply if reply.endswith("\n") or not reply else reply + "\n"
-    lines = [
-        "STATUS " + ("PASS" if passed else "FAIL"),
-        "cmd: " + subprocess.list2cmdline(sys.argv),
-        "loopback_cmd: " + subprocess.list2cmdline(argv),
-        "phrase: " + phrase,
-        "transcript: " + transcript,
-        "ratio: " + status_value(loop_status, "ratio"),
-        "loopback_exit: " + str(completed.returncode),
-        "synth_exit: " + status_value(loop_status, "synth_exit"),
-        "play_exit: " + status_value(loop_status, "play_exit"),
-        "hear_exit: " + status_value(loop_status, "hear_exit"),
-        "nvidia_exit: " + nvidia_exit,
-        "mouth_exit: " + mouth_exit,
-        "mouth_wavs: " + " ".join(mouth_paths),
-        "play_device: " + status_value(loop_status, "play_device"),
-        "capture_device: " + status_value(loop_status, "capture_device"),
-        "spoken_wav: " + status_value(loop_status, "spoken_wav"),
-        "hear_wav: " + status_value(loop_status, "hear_wav"),
-        "url: " + found.url,
-        "request: " + str(ROOT / "nvidia_turn.request.txt"),
-        "response: " + str(ROOT / "nvidia_turn.response.txt"),
-        "head: " + (status_value(loop_status, "head") or git_head()),
-        "reasons: " + "; ".join(reasons),
-        "",
-        "nvidia reply:",
-        reply_text.rstrip("\n"),
-        "",
-        "nvidia response file:",
-        response_text.rstrip("\n"),
-        "",
-        "loopback status:",
-        loop_status.rstrip("\n"),
-        "",
-    ]
-    body = "\n".join(lines)
-    write_proof("jarvis.txt", body)
-    nvidia_body = "exit " + nvidia_exit + "\nurl " + found.url + "\n\n" + reply_text
-    if response_text:
-        nvidia_body += "\nresponse file:\n" + response_text
-        if not response_text.endswith("\n"):
-            nvidia_body += "\n"
-    write_proof("nvidia.txt", nvidia_body)
-    print(body, end="" if body.endswith("\n") else "\n")
-    raise SystemExit(0 if passed else 1)
 
 
 def live_clip(py, args, state):
@@ -1560,11 +1363,7 @@ def main():
     configure_stdio_utf8()
     parser = argparse.ArgumentParser(prog="assistant.py")
     parser.add_argument("--once", action="store_true", help="one turn, then exit")
-    parser.add_argument(
-        "--text",
-        default=None,
-        help="skip the mic; one brain then mouth round. With --vb-cable, the phrase played into CABLE Input",
-    )
+    parser.add_argument("--text", default=None, help="skip the mic; one brain then mouth round")
     parser.add_argument(
         "--inject",
         nargs="?",
@@ -1582,16 +1381,6 @@ def main():
         help="claim PE iris_outbox or TRIDENT_IRIS_OUTBOX and act. say speaks. status and work ask the brain. stop voice ends this PC voice and leaves the brain up. A failed act puts the signal back. No audio from the brain",
     )
     parser.add_argument("--wav", default=None, help="transcribe this wav through hear.py; skip the mic; one turn")
-    parser.add_argument(
-        "--vb-cable",
-        action="store_true",
-        help="play a phrase into CABLE Input, hear CABLE Output, then one turn. Does not open the live mic",
-    )
-    parser.add_argument(
-        "--mouth",
-        action="store_true",
-        help="with --vb-cable, synthesize the reply to wavs and do not play them",
-    )
     parser.add_argument("--stop", action="store_true", help="stop the assistant tree on this PC")
     parser.add_argument("--brain", default="qwen", choices=BRAINS, help="CPU row only; a CUDA device uses Gemma")
     parser.add_argument(
@@ -1600,7 +1389,6 @@ def main():
         choices=MODELS,
         help="fast English mouth: turbo, otherwise nano. Other languages use v3",
     )
-    parser.add_argument("--lang", default=None, help="accepted; the chunker assigns the voice. Empty tag fails")
     parser.add_argument("--image", default=None, help="image file forwarded on the turn")
     parser.add_argument(
         "--nvidia",
@@ -1615,8 +1403,6 @@ def main():
         if (
             args.text is not None
             or args.wav is not None
-            or args.vb_cable
-            or args.mouth
             or args.image
             or args.nvidia
             or args.url
@@ -1625,8 +1411,6 @@ def main():
             die("usage: assistant.py --stop")
         stop_tree()
         return
-    if args.lang is not None and args.lang.strip() == "":
-        die("empty language")
     if args.image is not None and args.image.strip() == "":
         die("empty image")
     if args.text is not None and args.text.strip() == "":
@@ -1636,19 +1420,15 @@ def main():
     if args.text is not None and args.wav is not None:
         die("use text or wav, not both")
     if args.inject is not None:
-        if args.text is not None or args.wav is not None or args.vb_cable:
-            die("inject asks for no text, wav, or vb-cable")
+        if args.text is not None or args.wav is not None:
+            die("inject asks for no text or wav")
         if str(args.inject).strip() == "":
             die("empty inject path")
     if args.iris_outbox is not None:
-        if args.text is not None or args.wav is not None or args.vb_cable or args.inject is not None:
-            die("iris-outbox asks for no text, wav, vb-cable, or inject")
+        if args.text is not None or args.wav is not None or args.inject is not None:
+            die("iris-outbox asks for no text, wav, or inject")
         if str(args.iris_outbox).strip() == "":
             die("empty iris-outbox path")
-    if args.vb_cable and args.wav is not None:
-        die("use vb-cable or wav, not both")
-    if args.mouth and not args.vb_cable:
-        die("--mouth asks for --vb-cable")
     if args.url is not None and args.url.strip() == "":
         die("empty url")
     if args.url and not args.nvidia:
@@ -1657,11 +1437,6 @@ def main():
         die("timeout must be > 0")
 
     py = venv_python()
-    if args.vb_cable:
-        found = place_turn(args)
-        own_turn()
-        cable_turn(py, found, args)
-        return
     if args.iris_outbox is not None:
         path = None if args.iris_outbox == "-" else str(args.iris_outbox).strip()
         consume_iris_outbox(py, args, path)

@@ -4,7 +4,7 @@
 # Allow Git to descend into directories. Files stay ignored until named.
 !*/
 
-# Generated/install-only directories.
+# Generated and local. The exes and models stay beside the checkout.
 /.venv/
 /.install/
 /build/
@@ -15,26 +15,16 @@
 /.ckpt/
 /.ckpt-v3/
 /wav/
-/gemma/llama.cpp/
-/gemma/build/
-/gemma/models/
-/gemma/cmake/HostCpu.generated.cmake
+/gemma/
 
-# Repository root.
+# Sources.
 !/.gitignore
 !/.gitattributes
-!/README.md
-!/CMakeLists.txt
 !/LICENSE
-!/install.py
-!/install.txt
-!/utf8.manifest
 !/vad.txt
-!/ear.txt
 !/sense.txt
 !/gemma.txt
 !/chatterbox.txt
-!/bake.txt
 !/assistant.py
 !/run.py
 !/hear.py
@@ -42,34 +32,12 @@
 !/gemma.py
 !/mouth.py
 !/seat.py
-!/loopback.py
 !/nvidia_client.py
 !/nvidia_worker.py
 !/nvidia_start.py
 !/nvidia_stop.py
-!/reference.wav
 
-# Installer conversion/quantization tools.
-!/scripts/convert_s3.py
-!/scripts/convert_t3.py
-!/scripts/quant.py
-!/scripts/quant_s3.json
-!/scripts/quant_t3.json
-
-# Native source.
-!/src/**/*.cpp
-!/src/**/*.h
-!/src/**/*.hpp
-
-# Gemma/Qwen native build source.
-!/gemma/CMakeLists.txt
-!/gemma/cmake/HostCpu.cmake
-!/gemma/scripts/detect_cpu.ps1
-!/gemma/scripts/detect_gpu.ps1
-!/gemma/src/brain.cpp
-!/gemma/src/sense.cpp
-
-# Resident slots, one-shot artifacts, and run logs.
+# Runtime files the programs rewrite.
 /mouth.txt
 /mouth.v3.txt
 /gemma_run.txt
@@ -97,20 +65,11 @@
 /iris_outbox.txt.tmp
 /iris_status.txt
 /iris_status.txt.tmp
-!/proof/g429-pe-stream-flush.md
-!/proof/g429-pe-memory.md
-!/proof/g429-pe-idle.md
-!/proof/g429-pe-idle-quiet.md
-!/proof/g429-pe-quiet-live.md
-!/proof/g429-pe-seat-forward.md
-!/proof/g429-pe-brain-finish.md
-!/proof/README.md
-/seq_agents.txt
-/parallel_agents.txt
-/parallel_agents.log
-/parallel_run/
-
-# Door, file-team, and cable proofs. The programs rewrite these. README holds the record.
+/voice.memory.txt
+/voice.memory.txt.tmp
+/vad.hold
+/vad.utterance.txt
+/vad_run.txt
 /grok_bot.txt
 /grok_bot_history.txt
 /grok_bot_inbox.txt
@@ -121,15 +80,9 @@
 /cursor.status.txt.tmp
 /iris-door.txt
 /loopback-proof/
-
-# Local brain turn. The files above are runtime, not sources.
-!/grok_local_bot.py
-!/proof/voice-act.md
-!/proof/g429-closed-mic-loop.md
-!/proof/g429-iris-outbox-consume.md
-!/proof/g429-live-mic.md
-!/proof/g429-run-stop.md
-!/proof/span-mouth.md
-!/proof/voice-seat.md
-!/proof/voice_seat_check.py
-!/proof/voice_turn_check.py
+/seq_agents.txt
+/parallel_agents.txt
+/parallel_agents.log
+/parallel_run/
+/assistant.session.txt
+/assistant.session.txt.tmp

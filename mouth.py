@@ -162,148 +162,6 @@ def play_wav(path):
         die("PlaySoundW failed: " + str(path))
 
 
-def hostapi_name(sd, info):
-    try:
-        return sd.query_hostapis(int(info["hostapi"]))["name"]
-    except Exception:
-        return ""
-
-
-def prefer_wasapi(matches, sd):
-    ranked = []
-    for index, info in matches:
-        api = hostapi_name(sd, info).lower()
-        if "wasapi" in api:
-            rank = 0
-        elif "directsound" in api:
-            rank = 1
-        elif "mme" in api:
-            rank = 2
-        else:
-            rank = 3
-        ranked.append((rank, index, info))
-    ranked.sort(key=lambda item: (item[0], item[1]))
-    index, info = ranked[0][1], ranked[0][2]
-    return index, info["name"]
-
-
-def cable_playback_hits(devices):
-    hits = []
-    for index, info in enumerate(devices):
-        if info["max_output_channels"] < 1:
-            continue
-        name = info["name"].lower()
-        if "cable input" not in name or "vb-audio" not in name or "16ch" in name:
-            continue
-        hits.append((index, info))
-    virtual = [item for item in hits if "virtual" in item[1]["name"].lower()]
-    return virtual or hits
-
-
-def load_wav_mono(path):
-    import wave
-
-    import numpy as np
-
-    path = Path(path)
-    with wave.open(str(path), "rb") as handle:
-        channels = handle.getnchannels()
-        width = handle.getsampwidth()
-        rate = handle.getframerate()
-        raw = handle.readframes(handle.getnframes())
-    if width == 2:
-        pcm = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
-    elif width == 4:
-        pcm = np.frombuffer(raw, dtype="<i4").astype(np.float32) / 2147483648.0
-    elif width == 1:
-        pcm = (np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 128.0) / 128.0
-    else:
-        die("unsupported wav width: " + str(width))
-    if channels > 1:
-        pcm = pcm.reshape(-1, channels).mean(axis=1)
-    return np.ascontiguousarray(pcm, dtype=np.float32), rate
-
-
-def resample_linear(pcm, src_rate, dst_rate):
-    import numpy as np
-
-    pcm = np.asarray(pcm, dtype=np.float32)
-    if src_rate == dst_rate or len(pcm) == 0:
-        return pcm
-    new_len = max(1, int(round(len(pcm) * float(dst_rate) / float(src_rate))))
-    if len(pcm) == 1:
-        return np.full(new_len, float(pcm[0]), dtype=np.float32)
-    x_old = np.linspace(0.0, 1.0, num=len(pcm), endpoint=False)
-    x_new = np.linspace(0.0, 1.0, num=new_len, endpoint=False)
-    return np.interp(x_new, x_old, pcm.astype(np.float64)).astype(np.float32)
-
-
-def pick_out(prefer, vb_cable):
-    try:
-        import sounddevice as sd
-    except ImportError:
-        die("missing sounddevice; install with: .venv\\Scripts\\python.exe -m pip install sounddevice")
-    devices = sd.query_devices()
-    if prefer is None and not vb_cable:
-        return None, "default"
-    if prefer is not None and str(prefer).isdigit():
-        index = int(prefer)
-        if index < 0 or index >= len(devices) or devices[index]["max_output_channels"] < 1:
-            die("unknown output: " + str(prefer))
-        return index, devices[index]["name"]
-    if prefer is not None:
-        prefer_l = str(prefer).lower()
-        matches = []
-        for index, info in enumerate(devices):
-            if info["max_output_channels"] < 1:
-                continue
-            if prefer_l in info["name"].lower():
-                matches.append((index, info))
-        if not matches:
-            die("unknown output: " + str(prefer))
-        if len(matches) == 1:
-            return matches[0][0], matches[0][1]["name"]
-        return prefer_wasapi(matches, sd)
-    hits = cable_playback_hits(devices)
-    if not hits:
-        die("VB-Cable playback device not found")
-    return prefer_wasapi(hits, sd)
-
-
-def play_wav_device(path, device_index):
-    import numpy as np
-    import sounddevice as sd
-
-    path = Path(path).resolve()
-    if not path.is_file():
-        die("missing wav: " + str(path))
-    pcm, rate = load_wav_mono(path)
-    info = sd.query_devices(device_index)
-    target = int(round(float(info["default_samplerate"])))
-    pcm = resample_linear(pcm, rate, target)
-    max_ch = int(info["max_output_channels"])
-    if max_ch < 1:
-        die("output device has no channels: " + str(device_index))
-    order = []
-    if max_ch >= 2:
-        order.append(2)
-    if 1 not in order:
-        order.append(1)
-    if max_ch > 2:
-        order.append(max_ch)
-    last = None
-    for channels in order:
-        audio = pcm if channels == 1 else np.column_stack([pcm] * channels)
-        try:
-            sd.play(audio, samplerate=target, device=device_index)
-            sd.wait()
-            return
-        except sd.PortAudioError as exc:
-            sd.stop()
-            last = exc
-    die("cannot play to device " + str(device_index) + ": " + str(last))
-
-
 def write_mouth(payload):
     try:
         (ROOT / "mouth.txt").write_bytes(payload.encode("utf-8"))
@@ -963,13 +821,10 @@ def main():
     parser.add_argument("--lang", default=None)
     parser.add_argument("--once", action="store_true", help="one-shot chatterbox.exe, then exit")
     parser.add_argument("--stop", action="store_true", help="stop the resident chatterbox.exe")
-    parser.add_argument("--vb-cable", action="store_true", help="play into CABLE Input (VB-Audio Virtual Cable)")
-    parser.add_argument("--out", default=None, help="playback device index or name substring")
     parser.add_argument("--no-play", action="store_true", help="synthesize and print the wav path")
-    parser.add_argument("--play-wav", default=None, help="play this wav and skip synthesis")
     args = parser.parse_args()
     if args.stop:
-        if args.once or args.text or args.lang is not None or args.vb_cable or args.out or args.no_play or args.play_wav:
+        if args.once or args.text or args.lang is not None or args.no_play:
             die("usage: mouth.py --stop")
         os.chdir(ROOT)
         if stop_resident():
@@ -977,24 +832,10 @@ def main():
         else:
             print("mouth: chatterbox not running", file=sys.stderr)
         raise SystemExit(0)
-    if args.play_wav and (args.text or args.no_play):
-        die("usage: mouth.py --play-wav FILE [--vb-cable|--out DEVICE]")
     if args.no_play and not args.text:
         die("usage: mouth.py --no-play TEXT [TEXT ...]")
-    if args.play_wav:
-        wav = Path(args.play_wav).expanduser()
-        if not wav.is_file():
-            die("missing wav: " + str(wav))
-        if args.vb_cable or args.out is not None:
-            index, name = pick_out(args.out, args.vb_cable)
-            print("mouth out: " + name, file=sys.stderr, flush=True)
-            play_wav_device(wav, index)
-        else:
-            print("mouth out: default", file=sys.stderr, flush=True)
-            play_wav(wav)
-        raise SystemExit(0)
     if not args.text:
-        die("usage: mouth.py [--model nano|turbo|v3] [--lang TAG] [--once] [--vb-cable] TEXT [TEXT ...]")
+        die("usage: mouth.py [--model nano|turbo|v3] [--lang TAG] [--once] TEXT [TEXT ...]")
     if args.model not in MODELS:
         die("unknown model")
     if args.lang is None:
@@ -1023,20 +864,12 @@ def main():
         for wav in produced:
             print(str(Path(wav).resolve()), flush=True)
         raise SystemExit(0)
-    if args.vb_cable or args.out is not None:
-        index, name = pick_out(args.out, args.vb_cable)
-        print("mouth out: " + name, file=sys.stderr, flush=True)
-
-        def play_one(path, index=index):
-            play_wav_device(path, index)
-    else:
-        print("mouth out: default", file=sys.stderr, flush=True)
-        play_one = play_wav
+    print("mouth out: default", file=sys.stderr, flush=True)
     if args.once:
-        speak_chunks(lambda sentence: synthesize(args.model, lang, sentence), chunks, play_one)
+        speak_chunks(lambda sentence: synthesize(args.model, lang, sentence), chunks, play_wav)
     else:
         pid = ensure_resident(args.model, lang)
-        speak_chunks(lambda sentence: resident_say(pid, sentence), chunks, play_one)
+        speak_chunks(lambda sentence: resident_say(pid, sentence), chunks, play_wav)
     raise SystemExit(0)
 
 

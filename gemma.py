@@ -1656,11 +1656,6 @@ def adapter_names():
     return cuda_device_name(), vulkan_device_name()
 
 
-def same_adapter():
-    cuda_name, vulkan_name = adapter_names()
-    return adapter_word(cuda_name, vulkan_name) == "same"
-
-
 PLACE_PORT = 8765
 Place = namedtuple("Place", "brain url cuda vulkan adapter flip where")
 

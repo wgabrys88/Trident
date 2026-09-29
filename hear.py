@@ -42,45 +42,7 @@ def emit(message, file=sys.stderr):
         file.flush()
 
 
-def hostapi_name(sd, info):
-    try:
-        return sd.query_hostapis(int(info["hostapi"]))["name"]
-    except Exception:
-        return ""
-
-
-def prefer_wasapi(matches, sd):
-    ranked = []
-    for index, info in matches:
-        api = hostapi_name(sd, info).lower()
-        if "wasapi" in api:
-            rank = 0
-        elif "directsound" in api:
-            rank = 1
-        elif "mme" in api:
-            rank = 2
-        else:
-            rank = 3
-        ranked.append((rank, index, info))
-    ranked.sort(key=lambda item: (item[0], item[1]))
-    index, info = ranked[0][1], ranked[0][2]
-    return index, info["name"]
-
-
-def cable_capture_hits(devices):
-    hits = []
-    for index, info in enumerate(devices):
-        if info["max_input_channels"] < 1:
-            continue
-        name = info["name"].lower()
-        if "cable output" not in name or "vb-audio" not in name:
-            continue
-        hits.append((index, info))
-    virtual = [item for item in hits if "virtual" in item[1]["name"].lower()]
-    return virtual or hits
-
-
-def pick_mic(prefer: str | None, allow_cable: bool = False):
+def pick_mic(prefer: str | None):
     try:
         import sounddevice as sd
     except ImportError:
@@ -99,21 +61,12 @@ def pick_mic(prefer: str | None, allow_cable: bool = False):
             if info["max_input_channels"] < 1:
                 continue
             name = info["name"]
-            if prefer_l not in name.lower():
-                continue
-            if not allow_cable and "cable" in name.lower():
+            if prefer_l not in name.lower() or "cable" in name.lower():
                 continue
             matches.append((index, info))
         if not matches:
             die("unknown mic: " + prefer)
-        if allow_cable and len(matches) > 1:
-            return prefer_wasapi(matches, sd)
         return matches[0][0], matches[0][1]["name"]
-    if allow_cable:
-        hits = cable_capture_hits(devices)
-        if not hits:
-            die("VB-Cable capture device not found")
-        return prefer_wasapi(hits, sd)
     if default_in is not None and 0 <= default_in < len(devices):
         name = devices[default_in]["name"]
         if devices[default_in]["max_input_channels"] >= 1 and "cable" not in name.lower():
@@ -257,8 +210,7 @@ def main():
     parser.add_argument("--language", default=None)
     parser.add_argument("--format", default="text")
     parser.add_argument("--rate", type=int, default=16000)
-    parser.add_argument("--mic", default=None, help="device index or name substring (never VB-Cable by default)")
-    parser.add_argument("--vb-cable", action="store_true", help="record CABLE Output (VB-Audio Virtual Cable)")
+    parser.add_argument("--mic", default=None, help="device index or name substring (never VB-Cable)")
     parser.add_argument("--save-wav", default=None, help="copy the recording to this path before transcribe")
     parser.add_argument("--endpointing", default="on", choices=("on", "off"))
     parser.add_argument("--stop-history-eou-ms", default="1200")
@@ -292,7 +244,7 @@ def main():
         os.chdir(ROOT)
         transcribe_wav(wav_path, args)
 
-    mic_index, mic_name = pick_mic(args.mic, allow_cable=args.vb_cable)
+    mic_index, mic_name = pick_mic(args.mic)
     emit("hear mic: " + mic_name, file=sys.stderr)
 
     os.chdir(ROOT)

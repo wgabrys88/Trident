@@ -17,11 +17,9 @@ import base64
 import codecs
 import json
 import os
-import socket
 import sys
 import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -90,22 +88,6 @@ def generation_from_body(raw):
         if isinstance(data, dict) and "text" in data and data["text"] is not None:
             return str(data["text"])
     return raw
-
-
-def probe(url, timeout=2):
-    parsed = urllib.parse.urlsplit(url)
-    host = parsed.hostname
-    if not host or parsed.scheme not in ("http", "https"):
-        return False
-    port = parsed.port
-    if port is None:
-        port = 443 if parsed.scheme == "https" else 80
-    try:
-        sock = socket.create_connection((host, port), timeout)
-    except OSError:
-        return False
-    sock.close()
-    return True
 
 
 def file_b64(path):
