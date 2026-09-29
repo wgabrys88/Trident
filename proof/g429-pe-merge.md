@@ -25,16 +25,27 @@ Parents:
 
 `origin/main` stayed `d535349a8b99fcdd0e42efb14ec269e0d59c54b1`.
 
-Note commit: `b85f8293e41c385bd209c03387b9344460100322`. The commit that names that id is its child. After the push, that child is `runner-h`.
+Note commit: `b85f8293e41c385bd209c03387b9344460100322`. The commit that names that id is `521a88e7ec3d4cb3f0808a634949944f1a6e8b59`.
+
+While that note was being written, Iris pushed `42be2ad0553ae151d6baa71972a298bbc3be8fb4` and `d24cbe3ef24e52e78fb78a4a5ffc37e2867c18ff` onto `runner-h` (voice proof and `proof/iris-merge-runner-h.md` only). Those two commits are merged here. No product-file conflict.
+
+Second merge: `d1f482be112b2478d5b06d8ee64b9ad431bba496`
+
+Parents:
+
+- `521a88e7ec3d4cb3f0808a634949944f1a6e8b59` — PE stack note
+- `d24cbe3ef24e52e78fb78a4a5ffc37e2867c18ff` — Iris `runner-h` tip at the fetch
+
+After the push, `runner-h` is the commit that contains this paragraph. Its parent is that second merge.
 
 ## Left with the Iris twin
 
-Not merged from this seat. Both heads were already inside `runner-h` before the PE merge. The PRs stay open because their bases are not `runner-h`.
+Not merged from this seat. Iris already fast-forwarded that voice stack onto `runner-h` and recorded it in `proof/iris-merge-runner-h.md`. Their note says PRs 25 and 27 were closed there. This seat did not reopen them.
 
-| PR | Head | Base at the time of this note |
+| PR | Head | What Iris recorded |
 | --- | --- | --- |
-| 25 | `9274d632c907926066f4ab2940e14dce113cb4d3` | `cursor/iris-voice-loop-5fab` |
-| 27 | `123050e556ed193cc1795a5ed182874b510e4ba1` | `cursor/lang-span-mouth-2f02` |
+| 25 | `9274d632c907926066f4ab2940e14dce113cb4d3` | Commits already on `runner-h`. Closed. |
+| 27 | `123050e556ed193cc1795a5ed182874b510e4ba1` | Head was `runner-h` after their fast-forward. Closed. |
 
 Voice commits already on `runner-h` before this merge: `880663714dc76c11fa25379b9eca4bd35d9a0410`, `940d50ff11fc2e626a115b29cd8ad6db2f25a8d0`, `f03b1f147c42d7f89b1bc31b5f80c8de6a64e68d`, `35ee885e370897f79c45df5e58fb2abd1735c607`, `9274d632c907926066f4ab2940e14dce113cb4d3`, `65cfd44680fff71a2c2cee9b355315bfc9fdfd6f`, `123050e556ed193cc1795a5ed182874b510e4ba1`.
 
@@ -49,6 +60,8 @@ Conflicts were `README.md`, `assistant.py`, and `nvidia_client.py`. `.gitignore`
 `nvidia_client.py` keeps `iter_stream` (one HTTP chunk at a time). The baked-in `192.168.16.31` default is gone. A connect failure is `peer missing`.
 
 `grok_local_bot.py` keeps `mouth.speak_pieces` for the door. Inbox exits `peer missing` when `:8765` is down and does not start `--drop`. `--proof` does not require a cursor spawn. The reasoner prompt does not order that call.
+
+`proof/iris-merge-runner-h.md` describes `runner-h` before this brain merge. On that tree, `--nvidia` died with `brain down` and the client had a built-in host. This merge's `assistant.py` uses `gemma.place` and exits `peer missing`. The listen loop, spans, prefetch, and `StreamFeed` stay.
 
 ## runner-h in words
 
