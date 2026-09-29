@@ -3,10 +3,12 @@
 The default keeps one gemma-brain.exe for this checkout. --once is the old single card run.
 --stop unloads it. --stream writes each sampled piece as it arrives.
 
-Text turns replay gemma.memory.txt and declare remember and cursor. A Gemma 4 <|tool_call>
-is run here, then the brain is asked once more with the tool result. The speakable answer
-is appended to that file. remember adds one fact. Trim drops the oldest turns
-first. A fact drops only after every turn is gone and the prompt still does not fit.
+Text turns replay gemma.memory.txt and declare remember, devices, and cursor. Past model
+turns are the speakable text only. The current turn starts at <|turn>model with thinking
+left off. A Gemma 4 <|tool_call> is run here, then the brain is asked once more with the
+tool result. The speakable answer is appended to that file. remember adds one fact.
+devices reports the CUDA and Vulkan adapters on this computer. Trim drops the oldest
+turns first. A fact drops only after every turn is gone and the prompt still does not fit.
 
 cursor launches the Cursor CLI once and writes grok_bot_spawn.txt. If the CLI is missing
 the tool writes BLOCKED and does not start a follow-up turn.
@@ -33,6 +35,7 @@ ROOT = Path(__file__).resolve().parent
 DROP_KEYS = ("gemma.text", "gemma.image")
 SIDECAR = ROOT / "gemma_run.txt"
 MEMORY_PATH = ROOT / "gemma.memory.txt"
+LAST_PROMPT = ROOT / "gemma.lastprompt.txt"
 SPAWN_PATH = ROOT / "grok_bot_spawn.txt"
 MEDIA = "<__media__>"
 Q = '<|"|>'
@@ -43,8 +46,9 @@ FACT_CHARS = 200
 SYSTEM = (
     "You are Jarvis, the voice of Trident. Wojciech is the owner. "
     "Speak one or two short sentences in the owner's language. "
-    "Earlier turns in this prompt are your memory. Use them. "
+    "The user and model turns after this are what was already said. Use them. "
     "remember stores one fact that stays after old turns are dropped. "
+    "devices reports the CUDA and Vulkan adapters on this computer. "
     "Call a tool only by its tool call. The spoken sentence has no channels or file names."
 )
 REMEMBER_DECL = (
@@ -65,6 +69,17 @@ REMEMBER_DECL = (
     + "line"
     + Q
     + "],type:"
+    + Q
+    + "OBJECT"
+    + Q
+    + "}}<tool|>"
+)
+DEVICES_DECL = (
+    "<|tool>declaration:devices{description:"
+    + Q
+    + "Report the CUDA device and the Vulkan device on this computer, and whether they are the same adapter. Call this when asked which GPU is here or whether speaking would share the brain GPU."
+    + Q
+    + ",parameters:{properties:{},required:[],type:"
     + Q
     + "OBJECT"
     + Q
@@ -157,8 +172,8 @@ def user_body(question, with_image):
 def tool_header(facts):
     body = SYSTEM
     if facts:
-        body += "\n" + "\n".join(facts)
-    return "<|turn>system\n" + body + REMEMBER_DECL + CURSOR_DECL + "<turn|>\n"
+        body += "\nRemembered:\n" + "\n".join(facts)
+    return "<|turn>system\n" + body + REMEMBER_DECL + DEVICES_DECL + CURSOR_DECL + "<turn|>\n"
 
 
 def prepare_question(question):
@@ -190,10 +205,13 @@ def gemma_prompt(question, with_image, reason=False):
 def memory_prompt(facts, pairs, question, suffix):
     parts = ["<bos>", tool_header(facts)]
     for user, model in pairs:
+        if not user and not model:
+            continue
         parts.append("<|turn>user\n" + user + "<turn|>\n")
-        parts.append("<|turn>model\n<|channel>thought\n<channel|>\n" + model + "<turn|>\n")
+        if model:
+            parts.append("<|turn>model\n" + model + "<turn|>\n")
     parts.append("<|turn>user\n" + question.strip("\r\n") + "<turn|>\n")
-    parts.append("<|turn>model\n<|channel>thought\n<channel|>\n" + suffix)
+    parts.append("<|turn>model\n" + suffix)
     return "".join(parts)
 
 
@@ -330,6 +348,9 @@ def store_fact(path, line):
         print("gemma: tool remember empty", file=sys.stderr, flush=True)
         return ""
     facts, pairs = read_memory(path)
+    if text in facts:
+        print("gemma: tool remember kept " + path.name + " (" + text + ")", file=sys.stderr, flush=True)
+        return text
     facts.append(text)
     write_memory(path, facts, pairs)
     print("gemma: tool remember wrote " + path.name + " (" + text + ")", file=sys.stderr, flush=True)
@@ -473,9 +494,12 @@ def strip_tool_markup(text):
 
 def answer_text(text):
     cleaned = strip_tool_markup(text).replace("\r\n", "\n").replace("\r", "\n")
+    cut = cleaned.find("<|tool_call>")
+    if cut >= 0:
+        cleaned = cleaned[:cut]
     if "<channel|>" in cleaned:
         cleaned = cleaned.split("<channel|>")[-1]
-    for token in ("<turn|>", "<|turn>", "<bos>", "<eos>", "`"):
+    for token in ("<|channel>thought", "<|channel>", "<turn|>", "<|turn>", "<bos>", "<eos>", "<|think|>", "`"):
         cleaned = cleaned.replace(token, "")
     return " ".join(cleaned.split())
 
@@ -1262,6 +1286,64 @@ def same_adapter():
     return _norm_device(cuda_name) == _norm_device(vulkan_name)
 
 
+def run_devices():
+    cuda_name, vulkan_name = adapter_names()
+    cuda_name = cuda_name or "none"
+    vulkan_name = vulkan_name or "none"
+    if cuda_name != "none" and vulkan_name != "none" and _norm_device(cuda_name) == _norm_device(vulkan_name):
+        adapter = "same"
+    elif cuda_name == "none" and vulkan_name == "none":
+        adapter = "unknown"
+    else:
+        adapter = "different"
+    print(
+        "gemma: tool devices cuda " + cuda_name + " vulkan " + vulkan_name + " " + adapter,
+        file=sys.stderr,
+        flush=True,
+    )
+    return cuda_name, vulkan_name, adapter
+
+
+def note_prompt(prompt, facts, pairs):
+    print(
+        "gemma: memory facts " + str(len(facts)) + " pairs " + str(len(pairs)),
+        file=sys.stderr,
+        flush=True,
+    )
+    try:
+        LAST_PROMPT.write_text(prompt, encoding="utf-8")
+    except OSError as exc:
+        print("gemma: cannot write gemma.lastprompt.txt: " + str(exc), file=sys.stderr, flush=True)
+
+
+def tool_turn(name, args, raw):
+    if name == "remember":
+        line = store_fact(MEMORY_PATH, args.get("line")) or "empty"
+        return raw + tool_response("remember", [("line", line)]), None, line
+    if name == "devices":
+        cuda_name, vulkan_name, adapter = run_devices()
+        suffix = raw + tool_response(
+            "devices",
+            [("adapter", adapter), ("cuda", cuda_name), ("vulkan", vulkan_name)],
+        )
+        spoken = "cuda " + cuda_name + "; vulkan " + vulkan_name + "; " + adapter
+        return suffix, None, spoken
+    if name == "cursor":
+        job = clean_job(args.get("job"))
+        summary = run_cursor_job(job)
+        if summary == "BLOCKED":
+            print("gemma: tool cursor stopped", file=sys.stderr, flush=True)
+            return None, "BLOCKED cursor cli missing\n", None
+        line = plain(summary) or "cursor"
+        suffix = raw + tool_response(
+            "cursor",
+            [("path", "grok_bot_spawn.txt"), ("text", line)],
+        )
+        return suffix, None, "Cursor job logged in grok_bot_spawn.txt."
+    print("gemma: tool skip " + name, file=sys.stderr, flush=True)
+    return None, None, None
+
+
 def main():
     parser = argparse.ArgumentParser(prog="gemma.py")
     parser.add_argument("question", nargs="?", default=None, help="text question / analysis prompt")
@@ -1317,49 +1399,27 @@ def main():
 
     use_memory = not image_b64 and not reason
     if use_memory:
-        prompt, _facts, _kept = fit_memory(question, "")
+        prompt, facts, kept = fit_memory(question, "")
+        note_prompt(prompt, facts, kept)
     else:
         prompt = gemma_prompt(question, bool(image_b64), reason)
     text = run(prompt, image_b64)
     if use_memory:
         call = parse_tool_call(text)
-        if call and call[0] == "remember":
-            line = store_fact(MEMORY_PATH, call[1].get("line")) or "empty"
-            follow, _facts, _kept = fit_memory(
-                question,
-                call[2] + tool_response("remember", [("line", line)]),
-            )
-            reply = answer_text(run(follow, ""))
-            if not reply:
-                print("gemma: tool follow-up empty", file=sys.stderr, flush=True)
-                reply = line
-                emit_fallback(reply)
-            text = reply
-        elif call and call[0] == "cursor":
-            job = clean_job(call[1].get("job"))
-            summary = run_cursor_job(job)
-            if summary == "BLOCKED":
-                print("gemma: tool cursor stopped", file=sys.stderr, flush=True)
-                text = "BLOCKED cursor cli missing\n"
-                emit_fallback(text)
-            else:
-                line = plain(summary) or "cursor"
-                follow, _facts, _kept = fit_memory(
-                    question,
-                    call[2]
-                    + tool_response(
-                        "cursor",
-                        [("path", "grok_bot_spawn.txt"), ("text", line)],
-                    ),
-                )
+        if call:
+            suffix, blocked, fallback = tool_turn(call[0], call[1], call[2])
+            if blocked:
+                text = blocked
+                emit_fallback(blocked)
+            elif suffix:
+                follow, facts, kept = fit_memory(question, suffix)
+                note_prompt(follow, facts, kept)
                 reply = answer_text(run(follow, ""))
                 if not reply:
                     print("gemma: tool follow-up empty", file=sys.stderr, flush=True)
-                    reply = "Cursor job logged in grok_bot_spawn.txt."
+                    reply = fallback or "done"
                     emit_fallback(reply)
                 text = reply
-        elif call:
-            print("gemma: tool skip " + call[0], file=sys.stderr, flush=True)
         spoken = answer_text(text)
         if spoken:
             append_memory(MEMORY_PATH, question, spoken)

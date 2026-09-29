@@ -86,6 +86,8 @@
 /tool_hello.txt
 /gemma.memory.txt
 /gemma.memory.txt.tmp
+/gemma.lastprompt.txt
+!/proof/g429-pe-memory-live.md
 !/proof/g429-pe-memory.md
 /seq_agents.txt
 /parallel_agents.txt
