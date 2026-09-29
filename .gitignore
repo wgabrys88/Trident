@@ -24,6 +24,7 @@
 !/.gitignore
 !/.gitattributes
 !/README.md
+!/hello-world.txt
 !/CMakeLists.txt
 !/LICENSE
 !/install.py
