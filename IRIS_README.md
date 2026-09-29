@@ -21,9 +21,9 @@ Iris is the body. It hears, places one brain, and speaks. The brain is text. The
 | Path | `C:\Users\eb-wjt\Downloads\Jarvis\Trident` |
 | Seat | `trident-iris`, machine EB-W, account `eb-wjt` |
 | Remote | `https://github.com/wgabrys88/Trident.git` |
-| Branch | `runner-h` tracking `origin/runner-h` |
-| HEAD | `1bafab3fb7f8e874414c1597f6717a59681b1c9b` (merge of PR 40) |
-| Ahead / behind | 0 / 0 |
+| Branch at dig | `runner-h` tracking `origin/runner-h` |
+| Base | `1bafab3fb7f8e874414c1597f6717a59681b1c9b` (merge of PR 40), even with `origin/runner-h` |
+| This file | one commit on `cursor/iris-readme-scout-4036` above that base |
 | Worktree | this directory only |
 | `git status --porcelain -uall` | empty before this file |
 | Tracked files | 106 before this file |
