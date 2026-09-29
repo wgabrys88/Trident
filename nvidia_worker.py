@@ -205,6 +205,9 @@ def iter_gemma_stream(text, image, timeout, verbose, via_b64, on_chunk):
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            # A buffered pipe read waits until 4096 bytes or process exit, so a
+            # short reply left the worker as one chunk at the end.
+            bufsize=0,
         )
     except OSError as exc:
         raise WorkerError("cannot run gemma.py: " + str(exc))

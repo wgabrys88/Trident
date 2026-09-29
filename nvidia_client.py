@@ -115,8 +115,11 @@ def post_turn(url, ident, text, image, image_b64, timeout, stream=False):
             if stream:
                 kept = bytearray()
                 pending = b""
+                read = getattr(resp, "read1", None)
+                if read is None:
+                    read = resp.read
                 while True:
-                    block = resp.read(4096)
+                    block = read(4096)
                     if not block:
                         break
                     pending += block

@@ -1,7 +1,7 @@
 """Gemma brain. Text question, or question + image file → stdout generation (thinking included).
 
 The default keeps one gemma-brain.exe for this checkout. --once is the old single card run.
---stop unloads it. --stream writes each sampled piece as it arrives.
+--stop unloads it. --stream writes a speakable sentence when it ends.
 
 Text turns replay gemma.memory.txt and declare remember, devices, and cursor. Past model
 turns are the speakable text only. The current turn starts at <|turn>model with thinking
@@ -20,6 +20,7 @@ is not read or written. Image turns skip tools and memory replay, then append th
 
 import argparse
 import base64
+import codecs
 import ctypes
 import hashlib
 import os
@@ -490,6 +491,87 @@ def run_cursor_job(job):
 
 def strip_tool_markup(text):
     return TOOL_MARKUP_RE.sub("", text)
+
+
+def sentence_end(text, final):
+    n = len(text)
+    i = 0
+    while i < n:
+        ch = text[i]
+        if ch == "\n" and i + 1 < n and text[i + 1] == "\n":
+            return i + 2
+        if ch in ".!?":
+            j = i + 1
+            if j < n and text[j].isdigit():
+                i = j
+                continue
+            if j < n and text[j].isspace():
+                k = j + 1
+                while k < n and text[k].isspace() and text[k] != "\n":
+                    k += 1
+                if k < n and not text[k].isspace():
+                    tail = text[k:]
+                    if "<channel|>".startswith(tail) or "<|channel>".startswith(tail):
+                        return None
+                    if tail.startswith("<channel|>") or tail.startswith("<|channel>"):
+                        return None
+                    return j + 1
+                if final:
+                    return n
+        i += 1
+    if final and text.strip():
+        return n
+    return None
+
+
+class SpeakFlush:
+    # Stream stdout is what the mouth can say. Hold a sentence until the next
+    # word starts, so a later <channel|> can still drop the thought. JSON turns
+    # do not use this.
+    def __init__(self):
+        self.dec = codecs.getincrementaldecoder("utf-8")("replace")
+        self.buf = ""
+
+    def feed(self, piece):
+        if piece:
+            self.buf += self.dec.decode(piece)
+            self._pump(False)
+
+    def finish(self):
+        self.buf += self.dec.decode(b"", True)
+        self._pump(True)
+
+    def _pump(self, final):
+        self.buf = TOOL_MARKUP_RE.sub("", self.buf)
+        cut = self.buf.find("<|tool_call>")
+        held = ""
+        if cut >= 0:
+            held = self.buf[cut:]
+            self.buf = self.buf[:cut]
+        if "<|channel>" in self.buf and "<channel|>" not in self.buf and not final:
+            self.buf += held
+            return
+        if "<channel|>" in self.buf:
+            self.buf = self.buf.split("<channel|>")[-1]
+        while self.buf:
+            end = sentence_end(self.buf, False)
+            if end is None:
+                break
+            self._write(self.buf[:end])
+            self.buf = self.buf[end:]
+        if final and self.buf.strip():
+            self._write(self.buf)
+            self.buf = ""
+        if held and "<tool_call|>" not in held:
+            self.buf += held
+        elif held and not final:
+            self.buf += held.split("<tool_call|>", 1)[-1]
+
+    def _write(self, text):
+        if not text:
+            return
+        sys.stdout.buffer.write(text.encode("utf-8"))
+        sys.stdout.buffer.flush()
 
 
 def answer_text(text):
@@ -1170,13 +1252,16 @@ def resident_ask(pid, prompt, image_b64, on_piece, timeout):
 
 def resident_generate(prompt, image_b64, stream, timeout=ASK_TIMEOUT):
     pid = ensure_resident()
+    speaker = SpeakFlush() if stream else None
 
     def on_piece(piece):
-        if stream:
-            sys.stdout.buffer.write(piece)
-            sys.stdout.buffer.flush()
+        if speaker is not None:
+            speaker.feed(piece)
 
-    return resident_ask(pid, prompt, image_b64, on_piece, timeout)
+    text = resident_ask(pid, prompt, image_b64, on_piece, timeout)
+    if speaker is not None:
+        speaker.finish()
+    return text
 
 
 def _norm_device(name):
