@@ -102,3 +102,4 @@
 # Grok-bot team program. Role files above are runtime, not sources.
 !/grok_local_bot.py
 !/proof/voice-g429.md
+!/proof/span-mouth.md

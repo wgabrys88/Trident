@@ -648,24 +648,19 @@ def wav_ok(path):
 
 def speak_door(text):
     import assistant
+    import mouth
 
     cleaned = gemma.strip_tool_markup(text)
     spoken = assistant.speakable(cleaned)
-    parts = assistant.chunks_for_mouth(spoken, "en") if spoken else []
+    parts = assistant.chunks_for_mouth(spoken, "nano") if spoken else []
     if not parts:
         return spoken, []
-    argv = [venv_python(), str(ROOT / "mouth.py"), "--model", "nano", "--no-play", "--"]
-    argv.extend(parts)
     print("grok-bot: mouth " + str(len(parts)) + " chunk(s)", file=sys.stderr, flush=True)
-    code, out, _err = run_child_text("mouth", argv, 300)
-    if code != 0:
+    try:
+        paths = mouth.speak_pieces(parts, None)
+    except SystemExit:
         return spoken, []
-    paths = []
-    for line in out.splitlines():
-        name = line.strip()
-        if name:
-            paths.append(name)
-    return spoken, paths
+    return spoken, [str(path) for path in paths]
 
 
 def clip_line(text, limit=240):

@@ -801,6 +801,42 @@ def resident_say(pid, text):
     die("chatterbox timed out")
 
 
+def speak_pieces(pieces, play_one):
+    """One resident. Switch nano/turbo/v3 only when the next span asks."""
+    state = {"pid": None, "mode": None}
+
+    def synth(piece):
+        text, model, lang = piece
+        if text.strip() == "":
+            die("empty text")
+        if any(line == "<<" for line in physical_lines(text)):
+            die("text line is only <<")
+        mode = (model, lang)
+        if mode != state["mode"]:
+            state["pid"] = ensure_resident(model, lang)
+            state["mode"] = mode
+        print("mouth: " + model + " " + lang + " | " + text, file=sys.stderr, flush=True)
+        return resident_say(state["pid"], text)
+
+    pending = iter(pieces)
+    try:
+        first = next(pending)
+    except StopIteration:
+        return []
+    if play_one is None:
+        paths = [synth(first)]
+        for piece in pending:
+            paths.append(synth(piece))
+        return paths
+
+    def chain():
+        yield first
+        yield from pending
+
+    speak_chunks(synth, chain(), play_one)
+    return []
+
+
 def speak_chunks(synthesize_one, chunks, play_one):
     pending = iter(chunks)
     try:

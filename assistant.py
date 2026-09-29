@@ -18,7 +18,6 @@ QUIT_WORDS = {"quit", "exit", "stop"}
 CABLE_PHRASE = "Trident cable loopback"
 EN_LIMIT = 65
 PL_LIMIT = 55
-LISTEN_MODEL = "v3"
 TOKENS = (
     "<|im_start|>",
     "<|im_end|>",
@@ -174,9 +173,10 @@ def pack_atoms(parts, limit):
     return chunks
 
 
-def chunks_for_mouth(text, lang):
-    limit = EN_LIMIT if lang == "en" else PL_LIMIT
-    return pack_atoms(atoms(text), limit)
+def chunks_for_mouth(text, fast="nano"):
+    if fast not in ("nano", "turbo"):
+        fast = "nano"
+    return _plan_chunks(text, fast, pack=True)
 
 
 class AtomScan:
@@ -238,6 +238,214 @@ def atoms(text):
     return AtomScan().feed(text, final=True)
 
 
+LID_URL = "https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.ftz"
+LID_NAME = "lid.176.ftz"
+# Tags stored on v3-t3.gguf, minus the ipa marker. English spans do not use this set.
+V3_LANGS = frozenset(
+    "ar bg cy cs da de el es fi fr he hi hu it ja ko ms nl no pl pt ro ru si sk sv sw ta tr vi zh".split()
+)
+_LID = None
+_LID_CACHE = {}
+
+
+def fast_model(name):
+    return "turbo" if name == "turbo" else "nano"
+
+
+def _lid_model():
+    global _LID
+    if _LID is not None:
+        return _LID
+    import fasttext
+    import urllib.request
+
+    path = ROOT / LID_NAME
+    if not path.is_file():
+        tmp = ROOT / (LID_NAME + ".part")
+        try:
+            with urllib.request.urlopen(LID_URL, timeout=60) as response:
+                tmp.write_bytes(response.read())
+            tmp.replace(path)
+        except Exception as exc:
+            if tmp.is_file():
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+            die("cannot fetch " + LID_NAME + ": " + str(exc))
+    fasttext.FastText.eprint = lambda _msg: None
+    _LID = fasttext.load_model(str(path))
+    return _LID
+
+
+def _lid(text):
+    text = " ".join(text.split()).strip(".,!?;:…\"'“”«»()[]")
+    text = text.strip(".").strip()
+    if not text:
+        return "en", 0.0
+    hit = _LID_CACHE.get(text)
+    if hit is None:
+        labels, probs = _lid_model().predict(text, k=1)
+        hit = (labels[0].replace("__label__", ""), float(probs[0]))
+        _LID_CACHE[text] = hit
+    return hit
+
+
+def _solo(token):
+    return _lid(token)
+
+
+def _script(ch):
+    if not ch.isalpha():
+        return None
+    o = ord(ch)
+    if o <= 0x024F or 0x1E00 <= o <= 0x1EFF:
+        return "Latn"
+    if 0x0400 <= o <= 0x052F:
+        return "Cyrl"
+    if 0x0590 <= o <= 0x05FF:
+        return "Hebr"
+    if 0x0600 <= o <= 0x06FF or 0x0750 <= o <= 0x077F:
+        return "Arab"
+    if 0x0370 <= o <= 0x03FF:
+        return "Grek"
+    if 0x0900 <= o <= 0x097F:
+        return "Deva"
+    if 0x3040 <= o <= 0x30FF or 0x3400 <= o <= 0x9FFF or 0xAC00 <= o <= 0xD7AF:
+        return "Cjk"
+    return "Other"
+
+
+def _anchored(matches, lang):
+    for match in matches:
+        code, prob = _solo(match.group())
+        if code == lang and prob >= 0.60:
+            return True
+    return False
+
+
+def _span_words(text):
+    spans = list(re.finditer(r"\S+", text))
+    if not spans:
+        return [("en", text)] if text.strip() else []
+
+    def phrase(start, end):
+        return text[spans[start].start() : spans[end - 1].end()]
+
+    def rec(start, end):
+        chunk = phrase(start, end)
+        lang, prob = _lid(chunk)
+        # 0.95 keeps a sure monolingual span whole. English at 0.80 stays whole so
+        # "The door" is not peeled off as Dutch. Mixed lines sit well below that.
+        if end - start < 2 or prob >= 0.95 or (lang == "en" and prob >= 0.80):
+            return [(mouth_tag(lang), chunk)]
+        best = None
+        for cut in range(start + 1, end):
+            left_lang, left_p = _lid(phrase(start, cut))
+            right_lang, right_p = _lid(phrase(cut, end))
+            if left_lang == right_lang or left_p < 0.70 or right_p < 0.70:
+                continue
+            if not _anchored(spans[start:cut], left_lang) or not _anchored(spans[cut:end], right_lang):
+                continue
+            if cut - start == 1 and _solo(spans[start].group())[1] < 0.90:
+                continue
+            if end - cut == 1 and _solo(spans[cut].group())[1] < 0.90:
+                continue
+            bound = 0
+            end_lang, end_p = _solo(spans[cut - 1].group())
+            open_lang, open_p = _solo(spans[cut].group())
+            if end_lang == left_lang and end_p >= 0.50:
+                bound += 1
+            if open_lang == right_lang and open_p >= 0.50:
+                bound += 2
+            key = (left_p + right_p, bound, -cut)
+            if best is None or key > best[0]:
+                best = (key, cut)
+        if best is None:
+            return [(mouth_tag(lang), chunk)]
+        cut = best[1]
+        return rec(start, cut) + rec(cut, end)
+
+    return rec(0, len(spans))
+
+
+def _spans(text):
+    if not text.strip():
+        return []
+    runs = []
+    current = None
+    for index, ch in enumerate(text):
+        kind = _script(ch)
+        if kind is None:
+            continue
+        if current is None:
+            current = kind
+            continue
+        if kind != current:
+            runs.append((current, index))
+            current = kind
+    if current is None:
+        return [("en", text.strip())]
+    runs.append((current, len(text)))
+    pieces = []
+    left = 0
+    for kind, end in runs:
+        chunk = text[left:end].strip()
+        left = end
+        if not chunk:
+            continue
+        if kind == "Latn":
+            pieces.extend(_span_words(chunk))
+        else:
+            lang, _prob = _lid(chunk)
+            pieces.append((mouth_tag(lang), chunk))
+    return pieces
+
+
+def _voice(lang, fast):
+    tag = mouth_tag(lang)
+    if tag == "en":
+        return fast, "en"
+    if tag not in V3_LANGS:
+        die("mouth has no voice for " + tag)
+    return "v3", tag
+
+
+def _windows(text, lang, fast):
+    model, tag = _voice(lang, fast)
+    limit = EN_LIMIT if tag == "en" else PL_LIMIT
+    words = text.split()
+    if len(words) > limit:
+        return [(window, model, tag) for window in word_windows(words, limit)]
+    if words:
+        return [(text, model, tag)]
+    return []
+
+
+def _plan_chunks(text, fast, pack):
+    if not pack:
+        pieces = []
+        for lang, span in _spans(text):
+            pieces.extend(_windows(span, lang, fast))
+        return pieces
+    labeled = []
+    for atom in atoms(text):
+        labeled.extend(_spans(atom))
+    pieces = []
+    index = 0
+    while index < len(labeled):
+        lang = labeled[index][0]
+        end = index + 1
+        while end < len(labeled) and labeled[end][0] == lang:
+            end += 1
+        model, tag = _voice(lang, fast)
+        limit = EN_LIMIT if tag == "en" else PL_LIMIT
+        for chunk in pack_atoms([labeled[i][1] for i in range(index, end)], limit):
+            pieces.append((chunk, model, tag))
+        index = end
+    return pieces
+
+
 def _held_tail(text):
     markers = TOKENS + ("**", "__", "`")
     cap = min(len(text), max(len(marker) for marker in markers))
@@ -280,8 +488,8 @@ def _visible(raw, locked, final):
 class StreamFeed:
     """Closed atoms for the mouth while text is still arriving."""
 
-    def __init__(self, lang):
-        self.limit = EN_LIMIT if lang == "en" else PL_LIMIT
+    def __init__(self, fast="nano"):
+        self.fast = fast if fast in ("nano", "turbo") else "nano"
         self.scan = AtomScan()
         self.raw = ""
         self.fed = ""
@@ -309,21 +517,12 @@ class StreamFeed:
         self.fed = text
         chunks = []
         for part in self.scan.feed(extra, final=final):
-            words = part.split()
-            if not words:
+            pieces = _plan_chunks(part, self.fast, pack=False)
+            if not pieces:
                 continue
             self.spoke = True
-            if len(words) > self.limit:
-                chunks.extend(word_windows(words, self.limit))
-            else:
-                chunks.append(" ".join(words))
+            chunks.extend(pieces)
         return chunks
-
-
-def budget_lang(model, lang):
-    if lang:
-        return lang
-    return "pl" if model == "v3" else "en"
 
 
 def mouth_tag(code):
@@ -661,31 +860,21 @@ def announce(route):
         print("assistant: Qwen", file=sys.stderr)
 
 
-def speak_raw(py, args, raw, play=True, model=None, budget=None, prefix=None):
-    model = args.model if model is None else model
-    if budget is None:
-        budget = budget_lang(model, args.lang)
+def speak_raw(args, raw, play=True):
+    import mouth
+
     spoken = speakable(raw)
-    parts = chunks_for_mouth(spoken, budget) if spoken else []
-    if prefix:
-        parts = ["[" + prefix + "] " + part for part in parts]
+    parts = chunks_for_mouth(spoken, fast_model(args.model)) if spoken else []
     if not parts:
         print("assistant: no speakable answer", file=sys.stderr)
         return []
     print("assistant: mouth " + str(len(parts)) + " chunk(s)", file=sys.stderr)
     note_mouth()
-    argv = [py, str(ROOT / "mouth.py"), "--model", model]
-    if not play:
-        argv.append("--no-play")
-    if prefix is None and args.lang is not None:
-        argv.extend(["--lang", args.lang])
-    argv.append("--")
-    argv.extend(parts)
     if play:
-        run_child("mouth", argv, keep_stdout=False, keep_stderr=False)
+        print("mouth out: default", file=sys.stderr, flush=True)
+        mouth.speak_pieces(parts, mouth.play_wav)
         return []
-    out = run_child("mouth", argv, keep_stdout=True, keep_stderr=False)
-    return [line.strip() for line in out.splitlines() if line.strip()]
+    return [str(Path(path).resolve()) for path in mouth.speak_pieces(parts, None)]
 
 
 def open_remote(args, question):
@@ -715,28 +904,13 @@ def remote_text(route, args, question):
     return "".join(iter_remote(route, args, open_remote(args, question), question))
 
 
-def resident_lang(model, args, prefix):
-    if prefix is None and args.lang:
-        return args.lang
-    return "pl" if model == "v3" else "en"
-
-
-def prefixed(chunk, prefix):
-    if prefix:
-        return "[" + prefix + "] " + chunk
-    return chunk
-
-
-def remote_speak(route, args, question, model, budget, prefix, hold):
+def remote_speak(route, args, question, hold):
     import mouth
 
-    model = args.model if model is None else model
-    if budget is None:
-        budget = budget_lang(model, args.lang)
     opened = open_remote(args, question)
     box = {"err": None, "parts": []}
     pending = queue.Queue()
-    feed = StreamFeed(budget)
+    feed = StreamFeed(fast_model(args.model))
 
     def produce():
         try:
@@ -758,7 +932,6 @@ def remote_speak(route, args, question, model, budget, prefix, hold):
 
     threading.Thread(target=produce, daemon=True).start()
     print("mouth out: default", file=sys.stderr, flush=True)
-    pid = mouth.ensure_resident(model, resident_lang(model, args, prefix))
     note_mouth()
     first = pending.get()
 
@@ -784,17 +957,13 @@ def remote_speak(route, args, question, model, budget, prefix, hold):
             count += 1
             if count == 1:
                 print("assistant: mouth", file=sys.stderr, flush=True)
-            yield prefixed(chunk, prefix)
+            yield chunk
             chunk = pending.get()
 
     if hold:
         set_hold(True)
     try:
-        mouth.speak_chunks(
-            lambda sentence: mouth.resident_say(pid, sentence),
-            arriving(),
-            mouth.play_wav,
-        )
+        mouth.speak_pieces(arriving(), mouth.play_wav)
     finally:
         if hold:
             set_hold(False)
@@ -819,10 +988,10 @@ def local_turn(py, script, args, question):
     return run_child(label, argv, keep_stdout=True, keep_stderr=True)
 
 
-def answer(py, route, args, question, speak=True, model=None, budget=None, prefix=None):
+def answer(py, route, args, question, speak=True):
     if route.kind == "remote":
         if speak:
-            return remote_speak(route, args, question, model, budget, prefix, False)
+            return remote_speak(route, args, question, False)
         raw = remote_text(route, args, question)
         show(raw)
         return raw
@@ -832,14 +1001,14 @@ def answer(py, route, args, question, speak=True, model=None, budget=None, prefi
         raw = local_turn(py, "qwen.py", args, question)
     show(raw)
     if speak:
-        speak_raw(py, args, raw, play=True, model=model, budget=budget, prefix=prefix)
+        speak_raw(args, raw, play=True)
     return raw
 
 
-def speak_live(py, args, raw, budget, prefix):
+def speak_live(args, raw):
     set_hold(True)
     try:
-        speak_raw(py, args, raw, play=True, model=LISTEN_MODEL, budget=budget, prefix=prefix)
+        speak_raw(args, raw, play=True)
     finally:
         set_hold(False)
 
@@ -941,7 +1110,7 @@ def cable_turn(py, route, args):
             reasons.append("no reply to speak")
         else:
             try:
-                mouth_paths = speak_raw(py, args, reply, play=False)
+                mouth_paths = speak_raw(args, reply, play=False)
             except SystemExit as exc:
                 code = exc.code if isinstance(exc.code, int) else 2
                 mouth_exit = str(code)
@@ -1024,13 +1193,12 @@ def listen_loop(py, route, args):
         if is_quit(words):
             print("assistant: quit", file=sys.stderr)
             return
-        tag = mouth_tag(code)
         question = posted_text(code, words)
         if route.kind == "remote":
-            reply = remote_speak(route, args, question, LISTEN_MODEL, tag, tag, True)
+            reply = remote_speak(route, args, question, True)
         else:
             reply = answer(py, route, args, question, speak=False)
-            speak_live(py, args, reply, tag, tag)
+            speak_live(args, reply)
         write_history(words, speakable(reply))
         if args.once:
             return
@@ -1058,8 +1226,13 @@ def main():
         help="with --vb-cable, synthesize the reply to wavs and do not play them",
     )
     parser.add_argument("--stop", action="store_true", help="stop the assistant tree on this PC")
-    parser.add_argument("--model", default="nano", choices=MODELS, help="mouth model for --text, --wav, and --vb-cable")
-    parser.add_argument("--lang", default=None, help="mouth language for --text, --wav, and --vb-cable")
+    parser.add_argument(
+        "--model",
+        default="nano",
+        choices=MODELS,
+        help="fast English mouth: turbo, otherwise nano. Other languages use v3",
+    )
+    parser.add_argument("--lang", default=None, help="accepted; the chunker assigns the voice. Empty tag fails")
     parser.add_argument("--image", default=None, help="image file forwarded on the turn")
     parser.add_argument(
         "--nvidia",
