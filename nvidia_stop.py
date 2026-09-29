@@ -169,13 +169,15 @@ def terminate(pid):
         stderr=subprocess.STDOUT,
         check=False,
     )
-    if completed.returncode != 0:
-        text = (completed.stdout or b"").decode("utf-8", errors="replace").strip()
-        print(
-            "nvidia stop: taskkill " + str(pid) + " exit " + str(completed.returncode) + " " + text,
-            file=sys.stderr,
-        )
-    return completed.returncode == 0
+    # 128: pid already gone. The venv launcher exits when the listener child dies.
+    if completed.returncode in (0, 128):
+        return True
+    text = (completed.stdout or b"").decode("utf-8", errors="replace").strip()
+    print(
+        "nvidia stop: taskkill " + str(pid) + " exit " + str(completed.returncode) + " " + text,
+        file=sys.stderr,
+    )
+    return False
 
 
 def wait_free():
