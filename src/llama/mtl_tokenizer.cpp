@@ -1,7 +1,6 @@
 #include "mtl_tokenizer.h"
 #include "common/gguf_file.h"
 #include <algorithm>
-#include <icu.h>
 #include <limits>
 #include <stdexcept>
 
@@ -18,25 +17,21 @@ std::vector<std::string> codepoints(const std::string& text) {
     }
     return out;
 }
-std::string utf8_from(const std::vector<UChar>& text) {
-    UErrorCode status = U_ZERO_ERROR;
-    int32_t count;
-    u_strToUTF8(nullptr, 0, &count, text.data(), int32_t(text.size()), &status);
-    status = U_ZERO_ERROR;
-    std::string result(count, '\0');
-    u_strToUTF8(result.data(), count, nullptr, text.data(), int32_t(text.size()), &status);
-    if (U_FAILURE(status)) throw std::runtime_error("ICU UTF-8 encoding failed");
-    return result;
+bool lang_span_at(const std::string& text, size_t at, size_t& len, std::string& tag) {
+    if (at >= text.size() || text[at] != '[') return false;
+    size_t i = at + 1;
+    size_t n = 0;
+    while (i < text.size() && n < 3 && text[i] >= 'a' && text[i] <= 'z') {
+        ++i;
+        ++n;
+    }
+    if (n < 2 || i >= text.size() || text[i] != ']') return false;
+    tag = text.substr(at + 1, n);
+    len = n + 2;
+    return true;
 }
-std::vector<UChar> utf8_to(const std::string& text) {
-    UErrorCode status = U_ZERO_ERROR;
-    int32_t count;
-    u_strFromUTF8(nullptr, 0, &count, text.data(), int32_t(text.size()), &status);
-    status = U_ZERO_ERROR;
-    std::vector<UChar> result(count);
-    u_strFromUTF8(result.data(), count, nullptr, text.data(), int32_t(text.size()), &status);
-    if (U_FAILURE(status)) throw std::runtime_error("ICU UTF-8 decoding failed");
-    return result;
+bool allowed_tag(const std::string& allowed, const std::string& tag) {
+    return ("," + allowed + ",").find(",[" + tag + "],") != std::string::npos;
 }
 }
 MtlTokenizer::MtlTokenizer(const std::string& t3_path) {
@@ -52,26 +47,26 @@ MtlTokenizer::MtlTokenizer(const std::string& t3_path) {
     if (unk != vocabulary_.end()) unk_ = unk->second;
     for (size_t i = 0; i < merges.size(); ++i) ranks_[merges[i]] = int(i);
 }
-std::string MtlTokenizer::prepare(const std::string& text, const std::string& language) {
-    auto chars = utf8_to(text);
-    UErrorCode status = U_ZERO_ERROR;
-    const UNormalizer2* norm = unorm2_getNFKDInstance(&status);
-    if (U_FAILURE(status)) throw std::runtime_error("ICU NFKD unavailable");
-    status = U_ZERO_ERROR;
-    int32_t need = unorm2_normalize(norm, chars.data(), int32_t(chars.size()), nullptr, 0, &status);
-    status = U_ZERO_ERROR;
-    std::vector<UChar> folded(need);
-    unorm2_normalize(norm, chars.data(), int32_t(chars.size()), folded.data(), need, &status);
-    if (U_FAILURE(status)) throw std::runtime_error("ICU NFKD failed");
-    status = U_ZERO_ERROR;
-    int32_t lower_need = u_strToLower(nullptr, 0, folded.data(), need, "", &status);
-    status = U_ZERO_ERROR;
-    std::vector<UChar> lower(lower_need);
-    u_strToLower(lower.data(), lower_need, folded.data(), need, "", &status);
-    if (U_FAILURE(status)) throw std::runtime_error("ICU lowercase failed");
-    std::string out = "[" + language + "]" + utf8_from(lower);
+std::string MtlTokenizer::prepare(const std::string& text, const std::string& language, const std::string& allowed) {
+    if (!allowed_tag(allowed, language))
+        throw std::runtime_error("Unsupported language: " + language + "; GGUF offers " + allowed);
+    size_t lead = 0;
+    std::string lead_tag;
+    std::string body = text;
+    if (!lang_span_at(text, 0, lead, lead_tag)) body = "[" + language + "]" + text;
+    for (size_t i = 0; i < body.size();) {
+        size_t len = 0;
+        std::string tag;
+        if (!lang_span_at(body, i, len, tag)) {
+            ++i;
+            continue;
+        }
+        if (!allowed_tag(allowed, tag))
+            throw std::runtime_error("Unsupported language: " + tag + "; GGUF offers " + allowed);
+        i += len;
+    }
     std::string spaced;
-    for (char c : out) {
+    for (char c : body) {
         if (c == ' ') spaced += "[SPACE]";
         else spaced += c;
     }
@@ -95,8 +90,8 @@ void MtlTokenizer::piece(const std::string& text, std::vector<int32_t>& ids) con
         ids.push_back(id == vocabulary_.end() ? unk_ : id->second);
     }
 }
-std::vector<int32_t> MtlTokenizer::tokenize(const std::string& text, const std::string& language) const {
-    const std::string prepared = prepare(text, language);
+std::vector<int32_t> MtlTokenizer::tokenize(const std::string& text, const std::string& language, const std::string& allowed) const {
+    const std::string prepared = prepare(text, language, allowed);
     struct Span { size_t start, length; int32_t id; };
     std::vector<Span> spans;
     for (const auto& entry : added_) {

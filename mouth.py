@@ -13,7 +13,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 MODELS = ("nano", "turbo", "v3")
-DROP_KEYS = ("chatterbox.variant", "chatterbox.language", "chatterbox.play")
+DROP_KEYS = ("chatterbox.variant", "chatterbox.language", "chatterbox.play", "chatterbox.cfm-steps")
 SND_FILENAME = 0x00020000
 SND_NODEFAULT = 0x0002
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
@@ -112,6 +112,10 @@ def without_spoken_text(raw):
     return "\n".join(kept)
 
 
+def cfm_steps(model):
+    return "10" if model == "v3" else "2"
+
+
 def settings_text(model, lang, sentence, play):
     source = ROOT / "chatterbox.txt"
     if not source.is_file():
@@ -124,6 +128,7 @@ def settings_text(model, lang, sentence, play):
     body += (
         "chatterbox.variant " + model + "\n"
         "chatterbox.language " + lang + "\n"
+        "chatterbox.cfm-steps " + cfm_steps(model) + "\n"
         "chatterbox.play " + play + "\n"
         "chatterbox.text <<\n"
         + block

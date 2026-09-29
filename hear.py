@@ -129,6 +129,24 @@ def pick_mic(prefer: str | None, allow_cable: bool = False):
     die("no non-cable microphone found")
 
 
+def wasapi_capture_name():
+    try:
+        import sounddevice as sd
+    except ImportError:
+        die("missing sounddevice; install with: .venv\\Scripts\\python.exe -m pip install sounddevice")
+    for api in sd.query_hostapis():
+        if "wasapi" not in api["name"].lower():
+            continue
+        index = api["default_input_device"]
+        if index is None or index < 0:
+            continue
+        name = sd.query_devices(index)["name"]
+        if "cable" in name.lower():
+            continue
+        return name
+    die("no non-cable WASAPI microphone")
+
+
 def transcribe_wav(wav: Path, args):
     command = [
         str(ROOT / "nemo-speech.exe"),

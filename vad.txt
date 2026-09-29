@@ -1,10 +1,13 @@
-# vad.exe takes this file as its only argument.
+# vad.exe vad.txt runs once and writes one cable utterance.
+# vad.exe --resident file.txt stays up. The assistant writes that listen card.
+# vad.hold drops mic audio. vad.stop exits the resident. vad.utterance.txt names the wav.
+# vad.exe takes this file as its only argument when it is not --resident.
 # The values below are used as written. Nothing in the program replaces them.
-# It runs once and writes HH-MM-SS-mmm_vad_out_NNN.txt in the current directory.
+# It writes HH-MM-SS-mmm_vad_out_NNN.txt in the current directory.
 # NNN starts at 000. An existing name is kept and the next number is used.
 # Paths are names in this file's directory. A value ending in << runs until a line that is only <<.
 # vad.device is the capture endpoint friendly name.
-# One finished utterance is written, then the program exits. The text file contains the wav file name.
+# One-shot writes one finished utterance, then exits. The text file contains the wav file name.
 
 # VAD. vad.exe. Silero on CPU through ONNX Runtime. vad.window 512 is the 16 kHz frame.
 # Capture is resampled with the polyphase FIR in Audio::resample, not linear interpolation.
@@ -16,3 +19,4 @@ vad.window 512
 vad.threshold 0.5
 vad.min-silence-ms 400
 vad.speech-pad-ms 120
+vad.max-ms 30000

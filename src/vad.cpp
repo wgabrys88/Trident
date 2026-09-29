@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <numeric>
 #include <string>
@@ -58,24 +59,64 @@ std::vector<float> pull_16k(std::vector<float>& native, int native_rate, int rat
     return std::vector<float>(converted.begin() + drop, converted.end());
 }
 
+bool is_file(const std::filesystem::path& path) {
+    std::error_code ec;
+    return std::filesystem::is_regular_file(path, ec);
 }
 
-int main(int argc, char** argv) {
-    const auto values = trident::load_settings(argc, argv);
-    const int rate = trident::cfg_int(values, "vad.rate");
-    const int window = trident::cfg_int(values, "vad.window");
-    auto device = trident::CaptureDevice::open(trident::need(values, "vad.device"));
-    trident::SileroVad vad(trident::cfg_path(values, "vad.model"), rate, window, trident::cfg_float(values, "vad.threshold"),
-        trident::cfg_int(values, "vad.min-silence-ms"));
-    const int pad = rate * trident::cfg_int(values, "vad.speech-pad-ms") / 1000;
-    std::vector<float> native, pcm, speech, lead;
+void publish_line(const std::filesystem::path& path, const std::string& body) {
+    const auto tmp = path.parent_path() / (path.filename().string() + ".tmp");
+    trident::write_named(tmp, body);
+    if (!MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        std::error_code ec;
+        std::filesystem::remove(tmp, ec);
+        trident::fail("cannot publish " + trident::path_u8(path));
+    }
+}
+
+std::filesystem::path resident_pid_path;
+
+void remove_resident_pid() {
+    if (resident_pid_path.empty()) return;
+    std::error_code ec;
+    std::filesystem::remove(resident_pid_path, ec);
+    resident_pid_path.clear();
+}
+
+struct Ear {
+    trident::CaptureDevice device;
+    trident::SileroVad vad;
+    int rate;
+    int window;
+    int pad;
+    int max_samples;
+    int keep = 960;
+    std::vector<float> native, pcm, speech, lead, frame;
     bool talking = false;
-    bool done = false;
-    const int block = std::max(window, window * device.native_rate / rate);
-    std::vector<float> frame(block);
-    const int keep = 960;
-    while (!done) {
-        device.read(frame.data(), block);
+
+    Ear(trident::CaptureDevice dev, const std::filesystem::path& model, int rate_in, int window_in, float threshold,
+        int min_silence_ms, int pad_in, int max_samples_in)
+        : device(std::move(dev)),
+          vad(model, rate_in, window_in, threshold, min_silence_ms),
+          rate(rate_in),
+          window(window_in),
+          pad(pad_in),
+          max_samples(max_samples_in),
+          frame(std::max(window_in, window_in * device.native_rate / rate_in)) {}
+
+    bool pump(bool drop) {
+        device.read(frame.data(), (int)frame.size());
+        if (drop) {
+            native.clear();
+            pcm.clear();
+            speech.clear();
+            lead.clear();
+            if (talking) {
+                vad.reset();
+                talking = false;
+            }
+            return false;
+        }
         native.insert(native.end(), frame.begin(), frame.end());
         auto converted = pull_16k(native, device.native_rate, rate, keep);
         pcm.insert(pcm.end(), converted.begin(), converted.end());
@@ -89,6 +130,11 @@ int main(int argc, char** argv) {
                 speech.insert(speech.end(), hop.begin(), hop.end());
                 lead.clear();
                 talking = true;
+                if (max_samples > 0 && (int)speech.size() >= max_samples) {
+                    vad.reset();
+                    talking = false;
+                    return true;
+                }
                 continue;
             }
             if (!talking) {
@@ -97,19 +143,86 @@ int main(int argc, char** argv) {
                 continue;
             }
             speech.insert(speech.end(), hop.begin(), hop.end());
-            if (!event.end) continue;
-            vad.reset();
-            talking = false;
-            auto txt = trident::reserve_output("vad");
-            auto wav = txt;
-            wav.replace_extension(".wav");
-            write_wav(wav, speech, rate);
-            speech.clear();
-            trident::write_named(txt, trident::path_u8(wav.filename()));
-            done = true;
-            break;
+            if ((max_samples > 0 && (int)speech.size() >= max_samples) || event.end) {
+                vad.reset();
+                talking = false;
+                return true;
+            }
         }
+        return false;
     }
-    device.close();
+};
+
+std::string save_utterance(std::vector<float>& speech, int rate) {
+    auto txt = trident::reserve_output("vad");
+    auto wav = txt;
+    wav.replace_extension(".wav");
+    write_wav(wav, speech, rate);
+    speech.clear();
+    const auto name = trident::path_u8(wav.filename());
+    trident::write_named(txt, name);
+    return name;
+}
+
+int run(const std::map<std::string, std::string>& values, bool resident) {
+    const int rate = trident::cfg_int(values, "vad.rate");
+    const int window = trident::cfg_int(values, "vad.window");
+    const auto device_name = trident::need(values, "vad.device");
+    const int max_ms = trident::cfg_int(values, "vad.max-ms");
+    auto opened = trident::CaptureDevice::open(device_name);
+    std::fprintf(stderr, "vad mic: %s\n", device_name.c_str());
+    std::fflush(stderr);
+    const auto dir = std::filesystem::current_path();
+    if (resident) {
+        resident_pid_path = dir / "vad.pid";
+        std::atexit(remove_resident_pid);
+        std::error_code ec;
+        std::filesystem::remove(dir / "vad.utterance.txt", ec);
+        if (is_file(dir / "vad.stop")) {
+            std::filesystem::remove(dir / "vad.stop", ec);
+            std::fprintf(stderr, "resident stop before ready\n");
+            std::fflush(stderr);
+            return 0;
+        }
+        publish_line(resident_pid_path, std::to_string(GetCurrentProcessId()) + "\nready\n");
+        std::fprintf(stderr, "resident ready pid %lu\n", static_cast<unsigned long>(GetCurrentProcessId()));
+        std::fflush(stderr);
+    }
+    Ear ear(std::move(opened), trident::cfg_path(values, "vad.model"), rate, window, trident::cfg_float(values, "vad.threshold"),
+        trident::cfg_int(values, "vad.min-silence-ms"), rate * trident::cfg_int(values, "vad.speech-pad-ms") / 1000,
+        rate * max_ms / 1000);
+    for (;;) {
+        if (resident && is_file(dir / "vad.stop")) {
+            std::error_code ec;
+            std::filesystem::remove(dir / "vad.stop", ec);
+            std::fprintf(stderr, "resident stop pid %lu\n", static_cast<unsigned long>(GetCurrentProcessId()));
+            std::fflush(stderr);
+            remove_resident_pid();
+            return 0;
+        }
+        const bool drop = resident && (is_file(dir / "vad.hold") || is_file(dir / "vad.utterance.txt"));
+        if (!ear.pump(drop)) continue;
+        if (ear.speech.empty()) continue;
+        const auto name = save_utterance(ear.speech, rate);
+        if (!resident) break;
+        publish_line(dir / "vad.utterance.txt", name + "\n");
+    }
     return 0;
+}
+
+}
+
+int main(int argc, char** argv) {
+    const char* file = nullptr;
+    bool resident = false;
+    if (argc == 2 && argv[1] && argv[1][0]) {
+        file = argv[1];
+    } else if (argc == 3 && argv[1] && std::string(argv[1]) == "--resident" && argv[2] && argv[2][0]) {
+        resident = true;
+        file = argv[2];
+    } else {
+        trident::fail("usage: vad.exe file.txt | vad.exe --resident file.txt");
+    }
+    char* args[] = {argv[0], const_cast<char*>(file)};
+    return run(trident::load_settings(2, args), resident);
 }

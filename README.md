@@ -43,17 +43,17 @@ flowchart LR
   mic --> asr --> post --> gemma --> chunk --> mouth --> speakers
 ```
 
-1. Iris turns a microphone window, or a wav file, into text. `hear.py` runs `nemo-speech.exe transcribe` with model `ear.gguf`. It does not read `ear.txt` and it does not run `ear.exe`. `src/ear.cpp` is the separate `ear.exe` one-shot. That program writes `*_ear_out_NNN.txt`.
+1. Iris keeps Silero resident in `vad.exe --resident` and transcribes each finished wav with `hear.py`. The live hear command is `nemo-speech.exe transcribe` on `ear.gguf` with `--device cpu --format json --language auto --verbatim`. It does not read `ear.txt` and it does not run `ear.exe`. `src/ear.cpp` is the separate `ear.exe` one-shot. That program writes `*_ear_out_NNN.txt`.
 2. The text is one JSON POST. `nvidia_client.py` sends `id`, `text`, `image`, and, when a local image was passed, `image_b64`. `nvidia_worker.py` `do_POST` runs `gemma.py` once and returns `{"text": out}`. Errors are `text/plain` (`bad json`, `empty text`, `gemma exit`, `gemma timed out`, and the other worker errors). There is no `do_GET`. A browser GET is not a health check.
 3. Iris keeps the text after `<channel|>` (`assistant.speakable`, with the same split on `</think>`). The thought stays in the response file. The mouth does not speak it.
-4. Iris splits that speakable text. The chunker is `assistant.chunks_for_mouth` (`breath_parts`, then `split_long`). `mouth.py` speaks the chunks it is given. It does not split them. PE Gemma and `nvidia_worker.py` return one whole string. `qwen.py` does not chunk. On `--nvidia`, Qwen is not in the path.
+4. Iris splits that speakable text. `assistant.chunks_for_mouth` flushes atoms on `.!?` and a blank line. English packs up to 65 words, any other tag up to 55. A short reply is one chunk and does not call `qwen.py`. An atom over that budget is a Qwen range. `mouth.py` speaks the chunks it is given. PE Gemma and `nvidia_worker.py` return one whole string. No wav is posted back.
 5. `mouth.py` keeps `chatterbox.exe --resident` when the settings fingerprint matches. It writes `chatterbox.play off` into the settings it generates. `chatterbox.txt` still says `chatterbox.play on`. That template flag is not the speaker switch. Playback is `PlaySoundW` on the Windows default wave device, unless `--no-play`, `--vb-cable`, or `--out` is set. The default path prints `mouth out: default` and does not look up a friendly name.
 
 The mouth target for NVIDIA replies is that Iris default device. The same-day measurement (`scenario-c-preflight-iris.txt`, sounddevice default output) named it **Speakers (Realtek(R) Audio)**. The NVIDIA seat's own Windows default render, recorded in the PE Scenario C notes, is **Speakers (Creative SB X-Fi)**. **LG TV (NVIDIA High Definition Audio)** is present on PE and is not that default. There is no endpoint named NVIDIA Speakers. X-Fi and the LG TV are not the live mouth.
 
-Language follows the mouth model when `--lang` is omitted. `resolved_lang` returns `en` for `nano` and `turbo`, and `pl` for `v3`. `mouth.py` uses the same default. Scenario C omitted `--lang` with model `nano`, so the resident was `nano en` (`mouth.pid`). Chatterbox does not rewrite the text into English (`chatterbox.txt`). Polish sentences spoken that evening were Polish text on the English voice. Pass `--lang pl` when the voice tag should be Polish. The English tag on Polish text is that omitted `--lang`, before Chatterbox runs.
+The listen mouth is Chatterbox v3. `--lang` is omitted on that path, so the resident language stays put. Each chunk starts with `[pl]` or `[en]` from the hear tag. `chatterbox.cfm-steps` is 10 for v3 and 2 for nano and turbo. Door and closed-mic `--text` stay nano. Scenario C omitted `--lang` with model `nano`, so that evening's resident was `nano en`.
 
-Chunk sizes on the English path: flush on `.!?;:` and dashes, then a 65-word limit (`EN_LIMIT`) with a conjunction split down to 50 words. Polish limits are 55 and 45. With `--lang` omitted on `nano`, the English limits apply even when the words are Polish.
+The listen loop posts the last 4 pairs from `assistant.history.txt` inside the turn text, each side clipped to 200 words. The worker schema is still one POST. It does not store a session.
 
 ### `--nvidia` is one turn
 
@@ -71,11 +71,11 @@ File-team memory is different. `grok_local_bot.py` appends coordinator and reaso
 | Proven live and closed-mic replay | 180 s | The passing commands below. |
 | Door and file-team HTTP | 600 s | `grok_local_bot.py --timeout`. Separate from the door's hear cap (180 s) and mouth cap (300 s). |
 | Worker Gemma kill | 600 s | `nvidia_worker.py --timeout`, around `gemma.py`, not the Iris HTTP clock. |
-| Listen window | 8 s | `assistant.py --seconds`. Scenario C used 30 s. The mic is open for that window, then the subprocess exits. It stays closed during the POST and during playback. The next turn opens it again. |
+| Listen | resident VAD | `vad.exe --resident`. Silence writes no POST. `vad.hold` drops the mic during playback. `vad.max-ms` is 30000. |
 
-`hear.py` defaults: device `cpu`, rate 16000, model `ear.gguf`, endpointing on, `--stop-history-eou-ms` 1200. Endpointing runs on the finished wav. `vad.exe` is not in this loop. `vad.txt` points `vad.exe` at `CABLE Output (VB-Audio Virtual Cable)`. Capture resample in `vad.exe` is the polyphase FIR in `Audio::resample`. `hear.py` live record uses `resample_linear` (`numpy.interp`).
+`hear.py` defaults: device `cpu`, rate 16000, model `ear.gguf`, endpointing on, `--stop-history-eou-ms` 1200. The listen loop passes `--format json --language auto --verbatim`. `vad.txt` still points one-shot `vad.exe vad.txt` at `CABLE Output (VB-Audio Virtual Cable)`. The listen card is `vad_run.txt`, written for the default non-cable WASAPI mic. Capture resample in `vad.exe` is the polyphase FIR in `Audio::resample`.
 
-`assistant.py` also exits its own loop when the transcript is only `quit`, `exit`, or `stop`. That does not stop port 8765. Gemma has no quit tool. Stopping the listener, or the live assistant tree, is an external Shell action. MIC STOP kills the `assistant.py` tree only.
+`assistant.py` exits its own loop when the transcript is only `quit`, `exit`, or `stop`. That does not stop port 8765. `assistant.py --stop` kills the assistant tree on this PC (vad, and a mouth or Qwen this process started). It does not open a connection to the brain. Gemma has no quit tool. Leave a healthy `:8765` alone.
 
 ### Tools on the worker
 
@@ -87,9 +87,7 @@ On the Scenario C math turn the NVIDIA seat recorded `call:hello` with body `106
 
 ### Local Qwen
 
-`assistant.py` without `--nvidia` uses `--brain qwen` (the default): `qwen.py` and `sense.exe`, Qwen3 0.6B, CPU, `sense.gpu-layers 0`, context 4096, `n-predict` 128. Vision is refused (`qwen/sense vision is N/A`). The door does not call it. The same Iris `speak_raw` path still chunks the local reply before `mouth.py`.
-
-`assistant.py --brain gemma` without `--nvidia` runs local `gemma.py`. That is not the production GPU path.
+Placement is by devices, once, at process start. If the brain port accepts, the turn is a POST and the mouth is local Vulkan. `--nvidia` with the port closed exits non-zero and does not call `qwen.py`. With the port closed and no local CUDA device, stderr says Qwen (`qwen.py`, `sense.exe`, CPU) and the listen mouth is still v3. An image on that path fails with the existing Qwen vision error. A local CUDA device with the port closed uses `gemma.py` and does not overlap it with the mouth. The door does not call Qwen unless a nano reply is over the word budget.
 
 ## What has been shown (2026-09-28)
 
@@ -177,7 +175,7 @@ Run programs with `.\.venv\Scripts\python.exe`.
 
 Gemma sampling in `gemma.txt`, passed through as written: context 65536 (native 131072; 8192 left KV unused on this 1060), batch 512, `n-predict` 2048, `gpu-layers` 999, gpu 0, temp 1.0, top-k 64, top-p 0.95, min-p 0.05, flash-attn off, KV f16. A lower temperature collapses the turn. `gemma-brain.exe` takes `gemma.txt` as its only argument and writes `HH-MM-SS-mmm_gemma_out_NNN.txt`.
 
-Voice bake card `bake.txt`: reference `reference.wav`, cond-seconds 15 for nano and turbo, 6 for v3. `chatterbox.txt` variant in the template is `turbo`; the live and door commands pass `--model nano`.
+Voice bake card `bake.txt`: reference `reference.wav`, cond-seconds 15 for nano and turbo, 6 for v3. `chatterbox.txt` variant in the template is `turbo`. The listen loop uses v3. The door and closed-mic `--text` pass `--model nano`.
 
 ## Run
 
@@ -210,10 +208,16 @@ Closed-mic audible check, on Iris, with a person at the Realtek speakers:
 .\.venv\Scripts\python.exe .\assistant.py --text "Say one short sentence." --nvidia --url http://192.168.16.31:8765/ --timeout 180
 ```
 
-Live mic, on Iris, only after Wojciech says go and Spock passes it. This is the Scenario C command:
+Live mic, on the PC with the microphone. One command. VAD stays up. `--nvidia` requires the brain port. The 2026-09-28 Scenario C command is the record in the section above, not this command.
 
 ```powershell
-.\.venv\Scripts\python.exe .\assistant.py --nvidia --url http://192.168.16.31:8765/ --seconds 30 --timeout 180
+.\.venv\Scripts\python.exe .\assistant.py --nvidia
+```
+
+Stop that tree, and not the brain:
+
+```powershell
+.\.venv\Scripts\python.exe .\assistant.py --stop
 ```
 
 Cable harness, on Iris. Not the human speakers.
@@ -247,7 +251,7 @@ Checked-in values below are the values in the cards on `runner-h`. A program tha
 - Boolean keys are the words `on` and `off`. Anything else fails.
 - Paths are names beside the card file (the card's directory), unless a Python wrapper puts an absolute path in the run file it writes.
 
-`gemma-brain.exe`, `chatterbox-bake.exe`, `ear.exe`, and `vad.exe` take exactly one argument, the card path. Usage text is `program file.txt`. `chatterbox.exe` and `sense.exe` take `card.txt` for one shot, or `--resident card.txt` to stay up.
+`gemma-brain.exe`, `chatterbox-bake.exe`, and `ear.exe` take exactly one argument, the card path. Usage text is `program file.txt`. `chatterbox.exe`, `sense.exe`, and `vad.exe` take `card.txt` for one shot, or `--resident card.txt` to stay up.
 
 ### Environment
 
@@ -260,27 +264,26 @@ Checked-in values below are the values in the cards on `runner-h`. A program tha
 
 ### `assistant.py`
 
-Live hear / brain / mouth loop. Default brain is local Qwen. `--nvidia` posts one turn and does not send history.
+Live hear / brain / mouth loop. No `--seconds`. The listen mouth is v3. `--text` and `--wav` stay on `--model` (default nano).
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--once` | off | One turn, then exit. The live Scenario C command omits this and loops. |
-| `--text TEXT` | none | Skip the microphone. One brain turn, then the mouth. With `--vb-cable`, this string is the phrase played into CABLE Input. Empty text fails. |
+| `--once` | off | One turn, then exit. The live command omits this and loops. |
+| `--text TEXT` | none | Skip the microphone. One brain turn, then the mouth. Nano unless `--model` is set. With `--vb-cable`, this string is the phrase played into CABLE Input. Empty text fails. |
 | `--wav PATH` | none | Transcribe this wav through `hear.py`, skip the mic, one turn. Empty path fails. Cannot combine with `--text` or `--vb-cable`. |
 | `--vb-cable` | off | Play a phrase into `CABLE Input (VB-Audio Virtual Cable)`, hear `CABLE Output`, then one turn. Returns before the live mic loop. |
 | `--mouth` | off | With `--vb-cable` only: synthesize the reply to wavs and do not play them. Without `--vb-cable` the process exits. |
-| `--seconds N` | `8` | Mic window passed to `hear.py`. Must be `> 0`. Scenario C used `30`. The mic closes when the window ends, including during the POST and playback. |
-| `--brain` | `qwen` | `qwen` or `gemma`. Local brains only. `--nvidia` uses the worker instead. |
-| `--model` | `nano` | Mouth model: `nano`, `turbo`, or `v3`. |
-| `--lang TAG` | omit | Mouth language. Omit and `resolved_lang` returns `en` for `nano` and `turbo`, `pl` for `v3`. Empty tag fails. |
-| `--image PATH` | none | Image file. Local path requires `--brain gemma` unless `--nvidia` is set. On `--nvidia` the path is sent to `nvidia_client.py`. |
-| `--nvidia` | off | One POST through `nvidia_client.py`. The worker stores no conversation. |
-| `--url URL` | none | Forwarded to `nvidia_client.py`. Requires `--nvidia`. Empty URL fails. |
-| `--timeout SEC` | none | Forwarded only with `--nvidia`. Must be `> 0`. Omit it and the client default is 30 s, which is shorter than a slow Gemma turn. The proven commands pass `180`. |
+| `--stop` | off | Stop the assistant tree on this PC. Does not contact the brain. Alone. |
+| `--model` | `nano` | Mouth model for `--text`, `--wav`, and `--vb-cable`: `nano`, `turbo`, or `v3`. The listen loop always uses v3. |
+| `--lang TAG` | omit | Mouth language for those closed paths. Omit and nano/turbo use `en`, v3 uses `pl`. The listen loop omits this flag and puts `[pl]` or `[en]` in the text. Empty tag fails. |
+| `--image PATH` | none | Image file on the turn. Qwen still refuses vision. A remote turn POSTs it. |
+| `--nvidia` | off | The brain port must accept or the process exits non-zero and does not call `qwen.py`. |
+| `--url URL` | `http://192.168.16.31:8765/` | Brain URL. Empty URL fails. |
+| `--timeout SEC` | `180` | HTTP timeout when the turn is a POST. Must be `> 0`. |
 
 A transcript that is only `quit`, `exit`, or `stop` ends this loop. It does not stop port 8765.
 
-The chunker is `chunks_for_mouth`. It flushes on `.!?;:` and dashes, then a word limit: English 65 with a conjunction split down to 50 (`and but or so because however`); Polish 55 and 45 (`i oraz ale lub albo więc wiec bo jednak`). Polish limits apply when the resolved language is `pl`. Omitted `--lang` on `nano` uses the English limits.
+The chunker is `chunks_for_mouth`. Atoms flush on `.!?` and a blank line, not on `:`, `;`, or dashes. English budget 65. Any other tag 55. Under the budget, one chunk and no `qwen.py`. Over the budget, short atoms pack together. One atom over the budget asks Qwen for range lines. A bad range fails the turn and prints that text on stderr.
 
 `speakable` keeps the text after `<channel|>`, or after `</think>` when that tag is present. An unclosed `<think>` with no channel split is silence.
 
@@ -664,7 +667,7 @@ Voice paths and sampling for `chatterbox.exe`. `mouth.py` overwrites variant, la
 | `chatterbox.n-predict` | `1000` | Max speech tokens. |
 | `chatterbox.trim-fade-samples` | `480` | Fade length applied to the pcm tail. |
 | `chatterbox.top-p` | `0.95` | Top-p. |
-| `chatterbox.cfm-steps` | `2` | Flow matching steps. |
+| `chatterbox.cfm-steps` | `2` | Template value. `mouth.py` writes `10` for v3 and `2` for nano and turbo. |
 | `chatterbox.top-k` | `1000` | Top-k. |
 | `chatterbox.min-p` | `0.05` | Min-p. |
 | `chatterbox.cfg-weight` | `0.5` | Classifier-free guidance on the v3 llama T3. The gpt2 engine (nano, turbo) does not read it. |
@@ -813,17 +816,21 @@ The body of `README.md` is the program manual (seats, voice path, install, comma
 
 - **Live mic is a proven win (Scenario C, 2026-09-28).** From the Iris checkout:
 
+  The 2026-09-28 record, not the command to run now:
+
   ```powershell
   .\.venv\Scripts\python.exe .\assistant.py --nvidia --url http://192.168.16.31:8765/ --seconds 30 --timeout 180
   ```
 
+  The listen command now is `assistant.py --nvidia` (resident VAD, no `--seconds`).
+
   YouTube chaos mid-session clarified and the mouth spoke two chunks. It did not refuse and it did not stay quiet. The process was later killed (exit `4294967295`). There is no `STATUS PASS` file for that session. The 14:57 `--once` without `--timeout` timed out at 30 s and did not speak. Do not collapse those two runs.
 - **Permission gate stays.** Live mic only after Wojciech says go. Spock passes GO to Iris as Shell, not as a Cursor wait, and not behind a smoke test.
-- **Chunker = Iris** `assistant.chunks_for_mouth` → `mouth.py`. PE returns one JSON `text`. Qwen is not on the live `--nvidia` path and does not own the chunker.
-- **`--nvidia` = single-turn POST** (`id`, `text`, `image`, `image_b64`). No conversation store. "We have not had a conversation yet" mid-session is honest.
+- **Chunker = Iris** `assistant.chunks_for_mouth` → `mouth.py`. PE returns one JSON `text`. Qwen packs a single over-budget atom. It is not the brain when the port is up.
+- **`--nvidia` = the brain port must be up.** The POST body is still `id`, `text`, `image`, `image_b64`. The listen loop puts the last 4 history pairs inside `text`. The worker does not store a session.
 - **Mouth target = Iris default PlaySound device**, measured that day as **Speakers (Realtek(R) Audio)**. The mouth prints `mouth out: default`. PE console default in the NVIDIA notes is Speakers (Creative SB X-Fi). LG TV (NVIDIA High Definition Audio) is on PE and is not the default. Neither is the live mouth. There is no NVIDIA Speakers endpoint.
-- **Polish.** English Chatterbox on Polish text means omitted `--lang` on `nano` (`resolved_lang` → `en`) before Chatterbox. The text is not rewritten.
-- **Stop is external.** Gemma has no quit tool. MIC STOP kills the `assistant.py` tree only. Leave `:8765` up. Heard `quit` / `exit` / `stop` ends the assistant loop only.
+- **Polish.** The listen mouth is v3. The chunk body starts with `[pl]`. The resident card language does not change between turns. Door and `--text` stay nano.
+- **Stop.** `assistant.py --stop` kills the assistant tree on this PC. Leave `:8765` up. Heard `quit` / `exit` / `stop` ends the assistant loop only. Gemma has no quit tool.
 - **Tools are thin.** `hello` writes `tool_hello.txt` on the worker machine. `cursor` lists extensions or prints a version into `grok_bot_spawn.txt` and does not edit the repo.
 - **VOICE = invoke-on-ask only.** No default VOICE Cursor scout.
 - **Worker bind.** `nvidia_worker.py --host` defaults to `0.0.0.0`, port 8765, PE only. Iris `local_8765: none`. Health probe is TCP connect or a real POST. GET is not implemented.
@@ -866,7 +873,7 @@ You are Trident Spock V2. Read `README.md`, including this Rebirth appendix. You
 
 **Role card:**
 
-You are TRIDENT_IRIS. Worker `trident-iris`, machine EB-W, account `eb-wjt`, workspace `C:\Users\eb-wjt\Downloads\Jarvis\Trident`. You own Iris I/O: mic hear, Speakers (Realtek(R) Audio) via PlaySound `mouth out: default`, `hear.py`, `mouth.py`, `assistant.py`, and the wav door. Hearing is `nemo-speech.exe` through `hear.py`, not `ear.exe`. Do not bind `:8765`. Never kill a healthy PE listener. Do not edit `nvidia_worker.py`, `gemma.py`, or `nvidia_client.py`. Coding = Cursor on `trident-iris` only. Quiet via Spock. War Room short. First message: write durable rules; ask nothing unless blocked. MIC OPEN: `.\.venv\Scripts\python.exe .\assistant.py --nvidia --url http://192.168.16.31:8765/ --seconds 30 --timeout 180`. Chunker = `assistant.chunks_for_mouth` → `mouth.py`. Unattended door sets `TRIDENT_NVIDIA_URL` and runs `grok_local_bot.py --wav` (`mouth.py --no-play`).
+You are TRIDENT_IRIS. Worker `trident-iris`, machine EB-W, account `eb-wjt`, workspace `C:\Users\eb-wjt\Downloads\Jarvis\Trident`. You own Iris I/O: mic hear, Speakers (Realtek(R) Audio) via PlaySound `mouth out: default`, `hear.py`, `mouth.py`, `assistant.py`, and the wav door. Hearing is `nemo-speech.exe` through `hear.py`, not `ear.exe`. Do not bind `:8765`. Never kill a healthy PE listener. Do not edit `nvidia_worker.py`, `gemma.py`, or `nvidia_client.py`. Coding = Cursor on `trident-iris` only. Quiet via Spock. War Room short. First message: write durable rules; ask nothing unless blocked. MIC OPEN: `.\.venv\Scripts\python.exe .\assistant.py --nvidia`. MIC STOP: `.\.venv\Scripts\python.exe .\assistant.py --stop` (this PC only, leave `:8765`). Chunker = `assistant.chunks_for_mouth` → `mouth.py`. Unattended door sets `TRIDENT_NVIDIA_URL` and runs `grok_local_bot.py --wav` (`mouth.py --no-play`).
 
 ## CreateAgent — TRIDENT_NVIDIA
 
