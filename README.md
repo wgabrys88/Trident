@@ -79,7 +79,13 @@ Closed microphone. One turn per line, or blocks split by a line that is only `--
 
 The URL is `--url`, else `TRIDENT_NVIDIA_URL`, else `http://192.168.16.31:8765/`. `run.py` does not pass `--model`. English through `run.py` is nano.
 
+A live clip is finished only after `vad.min-silence-ms` of quiet (700). The assistant then drops a clip shorter than 400 ms (`vad: drop short`) or quieter than the peak floor (`vad: drop quiet`). A kept clip is `vad: keep`. From that clip until the mouth returns, `vad.hold` stays set, so a second turn does not start under the answer.
+
+An empty transcript is `hear: empty`. The same wav is transcribed once more. If it is still empty, Iris does not call the brain. Inject sends the same text the microphone would send after a transcript: the words themselves. `hear:` logs that text. The brain prompt, not a word list, chooses the language and whether a tool matches.
+
 `run.py stop` stops this organism and the mouth. It does not open the brain and it does not bind, stop, or restart port 8765.
+
+Each stage prints one line: `vad: keep` or `vad: drop`, `hear: empty` or `hear:` plus the text, `assistant: place`, `assistant: lan` or `assistant: alone`, `assistant: nvidia` or the local brain, `assistant: tool` plus the name, and `mouth:` plus model and language.
 
 If the house LAN address changes, change the URL. Keep port 8765.
 
@@ -114,23 +120,29 @@ Hearing is `hear.py` and `nemo-speech.exe` on `ear.gguf`. The live loop keeps `v
 
 ## Memory, tools, and quiet work
 
-Text turns on the machine that runs `gemma.py` replay `gemma.memory.txt` and declare tools. Python runs a tool only when the generation contains the call. It does not match keywords in the question. Image turns skip tools and memory replay.
+Text turns on the machine that runs `gemma.py` replay `gemma.memory.txt` and declare tools. The system prompt tells the model to answer in the language of the user's words. Python runs a tool only when the generation contains the call. It does not match keywords in the question. Image turns skip tools and memory replay.
 
 | Call | What it does |
 | --- | --- |
 | `remember` | Appends one fact (at most 200 characters) and asks once more. |
 | `place` | Reports CUDA device 0, Vulkan device 0, whether they are the same adapter, whether `127.0.0.1:8765` accepts, and whether a mouth here would share that GPU. No hostname. |
 | `next` | Appends one work line and does not run it. `iris_status.txt` gains `work` plus that line. |
-| `cursor` | Starts one local `agent` (`composer-2.5`, worktree base `runner-h`) and does not wait. A missing CLI is `BLOCKED`. |
+| `cursor` | Starts one local `agent` (`composer-2.5`, worktree base `runner-h`) when the model calls it and does not wait. One agent at a time; a second start is refused while that pid is alive or unknown. A missing CLI is `BLOCKED`. Pid, task, cwd, and model land in `cursor.status.txt` on the checkout that started it. |
 | `stop` | Leaves the call in the answer. Does not ask again. Does not unload `gemma-brain.exe`. Does not close port 8765. Empty line, or a line that is not waiting work: `iris_status.txt` gains `stop voice`. A matching work line is dropped and the status line is `stop` plus that line. |
 
 A spoken shutdown is that `stop` call (`assistant.organism_stop`). The sentence "Please stop listening." is ordinary text.
+
+When the owner asks which tools are available, the prompt tells the model to name remember, place, next, cursor, and stop, one short line each, and not to call a tool. The brain prompt also carries the last Code agent line from `cursor.status.txt` (pid, task, and alive, not running, or unknown). When the owner asks what the agent is doing, the model says that line. Iris does not pick either answer by matching phrases.
+
+The mouth still chooses the voice from the answer: English is nano, every other v3 language is v3.
 
 Facts and work lines are clipped to 200 characters. Duplicate facts and duplicate work lines are kept once. The prompt cap is 80_000 characters. Oldest turns drop first.
 
 When no POST has arrived for 60 seconds, no connection is waiting, and the resident is not busy, the worker runs one `gemma.py --idle`. A speakable notice replaces `iris_outbox.txt` (one line, at most 2000 characters, via `iris_outbox.txt.tmp`) and appends `say` to `iris_status.txt`. Status keeps the last 40 lines. The word `idle` is not written onward. `--drop` does not run the notice.
 
-Iris, on the live microphone and between inject turns, reads `iris_seat.txt`, `iris_outbox.txt`, and `iris_status.txt` in the checkout, or the paths in `TRIDENT_IRIS_SEAT`, `TRIDENT_IRIS_OUTBOX`, and `TRIDENT_IRIS_STATUS`. `say` is spoken. `stop voice` ends this PC's voice and leaves the brain up. `stop` plus a work line drops that line and does not speak. `status` and `work` ask the brain. The line format is `proof/README.md`. On two PCs the files are written on the brain disk; point those variables at them when Iris should see them.
+Iris, on the live microphone and between inject turns, reads `iris_seat.txt`, `iris_outbox.txt`, and `iris_status.txt` in the checkout, or the paths in `TRIDENT_IRIS_SEAT`, `TRIDENT_IRIS_OUTBOX`, and `TRIDENT_IRIS_STATUS`. `say` is spoken. `stop voice` ends this PC's voice and leaves the brain up. `stop` plus a work line drops that line and does not speak. `status` and `work` ask the brain. The line format is `proof/README.md`. On two PCs those files are written on the brain disk; point the variables at them when Iris should see them. `cursor.status.txt` stays on the checkout that started the agent.
+
+On the live microphone, for 25 seconds after a transcript, `say`, `work`, and `status` stay in the file (`assistant: seat deferred`). `stop voice` and `stop` plus a work line still apply. Inject still reads those files between turns.
 
 ## Hard laws
 
@@ -150,4 +162,4 @@ Knobs live in the text cards the programs read: `install.txt`, `gemma.txt`, `sen
 
 ## Proof
 
-Measured notes under `proof/` are the runs. They are not a second manual. The voice-seat record is `proof/voice-seat.md` (`STATUS PASS`: alone inject, LAN inject, `run.py stop`, port left accepting). The spoken stop is `proof/g429-run-stop.md`. The live-mic measurement is `proof/g429-live-mic.md` (the `start.py` command in that note is gone; `run.py start` is the entry). Mouth spans are `proof/span-mouth.md`. The offline check is `proof/voice_seat_check.py`. Brain measurements that still match the tools above stay beside them, including `proof/g429-pe-brain-finish.md`.
+Measured notes under `proof/` are the runs. They are not a second manual. The voice-seat record is `proof/voice-seat.md` (`STATUS PASS`: alone inject, LAN inject, `run.py stop`, port left accepting). The spoken stop is `proof/g429-run-stop.md`. The live-mic measurement is `proof/g429-live-mic.md` (the `start.py` command in that note is gone; `run.py start` is the entry). Mouth spans are `proof/span-mouth.md`. The offline checks are `proof/voice_seat_check.py` and `proof/voice_turn_check.py` (closed mic: the transcript is the question, silence does not call the brain, the turn gate holds, one cursor agent at a time, and stop leaves port 8765 alone). Brain measurements that still match the tools above stay beside them, including `proof/g429-pe-brain-finish.md`.

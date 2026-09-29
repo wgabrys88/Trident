@@ -32,6 +32,11 @@ TOKENS = (
 VAD_PROC = None
 OWN = False
 TRACK = {"mouth": "off", "qwen": "off"}
+MIN_SPEECH_MS = 400
+MIN_PEAK = 800
+HOT_S = 25.0
+HOLD_DEPTH = 0
+DEFER_KINDS = ("say", "work", "status")
 
 
 def die(message):
@@ -538,20 +543,9 @@ def memory_preface():
 
 
 def voice_question(code, words):
-    shown = code if code else "en"
-    parts = [
-        "You are Jarvis. Speak one or two short sentences.",
-        tool_decls(),
-    ]
-    parts.extend(memory_preface())
-    parts.append("User spoke " + shown + ".")
-    parts.append(words)
-    parts.append(
-        "Call a tool only by its tool call. "
-        "Call stop when the owner wants this local voice to shut down or stop listening. "
-        "Otherwise answer. Do not call stop for anything else."
-    )
-    return "\n".join(parts)
+    # The transcript is the whole question. The brain's prompt chooses the language and the tool.
+    del code
+    return (words or "").strip()
 
 
 def signal_question(kind, text):
@@ -659,7 +653,7 @@ def apply_reply(py, found, args, raw, hold, play=True, follow=True):
 def run_voice_turn(py, found, args, words, code, hold):
     text = (words or "").strip()
     if not text:
-        print("assistant: hear returned no transcript", file=sys.stderr)
+        print("hear: empty", file=sys.stderr, flush=True)
         return not args.once
     reply = fetch_reply(py, found, args, voice_question(code, text))
     show(reply)
@@ -667,6 +661,17 @@ def run_voice_turn(py, found, args, words, code, hold):
     if cont:
         remember_turn(text, spoken)
     return cont
+
+
+def turn_after_transcript(py, args, words, code, hold):
+    text = (words or "").strip()
+    if not text:
+        print("hear: empty", file=sys.stderr, flush=True)
+        return not args.once
+    print("hear: " + text, file=sys.stderr, flush=True)
+    show(text)
+    found = place_turn(args)
+    return run_voice_turn(py, found, args, text, code, hold)
 
 
 def write_session():
@@ -799,7 +804,8 @@ def write_listen_card(name):
 
 
 def start_vad(name):
-    global VAD_PROC
+    global VAD_PROC, HOLD_DEPTH
+    HOLD_DEPTH = 0
     exe = ROOT / "vad.exe"
     if not exe.is_file():
         die("missing vad.exe")
@@ -826,7 +832,8 @@ def start_vad(name):
 
 
 def stop_vad():
-    global VAD_PROC
+    global VAD_PROC, HOLD_DEPTH
+    HOLD_DEPTH = 0
     proc = VAD_PROC
     if proc is None:
         return
@@ -861,11 +868,88 @@ def release_vad():
 
 
 def set_hold(on):
+    # The mouth also holds. Depth keeps the mic closed until the whole turn is done.
+    global HOLD_DEPTH
     path = ROOT / "vad.hold"
     if on:
+        HOLD_DEPTH += 1
         path.write_bytes(b"")
         return
-    remove_file(path)
+    if HOLD_DEPTH > 0:
+        HOLD_DEPTH -= 1
+    if HOLD_DEPTH == 0:
+        remove_file(path)
+
+
+def judge_wav(path):
+    import wave
+
+    try:
+        handle = wave.open(str(path), "rb")
+    except (wave.Error, OSError, EOFError):
+        return "unreadable", 0
+    with handle:
+        rate = handle.getframerate() or 0
+        width = handle.getsampwidth()
+        frames = handle.getnframes()
+        raw = handle.readframes(frames)
+    if rate <= 0:
+        return "unreadable", 0
+    ms = int(frames * 1000 / rate)
+    if ms < MIN_SPEECH_MS:
+        return "short", ms
+    if pcm_peak(raw, width) < MIN_PEAK:
+        return "quiet", ms
+    return "keep", ms
+
+
+def pcm_peak(raw, width):
+    if not raw or width <= 0:
+        return 0
+    if width == 2:
+        count = len(raw) // 2
+        peak = 0
+        for index in range(count):
+            sample = int.from_bytes(raw[index * 2 : index * 2 + 2], "little", signed=True)
+            value = sample if sample >= 0 else -sample
+            if value > peak:
+                peak = value
+        return peak
+    peak = 0
+    for byte in raw:
+        if byte > peak:
+            peak = byte
+    return peak
+
+
+def log_vad(kind, ms):
+    if kind == "keep":
+        print("vad: keep " + str(ms) + "ms", file=sys.stderr, flush=True)
+        return
+    if kind == "short":
+        print("vad: drop short " + str(ms) + "ms", file=sys.stderr, flush=True)
+        return
+    if kind == "quiet":
+        print("vad: drop quiet", file=sys.stderr, flush=True)
+        return
+    print("vad: drop " + kind, file=sys.stderr, flush=True)
+
+
+def words_from_wav(py, wav, live):
+    def once():
+        raw = transcribe(py, wav, live)
+        if live:
+            return parse_hear(raw)
+        return " ".join((raw or "").split()), None
+
+    words, code = once()
+    if words:
+        return words, code
+    print("hear: empty", file=sys.stderr, flush=True)
+    words, code = once()
+    if not words:
+        print("hear: empty", file=sys.stderr, flush=True)
+    return words, code
 
 
 def take_utterance(timeout=None):
@@ -982,8 +1066,7 @@ def injected_turn(py, args, text):
     own_turn()
     if not drain_seat(py, args, False):
         return
-    found = place_turn(args)
-    run_voice_turn(py, found, args, text.strip(), None, False)
+    turn_after_transcript(py, args, text.strip(), None, False)
 
 
 def iter_inject_turns(path):
@@ -1031,10 +1114,11 @@ def _inject_blocks_from_stream(stream):
 
 
 def process_inject_turn(py, args, found, text):
+    del found
     stripped = text.strip()
     if not stripped:
         return True
-    return run_voice_turn(py, found, args, stripped, None, False)
+    return turn_after_transcript(py, args, stripped, None, False)
 
 
 def act_signal(py, args, found, sig, hold):
@@ -1096,15 +1180,43 @@ def play_signals(py, args, path, signals, hold):
     return True
 
 
-def drain_file(py, args, path, hold):
+def hot_now(hot_until):
+    return bool(hot_until) and time.monotonic() < float(hot_until)
+
+
+def peek_signals(path):
+    path = Path(path)
+    if not path.is_file():
+        return []
+    try:
+        raw = path.read_text(encoding="utf-8-sig")
+    except OSError:
+        return []
+    return seat.parse_signals(raw)
+
+
+def drain_file(py, args, path, hold, hot_until=0.0):
+    if hot_now(hot_until):
+        peeked = peek_signals(path)
+        if peeked and all(item.kind in DEFER_KINDS for item in peeked):
+            print("assistant: seat deferred", file=sys.stderr, flush=True)
+            return True
     signals = seat.claim(path)
     if not signals:
         return True
+    if hot_now(hot_until):
+        later = [item for item in signals if item.kind in DEFER_KINDS]
+        signals = [item for item in signals if item.kind not in DEFER_KINDS]
+        if later:
+            seat.give_back(path, later)
+            print("assistant: seat deferred", file=sys.stderr, flush=True)
+        if not signals:
+            return True
     print("assistant: seat " + str(path), file=sys.stderr, flush=True)
     return play_signals(py, args, path, signals, hold)
 
 
-def drain_seat(py, args, hold):
+def drain_seat(py, args, hold, hot_until=0.0):
     seen = set()
     paths = (seat.seat_path(None), seat.outbox_path(None), seat.status_path(None))
     for path in paths:
@@ -1115,7 +1227,7 @@ def drain_seat(py, args, hold):
         if key in seen:
             continue
         seen.add(key)
-        if not drain_file(py, args, path, hold):
+        if not drain_file(py, args, path, hold, hot_until):
             return False
     return True
 
@@ -1126,8 +1238,7 @@ def inject_loop(py, args, path):
     if not drain_seat(py, args, False):
         return
     for text in iter_inject_turns(path):
-        found = place_turn(args)
-        if not process_inject_turn(py, args, found, text):
+        if not turn_after_transcript(py, args, text, None, False):
             return
         if not drain_seat(py, args, False):
             return
@@ -1410,34 +1521,39 @@ def cable_turn(py, found, args):
     raise SystemExit(0 if passed else 1)
 
 
-def heard_turn(py, found, args, words, code):
-    return run_voice_turn(py, found, args, words, code, True)
+def live_clip(py, args, state):
+    # Hold before the utterance file is removed. That file is what mutes capture.
+    set_hold(True)
+    try:
+        wav = take_utterance()
+        kind, ms = judge_wav(wav)
+        log_vad(kind, ms)
+        if kind != "keep":
+            return not args.once
+        words, code = words_from_wav(py, wav, True)
+        if not words:
+            return not args.once
+        state["hot_until"] = time.monotonic() + HOT_S
+        return turn_after_transcript(py, args, words, code, True)
+    finally:
+        set_hold(False)
 
 
 def listen_loop(py, args):
     mic = hear.wasapi_capture_name()
     start_vad(mic)
     (ROOT / "assistant.pid").write_text(str(os.getpid()) + "\n", encoding="utf-8")
+    state = {"hot_until": 0.0}
     while True:
-        if not drain_seat(py, args, True):
-            return
-        if not (ROOT / "vad.utterance.txt").is_file():
-            if VAD_PROC is None or VAD_PROC.poll() is not None:
-                die("vad exited")
-            time.sleep(0.05)
-            continue
-        wav = take_utterance()
-        raw = transcribe(py, wav, live=True)
-        words, code = parse_hear(raw)
-        show(words)
-        if not words:
-            print("assistant: hear returned no transcript", file=sys.stderr)
-            if args.once:
+        if VAD_PROC is None or VAD_PROC.poll() is not None:
+            die("vad exited")
+        if (ROOT / "vad.utterance.txt").is_file():
+            if not live_clip(py, args, state):
                 return
             continue
-        found = place_turn(args)
-        if not heard_turn(py, found, args, words, code):
+        if not drain_seat(py, args, True, state["hot_until"]):
             return
+        time.sleep(0.05)
 
 
 def main():
@@ -1558,12 +1674,15 @@ def main():
         injected_turn(py, args, args.text.strip())
         return
     if args.wav is not None:
-        heard = transcribe(py, args.wav.strip(), live=False).strip()
-        show(heard)
-        if not heard:
-            print("assistant: hear returned no transcript", file=sys.stderr)
+        wav_path = Path(args.wav.strip())
+        kind, ms = judge_wav(wav_path)
+        log_vad(kind, ms)
+        if kind != "keep":
             return
-        injected_turn(py, args, heard)
+        words, code = words_from_wav(py, wav_path, False)
+        if not words:
+            return
+        injected_turn(py, args, words)
         return
     place_turn(args)
     own_turn()

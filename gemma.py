@@ -19,9 +19,11 @@ next stores one work line in that same file. stop writes an Iris status line and
 when the line matches waiting work, drops that line. It does not unload the resident
 and it does not close port 8765.
 
-cursor starts one local `agent` process when the model calls it, writes grok_bot_spawn.txt,
-and does not wait. A missing agent writes BLOCKED and does not start a follow-up. This
-file does not call a tool the model did not emit, and it does not run the Cursor IDE shim.
+cursor starts one local `agent` process when the model emits that call. The tool
+description is what tells the model when a code agent is the meaning. One agent at a
+time. It writes grok_bot_spawn.txt and cursor.status.txt and does not wait. A missing
+agent writes BLOCKED and does not start a follow-up. This file does not call a tool
+the model did not emit, and it does not run the Cursor IDE shim.
 
 --idle is one notice, not a loop. No work line prints idle and does not generate. One work
 line is one prompt. A tool runs only when that generation contains the call. The line is
@@ -67,16 +69,19 @@ TURN_WORDS = 200
 FACT_CHARS = 200
 SYSTEM = (
     "You are Jarvis, the voice of Trident. Wojciech is the owner. "
-    "Speak one or two short sentences in the owner's language. "
+    "Speak one or two short sentences in the language of the user's words. "
     "The user and model turns after this are what was already said. Use them. "
     "remember stores one fact that stays after old turns are dropped. "
     "place reports the CUDA device, the Vulkan device, whether they are the same adapter, whether port 8765 is accepting here, and whether a mouth on this computer would share the brain GPU. "
-    "cursor starts one local Cursor agent when the owner asks for a code change. "
+    "cursor starts one local Cursor agent when the owner wants a code agent to change this checkout. "
     "next stores one line of work for when you are idle and nobody is speaking. "
     "stop shuts down the local voice when the owner wants it to stop listening. It does not stop you and it does not close port 8765. "
     "A line that matches Work waiting drops that line. "
     "Work waiting lists those lines. Do not recite them unless the owner asks. "
-    "Call a tool only by its tool call. The spoken sentence has no channels or file names."
+    "When the owner asks which tools you have, name remember, place, next, cursor, and stop, one short line each, and do not call a tool. "
+    "The Code agent line is the last known pid, task, and state. When the owner asks what the agent is doing, say that line. Do not invent a status. "
+    "Call a tool only by its tool call, and only when that tool's description matches what the owner wants. "
+    "The spoken sentence has no channels or file names."
 )
 REMEMBER_DECL = (
     "<|tool>declaration:remember{description:"
@@ -115,7 +120,7 @@ PLACE_DECL = (
 CURSOR_DECL = (
     "<|tool>declaration:cursor{description:"
     + Q
-    + "Start one local Cursor agent for a code change the owner asked for. Pass that request as task. A missing agent is BLOCKED."
+    + "Start one local Cursor agent when the owner wants a code agent to change this checkout. Pass that request as task. Do not call this for conversation, for a question about tools, or for a question about an agent that is already running. A missing agent is BLOCKED. A second agent is refused while one is running."
     + Q
     + ",parameters:{properties:{task:{description:"
     + Q
@@ -182,6 +187,9 @@ TASK_SUFFIX = (
     " Do not push main. Do not force-push. Do not kill a listening port 8765."
 )
 CURSOR_MODEL = "composer-2.5"
+CURSOR_STATUS = ROOT / "cursor.status.txt"
+CURSOR_CAP = 1
+CURSOR_BUSY = "A code agent is already running, so I did not start another."
 CALL_RE = re.compile(
     r"<\|tool_call>\s*call:([A-Za-z_][A-Za-z0-9_]*)\s*\{(.*?)\}\s*<tool_call\|>",
     re.DOTALL,
@@ -251,6 +259,7 @@ def tool_header(facts, works=None):
         body += "\nRemembered:\n" + "\n".join(facts)
     if works:
         body += "\nWork waiting:\n" + "\n".join(works)
+    body += "\n" + cursor_status_speech()
     return (
         "<|turn>system\n"
         + body
@@ -605,7 +614,121 @@ def argv_has_fast(argv):
     return False
 
 
-def run_cursor_job(task, agent_path=None, spawn_path=None):
+_k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+_k32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+_k32.OpenProcess.restype = ctypes.c_void_p
+_k32.CloseHandle.argtypes = [ctypes.c_void_p]
+_k32.CloseHandle.restype = ctypes.c_int
+_k32.QueryFullProcessImageNameW.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_uint32,
+    ctypes.c_wchar_p,
+    ctypes.POINTER(ctypes.c_uint32),
+]
+_k32.QueryFullProcessImageNameW.restype = ctypes.c_int
+_k32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+_k32.GetExitCodeProcess.restype = ctypes.c_int
+_STILL_ACTIVE = 259
+
+
+def cursor_state(pid):
+    # alive: still running and the image name came back.
+    # down: the pid is gone, or the process has already exited.
+    # unknown: still running, but the image name did not come back.
+    if pid <= 0:
+        return "down"
+    handle = _k32.OpenProcess(0x1000, 0, int(pid))
+    if not handle:
+        return "down"
+    try:
+        code = ctypes.c_uint32(0)
+        if _k32.GetExitCodeProcess(handle, ctypes.byref(code)) and code.value != _STILL_ACTIVE:
+            return "down"
+        size = ctypes.c_uint32(32768)
+        buf = ctypes.create_unicode_buffer(size.value)
+        ok = _k32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size))
+        if ok and buf.value:
+            return "alive"
+        return "unknown"
+    finally:
+        _k32.CloseHandle(handle)
+
+
+def read_cursor_status(path=None):
+    path = CURSOR_STATUS if path is None else path
+    if not path.is_file():
+        return None
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    data = {}
+    for line in lines:
+        key, sep, rest = line.partition(" ")
+        if sep and key:
+            data[key] = rest.strip()
+    if "pid" not in data:
+        return None
+    return data
+
+
+def write_cursor_status(pid, task, path=None):
+    path = CURSOR_STATUS if path is None else path
+    body = (
+        "pid "
+        + str(pid)
+        + "\n"
+        + "task "
+        + " ".join((task or "").split())
+        + "\n"
+        + "cwd "
+        + str(ROOT)
+        + "\n"
+        + "model "
+        + CURSOR_MODEL
+        + "\n"
+    )
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(body, encoding="utf-8")
+        tmp.replace(path)
+    except OSError as exc:
+        die("cannot write " + path.name + ": " + str(exc))
+
+
+def cursor_blocks(path=None):
+    # The status file is the one slot. An alive or unknown pid fills CURSOR_CAP.
+    data = read_cursor_status(path)
+    if not data:
+        return False
+    try:
+        pid = int(data.get("pid", "0"))
+    except ValueError:
+        return True
+    occupying = []
+    if cursor_state(pid) in ("alive", "unknown"):
+        occupying.append(pid)
+    return len(occupying) >= CURSOR_CAP
+
+
+def cursor_status_speech(path=None):
+    data = read_cursor_status(path)
+    if not data:
+        return "No code agent has been started."
+    task = data.get("task", "")
+    try:
+        pid = int(data.get("pid", ""))
+    except ValueError:
+        return "I have no code agent status."
+    state = cursor_state(pid)
+    if state == "alive":
+        return "The code agent pid " + str(pid) + " is alive. Task: " + task + "."
+    if state == "unknown":
+        return "The code agent pid " + str(pid) + " is unknown. Task: " + task + "."
+    return "The last code agent pid " + str(pid) + " is not running. Task: " + task + "."
+
+
+def run_cursor_job(task, agent_path=None, spawn_path=None, status_path=None):
     # agent_path None looks up `agent` on PATH. "" means the CLI is missing.
     # The process is started and not waited on. This does not run `cursor`.
     path = SPAWN_PATH if spawn_path is None else spawn_path
@@ -622,13 +745,20 @@ def run_cursor_job(task, agent_path=None, spawn_path=None):
         write_spawn("BLOCKED\nagent cli missing\n", path)
         print("gemma: tool cursor BLOCKED", file=sys.stderr, flush=True)
         return "BLOCKED"
+    if cursor_blocks(status_path):
+        print("gemma: tool cursor busy", file=sys.stderr, flush=True)
+        return "busy"
     argv = agent_argv(agent, label)
     if argv_has_fast(argv):
         write_spawn("fail fast forbidden\n", path)
         print("gemma: tool cursor fast forbidden", file=sys.stderr, flush=True)
         return "fail fast forbidden"
     command = subprocess.list2cmdline(argv)
-    print("gemma: tool cursor " + command, file=sys.stderr, flush=True)
+    print(
+        "gemma: tool cursor model " + CURSOR_MODEL + " cwd " + str(ROOT) + " prompt " + label,
+        file=sys.stderr,
+        flush=True,
+    )
     try:
         proc = subprocess.Popen(
             argv,
@@ -647,7 +777,7 @@ def run_cursor_job(task, agent_path=None, spawn_path=None):
     body += log_block("command", command + "\n")
     body += "pid " + str(pid) + "\nstarted\n"
     write_spawn(body, path)
-    print("gemma: tool cursor started pid " + str(pid), file=sys.stderr, flush=True)
+    write_cursor_status(pid, label, status_path)
     return "started local pid " + str(pid)
 
 
@@ -1706,7 +1836,7 @@ def idle_question(line):
     return (
         "You are idle. Nobody is speaking. Next work: "
         + line
-        + ". If this needs a tool, call it. Use cursor when it is a code change. "
+        + ". If this needs a tool, call it. Use cursor only when the line asks for a code agent. "
         "If it needs no tool, answer in one or two sentences. Do not invent other work."
     )
 
@@ -1792,6 +1922,8 @@ def tool_turn(name, args, raw, spawn_path=None, memory_path=None, status_path=No
         return raw + tool_response("place", fields), None, spoken
     if name == "cursor":
         summary = run_cursor_job(args.get("task"), spawn_path=spawn_path)
+        if summary == "busy":
+            return None, CURSOR_BUSY + "\n", None
         if summary == "BLOCKED" or summary.startswith("fail"):
             print("gemma: tool cursor stopped", file=sys.stderr, flush=True)
             line = "BLOCKED agent cli missing" if summary == "BLOCKED" else summary

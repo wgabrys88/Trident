@@ -117,6 +117,8 @@
 /grok_bot_request.txt
 /grok_bot_response.txt
 /grok_bot_spawn.txt
+/cursor.status.txt
+/cursor.status.txt.tmp
 /iris-door.txt
 /loopback-proof/
 
@@ -130,3 +132,4 @@
 !/proof/span-mouth.md
 !/proof/voice-seat.md
 !/proof/voice_seat_check.py
+!/proof/voice_turn_check.py
