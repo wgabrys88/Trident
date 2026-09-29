@@ -67,6 +67,7 @@
 
 # Resident slots, one-shot artifacts, and run logs.
 /mouth.txt
+/mouth.v3.txt
 /gemma_run.txt
 /sense_run.txt
 /nvidia_turn.request.txt

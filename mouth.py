@@ -3,10 +3,12 @@ import concurrent.futures
 import ctypes
 import hashlib
 import os
+import queue
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections import namedtuple
 from pathlib import Path
@@ -321,13 +323,22 @@ def adopt_output(tmp, out_txt):
     return dest
 
 
-def synthesize(model, lang, sentence):
-    write_mouth(settings_text(model, lang, sentence, "off"))
+def synthesize(model, lang, sentence, card=None):
+    payload = settings_text(model, lang, sentence, "off")
+    if card is None:
+        write_mouth(payload)
+        path = ROOT / "mouth.txt"
+    else:
+        path = ROOT / card
+        try:
+            path.write_text(payload, encoding="utf-8")
+        except OSError as exc:
+            die("cannot write " + path.name + ": " + str(exc))
     tmp = Path(tempfile.mkdtemp(prefix="trident-mouth-once-"))
     try:
         try:
             completed = subprocess.run(
-                [str(ROOT / "chatterbox.exe"), str(ROOT / "mouth.txt")],
+                [str(ROOT / "chatterbox.exe"), str(path)],
                 cwd=str(tmp),
                 shell=False,
             )
@@ -343,6 +354,11 @@ def synthesize(model, lang, sentence):
         return adopt_output(tmp, new_files[0])
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+        if card is not None:
+            try:
+                path.unlink()
+            except OSError:
+                pass
 
 
 def remove_file(name):
@@ -802,15 +818,79 @@ def resident_say(pid, text):
 
 
 def speak_pieces(pieces, play_one):
-    """One resident. Switch nano/turbo/v3 only when the next span asks."""
+    """Fast resident stays up. A known later v3 span is synthesized beside it."""
+    jobs = queue.Queue()
+    spoken = queue.Queue()
+
+    def worker():
+        while True:
+            item = jobs.get()
+            if item is None:
+                return
+            model, lang, text, event, holder = item
+            try:
+                holder["wav"] = synthesize(model, lang, text, "mouth.v3.txt")
+            except SystemExit as exc:
+                holder["err"] = exc
+            finally:
+                event.set()
+
+    thread = threading.Thread(target=worker, name="mouth-v3")
+
+    def reader():
+        saw_fast = False
+        announced = False
+        try:
+            for piece in pieces:
+                text, model, lang = piece
+                bad = text.strip() == "" or any(line == "<<" for line in physical_lines(text))
+                if model == "v3" and saw_fast and not bad:
+                    if not announced:
+                        print("mouth: prefetch " + model + " " + lang, file=sys.stderr, flush=True)
+                        announced = True
+                    holder = {}
+                    event = threading.Event()
+                    jobs.put((model, lang, text, event, holder))
+                    spoken.put((piece, event, holder))
+                else:
+                    if model != "v3":
+                        saw_fast = True
+                    spoken.put((piece, None, None))
+        except BaseException as exc:
+            spoken.put(exc)
+        finally:
+            spoken.put(None)
+            jobs.put(None)
+
+    reader_thread = threading.Thread(target=reader, name="mouth-read", daemon=True)
+
+    def queued():
+        while True:
+            item = spoken.get()
+            if item is None:
+                return
+            if isinstance(item, BaseException):
+                raise item
+            yield item
+
     state = {"pid": None, "mode": None}
 
-    def synth(piece):
+    def synth(item):
+        piece, event, holder = item
         text, model, lang = piece
         if text.strip() == "":
             die("empty text")
         if any(line == "<<" for line in physical_lines(text)):
             die("text line is only <<")
+        if event is not None:
+            event.wait()
+            if holder.get("err") is not None:
+                raise holder["err"]
+            wav = holder.get("wav")
+            if wav is None:
+                die("v3 prefetch failed")
+            print("mouth: " + model + " " + lang + " | " + text, file=sys.stderr, flush=True)
+            return wav
         mode = (model, lang)
         if mode != state["mode"]:
             state["pid"] = ensure_resident(model, lang)
@@ -818,23 +898,29 @@ def speak_pieces(pieces, play_one):
         print("mouth: " + model + " " + lang + " | " + text, file=sys.stderr, flush=True)
         return resident_say(state["pid"], text)
 
-    pending = iter(pieces)
+    thread.start()
+    reader_thread.start()
     try:
-        first = next(pending)
-    except StopIteration:
+        pending = queued()
+        try:
+            first = next(pending)
+        except StopIteration:
+            return []
+        if play_one is None:
+            paths = [synth(first)]
+            for item in pending:
+                paths.append(synth(item))
+            return paths
+
+        def chain():
+            yield first
+            yield from pending
+
+        speak_chunks(synth, chain(), play_one)
         return []
-    if play_one is None:
-        paths = [synth(first)]
-        for piece in pending:
-            paths.append(synth(piece))
-        return paths
-
-    def chain():
-        yield first
-        yield from pending
-
-    speak_chunks(synth, chain(), play_one)
-    return []
+    finally:
+        jobs.put(None)
+        thread.join()
 
 
 def speak_chunks(synthesize_one, chunks, play_one):
