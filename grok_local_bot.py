@@ -19,8 +19,7 @@ RESPONSE = ROOT / "grok_bot_response.txt"
 INBOX = ROOT / "grok_bot_inbox.txt"
 STATUS = ROOT / "grok_bot.txt"
 DOOR = ROOT / "iris-door.txt"
-CURSOR_JOB = "extensions"
-HANDOFF = "next role reasoner\ncursor job: " + CURSOR_JOB + "\n"
+HANDOFF = "next role reasoner\n"
 
 
 def die(message):
@@ -280,13 +279,20 @@ def head_sha():
 
 def spawn_kind(raw):
     text = raw or ""
-    if not text.strip():
+    first = ""
+    for line in text.splitlines():
+        if line.strip():
+            first = line.strip()
+            break
+    if not first:
         return "missing"
-    if text.startswith("BLOCKED"):
+    if first.startswith("BLOCKED"):
         return "blocked"
-    if "fail " in text or text.startswith("fail"):
+    if first.startswith("fail"):
         return "fail"
-    if "pid " in text and "exit " in text:
+    lines = [line.strip() for line in text.splitlines()]
+    started = "started" in lines or any(line.startswith("exit ") for line in lines)
+    if any(line.startswith("pid ") for line in lines) and started:
         return "ran"
     return "missing"
 
@@ -347,9 +353,7 @@ def reasoner_text(history):
     return (
         "Coordinator handoff:\n"
         + handoff
-        + "\nUse the cursor tool now. Set job to "
-        + CURSOR_JOB
-        + ". Then reply with one short sentence that contains the word reasoner.\n"
+        + "\nReply with one short sentence that contains the word reasoner.\n"
     )
 
 
@@ -447,18 +451,14 @@ def run_reasoner(url, drop, timeout):
     spawn_raw = read_text(gemma.SPAWN_PATH) if gemma.SPAWN_PATH.is_file() else ""
     kind = spawn_kind(spawn_raw)
     origin = "none"
-    if ok and kind == "missing":
-        print("grok-bot: cursor tool direct", file=sys.stderr, flush=True)
-        gemma.run_cursor_job(CURSOR_JOB)
-        spawn_raw = read_text(gemma.SPAWN_PATH) if gemma.SPAWN_PATH.is_file() else ""
-        kind = spawn_kind(spawn_raw)
-        origin = "direct"
-    elif kind == "blocked":
+    if kind == "blocked":
         origin = "blocked"
     elif kind == "fail":
         origin = "fail"
     elif kind == "ran":
         origin = "model"
+    else:
+        print("grok-bot: cursor not called", file=sys.stderr, flush=True)
     text_out = payload if ok else ""
     role_ok = bool(ok and text_out.strip())
     if role_ok:
@@ -1033,9 +1033,8 @@ def prove(args):
     history = read_text(HISTORY) if HISTORY.is_file() else ""
     spawn_raw = read_text(gemma.SPAWN_PATH) if gemma.SPAWN_PATH.is_file() else ""
     sexit = spawn_exit(spawn_raw)
-    spawn_ok = spawn_kind(spawn_raw) == "ran" and sexit == 0
     listener_ok = bool(pid_after) and pid_after == pid
-    passed = role_ok and roles_in_order(history) and spawn_ok and listener_ok
+    passed = role_ok and roles_in_order(history) and listener_ok
     append_history(["result ok\n" if passed else "result fail\n"])
     base, util, used = gpu_peak(watch.samples)
     lines = [

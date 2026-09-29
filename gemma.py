@@ -5,13 +5,14 @@ The default keeps one gemma-brain.exe for this checkout. --once is the old singl
 
 Text turns replay gemma.memory.txt and declare remember, devices, and cursor. Past model
 turns are the speakable text only. The current turn starts at <|turn>model with thinking
-left off. A Gemma 4 <|tool_call> is run here, then the brain is asked once more with the
-tool result. The speakable answer is appended to that file. remember adds one fact.
+left off. A Gemma 4 <|tool_call> is run here. remember and devices ask the brain once
+more. The speakable answer is appended to that file. remember adds one fact.
 devices reports the CUDA and Vulkan adapters on this computer. Trim drops the oldest
 turns first. A fact drops only after every turn is gone and the prompt still does not fit.
 
-cursor launches the Cursor CLI once and writes grok_bot_spawn.txt. If the CLI is missing
-the tool writes BLOCKED and does not start a follow-up turn.
+cursor starts one local `agent` process when the model calls it, writes grok_bot_spawn.txt,
+and does not wait. A missing agent writes BLOCKED and does not start a follow-up. This
+file does not call a tool the model did not emit, and it does not run the Cursor IDE shim.
 
 A question that starts with <<trident-inbox>> is one stateless inbox turn: the marker
 is removed, tools are not declared, the thought channel stays open, and gemma.memory.txt
@@ -50,6 +51,7 @@ SYSTEM = (
     "The user and model turns after this are what was already said. Use them. "
     "remember stores one fact that stays after old turns are dropped. "
     "devices reports the CUDA and Vulkan adapters on this computer. "
+    "cursor starts one local Cursor agent when the owner asks for a code change. "
     "Call a tool only by its tool call. The spoken sentence has no channels or file names."
 )
 REMEMBER_DECL = (
@@ -89,11 +91,11 @@ DEVICES_DECL = (
 CURSOR_DECL = (
     "<|tool>declaration:cursor{description:"
     + Q
-    + "Launch the Cursor CLI once and write grok_bot_spawn.txt. Call this when the user asks to run Cursor or the cursor tool."
+    + "Start one local Cursor agent for a code change the owner asked for. Pass that request as task. A missing agent is BLOCKED."
     + Q
-    + ",parameters:{properties:{job:{description:"
+    + ",parameters:{properties:{task:{description:"
     + Q
-    + "Short job label. Use extensions to list installed Cursor extensions."
+    + "What the owner asked to change, in one short line."
     + Q
     + ",type:"
     + Q
@@ -101,7 +103,7 @@ CURSOR_DECL = (
     + Q
     + "}},required:["
     + Q
-    + "job"
+    + "task"
     + Q
     + "],type:"
     + Q
@@ -109,6 +111,11 @@ CURSOR_DECL = (
     + Q
     + "}}<tool|>"
 )
+TASK_SUFFIX = (
+    " Work on branch runner-h. Open the pull request into runner-h."
+    " Do not push main. Do not force-push. Do not kill a listening port 8765."
+)
+CURSOR_MODEL = "composer-2.5"
 CALL_RE = re.compile(
     r"<\|tool_call>\s*call:([A-Za-z_][A-Za-z0-9_]*)\s*\{(.*?)\}\s*<tool_call\|>",
     re.DOTALL,
@@ -368,7 +375,7 @@ def append_memory(path, question, reply):
     write_memory(path, facts, pairs)
 
 
-def clean_job(raw):
+def clean_task(raw):
     text = (raw or "").strip()
     if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
         text = text[1:-1].strip()
@@ -376,8 +383,6 @@ def clean_job(raw):
     text = text.replace(Q, "'")
     if len(text) > 200:
         text = text[:200].rstrip()
-    if not text:
-        text = "extensions"
     return text
 
 
@@ -386,15 +391,16 @@ def log_block(title, body):
     return title + " <<\n" + text + "<<\n"
 
 
-def write_spawn(body):
+def write_spawn(body, path=None):
+    path = SPAWN_PATH if path is None else path
     try:
-        SPAWN_PATH.write_text(body, encoding="utf-8")
+        path.write_text(body, encoding="utf-8")
     except OSError as exc:
-        die("cannot write grok_bot_spawn.txt: " + str(exc))
+        die("cannot write " + path.name + ": " + str(exc))
 
 
-def find_cursor():
-    found = shutil.which("cursor")
+def find_exe(name):
+    found = shutil.which(name)
     if not found:
         return None
     path = Path(found)
@@ -408,31 +414,59 @@ def find_cursor():
     return None
 
 
-def cursor_argv(cursor, job):
-    # cursor 3.22.7 lists `agent` in help, but this build's cli.js does not
-    # dispatch it and passes unknown flags to Electron. One exiting CLI job:
-    # list extensions, or --version when the job asks for the version.
-    folded = job.lower()
-    if "version" in folded and "extension" not in folded:
-        return [cursor, "--version"]
-    return [cursor, "--list-extensions", "--show-versions"]
+def find_agent():
+    return find_exe("agent")
 
 
-def clip_lines(text, limit):
-    lines = (text or "").splitlines()
-    if len(lines) > limit:
-        lines = lines[-limit:]
-    return "\n".join(lines)
+def agent_argv(agent, task):
+    # composer-2.5 is the non-fast id. No -fast slug and no fast flag.
+    return [
+        agent,
+        "-p",
+        "--force",
+        "--trust",
+        "--workspace",
+        str(ROOT),
+        "--worktree",
+        "--worktree-base",
+        "runner-h",
+        "--model",
+        CURSOR_MODEL,
+        "--output-format",
+        "json",
+        task + TASK_SUFFIX,
+    ]
 
 
-def run_cursor_job(job):
-    label = clean_job(job)
-    cursor = find_cursor()
-    if not cursor:
-        write_spawn("BLOCKED\ncursor cli missing\n")
+def argv_has_fast(argv):
+    for arg in argv[:-1]:
+        if "fast" in arg.casefold():
+            return True
+    return False
+
+
+def run_cursor_job(task, agent_path=None, spawn_path=None):
+    # agent_path None looks up `agent` on PATH. "" means the CLI is missing.
+    # The process is started and not waited on. This does not run `cursor`.
+    path = SPAWN_PATH if spawn_path is None else spawn_path
+    label = clean_task(task)
+    if not label or label.startswith("-"):
+        write_spawn("fail empty task\n", path)
+        print("gemma: tool cursor empty task", file=sys.stderr, flush=True)
+        return "fail empty task"
+    if agent_path is None:
+        agent = find_agent()
+    else:
+        agent = agent_path or None
+    if not agent:
+        write_spawn("BLOCKED\nagent cli missing\n", path)
         print("gemma: tool cursor BLOCKED", file=sys.stderr, flush=True)
         return "BLOCKED"
-    argv = cursor_argv(cursor, label)
+    argv = agent_argv(agent, label)
+    if argv_has_fast(argv):
+        write_spawn("fail fast forbidden\n", path)
+        print("gemma: tool cursor fast forbidden", file=sys.stderr, flush=True)
+        return "fail fast forbidden"
     command = subprocess.list2cmdline(argv)
     print("gemma: tool cursor " + command, file=sys.stderr, flush=True)
     try:
@@ -441,52 +475,20 @@ def run_cursor_job(job):
             cwd=ROOT,
             shell=False,
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
     except OSError as exc:
-        body = "job " + label + "\n"
-        body += log_block("command", command + "\n")
-        body += "fail cannot start: " + str(exc) + "\n"
-        write_spawn(body)
+        write_spawn("fail cannot start: " + str(exc) + "\n", path)
         print("gemma: tool cursor fail", file=sys.stderr, flush=True)
-        return "fail"
+        return "fail cannot start"
     pid = proc.pid
-    try:
-        out_b, err_b = proc.communicate(timeout=60)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        try:
-            proc.communicate(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
-        body = "job " + label + "\n"
-        body += log_block("command", command + "\n")
-        body += "pid " + str(pid) + "\n"
-        body += "fail timed out\n"
-        write_spawn(body)
-        print("gemma: tool cursor timed out pid " + str(pid), file=sys.stderr, flush=True)
-        return "fail timed out"
-    code = proc.returncode
-    if code is None:
-        code = 1
-    out = (out_b or b"").decode("utf-8", errors="replace")
-    err = (err_b or b"").decode("utf-8", errors="replace")
-    body = "job " + label + "\n"
+    body = "task " + label + "\n"
     body += log_block("command", command + "\n")
-    body += "pid " + str(pid) + "\n"
-    body += "exit " + str(code) + "\n"
-    shown = clip_lines(out, 40)
-    body += log_block("stdout", (shown + "\n") if shown else "")
-    if code != 0 and err.strip():
-        body += log_block("stderr", clip_lines(err.strip(), 20) + "\n")
-    write_spawn(body)
-    print(
-        "gemma: tool cursor pid " + str(pid) + " exit " + str(code),
-        file=sys.stderr,
-        flush=True,
-    )
-    return "pid " + str(pid) + " exit " + str(code)
+    body += "pid " + str(pid) + "\nstarted\n"
+    write_spawn(body, path)
+    print("gemma: tool cursor started pid " + str(pid), file=sys.stderr, flush=True)
+    return "started local pid " + str(pid)
 
 
 def strip_tool_markup(text):
@@ -1401,7 +1403,7 @@ def note_prompt(prompt, facts, pairs):
         print("gemma: cannot write gemma.lastprompt.txt: " + str(exc), file=sys.stderr, flush=True)
 
 
-def tool_turn(name, args, raw):
+def tool_turn(name, args, raw, spawn_path=None):
     if name == "remember":
         line = store_fact(MEMORY_PATH, args.get("line")) or "empty"
         return raw + tool_response("remember", [("line", line)]), None, line
@@ -1414,19 +1416,16 @@ def tool_turn(name, args, raw):
         spoken = "cuda " + cuda_name + "; vulkan " + vulkan_name + "; " + adapter
         return suffix, None, spoken
     if name == "cursor":
-        job = clean_job(args.get("job"))
-        summary = run_cursor_job(job)
-        if summary == "BLOCKED":
+        summary = run_cursor_job(args.get("task"), spawn_path=spawn_path)
+        if summary == "BLOCKED" or summary.startswith("fail"):
             print("gemma: tool cursor stopped", file=sys.stderr, flush=True)
-            return None, "BLOCKED cursor cli missing\n", None
+            line = "BLOCKED agent cli missing" if summary == "BLOCKED" else summary
+            return None, line + "\n", None
         line = plain(summary) or "cursor"
-        suffix = raw + tool_response(
-            "cursor",
-            [("path", "grok_bot_spawn.txt"), ("text", line)],
-        )
-        return suffix, None, "Cursor job logged in grok_bot_spawn.txt."
-    print("gemma: tool skip " + name, file=sys.stderr, flush=True)
-    return None, None, None
+        suffix = raw + tool_response("cursor", [("text", line)])
+        return suffix, None, line
+    print("gemma: tool unknown " + name, file=sys.stderr, flush=True)
+    return None, "unknown tool " + name + "\n", None
 
 
 def main():

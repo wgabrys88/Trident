@@ -90,6 +90,7 @@
 !/proof/g429-pe-memory-live.md
 !/proof/g429-pe-stream-flush.md
 !/proof/g429-pe-memory.md
+!/proof/g429-pe-tools.md
 /seq_agents.txt
 /parallel_agents.txt
 /parallel_agents.log
