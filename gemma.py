@@ -23,6 +23,7 @@ line is one prompt. A tool runs only when that generation contains the call. The
 dropped after a speakable answer. A failed tool leaves the line. An empty generation is an
 error and leaves the line. An empty follow-up is replaced by the tool's own result, never
 by a made-up sentence. --idle does not listen and does not start a second brain.
+The HTTP worker runs this notice once after a quiet stretch with no POST.
 
 A question that starts with <<trident-inbox>> is one stateless inbox turn: the marker
 is removed, tools are not declared, the thought channel stays open, and gemma.memory.txt
