@@ -1,38 +1,72 @@
-"""Gemma brain one-shot. Text question, or question + image file → stdout generation (thinking included).
+"""Gemma brain. Text question, or question + image file → stdout generation (thinking included).
 
-Text turns declare two local tools, hello and cursor. A Gemma 4 <|tool_call> is run here,
-then the brain is asked once more with the tool result so the follow-up generation can complete.
-cursor launches the Cursor CLI once and writes grok_bot_spawn.txt. If the CLI is missing
-the tool writes BLOCKED and does not start a follow-up turn.
+The default keeps one gemma-brain.exe for this checkout. --once is the old single card run.
+--stop unloads it. --stream writes a speakable sentence when it ends.
+
+Text turns replay gemma.memory.txt and declare remember, devices, and cursor. Past model
+turns are the speakable text only. The current turn starts at <|turn>model with thinking
+left off. A Gemma 4 <|tool_call> is run here. remember and devices ask the brain once
+more. The speakable answer is appended to that file. remember adds one fact.
+devices reports the CUDA and Vulkan adapters on this computer, whether port
+8765 accepts here, and whether a mouth on this computer would share that GPU.
+place() is that same decision for a turn: one TCP connect, no computer name,
+no second URL. Trim drops the oldest
+turns first. A fact drops only after every turn is gone and the prompt still does not fit.
+
+cursor starts one local `agent` process when the model calls it, writes grok_bot_spawn.txt,
+and does not wait. A missing agent writes BLOCKED and does not start a follow-up. This
+file does not call a tool the model did not emit, and it does not run the Cursor IDE shim.
 
 A question that starts with <<trident-inbox>> is one stateless inbox turn: the marker
-is removed, tools are not declared, and the thought channel stays open.
+is removed, tools are not declared, the thought channel stays open, and gemma.memory.txt
+is not read or written. Image turns skip tools and memory replay, then append the reply.
 """
 
 import argparse
 import base64
+import codecs
+import ctypes
+import hashlib
+import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
+import time
+import urllib.parse
+from collections import namedtuple
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 DROP_KEYS = ("gemma.text", "gemma.image")
 SIDECAR = ROOT / "gemma_run.txt"
-HELLO_PATH = ROOT / "tool_hello.txt"
+MEMORY_PATH = ROOT / "gemma.memory.txt"
+LAST_PROMPT = ROOT / "gemma.lastprompt.txt"
 SPAWN_PATH = ROOT / "grok_bot_spawn.txt"
 MEDIA = "<__media__>"
 Q = '<|"|>'
 INBOX_MARK = "<<trident-inbox>>"
-HELLO_DECL = (
-    "<|tool>declaration:hello{description:"
+PROMPT_CHARS = 80_000
+TURN_WORDS = 200
+FACT_CHARS = 200
+SYSTEM = (
+    "You are Jarvis, the voice of Trident. Wojciech is the owner. "
+    "Speak one or two short sentences in the owner's language. "
+    "The user and model turns after this are what was already said. Use them. "
+    "remember stores one fact that stays after old turns are dropped. "
+    "devices reports the CUDA device, the Vulkan device, whether they are the same adapter, and whether a mouth on this computer would share the brain GPU. "
+    "cursor starts one local Cursor agent when the owner asks for a code change. "
+    "Call a tool only by its tool call. The spoken sentence has no channels or file names."
+)
+REMEMBER_DECL = (
+    "<|tool>declaration:remember{description:"
     + Q
-    + "Write one line into tool_hello.txt. Call this when the user asks to write Hello World or to use the hello tool."
+    + "Store one fact that stays after old conversation turns are dropped. Call this when the owner states something that must be remembered."
     + Q
     + ",parameters:{properties:{line:{description:"
     + Q
-    + "Exact line to write. Use Hello World when asked to write Hello World."
+    + "The fact, one short line."
     + Q
     + ",type:"
     + Q
@@ -48,14 +82,25 @@ HELLO_DECL = (
     + Q
     + "}}<tool|>"
 )
+DEVICES_DECL = (
+    "<|tool>declaration:devices{description:"
+    + Q
+    + "Report the CUDA device and the Vulkan device on this computer, whether they are the same adapter, whether port 8765 is accepting here, and whether a mouth on this computer would share the brain GPU. Call this when asked which GPU is here or where this computer's brain is running."
+    + Q
+    + ",parameters:{properties:{},required:[],type:"
+    + Q
+    + "OBJECT"
+    + Q
+    + "}}<tool|>"
+)
 CURSOR_DECL = (
     "<|tool>declaration:cursor{description:"
     + Q
-    + "Launch the Cursor CLI once and write grok_bot_spawn.txt. Call this when the user asks to run Cursor or the cursor tool. Do not use this to write Hello World."
+    + "Start one local Cursor agent for a code change the owner asked for. Pass that request as task. A missing agent is BLOCKED."
     + Q
-    + ",parameters:{properties:{job:{description:"
+    + ",parameters:{properties:{task:{description:"
     + Q
-    + "Short job label. Use extensions to list installed Cursor extensions."
+    + "What the owner asked to change, in one short line."
     + Q
     + ",type:"
     + Q
@@ -63,7 +108,7 @@ CURSOR_DECL = (
     + Q
     + "}},required:["
     + Q
-    + "job"
+    + "task"
     + Q
     + "],type:"
     + Q
@@ -71,6 +116,11 @@ CURSOR_DECL = (
     + Q
     + "}}<tool|>"
 )
+TASK_SUFFIX = (
+    " Work on branch runner-h. Open the pull request into runner-h."
+    " Do not push main. Do not force-push. Do not kill a listening port 8765."
+)
+CURSOR_MODEL = "composer-2.5"
 CALL_RE = re.compile(
     r"<\|tool_call>\s*call:([A-Za-z_][A-Za-z0-9_]*)\s*\{(.*?)\}\s*<tool_call\|>",
     re.DOTALL,
@@ -86,7 +136,7 @@ TOOL_MARKUP_RE = re.compile(
 
 
 def die(message):
-    print(message, file=sys.stderr)
+    print(message, file=sys.stderr, flush=True)
     raise SystemExit(2)
 
 
@@ -132,8 +182,11 @@ def user_body(question, with_image):
     return q
 
 
-def tool_header():
-    return "<|turn>system\nYou are a helpful assistant." + HELLO_DECL + CURSOR_DECL + "<turn|>\n"
+def tool_header(facts):
+    body = SYSTEM
+    if facts:
+        body += "\nRemembered:\n" + "\n".join(facts)
+    return "<|turn>system\n" + body + REMEMBER_DECL + DEVICES_DECL + CURSOR_DECL + "<turn|>\n"
 
 
 def prepare_question(question):
@@ -147,18 +200,13 @@ def prepare_question(question):
 
 
 def gemma_prompt(question, with_image, reason=False):
+    # Image turns and inbox turns. Text memory turns use memory_prompt.
     user = user_body(question, with_image)
-    # Image turns stay on the old prompt. Text turns declare hello and cursor
-    # and still close an empty thought channel, which is Gemma 4's thinking-off prefill.
-    # Inbox turns leave that channel open and declare no tools, so the brain runs once.
-    head = "<bos>"
-    if not with_image and not reason:
-        head += tool_header()
     tail = "<|channel>thought\n"
     if not reason:
         tail += "<channel|>\n"
     return (
-        head
+        "<bos>"
         + "<|turn>user\n"
         + user
         + "<turn|>\n"
@@ -167,55 +215,22 @@ def gemma_prompt(question, with_image, reason=False):
     )
 
 
-def continue_prompt(question, call_markup, response):
-    # Same empty thought close as the first turn, then the call the model just
-    # emitted, then the tool result. Gemma stops on <|tool_response> and continues
-    # the answer after <tool_response|>.
-    return (
-        "<bos>"
-        + tool_header()
-        + "<|turn>user\n"
-        + question.strip("\r\n")
-        + "<turn|>\n"
-        "<|turn>model\n"
-        "<|channel>thought\n"
-        "<channel|>\n"
-        + call_markup
-        + response
-    )
+def memory_prompt(facts, pairs, question, suffix):
+    parts = ["<bos>", tool_header(facts)]
+    for user, model in pairs:
+        if not user and not model:
+            continue
+        parts.append("<|turn>user\n" + user + "<turn|>\n")
+        if model:
+            parts.append("<|turn>model\n" + model + "<turn|>\n")
+    parts.append("<|turn>user\n" + question.strip("\r\n") + "<turn|>\n")
+    parts.append("<|turn>model\n" + suffix)
+    return "".join(parts)
 
 
-def follow_prompt(question, call_markup, line):
-    response = (
-        "<|tool_response>response:hello{path:"
-        + Q
-        + "tool_hello.txt"
-        + Q
-        + ",text:"
-        + Q
-        + line
-        + Q
-        + "}<tool_response|>"
-    )
-    return continue_prompt(question, call_markup, response)
-
-
-def follow_cursor_prompt(question, call_markup, summary):
-    line = " ".join(str(summary).split()).replace(Q, "'")
-    if not line:
-        line = "cursor"
-    response = (
-        "<|tool_response>response:cursor{path:"
-        + Q
-        + "grok_bot_spawn.txt"
-        + Q
-        + ",text:"
-        + Q
-        + line
-        + Q
-        + "}<tool_response|>"
-    )
-    return continue_prompt(question, call_markup, response)
+def tool_response(name, fields):
+    parts = [key + ":" + Q + value + Q for key, value in fields]
+    return "<|tool_response>response:" + name + "{" + ",".join(parts) + "}<tool_response|>"
 
 
 def parse_tool_call(text):
@@ -229,28 +244,143 @@ def parse_tool_call(text):
     return match.group(1), args, match.group(0)
 
 
-def clean_line(raw):
-    text = (raw or "").strip()
-    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
-        text = text[1:-1].strip()
-    text = " ".join(text.split())
-    text = text.replace(Q, "'")
-    if len(text) > 200:
-        text = text[:200].rstrip()
-    if not text:
-        text = "Hello World"
+def plain(raw):
+    text = " ".join((raw or "").replace(Q, "'").split())
     return text
 
 
-def write_hello(line):
+def clip_words(raw, limit):
+    words = plain(raw).split()
+    if len(words) > limit:
+        words = words[:limit]
+    return " ".join(words)
+
+
+def clip_fact(raw):
+    text = (raw or "").strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        text = text[1:-1].strip()
+    text = plain(text)
+    if len(text) > FACT_CHARS:
+        text = text[:FACT_CHARS].rstrip()
+    return text
+
+
+def parse_store(raw):
+    facts = []
+    pairs = []
+    pending = None
+    lines = physical_lines(raw)
+    index = 0
+    while index < len(lines):
+        stripped = lines[index].rstrip(" \t")
+        if stripped.endswith("<<") and stripped[:-2].strip() in ("fact", "user", "model"):
+            key = stripped[:-2].strip()
+            index += 1
+            buf = []
+            while index < len(lines) and lines[index] != "<<":
+                buf.append(lines[index])
+                index += 1
+            if index < len(lines) and lines[index] == "<<":
+                index += 1
+            body = "\n".join(buf).strip()
+            if key == "fact":
+                if body:
+                    facts.append(body)
+            elif key == "user":
+                if pending is not None:
+                    pairs.append((pending, ""))
+                pending = body
+            else:
+                if pending is None:
+                    pending = ""
+                pairs.append((pending, body))
+                pending = None
+            continue
+        index += 1
+    if pending is not None:
+        pairs.append((pending, ""))
+    return facts, pairs
+
+
+def render_store(facts, pairs):
+    parts = []
+    for fact in facts:
+        parts.append("fact <<\n" + fact + "\n<<\n")
+    for user, model in pairs:
+        parts.append("user <<\n" + user + "\n<<\n")
+        parts.append("model <<\n" + model + "\n<<\n")
+    return "".join(parts)
+
+
+def read_memory(path):
+    if not path.is_file():
+        return [], []
     try:
-        HELLO_PATH.write_text(line + "\n", encoding="utf-8")
+        raw = path.read_text(encoding="utf-8")
     except OSError as exc:
-        die("cannot write tool_hello.txt: " + str(exc))
-    print("gemma: tool hello wrote tool_hello.txt (" + line + ")", file=sys.stderr, flush=True)
+        die("cannot read " + path.name + ": " + str(exc))
+    return parse_store(raw)
 
 
-def clean_job(raw):
+def write_memory(path, facts, pairs):
+    body = render_store(facts, pairs)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_bytes(body.encode("utf-8"))
+        tmp.replace(path)
+    except OSError as exc:
+        die("cannot write " + path.name + ": " + str(exc))
+
+
+def fit_memory(question, suffix, path=None, limit=None):
+    path = MEMORY_PATH if path is None else path
+    limit = PROMPT_CHARS if limit is None else limit
+    facts, pairs = read_memory(path)
+    kept = list(pairs)
+    prompt = memory_prompt(facts, kept, question, suffix)
+    dropped = False
+    while len(prompt) > limit and kept:
+        kept = kept[1:]
+        dropped = True
+        prompt = memory_prompt(facts, kept, question, suffix)
+    while len(prompt) > limit and facts:
+        facts = facts[1:]
+        dropped = True
+        prompt = memory_prompt(facts, kept, question, suffix)
+    if len(prompt) > limit:
+        die("prompt too long")
+    if dropped:
+        write_memory(path, facts, kept)
+    return prompt, facts, kept
+
+
+def store_fact(path, line):
+    text = clip_fact(line)
+    if not text:
+        print("gemma: tool remember empty", file=sys.stderr, flush=True)
+        return ""
+    facts, pairs = read_memory(path)
+    if text in facts:
+        print("gemma: tool remember kept " + path.name + " (" + text + ")", file=sys.stderr, flush=True)
+        return text
+    facts.append(text)
+    write_memory(path, facts, pairs)
+    print("gemma: tool remember wrote " + path.name + " (" + text + ")", file=sys.stderr, flush=True)
+    return text
+
+
+def append_memory(path, question, reply):
+    user = clip_words(question, TURN_WORDS)
+    model = clip_words(reply, TURN_WORDS)
+    if not user or not model:
+        return
+    facts, pairs = read_memory(path)
+    pairs.append((user, model))
+    write_memory(path, facts, pairs)
+
+
+def clean_task(raw):
     text = (raw or "").strip()
     if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
         text = text[1:-1].strip()
@@ -258,8 +388,6 @@ def clean_job(raw):
     text = text.replace(Q, "'")
     if len(text) > 200:
         text = text[:200].rstrip()
-    if not text:
-        text = "extensions"
     return text
 
 
@@ -268,15 +396,16 @@ def log_block(title, body):
     return title + " <<\n" + text + "<<\n"
 
 
-def write_spawn(body):
+def write_spawn(body, path=None):
+    path = SPAWN_PATH if path is None else path
     try:
-        SPAWN_PATH.write_text(body, encoding="utf-8")
+        path.write_text(body, encoding="utf-8")
     except OSError as exc:
-        die("cannot write grok_bot_spawn.txt: " + str(exc))
+        die("cannot write " + path.name + ": " + str(exc))
 
 
-def find_cursor():
-    found = shutil.which("cursor")
+def find_exe(name):
+    found = shutil.which(name)
     if not found:
         return None
     path = Path(found)
@@ -290,31 +419,59 @@ def find_cursor():
     return None
 
 
-def cursor_argv(cursor, job):
-    # cursor 3.22.7 lists `agent` in help, but this build's cli.js does not
-    # dispatch it and passes unknown flags to Electron. One exiting CLI job:
-    # list extensions, or --version when the job asks for the version.
-    folded = job.lower()
-    if "version" in folded and "extension" not in folded:
-        return [cursor, "--version"]
-    return [cursor, "--list-extensions", "--show-versions"]
+def find_agent():
+    return find_exe("agent")
 
 
-def clip_lines(text, limit):
-    lines = (text or "").splitlines()
-    if len(lines) > limit:
-        lines = lines[-limit:]
-    return "\n".join(lines)
+def agent_argv(agent, task):
+    # composer-2.5 is the non-fast id. No -fast slug and no fast flag.
+    return [
+        agent,
+        "-p",
+        "--force",
+        "--trust",
+        "--workspace",
+        str(ROOT),
+        "--worktree",
+        "--worktree-base",
+        "runner-h",
+        "--model",
+        CURSOR_MODEL,
+        "--output-format",
+        "json",
+        task + TASK_SUFFIX,
+    ]
 
 
-def run_cursor_job(job):
-    label = clean_job(job)
-    cursor = find_cursor()
-    if not cursor:
-        write_spawn("BLOCKED\ncursor cli missing\n")
+def argv_has_fast(argv):
+    for arg in argv[:-1]:
+        if "fast" in arg.casefold():
+            return True
+    return False
+
+
+def run_cursor_job(task, agent_path=None, spawn_path=None):
+    # agent_path None looks up `agent` on PATH. "" means the CLI is missing.
+    # The process is started and not waited on. This does not run `cursor`.
+    path = SPAWN_PATH if spawn_path is None else spawn_path
+    label = clean_task(task)
+    if not label or label.startswith("-"):
+        write_spawn("fail empty task\n", path)
+        print("gemma: tool cursor empty task", file=sys.stderr, flush=True)
+        return "fail empty task"
+    if agent_path is None:
+        agent = find_agent()
+    else:
+        agent = agent_path or None
+    if not agent:
+        write_spawn("BLOCKED\nagent cli missing\n", path)
         print("gemma: tool cursor BLOCKED", file=sys.stderr, flush=True)
         return "BLOCKED"
-    argv = cursor_argv(cursor, label)
+    argv = agent_argv(agent, label)
+    if argv_has_fast(argv):
+        write_spawn("fail fast forbidden\n", path)
+        print("gemma: tool cursor fast forbidden", file=sys.stderr, flush=True)
+        return "fail fast forbidden"
     command = subprocess.list2cmdline(argv)
     print("gemma: tool cursor " + command, file=sys.stderr, flush=True)
     try:
@@ -323,63 +480,115 @@ def run_cursor_job(job):
             cwd=ROOT,
             shell=False,
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
     except OSError as exc:
-        body = "job " + label + "\n"
-        body += log_block("command", command + "\n")
-        body += "fail cannot start: " + str(exc) + "\n"
-        write_spawn(body)
+        write_spawn("fail cannot start: " + str(exc) + "\n", path)
         print("gemma: tool cursor fail", file=sys.stderr, flush=True)
-        return "fail"
+        return "fail cannot start"
     pid = proc.pid
-    try:
-        out_b, err_b = proc.communicate(timeout=60)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        try:
-            proc.communicate(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
-        body = "job " + label + "\n"
-        body += log_block("command", command + "\n")
-        body += "pid " + str(pid) + "\n"
-        body += "fail timed out\n"
-        write_spawn(body)
-        print("gemma: tool cursor timed out pid " + str(pid), file=sys.stderr, flush=True)
-        return "fail timed out"
-    code = proc.returncode
-    if code is None:
-        code = 1
-    out = (out_b or b"").decode("utf-8", errors="replace")
-    err = (err_b or b"").decode("utf-8", errors="replace")
-    body = "job " + label + "\n"
+    body = "task " + label + "\n"
     body += log_block("command", command + "\n")
-    body += "pid " + str(pid) + "\n"
-    body += "exit " + str(code) + "\n"
-    shown = clip_lines(out, 40)
-    body += log_block("stdout", (shown + "\n") if shown else "")
-    if code != 0 and err.strip():
-        body += log_block("stderr", clip_lines(err.strip(), 20) + "\n")
-    write_spawn(body)
-    print(
-        "gemma: tool cursor pid " + str(pid) + " exit " + str(code),
-        file=sys.stderr,
-        flush=True,
-    )
-    return "pid " + str(pid) + " exit " + str(code)
+    body += "pid " + str(pid) + "\nstarted\n"
+    write_spawn(body, path)
+    print("gemma: tool cursor started pid " + str(pid), file=sys.stderr, flush=True)
+    return "started local pid " + str(pid)
 
 
 def strip_tool_markup(text):
     return TOOL_MARKUP_RE.sub("", text)
 
 
+def sentence_end(text, final):
+    n = len(text)
+    i = 0
+    while i < n:
+        ch = text[i]
+        if ch == "\n" and i + 1 < n and text[i + 1] == "\n":
+            return i + 2
+        if ch in ".!?":
+            j = i + 1
+            if j < n and text[j].isdigit():
+                i = j
+                continue
+            if j < n and text[j].isspace():
+                k = j + 1
+                while k < n and text[k].isspace() and text[k] != "\n":
+                    k += 1
+                if k < n and not text[k].isspace():
+                    tail = text[k:]
+                    if "<channel|>".startswith(tail) or "<|channel>".startswith(tail):
+                        return None
+                    if tail.startswith("<channel|>") or tail.startswith("<|channel>"):
+                        return None
+                    return j + 1
+                if final:
+                    return n
+        i += 1
+    if final and text.strip():
+        return n
+    return None
+
+
+class SpeakFlush:
+    # Stream stdout is what the mouth can say. Hold a sentence until the next
+    # word starts, so a later <channel|> can still drop the thought. JSON turns
+    # do not use this.
+    def __init__(self):
+        self.dec = codecs.getincrementaldecoder("utf-8")("replace")
+        self.buf = ""
+
+    def feed(self, piece):
+        if piece:
+            self.buf += self.dec.decode(piece)
+            self._pump(False)
+
+    def finish(self):
+        self.buf += self.dec.decode(b"", True)
+        self._pump(True)
+
+    def _pump(self, final):
+        self.buf = TOOL_MARKUP_RE.sub("", self.buf)
+        cut = self.buf.find("<|tool_call>")
+        held = ""
+        if cut >= 0:
+            held = self.buf[cut:]
+            self.buf = self.buf[:cut]
+        if "<|channel>" in self.buf and "<channel|>" not in self.buf and not final:
+            self.buf += held
+            return
+        if "<channel|>" in self.buf:
+            self.buf = self.buf.split("<channel|>")[-1]
+        while self.buf:
+            end = sentence_end(self.buf, False)
+            if end is None:
+                break
+            self._write(self.buf[:end])
+            self.buf = self.buf[end:]
+        if final and self.buf.strip():
+            self._write(self.buf)
+            self.buf = ""
+        if held and "<tool_call|>" not in held:
+            self.buf += held
+        elif held and not final:
+            self.buf += held.split("<tool_call|>", 1)[-1]
+
+    def _write(self, text):
+        if not text:
+            return
+        sys.stdout.buffer.write(text.encode("utf-8"))
+        sys.stdout.buffer.flush()
+
+
 def answer_text(text):
     cleaned = strip_tool_markup(text).replace("\r\n", "\n").replace("\r", "\n")
+    cut = cleaned.find("<|tool_call>")
+    if cut >= 0:
+        cleaned = cleaned[:cut]
     if "<channel|>" in cleaned:
         cleaned = cleaned.split("<channel|>")[-1]
-    for token in ("<turn|>", "<|turn>", "<bos>", "<eos>", "`"):
+    for token in ("<|channel>thought", "<|channel>", "<turn|>", "<|turn>", "<bos>", "<eos>", "<|think|>", "`"):
         cleaned = cleaned.replace(token, "")
     return " ".join(cleaned.split())
 
@@ -449,9 +658,918 @@ def run_brain(prompt, image_b64, verbose):
     return out_txt.read_text(encoding="utf-8")
 
 
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+PROCESS_TERMINATE = 0x0001
+ASK_TIMEOUT = 600
+PROMPT_CAP = 16_000_000
+SLOTS = (
+    "gemma.pid",
+    "gemma.pid.tmp",
+    "gemma.stop",
+    "gemma.prompt.txt",
+    "gemma.response.txt",
+    "gemma.prompt.txt.tmp",
+    "gemma.response.txt.tmp",
+    "gemma.busy",
+)
+LOCK_NAME = "gemma.lock"
+Resident = namedtuple("Resident", ("pid", "fingerprint", "state"))
+
+_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+_kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+_kernel32.OpenProcess.restype = ctypes.c_void_p
+_kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+_kernel32.CloseHandle.restype = ctypes.c_int
+_kernel32.QueryFullProcessImageNameW.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_uint32,
+    ctypes.c_wchar_p,
+    ctypes.POINTER(ctypes.c_uint32),
+]
+_kernel32.QueryFullProcessImageNameW.restype = ctypes.c_int
+_kernel32.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+_kernel32.TerminateProcess.restype = ctypes.c_int
+
+
+def remove_file(name):
+    path = ROOT / name
+    for _ in range(50):
+        try:
+            if path.is_file():
+                path.unlink()
+            return
+        except OSError:
+            time.sleep(0.05)
+    if path.is_file():
+        die("cannot remove " + name)
+
+
+def hex_fingerprint(text):
+    return len(text) == 64 and all(ch in "0123456789abcdef" for ch in text)
+
+
+def resident_record():
+    path = ROOT / "gemma.pid"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    if len(lines) not in (1, 3):
+        return None
+    try:
+        pid = int(lines[0].strip())
+    except ValueError:
+        return None
+    if pid <= 0:
+        return None
+    if len(lines) == 1:
+        return Resident(pid, "", "")
+    fingerprint = lines[1].strip()
+    state = lines[2].strip()
+    if not hex_fingerprint(fingerprint) or state not in ("loading", "ready"):
+        return None
+    return Resident(pid, fingerprint, state)
+
+
+def process_image(pid):
+    handle = _kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid)
+    if not handle:
+        return ""
+    try:
+        size = ctypes.c_uint32(32768)
+        buf = ctypes.create_unicode_buffer(size.value)
+        ok = _kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size))
+        if not ok:
+            return ""
+        return buf.value
+    finally:
+        _kernel32.CloseHandle(handle)
+
+
+def brain_running(pid):
+    image = process_image(pid)
+    return bool(image) and Path(image).name.lower() == "gemma-brain.exe"
+
+
+def brain_running_any():
+    rec = resident_record()
+    return rec is not None and brain_running(rec.pid)
+
+
+def terminate_pid(pid):
+    handle = _kernel32.OpenProcess(PROCESS_TERMINATE, 0, pid)
+    if not handle:
+        return
+    try:
+        _kernel32.TerminateProcess(handle, 1)
+    finally:
+        _kernel32.CloseHandle(handle)
+
+
+def wait_dead(pid, seconds):
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if not brain_running(pid):
+            return True
+        time.sleep(0.05)
+    return not brain_running(pid)
+
+
+def log_tail():
+    path = ROOT / "gemma.run.err"
+    try:
+        data = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    if len(data) > 2000:
+        data = data[-2000:]
+    return data
+
+
+def cuda_log_line():
+    path = ROOT / "gemma.run.err"
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    found = ""
+    for line in text.splitlines():
+        if line.startswith("cuda[") or line.startswith("vulkan["):
+            found = line
+    return found
+
+
+def announce(pid):
+    print("gemma: resident pid " + str(pid), file=sys.stderr, flush=True)
+    line = cuda_log_line()
+    if line:
+        print("gemma: " + line, file=sys.stderr, flush=True)
+
+
+def acquire_lock():
+    path = ROOT / LOCK_NAME
+    try:
+        fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_RDWR)
+    except FileExistsError:
+        return None
+    except OSError as exc:
+        die("cannot create gemma.lock: " + str(exc))
+    try:
+        os.write(fd, (str(os.getpid()) + "\n" + str(time.time()) + "\n").encode("ascii"))
+    except OSError as exc:
+        os.close(fd)
+        die("cannot write gemma.lock: " + str(exc))
+    return fd
+
+
+def release_lock(fd):
+    if fd is None:
+        return
+    os.close(fd)
+    try:
+        (ROOT / LOCK_NAME).unlink()
+    except OSError:
+        pass
+
+
+def lock_owner():
+    path = ROOT / LOCK_NAME
+    try:
+        lines = path.read_text(encoding="ascii").splitlines()
+    except OSError:
+        return None
+    if not lines:
+        return None
+    try:
+        return int(lines[0].strip())
+    except ValueError:
+        return None
+
+
+def lock_busy():
+    if not (ROOT / LOCK_NAME).is_file():
+        return False
+    owner = lock_owner()
+    if owner is None:
+        return True
+    return bool(process_image(owner))
+
+
+def clear_stale_lock():
+    if lock_busy():
+        return
+    try:
+        if (ROOT / LOCK_NAME).is_file():
+            (ROOT / LOCK_NAME).unlink()
+    except OSError:
+        pass
+
+
+def stop_resident():
+    fd = None
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        fd = acquire_lock()
+        if fd is not None:
+            break
+        clear_stale_lock()
+        time.sleep(0.05)
+    if fd is None:
+        die("gemma busy")
+    try:
+        try:
+            (ROOT / "gemma.stop").write_bytes(b"stop\n")
+        except OSError as exc:
+            die("cannot write gemma.stop: " + str(exc))
+        stopped = False
+        rec = resident_record()
+        if rec is not None and brain_running(rec.pid):
+            stopped = True
+            if rec.state == "loading":
+                terminate_pid(rec.pid)
+                if not wait_dead(rec.pid, 5):
+                    die("cannot stop gemma pid " + str(rec.pid))
+            elif not wait_dead(rec.pid, 120):
+                terminate_pid(rec.pid)
+                if not wait_dead(rec.pid, 5):
+                    die("cannot stop gemma pid " + str(rec.pid))
+        for name in SLOTS:
+            remove_file(name)
+        return stopped
+    finally:
+        release_lock(fd)
+
+
+def publish_pid(pid, fingerprint, state):
+    body = str(pid) + "\n" + fingerprint + "\n" + state + "\n"
+    tmp = ROOT / "gemma.pid.tmp"
+    try:
+        tmp.write_bytes(body.encode("utf-8"))
+        tmp.replace(ROOT / "gemma.pid")
+    except OSError as exc:
+        die("cannot write gemma.pid: " + str(exc))
+
+
+def note_spawn(proc, fingerprint):
+    rec = resident_record()
+    if rec is not None and rec.pid == proc.pid:
+        if rec.state == "ready" and rec.fingerprint == fingerprint:
+            return
+        if rec.fingerprint == "" and rec.state == "":
+            publish_pid(proc.pid, fingerprint, "ready")
+            return
+    publish_pid(proc.pid, fingerprint, "loading")
+
+
+def launch_resident(fingerprint):
+    if (ROOT / "gemma.stop").is_file():
+        return None
+    exe = ROOT / "gemma-brain.exe"
+    if not exe.is_file():
+        die("missing gemma-brain.exe")
+    log_path = ROOT / "gemma.run.err"
+    try:
+        log = open(log_path, "wb", buffering=0)
+    except OSError as exc:
+        die("cannot write gemma.run.err: " + str(exc))
+    flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+    breakaway = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0x01000000)
+    try:
+        try:
+            proc = subprocess.Popen(
+                [str(exe), "--resident", "gemma_run.txt"],
+                cwd=str(ROOT),
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                creationflags=flags | breakaway,
+                close_fds=True,
+            )
+        except OSError:
+            proc = subprocess.Popen(
+                [str(exe), "--resident", "gemma_run.txt"],
+                cwd=str(ROOT),
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                creationflags=flags,
+                close_fds=True,
+            )
+    except OSError as exc:
+        log.close()
+        die("cannot run gemma-brain.exe: " + str(exc))
+    log.close()
+    try:
+        note_spawn(proc, fingerprint)
+    except SystemExit:
+        if proc.poll() is None:
+            terminate_pid(proc.pid)
+        raise
+    if (ROOT / "gemma.stop").is_file() or proc.poll() is not None:
+        if proc.poll() is None:
+            terminate_pid(proc.pid)
+            wait_dead(proc.pid, 5)
+        remove_file("gemma.pid")
+        if proc.poll() is not None and not (ROOT / "gemma.stop").is_file():
+            die("gemma exited " + str(proc.returncode) + "\n" + log_tail())
+        return None
+    print("gemma: starting", file=sys.stderr, flush=True)
+    return proc
+
+
+def fail_loader(pid, message):
+    if brain_running(pid):
+        terminate_pid(pid)
+        if not wait_dead(pid, 5):
+            die(message + "\nloader pid " + str(pid) + " did not exit")
+    remove_file("gemma.pid")
+    die(message)
+
+
+def wait_until_ready(pid, fingerprint, proc=None):
+    deadline = time.time() + ASK_TIMEOUT
+    while time.time() < deadline:
+        if proc is not None and proc.poll() is not None:
+            die("gemma exited " + str(proc.returncode) + "\n" + log_tail())
+        if not brain_running(pid):
+            die("gemma exited\n" + log_tail())
+        rec = resident_record()
+        if rec is not None and rec.pid == pid:
+            if rec.state == "ready" and rec.fingerprint == fingerprint:
+                announce(pid)
+                return pid
+            if rec.fingerprint == fingerprint and rec.state == "loading":
+                pass
+            elif rec.fingerprint == "" and rec.state == "":
+                publish_pid(pid, fingerprint, "ready")
+                if not brain_running(pid):
+                    die("gemma exited\n" + log_tail())
+                announce(pid)
+                return pid
+        time.sleep(0.05)
+    fail_loader(pid, "gemma did not become ready\n" + log_tail())
+
+
+def wait_for_fingerprint(pid, seconds):
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        rec = resident_record()
+        if rec is None or rec.pid != pid or not brain_running(pid):
+            return None
+        if rec.fingerprint:
+            return rec
+        time.sleep(0.02)
+    rec = resident_record()
+    if rec is not None and rec.pid == pid and rec.fingerprint and brain_running(pid):
+        return rec
+    return None
+
+
+def same_settings(rec, fingerprint):
+    return (
+        rec is not None
+        and brain_running(rec.pid)
+        and rec.fingerprint == fingerprint
+        and rec.state in ("loading", "ready")
+    )
+
+
+def resident_settings():
+    source = ROOT / "gemma.txt"
+    if not source.is_file():
+        die("missing gemma.txt")
+    raw = source.read_text(encoding="utf-8-sig")
+    body = "\n".join(kept_lines(raw))
+    if body and not body.endswith("\n"):
+        body += "\n"
+    body += "gemma.text <<\n<<\ngemma.image <<\n<<\n"
+    return body
+
+
+def write_sidecar(payload):
+    try:
+        SIDECAR.write_bytes(payload.encode("utf-8"))
+    except OSError as exc:
+        die("cannot write gemma_run.txt: " + str(exc))
+
+
+def ensure_resident():
+    desired = resident_settings()
+    fingerprint = hashlib.sha256(desired.encode("utf-8")).hexdigest()
+    deadline = time.time() + ASK_TIMEOUT
+    while time.time() < deadline:
+        rec = resident_record()
+        if rec is not None and brain_running(rec.pid) and not rec.fingerprint:
+            rec = wait_for_fingerprint(rec.pid, 2) or rec
+        if same_settings(rec, fingerprint):
+            if rec.state == "ready":
+                announce(rec.pid)
+                return rec.pid
+            return wait_until_ready(rec.pid, fingerprint)
+        fd = acquire_lock()
+        if fd is None:
+            clear_stale_lock()
+            time.sleep(0.05)
+            continue
+        proc = None
+        try:
+            rec = resident_record()
+            if same_settings(rec, fingerprint):
+                if rec.state == "ready":
+                    announce(rec.pid)
+                    return rec.pid
+                held = rec.pid
+                release_lock(fd)
+                fd = None
+                return wait_until_ready(held, fingerprint)
+            if rec is not None and brain_running(rec.pid):
+                print("gemma: settings changed", file=sys.stderr, flush=True)
+                release_lock(fd)
+                fd = None
+                stop_resident()
+                continue
+            stop_path = ROOT / "gemma.stop"
+            if stop_path.is_file():
+                if brain_running_any():
+                    die("gemma stop requested")
+                remove_file("gemma.stop")
+            write_sidecar(desired)
+            for name in (
+                "gemma.prompt.txt",
+                "gemma.response.txt",
+                "gemma.prompt.txt.tmp",
+                "gemma.response.txt.tmp",
+                "gemma.busy",
+            ):
+                remove_file(name)
+            proc = launch_resident(fingerprint)
+            if proc is None:
+                die("gemma stop requested")
+        finally:
+            release_lock(fd)
+        return wait_until_ready(proc.pid, fingerprint, proc)
+    die("gemma did not become ready\n" + log_tail())
+
+
+class FrameParser:
+    def __init__(self, ident, on_piece=None):
+        self.ident = ident
+        self.on_piece = on_piece
+        self.buf = b""
+        self.pos = 0
+        self.mode = "id"
+        self.need = 0
+        self.blob = bytearray()
+        self.done = ""
+        self.error = ""
+        self.stale = False
+
+    def text(self):
+        return self.blob.decode("utf-8", errors="replace")
+
+    def _reset(self):
+        self.pos = 0
+        self.mode = "id"
+        self.need = 0
+        self.blob = bytearray()
+        self.stale = False
+
+    def feed(self, data):
+        if self.done or self.error:
+            return
+        if self.stale or (self.pos and not data.startswith(self.buf[: self.pos])):
+            if data == self.buf and self.stale:
+                return
+            self._reset()
+        self.buf = data
+        self._pump()
+
+    def _pump(self):
+        while not self.done and not self.error and not self.stale:
+            if self.mode == "body":
+                if len(self.buf) - self.pos < self.need:
+                    return
+                piece = self.buf[self.pos : self.pos + self.need]
+                self.pos += self.need
+                self.blob += piece
+                self.mode = "tag"
+                if self.on_piece is not None:
+                    self.on_piece(bytes(piece))
+                continue
+            nl = self.buf.find(b"\n", self.pos)
+            if nl < 0:
+                return
+            line = self.buf[self.pos : nl].decode("utf-8", errors="replace").rstrip("\r")
+            self.pos = nl + 1
+            if self.mode == "id":
+                if line.strip() != self.ident:
+                    self.stale = True
+                    return
+                self.mode = "tag"
+                continue
+            if line == "ok":
+                self.done = "ok"
+                return
+            if line.startswith("err"):
+                self.error = line[3:].strip() or "failed"
+                return
+            if len(line) > 1 and line[0] == "." and line[1:].isdigit():
+                self.need = int(line[1:])
+                if self.need > 65536:
+                    self.error = "bad piece"
+                    return
+                self.mode = "body"
+                continue
+            self.error = "bad response"
+            return
+
+
+def prompt_payload(ident, image_b64, text):
+    image = image_b64.encode("ascii") if image_b64 else b""
+    payload = (ident + "\n" + str(len(image)) + "\n").encode("ascii") + image + text.encode("utf-8")
+    if len(payload) > PROMPT_CAP:
+        die("prompt too long")
+    return payload
+
+
+def resident_ask(pid, prompt, image_b64, on_piece, timeout):
+    deadline = time.time() + timeout
+    ident = str(time.time_ns())
+    submitted = False
+    while time.time() < deadline and not submitted:
+        if (ROOT / "gemma.busy").is_file() or (ROOT / "gemma.prompt.txt").is_file():
+            if not brain_running(pid):
+                remove_file("gemma.busy")
+            else:
+                time.sleep(0.02)
+                continue
+        fd = acquire_lock()
+        if fd is None:
+            clear_stale_lock()
+            time.sleep(0.05)
+            continue
+        try:
+            if (ROOT / "gemma.busy").is_file() or (ROOT / "gemma.prompt.txt").is_file():
+                continue
+            response = ROOT / "gemma.response.txt"
+            if response.is_file():
+                try:
+                    response.unlink()
+                except OSError as exc:
+                    die("cannot remove gemma.response.txt: " + str(exc))
+            tmp = ROOT / "gemma.prompt.txt.tmp"
+            try:
+                tmp.write_bytes(prompt_payload(ident, image_b64, prompt))
+                tmp.replace(ROOT / "gemma.prompt.txt")
+            except OSError as exc:
+                die("cannot write gemma.prompt.txt: " + str(exc))
+            submitted = True
+        finally:
+            release_lock(fd)
+    if not submitted:
+        die("gemma busy")
+    parser = FrameParser(ident, on_piece)
+    while time.time() < deadline:
+        path = ROOT / "gemma.response.txt"
+        if path.is_file():
+            try:
+                data = path.read_bytes()
+            except OSError:
+                time.sleep(0.02)
+                continue
+            parser.feed(data)
+            if parser.done == "ok":
+                return parser.text()
+            if parser.error:
+                die("gemma: " + parser.error)
+        if not brain_running(pid):
+            if path.is_file():
+                try:
+                    parser.feed(path.read_bytes())
+                except OSError:
+                    pass
+                if parser.done == "ok":
+                    return parser.text()
+                if parser.error:
+                    die("gemma: " + parser.error)
+            die("gemma exited\n" + log_tail())
+        time.sleep(0.02)
+    die("gemma timed out")
+
+
+def resident_generate(prompt, image_b64, stream, timeout=ASK_TIMEOUT):
+    pid = ensure_resident()
+    speaker = SpeakFlush() if stream else None
+
+    def on_piece(piece):
+        if speaker is not None:
+            speaker.feed(piece)
+
+    text = resident_ask(pid, prompt, image_b64, on_piece, timeout)
+    if speaker is not None:
+        speaker.finish()
+    return text
+
+
+def _norm_device(name):
+    return " ".join((name or "").casefold().split())
+
+
+def cuda_device_name():
+    try:
+        completed = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            shell=False,
+            encoding="utf-8",
+            errors="replace",
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    if completed.returncode != 0:
+        return ""
+    lines = [line.strip() for line in (completed.stdout or "").splitlines() if line.strip()]
+    if not lines:
+        return ""
+    return lines[0]
+
+
+def vulkan_device_name():
+    try:
+        vk = ctypes.WinDLL("vulkan-1")
+    except OSError:
+        return ""
+    app_type = 0
+    inst_type = 1
+    api = (1 << 22) | (2 << 12)
+
+    class VkApplicationInfo(ctypes.Structure):
+        _fields_ = [
+            ("sType", ctypes.c_uint32),
+            ("pNext", ctypes.c_void_p),
+            ("pApplicationName", ctypes.c_char_p),
+            ("applicationVersion", ctypes.c_uint32),
+            ("pEngineName", ctypes.c_char_p),
+            ("engineVersion", ctypes.c_uint32),
+            ("apiVersion", ctypes.c_uint32),
+        ]
+
+    class VkInstanceCreateInfo(ctypes.Structure):
+        _fields_ = [
+            ("sType", ctypes.c_uint32),
+            ("pNext", ctypes.c_void_p),
+            ("flags", ctypes.c_uint32),
+            ("pApplicationInfo", ctypes.POINTER(VkApplicationInfo)),
+            ("enabledLayerCount", ctypes.c_uint32),
+            ("ppEnabledLayerNames", ctypes.c_void_p),
+            ("enabledExtensionCount", ctypes.c_uint32),
+            ("ppEnabledExtensionNames", ctypes.c_void_p),
+        ]
+
+    try:
+        vk.vkCreateInstance.argtypes = [
+            ctypes.POINTER(VkInstanceCreateInfo),
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        vk.vkCreateInstance.restype = ctypes.c_int
+        vk.vkEnumeratePhysicalDevices.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p]
+        vk.vkEnumeratePhysicalDevices.restype = ctypes.c_int
+        vk.vkGetPhysicalDeviceProperties.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        vk.vkGetPhysicalDeviceProperties.restype = None
+        vk.vkDestroyInstance.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        vk.vkDestroyInstance.restype = None
+        app = VkApplicationInfo()
+        app.sType = app_type
+        app.apiVersion = api
+        info = VkInstanceCreateInfo()
+        info.sType = inst_type
+        info.pApplicationInfo = ctypes.pointer(app)
+        inst = ctypes.c_void_p()
+        if vk.vkCreateInstance(ctypes.byref(info), None, ctypes.byref(inst)) != 0 or not inst.value:
+            return ""
+        try:
+            count = ctypes.c_uint32(0)
+            if vk.vkEnumeratePhysicalDevices(inst, ctypes.byref(count), None) != 0 or count.value < 1:
+                return ""
+            arr = (ctypes.c_void_p * count.value)()
+            if vk.vkEnumeratePhysicalDevices(inst, ctypes.byref(count), ctypes.cast(arr, ctypes.c_void_p)) != 0:
+                return ""
+            props = (ctypes.c_ubyte * 4096)()
+            vk.vkGetPhysicalDeviceProperties(arr[0], ctypes.cast(props, ctypes.c_void_p))
+            raw = bytes(props[20:276]).split(b"\x00", 1)[0]
+            return raw.decode("utf-8", errors="replace").strip()
+        finally:
+            vk.vkDestroyInstance(inst, None)
+    except (OSError, AttributeError):
+        return ""
+
+
+def adapter_names():
+    return cuda_device_name(), vulkan_device_name()
+
+
+def same_adapter():
+    cuda_name, vulkan_name = adapter_names()
+    return adapter_word(cuda_name, vulkan_name) == "same"
+
+
+PLACE_PORT = 8765
+Place = namedtuple("Place", "brain url cuda vulkan adapter flip where")
+
+
+def tcp_accepts(host, port, timeout=1.0):
+    try:
+        infos = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except OSError:
+        return False
+    if not infos:
+        return False
+    family, socktype, proto, _canon, sockaddr = infos[0]
+    sock = socket.socket(family, socktype, proto)
+    sock.settimeout(timeout)
+    try:
+        sock.connect(sockaddr)
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
+def local_addresses():
+    # Interface addresses. The computer name is not a key.
+    names = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
+    try:
+        get_table = ctypes.windll.iphlpapi.GetIpAddrTable
+    except (AttributeError, OSError):
+        return names
+    get_table.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong), ctypes.c_int]
+    get_table.restype = ctypes.c_ulong
+    size = ctypes.c_ulong(0)
+    get_table(None, ctypes.byref(size), False)
+    if size.value <= 4:
+        return names
+    buf = ctypes.create_string_buffer(size.value)
+    if get_table(buf, ctypes.byref(size), False) != 0:
+        return names
+    count = int.from_bytes(buf.raw[:4], "little")
+    for index in range(count):
+        off = 4 + index * 24
+        if off + 4 > len(buf.raw):
+            break
+        ip = ".".join(str(byte) for byte in buf.raw[off : off + 4])
+        if ip != "0.0.0.0":
+            names.add(ip)
+    return names
+
+
+def host_is_local(host, addresses):
+    name = (host or "").strip().casefold()
+    if not name:
+        return False
+    return name in {item.casefold() for item in addresses}
+
+
+def split_peer(url):
+    parsed = urllib.parse.urlsplit((url or "").strip())
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return None
+    port = parsed.port
+    if port is None:
+        port = 443 if parsed.scheme == "https" else 80
+    return parsed.hostname, port
+
+
+def adapter_word(cuda_name, vulkan_name):
+    if not cuda_name or not vulkan_name:
+        return "unknown"
+    if _norm_device(cuda_name) == _norm_device(vulkan_name):
+        return "same"
+    return "different"
+
+
+def place_line(found):
+    return (
+        "brain "
+        + found.brain
+        + " "
+        + found.where
+        + " cuda "
+        + (found.cuda or "none")
+        + " vulkan "
+        + (found.vulkan or "none")
+        + " "
+        + found.adapter
+        + (" flip" if found.flip else "")
+    )
+
+
+def place(peer_url=None, port=PLACE_PORT, opener=None, addresses=None, devices=None):
+    # One decision. Device names and one TCP connect. No computer name. No second URL.
+    if devices is None:
+        cuda_name, vulkan_name = adapter_names()
+    else:
+        cuda_name, vulkan_name = devices
+    adapter = adapter_word(cuda_name, vulkan_name)
+    same = adapter == "same"
+    open_tcp = tcp_accepts if opener is None else opener
+    if peer_url is not None:
+        text = str(peer_url).strip()
+        if not text:
+            return Place("missing", "", cuda_name, vulkan_name, adapter, False, "peer")
+        parts = split_peer(text)
+        if parts is None:
+            return Place("missing", text, cuda_name, vulkan_name, adapter, False, "peer")
+        host, peer_port = parts
+        if not open_tcp(host, peer_port):
+            return Place("missing", text, cuda_name, vulkan_name, adapter, False, "peer")
+        addrs = local_addresses() if addresses is None else addresses
+        local = host_is_local(host, addrs)
+        flip = bool(same and local and cuda_name)
+        where = "local" if local else "peer"
+        return Place("post", text, cuda_name, vulkan_name, adapter, flip, where)
+    if open_tcp("127.0.0.1", port):
+        url = "http://127.0.0.1:" + str(port) + "/"
+        return Place("post", url, cuda_name, vulkan_name, adapter, bool(same and cuda_name), "local")
+    if cuda_name:
+        return Place("resident", "", cuda_name, vulkan_name, adapter, bool(same), "local")
+    return Place("cpu", "", cuda_name, vulkan_name, adapter, False, "local")
+
+
+def devices_report(found):
+    listener = "up" if found.brain == "post" else "down"
+    cuda_name = found.cuda or "none"
+    vulkan_name = found.vulkan or "none"
+    flip = "yes" if found.flip else "no"
+    fields = [
+        ("adapter", found.adapter),
+        ("cuda", cuda_name),
+        ("vulkan", vulkan_name),
+        ("brain", found.brain),
+        ("listener", listener),
+        ("flip", flip),
+    ]
+    spoken = (
+        "cuda "
+        + cuda_name
+        + "; vulkan "
+        + vulkan_name
+        + "; "
+        + found.adapter
+        + "; brain "
+        + found.brain
+        + "; listener "
+        + listener
+        + "; flip "
+        + flip
+    )
+    return fields, spoken
+
+
+def run_devices():
+    fields, spoken = devices_report(place(None))
+    print("gemma: tool devices " + spoken, file=sys.stderr, flush=True)
+    return fields, spoken
+
+
+def note_prompt(prompt, facts, pairs):
+    print(
+        "gemma: memory facts " + str(len(facts)) + " pairs " + str(len(pairs)),
+        file=sys.stderr,
+        flush=True,
+    )
+    try:
+        LAST_PROMPT.write_text(prompt, encoding="utf-8")
+    except OSError as exc:
+        print("gemma: cannot write gemma.lastprompt.txt: " + str(exc), file=sys.stderr, flush=True)
+
+
+def tool_turn(name, args, raw, spawn_path=None):
+    if name == "remember":
+        line = store_fact(MEMORY_PATH, args.get("line")) or "empty"
+        return raw + tool_response("remember", [("line", line)]), None, line
+    if name == "devices":
+        fields, spoken = run_devices()
+        return raw + tool_response("devices", fields), None, spoken
+    if name == "cursor":
+        summary = run_cursor_job(args.get("task"), spawn_path=spawn_path)
+        if summary == "BLOCKED" or summary.startswith("fail"):
+            print("gemma: tool cursor stopped", file=sys.stderr, flush=True)
+            line = "BLOCKED agent cli missing" if summary == "BLOCKED" else summary
+            return None, line + "\n", None
+        line = plain(summary) or "cursor"
+        suffix = raw + tool_response("cursor", [("text", line)])
+        return suffix, None, line
+    print("gemma: tool unknown " + name, file=sys.stderr, flush=True)
+    return None, "unknown tool " + name + "\n", None
+
+
 def main():
     parser = argparse.ArgumentParser(prog="gemma.py")
-    parser.add_argument("question", help="text question / analysis prompt")
+    parser.add_argument("question", nargs="?", default=None, help="text question / analysis prompt")
     parser.add_argument(
         "--image",
         metavar="PATH",
@@ -460,59 +1578,82 @@ def main():
     parser.add_argument(
         "--verbose",
         action="store_true",
-        help="pass gemma-brain.exe stderr through; default discards it",
+        help="show one-shot gemma-brain.exe stderr; resident logs are gemma.run.err",
     )
+    parser.add_argument("--once", action="store_true", help="one-shot gemma-brain.exe, then exit")
+    parser.add_argument("--stop", action="store_true", help="stop the resident gemma-brain.exe")
+    parser.add_argument("--stream", action="store_true", help="write token pieces to stdout as they are sampled")
     args = parser.parse_args()
-    if not args.question.strip():
-        die("empty question")
-    reason, question = prepare_question(args.question)
-    if not question.strip():
-        die("empty question")
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    os.chdir(ROOT)
+    if args.stop:
+        if args.once or args.question or args.image or args.verbose or args.stream:
+            die("usage: gemma.py --stop")
+        if stop_resident():
+            print("gemma: stopped", file=sys.stderr, flush=True)
+        else:
+            print("gemma: not running", file=sys.stderr, flush=True)
+        raise SystemExit(0)
+    if args.question is None or not args.question.strip():
+        die("usage: gemma.py [--once] [--stream] [--verbose] QUESTION")
+    if args.stream and args.once:
+        die("stream asks for the resident")
+    reason, question = prepare_question(args.question)
+    if not question.strip():
+        die("empty question")
     if reason:
         print("gemma: inbox reasoning on", file=sys.stderr, flush=True)
     image_b64 = image_to_b64(args.image) if args.image else ""
-    text = run_brain(gemma_prompt(question, bool(image_b64), reason), image_b64, args.verbose)
-    if not image_b64 and not reason:
+
+    def run(prompt, image):
+        if args.once:
+            if brain_running_any():
+                die("gemma resident is running; gemma.py --stop first")
+            return run_brain(prompt, image, args.verbose)
+        return resident_generate(prompt, image, args.stream)
+
+    def emit_fallback(line):
+        if args.stream and line:
+            sys.stdout.buffer.write(line.encode("utf-8"))
+            sys.stdout.buffer.flush()
+
+    use_memory = not image_b64 and not reason
+    if use_memory:
+        prompt, facts, kept = fit_memory(question, "")
+        note_prompt(prompt, facts, kept)
+    else:
+        prompt = gemma_prompt(question, bool(image_b64), reason)
+    text = run(prompt, image_b64)
+    if use_memory:
         call = parse_tool_call(text)
-        if call and call[0] == "hello":
-            line = clean_line(call[1].get("line"))
-            write_hello(line)
-            follow = follow_prompt(question, call[2], line)
-            reply = ""
-            for _ in range(3):
-                reply = answer_text(run_brain(follow, "", args.verbose))
-                if reply:
-                    break
-            if not reply:
-                print("gemma: tool follow-up empty", file=sys.stderr, flush=True)
-                reply = "Wrote " + line + " to tool_hello.txt."
-            text = reply
-        elif call and call[0] == "cursor":
-            job = clean_job(call[1].get("job"))
-            summary = run_cursor_job(job)
-            if summary == "BLOCKED":
-                print("gemma: tool cursor stopped", file=sys.stderr, flush=True)
-                text = "BLOCKED cursor cli missing\n"
-            else:
-                follow = follow_cursor_prompt(question, call[2], summary)
-                reply = ""
-                for _ in range(3):
-                    reply = answer_text(run_brain(follow, "", args.verbose))
-                    if reply:
-                        break
+        if call:
+            suffix, blocked, fallback = tool_turn(call[0], call[1], call[2])
+            if blocked:
+                text = blocked
+                emit_fallback(blocked)
+            elif suffix:
+                follow, facts, kept = fit_memory(question, suffix)
+                note_prompt(follow, facts, kept)
+                reply = answer_text(run(follow, ""))
                 if not reply:
                     print("gemma: tool follow-up empty", file=sys.stderr, flush=True)
-                    reply = "Cursor job logged in grok_bot_spawn.txt."
+                    reply = fallback or "done"
+                    emit_fallback(reply)
                 text = reply
-        elif call:
-            print("gemma: tool skip " + call[0], file=sys.stderr, flush=True)
-    sys.stdout.write(text)
-    if not text.endswith("\n"):
-        sys.stdout.write("\n")
+        spoken = answer_text(text)
+        if spoken:
+            append_memory(MEMORY_PATH, question, spoken)
+    elif image_b64 and not reason:
+        spoken = answer_text(text)
+        if spoken:
+            append_memory(MEMORY_PATH, question, spoken)
+    if not args.stream:
+        sys.stdout.write(text)
+        if text and not text.endswith("\n"):
+            sys.stdout.write("\n")
     raise SystemExit(0)
 
 

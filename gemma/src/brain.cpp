@@ -10,11 +10,19 @@
 #include "sampling.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
+#include <filesystem>
+#include <fstream>
+#include <functional>
+#include <iterator>
 #include <initializer_list>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -190,13 +198,14 @@ struct Gemma {
     common_sampler * smpl = nullptr;
     llama_batch batch{};
     int n_batch = 512;
+    int n_predict = 2048;
     llama_pos n_past = 0;
     mtmd::context_ptr mtmd_ctx;
     mtmd::bitmaps pending_media;
     mtmd_helper_init_opt media_opt = mtmd_helper_init_opt_default();
 
     explicit Gemma(common_params & params)
-        : llama(common_init_from_params(params)), n_batch(params.n_batch) {
+        : llama(common_init_from_params(params)), n_batch(params.n_batch), n_predict(params.n_predict) {
         model = llama->model();
         lctx = llama->context();
         if (!model || !lctx) die("model or context load failed");
@@ -241,7 +250,7 @@ struct Gemma {
             if (c == '\n' || c == '\r' || c == ' ' || c == '\t') continue;
             if (c == '=') break;
             const int digit = b64_value(c);
-            if (digit < 0) die("gemma.image is not base64");
+            if (digit < 0) throw std::runtime_error("gemma.image is not base64");
             value = (value << 6) | digit;
             bits += 6;
             if (bits >= 8) {
@@ -259,7 +268,7 @@ struct Gemma {
             common_batch_clear(batch);
             for (size_t j = 0; j < n; ++j)
                 common_batch_add(batch, tokens[i + j], n_past++, {0}, i + j + 1 == tokens.size());
-            if (llama_decode(lctx, batch) != 0) die("llama_decode failed");
+            if (llama_decode(lctx, batch) != 0) throw std::runtime_error("llama_decode failed");
             i += n;
         }
     }
@@ -269,11 +278,11 @@ struct Gemma {
         mtmd_input_text text{formatted.data(), formatted.size(), false, true};
         auto bitmaps = pending_media.c_ptr();
         const int32_t tok = mtmd_tokenize(mtmd_ctx.get(), chunks.ptr.get(), &text, bitmaps.data(), bitmaps.size());
-        if (tok != 0) die_fmt("mtmd_tokenize failed (%d)", tok);
+        if (tok != 0) throw std::runtime_error("mtmd_tokenize failed (" + std::to_string(tok) + ")");
         pending_media.entries.clear();
         llama_pos new_n_past = n_past;
         const int32_t res = mtmd_helper_eval_chunks(mtmd_ctx.get(), lctx, chunks.ptr.get(), n_past, 0, n_batch, true, &new_n_past);
-        if (res != 0) die_fmt("mtmd_helper_eval_chunks failed (%d)", res);
+        if (res != 0) throw std::runtime_error("mtmd_helper_eval_chunks failed (" + std::to_string(res) + ")");
         n_past = new_n_past;
     }
 
@@ -284,7 +293,7 @@ struct Gemma {
         pending_media.entries.clear();
     }
 
-    std::string generate(int max_tokens) {
+    std::string generate(int max_tokens, const std::function<void(const std::string &)> & on_piece) {
         std::string out;
         for (int i = 0; i < max_tokens; ++i) {
             const llama_token id = common_sampler_sample(smpl, lctx, -1);
@@ -292,9 +301,10 @@ struct Gemma {
             if (llama_vocab_is_eog(vocab, id)) break;
             const auto piece = common_token_to_piece(lctx, id);
             out += piece;
+            if (!piece.empty() && on_piece) on_piece(piece);
             common_batch_clear(batch);
             common_batch_add(batch, id, n_past++, {0}, true);
-            if (llama_decode(lctx, batch) != 0) die("llama_decode failed");
+            if (llama_decode(lctx, batch) != 0) throw std::runtime_error("llama_decode failed");
         }
         return out;
     }
@@ -305,24 +315,353 @@ struct Gemma {
         return false;
     }
 
-    std::string answer(const std::string & text, const std::string & image, int max_tokens) {
+    std::string answer(const std::string & text, const std::string & image, int max_tokens,
+                       const std::function<void(const std::string &)> & on_piece = {}) {
         reset();
         if (!filled(image)) eval_text(text);
         else {
             const auto bytes = b64_decode(image);
             auto res = mtmd_helper_bitmap_init_from_buf(mtmd_ctx.get(), bytes.data(), bytes.size(), false, media_opt);
-            if (!res.bitmap) die("gemma.image is not a bitmap");
+            if (!res.bitmap) throw std::runtime_error("gemma.image is not a bitmap");
             pending_media.entries.emplace_back(res.bitmap);
             eval_media(text);
         }
-        return generate(max_tokens);
+        return generate(max_tokens, on_piece);
     }
 };
+
+constexpr std::uintmax_t kPromptCap = 16000000;
+
+std::filesystem::path resident_pid_path;
+
+void remove_resident_pid() {
+    if (resident_pid_path.empty()) return;
+    std::error_code ec;
+    std::filesystem::remove(resident_pid_path, ec);
+    std::filesystem::remove(resident_pid_path.parent_path() / "gemma.busy", ec);
+    resident_pid_path.clear();
+}
+
+bool is_file(const std::filesystem::path & path) {
+    std::error_code ec;
+    return std::filesystem::is_regular_file(path, ec);
+}
+
+void publish(const std::filesystem::path & path, const std::string & body) {
+    auto tmp = path.parent_path() / (path.filename().string() + ".tmp");
+    trident::write_named(tmp, body);
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+    std::filesystem::rename(tmp, path, ec);
+    if (ec) trident::fail("cannot publish " + trident::path_u8(path));
+}
+
+std::string one_line(std::string text) {
+    for (char & c : text) {
+        if (c == '\n' || c == '\r' || c == '\t') c = ' ';
+    }
+    if (text.empty()) text = "failed";
+    if (text.size() > 400) text.resize(400);
+    return text;
+}
+
+bool decimal_id(const std::string & id) {
+    if (id.empty() || id.size() > 32) return false;
+    for (unsigned char c : id)
+        if (c < '0' || c > '9') return false;
+    return true;
+}
+
+std::string trim_cr(std::string text) {
+    if (!text.empty() && text.back() == '\r') text.pop_back();
+    return text;
+}
+
+bool hex64(const std::string & text) {
+    if (text.size() != 64) return false;
+    for (unsigned char c : text) {
+        if (c >= '0' && c <= '9') continue;
+        if (c >= 'a' && c <= 'f') continue;
+        return false;
+    }
+    return true;
+}
+
+std::string loaded_fingerprint(const std::filesystem::path & path, unsigned long pid) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return {};
+    std::string lines[3];
+    int count = 0;
+    std::string line;
+    while (count < 3 && std::getline(in, line)) lines[count++] = trim_cr(line);
+    if (count < 2) return {};
+    char * end = nullptr;
+    const unsigned long have = std::strtoul(lines[0].c_str(), &end, 10);
+    if (end == lines[0].c_str() || *end || have != pid) return {};
+    if (!hex64(lines[1])) return {};
+    return lines[1];
+}
+
+void replace_pid_file(const std::filesystem::path & path, const std::string & body) {
+    const auto tmp = path.parent_path() / "gemma.pid.tmp";
+    trident::write_named(tmp, body);
+    if (!MoveFileExW(tmp.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        std::error_code ec;
+        std::filesystem::remove(tmp, ec);
+        trident::fail("cannot publish " + trident::path_u8(path));
+    }
+}
+
+void hold_ready(unsigned long pid, std::string & loaded) {
+    std::ifstream in(resident_pid_path, std::ios::binary);
+    if (!in) return;
+    std::string lines[3];
+    int count = 0;
+    std::string line;
+    while (count < 3 && std::getline(in, line)) lines[count++] = trim_cr(line);
+    in.close();
+    if (count < 1) return;
+    char * end = nullptr;
+    const unsigned long have = std::strtoul(lines[0].c_str(), &end, 10);
+    if (end == lines[0].c_str() || *end || have != pid) return;
+    if (count < 2 || !hex64(lines[1])) return;
+    if (loaded.empty()) loaded = lines[1];
+    else if (lines[1] != loaded) return;
+    if (count >= 3 && lines[2] == "ready") return;
+    replace_pid_file(resident_pid_path, std::to_string(pid) + "\n" + loaded + "\nready\n");
+}
+
+std::string first_line(const std::filesystem::path & path, bool & got_nl) {
+    got_nl = false;
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return {};
+    std::string line;
+    char c;
+    while (in.get(c)) {
+        if (c == '\n') {
+            got_nl = true;
+            break;
+        }
+        if (line.size() >= 64) break;
+        line.push_back(c);
+    }
+    return trim_cr(line);
+}
+
+void set_busy(const std::filesystem::path & dir, bool on) {
+    const auto path = dir / "gemma.busy";
+    if (!on) {
+        std::error_code ec;
+        std::filesystem::remove(path, ec);
+        return;
+    }
+    trident::write_named(path, "1\n");
+}
+
+struct Reply {
+    HANDLE file = INVALID_HANDLE_VALUE;
+    std::filesystem::path path;
+    bool opened = false;
+
+    ~Reply() { close(); }
+
+    void close() {
+        if (file != INVALID_HANDLE_VALUE) {
+            CloseHandle(file);
+            file = INVALID_HANDLE_VALUE;
+        }
+    }
+
+    void open(const std::filesystem::path & target) {
+        close();
+        path = target;
+        file = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file == INVALID_HANDLE_VALUE) throw std::runtime_error("cannot write gemma.response.txt");
+        opened = true;
+    }
+
+    void raw(const std::string & bytes) {
+        if (file == INVALID_HANDLE_VALUE) throw std::runtime_error("cannot write gemma.response.txt");
+        DWORD wrote = 0;
+        if (!WriteFile(file, bytes.data(), (DWORD)bytes.size(), &wrote, nullptr) || wrote != bytes.size())
+            throw std::runtime_error("cannot write gemma.response.txt");
+        if (!FlushFileBuffers(file)) throw std::runtime_error("cannot write gemma.response.txt");
+    }
+};
+
+bool parse_turn(const std::string & body, std::string & id, std::string & image, std::string & text, std::string & err) {
+    const auto nl1 = body.find('\n');
+    if (nl1 == std::string::npos) {
+        id = trim_cr(body);
+        err = "bad prompt";
+        return false;
+    }
+    id = trim_cr(body.substr(0, nl1));
+    const auto rest = body.substr(nl1 + 1);
+    const auto nl2 = rest.find('\n');
+    if (nl2 == std::string::npos) {
+        err = "bad prompt";
+        return false;
+    }
+    const auto len_line = trim_cr(rest.substr(0, nl2));
+    if (len_line.empty() || len_line.size() > 8) {
+        err = "bad image length";
+        return false;
+    }
+    for (unsigned char c : len_line) {
+        if (c < '0' || c > '9') {
+            err = "bad image length";
+            return false;
+        }
+    }
+    char * end = nullptr;
+    const unsigned long n = std::strtoul(len_line.c_str(), &end, 10);
+    if (end == len_line.c_str() || *end) {
+        err = "bad image length";
+        return false;
+    }
+    const auto after = rest.substr(nl2 + 1);
+    if (after.size() < n) {
+        err = "short image";
+        return false;
+    }
+    image = after.substr(0, n);
+    text = after.substr(n);
+    if (text.empty()) {
+        err = "empty";
+        return false;
+    }
+    return true;
+}
+
+void reply_err(const std::filesystem::path & dir, const std::string & id, const std::string & msg) {
+    const auto line = decimal_id(id) ? id : std::string("0");
+    publish(dir / "gemma.response.txt", line + "\nerr " + one_line(msg) + "\n");
+}
+
+void handle_prompt(const std::filesystem::path & dir, Gemma & gemma) {
+    const auto path = dir / "gemma.prompt.txt";
+    if (!is_file(path)) return;
+    std::error_code ec;
+    const auto size = std::filesystem::file_size(path, ec);
+    if (ec) return;
+    if (size > kPromptCap) {
+        bool nl = false;
+        auto id = first_line(path, nl);
+        std::filesystem::remove(path, ec);
+        std::fprintf(stderr, "resident error prompt too long\n");
+        std::fflush(stderr);
+        reply_err(dir, id, "prompt too long");
+        return;
+    }
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return;
+    std::string body((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    in.close();
+    std::filesystem::remove(path, ec);
+    if (ec) return;
+    std::string id, image, text, err;
+    if (!parse_turn(body, id, image, text, err) || !decimal_id(id)) {
+        if (!decimal_id(id)) {
+            std::fprintf(stderr, "resident error bad prompt id\n");
+            std::fflush(stderr);
+            reply_err(dir, id, err.empty() ? "bad prompt id" : err);
+            return;
+        }
+        std::fprintf(stderr, "resident error %s\n", one_line(err).c_str());
+        std::fflush(stderr);
+        reply_err(dir, id, err);
+        return;
+    }
+    Reply reply;
+    try {
+        set_busy(dir, true);
+        reply.open(dir / "gemma.response.txt");
+        reply.raw(id + "\n");
+        const auto t0 = std::chrono::steady_clock::now();
+        gemma.answer(text, image, gemma.n_predict, [&](const std::string & piece) {
+            std::string blob = "." + std::to_string(piece.size()) + "\n";
+            blob += piece;
+            reply.raw(blob);
+        });
+        reply.raw("ok\n");
+        reply.close();
+        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+        std::fprintf(stderr, "resident generate %lld ms\n", static_cast<long long>(ms));
+        std::fflush(stderr);
+    } catch (const std::exception & ex) {
+        const auto msg = one_line(ex.what());
+        std::fprintf(stderr, "resident error %s\n", msg.c_str());
+        std::fflush(stderr);
+        try {
+            if (reply.opened) reply.raw("err " + msg + "\n");
+            else reply_err(dir, id, msg);
+        } catch (const std::exception & write_ex) {
+            std::fprintf(stderr, "resident error %s\n", one_line(write_ex.what()).c_str());
+            std::fflush(stderr);
+        }
+    } catch (...) {
+        std::fprintf(stderr, "resident error failed\n");
+        std::fflush(stderr);
+        try {
+            if (reply.opened) reply.raw("err failed\n");
+            else reply_err(dir, id, "failed");
+        } catch (...) {
+        }
+    }
+    reply.close();
+    set_busy(dir, false);
+}
+
+int serve(Gemma & gemma) {
+    const auto dir = std::filesystem::current_path();
+    const auto pid = GetCurrentProcessId();
+    resident_pid_path = dir / "gemma.pid";
+    std::atexit(remove_resident_pid);
+    if (is_file(dir / "gemma.stop")) {
+        std::error_code ec;
+        std::filesystem::remove(dir / "gemma.stop", ec);
+        std::fprintf(stderr, "resident stop before ready\n");
+        std::fflush(stderr);
+        return 0;
+    }
+    std::string loaded = loaded_fingerprint(resident_pid_path, pid);
+    std::string body = std::to_string(pid) + "\n";
+    if (!loaded.empty()) body += loaded + "\nready\n";
+    replace_pid_file(resident_pid_path, body);
+    std::fprintf(stderr, "resident ready pid %lu\n", static_cast<unsigned long>(pid));
+    std::fflush(stderr);
+    for (;;) {
+        hold_ready(pid, loaded);
+        handle_prompt(dir, gemma);
+        if (is_file(dir / "gemma.stop")) {
+            std::error_code ec;
+            std::filesystem::remove(dir / "gemma.stop", ec);
+            std::fprintf(stderr, "resident stop pid %lu\n", static_cast<unsigned long>(GetCurrentProcessId()));
+            std::fflush(stderr);
+            remove_resident_pid();
+            return 0;
+        }
+        Sleep(20);
+    }
+}
 
 } // namespace
 
 int main(int argc, char ** argv) {
-    const auto values = trident::load_settings(argc, argv);
+    const char * file = nullptr;
+    bool resident = false;
+    if (argc == 2 && argv[1] && argv[1][0]) {
+        file = argv[1];
+    } else if (argc == 3 && argv[1] && std::string(argv[1]) == "--resident" && argv[2] && argv[2][0]) {
+        resident = true;
+        file = argv[2];
+    } else {
+        trident::fail("usage: gemma-brain.exe file.txt | gemma-brain.exe --resident file.txt");
+    }
+    if (resident) std::setvbuf(stderr, nullptr, _IONBF, 0);
+    char * args[] = {argv[0], const_cast<char *>(file)};
+    const auto values = trident::load_settings(2, args);
     ggml_time_init();
     common_init();
     common_params params = default_params();
@@ -330,8 +669,20 @@ int main(int argc, char ** argv) {
     const bool timings = trident::cfg_on(values, "gemma.mmproj-timings");
     ggml_backend_load_all();
     require_gpu(params.main_gpu);
+    const auto load_t0 = std::chrono::steady_clock::now();
     Gemma gemma(params);
     gemma.open_mmproj(params, timings);
-    trident::write_output("gemma", gemma.answer(trident::cfg_key(values, "gemma.text"), trident::cfg_key(values, "gemma.image"), params.n_predict));
-    return 0;
+    if (!resident) {
+        try {
+            trident::write_output("gemma", gemma.answer(trident::cfg_key(values, "gemma.text"), trident::cfg_key(values, "gemma.image"), params.n_predict));
+        } catch (const std::exception & ex) {
+            std::fprintf(stderr, "error: %s\n", ex.what());
+            return 1;
+        }
+        return 0;
+    }
+    const auto load_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - load_t0).count();
+    std::fprintf(stderr, "resident load %lld ms\n", static_cast<long long>(load_ms));
+    std::fflush(stderr);
+    return serve(gemma);
 }

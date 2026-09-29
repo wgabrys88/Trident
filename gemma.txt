@@ -1,6 +1,6 @@
-# gemma-brain.exe takes this file as its only argument.
+# gemma-brain.exe file.txt runs once and writes HH-MM-SS-mmm_gemma_out_NNN.txt.
+# gemma-brain.exe --resident file.txt loads once and stays up. gemma.py uses that.
 # The values below are used as written. Nothing in the program replaces them.
-# It runs once and writes HH-MM-SS-mmm_gemma_out_NNN.txt in the current directory.
 # NNN starts at 000. An existing name is kept and the next number is used.
 # Paths are names in this file's directory. A value ending in << runs until a line that is only <<.
 # gemma.text is the whole prompt. gemma.image is raw base64, or empty.
@@ -35,8 +35,9 @@ gemma.flash-attn off
 gemma.warmup on
 gemma.cache-type-k f16
 gemma.cache-type-v f16
-gemma.image-min-tokens -1
-gemma.image-max-tokens -1
+# 70 and 280 are the Gemma 4 picture budget. 560 is the OCR budget and is not this card.
+gemma.image-min-tokens 70
+gemma.image-max-tokens 280
 gemma.mmproj-gpu on
 gemma.mmproj-timings on
 gemma.n-keep 0
@@ -59,8 +60,9 @@ gemma.numa disabled
 gemma.threads-batch 4
 gemma.priority high
 gemma.priority-batch high
-gemma.poll 50
-gemma.poll-batch 50
+# 100 busy-waits the GPU sync on the four physical cores.
+gemma.poll 100
+gemma.poll-batch 100
 gemma.strict-cpu off
 gemma.strict-cpu-batch off
 gemma.cpu-mask

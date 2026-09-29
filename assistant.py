@@ -14,6 +14,7 @@ import nvidia_client
 
 ROOT = Path(__file__).resolve().parent
 MODELS = ("nano", "turbo", "v3")
+BRAINS = ("qwen", "gemma")
 QUIT_WORDS = {"quit", "exit", "stop"}
 CABLE_PHRASE = "Trident cable loopback"
 EN_LIMIT = 65
@@ -810,57 +811,53 @@ def transcribe(py, wav, live):
     return run_child("hear", argv, keep_stdout=True, keep_stderr=False)
 
 
-class Route:
-    def __init__(self, kind, url):
-        self.kind = kind
-        self.url = url
+def release_shared_gpu(flip):
+    import gemma
+
+    cuda_name, vulkan_name = gemma.adapter_names()
+    print(
+        "assistant: gpu cuda " + (cuda_name or "none") + " vulkan " + (vulkan_name or "none"),
+        file=sys.stderr,
+    )
+    if not flip:
+        return
+    if not cuda_name:
+        return
+    if not vulkan_name:
+        die("cannot read Vulkan device 0")
+    print("assistant: flip gemma off", file=sys.stderr)
+    gemma.stop_resident()
 
 
-def cuda_device():
-    script = ROOT / "gemma" / "scripts" / "detect_gpu.ps1"
-    try:
-        completed = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-File", str(script)],
-            cwd=ROOT,
-            shell=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=30,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return (completed.stdout or "").strip() == "cuda"
+def peer_url(args):
+    if not args.nvidia:
+        return None
+    return (args.url or os.environ.get("TRIDENT_NVIDIA_URL", "")).strip()
 
 
-def brain_url(args):
-    if args.url:
-        return args.url.strip()
-    return nvidia_client.BRAIN_URL
+def turn_place(args):
+    import gemma
+
+    found = gemma.place(peer_url(args))
+    print("assistant: place " + gemma.place_line(found), file=sys.stderr, flush=True)
+    if found.brain == "missing":
+        die("peer missing")
+    return found
 
 
-def route_of(args):
-    url = brain_url(args)
-    if nvidia_client.probe(url):
-        return Route("remote", url)
-    if args.nvidia:
-        die("brain down " + url)
-    if cuda_device():
-        return Route("gemma", url)
-    return Route("qwen", url)
+def brain_script(found, brain_flag):
+    if found.brain == "missing":
+        die("peer missing")
+    if found.brain == "post":
+        return "nvidia_client.py"
+    if found.brain == "resident":
+        return "gemma.py"
+    if brain_flag == "gemma":
+        return "gemma.py"
+    return "qwen.py"
 
 
-def announce(route):
-    if route.kind == "remote":
-        print("assistant: remote Gemma, local Vulkan " + route.url, file=sys.stderr)
-    elif route.kind == "gemma":
-        print("assistant: local Gemma", file=sys.stderr)
-    else:
-        print("assistant: Qwen", file=sys.stderr)
-
-
-def speak_raw(args, raw, play=True):
+def speak_raw(args, raw, play=True, flip=False):
     import mouth
 
     spoken = speakable(raw)
@@ -868,6 +865,7 @@ def speak_raw(args, raw, play=True):
     if not parts:
         print("assistant: no speakable answer", file=sys.stderr)
         return []
+    release_shared_gpu(flip)
     print("assistant: mouth " + str(len(parts)) + " chunk(s)", file=sys.stderr)
     note_mouth()
     if play:
@@ -877,7 +875,7 @@ def speak_raw(args, raw, play=True):
     return [str(Path(path).resolve()) for path in mouth.speak_pieces(parts, None)]
 
 
-def open_remote(args, question):
+def prepare_remote(args, question):
     image = None
     image_b64 = None
     if args.image:
@@ -889,22 +887,38 @@ def open_remote(args, question):
         print("nvidia: image_b64 " + str(nbytes) + " bytes", file=sys.stderr)
     ident = str(time.time_ns())
     nvidia_client.write_request(nvidia_client.request_body(ident, question, image))
-    print("assistant: nvidia stream", file=sys.stderr, flush=True)
     return ident, image, image_b64
 
 
-def iter_remote(route, args, opened, question):
+def open_remote(args, question):
+    opened = prepare_remote(args, question)
+    print("assistant: nvidia stream", file=sys.stderr, flush=True)
+    return opened
+
+
+def iter_remote(found, args, opened, question):
     ident, image, image_b64 = opened
     return nvidia_client.iter_stream(
-        route.url, ident, question, image, image_b64, args.timeout
+        found.url, ident, question, image, image_b64, args.timeout
     )
 
 
-def remote_text(route, args, question):
-    return "".join(iter_remote(route, args, open_remote(args, question), question))
+def remote_whole(found, args, question):
+    import io
+
+    ident, image, image_b64 = prepare_remote(args, question)
+    print("assistant: nvidia", file=sys.stderr, flush=True)
+    buf = io.StringIO()
+    old = sys.stdout
+    sys.stdout = buf
+    try:
+        nvidia_client.post_turn(found.url, ident, question, image, image_b64, args.timeout, False)
+    finally:
+        sys.stdout = old
+    return buf.getvalue()
 
 
-def remote_speak(route, args, question, hold):
+def remote_speak(found, args, question, hold):
     import mouth
 
     opened = open_remote(args, question)
@@ -914,7 +928,7 @@ def remote_speak(route, args, question, hold):
 
     def produce():
         try:
-            for piece in iter_remote(route, args, opened, question):
+            for piece in iter_remote(found, args, opened, question):
                 box["parts"].append(piece)
                 sys.stdout.write(piece)
                 sys.stdout.flush()
@@ -988,27 +1002,29 @@ def local_turn(py, script, args, question):
     return run_child(label, argv, keep_stdout=True, keep_stderr=True)
 
 
-def answer(py, route, args, question, speak=True):
-    if route.kind == "remote":
-        if speak:
-            return remote_speak(route, args, question, False)
-        raw = remote_text(route, args, question)
+def answer(py, found, args, question, speak=True):
+    if found.brain == "post":
+        if speak and not found.flip:
+            return remote_speak(found, args, question, False)
+        raw = remote_whole(found, args, question)
         show(raw)
+        if speak:
+            speak_raw(args, raw, play=True, flip=found.flip)
         return raw
-    if route.kind == "gemma":
-        raw = local_turn(py, "gemma.py", args, question)
-    else:
-        raw = local_turn(py, "qwen.py", args, question)
+    script = brain_script(found, args.brain)
+    if args.image and script == "qwen.py":
+        die("image asks use --brain gemma")
+    raw = local_turn(py, script, args, question)
     show(raw)
     if speak:
-        speak_raw(args, raw, play=True)
+        speak_raw(args, raw, play=True, flip=found.flip)
     return raw
 
 
-def speak_live(args, raw):
+def speak_live(args, raw, flip=False):
     set_hold(True)
     try:
-        speak_raw(args, raw, play=True)
+        speak_raw(args, raw, play=True, flip=flip)
     finally:
         set_hold(False)
 
@@ -1055,7 +1071,7 @@ def write_proof(name, text):
     (folder / name).write_text(text, encoding="utf-8")
 
 
-def cable_turn(py, route, args):
+def cable_turn(py, found, args):
     phrase = CABLE_PHRASE if args.text is None else args.text.strip()
     argv = [py, str(ROOT / "loopback.py"), "--phrase", phrase]
     print("assistant: vb-cable", file=sys.stderr)
@@ -1093,16 +1109,16 @@ def cable_turn(py, route, args):
         reasons.append("no transcript")
     else:
         try:
-            reply = answer(py, route, args, transcript, speak=False)
-            if route.kind == "remote":
+            reply = answer(py, found, args, transcript, speak=False)
+            if found.brain == "post":
                 nvidia_exit = "0"
                 if not reply.strip():
                     reasons.append("empty nvidia reply")
             else:
-                nvidia_exit = "local"
+                nvidia_exit = found.brain
         except SystemExit as exc:
             code = exc.code if isinstance(exc.code, int) else 2
-            if route.kind == "remote":
+            if found.brain == "post":
                 nvidia_exit = str(code)
             reasons.append("brain exit " + str(code))
     if args.mouth and not reasons:
@@ -1110,7 +1126,7 @@ def cable_turn(py, route, args):
             reasons.append("no reply to speak")
         else:
             try:
-                mouth_paths = speak_raw(args, reply, play=False)
+                mouth_paths = speak_raw(args, reply, play=False, flip=found.flip)
             except SystemExit as exc:
                 code = exc.code if isinstance(exc.code, int) else 2
                 mouth_exit = str(code)
@@ -1124,7 +1140,7 @@ def cable_turn(py, route, args):
                     mouth_exit = "1"
                     reasons.append("no mouth wav")
     response_text = ""
-    if route.kind == "remote" and nvidia_exit != "skipped":
+    if found.brain == "post" and nvidia_exit != "skipped":
         response_path = ROOT / "nvidia_turn.response.txt"
         if response_path.is_file():
             response_text = response_path.read_text(encoding="utf-8")
@@ -1148,7 +1164,7 @@ def cable_turn(py, route, args):
         "capture_device: " + status_value(loop_status, "capture_device"),
         "spoken_wav: " + status_value(loop_status, "spoken_wav"),
         "hear_wav: " + status_value(loop_status, "hear_wav"),
-        "url: " + route.url,
+        "url: " + found.url,
         "request: " + str(ROOT / "nvidia_turn.request.txt"),
         "response: " + str(ROOT / "nvidia_turn.response.txt"),
         "head: " + (status_value(loop_status, "head") or git_head()),
@@ -1166,7 +1182,7 @@ def cable_turn(py, route, args):
     ]
     body = "\n".join(lines)
     write_proof("jarvis.txt", body)
-    nvidia_body = "exit " + nvidia_exit + "\nurl " + route.url + "\n\n" + reply_text
+    nvidia_body = "exit " + nvidia_exit + "\nurl " + found.url + "\n\n" + reply_text
     if response_text:
         nvidia_body += "\nresponse file:\n" + response_text
         if not response_text.endswith("\n"):
@@ -1176,7 +1192,7 @@ def cable_turn(py, route, args):
     raise SystemExit(0 if passed else 1)
 
 
-def listen_loop(py, route, args):
+def listen_loop(py, found, args):
     mic = hear.wasapi_capture_name()
     start_vad(mic)
     (ROOT / "assistant.pid").write_text(str(os.getpid()) + "\n", encoding="utf-8")
@@ -1194,11 +1210,11 @@ def listen_loop(py, route, args):
             print("assistant: quit", file=sys.stderr)
             return
         question = posted_text(code, words)
-        if route.kind == "remote":
-            reply = remote_speak(route, args, question, True)
+        if found.brain == "post" and not found.flip:
+            reply = remote_speak(found, args, question, True)
         else:
-            reply = answer(py, route, args, question, speak=False)
-            speak_live(args, reply)
+            reply = answer(py, found, args, question, speak=False)
+            speak_live(args, reply, found.flip)
         write_history(words, speakable(reply))
         if args.once:
             return
@@ -1226,6 +1242,7 @@ def main():
         help="with --vb-cable, synthesize the reply to wavs and do not play them",
     )
     parser.add_argument("--stop", action="store_true", help="stop the assistant tree on this PC")
+    parser.add_argument("--brain", default="qwen", choices=BRAINS, help="CPU row only; a CUDA device uses Gemma")
     parser.add_argument(
         "--model",
         default="nano",
@@ -1237,14 +1254,23 @@ def main():
     parser.add_argument(
         "--nvidia",
         action="store_true",
-        help="brain URL must accept a connection or the process exits",
+        help="POST to one peer URL; a closed port exits peer missing",
     )
-    parser.add_argument("--url", default=None, help="brain URL; default is nvidia_client.BRAIN_URL")
+    parser.add_argument("--url", default=None, help="peer POST URL; requires --nvidia. Else TRIDENT_NVIDIA_URL")
     parser.add_argument("--timeout", type=float, default=180, help="brain HTTP timeout seconds (default 180)")
     args = parser.parse_args()
 
     if args.stop:
-        if args.text is not None or args.wav is not None or args.vb_cable or args.mouth or args.image or args.nvidia or args.url:
+        if (
+            args.text is not None
+            or args.wav is not None
+            or args.vb_cable
+            or args.mouth
+            or args.image
+            or args.nvidia
+            or args.url
+            or args.brain != "qwen"
+        ):
             die("usage: assistant.py --stop")
         stop_tree()
         return
@@ -1264,19 +1290,22 @@ def main():
         die("--mouth asks for --vb-cable")
     if args.url is not None and args.url.strip() == "":
         die("empty url")
+    if args.url and not args.nvidia:
+        die("url asks for --nvidia")
     if args.timeout <= 0:
         die("timeout must be > 0")
 
     py = venv_python()
-    route = route_of(args)
-    announce(route)
+    found = turn_place(args)
+    if args.image and brain_script(found, args.brain) == "qwen.py":
+        die("image asks use --brain gemma")
     OWN = True
     init_track()
     if args.vb_cable:
-        cable_turn(py, route, args)
+        cable_turn(py, args, found)
         return
     if args.text is not None:
-        answer(py, route, args, args.text.strip())
+        answer(py, found, args, args.text.strip())
         return
     if args.wav is not None:
         question = transcribe(py, args.wav.strip(), live=False).strip()
@@ -1284,9 +1313,9 @@ def main():
         if not question:
             print("assistant: hear returned no transcript", file=sys.stderr)
             return
-        answer(py, route, args, question)
+        answer(py, found, args, question)
         return
-    listen_loop(py, route, args)
+    listen_loop(py, found, args)
 
 
 if __name__ == "__main__":

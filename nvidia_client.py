@@ -26,7 +26,6 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-BRAIN_URL = "http://192.168.16.31:8765/"
 REQUEST = ROOT / "nvidia_turn.request.txt"
 REQUEST_TMP = ROOT / "nvidia_turn.request.txt.tmp"
 RESPONSE = ROOT / "nvidia_turn.response.txt"
@@ -150,8 +149,8 @@ def _open(url, ident, text, image, image_b64, timeout, stream):
         _fail_http(ident, exc)
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         reason = getattr(exc, "reason", exc)
-        write_response("id " + ident + "\nerr " + str(reason) + "\n")
-        die("nvidia worker: " + str(reason))
+        write_response("id " + ident + "\nerr peer missing " + str(reason) + "\n")
+        die("nvidia worker: peer missing " + str(reason))
     code = getattr(resp, "status", 200)
     if code < 200 or code >= 300:
         resp.close()
@@ -262,7 +261,7 @@ def main():
     parser.add_argument(
         "--stream",
         action="store_true",
-        help="POST stream true; print text pieces as they arrive",
+        help="POST stream true; print text pieces as they arrive. The body ends with a blank line",
     )
     args = parser.parse_args()
     if not args.text.strip():
