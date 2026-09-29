@@ -44,7 +44,7 @@ flowchart LR
 ```
 
 1. Iris turns a microphone window, or a wav file, into text. `hear.py` runs `nemo-speech.exe transcribe` with model `ear.gguf`. It does not read `ear.txt` and it does not run `ear.exe`. `src/ear.cpp` is the separate `ear.exe` one-shot. That program writes `*_ear_out_NNN.txt`.
-2. The text is one JSON POST. `nvidia_client.py` sends `id`, `text`, `image`, and, when a local image was passed, `image_b64`. `nvidia_worker.py` `do_POST` runs `gemma.py` once and returns `{"text": out}`. Errors are `text/plain` (`bad json`, `empty text`, `gemma exit`, `gemma timed out`, and the other worker errors). There is no `do_GET`. A browser GET is not a health check.
+2. The text is one JSON POST. `nvidia_client.py` sends `id`, `text`, `image`, and, when a local image was passed, `image_b64`. `stream: true` is optional. `nvidia_worker.py` `do_POST` runs `gemma.py`, which keeps one resident `gemma-brain.exe`. Without `stream`, the response is `{"text": out}`. With `stream: true`, the response is chunked `text/plain` of the token pieces and then a blank line. It is text, not audio. Errors before any piece are `text/plain` (`bad json`, `empty text`, `gemma exit`, `gemma timed out`, and the other worker errors). There is no `do_GET`. A browser GET is not a health check. If the port is already accepting connections, a new worker process leaves it alone.
 3. Iris keeps the text after `<channel|>` (`assistant.speakable`, with the same split on `</think>`). The thought stays in the response file. The mouth does not speak it.
 4. Iris splits that speakable text. The chunker is `assistant.chunks_for_mouth` (`breath_parts`, then `split_long`). `mouth.py` speaks the chunks it is given. It does not split them. PE Gemma and `nvidia_worker.py` return one whole string. `qwen.py` does not chunk. On `--nvidia`, Qwen is not in the path.
 5. `mouth.py` keeps `chatterbox.exe --resident` when the settings fingerprint matches. It writes `chatterbox.play off` into the settings it generates. `chatterbox.txt` still says `chatterbox.play on`. That template flag is not the speaker switch. Playback is `PlaySoundW` on the Windows default wave device, unless `--no-play`, `--vb-cable`, or `--out` is set. The default path prints `mouth out: default` and does not look up a friendly name.
@@ -57,7 +57,7 @@ Chunk sizes on the English path: flush on `.!?;:` and dashes, then a 65-word lim
 
 ### `--nvidia` is one turn
 
-The worker stores no conversation. `do_POST` reads `id`, `text`, `image`, and `image_b64` only. `assistant.py --nvidia` posts the current question and does not attach `grok_bot_history.txt`. A mid-session reply of "We have not had a conversation yet" matches the code. The 2026-09-28 evening recorded that sentence (Iris chatterbox wav `19-16-15-588`; PE `19-16-31-164_gemma_out_000.txt`).
+The worker stores no conversation. `do_POST` reads `id`, `text`, `image`, `image_b64`, and optional `stream`. `assistant.py --nvidia` posts the current question and does not attach `grok_bot_history.txt`. A mid-session reply of "We have not had a conversation yet" matches the code. The 2026-09-28 evening recorded that sentence (Iris chatterbox wav `19-16-15-588`; PE `19-16-31-164_gemma_out_000.txt`).
 
 `nvidia_client.py` always writes `nvidia_turn.request.txt` on the caller, then the response file after HTTP. Those same names are the `--drop` inbox inside `nvidia_worker.py`. `--drop` writes plain `id` / `ok` or `err` text. HTTP success is JSON. While `0.0.0.0:8765` is already listening, production is POST. The door never starts the worker. `--drop` is the fallback when this computer is not already listening. Do not use that fallback on Iris. An Iris `--inbox` with no local listener would try to run Gemma on Iris.
 
@@ -70,7 +70,7 @@ File-team memory is different. `grok_local_bot.py` appends coordinator and reaso
 | HTTP client | 30 s | `nvidia_client.py`. `assistant.py` forwards `--timeout` only with `--nvidia`. Omit it and a slow Gemma turn dies at 30 s, before the mouth. |
 | Proven live and closed-mic replay | 180 s | The passing commands below. |
 | Door and file-team HTTP | 600 s | `grok_local_bot.py --timeout`. Separate from the door's hear cap (180 s) and mouth cap (300 s). |
-| Worker Gemma kill | 600 s | `nvidia_worker.py --timeout`, around `gemma.py`, not the Iris HTTP clock. |
+| Worker wait | 600 s | `nvidia_worker.py --timeout`, around that `gemma.py` call, not the Iris HTTP clock. It does not kill the resident `gemma-brain.exe`. |
 | Listen window | 8 s | `assistant.py --seconds`. Scenario C used 30 s. The mic is open for that window, then the subprocess exits. It stays closed during the POST and during playback. The next turn opens it again. |
 
 `hear.py` defaults: device `cpu`, rate 16000, model `ear.gguf`, endpointing on, `--stop-history-eou-ms` 1200. Endpointing runs on the finished wav. `vad.exe` is not in this loop. `vad.txt` points `vad.exe` at `CABLE Output (VB-Audio Virtual Cable)`. Capture resample in `vad.exe` is the polyphase FIR in `Audio::resample`. `hear.py` live record uses `resample_linear` (`numpy.interp`).
@@ -81,7 +81,7 @@ File-team memory is different. `grok_local_bot.py` appends coordinator and reaso
 
 Ordinary text turns in `gemma.py` declare two tools, `hello` and `cursor`, and close the empty thought channel in the prompt. A question that starts with `<<trident-inbox>>` skips the tools and leaves the thought channel open. Image prompts do not add the tool header.
 
-`hello` writes one line to `tool_hello.txt` on the machine that ran `gemma.py`, then asks the brain again (up to three follow-ups). `cursor` runs the Cursor CLI once: `--list-extensions --show-versions`, or `--version` when the job asks for a version, and writes `grok_bot_spawn.txt`. A missing CLI writes `BLOCKED` and does not edit the repo. Unknown tool names are skipped. This is not an agent stack.
+`hello` writes one line to `tool_hello.txt` on the machine that ran `gemma.py`, then asks the brain once more. `cursor` runs the Cursor CLI once: `--list-extensions --show-versions`, or `--version` when the job asks for a version, and writes `grok_bot_spawn.txt`. A missing CLI writes `BLOCKED` and does not edit the repo. Unknown tool names are skipped. This is not an agent stack.
 
 On the Scenario C math turn the NVIDIA seat recorded `call:hello` with body `106 - 12 = 94` and a follow-up that the result is 94. The Iris mouth wav for that reply is `19-19-06-010`. A separate Hello World utterance was spoken on Iris as prose. `tool_hello.txt` was not created on the Iris disk. The tool file, when it is written, is on PE.
 
@@ -175,7 +175,7 @@ After install, Iris needs `nemo-speech.exe`, `chatterbox.exe`, `ear.gguf`, the v
 
 Run programs with `.\.venv\Scripts\python.exe`.
 
-Gemma sampling in `gemma.txt`, passed through as written: context 65536 (native 131072; 8192 left KV unused on this 1060), batch 512, `n-predict` 2048, `gpu-layers` 999, gpu 0, temp 1.0, top-k 64, top-p 0.95, min-p 0.05, flash-attn off, KV f16. A lower temperature collapses the turn. `gemma-brain.exe` takes `gemma.txt` as its only argument and writes `HH-MM-SS-mmm_gemma_out_NNN.txt`.
+Gemma sampling in `gemma.txt`, passed through as written: context 65536 (native 131072; 8192 left KV unused on this 1060), batch 512, `n-predict` 2048, `gpu-layers` 999, gpu 0, temp 1.0, top-k 64, top-p 0.95, min-p 0.05, flash-attn off, KV f16, image tokens 70–280, poll 100. A lower temperature collapses the turn. `gemma-brain.exe file.txt` is one shot and writes `HH-MM-SS-mmm_gemma_out_NNN.txt`. `gemma-brain.exe --resident file.txt` stays loaded. `gemma.py` uses the resident.
 
 Voice bake card `bake.txt`: reference `reference.wav`, cond-seconds 15 for nano and turbo, 6 for v3. `chatterbox.txt` variant in the template is `turbo`; the live and door commands pass `--model nano`.
 
@@ -340,8 +340,9 @@ Iris-side POST. One turn. NVIDIA owns this file.
 | `--image PATH` | none | Local image. The POST body includes `image` (the path) and `image_b64` (standard base64 of the bytes). |
 | `--url URL` | `TRIDENT_NVIDIA_URL` | Must start with `http://` or `https://` when set. With no URL the client writes `nvidia_turn.request.txt` and exits 0. It does not start Gemma. |
 | `--timeout SEC` | `30` | HTTP timeout. Must be `> 0`. `assistant.py` forwards its own `--timeout` only when you pass one. |
+| `--stream` | off | Send `stream: true`. Stdout is the token text. The HTTP body ends with a blank line, which this client consumes. |
 
-Success prints the worker text and writes `nvidia_turn.response.txt` (`id`, `ok`, then the text). Errors from the worker are `text/plain`.
+Success prints the worker text and writes `nvidia_turn.response.txt` (`id`, `ok`, then the text). Errors from the worker are `text/plain`. A stream that ends without the blank line fails in the open.
 
 ### `nvidia_worker.py`
 
@@ -353,24 +354,27 @@ PE listener. One Gemma on the 1060. If `0.0.0.0:8765` is already listening, do n
 | `--port` | `8765` | Bind port, 1–65535. |
 | `--drop` | off | Read `nvidia_turn.request.txt` and write `nvidia_turn.response.txt`. This is the local inbox. It is not the LAN path. Do not use it on Iris. |
 | `--once` | off | With `--drop` only: handle the current request and exit. |
-| `--timeout SEC` | `600` | Kill `gemma.py` after this many seconds. Must be `> 0`. This clock is around Gemma, separate from the Iris HTTP timeout. |
-| `--verbose` | off | Pass `gemma-brain.exe` stderr through `gemma.py`. |
+| `--timeout SEC` | `600` | Stop waiting on that `gemma.py` call after this many seconds. Must be `> 0`. This does not kill the resident `gemma-brain.exe`. |
+| `--verbose` | off | Pass `--verbose` through to `gemma.py`. Resident logs are `gemma.run.err`. |
 
-`do_POST` reads JSON `id`, `text`, `image`, and `image_b64`. It runs `gemma.py` once and returns `{"text": out}`. There is no `do_GET`. A browser GET is not a health check. Body cap is 16_000_000 bytes. `image_b64` is decoded to a temp file. If it is absent and `image` is a readable path on this machine, that path is passed to `gemma.py --image`.
+`do_POST` reads JSON `id`, `text`, `image`, `image_b64`, and optional `stream`. Without `stream`, it returns `{"text": out}`. With `stream: true`, it returns chunked `text/plain` pieces and then a blank line. The worker does not load Chatterbox and does not return audio. There is no `do_GET`. A browser GET is not a health check. Body cap is 16_000_000 bytes. `image_b64` is decoded to a temp file. If it is absent and `image` is a readable path on this machine, that path is passed to `gemma.py --image`. If something is already accepting the bind port, the process prints that and exits 0. It does not kill the listener.
 
 ### `gemma.py`
 
-One question, then stdout generation, thinking included.
+One question, then stdout generation, thinking included. The default keeps one resident `gemma-brain.exe`.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `question` | required | Text prompt. A question that starts with `<<trident-inbox>>` drops that marker, skips tools, and leaves the thought channel open. |
-| `--image PATH` | none | Encoded as raw base64 into `gemma.image`. The prompt must contain `<__media__>` or `gemma.py` inserts that token. |
-| `--verbose` | off | Show `gemma-brain.exe` stderr. The default discards it. |
+| `question` | required, except `--stop` | Text prompt. A question that starts with `<<trident-inbox>>` drops that marker, skips tools, and leaves the thought channel open. |
+| `--image PATH` | none | Encoded as raw base64 into the resident prompt. The prompt must contain `<__media__>` or `gemma.py` inserts that token. |
+| `--verbose` | off | One-shot: show `gemma-brain.exe` stderr. Resident logs stay in `gemma.run.err`. |
+| `--once` | off | One-shot `gemma-brain.exe`, then exit. Refuses while a resident is already running. |
+| `--stop` | off | Stop the resident. Must be the only flag. This is how a same-GPU mouth unloads Gemma before Vulkan. |
+| `--stream` | off | Write each sampled piece to stdout. Implies the resident. |
 
-Ordinary text turns declare two tools, `hello` and `cursor`, and close an empty thought channel. `hello` appends one line to `tool_hello.txt` on the machine that ran `gemma.py`, then asks the brain again (up to three follow-ups). `cursor` runs the Cursor CLI once: `--version` when the job asks for a version, otherwise `--list-extensions --show-versions`. It writes `grok_bot_spawn.txt`. A missing CLI writes `BLOCKED` and does not edit the repo. Unknown tool names are skipped. Image prompts do not add the tool header.
+Ordinary text turns declare two tools, `hello` and `cursor`, and close an empty thought channel. `hello` writes one line to `tool_hello.txt` on the machine that ran `gemma.py`, then asks the brain once more. `cursor` runs the Cursor CLI once: `--version` when the job asks for a version, otherwise `--list-extensions --show-versions`. It writes `grok_bot_spawn.txt`. A missing CLI writes `BLOCKED` and does not edit the repo. Unknown tool names are skipped. Image prompts do not add the tool header.
 
-`gemma.py` copies `gemma.txt`, drops `gemma.text` and `gemma.image`, writes the prompt and the image block, and runs `gemma-brain.exe gemma_run.txt`. Output is `HH-MM-SS-mmm_gemma_out_NNN.txt`.
+The default path keeps one `gemma-brain.exe --resident gemma_run.txt`. Prompts are `gemma.prompt.txt` (`id`, image byte length, image base64, prompt). Responses are `gemma.response.txt` (length-prefixed pieces, then `ok` or `err`). `--once` still copies `gemma.txt`, drops `gemma.text` and `gemma.image`, and runs `gemma-brain.exe gemma_run.txt`. One-shot output is `HH-MM-SS-mmm_gemma_out_NNN.txt`.
 
 ### `qwen.py`
 
@@ -544,7 +548,7 @@ A new GPU is a change to `install.cuda_architectures` and to `gemma.ctx` / `gemm
 
 ### `gemma.txt`
 
-`gemma-brain.exe` reads this card as its only argument. `gemma.py` keeps every key except `gemma.text` and `gemma.image`, which it rewrites per turn. Lower `gemma.temp` collapses the turn. On this 1060 the fit that held an image was context `65536`, `gpu-layers` `999`, KV f16, flash-attn `off` (peak 5672 MiB of 6144). Native context length is 131072. `8192` left KV unused on that card.
+`gemma-brain.exe file.txt` reads this card as its only argument. `gemma-brain.exe --resident file.txt` loads it once. `gemma.py` keeps every key except `gemma.text` and `gemma.image`, which it sends per turn. Lower `gemma.temp` collapses the turn. On this 1060 the fit that held an image was context `65536`, `gpu-layers` `999`, KV f16, flash-attn `off` (peak 5672 MiB of 6144). Native context length is 131072. `8192` left KV unused on that card. Image tokens stay 70–280. Do not turn flash-attn on and do not quantize the KV cache on this Pascal card.
 
 | Key | Checked-in | Meaning |
 | --- | --- | --- |
@@ -565,7 +569,7 @@ A new GPU is a change to `install.cuda_architectures` and to `gemma.ctx` / `gemm
 | `gemma.flash-attn` | `off` | `auto`, `on`, or `off`. |
 | `gemma.warmup` | `on` | Warmup pass. |
 | `gemma.cache-type-k` / `gemma.cache-type-v` | `f16` / `f16` | KV cache types. f16 is the measured fit. |
-| `gemma.image-min-tokens` / `gemma.image-max-tokens` | `-1` / `-1` | Vision token bounds. `-1` leaves the mmproj default. |
+| `gemma.image-min-tokens` / `gemma.image-max-tokens` | `70` / `280` | Gemma 4 picture budget. One bitmap. 560 and 1120 are OCR budgets and are not this card. |
 | `gemma.mmproj-gpu` | `on` | Run the projector on GPU. |
 | `gemma.mmproj-timings` | `on` | Print mmproj timings. |
 | `gemma.n-keep` | `0` | Tokens kept from the prompt on a shift. |
@@ -584,7 +588,7 @@ A new GPU is a change to `install.cuda_architectures` and to `gemma.ctx` / `gemm
 | `gemma.lazy-mode` | `auto` | `off`, `auto`, or `on`. |
 | `gemma.numa` | `disabled` | `disabled`, `distribute`, `isolate`, `numactl`, or `mirror`. |
 | `gemma.priority` / `gemma.priority-batch` | `high` / `high` | Process priority for generation and batch. |
-| `gemma.poll` / `gemma.poll-batch` | `50` / `50` | Busy-poll level, 0–100. |
+| `gemma.poll` / `gemma.poll-batch` | `100` / `100` | Busy-poll level, 0–100. 100 busy-waits the GPU sync. |
 | `gemma.strict-cpu` / `gemma.strict-cpu-batch` | `off` / `off` | Pin threads to the CPU mask. |
 | `gemma.cpu-mask` / `gemma.cpu-mask-batch` | empty | Hex mask. Empty means no mask. |
 | `gemma.rope-scaling` | `unspecified` | `unspecified`, `none`, `linear`, `yarn`, or `longrope`. |
@@ -750,7 +754,7 @@ Do not commit to `main`. Do not fast-forward `main` without Wojciech. Do not for
 | `mouth.py`, `chatterbox.txt` | Resident or one-shot Chatterbox. Template play flag is off in the generated settings. |
 | `assistant.py` | Live loop, closed-mic `--text`, chunker, `--nvidia` poster via `nvidia_client.py`. |
 | `nvidia_client.py` | Iris-side POST. NVIDIA owns the file. Iris does not edit it. |
-| `nvidia_worker.py`, `gemma.py`, `gemma.txt` | PE HTTP worker and one-shot Gemma. NVIDIA owns them. Iris does not edit them. |
+| `nvidia_worker.py`, `gemma.py`, `gemma.txt` | PE HTTP worker and resident Gemma. NVIDIA owns them. Iris does not edit them. |
 | `qwen.py`, `sense.txt`, `gemma/src/sense.cpp` | Local CPU Qwen. `sense.exe`. |
 | `gemma/src/brain.cpp` | `gemma-brain.exe`. |
 | `grok_local_bot.py` | File team, inbox, proof, door. Writes `grok_bot.txt`, `grok_bot_history.txt`, `grok_bot_request.txt`, `grok_bot_response.txt`, `grok_bot_spawn.txt`, and `iris-door.txt`. Those outputs are not in git. `--inbox` reads a text file you supply (default name `grok_bot_inbox.txt`). |

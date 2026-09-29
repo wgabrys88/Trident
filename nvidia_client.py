@@ -96,10 +96,12 @@ def file_b64(path):
     return base64.b64encode(data).decode("ascii"), len(data)
 
 
-def post_turn(url, ident, text, image, image_b64, timeout):
+def post_turn(url, ident, text, image, image_b64, timeout, stream=False):
     body = {"id": ident, "text": text, "image": image}
     if image_b64:
         body["image_b64"] = image_b64
+    if stream:
+        body["stream"] = True
     payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -109,8 +111,30 @@ def post_turn(url, ident, text, image, image_b64, timeout):
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8", errors="replace")
             code = getattr(resp, "status", 200)
+            if stream:
+                kept = bytearray()
+                pending = b""
+                while True:
+                    block = resp.read(4096)
+                    if not block:
+                        break
+                    pending += block
+                    if len(pending) > 2:
+                        emit = pending[:-2]
+                        pending = pending[-2:]
+                        kept += emit
+                        sys.stdout.buffer.write(emit)
+                        sys.stdout.buffer.flush()
+                if pending != b"\n\n":
+                    if pending:
+                        sys.stdout.buffer.write(pending)
+                        sys.stdout.buffer.flush()
+                    write_response("id " + ident + "\nerr truncated stream\n")
+                    die("nvidia worker stream ended without a blank line")
+                raw = kept.decode("utf-8", errors="replace")
+            else:
+                raw = resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace").strip()
         message = "http " + str(exc.code)
@@ -125,14 +149,15 @@ def post_turn(url, ident, text, image, image_b64, timeout):
     if code < 200 or code >= 300:
         write_response("id " + ident + "\nerr http " + str(code) + "\n")
         die("nvidia worker: http " + str(code))
-    text_out = generation_from_body(raw)
+    text_out = raw if stream else generation_from_body(raw)
     if not str(text_out).strip():
         write_response("id " + ident + "\nerr empty\n")
         die("nvidia worker returned empty")
     if not text_out.endswith("\n"):
         text_out += "\n"
     write_response("id " + ident + "\nok\n" + text_out)
-    sys.stdout.write(text_out)
+    if not stream:
+        sys.stdout.write(text_out)
 
 
 def main():
@@ -146,6 +171,7 @@ def main():
     )
     parser.add_argument("--url", default=None, help="NVIDIA worker POST url; else TRIDENT_NVIDIA_URL")
     parser.add_argument("--timeout", type=float, default=30, help="HTTP timeout seconds (default 30)")
+    parser.add_argument("--stream", action="store_true", help="ask for chunked text pieces; the body ends with a blank line")
     args = parser.parse_args()
     if not args.text.strip():
         die("empty text")
@@ -180,7 +206,7 @@ def main():
         return
     if image_b64:
         print("nvidia: image_b64 " + str(image_bytes) + " bytes", file=sys.stderr)
-    post_turn(url, ident, args.text, image, image_b64, args.timeout)
+    post_turn(url, ident, args.text, image, image_b64, args.timeout, args.stream)
 
 
 if __name__ == "__main__":

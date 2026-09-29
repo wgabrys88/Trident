@@ -248,6 +248,23 @@ def is_quit(text):
     return word in QUIT_WORDS
 
 
+def release_shared_gpu():
+    import gemma
+
+    cuda_name, vulkan_name = gemma.adapter_names()
+    print(
+        "assistant: gpu cuda " + (cuda_name or "none") + " vulkan " + (vulkan_name or "none"),
+        file=sys.stderr,
+    )
+    if not cuda_name:
+        return
+    if not vulkan_name:
+        die("cannot read Vulkan device 0")
+    if gemma.same_adapter():
+        print("assistant: flip gemma off", file=sys.stderr)
+        gemma.stop_resident()
+
+
 def speak_raw(py, args, raw, play=True):
     spoken = speakable(raw)
     lang = resolved_lang(args.model, args.lang)
@@ -255,6 +272,7 @@ def speak_raw(py, args, raw, play=True):
     if not parts:
         print("assistant: no speakable answer", file=sys.stderr)
         return []
+    release_shared_gpu()
     print("assistant: mouth " + str(len(parts)) + " chunk(s)", file=sys.stderr)
     argv = [py, str(ROOT / "mouth.py"), "--model", args.model]
     if not play:
