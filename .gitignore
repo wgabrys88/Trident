@@ -25,6 +25,7 @@
 !/.gitattributes
 !/README.md
 !/IRIS_README.md
+!/NVIDIA_README.md
 !/CMakeLists.txt
 !/LICENSE
 !/install.py
