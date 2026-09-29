@@ -22,7 +22,8 @@ Same directory. Iris can read these lines. They are not audio. The outbox line a
 | --- | --- |
 | `say <sentence>` | Quiet drain finished. Same sentence as `iris_outbox.txt`. |
 | `work <line>` | `next` stored a waiting line. |
-| `stop <line>` | `stop` dropped waiting work. |
+| `stop voice` | The owner asked the voice to go quiet. Iris can act on this line. The brain stays up. |
+| `stop <line>` | `stop` dropped that waiting work line. |
 
 The file keeps the last 40 lines. No hostname. No JSON.
 

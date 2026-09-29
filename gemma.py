@@ -14,8 +14,8 @@ place reports the CUDA and Vulkan adapters on this computer, whether port
 place() is that same decision for a turn: one TCP connect, no computer name,
 no second URL. Trim drops the oldest
 turns first. A fact drops only after every turn is gone and the prompt still does not fit.
-next stores one work line in that same file. stop drops waiting work. It does not unload
-the resident and it does not close port 8765.
+next stores one work line in that same file. stop tells Iris the voice should go quiet,
+or drops one matching work line. It does not unload the resident and it does not close port 8765.
 
 cursor starts one local `agent` process when the model calls it, writes grok_bot_spawn.txt,
 and does not wait. A missing agent writes BLOCKED and does not start a follow-up. This
@@ -71,7 +71,7 @@ SYSTEM = (
     "place reports the CUDA device, the Vulkan device, whether they are the same adapter, whether port 8765 is accepting here, and whether a mouth on this computer would share the brain GPU. "
     "cursor starts one local Cursor agent when the owner asks for a code change. "
     "next stores one line of work for when you are idle and nobody is speaking. "
-    "stop drops waiting work. It does not stop you and it does not close port 8765. "
+    "stop tells Iris the voice should go quiet, or drops one waiting work line. It does not stop you and it does not close port 8765. "
     "Work waiting lists those lines. Do not recite them unless the owner asks. "
     "Call a tool only by its tool call. The spoken sentence has no channels or file names."
 )
@@ -158,11 +158,11 @@ NEXT_DECL = (
 STOP_DECL = (
     "<|tool>declaration:stop{description:"
     + Q
-    + "Drop stored work that has not run yet. Call this when the owner cancels later work. This does not stop the brain and does not close a listening port. Pass line to drop that one item, or leave line empty to drop every waiting line."
+    + "Call this when the owner wants the voice to go quiet or stop listening, or when the owner cancels one waiting work line. An empty call tells Iris the voice should stop. A line that matches waiting work drops that line. This does not stop the brain and does not close a listening port."
     + Q
     + ",parameters:{properties:{line:{description:"
     + Q
-    + "The waiting work line to drop. Empty drops every waiting line."
+    + "Waiting work to drop. Empty tells Iris the voice should stop."
     + Q
     + ",type:"
     + Q
@@ -459,25 +459,19 @@ def store_work(path, line, status_path=None):
 
 
 def stop_work(path, line, status_path=None):
-    # Exact stored line, or every waiting line when line is empty. No keyword scan.
+    # A matching work line is dropped. Any other call tells Iris the voice should stop.
+    # Python does not scan the question. The model passes line or leaves it empty.
     facts, pairs, works = read_memory(path)
     target = clip_fact(line) if (line or "").strip() else ""
-    if target:
-        if target not in works:
-            print("gemma: tool stop missing", file=sys.stderr, flush=True)
-            return ""
+    if target and target in works:
         works = [item for item in works if item != target]
-        dropped = target
-    else:
-        if not works:
-            print("gemma: tool stop none", file=sys.stderr, flush=True)
-            return ""
-        dropped = " | ".join(works)
-        works = []
-    write_memory(path, facts, pairs, works)
-    write_iris_status("stop", dropped, status_path)
-    print("gemma: tool stop " + dropped, file=sys.stderr, flush=True)
-    return dropped
+        write_memory(path, facts, pairs, works)
+        write_iris_status("stop", target, status_path)
+        print("gemma: tool stop " + target, file=sys.stderr, flush=True)
+        return target
+    write_iris_status("stop", "voice", status_path)
+    print("gemma: tool stop voice", file=sys.stderr, flush=True)
+    return "voice"
 
 
 def write_iris_outbox(line, path=None):
@@ -1805,9 +1799,6 @@ def tool_turn(name, args, raw, spawn_path=None, memory_path=None):
         return raw + tool_response("next", [("line", line)]), None, line
     if name == "stop":
         line = stop_work(memory_path, args.get("line"))
-        if not line:
-            print("gemma: tool stop stopped", file=sys.stderr, flush=True)
-            return None, "fail nothing to stop\n", None
         return raw + tool_response("stop", [("line", line)]), None, line
     print("gemma: tool unknown " + name, file=sys.stderr, flush=True)
     return None, "unknown tool " + name + "\n", None
