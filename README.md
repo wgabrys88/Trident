@@ -76,7 +76,7 @@ The listen loop posts the last 4 pairs from `assistant.history.txt` inside the t
 
 `hear.py` defaults: device `cpu`, rate 16000, model `ear.gguf`, endpointing on, `--stop-history-eou-ms` 1200. The listen loop passes `--format json --language auto --verbatim`. `vad.txt` still points one-shot `vad.exe vad.txt` at `CABLE Output (VB-Audio Virtual Cable)`. The listen card is `vad_run.txt`, written for the default non-cable WASAPI mic. Capture resample in `vad.exe` is the polyphase FIR in `Audio::resample`.
 
-`assistant.py` exits its own loop when the transcript is only `quit`, `exit`, or `stop`. That does not stop port 8765. `assistant.py --stop` kills the assistant tree on this PC (vad, and a mouth or Qwen this process started). It does not open a connection to the brain. Gemma has no quit tool. Leave a healthy `:8765` alone.
+`run.py start` is the live mic. `run.py stop` stops that organism and the mouth. Neither binds or restarts port 8765. A spoken shutdown is Gemma's `stop` tool. `assistant.py --stop` kills the assistant tree on this PC and does not open a connection to the brain. Leave a healthy `:8765` alone.
 
 ### Tools on the worker
 
@@ -227,10 +227,22 @@ Live mic, on the PC with the microphone. One command. VAD stays up. `--nvidia` r
 .\.venv\Scripts\python.exe .\assistant.py --nvidia
 ```
 
-Stop that tree, and not the brain:
+Everyday live mic, on Iris. Resident VAD on the default microphone, free speech, one brain POST, then the mouth. No canned phrase. No keyboard for a normal turn. Leave `:8765` alone.
 
 ```powershell
-.\.venv\Scripts\python.exe .\assistant.py --stop
+.\.venv\Scripts\python.exe .\run.py start
+```
+
+Simulated ASR, no microphone. A turn file, or stdin, then the same brain path.
+
+```powershell
+.\.venv\Scripts\python.exe .\run.py start inject turn.txt
+```
+
+Stop that tree, and not the brain. `run.py stop` stops the organism and the mouth. It does not contact the brain. Gemma's `stop` tool does the same shutdown when the owner asks by meaning.
+
+```powershell
+.\.venv\Scripts\python.exe .\run.py stop
 ```
 
 Cable harness, on Iris. Not the human speakers.
@@ -300,14 +312,13 @@ Live hear / brain / mouth loop. No `--seconds`. The brain is the placement in "W
 | `--nvidia` | off | Name one peer. `--url`, or else `TRIDENT_NVIDIA_URL`. One connect. A closed port exits `peer missing`. |
 | `--url URL` | none | That peer's POST URL. Requires `--nvidia`. Empty URL fails. There is no built-in host. |
 | `--timeout SEC` | `180` | HTTP timeout when the turn is a POST. Must be `> 0`. |
+A heard sentence goes to the brain. Gemma calls `stop` when the owner wants the local voice to shut down. That ends the loop and the mouth. It does not stop port 8765.
 
-A transcript that is only `quit`, `exit`, or `stop` ends this loop. It does not stop port 8765.
-
-The chunker flushes atoms on `.!?` and a blank line, not on `:`, `;`, or dashes. It then splits each atom by language. English budget 65. Any other tag 55. A finished reply packs short spans of the same language up to that budget (`chunks_for_mouth`). `--nvidia` uses `StreamFeed` and speaks each closed atom while later text can still be arriving. One span over the budget is cut into word windows. Text before `<channel|>`, or an unclosed `<think>`, is not spoken.
+The chunker flushes atoms on `.!?` and a blank line, not on `:`, `;`, or dashes. It then splits each atom by language. English budget 65. Any other tag 55. A finished reply packs short spans of the same language up to that budget (`chunks_for_mouth`). The voice turn waits for the whole reply, then speaks. One span over the budget is cut into word windows. Text before `<channel|>`, or an unclosed `<think>`, is not spoken.
 
 `speakable` keeps the text after `<channel|>`, or after `</think>` when that tag is present. An unclosed `<think>` with no channel split is silence.
 
-A line that is only `act: time`, `act: note <fact>`, or `act: next` is a voice-seat act. The act line is not sent to the brain. `time` speaks the local hour and minute. `note` appends one fact, at most 200 characters, to `assistant.note.txt` on this PC and speaks `Noted.` plus that fact. `next` speaks the last stored fact. An empty note, extra words on `time` or `next`, a second act line, words after the act line, an unknown name, or `next` with no note exits 2 and does not speak a success. A turn that is only the act does not place the brain and does not POST. A question with one trailing act line uses the usual brain and mouth path, then runs the act. A bad act fails before that POST. If the brain turn fails, the act does not run. The listen loop uses the same split and holds the mic while the act is spoken. `--vb-cable` does not parse the phrase as an act.
+Python does not pick a tool from the words. Gemma emits the tool call. `stop` shuts down this organism.
 
 ### `hear.py`
 
@@ -852,12 +863,12 @@ The body of `README.md` is the program manual (seats, voice path, install, comma
 
   YouTube chaos mid-session clarified and the mouth spoke two chunks. It did not refuse and it did not stay quiet. The process was later killed (exit `4294967295`). There is no `STATUS PASS` file for that session. The 14:57 `--once` without `--timeout` timed out at 30 s and did not speak. Do not collapse those two runs.
 - **Permission gate stays.** Live mic only after Wojciech says go. Spock passes GO to Iris as Shell, not as a Cursor wait, and not behind a smoke test.
-- **Chunker = Iris.** A finished reply is `chunks_for_mouth`. A `--nvidia` stream speaks each closed sentence from `StreamFeed` while later pieces can still arrive, when the mouth is not on the brain GPU. The same-GPU path waits for the whole reply. An atom over the word budget is cut into windows.
+- **Chunker = Iris.** A finished reply is `chunks_for_mouth`. The voice turn waits for the whole reply, then speaks. An atom over the word budget is cut into windows.
 - **`--nvidia` posts one turn** (`id`, `text`, `image`, `image_b64`, and `stream: true` on the listen loop when there is no flip). The door does not set `stream`. The listen loop puts the last 4 history pairs inside `text`. No wav crosses the network. The worker does not store a session. `gemma.memory.txt` on the brain machine is the next text prompt's memory.
 - **Mouth target = Iris default PlaySound device**, measured that day as **Speakers (Realtek(R) Audio)**. The mouth prints `mouth out: default`. PE console default in the NVIDIA notes is Speakers (Creative SB X-Fi). LG TV (NVIDIA High Definition Audio) is on PE and is not the default. Neither is the live mouth. There is no NVIDIA Speakers endpoint.
 - **Language spans.** English spans use nano (turbo only with `--model turbo`). Other languages use v3 for that span. The fast resident stays up; v3 synthesizes the span when it is known and then exits. The hear tag is not written onto the spoken text.
-- **Stop.** `assistant.py --stop` kills the assistant tree on this PC. Leave `:8765` up. Heard `quit` / `exit` / `stop` ends the assistant loop only. Gemma has no quit tool. `nvidia_stop.py` without `--cutover` does not stop the worker. `--cutover` is an owner or PM intentional cutover.
-- **Tools.** `remember` appends one fact to `gemma.memory.txt` on the worker machine. `next` appends one work line there and does not run it. `stop` tells Iris the voice should go quiet, or drops one matching work line, and does not close port 8765. `gemma.py --idle` notices that line, or prints `idle` without generating, then writes `iris_outbox.txt` and a `say` line in `iris_status.txt`. `place` reports the CUDA and Vulkan adapters on that computer, whether `127.0.0.1:8765` is accepting, and whether a mouth there would share that GPU. `cursor` starts one local `agent` on `composer-2.5` when the model calls it, and a missing CLI is `BLOCKED`. Python does not call a tool the model did not emit. The 2026-09-28 `hello` write is gone. The HTTP worker runs one `--idle` after 60 seconds with no POST. `--idle` itself does not poll.
+- **Stop.** `run.py stop` and Gemma's `stop` tool end the local voice and the mouth. The tool call stays in the answer. Leave `:8765` up. `nvidia_stop.py` without `--cutover` does not stop the worker. `--cutover` is an owner or PM intentional cutover.
+- **Tools.** `remember` appends one fact to `gemma.memory.txt` on the worker machine. `next` appends one work line there and does not run it. `stop` writes `iris_status.txt` (`stop voice`, or `stop` plus one matching work line that is dropped) and does not close port 8765. `gemma.py --idle` notices that line, or prints `idle` without generating, then writes `iris_outbox.txt` and a `say` line in `iris_status.txt`. `place` reports the CUDA and Vulkan adapters on that computer, whether `127.0.0.1:8765` is accepting, and whether a mouth there would share that GPU. `cursor` starts one local `agent` on `composer-2.5` when the model calls it, and a missing CLI is `BLOCKED`. Python does not call a tool the model did not emit. The 2026-09-28 `hello` write is gone. The HTTP worker runs one `--idle` after 60 seconds with no POST. `--idle` itself does not poll.
 - **VOICE = invoke-on-ask only.** No default VOICE Cursor scout.
 - **Worker bind.** `nvidia_worker.py --host` defaults to `0.0.0.0`, port 8765, PE only. Iris `local_8765: none`. Health probe is TCP connect or a real POST. GET is not implemented.
 - **VRAM.** One Gemma on the 1060. Image inbox peaked 5672 MiB of 6144. File-team proof peaked 4678. An overlap experiment peaked at 5976 MiB concurrent. Do not start a second Gemma beside the worker.
@@ -895,7 +906,7 @@ The body of `README.md` is the program manual (seats, voice path, install, comma
 
 **Role card:**
 
-You are Trident Spock V2. Read `README.md`, including this Rebirth appendix. You do not edit code. Coding is Cursor on `trident-iris` or `trident-nvidia` only. Assign Composer 2.5 fast=false for scouts, inventories, and low-priority edits. Assign Grok 4.7, reasoning_effort xhigh, fast=false, context 256k or 500k, one pass, for a final README or ledger. Merge to `runner-h` only. Do not fast-forward `main` unless Wojciech asks. Live mic only after Wojciech says go — pass GO to Iris as the direct Shell recipe in this appendix, not a Cursor wait. Leave healthy `:8765` alone. War Room short. Token-low default. Proven live path is Scenario C (2026-09-28) on Iris Speakers (Realtek(R) Audio): clarify-and-speak under YouTube chaos was the win. Chunker is Iris (`chunks_for_mouth`, and `StreamFeed` while `--nvidia` streams on another GPU). Memory is `gemma.memory.txt` on the brain machine. One resident Gemma serves the worker. PE X-Fi and LG TV are not the mouth.
+You are Trident Spock V2. Read `README.md`, including this Rebirth appendix. You do not edit code. Coding is Cursor on `trident-iris` or `trident-nvidia` only. Assign Composer 2.5 fast=false for scouts, inventories, and low-priority edits. Assign Grok 4.7, reasoning_effort xhigh, fast=false, context 256k or 500k, one pass, for a final README or ledger. Merge to `runner-h` only. Do not fast-forward `main` unless Wojciech asks. Live mic only after Wojciech says go — pass GO to Iris as the direct Shell recipe in this appendix, not a Cursor wait. Leave healthy `:8765` alone. War Room short. Token-low default. Proven live path is Scenario C (2026-09-28) on Iris Speakers (Realtek(R) Audio): clarify-and-speak under YouTube chaos was the win. Chunker is Iris (`chunks_for_mouth`). Memory is `gemma.memory.txt` on the brain machine. One resident Gemma serves the worker. PE X-Fi and LG TV are not the mouth. Voice entry is `run.py start` and `run.py stop`. Gemma's `stop` tool shuts down the local voice.
 
 ## CreateAgent — TRIDENT_IRIS
 
@@ -905,7 +916,7 @@ You are Trident Spock V2. Read `README.md`, including this Rebirth appendix. You
 
 **Role card:**
 
-You are TRIDENT_IRIS. Worker `trident-iris`, machine EB-W, account `eb-wjt`, workspace `C:\Users\eb-wjt\Downloads\Jarvis\Trident`. You own Iris I/O: mic hear, Speakers (Realtek(R) Audio) via PlaySound `mouth out: default`, `hear.py`, `mouth.py`, `assistant.py`, and the wav door. Hearing is `nemo-speech.exe` through `hear.py`, not `ear.exe`. Do not bind `:8765`. Never kill a healthy PE listener. Do not edit `nvidia_worker.py` or `gemma.py`. Coding = Cursor on `trident-iris` only. Quiet via Spock. War Room short. First message: write durable rules; ask nothing unless blocked. MIC OPEN: `.\.venv\Scripts\python.exe .\assistant.py --nvidia`. MIC STOP: `.\.venv\Scripts\python.exe .\assistant.py --stop` (this PC only, leave `:8765`). Chunker = `assistant.chunks_for_mouth` for a finished reply, and `StreamFeed` while `--nvidia` is streaming. Unattended door sets `TRIDENT_NVIDIA_URL` and runs `grok_local_bot.py --wav` (mouth wavs, no playback).
+You are TRIDENT_IRIS. Worker `trident-iris`, machine EB-W, account `eb-wjt`, workspace `C:\Users\eb-wjt\Downloads\Jarvis\Trident`. You own Iris I/O: mic hear, Speakers (Realtek(R) Audio) via PlaySound `mouth out: default`, `hear.py`, `mouth.py`, `assistant.py`, `run.py`, and the wav door. Hearing is `nemo-speech.exe` through `hear.py`, not `ear.exe`. Do not bind `:8765`. Never kill a healthy PE listener. Do not edit `nvidia_worker.py`. Coding = Cursor on `trident-iris` only. Quiet via Spock. War Room short. First message: write durable rules; ask nothing unless blocked. MIC OPEN: `.\.venv\Scripts\python.exe .\run.py start`. MIC STOP: `.\.venv\Scripts\python.exe .\run.py stop` (this PC only, leave `:8765`). Spoken shutdown is Gemma's `stop` tool. Chunker = `assistant.chunks_for_mouth`. Unattended door sets `TRIDENT_NVIDIA_URL` and runs `grok_local_bot.py --wav` (mouth wavs, no playback).
 
 ## CreateAgent — TRIDENT_NVIDIA
 

@@ -1,12 +1,18 @@
-"""Iris closed-mic start.
+"""Iris voice.
 
-Runs `assistant.py --nvidia --timeout 180 --inject` and waits.
-No microphone and no VAD. Does not bind, stop, or restart port 8765.
+python run.py start [--url URL]
+    Continuous microphone, resident VAD, brain, mouth.
+    A normal turn needs no mouse or keyboard.
 
-Peer URL: `--url`, else `TRIDENT_NVIDIA_URL`, else `http://192.168.16.31:8765/`.
-Type a turn, then a line that is only `---`.
-A turn that is only `quit`, `exit`, or `stop` ends the loop.
-`python stop.py` stops this process and the mouth. It does not contact the brain.
+python run.py start inject [PATH]
+    Simulated ASR. PATH is one turn per line, or blocks split by a line
+    that is only ---. No PATH reads stdin. No microphone.
+
+python run.py stop
+    Stop this organism and the mouth. Do not contact the brain.
+
+Does not bind, stop, or restart port 8765.
+Spoken shutdown is a Gemma stop tool call, not a keyword.
 """
 
 import ctypes
@@ -89,26 +95,51 @@ def remove_pidfile(name, pid):
         pass
 
 
-def brain_url(argv):
+def parse_args(argv):
+    usage = "usage: run.py start [--url URL] [inject [PATH]] | run.py stop"
+    if not argv:
+        die(usage)
+    command = argv[0]
+    if command == "stop":
+        if len(argv) != 1:
+            die("usage: run.py stop")
+        return "stop", "", None
+    if command != "start":
+        die(usage)
     url = ""
-    index = 0
+    inject = None
+    index = 1
     while index < len(argv):
-        if argv[index] != "--url":
-            die("usage: start.py [--url URL]")
-        if index + 1 >= len(argv):
-            die("empty url")
-        value = argv[index + 1].strip()
-        if not value:
-            die("empty url")
-        if url:
-            die("usage: start.py [--url URL]")
-        url = value
-        index += 2
+        arg = argv[index]
+        if arg == "--url":
+            if index + 1 >= len(argv):
+                die("empty url")
+            value = argv[index + 1].strip()
+            if not value:
+                die("empty url")
+            if url:
+                die(usage)
+            url = value
+            index += 2
+            continue
+        if arg == "inject":
+            if inject is not None:
+                die(usage)
+            if index + 1 < len(argv) and not argv[index + 1].startswith("-"):
+                inject = argv[index + 1]
+                if not inject.strip():
+                    die("empty inject path")
+                index += 2
+            else:
+                inject = "-"
+                index += 1
+            continue
+        die(usage)
     if not url:
         url = os.environ.get("TRIDENT_NVIDIA_URL", "").strip() or DEFAULT_URL
     if not (url.startswith("http://") or url.startswith("https://")):
         die("url must start with http:// or https://")
-    return url
+    return "start", url, inject
 
 
 def already_up():
@@ -142,7 +173,6 @@ def taskkill(pid):
 
 
 def end_process(proc, before):
-    # venv python.exe is a redirector. taskkill /T stops the inject child too.
     if proc.poll() is None:
         taskkill(proc.pid)
         try:
@@ -157,7 +187,6 @@ def end_process(proc, before):
 
 
 def wait_ready(proc, before):
-    # assistant.pid is the child interpreter, not proc.pid.
     deadline = time.monotonic() + READY_SECONDS
     while time.monotonic() < deadline:
         if proc.poll() is not None:
@@ -168,56 +197,100 @@ def wait_ready(proc, before):
             return pid
         time.sleep(0.05)
     end_process(proc, before)
-    die("inject did not become ready")
+    die("assistant did not become ready")
 
 
-def main():
-    os.environ["PYTHONUNBUFFERED"] = "1"
-    reexec()
-    url = brain_url(sys.argv[1:])
+def stop_mouth():
+    py = venv_python()
+    return subprocess.run(
+        [py, str(ROOT / "mouth.py"), "--stop"],
+        cwd=str(ROOT),
+        shell=False,
+    ).returncode
+
+
+def stop_assistant():
+    py = venv_python()
+    return subprocess.run(
+        [py, str(ROOT / "assistant.py"), "--stop"],
+        cwd=str(ROOT),
+        shell=False,
+    ).returncode
+
+
+def cmd_stop():
+    for name in ("assistant.pid", "iris.pid"):
+        pid = read_pid(name)
+        if pid and process_image(pid) and not python_alive(pid):
+            die("refusing to stop " + name + " pid " + str(pid))
+    iris_pid = read_pid("iris.pid")
+    if python_alive(iris_pid):
+        taskkill(iris_pid)
+    assistant_code = stop_assistant()
+    mouth_code = stop_mouth()
+    try:
+        (ROOT / "iris.pid").unlink()
+    except OSError:
+        pass
+    print("iris: stopped", file=sys.stderr)
+    if assistant_code or mouth_code:
+        raise SystemExit(assistant_code or mouth_code)
+
+
+def cmd_start(url, inject):
     if already_up():
         return
     py = venv_python()
     print("iris: brain " + url, file=sys.stderr, flush=True)
+    if inject is None:
+        print("iris: live mic", file=sys.stderr, flush=True)
+    else:
+        print("iris: inject", file=sys.stderr, flush=True)
     before = pid_stamp("assistant.pid")
-    proc = subprocess.Popen(
-        [
-            py,
-            "-u",
-            str(ROOT / "assistant.py"),
-            "--nvidia",
-            "--url",
-            url,
-            "--timeout",
-            "180",
-            "--inject",
-        ],
-        cwd=str(ROOT),
-        shell=False,
-    )
+    command = [
+        py,
+        "-u",
+        str(ROOT / "assistant.py"),
+        "--nvidia",
+        "--url",
+        url,
+        "--timeout",
+        "180",
+    ]
+    if inject is not None:
+        command.append("--inject")
+        if inject != "-":
+            command.append(inject)
+    proc = subprocess.Popen(command, cwd=str(ROOT), shell=False)
     (ROOT / "iris.pid").write_text(str(proc.pid) + "\n", encoding="utf-8")
     code = 2
+    announced = False
     try:
         ready_pid = wait_ready(proc, before)
         print("iris: up pid " + str(ready_pid), file=sys.stderr, flush=True)
         code = proc.wait()
     except KeyboardInterrupt:
         print("iris: stopped", file=sys.stderr)
+        announced = True
         end_process(proc, before)
-        subprocess.run(
-            [py, str(ROOT / "assistant.py"), "--stop"],
-            cwd=str(ROOT),
-            shell=False,
-        )
-        subprocess.run(
-            [py, str(ROOT / "mouth.py"), "--stop"],
-            cwd=str(ROOT),
-            shell=False,
-        )
+        stop_assistant()
+        stop_mouth()
         code = 0
     finally:
         remove_pidfile("iris.pid", proc.pid)
+    if code == 0 and not announced:
+        print("iris: stopped", file=sys.stderr)
     raise SystemExit(code if code is not None else 2)
+
+
+def main():
+    os.environ["PYTHONUNBUFFERED"] = "1"
+    reexec()
+    command, url, inject = parse_args(sys.argv[1:])
+    if command == "stop":
+        cmd_stop()
+        return
+    cmd_start(url, inject)
 
 
 if __name__ == "__main__":

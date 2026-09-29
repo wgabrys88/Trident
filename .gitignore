@@ -36,8 +36,7 @@
 !/chatterbox.txt
 !/bake.txt
 !/assistant.py
-!/start.py
-!/stop.py
+!/run.py
 !/hear.py
 !/qwen.py
 !/gemma.py
@@ -131,5 +130,7 @@
 !/proof/g429-closed-mic-loop.md
 !/proof/g429-iris-start-stop.md
 !/proof/g429-iris-outbox-consume.md
+!/proof/g429-live-mic.md
+!/proof/g429-run-stop.md
 !/proof/span-mouth.md
 !/proof/iris-merge-runner-h.md

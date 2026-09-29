@@ -5,17 +5,19 @@ The default keeps one gemma-brain.exe for this checkout. --once is the old singl
 
 Text turns replay gemma.memory.txt and declare remember, place, cursor, next, and stop.
 Past model turns are the speakable text only. Waiting work is listed in the system
-text so the model can stop a line. The current turn starts at <|turn>model with thinking
-left off. A Gemma 4 <|tool_call> is run here. The model chooses the tool. Python does not
-match keywords in the question. remember, place, next, and stop ask the brain once more.
+text. The current turn starts at <|turn>model with thinking left off. A Gemma 4
+<|tool_call> is run here. The model chooses the tool. Python does not match keywords
+in the question. remember, place, and next ask the brain once more. stop does not.
+It leaves the call in the answer and does not kill this brain.
 The speakable answer is appended to that file. remember adds one fact.
 place reports the CUDA and Vulkan adapters on this computer, whether port
 8765 accepts here, and whether a mouth on this computer would share that GPU.
 place() is that same decision for a turn: one TCP connect, no computer name,
 no second URL. Trim drops the oldest
 turns first. A fact drops only after every turn is gone and the prompt still does not fit.
-next stores one work line in that same file. stop tells Iris the voice should go quiet,
-or drops one matching work line. It does not unload the resident and it does not close port 8765.
+next stores one work line in that same file. stop writes an Iris status line and,
+when the line matches waiting work, drops that line. It does not unload the resident
+and it does not close port 8765.
 
 cursor starts one local `agent` process when the model calls it, writes grok_bot_spawn.txt,
 and does not wait. A missing agent writes BLOCKED and does not start a follow-up. This
@@ -71,7 +73,8 @@ SYSTEM = (
     "place reports the CUDA device, the Vulkan device, whether they are the same adapter, whether port 8765 is accepting here, and whether a mouth on this computer would share the brain GPU. "
     "cursor starts one local Cursor agent when the owner asks for a code change. "
     "next stores one line of work for when you are idle and nobody is speaking. "
-    "stop tells Iris the voice should go quiet, or drops one waiting work line. It does not stop you and it does not close port 8765. "
+    "stop shuts down the local voice when the owner wants it to stop listening. It does not stop you and it does not close port 8765. "
+    "A line that matches Work waiting drops that line. "
     "Work waiting lists those lines. Do not recite them unless the owner asks. "
     "Call a tool only by its tool call. The spoken sentence has no channels or file names."
 )
@@ -158,7 +161,7 @@ NEXT_DECL = (
 STOP_DECL = (
     "<|tool>declaration:stop{description:"
     + Q
-    + "Call this when the owner wants the voice to go quiet or stop listening, or when the owner cancels one waiting work line. An empty call tells Iris the voice should stop. A line that matches waiting work drops that line. This does not stop the brain and does not close a listening port."
+    + "Stop the local voice organism when the owner wants this computer voice to shut down, go quiet, or stop listening. A line that matches waiting work drops that line. Does not stop the brain and does not close a listening port."
     + Q
     + ",parameters:{properties:{line:{description:"
     + Q
@@ -1745,7 +1748,12 @@ def idle_notice(generate, path=None, spawn_path=None, outbox_path=None, status_p
     if call:
         print("gemma: idle tool " + call[0], file=sys.stderr, flush=True)
         suffix, blocked, fallback = tool_turn(
-            call[0], call[1], call[2], spawn_path=spawn_path, memory_path=path
+            call[0],
+            call[1],
+            call[2],
+            spawn_path=spawn_path,
+            memory_path=path,
+            status_path=status_path,
         )
         if blocked:
             print("gemma: idle kept", file=sys.stderr, flush=True)
@@ -1774,7 +1782,7 @@ def idle_notice(generate, path=None, spawn_path=None, outbox_path=None, status_p
     return text
 
 
-def tool_turn(name, args, raw, spawn_path=None, memory_path=None):
+def tool_turn(name, args, raw, spawn_path=None, memory_path=None, status_path=None):
     memory_path = MEMORY_PATH if memory_path is None else memory_path
     if name == "remember":
         line = store_fact(memory_path, args.get("line")) or "empty"
@@ -1792,14 +1800,17 @@ def tool_turn(name, args, raw, spawn_path=None, memory_path=None):
         suffix = raw + tool_response("cursor", [("text", line)])
         return suffix, None, line
     if name == "next":
-        line = store_work(memory_path, args.get("line"))
+        line = store_work(memory_path, args.get("line"), status_path)
         if not line:
             print("gemma: tool next stopped", file=sys.stderr, flush=True)
             return None, "fail empty work\n", None
         return raw + tool_response("next", [("line", line)]), None, line
     if name == "stop":
-        line = stop_work(memory_path, args.get("line"))
-        return raw + tool_response("stop", [("line", line)]), None, line
+        # The voice seat ends the organism from this call. Do not kill the brain.
+        # Do not ask the model again. The call stays in the answer.
+        stop_work(memory_path, args.get("line"), status_path)
+        body = raw if raw.endswith("\n") else raw + "\n"
+        return None, body, None
     print("gemma: tool unknown " + name, file=sys.stderr, flush=True)
     return None, "unknown tool " + name + "\n", None
 
