@@ -96,3 +96,60 @@ No single-PC edit. `--text` without `--nvidia` already uses `answer()`. The port
 The live `:8765` accepts `stream: true` and returns one chunk after the whole generation. The 15:03 spoken turn did the same: one blob, then the mouth. Until that worker flushes an earlier piece, a two-PC turn speaks after the body arrives.
 
 This PC has no CUDA device, so the same-GPU flip does not run. `gemma-brain.exe` here is still one-shot. That is the brain seat.
+
+## Speak-while-decode re-prove after PE PR24 cutover (15:32)
+
+Leave-healthy LAN brain `http://192.168.16.31:8765/` on PE branch `cursor/pe-memory-live-0233` (PR24 early flush). Iris on `cursor/iris-voice-loop-5fab`. No product-code edit this prove. `:8765` left open.
+
+### Closed-mic spoken turn
+
+```powershell
+.\.venv\Scripts\python.exe .\assistant.py --nvidia --url http://192.168.16.31:8765/ --text "Reply with exactly two short sentences. The lamp is on. The door is shut." --timeout 180
+```
+
+Exit 0. Stderr: `assistant: nvidia stream`, `mouth out: default`, `assistant: mouth 2 chunk(s)`. Reply: `The lamp is on. The door is shut.`
+
+| File | Time | What |
+| --- | --- | --- |
+| `nvidia_turn.request.txt` | 15:32:51 | injected text |
+| `nvidia_turn.response.txt` | 15:32:53 | ok + both sentences |
+| `15-32-54-458_chatterbox_out_000.wav` | 15:32:54 | first nano clip |
+| `15-32-55-729_chatterbox_out_000.wav` | 15:32:55 | second nano clip |
+
+### Stream piece count (same prompt, `nvidia_client.iter_stream`, no mouth)
+
+| Piece | Offset | Text |
+| --- | --- | --- |
+| 1 | +1439 ms | `The lamp is on. ` |
+| 2 | +1557 ms | `The door is shut.` |
+
+**N=2** — early flush YES on live leave-healthy after PR24 cutover (was N=1 / one late blob before cutover). Mouth stopped after (`mouth.py --stop`). TCP `:8765` still open. Raw: `proof/swd-reprove-pr24.log`, `proof/stream_iter_pr24.log`.
+
+
+## Speak-while-decode re-prove vs PR24 leave-healthy (15:32)
+
+Intentional PE cutover already on leave-healthy. Iris branch `cursor/iris-voice-loop-5fab`. Closed-mic only (no live mic). Leave-healthy untouched after.
+
+`powershell
+.\.venv\Scripts\python.exe .\assistant.py --nvidia --url http://192.168.16.31:8765/ --text "Reply with exactly two short sentences. The lamp is on. The door is shut." --timeout 180
+`
+
+Exit 0. Stderr: `assistant: nvidia stream`, `mouth out: default`, `assistant: mouth 2 chunk(s)`. Reply: `The lamp is on. The door is shut.`
+
+| File | Time | What |
+| --- | --- | --- |
+| `nvidia_turn.request.txt` | 15:32:51 | injected text |
+| `nvidia_turn.response.txt` | 15:32:53 | ok + both sentences |
+| `15-32-54-458_chatterbox_out_000.wav` | 15:32:54 | first clip |
+| `15-32-55-729_chatterbox_out_000.wav` | 15:32:55 | second clip (synth while first playing) |
+
+Separate `nvidia_client.iter_stream` POST (no mouth) against the same leave-healthy URL:
+
+- piece1 +1439ms `The lamp is on. `
+- piece2 +1557ms `The door is shut.`
+- N=2 (early flush YES — not one late blob)
+
+Speak-while-decode client path can start mouth on the first closed atom while later pieces still arrive. `mouth.py --stop` after. TCP `192.168.16.31:8765` still open.
+
+Raw: `proof/swd-reprove-pr24.log`, `proof/stream_iter_pr24.log`.
+
