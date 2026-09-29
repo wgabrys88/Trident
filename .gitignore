@@ -84,6 +84,9 @@
 /*.run.log
 /*.run.err
 /tool_hello.txt
+/gemma.memory.txt
+/gemma.memory.txt.tmp
+!/proof/g429-pe-memory.md
 /seq_agents.txt
 /parallel_agents.txt
 /parallel_agents.log

@@ -57,7 +57,7 @@ Chunk sizes on the English path: flush on `.!?;:` and dashes, then a 65-word lim
 
 ### `--nvidia` is one turn
 
-The worker stores no conversation. `do_POST` reads `id`, `text`, `image`, `image_b64`, and optional `stream`. `assistant.py --nvidia` posts the current question and does not attach `grok_bot_history.txt`. A mid-session reply of "We have not had a conversation yet" matches the code. The 2026-09-28 evening recorded that sentence (Iris chatterbox wav `19-16-15-588`; PE `19-16-31-164_gemma_out_000.txt`).
+`do_POST` reads `id`, `text`, `image`, `image_b64`, and optional `stream`. It does not keep a session. `gemma.py` on the machine that runs the brain replays `gemma.memory.txt` into the next text prompt: `remember` facts, then the newest user and model turns. Each side is clipped to 200 words. Oldest turns drop when that prompt passes 80_000 characters. A fact drops only after those turns are gone and the prompt still does not fit. Image prompts do not replay the file. A `<<trident-inbox>>` question does not read or write it. `assistant.py --nvidia` still posts only the current question and does not attach `grok_bot_history.txt`. The 2026-09-28 reply "We have not had a conversation yet" (Iris chatterbox wav `19-16-15-588`; PE `19-16-31-164_gemma_out_000.txt`) is the code from before this file.
 
 `nvidia_client.py` always writes `nvidia_turn.request.txt` on the caller, then the response file after HTTP. Those same names are the `--drop` inbox inside `nvidia_worker.py`. `--drop` writes plain `id` / `ok` or `err` text. HTTP success is JSON. While `0.0.0.0:8765` is already listening, production is POST. The door never starts the worker. `--drop` is the fallback when this computer is not already listening. Do not use that fallback on Iris. An Iris `--inbox` with no local listener would try to run Gemma on Iris.
 
@@ -79,11 +79,11 @@ File-team memory is different. `grok_local_bot.py` appends coordinator and reaso
 
 ### Tools on the worker
 
-Ordinary text turns in `gemma.py` declare two tools, `hello` and `cursor`, and close the empty thought channel in the prompt. A question that starts with `<<trident-inbox>>` skips the tools and leaves the thought channel open. Image prompts do not add the tool header.
+Ordinary text turns in `gemma.py` declare `remember` and `cursor`, close the empty thought channel, and replay `gemma.memory.txt`. A question that starts with `<<trident-inbox>>` skips the tools, leaves the thought channel open, and does not touch that file. Image prompts do not add the tool header and do not replay memory. After an image turn the speakable reply is still appended.
 
-`hello` writes one line to `tool_hello.txt` on the machine that ran `gemma.py`, then asks the brain once more. `cursor` runs the Cursor CLI once: `--list-extensions --show-versions`, or `--version` when the job asks for a version, and writes `grok_bot_spawn.txt`. A missing CLI writes `BLOCKED` and does not edit the repo. Unknown tool names are skipped. This is not an agent stack.
+`remember` appends one fact, at most 200 characters, to `gemma.memory.txt` on the machine that ran `gemma.py`, then asks the brain once more. `cursor` runs the Cursor CLI once: `--list-extensions --show-versions`, or `--version` when the job asks for a version, and writes `grok_bot_spawn.txt`. A missing CLI writes `BLOCKED` and does not edit the repo. Unknown tool names are skipped. One follow-up. This is not an agent stack.
 
-On the Scenario C math turn the NVIDIA seat recorded `call:hello` with body `106 - 12 = 94` and a follow-up that the result is 94. The Iris mouth wav for that reply is `19-19-06-010`. A separate Hello World utterance was spoken on Iris as prose. `tool_hello.txt` was not created on the Iris disk. The tool file, when it is written, is on PE.
+On the Scenario C math turn the NVIDIA seat recorded `call:hello` with body `106 - 12 = 94` and a follow-up that the result is 94. The Iris mouth wav for that reply is `19-19-06-010`. That `hello` write is gone. `remember` is the write.
 
 ### Local Qwen
 
@@ -274,7 +274,7 @@ Live hear / brain / mouth loop. Default brain is local Qwen. `--nvidia` posts on
 | `--model` | `nano` | Mouth model: `nano`, `turbo`, or `v3`. |
 | `--lang TAG` | omit | Mouth language. Omit and `resolved_lang` returns `en` for `nano` and `turbo`, `pl` for `v3`. Empty tag fails. |
 | `--image PATH` | none | Image file. Local path requires `--brain gemma` unless `--nvidia` is set. On `--nvidia` the path is sent to `nvidia_client.py`. |
-| `--nvidia` | off | One POST through `nvidia_client.py`. The worker stores no conversation. |
+| `--nvidia` | off | One POST through `nvidia_client.py`. The worker stores no session. `gemma.py` replays `gemma.memory.txt`. |
 | `--url URL` | none | Forwarded to `nvidia_client.py`. Requires `--nvidia`. Empty URL fails. |
 | `--timeout SEC` | none | Forwarded only with `--nvidia`. Must be `> 0`. Omit it and the client default is 30 s, which is shorter than a slow Gemma turn. The proven commands pass `180`. |
 
@@ -372,7 +372,7 @@ One question, then stdout generation, thinking included. The default keeps one r
 | `--stop` | off | Stop the resident. Must be the only flag. This is how a same-GPU mouth unloads Gemma before Vulkan. |
 | `--stream` | off | Write each sampled piece to stdout. Implies the resident. |
 
-Ordinary text turns declare two tools, `hello` and `cursor`, and close an empty thought channel. `hello` writes one line to `tool_hello.txt` on the machine that ran `gemma.py`, then asks the brain once more. `cursor` runs the Cursor CLI once: `--version` when the job asks for a version, otherwise `--list-extensions --show-versions`. It writes `grok_bot_spawn.txt`. A missing CLI writes `BLOCKED` and does not edit the repo. Unknown tool names are skipped. Image prompts do not add the tool header.
+Ordinary text turns replay `gemma.memory.txt`, declare `remember` and `cursor`, and close an empty thought channel. `remember` appends one fact to `gemma.memory.txt` on the machine that ran `gemma.py`, then asks the brain once more. `cursor` runs the Cursor CLI once: `--version` when the job asks for a version, otherwise `--list-extensions --show-versions`. It writes `grok_bot_spawn.txt`. A missing CLI writes `BLOCKED` and does not edit the repo. Unknown tool names are skipped. Image prompts do not add the tool header and do not replay memory. A `<<trident-inbox>>` question does not read or write `gemma.memory.txt`.
 
 The default path keeps one `gemma-brain.exe --resident gemma_run.txt`. Prompts are `gemma.prompt.txt` (`id`, image byte length, image base64, prompt). Responses are `gemma.response.txt` (length-prefixed pieces, then `ok` or `err`). `--once` still copies `gemma.txt`, drops `gemma.text` and `gemma.image`, and runs `gemma-brain.exe gemma_run.txt`. One-shot output is `HH-MM-SS-mmm_gemma_out_NNN.txt`.
 
@@ -824,11 +824,11 @@ The body of `README.md` is the program manual (seats, voice path, install, comma
   YouTube chaos mid-session clarified and the mouth spoke two chunks. It did not refuse and it did not stay quiet. The process was later killed (exit `4294967295`). There is no `STATUS PASS` file for that session. The 14:57 `--once` without `--timeout` timed out at 30 s and did not speak. Do not collapse those two runs.
 - **Permission gate stays.** Live mic only after Wojciech says go. Spock passes GO to Iris as Shell, not as a Cursor wait, and not behind a smoke test.
 - **Chunker = Iris** `assistant.chunks_for_mouth` → `mouth.py`. PE returns one JSON `text`. Qwen is not on the live `--nvidia` path and does not own the chunker.
-- **`--nvidia` = single-turn POST** (`id`, `text`, `image`, `image_b64`). No conversation store. "We have not had a conversation yet" mid-session is honest.
+- **`--nvidia` posts one turn** (`id`, `text`, `image`, `image_b64`, optional `stream`). The worker keeps no session. `gemma.memory.txt` on the brain machine is the next text prompt's memory. "We have not had a conversation yet" was the 2026-09-28 code, before that file.
 - **Mouth target = Iris default PlaySound device**, measured that day as **Speakers (Realtek(R) Audio)**. The mouth prints `mouth out: default`. PE console default in the NVIDIA notes is Speakers (Creative SB X-Fi). LG TV (NVIDIA High Definition Audio) is on PE and is not the default. Neither is the live mouth. There is no NVIDIA Speakers endpoint.
 - **Polish.** English Chatterbox on Polish text means omitted `--lang` on `nano` (`resolved_lang` → `en`) before Chatterbox. The text is not rewritten.
 - **Stop is external.** Gemma has no quit tool. MIC STOP kills the `assistant.py` tree only. Leave `:8765` up. Heard `quit` / `exit` / `stop` ends the assistant loop only.
-- **Tools are thin.** `hello` writes `tool_hello.txt` on the worker machine. `cursor` lists extensions or prints a version into `grok_bot_spawn.txt` and does not edit the repo.
+- **Tools.** `remember` appends one fact to `gemma.memory.txt` on the worker machine. `cursor` lists extensions or prints a version into `grok_bot_spawn.txt` and does not edit the repo. The 2026-09-28 `hello` write is gone.
 - **VOICE = invoke-on-ask only.** No default VOICE Cursor scout.
 - **Worker bind.** `nvidia_worker.py --host` defaults to `0.0.0.0`, port 8765, PE only. Iris `local_8765: none`. Health probe is TCP connect or a real POST. GET is not implemented.
 - **VRAM.** One Gemma on the 1060. Image inbox peaked 5672 MiB of 6144. File-team proof peaked 4678. An overlap experiment peaked at 5976 MiB concurrent. Do not start a second Gemma beside the worker.
@@ -860,7 +860,7 @@ The body of `README.md` is the program manual (seats, voice path, install, comma
 
 **Role card:**
 
-You are Trident Spock V2. Read `README.md`, including this Rebirth appendix. You do not edit code. Coding is Cursor on `trident-iris` or `trident-nvidia` only. Assign Composer 2.5 fast=false for scouts, inventories, and low-priority edits. Assign Grok 4.7, reasoning_effort xhigh, fast=false, context 256k or 500k, one pass, for a final README or ledger. Merge to `runner-h` only. Do not fast-forward `main` unless Wojciech asks. Live mic only after Wojciech says go — pass GO to Iris as the direct Shell recipe in this appendix, not a Cursor wait. Leave healthy `:8765` alone. War Room short. Token-low default. Proven live path is Scenario C (2026-09-28) on Iris Speakers (Realtek(R) Audio): clarify-and-speak under YouTube chaos was the win. Chunker is Iris `assistant.chunks_for_mouth`. `--nvidia` is single-turn until memory is wired. PE X-Fi and LG TV are not the mouth.
+You are Trident Spock V2. Read `README.md`, including this Rebirth appendix. You do not edit code. Coding is Cursor on `trident-iris` or `trident-nvidia` only. Assign Composer 2.5 fast=false for scouts, inventories, and low-priority edits. Assign Grok 4.7, reasoning_effort xhigh, fast=false, context 256k or 500k, one pass, for a final README or ledger. Merge to `runner-h` only. Do not fast-forward `main` unless Wojciech asks. Live mic only after Wojciech says go — pass GO to Iris as the direct Shell recipe in this appendix, not a Cursor wait. Leave healthy `:8765` alone. War Room short. Token-low default. Proven live path is Scenario C (2026-09-28) on Iris Speakers (Realtek(R) Audio): clarify-and-speak under YouTube chaos was the win. Chunker is Iris `assistant.chunks_for_mouth`. `--nvidia` posts one turn. Memory is `gemma.memory.txt` on the brain machine. PE X-Fi and LG TV are not the mouth.
 
 ## CreateAgent — TRIDENT_IRIS
 
@@ -917,7 +917,7 @@ next: <Spock, IRIS, NVIDIA, or VOICE>
 - "EB-W Speakers" is not the measured name. Use Speakers (Realtek(R) Audio). The log line is `mouth out: default`.
 - X-Fi and LG TV (NVIDIA High Definition Audio) are PE console facts. They are not the live mouth.
 - The chunker is not Gemma, PE, or Qwen.
-- `--nvidia` has no conversation memory until that is wired in code.
+- `--nvidia` posts one turn. Conversation memory is `gemma.memory.txt` on the brain machine, not a session in the worker.
 - VOICE does not code and has no default scout.
 - Grok Bots do not code Trident.
 - Do not require Cursor to open the mic or to leave `:8765` healthy. Those are direct Shell recipes.

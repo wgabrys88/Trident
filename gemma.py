@@ -3,13 +3,17 @@
 The default keeps one gemma-brain.exe for this checkout. --once is the old single card run.
 --stop unloads it. --stream writes each sampled piece as it arrives.
 
-Text turns declare two local tools, hello and cursor. A Gemma 4 <|tool_call> is run here,
-then the brain is asked once more with the tool result.
+Text turns replay gemma.memory.txt and declare remember and cursor. A Gemma 4 <|tool_call>
+is run here, then the brain is asked once more with the tool result. The speakable answer
+is appended to that file. remember adds one fact. Trim drops the oldest turns
+first. A fact drops only after every turn is gone and the prompt still does not fit.
+
 cursor launches the Cursor CLI once and writes grok_bot_spawn.txt. If the CLI is missing
 the tool writes BLOCKED and does not start a follow-up turn.
 
 A question that starts with <<trident-inbox>> is one stateless inbox turn: the marker
-is removed, tools are not declared, and the thought channel stays open.
+is removed, tools are not declared, the thought channel stays open, and gemma.memory.txt
+is not read or written. Image turns skip tools and memory replay, then append the reply.
 """
 
 import argparse
@@ -28,19 +32,29 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 DROP_KEYS = ("gemma.text", "gemma.image")
 SIDECAR = ROOT / "gemma_run.txt"
-HELLO_PATH = ROOT / "tool_hello.txt"
+MEMORY_PATH = ROOT / "gemma.memory.txt"
 SPAWN_PATH = ROOT / "grok_bot_spawn.txt"
 MEDIA = "<__media__>"
 Q = '<|"|>'
 INBOX_MARK = "<<trident-inbox>>"
-HELLO_DECL = (
-    "<|tool>declaration:hello{description:"
+PROMPT_CHARS = 80_000
+TURN_WORDS = 200
+FACT_CHARS = 200
+SYSTEM = (
+    "You are Jarvis, the voice of Trident. Wojciech is the owner. "
+    "Speak one or two short sentences in the owner's language. "
+    "Earlier turns in this prompt are your memory. Use them. "
+    "remember stores one fact that stays after old turns are dropped. "
+    "Call a tool only by its tool call. The spoken sentence has no channels or file names."
+)
+REMEMBER_DECL = (
+    "<|tool>declaration:remember{description:"
     + Q
-    + "Write one line into tool_hello.txt. Call this when the user asks to write Hello World or to use the hello tool."
+    + "Store one fact that stays after old conversation turns are dropped. Call this when the owner states something that must be remembered."
     + Q
     + ",parameters:{properties:{line:{description:"
     + Q
-    + "Exact line to write. Use Hello World when asked to write Hello World."
+    + "The fact, one short line."
     + Q
     + ",type:"
     + Q
@@ -59,7 +73,7 @@ HELLO_DECL = (
 CURSOR_DECL = (
     "<|tool>declaration:cursor{description:"
     + Q
-    + "Launch the Cursor CLI once and write grok_bot_spawn.txt. Call this when the user asks to run Cursor or the cursor tool. Do not use this to write Hello World."
+    + "Launch the Cursor CLI once and write grok_bot_spawn.txt. Call this when the user asks to run Cursor or the cursor tool."
     + Q
     + ",parameters:{properties:{job:{description:"
     + Q
@@ -140,8 +154,11 @@ def user_body(question, with_image):
     return q
 
 
-def tool_header():
-    return "<|turn>system\nYou are a helpful assistant." + HELLO_DECL + CURSOR_DECL + "<turn|>\n"
+def tool_header(facts):
+    body = SYSTEM
+    if facts:
+        body += "\n" + "\n".join(facts)
+    return "<|turn>system\n" + body + REMEMBER_DECL + CURSOR_DECL + "<turn|>\n"
 
 
 def prepare_question(question):
@@ -155,18 +172,13 @@ def prepare_question(question):
 
 
 def gemma_prompt(question, with_image, reason=False):
+    # Image turns and inbox turns. Text memory turns use memory_prompt.
     user = user_body(question, with_image)
-    # Image turns stay on the old prompt. Text turns declare hello and cursor
-    # and still close an empty thought channel, which is Gemma 4's thinking-off prefill.
-    # Inbox turns leave that channel open and declare no tools, so the brain runs once.
-    head = "<bos>"
-    if not with_image and not reason:
-        head += tool_header()
     tail = "<|channel>thought\n"
     if not reason:
         tail += "<channel|>\n"
     return (
-        head
+        "<bos>"
         + "<|turn>user\n"
         + user
         + "<turn|>\n"
@@ -175,55 +187,19 @@ def gemma_prompt(question, with_image, reason=False):
     )
 
 
-def continue_prompt(question, call_markup, response):
-    # Same empty thought close as the first turn, then the call the model just
-    # emitted, then the tool result. Gemma stops on <|tool_response> and continues
-    # the answer after <tool_response|>.
-    return (
-        "<bos>"
-        + tool_header()
-        + "<|turn>user\n"
-        + question.strip("\r\n")
-        + "<turn|>\n"
-        "<|turn>model\n"
-        "<|channel>thought\n"
-        "<channel|>\n"
-        + call_markup
-        + response
-    )
+def memory_prompt(facts, pairs, question, suffix):
+    parts = ["<bos>", tool_header(facts)]
+    for user, model in pairs:
+        parts.append("<|turn>user\n" + user + "<turn|>\n")
+        parts.append("<|turn>model\n<|channel>thought\n<channel|>\n" + model + "<turn|>\n")
+    parts.append("<|turn>user\n" + question.strip("\r\n") + "<turn|>\n")
+    parts.append("<|turn>model\n<|channel>thought\n<channel|>\n" + suffix)
+    return "".join(parts)
 
 
-def follow_prompt(question, call_markup, line):
-    response = (
-        "<|tool_response>response:hello{path:"
-        + Q
-        + "tool_hello.txt"
-        + Q
-        + ",text:"
-        + Q
-        + line
-        + Q
-        + "}<tool_response|>"
-    )
-    return continue_prompt(question, call_markup, response)
-
-
-def follow_cursor_prompt(question, call_markup, summary):
-    line = " ".join(str(summary).split()).replace(Q, "'")
-    if not line:
-        line = "cursor"
-    response = (
-        "<|tool_response>response:cursor{path:"
-        + Q
-        + "grok_bot_spawn.txt"
-        + Q
-        + ",text:"
-        + Q
-        + line
-        + Q
-        + "}<tool_response|>"
-    )
-    return continue_prompt(question, call_markup, response)
+def tool_response(name, fields):
+    parts = [key + ":" + Q + value + Q for key, value in fields]
+    return "<|tool_response>response:" + name + "{" + ",".join(parts) + "}<tool_response|>"
 
 
 def parse_tool_call(text):
@@ -237,25 +213,137 @@ def parse_tool_call(text):
     return match.group(1), args, match.group(0)
 
 
-def clean_line(raw):
-    text = (raw or "").strip()
-    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
-        text = text[1:-1].strip()
-    text = " ".join(text.split())
-    text = text.replace(Q, "'")
-    if len(text) > 200:
-        text = text[:200].rstrip()
-    if not text:
-        text = "Hello World"
+def plain(raw):
+    text = " ".join((raw or "").replace(Q, "'").split())
     return text
 
 
-def write_hello(line):
+def clip_words(raw, limit):
+    words = plain(raw).split()
+    if len(words) > limit:
+        words = words[:limit]
+    return " ".join(words)
+
+
+def clip_fact(raw):
+    text = (raw or "").strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        text = text[1:-1].strip()
+    text = plain(text)
+    if len(text) > FACT_CHARS:
+        text = text[:FACT_CHARS].rstrip()
+    return text
+
+
+def parse_store(raw):
+    facts = []
+    pairs = []
+    pending = None
+    lines = physical_lines(raw)
+    index = 0
+    while index < len(lines):
+        stripped = lines[index].rstrip(" \t")
+        if stripped.endswith("<<") and stripped[:-2].strip() in ("fact", "user", "model"):
+            key = stripped[:-2].strip()
+            index += 1
+            buf = []
+            while index < len(lines) and lines[index] != "<<":
+                buf.append(lines[index])
+                index += 1
+            if index < len(lines) and lines[index] == "<<":
+                index += 1
+            body = "\n".join(buf).strip()
+            if key == "fact":
+                if body:
+                    facts.append(body)
+            elif key == "user":
+                if pending is not None:
+                    pairs.append((pending, ""))
+                pending = body
+            else:
+                if pending is None:
+                    pending = ""
+                pairs.append((pending, body))
+                pending = None
+            continue
+        index += 1
+    if pending is not None:
+        pairs.append((pending, ""))
+    return facts, pairs
+
+
+def render_store(facts, pairs):
+    parts = []
+    for fact in facts:
+        parts.append("fact <<\n" + fact + "\n<<\n")
+    for user, model in pairs:
+        parts.append("user <<\n" + user + "\n<<\n")
+        parts.append("model <<\n" + model + "\n<<\n")
+    return "".join(parts)
+
+
+def read_memory(path):
+    if not path.is_file():
+        return [], []
     try:
-        HELLO_PATH.write_text(line + "\n", encoding="utf-8")
+        raw = path.read_text(encoding="utf-8")
     except OSError as exc:
-        die("cannot write tool_hello.txt: " + str(exc))
-    print("gemma: tool hello wrote tool_hello.txt (" + line + ")", file=sys.stderr, flush=True)
+        die("cannot read " + path.name + ": " + str(exc))
+    return parse_store(raw)
+
+
+def write_memory(path, facts, pairs):
+    body = render_store(facts, pairs)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_bytes(body.encode("utf-8"))
+        tmp.replace(path)
+    except OSError as exc:
+        die("cannot write " + path.name + ": " + str(exc))
+
+
+def fit_memory(question, suffix, path=None, limit=None):
+    path = MEMORY_PATH if path is None else path
+    limit = PROMPT_CHARS if limit is None else limit
+    facts, pairs = read_memory(path)
+    kept = list(pairs)
+    prompt = memory_prompt(facts, kept, question, suffix)
+    dropped = False
+    while len(prompt) > limit and kept:
+        kept = kept[1:]
+        dropped = True
+        prompt = memory_prompt(facts, kept, question, suffix)
+    while len(prompt) > limit and facts:
+        facts = facts[1:]
+        dropped = True
+        prompt = memory_prompt(facts, kept, question, suffix)
+    if len(prompt) > limit:
+        die("prompt too long")
+    if dropped:
+        write_memory(path, facts, kept)
+    return prompt, facts, kept
+
+
+def store_fact(path, line):
+    text = clip_fact(line)
+    if not text:
+        print("gemma: tool remember empty", file=sys.stderr, flush=True)
+        return ""
+    facts, pairs = read_memory(path)
+    facts.append(text)
+    write_memory(path, facts, pairs)
+    print("gemma: tool remember wrote " + path.name + " (" + text + ")", file=sys.stderr, flush=True)
+    return text
+
+
+def append_memory(path, question, reply):
+    user = clip_words(question, TURN_WORDS)
+    model = clip_words(reply, TURN_WORDS)
+    if not user or not model:
+        return
+    facts, pairs = read_memory(path)
+    pairs.append((user, model))
+    write_memory(path, facts, pairs)
 
 
 def clean_job(raw):
@@ -1227,17 +1315,24 @@ def main():
             sys.stdout.buffer.write(line.encode("utf-8"))
             sys.stdout.buffer.flush()
 
-    text = run(gemma_prompt(question, bool(image_b64), reason), image_b64)
-    if not image_b64 and not reason:
+    use_memory = not image_b64 and not reason
+    if use_memory:
+        prompt, _facts, _kept = fit_memory(question, "")
+    else:
+        prompt = gemma_prompt(question, bool(image_b64), reason)
+    text = run(prompt, image_b64)
+    if use_memory:
         call = parse_tool_call(text)
-        if call and call[0] == "hello":
-            line = clean_line(call[1].get("line"))
-            write_hello(line)
-            follow = follow_prompt(question, call[2], line)
+        if call and call[0] == "remember":
+            line = store_fact(MEMORY_PATH, call[1].get("line")) or "empty"
+            follow, _facts, _kept = fit_memory(
+                question,
+                call[2] + tool_response("remember", [("line", line)]),
+            )
             reply = answer_text(run(follow, ""))
             if not reply:
                 print("gemma: tool follow-up empty", file=sys.stderr, flush=True)
-                reply = "Wrote " + line + " to tool_hello.txt."
+                reply = line
                 emit_fallback(reply)
             text = reply
         elif call and call[0] == "cursor":
@@ -1248,7 +1343,15 @@ def main():
                 text = "BLOCKED cursor cli missing\n"
                 emit_fallback(text)
             else:
-                follow = follow_cursor_prompt(question, call[2], summary)
+                line = plain(summary) or "cursor"
+                follow, _facts, _kept = fit_memory(
+                    question,
+                    call[2]
+                    + tool_response(
+                        "cursor",
+                        [("path", "grok_bot_spawn.txt"), ("text", line)],
+                    ),
+                )
                 reply = answer_text(run(follow, ""))
                 if not reply:
                     print("gemma: tool follow-up empty", file=sys.stderr, flush=True)
@@ -1257,6 +1360,13 @@ def main():
                 text = reply
         elif call:
             print("gemma: tool skip " + call[0], file=sys.stderr, flush=True)
+        spoken = answer_text(text)
+        if spoken:
+            append_memory(MEMORY_PATH, question, spoken)
+    elif image_b64 and not reason:
+        spoken = answer_text(text)
+        if spoken:
+            append_memory(MEMORY_PATH, question, spoken)
     if not args.stream:
         sys.stdout.write(text)
         if text and not text.endswith("\n"):
