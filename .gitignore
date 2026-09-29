@@ -4,7 +4,7 @@
 # Allow Git to descend into directories. Files stay ignored until named.
 !*/
 
-# Generated and local. The exes and models stay beside the checkout.
+# Generated and downloaded. A clone builds these with install.py.
 /.venv/
 /.install/
 /build/
@@ -15,16 +15,25 @@
 /.ckpt/
 /.ckpt-v3/
 /wav/
-/gemma/
+/gemma/llama.cpp/
+/gemma/build/
+/gemma/models/
+/gemma/cmake/HostCpu.generated.cmake
 
-# Sources.
+# Sources a fresh clone needs in order to install and rebuild.
 !/.gitignore
 !/.gitattributes
+!/CMakeLists.txt
 !/LICENSE
+!/install.py
+!/install.txt
+!/utf8.manifest
 !/vad.txt
+!/ear.txt
 !/sense.txt
 !/gemma.txt
 !/chatterbox.txt
+!/bake.txt
 !/assistant.py
 !/run.py
 !/hear.py
@@ -36,6 +45,27 @@
 !/nvidia_worker.py
 !/nvidia_start.py
 !/nvidia_stop.py
+!/reference.wav
+
+# Installer conversion and quantization.
+!/scripts/convert_s3.py
+!/scripts/convert_t3.py
+!/scripts/quant.py
+!/scripts/quant_s3.json
+!/scripts/quant_t3.json
+
+# Native source.
+!/src/**/*.cpp
+!/src/**/*.h
+!/src/**/*.hpp
+
+# Gemma and Qwen native build source.
+!/gemma/CMakeLists.txt
+!/gemma/cmake/HostCpu.cmake
+!/gemma/scripts/detect_cpu.ps1
+!/gemma/scripts/detect_gpu.ps1
+!/gemma/src/brain.cpp
+!/gemma/src/sense.cpp
 
 # Runtime files the programs rewrite.
 /mouth.txt
