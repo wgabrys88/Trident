@@ -44,3 +44,7 @@ Offline, temp files only. `gemma.memory.txt` was not created in the checkout.
 ## Not verified
 
 A live second answer that uses the first. That needs a generate on the resident, and the resident is the healthy listener's brain. `--once` refuses while that process is up. The prompt check above is the part that does not touch it.
+
+## Later
+
+The live second answer is in `proof/g429-pe-memory-live.md`. This note's offline check is unchanged.
