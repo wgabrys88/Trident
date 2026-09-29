@@ -95,6 +95,8 @@
 /gemma.lastprompt.txt
 /iris_outbox.txt
 /iris_outbox.txt.tmp
+/iris_status.txt
+/iris_status.txt.tmp
 !/proof/g429-pe-memory-live.md
 !/proof/g429-pe-stream-flush.md
 !/proof/g429-pe-memory.md
@@ -103,6 +105,7 @@
 !/proof/g429-pe-idle-quiet.md
 !/proof/g429-pe-quiet-live.md
 !/proof/g429-pe-seat-forward.md
+!/proof/g429-pe-brain-finish.md
 !/proof/README.md
 !/proof/g429-pe-place.md
 !/proof/g429-pe-merge.md

@@ -14,6 +14,18 @@ PE (brain machine, this repo on `trident-nvidia`) writes **one UTF-8 line** when
 | Max length | 2000 characters (truncated) |
 | Replace semantics | Each successful idle overwrites the whole file atomically via `iris_outbox.txt.tmp` |
 
+## Status lines (`iris_status.txt`)
+
+Same directory. Iris can read these lines. They are not audio. The outbox line above is the one `assistant.py --iris-outbox` speaks.
+
+| Line | When |
+| --- | --- |
+| `say <sentence>` | Quiet drain finished. Same sentence as `iris_outbox.txt`. |
+| `work <line>` | `next` stored a waiting line. |
+| `stop <line>` | `stop` dropped waiting work. |
+
+The file keeps the last 40 lines. No hostname. No JSON.
+
 **Iris contract (consumer on Iris):**
 
 1. Point at the PE file (`TRIDENT_IRIS_OUTBOX` or SMB path) or a local `iris_outbox.txt` for proof.

@@ -23,7 +23,7 @@ NVIDIA owns Gemma and `nvidia_worker.py`. The measured card is an NVIDIA GeForce
 
 The worker that has been serving turns is `http://192.168.16.31:8765/`. On PE it is bound to `0.0.0.0:8765`. Iris does not bind that port. A healthy door record says `local_8765: none`.
 
-`assistant.py` is the live hear / brain / mouth loop, including the proven microphone session. `grok_local_bot.py` is the file team and the unattended wav door. Both stay in the tree.
+`assistant.py` is the live hear / brain / mouth loop, including the proven microphone session. `grok_local_bot.py` is one local brain turn and the unattended wav door. Both stay in the tree.
 
 Grok Bots do not edit this repo. Coding is Cursor agents on `trident-iris` or `trident-nvidia` only.
 
@@ -57,11 +57,11 @@ The listen loop posts the last 4 pairs from `assistant.history.txt` inside the t
 
 ### `--nvidia` is one turn
 
-`do_POST` reads `id`, `text`, `image`, `image_b64`, and optional `stream`. It does not keep a session. `gemma.py` on the machine that runs the brain replays `gemma.memory.txt` into the next text prompt: `remember` facts, then the newest user and model turns. Each side is clipped to 200 words. Oldest turns drop when that prompt passes 80_000 characters. A fact drops only after those turns are gone and the prompt still does not fit. A `next` work line stays in that file and is not replayed on a spoken turn. `gemma.py --idle` reads the oldest one. The HTTP worker runs that notice after 60 seconds with no POST. Image prompts do not replay the file. A `<<trident-inbox>>` question does not read or write it. `assistant.py --nvidia` posts the listen text (the last 4 history pairs, then the new line) and does not attach `grok_bot_history.txt`. The 2026-09-28 reply "We have not had a conversation yet" (Iris chatterbox wav `19-16-15-588`; PE `19-16-31-164_gemma_out_000.txt`) is the code from before this file.
+`do_POST` reads `id`, `text`, `image`, `image_b64`, and optional `stream`. It does not keep a session. `gemma.py` on the machine that runs the brain replays `gemma.memory.txt` into the next text prompt: `remember` facts, then the newest user and model turns. Each side is clipped to 200 words. Oldest turns drop when that prompt passes 80_000 characters. A fact drops only after those turns are gone and the prompt still does not fit. A `next` work line stays in that file and is not replayed on a spoken turn. `gemma.py --idle` reads the oldest one. The HTTP worker runs that notice after 60 seconds with no POST. Image prompts do not replay the file. `assistant.py --nvidia` posts the listen text (the last 4 history pairs, then the new line) and does not attach `grok_bot_history.txt`. The 2026-09-28 reply "We have not had a conversation yet" (Iris chatterbox wav `19-16-15-588`; PE `19-16-31-164_gemma_out_000.txt`) is the code from before this file.
 
-`nvidia_client.py` always writes `nvidia_turn.request.txt` on the caller, then the response file after HTTP. Those same names are the `--drop` inbox inside `nvidia_worker.py`. `--drop` writes plain `id` / `ok` or `err` text. HTTP success is JSON. While `0.0.0.0:8765` is already listening, production is POST. The door never starts the worker. `grok_local_bot.py --inbox` exits `peer missing` when that listener is absent. `--drop` stays an explicit reasoner flag.
+`nvidia_client.py` always writes `nvidia_turn.request.txt` on the caller, then the response file after HTTP. Those same names are the `--drop` inbox inside `nvidia_worker.py`. `--drop` writes plain `id` / `ok` or `err` text. HTTP success is JSON. While `0.0.0.0:8765` is already listening, production is POST. The door never starts the worker. `grok_local_bot.py` uses `gemma.place`: that listener when it accepts, the local Gemma resident when this computer has a CUDA device and the port is closed, and `qwen.py` when it does not. A named peer whose port does not accept exits `peer missing`. It does not call an online bridge. `--drop` stays the worker's local file inbox. It is not the local-bot path.
 
-File-team memory is different. `grok_local_bot.py` appends coordinator and reasoner lines to `grok_bot_history.txt`, with `grok_bot_request.txt` and `grok_bot_response.txt`. Those roles are lines in a file. They are not people. `--proof` clears the history file before it runs. The live `--nvidia` loop does not.
+`grok_local_bot.py` does not keep a coordinator or a reasoner file. The turn is `gemma.memory.txt` and the Gemma tools on the machine that runs the brain. The live `--nvidia` loop does not attach `grok_bot_history.txt`.
 
 ### Clocks
 
@@ -69,7 +69,7 @@ File-team memory is different. `grok_local_bot.py` appends coordinator and reaso
 | --- | --- | --- |
 | HTTP client | 30 s alone, 180 s from `assistant.py` | `nvidia_client.py` defaults to 30 s. `assistant.py` defaults `--timeout` to 180 and sends that on a POST. |
 | Proven live and closed-mic replay | 180 s | The passing commands below. |
-| Door and file-team HTTP | 600 s | `grok_local_bot.py --timeout`. Separate from the door's hear cap (180 s) and mouth cap (300 s). |
+| Door and local-bot brain | 600 s | `grok_local_bot.py --timeout`. Separate from the door's hear cap (180 s) and mouth cap (300 s). |
 | Worker wait | 600 s | `nvidia_worker.py --timeout`, around that `gemma.py` call, not the Iris HTTP clock. It does not kill the resident `gemma-brain.exe`. |
 | Listen | resident VAD | `vad.exe --resident`. Silence writes no POST. `vad.hold` drops the mic during playback. `vad.max-ms` is 30000. |
 | Quiet work | 60 s | No POST and no waiting connection, then one `gemma.py --idle`. Not during a request. `--drop` does not. |
@@ -80,9 +80,9 @@ File-team memory is different. `grok_local_bot.py` appends coordinator and reaso
 
 ### Tools on the worker
 
-Ordinary text turns in `gemma.py` declare `remember`, `devices`, `cursor`, and `next`, and replay `gemma.memory.txt`. Past model turns are the speakable text only. The current text turn starts at `<|turn>model` with thinking left off. A question that starts with `<<trident-inbox>>` skips the tools, leaves the thought channel open, and does not touch that file. Image prompts do not add the tool header, do not replay memory, and still close an empty thought channel. After an image turn the speakable reply is still appended. A spoken turn does not list stored work lines.
+Ordinary text turns in `gemma.py` declare `remember`, `place`, `cursor`, `next`, and `stop`, and replay `gemma.memory.txt`. Waiting work is in that system text. Past model turns are the speakable text only. The current text turn starts at `<|turn>model` with thinking left off. The model chooses the tool. Python does not match keywords in the question. Image prompts do not add the tool header, do not replay memory, and still close an empty thought channel. After an image turn the speakable reply is still appended. A spoken turn does not recite stored work lines unless the owner asked.
 
-`remember` appends one fact, at most 200 characters, to `gemma.memory.txt` on the machine that ran `gemma.py`, then asks the brain once more. A duplicate fact is kept, not written twice. `next` appends one work line to that same file, same length, and does not run it. A duplicate work line is kept once. `gemma.py --idle` prints `idle` and does not generate when no work line is stored. One work line is one prompt. A tool runs only when that generation contains the call. The line is dropped after a speakable answer. A failed tool leaves the line. An empty generation is an error and leaves the line. `--idle` does not poll and does not listen. The HTTP accept loop runs that notice once when 60 seconds have passed with no POST and no connection is waiting. It does not run during a request. `--drop` does not run it. A speakable result is written to the worker stdout. The word `idle` is not. `devices` reports the CUDA device, the Vulkan device, whether they are the same adapter, whether `127.0.0.1:8765` is accepting, and whether a mouth on this computer would share that GPU. The computer name is not an input. `cursor` runs only when the generation contains that call. It starts one local `agent` with `--model composer-2.5` in a worktree based on `runner-h`, writes `grok_bot_spawn.txt`, and does not wait. The argv has no fast model. A missing `agent` writes `BLOCKED` and does not start a follow-up. It does not run the Cursor IDE shim. An empty task is `fail empty task`. An unknown tool name is the spoken line `unknown tool` plus that name. Python does not call a tool the model did not emit.
+`remember` appends one fact, at most 200 characters, to `gemma.memory.txt` on the machine that ran `gemma.py`, then asks the brain once more. A duplicate fact is kept, not written twice. `next` appends one work line to that same file, same length, and does not run it. A duplicate work line is kept once. `stop` drops one waiting line, or every waiting line when `line` is empty. It does not unload `gemma-brain.exe` and it does not close port 8765. `gemma.py --idle` prints `idle` and does not generate when no work line is stored. One work line is one prompt. A tool runs only when that generation contains the call. The line is dropped after a speakable answer. A failed tool leaves the line. An empty generation is an error and leaves the line. `--idle` does not poll and does not listen. The HTTP accept loop runs that notice once when 60 seconds have passed with no POST and no connection is waiting. It does not run during a request. `--drop` does not run it. A speakable result is written to the worker stdout. The word `idle` is not. That speakable line replaces `iris_outbox.txt` so Iris can speak it. `iris_status.txt` appends `say`, `work`, and `stop` lines. `place` reports the CUDA device, the Vulkan device, whether they are the same adapter, whether `127.0.0.1:8765` is accepting, and whether a mouth on this computer would share that GPU. The computer name is not an input. `cursor` runs only when the generation contains that call. It starts one local `agent` with `--model composer-2.5` in a worktree based on `runner-h`, writes `grok_bot_spawn.txt`, and does not wait. The argv has no fast model. A missing `agent` writes `BLOCKED` and does not start a follow-up. It does not run the Cursor IDE shim. An empty task is `fail empty task`. An unknown tool name is the spoken line `unknown tool` plus that name. Python does not call a tool the model did not emit.
 
 On the Scenario C math turn the NVIDIA seat recorded `call:hello` with body `106 - 12 = 94` and a follow-up that the result is 94. The Iris mouth wav for that reply is `19-19-06-010`. That `hello` write is gone. `remember` is the write.
 
@@ -195,19 +195,25 @@ $env:TRIDENT_NVIDIA_URL = "http://192.168.16.31:8765/"
 .\.venv\Scripts\python.exe .\grok_local_bot.py --wav .\reference.wav
 ```
 
-File-team proof, on PE. This clears `grok_bot_history.txt`.
+Local brain, on this computer. One short sentence. Listener up is a POST. No listener and a CUDA device is the Gemma resident.
 
 ```powershell
 .\.venv\Scripts\python.exe .\grok_local_bot.py --proof
 ```
 
-Inbox, on PE, default file `grok_bot_inbox.txt`.
+One question, same placement:
+
+```powershell
+.\.venv\Scripts\python.exe .\grok_local_bot.py --text "Say one short sentence."
+```
+
+Inbox file `grok_bot_inbox.txt`, same placement:
 
 ```powershell
 .\.venv\Scripts\python.exe .\grok_local_bot.py --inbox
 ```
 
-`grok_local_bot.py` accepts exactly one of `--proof`, `--role`, `--wav`, or `--inbox`. `--wav` refuses `--drop`. `--proof` and `--inbox` require a local `0.0.0.0:8765`. Their default URL is `http://127.0.0.1:8765/`. A missing listener on `--inbox` exits `peer missing`.
+`grok_local_bot.py` accepts exactly one of `--text`, `--proof`, `--wav`, or `--inbox`. With no `--url`, placement is this computer. A `--url` whose port does not accept exits `peer missing`.
 
 Closed-mic audible check, on Iris, with a person at the Realtek speakers:
 
@@ -270,7 +276,7 @@ Checked-in values below are the values in the cards on `runner-h`. A program tha
 
 | Variable | Who reads it | Meaning |
 | --- | --- | --- |
-| `TRIDENT_NVIDIA_URL` | `nvidia_client.py` when `--url` is omitted. `assistant.py --nvidia` when `--url` is omitted. `grok_local_bot.py --wav` when `--url` is omitted. | Worker POST URL, for example `http://192.168.16.31:8765/`. The door exits if both `--url` and this variable are empty. `assistant.py --nvidia` exits `peer missing` when both are empty, and when the one URL does not accept. `--proof`, `--role`, and `--inbox` do not read it. Those modes use `--url` or `http://127.0.0.1:8765/`. |
+| `TRIDENT_NVIDIA_URL` | `nvidia_client.py` when `--url` is omitted. `assistant.py --nvidia` when `--url` is omitted. `grok_local_bot.py --wav` when `--url` is omitted. | Worker POST URL, for example `http://192.168.16.31:8765/`. The wav door uses this computer's placement when both `--url` and this variable are empty. `assistant.py --nvidia` exits `peer missing` when both are empty, and when the one URL does not accept. `--text`, `--proof`, and `--inbox` use `--url` when it is set, otherwise this computer. |
 | `TRIDENT_VENV_NEW` | `install.py` | Internal. The installer sets it to `1` only for the re-exec into a venv it just created. Leave it unset. |
 | `CUDA_PATH` | `gemma/scripts/detect_gpu.ps1` | One place that script looks for `nvcc.exe` when `install.gemma_backend` is `auto`. |
 | `PYTHONUNBUFFERED` | Set to `1` by `assistant.py` and `loopback.py` on some children | Child-process plumbing. Leave it alone. |
@@ -384,7 +390,7 @@ One question, then stdout generation, thinking included. The default keeps one r
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `question` | required, except `--stop` and `--idle` | Text prompt. A question that starts with `<<trident-inbox>>` drops that marker, skips tools, and leaves the thought channel open. |
+| `question` | required, except `--stop` and `--idle` | Text prompt. Text turns use memory and tools. An image turn does not. |
 | `--idle` | off | One notice of the oldest `work` line in `gemma.memory.txt`. No line prints `idle` and does not generate. Must be the only flag. |
 | `--image PATH` | none | Encoded as raw base64 into the resident prompt. The prompt must contain `<__media__>` or `gemma.py` inserts that token. |
 | `--verbose` | off | One-shot: show `gemma-brain.exe` stderr. Resident logs stay in `gemma.run.err`. |
@@ -392,7 +398,7 @@ One question, then stdout generation, thinking included. The default keeps one r
 | `--stop` | off | Stop the resident. Must be the only flag. This is how a same-GPU mouth unloads Gemma before Vulkan. |
 | `--stream` | off | Write each sampled piece to stdout. Implies the resident. |
 
-Ordinary text turns replay `gemma.memory.txt` and declare `remember`, `devices`, `cursor`, and `next`. Past model turns are the speakable text only. The current text turn starts at `<|turn>model` with thinking left off. `remember` appends one fact to `gemma.memory.txt` on the machine that ran `gemma.py`, then asks the brain once more. `next` appends one work line to that file and does not run it. `gemma.py --idle` notices the oldest line, or prints `idle` without generating. The HTTP worker runs one notice after 60 seconds with no POST. A tool on that notice runs only when the generation contains the call. `devices` reports the CUDA device, the Vulkan device, whether they are the same adapter, whether `127.0.0.1:8765` is accepting, and whether a mouth on this computer would share that GPU. `cursor` starts one local `agent -p --force --trust --worktree --worktree-base runner-h --model composer-2.5` when the model emits that call, writes `grok_bot_spawn.txt`, and returns without waiting. A missing `agent` writes `BLOCKED` and does not follow up. An unknown tool is spoken as a failure. Image prompts do not add the tool header and do not replay memory. A `<<trident-inbox>>` question does not read or write `gemma.memory.txt`. A spoken turn does not list work lines.
+Ordinary text turns replay `gemma.memory.txt` and declare `remember`, `place`, `cursor`, `next`, and `stop`. Waiting work is in the system text. Past model turns are the speakable text only. The current text turn starts at `<|turn>model` with thinking left off. `remember` appends one fact to `gemma.memory.txt` on the machine that ran `gemma.py`, then asks the brain once more. `next` appends one work line to that file and does not run it. `stop` drops waiting work and does not close port 8765. `gemma.py --idle` notices the oldest line, or prints `idle` without generating. The HTTP worker runs one notice after 60 seconds with no POST. A tool on that notice runs only when the generation contains the call. A speakable idle answer replaces `iris_outbox.txt`. `iris_status.txt` keeps `say`, `work`, and `stop` lines. `place` reports the CUDA device, the Vulkan device, whether they are the same adapter, whether `127.0.0.1:8765` is accepting, and whether a mouth on this computer would share that GPU. `cursor` starts one local `agent -p --force --trust --worktree --worktree-base runner-h --model composer-2.5` when the model emits that call, writes `grok_bot_spawn.txt`, and returns without waiting. A missing `agent` writes `BLOCKED` and does not follow up. An unknown tool is spoken as a failure. Image prompts do not add the tool header and do not replay memory. A spoken turn does not recite work lines unless the owner asked.
 
 The default path keeps one `gemma-brain.exe --resident gemma_run.txt`. Prompts are `gemma.prompt.txt` (`id`, image byte length, image base64, prompt). Responses are `gemma.response.txt` (length-prefixed pieces, then `ok` or `err`). `--once` still copies `gemma.txt`, drops `gemma.text` and `gemma.image`, and runs `gemma-brain.exe gemma_run.txt`. One-shot output is `HH-MM-SS-mmm_gemma_out_NNN.txt`.
 
@@ -412,23 +418,22 @@ Local Qwen3 0.6B through `sense.exe`. Text only.
 
 ### `grok_local_bot.py`
 
-File team and the unattended wav door. Pass exactly one of `--proof`, `--role`, `--wav`, or `--inbox`.
+One local brain turn, plus the unattended wav door. Pass exactly one of `--text`, `--proof`, `--wav`, or `--inbox`. Placement is `gemma.place`. No coordinator, no reasoner file, no online bridge.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--proof` | off | On the listener seat. Clears `grok_bot_history.txt`, runs coordinator then reasoner, writes `grok_bot.txt`. Requires a local `0.0.0.0:8765` whose pid stays. |
-| `--role` | none | `coordinator` or `reasoner`. One role, then exit. |
-| `--wav PATH` | none | Iris door. Hear this wav, one team turn over the LAN, mouth wavs with no playback. Refuses `--drop`. |
-| `--inbox PATH` | flag absent | File inbox. `--inbox` with no path reads `grok_bot_inbox.txt`. The file is an input you write. It is not shipped in git. |
-| `--drop` | off | Reasoner uses `nvidia_worker.py --drop --once` instead of POST. Illegal with `--wav`. |
-| `--url URL` | see below | Worker POST URL. |
-| `--timeout SEC` | `600` | Worker seconds for the reasoner. Must be `> 0`. The door's hear cap is 180 s and its mouth cap is 300 s, separate from this clock. |
+| `--text TEXT` | none | One question. Gemma tools and `gemma.memory.txt` when the brain is Gemma. |
+| `--proof` | off | One short sentence on that same path. Writes `grok_bot.txt`. |
+| `--wav PATH` | none | Hear this wav, one brain turn, mouth wavs with no playback. |
+| `--inbox PATH` | flag absent | File turn. `--inbox` with no path reads `grok_bot_inbox.txt`. The file is an input you write. It is not shipped in git. |
+| `--url URL` | none | Optional peer. Omitted: this computer's listener, else local Gemma, else `qwen.py`. |
+| `--timeout SEC` | `600` | Brain seconds. Must be `> 0`. The door's hear cap is 180 s, separate from this clock. |
 
-`--wav` URL is `--url` or `TRIDENT_NVIDIA_URL`. `--proof` and `--role` use `--url` or `http://127.0.0.1:8765/` when `--drop` is off. `--inbox` uses that URL and exits `peer missing` when `0.0.0.0:8765` is not listening.
+`--wav` uses `--url` or `TRIDENT_NVIDIA_URL` when one of those is set. Otherwise it uses the same placement as `--text`. A named peer whose port does not accept exits `peer missing`.
 
 `--inbox` file: either plain text, or blocks `text <<` … `<<` and optional `image <<` … `<<`. An image path must exist on the machine that reads the inbox. Empty text with an image becomes `What is in this picture?`.
 
-The door and `--proof` create `grok_bot_history.txt`, `grok_bot_request.txt`, and `grok_bot_response.txt` if they are missing. `--proof` also writes `grok_bot.txt`. The `cursor` tool writes `grok_bot_spawn.txt`. The door writes `iris-door.txt`. None of those run records are in git.
+`--proof` writes `grok_bot.txt`. The `cursor` tool writes `grok_bot_spawn.txt`. The door writes `iris-door.txt`. None of those run records are in git.
 
 ### `loopback.py`
 
@@ -777,7 +782,7 @@ Do not commit to `main`. Do not fast-forward `main` without Wojciech. Do not for
 | `nvidia_worker.py`, `gemma.py`, `gemma.txt` | PE HTTP worker and resident Gemma. NVIDIA owns them. Iris does not edit them. |
 | `qwen.py`, `sense.txt`, `gemma/src/sense.cpp` | Local CPU Qwen. `sense.exe`. |
 | `gemma/src/brain.cpp` | `gemma-brain.exe`. |
-| `grok_local_bot.py` | File team, inbox, proof, door. Writes `grok_bot.txt`, `grok_bot_history.txt`, `grok_bot_request.txt`, `grok_bot_response.txt`, `grok_bot_spawn.txt`, and `iris-door.txt`. Those outputs are not in git. `--inbox` reads a text file you supply (default name `grok_bot_inbox.txt`). |
+| `grok_local_bot.py` | Local brain turn and wav door. `gemma.place`, resident Gemma, tools, `gemma.memory.txt`. Writes `grok_bot.txt`, `iris-door.txt`, and the cursor tool writes `grok_bot_spawn.txt`. Those outputs are not in git. `--inbox` reads a text file you supply (default name `grok_bot_inbox.txt`). |
 | `loopback.py` | Cable harness. Writes `loopback-proof/`. That directory is not in git. |
 | `vad.txt`, `src/vad.cpp` | Silero `vad.exe`. Cable device. Not the live `hear.py` loop. |
 | `bake.txt`, `reference.wav`, `scripts/convert_*.py`, `scripts/quant*.json` | Voice bake. `reference.wav` is also the door wav. |
@@ -811,7 +816,7 @@ Iris measured playback and the Realtek default. PE measured the 1060, the listen
 
 You are a fresh empty Grok Bot with no prior history. This appendix alone rebuilds the Trident Grok Bot team. Read it, create the seats below, join War Room, and write durable rules on each seat's first message. You do not write Trident code. Coding is Cursor My Machines only.
 
-The file-team roles inside `grok_local_bot.py` (coordinator / reasoner) are lines in `grok_bot_history.txt`, not people. Do not spawn a person named Coordinator. Older notes said SPOC merges. That chair is Spock. Do not spawn SPOC as a second manager. Old Gemma batch runners are not in this tree and are not this team.
+`grok_local_bot.py` is one local brain turn. It is not a coordinator and not a reasoner. Older notes said SPOC merges. That chair is Spock. Do not spawn SPOC as a second manager. Old Gemma batch runners are not in this tree and are not this team. The online bridge is unused. This seat stands alone.
 
 The body of `README.md` is the program manual (seats, voice path, install, commands, proof, flags). This appendix is the team. If a sentence here and a sentence in an older README disagree, follow `README.md` plus the code. Wojciech keeps a rebirth paste on Downloads. That paste is outside git. This appendix is the in-tree copy.
 
@@ -852,7 +857,7 @@ The body of `README.md` is the program manual (seats, voice path, install, comma
 - **Mouth target = Iris default PlaySound device**, measured that day as **Speakers (Realtek(R) Audio)**. The mouth prints `mouth out: default`. PE console default in the NVIDIA notes is Speakers (Creative SB X-Fi). LG TV (NVIDIA High Definition Audio) is on PE and is not the default. Neither is the live mouth. There is no NVIDIA Speakers endpoint.
 - **Language spans.** English spans use nano (turbo only with `--model turbo`). Other languages use v3 for that span. The fast resident stays up; v3 synthesizes the span when it is known and then exits. The hear tag is not written onto the spoken text.
 - **Stop.** `assistant.py --stop` kills the assistant tree on this PC. Leave `:8765` up. Heard `quit` / `exit` / `stop` ends the assistant loop only. Gemma has no quit tool. `nvidia_stop.py` without `--cutover` does not stop the worker. `--cutover` is an owner or PM intentional cutover.
-- **Tools.** `remember` appends one fact to `gemma.memory.txt` on the worker machine. `next` appends one work line there and does not run it. `gemma.py --idle` notices that line, or prints `idle` without generating. `devices` reports the CUDA and Vulkan adapters on that computer, whether `127.0.0.1:8765` is accepting, and whether a mouth there would share that GPU. `cursor` starts one local `agent` on `composer-2.5` when the model calls it, and a missing CLI is `BLOCKED`. Python does not call it otherwise. The 2026-09-28 `hello` write is gone. The HTTP worker runs one `--idle` after 60 seconds with no POST. `--idle` itself does not poll.
+- **Tools.** `remember` appends one fact to `gemma.memory.txt` on the worker machine. `next` appends one work line there and does not run it. `stop` drops waiting work and does not close port 8765. `gemma.py --idle` notices that line, or prints `idle` without generating, then writes `iris_outbox.txt` and a `say` line in `iris_status.txt`. `place` reports the CUDA and Vulkan adapters on that computer, whether `127.0.0.1:8765` is accepting, and whether a mouth there would share that GPU. `cursor` starts one local `agent` on `composer-2.5` when the model calls it, and a missing CLI is `BLOCKED`. Python does not call a tool the model did not emit. The 2026-09-28 `hello` write is gone. The HTTP worker runs one `--idle` after 60 seconds with no POST. `--idle` itself does not poll.
 - **VOICE = invoke-on-ask only.** No default VOICE Cursor scout.
 - **Worker bind.** `nvidia_worker.py --host` defaults to `0.0.0.0`, port 8765, PE only. Iris `local_8765: none`. Health probe is TCP connect or a real POST. GET is not implemented.
 - **VRAM.** One Gemma on the 1060. Image inbox peaked 5672 MiB of 6144. File-team proof peaked 4678. An overlap experiment peaked at 5976 MiB concurrent. Do not start a second Gemma beside the worker.
@@ -910,7 +915,7 @@ You are TRIDENT_IRIS. Worker `trident-iris`, machine EB-W, account `eb-wjt`, wor
 
 **Role card:**
 
-You are TRIDENT_NVIDIA. Worker `trident-nvidia`, machine PE-DMLW, account `px-wjt`, workspace `C:\Users\px-wjt\Downloads\Jarvis\Trident`. You own Gemma, `gemma.py`, `gemma.txt`, and `nvidia_worker.py` on `0.0.0.0:8765`. Card on record: GeForce GTX 1060 6 GB, CUDA 12.6, architecture 61. Iris owns hear, mouth, and mic. Leave healthy `:8765` alone. Without `stream`, return one JSON `text`. With `stream: true`, return chunked text pieces and then a blank line. The chunker is Iris. `--nvidia` POST is single-turn (`id` / `text` / `image` / `image_b64`, optional `stream`) until memory is wired. Your Windows default render on the Scenario C notes is Speakers (Creative SB X-Fi). LG TV (NVIDIA High Definition Audio) is present and is not the default. Neither is the live mouth. The live mouth is Iris Speakers (Realtek(R) Audio). Inbox and `grok_local_bot.py --proof` run here because they need a local `0.0.0.0:8765`. Coding = Cursor on `trident-nvidia` only. Quiet via Spock. War Room short. First message: write durable rules; ask nothing unless blocked. A new GPU means re-check `gemma.txt` context and gpu-layers before claiming the 1060 fit.
+You are TRIDENT_NVIDIA. Worker `trident-nvidia`, machine PE-DMLW, account `px-wjt`, workspace `C:\Users\px-wjt\Downloads\Jarvis\Trident`. You own Gemma, `gemma.py`, `gemma.txt`, and `nvidia_worker.py` on `0.0.0.0:8765`. Card on record: GeForce GTX 1060 6 GB, CUDA 12.6, architecture 61. Iris owns hear, mouth, and mic. Leave healthy `:8765` alone. Without `stream`, return one JSON `text`. With `stream: true`, return chunked text pieces and then a blank line. The chunker is Iris. `--nvidia` POST is one turn (`id` / `text` / `image` / `image_b64`, optional `stream`). Memory, tools, and quiet work live in `gemma.py` on this machine. Your Windows default render on the Scenario C notes is Speakers (Creative SB X-Fi). LG TV (NVIDIA High Definition Audio) is present and is not the default. Neither is the live mouth. The live mouth is Iris Speakers (Realtek(R) Audio). `--text`, `--inbox`, and `--proof` use `gemma.place` on this computer. They do not call an online bridge. Coding = Cursor on `trident-nvidia` only. Quiet via Spock. War Room short. First message: write durable rules; ask nothing unless blocked. A new GPU means re-check `gemma.txt` context and gpu-layers before claiming the 1060 fit.
 
 ## CreateAgent — TRIDENT_VOICE
 
@@ -935,8 +940,8 @@ next: <Spock, IRIS, NVIDIA, or VOICE>
 1. Two Windows PCs on one LAN. Iris hears and speaks. PE has the GPU and no microphone job.
 2. Clone the repo, check out `runner-h`, run `python install.py install.txt` on each. Visual Studio 2022 and a Vulkan SDK. CUDA 12.6 on PE while the brain is still architecture 61. A new GPU is a NVIDIA-seat re-check of `gemma.txt` before the old 1060 numbers are reused. Iris needs a microphone, Speakers (Realtek(R) Audio) as the default playback device, and a Vulkan device for Chatterbox on Iris GPU index 0. The discrete GPU belongs in PE.
 3. On PE, start one worker with `--host 0.0.0.0 --port 8765` only if the port is free. Then leave it.
-4. On PE, run `--proof`. Read `grok_bot.txt`. `STATUS PASS` means the file team reached the listener and the pid stayed.
-5. On Iris, set `TRIDENT_NVIDIA_URL` and run the door on `reference.wav`. Read `iris-door.txt`. You want `STATUS PASS`, `local_8765: none`, `mouth_exit: 0`, and a wav path on the Iris disk. Do not play it unless a person is listening.
+4. On PE, run `grok_local_bot.py --proof`. Read `grok_bot.txt`. `STATUS PASS` means the local brain answered. An accepting `:8765` is a POST and stays up. No listener and a CUDA device uses the Gemma resident. No online bridge.
+5. On Iris, set `TRIDENT_NVIDIA_URL` and run the door on `reference.wav`. Read `iris-door.txt`. You want `STATUS PASS`, `mouth_exit: 0`, and a wav path on the Iris disk. Do not play it unless a person is listening.
 6. Audible check, only with a person at the Iris speakers: `assistant.py --text`, `--nvidia`, the worker URL, `--timeout 180`. Confirm the log says `mouth out: default` on this PC.
 7. Live mic only when Wojciech says go and Spock passes the Scenario C command. It is a proven path. Re-run it only on that go.
 8. Point a fresh empty Grok Bot at this appendix. It creates Spock, then Iris, then NVIDIA, then VOICE, then War Room, from the CreateAgent cards. That bot does not code.
