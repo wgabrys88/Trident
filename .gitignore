@@ -36,6 +36,8 @@
 !/chatterbox.txt
 !/bake.txt
 !/assistant.py
+!/start.py
+!/stop.py
 !/hear.py
 !/qwen.py
 !/gemma.py
