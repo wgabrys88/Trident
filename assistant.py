@@ -1057,6 +1057,33 @@ def inject_loop(py, args, path):
             return
 
 
+def iris_outbox_path(path_arg):
+    if path_arg:
+        return Path(path_arg)
+    env = os.environ.get("TRIDENT_IRIS_OUTBOX", "").strip()
+    if env:
+        return Path(env)
+    return ROOT / "iris_outbox.txt"
+
+
+def consume_iris_outbox(args, path_arg):
+    path = iris_outbox_path(path_arg)
+    if not path.is_file():
+        print("assistant: iris outbox missing", file=sys.stderr, flush=True)
+        raise SystemExit(0)
+    line = path.read_text(encoding="utf-8-sig").strip()
+    if not line:
+        print("assistant: iris outbox empty", file=sys.stderr, flush=True)
+        raise SystemExit(0)
+    try:
+        path.write_text("", encoding="utf-8")
+    except OSError as exc:
+        die("iris outbox clear: " + str(exc))
+    print("assistant: iris outbox consumed " + str(path), file=sys.stderr, flush=True)
+    own_turn()
+    speak_raw(args, line, play=True, flip=False)
+
+
 def brain_script(found, brain_flag):
     if found.brain == "missing":
         die("peer missing")
@@ -1469,6 +1496,14 @@ def main():
         default=None,
         help="closed-mic loop: PATH is one turn per non-empty line, or blocks split by a --- line; flag alone reads stdin until EOF. No live mic",
     )
+    parser.add_argument(
+        "--iris-outbox",
+        nargs="?",
+        const="-",
+        metavar="PATH",
+        default=None,
+        help="read one PE iris_outbox line, clear the file, speak via mouth. PATH or TRIDENT_IRIS_OUTBOX; else repo iris_outbox.txt. No brain POST",
+    )
     parser.add_argument("--wav", default=None, help="transcribe this wav through hear.py; skip the mic; one turn")
     parser.add_argument(
         "--vb-cable",
@@ -1528,6 +1563,13 @@ def main():
             die("inject asks for no text, wav, or vb-cable")
         if str(args.inject).strip() == "":
             die("empty inject path")
+    if args.iris_outbox is not None:
+        if args.text is not None or args.wav is not None or args.vb_cable or args.inject is not None:
+            die("iris-outbox asks for no text, wav, vb-cable, or inject")
+        if args.nvidia or args.url:
+            die("iris-outbox asks for no nvidia or url")
+        if str(args.iris_outbox).strip() == "":
+            die("empty iris-outbox path")
     if args.vb_cable and args.wav is not None:
         die("use vb-cable or wav, not both")
     if args.mouth and not args.vb_cable:
@@ -1544,6 +1586,10 @@ def main():
         found = place_turn(args)
         own_turn()
         cable_turn(py, args, found)
+        return
+    if args.iris_outbox is not None:
+        path = None if args.iris_outbox == "-" else str(args.iris_outbox).strip()
+        consume_iris_outbox(args, path)
         return
     if args.inject is not None:
         path = None if args.inject == "-" else str(args.inject).strip()
