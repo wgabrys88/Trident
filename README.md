@@ -44,9 +44,9 @@ flowchart LR
 ```
 
 1. Iris keeps Silero resident in `vad.exe --resident` and transcribes each finished wav with `hear.py`. The live hear command is `nemo-speech.exe transcribe` on `ear.gguf` with `--device cpu --format json --language auto --verbatim`. It does not read `ear.txt` and it does not run `ear.exe`. `src/ear.cpp` is the separate `ear.exe` one-shot. That program writes `*_ear_out_NNN.txt`.
-2. The text is one JSON POST. `nvidia_client.py` sends `id`, `text`, `image`, and, when a local image was passed, `image_b64`. `nvidia_worker.py` `do_POST` runs `gemma.py` once and returns `{"text": out}`. Errors are `text/plain` (`bad json`, `empty text`, `gemma exit`, `gemma timed out`, and the other worker errors). There is no `do_GET`. A browser GET is not a health check.
+2. A `--nvidia` turn is one JSON POST with `stream: true`. `nvidia_client.py` sends `id`, `text`, `image`, and, when a local image was passed, `image_b64`. The worker body is text pieces, then a blank line. `iter_stream` yields the pieces and does not yield that blank line. JSON, or a body that ends without the blank line, fails the turn. The door still posts without `stream` and reads one `{"text": ...}`. Errors before any piece are `text/plain`. There is no `do_GET`.
 3. Iris keeps the text after `<channel|>` (`assistant.speakable`, with the same split on `</think>`). The thought stays in the response file. The mouth does not speak it.
-4. Iris splits that speakable text. `assistant.chunks_for_mouth` flushes atoms on `.!?` and a blank line. English packs up to 65 words, any other tag up to 55. A short reply is one chunk and does not call `qwen.py`. An atom over that budget is a Qwen range. `mouth.py` speaks the chunks it is given. PE Gemma and `nvidia_worker.py` return one whole string. No wav is posted back.
+4. Iris splits that speakable text. Atoms flush on `.!?` and a blank line. English budget 65, any other tag 55. A finished reply packs short atoms up to that budget. The stream speaks each closed atom as it closes. An atom over the budget is cut into word windows. No wav is posted.
 5. `mouth.py` keeps `chatterbox.exe --resident` when the settings fingerprint matches. It writes `chatterbox.play off` into the settings it generates. `chatterbox.txt` still says `chatterbox.play on`. That template flag is not the speaker switch. Playback is `PlaySoundW` on the Windows default wave device, unless `--no-play`, `--vb-cable`, or `--out` is set. The default path prints `mouth out: default` and does not look up a friendly name.
 
 The mouth target for NVIDIA replies is that Iris default device. The same-day measurement (`scenario-c-preflight-iris.txt`, sounddevice default output) named it **Speakers (Realtek(R) Audio)**. The NVIDIA seat's own Windows default render, recorded in the PE Scenario C notes, is **Speakers (Creative SB X-Fi)**. **LG TV (NVIDIA High Definition Audio)** is present on PE and is not that default. There is no endpoint named NVIDIA Speakers. X-Fi and the LG TV are not the live mouth.
@@ -283,7 +283,7 @@ Live hear / brain / mouth loop. No `--seconds`. The listen mouth is v3. `--text`
 
 A transcript that is only `quit`, `exit`, or `stop` ends this loop. It does not stop port 8765.
 
-The chunker is `chunks_for_mouth`. Atoms flush on `.!?` and a blank line, not on `:`, `;`, or dashes. English budget 65. Any other tag 55. Under the budget, one chunk and no `qwen.py`. Over the budget, short atoms pack together. One atom over the budget asks Qwen for range lines. A bad range fails the turn and prints that text on stderr.
+The chunker flushes atoms on `.!?` and a blank line, not on `:`, `;`, or dashes. English budget 65. Any other tag 55. A finished reply packs short atoms up to that budget (`chunks_for_mouth`). `--nvidia` uses `StreamFeed` and speaks each closed atom while later text can still be arriving. One atom over the budget is cut into word windows. Text before `<channel|>`, or an unclosed `<think>`, is not spoken.
 
 `speakable` keeps the text after `<channel|>`, or after `</think>` when that tag is present. An unclosed `<think>` with no channel split is silence.
 
@@ -343,8 +343,9 @@ Iris-side POST. One turn. NVIDIA owns this file.
 | `--image PATH` | none | Local image. The POST body includes `image` (the path) and `image_b64` (standard base64 of the bytes). |
 | `--url URL` | `TRIDENT_NVIDIA_URL` | Must start with `http://` or `https://` when set. With no URL the client writes `nvidia_turn.request.txt` and exits 0. It does not start Gemma. |
 | `--timeout SEC` | `30` | HTTP timeout. Must be `> 0`. `assistant.py` forwards its own `--timeout` only when you pass one. |
+| `--stream` | off | POST `stream: true`. Print each text piece as it arrives. The trailing blank line is not printed. |
 
-Success prints the worker text and writes `nvidia_turn.response.txt` (`id`, `ok`, then the text). Errors from the worker are `text/plain`.
+Success writes `nvidia_turn.response.txt` (`id`, `ok`, then the text). Without `--stream`, that text is also printed at the end. Errors from the worker are `text/plain`. A stream that ends without the blank line fails.
 
 ### `nvidia_worker.py`
 
@@ -826,8 +827,8 @@ The body of `README.md` is the program manual (seats, voice path, install, comma
 
   YouTube chaos mid-session clarified and the mouth spoke two chunks. It did not refuse and it did not stay quiet. The process was later killed (exit `4294967295`). There is no `STATUS PASS` file for that session. The 14:57 `--once` without `--timeout` timed out at 30 s and did not speak. Do not collapse those two runs.
 - **Permission gate stays.** Live mic only after Wojciech says go. Spock passes GO to Iris as Shell, not as a Cursor wait, and not behind a smoke test.
-- **Chunker = Iris** `assistant.chunks_for_mouth` → `mouth.py`. PE returns one JSON `text`. Qwen packs a single over-budget atom. It is not the brain when the port is up.
-- **`--nvidia` = the brain port must be up.** The POST body is still `id`, `text`, `image`, `image_b64`. The listen loop puts the last 4 history pairs inside `text`. The worker does not store a session.
+- **Chunker = Iris.** A finished reply is `chunks_for_mouth`. A `--nvidia` stream speaks each closed sentence from `StreamFeed` while later pieces can still arrive. An atom over the word budget is cut into windows.
+- **`--nvidia` posts `stream: true`.** The door does not. The body is text pieces, then a blank line. The listen loop puts the last 4 history pairs inside `text`. No wav crosses the network. The worker does not store a session.
 - **Mouth target = Iris default PlaySound device**, measured that day as **Speakers (Realtek(R) Audio)**. The mouth prints `mouth out: default`. PE console default in the NVIDIA notes is Speakers (Creative SB X-Fi). LG TV (NVIDIA High Definition Audio) is on PE and is not the default. Neither is the live mouth. There is no NVIDIA Speakers endpoint.
 - **Polish.** The listen mouth is v3. The chunk body starts with `[pl]`. The resident card language does not change between turns. Door and `--text` stay nano.
 - **Stop.** `assistant.py --stop` kills the assistant tree on this PC. Leave `:8765` up. Heard `quit` / `exit` / `stop` ends the assistant loop only. Gemma has no quit tool.
@@ -863,7 +864,7 @@ The body of `README.md` is the program manual (seats, voice path, install, comma
 
 **Role card:**
 
-You are Trident Spock V2. Read `README.md`, including this Rebirth appendix. You do not edit code. Coding is Cursor on `trident-iris` or `trident-nvidia` only. Assign Composer 2.5 fast=false for scouts, inventories, and low-priority edits. Assign Grok 4.7, reasoning_effort xhigh, fast=false, context 256k or 500k, one pass, for a final README or ledger. Merge to `runner-h` only. Do not fast-forward `main` unless Wojciech asks. Live mic only after Wojciech says go — pass GO to Iris as the direct Shell recipe in this appendix, not a Cursor wait. Leave healthy `:8765` alone. War Room short. Token-low default. Proven live path is Scenario C (2026-09-28) on Iris Speakers (Realtek(R) Audio): clarify-and-speak under YouTube chaos was the win. Chunker is Iris `assistant.chunks_for_mouth`. `--nvidia` is single-turn until memory is wired. PE X-Fi and LG TV are not the mouth.
+You are Trident Spock V2. Read `README.md`, including this Rebirth appendix. You do not edit code. Coding is Cursor on `trident-iris` or `trident-nvidia` only. Assign Composer 2.5 fast=false for scouts, inventories, and low-priority edits. Assign Grok 4.7, reasoning_effort xhigh, fast=false, context 256k or 500k, one pass, for a final README or ledger. Merge to `runner-h` only. Do not fast-forward `main` unless Wojciech asks. Live mic only after Wojciech says go — pass GO to Iris as the direct Shell recipe in this appendix, not a Cursor wait. Leave healthy `:8765` alone. War Room short. Token-low default. Proven live path is Scenario C (2026-09-28) on Iris Speakers (Realtek(R) Audio): clarify-and-speak under YouTube chaos was the win. Chunker is Iris (`chunks_for_mouth`, and `StreamFeed` while `--nvidia` streams). `--nvidia` is single-turn until memory is wired. PE X-Fi and LG TV are not the mouth.
 
 ## CreateAgent — TRIDENT_IRIS
 
@@ -873,7 +874,7 @@ You are Trident Spock V2. Read `README.md`, including this Rebirth appendix. You
 
 **Role card:**
 
-You are TRIDENT_IRIS. Worker `trident-iris`, machine EB-W, account `eb-wjt`, workspace `C:\Users\eb-wjt\Downloads\Jarvis\Trident`. You own Iris I/O: mic hear, Speakers (Realtek(R) Audio) via PlaySound `mouth out: default`, `hear.py`, `mouth.py`, `assistant.py`, and the wav door. Hearing is `nemo-speech.exe` through `hear.py`, not `ear.exe`. Do not bind `:8765`. Never kill a healthy PE listener. Do not edit `nvidia_worker.py`, `gemma.py`, or `nvidia_client.py`. Coding = Cursor on `trident-iris` only. Quiet via Spock. War Room short. First message: write durable rules; ask nothing unless blocked. MIC OPEN: `.\.venv\Scripts\python.exe .\assistant.py --nvidia`. MIC STOP: `.\.venv\Scripts\python.exe .\assistant.py --stop` (this PC only, leave `:8765`). Chunker = `assistant.chunks_for_mouth` → `mouth.py`. Unattended door sets `TRIDENT_NVIDIA_URL` and runs `grok_local_bot.py --wav` (`mouth.py --no-play`).
+You are TRIDENT_IRIS. Worker `trident-iris`, machine EB-W, account `eb-wjt`, workspace `C:\Users\eb-wjt\Downloads\Jarvis\Trident`. You own Iris I/O: mic hear, Speakers (Realtek(R) Audio) via PlaySound `mouth out: default`, `hear.py`, `mouth.py`, `assistant.py`, and the wav door. Hearing is `nemo-speech.exe` through `hear.py`, not `ear.exe`. Do not bind `:8765`. Never kill a healthy PE listener. Do not edit `nvidia_worker.py` or `gemma.py`. Coding = Cursor on `trident-iris` only. Quiet via Spock. War Room short. First message: write durable rules; ask nothing unless blocked. MIC OPEN: `.\.venv\Scripts\python.exe .\assistant.py --nvidia`. MIC STOP: `.\.venv\Scripts\python.exe .\assistant.py --stop` (this PC only, leave `:8765`). Chunker = `assistant.chunks_for_mouth` for a finished reply, and `StreamFeed` while `--nvidia` is streaming. Unattended door sets `TRIDENT_NVIDIA_URL` and runs `grok_local_bot.py --wav` (`mouth.py --no-play`).
 
 ## CreateAgent — TRIDENT_NVIDIA
 
@@ -883,7 +884,7 @@ You are TRIDENT_IRIS. Worker `trident-iris`, machine EB-W, account `eb-wjt`, wor
 
 **Role card:**
 
-You are TRIDENT_NVIDIA. Worker `trident-nvidia`, machine PE-DMLW, account `px-wjt`, workspace `C:\Users\px-wjt\Downloads\Jarvis\Trident`. You own Gemma, `gemma.py`, `gemma.txt`, and `nvidia_worker.py` on `0.0.0.0:8765`. Card on record: GeForce GTX 1060 6 GB, CUDA 12.6, architecture 61. Iris owns hear, mouth, and mic. Leave healthy `:8765` alone. You return one whole JSON `text`. The chunker is Iris. `--nvidia` POST is single-turn (`id` / `text` / `image` / `image_b64`) until memory is wired. Your Windows default render on the Scenario C notes is Speakers (Creative SB X-Fi). LG TV (NVIDIA High Definition Audio) is present and is not the default. Neither is the live mouth. The live mouth is Iris Speakers (Realtek(R) Audio). Inbox and `grok_local_bot.py --proof` run here because they need a local `0.0.0.0:8765`. Coding = Cursor on `trident-nvidia` only. Quiet via Spock. War Room short. First message: write durable rules; ask nothing unless blocked. A new GPU means re-check `gemma.txt` context and gpu-layers before claiming the 1060 fit.
+You are TRIDENT_NVIDIA. Worker `trident-nvidia`, machine PE-DMLW, account `px-wjt`, workspace `C:\Users\px-wjt\Downloads\Jarvis\Trident`. You own Gemma, `gemma.py`, `gemma.txt`, and `nvidia_worker.py` on `0.0.0.0:8765`. Card on record: GeForce GTX 1060 6 GB, CUDA 12.6, architecture 61. Iris owns hear, mouth, and mic. Leave healthy `:8765` alone. Without `stream`, return one JSON `text`. With `stream: true`, return chunked text pieces and then a blank line. The chunker is Iris. `--nvidia` POST is single-turn (`id` / `text` / `image` / `image_b64`, optional `stream`) until memory is wired. Your Windows default render on the Scenario C notes is Speakers (Creative SB X-Fi). LG TV (NVIDIA High Definition Audio) is present and is not the default. Neither is the live mouth. The live mouth is Iris Speakers (Realtek(R) Audio). Inbox and `grok_local_bot.py --proof` run here because they need a local `0.0.0.0:8765`. Coding = Cursor on `trident-nvidia` only. Quiet via Spock. War Room short. First message: write durable rules; ask nothing unless blocked. A new GPU means re-check `gemma.txt` context and gpu-layers before claiming the 1060 fit.
 
 ## CreateAgent — TRIDENT_VOICE
 

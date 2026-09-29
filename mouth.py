@@ -802,12 +802,21 @@ def resident_say(pid, text):
 
 
 def speak_chunks(synthesize_one, chunks, play_one):
-    ready = synthesize_one(chunks[0])
+    pending = iter(chunks)
+    try:
+        sentence = next(pending)
+    except StopIteration:
+        return
+    ready = synthesize_one(sentence)
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        for index, sentence in enumerate(chunks):
+        while True:
             play_future = pool.submit(play_one, ready)
-            if index + 1 < len(chunks):
-                ready = synthesize_one(chunks[index + 1])
+            try:
+                sentence = next(pending)
+            except StopIteration:
+                play_future.result()
+                return
+            ready = synthesize_one(sentence)
             play_future.result()
 
 

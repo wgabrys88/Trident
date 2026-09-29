@@ -1,9 +1,11 @@
 import argparse
 import json
 import os
+import queue
 import re
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -29,8 +31,6 @@ TOKENS = (
     "<think>",
     "</think>",
 )
-ATOM_RANGE = re.compile(r"^(\d+)-(\d+)$")
-WORD_RANGE = re.compile(r"^(\d+):(\d+)-(\d+)$")
 VAD_PROC = None
 OWN = False
 TRACK = {"mouth": "off", "qwen": "off"}
@@ -106,6 +106,13 @@ def remove_file(name):
         die("cannot remove " + path.name + ": " + str(exc))
 
 
+def _markup(text):
+    for token in TOKENS:
+        text = text.replace(token, "")
+    text = text.replace("**", "").replace("__", "").replace("`", "")
+    return re.sub(r"[ \t]+\n", "\n", text)
+
+
 def speakable(generation):
     text = generation.replace("\r\n", "\n").replace("\r", "\n")
     if "</think>" in text:
@@ -114,11 +121,7 @@ def speakable(generation):
         text = text.split("<channel|>")[-1]
     elif "<think>" in text:
         return ""
-    for token in TOKENS:
-        text = text.replace(token, "")
-    text = text.replace("**", "").replace("__", "").replace("`", "")
-    text = re.sub(r"[ \t]+\n", "\n", text)
-    return text.strip()
+    return _markup(text).strip()
 
 
 def _flush(parts, buf):
@@ -132,134 +135,17 @@ def _closing_quote(opener):
     return {'"': '"', "“": "”", "«": "»"}[opener]
 
 
-def atoms(text):
-    parts = []
-    buf = []
-    quote = None
-    i = 0
-    n = len(text)
-    while i < n:
-        ch = text[i]
-        if quote is not None:
-            buf.append(ch)
-            if ch == _closing_quote(quote):
-                quote = None
-            i += 1
-            continue
-        if ch in "\"“«":
-            quote = ch
-            buf.append(ch)
-            i += 1
-            continue
-        if ch == "\n":
-            j = i + 1
-            while j < n and text[j] in " \t":
-                j += 1
-            if j < n and text[j] == "\n":
-                _flush(parts, buf)
-                i = j + 1
-                continue
-            buf.append(" ")
-            i += 1
-            continue
-        if ch in ".!?":
-            buf.append(ch)
-            if i + 1 < n and text[i + 1].isspace():
-                _flush(parts, buf)
-            i += 1
-            continue
-        buf.append(ch)
-        i += 1
-    _flush(parts, buf)
-    return parts
-
-
-def range_lines(raw):
-    text = raw
-    for token in TOKENS:
-        text = text.replace(token, "")
-    lines = []
-    for line in text.splitlines():
-        line = line.strip()
-        if line:
-            lines.append(line)
-    return lines
-
-
-def apply_ranges(raw, atoms_words, limit):
-    lines = range_lines(raw)
-    if not lines:
-        raise ValueError(raw)
-    covered = [0] * len(atoms_words)
+def word_windows(words, limit):
     chunks = []
-    for line in lines:
-        word = WORD_RANGE.fullmatch(line)
-        if word:
-            index = int(word.group(1)) - 1
-            start = int(word.group(2)) - 1
-            end = int(word.group(3))
-            if index < 0 or index >= len(atoms_words):
-                raise ValueError(raw)
-            if any(covered[i] != len(atoms_words[i]) for i in range(index)):
-                raise ValueError(raw)
-            if start != covered[index] or end <= start or end > len(atoms_words[index]):
-                raise ValueError(raw)
-            piece = atoms_words[index][start:end]
-            if len(piece) > limit:
-                raise ValueError(raw)
-            covered[index] = end
-            chunks.append(" ".join(piece))
-            continue
-        span = ATOM_RANGE.fullmatch(line)
-        if not span:
-            raise ValueError(raw)
-        first = int(span.group(1)) - 1
-        last = int(span.group(2)) - 1
-        if first < 0 or last < first or last >= len(atoms_words):
-            raise ValueError(raw)
-        if any(covered[i] != len(atoms_words[i]) for i in range(first)):
-            raise ValueError(raw)
-        if any(covered[i] != 0 for i in range(first, last + 1)):
-            raise ValueError(raw)
-        words = []
-        for index in range(first, last + 1):
-            words.extend(atoms_words[index])
-            covered[index] = len(atoms_words[index])
-        if not words or len(words) > limit:
-            raise ValueError(raw)
-        chunks.append(" ".join(words))
-    if any(covered[i] != len(atoms_words[i]) for i in range(len(atoms_words))):
-        raise ValueError(raw)
+    start = 0
+    n = len(words)
+    while start < n:
+        chunks.append(" ".join(words[start : start + limit]))
+        start += limit
     return chunks
 
 
-def ask_ranges(atoms_words, limit):
-    rows = []
-    for index, words in enumerate(atoms_words, 1):
-        rows.append(str(index) + " (" + str(len(words)) + ") " + " ".join(words))
-    question = (
-        "Range lines only. Budget "
-        + str(limit)
-        + ".\nA line is A-B or A:W-X. Cover every word once, in order. Each line is at most the budget.\n"
-        + "\n".join(rows)
-    )
-    note_qwen()
-    raw = run_child(
-        "qwen",
-        [venv_python(), str(ROOT / "qwen.py"), "--", question],
-        keep_stdout=True,
-        keep_stderr=True,
-    )
-    try:
-        return apply_ranges(raw, atoms_words, limit)
-    except ValueError:
-        print(raw.rstrip("\n"), file=sys.stderr)
-        die("bad range")
-
-
-def chunks_for_mouth(text, lang):
-    limit = EN_LIMIT if lang == "en" else PL_LIMIT
-    parts = atoms(text)
+def pack_atoms(parts, limit):
     chunks = []
     buf = []
     count = 0
@@ -278,7 +164,7 @@ def chunks_for_mouth(text, lang):
             continue
         if n > limit:
             flush()
-            chunks.extend(ask_ranges([words], limit))
+            chunks.extend(word_windows(words, limit))
             continue
         if count and count + n > limit:
             flush()
@@ -286,6 +172,152 @@ def chunks_for_mouth(text, lang):
         count += n
     flush()
     return chunks
+
+
+def chunks_for_mouth(text, lang):
+    limit = EN_LIMIT if lang == "en" else PL_LIMIT
+    return pack_atoms(atoms(text), limit)
+
+
+class AtomScan:
+    def __init__(self):
+        self.buf = []
+        self.quote = None
+        self.pending = ""
+
+    def feed(self, text, final=False):
+        data = self.pending + (text or "")
+        self.pending = ""
+        parts = []
+        i = 0
+        n = len(data)
+        while i < n:
+            ch = data[i]
+            if self.quote is not None:
+                self.buf.append(ch)
+                if ch == _closing_quote(self.quote):
+                    self.quote = None
+                i += 1
+                continue
+            if ch in "\"“«":
+                self.quote = ch
+                self.buf.append(ch)
+                i += 1
+                continue
+            if ch == "\n":
+                j = i + 1
+                while j < n and data[j] in " \t":
+                    j += 1
+                if j >= n and not final:
+                    self.pending = data[i:]
+                    return parts
+                if j < n and data[j] == "\n":
+                    _flush(parts, self.buf)
+                    i = j + 1
+                    continue
+                self.buf.append(" ")
+                i += 1
+                continue
+            if ch in ".!?":
+                if i + 1 >= n and not final:
+                    self.pending = data[i:]
+                    return parts
+                self.buf.append(ch)
+                if i + 1 < n and data[i + 1].isspace():
+                    _flush(parts, self.buf)
+                i += 1
+                continue
+            self.buf.append(ch)
+            i += 1
+        if final:
+            _flush(parts, self.buf)
+        return parts
+
+
+def atoms(text):
+    return AtomScan().feed(text, final=True)
+
+
+def _held_tail(text):
+    markers = TOKENS + ("**", "__", "`")
+    cap = min(len(text), max(len(marker) for marker in markers))
+    best = 0
+    for size in range(1, cap + 1):
+        suffix = text[-size:]
+        if any(marker.startswith(suffix) and len(suffix) < len(marker) for marker in markers):
+            best = size
+    return best
+
+
+def _lead_hold(text):
+    lead = text.lstrip()
+    if not lead:
+        return False
+    for marker in ("<think>", "</think>", "<channel|>", "<|channel>thought", "<channel>thought"):
+        if marker.startswith(lead) and lead != marker:
+            return True
+    return False
+
+
+def _visible(raw, locked, final):
+    text = raw.replace("\r\n", "\n").replace("\r", "\n")
+    if not locked:
+        if "</think>" in text:
+            text = text.split("</think>")[-1]
+        elif "<channel|>" in text:
+            text = text.split("<channel|>")[-1]
+        elif "<think>" in text or "<|channel>thought" in text or "<channel>thought" in text:
+            return "", False
+        elif not final and _lead_hold(text):
+            return "", False
+    if not final:
+        held = _held_tail(text)
+        if held:
+            text = text[:-held]
+    return _markup(text).lstrip(), True
+
+
+class StreamFeed:
+    """Closed atoms for the mouth while text is still arriving."""
+
+    def __init__(self, lang):
+        self.limit = EN_LIMIT if lang == "en" else PL_LIMIT
+        self.scan = AtomScan()
+        self.raw = ""
+        self.fed = ""
+        self.locked = False
+        self.spoke = False
+
+    def push(self, piece):
+        self.raw += piece or ""
+        return self._pump(False)
+
+    def finish(self):
+        return self._pump(True)
+
+    def _pump(self, final):
+        text, ready = _visible(self.raw, self.locked, final)
+        if not ready:
+            return []
+        self.locked = True
+        if not text.startswith(self.fed):
+            if self.spoke:
+                return []
+            self.scan = AtomScan()
+            self.fed = ""
+        extra = text[len(self.fed) :]
+        self.fed = text
+        chunks = []
+        for part in self.scan.feed(extra, final=final):
+            words = part.split()
+            if not words:
+                continue
+            self.spoke = True
+            if len(words) > self.limit:
+                chunks.extend(word_windows(words, self.limit))
+            else:
+                chunks.append(" ".join(words))
+        return chunks
 
 
 def budget_lang(model, lang):
@@ -656,23 +688,120 @@ def speak_raw(py, args, raw, play=True, model=None, budget=None, prefix=None):
     return [line.strip() for line in out.splitlines() if line.strip()]
 
 
-def remote_turn(py, route, args, question):
-    argv = [
-        py,
-        str(ROOT / "nvidia_client.py"),
-        "--url",
-        route.url,
-        "--timeout",
-        format(args.timeout, "g"),
-    ]
+def open_remote(args, question):
+    image = None
+    image_b64 = None
     if args.image:
-        argv.extend(["--image", args.image])
-    argv.extend(["--", question])
-    print("assistant: nvidia", file=sys.stderr)
-    raw = run_child("nvidia", argv, keep_stdout=True, keep_stderr=False)
-    if not raw.strip():
-        print("assistant: nvidia request only", file=sys.stderr)
-        return ""
+        path = Path(args.image)
+        if not path.is_file():
+            die("missing image: " + str(path))
+        image_b64, nbytes = nvidia_client.file_b64(path)
+        image = str(path)
+        print("nvidia: image_b64 " + str(nbytes) + " bytes", file=sys.stderr)
+    ident = str(time.time_ns())
+    nvidia_client.write_request(nvidia_client.request_body(ident, question, image))
+    print("assistant: nvidia stream", file=sys.stderr, flush=True)
+    return ident, image, image_b64
+
+
+def iter_remote(route, args, opened, question):
+    ident, image, image_b64 = opened
+    return nvidia_client.iter_stream(
+        route.url, ident, question, image, image_b64, args.timeout
+    )
+
+
+def remote_text(route, args, question):
+    return "".join(iter_remote(route, args, open_remote(args, question), question))
+
+
+def resident_lang(model, args, prefix):
+    if prefix is None and args.lang:
+        return args.lang
+    return "pl" if model == "v3" else "en"
+
+
+def prefixed(chunk, prefix):
+    if prefix:
+        return "[" + prefix + "] " + chunk
+    return chunk
+
+
+def remote_speak(route, args, question, model, budget, prefix, hold):
+    import mouth
+
+    model = args.model if model is None else model
+    if budget is None:
+        budget = budget_lang(model, args.lang)
+    opened = open_remote(args, question)
+    box = {"err": None, "parts": []}
+    pending = queue.Queue()
+    feed = StreamFeed(budget)
+
+    def produce():
+        try:
+            for piece in iter_remote(route, args, opened, question):
+                box["parts"].append(piece)
+                sys.stdout.write(piece)
+                sys.stdout.flush()
+                for chunk in feed.push(piece):
+                    pending.put(chunk)
+            for chunk in feed.finish():
+                pending.put(chunk)
+        except SystemExit as exc:
+            box["err"] = exc
+        except Exception as exc:
+            box["err"] = SystemExit(2)
+            print("assistant: nvidia stream failed: " + str(exc), file=sys.stderr)
+        finally:
+            pending.put(None)
+
+    threading.Thread(target=produce, daemon=True).start()
+    print("mouth out: default", file=sys.stderr, flush=True)
+    pid = mouth.ensure_resident(model, resident_lang(model, args, prefix))
+    note_mouth()
+    first = pending.get()
+
+    def take_raw():
+        text = "".join(box["parts"])
+        if text and not text.endswith("\n"):
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        return text
+
+    if first is None:
+        raw = take_raw()
+        if box["err"] is not None:
+            raise box["err"]
+        print("assistant: no speakable answer", file=sys.stderr)
+        return raw
+    count = 0
+
+    def arriving():
+        nonlocal count
+        chunk = first
+        while chunk is not None:
+            count += 1
+            if count == 1:
+                print("assistant: mouth", file=sys.stderr, flush=True)
+            yield prefixed(chunk, prefix)
+            chunk = pending.get()
+
+    if hold:
+        set_hold(True)
+    try:
+        mouth.speak_chunks(
+            lambda sentence: mouth.resident_say(pid, sentence),
+            arriving(),
+            mouth.play_wav,
+        )
+    finally:
+        if hold:
+            set_hold(False)
+    raw = take_raw()
+    print("assistant: mouth " + str(count) + " chunk(s)", file=sys.stderr)
+    if box["err"] is not None:
+        raise box["err"]
     return raw
 
 
@@ -692,8 +821,12 @@ def local_turn(py, script, args, question):
 
 def answer(py, route, args, question, speak=True, model=None, budget=None, prefix=None):
     if route.kind == "remote":
-        raw = remote_turn(py, route, args, question)
-    elif route.kind == "gemma":
+        if speak:
+            return remote_speak(route, args, question, model, budget, prefix, False)
+        raw = remote_text(route, args, question)
+        show(raw)
+        return raw
+    if route.kind == "gemma":
         raw = local_turn(py, "gemma.py", args, question)
     else:
         raw = local_turn(py, "qwen.py", args, question)
@@ -892,8 +1025,12 @@ def listen_loop(py, route, args):
             print("assistant: quit", file=sys.stderr)
             return
         tag = mouth_tag(code)
-        reply = answer(py, route, args, posted_text(code, words), speak=False)
-        speak_live(py, args, reply, tag, tag)
+        question = posted_text(code, words)
+        if route.kind == "remote":
+            reply = remote_speak(route, args, question, LISTEN_MODEL, tag, tag, True)
+        else:
+            reply = answer(py, route, args, question, speak=False)
+            speak_live(py, args, reply, tag, tag)
         write_history(words, speakable(reply))
         if args.once:
             return
