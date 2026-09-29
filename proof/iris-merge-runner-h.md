@@ -28,7 +28,7 @@ Commits now on `origin/runner-h`, oldest first:
 | `65cfd44680fff71a2c2cee9b355315bfc9fdfd6f` | Prefetch a known non-English span while nano is still speaking. |
 | `123050e556ed193cc1795a5ed182874b510e4ba1` | Record the prefetched Polish span on the speakers. |
 
-The voice code is those seven commits. This note is committed on top of `123050e556ed193cc1795a5ed182874b510e4ba1`.
+The voice code is those seven commits. The commit that added this note is `42be2ad0553ae151d6baa71972a298bbc3be8fb4`, parent `123050e556ed193cc1795a5ed182874b510e4ba1`. The commit that records that SHA is the `runner-h` tip for this pass.
 
 ## Iris features on that tip
 
