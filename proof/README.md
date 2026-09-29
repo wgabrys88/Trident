@@ -29,8 +29,8 @@ The file keeps the last 40 lines. No hostname. No JSON.
 
 **Iris contract (consumer on Iris):**
 
-1. Point at the PE file (`TRIDENT_IRIS_OUTBOX` or SMB path) or a local `iris_outbox.txt` for proof.
-2. `assistant.py --iris-outbox` reads the trimmed line, clears the file, speaks it through `mouth.py` (no `:8765` POST).
+1. Point at the PE file (`TRIDENT_IRIS_OUTBOX` or SMB path) or a local `iris_outbox.txt` for proof. `TRIDENT_IRIS_SEAT` is the same exchange with `status`, `work`, and `say` blocks.
+2. A plain line is `say`. Iris claims the file, speaks `say` through the mouth, and asks the brain about `status` and `work`. A failed act writes the signal back. No audio comes from the brain.
 3. Missing or empty file exits 0 with `iris outbox missing` / `iris outbox empty` on stderr (no fake speak).
 
 The running `:8765` worker loads `gemma.py` from disk at start. After a code cutover, the quiet idle path both drains `work` lines and updates `iris_outbox.txt`. Leave-healthy: do not restart `:8765` unless cutover is intentional.

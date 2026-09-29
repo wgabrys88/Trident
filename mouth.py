@@ -114,6 +114,20 @@ def without_spoken_text(raw):
     return "\n".join(kept)
 
 
+def check_voice(model, lang):
+    if model in ("nano", "turbo"):
+        if lang != "en":
+            die(model + " speaks en")
+        return
+    if model == "v3":
+        if lang == "en":
+            die("english uses nano or turbo")
+        if not lang or any(ch.isspace() for ch in lang):
+            die("v3 asks for a language tag")
+        return
+    die("unknown model")
+
+
 def cfm_steps(model):
     return "10" if model == "v3" else "2"
 
@@ -324,6 +338,7 @@ def adopt_output(tmp, out_txt):
 
 
 def synthesize(model, lang, sentence, card=None):
+    check_voice(model, lang)
     payload = settings_text(model, lang, sentence, "off")
     if card is None:
         write_mouth(payload)
@@ -697,8 +712,7 @@ def same_settings(rec, model, lang, fingerprint):
 
 
 def ensure_resident(model, lang):
-    if any(ch.isspace() for ch in lang):
-        die("language must be a single tag")
+    check_voice(model, lang)
     desired = settings_text(model, lang, "", "off")
     fingerprint = settings_fingerprint(desired)
     deadline = time.time() + 240
@@ -984,11 +998,14 @@ def main():
     if args.model not in MODELS:
         die("unknown model")
     if args.lang is None:
-        lang = "pl" if args.model == "v3" else "en"
+        if args.model == "v3":
+            die("v3 asks for --lang")
+        lang = "en"
     elif args.lang.strip() == "":
         die("empty language")
     else:
-        lang = args.lang
+        lang = args.lang.strip()
+    check_voice(args.model, lang)
     for sentence in args.text:
         if sentence.strip() == "":
             die("empty text")
