@@ -1,10 +1,16 @@
-"""Iris closed-mic start.
+"""Iris start.
 
-Runs `assistant.py --nvidia --timeout 180 --inject` and waits.
-No microphone and no VAD. Does not bind, stop, or restart port 8765.
+Default runs `assistant.py --nvidia --timeout 180 --inject` and waits.
+No microphone and no VAD.
+
+`--live` runs `assistant.py --nvidia --timeout 180 --cue`.
+One beep, wait 10 seconds, two beeps, then the default mic and VAD.
+Three beeps after the turn. `--once` is allowed only with `--live`.
+
+Does not bind, stop, or restart port 8765.
 
 Peer URL: `--url`, else `TRIDENT_NVIDIA_URL`, else `http://192.168.16.31:8765/`.
-Type a turn, then a line that is only `---`.
+Inject: type a turn, then a line that is only `---`.
 A turn that is only `quit`, `exit`, or `stop` ends the loop.
 `python stop.py` stops this process and the mouth. It does not contact the brain.
 """
@@ -89,26 +95,44 @@ def remove_pidfile(name, pid):
         pass
 
 
-def brain_url(argv):
+def parse_start_args(argv):
     url = ""
+    live = False
+    once = False
     index = 0
+    usage = "usage: start.py [--url URL] [--live] [--once]"
     while index < len(argv):
-        if argv[index] != "--url":
-            die("usage: start.py [--url URL]")
+        arg = argv[index]
+        if arg == "--live":
+            if live:
+                die(usage)
+            live = True
+            index += 1
+            continue
+        if arg == "--once":
+            if once:
+                die(usage)
+            once = True
+            index += 1
+            continue
+        if arg != "--url":
+            die(usage)
         if index + 1 >= len(argv):
             die("empty url")
         value = argv[index + 1].strip()
         if not value:
             die("empty url")
         if url:
-            die("usage: start.py [--url URL]")
+            die(usage)
         url = value
         index += 2
+    if once and not live:
+        die(usage)
     if not url:
         url = os.environ.get("TRIDENT_NVIDIA_URL", "").strip() or DEFAULT_URL
     if not (url.startswith("http://") or url.startswith("https://")):
         die("url must start with http:// or https://")
-    return url
+    return url, live, once
 
 
 def already_up():
@@ -168,30 +192,35 @@ def wait_ready(proc, before):
             return pid
         time.sleep(0.05)
     end_process(proc, before)
-    die("inject did not become ready")
+    die("assistant did not become ready")
 
 
 def main():
     os.environ["PYTHONUNBUFFERED"] = "1"
     reexec()
-    url = brain_url(sys.argv[1:])
+    url, live, once = parse_start_args(sys.argv[1:])
     if already_up():
         return
     py = venv_python()
     print("iris: brain " + url, file=sys.stderr, flush=True)
+    if live:
+        print("iris: live mic", file=sys.stderr, flush=True)
     before = pid_stamp("assistant.pid")
+    command = [
+        py,
+        "-u",
+        str(ROOT / "assistant.py"),
+        "--nvidia",
+        "--url",
+        url,
+        "--timeout",
+        "180",
+        "--cue" if live else "--inject",
+    ]
+    if once:
+        command.append("--once")
     proc = subprocess.Popen(
-        [
-            py,
-            "-u",
-            str(ROOT / "assistant.py"),
-            "--nvidia",
-            "--url",
-            url,
-            "--timeout",
-            "180",
-            "--inject",
-        ],
+        command,
         cwd=str(ROOT),
         shell=False,
     )

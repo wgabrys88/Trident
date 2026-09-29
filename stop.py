@@ -1,6 +1,6 @@
-"""Iris closed-mic stop.
+"""Iris stop.
 
-Stops the inject process started by start.py and runs mouth.py --stop.
+Stops the process started by start.py (inject or live mic) and runs mouth.py --stop.
 Does not bind, probe, or restart port 8765.
 """
 

@@ -3,10 +3,12 @@ import json
 import os
 import queue
 import re
+import struct
 import subprocess
 import sys
 import threading
 import time
+import wave
 from pathlib import Path
 
 import hear
@@ -37,6 +39,12 @@ TOKENS = (
 VAD_PROC = None
 OWN = False
 TRACK = {"mouth": "off", "qwen": "off"}
+CUE_WAV = ROOT / "proof" / "g429-live-cue.wav"
+CUE_HZ = 1000
+CUE_MS = 500
+CUE_GAP_S = 0.28
+CUE_WAIT_S = 10.0
+CUE_LISTEN_S = 60.0
 
 
 def die(message):
@@ -842,7 +850,7 @@ def start_vad(name):
     die("vad did not become ready")
 
 
-def release_vad():
+def stop_vad():
     global VAD_PROC
     proc = VAD_PROC
     if proc is None:
@@ -860,11 +868,21 @@ def release_vad():
             proc.wait(timeout=3)
         except subprocess.TimeoutExpired:
             pass
-    for name in ("vad.stop", "vad.hold", "assistant.pid"):
+    for name in ("vad.stop", "vad.hold"):
         try:
             remove_file(name)
         except SystemExit:
             pass
+
+
+def release_vad():
+    stop_vad()
+    if read_pid("assistant.pid") != os.getpid():
+        return
+    try:
+        remove_file("assistant.pid")
+    except SystemExit:
+        pass
 
 
 def set_hold(on):
@@ -875,11 +893,14 @@ def set_hold(on):
     remove_file(path)
 
 
-def take_utterance():
+def take_utterance(timeout=None):
     path = ROOT / "vad.utterance.txt"
+    deadline = None if timeout is None else time.monotonic() + timeout
     while not path.is_file():
         if VAD_PROC is None or VAD_PROC.poll() is not None:
             die("vad exited")
+        if deadline is not None and time.monotonic() >= deadline:
+            die("no utterance")
         time.sleep(0.05)
     name = path.read_text(encoding="utf-8").strip()
     remove_file(path)
@@ -1431,7 +1452,163 @@ def cable_turn(py, found, args):
     raise SystemExit(0 if passed else 1)
 
 
+def heard_turn(py, found, args, words, code):
+    if is_quit(words):
+        print("assistant: quit", file=sys.stderr)
+        return False
+    question, act = split_act(words)
+    if question and is_quit(question):
+        print("assistant: quit", file=sys.stderr)
+        return False
+    if act:
+        prepare_act(act[0], act[1])
+    if not question:
+        if act is None:
+            print("assistant: hear returned no transcript", file=sys.stderr)
+            return not args.once
+        sentence, line = speak_act(args, act, True, True)
+        write_history(line, sentence)
+        return not args.once
+    posted = posted_text(code, question)
+    if found.brain == "post" and not found.flip:
+        reply = remote_speak(found, args, posted, True)
+    else:
+        reply = answer(py, found, args, posted, speak=False)
+        speak_live(args, reply, found.flip)
+    write_history(question, speakable(reply))
+    if act:
+        sentence, line = speak_act(args, act, False, True)
+        write_history(line, sentence)
+    return not args.once
+
+
+def cue_stamp():
+    now = time.time()
+    base = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now))
+    return base + ".%03d" % int((now - int(now)) * 1000)
+
+
+def cue_log(line):
+    print(line, file=sys.stderr, flush=True)
+    path = ROOT / "proof" / "g429-live-mic.log"
+    try:
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+    except OSError as exc:
+        print("assistant: cue log failed: " + str(exc), file=sys.stderr)
+
+
+def cue_log_reset():
+    path = ROOT / "proof" / "g429-live-mic.log"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("", encoding="utf-8")
+
+
+def ensure_cue_wav():
+    path = CUE_WAV
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rate = 44100
+    count = int(rate * CUE_MS / 1000)
+    frames = bytearray()
+    for index in range(count):
+        second = index / rate
+        sign = 1.0 if (int(second * CUE_HZ) % 2 == 0) else -1.0
+        sample = int(0.98 * 32767 * sign)
+        frames.extend(struct.pack("<h", sample))
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(rate)
+        handle.writeframes(bytes(frames))
+    return path
+
+
+def play_cues(count):
+    import mouth
+
+    wav = ensure_cue_wav()
+    cue_log("assistant: cue " + str(count) + " begin " + cue_stamp())
+    for index in range(count):
+        if index:
+            time.sleep(CUE_GAP_S)
+        mouth.play_wav(wav)
+        cue_log("assistant: cue " + str(count) + " beep " + str(index + 1) + " " + cue_stamp())
+    cue_log("assistant: cue " + str(count) + " end " + cue_stamp())
+
+
+def snapshot_turn_files():
+    proof = ROOT / "proof"
+    proof.mkdir(parents=True, exist_ok=True)
+    for name in ("nvidia_turn.request.txt", "nvidia_turn.response.txt"):
+        src = ROOT / name
+        if not src.is_file():
+            continue
+        dest = proof / ("g429-live-mic-" + name)
+        dest.write_bytes(src.read_bytes())
+        cue_log("assistant: saved " + str(dest))
+
+
+def cued_listen_loop(py, found, args):
+    if not (ROOT / "vad.exe").is_file():
+        die("missing vad.exe")
+    if not (ROOT / "vad.txt").is_file():
+        die("missing vad.txt")
+    model = ROOT / "silero_vad.onnx"
+    try:
+        model_bytes = model.read_bytes()
+    except OSError as exc:
+        die("missing vad model: " + str(exc))
+    if not model_bytes:
+        die("empty vad model")
+    mic = hear.wasapi_capture_name()
+    (ROOT / "assistant.pid").write_text(str(os.getpid()) + "\n", encoding="utf-8")
+    cue_log_reset()
+    cue_log("assistant: cue mic " + mic)
+    cue_log("assistant: mic closed before cue " + cue_stamp())
+    while True:
+        play_cues(1)
+        cue_log("assistant: cue wait 10 begin " + cue_stamp())
+        time.sleep(CUE_WAIT_S)
+        cue_log("assistant: cue wait 10 end " + cue_stamp())
+        if found.brain == "post" and not nvidia_client.probe(found.url):
+            die("peer missing")
+        play_cues(2)
+        cue_log("assistant: mic opening " + mic + " " + cue_stamp())
+        start_vad(mic)
+        cue_log("assistant: mic open " + cue_stamp())
+        wav = take_utterance(CUE_LISTEN_S)
+        cue_log("assistant: utterance " + wav.name + " " + cue_stamp())
+        stop_vad()
+        cue_log("assistant: mic closed " + cue_stamp())
+        kept = ROOT / "proof" / "g429-live-mic-utterance.wav"
+        kept.write_bytes(wav.read_bytes())
+        cue_log("assistant: utterance copy " + str(kept))
+        raw = transcribe(py, wav, live=True)
+        words, code = parse_hear(raw)
+        show(words)
+        hear_path = ROOT / "proof" / "g429-live-mic-hear.json"
+        hear_path.write_text(raw, encoding="utf-8")
+        cue_log("assistant: hear " + words)
+        if not words:
+            print("assistant: hear returned no transcript", file=sys.stderr)
+            if args.once:
+                die("hear returned no transcript")
+            continue
+        try:
+            keep = heard_turn(py, found, args, words, code)
+        except SystemExit:
+            snapshot_turn_files()
+            raise
+        snapshot_turn_files()
+        play_cues(3)
+        if not keep:
+            return
+
+
 def listen_loop(py, found, args):
+    if args.cue:
+        cued_listen_loop(py, found, args)
+        return
     mic = hear.wasapi_capture_name()
     start_vad(mic)
     (ROOT / "assistant.pid").write_text(str(os.getpid()) + "\n", encoding="utf-8")
@@ -1445,37 +1622,7 @@ def listen_loop(py, found, args):
             if args.once:
                 return
             continue
-        if is_quit(words):
-            print("assistant: quit", file=sys.stderr)
-            return
-        question, act = split_act(words)
-        if question and is_quit(question):
-            print("assistant: quit", file=sys.stderr)
-            return
-        if act:
-            prepare_act(act[0], act[1])
-        if not question:
-            if act is None:
-                print("assistant: hear returned no transcript", file=sys.stderr)
-                if args.once:
-                    return
-                continue
-            sentence, line = speak_act(args, act, True, True)
-            write_history(line, sentence)
-            if args.once:
-                return
-            continue
-        posted = posted_text(code, question)
-        if found.brain == "post" and not found.flip:
-            reply = remote_speak(found, args, posted, True)
-        else:
-            reply = answer(py, found, args, posted, speak=False)
-            speak_live(args, reply, found.flip)
-        write_history(question, speakable(reply))
-        if act:
-            sentence, line = speak_act(args, act, False, True)
-            write_history(line, sentence)
-        if args.once:
+        if not heard_turn(py, found, args, words, code):
             return
 
 
@@ -1532,6 +1679,11 @@ def main():
     )
     parser.add_argument("--url", default=None, help="peer POST URL; requires --nvidia. Else TRIDENT_NVIDIA_URL")
     parser.add_argument("--timeout", type=float, default=180, help="brain HTTP timeout seconds (default 180)")
+    parser.add_argument(
+        "--cue",
+        action="store_true",
+        help="live mic: one beep, wait 10s, two beeps, then open the default mic. Three beeps after the turn",
+    )
     args = parser.parse_args()
 
     if args.stop:
@@ -1543,6 +1695,7 @@ def main():
             or args.image
             or args.nvidia
             or args.url
+            or args.cue
             or args.brain != "qwen"
         ):
             die("usage: assistant.py --stop")
@@ -1563,6 +1716,14 @@ def main():
             die("inject asks for no text, wav, or vb-cable")
         if str(args.inject).strip() == "":
             die("empty inject path")
+    if args.cue and (
+        args.text is not None
+        or args.wav is not None
+        or args.vb_cable
+        or args.inject is not None
+        or args.iris_outbox is not None
+    ):
+        die("cue asks for the live mic")
     if args.iris_outbox is not None:
         if args.text is not None or args.wav is not None or args.vb_cable or args.inject is not None:
             die("iris-outbox asks for no text, wav, vb-cable, or inject")

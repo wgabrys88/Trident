@@ -221,10 +221,17 @@ Live mic, on the PC with the microphone. One command. VAD stays up. `--nvidia` r
 .\.venv\Scripts\python.exe .\assistant.py --nvidia
 ```
 
-Stop that tree, and not the brain:
+Cued live mic, on Iris. One beep, ten seconds, two beeps, then the default microphone. Capture stays closed until the two beeps finish. After the mouth, three beeps. `--once` is one turn. `start.py` without `--live` stays the closed-mic inject loop. Leave `:8765` alone.
+
+```powershell
+.\.venv\Scripts\python.exe .\start.py --live --once
+```
+
+Stop that tree, and not the brain. `stop.py` stops a `start.py` inject or live process and the mouth. It does not contact the brain.
 
 ```powershell
 .\.venv\Scripts\python.exe .\assistant.py --stop
+.\.venv\Scripts\python.exe .\stop.py
 ```
 
 Cable harness, on Iris. Not the human speakers.
@@ -294,6 +301,7 @@ Live hear / brain / mouth loop. No `--seconds`. The brain is the placement in "W
 | `--nvidia` | off | Name one peer. `--url`, or else `TRIDENT_NVIDIA_URL`. One connect. A closed port exits `peer missing`. |
 | `--url URL` | none | That peer's POST URL. Requires `--nvidia`. Empty URL fails. There is no built-in host. |
 | `--timeout SEC` | `180` | HTTP timeout when the turn is a POST. Must be `> 0`. |
+| `--cue` | off | Live mic only. One beep, wait 10 seconds, two beeps, then open the default WASAPI mic and resident VAD. Three beeps after that turn. No capture before the two beeps. No utterance within 60 seconds exits `no utterance`. Refuses `--text`, `--wav`, `--inject`, `--vb-cable`, and `--iris-outbox`. A closed brain port exits `peer missing` before the first beep, and again before the two beeps. |
 
 A transcript that is only `quit`, `exit`, or `stop` ends this loop. It does not stop port 8765.
 
