@@ -120,20 +120,54 @@ def already_up():
     return False
 
 
-def wait_ready(proc):
+def pid_stamp(name):
+    path = ROOT / name
+    try:
+        text = path.read_text(encoding="utf-8")
+        mtime = path.stat().st_mtime_ns
+    except OSError:
+        return "", 0
+    return text, mtime
+
+
+def taskkill(pid):
+    subprocess.run(
+        ["taskkill", "/PID", str(pid), "/T", "/F"],
+        cwd=str(ROOT),
+        shell=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def end_process(proc, before):
+    # venv python.exe is a redirector. taskkill /T stops the inject child too.
+    if proc.poll() is None:
+        taskkill(proc.pid)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+    if pid_stamp("assistant.pid") == before:
+        return
+    pid = read_pid("assistant.pid")
+    if pid and pid != proc.pid and python_alive(pid):
+        taskkill(pid)
+
+
+def wait_ready(proc, before):
+    # assistant.pid is the child interpreter, not proc.pid.
     deadline = time.monotonic() + READY_SECONDS
     while time.monotonic() < deadline:
         if proc.poll() is not None:
             code = proc.returncode
             raise SystemExit(code if code is not None else 2)
-        if read_pid("assistant.pid") == proc.pid:
-            return
+        pid = read_pid("assistant.pid")
+        if pid_stamp("assistant.pid") != before and python_alive(pid):
+            return pid
         time.sleep(0.05)
-    proc.kill()
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        pass
+    end_process(proc, before)
     die("inject did not become ready")
 
 
@@ -145,6 +179,7 @@ def main():
         return
     py = venv_python()
     print("iris: brain " + url, file=sys.stderr, flush=True)
+    before = pid_stamp("assistant.pid")
     proc = subprocess.Popen(
         [
             py,
@@ -163,20 +198,12 @@ def main():
     (ROOT / "iris.pid").write_text(str(proc.pid) + "\n", encoding="utf-8")
     code = 2
     try:
-        wait_ready(proc)
-        print("iris: up pid " + str(proc.pid), file=sys.stderr, flush=True)
+        ready_pid = wait_ready(proc, before)
+        print("iris: up pid " + str(ready_pid), file=sys.stderr, flush=True)
         code = proc.wait()
     except KeyboardInterrupt:
         print("iris: stopped", file=sys.stderr)
-        if proc.poll() is None:
-            subprocess.run(
-                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                cwd=str(ROOT),
-                shell=False,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+        end_process(proc, before)
         subprocess.run(
             [py, str(ROOT / "assistant.py"), "--stop"],
             cwd=str(ROOT),
