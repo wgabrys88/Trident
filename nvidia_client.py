@@ -147,8 +147,8 @@ def post_turn(url, ident, text, image, image_b64, timeout, stream=False):
         die("nvidia worker: " + message)
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         reason = getattr(exc, "reason", exc)
-        write_response("id " + ident + "\nerr " + str(reason) + "\n")
-        die("nvidia worker: " + str(reason))
+        write_response("id " + ident + "\nerr peer missing " + str(reason) + "\n")
+        die("nvidia worker: peer missing " + str(reason))
     if code < 200 or code >= 300:
         write_response("id " + ident + "\nerr http " + str(code) + "\n")
         die("nvidia worker: http " + str(code))

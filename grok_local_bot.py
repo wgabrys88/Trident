@@ -936,25 +936,23 @@ def run_inbox(args):
     path = inbox_path(args.inbox)
     user_text, image = load_inbox(path)
     pid = lan_pid(listeners_8765())
-    drop = not bool(pid)
-    url = None
-    if not drop:
-        url = (args.url or "http://127.0.0.1:8765/").strip()
-        if not (url.startswith("http://") or url.startswith("https://")):
-            die("nvidia url must start with http:// or https://")
-        up, where = probe_worker(url)
-        print(
-            "grok-bot: listener 0.0.0.0:8765 pid "
-            + pid
-            + " "
-            + ("up " + where if up else "down " + where),
-            file=sys.stderr,
-            flush=True,
-        )
-        if not up:
-            die("0.0.0.0:8765 pid " + pid + " is not reachable at " + url)
-    else:
-        print("grok-bot: listener missing, drop once", file=sys.stderr, flush=True)
+    if not pid:
+        print("grok-bot: listener missing", file=sys.stderr, flush=True)
+        die("peer missing")
+    url = (args.url or "http://127.0.0.1:8765/").strip()
+    if not (url.startswith("http://") or url.startswith("https://")):
+        die("nvidia url must start with http:// or https://")
+    up, where = probe_worker(url)
+    print(
+        "grok-bot: listener 0.0.0.0:8765 pid "
+        + pid
+        + " "
+        + ("up " + where if up else "down " + where),
+        file=sys.stderr,
+        flush=True,
+    )
+    if not up:
+        die("peer missing")
     print(
         "grok-bot: gemma.ctx "
         + gemma_setting("gemma.ctx")
@@ -968,7 +966,7 @@ def run_inbox(args):
         flush=True,
     )
     run_coordinator(inbox_handoff(user_text, image))
-    role_ok, ms, reply, _watch, _base, util, used = run_inbox_reasoner(url, drop, args.timeout)
+    role_ok, ms, reply, _watch, _base, util, used = run_inbox_reasoner(url, False, args.timeout)
     after_pid = lan_pid(listeners_8765())
     listener_ok = (not pid) or (after_pid == pid)
     passed = bool(role_ok and listener_ok)
@@ -985,7 +983,7 @@ def run_inbox(args):
             flush=True,
         )
     print(
-        "grok-bot: reasoner_ms " + str(ms) + " via " + ("drop" if drop else "post"),
+        "grok-bot: reasoner_ms " + str(ms) + " via post",
         file=sys.stderr,
         flush=True,
     )

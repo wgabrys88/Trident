@@ -248,7 +248,7 @@ def is_quit(text):
     return word in QUIT_WORDS
 
 
-def release_shared_gpu():
+def release_shared_gpu(flip):
     import gemma
 
     cuda_name, vulkan_name = gemma.adapter_names()
@@ -256,23 +256,52 @@ def release_shared_gpu():
         "assistant: gpu cuda " + (cuda_name or "none") + " vulkan " + (vulkan_name or "none"),
         file=sys.stderr,
     )
+    if not flip:
+        return
     if not cuda_name:
         return
     if not vulkan_name:
         die("cannot read Vulkan device 0")
-    if gemma.same_adapter():
-        print("assistant: flip gemma off", file=sys.stderr)
-        gemma.stop_resident()
+    print("assistant: flip gemma off", file=sys.stderr)
+    gemma.stop_resident()
 
 
-def speak_raw(py, args, raw, play=True):
+def peer_url(args):
+    if not args.nvidia:
+        return None
+    return (args.url or os.environ.get("TRIDENT_NVIDIA_URL", "")).strip()
+
+
+def turn_place(args):
+    import gemma
+
+    found = gemma.place(peer_url(args))
+    print("assistant: place " + gemma.place_line(found), file=sys.stderr, flush=True)
+    if found.brain == "missing":
+        die("peer missing")
+    return found
+
+
+def brain_script(found, brain_flag):
+    if found.brain == "missing":
+        die("peer missing")
+    if found.brain == "post":
+        return "nvidia_client.py"
+    if found.brain == "resident":
+        return "gemma.py"
+    if brain_flag == "gemma":
+        return "gemma.py"
+    return "qwen.py"
+
+
+def speak_raw(py, args, raw, play=True, flip=False):
     spoken = speakable(raw)
     lang = resolved_lang(args.model, args.lang)
     parts = chunks_for_mouth(spoken, lang) if spoken else []
     if not parts:
         print("assistant: no speakable answer", file=sys.stderr)
         return []
-    release_shared_gpu()
+    release_shared_gpu(flip)
     print("assistant: mouth " + str(len(parts)) + " chunk(s)", file=sys.stderr)
     argv = [py, str(ROOT / "mouth.py"), "--model", args.model]
     if not play:
@@ -288,7 +317,7 @@ def speak_raw(py, args, raw, play=True):
     return [line.strip() for line in out.splitlines() if line.strip()]
 
 
-def say(py, args, question, speak=True):
+def say(py, args, question, speak=True, flip=False):
     script = "qwen.py" if args.brain == "qwen" else "gemma.py"
     argv = [py, str(ROOT / script), "--verbose"]
     if args.image:
@@ -298,11 +327,11 @@ def say(py, args, question, speak=True):
     raw = run_child(args.brain, argv, keep_stdout=True, keep_stderr=True)
     show(raw)
     if speak:
-        speak_raw(py, args, raw)
+        speak_raw(py, args, raw, flip=flip)
     return raw
 
 
-def offload(py, args, question, speak=True):
+def offload(py, args, question, speak=True, flip=False):
     argv = [py, str(ROOT / "nvidia_client.py")]
     if args.url:
         argv.extend(["--url", args.url])
@@ -318,8 +347,23 @@ def offload(py, args, question, speak=True):
         return ""
     show(raw)
     if speak:
-        speak_raw(py, args, raw)
+        speak_raw(py, args, raw, flip=flip)
     return raw
+
+
+def run_brain(py, args, question, speak, found):
+    script = brain_script(found, args.brain)
+    if args.image and script == "qwen.py":
+        die("image asks use --brain gemma")
+    if script == "nvidia_client.py":
+        args.url = found.url
+        return offload(py, args, question, speak, found.flip)
+    previous = args.brain
+    args.brain = "gemma" if script == "gemma.py" else "qwen"
+    try:
+        return say(py, args, question, speak, found.flip)
+    finally:
+        args.brain = previous
 
 
 def listen(py, seconds):
@@ -346,14 +390,11 @@ def listen_wav(py, wav):
     return raw.strip()
 
 
-def one_turn(py, args, question):
+def one_turn(py, args, question, found):
     if is_quit(question):
         print("assistant: quit", file=sys.stderr)
         return True
-    if args.nvidia:
-        offload(py, args, question)
-        return False
-    say(py, args, question)
+    run_brain(py, args, question, True, found)
     return False
 
 
@@ -399,7 +440,7 @@ def write_proof(name, text):
     (folder / name).write_text(text, encoding="utf-8")
 
 
-def cable_turn(py, args):
+def cable_turn(py, args, found):
     phrase = CABLE_PHRASE if args.text is None else args.text.strip()
     argv = [py, str(ROOT / "loopback.py"), "--phrase", phrase]
     print("assistant: vb-cable", file=sys.stderr)
@@ -437,14 +478,10 @@ def cable_turn(py, args):
         reasons.append("no transcript")
     else:
         try:
-            if args.nvidia:
-                reply = offload(py, args, transcript, speak=False)
-                nvidia_exit = "0"
-                if args.url and not reply.strip():
-                    reasons.append("empty nvidia reply")
-            else:
-                reply = say(py, args, transcript, speak=False)
-                nvidia_exit = "local"
+            reply = run_brain(py, args, transcript, False, found)
+            nvidia_exit = "0" if found.brain == "post" else found.brain
+            if found.brain == "post" and not reply.strip():
+                reasons.append("empty nvidia reply")
         except SystemExit as exc:
             code = exc.code if isinstance(exc.code, int) else 2
             if args.nvidia:
@@ -455,7 +492,7 @@ def cable_turn(py, args):
             reasons.append("no reply to speak")
         else:
             try:
-                mouth_paths = speak_raw(py, args, reply, play=False)
+                mouth_paths = speak_raw(py, args, reply, play=False, flip=found.flip)
             except SystemExit as exc:
                 code = exc.code if isinstance(exc.code, int) else 2
                 mouth_exit = str(code)
@@ -542,14 +579,14 @@ def main():
         help="with --vb-cable, synthesize the reply to wavs and do not play them",
     )
     parser.add_argument("--seconds", type=float, default=8, help="hear.py seconds (default 8)")
-    parser.add_argument("--brain", default="qwen", choices=BRAINS, help="default qwen")
+    parser.add_argument("--brain", default="qwen", choices=BRAINS, help="CPU row only; a CUDA device uses Gemma")
     parser.add_argument("--model", default="nano", choices=MODELS, help="mouth model, default nano")
     parser.add_argument("--lang", default=None, help="mouth language; omit for en, or pl when model is v3")
     parser.add_argument("--image", default=None, help="image file; local gemma, or a path on an --nvidia turn")
     parser.add_argument(
         "--nvidia",
         action="store_true",
-        help="send the turn through nvidia_client.py instead of the local brain",
+        help="POST to one peer URL; a closed port exits peer missing",
     )
     parser.add_argument("--url", default=None, help="NVIDIA worker URL; forwarded to nvidia_client.py")
     parser.add_argument(
@@ -566,8 +603,6 @@ def main():
         die("empty language")
     if args.image is not None and args.image.strip() == "":
         die("empty image")
-    if args.image and args.brain != "gemma" and not args.nvidia:
-        die("image asks use --brain gemma")
     if args.text is not None and args.text.strip() == "":
         die("empty text")
     if args.wav is not None and args.wav.strip() == "":
@@ -588,18 +623,21 @@ def main():
         die("timeout must be > 0")
 
     py = venv_python()
+    found = turn_place(args)
+    if args.image and brain_script(found, args.brain) == "qwen.py":
+        die("image asks use --brain gemma")
     if args.vb_cable:
-        cable_turn(py, args)
+        cable_turn(py, args, found)
         return
     if args.text is not None:
-        one_turn(py, args, args.text.strip())
+        one_turn(py, args, args.text.strip(), found)
         return
     if args.wav is not None:
         question = listen_wav(py, args.wav.strip())
         if not question:
             print("assistant: hear returned no transcript", file=sys.stderr)
             return
-        one_turn(py, args, question)
+        one_turn(py, args, question, found)
         return
 
     while True:
@@ -609,7 +647,7 @@ def main():
             if args.once:
                 return
             continue
-        if one_turn(py, args, question) or args.once:
+        if one_turn(py, args, question, found) or args.once:
             return
 
 

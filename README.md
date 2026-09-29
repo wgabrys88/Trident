@@ -59,7 +59,7 @@ Chunk sizes on the English path: flush on `.!?;:` and dashes, then a 65-word lim
 
 `do_POST` reads `id`, `text`, `image`, `image_b64`, and optional `stream`. It does not keep a session. `gemma.py` on the machine that runs the brain replays `gemma.memory.txt` into the next text prompt: `remember` facts, then the newest user and model turns. Each side is clipped to 200 words. Oldest turns drop when that prompt passes 80_000 characters. A fact drops only after those turns are gone and the prompt still does not fit. Image prompts do not replay the file. A `<<trident-inbox>>` question does not read or write it. `assistant.py --nvidia` still posts only the current question and does not attach `grok_bot_history.txt`. The 2026-09-28 reply "We have not had a conversation yet" (Iris chatterbox wav `19-16-15-588`; PE `19-16-31-164_gemma_out_000.txt`) is the code from before this file.
 
-`nvidia_client.py` always writes `nvidia_turn.request.txt` on the caller, then the response file after HTTP. Those same names are the `--drop` inbox inside `nvidia_worker.py`. `--drop` writes plain `id` / `ok` or `err` text. HTTP success is JSON. While `0.0.0.0:8765` is already listening, production is POST. The door never starts the worker. `--drop` is the fallback when this computer is not already listening. Do not use that fallback on Iris. An Iris `--inbox` with no local listener would try to run Gemma on Iris.
+`nvidia_client.py` always writes `nvidia_turn.request.txt` on the caller, then the response file after HTTP. Those same names are the `--drop` inbox inside `nvidia_worker.py`. `--drop` writes plain `id` / `ok` or `err` text. HTTP success is JSON. While `0.0.0.0:8765` is already listening, production is POST. The door never starts the worker. `grok_local_bot.py --inbox` exits `peer missing` when that listener is absent. `--drop` stays an explicit reasoner flag.
 
 File-team memory is different. `grok_local_bot.py` appends coordinator and reasoner lines to `grok_bot_history.txt`, with `grok_bot_request.txt` and `grok_bot_response.txt`. Those roles are lines in a file. They are not people. `--proof` clears the history file before it runs. The live `--nvidia` loop does not.
 
@@ -81,15 +81,19 @@ File-team memory is different. `grok_local_bot.py` appends coordinator and reaso
 
 Ordinary text turns in `gemma.py` declare `remember`, `devices`, and `cursor`, and replay `gemma.memory.txt`. Past model turns are the speakable text only. The current text turn starts at `<|turn>model` with thinking left off. A question that starts with `<<trident-inbox>>` skips the tools, leaves the thought channel open, and does not touch that file. Image prompts do not add the tool header, do not replay memory, and still close an empty thought channel. After an image turn the speakable reply is still appended.
 
-`remember` appends one fact, at most 200 characters, to `gemma.memory.txt` on the machine that ran `gemma.py`, then asks the brain once more. A duplicate fact is kept, not written twice. `devices` reports the CUDA device, the Vulkan device, and whether they are the same adapter. It does not use a hostname. `cursor` runs only when the generation contains that call. It starts one local `agent` with `--model composer-2.5` in a worktree based on `runner-h`, writes `grok_bot_spawn.txt`, and does not wait. The argv has no fast model. A missing `agent` writes `BLOCKED` and does not start a follow-up. It does not run the Cursor IDE shim. An empty task is `fail empty task`. An unknown tool name is the spoken line `unknown tool` plus that name. Python does not call a tool the model did not emit.
+`remember` appends one fact, at most 200 characters, to `gemma.memory.txt` on the machine that ran `gemma.py`, then asks the brain once more. A duplicate fact is kept, not written twice. `devices` reports the CUDA device, the Vulkan device, whether they are the same adapter, whether `127.0.0.1:8765` is accepting, and whether a mouth on this computer would share that GPU. The computer name is not an input. `cursor` runs only when the generation contains that call. It starts one local `agent` with `--model composer-2.5` in a worktree based on `runner-h`, writes `grok_bot_spawn.txt`, and does not wait. The argv has no fast model. A missing `agent` writes `BLOCKED` and does not start a follow-up. It does not run the Cursor IDE shim. An empty task is `fail empty task`. An unknown tool name is the spoken line `unknown tool` plus that name. Python does not call a tool the model did not emit.
 
 On the Scenario C math turn the NVIDIA seat recorded `call:hello` with body `106 - 12 = 94` and a follow-up that the result is 94. The Iris mouth wav for that reply is `19-19-06-010`. That `hello` write is gone. `remember` is the write.
 
-### Local Qwen
+### Where the turn runs
 
-`assistant.py` without `--nvidia` uses `--brain qwen` (the default): `qwen.py` and `sense.exe`, Qwen3 0.6B, CPU, `sense.gpu-layers 0`, context 4096, `n-predict` 128. Vision is refused (`qwen/sense vision is N/A`). The door does not call it. The same Iris `speak_raw` path still chunks the local reply before `mouth.py`.
+`assistant.py` decides once, from the CUDA device, the Vulkan device, and one TCP connect. The computer name is not an input.
 
-`assistant.py --brain gemma` without `--nvidia` runs local `gemma.py`. That is not the production GPU path.
+`--nvidia` names one peer: `--url`, or `TRIDENT_NVIDIA_URL` when `--url` is omitted. An empty peer exits `peer missing`. A peer whose port accepts is one POST to that URL. A peer whose port does not accept exits `peer missing`. That failure leaves `qwen.py` and the local Gemma resident unstarted.
+
+With no peer named, an accepting `127.0.0.1:8765` is a POST to that listener. With no listener and a CUDA device, the turn is the local Gemma resident (`gemma.py`). With no listener and no CUDA device, the turn is `--brain` (default `qwen`: `qwen.py` and `sense.exe`, Qwen3 0.6B, CPU, `sense.gpu-layers 0`, context 4096, `n-predict` 128). Vision on that CPU row is refused (`qwen/sense vision is N/A`). The door does not call it.
+
+The mouth runs after that text, through the same `speak_raw` path. Gemma is stopped first when this turn's brain is on this computer and CUDA device 0 and Vulkan device 0 are the same adapter. A peer on another address leaves the local resident loaded. `mouth.py` is unchanged.
 
 ## What has been shown (2026-09-28)
 
@@ -202,7 +206,7 @@ Inbox, on PE, default file `grok_bot_inbox.txt`.
 .\.venv\Scripts\python.exe .\grok_local_bot.py --inbox
 ```
 
-`grok_local_bot.py` accepts exactly one of `--proof`, `--role`, `--wav`, or `--inbox`. `--wav` refuses `--drop`. `--proof` and `--inbox` look for a local `0.0.0.0:8765`. Their default URL is `http://127.0.0.1:8765/`.
+`grok_local_bot.py` accepts exactly one of `--proof`, `--role`, `--wav`, or `--inbox`. `--wav` refuses `--drop`. `--proof` and `--inbox` require a local `0.0.0.0:8765`. Their default URL is `http://127.0.0.1:8765/`. A missing listener on `--inbox` exits `peer missing`.
 
 Closed-mic audible check, on Iris, with a person at the Realtek speakers:
 
@@ -253,14 +257,14 @@ Checked-in values below are the values in the cards on `runner-h`. A program tha
 
 | Variable | Who reads it | Meaning |
 | --- | --- | --- |
-| `TRIDENT_NVIDIA_URL` | `nvidia_client.py` when `--url` is omitted. `grok_local_bot.py --wav` when `--url` is omitted. | Worker POST URL, for example `http://192.168.16.31:8765/`. The door exits if both `--url` and this variable are empty. `--proof`, `--role`, and `--inbox` do not read it. Those modes use `--url` or `http://127.0.0.1:8765/`. |
+| `TRIDENT_NVIDIA_URL` | `nvidia_client.py` when `--url` is omitted. `assistant.py --nvidia` when `--url` is omitted. `grok_local_bot.py --wav` when `--url` is omitted. | Worker POST URL, for example `http://192.168.16.31:8765/`. The door exits if both `--url` and this variable are empty. `assistant.py --nvidia` exits `peer missing` when both are empty, and when the one URL does not accept. `--proof`, `--role`, and `--inbox` do not read it. Those modes use `--url` or `http://127.0.0.1:8765/`. |
 | `TRIDENT_VENV_NEW` | `install.py` | Internal. The installer sets it to `1` only for the re-exec into a venv it just created. Leave it unset. |
 | `CUDA_PATH` | `gemma/scripts/detect_gpu.ps1` | One place that script looks for `nvcc.exe` when `install.gemma_backend` is `auto`. |
 | `PYTHONUNBUFFERED` | Set to `1` by `assistant.py` and `loopback.py` on some children | Child-process plumbing. Leave it alone. |
 
 ### `assistant.py`
 
-Live hear / brain / mouth loop. Default brain is local Qwen. `--nvidia` posts one turn and does not send history.
+Live hear / brain / mouth loop. The brain is the placement in "Where the turn runs". `--nvidia` names one peer. The chunker and the mouth are unchanged.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
@@ -270,12 +274,12 @@ Live hear / brain / mouth loop. Default brain is local Qwen. `--nvidia` posts on
 | `--vb-cable` | off | Play a phrase into `CABLE Input (VB-Audio Virtual Cable)`, hear `CABLE Output`, then one turn. Returns before the live mic loop. |
 | `--mouth` | off | With `--vb-cable` only: synthesize the reply to wavs and do not play them. Without `--vb-cable` the process exits. |
 | `--seconds N` | `8` | Mic window passed to `hear.py`. Must be `> 0`. Scenario C used `30`. The mic closes when the window ends, including during the POST and playback. |
-| `--brain` | `qwen` | `qwen` or `gemma`. Local brains only. `--nvidia` uses the worker instead. |
+| `--brain` | `qwen` | `qwen` or `gemma` on the CPU row (no CUDA device, and `127.0.0.1:8765` is not accepting). A CUDA device uses the local listener or the Gemma resident. |
 | `--model` | `nano` | Mouth model: `nano`, `turbo`, or `v3`. |
 | `--lang TAG` | omit | Mouth language. Omit and `resolved_lang` returns `en` for `nano` and `turbo`, `pl` for `v3`. Empty tag fails. |
-| `--image PATH` | none | Image file. Local path requires `--brain gemma` unless `--nvidia` is set. On `--nvidia` the path is sent to `nvidia_client.py`. |
-| `--nvidia` | off | One POST through `nvidia_client.py`. The worker stores no session. `gemma.py` replays `gemma.memory.txt`. |
-| `--url URL` | none | Forwarded to `nvidia_client.py`. Requires `--nvidia`. Empty URL fails. |
+| `--image PATH` | none | Image file. The CPU row with `--brain qwen` exits. A CUDA placement or a peer POST can carry the image. |
+| `--nvidia` | off | Name one peer. `--url`, or else `TRIDENT_NVIDIA_URL`. One connect. A closed port exits `peer missing`. |
+| `--url URL` | none | That peer's POST URL. Requires `--nvidia`. Empty URL fails. There is no second URL. |
 | `--timeout SEC` | none | Forwarded only with `--nvidia`. Must be `> 0`. Omit it and the client default is 30 s, which is shorter than a slow Gemma turn. The proven commands pass `180`. |
 
 A transcript that is only `quit`, `exit`, or `stop` ends this loop. It does not stop port 8765.
@@ -372,7 +376,7 @@ One question, then stdout generation, thinking included. The default keeps one r
 | `--stop` | off | Stop the resident. Must be the only flag. This is how a same-GPU mouth unloads Gemma before Vulkan. |
 | `--stream` | off | Write each sampled piece to stdout. Implies the resident. |
 
-Ordinary text turns replay `gemma.memory.txt` and declare `remember`, `devices`, and `cursor`. Past model turns are the speakable text only. The current text turn starts at `<|turn>model` with thinking left off. `remember` appends one fact to `gemma.memory.txt` on the machine that ran `gemma.py`, then asks the brain once more. `devices` reports the CUDA and Vulkan adapters on this computer. `cursor` starts one local `agent -p --force --trust --worktree --worktree-base runner-h --model composer-2.5` when the model emits that call, writes `grok_bot_spawn.txt`, and returns without waiting. A missing `agent` writes `BLOCKED` and does not follow up. An unknown tool is spoken as a failure. Image prompts do not add the tool header and do not replay memory. A `<<trident-inbox>>` question does not read or write `gemma.memory.txt`.
+Ordinary text turns replay `gemma.memory.txt` and declare `remember`, `devices`, and `cursor`. Past model turns are the speakable text only. The current text turn starts at `<|turn>model` with thinking left off. `remember` appends one fact to `gemma.memory.txt` on the machine that ran `gemma.py`, then asks the brain once more. `devices` reports the CUDA device, the Vulkan device, whether they are the same adapter, whether `127.0.0.1:8765` is accepting, and whether a mouth on this computer would share that GPU. `cursor` starts one local `agent -p --force --trust --worktree --worktree-base runner-h --model composer-2.5` when the model emits that call, writes `grok_bot_spawn.txt`, and returns without waiting. A missing `agent` writes `BLOCKED` and does not follow up. An unknown tool is spoken as a failure. Image prompts do not add the tool header and do not replay memory. A `<<trident-inbox>>` question does not read or write `gemma.memory.txt`.
 
 The default path keeps one `gemma-brain.exe --resident gemma_run.txt`. Prompts are `gemma.prompt.txt` (`id`, image byte length, image base64, prompt). Responses are `gemma.response.txt` (length-prefixed pieces, then `ok` or `err`). `--once` still copies `gemma.txt`, drops `gemma.text` and `gemma.image`, and runs `gemma-brain.exe gemma_run.txt`. One-shot output is `HH-MM-SS-mmm_gemma_out_NNN.txt`.
 
@@ -404,7 +408,7 @@ File team and the unattended wav door. Pass exactly one of `--proof`, `--role`, 
 | `--url URL` | see below | Worker POST URL. |
 | `--timeout SEC` | `600` | Worker seconds for the reasoner. Must be `> 0`. The door's hear cap is 180 s and its mouth cap is 300 s, separate from this clock. |
 
-`--wav` URL is `--url` or `TRIDENT_NVIDIA_URL`. `--proof`, `--role`, and `--inbox` use `--url` or `http://127.0.0.1:8765/` when `--drop` is off.
+`--wav` URL is `--url` or `TRIDENT_NVIDIA_URL`. `--proof` and `--role` use `--url` or `http://127.0.0.1:8765/` when `--drop` is off. `--inbox` uses that URL and exits `peer missing` when `0.0.0.0:8765` is not listening.
 
 `--inbox` file: either plain text, or blocks `text <<` … `<<` and optional `image <<` … `<<`. An image path must exist on the machine that reads the inbox. Empty text with an image becomes `What is in this picture?`.
 
@@ -828,7 +832,7 @@ The body of `README.md` is the program manual (seats, voice path, install, comma
 - **Mouth target = Iris default PlaySound device**, measured that day as **Speakers (Realtek(R) Audio)**. The mouth prints `mouth out: default`. PE console default in the NVIDIA notes is Speakers (Creative SB X-Fi). LG TV (NVIDIA High Definition Audio) is on PE and is not the default. Neither is the live mouth. There is no NVIDIA Speakers endpoint.
 - **Polish.** English Chatterbox on Polish text means omitted `--lang` on `nano` (`resolved_lang` → `en`) before Chatterbox. The text is not rewritten.
 - **Stop is external.** Gemma has no quit tool. MIC STOP kills the `assistant.py` tree only. Leave `:8765` up. Heard `quit` / `exit` / `stop` ends the assistant loop only.
-- **Tools.** `remember` appends one fact to `gemma.memory.txt` on the worker machine. `devices` reports the CUDA and Vulkan adapters on that computer. `cursor` starts one local `agent` on `composer-2.5` when the model calls it, and a missing CLI is `BLOCKED`. Python does not call it otherwise. The 2026-09-28 `hello` write is gone.
+- **Tools.** `remember` appends one fact to `gemma.memory.txt` on the worker machine. `devices` reports the CUDA and Vulkan adapters on that computer, whether `127.0.0.1:8765` is accepting, and whether a mouth there would share that GPU. `cursor` starts one local `agent` on `composer-2.5` when the model calls it, and a missing CLI is `BLOCKED`. Python does not call it otherwise. The 2026-09-28 `hello` write is gone.
 - **VOICE = invoke-on-ask only.** No default VOICE Cursor scout.
 - **Worker bind.** `nvidia_worker.py --host` defaults to `0.0.0.0`, port 8765, PE only. Iris `local_8765: none`. Health probe is TCP connect or a real POST. GET is not implemented.
 - **VRAM.** One Gemma on the 1060. Image inbox peaked 5672 MiB of 6144. File-team proof peaked 4678. An overlap experiment peaked at 5976 MiB concurrent. Do not start a second Gemma beside the worker.

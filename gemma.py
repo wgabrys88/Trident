@@ -7,7 +7,10 @@ Text turns replay gemma.memory.txt and declare remember, devices, and cursor. Pa
 turns are the speakable text only. The current turn starts at <|turn>model with thinking
 left off. A Gemma 4 <|tool_call> is run here. remember and devices ask the brain once
 more. The speakable answer is appended to that file. remember adds one fact.
-devices reports the CUDA and Vulkan adapters on this computer. Trim drops the oldest
+devices reports the CUDA and Vulkan adapters on this computer, whether port
+8765 accepts here, and whether a mouth on this computer would share that GPU.
+place() is that same decision for a turn: one TCP connect, no computer name,
+no second URL. Trim drops the oldest
 turns first. A fact drops only after every turn is gone and the prompt still does not fit.
 
 cursor starts one local `agent` process when the model calls it, writes grok_bot_spawn.txt,
@@ -27,9 +30,11 @@ import hashlib
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
+import urllib.parse
 from collections import namedtuple
 from pathlib import Path
 
@@ -50,7 +55,7 @@ SYSTEM = (
     "Speak one or two short sentences in the owner's language. "
     "The user and model turns after this are what was already said. Use them. "
     "remember stores one fact that stays after old turns are dropped. "
-    "devices reports the CUDA and Vulkan adapters on this computer. "
+    "devices reports the CUDA device, the Vulkan device, whether they are the same adapter, and whether a mouth on this computer would share the brain GPU. "
     "cursor starts one local Cursor agent when the owner asks for a code change. "
     "Call a tool only by its tool call. The spoken sentence has no channels or file names."
 )
@@ -80,7 +85,7 @@ REMEMBER_DECL = (
 DEVICES_DECL = (
     "<|tool>declaration:devices{description:"
     + Q
-    + "Report the CUDA device and the Vulkan device on this computer, and whether they are the same adapter. Call this when asked which GPU is here or whether speaking would share the brain GPU."
+    + "Report the CUDA device and the Vulkan device on this computer, whether they are the same adapter, whether port 8765 is accepting here, and whether a mouth on this computer would share the brain GPU. Call this when asked which GPU is here or where this computer's brain is running."
     + Q
     + ",parameters:{properties:{},required:[],type:"
     + Q
@@ -1368,27 +1373,166 @@ def adapter_names():
 
 def same_adapter():
     cuda_name, vulkan_name = adapter_names()
-    if not cuda_name or not vulkan_name:
+    return adapter_word(cuda_name, vulkan_name) == "same"
+
+
+PLACE_PORT = 8765
+Place = namedtuple("Place", "brain url cuda vulkan adapter flip where")
+
+
+def tcp_accepts(host, port, timeout=1.0):
+    try:
+        infos = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except OSError:
         return False
-    return _norm_device(cuda_name) == _norm_device(vulkan_name)
+    if not infos:
+        return False
+    family, socktype, proto, _canon, sockaddr = infos[0]
+    sock = socket.socket(family, socktype, proto)
+    sock.settimeout(timeout)
+    try:
+        sock.connect(sockaddr)
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
+def local_addresses():
+    # Interface addresses. The computer name is not a key.
+    names = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
+    try:
+        get_table = ctypes.windll.iphlpapi.GetIpAddrTable
+    except (AttributeError, OSError):
+        return names
+    get_table.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong), ctypes.c_int]
+    get_table.restype = ctypes.c_ulong
+    size = ctypes.c_ulong(0)
+    get_table(None, ctypes.byref(size), False)
+    if size.value <= 4:
+        return names
+    buf = ctypes.create_string_buffer(size.value)
+    if get_table(buf, ctypes.byref(size), False) != 0:
+        return names
+    count = int.from_bytes(buf.raw[:4], "little")
+    for index in range(count):
+        off = 4 + index * 24
+        if off + 4 > len(buf.raw):
+            break
+        ip = ".".join(str(byte) for byte in buf.raw[off : off + 4])
+        if ip != "0.0.0.0":
+            names.add(ip)
+    return names
+
+
+def host_is_local(host, addresses):
+    name = (host or "").strip().casefold()
+    if not name:
+        return False
+    return name in {item.casefold() for item in addresses}
+
+
+def split_peer(url):
+    parsed = urllib.parse.urlsplit((url or "").strip())
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return None
+    port = parsed.port
+    if port is None:
+        port = 443 if parsed.scheme == "https" else 80
+    return parsed.hostname, port
+
+
+def adapter_word(cuda_name, vulkan_name):
+    if not cuda_name or not vulkan_name:
+        return "unknown"
+    if _norm_device(cuda_name) == _norm_device(vulkan_name):
+        return "same"
+    return "different"
+
+
+def place_line(found):
+    return (
+        "brain "
+        + found.brain
+        + " "
+        + found.where
+        + " cuda "
+        + (found.cuda or "none")
+        + " vulkan "
+        + (found.vulkan or "none")
+        + " "
+        + found.adapter
+        + (" flip" if found.flip else "")
+    )
+
+
+def place(peer_url=None, port=PLACE_PORT, opener=None, addresses=None, devices=None):
+    # One decision. Device names and one TCP connect. No computer name. No second URL.
+    if devices is None:
+        cuda_name, vulkan_name = adapter_names()
+    else:
+        cuda_name, vulkan_name = devices
+    adapter = adapter_word(cuda_name, vulkan_name)
+    same = adapter == "same"
+    open_tcp = tcp_accepts if opener is None else opener
+    if peer_url is not None:
+        text = str(peer_url).strip()
+        if not text:
+            return Place("missing", "", cuda_name, vulkan_name, adapter, False, "peer")
+        parts = split_peer(text)
+        if parts is None:
+            return Place("missing", text, cuda_name, vulkan_name, adapter, False, "peer")
+        host, peer_port = parts
+        if not open_tcp(host, peer_port):
+            return Place("missing", text, cuda_name, vulkan_name, adapter, False, "peer")
+        addrs = local_addresses() if addresses is None else addresses
+        local = host_is_local(host, addrs)
+        flip = bool(same and local and cuda_name)
+        where = "local" if local else "peer"
+        return Place("post", text, cuda_name, vulkan_name, adapter, flip, where)
+    if open_tcp("127.0.0.1", port):
+        url = "http://127.0.0.1:" + str(port) + "/"
+        return Place("post", url, cuda_name, vulkan_name, adapter, bool(same and cuda_name), "local")
+    if cuda_name:
+        return Place("resident", "", cuda_name, vulkan_name, adapter, bool(same), "local")
+    return Place("cpu", "", cuda_name, vulkan_name, adapter, False, "local")
+
+
+def devices_report(found):
+    listener = "up" if found.brain == "post" else "down"
+    cuda_name = found.cuda or "none"
+    vulkan_name = found.vulkan or "none"
+    flip = "yes" if found.flip else "no"
+    fields = [
+        ("adapter", found.adapter),
+        ("cuda", cuda_name),
+        ("vulkan", vulkan_name),
+        ("brain", found.brain),
+        ("listener", listener),
+        ("flip", flip),
+    ]
+    spoken = (
+        "cuda "
+        + cuda_name
+        + "; vulkan "
+        + vulkan_name
+        + "; "
+        + found.adapter
+        + "; brain "
+        + found.brain
+        + "; listener "
+        + listener
+        + "; flip "
+        + flip
+    )
+    return fields, spoken
 
 
 def run_devices():
-    cuda_name, vulkan_name = adapter_names()
-    cuda_name = cuda_name or "none"
-    vulkan_name = vulkan_name or "none"
-    if cuda_name != "none" and vulkan_name != "none" and _norm_device(cuda_name) == _norm_device(vulkan_name):
-        adapter = "same"
-    elif cuda_name == "none" and vulkan_name == "none":
-        adapter = "unknown"
-    else:
-        adapter = "different"
-    print(
-        "gemma: tool devices cuda " + cuda_name + " vulkan " + vulkan_name + " " + adapter,
-        file=sys.stderr,
-        flush=True,
-    )
-    return cuda_name, vulkan_name, adapter
+    fields, spoken = devices_report(place(None))
+    print("gemma: tool devices " + spoken, file=sys.stderr, flush=True)
+    return fields, spoken
 
 
 def note_prompt(prompt, facts, pairs):
@@ -1408,13 +1552,8 @@ def tool_turn(name, args, raw, spawn_path=None):
         line = store_fact(MEMORY_PATH, args.get("line")) or "empty"
         return raw + tool_response("remember", [("line", line)]), None, line
     if name == "devices":
-        cuda_name, vulkan_name, adapter = run_devices()
-        suffix = raw + tool_response(
-            "devices",
-            [("adapter", adapter), ("cuda", cuda_name), ("vulkan", vulkan_name)],
-        )
-        spoken = "cuda " + cuda_name + "; vulkan " + vulkan_name + "; " + adapter
-        return suffix, None, spoken
+        fields, spoken = run_devices()
+        return raw + tool_response("devices", fields), None, spoken
     if name == "cursor":
         summary = run_cursor_job(args.get("task"), spawn_path=spawn_path)
         if summary == "BLOCKED" or summary.startswith("fail"):
