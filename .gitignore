@@ -93,6 +93,7 @@
 !/proof/g429-pe-stream-flush.md
 !/proof/g429-pe-memory.md
 !/proof/g429-pe-tools.md
+!/proof/g429-pe-idle.md
 !/proof/g429-pe-place.md
 !/proof/g429-pe-merge.md
 /seq_agents.txt
