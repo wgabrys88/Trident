@@ -1,14 +1,10 @@
 import argparse
 import json
 import os
-import queue
 import re
-import struct
 import subprocess
 import sys
-import threading
 import time
-import wave
 from pathlib import Path
 
 import hear
@@ -17,10 +13,6 @@ import nvidia_client
 ROOT = Path(__file__).resolve().parent
 MODELS = ("nano", "turbo", "v3")
 BRAINS = ("qwen", "gemma")
-QUIT_WORDS = {"quit", "exit", "stop"}
-ACT_LINE = re.compile(r"^act:\s*(.*)$", re.IGNORECASE)
-NOTE_PATH = ROOT / "assistant.note.txt"
-NOTE_LIMIT = 200
 CABLE_PHRASE = "Trident cable loopback"
 EN_LIMIT = 65
 PL_LIMIT = 55
@@ -39,12 +31,6 @@ TOKENS = (
 VAD_PROC = None
 OWN = False
 TRACK = {"mouth": "off", "qwen": "off"}
-CUE_WAV = ROOT / "proof" / "g429-live-cue.wav"
-CUE_HZ = 1000
-CUE_MS = 500
-CUE_GAP_S = 0.28
-CUE_WAIT_S = 10.0
-CUE_LISTEN_S = 60.0
 
 
 def die(message):
@@ -125,7 +111,13 @@ def _markup(text):
 
 
 def speakable(generation):
-    text = generation.replace("\r\n", "\n").replace("\r", "\n")
+    import gemma
+
+    text = gemma.strip_tool_markup(generation or "")
+    cut = text.find("<|tool_call>")
+    if cut >= 0:
+        text = text[:cut]
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
     if "</think>" in text:
         text = text.split("</think>")[-1]
     elif "<channel|>" in text:
@@ -458,95 +450,11 @@ def _plan_chunks(text, fast, pack):
     return pieces
 
 
-def _held_tail(text):
-    markers = TOKENS + ("**", "__", "`")
-    cap = min(len(text), max(len(marker) for marker in markers))
-    best = 0
-    for size in range(1, cap + 1):
-        suffix = text[-size:]
-        if any(marker.startswith(suffix) and len(suffix) < len(marker) for marker in markers):
-            best = size
-    return best
-
-
-def _lead_hold(text):
-    lead = text.lstrip()
-    if not lead:
-        return False
-    for marker in ("<think>", "</think>", "<channel|>", "<|channel>thought", "<channel>thought"):
-        if marker.startswith(lead) and lead != marker:
-            return True
-    return False
-
-
-def _visible(raw, locked, final):
-    text = raw.replace("\r\n", "\n").replace("\r", "\n")
-    if not locked:
-        if "</think>" in text:
-            text = text.split("</think>")[-1]
-        elif "<channel|>" in text:
-            text = text.split("<channel|>")[-1]
-        elif "<think>" in text or "<|channel>thought" in text or "<channel>thought" in text:
-            return "", False
-        elif not final and _lead_hold(text):
-            return "", False
-    if not final:
-        held = _held_tail(text)
-        if held:
-            text = text[:-held]
-    return _markup(text).lstrip(), True
-
-
-class StreamFeed:
-    """Closed atoms for the mouth while text is still arriving."""
-
-    def __init__(self, fast="nano"):
-        self.fast = fast if fast in ("nano", "turbo") else "nano"
-        self.scan = AtomScan()
-        self.raw = ""
-        self.fed = ""
-        self.locked = False
-        self.spoke = False
-
-    def push(self, piece):
-        self.raw += piece or ""
-        return self._pump(False)
-
-    def finish(self):
-        return self._pump(True)
-
-    def _pump(self, final):
-        text, ready = _visible(self.raw, self.locked, final)
-        if not ready:
-            return []
-        self.locked = True
-        if not text.startswith(self.fed):
-            if self.spoke:
-                return []
-            self.scan = AtomScan()
-            self.fed = ""
-        extra = text[len(self.fed) :]
-        self.fed = text
-        chunks = []
-        for part in self.scan.feed(extra, final=final):
-            pieces = _plan_chunks(part, self.fast, pack=False)
-            if not pieces:
-                continue
-            self.spoke = True
-            chunks.extend(pieces)
-        return chunks
-
-
 def mouth_tag(code):
     primary = code.split("-")[0].lower() if code else ""
     if primary in ("nb", "nn"):
         return "no"
     return primary or "en"
-
-
-def is_quit(text):
-    word = text.strip().strip(" .!?").casefold()
-    return word in QUIT_WORDS
 
 
 def clip_words(text, limit=200):
@@ -587,111 +495,72 @@ def write_history(user, reply):
     (ROOT / "assistant.history.txt").write_text("\n".join(body) + "\n", encoding="utf-8")
 
 
-def posted_text(code, words):
+def voice_question(code, words):
+    # Inbox leaves the model's tool call in the reply. A normal turn on the
+    # current brain speaks a shutdown instead of calling stop.
+    import gemma
+
     shown = code if code else "en"
-    body = "User spoke " + shown + ".\n" + words
+    parts = [
+        "You are Jarvis. Speak one or two short sentences.",
+        gemma.STOP_DECL,
+    ]
     block = history_block()
     if block:
-        return block + "\n\n" + body
-    return body
+        parts.append(block)
+    parts.append("User spoke " + shown + ".")
+    parts.append(words)
+    parts.append(
+        "Call stop when the owner wants this local voice to shut down or stop listening. "
+        "Otherwise answer. Do not call stop for anything else."
+    )
+    return "<<trident-inbox>>\n" + "\n".join(parts)
 
 
-def split_act(text):
-    """Question text, then one trailing act. No act line leaves the question unchanged."""
-    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
-    raw_lines = normalized.split("\n")
-    act_at = None
-    for index, line in enumerate(raw_lines):
-        if ACT_LINE.match(line.strip()):
-            if act_at is not None:
-                die("one act")
-            act_at = index
-    if act_at is None:
-        return text.strip(), None
-    if any(line.strip() for line in raw_lines[act_at + 1 :]):
-        die("act line last")
-    rest = ACT_LINE.match(raw_lines[act_at].strip()).group(1).strip()
-    if not rest:
-        die("empty act")
-    name, _, arg = rest.partition(" ")
-    question = "\n".join(raw_lines[:act_at]).strip()
-    return question, (name.casefold(), arg.strip())
+def organism_stop(raw):
+    import gemma
+
+    call = gemma.parse_tool_call(raw or "")
+    return bool(call) and call[0] == "stop"
 
 
-def act_user_line(name, arg):
-    if arg:
-        return "act: " + name + " " + arg
-    return "act: " + name
+def release_mouth():
+    import mouth
+
+    if mouth.stop_resident():
+        print("assistant: mouth stopped", file=sys.stderr, flush=True)
 
 
-def note_lines():
-    if not NOTE_PATH.is_file():
-        die("no note")
-    try:
-        stored = NOTE_PATH.read_text(encoding="utf-8")
-    except OSError as exc:
-        die("cannot read assistant.note.txt: " + str(exc))
-    lines = [item.strip() for item in stored.splitlines() if item.strip()]
-    if not lines:
-        die("no note")
-    return lines
+def fetch_reply(py, found, args, question):
+    if found.brain == "post":
+        return remote_whole(found, args, question)
+    script = brain_script(found, args.brain)
+    if args.image and script == "qwen.py":
+        die("image asks use --brain gemma")
+    return local_turn(py, script, args, question)
 
 
-def prepare_act(name, arg):
-    if name == "time":
-        if arg:
-            die("time takes no words")
-        return "time", ""
-    if name == "note":
-        line = " ".join(arg.split())
-        if not line:
-            die("empty note")
-        if len(line) > NOTE_LIMIT:
-            die("note over 200 characters")
-        return "note", line
-    if name == "next":
-        if arg:
-            die("next takes no words")
-        note_lines()
-        return "next", ""
-    die("unknown act " + name)
-
-
-def commit_act(name, arg):
-    print("assistant: act " + name, file=sys.stderr, flush=True)
-    if name == "time":
-        return time.strftime("The time is %H:%M.")
-    if name == "note":
-        try:
-            with NOTE_PATH.open("a", encoding="utf-8", newline="\n") as handle:
-                handle.write(arg + "\n")
-        except OSError as exc:
-            die("cannot write assistant.note.txt: " + str(exc))
-        return "Noted. " + arg
-    said = note_lines()[-1]
-    if said[-1] not in ".!?":
-        said += "."
-    return "The note is " + said
-
-
-def run_local_act(args, act, local):
-    name, arg = prepare_act(act[0], act[1])
-    if local:
-        print("assistant: local act", file=sys.stderr, flush=True)
-    sentence = commit_act(name, arg)
-    show(sentence)
-    speak_raw(args, sentence, play=True, flip=False)
-    return sentence, act_user_line(name, arg)
-
-
-def speak_act(args, act, local, hold):
-    if not hold:
-        return run_local_act(args, act, local)
-    set_hold(True)
-    try:
-        return run_local_act(args, act, local)
-    finally:
-        set_hold(False)
+def run_voice_turn(py, found, args, words, code, hold):
+    text = (words or "").strip()
+    if not text:
+        print("assistant: hear returned no transcript", file=sys.stderr)
+        return not args.once
+    reply = fetch_reply(py, found, args, voice_question(code, text))
+    show(reply)
+    if organism_stop(reply):
+        print("assistant: tool stop", file=sys.stderr, flush=True)
+        release_mouth()
+        return False
+    spoken = speakable(reply)
+    if spoken:
+        if hold:
+            speak_live(args, reply, found.flip)
+        else:
+            speak_raw(args, reply, play=True, flip=found.flip)
+    else:
+        print("assistant: no speakable answer", file=sys.stderr)
+    write_history(text, spoken or "")
+    return not args.once
 
 
 def write_session():
@@ -980,22 +849,12 @@ def place_turn(args):
     return found
 
 
-def injected_turn(py, args, question, act):
-    if not question and not act:
+def injected_turn(py, args, text):
+    if not (text or "").strip():
         die("empty text")
-    if act:
-        prepare_act(act[0], act[1])
-    if not question:
-        if args.image:
-            die("image asks for a question")
-        own_turn()
-        run_local_act(args, act, True)
-        return
     found = place_turn(args)
     own_turn()
-    answer(py, found, args, question)
-    if act:
-        run_local_act(args, act, False)
+    run_voice_turn(py, found, args, text.strip(), None, False)
 
 
 def iter_inject_turns(path):
@@ -1046,27 +905,7 @@ def process_inject_turn(py, args, found, text):
     stripped = text.strip()
     if not stripped:
         return True
-    if is_quit(stripped):
-        print("assistant: quit", file=sys.stderr)
-        return False
-    question, act = split_act(stripped)
-    if not question and not act:
-        print("assistant: empty turn", file=sys.stderr)
-        return True
-    if act:
-        prepare_act(act[0], act[1])
-    if not question:
-        if args.image:
-            die("image asks for a question")
-        sentence, line = run_local_act(args, act, True)
-        write_history(line, sentence)
-        return not args.once
-    reply = answer(py, found, args, question)
-    write_history(question, speakable(reply))
-    if act:
-        sentence, line = run_local_act(args, act, False)
-        write_history(line, sentence)
-    return not args.once
+    return run_voice_turn(py, found, args, stripped, None, False)
 
 
 def inject_loop(py, args, path):
@@ -1150,19 +989,6 @@ def prepare_remote(args, question):
     return ident, image, image_b64
 
 
-def open_remote(args, question):
-    opened = prepare_remote(args, question)
-    print("assistant: nvidia stream", file=sys.stderr, flush=True)
-    return opened
-
-
-def iter_remote(found, args, opened, question):
-    ident, image, image_b64 = opened
-    return nvidia_client.iter_stream(
-        found.url, ident, question, image, image_b64, args.timeout
-    )
-
-
 def remote_whole(found, args, question):
     import io
 
@@ -1176,76 +1002,6 @@ def remote_whole(found, args, question):
     finally:
         sys.stdout = old
     return buf.getvalue()
-
-
-def remote_speak(found, args, question, hold):
-    import mouth
-
-    opened = open_remote(args, question)
-    box = {"err": None, "parts": []}
-    pending = queue.Queue()
-    feed = StreamFeed(fast_model(args.model))
-
-    def produce():
-        try:
-            for piece in iter_remote(found, args, opened, question):
-                box["parts"].append(piece)
-                sys.stdout.write(piece)
-                sys.stdout.flush()
-                for chunk in feed.push(piece):
-                    pending.put(chunk)
-            for chunk in feed.finish():
-                pending.put(chunk)
-        except SystemExit as exc:
-            box["err"] = exc
-        except Exception as exc:
-            box["err"] = SystemExit(2)
-            print("assistant: nvidia stream failed: " + str(exc), file=sys.stderr)
-        finally:
-            pending.put(None)
-
-    threading.Thread(target=produce, daemon=True).start()
-    print("mouth out: default", file=sys.stderr, flush=True)
-    note_mouth()
-    first = pending.get()
-
-    def take_raw():
-        text = "".join(box["parts"])
-        if text and not text.endswith("\n"):
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-        return text
-
-    if first is None:
-        raw = take_raw()
-        if box["err"] is not None:
-            raise box["err"]
-        print("assistant: no speakable answer", file=sys.stderr)
-        return raw
-    count = 0
-
-    def arriving():
-        nonlocal count
-        chunk = first
-        while chunk is not None:
-            count += 1
-            if count == 1:
-                print("assistant: mouth", file=sys.stderr, flush=True)
-            yield chunk
-            chunk = pending.get()
-
-    if hold:
-        set_hold(True)
-    try:
-        mouth.speak_pieces(arriving(), mouth.play_wav)
-    finally:
-        if hold:
-            set_hold(False)
-    raw = take_raw()
-    print("assistant: mouth " + str(count) + " chunk(s)", file=sys.stderr)
-    if box["err"] is not None:
-        raise box["err"]
-    return raw
 
 
 def local_turn(py, script, args, question):
@@ -1264,8 +1020,6 @@ def local_turn(py, script, args, question):
 
 def answer(py, found, args, question, speak=True):
     if found.brain == "post":
-        if speak and not found.flip:
-            return remote_speak(found, args, question, False)
         raw = remote_whole(found, args, question)
         show(raw)
         if speak:
@@ -1453,162 +1207,10 @@ def cable_turn(py, found, args):
 
 
 def heard_turn(py, found, args, words, code):
-    if is_quit(words):
-        print("assistant: quit", file=sys.stderr)
-        return False
-    question, act = split_act(words)
-    if question and is_quit(question):
-        print("assistant: quit", file=sys.stderr)
-        return False
-    if act:
-        prepare_act(act[0], act[1])
-    if not question:
-        if act is None:
-            print("assistant: hear returned no transcript", file=sys.stderr)
-            return not args.once
-        sentence, line = speak_act(args, act, True, True)
-        write_history(line, sentence)
-        return not args.once
-    posted = posted_text(code, question)
-    if found.brain == "post" and not found.flip:
-        reply = remote_speak(found, args, posted, True)
-    else:
-        reply = answer(py, found, args, posted, speak=False)
-        speak_live(args, reply, found.flip)
-    write_history(question, speakable(reply))
-    if act:
-        sentence, line = speak_act(args, act, False, True)
-        write_history(line, sentence)
-    return not args.once
-
-
-def cue_stamp():
-    now = time.time()
-    base = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(now))
-    return base + ".%03d" % int((now - int(now)) * 1000)
-
-
-def cue_log(line):
-    print(line, file=sys.stderr, flush=True)
-    path = ROOT / "proof" / "g429-live-mic.log"
-    try:
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(line + "\n")
-    except OSError as exc:
-        print("assistant: cue log failed: " + str(exc), file=sys.stderr)
-
-
-def cue_log_reset():
-    path = ROOT / "proof" / "g429-live-mic.log"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("", encoding="utf-8")
-
-
-def ensure_cue_wav():
-    path = CUE_WAV
-    path.parent.mkdir(parents=True, exist_ok=True)
-    rate = 44100
-    count = int(rate * CUE_MS / 1000)
-    frames = bytearray()
-    for index in range(count):
-        second = index / rate
-        sign = 1.0 if (int(second * CUE_HZ) % 2 == 0) else -1.0
-        sample = int(0.98 * 32767 * sign)
-        frames.extend(struct.pack("<h", sample))
-    with wave.open(str(path), "wb") as handle:
-        handle.setnchannels(1)
-        handle.setsampwidth(2)
-        handle.setframerate(rate)
-        handle.writeframes(bytes(frames))
-    return path
-
-
-def play_cues(count):
-    import mouth
-
-    wav = ensure_cue_wav()
-    cue_log("assistant: cue " + str(count) + " begin " + cue_stamp())
-    for index in range(count):
-        if index:
-            time.sleep(CUE_GAP_S)
-        mouth.play_wav(wav)
-        cue_log("assistant: cue " + str(count) + " beep " + str(index + 1) + " " + cue_stamp())
-    cue_log("assistant: cue " + str(count) + " end " + cue_stamp())
-
-
-def snapshot_turn_files():
-    proof = ROOT / "proof"
-    proof.mkdir(parents=True, exist_ok=True)
-    for name in ("nvidia_turn.request.txt", "nvidia_turn.response.txt"):
-        src = ROOT / name
-        if not src.is_file():
-            continue
-        dest = proof / ("g429-live-mic-" + name)
-        dest.write_bytes(src.read_bytes())
-        cue_log("assistant: saved " + str(dest))
-
-
-def cued_listen_loop(py, found, args):
-    if not (ROOT / "vad.exe").is_file():
-        die("missing vad.exe")
-    if not (ROOT / "vad.txt").is_file():
-        die("missing vad.txt")
-    model = ROOT / "silero_vad.onnx"
-    try:
-        model_bytes = model.read_bytes()
-    except OSError as exc:
-        die("missing vad model: " + str(exc))
-    if not model_bytes:
-        die("empty vad model")
-    mic = hear.wasapi_capture_name()
-    (ROOT / "assistant.pid").write_text(str(os.getpid()) + "\n", encoding="utf-8")
-    cue_log_reset()
-    cue_log("assistant: cue mic " + mic)
-    cue_log("assistant: mic closed before cue " + cue_stamp())
-    while True:
-        play_cues(1)
-        cue_log("assistant: cue wait 10 begin " + cue_stamp())
-        time.sleep(CUE_WAIT_S)
-        cue_log("assistant: cue wait 10 end " + cue_stamp())
-        if found.brain == "post" and not nvidia_client.probe(found.url):
-            die("peer missing")
-        play_cues(2)
-        cue_log("assistant: mic opening " + mic + " " + cue_stamp())
-        start_vad(mic)
-        cue_log("assistant: mic open " + cue_stamp())
-        wav = take_utterance(CUE_LISTEN_S)
-        cue_log("assistant: utterance " + wav.name + " " + cue_stamp())
-        stop_vad()
-        cue_log("assistant: mic closed " + cue_stamp())
-        kept = ROOT / "proof" / "g429-live-mic-utterance.wav"
-        kept.write_bytes(wav.read_bytes())
-        cue_log("assistant: utterance copy " + str(kept))
-        raw = transcribe(py, wav, live=True)
-        words, code = parse_hear(raw)
-        show(words)
-        hear_path = ROOT / "proof" / "g429-live-mic-hear.json"
-        hear_path.write_text(raw, encoding="utf-8")
-        cue_log("assistant: hear " + words)
-        if not words:
-            print("assistant: hear returned no transcript", file=sys.stderr)
-            if args.once:
-                die("hear returned no transcript")
-            continue
-        try:
-            keep = heard_turn(py, found, args, words, code)
-        except SystemExit:
-            snapshot_turn_files()
-            raise
-        snapshot_turn_files()
-        play_cues(3)
-        if not keep:
-            return
+    return run_voice_turn(py, found, args, words, code, True)
 
 
 def listen_loop(py, found, args):
-    if args.cue:
-        cued_listen_loop(py, found, args)
-        return
     mic = hear.wasapi_capture_name()
     start_vad(mic)
     (ROOT / "assistant.pid").write_text(str(os.getpid()) + "\n", encoding="utf-8")
@@ -1633,7 +1235,7 @@ def main():
     parser.add_argument(
         "--text",
         default=None,
-        help="skip the mic; one brain then mouth round. A final act: line runs on this PC. With --vb-cable, the phrase played into CABLE Input",
+        help="skip the mic; one brain then mouth round. With --vb-cable, the phrase played into CABLE Input",
     )
     parser.add_argument(
         "--inject",
@@ -1679,11 +1281,6 @@ def main():
     )
     parser.add_argument("--url", default=None, help="peer POST URL; requires --nvidia. Else TRIDENT_NVIDIA_URL")
     parser.add_argument("--timeout", type=float, default=180, help="brain HTTP timeout seconds (default 180)")
-    parser.add_argument(
-        "--cue",
-        action="store_true",
-        help="live mic: one beep, wait 10s, two beeps, then open the default mic. Three beeps after the turn",
-    )
     args = parser.parse_args()
 
     if args.stop:
@@ -1695,7 +1292,6 @@ def main():
             or args.image
             or args.nvidia
             or args.url
-            or args.cue
             or args.brain != "qwen"
         ):
             die("usage: assistant.py --stop")
@@ -1716,14 +1312,6 @@ def main():
             die("inject asks for no text, wav, or vb-cable")
         if str(args.inject).strip() == "":
             die("empty inject path")
-    if args.cue and (
-        args.text is not None
-        or args.wav is not None
-        or args.vb_cable
-        or args.inject is not None
-        or args.iris_outbox is not None
-    ):
-        die("cue asks for the live mic")
     if args.iris_outbox is not None:
         if args.text is not None or args.wav is not None or args.vb_cable or args.inject is not None:
             die("iris-outbox asks for no text, wav, vb-cable, or inject")
@@ -1757,8 +1345,7 @@ def main():
         inject_loop(py, args, path)
         return
     if args.text is not None:
-        question, act = split_act(args.text.strip())
-        injected_turn(py, args, question, act)
+        injected_turn(py, args, args.text.strip())
         return
     if args.wav is not None:
         heard = transcribe(py, args.wav.strip(), live=False).strip()
@@ -1766,8 +1353,7 @@ def main():
         if not heard:
             print("assistant: hear returned no transcript", file=sys.stderr)
             return
-        question, act = split_act(heard)
-        injected_turn(py, args, question, act)
+        injected_turn(py, args, heard)
         return
     found = place_turn(args)
     own_turn()
