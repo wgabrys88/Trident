@@ -2,11 +2,14 @@
 
 python run.py start [--url URL]
     Continuous microphone, resident VAD, brain, mouth.
-    A normal turn needs no mouse or keyboard.
+    The URL is the brain when that port accepts. A closed port is this PC.
+    The computer name is not a key. A normal turn needs no mouse or keyboard.
 
 python run.py start inject [PATH]
     Simulated ASR. PATH is one turn per line, or blocks split by a line
     that is only ---. No PATH reads stdin. No microphone.
+    Between turns, iris_seat.txt and iris_outbox.txt are status, work, and say.
+    TRIDENT_IRIS_SEAT and TRIDENT_IRIS_OUTBOX name those files.
 
 python run.py stop
     Stop this organism and the mouth. Do not contact the brain.

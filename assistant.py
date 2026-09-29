@@ -9,6 +9,7 @@ from pathlib import Path
 
 import hear
 import nvidia_client
+import seat
 
 ROOT = Path(__file__).resolve().parent
 MODELS = ("nano", "turbo", "v3")
@@ -179,7 +180,7 @@ def pack_atoms(parts, limit):
 
 def chunks_for_mouth(text, fast="nano"):
     if fast not in ("nano", "turbo"):
-        fast = "nano"
+        die("fast mouth is nano or turbo")
     return _plan_chunks(text, fast, pack=True)
 
 
@@ -495,26 +496,97 @@ def write_history(user, reply):
     (ROOT / "assistant.history.txt").write_text("\n".join(body) + "\n", encoding="utf-8")
 
 
-def voice_question(code, words):
-    # Inbox leaves the model's tool call in the reply. A normal turn on the
-    # current brain speaks a shutdown instead of calling stop.
+VOICE_MEMORY = ROOT / "voice.memory.txt"
+
+
+def tool_decls():
     import gemma
 
+    return "\n".join(
+        (
+            gemma.REMEMBER_DECL,
+            gemma.PLACE_DECL,
+            gemma.CURSOR_DECL,
+            gemma.NEXT_DECL,
+            gemma.STOP_DECL,
+        )
+    )
+
+
+def memory_preface():
+    import gemma
+
+    facts, pairs, works = gemma.read_memory(VOICE_MEMORY)
+    lines = []
+    if facts:
+        lines.append("Remembered:")
+        lines.extend(facts)
+    if works:
+        lines.append("Waiting work:")
+        lines.extend(works)
+    if pairs:
+        for user, reply in pairs[-4:]:
+            if user:
+                lines.append("User: " + user)
+            if reply:
+                lines.append("Assistant: " + reply)
+        return lines
+    block = history_block()
+    if block:
+        lines.append(block)
+    return lines
+
+
+def voice_question(code, words):
     shown = code if code else "en"
     parts = [
         "You are Jarvis. Speak one or two short sentences.",
-        gemma.STOP_DECL,
+        tool_decls(),
     ]
-    block = history_block()
-    if block:
-        parts.append(block)
+    parts.extend(memory_preface())
     parts.append("User spoke " + shown + ".")
     parts.append(words)
     parts.append(
+        "Call a tool only by its tool call. "
         "Call stop when the owner wants this local voice to shut down or stop listening. "
         "Otherwise answer. Do not call stop for anything else."
     )
-    return "<<trident-inbox>>\n" + "\n".join(parts)
+    return "\n".join(parts)
+
+
+def signal_question(kind, text):
+    parts = [
+        "You are Jarvis. Nobody is speaking. A seat signal arrived.",
+        "Kind: " + kind,
+        "Text: " + text,
+        tool_decls(),
+    ]
+    parts.extend(memory_preface())
+    parts.append(
+        "If the owner should hear this now, speak one or two short sentences and do not call a tool. "
+        "If a status should only be kept, call remember. "
+        "If work should wait, call next. "
+        "Do not call stop for a seat signal. Do not invent other work."
+    )
+    return "\n".join(parts)
+
+
+def voice_follow(name, result):
+    return "\n".join(
+        (
+            "You are Jarvis. The tool " + name + " finished.",
+            "Result: " + (result or ""),
+            "Speak one or two short sentences. Do not call a tool.",
+        )
+    )
+
+
+def remember_turn(user, spoken):
+    import gemma
+
+    write_history(user, spoken or "")
+    if user and spoken:
+        gemma.append_memory(VOICE_MEMORY, user, spoken)
 
 
 def organism_stop(raw):
@@ -540,6 +612,50 @@ def fetch_reply(py, found, args, question):
     return local_turn(py, script, args, question)
 
 
+def say_text(args, raw, hold, flip, play=True):
+    if not play:
+        return speak_raw(args, raw, play=False, flip=flip)
+    if hold:
+        speak_live(args, raw, flip)
+        return []
+    speak_raw(args, raw, play=True, flip=flip)
+    return []
+
+
+def apply_reply(py, found, args, raw, hold, play=True, follow=True):
+    import gemma
+
+    if organism_stop(raw):
+        print("assistant: tool stop", file=sys.stderr, flush=True)
+        release_mouth()
+        return False, "", []
+    call = gemma.parse_tool_call(raw or "")
+    if call and follow:
+        name = call[0]
+        print("assistant: tool " + name, file=sys.stderr, flush=True)
+        _suffix, blocked, fallback = gemma.tool_turn(
+            name, call[1], call[2], memory_path=VOICE_MEMORY
+        )
+        if blocked and not fallback:
+            spoken = speakable(blocked)
+            paths = []
+            if spoken:
+                paths = say_text(args, spoken, hold, found.flip, play)
+            elif blocked.strip():
+                print("assistant: no speakable answer", file=sys.stderr)
+            return (not args.once), spoken, paths
+        raw2 = fetch_reply(py, found, args, voice_follow(name, fallback or ""))
+        show(raw2)
+        return apply_reply(py, found, args, raw2, hold, play, False)
+    spoken = speakable(raw)
+    paths = []
+    if spoken:
+        paths = say_text(args, raw, hold, found.flip, play)
+    else:
+        print("assistant: no speakable answer", file=sys.stderr)
+    return (not args.once), spoken, paths
+
+
 def run_voice_turn(py, found, args, words, code, hold):
     text = (words or "").strip()
     if not text:
@@ -547,20 +663,10 @@ def run_voice_turn(py, found, args, words, code, hold):
         return not args.once
     reply = fetch_reply(py, found, args, voice_question(code, text))
     show(reply)
-    if organism_stop(reply):
-        print("assistant: tool stop", file=sys.stderr, flush=True)
-        release_mouth()
-        return False
-    spoken = speakable(reply)
-    if spoken:
-        if hold:
-            speak_live(args, reply, found.flip)
-        else:
-            speak_raw(args, reply, play=True, flip=found.flip)
-    else:
-        print("assistant: no speakable answer", file=sys.stderr)
-    write_history(text, spoken or "")
-    return not args.once
+    cont, spoken, _paths = apply_reply(py, found, args, reply, hold, True, True)
+    if cont:
+        remember_turn(text, spoken)
+    return cont
 
 
 def write_session():
@@ -832,13 +938,34 @@ def peer_url(args):
     return (args.url or os.environ.get("TRIDENT_NVIDIA_URL", "")).strip()
 
 
-def turn_place(args):
+def announce_place(found):
     import gemma
 
-    found = gemma.place(peer_url(args))
     print("assistant: place " + gemma.place_line(found), file=sys.stderr, flush=True)
+    if found.brain == "post":
+        print("assistant: lan", file=sys.stderr, flush=True)
+    else:
+        print("assistant: alone", file=sys.stderr, flush=True)
+
+
+def turn_place(args):
+    # One route. A peer that accepts is the brain. A closed port is this PC.
+    # The computer name is not a key. This does not bind port 8765.
+    import gemma
+
+    peer = peer_url(args)
+    if peer:
+        if gemma.split_peer(peer) is None:
+            die("url must start with http:// or https://")
+        found = gemma.place(peer)
+        if found.brain == "post":
+            announce_place(found)
+            return found
+        print("assistant: peer unreachable", file=sys.stderr, flush=True)
+    found = gemma.place(None)
     if found.brain == "missing":
         die("peer missing")
+    announce_place(found)
     return found
 
 
@@ -852,8 +979,10 @@ def place_turn(args):
 def injected_turn(py, args, text):
     if not (text or "").strip():
         die("empty text")
-    found = place_turn(args)
     own_turn()
+    if not drain_seat(py, args, False):
+        return
+    found = place_turn(args)
     run_voice_turn(py, found, args, text.strip(), None, False)
 
 
@@ -908,40 +1037,115 @@ def process_inject_turn(py, args, found, text):
     return run_voice_turn(py, found, args, stripped, None, False)
 
 
+def act_signal(py, args, found, sig, hold):
+    import gemma
+
+    text = " ".join(sig.text.split())
+    if not text:
+        return True
+    if sig.kind == "stop":
+        print("assistant: stop " + text, file=sys.stderr, flush=True)
+        if text == "voice":
+            release_mouth()
+            return False
+        facts, pairs, works = gemma.read_memory(VOICE_MEMORY)
+        target = gemma.clip_fact(text)
+        if target and target in works:
+            works = [item for item in works if item != target]
+            gemma.write_memory(VOICE_MEMORY, facts, pairs, works)
+            print("assistant: work dropped", file=sys.stderr, flush=True)
+        return True
+    if sig.kind == "say":
+        print("assistant: say " + text, file=sys.stderr, flush=True)
+        say_text(args, text, hold, found.flip, True)
+        return True
+    if sig.kind == "status":
+        seat.record_status(text)
+        print("assistant: status " + text, file=sys.stderr, flush=True)
+        raw = fetch_reply(py, found, args, signal_question("status", text))
+        show(raw)
+        cont, _spoken, _paths = apply_reply(py, found, args, raw, hold, True, True)
+        return cont
+    if sig.kind == "work":
+        print("assistant: work " + text, file=sys.stderr, flush=True)
+        raw = fetch_reply(py, found, args, signal_question("work", text))
+        show(raw)
+        cont, spoken, _paths = apply_reply(py, found, args, raw, hold, True, True)
+        if cont and not spoken and gemma.parse_tool_call(raw) is None:
+            kept = gemma.store_work(VOICE_MEMORY, text)
+            if kept:
+                print("assistant: work kept", file=sys.stderr, flush=True)
+        return cont
+    print("assistant: seat " + sig.kind, file=sys.stderr, flush=True)
+    return True
+
+
+def play_signals(py, args, path, signals, hold):
+    pending = list(signals)
+    try:
+        found = turn_place(args)
+        while pending:
+            cont = act_signal(py, args, found, pending[0], hold)
+            pending = pending[1:]
+            if not cont:
+                seat.give_back(path, pending)
+                return False
+    except SystemExit:
+        seat.give_back(path, pending)
+        raise
+    return True
+
+
+def drain_file(py, args, path, hold):
+    signals = seat.claim(path)
+    if not signals:
+        return True
+    print("assistant: seat " + str(path), file=sys.stderr, flush=True)
+    return play_signals(py, args, path, signals, hold)
+
+
+def drain_seat(py, args, hold):
+    seen = set()
+    paths = (seat.seat_path(None), seat.outbox_path(None), seat.status_path(None))
+    for path in paths:
+        try:
+            key = str(Path(path).resolve())
+        except OSError:
+            key = str(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        if not drain_file(py, args, path, hold):
+            return False
+    return True
+
+
 def inject_loop(py, args, path):
-    found = place_turn(args)
     own_turn()
     (ROOT / "assistant.pid").write_text(str(os.getpid()) + "\n", encoding="utf-8")
+    if not drain_seat(py, args, False):
+        return
     for text in iter_inject_turns(path):
+        found = place_turn(args)
         if not process_inject_turn(py, args, found, text):
+            return
+        if not drain_seat(py, args, False):
             return
 
 
-def iris_outbox_path(path_arg):
-    if path_arg:
-        return Path(path_arg)
-    env = os.environ.get("TRIDENT_IRIS_OUTBOX", "").strip()
-    if env:
-        return Path(env)
-    return ROOT / "iris_outbox.txt"
-
-
-def consume_iris_outbox(args, path_arg):
-    path = iris_outbox_path(path_arg)
+def consume_iris_outbox(py, args, path_arg):
+    path = seat.outbox_path(path_arg)
     if not path.is_file():
         print("assistant: iris outbox missing", file=sys.stderr, flush=True)
         raise SystemExit(0)
-    line = path.read_text(encoding="utf-8-sig").strip()
-    if not line:
+    signals = seat.claim(path)
+    if not signals:
         print("assistant: iris outbox empty", file=sys.stderr, flush=True)
         raise SystemExit(0)
-    try:
-        path.write_text("", encoding="utf-8")
-    except OSError as exc:
-        die("iris outbox clear: " + str(exc))
     print("assistant: iris outbox consumed " + str(path), file=sys.stderr, flush=True)
     own_turn()
-    speak_raw(args, line, play=True, flip=False)
+    if not play_signals(py, args, path, signals, False):
+        return
 
 
 def brain_script(found, brain_flag):
@@ -1210,11 +1414,18 @@ def heard_turn(py, found, args, words, code):
     return run_voice_turn(py, found, args, words, code, True)
 
 
-def listen_loop(py, found, args):
+def listen_loop(py, args):
     mic = hear.wasapi_capture_name()
     start_vad(mic)
     (ROOT / "assistant.pid").write_text(str(os.getpid()) + "\n", encoding="utf-8")
     while True:
+        if not drain_seat(py, args, True):
+            return
+        if not (ROOT / "vad.utterance.txt").is_file():
+            if VAD_PROC is None or VAD_PROC.poll() is not None:
+                die("vad exited")
+            time.sleep(0.05)
+            continue
         wav = take_utterance()
         raw = transcribe(py, wav, live=True)
         words, code = parse_hear(raw)
@@ -1224,6 +1435,7 @@ def listen_loop(py, found, args):
             if args.once:
                 return
             continue
+        found = place_turn(args)
         if not heard_turn(py, found, args, words, code):
             return
 
@@ -1251,7 +1463,7 @@ def main():
         const="-",
         metavar="PATH",
         default=None,
-        help="read one PE iris_outbox line, clear the file, speak via mouth. PATH or TRIDENT_IRIS_OUTBOX; else repo iris_outbox.txt. No brain POST",
+        help="claim PE iris_outbox or TRIDENT_IRIS_OUTBOX and act. say speaks. status and work ask the brain. stop voice ends this PC voice and leaves the brain up. A failed act puts the signal back. No audio from the brain",
     )
     parser.add_argument("--wav", default=None, help="transcribe this wav through hear.py; skip the mic; one turn")
     parser.add_argument(
@@ -1277,7 +1489,7 @@ def main():
     parser.add_argument(
         "--nvidia",
         action="store_true",
-        help="POST to one peer URL; a closed port exits peer missing",
+        help="use this peer when its port accepts; a closed port uses this PC. Does not bind 8765",
     )
     parser.add_argument("--url", default=None, help="peer POST URL; requires --nvidia. Else TRIDENT_NVIDIA_URL")
     parser.add_argument("--timeout", type=float, default=180, help="brain HTTP timeout seconds (default 180)")
@@ -1315,8 +1527,6 @@ def main():
     if args.iris_outbox is not None:
         if args.text is not None or args.wav is not None or args.vb_cable or args.inject is not None:
             die("iris-outbox asks for no text, wav, vb-cable, or inject")
-        if args.nvidia or args.url:
-            die("iris-outbox asks for no nvidia or url")
         if str(args.iris_outbox).strip() == "":
             die("empty iris-outbox path")
     if args.vb_cable and args.wav is not None:
@@ -1334,11 +1544,11 @@ def main():
     if args.vb_cable:
         found = place_turn(args)
         own_turn()
-        cable_turn(py, args, found)
+        cable_turn(py, found, args)
         return
     if args.iris_outbox is not None:
         path = None if args.iris_outbox == "-" else str(args.iris_outbox).strip()
-        consume_iris_outbox(args, path)
+        consume_iris_outbox(py, args, path)
         return
     if args.inject is not None:
         path = None if args.inject == "-" else str(args.inject).strip()
@@ -1355,9 +1565,9 @@ def main():
             return
         injected_turn(py, args, heard)
         return
-    found = place_turn(args)
+    place_turn(args)
     own_turn()
-    listen_loop(py, found, args)
+    listen_loop(py, args)
 
 
 if __name__ == "__main__":

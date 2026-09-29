@@ -41,6 +41,7 @@
 !/qwen.py
 !/gemma.py
 !/mouth.py
+!/seat.py
 !/loopback.py
 !/nvidia_client.py
 !/nvidia_worker.py
@@ -133,4 +134,6 @@
 !/proof/g429-live-mic.md
 !/proof/g429-run-stop.md
 !/proof/span-mouth.md
+!/proof/voice-seat.md
+!/proof/voice_seat_check.py
 !/proof/iris-merge-runner-h.md
