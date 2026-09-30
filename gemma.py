@@ -31,8 +31,8 @@ dropped after a speakable answer. A failed tool leaves the line. An empty genera
 error and leaves the line. An empty follow-up is replaced by the tool's own result, never
 by a made-up sentence. --idle does not listen and does not start a second brain.
 The HTTP worker runs this notice once after a quiet stretch with no POST.
-A speakable idle answer is one line in iris_outbox.txt. say, work, and stop lines go to
-iris_status.txt. Image turns skip tools and memory replay, then append the reply.
+A speakable idle answer is one mouth card. say is not also written as a status card.
+work and stop are seat cards. Image turns skip tools and memory replay, then append the reply.
 """
 
 import argparse
@@ -487,51 +487,42 @@ def stop_work(path, line, status_path=None):
 
 
 def write_iris_outbox(line, path=None):
+    import mouth
+    import seat
+
     text = " ".join((line or "").split())
     if not text:
         return
     if len(text) > IRIS_OUTBOX_CHARS:
         text = text[:IRIS_OUTBOX_CHARS]
-    path = IRIS_OUTBOX if path is None else path
-    tmp = path.with_name(path.name + ".tmp")
-    try:
-        tmp.write_text(text + "\n", encoding="utf-8")
-        tmp.replace(path)
-    except OSError as exc:
-        print("gemma: iris outbox fail " + str(exc), file=sys.stderr, flush=True)
-        return
-    print("gemma: iris outbox wrote " + path.name, file=sys.stderr, flush=True)
+    who = seat.node_from()
+    card = seat.make(
+        "mouth",
+        "say",
+        text,
+        **{"from": who, "to": who, "lang": mouth.language_of(text), "state": "queued"},
+    )
+    seat.write_new(card, path)
+    print("gemma: mouth card " + card["id"], file=sys.stderr, flush=True)
 
 
 def write_iris_status(kind, line, path=None):
+    import seat
+
     kind = (kind or "").strip()
-    if kind not in ("say", "work", "stop"):
-        return
+    if kind == "say":
+        die("say is mouth")
+    if kind not in ("work", "stop"):
+        die("unknown status " + kind)
     text = " ".join((line or "").split())
     if not text:
         return
-    row = kind + " " + text
-    if len(row) > STATUS_CHARS:
-        row = row[:STATUS_CHARS].rstrip()
-    path = IRIS_STATUS if path is None else path
-    prev = ""
-    if path.is_file():
-        try:
-            prev = path.read_text(encoding="utf-8")
-        except OSError as exc:
-            print("gemma: iris status fail " + str(exc), file=sys.stderr, flush=True)
-            return
-    lines = [item for item in prev.splitlines() if item.strip()]
-    lines.append(row)
-    body = "\n".join(lines[-STATUS_KEEP:]) + "\n"
-    tmp = path.with_name(path.name + ".tmp")
-    try:
-        tmp.write_text(body, encoding="utf-8")
-        tmp.replace(path)
-    except OSError as exc:
-        print("gemma: iris status fail " + str(exc), file=sys.stderr, flush=True)
-        return
-    print("gemma: iris status " + kind, file=sys.stderr, flush=True)
+    if len(text) > STATUS_CHARS:
+        text = text[:STATUS_CHARS].rstrip()
+    who = seat.node_from()
+    card = seat.make("seat", kind, text, **{"from": who, "to": who, "state": "queued"})
+    seat.write_new(card, path)
+    print("gemma: seat card " + kind + " " + card["id"], file=sys.stderr, flush=True)
 
 
 def append_memory(path, question, reply):
@@ -864,6 +855,16 @@ class SpeakFlush:
             return
         sys.stdout.buffer.write(text.encode("utf-8"))
         sys.stdout.buffer.flush()
+
+
+def follow_reply(reply, fallback):
+    text = answer_text(reply or "")
+    if text:
+        return text
+    fb = (fallback or "").strip()
+    if fb:
+        return fb
+    die("gemma: tool follow-up empty")
 
 
 def answer_text(text):
@@ -1887,12 +1888,7 @@ def idle_notice(generate, path=None, spawn_path=None, outbox_path=None, status_p
             die("gemma: idle empty")
         follow, facts, kept = fit_memory(question, suffix, path)
         note_prompt(follow, facts, kept)
-        reply = answer_text(generate(follow))
-        if not reply:
-            print("gemma: idle follow-up empty", file=sys.stderr, flush=True)
-            reply = fallback or ""
-        if not reply:
-            die("gemma: idle follow-up empty")
+        reply = follow_reply(generate(follow), fallback)
         text = reply
     else:
         print("gemma: idle no tool", file=sys.stderr, flush=True)
@@ -1902,8 +1898,7 @@ def idle_notice(generate, path=None, spawn_path=None, outbox_path=None, status_p
     append_memory(path, "idle: " + line, spoken)
     drop_work(path, line)
     write_iris_outbox(spoken, outbox_path)
-    write_iris_status("say", spoken, status_path)
-    print("gemma: idle done", file=sys.stderr, flush=True)
+    print("gemma: idle queued", file=sys.stderr, flush=True)
     return text
 
 
@@ -2027,11 +2022,8 @@ def main():
             elif suffix:
                 follow, facts, kept = fit_memory(question, suffix)
                 note_prompt(follow, facts, kept)
-                reply = answer_text(run(follow, ""))
-                if not reply:
-                    print("gemma: tool follow-up empty", file=sys.stderr, flush=True)
-                    reply = fallback or "done"
-                    emit_fallback(reply)
+                reply = follow_reply(run(follow, ""), fallback)
+                emit_fallback(reply)
                 text = reply
         spoken = answer_text(text)
         if spoken:

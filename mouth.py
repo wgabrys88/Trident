@@ -10,11 +10,16 @@ import sys
 import tempfile
 import threading
 import time
+import wave
 from collections import namedtuple
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 MODELS = ("nano", "turbo", "v3")
+V3_LANGS = frozenset(
+    "ar bg cy cs da de el es fi fr he hi hu it ja ko ms nl no pl pt ro ru si sk sv sw ta tr vi zh".split()
+)
+_PL = "ąćęłńóśźżĄĆĘŁŃÓŚŹŻ"
 DROP_KEYS = ("chatterbox.variant", "chatterbox.language", "chatterbox.play", "chatterbox.cfm-steps")
 SND_FILENAME = 0x00020000
 SND_NODEFAULT = 0x0002
@@ -153,13 +158,85 @@ def settings_text(model, lang, sentence, play):
     return body
 
 
-def play_wav(path):
+def routed_name():
+    card = ROOT / "mouth.out.txt"
+    if not card.is_file():
+        return ""
+    name = card.read_text(encoding="utf-8").strip()
+    if not name:
+        die("empty mouth out")
+    return name
+
+
+def output_device(name):
+    import sounddevice as sd
+
+    found = []
+    for index, info in enumerate(sd.query_devices()):
+        if info["max_output_channels"] < 1 or info["name"] != name:
+            continue
+        if "wasapi" not in sd.query_hostapis(info["hostapi"])["name"].lower():
+            continue
+        found.append((index, info))
+    if not found:
+        die("audio device absent: " + name)
+    index, info = found[0]
+    channels = int(info["max_output_channels"])
+    rate = int(round(float(info["default_samplerate"])))
+    if rate < 8000:
+        die("audio device absent: " + name)
+    return index, min(channels, 2), rate
+
+
+def resample_linear(pcm, src_rate, dst_rate):
+    import numpy as np
+
+    pcm = np.asarray(pcm, dtype=np.float32)
+    if src_rate == dst_rate or len(pcm) == 0:
+        return pcm
+    new_len = max(1, int(round(len(pcm) * float(dst_rate) / float(src_rate))))
+    if len(pcm) == 1:
+        return np.full(new_len, float(pcm[0]), dtype=np.float32)
+    old = np.linspace(0.0, 1.0, num=len(pcm), endpoint=False)
+    new = np.linspace(0.0, 1.0, num=new_len, endpoint=False)
+    return np.interp(new, old, pcm.astype(np.float64)).astype(np.float32)
+
+
+def play_named(path, name):
+    import numpy as np
+    import sounddevice as sd
+
+    index, channels, rate = output_device(name)
+    with wave.open(str(path), "rb") as handle:
+        width = handle.getsampwidth()
+        src_channels = handle.getnchannels()
+        src_rate = handle.getframerate()
+        raw = handle.readframes(handle.getnframes())
+    if width != 2 or src_rate < 8000 or not raw:
+        die("mouth wav: " + str(path))
+    pcm = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+    if src_channels > 1:
+        pcm = pcm.reshape(-1, src_channels).mean(axis=1)
+    if src_rate != rate:
+        pcm = resample_linear(pcm, src_rate, rate)
+    if channels > 1:
+        pcm = np.repeat(np.asarray(pcm, dtype=np.float32)[:, None], channels, axis=1)
+    sd.play(pcm, samplerate=rate, device=index)
+    sd.wait()
+
+
+def play_wav(path, device=None):
     path = Path(path).resolve()
     if not path.is_file():
         die("missing wav: " + str(path))
-    ok = ctypes.windll.winmm.PlaySoundW(str(path), None, SND_FILENAME | SND_NODEFAULT)
-    if not ok:
-        die("PlaySoundW failed: " + str(path))
+    if device is None:
+        device = routed_name()
+    if not device:
+        ok = ctypes.windll.winmm.PlaySoundW(str(path), None, SND_FILENAME | SND_NODEFAULT)
+        if not ok:
+            die("PlaySoundW failed: " + str(path))
+        return
+    play_named(path, device)
 
 
 def write_mouth(payload):
@@ -814,6 +891,65 @@ def speak_chunks(synthesize_one, chunks, play_one):
             play_future.result()
 
 
+class MouthError(Exception):
+    pass
+
+
+def mouth_tag(code):
+    primary = code.split("-")[0].lower() if code else ""
+    if primary in ("nb", "nn"):
+        return "no"
+    return primary
+
+
+def language_of(text):
+    for ch in text or "":
+        if ch in _PL:
+            return "pl"
+    return "en"
+
+
+def pack_words(text, limit):
+    words = (text or "").split()
+    if not words:
+        raise MouthError("empty text")
+    chunks = []
+    buf = []
+    for word in words:
+        if buf and len(buf) + 1 > limit:
+            chunks.append(" ".join(buf))
+            buf = []
+        buf.append(word)
+    if buf:
+        chunks.append(" ".join(buf))
+    return chunks
+
+
+def say(text, lang, play=True, fast="nano"):
+    spoken = " ".join((text or "").split())
+    if not spoken:
+        raise MouthError("empty text")
+    if not (lang or "").strip():
+        raise MouthError("mouth language")
+    if fast not in ("nano", "turbo"):
+        raise MouthError("fast mouth is nano or turbo")
+    tag = mouth_tag(lang.strip())
+    if tag == "en":
+        model = fast
+    elif tag in V3_LANGS:
+        model = "v3"
+    else:
+        raise MouthError("mouth has no voice for " + tag)
+    check_voice(model, tag)
+    limit = 65 if tag == "en" else 55
+    pieces = [(chunk, model, tag) for chunk in pack_words(spoken, limit)]
+    if play:
+        print("mouth out: " + (routed_name() or "default"), file=sys.stderr, flush=True)
+        speak_pieces(pieces, play_wav)
+        return []
+    return speak_pieces(pieces, None)
+
+
 def main():
     parser = argparse.ArgumentParser(prog="mouth.py")
     parser.add_argument("text", nargs="*")
@@ -864,7 +1000,7 @@ def main():
         for wav in produced:
             print(str(Path(wav).resolve()), flush=True)
         raise SystemExit(0)
-    print("mouth out: default", file=sys.stderr, flush=True)
+    print("mouth out: " + (routed_name() or "default"), file=sys.stderr, flush=True)
     if args.once:
         speak_chunks(lambda sentence: synthesize(args.model, lang, sentence), chunks, play_wav)
     else:

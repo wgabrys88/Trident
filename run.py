@@ -1,33 +1,35 @@
 """Iris voice.
 
 python run.py start [--url URL]
-    Continuous microphone, resident VAD, brain, mouth.
-    The URL is the brain when that port accepts. A closed port is this PC.
-    The computer name is not a key. A normal turn needs no mouse or keyboard.
+    Start the node on port 8765 when it is down, then the assistant.
+    URL is the peer brain. An empty URL is this machine's node.
+    TRIDENT_PEER supplies the URL when --url is absent.
+    The microphone stays closed unless ear.go is present.
 
 python run.py start inject [PATH]
-    Simulated ASR. PATH is one turn per line, or blocks split by a line
+    Simulated turns. PATH is one turn per line, or blocks split by a line
     that is only ---. No PATH reads stdin. No microphone.
-    Between turns, iris_seat.txt and iris_outbox.txt are status, work, and say.
-    TRIDENT_IRIS_SEAT and TRIDENT_IRIS_OUTBOX name those files.
 
 python run.py stop
-    Stop this organism and the mouth. Do not contact the brain.
+    Stop this organism and the mouth. Leave port 8765 listening.
 
-Does not bind, stop, or restart port 8765.
 Spoken shutdown is a Gemma stop tool call, not a keyword.
 """
 
 import ctypes
 import os
+import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
 
+import nvidia_client
+import seat
+
 ROOT = Path(__file__).resolve().parent
-DEFAULT_URL = "http://192.168.16.31:8765/"
 READY_SECONDS = 60
+NODE_URL = "http://127.0.0.1:8765/"
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
 
@@ -139,8 +141,8 @@ def parse_args(argv):
             continue
         die(usage)
     if not url:
-        url = os.environ.get("TRIDENT_NVIDIA_URL", "").strip() or DEFAULT_URL
-    if not (url.startswith("http://") or url.startswith("https://")):
+        url = os.environ.get("TRIDENT_PEER", "").strip()
+    if url and not (url.startswith("http://") or url.startswith("https://")):
         die("url must start with http:// or https://")
     return "start", url, inject
 
@@ -240,26 +242,64 @@ def cmd_stop():
         raise SystemExit(assistant_code or mouth_code)
 
 
+def port_open():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(0.4)
+    try:
+        sock.connect(("127.0.0.1", 8765))
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
+def ensure_node():
+    py = venv_python()
+    if not port_open():
+        completed = subprocess.run([py, str(ROOT / "nvidia_start.py")], cwd=str(ROOT))
+        if completed.returncode != 0 or not port_open():
+            die("node did not start")
+    who = seat.node_from()
+    card = seat.make(
+        "node",
+        "caps",
+        "",
+        **{"from": who, "to": who, "timeout": "30", "state": "queued"},
+    )
+    done = nvidia_client.post_card(NODE_URL, card, 30)
+    body = done.get("body") or ""
+    lines = set(body.splitlines())
+    for line in ("op mouth.say", "op ear.listen", "op brain.ask", "op node.caps", "op node.leases"):
+        if line not in lines:
+            die("node is not this protocol")
+
+
 def cmd_start(url, inject):
     if already_up():
         return
+    ensure_node()
     py = venv_python()
-    print("iris: brain " + url, file=sys.stderr, flush=True)
-    if inject is None:
+    if url:
+        print("iris: peer", file=sys.stderr, flush=True)
+    else:
+        print("iris: local", file=sys.stderr, flush=True)
+    if inject is not None:
+        print("iris: inject", file=sys.stderr, flush=True)
+    elif (ROOT / "ear.go").is_file():
         print("iris: live mic", file=sys.stderr, flush=True)
     else:
-        print("iris: inject", file=sys.stderr, flush=True)
+        print("iris: capture closed", file=sys.stderr, flush=True)
     before = pid_stamp("assistant.pid")
     command = [
         py,
         "-u",
         str(ROOT / "assistant.py"),
-        "--nvidia",
-        "--url",
-        url,
         "--timeout",
-        "180",
+        "600",
     ]
+    if url:
+        command.extend(["--nvidia", "--url", url])
     if inject is not None:
         command.append("--inject")
         if inject != "-":

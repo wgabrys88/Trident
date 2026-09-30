@@ -41,10 +41,13 @@
 !/gemma.py
 !/mouth.py
 !/seat.py
+!/check.py
 !/nvidia_client.py
 !/nvidia_worker.py
 !/nvidia_start.py
 !/nvidia_stop.py
+!/telegram.py
+!/call.txt
 !/reference.wav
 
 # Installer conversion and quantization.
@@ -98,6 +101,12 @@
 /voice.memory.txt
 /voice.memory.txt.tmp
 /vad.hold
+/mouth.out.txt
+/call.lease.txt
+/call.job.txt
+/call.fact.txt
+/call.restore.txt
+/call.cable.wav
 /vad.utterance.txt
 /vad_run.txt
 /grok_bot.txt
