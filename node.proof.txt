@@ -35,3 +35,5 @@ scheduler start A start B end B end A start C end C
 eye.shot bytes 499145
 hello 321ee011cb5f496a8eb72a58ea1dc25e
 room post 321ee011cb5f496a8eb72a58ea1dc25e skeleton
+command gemma resident user turn
+The sun is shining brightly today.
