@@ -1,5 +1,7 @@
 import base64
 import binascii
+import ctypes
+import json
 import os
 import shutil
 import socket
@@ -22,6 +24,7 @@ OPS = {
     "mouth": ("say",),
     "ear": ("listen",),
     "room": ("post", "task"),
+    "desk": ("turn",),
     "endgame": ("run",),
     "telegram": ("run",),
     "tool": ("call",),
@@ -34,7 +37,7 @@ PROFILES = {
     },
     "jarvis": {
         "memory": "gemma.memory.txt",
-        "tools": ("remember", "place", "cursor", "next", "stop"),
+        "tools": ("remember", "place", "cursor", "desk", "next", "stop"),
         "brain": "gemma",
     },
 }
@@ -42,7 +45,7 @@ MAP = (
     "gemma.py text+image inference only\n"
     "gemma.txt the only gemma weight and sampling config\n"
     "qwen.py qwen text weights\n"
-    "node.py cards, queues, scheduler, agent, tools, caps, room, peers\n"
+    "node.py cards, queues, scheduler, agent, tools, caps, room, peers, desk\n"
     "mouth.py the only playback\n"
     "hear.py wav transcript, capture stays closed\n"
     "assistant.py voice organism, turns through the agent\n"
@@ -279,6 +282,7 @@ def needs_of(card):
         ("room", "post"): ("room",),
         ("room", "task"): ("room",),
         ("node", "hello"): ("node",),
+        ("desk", "turn"): ("desktop", "gpu", "weights:gemma"),
         ("endgame", "run"): ("desktop",),
         ("telegram", "run"): ("desktop",),
         ("tool", "call"): ("cpu",),
@@ -537,6 +541,8 @@ def caps_text():
     ]
     if engine_here("gemma"):
         lines.append("brain gemma")
+        if (ROOT / "gemma-mmproj.gguf").is_file():
+            lines.append("vision gemma")
     if engine_here("qwen"):
         lines.append("brain qwen")
     lines.append("cursor " + yes(bool(shutil.which("agent"))))
@@ -618,6 +624,219 @@ def local_infer(brain, prompt, image):
     die("brain missing " + brain)
 
 
+DESK_TOKENS = 560
+DESK_SYSTEM = (
+    "You see one full desktop screenshot. "
+    "Answer with one JSON object and no other text. "
+    "The object always has see and do, in that order. "
+    "see quotes the readable window title and one sentence from the screen and is never empty. "
+    "do is click, type, key, wait, or done. "
+    "type has text. "
+    "Add key only when the user sets key, and only enter, backspace, ctrl-a, or ctrl-l. "
+    "click has box_2d as y_min, x_min, y_max, x_max, integers 0 to 1000, top left origin."
+)
+DESK_KEYS = {
+    "enter": ((0x0D, 0), (0x0D, 2)),
+    "backspace": ((0x08, 0), (0x08, 2)),
+    "ctrl-a": ((0x11, 0), (0x41, 0), (0x41, 2), (0x11, 2)),
+    "ctrl-l": ((0x11, 0), (0x4C, 0), (0x4C, 2), (0x11, 2)),
+}
+WIN = {"mod": None}
+
+
+def desktop_lease():
+    lib = ctypes.WinDLL("user32", use_last_error=True)
+    lib.OpenInputDesktop.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+    lib.OpenInputDesktop.restype = ctypes.c_void_p
+    lib.CloseDesktop.argtypes = [ctypes.c_void_p]
+    lib.CloseDesktop.restype = ctypes.c_int
+    handle = lib.OpenInputDesktop(0, 0, 1)
+    if not handle:
+        die("desktop lease absent")
+    lib.CloseDesktop(handle)
+
+
+def require_eye():
+    import gemma
+
+    pairs = gemma.config_pairs(gemma.config_body())
+    if not (ROOT / "endgame-vision-chat" / "winapi.py").is_file():
+        die("vision absent")
+    if not (ROOT / pairs.get("gemma.mmproj", "")).is_file():
+        die("vision absent")
+    tokens = pairs.get("gemma.image-max-tokens", "")
+    if not tokens.isdigit() or int(tokens) < DESK_TOKENS:
+        die("vision absent")
+    if not (ROOT / "gemma-brain.exe").is_file() or not (ROOT / pairs.get("gemma.model", "")).is_file():
+        die("weights absent")
+
+
+def desk_win():
+    mod = WIN["mod"]
+    if mod is not None:
+        return mod
+    folder = str(ROOT / "endgame-vision-chat")
+    if folder not in sys.path:
+        sys.path.insert(0, folder)
+    import winapi
+
+    WIN["mod"] = winapi
+    return winapi
+
+
+def desk_png():
+    win = desk_win()
+    win.init_dpi()
+    sw, sh = win.get_screen_size()
+    scale = ((DESK_TOKENS * 2304) / float(sw * sh)) ** 0.5
+    wide = max(48, int(round(sw * scale / 48)) * 48)
+    high = max(48, int(round(sh * scale / 48)) * 48)
+    png, _raw_w, _raw_h = win.capture_screenshot_png(wide, high)
+    if len(png) < 32:
+        die("vision absent")
+    return base64.b64encode(png).decode("ascii"), wide, high
+
+
+def desk_prompt(goal):
+    return (
+        "<bos><|turn>system\n"
+        + DESK_SYSTEM
+        + "<turn|>\n<|turn>user\n"
+        + MEDIA
+        + "\n"
+        + goal
+        + "<turn|>\n<|turn>model\n"
+    )
+
+
+def desk_object(reply):
+    raw = reply or ""
+    if "<channel|>" in raw:
+        raw = raw.split("<channel|>")[-1]
+    raw = raw.replace("```json", "").replace("```", "").strip()
+    start = raw.find("{")
+    if start < 0:
+        die("desk unparsed " + clip(raw, 160))
+    try:
+        found, _end = json.JSONDecoder().raw_decode(raw[start:])
+    except json.JSONDecodeError:
+        die("desk unparsed " + clip(raw, 160))
+    if not isinstance(found, dict):
+        die("desk unparsed " + clip(raw, 160))
+    do = found.get("do")
+    if isinstance(do, dict):
+        for key in ("text", "key", "box_2d"):
+            if key in do and key not in found:
+                found[key] = do[key]
+        name = ""
+        for key in ("type", "click", "key", "wait", "done"):
+            if key in do:
+                name = key
+                if isinstance(do[key], str) and key in ("type", "key"):
+                    found["text" if key == "type" else "key"] = do[key]
+                break
+        found["do"] = (name or str(do.get("action") or do.get("do") or "")).strip().lower()
+    elif isinstance(do, str):
+        found["do"] = do.strip().lower()
+    else:
+        found["do"] = ""
+        for key in ("type", "click", "key", "wait", "done"):
+            if key in found:
+                if key == "type" and isinstance(found[key], str):
+                    found["text"] = found[key]
+                found["do"] = key
+                break
+    if found["do"] not in DESK_ACTS:
+        die("desk action absent " + (found["do"] or "empty") + " " + clip(raw, 140))
+    see = found.get("see")
+    if not isinstance(see, str) or not see.strip():
+        die("desk see absent " + clip(raw, 140))
+    return found
+
+
+def desk_key(name):
+    seq = DESK_KEYS.get(str(name).strip().lower())
+    if not seq:
+        die("desk action absent")
+    win = desk_win()
+    items = []
+    for vk, flags in seq:
+        item = win.INPUT()
+        item.type = win.INPUT_KEYBOARD
+        item.ii.ki = win.KEYBDINPUT(vk, 0, flags, 0, 0)
+        items.append(item)
+    batch = (win.INPUT * len(items))(*items)
+    sent = win.user32.SendInput(len(items), batch, ctypes.sizeof(win.INPUT))
+    if sent != len(items):
+        die("desk action absent")
+
+
+def act_click(obj):
+    box = obj.get("box_2d")
+    if not isinstance(box, list) or len(box) != 4:
+        die("desk action absent")
+    y0, x0, y1, x1 = (float(box[0]), float(box[1]), float(box[2]), float(box[3]))
+    win = desk_win()
+    win.move_mouse_norm((x0 + x1) / 2.0, (y0 + y1) / 2.0)
+    time.sleep(0.05)
+    win.click_mouse()
+    return "click %.0f %.0f %.0f %.0f" % (y0, x0, y1, x1)
+
+
+def act_type(obj):
+    text = str(obj.get("text", ""))
+    key = str(obj.get("key", "")).strip().lower()
+    if not text or (key and key not in DESK_KEYS):
+        die("desk action absent")
+    desk_win().type_text(text)
+    time.sleep(0.3)
+    if not key:
+        return "type " + text
+    desk_key(key)
+    return "type " + text + " key " + key
+
+
+def act_key(obj):
+    name = str(obj.get("key", "")).strip().lower()
+    desk_key(name)
+    return "key " + name
+
+
+def act_wait(obj):
+    del obj
+    time.sleep(1.0)
+    return "wait"
+
+
+def act_done(_obj):
+    return "done"
+
+
+DESK_ACTS = {
+    "click": act_click,
+    "type": act_type,
+    "key": act_key,
+    "wait": act_wait,
+    "done": act_done,
+}
+
+
+def desk_turn(goal):
+    text = (goal or "").strip()
+    if not text:
+        die("empty goal")
+    desktop_lease()
+    require_eye()
+    image, wide, high = desk_png()
+    reply = local_infer("gemma", desk_prompt(text), image)
+    obj = desk_object(reply)
+    seen = " ".join(obj["see"].split())
+    taken = DESK_ACTS[obj["do"]](obj)
+    if not str(taken or "").strip():
+        die("desk action absent")
+    return "see " + seen + "\nact " + taken + "\nshot " + str(wide) + " " + str(high)
+
+
 def transact(addr, card, timeout):
     host, port = split_host(addr)
     try:
@@ -695,6 +914,7 @@ def tool_decls(names):
         "remember": ("Store one fact that stays after old turns are dropped.", (("line", "The fact, one short line.", True),)),
         "place": ("Report this machine: cuda, vulkan, engines, playback, microphone.", ()),
         "cursor": ("Start one local Cursor agent for a code change in this checkout.", (("task", "What to change, one short line.", True),)),
+        "desk": ("Look at the desktop with Gemma and do the one named action.", (("line", "The goal, one short line.", True),)),
         "next": ("Store one line of work for later. This does not run the work.", (("line", "The work, one short line.", True),)),
         "stop": ("Stop the local voice. Does not stop the brain.", (("line", "Waiting work to drop, or empty.", False),)),
     }
@@ -958,6 +1178,10 @@ def tool_cursor(args):
     return "started local pid " + str(proc.pid)
 
 
+def tool_desk(args):
+    return " ".join(desk_turn(args.get("line", "")).split())
+
+
 def run_tool(profile, name, args, root):
     if name not in PROFILES[profile]["tools"]:
         die("tool refused " + name)
@@ -971,6 +1195,8 @@ def run_tool(profile, name, args, root):
         return tool_place()
     if name == "cursor":
         return tool_cursor(args)
+    if name == "desk":
+        return tool_desk(args)
     die("unknown tool " + name)
 
 
@@ -1117,6 +1343,10 @@ def handle_room(card):
     return card.body, None
 
 
+def handle_desk(card):
+    return desk_turn(card.body), None
+
+
 def handle_endgame(card):
     goal = (card.body or "").strip()
     if not goal:
@@ -1171,6 +1401,7 @@ HANDLERS = {
     ("ear", "listen"): handle_ear,
     ("room", "post"): handle_room,
     ("room", "task"): handle_room,
+    ("desk", "turn"): handle_desk,
     ("endgame", "run"): handle_endgame,
     ("telegram", "run"): handle_telegram,
     ("tool", "call"): handle_tool,

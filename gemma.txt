@@ -30,14 +30,13 @@ gemma.top-k 64
 gemma.top-p 0.95
 gemma.min-p 0.05
 gemma.repeat-penalty 1.0
-gemma.seed -1
+gemma.seed 7
 gemma.flash-attn off
 gemma.warmup on
 gemma.cache-type-k f16
 gemma.cache-type-v f16
-# 70 and 280 are the Gemma 4 picture budget. 560 is the OCR budget and is not this card.
-gemma.image-min-tokens 70
-gemma.image-max-tokens 280
+gemma.image-min-tokens 560
+gemma.image-max-tokens 560
 gemma.mmproj-gpu on
 gemma.mmproj-timings on
 gemma.n-keep 0
