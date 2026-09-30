@@ -1,212 +1,28 @@
-"""Gemma brain. Text question, or question + image file → stdout generation (thinking included).
-
-The default keeps one gemma-brain.exe for this checkout. --once is the old single card run.
---stop unloads it. --stream writes a speakable sentence when it ends.
-
-Text turns replay gemma.memory.txt and declare remember, place, cursor, next, and stop.
-Past model turns are the speakable text only. Waiting work is listed in the system
-text. The current turn starts at <|turn>model with thinking left off. A Gemma 4
-<|tool_call> is run here. The model chooses the tool. Python does not match keywords
-in the question. remember, place, and next ask the brain once more. stop does not.
-It leaves the call in the answer and does not kill this brain.
-The speakable answer is appended to that file. remember adds one fact.
-place reports the CUDA and Vulkan adapters on this computer, whether port
-8765 accepts here, and whether a mouth on this computer would share that GPU.
-place() is that same decision for a turn: one TCP connect, no computer name,
-no second URL. Trim drops the oldest
-turns first. A fact drops only after every turn is gone and the prompt still does not fit.
-next stores one work line in that same file. stop writes an Iris status line and,
-when the line matches waiting work, drops that line. It does not unload the resident
-and it does not close port 8765.
-
-cursor starts one local `agent` process when the model emits that call. The tool
-description is what tells the model when a code agent is the meaning. One agent at a
-time. It writes grok_bot_spawn.txt and cursor.status.txt and does not wait. A missing
-agent writes BLOCKED and does not start a follow-up. This file does not call a tool
-the model did not emit, and it does not run the Cursor IDE shim.
-
---idle is one notice, not a loop. No work line prints idle and does not generate. One work
-line is one prompt. A tool runs only when that generation contains the call. The line is
-dropped after a speakable answer. A failed tool leaves the line. An empty generation is an
-error and leaves the line. An empty follow-up is replaced by the tool's own result, never
-by a made-up sentence. --idle does not listen and does not start a second brain.
-The HTTP worker runs this notice once after a quiet stretch with no POST.
-A speakable idle answer is one line in iris_outbox.txt. say, work, and stop lines go to
-iris_status.txt. Image turns skip tools and memory replay, then append the reply.
+"""Gemma text and image inference. One resident gemma-brain.exe.
 """
 
 import argparse
 import base64
-import codecs
 import ctypes
 import hashlib
 import os
-import re
-import shutil
-import socket
 import subprocess
 import sys
 import time
-import urllib.parse
 from collections import namedtuple
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 DROP_KEYS = ("gemma.text", "gemma.image")
 SIDECAR = ROOT / "gemma_run.txt"
-MEMORY_PATH = ROOT / "gemma.memory.txt"
-LAST_PROMPT = ROOT / "gemma.lastprompt.txt"
-SPAWN_PATH = ROOT / "grok_bot_spawn.txt"
-IRIS_OUTBOX = ROOT / "iris_outbox.txt"
-IRIS_STATUS = ROOT / "iris_status.txt"
-IRIS_OUTBOX_CHARS = 2000
-STATUS_CHARS = 500
-STATUS_KEEP = 40
 MEDIA = "<__media__>"
-Q = '<|"|>'
-PROMPT_CHARS = 80_000
-TURN_WORDS = 200
-FACT_CHARS = 200
-SYSTEM = (
-    "You are Jarvis, the voice of Trident. Wojciech is the owner. "
-    "Speak one or two short sentences in the language of the user's words. "
-    "The user and model turns after this are what was already said. Use them. "
-    "remember stores one fact that stays after old turns are dropped. "
-    "place reports the CUDA device, the Vulkan device, whether they are the same adapter, whether port 8765 is accepting here, and whether a mouth on this computer would share the brain GPU. "
-    "cursor starts one local Cursor agent when the owner wants a code agent to change this checkout. "
-    "next stores one line of work for when you are idle and nobody is speaking. "
-    "stop shuts down the local voice when the owner wants it to stop listening. It does not stop you and it does not close port 8765. "
-    "A line that matches Work waiting drops that line. "
-    "Work waiting lists those lines. Do not recite them unless the owner asks. "
-    "When the owner asks which tools you have, name remember, place, next, cursor, and stop, one short line each, and do not call a tool. "
-    "The Code agent line is the last known pid, task, and state. When the owner asks what the agent is doing, say that line. Do not invent a status. "
-    "Call a tool only by its tool call, and only when that tool's description matches what the owner wants. "
-    "The spoken sentence has no channels or file names."
-)
-REMEMBER_DECL = (
-    "<|tool>declaration:remember{description:"
-    + Q
-    + "Store one fact that stays after old conversation turns are dropped. Call this when the owner states something that must be remembered."
-    + Q
-    + ",parameters:{properties:{line:{description:"
-    + Q
-    + "The fact, one short line."
-    + Q
-    + ",type:"
-    + Q
-    + "STRING"
-    + Q
-    + "}},required:["
-    + Q
-    + "line"
-    + Q
-    + "],type:"
-    + Q
-    + "OBJECT"
-    + Q
-    + "}}<tool|>"
-)
-PLACE_DECL = (
-    "<|tool>declaration:place{description:"
-    + Q
-    + "Report the CUDA device and the Vulkan device on this computer, whether they are the same adapter, whether port 8765 is accepting here, and whether a mouth on this computer would share the brain GPU. Call this when asked which GPU is here or where this brain is running."
-    + Q
-    + ",parameters:{properties:{},required:[],type:"
-    + Q
-    + "OBJECT"
-    + Q
-    + "}}<tool|>"
-)
-CURSOR_DECL = (
-    "<|tool>declaration:cursor{description:"
-    + Q
-    + "Start one local Cursor agent when the owner wants a code agent to change this checkout. Pass that request as task. Do not call this for conversation, for a question about tools, or for a question about an agent that is already running. A missing agent is BLOCKED. A second agent is refused while one is running."
-    + Q
-    + ",parameters:{properties:{task:{description:"
-    + Q
-    + "What the owner asked to change, in one short line."
-    + Q
-    + ",type:"
-    + Q
-    + "STRING"
-    + Q
-    + "}},required:["
-    + Q
-    + "task"
-    + Q
-    + "],type:"
-    + Q
-    + "OBJECT"
-    + Q
-    + "}}<tool|>"
-)
-NEXT_DECL = (
-    "<|tool>declaration:next{description:"
-    + Q
-    + "Store one line of work for an idle turn, when the owner leaves something for later. This does not run the work."
-    + Q
-    + ",parameters:{properties:{line:{description:"
-    + Q
-    + "The work, one short line."
-    + Q
-    + ",type:"
-    + Q
-    + "STRING"
-    + Q
-    + "}},required:["
-    + Q
-    + "line"
-    + Q
-    + "],type:"
-    + Q
-    + "OBJECT"
-    + Q
-    + "}}<tool|>"
-)
-STOP_DECL = (
-    "<|tool>declaration:stop{description:"
-    + Q
-    + "Stop the local voice organism when the owner wants this computer voice to shut down, go quiet, or stop listening. A line that matches waiting work drops that line. Does not stop the brain and does not close a listening port."
-    + Q
-    + ",parameters:{properties:{line:{description:"
-    + Q
-    + "Waiting work to drop. Empty tells Iris the voice should stop."
-    + Q
-    + ",type:"
-    + Q
-    + "STRING"
-    + Q
-    + "}},required:[],type:"
-    + Q
-    + "OBJECT"
-    + Q
-    + "}}<tool|>"
-)
-TASK_SUFFIX = (
-    " Work on branch runner-h. Open the pull request into runner-h."
-    " Do not push main. Do not force-push. Do not kill a listening port 8765."
-)
-CURSOR_MODEL = "composer-2.5"
-CURSOR_STATUS = ROOT / "cursor.status.txt"
-CURSOR_CAP = 1
-CURSOR_BUSY = "A code agent is already running, so I did not start another."
-CALL_RE = re.compile(
-    r"<\|tool_call>\s*call:([A-Za-z_][A-Za-z0-9_]*)\s*\{(.*?)\}\s*<tool_call\|>",
-    re.DOTALL,
-)
-ARG_RE = re.compile(
-    r"(\w+)\s*:\s*(?:<\|\"\|>(.*?)<\|\"\|>|([^,}\n]*))",
-    re.DOTALL,
-)
-TOOL_MARKUP_RE = re.compile(
-    r"<\|tool_call>.*?<tool_call\|>|<\|tool_response>.*?<tool_response\|>",
-    re.DOTALL,
-)
 
 
 def die(message):
     print(message, file=sys.stderr, flush=True)
-    raise SystemExit(2)
+    err = SystemExit(2)
+    err.message = message
+    raise err
 
 
 def physical_lines(text):
@@ -244,650 +60,52 @@ def kept_lines(raw):
     return kept
 
 
-def user_body(question, with_image):
-    q = question.strip("\r\n")
-    if with_image and MEDIA not in q:
-        return MEDIA + "\n" + q
-    return q
 
-
-def tool_header(facts, works=None):
-    if works is None:
-        works = []
-    body = SYSTEM
-    if facts:
-        body += "\nRemembered:\n" + "\n".join(facts)
-    if works:
-        body += "\nWork waiting:\n" + "\n".join(works)
-    body += "\n" + cursor_status_speech()
-    return (
-        "<|turn>system\n"
-        + body
-        + REMEMBER_DECL
-        + PLACE_DECL
-        + CURSOR_DECL
-        + NEXT_DECL
-        + STOP_DECL
-        + "<turn|>\n"
-    )
-
-
-def gemma_prompt(question, with_image):
-    # Image turns. Text memory turns use memory_prompt.
-    user = user_body(question, with_image)
-    tail = "<|channel>thought\n<channel|>\n"
-    return (
-        "<bos>"
-        + "<|turn>user\n"
-        + user
-        + "<turn|>\n"
-        "<|turn>model\n"
-        + tail
-    )
-
-
-def memory_prompt(facts, pairs, question, suffix, works=None):
-    if works is None:
-        works = []
-    parts = ["<bos>", tool_header(facts, works)]
-    for user, model in pairs:
-        if not user and not model:
-            continue
-        parts.append("<|turn>user\n" + user + "<turn|>\n")
-        if model:
-            parts.append("<|turn>model\n" + model + "<turn|>\n")
-    parts.append("<|turn>user\n" + question.strip("\r\n") + "<turn|>\n")
-    parts.append("<|turn>model\n" + suffix)
-    return "".join(parts)
-
-
-def tool_response(name, fields):
-    parts = [key + ":" + Q + value + Q for key, value in fields]
-    return "<|tool_response>response:" + name + "{" + ",".join(parts) + "}<tool_response|>"
-
-
-def parse_tool_call(text):
-    match = CALL_RE.search(text)
-    if not match:
-        return None
-    args = {}
-    for key, quoted, bare in ARG_RE.findall(match.group(2)):
-        value = quoted if quoted else bare
-        args[key] = value.strip()
-    return match.group(1), args, match.group(0)
-
-
-def plain(raw):
-    text = " ".join((raw or "").replace(Q, "'").split())
-    return text
-
-
-def clip_words(raw, limit):
-    words = plain(raw).split()
-    if len(words) > limit:
-        words = words[:limit]
-    return " ".join(words)
-
-
-def clip_fact(raw):
-    text = (raw or "").strip()
-    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
-        text = text[1:-1].strip()
-    text = plain(text)
-    if len(text) > FACT_CHARS:
-        text = text[:FACT_CHARS].rstrip()
-    return text
-
-
-def parse_store(raw):
-    facts = []
-    pairs = []
-    works = []
-    pending = None
-    lines = physical_lines(raw)
-    index = 0
-    while index < len(lines):
-        stripped = lines[index].rstrip(" \t")
-        if stripped.endswith("<<") and stripped[:-2].strip() in ("fact", "user", "model", "work"):
-            key = stripped[:-2].strip()
-            index += 1
-            buf = []
-            while index < len(lines) and lines[index] != "<<":
-                buf.append(lines[index])
-                index += 1
-            if index < len(lines) and lines[index] == "<<":
-                index += 1
-            body = "\n".join(buf).strip()
-            if key == "fact":
-                if body:
-                    facts.append(body)
-            elif key == "work":
-                if body:
-                    works.append(body)
-            elif key == "user":
-                if pending is not None:
-                    pairs.append((pending, ""))
-                pending = body
-            else:
-                if pending is None:
-                    pending = ""
-                pairs.append((pending, body))
-                pending = None
-            continue
-        index += 1
-    if pending is not None:
-        pairs.append((pending, ""))
-    return facts, pairs, works
-
-
-def render_store(facts, pairs, works):
-    parts = []
-    for fact in facts:
-        parts.append("fact <<\n" + fact + "\n<<\n")
-    for line in works:
-        parts.append("work <<\n" + line + "\n<<\n")
-    for user, model in pairs:
-        parts.append("user <<\n" + user + "\n<<\n")
-        parts.append("model <<\n" + model + "\n<<\n")
-    return "".join(parts)
-
-
-def read_memory(path):
-    if not path.is_file():
-        return [], [], []
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except OSError as exc:
-        die("cannot read " + path.name + ": " + str(exc))
-    return parse_store(raw)
-
-
-def write_memory(path, facts, pairs, works=None):
-    if works is None:
-        if path.is_file():
-            _facts, _pairs, works = read_memory(path)
-        else:
-            works = []
-    body = render_store(facts, pairs, works)
-    tmp = path.with_name(path.name + ".tmp")
-    try:
-        tmp.write_bytes(body.encode("utf-8"))
-        tmp.replace(path)
-    except OSError as exc:
-        die("cannot write " + path.name + ": " + str(exc))
-
-
-def fit_memory(question, suffix, path=None, limit=None):
-    path = MEMORY_PATH if path is None else path
-    limit = PROMPT_CHARS if limit is None else limit
-    facts, pairs, works = read_memory(path)
-    kept = list(pairs)
-    prompt = memory_prompt(facts, kept, question, suffix, works)
-    dropped = False
-    while len(prompt) > limit and kept:
-        kept = kept[1:]
-        dropped = True
-        prompt = memory_prompt(facts, kept, question, suffix, works)
-    while len(prompt) > limit and facts:
-        facts = facts[1:]
-        dropped = True
-        prompt = memory_prompt(facts, kept, question, suffix, works)
-    if len(prompt) > limit:
-        die("prompt too long")
-    if dropped:
-        write_memory(path, facts, kept, works)
-    return prompt, facts, kept
-
-
-def store_fact(path, line):
-    text = clip_fact(line)
-    if not text:
-        print("gemma: tool remember empty", file=sys.stderr, flush=True)
-        return ""
-    facts, pairs, works = read_memory(path)
-    if text in facts:
-        print("gemma: tool remember kept " + path.name + " (" + text + ")", file=sys.stderr, flush=True)
-        return text
-    facts.append(text)
-    write_memory(path, facts, pairs, works)
-    print("gemma: tool remember wrote " + path.name + " (" + text + ")", file=sys.stderr, flush=True)
-    return text
-
-
-def store_work(path, line, status_path=None):
-    text = clip_fact(line)
-    if not text:
-        print("gemma: tool next empty", file=sys.stderr, flush=True)
-        return ""
-    facts, pairs, works = read_memory(path)
-    if text in works:
-        print("gemma: tool next kept " + path.name + " (" + text + ")", file=sys.stderr, flush=True)
-        return text
-    works.append(text)
-    write_memory(path, facts, pairs, works)
-    write_iris_status("work", text, status_path)
-    print("gemma: tool next wrote " + path.name + " (" + text + ")", file=sys.stderr, flush=True)
-    return text
-
-
-def stop_work(path, line, status_path=None):
-    # A matching work line is dropped. Any other call tells Iris the voice should stop.
-    # Python does not scan the question. The model passes line or leaves it empty.
-    facts, pairs, works = read_memory(path)
-    target = clip_fact(line) if (line or "").strip() else ""
-    if target and target in works:
-        works = [item for item in works if item != target]
-        write_memory(path, facts, pairs, works)
-        write_iris_status("stop", target, status_path)
-        print("gemma: tool stop " + target, file=sys.stderr, flush=True)
-        return target
-    write_iris_status("stop", "voice", status_path)
-    print("gemma: tool stop voice", file=sys.stderr, flush=True)
-    return "voice"
-
-
-def write_iris_outbox(line, path=None):
-    text = " ".join((line or "").split())
-    if not text:
-        return
-    if len(text) > IRIS_OUTBOX_CHARS:
-        text = text[:IRIS_OUTBOX_CHARS]
-    path = IRIS_OUTBOX if path is None else path
-    tmp = path.with_name(path.name + ".tmp")
-    try:
-        tmp.write_text(text + "\n", encoding="utf-8")
-        tmp.replace(path)
-    except OSError as exc:
-        print("gemma: iris outbox fail " + str(exc), file=sys.stderr, flush=True)
-        return
-    print("gemma: iris outbox wrote " + path.name, file=sys.stderr, flush=True)
-
-
-def write_iris_status(kind, line, path=None):
-    kind = (kind or "").strip()
-    if kind not in ("say", "work", "stop"):
-        return
-    text = " ".join((line or "").split())
-    if not text:
-        return
-    row = kind + " " + text
-    if len(row) > STATUS_CHARS:
-        row = row[:STATUS_CHARS].rstrip()
-    path = IRIS_STATUS if path is None else path
-    prev = ""
-    if path.is_file():
-        try:
-            prev = path.read_text(encoding="utf-8")
-        except OSError as exc:
-            print("gemma: iris status fail " + str(exc), file=sys.stderr, flush=True)
-            return
-    lines = [item for item in prev.splitlines() if item.strip()]
-    lines.append(row)
-    body = "\n".join(lines[-STATUS_KEEP:]) + "\n"
-    tmp = path.with_name(path.name + ".tmp")
-    try:
-        tmp.write_text(body, encoding="utf-8")
-        tmp.replace(path)
-    except OSError as exc:
-        print("gemma: iris status fail " + str(exc), file=sys.stderr, flush=True)
-        return
-    print("gemma: iris status " + kind, file=sys.stderr, flush=True)
-
-
-def append_memory(path, question, reply):
-    user = clip_words(question, TURN_WORDS)
-    model = clip_words(reply, TURN_WORDS)
-    if not user or not model:
-        return
-    facts, pairs, works = read_memory(path)
-    pairs.append((user, model))
-    write_memory(path, facts, pairs, works)
-
-
-def clean_task(raw):
-    text = (raw or "").strip()
-    if len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
-        text = text[1:-1].strip()
-    text = " ".join(text.split())
-    text = text.replace(Q, "'")
-    if len(text) > 200:
-        text = text[:200].rstrip()
-    return text
-
-
-def log_block(title, body):
-    text = body if body.endswith("\n") or body == "" else body + "\n"
-    return title + " <<\n" + text + "<<\n"
-
-
-def write_spawn(body, path=None):
-    path = SPAWN_PATH if path is None else path
-    try:
-        path.write_text(body, encoding="utf-8")
-    except OSError as exc:
-        die("cannot write " + path.name + ": " + str(exc))
-
-
-def find_exe(name):
-    found = shutil.which(name)
-    if not found:
-        return None
-    path = Path(found)
-    if path.suffix.lower() in (".cmd", ".exe", ".bat"):
-        return str(path)
-    cmd = Path(str(path) + ".cmd")
-    if cmd.is_file():
-        return str(cmd)
-    if path.is_file():
-        return str(path)
-    return None
-
-
-def find_agent():
-    return find_exe("agent")
-
-
-def agent_argv(agent, task):
-    # composer-2.5 is the non-fast id. No -fast slug and no fast flag.
-    return [
-        agent,
-        "-p",
-        "--force",
-        "--trust",
-        "--workspace",
-        str(ROOT),
-        "--worktree",
-        "--worktree-base",
-        "runner-h",
-        "--model",
-        CURSOR_MODEL,
-        "--output-format",
-        "json",
-        task + TASK_SUFFIX,
-    ]
-
-
-def argv_has_fast(argv):
-    for arg in argv[:-1]:
-        if "fast" in arg.casefold():
-            return True
-    return False
-
-
-_k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-_k32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
-_k32.OpenProcess.restype = ctypes.c_void_p
-_k32.CloseHandle.argtypes = [ctypes.c_void_p]
-_k32.CloseHandle.restype = ctypes.c_int
-_k32.QueryFullProcessImageNameW.argtypes = [
-    ctypes.c_void_p,
-    ctypes.c_uint32,
-    ctypes.c_wchar_p,
-    ctypes.POINTER(ctypes.c_uint32),
-]
-_k32.QueryFullProcessImageNameW.restype = ctypes.c_int
-_k32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
-_k32.GetExitCodeProcess.restype = ctypes.c_int
-_STILL_ACTIVE = 259
-
-
-def cursor_state(pid):
-    # alive: still running and the image name came back.
-    # down: the pid is gone, or the process has already exited.
-    # unknown: still running, but the image name did not come back.
-    if pid <= 0:
-        return "down"
-    handle = _k32.OpenProcess(0x1000, 0, int(pid))
-    if not handle:
-        return "down"
-    try:
-        code = ctypes.c_uint32(0)
-        if _k32.GetExitCodeProcess(handle, ctypes.byref(code)) and code.value != _STILL_ACTIVE:
-            return "down"
-        size = ctypes.c_uint32(32768)
-        buf = ctypes.create_unicode_buffer(size.value)
-        ok = _k32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size))
-        if ok and buf.value:
-            return "alive"
-        return "unknown"
-    finally:
-        _k32.CloseHandle(handle)
-
-
-def read_cursor_status(path=None):
-    path = CURSOR_STATUS if path is None else path
-    if not path.is_file():
-        return None
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return None
-    data = {}
-    for line in lines:
-        key, sep, rest = line.partition(" ")
-        if sep and key:
-            data[key] = rest.strip()
-    if "pid" not in data:
-        return None
-    return data
-
-
-def write_cursor_status(pid, task, path=None):
-    path = CURSOR_STATUS if path is None else path
-    body = (
-        "pid "
-        + str(pid)
-        + "\n"
-        + "task "
-        + " ".join((task or "").split())
-        + "\n"
-        + "cwd "
-        + str(ROOT)
-        + "\n"
-        + "model "
-        + CURSOR_MODEL
-        + "\n"
-    )
-    tmp = path.with_name(path.name + ".tmp")
-    try:
-        tmp.write_text(body, encoding="utf-8")
-        tmp.replace(path)
-    except OSError as exc:
-        die("cannot write " + path.name + ": " + str(exc))
-
-
-def cursor_blocks(path=None):
-    # The status file is the one slot. An alive or unknown pid fills CURSOR_CAP.
-    data = read_cursor_status(path)
-    if not data:
-        return False
-    try:
-        pid = int(data.get("pid", "0"))
-    except ValueError:
-        return True
-    occupying = []
-    if cursor_state(pid) in ("alive", "unknown"):
-        occupying.append(pid)
-    return len(occupying) >= CURSOR_CAP
-
-
-def cursor_status_speech(path=None):
-    data = read_cursor_status(path)
-    if not data:
-        return "No code agent has been started."
-    task = data.get("task", "")
-    try:
-        pid = int(data.get("pid", ""))
-    except ValueError:
-        return "I have no code agent status."
-    state = cursor_state(pid)
-    if state == "alive":
-        return "The code agent pid " + str(pid) + " is alive. Task: " + task + "."
-    if state == "unknown":
-        return "The code agent pid " + str(pid) + " is unknown. Task: " + task + "."
-    return "The last code agent pid " + str(pid) + " is not running. Task: " + task + "."
-
-
-def run_cursor_job(task, agent_path=None, spawn_path=None, status_path=None):
-    # agent_path None looks up `agent` on PATH. "" means the CLI is missing.
-    # The process is started and not waited on. This does not run `cursor`.
-    path = SPAWN_PATH if spawn_path is None else spawn_path
-    label = clean_task(task)
-    if not label or label.startswith("-"):
-        write_spawn("fail empty task\n", path)
-        print("gemma: tool cursor empty task", file=sys.stderr, flush=True)
-        return "fail empty task"
-    if agent_path is None:
-        agent = find_agent()
-    else:
-        agent = agent_path or None
-    if not agent:
-        write_spawn("BLOCKED\nagent cli missing\n", path)
-        print("gemma: tool cursor BLOCKED", file=sys.stderr, flush=True)
-        return "BLOCKED"
-    if cursor_blocks(status_path):
-        print("gemma: tool cursor busy", file=sys.stderr, flush=True)
-        return "busy"
-    argv = agent_argv(agent, label)
-    if argv_has_fast(argv):
-        write_spawn("fail fast forbidden\n", path)
-        print("gemma: tool cursor fast forbidden", file=sys.stderr, flush=True)
-        return "fail fast forbidden"
-    command = subprocess.list2cmdline(argv)
-    print(
-        "gemma: tool cursor model " + CURSOR_MODEL + " cwd " + str(ROOT) + " prompt " + label,
-        file=sys.stderr,
-        flush=True,
-    )
-    try:
-        proc = subprocess.Popen(
-            argv,
-            cwd=ROOT,
-            shell=False,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-    except OSError as exc:
-        write_spawn("fail cannot start: " + str(exc) + "\n", path)
-        print("gemma: tool cursor fail", file=sys.stderr, flush=True)
-        return "fail cannot start"
-    pid = proc.pid
-    body = "task " + label + "\n"
-    body += log_block("command", command + "\n")
-    body += "pid " + str(pid) + "\nstarted\n"
-    write_spawn(body, path)
-    write_cursor_status(pid, label, status_path)
-    return "started local pid " + str(pid)
-
-
-def strip_tool_markup(text):
-    return TOOL_MARKUP_RE.sub("", text)
-
-
-def sentence_end(text, final):
-    n = len(text)
-    i = 0
-    while i < n:
-        ch = text[i]
-        if ch == "\n" and i + 1 < n and text[i + 1] == "\n":
-            return i + 2
-        if ch in ".!?":
-            j = i + 1
-            if j < n and text[j].isdigit():
-                i = j
-                continue
-            if j < n and text[j].isspace():
-                k = j + 1
-                while k < n and text[k].isspace() and text[k] != "\n":
-                    k += 1
-                if k < n and not text[k].isspace():
-                    tail = text[k:]
-                    if "<channel|>".startswith(tail) or "<|channel>".startswith(tail):
-                        return None
-                    if tail.startswith("<channel|>") or tail.startswith("<|channel>"):
-                        return None
-                    return j + 1
-                if final:
-                    return n
-        i += 1
-    if final and text.strip():
-        return n
-    return None
-
-
-class SpeakFlush:
-    # Stream stdout is what the mouth can say. Hold a sentence until the next
-    # word starts, so a later <channel|> can still drop the thought. JSON turns
-    # do not use this.
-    def __init__(self):
-        self.dec = codecs.getincrementaldecoder("utf-8")("replace")
-        self.buf = ""
-
-    def feed(self, piece):
-        if piece:
-            self.buf += self.dec.decode(piece)
-            self._pump(False)
-
-    def finish(self):
-        self.buf += self.dec.decode(b"", True)
-        self._pump(True)
-
-    def _pump(self, final):
-        self.buf = TOOL_MARKUP_RE.sub("", self.buf)
-        cut = self.buf.find("<|tool_call>")
-        held = ""
-        if cut >= 0:
-            held = self.buf[cut:]
-            self.buf = self.buf[:cut]
-        if "<|channel>" in self.buf and "<channel|>" not in self.buf and not final:
-            self.buf += held
-            return
-        if "<channel|>" in self.buf:
-            self.buf = self.buf.split("<channel|>")[-1]
-        while self.buf:
-            end = sentence_end(self.buf, False)
-            if end is None:
-                break
-            self._write(self.buf[:end])
-            self.buf = self.buf[end:]
-        if final and self.buf.strip():
-            self._write(self.buf)
-            self.buf = ""
-        if held and "<tool_call|>" not in held:
-            self.buf += held
-        elif held and not final:
-            self.buf += held.split("<tool_call|>", 1)[-1]
-
-    def _write(self, text):
-        if not text:
-            return
-        sys.stdout.buffer.write(text.encode("utf-8"))
-        sys.stdout.buffer.flush()
-
-
-def answer_text(text):
-    cleaned = strip_tool_markup(text).replace("\r\n", "\n").replace("\r", "\n")
-    cut = cleaned.find("<|tool_call>")
-    if cut >= 0:
-        cleaned = cleaned[:cut]
-    if "<channel|>" in cleaned:
-        cleaned = cleaned.split("<channel|>")[-1]
-    for token in ("<|channel>thought", "<|channel>", "<turn|>", "<|turn>", "<bos>", "<eos>", "<|think|>", "`"):
-        cleaned = cleaned.replace(token, "")
-    return " ".join(cleaned.split())
-
-
-def settings_text(prompt, image_b64):
+def config_body():
     source = ROOT / "gemma.txt"
     if not source.is_file():
         die("missing gemma.txt")
     raw = source.read_text(encoding="utf-8-sig")
     body = "\n".join(kept_lines(raw))
-    if body:
+    if body and not body.endswith("\n"):
         body += "\n"
-    body += "gemma.text <<\n" + prompt
-    if not prompt.endswith("\n"):
+    return body
+
+
+def config_pairs(text):
+    rows = physical_lines(text or "")
+    if rows and rows[-1] == "":
+        rows = rows[:-1]
+    pairs = {}
+    index = 0
+    while index < len(rows):
+        line = rows[index]
+        stripped = line.lstrip(" \t")
+        if not stripped or stripped.startswith("#"):
+            index += 1
+            continue
+        if len(stripped) >= 2 and stripped.endswith("<<"):
+            key = stripped[:-2].rstrip(" \t")
+            index += 1
+            buf = []
+            while index < len(rows) and rows[index] != "<<":
+                buf.append(rows[index])
+                index += 1
+            if index >= len(rows) or rows[index] != "<<":
+                die("truncated gemma settings")
+            index += 1
+            pairs[key] = "\n".join(buf)
+            continue
+        key, sep, rest = stripped.partition(" ")
+        pairs[key] = rest if sep else ""
+        index += 1
+    return pairs
+
+
+def settings_text(prompt, image_b64):
+    body = config_body()
+    body += "gemma.text <<\n" + (prompt or "")
+    if not (prompt or "").endswith("\n"):
         body += "\n"
     body += "<<\n"
     body += "gemma.image <<\n"
@@ -897,6 +115,10 @@ def settings_text(prompt, image_b64):
             body += "\n"
     body += "<<\n"
     return body
+
+
+def resident_settings():
+    return config_body() + "gemma.text <<\n<<\ngemma.image <<\n<<\n"
 
 
 def image_to_b64(path):
@@ -1318,19 +540,6 @@ def same_settings(rec, fingerprint):
         and rec.state in ("loading", "ready")
     )
 
-
-def resident_settings():
-    source = ROOT / "gemma.txt"
-    if not source.is_file():
-        die("missing gemma.txt")
-    raw = source.read_text(encoding="utf-8-sig")
-    body = "\n".join(kept_lines(raw))
-    if body and not body.endswith("\n"):
-        body += "\n"
-    body += "gemma.text <<\n<<\ngemma.image <<\n<<\n"
-    return body
-
-
 def write_sidecar(payload):
     try:
         SIDECAR.write_bytes(payload.encode("utf-8"))
@@ -1544,425 +753,26 @@ def resident_ask(pid, prompt, image_b64, on_piece, timeout):
 
 def resident_generate(prompt, image_b64, stream, timeout=ASK_TIMEOUT):
     pid = ensure_resident()
-    speaker = SpeakFlush() if stream else None
 
     def on_piece(piece):
-        if speaker is not None:
-            speaker.feed(piece)
+        if stream and piece:
+            sys.stdout.buffer.write(piece)
+            sys.stdout.buffer.flush()
 
     text = resident_ask(pid, prompt, image_b64, on_piece, timeout)
-    if speaker is not None:
-        speaker.finish()
+    if not str(text or "").strip():
+        die("gemma returned empty")
     return text
-
-
-def _norm_device(name):
-    return " ".join((name or "").casefold().split())
-
-
-def cuda_device_name():
-    try:
-        completed = subprocess.run(
-            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            shell=False,
-            encoding="utf-8",
-            errors="replace",
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return ""
-    if completed.returncode != 0:
-        return ""
-    lines = [line.strip() for line in (completed.stdout or "").splitlines() if line.strip()]
-    if not lines:
-        return ""
-    return lines[0]
-
-
-def vulkan_device_name():
-    try:
-        vk = ctypes.WinDLL("vulkan-1")
-    except OSError:
-        return ""
-    app_type = 0
-    inst_type = 1
-    api = (1 << 22) | (2 << 12)
-
-    class VkApplicationInfo(ctypes.Structure):
-        _fields_ = [
-            ("sType", ctypes.c_uint32),
-            ("pNext", ctypes.c_void_p),
-            ("pApplicationName", ctypes.c_char_p),
-            ("applicationVersion", ctypes.c_uint32),
-            ("pEngineName", ctypes.c_char_p),
-            ("engineVersion", ctypes.c_uint32),
-            ("apiVersion", ctypes.c_uint32),
-        ]
-
-    class VkInstanceCreateInfo(ctypes.Structure):
-        _fields_ = [
-            ("sType", ctypes.c_uint32),
-            ("pNext", ctypes.c_void_p),
-            ("flags", ctypes.c_uint32),
-            ("pApplicationInfo", ctypes.POINTER(VkApplicationInfo)),
-            ("enabledLayerCount", ctypes.c_uint32),
-            ("ppEnabledLayerNames", ctypes.c_void_p),
-            ("enabledExtensionCount", ctypes.c_uint32),
-            ("ppEnabledExtensionNames", ctypes.c_void_p),
-        ]
-
-    try:
-        vk.vkCreateInstance.argtypes = [
-            ctypes.POINTER(VkInstanceCreateInfo),
-            ctypes.c_void_p,
-            ctypes.POINTER(ctypes.c_void_p),
-        ]
-        vk.vkCreateInstance.restype = ctypes.c_int
-        vk.vkEnumeratePhysicalDevices.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p]
-        vk.vkEnumeratePhysicalDevices.restype = ctypes.c_int
-        vk.vkGetPhysicalDeviceProperties.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-        vk.vkGetPhysicalDeviceProperties.restype = None
-        vk.vkDestroyInstance.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-        vk.vkDestroyInstance.restype = None
-        app = VkApplicationInfo()
-        app.sType = app_type
-        app.apiVersion = api
-        info = VkInstanceCreateInfo()
-        info.sType = inst_type
-        info.pApplicationInfo = ctypes.pointer(app)
-        inst = ctypes.c_void_p()
-        if vk.vkCreateInstance(ctypes.byref(info), None, ctypes.byref(inst)) != 0 or not inst.value:
-            return ""
-        try:
-            count = ctypes.c_uint32(0)
-            if vk.vkEnumeratePhysicalDevices(inst, ctypes.byref(count), None) != 0 or count.value < 1:
-                return ""
-            arr = (ctypes.c_void_p * count.value)()
-            if vk.vkEnumeratePhysicalDevices(inst, ctypes.byref(count), ctypes.cast(arr, ctypes.c_void_p)) != 0:
-                return ""
-            props = (ctypes.c_ubyte * 4096)()
-            vk.vkGetPhysicalDeviceProperties(arr[0], ctypes.cast(props, ctypes.c_void_p))
-            raw = bytes(props[20:276]).split(b"\x00", 1)[0]
-            return raw.decode("utf-8", errors="replace").strip()
-        finally:
-            vk.vkDestroyInstance(inst, None)
-    except (OSError, AttributeError):
-        return ""
-
-
-def adapter_names():
-    return cuda_device_name(), vulkan_device_name()
-
-
-PLACE_PORT = 8765
-Place = namedtuple("Place", "brain url cuda vulkan adapter flip where")
-
-
-def tcp_accepts(host, port, timeout=1.0):
-    try:
-        infos = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
-    except OSError:
-        return False
-    if not infos:
-        return False
-    family, socktype, proto, _canon, sockaddr = infos[0]
-    sock = socket.socket(family, socktype, proto)
-    sock.settimeout(timeout)
-    try:
-        sock.connect(sockaddr)
-        return True
-    except OSError:
-        return False
-    finally:
-        sock.close()
-
-
-def local_addresses():
-    # Interface addresses. The computer name is not a key.
-    names = {"127.0.0.1", "localhost", "::1", "0.0.0.0"}
-    try:
-        get_table = ctypes.windll.iphlpapi.GetIpAddrTable
-    except (AttributeError, OSError):
-        return names
-    get_table.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong), ctypes.c_int]
-    get_table.restype = ctypes.c_ulong
-    size = ctypes.c_ulong(0)
-    get_table(None, ctypes.byref(size), False)
-    if size.value <= 4:
-        return names
-    buf = ctypes.create_string_buffer(size.value)
-    if get_table(buf, ctypes.byref(size), False) != 0:
-        return names
-    count = int.from_bytes(buf.raw[:4], "little")
-    for index in range(count):
-        off = 4 + index * 24
-        if off + 4 > len(buf.raw):
-            break
-        ip = ".".join(str(byte) for byte in buf.raw[off : off + 4])
-        if ip != "0.0.0.0":
-            names.add(ip)
-    return names
-
-
-def host_is_local(host, addresses):
-    name = (host or "").strip().casefold()
-    if not name:
-        return False
-    return name in {item.casefold() for item in addresses}
-
-
-def split_peer(url):
-    parsed = urllib.parse.urlsplit((url or "").strip())
-    if parsed.scheme not in ("http", "https") or not parsed.hostname:
-        return None
-    port = parsed.port
-    if port is None:
-        port = 443 if parsed.scheme == "https" else 80
-    return parsed.hostname, port
-
-
-def adapter_word(cuda_name, vulkan_name):
-    if not cuda_name or not vulkan_name:
-        return "unknown"
-    if _norm_device(cuda_name) == _norm_device(vulkan_name):
-        return "same"
-    return "different"
-
-
-def place_line(found):
-    return (
-        "brain "
-        + found.brain
-        + " "
-        + found.where
-        + " cuda "
-        + (found.cuda or "none")
-        + " vulkan "
-        + (found.vulkan or "none")
-        + " "
-        + found.adapter
-        + (" flip" if found.flip else "")
-    )
-
-
-def place(peer_url=None, port=PLACE_PORT, opener=None, addresses=None, devices=None):
-    # One decision. Device names and one TCP connect. No computer name. No second URL.
-    if devices is None:
-        cuda_name, vulkan_name = adapter_names()
-    else:
-        cuda_name, vulkan_name = devices
-    adapter = adapter_word(cuda_name, vulkan_name)
-    same = adapter == "same"
-    open_tcp = tcp_accepts if opener is None else opener
-    if peer_url is not None:
-        text = str(peer_url).strip()
-        if not text:
-            return Place("missing", "", cuda_name, vulkan_name, adapter, False, "peer")
-        parts = split_peer(text)
-        if parts is None:
-            return Place("missing", text, cuda_name, vulkan_name, adapter, False, "peer")
-        host, peer_port = parts
-        if not open_tcp(host, peer_port):
-            return Place("missing", text, cuda_name, vulkan_name, adapter, False, "peer")
-        addrs = local_addresses() if addresses is None else addresses
-        local = host_is_local(host, addrs)
-        flip = bool(same and local and cuda_name)
-        where = "local" if local else "peer"
-        return Place("post", text, cuda_name, vulkan_name, adapter, flip, where)
-    if open_tcp("127.0.0.1", port):
-        url = "http://127.0.0.1:" + str(port) + "/"
-        return Place("post", url, cuda_name, vulkan_name, adapter, bool(same and cuda_name), "local")
-    if cuda_name:
-        return Place("resident", "", cuda_name, vulkan_name, adapter, bool(same), "local")
-    return Place("cpu", "", cuda_name, vulkan_name, adapter, False, "local")
-
-
-def devices_report(found):
-    listener = "up" if found.brain == "post" else "down"
-    cuda_name = found.cuda or "none"
-    vulkan_name = found.vulkan or "none"
-    flip = "yes" if found.flip else "no"
-    fields = [
-        ("adapter", found.adapter),
-        ("cuda", cuda_name),
-        ("vulkan", vulkan_name),
-        ("brain", found.brain),
-        ("listener", listener),
-        ("flip", flip),
-    ]
-    spoken = (
-        "cuda "
-        + cuda_name
-        + "; vulkan "
-        + vulkan_name
-        + "; "
-        + found.adapter
-        + "; brain "
-        + found.brain
-        + "; listener "
-        + listener
-        + "; flip "
-        + flip
-    )
-    return fields, spoken
-
-
-def run_place():
-    fields, spoken = devices_report(place(None))
-    print("gemma: tool place " + spoken, file=sys.stderr, flush=True)
-    return fields, spoken
-
-
-def note_prompt(prompt, facts, pairs):
-    print(
-        "gemma: memory facts " + str(len(facts)) + " pairs " + str(len(pairs)),
-        file=sys.stderr,
-        flush=True,
-    )
-    try:
-        LAST_PROMPT.write_text(prompt, encoding="utf-8")
-    except OSError as exc:
-        print("gemma: cannot write gemma.lastprompt.txt: " + str(exc), file=sys.stderr, flush=True)
-
-
-def idle_question(line):
-    return (
-        "You are idle. Nobody is speaking. Next work: "
-        + line
-        + ". If this needs a tool, call it. Use cursor only when the line asks for a code agent. "
-        "If it needs no tool, answer in one or two sentences. Do not invent other work."
-    )
-
-
-def oldest_work(path):
-    _facts, _pairs, works = read_memory(path)
-    for line in works:
-        if line:
-            return line
-    return ""
-
-
-def drop_work(path, line):
-    facts, pairs, works = read_memory(path)
-    if line not in works:
-        print("gemma: idle work missing", file=sys.stderr, flush=True)
-        return False
-    works.remove(line)
-    write_memory(path, facts, pairs, works)
-    return True
-
-
-def idle_notice(generate, path=None, spawn_path=None, outbox_path=None, status_path=None):
-    # One stored line, one prompt. generate(prompt) is the resident. No line
-    # does not call it. Python does not pick the tool.
-    path = MEMORY_PATH if path is None else path
-    line = oldest_work(path)
-    if not line:
-        print("gemma: idle none", file=sys.stderr, flush=True)
-        return "idle"
-    print("gemma: idle work " + line, file=sys.stderr, flush=True)
-    question = idle_question(line)
-    prompt, facts, kept = fit_memory(question, "", path)
-    note_prompt(prompt, facts, kept)
-    text = generate(prompt)
-    if not (text or "").strip():
-        die("gemma: idle empty")
-    call = parse_tool_call(text)
-    if call:
-        print("gemma: idle tool " + call[0], file=sys.stderr, flush=True)
-        suffix, blocked, fallback = tool_turn(
-            call[0],
-            call[1],
-            call[2],
-            spawn_path=spawn_path,
-            memory_path=path,
-            status_path=status_path,
-        )
-        if blocked:
-            print("gemma: idle kept", file=sys.stderr, flush=True)
-            return blocked if blocked.endswith("\n") else blocked + "\n"
-        if not suffix:
-            die("gemma: idle empty")
-        follow, facts, kept = fit_memory(question, suffix, path)
-        note_prompt(follow, facts, kept)
-        reply = answer_text(generate(follow))
-        if not reply:
-            print("gemma: idle follow-up empty", file=sys.stderr, flush=True)
-            reply = fallback or ""
-        if not reply:
-            die("gemma: idle follow-up empty")
-        text = reply
-    else:
-        print("gemma: idle no tool", file=sys.stderr, flush=True)
-    spoken = answer_text(text)
-    if not spoken:
-        die("gemma: idle empty")
-    append_memory(path, "idle: " + line, spoken)
-    drop_work(path, line)
-    write_iris_outbox(spoken, outbox_path)
-    write_iris_status("say", spoken, status_path)
-    print("gemma: idle done", file=sys.stderr, flush=True)
-    return text
-
-
-def tool_turn(name, args, raw, spawn_path=None, memory_path=None, status_path=None):
-    memory_path = MEMORY_PATH if memory_path is None else memory_path
-    if name == "remember":
-        line = store_fact(memory_path, args.get("line")) or "empty"
-        return raw + tool_response("remember", [("line", line)]), None, line
-    if name == "place":
-        fields, spoken = run_place()
-        return raw + tool_response("place", fields), None, spoken
-    if name == "cursor":
-        summary = run_cursor_job(args.get("task"), spawn_path=spawn_path)
-        if summary == "busy":
-            return None, CURSOR_BUSY + "\n", None
-        if summary == "BLOCKED" or summary.startswith("fail"):
-            print("gemma: tool cursor stopped", file=sys.stderr, flush=True)
-            line = "BLOCKED agent cli missing" if summary == "BLOCKED" else summary
-            return None, line + "\n", None
-        line = plain(summary) or "cursor"
-        suffix = raw + tool_response("cursor", [("text", line)])
-        return suffix, None, line
-    if name == "next":
-        line = store_work(memory_path, args.get("line"), status_path)
-        if not line:
-            print("gemma: tool next stopped", file=sys.stderr, flush=True)
-            return None, "fail empty work\n", None
-        return raw + tool_response("next", [("line", line)]), None, line
-    if name == "stop":
-        # The voice seat ends the organism from this call. Do not kill the brain.
-        # Do not ask the model again. The call stays in the answer.
-        stop_work(memory_path, args.get("line"), status_path)
-        body = raw if raw.endswith("\n") else raw + "\n"
-        return None, body, None
-    print("gemma: tool unknown " + name, file=sys.stderr, flush=True)
-    return None, "unknown tool " + name + "\n", None
 
 
 def main():
     parser = argparse.ArgumentParser(prog="gemma.py")
-    parser.add_argument("question", nargs="?", default=None, help="text question / analysis prompt")
-    parser.add_argument(
-        "--image",
-        metavar="PATH",
-        help="image file (png/jpeg/...); encoded as raw base64 into gemma.image",
-    )
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="show one-shot gemma-brain.exe stderr; resident logs are gemma.run.err",
-    )
-    parser.add_argument("--once", action="store_true", help="one-shot gemma-brain.exe, then exit")
-    parser.add_argument("--stop", action="store_true", help="stop the resident gemma-brain.exe")
-    parser.add_argument("--stream", action="store_true", help="write token pieces to stdout as they are sampled")
-    parser.add_argument(
-        "--idle",
-        action="store_true",
-        help="one notice of the oldest work line; prints idle when there is none",
-    )
+    parser.add_argument("question", nargs="?", default=None)
+    parser.add_argument("--image", metavar="PATH")
+    parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--once", action="store_true")
+    parser.add_argument("--stop", action="store_true")
+    parser.add_argument("--stream", action="store_true")
     args = parser.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -1970,79 +780,34 @@ def main():
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     os.chdir(ROOT)
     if args.stop:
-        if args.once or args.question or args.image or args.verbose or args.stream or args.idle:
+        if args.once or args.question or args.image or args.verbose or args.stream:
             die("usage: gemma.py --stop")
         if stop_resident():
             print("gemma: stopped", file=sys.stderr, flush=True)
         else:
             print("gemma: not running", file=sys.stderr, flush=True)
         raise SystemExit(0)
-    if args.idle:
-        if args.once or args.question or args.image or args.verbose or args.stream:
-            die("usage: gemma.py --idle")
-
-        def run_idle(prompt):
-            return resident_generate(prompt, "", False)
-
-        text = idle_notice(run_idle)
-        sys.stdout.write(text)
-        if text and not text.endswith("\n"):
-            sys.stdout.write("\n")
-        raise SystemExit(0)
     if args.question is None or not args.question.strip():
-        die("usage: gemma.py [--once] [--stream] [--verbose] QUESTION")
+        die("usage: gemma.py [--once] [--stream] [--verbose] [--image PATH] QUESTION")
     if args.stream and args.once:
         die("stream asks for the resident")
     question = args.question.replace("\r\n", "\n").replace("\r", "\n")
     if not question.strip():
         die("empty question")
     image_b64 = image_to_b64(args.image) if args.image else ""
-
-    def run(prompt, image):
-        if args.once:
-            if brain_running_any():
-                die("gemma resident is running; gemma.py --stop first")
-            return run_brain(prompt, image, args.verbose)
-        return resident_generate(prompt, image, args.stream)
-
-    def emit_fallback(line):
-        if args.stream and line:
-            sys.stdout.buffer.write(line.encode("utf-8"))
-            sys.stdout.buffer.flush()
-
-    use_memory = not image_b64
-    if use_memory:
-        prompt, facts, kept = fit_memory(question, "")
-        note_prompt(prompt, facts, kept)
+    if image_b64 and MEDIA not in question:
+        die("image prompt missing <__media__>")
+    if args.once:
+        if brain_running_any():
+            die("gemma resident is running; gemma.py --stop first")
+        text = run_brain(question, image_b64, args.verbose)
     else:
-        prompt = gemma_prompt(question, True)
-    text = run(prompt, image_b64)
-    if use_memory:
-        call = parse_tool_call(text)
-        if call:
-            suffix, blocked, fallback = tool_turn(call[0], call[1], call[2])
-            if blocked:
-                text = blocked
-                emit_fallback(blocked)
-            elif suffix:
-                follow, facts, kept = fit_memory(question, suffix)
-                note_prompt(follow, facts, kept)
-                reply = answer_text(run(follow, ""))
-                if not reply:
-                    print("gemma: tool follow-up empty", file=sys.stderr, flush=True)
-                    reply = fallback or "done"
-                    emit_fallback(reply)
-                text = reply
-        spoken = answer_text(text)
-        if spoken:
-            append_memory(MEMORY_PATH, question, spoken)
-    elif image_b64:
-        spoken = answer_text(text)
-        if spoken:
-            append_memory(MEMORY_PATH, question, spoken)
+        text = resident_generate(question, image_b64, args.stream)
+    if not str(text or "").strip():
+        die("gemma returned empty")
     if not args.stream:
         sys.stdout.write(text)
-        if text and not text.endswith("\n"):
+        if not text.endswith("\n"):
             sys.stdout.write("\n")
     raise SystemExit(0)
 

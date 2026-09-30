@@ -112,13 +112,7 @@ gemma.mirostat-eta 0.1
 gemma.ignore-eos off
 gemma.timing-per-token off
 gemma.backend-sampling off
-# gemma.text is the native prompt. These tokens are Gemma 4's own turn markers.
 gemma.text <<
-<bos><|turn>user
-Say one short sentence.<turn|>
-<|turn>model
-<|channel>thought
-<channel|>
 <<
 gemma.image <<
 <<

@@ -1,15 +1,13 @@
 """Iris voice.
 
-python run.py start [--url URL]
+python run.py start [--url HOST:PORT]
     Continuous microphone, resident VAD, brain, mouth.
-    The URL is the brain when that port accepts. A closed port is this PC.
-    The computer name is not a key. A normal turn needs no mouse or keyboard.
+    HOST:PORT is one Trident node. No URL uses the brain on this PC.
+    TRIDENT_PEERS supplies HOST:PORT when --url is omitted.
 
 python run.py start inject [PATH]
     Simulated ASR. PATH is one turn per line, or blocks split by a line
     that is only ---. No PATH reads stdin. No microphone.
-    Between turns, iris_seat.txt and iris_outbox.txt are status, work, and say.
-    TRIDENT_IRIS_SEAT and TRIDENT_IRIS_OUTBOX name those files.
 
 python run.py stop
     Stop this organism and the mouth. Do not contact the brain.
@@ -26,7 +24,6 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_URL = "http://192.168.16.31:8765/"
 READY_SECONDS = 60
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
@@ -99,7 +96,7 @@ def remove_pidfile(name, pid):
 
 
 def parse_args(argv):
-    usage = "usage: run.py start [--url URL] [inject [PATH]] | run.py stop"
+    usage = "usage: run.py start [--url HOST:PORT] [inject [PATH]] | run.py stop"
     if not argv:
         die(usage)
     command = argv[0]
@@ -139,9 +136,15 @@ def parse_args(argv):
             continue
         die(usage)
     if not url:
-        url = os.environ.get("TRIDENT_NVIDIA_URL", "").strip() or DEFAULT_URL
-    if not (url.startswith("http://") or url.startswith("https://")):
-        die("url must start with http:// or https://")
+        peers = os.environ.get("TRIDENT_PEERS", "").strip()
+        if peers:
+            url = peers.split(",")[0].strip()
+    if url.startswith("http://") or url.startswith("https://"):
+        die("peer is host:port")
+    if url:
+        host, sep, port = url.rpartition(":")
+        if sep != ":" or not host or not port.isdigit() or not (1 <= int(port) <= 65535):
+            die("peer is host:port")
     return "start", url, inject
 
 
@@ -244,7 +247,10 @@ def cmd_start(url, inject):
     if already_up():
         return
     py = venv_python()
-    print("iris: brain " + url, file=sys.stderr, flush=True)
+    if url:
+        print("iris: brain " + url, file=sys.stderr, flush=True)
+    else:
+        print("iris: brain local", file=sys.stderr, flush=True)
     if inject is None:
         print("iris: live mic", file=sys.stderr, flush=True)
     else:
@@ -254,12 +260,11 @@ def cmd_start(url, inject):
         py,
         "-u",
         str(ROOT / "assistant.py"),
-        "--nvidia",
-        "--url",
-        url,
         "--timeout",
         "180",
     ]
+    if url:
+        command.extend(["--nvidia", "--url", url])
     if inject is not None:
         command.append("--inject")
         if inject != "-":

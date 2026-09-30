@@ -45,6 +45,8 @@
 !/nvidia_worker.py
 !/nvidia_start.py
 !/nvidia_stop.py
+!/node.py
+!/node.proof.txt
 !/reference.wav
 
 # Installer conversion and quantization.
@@ -116,3 +118,21 @@
 /parallel_run/
 /assistant.session.txt
 /assistant.session.txt.tmp
+/leases.txt
+/leases.txt.tmp
+/leases.lock
+/endgame.job
+/endgame.job.tmp
+/audio.card
+/audio.card.tmp
+/telegram.owner.txt
+
+!/desk.py
+!/vision.py
+!/cursor.py
+!/proof/
+!/proof/*.md
+/endgame-ai/
+/endgame-vision-chat/
+/screenshot-vision/
+/telegram-control/
