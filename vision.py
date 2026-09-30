@@ -21,8 +21,10 @@ def load(folder, name):
     parent = str(path.parent)
     if parent not in sys.path:
         sys.path.insert(0, parent)
-    spec = importlib.util.spec_from_file_location(name + "_" + folder.replace("-", "_"), path)
+    mod_name = name + "_" + folder.replace("-", "_")
+    spec = importlib.util.spec_from_file_location(mod_name, path)
     mod = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = mod
     spec.loader.exec_module(mod)
     CACHE[key] = mod
     return mod
