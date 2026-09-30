@@ -1,0 +1,1730 @@
+14:43:12 dpi 120
+14:43:12 gemma.ctx 32768
+14:43:12 gemma.batch 2048
+14:43:12 gemma.ubatch 2048
+14:43:12 gemma.image-min-tokens 1120
+14:43:12 gemma.image-max-tokens 1120
+14:43:12 gemma.mtmd-batch 2048
+14:43:12 gemma.temp 1.0
+14:43:12 gemma.top-k 64
+14:43:12 gemma.top-p 0.95
+14:43:12 gemma.seed 7
+14:43:12 gemma.n-predict 2048
+14:43:12 turn 1
+14:43:13 prompt <<
+<bos><|turn>system
+You see one full-monitor screenshot. Output one JSON object and no other text. box_2d is y_min, x_min, y_max, x_max, integers from 0 to 1000, origin at the top left. {"see":"what is on screen","do":"click","box_2d":[0,0,0,0]} {"see":"what is on screen","do":"type","text":"words"} {"see":"what is on screen","do":"key","key":"enter"} {"see":"what is on screen","do":"wait"} {"see":"what is on screen","do":"done","reply":"the ChatGPT answer copied from the screen"} key is enter, tab, escape, or ctrl-l. done only when the ChatGPT answer is visible. reply is that answer, not a guess.<turn|>
+<|turn>user
+<__media__>
+Focus or open Chrome on https://chatgpt.com. Click the message box. Type this message once: Reply with the single word lighthouse. Then key enter. If Chrome is not in front, click Chrome. If the address is not chatgpt.com, key ctrl-l, type https://chatgpt.com, then key enter. If the answer is still generating, do is wait. When the ChatGPT answer is visible, do is done and reply is only that answer.<turn|>
+<|turn>model
+<<
+14:43:13 image screen 1920 1080 captured 1920 1080 bytes 500655 sent 1920 1080 bytes 411115
+14:44:42 gemma <<
+{"see": "A screenshot of the ChatGPT interface, showing a login screen with the text \"Where should we begin?\" and options to \"Ask ChatGPT\", \"Create an image or sticker\", \"Write or edit\", and \"Search the web\". There is also a task manager panel on the right showing performance metrics for CPU and GPU.", "do": "type", "text": "lighthouse", "key": "enter"}<<
+14:44:42 see A screenshot of the ChatGPT interface, showing a login screen with the text "Where should we begin?" and options to "Ask ChatGPT", "Create an image or sticker", "Write or edit", and "Search the web". There is also a task manager panel on the right showing performance metrics for CPU and GPU.
+14:44:43 act type lighthouse
+14:44:43 turn 2
+14:44:44 prompt <<
+<bos><|turn>system
+You see one full-monitor screenshot. Output one JSON object and no other text. box_2d is y_min, x_min, y_max, x_max, integers from 0 to 1000, origin at the top left. {"see":"what is on screen","do":"click","box_2d":[0,0,0,0]} {"see":"what is on screen","do":"type","text":"words"} {"see":"what is on screen","do":"key","key":"enter"} {"see":"what is on screen","do":"wait"} {"see":"what is on screen","do":"done","reply":"the ChatGPT answer copied from the screen"} key is enter, tab, escape, or ctrl-l. done only when the ChatGPT answer is visible. reply is that answer, not a guess.<turn|>
+<|turn>user
+<__media__>
+Focus or open Chrome on https://chatgpt.com. Click the message box. Type this message once: Reply with the single word lighthouse. Then key enter. If Chrome is not in front, click Chrome. If the address is not chatgpt.com, key ctrl-l, type https://chatgpt.com, then key enter. If the answer is still generating, do is wait. When the ChatGPT answer is visible, do is done and reply is only that answer.
+Done so far:
+type lighthouse<turn|>
+<|turn>model
+<<
+14:44:44 image screen 1920 1080 captured 1920 1080 bytes 495398 sent 1920 1080 bytes 404857
+14:46:11 gemma <<
+{"box_2d": [501, 254, 558, 377], "label": "lighthouse"}<<
+14:46:11 see 
+14:46:11 act idle
+14:46:11 turn 3
+14:46:12 prompt <<
+<bos><|turn>system
+You see one full-monitor screenshot. Output one JSON object and no other text. box_2d is y_min, x_min, y_max, x_max, integers from 0 to 1000, origin at the top left. {"see":"what is on screen","do":"click","box_2d":[0,0,0,0]} {"see":"what is on screen","do":"type","text":"words"} {"see":"what is on screen","do":"key","key":"enter"} {"see":"what is on screen","do":"wait"} {"see":"what is on screen","do":"done","reply":"the ChatGPT answer copied from the screen"} key is enter, tab, escape, or ctrl-l. done only when the ChatGPT answer is visible. reply is that answer, not a guess.<turn|>
+<|turn>user
+<__media__>
+Focus or open Chrome on https://chatgpt.com. Click the message box. Type this message once: Reply with the single word lighthouse. Then key enter. If Chrome is not in front, click Chrome. If the address is not chatgpt.com, key ctrl-l, type https://chatgpt.com, then key enter. If the answer is still generating, do is wait. When the ChatGPT answer is visible, do is done and reply is only that answer.
+Done so far:
+type lighthouse
+idle<turn|>
+<|turn>model
+<<
+14:46:12 image screen 1920 1080 captured 1920 1080 bytes 501525 sent 1920 1080 bytes 411135
+14:48:37 revision 2
+14:48:37 dpi 120
+14:48:37 gemma.ctx 32768
+14:48:37 gemma.batch 2048
+14:48:37 gemma.ubatch 2048
+14:48:37 gemma.image-min-tokens 1120
+14:48:37 gemma.image-max-tokens 1120
+14:48:37 gemma.mtmd-batch 2048
+14:48:37 gemma.temp 1.0
+14:48:37 gemma.top-k 64
+14:48:37 gemma.top-p 0.95
+14:48:37 gemma.seed 7
+14:48:37 gemma.n-predict 2048
+14:48:37 turn 1
+14:48:38 prompt <<
+<bos><|turn>system
+You control this desktop from one screenshot. Answer with one JSON object and no other text. The object must contain do and see. do is click, type, key, wait, or done. see is one sentence about the screen. click also contains box_2d as y_min, x_min, y_max, x_max, integers 0 to 1000, top-left origin. type also contains text. key also contains key: enter, tab, escape, ctrl-l, ctrl-a, or backspace. done also contains reply, copied from the ChatGPT answer on screen. Do not return a label.<turn|>
+<|turn>user
+<__media__>
+Work only in the ChatGPT page. Ignore Task Manager. Do the earliest unfinished step and nothing else. Step 1: click the ChatGPT message box. Step 2: if that box already holds other text, key ctrl-a. Step 3: type exactly: Reply with the single word lighthouse. Step 4: key enter. Step 5: wait while the answer is generating. Step 6: done, and reply is only the ChatGPT answer. Text sitting in the input box is not the answer.<turn|>
+<|turn>model
+<<
+14:48:38 image screen 1920 1080 captured 1920 1080 bytes 494710 sent 1920 1080 bytes 403321
+14:50:07 gemma <<
+{"do": ["click", "box_2d": [178, 391, 223, 473]}, "see": "A chat interface is open with a question asking 'Where should we begin?'"}<<
+14:50:07 unparsed
+14:50:07 turn 2
+14:50:08 prompt <<
+<bos><|turn>system
+You control this desktop from one screenshot. Answer with one JSON object and no other text. The object must contain do and see. do is click, type, key, wait, or done. see is one sentence about the screen. click also contains box_2d as y_min, x_min, y_max, x_max, integers 0 to 1000, top-left origin. type also contains text. key also contains key: enter, tab, escape, ctrl-l, ctrl-a, or backspace. done also contains reply, copied from the ChatGPT answer on screen. Do not return a label.<turn|>
+<|turn>user
+<__media__>
+Work only in the ChatGPT page. Ignore Task Manager. Do the earliest unfinished step and nothing else. Step 1: click the ChatGPT message box. Step 2: if that box already holds other text, key ctrl-a. Step 3: type exactly: Reply with the single word lighthouse. Step 4: key enter. Step 5: wait while the answer is generating. Step 6: done, and reply is only the ChatGPT answer. Text sitting in the input box is not the answer.
+Done so far:
+unparsed<turn|>
+<|turn>model
+<<
+14:50:08 image screen 1920 1080 captured 1920 1080 bytes 497028 sent 1920 1080 bytes 406413
+14:51:38 gemma <<
+```json
+{
+  "do": [
+    {
+      "action": "click",
+      "box_2d": [
+        20,
+        10,
+        126,
+        107
+      ]
+    },
+    {
+      "action": "type",
+      "text": "Ctrl+a"
+    },
+    {
+      "action": "type",
+      "text": "Reply with the single word lighthouse"
+    },
+    {
+      "action": "key",
+      "key": "enter"
+    },
+    {
+      "action": "wait",
+      "duration": 5000
+    }
+  ]
+}
+```<<
+14:51:38 see 
+14:51:38 act idle
+14:51:38 turn 3
+14:51:39 prompt <<
+<bos><|turn>system
+You control this desktop from one screenshot. Answer with one JSON object and no other text. The object must contain do and see. do is click, type, key, wait, or done. see is one sentence about the screen. click also contains box_2d as y_min, x_min, y_max, x_max, integers 0 to 1000, top-left origin. type also contains text. key also contains key: enter, tab, escape, ctrl-l, ctrl-a, or backspace. done also contains reply, copied from the ChatGPT answer on screen. Do not return a label.<turn|>
+<|turn>user
+<__media__>
+Work only in the ChatGPT page. Ignore Task Manager. Do the earliest unfinished step and nothing else. Step 1: click the ChatGPT message box. Step 2: if that box already holds other text, key ctrl-a. Step 3: type exactly: Reply with the single word lighthouse. Step 4: key enter. Step 5: wait while the answer is generating. Step 6: done, and reply is only the ChatGPT answer. Text sitting in the input box is not the answer.
+Done so far:
+unparsed
+idle<turn|>
+<|turn>model
+<<
+14:51:39 image screen 1920 1080 captured 1920 1080 bytes 500632 sent 1920 1080 bytes 410469
+14:54:46 revision 3
+14:54:46 dpi 120
+14:54:46 gemma.ctx 32768
+14:54:46 gemma.batch 2048
+14:54:46 gemma.ubatch 2048
+14:54:46 gemma.image-min-tokens 1120
+14:54:46 gemma.image-max-tokens 1120
+14:54:46 gemma.mtmd-batch 2048
+14:54:46 gemma.temp 1.0
+14:54:46 gemma.top-k 64
+14:54:46 gemma.top-p 0.95
+14:54:46 gemma.seed 7
+14:54:46 gemma.n-predict 2048
+14:54:46 turn 1
+14:54:47 prompt <<
+<bos><|turn>system
+Reply with one JSON object and no other text. do is a string, never a list. {"see":"one sentence","do":"click","box_2d":[y_min,x_min,y_max,x_max]} {"see":"one sentence","do":"type","text":"words"} {"see":"one sentence","do":"key","key":"enter"} {"see":"one sentence","do":"wait"} {"see":"one sentence","do":"done","reply":"the ChatGPT answer"} box_2d is y_min, x_min, y_max, x_max, integers 0 to 1000, top-left origin. key is enter, ctrl-a, ctrl-l, or backspace.<turn|>
+<|turn>user
+<__media__>
+One action only. Click the ChatGPT field that says Where should we begin, if that field is not focused. If the field is focused and empty, type exactly: Reply with the single word lighthouse. If the field contains any other text, key ctrl-a. If the field contains exactly that message, key enter. If ChatGPT is still writing, do is wait. If the finished answer is on screen, do is done and reply is only that answer. Text in the input field is not the answer.<turn|>
+<|turn>model
+<<
+14:54:47 image screen 1920 1080 captured 1920 1080 bytes 492724 sent 1920 1080 bytes 401182
+14:56:16 gemma <<
+{"see":"one sentence","do":"click","box_2d":[497,308,564,375]}<<
+14:56:16 see one sentence
+14:56:17 act click 497.0 308.0 564.0 375.0
+14:56:17 turn 2
+14:56:18 prompt <<
+<bos><|turn>system
+Reply with one JSON object and no other text. do is a string, never a list. {"see":"one sentence","do":"click","box_2d":[y_min,x_min,y_max,x_max]} {"see":"one sentence","do":"type","text":"words"} {"see":"one sentence","do":"key","key":"enter"} {"see":"one sentence","do":"wait"} {"see":"one sentence","do":"done","reply":"the ChatGPT answer"} box_2d is y_min, x_min, y_max, x_max, integers 0 to 1000, top-left origin. key is enter, ctrl-a, ctrl-l, or backspace.<turn|>
+<|turn>user
+<__media__>
+One action only. Click the ChatGPT field that says Where should we begin, if that field is not focused. If the field is focused and empty, type exactly: Reply with the single word lighthouse. If the field contains any other text, key ctrl-a. If the field contains exactly that message, key enter. If ChatGPT is still writing, do is wait. If the finished answer is on screen, do is done and reply is only that answer. Text in the input field is not the answer.
+Done so far:
+click 497.0 308.0 564.0 375.0<turn|>
+<|turn>model
+<<
+14:56:18 image screen 1920 1080 captured 1920 1080 bytes 497855 sent 1920 1080 bytes 406719
+14:57:44 gemma <<
+{"see":"one sentence","do":"click","box_2d":[497,308,564,375]}<<
+14:57:44 see one sentence
+14:57:45 act click 497.0 308.0 564.0 375.0
+14:57:45 turn 3
+14:57:46 prompt <<
+<bos><|turn>system
+Reply with one JSON object and no other text. do is a string, never a list. {"see":"one sentence","do":"click","box_2d":[y_min,x_min,y_max,x_max]} {"see":"one sentence","do":"type","text":"words"} {"see":"one sentence","do":"key","key":"enter"} {"see":"one sentence","do":"wait"} {"see":"one sentence","do":"done","reply":"the ChatGPT answer"} box_2d is y_min, x_min, y_max, x_max, integers 0 to 1000, top-left origin. key is enter, ctrl-a, ctrl-l, or backspace.<turn|>
+<|turn>user
+<__media__>
+One action only. Click the ChatGPT field that says Where should we begin, if that field is not focused. If the field is focused and empty, type exactly: Reply with the single word lighthouse. If the field contains any other text, key ctrl-a. If the field contains exactly that message, key enter. If ChatGPT is still writing, do is wait. If the finished answer is on screen, do is done and reply is only that answer. Text in the input field is not the answer.
+Done so far:
+click 497.0 308.0 564.0 375.0
+click 497.0 308.0 564.0 375.0<turn|>
+<|turn>model
+<<
+14:57:46 image screen 1920 1080 captured 1920 1080 bytes 496004 sent 1920 1080 bytes 405531
+14:59:14 gemma <<
+{"see":"one sentence","do":"click","box_2d":[506,231,534,314]}<<
+14:59:14 see one sentence
+14:59:15 act click 506.0 231.0 534.0 314.0
+14:59:15 turn 4
+14:59:15 prompt <<
+<bos><|turn>system
+Reply with one JSON object and no other text. do is a string, never a list. {"see":"one sentence","do":"click","box_2d":[y_min,x_min,y_max,x_max]} {"see":"one sentence","do":"type","text":"words"} {"see":"one sentence","do":"key","key":"enter"} {"see":"one sentence","do":"wait"} {"see":"one sentence","do":"done","reply":"the ChatGPT answer"} box_2d is y_min, x_min, y_max, x_max, integers 0 to 1000, top-left origin. key is enter, ctrl-a, ctrl-l, or backspace.<turn|>
+<|turn>user
+<__media__>
+One action only. Click the ChatGPT field that says Where should we begin, if that field is not focused. If the field is focused and empty, type exactly: Reply with the single word lighthouse. If the field contains any other text, key ctrl-a. If the field contains exactly that message, key enter. If ChatGPT is still writing, do is wait. If the finished answer is on screen, do is done and reply is only that answer. Text in the input field is not the answer.
+Done so far:
+click 497.0 308.0 564.0 375.0
+click 497.0 308.0 564.0 375.0
+click 506.0 231.0 534.0 314.0<turn|>
+<|turn>model
+<<
+14:59:15 image screen 1920 1080 captured 1920 1080 bytes 499065 sent 1920 1080 bytes 409358
+15:00:50 revision 4
+15:00:50 dpi 120
+15:00:50 gemma.ctx 32768
+15:00:50 gemma.batch 2048
+15:00:50 gemma.ubatch 2048
+15:00:50 gemma.image-min-tokens 1120
+15:00:50 gemma.image-max-tokens 1120
+15:00:50 gemma.mtmd-batch 2048
+15:00:50 gemma.temp 1.0
+15:00:50 gemma.top-k 64
+15:00:50 gemma.top-p 0.95
+15:00:50 gemma.seed 7
+15:00:50 gemma.n-predict 2048
+15:00:50 turn 1
+15:00:51 prompt <<
+<bos><|turn>system
+Answer with one JSON object and no other text. do is a string: type, key, wait, done, or click. see must quote words that are visibly on the screen. type includes text. key includes key, one of enter, ctrl-a, ctrl-l, backspace. click includes box_2d as y_min, x_min, y_max, x_max, integers 0 to 1000, top-left origin. done includes reply copied from the ChatGPT answer.<turn|>
+<|turn>user
+<__media__>
+The ChatGPT message field was just clicked. do must be type. text must be exactly: Reply with the single word lighthouse. see must quote words you can read on the ChatGPT page.<turn|>
+<|turn>model
+<<
+15:00:51 image screen 1920 1080 captured 1920 1080 bytes 498380 sent 1920 1080 bytes 407444
+15:02:19 gemma <<
+{"type": "click", "key": "ctrl-a", "value": "lighthouse"}<<
+15:02:19 unparsed
+15:02:19 turn 2
+15:02:20 prompt <<
+<bos><|turn>system
+Answer with one JSON object and no other text. do is a string: type, key, wait, done, or click. see must quote words that are visibly on the screen. type includes text. key includes key, one of enter, ctrl-a, ctrl-l, backspace. click includes box_2d as y_min, x_min, y_max, x_max, integers 0 to 1000, top-left origin. done includes reply copied from the ChatGPT answer.<turn|>
+<|turn>user
+<__media__>
+The ChatGPT message field was just clicked. do must be type. text must be exactly: Reply with the single word lighthouse. see must quote words you can read on the ChatGPT page.
+Done so far:
+unparsed<turn|>
+<|turn>model
+<<
+15:02:20 image screen 1920 1080 captured 1920 1080 bytes 497834 sent 1920 1080 bytes 407400
+15:03:56 revision 5
+15:03:56 dpi 120
+15:03:56 gemma.ctx 32768
+15:03:56 gemma.batch 2048
+15:03:56 gemma.ubatch 2048
+15:03:56 gemma.image-min-tokens 1120
+15:03:56 gemma.image-max-tokens 1120
+15:03:56 gemma.mtmd-batch 2048
+15:03:56 gemma.temp 1.0
+15:03:56 gemma.top-k 64
+15:03:56 gemma.top-p 0.95
+15:03:56 gemma.seed 7
+15:03:56 gemma.n-predict 2048
+15:03:56 turn 1
+15:03:57 prompt <<
+<bos><|turn>system
+You see one full-monitor screenshot. Output one JSON object and no other text. see is the words and the app you can actually see. do is the string type, key, click, wait, or done. type has text, and may also have key set to enter. key has key set to enter, ctrl-a, ctrl-l, or backspace. click has box_2d as y_min, x_min, y_max, x_max, integers 0 to 1000, top left origin. done has reply set to the ChatGPT answer you can read.<turn|>
+<|turn>user
+<__media__>
+ChatGPT is on screen. do is type. text is exactly: Reply with the single word lighthouse. Also set key to enter so the message is sent. see names the app and quotes the visible words.<turn|>
+<|turn>model
+<<
+15:03:57 image screen 1920 1080 captured 1920 1080 bytes 495845 sent 1920 1080 bytes 405263
+15:05:26 gemma <<
+```json
+{
+  "action": "type",
+  "text": "lighthouse",
+  "key": "enter"
+}
+```<<
+15:05:26 see 
+15:05:28 act type lighthouse key enter
+15:05:28 turn 2
+15:05:29 prompt <<
+<bos><|turn>system
+You see one full-monitor screenshot. Output one JSON object and no other text. see is the words and the app you can actually see. do is the string type, key, click, wait, or done. type has text, and may also have key set to enter. key has key set to enter, ctrl-a, ctrl-l, or backspace. click has box_2d as y_min, x_min, y_max, x_max, integers 0 to 1000, top left origin. done has reply set to the ChatGPT answer you can read.<turn|>
+<|turn>user
+<__media__>
+If ChatGPT is still writing, do is wait. If the answer is visible, do is done and reply is only that answer. see must quote that answer.
+Done so far:
+type lighthouse key enter<turn|>
+<|turn>model
+<<
+15:05:29 image screen 1920 1080 captured 1920 1080 bytes 502425 sent 1920 1080 bytes 414620
+15:06:56 gemma <<
+```json
+{
+  "done": "type lighthouse key enter"
+}
+```<<
+15:06:56 unparsed
+15:06:56 turn 3
+15:06:57 prompt <<
+<bos><|turn>system
+You see one full-monitor screenshot. Output one JSON object and no other text. see is the words and the app you can actually see. do is the string type, key, click, wait, or done. type has text, and may also have key set to enter. key has key set to enter, ctrl-a, ctrl-l, or backspace. click has box_2d as y_min, x_min, y_max, x_max, integers 0 to 1000, top left origin. done has reply set to the ChatGPT answer you can read.<turn|>
+<|turn>user
+<__media__>
+If ChatGPT is still writing, do is wait. If the answer is visible, do is done and reply is only that answer. see must quote that answer.
+Done so far:
+type lighthouse key enter
+unparsed<turn|>
+<|turn>model
+<<
+15:06:57 image screen 1920 1080 captured 1920 1080 bytes 503418 sent 1920 1080 bytes 417529
+15:08:30 revision 6
+15:08:30 dpi 120
+15:08:30 gemma.ctx 32768
+15:08:30 gemma.batch 2048
+15:08:30 gemma.ubatch 2048
+15:08:30 gemma.image-min-tokens 1120
+15:08:30 gemma.image-max-tokens 1120
+15:08:30 gemma.mtmd-batch 2048
+15:08:30 gemma.temp 1.0
+15:08:30 gemma.top-k 64
+15:08:30 gemma.top-p 0.95
+15:08:30 gemma.seed 7
+15:08:30 gemma.n-predict 2048
+15:08:30 turn 1
+15:08:31 prompt <<
+<bos><|turn>system
+You see one full-monitor screenshot. Output one JSON object and no other text. see is the words and the app you can actually see. do is the string type, key, click, wait, or done. type has text, and may also have key set to enter. key has key set to enter, ctrl-a, ctrl-l, or backspace. click has box_2d as y_min, x_min, y_max, x_max, integers 0 to 1000, top left origin. done has reply set to the ChatGPT answer you can read.<turn|>
+<|turn>user
+<__media__>
+Describe this screenshot in two sentences. Name the foreground application and quote the readable text. If a chat answer is visible, do is done and reply is only that answer.<turn|>
+<|turn>model
+<<
+15:08:31 image screen 1920 1080 captured 1920 1080 bytes 505682 sent 1920 1080 bytes 419356
+15:10:00 gemma <<
+{"done": "Could you clarify what you mean by \"lighthouselighthouse\"?"}<<
+15:10:00 unparsed
+15:10:00 turn 2
+15:10:01 prompt <<
+<bos><|turn>system
+You see one full-monitor screenshot. Output one JSON object and no other text. see is the words and the app you can actually see. do is the string type, key, click, wait, or done. type has text, and may also have key set to enter. key has key set to enter, ctrl-a, ctrl-l, or backspace. click has box_2d as y_min, x_min, y_max, x_max, integers 0 to 1000, top left origin. done has reply set to the ChatGPT answer you can read.<turn|>
+<|turn>user
+<__media__>
+Describe this screenshot in two sentences. Name the foreground application and quote the readable text. If a chat answer is visible, do is done and reply is only that answer.<turn|>
+<|turn>model
+<<
+15:10:01 image screen 1920 1080 captured 1920 1080 bytes 506537 sent 1920 1080 bytes 420481
+15:11:31 gemma <<
+{"description": "This screenshot displays the ChatGPT interface with a question from a user asking for clarification on a term, alongside the application's sidebar and a performance metrics panel on the right.", "application": "ChatGPT", "readable_text": "Could you clarify what you mean by \"lighthouselighthouse\"? ChatGPT can make mistakes. Check important info. Ask ChatGPT"}<<
+15:11:31 unparsed
+15:11:31 turn 3
+15:11:31 prompt <<
+<bos><|turn>system
+You see one full-monitor screenshot. Output one JSON object and no other text. see is the words and the app you can actually see. do is the string type, key, click, wait, or done. type has text, and may also have key set to enter. key has key set to enter, ctrl-a, ctrl-l, or backspace. click has box_2d as y_min, x_min, y_max, x_max, integers 0 to 1000, top left origin. done has reply set to the ChatGPT answer you can read.<turn|>
+<|turn>user
+<__media__>
+Describe this screenshot in two sentences. Name the foreground application and quote the readable text. If a chat answer is visible, do is done and reply is only that answer.<turn|>
+<|turn>model
+<<
+15:11:31 image screen 1920 1080 captured 1920 1080 bytes 505577 sent 1920 1080 bytes 419441
+15:13:04 revision 7
+15:13:04 dpi 120
+15:13:04 gemma.ctx 32768
+15:13:04 gemma.batch 2048
+15:13:04 gemma.ubatch 2048
+15:13:04 gemma.image-min-tokens 1120
+15:13:04 gemma.image-max-tokens 1120
+15:13:04 gemma.mtmd-batch 2048
+15:13:04 gemma.temp 1.0
+15:13:04 gemma.top-k 64
+15:13:04 gemma.top-p 0.95
+15:13:04 gemma.seed 7
+15:13:04 gemma.n-predict 2048
+15:13:04 turn 1
+15:13:04 prompt <<
+<bos><|turn>system
+You see one full-monitor screenshot. Output one JSON object and no other text. see is the words and the app you can actually see. do is the string type, key, click, wait, or done. type has text, and may also have key set to enter. key has key set to enter, ctrl-a, ctrl-l, or backspace. click has box_2d as y_min, x_min, y_max, x_max, integers 0 to 1000, top left origin. done has reply set to the ChatGPT answer you can read.<turn|>
+<|turn>user
+<__media__>
+Describe this screenshot in two sentences. Name the foreground application and quote the readable text. If a chat answer is visible, do is done and reply is only that answer.<turn|>
+<|turn>model
+<<
+15:13:04 image screen 1920 1080 captured 1920 1080 bytes 505222 sent 1920 1080 bytes 418505
+15:14:33 gemma <<
+{"done": "Could you clarify what you mean by \"lighthouselighthouse\"?"}<<
+15:14:33 see 
+15:14:33 act done
+15:14:34 prompt <<
+<bos><|turn>system
+You see one full-monitor screenshot. Output one JSON object and no other text. see is the words and the app you can actually see. do is the string type, key, click, wait, or done. type has text, and may also have key set to enter. key has key set to enter, ctrl-a, ctrl-l, or backspace. click has box_2d as y_min, x_min, y_max, x_max, integers 0 to 1000, top left origin. done has reply set to the ChatGPT answer you can read.<turn|>
+<|turn>user
+<__media__>
+Transcribe only the newest ChatGPT assistant message that is visible. No other words.<turn|>
+<|turn>model
+<<
+15:14:34 image screen 1920 1080 captured 1920 1080 bytes 505673 sent 1920 1080 bytes 419994
+15:16:01 gemma <<
+```json
+{
+  "done": "Could you clarify what you mean by \"lighthouselighthouse\"?"
+}
+```<<
+15:16:01 success <<
+```json
+{
+  "done": "Could you clarify what you mean by \"lighthouselighthouse\"?"
+}
+```<<
+15:33:21 revision 8
+15:33:21 2026-09-30 15:33:21
+15:33:21 llama.cpp 84e76d8a23162eca70490da131945ebec1f09bf4
+15:33:21 gemma4 embedding_length 1536 block_count 35 sliding_window 512 head_count_kv 1 key_length 512 value_length 512 key_length_swa 256
+15:33:21 checkout mtmd_decode_use_non_causal returns false for Gemma 4 E2B n_embd_text 1536
+15:33:21 processes before
+15:33:21 3704 parent 11088 ws_mb 7,048.4 C:\Users\px-wjt\Downloads\Jarvis\Trident\gemma-brain.exe --resident gemma_run.txt
+6768 parent 5076 ws_mb 77.1 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'gemma-brain|llama' -or ($_.CommandLine -and $_.CommandLine -match 'gemma-brain|llama-server|llama-cli') } | ForEach-Object { '{0} parent {1} ws_mb {2:N1} {3}' -f $_.ProcessId, $_.ParentProcessId, ($_.WorkingSetSize/1MB), $_.CommandLine }"
+15:33:23 dedicated usage 214,487,040 pid_1512_luid_0x00000000_0x00009007_phys_0
+dedicated usage 5,822,169,088 pid_3704_luid_0x00000000_0x00009007_phys_0
+dedicated usage 71,651,328 pid_5592_luid_0x00000000_0x00009007_phys_0
+shared usage 5,402,263,552 pid_3704_luid_0x00000000_0x00009007_phys_0
+15:33:23 6144 MiB, 5918 MiB, 112 MiB
+15:33:23 dpi 120
+15:33:24 capture screen 1920 1080 frame 1920 1080 bytes 503959 raw 1920 1080
+15:33:24 windows <<
+ 944 0 1000 1000 0,1020,1920,1080
+Clarify lighthouse meaning - Google Chrome 27 7 924 709 13,29,1361,998
+Task Manager 57 705 918 1112 1353,62,2136,991
+Settings 1 0 916 683 0,1,1312,989
+Settings 5 0 929 693 0,5,1330,1003
+ 0 10 4 1000 19,0,1920,4
+Program Manager 0 0 1000 1000 0,0,1920,1080<<
+15:33:24 flags 280-full ctx 65536 batch 512 ubatch 512 image 70 280 mtmd 1024
+15:33:24 prompt <<
+<bos><|turn>system
+You see one full desktop screenshot. Answer with one JSON object and no other text. see quotes the readable text and names the foreground app. items lists every interactive element, including every taskbar icon. Each item has name and box_2d. box_2d is y_min, x_min, y_max, x_max, integers 0 to 1000, top left origin.<turn|>
+<|turn>user
+<__media__>
+Describe this whole desktop. Quote the words you can read. Put each taskbar icon and every other interactive element in items.<turn|>
+<|turn>model
+<<
+15:33:24 image 280-full screen 1920 1080 sent 1920 1080 bytes 416797
+15:33:29 ready 280-full pid 6004
+15:33:29 vram 280-full before shot
+15:33:29 6004 parent 5076 ws_mb 2,023.6 C:\Users\px-wjt\Downloads\Jarvis\Trident\gemma-brain.exe --resident gemma_run.txt
+11556 parent 5076 ws_mb 77.0 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'gemma-brain|llama' -or ($_.CommandLine -and $_.CommandLine -match 'gemma-brain|llama-server|llama-cli') } | ForEach-Object { '{0} parent {1} ws_mb {2:N1} {3}' -f $_.ProcessId, $_.ParentProcessId, ($_.WorkingSetSize/1MB), $_.CommandLine }"
+15:33:31 dedicated usage 214,507,520 pid_1512_luid_0x00000000_0x00009007_phys_0
+dedicated usage 71,651,328 pid_5592_luid_0x00000000_0x00009007_phys_0
+dedicated usage 4,226,555,904 pid_6004_luid_0x00000000_0x00009007_phys_0
+shared usage 226,492,416 pid_6004_luid_0x00000000_0x00009007_phys_0
+15:33:31 6144 MiB, 4406 MiB, 1624 MiB
+15:34:31 seconds 280-full 60.134
+15:34:31 log <<
+cuda[0] NVIDIA GeForce GTX 1060 6GB | free 5197 MiB / total 6143 MiB
+load_hparams: image_min_pixels:   161280 (custom value)
+load_hparams: image_max_pixels:   645120 (custom value)
+resident load 2582 ms
+resident ready pid 6004
+clip_encode: copying image 1/1 to input buffer (nx=1056, ny=576)
+image slice encoded in 647 ms
+decoding image batch 1/1, n_tokens_batch = 264
+image decoded (batch 1/1) in 49 ms
+resident generate 60080 ms<<
+15:34:31 gemma <<
+```json
+{
+  "desktop_description": "A full desktop screenshot showing a web browser window focused on a chat interface, likely ChatGPT, with various application elements visible.",
+  "foreground_app": "ChatGPT",
+  "interactive_elements": [
+    {
+      "name": "Chatbot logo/name",
+      "box_2d": [36, 20, 56, 86]
+    },
+    {
+      "name": "ChatGPT address bar/URL",
+      "box_2d": [73, 102, 108, 566]
+    },
+    {
+      "name": "Menu icon (three dots)",
+      "box_2d": [73, 621, 108, 645]
+    },
+    {
+      "name": "File icon",
+      "box_2d": [73, 666, 108, 690]
+    },
+    {
+      "name": "History icon",
+      "box_2d": [73, 704, 108, 728]
+    },
+    {
+      "name": "New chat button",
+      "box_2d": [194, 31, 218, 122]
+    },
+    {
+      "name": "Chat with ChatGPT",
+      "box_2d": [244, 31, 272, 112]
+    },
+    {
+      "name": "New chat button",
+      "box_2d": [220, 31, 238, 112]
+    },
+    {
+      "name": "Scheduled",
+      "box_2d": [259, 31, 278, 102]
+    },
+    {
+      "name": "Library icon",
+      "box_2d": [290, 31, 308, 94]
+    },
+    {
+      "name": "Plugins icon",
+      "box_2d": [331, 31, 350, 88]
+    },
+    {
+      "name": "Explore",
+      "box_2d": [373, 31, 392, 78]
+    },
+    {
+      "name": "Projects",
+      "box_2d": [425, 31, 444, 88]
+    },
+    {
+      "name": "No projects",
+      "box_2d": [458, 31, 477, 94]
+    },
+    {
+      "name": "Recent",
+      "box_2d": [514, 31, 533, 88]
+    },
+    {
+      "name": "Clarify lighthouse meaning",
+      "box_2d": [575, 20, 601, 185]
+    },
+    {
+      "name": "Analyze Repository Capabilities",
+      "box_2d": [634, 20, 658, 234]
+    },
+    {
+      "name": "Share button",
+      "box_2d": [163, 552, 187, 613]
+    },
+    {
+      "name": "Performance tab",
+      "box_2d": [100, 635, 136, 702]
+    },
+    {
+      "name": "CPU gauge",
+      "box_2d": [173, 675, 210, 745]
+    },
+    {
+      "name": "GPU gauge",
+      "box_2d": [224, 675, 261, 745]
+    },
+    {
+      "name": "Memory gauge",
+      "box_2d": [270, 675, 308, 745]
+    },
+    {
+      "name": "Disk gauge",
+      "box_2d": [316, 675, 353, 745]
+    },
+    {
+      "name": "Video Encode gauge",
+      "box_2d": [362, 675, 399, 745]
+    },
+    {
+      "name": "Ethernet gauge",
+      "box_2d": [406, 675, 443, 745]
+    },
+    {
+      "name": "GPU 0 gauge",
+      "box_2d": [452, 675, 489, 745]
+    },
+    {
+      "name": "Dedicated GPU memory graph",
+      "box_2d": [496, 675, 577, 978]
+    },
+    {
+      "name": "Performance metrics (e.g., 13.8 GB, 35.13 GB)",
+      "box_2d": [185, 675, 215, 745]
+    },
+    {
+      "name": "12% 3.38 GB (CPU)",
+      "box_2d": [173, 675, 210, 745]
+    },
+    {
+      "name": "13.8 GB, 35.13 GB (Memory)",
+      "box_2d": [224, 675, 261, 745]
+    },
+    {
+      "name": "3.38 GB (Disk)",
+      "box_2d": [316, 675, 353, 745]
+    },
+    {
+      "name": "1.9% 0.2 GB (Video Encode)",
+      "box_2d": [362, 675, 399, 745]
+    },
+    {
+      "name": "0.0 GB (Ethernet)",
+      "box_2d": [406, 675, 443, 745]
+    },
+    {
+      "name": "1.9% 0.2 GB (GPU 0)",
+      "box_2d": [452, 675, 489, 745]
+    },
+    {
+      "name": "1.9% 0.2 GB (Dedicated GPU memory)",
+      "box_2d": [496, 675, 577, 978]
+    },
+    {
+      "name": "10.8/22.0 GB (Utilization)",
+      "box_2d": [728, 675, 755, 745]
+    },
+    {
+      "name": "5.0/10.0 GB (GPU Memory)",
+      "box_2d": [755, 675, 782, 745]
+    },
+    {
+      "name": "28 °C (Temperature)",
+      "box_2d": [782, 675, 809, 745]
+    },
+    {
+      "name": "Plus button",
+      "box_2d": [840, 260, 876, 313]
+    },
+    {
+      "name": "Ask ChatGPT button",
+      "box_2d": [840, 315, 876, 432]
+    },
+    {
+      "name": "Medium setting",
+      "box_2d": [840, 512, 876, 571]
+    },
+    {
+      "name": "Microphone icon",
+      "box_2d": [836, 626, 876, 665]
+    },
+    {
+      "name": "Microphone icon",
+      "box_2d": [836, 675, 876, 714]
+    },
+    {
+      "name": "Timestamp",
+      "box_2d": [950, 833, 965, 891]
+    },
+    <<
+15:34:31 vram 280-full after shot
+15:34:31 6004 parent 5076 ws_mb 2,069.9 C:\Users\px-wjt\Downloads\Jarvis\Trident\gemma-brain.exe --resident gemma_run.txt
+100 parent 5076 ws_mb 77.0 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'gemma-brain|llama' -or ($_.CommandLine -and $_.CommandLine -match 'gemma-brain|llama-server|llama-cli') } | ForEach-Object { '{0} parent {1} ws_mb {2:N1} {3}' -f $_.ProcessId, $_.ParentProcessId, ($_.WorkingSetSize/1MB), $_.CommandLine }"
+15:34:33 dedicated usage 214,491,136 pid_1512_luid_0x00000000_0x00009007_phys_0
+dedicated usage 71,651,328 pid_5592_luid_0x00000000_0x00009007_phys_0
+dedicated usage 4,333,518,848 pid_6004_luid_0x00000000_0x00009007_phys_0
+shared usage 226,492,416 pid_6004_luid_0x00000000_0x00009007_phys_0
+15:34:33 6144 MiB, 4508 MiB, 1522 MiB
+15:34:33 flags 280-fit ctx 65536 batch 512 ubatch 512 image 70 280 mtmd 1024
+15:34:33 prompt <<
+<bos><|turn>system
+You see one full desktop screenshot. Answer with one JSON object and no other text. see quotes the readable text and names the foreground app. items lists every interactive element, including every taskbar icon. Each item has name and box_2d. box_2d is y_min, x_min, y_max, x_max, integers 0 to 1000, top left origin.<turn|>
+<|turn>user
+<__media__>
+Describe this whole desktop. Quote the words you can read. Put each taskbar icon and every other interactive element in items.<turn|>
+<|turn>model
+<<
+15:34:33 image 280-fit screen 1920 1080 sent 1056 624 bytes 270049
+15:34:33 ready 280-fit pid 6004
+15:34:33 vram 280-fit before shot
+15:34:34 6004 parent 5076 ws_mb 2,069.9 C:\Users\px-wjt\Downloads\Jarvis\Trident\gemma-brain.exe --resident gemma_run.txt
+4472 parent 5076 ws_mb 77.0 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'gemma-brain|llama' -or ($_.CommandLine -and $_.CommandLine -match 'gemma-brain|llama-server|llama-cli') } | ForEach-Object { '{0} parent {1} ws_mb {2:N1} {3}' -f $_.ProcessId, $_.ParentProcessId, ($_.WorkingSetSize/1MB), $_.CommandLine }"
+15:34:35 dedicated usage 214,491,136 pid_1512_luid_0x00000000_0x00009007_phys_0
+dedicated usage 71,651,328 pid_5592_luid_0x00000000_0x00009007_phys_0
+dedicated usage 4,333,518,848 pid_6004_luid_0x00000000_0x00009007_phys_0
+shared usage 226,492,416 pid_6004_luid_0x00000000_0x00009007_phys_0
+15:34:36 6144 MiB, 4508 MiB, 1522 MiB
+15:34:52 seconds 280-fit 16.111
+15:34:52 log <<
+cuda[0] NVIDIA GeForce GTX 1060 6GB | free 5197 MiB / total 6143 MiB
+load_hparams: image_min_pixels:   161280 (custom value)
+load_hparams: image_max_pixels:   645120 (custom value)
+resident load 2582 ms
+resident ready pid 6004
+clip_encode: copying image 1/1 to input buffer (nx=1056, ny=576)
+image slice encoded in 647 ms
+decoding image batch 1/1, n_tokens_batch = 264
+image decoded (batch 1/1) in 49 ms
+resident generate 60080 ms
+clip_encode: copying image 1/1 to input buffer (nx=1008, ny=576)
+image slice encoded in 707 ms
+decoding image batch 1/1, n_tokens_batch = 252
+image decoded (batch 1/1) in 46 ms
+resident generate 16060 ms<<
+15:34:52 gemma <<
+```json
+{
+  "desktop_description": "A desktop screenshot featuring a web browser with a chat interface open. The browser is displaying a chat conversation between a user and the 'ChatGPT' app. The taskbar at the bottom contains several icons.",
+  "foreground_app": "Web browser (likely Chrome or similar)",
+  "interactive_elements": [
+    {
+      "name": "ChatGPT logo/name",
+      "box_2d": [
+        164,
+        26,
+        181,
+        105
+      ]
+    },
+    {
+      "name": "Search bar/input field",
+      "box_2d": [
+        916,
+        25,
+        951,
+        245
+      ]
+    },
+    {
+      "name": "Taskbar icon: Start",
+      "box_2d": [
+        21,
+        11,
+        76,
+        102
+      ]
+    },
+    {
+      "name": "Taskbar icon: Search",
+      "box_2d": [
+        21,
+        237,
+        76,
+        322
+      ]
+    },
+    {
+      "name": "Taskbar icon: Browser/Pinned Apps",
+      "box_2d": [
+        21,
+        334,
+        76,
+        423
+      ]
+    },
+    {
+      "name": "Taskbar icon: Minimize",
+      "box_2d": [
+        21,
+        620,
+        76,
+        694
+      ]
+    },
+    {
+      "name": "Taskbar icon: Maximize/Restore",
+      "box_2d": [
+        21,
+        700,
+        76,
+        775
+      ]
+    },
+    {
+      "name": "Taskbar icon: Close window",
+      "box_2d": [
+        21,
+        782,
+        76,
+        866
+      ]
+    },
+    {
+      "name": "Taskbar icon: Speaker/Volume",
+      "box_2d": [
+        916,
+        855,
+        951,
+        907
+      ]
+    }
+  ]
+}
+```<<
+15:34:52 vram 280-fit after shot
+15:34:52 6004 parent 5076 ws_mb 2,071.1 C:\Users\px-wjt\Downloads\Jarvis\Trident\gemma-brain.exe --resident gemma_run.txt
+600 parent 5076 ws_mb 77.0 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'gemma-brain|llama' -or ($_.CommandLine -and $_.CommandLine -match 'gemma-brain|llama-server|llama-cli') } | ForEach-Object { '{0} parent {1} ws_mb {2:N1} {3}' -f $_.ProcessId, $_.ParentProcessId, ($_.WorkingSetSize/1MB), $_.CommandLine }"
+15:34:54 dedicated usage 214,491,136 pid_1512_luid_0x00000000_0x00009007_phys_0
+dedicated usage 71,651,328 pid_5592_luid_0x00000000_0x00009007_phys_0
+dedicated usage 4,333,518,848 pid_6004_luid_0x00000000_0x00009007_phys_0
+shared usage 226,492,416 pid_6004_luid_0x00000000_0x00009007_phys_0
+15:34:54 6144 MiB, 4508 MiB, 1522 MiB
+15:34:55 reload stop True 0.761
+15:34:55 processes during reload
+15:34:55 4536 parent 5076 ws_mb 77.1 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'gemma-brain|llama' -or ($_.CommandLine -and $_.CommandLine -match 'gemma-brain|llama-server|llama-cli') } | ForEach-Object { '{0} parent {1} ws_mb {2:N1} {3}' -f $_.ProcessId, $_.ParentProcessId, ($_.WorkingSetSize/1MB), $_.CommandLine }"
+15:34:57 dedicated usage 214,491,136 pid_1512_luid_0x00000000_0x00009007_phys_0
+dedicated usage 71,651,328 pid_5592_luid_0x00000000_0x00009007_phys_0
+15:34:57 6144 MiB, 376 MiB, 5654 MiB
+15:34:57 flags 280-reload ctx 65536 batch 512 ubatch 512 image 70 280 mtmd 1024
+15:34:57 prompt <<
+<bos><|turn>system
+You see one full desktop screenshot. Answer with one JSON object and no other text. see quotes the readable text and names the foreground app. items lists every interactive element, including every taskbar icon. Each item has name and box_2d. box_2d is y_min, x_min, y_max, x_max, integers 0 to 1000, top left origin.<turn|>
+<|turn>user
+<__media__>
+Describe this whole desktop. Quote the words you can read. Put each taskbar icon and every other interactive element in items.<turn|>
+<|turn>model
+<<
+15:34:57 image 280-reload screen 1920 1080 sent 1056 624 bytes 270049
+15:35:00 ready 280-reload pid 10904
+15:35:00 vram 280-reload before shot
+15:35:00 10904 parent 5076 ws_mb 2,023.6 C:\Users\px-wjt\Downloads\Jarvis\Trident\gemma-brain.exe --resident gemma_run.txt
+1524 parent 5076 ws_mb 77.0 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'gemma-brain|llama' -or ($_.CommandLine -and $_.CommandLine -match 'gemma-brain|llama-server|llama-cli') } | ForEach-Object { '{0} parent {1} ws_mb {2:N1} {3}' -f $_.ProcessId, $_.ParentProcessId, ($_.WorkingSetSize/1MB), $_.CommandLine }"
+15:35:02 dedicated usage 4,226,555,904 pid_10904_luid_0x00000000_0x00009007_phys_0
+dedicated usage 214,491,136 pid_1512_luid_0x00000000_0x00009007_phys_0
+dedicated usage 71,651,328 pid_5592_luid_0x00000000_0x00009007_phys_0
+shared usage 226,492,416 pid_10904_luid_0x00000000_0x00009007_phys_0
+15:35:02 6144 MiB, 4406 MiB, 1624 MiB
+15:35:18 seconds 280-reload 16.039
+15:35:18 log <<
+cuda[0] NVIDIA GeForce GTX 1060 6GB | free 5197 MiB / total 6143 MiB
+load_hparams: image_min_pixels:   161280 (custom value)
+load_hparams: image_max_pixels:   645120 (custom value)
+resident load 2571 ms
+resident ready pid 10904
+clip_encode: copying image 1/1 to input buffer (nx=1008, ny=576)
+image slice encoded in 566 ms
+decoding image batch 1/1, n_tokens_batch = 252
+image decoded (batch 1/1) in 42 ms
+resident generate 15964 ms<<
+15:35:18 gemma <<
+```json
+{
+  "desktop_description": "A desktop screenshot featuring a web browser with a chat interface open. The browser is displaying a chat conversation between a user and the 'ChatGPT' app. The taskbar at the bottom contains several icons.",
+  "foreground_app": "Web browser (likely Chrome or similar)",
+  "interactive_elements": [
+    {
+      "name": "ChatGPT logo/name",
+      "box_2d": [
+        164,
+        26,
+        181,
+        105
+      ]
+    },
+    {
+      "name": "Search bar/input field",
+      "box_2d": [
+        916,
+        25,
+        951,
+        245
+      ]
+    },
+    {
+      "name": "Taskbar icon: Start",
+      "box_2d": [
+        21,
+        11,
+        76,
+        102
+      ]
+    },
+    {
+      "name": "Taskbar icon: Search",
+      "box_2d": [
+        21,
+        237,
+        76,
+        322
+      ]
+    },
+    {
+      "name": "Taskbar icon: Browser/Pinned Apps",
+      "box_2d": [
+        21,
+        334,
+        76,
+        423
+      ]
+    },
+    {
+      "name": "Taskbar icon: Minimize",
+      "box_2d": [
+        21,
+        620,
+        76,
+        694
+      ]
+    },
+    {
+      "name": "Taskbar icon: Maximize/Restore",
+      "box_2d": [
+        21,
+        700,
+        76,
+        775
+      ]
+    },
+    {
+      "name": "Taskbar icon: Close window",
+      "box_2d": [
+        21,
+        782,
+        76,
+        866
+      ]
+    },
+    {
+      "name": "Taskbar icon: Speaker/Volume",
+      "box_2d": [
+        916,
+        855,
+        951,
+        907
+      ]
+    }
+  ]
+}
+```<<
+15:35:18 vram 280-reload after shot
+15:35:19 10904 parent 5076 ws_mb 2,068.8 C:\Users\px-wjt\Downloads\Jarvis\Trident\gemma-brain.exe --resident gemma_run.txt
+1376 parent 5076 ws_mb 76.9 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'gemma-brain|llama' -or ($_.CommandLine -and $_.CommandLine -match 'gemma-brain|llama-server|llama-cli') } | ForEach-Object { '{0} parent {1} ws_mb {2:N1} {3}' -f $_.ProcessId, $_.ParentProcessId, ($_.WorkingSetSize/1MB), $_.CommandLine }"
+15:35:20 dedicated usage 4,316,737,536 pid_10904_luid_0x00000000_0x00009007_phys_0
+dedicated usage 214,491,136 pid_1512_luid_0x00000000_0x00009007_phys_0
+dedicated usage 71,651,328 pid_5592_luid_0x00000000_0x00009007_phys_0
+shared usage 226,492,416 pid_10904_luid_0x00000000_0x00009007_phys_0
+15:35:21 6144 MiB, 4492 MiB, 1538 MiB
+15:35:21 flags 140-fit ctx 65536 batch 512 ubatch 512 image 70 140 mtmd 1024
+15:35:21 prompt <<
+<bos><|turn>system
+You see one full desktop screenshot. Answer with one JSON object and no other text. see quotes the readable text and names the foreground app. items lists every interactive element, including every taskbar icon. Each item has name and box_2d. box_2d is y_min, x_min, y_max, x_max, integers 0 to 1000, top left origin.<turn|>
+<|turn>user
+<__media__>
+Describe this whole desktop. Quote the words you can read. Put each taskbar icon and every other interactive element in items.<turn|>
+<|turn>model
+<<
+15:35:21 image 140-fit screen 1920 1080 sent 768 432 bytes 156163
+15:35:24 ready 140-fit pid 10508
+15:35:24 vram 140-fit before shot
+15:35:24 10508 parent 5076 ws_mb 2,023.9 C:\Users\px-wjt\Downloads\Jarvis\Trident\gemma-brain.exe --resident gemma_run.txt
+6276 parent 5076 ws_mb 77.2 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'gemma-brain|llama' -or ($_.CommandLine -and $_.CommandLine -match 'gemma-brain|llama-server|llama-cli') } | ForEach-Object { '{0} parent {1} ws_mb {2:N1} {3}' -f $_.ProcessId, $_.ParentProcessId, ($_.WorkingSetSize/1MB), $_.CommandLine }"
+15:35:26 dedicated usage 4,226,555,904 pid_10508_luid_0x00000000_0x00009007_phys_0
+dedicated usage 214,491,136 pid_1512_luid_0x00000000_0x00009007_phys_0
+dedicated usage 71,651,328 pid_5592_luid_0x00000000_0x00009007_phys_0
+shared usage 226,492,416 pid_10508_luid_0x00000000_0x00009007_phys_0
+15:35:26 6144 MiB, 4406 MiB, 1624 MiB
+15:35:54 seconds 140-fit 27.707
+15:35:54 log <<
+cuda[0] NVIDIA GeForce GTX 1060 6GB | free 5197 MiB / total 6143 MiB
+load_hparams: image_min_pixels:   161280 (custom value)
+load_hparams: image_max_pixels:   322560 (custom value)
+resident load 2563 ms
+resident ready pid 10508
+clip_encode: copying image 1/1 to input buffer (nx=720, ny=384)
+image slice encoded in 295 ms
+decoding image batch 1/1, n_tokens_batch = 120
+image decoded (batch 1/1) in 21 ms
+resident generate 27679 ms<<
+15:35:54 gemma <<
+```json
+{
+  "desktop_description": "A desktop screenshot featuring a dark theme with a Windows-like operating system. The main application visible is 'ChatGPT'. The user has a search bar, a text input area with a prompt, and various interaction buttons. The taskbar at the bottom displays icons for various system functions.",
+  "foreground_app": "ChatGPT",
+  "interactive_elements": [
+    {
+      "name": "New chat",
+      "box_2d": [
+        36,
+        53,
+        57,
+        111
+      ]
+    },
+    {
+      "name": "chatgpt.com/sub/ixd-8edb-8ba-43695e9764",
+      "box_2d": [
+        104,
+        202,
+        116,
+        308
+      ]
+    },
+    {
+      "name": "Share",
+      "box_2d": [
+        95,
+        574,
+        116,
+        624
+      ]
+    },
+    {
+      "name": "CPU",
+      "box_2d": [
+        145,
+        672,
+        159,
+        722
+      ]
+    },
+    {
+      "name": "12% 3.8 GHz",
+      "box_2d": [
+        162,
+        672,
+        173,
+        731
+      ]
+    },
+    {
+      "name": "Memory",
+      "box_2d": [182,
+        672,
+        195,
+        722
+      ]
+    },
+    {
+      "name": "13.1 GB 0.8%",
+      "box_2d": [
+        197,
+        672,
+        207,
+        731
+      ]
+    },
+    {
+      "name": "Disk (C :)",
+      "box_2d": [216,
+        672,
+        229,
+        731
+      ]
+    },
+    {
+      "name": "50 GB 0.8%",
+      "box_2d": [232,
+        672,
+        245,
+        731
+      ]
+    },
+    {
+      "name": "Ethernet",
+      "box_2d": [253,
+        672,
+        266,
+        722
+      ]
+    },
+    {
+      "name": "GPU 0",
+      "box_2d": [275,
+        672,
+        287,
+        722
+      ]
+    },
+    {
+      "name": "Dedicated GPU memory",
+      "box_2d": [290,
+        672,
+        301,
+        755
+      ]
+    },
+    {
+      "name": "5.8 GB 0.8%",
+      "box_2d": [303,
+        672,
+        314,
+        731
+      ]
+    },
+    {
+      "name": "10.8/22.0 GB 5.0/16.0 GB",
+      "box_2d": [317,
+        672,
+        329,
+        731
+      ]
+    },
+    {
+      "name": "Jus ChatGPT",
+      "box_2d": [759,
+        315,
+        776,
+        413
+      ]
+    },
+    {
+      "name": "Menu icon",
+      "box_2d": [826,
+        2,
+        858,
+        66
+      ]
+    },
+    {
+      "name": "Search icon",
+      "box_2d": [826,
+        74,
+        858,
+        111
+      ]
+    }
+  ]
+}
+```<<
+15:35:54 vram 140-fit after shot
+15:35:54 10508 parent 5076 ws_mb 2,062.3 C:\Users\px-wjt\Downloads\Jarvis\Trident\gemma-brain.exe --resident gemma_run.txt
+10020 parent 5076 ws_mb 76.9 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'gemma-brain|llama' -or ($_.CommandLine -and $_.CommandLine -match 'gemma-brain|llama-server|llama-cli') } | ForEach-Object { '{0} parent {1} ws_mb {2:N1} {3}' -f $_.ProcessId, $_.ParentProcessId, ($_.WorkingSetSize/1MB), $_.CommandLine }"
+15:35:56 dedicated usage 4,258,017,280 pid_10508_luid_0x00000000_0x00009007_phys_0
+dedicated usage 214,491,136 pid_1512_luid_0x00000000_0x00009007_phys_0
+dedicated usage 71,651,328 pid_5592_luid_0x00000000_0x00009007_phys_0
+shared usage 226,492,416 pid_10508_luid_0x00000000_0x00009007_phys_0
+15:35:56 6144 MiB, 4436 MiB, 1594 MiB
+15:35:56 flags 560-fit ctx 8192 batch 512 ubatch 512 image 560 560 mtmd 1024
+15:35:57 prompt <<
+<bos><|turn>system
+You see one full desktop screenshot. Answer with one JSON object and no other text. see quotes the readable text and names the foreground app. items lists every interactive element, including every taskbar icon. Each item has name and box_2d. box_2d is y_min, x_min, y_max, x_max, integers 0 to 1000, top left origin.<turn|>
+<|turn>user
+<__media__>
+Describe this whole desktop. Quote the words you can read. Put each taskbar icon and every other interactive element in items.<turn|>
+<|turn>model
+<<
+15:35:57 image 560-fit screen 1920 1080 sent 1536 864 bytes 453079
+15:36:00 ready 560-fit pid 944
+15:36:00 vram 560-fit before shot
+15:36:00 944 parent 5076 ws_mb 1,910.8 C:\Users\px-wjt\Downloads\Jarvis\Trident\gemma-brain.exe --resident gemma_run.txt
+2812 parent 5076 ws_mb 76.8 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'gemma-brain|llama' -or ($_.CommandLine -and $_.CommandLine -match 'gemma-brain|llama-server|llama-cli') } | ForEach-Object { '{0} parent {1} ws_mb {2:N1} {3}' -f $_.ProcessId, $_.ParentProcessId, ($_.WorkingSetSize/1MB), $_.CommandLine }"
+15:36:02 dedicated usage 214,491,136 pid_1512_luid_0x00000000_0x00009007_phys_0
+dedicated usage 71,651,328 pid_5592_luid_0x00000000_0x00009007_phys_0
+dedicated usage 3,200,815,104 pid_944_luid_0x00000000_0x00009007_phys_0
+shared usage 109,051,904 pid_944_luid_0x00000000_0x00009007_phys_0
+15:36:02 6144 MiB, 3428 MiB, 2602 MiB
+15:36:43 seconds 560-fit 40.595
+15:36:43 log <<
+cuda[0] NVIDIA GeForce GTX 1060 6GB | free 5197 MiB / total 6143 MiB
+load_hparams: image_min_pixels:   1290240 (custom value)
+load_hparams: image_max_pixels:   1290240 (custom value)
+resident load 2853 ms
+resident ready pid 944
+clip_encode: copying image 1/1 to input buffer (nx=1488, ny=816)
+image slice encoded in 1718 ms
+decoding image batch 1/2, n_tokens_batch = 512
+image decoded (batch 1/2) in 69 ms
+decoding image batch 2/2, n_tokens_batch = 15
+image decoded (batch 2/2) in 359 ms
+resident generate 40511 ms<<
+15:36:43 gemma <<
+```json
+{
+  "desktop_description": "A desktop screenshot featuring a web application interface, specifically a ChatGPT session, on a dark background. The interface includes a sidebar with navigation options like 'New chat', 'Scheduled', 'Library', 'Plugins', 'Explore', and 'Projects', and the main chat area displaying a prompt about 'lighthouselighthouse'. The right side shows a 'Performance' panel with sections for 'CPU' and 'GPU', and a 'Dedicated GPU memory' section.",
+  "foreground_app": "ChatGPT",
+  "interactive_elements": [
+    {
+      "name": "ChatGPT window/app",
+      "box_2d": [21, 24, 978, 680]
+    },
+    {
+      "name": "New chat button",
+      "box_2d": [181, 34, 225, 107]
+    },
+    {
+      "name": "ChatGPT title/header",
+      "box_2d": [46, 33, 75, 137]
+    },
+    {
+      "name": "ChatGPT logo/icon",
+      "box_2d": [48, 30, 66, 56]
+    },
+    {
+      "name": "Arrow back button",
+      "box_2d": [80, 30, 104, 46]
+    },
+    {
+      "name": "Refresh button",
+      "box_2d": [80, 68, 104, 85]
+    },
+    {
+      "name": "ChatGPT URL/Breadcrumb",
+      "box_2d": [80, 107, 104, 313]
+    },
+    {
+      "name": "New chat button (in title bar)",
+      "box_2d": [23, 342, 57, 358]
+    },
+    {
+      "name": "Clear history button",
+      "box_2d": [23, 398, 57, 414]
+    },
+    {
+      "name": "Maximize button",
+      "box_2d": [23, 448, 57, 464]
+    },
+    {
+      "name": "Minimize button",
+      "box_2d": [23, 511, 57, 527]
+    },
+    {
+      "name": "Close button",
+      "box_2d": [23, 544, 57, 560]
+    },
+    {
+      "name": "ChatGPT logo icon",
+      "box_2d": [23, 37, 57, 64]
+    },
+    {
+      "name": "ChatGPT settings/more options icon",
+      "box_2d": [23, 604, 57, 620]
+    },
+    {
+      "name": "ChatGPT chat title",
+      "box_2d": [144, 30, 172, 110]
+    },
+    {
+      "name": "New chat (sidebar)",
+      "box_2d": [193, 30, 225, 107]
+    },
+    {
+      "name": "Scheduled (sidebar)",
+      "box_2d": [243, 30, 273, 107]
+    },
+    {
+      "name": "Library (sidebar)",
+      "box_2d": [286, 30, 316, 107]
+    },
+    {
+      "name": "Plugins (sidebar)",
+      "box_2d": [328, 30, 358, 107]
+    },
+    {
+      "name": "Explore (sidebar)",
+      "box_2d": [372, 30, 403, 107]
+    },
+    {
+      "name": "Projects (sidebar)",
+      "box_2d": [421, 30, 452, 107]
+    },
+    {
+      "name": "No projects message",
+      "box_2d": [475, 30, 498, 93]
+    },
+    {
+      "name": "Recent: Clarify lighthouse meaning",
+      "box_2d": [601, 23, 629, 240]
+    },
+    {
+      "name": "Recent: Analyze Repository Capabilities",
+      "box_2d": [642, 23, 670, 174]
+    },
+    {
+      "name": "Wojciech Gabrys profile/name",
+      "box_2d": [793, 30, 834, 108]
+    },
+    {
+      "name": "Search bar",
+      "box_2d": [941, 26, 990, 194]
+    },
+    {
+      "name": "Performance panel (CPU)",
+      "box_2d": [176, 718, 242, 829]
+    },
+    {
+      "name": "Performance panel (GPU)",
+      "box_2d": [176, 829, 786, 1000]
+    }
+  ]
+}
+```<<
+15:36:43 vram 560-fit after shot
+15:36:43 944 parent 5076 ws_mb 1,967.7 C:\Users\px-wjt\Downloads\Jarvis\Trident\gemma-brain.exe --resident gemma_run.txt
+6360 parent 5076 ws_mb 76.9 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'gemma-brain|llama' -or ($_.CommandLine -and $_.CommandLine -match 'gemma-brain|llama-server|llama-cli') } | ForEach-Object { '{0} parent {1} ws_mb {2:N1} {3}' -f $_.ProcessId, $_.ParentProcessId, ($_.WorkingSetSize/1MB), $_.CommandLine }"
+15:36:45 dedicated usage 214,491,136 pid_1512_luid_0x00000000_0x00009007_phys_0
+dedicated usage 71,647,232 pid_5592_luid_0x00000000_0x00009007_phys_0
+dedicated usage 4,161,323,008 pid_944_luid_0x00000000_0x00009007_phys_0
+shared usage 109,051,904 pid_944_luid_0x00000000_0x00009007_phys_0
+15:36:45 6144 MiB, 4344 MiB, 1686 MiB
+15:36:45 flags 70-fit ctx 8192 batch 512 ubatch 512 image 70 70 mtmd 512
+15:36:45 prompt <<
+<bos><|turn>system
+You see one full desktop screenshot. Answer with one JSON object and no other text. see quotes the readable text and names the foreground app. items lists every interactive element, including every taskbar icon. Each item has name and box_2d. box_2d is y_min, x_min, y_max, x_max, integers 0 to 1000, top left origin.<turn|>
+<|turn>user
+<__media__>
+Describe this whole desktop. Quote the words you can read. Put each taskbar icon and every other interactive element in items.<turn|>
+<|turn>model
+<<
+15:36:45 image 70-fit screen 1920 1080 sent 528 288 bytes 83697
+15:36:48 ready 70-fit pid 6028
+15:36:48 vram 70-fit before shot
+15:36:49 6028 parent 5076 ws_mb 1,908.7 C:\Users\px-wjt\Downloads\Jarvis\Trident\gemma-brain.exe --resident gemma_run.txt
+11768 parent 5076 ws_mb 77.2 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'gemma-brain|llama' -or ($_.CommandLine -and $_.CommandLine -match 'gemma-brain|llama-server|llama-cli') } | ForEach-Object { '{0} parent {1} ws_mb {2:N1} {3}' -f $_.ProcessId, $_.ParentProcessId, ($_.WorkingSetSize/1MB), $_.CommandLine }"
+15:36:50 dedicated usage 214,491,136 pid_1512_luid_0x00000000_0x00009007_phys_0
+dedicated usage 71,647,232 pid_5592_luid_0x00000000_0x00009007_phys_0
+dedicated usage 3,200,815,104 pid_6028_luid_0x00000000_0x00009007_phys_0
+shared usage 109,051,904 pid_6028_luid_0x00000000_0x00009007_phys_0
+15:36:51 6144 MiB, 3428 MiB, 2602 MiB
+15:37:03 seconds 70-fit 12.123
+15:37:03 log <<
+cuda[0] NVIDIA GeForce GTX 1060 6GB | free 5197 MiB / total 6143 MiB
+load_hparams: image_min_pixels:   161280 (custom value)
+load_hparams: image_max_pixels:   161280 (custom value)
+resident load 2534 ms
+resident ready pid 6028
+clip_encode: copying image 1/1 to input buffer (nx=576, ny=336)
+image slice encoded in 227 ms
+decoding image batch 1/1, n_tokens_batch = 84
+image decoded (batch 1/1) in 20 ms
+resident generate 12066 ms<<
+15:37:03 gemma <<
+```json
+{
+  "desktop_description": "A desktop screenshot displaying a window titled \"ChatGPT\". The main application window is prominent, showing a chat interface. The taskbar at the bottom contains several icons. The background shows a dark theme.",
+  "foreground_app": "ChatGPT",
+  "items": [
+    {
+      "name": "Taskbar Icon",
+      "box_2d": [794, 11, 834, 33]
+    },
+    {
+      "name": "Search Button",
+      "box_2d": [847, 50, 876, 113]
+    },
+    {
+      "name": "ChatGPT Window",
+      "box_2d": [1, 2, 894, 1000]
+    },
+    {
+      "name": "Chat Input Field",
+      "box_2d": [100, 14, 133, 472]
+    },
+    {
+      "name": "Chat Message Area",
+      "box_2d": [145, 33, 188, 485]
+    },
+    {
+      "name": "Chat History/Messages List (Top)",
+      "box_2d": [190, 33, 247, 485]
+    },
+    {
+      "name": "User Input Text",
+      "box_2d": [346, 115, 372, 376]
+    },
+    {
+      "name": "Chat Input Area (Bottom)",
+      "box_2d": [780, 31, 894, 1000]
+    }
+  ]
+}
+```<<
+15:37:03 vram 70-fit after shot
+15:37:03 6028 parent 5076 ws_mb 1,945.7 C:\Users\px-wjt\Downloads\Jarvis\Trident\gemma-brain.exe --resident gemma_run.txt
+7260 parent 5076 ws_mb 77.0 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'gemma-brain|llama' -or ($_.CommandLine -and $_.CommandLine -match 'gemma-brain|llama-server|llama-cli') } | ForEach-Object { '{0} parent {1} ws_mb {2:N1} {3}' -f $_.ProcessId, $_.ParentProcessId, ($_.WorkingSetSize/1MB), $_.CommandLine }"
+15:37:05 dedicated usage 214,491,136 pid_1512_luid_0x00000000_0x00009007_phys_0
+dedicated usage 71,647,232 pid_5592_luid_0x00000000_0x00009007_phys_0
+dedicated usage 3,232,276,480 pid_6028_luid_0x00000000_0x00009007_phys_0
+shared usage 109,051,904 pid_6028_luid_0x00000000_0x00009007_phys_0
+15:37:05 6144 MiB, 3458 MiB, 2572 MiB
+15:37:05 processes after
+15:37:06 6028 parent 5076 ws_mb 1,945.7 C:\Users\px-wjt\Downloads\Jarvis\Trident\gemma-brain.exe --resident gemma_run.txt
+2204 parent 5076 ws_mb 77.0 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'gemma-brain|llama' -or ($_.CommandLine -and $_.CommandLine -match 'gemma-brain|llama-server|llama-cli') } | ForEach-Object { '{0} parent {1} ws_mb {2:N1} {3}' -f $_.ProcessId, $_.ParentProcessId, ($_.WorkingSetSize/1MB), $_.CommandLine }"
+15:37:07 dedicated usage 214,491,136 pid_1512_luid_0x00000000_0x00009007_phys_0
+dedicated usage 71,647,232 pid_5592_luid_0x00000000_0x00009007_phys_0
+dedicated usage 3,232,276,480 pid_6028_luid_0x00000000_0x00009007_phys_0
+shared usage 109,051,904 pid_6028_luid_0x00000000_0x00009007_phys_0
+15:37:08 6144 MiB, 3458 MiB, 2572 MiB
+15:37:08 unfinished choices
+15:39:21 revision 9
+15:39:21 2026-09-30 15:39:21
+15:39:21 llama.cpp 84e76d8a23162eca70490da131945ebec1f09bf4
+15:39:21 gemma4 embedding_length 1536 block_count 35 sliding_window 512 head_count_kv 1 key_length 512 value_length 512 key_length_swa 256
+15:39:21 checkout mtmd_decode_use_non_causal returns false for Gemma 4 E2B n_embd_text 1536
+15:39:21 processes before
+15:39:21 6028 parent 5076 ws_mb 1,945.7 C:\Users\px-wjt\Downloads\Jarvis\Trident\gemma-brain.exe --resident gemma_run.txt
+9256 parent 1668 ws_mb 76.9 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'gemma-brain|llama' -or ($_.CommandLine -and $_.CommandLine -match 'gemma-brain|llama-server|llama-cli') } | ForEach-Object { '{0} parent {1} ws_mb {2:N1} {3}' -f $_.ProcessId, $_.ParentProcessId, ($_.WorkingSetSize/1MB), $_.CommandLine }"
+15:39:23 dedicated usage 214,491,136 pid_1512_luid_0x00000000_0x00009007_phys_0
+dedicated usage 71,647,232 pid_5592_luid_0x00000000_0x00009007_phys_0
+dedicated usage 3,232,276,480 pid_6028_luid_0x00000000_0x00009007_phys_0
+shared usage 109,051,904 pid_6028_luid_0x00000000_0x00009007_phys_0
+15:39:23 6144 MiB, 3458 MiB, 2572 MiB
+15:39:23 dpi 120
+15:39:24 capture screen 1920 1080 frame 1920 1080 bytes 500360 raw 1920 1080
+15:39:24 windows <<
+ 944 0 1000 1000 0,1020,1920,1080
+Clarify lighthouse meaning - Google Chrome 27 7 924 709 13,29,1361,998
+Task Manager 57 705 918 1112 1353,62,2136,991
+Settings 1 0 916 683 0,1,1312,989
+Settings 5 0 929 693 0,5,1330,1003
+ 0 10 4 1000 19,0,1920,4
+Program Manager 0 0 1000 1000 0,0,1920,1080<<
+15:39:24 flags 280-quote ctx 65536 batch 512 ubatch 512 image 280 280 mtmd 1024
+15:39:24 prompt <<
+<bos><|turn>system
+You see one full desktop screenshot. Answer with one JSON object and no other text. see quotes the readable sentences and the numbers. taskbar lists every bottom-edge icon from left to right, each with name and box_2d. windows lists each open window with name and box_2d. box_2d is y_min, x_min, y_max, x_max, integers 0 to 1000, top left origin.<turn|>
+<|turn>user
+<__media__>
+Describe the whole desktop. Quote the chat words. Name each taskbar icon from left to right.<turn|>
+<|turn>model
+<<
+15:39:24 image 280-quote screen 1920 1080 sent 1056 624 bytes 269403
+15:39:28 ready 280-quote pid 5396
+15:39:28 vram 280-quote before shot
+15:39:28 5396 parent 1668 ws_mb 2,023.7 C:\Users\px-wjt\Downloads\Jarvis\Trident\gemma-brain.exe --resident gemma_run.txt
+4304 parent 1668 ws_mb 77.2 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'gemma-brain|llama' -or ($_.CommandLine -and $_.CommandLine -match 'gemma-brain|llama-server|llama-cli') } | ForEach-Object { '{0} parent {1} ws_mb {2:N1} {3}' -f $_.ProcessId, $_.ParentProcessId, ($_.WorkingSetSize/1MB), $_.CommandLine }"
+15:39:30 dedicated usage 214,511,616 pid_1512_luid_0x00000000_0x00009007_phys_0
+dedicated usage 4,226,555,904 pid_5396_luid_0x00000000_0x00009007_phys_0
+dedicated usage 71,647,232 pid_5592_luid_0x00000000_0x00009007_phys_0
+shared usage 226,492,416 pid_5396_luid_0x00000000_0x00009007_phys_0
+15:39:30 6144 MiB, 4406 MiB, 1624 MiB
+15:39:39 seconds 280-quote 8.810
+15:39:39 log <<
+cuda[0] NVIDIA GeForce GTX 1060 6GB | free 5197 MiB / total 6143 MiB
+load_hparams: image_min_pixels:   645120 (custom value)
+load_hparams: image_max_pixels:   645120 (custom value)
+resident load 2602 ms
+resident ready pid 5396
+clip_encode: copying image 1/1 to input buffer (nx=1008, ny=576)
+image slice encoded in 608 ms
+decoding image batch 1/1, n_tokens_batch = 252
+image decoded (batch 1/1) in 40 ms
+resident generate 8766 ms<<
+15:39:39 gemma <<
+```json
+{
+  "desktop_description": "The desktop features a dark wallpaper with a subtle geometric pattern. In the center, there is a ChatGPT web interface open. At the bottom, there is a taskbar with icons. The main window is the ChatGPT interface, which shows a prompt asking 'Could you clarify what you mean by \"lighthouselighthouse\"?'.",
+  "taskbar_icons": [
+    {
+      "name": "Start",
+      "box_2d": [15, 18, 54, 75]
+    },
+    {
+      "name": "Search",
+      "box_2d": [15, 108, 54, 177]
+    },
+    {
+      "name": "Task Manager",
+      "box_2d": [15, 732, 54, 801]
+    }
+  ],
+  "windows": [
+    {
+      "name": "ChatGPT",
+      "box_2d": [33, 1, 966, 996]
+    }
+  ],
+  "chat_words_quoted": "Could you clarify what you mean by \"lighthouselighthouse\"?"
+}
+```<<
+15:39:39 vram 280-quote after shot
+15:39:39 5396 parent 1668 ws_mb 2,068.8 C:\Users\px-wjt\Downloads\Jarvis\Trident\gemma-brain.exe --resident gemma_run.txt
+4760 parent 1668 ws_mb 77.1 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'gemma-brain|llama' -or ($_.CommandLine -and $_.CommandLine -match 'gemma-brain|llama-server|llama-cli') } | ForEach-Object { '{0} parent {1} ws_mb {2:N1} {3}' -f $_.ProcessId, $_.ParentProcessId, ($_.WorkingSetSize/1MB), $_.CommandLine }"
+15:39:41 dedicated usage 214,511,616 pid_1512_luid_0x00000000_0x00009007_phys_0
+dedicated usage 4,316,737,536 pid_5396_luid_0x00000000_0x00009007_phys_0
+dedicated usage 71,647,232 pid_5592_luid_0x00000000_0x00009007_phys_0
+shared usage 226,492,416 pid_5396_luid_0x00000000_0x00009007_phys_0
+15:39:41 6144 MiB, 4492 MiB, 1538 MiB
+15:39:41 flags 560-quote ctx 65536 batch 512 ubatch 512 image 560 560 mtmd 1024
+15:39:41 prompt <<
+<bos><|turn>system
+You see one full desktop screenshot. Answer with one JSON object and no other text. see quotes the readable sentences and the numbers. taskbar lists every bottom-edge icon from left to right, each with name and box_2d. windows lists each open window with name and box_2d. box_2d is y_min, x_min, y_max, x_max, integers 0 to 1000, top left origin.<turn|>
+<|turn>user
+<__media__>
+Describe the whole desktop. Quote the chat words. Name each taskbar icon from left to right.<turn|>
+<|turn>model
+<<
+15:39:41 image 560-quote screen 1920 1080 sent 1536 864 bytes 450809
+15:39:44 ready 560-quote pid 4864
+15:39:44 vram 560-quote before shot
+15:39:45 4864 parent 1668 ws_mb 2,023.6 C:\Users\px-wjt\Downloads\Jarvis\Trident\gemma-brain.exe --resident gemma_run.txt
+6428 parent 1668 ws_mb 77.1 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'gemma-brain|llama' -or ($_.CommandLine -and $_.CommandLine -match 'gemma-brain|llama-server|llama-cli') } | ForEach-Object { '{0} parent {1} ws_mb {2:N1} {3}' -f $_.ProcessId, $_.ParentProcessId, ($_.WorkingSetSize/1MB), $_.CommandLine }"
+15:39:46 dedicated usage 214,511,616 pid_1512_luid_0x00000000_0x00009007_phys_0
+dedicated usage 4,226,555,904 pid_4864_luid_0x00000000_0x00009007_phys_0
+dedicated usage 71,647,232 pid_5592_luid_0x00000000_0x00009007_phys_0
+shared usage 226,492,416 pid_4864_luid_0x00000000_0x00009007_phys_0
+15:39:47 6144 MiB, 4406 MiB, 1624 MiB
+15:40:00 seconds 560-quote 12.901
+15:40:00 log <<
+cuda[0] NVIDIA GeForce GTX 1060 6GB | free 5197 MiB / total 6143 MiB
+load_hparams: image_min_pixels:   1290240 (custom value)
+load_hparams: image_max_pixels:   1290240 (custom value)
+resident load 2529 ms
+resident ready pid 4864
+clip_encode: copying image 1/1 to input buffer (nx=1488, ny=816)
+image slice encoded in 1734 ms
+decoding image batch 1/2, n_tokens_batch = 512
+image decoded (batch 1/2) in 73 ms
+decoding image batch 2/2, n_tokens_batch = 15
+image decoded (batch 2/2) in 356 ms
+resident generate 12836 ms<<
+15:40:00 gemma <<
+```json
+{
+  "desktop_description": "The desktop features a web browser window prominently displaying the ChatGPT interface. The browser is open, showing a chat history with a message from 'lightouselighthouse'. To the right, there is a panel with system information, including 'Performance' and 'GPU' details. The taskbar at the bottom contains several icons, and the right side shows a dark blue/black background suggesting a modern desktop environment.",
+  "quoted_chat_words": [
+    "ChatGPT",
+    "clarify lighthouse meaning",
+    "lightouselighthouse",
+    "Could you clarify what you mean by \"lightouselighthouse\"?"
+  ],
+  "taskbar_icons": [
+    {
+      "name": "Search",
+      "box_2d": [943, 23, 988, 76]
+    },
+    {
+      "name": "Windows 10/11 Icons (from left to right, based on typical layout, though exact names are inferred):",
+      "icons": [
+        {"name": "Start/Super Button", "box_2d": [943, 113, 988, 158]},
+        {"name": "File Explorer", "box_2d": [943, 154, 988, 197]},
+        {"name": "Task View/Search/Other System Icons", "box_2d": [943, 191, 988, 233]}
+      ]
+    }
+  ]
+}
+```<<
+15:40:00 vram 560-quote after shot
+15:40:00 4864 parent 1668 ws_mb 2,082.4 C:\Users\px-wjt\Downloads\Jarvis\Trident\gemma-brain.exe --resident gemma_run.txt
+7260 parent 1668 ws_mb 77.0 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'gemma-brain|llama' -or ($_.CommandLine -and $_.CommandLine -match 'gemma-brain|llama-server|llama-cli') } | ForEach-Object { '{0} parent {1} ws_mb {2:N1} {3}' -f $_.ProcessId, $_.ParentProcessId, ($_.WorkingSetSize/1MB), $_.CommandLine }"
+15:40:02 dedicated usage 214,511,616 pid_1512_luid_0x00000000_0x00009007_phys_0
+dedicated usage 5,187,067,904 pid_4864_luid_0x00000000_0x00009007_phys_0
+dedicated usage 71,647,232 pid_5592_luid_0x00000000_0x00009007_phys_0
+shared usage 226,492,416 pid_4864_luid_0x00000000_0x00009007_phys_0
+15:40:02 6144 MiB, 5322 MiB, 708 MiB
+15:40:02 processes after
+15:40:02 4864 parent 1668 ws_mb 2,082.4 C:\Users\px-wjt\Downloads\Jarvis\Trident\gemma-brain.exe --resident gemma_run.txt
+2476 parent 1668 ws_mb 77.0 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'gemma-brain|llama' -or ($_.CommandLine -and $_.CommandLine -match 'gemma-brain|llama-server|llama-cli') } | ForEach-Object { '{0} parent {1} ws_mb {2:N1} {3}' -f $_.ProcessId, $_.ParentProcessId, ($_.WorkingSetSize/1MB), $_.CommandLine }"
+15:40:04 dedicated usage 214,511,616 pid_1512_luid_0x00000000_0x00009007_phys_0
+dedicated usage 5,187,067,904 pid_4864_luid_0x00000000_0x00009007_phys_0
+dedicated usage 71,647,232 pid_5592_luid_0x00000000_0x00009007_phys_0
+shared usage 226,492,416 pid_4864_luid_0x00000000_0x00009007_phys_0
+15:40:04 6144 MiB, 5322 MiB, 708 MiB
+15:41:16 revision 10
+15:41:16 2026-09-30 15:41:16
+15:41:16 llama.cpp 84e76d8a23162eca70490da131945ebec1f09bf4
+15:41:16 gemma4 embedding_length 1536 block_count 35 sliding_window 512 head_count_kv 1 key_length 512 value_length 512 key_length_swa 256
+15:41:16 checkout mtmd_decode_use_non_causal returns false for Gemma 4 E2B n_embd_text 1536
+15:41:16 processes before
+15:41:16 4864 parent 1668 ws_mb 2,082.3 C:\Users\px-wjt\Downloads\Jarvis\Trident\gemma-brain.exe --resident gemma_run.txt
+9256 parent 3336 ws_mb 77.0 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'gemma-brain|llama' -or ($_.CommandLine -and $_.CommandLine -match 'gemma-brain|llama-server|llama-cli') } | ForEach-Object { '{0} parent {1} ws_mb {2:N1} {3}' -f $_.ProcessId, $_.ParentProcessId, ($_.WorkingSetSize/1MB), $_.CommandLine }"
+15:41:18 dedicated usage 214,491,136 pid_1512_luid_0x00000000_0x00009007_phys_0
+dedicated usage 5,187,067,904 pid_4864_luid_0x00000000_0x00009007_phys_0
+dedicated usage 71,647,232 pid_5592_luid_0x00000000_0x00009007_phys_0
+shared usage 226,492,416 pid_4864_luid_0x00000000_0x00009007_phys_0
+15:41:18 6144 MiB, 5322 MiB, 708 MiB
+15:41:18 dpi 120
+15:41:19 capture screen 1920 1080 frame 1920 1080 bytes 500311 raw 1920 1080
+15:41:19 windows <<
+ 944 0 1000 1000 0,1020,1920,1080
+Clarify lighthouse meaning - Google Chrome 27 7 924 709 13,29,1361,998
+Task Manager 57 705 918 1112 1353,62,2136,991
+Settings 1 0 916 683 0,1,1312,989
+Settings 5 0 929 693 0,5,1330,1003
+ 0 10 4 1000 19,0,1920,4
+Program Manager 0 0 1000 1000 0,0,1920,1080<<
+15:41:19 flags 560-read ctx 65536 batch 512 ubatch 512 image 560 560 mtmd 1024
+15:41:19 prompt <<
+<bos><|turn>system
+You see one full desktop screenshot. Answer with one JSON object and no other text. see is the chat reply copied character for character, then the other readable lines. taskbar is the bottom strip only, left to right, one object per icon, each with name and box_2d. windows is one object per open window, each with name and box_2d. box_2d is y_min, x_min, y_max, x_max, integers 0 to 1000, top left origin. A bottom-strip box has y_min above 900.<turn|>
+<|turn>user
+<__media__>
+Copy the chat reply exactly. Name every taskbar icon from the left edge to the clock. Name each large window.<turn|>
+<|turn>model
+<<
+15:41:19 image 560-read screen 1920 1080 sent 1536 864 bytes 451252
+15:41:19 ready 560-read pid 4864
+15:41:19 vram 560-read before shot
+15:41:19 4864 parent 1668 ws_mb 2,082.3 C:\Users\px-wjt\Downloads\Jarvis\Trident\gemma-brain.exe --resident gemma_run.txt
+5564 parent 3336 ws_mb 77.0 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'gemma-brain|llama' -or ($_.CommandLine -and $_.CommandLine -match 'gemma-brain|llama-server|llama-cli') } | ForEach-Object { '{0} parent {1} ws_mb {2:N1} {3}' -f $_.ProcessId, $_.ParentProcessId, ($_.WorkingSetSize/1MB), $_.CommandLine }"
+15:41:21 dedicated usage 214,511,616 pid_1512_luid_0x00000000_0x00009007_phys_0
+dedicated usage 5,187,067,904 pid_4864_luid_0x00000000_0x00009007_phys_0
+dedicated usage 71,647,232 pid_5592_luid_0x00000000_0x00009007_phys_0
+shared usage 226,492,416 pid_4864_luid_0x00000000_0x00009007_phys_0
+15:41:21 6144 MiB, 5322 MiB, 708 MiB
+15:41:30 seconds 560-read 9.190
+15:41:30 log <<
+cuda[0] NVIDIA GeForce GTX 1060 6GB | free 5197 MiB / total 6143 MiB
+load_hparams: image_min_pixels:   1290240 (custom value)
+load_hparams: image_max_pixels:   1290240 (custom value)
+resident load 2529 ms
+resident ready pid 4864
+clip_encode: copying image 1/1 to input buffer (nx=1488, ny=816)
+image slice encoded in 1734 ms
+decoding image batch 1/2, n_tokens_batch = 512
+image decoded (batch 1/2) in 73 ms
+decoding image batch 2/2, n_tokens_batch = 15
+image decoded (batch 2/2) in 356 ms
+resident generate 12836 ms
+clip_encode: copying image 1/1 to input buffer (nx=1488, ny=816)
+image slice encoded in 1717 ms
+decoding image batch 1/2, n_tokens_batch = 512
+image decoded (batch 1/2) in 67 ms
+decoding image batch 2/2, n_tokens_batch = 15
+image decoded (batch 2/2) in 373 ms
+resident generate 9141 ms<<
+15:41:30 gemma <<
+```json
+{
+  "taskbar": [
+    {
+      "name": "Start button",
+      "box_2d": [33, 8, 66, 53]
+    },
+    {
+      "name": "ChatGPT",
+      "box_2d": [28, 83, 63, 186]
+    },
+    {
+      "name": "Task Manager",
+      "box_2d": [48, 717, 98, 792]
+    },
+    {
+      "name": "Notification area",
+      "box_2d": [33, 792, 66, 999]
+    }
+  ],
+  "windows": [
+    {
+      "name": "ChatGPT",
+      "box_2d": [17, 31, 955, 701]
+    }
+  ]
+}
+```<<
+15:41:30 vram 560-read after shot
+15:41:31 4864 parent 1668 ws_mb 2,084.2 C:\Users\px-wjt\Downloads\Jarvis\Trident\gemma-brain.exe --resident gemma_run.txt
+1756 parent 3336 ws_mb 77.1 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'gemma-brain|llama' -or ($_.CommandLine -and $_.CommandLine -match 'gemma-brain|llama-server|llama-cli') } | ForEach-Object { '{0} parent {1} ws_mb {2:N1} {3}' -f $_.ProcessId, $_.ParentProcessId, ($_.WorkingSetSize/1MB), $_.CommandLine }"
+15:41:32 dedicated usage 214,487,040 pid_1512_luid_0x00000000_0x00009007_phys_0
+dedicated usage 5,187,067,904 pid_4864_luid_0x00000000_0x00009007_phys_0
+dedicated usage 71,647,232 pid_5592_luid_0x00000000_0x00009007_phys_0
+shared usage 226,492,416 pid_4864_luid_0x00000000_0x00009007_phys_0
+15:41:33 6144 MiB, 5322 MiB, 708 MiB
+15:41:33 processes after
+15:41:33 4864 parent 1668 ws_mb 2,084.2 C:\Users\px-wjt\Downloads\Jarvis\Trident\gemma-brain.exe --resident gemma_run.txt
+944 parent 3336 ws_mb 77.0 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'gemma-brain|llama' -or ($_.CommandLine -and $_.CommandLine -match 'gemma-brain|llama-server|llama-cli') } | ForEach-Object { '{0} parent {1} ws_mb {2:N1} {3}' -f $_.ProcessId, $_.ParentProcessId, ($_.WorkingSetSize/1MB), $_.CommandLine }"
+15:41:35 dedicated usage 214,487,040 pid_1512_luid_0x00000000_0x00009007_phys_0
+dedicated usage 5,187,067,904 pid_4864_luid_0x00000000_0x00009007_phys_0
+dedicated usage 71,647,232 pid_5592_luid_0x00000000_0x00009007_phys_0
+shared usage 226,492,416 pid_4864_luid_0x00000000_0x00009007_phys_0
+15:41:35 6144 MiB, 5322 MiB, 708 MiB
+15:43:43 revision 11
+15:43:43 2026-09-30 15:43:43
+15:43:43 processes before
+15:43:44 4864 parent 1668 ws_mb 2,084.2 C:\Users\px-wjt\Downloads\Jarvis\Trident\gemma-brain.exe --resident gemma_run.txt
+5568 parent 4836 ws_mb 77.1 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'gemma-brain|llama' -or ($_.CommandLine -and $_.CommandLine -match 'gemma-brain|llama-server|llama-cli') } | ForEach-Object { '{0} parent {1} ws_mb {2:N1} {3}' -f $_.ProcessId, $_.ParentProcessId, ($_.WorkingSetSize/1MB), $_.CommandLine }"
+15:43:45 dedicated usage 214,491,136 pid_1512_luid_0x00000000_0x00009007_phys_0
+dedicated usage 5,187,067,904 pid_4864_luid_0x00000000_0x00009007_phys_0
+dedicated usage 71,647,232 pid_5592_luid_0x00000000_0x00009007_phys_0
+shared usage 226,492,416 pid_4864_luid_0x00000000_0x00009007_phys_0
+15:43:45 6144 MiB, 5322 MiB, 708 MiB
+15:43:45 dpi 120
+15:43:45 gemma.ctx 65536
+15:43:45 gemma.batch 512
+15:43:45 gemma.ubatch 512
+15:43:45 gemma.image-min-tokens 560
+15:43:45 gemma.image-max-tokens 560
+15:43:45 gemma.mtmd-batch 1024
+15:43:45 gemma.temp 1.0
+15:43:45 gemma.top-k 64
+15:43:45 gemma.top-p 0.95
+15:43:45 gemma.seed 7
+15:43:46 capture screen 1920 1080 frame 1920 1080 bytes 501498 sent 1536 864 bytes 450937 raw 1920 1080
+15:43:46 windows <<
+ 944 0 1000 1000 0,1020,1920,1080
+Clarify lighthouse meaning - Google Chrome 27 7 924 709 13,29,1361,998
+Task Manager 57 705 918 1112 1353,62,2136,991
+Settings 1 0 916 683 0,1,1312,989
+Settings 5 0 929 693 0,5,1330,1003
+ 0 10 4 1000 19,0,1920,4
+Program Manager 0 0 1000 1000 0,0,1920,1080<<
+15:43:46 prompt <<
+<bos><|turn>system
+You see one full desktop screenshot. Answer with one JSON object and no other text. see quotes the readable sentences and the numbers. taskbar lists every bottom-edge icon from left to right, each with name and box_2d. windows lists each open window with name and box_2d. box_2d is y_min, x_min, y_max, x_max, integers 0 to 1000, top left origin.<turn|>
+<|turn>user
+<__media__>
+Describe the whole desktop. Quote the chat words. Name each taskbar icon from left to right.<turn|>
+<|turn>model
+<<
+15:43:50 ready pid 5412
+15:44:07 seconds 16.538
+15:44:07 log <<
+cuda[0] NVIDIA GeForce GTX 1060 6GB | free 5197 MiB / total 6143 MiB
+load_hparams: image_min_pixels:   1290240 (custom value)
+load_hparams: image_max_pixels:   1290240 (custom value)
+resident load 2646 ms
+clip_encode: copying image 1/1 to input buffer (nx=1488, ny=816)
+image slice encoded in 1769 ms
+decoding image batch 1/2, n_tokens_batch = 512
+image decoded (batch 1/2) in 83 ms
+decoding image batch 2/2, n_tokens_batch = 15
+image decoded (batch 2/2) in 341 ms
+resident generate 16458 ms<<
+15:44:07 gemma <<
+```json
+{
+  "desktop_description": "The desktop features a web application interface, likely ChatGPT, in a dark theme. The main window displays a chat interface with the title \"ChatGPT\" and a message from the system asking for clarification: \"Could you clarify what you mean by \"lighthouseighthouse\"?\". There are navigation options on the left sidebar including \"New chat\", \"Scheduled\", \"Library\", \"Plugins\", and \"Explore\". Below that, there are sections for \"Projects\" and \"Recents\". A search bar is visible at the bottom.",
+  "chat_words": [
+    "ChatGPT",
+    "new chat",
+    "Clarify lighthouse meaning",
+    "Could you clarify what you mean by \"lighthouseighthouse\"?",
+    "ChatGPT can make mistakes. Check important info.",
+    "Ask ChatGPT",
+    "Medium"
+  ],
+  "taskbar_icons": [
+    {"name": "Search", "box_2d": [946, 13, 995, 184]},
+    {"name": "Browser Icon", "box_2d": [946, 186, 995, 237]},
+    {"name": "Other Icon 1", "box_2d": [946, 238, 995, 289]},
+    {"name": "Other Icon 2", "box_2d": [946, 290, 995, 342]},
+    {"name": "Other Icon 3", "box_2d": [946, 343, 995, 394]},
+    {"name": "System Tray Icon 1", "box_2d": [946, 395, 995, 446]},
+    {"name": "System Tray Icon 2", "box_2d": [946, 447, 995, 498]},
+    {"name": "System Tray Icon 3", "box_2d": [946, 499, 995, 549]}
+  ]
+}
+```<<
+15:44:07 processes after
+15:44:07 5412 parent 4836 ws_mb 2,082.4 C:\Users\px-wjt\Downloads\Jarvis\Trident\gemma-brain.exe --resident gemma_run.txt
+5424 parent 4836 ws_mb 77.0 powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'gemma-brain|llama' -or ($_.CommandLine -and $_.CommandLine -match 'gemma-brain|llama-server|llama-cli') } | ForEach-Object { '{0} parent {1} ws_mb {2:N1} {3}' -f $_.ProcessId, $_.ParentProcessId, ($_.WorkingSetSize/1MB), $_.CommandLine }"
+15:44:09 dedicated usage 214,511,616 pid_1512_luid_0x00000000_0x00009007_phys_0
+dedicated usage 5,187,067,904 pid_5412_luid_0x00000000_0x00009007_phys_0
+dedicated usage 71,647,232 pid_5592_luid_0x00000000_0x00009007_phys_0
+shared usage 226,492,416 pid_5412_luid_0x00000000_0x00009007_phys_0
+15:44:09 6144 MiB, 5322 MiB, 708 MiB
+15:44:09 check taskbar window y 944 1000 x 0 1000. revision 11 taskbar boxes y 946 995.
+15:44:09 check chrome window y 27 924 x 7 709 pixels 13,29,1361,998.
+15:44:09 check 280-quote copied Could you clarify what you mean by "lighthouselighthouse"?
+15:44:09 check revision 11 copied Could you clarify what you mean by "lighthouseighthouse"?

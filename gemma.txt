@@ -14,11 +14,11 @@
 # gemma.flash-attn off and f16 KV.
 gemma.model gemma.gguf
 gemma.mmproj gemma-mmproj.gguf
-# Native context_length is 131072. An image turn at ctx 65536 peaked near 5672 MiB of 6144.
-# Gemma 4 image tokens use non-causal attention, so one ubatch has to hold them.
-gemma.ctx 32768
-gemma.batch 2048
-gemma.ubatch 2048
+# Native context_length is 131072. ctx 65536 with image tokens 560 used 4946 MiB dedicated and 216 MiB shared on the 6144 MiB card.
+# Gemma 4 E2B image attention is causal in this llama.cpp, so ubatch 512 decodes a 560-token image in two batches.
+gemma.ctx 65536
+gemma.batch 512
+gemma.ubatch 512
 # Room for an open thought channel plus the answer. A short reply still stops on EOS.
 gemma.n-predict 2048
 gemma.gpu-layers 999
@@ -35,9 +35,9 @@ gemma.flash-attn off
 gemma.warmup on
 gemma.cache-type-k f16
 gemma.cache-type-v f16
-# Gemma 4 budgets are 70, 140, 280, 560, and 1120. 1120 is the small-text and OCR budget.
-gemma.image-min-tokens 1120
-gemma.image-max-tokens 1120
+# Gemma 4 budgets are 70, 140, 280, 560, and 1120. 1120 upscaled 1920x1080 to 2160x1248 and encoded in about 81 seconds. 560 encodes at 1488x816 in about 1.7 seconds.
+gemma.image-min-tokens 560
+gemma.image-max-tokens 560
 gemma.mmproj-gpu on
 gemma.mmproj-timings on
 gemma.n-keep 0
@@ -86,7 +86,7 @@ gemma.no-host off
 gemma.show-timings on
 gemma.no-perf off
 gemma.sampler-no-perf off
-gemma.mtmd-batch 2048
+gemma.mtmd-batch 1024
 gemma.verbosity 2
 gemma.n-prev 64
 gemma.n-probs 0
