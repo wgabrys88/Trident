@@ -1,8 +1,6 @@
 command python node.py --prove
-tip c234f4dd4c0b04fcffed0e34c5168e399fc9352c
+tip 9968274e2f9fd07e4f4b49a7fd308c6b85fad77a
 endgame-ai 5ebd9e4d2308fdc07da6f8074040cb26061b32a6
-endgame-vision-chat 6a4604c1572406bbd6a5255ebc92925900aa78e3
-screenshot-vision 260402cf47e696eeccbc3763e7db9e7accb4ac41
 telegram-control 38066703e4f3a83a0743b9f7012d97ecfd842ed4
 map
 gemma.py text+image inference only
@@ -14,8 +12,6 @@ hear.py ear capture where a microphone exists
 assistant.py voice organism, turns through the agent
 run.py voice start and stop, peer from TRIDENT_PEERS or --url
 endgame-ai/ desktop organism, module endgame, not edited on this seat
-endgame-vision-chat/ eye.shot via vision_frame.grab
-screenshot-vision/ eye.ask via its ask CLI
 telegram-control/ telegram capability, not started unless a card asks
 caps
 cpu 8
@@ -25,15 +21,12 @@ brain gemma
 brain qwen
 cursor yes
 endgame yes
-screenshot yes
-vision yes
 telegram yes
 chrome yes
 playback yes
 mic no
 scheduler start A start B end B end A start C end C
-eye.shot bytes 499145
+gemma resident user turn
+The sky is blue.
 hello 321ee011cb5f496a8eb72a58ea1dc25e
 room post 321ee011cb5f496a8eb72a58ea1dc25e skeleton
-command gemma resident user turn
-The sun is shining brightly today.
