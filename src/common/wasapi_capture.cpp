@@ -4,6 +4,7 @@
 #include <audioclientactivationparams.h>
 #include <ksmedia.h>
 #include <mmdeviceapi.h>
+#include <mmreg.h>
 #include <propvarutil.h>
 #include <objbase.h>
 #include <cstdlib>
@@ -112,10 +113,24 @@ CaptureDevice CaptureDevice::open_loopback(const std::string& pid_text) {
     CaptureDevice out;
     out.impl = new Impl;
     out.impl->client = client;
-    if (FAILED(out.impl->client->GetMixFormat(&out.impl->mix))) fail("WASAPI mix format failed");
-    out.native_rate = (int)out.impl->mix->nSamplesPerSec;
+    WAVEFORMATEX* format = (WAVEFORMATEX*)CoTaskMemAlloc(sizeof(WAVEFORMATEX));
+    if (!format) fail("WASAPI initialize failed");
+    format->wFormatTag = WAVE_FORMAT_PCM;
+    format->nChannels = 2;
+    format->nSamplesPerSec = 44100;
+    format->wBitsPerSample = 16;
+    format->nBlockAlign = 4;
+    format->nAvgBytesPerSec = 44100 * 4;
+    format->cbSize = 0;
+    out.impl->mix = format;
+    out.native_rate = 44100;
     if (FAILED(out.impl->client->Initialize(
-            AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, 10000000, 0, out.impl->mix, nullptr)))
+            AUDCLNT_SHAREMODE_SHARED,
+            AUDCLNT_STREAMFLAGS_LOOPBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
+            0,
+            0,
+            format,
+            nullptr)))
         fail("WASAPI initialize failed");
     if (FAILED(out.impl->client->GetService(__uuidof(IAudioCaptureClient), (void**)&out.impl->capture)))
         fail("WASAPI capture client failed");
