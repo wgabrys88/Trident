@@ -232,20 +232,24 @@ def claim_one(root=None):
     if not base.is_dir():
         return None
     for path in sorted(base.glob("*.card")):
-        held = path.with_suffix(".held")
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            continue
+        held = path.with_name(path.name + "." + str(os.getpid()) + "." + str(threading.get_ident()))
         try:
             os.replace(path, held)
         except OSError:
             continue
-        try:
-            raw = held.read_text(encoding="utf-8")
-        except OSError as exc:
-            die("cannot read " + held.name + ": " + str(exc))
+        if not held.is_file():
+            continue
         try:
             held.unlink()
+        except FileNotFoundError:
+            continue
         except OSError as exc:
             die("cannot remove " + held.name + ": " + str(exc))
-        return parse_card(raw)
+        return parse_card(raw.decode("utf-8"))
     return None
 
 
@@ -455,19 +459,44 @@ def adapter_names():
     return cuda_name(), vulkan_name()
 
 
+def capture_name(name):
+    text = " ".join((name or "").casefold().split())
+    for skip in (
+        "cable",
+        "what u hear",
+        "digital-in",
+        "digital in",
+        "sound mapper",
+        "primary sound capture",
+        "line-in",
+        "line in",
+        "vb-audio",
+        "stereo mix",
+    ):
+        if skip in text:
+            return False
+    return bool(text)
+
+
 def mic_present():
     try:
         import sounddevice as sd
     except ImportError:
         return False
-    devices = sd.query_devices()
-    for info in devices:
+    wasapi = None
+    for index, api in enumerate(sd.query_hostapis()):
+        if str(api.get("name") or "").casefold() == "windows wasapi":
+            wasapi = index
+            break
+    if wasapi is None:
+        die("wasapi missing")
+    for info in sd.query_devices():
+        if int(info.get("hostapi") or -1) != wasapi:
+            continue
         if int(info.get("max_input_channels") or 0) < 1:
             continue
-        name = str(info.get("name") or "").lower()
-        if "cable" in name:
-            continue
-        return True
+        if capture_name(str(info.get("name") or "")):
+            return True
     return False
 
 
@@ -1228,6 +1257,8 @@ def serve_conn(conn):
             data += chunk
             if len(data) > 32_000_000:
                 die("card too large")
+        if not data:
+            return
         card = parse_card(data.decode("utf-8"))
         try:
             body, image = execute(card, 600)
