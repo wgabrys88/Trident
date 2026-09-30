@@ -3,7 +3,7 @@
 # A value ending in << runs until a line that is only <<. An empty value is empty.
 # install.vulkan_sdk empty uses the newest Vulkan SDK. install.msvc_arch empty detects this CPU.
 # Build directories are temporary and removed after their runtime files are staged in the repository root.
-# install.build_gemma stays short because the Vulkan shader step fails on a long path.
+# install.build_gemma and install.build_mouth stay short because the Vulkan shader step fails on a long path.
 # Clearing install.llama_rev tracks llama.cpp master. Clearing install.nemo_rev keeps the cloned revision.
 # install.ear_vcpkg_root and install.ear_vcpkg_triplet empty skip vcpkg.
 # The cond-seconds values are the reference length baked into that voice.
@@ -19,7 +19,7 @@ install.utf8_manifest utf8.manifest
 install.src_ggml .install/src/ggml
 install.src_llama .install/src/llama.cpp
 install.src_nemo .install/src/nemo-speech
-install.build_mouth .install/build/mouth
+install.build_mouth C:\tmouth
 install.build_gemma C:\tgemma
 install.build_ear .install/build/ear
 install.cache .install/cache

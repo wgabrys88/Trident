@@ -145,6 +145,13 @@ def stamps() -> Path:
 
 
 def run(cmd, **kw):
+    env = os.environ.copy() if kw.get("env") is None else dict(kw["env"])
+    # Git on Windows still stops at MAX_PATH unless core.longpaths is set.
+    count = int(env.get("GIT_CONFIG_COUNT", "0") or "0")
+    env["GIT_CONFIG_COUNT"] = str(count + 1)
+    env[f"GIT_CONFIG_KEY_{count}"] = "core.longpaths"
+    env[f"GIT_CONFIG_VALUE_{count}"] = "true"
+    kw["env"] = env
     subprocess.run(cmd, check=True, **kw)
 
 
