@@ -1,0 +1,3 @@
+call.contact
+call.mouth CABLE Input (VB-Audio Virtual Cable)
+call.telegram-mic CABLE Output (VB-Audio Virtual Cable)

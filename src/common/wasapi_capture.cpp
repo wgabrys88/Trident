@@ -1,10 +1,13 @@
 #include "wasapi_capture.h"
 #include "config.h"
-#include <filesystem>
 #include <audioclient.h>
+#include <audioclientactivationparams.h>
 #include <ksmedia.h>
 #include <mmdeviceapi.h>
 #include <propvarutil.h>
+#include <objbase.h>
+#include <cstdlib>
+#include <filesystem>
 #include <vector>
 
 namespace trident {
@@ -34,7 +37,95 @@ static std::string friendly_name(IMMDevice* device) {
     return name;
 }
 
+CaptureDevice CaptureDevice::open_loopback(const std::string& pid_text) {
+    char* end = nullptr;
+    unsigned long pid = std::strtoul(pid_text.c_str(), &end, 10);
+    if (end == pid_text.c_str() || *end != 0 || pid == 0) fail("loopback pid");
+    HANDLE proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!proc) fail("loopback process absent");
+    CloseHandle(proc);
+    if (FAILED(CoInitializeEx(nullptr, COINIT_MULTITHREADED))) fail("WASAPI init failed");
+    struct Handler : IActivateAudioInterfaceCompletionHandler, IAgileObject {
+        LONG refs = 1;
+        HANDLE event = nullptr;
+        HRESULT hr = E_FAIL;
+        IAudioClient* client = nullptr;
+        Handler() { event = CreateEventW(nullptr, TRUE, FALSE, nullptr); }
+        ~Handler() {
+            if (client) client->Release();
+            if (event) CloseHandle(event);
+        }
+        HRESULT STDMETHODCALLTYPE QueryInterface(REFIID id, void** out) override {
+            if (!out) return E_POINTER;
+            if (id == __uuidof(IUnknown) || id == __uuidof(IActivateAudioInterfaceCompletionHandler)) {
+                *out = static_cast<IActivateAudioInterfaceCompletionHandler*>(this);
+                AddRef();
+                return S_OK;
+            }
+            if (id == __uuidof(IAgileObject)) {
+                *out = static_cast<IAgileObject*>(this);
+                AddRef();
+                return S_OK;
+            }
+            *out = nullptr;
+            return E_NOINTERFACE;
+        }
+        ULONG STDMETHODCALLTYPE AddRef() override { return InterlockedIncrement(&refs); }
+        ULONG STDMETHODCALLTYPE Release() override {
+            ULONG n = InterlockedDecrement(&refs);
+            if (!n) delete this;
+            return n;
+        }
+        HRESULT STDMETHODCALLTYPE ActivateCompleted(IActivateAudioInterfaceAsyncOperation* op) override {
+            IUnknown* unk = nullptr;
+            HRESULT activated = E_FAIL;
+            hr = op->GetActivateResult(&activated, &unk);
+            if (SUCCEEDED(hr)) hr = activated;
+            if (SUCCEEDED(hr) && unk) hr = unk->QueryInterface(__uuidof(IAudioClient), (void**)&client);
+            if (unk) unk->Release();
+            SetEvent(event);
+            return S_OK;
+        }
+    };
+    Handler* handler = new Handler();
+    if (!handler->event) fail("loopback event");
+    AUDIOCLIENT_ACTIVATION_PARAMS params{};
+    params.ActivationType = AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK;
+    params.ProcessLoopbackParams.TargetProcessId = pid;
+    params.ProcessLoopbackParams.ProcessLoopbackMode = PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE;
+    PROPVARIANT activate;
+    PropVariantInit(&activate);
+    activate.vt = VT_BLOB;
+    activate.blob.cbSize = sizeof(params);
+    activate.blob.pBlobData = reinterpret_cast<BYTE*>(&params);
+    IActivateAudioInterfaceAsyncOperation* async_op = nullptr;
+    HRESULT hr = ActivateAudioInterfaceAsync(
+        VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, __uuidof(IAudioClient), &activate, handler, &async_op);
+    if (FAILED(hr)) fail("loopback activate failed");
+    if (WaitForSingleObject(handler->event, 15000) != WAIT_OBJECT_0) fail("loopback activate failed");
+    hr = handler->hr;
+    IAudioClient* client = handler->client;
+    handler->client = nullptr;
+    if (async_op) async_op->Release();
+    handler->Release();
+    if (FAILED(hr) || !client) fail("loopback activate failed");
+    CaptureDevice out;
+    out.impl = new Impl;
+    out.impl->client = client;
+    if (FAILED(out.impl->client->GetMixFormat(&out.impl->mix))) fail("WASAPI mix format failed");
+    out.native_rate = (int)out.impl->mix->nSamplesPerSec;
+    if (FAILED(out.impl->client->Initialize(
+            AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, 10000000, 0, out.impl->mix, nullptr)))
+        fail("WASAPI initialize failed");
+    if (FAILED(out.impl->client->GetService(__uuidof(IAudioCaptureClient), (void**)&out.impl->capture)))
+        fail("WASAPI capture client failed");
+    if (FAILED(out.impl->client->Start())) fail("WASAPI start failed");
+    return out;
+}
+
 CaptureDevice CaptureDevice::open(const std::string& device) {
+    const std::string loop = "loopback:";
+    if (device.rfind(loop, 0) == 0) return open_loopback(device.substr(loop.size()));
     CaptureDevice out;
     out.impl = new Impl;
     if (FAILED(CoInitializeEx(nullptr, COINIT_MULTITHREADED))) fail("WASAPI init failed");

@@ -18,5 +18,6 @@ public:
 private:
     struct Impl;
     Impl* impl = nullptr;
+    static CaptureDevice open_loopback(const std::string& pid_text);
 };
 }
