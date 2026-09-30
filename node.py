@@ -22,7 +22,6 @@ OPS = {
     "mouth": ("say",),
     "ear": ("listen",),
     "room": ("post", "task"),
-    "eye": ("shot", "ask"),
     "endgame": ("run",),
     "telegram": ("run",),
     "tool": ("call",),
@@ -49,8 +48,6 @@ MAP = (
     "assistant.py voice organism, turns through the agent\n"
     "run.py voice start and stop, peer from TRIDENT_PEERS or --url\n"
     "endgame-ai/ desktop organism, module endgame, not edited on this seat\n"
-    "endgame-vision-chat/ eye.shot via vision_frame.grab\n"
-    "screenshot-vision/ eye.ask via its ask CLI\n"
     "telegram-control/ telegram capability, not started unless a card asks\n"
 )
 Card = namedtuple(
@@ -282,8 +279,6 @@ def needs_of(card):
         ("room", "post"): ("room",),
         ("room", "task"): ("room",),
         ("node", "hello"): ("node",),
-        ("eye", "shot"): ("screenshot",),
-        ("eye", "ask"): ("gpu", "weights:internvl"),
         ("endgame", "run"): ("desktop",),
         ("telegram", "run"): ("desktop",),
         ("tool", "call"): ("cpu",),
@@ -482,7 +477,7 @@ def mic_present():
     try:
         import sounddevice as sd
     except ImportError:
-        return False
+        die("sounddevice missing")
     wasapi = None
     for index, api in enumerate(sd.query_hostapis()):
         if str(api.get("name") or "").casefold() == "windows wasapi":
@@ -541,8 +536,6 @@ def caps_text():
         lines.append("brain qwen")
     lines.append("cursor " + yes(bool(shutil.which("agent"))))
     lines.append("endgame " + yes(clone_file("endgame-ai", "endgame.py")))
-    lines.append("screenshot " + yes(clone_file("endgame-vision-chat", "vision_frame.py")))
-    lines.append("vision " + yes(clone_file("screenshot-vision", "ask.py")))
     lines.append("telegram " + yes(clone_file("telegram-control", "telegram_pc_remote.py")))
     lines.append("chrome " + yes(chrome_present()))
     lines.append("playback " + yes((ROOT / "chatterbox.exe").is_file()))
@@ -566,11 +559,6 @@ def real_stop(model):
     if model == "qwen":
         import qwen
         qwen.stop_resident()
-        return
-    if model == "internvl":
-        exe = ROOT / "screenshot-vision" / "main.py"
-        if exe.is_file():
-            subprocess.run([sys.executable, str(exe), "stop"], cwd=str(exe.parent), shell=False)
         return
     die("unknown weights " + model)
 
@@ -1137,37 +1125,6 @@ def handle_room(card):
     return card.body, None
 
 
-def handle_shot(card):
-    path = str(ROOT / "endgame-vision-chat")
-    if path not in sys.path:
-        sys.path.insert(0, path)
-    import vision_frame
-    frame = vision_frame.grab(goal=card.body or "", crop_title=card.room or None)
-    return frame.user_prompt, frame.full_b64()
-
-
-def handle_ask(card):
-    script = ROOT / "screenshot-vision" / "main.py"
-    if not script.is_file():
-        die("vision missing")
-    use_weights("internvl")
-    mode = (card.agent or "describe").strip()
-    argv = [sys.executable, str(script), "ask", "--mode", mode]
-    if card.body.strip() and mode == "find":
-        argv.extend(["--query", card.body.strip()])
-    elif card.body.strip():
-        argv.extend(["--prompt", card.body.strip()])
-    completed = subprocess.run(argv, cwd=str(script.parent), shell=False, capture_output=True, text=True, encoding="utf-8", errors="replace")
-    LOADED["model"] = ""
-    if completed.returncode != 0:
-        err = (completed.stderr or completed.stdout or "").strip()
-        die(err or "vision failed")
-    text = (completed.stdout or "").strip()
-    if not text:
-        die("vision returned empty")
-    return text, None
-
-
 def handle_endgame(card):
     goal = (card.body or "").strip()
     if not goal:
@@ -1222,8 +1179,6 @@ HANDLERS = {
     ("ear", "listen"): handle_ear,
     ("room", "post"): handle_room,
     ("room", "task"): handle_room,
-    ("eye", "shot"): handle_shot,
-    ("eye", "ask"): handle_ask,
     ("endgame", "run"): handle_endgame,
     ("telegram", "run"): handle_telegram,
     ("tool", "call"): handle_tool,
@@ -1383,10 +1338,9 @@ def prove():
         die("fabricated done remains")
     pins = {
         "endgame-ai": "5ebd9e4d2308fdc07da6f8074040cb26061b32a6",
-        "endgame-vision-chat": "6a4604c1572406bbd6a5255ebc92925900aa78e3",
     }
     clone_shas = []
-    for name in ("endgame-ai", "endgame-vision-chat", "screenshot-vision", "telegram-control"):
+    for name in ("endgame-ai", "telegram-control"):
         got = subprocess.check_output(["git", "-C", str(ROOT / name), "rev-parse", "HEAD"], text=True).strip()
         clone_shas.append(name + " " + got)
         if name in pins and got != pins[name]:
@@ -1489,14 +1443,15 @@ def prove():
     text = caps_text()
     if "mic yes" in text:
         die("claimed a microphone\n" + text)
-    for needle in ("endgame yes", "screenshot yes", "vision yes", "telegram yes", "playback yes", "brain gemma"):
+    for needle in ("endgame yes", "telegram yes", "playback yes", "brain gemma"):
         if needle not in text:
             die("caps missing " + needle + "\n" + text)
     print("prove: caps\n" + text, file=sys.stderr, flush=True)
-    body, image = handle_shot(make_card("eye", "shot", "prove the screen"))
-    if not image or len(base64.b64decode(image)) < 32:
-        die("eye.shot returned no image")
-    print("prove: eye.shot bytes " + str(len(base64.b64decode(image))), file=sys.stderr, flush=True)
+    raw = local_infer("gemma", "<bos><|turn>user\nSay one short sentence.<turn|>\n<|turn>model\n", "")
+    sentence = answer_text(raw)
+    if not sentence:
+        die("gemma returned empty")
+    print("prove: gemma " + sentence, file=sys.stderr, flush=True)
     room_add("floor", "post", node_id(), "skeleton", root)
     log_text = (root / "node.room" / "floor.log").read_text(encoding="utf-8")
     if "skeleton" not in log_text:
@@ -1536,7 +1491,8 @@ def prove():
     proof.append("caps")
     proof.append(text.rstrip())
     proof.append("scheduler " + " ".join(order))
-    proof.append("eye.shot bytes " + str(len(base64.b64decode(image))))
+    proof.append("gemma resident user turn")
+    proof.append(sentence)
     proof.append("hello " + reply.frm)
     proof.append("room " + log_text.strip())
     (ROOT / "node.proof.txt").write_text("\n".join(proof) + "\n", encoding="utf-8")
