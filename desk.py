@@ -510,6 +510,8 @@ def ask_body(window, url, text, browser):
             x, y = vision.locate("the text input where a message is typed", window)
         except RuntimeError:
             die("input unwitnessed")
+        except FileNotFoundError as exc:
+            die(str(exc))
         click_xy(x, y)
         edit = poll(20, lambda: first_write(window))
         if edit is None:
