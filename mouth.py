@@ -48,9 +48,14 @@ _kernel32.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
 _kernel32.TerminateProcess.restype = ctypes.c_int
 
 
+_PL = "ąćęłńóśźżĄĆĘŁŃÓŚŹŻ"
+
+
 def die(message):
-    print(message, file=sys.stderr)
-    raise SystemExit(2)
+    print(message, file=sys.stderr, flush=True)
+    err = SystemExit(2)
+    err.message = message
+    raise err
 
 
 def physical_lines(text):
@@ -812,6 +817,51 @@ def speak_chunks(synthesize_one, chunks, play_one):
                 return
             ready = synthesize_one(sentence)
             play_future.result()
+
+
+def language_of(text):
+    for ch in text or "":
+        if ch in _PL:
+            return "pl"
+    return "en"
+
+
+def pack_words(text, limit):
+    words = (text or "").split()
+    if not words:
+        die("empty text")
+    chunks = []
+    buf = []
+    for word in words:
+        if buf and len(buf) + 1 > limit:
+            chunks.append(" ".join(buf))
+            buf = []
+        buf.append(word)
+    if buf:
+        chunks.append(" ".join(buf))
+    return chunks
+
+
+def say(text, lang, fast="nano"):
+    spoken = " ".join((text or "").split())
+    if not spoken:
+        die("empty text")
+    tag = (lang or "").strip().split("-")[0].lower()
+    if not tag:
+        die("mouth language")
+    if tag == "en":
+        if fast not in ("nano", "turbo"):
+            die("fast mouth is nano or turbo")
+        model = fast
+    elif tag == "pl":
+        model = "v3"
+    else:
+        die("mouth has no voice for " + tag)
+    check_voice(model, tag)
+    limit = 65 if tag == "en" else 55
+    pieces = [(chunk, model, tag) for chunk in pack_words(spoken, limit)]
+    print("mouth out: default", file=sys.stderr, flush=True)
+    speak_pieces(pieces, play_wav)
 
 
 def main():

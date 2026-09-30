@@ -1,23 +1,23 @@
 """Iris voice.
 
 python run.py start [--url HOST:PORT]
-    Continuous microphone, resident VAD, brain, mouth.
-    HOST:PORT is one Trident node. No URL uses the brain on this PC.
-    TRIDENT_PEERS supplies HOST:PORT when --url is omitted.
+    Start the node on port 8765 when it is down, then the assistant.
+    The microphone stays closed.
+    HOST:PORT is one peer. TRIDENT_PEERS supplies it when --url is omitted.
 
 python run.py start inject [PATH]
-    Simulated ASR. PATH is one turn per line, or blocks split by a line
+    Simulated turns. PATH is one turn per line, or blocks split by a line
     that is only ---. No PATH reads stdin. No microphone.
 
 python run.py stop
-    Stop this organism and the mouth. Do not contact the brain.
+    Stop this organism and the mouth. Leave port 8765 listening.
 
-Does not bind, stop, or restart port 8765.
 Spoken shutdown is a Gemma stop tool call, not a keyword.
 """
 
 import ctypes
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -243,16 +243,50 @@ def cmd_stop():
         raise SystemExit(assistant_code or mouth_code)
 
 
+def port_open():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(0.4)
+    try:
+        sock.connect(("127.0.0.1", 8765))
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
+def ensure_node():
+    import node
+
+    py = venv_python()
+    if not port_open():
+        subprocess.Popen(
+            [py, "-u", str(ROOT / "node.py")],
+            cwd=str(ROOT),
+            shell=False,
+        )
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and not port_open():
+            time.sleep(0.05)
+        if not port_open():
+            die("node did not start")
+    reply = node.transact("127.0.0.1:8765", node.make_card("node", "hello", "hi"), 10)
+    for line in ("capture closed", "op mouth.say", "op ear.listen"):
+        if line not in reply.body.splitlines():
+            die("node is not this protocol")
+
+
 def cmd_start(url, inject):
     if already_up():
         return
+    ensure_node()
     py = venv_python()
     if url:
         print("iris: brain " + url, file=sys.stderr, flush=True)
     else:
         print("iris: brain local", file=sys.stderr, flush=True)
     if inject is None:
-        print("iris: live mic", file=sys.stderr, flush=True)
+        print("iris: capture closed", file=sys.stderr, flush=True)
     else:
         print("iris: inject", file=sys.stderr, flush=True)
     before = pid_stamp("assistant.pid")

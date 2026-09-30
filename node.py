@@ -28,7 +28,7 @@ OPS = {
 }
 PROFILES = {
     "voice": {
-        "memory": "voice.memory.txt",
+        "memory": "gemma.memory.txt",
         "tools": ("remember", "place", "next", "stop"),
         "brain": "gemma",
     },
@@ -43,8 +43,8 @@ MAP = (
     "gemma.txt the only gemma weight and sampling config\n"
     "qwen.py qwen text weights\n"
     "node.py cards, queues, scheduler, agent, tools, caps, room, peers\n"
-    "mouth.py playback\n"
-    "hear.py ear capture where a microphone exists\n"
+    "mouth.py the only playback\n"
+    "hear.py wav transcript, capture stays closed\n"
     "assistant.py voice organism, turns through the agent\n"
     "run.py voice start and stop, peer from TRIDENT_PEERS or --url\n"
     "endgame-ai/ desktop organism, module endgame, not edited on this seat\n"
@@ -473,7 +473,7 @@ def capture_name(name):
     return bool(text)
 
 
-def mic_present():
+def mic_lines():
     try:
         import sounddevice as sd
     except ImportError:
@@ -485,14 +485,19 @@ def mic_present():
             break
     if wasapi is None:
         die("wasapi missing")
-    for info in sd.query_devices():
+    found = []
+    for index, info in enumerate(sd.query_devices()):
         if int(info.get("hostapi") or -1) != wasapi:
             continue
         if int(info.get("max_input_channels") or 0) < 1:
             continue
-        if capture_name(str(info.get("name") or "")):
-            return True
-    return False
+        name = " ".join(str(info.get("name") or "").split())
+        if capture_name(name):
+            found.append("mic " + str(index) + " " + name)
+    if not found:
+        found.append("mic no")
+    found.append("capture closed")
+    return found
 
 
 def chrome_present():
@@ -539,7 +544,10 @@ def caps_text():
     lines.append("telegram " + yes(clone_file("telegram-control", "telegram_pc_remote.py")))
     lines.append("chrome " + yes(chrome_present()))
     lines.append("playback " + yes((ROOT / "chatterbox.exe").is_file()))
-    lines.append("mic " + yes(mic_present()))
+    lines.extend(mic_lines())
+    for module, names in OPS.items():
+        for op in names:
+            lines.append("op " + module + "." + op)
     CAPS["text"] = "\n".join(lines) + "\n"
     return CAPS["text"]
 
@@ -1073,7 +1081,10 @@ def handle_agent(card):
 
 
 def handle_mouth(card):
-    text = " ".join((card.body or "").split())
+    raw = card.body or ""
+    if "\x00" in raw:
+        die("mouth is text")
+    text = " ".join(raw.split())
     if not text:
         die("empty say")
     if card.to not in ("*", node_id()) and card.to in PEERS:
@@ -1087,37 +1098,18 @@ def handle_mouth(card):
         reply = transact(other["addr"], sent, 180)
         return reply.body, None
     import mouth
-    mouth.speak_pieces([(text, "nano", "en")], mouth.play_wav)
-    return text, None
+    mouth.say(text, mouth.language_of(text))
+    return "spoken", None
 
 
 def handle_ear(card):
-    body = (card.body or "").strip()
-    if not body:
-        die("empty listen")
-    if "\x00" in body:
+    raw = card.body or ""
+    if "\x00" in raw:
         die("ear is text")
     if card.to not in ("*", node_id()) and card.to in PEERS:
         reply = transact(PEERS[card.to]["addr"], card._replace(frm=node_id()), 30)
         return reply.body, None
-    if not cap_has("mic", "yes"):
-        other = peer_with("mic", "yes")
-        if not other or not other["addr"]:
-            die("ear missing")
-        sent = card._replace(frm=node_id(), to=other["id"])
-        reply = transact(other["addr"], sent, 30)
-        return reply.body, None
-    if body == "stop":
-        code = subprocess.run([sys.executable, str(ROOT / "run.py"), "stop"], cwd=str(ROOT), shell=False).returncode
-        if code:
-            die("ear stop failed")
-        return "stop", None
-    if body == "start":
-        if not (ROOT / "assistant.pid").is_file() and not (ROOT / "iris.pid").is_file():
-            die("ear down")
-        return "listening", None
-    room_add(card.room or "floor", "heard", card.frm, body)
-    return body, None
+    die("ear closed")
 
 
 def handle_room(card):
@@ -1309,6 +1301,22 @@ def place_line(found):
     return "brain " + found.brain + " " + found.where + " cuda " + (found.cuda or "none") + " vulkan " + (found.vulkan or "none")
 
 
+def assert_mic(text):
+    lines = text.splitlines()
+    if "mic yes" in lines:
+        die("claimed a microphone\n" + text)
+    if "capture closed" not in lines:
+        die("capture not closed\n" + text)
+    endpoints = [line for line in lines if line.startswith("mic ") and line != "mic no"]
+    if ("mic no" in lines) and endpoints:
+        die("mic both present and absent\n" + text)
+    if "mic no" not in lines and not endpoints:
+        die("mic missing\n" + text)
+    for needle in ("op mouth.say", "op ear.listen"):
+        if needle not in lines:
+            die("caps missing " + needle + "\n" + text)
+
+
 def prove_expect(label, fn, needle):
     try:
         fn()
@@ -1328,9 +1336,17 @@ def prove():
     assistant_text = (ROOT / "assistant.py").read_text(encoding="utf-8")
     if "192.168.16.31" in run_text or "TRIDENT_NVIDIA_URL" in run_text or "TRIDENT_NVIDIA_URL" in assistant_text:
         die("hard-coded peer url remains")
-    for needle in ("nvidia_client", "import seat", "drain_seat", "tool_turn", "gemma.place"):
+    if "live mic" in run_text:
+        die("live mic remains")
+    hear_src = (ROOT / "hear.py").read_text(encoding="utf-8")
+    for needle in ("nvidia_client", "import seat", "drain_seat", "tool_turn", "gemma.place", "start_vad", "lid.176", "voice.memory"):
         if needle in assistant_text:
             die("assistant still has " + needle)
+    if "sd.rec" in hear_src or "start_vad" in hear_src:
+        die("hear opens a microphone")
+    for profile in PROFILES.values():
+        if profile["memory"] != "gemma.memory.txt":
+            die("duplicate voice memory")
     gemma_src = (ROOT / "gemma.py").read_text(encoding="utf-8")
     node_src = (ROOT / "node.py").read_text(encoding="utf-8")
     fabricated = "or " + '"' + "done" + '"'
@@ -1353,6 +1369,12 @@ def prove():
         right.pop(key, None)
     if left != right:
         die("brain config mismatch")
+    import mouth
+    if mouth.language_of("zażółć gęślą jaźń") != "pl" or mouth.language_of("Iris can hear") != "en":
+        die("mouth language")
+    prove_expect("empty say", lambda: mouth.say("  ", "en"), "empty text")
+    prove_expect("missing lang", lambda: mouth.say("hi", ""), "mouth language")
+    print("prove: mouth language", file=sys.stderr, flush=True)
     print("prove: brain config", file=sys.stderr, flush=True)
     prove_expect("missing image", lambda: file_b64(ROOT / "no-such-image.png"), "missing image")
     prove_expect("blank image", lambda: handle_brain(make_card("brain", "infer", "see " + MEDIA, image="")), "missing image")
@@ -1441,8 +1463,7 @@ def prove():
     if hits:
         die("peer miss used the local brain")
     text = caps_text()
-    if "mic yes" in text:
-        die("claimed a microphone\n" + text)
+    assert_mic(text)
     for needle in ("endgame yes", "telegram yes", "playback yes", "brain gemma"):
         if needle not in text:
             die("caps missing " + needle + "\n" + text)
@@ -1474,9 +1495,22 @@ def prove():
         if not reachable("127.0.0.1:" + str(PORT)):
             die("node did not listen")
         reply = transact("127.0.0.1:" + str(PORT), make_card("node", "hello", "hi"), 5)
-        if "mic no" not in reply.body:
-            die("hello claimed a microphone")
+        assert_mic(reply.body)
         print("prove: hello " + reply.frm, file=sys.stderr, flush=True)
+        prove_expect(
+            "ear closed",
+            lambda: transact("127.0.0.1:" + str(PORT), make_card("ear", "listen", ""), 10),
+            "ear closed",
+        )
+        gemma.stop_resident()
+        spoken = transact(
+            "127.0.0.1:" + str(PORT),
+            make_card("mouth", "say", "Iris is listening. The microphone stays closed."),
+            600,
+        )
+        if spoken.body.strip() != "spoken":
+            die("mouth missed")
+        print("prove: mouth spoken", file=sys.stderr, flush=True)
     finally:
         STOP.set()
         thread.join(timeout=3)
@@ -1494,6 +1528,8 @@ def prove():
     proof.append("gemma resident user turn")
     proof.append(sentence)
     proof.append("hello " + reply.frm)
+    proof.append("ear closed")
+    proof.append("mouth spoken")
     proof.append("room " + log_text.strip())
     (ROOT / "node.proof.txt").write_text("\n".join(proof) + "\n", encoding="utf-8")
     print("prove: wrote node.proof.txt", file=sys.stderr, flush=True)
