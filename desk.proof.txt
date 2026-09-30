@@ -1,0 +1,34 @@
+command desk_turn
+goal Look at the whole desktop. do is done.
+pid 5728
+pid_after 5728
+see The desktop shows a web browser with ChatGPT open, displaying a prompt about clarifying the meaning of "lighthouselighthouse", along with a task manager on the right side.
+act done
+shot 1536 864
+capture_s 0.490
+infer_s 4.007
+total_s 4.497
+card NVIDIA GeForce GTX 1060 6GB
+vram_mib 5327 6144
+encoded 1488 816
+tokens 527
+encode_ms 1777
+resident_generate_ms 3949
+log
+clip_encode: copying image 1/1 to input buffer (nx=1488, ny=816)
+clip_encode: output embedding shape [1536, 527, 1]
+image slice encoded in 1777 ms
+image decoded (batch 1/2) in 76 ms
+image decoded (batch 2/2) in 349 ms
+resident generate 3949 ms
+map
+gemma.py text+image inference only
+gemma.txt the only gemma weight and sampling config
+qwen.py qwen text weights
+node.py cards, queues, scheduler, agent, tools, caps, room, peers, whole-desktop gemma desk
+mouth.py the only playback
+hear.py wav transcript, capture stays closed
+assistant.py voice organism, turns through the agent
+run.py voice start and stop, peer from TRIDENT_PEERS or --url
+endgame-ai/ desktop organism, module endgame, not edited on this seat
+telegram-control/ telegram capability, not started unless a card asks

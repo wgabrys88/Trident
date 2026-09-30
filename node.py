@@ -45,7 +45,7 @@ MAP = (
     "gemma.py text+image inference only\n"
     "gemma.txt the only gemma weight and sampling config\n"
     "qwen.py qwen text weights\n"
-    "node.py cards, queues, scheduler, agent, tools, caps, room, peers, desk\n"
+    "node.py cards, queues, scheduler, agent, tools, caps, room, peers, whole-desktop gemma desk\n"
     "mouth.py the only playback\n"
     "hear.py wav transcript, capture stays closed\n"
     "assistant.py voice organism, turns through the agent\n"
@@ -628,12 +628,9 @@ DESK_TOKENS = 560
 DESK_SYSTEM = (
     "You see one full desktop screenshot. "
     "Answer with one JSON object and no other text. "
-    "The object always has see and do, in that order. "
-    "see quotes the readable window title and one sentence from the screen and is never empty. "
-    "do is click, type, key, wait, or done. "
-    "type has text. "
-    "Add key only when the user sets key, and only enter, backspace, ctrl-a, or ctrl-l. "
-    "click has box_2d as y_min, x_min, y_max, x_max, integers 0 to 1000, top left origin."
+    "The object has see and do, in that order. "
+    "see quotes the readable title-bar or address text and one sentence about the whole screen and is never empty. "
+    "do is click, type, key, wait, or done."
 )
 DESK_KEYS = {
     "enter": ((0x0D, 0), (0x0D, 2)),
@@ -711,9 +708,6 @@ def desk_prompt(goal):
 
 def desk_object(reply):
     raw = reply or ""
-    if "<channel|>" in raw:
-        raw = raw.split("<channel|>")[-1]
-    raw = raw.replace("```json", "").replace("```", "").strip()
     start = raw.find("{")
     if start < 0:
         die("desk unparsed " + clip(raw, 160))
@@ -723,34 +717,16 @@ def desk_object(reply):
         die("desk unparsed " + clip(raw, 160))
     if not isinstance(found, dict):
         die("desk unparsed " + clip(raw, 160))
-    do = found.get("do")
-    if isinstance(do, dict):
-        for key in ("text", "key", "box_2d"):
-            if key in do and key not in found:
-                found[key] = do[key]
-        name = ""
-        for key in ("type", "click", "key", "wait", "done"):
-            if key in do:
-                name = key
-                if isinstance(do[key], str) and key in ("type", "key"):
-                    found["text" if key == "type" else "key"] = do[key]
-                break
-        found["do"] = (name or str(do.get("action") or do.get("do") or "")).strip().lower()
-    elif isinstance(do, str):
-        found["do"] = do.strip().lower()
-    else:
-        found["do"] = ""
-        for key in ("type", "click", "key", "wait", "done"):
-            if key in found:
-                if key == "type" and isinstance(found[key], str):
-                    found["text"] = found[key]
-                found["do"] = key
-                break
-    if found["do"] not in DESK_ACTS:
-        die("desk action absent " + (found["do"] or "empty") + " " + clip(raw, 140))
     see = found.get("see")
+    do = found.get("do")
     if not isinstance(see, str) or not see.strip():
         die("desk see absent " + clip(raw, 140))
+    if not isinstance(do, str):
+        die("desk action absent " + clip(raw, 140))
+    name = do.strip().lower()
+    if name not in DESK_ACTS:
+        die("desk action absent " + (name or "empty") + " " + clip(raw, 140))
+    found["do"] = name
     return found
 
 
@@ -827,14 +803,24 @@ def desk_turn(goal):
         die("empty goal")
     desktop_lease()
     require_eye()
+    t0 = time.perf_counter()
     image, wide, high = desk_png()
+    t1 = time.perf_counter()
     reply = local_infer("gemma", desk_prompt(text), image)
+    t2 = time.perf_counter()
     obj = desk_object(reply)
     seen = " ".join(obj["see"].split())
     taken = DESK_ACTS[obj["do"]](obj)
     if not str(taken or "").strip():
         die("desk action absent")
-    return "see " + seen + "\nact " + taken + "\nshot " + str(wide) + " " + str(high)
+    return (
+        "see " + seen
+        + "\nact " + taken
+        + "\nshot " + str(wide) + " " + str(high)
+        + "\ncapture_s %.3f" % (t1 - t0)
+        + "\ninfer_s %.3f" % (t2 - t1)
+        + "\ntotal_s %.3f" % (t2 - t0)
+    )
 
 
 def transact(addr, card, timeout):
@@ -914,7 +900,7 @@ def tool_decls(names):
         "remember": ("Store one fact that stays after old turns are dropped.", (("line", "The fact, one short line.", True),)),
         "place": ("Report this machine: cuda, vulkan, engines, playback, microphone.", ()),
         "cursor": ("Start one local Cursor agent for a code change in this checkout.", (("task", "What to change, one short line.", True),)),
-        "desk": ("Look at the desktop with Gemma and do the one named action.", (("line", "The goal, one short line.", True),)),
+        "desk": ("Look at the whole desktop with one Gemma and do the one named action.", (("line", "The goal, one short line.", True),)),
         "next": ("Store one line of work for later. This does not run the work.", (("line", "The work, one short line.", True),)),
         "stop": ("Stop the local voice. Does not stop the brain.", (("line", "Waiting work to drop, or empty.", False),)),
     }
