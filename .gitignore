@@ -40,11 +40,6 @@
 !/qwen.py
 !/gemma.py
 !/mouth.py
-!/seat.py
-!/nvidia_client.py
-!/nvidia_worker.py
-!/nvidia_start.py
-!/nvidia_stop.py
 !/node.py
 !/node.proof.txt
 !/reference.wav
