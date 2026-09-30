@@ -25,6 +25,7 @@ OPS = {
     "eye": ("shot", "ask"),
     "endgame": ("run",),
     "telegram": ("run",),
+    "call": ("live", "hangup", "restore", "hold"),
     "tool": ("call",),
 }
 PROFILES = {
@@ -51,7 +52,10 @@ MAP = (
     "endgame-ai/ desktop organism, module endgame, not edited on this seat\n"
     "endgame-vision-chat/ eye.shot via vision_frame.grab\n"
     "screenshot-vision/ eye.ask via its ask CLI\n"
-    "telegram-control/ telegram capability, not started unless a card asks\n"
+    "telegram-control/ bot clone, not the desktop call\n"
+    "desk.py desktop telegram call and ask\n"
+    "vision.py locate when a window has no edit\n"
+    "cursor.py one cursor agent, fifo, exit code\n"
 )
 Card = namedtuple(
     "Card",
@@ -282,6 +286,10 @@ def needs_of(card):
         ("eye", "ask"): ("gpu", "weights:internvl"),
         ("endgame", "run"): ("desktop",),
         ("telegram", "run"): ("desktop",),
+        ("call", "live"): ("signal",),
+        ("call", "hangup"): ("signal",),
+        ("call", "restore"): ("signal",),
+        ("call", "hold"): ("signal",),
         ("tool", "call"): ("cpu",),
     }
     return table[(card.module, card.op)]
@@ -515,6 +523,9 @@ def caps_text():
     lines.append("screenshot " + yes(clone_file("endgame-vision-chat", "vision_frame.py")))
     lines.append("vision " + yes(clone_file("screenshot-vision", "ask.py")))
     lines.append("telegram " + yes(clone_file("telegram-control", "telegram_pc_remote.py")))
+    import desk
+    lines.append("desktop " + yes(desk.interactive()))
+    lines.append("telegram-desktop " + yes(bool(desk.telegram_exe())))
     lines.append("chrome " + yes(chrome_present()))
     lines.append("playback " + yes((ROOT / "chatterbox.exe").is_file()))
     lines.append("mic " + yes(mic_present()))
@@ -636,6 +647,14 @@ def peer_with(cap, value):
         for line in item["caps"].splitlines():
             if line == cap + " " + value:
                 return item
+    return None
+
+
+def peer_with_all(pairs):
+    for item in PEERS.values():
+        lines = item["caps"].splitlines()
+        if all(cap + " " + value in lines for cap, value in pairs):
+            return item
     return None
 
 
@@ -903,34 +922,8 @@ def tool_place():
 
 
 def tool_cursor(args):
-    task = clip(args.get("task", ""))
-    if not task or task.startswith("-"):
-        die("empty task")
-    agent = shutil.which("agent")
-    if not agent:
-        die("cursor missing")
-    status = ROOT / "cursor.status.txt"
-    if status.is_file():
-        die("cursor busy")
-    argv = [
-        agent,
-        "-p",
-        "--force",
-        "--trust",
-        "--workspace",
-        str(ROOT),
-        "--worktree",
-        "--worktree-base",
-        "runner-h",
-        "--model",
-        "composer-2.5",
-        "--output-format",
-        "json",
-        task + " Work on branch runner-h. Open the pull request into runner-h. Do not push main. Do not force-push.",
-    ]
-    proc = subprocess.Popen(argv, cwd=str(ROOT), shell=False, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    status.write_text("pid " + str(proc.pid) + "\ntask " + task + "\n", encoding="utf-8")
-    return "started local pid " + str(proc.pid)
+    import cursor
+    return cursor.start(clip(args.get("task", "")))
 
 
 def run_tool(profile, name, args, root):
@@ -1140,40 +1133,40 @@ def handle_ask(card):
 
 
 def handle_endgame(card):
-    goal = (card.body or "").strip()
-    if not goal:
-        die("empty goal")
-    script = ROOT / "endgame-ai" / "endgame.py"
-    if not script.is_file():
-        die("endgame missing")
-    completed = subprocess.run(
-        [sys.executable, str(script), "--once", goal],
-        cwd=str(script.parent),
-        shell=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    if completed.returncode != 0:
-        err = (completed.stderr or completed.stdout or "").strip()
-        die(err or "endgame failed")
-    text = (completed.stdout or "").strip()
-    if not text:
-        die("endgame returned empty")
-    return text, None
+    if card.to not in ("*", node_id()) and card.to in PEERS:
+        reply = transact(PEERS[card.to]["addr"], card._replace(frm=node_id()), 600)
+        return reply.body, None
+    if not cap_has("desktop", "yes"):
+        other = peer_with("desktop", "yes")
+        if not other or not other["addr"]:
+            die("desktop lease absent")
+        sent = card._replace(frm=node_id(), to=other["id"])
+        reply = transact(other["addr"], sent, 600)
+        return reply.body, None
+    import desk
+    return desk.place_ask(desk.parse(card.body), card.id), None
 
 
 def handle_telegram(card):
-    script = ROOT / "telegram-control" / "telegram_pc_remote.py"
-    if not script.is_file():
-        die("telegram missing")
-    if not os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() or not os.environ.get("TELEGRAM_OWNER_ID", "").strip():
-        die("telegram env missing")
-    if (card.body or "").strip() != "run":
-        die("telegram card is run")
-    subprocess.Popen([sys.executable, str(script), "run"], cwd=str(script.parent), shell=False)
-    return "telegram started", None
+    if card.to not in ("*", node_id()) and card.to in PEERS:
+        reply = transact(PEERS[card.to]["addr"], card._replace(frm=node_id()), 86400)
+        return reply.body, None
+    if not cap_has("desktop", "yes") or not cap_has("telegram-desktop", "yes"):
+        other = peer_with_all((("desktop", "yes"), ("telegram-desktop", "yes")))
+        if not other or not other["addr"]:
+            if not cap_has("desktop", "yes"):
+                die("desktop lease absent")
+            die("telegram desktop absent")
+        sent = card._replace(frm=node_id(), to=other["id"])
+        reply = transact(other["addr"], sent, 86400)
+        return reply.body, None
+    import desk
+    return desk.place_call(card.id), None
+
+
+def handle_call(card):
+    import desk
+    return desk.record_call(card.op, card.body), None
 
 
 def handle_tool(card):
@@ -1197,6 +1190,10 @@ HANDLERS = {
     ("eye", "ask"): handle_ask,
     ("endgame", "run"): handle_endgame,
     ("telegram", "run"): handle_telegram,
+    ("call", "live"): handle_call,
+    ("call", "hangup"): handle_call,
+    ("call", "restore"): handle_call,
+    ("call", "hold"): handle_call,
     ("tool", "call"): handle_tool,
 }
 
@@ -1207,6 +1204,12 @@ def handle(card):
 
 def reply_of(card, body, image):
     return Card(card.id, node_id(), card.frm, card.module, card.op, body, "", "", card.room, image, "")
+
+
+def card_timeout(card):
+    if card.module == "telegram":
+        return 86400
+    return 600
 
 
 def execute(card, timeout):
@@ -1230,7 +1233,7 @@ def serve_conn(conn):
                 die("card too large")
         card = parse_card(data.decode("utf-8"))
         try:
-            body, image = execute(card, 600)
+            body, image = execute(card, card_timeout(card))
             reply = reply_of(card, body, image)
         except SystemExit as exc:
             reply = reply_of(card, "err " + (getattr(exc, "message", "") or "failed"), None)
@@ -1271,11 +1274,13 @@ def serve(host="0.0.0.0", port=PORT):
     sock.settimeout(0.2)
     print("node: listening " + host + ":" + str(port) + " id " + node_id(), file=sys.stderr, flush=True)
     join_peers()
+    import cursor
     while not STOP.is_set():
+        cursor.tick()
         card = claim_one(ROOT)
         if card is not None:
             try:
-                execute(card, 600)
+                execute(card, card_timeout(card))
             except SystemExit as exc:
                 print(getattr(exc, "message", "") or "failed", file=sys.stderr, flush=True)
             continue

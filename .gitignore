@@ -126,6 +126,10 @@
 /audio.card
 /audio.card.tmp
 /telegram.owner.txt
+/node.queue/
+/node.state/
+/node.id
+/node.proof.txt
 
 !/desk.py
 !/vision.py
