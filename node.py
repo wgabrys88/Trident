@@ -1,9 +1,7 @@
 import base64
-import binascii
 import ctypes
 import json
 import os
-import shutil
 import socket
 import subprocess
 import sys
@@ -18,50 +16,19 @@ PORT = 8765
 Q = '<|"|>'
 MEDIA = "<__media__>"
 OPS = {
-    "node": ("hello", "join"),
-    "brain": ("infer",),
-    "agent": ("turn",),
-    "mouth": ("say",),
-    "ear": ("listen",),
-    "room": ("post", "task"),
-    "desk": ("turn",),
-    "endgame": ("run",),
-    "telegram": ("run",),
+    "node": ("hello",),
     "call": ("dial", "hang", "wait"),
-    "tool": ("call",),
 }
 PROFILES = {
     "voice": {
         "memory": "gemma.memory.txt",
         "tools": ("remember", "place", "desk", "ring", "next", "stop"),
-        "brain": "gemma",
-    },
-    "jarvis": {
-        "memory": "gemma.memory.txt",
-        "tools": ("remember", "place", "cursor", "desk", "ring", "next", "stop"),
-        "brain": "gemma",
     },
 }
-MAP = (
-    "gemma.py text+image inference only\n"
-    "gemma.txt the only gemma weight and sampling config\n"
-    "qwen.py qwen text weights\n"
-    "node.py cards, queues, scheduler, agent, tools, caps, room, peers, whole-desktop gemma desk\n"
-    "mouth.py the only playback\n"
-    "hear.py wav transcript, capture stays closed\n"
-    "assistant.py voice organism, turns through the agent\n"
-    "run.py rest exits 0 with residents idle, peer from --peer\n"
-    "endgame-ai/ desktop organism, module endgame, not edited on this seat\n"
-    "telegram-control/ telegram capability, not started unless a card asks\n"
-    "call.py telegram voice line on the user session, pictures leave as messages\n"
-)
 Card = namedtuple(
     "Card",
     "id frm to module op body agent profile room image resource",
 )
-LOADED = {"model": ""}
-PEERS = {}
-CAPS = {"text": ""}
 SCHED = None
 STOP = threading.Event()
 
@@ -104,10 +71,10 @@ def node_id():
 def split_host(addr):
     host, sep, port = (addr or "").strip().rpartition(":")
     if sep != ":" or not host or not port.isdigit():
-        die("peer is host:port")
+        die("bad address")
     number = int(port)
     if number < 1 or number > 65535:
-        die("peer port out of range")
+        die("bad address")
     return host, number
 
 
@@ -216,45 +183,6 @@ def parse_card(raw):
     )
 
 
-def queue_dir(root=None):
-    return (ROOT if root is None else Path(root)) / "node.queue"
-
-
-def enqueue(card, root=None):
-    base = queue_dir(root)
-    base.mkdir(parents=True, exist_ok=True)
-    path = base / (card.id + ".card")
-    tmp = base / (card.id + ".card.tmp")
-    tmp.write_bytes(render(card).encode("utf-8"))
-    os.replace(tmp, path)
-
-
-def claim_one(root=None):
-    base = queue_dir(root)
-    if not base.is_dir():
-        return None
-    for path in sorted(base.glob("*.card")):
-        try:
-            raw = path.read_bytes()
-        except OSError:
-            continue
-        held = path.with_name(path.name + "." + str(os.getpid()) + "." + str(threading.get_ident()))
-        try:
-            os.replace(path, held)
-        except OSError:
-            continue
-        if not held.is_file():
-            continue
-        try:
-            held.unlink()
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            die("cannot remove " + held.name + ": " + str(exc))
-        return parse_card(raw.decode("utf-8"))
-    return None
-
-
 def mark(root, card, state):
     base = Path(root) / "node.state"
     for name in ("queued", "running", "completed", "failed"):
@@ -267,39 +195,11 @@ def mark(root, card, state):
 
 
 def needs_of(card):
-    if card.module == "agent" and card.op == "turn" and card.resource == "call":
-        return ("call", "gpu", "weights:gemma")
-    if card.module == "mouth" and card.op == "say":
-        if card.resource == "call":
-            return ("call", "playback", "gpu")
-        return ("playback", "gpu")
-    if card.resource.strip():
-        return tuple(card.resource.split())
-    if card.module == "agent" and card.op == "turn":
-        profile = card.profile or "jarvis"
-        if profile not in PROFILES:
-            die("unknown profile " + profile)
-        brain = PROFILES[profile]["brain"]
-        if engine_here(brain):
-            return ("gpu", "weights:" + brain)
-        return ("cpu",)
-    table = {
-        ("brain", "infer"): ("gpu", "weights:gemma"),
-        ("mouth", "say"): ("playback",),
-        ("ear", "listen"): ("ear",),
-        ("room", "post"): ("room",),
-        ("room", "task"): ("room",),
-        ("node", "hello"): ("node",),
-        ("node", "join"): ("node",),
-        ("desk", "turn"): ("desktop", "gpu", "weights:gemma"),
-        ("endgame", "run"): ("desktop",),
-        ("telegram", "run"): ("desktop",),
-        ("call", "dial"): ("call",),
-        ("call", "hang"): ("call",),
-        ("call", "wait"): ("call",),
-        ("tool", "call"): ("cpu",),
-    }
-    return table[(card.module, card.op)]
+    if card.module == "call" and card.op == "hang":
+        return ()
+    if card.module == "call":
+        return ("call",)
+    return ("node",)
 
 
 class Scheduler:
@@ -366,22 +266,6 @@ class Scheduler:
                 self.cv.notify_all()
             box["event"].set()
 
-    def finish_all(self, count, timeout):
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            done = self.root / "node.state" / "completed"
-            failed = self.root / "node.state" / "failed"
-            n_done = len(list(done.glob("*.card"))) if done.is_dir() else 0
-            n_fail = len(list(failed.glob("*.card"))) if failed.is_dir() else 0
-            with self.cv:
-                idle = not self.queue and not any(self.owner.values())
-            if idle and n_done + n_fail >= count:
-                if n_fail:
-                    die("scheduler failed")
-                return
-            time.sleep(0.02)
-        die("scheduler stuck")
-
 
 def cuda_name():
     try:
@@ -409,153 +293,85 @@ def vulkan_name():
         vk = __import__("ctypes").WinDLL("vulkan-1")
     except OSError:
         return ""
-    ctypes = __import__("ctypes")
+    ctypes_mod = __import__("ctypes")
 
-    class VkApplicationInfo(ctypes.Structure):
+    class VkApplicationInfo(ctypes_mod.Structure):
         _fields_ = [
-            ("sType", ctypes.c_uint32),
-            ("pNext", ctypes.c_void_p),
-            ("pApplicationName", ctypes.c_char_p),
-            ("applicationVersion", ctypes.c_uint32),
-            ("pEngineName", ctypes.c_char_p),
-            ("engineVersion", ctypes.c_uint32),
-            ("apiVersion", ctypes.c_uint32),
+            ("sType", ctypes_mod.c_uint32),
+            ("pNext", ctypes_mod.c_void_p),
+            ("pApplicationName", ctypes_mod.c_char_p),
+            ("applicationVersion", ctypes_mod.c_uint32),
+            ("pEngineName", ctypes_mod.c_char_p),
+            ("engineVersion", ctypes_mod.c_uint32),
+            ("apiVersion", ctypes_mod.c_uint32),
         ]
 
-    class VkInstanceCreateInfo(ctypes.Structure):
+    class VkInstanceCreateInfo(ctypes_mod.Structure):
         _fields_ = [
-            ("sType", ctypes.c_uint32),
-            ("pNext", ctypes.c_void_p),
-            ("flags", ctypes.c_uint32),
-            ("pApplicationInfo", ctypes.POINTER(VkApplicationInfo)),
-            ("enabledLayerCount", ctypes.c_uint32),
-            ("ppEnabledLayerNames", ctypes.c_void_p),
-            ("enabledExtensionCount", ctypes.c_uint32),
-            ("ppEnabledExtensionNames", ctypes.c_void_p),
+            ("sType", ctypes_mod.c_uint32),
+            ("pNext", ctypes_mod.c_void_p),
+            ("flags", ctypes_mod.c_uint32),
+            ("pApplicationInfo", ctypes_mod.POINTER(VkApplicationInfo)),
+            ("enabledLayerCount", ctypes_mod.c_uint32),
+            ("ppEnabledLayerNames", ctypes_mod.c_void_p),
+            ("enabledExtensionCount", ctypes_mod.c_uint32),
+            ("ppEnabledExtensionNames", ctypes_mod.c_void_p),
         ]
 
-    vk.vkCreateInstance.argtypes = [ctypes.POINTER(VkInstanceCreateInfo), ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p)]
-    vk.vkCreateInstance.restype = ctypes.c_int
-    vk.vkEnumeratePhysicalDevices.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p]
-    vk.vkEnumeratePhysicalDevices.restype = ctypes.c_int
-    vk.vkGetPhysicalDeviceProperties.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    vk.vkCreateInstance.argtypes = [ctypes_mod.POINTER(VkInstanceCreateInfo), ctypes_mod.c_void_p, ctypes_mod.POINTER(ctypes_mod.c_void_p)]
+    vk.vkCreateInstance.restype = ctypes_mod.c_int
+    vk.vkEnumeratePhysicalDevices.argtypes = [ctypes_mod.c_void_p, ctypes_mod.POINTER(ctypes_mod.c_uint32), ctypes_mod.c_void_p]
+    vk.vkEnumeratePhysicalDevices.restype = ctypes_mod.c_int
+    vk.vkGetPhysicalDeviceProperties.argtypes = [ctypes_mod.c_void_p, ctypes_mod.c_void_p]
     vk.vkGetPhysicalDeviceProperties.restype = None
-    vk.vkDestroyInstance.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    vk.vkDestroyInstance.argtypes = [ctypes_mod.c_void_p, ctypes_mod.c_void_p]
     vk.vkDestroyInstance.restype = None
     app = VkApplicationInfo()
     app.sType = 0
     app.apiVersion = (1 << 22) | (2 << 12)
     info = VkInstanceCreateInfo()
     info.sType = 1
-    info.pApplicationInfo = ctypes.pointer(app)
-    inst = ctypes.c_void_p()
-    if vk.vkCreateInstance(ctypes.byref(info), None, ctypes.byref(inst)) != 0 or not inst.value:
+    info.pApplicationInfo = ctypes_mod.pointer(app)
+    inst = ctypes_mod.c_void_p()
+    if vk.vkCreateInstance(ctypes_mod.byref(info), None, ctypes_mod.byref(inst)) != 0 or not inst.value:
         return ""
     try:
-        count = ctypes.c_uint32(0)
-        if vk.vkEnumeratePhysicalDevices(inst, ctypes.byref(count), None) != 0 or count.value < 1:
+        count = ctypes_mod.c_uint32(0)
+        if vk.vkEnumeratePhysicalDevices(inst, ctypes_mod.byref(count), None) != 0 or count.value < 1:
             return ""
-        arr = (ctypes.c_void_p * count.value)()
-        if vk.vkEnumeratePhysicalDevices(inst, ctypes.byref(count), ctypes.cast(arr, ctypes.c_void_p)) != 0:
+        arr = (ctypes_mod.c_void_p * count.value)()
+        if vk.vkEnumeratePhysicalDevices(inst, ctypes_mod.byref(count), ctypes_mod.cast(arr, ctypes_mod.c_void_p)) != 0:
             return ""
-        props = (ctypes.c_ubyte * 4096)()
-        vk.vkGetPhysicalDeviceProperties(arr[0], ctypes.cast(props, ctypes.c_void_p))
+        props = (ctypes_mod.c_ubyte * 4096)()
+        vk.vkGetPhysicalDeviceProperties(arr[0], ctypes_mod.cast(props, ctypes_mod.c_void_p))
         raw = bytes(props[20:276]).split(b"\x00", 1)[0]
         return raw.decode("utf-8", errors="replace").strip()
     finally:
         vk.vkDestroyInstance(inst, None)
 
 
-def adapter_names():
-    return cuda_name(), vulkan_name()
-
-
-def chrome_present():
-    if shutil.which("chrome") or shutil.which("chrome.exe"):
-        return True
-    for env in ("PROGRAMFILES", "PROGRAMFILES(X86)"):
-        root = os.environ.get(env, "")
-        if root and (Path(root) / "Google" / "Chrome" / "Application" / "chrome.exe").is_file():
-            return True
-    return False
-
-
-def engine_here(name):
-    if name == "gemma":
-        return (ROOT / "gemma-brain.exe").is_file() and (ROOT / "gemma.gguf").is_file()
-    if name == "qwen":
-        return (ROOT / "sense.exe").is_file() and (ROOT / "sense.gguf").is_file()
-    return False
-
-
-def clone_file(name, filename):
-    return (ROOT / name / filename).is_file()
-
-
-def yes(flag):
-    return "yes" if flag else "no"
+def gemma_ready():
+    return (ROOT / "gemma-brain.exe").is_file() and (ROOT / "gemma.gguf").is_file()
 
 
 def caps_text():
-    if CAPS["text"]:
-        return CAPS["text"]
-    cuda, vulkan = adapter_names()
+    cuda = cuda_name()
     lines = [
         "cpu " + str(os.cpu_count() or 0),
         "cuda " + (cuda or "none"),
-        "vulkan " + (vulkan or "none"),
+        "vulkan " + (vulkan_name() or "none"),
     ]
-    if engine_here("gemma"):
+    if gemma_ready():
         lines.append("brain gemma")
         if (ROOT / "gemma-mmproj.gguf").is_file():
             lines.append("vision gemma")
-    if engine_here("qwen"):
-        lines.append("brain qwen")
-    lines.append("cursor " + yes(bool(shutil.which("agent"))))
-    lines.append("endgame " + yes(clone_file("endgame-ai", "endgame.py")))
-    lines.append("telegram " + yes(clone_file("telegram-control", "telegram_pc_remote.py")))
-    lines.append("chrome " + yes(chrome_present()))
-    lines.append("playback " + yes((ROOT / "chatterbox.exe").is_file()))
+    lines.append("playback " + ("yes" if (ROOT / "chatterbox.exe").is_file() else "no"))
     lines.append("mic no")
     lines.append("capture closed")
     for module, names in OPS.items():
         for op in names:
             lines.append("op " + module + "." + op)
-    CAPS["text"] = "\n".join(lines) + "\n"
-    return CAPS["text"]
-
-
-def real_stop(model):
-    if model == "gemma":
-        import gemma
-        gemma.stop_resident()
-        return
-    if model == "qwen":
-        import qwen
-        qwen.stop_resident()
-        return
-    die("unknown weights " + model)
-
-
-def use_weights(model, stop=None):
-    if LOADED["model"] == model:
-        return
-    if LOADED["model"]:
-        if stop is not None:
-            stop(LOADED["model"])
-        else:
-            real_stop(LOADED["model"])
-    LOADED["model"] = model
-
-
-def file_b64(path):
-    file_path = Path(path)
-    if not file_path.is_file():
-        die("missing image: " + str(file_path))
-    data = file_path.read_bytes()
-    if not data:
-        die("empty image: " + str(file_path))
-    return base64.b64encode(data).decode("ascii")
+    return "\n".join(lines) + "\n"
 
 
 def park_mouth():
@@ -566,39 +382,27 @@ def park_mouth():
 
 
 def park_gemma():
-    if not cuda_name():
-        return
     import gemma
 
     if gemma.brain_running_any():
         gemma.stop_resident()
 
 
-def local_infer(brain, prompt, image):
-    if brain == "gemma":
-        import gemma
-        if image and MEDIA not in prompt:
-            die("image prompt missing <__media__>")
-        park_mouth()
-        use_weights(brain)
-        try:
-            text = gemma.resident_generate(prompt, image or "", False)
-        except SystemExit as exc:
-            die(getattr(exc, "message", "") or "gemma failed")
-        if not str(text or "").strip():
-            die("gemma returned empty")
-        return text
-    if brain == "qwen":
-        if image:
-            die("qwen is text only")
-        use_weights(brain)
-        import qwen
-        pid = qwen.ensure_resident()
-        text = qwen.resident_ask(pid, prompt)
-        if not str(text or "").strip():
-            die("qwen returned empty")
-        return text
-    die("brain missing " + brain)
+def local_infer(prompt, image):
+    import gemma
+
+    if not gemma_ready():
+        die("brain missing gemma")
+    if image and MEDIA not in prompt:
+        die("image prompt missing <__media__>")
+    park_mouth()
+    try:
+        text = gemma.resident_generate(prompt, image or "", False)
+    except SystemExit as exc:
+        die(getattr(exc, "message", "") or "gemma failed")
+    if not str(text or "").strip():
+        die("gemma returned empty")
+    return text
 
 
 DESK_TOKENS = 560
@@ -618,6 +422,15 @@ DESK_KEYS = {
     "ctrl-a": ((0x11, 0), (0x41, 0), (0x41, 2), (0x11, 2)),
     "ctrl-l": ((0x11, 0), (0x4C, 0), (0x4C, 2), (0x11, 2)),
 }
+
+
+def clip(text, limit=200):
+    flat = " ".join((text or "").split())
+    if len(flat) > limit:
+        flat = flat[:limit].rstrip()
+    return flat
+
+
 def desktop_lease():
     lib = ctypes.WinDLL("user32", use_last_error=True)
     lib.OpenInputDesktop.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
@@ -934,15 +747,13 @@ def desk_turn(goal):
     text = (goal or "").strip()
     if not text:
         die("empty goal")
-    desktop_lease()
-    addr = brain_place()
-    if addr == "" and not (ROOT / "gemma-mmproj.gguf").is_file():
+    if not gemma_ready():
+        die("brain missing gemma")
+    if not (ROOT / "gemma-mmproj.gguf").is_file():
         die("vision absent")
+    desktop_lease()
     image, wide, high = desk_png()
-    if addr:
-        reply = remote_infer(addr, desk_prompt(text), image, 600)
-    else:
-        reply = local_infer("gemma", desk_prompt(text), image)
+    reply = local_infer(desk_prompt(text), image)
     obj = desk_object(reply)
     seen = " ".join(obj["see"].split())
     taken = DESK_ACTS[obj["do"]](obj)
@@ -957,10 +768,12 @@ def desk_turn(goal):
 
 def transact(addr, card, timeout):
     host, port = split_host(addr)
+    if host not in {"127.0.0.1", "localhost"}:
+        die("bad address")
     try:
         sock = socket.create_connection((host, port), timeout=min(5, timeout))
     except OSError as exc:
-        die("peer missing " + str(exc))
+        die("node down " + str(exc))
     sock.settimeout(timeout)
     try:
         sock.sendall(render(card).encode("utf-8"))
@@ -976,21 +789,13 @@ def transact(addr, card, timeout):
     finally:
         sock.close()
     if not data:
-        die("peer missing empty reply")
+        die("node down empty reply")
     reply = parse_card(data.decode("utf-8"))
     if reply.id != card.id:
         die("card id mismatch")
     if reply.body.startswith("err "):
         die(reply.body)
     return reply
-
-
-def remote_infer(peer, prompt, image, timeout):
-    card = make_card("brain", "infer", prompt, image if image else None, to="*")
-    reply = transact(peer, card, timeout)
-    if not reply.body.strip():
-        die("gemma returned empty")
-    return reply.body
 
 
 def decl(name, description, fields):
@@ -1023,7 +828,6 @@ def tool_decls(names):
     table = {
         "remember": ("Store one fact that stays after old turns are dropped.", (("line", "The fact, one short line.", True),)),
         "place": ("Report this machine: cuda, vulkan, engines, playback, microphone.", ()),
-        "cursor": ("Start one local Cursor agent for a code change in this checkout.", (("task", "What to change, one short line.", True),)),
         "desk": ("Look at the whole desktop. One call is one look or the one action he named. The picture is sent to his Telegram. A longer task is one call for each step.", (("line", "The goal, one short line.", True),)),
         "ring": ("Place the Telegram call to Wojciech when the work needs him.", ()),
         "next": ("Store one line of work for later. This does not run the work.", (("line", "The work, one short line.", True),)),
@@ -1123,13 +927,6 @@ def write_memory(path, facts, pairs, works):
     os.replace(tmp, path)
 
 
-def clip(text, limit=200):
-    flat = " ".join((text or "").split())
-    if len(flat) > limit:
-        flat = flat[:limit].rstrip()
-    return flat
-
-
 def prompt_for(profile, question, suffix, root):
     path = memory_file(profile, root)
     facts, pairs, works = read_memory(path)
@@ -1150,6 +947,7 @@ def prompt_for(profile, question, suffix, root):
         head += "Work waiting:\n" + "\n".join(works) + "\n"
     parts = [head]
     kept = list(pairs)
+
     def build(items):
         body = list(parts)
         for user, model in items:
@@ -1159,6 +957,7 @@ def prompt_for(profile, question, suffix, root):
         body.append("<|turn>user\n" + question.strip() + "<turn|>\n")
         body.append("<|turn>model\n" + suffix)
         return "".join(body)
+
     text = build(kept)
     while len(text) > 80000 and kept:
         kept = kept[1:]
@@ -1182,19 +981,9 @@ def answer_text(text):
     return " ".join(cleaned.split())
 
 
-def strip_tool_markup(text):
-    raw = text or ""
-    while "<|tool_call>" in raw and "<tool_call|>" in raw:
-        start = raw.find("<|tool_call>")
-        end = raw.find("<tool_call|>", start)
-        if end < 0:
-            break
-        raw = raw[:start] + raw[end + len("<tool_call|>"):]
-    return raw
-
-
 def parse_tool_call(text):
     import re
+
     match = re.search(r"<\|tool_call>\s*call:([A-Za-z_][A-Za-z0-9_]*)\s*\{(.*?)\}\s*<tool_call\|>", text or "", re.DOTALL)
     if not match:
         return None
@@ -1205,8 +994,8 @@ def parse_tool_call(text):
 
 
 def is_stop(text):
-    call = parse_tool_call(text or "")
-    return bool(call) and call[0] == "stop"
+    found = parse_tool_call(text or "")
+    return bool(found) and found[0] == "stop"
 
 
 def tool_response(name, fields):
@@ -1219,11 +1008,13 @@ def tool_remember(profile, args, root):
     if not line:
         die("empty fact")
     path = memory_file(profile, root)
+
     def run():
         facts, pairs, works = read_memory(path)
         if line not in facts:
             facts.append(line)
             write_memory(path, facts, pairs, works)
+
     with_memory(path, run)
     return line
 
@@ -1233,62 +1024,33 @@ def tool_next(profile, args, root):
     if not line:
         die("empty work")
     path = memory_file(profile, root)
+
     def run():
         facts, pairs, works = read_memory(path)
         if line not in works:
             works.append(line)
             write_memory(path, facts, pairs, works)
+
     with_memory(path, run)
-    room_add(profile, "task", node_id(), line, root)
     return line
 
 
 def tool_stop(profile, args, root):
     target = clip(args.get("line", ""))
     path = memory_file(profile, root)
+
     def run():
         facts, pairs, works = read_memory(path)
         if target and target in works:
             works = [item for item in works if item != target]
             write_memory(path, facts, pairs, works)
+
     with_memory(path, run)
-    room_add(profile, "stop", node_id(), target or "voice", root)
     return target or "voice"
 
 
 def tool_place():
     return " ".join(caps_text().split())
-
-
-def tool_cursor(args):
-    task = clip(args.get("task", ""))
-    if not task or task.startswith("-"):
-        die("empty task")
-    agent = shutil.which("agent")
-    if not agent:
-        die("cursor missing")
-    status = ROOT / "cursor.status.txt"
-    if status.is_file():
-        die("cursor busy")
-    argv = [
-        agent,
-        "-p",
-        "--force",
-        "--trust",
-        "--workspace",
-        str(ROOT),
-        "--worktree",
-        "--worktree-base",
-        "runner-h",
-        "--model",
-        "composer-2.5",
-        "--output-format",
-        "json",
-        task + " Work on branch runner-h. Open the pull request into runner-h. Do not push main. Do not force-push.",
-    ]
-    proc = subprocess.Popen(argv, cwd=str(ROOT), shell=False, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    status.write_text("pid " + str(proc.pid) + "\ntask " + task + "\n", encoding="utf-8")
-    return "started local pid " + str(proc.pid)
 
 
 def tool_desk(args):
@@ -1316,8 +1078,6 @@ def run_tool(profile, name, args, root):
         return tool_stop(profile, args, root)
     if name == "place":
         return tool_place()
-    if name == "cursor":
-        return tool_cursor(args)
     if name == "desk":
         return tool_desk(args)
     if name == "ring":
@@ -1330,27 +1090,24 @@ def append_turn(profile, question, reply, root):
     spoken = answer_text(reply)
     if not spoken:
         return
+
     def run():
         facts, pairs, works = read_memory(path)
         pairs.append((clip(question, 400), clip(spoken, 400)))
         write_memory(path, facts, pairs, works)
+
     with_memory(path, run)
 
 
-def agent_turn(profile, question, image_b64="", peer="", generate=None, timeout=180, root=None):
+def agent_turn(profile, question, image_b64="", root=None):
     if profile not in PROFILES:
         die("unknown profile " + profile)
     if not (question or "").strip():
         die("empty question")
-    brain = PROFILES[profile]["brain"]
-    if generate is None:
-        def generate(prompt, image):
-            if peer:
-                return remote_infer(peer, prompt, image, timeout)
-            addr = brain_place()
-            if addr:
-                return remote_infer(addr, prompt, image, timeout)
-            return local_infer(brain, prompt, image)
+
+    def generate(prompt, image):
+        return local_infer(prompt, image)
+
     if image_b64:
         prompt = question if MEDIA in question else MEDIA + "\n" + question
         text = generate(prompt, image_b64)
@@ -1367,13 +1124,13 @@ def agent_turn(profile, question, image_b64="", peer="", generate=None, timeout=
         shot = ""
         if not str(text or "").strip():
             die("agent follow-up empty" if saw else "gemma returned empty")
-        call = parse_tool_call(text)
-        if not call:
+        found = parse_tool_call(text)
+        if not found:
             if not answer_text(text):
                 die("agent follow-up empty" if saw else "gemma returned empty")
             append_turn(profile, question, text, root)
             return text
-        name, args, raw = call
+        name, args, raw = found
         if name == "stop":
             tool_stop(profile, args, root)
             return text
@@ -1384,25 +1141,6 @@ def agent_turn(profile, question, image_b64="", peer="", generate=None, timeout=
         saw = True
 
 
-def room_add(room, kind, frm, body, root=None):
-    name = safe_token(room or "floor")
-    base = (ROOT if root is None else Path(root)) / "node.room"
-    base.mkdir(parents=True, exist_ok=True)
-    path = base / (name + ".log")
-    lock = base / (name + ".lock")
-    try:
-        fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_RDWR)
-    except FileExistsError:
-        die("room busy")
-    try:
-        line = kind + " " + frm + " " + " ".join((body or "").split()) + "\n"
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(line)
-    finally:
-        os.close(fd)
-        lock.unlink()
-
-
 def call_flag():
     mod = sys.modules.get("call")
     live = getattr(mod, "LIVE", None) if mod is not None else None
@@ -1411,196 +1149,18 @@ def call_flag():
     return "call idle"
 
 
-def handle_hello(card):
-    item = PEERS.get(card.frm)
-    if item is None:
-        PEERS[card.frm] = {"addr": "", "caps": card.body, "id": card.frm}
-    else:
-        item["caps"] = card.body
-    return caps_text().rstrip("\n") + "\n" + call_flag() + "\n", None
-
-
-def handle_join(card):
-    addr = (card.body or "").strip()
-    if not addr:
-        die("peer is host:port")
-    if join_one(addr):
-        return "joined " + addr, None
-    return "offline " + addr, None
-
-
-def handle_brain(card):
-    if card.image is not None:
-        compact = "".join(card.image.split())
-        if not compact:
-            die("missing image")
-        try:
-            data = base64.b64decode(compact, validate=True)
-        except (ValueError, binascii.Error):
-            die("bad image")
-        if not data:
-            die("empty image")
-        if MEDIA not in card.body:
-            die("image prompt missing <__media__>")
-    if not (card.body or "").strip():
-        die("empty text")
-    text = local_infer("gemma", card.body, card.image or "")
-    return text, None
-
-
-def handle_agent(card):
-    profile = card.profile or "jarvis"
-    if card.resource == "call":
-        if card.image:
-            die("call is text")
-        if card.profile != "voice":
-            die("call profile")
-        text = agent_turn("voice", card.body, "")
-        if is_stop(text):
-            return text, None
-        return answer_text(text), None
-    text = agent_turn(profile, card.body, card.image or "")
-    return text, None
-
-
-def forward(card, addr):
-    reply = transact(addr, card._replace(frm=node_id()), 600)
-    return reply.body, reply.image
-
-
-def handle_mouth(card):
-    raw = card.body or ""
-    if "\x00" in raw:
-        die("mouth is text")
-    text = " ".join(raw.split())
-    if not text:
-        die("empty say")
-    if card.resource == "call":
-        import call
-        call.speak(text)
-        return "spoken", None
-    if card.to not in ("*", node_id()) and card.to in PEERS:
-        return forward(card, PEERS[card.to]["addr"])
-    addr = cuda_mouth()
-    if addr:
-        return forward(card._replace(to="*"), addr)
-    if not (ROOT / "chatterbox.exe").is_file():
-        die("mouth missing")
-    import mouth
-    park_gemma()
-    if card.resource == "wav":
-        path = mouth.wave(text, card.agent)
-        return "wav " + path.name, file_b64(path)
-    mouth.say(text, card.agent or mouth.language_of(text))
-    return "spoken", None
-
-
-def handle_ear(card):
-    raw = card.body or ""
-    if "\x00" in raw:
-        die("ear is text")
-    if card.resource == "call":
-        import call
-        return call.listen(card.body), None
-    if card.to not in ("*", node_id()) and card.to in PEERS:
-        reply = transact(PEERS[card.to]["addr"], card._replace(frm=node_id()), 30)
-        return reply.body, None
-    die("ear closed")
-
-
-def handle_room(card):
-    room = card.room or "floor"
-    room_add(room, card.op, card.frm, card.body)
-    if room == "seat":
-        path = (ROOT / "node.room" / "seat.log")
-        return path.read_text(encoding="utf-8"), None
-    return card.body, None
-
-
-def handle_desk(card):
-    report, image = desk_turn(card.body)
-    return report, image
-
-
-def handle_endgame(card):
-    goal = (card.body or "").strip()
-    if not goal:
-        die("empty goal")
-    script = ROOT / "endgame-ai" / "endgame.py"
-    if not script.is_file():
-        die("endgame missing")
-    completed = subprocess.run(
-        [sys.executable, str(script), "--once", goal],
-        cwd=str(script.parent),
-        shell=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    if completed.returncode != 0:
-        err = (completed.stderr or completed.stdout or "").strip()
-        die(err or "endgame failed")
-    text = (completed.stdout or "").strip()
-    if not text:
-        die("endgame returned empty")
-    return text, None
-
-
-def handle_call(card):
+def handle(card):
+    if card.module == "node" and card.op == "hello":
+        return caps_text().rstrip("\n") + "\n" + call_flag() + "\n", None
     import call
+
     if card.op == "wait":
         return call.arm(), None
     if card.op == "dial":
         return call.dial((card.body or "").strip()), None
     if card.op == "hang":
         return call.hang((card.body or "").strip()), None
-    die("call card")
-
-
-def handle_telegram(card):
-    script = ROOT / "telegram-control" / "telegram_pc_remote.py"
-    if not script.is_file():
-        die("telegram missing")
-    if (card.body or "").strip() != "run":
-        die("telegram card is run")
-    subprocess.Popen([sys.executable, str(script), "run"], cwd=str(script.parent), shell=False)
-    return "telegram started", None
-
-
-def handle_tool(card):
-    profile = card.profile or "jarvis"
-    name, _, rest = (card.body or "").partition(" ")
-    args = {"line": rest.strip(), "task": rest.strip()}
-    if not name.strip():
-        die("empty tool")
-    result = run_tool(profile, name.strip(), args, None)
-    if isinstance(result, tuple):
-        return result
-    return result, None
-
-
-HANDLERS = {
-    ("node", "hello"): handle_hello,
-    ("node", "join"): handle_join,
-    ("brain", "infer"): handle_brain,
-    ("agent", "turn"): handle_agent,
-    ("mouth", "say"): handle_mouth,
-    ("ear", "listen"): handle_ear,
-    ("room", "post"): handle_room,
-    ("room", "task"): handle_room,
-    ("desk", "turn"): handle_desk,
-    ("endgame", "run"): handle_endgame,
-    ("telegram", "run"): handle_telegram,
-    ("call", "dial"): handle_call,
-    ("call", "hang"): handle_call,
-    ("call", "wait"): handle_call,
-    ("tool", "call"): handle_tool,
-}
-
-
-def handle(card):
-    return HANDLERS[(card.module, card.op)](card)
+    die("unknown card " + card.module + " " + card.op)
 
 
 def reply_of(card, body, image):
@@ -1608,7 +1168,6 @@ def reply_of(card, body, image):
 
 
 def execute(card, timeout):
-    global SCHED
     if SCHED is None:
         die("node is not serving")
     box = SCHED.submit(card, handle)
@@ -1641,429 +1200,48 @@ def serve_conn(conn):
         conn.close()
 
 
-def join_one(addr):
-    split_host(addr)
-    if not reachable(addr):
-        return False
-    reply = transact(addr, make_card("node", "hello", caps_text(), to="*"), 10)
-    if reply.module != "node" or reply.op != "hello":
-        die("peer hello refused")
-    PEERS[reply.frm] = {"addr": addr, "caps": reply.body, "id": reply.frm}
-    print("node: joined " + reply.frm + " " + addr, file=sys.stderr, flush=True)
-    return True
+def write_pid():
+    (ROOT / "node.pid").write_text(str(os.getpid()) + "\n", encoding="ascii")
 
 
-def serve(host="0.0.0.0", port=PORT):
+def clear_pid():
+    path = ROOT / "node.pid"
+    try:
+        text = path.read_text(encoding="ascii")
+    except OSError:
+        return
+    if text.strip() == str(os.getpid()):
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+def serve():
     global SCHED
     SCHED = Scheduler(ROOT)
     SCHED.start()
+    write_pid()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 0)
     try:
-        sock.bind((host, port))
+        sock.bind(("127.0.0.1", PORT))
     except OSError as exc:
-        die("cannot listen on " + host + ":" + str(port) + ": " + str(exc))
+        clear_pid()
+        die("cannot listen on 127.0.0.1:" + str(PORT) + ": " + str(exc))
     sock.listen(8)
     sock.settimeout(0.2)
-    print("node: listening " + host + ":" + str(port) + " id " + node_id(), file=sys.stderr, flush=True)
-    while not STOP.is_set():
-        card = claim_one(ROOT)
-        if card is not None:
-            try:
-                execute(card, 600)
-            except SystemExit as exc:
-                print(getattr(exc, "message", "") or "failed", file=sys.stderr, flush=True)
-            continue
-        try:
-            conn, _addr = sock.accept()
-        except socket.timeout:
-            continue
-        threading.Thread(target=serve_conn, args=(conn,), daemon=True).start()
-    sock.close()
-
-
-def reachable(addr):
-    host, port = split_host(addr)
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(1.0)
+    print("node: listening 127.0.0.1:" + str(PORT), file=sys.stderr, flush=True)
     try:
-        sock.connect((host, port))
-        return True
-    except OSError:
-        return False
+        while not STOP.is_set():
+            try:
+                conn, _addr = sock.accept()
+            except socket.timeout:
+                continue
+            threading.Thread(target=serve_conn, args=(conn,), daemon=True).start()
     finally:
         sock.close()
-
-
-def remote_place(addr):
-    cuda, vulkan = adapter_names()
-    Place = namedtuple("Place", "brain url cuda vulkan adapter flip where")
-    same = bool(cuda and vulkan and " ".join(cuda.casefold().split()) == " ".join(vulkan.casefold().split()))
-    return Place("post", addr, cuda, vulkan, "same" if same else "different", False, "peer")
-
-
-def local_place():
-    cuda, vulkan = adapter_names()
-    Place = namedtuple("Place", "brain url cuda vulkan adapter flip where")
-    same = bool(cuda and vulkan and " ".join(cuda.casefold().split()) == " ".join(vulkan.casefold().split()))
-    adapter = "same" if same else "different"
-    if engine_here("gemma"):
-        return Place("resident", "", cuda, vulkan, adapter, False, "local")
-    if engine_here("qwen"):
-        return Place("cpu", "", cuda, vulkan, adapter, False, "local")
-    return Place("missing", "", cuda, vulkan, adapter, False, "local")
-
-
-def cuda_line(text):
-    for line in (text or "").splitlines():
-        if line.startswith("cuda "):
-            name = line[5:].strip()
-            if name and name != "none":
-                return name
-    return ""
-
-
-def peer_addrs(extra=()):
-    if isinstance(extra, str):
-        extra = (extra,) if extra else ()
-    seen = []
-    addrs = [item for item in extra]
-    for item in PEERS.values():
-        addrs.append(item.get("addr") or "")
-    found = []
-    for addr in addrs:
-        addr = (addr or "").strip()
-        if not addr or addr in seen:
-            continue
-        seen.append(addr)
-        found.append(addr)
-    return found
-
-
-def caps_for(addr):
-    for item in PEERS.values():
-        if item.get("addr") == addr and item.get("caps"):
-            return item["caps"]
-    reply = transact(addr, make_card("node", "hello", "hi"), 10)
-    PEERS[reply.frm] = {"addr": addr, "caps": reply.body, "id": reply.frm}
-    return reply.body
-
-
-def brain_place(extra=()):
-    if cuda_name() and engine_here("gemma"):
-        return ""
-    for addr in peer_addrs(extra):
-        if not reachable(addr):
-            continue
-        caps = caps_for(addr)
-        if cuda_line(caps) and "brain gemma" in caps.splitlines():
-            return addr
-    if engine_here("gemma"):
-        return ""
-    die("brain missing gemma")
-
-
-def cuda_mouth(extra=()):
-    if cuda_name() and (ROOT / "chatterbox.exe").is_file():
-        return ""
-    for addr in peer_addrs(extra):
-        if not reachable(addr):
-            continue
-        caps = caps_for(addr)
-        if cuda_line(caps) and "playback yes" in caps.splitlines():
-            return addr
-    return ""
-
-
-def wav_bytes(image):
-    raw = "".join((image or "").split())
-    if not raw:
-        die("mouth wav missing")
-    try:
-        data = base64.b64decode(raw, validate=True)
-    except (ValueError, binascii.Error):
-        die("mouth wav")
-    if data[:4] != b"RIFF" or len(data) < 44:
-        die("mouth wav")
-    return data
-
-
-def write_peer_wav(data):
-    path = ROOT / (str(time.time_ns()) + "_peer.wav")
-    path.write_bytes(data)
-    return path
-
-
-def fetch_wav(addr, text, lang):
-    card = make_card("mouth", "say", text, resource="wav", agent=lang or "")
-    reply = transact(addr, card, 600)
-    return write_peer_wav(wav_bytes(reply.image))
-
-
-def play_remote(addr, text, play_one, lang=""):
-    import mouth
-
-    spoken = " ".join((text or "").split())
-    tag = (lang or mouth.language_of(spoken)).strip().split("-")[0].lower()
-    limit = 65 if tag == "en" else 55
-    chunks = mouth.pack_words(spoken, limit)
-
-    def synth(sentence):
-        return fetch_wav(addr, sentence, tag)
-
-    mouth.speak_chunks(synth, chunks, play_one)
-
-
-def place_line(found):
-    return "brain " + found.brain + " " + found.where + " cuda " + (found.cuda or "none") + " vulkan " + (found.vulkan or "none")
-
-
-def assert_mic(text):
-    lines = text.splitlines()
-    if "mic yes" in lines:
-        die("claimed a microphone\n" + text)
-    if "capture closed" not in lines:
-        die("capture not closed\n" + text)
-    endpoints = [line for line in lines if line.startswith("mic ") and line != "mic no"]
-    if ("mic no" in lines) and endpoints:
-        die("mic both present and absent\n" + text)
-    if "mic no" not in lines and not endpoints:
-        die("mic missing\n" + text)
-    for needle in ("op mouth.say", "op ear.listen"):
-        if needle not in lines:
-            die("caps missing " + needle + "\n" + text)
-
-
-def prove_expect(label, fn, needle):
-    try:
-        fn()
-    except SystemExit as exc:
-        message = getattr(exc, "message", "") or ""
-        if needle not in message:
-            die(label + " raised " + message)
-        print("prove: " + label, file=sys.stderr, flush=True)
-        return
-    die(label + " returned")
-
-
-def prove():
-    import tempfile
-    log = []
-    run_text = (ROOT / "run.py").read_text(encoding="utf-8")
-    assistant_text = (ROOT / "assistant.py").read_text(encoding="utf-8")
-    if "192.168.16.31" in run_text or "TRIDENT_NVIDIA_URL" in run_text or "TRIDENT_NVIDIA_URL" in assistant_text:
-        die("hard-coded peer url remains")
-    if "live mic" in run_text:
-        die("live mic remains")
-    hear_src = (ROOT / "hear.py").read_text(encoding="utf-8")
-    for needle in ("nvidia_client", "import seat", "drain_seat", "tool_turn", "gemma.place", "start_vad", "lid.176", "voice.memory"):
-        if needle in assistant_text:
-            die("assistant still has " + needle)
-    if "sd.rec" in hear_src or "start_vad" in hear_src:
-        die("hear opens a microphone")
-    for profile in PROFILES.values():
-        if profile["memory"] != "gemma.memory.txt":
-            die("duplicate voice memory")
-    gemma_src = (ROOT / "gemma.py").read_text(encoding="utf-8")
-    node_src = (ROOT / "node.py").read_text(encoding="utf-8")
-    fabricated = "or " + '"' + "done" + '"'
-    if fabricated in gemma_src or fabricated in node_src:
-        die("fabricated done remains")
-    pins = {
-        "endgame-ai": "5ebd9e4d2308fdc07da6f8074040cb26061b32a6",
-    }
-    clone_shas = []
-    for name in ("endgame-ai", "telegram-control"):
-        got = subprocess.check_output(["git", "-C", str(ROOT / name), "rev-parse", "HEAD"], text=True).strip()
-        clone_shas.append(name + " " + got)
-        if name in pins and got != pins[name]:
-            die(name + " sha " + got)
-    import gemma
-    left = gemma.config_pairs(gemma.settings_text("Hello", ""))
-    right = gemma.config_pairs(gemma.resident_settings())
-    for key in ("gemma.text", "gemma.image"):
-        left.pop(key, None)
-        right.pop(key, None)
-    if left != right:
-        die("brain config mismatch")
-    import mouth
-    if mouth.language_of("zażółć gęślą jaźń") != "pl" or mouth.language_of("Iris can hear") != "en":
-        die("mouth language")
-    norm = mouth.model_text("Pięć dwanaście", "pl")
-    if "ę" in norm or "ś" in norm or "\u0301" not in norm or "\u0328" not in norm:
-        die("mouth language")
-    if mouth.language_of(norm) == "pl" or mouth.model_text("Hello", "en") != "Hello":
-        die("mouth language")
-    if mouth.model_text("Größe", "de") == "Größe":
-        die("mouth language")
-    looked = desk_object('{"action":"done","screenshot_description":"A quiet desk."}')
-    if looked["see"] != "A quiet desk." or looked["do"] != "done":
-        die("desk keys")
-    mouth_src = (ROOT / "mouth.py").read_text(encoding="utf-8")
-    if ("import " + "sounddevice") in node_src or "PlaySound" in mouth_src:
-        die("local audio remains")
-    if mouth.cfm_steps("v3") != "5" or mouth.cfm_steps("nano") != "2":
-        die("cfm steps")
-    if "chatterbox.cfm-steps 5" not in mouth.settings_text("v3", "pl", "zażółć", "off"):
-        die("cfm steps")
-    prove_expect("empty say", lambda: mouth.say("  ", "en"), "empty text")
-    prove_expect("missing lang", lambda: mouth.say("hi", ""), "mouth language")
-    print("prove: mouth language", file=sys.stderr, flush=True)
-    print("prove: brain config", file=sys.stderr, flush=True)
-    prove_expect("missing image", lambda: file_b64(ROOT / "no-such-image.png"), "missing image")
-    prove_expect("blank image", lambda: handle_brain(make_card("brain", "infer", "see " + MEDIA, image="")), "missing image")
-    prove_expect("image without media", lambda: local_infer("gemma", "no token", "aaaa"), "image prompt missing")
-    root = Path(tempfile.mkdtemp(prefix="trident-node-"))
-    seq = iter([
-        '<|tool_call>call:remember{line:<|"|>alpha<|"|>}<tool_call|>',
-        "   ",
-    ])
-    def generate(_prompt, _image):
-        return next(seq)
-    prove_expect(
-        "empty follow-up",
-        lambda: agent_turn("jarvis", "remember alpha", generate=generate, root=root),
-        "agent follow-up empty",
-    )
-    enqueue(make_card("room", "post", "one", room="floor", ident="a1"), root)
-    enqueue(make_card("room", "post", "two", room="floor", ident="b2"), root)
-    ids = []
-    lock = threading.Lock()
-    barrier = threading.Barrier(2)
-    def claim():
-        barrier.wait()
-        card = claim_one(root)
-        with lock:
-            if card is not None:
-                ids.append(card.id)
-    threads = [threading.Thread(target=claim), threading.Thread(target=claim)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
-    if sorted(ids) != ["a1", "b2"]:
-        die("queue race " + " ".join(ids))
-    if (root / "nvidia_turn.request.txt").exists():
-        die("shared inbox remains")
-    print("prove: queue", file=sys.stderr, flush=True)
-    order = []
-    gate = threading.Event()
-    sched = Scheduler(root)
-    sched.start()
-    def job(name, resource, hold):
-        def run(card):
-            order.append("start " + name)
-            if hold:
-                gate.wait(2)
-            time.sleep(0.05)
-            order.append("end " + name)
-            return "ok", None
-        card = make_card("room", "post", name, room="floor", resource=resource, ident="s" + name)
-        return card, run
-    a, ra = job("A", "gpu", True)
-    b, rb = job("B", "cpu", False)
-    c, rc = job("C", "gpu", False)
-    sched.submit(a, ra)
-    time.sleep(0.05)
-    sched.submit(b, rb)
-    sched.submit(c, rc)
-    time.sleep(0.2)
-    gate.set()
-    sched.finish_all(3, 3)
-    if order.index("start B") > order.index("end A"):
-        die("independent resource waited " + " ".join(order))
-    if order.index("start C") < order.index("end A"):
-        die("gpu conflict was not fifo " + " ".join(order))
-    print("prove: scheduler " + " ".join(order), file=sys.stderr, flush=True)
-    saved = LOADED["model"]
-    LOADED["model"] = ""
-    use_weights("gemma", stop=lambda name: log.append(name))
-    use_weights("gemma", stop=lambda name: log.append(name))
-    use_weights("qwen", stop=lambda name: log.append("unload " + name))
-    LOADED["model"] = saved
-    if log != ["unload gemma"]:
-        die("weights unloaded on the same model " + " ".join(log))
-    print("prove: weights", file=sys.stderr, flush=True)
-    hits = []
-    real = local_infer
-    def wrapped(*args, **kwargs):
-        hits.append(1)
-        return real(*args, **kwargs)
-    globals()["local_infer"] = wrapped
-    try:
-        prove_expect("peer miss", lambda: agent_turn("voice", "hi", peer="127.0.0.1:9", timeout=2, root=root), "peer missing")
-    finally:
-        globals()["local_infer"] = real
-    if hits:
-        die("peer miss used the local brain")
-    text = caps_text()
-    assert_mic(text)
-    for needle in ("endgame yes", "telegram yes", "playback yes", "brain gemma"):
-        if needle not in text:
-            die("caps missing " + needle + "\n" + text)
-    print("prove: caps\n" + text, file=sys.stderr, flush=True)
-    raw = local_infer("gemma", "<bos><|turn>user\nSay one short sentence.<turn|>\n<|turn>model\n", "")
-    sentence = answer_text(raw)
-    if not sentence:
-        die("gemma returned empty")
-    print("prove: gemma " + sentence, file=sys.stderr, flush=True)
-    room_add("floor", "post", node_id(), "skeleton", root)
-    log_text = (root / "node.room" / "floor.log").read_text(encoding="utf-8")
-    if "skeleton" not in log_text:
-        die("room log missing")
-    print("prove: room", file=sys.stderr, flush=True)
-    if reachable("127.0.0.1:" + str(PORT)):
-        die("port busy")
-    qdir = ROOT / "node.queue"
-    if qdir.is_dir() and any(qdir.glob("*.card")):
-        die("node.queue is not empty")
-    STOP.clear()
-    global SCHED
-    thread = threading.Thread(target=serve, daemon=True)
-    thread.start()
-    try:
-        deadline = time.time() + 5
-        while time.time() < deadline and not reachable("127.0.0.1:" + str(PORT)):
-            time.sleep(0.05)
-        if not reachable("127.0.0.1:" + str(PORT)):
-            die("node did not listen")
-        reply = transact("127.0.0.1:" + str(PORT), make_card("node", "hello", "hi"), 5)
-        assert_mic(reply.body)
-        print("prove: hello " + reply.frm, file=sys.stderr, flush=True)
-        prove_expect(
-            "ear closed",
-            lambda: transact("127.0.0.1:" + str(PORT), make_card("ear", "listen", ""), 10),
-            "ear closed",
-        )
-        gemma.stop_resident()
-        spoken = transact(
-            "127.0.0.1:" + str(PORT),
-            make_card("mouth", "say", "Iris is listening. The microphone stays closed."),
-            600,
-        )
-        if spoken.body.strip() != "spoken":
-            die("mouth missed")
-        print("prove: mouth spoken", file=sys.stderr, flush=True)
-    finally:
-        STOP.set()
-        thread.join(timeout=3)
-    proof = []
-    proof.append("command python node.py --prove")
-    proof.append("tip " + subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=str(ROOT), text=True).strip())
-    proof.extend(clone_shas)
-    proof.append("map")
-    proof.append(MAP.rstrip())
-    proof.append("caps")
-    proof.append(text.rstrip())
-    proof.append("scheduler " + " ".join(order))
-    proof.append("gemma resident user turn")
-    proof.append(sentence)
-    proof.append("hello " + reply.frm)
-    proof.append("ear closed")
-    proof.append("mouth spoken")
-    proof.append("room " + log_text.strip())
-    (ROOT / "node.proof.txt").write_text("\n".join(proof) + "\n", encoding="utf-8")
-    print("prove: wrote node.proof.txt", file=sys.stderr, flush=True)
+        clear_pid()
 
 
 def main():
@@ -2072,20 +1250,12 @@ def main():
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     argv = sys.argv[1:]
-    if argv == ["--prove"]:
-        prove()
-        return
-    if argv and argv[0] == "--peer":
-        if len(argv) != 2:
-            die("usage: node.py --peer host:port")
-        reply = transact(argv[1], make_card("node", "hello", caps_text()), 10)
-        sys.stdout.write(reply.body)
-        return
+    if argv not in ([], ["--line"]):
+        die("usage: node.py [--line]")
     line = argv == ["--line"]
-    if argv and not line:
-        die("usage: node.py [--prove | --line | --peer host:port]")
     if line:
         import call
+
         call.arm()
     try:
         serve()
@@ -2095,9 +1265,9 @@ def main():
     finally:
         if line:
             import call
+
             call.close_session()
 
 
 if __name__ == "__main__":
-    sys.modules["node"] = sys.modules["__main__"]
     main()
