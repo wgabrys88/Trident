@@ -726,10 +726,15 @@ def speak(text):
         die("empty say")
     import mouth
 
-    lang = mouth.language_of(spoken)
-    model = "v3" if lang == "pl" else "nano"
-    wav = mouth.synthesize(model, lang, spoken)
+    mod = node_mod()
+    peer = mod.mouth_peer()
+    if peer:
+        wav = mod.pull_wav(spoken, peer, mouth.language_of(spoken))
+    else:
+        wav = mouth.once(spoken)
     pcm = pcm_48k(wav)
+    if peer:
+        wav.unlink()
     LIVE.drop_rx = True
     start = time.perf_counter()
     sent = 0

@@ -134,7 +134,7 @@ def check_voice(model, lang):
 
 
 def cfm_steps(model):
-    return "10" if model == "v3" else "2"
+    return "5" if model == "v3" else "2"
 
 
 def settings_text(model, lang, sentence, play):
@@ -842,7 +842,13 @@ def pack_words(text, limit):
     return chunks
 
 
-def say(text, lang, fast="nano"):
+def once(text, lang=""):
+    tag = (lang or language_of(text)).split("-")[0].lower()
+    model = "v3" if tag == "pl" else "nano"
+    return synthesize(model, tag, text)
+
+
+def say(text, lang, fast="nano", fetch=None):
     spoken = " ".join((text or "").split())
     if not spoken:
         die("empty text")
@@ -861,7 +867,15 @@ def say(text, lang, fast="nano"):
     limit = 65 if tag == "en" else 55
     pieces = [(chunk, model, tag) for chunk in pack_words(spoken, limit)]
     print("mouth out: default", file=sys.stderr, flush=True)
-    speak_pieces(pieces, play_wav)
+    if fetch is None:
+        speak_pieces(pieces, play_wav)
+        return
+
+    def play(path):
+        play_wav(path)
+        Path(path).unlink()
+
+    speak_chunks(lambda piece: fetch(piece[0]), pieces, play)
 
 
 def main():

@@ -7,6 +7,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -61,6 +62,7 @@ Card = namedtuple(
 )
 LOADED = {"model": ""}
 PEERS = {}
+LINKS = {}
 CAPS = {"text": ""}
 SCHED = None
 STOP = threading.Event()
@@ -1023,6 +1025,40 @@ def peer_with(cap, value):
     return None
 
 
+def mouth_peer():
+    if cuda_line(caps_text()):
+        return None
+    for item in PEERS.values():
+        addr = (item["addr"] or "").strip()
+        if not addr or not cuda_line(item["caps"]):
+            continue
+        if "playback yes" not in item["caps"].splitlines():
+            continue
+        if reachable(addr):
+            return item
+    return None
+
+
+def pull_wav(text, peer, lang):
+    reply = transact(
+        peer["addr"],
+        make_card("mouth", "say", text, resource="wav", profile=lang or ""),
+        600,
+    )
+    body = (reply.body or "").strip()
+    if not body.startswith("wav ") or not (reply.image or "").strip():
+        die("mouth missed")
+    try:
+        raw = base64.b64decode("".join(reply.image.split()), validate=True)
+    except (ValueError, binascii.Error):
+        die("mouth missed")
+    fd, name = tempfile.mkstemp(suffix=".wav")
+    os.write(fd, raw)
+    os.close(fd)
+    print("mouth: peer " + body[4:].strip(), file=sys.stderr, flush=True)
+    return Path(name)
+
+
 def decl(name, description, fields):
     props = []
     required = []
@@ -1446,11 +1482,19 @@ def call_flag():
 
 
 def handle_hello(card):
+    host = LINKS.get(card.id, "")
+    addr = ""
+    if host and host not in ("127.0.0.1", "::1") and card.frm != node_id():
+        addr = host + ":" + str(PORT)
     item = PEERS.get(card.frm)
     if item is None:
-        PEERS[card.frm] = {"addr": "", "caps": card.body, "id": card.frm}
+        PEERS[card.frm] = {"addr": addr, "caps": card.body or "", "id": card.frm}
     else:
-        item["caps"] = card.body
+        if addr:
+            item["addr"] = addr
+        item["caps"] = card.body or ""
+    if addr:
+        print("node: link " + card.frm + " " + addr, file=sys.stderr, flush=True)
     return caps_text().rstrip("\n") + "\n" + call_flag() + "\n", None
 
 
@@ -1508,9 +1552,27 @@ def handle_mouth(card):
         import call
         call.speak(text)
         return "spoken", None
+    if card.resource == "wav":
+        peer = mouth_peer()
+        if peer and peer["id"] != card.frm:
+            reply = transact(peer["addr"], card._replace(frm=node_id()), 600)
+            return reply.body, reply.image
+        import mouth
+        wav = mouth.once(text, card.profile)
+        payload = base64.b64encode(wav.read_bytes()).decode("ascii")
+        wav.unlink()
+        tag = (card.profile or mouth.language_of(text)).split("-")[0].lower()
+        model = "v3" if tag == "pl" else "nano"
+        return "wav " + (cuda_line(caps_text()) or "none") + " cfm " + mouth.cfm_steps(model), payload
     if card.to not in ("*", node_id()) and card.to in PEERS:
         reply = transact(PEERS[card.to]["addr"], card._replace(frm=node_id()), 180)
         return reply.body, None
+    peer = mouth_peer()
+    if peer:
+        import mouth
+        lang = mouth.language_of(text)
+        mouth.say(text, lang, fetch=lambda sentence: pull_wav(sentence, peer, lang))
+        return "spoken", None
     if not cap_has("playback", "yes"):
         other = peer_with("playback", "yes")
         if not other or not other["addr"]:
@@ -1642,6 +1704,7 @@ def execute(card, timeout):
 
 def serve_conn(conn):
     data = b""
+    card = None
     try:
         while True:
             chunk = conn.recv(65536)
@@ -1653,6 +1716,7 @@ def serve_conn(conn):
         if not data:
             return
         card = parse_card(data.decode("utf-8"))
+        LINKS[card.id] = conn.getpeername()[0]
         try:
             body, image = execute(card, 600)
             reply = reply_of(card, body, image)
@@ -1662,6 +1726,8 @@ def serve_conn(conn):
     except SystemExit as exc:
         print(getattr(exc, "message", "") or "failed", file=sys.stderr, flush=True)
     finally:
+        if card is not None:
+            LINKS.pop(card.id, None)
         conn.close()
 
 
