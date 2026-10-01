@@ -92,7 +92,10 @@ def say_text(text, hold, flip):
         die("empty text")
     if not node.reachable("127.0.0.1:8765"):
         die("node down")
-    reply = node.transact("127.0.0.1:8765", node.make_card("mouth", "say", spoken), 600)
+    import mouth
+
+    lang = mouth.resolve_lang(spoken)
+    reply = node.transact("127.0.0.1:8765", node.make_card("mouth", "say", spoken, agent=lang), 600)
     if (reply.body or "").strip() != "spoken":
         die("mouth missed")
 

@@ -470,52 +470,6 @@ def adapter_names():
     return cuda_name(), vulkan_name()
 
 
-def capture_name(name):
-    text = " ".join((name or "").casefold().split())
-    for skip in (
-        "cable",
-        "what u hear",
-        "digital-in",
-        "digital in",
-        "sound mapper",
-        "primary sound capture",
-        "line-in",
-        "line in",
-        "vb-audio",
-        "stereo mix",
-    ):
-        if skip in text:
-            return False
-    return bool(text)
-
-
-def mic_lines():
-    try:
-        import sounddevice as sd
-    except ImportError:
-        die("sounddevice missing")
-    wasapi = None
-    for index, api in enumerate(sd.query_hostapis()):
-        if str(api.get("name") or "").casefold() == "windows wasapi":
-            wasapi = index
-            break
-    if wasapi is None:
-        die("wasapi missing")
-    found = []
-    for index, info in enumerate(sd.query_devices()):
-        if int(info.get("hostapi") or -1) != wasapi:
-            continue
-        if int(info.get("max_input_channels") or 0) < 1:
-            continue
-        name = " ".join(str(info.get("name") or "").split())
-        if capture_name(name):
-            found.append("mic " + str(index) + " " + name)
-    if not found:
-        found.append("mic no")
-    found.append("capture closed")
-    return found
-
-
 def chrome_present():
     if shutil.which("chrome") or shutil.which("chrome.exe"):
         return True
@@ -562,19 +516,13 @@ def caps_text():
     lines.append("telegram " + yes(clone_file("telegram-control", "telegram_pc_remote.py")))
     lines.append("chrome " + yes(chrome_present()))
     lines.append("playback " + yes((ROOT / "chatterbox.exe").is_file()))
-    lines.extend(mic_lines())
+    lines.append("mic no")
+    lines.append("capture closed")
     for module, names in OPS.items():
         for op in names:
             lines.append("op " + module + "." + op)
     CAPS["text"] = "\n".join(lines) + "\n"
     return CAPS["text"]
-
-
-def cap_has(name, value):
-    for line in caps_text().splitlines():
-        if line == name + " " + value:
-            return True
-    return False
 
 
 def real_stop(model):
@@ -658,6 +606,7 @@ DESK_SYSTEM = (
     "You see one full desktop screenshot. "
     "Answer with one JSON object and no other text. "
     "see is one sentence about the whole screen and is never empty. "
+    "The JSON keys are see and do. "
     "do is click, type, key, wait, or done. "
     "click includes box_2d as y0, x0, y1, x1, each a number from 0 to 1000. "
     "type includes text and an optional key. "
@@ -811,15 +760,21 @@ def desk_object(reply):
         die("desk unparsed " + clip(raw, 160))
     if not isinstance(found, dict):
         die("desk unparsed " + clip(raw, 160))
-    see = found.get("see")
-    do = found.get("do")
-    if not isinstance(see, str) or not see.strip():
+    see = ""
+    for key in ("see", "screenshot_description", "description"):
+        value = found.get(key)
+        if isinstance(value, str) and value.strip():
+            see = " ".join(value.split())
+            break
+    if not see:
         die("desk see absent " + clip(raw, 140))
-    if not isinstance(do, str):
-        die("desk action absent " + clip(raw, 140))
-    name = do.strip().lower()
+    do = found.get("do")
+    if not isinstance(do, str) or not do.strip():
+        do = found.get("action")
+    name = do.strip().lower() if isinstance(do, str) else ""
     if name not in DESK_ACTS:
-        die("desk action absent " + (name or "empty") + " " + clip(raw, 140))
+        name = "done"
+    found["see"] = see
     found["do"] = name
     return found
 
@@ -1034,14 +989,6 @@ def remote_infer(peer, prompt, image, timeout):
     if not reply.body.strip():
         die("gemma returned empty")
     return reply.body
-
-
-def peer_with(cap, value):
-    for item in PEERS.values():
-        for line in item["caps"].splitlines():
-            if line == cap + " " + value:
-                return item
-    return None
 
 
 def decl(name, description, fields):
@@ -1528,32 +1475,25 @@ def handle_mouth(card):
         die("empty say")
     if card.resource == "call":
         import call
-        call.speak(text)
+        call.speak(text, card.agent)
         return "spoken", None
     if card.to not in ("*", node_id()) and card.to in PEERS:
         return forward(card, PEERS[card.to]["addr"])
-    addr = cuda_mouth()
-    if card.resource == "wav":
-        if addr:
-            return forward(card._replace(to="*"), addr)
-        if not (ROOT / "chatterbox.exe").is_file():
-            die("mouth missing")
-        import mouth
-        park_gemma()
-        path = mouth.wave(text, card.agent)
-        return "wav " + path.name, file_b64(path)
-    if addr:
-        import mouth
-        play_remote(addr, text, mouth.play_wav)
-        return "spoken", None
-    if not cap_has("playback", "yes"):
-        other = peer_with("playback", "yes")
-        if not other or not other["addr"]:
-            die("mouth missing")
-        return forward(card._replace(to=other["id"]), other["addr"])
     import mouth
+    lang = (card.agent or "").strip() or mouth.resolve_lang(text)
+    addr = cuda_mouth()
+    if addr:
+        body, image = forward(card._replace(to="*", resource="wav", agent=lang), addr)
+        if card.resource == "wav":
+            return body, image
+        return "spoken", None
+    if not (ROOT / "chatterbox.exe").is_file():
+        die("mouth missing")
     park_gemma()
-    mouth.say(text, mouth.language_of(text))
+    if card.resource == "wav":
+        path = mouth.wave(text, lang)
+        return "wav " + path.name, file_b64(path)
+    mouth.say(text, lang)
     return "spoken", None
 
 
@@ -1866,9 +1806,8 @@ def play_remote(addr, text, play_one, lang=""):
     import mouth
 
     spoken = " ".join((text or "").split())
-    tag = (lang or mouth.language_of(spoken)).strip().split("-")[0].lower()
-    limit = 65 if tag == "en" else 55
-    chunks = mouth.pack_words(spoken, limit)
+    tag = mouth.resolve_lang(spoken, lang)
+    chunks = mouth.chunks_for(spoken, tag)
 
     def synth(sentence):
         return fetch_wav(addr, sentence, tag)
@@ -1951,6 +1890,25 @@ def prove():
     import mouth
     if mouth.language_of("zażółć gęślą jaźń") != "pl" or mouth.language_of("Iris can hear") != "en":
         die("mouth language")
+    norm = mouth.model_text("Pięć", "pl")
+    if "ę" in norm or "P" in norm or "\u0328" not in norm:
+        die("polish norm")
+    if mouth.model_text("Hello", "en") != "Hello":
+        die("english norm")
+    if mouth.resolve_lang("Tak widze", "pl") != "pl" or mouth.resolve_lang("Tak widze", "uk") != "en":
+        die("mouth language")
+    long_pl = " ".join(["słowo"] * 60)
+    if len(mouth.chunks_for(long_pl, "pl")) < 2:
+        die("polish chunks")
+    wav_card = parse_card(render(make_card("mouth", "say", "cześć", resource="wav", agent="pl")))
+    if wav_card.agent != "pl" or wav_card.resource != "wav":
+        die("wav lang")
+    seen = desk_object('{"action": "done", "screenshot_description": "A terminal is open."}')
+    if seen["see"] != "A terminal is open." or seen["do"] != "done":
+        die("desk see")
+    mouth_src = (ROOT / "mouth.py").read_text(encoding="utf-8")
+    if ("import " + "sounddevice") in node_src or "PlaySound" in mouth_src:
+        die("local audio remains")
     if mouth.cfm_steps("v3") != "5" or mouth.cfm_steps("nano") != "2":
         die("cfm steps")
     if "chatterbox.cfm-steps 5" not in mouth.settings_text("v3", "pl", "zażółć", "off"):
