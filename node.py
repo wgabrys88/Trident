@@ -2148,4 +2148,5 @@ def main():
 
 
 if __name__ == "__main__":
+    sys.modules["node"] = sys.modules["__main__"]
     main()
