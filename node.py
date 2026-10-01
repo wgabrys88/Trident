@@ -269,6 +269,10 @@ def mark(root, card, state):
 def needs_of(card):
     if card.module == "agent" and card.op == "turn" and card.resource == "call":
         return ("call", "gpu", "weights:gemma")
+    if card.module == "mouth" and card.op == "say":
+        if card.resource == "call":
+            return ("call", "playback", "gpu")
+        return ("playback", "gpu")
     if card.resource.strip():
         return tuple(card.resource.split())
     if card.module == "agent" and card.op == "turn":
@@ -606,11 +610,28 @@ def file_b64(path):
     return base64.b64encode(data).decode("ascii")
 
 
+def park_mouth():
+    import mouth
+
+    if mouth.chatterbox_running_any():
+        mouth.stop_resident()
+
+
+def park_gemma():
+    if not cuda_name():
+        return
+    import gemma
+
+    if gemma.brain_running_any():
+        gemma.stop_resident()
+
+
 def local_infer(brain, prompt, image):
     if brain == "gemma":
         import gemma
         if image and MEDIA not in prompt:
             die("image prompt missing <__media__>")
+        park_mouth()
         use_weights(brain)
         try:
             text = gemma.resident_generate(prompt, image or "", False)
@@ -1493,6 +1514,11 @@ def handle_agent(card):
     return text, None
 
 
+def forward(card, addr):
+    reply = transact(addr, card._replace(frm=node_id()), 600)
+    return reply.body, reply.image
+
+
 def handle_mouth(card):
     raw = card.body or ""
     if "\x00" in raw:
@@ -1505,16 +1531,28 @@ def handle_mouth(card):
         call.speak(text)
         return "spoken", None
     if card.to not in ("*", node_id()) and card.to in PEERS:
-        reply = transact(PEERS[card.to]["addr"], card._replace(frm=node_id()), 180)
-        return reply.body, None
+        return forward(card, PEERS[card.to]["addr"])
+    addr = cuda_mouth()
+    if card.resource == "wav":
+        if addr:
+            return forward(card._replace(to="*"), addr)
+        if not (ROOT / "chatterbox.exe").is_file():
+            die("mouth missing")
+        import mouth
+        park_gemma()
+        path = mouth.wave(text, card.agent)
+        return "wav " + path.name, file_b64(path)
+    if addr:
+        import mouth
+        play_remote(addr, text, mouth.play_wav)
+        return "spoken", None
     if not cap_has("playback", "yes"):
         other = peer_with("playback", "yes")
         if not other or not other["addr"]:
             die("mouth missing")
-        sent = card._replace(frm=node_id(), to=other["id"])
-        reply = transact(other["addr"], sent, 180)
-        return reply.body, None
+        return forward(card._replace(to=other["id"]), other["addr"])
     import mouth
+    park_gemma()
     mouth.say(text, mouth.language_of(text))
     return "spoken", None
 
@@ -1533,7 +1571,11 @@ def handle_ear(card):
 
 
 def handle_room(card):
-    room_add(card.room or "floor", card.op, card.frm, card.body)
+    room = card.room or "floor"
+    room_add(room, card.op, card.frm, card.body)
+    if room == "seat":
+        path = (ROOT / "node.room" / "seat.log")
+        return path.read_text(encoding="utf-8"), None
     return card.body, None
 
 
@@ -1743,36 +1785,95 @@ def cuda_line(text):
     return ""
 
 
-def brain_place(extra=()):
+def peer_addrs(extra=()):
     if isinstance(extra, str):
         extra = (extra,) if extra else ()
-    if cuda_name() and engine_here("gemma"):
-        return ""
     seen = []
     addrs = [item for item in extra]
     for item in PEERS.values():
         addrs.append(item.get("addr") or "")
+    found = []
     for addr in addrs:
         addr = (addr or "").strip()
         if not addr or addr in seen:
             continue
         seen.append(addr)
+        found.append(addr)
+    return found
+
+
+def caps_for(addr):
+    for item in PEERS.values():
+        if item.get("addr") == addr and item.get("caps"):
+            return item["caps"]
+    reply = transact(addr, make_card("node", "hello", "hi"), 10)
+    PEERS[reply.frm] = {"addr": addr, "caps": reply.body, "id": reply.frm}
+    return reply.body
+
+
+def brain_place(extra=()):
+    if cuda_name() and engine_here("gemma"):
+        return ""
+    for addr in peer_addrs(extra):
         if not reachable(addr):
             continue
-        caps = ""
-        for item in PEERS.values():
-            if item.get("addr") == addr:
-                caps = item.get("caps") or ""
-                break
-        if not caps:
-            reply = transact(addr, make_card("node", "hello", "hi"), 10)
-            caps = reply.body
-            PEERS[reply.frm] = {"addr": addr, "caps": caps, "id": reply.frm}
+        caps = caps_for(addr)
         if cuda_line(caps) and "brain gemma" in caps.splitlines():
             return addr
     if engine_here("gemma"):
         return ""
     die("brain missing gemma")
+
+
+def cuda_mouth(extra=()):
+    if cuda_name() and (ROOT / "chatterbox.exe").is_file():
+        return ""
+    for addr in peer_addrs(extra):
+        if not reachable(addr):
+            continue
+        caps = caps_for(addr)
+        if cuda_line(caps) and "playback yes" in caps.splitlines():
+            return addr
+    return ""
+
+
+def wav_bytes(image):
+    raw = "".join((image or "").split())
+    if not raw:
+        die("mouth wav missing")
+    try:
+        data = base64.b64decode(raw, validate=True)
+    except (ValueError, binascii.Error):
+        die("mouth wav")
+    if data[:4] != b"RIFF" or len(data) < 44:
+        die("mouth wav")
+    return data
+
+
+def write_peer_wav(data):
+    path = ROOT / (str(time.time_ns()) + "_peer.wav")
+    path.write_bytes(data)
+    return path
+
+
+def fetch_wav(addr, text, lang):
+    card = make_card("mouth", "say", text, resource="wav", agent=lang or "")
+    reply = transact(addr, card, 600)
+    return write_peer_wav(wav_bytes(reply.image))
+
+
+def play_remote(addr, text, play_one, lang=""):
+    import mouth
+
+    spoken = " ".join((text or "").split())
+    tag = (lang or mouth.language_of(spoken)).strip().split("-")[0].lower()
+    limit = 65 if tag == "en" else 55
+    chunks = mouth.pack_words(spoken, limit)
+
+    def synth(sentence):
+        return fetch_wav(addr, sentence, tag)
+
+    mouth.speak_chunks(synth, chunks, play_one)
 
 
 def place_line(found):
@@ -1850,6 +1951,10 @@ def prove():
     import mouth
     if mouth.language_of("zażółć gęślą jaźń") != "pl" or mouth.language_of("Iris can hear") != "en":
         die("mouth language")
+    if mouth.cfm_steps("v3") != "5" or mouth.cfm_steps("nano") != "2":
+        die("cfm steps")
+    if "chatterbox.cfm-steps 5" not in mouth.settings_text("v3", "pl", "zażółć", "off"):
+        die("cfm steps")
     prove_expect("empty say", lambda: mouth.say("  ", "en"), "empty text")
     prove_expect("missing lang", lambda: mouth.say("hi", ""), "mouth language")
     print("prove: mouth language", file=sys.stderr, flush=True)

@@ -717,6 +717,29 @@ async def send_frame(chunk):
     )
 
 
+def send_pcm(pcm):
+    start = time.perf_counter()
+    sent = 0
+    for offset in range(0, len(pcm), FRAME_TX):
+        chunk = pcm[offset : offset + FRAME_TX]
+        if len(chunk) < FRAME_TX:
+            chunk = chunk + bytes(FRAME_TX - len(chunk))
+        submit(send_frame(chunk), 5)
+        sent += 1
+        delay = start + sent * 0.01 - time.perf_counter()
+        if delay > 0:
+            time.sleep(delay)
+    LIVE.tx_seconds += len(pcm) / 2 / RATE_TX
+
+
+def reset_rx():
+    LIVE.drop_rx = False
+    with LIVE.rx_lock:
+        LIVE.rx.clear()
+    LIVE.rx_event.clear()
+    LIVE.gate.reset()
+
+
 def speak(text):
     if LIVE is None or not LIVE.up:
         die("call down")
@@ -726,29 +749,19 @@ def speak(text):
     import mouth
 
     lang = mouth.language_of(spoken)
-    model = "v3" if lang == "pl" else "nano"
-    wav = mouth.synthesize(model, lang, spoken)
-    pcm = pcm_48k(wav)
     LIVE.drop_rx = True
-    start = time.perf_counter()
-    sent = 0
     try:
-        for offset in range(0, len(pcm), FRAME_TX):
-            chunk = pcm[offset : offset + FRAME_TX]
-            if len(chunk) < FRAME_TX:
-                chunk = chunk + bytes(FRAME_TX - len(chunk))
-            submit(send_frame(chunk), 5)
-            sent += 1
-            delay = start + sent * 0.01 - time.perf_counter()
-            if delay > 0:
-                time.sleep(delay)
+        import node
+
+        addr = node.cuda_mouth()
+        if addr:
+            node.play_remote(addr, spoken, lambda path: send_pcm(pcm_48k(path)), lang)
+        else:
+            node.park_gemma()
+            model = "v3" if lang == "pl" else "nano"
+            send_pcm(pcm_48k(mouth.synthesize(model, lang, spoken)))
     finally:
-        LIVE.drop_rx = False
-        with LIVE.rx_lock:
-            LIVE.rx.clear()
-        LIVE.rx_event.clear()
-        LIVE.gate.reset()
-    LIVE.tx_seconds += len(pcm) / 2 / RATE_TX
+        reset_rx()
     print("call: tx " + format(LIVE.tx_seconds, ".2f"), file=sys.stderr, flush=True)
 
 

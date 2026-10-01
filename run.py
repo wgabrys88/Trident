@@ -14,6 +14,9 @@ python run.py stop
 python run.py call [SECONDS] [--peer HOST:PORT]
     Place one voice call on the line. Residents stay up when it drops.
     SECONDS hangs the call up after that long.
+
+python run.py clean
+    Delete call and test artifacts. Leaves models, installs, and reference.wav.
 """
 
 import ctypes
@@ -123,7 +126,7 @@ def split_peers(argv):
 
 def parse_args(argv):
     argv, peers = split_peers(argv)
-    usage = "usage: run.py [--peer HOST:PORT] | run.py start [inject [PATH]] [--peer HOST:PORT] | run.py stop | run.py call [SECONDS] [--peer HOST:PORT]"
+    usage = "usage: run.py [--peer HOST:PORT] | run.py start [inject [PATH]] [--peer HOST:PORT] | run.py stop | run.py call [SECONDS] [--peer HOST:PORT] | run.py clean"
     if not argv:
         return "rest", peers, None
     if argv[0] == "call":
@@ -137,6 +140,10 @@ def parse_args(argv):
         if len(argv) != 1:
             die("usage: run.py stop")
         return "stop", [], None
+    if command == "clean":
+        if len(argv) != 1 or peers:
+            die("usage: run.py clean")
+        return "clean", [], None
     if command != "start":
         die(usage)
     inject = None
@@ -236,6 +243,66 @@ def stop_assistant():
         cwd=str(ROOT),
         shell=False,
     ).returncode
+
+
+def drop_file(path):
+    if not path.is_file():
+        return 0
+    path.unlink()
+    return 1
+
+
+def cmd_clean():
+    removed = 0
+    for name in (
+        "mouth.txt",
+        "mouth.v3.txt",
+        "mouth.stop",
+        "mouth.lock",
+        "gemma_run.txt",
+        "sense_run.txt",
+        "vad_run.txt",
+        "call.hear.wav",
+        "call.hear.txt",
+        "assistant.note.txt",
+        "assistant.session.txt",
+        "assistant.session.txt.tmp",
+        "tool_hello.txt",
+        "cursor.status.txt",
+        "cursor.status.txt.tmp",
+        "iris.pid",
+        "iris_outbox.txt",
+        "iris_outbox.txt.tmp",
+        "iris_status.txt",
+        "iris_status.txt.tmp",
+        "gemma.lastprompt.txt",
+    ):
+        removed += drop_file(ROOT / name)
+    for pattern in (
+        "*.pid",
+        "*.pid.tmp",
+        "*.stop",
+        "*.prompt.txt",
+        "*.response.txt",
+        "*.response.wav",
+        "*.run.log",
+        "*.run.err",
+        "*_chatterbox_out_*",
+        "*_out_*.txt",
+        "*_peer.wav",
+    ):
+        for path in ROOT.glob(pattern):
+            removed += drop_file(path)
+    for path in ROOT.glob("*.wav"):
+        if path.name != "reference.wav":
+            removed += drop_file(path)
+    for folder in ("node.queue", "node.state"):
+        base = ROOT / folder
+        if not base.is_dir():
+            continue
+        for path in base.rglob("*"):
+            removed += drop_file(path)
+    print("clean " + str(removed), flush=True)
 
 
 def cmd_stop():
@@ -435,6 +502,9 @@ def main():
     command, peers, extra = parse_args(sys.argv[1:])
     if command == "stop":
         cmd_stop()
+        return
+    if command == "clean":
+        cmd_clean()
         return
     if command == "call":
         cmd_call(extra, peers)
