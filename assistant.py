@@ -84,15 +84,12 @@ def speakable(generation):
 
 
 def say_text(text, hold, flip):
-    del hold
-    import gemma
+    del hold, flip
     import node
 
     spoken = " ".join((text or "").split())
     if not spoken:
         die("empty text")
-    if flip:
-        gemma.stop_resident()
     if not node.reachable("127.0.0.1:8765"):
         die("node down")
     reply = node.transact("127.0.0.1:8765", node.make_card("mouth", "say", spoken), 600)
@@ -195,14 +192,9 @@ def words_from_wav(wav):
 
 
 def peer_addr(args):
-    if not args.nvidia:
-        return ""
     raw = (args.url or "").strip()
     if not raw:
-        peers = os.environ.get("TRIDENT_PEERS", "").strip()
-        raw = peers.split(",")[0].strip() if peers else ""
-    if not raw:
-        die("peer missing")
+        return ""
     if raw.startswith("http://") or raw.startswith("https://"):
         die("peer is host:port")
     host, sep, port = raw.rpartition(":")
@@ -224,14 +216,11 @@ def announce_place(found):
 def turn_place(args):
     import node
 
-    addr = peer_addr(args)
+    addr = node.brain_place(peer_addr(args))
     if addr:
-        if not node.reachable(addr):
-            die("peer missing")
         found = node.remote_place(addr)
-        announce_place(found)
-        return found
-    found = node.local_place()
+    else:
+        found = node.local_place()
     if found.brain == "missing":
         die("brain missing")
     announce_place(found)
@@ -346,17 +335,12 @@ def main():
     parser.add_argument("--wav", default=None, help="transcribe this wav through hear.py; skip the mic; one turn")
     parser.add_argument("--stop", action="store_true", help="stop the assistant tree on this PC")
     parser.add_argument("--image", default=None, help="image file forwarded on the turn")
-    parser.add_argument(
-        "--nvidia",
-        action="store_true",
-        help="send each turn to this peer host:port. A closed port is an error. Does not bind 8765",
-    )
-    parser.add_argument("--url", default=None, help="peer host:port; requires --nvidia. Else the first TRIDENT_PEERS entry")
+    parser.add_argument("--url", default=None, help="peer host:port")
     parser.add_argument("--timeout", type=float, default=180, help="brain timeout seconds (default 180)")
     args = parser.parse_args()
 
     if args.stop:
-        if args.text is not None or args.wav is not None or args.image or args.nvidia or args.url:
+        if args.text is not None or args.wav is not None or args.image or args.url:
             die("usage: assistant.py --stop")
         stop_tree()
         return
@@ -380,9 +364,7 @@ def main():
             die("empty iris-outbox path")
     if args.url is not None and args.url.strip() == "":
         die("empty url")
-    if args.url and not args.nvidia:
-        die("url asks for --nvidia")
-    if args.nvidia:
+    if args.url:
         peer_addr(args)
     if args.timeout <= 0:
         die("timeout must be > 0")

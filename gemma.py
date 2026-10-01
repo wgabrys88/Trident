@@ -605,6 +605,12 @@ def ensure_resident():
     die("gemma did not become ready\n" + log_tail())
 
 
+def idle():
+    if (ROOT / "gemma.busy").is_file() and brain_running_any():
+        die("gemma busy")
+    return ensure_resident()
+
+
 class FrameParser:
     def __init__(self, ident, on_piece=None):
         self.ident = ident

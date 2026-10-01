@@ -1,26 +1,19 @@
-"""Iris voice.
+"""Trident.
 
-python run.py start [--url HOST:PORT]
+python run.py [--peer HOST:PORT]
+    Residents idle, no call up. Prints nothing and exits 0.
+    A failure prints one line and exits non-zero.
+
+python run.py start [--peer HOST:PORT] [inject [PATH]]
     Start the node on port 8765 when it is down, then the assistant.
     The microphone stays closed.
-    HOST:PORT is one peer. TRIDENT_PEERS supplies it when --url is omitted.
-
-python run.py start inject [PATH]
-    Simulated turns. PATH is one turn per line, or blocks split by a line
-    that is only ---. No PATH reads stdin. No microphone.
 
 python run.py stop
     Stop this organism and the mouth. Leave port 8765 listening.
 
-python run.py call [SECONDS]
+python run.py call [SECONDS] [--peer HOST:PORT]
     Quit Telegram Desktop, place one voice call, then restart Desktop.
-    The microphone stays closed. Each heard sentence is one voice card.
-    Resident Gemma answers in text. That sentence is spoken into the call.
-    SECONDS keeps the duplex for that long, then hangs up and stops the
-    node, Telethon, and any Cursor child this call started.
-    TRIDENT_PEERS is the other seat when the call or the brain is not here.
-
-Spoken shutdown is a Gemma stop tool call, not a keyword.
+    The microphone stays closed. Resident Gemma stays loaded.
 """
 
 import ctypes
@@ -28,7 +21,6 @@ import os
 import socket
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -104,39 +96,53 @@ def remove_pidfile(name, pid):
         pass
 
 
+def host_port(value):
+    if value.startswith("http://") or value.startswith("https://"):
+        die("peer is host:port")
+    host, sep, port = value.rpartition(":")
+    if sep != ":" or not host or not port.isdigit() or not (1 <= int(port) <= 65535):
+        die("peer is host:port")
+    return value
+
+
+def split_peers(argv):
+    peers = []
+    rest = []
+    index = 0
+    while index < len(argv):
+        if argv[index] == "--peer":
+            if index + 1 >= len(argv) or not argv[index + 1].strip():
+                die("peer is host:port")
+            peers.append(host_port(argv[index + 1].strip()))
+            index += 2
+            continue
+        rest.append(argv[index])
+        index += 1
+    return rest, peers
+
+
 def parse_args(argv):
-    usage = "usage: run.py start [--url HOST:PORT] [inject [PATH]] | run.py stop | run.py call [SECONDS]"
+    argv, peers = split_peers(argv)
+    usage = "usage: run.py [--peer HOST:PORT] | run.py start [inject [PATH]] [--peer HOST:PORT] | run.py stop | run.py call [SECONDS] [--peer HOST:PORT]"
     if not argv:
-        die(usage)
+        return "rest", peers, None
     if argv[0] == "call":
         if len(argv) == 1:
-            return "call", "", None
+            return "call", peers, ""
         if len(argv) == 2 and argv[1].isdigit() and int(argv[1]) > 0:
-            return "call", argv[1], None
-        die("usage: run.py call [SECONDS]")
+            return "call", peers, argv[1]
+        die("usage: run.py call [SECONDS] [--peer HOST:PORT]")
     command = argv[0]
     if command == "stop":
         if len(argv) != 1:
             die("usage: run.py stop")
-        return "stop", "", None
+        return "stop", [], None
     if command != "start":
         die(usage)
-    url = ""
     inject = None
     index = 1
     while index < len(argv):
         arg = argv[index]
-        if arg == "--url":
-            if index + 1 >= len(argv):
-                die("empty url")
-            value = argv[index + 1].strip()
-            if not value:
-                die("empty url")
-            if url:
-                die(usage)
-            url = value
-            index += 2
-            continue
         if arg == "inject":
             if inject is not None:
                 die(usage)
@@ -150,17 +156,7 @@ def parse_args(argv):
                 index += 1
             continue
         die(usage)
-    if not url:
-        peers = os.environ.get("TRIDENT_PEERS", "").strip()
-        if peers:
-            url = peers.split(",")[0].strip()
-    if url.startswith("http://") or url.startswith("https://"):
-        die("peer is host:port")
-    if url:
-        host, sep, port = url.rpartition(":")
-        if sep != ":" or not host or not port.isdigit() or not (1 <= int(port) <= 65535):
-            die("peer is host:port")
-    return "start", url, inject
+    return "start", peers, inject
 
 
 def already_up():
@@ -273,19 +269,29 @@ def port_open():
         sock.close()
 
 
-def ensure_node():
+def ensure_node(peers, quiet=False):
     import node
 
     py = venv_python()
     proc = None
     if not port_open():
-        proc = subprocess.Popen(
-            [py, "-u", str(ROOT / "node.py")],
-            cwd=str(ROOT),
-            shell=False,
-        )
-        deadline = time.monotonic() + 15
+        argv = [py, "-u", str(ROOT / "node.py")]
+        stdio = {}
+        log = None
+        if quiet:
+            log = open(ROOT / "node.run.err", "ab", buffering=0)
+            stdio["stdout"] = subprocess.DEVNULL
+            stdio["stderr"] = log
+            stdio["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+        try:
+            proc = subprocess.Popen(argv, cwd=str(ROOT), shell=False, **stdio)
+        finally:
+            if log is not None:
+                log.close()
+        deadline = time.monotonic() + 30
         while time.monotonic() < deadline and not port_open():
+            if proc.poll() is not None:
+                break
             time.sleep(0.05)
         if not port_open():
             if proc.poll() is None:
@@ -295,20 +301,9 @@ def ensure_node():
     for line in ("capture closed", "op mouth.say", "op ear.listen", "op call.dial"):
         if line not in reply.body.splitlines():
             die("node is not this protocol")
+    for addr in peers:
+        node.transact("127.0.0.1:8765", node.make_card("node", "join", addr), 20)
     return proc
-
-
-def peer_addr():
-    raw = os.environ.get("TRIDENT_PEERS", "").strip()
-    if not raw:
-        die("peer missing")
-    addr = raw.split(",")[0].strip()
-    if addr.startswith("http://") or addr.startswith("https://"):
-        die("peer is host:port")
-    host, sep, port = addr.rpartition(":")
-    if sep != ":" or not host or not port.isdigit() or not (1 <= int(port) <= 65535):
-        die("peer is host:port")
-    return addr
 
 
 def telegram_here():
@@ -316,27 +311,18 @@ def telegram_here():
     return (desktop / "Telegram.exe").is_file() and (desktop / "tdata").is_dir()
 
 
-def call_addr():
-    if telegram_here():
-        return "127.0.0.1:8765"
-    return peer_addr()
-
-
-def brain_addr():
+def call_addr(peers):
     import node
 
-    if node.engine_here("gemma"):
+    if telegram_here():
         return "127.0.0.1:8765"
-    addr = peer_addr()
-    reply = node.transact(addr, node.make_card("node", "hello", "hi"), 10)
-    rows = reply.body.splitlines()
-    cuda = ""
-    for line in rows:
-        if line.startswith("cuda "):
-            cuda = line[5:]
-    if "brain gemma" not in rows or cuda == "" or cuda == "none":
-        die("brain missing gemma")
-    return addr
+    for addr in peers:
+        if not node.reachable(addr):
+            continue
+        reply = node.transact(addr, node.make_card("node", "hello", "hi"), 10)
+        if "op call.dial" in reply.body.splitlines():
+            return addr
+    die("peer missing")
 
 
 GREETING = (
@@ -347,124 +333,7 @@ GREETING = (
 )
 
 
-def cursor_pid():
-    path = ROOT / "cursor.status.txt"
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return 0
-    for line in lines:
-        if line.startswith("pid "):
-            text = line[4:].strip()
-            if text.isdigit():
-                return int(text)
-    return 0
-
-
-def cut_gemma(deadline, done):
-    remain = deadline - time.monotonic()
-    if remain > 0:
-        done.wait(remain)
-    if done.is_set() or done.wait(3):
-        return
-    import gemma
-
-    if gemma.brain_running_any():
-        gemma.stop_resident()
-
-
-def process_rows():
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-
-    class ENTRY(ctypes.Structure):
-        _fields_ = [
-            ("dwSize", ctypes.c_uint32),
-            ("cntUsage", ctypes.c_uint32),
-            ("th32ProcessID", ctypes.c_uint32),
-            ("th32DefaultHeapID", ctypes.c_void_p),
-            ("th32ModuleID", ctypes.c_uint32),
-            ("cntThreads", ctypes.c_uint32),
-            ("th32ParentProcessID", ctypes.c_uint32),
-            ("pcPriClassBase", ctypes.c_int32),
-            ("dwFlags", ctypes.c_uint32),
-            ("szExeFile", ctypes.c_wchar * 260),
-        ]
-
-    kernel.CreateToolhelp32Snapshot.argtypes = [ctypes.c_uint32, ctypes.c_uint32]
-    kernel.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
-    kernel.Process32FirstW.argtypes = [ctypes.c_void_p, ctypes.POINTER(ENTRY)]
-    kernel.Process32FirstW.restype = ctypes.c_int
-    kernel.Process32NextW.argtypes = [ctypes.c_void_p, ctypes.POINTER(ENTRY)]
-    kernel.Process32NextW.restype = ctypes.c_int
-    kernel.CloseHandle.argtypes = [ctypes.c_void_p]
-    snap = kernel.CreateToolhelp32Snapshot(0x00000002, 0)
-    if not snap or snap == ctypes.c_void_p(-1).value:
-        return []
-    try:
-        entry = ENTRY()
-        entry.dwSize = ctypes.sizeof(ENTRY)
-        rows = []
-        ok = kernel.Process32FirstW(snap, ctypes.byref(entry))
-        while ok:
-            rows.append((int(entry.th32ProcessID), int(entry.th32ParentProcessID), entry.szExeFile))
-            ok = kernel.Process32NextW(snap, ctypes.byref(entry))
-        return rows
-    finally:
-        kernel.CloseHandle(snap)
-
-
-def stop_spawned(root_pid):
-    kids = {}
-    names = {}
-    for pid, parent, name in process_rows():
-        names[pid] = name.lower()
-        kids.setdefault(parent, []).append(pid)
-    doomed = []
-    seen = set()
-    stack = list(kids.get(root_pid, []))
-    while stack:
-        pid = stack.pop()
-        if pid in seen:
-            continue
-        seen.add(pid)
-        if names.get(pid) == "telegram.exe":
-            continue
-        stack.extend(kids.get(pid, []))
-        doomed.append(pid)
-    for pid in reversed(doomed):
-        if process_image(pid):
-            taskkill(pid, tree=False)
-    if process_image(root_pid):
-        taskkill(root_pid, tree=False)
-
-
-def session_end(before, node_proc):
-    gemma_before, mouth_before, cursor_before = before
-    cursor_now = cursor_pid()
-    if cursor_now and cursor_now != cursor_before:
-        if process_image(cursor_now):
-            taskkill(cursor_now)
-        try:
-            (ROOT / "cursor.status.txt").unlink()
-        except OSError:
-            pass
-    if read_pid("gemma.pid") not in (0, gemma_before):
-        import gemma
-
-        gemma.stop_resident()
-    if read_pid("mouth.pid") not in (0, mouth_before):
-        import mouth
-
-        mouth.stop_resident()
-    if node_proc is not None:
-        stop_spawned(node_proc.pid)
-        try:
-            node_proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
-
-
-def duplex(seat, brain, deadline):
+def duplex(seat, deadline):
     import node
 
     node.transact(seat, node.make_card("mouth", "say", GREETING, resource="call"), 240)
@@ -482,7 +351,7 @@ def duplex(seat, brain, deadline):
             return
         brain_timeout = 600 if deadline is None else (deadline - time.monotonic()) + 45
         reply = node.transact(
-            brain,
+            seat,
             node.make_card("agent", "turn", heard.body, profile="voice", resource="call"),
             brain_timeout,
         )
@@ -498,51 +367,70 @@ def duplex(seat, brain, deadline):
             return
 
 
-def cmd_call(seconds):
-    before = (read_pid("gemma.pid"), read_pid("mouth.pid"), cursor_pid())
-    node_proc = ensure_node()
-    done = threading.Event()
-    watch = None
+def cmd_call(seconds, peers):
+    ensure_node(peers)
+    import node
+
+    seat = call_addr(peers)
+    node.brain_place(peers)
+    if seat != "127.0.0.1:8765":
+        hello = node.transact(seat, node.make_card("node", "hello", "hi"), 10)
+        if "op call.dial" not in hello.body.splitlines() or "capture closed" not in hello.body.splitlines():
+            die("peer is not the call")
+    print("call: seat " + seat, file=sys.stderr, flush=True)
+    up = node.transact(seat, node.make_card("call", "dial", "", resource="call"), 300)
+    print(up.body, flush=True)
+    deadline = time.monotonic() + int(seconds) if seconds else None
+    failed = None
     try:
+        duplex(seat, deadline)
+    except BaseException as exc:
+        failed = None if deadline is not None and time.monotonic() >= deadline else exc
+    hung = node.transact(seat, node.make_card("call", "hang", seconds, resource="call"), 90)
+    print(hung.body, flush=True)
+    if failed is not None:
+        raise failed
+
+
+def cmd_rest(peers):
+    import io
+
+    sink = io.StringIO()
+    old_out, old_err = sys.stdout, sys.stderr
+    sys.stdout = sink
+    sys.stderr = sink
+    try:
+        ensure_node(peers, quiet=True)
+        import gemma
         import node
 
-        seat = call_addr()
-        brain = brain_addr()
-        if seat != "127.0.0.1:8765":
-            hello = node.transact(seat, node.make_card("node", "hello", "hi"), 10)
-            if "op call.dial" not in hello.body.splitlines() or "capture closed" not in hello.body.splitlines():
-                die("peer is not the call")
-        print("call: seat " + seat + " brain " + brain, file=sys.stderr, flush=True)
-        up = node.transact(seat, node.make_card("call", "dial", "", resource="call"), 300)
-        print(up.body, flush=True)
-        deadline = None
-        if seconds:
-            deadline = time.monotonic() + int(seconds)
-            watch = threading.Thread(target=cut_gemma, args=(deadline, done), daemon=True)
-            watch.start()
-        failed = None
-        try:
-            duplex(seat, brain, deadline)
-        except BaseException as exc:
-            failed = None if deadline is not None and time.monotonic() >= deadline else exc
-        finally:
-            done.set()
-            if watch is not None:
-                watch.join()
-        hung = node.transact(seat, node.make_card("call", "hang", seconds, resource="call"), 90)
-        print(hung.body, flush=True)
-        if failed is not None:
-            raise failed
-    finally:
-        if seconds:
-            session_end(before, node_proc)
+        reply = node.transact("127.0.0.1:8765", node.make_card("node", "hello", "hi"), 10)
+        if "call up" in reply.body.splitlines():
+            die("call up")
+        if node.brain_place(peers) == "":
+            gemma.idle()
+    except KeyboardInterrupt:
+        sys.stdout = old_out
+        sys.stderr = old_err
+        raise
+    except BaseException as exc:
+        sys.stdout = old_out
+        sys.stderr = old_err
+        text = getattr(exc, "message", "") or sink.getvalue() or str(exc)
+        line = " ".join(str(text).split()) or "failed"
+        print(line, file=sys.stderr)
+        code = exc.code if isinstance(exc, SystemExit) and isinstance(exc.code, int) and exc.code else 1
+        raise SystemExit(code)
+    sys.stdout = old_out
+    sys.stderr = old_err
 
 
-def cmd_start(url, inject):
+def cmd_start(peers, inject):
     if already_up():
         return
-    ensure_node()
+    ensure_node(peers)
     py = venv_python()
+    url = peers[0] if peers else ""
     if url:
         print("iris: brain " + url, file=sys.stderr, flush=True)
     else:
@@ -560,7 +448,7 @@ def cmd_start(url, inject):
         "180",
     ]
     if url:
-        command.extend(["--nvidia", "--url", url])
+        command.extend(["--url", url])
     if inject is not None:
         command.append("--inject")
         if inject != "-":
@@ -594,14 +482,17 @@ def main():
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     reexec()
-    command, url, inject = parse_args(sys.argv[1:])
+    command, peers, extra = parse_args(sys.argv[1:])
     if command == "stop":
         cmd_stop()
         return
     if command == "call":
-        cmd_call(url)
+        cmd_call(extra, peers)
         return
-    cmd_start(url, inject)
+    if command == "rest":
+        cmd_rest(peers)
+        return
+    cmd_start(peers, extra)
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ PORT = 8765
 Q = '<|"|>'
 MEDIA = "<__media__>"
 OPS = {
-    "node": ("hello",),
+    "node": ("hello", "join"),
     "brain": ("infer",),
     "agent": ("turn",),
     "mouth": ("say",),
@@ -33,12 +33,12 @@ OPS = {
 PROFILES = {
     "voice": {
         "memory": "gemma.memory.txt",
-        "tools": ("remember", "place", "next", "stop"),
+        "tools": ("remember", "place", "desk", "ring", "next", "stop"),
         "brain": "gemma",
     },
     "jarvis": {
         "memory": "gemma.memory.txt",
-        "tools": ("remember", "place", "cursor", "desk", "next", "stop"),
+        "tools": ("remember", "place", "cursor", "desk", "ring", "next", "stop"),
         "brain": "gemma",
     },
 }
@@ -50,7 +50,7 @@ MAP = (
     "mouth.py the only playback\n"
     "hear.py wav transcript, capture stays closed\n"
     "assistant.py voice organism, turns through the agent\n"
-    "run.py voice start and stop, peer from TRIDENT_PEERS or --url\n"
+    "run.py rest exits 0 with residents idle, peer from --peer\n"
     "endgame-ai/ desktop organism, module endgame, not edited on this seat\n"
     "telegram-control/ telegram capability, not started unless a card asks\n"
     "call.py telegram voice duplex, telethon and ntgcalls, ear and mouth on the call\n"
@@ -286,6 +286,7 @@ def needs_of(card):
         ("room", "post"): ("room",),
         ("room", "task"): ("room",),
         ("node", "hello"): ("node",),
+        ("node", "join"): ("node",),
         ("desk", "turn"): ("desktop", "gpu", "weights:gemma"),
         ("endgame", "run"): ("desktop",),
         ("telegram", "run"): ("desktop",),
@@ -634,9 +635,12 @@ DESK_TOKENS = 560
 DESK_SYSTEM = (
     "You see one full desktop screenshot. "
     "Answer with one JSON object and no other text. "
-    "The object has see and do, in that order. "
-    "see quotes the readable title-bar or address text and one sentence about the whole screen and is never empty. "
-    "do is click, type, key, wait, or done."
+    "see is one sentence about the whole screen and is never empty. "
+    "do is click, type, key, wait, or done. "
+    "click includes box_2d as y0, x0, y1, x1, each a number from 0 to 1000. "
+    "type includes text and an optional key. "
+    "key is enter, backspace, ctrl-a, or ctrl-l. "
+    "done is a look with no action."
 )
 DESK_KEYS = {
     "enter": ((0x0D, 0), (0x0D, 2)),
@@ -644,9 +648,6 @@ DESK_KEYS = {
     "ctrl-a": ((0x11, 0), (0x41, 0), (0x41, 2), (0x11, 2)),
     "ctrl-l": ((0x11, 0), (0x4C, 0), (0x4C, 2), (0x11, 2)),
 }
-WIN = {"mod": None}
-
-
 def desktop_lease():
     lib = ctypes.WinDLL("user32", use_last_error=True)
     lib.OpenInputDesktop.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
@@ -659,42 +660,107 @@ def desktop_lease():
     lib.CloseDesktop(handle)
 
 
-def require_eye():
-    import gemma
+class _HDR(ctypes.Structure):
+    _fields_ = [
+        ("biSize", ctypes.c_uint32),
+        ("biWidth", ctypes.c_int32),
+        ("biHeight", ctypes.c_int32),
+        ("biPlanes", ctypes.c_uint16),
+        ("biBitCount", ctypes.c_uint16),
+        ("biCompression", ctypes.c_uint32),
+        ("biSizeImage", ctypes.c_uint32),
+        ("biXPelsPerMeter", ctypes.c_int32),
+        ("biYPelsPerMeter", ctypes.c_int32),
+        ("biClrUsed", ctypes.c_uint32),
+        ("biClrImportant", ctypes.c_uint32),
+    ]
 
-    pairs = gemma.config_pairs(gemma.config_body())
-    if not (ROOT / "endgame-vision-chat" / "winapi.py").is_file():
-        die("vision absent")
-    if not (ROOT / pairs.get("gemma.mmproj", "")).is_file():
-        die("vision absent")
-    tokens = pairs.get("gemma.image-max-tokens", "")
-    if not tokens.isdigit() or int(tokens) < DESK_TOKENS:
-        die("vision absent")
-    if not (ROOT / "gemma-brain.exe").is_file() or not (ROOT / pairs.get("gemma.model", "")).is_file():
-        die("weights absent")
 
+def png_rgb(wide, high, bgra):
+    import struct
+    import zlib
+    import numpy as np
 
-def desk_win():
-    mod = WIN["mod"]
-    if mod is not None:
-        return mod
-    folder = str(ROOT / "endgame-vision-chat")
-    if folder not in sys.path:
-        sys.path.insert(0, folder)
-    import winapi
+    pix = np.frombuffer(bgra, dtype=np.uint8).reshape(high, wide, 4)
+    rgb = np.ascontiguousarray(np.flipud(pix)[:, :, [2, 1, 0]])
+    raw = b"".join(b"\x00" + rgb[y].tobytes() for y in range(high))
 
-    WIN["mod"] = winapi
-    return winapi
+    def chunk(tag, data):
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+    ihdr = struct.pack(">IIBBBBB", wide, high, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw, 1)) + chunk(b"IEND", b"")
 
 
 def desk_png():
-    win = desk_win()
-    win.init_dpi()
-    sw, sh = win.get_screen_size()
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+    user32.SetProcessDPIAware.restype = ctypes.c_int
+    user32.SetProcessDPIAware()
+    user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+    user32.GetSystemMetrics.restype = ctypes.c_int
+    user32.GetDC.argtypes = [ctypes.c_void_p]
+    user32.GetDC.restype = ctypes.c_void_p
+    user32.ReleaseDC.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    user32.ReleaseDC.restype = ctypes.c_int
+    gdi32.CreateCompatibleDC.argtypes = [ctypes.c_void_p]
+    gdi32.CreateCompatibleDC.restype = ctypes.c_void_p
+    gdi32.CreateCompatibleBitmap.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    gdi32.CreateCompatibleBitmap.restype = ctypes.c_void_p
+    gdi32.SelectObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    gdi32.SelectObject.restype = ctypes.c_void_p
+    gdi32.StretchBlt.argtypes = [
+        ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint32,
+    ]
+    gdi32.StretchBlt.restype = ctypes.c_int
+    gdi32.GetDIBits.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint,
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint,
+    ]
+    gdi32.GetDIBits.restype = ctypes.c_int
+    gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
+    gdi32.DeleteObject.restype = ctypes.c_int
+    gdi32.DeleteDC.argtypes = [ctypes.c_void_p]
+    gdi32.DeleteDC.restype = ctypes.c_int
+    sw = user32.GetSystemMetrics(0)
+    sh = user32.GetSystemMetrics(1)
+    if sw < 48 or sh < 48:
+        die("vision absent")
     scale = ((DESK_TOKENS * 2304) / float(sw * sh)) ** 0.5
     wide = max(48, int(round(sw * scale / 48)) * 48)
     high = max(48, int(round(sh * scale / 48)) * 48)
-    png, _raw_w, _raw_h = win.capture_screenshot_png(wide, high)
+    src = user32.GetDC(0)
+    if not src:
+        die("vision absent")
+    mem = gdi32.CreateCompatibleDC(src)
+    bmp = gdi32.CreateCompatibleBitmap(src, wide, high)
+    old = gdi32.SelectObject(mem, bmp) if mem and bmp else None
+    try:
+        if not mem or not bmp or not gdi32.StretchBlt(mem, 0, 0, wide, high, src, 0, 0, sw, sh, 0x00CC0020):
+            die("vision absent")
+        gdi32.SelectObject(mem, old)
+        old = None
+        hdr = _HDR()
+        hdr.biSize = ctypes.sizeof(_HDR)
+        hdr.biWidth = wide
+        hdr.biHeight = high
+        hdr.biPlanes = 1
+        hdr.biBitCount = 32
+        hdr.biCompression = 0
+        hdr.biSizeImage = wide * high * 4
+        buf = (ctypes.c_ubyte * (wide * high * 4))()
+        if gdi32.GetDIBits(mem, bmp, 0, high, buf, ctypes.byref(hdr), 0) != high:
+            die("vision absent")
+        png = png_rgb(wide, high, bytes(buf))
+    finally:
+        if old:
+            gdi32.SelectObject(mem, old)
+        if bmp:
+            gdi32.DeleteObject(bmp)
+        if mem:
+            gdi32.DeleteDC(mem)
+        user32.ReleaseDC(0, src)
     if len(png) < 32:
         die("vision absent")
     return base64.b64encode(png).decode("ascii"), wide, high
@@ -736,21 +802,96 @@ def desk_object(reply):
     return found
 
 
+_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
+
+
+class _KEY(ctypes.Structure):
+    _fields_ = [
+        ("wVk", ctypes.c_ushort),
+        ("wScan", ctypes.c_ushort),
+        ("dwFlags", ctypes.c_ulong),
+        ("time", ctypes.c_ulong),
+        ("dwExtraInfo", _PTR),
+    ]
+
+
+class _MOUSE(ctypes.Structure):
+    _fields_ = [
+        ("dx", ctypes.c_long),
+        ("dy", ctypes.c_long),
+        ("mouseData", ctypes.c_ulong),
+        ("dwFlags", ctypes.c_ulong),
+        ("time", ctypes.c_ulong),
+        ("dwExtraInfo", _PTR),
+    ]
+
+
+class _HARD(ctypes.Structure):
+    _fields_ = [("uMsg", ctypes.c_ulong), ("wParamL", ctypes.c_ushort), ("wParamH", ctypes.c_ushort)]
+
+
+class _IN(ctypes.Structure):
+    class _U(ctypes.Union):
+        _fields_ = [("mi", _MOUSE), ("ki", _KEY), ("hi", _HARD)]
+
+    _anonymous_ = ("u",)
+    _fields_ = [("type", ctypes.c_ulong), ("u", _U)]
+
+
+def send_input(items):
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.SendInput.argtypes = [ctypes.c_uint, ctypes.POINTER(_IN), ctypes.c_int]
+    user32.SendInput.restype = ctypes.c_uint
+    batch = (_IN * len(items))(*items)
+    sent = user32.SendInput(len(items), batch, ctypes.sizeof(_IN))
+    if sent != len(items):
+        die("desk action absent")
+
+
 def desk_key(name):
     seq = DESK_KEYS.get(str(name).strip().lower())
     if not seq:
         die("desk action absent")
-    win = desk_win()
     items = []
     for vk, flags in seq:
-        item = win.INPUT()
-        item.type = win.INPUT_KEYBOARD
-        item.ii.ki = win.KEYBDINPUT(vk, 0, flags, 0, 0)
+        item = _IN()
+        item.type = 1
+        item.ki = _KEY(vk, 0, flags, 0, 0)
         items.append(item)
-    batch = (win.INPUT * len(items))(*items)
-    sent = win.user32.SendInput(len(items), batch, ctypes.sizeof(win.INPUT))
-    if sent != len(items):
+    send_input(items)
+
+
+def type_text(text):
+    items = []
+    for ch in text:
+        code = ord(ch)
+        down = _IN()
+        down.type = 1
+        down.ki = _KEY(0, code, 0x0004, 0, 0)
+        up = _IN()
+        up.type = 1
+        up.ki = _KEY(0, code, 0x0004 | 0x0002, 0, 0)
+        items.extend((down, up))
+    if items:
+        send_input(items)
+
+
+def move_click(x, y):
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+    user32.GetSystemMetrics.restype = ctypes.c_int
+    user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
+    user32.SetCursorPos.restype = ctypes.c_int
+    user32.mouse_event.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_int, ctypes.c_uint32, ctypes.c_void_p]
+    sw = user32.GetSystemMetrics(0)
+    sh = user32.GetSystemMetrics(1)
+    px = int(max(0.0, min(1000.0, float(x))) / 1000.0 * max(1, sw - 1))
+    py = int(max(0.0, min(1000.0, float(y))) / 1000.0 * max(1, sh - 1))
+    if not user32.SetCursorPos(px, py):
         die("desk action absent")
+    time.sleep(0.05)
+    user32.mouse_event(0x0002, 0, 0, 0, None)
+    user32.mouse_event(0x0004, 0, 0, 0, None)
 
 
 def act_click(obj):
@@ -758,10 +899,7 @@ def act_click(obj):
     if not isinstance(box, list) or len(box) != 4:
         die("desk action absent")
     y0, x0, y1, x1 = (float(box[0]), float(box[1]), float(box[2]), float(box[3]))
-    win = desk_win()
-    win.move_mouse_norm((x0 + x1) / 2.0, (y0 + y1) / 2.0)
-    time.sleep(0.05)
-    win.click_mouse()
+    move_click((x0 + x1) / 2.0, (y0 + y1) / 2.0)
     return "click %.0f %.0f %.0f %.0f" % (y0, x0, y1, x1)
 
 
@@ -770,7 +908,7 @@ def act_type(obj):
     key = str(obj.get("key", "")).strip().lower()
     if not text or (key and key not in DESK_KEYS):
         die("desk action absent")
-    desk_win().type_text(text)
+    type_text(text)
     time.sleep(0.3)
     if not key:
         return "type " + text
@@ -803,30 +941,39 @@ DESK_ACTS = {
 }
 
 
+def deliver(image_b64):
+    mod = sys.modules.get("call")
+    if mod is None:
+        return
+    live = getattr(mod, "LIVE", None)
+    if live is None or not getattr(live, "up", False):
+        return
+    mod.picture(base64.b64decode("".join((image_b64 or "").split())))
+
+
 def desk_turn(goal):
     text = (goal or "").strip()
     if not text:
         die("empty goal")
     desktop_lease()
-    require_eye()
-    t0 = time.perf_counter()
+    addr = brain_place()
+    if addr == "" and not (ROOT / "gemma-mmproj.gguf").is_file():
+        die("vision absent")
     image, wide, high = desk_png()
-    t1 = time.perf_counter()
-    reply = local_infer("gemma", desk_prompt(text), image)
-    t2 = time.perf_counter()
+    if addr:
+        reply = remote_infer(addr, desk_prompt(text), image, 600)
+    else:
+        reply = local_infer("gemma", desk_prompt(text), image)
     obj = desk_object(reply)
     seen = " ".join(obj["see"].split())
     taken = DESK_ACTS[obj["do"]](obj)
     if not str(taken or "").strip():
         die("desk action absent")
-    return (
-        "see " + seen
-        + "\nact " + taken
-        + "\nshot " + str(wide) + " " + str(high)
-        + "\ncapture_s %.3f" % (t1 - t0)
-        + "\ninfer_s %.3f" % (t2 - t1)
-        + "\ntotal_s %.3f" % (t2 - t0)
-    )
+    if obj["do"] != "done":
+        image, wide, high = desk_png()
+    deliver(image)
+    report = "see " + seen + "\nact " + taken + "\nshot " + str(wide) + " " + str(high)
+    return report, image
 
 
 def transact(addr, card, timeout):
@@ -906,7 +1053,8 @@ def tool_decls(names):
         "remember": ("Store one fact that stays after old turns are dropped.", (("line", "The fact, one short line.", True),)),
         "place": ("Report this machine: cuda, vulkan, engines, playback, microphone.", ()),
         "cursor": ("Start one local Cursor agent for a code change in this checkout.", (("task", "What to change, one short line.", True),)),
-        "desk": ("Look at the whole desktop with one Gemma and do the one named action.", (("line", "The goal, one short line.", True),)),
+        "desk": ("Look at the whole desktop. One call is one look or the one action he named. The picture is sent to his Telegram. A longer task is one call for each step.", (("line", "The goal, one short line.", True),)),
+        "ring": ("Place the Telegram call to Wojciech when the work needs him.", ()),
         "next": ("Store one line of work for later. This does not run the work.", (("line", "The work, one short line.", True),)),
         "stop": ("Stop the local voice. Does not stop the brain.", (("line", "Waiting work to drop, or empty.", False),)),
     }
@@ -1016,10 +1164,12 @@ def prompt_for(profile, question, suffix, root):
     facts, pairs, works = read_memory(path)
     names = PROFILES[profile]["tools"]
     head = (
-        "<bos><|turn>system\nYou are Jarvis, the voice of Trident. Wojciech is the owner. "
-        "Speak one or two short sentences in the language of the user's words. "
-        "Call a tool only by its tool call when its description matches. "
-        "The spoken sentence has no channels or file names.\n"
+        "<bos><|turn>system\nYou are Gemma, resident in Trident. Wojciech is the owner. "
+        "The meaning of his words is the decision. "
+        "What you remember is written in this prompt. "
+        "Speak one or two short sentences in the language of his words. "
+        "The computer microphone stays closed. "
+        "A tool runs only when that meaning calls for it.\n"
         + tool_decls(names)
         + "<turn|>\n"
     )
@@ -1171,7 +1321,17 @@ def tool_cursor(args):
 
 
 def tool_desk(args):
-    return " ".join(desk_turn(args.get("line", "")).split())
+    report, image = desk_turn(args.get("line", ""))
+    return report, image
+
+
+def tool_ring(_args):
+    import call
+
+    live = getattr(call, "LIVE", None)
+    if live is not None and getattr(live, "up", False):
+        return "up"
+    return call.dial()
 
 
 def run_tool(profile, name, args, root):
@@ -1189,6 +1349,8 @@ def run_tool(profile, name, args, root):
         return tool_cursor(args)
     if name == "desk":
         return tool_desk(args)
+    if name == "ring":
+        return tool_ring(args)
     die("unknown tool " + name)
 
 
@@ -1214,12 +1376,10 @@ def agent_turn(profile, question, image_b64="", peer="", generate=None, timeout=
         def generate(prompt, image):
             if peer:
                 return remote_infer(peer, prompt, image, timeout)
-            if engine_here(brain):
-                return local_infer(brain, prompt, image)
-            other = peer_with("brain", brain)
-            if not other:
-                die("brain missing " + brain)
-            return remote_infer(other["addr"], prompt, image, timeout)
+            addr = brain_place()
+            if addr:
+                return remote_infer(addr, prompt, image, timeout)
+            return local_infer(brain, prompt, image)
     if image_b64:
         prompt = question if MEDIA in question else MEDIA + "\n" + question
         text = generate(prompt, image_b64)
@@ -1227,26 +1387,30 @@ def agent_turn(profile, question, image_b64="", peer="", generate=None, timeout=
             die("gemma returned empty")
         append_turn(profile, question, text, root)
         return text
-    text = generate(prompt_for(profile, question, "", root), "")
-    if not str(text or "").strip():
-        die("gemma returned empty")
-    call = parse_tool_call(text)
-    if not call:
-        if not answer_text(text):
-            die("gemma returned empty")
-        append_turn(profile, question, text, root)
-        return text
-    name, args, raw = call
-    if name == "stop":
-        tool_stop(profile, args, root)
-        return text
-    result = run_tool(profile, name, args, root)
-    suffix = raw + tool_response(name, [("text", result)])
-    reply = generate(prompt_for(profile, question, suffix, root), "")
-    if not answer_text(reply):
-        die("agent follow-up empty")
-    append_turn(profile, question, reply, root)
-    return reply
+    trail = ""
+    shot = ""
+    saw = False
+    while True:
+        suffix = trail + (MEDIA if shot else "")
+        text = generate(prompt_for(profile, question, suffix, root), shot)
+        shot = ""
+        if not str(text or "").strip():
+            die("agent follow-up empty" if saw else "gemma returned empty")
+        call = parse_tool_call(text)
+        if not call:
+            if not answer_text(text):
+                die("agent follow-up empty" if saw else "gemma returned empty")
+            append_turn(profile, question, text, root)
+            return text
+        name, args, raw = call
+        if name == "stop":
+            tool_stop(profile, args, root)
+            return text
+        result = run_tool(profile, name, args, root)
+        if isinstance(result, tuple):
+            result, shot = result
+        trail += raw + tool_response(name, [("text", result)])
+        saw = True
 
 
 def room_add(room, kind, frm, body, root=None):
@@ -1268,9 +1432,30 @@ def room_add(room, kind, frm, body, root=None):
         lock.unlink()
 
 
+def call_flag():
+    mod = sys.modules.get("call")
+    live = getattr(mod, "LIVE", None) if mod is not None else None
+    if live is not None and getattr(live, "up", False):
+        return "call up"
+    return "call idle"
+
+
 def handle_hello(card):
-    PEERS.setdefault(card.frm, {"addr": "", "caps": card.body, "id": card.frm})
-    return caps_text(), None
+    item = PEERS.get(card.frm)
+    if item is None:
+        PEERS[card.frm] = {"addr": "", "caps": card.body, "id": card.frm}
+    else:
+        item["caps"] = card.body
+    return caps_text().rstrip("\n") + "\n" + call_flag() + "\n", None
+
+
+def handle_join(card):
+    addr = (card.body or "").strip()
+    if not addr:
+        die("peer is host:port")
+    if join_one(addr):
+        return "joined " + addr, None
+    return "offline " + addr, None
 
 
 def handle_brain(card):
@@ -1352,7 +1537,8 @@ def handle_room(card):
 
 
 def handle_desk(card):
-    return desk_turn(card.body), None
+    report, image = desk_turn(card.body)
+    return report, image
 
 
 def handle_endgame(card):
@@ -1393,8 +1579,6 @@ def handle_telegram(card):
     script = ROOT / "telegram-control" / "telegram_pc_remote.py"
     if not script.is_file():
         die("telegram missing")
-    if not os.environ.get("TELEGRAM_BOT_TOKEN", "").strip() or not os.environ.get("TELEGRAM_OWNER_ID", "").strip():
-        die("telegram env missing")
     if (card.body or "").strip() != "run":
         die("telegram card is run")
     subprocess.Popen([sys.executable, str(script), "run"], cwd=str(script.parent), shell=False)
@@ -1407,11 +1591,15 @@ def handle_tool(card):
     args = {"line": rest.strip(), "task": rest.strip()}
     if not name.strip():
         die("empty tool")
-    return run_tool(profile, name.strip(), args, None), None
+    result = run_tool(profile, name.strip(), args, None)
+    if isinstance(result, tuple):
+        return result
+    return result, None
 
 
 HANDLERS = {
     ("node", "hello"): handle_hello,
+    ("node", "join"): handle_join,
     ("brain", "infer"): handle_brain,
     ("agent", "turn"): handle_agent,
     ("mouth", "say"): handle_mouth,
@@ -1469,20 +1657,16 @@ def serve_conn(conn):
         conn.close()
 
 
-def join_peers():
-    raw = os.environ.get("TRIDENT_PEERS", "").strip()
-    if not raw:
-        return
-    for item in raw.split(","):
-        item = item.strip()
-        if not item:
-            continue
-        card = make_card("node", "hello", caps_text(), to="*")
-        reply = transact(item, card, 10)
-        if reply.module != "node" or reply.op != "hello":
-            die("peer hello refused")
-        PEERS[reply.frm] = {"addr": item, "caps": reply.body, "id": reply.frm}
-        print("node: joined " + reply.frm + " " + item, file=sys.stderr, flush=True)
+def join_one(addr):
+    split_host(addr)
+    if not reachable(addr):
+        return False
+    reply = transact(addr, make_card("node", "hello", caps_text(), to="*"), 10)
+    if reply.module != "node" or reply.op != "hello":
+        die("peer hello refused")
+    PEERS[reply.frm] = {"addr": addr, "caps": reply.body, "id": reply.frm}
+    print("node: joined " + reply.frm + " " + addr, file=sys.stderr, flush=True)
+    return True
 
 
 def serve(host="0.0.0.0", port=PORT):
@@ -1498,7 +1682,6 @@ def serve(host="0.0.0.0", port=PORT):
     sock.listen(8)
     sock.settimeout(0.2)
     print("node: listening " + host + ":" + str(port) + " id " + node_id(), file=sys.stderr, flush=True)
-    join_peers()
     while not STOP.is_set():
         card = claim_one(ROOT)
         if card is not None:
@@ -1541,10 +1724,51 @@ def local_place():
     same = bool(cuda and vulkan and " ".join(cuda.casefold().split()) == " ".join(vulkan.casefold().split()))
     adapter = "same" if same else "different"
     if engine_here("gemma"):
-        return Place("resident", "", cuda, vulkan, adapter, bool(same and cuda), "local")
+        return Place("resident", "", cuda, vulkan, adapter, False, "local")
     if engine_here("qwen"):
         return Place("cpu", "", cuda, vulkan, adapter, False, "local")
     return Place("missing", "", cuda, vulkan, adapter, False, "local")
+
+
+def cuda_line(text):
+    for line in (text or "").splitlines():
+        if line.startswith("cuda "):
+            name = line[5:].strip()
+            if name and name != "none":
+                return name
+    return ""
+
+
+def brain_place(extra=()):
+    if isinstance(extra, str):
+        extra = (extra,) if extra else ()
+    if cuda_name() and engine_here("gemma"):
+        return ""
+    seen = []
+    addrs = [item for item in extra]
+    for item in PEERS.values():
+        addrs.append(item.get("addr") or "")
+    for addr in addrs:
+        addr = (addr or "").strip()
+        if not addr or addr in seen:
+            continue
+        seen.append(addr)
+        if not reachable(addr):
+            continue
+        caps = ""
+        for item in PEERS.values():
+            if item.get("addr") == addr:
+                caps = item.get("caps") or ""
+                break
+        if not caps:
+            reply = transact(addr, make_card("node", "hello", "hi"), 10)
+            caps = reply.body
+            PEERS[reply.frm] = {"addr": addr, "caps": caps, "id": reply.frm}
+        if cuda_line(caps) and "brain gemma" in caps.splitlines():
+            return addr
+    if engine_here("gemma"):
+        return ""
+    die("brain missing gemma")
 
 
 def place_line(found):
@@ -1735,7 +1959,6 @@ def prove():
         die("node.queue is not empty")
     STOP.clear()
     global SCHED
-    saved_peers = os.environ.pop("TRIDENT_PEERS", None)
     thread = threading.Thread(target=serve, daemon=True)
     thread.start()
     try:
@@ -1764,8 +1987,6 @@ def prove():
     finally:
         STOP.set()
         thread.join(timeout=3)
-        if saved_peers is not None:
-            os.environ["TRIDENT_PEERS"] = saved_peers
     proof = []
     proof.append("command python node.py --prove")
     proof.append("tip " + subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=str(ROOT), text=True).strip())
