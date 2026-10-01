@@ -1339,7 +1339,7 @@ def handle_ear(card):
         die("ear is text")
     if card.resource == "call":
         import call
-        return call.listen(), None
+        return call.listen(card.body), None
     if card.to not in ("*", node_id()) and card.to in PEERS:
         reply = transact(PEERS[card.to]["addr"], card._replace(frm=node_id()), 30)
         return reply.body, None
@@ -1385,7 +1385,7 @@ def handle_call(card):
     if card.op == "dial":
         return call.dial(), None
     if card.op == "hang":
-        return call.hang(), None
+        return call.hang((card.body or "").strip()), None
     die("call card")
 
 

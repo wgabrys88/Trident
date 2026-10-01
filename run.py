@@ -12,10 +12,12 @@ python run.py start inject [PATH]
 python run.py stop
     Stop this organism and the mouth. Leave port 8765 listening.
 
-python run.py call
+python run.py call [SECONDS]
     Quit Telegram Desktop, place one voice call, then restart Desktop.
-    The microphone stays closed. The transcript is one voice card.
+    The microphone stays closed. Each heard sentence is one voice card.
     Resident Gemma answers in text. That sentence is spoken into the call.
+    SECONDS keeps the duplex for that long, then hangs up and stops the
+    node, Telethon, and any Cursor child this call started.
     TRIDENT_PEERS is the other seat when the call or the brain is not here.
 
 Spoken shutdown is a Gemma stop tool call, not a keyword.
@@ -26,6 +28,7 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -102,11 +105,15 @@ def remove_pidfile(name, pid):
 
 
 def parse_args(argv):
-    usage = "usage: run.py start [--url HOST:PORT] [inject [PATH]] | run.py stop | run.py call"
+    usage = "usage: run.py start [--url HOST:PORT] [inject [PATH]] | run.py stop | run.py call [SECONDS]"
     if not argv:
         die(usage)
-    if argv == ["call"]:
-        return "call", "", None
+    if argv[0] == "call":
+        if len(argv) == 1:
+            return "call", "", None
+        if len(argv) == 2 and argv[1].isdigit() and int(argv[1]) > 0:
+            return "call", argv[1], None
+        die("usage: run.py call [SECONDS]")
     command = argv[0]
     if command == "stop":
         if len(argv) != 1:
@@ -175,9 +182,12 @@ def pid_stamp(name):
     return text, mtime
 
 
-def taskkill(pid):
+def taskkill(pid, tree=True):
+    argv = ["taskkill", "/PID", str(pid), "/F"]
+    if tree:
+        argv.insert(-1, "/T")
     subprocess.run(
-        ["taskkill", "/PID", str(pid), "/T", "/F"],
+        argv,
         cwd=str(ROOT),
         shell=False,
         stdin=subprocess.DEVNULL,
@@ -267,8 +277,9 @@ def ensure_node():
     import node
 
     py = venv_python()
+    proc = None
     if not port_open():
-        subprocess.Popen(
+        proc = subprocess.Popen(
             [py, "-u", str(ROOT / "node.py")],
             cwd=str(ROOT),
             shell=False,
@@ -277,11 +288,14 @@ def ensure_node():
         while time.monotonic() < deadline and not port_open():
             time.sleep(0.05)
         if not port_open():
+            if proc.poll() is None:
+                taskkill(proc.pid, tree=False)
             die("node did not start")
     reply = node.transact("127.0.0.1:8765", node.make_card("node", "hello", "hi"), 10)
     for line in ("capture closed", "op mouth.say", "op ear.listen", "op call.dial"):
         if line not in reply.body.splitlines():
             die("node is not this protocol")
+    return proc
 
 
 def peer_addr():
@@ -302,15 +316,6 @@ def telegram_here():
     return (desktop / "Telegram.exe").is_file() and (desktop / "tdata").is_dir()
 
 
-def cuda_here():
-    import node
-
-    for line in node.caps_text().splitlines():
-        if line.startswith("cuda "):
-            return line[5:] != "none"
-    return False
-
-
 def call_addr():
     if telegram_here():
         return "127.0.0.1:8765"
@@ -320,7 +325,7 @@ def call_addr():
 def brain_addr():
     import node
 
-    if cuda_here() and node.engine_here("gemma"):
+    if node.engine_here("gemma"):
         return "127.0.0.1:8765"
     addr = peer_addr()
     reply = node.transact(addr, node.make_card("node", "hello", "hi"), 10)
@@ -334,47 +339,203 @@ def brain_addr():
     return addr
 
 
-def cmd_call():
-    ensure_node()
+GREETING = (
+    "Wojciech, this is Iris calling from the desk. "
+    "The microphone on this computer stays closed. "
+    "I am speaking through the Telegram call. "
+    "Please say a full sentence after I finish, and I will answer you."
+)
+
+
+def cursor_pid():
+    path = ROOT / "cursor.status.txt"
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return 0
+    for line in lines:
+        if line.startswith("pid "):
+            text = line[4:].strip()
+            if text.isdigit():
+                return int(text)
+    return 0
+
+
+def cut_gemma(deadline, done):
+    remain = deadline - time.monotonic()
+    if remain > 0:
+        done.wait(remain)
+    if done.is_set() or done.wait(3):
+        return
+    import gemma
+
+    if gemma.brain_running_any():
+        gemma.stop_resident()
+
+
+def process_rows():
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+
+    class ENTRY(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", ctypes.c_uint32),
+            ("cntUsage", ctypes.c_uint32),
+            ("th32ProcessID", ctypes.c_uint32),
+            ("th32DefaultHeapID", ctypes.c_void_p),
+            ("th32ModuleID", ctypes.c_uint32),
+            ("cntThreads", ctypes.c_uint32),
+            ("th32ParentProcessID", ctypes.c_uint32),
+            ("pcPriClassBase", ctypes.c_int32),
+            ("dwFlags", ctypes.c_uint32),
+            ("szExeFile", ctypes.c_wchar * 260),
+        ]
+
+    kernel.CreateToolhelp32Snapshot.argtypes = [ctypes.c_uint32, ctypes.c_uint32]
+    kernel.CreateToolhelp32Snapshot.restype = ctypes.c_void_p
+    kernel.Process32FirstW.argtypes = [ctypes.c_void_p, ctypes.POINTER(ENTRY)]
+    kernel.Process32FirstW.restype = ctypes.c_int
+    kernel.Process32NextW.argtypes = [ctypes.c_void_p, ctypes.POINTER(ENTRY)]
+    kernel.Process32NextW.restype = ctypes.c_int
+    kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+    snap = kernel.CreateToolhelp32Snapshot(0x00000002, 0)
+    if not snap or snap == ctypes.c_void_p(-1).value:
+        return []
+    try:
+        entry = ENTRY()
+        entry.dwSize = ctypes.sizeof(ENTRY)
+        rows = []
+        ok = kernel.Process32FirstW(snap, ctypes.byref(entry))
+        while ok:
+            rows.append((int(entry.th32ProcessID), int(entry.th32ParentProcessID), entry.szExeFile))
+            ok = kernel.Process32NextW(snap, ctypes.byref(entry))
+        return rows
+    finally:
+        kernel.CloseHandle(snap)
+
+
+def stop_spawned(root_pid):
+    kids = {}
+    names = {}
+    for pid, parent, name in process_rows():
+        names[pid] = name.lower()
+        kids.setdefault(parent, []).append(pid)
+    doomed = []
+    seen = set()
+    stack = list(kids.get(root_pid, []))
+    while stack:
+        pid = stack.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        if names.get(pid) == "telegram.exe":
+            continue
+        stack.extend(kids.get(pid, []))
+        doomed.append(pid)
+    for pid in reversed(doomed):
+        if process_image(pid):
+            taskkill(pid, tree=False)
+    if process_image(root_pid):
+        taskkill(root_pid, tree=False)
+
+
+def session_end(before, node_proc):
+    gemma_before, mouth_before, cursor_before = before
+    cursor_now = cursor_pid()
+    if cursor_now and cursor_now != cursor_before:
+        if process_image(cursor_now):
+            taskkill(cursor_now)
+        try:
+            (ROOT / "cursor.status.txt").unlink()
+        except OSError:
+            pass
+    if read_pid("gemma.pid") not in (0, gemma_before):
+        import gemma
+
+        gemma.stop_resident()
+    if read_pid("mouth.pid") not in (0, mouth_before):
+        import mouth
+
+        mouth.stop_resident()
+    if node_proc is not None:
+        stop_spawned(node_proc.pid)
+        try:
+            node_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def duplex(seat, brain, deadline):
     import node
 
-    seat = call_addr()
-    brain = brain_addr()
-    if seat != "127.0.0.1:8765":
-        hello = node.transact(seat, node.make_card("node", "hello", "hi"), 10)
-        if "op call.dial" not in hello.body.splitlines() or "capture closed" not in hello.body.splitlines():
-            die("peer is not the call")
-    print("call: seat " + seat + " brain " + brain, file=sys.stderr, flush=True)
-    greeting = (
-        "Wojciech, this is Iris calling from the desk. "
-        "The microphone on this computer stays closed. "
-        "I am speaking through the Telegram call. "
-        "Please say a full sentence after I finish, and I will answer you."
-    )
-    up = node.transact(seat, node.make_card("call", "dial", "", resource="call"), 300)
-    print(up.body, flush=True)
-    failed = None
-    try:
-        node.transact(seat, node.make_card("mouth", "say", greeting, resource="call"), 240)
-        heard = node.transact(seat, node.make_card("ear", "listen", "", resource="call"), 220)
+    node.transact(seat, node.make_card("mouth", "say", GREETING, resource="call"), 240)
+    while deadline is None or time.monotonic() < deadline:
+        remain = None if deadline is None else deadline - time.monotonic()
+        if remain is not None and remain < 0.4:
+            return
+        limit = "" if remain is None else format(remain, ".3f")
+        heard_timeout = 220 if remain is None else remain + 30
+        heard = node.transact(seat, node.make_card("ear", "listen", limit, resource="call"), heard_timeout)
+        if not heard.body.strip():
+            return
         print(heard.body, flush=True)
+        if deadline is not None and time.monotonic() >= deadline:
+            return
+        brain_timeout = 600 if deadline is None else (deadline - time.monotonic()) + 45
         reply = node.transact(
             brain,
             node.make_card("agent", "turn", heard.body, profile="voice", resource="call"),
-            600,
+            brain_timeout,
         )
         print(reply.body, flush=True)
         if node.is_stop(reply.body):
             die("gemma stop")
+        if deadline is not None and time.monotonic() >= deadline:
+            return
         said = node.transact(seat, node.make_card("mouth", "say", reply.body, resource="call"), 240)
         if said.body.strip() != "spoken":
             die("mouth missed")
-    except BaseException as exc:
-        failed = exc
-    hung = node.transact(seat, node.make_card("call", "hang", "", resource="call"), 90)
-    print(hung.body, flush=True)
-    if failed is not None:
-        raise failed
+        if deadline is None:
+            return
+
+
+def cmd_call(seconds):
+    before = (read_pid("gemma.pid"), read_pid("mouth.pid"), cursor_pid())
+    node_proc = ensure_node()
+    done = threading.Event()
+    watch = None
+    try:
+        import node
+
+        seat = call_addr()
+        brain = brain_addr()
+        if seat != "127.0.0.1:8765":
+            hello = node.transact(seat, node.make_card("node", "hello", "hi"), 10)
+            if "op call.dial" not in hello.body.splitlines() or "capture closed" not in hello.body.splitlines():
+                die("peer is not the call")
+        print("call: seat " + seat + " brain " + brain, file=sys.stderr, flush=True)
+        up = node.transact(seat, node.make_card("call", "dial", "", resource="call"), 300)
+        print(up.body, flush=True)
+        deadline = None
+        if seconds:
+            deadline = time.monotonic() + int(seconds)
+            watch = threading.Thread(target=cut_gemma, args=(deadline, done), daemon=True)
+            watch.start()
+        failed = None
+        try:
+            duplex(seat, brain, deadline)
+        except BaseException as exc:
+            failed = None if deadline is not None and time.monotonic() >= deadline else exc
+        finally:
+            done.set()
+            if watch is not None:
+                watch.join()
+        hung = node.transact(seat, node.make_card("call", "hang", seconds, resource="call"), 90)
+        print(hung.body, flush=True)
+        if failed is not None:
+            raise failed
+    finally:
+        if seconds:
+            session_end(before, node_proc)
 
 
 def cmd_start(url, inject):
@@ -438,7 +599,7 @@ def main():
         cmd_stop()
         return
     if command == "call":
-        cmd_call()
+        cmd_call(url)
         return
     cmd_start(url, inject)
 

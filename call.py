@@ -590,13 +590,17 @@ def speak(text):
     print("call: tx " + format(LIVE.tx_seconds, ".2f"), file=sys.stderr, flush=True)
 
 
-def listen():
+def listen(limit=""):
     if LIVE is None or not LIVE.up:
         die("call down")
     import hear
     import node
 
-    deadline = time.monotonic() + 100
+    window = (limit or "").strip()
+    seconds = float(window) if window else 100.0
+    if seconds <= 0:
+        return ""
+    deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
         data = pull_rx()
         if not data:
@@ -616,6 +620,8 @@ def listen():
         (ROOT / "call.agent.card").write_text(node.render(card), encoding="utf-8")
         print("call: rx " + format(LIVE.rx_seconds, ".2f") + " " + lang + " " + text, file=sys.stderr, flush=True)
         return text
+    if window:
+        return ""
     die("hear empty")
 
 
@@ -634,7 +640,7 @@ def dial():
         raise
 
 
-def hang():
+def hang(kind=""):
     if LIVE is None:
         die("call down")
     snap = (
@@ -649,8 +655,9 @@ def hang():
     still = release()
     tx, rx, text, caller, caller_name, peer, peer_name = snap
     tip = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=str(ROOT), text=True).strip()
+    command = "python run.py call" + ((" " + kind) if kind else "")
     lines = [
-        "command python run.py call",
+        "command " + command,
         "tip " + tip,
         "caller " + str(caller) + " " + caller_name,
         "peer " + str(peer) + " " + peer_name,
@@ -663,7 +670,8 @@ def hang():
         "capture closed",
     ]
     body = "\n".join(lines) + "\n"
-    if still != caller or tx < 5 or rx < 1 or not text or not telegram_pids():
+    timed = kind.isdigit() and int(kind) > 0
+    if still != caller or tx < 5 or not telegram_pids() or (not timed and (rx < 1 or not text)):
         write_blocker(body)
         die("call short")
     (ROOT / "call.fact.txt").write_text(body, encoding="utf-8")
