@@ -470,50 +470,8 @@ def adapter_names():
     return cuda_name(), vulkan_name()
 
 
-def capture_name(name):
-    text = " ".join((name or "").casefold().split())
-    for skip in (
-        "cable",
-        "what u hear",
-        "digital-in",
-        "digital in",
-        "sound mapper",
-        "primary sound capture",
-        "line-in",
-        "line in",
-        "vb-audio",
-        "stereo mix",
-    ):
-        if skip in text:
-            return False
-    return bool(text)
-
-
 def mic_lines():
-    try:
-        import sounddevice as sd
-    except ImportError:
-        die("sounddevice missing")
-    wasapi = None
-    for index, api in enumerate(sd.query_hostapis()):
-        if str(api.get("name") or "").casefold() == "windows wasapi":
-            wasapi = index
-            break
-    if wasapi is None:
-        die("wasapi missing")
-    found = []
-    for index, info in enumerate(sd.query_devices()):
-        if int(info.get("hostapi") or -1) != wasapi:
-            continue
-        if int(info.get("max_input_channels") or 0) < 1:
-            continue
-        name = " ".join(str(info.get("name") or "").split())
-        if capture_name(name):
-            found.append("mic " + str(index) + " " + name)
-    if not found:
-        found.append("mic no")
-    found.append("capture closed")
-    return found
+    return ["mic no", "capture closed"]
 
 
 def chrome_present():
@@ -800,6 +758,14 @@ def desk_prompt(goal):
     )
 
 
+def desk_text(found, key, alias):
+    for name in (key, alias):
+        value = found.get(name)
+        if isinstance(value, str) and value.strip():
+            return " ".join(value.split())
+    return ""
+
+
 def desk_object(reply):
     raw = reply or ""
     start = raw.find("{")
@@ -811,15 +777,16 @@ def desk_object(reply):
         die("desk unparsed " + clip(raw, 160))
     if not isinstance(found, dict):
         die("desk unparsed " + clip(raw, 160))
-    see = found.get("see")
-    do = found.get("do")
-    if not isinstance(see, str) or not see.strip():
+    see = desk_text(found, "see", "screenshot_description")
+    do = desk_text(found, "do", "action")
+    if not see:
         die("desk see absent " + clip(raw, 140))
-    if not isinstance(do, str):
+    if not do:
         die("desk action absent " + clip(raw, 140))
-    name = do.strip().lower()
+    name = do.lower()
     if name not in DESK_ACTS:
         die("desk action absent " + (name or "empty") + " " + clip(raw, 140))
+    found["see"] = see
     found["do"] = name
     return found
 
@@ -1034,14 +1001,6 @@ def remote_infer(peer, prompt, image, timeout):
     if not reply.body.strip():
         die("gemma returned empty")
     return reply.body
-
-
-def peer_with(cap, value):
-    for item in PEERS.values():
-        for line in item["caps"].splitlines():
-            if line == cap + " " + value:
-                return item
-    return None
 
 
 def decl(name, description, fields):
@@ -1542,18 +1501,15 @@ def handle_mouth(card):
         park_gemma()
         path = mouth.wave(text, card.agent)
         return "wav " + path.name, file_b64(path)
-    if addr:
-        import mouth
-        play_remote(addr, text, mouth.play_wav)
+    call_mod = sys.modules.get("call")
+    if call_mod is not None and call_mod.live():
+        call_mod.speak(text)
         return "spoken", None
-    if not cap_has("playback", "yes"):
-        other = peer_with("playback", "yes")
-        if not other or not other["addr"]:
-            die("mouth missing")
-        return forward(card._replace(to=other["id"]), other["addr"])
+    if not (ROOT / "chatterbox.exe").is_file():
+        die("mouth missing")
     import mouth
     park_gemma()
-    mouth.say(text, mouth.language_of(text))
+    mouth.wave(text, mouth.language_of(text))
     return "spoken", None
 
 
@@ -1811,12 +1767,18 @@ def caps_for(addr):
     return reply.body
 
 
+def other_seat(extra=()):
+    found = peer_addrs(extra)
+    if not found:
+        return ""
+    return found[0]
+
+
 def brain_place(extra=()):
     if cuda_name() and engine_here("gemma"):
         return ""
-    for addr in peer_addrs(extra):
-        if not reachable(addr):
-            continue
+    addr = other_seat(extra)
+    if addr and reachable(addr):
         caps = caps_for(addr)
         if cuda_line(caps) and "brain gemma" in caps.splitlines():
             return addr
@@ -1828,9 +1790,8 @@ def brain_place(extra=()):
 def cuda_mouth(extra=()):
     if cuda_name() and (ROOT / "chatterbox.exe").is_file():
         return ""
-    for addr in peer_addrs(extra):
-        if not reachable(addr):
-            continue
+    addr = other_seat(extra)
+    if addr and reachable(addr):
         caps = caps_for(addr)
         if cuda_line(caps) and "playback yes" in caps.splitlines():
             return addr
@@ -1867,6 +1828,7 @@ def play_remote(addr, text, play_one, lang=""):
 
     spoken = " ".join((text or "").split())
     tag = (lang or mouth.language_of(spoken)).strip().split("-")[0].lower()
+    spoken = mouth.voice_text(spoken, tag)
     limit = 65 if tag == "en" else 55
     chunks = mouth.pack_words(spoken, limit)
 
@@ -1951,6 +1913,14 @@ def prove():
     import mouth
     if mouth.language_of("zażółć gęślą jaźń") != "pl" or mouth.language_of("Iris can hear") != "en":
         die("mouth language")
+    prepared = mouth.voice_text("Pięć dwanaście", "pl")
+    if "ę" in prepared or "ś" in prepared or "\u0301" not in prepared or "\u0328" not in prepared:
+        die("mouth language")
+    if mouth.language_of(prepared) == "pl":
+        die("mouth language")
+    looked = desk_object('{"action":"done","screenshot_description":"A quiet desk."}')
+    if looked["see"] != "A quiet desk." or looked["do"] != "done":
+        die("desk keys")
     if mouth.cfm_steps("v3") != "5" or mouth.cfm_steps("nano") != "2":
         die("cfm steps")
     if "chatterbox.cfm-steps 5" not in mouth.settings_text("v3", "pl", "zażółć", "off"):

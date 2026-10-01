@@ -10,14 +10,13 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 from collections import namedtuple
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 MODELS = ("nano", "turbo", "v3")
 DROP_KEYS = ("chatterbox.variant", "chatterbox.language", "chatterbox.play", "chatterbox.cfm-steps")
-SND_FILENAME = 0x00020000
-SND_NODEFAULT = 0x0002
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 PROCESS_TERMINATE = 0x0001
 SLOTS = (
@@ -158,15 +157,6 @@ def settings_text(model, lang, sentence, play):
     return body
 
 
-def play_wav(path):
-    path = Path(path).resolve()
-    if not path.is_file():
-        die("missing wav: " + str(path))
-    ok = ctypes.windll.winmm.PlaySoundW(str(path), None, SND_FILENAME | SND_NODEFAULT)
-    if not ok:
-        die("PlaySoundW failed: " + str(path))
-
-
 def write_mouth(payload):
     try:
         (ROOT / "mouth.txt").write_bytes(payload.encode("utf-8"))
@@ -200,8 +190,18 @@ def adopt_output(tmp, out_txt):
     return dest
 
 
+def voice_text(text, tag):
+    spoken = " ".join((text or "").split())
+    if tag == "pl":
+        # v3 was trained on lowercase NFKD graphemes. Composed ą/ę/ś/ć/ń/ó/ź/ż
+        # are rare tokens and the palatals come out as another Slavic language.
+        spoken = " ".join(unicodedata.normalize("NFKD", spoken.lower()).split())
+    return spoken
+
+
 def synthesize(model, lang, sentence, card=None):
     check_voice(model, lang)
+    sentence = voice_text(sentence, lang)
     payload = settings_text(model, lang, sentence, "off")
     if card is None:
         write_mouth(payload)
@@ -843,12 +843,12 @@ def pack_words(text, limit):
 
 
 def bind(text, lang, fast="nano"):
-    spoken = " ".join((text or "").split())
-    if not spoken:
-        die("empty text")
     tag = (lang or "").strip().split("-")[0].lower()
     if not tag:
         die("mouth language")
+    spoken = voice_text(text, tag)
+    if not spoken:
+        die("empty text")
     if tag == "en":
         if fast not in ("nano", "turbo"):
             die("fast mouth is nano or turbo")
@@ -875,8 +875,7 @@ def say(text, lang, fast="nano"):
     spoken, model, tag = bind(text, lang, fast)
     limit = 65 if tag == "en" else 55
     pieces = [(chunk, model, tag) for chunk in pack_words(spoken, limit)]
-    print("mouth out: default", file=sys.stderr, flush=True)
-    speak_pieces(pieces, play_wav)
+    speak_pieces(pieces, None)
 
 
 def main():
@@ -920,21 +919,13 @@ def main():
 
     os.chdir(ROOT)
     chunks = list(args.text)
-    if args.no_play:
-        if args.once:
-            produced = [synthesize(args.model, lang, sentence) for sentence in chunks]
-        else:
-            pid = ensure_resident(args.model, lang)
-            produced = [resident_say(pid, sentence) for sentence in chunks]
-        for wav in produced:
-            print(str(Path(wav).resolve()), flush=True)
-        raise SystemExit(0)
-    print("mouth out: default", file=sys.stderr, flush=True)
     if args.once:
-        speak_chunks(lambda sentence: synthesize(args.model, lang, sentence), chunks, play_wav)
+        produced = [synthesize(args.model, lang, sentence) for sentence in chunks]
     else:
         pid = ensure_resident(args.model, lang)
-        speak_chunks(lambda sentence: resident_say(pid, sentence), chunks, play_wav)
+        produced = [resident_say(pid, voice_text(sentence, lang)) for sentence in chunks]
+    for wav in produced:
+        print(str(Path(wav).resolve()), flush=True)
     raise SystemExit(0)
 
 
