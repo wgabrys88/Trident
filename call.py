@@ -590,6 +590,23 @@ def speak(text):
     print("call: tx " + format(LIVE.tx_seconds, ".2f"), file=sys.stderr, flush=True)
 
 
+def picture(png):
+    if LIVE is None or not LIVE.up:
+        die("call down")
+    if not png:
+        die("empty shot")
+
+    async def send():
+        import io
+
+        buf = io.BytesIO(png)
+        buf.name = "desk.png"
+        await LIVE.client.send_file(LIVE.peer_id, buf, force_document=False)
+
+    submit(send(), 60)
+    return "sent"
+
+
 def listen(limit=""):
     if LIVE is None or not LIVE.up:
         die("call down")
