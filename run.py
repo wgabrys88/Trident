@@ -14,7 +14,9 @@ python run.py stop
 
 python run.py call
     Quit Telegram Desktop, place one voice call, then restart Desktop.
-    The microphone stays closed. Speech goes through the call.
+    The microphone stays closed. The transcript is one voice card.
+    Resident Gemma answers in text. That sentence is spoken into the call.
+    TRIDENT_PEERS is the other seat when the call or the brain is not here.
 
 Spoken shutdown is a Gemma stop tool call, not a keyword.
 """
@@ -282,28 +284,94 @@ def ensure_node():
             die("node is not this protocol")
 
 
+def peer_addr():
+    raw = os.environ.get("TRIDENT_PEERS", "").strip()
+    if not raw:
+        die("peer missing")
+    addr = raw.split(",")[0].strip()
+    if addr.startswith("http://") or addr.startswith("https://"):
+        die("peer is host:port")
+    host, sep, port = addr.rpartition(":")
+    if sep != ":" or not host or not port.isdigit() or not (1 <= int(port) <= 65535):
+        die("peer is host:port")
+    return addr
+
+
+def telegram_here():
+    desktop = Path(os.environ["APPDATA"]) / "Telegram Desktop"
+    return (desktop / "Telegram.exe").is_file() and (desktop / "tdata").is_dir()
+
+
+def cuda_here():
+    import node
+
+    for line in node.caps_text().splitlines():
+        if line.startswith("cuda "):
+            return line[5:] != "none"
+    return False
+
+
+def call_addr():
+    if telegram_here():
+        return "127.0.0.1:8765"
+    return peer_addr()
+
+
+def brain_addr():
+    import node
+
+    if cuda_here() and node.engine_here("gemma"):
+        return "127.0.0.1:8765"
+    addr = peer_addr()
+    reply = node.transact(addr, node.make_card("node", "hello", "hi"), 10)
+    rows = reply.body.splitlines()
+    cuda = ""
+    for line in rows:
+        if line.startswith("cuda "):
+            cuda = line[5:]
+    if "brain gemma" not in rows or cuda == "" or cuda == "none":
+        die("brain missing gemma")
+    return addr
+
+
 def cmd_call():
     ensure_node()
     import node
 
+    seat = call_addr()
+    brain = brain_addr()
+    if seat != "127.0.0.1:8765":
+        hello = node.transact(seat, node.make_card("node", "hello", "hi"), 10)
+        if "op call.dial" not in hello.body.splitlines() or "capture closed" not in hello.body.splitlines():
+            die("peer is not the call")
+    print("call: seat " + seat + " brain " + brain, file=sys.stderr, flush=True)
     greeting = (
         "Wojciech, this is Iris calling from the desk. "
         "The microphone on this computer stays closed. "
         "I am speaking through the Telegram call. "
-        "Please say a full sentence after I finish, and I will write your words down."
+        "Please say a full sentence after I finish, and I will answer you."
     )
-    up = node.transact("127.0.0.1:8765", node.make_card("call", "dial", "", resource="call"), 300)
+    up = node.transact(seat, node.make_card("call", "dial", "", resource="call"), 300)
     print(up.body, flush=True)
     failed = None
     try:
-        node.transact("127.0.0.1:8765", node.make_card("mouth", "say", greeting, resource="call"), 240)
-        heard = node.transact("127.0.0.1:8765", node.make_card("ear", "listen", "", resource="call"), 220)
+        node.transact(seat, node.make_card("mouth", "say", greeting, resource="call"), 240)
+        heard = node.transact(seat, node.make_card("ear", "listen", "", resource="call"), 220)
         print(heard.body, flush=True)
-        reply = "I heard you. " + " ".join(heard.body.split())
-        node.transact("127.0.0.1:8765", node.make_card("mouth", "say", reply, resource="call"), 240)
-    except SystemExit as exc:
+        reply = node.transact(
+            brain,
+            node.make_card("agent", "turn", heard.body, profile="voice", resource="call"),
+            600,
+        )
+        print(reply.body, flush=True)
+        if node.is_stop(reply.body):
+            die("gemma stop")
+        said = node.transact(seat, node.make_card("mouth", "say", reply.body, resource="call"), 240)
+        if said.body.strip() != "spoken":
+            die("mouth missed")
+    except BaseException as exc:
         failed = exc
-    hung = node.transact("127.0.0.1:8765", node.make_card("call", "hang", "", resource="call"), 90)
+    hung = node.transact(seat, node.make_card("call", "hang", "", resource="call"), 90)
     print(hung.body, flush=True)
     if failed is not None:
         raise failed
@@ -360,6 +428,10 @@ def cmd_start(url, inject):
 
 def main():
     os.environ["PYTHONUNBUFFERED"] = "1"
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     reexec()
     command, url, inject = parse_args(sys.argv[1:])
     if command == "stop":

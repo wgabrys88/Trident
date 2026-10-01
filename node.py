@@ -267,6 +267,8 @@ def mark(root, card, state):
 
 
 def needs_of(card):
+    if card.module == "agent" and card.op == "turn" and card.resource == "call":
+        return ("call", "gpu", "weights:gemma")
     if card.resource.strip():
         return tuple(card.resource.split())
     if card.module == "agent" and card.op == "turn":
@@ -1292,6 +1294,15 @@ def handle_brain(card):
 
 def handle_agent(card):
     profile = card.profile or "jarvis"
+    if card.resource == "call":
+        if card.image:
+            die("call is text")
+        if card.profile != "voice":
+            die("call profile")
+        text = agent_turn("voice", card.body, "")
+        if is_stop(text):
+            return text, None
+        return answer_text(text), None
     text = agent_turn(profile, card.body, card.image or "")
     return text, None
 
