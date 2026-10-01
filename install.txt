@@ -80,7 +80,6 @@ install.ggml_cuda_fa_all_quants off
 install.ggml_cuda_graphs on
 install.ggml_cuda_nccl off
 install.ear_gguf_url https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b/resolve/main/nemotron-3.5-asr-streaming-0.6b.q8_0.gguf
-install.sense_url https://huggingface.co/bartowski/Qwen_Qwen3-0.6B-GGUF/resolve/main/Qwen_Qwen3-0.6B-Q4_K_M.gguf
 install.ear_backend cpu
 install.ear_profile core
 install.ear_config Release

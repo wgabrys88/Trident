@@ -142,7 +142,6 @@ def cmd_clean():
         "mouth.stop",
         "mouth.lock",
         "gemma_run.txt",
-        "sense_run.txt",
         "vad_run.txt",
         "call.hear.wav",
         "call.hear.txt",
