@@ -1,7 +1,7 @@
 # One-shot: sense.exe file.txt reads sense.text, writes HH-MM-SS-mmm_sense_out_NNN.txt, and exits.
 # Resident: sense.exe --resident file.txt loads this file once and stays up.
 # The resident reads sense.prompt.txt and writes the generation to sense.response.txt.
-# qwen.py starts and reuses that process. A bare file argument stays one-shot.
+# A bare file argument stays one-shot. Resident mode answers each sense.prompt.txt.
 # The values below are used as written. Nothing in the program replaces them.
 # NNN starts at 000. An existing name is kept and the next number is used.
 # Paths are names in this file's directory. A value ending in << runs until a line that is only <<.

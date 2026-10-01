@@ -1,25 +1,22 @@
-"""Trident.
+"""Trident on this machine.
 
-python run.py [--peer HOST:PORT]
-    Residents idle, no call up. The phone line listens. Prints nothing and exits 0.
+python run.py
+    Gemma stays resident. The phone line listens. Prints nothing and exits 0.
     A failure prints one line and exits non-zero.
 
-python run.py start [--peer HOST:PORT] [inject [PATH]]
-    Start the node on port 8765 when it is down, then the assistant.
-    The microphone stays closed.
+python run.py call [SECONDS]
+    Place one voice call. Residents stay up when it drops.
+    SECONDS hangs the call up after that long.
 
 python run.py stop
-    Stop this organism and the mouth. Close the phone line. Leave port 8765 listening.
-
-python run.py call [SECONDS] [--peer HOST:PORT]
-    Place one voice call on the line. Residents stay up when it drops.
-    SECONDS hangs the call up after that long.
+    Hang up, stop Gemma and the mouth, and stop the line.
 
 python run.py clean
     Delete call and test artifacts. Leaves models, installs, and reference.wav.
 """
 
 import ctypes
+import io
 import os
 import socket
 import subprocess
@@ -28,13 +25,14 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-READY_SECONDS = 60
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
 
 def die(message):
     print(message, file=sys.stderr)
-    raise SystemExit(2)
+    err = SystemExit(2)
+    err.message = message
+    raise err
 
 
 def venv_python():
@@ -90,107 +88,9 @@ def python_alive(pid):
     return bool(image) and Path(image).name.lower() in {"python.exe", "pythonw.exe"}
 
 
-def remove_pidfile(name, pid):
-    if read_pid(name) != pid:
-        return
-    try:
-        (ROOT / name).unlink()
-    except OSError:
-        pass
-
-
-def host_port(value):
-    if value.startswith("http://") or value.startswith("https://"):
-        die("peer is host:port")
-    host, sep, port = value.rpartition(":")
-    if sep != ":" or not host or not port.isdigit() or not (1 <= int(port) <= 65535):
-        die("peer is host:port")
-    return value
-
-
-def split_peers(argv):
-    peers = []
-    rest = []
-    index = 0
-    while index < len(argv):
-        if argv[index] == "--peer":
-            if index + 1 >= len(argv) or not argv[index + 1].strip():
-                die("peer is host:port")
-            peers.append(host_port(argv[index + 1].strip()))
-            index += 2
-            continue
-        rest.append(argv[index])
-        index += 1
-    return rest, peers
-
-
-def parse_args(argv):
-    argv, peers = split_peers(argv)
-    usage = "usage: run.py [--peer HOST:PORT] | run.py start [inject [PATH]] [--peer HOST:PORT] | run.py stop | run.py call [SECONDS] [--peer HOST:PORT] | run.py clean"
-    if not argv:
-        return "rest", peers, None
-    if argv[0] == "call":
-        if len(argv) == 1:
-            return "call", peers, ""
-        if len(argv) == 2 and argv[1].isdigit() and int(argv[1]) > 0:
-            return "call", peers, argv[1]
-        die("usage: run.py call [SECONDS] [--peer HOST:PORT]")
-    command = argv[0]
-    if command == "stop":
-        if len(argv) != 1:
-            die("usage: run.py stop")
-        return "stop", [], None
-    if command == "clean":
-        if len(argv) != 1 or peers:
-            die("usage: run.py clean")
-        return "clean", [], None
-    if command != "start":
-        die(usage)
-    inject = None
-    index = 1
-    while index < len(argv):
-        arg = argv[index]
-        if arg == "inject":
-            if inject is not None:
-                die(usage)
-            if index + 1 < len(argv) and not argv[index + 1].startswith("-"):
-                inject = argv[index + 1]
-                if not inject.strip():
-                    die("empty inject path")
-                index += 2
-            else:
-                inject = "-"
-                index += 1
-            continue
-        die(usage)
-    return "start", peers, inject
-
-
-def already_up():
-    for name in ("assistant.pid", "iris.pid"):
-        pid = read_pid(name)
-        if python_alive(pid):
-            print("iris: already up pid " + str(pid), file=sys.stderr)
-            return True
-    return False
-
-
-def pid_stamp(name):
-    path = ROOT / name
-    try:
-        text = path.read_text(encoding="utf-8")
-        mtime = path.stat().st_mtime_ns
-    except OSError:
-        return "", 0
-    return text, mtime
-
-
-def taskkill(pid, tree=True):
-    argv = ["taskkill", "/PID", str(pid), "/F"]
-    if tree:
-        argv.insert(-1, "/T")
+def taskkill(pid):
     subprocess.run(
-        argv,
+        ["taskkill", "/PID", str(pid), "/T", "/F"],
         cwd=str(ROOT),
         shell=False,
         stdin=subprocess.DEVNULL,
@@ -199,57 +99,39 @@ def taskkill(pid, tree=True):
     )
 
 
-def end_process(proc, before):
-    if proc.poll() is None:
-        taskkill(proc.pid)
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
-    if pid_stamp("assistant.pid") == before:
-        return
-    pid = read_pid("assistant.pid")
-    if pid and pid != proc.pid and python_alive(pid):
-        taskkill(pid)
-
-
-def wait_ready(proc, before):
-    deadline = time.monotonic() + READY_SECONDS
-    while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            code = proc.returncode
-            raise SystemExit(code if code is not None else 2)
-        pid = read_pid("assistant.pid")
-        if pid_stamp("assistant.pid") != before and python_alive(pid):
-            return pid
-        time.sleep(0.05)
-    end_process(proc, before)
-    die("assistant did not become ready")
-
-
-def stop_mouth():
-    py = venv_python()
-    return subprocess.run(
-        [py, str(ROOT / "mouth.py"), "--stop"],
-        cwd=str(ROOT),
-        shell=False,
-    ).returncode
-
-
-def stop_assistant():
-    py = venv_python()
-    return subprocess.run(
-        [py, str(ROOT / "assistant.py"), "--stop"],
-        cwd=str(ROOT),
-        shell=False,
-    ).returncode
-
-
 def drop_file(path):
     if not path.is_file():
         return 0
     path.unlink()
     return 1
+
+
+def port_open(port):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(0.4)
+    try:
+        sock.connect(("127.0.0.1", port))
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+
+def parse_args(argv):
+    if not argv:
+        return "rest", ""
+    if argv[0] == "call":
+        if len(argv) == 1:
+            return "call", ""
+        if len(argv) == 2 and argv[1].isdigit() and int(argv[1]) > 0:
+            return "call", argv[1]
+        die("usage: run.py call [SECONDS]")
+    if argv == ["stop"]:
+        return "stop", ""
+    if argv == ["clean"]:
+        return "clean", ""
+    die("usage: run.py | run.py call [SECONDS] | run.py stop | run.py clean")
 
 
 def cmd_clean():
@@ -264,39 +146,20 @@ def cmd_clean():
         "vad_run.txt",
         "call.hear.wav",
         "call.hear.txt",
-        "assistant.note.txt",
-        "assistant.session.txt",
-        "assistant.session.txt.tmp",
-        "tool_hello.txt",
-        "cursor.status.txt",
-        "cursor.status.txt.tmp",
-        "iris.pid",
-        "iris_outbox.txt",
-        "iris_outbox.txt.tmp",
-        "iris_status.txt",
-        "iris_status.txt.tmp",
+        "call.ready",
+        "call.blocker.txt",
+        "node.pid",
+        "node.run.err",
         "gemma.lastprompt.txt",
     ):
         removed += drop_file(ROOT / name)
-    for pattern in (
-        "*.pid",
-        "*.pid.tmp",
-        "*.stop",
-        "*.prompt.txt",
-        "*.response.txt",
-        "*.response.wav",
-        "*.run.log",
-        "*.run.err",
-        "*_chatterbox_out_*",
-        "*_out_*.txt",
-        "*_peer.wav",
-    ):
+    for pattern in ("*.pid", "*.pid.tmp", "*.stop", "*.prompt.txt", "*.response.txt", "*.response.wav", "*.run.log", "*.run.err", "*_chatterbox_out_*", "*_out_*.txt", "*_peer.wav"):
         for path in ROOT.glob(pattern):
             removed += drop_file(path)
     for path in ROOT.glob("*.wav"):
         if path.name != "reference.wav":
             removed += drop_file(path)
-    for folder in ("node.queue", "node.state"):
+    for folder in ("node.queue", "node.state", "node.room"):
         base = ROOT / folder
         if not base.is_dir():
             continue
@@ -305,127 +168,127 @@ def cmd_clean():
     print("clean " + str(removed), flush=True)
 
 
+def stop_mouth():
+    py = venv_python()
+    return subprocess.run([py, str(ROOT / "mouth.py"), "--stop"], cwd=str(ROOT), shell=False).returncode
+
+
 def cmd_stop():
-    for name in ("assistant.pid", "iris.pid"):
-        pid = read_pid(name)
-        if pid and process_image(pid) and not python_alive(pid):
-            die("refusing to stop " + name + " pid " + str(pid))
-    if port_open():
-        import node
+    import gemma
+    import node
 
-        node.transact("127.0.0.1:8765", node.make_card("call", "hang", "close"), 60)
-    iris_pid = read_pid("iris.pid")
-    if python_alive(iris_pid):
-        taskkill(iris_pid)
-    assistant_code = stop_assistant()
-    mouth_code = stop_mouth()
+    if port_open(node.PORT):
+        try:
+            node.transact("127.0.0.1:" + str(node.PORT), node.make_card("call", "hang", "close"), 60)
+        except SystemExit:
+            pass
+    stop_mouth()
     try:
-        (ROOT / "iris.pid").unlink()
-    except OSError:
+        gemma.stop_resident()
+    except SystemExit:
         pass
-    print("iris: stopped", file=sys.stderr)
-    if assistant_code or mouth_code:
-        raise SystemExit(assistant_code or mouth_code)
+    pid = read_pid("node.pid")
+    if python_alive(pid):
+        taskkill(pid)
+    drop_file(ROOT / "node.pid")
+    print("trident: stopped", file=sys.stderr)
 
 
-def port_open():
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(0.4)
-    try:
-        sock.connect(("127.0.0.1", 8765))
-        return True
-    except OSError:
-        return False
-    finally:
-        sock.close()
-
-
-def ensure_node(peers, quiet=False):
+def ensure_node():
     import node
 
     py = venv_python()
     proc = None
-    if not port_open():
+    log = None
+    if not port_open(node.PORT):
         argv = [py, "-u", str(ROOT / "node.py"), "--line"]
-        stdio = {"stdin": subprocess.DEVNULL}
-        log = None
-        if quiet:
-            log = open(ROOT / "node.run.err", "wb", buffering=0)
-            stdio["stdout"] = log
-            stdio["stderr"] = subprocess.STDOUT
-            stdio["creationflags"] = (
-                subprocess.CREATE_NEW_PROCESS_GROUP
-                | subprocess.CREATE_NO_WINDOW
-                | subprocess.CREATE_BREAKAWAY_FROM_JOB
-            )
+        log = open(ROOT / "node.run.err", "wb", buffering=0)
         try:
-            proc = subprocess.Popen(argv, cwd=str(ROOT), shell=False, **stdio)
+            proc = subprocess.Popen(
+                argv,
+                cwd=str(ROOT),
+                shell=False,
+                stdin=subprocess.DEVNULL,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW | subprocess.CREATE_BREAKAWAY_FROM_JOB,
+            )
         except OSError as exc:
             die("line did not start " + " ".join(str(exc).split()))
         finally:
             if log is not None:
                 log.close()
         deadline = time.monotonic() + 240
-        while time.monotonic() < deadline and not port_open():
+        while time.monotonic() < deadline and not port_open(node.PORT):
             if proc.poll() is not None:
                 break
             time.sleep(0.05)
-        if not port_open():
+        if not port_open(node.PORT):
             if proc.poll() is None:
-                taskkill(proc.pid, tree=False)
-            if quiet:
-                try:
-                    text = (ROOT / "node.run.err").read_text(encoding="utf-8", errors="replace")
-                except OSError:
-                    text = ""
-                lines = [item.strip() for item in text.replace("\r\n", "\n").splitlines() if item.strip()]
-                die(lines[-1] if lines else "line did not become idle")
-            die("node did not start")
-    reply = node.transact("127.0.0.1:8765", node.make_card("node", "hello", "hi"), 10)
+                taskkill(proc.pid)
+            try:
+                text = (ROOT / "node.run.err").read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                text = ""
+            lines = [item.strip() for item in text.replace("\r\n", "\n").splitlines() if item.strip()]
+            die(lines[-1] if lines else "line did not become idle")
+    reply = node.transact("127.0.0.1:" + str(node.PORT), node.make_card("node", "hello", "hi"), 30)
     rows = reply.body.splitlines()
-    for line in ("capture closed", "op mouth.say", "op ear.listen", "op call.dial", "op call.wait"):
+    for line in ("capture closed", "op call.dial", "op call.wait"):
         if line not in rows:
             die("node is not this protocol")
-    if "call up" in rows:
-        die("call up")
-    waited = node.transact("127.0.0.1:8765", node.make_card("call", "wait", ""), 240)
-    body = (waited.body or "").strip()
-    if body == "up":
-        die("call up")
-    if body != "idle":
-        die("line did not become idle")
-    for addr in peers:
-        node.transact("127.0.0.1:8765", node.make_card("node", "join", addr), 20)
-    return proc
+    if "op node.join" in rows:
+        die("node is not this protocol")
+    return rows
 
 
-def cmd_call(seconds, peers):
-    cmd_rest(peers)
+def line_state():
     import node
 
-    up = node.transact("127.0.0.1:8765", node.make_card("call", "dial", ""), 300)
-    sys.stdout.write(up.body if up.body.endswith("\n") else up.body + "\n")
+    waited = node.transact("127.0.0.1:" + str(node.PORT), node.make_card("call", "wait", ""), 240)
+    return (waited.body or "").strip()
+
+
+def show(text):
+    sys.stdout.write(text if text.endswith("\n") else text + "\n")
+
+
+def cmd_call(seconds):
+    ensure_node()
+    import gemma
+    import node
+
+    state = line_state()
+    if state == "up":
+        node.transact("127.0.0.1:" + str(node.PORT), node.make_card("call", "hang", ""), 90)
+        state = line_state()
+    if state != "idle":
+        die("line did not become idle")
+    gemma.idle()
+    up = node.transact("127.0.0.1:" + str(node.PORT), node.make_card("call", "dial", ""), 300)
+    show(up.body)
     if not seconds:
         return
     time.sleep(int(seconds))
-    hung = node.transact("127.0.0.1:8765", node.make_card("call", "hang", ""), 90)
-    sys.stdout.write(hung.body if hung.body.endswith("\n") else hung.body + "\n")
+    hung = node.transact("127.0.0.1:" + str(node.PORT), node.make_card("call", "hang", ""), 90)
+    show(hung.body)
 
 
-def cmd_rest(peers):
-    import io
-
+def cmd_rest():
     sink = io.StringIO()
     old_out, old_err = sys.stdout, sys.stderr
     sys.stdout = sink
     sys.stderr = sink
     try:
-        ensure_node(peers, quiet=True)
+        ensure_node()
+        state = line_state()
+        if state == "up":
+            die("call up")
+        if state != "idle":
+            die("line did not become idle")
         import gemma
-        import node
 
-        if node.brain_place(peers) == "":
-            gemma.idle()
+        gemma.idle()
     except KeyboardInterrupt:
         sys.stdout = old_out
         sys.stderr = old_err
@@ -442,56 +305,6 @@ def cmd_rest(peers):
     sys.stderr = old_err
 
 
-def cmd_start(peers, inject):
-    if already_up():
-        return
-    ensure_node(peers)
-    py = venv_python()
-    url = peers[0] if peers else ""
-    if url:
-        print("iris: brain " + url, file=sys.stderr, flush=True)
-    else:
-        print("iris: brain local", file=sys.stderr, flush=True)
-    if inject is None:
-        print("iris: capture closed", file=sys.stderr, flush=True)
-    else:
-        print("iris: inject", file=sys.stderr, flush=True)
-    before = pid_stamp("assistant.pid")
-    command = [
-        py,
-        "-u",
-        str(ROOT / "assistant.py"),
-        "--timeout",
-        "180",
-    ]
-    if url:
-        command.extend(["--url", url])
-    if inject is not None:
-        command.append("--inject")
-        if inject != "-":
-            command.append(inject)
-    proc = subprocess.Popen(command, cwd=str(ROOT), shell=False)
-    (ROOT / "iris.pid").write_text(str(proc.pid) + "\n", encoding="utf-8")
-    code = 2
-    announced = False
-    try:
-        ready_pid = wait_ready(proc, before)
-        print("iris: up pid " + str(ready_pid), file=sys.stderr, flush=True)
-        code = proc.wait()
-    except KeyboardInterrupt:
-        print("iris: stopped", file=sys.stderr)
-        announced = True
-        end_process(proc, before)
-        stop_assistant()
-        stop_mouth()
-        code = 0
-    finally:
-        remove_pidfile("iris.pid", proc.pid)
-    if code == 0 and not announced:
-        print("iris: stopped", file=sys.stderr)
-    raise SystemExit(code if code is not None else 2)
-
-
 def main():
     os.environ["PYTHONUNBUFFERED"] = "1"
     if hasattr(sys.stdout, "reconfigure"):
@@ -499,7 +312,7 @@ def main():
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     reexec()
-    command, peers, extra = parse_args(sys.argv[1:])
+    command, extra = parse_args(sys.argv[1:])
     if command == "stop":
         cmd_stop()
         return
@@ -507,12 +320,9 @@ def main():
         cmd_clean()
         return
     if command == "call":
-        cmd_call(extra, peers)
+        cmd_call(extra)
         return
-    if command == "rest":
-        cmd_rest(peers)
-        return
-    cmd_start(peers, extra)
+    cmd_rest()
 
 
 if __name__ == "__main__":
