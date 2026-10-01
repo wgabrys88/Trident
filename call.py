@@ -30,14 +30,16 @@ from opentele.tl.telethon import TelegramClient
 from telethon import events
 from telethon.sessions import MemorySession
 from telethon.tl.functions.messages import GetDhConfigRequest
-from telethon.tl.functions.phone import ConfirmCallRequest, DiscardCallRequest, RequestCallRequest, SendSignalingDataRequest
+from telethon.tl.functions.phone import AcceptCallRequest, ConfirmCallRequest, DiscardCallRequest, RequestCallRequest, SendSignalingDataRequest
 from telethon.tl.types import (
     InputPhoneCall,
     PhoneCall,
     PhoneCallAccepted,
     PhoneCallDiscarded,
     PhoneCallDiscardReasonHangup,
+    PhoneCallDiscardReasonMissed,
     PhoneCallProtocol,
+    PhoneCallRequested,
     PhoneCallWaiting,
     PhoneConnection,
     PhoneConnectionWebrtc,
@@ -90,7 +92,7 @@ def telegram_pids():
 def quit_telegram():
     pids = set(telegram_pids())
     if not pids:
-        die("telegram desktop is not running")
+        return
     user32 = ctypes.windll.user32
     user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
     user32.GetWindowThreadProcessId.restype = ctypes.c_ulong
@@ -248,6 +250,15 @@ def boot():
     LIVE.linked = False
     LIVE.accepted = None
     LIVE.discarded = None
+    LIVE.final = None
+    LIVE.got_accept = None
+    LIVE.got_final = None
+    LIVE.closed = False
+    LIVE.fault = ""
+    LIVE.opening = ""
+    LIVE.ring = threading.Event()
+    LIVE.mark_lock = threading.Lock()
+    LIVE.thread_line = None
 
     def runner():
         asyncio.set_event_loop(LIVE.loop)
@@ -341,13 +352,33 @@ def external(rate):
     )
 
 
-async def stop_call():
-    if LIVE.client is None or not LIVE.client.is_connected():
-        return 0
-    me = await LIVE.client.get_me()
-    ident = int(me.id)
+def mark(state):
+    if LIVE is None:
+        return
+    with LIVE.mark_lock:
+        if state == "idle" and LIVE.up:
+            state = "up"
+        (ROOT / "call.ready").write_text(state + "\n", encoding="utf-8")
+
+
+def clear_ready():
     try:
-        if LIVE.phone is not None:
+        (ROOT / "call.ready").unlink()
+    except OSError:
+        pass
+
+
+def armed():
+    return LIVE is not None and LIVE.client is not None and not LIVE.closed
+
+
+def live():
+    return LIVE is not None and LIVE.up and not LIVE.closed
+
+
+async def end_media():
+    try:
+        if LIVE.client is not None and LIVE.client.is_connected() and LIVE.phone is not None:
             await LIVE.client(
                 DiscardCallRequest(
                     peer=LIVE.phone,
@@ -358,27 +389,59 @@ async def stop_call():
                 )
             )
     finally:
-        try:
-            if LIVE.calls is not None and LIVE.peer_id:
+        if LIVE.calls is not None and LIVE.peer_id:
+            try:
                 await LIVE.calls.stop(LIVE.peer_id)
-        finally:
-            if LIVE.client.is_connected():
-                await LIVE.client.disconnect()
-    return ident
+            except Exception:
+                pass
+        LIVE.calls = None
+        LIVE.phone = None
+        LIVE.media_up = False
+        LIVE.up = False
+        LIVE.drop_rx = False
 
 
-def release():
-    still = 0
+async def stop_call():
     try:
-        if LIVE is not None and LIVE.client is not None:
-            still = submit(stop_call(), 45)
+        await end_media()
     finally:
-        try:
-            start_telegram()
-        finally:
-            if LIVE is not None:
-                stop_loop()
-    return still
+        if LIVE.client is not None and LIVE.client.is_connected():
+            await LIVE.client.disconnect()
+
+
+def drop_call():
+    if LIVE is None:
+        return
+    LIVE.up = False
+    LIVE.rx_event.set()
+    try:
+        submit(end_media(), 45)
+    except BaseException:
+        LIVE.up = False
+    mark("idle")
+
+
+def close_session():
+    if LIVE is None:
+        start_telegram()
+        clear_ready()
+        return
+    me = threading.current_thread()
+    line = LIVE.thread_line
+    LIVE.closed = True
+    LIVE.up = False
+    LIVE.ring.set()
+    LIVE.rx_event.set()
+    try:
+        if LIVE.client is not None:
+            submit(stop_call(), 20)
+    except BaseException:
+        pass
+    if line is not None and line is not me and line.is_alive():
+        line.join(3)
+    stop_loop()
+    start_telegram()
+    clear_ready()
 
 
 def pull_rx():
@@ -414,10 +477,95 @@ def on_signal(_uid, data):
     asyncio.run_coroutine_threadsafe(push_signal(bytes(data)), LIVE.loop)
 
 
+def person_name(entity):
+    return " ".join(part for part in (getattr(entity, "first_name", "") or "", getattr(entity, "last_name", "") or "") if part)
+
+
+def wire_protocol():
+    protocol = NTgCalls.get_protocol()
+    versions = list(protocol.library_versions)
+    versions.reverse()
+    return PhoneCallProtocol(
+        udp_p2p=bool(protocol.udp_p2p),
+        udp_reflector=bool(protocol.udp_reflector),
+        min_layer=65,
+        max_layer=92,
+        library_versions=versions,
+    )
+
+
+async def dh_config():
+    cfg = await LIVE.client(GetDhConfigRequest(0, 256))
+    if not isinstance(cfg, MessagesDhConfig):
+        die("dh config")
+    return DhConfig(int(cfg.g), bytes(cfg.p), bytes(cfg.random))
+
+
+async def begin_media(peer_id):
+    LIVE.peer_id = peer_id
+    LIVE.calls = NTgCalls()
+    LIVE.connected = asyncio.Event()
+    LIVE.got_accept = asyncio.Event()
+    LIVE.got_final = asyncio.Event()
+    LIVE.linked = False
+    LIVE.media_up = False
+    LIVE.in_sig = []
+    LIVE.discarded = None
+    LIVE.accepted = None
+    LIVE.final = None
+    LIVE.gate.reset()
+    LIVE.calls.on_frames(on_frames)
+    LIVE.calls.on_connection_change(on_connection)
+    LIVE.calls.on_signaling_data(on_signal)
+    await LIVE.calls.create_p2p_call(peer_id)
+    await LIVE.calls.set_stream_sources(peer_id, StreamMode.CAPTURE, external(RATE_TX))
+    await LIVE.calls.set_stream_sources(peer_id, StreamMode.PLAYBACK, external(RATE_RX))
+
+
+async def finish_link(call):
+    LIVE.phone = InputPhoneCall(int(call.id), int(call.access_hash))
+    versions = list(call.protocol.library_versions)
+    custom = call.custom_parameters.data if call.custom_parameters else None
+    await LIVE.calls.connect_p2p(LIVE.peer_id, servers_of(call.connections), versions, bool(call.p2p_allowed), custom)
+    LIVE.media_up = True
+    queued = list(LIVE.in_sig)
+    LIVE.in_sig.clear()
+    for blob in queued:
+        await LIVE.calls.send_signaling_data(LIVE.peer_id, blob)
+    await asyncio.wait_for(LIVE.connected.wait(), 30)
+    if not LIVE.linked:
+        die("call link")
+    LIVE.up = True
+    LIVE.began = time.time()
+    mark("up")
+    print("call: connected", file=sys.stderr, flush=True)
+
+
+async def discard_missed(phone):
+    await LIVE.client(
+        DiscardCallRequest(
+            peer=InputPhoneCall(int(phone.id), int(phone.access_hash)),
+            duration=0,
+            reason=PhoneCallDiscardReasonMissed(),
+            connection_id=0,
+            video=False,
+        )
+    )
+
+
 async def on_raw(update):
+    try:
+        await on_update(update)
+    except SystemExit as exc:
+        LIVE.fault = getattr(exc, "message", "") or "call failed"
+        LIVE.up = False
+        LIVE.ring.set()
+
+
+async def on_update(update):
     if isinstance(update, UpdatePhoneCallSignalingData):
         blob = bytes(update.data)
-        if LIVE.media_up:
+        if LIVE.media_up and LIVE.calls is not None:
             await LIVE.calls.send_signaling_data(LIVE.peer_id, blob)
         else:
             LIVE.in_sig.append(blob)
@@ -425,17 +573,33 @@ async def on_raw(update):
     if not isinstance(update, UpdatePhoneCall):
         return
     phone = update.phone_call
+    if isinstance(phone, PhoneCallRequested):
+        if LIVE.closed:
+            return
+        if LIVE.up or LIVE.calls is not None or int(phone.admin_id) != PEER:
+            await discard_missed(phone)
+            return
+        await accept_requested(phone)
+        return
     if isinstance(phone, (PhoneCallWaiting, PhoneCallAccepted, PhoneCall)):
         LIVE.phone = InputPhoneCall(int(phone.id), int(phone.access_hash))
-    if isinstance(phone, PhoneCallAccepted):
+    if isinstance(phone, PhoneCallAccepted) and LIVE.got_accept is not None:
         LIVE.accepted = phone
         LIVE.got_accept.set()
+    if isinstance(phone, PhoneCall) and LIVE.got_final is not None:
+        LIVE.final = phone
+        LIVE.got_final.set()
     if isinstance(phone, PhoneCallDiscarded):
         LIVE.discarded = phone
-        LIVE.got_accept.set()
+        LIVE.up = False
+        LIVE.rx_event.set()
+        if LIVE.got_accept is not None:
+            LIVE.got_accept.set()
+        if LIVE.got_final is not None:
+            LIVE.got_final.set()
 
 
-async def place():
+async def connect_session():
     if not TDATA.is_dir():
         die("tdata missing")
     tdesk = TDesktop(str(TDATA))
@@ -457,50 +621,61 @@ async def place():
         api=API.TelegramDesktop,
     )
     LIVE.client = client
-    LIVE.calls = NTgCalls()
-    LIVE.connected = asyncio.Event()
-    LIVE.got_accept = asyncio.Event()
-    LIVE.calls.on_frames(on_frames)
-    LIVE.calls.on_connection_change(on_connection)
-    LIVE.calls.on_signaling_data(on_signal)
+    LIVE.got_accept = None
+    LIVE.got_final = None
     client.add_event_handler(on_raw, events.Raw())
     await client.connect()
     me = await client.get_me()
     if int(me.id) != IRIS:
         die("iris session " + str(int(me.id)))
     LIVE.caller = int(me.id)
-    LIVE.caller_name = " ".join(part for part in (me.first_name or "", me.last_name or "") if part)
+    LIVE.caller_name = person_name(me)
     humans = []
     async for dialog in client.iter_dialogs():
         entity = dialog.entity
         if not dialog.is_user or getattr(entity, "bot", False) or int(entity.id) == IRIS:
             continue
-        name = " ".join(part for part in (getattr(entity, "first_name", "") or "", getattr(entity, "last_name", "") or "") if part)
-        humans.append((int(entity.id), name))
+        humans.append((int(entity.id), person_name(entity)))
     match = [item for item in humans if item[0] == PEER]
     if not match:
         die("peer missing " + " ".join(str(item[0]) for item in humans))
     LIVE.peer_id = match[0][0]
     LIVE.peer_name = match[0][1]
     print("call: peer " + str(LIVE.peer_id) + " " + LIVE.peer_name, file=sys.stderr, flush=True)
-    await LIVE.calls.create_p2p_call(LIVE.peer_id)
-    await LIVE.calls.set_stream_sources(LIVE.peer_id, StreamMode.CAPTURE, external(RATE_TX))
-    await LIVE.calls.set_stream_sources(LIVE.peer_id, StreamMode.PLAYBACK, external(RATE_RX))
-    cfg = await client(GetDhConfigRequest(0, 256))
-    if not isinstance(cfg, MessagesDhConfig):
-        die("dh config")
-    g_a_hash = bytes(await LIVE.calls.init_exchange(LIVE.peer_id, DhConfig(int(cfg.g), bytes(cfg.p), bytes(cfg.random)), None))
-    protocol = NTgCalls.get_protocol()
-    wire = PhoneCallProtocol(
-        udp_p2p=bool(protocol.udp_p2p),
-        udp_reflector=bool(protocol.udp_reflector),
-        min_layer=int(protocol.min_layer),
-        max_layer=int(protocol.max_layer),
-        library_versions=list(protocol.library_versions),
-    )
-    invited = await client(
+
+
+async def accept_requested(requested):
+    await begin_media(PEER)
+    g_b = bytes(await LIVE.calls.init_exchange(PEER, await dh_config(), bytes(requested.g_a_hash)))
+    LIVE.phone = InputPhoneCall(int(requested.id), int(requested.access_hash))
+    wire = wire_protocol()
+    answered = await LIVE.client(AcceptCallRequest(peer=LIVE.phone, g_b=g_b, protocol=wire))
+    call = answered.phone_call
+    if isinstance(call, PhoneCallDiscarded) or LIVE.discarded is not None:
+        reason = type(getattr(LIVE.discarded, "reason", None)).__name__
+        die("call " + reason)
+    if not isinstance(call, PhoneCall):
+        await asyncio.wait_for(LIVE.got_final.wait(), 30)
+        if LIVE.discarded is not None:
+            die("call discarded")
+        call = LIVE.final
+    if not isinstance(call, PhoneCall):
+        die("call confirm")
+    await LIVE.calls.exchange_keys(PEER, bytes(call.g_a_or_b), int(call.key_fingerprint))
+    await finish_link(call)
+    print("call: answered", file=sys.stderr, flush=True)
+    LIVE.ring.set()
+
+
+async def place():
+    if LIVE.up:
+        die("call already up")
+    await begin_media(LIVE.peer_id)
+    g_a_hash = bytes(await LIVE.calls.init_exchange(LIVE.peer_id, await dh_config(), None))
+    wire = wire_protocol()
+    invited = await LIVE.client(
         RequestCallRequest(
-            user_id=await client.get_input_entity(LIVE.peer_id),
+            user_id=await LIVE.client.get_input_entity(LIVE.peer_id),
             random_id=random.randint(0, 2**31 - 1),
             g_a_hash=g_a_hash,
             protocol=wire,
@@ -518,7 +693,7 @@ async def place():
     if LIVE.accepted is None:
         die("call waiting")
     auth = await LIVE.calls.exchange_keys(LIVE.peer_id, bytes(LIVE.accepted.g_b), 0)
-    confirmed = await client(
+    confirmed = await LIVE.client(
         ConfirmCallRequest(
             peer=LIVE.phone,
             g_a=bytes(auth.g_a_or_b),
@@ -529,20 +704,7 @@ async def place():
     call = confirmed.phone_call
     if not isinstance(call, PhoneCall):
         die("call confirm")
-    LIVE.phone = InputPhoneCall(int(call.id), int(call.access_hash))
-    versions = list(call.protocol.library_versions)
-    custom = call.custom_parameters.data if call.custom_parameters else None
-    await LIVE.calls.connect_p2p(LIVE.peer_id, servers_of(call.connections), versions, bool(call.p2p_allowed), custom)
-    LIVE.media_up = True
-    queued = list(LIVE.in_sig)
-    LIVE.in_sig.clear()
-    for blob in queued:
-        await LIVE.calls.send_signaling_data(LIVE.peer_id, blob)
-    await asyncio.wait_for(LIVE.connected.wait(), 30)
-    if not LIVE.linked:
-        die("call link")
-    LIVE.up = True
-    print("call: connected", file=sys.stderr, flush=True)
+    await finish_link(call)
     return "up " + str(LIVE.caller) + " " + LIVE.caller_name + " " + str(LIVE.peer_id) + " " + LIVE.peer_name
 
 
@@ -609,16 +771,17 @@ def picture(png):
 
 def listen(limit=""):
     if LIVE is None or not LIVE.up:
-        die("call down")
+        return ""
     import hear
-    import node
 
     window = (limit or "").strip()
-    seconds = float(window) if window else 100.0
-    if seconds <= 0:
+    seconds = float(window) if window else 0.0
+    if window and seconds <= 0:
         return ""
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
+    deadline = time.monotonic() + seconds if seconds else None
+    while LIVE.up:
+        if deadline is not None and time.monotonic() >= deadline:
+            return ""
         data = pull_rx()
         if not data:
             LIVE.rx_event.wait(0.2)
@@ -633,63 +796,102 @@ def listen(limit=""):
         LIVE.transcript = text
         LIVE.rx_seconds = clip.size / RATE_RX
         (ROOT / "call.hear.txt").write_text(text + "\n", encoding="utf-8")
-        card = node.make_card("agent", "turn", text, profile="voice", resource="call")
-        (ROOT / "call.agent.card").write_text(node.render(card), encoding="utf-8")
         print("call: rx " + format(LIVE.rx_seconds, ".2f") + " " + lang + " " + text, file=sys.stderr, flush=True)
         return text
-    if window:
-        return ""
-    die("hear empty")
+    return ""
 
 
-def dial():
-    if LIVE is not None:
-        die("call already up")
+def line_loop():
+    while LIVE is not None and not LIVE.closed:
+        LIVE.ring.wait()
+        if LIVE is None or LIVE.closed:
+            return
+        LIVE.ring.clear()
+        opening = LIVE.opening
+        LIVE.opening = ""
+        try:
+            if LIVE.fault:
+                message = LIVE.fault
+                LIVE.fault = ""
+                die(message)
+            if opening and LIVE.up:
+                speak(opening)
+            while LIVE is not None and LIVE.up and not LIVE.closed:
+                heard = listen("")
+                if LIVE is None or not LIVE.up or LIVE.closed:
+                    break
+                if not heard:
+                    continue
+                mod = sys.modules["__main__"]
+                reply = mod.agent_turn("voice", heard, "")
+                print(reply, flush=True)
+                if mod.is_stop(reply):
+                    drop_call()
+                    break
+                spoken = mod.answer_text(reply)
+                if spoken and LIVE.up:
+                    speak(spoken)
+        except SystemExit as exc:
+            message = getattr(exc, "message", "") or ""
+            if message == "call down" and LIVE is not None and not LIVE.closed:
+                mark("idle")
+                continue
+            if LIVE is not None and not LIVE.closed:
+                close_session()
+            return
+        if LIVE is not None and not LIVE.closed:
+            mark("idle")
+
+
+def arm():
+    if armed():
+        state = "up" if LIVE.up else "idle"
+        mark(state)
+        return state
     if not EXE.is_file():
         die("telegram desktop missing")
     quit_telegram()
     boot()
+    LIVE.thread_line = threading.Thread(target=line_loop, name="iris-line", daemon=True)
+    LIVE.thread_line.start()
     try:
-        return submit(place(), 240)
+        submit(connect_session(), 180)
     except BaseException as exc:
         write_blocker(getattr(exc, "message", "") or str(exc))
-        release()
+        close_session()
         raise
+    if LIVE.up:
+        mark("up")
+        return "up"
+    mark("idle")
+    print("call: idle", file=sys.stderr, flush=True)
+    return "idle"
+
+
+def dial(reason=""):
+    if not armed():
+        die("call down")
+    if LIVE.up:
+        die("call already up")
+    try:
+        text = submit(place(), 240)
+    except BaseException as exc:
+        write_blocker(getattr(exc, "message", "") or str(exc))
+        drop_call()
+        raise
+    LIVE.opening = " ".join((reason or "").split())
+    LIVE.ring.set()
+    return text
 
 
 def hang(kind=""):
-    if LIVE is None:
+    if kind == "close":
+        close_session()
+        return "closed"
+    if not armed():
         die("call down")
-    snap = (
-        LIVE.tx_seconds,
-        LIVE.rx_seconds,
-        LIVE.transcript,
-        LIVE.caller,
-        LIVE.caller_name,
-        LIVE.peer_id,
-        LIVE.peer_name,
-    )
-    still = release()
-    tx, rx, text, caller, caller_name, peer, peer_name = snap
-    tip = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=str(ROOT), text=True).strip()
-    command = "python run.py call" + ((" " + kind) if kind else "")
-    lines = [
-        "command " + command,
-        "tip " + tip,
-        "caller " + str(caller) + " " + caller_name,
-        "peer " + str(peer) + " " + peer_name,
-        "session " + str(still),
-        "tx_s " + format(tx, ".2f"),
-        "rx_s " + format(rx, ".2f"),
-        "hear " + text,
-        "quit telegram",
-        "desktop restarted",
-        "capture closed",
-    ]
-    body = "\n".join(lines) + "\n"
-    timed = kind.isdigit() and int(kind) > 0
-    if still != caller or tx < 5 or not telegram_pids() or (not timed and (rx < 1 or not text)):
-        write_blocker(body)
-        die("call short")
-    (ROOT / "call.fact.txt").write_text(body, encoding="utf-8")
-    return "hung " + text
+    if not LIVE.up:
+        return "hung"
+    drop_call()
+    return "hung"
+

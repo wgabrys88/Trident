@@ -27,7 +27,7 @@ OPS = {
     "desk": ("turn",),
     "endgame": ("run",),
     "telegram": ("run",),
-    "call": ("dial", "hang"),
+    "call": ("dial", "hang", "wait"),
     "tool": ("call",),
 }
 PROFILES = {
@@ -53,7 +53,7 @@ MAP = (
     "run.py rest exits 0 with residents idle, peer from --peer\n"
     "endgame-ai/ desktop organism, module endgame, not edited on this seat\n"
     "telegram-control/ telegram capability, not started unless a card asks\n"
-    "call.py telegram voice duplex, telethon and ntgcalls, ear and mouth on the call\n"
+    "call.py telegram voice line on the user session, pictures leave as messages\n"
 )
 Card = namedtuple(
     "Card",
@@ -292,6 +292,7 @@ def needs_of(card):
         ("telegram", "run"): ("desktop",),
         ("call", "dial"): ("call",),
         ("call", "hang"): ("call",),
+        ("call", "wait"): ("call",),
         ("tool", "call"): ("cpu",),
     }
     return table[(card.module, card.op)]
@@ -1568,8 +1569,10 @@ def handle_endgame(card):
 
 def handle_call(card):
     import call
+    if card.op == "wait":
+        return call.arm(), None
     if card.op == "dial":
-        return call.dial(), None
+        return call.dial((card.body or "").strip()), None
     if card.op == "hang":
         return call.hang((card.body or "").strip()), None
     die("call card")
@@ -1611,6 +1614,7 @@ HANDLERS = {
     ("telegram", "run"): handle_telegram,
     ("call", "dial"): handle_call,
     ("call", "hang"): handle_call,
+    ("call", "wait"): handle_call,
     ("tool", "call"): handle_tool,
 }
 
@@ -2021,13 +2025,21 @@ def main():
         reply = transact(argv[1], make_card("node", "hello", caps_text()), 10)
         sys.stdout.write(reply.body)
         return
-    if argv:
-        die("usage: node.py [--prove | --peer host:port]")
+    line = argv == ["--line"]
+    if argv and not line:
+        die("usage: node.py [--prove | --line | --peer host:port]")
+    if line:
+        import call
+        call.arm()
     try:
         serve()
     except KeyboardInterrupt:
         print("node: stopped", file=sys.stderr, flush=True)
         raise SystemExit(0)
+    finally:
+        if line:
+            import call
+            call.close_session()
 
 
 if __name__ == "__main__":

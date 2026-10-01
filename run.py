@@ -1,7 +1,7 @@
 """Trident.
 
 python run.py [--peer HOST:PORT]
-    Residents idle, no call up. Prints nothing and exits 0.
+    Residents idle, no call up. The phone line listens. Prints nothing and exits 0.
     A failure prints one line and exits non-zero.
 
 python run.py start [--peer HOST:PORT] [inject [PATH]]
@@ -9,11 +9,11 @@ python run.py start [--peer HOST:PORT] [inject [PATH]]
     The microphone stays closed.
 
 python run.py stop
-    Stop this organism and the mouth. Leave port 8765 listening.
+    Stop this organism and the mouth. Close the phone line. Leave port 8765 listening.
 
 python run.py call [SECONDS] [--peer HOST:PORT]
-    Quit Telegram Desktop, place one voice call, then restart Desktop.
-    The microphone stays closed. Resident Gemma stays loaded.
+    Place one voice call on the line. Residents stay up when it drops.
+    SECONDS hangs the call up after that long.
 """
 
 import ctypes
@@ -243,6 +243,10 @@ def cmd_stop():
         pid = read_pid(name)
         if pid and process_image(pid) and not python_alive(pid):
             die("refusing to stop " + name + " pid " + str(pid))
+    if port_open():
+        import node
+
+        node.transact("127.0.0.1:8765", node.make_card("call", "hang", "close"), 60)
     iris_pid = read_pid("iris.pid")
     if python_alive(iris_pid):
         taskkill(iris_pid)
@@ -275,20 +279,26 @@ def ensure_node(peers, quiet=False):
     py = venv_python()
     proc = None
     if not port_open():
-        argv = [py, "-u", str(ROOT / "node.py")]
-        stdio = {}
+        argv = [py, "-u", str(ROOT / "node.py"), "--line"]
+        stdio = {"stdin": subprocess.DEVNULL}
         log = None
         if quiet:
-            log = open(ROOT / "node.run.err", "ab", buffering=0)
-            stdio["stdout"] = subprocess.DEVNULL
-            stdio["stderr"] = log
-            stdio["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+            log = open(ROOT / "node.run.err", "wb", buffering=0)
+            stdio["stdout"] = log
+            stdio["stderr"] = subprocess.STDOUT
+            stdio["creationflags"] = (
+                subprocess.CREATE_NEW_PROCESS_GROUP
+                | subprocess.CREATE_NO_WINDOW
+                | subprocess.CREATE_BREAKAWAY_FROM_JOB
+            )
         try:
             proc = subprocess.Popen(argv, cwd=str(ROOT), shell=False, **stdio)
+        except OSError as exc:
+            die("line did not start " + " ".join(str(exc).split()))
         finally:
             if log is not None:
                 log.close()
-        deadline = time.monotonic() + 30
+        deadline = time.monotonic() + 240
         while time.monotonic() < deadline and not port_open():
             if proc.poll() is not None:
                 break
@@ -296,100 +306,43 @@ def ensure_node(peers, quiet=False):
         if not port_open():
             if proc.poll() is None:
                 taskkill(proc.pid, tree=False)
+            if quiet:
+                try:
+                    text = (ROOT / "node.run.err").read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    text = ""
+                lines = [item.strip() for item in text.replace("\r\n", "\n").splitlines() if item.strip()]
+                die(lines[-1] if lines else "line did not become idle")
             die("node did not start")
     reply = node.transact("127.0.0.1:8765", node.make_card("node", "hello", "hi"), 10)
-    for line in ("capture closed", "op mouth.say", "op ear.listen", "op call.dial"):
-        if line not in reply.body.splitlines():
+    rows = reply.body.splitlines()
+    for line in ("capture closed", "op mouth.say", "op ear.listen", "op call.dial", "op call.wait"):
+        if line not in rows:
             die("node is not this protocol")
+    if "call up" in rows:
+        die("call up")
+    waited = node.transact("127.0.0.1:8765", node.make_card("call", "wait", ""), 240)
+    body = (waited.body or "").strip()
+    if body == "up":
+        die("call up")
+    if body != "idle":
+        die("line did not become idle")
     for addr in peers:
         node.transact("127.0.0.1:8765", node.make_card("node", "join", addr), 20)
     return proc
 
 
-def telegram_here():
-    desktop = Path(os.environ["APPDATA"]) / "Telegram Desktop"
-    return (desktop / "Telegram.exe").is_file() and (desktop / "tdata").is_dir()
-
-
-def call_addr(peers):
-    import node
-
-    if telegram_here():
-        return "127.0.0.1:8765"
-    for addr in peers:
-        if not node.reachable(addr):
-            continue
-        reply = node.transact(addr, node.make_card("node", "hello", "hi"), 10)
-        if "op call.dial" in reply.body.splitlines():
-            return addr
-    die("peer missing")
-
-
-GREETING = (
-    "Wojciech, this is Iris calling from the desk. "
-    "The microphone on this computer stays closed. "
-    "I am speaking through the Telegram call. "
-    "Please say a full sentence after I finish, and I will answer you."
-)
-
-
-def duplex(seat, deadline):
-    import node
-
-    node.transact(seat, node.make_card("mouth", "say", GREETING, resource="call"), 240)
-    while deadline is None or time.monotonic() < deadline:
-        remain = None if deadline is None else deadline - time.monotonic()
-        if remain is not None and remain < 0.4:
-            return
-        limit = "" if remain is None else format(remain, ".3f")
-        heard_timeout = 220 if remain is None else remain + 30
-        heard = node.transact(seat, node.make_card("ear", "listen", limit, resource="call"), heard_timeout)
-        if not heard.body.strip():
-            return
-        print(heard.body, flush=True)
-        if deadline is not None and time.monotonic() >= deadline:
-            return
-        brain_timeout = 600 if deadline is None else (deadline - time.monotonic()) + 45
-        reply = node.transact(
-            seat,
-            node.make_card("agent", "turn", heard.body, profile="voice", resource="call"),
-            brain_timeout,
-        )
-        print(reply.body, flush=True)
-        if node.is_stop(reply.body):
-            die("gemma stop")
-        if deadline is not None and time.monotonic() >= deadline:
-            return
-        said = node.transact(seat, node.make_card("mouth", "say", reply.body, resource="call"), 240)
-        if said.body.strip() != "spoken":
-            die("mouth missed")
-        if deadline is None:
-            return
-
-
 def cmd_call(seconds, peers):
-    ensure_node(peers)
+    cmd_rest(peers)
     import node
 
-    seat = call_addr(peers)
-    node.brain_place(peers)
-    if seat != "127.0.0.1:8765":
-        hello = node.transact(seat, node.make_card("node", "hello", "hi"), 10)
-        if "op call.dial" not in hello.body.splitlines() or "capture closed" not in hello.body.splitlines():
-            die("peer is not the call")
-    print("call: seat " + seat, file=sys.stderr, flush=True)
-    up = node.transact(seat, node.make_card("call", "dial", "", resource="call"), 300)
-    print(up.body, flush=True)
-    deadline = time.monotonic() + int(seconds) if seconds else None
-    failed = None
-    try:
-        duplex(seat, deadline)
-    except BaseException as exc:
-        failed = None if deadline is not None and time.monotonic() >= deadline else exc
-    hung = node.transact(seat, node.make_card("call", "hang", seconds, resource="call"), 90)
-    print(hung.body, flush=True)
-    if failed is not None:
-        raise failed
+    up = node.transact("127.0.0.1:8765", node.make_card("call", "dial", ""), 300)
+    sys.stdout.write(up.body if up.body.endswith("\n") else up.body + "\n")
+    if not seconds:
+        return
+    time.sleep(int(seconds))
+    hung = node.transact("127.0.0.1:8765", node.make_card("call", "hang", ""), 90)
+    sys.stdout.write(hung.body if hung.body.endswith("\n") else hung.body + "\n")
 
 
 def cmd_rest(peers):
@@ -404,9 +357,6 @@ def cmd_rest(peers):
         import gemma
         import node
 
-        reply = node.transact("127.0.0.1:8765", node.make_card("node", "hello", "hi"), 10)
-        if "call up" in reply.body.splitlines():
-            die("call up")
         if node.brain_place(peers) == "":
             gemma.idle()
     except KeyboardInterrupt:
