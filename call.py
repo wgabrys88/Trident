@@ -256,6 +256,7 @@ def boot():
     LIVE.closed = False
     LIVE.fault = ""
     LIVE.opening = ""
+    LIVE.heard = ""
     LIVE.ring = threading.Event()
     LIVE.mark_lock = threading.Lock()
     LIVE.thread_line = None
@@ -740,7 +741,7 @@ def reset_rx():
     LIVE.gate.reset()
 
 
-def speak(text):
+def speak(text, heard=""):
     if LIVE is None or not LIVE.up:
         die("call down")
     spoken = " ".join((text or "").split())
@@ -748,7 +749,7 @@ def speak(text):
         die("empty say")
     import mouth
 
-    lang = mouth.language_of(spoken)
+    lang = mouth.resolve_lang(spoken, heard or getattr(LIVE, "heard", ""))
     LIVE.drop_rx = True
     try:
         import node
@@ -758,11 +759,12 @@ def speak(text):
             node.play_remote(addr, spoken, lambda path: send_pcm(pcm_48k(path)), lang)
         else:
             node.park_gemma()
-            model = "v3" if lang == "pl" else "nano"
-            send_pcm(pcm_48k(mouth.synthesize(model, lang, spoken)))
+            _spoken, model, tag = mouth.bind(spoken, lang)
+            for chunk in mouth.chunks_for(_spoken, tag):
+                send_pcm(pcm_48k(mouth.synthesize(model, tag, chunk)))
     finally:
         reset_rx()
-    print("call: tx " + format(LIVE.tx_seconds, ".2f"), file=sys.stderr, flush=True)
+    print("call: tx " + format(LIVE.tx_seconds, ".2f") + " " + lang, file=sys.stderr, flush=True)
 
 
 def picture(png):
@@ -807,6 +809,7 @@ def listen(limit=""):
         write_wav(path, clip)
         text, lang = hear.transcribe(path)
         LIVE.transcript = text
+        LIVE.heard = (lang or "").strip().split("-")[0].lower()
         LIVE.rx_seconds = clip.size / RATE_RX
         (ROOT / "call.hear.txt").write_text(text + "\n", encoding="utf-8")
         print("call: rx " + format(LIVE.rx_seconds, ".2f") + " " + lang + " " + text, file=sys.stderr, flush=True)
@@ -827,6 +830,7 @@ def line_loop():
                 message = LIVE.fault
                 LIVE.fault = ""
                 die(message)
+            LIVE.heard = ""
             if opening and LIVE.up:
                 speak(opening)
             while LIVE is not None and LIVE.up and not LIVE.closed:
@@ -848,6 +852,14 @@ def line_loop():
             message = getattr(exc, "message", "") or ""
             if message == "call down" and LIVE is not None and not LIVE.closed:
                 mark("idle")
+                continue
+            if LIVE is not None and LIVE.up and not LIVE.closed:
+                print("call: stay " + message, file=sys.stderr, flush=True)
+                if message.startswith("desk ") or message.startswith("vision "):
+                    try:
+                        speak("I could not read the screen.")
+                    except SystemExit:
+                        pass
                 continue
             if LIVE is not None and not LIVE.closed:
                 close_session()
