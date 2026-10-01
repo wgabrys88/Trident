@@ -61,6 +61,7 @@ WINDOW = 512
 PAD = RATE_RX * 120 // 1000
 MIN_UTTER = RATE_RX
 MAX_UTTER = RATE_RX * 30
+IDLE_WAKE = 15
 
 LIVE = None
 
@@ -801,11 +802,55 @@ def listen(limit=""):
     return ""
 
 
-def line_loop():
-    while LIVE is not None and not LIVE.closed:
-        LIVE.ring.wait()
+def node_mod():
+    mod = sys.modules.get("__main__")
+    if mod is not None and hasattr(mod, "agent_turn") and hasattr(mod, "idle_line_text"):
+        return mod
+    import node
+
+    return node
+
+
+def voice_works():
+    mod = node_mod()
+    _facts, _pairs, works = mod.read_memory(mod.memory_file("voice"))
+    return works
+
+
+def run_wake():
+    mod = node_mod()
+    question = mod.idle_line_text()
+    print("call: wake " + question, file=sys.stderr, flush=True)
+    try:
+        reply = mod.agent_turn("voice", question, "")
+    except (SystemExit, Exception) as exc:
+        message = getattr(exc, "message", "") or str(exc) or "wake failed"
+        print("call: wake " + message, file=sys.stderr, flush=True)
+        return
+    print(reply, flush=True)
+
+
+def wait_idle():
+    while LIVE is not None and not LIVE.closed and not LIVE.ring.is_set() and not LIVE.up:
+        if not armed():
+            LIVE.ring.wait(1)
+            continue
+        if voice_works():
+            run_wake()
+            if LIVE is None or LIVE.closed or LIVE.ring.is_set() or LIVE.up:
+                return
         if LIVE is None or LIVE.closed:
             return
+        LIVE.ring.wait(IDLE_WAKE)
+
+
+def line_loop():
+    while LIVE is not None and not LIVE.closed:
+        wait_idle()
+        if LIVE is None or LIVE.closed:
+            return
+        if not LIVE.ring.is_set() and not LIVE.up:
+            continue
         LIVE.ring.clear()
         opening = LIVE.opening
         LIVE.opening = ""

@@ -1160,6 +1160,10 @@ def clip(text, limit=200):
     return flat
 
 
+def idle_line_text():
+    return time.strftime("%Y-%m-%d %H:%M:%S") + " The line is idle."
+
+
 def prompt_for(profile, question, suffix, root):
     path = memory_file(profile, root)
     facts, pairs, works = read_memory(path)
@@ -1807,6 +1811,111 @@ def prove_expect(label, fn, needle):
     die(label + " returned")
 
 
+def prove_idle():
+    import re
+    import tempfile
+    root = Path(tempfile.mkdtemp(prefix="trident-idle-"))
+    line = "call Wojciech back"
+    question = idle_line_text()
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} The line is idle\.", question):
+        die("idle line text " + question)
+    tool_next("voice", {"line": line}, root)
+    prompt = prompt_for("voice", question, "", root)
+    head, _, tail = prompt.partition("<|turn>user\n")
+    if "Work waiting:\n" + line not in head:
+        die("work missing from prompt")
+    if "The line is idle." in head:
+        die("idle fact in system prompt")
+    if question not in tail:
+        die("idle fact missing from user text")
+    agent_turn("voice", question, generate=lambda _prompt, _image: "Not yet.", root=root)
+    _facts, _pairs, works = read_memory(memory_file("voice", root))
+    if works != [line]:
+        die("plain reply cleared work")
+    other = '<|tool_call>call:stop{line:<|"|>other work<|"|>}<tool_call|>'
+    agent_turn("voice", question, generate=lambda _prompt, _image: other, root=root)
+    _facts, _pairs, works = read_memory(memory_file("voice", root))
+    if works != [line]:
+        die("other stop cleared work")
+    exact = '<|tool_call>call:stop{line:<|"|>' + line + '<|"|>}<tool_call|>'
+    agent_turn("voice", question, generate=lambda _prompt, _image: exact, root=root)
+    _facts, _pairs, works = read_memory(memory_file("voice", root))
+    if works:
+        die("exact stop left work")
+    tool_next("voice", {"line": line}, root)
+    import call
+    dialed = []
+    saved_dial = call.dial
+    saved_live = call.LIVE
+    saved_wake = call.IDLE_WAKE
+
+    def fake_dial(reason=""):
+        dialed.append(reason)
+        return "up"
+
+    call.dial = fake_dial
+    call.LIVE = None
+    try:
+        seq = iter([
+            "<|tool_call>call:ring{}<tool_call|>",
+            "Calling.",
+        ])
+        agent_turn("voice", question, generate=lambda _prompt, _image: next(seq), root=root)
+        if dialed != [""]:
+            die("ring did not dial")
+        _facts, _pairs, works = read_memory(memory_file("voice", root))
+        if works != [line]:
+            die("ring cleared work")
+        call.IDLE_WAKE = 0.05
+        call.LIVE = type("Line", (), {})()
+        call.LIVE.ring = threading.Event()
+        call.LIVE.closed = False
+        call.LIVE.up = False
+        call.LIVE.client = object()
+        wakes = []
+        saved_works = call.voice_works
+        saved_run = call.run_wake
+
+        def pending():
+            return [line]
+
+        def wake():
+            wakes.append(1)
+            if len(wakes) >= 2:
+                call.LIVE.ring.set()
+                call.LIVE.up = True
+
+        call.voice_works = pending
+        call.run_wake = wake
+        try:
+            call.wait_idle()
+            if len(wakes) != 2:
+                die("idle wake count " + str(len(wakes)))
+            call.LIVE.up = False
+            call.LIVE.closed = False
+            call.LIVE.ring.clear()
+            wakes.clear()
+            call.voice_works = lambda: []
+            call.run_wake = lambda: wakes.append(1)
+
+            def poke():
+                time.sleep(0.02)
+                call.LIVE.ring.set()
+
+            threading.Thread(target=poke, daemon=True).start()
+            call.wait_idle()
+            if wakes:
+                die("wake without work")
+        finally:
+            call.voice_works = saved_works
+            call.run_wake = saved_run
+    finally:
+        call.dial = saved_dial
+        call.LIVE = saved_live
+        call.IDLE_WAKE = saved_wake
+    print("prove: idle wake", file=sys.stderr, flush=True)
+
+
 def prove():
     import tempfile
     log = []
@@ -1853,6 +1962,7 @@ def prove():
     prove_expect("empty say", lambda: mouth.say("  ", "en"), "empty text")
     prove_expect("missing lang", lambda: mouth.say("hi", ""), "mouth language")
     print("prove: mouth language", file=sys.stderr, flush=True)
+    prove_idle()
     print("prove: brain config", file=sys.stderr, flush=True)
     prove_expect("missing image", lambda: file_b64(ROOT / "no-such-image.png"), "missing image")
     prove_expect("blank image", lambda: handle_brain(make_card("brain", "infer", "see " + MEDIA, image="")), "missing image")
