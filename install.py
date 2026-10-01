@@ -549,9 +549,7 @@ def build_gemma(sdk: Path) -> None:
     build = place("install.build_gemma")
     config = need("install.config")
     exe = build / config / "gemma-brain.exe"
-    sense = build / config / "sense.exe"
     runtime_brain = ROOT / "gemma-brain.exe"
-    runtime_sense = ROOT / "sense.exe"
     llama = subprocess.run(["git", "-C", str(place("install.src_llama")), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
     source = ROOT / "gemma"
     args = ["-DCMAKE_BUILD_TYPE=" + config, "-DGEMMA_BACKEND=" + backend]
@@ -580,17 +578,16 @@ def build_gemma(sdk: Path) -> None:
         "llama": llama,
         "backend": backend,
         "cmake": args + defs,
-        "source": digest(source / "CMakeLists.txt", source / "src" / "brain.cpp", source / "src" / "sense.cpp", source / "cmake" / "HostCpu.cmake", ROOT / "src" / "common" / "config.h"),
+        "source": digest(source / "CMakeLists.txt", source / "src" / "brain.cpp", source / "cmake" / "HostCpu.cmake", ROOT / "src" / "common" / "config.h"),
     }
     stamp = stamps() / "gemma.json"
-    if not matches(stamp, wanted, runtime_brain, runtime_sense):
+    if not matches(stamp, wanted, runtime_brain):
         print("install gemma-brain", flush=True)
         cmake_configure(source, build, args + defs, env)
         if backend == "cuda":
             cmake_targets(build, ["ggml-cuda"], need("install.cuda_codegen_parallel"))
-        cmake_targets(build, ["gemma-brain", "sense"], need("install.brain_parallel"))
+        cmake_targets(build, ["gemma-brain"], need("install.brain_parallel"))
         shutil.copy2(exe, runtime_brain)
-        shutil.copy2(sense, runtime_sense)
         atomic_json(stamp, wanted)
     else:
         print("skip gemma-brain", flush=True)
@@ -752,7 +749,6 @@ def main() -> None:
     fetch_model("install.text_model_url", "gemma.txt", "gemma.model")
     fetch_model("install.mmproj_url", "gemma.txt", "gemma.mmproj")
     fetch_model("install.ear_gguf_url", "ear.txt", "ear.model")
-    fetch_model("install.sense_url", "sense.txt", "sense.model")
     fetch_model("install.silero_onnx_url", "vad.txt", "vad.model")
     publish()
 

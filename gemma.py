@@ -2,12 +2,12 @@
 """
 
 import argparse
-import base64
 import ctypes
 import hashlib
 import os
 import subprocess
 import sys
+import threading
 import time
 from collections import namedtuple
 from pathlib import Path
@@ -15,7 +15,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 DROP_KEYS = ("gemma.text", "gemma.image")
 SIDECAR = ROOT / "gemma_run.txt"
-MEDIA = "<__media__>"
 
 
 def die(message):
@@ -102,72 +101,17 @@ def config_pairs(text):
     return pairs
 
 
-def settings_text(prompt, image_b64):
-    body = config_body()
-    body += "gemma.text <<\n" + (prompt or "")
-    if not (prompt or "").endswith("\n"):
-        body += "\n"
-    body += "<<\n"
-    body += "gemma.image <<\n"
-    if image_b64:
-        body += image_b64
-        if not image_b64.endswith("\n"):
-            body += "\n"
-    body += "<<\n"
-    return body
-
-
 def resident_settings():
     return config_body() + "gemma.text <<\n<<\ngemma.image <<\n<<\n"
-
-
-def image_to_b64(path):
-    path = Path(path)
-    if not path.is_file():
-        die("missing image: " + str(path))
-    data = path.read_bytes()
-    if not data:
-        die("empty image: " + str(path))
-    return base64.b64encode(data).decode("ascii")
-
-
-def newest_out(before):
-    after = set(ROOT.glob("*_gemma_out_*.txt"))
-    new_files = sorted(after - before)
-    if not new_files:
-        die("gemma-brain wrote no output text")
-    return new_files[-1]
-
-
-def run_brain(prompt, image_b64, verbose):
-    exe = ROOT / "gemma-brain.exe"
-    if not exe.is_file():
-        die("missing gemma-brain.exe")
-    payload = settings_text(prompt, image_b64)
-    try:
-        SIDECAR.write_bytes(payload.encode("utf-8"))
-    except OSError as exc:
-        die("cannot write gemma_run.txt: " + str(exc))
-    before = set(ROOT.glob("*_gemma_out_*.txt"))
-    try:
-        completed = subprocess.run(
-            [".\\gemma-brain.exe", "gemma_run.txt"],
-            cwd=ROOT,
-            shell=False,
-            stdout=subprocess.DEVNULL,
-            stderr=None if verbose else subprocess.DEVNULL,
-        )
-    except OSError as exc:
-        die("cannot run gemma-brain.exe: " + str(exc))
-    if completed.returncode != 0:
-        raise SystemExit(completed.returncode)
-    out_txt = newest_out(before)
-    return out_txt.read_text(encoding="utf-8")
 
 
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 PROCESS_TERMINATE = 0x0001
 ASK_TIMEOUT = 600
+PRELOAD_CANCEL = threading.Event()
+_PRELOAD_GUARD = threading.Lock()
+_PRELOAD_THREAD = None
+_PRELOAD_ABORT = threading.local()
 PROMPT_CAP = 16_000_000
 SLOTS = (
     "gemma.pid",
@@ -493,9 +437,21 @@ def fail_loader(pid, message):
     die(message)
 
 
+def preload_should_stop():
+    return PRELOAD_CANCEL.is_set() and getattr(_PRELOAD_ABORT, "on", False)
+
+
+def preload_abort():
+    err = SystemExit(2)
+    err.message = "gemma preload cancelled"
+    raise err
+
+
 def wait_until_ready(pid, fingerprint, proc=None):
     deadline = time.time() + ASK_TIMEOUT
     while time.time() < deadline:
+        if preload_should_stop():
+            preload_abort()
         if proc is not None and proc.poll() is not None:
             die("gemma exited " + str(proc.returncode) + "\n" + log_tail())
         if not brain_running(pid):
@@ -552,6 +508,8 @@ def ensure_resident():
     fingerprint = hashlib.sha256(desired.encode("utf-8")).hexdigest()
     deadline = time.time() + ASK_TIMEOUT
     while time.time() < deadline:
+        if preload_should_stop():
+            preload_abort()
         rec = resident_record()
         if rec is not None and brain_running(rec.pid) and not rec.fingerprint:
             rec = wait_for_fingerprint(rec.pid, 2) or rec
@@ -596,6 +554,8 @@ def ensure_resident():
                 "gemma.busy",
             ):
                 remove_file(name)
+            if preload_should_stop():
+                preload_abort()
             proc = launch_resident(fingerprint)
             if proc is None:
                 die("gemma stop requested")
@@ -609,6 +569,66 @@ def idle():
     if (ROOT / "gemma.busy").is_file() and brain_running_any():
         die("gemma busy")
     return ensure_resident()
+
+
+def begin_preload():
+    import mouth
+
+    global _PRELOAD_THREAD
+    if mouth.chatterbox_running_any():
+        print("vram: gemma preload held", file=sys.stderr, flush=True)
+        return
+    with _PRELOAD_GUARD:
+        if _PRELOAD_THREAD is not None and _PRELOAD_THREAD.is_alive():
+            return
+        desired = resident_settings()
+        fingerprint = hashlib.sha256(desired.encode("utf-8")).hexdigest()
+        rec = resident_record()
+        if same_settings(rec, fingerprint) and rec.state == "ready":
+            print("vram: gemma resident", file=sys.stderr, flush=True)
+            return
+        PRELOAD_CANCEL.clear()
+
+        def worker():
+            _PRELOAD_ABORT.on = True
+            try:
+                if PRELOAD_CANCEL.is_set():
+                    print("vram: gemma preload cancelled", file=sys.stderr, flush=True)
+                    return
+                import mouth as mouth_mod
+
+                if mouth_mod.chatterbox_running_any():
+                    print("vram: gemma preload held", file=sys.stderr, flush=True)
+                    return
+                ensure_resident()
+                if PRELOAD_CANCEL.is_set():
+                    print("vram: gemma preload cancelled", file=sys.stderr, flush=True)
+                    return
+                print("vram: gemma resident", file=sys.stderr, flush=True)
+            except SystemExit as exc:
+                if PRELOAD_CANCEL.is_set():
+                    print("vram: gemma preload cancelled", file=sys.stderr, flush=True)
+                    return
+                message = getattr(exc, "message", "") or "failed"
+                print("vram: gemma preload failed " + message, file=sys.stderr, flush=True)
+            finally:
+                _PRELOAD_ABORT.on = False
+
+        print("vram: gemma preload", file=sys.stderr, flush=True)
+        _PRELOAD_THREAD = threading.Thread(target=worker, name="gemma-preload", daemon=True)
+        _PRELOAD_THREAD.start()
+
+
+def cancel_preload():
+    PRELOAD_CANCEL.set()
+    if brain_running_any():
+        stop_resident()
+    with _PRELOAD_GUARD:
+        thread = _PRELOAD_THREAD
+    if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+        thread.join(120)
+    if brain_running_any():
+        stop_resident()
 
 
 class FrameParser:
@@ -759,6 +779,7 @@ def resident_ask(pid, prompt, image_b64, on_piece, timeout):
 
 def resident_generate(prompt, image_b64, stream, timeout=ASK_TIMEOUT):
     pid = ensure_resident()
+    print("vram: gemma ready", file=sys.stderr, flush=True)
 
     def on_piece(piece):
         if stream and piece:
@@ -773,48 +794,19 @@ def resident_generate(prompt, image_b64, stream, timeout=ASK_TIMEOUT):
 
 def main():
     parser = argparse.ArgumentParser(prog="gemma.py")
-    parser.add_argument("question", nargs="?", default=None)
-    parser.add_argument("--image", metavar="PATH")
-    parser.add_argument("--verbose", action="store_true")
-    parser.add_argument("--once", action="store_true")
     parser.add_argument("--stop", action="store_true")
-    parser.add_argument("--stream", action="store_true")
     args = parser.parse_args()
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     if hasattr(sys.stderr, "reconfigure"):
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    if not args.stop:
+        die("usage: gemma.py --stop")
     os.chdir(ROOT)
-    if args.stop:
-        if args.once or args.question or args.image or args.verbose or args.stream:
-            die("usage: gemma.py --stop")
-        if stop_resident():
-            print("gemma: stopped", file=sys.stderr, flush=True)
-        else:
-            print("gemma: not running", file=sys.stderr, flush=True)
-        raise SystemExit(0)
-    if args.question is None or not args.question.strip():
-        die("usage: gemma.py [--once] [--stream] [--verbose] [--image PATH] QUESTION")
-    if args.stream and args.once:
-        die("stream asks for the resident")
-    question = args.question.replace("\r\n", "\n").replace("\r", "\n")
-    if not question.strip():
-        die("empty question")
-    image_b64 = image_to_b64(args.image) if args.image else ""
-    if image_b64 and MEDIA not in question:
-        die("image prompt missing <__media__>")
-    if args.once:
-        if brain_running_any():
-            die("gemma resident is running; gemma.py --stop first")
-        text = run_brain(question, image_b64, args.verbose)
+    if stop_resident():
+        print("gemma: stopped", file=sys.stderr, flush=True)
     else:
-        text = resident_generate(question, image_b64, args.stream)
-    if not str(text or "").strip():
-        die("gemma returned empty")
-    if not args.stream:
-        sys.stdout.write(text)
-        if not text.endswith("\n"):
-            sys.stdout.write("\n")
+        print("gemma: not running", file=sys.stderr, flush=True)
     raise SystemExit(0)
 
 

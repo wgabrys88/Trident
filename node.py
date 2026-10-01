@@ -384,8 +384,7 @@ def park_mouth():
 def park_gemma():
     import gemma
 
-    if gemma.brain_running_any():
-        gemma.stop_resident()
+    gemma.cancel_preload()
 
 
 def local_infer(prompt, image):

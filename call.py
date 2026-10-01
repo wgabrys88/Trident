@@ -821,11 +821,16 @@ def speak(text):
     lang = mouth.language_of(spoken)
     LIVE.drop_rx = True
     try:
+        import gemma
         import node
 
         node.park_gemma()
+        node.park_mouth()
         model = "v3" if lang == "pl" else "nano"
-        send_pcm(pcm_48k(mouth.synthesize(model, lang, spoken)))
+        wav = mouth.synthesize(model, lang, spoken)
+        print("vram: mouth unloaded", file=sys.stderr, flush=True)
+        gemma.begin_preload()
+        send_pcm(pcm_48k(wav))
     finally:
         reset_rx()
     print("call: tx " + format(LIVE.tx_seconds, ".2f"), file=sys.stderr, flush=True)
@@ -871,7 +876,9 @@ def listen(limit=""):
             continue
         path = ROOT / "call.hear.wav"
         write_wav(path, clip)
+        print("vram: asr start", file=sys.stderr, flush=True)
         text, lang = hear.transcribe(path)
+        print("vram: asr ready", file=sys.stderr, flush=True)
         LIVE.transcript = text
         LIVE.rx_seconds = clip.size / RATE_RX
         (ROOT / "call.hear.txt").write_text(text + "\n", encoding="utf-8")
@@ -883,29 +890,6 @@ def listen(limit=""):
 def vision_fault(message):
     text = message or ""
     return text.startswith("desk") or text.startswith("vision") or text.startswith("desktop")
-
-
-def greet(reason):
-    spoken = " ".join((reason or "").split())
-    if spoken:
-        return spoken
-    import node
-
-    prompt = (
-        "<bos><|turn>system\n"
-        "You are Gemma on a voice call with Wojciech. "
-        "Say one short greeting. No tools.\n"
-        "<turn|>\n<|turn>user\nThe call just connected.\n<turn|>\n<|turn>model\n"
-    )
-    try:
-        raw = node.local_infer(prompt, "")
-    except BaseException as exc:
-        print("call: greet " + (getattr(exc, "message", "") or type(exc).__name__), file=sys.stderr, flush=True)
-        return "Cześć."
-    if node.is_stop(raw):
-        return "Cześć."
-    text = " ".join(node.answer_text(raw).split())
-    return text or "Cześć."
 
 
 def line_loop():
@@ -1002,11 +986,14 @@ def dial(reason=""):
     if not LIVE.up or LIVE.cancel.is_set():
         drop_call()
         die("call hung")
-    LIVE.opening = greet(reason)
+    LIVE.opening = " ".join((reason or "").split())
     if not LIVE.up or LIVE.cancel.is_set():
         drop_call()
         die("call hung")
-    print("call: hello " + LIVE.opening, file=sys.stderr, flush=True)
+    if LIVE.opening:
+        print("call: open " + LIVE.opening, file=sys.stderr, flush=True)
+    else:
+        print("call: listening", file=sys.stderr, flush=True)
     LIVE.ring.set()
     return text
 
