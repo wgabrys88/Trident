@@ -27,6 +27,7 @@ OPS = {
     "desk": ("turn",),
     "endgame": ("run",),
     "telegram": ("run",),
+    "call": ("dial", "hang"),
     "tool": ("call",),
 }
 PROFILES = {
@@ -52,6 +53,7 @@ MAP = (
     "run.py voice start and stop, peer from TRIDENT_PEERS or --url\n"
     "endgame-ai/ desktop organism, module endgame, not edited on this seat\n"
     "telegram-control/ telegram capability, not started unless a card asks\n"
+    "call.py telegram voice duplex, telethon and ntgcalls, ear and mouth on the call\n"
 )
 Card = namedtuple(
     "Card",
@@ -285,6 +287,8 @@ def needs_of(card):
         ("desk", "turn"): ("desktop", "gpu", "weights:gemma"),
         ("endgame", "run"): ("desktop",),
         ("telegram", "run"): ("desktop",),
+        ("call", "dial"): ("call",),
+        ("call", "hang"): ("call",),
         ("tool", "call"): ("cpu",),
     }
     return table[(card.module, card.op)]
@@ -1299,6 +1303,10 @@ def handle_mouth(card):
     text = " ".join(raw.split())
     if not text:
         die("empty say")
+    if card.resource == "call":
+        import call
+        call.speak(text)
+        return "spoken", None
     if card.to not in ("*", node_id()) and card.to in PEERS:
         reply = transact(PEERS[card.to]["addr"], card._replace(frm=node_id()), 180)
         return reply.body, None
@@ -1318,6 +1326,9 @@ def handle_ear(card):
     raw = card.body or ""
     if "\x00" in raw:
         die("ear is text")
+    if card.resource == "call":
+        import call
+        return call.listen(), None
     if card.to not in ("*", node_id()) and card.to in PEERS:
         reply = transact(PEERS[card.to]["addr"], card._replace(frm=node_id()), 30)
         return reply.body, None
@@ -1358,6 +1369,15 @@ def handle_endgame(card):
     return text, None
 
 
+def handle_call(card):
+    import call
+    if card.op == "dial":
+        return call.dial(), None
+    if card.op == "hang":
+        return call.hang(), None
+    die("call card")
+
+
 def handle_telegram(card):
     script = ROOT / "telegram-control" / "telegram_pc_remote.py"
     if not script.is_file():
@@ -1390,6 +1410,8 @@ HANDLERS = {
     ("desk", "turn"): handle_desk,
     ("endgame", "run"): handle_endgame,
     ("telegram", "run"): handle_telegram,
+    ("call", "dial"): handle_call,
+    ("call", "hang"): handle_call,
     ("tool", "call"): handle_tool,
 }
 

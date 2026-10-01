@@ -40,6 +40,7 @@
 !/qwen.py
 !/gemma.py
 !/mouth.py
+!/call.py
 !/node.py
 !/node.proof.txt
 !/desk.proof.txt

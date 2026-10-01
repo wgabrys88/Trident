@@ -12,6 +12,10 @@ python run.py start inject [PATH]
 python run.py stop
     Stop this organism and the mouth. Leave port 8765 listening.
 
+python run.py call
+    Quit Telegram Desktop, place one voice call, then restart Desktop.
+    The microphone stays closed. Speech goes through the call.
+
 Spoken shutdown is a Gemma stop tool call, not a keyword.
 """
 
@@ -96,9 +100,11 @@ def remove_pidfile(name, pid):
 
 
 def parse_args(argv):
-    usage = "usage: run.py start [--url HOST:PORT] [inject [PATH]] | run.py stop"
+    usage = "usage: run.py start [--url HOST:PORT] [inject [PATH]] | run.py stop | run.py call"
     if not argv:
         die(usage)
+    if argv == ["call"]:
+        return "call", "", None
     command = argv[0]
     if command == "stop":
         if len(argv) != 1:
@@ -271,9 +277,36 @@ def ensure_node():
         if not port_open():
             die("node did not start")
     reply = node.transact("127.0.0.1:8765", node.make_card("node", "hello", "hi"), 10)
-    for line in ("capture closed", "op mouth.say", "op ear.listen"):
+    for line in ("capture closed", "op mouth.say", "op ear.listen", "op call.dial"):
         if line not in reply.body.splitlines():
             die("node is not this protocol")
+
+
+def cmd_call():
+    ensure_node()
+    import node
+
+    greeting = (
+        "Wojciech, this is Iris calling from the desk. "
+        "The microphone on this computer stays closed. "
+        "I am speaking through the Telegram call. "
+        "Please say a full sentence after I finish, and I will write your words down."
+    )
+    up = node.transact("127.0.0.1:8765", node.make_card("call", "dial", "", resource="call"), 300)
+    print(up.body, flush=True)
+    failed = None
+    try:
+        node.transact("127.0.0.1:8765", node.make_card("mouth", "say", greeting, resource="call"), 240)
+        heard = node.transact("127.0.0.1:8765", node.make_card("ear", "listen", "", resource="call"), 220)
+        print(heard.body, flush=True)
+        reply = "I heard you. " + " ".join(heard.body.split())
+        node.transact("127.0.0.1:8765", node.make_card("mouth", "say", reply, resource="call"), 240)
+    except SystemExit as exc:
+        failed = exc
+    hung = node.transact("127.0.0.1:8765", node.make_card("call", "hang", "", resource="call"), 90)
+    print(hung.body, flush=True)
+    if failed is not None:
+        raise failed
 
 
 def cmd_start(url, inject):
@@ -331,6 +364,9 @@ def main():
     command, url, inject = parse_args(sys.argv[1:])
     if command == "stop":
         cmd_stop()
+        return
+    if command == "call":
+        cmd_call()
         return
     cmd_start(url, inject)
 

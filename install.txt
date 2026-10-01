@@ -118,4 +118,8 @@ gguf==0.19.0
 safetensors==0.8.0
 librosa==0.11.0
 tokenizers==0.23.2
+telethon==1.45.0
+ntgcalls==3.0.0
+opentele-ng==1.4.0
+onnxruntime==1.20.1
 <<
