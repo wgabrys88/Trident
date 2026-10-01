@@ -470,52 +470,6 @@ def adapter_names():
     return cuda_name(), vulkan_name()
 
 
-def capture_name(name):
-    text = " ".join((name or "").casefold().split())
-    for skip in (
-        "cable",
-        "what u hear",
-        "digital-in",
-        "digital in",
-        "sound mapper",
-        "primary sound capture",
-        "line-in",
-        "line in",
-        "vb-audio",
-        "stereo mix",
-    ):
-        if skip in text:
-            return False
-    return bool(text)
-
-
-def mic_lines():
-    try:
-        import sounddevice as sd
-    except ImportError:
-        die("sounddevice missing")
-    wasapi = None
-    for index, api in enumerate(sd.query_hostapis()):
-        if str(api.get("name") or "").casefold() == "windows wasapi":
-            wasapi = index
-            break
-    if wasapi is None:
-        die("wasapi missing")
-    found = []
-    for index, info in enumerate(sd.query_devices()):
-        if int(info.get("hostapi") or -1) != wasapi:
-            continue
-        if int(info.get("max_input_channels") or 0) < 1:
-            continue
-        name = " ".join(str(info.get("name") or "").split())
-        if capture_name(name):
-            found.append("mic " + str(index) + " " + name)
-    if not found:
-        found.append("mic no")
-    found.append("capture closed")
-    return found
-
-
 def chrome_present():
     if shutil.which("chrome") or shutil.which("chrome.exe"):
         return True
@@ -562,19 +516,13 @@ def caps_text():
     lines.append("telegram " + yes(clone_file("telegram-control", "telegram_pc_remote.py")))
     lines.append("chrome " + yes(chrome_present()))
     lines.append("playback " + yes((ROOT / "chatterbox.exe").is_file()))
-    lines.extend(mic_lines())
+    lines.append("mic no")
+    lines.append("capture closed")
     for module, names in OPS.items():
         for op in names:
             lines.append("op " + module + "." + op)
     CAPS["text"] = "\n".join(lines) + "\n"
     return CAPS["text"]
-
-
-def cap_has(name, value):
-    for line in caps_text().splitlines():
-        if line == name + " " + value:
-            return True
-    return False
 
 
 def real_stop(model):
@@ -800,6 +748,14 @@ def desk_prompt(goal):
     )
 
 
+def desk_field(found, names):
+    for name in names:
+        value = found.get(name)
+        if isinstance(value, str) and value.strip():
+            return " ".join(value.split())
+    return ""
+
+
 def desk_object(reply):
     raw = reply or ""
     start = raw.find("{")
@@ -811,15 +767,16 @@ def desk_object(reply):
         die("desk unparsed " + clip(raw, 160))
     if not isinstance(found, dict):
         die("desk unparsed " + clip(raw, 160))
-    see = found.get("see")
-    do = found.get("do")
-    if not isinstance(see, str) or not see.strip():
+    see = desk_field(found, ("see", "screenshot_description", "description"))
+    do = desk_field(found, ("do", "action"))
+    if not see:
         die("desk see absent " + clip(raw, 140))
-    if not isinstance(do, str):
+    if not do:
         die("desk action absent " + clip(raw, 140))
-    name = do.strip().lower()
+    name = do.lower()
     if name not in DESK_ACTS:
-        die("desk action absent " + (name or "empty") + " " + clip(raw, 140))
+        die("desk action absent " + name + " " + clip(raw, 140))
+    found["see"] = see
     found["do"] = name
     return found
 
@@ -1034,14 +991,6 @@ def remote_infer(peer, prompt, image, timeout):
     if not reply.body.strip():
         die("gemma returned empty")
     return reply.body
-
-
-def peer_with(cap, value):
-    for item in PEERS.values():
-        for line in item["caps"].splitlines():
-            if line == cap + " " + value:
-                return item
-    return None
 
 
 def decl(name, description, fields):
@@ -1533,27 +1482,16 @@ def handle_mouth(card):
     if card.to not in ("*", node_id()) and card.to in PEERS:
         return forward(card, PEERS[card.to]["addr"])
     addr = cuda_mouth()
-    if card.resource == "wav":
-        if addr:
-            return forward(card._replace(to="*"), addr)
-        if not (ROOT / "chatterbox.exe").is_file():
-            die("mouth missing")
-        import mouth
-        park_gemma()
-        path = mouth.wave(text, card.agent)
-        return "wav " + path.name, file_b64(path)
     if addr:
-        import mouth
-        play_remote(addr, text, mouth.play_wav)
-        return "spoken", None
-    if not cap_has("playback", "yes"):
-        other = peer_with("playback", "yes")
-        if not other or not other["addr"]:
-            die("mouth missing")
-        return forward(card._replace(to=other["id"]), other["addr"])
+        return forward(card._replace(to="*"), addr)
+    if not (ROOT / "chatterbox.exe").is_file():
+        die("mouth missing")
     import mouth
     park_gemma()
-    mouth.say(text, mouth.language_of(text))
+    if card.resource == "wav":
+        path = mouth.wave(text, card.agent)
+        return "wav " + path.name, file_b64(path)
+    mouth.say(text, card.agent or mouth.language_of(text))
     return "spoken", None
 
 
@@ -1951,6 +1889,19 @@ def prove():
     import mouth
     if mouth.language_of("zażółć gęślą jaźń") != "pl" or mouth.language_of("Iris can hear") != "en":
         die("mouth language")
+    norm = mouth.model_text("Pięć dwanaście", "pl")
+    if "ę" in norm or "ś" in norm or "\u0301" not in norm or "\u0328" not in norm:
+        die("mouth language")
+    if mouth.language_of(norm) == "pl" or mouth.model_text("Hello", "en") != "Hello":
+        die("mouth language")
+    if mouth.model_text("Größe", "de") == "Größe":
+        die("mouth language")
+    looked = desk_object('{"action":"done","screenshot_description":"A quiet desk."}')
+    if looked["see"] != "A quiet desk." or looked["do"] != "done":
+        die("desk keys")
+    mouth_src = (ROOT / "mouth.py").read_text(encoding="utf-8")
+    if ("import " + "sounddevice") in node_src or "PlaySound" in mouth_src:
+        die("local audio remains")
     if mouth.cfm_steps("v3") != "5" or mouth.cfm_steps("nano") != "2":
         die("cfm steps")
     if "chatterbox.cfm-steps 5" not in mouth.settings_text("v3", "pl", "zażółć", "off"):

@@ -814,6 +814,11 @@ def listen(limit=""):
     return ""
 
 
+def vision_fault(message):
+    text = message or ""
+    return text.startswith("desk") or text.startswith("vision") or text.startswith("desktop")
+
+
 def line_loop():
     while LIVE is not None and not LIVE.closed:
         LIVE.ring.wait()
@@ -836,7 +841,14 @@ def line_loop():
                 if not heard:
                     continue
                 mod = sys.modules["__main__"]
-                reply = mod.agent_turn("voice", heard, "")
+                try:
+                    reply = mod.agent_turn("voice", heard, "")
+                except SystemExit as exc:
+                    message = getattr(exc, "message", "") or ""
+                    if vision_fault(message):
+                        print("call: stay " + message, file=sys.stderr, flush=True)
+                        continue
+                    raise
                 print(reply, flush=True)
                 if mod.is_stop(reply):
                     drop_call()

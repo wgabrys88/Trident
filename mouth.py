@@ -10,14 +10,13 @@ import sys
 import tempfile
 import threading
 import time
+import unicodedata
 from collections import namedtuple
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 MODELS = ("nano", "turbo", "v3")
 DROP_KEYS = ("chatterbox.variant", "chatterbox.language", "chatterbox.play", "chatterbox.cfm-steps")
-SND_FILENAME = 0x00020000
-SND_NODEFAULT = 0x0002
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 PROCESS_TERMINATE = 0x0001
 SLOTS = (
@@ -158,15 +157,6 @@ def settings_text(model, lang, sentence, play):
     return body
 
 
-def play_wav(path):
-    path = Path(path).resolve()
-    if not path.is_file():
-        die("missing wav: " + str(path))
-    ok = ctypes.windll.winmm.PlaySoundW(str(path), None, SND_FILENAME | SND_NODEFAULT)
-    if not ok:
-        die("PlaySoundW failed: " + str(path))
-
-
 def write_mouth(payload):
     try:
         (ROOT / "mouth.txt").write_bytes(payload.encode("utf-8"))
@@ -200,8 +190,17 @@ def adopt_output(tmp, out_txt):
     return dest
 
 
+def model_text(text, lang):
+    spoken = " ".join((text or "").split())
+    tag = (lang or "").split("-")[0].lower()
+    if tag == "en" or not tag:
+        return spoken
+    return unicodedata.normalize("NFKD", spoken.lower())
+
+
 def synthesize(model, lang, sentence, card=None):
     check_voice(model, lang)
+    sentence = model_text(sentence, lang)
     payload = settings_text(model, lang, sentence, "off")
     if card is None:
         write_mouth(payload)
@@ -634,6 +633,10 @@ def chatterbox_running_any():
 
 
 def resident_say(pid, text):
+    rec = resident_record()
+    if rec is None or rec.pid != pid:
+        die("mouth language")
+    text = model_text(text, rec.lang)
     prompt = ROOT / "mouth.prompt.txt"
     response = ROOT / "mouth.response.txt"
     deadline = time.time() + 180
@@ -875,8 +878,7 @@ def say(text, lang, fast="nano"):
     spoken, model, tag = bind(text, lang, fast)
     limit = 65 if tag == "en" else 55
     pieces = [(chunk, model, tag) for chunk in pack_words(spoken, limit)]
-    print("mouth out: default", file=sys.stderr, flush=True)
-    speak_pieces(pieces, play_wav)
+    speak_pieces(pieces, None)
 
 
 def main():
@@ -886,10 +888,9 @@ def main():
     parser.add_argument("--lang", default=None)
     parser.add_argument("--once", action="store_true", help="one-shot chatterbox.exe, then exit")
     parser.add_argument("--stop", action="store_true", help="stop the resident chatterbox.exe")
-    parser.add_argument("--no-play", action="store_true", help="synthesize and print the wav path")
     args = parser.parse_args()
     if args.stop:
-        if args.once or args.text or args.lang is not None or args.no_play:
+        if args.once or args.text or args.lang is not None:
             die("usage: mouth.py --stop")
         os.chdir(ROOT)
         if stop_resident():
@@ -897,8 +898,6 @@ def main():
         else:
             print("mouth: chatterbox not running", file=sys.stderr)
         raise SystemExit(0)
-    if args.no_play and not args.text:
-        die("usage: mouth.py --no-play TEXT [TEXT ...]")
     if not args.text:
         die("usage: mouth.py [--model nano|turbo|v3] [--lang TAG] [--once] TEXT [TEXT ...]")
     if args.model not in MODELS:
@@ -920,21 +919,13 @@ def main():
 
     os.chdir(ROOT)
     chunks = list(args.text)
-    if args.no_play:
-        if args.once:
-            produced = [synthesize(args.model, lang, sentence) for sentence in chunks]
-        else:
-            pid = ensure_resident(args.model, lang)
-            produced = [resident_say(pid, sentence) for sentence in chunks]
-        for wav in produced:
-            print(str(Path(wav).resolve()), flush=True)
-        raise SystemExit(0)
-    print("mouth out: default", file=sys.stderr, flush=True)
     if args.once:
-        speak_chunks(lambda sentence: synthesize(args.model, lang, sentence), chunks, play_wav)
+        produced = [synthesize(args.model, lang, sentence) for sentence in chunks]
     else:
         pid = ensure_resident(args.model, lang)
-        speak_chunks(lambda sentence: resident_say(pid, sentence), chunks, play_wav)
+        produced = [resident_say(pid, sentence) for sentence in chunks]
+    for wav in produced:
+        print(str(Path(wav).resolve()), flush=True)
     raise SystemExit(0)
 
 
