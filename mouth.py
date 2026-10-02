@@ -88,13 +88,13 @@ def kept_lines(raw):
 
 
 def check_voice(model, lang):
-    if model in ("nano", "turbo"):
+    if model == "nano":
         if lang != "en":
-            die(model + " speaks en")
+            die("nano speaks en")
         return
     if model == "v3":
         if lang == "en":
-            die("english uses nano or turbo")
+            die("english uses nano")
         if not lang or any(ch.isspace() for ch in lang):
             die("v3 asks for a language tag")
         return

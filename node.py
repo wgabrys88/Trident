@@ -602,26 +602,12 @@ def act_click(obj):
     return "click %.0f %.0f" % point
 
 
-def drag_inside(box, goal):
+def drag_inside(box):
     y0, x0, y1, x1 = (float(box[0]), float(box[1]), float(box[2]), float(box[3]))
-    spots = (
-        ("left ear", 0.32, 0.16, 0.42, 0.34),
-        ("right ear", 0.58, 0.16, 0.70, 0.34),
-        ("left eye", 0.40, 0.40, 0.46, 0.48),
-        ("right eye", 0.54, 0.40, 0.60, 0.48),
-        ("body", 0.38, 0.62, 0.64, 0.88),
-        ("head", 0.28, 0.30, 0.72, 0.58),
-    )
-    fx0, fy0, fx1, fy1 = 0.35, 0.42, 0.65, 0.58
-    low = (goal or "").lower()
-    for name, a, b, c, d in spots:
-        if name in low:
-            fx0, fy0, fx1, fy1 = a, b, c, d
-            break
-    ax = (x0 + (x1 - x0) * fx0) / 10.0
-    ay = (y0 + (y1 - y0) * fy0) / 10.0
-    bx = (x0 + (x1 - x0) * fx1) / 10.0
-    by = (y0 + (y1 - y0) * fy1) / 10.0
+    ax = (x0 + (x1 - x0) * 0.35) / 10.0
+    ay = (y0 + (y1 - y0) * 0.40) / 10.0
+    bx = (x0 + (x1 - x0) * 0.65) / 10.0
+    by = (y0 + (y1 - y0) * 0.60) / 10.0
     if not win32.drag_pct(ax, ay, bx, by):
         return ""
     return "drag %.0f %.0f %.0f %.0f" % (ax, ay, bx, by)
@@ -636,7 +622,7 @@ def act_drag(obj):
     if distinct and start and end and win32.drag_pct(start[0], start[1], end[0], end[1]):
         return "drag %.0f %.0f %.0f %.0f" % (start[0], start[1], end[0], end[1])
     if isinstance(box, list) and len(box) == 4:
-        return drag_inside(box, obj.get("goal") or "")
+        return drag_inside(box)
     return ""
 
 
@@ -1135,8 +1121,9 @@ def tool_act(line):
     if not may_touch():
         return "The call is down. Ring him before you touch the desktop.", ""
     text = " ".join((line or "").split())
-    if text.lower().startswith("run "):
-        return tool_run(text[4:]), ""
+    head = text.lower()
+    if head.startswith(("run ", "start ", "start-process ", "powershell ", "python ", "cmd ", "set-content ")):
+        return tool_run(text[4:].strip() if head.startswith("run ") else text), ""
     if not (ROOT / "gemma-mmproj.gguf").is_file():
         return "vision absent", ""
     desktop_lease()
@@ -1150,8 +1137,8 @@ def tool_act(line):
         return "act " + done + " " + str(wide) + " " + str(high), image
     goal = text or "Look, then one step."
     low = goal.lower()
-    if low.startswith(("drag ", "click ")) or any(word in low for word in ("head", "ear", "eye", "body", "canvas", "stroke", "draw", "cat")):
-        goal = "One short drag on the white canvas. do must be drag. box_2d is the white canvas. Part: " + text
+    if low.startswith(("drag ", "click ", "draw")):
+        goal = "One short drag on the white canvas. do must be drag. box_2d is the white canvas."
     reply = local_infer(desk_prompt(goal), image)
     obj = desk_object(reply)
     if obj:
@@ -1168,10 +1155,18 @@ def tool_act(line):
     return "see " + obj["see"] + "\nact " + taken + " " + str(wide) + " " + str(high), image
 
 
+def shell_command(line):
+    parts = " ".join((line or "").split()).split(" ")
+    if len(parts) >= 3 and parts[0].lower() == "start-process" and not any(part.startswith("-") for part in parts[1:]):
+        arg = " ".join(parts[2:]).replace("'", "''")
+        return "Start-Process " + parts[1] + " -ArgumentList '" + arg + "'"
+    return " ".join(parts)
+
+
 def tool_run(line):
     if not may_touch():
         return "The call is down. Ring him before you run a command."
-    command = " ".join((line or "").split())
+    command = shell_command(line)
     if not command:
         return "empty command"
     try:

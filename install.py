@@ -21,7 +21,6 @@ class Variant:
 _GPT2 = ("s3gen_meanflow.safetensors", "conds.pt", "ve.safetensors", "vocab.json", "merges.txt", "added_tokens.json")
 VARIANTS = {
     "nano": Variant("nano", ("t3_nano_v1.safetensors",) + _GPT2, "t3_nano_v1.safetensors", "gpt2"),
-    "turbo": Variant("turbo", ("t3_turbo_v1.safetensors",) + _GPT2, "t3_turbo_v1.safetensors", "gpt2"),
     "v3": Variant("v3", ("t3_mtl23ls_v3.safetensors", "s3gen.safetensors", "conds.pt", "ve.safetensors", "grapheme_mtl_merged_expanded_v1.json"), "t3_mtl23ls_v3.safetensors", "llama"),
 }
 ARCH = {
@@ -748,7 +747,7 @@ def main() -> None:
     build_mouth(sdk)
     build_ear()
     build_gemma(sdk)
-    for name in ("nano", "turbo", "v3"):
+    for name in ("nano", "v3"):
         install_voice(name)
     fetch_model("install.text_model_url", "gemma.txt", "gemma.model")
     fetch_model("install.mmproj_url", "gemma.txt", "gemma.mmproj")

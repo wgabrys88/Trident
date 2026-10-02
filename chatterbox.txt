@@ -11,14 +11,12 @@
 
 nano.t3 nano-t3.gguf
 nano.s3 nano-s3.gguf
-turbo.t3 turbo-t3.gguf
-turbo.s3 turbo-s3.gguf
 v3.t3 v3-t3.gguf
 v3.s3 v3-s3.gguf
 
 # Chatterbox. chatterbox.exe. One-shot speaks chatterbox.text. The resident speaks each mouth.prompt.txt.
 # chatterbox.language must be a tag stored in that GGUF. The text is not rewritten into English.
-chatterbox.variant turbo
+chatterbox.variant nano
 chatterbox.language en
 chatterbox.sample-rate 24000
 chatterbox.graph-nodes 8192

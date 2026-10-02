@@ -34,7 +34,6 @@ install.s3_weight_type q4_0
 install.t3_quant_policy scripts/quant_t3.json
 install.s3_quant_policy scripts/quant_s3.json
 install.hf_nano https://huggingface.co/ResembleAI/chatterbox-nano/resolve/71ccd1d0081b430592cea481f4307e764e07bc64
-install.hf_turbo https://huggingface.co/ResembleAI/chatterbox-turbo/resolve/749d1c1a46eb10492095d68fbcf55691ccf137cd
 install.hf_v3 https://huggingface.co/ResembleAI/chatterbox/resolve/5bb1f6ee58e50c3b8d408bc82a6d3740c2db6e18
 install.mouth_ggml_vulkan on
 install.mouth_ggml_cpu off
@@ -107,7 +106,6 @@ install.torch torch==2.6.0
 install.torch_index https://download.pytorch.org/whl/cpu
 install.torch_extra_index https://pypi.org/simple
 install.nano_cond_seconds 15
-install.turbo_cond_seconds 15
 install.v3_cond_seconds 6
 install.pip <<
 numpy==1.26.4

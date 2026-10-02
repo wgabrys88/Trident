@@ -6,9 +6,9 @@
 # bake.cond-seconds is the reference length baked into the model.
 
 # chatterbox-bake.exe reads bake.t3, bake.s3, and bake.reference.
-# bake.cond-seconds is the reference length baked into the model. Nano and turbo use 15. v3 uses 6.
-bake.t3 turbo-t3.gguf
-bake.s3 turbo-s3.gguf
+# bake.cond-seconds is the reference length baked into the model. Nano uses 15. v3 uses 6.
+bake.t3 nano-t3.gguf
+bake.s3 nano-s3.gguf
 bake.reference reference.wav
 bake.gpu 0
 bake.cond-seconds 15
