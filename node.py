@@ -1241,12 +1241,18 @@ def run_release(right):
     return word
 
 
+def lift():
+    global HELD
+    if not HELD:
+        return
+    y, x = hand_at()
+    win32.loosen_pct(*to_pct(y, x), HELD == "right")
+    HELD = ""
+
+
 def reset_hand():
-    global POS, LAST, HELD
-    if HELD:
-        y, x = hand_at()
-        win32.loosen_pct(*to_pct(y, x), HELD == "right")
-        HELD = ""
+    global POS, LAST
+    lift()
     POS = None
     LAST = ""
     TRAIL.clear()
@@ -1427,11 +1433,13 @@ def agent_turn(profile, question, image_b64="", root=None, written=False, hands=
             if any(item[1] == "ring" for item in steps):
                 park_after(speech)
             append_turn(profile, question, speech, root)
+            lift()
             return speech
         name, args, _raw = found
         if name == "hang":
             tool_hang()
             log_gemma("tool", "hang")
+            lift()
             return "<|tool_call>call:hang{}<tool_call|>"
         result = run_tool(profile, name, args, root)
         if isinstance(result, tuple):
@@ -1440,13 +1448,16 @@ def agent_turn(profile, question, image_b64="", root=None, written=False, hands=
         steps.append((thought, name, args, str(result)))
         if name == "ring":
             if str(result) == "quiet":
+                lift()
                 return "quiet"
             said = hear_line(question)
             log_gemma("hear", said)
             if said:
                 park_after(said)
             append_turn(profile, question, said or quote(args.get("line", "")), root)
+            lift()
             return said or quote(args.get("line", ""))
+    lift()
     return "I am still on it."
 
 
