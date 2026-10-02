@@ -596,7 +596,7 @@ def idle_world(node):
         print("idle: quiet", file=sys.stderr, flush=True)
         return
     print("idle: world", file=sys.stderr, flush=True)
-    report, _image = node.tool_look("What is on screen?")
+    report, _image = node.tool_look("What is on screen?", False)
     seen = " ".join(report.split())
     print("idle: see " + seen, file=sys.stderr, flush=True)
     reply = node.agent_turn("voice", "Idle check. Not his voice. Nothing is in progress. " + seen, "", hands=False)

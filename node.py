@@ -1,6 +1,5 @@
 import base64
 import ctypes
-import json
 import os
 import re
 import socket
@@ -27,10 +26,19 @@ PROFILES = {
         "memory": "gemma.memory.txt",
         "tools": ("ring", "hang", "look", "act", "run", "remember", "quiet"),
     },
+    "eyes": {
+        "memory": "gemma.eyes.txt",
+        "tools": (),
+    },
+    "area": {
+        "memory": "gemma.area.txt",
+        "tools": (),
+    },
 }
 HANDS = False
+REGION = None
 SYSTEM = (
-    "You are Gemma on Wojciech's computer. "
+    "You are Gemma, the organism on Wojciech's computer. "
     "Think one or two short sentences, then either one tool call or the words he should hear. "
     "He never hears the thought. A tool call is how you act. Do not write a tool name as speech. "
     "Call down: he cannot hear you. The computer microphone is closed. Cable speech is the room. A written line is Wojciech. "
@@ -38,17 +46,35 @@ SYSTEM = (
     "If you already rang and nothing new happened, do not ring again. "
     "If a remembered line starts with quiet, do not ring until he speaks. "
     "Call up: the user line is Wojciech. Speak one or two short sentences in his language, or act with a tool. "
-    "Look whenever you want. "
-    "To write a file, run Python or cmd, or open a program, use run. Before you click or drag on your own, be on the call. "
+    "Area and Eyes are other members on this same computer. Each has her own memory. "
+    "A look marks the work region, then says where things are, in percents of that picture. Later looks use that smaller picture. "
+    "If the work is not on screen yet, use run, then look. "
+    "In the thought, judge the miss. A larger miss is a larger percent. If the miss shrank, use a smaller percent. "
+    "One correction, then look again. Up is toward the top of the picture. "
+    "move 20 right, move 20 left, move 20 up, and move 20 down shift the pointer by that percent of the picture. "
+    "move x y, click, click x y, right, right x y, and drag x y x y are percents of the picture. "
+    "wheel n, key name, type text. down name holds a key. up name lets that key up. "
+    "To write a file, run Python or cmd, or open a program, use run. "
+    "Before you move, click, or drag on your own, be on the call. "
     "If he asked, do the work. "
     "If he wants the call to end, the action is hang and you write no words. "
     "If you are confused or stuck, the action is ring."
 )
+EYES = (
+    "You are Eyes. You see one picture. Think, then say where things are. "
+    "Each thing is a name and percents of this picture, across then down, from 0 to 100. "
+    "A wide thing is a name and four percents: across, down, across, down. "
+    "Use the pointer line. No actions."
+)
+AREA = (
+    "You are Area. You see one full desktop. Think, then mark the region the work is in. "
+    "One line of four percents of the screen: across, down, across, down. Nothing else."
+)
 TOOL_TEXT = {
     "ring": "Place the call. The next words you write, after this tool, are what he hears once he has answered. If he asked for a joke or a message, those words are that joke or message. If nothing is waiting, say you are up and ask if he wants anything.",
     "hang": "End the phone call now. Use this when he wants to stop, hang up, or says goodbye. Say nothing else.",
-    "look": "See the whole desktop. You get one sentence back. The picture is sent to him in the chat when the line is connected.",
-    "act": "One mouse or key step on the desktop. Percents run from 0 to 100. Opening a program is run, not act.",
+    "look": "See the work. Area marks the region. Eyes says where things are, in percents of that picture.",
+    "act": "One correction. A percent of the picture, a direction, a click, a key, or a short goal. Opening a program is run.",
     "run": "Run one PowerShell command and return the output. Use this to write a file, run Python, run cmd, or open a program.",
     "remember": "Store one short fact that stays in later turns.",
     "quiet": "Stay quiet and do not ring until he speaks. line clear ends that.",
@@ -57,7 +83,7 @@ TOOL_LINE = {
     "ring": "A short greeting. The joke or the message belongs in the words you write after this tool.",
     "hang": "Leave empty.",
     "look": "What to notice, or empty.",
-    "act": "click x y, drag x y x y, key win-r, type words, or one short goal.",
+    "act": "move 20 right, move 20 left, move 20 up, move 20 down, move x y, click, click x y, right, right x y, drag x y x y, wheel n, key name, type text, down name, up name, or a short goal.",
     "run": "The PowerShell command. Set-Content writes a file. python -c runs Python. cmd /c runs cmd.",
     "remember": "The fact.",
     "quiet": "Why to stay quiet.",
@@ -375,17 +401,7 @@ def local_infer(prompt, image):
 
 
 DESK_TOKENS = 560
-DESK_SYSTEM = (
-    "You see one full desktop screenshot. "
-    "Answer with one JSON object and no other text. "
-    "see is one sentence about the whole screen and is never empty. "
-    "do is click, drag, type, key, or done. "
-    "click has box_2d as y0, x0, y1, x1, each a number from 0 to 1000. "
-    "drag has box_2d for the start and box_2d_end for the end, same order. "
-    "type has text and an optional key. "
-    "key is win-r, enter, escape, backspace, delete, tab, ctrl-a, ctrl-l, ctrl-t, ctrl-w, alt-f4, up, down, left, right, or space. "
-    "done is a look with no action."
-)
+ZOOM_EDGE = 384
 
 
 def clip(text, limit=200):
@@ -439,7 +455,54 @@ def png_rgb(wide, high, bgra):
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw, 1)) + chunk(b"IEND", b"")
 
 
-def desk_png():
+class _POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+class _CURSORINFO(ctypes.Structure):
+    _fields_ = [("cbSize", ctypes.c_uint32), ("flags", ctypes.c_uint32), ("hCursor", ctypes.c_void_p), ("pt", _POINT)]
+
+
+class _ICONINFO(ctypes.Structure):
+    _fields_ = [
+        ("fIcon", ctypes.c_int),
+        ("xHotspot", ctypes.c_uint32),
+        ("yHotspot", ctypes.c_uint32),
+        ("hbmMask", ctypes.c_void_p),
+        ("hbmColor", ctypes.c_void_p),
+    ]
+
+
+def stamp_cursor(user32, gdi32, hdc, left, top, src_w, src_h, wide, high):
+    info = _CURSORINFO()
+    info.cbSize = ctypes.sizeof(_CURSORINFO)
+    user32.GetCursorInfo.argtypes = [ctypes.POINTER(_CURSORINFO)]
+    user32.GetCursorInfo.restype = ctypes.c_int
+    if not user32.GetCursorInfo(ctypes.byref(info)) or not info.hCursor or not (info.flags & 1):
+        return
+    if info.pt.x < left or info.pt.y < top or info.pt.x >= left + src_w or info.pt.y >= top + src_h:
+        return
+    icon = _ICONINFO()
+    hotx, hoty = 0, 0
+    user32.GetIconInfo.argtypes = [ctypes.c_void_p, ctypes.POINTER(_ICONINFO)]
+    user32.GetIconInfo.restype = ctypes.c_int
+    if user32.GetIconInfo(info.hCursor, ctypes.byref(icon)):
+        hotx, hoty = icon.xHotspot, icon.yHotspot
+        if icon.hbmMask:
+            gdi32.DeleteObject(icon.hbmMask)
+        if icon.hbmColor:
+            gdi32.DeleteObject(icon.hbmColor)
+    x = int((info.pt.x - left - hotx) * wide / max(1, src_w))
+    y = int((info.pt.y - top - hoty) * high / max(1, src_h))
+    user32.DrawIconEx.argtypes = [
+        ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
+        ctypes.c_int, ctypes.c_int, ctypes.c_uint, ctypes.c_void_p, ctypes.c_uint,
+    ]
+    user32.DrawIconEx.restype = ctypes.c_int
+    user32.DrawIconEx(hdc, x, y, info.hCursor, 0, 0, 0, None, 3)
+
+
+def desk_png(region=None):
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
     user32.GetSystemMetrics.argtypes = [ctypes.c_int]
@@ -474,9 +537,22 @@ def desk_png():
     sh = user32.GetSystemMetrics(1)
     if sw < 48 or sh < 48:
         die("vision absent")
-    scale = ((DESK_TOKENS * 2304) / float(sw * sh)) ** 0.5
-    wide = max(48, int(round(sw * scale / 48)) * 48)
-    high = max(48, int(round(sh * scale / 48)) * 48)
+    if region:
+        x0, y0, x1, y1 = region
+        left = int(round(min(x0, x1) / 100.0 * max(1, sw - 1)))
+        top = int(round(min(y0, y1) / 100.0 * max(1, sh - 1)))
+        right = int(round(max(x0, x1) / 100.0 * max(1, sw - 1)))
+        bottom = int(round(max(y0, y1) / 100.0 * max(1, sh - 1)))
+        left = max(0, min(sw - 2, left))
+        top = max(0, min(sh - 2, top))
+        src_w = max(1, min(sw, right) - left)
+        src_h = max(1, min(sh, bottom) - top)
+        scale = min(1.0, ZOOM_EDGE / float(max(src_w, src_h)))
+    else:
+        left, top, src_w, src_h = 0, 0, sw, sh
+        scale = ((DESK_TOKENS * 2304) / float(src_w * src_h)) ** 0.5
+    wide = max(48, int(round(src_w * scale / 48)) * 48)
+    high = max(48, int(round(src_h * scale / 48)) * 48)
     src = user32.GetDC(0)
     if not src:
         die("vision absent")
@@ -486,8 +562,9 @@ def desk_png():
     try:
         if mem:
             gdi32.SetStretchBltMode(mem, 4)
-        if not mem or not bmp or not gdi32.StretchBlt(mem, 0, 0, wide, high, src, 0, 0, sw, sh, 0x00CC0020):
+        if not mem or not bmp or not gdi32.StretchBlt(mem, 0, 0, wide, high, src, left, top, src_w, src_h, 0x00CC0020):
             die("vision absent")
+        stamp_cursor(user32, gdi32, mem, left, top, src_w, src_h, wide, high)
         gdi32.SelectObject(mem, old)
         old = None
         hdr = _HDR()
@@ -513,141 +590,6 @@ def desk_png():
     if len(png) < 32:
         die("vision absent")
     return base64.b64encode(png).decode("ascii"), wide, high
-
-
-def desk_prompt(goal):
-    return (
-        "<bos><|turn>system\n"
-        + DESK_SYSTEM
-        + "<turn|>\n<|turn>user\n"
-        + MEDIA
-        + "\n"
-        + goal
-        + "<turn|>\n<|turn>model\n"
-    )
-
-
-def desk_field(found, names):
-    for name in names:
-        value = found.get(name)
-        if isinstance(value, str) and value.strip():
-            return " ".join(value.split())
-    return ""
-
-
-def first_box(found):
-    box = found.get("box_2d")
-    if isinstance(box, list) and len(box) == 4:
-        return box
-    for value in found.values():
-        if isinstance(value, list):
-            for item in value:
-                if isinstance(item, dict) and isinstance(item.get("box_2d"), list) and len(item["box_2d"]) == 4:
-                    return item["box_2d"]
-        elif isinstance(value, dict):
-            got = first_box(value)
-            if got:
-                return got
-    return None
-
-
-def desk_object(reply):
-    raw = reply or ""
-    start = raw.find("{")
-    if start < 0:
-        return None
-    try:
-        found, _end = json.JSONDecoder().raw_decode(raw[start:])
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(found, dict):
-        return None
-    box = first_box(found)
-    see = desk_field(found, ("see", "screenshot_description", "description")) or "screen"
-    do = desk_field(found, ("do", "action")).lower()
-    if not do and box:
-        do = "drag"
-    if do not in DESK_ACTS:
-        return None
-    found["see"] = see
-    found["do"] = do
-    if box:
-        found["box_2d"] = box
-    return found
-
-
-def box_pct(box):
-    if not isinstance(box, list) or len(box) != 4:
-        return None
-    try:
-        y0, x0, y1, x1 = (float(box[0]), float(box[1]), float(box[2]), float(box[3]))
-    except (TypeError, ValueError):
-        return None
-    return (x0 + x1) / 20.0, (y0 + y1) / 20.0
-
-
-def act_click(obj):
-    point = box_pct(obj.get("box_2d"))
-    if not point or not win32.click_pct(point[0], point[1]):
-        return ""
-    return "click %.0f %.0f" % point
-
-
-def drag_inside(box):
-    y0, x0, y1, x1 = (float(box[0]), float(box[1]), float(box[2]), float(box[3]))
-    ax = (x0 + (x1 - x0) * 0.35) / 10.0
-    ay = (y0 + (y1 - y0) * 0.40) / 10.0
-    bx = (x0 + (x1 - x0) * 0.65) / 10.0
-    by = (y0 + (y1 - y0) * 0.60) / 10.0
-    if not win32.drag_pct(ax, ay, bx, by):
-        return ""
-    return "drag %.0f %.0f %.0f %.0f" % (ax, ay, bx, by)
-
-
-def act_drag(obj):
-    box = obj.get("box_2d")
-    other = obj.get("box_2d_end")
-    start = box_pct(box)
-    end = box_pct(other)
-    distinct = isinstance(box, list) and isinstance(other, list) and box != other
-    if distinct and start and end and win32.drag_pct(start[0], start[1], end[0], end[1]):
-        return "drag %.0f %.0f %.0f %.0f" % (start[0], start[1], end[0], end[1])
-    if isinstance(box, list) and len(box) == 4:
-        return drag_inside(box)
-    return ""
-
-
-def act_type(obj):
-    text = str(obj.get("text", ""))
-    key = str(obj.get("key", "")).strip().lower()
-    if not text or not win32.type_text(text):
-        return ""
-    if not key:
-        return "type " + text
-    time.sleep(0.3)
-    if not win32.press(key):
-        return ""
-    return "type " + text + " key " + key
-
-
-def act_key(obj):
-    name = str(obj.get("key", "")).strip().lower()
-    if not win32.press(name):
-        return ""
-    return "key " + name
-
-
-def act_done(_obj):
-    return "done"
-
-
-DESK_ACTS = {
-    "click": act_click,
-    "drag": act_drag,
-    "type": act_type,
-    "key": act_key,
-    "done": act_done,
-}
 
 
 def deliver(image_b64):
@@ -684,16 +626,12 @@ def window_titles():
     return found
 
 
-def see_screen(image, goal=""):
-    ask = " ".join((goal or "").split()) or "What is on screen?"
-    prompt = (
-        "<bos><|turn>system\nYou see one full desktop screenshot. Answer with one sentence. Name a listed window title when it matters, and quote short on-screen text you can read.<turn|>\n"
-        "<|turn>user\n" + MEDIA + "\n" + ask + "<turn|>\n<|turn>model\n"
-    )
-    text = answer_text(local_infer(prompt, image))
-    if not text:
-        die("desk see absent")
-    return text
+def see_screen(goal="", work=False):
+    desktop_lease()
+    if work:
+        return see_work(goal)
+    image, _wide, _high = desk_png(None)
+    return eyes_report(image, goal), image
 
 
 def transact(addr, card, timeout):
@@ -862,16 +800,18 @@ def log_gemma(kind, text):
 def prompt_for(profile, question, suffix, root, written=False):
     path = memory_file(profile, root)
     facts, pairs = read_memory(path)
+    system = {"eyes": EYES, "area": AREA}.get(profile, SYSTEM)
     head = (
         "<bos><|turn>system\n<|think|>\n"
-        + SYSTEM
+        + system
         + tool_decls(PROFILES[profile]["tools"])
         + "<turn|>\n"
-        + "Time " + time.strftime("%Y-%m-%d %H:%M") + "\n"
-        + ("Call up\n" if call_flag() == "call up" else "Call down\n")
     )
-    if written:
-        head += "Written by Wojciech.\n"
+    if profile == "voice":
+        head += "Time " + time.strftime("%Y-%m-%d %H:%M") + "\n"
+        head += "Call up\n" if call_flag() == "call up" else "Call down\n"
+        if written:
+            head += "Written by Wojciech.\n"
     if facts:
         head += "Remembered:\n" + "\n".join(facts) + "\n"
     shown = list(pairs[-6:])
@@ -1141,19 +1081,101 @@ def tool_ring(args):
     return call.dial(line)
 
 
-def tool_look(line):
+def tool_look(line, work=None):
     titles = window_titles()
     listed = "; ".join(titles)
-    ask = " ".join((line or "What is on screen?").split())
+    ask = " ".join((line or "Where is what?").split())
     if listed:
         ask += " Open windows: " + listed
     if not (ROOT / "gemma-mmproj.gguf").is_file():
         return "windows " + listed, ""
-    desktop_lease()
-    image, wide, high = desk_png()
-    seen = see_screen(image, ask)
+    if work is None:
+        work = may_touch()
+    seen, image = see_screen(ask, work)
     deliver(image)
-    return "windows " + listed + "\nsee " + seen, image
+    return "windows " + listed + "\n" + seen, image
+
+
+def picture_of(sx, sy):
+    if not REGION:
+        return sx, sy
+    x0, y0, x1, y1 = REGION
+    return (sx - x0) / ((x1 - x0) or 1.0) * 100.0, (sy - y0) / ((y1 - y0) or 1.0) * 100.0
+
+
+def screen_of(px, py):
+    if not REGION:
+        return px, py
+    x0, y0, x1, y1 = REGION
+    return x0 + (x1 - x0) * float(px) / 100.0, y0 + (y1 - y0) * float(py) / 100.0
+
+
+def pointer_picture():
+    point = win32.pointer_pct()
+    if not point:
+        return None
+    return picture_of(point[0], point[1])
+
+
+def pointer_line():
+    point = pointer_picture()
+    if not point:
+        return "Pointer unknown"
+    return "Pointer %.0f %.0f" % point
+
+
+def four_pcts(text):
+    found = []
+    for token in re.findall(r"\d+(?:\.\d+)?", text or ""):
+        found.append(float(token))
+        if len(found) == 4:
+            break
+    if len(found) < 4 or any(n < 0 or n > 100 for n in found):
+        return None
+    x0, y0, x1, y1 = found
+    if x1 < x0:
+        x0, x1 = x1, x0
+    if y1 < y0:
+        y0, y1 = y1, y0
+    if x1 - x0 < 8 or y1 - y0 < 8 or (x1 - x0 > 92 and y1 - y0 > 92):
+        return None
+    return x0, y0, x1, y1
+
+
+def member_say(profile, image, question):
+    ask = " ".join((question or "").split()) or "Where is what?"
+    if profile == "eyes":
+        ask += "\n" + pointer_line()
+    body = (MEDIA + "\n" + ask) if image else ask
+    text = answer_text(local_infer(prompt_for(profile, body, "", None, False), image or ""))
+    if not text:
+        die("desk see absent")
+    append_turn(profile, ask, text, None)
+    log_gemma(profile, text)
+    return text
+
+
+def eyes_report(image, goal):
+    seen = member_say("eyes", image, goal)
+    point = pointer_picture()
+    line = "pointer %.0f %.0f\n%s" % (point[0], point[1], seen) if point else seen
+    if REGION:
+        line += "\nregion %.0f %.0f %.0f %.0f" % REGION
+    return line
+
+
+def see_work(goal):
+    global REGION
+    mark = ""
+    if REGION is None:
+        full, _wide, _high = desk_png(None)
+        mark = member_say("area", full, goal or "Where is the work?")
+        REGION = four_pcts(mark)
+    image, _wide, _high = desk_png(REGION)
+    report = eyes_report(image, goal)
+    if mark:
+        report = "area " + clip(mark, 140) + "\n" + report
+    return report, image
 
 
 def numbers(parts):
@@ -1163,70 +1185,213 @@ def numbers(parts):
         return None
 
 
-def act_direct(line):
+def pct_ok(point, count):
+    return bool(point) and len(point) == count and all(0 <= n <= 100 for n in point[:count])
+
+
+def parse_direct(line):
     text = " ".join((line or "").split())
     parts = text.split(" ")
-    if not parts:
+    if not parts or not parts[0]:
         return None
     head = parts[0].lower()
+    rest = [part[:-1] if part.endswith("%") else part for part in parts[1:]]
+    if head == "move" and len(rest) == 2:
+        if rest[1].lower() in ("up", "down", "left", "right"):
+            point = numbers([rest[0]])
+            if point and 0 <= point[0] <= 100:
+                return ("rel", rest[1].lower(), point[0])
+        if rest[0].lower() in ("up", "down", "left", "right"):
+            point = numbers([rest[1]])
+            if point and 0 <= point[0] <= 100:
+                return ("rel", rest[0].lower(), point[0])
+        point = numbers(rest)
+        if pct_ok(point, 2):
+            return ("move", point[0], point[1])
+        return None
     if head == "click":
-        point = numbers(parts[1:])
-        if not point or len(point) != 2 or any(n < 0 or n > 100 for n in point):
-            return None
-        if not win32.click_pct(point[0], point[1]):
-            return ""
-        return "click %.0f %.0f" % (point[0], point[1])
+        if len(rest) == 0:
+            return ("click",)
+        point = numbers(rest)
+        if pct_ok(point, 2):
+            return ("click", point[0], point[1])
+        return None
+    if head == "right":
+        if len(rest) == 0:
+            return ("right",)
+        point = numbers(rest)
+        if pct_ok(point, 2):
+            return ("right", point[0], point[1])
+        return None
     if head == "drag":
-        point = numbers(parts[1:])
-        if not point or len(point) != 4 or any(n < 0 or n > 100 for n in point):
-            return None
-        if not win32.drag_pct(point[0], point[1], point[2], point[3]):
-            return ""
-        return "drag %.0f %.0f %.0f %.0f" % tuple(point)
-    if head == "key" and len(parts) >= 2:
-        name = parts[1].lower()
-        if not win32.press(name):
-            return ""
-        return "key " + name
+        point = numbers(rest)
+        if pct_ok(point, 4):
+            return ("drag",) + tuple(point)
+        return None
+    if head == "wheel":
+        point = numbers(rest)
+        if point and len(point) == 1:
+            return ("wheel", point[0])
+        if point and len(point) == 3 and all(0 <= n <= 100 for n in point[:2]):
+            return ("wheel", point[0], point[1], point[2])
+        return None
+    if head == "key" and len(rest) >= 1:
+        return ("key", rest[0].lower())
     if head == "type" and len(parts) >= 2:
-        typed = text.split(" ", 1)[1]
-        if not win32.type_text(typed):
-            return ""
-        return "type " + typed
+        return ("type", text.split(" ", 1)[1])
+    if head in ("down", "up") and len(rest) >= 1 and rest[0].lower() in win32.VK_MAP:
+        return (head, rest[0].lower())
     return None
+
+
+def landed(prefix):
+    point = pointer_picture()
+    if not point:
+        return prefix
+    return prefix + " -> %.0f %.0f" % point
+
+
+def run_direct(cmd):
+    kind = cmd[0]
+    if kind == "rel":
+        here = pointer_picture()
+        if not here:
+            return ""
+        px, py = here
+        if cmd[1] == "right":
+            px += cmd[2]
+        elif cmd[1] == "left":
+            px -= cmd[2]
+        elif cmd[1] == "down":
+            py += cmd[2]
+        else:
+            py -= cmd[2]
+        if not win32.move_pct(*screen_of(px, py)):
+            return ""
+        return landed("move %s %.0f" % (cmd[1], cmd[2]))
+    if kind == "move":
+        if not win32.move_pct(*screen_of(cmd[1], cmd[2])):
+            return ""
+        return landed("move %.0f %.0f" % (cmd[1], cmd[2]))
+    if kind == "click":
+        point = screen_of(cmd[1], cmd[2]) if len(cmd) == 3 else win32.pointer_pct()
+        if not point or not win32.click_pct(point[0], point[1]):
+            return ""
+        return landed("click" if len(cmd) == 1 else "click %.0f %.0f" % (cmd[1], cmd[2]))
+    if kind == "right":
+        point = screen_of(cmd[1], cmd[2]) if len(cmd) == 3 else win32.pointer_pct()
+        if not point or not win32.right_pct(point[0], point[1]):
+            return ""
+        return landed("right" if len(cmd) == 1 else "right %.0f %.0f" % (cmd[1], cmd[2]))
+    if kind == "drag":
+        start = screen_of(cmd[1], cmd[2])
+        end = screen_of(cmd[3], cmd[4])
+        if not win32.drag_pct(start[0], start[1], end[0], end[1]):
+            return ""
+        return landed("drag %.0f %.0f %.0f %.0f" % cmd[1:])
+    if kind == "wheel":
+        if len(cmd) == 2:
+            point = win32.pointer_pct()
+            notches = cmd[1]
+            label = "wheel %.0f" % notches
+        else:
+            point = screen_of(cmd[1], cmd[2])
+            notches = cmd[3]
+            label = "wheel %.0f %.0f %.0f" % (cmd[1], cmd[2], cmd[3])
+        if not point or not win32.wheel_pct(point[0], point[1], notches):
+            return ""
+        return landed(label)
+    if kind == "key":
+        if not win32.press(cmd[1]):
+            return ""
+        return "key " + cmd[1]
+    if kind == "type":
+        if not win32.type_text(cmd[1]):
+            return ""
+        return "type " + cmd[1]
+    if kind == "down":
+        if not win32.key_down(cmd[1]):
+            return ""
+        return "down " + cmd[1]
+    if kind == "up":
+        if not win32.key_up(cmd[1]):
+            return ""
+        return "up " + cmd[1]
+    return ""
+
+
+def note_last(line):
+    path = memory_file("voice")
+
+    def run():
+        facts, pairs = read_memory(path)
+        facts = [item for item in facts if not item.lower().startswith("last act:")]
+        facts.append("last act: " + clip(line, 160))
+        write_memory(path, facts, pairs)
+
+    with_memory(path, run)
+
+
+def act_direct(line):
+    cmd = parse_direct(line)
+    if cmd is None:
+        return None
+    done = run_direct(cmd)
+    if done:
+        note_last(done)
+    return done
+
+
+def one_step(goal, seen):
+    ask = goal + "\n" + seen + "\nOne act line."
+    text = local_infer(prompt_for("voice", ask, "", None, False), "")
+    found = parse_tool_call(text)
+    if found and found[0] == "act":
+        return found[1].get("line", "")
+    spoken = answer_text(text)
+    for chunk in re.split(r"[\n.]", spoken):
+        line = " ".join(chunk.split())
+        if parse_direct(line):
+            return line
+    return spoken
+
+
+def shot_of():
+    image, wide, high = desk_png(REGION)
+    return image, wide, high
 
 
 def tool_act(line):
     if not may_touch():
         return "The call is down. Ring him before you touch the desktop.", ""
+    reason = win32.seat_fault()
+    if reason:
+        return "act stopped " + reason, ""
     text = " ".join((line or "").split())
     head = text.lower()
     if head.startswith(("run ", "start ", "start-process ", "powershell ", "python ", "cmd ", "set-content ")):
         return tool_run(text[4:].strip() if head.startswith("run ") else text), ""
-    if not (ROOT / "gemma-mmproj.gguf").is_file():
-        return "vision absent", ""
-    desktop_lease()
-    done = act_direct(line)
-    image, wide, high = desk_png()
+    done = act_direct(text) if parse_direct(text) else None
     if done is not None:
         if not done:
-            return "act failed", image
+            return "act stopped " + (win32.fault or "failed"), ""
+        image, wide, high = shot_of()
         deliver(image)
         return "act " + done + " " + str(wide) + " " + str(high), image
-    goal = text or "Look, then one step."
-    reply = local_infer(desk_prompt(goal), image)
-    obj = desk_object(reply)
-    if obj:
-        obj["goal"] = goal
-    if not obj:
-        return "act unparsed " + clip(reply, 140), image
-    taken = DESK_ACTS[obj["do"]](obj)
-    if not taken:
-        return "see " + obj["see"] + "\nact failed", image
-    if obj["do"] != "done":
-        image, wide, high = desk_png()
+    if not (ROOT / "gemma-mmproj.gguf").is_file():
+        return "vision absent", ""
+    if not text:
+        text = "Look, then one correction."
+    seen, image = see_screen(text, True)
+    step = one_step(text, seen)
+    if not parse_direct(step):
+        return "see " + seen + "\nact unparsed " + clip(step, 80), image
+    done = act_direct(step)
+    if not done:
+        return "see " + seen + "\nact stopped " + (win32.fault or "failed"), image
+    image, wide, high = shot_of()
     deliver(image)
-    return "see " + obj["see"] + "\nact " + taken + " " + str(wide) + " " + str(high), image
+    return "see " + seen + "\nact " + done + " " + str(wide) + " " + str(high), image
 
 
 def shell_command(line):
@@ -1238,6 +1403,7 @@ def shell_command(line):
 
 
 def tool_run(line):
+    global REGION
     if not may_touch():
         return "The call is down. Ring him before you run a command."
     command = shell_command(line)
@@ -1252,11 +1418,13 @@ def tool_run(line):
             shell=False,
         )
     except subprocess.TimeoutExpired:
+        REGION = None
         return "command timed out"
     except OSError:
         return "command failed"
     out = ((done.stdout or b"") + b"\n" + (done.stderr or b"")).decode("utf-8", errors="replace")
     text = clip(out, 400)
+    REGION = None
     if done.returncode and not text:
         return "exit " + str(done.returncode)
     if command.lower().startswith(("start-process", "start ")):
@@ -1321,15 +1489,16 @@ def park_after(speech):
 
 
 def agent_turn(profile, question, image_b64="", root=None, written=False, hands=False):
-    global HANDS
+    global HANDS, REGION
     if profile not in PROFILES:
         die("unknown profile " + profile)
     if not (question or "").strip():
         die("empty question")
     HANDS = bool(hands) or call_flag() == "call up"
+    REGION = None
     steps = []
     shot = image_b64 or ""
-    while len(steps) < 12:
+    while len(steps) < 36:
         opened = bool(steps)
         ask = question
         image = ""
