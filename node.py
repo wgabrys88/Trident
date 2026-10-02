@@ -665,6 +665,39 @@ def desk_png():
     return base64.b64encode(png).decode("ascii"), wide, high
 
 
+HYPER_KEYS = (
+    "gemma.temp",
+    "gemma.top-k",
+    "gemma.top-p",
+    "gemma.min-p",
+    "gemma.repeat-penalty",
+    "gemma.repeat-last-n",
+    "gemma.seed",
+    "gemma.ctx",
+    "gemma.n-predict",
+)
+
+
+def hyper_text():
+    found = {}
+    path = ROOT / "gemma.txt"
+    try:
+        raw = path.read_text(encoding="utf-8-sig")
+    except OSError:
+        return ""
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.endswith("<<"):
+            continue
+        key, sep, value = stripped.partition(" ")
+        if sep and key in HYPER_KEYS and key not in found:
+            found[key] = value.strip()
+    rows = [key + " " + found[key] for key in HYPER_KEYS if key in found]
+    if not rows:
+        return ""
+    return "hyperparameters\n" + "\n".join(rows)
+
+
 def relay(text=""):
     raw = (text or "").strip()
     if not raw:
@@ -699,17 +732,21 @@ def sheet_text(items):
     return "\n\n".join(parts)
 
 
-def flush():
-    global SENT
+def flush(force=False):
+    global SENT, LAST_PNG
     fresh = SHEET[SENT:]
     if not fresh:
         return
-    SENT = len(SHEET)
+    png = LAST_PNG
+    if not png and not force:
+        return
     mod = sys.modules.get("call")
     send = getattr(mod, "trace", None) if mod else None
     if send is None:
         return
-    send(sheet_text(fresh), LAST_PNG)
+    SENT = len(SHEET)
+    LAST_PNG = b""
+    send(sheet_text(fresh), png)
 
 
 def deliver(image_b64, note=""):
@@ -1300,7 +1337,7 @@ def lift():
 
 def end_turn():
     global SENT, LAST_PNG
-    flush()
+    flush(True)
     lift()
     SHEET.clear()
     SENT = 0
@@ -1461,7 +1498,11 @@ def agent_turn(profile, question, image_b64="", root=None, written=False, hands=
     if HANDS:
         reset_hand()
     end_turn()
-    relay("request\n" + question.strip())
+    body = question.strip()
+    hypers = hyper_text()
+    if hypers:
+        body += "\n\n" + hypers
+    relay("request\n" + body)
     steps = []
     shot = image_b64 or ""
     while len(steps) < 64:
