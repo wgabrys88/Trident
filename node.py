@@ -39,7 +39,7 @@ SYSTEM = (
     "If a remembered line starts with quiet, do not ring until he speaks. "
     "Call up: the user line is Wojciech. Speak one or two short sentences in his language, or act with a tool. "
     "Look whenever you want. "
-    "Before click, type, key, drag, or a command on your own, be on the call and tell him what you see and what you plan. "
+    "To write a file, run Python or cmd, or open a program, use run. Before you click or drag on your own, be on the call. "
     "If he asked, do the work. "
     "If he wants the call to end, the action is hang and you write no words. "
     "If you are confused or stuck, the action is ring."
@@ -49,18 +49,18 @@ TOOL_TEXT = {
     "hang": "End the phone call now. Use this when he wants to stop, hang up, or says goodbye. Say nothing else.",
     "look": "See the whole desktop. You get one sentence back. On a call the picture is sent to him.",
     "act": "One mouse or key step on the desktop. Percents run from 0 to 100. Opening a program is run, not act.",
-    "run": "Run one PowerShell command and return the output. Opening a program is this tool.",
+    "run": "Run one PowerShell command and return the output. Use this to write a file, run Python, run cmd, or open a program.",
     "remember": "Store one short fact that stays in later turns.",
-    "quiet": "Stay quiet and do not ring until he speaks.",
+    "quiet": "Stay quiet and do not ring until he speaks. line clear ends that.",
 }
 TOOL_LINE = {
     "ring": "A short greeting. The joke or the message belongs in the words you write after this tool.",
     "hang": "Leave empty.",
     "look": "What to notice, or empty.",
     "act": "click x y, drag x y x y, key win-r, type words, or one short goal.",
-    "run": "The command. Start-Process mspaint opens Paint.",
+    "run": "The PowerShell command. Set-Content writes a file. python -c runs Python. cmd /c runs cmd.",
     "remember": "The fact.",
-    "quiet": "The reason, or off.",
+    "quiet": "Why to stay quiet.",
 }
 Card = namedtuple(
     "Card",
@@ -618,9 +618,6 @@ def drag_inside(box, goal):
         if name in low:
             fx0, fy0, fx1, fy1 = a, b, c, d
             break
-    win32.focus_title("Untitled - Paint")
-    win32.click_pct((x0 + x1) / 20.0, (y0 + y1) / 20.0)
-    time.sleep(0.15)
     ax = (x0 + (x1 - x0) * fx0) / 10.0
     ay = (y0 + (y1 - y0) * fy0) / 10.0
     bx = (x0 + (x1 - x0) * fx1) / 10.0
@@ -1048,7 +1045,7 @@ def tool_quiet(profile, args, root):
 
     def run():
         facts, pairs, works = read_memory(path)
-        if line.lower() == "off":
+        if line.lower() == "clear":
             facts = [item for item in facts if not item.lower().startswith("quiet")]
         else:
             fact = "quiet: " + line
@@ -1057,7 +1054,7 @@ def tool_quiet(profile, args, root):
         write_memory(path, facts, pairs, works)
 
     with_memory(path, run)
-    return "quiet off" if line.lower() == "off" else "quiet: " + line
+    return "quiet clear" if line.lower() == "clear" else "quiet: " + line
 
 
 def tool_hang():

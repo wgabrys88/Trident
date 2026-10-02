@@ -1,6 +1,5 @@
 import ctypes
 import ctypes.wintypes as W
-import time
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 
@@ -62,31 +61,17 @@ class INPUT(ctypes.Structure):
 
 user32.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
 user32.SetProcessDpiAwarenessContext.restype = ctypes.c_void_p
-user32.OpenInputDesktop.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
-user32.OpenInputDesktop.restype = ctypes.c_void_p
-user32.SetThreadDesktop.argtypes = [ctypes.c_void_p]
-user32.SetThreadDesktop.restype = ctypes.c_int
 user32.GetSystemMetrics.argtypes = [ctypes.c_int]
 user32.GetSystemMetrics.restype = ctypes.c_int
 user32.SendInput.argtypes = [W.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
 user32.SendInput.restype = W.UINT
 
 
-def attach_input():
-    access = 0x0001 | 0x0002 | 0x0004 | 0x0008 | 0x0020 | 0x0040 | 0x0080 | 0x0100
-    desk = user32.OpenInputDesktop(0, 0, access)
-    if not desk:
-        return False
-    return bool(user32.SetThreadDesktop(desk))
-
-
 def set_dpi_aware():
     user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
-    attach_input()
 
 
 def _send(items):
-    attach_input()
     batch = (INPUT * len(items))(*items)
     return user32.SendInput(len(items), batch, ctypes.sizeof(INPUT)) == len(items)
 
@@ -133,28 +118,16 @@ def click_pct(x, y):
     ])
 
 
-def focus_title(title):
-    hwnd = user32.FindWindowW(None, title)
-    if not hwnd:
-        return False
-    user32.ShowWindow(hwnd, 9)
-    user32.SetForegroundWindow(hwnd)
-    return True
-
-
 def drag_pct(x0, y0, x1, y1):
     ax, ay = _abs(x0, y0)
     bx, by = _abs(x1, y1)
     base = 0x8000 | 0x4000
-    if not _send([_mouse(ax, ay, base | 0x0001), _mouse(ax, ay, base | 0x0002)]):
-        return False
-    time.sleep(0.05)
-    for step in range(1, 12):
-        t = step / 12
-        if not _send([_mouse(int(ax + (bx - ax) * t), int(ay + (by - ay) * t), base | 0x0001)]):
-            return False
-        time.sleep(0.02)
-    return _send([_mouse(bx, by, base | 0x0004)])
+    items = [_mouse(ax, ay, base | 0x0001), _mouse(ax, ay, base | 0x0002)]
+    for step in range(1, 8):
+        t = step / 8
+        items.append(_mouse(int(ax + (bx - ax) * t), int(ay + (by - ay) * t), base | 0x0001))
+    items.append(_mouse(bx, by, base | 0x0004))
+    return _send(items)
 
 
 def _key(vk, scan, flags):
