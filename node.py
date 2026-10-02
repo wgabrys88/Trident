@@ -1,6 +1,5 @@
 import base64
 import ctypes
-import json
 import os
 import re
 import socket
@@ -25,12 +24,16 @@ OPS = {
 PROFILES = {
     "voice": {
         "memory": "gemma.memory.txt",
-        "tools": ("ring", "hang", "look", "act", "run", "remember", "quiet"),
+        "tools": (
+            "ring", "hang", "look",
+            "left", "right", "up", "down", "press", "release", "rightpress", "rightrelease",
+            "type", "key", "run", "remember", "quiet",
+        ),
     },
 }
 HANDS = False
 SYSTEM = (
-    "You are Gemma on Wojciech's computer. "
+    "You are Gemma, the organism on Wojciech's computer. "
     "Think one or two short sentences, then either one tool call or the words he should hear. "
     "He never hears the thought. A tool call is how you act. Do not write a tool name as speech. "
     "Call down: he cannot hear you. The computer microphone is closed. Cable speech is the room. A written line is Wojciech. "
@@ -38,8 +41,10 @@ SYSTEM = (
     "If you already rang and nothing new happened, do not ring again. "
     "If a remembered line starts with quiet, do not ring until he speaks. "
     "Call up: the user line is Wojciech. Speak one or two short sentences in his language, or act with a tool. "
-    "Look whenever you want. "
-    "To write a file, run Python or cmd, or open a program, use run. Before you click or drag on your own, be on the call. "
+    "The picture shows the pointer, the trail, and the last act. A move or a button is its own tool. You do not name a place. "
+    "If you have no picture, look. Each move or button returns the picture. "
+    "On an idle check, do not touch the screen. "
+    "If the work is not on screen, use run, then look. run does not change the picture. "
     "If he asked, do the work. "
     "If he wants the call to end, the action is hang and you write no words. "
     "If you are confused or stuck, the action is ring."
@@ -47,8 +52,17 @@ SYSTEM = (
 TOOL_TEXT = {
     "ring": "Place the call. The next words you write, after this tool, are what he hears once he has answered. If he asked for a joke or a message, those words are that joke or message. If nothing is waiting, say you are up and ask if he wants anything.",
     "hang": "End the phone call now. Use this when he wants to stop, hang up, or says goodbye. Say nothing else.",
-    "look": "See the whole desktop. You get one sentence back. The picture is sent to him in the chat when the line is connected.",
-    "act": "One mouse or key step on the desktop. Percents run from 0 to 100. Opening a program is run, not act.",
+    "look": "See the screen. The mark is the pointer. The trail is where it went.",
+    "left": "Move the pointer one step left.",
+    "right": "Move the pointer one step right.",
+    "up": "Move the pointer one step up.",
+    "down": "Move the pointer one step down.",
+    "press": "Hold the left button.",
+    "release": "Let the left button go.",
+    "rightpress": "Hold the right button.",
+    "rightrelease": "Let the right button go.",
+    "type": "Type text at the pointer.",
+    "key": "Tap one key.",
     "run": "Run one PowerShell command and return the output. Use this to write a file, run Python, run cmd, or open a program.",
     "remember": "Store one short fact that stays in later turns.",
     "quiet": "Stay quiet and do not ring until he speaks. line clear ends that.",
@@ -57,7 +71,16 @@ TOOL_LINE = {
     "ring": "A short greeting. The joke or the message belongs in the words you write after this tool.",
     "hang": "Leave empty.",
     "look": "What to notice, or empty.",
-    "act": "click x y, drag x y x y, key win-r, type words, or one short goal.",
+    "left": "Leave empty.",
+    "right": "Leave empty.",
+    "up": "Leave empty.",
+    "down": "Leave empty.",
+    "press": "Leave empty.",
+    "release": "Leave empty.",
+    "rightpress": "Leave empty.",
+    "rightrelease": "Leave empty.",
+    "type": "The text.",
+    "key": "The key name.",
     "run": "The PowerShell command. Set-Content writes a file. python -c runs Python. cmd /c runs cmd.",
     "remember": "The fact.",
     "quiet": "Why to stay quiet.",
@@ -375,17 +398,16 @@ def local_infer(prompt, image):
 
 
 DESK_TOKENS = 560
-DESK_SYSTEM = (
-    "You see one full desktop screenshot. "
-    "Answer with one JSON object and no other text. "
-    "see is one sentence about the whole screen and is never empty. "
-    "do is click, drag, type, key, or done. "
-    "click has box_2d as y0, x0, y1, x1, each a number from 0 to 1000. "
-    "drag has box_2d for the start and box_2d_end for the end, same order. "
-    "type has text and an optional key. "
-    "key is win-r, enter, escape, backspace, delete, tab, ctrl-a, ctrl-l, ctrl-t, ctrl-w, alt-f4, up, down, left, right, or space. "
-    "done is a look with no action."
-)
+GRID = 1000
+STEP = 100
+POS = None
+TRAIL = []
+LAST = ""
+HELD = ""
+SHEET = []
+SENT = 0
+LAST_PNG = b""
+MOVES = {"left": (0, -1), "right": (0, 1), "up": (-1, 0), "down": (1, 0)}
 
 
 def clip(text, limit=200):
@@ -439,6 +461,132 @@ def png_rgb(wide, high, bgra):
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw, 1)) + chunk(b"IEND", b"")
 
 
+class _POINT(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+class _CURSORINFO(ctypes.Structure):
+    _fields_ = [("cbSize", ctypes.c_uint32), ("flags", ctypes.c_uint32), ("hCursor", ctypes.c_void_p), ("pt", _POINT)]
+
+
+class _ICONINFO(ctypes.Structure):
+    _fields_ = [
+        ("fIcon", ctypes.c_int),
+        ("xHotspot", ctypes.c_uint32),
+        ("yHotspot", ctypes.c_uint32),
+        ("hbmMask", ctypes.c_void_p),
+        ("hbmColor", ctypes.c_void_p),
+    ]
+
+
+def stamp_cursor(user32, gdi32, hdc, left, top, src_w, src_h, wide, high):
+    info = _CURSORINFO()
+    info.cbSize = ctypes.sizeof(_CURSORINFO)
+    user32.GetCursorInfo.argtypes = [ctypes.POINTER(_CURSORINFO)]
+    user32.GetCursorInfo.restype = ctypes.c_int
+    if not user32.GetCursorInfo(ctypes.byref(info)) or not info.hCursor or not (info.flags & 1):
+        return
+    if info.pt.x < left or info.pt.y < top or info.pt.x >= left + src_w or info.pt.y >= top + src_h:
+        return
+    icon = _ICONINFO()
+    hotx, hoty = 0, 0
+    user32.GetIconInfo.argtypes = [ctypes.c_void_p, ctypes.POINTER(_ICONINFO)]
+    user32.GetIconInfo.restype = ctypes.c_int
+    if user32.GetIconInfo(info.hCursor, ctypes.byref(icon)):
+        hotx, hoty = icon.xHotspot, icon.yHotspot
+        if icon.hbmMask:
+            gdi32.DeleteObject(icon.hbmMask)
+        if icon.hbmColor:
+            gdi32.DeleteObject(icon.hbmColor)
+    x = int((info.pt.x - left - hotx) * wide / max(1, src_w))
+    y = int((info.pt.y - top - hoty) * high / max(1, src_h))
+    user32.DrawIconEx.argtypes = [
+        ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_void_p,
+        ctypes.c_int, ctypes.c_int, ctypes.c_uint, ctypes.c_void_p, ctypes.c_uint,
+    ]
+    user32.DrawIconEx.restype = ctypes.c_int
+    user32.DrawIconEx(hdc, x, y, info.hCursor, 0, 0, 0, None, 3)
+
+
+def paint_hand(gdi32, hdc, wide, high):
+    point = POS if POS is not None else pointer_grid()
+    spots = list(TRAIL)
+    if point is not None and (not spots or spots[-1] != point):
+        spots.append(point)
+    spots = spots[-10:]
+    gdi32.CreatePen.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint32]
+    gdi32.CreatePen.restype = ctypes.c_void_p
+    gdi32.CreateSolidBrush.argtypes = [ctypes.c_uint32]
+    gdi32.CreateSolidBrush.restype = ctypes.c_void_p
+    gdi32.Polyline.argtypes = [ctypes.c_void_p, ctypes.POINTER(_POINT), ctypes.c_int]
+    gdi32.Polyline.restype = ctypes.c_int
+    gdi32.Ellipse.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+    gdi32.Ellipse.restype = ctypes.c_int
+    gdi32.CreateFontW.argtypes = [
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32,
+        ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_wchar_p,
+    ]
+    gdi32.CreateFontW.restype = ctypes.c_void_p
+    gdi32.SetTextColor.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+    gdi32.SetTextColor.restype = ctypes.c_uint32
+    gdi32.SetBkMode.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    gdi32.SetBkMode.restype = ctypes.c_int
+    gdi32.TextOutW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_wchar_p, ctypes.c_int]
+    gdi32.TextOutW.restype = ctypes.c_int
+    gdi32.Rectangle.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+    gdi32.Rectangle.restype = ctypes.c_int
+
+    def at(spot):
+        y, x = spot
+        return int(round(float(x) / GRID * (wide - 1))), int(round(float(y) / GRID * (high - 1)))
+
+    if len(spots) >= 2:
+        pen = gdi32.CreatePen(0, 6, 0x0000FFFF)
+        if pen:
+            old = gdi32.SelectObject(hdc, pen)
+            pts = (_POINT * len(spots))(*(_POINT(*at(spot)) for spot in spots))
+            gdi32.Polyline(hdc, pts, len(spots))
+            gdi32.SelectObject(hdc, old)
+            gdi32.DeleteObject(pen)
+    if point is not None:
+        cx, cy = at(point)
+        radius = 14
+        brush = gdi32.CreateSolidBrush(0x0000FFFF if HELD else 0x000000FF)
+        pen = gdi32.CreatePen(0, 2, 0x00000000)
+        if brush and pen:
+            oldp = gdi32.SelectObject(hdc, pen)
+            oldb = gdi32.SelectObject(hdc, brush)
+            gdi32.Ellipse(hdc, cx - radius, cy - radius, cx + radius, cy + radius)
+            gdi32.SelectObject(hdc, oldb)
+            gdi32.SelectObject(hdc, oldp)
+        if brush:
+            gdi32.DeleteObject(brush)
+        if pen:
+            gdi32.DeleteObject(pen)
+    word = LAST or ""
+    if not word:
+        return
+    font = gdi32.CreateFontW(-64, 0, 0, 0, 700, 0, 0, 0, 0, 0, 0, 0, 0, "Segoe UI")
+    plate = gdi32.CreateSolidBrush(0x00000000)
+    if not font or not plate:
+        if font:
+            gdi32.DeleteObject(font)
+        if plate:
+            gdi32.DeleteObject(plate)
+        return
+    oldf = gdi32.SelectObject(hdc, font)
+    oldb = gdi32.SelectObject(hdc, plate)
+    gdi32.Rectangle(hdc, 8, 8, 28 + 40 * len(word), 84)
+    gdi32.SetBkMode(hdc, 1)
+    gdi32.SetTextColor(hdc, 0x00FFFFFF)
+    gdi32.TextOutW(hdc, 18, 12, word, len(word))
+    gdi32.SelectObject(hdc, oldb)
+    gdi32.SelectObject(hdc, oldf)
+    gdi32.DeleteObject(plate)
+    gdi32.DeleteObject(font)
+
+
 def desk_png():
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
@@ -488,6 +636,8 @@ def desk_png():
             gdi32.SetStretchBltMode(mem, 4)
         if not mem or not bmp or not gdi32.StretchBlt(mem, 0, 0, wide, high, src, 0, 0, sw, sh, 0x00CC0020):
             die("vision absent")
+        stamp_cursor(user32, gdi32, mem, 0, 0, sw, sh, wide, high)
+        paint_hand(gdi32, mem, wide, high)
         gdi32.SelectObject(mem, old)
         old = None
         hdr = _HDR()
@@ -515,149 +665,94 @@ def desk_png():
     return base64.b64encode(png).decode("ascii"), wide, high
 
 
-def desk_prompt(goal):
-    return (
-        "<bos><|turn>system\n"
-        + DESK_SYSTEM
-        + "<turn|>\n<|turn>user\n"
-        + MEDIA
-        + "\n"
-        + goal
-        + "<turn|>\n<|turn>model\n"
-    )
+HYPER_KEYS = (
+    "gemma.temp",
+    "gemma.top-k",
+    "gemma.top-p",
+    "gemma.min-p",
+    "gemma.repeat-penalty",
+    "gemma.repeat-last-n",
+    "gemma.seed",
+    "gemma.ctx",
+    "gemma.n-predict",
+)
 
 
-def desk_field(found, names):
-    for name in names:
-        value = found.get(name)
-        if isinstance(value, str) and value.strip():
-            return " ".join(value.split())
-    return ""
-
-
-def first_box(found):
-    box = found.get("box_2d")
-    if isinstance(box, list) and len(box) == 4:
-        return box
-    for value in found.values():
-        if isinstance(value, list):
-            for item in value:
-                if isinstance(item, dict) and isinstance(item.get("box_2d"), list) and len(item["box_2d"]) == 4:
-                    return item["box_2d"]
-        elif isinstance(value, dict):
-            got = first_box(value)
-            if got:
-                return got
-    return None
-
-
-def desk_object(reply):
-    raw = reply or ""
-    start = raw.find("{")
-    if start < 0:
-        return None
+def hyper_text():
+    found = {}
+    path = ROOT / "gemma.txt"
     try:
-        found, _end = json.JSONDecoder().raw_decode(raw[start:])
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(found, dict):
-        return None
-    box = first_box(found)
-    see = desk_field(found, ("see", "screenshot_description", "description")) or "screen"
-    do = desk_field(found, ("do", "action")).lower()
-    if not do and box:
-        do = "drag"
-    if do not in DESK_ACTS:
-        return None
-    found["see"] = see
-    found["do"] = do
-    if box:
-        found["box_2d"] = box
-    return found
-
-
-def box_pct(box):
-    if not isinstance(box, list) or len(box) != 4:
-        return None
-    try:
-        y0, x0, y1, x1 = (float(box[0]), float(box[1]), float(box[2]), float(box[3]))
-    except (TypeError, ValueError):
-        return None
-    return (x0 + x1) / 20.0, (y0 + y1) / 20.0
-
-
-def act_click(obj):
-    point = box_pct(obj.get("box_2d"))
-    if not point or not win32.click_pct(point[0], point[1]):
+        raw = path.read_text(encoding="utf-8-sig")
+    except OSError:
         return ""
-    return "click %.0f %.0f" % point
-
-
-def drag_inside(box):
-    y0, x0, y1, x1 = (float(box[0]), float(box[1]), float(box[2]), float(box[3]))
-    ax = (x0 + (x1 - x0) * 0.35) / 10.0
-    ay = (y0 + (y1 - y0) * 0.40) / 10.0
-    bx = (x0 + (x1 - x0) * 0.65) / 10.0
-    by = (y0 + (y1 - y0) * 0.60) / 10.0
-    if not win32.drag_pct(ax, ay, bx, by):
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.endswith("<<"):
+            continue
+        key, sep, value = stripped.partition(" ")
+        if sep and key in HYPER_KEYS and key not in found:
+            found[key] = value.strip()
+    rows = [key + " " + found[key] for key in HYPER_KEYS if key in found]
+    if not rows:
         return ""
-    return "drag %.0f %.0f %.0f %.0f" % (ax, ay, bx, by)
+    return "hyperparameters\n" + "\n".join(rows)
 
 
-def act_drag(obj):
-    box = obj.get("box_2d")
-    other = obj.get("box_2d_end")
-    start = box_pct(box)
-    end = box_pct(other)
-    distinct = isinstance(box, list) and isinstance(other, list) and box != other
-    if distinct and start and end and win32.drag_pct(start[0], start[1], end[0], end[1]):
-        return "drag %.0f %.0f %.0f %.0f" % (start[0], start[1], end[0], end[1])
-    if isinstance(box, list) and len(box) == 4:
-        return drag_inside(box)
-    return ""
+def relay(text=""):
+    raw = (text or "").strip()
+    if not raw:
+        return
+    head, sep, rest = raw.partition("\n")
+    labels = {"request": "REQUEST", "thought": "REASONING", "tool": "TOOLS", "hear": "HEAR", "say": "SAY"}
+    key = head.strip().lower()
+    if key in labels and sep:
+        SHEET.append((labels[key], rest.strip()))
+    else:
+        SHEET.append(("TOOLS", raw))
 
 
-def act_type(obj):
-    text = str(obj.get("text", ""))
-    key = str(obj.get("key", "")).strip().lower()
-    if not text or not win32.type_text(text):
-        return ""
-    if not key:
-        return "type " + text
-    time.sleep(0.3)
-    if not win32.press(key):
-        return ""
-    return "type " + text + " key " + key
+def sheet_text(items):
+    parts = []
+    label = ""
+    lines = []
+
+    def close():
+        if label and lines:
+            parts.append(label + "\n" + "\n\n".join(lines))
+
+    for name, text in items:
+        if name != label:
+            close()
+            label = name
+            lines = []
+        body = (text or "").strip()
+        if body:
+            lines.append(body)
+    close()
+    return "\n\n".join(parts)
 
 
-def act_key(obj):
-    name = str(obj.get("key", "")).strip().lower()
-    if not win32.press(name):
-        return ""
-    return "key " + name
-
-
-def act_done(_obj):
-    return "done"
-
-
-DESK_ACTS = {
-    "click": act_click,
-    "drag": act_drag,
-    "type": act_type,
-    "key": act_key,
-    "done": act_done,
-}
-
-
-def deliver(image_b64):
+def flush(force=False):
+    global SENT, LAST_PNG
+    fresh = SHEET[SENT:]
+    if not fresh:
+        return
+    png = LAST_PNG
+    if not png and not force:
+        return
     mod = sys.modules.get("call")
-    if mod is None:
+    send = getattr(mod, "trace", None) if mod else None
+    if send is None:
         return
-    live = getattr(mod, "LIVE", None)
-    if live is None or getattr(live, "closed", True) or getattr(live, "client", None) is None or not getattr(live, "peer_id", 0):
-        return
-    mod.picture(base64.b64decode("".join((image_b64 or "").split())))
+    SENT = len(SHEET)
+    LAST_PNG = b""
+    send(sheet_text(fresh), png)
+
+
+def deliver(image_b64, note=""):
+    global LAST_PNG
+    if image_b64:
+        LAST_PNG = base64.b64decode("".join(str(image_b64).split()))
 
 
 def window_titles():
@@ -682,18 +777,6 @@ def window_titles():
 
     user32.EnumWindows(visit, 0)
     return found
-
-
-def see_screen(image, goal=""):
-    ask = " ".join((goal or "").split()) or "What is on screen?"
-    prompt = (
-        "<bos><|turn>system\nYou see one full desktop screenshot. Answer with one sentence. Name a listed window title when it matters, and quote short on-screen text you can read.<turn|>\n"
-        "<|turn>user\n" + MEDIA + "\n" + ask + "<turn|>\n<|turn>model\n"
-    )
-    text = answer_text(local_infer(prompt, image))
-    if not text:
-        die("desk see absent")
-    return text
 
 
 def transact(addr, card, timeout):
@@ -857,21 +940,27 @@ def log_gemma(kind, text):
         path.write_text("\n".join(rows) + "\n", encoding="utf-8")
     except OSError:
         pass
+    if kind != "turn":
+        relay(kind + "\n" + (text or ""))
 
 
 def prompt_for(profile, question, suffix, root, written=False):
     path = memory_file(profile, root)
     facts, pairs = read_memory(path)
+    system = SYSTEM
     head = (
         "<bos><|turn>system\n<|think|>\n"
-        + SYSTEM
+        + system
         + tool_decls(PROFILES[profile]["tools"])
         + "<turn|>\n"
-        + "Time " + time.strftime("%Y-%m-%d %H:%M") + "\n"
-        + ("Call up\n" if call_flag() == "call up" else "Call down\n")
     )
-    if written:
-        head += "Written by Wojciech.\n"
+    if profile == "voice":
+        head += "Time " + time.strftime("%Y-%m-%d %H:%M") + "\n"
+        head += "Call up\n" if call_flag() == "call up" else "Call down\n"
+        if written:
+            head += "Written by Wojciech.\n"
+        if HANDS and call_flag() != "call up":
+            head += "He just spoke. You may touch the screen.\n"
     if facts:
         head += "Remembered:\n" + "\n".join(facts) + "\n"
     shown = list(pairs[-6:])
@@ -1141,92 +1230,171 @@ def tool_ring(args):
     return call.dial(line)
 
 
-def tool_look(line):
-    titles = window_titles()
-    listed = "; ".join(titles)
-    ask = " ".join((line or "What is on screen?").split())
-    if listed:
-        ask += " Open windows: " + listed
+def tool_look(line, work=None):
+    listed = "; ".join(window_titles())
     if not (ROOT / "gemma-mmproj.gguf").is_file():
         return "windows " + listed, ""
     desktop_lease()
-    image, wide, high = desk_png()
-    seen = see_screen(image, ask)
-    deliver(image)
-    return "windows " + listed + "\nsee " + seen, image
+    image, _wide, _high = desk_png()
+    deliver(image, "look\nwindows " + listed)
+    return "windows " + listed, image
 
 
-def numbers(parts):
-    try:
-        return [float(part) for part in parts]
-    except ValueError:
+def pointer_grid():
+    point = win32.pointer_pct()
+    if not point:
         return None
+    across, down = point
+    return down / 100.0 * GRID, across / 100.0 * GRID
 
 
-def act_direct(line):
-    text = " ".join((line or "").split())
-    parts = text.split(" ")
-    if not parts:
-        return None
-    head = parts[0].lower()
-    if head == "click":
-        point = numbers(parts[1:])
-        if not point or len(point) != 2 or any(n < 0 or n > 100 for n in point):
-            return None
-        if not win32.click_pct(point[0], point[1]):
-            return ""
-        return "click %.0f %.0f" % (point[0], point[1])
-    if head == "drag":
-        point = numbers(parts[1:])
-        if not point or len(point) != 4 or any(n < 0 or n > 100 for n in point):
-            return None
-        if not win32.drag_pct(point[0], point[1], point[2], point[3]):
-            return ""
-        return "drag %.0f %.0f %.0f %.0f" % tuple(point)
-    if head == "key" and len(parts) >= 2:
-        name = parts[1].lower()
-        if not win32.press(name):
-            return ""
-        return "key " + name
-    if head == "type" and len(parts) >= 2:
-        typed = text.split(" ", 1)[1]
-        if not win32.type_text(typed):
-            return ""
-        return "type " + typed
-    return None
+def to_pct(y, x):
+    return float(x) / GRID * 100.0, float(y) / GRID * 100.0
 
 
-def tool_act(line):
+def hand_at():
+    global POS
+    if POS is None:
+        POS = pointer_grid() or (500.0, 500.0)
+    return POS
+
+
+def remember_spot(y, x):
+    global POS
+    POS = (y, x)
+    TRAIL.append(POS)
+    if len(TRAIL) > 10:
+        del TRAIL[:-10]
+
+
+def stamp(word):
+    global LAST
+    LAST = word
+
+
+def pictured(note):
+    image, _wide, _high = desk_png()
+    deliver(image, note)
+    return note, image
+
+
+def glide(y0, x0, y1, x1):
+    count = 4 if HELD else 1
+    for index in range(1, count + 1):
+        share = index / count
+        y = y0 + (y1 - y0) * share
+        x = x0 + (x1 - x0) * share
+        if not win32.move_pct(*to_pct(y, x)):
+            return False
+        if HELD and index < count:
+            time.sleep(0.03)
+    return True
+
+
+def run_move(name):
+    y0, x0 = hand_at()
+    dy, dx = MOVES[name]
+    y1 = min(GRID, max(0, y0 + dy * STEP))
+    x1 = min(GRID, max(0, x0 + dx * STEP))
+    if not glide(y0, x0, y1, x1):
+        return ""
+    remember_spot(y1, x1)
+    stamp(name)
+    return name
+
+
+def run_press(right):
+    global HELD
+    y, x = hand_at()
+    if not win32.hold_pct(*to_pct(y, x), right):
+        return ""
+    HELD = "right" if right else "left"
+    word = "rightpress" if right else "press"
+    stamp(word)
+    return word
+
+
+def run_release(right):
+    global HELD
+    y, x = hand_at()
+    if not win32.loosen_pct(*to_pct(y, x), right):
+        return ""
+    if HELD == ("right" if right else "left"):
+        HELD = ""
+    word = "rightrelease" if right else "release"
+    stamp(word)
+    return word
+
+
+def lift():
+    global HELD
+    if not HELD:
+        return
+    y, x = hand_at()
+    win32.loosen_pct(*to_pct(y, x), HELD == "right")
+    HELD = ""
+
+
+def end_turn():
+    global SENT, LAST_PNG
+    flush(True)
+    lift()
+    SHEET.clear()
+    SENT = 0
+    LAST_PNG = b""
+
+
+def reset_hand():
+    global POS, LAST
+    lift()
+    POS = None
+    LAST = ""
+    TRAIL.clear()
+
+
+def note_last(line):
+    path = memory_file("voice")
+
+    def run():
+        facts, pairs = read_memory(path)
+        facts = [item for item in facts if not item.lower().startswith("last act:")]
+        facts.append("last act: " + clip(line, 160))
+        write_memory(path, facts, pairs)
+
+    with_memory(path, run)
+
+
+def touch(kind, line=""):
     if not may_touch():
         return "The call is down. Ring him before you touch the desktop.", ""
-    text = " ".join((line or "").split())
-    head = text.lower()
-    if head.startswith(("run ", "start ", "start-process ", "powershell ", "python ", "cmd ", "set-content ")):
-        return tool_run(text[4:].strip() if head.startswith("run ") else text), ""
-    if not (ROOT / "gemma-mmproj.gguf").is_file():
-        return "vision absent", ""
-    desktop_lease()
-    done = act_direct(line)
-    image, wide, high = desk_png()
-    if done is not None:
-        if not done:
-            return "act failed", image
-        deliver(image)
-        return "act " + done + " " + str(wide) + " " + str(high), image
-    goal = text or "Look, then one step."
-    reply = local_infer(desk_prompt(goal), image)
-    obj = desk_object(reply)
-    if obj:
-        obj["goal"] = goal
-    if not obj:
-        return "act unparsed " + clip(reply, 140), image
-    taken = DESK_ACTS[obj["do"]](obj)
-    if not taken:
-        return "see " + obj["see"] + "\nact failed", image
-    if obj["do"] != "done":
-        image, wide, high = desk_png()
-    deliver(image)
-    return "see " + obj["see"] + "\nact " + taken + " " + str(wide) + " " + str(high), image
+    reason = win32.seat_fault()
+    if reason:
+        return "stopped " + reason, ""
+    done = ""
+    if kind in MOVES:
+        done = run_move(kind)
+    elif kind == "press":
+        done = run_press(False)
+    elif kind == "release":
+        done = run_release(False)
+    elif kind == "rightpress":
+        done = run_press(True)
+    elif kind == "rightrelease":
+        done = run_release(True)
+    elif kind == "key":
+        name = (line or "").split(" ")[0].lower()
+        if name and win32.press(name):
+            stamp("key")
+            done = "key " + name
+    elif kind == "type":
+        text = " ".join((line or "").split())
+        if text and win32.type_text(text):
+            stamp("type")
+            done = "type " + text
+    if not done:
+        return "stopped " + (win32.fault or "failed"), ""
+    note_last(done)
+    return pictured(done)
 
 
 def shell_command(line):
@@ -1273,8 +1441,8 @@ def run_tool(profile, name, args, root):
         return tool_quiet(profile, args, root)
     if name == "look":
         return tool_look(args.get("line", ""))
-    if name == "act":
-        return tool_act(args.get("line", ""))
+    if name in MOVES or name in ("press", "release", "rightpress", "rightrelease", "type", "key"):
+        return touch(name, args.get("line", ""))
     if name == "run":
         return tool_run(args.get("line", ""))
     if name == "ring":
@@ -1327,9 +1495,17 @@ def agent_turn(profile, question, image_b64="", root=None, written=False, hands=
     if not (question or "").strip():
         die("empty question")
     HANDS = bool(hands) or call_flag() == "call up"
+    if HANDS:
+        reset_hand()
+    end_turn()
+    body = question.strip()
+    hypers = hyper_text()
+    if hypers:
+        body += "\n\n" + hypers
+    relay("request\n" + body)
     steps = []
     shot = image_b64 or ""
-    while len(steps) < 12:
+    while len(steps) < 64:
         opened = bool(steps)
         ask = question
         image = ""
@@ -1357,26 +1533,36 @@ def agent_turn(profile, question, image_b64="", root=None, written=False, hands=
             if any(item[1] == "ring" for item in steps):
                 park_after(speech)
             append_turn(profile, question, speech, root)
+            relay("say\n" + speech)
+            end_turn()
             return speech
         name, args, _raw = found
         if name == "hang":
             tool_hang()
             log_gemma("tool", "hang")
+            end_turn()
             return "<|tool_call>call:hang{}<tool_call|>"
         result = run_tool(profile, name, args, root)
         if isinstance(result, tuple):
             result, shot = result
-        log_gemma("tool", name + " " + quote(args.get("line", "")) + " -> " + clip(str(result), 160))
+        log_gemma("tool", name + " " + quote(args.get("line", "")) + " -> " + str(result))
+        flush()
         steps.append((thought, name, args, str(result)))
         if name == "ring":
             if str(result) == "quiet":
+                relay("say\nquiet")
+                end_turn()
                 return "quiet"
             said = hear_line(question)
             log_gemma("hear", said)
             if said:
                 park_after(said)
             append_turn(profile, question, said or quote(args.get("line", "")), root)
+            relay("say\n" + (said or quote(args.get("line", ""))))
+            end_turn()
             return said or quote(args.get("line", ""))
+    relay("say\nI am still on it.")
+    end_turn()
     return "I am still on it."
 
 
