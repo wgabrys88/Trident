@@ -118,6 +118,18 @@ def click_pct(x, y):
     ])
 
 
+def drag_pct(x0, y0, x1, y1):
+    ax, ay = _abs(x0, y0)
+    bx, by = _abs(x1, y1)
+    base = 0x8000 | 0x4000
+    return _send([
+        _mouse(ax, ay, base | 0x0001),
+        _mouse(ax, ay, base | 0x0002),
+        _mouse(bx, by, base | 0x0001),
+        _mouse(bx, by, base | 0x0004),
+    ])
+
+
 def _key(vk, scan, flags):
     item = INPUT()
     item.type = 1

@@ -2,6 +2,7 @@ import base64
 import ctypes
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -24,8 +25,42 @@ OPS = {
 PROFILES = {
     "voice": {
         "memory": "gemma.memory.txt",
-        "tools": ("remember", "place", "desk", "ring", "next", "stop"),
+        "tools": ("ring", "hang", "look", "act", "run", "remember", "quiet"),
     },
+}
+HANDS = False
+SYSTEM = (
+    "You are Gemma on Wojciech's computer. "
+    "Think one or two short sentences, then either one tool call or the words he should hear. "
+    "He never hears the thought. A tool call is how you act. Do not write a tool name as speech. "
+    "Call down: he cannot hear you. The computer microphone is closed. Cable speech is the room. A written line is Wojciech. "
+    "If the call is down, nothing new has happened, and no remembered line starts with quiet, the action is ring. "
+    "If you already rang and nothing new happened, do not ring again. "
+    "If a remembered line starts with quiet, do not ring until he speaks. "
+    "Call up: the user line is Wojciech. Speak one or two short sentences in his language, or act with a tool. "
+    "Look whenever you want. "
+    "Before click, type, key, drag, or a command on your own, be on the call and tell him what you see and what you plan. "
+    "If he asked, do the work. "
+    "If he wants the call to end, the action is hang and you write no words. "
+    "If you are confused or stuck, the action is ring."
+)
+TOOL_TEXT = {
+    "ring": "Place the call so he can hear you. If nothing is waiting, say you are up and ask if he wants anything.",
+    "hang": "End the phone call now. Use this when he wants to stop, hang up, or says goodbye. Say nothing else.",
+    "look": "See the whole desktop. You get one sentence back. On a call the picture is sent to him.",
+    "act": "One mouse or key step on the desktop. Percents run from 0 to 100. Opening a program is run, not act.",
+    "run": "Run one PowerShell command and return the output. Opening a program is this tool.",
+    "remember": "Store one short fact that stays in later turns.",
+    "quiet": "Stay quiet and do not ring until he speaks.",
+}
+TOOL_LINE = {
+    "ring": "The sentence he hears when he answers. If he asked you to tell him something, that something is this sentence.",
+    "hang": "Leave empty.",
+    "look": "What to notice, or empty.",
+    "act": "click x y, drag x y x y, key win-r, type words, or one short goal.",
+    "run": "The command. Start-Process mspaint opens Paint.",
+    "remember": "The fact.",
+    "quiet": "The reason, or off.",
 }
 Card = namedtuple(
     "Card",
@@ -290,68 +325,6 @@ def cuda_name():
     return lines[0] if lines else ""
 
 
-def vulkan_name():
-    try:
-        vk = __import__("ctypes").WinDLL("vulkan-1")
-    except OSError:
-        return ""
-    ctypes_mod = __import__("ctypes")
-
-    class VkApplicationInfo(ctypes_mod.Structure):
-        _fields_ = [
-            ("sType", ctypes_mod.c_uint32),
-            ("pNext", ctypes_mod.c_void_p),
-            ("pApplicationName", ctypes_mod.c_char_p),
-            ("applicationVersion", ctypes_mod.c_uint32),
-            ("pEngineName", ctypes_mod.c_char_p),
-            ("engineVersion", ctypes_mod.c_uint32),
-            ("apiVersion", ctypes_mod.c_uint32),
-        ]
-
-    class VkInstanceCreateInfo(ctypes_mod.Structure):
-        _fields_ = [
-            ("sType", ctypes_mod.c_uint32),
-            ("pNext", ctypes_mod.c_void_p),
-            ("flags", ctypes_mod.c_uint32),
-            ("pApplicationInfo", ctypes_mod.POINTER(VkApplicationInfo)),
-            ("enabledLayerCount", ctypes_mod.c_uint32),
-            ("ppEnabledLayerNames", ctypes_mod.c_void_p),
-            ("enabledExtensionCount", ctypes_mod.c_uint32),
-            ("ppEnabledExtensionNames", ctypes_mod.c_void_p),
-        ]
-
-    vk.vkCreateInstance.argtypes = [ctypes_mod.POINTER(VkInstanceCreateInfo), ctypes_mod.c_void_p, ctypes_mod.POINTER(ctypes_mod.c_void_p)]
-    vk.vkCreateInstance.restype = ctypes_mod.c_int
-    vk.vkEnumeratePhysicalDevices.argtypes = [ctypes_mod.c_void_p, ctypes_mod.POINTER(ctypes_mod.c_uint32), ctypes_mod.c_void_p]
-    vk.vkEnumeratePhysicalDevices.restype = ctypes_mod.c_int
-    vk.vkGetPhysicalDeviceProperties.argtypes = [ctypes_mod.c_void_p, ctypes_mod.c_void_p]
-    vk.vkGetPhysicalDeviceProperties.restype = None
-    vk.vkDestroyInstance.argtypes = [ctypes_mod.c_void_p, ctypes_mod.c_void_p]
-    vk.vkDestroyInstance.restype = None
-    app = VkApplicationInfo()
-    app.sType = 0
-    app.apiVersion = (1 << 22) | (2 << 12)
-    info = VkInstanceCreateInfo()
-    info.sType = 1
-    info.pApplicationInfo = ctypes_mod.pointer(app)
-    inst = ctypes_mod.c_void_p()
-    if vk.vkCreateInstance(ctypes_mod.byref(info), None, ctypes_mod.byref(inst)) != 0 or not inst.value:
-        return ""
-    try:
-        count = ctypes_mod.c_uint32(0)
-        if vk.vkEnumeratePhysicalDevices(inst, ctypes_mod.byref(count), None) != 0 or count.value < 1:
-            return ""
-        arr = (ctypes_mod.c_void_p * count.value)()
-        if vk.vkEnumeratePhysicalDevices(inst, ctypes_mod.byref(count), ctypes_mod.cast(arr, ctypes_mod.c_void_p)) != 0:
-            return ""
-        props = (ctypes_mod.c_ubyte * 4096)()
-        vk.vkGetPhysicalDeviceProperties(arr[0], ctypes_mod.cast(props, ctypes_mod.c_void_p))
-        raw = bytes(props[20:276]).split(b"\x00", 1)[0]
-        return raw.decode("utf-8", errors="replace").strip()
-    finally:
-        vk.vkDestroyInstance(inst, None)
-
-
 def gemma_ready():
     return (ROOT / "gemma-brain.exe").is_file() and (ROOT / "gemma.gguf").is_file()
 
@@ -361,7 +334,6 @@ def caps_text():
     lines = [
         "cpu " + str(os.cpu_count() or 0),
         "cuda " + (cuda or "none"),
-        "vulkan " + (vulkan_name() or "none"),
     ]
     if gemma_ready():
         lines.append("brain gemma")
@@ -398,6 +370,10 @@ def local_infer(prompt, image):
         die("image prompt missing <__media__>")
     park_mouth()
     try:
+        (ROOT / "gemma.lastprompt.txt").write_text(prompt, encoding="utf-8")
+    except OSError:
+        pass
+    try:
         text = gemma.resident_generate(prompt, image or "", False)
     except SystemExit as exc:
         die(getattr(exc, "message", "") or "gemma failed")
@@ -411,10 +387,11 @@ DESK_SYSTEM = (
     "You see one full desktop screenshot. "
     "Answer with one JSON object and no other text. "
     "see is one sentence about the whole screen and is never empty. "
-    "do is click, type, key, wait, or done. "
-    "click includes box_2d as y0, x0, y1, x1, each a number from 0 to 1000. "
-    "type includes text and an optional key. "
-    "key is enter, backspace, ctrl-a, or ctrl-l. "
+    "do is click, drag, type, key, or done. "
+    "click has box_2d as y0, x0, y1, x1, each a number from 0 to 1000. "
+    "drag has box_2d for the start and box_2d_end for the end, same order. "
+    "type has text and an optional key. "
+    "key is win-r, enter, escape, backspace, delete, tab, ctrl-a, ctrl-l, ctrl-t, ctrl-w, alt-f4, up, down, left, right, or space. "
     "done is a look with no action."
 )
 
@@ -485,6 +462,8 @@ def desk_png():
     gdi32.CreateCompatibleBitmap.restype = ctypes.c_void_p
     gdi32.SelectObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
     gdi32.SelectObject.restype = ctypes.c_void_p
+    gdi32.SetStretchBltMode.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    gdi32.SetStretchBltMode.restype = ctypes.c_int
     gdi32.StretchBlt.argtypes = [
         ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
         ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint32,
@@ -513,6 +492,8 @@ def desk_png():
     bmp = gdi32.CreateCompatibleBitmap(src, wide, high)
     old = gdi32.SelectObject(mem, bmp) if mem and bmp else None
     try:
+        if mem:
+            gdi32.SetStretchBltMode(mem, 4)
         if not mem or not bmp or not gdi32.StretchBlt(mem, 0, 0, wide, high, src, 0, 0, sw, sh, 0x00CC0020):
             die("vision absent")
         gdi32.SelectObject(mem, old)
@@ -566,61 +547,65 @@ def desk_object(reply):
     raw = reply or ""
     start = raw.find("{")
     if start < 0:
-        die("desk unparsed " + clip(raw, 160))
+        return None
     try:
         found, _end = json.JSONDecoder().raw_decode(raw[start:])
     except json.JSONDecodeError:
-        die("desk unparsed " + clip(raw, 160))
+        return None
     if not isinstance(found, dict):
-        die("desk unparsed " + clip(raw, 160))
+        return None
     see = desk_field(found, ("see", "screenshot_description", "description"))
-    do = desk_field(found, ("do", "action"))
-    if not see:
-        die("desk see absent " + clip(raw, 140))
-    if not do:
-        die("desk action absent " + clip(raw, 140))
-    name = do.lower()
-    if name not in DESK_ACTS:
-        die("desk action absent " + name + " " + clip(raw, 140))
+    do = desk_field(found, ("do", "action")).lower()
+    if not see or do not in DESK_ACTS:
+        return None
     found["see"] = see
-    found["do"] = name
+    found["do"] = do
     return found
 
 
-def act_click(obj):
-    box = obj.get("box_2d")
+def box_pct(box):
     if not isinstance(box, list) or len(box) != 4:
-        die("desk action absent")
-    y0, x0, y1, x1 = (float(box[0]), float(box[1]), float(box[2]), float(box[3]))
-    if not win32.click_pct((x0 + x1) / 20.0, (y0 + y1) / 20.0):
-        die("desk action absent")
-    return "click %.0f %.0f %.0f %.0f" % (y0, x0, y1, x1)
+        return None
+    try:
+        y0, x0, y1, x1 = (float(box[0]), float(box[1]), float(box[2]), float(box[3]))
+    except (TypeError, ValueError):
+        return None
+    return (x0 + x1) / 20.0, (y0 + y1) / 20.0
+
+
+def act_click(obj):
+    point = box_pct(obj.get("box_2d"))
+    if not point or not win32.click_pct(point[0], point[1]):
+        return ""
+    return "click %.0f %.0f" % point
+
+
+def act_drag(obj):
+    start = box_pct(obj.get("box_2d"))
+    end = box_pct(obj.get("box_2d_end") or obj.get("end"))
+    if not start or not end or not win32.drag_pct(start[0], start[1], end[0], end[1]):
+        return ""
+    return "drag %.0f %.0f %.0f %.0f" % (start[0], start[1], end[0], end[1])
 
 
 def act_type(obj):
     text = str(obj.get("text", ""))
     key = str(obj.get("key", "")).strip().lower()
     if not text or not win32.type_text(text):
-        die("desk action absent")
+        return ""
     if not key:
         return "type " + text
     time.sleep(0.3)
     if not win32.press(key):
-        die("desk action absent")
+        return ""
     return "type " + text + " key " + key
 
 
 def act_key(obj):
     name = str(obj.get("key", "")).strip().lower()
     if not win32.press(name):
-        die("desk action absent")
+        return ""
     return "key " + name
-
-
-def act_wait(obj):
-    del obj
-    time.sleep(1.0)
-    return "wait"
 
 
 def act_done(_obj):
@@ -629,9 +614,9 @@ def act_done(_obj):
 
 DESK_ACTS = {
     "click": act_click,
+    "drag": act_drag,
     "type": act_type,
     "key": act_key,
-    "wait": act_wait,
     "done": act_done,
 }
 
@@ -646,41 +631,16 @@ def deliver(image_b64):
     mod.picture(base64.b64decode("".join((image_b64 or "").split())))
 
 
-def see_screen(image):
+def see_screen(image, goal=""):
+    ask = " ".join((goal or "").split()) or "What is on screen?"
     prompt = (
         "<bos><|turn>system\nYou see one full desktop screenshot. Answer with one sentence and nothing else.<turn|>\n"
-        "<|turn>user\n" + MEDIA + "\nWhat is on screen?<turn|>\n<|turn>model\n"
+        "<|turn>user\n" + MEDIA + "\n" + ask + "<turn|>\n<|turn>model\n"
     )
     text = answer_text(local_infer(prompt, image))
     if not text:
         die("desk see absent")
     return text
-
-
-def desk_turn(goal):
-    text = (goal or "").strip()
-    if not text:
-        die("empty goal")
-    if not gemma_ready():
-        die("brain missing gemma")
-    if not (ROOT / "gemma-mmproj.gguf").is_file():
-        die("vision absent")
-    desktop_lease()
-    image, wide, high = desk_png()
-    reply = local_infer(desk_prompt(text), image)
-    obj = desk_object(reply)
-    seen = " ".join(obj["see"].split())
-    if obj["do"] in ("click", "type", "key") and call_flag() != "call up":
-        report = "see " + seen + "\nask before " + obj["do"] + "\nshot " + str(wide) + " " + str(high)
-        return report, ""
-    taken = DESK_ACTS[obj["do"]](obj)
-    if not str(taken or "").strip():
-        die("desk action absent")
-    if obj["do"] != "done":
-        image, wide, high = desk_png()
-    deliver(image)
-    report = "see " + seen + "\nact " + taken + "\nshot " + str(wide) + " " + str(high)
-    return report, image
 
 
 def transact(addr, card, timeout):
@@ -715,13 +675,7 @@ def transact(addr, card, timeout):
     return reply
 
 
-def decl(name, description, fields):
-    props = []
-    required = []
-    for fname, fdesc, req in fields:
-        props.append(fname + ":{description:" + Q + fdesc + Q + ",type:" + Q + "STRING" + Q + "}")
-        if req:
-            required.append(Q + fname + Q)
+def decl(name, description):
     return (
         "<|tool>declaration:"
         + name
@@ -729,10 +683,18 @@ def decl(name, description, fields):
         + Q
         + description
         + Q
-        + ",parameters:{properties:{"
-        + ",".join(props)
-        + "},required:["
-        + ",".join(required)
+        + ",parameters:{properties:{line:{description:"
+        + Q
+        + TOOL_LINE[name]
+        + Q
+        + ",type:"
+        + Q
+        + "STRING"
+        + Q
+        + "}},required:["
+        + Q
+        + "line"
+        + Q
         + "],type:"
         + Q
         + "OBJECT"
@@ -742,19 +704,7 @@ def decl(name, description, fields):
 
 
 def tool_decls(names):
-    table = {
-        "remember": ("Store one fact that stays after old turns are dropped.", (("line", "The fact, one short line.", True),)),
-        "place": ("Report this machine: cuda, vulkan, engines, playback, microphone.", ()),
-        "desk": ("Look at the whole desktop, or do the one action he agreed to. click, type, and key run only while the call is up. done is a look. On the call the picture is sent to his Telegram.", (("line", "The goal, one short line.", True),)),
-        "ring": ("Place the call. He cannot hear you until this runs. line is the sentence he hears when he answers. If he asked you to tell him something, that substance is the line. If nothing is waiting, say you are up and ask if he wants anything.", (("line", "The sentence he hears when he answers.", True),)),
-        "next": ("Store one line of work for later. This does not run the work.", (("line", "The work, one short line.", True),)),
-        "stop": ("Stop the local voice. Does not stop the brain.", (("line", "Waiting work to drop, or empty.", False),)),
-    }
-    parts = []
-    for name in names:
-        description, fields = table[name]
-        parts.append(decl(name, description, fields))
-    return "".join(parts)
+    return "".join(decl(name, TOOL_TEXT[name]) for name in names)
 
 
 def memory_file(profile, root=None):
@@ -844,92 +794,43 @@ def write_memory(path, facts, pairs, works):
     os.replace(tmp, path)
 
 
-def words(text):
-    raw = "".join(ch.lower() if ch.isalnum() else " " for ch in (text or ""))
-    return {w for w in raw.split() if len(w) > 2}
+def quote(text):
+    return " ".join(str(text or "").replace(Q, "'").split())
 
 
-def deep_ask(question):
-    low = (question or "").lower()
-    return any(mark in low for mark in (
-        "deep memory",
-        "what do you remember",
-        "all you remember",
-        "recall",
-        "wszystko",
-        "przypomnij",
-        "pamiętasz",
-        "pamietasz",
-    ))
-
-
-def earlier_line(pairs):
-    bits = []
-    for user, model in pairs:
-        bit = clip(user, 60)
-        if model:
-            bit += " / " + clip(model, 60)
-        if bit:
-            bits.append(bit)
-    return clip(" | ".join(bits), 900)
-
-
-def layer_pairs(pairs, question):
-    if deep_ask(question) or len(pairs) <= 4:
-        return list(pairs), []
-    recent = list(pairs[-4:])
-    older = list(pairs[:-4])
-    need = words(question)
-    picked = []
-    if need:
-        scored = sorted(range(len(older)), key=lambda i: len(words(older[i][0] + "\n" + older[i][1]) & need), reverse=True)
-        for index in scored:
-            if not (words(older[index][0] + "\n" + older[index][1]) & need):
-                break
-            picked.append(index)
-            if len(picked) == 6:
-                break
-    chosen = set(picked)
-    shown = [older[i] for i in range(len(older)) if i in chosen] + recent
-    rest = [older[i] for i in range(len(older)) if i not in chosen]
-    return shown, rest
+def log_gemma(kind, text):
+    line = "gemma: " + kind + " " + clip(text, 700)
+    print(line, file=sys.stderr, flush=True)
+    path = ROOT / "gemma.thought.txt"
+    try:
+        prev = path.read_text(encoding="utf-8") if path.is_file() else ""
+        rows = [row for row in (prev + line + "\n").splitlines() if row][-40:]
+        path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    except OSError:
+        pass
 
 
 def prompt_for(profile, question, suffix, root, written=False):
     path = memory_file(profile, root)
     facts, pairs, works = read_memory(path)
-    names = PROFILES[profile]["tools"]
     head = (
-        "<bos><|turn>system\nYou are Gemma, resident in Trident. Wojciech is the owner. "
-        "The meaning of his words is the decision. What you remember is in this prompt. "
-        "The computer microphone stays closed. "
-        "On a call the user line is Wojciech. With the call down, cable speech is the room. "
-        "A written line is Wojciech. Act on its meaning as you would his voice: look, work, remember a wait, or stay quiet. With the call down he cannot hear you. If he wants you to call, use ring. Its line is the sentence he will hear, including what he asked you to pass on. "
-        "When the call is down and nothing is happening, and memory does not say to stay quiet, use ring. "
-        "Its line says you are up, nothing is waiting, and asks if he wants anything. "
-        "If he told you to do nothing until a time, remember that and do not ring. "
-        "If you already rang and nothing new has happened, do not ring again. A written line is new. "
-        "Do not burst calls when a step fails. If you are confused, stuck with no clear next move, or the screen says to reach him, use ring. "
-        "Look whenever you want. Before click, type, or key on your own, be on the call, say what you see and what you plan, and wait for his yes. "
-        "On a call, speak one or two short sentences in the language of his words."
-        + tool_decls(names)
+        "<bos><|turn>system\n<|think|>\n"
+        + SYSTEM
+        + tool_decls(PROFILES[profile]["tools"])
         + "<turn|>\n"
         + "Time " + time.strftime("%Y-%m-%d %H:%M") + "\n"
         + ("Call up\n" if call_flag() == "call up" else "Call down\n")
     )
     if written:
-        head += "Written line from Wojciech. If the meaning is to call, reply with only ring{line:" + Q + "the sentence he will hear" + Q + "}.\n"
+        head += "Written by Wojciech.\n"
     if facts:
         head += "Remembered:\n" + "\n".join(facts) + "\n"
     if works:
         head += "Work waiting:\n" + "\n".join(works) + "\n"
-    shown, rest = layer_pairs(pairs, question)
-    earlier = earlier_line(rest)
+    shown = list(pairs[-6:])
 
     def build(items):
         body = [head]
-        if earlier:
-            body.append("Earlier: " + earlier + "\n")
         for user, model in items:
             body.append("<|turn>user\n" + user + "<turn|>\n")
             if model:
@@ -940,9 +841,7 @@ def prompt_for(profile, question, suffix, root, written=False):
 
     text = build(shown)
     while len(text) > 80000 and shown:
-        extra = earlier_line(shown[:1])
         shown = shown[1:]
-        earlier = clip((earlier + " | " + extra).strip(" |"), 900) if earlier else extra
         text = build(shown)
     if len(text) > 80000:
         die("prompt too long")
@@ -950,46 +849,132 @@ def prompt_for(profile, question, suffix, root, written=False):
 
 
 def answer_text(text):
-    cleaned = text or ""
-    cut = cleaned.find("<|tool_call>")
+    raw = text or ""
+    if "<|channel>" not in raw and "<channel|>" in raw:
+        raw = raw.split("<channel|>")[-1]
+    while "<|channel>" in raw:
+        start = raw.find("<|channel>")
+        end = raw.find("<channel|>", start)
+        if end < 0:
+            raw = raw[:start]
+            break
+        raw = raw[:start] + raw[end + len("<channel|>") :]
+    cut = raw.find("<|tool_call>")
     if cut >= 0:
-        cleaned = cleaned[:cut]
-    if "<channel|>" in cleaned:
-        cleaned = cleaned.split("<channel|>")[-1]
-    for token in ("<|channel>thought", "<|channel>", "<turn|>", "<|turn>", "<bos>", "<eos>", "<|think|>", "`"):
-        cleaned = cleaned.replace(token, "")
-    return " ".join(cleaned.split())
+        raw = raw[:cut]
+    for token in ("<turn|>", "<|turn>", "<bos>", "<eos>", "<|think|>", "<|tool_response>", "<tool_response|>", "<tool_call|>", "`"):
+        raw = raw.replace(token, "")
+    return " ".join(raw.split())
+
+
+def tool_name(name):
+    if name == "stop":
+        return "hang"
+    if name in PROFILES["voice"]["tools"]:
+        return name
+    return ""
+
+
+def args_of(body):
+    args = {}
+    for key, quoted, bare in re.findall(r"(\w+)\s*:\s*(?:<\|\"\|>(.*?)<\|\"\|>|([^,}]*))", body or "", re.DOTALL):
+        args[key] = " ".join((quoted if quoted else bare).split())
+    return args
 
 
 def parse_tool_call(text):
-    import re
-
     raw = text or ""
-    match = re.search(r"<\|tool_call>\s*call:([A-Za-z_][A-Za-z0-9_]*)\s*\{(.*?)\}\s*<tool_call\|>", raw, re.DOTALL)
+    match = re.search(r"<\|tool_call>\s*call:([A-Za-z_]\w*)\s*\{(.*?)\}\s*<tool_call\|>", raw, re.DOTALL)
     if not match:
-        match = re.search(r"^(?:call:)?([A-Za-z_][A-Za-z0-9_]*)\s*\{(.*)\}\s*$", raw.strip(), re.DOTALL)
-        if not match or match.group(1) not in PROFILES["voice"]["tools"]:
-            return None
-    args = {}
-    for key, quoted, bare in re.findall(r"(\w+)\s*:\s*(?:<\|\"\|>(.*?)<\|\"\|>|([^,}\n]*))", match.group(2), re.DOTALL):
-        args[key] = (quoted if quoted else bare).strip()
-    return match.group(1), args, match.group(0)
+        match = re.search(r"call:([A-Za-z_]\w*)\s*\{(.*?)\}\s*(?:<tool_call\|>|$)", raw.strip(), re.DOTALL)
+    if match and tool_name(match.group(1)):
+        return tool_name(match.group(1)), args_of(match.group(2)), match.group(0)
+    spoken = answer_text(raw).strip()
+    low = spoken.lower().strip(".")
+    bare = {
+        "stop": "hang",
+        "stop the call": "hang",
+        "hang": "hang",
+        "hang up": "hang",
+        "end the call": "hang",
+    }
+    if low in bare:
+        return bare[low], {}, spoken
+    if low in PROFILES["voice"]["tools"]:
+        return low, {}, spoken
+    quoted = re.search(r"[\"“](.+?)[\"”]", spoken)
+    if low.startswith("ring") and quoted and quoted.group(1).strip():
+        return "ring", {"line": quoted.group(1).strip()}, spoken
+    return None
 
 
 def is_stop(text):
     found = parse_tool_call(text or "")
-    return bool(found) and found[0] == "stop"
+    return bool(found) and found[0] == "hang"
 
 
-def tool_response(name, fields):
-    parts = [key + ":" + Q + value + Q for key, value in fields]
-    return "<|tool_response>response:" + name + "{" + ",".join(parts) + "}<tool_response|>"
+def thought_of(text, opened):
+    raw = ("<|channel>thought\n" + (text or "")) if opened else (text or "")
+    parts = []
+    while "<|channel>" in raw:
+        start = raw.find("<|channel>")
+        end = raw.find("<channel|>", start)
+        if end < 0:
+            body = raw[start + len("<|channel>") :]
+            raw = raw[:start]
+        else:
+            body = raw[start + len("<|channel>") : end]
+            raw = raw[:start] + raw[end + len("<channel|>") :]
+        if body.startswith("thought"):
+            body = body[len("thought") :]
+        cut = body.find("<|tool_call>")
+        if cut >= 0:
+            body = body[:cut]
+        body = " ".join(body.split())
+        if body:
+            parts.append(body)
+    return " ".join(parts)
+
+
+def tool_mark(name, args):
+    parts = []
+    for key in sorted(args):
+        if args[key] != "":
+            parts.append(key + ":" + Q + quote(args[key]) + Q)
+    return "<|tool_call>call:" + name + "{" + ",".join(parts) + "}<tool_call|>"
+
+
+def tool_response(name, text):
+    return "<|tool_response>response:" + name + "{value:" + Q + quote(text) + Q + "}<tool_response|>"
+
+
+def open_suffix(steps, image):
+    parts = []
+    for thought, name, args, result in steps:
+        if thought:
+            parts.append("<|channel>thought\n" + thought.strip() + "\n<channel|>")
+        parts.append(tool_mark(name, args))
+        parts.append(tool_response(name, result))
+    if image:
+        parts.append(MEDIA + "\n")
+    if steps:
+        parts.append("<|channel>thought\n")
+    return "".join(parts)
+
+
+def may_touch():
+    return HANDS or call_flag() == "call up"
+
+
+def quiet_set(root=None):
+    facts, _pairs, _works = read_memory(memory_file("voice", root))
+    return any(item.lower().startswith("quiet") for item in facts)
 
 
 def tool_remember(profile, args, root):
     line = clip(args.get("line", ""))
     if not line:
-        die("empty fact")
+        return "empty fact"
     path = memory_file(profile, root)
 
     def run():
@@ -1002,43 +987,31 @@ def tool_remember(profile, args, root):
     return line
 
 
-def tool_next(profile, args, root):
-    line = clip(args.get("line", ""))
-    if not line:
-        die("empty work")
+def tool_quiet(profile, args, root):
+    line = clip(args.get("line", "") or "until he speaks")
     path = memory_file(profile, root)
 
     def run():
         facts, pairs, works = read_memory(path)
-        if line not in works:
-            works.append(line)
-            write_memory(path, facts, pairs, works)
+        if line.lower() == "off":
+            facts = [item for item in facts if not item.lower().startswith("quiet")]
+        else:
+            fact = "quiet: " + line
+            if fact not in facts:
+                facts.append(fact)
+        write_memory(path, facts, pairs, works)
 
     with_memory(path, run)
-    return line
+    return "quiet off" if line.lower() == "off" else "quiet: " + line
 
 
-def tool_stop(profile, args, root):
-    target = clip(args.get("line", ""))
-    path = memory_file(profile, root)
+def tool_hang():
+    import call
 
-    def run():
-        facts, pairs, works = read_memory(path)
-        if target and target in works:
-            works = [item for item in works if item != target]
-            write_memory(path, facts, pairs, works)
-
-    with_memory(path, run)
-    return target or "voice"
-
-
-def tool_place():
-    return " ".join(caps_text().split())
-
-
-def tool_desk(args):
-    report, image = desk_turn(args.get("line", ""))
-    return report, image
+    live = getattr(call, "LIVE", None)
+    if live is not None and (getattr(live, "up", False) or getattr(live, "calls", None) is not None or getattr(live, "phone", None) is not None):
+        call.drop_call()
+    return "hung"
 
 
 def tool_ring(args):
@@ -1047,28 +1020,134 @@ def tool_ring(args):
     live = getattr(call, "LIVE", None)
     if live is not None and getattr(live, "up", False):
         return "up"
-    line = " ".join((args.get("line") or "").split())
-    if not line:
-        die("empty ring")
+    if not HANDS and quiet_set():
+        return "quiet"
+    line = " ".join((args.get("line") or "").split()) or "I am up. Do you want anything?"
     return call.dial(line)
+
+
+def tool_look(line):
+    if not (ROOT / "gemma-mmproj.gguf").is_file():
+        return "vision absent", ""
+    desktop_lease()
+    image, wide, high = desk_png()
+    seen = see_screen(image, line)
+    if call_flag() == "call up":
+        deliver(image)
+    return "see " + seen + " " + str(wide) + " " + str(high), image
+
+
+def numbers(parts):
+    try:
+        return [float(part) for part in parts]
+    except ValueError:
+        return None
+
+
+def act_direct(line):
+    text = " ".join((line or "").split())
+    parts = text.split(" ")
+    if not parts:
+        return None
+    head = parts[0].lower()
+    if head == "click":
+        point = numbers(parts[1:])
+        if not point or len(point) != 2 or not win32.click_pct(point[0], point[1]):
+            return "" if point and len(point) == 2 else None
+        return "click %.0f %.0f" % (point[0], point[1])
+    if head == "drag":
+        point = numbers(parts[1:])
+        if not point or len(point) != 4 or not win32.drag_pct(point[0], point[1], point[2], point[3]):
+            return "" if point and len(point) == 4 else None
+        return "drag %.0f %.0f %.0f %.0f" % tuple(point)
+    if head == "key" and len(parts) >= 2:
+        name = parts[1].lower()
+        if not win32.press(name):
+            return ""
+        return "key " + name
+    if head == "type" and len(parts) >= 2:
+        typed = text.split(" ", 1)[1]
+        if not win32.type_text(typed):
+            return ""
+        return "type " + typed
+    return None
+
+
+def tool_act(line):
+    if not may_touch():
+        return "The call is down. Ring him before you touch the desktop.", ""
+    text = " ".join((line or "").split())
+    if text.lower().startswith("run "):
+        return tool_run(text[4:]), ""
+    if not (ROOT / "gemma-mmproj.gguf").is_file():
+        return "vision absent", ""
+    desktop_lease()
+    done = act_direct(line)
+    image, wide, high = desk_png()
+    if done is not None:
+        if not done:
+            return "act failed", image
+        if call_flag() == "call up":
+            deliver(image)
+        return "act " + done + " " + str(wide) + " " + str(high), image
+    goal = " ".join((line or "").split()) or "Look, then one step."
+    reply = local_infer(desk_prompt(goal), image)
+    obj = desk_object(reply)
+    if not obj:
+        return "act unparsed " + clip(reply, 140), image
+    taken = DESK_ACTS[obj["do"]](obj)
+    if not taken:
+        return "see " + obj["see"] + "\nact failed", image
+    if obj["do"] != "done":
+        image, wide, high = desk_png()
+    if call_flag() == "call up":
+        deliver(image)
+    return "see " + obj["see"] + "\nact " + taken + " " + str(wide) + " " + str(high), image
+
+
+def tool_run(line):
+    if not may_touch():
+        return "The call is down. Ring him before you run a command."
+    command = " ".join((line or "").split())
+    if not command:
+        return "empty command"
+    try:
+        done = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+            cwd=str(ROOT),
+            capture_output=True,
+            timeout=25,
+            shell=False,
+        )
+    except subprocess.TimeoutExpired:
+        return "command timed out"
+    except OSError:
+        return "command failed"
+    out = ((done.stdout or b"") + b"\n" + (done.stderr or b"")).decode("utf-8", errors="replace")
+    text = clip(out, 400)
+    if done.returncode and not text:
+        return "exit " + str(done.returncode)
+    return text or "ok"
 
 
 def run_tool(profile, name, args, root):
     if name not in PROFILES[profile]["tools"]:
-        die("tool refused " + name)
+        return "unknown tool"
     if name == "remember":
         return tool_remember(profile, args, root)
-    if name == "next":
-        return tool_next(profile, args, root)
-    if name == "stop":
-        return tool_stop(profile, args, root)
-    if name == "place":
-        return tool_place()
-    if name == "desk":
-        return tool_desk(args)
+    if name == "quiet":
+        return tool_quiet(profile, args, root)
+    if name == "look":
+        return tool_look(args.get("line", ""))
+    if name == "act":
+        return tool_act(args.get("line", ""))
+    if name == "run":
+        return tool_run(args.get("line", ""))
     if name == "ring":
         return tool_ring(args)
-    die("unknown tool " + name)
+    if name == "hang":
+        return tool_hang()
+    return "unknown tool"
 
 
 def append_turn(profile, question, reply, root):
@@ -1080,58 +1159,61 @@ def append_turn(profile, question, reply, root):
     def run():
         facts, pairs, works = read_memory(path)
         pairs.append((clip(question, 400), clip(spoken, 400)))
+        if len(pairs) > 12:
+            pairs = pairs[-12:]
         write_memory(path, facts, pairs, works)
 
     with_memory(path, run)
 
 
-def agent_turn(profile, question, image_b64="", root=None, written=False):
+def agent_turn(profile, question, image_b64="", root=None, written=False, hands=False):
+    global HANDS
     if profile not in PROFILES:
         die("unknown profile " + profile)
     if not (question or "").strip():
         die("empty question")
-
-    def generate(prompt, image):
-        return local_infer(prompt, image)
-
-    trail = ""
+    HANDS = bool(hands) or call_flag() == "call up"
+    steps = []
     shot = image_b64 or ""
-    saw = False
-    while True:
+    while len(steps) < 12:
+        opened = bool(steps)
         ask = question
-        suffix = trail
         image = ""
-        if shot and not trail:
+        if shot and not opened:
             if MEDIA not in ask:
                 ask = MEDIA + "\n" + ask
             image = shot
         elif shot:
-            suffix = trail + MEDIA
             image = shot
-        text = generate(prompt_for(profile, ask, suffix, root, written), image)
+        text = local_infer(prompt_for(profile, ask, open_suffix(steps, bool(shot) and opened), root, written), image)
         shot = ""
         if not str(text or "").strip():
-            die("agent follow-up empty" if saw else "gemma returned empty")
-        found = parse_tool_call(text)
+            die("gemma returned empty")
+        thought = thought_of(text, opened)
+        if thought:
+            log_gemma("thought", thought)
+        log_gemma("turn", text)
+        found = parse_tool_call("<|channel>thought\n" + text if opened else text)
         if not found:
-            if not answer_text(text):
-                die("agent follow-up empty" if saw else "gemma returned empty")
-            append_turn(profile, question, text, root)
-            return text
-        name, args, raw = found
-        if name == "stop":
-            tool_stop(profile, args, root)
-            return text
-        before = call_flag()
+            speech = answer_text("<|channel>thought\n" + text if opened else text)
+            if not speech:
+                die("gemma returned empty")
+            append_turn(profile, question, speech, root)
+            return speech
+        name, args, _raw = found
+        log_gemma("tool", name + " " + quote(args.get("line", "")))
+        if name == "hang":
+            tool_hang()
+            return "<|tool_call>call:hang{}<tool_call|>"
         result = run_tool(profile, name, args, root)
-        if name == "ring" and before != "call up":
-            spoken = " ".join((args.get("line") or "").split())
-            append_turn(profile, question, spoken or text, root)
-            return text
         if isinstance(result, tuple):
             result, shot = result
-        trail += raw + tool_response(name, [("text", result)])
-        saw = True
+        steps.append((thought, name, args, str(result)))
+        if name == "ring":
+            spoken = " ".join((args.get("line") or "").split())
+            append_turn(profile, question, spoken or "ring", root)
+            return "<|tool_call>call:ring{}<tool_call|>"
+    return "I am still on it."
 
 
 def call_flag():

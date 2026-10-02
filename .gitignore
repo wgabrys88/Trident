@@ -62,7 +62,6 @@
 !/gemma/scripts/detect_cpu.ps1
 !/gemma/scripts/detect_gpu.ps1
 !/gemma/src/brain.cpp
-!/gemma/src/sense.cpp
 
 # Runtime files the programs rewrite.
 /mouth.txt

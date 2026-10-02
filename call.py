@@ -63,8 +63,9 @@ PAD = RATE_RX * 120 // 1000
 MIN_UTTER = RATE_RX
 MAX_UTTER = RATE_RX * 30
 IDLE_EAR = 20
-DESK_W = 640
-DESK_H = 360
+DESK_W = 960
+DESK_H = 540
+DESK_FPS = 12
 
 LIVE = None
 VAD_PROC = None
@@ -390,7 +391,7 @@ def servers_of(connections):
 def external(rate, camera=False):
     shot = None
     if camera:
-        shot = VideoDescription(MediaSource.EXTERNAL, DESK_W, DESK_H, 8, "", True)
+        shot = VideoDescription(MediaSource.EXTERNAL, DESK_W, DESK_H, DESK_FPS, "", True)
     return MediaDescription(
         microphone=AudioDescription(MediaSource.EXTERNAL, rate, 1, "", True),
         speaker=None,
@@ -599,7 +600,7 @@ def idle_world(node):
     image, _wide, _high = node.desk_png()
     seen = node.see_screen(image)
     print("idle: see " + seen, file=sys.stderr, flush=True)
-    reply = node.agent_turn("voice", "You are up. Nothing is in progress. Screen: " + seen, "")
+    reply = node.agent_turn("voice", "You are up. Nothing is in progress. Screen: " + seen, "", hands=False)
     print(reply, flush=True)
 
 
@@ -617,7 +618,7 @@ def idle_heard(node):
     print("idle: rx " + lang + " " + text, file=sys.stderr, flush=True)
     if LIVE is None or LIVE.closed or LIVE.up or LIVE.ring.is_set():
         return True
-    reply = node.agent_turn("voice", text, "")
+    reply = node.agent_turn("voice", text, "", hands=True)
     print(reply, flush=True)
     return True
 
@@ -997,6 +998,8 @@ def desk_i420():
     gdi32.CreateCompatibleBitmap.restype = ctypes.c_void_p
     gdi32.SelectObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
     gdi32.SelectObject.restype = ctypes.c_void_p
+    gdi32.SetStretchBltMode.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    gdi32.SetStretchBltMode.restype = ctypes.c_int
     gdi32.StretchBlt.argtypes = [
         ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
         ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint32,
@@ -1017,6 +1020,7 @@ def desk_i420():
     mem = gdi32.CreateCompatibleDC(src)
     bmp = gdi32.CreateCompatibleBitmap(src, DESK_W, DESK_H)
     old = gdi32.SelectObject(mem, bmp)
+    gdi32.SetStretchBltMode(mem, 4)
     gdi32.StretchBlt(mem, 0, 0, DESK_W, DESK_H, src, 0, 0, sw, sh, 0x00CC0020)
     gdi32.SelectObject(mem, old)
     hdr = _BMI()
@@ -1030,17 +1034,23 @@ def desk_i420():
     gdi32.DeleteObject(bmp)
     gdi32.DeleteDC(mem)
     user32.ReleaseDC(0, src)
-    bgr = np.flipud(np.frombuffer(buf, dtype=np.uint8).reshape(DESK_H, DESK_W, 4)[:, :, :3]).astype(np.float32)
+    bgr = np.flipud(np.frombuffer(buf, dtype=np.uint8).reshape(DESK_H, DESK_W, 4)[:, :, :3]).astype(np.int32)
     blue, green, red = bgr[:, :, 0], bgr[:, :, 1], bgr[:, :, 2]
-    y = (0.257 * red + 0.504 * green + 0.098 * blue + 16).clip(0, 255).astype(np.uint8)
-    u = (-0.148 * red[::2, ::2] - 0.291 * green[::2, ::2] + 0.439 * blue[::2, ::2] + 128).clip(0, 255).astype(np.uint8)
-    v = (0.439 * red[::2, ::2] - 0.368 * green[::2, ::2] - 0.071 * blue[::2, ::2] + 128).clip(0, 255).astype(np.uint8)
+    y = np.clip(((66 * red + 129 * green + 25 * blue + 128) >> 8) + 16, 16, 235).astype(np.uint8)
+    red2 = (red[0::2, 0::2] + red[1::2, 0::2] + red[0::2, 1::2] + red[1::2, 1::2] + 2) >> 2
+    green2 = (green[0::2, 0::2] + green[1::2, 0::2] + green[0::2, 1::2] + green[1::2, 1::2] + 2) >> 2
+    blue2 = (blue[0::2, 0::2] + blue[1::2, 0::2] + blue[0::2, 1::2] + blue[1::2, 1::2] + 2) >> 2
+    u = np.clip(((-38 * red2 - 74 * green2 + 112 * blue2 + 128) >> 8) + 128, 16, 240).astype(np.uint8)
+    v = np.clip(((112 * red2 - 94 * green2 - 18 * blue2 + 128) >> 8) + 128, 16, 240).astype(np.uint8)
     return np.concatenate((y.reshape(-1), u.reshape(-1), v.reshape(-1))).tobytes()
 
 
 async def send_desk(frame):
-    await LIVE.calls.send_external_frame(
-        LIVE.peer_id,
+    live = LIVE
+    if live is None or live.calls is None or not live.peer_id or not frame:
+        return
+    await live.calls.send_external_frame(
+        live.peer_id,
         StreamDevice.CAMERA,
         frame,
         FrameData(int(time.time() * 1000), VIDEO_ROTATION_0, DESK_W, DESK_H),
@@ -1049,15 +1059,20 @@ async def send_desk(frame):
 
 def desk_video():
     sent = 0
-    while LIVE is not None and LIVE.up and not LIVE.closed:
-        submit(send_desk(desk_i420()), 3)
-        sent += 1
-        if sent == 1:
-            print("desk video", file=sys.stderr, flush=True)
-        time.sleep(0.125)
-    print("desk video sent " + str(sent), file=sys.stderr, flush=True)
-    if LIVE is not None:
-        LIVE.desk_on = False
+    try:
+        while LIVE is not None and LIVE.up and not LIVE.closed and LIVE.calls is not None:
+            try:
+                submit(send_desk(desk_i420()), 3)
+            except BaseException:
+                break
+            sent += 1
+            if sent == 1:
+                print("desk video " + str(DESK_W) + "x" + str(DESK_H) + " " + str(DESK_FPS), file=sys.stderr, flush=True)
+            time.sleep(1.0 / DESK_FPS)
+    finally:
+        print("desk video sent " + str(sent), file=sys.stderr, flush=True)
+        if LIVE is not None:
+            LIVE.desk_on = False
 
 
 def start_desk():
@@ -1178,7 +1193,7 @@ def serve_call(node):
             if not heard:
                 continue
             try:
-                reply = node.agent_turn("voice", heard, "")
+                reply = node.agent_turn("voice", heard, "", hands=True)
             except SystemExit as exc:
                 message = getattr(exc, "message", "") or ""
                 if vision_fault(message):
@@ -1230,7 +1245,7 @@ def line_loop():
             injected = take_inject()
             if injected:
                 print("inject: " + injected, file=sys.stderr, flush=True)
-                reply = node.agent_turn("voice", injected, "", written=True)
+                reply = node.agent_turn("voice", injected, "", written=True, hands=True)
                 print(reply, flush=True)
                 continue
             if time.monotonic() - idle_since < IDLE_EAR:
