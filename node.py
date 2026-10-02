@@ -755,6 +755,9 @@ def desk_turn(goal):
     reply = local_infer(desk_prompt(text), image)
     obj = desk_object(reply)
     seen = " ".join(obj["see"].split())
+    if obj["do"] in ("click", "type", "key") and call_flag() != "call up":
+        report = "see " + seen + "\nask before " + obj["do"] + "\nshot " + str(wide) + " " + str(high)
+        return report, ""
     taken = DESK_ACTS[obj["do"]](obj)
     if not str(taken or "").strip():
         die("desk action absent")
@@ -827,8 +830,8 @@ def tool_decls(names):
     table = {
         "remember": ("Store one fact that stays after old turns are dropped.", (("line", "The fact, one short line.", True),)),
         "place": ("Report this machine: cuda, vulkan, engines, playback, microphone.", ()),
-        "desk": ("Look at the whole desktop. One call is one look or the one action he named. The picture is sent to his Telegram. A longer task is one call for each step.", (("line", "The goal, one short line.", True),)),
-        "ring": ("Place the Telegram call to Wojciech when the work needs him.", ()),
+        "desk": ("Look at the whole desktop, or do the one action he agreed to. click, type, and key run only while the call is up. done is a look. On the call the picture is sent to his Telegram.", (("line", "The goal, one short line.", True),)),
+        "ring": ("Call Wojciech. line is what you say when he answers, such as that you are up, nothing is waiting, and you are asking if he wants anything.", (("line", "What you will say when he answers.", True),)),
         "next": ("Store one line of work for later. This does not run the work.", (("line", "The work, one short line.", True),)),
         "stop": ("Stop the local voice. Does not stop the brain.", (("line", "Waiting work to drop, or empty.", False),)),
     }
@@ -932,13 +935,21 @@ def prompt_for(profile, question, suffix, root):
     names = PROFILES[profile]["tools"]
     head = (
         "<bos><|turn>system\nYou are Gemma, resident in Trident. Wojciech is the owner. "
-        "The meaning of his words is the decision. "
-        "What you remember is written in this prompt. "
+        "The meaning of his words is the decision. What you remember is written in this prompt. "
         "Speak one or two short sentences in the language of his words. "
         "The computer microphone stays closed. "
+        "On a call the user line is Wojciech. With the call down the user line is the room. "
+        "When the call is down and nothing is happening, and he did not tell you to stay quiet, call him. "
+        "Say you are up, nothing is waiting, and ask if he wants anything. "
+        "If he told you to do nothing until a time, remember that and wait. "
+        "If you already asked and nothing new has happened, do not call again. "
+        "Do not call because a step failed. "
+        "Look whenever you want. Before you click, type, or press a key on your own, be on the call, say what you see and what you plan, and wait for his yes. "
         "A tool runs only when that meaning calls for it.\n"
         + tool_decls(names)
         + "<turn|>\n"
+        + "Time " + time.strftime("%Y-%m-%d %H:%M") + "\n"
+        + ("Call up\n" if call_flag() == "call up" else "Call down\n")
     )
     if facts:
         head += "Remembered:\n" + "\n".join(facts) + "\n"
@@ -1057,13 +1068,16 @@ def tool_desk(args):
     return report, image
 
 
-def tool_ring(_args):
+def tool_ring(args):
     import call
 
     live = getattr(call, "LIVE", None)
     if live is not None and getattr(live, "up", False):
         return "up"
-    return call.dial()
+    line = " ".join((args.get("line") or "").split())
+    if not line:
+        die("empty ring")
+    return call.dial(line)
 
 
 def run_tool(profile, name, args, root):
@@ -1107,19 +1121,21 @@ def agent_turn(profile, question, image_b64="", root=None):
     def generate(prompt, image):
         return local_infer(prompt, image)
 
-    if image_b64:
-        prompt = question if MEDIA in question else MEDIA + "\n" + question
-        text = generate(prompt, image_b64)
-        if not answer_text(text):
-            die("gemma returned empty")
-        append_turn(profile, question, text, root)
-        return text
     trail = ""
-    shot = ""
+    shot = image_b64 or ""
     saw = False
     while True:
-        suffix = trail + (MEDIA if shot else "")
-        text = generate(prompt_for(profile, question, suffix, root), shot)
+        ask = question
+        suffix = trail
+        image = ""
+        if shot and not trail:
+            if MEDIA not in ask:
+                ask = MEDIA + "\n" + ask
+            image = shot
+        elif shot:
+            suffix = trail + MEDIA
+            image = shot
+        text = generate(prompt_for(profile, ask, suffix, root), image)
         shot = ""
         if not str(text or "").strip():
             die("agent follow-up empty" if saw else "gemma returned empty")
@@ -1133,7 +1149,12 @@ def agent_turn(profile, question, image_b64="", root=None):
         if name == "stop":
             tool_stop(profile, args, root)
             return text
+        before = call_flag()
         result = run_tool(profile, name, args, root)
+        if name == "ring" and before != "call up":
+            spoken = " ".join((args.get("line") or "").split())
+            append_turn(profile, question, spoken or text, root)
+            return text
         if isinstance(result, tuple):
             result, shot = result
         trail += raw + tool_response(name, [("text", result)])

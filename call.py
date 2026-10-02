@@ -61,8 +61,11 @@ WINDOW = 512
 PAD = RATE_RX * 120 // 1000
 MIN_UTTER = RATE_RX
 MAX_UTTER = RATE_RX * 30
+IDLE_EAR = 20
 
 LIVE = None
+VAD_PROC = None
+_VAD = threading.Lock()
 
 
 def die(message):
@@ -468,7 +471,141 @@ def drop_call():
     mark("idle")
 
 
+def drop_runtime(name):
+    path = ROOT / name
+    if path.is_file():
+        path.unlink()
+
+
+def vad_pid():
+    path = ROOT / "vad.pid"
+    if not path.is_file():
+        return 0
+    lines = path.read_text(encoding="ascii").splitlines()
+    if len(lines) < 2 or lines[1].strip() != "ready":
+        return 0
+    return int(lines[0].strip())
+
+
+def vad_alive():
+    pid = vad_pid()
+    if pid <= 0:
+        return False
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = (ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32)
+    kernel.OpenProcess.restype = ctypes.c_void_p
+    kernel.QueryFullProcessImageNameW.argtypes = (ctypes.c_void_p, ctypes.c_uint32, ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_uint32))
+    kernel.QueryFullProcessImageNameW.restype = ctypes.c_int
+    kernel.CloseHandle.argtypes = (ctypes.c_void_p,)
+    handle = kernel.OpenProcess(0x1000, 0, pid)
+    if not handle:
+        return False
+    size = ctypes.c_uint32(32768)
+    buf = ctypes.create_unicode_buffer(size.value)
+    ok = kernel.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size))
+    kernel.CloseHandle(handle)
+    return bool(ok) and Path(buf.value).name.lower() == "vad.exe"
+
+
+def stop_vad():
+    global VAD_PROC
+    with _VAD:
+        proc = VAD_PROC
+        running = vad_alive() or (proc is not None and proc.poll() is None)
+        if not running:
+            drop_runtime("vad.stop")
+            drop_runtime("vad.hold")
+            drop_runtime("vad.utterance.txt")
+            VAD_PROC = None
+            return
+        (ROOT / "vad.stop").write_text("stop\n", encoding="ascii")
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        if not vad_alive() and (proc is None or proc.poll() is not None):
+            break
+        time.sleep(0.05)
+    else:
+        die("vad did not stop")
+    with _VAD:
+        if VAD_PROC is proc:
+            VAD_PROC = None
+        drop_runtime("vad.stop")
+        drop_runtime("vad.hold")
+        drop_runtime("vad.utterance.txt")
+
+
+def start_vad():
+    global VAD_PROC
+    with _VAD:
+        if vad_alive():
+            return
+        drop_runtime("vad.utterance.txt")
+        drop_runtime("vad.hold")
+        drop_runtime("vad.stop")
+        VAD_PROC = subprocess.Popen(
+            [str(ROOT / "vad.exe"), "--resident", "vad.txt"],
+            cwd=str(ROOT),
+            shell=False,
+            stdin=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        proc = VAD_PROC
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        if vad_alive():
+            print("idle: ear", file=sys.stderr, flush=True)
+            return
+        if proc.poll() is not None:
+            if proc.returncode == 0:
+                return
+            die("vad exited")
+        if LIVE is None or LIVE.closed or LIVE.ring.is_set() or LIVE.up:
+            stop_vad()
+            return
+        time.sleep(0.05)
+    die("vad did not become ready")
+
+
+def take_utterance():
+    card = ROOT / "vad.utterance.txt"
+    if not card.is_file():
+        return None
+    name = card.read_text(encoding="utf-8").strip()
+    card.unlink()
+    wav = ROOT / name
+    if name != Path(name).name or not wav.is_file():
+        die("bad vad utterance")
+    return wav
+
+
+def idle_world(node):
+    print("idle: world", file=sys.stderr, flush=True)
+    image, _wide, _high = node.desk_png()
+    reply = node.agent_turn("voice", "You are up. Nothing is in progress.", image)
+    print(reply, flush=True)
+
+
+def idle_heard(node):
+    start_vad()
+    wav = take_utterance()
+    if wav is None:
+        return False
+    import hear
+
+    print("idle: asr", file=sys.stderr, flush=True)
+    text, lang = hear.transcribe(wav)
+    wav.with_suffix(".txt").unlink()
+    wav.unlink()
+    print("idle: rx " + lang + " " + text, file=sys.stderr, flush=True)
+    if LIVE is None or LIVE.closed or LIVE.up or LIVE.ring.is_set():
+        return True
+    reply = node.agent_turn("voice", text, "")
+    print(reply, flush=True)
+    return True
+
+
 def close_session():
+    stop_vad()
     if LIVE is None:
         start_telegram()
         clear_ready()
@@ -892,57 +1029,90 @@ def vision_fault(message):
     return text.startswith("desk") or text.startswith("vision") or text.startswith("desktop")
 
 
+def serve_call(node):
+    opening = LIVE.opening
+    LIVE.opening = ""
+    try:
+        stop_vad()
+        if LIVE.fault:
+            message = LIVE.fault
+            LIVE.fault = ""
+            die(message)
+        if opening and LIVE.up:
+            speak(opening)
+        while LIVE is not None and LIVE.up and not LIVE.closed:
+            heard = listen("")
+            if LIVE is None or not LIVE.up or LIVE.closed:
+                break
+            if not heard:
+                continue
+            try:
+                reply = node.agent_turn("voice", heard, "")
+            except SystemExit as exc:
+                message = getattr(exc, "message", "") or ""
+                if vision_fault(message):
+                    print("call: stay " + message, file=sys.stderr, flush=True)
+                    continue
+                raise
+            print(reply, flush=True)
+            if node.is_stop(reply):
+                drop_call()
+                break
+            spoken = node.answer_text(reply)
+            if spoken and LIVE.up:
+                speak(spoken)
+    except SystemExit as exc:
+        message = getattr(exc, "message", "") or ""
+        if message == "call down" and LIVE is not None and not LIVE.closed:
+            drop_call()
+            return
+        if LIVE is not None and not LIVE.closed:
+            close_session()
+        return
+    if LIVE is not None and not LIVE.closed:
+        if LIVE.up:
+            mark("idle")
+        else:
+            drop_call()
+
+
 def line_loop():
     import node
 
+    idle_since = time.monotonic()
+    looked = False
     while LIVE is not None and not LIVE.closed:
-        LIVE.ring.wait()
-        if LIVE is None or LIVE.closed:
-            return
-        LIVE.ring.clear()
-        opening = LIVE.opening
-        LIVE.opening = ""
+        if LIVE.ring.wait(0.2):
+            if LIVE is None or LIVE.closed:
+                return
+            LIVE.ring.clear()
+            serve_call(node)
+            idle_since = time.monotonic()
+            looked = False
+            continue
+        if LIVE is None or LIVE.closed or LIVE.up:
+            continue
+        if not armed() or not LIVE.peer_id:
+            idle_since = time.monotonic()
+            continue
+        if time.monotonic() - idle_since < IDLE_EAR:
+            continue
         try:
-            if LIVE.fault:
-                message = LIVE.fault
-                LIVE.fault = ""
-                die(message)
-            if opening and LIVE.up:
-                speak(opening)
-            while LIVE is not None and LIVE.up and not LIVE.closed:
-                heard = listen("")
-                if LIVE is None or not LIVE.up or LIVE.closed:
-                    break
-                if not heard:
-                    continue
-                try:
-                    reply = node.agent_turn("voice", heard, "")
-                except SystemExit as exc:
-                    message = getattr(exc, "message", "") or ""
-                    if vision_fault(message):
-                        print("call: stay " + message, file=sys.stderr, flush=True)
-                        continue
-                    raise
-                print(reply, flush=True)
-                if node.is_stop(reply):
-                    drop_call()
-                    break
-                spoken = node.answer_text(reply)
-                if spoken and LIVE.up:
-                    speak(spoken)
+            if idle_heard(node):
+                continue
+            if LIVE is None or LIVE.closed or LIVE.up or LIVE.ring.is_set():
+                continue
+            if not looked:
+                looked = True
+                idle_world(node)
         except SystemExit as exc:
             message = getattr(exc, "message", "") or ""
-            if message == "call down" and LIVE is not None and not LIVE.closed:
-                drop_call()
+            if vision_fault(message) or message == "call down" or message.startswith("call "):
+                print("call: stay " + message, file=sys.stderr, flush=True)
                 continue
             if LIVE is not None and not LIVE.closed:
                 close_session()
             return
-        if LIVE is not None and not LIVE.closed:
-            if LIVE.up:
-                mark("idle")
-            else:
-                drop_call()
 
 
 def arm():
@@ -970,6 +1140,7 @@ def arm():
 
 
 def dial(reason=""):
+    stop_vad()
     if not armed():
         die("call down")
     if LIVE.up and LIVE.linked and LIVE.media_up and not LIVE.cancel.is_set():

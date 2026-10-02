@@ -2,7 +2,8 @@
 
 python run.py
     Gemma stays resident. The phone line listens. Prints nothing and exits 0.
-    A failure prints one line and exits non-zero.
+    With no call, after about twenty seconds the cable is heard and she sees the desktop.
+    She may call from that. A failure prints one line and exits non-zero.
 
 python run.py call [SECONDS]
     Place one voice call. Residents stay up when it drops.
