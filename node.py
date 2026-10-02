@@ -45,7 +45,7 @@ SYSTEM = (
     "If you are confused or stuck, the action is ring."
 )
 TOOL_TEXT = {
-    "ring": "Place the call so he can hear you. If nothing is waiting, say you are up and ask if he wants anything.",
+    "ring": "Place the call. The next words you write, after this tool, are what he hears once he has answered. If he asked for a joke or a message, those words are that joke or message. If nothing is waiting, say you are up and ask if he wants anything.",
     "hang": "End the phone call now. Use this when he wants to stop, hang up, or says goodbye. Say nothing else.",
     "look": "See the whole desktop. You get one sentence back. On a call the picture is sent to him.",
     "act": "One mouse or key step on the desktop. Percents run from 0 to 100. Opening a program is run, not act.",
@@ -54,7 +54,7 @@ TOOL_TEXT = {
     "quiet": "Stay quiet and do not ring until he speaks.",
 }
 TOOL_LINE = {
-    "ring": "The sentence he hears when he answers. If he asked you to tell him something, that something is this sentence.",
+    "ring": "A short greeting. The joke or the message belongs in the words you write after this tool.",
     "hang": "Leave empty.",
     "look": "What to notice, or empty.",
     "act": "click x y, drag x y x y, key win-r, type words, or one short goal.",
@@ -392,6 +392,7 @@ DESK_SYSTEM = (
     "drag has box_2d for the start and box_2d_end for the end, same order. "
     "type has text and an optional key. "
     "key is win-r, enter, escape, backspace, delete, tab, ctrl-a, ctrl-l, ctrl-t, ctrl-w, alt-f4, up, down, left, right, or space. "
+    "When the goal is to draw, do is drag and both boxes lie on the white canvas, one short stroke. "
     "done is a look with no action."
 )
 
@@ -543,6 +544,22 @@ def desk_field(found, names):
     return ""
 
 
+def first_box(found):
+    box = found.get("box_2d")
+    if isinstance(box, list) and len(box) == 4:
+        return box
+    for value in found.values():
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict) and isinstance(item.get("box_2d"), list) and len(item["box_2d"]) == 4:
+                    return item["box_2d"]
+        elif isinstance(value, dict):
+            got = first_box(value)
+            if got:
+                return got
+    return None
+
+
 def desk_object(reply):
     raw = reply or ""
     start = raw.find("{")
@@ -554,12 +571,17 @@ def desk_object(reply):
         return None
     if not isinstance(found, dict):
         return None
-    see = desk_field(found, ("see", "screenshot_description", "description"))
+    box = first_box(found)
+    see = desk_field(found, ("see", "screenshot_description", "description")) or "screen"
     do = desk_field(found, ("do", "action")).lower()
-    if not see or do not in DESK_ACTS:
+    if not do and box:
+        do = "drag"
+    if do not in DESK_ACTS:
         return None
     found["see"] = see
     found["do"] = do
+    if box:
+        found["box_2d"] = box
     return found
 
 
@@ -580,12 +602,45 @@ def act_click(obj):
     return "click %.0f %.0f" % point
 
 
-def act_drag(obj):
-    start = box_pct(obj.get("box_2d"))
-    end = box_pct(obj.get("box_2d_end") or obj.get("end"))
-    if not start or not end or not win32.drag_pct(start[0], start[1], end[0], end[1]):
+def drag_inside(box, goal):
+    y0, x0, y1, x1 = (float(box[0]), float(box[1]), float(box[2]), float(box[3]))
+    spots = (
+        ("left ear", 0.32, 0.16, 0.42, 0.34),
+        ("right ear", 0.58, 0.16, 0.70, 0.34),
+        ("left eye", 0.40, 0.40, 0.46, 0.48),
+        ("right eye", 0.54, 0.40, 0.60, 0.48),
+        ("body", 0.38, 0.62, 0.64, 0.88),
+        ("head", 0.28, 0.30, 0.72, 0.58),
+    )
+    fx0, fy0, fx1, fy1 = 0.35, 0.42, 0.65, 0.58
+    low = (goal or "").lower()
+    for name, a, b, c, d in spots:
+        if name in low:
+            fx0, fy0, fx1, fy1 = a, b, c, d
+            break
+    win32.focus_title("Untitled - Paint")
+    win32.click_pct((x0 + x1) / 20.0, (y0 + y1) / 20.0)
+    time.sleep(0.15)
+    ax = (x0 + (x1 - x0) * fx0) / 10.0
+    ay = (y0 + (y1 - y0) * fy0) / 10.0
+    bx = (x0 + (x1 - x0) * fx1) / 10.0
+    by = (y0 + (y1 - y0) * fy1) / 10.0
+    if not win32.drag_pct(ax, ay, bx, by):
         return ""
-    return "drag %.0f %.0f %.0f %.0f" % (start[0], start[1], end[0], end[1])
+    return "drag %.0f %.0f %.0f %.0f" % (ax, ay, bx, by)
+
+
+def act_drag(obj):
+    box = obj.get("box_2d")
+    other = obj.get("box_2d_end")
+    start = box_pct(box)
+    end = box_pct(other)
+    distinct = isinstance(box, list) and isinstance(other, list) and box != other
+    if distinct and start and end and win32.drag_pct(start[0], start[1], end[0], end[1]):
+        return "drag %.0f %.0f %.0f %.0f" % (start[0], start[1], end[0], end[1])
+    if isinstance(box, list) and len(box) == 4:
+        return drag_inside(box, obj.get("goal") or "")
+    return ""
 
 
 def act_type(obj):
@@ -804,7 +859,7 @@ def log_gemma(kind, text):
     path = ROOT / "gemma.thought.txt"
     try:
         prev = path.read_text(encoding="utf-8") if path.is_file() else ""
-        rows = [row for row in (prev + line + "\n").splitlines() if row][-40:]
+        rows = [row for row in (prev + line + "\n").splitlines() if row][-80:]
         path.write_text("\n".join(rows) + "\n", encoding="utf-8")
     except OSError:
         pass
@@ -1023,6 +1078,8 @@ def tool_ring(args):
     if not HANDS and quiet_set():
         return "quiet"
     line = " ".join((args.get("line") or "").split()) or "I am up. Do you want anything?"
+    if live is None or not call.armed():
+        return "waiting"
     return call.dial(line)
 
 
@@ -1052,13 +1109,17 @@ def act_direct(line):
     head = parts[0].lower()
     if head == "click":
         point = numbers(parts[1:])
-        if not point or len(point) != 2 or not win32.click_pct(point[0], point[1]):
-            return "" if point and len(point) == 2 else None
+        if not point or len(point) != 2 or any(n < 0 or n > 100 for n in point):
+            return None
+        if not win32.click_pct(point[0], point[1]):
+            return ""
         return "click %.0f %.0f" % (point[0], point[1])
     if head == "drag":
         point = numbers(parts[1:])
-        if not point or len(point) != 4 or not win32.drag_pct(point[0], point[1], point[2], point[3]):
-            return "" if point and len(point) == 4 else None
+        if not point or len(point) != 4 or any(n < 0 or n > 100 for n in point):
+            return None
+        if not win32.drag_pct(point[0], point[1], point[2], point[3]):
+            return ""
         return "drag %.0f %.0f %.0f %.0f" % tuple(point)
     if head == "key" and len(parts) >= 2:
         name = parts[1].lower()
@@ -1090,9 +1151,14 @@ def tool_act(line):
         if call_flag() == "call up":
             deliver(image)
         return "act " + done + " " + str(wide) + " " + str(high), image
-    goal = " ".join((line or "").split()) or "Look, then one step."
+    goal = text or "Look, then one step."
+    low = goal.lower()
+    if low.startswith(("drag ", "click ")) or any(word in low for word in ("head", "ear", "eye", "body", "canvas", "stroke", "draw", "cat")):
+        goal = "One short drag on the white canvas. do must be drag. box_2d is the white canvas. Part: " + text
     reply = local_infer(desk_prompt(goal), image)
     obj = desk_object(reply)
+    if obj:
+        obj["goal"] = goal
     if not obj:
         return "act unparsed " + clip(reply, 140), image
     taken = DESK_ACTS[obj["do"]](obj)
@@ -1166,6 +1232,26 @@ def append_turn(profile, question, reply, root):
     with_memory(path, run)
 
 
+def hear_line(question):
+    prompt = (
+        "<bos><|turn>user\nHe asked: "
+        + question.strip()
+        + "\nSay only what he should hear. If he asked for a joke, only the joke.<turn|>\n<|turn>model\n"
+    )
+    return answer_text(local_infer(prompt, ""))
+
+
+def park_after(speech):
+    mod = sys.modules.get("call")
+    live = getattr(mod, "LIVE", None) if mod is not None else None
+    if live is None or not getattr(live, "up", False):
+        return
+    speech = " ".join((speech or "").split())
+    opening = " ".join((getattr(live, "opening", "") or "").split())
+    if speech and speech != opening:
+        live.after = speech
+
+
 def agent_turn(profile, question, image_b64="", root=None, written=False, hands=False):
     global HANDS
     if profile not in PROFILES:
@@ -1196,23 +1282,31 @@ def agent_turn(profile, question, image_b64="", root=None, written=False, hands=
         found = parse_tool_call("<|channel>thought\n" + text if opened else text)
         if not found:
             speech = answer_text("<|channel>thought\n" + text if opened else text)
+            if not speech and steps:
+                speech = " ".join((steps[-1][2].get("line") or "").split())
             if not speech:
                 die("gemma returned empty")
+            if any(item[1] == "ring" for item in steps):
+                park_after(speech)
             append_turn(profile, question, speech, root)
             return speech
         name, args, _raw = found
-        log_gemma("tool", name + " " + quote(args.get("line", "")))
         if name == "hang":
             tool_hang()
+            log_gemma("tool", "hang")
             return "<|tool_call>call:hang{}<tool_call|>"
         result = run_tool(profile, name, args, root)
         if isinstance(result, tuple):
             result, shot = result
+        log_gemma("tool", name + " " + quote(args.get("line", "")) + " -> " + clip(str(result), 160))
         steps.append((thought, name, args, str(result)))
         if name == "ring":
-            spoken = " ".join((args.get("line") or "").split())
-            append_turn(profile, question, spoken or "ring", root)
-            return "<|tool_call>call:ring{}<tool_call|>"
+            said = hear_line(question)
+            log_gemma("hear", said)
+            if said:
+                park_after(said)
+            append_turn(profile, question, said or quote(args.get("line", "")), root)
+            return said or quote(args.get("line", ""))
     return "I am still on it."
 
 

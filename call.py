@@ -1177,8 +1177,12 @@ def serve_call(node):
             message = LIVE.fault
             LIVE.fault = ""
             die(message)
+        purpose = " ".join((getattr(LIVE, "after", "") or "").split())
+        LIVE.after = ""
         if opening and LIVE.up:
             speak(opening)
+        if purpose and purpose != opening and LIVE is not None and LIVE.up:
+            speak(purpose)
         while LIVE is not None and LIVE.up and not LIVE.closed:
             try:
                 heard = listen("")

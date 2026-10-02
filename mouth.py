@@ -284,71 +284,21 @@ def wait_dead(pid, seconds):
     return not chatterbox_running(pid)
 
 
-def lock_owner():
-    path = ROOT / LOCK_NAME
-    try:
-        lines = path.read_text(encoding="ascii").splitlines()
-    except OSError:
-        return None
-    if not lines:
-        return None
-    try:
-        pid = int(lines[0].strip())
-    except ValueError:
-        return None
-    try:
-        started = float(lines[1].strip()) if len(lines) > 1 else 0.0
-    except ValueError:
-        started = 0.0
-    return pid, started
-
-
-def lock_busy():
-    if not (ROOT / LOCK_NAME).is_file():
-        return False
-    owner = lock_owner()
-    if owner is None:
-        return True
-    return bool(process_image(owner[0]))
-
-
-def clear_stale_lock():
-    if lock_busy():
-        return
-    path = ROOT / LOCK_NAME
-    try:
-        if path.is_file():
-            path.unlink()
-    except OSError:
-        pass
-
-
 def stop_resident():
     try:
         (ROOT / "mouth.stop").write_bytes(b"stop\n")
     except OSError as exc:
         die("cannot write mouth.stop: " + str(exc))
     stopped = False
-    deadline = time.time() + 15
-    while True:
-        rec = resident_record()
-        if rec is not None and chatterbox_running(rec.pid):
-            stopped = True
-            if rec.state == "loading":
-                terminate_pid(rec.pid)
-                if not wait_dead(rec.pid, 5):
-                    die("cannot stop chatterbox pid " + str(rec.pid))
-            elif not wait_dead(rec.pid, 120):
-                terminate_pid(rec.pid)
-                if not wait_dead(rec.pid, 5):
-                    die("cannot stop chatterbox pid " + str(rec.pid))
-            break
-        if not lock_busy() or time.time() > deadline:
-            break
-        time.sleep(0.05)
+    rec = resident_record()
+    if rec is not None and chatterbox_running(rec.pid):
+        stopped = True
+        terminate_pid(rec.pid)
+        if not wait_dead(rec.pid, 5):
+            die("cannot stop chatterbox pid " + str(rec.pid))
     for name in SLOTS:
         remove_file(name)
-    clear_stale_lock()
+    remove_file(LOCK_NAME)
     return stopped
 
 

@@ -477,7 +477,7 @@ def build_mouth(sdk: Path) -> None:
         *vulkan_defs(sdk),
         "-DONNXRUNTIME_DIR=" + str(onnx_root()),
     ]
-    names = ("chatterbox.exe", "chatterbox-bake.exe", "ear.exe", "vad.exe")
+    names = ("chatterbox.exe", "chatterbox-bake.exe", "vad.exe")
     built = tuple(build / "bin" / name for name in names)
     runtime = tuple(ROOT / name for name in names) + (ROOT / "onnxruntime.dll",)
     wanted = {"ggml": need("install.ggml_rev"), "cmake": defs, "source": digest(ROOT / "CMakeLists.txt", ROOT / "src")}
@@ -485,7 +485,7 @@ def build_mouth(sdk: Path) -> None:
     if not matches(stamp, wanted, *runtime):
         print("install mouth", flush=True)
         cmake_configure(ROOT, build, defs, vulkan_env(sdk))
-        cmake_targets(build, ["chatterbox", "chatterbox-bake", "ear", "vad"], need("install.parallel"))
+        cmake_targets(build, ["chatterbox", "chatterbox-bake", "vad"], need("install.parallel"))
         for exe in built:
             imports = pe_import_dlls(exe)
             if "ggml.dll" in imports or "ggml-base.dll" in imports:
@@ -697,8 +697,8 @@ def install_voice(name: str) -> None:
     bake_voice(cfg, t3, s3, contracts)
 
 
-def fetch_model(url_key: str, module: str, key: str) -> None:
-    dest = ROOT / module_need(module, key)
+def fetch_file(url_key: str, name: str) -> None:
+    dest = ROOT / name
     url = need(url_key)
     stamp = stamps() / (dest.name + ".download.json")
     wanted = {"url": url}
@@ -708,6 +708,10 @@ def fetch_model(url_key: str, module: str, key: str) -> None:
     print("install " + dest.name, flush=True)
     download(url, dest)
     atomic_json(stamp, wanted)
+
+
+def fetch_model(url_key: str, module: str, key: str) -> None:
+    fetch_file(url_key, module_need(module, key))
 
 
 def publish() -> None:
@@ -748,7 +752,7 @@ def main() -> None:
         install_voice(name)
     fetch_model("install.text_model_url", "gemma.txt", "gemma.model")
     fetch_model("install.mmproj_url", "gemma.txt", "gemma.mmproj")
-    fetch_model("install.ear_gguf_url", "ear.txt", "ear.model")
+    fetch_file("install.ear_gguf_url", "ear.gguf")
     fetch_model("install.silero_onnx_url", "vad.txt", "vad.model")
     publish()
 
