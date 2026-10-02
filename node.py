@@ -1195,7 +1195,7 @@ def grid_ok(point, count):
 
 
 def parse_direct(line):
-    text = " ".join((line or "").split())
+    text = " ".join((line or "").split()).split(",")[0].split(";")[0].strip()
     parts = text.split(" ")
     if not parts or not parts[0]:
         return None
