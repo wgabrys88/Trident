@@ -404,6 +404,7 @@ POS = None
 TRAIL = []
 LAST = ""
 HELD = ""
+SHEET = []
 MOVES = {"left": (0, -1), "right": (0, 1), "up": (-1, 0), "down": (1, 0)}
 
 
@@ -662,14 +663,30 @@ def desk_png():
     return base64.b64encode(png).decode("ascii"), wide, high
 
 
-def deliver(image_b64):
+def relay(text="", image_b64=""):
+    line = (text or "").strip()
+    if line:
+        SHEET.append(line)
     mod = sys.modules.get("call")
-    if mod is None:
+    send = getattr(mod, "trace", None) if mod else None
+    if send is None:
         return
-    live = getattr(mod, "LIVE", None)
-    if live is None or getattr(live, "closed", True) or getattr(live, "client", None) is None or not getattr(live, "peer_id", 0):
-        return
-    mod.picture(base64.b64decode("".join((image_b64 or "").split())))
+    if image_b64:
+        png = base64.b64decode("".join(str(image_b64).split()))
+        body = "\n".join(SHEET)
+        if len(body) > 1024:
+            first = (SHEET[0] if SHEET else "")[:500]
+            room = 1024 - len(first) - 1
+            tail = body[-room:] if room > 0 else body[-1024:]
+            body = (first + "\n" + tail) if room > 0 else tail
+            body = body[-1024:]
+        send(body, png)
+    elif line:
+        send(line, b"")
+
+
+def deliver(image_b64, note=""):
+    relay(note, image_b64)
 
 
 def window_titles():
@@ -857,6 +874,8 @@ def log_gemma(kind, text):
         path.write_text("\n".join(rows) + "\n", encoding="utf-8")
     except OSError:
         pass
+    if kind != "turn":
+        relay(kind + "\n" + (text or ""))
 
 
 def prompt_for(profile, question, suffix, root, written=False):
@@ -1151,7 +1170,7 @@ def tool_look(line, work=None):
         return "windows " + listed, ""
     desktop_lease()
     image, _wide, _high = desk_png()
-    deliver(image)
+    deliver(image, "look\nwindows " + listed)
     return "windows " + listed, image
 
 
@@ -1189,7 +1208,7 @@ def stamp(word):
 
 def pictured(note):
     image, _wide, _high = desk_png()
-    deliver(image)
+    deliver(image, note)
     return note, image
 
 
@@ -1248,6 +1267,11 @@ def lift():
     y, x = hand_at()
     win32.loosen_pct(*to_pct(y, x), HELD == "right")
     HELD = ""
+
+
+def end_turn():
+    lift()
+    SHEET.clear()
 
 
 def reset_hand():
@@ -1403,6 +1427,8 @@ def agent_turn(profile, question, image_b64="", root=None, written=False, hands=
     HANDS = bool(hands) or call_flag() == "call up"
     if HANDS:
         reset_hand()
+    SHEET.clear()
+    relay("request\n" + question.strip())
     steps = []
     shot = image_b64 or ""
     while len(steps) < 64:
@@ -1433,31 +1459,35 @@ def agent_turn(profile, question, image_b64="", root=None, written=False, hands=
             if any(item[1] == "ring" for item in steps):
                 park_after(speech)
             append_turn(profile, question, speech, root)
-            lift()
+            relay("say\n" + speech)
+            end_turn()
             return speech
         name, args, _raw = found
         if name == "hang":
             tool_hang()
             log_gemma("tool", "hang")
-            lift()
+            end_turn()
             return "<|tool_call>call:hang{}<tool_call|>"
         result = run_tool(profile, name, args, root)
         if isinstance(result, tuple):
             result, shot = result
-        log_gemma("tool", name + " " + quote(args.get("line", "")) + " -> " + clip(str(result), 160))
+        log_gemma("tool", name + " " + quote(args.get("line", "")) + " -> " + str(result))
         steps.append((thought, name, args, str(result)))
         if name == "ring":
             if str(result) == "quiet":
-                lift()
+                relay("say\nquiet")
+                end_turn()
                 return "quiet"
             said = hear_line(question)
             log_gemma("hear", said)
             if said:
                 park_after(said)
             append_turn(profile, question, said or quote(args.get("line", "")), root)
-            lift()
+            relay("say\n" + (said or quote(args.get("line", ""))))
+            end_turn()
             return said or quote(args.get("line", ""))
-    lift()
+    relay("say\nI am still on it.")
+    end_turn()
     return "I am still on it."
 
 

@@ -1106,24 +1106,44 @@ def speak(text):
     print("call: tx " + format(LIVE.tx_seconds, ".2f"), file=sys.stderr, flush=True)
 
 
-def picture(png):
-    if LIVE is None or LIVE.closed or LIVE.client is None or not LIVE.peer_id:
-        die("call down")
-    if not png:
-        die("empty shot")
+def trace(text="", png=b""):
+    if LIVE is None or LIVE.closed or getattr(LIVE, "client", None) is None or not getattr(LIVE, "peer_id", 0):
+        return ""
+    if getattr(LIVE, "loop", None) is None:
+        return ""
+    body = text or ""
+    data = png or b""
+    if not body and not data:
+        return ""
 
     async def send():
         import io
 
-        buf = io.BytesIO(png)
+        words = body
+        caption = ""
+        if data:
+            caption = words[-1024:] if len(words) > 1024 else words
+            words = words[:-1024] if len(words) > 1024 else ""
+        while words:
+            chunk = words[:4000]
+            words = words[4000:]
+            await LIVE.client.send_message(LIVE.peer_id, chunk)
+        if not data:
+            return 0
+        buf = io.BytesIO(data)
         buf.name = "desk.png"
-        sent = await LIVE.client.send_file(LIVE.peer_id, buf, force_document=False)
+        sent = await LIVE.client.send_file(LIVE.peer_id, buf, force_document=False, caption=caption or None)
         if isinstance(sent, list):
             sent = sent[0] if sent else None
         return int(getattr(sent, "id", 0) or 0)
 
-    ident = submit(send(), 60)
-    print("call: shot " + str(ident), file=sys.stderr, flush=True)
+    try:
+        ident = submit(send(), 90)
+    except Exception as exc:
+        print("telegram " + type(exc).__name__ + " " + " ".join(str(exc).split()), file=sys.stderr, flush=True)
+        return ""
+    if data:
+        print("call: shot " + str(ident), file=sys.stderr, flush=True)
     return "sent"
 
 
