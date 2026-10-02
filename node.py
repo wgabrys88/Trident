@@ -776,13 +776,13 @@ def memory_file(profile, root=None):
 
 
 def parse_store(raw):
-    facts, pairs, works = [], [], []
+    facts, pairs = [], []
     pending = None
     lines = (raw or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
     index = 0
     while index < len(lines):
         stripped = lines[index].rstrip(" \t")
-        if stripped.endswith("<<") and stripped[:-2].strip() in ("fact", "user", "model", "work"):
+        if stripped.endswith("<<") and stripped[:-2].strip() in ("fact", "user", "model"):
             key = stripped[:-2].strip()
             index += 1
             buf = []
@@ -794,13 +794,11 @@ def parse_store(raw):
             body = "\n".join(buf).strip()
             if key == "fact" and body:
                 facts.append(body)
-            elif key == "work" and body:
-                works.append(body)
             elif key == "user":
                 if pending is not None:
                     pairs.append((pending, ""))
                 pending = body
-            else:
+            elif key == "model":
                 if pending is None:
                     pending = ""
                 pairs.append((pending, body))
@@ -809,15 +807,13 @@ def parse_store(raw):
         index += 1
     if pending is not None:
         pairs.append((pending, ""))
-    return facts, pairs, works
+    return facts, pairs
 
 
-def render_store(facts, pairs, works):
+def render_store(facts, pairs):
     parts = []
     for fact in facts:
         parts.append("fact <<\n" + fact + "\n<<\n")
-    for line in works:
-        parts.append("work <<\n" + line + "\n<<\n")
     for user, model in pairs:
         parts.append("user <<\n" + user + "\n<<\n")
         parts.append("model <<\n" + model + "\n<<\n")
@@ -846,13 +842,13 @@ def with_memory(path, fn):
 
 def read_memory(path):
     if not path.is_file():
-        return [], [], []
+        return [], []
     return parse_store(path.read_text(encoding="utf-8"))
 
 
-def write_memory(path, facts, pairs, works):
+def write_memory(path, facts, pairs):
     tmp = path.with_name(path.name + ".tmp")
-    tmp.write_bytes(render_store(facts, pairs, works).encode("utf-8"))
+    tmp.write_bytes(render_store(facts, pairs).encode("utf-8"))
     os.replace(tmp, path)
 
 
@@ -874,7 +870,7 @@ def log_gemma(kind, text):
 
 def prompt_for(profile, question, suffix, root, written=False):
     path = memory_file(profile, root)
-    facts, pairs, works = read_memory(path)
+    facts, pairs = read_memory(path)
     head = (
         "<bos><|turn>system\n<|think|>\n"
         + SYSTEM
@@ -887,8 +883,6 @@ def prompt_for(profile, question, suffix, root, written=False):
         head += "Written by Wojciech.\n"
     if facts:
         head += "Remembered:\n" + "\n".join(facts) + "\n"
-    if works:
-        head += "Work waiting:\n" + "\n".join(works) + "\n"
     shown = list(pairs[-6:])
 
     def build(items):
@@ -1029,7 +1023,7 @@ def may_touch():
 
 
 def quiet_set(root=None):
-    facts, _pairs, _works = read_memory(memory_file("voice", root))
+    facts, _pairs = read_memory(memory_file("voice", root))
     return any(item.lower().startswith("quiet") for item in facts)
 
 
@@ -1040,10 +1034,10 @@ def tool_remember(profile, args, root):
     path = memory_file(profile, root)
 
     def run():
-        facts, pairs, works = read_memory(path)
+        facts, pairs = read_memory(path)
         if line not in facts:
             facts.append(line)
-            write_memory(path, facts, pairs, works)
+            write_memory(path, facts, pairs)
 
     with_memory(path, run)
     return line
@@ -1054,14 +1048,14 @@ def tool_quiet(profile, args, root):
     path = memory_file(profile, root)
 
     def run():
-        facts, pairs, works = read_memory(path)
+        facts, pairs = read_memory(path)
         if line.lower() == "clear":
             facts = [item for item in facts if not item.lower().startswith("quiet")]
         else:
             fact = "quiet: " + line
             if fact not in facts:
                 facts.append(fact)
-        write_memory(path, facts, pairs, works)
+        write_memory(path, facts, pairs)
 
     with_memory(path, run)
     return "quiet clear" if line.lower() == "clear" else "quiet: " + line
@@ -1214,6 +1208,8 @@ def tool_run(line):
     text = clip(out, 400)
     if done.returncode and not text:
         return "exit " + str(done.returncode)
+    if command.lower().startswith(("start-process", "start ")):
+        time.sleep(1)
     return text or "ok"
 
 
@@ -1244,11 +1240,11 @@ def append_turn(profile, question, reply, root):
         return
 
     def run():
-        facts, pairs, works = read_memory(path)
+        facts, pairs = read_memory(path)
         pairs.append((clip(question, 400), clip(spoken, 400)))
         if len(pairs) > 12:
             pairs = pairs[-12:]
-        write_memory(path, facts, pairs, works)
+        write_memory(path, facts, pairs)
 
     with_memory(path, run)
 
