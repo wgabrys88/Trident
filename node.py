@@ -904,7 +904,7 @@ def prompt_for(profile, question, suffix, root, written=False):
         "The meaning of his words is the decision. What you remember is in this prompt. "
         "The computer microphone stays closed. "
         "On a call the user line is Wojciech. With the call down, cable speech is the room. "
-        "A written line is Wojciech, and you act on its meaning as you would his voice: look, work, remember a wait, stay quiet, or ring and say what he asked you to pass on. "
+        "A written line is Wojciech. Act on its meaning as you would his voice: look, work, remember a wait, or stay quiet. If he wants you to call, use ring. Its line is what you will say when he answers, including what he asked you to pass on. "
         "When the call is down and nothing is happening, and memory does not say to stay quiet, use ring. "
         "Its line says you are up, nothing is waiting, and asks if he wants anything. "
         "If he told you to do nothing until a time, remember that and do not ring. "
@@ -918,7 +918,7 @@ def prompt_for(profile, question, suffix, root, written=False):
         + ("Call up\n" if call_flag() == "call up" else "Call down\n")
     )
     if written:
-        head += "Written line from Wojciech.\n"
+        head += "Written line from Wojciech. If the meaning is to call, use ring.\n"
     if facts:
         head += "Remembered:\n" + "\n".join(facts) + "\n"
     if works:
