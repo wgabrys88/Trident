@@ -71,36 +71,6 @@ def config_body():
     return body
 
 
-def config_pairs(text):
-    rows = physical_lines(text or "")
-    if rows and rows[-1] == "":
-        rows = rows[:-1]
-    pairs = {}
-    index = 0
-    while index < len(rows):
-        line = rows[index]
-        stripped = line.lstrip(" \t")
-        if not stripped or stripped.startswith("#"):
-            index += 1
-            continue
-        if len(stripped) >= 2 and stripped.endswith("<<"):
-            key = stripped[:-2].rstrip(" \t")
-            index += 1
-            buf = []
-            while index < len(rows) and rows[index] != "<<":
-                buf.append(rows[index])
-                index += 1
-            if index >= len(rows) or rows[index] != "<<":
-                die("truncated gemma settings")
-            index += 1
-            pairs[key] = "\n".join(buf)
-            continue
-        key, sep, rest = stripped.partition(" ")
-        pairs[key] = rest if sep else ""
-        index += 1
-    return pairs
-
-
 def resident_settings():
     return config_body() + "gemma.text <<\n<<\ngemma.image <<\n<<\n"
 

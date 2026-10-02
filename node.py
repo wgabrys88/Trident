@@ -1159,9 +1159,6 @@ def tool_act(line):
             deliver(image)
         return "act " + done + " " + str(wide) + " " + str(high), image
     goal = text or "Look, then one step."
-    low = goal.lower()
-    if low.startswith(("drag ", "click ", "draw")):
-        goal = "One short drag on the white canvas. do must be drag. box_2d is the white canvas."
     reply = local_infer(desk_prompt(goal), image)
     obj = desk_object(reply)
     if obj:
