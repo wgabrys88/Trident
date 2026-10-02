@@ -1151,7 +1151,12 @@ def dial(reason=""):
         drop_call()
     LIVE.cancel.clear()
     try:
-        text = submit(place(), 120)
+        text = submit(place(), 150)
+    except TimeoutError:
+        LIVE.cancel.set()
+        write_blocker("call missed")
+        drop_call()
+        die("call missed")
     except BaseException as exc:
         write_blocker(getattr(exc, "message", "") or str(exc))
         drop_call()
