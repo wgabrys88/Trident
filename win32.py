@@ -1,6 +1,5 @@
 import ctypes
 import ctypes.wintypes as W
-import time
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -250,62 +249,26 @@ def move_pct(x, y):
     return _go(x, y) is not None
 
 
-def click_pct(x, y):
+def hold_pct(x, y, right=False):
     if not _ready():
         return False
     got = _go(x, y)
     if not got:
         return False
     ax, ay, base = got
-    if not _send([_mouse(ax, ay, base | 0x0002), _mouse(ax, ay, base | 0x0004)]):
-        return False
-    return _at(x, y)
+    flag = 0x0008 if right else 0x0002
+    return _send([_mouse(ax, ay, base | flag)])
 
 
-def right_pct(x, y):
+def loosen_pct(x, y, right=False):
     if not _ready():
         return False
     got = _go(x, y)
     if not got:
         return False
     ax, ay, base = got
-    if not _send([_mouse(ax, ay, base | 0x0008), _mouse(ax, ay, base | 0x0010)]):
-        return False
-    return _at(x, y)
-
-
-def drag_pct(x0, y0, x1, y1):
-    if not _ready():
-        return False
-    got = _go(x0, y0)
-    if not got:
-        return False
-    ax, ay, base = got
-    if not _send([_mouse(ax, ay, base | 0x0002)]):
-        return False
-    time.sleep(0.04)
-    bx, by = _abs(x1, y1)
-    for step in range(1, 8):
-        t = step / 7.0
-        if not _send([_mouse(int(round(ax + (bx - ax) * t)), int(round(ay + (by - ay) * t)), base | 0x0001)]):
-            return False
-        time.sleep(0.03)
-    if not _send([_mouse(bx, by, base | 0x0004)]):
-        return False
-    return _at(x1, y1)
-
-
-def wheel_pct(x, y, notches):
-    if not move_pct(x, y):
-        return False
-    count = int(round(float(notches)))
-    if count == 0:
-        return True
-    ax, ay = _abs(x, y)
-    data = (count * 120) & 0xFFFFFFFF
-    if not _send([_mouse(ax, ay, 0x8000 | 0x4000 | 0x0800, data)]):
-        return False
-    return _at(x, y)
+    flag = 0x0010 if right else 0x0004
+    return _send([_mouse(ax, ay, base | flag)])
 
 
 def _key(vk, scan, flags):
@@ -313,25 +276,6 @@ def _key(vk, scan, flags):
     item.type = 1
     item.u.ki = KEYBDINPUT(vk, scan, flags, 0, 0)
     return item
-
-
-def _one(name, flags):
-    if not _ready():
-        return False
-    key = str(name).lower()
-    if key not in VK_MAP:
-        return _fail("key " + key)
-    vk = VK_MAP[key]
-    extra = 0x0001 if vk in EXTENDED_VKS else 0
-    return _send([_key(vk, 0, flags | extra)])
-
-
-def key_down(name):
-    return _one(name, 0)
-
-
-def key_up(name):
-    return _one(name, 0x0002)
 
 
 def press(name):
