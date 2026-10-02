@@ -581,7 +581,9 @@ def take_utterance():
 def idle_world(node):
     print("idle: world", file=sys.stderr, flush=True)
     image, _wide, _high = node.desk_png()
-    reply = node.agent_turn("voice", "You are up. Nothing is in progress.", image)
+    seen = node.see_screen(image)
+    print("idle: see " + seen, file=sys.stderr, flush=True)
+    reply = node.agent_turn("voice", "You are up. Nothing is in progress. Screen: " + seen, "")
     print(reply, flush=True)
 
 
