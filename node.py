@@ -746,7 +746,7 @@ def tool_decls(names):
         "remember": ("Store one fact that stays after old turns are dropped.", (("line", "The fact, one short line.", True),)),
         "place": ("Report this machine: cuda, vulkan, engines, playback, microphone.", ()),
         "desk": ("Look at the whole desktop, or do the one action he agreed to. click, type, and key run only while the call is up. done is a look. On the call the picture is sent to his Telegram.", (("line", "The goal, one short line.", True),)),
-        "ring": ("Call Wojciech. line is what you say when he answers. If he asked you to tell him something, that substance is the line. If nothing is waiting, say you are up and ask if he wants anything.", (("line", "What you will say when he answers.", True),)),
+        "ring": ("Place the call. He cannot hear you until this runs. line is the sentence he hears when he answers. If he asked you to tell him something, that substance is the line. If nothing is waiting, say you are up and ask if he wants anything.", (("line", "The sentence he hears when he answers.", True),)),
         "next": ("Store one line of work for later. This does not run the work.", (("line", "The work, one short line.", True),)),
         "stop": ("Stop the local voice. Does not stop the brain.", (("line", "Waiting work to drop, or empty.", False),)),
     }
@@ -904,7 +904,7 @@ def prompt_for(profile, question, suffix, root, written=False):
         "The meaning of his words is the decision. What you remember is in this prompt. "
         "The computer microphone stays closed. "
         "On a call the user line is Wojciech. With the call down, cable speech is the room. "
-        "A written line is Wojciech. Act on its meaning as you would his voice: look, work, remember a wait, or stay quiet. If he wants you to call, use ring. Its line is what you will say when he answers, including what he asked you to pass on. "
+        "A written line is Wojciech. Act on its meaning as you would his voice: look, work, remember a wait, or stay quiet. With the call down he cannot hear you. If he wants you to call, use ring. Its line is the sentence he will hear, including what he asked you to pass on. "
         "When the call is down and nothing is happening, and memory does not say to stay quiet, use ring. "
         "Its line says you are up, nothing is waiting, and asks if he wants anything. "
         "If he told you to do nothing until a time, remember that and do not ring. "
@@ -918,7 +918,7 @@ def prompt_for(profile, question, suffix, root, written=False):
         + ("Call up\n" if call_flag() == "call up" else "Call down\n")
     )
     if written:
-        head += "Written line from Wojciech. If the meaning is to call, use ring.\n"
+        head += "Written line from Wojciech. If the meaning is to call, reply with only ring{line:" + Q + "the sentence he will hear" + Q + "}.\n"
     if facts:
         head += "Remembered:\n" + "\n".join(facts) + "\n"
     if works:
