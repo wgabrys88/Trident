@@ -1004,9 +1004,12 @@ def answer_text(text):
 def parse_tool_call(text):
     import re
 
-    match = re.search(r"<\|tool_call>\s*call:([A-Za-z_][A-Za-z0-9_]*)\s*\{(.*?)\}\s*<tool_call\|>", text or "", re.DOTALL)
+    raw = text or ""
+    match = re.search(r"<\|tool_call>\s*call:([A-Za-z_][A-Za-z0-9_]*)\s*\{(.*?)\}\s*<tool_call\|>", raw, re.DOTALL)
     if not match:
-        return None
+        match = re.search(r"^(?:call:)?([A-Za-z_][A-Za-z0-9_]*)\s*\{(.*)\}\s*$", raw.strip(), re.DOTALL)
+        if not match or match.group(1) not in PROFILES["voice"]["tools"]:
+            return None
     args = {}
     for key, quoted, bare in re.findall(r"(\w+)\s*:\s*(?:<\|\"\|>(.*?)<\|\"\|>|([^,}\n]*))", match.group(2), re.DOTALL):
         args[key] = (quoted if quoted else bare).strip()
