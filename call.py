@@ -1043,7 +1043,14 @@ def serve_call(node):
         if opening and LIVE.up:
             speak(opening)
         while LIVE is not None and LIVE.up and not LIVE.closed:
-            heard = listen("")
+            try:
+                heard = listen("")
+            except SystemExit as exc:
+                message = getattr(exc, "message", "") or ""
+                if message.startswith("hear"):
+                    print("call: stay " + message, file=sys.stderr, flush=True)
+                    continue
+                raise
             if LIVE is None or not LIVE.up or LIVE.closed:
                 break
             if not heard:
@@ -1109,7 +1116,7 @@ def line_loop():
                 idle_world(node)
         except SystemExit as exc:
             message = getattr(exc, "message", "") or ""
-            if vision_fault(message) or message == "call down" or message.startswith("call "):
+            if message.startswith("hear") or vision_fault(message) or message == "call down" or message.startswith("call "):
                 print("call: stay " + message, file=sys.stderr, flush=True)
                 continue
             if LIVE is not None and not LIVE.closed:
