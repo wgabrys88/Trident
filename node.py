@@ -24,7 +24,11 @@ OPS = {
 PROFILES = {
     "voice": {
         "memory": "gemma.memory.txt",
-        "tools": ("ring", "hang", "look", "act", "run", "remember", "quiet"),
+        "tools": (
+            "ring", "hang", "look",
+            "left", "right", "up", "down", "press", "release", "rightpress", "rightrelease",
+            "type", "key", "run", "remember", "quiet",
+        ),
     },
 }
 HANDS = False
@@ -37,8 +41,8 @@ SYSTEM = (
     "If you already rang and nothing new happened, do not ring again. "
     "If a remembered line starts with quiet, do not ring until he speaks. "
     "Call up: the user line is Wojciech. Speak one or two short sentences in his language, or act with a tool. "
-    "The picture shows the pointer, the trail, and the last act. One act is one step or one button. You do not name a place. "
-    "If you have no picture, look. Each act returns the picture. "
+    "The picture shows the pointer, the trail, and the last act. A move or a button is its own tool. You do not name a place. "
+    "If you have no picture, look. Each move or button returns the picture. "
     "On an idle check, do not touch the screen. "
     "If the work is not on screen, use run, then look. run does not change the picture. "
     "If he asked, do the work. "
@@ -49,7 +53,16 @@ TOOL_TEXT = {
     "ring": "Place the call. The next words you write, after this tool, are what he hears once he has answered. If he asked for a joke or a message, those words are that joke or message. If nothing is waiting, say you are up and ask if he wants anything.",
     "hang": "End the phone call now. Use this when he wants to stop, hang up, or says goodbye. Say nothing else.",
     "look": "See the screen. The mark is the pointer. The trail is where it went.",
-    "act": "One step or one button. Opening a program is run.",
+    "left": "Move the pointer one step left.",
+    "right": "Move the pointer one step right.",
+    "up": "Move the pointer one step up.",
+    "down": "Move the pointer one step down.",
+    "press": "Hold the left button.",
+    "release": "Let the left button go.",
+    "rightpress": "Hold the right button.",
+    "rightrelease": "Let the right button go.",
+    "type": "Type text at the pointer.",
+    "key": "Tap one key.",
     "run": "Run one PowerShell command and return the output. Use this to write a file, run Python, run cmd, or open a program.",
     "remember": "Store one short fact that stays in later turns.",
     "quiet": "Stay quiet and do not ring until he speaks. line clear ends that.",
@@ -58,7 +71,16 @@ TOOL_LINE = {
     "ring": "A short greeting. The joke or the message belongs in the words you write after this tool.",
     "hang": "Leave empty.",
     "look": "What to notice, or empty.",
-    "act": "left, right, up, down, press, release, rightpress, rightrelease, key name, or type text.",
+    "left": "Leave empty.",
+    "right": "Leave empty.",
+    "up": "Leave empty.",
+    "down": "Leave empty.",
+    "press": "Leave empty.",
+    "release": "Leave empty.",
+    "rightpress": "Leave empty.",
+    "rightrelease": "Leave empty.",
+    "type": "The text.",
+    "key": "The key name.",
     "run": "The PowerShell command. Set-Content writes a file. python -c runs Python. cmd /c runs cmd.",
     "remember": "The fact.",
     "quiet": "Why to stay quiet.",
@@ -1230,48 +1252,6 @@ def reset_hand():
     TRAIL.clear()
 
 
-def parse_direct(line):
-    text = " ".join((line or "").split()).split(",")[0].split(";")[0].strip()
-    parts = text.split(" ")
-    if not parts or not parts[0]:
-        return None
-    head = parts[0].lower()
-    if head in MOVES or head in ("press", "release", "rightpress", "rightrelease"):
-        if len(parts) == 1:
-            return (head,)
-        return None
-    if head == "key" and len(parts) >= 2:
-        return ("key", parts[1].lower())
-    if head == "type" and len(parts) >= 2:
-        return ("type", text.split(" ", 1)[1])
-    return None
-
-
-def run_direct(cmd):
-    kind = cmd[0]
-    if kind in MOVES:
-        return run_move(kind)
-    if kind == "press":
-        return run_press(False)
-    if kind == "release":
-        return run_release(False)
-    if kind == "rightpress":
-        return run_press(True)
-    if kind == "rightrelease":
-        return run_release(True)
-    if kind == "key":
-        if not win32.press(cmd[1]):
-            return ""
-        stamp("key")
-        return "key " + cmd[1]
-    if kind == "type":
-        if not win32.type_text(cmd[1]):
-            return ""
-        stamp("type")
-        return "type " + cmd[1]
-    return ""
-
-
 def note_last(line):
     path = memory_file("voice")
 
@@ -1284,31 +1264,36 @@ def note_last(line):
     with_memory(path, run)
 
 
-def act_direct(line):
-    cmd = parse_direct(line)
-    if cmd is None:
-        return None
-    done = run_direct(cmd)
-    if done:
-        note_last(done)
-    return done
-
-
-def tool_act(line):
+def touch(kind, line=""):
     if not may_touch():
         return "The call is down. Ring him before you touch the desktop.", ""
     reason = win32.seat_fault()
     if reason:
-        return "act stopped " + reason, ""
-    text = " ".join((line or "").split())
-    head = text.lower()
-    if head.startswith(("run ", "start ", "start-process ", "powershell ", "python ", "cmd ", "set-content ")):
-        return tool_run(text[4:].strip() if head.startswith("run ") else text), ""
-    if parse_direct(text) is None:
-        return pictured("act unparsed. left, right, up, down, press, or release.")
-    done = act_direct(text)
+        return "stopped " + reason, ""
+    done = ""
+    if kind in MOVES:
+        done = run_move(kind)
+    elif kind == "press":
+        done = run_press(False)
+    elif kind == "release":
+        done = run_release(False)
+    elif kind == "rightpress":
+        done = run_press(True)
+    elif kind == "rightrelease":
+        done = run_release(True)
+    elif kind == "key":
+        name = (line or "").split(" ")[0].lower()
+        if name and win32.press(name):
+            stamp("key")
+            done = "key " + name
+    elif kind == "type":
+        text = " ".join((line or "").split())
+        if text and win32.type_text(text):
+            stamp("type")
+            done = "type " + text
     if not done:
-        return "act stopped " + (win32.fault or "failed"), ""
+        return "stopped " + (win32.fault or "failed"), ""
+    note_last(done)
     return pictured(done)
 
 
@@ -1356,8 +1341,8 @@ def run_tool(profile, name, args, root):
         return tool_quiet(profile, args, root)
     if name == "look":
         return tool_look(args.get("line", ""))
-    if name == "act":
-        return tool_act(args.get("line", ""))
+    if name in MOVES or name in ("press", "release", "rightpress", "rightrelease", "type", "key"):
+        return touch(name, args.get("line", ""))
     if name == "run":
         return tool_run(args.get("line", ""))
     if name == "ring":
