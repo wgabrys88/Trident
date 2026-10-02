@@ -208,12 +208,7 @@ def remove_file(name):
 
 
 def hex_fingerprint(text):
-    if len(text) != 64:
-        return False
-    for ch in text:
-        if ch not in "0123456789abcdef":
-            return False
-    return True
+    return len(text) == 64 and all(ch in "0123456789abcdef" for ch in text)
 
 
 def resident_record():

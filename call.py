@@ -596,11 +596,14 @@ def take_utterance():
 
 
 def idle_world(node):
+    if node.quiet_set():
+        print("idle: quiet", file=sys.stderr, flush=True)
+        return
     print("idle: world", file=sys.stderr, flush=True)
-    image, _wide, _high = node.desk_png()
-    seen = node.see_screen(image)
+    report, _image = node.tool_look("What is on screen?")
+    seen = " ".join(report.split())
     print("idle: see " + seen, file=sys.stderr, flush=True)
-    reply = node.agent_turn("voice", "You are up. Nothing is in progress. Screen: " + seen, "", hands=False)
+    reply = node.agent_turn("voice", "Idle check. Not his voice. Nothing is in progress. " + seen, "", hands=False)
     print(reply, flush=True)
 
 

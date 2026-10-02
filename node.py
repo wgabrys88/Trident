@@ -669,10 +669,34 @@ def deliver(image_b64):
     mod.picture(base64.b64decode("".join((image_b64 or "").split())))
 
 
+def window_titles():
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    found = []
+
+    def add(hwnd):
+        buf = ctypes.create_unicode_buffer(300)
+        if not hwnd or user32.GetWindowTextW(hwnd, buf, 300) <= 0:
+            return
+        title = " ".join(buf.value.split())
+        if title and title not in found and len(found) < 8:
+            found.append(title)
+
+    add(user32.GetForegroundWindow())
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    def visit(hwnd, _lparam):
+        if user32.IsWindowVisible(hwnd):
+            add(hwnd)
+        return True
+
+    user32.EnumWindows(visit, 0)
+    return found
+
+
 def see_screen(image, goal=""):
     ask = " ".join((goal or "").split()) or "What is on screen?"
     prompt = (
-        "<bos><|turn>system\nYou see one full desktop screenshot. Answer with one sentence and nothing else.<turn|>\n"
+        "<bos><|turn>system\nYou see one full desktop screenshot. Answer with one sentence. Name a listed window title when it matters, and quote short on-screen text you can read.<turn|>\n"
         "<|turn>user\n" + MEDIA + "\n" + ask + "<turn|>\n<|turn>model\n"
     )
     text = answer_text(local_infer(prompt, image))
@@ -1067,14 +1091,19 @@ def tool_ring(args):
 
 
 def tool_look(line):
+    titles = window_titles()
+    listed = "; ".join(titles)
+    ask = " ".join((line or "What is on screen?").split())
+    if listed:
+        ask += " Open windows: " + listed
     if not (ROOT / "gemma-mmproj.gguf").is_file():
-        return "vision absent", ""
+        return "windows " + listed, ""
     desktop_lease()
     image, wide, high = desk_png()
-    seen = see_screen(image, line)
+    seen = see_screen(image, ask)
     if call_flag() == "call up":
         deliver(image)
-    return "see " + seen + " " + str(wide) + " " + str(high), image
+    return "windows " + listed + "\nsee " + seen, image
 
 
 def numbers(parts):
@@ -1293,6 +1322,8 @@ def agent_turn(profile, question, image_b64="", root=None, written=False, hands=
         log_gemma("tool", name + " " + quote(args.get("line", "")) + " -> " + clip(str(result), 160))
         steps.append((thought, name, args, str(result)))
         if name == "ring":
+            if str(result) == "quiet":
+                return "quiet"
             said = hear_line(question)
             log_gemma("hear", said)
             if said:

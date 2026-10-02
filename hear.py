@@ -45,11 +45,10 @@ def parse_transcript(raw):
         die("hear json")
     text = " ".join(text.split())
     langs = data.get("languages")
-    if not isinstance(langs, list) or not langs or not isinstance(langs[0], str) or not langs[0].strip():
-        die("hear language")
+    lang = langs[0].strip() if isinstance(langs, list) and langs and isinstance(langs[0], str) else ""
     if not text:
         die("hear empty")
-    return text, langs[0].strip()
+    return text, lang
 
 
 def transcribe(wav):

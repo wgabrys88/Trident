@@ -103,11 +103,6 @@ def _mouse(dx, dy, flags):
     return item
 
 
-def move_pct(x, y):
-    ax, ay = _abs(x, y)
-    return _send([_mouse(ax, ay, 0x8001 | 0x4000)])
-
-
 def click_pct(x, y):
     ax, ay = _abs(x, y)
     base = 0x8000 | 0x4000
