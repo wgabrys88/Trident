@@ -61,14 +61,18 @@ SYSTEM = (
     "If you are confused or stuck, the action is ring."
 )
 EYES = (
-    "You are Eyes. You see one picture. Think, then say where things are. "
-    "Each thing is a name and percents of this picture, across then down, from 0 to 100. "
-    "A wide thing is a name and four percents: across, down, across, down. "
-    "Use the pointer line. No actions."
+    "You are Eyes. You see one picture. "
+    "Short lines only: name, across, down. "
+    "A wide thing is name, left, top, right, bottom. "
+    "Only what the question asks about, and the pointer. "
+    "At most six lines. No markdown. No actions."
 )
 AREA = (
-    "You are Area. You see one full desktop. Think, then mark the region the work is in. "
-    "One line of four percents of the screen: across, down, across, down. Nothing else."
+    "You are Area. You see the whole screen. "
+    "Reply with four numbers and nothing else: left, top, right, bottom. "
+    "Each number is a percent of the screen from 0 to 100. "
+    "left and top are one corner of the work. right and bottom are the opposite corner. "
+    "right is much larger than left. bottom is much larger than top."
 )
 TOOL_TEXT = {
     "ring": "Place the call. The next words you write, after this tool, are what he hears once he has answered. If he asked for a joke or a message, those words are that joke or message. If nothing is waiting, say you are up and ask if he wants anything.",
@@ -1169,7 +1173,7 @@ def see_work(goal):
     mark = ""
     if REGION is None:
         full, _wide, _high = desk_png(None)
-        mark = member_say("area", full, goal or "Where is the work?")
+        mark = member_say("area", full, "Mark the work. Four numbers: left top right bottom.")
         REGION = four_pcts(mark)
     image, _wide, _high = desk_png(REGION)
     report = eyes_report(image, goal)
@@ -1208,39 +1212,46 @@ def parse_direct(line):
         point = numbers(rest)
         if pct_ok(point, 2):
             return ("move", point[0], point[1])
-        return None
-    if head == "click":
+    elif head == "click":
         if len(rest) == 0:
             return ("click",)
         point = numbers(rest)
         if pct_ok(point, 2):
             return ("click", point[0], point[1])
-        return None
-    if head == "right":
+    elif head == "right":
         if len(rest) == 0:
             return ("right",)
         point = numbers(rest)
         if pct_ok(point, 2):
             return ("right", point[0], point[1])
-        return None
-    if head == "drag":
+    elif head == "drag":
         point = numbers(rest)
         if pct_ok(point, 4):
             return ("drag",) + tuple(point)
-        return None
-    if head == "wheel":
+    elif head == "wheel":
         point = numbers(rest)
         if point and len(point) == 1:
             return ("wheel", point[0])
         if point and len(point) == 3 and all(0 <= n <= 100 for n in point[:2]):
             return ("wheel", point[0], point[1], point[2])
-        return None
     if head == "key" and len(rest) >= 1:
         return ("key", rest[0].lower())
     if head == "type" and len(parts) >= 2:
         return ("type", text.split(" ", 1)[1])
     if head in ("down", "up") and len(rest) >= 1 and rest[0].lower() in win32.VK_MAP:
         return (head, rest[0].lower())
+    nums = []
+    for token in re.findall(r"\d+(?:\.\d+)?", text):
+        number = float(token)
+        if 0 <= number <= 100:
+            nums.append(number)
+    dirs = [part.lower() for part in parts if part.lower() in ("up", "down", "left", "right")]
+    if len(dirs) == 1 and len(nums) == 1:
+        return ("rel", dirs[0], nums[0])
+    if len(nums) == 4:
+        return ("drag", nums[0], nums[1], nums[2], nums[3])
+    if len(nums) == 2:
+        return ("click", nums[0], nums[1])
     return None
 
 
@@ -1343,7 +1354,7 @@ def act_direct(line):
 
 
 def one_step(goal, seen):
-    ask = goal + "\n" + seen + "\nOne act line."
+    ask = seen + "\nDo this: " + goal + "\nOne line only: drag x y x y, move 20 right, or click x y."
     text = local_infer(prompt_for("voice", ask, "", None, False), "")
     found = parse_tool_call(text)
     if found and found[0] == "act":
@@ -1382,16 +1393,16 @@ def tool_act(line):
         return "vision absent", ""
     if not text:
         text = "Look, then one correction."
-    seen, image = see_screen(text, True)
+    seen, image = see_screen("Where is the work?", True)
     step = one_step(text, seen)
     if not parse_direct(step):
-        return "see " + seen + "\nact unparsed " + clip(step, 80), image
+        return "act unparsed. Use drag x y x y or move 20 right.\n" + clip(step, 80), image
     done = act_direct(step)
     if not done:
-        return "see " + seen + "\nact stopped " + (win32.fault or "failed"), image
+        return "act stopped " + (win32.fault or "failed"), image
     image, wide, high = shot_of()
     deliver(image)
-    return "see " + seen + "\nact " + done + " " + str(wide) + " " + str(high), image
+    return "act " + done + " " + str(wide) + " " + str(high) + "\n" + seen, image
 
 
 def shell_command(line):
