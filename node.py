@@ -47,12 +47,14 @@ SYSTEM = (
     "If a remembered line starts with quiet, do not ring until he speaks. "
     "Call up: the user line is Wojciech. Speak one or two short sentences in his language, or act with a tool. "
     "Area and Eyes are other members on this same computer. Each has her own memory. "
-    "A look marks the work region, then says where things are, in percents of that picture. Later looks use that smaller picture. "
+    "A place is box_2d: y, x, y, x. Numbers run from 0 to 1000. y is down from the top. x is across. "
+    "Area marks the work with one box_2d. Later pictures use that same grid and black out everything outside the box. "
+    "Eyes names things with box_2d. "
     "If the work is not on screen yet, use run, then look. "
-    "In the thought, judge the miss. A larger miss is a larger percent. If the miss shrank, use a smaller percent. "
-    "One correction, then look again. Up is toward the top of the picture. "
-    "move 20 right, move 20 left, move 20 up, and move 20 down shift the pointer by that percent of the picture. "
-    "move x y, click, click x y, right, right x y, and drag x y x y are percents of the picture. "
+    "In the thought, judge the miss. A larger miss is a larger number. If the miss shrank, use a smaller number. "
+    "One correction, then look again. Up is toward the top. "
+    "move 200 right, move 200 left, move 200 up, and move 200 down shift the pointer by that many on the grid. "
+    "click y x, right y x, and drag y x y x use that same grid. "
     "wheel n, key name, type text. down name holds a key. up name lets that key up. "
     "To write a file, run Python or cmd, or open a program, use run. "
     "Before you move, click, or drag on your own, be on the call. "
@@ -61,24 +63,22 @@ SYSTEM = (
     "If you are confused or stuck, the action is ring."
 )
 EYES = (
-    "You are Eyes. You see one picture. "
-    "Short lines only: name, across, down. "
-    "A wide thing is name, left, top, right, bottom. "
-    "Only what the question asks about, and the pointer. "
-    "At most six lines. No markdown. No actions."
+    "You are Eyes. You see one picture. Black is outside the work. "
+    "Reply with JSON only. Each thing is {\"box_2d\": [y, x, y, x], \"label\": \"name\"}. "
+    "Numbers are 0 to 1000. y is down from the top. x is across. "
+    "Only what the question asks about. No actions."
 )
 AREA = (
-    "You are Area. You see the whole screen. "
-    "Reply with four numbers and nothing else: left, top, right, bottom. "
-    "Each number is a percent of the screen from 0 to 100. "
-    "left and top are one corner of the work. right and bottom are the opposite corner. "
-    "right is much larger than left. bottom is much larger than top."
+    "You are Area. You see one picture. "
+    "Reply with one JSON object and nothing else: {\"box_2d\": [y, x, y, x], \"label\": \"work\"}. "
+    "Numbers are 0 to 1000. y is down from the top. x is across. "
+    "The box is the region the work is in."
 )
 TOOL_TEXT = {
     "ring": "Place the call. The next words you write, after this tool, are what he hears once he has answered. If he asked for a joke or a message, those words are that joke or message. If nothing is waiting, say you are up and ask if he wants anything.",
     "hang": "End the phone call now. Use this when he wants to stop, hang up, or says goodbye. Say nothing else.",
-    "look": "See the work. Area marks the region. Eyes says where things are, in percents of that picture.",
-    "act": "One correction. A percent of the picture, a direction, a click, a key, or a short goal. Opening a program is run.",
+    "look": "See the work. Area and Eyes answer with box_2d. The grid is 0 to 1000, top then across.",
+    "act": "One correction on that same grid. Opening a program is run.",
     "run": "Run one PowerShell command and return the output. Use this to write a file, run Python, run cmd, or open a program.",
     "remember": "Store one short fact that stays in later turns.",
     "quiet": "Stay quiet and do not ring until he speaks. line clear ends that.",
@@ -87,7 +87,7 @@ TOOL_LINE = {
     "ring": "A short greeting. The joke or the message belongs in the words you write after this tool.",
     "hang": "Leave empty.",
     "look": "What to notice, or empty.",
-    "act": "move 20 right, move 20 left, move 20 up, move 20 down, move x y, click, click x y, right, right x y, drag x y x y, wheel n, key name, type text, down name, up name, or a short goal.",
+    "act": "move 200 right, move 200 left, move 200 up, move 200 down, click y x, right y x, drag y x y x, wheel n, key name, type text, down name, up name, or a short goal. Numbers are 0 to 1000, top then across.",
     "run": "The PowerShell command. Set-Content writes a file. python -c runs Python. cmd /c runs cmd.",
     "remember": "The fact.",
     "quiet": "Why to stay quiet.",
@@ -405,7 +405,7 @@ def local_infer(prompt, image):
 
 
 DESK_TOKENS = 560
-ZOOM_EDGE = 384
+GRID = 1000
 
 
 def clip(text, limit=200):
@@ -443,13 +443,31 @@ class _HDR(ctypes.Structure):
     ]
 
 
-def png_rgb(wide, high, bgra):
+def black_outside(rgb, wide, high, box):
+    y0, x0, y1, x1 = box
+    top = max(0, min(high, int(round(y0 / GRID * high))))
+    bottom = max(0, min(high, int(round(y1 / GRID * high))))
+    left = max(0, min(wide, int(round(x0 / GRID * wide))))
+    right = max(0, min(wide, int(round(x1 / GRID * wide))))
+    if top:
+        rgb[:top, :, :] = 0
+    if bottom < high:
+        rgb[bottom:, :, :] = 0
+    if left:
+        rgb[:, :left, :] = 0
+    if right < wide:
+        rgb[:, right:, :] = 0
+
+
+def png_rgb(wide, high, bgra, box=None):
     import struct
     import zlib
     import numpy as np
 
     pix = np.frombuffer(bgra, dtype=np.uint8).reshape(high, wide, 4)
     rgb = np.ascontiguousarray(np.flipud(pix)[:, :, [2, 1, 0]])
+    if box:
+        black_outside(rgb, wide, high, box)
     raw = b"".join(b"\x00" + rgb[y].tobytes() for y in range(high))
 
     def chunk(tag, data):
@@ -506,7 +524,7 @@ def stamp_cursor(user32, gdi32, hdc, left, top, src_w, src_h, wide, high):
     user32.DrawIconEx(hdc, x, y, info.hCursor, 0, 0, 0, None, 3)
 
 
-def desk_png(region=None):
+def desk_png(box=None):
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
     user32.GetSystemMetrics.argtypes = [ctypes.c_int]
@@ -541,22 +559,9 @@ def desk_png(region=None):
     sh = user32.GetSystemMetrics(1)
     if sw < 48 or sh < 48:
         die("vision absent")
-    if region:
-        x0, y0, x1, y1 = region
-        left = int(round(min(x0, x1) / 100.0 * max(1, sw - 1)))
-        top = int(round(min(y0, y1) / 100.0 * max(1, sh - 1)))
-        right = int(round(max(x0, x1) / 100.0 * max(1, sw - 1)))
-        bottom = int(round(max(y0, y1) / 100.0 * max(1, sh - 1)))
-        left = max(0, min(sw - 2, left))
-        top = max(0, min(sh - 2, top))
-        src_w = max(1, min(sw, right) - left)
-        src_h = max(1, min(sh, bottom) - top)
-        scale = min(1.0, ZOOM_EDGE / float(max(src_w, src_h)))
-    else:
-        left, top, src_w, src_h = 0, 0, sw, sh
-        scale = ((DESK_TOKENS * 2304) / float(src_w * src_h)) ** 0.5
-    wide = max(48, int(round(src_w * scale / 48)) * 48)
-    high = max(48, int(round(src_h * scale / 48)) * 48)
+    scale = ((DESK_TOKENS * 2304) / float(sw * sh)) ** 0.5
+    wide = max(48, int(round(sw * scale / 48)) * 48)
+    high = max(48, int(round(sh * scale / 48)) * 48)
     src = user32.GetDC(0)
     if not src:
         die("vision absent")
@@ -566,9 +571,9 @@ def desk_png(region=None):
     try:
         if mem:
             gdi32.SetStretchBltMode(mem, 4)
-        if not mem or not bmp or not gdi32.StretchBlt(mem, 0, 0, wide, high, src, left, top, src_w, src_h, 0x00CC0020):
+        if not mem or not bmp or not gdi32.StretchBlt(mem, 0, 0, wide, high, src, 0, 0, sw, sh, 0x00CC0020):
             die("vision absent")
-        stamp_cursor(user32, gdi32, mem, left, top, src_w, src_h, wide, high)
+        stamp_cursor(user32, gdi32, mem, 0, 0, sw, sh, wide, high)
         gdi32.SelectObject(mem, old)
         old = None
         hdr = _HDR()
@@ -582,7 +587,7 @@ def desk_png(region=None):
         buf = (ctypes.c_ubyte * (wide * high * 4))()
         if gdi32.GetDIBits(mem, bmp, 0, high, buf, ctypes.byref(hdr), 0) != high:
             die("vision absent")
-        png = png_rgb(wide, high, bytes(buf))
+        png = png_rgb(wide, high, bytes(buf), box)
     finally:
         if old:
             gdi32.SelectObject(mem, old)
@@ -1100,50 +1105,41 @@ def tool_look(line, work=None):
     return "windows " + listed + "\n" + seen, image
 
 
-def picture_of(sx, sy):
-    if not REGION:
-        return sx, sy
-    x0, y0, x1, y1 = REGION
-    return (sx - x0) / ((x1 - x0) or 1.0) * 100.0, (sy - y0) / ((y1 - y0) or 1.0) * 100.0
-
-
-def screen_of(px, py):
-    if not REGION:
-        return px, py
-    x0, y0, x1, y1 = REGION
-    return x0 + (x1 - x0) * float(px) / 100.0, y0 + (y1 - y0) * float(py) / 100.0
-
-
-def pointer_picture():
+def pointer_grid():
     point = win32.pointer_pct()
     if not point:
         return None
-    return picture_of(point[0], point[1])
+    across, down = point
+    return down / 100.0 * GRID, across / 100.0 * GRID
 
 
 def pointer_line():
-    point = pointer_picture()
+    point = pointer_grid()
     if not point:
         return "Pointer unknown"
-    return "Pointer %.0f %.0f" % point
+    return "Pointer %d %d" % (round(point[0]), round(point[1]))
 
 
-def four_pcts(text):
-    found = []
-    for token in re.findall(r"\d+(?:\.\d+)?", text or ""):
-        found.append(float(token))
-        if len(found) == 4:
-            break
-    if len(found) < 4 or any(n < 0 or n > 100 for n in found):
+def parse_box(text):
+    raw = text or ""
+    start = raw.find("box_2d")
+    chunk = raw[start + len("box_2d"):] if start >= 0 else raw
+    found = [float(token) for token in re.findall(r"\d+(?:\.\d+)?", chunk)]
+    found = [number for number in found if 0 <= number <= GRID]
+    if len(found) < 4:
         return None
-    x0, y0, x1, y1 = found
-    if x1 < x0:
-        x0, x1 = x1, x0
+    y0, x0, y1, x1 = found[:4]
     if y1 < y0:
         y0, y1 = y1, y0
-    if x1 - x0 < 8 or y1 - y0 < 8 or (x1 - x0 > 92 and y1 - y0 > 92):
+    if x1 < x0:
+        x0, x1 = x1, x0
+    if y1 <= y0 or x1 <= x0:
         return None
-    return x0, y0, x1, y1
+    return y0, x0, y1, x1
+
+
+def to_pct(y, x):
+    return float(x) / GRID * 100.0, float(y) / GRID * 100.0
 
 
 def member_say(profile, image, question):
@@ -1161,10 +1157,10 @@ def member_say(profile, image, question):
 
 def eyes_report(image, goal):
     seen = member_say("eyes", image, goal)
-    point = pointer_picture()
-    line = "pointer %.0f %.0f\n%s" % (point[0], point[1], seen) if point else seen
+    point = pointer_grid()
+    line = "pointer %d %d\n%s" % (round(point[0]), round(point[1]), seen) if point else seen
     if REGION:
-        line += "\nregion %.0f %.0f %.0f %.0f" % REGION
+        line = "box_2d %d %d %d %d\n" % tuple(int(round(number)) for number in REGION) + line
     return line
 
 
@@ -1173,8 +1169,10 @@ def see_work(goal):
     mark = ""
     if REGION is None:
         full, _wide, _high = desk_png(None)
-        mark = member_say("area", full, "Mark the work. Four numbers: left top right bottom.")
-        REGION = four_pcts(mark)
+        mark = member_say("area", full, "box_2d")
+        REGION = parse_box(mark)
+        if REGION is None:
+            return "area " + mark, full
     image, _wide, _high = desk_png(REGION)
     report = eyes_report(image, goal)
     if mark:
@@ -1189,8 +1187,8 @@ def numbers(parts):
         return None
 
 
-def pct_ok(point, count):
-    return bool(point) and len(point) == count and all(0 <= n <= 100 for n in point[:count])
+def grid_ok(point, count):
+    return bool(point) and len(point) == count and all(0 <= n <= GRID for n in point[:count])
 
 
 def parse_direct(line):
@@ -1203,36 +1201,36 @@ def parse_direct(line):
     if head == "move" and len(rest) == 2:
         if rest[1].lower() in ("up", "down", "left", "right"):
             point = numbers([rest[0]])
-            if point and 0 <= point[0] <= 100:
+            if point and 0 <= point[0] <= GRID:
                 return ("rel", rest[1].lower(), point[0])
         if rest[0].lower() in ("up", "down", "left", "right"):
             point = numbers([rest[1]])
-            if point and 0 <= point[0] <= 100:
+            if point and 0 <= point[0] <= GRID:
                 return ("rel", rest[0].lower(), point[0])
         point = numbers(rest)
-        if pct_ok(point, 2):
+        if grid_ok(point, 2):
             return ("move", point[0], point[1])
     elif head == "click":
         if len(rest) == 0:
             return ("click",)
         point = numbers(rest)
-        if pct_ok(point, 2):
+        if grid_ok(point, 2):
             return ("click", point[0], point[1])
     elif head == "right":
         if len(rest) == 0:
             return ("right",)
         point = numbers(rest)
-        if pct_ok(point, 2):
+        if grid_ok(point, 2):
             return ("right", point[0], point[1])
     elif head == "drag":
         point = numbers(rest)
-        if pct_ok(point, 4):
+        if grid_ok(point, 4):
             return ("drag",) + tuple(point)
     elif head == "wheel":
         point = numbers(rest)
         if point and len(point) == 1:
             return ("wheel", point[0])
-        if point and len(point) == 3 and all(0 <= n <= 100 for n in point[:2]):
+        if point and len(point) == 3 and all(0 <= n <= GRID for n in point[:2]):
             return ("wheel", point[0], point[1], point[2])
     if head == "key" and len(rest) >= 1:
         return ("key", rest[0].lower())
@@ -1243,7 +1241,7 @@ def parse_direct(line):
     nums = []
     for token in re.findall(r"\d+(?:\.\d+)?", text):
         number = float(token)
-        if 0 <= number <= 100:
+        if 0 <= number <= GRID:
             nums.append(number)
     dirs = [part.lower() for part in parts if part.lower() in ("up", "down", "left", "right")]
     if len(dirs) == 1 and len(nums) == 1:
@@ -1256,47 +1254,47 @@ def parse_direct(line):
 
 
 def landed(prefix):
-    point = pointer_picture()
+    point = pointer_grid()
     if not point:
         return prefix
-    return prefix + " -> %.0f %.0f" % point
+    return prefix + " -> %d %d" % (round(point[0]), round(point[1]))
 
 
 def run_direct(cmd):
     kind = cmd[0]
     if kind == "rel":
-        here = pointer_picture()
+        here = pointer_grid()
         if not here:
             return ""
-        px, py = here
+        y, x = here
         if cmd[1] == "right":
-            px += cmd[2]
+            x += cmd[2]
         elif cmd[1] == "left":
-            px -= cmd[2]
+            x -= cmd[2]
         elif cmd[1] == "down":
-            py += cmd[2]
+            y += cmd[2]
         else:
-            py -= cmd[2]
-        if not win32.move_pct(*screen_of(px, py)):
+            y -= cmd[2]
+        if not win32.move_pct(*to_pct(y, x)):
             return ""
         return landed("move %s %.0f" % (cmd[1], cmd[2]))
     if kind == "move":
-        if not win32.move_pct(*screen_of(cmd[1], cmd[2])):
+        if not win32.move_pct(*to_pct(cmd[1], cmd[2])):
             return ""
         return landed("move %.0f %.0f" % (cmd[1], cmd[2]))
     if kind == "click":
-        point = screen_of(cmd[1], cmd[2]) if len(cmd) == 3 else win32.pointer_pct()
+        point = to_pct(cmd[1], cmd[2]) if len(cmd) == 3 else win32.pointer_pct()
         if not point or not win32.click_pct(point[0], point[1]):
             return ""
         return landed("click" if len(cmd) == 1 else "click %.0f %.0f" % (cmd[1], cmd[2]))
     if kind == "right":
-        point = screen_of(cmd[1], cmd[2]) if len(cmd) == 3 else win32.pointer_pct()
+        point = to_pct(cmd[1], cmd[2]) if len(cmd) == 3 else win32.pointer_pct()
         if not point or not win32.right_pct(point[0], point[1]):
             return ""
         return landed("right" if len(cmd) == 1 else "right %.0f %.0f" % (cmd[1], cmd[2]))
     if kind == "drag":
-        start = screen_of(cmd[1], cmd[2])
-        end = screen_of(cmd[3], cmd[4])
+        start = to_pct(cmd[1], cmd[2])
+        end = to_pct(cmd[3], cmd[4])
         if not win32.drag_pct(start[0], start[1], end[0], end[1]):
             return ""
         return landed("drag %.0f %.0f %.0f %.0f" % cmd[1:])
@@ -1306,7 +1304,7 @@ def run_direct(cmd):
             notches = cmd[1]
             label = "wheel %.0f" % notches
         else:
-            point = screen_of(cmd[1], cmd[2])
+            point = to_pct(cmd[1], cmd[2])
             notches = cmd[3]
             label = "wheel %.0f %.0f %.0f" % (cmd[1], cmd[2], cmd[3])
         if not point or not win32.wheel_pct(point[0], point[1], notches):
@@ -1354,7 +1352,7 @@ def act_direct(line):
 
 
 def one_step(goal, seen):
-    ask = seen + "\nDo this: " + goal + "\nOne line only: drag x y x y, move 20 right, or click x y."
+    ask = seen + "\nDo this: " + goal + "\nOne line only: drag y x y x, move 200 right, or click y x. Numbers are 0 to 1000, top then across."
     text = local_infer(prompt_for("voice", ask, "", None, False), "")
     found = parse_tool_call(text)
     if found and found[0] == "act":
@@ -1396,7 +1394,7 @@ def tool_act(line):
     seen, image = see_screen("Where is the work?", True)
     step = one_step(text, seen)
     if not parse_direct(step):
-        return "act unparsed. Use drag x y x y or move 20 right.\n" + clip(step, 80), image
+        return "act unparsed. Use drag y x y x or move 200 right.\n" + clip(step, 80), image
     done = act_direct(step)
     if not done:
         return "act stopped " + (win32.fault or "failed"), image
