@@ -46,19 +46,11 @@ SYSTEM = (
     "If you already rang and nothing new happened, do not ring again. "
     "If a remembered line starts with quiet, do not ring until he speaks. "
     "Call up: the user line is Wojciech. Speak one or two short sentences in his language, or act with a tool. "
-    "Area and Eyes are other members on this same computer. Each has her own memory. "
-    "A place is box_2d: y, x, y, x. Numbers run from 0 to 1000. y is down from the top. x is across. "
-    "Area marks the work with one box_2d. Later pictures use that same grid and black out everything outside the box. "
-    "Eyes names things with box_2d. "
-    "If the work is not on screen yet, use run, then look. "
-    "In the thought, judge the miss. A larger miss is a larger number. If the miss shrank, use a smaller number. "
-    "One correction, then look again. Up is toward the top. "
-    "move 200 right, move 200 left, move 200 up, and move 200 down shift the pointer by that many on the grid. "
-    "click y x, right y x, and drag y x y x use that same grid. "
-    "wheel n, key name, type text. down name holds a key. up name lets that key up. "
-    "To write a file, run Python or cmd, or open a program, use run. "
-    "Do not touch the screen on an idle check. "
-    "To change the picture on the screen, look, then drag or click. run opens a program or runs a command. It does not draw the picture. "
+    "A place is box_2d: y, x, y, x from 0 to 1000. y is down from the top. x is across. "
+    "Area, Eyes, and every act use that place. Later pictures keep that grid and black out everything outside Area's box. "
+    "Look, then one act, then look. If the picture did not change, that act missed. "
+    "On an idle check, do not touch the screen. "
+    "If the work is not on screen, use run, then look. run does not change the picture. "
     "If he asked, do the work. "
     "If he wants the call to end, the action is hang and you write no words. "
     "If you are confused or stuck, the action is ring."
@@ -66,20 +58,20 @@ SYSTEM = (
 EYES = (
     "You are Eyes. You see one picture. Black is outside the work. "
     "Reply with JSON only. Each thing is {\"box_2d\": [y, x, y, x], \"label\": \"name\"}. "
-    "Numbers are 0 to 1000. y is down from the top. x is across. "
+    "y then x, from 0 to 1000, y down from the top. "
     "Only what the question asks about. No actions."
 )
 AREA = (
     "You are Area. You see one picture. "
     "Reply with one JSON object and nothing else: {\"box_2d\": [y, x, y, x], \"label\": \"work\"}. "
-    "Numbers are 0 to 1000. y is down from the top. x is across. "
-    "The box is the region the work is in."
+    "y then x, from 0 to 1000, y down from the top. "
+    "The box is the region the question names."
 )
 TOOL_TEXT = {
     "ring": "Place the call. The next words you write, after this tool, are what he hears once he has answered. If he asked for a joke or a message, those words are that joke or message. If nothing is waiting, say you are up and ask if he wants anything.",
     "hang": "End the phone call now. Use this when he wants to stop, hang up, or says goodbye. Say nothing else.",
-    "look": "See the work. Area and Eyes answer with box_2d. The grid is 0 to 1000, top then across.",
-    "act": "One correction on that same grid. Opening a program is run.",
+    "look": "See the work. Area and Eyes answer with box_2d.",
+    "act": "One act at one place. Opening a program is run.",
     "run": "Run one PowerShell command and return the output. Use this to write a file, run Python, run cmd, or open a program.",
     "remember": "Store one short fact that stays in later turns.",
     "quiet": "Stay quiet and do not ring until he speaks. line clear ends that.",
@@ -88,7 +80,7 @@ TOOL_LINE = {
     "ring": "A short greeting. The joke or the message belongs in the words you write after this tool.",
     "hang": "Leave empty.",
     "look": "What to notice, or empty.",
-    "act": "move 200 right, move 200 left, move 200 up, move 200 down, click y x, right y x, drag y x y x, wheel n, key name, type text, down name, up name, or a short goal. Numbers are 0 to 1000, top then across.",
+    "act": "click y x, right y x, drag y x y x, move y x, wheel n, key name, type text, down name, or up name. y then x, 0 to 1000.",
     "run": "The PowerShell command. Set-Content writes a file. python -c runs Python. cmd /c runs cmd.",
     "remember": "The fact.",
     "quiet": "Why to stay quiet.",
@@ -1096,9 +1088,7 @@ def tool_ring(args):
 def tool_look(line, work=None):
     titles = window_titles()
     listed = "; ".join(titles)
-    ask = " ".join((line or "Where is what?").split())
-    if listed:
-        ask += " Open windows: " + listed
+    ask = " ".join((line or "the work").split())
     if not (ROOT / "gemma-mmproj.gguf").is_file():
         return "windows " + listed, ""
     if work is None:
@@ -1158,29 +1148,29 @@ def member_say(profile, image, question):
     return text
 
 
+def box_line(box):
+    y0, x0, y1, x1 = (int(round(number)) for number in box)
+    return "{\"box_2d\": [%d, %d, %d, %d], \"label\": \"work\"}" % (y0, x0, y1, x1)
+
+
 def eyes_report(image, goal):
     seen = member_say("eyes", image, goal)
     point = pointer_grid()
-    line = "pointer %d %d\n%s" % (round(point[0]), round(point[1]), seen) if point else seen
-    if REGION:
-        line = "box_2d %d %d %d %d\n" % tuple(int(round(number)) for number in REGION) + line
-    return line
+    if not point:
+        return seen
+    return "pointer %d %d\n%s" % (round(point[0]), round(point[1]), seen)
 
 
 def see_work(goal):
     global REGION
-    mark = ""
     if REGION is None:
         full, _wide, _high = desk_png(None)
-        mark = member_say("area", full, "box_2d")
+        mark = member_say("area", full, goal or "the work")
         REGION = parse_box(mark)
         if REGION is None:
             return "area " + mark, full
     image, _wide, _high = desk_png(REGION)
-    report = eyes_report(image, goal)
-    if mark:
-        report = "area " + clip(mark, 140) + "\n" + report
-    return report, image
+    return "area " + box_line(REGION) + "\n" + eyes_report(image, goal), image
 
 
 def numbers(parts):
@@ -1200,16 +1190,8 @@ def parse_direct(line):
     if not parts or not parts[0]:
         return None
     head = parts[0].lower()
-    rest = [part[:-1] if part.endswith("%") else part for part in parts[1:]]
-    if head == "move" and len(rest) == 2:
-        if rest[1].lower() in ("up", "down", "left", "right"):
-            point = numbers([rest[0]])
-            if point and 0 <= point[0] <= GRID:
-                return ("rel", rest[1].lower(), point[0])
-        if rest[0].lower() in ("up", "down", "left", "right"):
-            point = numbers([rest[1]])
-            if point and 0 <= point[0] <= GRID:
-                return ("rel", rest[0].lower(), point[0])
+    rest = parts[1:]
+    if head == "move":
         point = numbers(rest)
         if grid_ok(point, 2):
             return ("move", point[0], point[1])
@@ -1241,18 +1223,6 @@ def parse_direct(line):
         return ("type", text.split(" ", 1)[1])
     if head in ("down", "up") and len(rest) >= 1 and rest[0].lower() in win32.VK_MAP:
         return (head, rest[0].lower())
-    nums = []
-    for token in re.findall(r"\d+(?:\.\d+)?", text):
-        number = float(token)
-        if 0 <= number <= GRID:
-            nums.append(number)
-    dirs = [part.lower() for part in parts if part.lower() in ("up", "down", "left", "right")]
-    if len(dirs) == 1 and len(nums) == 1:
-        return ("rel", dirs[0], nums[0])
-    if len(nums) == 4:
-        return ("drag", nums[0], nums[1], nums[2], nums[3])
-    if len(nums) == 2:
-        return ("click", nums[0], nums[1])
     return None
 
 
@@ -1265,22 +1235,6 @@ def landed(prefix):
 
 def run_direct(cmd):
     kind = cmd[0]
-    if kind == "rel":
-        here = pointer_grid()
-        if not here:
-            return ""
-        y, x = here
-        if cmd[1] == "right":
-            x += cmd[2]
-        elif cmd[1] == "left":
-            x -= cmd[2]
-        elif cmd[1] == "down":
-            y += cmd[2]
-        else:
-            y -= cmd[2]
-        if not win32.move_pct(*to_pct(y, x)):
-            return ""
-        return landed("move %s %.0f" % (cmd[1], cmd[2]))
     if kind == "move":
         if not win32.move_pct(*to_pct(cmd[1], cmd[2])):
             return ""
@@ -1354,23 +1308,35 @@ def act_direct(line):
     return done
 
 
-def one_step(goal, seen):
-    ask = seen + "\nDo this: " + goal + "\nOne line only: drag y x y x, move 200 right, or click y x. Numbers are 0 to 1000, top then across."
-    text = local_infer(prompt_for("voice", ask, "", None, False), "")
-    found = parse_tool_call(text)
-    if found and found[0] == "act":
-        return found[1].get("line", "")
-    spoken = answer_text(text)
-    for chunk in re.split(r"[\n.]", spoken):
-        line = " ".join(chunk.split())
-        if parse_direct(line):
-            return line
-    return spoken
-
-
 def shot_of():
     image, wide, high = desk_png(REGION)
     return image, wide, high
+
+
+def with_work(note):
+    if REGION is None:
+        return note, ""
+    image, _wide, _high = shot_of()
+    deliver(image)
+    return note + " " + box_line(REGION), image
+
+
+def place_ok(y, x):
+    if REGION is None:
+        return True
+    y0, x0, y1, x1 = REGION
+    return y0 <= y <= y1 and x0 <= x <= x1
+
+
+def act_places(cmd):
+    kind = cmd[0]
+    if kind in ("click", "right", "move") and len(cmd) == 3:
+        return ((cmd[1], cmd[2]),)
+    if kind == "drag":
+        return ((cmd[1], cmd[2]), (cmd[3], cmd[4]))
+    if kind == "wheel" and len(cmd) == 4:
+        return ((cmd[1], cmd[2]),)
+    return ()
 
 
 def tool_act(line):
@@ -1383,27 +1349,23 @@ def tool_act(line):
     head = text.lower()
     if head.startswith(("run ", "start ", "start-process ", "powershell ", "python ", "cmd ", "set-content ")):
         return tool_run(text[4:].strip() if head.startswith("run ") else text), ""
-    done = act_direct(text) if parse_direct(text) else None
-    if done is not None:
-        if not done:
-            return "act stopped " + (win32.fault or "failed"), ""
-        image, wide, high = shot_of()
-        deliver(image)
-        return "act " + done + " " + str(wide) + " " + str(high), image
-    if not (ROOT / "gemma-mmproj.gguf").is_file():
-        return "vision absent", ""
-    if not text:
-        text = "Look, then one correction."
-    seen, image = see_screen("Where is the work?", True)
-    step = one_step(text, seen)
-    if not parse_direct(step):
-        return "act unparsed. Use drag y x y x or move 200 right.\n" + clip(step, 80), image
-    done = act_direct(step)
+    cmd = parse_direct(text)
+    if cmd is None:
+        return with_work("act unparsed. click y x or drag y x y x.")
+    if cmd[0] == "drag" and abs(cmd[1] - cmd[3]) < 1 and abs(cmd[2] - cmd[4]) < 1:
+        return with_work("A stroke needs two places. drag y x y x.")
+    if cmd[0] in ("click", "right") and len(cmd) == 1:
+        point = pointer_grid()
+        if point and not place_ok(point[0], point[1]):
+            return with_work("outside the work.")
+    elif any(not place_ok(y, x) for y, x in act_places(cmd)):
+        return with_work("outside the work.")
+    done = act_direct(text)
     if not done:
-        return "act stopped " + (win32.fault or "failed"), image
+        return "act stopped " + (win32.fault or "failed"), ""
     image, wide, high = shot_of()
     deliver(image)
-    return "act " + done + " " + str(wide) + " " + str(high) + "\n" + seen, image
+    return "act " + done + " " + str(wide) + " " + str(high), image
 
 
 def shell_command(line):
