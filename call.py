@@ -20,6 +20,7 @@ from ntgcalls import (
     FrameData,
     MediaDescription,
     MediaSource,
+    VideoDescription,
     RTCServer,
     StreamDevice,
     StreamMode,
@@ -62,6 +63,8 @@ PAD = RATE_RX * 120 // 1000
 MIN_UTTER = RATE_RX
 MAX_UTTER = RATE_RX * 30
 IDLE_EAR = 20
+DESK_W = 640
+DESK_H = 360
 
 LIVE = None
 VAD_PROC = None
@@ -299,6 +302,7 @@ def boot():
     LIVE.ring = threading.Event()
     LIVE.mark_lock = threading.Lock()
     LIVE.thread_line = None
+    LIVE.desk_on = False
 
     def runner():
         asyncio.set_event_loop(LIVE.loop)
@@ -383,11 +387,14 @@ def servers_of(connections):
     return found
 
 
-def external(rate):
+def external(rate, camera=False):
+    shot = None
+    if camera:
+        shot = VideoDescription(MediaSource.EXTERNAL, DESK_W, DESK_H, 8, "", True)
     return MediaDescription(
         microphone=AudioDescription(MediaSource.EXTERNAL, rate, 1, "", True),
         speaker=None,
-        camera=None,
+        camera=shot,
         screen=None,
     )
 
@@ -442,7 +449,7 @@ async def end_media():
                         duration=max(0, int(time.time() - began)) if began else 0,
                         reason=PhoneCallDiscardReasonHangup(),
                         connection_id=0,
-                        video=False,
+                        video=True,
                     )
                 ),
                 8,
@@ -714,7 +721,7 @@ async def begin_media(peer_id):
     LIVE.calls.on_connection_change(on_connection)
     LIVE.calls.on_signaling_data(on_signal)
     await LIVE.calls.create_p2p_call(peer_id)
-    await LIVE.calls.set_stream_sources(peer_id, StreamMode.CAPTURE, external(RATE_TX))
+    await LIVE.calls.set_stream_sources(peer_id, StreamMode.CAPTURE, external(RATE_TX, True))
     await LIVE.calls.set_stream_sources(peer_id, StreamMode.PLAYBACK, external(RATE_RX))
 
 
@@ -735,6 +742,7 @@ async def finish_link(call):
     LIVE.began = time.time()
     mark("up")
     print("call: connected", file=sys.stderr, flush=True)
+    start_desk()
 
 
 async def discard_missed(phone):
@@ -744,7 +752,7 @@ async def discard_missed(phone):
             duration=0,
             reason=PhoneCallDiscardReasonMissed(),
             connection_id=0,
-            video=False,
+            video=True,
         )
     )
 
@@ -876,7 +884,7 @@ async def place():
                 random_id=random.randint(0, 2**31 - 1),
                 g_a_hash=g_a_hash,
                 protocol=wire,
-                video=False,
+                video=True,
             )
         )
     except RPCError as exc:
@@ -956,6 +964,107 @@ def reset_rx():
         LIVE.rx.clear()
     LIVE.rx_event.clear()
     LIVE.gate.reset()
+
+
+class _BMI(ctypes.Structure):
+    _fields_ = [
+        ("biSize", ctypes.c_uint32),
+        ("biWidth", ctypes.c_int32),
+        ("biHeight", ctypes.c_int32),
+        ("biPlanes", ctypes.c_uint16),
+        ("biBitCount", ctypes.c_uint16),
+        ("biCompression", ctypes.c_uint32),
+        ("biSizeImage", ctypes.c_uint32),
+        ("biXPelsPerMeter", ctypes.c_int32),
+        ("biYPelsPerMeter", ctypes.c_int32),
+        ("biClrUsed", ctypes.c_uint32),
+        ("biClrImportant", ctypes.c_uint32),
+    ]
+
+
+def desk_i420():
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
+    user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+    user32.GetSystemMetrics.restype = ctypes.c_int
+    user32.GetDC.argtypes = [ctypes.c_void_p]
+    user32.GetDC.restype = ctypes.c_void_p
+    user32.ReleaseDC.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    user32.ReleaseDC.restype = ctypes.c_int
+    gdi32.CreateCompatibleDC.argtypes = [ctypes.c_void_p]
+    gdi32.CreateCompatibleDC.restype = ctypes.c_void_p
+    gdi32.CreateCompatibleBitmap.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    gdi32.CreateCompatibleBitmap.restype = ctypes.c_void_p
+    gdi32.SelectObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    gdi32.SelectObject.restype = ctypes.c_void_p
+    gdi32.StretchBlt.argtypes = [
+        ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+        ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint32,
+    ]
+    gdi32.StretchBlt.restype = ctypes.c_int
+    gdi32.GetDIBits.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint,
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint,
+    ]
+    gdi32.GetDIBits.restype = ctypes.c_int
+    gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
+    gdi32.DeleteObject.restype = ctypes.c_int
+    gdi32.DeleteDC.argtypes = [ctypes.c_void_p]
+    gdi32.DeleteDC.restype = ctypes.c_int
+    sw = user32.GetSystemMetrics(0)
+    sh = user32.GetSystemMetrics(1)
+    src = user32.GetDC(0)
+    mem = gdi32.CreateCompatibleDC(src)
+    bmp = gdi32.CreateCompatibleBitmap(src, DESK_W, DESK_H)
+    old = gdi32.SelectObject(mem, bmp)
+    gdi32.StretchBlt(mem, 0, 0, DESK_W, DESK_H, src, 0, 0, sw, sh, 0x00CC0020)
+    gdi32.SelectObject(mem, old)
+    hdr = _BMI()
+    hdr.biSize = ctypes.sizeof(_BMI)
+    hdr.biWidth = DESK_W
+    hdr.biHeight = DESK_H
+    hdr.biPlanes = 1
+    hdr.biBitCount = 32
+    buf = (ctypes.c_ubyte * (DESK_W * DESK_H * 4))()
+    gdi32.GetDIBits(mem, bmp, 0, DESK_H, buf, ctypes.byref(hdr), 0)
+    gdi32.DeleteObject(bmp)
+    gdi32.DeleteDC(mem)
+    user32.ReleaseDC(0, src)
+    bgr = np.flipud(np.frombuffer(buf, dtype=np.uint8).reshape(DESK_H, DESK_W, 4)[:, :, :3]).astype(np.float32)
+    blue, green, red = bgr[:, :, 0], bgr[:, :, 1], bgr[:, :, 2]
+    y = (0.257 * red + 0.504 * green + 0.098 * blue + 16).clip(0, 255).astype(np.uint8)
+    u = (-0.148 * red[::2, ::2] - 0.291 * green[::2, ::2] + 0.439 * blue[::2, ::2] + 128).clip(0, 255).astype(np.uint8)
+    v = (0.439 * red[::2, ::2] - 0.368 * green[::2, ::2] - 0.071 * blue[::2, ::2] + 128).clip(0, 255).astype(np.uint8)
+    return np.concatenate((y.reshape(-1), u.reshape(-1), v.reshape(-1))).tobytes()
+
+
+async def send_desk(frame):
+    await LIVE.calls.send_external_frame(
+        LIVE.peer_id,
+        StreamDevice.CAMERA,
+        frame,
+        FrameData(int(time.time() * 1000), VIDEO_ROTATION_0, DESK_W, DESK_H),
+    )
+
+
+def desk_video():
+    sent = 0
+    while LIVE is not None and LIVE.up and not LIVE.closed:
+        submit(send_desk(desk_i420()), 3)
+        sent += 1
+        if sent == 1:
+            print("desk video", file=sys.stderr, flush=True)
+        time.sleep(0.125)
+    print("desk video sent " + str(sent), file=sys.stderr, flush=True)
+    if LIVE is not None:
+        LIVE.desk_on = False
+
+
+def start_desk():
+    if LIVE is None or LIVE.desk_on:
+        return
+    LIVE.desk_on = True
+    threading.Thread(target=desk_video, name="trident-desk", daemon=True).start()
 
 
 def speak(text):
@@ -1121,7 +1230,7 @@ def line_loop():
             injected = take_inject()
             if injected:
                 print("inject: " + injected, file=sys.stderr, flush=True)
-                reply = node.agent_turn("voice", injected, "")
+                reply = node.agent_turn("voice", injected, "", written=True)
                 print(reply, flush=True)
                 continue
             if time.monotonic() - idle_since < IDLE_EAR:

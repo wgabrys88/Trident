@@ -746,7 +746,7 @@ def tool_decls(names):
         "remember": ("Store one fact that stays after old turns are dropped.", (("line", "The fact, one short line.", True),)),
         "place": ("Report this machine: cuda, vulkan, engines, playback, microphone.", ()),
         "desk": ("Look at the whole desktop, or do the one action he agreed to. click, type, and key run only while the call is up. done is a look. On the call the picture is sent to his Telegram.", (("line", "The goal, one short line.", True),)),
-        "ring": ("Call Wojciech. line is what you say when he answers, such as that you are up, nothing is waiting, and you are asking if he wants anything.", (("line", "What you will say when he answers.", True),)),
+        "ring": ("Call Wojciech. line is what you say when he answers. If he asked you to tell him something, that substance is the line. If nothing is waiting, say you are up and ask if he wants anything.", (("line", "What you will say when he answers.", True),)),
         "next": ("Store one line of work for later. This does not run the work.", (("line", "The work, one short line.", True),)),
         "stop": ("Stop the local voice. Does not stop the brain.", (("line", "Waiting work to drop, or empty.", False),)),
     }
@@ -895,7 +895,7 @@ def layer_pairs(pairs, question):
     return shown, rest
 
 
-def prompt_for(profile, question, suffix, root):
+def prompt_for(profile, question, suffix, root, written=False):
     path = memory_file(profile, root)
     facts, pairs, works = read_memory(path)
     names = PROFILES[profile]["tools"]
@@ -903,11 +903,12 @@ def prompt_for(profile, question, suffix, root):
         "<bos><|turn>system\nYou are Gemma, resident in Trident. Wojciech is the owner. "
         "The meaning of his words is the decision. What you remember is in this prompt. "
         "The computer microphone stays closed. "
-        "On a call the user line is Wojciech. With the call down the user line is the room. "
+        "On a call the user line is Wojciech. With the call down, cable speech is the room. "
+        "A written line is Wojciech, and you act on its meaning as you would his voice: look, work, remember a wait, stay quiet, or ring and say what he asked you to pass on. "
         "When the call is down and nothing is happening, and memory does not say to stay quiet, use ring. "
         "Its line says you are up, nothing is waiting, and asks if he wants anything. "
         "If he told you to do nothing until a time, remember that and do not ring. "
-        "If you already rang and nothing new has happened, do not ring again. "
+        "If you already rang and nothing new has happened, do not ring again. A written line is new. "
         "Do not burst calls when a step fails. If you are confused, stuck with no clear next move, or the screen says to reach him, use ring. "
         "Look whenever you want. Before click, type, or key on your own, be on the call, say what you see and what you plan, and wait for his yes. "
         "On a call, speak one or two short sentences in the language of his words."
@@ -916,6 +917,8 @@ def prompt_for(profile, question, suffix, root):
         + "Time " + time.strftime("%Y-%m-%d %H:%M") + "\n"
         + ("Call up\n" if call_flag() == "call up" else "Call down\n")
     )
+    if written:
+        head += "Written line from Wojciech.\n"
     if facts:
         head += "Remembered:\n" + "\n".join(facts) + "\n"
     if works:
@@ -1082,7 +1085,7 @@ def append_turn(profile, question, reply, root):
     with_memory(path, run)
 
 
-def agent_turn(profile, question, image_b64="", root=None):
+def agent_turn(profile, question, image_b64="", root=None, written=False):
     if profile not in PROFILES:
         die("unknown profile " + profile)
     if not (question or "").strip():
@@ -1105,7 +1108,7 @@ def agent_turn(profile, question, image_b64="", root=None):
         elif shot:
             suffix = trail + MEDIA
             image = shot
-        text = generate(prompt_for(profile, ask, suffix, root), image)
+        text = generate(prompt_for(profile, ask, suffix, root, written), image)
         shot = ""
         if not str(text or "").strip():
             die("agent follow-up empty" if saw else "gemma returned empty")
