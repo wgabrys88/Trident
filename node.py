@@ -47,7 +47,7 @@ SYSTEM = (
 TOOL_TEXT = {
     "ring": "Place the call. The next words you write, after this tool, are what he hears once he has answered. If he asked for a joke or a message, those words are that joke or message. If nothing is waiting, say you are up and ask if he wants anything.",
     "hang": "End the phone call now. Use this when he wants to stop, hang up, or says goodbye. Say nothing else.",
-    "look": "See the whole desktop. You get one sentence back. On a call the picture is sent to him.",
+    "look": "See the whole desktop. You get one sentence back. The picture is sent to him in the chat when the line is connected.",
     "act": "One mouse or key step on the desktop. Percents run from 0 to 100. Opening a program is run, not act.",
     "run": "Run one PowerShell command and return the output. Use this to write a file, run Python, run cmd, or open a program.",
     "remember": "Store one short fact that stays in later turns.",
@@ -348,13 +348,6 @@ def caps_text():
     return "\n".join(lines) + "\n"
 
 
-def park_mouth():
-    import mouth
-
-    if mouth.chatterbox_running_any():
-        mouth.stop_resident()
-
-
 def park_gemma():
     import gemma
 
@@ -368,7 +361,6 @@ def local_infer(prompt, image):
         die("brain missing gemma")
     if image and MEDIA not in prompt:
         die("image prompt missing <__media__>")
-    park_mouth()
     try:
         (ROOT / "gemma.lastprompt.txt").write_text(prompt, encoding="utf-8")
     except OSError:
@@ -392,7 +384,6 @@ DESK_SYSTEM = (
     "drag has box_2d for the start and box_2d_end for the end, same order. "
     "type has text and an optional key. "
     "key is win-r, enter, escape, backspace, delete, tab, ctrl-a, ctrl-l, ctrl-t, ctrl-w, alt-f4, up, down, left, right, or space. "
-    "When the goal is to draw, do is drag and both boxes lie on the white canvas, one short stroke. "
     "done is a look with no action."
 )
 
@@ -664,7 +655,7 @@ def deliver(image_b64):
     if mod is None:
         return
     live = getattr(mod, "LIVE", None)
-    if live is None or not getattr(live, "up", False):
+    if live is None or getattr(live, "closed", True) or getattr(live, "client", None) is None or not getattr(live, "peer_id", 0):
         return
     mod.picture(base64.b64decode("".join((image_b64 or "").split())))
 
@@ -906,6 +897,8 @@ def prompt_for(profile, question, suffix, root, written=False):
 
 def answer_text(text):
     raw = text or ""
+    raw = re.sub(r"```tool_code\b.*?```", " ", raw, flags=re.DOTALL)
+    raw = re.sub(r"(?m)^[ \t]*tool_code\s*=.*?$", " ", raw)
     if "<|channel>" not in raw and "<channel|>" in raw:
         raw = raw.split("<channel|>")[-1]
     while "<|channel>" in raw:
@@ -924,27 +917,93 @@ def answer_text(text):
 
 
 def tool_name(name):
-    if name == "stop":
+    key = (name or "").strip().lower()
+    if key == "stop":
         return "hang"
-    if name in PROFILES["voice"]["tools"]:
-        return name
+    if key in PROFILES["voice"]["tools"]:
+        return key
     return ""
 
 
 def args_of(body):
     args = {}
-    for key, quoted, bare in re.findall(r"(\w+)\s*:\s*(?:<\|\"\|>(.*?)<\|\"\|>|([^,}]*))", body or "", re.DOTALL):
+    for key, quoted, bare in re.findall(
+        r"(?:<\|\"\|>)?(\w+)(?:<\|\"\|>)?\s*:\s*(?:<\|\"\|>(.*?)<\|\"\|>|([^,}]*))",
+        body or "",
+        re.DOTALL,
+    ):
         args[key] = " ".join((quoted if quoted else bare).split())
     return args
 
 
+def paren_args(body):
+    body = body or ""
+    if not body.strip():
+        return {}
+    match = re.search(
+        r"line\s*=\s*(?:<\|\"\|>(.*?)<\|\"\|>|\"((?:\\.|[^\"\\])*)\"|'((?:\\.|[^'\\])*)')",
+        body,
+        re.DOTALL,
+    )
+    if not match:
+        return None
+    raw = next(group for group in match.groups() if group is not None)
+    return {"line": " ".join(raw.replace('\\"', '"').replace("\\'", "'").split())}
+
+
+def brace_call(raw):
+    match = re.search(
+        r"<\|tool_call>\s*call:([A-Za-z_]\w*)\s*\{(.*?)\}\s*(?:<tool_call\|>|<turn\|>)",
+        raw,
+        re.DOTALL,
+    )
+    if not match:
+        match = re.search(
+            r"call:([A-Za-z_]\w*)\s*\{(.*?)\}\s*(?:<tool_call\|>|<turn\|>|$)",
+            (raw or "").strip(),
+            re.DOTALL,
+        )
+    if not match or not tool_name(match.group(1)):
+        return None
+    return tool_name(match.group(1)), args_of(match.group(2)), match.group(0)
+
+
+def paren_call(raw):
+    match = re.search(
+        r"(?:<\|tool_call>\s*)?call:([A-Za-z_]\w*)\s*\((.*?)\)\s*(?:<tool_call\|>|<turn\|>|$)",
+        (raw or "").strip(),
+        re.DOTALL,
+    )
+    if not match or not tool_name(match.group(1)):
+        return None
+    args = paren_args(match.group(2))
+    if args is None:
+        return None
+    return tool_name(match.group(1)), args, match.group(0)
+
+
+def code_call(raw):
+    if "tool_code" not in (raw or ""):
+        return None
+    chunks = [item.group(1) for item in re.finditer(r"```tool_code\b[^\n]*\n(.*?)```", raw, re.DOTALL)]
+    chunks.append(raw)
+    for chunk in chunks:
+        for name in ("stop",) + PROFILES["voice"]["tools"]:
+            match = re.search(r"\b" + name + r"\s*\((.*?)\)", chunk, re.DOTALL)
+            if not match:
+                continue
+            args = paren_args(match.group(1))
+            if args is None:
+                continue
+            return tool_name(name), args, match.group(0)
+    return None
+
+
 def parse_tool_call(text):
     raw = text or ""
-    match = re.search(r"<\|tool_call>\s*call:([A-Za-z_]\w*)\s*\{(.*?)\}\s*<tool_call\|>", raw, re.DOTALL)
-    if not match:
-        match = re.search(r"call:([A-Za-z_]\w*)\s*\{(.*?)\}\s*(?:<tool_call\|>|$)", raw.strip(), re.DOTALL)
-    if match and tool_name(match.group(1)):
-        return tool_name(match.group(1)), args_of(match.group(2)), match.group(0)
+    found = brace_call(raw) or paren_call(raw) or code_call(raw)
+    if found:
+        return found
     spoken = answer_text(raw).strip()
     low = spoken.lower().strip(".")
     bare = {
@@ -956,8 +1015,6 @@ def parse_tool_call(text):
     }
     if low in bare:
         return bare[low], {}, spoken
-    if low in PROFILES["voice"]["tools"]:
-        return low, {}, spoken
     quoted = re.search(r"[\"“](.+?)[\"”]", spoken)
     if low.startswith("ring") and quoted and quoted.group(1).strip():
         return "ring", {"line": quoted.group(1).strip()}, spoken
@@ -1095,8 +1152,7 @@ def tool_look(line):
     desktop_lease()
     image, wide, high = desk_png()
     seen = see_screen(image, ask)
-    if call_flag() == "call up":
-        deliver(image)
+    deliver(image)
     return "windows " + listed + "\nsee " + seen, image
 
 
@@ -1155,8 +1211,7 @@ def tool_act(line):
     if done is not None:
         if not done:
             return "act failed", image
-        if call_flag() == "call up":
-            deliver(image)
+        deliver(image)
         return "act " + done + " " + str(wide) + " " + str(high), image
     goal = text or "Look, then one step."
     reply = local_infer(desk_prompt(goal), image)
@@ -1170,8 +1225,7 @@ def tool_act(line):
         return "see " + obj["see"] + "\nact failed", image
     if obj["do"] != "done":
         image, wide, high = desk_png()
-    if call_flag() == "call up":
-        deliver(image)
+    deliver(image)
     return "see " + obj["see"] + "\nact " + taken + " " + str(wide) + " " + str(high), image
 
 

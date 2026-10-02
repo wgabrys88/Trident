@@ -420,10 +420,6 @@ def armed():
     return LIVE is not None and LIVE.client is not None and not LIVE.closed
 
 
-def live():
-    return LIVE is not None and LIVE.up and not LIVE.closed
-
-
 async def end_media():
     calls = LIVE.calls
     peer = LIVE.peer_id
@@ -1100,7 +1096,6 @@ def speak(text):
         import node
 
         node.park_gemma()
-        node.park_mouth()
         model = "v3" if lang == "pl" else "nano"
         wav = mouth.synthesize(model, lang, spoken)
         print("vram: mouth unloaded", file=sys.stderr, flush=True)
@@ -1112,7 +1107,7 @@ def speak(text):
 
 
 def picture(png):
-    if LIVE is None or not LIVE.up:
+    if LIVE is None or LIVE.closed or LIVE.client is None or not LIVE.peer_id:
         die("call down")
     if not png:
         die("empty shot")
@@ -1122,9 +1117,13 @@ def picture(png):
 
         buf = io.BytesIO(png)
         buf.name = "desk.png"
-        await LIVE.client.send_file(LIVE.peer_id, buf, force_document=False)
+        sent = await LIVE.client.send_file(LIVE.peer_id, buf, force_document=False)
+        if isinstance(sent, list):
+            sent = sent[0] if sent else None
+        return int(getattr(sent, "id", 0) or 0)
 
-    submit(send(), 60)
+    ident = submit(send(), 60)
+    print("call: shot " + str(ident), file=sys.stderr, flush=True)
     return "sent"
 
 

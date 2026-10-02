@@ -542,12 +542,7 @@ def idle():
 
 
 def begin_preload():
-    import mouth
-
     global _PRELOAD_THREAD
-    if mouth.chatterbox_running_any():
-        print("vram: gemma preload held", file=sys.stderr, flush=True)
-        return
     with _PRELOAD_GUARD:
         if _PRELOAD_THREAD is not None and _PRELOAD_THREAD.is_alive():
             return
@@ -564,11 +559,6 @@ def begin_preload():
             try:
                 if PRELOAD_CANCEL.is_set():
                     print("vram: gemma preload cancelled", file=sys.stderr, flush=True)
-                    return
-                import mouth as mouth_mod
-
-                if mouth_mod.chatterbox_running_any():
-                    print("vram: gemma preload held", file=sys.stderr, flush=True)
                     return
                 ensure_resident()
                 if PRELOAD_CANCEL.is_set():

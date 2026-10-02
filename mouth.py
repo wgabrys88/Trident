@@ -1,47 +1,12 @@
-import argparse
-import ctypes
-import os
 import shutil
 import subprocess
 import sys
 import tempfile
-import time
 import unicodedata
-from collections import namedtuple
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 DROP_KEYS = ("chatterbox.variant", "chatterbox.language", "chatterbox.play", "chatterbox.cfm-steps")
-PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-PROCESS_TERMINATE = 0x0001
-SLOTS = (
-    "mouth.pid",
-    "mouth.pid.tmp",
-    "mouth.stop",
-    "mouth.prompt.txt",
-    "mouth.response.txt",
-    "mouth.prompt.txt.tmp",
-    "mouth.response.txt.tmp",
-)
-LOCK_NAME = "mouth.lock"
-Resident = namedtuple("Resident", ("pid", "variant", "lang", "fingerprint", "state"))
-
-_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-_kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
-_kernel32.OpenProcess.restype = ctypes.c_void_p
-_kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
-_kernel32.CloseHandle.restype = ctypes.c_int
-_kernel32.QueryFullProcessImageNameW.argtypes = [
-    ctypes.c_void_p,
-    ctypes.c_uint32,
-    ctypes.c_wchar_p,
-    ctypes.POINTER(ctypes.c_uint32),
-]
-_kernel32.QueryFullProcessImageNameW.restype = ctypes.c_int
-_kernel32.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-_kernel32.TerminateProcess.restype = ctypes.c_int
-
-
 _PL = "ąćęłńóśźżĄĆĘŁŃÓŚŹŻ"
 
 
@@ -194,134 +159,8 @@ def synthesize(model, lang, sentence):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def remove_file(name):
-    path = ROOT / name
-    for _ in range(50):
-        try:
-            if path.is_file():
-                path.unlink()
-            return
-        except OSError:
-            time.sleep(0.05)
-    if path.is_file():
-        die("cannot remove " + name)
-
-
-def hex_fingerprint(text):
-    return len(text) == 64 and all(ch in "0123456789abcdef" for ch in text)
-
-
-def resident_record():
-    path = ROOT / "mouth.pid"
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return None
-    if len(lines) not in (3, 5):
-        return None
-    try:
-        pid = int(lines[0].strip())
-    except ValueError:
-        return None
-    if pid <= 0:
-        return None
-    variant = lines[1].strip()
-    lang = lines[2].strip()
-    if not variant or not lang:
-        return None
-    if any(ch.isspace() for ch in variant) or any(ch.isspace() for ch in lang):
-        return None
-    if len(lines) == 3:
-        return Resident(pid, variant, lang, "", "")
-    fingerprint = lines[3].strip()
-    state = lines[4].strip()
-    if not hex_fingerprint(fingerprint) or state not in ("loading", "ready"):
-        return None
-    return Resident(pid, variant, lang, fingerprint, state)
-
-
-def process_image(pid):
-    handle = _kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid)
-    if not handle:
-        return ""
-    try:
-        size = ctypes.c_uint32(32768)
-        buf = ctypes.create_unicode_buffer(size.value)
-        ok = _kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size))
-        if not ok:
-            return ""
-        return buf.value
-    finally:
-        _kernel32.CloseHandle(handle)
-
-
-def chatterbox_running(pid):
-    image = process_image(pid)
-    return bool(image) and Path(image).name.lower() == "chatterbox.exe"
-
-
-def terminate_pid(pid):
-    handle = _kernel32.OpenProcess(PROCESS_TERMINATE, 0, pid)
-    if not handle:
-        return
-    try:
-        _kernel32.TerminateProcess(handle, 1)
-    finally:
-        _kernel32.CloseHandle(handle)
-
-
-def wait_dead(pid, seconds):
-    deadline = time.time() + seconds
-    while time.time() < deadline:
-        if not chatterbox_running(pid):
-            return True
-        time.sleep(0.05)
-    return not chatterbox_running(pid)
-
-
-def stop_resident():
-    try:
-        (ROOT / "mouth.stop").write_bytes(b"stop\n")
-    except OSError as exc:
-        die("cannot write mouth.stop: " + str(exc))
-    stopped = False
-    rec = resident_record()
-    if rec is not None and chatterbox_running(rec.pid):
-        stopped = True
-        terminate_pid(rec.pid)
-        if not wait_dead(rec.pid, 5):
-            die("cannot stop chatterbox pid " + str(rec.pid))
-    for name in SLOTS:
-        remove_file(name)
-    remove_file(LOCK_NAME)
-    return stopped
-
-
-def chatterbox_running_any():
-    rec = resident_record()
-    return rec is not None and chatterbox_running(rec.pid)
-
-
 def language_of(text):
     for ch in text or "":
         if ch in _PL:
             return "pl"
     return "en"
-
-
-def main():
-    parser = argparse.ArgumentParser(prog="mouth.py")
-    parser.add_argument("--stop", action="store_true")
-    args = parser.parse_args()
-    if not args.stop:
-        die("usage: mouth.py --stop")
-    os.chdir(ROOT)
-    if stop_resident():
-        print("mouth: chatterbox stopped", file=sys.stderr)
-    else:
-        print("mouth: chatterbox not running", file=sys.stderr)
-    raise SystemExit(0)
-
-
-if __name__ == "__main__":
-    main()

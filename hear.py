@@ -1,7 +1,9 @@
 import argparse
 import json
+import re
 import subprocess
 import sys
+import unicodedata
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -33,6 +35,41 @@ def asr_argv(wav):
     ]
 
 
+_PL = "ąćęłńóśźżĄĆĘŁŃÓŚŹŻ"
+_LEAK = re.compile(r"\s*<[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})?>\s*")
+
+
+def primary_tag(raw):
+    tag = (raw or "").strip().lower().replace("_", "-")
+    if tag in {"polish", "pol"}:
+        return "pl"
+    if tag in {"english", "eng"}:
+        return "en"
+    if not tag or tag == "auto":
+        return ""
+    return tag.split("-", 1)[0]
+
+
+def language_tag(data, text):
+    found = []
+    one = data.get("language")
+    if isinstance(one, str):
+        found.append(one)
+    langs = data.get("languages")
+    if isinstance(langs, str):
+        found.append(langs)
+    elif isinstance(langs, list):
+        found.extend(item for item in langs if isinstance(item, str))
+    tag = ""
+    for item in found:
+        tag = primary_tag(item)
+        if tag:
+            break
+    if any(ch in _PL for ch in text):
+        return "pl"
+    return tag
+
+
 def parse_transcript(raw):
     try:
         data = json.loads(raw)
@@ -43,12 +80,10 @@ def parse_transcript(raw):
     text = data.get("text")
     if not isinstance(text, str):
         die("hear json")
-    text = " ".join(text.split())
-    langs = data.get("languages")
-    lang = langs[0].strip() if isinstance(langs, list) and langs and isinstance(langs[0], str) else ""
+    text = " ".join(unicodedata.normalize("NFC", _LEAK.sub(" ", text)).split())
     if not text:
         die("hear empty")
-    return text, lang
+    return text, language_tag(data, text)
 
 
 def transcribe(wav):

@@ -10,7 +10,7 @@ python run.py call [SECONDS]
     SECONDS hangs the call up after that long.
 
 python run.py stop
-    Hang up, stop Gemma and the mouth, and stop the line.
+    Hang up, stop Gemma, and stop the line.
 
 python run.py clean
     Delete call and test artifacts. Leaves models, installs, and reference.wav.
@@ -160,18 +160,13 @@ def cmd_clean():
     for path in ROOT.glob("*.wav"):
         if path.name != "reference.wav":
             removed += drop_file(path)
-    for folder in ("node.queue", "node.state", "node.room"):
+    for folder in ("node.state",):
         base = ROOT / folder
         if not base.is_dir():
             continue
         for path in base.rglob("*"):
             removed += drop_file(path)
     print("clean " + str(removed), flush=True)
-
-
-def stop_mouth():
-    py = venv_python()
-    return subprocess.run([py, str(ROOT / "mouth.py"), "--stop"], cwd=str(ROOT), shell=False).returncode
 
 
 def cmd_stop():
@@ -183,7 +178,6 @@ def cmd_stop():
             node.transact("127.0.0.1:" + str(node.PORT), node.make_card("call", "hang", "close"), 60)
         except SystemExit:
             pass
-    stop_mouth()
     try:
         gemma.stop_resident()
     except SystemExit:
