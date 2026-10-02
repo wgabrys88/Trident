@@ -151,6 +151,7 @@ def cmd_clean():
         "node.pid",
         "node.run.err",
         "gemma.lastprompt.txt",
+        "ear.inject.txt",
     ):
         removed += drop_file(ROOT / name)
     for pattern in ("*.pid", "*.pid.tmp", "*.stop", "*.prompt.txt", "*.response.txt", "*.response.wav", "*.run.log", "*.run.err", "*_chatterbox_out_*", "*_out_*.txt", "*_peer.wav"):

@@ -566,6 +566,15 @@ def start_vad():
     die("vad did not become ready")
 
 
+def take_inject():
+    path = ROOT / "ear.inject.txt"
+    if not path.is_file():
+        return ""
+    text = " ".join(path.read_text(encoding="utf-8").split())
+    path.unlink()
+    return text
+
+
 def take_utterance():
     card = ROOT / "vad.utterance.txt"
     if not card.is_file():
@@ -1003,6 +1012,10 @@ def listen(limit=""):
         return ""
     deadline = time.monotonic() + seconds if seconds else None
     while LIVE.up:
+        injected = take_inject()
+        if injected:
+            print("inject: " + injected, file=sys.stderr, flush=True)
+            return injected
         if deadline is not None and time.monotonic() >= deadline:
             return ""
         data = pull_rx()
@@ -1104,9 +1117,15 @@ def line_loop():
         if not armed() or not LIVE.peer_id:
             idle_since = time.monotonic()
             continue
-        if time.monotonic() - idle_since < IDLE_EAR:
-            continue
         try:
+            injected = take_inject()
+            if injected:
+                print("inject: " + injected, file=sys.stderr, flush=True)
+                reply = node.agent_turn("voice", injected, "")
+                print(reply, flush=True)
+                continue
+            if time.monotonic() - idle_since < IDLE_EAR:
+                continue
             if idle_heard(node):
                 continue
             if LIVE is None or LIVE.closed or LIVE.up or LIVE.ring.is_set():

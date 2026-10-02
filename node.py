@@ -11,6 +11,8 @@ import uuid
 from collections import namedtuple
 from pathlib import Path
 
+import win32
+
 ROOT = Path(__file__).resolve().parent
 PORT = 8765
 Q = '<|"|>'
@@ -415,12 +417,6 @@ DESK_SYSTEM = (
     "key is enter, backspace, ctrl-a, or ctrl-l. "
     "done is a look with no action."
 )
-DESK_KEYS = {
-    "enter": ((0x0D, 0), (0x0D, 2)),
-    "backspace": ((0x08, 0), (0x08, 2)),
-    "ctrl-a": ((0x11, 0), (0x41, 0), (0x41, 2), (0x11, 2)),
-    "ctrl-l": ((0x11, 0), (0x4C, 0), (0x4C, 2), (0x11, 2)),
-}
 
 
 def clip(text, limit=200):
@@ -477,8 +473,6 @@ def png_rgb(wide, high, bgra):
 def desk_png():
     user32 = ctypes.WinDLL("user32", use_last_error=True)
     gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
-    user32.SetProcessDPIAware.restype = ctypes.c_int
-    user32.SetProcessDPIAware()
     user32.GetSystemMetrics.argtypes = [ctypes.c_int]
     user32.GetSystemMetrics.restype = ctypes.c_int
     user32.GetDC.argtypes = [ctypes.c_void_p]
@@ -593,123 +587,33 @@ def desk_object(reply):
     return found
 
 
-_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
-
-
-class _KEY(ctypes.Structure):
-    _fields_ = [
-        ("wVk", ctypes.c_ushort),
-        ("wScan", ctypes.c_ushort),
-        ("dwFlags", ctypes.c_ulong),
-        ("time", ctypes.c_ulong),
-        ("dwExtraInfo", _PTR),
-    ]
-
-
-class _MOUSE(ctypes.Structure):
-    _fields_ = [
-        ("dx", ctypes.c_long),
-        ("dy", ctypes.c_long),
-        ("mouseData", ctypes.c_ulong),
-        ("dwFlags", ctypes.c_ulong),
-        ("time", ctypes.c_ulong),
-        ("dwExtraInfo", _PTR),
-    ]
-
-
-class _HARD(ctypes.Structure):
-    _fields_ = [("uMsg", ctypes.c_ulong), ("wParamL", ctypes.c_ushort), ("wParamH", ctypes.c_ushort)]
-
-
-class _IN(ctypes.Structure):
-    class _U(ctypes.Union):
-        _fields_ = [("mi", _MOUSE), ("ki", _KEY), ("hi", _HARD)]
-
-    _anonymous_ = ("u",)
-    _fields_ = [("type", ctypes.c_ulong), ("u", _U)]
-
-
-def send_input(items):
-    user32 = ctypes.WinDLL("user32", use_last_error=True)
-    user32.SendInput.argtypes = [ctypes.c_uint, ctypes.POINTER(_IN), ctypes.c_int]
-    user32.SendInput.restype = ctypes.c_uint
-    batch = (_IN * len(items))(*items)
-    sent = user32.SendInput(len(items), batch, ctypes.sizeof(_IN))
-    if sent != len(items):
-        die("desk action absent")
-
-
-def desk_key(name):
-    seq = DESK_KEYS.get(str(name).strip().lower())
-    if not seq:
-        die("desk action absent")
-    items = []
-    for vk, flags in seq:
-        item = _IN()
-        item.type = 1
-        item.ki = _KEY(vk, 0, flags, 0, 0)
-        items.append(item)
-    send_input(items)
-
-
-def type_text(text):
-    items = []
-    for ch in text:
-        code = ord(ch)
-        down = _IN()
-        down.type = 1
-        down.ki = _KEY(0, code, 0x0004, 0, 0)
-        up = _IN()
-        up.type = 1
-        up.ki = _KEY(0, code, 0x0004 | 0x0002, 0, 0)
-        items.extend((down, up))
-    if items:
-        send_input(items)
-
-
-def move_click(x, y):
-    user32 = ctypes.WinDLL("user32", use_last_error=True)
-    user32.GetSystemMetrics.argtypes = [ctypes.c_int]
-    user32.GetSystemMetrics.restype = ctypes.c_int
-    user32.SetCursorPos.argtypes = [ctypes.c_int, ctypes.c_int]
-    user32.SetCursorPos.restype = ctypes.c_int
-    user32.mouse_event.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_int, ctypes.c_uint32, ctypes.c_void_p]
-    sw = user32.GetSystemMetrics(0)
-    sh = user32.GetSystemMetrics(1)
-    px = int(max(0.0, min(1000.0, float(x))) / 1000.0 * max(1, sw - 1))
-    py = int(max(0.0, min(1000.0, float(y))) / 1000.0 * max(1, sh - 1))
-    if not user32.SetCursorPos(px, py):
-        die("desk action absent")
-    time.sleep(0.05)
-    user32.mouse_event(0x0002, 0, 0, 0, None)
-    user32.mouse_event(0x0004, 0, 0, 0, None)
-
-
 def act_click(obj):
     box = obj.get("box_2d")
     if not isinstance(box, list) or len(box) != 4:
         die("desk action absent")
     y0, x0, y1, x1 = (float(box[0]), float(box[1]), float(box[2]), float(box[3]))
-    move_click((x0 + x1) / 2.0, (y0 + y1) / 2.0)
+    if not win32.click_pct((x0 + x1) / 20.0, (y0 + y1) / 20.0):
+        die("desk action absent")
     return "click %.0f %.0f %.0f %.0f" % (y0, x0, y1, x1)
 
 
 def act_type(obj):
     text = str(obj.get("text", ""))
     key = str(obj.get("key", "")).strip().lower()
-    if not text or (key and key not in DESK_KEYS):
+    if not text or not win32.type_text(text):
         die("desk action absent")
-    type_text(text)
-    time.sleep(0.3)
     if not key:
         return "type " + text
-    desk_key(key)
+    time.sleep(0.3)
+    if not win32.press(key):
+        die("desk action absent")
     return "type " + text + " key " + key
 
 
 def act_key(obj):
     name = str(obj.get("key", "")).strip().lower()
-    desk_key(name)
+    if not win32.press(name):
+        die("desk action absent")
     return "key " + name
 
 
@@ -940,6 +844,57 @@ def write_memory(path, facts, pairs, works):
     os.replace(tmp, path)
 
 
+def words(text):
+    raw = "".join(ch.lower() if ch.isalnum() else " " for ch in (text or ""))
+    return {w for w in raw.split() if len(w) > 2}
+
+
+def deep_ask(question):
+    low = (question or "").lower()
+    return any(mark in low for mark in (
+        "deep memory",
+        "what do you remember",
+        "all you remember",
+        "recall",
+        "wszystko",
+        "przypomnij",
+        "pamiętasz",
+        "pamietasz",
+    ))
+
+
+def earlier_line(pairs):
+    bits = []
+    for user, model in pairs:
+        bit = clip(user, 60)
+        if model:
+            bit += " / " + clip(model, 60)
+        if bit:
+            bits.append(bit)
+    return clip(" | ".join(bits), 900)
+
+
+def layer_pairs(pairs, question):
+    if deep_ask(question) or len(pairs) <= 4:
+        return list(pairs), []
+    recent = list(pairs[-4:])
+    older = list(pairs[:-4])
+    need = words(question)
+    picked = []
+    if need:
+        scored = sorted(range(len(older)), key=lambda i: len(words(older[i][0] + "\n" + older[i][1]) & need), reverse=True)
+        for index in scored:
+            if not (words(older[index][0] + "\n" + older[index][1]) & need):
+                break
+            picked.append(index)
+            if len(picked) == 6:
+                break
+    chosen = set(picked)
+    shown = [older[i] for i in range(len(older)) if i in chosen] + recent
+    rest = [older[i] for i in range(len(older)) if i not in chosen]
+    return shown, rest
+
+
 def prompt_for(profile, question, suffix, root):
     path = memory_file(profile, root)
     facts, pairs, works = read_memory(path)
@@ -953,7 +908,7 @@ def prompt_for(profile, question, suffix, root):
         "Its line says you are up, nothing is waiting, and asks if he wants anything. "
         "If he told you to do nothing until a time, remember that and do not ring. "
         "If you already rang and nothing new has happened, do not ring again. "
-        "Do not ring because a step failed. "
+        "Do not burst calls when a step fails. If you are confused, stuck with no clear next move, or the screen says to reach him, use ring. "
         "Look whenever you want. Before click, type, or key on your own, be on the call, say what you see and what you plan, and wait for his yes. "
         "On a call, speak one or two short sentences in the language of his words."
         + tool_decls(names)
@@ -965,11 +920,13 @@ def prompt_for(profile, question, suffix, root):
         head += "Remembered:\n" + "\n".join(facts) + "\n"
     if works:
         head += "Work waiting:\n" + "\n".join(works) + "\n"
-    parts = [head]
-    kept = list(pairs)
+    shown, rest = layer_pairs(pairs, question)
+    earlier = earlier_line(rest)
 
     def build(items):
-        body = list(parts)
+        body = [head]
+        if earlier:
+            body.append("Earlier: " + earlier + "\n")
         for user, model in items:
             body.append("<|turn>user\n" + user + "<turn|>\n")
             if model:
@@ -978,14 +935,14 @@ def prompt_for(profile, question, suffix, root):
         body.append("<|turn>model\n" + suffix)
         return "".join(body)
 
-    text = build(kept)
-    while len(text) > 80000 and kept:
-        kept = kept[1:]
-        text = build(kept)
+    text = build(shown)
+    while len(text) > 80000 and shown:
+        extra = earlier_line(shown[:1])
+        shown = shown[1:]
+        earlier = clip((earlier + " | " + extra).strip(" |"), 900) if earlier else extra
+        text = build(shown)
     if len(text) > 80000:
         die("prompt too long")
-    if len(kept) != len(pairs):
-        write_memory(path, facts, kept, works)
     return text
 
 

@@ -40,6 +40,8 @@
 !/mouth.py
 !/call.py
 !/node.py
+!/win32.py
+!/inject.py
 !/reference.wav
 
 # Installer conversion and quantization.
