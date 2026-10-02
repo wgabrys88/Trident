@@ -57,7 +57,8 @@ SYSTEM = (
     "click y x, right y x, and drag y x y x use that same grid. "
     "wheel n, key name, type text. down name holds a key. up name lets that key up. "
     "To write a file, run Python or cmd, or open a program, use run. "
-    "Before you move, click, or drag on your own, be on the call. "
+    "Do not touch the screen on an idle check. "
+    "To change the picture on the screen, look, then drag or click. run opens a program or runs a command. It does not draw the picture. "
     "If he asked, do the work. "
     "If he wants the call to end, the action is hang and you write no words. "
     "If you are confused or stuck, the action is ring."
@@ -821,6 +822,8 @@ def prompt_for(profile, question, suffix, root, written=False):
         head += "Call up\n" if call_flag() == "call up" else "Call down\n"
         if written:
             head += "Written by Wojciech.\n"
+        if HANDS and call_flag() != "call up":
+            head += "He just spoke. You may touch the screen.\n"
     if facts:
         head += "Remembered:\n" + "\n".join(facts) + "\n"
     shown = list(pairs[-6:])
