@@ -1120,10 +1120,6 @@ def trace(text="", png=b""):
         import io
 
         words = body
-        caption = ""
-        if data:
-            caption = words[-1024:] if len(words) > 1024 else words
-            words = words[:-1024] if len(words) > 1024 else ""
         while words:
             chunk = words[:4000]
             words = words[4000:]
@@ -1132,7 +1128,7 @@ def trace(text="", png=b""):
             return 0
         buf = io.BytesIO(data)
         buf.name = "desk.png"
-        sent = await LIVE.client.send_file(LIVE.peer_id, buf, force_document=False, caption=caption or None)
+        sent = await LIVE.client.send_file(LIVE.peer_id, buf, force_document=False, caption=None)
         if isinstance(sent, list):
             sent = sent[0] if sent else None
         return int(getattr(sent, "id", 0) or 0)

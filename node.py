@@ -399,12 +399,14 @@ def local_infer(prompt, image):
 
 DESK_TOKENS = 560
 GRID = 1000
-STEP = 50
+STEP = 100
 POS = None
 TRAIL = []
 LAST = ""
 HELD = ""
 SHEET = []
+SENT = 0
+LAST_PNG = b""
 MOVES = {"left": (0, -1), "right": (0, 1), "up": (-1, 0), "down": (1, 0)}
 
 
@@ -540,7 +542,7 @@ def paint_hand(gdi32, hdc, wide, high):
         return int(round(float(x) / GRID * (wide - 1))), int(round(float(y) / GRID * (high - 1)))
 
     if len(spots) >= 2:
-        pen = gdi32.CreatePen(0, 22, 0x0000FFFF)
+        pen = gdi32.CreatePen(0, 6, 0x0000FFFF)
         if pen:
             old = gdi32.SelectObject(hdc, pen)
             pts = (_POINT * len(spots))(*(_POINT(*at(spot)) for spot in spots))
@@ -549,9 +551,9 @@ def paint_hand(gdi32, hdc, wide, high):
             gdi32.DeleteObject(pen)
     if point is not None:
         cx, cy = at(point)
-        radius = 48
+        radius = 14
         brush = gdi32.CreateSolidBrush(0x0000FFFF if HELD else 0x000000FF)
-        pen = gdi32.CreatePen(0, 8, 0x00000000)
+        pen = gdi32.CreatePen(0, 2, 0x00000000)
         if brush and pen:
             oldp = gdi32.SelectObject(hdc, pen)
             oldb = gdi32.SelectObject(hdc, brush)
@@ -663,30 +665,57 @@ def desk_png():
     return base64.b64encode(png).decode("ascii"), wide, high
 
 
-def relay(text="", image_b64=""):
-    line = (text or "").strip()
-    if line:
-        SHEET.append(line)
+def relay(text=""):
+    raw = (text or "").strip()
+    if not raw:
+        return
+    head, sep, rest = raw.partition("\n")
+    labels = {"request": "REQUEST", "thought": "REASONING", "tool": "TOOLS", "hear": "HEAR", "say": "SAY"}
+    key = head.strip().lower()
+    if key in labels and sep:
+        SHEET.append((labels[key], rest.strip()))
+    else:
+        SHEET.append(("TOOLS", raw))
+
+
+def sheet_text(items):
+    parts = []
+    label = ""
+    lines = []
+
+    def close():
+        if label and lines:
+            parts.append(label + "\n" + "\n\n".join(lines))
+
+    for name, text in items:
+        if name != label:
+            close()
+            label = name
+            lines = []
+        body = (text or "").strip()
+        if body:
+            lines.append(body)
+    close()
+    return "\n\n".join(parts)
+
+
+def flush():
+    global SENT
+    fresh = SHEET[SENT:]
+    if not fresh:
+        return
+    SENT = len(SHEET)
     mod = sys.modules.get("call")
     send = getattr(mod, "trace", None) if mod else None
     if send is None:
         return
-    if image_b64:
-        png = base64.b64decode("".join(str(image_b64).split()))
-        body = "\n".join(SHEET)
-        if len(body) > 1024:
-            first = (SHEET[0] if SHEET else "")[:500]
-            room = 1024 - len(first) - 1
-            tail = body[-room:] if room > 0 else body[-1024:]
-            body = (first + "\n" + tail) if room > 0 else tail
-            body = body[-1024:]
-        send(body, png)
-    elif line:
-        send(line, b"")
+    send(sheet_text(fresh), LAST_PNG)
 
 
 def deliver(image_b64, note=""):
-    relay(note, image_b64)
+    global LAST_PNG
+    if image_b64:
+        LAST_PNG = base64.b64decode("".join(str(image_b64).split()))
 
 
 def window_titles():
@@ -1270,8 +1299,12 @@ def lift():
 
 
 def end_turn():
+    global SENT, LAST_PNG
+    flush()
     lift()
     SHEET.clear()
+    SENT = 0
+    LAST_PNG = b""
 
 
 def reset_hand():
@@ -1427,7 +1460,7 @@ def agent_turn(profile, question, image_b64="", root=None, written=False, hands=
     HANDS = bool(hands) or call_flag() == "call up"
     if HANDS:
         reset_hand()
-    SHEET.clear()
+    end_turn()
     relay("request\n" + question.strip())
     steps = []
     shot = image_b64 or ""
@@ -1472,6 +1505,7 @@ def agent_turn(profile, question, image_b64="", root=None, written=False, hands=
         if isinstance(result, tuple):
             result, shot = result
         log_gemma("tool", name + " " + quote(args.get("line", "")) + " -> " + str(result))
+        flush()
         steps.append((thought, name, args, str(result)))
         if name == "ring":
             if str(result) == "quiet":
