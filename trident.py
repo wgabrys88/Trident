@@ -11,7 +11,6 @@ The brain may use tools. Words it finishes with are spoken on the call when the 
 """
 
 import queue
-import re
 import sys
 import threading
 import time
@@ -33,8 +32,9 @@ SYSTEM = (
     "He hears only what you say, never the thought.\n"
     "Do the screen work he asked for. Use look before you touch the screen, and name screen elements by the text written on them. "
     "Open a program with run. After a page opens or a message is sent, run Start-Sleep, then look again before you act.\n"
-    "A command is run. A key is press. When he says to click an element, call click with that name before you type. "
-    "type_text is the whole sentence he gave you, every word, not one word taken from it.\n"
+    "A command is run. A key is press. When he says to click an element, call click with that name before you type.\n"
+    "When he asks you to type, the type_text text is that sentence copied unchanged. "
+    "Example: he says type The note says reply with exactly the word maple. The text is The note says reply with exactly the word maple.\n"
     "When you report the screen, say each chat message in full and who wrote it. A sidebar title is not a message. The year is the year on the clock.\n"
     "Ring him or send him a message only when he asks. When he says goodbye or asks you to stop, use hang_up and say nothing."
 )
@@ -134,7 +134,7 @@ class Trident:
 
     def turn(self, kind: str, text: str) -> str:
         situation = f"[{time.strftime('%H:%M')} | line {self.line.state} | heard from: {SOURCE[kind]}]"
-        reply = self.brain.think(SYSTEM + self.memory.facts_block(), self.tools(kind, text), self.memory.history(), f"{situation}\n{text}")
+        reply = self.brain.think(SYSTEM + self.memory.facts_block(), self.tools(kind), self.memory.history(), f"{situation}\n{text}")
         if reply.text and reply.text.lower().strip(".") != "idle":
             self.memory.add_turn(text, reply.text)
             return reply.text
@@ -153,11 +153,10 @@ class Trident:
 
     # ------------------------------------------------------------ what Gemma can do
 
-    def tools(self, kind: str, heard: str = "") -> dict[str, Tool]:
+    def tools(self, kind: str) -> dict[str, Tool]:
         from organs import eyes, hands
 
         asked = kind != "idle"
-        marked = re.search(r"(?:every word:\s*|whole sentence\s+)(.*?)(?:\.\s+(?:Then|Do not)|$)", heard)
 
         def look(question: str = "What is on the screen?"):
             png = eyes.screenshot()
@@ -192,7 +191,7 @@ class Trident:
         def type_text(text: str):
             if not asked:
                 return "nobody asked for this"
-            hands.type_text(marked.group(1).strip() if marked else text)
+            hands.type_text(text)
             return "typed"
 
         def press(keys: str):
