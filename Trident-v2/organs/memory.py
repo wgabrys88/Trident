@@ -1,0 +1,47 @@
+"""Memory: what Gemma keeps between turns. One JSON file in state/.
+
+  facts   short lines she chose to remember (remember tool)
+  turns   the last few (what he said, what she said) pairs, thoughts already stripped
+  quiet   she promised not to ring until he speaks again
+"""
+
+import json
+
+from organs import state_dir
+
+KEEP_TURNS = 8
+CLIP = 300
+
+
+class Memory:
+    def __init__(self):
+        self.path = state_dir() / "memory.json"
+        data = json.loads(self.path.read_text(encoding="utf-8")) if self.path.is_file() else {}
+        self.facts: list[str] = data.get("facts", [])
+        self.turns: list[list[str]] = data.get("turns", [])
+        self.quiet: bool = data.get("quiet", False)
+
+    def save(self):
+        self.path.write_text(json.dumps({"facts": self.facts, "turns": self.turns, "quiet": self.quiet}, ensure_ascii=False, indent=1), encoding="utf-8")
+
+    def remember(self, fact: str):
+        fact = " ".join(fact.split())[:CLIP]
+        if fact and fact not in self.facts:
+            self.facts.append(fact)
+            self.save()
+
+    def add_turn(self, user: str, model: str):
+        self.turns.append([" ".join(user.split())[:CLIP], " ".join(model.split())[:CLIP]])
+        self.turns = self.turns[-KEEP_TURNS:]
+        self.save()
+
+    def set_quiet(self, value: bool):
+        if self.quiet != value:
+            self.quiet = value
+            self.save()
+
+    def facts_block(self) -> str:
+        return ("\nRemembered:\n" + "\n".join(f"- {f}" for f in self.facts)) if self.facts else ""
+
+    def history(self) -> list[tuple[str, str]]:
+        return [(u, m) for u, m in self.turns]
