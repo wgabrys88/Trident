@@ -21,10 +21,8 @@ context = 16384
 slots = 2
 gpu_layers = 999
 threads = 4
-# Gemma 4 vision: 560 soft tokens per image is enough to read a desktop.
 image_tokens = 560
-# Gemma 4 E2B-it recommended sampling.
-temperature = 1.0
+temperature = 0
 top_k = 64
 top_p = 0.95
 min_p = 0.05
@@ -36,7 +34,7 @@ idle_after = 30
 
 [eyes]
 # Screenshot longest side in pixels before it goes to the model. Coordinates never depend on it.
-max_side = 1280
+max_side = 1920
 
 [ears]
 vad_threshold = 0.65

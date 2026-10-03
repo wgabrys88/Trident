@@ -10,9 +10,9 @@ Tracked files: `.gitattributes`, `.gitignore`, `LICENSE`, `config.toml`, `instal
 
 `[paths]` `models` = models, `bin` = bin, `state` = state. Read by `organs`, `install`, `brain`.
 
-`[brain]` `model` = gemma-4-E2B-it-Q4_0.gguf, `mmproj` = mmproj-gemma-4-E2B-it-Q8_0.gguf, `host` = 127.0.0.1, `port` = 8080, `context` = 16384, `slots` = 2, `gpu_layers` = 999, `threads` = 4, `image_tokens` = 560, `temperature` = 1.0, `top_k` = 64, `top_p` = 0.95, `min_p` = 0.05, `max_tokens` = 1024, `max_tool_steps` = 20, `idle_after` = 30. Read by `brain` and, for `idle_after`, `trident`. `model` and `mmproj` also by `install`.
+`[brain]` `model` = gemma-4-E2B-it-Q4_0.gguf, `mmproj` = mmproj-gemma-4-E2B-it-Q8_0.gguf, `host` = 127.0.0.1, `port` = 8080, `context` = 16384, `slots` = 2, `gpu_layers` = 999, `threads` = 4, `image_tokens` = 560, `temperature` = 0, `top_k` = 64, `top_p` = 0.95, `min_p` = 0.05, `max_tokens` = 1024, `max_tool_steps` = 20, `idle_after` = 30. Read by `brain` and, for `idle_after`, `trident`. `model` and `mmproj` also by `install`.
 
-`[eyes]` `max_side` = 1280. Read by `eyes`.
+`[eyes]` `max_side` = 1920. Read by `eyes`.
 
 `[ears]` `vad_threshold` = 0.65, `min_silence_ms` = 700, `pad_ms` = 120, `max_utterance_s` = 30, `min_utterance_s` = 1.0, `model` = nemotron-3.5-asr-streaming-0.6b.q8_0.gguf. Read by `ears`. `model` also by `install`.
 
@@ -60,7 +60,7 @@ Tokens: `BOS` `<bos>`, `TURN_OPEN` `<|turn>`, `TURN_CLOSE` `<turn|>`, `THINK` `<
 
 `parse(output: str) -> tuple[str, str, dict]`. Thought text from `<|channel>thought ... <channel|>`, a tool name from `<|tool_call>call:NAME{...}<tool_call|>`, and that call's args. No call returns `(thought, "", {})`. Quoted arg values stay strings. Bare `true`/`false` become bools. Bare integers and decimals become `int` and `float`.
 
-`LOCATE_SCHEMA` is a JSON schema: an array of objects with `box_2d` (four integers, 0 through 1000) and `label` (string), both required.
+`LOCATE_SCHEMA` is a JSON schema: an object with `y` and `x`, both integers from 0 through 1000, both required. `BUBBLE_SCHEMA` is an object with `messages`, an array of `{who, text}`. `who` is `user` or `assistant`. Both fields are required.
 
 `Brain.__init__()`. `url` from `brain.host` and `brain.port`. `proc` is `None`. `marker` is `None` until `media()`.
 
@@ -72,9 +72,11 @@ Tokens: `BOS` `<bos>`, `TURN_OPEN` `<|turn>`, `TURN_CLOSE` `<turn|>`, `THINK` `<
 
 `Brain.complete(prompt: str, images: list[bytes] = (), schema: dict | None = None, max_tokens: int | None = None, stop: list[str] = ()) -> str`. POST `{url}/completion`, timeout 600. Body: `prompt` (a string, or `{prompt_string, multimodal_data}` of base64 images when `images` is non-empty), `n_predict` (`max_tokens` or `brain.max_tokens`), `cache_prompt` true, `stop`, and sampling from `temperature`, `top_k`, `top_p`, `min_p`. `schema` sets `json_schema`. Writes the prompt to `state/last_prompt.txt`. Returns `content`. Logs elapsed seconds plus `timings.prompt_n` and `timings.predicted_n`.
 
-`Brain.see(png: bytes, question: str) -> str`. One image, no schema, `max_tokens` 700, thinking off. Prompt is `BOS` + user turn of `media()` plus `question` + an open model turn. Returns `plain` of the completion.
+`Brain.see(png: bytes, question: str) -> str`. One image, no schema, `max_tokens` 80, thinking off. Prompt is `BOS` + user turn of `media()` plus `question` + an open model turn. Returns `plain` of the completion.
 
-`Brain.locate(png: bytes, target: str) -> list[dict]`. One image, `LOCATE_SCHEMA`, `max_tokens` 120. The user turn starts with `media()`. Asks for the box of `target` or an empty list. Returns `json.loads` of the completion. Each box is `[y0, x0, y1, x1]` on a 1000 by 1000 grid plus `label`. Pixel conversion is outside this file.
+`Brain.bubbles(png: bytes) -> str`. One image, `BUBBLE_SCHEMA`, `max_tokens` 400. Asks for every chat bubble from top to bottom. A blue bubble on the right is the user. A reply on the left is the assistant. A wrapped line stays in the same text. The long paragraph on the left is the assistant. The sidebar, the composer, and Task Manager are skipped. Returns `who: text` joined with ` | `.
+
+`Brain.locate(png: bytes, target: str) -> list[dict]`. One image, `LOCATE_SCHEMA`, `max_tokens` 40. The user turn starts with `media()`. Asks for the center of `target`. The message box is the field at the bottom of a chat where the next message is typed. Returns one item, `box_2d` `[y, x, y, x]` on a 1000 by 1000 grid plus `label` = `target`. Pixel conversion is outside this file.
 
 `Brain.ask_json(question: str, schema: dict, png: bytes | None = None) -> object`. Optional image, given schema, `max_tokens` 400. An image prefixes the question with `media()`. Returns `json.loads` of the completion.
 
@@ -108,7 +110,9 @@ Talks to `organs` (`CONFIG`, and `state_dir` in `__main__`), `user32`, and PIL `
 
 `screenshot() -> bytes`. `ImageGrab.grab()` with no arguments. The module docstring calls that the primary monitor. Longest side at most `eyes.max_side` (LANCZOS). RGB PNG, `compress_level` 1.
 
-`center_px(box_2d: list) -> tuple[int, int]`. `box_2d` is `[y0, x0, y1, x1]` on the 1000-grid. Returns `(x, y)` from `screen_size()`: `round((x0+x1)/2000*(width-1))`, `round((y0+y1)/2000*(height-1))`.
+`corner(png: bytes) -> bytes`. Crops the bottom-right 420 by 90 pixels of that PNG and scales it by 3 with nearest-neighbor. That corner is the clock.
+
+`center_px(box_2d: list) -> tuple[int, int]`. `box_2d` is `[y0, x0, y1, x1]` on the 1000-grid. Returns `(x, y)` from `screen_size()`: `round((x0+x1)/2000*(width-1))`, `round((y0+y1)/2000*(height-1))`. A point from `locate` is `[y, x, y, x]`, so this is that point.
 
 `window_titles(limit: int = 8) -> list[str]`. Foreground window first, then visible windows. Unique, whitespace collapsed, cut at `limit`.
 
@@ -261,7 +265,9 @@ Talks to `organs` (`CONFIG`, `log`, `state_dir`), `brain` (`Brain`, `Tool`), `ea
 ```
 You are Gemma, the mind of {owner.name}'s computer. You see the screen and act with tools.
 Each turn: think in two or three short sentences, then either call exactly one tool or say one or two short sentences in English. He hears only what you say, never the thought.
-Do the screen work he asked for. Use look before you touch the screen, and name screen elements by the text written on them. Open programs with run. After a page opens or a message is sent, wait, then look again before you act.
+Do the screen work he asked for. Use look before you touch the screen, and name screen elements by the text written on them. Open a program with run. After a page opens or a message is sent, run Start-Sleep, then look again before you act.
+A command is run. A key is press. When he says to click an element, call click with that name before you type. type_text is the whole sentence he gave you, every word, not one word taken from it.
+When you report the screen, say each chat message in full and who wrote it. A sidebar title is not a message. The year is the year on the clock.
 Ring him or send him a message only when he asks. When he says goodbye or asks you to stop, use hang_up and say nothing.
 ```
 
@@ -293,13 +299,13 @@ Ring him or send him a message only when he asks. When he says goodbye or asks y
 
 `Trident.tools(kind: str) -> dict[str, Tool]`. `asked` is true when `kind` is not `idle`. The dict is:
 
-- `look(question: str = "What is on the screen?")`. Declared as `Look at the screen. Returns the readable text and the open window titles. The picture is also sent to {owner.name}'s chat.` Schema requires `question` (`STRING`, `What to look for, e.g. Is Paint open?`). Calls `eyes.screenshot`, `eyes.window_titles`, and `brain.see(png, "{question} Open windows: {'; '.join(titles)}. Quote the readable on-screen text. If a chat is visible, quote each message in order.")`. `line.send_photo(png, seen[:200])`. Returns `{"screen": seen, "windows": "; ".join(titles)}`.
+- `look(question: str = "What is on the screen?")`. Declared as `Look at the screen. Returns the chat bubbles, the clock, and the open window titles. The picture is also sent to {owner.name}'s chat.` Schema requires `question` (`STRING`, `What to look for, e.g. Is Paint open?`). Calls `eyes.screenshot`, `eyes.window_titles`, `brain.bubbles(png)`, and `brain.see(eyes.corner(png), "Copy the date and four-digit year exactly as printed.")`. `question` is accepted and not otherwise used. `line.send_photo(png, seen[:200])`. Returns `{"screen": seen, "clock": clock, "windows": "; ".join(titles)}`.
 - `find(target: str)` is not a tool. `brain.locate` on a new screenshot. Returns `eyes.center_px` of the first box, or `None`.
-- `click(target: str, how: str = "left")`. Declared as `Click one element on the screen, named by its visible text or look, e.g. the Start button, the OK button, the File menu.` Schema: `target` required (`The element to click.`), `how` optional enum `left`, `right`, `double` (`Kind of click.`). When not `asked`, returns `nobody asked for this`. A missing target returns `{target} is not on the screen`. Otherwise `hands.click` and returns `{how} click on {target}`.
+- `click(target: str, how: str = "left")`. Declared as `Click one element on the screen, named by its visible text or look, e.g. the Start button, the OK button, the File menu.` Schema: `target` required (`The element to click.`), `how` optional enum `left`, `right`, `double` (`Kind of click.`). When not `asked`, returns `nobody asked for this`. A missing target returns `{target} is not on the screen`. Otherwise `hands.click` and returns `{how} click on {target} at {x} {y}`.
 - `drag(source: str, destination: str)`. Declared as `Drag from one screen element to another.` Both required (`Where the drag starts.`, `Where the drag ends.`). Same idle refusal. When the source point is missing, returns `{source} is not on the screen`. When only the destination is missing, returns `{destination} is not on the screen`. Otherwise `hands.drag` and returns `dragged {source} to {destination}`.
-- `type_text(text: str)`. Declared as `Type text where the cursor is.` `text` is `The text to type.` Idle refusal, or `hands.type_text` and `typed`.
-- `press(keys: str)`. Declared as `Press a key or shortcut: enter, escape, tab, win-r, ctrl-a, ctrl-s, alt-f4, win-d.` `keys` is `The key or chord.` Idle refusal, or `hands.press` and `pressed {keys}`.
-- `run(command: str)`. Declared as `Run one PowerShell command and get its output. Open a program with Start-Process. Wait with Start-Sleep -Seconds 5.` `command` is `The PowerShell command.` Returns `hands.run(command)` when `asked`, otherwise `nobody asked for this`.
+- `type_text(text: str)`. Declared as `Type the text argument exactly, every word of it, where the cursor is.` `text` is `The text to type, every word.` Idle refusal, or `hands.type_text` and `typed`.
+- `press(keys: str)`. Declared as `Press keyboard keys only, for example enter, escape, tab, or ctrl-a. Never a command.` `keys` is `The key or chord.` Idle refusal, or `hands.press` and `pressed {keys}`. An unknown key still raises `KeyError` from `hands.press`.
+- `run(command: str)`. Declared as `Run one PowerShell command. Start-Process opens a program. Start-Sleep -Seconds N waits.` `command` is `The PowerShell command.` Returns `hands.run(command)` when `asked`, otherwise `nobody asked for this`.
 - `remember(fact: str)`. Declared as `Keep one short fact for later turns.` `fact` is `The fact.` `memory.remember`. Returns `remembered`.
 - `call_owner(opening: str = "I am up. Do you want anything?")`. Declared as `Ring {owner.name} on Telegram. When he answers, the opening is spoken to him first.` `opening` (`The first sentence he hears.`) is optional in the schema. Line already up returns `the line is already up; just speak`. `memory.quiet` returns `you promised to stay quiet until he speaks`. `line.dial()` failure returns `he did not answer: {exc}`. Success speaks `opening` and returns `he answered and heard the opening; now say what he should hear next, or hang_up`.
 - `hang_up()`. Declared as `End the call. Say nothing after it.` No params. `final` is true, so `think` returns no spoken text. Calls `line.hang()` and returns `hung up`.

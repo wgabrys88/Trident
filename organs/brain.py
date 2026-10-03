@@ -5,7 +5,7 @@ She returns a thought and then either one tool call or the words to say. That to
 same turn continues with a <|tool_response>, so the thought stays in context. That turn carries no picture.
 
 see(), locate(), and ask_json() are separate requests with thinking off. see() and locate() each take one image. locate() and ask_json() force a JSON schema.
-locate() answers with boxes on a 1000 by 1000 grid. Pixel conversion happens outside this file.
+locate() answers with a point on a 1000 by 1000 grid. Pixel conversion happens outside this file.
 Tools arrive as arguments. python -m organs.brain prints a structured answer and one short sentence. The question is the command line, or the built-in one when that is empty.
 """
 
@@ -40,15 +40,29 @@ ARG_RE = re.compile(r'(\w+):(?:<\|"\|>(.*?)<\|"\|>|([^,}]*))', re.DOTALL)
 CONTROL_RE = re.compile(r"<\|[a-z_\"]+\|?>|<[a-z_]+\|>|<bos>|<eos>")
 
 LOCATE_SCHEMA = {
-    "type": "array",
-    "items": {
-        "type": "object",
-        "properties": {
-            "box_2d": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 1000}, "minItems": 4, "maxItems": 4},
-            "label": {"type": "string"},
-        },
-        "required": ["box_2d", "label"],
+    "type": "object",
+    "properties": {
+        "y": {"type": "integer", "minimum": 0, "maximum": 1000},
+        "x": {"type": "integer", "minimum": 0, "maximum": 1000},
     },
+    "required": ["y", "x"],
+}
+BUBBLE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "messages": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "who": {"type": "string", "enum": ["user", "assistant"]},
+                    "text": {"type": "string"},
+                },
+                "required": ["who", "text"],
+            },
+        }
+    },
+    "required": ["messages"],
 }
 
 
@@ -233,13 +247,18 @@ class Brain:
 
     def see(self, png: bytes, question: str) -> str:
         prompt = BOS + turn("user", f"{self.media()}\n{question}") + f"{TURN_OPEN}model\n"
-        return plain(self.complete(prompt, images=[png], max_tokens=700))
+        return plain(self.complete(prompt, images=[png], max_tokens=80))
+
+    def bubbles(self, png: bytes) -> str:
+        question = "List every chat bubble from top to bottom. A blue bubble on the right is the user. A reply on the left is the assistant. If a reply continues on the next line, append that line to the same text. The long paragraph on the left is the assistant. Skip the sidebar, the composer, and Task Manager."
+        data = self.ask_json(question, BUBBLE_SCHEMA, png)
+        return " | ".join(f"{item['who']}: {item['text']}" for item in data["messages"])
 
     def locate(self, png: bytes, target: str) -> list[dict]:
-        """Boxes for the named element on the 1000-grid, each [y0, x0, y1, x1] with a label, or an empty list if it is missing."""
-        prompt = BOS + turn("user", f"{self.media()}\nDetect the {target}. Return the bounding box of that element only, or an empty list if it is not visible.") + f"{TURN_OPEN}model\n"
-        out = self.complete(prompt, images=[png], schema=LOCATE_SCHEMA, max_tokens=120)
-        return json.loads(out)
+        """One point on the 1000-grid as [y, x, y, x], the center of the named element."""
+        prompt = BOS + turn("user", f'{self.media()}\nPoint at the center of the "{target}" element. y and x are 0 to 1000, origin at the top left, y vertical. The message box is the field at the bottom of a chat where the next message is typed.') + f"{TURN_OPEN}model\n"
+        data = json.loads(self.complete(prompt, images=[png], schema=LOCATE_SCHEMA, max_tokens=40))
+        return [{"box_2d": [data["y"], data["x"], data["y"], data["x"]], "label": target}]
 
     def ask_json(self, question: str, schema: dict, png: bytes | None = None) -> object:
         body = f"{self.media()}\n{question}" if png else question

@@ -33,6 +33,17 @@ def screenshot() -> bytes:
     return buffer.getvalue()
 
 
+def corner(png: bytes) -> bytes:
+    """PNG of the bottom-right corner, scaled up, where the clock is."""
+    image = Image.open(io.BytesIO(png)).convert("RGB")
+    width, height = image.size
+    crop = image.crop((max(0, width - 420), max(0, height - 90), width, height))
+    crop = crop.resize((max(1, crop.width * 3), max(1, crop.height * 3)), Image.Resampling.NEAREST)
+    buffer = io.BytesIO()
+    crop.save(buffer, format="PNG", compress_level=1)
+    return buffer.getvalue()
+
+
 def center_px(box_2d: list) -> tuple[int, int]:
     """(x, y) pixels for the center of a [y0, x0, y1, x1] box on the 1000-grid."""
     width, height = screen_size()

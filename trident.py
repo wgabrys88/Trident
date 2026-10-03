@@ -31,7 +31,10 @@ SYSTEM = (
     "Each turn: think in two or three short sentences, then either call exactly one tool or say one or two short sentences in English. "
     "He hears only what you say, never the thought.\n"
     "Do the screen work he asked for. Use look before you touch the screen, and name screen elements by the text written on them. "
-    "Open programs with run. After a page opens or a message is sent, wait, then look again before you act.\n"
+    "Open a program with run. After a page opens or a message is sent, run Start-Sleep, then look again before you act.\n"
+    "A command is run. A key is press. When he says to click an element, call click with that name before you type. "
+    "type_text is the whole sentence he gave you, every word, not one word taken from it.\n"
+    "When you report the screen, say each chat message in full and who wrote it. A sidebar title is not a message. The year is the year on the clock.\n"
     "Ring him or send him a message only when he asks. When he says goodbye or asks you to stop, use hang_up and say nothing."
 )
 SOURCE = {"chat": "a Telegram message from him", "call": "his voice on the call", "typed": "a line he typed on the computer", "idle": "nobody; an idle moment"}
@@ -157,9 +160,10 @@ class Trident:
         def look(question: str = "What is on the screen?"):
             png = eyes.screenshot()
             titles = eyes.window_titles()
-            seen = self.brain.see(png, f"{question} Open windows: {'; '.join(titles)}. Quote the readable on-screen text. If a chat is visible, quote each message in order.")
+            seen = self.brain.bubbles(png)
+            clock = self.brain.see(eyes.corner(png), "Copy the date and four-digit year exactly as printed.")
             self.line.send_photo(png, seen[:200])
-            return {"screen": seen, "windows": "; ".join(titles)}
+            return {"screen": seen, "clock": clock, "windows": "; ".join(titles)}
 
         def find(target: str):
             boxes = self.brain.locate(eyes.screenshot(), target)
@@ -172,7 +176,7 @@ class Trident:
             if point is None:
                 return f"{target} is not on the screen"
             hands.click(*point, how)
-            return f"{how} click on {target}"
+            return f"{how} click on {target} at {point[0]} {point[1]}"
 
         def drag(source: str, destination: str):
             if not asked:
@@ -227,12 +231,12 @@ class Trident:
             return "quiet until he speaks"
 
         return {
-            "look": Tool("look", f"Look at the screen. Returns the readable text and the open window titles. The picture is also sent to {OWNER}'s chat.", {"question": {"description": "What to look for, e.g. Is Paint open?", "type": "STRING"}}, look),
+            "look": Tool("look", f"Look at the screen. Returns the chat bubbles, the clock, and the open window titles. The picture is also sent to {OWNER}'s chat.", {"question": {"description": "What to look for, e.g. Is Paint open?", "type": "STRING"}}, look),
             "click": Tool("click", "Click one element on the screen, named by its visible text or look, e.g. the Start button, the OK button, the File menu.", {"target": {"description": "The element to click.", "type": "STRING"}, "how": {"description": "Kind of click.", "type": "STRING", "enum": ["left", "right", "double"]}}, click, optional=("how",)),
             "drag": Tool("drag", "Drag from one screen element to another.", {"source": {"description": "Where the drag starts.", "type": "STRING"}, "destination": {"description": "Where the drag ends.", "type": "STRING"}}, drag),
-            "type_text": Tool("type_text", "Type text where the cursor is.", {"text": {"description": "The text to type.", "type": "STRING"}}, type_text),
-            "press": Tool("press", "Press a key or shortcut: enter, escape, tab, win-r, ctrl-a, ctrl-s, alt-f4, win-d.", {"keys": {"description": "The key or chord.", "type": "STRING"}}, press),
-            "run": Tool("run", "Run one PowerShell command and get its output. Open a program with Start-Process. Wait with Start-Sleep -Seconds 5.", {"command": {"description": "The PowerShell command.", "type": "STRING"}}, run),
+            "type_text": Tool("type_text", "Type the text argument exactly, every word of it, where the cursor is.", {"text": {"description": "The text to type, every word.", "type": "STRING"}}, type_text),
+            "press": Tool("press", "Press keyboard keys only, for example enter, escape, tab, or ctrl-a. Never a command.", {"keys": {"description": "The key or chord.", "type": "STRING"}}, press),
+            "run": Tool("run", "Run one PowerShell command. Start-Process opens a program. Start-Sleep -Seconds N waits.", {"command": {"description": "The PowerShell command.", "type": "STRING"}}, run),
             "remember": Tool("remember", "Keep one short fact for later turns.", {"fact": {"description": "The fact.", "type": "STRING"}}, remember),
             "call_owner": Tool("call_owner", f"Ring {OWNER} on Telegram. When he answers, the opening is spoken to him first.", {"opening": {"description": "The first sentence he hears.", "type": "STRING"}}, call_owner, optional=("opening",)),
             "hang_up": Tool("hang_up", "End the call. Say nothing after it.", {}, hang_up, final=True),
