@@ -239,8 +239,14 @@ class Brain:
         for who, piece in strips(png):
             text = self.see(piece, "Copy the text exactly, including punctuation.")
             if text.lower() != "none":
-                lines.append(f"{who}: {text}")
-        return " | ".join(lines)
+                lines.append((who, text))
+        if not lines:
+            return ""
+        if not any(who == "user" for who, _ in lines):
+            schema = {"type": "object", "properties": {"labels": {"type": "array", "minItems": len(lines), "maxItems": len(lines), "items": {"type": "string", "enum": ["greeting", "menu", "chips"]}}}, "required": ["labels"]}
+            names = self.ask_json("One label per line, same order. greeting is the large hello. menu is the model control row. chips is a suggestion button.\n" + "\n".join(text for _, text in lines), schema)["labels"]
+            return " | ".join(f"{name}: {text}" for name, (_, text) in zip(names, lines))
+        return " | ".join(f"{who}: {text}" if who else text for who, text in lines)
 
     def locate(self, png: bytes, target: str) -> list[dict]:
         """One point on the 1000-grid as [y, x, y, x], the center of the named element."""

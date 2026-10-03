@@ -47,7 +47,7 @@ def corner(png: bytes) -> bytes:
 
 
 def strips(png: bytes) -> list[tuple[str, bytes]]:
-    """Each chat line in the foreground window, scaled up, with who from which side it starts on."""
+    """Each line in the front window, scaled up. who is user on the right, assistant on the left, or empty when the line sits in the middle."""
     image = Image.open(io.BytesIO(png)).convert("RGB")
     box = ctypes.wintypes.RECT()
     user32.GetWindowRect(user32.GetForegroundWindow(), ctypes.byref(box))
@@ -85,19 +85,21 @@ def strips(png: bytes) -> list[tuple[str, bytes]]:
             break
         area = (y1 - y0 + 1) * (x1 - x0 + 1)
         bright = sum(sum(pix[x, y]) > 180 for y in range(y0, y1 + 1) for x in range(x0, x1 + 1))
-        if y1 - y0 < 24 and x1 - x0 > 120 and bright / area < 0.25:
+        if y1 - y0 < 24 and x1 - x0 > 120 and bright / area < 0.18:
             continue
         kept.append((y0, y1, x0, x1))
     if not kept:
         return []
     margin = min(item[2] for item in kept)
+    right = max(item[3] for item in kept)
     out = []
     for y0, y1, x0, x1 in kept:
         crop = image.crop((max(0, x0 - 6), max(0, y0 - 4), min(width, x1 + 6), min(height, y1 + 4)))
         crop = crop.resize((crop.width * 3, crop.height * 3), Image.Resampling.NEAREST)
         buf = io.BytesIO()
         crop.save(buf, format="PNG", compress_level=1)
-        out.append(("user" if x0 > margin + 80 else "assistant", buf.getvalue()))
+        who = "assistant" if x0 <= margin + 80 else "user" if x1 >= right - 40 else ""
+        out.append((who, buf.getvalue()))
     return out
 
 
