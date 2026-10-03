@@ -180,8 +180,8 @@ class Line:
             self.hang()
         if self.client is not None:
             self._await(self._disconnect(), 20)
+            start_telegram()
         self.loop.call_soon_threadsafe(self.loop.stop)
-        start_telegram()
 
     def _run_loop(self):
         asyncio.set_event_loop(self.loop)
@@ -225,9 +225,13 @@ class Line:
             threading.Thread(target=self.on_text, args=(text,), daemon=True).start()
 
     def send_text(self, text: str):
+        if self.client is None:
+            return
         self._await(self.client.send_message(self.owner, text), 30)
 
     def send_photo(self, png: bytes, caption: str = ""):
+        if self.client is None:
+            return
         buffer = io.BytesIO(png)
         buffer.name = "desk.png"
         self._await(self.client.send_file(self.owner, buffer, caption=caption, force_document=False), 60)
@@ -345,6 +349,8 @@ class Line:
         self._set("idle")
 
     def dial(self):
+        if self.client is None:
+            raise RuntimeError("line is down")
         if self.state != "idle":
             raise RuntimeError(f"line is {self.state}")
         try:

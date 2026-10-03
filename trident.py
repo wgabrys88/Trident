@@ -27,13 +27,12 @@ OWNER = CONFIG["owner"]["name"]
 INBOX = state_dir() / "inbox.txt"
 
 SYSTEM = (
-    f"You are Gemma, the mind of {OWNER}'s computer. You hear him, see the screen and act with tools.\n"
+    f"You are Gemma, the mind of {OWNER}'s computer. You see the screen and act with tools.\n"
     "Each turn: think in two or three short sentences, then either call exactly one tool or say one or two short sentences in English. "
     "He hears only what you say, never the thought.\n"
-    "You and he talk over a Telegram voice call. While the line is down he cannot hear you: reach him with call_owner or send_message, or say nothing.\n"
-    "Use look before you touch the screen, and name screen elements by the text written on them. "
-    "Open programs with run. Click, type and press only for work he asked for.\n"
-    "When he says goodbye or asks you to stop, use hang_up and say nothing."
+    "Do the screen work he asked for. Use look before you touch the screen, and name screen elements by the text written on them. "
+    "Open programs with run. After a page opens or a message is sent, wait, then look again before you act.\n"
+    "Ring him or send him a message only when he asks. When he says goodbye or asks you to stop, use hang_up and say nothing."
 )
 SOURCE = {"chat": "a Telegram message from him", "call": "his voice on the call", "typed": "a line he typed on the computer", "idle": "nobody; an idle moment"}
 
@@ -158,7 +157,7 @@ class Trident:
         def look(question: str = "What is on the screen?"):
             png = eyes.screenshot()
             titles = eyes.window_titles()
-            seen = self.brain.see(png, f"{question} Open windows: {'; '.join(titles)}. Answer in one sentence and quote short on-screen text you can read.")
+            seen = self.brain.see(png, f"{question} Open windows: {'; '.join(titles)}. Quote the readable on-screen text. If a chat is visible, quote each message in order.")
             self.line.send_photo(png, seen[:200])
             return {"screen": seen, "windows": "; ".join(titles)}
 
@@ -228,12 +227,12 @@ class Trident:
             return "quiet until he speaks"
 
         return {
-            "look": Tool("look", f"Look at the screen. Returns one sentence about what is visible and the open window titles. The picture is also sent to {OWNER}'s chat.", {"question": {"description": "What to look for, e.g. Is Paint open?", "type": "STRING"}}, look),
+            "look": Tool("look", f"Look at the screen. Returns the readable text and the open window titles. The picture is also sent to {OWNER}'s chat.", {"question": {"description": "What to look for, e.g. Is Paint open?", "type": "STRING"}}, look),
             "click": Tool("click", "Click one element on the screen, named by its visible text or look, e.g. the Start button, the OK button, the File menu.", {"target": {"description": "The element to click.", "type": "STRING"}, "how": {"description": "Kind of click.", "type": "STRING", "enum": ["left", "right", "double"]}}, click, optional=("how",)),
             "drag": Tool("drag", "Drag from one screen element to another.", {"source": {"description": "Where the drag starts.", "type": "STRING"}, "destination": {"description": "Where the drag ends.", "type": "STRING"}}, drag),
             "type_text": Tool("type_text", "Type text where the cursor is.", {"text": {"description": "The text to type.", "type": "STRING"}}, type_text),
             "press": Tool("press", "Press a key or shortcut: enter, escape, tab, win-r, ctrl-a, ctrl-s, alt-f4, win-d.", {"keys": {"description": "The key or chord.", "type": "STRING"}}, press),
-            "run": Tool("run", "Run one PowerShell command and get its output. Open a program with Start-Process notepad. Write a file with Set-Content.", {"command": {"description": "The PowerShell command.", "type": "STRING"}}, run),
+            "run": Tool("run", "Run one PowerShell command and get its output. Open a program with Start-Process. Wait with Start-Sleep -Seconds 5.", {"command": {"description": "The PowerShell command.", "type": "STRING"}}, run),
             "remember": Tool("remember", "Keep one short fact for later turns.", {"fact": {"description": "The fact.", "type": "STRING"}}, remember),
             "call_owner": Tool("call_owner", f"Ring {OWNER} on Telegram. When he answers, the opening is spoken to him first.", {"opening": {"description": "The first sentence he hears.", "type": "STRING"}}, call_owner, optional=("opening",)),
             "hang_up": Tool("hang_up", "End the call. Say nothing after it.", {}, hang_up, final=True),

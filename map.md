@@ -10,7 +10,7 @@ Tracked files: `.gitattributes`, `.gitignore`, `LICENSE`, `config.toml`, `instal
 
 `[paths]` `models` = models, `bin` = bin, `state` = state. Read by `organs`, `install`, `brain`.
 
-`[brain]` `model` = gemma-4-E2B-it-Q4_0.gguf, `mmproj` = mmproj-gemma-4-E2B-it-Q8_0.gguf, `host` = 127.0.0.1, `port` = 8080, `context` = 16384, `slots` = 2, `gpu_layers` = 999, `threads` = 4, `image_tokens` = 560, `temperature` = 1.0, `top_k` = 64, `top_p` = 0.95, `min_p` = 0.05, `max_tokens` = 1024, `max_tool_steps` = 10, `idle_after` = 30. Read by `brain` and, for `idle_after`, `trident`. `model` and `mmproj` also by `install`.
+`[brain]` `model` = gemma-4-E2B-it-Q4_0.gguf, `mmproj` = mmproj-gemma-4-E2B-it-Q8_0.gguf, `host` = 127.0.0.1, `port` = 8080, `context` = 16384, `slots` = 2, `gpu_layers` = 999, `threads` = 4, `image_tokens` = 560, `temperature` = 1.0, `top_k` = 64, `top_p` = 0.95, `min_p` = 0.05, `max_tokens` = 1024, `max_tool_steps` = 20, `idle_after` = 30. Read by `brain` and, for `idle_after`, `trident`. `model` and `mmproj` also by `install`.
 
 `[eyes]` `max_side` = 1280. Read by `eyes`.
 
@@ -38,7 +38,7 @@ Talks to `config.toml` and the `state/` directory. Talked to by `brain`, `ears`,
 
 Talks to `organs` (`CONFIG`, `ROOT`, `log`, `path_of`, `state_dir`), `bin/llama/llama-server.exe`, and HTTP `http://{host}:{port}`. Talked to by `trident` (`Brain`, `Tool`) and `python -m organs.brain`. Logger name `brain`. Import calls `log("brain")`, which creates `state/` and opens the log.
 
-Tokens: `BOS` `<bos>`, `TURN_OPEN` `<|turn>`, `TURN_CLOSE` `<turn|>`, `THINK` `<|think|>`, `QUOTE` `<|"|>`, `TOOL_RESPONSE_OPEN` `<|tool_response>`, `TOOL_RESPONSE_CLOSE` `<tool_response|>`, `MEDIA` `<__media__>`.
+Tokens: `BOS` `<bos>`, `TURN_OPEN` `<|turn>`, `TURN_CLOSE` `<turn|>`, `THINK` `<|think|>`, `QUOTE` `<|"|>`, `TOOL_RESPONSE_OPEN` `<|tool_response>`, `TOOL_RESPONSE_CLOSE` `<tool_response|>`. The image marker is whatever the running server reports. `Brain.media()` reads `media_marker` from `GET {url}/props` on first use and stores it on `Brain.marker`.
 
 `Tool(name, description, params, run, optional=(), final=False)`. `params` maps a name to `description`, `type` (`STRING`, `INTEGER`, `NUMBER`, or `BOOLEAN`), and optional `enum`. `optional` names may be omitted. `final` ends the turn with empty spoken text. `run` is `Callable[..., object]`.
 
@@ -52,7 +52,7 @@ Tokens: `BOS` `<bos>`, `TURN_OPEN` `<|turn>`, `TURN_CLOSE` `<turn|>`, `THINK` `<
 
 `declare(tool: Tool) -> str`. Keys sorted. `required` is every param name not in `optional`. Each property is `name:{description:quoted,enum:[quoted,...],type:quoted}`, and `enum` is omitted when absent. The return is `<|tool>declaration:NAME{description:quoted,parameters:{properties:{...}} },required:[quoted,...],type:<|"|>OBJECT<|"|>} }<tool|>`, including the space before `},required` and the space before the final `}`.
 
-`tool_response(name: str, result: object) -> str`. A dict result is the body. Any other result becomes `{"result": result}`. Wrapped in the tool-response tokens.
+`tool_response(name: str, result: object) -> str`. A dict result is the body, with keys sorted by `literal`. Any other result is `{value: ...}` using `literal`. Wrapped in the tool-response tokens.
 
 `turn(role: str, body: str) -> str`. `<|turn>{role}\n{body}<turn|>\n`.
 
@@ -62,7 +62,7 @@ Tokens: `BOS` `<bos>`, `TURN_OPEN` `<|turn>`, `TURN_CLOSE` `<turn|>`, `THINK` `<
 
 `LOCATE_SCHEMA` is a JSON schema: an array of objects with `box_2d` (four integers, 0 through 1000) and `label` (string), both required.
 
-`Brain.__init__()`. `url` from `brain.host` and `brain.port`. `proc` is `None`.
+`Brain.__init__()`. `url` from `brain.host` and `brain.port`. `proc` is `None`. `marker` is `None` until `media()`.
 
 `Brain.alive() -> bool`. GET `{url}/health`, timeout 2. True when status is 200. `URLError` or `OSError` returns False.
 
@@ -72,13 +72,13 @@ Tokens: `BOS` `<bos>`, `TURN_OPEN` `<|turn>`, `TURN_CLOSE` `<turn|>`, `THINK` `<
 
 `Brain.complete(prompt: str, images: list[bytes] = (), schema: dict | None = None, max_tokens: int | None = None, stop: list[str] = ()) -> str`. POST `{url}/completion`, timeout 600. Body: `prompt` (a string, or `{prompt_string, multimodal_data}` of base64 images when `images` is non-empty), `n_predict` (`max_tokens` or `brain.max_tokens`), `cache_prompt` true, `stop`, and sampling from `temperature`, `top_k`, `top_p`, `min_p`. `schema` sets `json_schema`. Writes the prompt to `state/last_prompt.txt`. Returns `content`. Logs elapsed seconds plus `timings.prompt_n` and `timings.predicted_n`.
 
-`Brain.see(png: bytes, question: str) -> str`. One image, no schema, `max_tokens` 300, thinking off. Prompt is `BOS` + user turn `MEDIA` plus `question` + an open model turn. Returns `plain` of the completion.
+`Brain.see(png: bytes, question: str) -> str`. One image, no schema, `max_tokens` 700, thinking off. Prompt is `BOS` + user turn of `media()` plus `question` + an open model turn. Returns `plain` of the completion.
 
-`Brain.locate(png: bytes, target: str) -> list[dict]`. One image, `LOCATE_SCHEMA`, `max_tokens` 120. Asks for the box of `target` or an empty list. Returns `json.loads` of the completion. Each box is `[y0, x0, y1, x1]` on a 1000 by 1000 grid plus `label`. Pixel conversion is outside this file.
+`Brain.locate(png: bytes, target: str) -> list[dict]`. One image, `LOCATE_SCHEMA`, `max_tokens` 120. The user turn starts with `media()`. Asks for the box of `target` or an empty list. Returns `json.loads` of the completion. Each box is `[y0, x0, y1, x1]` on a 1000 by 1000 grid plus `label`. Pixel conversion is outside this file.
 
-`Brain.ask_json(question: str, schema: dict, png: bytes | None = None) -> object`. Optional image, given schema, `max_tokens` 400. Returns `json.loads` of the completion.
+`Brain.ask_json(question: str, schema: dict, png: bytes | None = None) -> object`. Optional image, given schema, `max_tokens` 400. An image prefixes the question with `media()`. Returns `json.loads` of the completion.
 
-`Brain.think(system: str, tools: dict[str, Tool], history: list[tuple[str, str]], user: str, on_step: Callable[[Step], None] | None = None) -> Reply`. No image. System turn is `THINK`, `system`, and every `declare(tool)`. History is user/model turn pairs. Then the user turn and an open model turn. Up to `max_tool_steps` completions, stopped on the tool-response open token and `TURN_CLOSE`. A completion with no tool returns `Reply(plain(out), steps)`. An unknown tool name yields `unknown tool {name}` and the loop continues. `run(**args)` `TypeError` yields `bad arguments: {exc}`. Other exceptions from `run` propagate. Each call appends a `Step` and, when `on_step` is set, calls it. A `final` tool returns `Reply("", steps)` after it runs. Otherwise the completion and `tool_response` are appended and the loop continues. Exhausting the steps returns `Reply("I am still working on it.", steps)`.
+`Brain.think(system: str, tools: dict[str, Tool], history: list[tuple[str, str]], user: str, on_step: Callable[[Step], None] | None = None) -> Reply`. No image. System turn is `THINK`, `system`, and every `declare(tool)`. History is user/model turn pairs. Then the user turn and an open model turn. Up to `max_tool_steps` completions, stopped on the tool-response open token and `TURN_CLOSE`. A completion with no tool returns `Reply(plain(out), steps)`. An unknown tool name yields `unknown tool {name}` and the loop continues. Any exception from `run` yields `bad arguments: {exc}` and the loop continues. Each call appends a `Step` and, when `on_step` is set, calls it. The log line for a thought, a tool call, and a spoken reply is the full text. A `final` tool returns `Reply("", steps)` after it runs. Otherwise the completion and `tool_response` are appended and the loop continues. Exhausting the steps returns `Reply("I am still working on it.", steps)`.
 
 `main()`. `Brain.start()`, then `ask_json` on the command-line question, or `What is the capital of France and what are its GPS coordinates?` when the command line is empty. Schema requires `capital` (string), `latitude` (number), `longitude` (number). Prints that JSON and `think("You are Gemma. Answer in one short sentence.", {}, [], question).text`. Does not call `stop()`.
 
@@ -198,7 +198,7 @@ Talks to `organs` (`CONFIG`, `log`), `organs.ears.Segmenter`, Telethon, ntgcalls
 
 `Line.start()`. `quit_telegram()`, starts `telegram-loop` and `telegram-rx`, then `_connect` within 180 s.
 
-`Line.stop()`. `hang()` when `state` is not `idle`. Disconnects within 20 s when `client` exists. Stops the loop. `start_telegram()`.
+`Line.stop()`. `hang()` when `state` is not `idle`. When `client` exists, disconnects within 20 s and then `start_telegram()`. Stops the loop. A session that was never opened does not start Desktop.
 
 `Line._run_loop()`. Runs the asyncio loop.
 
@@ -214,9 +214,9 @@ Talks to `organs` (`CONFIG`, `log`), `organs.ears.Segmenter`, Telethon, ntgcalls
 
 `Line._on_message(event)`. A stripped private `raw_text` is logged and passed to `on_text` on a new daemon thread.
 
-`Line.send_text(text: str)`. `send_message` to `OWNER`, timeout 30. Returns None.
+`Line.send_text(text: str)`. Returns immediately when `client` is `None`. Otherwise `send_message` to `OWNER`, timeout 30. Returns None.
 
-`Line.send_photo(png: bytes, caption: str = "")`. Sends an in-memory file named `desk.png`, `force_document` false, timeout 60. Returns None.
+`Line.send_photo(png: bytes, caption: str = "")`. Returns immediately when `client` is `None`. Otherwise sends an in-memory file named `desk.png`, `force_document` false, timeout 60. Returns None.
 
 `Line._on_raw(update)`. Signaling data is forwarded when media is up, otherwise queued. A requested call whose `admin_id` is not `OWNER`, or that arrives while `state` is not `idle`, is discarded as missed (`video` true). Otherwise `_answer` is scheduled. Accepted and confirmed calls store `phone` and complete the matching futures. A discarded call tears the line down.
 
@@ -232,7 +232,7 @@ Talks to `organs` (`CONFIG`, `log`), `organs.ears.Segmenter`, Telethon, ntgcalls
 
 `Line._teardown()`. Stops ntgcalls, discards the call as a hangup when connected (timeout 8 s), clears the receive buffer, sets `idle`.
 
-`Line.dial()`. When `state` is not `idle`, raises `RuntimeError`. Awaits `_place` within 150 s. On `BaseException`, awaits `_teardown` within 20 s and re-raises.
+`Line.dial()`. When `client` is `None`, raises `RuntimeError("line is down")`. When `state` is not `idle`, raises `RuntimeError`. Awaits `_place` within 150 s. On `BaseException`, awaits `_teardown` within 20 s and re-raises.
 
 `Line.hang()`. When `state` is not `idle`, awaits `_teardown` within 20 s.
 
@@ -259,11 +259,10 @@ Talks to `organs` (`CONFIG`, `log`, `state_dir`), `brain` (`Brain`, `Tool`), `ea
 `SYSTEM` is passed to every `think`, with `{owner.name}` filled in:
 
 ```
-You are Gemma, the mind of {owner.name}'s computer. You hear him, see the screen and act with tools.
+You are Gemma, the mind of {owner.name}'s computer. You see the screen and act with tools.
 Each turn: think in two or three short sentences, then either call exactly one tool or say one or two short sentences in English. He hears only what you say, never the thought.
-You and he talk over a Telegram voice call. While the line is down he cannot hear you: reach him with call_owner or send_message, or say nothing.
-Use look before you touch the screen, and name screen elements by the text written on them. Open programs with run. Click, type and press only for work he asked for.
-When he says goodbye or asks you to stop, use hang_up and say nothing.
+Do the screen work he asked for. Use look before you touch the screen, and name screen elements by the text written on them. Open programs with run. After a page opens or a message is sent, wait, then look again before you act.
+Ring him or send him a message only when he asks. When he says goodbye or asks you to stop, use hang_up and say nothing.
 ```
 
 `Trident.__init__()`. Builds `Brain`, `Mouth`, `Memory`, an event queue, and a `stopping` event. `Line` callbacks: text pushes `("chat", text)`, an utterance pushes `("call", samples)`, a line-state change calls `touch`.
@@ -294,13 +293,13 @@ When he says goodbye or asks you to stop, use hang_up and say nothing.
 
 `Trident.tools(kind: str) -> dict[str, Tool]`. `asked` is true when `kind` is not `idle`. The dict is:
 
-- `look(question: str = "What is on the screen?")`. Declared as `Look at the screen. Returns one sentence about what is visible and the open window titles. The picture is also sent to {owner.name}'s chat.` Schema requires `question` (`STRING`, `What to look for, e.g. Is Paint open?`). Calls `eyes.screenshot`, `eyes.window_titles`, and `brain.see(png, "{question} Open windows: {'; '.join(titles)}. Answer in one sentence and quote short on-screen text you can read.")`. `line.send_photo(png, seen[:200])`. Returns `{"screen": seen, "windows": "; ".join(titles)}`.
+- `look(question: str = "What is on the screen?")`. Declared as `Look at the screen. Returns the readable text and the open window titles. The picture is also sent to {owner.name}'s chat.` Schema requires `question` (`STRING`, `What to look for, e.g. Is Paint open?`). Calls `eyes.screenshot`, `eyes.window_titles`, and `brain.see(png, "{question} Open windows: {'; '.join(titles)}. Quote the readable on-screen text. If a chat is visible, quote each message in order.")`. `line.send_photo(png, seen[:200])`. Returns `{"screen": seen, "windows": "; ".join(titles)}`.
 - `find(target: str)` is not a tool. `brain.locate` on a new screenshot. Returns `eyes.center_px` of the first box, or `None`.
 - `click(target: str, how: str = "left")`. Declared as `Click one element on the screen, named by its visible text or look, e.g. the Start button, the OK button, the File menu.` Schema: `target` required (`The element to click.`), `how` optional enum `left`, `right`, `double` (`Kind of click.`). When not `asked`, returns `nobody asked for this`. A missing target returns `{target} is not on the screen`. Otherwise `hands.click` and returns `{how} click on {target}`.
 - `drag(source: str, destination: str)`. Declared as `Drag from one screen element to another.` Both required (`Where the drag starts.`, `Where the drag ends.`). Same idle refusal. When the source point is missing, returns `{source} is not on the screen`. When only the destination is missing, returns `{destination} is not on the screen`. Otherwise `hands.drag` and returns `dragged {source} to {destination}`.
 - `type_text(text: str)`. Declared as `Type text where the cursor is.` `text` is `The text to type.` Idle refusal, or `hands.type_text` and `typed`.
 - `press(keys: str)`. Declared as `Press a key or shortcut: enter, escape, tab, win-r, ctrl-a, ctrl-s, alt-f4, win-d.` `keys` is `The key or chord.` Idle refusal, or `hands.press` and `pressed {keys}`.
-- `run(command: str)`. Declared as `Run one PowerShell command and get its output. Open a program with Start-Process notepad. Write a file with Set-Content.` `command` is `The PowerShell command.` Returns `hands.run(command)` when `asked`, otherwise `nobody asked for this`.
+- `run(command: str)`. Declared as `Run one PowerShell command and get its output. Open a program with Start-Process. Wait with Start-Sleep -Seconds 5.` `command` is `The PowerShell command.` Returns `hands.run(command)` when `asked`, otherwise `nobody asked for this`.
 - `remember(fact: str)`. Declared as `Keep one short fact for later turns.` `fact` is `The fact.` `memory.remember`. Returns `remembered`.
 - `call_owner(opening: str = "I am up. Do you want anything?")`. Declared as `Ring {owner.name} on Telegram. When he answers, the opening is spoken to him first.` `opening` (`The first sentence he hears.`) is optional in the schema. Line already up returns `the line is already up; just speak`. `memory.quiet` returns `you promised to stay quiet until he speaks`. `line.dial()` failure returns `he did not answer: {exc}`. Success speaks `opening` and returns `he answered and heard the opening; now say what he should hear next, or hang_up`.
 - `hang_up()`. Declared as `End the call. Say nothing after it.` No params. `final` is true, so `think` returns no spoken text. Calls `line.hang()` and returns `hung up`.

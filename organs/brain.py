@@ -33,8 +33,6 @@ THINK = "<|think|>"
 QUOTE = '<|"|>'
 TOOL_RESPONSE_OPEN = "<|tool_response>"
 TOOL_RESPONSE_CLOSE = "<tool_response|>"
-# llama.cpp's multimodal placeholder. mtmd swaps it for Gemma's own image tokens.
-MEDIA = "<__media__>"
 
 THOUGHT_RE = re.compile(r"<\|channel>thought\n?(.*?)(?:<channel\|>|$)", re.DOTALL)
 CALL_RE = re.compile(r"<\|tool_call>call:(\w+)\{(.*?)\}<tool_call\|>", re.DOTALL)
@@ -114,8 +112,8 @@ def declare(tool: Tool) -> str:
 
 
 def tool_response(name: str, result: object) -> str:
-    body = result if isinstance(result, dict) else {"result": result}
-    return f"{TOOL_RESPONSE_OPEN}response:{name}{literal(body)}{TOOL_RESPONSE_CLOSE}"
+    body = literal(result) if isinstance(result, dict) else "{value:" + literal(result) + "}"
+    return f"{TOOL_RESPONSE_OPEN}response:{name}{body}{TOOL_RESPONSE_CLOSE}"
 
 
 def turn(role: str, body: str) -> str:
@@ -155,8 +153,15 @@ class Brain:
     def __init__(self):
         self.url = f"http://{CFG['host']}:{CFG['port']}"
         self.proc = None
+        self.marker = None
 
     # ------------------------------------------------------------------ server
+
+    def media(self) -> str:
+        if self.marker is None:
+            with urllib.request.urlopen(self.url + "/props", timeout=10) as r:
+                self.marker = json.load(r)["media_marker"]
+        return self.marker
 
     def alive(self) -> bool:
         try:
@@ -227,17 +232,17 @@ class Brain:
     # ------------------------------------------------------------------ vision and structure
 
     def see(self, png: bytes, question: str) -> str:
-        prompt = BOS + turn("user", f"{MEDIA}\n{question}") + f"{TURN_OPEN}model\n"
-        return plain(self.complete(prompt, images=[png], max_tokens=300))
+        prompt = BOS + turn("user", f"{self.media()}\n{question}") + f"{TURN_OPEN}model\n"
+        return plain(self.complete(prompt, images=[png], max_tokens=700))
 
     def locate(self, png: bytes, target: str) -> list[dict]:
         """Boxes for the named element on the 1000-grid, each [y0, x0, y1, x1] with a label, or an empty list if it is missing."""
-        prompt = BOS + turn("user", f"{MEDIA}\nDetect the {target}. Return the bounding box of that element only, or an empty list if it is not visible.") + f"{TURN_OPEN}model\n"
+        prompt = BOS + turn("user", f"{self.media()}\nDetect the {target}. Return the bounding box of that element only, or an empty list if it is not visible.") + f"{TURN_OPEN}model\n"
         out = self.complete(prompt, images=[png], schema=LOCATE_SCHEMA, max_tokens=120)
         return json.loads(out)
 
     def ask_json(self, question: str, schema: dict, png: bytes | None = None) -> object:
-        body = f"{MEDIA}\n{question}" if png else question
+        body = f"{self.media()}\n{question}" if png else question
         prompt = BOS + turn("user", body) + f"{TURN_OPEN}model\n"
         return json.loads(self.complete(prompt, images=[png] if png else (), schema=schema, max_tokens=400))
 
@@ -252,7 +257,7 @@ class Brain:
             out = self.complete(prompt, stop=[TOOL_RESPONSE_OPEN, TURN_CLOSE])
             thought, name, args = parse(out)
             if thought:
-                LOG.info("thought: %s", thought[:600])
+                LOG.info("thought: %s", thought)
             if not name:
                 text = plain(out)
                 LOG.info("say: %s", text)
@@ -262,11 +267,11 @@ class Brain:
             else:
                 try:
                     result = tools[name].run(**args)
-                except TypeError as exc:
+                except Exception as exc:
                     result = f"bad arguments: {exc}"
             step = Step(thought, name, args, result)
             steps.append(step)
-            LOG.info("tool %s %s -> %s", name, json.dumps(args, ensure_ascii=False)[:200], str(result)[:200])
+            LOG.info("tool %s %s -> %s", name, json.dumps(args, ensure_ascii=False), result)
             if on_step:
                 on_step(step)
             if name in tools and tools[name].final:

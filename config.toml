@@ -30,7 +30,7 @@ top_p = 0.95
 min_p = 0.05
 # Room for a thought channel plus the answer in one agent step.
 max_tokens = 1024
-max_tool_steps = 10
+max_tool_steps = 20
 # After this many seconds with nothing happening, Gemma gets one idle turn.
 idle_after = 30
 
