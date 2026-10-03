@@ -184,7 +184,7 @@ class Line:
         if self.state != "idle":
             self.hang()
         if self.client is not None:
-            self._await(self.client.disconnect(), 20)
+            self._await(self._disconnect(), 20)
         self.loop.call_soon_threadsafe(self.loop.stop)
         start_telegram()
 
@@ -194,6 +194,9 @@ class Line:
 
     def _await(self, coro, timeout):
         return asyncio.run_coroutine_threadsafe(coro, self.loop).result(timeout)
+
+    async def _disconnect(self):
+        await self.client.disconnect()
 
     def _set(self, state: str):
         if state != self.state:
@@ -389,6 +392,9 @@ class Line:
                 LOG.info("owner spoke %.1fs", clip.size / RATE_RX)
                 self.on_utterance(clip)
 
+    async def _send_frame(self, device, data, frame):
+        await self.calls.send_external_frame(OWNER, device, data, frame)
+
     def speak(self, pcm48: bytes):
         """Blocking. Owner audio is ignored while Gemma talks."""
         if not self.up:
@@ -398,7 +404,7 @@ class Line:
             start = time.perf_counter()
             for n, offset in enumerate(range(0, len(pcm48), FRAME_TX), start=1):
                 chunk = pcm48[offset : offset + FRAME_TX].ljust(FRAME_TX, b"\0")
-                self._await(self.calls.send_external_frame(OWNER, StreamDevice.MICROPHONE, chunk, FrameData(int(time.time() * 1000), VIDEO_ROTATION_0, 0, 0)), 5)
+                self._await(self._send_frame(StreamDevice.MICROPHONE, chunk, FrameData(int(time.time() * 1000), VIDEO_ROTATION_0, 0, 0)), 5)
                 delay = start + n * 0.01 - time.perf_counter()
                 if delay > 0:
                     time.sleep(delay)
@@ -411,7 +417,7 @@ class Line:
     def _desk_video(self):
         while self.up and self.calls is not None:
             try:
-                self._await(self.calls.send_external_frame(OWNER, StreamDevice.CAMERA, desk_i420(), FrameData(int(time.time() * 1000), VIDEO_ROTATION_0, DESK_W, DESK_H)), 3)
+                self._await(self._send_frame(StreamDevice.CAMERA, desk_i420(), FrameData(int(time.time() * 1000), VIDEO_ROTATION_0, DESK_W, DESK_H)), 3)
             except Exception:
                 return
             time.sleep(1.0 / CFG["desk_fps"])
