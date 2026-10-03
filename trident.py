@@ -35,7 +35,7 @@ SYSTEM = (
     "A command is run. A key is press. When he says to click an element, call click with that name before you type.\n"
     "When he asks you to type, the type_text text is that sentence copied unchanged. "
     "Example: he says type The note says reply with exactly the word maple. The text is The note says reply with exactly the word maple.\n"
-    "When you report the screen, say the area name and whether that area and its items are visible. A sidebar title is not a message. The year is the year on the clock.\n"
+    "When you report the screen, say the area name, whether that area and its items are visible, and what the crop shows. A sidebar title is not a message. The year is the year on the clock.\n"
     "Ring him or send him a message only when he asks. When he says goodbye or asks you to stop, use hang_up and say nothing."
 )
 SOURCE = {"chat": "a Telegram message from him", "call": "his voice on the call", "typed": "a line he typed on the computer", "idle": "nobody; an idle moment"}
@@ -161,26 +161,33 @@ class Trident:
         def look(question: str = "What is on the screen?"):
             png = eyes.screenshot()
             titles = eyes.window_titles()
-            named = self.brain.area(png, question)
-            piece = eyes.crop(png, [named["y0"], named["x0"], named["y1"], named["x1"]])
-            seen = self.brain.visible(piece, question)
+            asked = self.brain.area(png, f"Name the area of interest for the next click or the next set of actions. Need: {question}. Include the whole element and a margin so none of its text is cut off.")
+            asked_box = [asked["y0"], asked["x0"], asked["y1"], asked["x1"]]
+            asked_png = eyes.crop(png, asked_box)
+            seen = self.brain.see(asked_png, f"Is the needed area visible, and are the items in it visible? Need: {question}. Answer yes or no, then name the items you see.", 200)
+            named = self.brain.area(png, f"You may look at the whole desktop and name the area. {question} Include the whole element and a margin so none of its text is cut off.")
+            focus = eyes.crop(png, [named["y0"], named["x0"], named["y1"], named["x1"]])
+            work = self.brain.see(focus, f"Answer only from this crop of {named['name']}. {question}", 200)
             corner = eyes.corner(png)
             clock = self.brain.see(corner, "Copy the date and four-digit year exactly as printed.")
-            self.line.send_photo(png, named["name"][:200])
-            self.line.send_photo(piece, seen[:200])
-            self.line.send_photo(corner, clock[:200])
-            return {"screen": seen, "area": named["name"], "clock": clock, "windows": "; ".join(titles)}
+            for image, caption in ((png, asked["name"]), (asked_png, seen), (png, named["name"]), (focus, work), (corner, clock)):
+                self.line.send_photo(image, caption[:200])
+            return {"screen": seen, "area": asked["name"], "desk": named["name"], "crop": work, "clock": clock, "windows": "; ".join(titles)}
 
         def find(target: str):
-            boxes = self.brain.locate(eyes.screenshot(), target)
-            return eyes.center_px(boxes[0]["box_2d"]) if boxes else None
+            png = eyes.screenshot()
+            named = self.brain.area(png, f"You may look at the whole desktop and name the area. It contains {target}. Include the whole element and a margin so none of its text is cut off.")
+            box = [named["y0"], named["x0"], named["y1"], named["x1"]]
+            piece = eyes.crop(png, box)
+            spot = self.brain.locate(piece, f'Point at the center of the "{target}" element. The message box is the field at the bottom of a chat where the next message is typed.')
+            self.line.send_photo(png, named["name"][:200])
+            self.line.send_photo(piece, target[:200])
+            return eyes.point_px(box, spot["y"], spot["x"])
 
         def click(target: str, how: str = "left"):
             if not asked:
                 return "nobody asked for this"
             point = find(target)
-            if point is None:
-                return f"{target} is not on the screen"
             hands.click(*point, how)
             return f"{how} click on {target} at {point[0]} {point[1]}"
 
@@ -188,8 +195,6 @@ class Trident:
             if not asked:
                 return "nobody asked for this"
             a, b = find(source), find(destination)
-            if a is None or b is None:
-                return f"{source if a is None else destination} is not on the screen"
             hands.drag(*a, *b)
             return f"dragged {source} to {destination}"
 
@@ -237,7 +242,7 @@ class Trident:
             return "quiet until he speaks"
 
         return {
-            "look": Tool("look", f"Look at the screen. Names the area for the next action, then says whether that area and its items are visible. Also the clock and the window titles. Each picture is also sent to {OWNER}'s chat.", {"question": {"description": "What to look for, e.g. Is Paint open?", "type": "STRING"}}, look),
+            "look": Tool("look", f"Look at the screen. Names an area, says whether that crop is visible, and answers on the crop. Also the clock and the window titles. Each picture is also sent to {OWNER}'s chat.", {"question": {"description": "What to look for, e.g. Is Paint open?", "type": "STRING"}}, look),
             "click": Tool("click", "Click one element on the screen, named by its visible text or look, e.g. the Start button, the OK button, the File menu.", {"target": {"description": "The element to click.", "type": "STRING"}, "how": {"description": "Kind of click.", "type": "STRING", "enum": ["left", "right", "double"]}}, click, optional=("how",)),
             "drag": Tool("drag", "Drag from one screen element to another.", {"source": {"description": "Where the drag starts.", "type": "STRING"}, "destination": {"description": "Where the drag ends.", "type": "STRING"}}, drag),
             "type_text": Tool("type_text", "Type the text argument exactly, every word of it, where the cursor is.", {"text": {"description": "The text to type, every word.", "type": "STRING"}}, type_text),

@@ -2,6 +2,7 @@
 
 Her boxes are [y0, x0, y1, x1] on a 1000 by 1000 grid, origin at the top left, at any image size.
 center_px() is the center of such a box on the real screen.
+point_px() is a 1000-grid point inside a crop, mapped back onto that screen.
 python -m organs.eyes saves state/screen.png and prints the window titles.
 """
 
@@ -45,14 +46,13 @@ def corner(png: bytes) -> bytes:
 
 
 def crop(png: bytes, box: list) -> bytes:
-    """PNG of a [y0, x0, y1, x1] box on the 1000-grid, with each side halved."""
+    """PNG of a [y0, x0, y1, x1] box on the 1000-grid."""
     image = Image.open(io.BytesIO(png)).convert("RGB")
     width, height = image.size
     y0, x0, y1, x1 = (float(v) for v in box)
     left, top = round(min(x0, x1) / 1000 * width), round(min(y0, y1) / 1000 * height)
     right, bottom = round(max(x0, x1) / 1000 * width), round(max(y0, y1) / 1000 * height)
     piece = image.crop((left, top, max(right, left + 1), max(bottom, top + 1)))
-    piece = piece.resize((max(1, piece.width // 2), max(1, piece.height // 2)), Image.Resampling.LANCZOS)
     buffer = io.BytesIO()
     piece.save(buffer, format="PNG", compress_level=1)
     return buffer.getvalue()
@@ -63,6 +63,15 @@ def center_px(box_2d: list) -> tuple[int, int]:
     width, height = screen_size()
     y0, x0, y1, x1 = (float(v) for v in box_2d)
     return round((x0 + x1) / 2000 * (width - 1)), round((y0 + y1) / 2000 * (height - 1))
+
+
+def point_px(box: list, y: float, x: float) -> tuple[int, int]:
+    """Screen pixel for a 1000-grid point inside a crop. box is that crop on the full 1000-grid."""
+    y0, x0, y1, x1 = (float(v) for v in box)
+    top, left = min(y0, y1), min(x0, x1)
+    gy = top + (max(y0, y1) - top) * float(y) / 1000
+    gx = left + (max(x0, x1) - left) * float(x) / 1000
+    return center_px([gy, gx, gy, gx])
 
 
 def window_titles(limit: int = 8) -> list[str]:

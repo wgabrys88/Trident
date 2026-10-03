@@ -76,11 +76,9 @@ Tokens: `BOS` `<bos>`, `TURN_OPEN` `<|turn>`, `TURN_CLOSE` `<turn|>`, `THINK` `<
 
 `Brain.see(png: bytes, question: str, max_tokens: int = 80) -> str`. One image, no schema, thinking off. Prompt is `BOS` + user turn of `media()` plus `question` + an open model turn. Returns `plain` of the completion.
 
-`Brain.area(png: bytes, need: str) -> dict`. One image, `AREA_SCHEMA`, `max_tokens` 80. The user turn starts with `media()`. Asks for the area of interest for the next click or the next set of actions, the whole element plus a margin so none of its text is cut off. Returns `name`, `y0`, `x0`, `y1`, `x1` on the 1000-grid.
+`Brain.area(png: bytes, prompt: str) -> dict`. One image, `AREA_SCHEMA`, `max_tokens` 80. The user turn is `media()`, then `prompt`, then `name is that area. y0, x0, y1, x1 are its edges, 0 to 1000, origin at the top left, y vertical.` Returns that object. The prompt is written by the caller for this pass.
 
-`Brain.visible(png: bytes, need: str) -> str`. One `see` of that crop, `max_tokens` 200. Asks whether the needed area and the items in it are visible, then to name the items.
-
-`Brain.locate(png: bytes, target: str) -> list[dict]`. One image, `LOCATE_SCHEMA`, `max_tokens` 40. The user turn starts with `media()`. Asks for the center of `target`. The message box is the field at the bottom of a chat where the next message is typed. Returns one item, `box_2d` `[y, x, y, x]` on a 1000 by 1000 grid plus `label` = `target`. Pixel conversion is outside this file.
+`Brain.locate(png: bytes, prompt: str) -> dict`. One image, `LOCATE_SCHEMA`, `max_tokens` 40. The user turn is `media()`, then `prompt`, then `y and x are 0 to 1000, origin at the top left, y vertical.` Returns `y` and `x` on the 1000-grid of that image. Pixel conversion is outside this file.
 
 `Brain.ask_json(question: str, schema: dict, png: bytes | None = None) -> object`. Optional image, given schema, `max_tokens` 400. An image prefixes the question with `media()`. Returns `json.loads` of the completion.
 
@@ -116,9 +114,11 @@ Talks to `organs` (`CONFIG`, and `state_dir` in `__main__`), `user32`, and PIL `
 
 `corner(png: bytes) -> bytes`. Crops the bottom-right 420 by 90 pixels of that PNG and scales it by 3 with nearest-neighbor. That corner is the clock.
 
-`crop(png: bytes, box: list) -> bytes`. `box` is `[y0, x0, y1, x1]` on the 1000-grid. Crops that rectangle out of `png` and resizes it to half the width and half the height (LANCZOS).
+`crop(png: bytes, box: list) -> bytes`. `box` is `[y0, x0, y1, x1]` on the 1000-grid. Crops that rectangle out of `png`. RGB PNG, `compress_level` 1.
 
-`center_px(box_2d: list) -> tuple[int, int]`. `box_2d` is `[y0, x0, y1, x1]` on the 1000-grid. Returns `(x, y)` from `screen_size()`: `round((x0+x1)/2000*(width-1))`, `round((y0+y1)/2000*(height-1))`. A point from `locate` is `[y, x, y, x]`, so this is that point.
+`center_px(box_2d: list) -> tuple[int, int]`. `box_2d` is `[y0, x0, y1, x1]` on the 1000-grid. Returns `(x, y)` from `screen_size()`: `round((x0+x1)/2000*(width-1))`, `round((y0+y1)/2000*(height-1))`.
+
+`point_px(box: list, y: float, x: float) -> tuple[int, int]`. `box` is a crop on the full 1000-grid. `y` and `x` are a point on the 1000-grid of that crop. Maps the point through the crop's min and max edges, then `center_px`.
 
 `window_titles(limit: int = 8) -> list[str]`. Foreground window first, then visible windows. Unique, whitespace collapsed, cut at `limit`.
 
@@ -274,7 +274,7 @@ Each turn: think in two or three short sentences, then either call exactly one t
 Do the screen work he asked for. Use look before you touch the screen, and name screen elements by the text written on them. Open a program with run. After a page opens or a message is sent, run Start-Sleep, then look again before you act.
 A command is run. A key is press. When he says to click an element, call click with that name before you type.
 When he asks you to type, the type_text text is that sentence copied unchanged. Example: he says type The note says reply with exactly the word maple. The text is The note says reply with exactly the word maple.
-When you report the screen, say the area name and whether that area and its items are visible. A sidebar title is not a message. The year is the year on the clock.
+When you report the screen, say the area name, whether that area and its items are visible, and what the crop shows. A sidebar title is not a message. The year is the year on the clock.
 Ring him or send him a message only when he asks. When he says goodbye or asks you to stop, use hang_up and say nothing.
 ```
 
@@ -306,10 +306,10 @@ Ring him or send him a message only when he asks. When he says goodbye or asks y
 
 `Trident.tools(kind: str) -> dict[str, Tool]`. `asked` is true when `kind` is not `idle`. The dict is:
 
-- `look(question: str = "What is on the screen?")`. Declared as `Look at the screen. Names the area for the next action, then says whether that area and its items are visible. Also the clock and the window titles. Each picture is also sent to {owner.name}'s chat.` Schema requires `question` (`STRING`, `What to look for, e.g. Is Paint open?`). Calls `eyes.screenshot`, `eyes.window_titles`, `brain.area(png, question)`, `eyes.crop` on that box, `brain.visible` on the crop, and `brain.see` on `eyes.corner(png)` for the clock. Sends the screenshot, the crop, and the corner with `line.send_photo`. Returns `{"screen": seen, "area": name, "clock": clock, "windows": "; ".join(titles)}`.
-- `find(target: str)` is not a tool. `brain.locate` on a new screenshot. Returns `eyes.center_px` of the first box, or `None`.
-- `click(target: str, how: str = "left")`. Declared as `Click one element on the screen, named by its visible text or look, e.g. the Start button, the OK button, the File menu.` Schema: `target` required (`The element to click.`), `how` optional enum `left`, `right`, `double` (`Kind of click.`). When not `asked`, returns `nobody asked for this`. A missing target returns `{target} is not on the screen`. Otherwise `hands.click` and returns `{how} click on {target} at {x} {y}`.
-- `drag(source: str, destination: str)`. Declared as `Drag from one screen element to another.` Both required (`Where the drag starts.`, `Where the drag ends.`). Same idle refusal. When the source point is missing, returns `{source} is not on the screen`. When only the destination is missing, returns `{destination} is not on the screen`. Otherwise `hands.drag` and returns `dragged {source} to {destination}`.
+- `look(question: str = "What is on the screen?")`. Declared as `Look at the screen. Names an area, says whether that crop is visible, and answers on the crop. Also the clock and the window titles. Each picture is also sent to {owner.name}'s chat.` Schema requires `question` (`STRING`, `What to look for, e.g. Is Paint open?`). Calls `eyes.screenshot` and `eyes.window_titles`. One `brain.area` asks for the area of the next click or the next actions, including the whole element and a margin. `eyes.crop` cuts that box. `brain.see` on that crop, `max_tokens` 200, asks whether the needed area and the items in it are visible. Another `brain.area` is `You may look at the whole desktop and name the area. {question} Include the whole element and a margin so none of its text is cut off.` `eyes.crop` cuts that box. `brain.see` on that crop, `max_tokens` 200, is `Answer only from this crop of {name}. {question}`. `brain.see` on `eyes.corner(png)` reads the clock. Each of those five pictures is sent with `line.send_photo`. Returns `{"screen": seen, "area": asked name, "desk": named name, "crop": work, "clock": clock, "windows": "; ".join(titles)}`.
+- `find(target: str)` is not a tool. `brain.area` on a new screenshot. The prompt is `You may look at the whole desktop and name the area. It contains {target}. Include the whole element and a margin so none of its text is cut off.` `eyes.crop` cuts that box. `brain.locate` on the crop only. The prompt is `Point at the center of the "{target}" element. The message box is the field at the bottom of a chat where the next message is typed.` Sends the screenshot and the crop with `line.send_photo`. Returns `eyes.point_px` of that crop and that point.
+- `click(target: str, how: str = "left")`. Declared as `Click one element on the screen, named by its visible text or look, e.g. the Start button, the OK button, the File menu.` Schema: `target` required (`The element to click.`), `how` optional enum `left`, `right`, `double` (`Kind of click.`). When not `asked`, returns `nobody asked for this`. Otherwise `hands.click` on `find(target)` and returns `{how} click on {target} at {x} {y}`.
+- `drag(source: str, destination: str)`. Declared as `Drag from one screen element to another.` Both required (`Where the drag starts.`, `Where the drag ends.`). Same idle refusal. `hands.drag` from `find(source)` to `find(destination)`. Returns `dragged {source} to {destination}`.
 - `type_text(text: str)`. Declared as `Type the text argument exactly, every word of it, where the cursor is.` `text` is `The text to type, every word.` Idle refusal, or `hands.type_text(text)` and `typed`.
 - `press(keys: str)`. Declared as `Press keyboard keys only, for example enter, escape, tab, or ctrl-a. Never a command.` `keys` is `The key or chord.` Idle refusal, or `hands.press` and `pressed {keys}`. An unknown key still raises `KeyError` from `hands.press`.
 - `run(command: str)`. Declared as `Run one PowerShell command. Start-Process opens a program. Start-Sleep -Seconds N waits.` `command` is `The PowerShell command.` Returns `hands.run(command)` when `asked`, otherwise `nobody asked for this`.

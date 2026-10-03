@@ -4,7 +4,7 @@ think() is the agent turn: system text, tool declarations, and recent turns, wit
 She returns a thought and then either one tool call or the words to say. That tool runs here, and the
 same turn continues with a <|tool_response>, so the thought stays in context. That turn carries no picture.
 
-see(), area(), visible(), locate(), and ask_json() are separate requests with thinking off. see(), area(), visible(), and locate() each take one image. area(), locate(), and ask_json() force a JSON schema.
+see(), area(), locate(), and ask_json() are separate requests with thinking off. see(), area(), and locate() each take one image. area(), locate(), and ask_json() force a JSON schema. The words of a pass are the prompt written for that moment.
 locate() answers with a point on a 1000 by 1000 grid. Pixel conversion happens outside this file.
 Tools arrive as arguments. python -m organs.brain prints a structured answer and one short sentence. The question is the command line, or the built-in one when that is empty.
 """
@@ -244,20 +244,15 @@ class Brain:
         prompt = BOS + turn("user", f"{self.media()}\n{question}") + f"{TURN_OPEN}model\n"
         return plain(self.complete(prompt, images=[png], max_tokens=max_tokens))
 
-    def area(self, png: bytes, need: str) -> dict:
-        """Name and [y0, x0, y1, x1] on the 1000-grid for the next click or the next actions."""
-        prompt = BOS + turn("user", f"{self.media()}\nName the area of interest for the next click or the next set of actions. Need: {need}. Include the whole element and a margin so none of its text is cut off. name is that area. y0, x0, y1, x1 are its edges, 0 to 1000, origin at the top left, y vertical.") + f"{TURN_OPEN}model\n"
-        return json.loads(self.complete(prompt, images=[png], schema=AREA_SCHEMA, max_tokens=80))
+    def area(self, png: bytes, prompt: str) -> dict:
+        """name, y0, x0, y1, x1 on the 1000-grid. prompt is this pass."""
+        text = f"{self.media()}\n{prompt}\nname is that area. y0, x0, y1, x1 are its edges, 0 to 1000, origin at the top left, y vertical."
+        return json.loads(self.complete(BOS + turn("user", text) + f"{TURN_OPEN}model\n", images=[png], schema=AREA_SCHEMA, max_tokens=80))
 
-    def visible(self, png: bytes, need: str) -> str:
-        """Whether this crop shows the needed area and the items in it."""
-        return self.see(png, f"Is the needed area visible, and are the items in it visible? Need: {need}. Answer yes or no, then name the items you see.", 200)
-
-    def locate(self, png: bytes, target: str) -> list[dict]:
-        """One point on the 1000-grid as [y, x, y, x], the center of the named element."""
-        prompt = BOS + turn("user", f'{self.media()}\nPoint at the center of the "{target}" element. y and x are 0 to 1000, origin at the top left, y vertical. The message box is the field at the bottom of a chat where the next message is typed.') + f"{TURN_OPEN}model\n"
-        data = json.loads(self.complete(prompt, images=[png], schema=LOCATE_SCHEMA, max_tokens=40))
-        return [{"box_2d": [data["y"], data["x"], data["y"], data["x"]], "label": target}]
+    def locate(self, png: bytes, prompt: str) -> dict:
+        """y and x on the 1000-grid of this image. prompt is this pass."""
+        text = f"{self.media()}\n{prompt}\ny and x are 0 to 1000, origin at the top left, y vertical."
+        return json.loads(self.complete(BOS + turn("user", text) + f"{TURN_OPEN}model\n", images=[png], schema=LOCATE_SCHEMA, max_tokens=40))
 
     def ask_json(self, question: str, schema: dict, png: bytes | None = None) -> object:
         body = f"{self.media()}\n{question}" if png else question
