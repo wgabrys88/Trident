@@ -21,7 +21,6 @@ Telegram Desktop logged into Gemma's account **and** Wojciech's account (Gemma's
 whose id is not `owner.telegram_id`), VB-Audio Virtual Cable for the room microphone.
 
 ```powershell
-cd Trident-v2
 python install.py
 ```
 
