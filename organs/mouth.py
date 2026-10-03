@@ -1,6 +1,6 @@
 """Chatterbox turbo turns English text into samples for the Telegram call.
 
-The model is loaded once, on the CPU from config, and the voice is reference.wav.
+The model is loaded once, on the GPU, and the voice is reference.wav.
 say() returns float32 mono at the model rate. pcm48() is signed 16-bit mono at 48 kHz.
 """
 
@@ -17,7 +17,7 @@ TAGS = re.compile(r"\[(laugh|chuckle|sigh|gasp|cough|clear throat|sniff|groan)\]
 
 
 def speakable(text: str) -> str:
-    """Letters, digits, punctuation, and nano's bracketed tags, kept as ASCII. Other characters are removed."""
+    """Letters, digits, punctuation, and bracketed tags, kept as ASCII."""
     kept = TAGS.sub(lambda m: f" <{m.group(1)}> ", text)
     kept = unicodedata.normalize("NFKD", kept).encode("ascii", "ignore").decode("ascii")
     kept = re.sub(r"<([a-z ]+)>", r"[\1]", kept)

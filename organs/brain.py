@@ -183,10 +183,10 @@ class Brain:
             self.proc.wait(10)
         self.proc = None
 
-    def complete(self, prompt: str, images: list[bytes] = (), schema: dict | None = None, max_tokens: int | None = None, stop: list[str] = ()) -> str:
+    def complete(self, prompt: str, images: list[bytes] = (), schema: dict | None = None, stop: list[str] = ()) -> str:
         body = {
             "prompt": {"prompt_string": prompt, "multimodal_data": [base64.b64encode(i).decode("ascii") for i in images]} if images else prompt,
-            "n_predict": max_tokens or CFG["max_tokens"],
+            "n_predict": CFG["max_tokens"],
             "cache_prompt": True,
             "stop": list(stop),
             "temperature": CFG["temperature"],

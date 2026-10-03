@@ -6,7 +6,6 @@ It makes .venv, installs the packages, and downloads anything still missing:
     the llama.cpp CUDA build, as bin/llama/llama-server.exe plus the CUDA runtime DLLs
     the NeMo-Speech.cpp build, as bin/nemo-speech/bin/nemo-speech.exe
     Gemma 4 E2B-it, its vision projector, the Nemotron ASR model, and Silero VAD, under models/
-    Chatterbox nano, into the Hugging Face cache
 A download already on disk is left alone. Change [install] in config.toml and run this again to fetch something else.
 """
 
@@ -119,13 +118,6 @@ def models():
     download(INSTALL["silero_url"], MODELS / "silero_vad.onnx")
 
 
-def voice():
-    from huggingface_hub import snapshot_download
-
-    say("get  ResembleAI/chatterbox-nano")
-    snapshot_download("ResembleAI/chatterbox-nano")
-
-
 def main():
     os.chdir(ROOT)
     venv()
@@ -133,7 +125,6 @@ def main():
     llama()
     nemo()
     models()
-    voice()
     say("done. next: put reference.wav here if it is missing, then  python trident.py")
 
 

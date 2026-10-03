@@ -18,11 +18,11 @@ Tracked files: `.gitattributes`, `.gitignore`, `LICENSE`, `config.toml`, `instal
 
 `[ears]` `vad_threshold` = 0.65, `min_silence_ms` = 700, `pad_ms` = 120, `min_utterance_s` = 1.0, `model` = nemotron-3.5-asr-streaming-0.6b.q8_0.gguf. Read by `ears`. `model` also by `install`.
 
-`[mouth]` `device` = cpu, `reference` = reference.wav. Read by `mouth`.
+`[mouth]` `device` = cuda, `reference` = reference.wav. Read by `mouth`.
 
 `[telegram]` `desk_video` = true, `desk_fps` = 12. Read by `telegram`.
 
-`[install]` `llama_tag` = b11371, `llama_asset` = bin-win-cuda-12.4-x64.zip, `cudart_asset` = cudart-llama-bin-win-cuda-12.4-x64.zip, `nemo_url` = https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v0.1.0/nemo-speech-0.1.0-windows-x86_64-cpu.zip, `gemma_url` = https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_0.gguf, `mmproj_url` = https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/mmproj-gemma-4-E2B-it-Q8_0.gguf, `ear_url` = https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b/resolve/main/nemotron-3.5-asr-streaming-0.6b.q8_0.gguf, `silero_url` = https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx, `torch_index` = https://download.pytorch.org/whl/cpu. Read by `install`.
+`[install]` `llama_tag` = b11371, `llama_asset` = bin-win-cuda-12.4-x64.zip, `cudart_asset` = cudart-llama-bin-win-cuda-12.4-x64.zip, `nemo_url` = https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v0.1.0/nemo-speech-0.1.0-windows-x86_64-cpu.zip, `gemma_url` = https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_0.gguf, `mmproj_url` = https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/mmproj-gemma-4-E2B-it-Q8_0.gguf, `ear_url` = https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b/resolve/main/nemotron-3.5-asr-streaming-0.6b.q8_0.gguf, `silero_url` = https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx, `torch_index` = https://download.pytorch.org/whl/cu124. Read by `install`.
 
 ## organs/__init__.py
 
@@ -70,7 +70,7 @@ Tokens: `BOS` `<bos>`, `TURN_OPEN` `<|turn>`, `TURN_CLOSE` `<turn|>`, `THINK` `<
 
 `Brain.stop()`. If `proc` is still running, `terminate()` and `wait(10)`. Sets `proc` to `None`. A server that was already up at `start()` is left running.
 
-`Brain.complete(prompt: str, images: list[bytes] = (), schema: dict | None = None, max_tokens: int | None = None, stop: list[str] = ()) -> str`. POST `{url}/completion`, timeout 600. Body: `prompt` (a string, or `{prompt_string, multimodal_data}` of base64 images when `images` is non-empty), `n_predict` (`max_tokens` or `brain.max_tokens`), `cache_prompt` true, `stop`, and sampling from `temperature`, `top_k`, `top_p`, `min_p`. `schema` sets `json_schema`. Writes the prompt to `state/last_prompt.txt`. Returns `content`. Logs elapsed seconds plus `timings.prompt_n` and `timings.predicted_n`.
+`Brain.complete(prompt: str, images: list[bytes] = (), schema: dict | None = None, stop: list[str] = ()) -> str`. POST `{url}/completion`, timeout 600. Body: `prompt` (a string, or `{prompt_string, multimodal_data}` of base64 images when `images` is non-empty), `n_predict` `brain.max_tokens`, `cache_prompt` true, `stop`, and sampling from `temperature`, `top_k`, `top_p`, `min_p`. `schema` sets `json_schema`. Writes the prompt to `state/last_prompt.txt`. Returns `content`. Logs elapsed seconds plus `timings.prompt_n` and `timings.predicted_n`.
 
 `Brain.ask_json(question: str, schema: dict, png: bytes | None = None) -> object`. Optional image, given schema, `n_predict` from `brain.max_tokens`, thinking off. An image prefixes the question with `media()`. Returns `json.loads` of the completion. A point in that object is on the 1000-grid of that image. Pixel conversion is outside this file.
 
@@ -138,7 +138,7 @@ Talks to `user32.SendInput` and `powershell.exe`. Imports no organ. Talked to by
 
 `type_text(text: str) -> None`. Each UTF-16-LE unit is its own Unicode key down and key up, then 0.01 s.
 
-`run(command: str, timeout: int = 25) -> str`. `powershell.exe -NoProfile -NonInteractive -Command`, hidden window, stdout and stderr in temporary files. `wait` with the timeout. Timeout kills the process and returns `timed out`. After exit, both files are read in full and joined. A command whose stripped lowercase text starts with `start-process` or `start ` then waits 1.5 s. Empty output returns `exit {code}` when the code is non-zero, otherwise `ok`.
+`run(command: str, timeout: int = 25) -> str`. `powershell.exe -NoProfile -NonInteractive -Command`, hidden window, stdout and stderr in temporary files. The command removes the `start` alias, then runs the text. `wait` with the timeout. Timeout kills the process and returns `timed out`. After exit, both files are read in full and joined. A command whose stripped lowercase text starts with `start-process` then waits 1.5 s. Empty output returns `exit {code}` when the code is non-zero, otherwise `ok`.
 
 `python -m organs.hands press CHORD` calls `press`. `type TEXT...` calls `type_text` on the joined words. `click X Y [HOW]` calls `click`. `run COMMAND...` prints `run`. No `drag` verb.
 
@@ -263,7 +263,7 @@ Talks to `organs` (`CONFIG`, `log`, `state_dir`), `brain` (`Brain`, `Tool`), `ea
 ```
 You are Gemma, the mind of {owner.name}'s computer. You see the screen and act with tools.
 Each turn: think in two or three short sentences, then either call exactly one tool or say one or two short sentences in English. He hears only what you say, never the thought.
-Do the screen work he asked for. Each look is one small step and you write its prompt. The prompt says where that one element sits, what it looks like, and asks for its center. A pass does not list every element. To click or drag: call crop on that element, then call click or drag with the x and y from the crop. A drag is one straight stroke. A rectangle is one stroke per side. A whole-desktop point is not the box. If the tool says not clicked, not dragged, or not pressed, call crop next. When a look is not confident, the next call is look once more before you act.
+Do the screen work he asked for. Each look is one small step and you write its prompt. The prompt says where that one element sits, what it looks like, and asks for its center. A pass does not list every element. To click or drag: call crop on that element, then call click or drag with the x and y from the crop. Each drag is the next side. After a stroke, look. If the shape is not finished, drag the next side. A whole-desktop point is not the box. If the tool says not clicked, not dragged, or not pressed, call crop next. When a look is not confident, the next call is look once more before you act.
 Open a program with run. After a page opens or a message is sent, run Start-Sleep, then look again before you act.
 A command is run. A key he asked for is press. press does not click.
 When he asks you to type, the type_text text is that sentence copied unchanged. Example: he says type The note says reply with exactly the word maple. The text is The note says reply with exactly the word maple.
@@ -272,11 +272,11 @@ When he asks you not to speak, do the work and say nothing.
 You are Gemma, the mind of {owner.name}'s computer. You see the screen and act with tools.
 ```
 
-`PASS` is the JSON schema for one look: `answer` (string), `confident` (boolean), `y`, `x`, `y0`, `x0`, `y1`, and `x1` (integers 0 through 1000), all required.
+`PASS` is the JSON schema for one look: `answer` (string, at most 200 characters), `confident` (boolean), `y`, `x`, `y0`, `x0`, `y1`, and `x1` (integers 0 through 1000), all required.
 
 `cloud_look(png: bytes, question: str) -> dict`. Writes `png` to `state/cloud/look.png`. Runs the newest `%LOCALAPPDATA%\cursor-agent\versions\*\node.exe` on that version's `index.js`, print mode, ask mode, `--trust`, `--model` `cloud.model`, text output, workspace that folder. The prompt says to read only `look.png` and reply with one JSON object of `answer`, `confident`, `y`, `x`, `y0`, `x0`, `y1`, and `x1`, then the question. Non-zero exit raises `RuntimeError` with stderr. Returns `json.loads` of stdout. Logs `cloud` plus the model name.
 
-`Trident.__init__()`. Builds `Brain`, `Mouth`, `Memory`, an event queue, and a `stopping` event. `request`, `seen`, and `unsure` start empty or false. `cropped` and `acted` start false. `Line` callbacks: text pushes `("chat", text)`, an utterance pushes `("call", samples)`, a line-state change calls `touch`.
+`Trident.__init__()`. Builds `Brain`, `Mouth`, `Memory`, an event queue, and a `stopping` event. `request` starts empty. `unsure`, `cropped`, and `acted` start false. `Line` callbacks: text pushes `("chat", text)`, an utterance pushes `("call", samples)`, a line-state change calls `touch`.
 
 `Trident.start()`. `brain.start()`, `mouth.load()`, `line.start()`, then daemon threads `trident-worker`, `trident-inbox`, and `trident-idle`.
 
@@ -296,7 +296,7 @@ You are Gemma, the mind of {owner.name}'s computer. You see the screen and act w
 
 `Trident.command(name: str)`. `call` dials and speaks `I am up. Do you want anything?`. `hang` calls `line.hang()`. `stop` sets `stopping`. Any other name returns. A command does not clear `quiet` and does not call `turn`.
 
-`Trident.turn(kind: str, text: str) -> str`. Stores `text` on `request` and sets `cropped` and `acted` false. User text to the brain is `[{HH:MM} | line {state} | heard from: {SOURCE[kind]}]\n{text}`. Calls `brain.think(SYSTEM + facts_block(), tools(kind), history(), that text, on_step=...)`. `on_step` sends the thought, the tool name, and the arguments as JSON, uncut, with `line.send_text`. When `reply.text` is non-empty and `reply.text.lower().strip(".")` is not `idle`, appends the turn to memory and returns `reply.text`. Otherwise returns `""`. `seen` and `unsure` are kept across turns.
+`Trident.turn(kind: str, text: str) -> str`. Stores `text` on `request` and sets `cropped` and `acted` false. User text to the brain is `[{HH:MM} | line {state} | heard from: {SOURCE[kind]}]\n{text}`. Calls `brain.think(SYSTEM + facts_block(), tools(kind), history(), that text, on_step=...)`. `on_step` sends the thought, the tool name, and the arguments as JSON, uncut, with `line.send_text`. When `reply.text` is non-empty and `reply.text.lower().strip(".")` is not `idle`, appends the turn to memory and returns `reply.text`. Otherwise returns `""`. `unsure` is kept across turns.
 
 `Trident.deliver(kind: str, text: str)`. Empty text returns. When the line is up, `speak`. When the line is down and `kind` is `chat`, `line.send_text`. A `typed` or `idle` reply with the line down is dropped.
 
@@ -304,13 +304,13 @@ You are Gemma, the mind of {owner.name}'s computer. You see the screen and act w
 
 `Trident.tools(kind: str) -> dict[str, Tool]`. `asked` is true when `kind` is not `idle`. The dict is:
 
-- `look(prompt: str, y0: int = -1, x0: int = -1, y1: int = -1, x1: int = -1)`. Declared as `One look at the whole desktop. It returns no click point. Write the prompt for this pass. Say where the one element sits, what it looks like, and ask for its center. The picture is also sent to {owner.name}'s chat.` Schema requires `prompt` (`STRING`). One new screenshot. A box is used only when every edge is at least 0, and then `eyes.crop` cuts it. When `unsure` is already true, `eyes.shrink` runs first and this pass calls `cloud_look`. Otherwise `brain.ask_json` with `PASS`. The question is her prompt, then `Request:` the stored user text, then `Last:` the previous answer, then: answer the request about this picture, copy written text in full when that is what was asked, do not transcribe the rest, do not answer with the instructions, the point is the center, and the four edges are `y0`, `x0`, `y1`, `x1`. The picture is sent with `line.send_photo` and the full prompt as the caption before the model sees it. When the returned object has `y0`, `x0`, `y1`, and `x1`, `eyes.mark` draws that box on a copy and `line.send_photo` sends the copy. That copy is not passed back into `ask_json` or `cloud_look`. `seen` becomes the answer. A local pass that is not confident sets `unsure`, so the next look is the cloud pass. A cloud pass clears `unsure`. `cropped` is true only when this pass had a box. A crop returns `x` and `y` from `eyes.point_px`. Any other look returns `x` and `y` from `eyes.center_px`, except a click or drag request, which gets no point. When not confident, also `next` = `look once more`. On a click or drag, before a click has landed, a whole-desktop look that is confident sets `next` to `crop` and leaves the answer as the model wrote it.
+- `look(prompt: str, y0: int = -1, x0: int = -1, y1: int = -1, x1: int = -1)`. Declared as `One look at the whole desktop. It returns no click point. Write the prompt for this pass. Say where the one element sits, what it looks like, and ask for its center. The picture is also sent to {owner.name}'s chat.` Schema requires `prompt` (`STRING`). One new screenshot. A box is used only when every edge is at least 0, and then `eyes.crop` cuts it. When `unsure` is already true, `eyes.shrink` runs first and this pass calls `cloud_look`. Otherwise `brain.ask_json` with `PASS`. The question is her prompt, then `One short sentence of what the picture shows.` The picture is sent with `line.send_photo` and the full prompt as the caption before the model sees it. When the returned object has `y0`, `x0`, `y1`, and `x1`, `eyes.mark` draws that box on a copy and `line.send_photo` sends the copy. That copy is not passed back into `ask_json` or `cloud_look`. The returned `answer` is what the picture shows. A local pass that is not confident sets `unsure`, so the next look is the cloud pass. A cloud pass clears `unsure`. A box sets `cropped` true, and a later look in the turn does not clear it. A crop returns `x` and `y` from `eyes.point_px`. Any other look returns `x` and `y` from `eyes.center_px`, except a click or drag request, which gets no point. When not confident, also `next` = `look once more`. On a click or drag, before an action has landed, a whole-desktop look that is confident sets `next` to `crop` and leaves the answer as the model wrote it.
 - `crop(prompt: str, y0: int, x0: int, y1: int, x1: int)`. Declared as `One look at a crop of one element. The prompt names where it sits and asks for its center. y0, x0, y1, x1 are that box, 0 to 1000, origin at the top left, y vertical. The picture is also sent to {owner.name}'s chat.` All five are required. Calls `look` with that box.
 - `click(x: int, y: int, how: str = "left")`. Declared as `Click the x and y returned by crop.` `x` and `y` required, `how` optional enum `left`, `right`, `double`. When not `asked`, returns `nobody asked for this`. When `cropped` is false, returns `not clicked. crop a small square on the edge the prompt names, then click the x and y from that crop` and does not click. Otherwise `hands.click`, sets `acted`, and returns `{how} click at {x} {y}`.
-- `drag(x0: int, y0: int, x1: int, y1: int)`. Declared as `One straight stroke from one screen pixel to another. A rectangle is one stroke per side.` All four required. Same idle refusal. When `cropped` is false, returns `not dragged. call crop with a tight box around the element, then drag using the x and y from that crop` and does not drag. Otherwise `hands.drag` and returns `dragged {x0} {y0} to {x1} {y1}`.
+- `drag(x0: int, y0: int, x1: int, y1: int)`. Declared as `The next side, one straight stroke. Look after it. If the shape is not finished, drag the next side.` All four required. Same idle refusal. When `cropped` is false, returns `not dragged. call crop with a tight box around the element, then drag using the x and y from that crop` and does not drag. Otherwise `hands.drag`, sets `acted`, and returns `stroke {x0} {y0} {x1} {y1}`.
 - `type_text(text: str)`. Declared as `Type the text argument exactly, every word of it, where the cursor is.` `text` is `The text to type, every word.` Idle refusal, or `hands.type_text(text)` and `typed`.
 - `press(keys: str)`. Declared as `Press a key he asked for, for example enter, escape, tab, or ctrl-a. Never a click and never a command.` `keys` is `The key or chord.` Idle refusal. When the request asks for a click and does not ask for a key, returns `not pressed. a key does not click. crop the element and click the x and y from that crop` and does not press. Otherwise `hands.press` and `pressed {keys}`. An unknown key still raises `KeyError` from `hands.press`.
-- `run(command: str)`. Declared as `Run one PowerShell command. Start-Process opens a program. Start-Sleep -Seconds N waits.` `command` is `The PowerShell command.` Idle refusal. When the request asks for a click, does not ask to run, and `acted` is still false, returns `not run. a command does not click. crop the element and click the x and y from that crop`. Otherwise returns `hands.run(command)`.
+- `run(command: str)`. Declared as `One PowerShell command. A program is Start-Process and its executable name. Start-Sleep -Seconds N waits.` `command` is `The PowerShell command.` Idle refusal. When the request asks for a click, does not ask to run, and `acted` is still false, returns `not run. a command does not click. crop the element and click the x and y from that crop`. Otherwise returns `hands.run(command)`.
 - `remember(fact: str)`. Declared as `Keep one short fact for later turns.` `fact` is `The fact.` `memory.remember`. Returns `remembered`.
 - `call_owner(opening: str = "I am up. Do you want anything?")`. Declared as `Ring {owner.name} on Telegram. When he answers, the opening is spoken to him first.` `opening` (`The first sentence he hears.`) is optional in the schema. Line already up returns `the line is already up; just speak`. `memory.quiet` returns `you promised to stay quiet until he speaks`. `line.dial()` failure returns `he did not answer: {exc}`. Success speaks `opening` and returns `he answered and heard the opening; now say what he should hear next, or hang_up`.
 - `hang_up()`. Declared as `End the call. Say nothing after it.` No params. `final` is true, so `think` returns no spoken text. Calls `line.hang()` and returns `hung up`.
@@ -325,7 +325,7 @@ The cloud model is `gpt-5.6-luna-none`, non-fast, on the local Cursor agent. Com
 
 ## install.py
 
-Talks to `config.toml`, the network, `zipfile`, `subprocess`, and `huggingface_hub` (imported inside `voice`). Does not import `organs`. Paths: repo root, `paths.bin`, `paths.models`, `.venv/Scripts/python.exe`.
+Talks to `config.toml`, the network, `zipfile`, and `subprocess`. Does not import `organs`. Paths: repo root, `paths.bin`, `paths.models`, `.venv/Scripts/python.exe`.
 
 `say(text: str)`. Prints and flushes.
 
@@ -343,13 +343,11 @@ Talks to `config.toml`, the network, `zipfile`, `subprocess`, and `huggingface_h
 
 `models()`. Downloads `gemma_url`, `mmproj_url`, `ear_url`, and `silero_url` to `models/{brain.model}`, `models/{brain.mmproj}`, `models/{ears.model}`, and `models/silero_vad.onnx`.
 
-`voice()`. `snapshot_download("ResembleAI/chatterbox-nano")`.
-
-`main()`. Changes to the repo root, then `venv`, `packages`, `llama`, `nemo`, `models`, `voice`. Prints `done. next: put reference.wav here if it is missing, then  python trident.py`.
+`main()`. Changes to the repo root, then `venv`, `packages`, `llama`, `nemo`, `models`. Prints `done. next: put reference.wav here if it is missing, then  python trident.py`.
 
 ## requirements.txt
 
-Installed by `install.packages` after the CPU torch wheels. `numpy`, `Pillow`, `onnxruntime==1.20.1`, `huggingface_hub`, `chatterbox-tts`, `telethon==1.45.0`, `ntgcalls==3.0.0`, `opentele-ng==1.4.0`.
+Installed by `install.packages` after the CUDA torch wheels. `numpy`, `Pillow`, `onnxruntime==1.20.1`, `huggingface_hub`, `chatterbox-tts`, `telethon==1.45.0`, `ntgcalls==3.0.0`, `opentele-ng==1.4.0`.
 
 ## reference.wav
 

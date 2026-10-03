@@ -40,7 +40,7 @@ min_utterance_s = 1.0
 model = "nemotron-3.5-asr-streaming-0.6b.q8_0.gguf"
 
 [mouth]
-device = "cpu"
+device = "cuda"
 reference = "reference.wav"
 
 [telegram]
@@ -56,4 +56,4 @@ gemma_url = "https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/ge
 mmproj_url = "https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/mmproj-gemma-4-E2B-it-Q8_0.gguf"
 ear_url = "https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b/resolve/main/nemotron-3.5-asr-streaming-0.6b.q8_0.gguf"
 silero_url = "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx"
-torch_index = "https://download.pytorch.org/whl/cpu"
+torch_index = "https://download.pytorch.org/whl/cu124"

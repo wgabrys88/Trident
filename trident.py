@@ -35,7 +35,7 @@ SYSTEM = (
     "Each turn: think in two or three short sentences, then either call exactly one tool or say one or two short sentences in English. "
     "He hears only what you say, never the thought.\n"
     "Do the screen work he asked for. Each look is one small step and you write its prompt. The prompt says where that one element sits, what it looks like, and asks for its center. A pass does not list every element. "
-    "To click or drag: call crop on that element, then call click or drag with the x and y from the crop. A drag is one straight stroke. A rectangle is one stroke per side. A whole-desktop point is not the box. If the tool says not clicked, not dragged, or not pressed, call crop next. "
+    "To click or drag: call crop on that element, then call click or drag with the x and y from the crop. Each drag is the next side. After a stroke, look. If the shape is not finished, drag the next side. A whole-desktop point is not the box. If the tool says not clicked, not dragged, or not pressed, call crop next. "
     "When a look is not confident, the next call is look once more before you act.\n"
     "Open a program with run. After a page opens or a message is sent, run Start-Sleep, then look again before you act.\n"
     "A command is run. A key he asked for is press. press does not click.\n"
@@ -45,7 +45,7 @@ SYSTEM = (
     "When he asks you not to speak, do the work and say nothing.\n"
     f"You are Gemma, the mind of {OWNER}'s computer. You see the screen and act with tools."
 )
-PASS = {"type": "object", "properties": {"answer": {"type": "string"}, "confident": {"type": "boolean"}, "y": {"type": "integer", "minimum": 0, "maximum": 1000}, "x": {"type": "integer", "minimum": 0, "maximum": 1000}, "y0": {"type": "integer", "minimum": 0, "maximum": 1000}, "x0": {"type": "integer", "minimum": 0, "maximum": 1000}, "y1": {"type": "integer", "minimum": 0, "maximum": 1000}, "x1": {"type": "integer", "minimum": 0, "maximum": 1000}}, "required": ["answer", "confident", "y", "x", "y0", "x0", "y1", "x1"]}
+PASS = {"type": "object", "properties": {"answer": {"type": "string", "maxLength": 200}, "confident": {"type": "boolean"}, "y": {"type": "integer", "minimum": 0, "maximum": 1000}, "x": {"type": "integer", "minimum": 0, "maximum": 1000}, "y0": {"type": "integer", "minimum": 0, "maximum": 1000}, "x0": {"type": "integer", "minimum": 0, "maximum": 1000}, "y1": {"type": "integer", "minimum": 0, "maximum": 1000}, "x1": {"type": "integer", "minimum": 0, "maximum": 1000}}, "required": ["answer", "confident", "y", "x", "y0", "x0", "y1", "x1"]}
 
 
 def cloud_look(png: bytes, question: str) -> dict:
@@ -76,7 +76,6 @@ class Trident:
         self.last_activity = time.monotonic()
         self.idle_sent = False
         self.request = ""
-        self.seen = ""
         self.unsure = False
         self.cropped = False
         self.acted = False
@@ -203,17 +202,18 @@ class Trident:
             if cloud:
                 png = eyes.shrink(png)
             self.line.send_photo(png, prompt)
-            words = f"{prompt}\nRequest: {self.request}\nLast: {self.seen}\nAnswer the request about this picture. When the request asks what is written, copy that text in full. Do not transcribe parts of the picture the request did not ask about. Do not answer with these instructions. The point is the center of the one element the request names, not a nearby control. y and x are that center, 0 to 1000, origin at the top left, y vertical. y0, x0, y1, x1 are the edges of that one element, on the same grid. If the requested text is not printed in the picture, the answer says it is not printed and confident is false. If the answer leaves out text the request asked to read, confident is false. Otherwise confident is true only when that answer is sure."
+            words = f"{prompt}\nOne short sentence of what the picture shows."
             LOG.info("look %s", "cloud" if cloud else "local")
             data = cloud_look(png, words) if cloud else self.brain.ask_json(words, PASS, png)
             if all(k in data for k in ("y0", "x0", "y1", "x1")):
                 self.line.send_photo(eyes.mark(png, [data["y0"], data["x0"], data["y1"], data["x1"]]))
             sure = data["confident"] is True
             self.unsure = not cloud and not sure
-            self.cropped = box is not None
-            self.seen = str(data["answer"])
+            if box:
+                self.cropped = True
+            answer = str(data["answer"])
             clicking = "click" in self.request.lower() or "drag" in self.request.lower()
-            found = {"answer": self.seen, "confident": sure}
+            found = {"answer": answer, "confident": sure}
             if box:
                 found["x"], found["y"] = eyes.point_px(box, data["y"], data["x"])
             elif not clicking:
@@ -243,7 +243,8 @@ class Trident:
             if not self.cropped:
                 return "not dragged. call crop with a tight box around the element, then drag using the x and y from that crop"
             hands.drag(int(x0), int(y0), int(x1), int(y1))
-            return f"dragged {int(x0)} {int(y0)} to {int(x1)} {int(y1)}"
+            self.acted = True
+            return f"stroke {int(x0)} {int(y0)} {int(x1)} {int(y1)}"
 
         def type_text(text: str):
             if not asked:
@@ -298,10 +299,10 @@ class Trident:
             "look": Tool("look", f"One look at the whole desktop. It returns no click point. Write the prompt for this pass. Say where the one element sits, what it looks like, and ask for its center. The picture is also sent to {OWNER}'s chat.", {"prompt": {"description": "Where the one element sits, what it looks like, and a request for its center.", "type": "STRING"}}, look),
             "crop": Tool("crop", f"One look at a crop of one element. The prompt names where it sits and asks for its center. y0, x0, y1, x1 are that box, 0 to 1000, origin at the top left, y vertical. The picture is also sent to {OWNER}'s chat.", {"prompt": {"description": "What this pass should answer.", "type": "STRING"}, "y0": {"description": "Crop top, 0 to 1000.", "type": "INTEGER"}, "x0": {"description": "Crop left, 0 to 1000.", "type": "INTEGER"}, "y1": {"description": "Crop bottom, 0 to 1000.", "type": "INTEGER"}, "x1": {"description": "Crop right, 0 to 1000.", "type": "INTEGER"}}, crop),
             "click": Tool("click", "Click the x and y returned by crop.", {"x": {"description": "Pixel x from crop.", "type": "INTEGER"}, "y": {"description": "Pixel y from crop.", "type": "INTEGER"}, "how": {"description": "Kind of click.", "type": "STRING", "enum": ["left", "right", "double"]}}, click, optional=("how",)),
-            "drag": Tool("drag", "One straight stroke from one screen pixel to another. A rectangle is one stroke per side.", {"x0": {"description": "Start pixel x.", "type": "INTEGER"}, "y0": {"description": "Start pixel y.", "type": "INTEGER"}, "x1": {"description": "End pixel x.", "type": "INTEGER"}, "y1": {"description": "End pixel y.", "type": "INTEGER"}}, drag),
+            "drag": Tool("drag", "The next side, one straight stroke. Look after it. If the shape is not finished, drag the next side.", {"x0": {"description": "Start pixel x.", "type": "INTEGER"}, "y0": {"description": "Start pixel y.", "type": "INTEGER"}, "x1": {"description": "End pixel x.", "type": "INTEGER"}, "y1": {"description": "End pixel y.", "type": "INTEGER"}}, drag),
             "type_text": Tool("type_text", "Type the text argument exactly, every word of it, where the cursor is.", {"text": {"description": "The text to type, every word.", "type": "STRING"}}, type_text),
             "press": Tool("press", "Press a key he asked for, for example enter, escape, tab, or ctrl-a. Never a click and never a command.", {"keys": {"description": "The key or chord.", "type": "STRING"}}, press),
-            "run": Tool("run", "Run one PowerShell command. Start-Process opens a program. Start-Sleep -Seconds N waits.", {"command": {"description": "The PowerShell command.", "type": "STRING"}}, run),
+            "run": Tool("run", "One PowerShell command. A program is Start-Process and its executable name. Start-Sleep -Seconds N waits.", {"command": {"description": "The PowerShell command.", "type": "STRING"}}, run),
             "remember": Tool("remember", "Keep one short fact for later turns.", {"fact": {"description": "The fact.", "type": "STRING"}}, remember),
             "call_owner": Tool("call_owner", f"Ring {OWNER} on Telegram. When he answers, the opening is spoken to him first.", {"opening": {"description": "The first sentence he hears.", "type": "STRING"}}, call_owner, optional=("opening",)),
             "hang_up": Tool("hang_up", "End the call. Say nothing after it.", {}, hang_up, final=True),

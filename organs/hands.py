@@ -113,7 +113,7 @@ def type_text(text: str) -> None:
 def run(command: str, timeout: int = 25) -> str:
     """One PowerShell command. stdout and stderr joined, or a short status when that is empty."""
     out, err = tempfile.TemporaryFile(), tempfile.TemporaryFile()
-    proc = subprocess.Popen(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command], stdin=subprocess.DEVNULL, stdout=out, stderr=err, creationflags=subprocess.CREATE_NO_WINDOW)
+    proc = subprocess.Popen(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Remove-Item Alias:start -Force; " + command], stdin=subprocess.DEVNULL, stdout=out, stderr=err, creationflags=subprocess.CREATE_NO_WINDOW)
     try:
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -127,7 +127,7 @@ def run(command: str, timeout: int = 25) -> str:
     text = (out.read() + b"\n" + err.read()).decode("utf-8", errors="replace").strip()
     out.close()
     err.close()
-    if command.lower().lstrip().startswith(("start-process", "start ")):
+    if command.lower().lstrip().startswith("start-process"):
         time.sleep(1.5)
     return text or (f"exit {proc.returncode}" if proc.returncode else "ok")
 
