@@ -10,6 +10,7 @@ import ctypes
 import ctypes.wintypes as W
 import subprocess
 import sys
+import tempfile
 import time
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -103,26 +104,32 @@ def press(keys: str) -> None:
 
 def type_text(text: str) -> None:
     encoded = text.encode("utf-16-le")
-    items = []
     for i in range(0, len(encoded), 2):
         unit = int.from_bytes(encoded[i : i + 2], "little")
-        items.append(_key(0, unit, 0x0004))
-        items.append(_key(0, unit, 0x0006))
-    if items:
-        _send(items)
+        _send([_key(0, unit, 0x0004), _key(0, unit, 0x0006)])
+        time.sleep(0.01)
 
 
 def run(command: str, timeout: int = 25) -> str:
-    """One PowerShell command. stdout and stderr joined, at most 600 characters, or a short status when that is empty."""
+    """One PowerShell command. stdout and stderr joined, or a short status when that is empty."""
+    out, err = tempfile.TemporaryFile(), tempfile.TemporaryFile()
+    proc = subprocess.Popen(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command], stdin=subprocess.DEVNULL, stdout=out, stderr=err, creationflags=subprocess.CREATE_NO_WINDOW)
     try:
-        done = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command], capture_output=True, timeout=timeout, creationflags=subprocess.CREATE_NO_WINDOW)
+        proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        out.close()
+        err.close()
         return "timed out"
-    out = (done.stdout + b"\n" + done.stderr).decode("utf-8", errors="replace")
-    text = " ".join(out.split())[:600]
+    out.seek(0)
+    err.seek(0)
+    text = (out.read() + b"\n" + err.read()).decode("utf-8", errors="replace").strip()
+    out.close()
+    err.close()
     if command.lower().lstrip().startswith(("start-process", "start ")):
         time.sleep(1.5)
-    return text or (f"exit {done.returncode}" if done.returncode else "ok")
+    return text or (f"exit {proc.returncode}" if proc.returncode else "ok")
 
 
 if __name__ == "__main__":

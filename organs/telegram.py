@@ -226,6 +226,13 @@ class Line:
         buffer.name = "desk.png"
         self._await(self.client.send_file(self.owner, buffer, caption=caption, force_document=False), 60)
 
+    def send_file(self, payload: bytes, name: str):
+        if self.client is None:
+            return
+        buffer = io.BytesIO(payload)
+        buffer.name = name
+        self._await(self.client.send_file(self.owner, buffer, force_document=True), 60)
+
     async def _on_raw(self, update):
         if isinstance(update, UpdatePhoneCallSignalingData):
             if self.media_up:

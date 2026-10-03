@@ -10,7 +10,7 @@ python -m organs.eyes saves state/screen.png and prints the screen size.
 import ctypes
 import io
 
-from PIL import Image, ImageGrab
+from PIL import Image, ImageDraw, ImageGrab
 
 from organs import CONFIG, state_dir
 
@@ -51,6 +51,19 @@ def crop(png: bytes, box: list) -> bytes:
     piece = image.crop((left, top, max(right, left + 1), max(bottom, top + 1)))
     buffer = io.BytesIO()
     piece.save(buffer, format="PNG", compress_level=1)
+    return buffer.getvalue()
+
+
+def mark(png: bytes, box: list) -> bytes:
+    """A copy of png with one [y0, x0, y1, x1] rectangle on the 1000-grid. png is unchanged."""
+    image = Image.open(io.BytesIO(png)).convert("RGB")
+    width, height = image.size
+    y0, x0, y1, x1 = (float(v) for v in box)
+    left, top = round(min(x0, x1) / 1000 * (width - 1)), round(min(y0, y1) / 1000 * (height - 1))
+    right, bottom = round(max(x0, x1) / 1000 * (width - 1)), round(max(y0, y1) / 1000 * (height - 1))
+    ImageDraw.Draw(image).rectangle((left, top, max(right, left + 1), max(bottom, top + 1)), outline=(255, 0, 0), width=3)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG", compress_level=1)
     return buffer.getvalue()
 
 

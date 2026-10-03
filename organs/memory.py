@@ -1,16 +1,13 @@
 """state/memory.json, the only memory that lasts across turns.
 
-facts are the short lines she asked to keep.
-turns are the latest things he said and she said, thoughts already removed.
+facts are the lines she asked to keep.
+turns are what he said and she said, thoughts already removed.
 quiet is her promise not to ring until he speaks.
 """
 
 import json
 
 from organs import state_dir
-
-KEEP_TURNS = 8
-CLIP = 300
 
 
 class Memory:
@@ -25,14 +22,13 @@ class Memory:
         self.path.write_text(json.dumps({"facts": self.facts, "turns": self.turns, "quiet": self.quiet}, ensure_ascii=False, indent=1), encoding="utf-8")
 
     def remember(self, fact: str):
-        fact = " ".join(fact.split())[:CLIP]
+        fact = fact.strip()
         if fact and fact not in self.facts:
             self.facts.append(fact)
             self.save()
 
     def add_turn(self, user: str, model: str):
-        self.turns.append([" ".join(user.split())[:CLIP], " ".join(model.split())[:CLIP]])
-        self.turns = self.turns[-KEEP_TURNS:]
+        self.turns.append([user, model])
         self.save()
 
     def set_quiet(self, value: bool):

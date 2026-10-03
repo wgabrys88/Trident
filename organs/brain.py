@@ -110,7 +110,7 @@ def plain(text: str) -> str:
 
 def parse(output: str) -> tuple[str, str, dict]:
     """(thought, tool name, args) from one completion. No call means an empty tool name."""
-    thought = " ".join(" ".join(m.group(1).split()) for m in THOUGHT_RE.finditer(output))
+    thought = "\n".join(m.group(1).strip("\n") for m in THOUGHT_RE.finditer(output))
     call = CALL_RE.search(output)
     if not call:
         return thought, "", {}
@@ -208,7 +208,7 @@ class Brain:
     def ask_json(self, question: str, schema: dict, png: bytes | None = None) -> object:
         body = f"{self.media()}\n{question}" if png else question
         prompt = BOS + turn("user", body) + f"{TURN_OPEN}model\n"
-        return json.loads(self.complete(prompt, images=[png] if png else (), schema=schema, max_tokens=400))
+        return json.loads(self.complete(prompt, images=[png] if png else (), schema=schema))
 
     def think(self, system: str, tools: dict[str, Tool], history: list[tuple[str, str]], user: str, on_step: Callable[[Step], None] | None = None) -> Reply:
         head = turn("system", f"{THINK}\n{system}" + "".join(declare(t) for t in tools.values()))
@@ -222,6 +222,8 @@ class Brain:
             if not name:
                 text = plain(out)
                 LOG.info("say: %s", text)
+                if on_step and thought:
+                    on_step(Step(thought, "", {}))
                 return Reply(text)
             if name not in tools:
                 result = f"unknown tool {name}"

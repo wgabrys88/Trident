@@ -31,7 +31,6 @@ class Segmenter:
         self.session = ort.InferenceSession(str(ROOT / CONFIG["paths"]["models"] / "silero_vad.onnx"), providers=["CPUExecutionProvider"])
         self.pad = RATE * CFG["pad_ms"] // 1000
         self.min_silence = RATE * CFG["min_silence_ms"] // 1000
-        self.max_len = RATE * CFG["max_utterance_s"]
         self.min_len = int(RATE * CFG["min_utterance_s"])
         self.reset()
 
@@ -66,8 +65,7 @@ class Segmenter:
                 continue
             self.speech.append(hop)
             self.silent_for = 0 if prob >= CFG["vad_threshold"] - 0.15 else self.silent_for + WINDOW
-            total = len(self.speech) * WINDOW
-            if self.silent_for >= self.min_silence or total >= self.max_len:
+            if self.silent_for >= self.min_silence:
                 clip = np.concatenate(self.speech)
                 self.talking = False
                 self.speech = []

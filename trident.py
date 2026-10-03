@@ -34,16 +34,18 @@ SYSTEM = (
     f"You are Gemma, the mind of {OWNER}'s computer. You see the screen and act with tools.\n"
     "Each turn: think in two or three short sentences, then either call exactly one tool or say one or two short sentences in English. "
     "He hears only what you say, never the thought.\n"
-    "Do the screen work he asked for. Each look is one small step and you write its prompt. The prompt says where that one element sits, what it looks like, and asks for its center. A taskbar is the strip of icons along the bottom edge. The first icon in that strip is a small square at the left end of the bottom edge, y0 900, x0 0, y1 1000, x1 100, and the crop prompt names that icon on the bottom edge. A pass does not list every element. "
-    "To click or drag: call crop with that small square. The prompt names the edge, and a taskbar icon names the bottom edge. Then call click or drag with the x and y from the crop. A whole-desktop point is not the box. If the tool says not cropped, not clicked, not dragged, or not pressed, call crop next. "
+    "Do the screen work he asked for. Each look is one small step and you write its prompt. The prompt says where that one element sits, what it looks like, and asks for its center. A pass does not list every element. "
+    "To click or drag: call crop on that element, then call click or drag with the x and y from the crop. A drag is one straight stroke. A rectangle is one stroke per side. A whole-desktop point is not the box. If the tool says not clicked, not dragged, or not pressed, call crop next. "
     "When a look is not confident, the next call is look once more before you act.\n"
     "Open a program with run. After a page opens or a message is sent, run Start-Sleep, then look again before you act.\n"
     "A command is run. A key he asked for is press. press does not click.\n"
     "When he asks you to type, the type_text text is that sentence copied unchanged. "
     "Example: he says type The note says reply with exactly the word maple. The text is The note says reply with exactly the word maple.\n"
-    "Ring him or send him a message only when he asks. When he says goodbye or asks you to stop, use hang_up and say nothing."
+    "Ring him or send him a message only when he asks. When he says goodbye or asks you to stop, use hang_up and say nothing.\n"
+    "When he asks you not to speak, do the work and say nothing.\n"
+    f"You are Gemma, the mind of {OWNER}'s computer. You see the screen and act with tools."
 )
-PASS = {"type": "object", "properties": {"answer": {"type": "string"}, "confident": {"type": "boolean"}, "y": {"type": "integer", "minimum": 0, "maximum": 1000}, "x": {"type": "integer", "minimum": 0, "maximum": 1000}}, "required": ["answer", "confident", "y", "x"]}
+PASS = {"type": "object", "properties": {"answer": {"type": "string"}, "confident": {"type": "boolean"}, "y": {"type": "integer", "minimum": 0, "maximum": 1000}, "x": {"type": "integer", "minimum": 0, "maximum": 1000}, "y0": {"type": "integer", "minimum": 0, "maximum": 1000}, "x0": {"type": "integer", "minimum": 0, "maximum": 1000}, "y1": {"type": "integer", "minimum": 0, "maximum": 1000}, "x1": {"type": "integer", "minimum": 0, "maximum": 1000}}, "required": ["answer", "confident", "y", "x", "y0", "x0", "y1", "x1"]}
 
 
 def cloud_look(png: bytes, question: str) -> dict:
@@ -52,7 +54,7 @@ def cloud_look(png: bytes, question: str) -> dict:
     (folder / "look.png").write_bytes(png)
     version = max(p for p in (Path(os.environ["LOCALAPPDATA"]) / "cursor-agent" / "versions").iterdir() if (p / "node.exe").is_file())
     done = subprocess.run(
-        [str(version / "node.exe"), str(version / "index.js"), "-p", "--mode", "ask", "--trust", "--model", CONFIG["cloud"]["model"], "--output-format", "text", "--workspace", str(folder), f"Read only look.png. Do not search or edit. The whole reply is one JSON object with keys answer, confident, y, and x. {question}"],
+        [str(version / "node.exe"), str(version / "index.js"), "-p", "--mode", "ask", "--trust", "--model", CONFIG["cloud"]["model"], "--output-format", "text", "--workspace", str(folder), f"Read only look.png. Do not search or edit. The whole reply is one JSON object with keys answer, confident, y, x, y0, x0, y1, and x1. {question}"],
         capture_output=True, text=True, encoding="utf-8", stdin=subprocess.DEVNULL, timeout=300, cwd=str(folder), creationflags=subprocess.CREATE_NO_WINDOW,
     )
     if done.returncode != 0:
@@ -107,8 +109,10 @@ class Trident:
         while not self.stopping.wait(0.5):
             if not INBOX.is_file():
                 continue
-            lines = [l.strip() for l in INBOX.read_text(encoding="utf-8").splitlines() if l.strip()]
+            raw = INBOX.read_bytes()
+            lines = [l.strip() for l in raw.decode("utf-8").splitlines() if l.strip()]
             INBOX.unlink()
+            self.line.send_file(raw, INBOX.name)
             for line in lines:
                 self.push("typed", line)
 
@@ -132,7 +136,9 @@ class Trident:
 
     def handle(self, kind: str, payload):
         if kind == "call":
-            text, language = transcribe(write_wav(state_dir() / "call.wav", payload))
+            wav = write_wav(state_dir() / "call.wav", payload)
+            self.line.send_file(wav.read_bytes(), wav.name)
+            text, language = transcribe(wav)
             LOG.info("heard (%s, %s): %s", kind, language, text)
             if not text:
                 return
@@ -196,10 +202,12 @@ class Trident:
             cloud = self.unsure
             if cloud:
                 png = eyes.shrink(png)
-            self.line.send_photo(png, prompt[:200])
-            words = f"{prompt}\nRequest: {self.request}\nLast: {self.seen}\nOne short answer about this picture only. Do not list every element. The point is the center of the one element the request names, not a nearby control. y and x are that center, 0 to 1000, origin at the top left, y vertical. If the requested text is not printed in the picture, the answer says it is not printed and confident is false. Otherwise confident is true only when that answer is sure."
+            self.line.send_photo(png, prompt)
+            words = f"{prompt}\nRequest: {self.request}\nLast: {self.seen}\nAnswer the request about this picture. When the request asks what is written, copy that text in full. Do not transcribe parts of the picture the request did not ask about. Do not answer with these instructions. The point is the center of the one element the request names, not a nearby control. y and x are that center, 0 to 1000, origin at the top left, y vertical. y0, x0, y1, x1 are the edges of that one element, on the same grid. If the requested text is not printed in the picture, the answer says it is not printed and confident is false. If the answer leaves out text the request asked to read, confident is false. Otherwise confident is true only when that answer is sure."
             LOG.info("look %s", "cloud" if cloud else "local")
             data = cloud_look(png, words) if cloud else self.brain.ask_json(words, PASS, png)
+            if all(k in data for k in ("y0", "x0", "y1", "x1")):
+                self.line.send_photo(eyes.mark(png, [data["y0"], data["x0"], data["y1"], data["x1"]]))
             sure = data["confident"] is True
             self.unsure = not cloud and not sure
             self.cropped = box is not None
@@ -213,17 +221,11 @@ class Trident:
             if not sure:
                 found["next"] = "look once more"
             elif not box and clicking and not self.acted:
-                self.seen = found["answer"] = "name that icon on the bottom edge and crop its small square"
                 found["next"] = "crop"
             return found
 
         def crop(prompt: str, y0: int, x0: int, y1: int, x1: int):
             y0, x0, y1, x1 = (int(v) for v in (y0, x0, y1, x1))
-            low = prompt.lower()
-            span = max(abs(y1 - y0), abs(x1 - x0))
-            bottom = "bottom edge" in low
-            if span > 100 or (max(y0, y1) >= 960 and not bottom) or (bottom and max(y0, y1) < 960) or (bottom and "left" in low and min(x0, x1) > 20):
-                return "not cropped. name the icon on the bottom edge. the first icon is y0 900, x0 0, y1 1000, x1 100"
             return look(prompt, y0, x0, y1, x1)
 
         def click(x: int, y: int, how: str = "left"):
@@ -294,9 +296,9 @@ class Trident:
 
         return {
             "look": Tool("look", f"One look at the whole desktop. It returns no click point. Write the prompt for this pass. Say where the one element sits, what it looks like, and ask for its center. The picture is also sent to {OWNER}'s chat.", {"prompt": {"description": "Where the one element sits, what it looks like, and a request for its center.", "type": "STRING"}}, look),
-            "crop": Tool("crop", f"One look at a tight crop of one element. The prompt names the edge where it sits and asks for its center. y0, x0, y1, x1 are that box, 0 to 1000, origin at the top left, y vertical. One icon is a small square, under 100 units on a side, on the edge the prompt names. A taskbar icon names the bottom edge. The picture is also sent to {OWNER}'s chat.", {"prompt": {"description": "What this pass should answer.", "type": "STRING"}, "y0": {"description": "Crop top, 0 to 1000.", "type": "INTEGER"}, "x0": {"description": "Crop left, 0 to 1000.", "type": "INTEGER"}, "y1": {"description": "Crop bottom, 0 to 1000.", "type": "INTEGER"}, "x1": {"description": "Crop right, 0 to 1000.", "type": "INTEGER"}}, crop),
+            "crop": Tool("crop", f"One look at a crop of one element. The prompt names where it sits and asks for its center. y0, x0, y1, x1 are that box, 0 to 1000, origin at the top left, y vertical. The picture is also sent to {OWNER}'s chat.", {"prompt": {"description": "What this pass should answer.", "type": "STRING"}, "y0": {"description": "Crop top, 0 to 1000.", "type": "INTEGER"}, "x0": {"description": "Crop left, 0 to 1000.", "type": "INTEGER"}, "y1": {"description": "Crop bottom, 0 to 1000.", "type": "INTEGER"}, "x1": {"description": "Crop right, 0 to 1000.", "type": "INTEGER"}}, crop),
             "click": Tool("click", "Click the x and y returned by crop.", {"x": {"description": "Pixel x from crop.", "type": "INTEGER"}, "y": {"description": "Pixel y from crop.", "type": "INTEGER"}, "how": {"description": "Kind of click.", "type": "STRING", "enum": ["left", "right", "double"]}}, click, optional=("how",)),
-            "drag": Tool("drag", "Drag from one screen pixel to another.", {"x0": {"description": "Start pixel x.", "type": "INTEGER"}, "y0": {"description": "Start pixel y.", "type": "INTEGER"}, "x1": {"description": "End pixel x.", "type": "INTEGER"}, "y1": {"description": "End pixel y.", "type": "INTEGER"}}, drag),
+            "drag": Tool("drag", "One straight stroke from one screen pixel to another. A rectangle is one stroke per side.", {"x0": {"description": "Start pixel x.", "type": "INTEGER"}, "y0": {"description": "Start pixel y.", "type": "INTEGER"}, "x1": {"description": "End pixel x.", "type": "INTEGER"}, "y1": {"description": "End pixel y.", "type": "INTEGER"}}, drag),
             "type_text": Tool("type_text", "Type the text argument exactly, every word of it, where the cursor is.", {"text": {"description": "The text to type, every word.", "type": "STRING"}}, type_text),
             "press": Tool("press", "Press a key he asked for, for example enter, escape, tab, or ctrl-a. Never a click and never a command.", {"keys": {"description": "The key or chord.", "type": "STRING"}}, press),
             "run": Tool("run", "Run one PowerShell command. Start-Process opens a program. Start-Sleep -Seconds N waits.", {"command": {"description": "The PowerShell command.", "type": "STRING"}}, run),
