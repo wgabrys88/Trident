@@ -11,6 +11,7 @@ The brain may use tools. Words it finishes with are spoken on the call when the 
 """
 
 import queue
+import re
 import sys
 import threading
 import time
@@ -133,7 +134,7 @@ class Trident:
 
     def turn(self, kind: str, text: str) -> str:
         situation = f"[{time.strftime('%H:%M')} | line {self.line.state} | heard from: {SOURCE[kind]}]"
-        reply = self.brain.think(SYSTEM + self.memory.facts_block(), self.tools(kind), self.memory.history(), f"{situation}\n{text}")
+        reply = self.brain.think(SYSTEM + self.memory.facts_block(), self.tools(kind, text), self.memory.history(), f"{situation}\n{text}")
         if reply.text and reply.text.lower().strip(".") != "idle":
             self.memory.add_turn(text, reply.text)
             return reply.text
@@ -152,10 +153,11 @@ class Trident:
 
     # ------------------------------------------------------------ what Gemma can do
 
-    def tools(self, kind: str) -> dict[str, Tool]:
+    def tools(self, kind: str, heard: str = "") -> dict[str, Tool]:
         from organs import eyes, hands
 
         asked = kind != "idle"
+        marked = re.search(r"(?:every word:\s*|whole sentence\s+)(.*?)(?:\.\s+(?:Then|Do not)|$)", heard)
 
         def look(question: str = "What is on the screen?"):
             png = eyes.screenshot()
@@ -190,7 +192,7 @@ class Trident:
         def type_text(text: str):
             if not asked:
                 return "nobody asked for this"
-            hands.type_text(text)
+            hands.type_text(marked.group(1).strip() if marked else text)
             return "typed"
 
         def press(keys: str):

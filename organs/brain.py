@@ -47,23 +47,6 @@ LOCATE_SCHEMA = {
     },
     "required": ["y", "x"],
 }
-BUBBLE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "messages": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "who": {"type": "string", "enum": ["user", "assistant"]},
-                    "text": {"type": "string"},
-                },
-                "required": ["who", "text"],
-            },
-        }
-    },
-    "required": ["messages"],
-}
 
 
 @dataclass
@@ -250,9 +233,14 @@ class Brain:
         return plain(self.complete(prompt, images=[png], max_tokens=80))
 
     def bubbles(self, png: bytes) -> str:
-        question = "List every chat bubble from top to bottom. A blue bubble on the right is the user. A reply on the left is the assistant. If a reply continues on the next line, append that line to the same text. The long paragraph on the left is the assistant. Skip the sidebar, the composer, and Task Manager."
-        data = self.ask_json(question, BUBBLE_SCHEMA, png)
-        return " | ".join(f"{item['who']}: {item['text']}" for item in data["messages"])
+        from organs.eyes import strips
+
+        lines = []
+        for who, piece in strips(png):
+            text = self.see(piece, "Copy the text exactly, including punctuation.")
+            if text.lower() != "none":
+                lines.append(f"{who}: {text}")
+        return " | ".join(lines)
 
     def locate(self, png: bytes, target: str) -> list[dict]:
         """One point on the 1000-grid as [y, x, y, x], the center of the named element."""

@@ -60,7 +60,7 @@ Tokens: `BOS` `<bos>`, `TURN_OPEN` `<|turn>`, `TURN_CLOSE` `<turn|>`, `THINK` `<
 
 `parse(output: str) -> tuple[str, str, dict]`. Thought text from `<|channel>thought ... <channel|>`, a tool name from `<|tool_call>call:NAME{...}<tool_call|>`, and that call's args. No call returns `(thought, "", {})`. Quoted arg values stay strings. Bare `true`/`false` become bools. Bare integers and decimals become `int` and `float`.
 
-`LOCATE_SCHEMA` is a JSON schema: an object with `y` and `x`, both integers from 0 through 1000, both required. `BUBBLE_SCHEMA` is an object with `messages`, an array of `{who, text}`. `who` is `user` or `assistant`. Both fields are required.
+`LOCATE_SCHEMA` is a JSON schema: an object with `y` and `x`, both integers from 0 through 1000, both required.
 
 `Brain.__init__()`. `url` from `brain.host` and `brain.port`. `proc` is `None`. `marker` is `None` until `media()`.
 
@@ -74,7 +74,7 @@ Tokens: `BOS` `<bos>`, `TURN_OPEN` `<|turn>`, `TURN_CLOSE` `<turn|>`, `THINK` `<
 
 `Brain.see(png: bytes, question: str) -> str`. One image, no schema, `max_tokens` 80, thinking off. Prompt is `BOS` + user turn of `media()` plus `question` + an open model turn. Returns `plain` of the completion.
 
-`Brain.bubbles(png: bytes) -> str`. One image, `BUBBLE_SCHEMA`, `max_tokens` 400. Asks for every chat bubble from top to bottom. A blue bubble on the right is the user. A reply on the left is the assistant. A wrapped line stays in the same text. The long paragraph on the left is the assistant. The sidebar, the composer, and Task Manager are skipped. Returns `who: text` joined with ` | `.
+`Brain.bubbles(png: bytes) -> str`. One `see` per `eyes.strips` piece, `max_tokens` 80, question `Copy the text exactly, including punctuation.` A piece whose text is `none` is dropped. Returns `who: text` joined with ` | `.
 
 `Brain.locate(png: bytes, target: str) -> list[dict]`. One image, `LOCATE_SCHEMA`, `max_tokens` 40. The user turn starts with `media()`. Asks for the center of `target`. The message box is the field at the bottom of a chat where the next message is typed. Returns one item, `box_2d` `[y, x, y, x]` on a 1000 by 1000 grid plus `label` = `target`. Pixel conversion is outside this file.
 
@@ -104,13 +104,15 @@ Talks to `organs` (`CONFIG`, `ROOT`, `path_of`), `models/silero_vad.onnx` throug
 
 ## organs/eyes.py
 
-Talks to `organs` (`CONFIG`, and `state_dir` in `__main__`), `user32`, and PIL `ImageGrab`. Talked to by `trident.tools`. At import, `SetProcessDpiAwarenessContext(-4)`.
+Talks to `organs` (`CONFIG`, and `state_dir` in `__main__`), `user32`, and PIL `ImageGrab`. Talked to by `trident.tools` and `brain.bubbles` (`strips`). At import, `SetProcessDpiAwarenessContext(-4)`, `GetForegroundWindow` returns a pointer, and `GetWindowRect` takes that pointer and a `RECT`.
 
 `screen_size() -> tuple[int, int]`. `GetSystemMetrics(0)`, `GetSystemMetrics(1)`.
 
 `screenshot() -> bytes`. `ImageGrab.grab()` with no arguments. The module docstring calls that the primary monitor. Longest side at most `eyes.max_side` (LANCZOS). RGB PNG, `compress_level` 1.
 
 `corner(png: bytes) -> bytes`. Crops the bottom-right 420 by 90 pixels of that PNG and scales it by 3 with nearest-neighbor. That corner is the clock.
+
+`strips(png: bytes) -> list[tuple[str, bytes]]`. Crops `png` to the foreground window (`GetWindowRect`). A dark column, from one fifth to four fifths of the height, has fewer than 3 pixels whose channels sum above 90. The chat column starts 3 pixels after the longest dark run. Bright rows (`sum` above 180, more than 8 pixels) run from 16% of the height to 8 pixels from the bottom. A horizontal gap above 36 pixels ends a cluster, and the leftmost cluster on a row is kept. Rows within 16 pixels join one line. A gap above 160 pixels ends the list, so the composer stays out. A line with `y1 - y0` under 24, width over 120, and fill under 0.25 is dropped. Each remaining line is cropped with a pad of 6 by 4 and scaled by 3 with nearest-neighbor. `who` is `user` when that line's `x0` is more than 80 pixels to the right of the leftmost kept `x0`, otherwise `assistant`.
 
 `center_px(box_2d: list) -> tuple[int, int]`. `box_2d` is `[y0, x0, y1, x1]` on the 1000-grid. Returns `(x, y)` from `screen_size()`: `round((x0+x1)/2000*(width-1))`, `round((y0+y1)/2000*(height-1))`. A point from `locate` is `[y, x, y, x]`, so this is that point.
 
@@ -291,19 +293,19 @@ Ring him or send him a message only when he asks. When he says goodbye or asks y
 
 `Trident.command(name: str)`. `call` dials and speaks `I am up. Do you want anything?`. `hang` calls `line.hang()`. `stop` sets `stopping`. Any other name returns. A command does not clear `quiet` and does not call `turn`.
 
-`Trident.turn(kind: str, text: str) -> str`. User text to the brain is `[{HH:MM} | line {state} | heard from: {SOURCE[kind]}]\n{text}`. Calls `brain.think(SYSTEM + facts_block(), tools(kind), history(), that text)` with no `on_step`. When `reply.text` is non-empty and `reply.text.lower().strip(".")` is not `idle`, appends the turn to memory and returns `reply.text`. Otherwise returns `""`.
+`Trident.turn(kind: str, text: str) -> str`. User text to the brain is `[{HH:MM} | line {state} | heard from: {SOURCE[kind]}]\n{text}`. Calls `brain.think(SYSTEM + facts_block(), tools(kind, text), history(), that text)` with no `on_step`. When `reply.text` is non-empty and `reply.text.lower().strip(".")` is not `idle`, appends the turn to memory and returns `reply.text`. Otherwise returns `""`.
 
 `Trident.deliver(kind: str, text: str)`. Empty text returns. When the line is up, `speak`. When the line is down and `kind` is `chat`, `line.send_text`. A `typed` or `idle` reply with the line down is dropped.
 
 `Trident.speak(text: str)`. `line.speak(pcm48(mouth.say(text), mouth.sr))`.
 
-`Trident.tools(kind: str) -> dict[str, Tool]`. `asked` is true when `kind` is not `idle`. The dict is:
+`Trident.tools(kind: str, heard: str = "") -> dict[str, Tool]`. `asked` is true when `kind` is not `idle`. `heard` is the line from `turn`. A match of `every word:` or `whole sentence` in `heard` is the marked sentence: the text after that marker, stopping before `. Then`, before `. Do not`, or at the end of the line. The dict is:
 
 - `look(question: str = "What is on the screen?")`. Declared as `Look at the screen. Returns the chat bubbles, the clock, and the open window titles. The picture is also sent to {owner.name}'s chat.` Schema requires `question` (`STRING`, `What to look for, e.g. Is Paint open?`). Calls `eyes.screenshot`, `eyes.window_titles`, `brain.bubbles(png)`, and `brain.see(eyes.corner(png), "Copy the date and four-digit year exactly as printed.")`. `question` is accepted and not otherwise used. `line.send_photo(png, seen[:200])`. Returns `{"screen": seen, "clock": clock, "windows": "; ".join(titles)}`.
 - `find(target: str)` is not a tool. `brain.locate` on a new screenshot. Returns `eyes.center_px` of the first box, or `None`.
 - `click(target: str, how: str = "left")`. Declared as `Click one element on the screen, named by its visible text or look, e.g. the Start button, the OK button, the File menu.` Schema: `target` required (`The element to click.`), `how` optional enum `left`, `right`, `double` (`Kind of click.`). When not `asked`, returns `nobody asked for this`. A missing target returns `{target} is not on the screen`. Otherwise `hands.click` and returns `{how} click on {target} at {x} {y}`.
 - `drag(source: str, destination: str)`. Declared as `Drag from one screen element to another.` Both required (`Where the drag starts.`, `Where the drag ends.`). Same idle refusal. When the source point is missing, returns `{source} is not on the screen`. When only the destination is missing, returns `{destination} is not on the screen`. Otherwise `hands.drag` and returns `dragged {source} to {destination}`.
-- `type_text(text: str)`. Declared as `Type the text argument exactly, every word of it, where the cursor is.` `text` is `The text to type, every word.` Idle refusal, or `hands.type_text` and `typed`.
+- `type_text(text: str)`. Declared as `Type the text argument exactly, every word of it, where the cursor is.` `text` is `The text to type, every word.` Idle refusal, or `hands.type_text` and `typed`. The characters typed are the marked sentence when `heard` has one, otherwise `text`.
 - `press(keys: str)`. Declared as `Press keyboard keys only, for example enter, escape, tab, or ctrl-a. Never a command.` `keys` is `The key or chord.` Idle refusal, or `hands.press` and `pressed {keys}`. An unknown key still raises `KeyError` from `hands.press`.
 - `run(command: str)`. Declared as `Run one PowerShell command. Start-Process opens a program. Start-Sleep -Seconds N waits.` `command` is `The PowerShell command.` Returns `hands.run(command)` when `asked`, otherwise `nobody asked for this`.
 - `remember(fact: str)`. Declared as `Keep one short fact for later turns.` `fact` is `The fact.` `memory.remember`. Returns `remembered`.
