@@ -4,7 +4,7 @@ Her boxes are [y0, x0, y1, x1] on a 1000 by 1000 grid, origin at the top left, a
 center_px() is the center of such a box on the real screen.
 point_px() is a 1000-grid point inside a crop, mapped back onto that screen.
 shrink() is the longest side eyes.cloud_side, for a cloud look.
-python -m organs.eyes saves state/screen.png and prints the window titles.
+python -m organs.eyes saves state/screen.png and prints the screen size.
 """
 
 import ctypes
@@ -17,9 +17,6 @@ from organs import CONFIG, state_dir
 CFG = CONFIG["eyes"]
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
-user32.GetForegroundWindow.restype = ctypes.c_void_p
-user32.GetWindowTextW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_int]
-user32.IsWindowVisible.argtypes = [ctypes.c_void_p]
 
 
 def screen_size() -> tuple[int, int]:
@@ -73,30 +70,7 @@ def point_px(box: list, y: float, x: float) -> tuple[int, int]:
     return center_px([gy, gx, gy, gx])
 
 
-def window_titles(limit: int = 8) -> list[str]:
-    titles: list[str] = []
-
-    def add(hwnd):
-        buf = ctypes.create_unicode_buffer(256)
-        if hwnd and user32.GetWindowTextW(hwnd, buf, 256) > 0:
-            title = " ".join(buf.value.split())
-            if title and title not in titles and len(titles) < limit:
-                titles.append(title)
-
-    add(user32.GetForegroundWindow())
-
-    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
-    def visit(hwnd, _):
-        if user32.IsWindowVisible(hwnd):
-            add(hwnd)
-        return True
-
-    user32.EnumWindows(visit, 0)
-    return titles
-
-
 if __name__ == "__main__":
     path = state_dir() / "screen.png"
     path.write_bytes(screenshot())
     print(path, screen_size())
-    print("\n".join(window_titles()))

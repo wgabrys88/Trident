@@ -44,13 +44,13 @@ Tokens: `BOS` `<bos>`, `TURN_OPEN` `<|turn>`, `TURN_CLOSE` `<turn|>`, `THINK` `<
 
 `Tool(name, description, params, run, optional=(), final=False)`. `params` maps a name to `description`, `type` (`STRING`, `INTEGER`, `NUMBER`, or `BOOLEAN`), and optional `enum`. `optional` names may be omitted. `final` ends the turn with empty spoken text. `run` is `Callable[..., object]`.
 
-`Step(thought: str, tool: str, args: dict, result: object)`.
+`Step(thought: str, tool: str, args: dict)`.
 
-`Reply(text: str, steps: list[Step])`. `steps` defaults to `[]`.
+`Reply(text: str)`.
 
 `quoted(text: object) -> str`. Wraps `str(text)` in `QUOTE`. A `QUOTE` inside the text becomes `'`.
 
-`literal(value: object) -> str`. `bool` to `true`/`false`, `int` and `float` to decimal text, `dict` to `{k:v}` with sorted keys, `list` and `tuple` to `[v]`, anything else to `quoted`.
+`literal(value: object) -> str`. `bool` to `true`/`false`, `int` and `float` to decimal text, `dict` to `{k:v}` with sorted keys, anything else to `quoted`.
 
 `declare(tool: Tool) -> str`. Keys sorted. `required` is every param name not in `optional`. Each property is `name:{description:quoted,enum:[quoted,...],type:quoted}`, and `enum` is omitted when absent. The return is `<|tool>declaration:NAME{description:quoted,parameters:{properties:{...}} },required:[quoted,...],type:<|"|>OBJECT<|"|>} }<tool|>`, including the space before `},required` and the space before the final `}`.
 
@@ -66,7 +66,7 @@ Tokens: `BOS` `<bos>`, `TURN_OPEN` `<|turn>`, `TURN_CLOSE` `<turn|>`, `THINK` `<
 
 `Brain.alive() -> bool`. GET `{url}/health`, timeout 2. True when status is 200. `URLError` or `OSError` returns False.
 
-`Brain.start()`. Returns immediately when `alive()`. Otherwise runs `bin/llama/llama-server.exe` with `--model` and `--mmproj` from `path_of("brain", ...)`, `--host`, `--port`, `--ctx-size` `context`, `--parallel` `slots`, `--n-gpu-layers` `gpu_layers`, `--threads`, `--flash-attn off`, `--cache-type-k f16`, `--cache-type-v f16`, `--image-min-tokens` and `--image-max-tokens` both `image_tokens`, `--no-webui`, `--log-file state/llama-server.log`. Working directory is the exe directory. Stdio is discarded. Window is hidden. Missing exe raises `FileNotFoundError`. Polls 0.5 s for up to 300 s. Process exit raises `RuntimeError`. Timeout raises `TimeoutError`.
+`Brain.start()`. Returns immediately when `alive()`. Otherwise runs `bin/llama/llama-server.exe` with `--model` and `--mmproj` from `path_of("brain", ...)`, `--host`, `--port`, `--ctx-size` `context`, `--parallel` `slots` (one slot keeps the agent prefix cached, the other serves vision), `--n-gpu-layers` `gpu_layers`, `--threads`, `--flash-attn off`, `--cache-type-k f16`, `--cache-type-v f16`, `--image-min-tokens` and `--image-max-tokens` both `image_tokens`, `--no-webui`, `--log-file state/llama-server.log`. Working directory is the exe directory. Stdio is discarded. Window is hidden. Missing exe raises `FileNotFoundError`. Polls 0.5 s for up to 300 s. Process exit raises `RuntimeError`. Timeout raises `TimeoutError`.
 
 `Brain.stop()`. If `proc` is still running, `terminate()` and `wait(10)`. Sets `proc` to `None`. A server that was already up at `start()` is left running.
 
@@ -74,7 +74,7 @@ Tokens: `BOS` `<bos>`, `TURN_OPEN` `<|turn>`, `TURN_CLOSE` `<turn|>`, `THINK` `<
 
 `Brain.ask_json(question: str, schema: dict, png: bytes | None = None) -> object`. Optional image, given schema, `max_tokens` 400, thinking off. An image prefixes the question with `media()`. Returns `json.loads` of the completion. A point in that object is on the 1000-grid of that image. Pixel conversion is outside this file.
 
-`Brain.think(system: str, tools: dict[str, Tool], history: list[tuple[str, str]], user: str, on_step: Callable[[Step], None] | None = None) -> Reply`. No image. System turn is `THINK`, `system`, and every `declare(tool)`. History is user/model turn pairs. Then the user turn and an open model turn. Up to `max_tool_steps` completions, stopped on the tool-response open token and `TURN_CLOSE`. A completion with no tool returns `Reply(plain(out), steps)`. An unknown tool name yields `unknown tool {name}` and the loop continues. Any exception from `run` yields `bad arguments: {exc}` and the loop continues. Each call appends a `Step` and, when `on_step` is set, calls it. The log line for a thought, a tool call, and a spoken reply is the full text. A `final` tool returns `Reply("", steps)` after it runs. Otherwise the completion and `tool_response` are appended and the loop continues. Exhausting the steps returns `Reply("I am still working on it.", steps)`.
+`Brain.think(system: str, tools: dict[str, Tool], history: list[tuple[str, str]], user: str, on_step: Callable[[Step], None] | None = None) -> Reply`. No image. System turn is `THINK`, `system`, and every `declare(tool)`. History is user/model turn pairs. Then the user turn and an open model turn. Up to `max_tool_steps` completions, stopped on the tool-response open token and `TURN_CLOSE`. A completion with no tool returns `Reply(plain(out))`. An unknown tool name yields `unknown tool {name}` and the loop continues. Any exception from `run` yields `bad arguments: {exc}` and the loop continues. Each call builds a `Step` and, when `on_step` is set, calls it. The log line for a thought, a tool call, and a spoken reply is the full text. A `final` tool returns `Reply("")` after it runs. Otherwise the completion and `tool_response` are appended and the loop continues. Exhausting the steps returns `Reply("I am still working on it.")`.
 
 `main()`. `Brain.start()`, then `ask_json` on the command-line question, or `What is the capital of France and what are its GPS coordinates?` when the command line is empty. Schema requires `capital` (string), `latitude` (number), `longitude` (number). Prints that JSON and `think("You are Gemma. Answer in one short sentence.", {}, [], question).text`. Does not call `stop()`.
 
@@ -98,7 +98,7 @@ Talks to `organs` (`CONFIG`, `ROOT`, `path_of`), `models/silero_vad.onnx` throug
 
 ## organs/eyes.py
 
-Talks to `organs` (`CONFIG`, and `state_dir` in `__main__`), `user32`, and PIL `ImageGrab`. Talked to by `trident.tools`. At import, `SetProcessDpiAwarenessContext(-4)`, and `GetForegroundWindow` returns a pointer.
+Talks to `organs` (`CONFIG`, and `state_dir` in `__main__`), `user32`, and PIL `ImageGrab`. Talked to by `trident.tools`. At import, `SetProcessDpiAwarenessContext(-4)`.
 
 `screen_size() -> tuple[int, int]`. `GetSystemMetrics(0)`, `GetSystemMetrics(1)`.
 
@@ -112,9 +112,7 @@ Talks to `organs` (`CONFIG`, and `state_dir` in `__main__`), `user32`, and PIL `
 
 `point_px(box: list, y: float, x: float) -> tuple[int, int]`. `box` is a crop on the full 1000-grid. `y` and `x` are a point on the 1000-grid of that crop. Maps the point through the crop's min and max edges, then `center_px`.
 
-`window_titles(limit: int = 8) -> list[str]`. Foreground window first, then visible windows. Unique, whitespace collapsed, cut at `limit`.
-
-`python -m organs.eyes` writes `state/screen.png`, prints that path and `screen_size()`, then one title per line.
+`python -m organs.eyes` writes `state/screen.png` and prints that path and `screen_size()`.
 
 ## organs/hands.py
 
@@ -335,7 +333,7 @@ Talks to `config.toml`, the network, `zipfile`, `subprocess`, and `huggingface_h
 
 `packages()`. Pip-installs `torch` and `torchaudio` from `install.torch_index`, then `pip install -r requirements.txt`.
 
-`llama()`. Returns when `bin/llama/llama-server.exe` exists. Otherwise `https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/{llama_tag}`, or `.../releases/latest` when the tag is empty. Picks the asset whose name starts with `llama-` and ends with `llama_asset`, plus `cudart_asset`. Extracts both, copies the exe's directory files and every `.dll` into `bin/llama`, writes `release.txt` with the tag name. No matching asset raises `SystemExit`.
+`llama()`. Returns when `bin/llama/llama-server.exe` exists. Otherwise `https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/{llama_tag}`. `b11371` is the tag that ships the Windows x64 CUDA 12.4 zip; the GitHub latest release does not. Picks the asset whose name starts with `llama-` and ends with `llama_asset`, plus `cudart_asset`. Extracts both, copies the exe's directory files and every `.dll` into `bin/llama`, writes `release.txt` with the tag name. No matching asset raises `SystemExit`.
 
 `nemo()`. Returns when `bin/nemo-speech/bin/nemo-speech.exe` exists. Otherwise downloads `nemo_url`, finds `nemo-speech.exe`, and copies that exe's grandparent tree to `bin/nemo-speech`.
 

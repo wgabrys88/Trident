@@ -1,6 +1,3 @@
-# Trident v2. One file. Every organ reads only its own table.
-# Paths are relative to this folder.
-
 [owner]
 telegram_id = 5884279027
 name = "Wojciech"
@@ -11,12 +8,10 @@ bin = "bin"
 state = "state"
 
 [brain]
-# llama-server.exe from the llama.cpp CUDA release. Gemma 4 E2B-it + its vision projector.
 model = "gemma-4-E2B-it-Q4_0.gguf"
 mmproj = "mmproj-gemma-4-E2B-it-Q8_0.gguf"
 host = "127.0.0.1"
 port = 8080
-# Two slots: one keeps the agent prefix cached, the other serves vision queries.
 context = 16384
 slots = 2
 gpu_layers = 999
@@ -26,14 +21,11 @@ temperature = 0
 top_k = 64
 top_p = 0.95
 min_p = 0.05
-# Room for a thought channel plus the answer in one agent step.
 max_tokens = 1024
 max_tool_steps = 20
-# After this many seconds with nothing happening, Gemma gets one idle turn.
 idle_after = 30
 
 [eyes]
-# Screenshot longest side in pixels before it goes to the model. Coordinates never depend on it.
 max_side = 1920
 cloud_side = 480
 
@@ -46,21 +38,17 @@ min_silence_ms = 700
 pad_ms = 120
 max_utterance_s = 30
 min_utterance_s = 1.0
-# Nemotron ASR GGUF for nemo-speech.exe.
 model = "nemotron-3.5-asr-streaming-0.6b.q8_0.gguf"
 
 [mouth]
-# Chatterbox nano: English only, 110M parameters, runs well on CPU and leaves the GPU to Gemma.
 device = "cpu"
 reference = "reference.wav"
 
 [telegram]
-# Stream the desktop as the call camera while a call is up.
 desk_video = true
 desk_fps = 12
 
 [install]
-# GitHub "latest" (v0.5.0) publishes only nightly-tag.txt. b11371, 2026-10-03, is the current build that ships Windows x64 CUDA 12.4.
 llama_tag = "b11371"
 llama_asset = "bin-win-cuda-12.4-x64.zip"
 cudart_asset = "cudart-llama-bin-win-cuda-12.4-x64.zip"

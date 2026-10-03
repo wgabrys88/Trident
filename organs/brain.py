@@ -16,7 +16,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable
 
 from organs import CONFIG, ROOT, log, path_of, state_dir
@@ -24,7 +24,6 @@ from organs import CONFIG, ROOT, log, path_of, state_dir
 LOG = log("brain")
 CFG = CONFIG["brain"]
 
-# Gemma 4 control tokens. Do not paraphrase these; the tokenizer owns them.
 BOS = "<bos>"
 TURN_OPEN = "<|turn>"
 TURN_CLOSE = "<turn|>"
@@ -47,7 +46,6 @@ class Tool:
     params: dict
     run: Callable[..., object]
     optional: tuple = ()
-    # A final tool ends the turn with no words (hang_up).
     final: bool = False
 
 
@@ -56,13 +54,11 @@ class Step:
     thought: str
     tool: str
     args: dict
-    result: object
 
 
 @dataclass
 class Reply:
     text: str
-    steps: list = field(default_factory=list)
 
 
 def quoted(text: object) -> str:
@@ -76,8 +72,6 @@ def literal(value: object) -> str:
         return str(value)
     if isinstance(value, dict):
         return "{" + ",".join(f"{k}:{literal(v)}" for k, v in sorted(value.items())) + "}"
-    if isinstance(value, (list, tuple)):
-        return "[" + ",".join(literal(v) for v in value) + "]"
     return quoted(value)
 
 
@@ -141,8 +135,6 @@ class Brain:
         self.proc = None
         self.marker = None
 
-    # ------------------------------------------------------------------ server
-
     def media(self) -> str:
         if self.marker is None:
             with urllib.request.urlopen(self.url + "/props", timeout=10) as r:
@@ -191,8 +183,6 @@ class Brain:
             self.proc.wait(10)
         self.proc = None
 
-    # ------------------------------------------------------------------ raw completion
-
     def complete(self, prompt: str, images: list[bytes] = (), schema: dict | None = None, max_tokens: int | None = None, stop: list[str] = ()) -> str:
         body = {
             "prompt": {"prompt_string": prompt, "multimodal_data": [base64.b64encode(i).decode("ascii") for i in images]} if images else prompt,
@@ -215,20 +205,15 @@ class Brain:
         LOG.info("gemma %.1fs prompt %d gen %d", time.monotonic() - started, timings.get("prompt_n", 0), timings.get("predicted_n", 0))
         return data["content"]
 
-    # ------------------------------------------------------------------ vision and structure
-
     def ask_json(self, question: str, schema: dict, png: bytes | None = None) -> object:
         body = f"{self.media()}\n{question}" if png else question
         prompt = BOS + turn("user", body) + f"{TURN_OPEN}model\n"
         return json.loads(self.complete(prompt, images=[png] if png else (), schema=schema, max_tokens=400))
 
-    # ------------------------------------------------------------------ the agent turn
-
     def think(self, system: str, tools: dict[str, Tool], history: list[tuple[str, str]], user: str, on_step: Callable[[Step], None] | None = None) -> Reply:
         head = turn("system", f"{THINK}\n{system}" + "".join(declare(t) for t in tools.values()))
         past = "".join(turn("user", u) + turn("model", m) for u, m in history)
         prompt = BOS + head + past + turn("user", user) + f"{TURN_OPEN}model\n"
-        steps: list[Step] = []
         for _ in range(CFG["max_tool_steps"]):
             out = self.complete(prompt, stop=[TOOL_RESPONSE_OPEN, TURN_CLOSE])
             thought, name, args = parse(out)
@@ -237,7 +222,7 @@ class Brain:
             if not name:
                 text = plain(out)
                 LOG.info("say: %s", text)
-                return Reply(text, steps)
+                return Reply(text)
             if name not in tools:
                 result = f"unknown tool {name}"
             else:
@@ -245,15 +230,13 @@ class Brain:
                     result = tools[name].run(**args)
                 except Exception as exc:
                     result = f"bad arguments: {exc}"
-            step = Step(thought, name, args, result)
-            steps.append(step)
             LOG.info("tool %s %s -> %s", name, json.dumps(args, ensure_ascii=False), result)
             if on_step:
-                on_step(step)
+                on_step(Step(thought, name, args))
             if name in tools and tools[name].final:
-                return Reply("", steps)
+                return Reply("")
             prompt += out + tool_response(name, result)
-        return Reply("I am still working on it.", steps)
+        return Reply("I am still working on it.")
 
 
 def main():

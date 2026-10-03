@@ -51,11 +51,9 @@ CFG = CONFIG["telegram"]
 OWNER = CONFIG["owner"]["telegram_id"]
 RATE_TX = 48000
 RATE_RX = 16000
-FRAME_TX = RATE_TX // 100 * 2  # 10 ms of s16 mono
+FRAME_TX = RATE_TX // 100 * 2
 DESK_W, DESK_H = 960, 540
 
-
-# ---------------------------------------------------------------- Telegram Desktop process
 
 def telegram_home() -> Path:
     for key in ("APPDATA", "LOCALAPPDATA"):
@@ -110,8 +108,6 @@ def start_telegram():
     LOG.info("telegram desktop reopened")
 
 
-# ---------------------------------------------------------------- the desktop as the call camera
-
 def desk_i420() -> bytes:
     rgb = np.asarray(ImageGrab.grab().convert("RGB").resize((DESK_W, DESK_H), Image.BILINEAR), dtype=np.int32)
     r, g, b = rgb[:, :, 0], rgb[:, :, 1], rgb[:, :, 2]
@@ -144,8 +140,6 @@ def wire_protocol() -> PhoneCallProtocol:
     return PhoneCallProtocol(udp_p2p=protocol.udp_p2p, udp_reflector=protocol.udp_reflector, min_layer=65, max_layer=92, library_versions=list(reversed(protocol.library_versions)))
 
 
-# ---------------------------------------------------------------- the line
-
 class Line:
     def __init__(self, on_text: Callable[[str], None], on_utterance: Callable[[np.ndarray], None], on_line: Callable[[str], None]):
         self.on_text, self.on_utterance, self.on_line = on_text, on_utterance, on_line
@@ -166,8 +160,6 @@ class Line:
         self.rx_event = threading.Event()
         self.listening = False
         self.segmenter = Segmenter()
-
-    # -------------------------------------------------- lifecycle
 
     def start(self):
         quit_telegram()
@@ -203,8 +195,6 @@ class Line:
     def up(self) -> bool:
         return self.state == "up"
 
-    # -------------------------------------------------- session
-
     async def _connect(self):
         tdesk = TDesktop(str(telegram_home() / "tdata"))
         account = next(a for a in tdesk.accounts if int(a.UserId) != OWNER)
@@ -235,8 +225,6 @@ class Line:
         buffer = io.BytesIO(png)
         buffer.name = "desk.png"
         self._await(self.client.send_file(self.owner, buffer, caption=caption, force_document=False), 60)
-
-    # -------------------------------------------------- call signalling
 
     async def _on_raw(self, update):
         if isinstance(update, UpdatePhoneCallSignalingData):
@@ -362,8 +350,6 @@ class Line:
     def hang(self):
         if self.state != "idle":
             self._await(self._teardown(), 20)
-
-    # -------------------------------------------------- audio
 
     def _on_connection(self, _uid, info):
         LOG.info("link %s", str(info.state).rsplit(".", 1)[-1])

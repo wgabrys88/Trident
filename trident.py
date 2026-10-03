@@ -80,8 +80,6 @@ class Trident:
         self.acted = False
         self.line = Line(on_text=lambda t: self.push("chat", t), on_utterance=lambda c: self.push("call", c), on_line=lambda _state: self.touch())
 
-    # ------------------------------------------------------------ life
-
     def start(self):
         self.brain.start()
         self.mouth.load()
@@ -104,8 +102,6 @@ class Trident:
     def push(self, kind: str, payload):
         self.touch()
         self.events.put((kind, payload))
-
-    # ------------------------------------------------------------ senses
 
     def inbox_loop(self):
         while not self.stopping.wait(0.5):
@@ -133,8 +129,6 @@ class Trident:
                 self.handle(kind, payload)
             except Exception as exc:
                 LOG.exception("turn failed: %s", exc)
-
-    # ------------------------------------------------------------ one event
 
     def handle(self, kind: str, payload):
         if kind == "call":
@@ -187,8 +181,6 @@ class Trident:
 
     def speak(self, text: str):
         self.line.speak(pcm48(self.mouth.say(text), self.mouth.sr))
-
-    # ------------------------------------------------------------ what Gemma can do
 
     def tools(self, kind: str) -> dict[str, Tool]:
         from organs import eyes, hands

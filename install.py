@@ -70,8 +70,7 @@ def llama():
     if (target / "llama-server.exe").is_file():
         say("skip llama-server")
         return
-    tag = INSTALL["llama_tag"]
-    release = github_json(f"https://api.github.com/repos/ggml-org/llama.cpp/releases/{'tags/' + tag if tag else 'latest'}")
+    release = github_json("https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/" + INSTALL["llama_tag"])
     assets = {a["name"]: a["browser_download_url"] for a in release["assets"]}
     wanted = [name for name in assets if name.endswith(INSTALL["llama_asset"]) and name.startswith("llama-")]
     if not wanted:

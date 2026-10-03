@@ -46,7 +46,7 @@ user32.SendInput.argtypes = [W.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
 user32.SendInput.restype = W.UINT
 
 MOVE, ABSOLUTE, VIRTUAL = 0x0001, 0x8000, 0x4000
-BUTTON = {"left": (0x0002, 0x0004), "right": (0x0008, 0x0010), "middle": (0x0020, 0x0040)}
+BUTTON = {"left": (0x0002, 0x0004), "right": (0x0008, 0x0010)}
 
 
 def _send(items: list[INPUT]) -> None:
