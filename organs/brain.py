@@ -4,8 +4,7 @@ think() is the agent turn: system text, tool declarations, and recent turns, wit
 She returns a thought and then either one tool call or the words to say. That tool runs here, and the
 same turn continues with a <|tool_response>, so the thought stays in context. That turn carries no picture.
 
-see(), area(), locate(), and ask_json() are separate requests with thinking off. see(), area(), and locate() each take one image. area(), locate(), and ask_json() force a JSON schema. The words of a pass are the prompt written for that moment.
-locate() answers with a point on a 1000 by 1000 grid. Pixel conversion happens outside this file.
+ask_json() is a separate request with thinking off. It may take one image and it forces a JSON schema. The words of a pass are the prompt written for that moment. A point in that object is on a 1000 by 1000 grid. Pixel conversion happens outside this file.
 Tools arrive as arguments. python -m organs.brain prints a structured answer and one short sentence. The question is the command line, or the built-in one when that is empty.
 """
 
@@ -38,28 +37,6 @@ THOUGHT_RE = re.compile(r"<\|channel>thought\n?(.*?)(?:<channel\|>|$)", re.DOTAL
 CALL_RE = re.compile(r"<\|tool_call>call:(\w+)\{(.*?)\}<tool_call\|>", re.DOTALL)
 ARG_RE = re.compile(r'(\w+):(?:<\|"\|>(.*?)<\|"\|>|([^,}]*))', re.DOTALL)
 CONTROL_RE = re.compile(r"<\|[a-z_\"]+\|?>|<[a-z_]+\|>|<bos>|<eos>")
-
-AREA_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "name": {"type": "string"},
-        "y0": {"type": "integer", "minimum": 0, "maximum": 1000},
-        "x0": {"type": "integer", "minimum": 0, "maximum": 1000},
-        "y1": {"type": "integer", "minimum": 0, "maximum": 1000},
-        "x1": {"type": "integer", "minimum": 0, "maximum": 1000},
-    },
-    "required": ["name", "y0", "x0", "y1", "x1"],
-}
-
-LOCATE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "y": {"type": "integer", "minimum": 0, "maximum": 1000},
-        "x": {"type": "integer", "minimum": 0, "maximum": 1000},
-    },
-    "required": ["y", "x"],
-}
-
 
 @dataclass
 class Tool:
@@ -239,20 +216,6 @@ class Brain:
         return data["content"]
 
     # ------------------------------------------------------------------ vision and structure
-
-    def see(self, png: bytes, question: str, max_tokens: int = 80) -> str:
-        prompt = BOS + turn("user", f"{self.media()}\n{question}") + f"{TURN_OPEN}model\n"
-        return plain(self.complete(prompt, images=[png], max_tokens=max_tokens))
-
-    def area(self, png: bytes, prompt: str) -> dict:
-        """name, y0, x0, y1, x1 on the 1000-grid. prompt is this pass."""
-        text = f"{self.media()}\n{prompt}\nname is that area. y0, x0, y1, x1 are its edges, 0 to 1000, origin at the top left, y vertical."
-        return json.loads(self.complete(BOS + turn("user", text) + f"{TURN_OPEN}model\n", images=[png], schema=AREA_SCHEMA, max_tokens=80))
-
-    def locate(self, png: bytes, prompt: str) -> dict:
-        """y and x on the 1000-grid of this image. prompt is this pass."""
-        text = f"{self.media()}\n{prompt}\ny and x are 0 to 1000, origin at the top left, y vertical."
-        return json.loads(self.complete(BOS + turn("user", text) + f"{TURN_OPEN}model\n", images=[png], schema=LOCATE_SCHEMA, max_tokens=40))
 
     def ask_json(self, question: str, schema: dict, png: bytes | None = None) -> object:
         body = f"{self.media()}\n{question}" if png else question

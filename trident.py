@@ -11,10 +11,13 @@ The brain may use tools. Words it finishes with are spoken on the call when the 
 """
 
 import json
+import os
 import queue
+import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 from organs import CONFIG, log, state_dir
 from organs.brain import Brain, Tool
@@ -31,14 +34,33 @@ SYSTEM = (
     f"You are Gemma, the mind of {OWNER}'s computer. You see the screen and act with tools.\n"
     "Each turn: think in two or three short sentences, then either call exactly one tool or say one or two short sentences in English. "
     "He hears only what you say, never the thought.\n"
-    "Do the screen work he asked for. Use look before you touch the screen, and name screen elements by the text written on them. "
+    "Do the screen work he asked for. Each look is one small step and you write its prompt. The prompt says where that one element sits, what it looks like, and asks for its center. A taskbar is the strip of icons along the bottom edge. A pass does not list every element. "
+    "To click or drag: call look, then call crop with a tight box around only that element, then call click or drag with the x and y from the crop. If click or drag says not clicked or not dragged, call crop next. "
+    "When a look is not confident, the next call is look once more before you act.\n"
     "Open a program with run. After a page opens or a message is sent, run Start-Sleep, then look again before you act.\n"
-    "A command is run. A key is press. When he says to click an element, call click with that name before you type.\n"
+    "A command is run. A key is press.\n"
     "When he asks you to type, the type_text text is that sentence copied unchanged. "
     "Example: he says type The note says reply with exactly the word maple. The text is The note says reply with exactly the word maple.\n"
-    "When you report the screen, say the area name, whether that area and its items are visible, and what the crop shows. A sidebar title is not a message. The year is the year on the clock.\n"
     "Ring him or send him a message only when he asks. When he says goodbye or asks you to stop, use hang_up and say nothing."
 )
+PASS = {"type": "object", "properties": {"answer": {"type": "string"}, "confident": {"type": "boolean"}, "y": {"type": "integer", "minimum": 0, "maximum": 1000}, "x": {"type": "integer", "minimum": 0, "maximum": 1000}}, "required": ["answer", "confident", "y", "x"]}
+
+
+def cloud_look(png: bytes, question: str) -> dict:
+    folder = state_dir() / "cloud"
+    folder.mkdir(exist_ok=True)
+    (folder / "look.png").write_bytes(png)
+    version = max(p for p in (Path(os.environ["LOCALAPPDATA"]) / "cursor-agent" / "versions").iterdir() if (p / "node.exe").is_file())
+    done = subprocess.run(
+        [str(version / "node.exe"), str(version / "index.js"), "-p", "--mode", "ask", "--trust", "--model", CONFIG["cloud"]["model"], "--output-format", "text", "--workspace", str(folder), f"Read only look.png. Do not search or edit. The whole reply is one JSON object with keys answer, confident, y, and x. {question}"],
+        capture_output=True, text=True, encoding="utf-8", stdin=subprocess.DEVNULL, timeout=300, cwd=str(folder), creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    if done.returncode != 0:
+        raise RuntimeError((done.stderr or "").strip() or f"agent exit {done.returncode}")
+    LOG.info("cloud %s", CONFIG["cloud"]["model"])
+    return json.loads(done.stdout.strip())
+
+
 SOURCE = {"chat": "a Telegram message from him", "call": "his voice on the call", "typed": "a line he typed on the computer", "idle": "nobody; an idle moment"}
 
 
@@ -51,6 +73,10 @@ class Trident:
         self.stopping = threading.Event()
         self.last_activity = time.monotonic()
         self.idle_sent = False
+        self.request = ""
+        self.seen = ""
+        self.unsure = False
+        self.cropped = False
         self.line = Line(on_text=lambda t: self.push("chat", t), on_utterance=lambda c: self.push("call", c), on_line=lambda _state: self.touch())
 
     # ------------------------------------------------------------ life
@@ -134,6 +160,8 @@ class Trident:
             self.stopping.set()
 
     def turn(self, kind: str, text: str) -> str:
+        self.request = text
+        self.cropped = False
         situation = f"[{time.strftime('%H:%M')} | line {self.line.state} | heard from: {SOURCE[kind]}]"
         reply = self.brain.think(
             SYSTEM + self.memory.facts_block(),
@@ -165,95 +193,47 @@ class Trident:
 
         asked = kind != "idle"
 
-        def shoot(png, need, wrong):
-            told = f"You may look at the whole desktop and name one area. {need}"
-            if wrong:
-                told += f" The previous box {int(wrong['y0'])} {int(wrong['x0'])} {int(wrong['y1'])} {int(wrong['x1'])} was a different element. Name a different area."
-            told += " Include the whole element and a margin so none of its text is cut off."
-            self.line.send_photo(png, need[:200])
-            named = self.brain.area(png, told)
-            box = [named["y0"], named["x0"], named["y1"], named["x1"]]
-            piece = eyes.crop(png, box)
-            self.line.send_photo(piece, named["name"][:200])
-            return named, box, piece
-
-        def yes(piece, label):
-            low = " ".join(self.brain.see(piece, f'Answer yes only if the crop\'s main object is the "{label}" and not a different control. A picture drawn on the "{label}" is still the "{label}". No written label is still the "{label}". Answer no for a different element. Answer yes or no.', 40).lower().split())
-            if low.startswith("yes"):
-                return True
-            if low.startswith("no"):
-                return False
-            name = label.lower()
-            if name not in low:
-                return False
-            before = low.split(name, 1)[0]
-            return not any(mark in before for mark in ("not ", "no ", "rather than", "different", "isn't", "is not"))
-
-        def widen(png, named, box, label):
-            wide = [max(0, min(box[0], box[2]) - 100), max(0, min(box[1], box[3]) - 100), min(1000, max(box[0], box[2]) + 100), min(1000, max(box[1], box[3]) + 100)]
-            wide_png = eyes.crop(png, wide)
-            self.line.send_photo(wide_png, named["name"][:200])
-            again = self.brain.area(wide_png, f"You may look at this crop and name one area. The element is {label}. Include the whole element and a margin so none of its text is cut off.")
-            boxed = eyes.inside(wide, [again["y0"], again["x0"], again["y1"], again["x1"]])
-            piece = eyes.crop(png, boxed)
-            self.line.send_photo(piece, again["name"][:200])
-            return again, boxed, piece
-
-        def look(question: str = "What is on the screen?"):
+        def look(prompt: str, y0: int = -1, x0: int = -1, y1: int = -1, x1: int = -1):
             png = eyes.screenshot()
-            titles = eyes.window_titles()
-            area, visible, work, wrong = "", False, "rejected", None
-            for _ in range(3):
-                named, box, piece = shoot(png, question, wrong)
-                if not yes(piece, named["name"]):
-                    named, box, piece = widen(png, named, box, question)
-                    if not yes(piece, named["name"]):
-                        wrong = named
-                        continue
-                work = self.brain.see(piece, f"Answer only from this crop of {named['name']}. {question} One or two sentences.", 80)
-                self.line.send_photo(piece, work[:200])
-                area, visible = named["name"], True
-                break
-            corner = eyes.corner(png)
-            clock = self.brain.see(corner, "Copy the date and four-digit year exactly as printed.")
-            self.line.send_photo(corner, clock[:200])
-            return {"area": area or (wrong["name"] if wrong else ""), "visible": visible, "crop": work, "clock": clock, "windows": "; ".join(titles)}
+            y0, x0, y1, x1 = (int(v) for v in (y0, x0, y1, x1))
+            box = [y0, x0, y1, x1] if min(y0, x0, y1, x1) >= 0 else None
+            if box:
+                png = eyes.crop(png, box)
+            cloud = self.unsure
+            if cloud:
+                png = eyes.shrink(png)
+            self.line.send_photo(png, prompt[:200])
+            words = f"{prompt}\nRequest: {self.request}\nLast: {self.seen}\nOne short answer about this picture only. Do not list every element. The point is the center of the one element the request names, not a nearby control. y and x are that center, 0 to 1000, origin at the top left, y vertical. If the requested text is not printed in the picture, the answer says it is not printed and confident is false. Otherwise confident is true only when that answer is sure."
+            LOG.info("look %s", "cloud" if cloud else "local")
+            data = cloud_look(png, words) if cloud else self.brain.ask_json(words, PASS, png)
+            sure = data["confident"] is True
+            self.unsure = not cloud and not sure
+            self.cropped = box is not None
+            self.seen = str(data["answer"])
+            point = eyes.point_px(box, data["y"], data["x"]) if box else eyes.center_px([data["y"], data["x"], data["y"], data["x"]])
+            found = {"answer": self.seen, "confident": sure, "x": point[0], "y": point[1]}
+            if not sure:
+                found["next"] = "look once more"
+            return found
 
-        def find(target: str):
-            png = eyes.screenshot()
-            wrong = None
-            for _ in range(3):
-                named, box, piece = shoot(png, f"The element is {target}.", wrong)
-                if not yes(piece, target):
-                    named, box, piece = widen(png, named, box, target)
-                    if not yes(piece, target):
-                        wrong = named
-                        continue
-                self.line.send_photo(piece, target[:200])
-                spot = self.brain.locate(piece, f'Point at the center of the icon for "{target}", not the word under it.')
-                return eyes.point_px(box, spot["y"], spot["x"])
-            return None
+        def crop(prompt: str, y0: int, x0: int, y1: int, x1: int):
+            return look(prompt, y0, x0, y1, x1)
 
-        def click(target: str, how: str = "left"):
+        def click(x: int, y: int, how: str = "left"):
             if not asked:
                 return "nobody asked for this"
-            point = find(target)
-            if point is None:
-                return f"rejected {target}"
-            hands.click(*point, how)
-            return f"{how} click on {target} at {point[0]} {point[1]}"
+            if not self.cropped:
+                return "not clicked. call crop with a tight box around the element, then click the x and y from that crop"
+            hands.click(int(x), int(y), how)
+            return f"{how} click at {int(x)} {int(y)}"
 
-        def drag(source: str, destination: str):
+        def drag(x0: int, y0: int, x1: int, y1: int):
             if not asked:
                 return "nobody asked for this"
-            a = find(source)
-            if a is None:
-                return f"rejected {source}"
-            b = find(destination)
-            if b is None:
-                return f"rejected {destination}"
-            hands.drag(*a, *b)
-            return f"dragged {source} to {destination}"
+            if not self.cropped:
+                return "not dragged. call crop with a tight box around the element, then drag using the x and y from that crop"
+            hands.drag(int(x0), int(y0), int(x1), int(y1))
+            return f"dragged {int(x0)} {int(y0)} to {int(x1)} {int(y1)}"
 
         def type_text(text: str):
             if not asked:
@@ -299,9 +279,10 @@ class Trident:
             return "quiet until he speaks"
 
         return {
-            "look": Tool("look", f"Look at the screen. Names one area on the desktop, then answers only on that crop. A wrong crop is rejected and the area is named again. Also the clock and the window titles. Each picture is also sent to {OWNER}'s chat.", {"question": {"description": "What to look for.", "type": "STRING"}}, look),
-            "click": Tool("click", "Click one element on the screen, named by its visible text or look, e.g. the Start button, the OK button, the File menu.", {"target": {"description": "The element to click.", "type": "STRING"}, "how": {"description": "Kind of click.", "type": "STRING", "enum": ["left", "right", "double"]}}, click, optional=("how",)),
-            "drag": Tool("drag", "Drag from one screen element to another.", {"source": {"description": "Where the drag starts.", "type": "STRING"}, "destination": {"description": "Where the drag ends.", "type": "STRING"}}, drag),
+            "look": Tool("look", f"One look at the whole desktop. Write the prompt for this pass. Say where the one element sits, what it looks like, and ask for its center. The picture is also sent to {OWNER}'s chat.", {"prompt": {"description": "Where the one element sits, what it looks like, and a request for its center.", "type": "STRING"}}, look),
+            "crop": Tool("crop", f"One look at a tight crop of one element. Write the prompt. y0, x0, y1, x1 are that box, 0 to 1000, origin at the top left, y vertical. One icon is a small square, under 100 units on a side. The picture is also sent to {OWNER}'s chat.", {"prompt": {"description": "What this pass should answer.", "type": "STRING"}, "y0": {"description": "Crop top, 0 to 1000.", "type": "INTEGER"}, "x0": {"description": "Crop left, 0 to 1000.", "type": "INTEGER"}, "y1": {"description": "Crop bottom, 0 to 1000.", "type": "INTEGER"}, "x1": {"description": "Crop right, 0 to 1000.", "type": "INTEGER"}}, crop),
+            "click": Tool("click", "Click the x and y returned by crop.", {"x": {"description": "Pixel x from crop.", "type": "INTEGER"}, "y": {"description": "Pixel y from crop.", "type": "INTEGER"}, "how": {"description": "Kind of click.", "type": "STRING", "enum": ["left", "right", "double"]}}, click, optional=("how",)),
+            "drag": Tool("drag", "Drag from one screen pixel to another.", {"x0": {"description": "Start pixel x.", "type": "INTEGER"}, "y0": {"description": "Start pixel y.", "type": "INTEGER"}, "x1": {"description": "End pixel x.", "type": "INTEGER"}, "y1": {"description": "End pixel y.", "type": "INTEGER"}}, drag),
             "type_text": Tool("type_text", "Type the text argument exactly, every word of it, where the cursor is.", {"text": {"description": "The text to type, every word.", "type": "STRING"}}, type_text),
             "press": Tool("press", "Press keyboard keys only, for example enter, escape, tab, or ctrl-a. Never a command.", {"keys": {"description": "The key or chord.", "type": "STRING"}}, press),
             "run": Tool("run", "Run one PowerShell command. Start-Process opens a program. Start-Sleep -Seconds N waits.", {"command": {"description": "The PowerShell command.", "type": "STRING"}}, run),

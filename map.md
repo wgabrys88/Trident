@@ -12,7 +12,9 @@ Tracked files: `.gitattributes`, `.gitignore`, `LICENSE`, `config.toml`, `instal
 
 `[brain]` `model` = gemma-4-E2B-it-Q4_0.gguf, `mmproj` = mmproj-gemma-4-E2B-it-Q8_0.gguf, `host` = 127.0.0.1, `port` = 8080, `context` = 16384, `slots` = 2, `gpu_layers` = 999, `threads` = 4, `image_tokens` = 560, `temperature` = 0, `top_k` = 64, `top_p` = 0.95, `min_p` = 0.05, `max_tokens` = 1024, `max_tool_steps` = 20, `idle_after` = 30. Read by `brain` and, for `idle_after`, `trident`. `model` and `mmproj` also by `install`.
 
-`[eyes]` `max_side` = 1920. Read by `eyes`.
+`[eyes]` `max_side` = 1920, `cloud_side` = 480. Read by `eyes`. `cloud_side` is the longest side of a picture for a cloud look.
+
+`[cloud]` `model` = gpt-5.6-luna-none. Read by `trident`.
 
 `[ears]` `vad_threshold` = 0.65, `min_silence_ms` = 700, `pad_ms` = 120, `max_utterance_s` = 30, `min_utterance_s` = 1.0, `model` = nemotron-3.5-asr-streaming-0.6b.q8_0.gguf. Read by `ears`. `model` also by `install`.
 
@@ -60,10 +62,6 @@ Tokens: `BOS` `<bos>`, `TURN_OPEN` `<|turn>`, `TURN_CLOSE` `<turn|>`, `THINK` `<
 
 `parse(output: str) -> tuple[str, str, dict]`. Thought text from `<|channel>thought ... <channel|>`, a tool name from `<|tool_call>call:NAME{...}<tool_call|>`, and that call's args. No call returns `(thought, "", {})`. Quoted arg values stay strings. Bare `true`/`false` become bools. Bare integers and decimals become `int` and `float`.
 
-`AREA_SCHEMA` is a JSON schema: an object with `name` (string) and `y0`, `x0`, `y1`, `x1`, each an integer from 0 through 1000, all required.
-
-`LOCATE_SCHEMA` is a JSON schema: an object with `y` and `x`, both integers from 0 through 1000, both required.
-
 `Brain.__init__()`. `url` from `brain.host` and `brain.port`. `proc` is `None`. `marker` is `None` until `media()`.
 
 `Brain.alive() -> bool`. GET `{url}/health`, timeout 2. True when status is 200. `URLError` or `OSError` returns False.
@@ -74,13 +72,7 @@ Tokens: `BOS` `<bos>`, `TURN_OPEN` `<|turn>`, `TURN_CLOSE` `<turn|>`, `THINK` `<
 
 `Brain.complete(prompt: str, images: list[bytes] = (), schema: dict | None = None, max_tokens: int | None = None, stop: list[str] = ()) -> str`. POST `{url}/completion`, timeout 600. Body: `prompt` (a string, or `{prompt_string, multimodal_data}` of base64 images when `images` is non-empty), `n_predict` (`max_tokens` or `brain.max_tokens`), `cache_prompt` true, `stop`, and sampling from `temperature`, `top_k`, `top_p`, `min_p`. `schema` sets `json_schema`. Writes the prompt to `state/last_prompt.txt`. Returns `content`. Logs elapsed seconds plus `timings.prompt_n` and `timings.predicted_n`.
 
-`Brain.see(png: bytes, question: str, max_tokens: int = 80) -> str`. One image, no schema, thinking off. Prompt is `BOS` + user turn of `media()` plus `question` + an open model turn. Returns `plain` of the completion.
-
-`Brain.area(png: bytes, prompt: str) -> dict`. One image, `AREA_SCHEMA`, `max_tokens` 80. The user turn is `media()`, then `prompt`, then `name is that area. y0, x0, y1, x1 are its edges, 0 to 1000, origin at the top left, y vertical.` Returns that object. The prompt is written by the caller for this pass.
-
-`Brain.locate(png: bytes, prompt: str) -> dict`. One image, `LOCATE_SCHEMA`, `max_tokens` 40. The user turn is `media()`, then `prompt`, then `y and x are 0 to 1000, origin at the top left, y vertical.` Returns `y` and `x` on the 1000-grid of that image. Pixel conversion is outside this file.
-
-`Brain.ask_json(question: str, schema: dict, png: bytes | None = None) -> object`. Optional image, given schema, `max_tokens` 400. An image prefixes the question with `media()`. Returns `json.loads` of the completion.
+`Brain.ask_json(question: str, schema: dict, png: bytes | None = None) -> object`. Optional image, given schema, `max_tokens` 400, thinking off. An image prefixes the question with `media()`. Returns `json.loads` of the completion. A point in that object is on the 1000-grid of that image. Pixel conversion is outside this file.
 
 `Brain.think(system: str, tools: dict[str, Tool], history: list[tuple[str, str]], user: str, on_step: Callable[[Step], None] | None = None) -> Reply`. No image. System turn is `THINK`, `system`, and every `declare(tool)`. History is user/model turn pairs. Then the user turn and an open model turn. Up to `max_tool_steps` completions, stopped on the tool-response open token and `TURN_CLOSE`. A completion with no tool returns `Reply(plain(out), steps)`. An unknown tool name yields `unknown tool {name}` and the loop continues. Any exception from `run` yields `bad arguments: {exc}` and the loop continues. Each call appends a `Step` and, when `on_step` is set, calls it. The log line for a thought, a tool call, and a spoken reply is the full text. A `final` tool returns `Reply("", steps)` after it runs. Otherwise the completion and `tool_response` are appended and the loop continues. Exhausting the steps returns `Reply("I am still working on it.", steps)`.
 
@@ -112,15 +104,13 @@ Talks to `organs` (`CONFIG`, and `state_dir` in `__main__`), `user32`, and PIL `
 
 `screenshot() -> bytes`. `ImageGrab.grab()` with no arguments. The module docstring calls that the primary monitor. Longest side at most `eyes.max_side` (LANCZOS). RGB PNG, `compress_level` 1.
 
-`corner(png: bytes) -> bytes`. Crops the bottom-right 420 by 90 pixels of that PNG and scales it by 3 with nearest-neighbor. That corner is the clock.
+`shrink(png: bytes) -> bytes`. Longest side at most `eyes.cloud_side` (LANCZOS). Smaller pictures stay that size. RGB PNG, `compress_level` 1. That size is 480. On this 1920 by 1080 desktop, 480 by 270 still showed the Start icon, the clock, and the status text. 360 by 203 left the clock digits unread.
 
 `crop(png: bytes, box: list) -> bytes`. `box` is `[y0, x0, y1, x1]` on the 1000-grid. Crops that rectangle out of `png`. RGB PNG, `compress_level` 1.
 
 `center_px(box_2d: list) -> tuple[int, int]`. `box_2d` is `[y0, x0, y1, x1]` on the 1000-grid. Returns `(x, y)` from `screen_size()`: `round((x0+x1)/2000*(width-1))`, `round((y0+y1)/2000*(height-1))`.
 
 `point_px(box: list, y: float, x: float) -> tuple[int, int]`. `box` is a crop on the full 1000-grid. `y` and `x` are a point on the 1000-grid of that crop. Maps the point through the crop's min and max edges, then `center_px`.
-
-`inside(outer: list, inner: list) -> list`. Both are `[y0, x0, y1, x1]` on the 1000-grid. `inner` is a box inside the crop `outer`. Returns that box on the full 1000-grid.
 
 `window_titles(limit: int = 8) -> list[str]`. Foreground window first, then visible windows. Unique, whitespace collapsed, cut at `limit`.
 
@@ -264,7 +254,7 @@ Talks to `organs` (`CONFIG`, `log`), `organs.ears.Segmenter`, Telethon, ntgcalls
 
 ## trident.py
 
-Talks to `organs` (`CONFIG`, `log`, `state_dir`), `brain` (`Brain`, `Tool`), `ears` (`transcribe`, `write_wav`), `memory` (`Memory`), `mouth` (`Mouth`, `pcm48`), `telegram` (`Line`). `eyes` and `hands` are imported inside `tools`. Logger name `trident`. Import loads config, opens `state/trident.log`, and does not start llama, the mouth model, or Telegram.
+Talks to `organs` (`CONFIG`, `log`, `state_dir`), `brain` (`Brain`, `Tool`), `ears` (`transcribe`, `write_wav`), `memory` (`Memory`), `mouth` (`Mouth`, `pcm48`), `telegram` (`Line`), and the local Cursor agent at `%LOCALAPPDATA%\cursor-agent`. `eyes` and `hands` are imported inside `tools`. Logger name `trident`. Import loads config, opens `state/trident.log`, and does not start llama, the mouth model, or Telegram.
 
 `OWNER` is `owner.name`. `INBOX` is `state/inbox.txt`. `SOURCE` is `chat` = `a Telegram message from him`, `call` = `his voice on the call`, `typed` = `a line he typed on the computer`, `idle` = `nobody; an idle moment`.
 
@@ -273,14 +263,18 @@ Talks to `organs` (`CONFIG`, `log`, `state_dir`), `brain` (`Brain`, `Tool`), `ea
 ```
 You are Gemma, the mind of {owner.name}'s computer. You see the screen and act with tools.
 Each turn: think in two or three short sentences, then either call exactly one tool or say one or two short sentences in English. He hears only what you say, never the thought.
-Do the screen work he asked for. Use look before you touch the screen, and name screen elements by the text written on them. Open a program with run. After a page opens or a message is sent, run Start-Sleep, then look again before you act.
-A command is run. A key is press. When he says to click an element, call click with that name before you type.
+Do the screen work he asked for. Each look is one small step and you write its prompt. The prompt says where that one element sits, what it looks like, and asks for its center. A taskbar is the strip of icons along the bottom edge. A pass does not list every element. To click or drag: call look, then call crop with a tight box around only that element, then call click or drag with the x and y from the crop. If click or drag says not clicked or not dragged, call crop next. When a look is not confident, the next call is look once more before you act.
+Open a program with run. After a page opens or a message is sent, run Start-Sleep, then look again before you act.
+A command is run. A key is press.
 When he asks you to type, the type_text text is that sentence copied unchanged. Example: he says type The note says reply with exactly the word maple. The text is The note says reply with exactly the word maple.
-When you report the screen, say the area name, whether that area and its items are visible, and what the crop shows. A sidebar title is not a message. The year is the year on the clock.
 Ring him or send him a message only when he asks. When he says goodbye or asks you to stop, use hang_up and say nothing.
 ```
 
-`Trident.__init__()`. Builds `Brain`, `Mouth`, `Memory`, an event queue, and a `stopping` event. `Line` callbacks: text pushes `("chat", text)`, an utterance pushes `("call", samples)`, a line-state change calls `touch`.
+`PASS` is the JSON schema for one look: `answer` (string), `confident` (boolean), `y` and `x` (integers 0 through 1000), all required.
+
+`cloud_look(png: bytes, question: str) -> dict`. Writes `png` to `state/cloud/look.png`. Runs the newest `%LOCALAPPDATA%\cursor-agent\versions\*\node.exe` on that version's `index.js`, print mode, ask mode, `--trust`, `--model` `cloud.model`, text output, workspace that folder. The prompt says to read only `look.png` and reply with one JSON object of `answer`, `confident`, `y`, and `x`, then the question. Non-zero exit raises `RuntimeError` with stderr. Returns `json.loads` of stdout. Logs `cloud` plus the model name.
+
+`Trident.__init__()`. Builds `Brain`, `Mouth`, `Memory`, an event queue, and a `stopping` event. `request`, `seen`, and `unsure` start empty or false. `cropped` starts false. `Line` callbacks: text pushes `("chat", text)`, an utterance pushes `("call", samples)`, a line-state change calls `touch`.
 
 `Trident.start()`. `brain.start()`, `mouth.load()`, `line.start()`, then daemon threads `trident-worker`, `trident-inbox`, and `trident-idle`.
 
@@ -300,7 +294,7 @@ Ring him or send him a message only when he asks. When he says goodbye or asks y
 
 `Trident.command(name: str)`. `call` dials and speaks `I am up. Do you want anything?`. `hang` calls `line.hang()`. `stop` sets `stopping`. Any other name returns. A command does not clear `quiet` and does not call `turn`.
 
-`Trident.turn(kind: str, text: str) -> str`. User text to the brain is `[{HH:MM} | line {state} | heard from: {SOURCE[kind]}]\n{text}`. Calls `brain.think(SYSTEM + facts_block(), tools(kind), history(), that text, on_step=...)`. `on_step` sends the thought, the tool name, and the arguments as JSON, uncut, with `line.send_text`. When `reply.text` is non-empty and `reply.text.lower().strip(".")` is not `idle`, appends the turn to memory and returns `reply.text`. Otherwise returns `""`.
+`Trident.turn(kind: str, text: str) -> str`. Stores `text` on `request` and sets `cropped` false. User text to the brain is `[{HH:MM} | line {state} | heard from: {SOURCE[kind]}]\n{text}`. Calls `brain.think(SYSTEM + facts_block(), tools(kind), history(), that text, on_step=...)`. `on_step` sends the thought, the tool name, and the arguments as JSON, uncut, with `line.send_text`. When `reply.text` is non-empty and `reply.text.lower().strip(".")` is not `idle`, appends the turn to memory and returns `reply.text`. Otherwise returns `""`. `seen` and `unsure` are kept across turns.
 
 `Trident.deliver(kind: str, text: str)`. Empty text returns. When the line is up, `speak`. When the line is down and `kind` is `chat`, `line.send_text`. A `typed` or `idle` reply with the line down is dropped.
 
@@ -308,10 +302,10 @@ Ring him or send him a message only when he asks. When he says goodbye or asks y
 
 `Trident.tools(kind: str) -> dict[str, Tool]`. `asked` is true when `kind` is not `idle`. The dict is:
 
-- `look(question: str = "What is on the screen?")`. Declared as `Look at the screen. Names one area on the desktop, then answers only on that crop. A wrong crop is rejected and the area is named again. Also the clock and the window titles. Each picture is also sent to {owner.name}'s chat.` Schema requires `question` (`STRING`, `What to look for.`). Calls `eyes.screenshot` and `eyes.window_titles`. Up to three times, `brain.area` on the desktop. The prompt is `You may look at the whole desktop and name one area. {question}` plus, after a rejection, `The previous box {y0} {x0} {y1} {x1} was a different element. Name a different area.` Then `Include the whole element and a margin so none of its text is cut off.` `eyes.crop` cuts that box. `brain.see` on the crop, `max_tokens` 40, is `Answer yes only if the crop's main object is the "{name}" and not a different control. A picture drawn on the "{name}" is still the "{name}". No written label is still the "{name}". Answer no for a different element. Answer yes or no.` A reply that starts with `yes` is accepted. A sentence that starts with neither `yes` nor `no` is accepted when it names that label and the text before the label does not contain `not `, `no `, `rather than`, `different`, `isn't`, or `is not`. Any other reply widens the box by 100 on the 1000-grid, clamped to 0 and 1000. `brain.area` on that wider crop is `You may look at this crop and name one area. The element is {question}. Include the whole element and a margin so none of its text is cut off.` `eyes.inside` maps that box onto the desktop, `eyes.crop` cuts it, and the same check is asked of the new name. A yes then `brain.see` on that crop, `max_tokens` 80, is `Answer only from this crop of {name}. {question} One or two sentences.` Three rejections leave `visible` false and `crop` `rejected`. `brain.see` on `eyes.corner(png)` reads the clock. Each picture the model is shown is sent with `line.send_photo`. Returns `{"area": name, "visible": bool, "crop": work, "clock": clock, "windows": "; ".join(titles)}`.
-- `find(target: str)` is not a tool. Same desktop naming and crop, with need `The element is {target}.` The same check uses `target`. A rejection widens the same way, and that prompt uses `The element is {target}.` A yes sends the crop again. `brain.locate` on that crop only. The prompt is `Point at the center of the icon for "{target}", not the word under it.` Returns `eyes.point_px` of that crop and that point. Three rejections return `None`.
-- `click(target: str, how: str = "left")`. Declared as `Click one element on the screen, named by its visible text or look, e.g. the Start button, the OK button, the File menu.` Schema: `target` required (`The element to click.`), `how` optional enum `left`, `right`, `double` (`Kind of click.`). When not `asked`, returns `nobody asked for this`. When `find` returns `None`, returns `rejected {target}` and does not click. Otherwise `hands.click` on that point and returns `{how} click on {target} at {x} {y}`.
-- `drag(source: str, destination: str)`. Declared as `Drag from one screen element to another.` Both required (`Where the drag starts.`, `Where the drag ends.`). Same idle refusal. When either `find` returns `None`, returns `rejected {source}` or `rejected {destination}` and does not drag. Otherwise `hands.drag` from `find(source)` to `find(destination)` and returns `dragged {source} to {destination}`.
+- `look(prompt: str, y0: int = -1, x0: int = -1, y1: int = -1, x1: int = -1)`. Declared as `One look at the whole desktop. Write the prompt for this pass. Say where the one element sits, what it looks like, and ask for its center. The picture is also sent to {owner.name}'s chat.` Schema requires `prompt` (`STRING`). One new screenshot. A box is used only when every edge is at least 0, and then `eyes.crop` cuts it. When `unsure` is already true, `eyes.shrink` runs first and this pass calls `cloud_look`. Otherwise `brain.ask_json` with `PASS`. The question is her prompt, then `Request:` the stored user text, then `Last:` the previous answer, then one general instruction: one short answer, do not list every element, the point is the center of the one element the request names, and `confident` is false when the requested text is not printed. Each picture is sent with `line.send_photo` before the model sees it. `seen` becomes the answer. A local pass that is not confident sets `unsure`, so the next look is the cloud pass. A cloud pass clears `unsure`. `cropped` is true only when this pass had a box. Screen pixels come from `eyes.point_px` on a crop, otherwise `eyes.center_px`. Returns `answer`, `confident`, `x`, `y`. When not confident, also `next` = `look once more`.
+- `crop(prompt: str, y0: int, x0: int, y1: int, x1: int)`. Declared as `One look at a tight crop of one element. Write the prompt. y0, x0, y1, x1 are that box, 0 to 1000, origin at the top left, y vertical. One icon is a small square, under 100 units on a side. The picture is also sent to {owner.name}'s chat.` All five are required. Calls `look` with that box.
+- `click(x: int, y: int, how: str = "left")`. Declared as `Click the x and y returned by crop.` `x` and `y` required, `how` optional enum `left`, `right`, `double`. When not `asked`, returns `nobody asked for this`. When `cropped` is false, returns `not clicked. call crop with a tight box around the element, then click the x and y from that crop` and does not click. Otherwise `hands.click` and returns `{how} click at {x} {y}`.
+- `drag(x0: int, y0: int, x1: int, y1: int)`. Declared as `Drag from one screen pixel to another.` All four required. Same idle refusal. When `cropped` is false, returns `not dragged. call crop with a tight box around the element, then drag using the x and y from that crop` and does not drag. Otherwise `hands.drag` and returns `dragged {x0} {y0} to {x1} {y1}`.
 - `type_text(text: str)`. Declared as `Type the text argument exactly, every word of it, where the cursor is.` `text` is `The text to type, every word.` Idle refusal, or `hands.type_text(text)` and `typed`.
 - `press(keys: str)`. Declared as `Press keyboard keys only, for example enter, escape, tab, or ctrl-a. Never a command.` `keys` is `The key or chord.` Idle refusal, or `hands.press` and `pressed {keys}`. An unknown key still raises `KeyError` from `hands.press`.
 - `run(command: str)`. Declared as `Run one PowerShell command. Start-Process opens a program. Start-Sleep -Seconds N waits.` `command` is `The PowerShell command.` Returns `hands.run(command)` when `asked`, otherwise `nobody asked for this`.
@@ -321,7 +315,9 @@ Ring him or send him a message only when he asks. When he says goodbye or asks y
 - `send_message(text: str)`. Declared as `Send {owner.name} a Telegram text message.` `text` is `The message.` `line.send_text`. Returns `sent`.
 - `stay_quiet(reason: str)`. Declared as `Promise not to ring until he speaks to you again.` `reason` is `Why.` `memory.set_quiet(True)`. The reason is not stored. Returns `quiet until he speaks`.
 
-Tool description strings interpolate `owner.name` for `look`, `call_owner`, and `send_message`.
+Tool description strings interpolate `owner.name` for `look`, `crop`, `call_owner`, and `send_message`.
+
+The cloud model is `gpt-5.6-luna-none`, non-fast, on the local Cursor agent. Composer 2.5 cannot see a picture. Grok 4.7 standard is $2 per million input tokens and $6 per million output tokens. Luna is $0.20 and $1.20. A 480 by 270 picture is 135 patches of 32 pixels, times 1.2, which is 162 image tokens, about $0.000032 before the agent prompt. A free no-login browser page was not wired.
 
 `main()`. `say TEXT` appends that line to `state/inbox.txt` and returns. `call`, `hang`, and `stop` append `/call`, `/hang`, or `/stop`. Words after those three commands are ignored. No command builds `Trident`, `start`s it, and waits on `stopping`. `KeyboardInterrupt` falls through. `stop()` always runs afterward.
 

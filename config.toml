@@ -35,6 +35,10 @@ idle_after = 30
 [eyes]
 # Screenshot longest side in pixels before it goes to the model. Coordinates never depend on it.
 max_side = 1920
+cloud_side = 480
+
+[cloud]
+model = "gpt-5.6-luna-none"
 
 [ears]
 vad_threshold = 0.65

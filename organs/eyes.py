@@ -3,7 +3,7 @@
 Her boxes are [y0, x0, y1, x1] on a 1000 by 1000 grid, origin at the top left, at any image size.
 center_px() is the center of such a box on the real screen.
 point_px() is a 1000-grid point inside a crop, mapped back onto that screen.
-inside() maps a 1000-grid box inside that crop back onto the full grid.
+shrink() is the longest side eyes.cloud_side, for a cloud look.
 python -m organs.eyes saves state/screen.png and prints the window titles.
 """
 
@@ -35,14 +35,12 @@ def screenshot() -> bytes:
     return buffer.getvalue()
 
 
-def corner(png: bytes) -> bytes:
-    """PNG of the bottom-right corner, scaled up, where the clock is."""
+def shrink(png: bytes) -> bytes:
     image = Image.open(io.BytesIO(png)).convert("RGB")
-    width, height = image.size
-    crop = image.crop((max(0, width - 420), max(0, height - 90), width, height))
-    crop = crop.resize((max(1, crop.width * 3), max(1, crop.height * 3)), Image.Resampling.NEAREST)
+    side = CFG["cloud_side"]
+    image.thumbnail((side, side), Image.LANCZOS)
     buffer = io.BytesIO()
-    crop.save(buffer, format="PNG", compress_level=1)
+    image.save(buffer, format="PNG", compress_level=1)
     return buffer.getvalue()
 
 
@@ -73,14 +71,6 @@ def point_px(box: list, y: float, x: float) -> tuple[int, int]:
     gy = top + (max(y0, y1) - top) * float(y) / 1000
     gx = left + (max(x0, x1) - left) * float(x) / 1000
     return center_px([gy, gx, gy, gx])
-
-
-def inside(outer: list, inner: list) -> list:
-    """A 1000-grid box inside a crop, mapped onto the full 1000-grid. outer is that crop."""
-    top, left = min(float(outer[0]), float(outer[2])), min(float(outer[1]), float(outer[3]))
-    dh, dw = abs(float(outer[2]) - float(outer[0])), abs(float(outer[3]) - float(outer[1]))
-    y0, x0, y1, x1 = (float(v) for v in inner)
-    return [top + dh * min(y0, y1) / 1000, left + dw * min(x0, x1) / 1000, top + dh * max(y0, y1) / 1000, left + dw * max(x0, x1) / 1000]
 
 
 def window_titles(limit: int = 8) -> list[str]:
