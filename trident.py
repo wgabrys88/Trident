@@ -6,26 +6,24 @@
     python trident.py hang         make it hang up
     python trident.py stop         make it shut down
 
-Events arrive from four senses and are handled one at a time, in order:
+Events arrive and are handled one at a time, in order:
     chat    a Telegram message from Wojciech
     call    his voice on the Telegram call
-    room    a voice on the room cable
     typed   a line from `trident.py say`
     idle    nothing happened for brain.idle_after seconds (once, until something happens)
 
 Every event becomes one agent turn in the brain. The brain may use tools; the words it ends with go
-back where the event came from: the call if it is up, else the chat, else the room speakers.
+back on the call if it is up, else into the chat when the event was a message.
 """
 
 import queue
 import sys
 import threading
 import time
-from pathlib import Path
 
 from organs import CONFIG, log, state_dir
 from organs.brain import Brain, Tool
-from organs.ears import Microphone, transcribe, write_wav
+from organs.ears import transcribe, write_wav
 from organs.memory import Memory
 from organs.mouth import Mouth, pcm48
 from organs.telegram import Line
@@ -43,7 +41,7 @@ SYSTEM = (
     "Open programs with run. Click, type and press only for work he asked for.\n"
     "When he says goodbye or asks you to stop, use hang_up and say nothing."
 )
-SOURCE = {"chat": "a Telegram message from him", "call": "his voice on the call", "room": "a voice in the room", "typed": "a line he typed on the computer", "idle": "nobody; an idle moment"}
+SOURCE = {"chat": "a Telegram message from him", "call": "his voice on the call", "typed": "a line he typed on the computer", "idle": "nobody; an idle moment"}
 
 
 class Trident:
@@ -55,8 +53,7 @@ class Trident:
         self.stopping = threading.Event()
         self.last_activity = time.monotonic()
         self.idle_sent = False
-        self.line = Line(on_text=lambda t: self.push("chat", t), on_utterance=lambda c: self.push("call", c), on_line=self.on_line)
-        self.mic = Microphone(on_utterance=lambda c: self.push("room", c))
+        self.line = Line(on_text=lambda t: self.push("chat", t), on_utterance=lambda c: self.push("call", c), on_line=lambda _state: self.touch())
 
     # ------------------------------------------------------------ life
 
@@ -64,7 +61,6 @@ class Trident:
         self.brain.start()
         self.mouth.load()
         self.line.start()
-        self.mic.start()
         threading.Thread(target=self.worker, name="trident-worker", daemon=True).start()
         threading.Thread(target=self.inbox_loop, name="trident-inbox", daemon=True).start()
         threading.Thread(target=self.idle_loop, name="trident-idle", daemon=True).start()
@@ -72,14 +68,9 @@ class Trident:
 
     def stop(self):
         self.stopping.set()
-        self.mic.stop()
         self.line.stop()
         self.brain.stop()
         LOG.info("trident down")
-
-    def on_line(self, state: str):
-        self.mic.muted = state != "idle"
-        self.touch()
 
     def touch(self):
         self.last_activity = time.monotonic()
@@ -121,8 +112,8 @@ class Trident:
     # ------------------------------------------------------------ one event
 
     def handle(self, kind: str, payload):
-        if kind in ("call", "room"):
-            text, language = transcribe(write_wav(state_dir() / f"{kind}.wav", payload))
+        if kind == "call":
+            text, language = transcribe(write_wav(state_dir() / "call.wav", payload))
             LOG.info("heard (%s, %s): %s", kind, language, text)
             if not text:
                 return
@@ -159,12 +150,6 @@ class Trident:
             self.speak(text)
         elif kind == "chat":
             self.line.send_text(text)
-        elif kind in ("room", "typed"):
-            self.mic.muted = True
-            try:
-                self.mouth.play(self.mouth.say(text))
-            finally:
-                self.mic.muted = self.line.state != "idle"
 
     def speak(self, text: str):
         self.line.speak(pcm48(self.mouth.say(text), self.mouth.sr))

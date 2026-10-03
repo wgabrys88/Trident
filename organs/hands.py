@@ -71,10 +71,6 @@ def _key(vk: int, scan: int, flags: int) -> INPUT:
     return item
 
 
-def move(x: int, y: int) -> None:
-    _send([_mouse(x, y, MOVE)])
-
-
 def click(x: int, y: int, how: str = "left") -> None:
     """how: left, right, double."""
     button = "right" if how == "right" else "left"

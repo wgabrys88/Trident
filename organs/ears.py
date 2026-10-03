@@ -1,31 +1,25 @@
 """Ears: 16 kHz speech in, finished utterances and their text out.
 
-  Segmenter   Silero VAD (ONNX, CPU). Feed float32 16 kHz audio from anywhere: the room cable or the phone call.
+  Segmenter   Silero VAD (ONNX, CPU). Feed float32 16 kHz audio from the phone call.
               Yields one numpy array per utterance, padded with a little lead-in.
-  Microphone  The room. WASAPI capture of the VB-Audio cable through sounddevice, resampled to 16 kHz by Windows.
   transcribe  Nemotron ASR through nemo-speech.exe. Returns (text, language tag).
 
-Run alone:  python -m organs.ears            -> listens to the room and prints what it hears
-            python -m organs.ears file.wav   -> transcribes one file
+Run alone:  python -m organs.ears file.wav   -> transcribes one file
 """
 
 import json
 import re
 import subprocess
 import sys
-import threading
 import unicodedata
 import wave
 from pathlib import Path
-from typing import Callable
 
 import numpy as np
 import onnxruntime as ort
-import sounddevice as sd
 
-from organs import CONFIG, ROOT, log, path_of
+from organs import CONFIG, ROOT, path_of
 
-LOG = log("ears")
 CFG = CONFIG["ears"]
 RATE = 16000
 WINDOW = 512
@@ -86,46 +80,6 @@ class Segmenter:
         return finished
 
 
-class Microphone:
-    """Room capture. on_utterance(samples) is called from the capture thread for each finished utterance."""
-
-    def __init__(self, on_utterance: Callable[[np.ndarray], None]):
-        self.on_utterance = on_utterance
-        self.segmenter = Segmenter()
-        self.muted = False
-        self.stream = None
-
-    @staticmethod
-    def device_index() -> int:
-        wasapi = next(i for i, api in enumerate(sd.query_hostapis()) if "WASAPI" in api["name"])
-        for index, dev in enumerate(sd.query_devices()):
-            if dev["hostapi"] == wasapi and dev["max_input_channels"] > 0 and CFG["device"].lower() in dev["name"].lower():
-                return index
-        raise LookupError(f"no WASAPI capture device containing {CFG['device']!r}")
-
-    def _callback(self, indata, frames, time_info, status):
-        if self.muted:
-            self.segmenter.reset()
-            return
-        clip = self.segmenter.push(indata[:, 0].copy())
-        if clip is not None:
-            self.on_utterance(clip)
-
-    def start(self):
-        self.stream = sd.InputStream(
-            device=self.device_index(), samplerate=RATE, channels=1, dtype="float32", blocksize=WINDOW,
-            extra_settings=sd.WasapiSettings(auto_convert=True), callback=self._callback,
-        )
-        self.stream.start()
-        LOG.info("room microphone open: %s", sd.query_devices(self.device_index())["name"])
-
-    def stop(self):
-        if self.stream is not None:
-            self.stream.stop()
-            self.stream.close()
-            self.stream = None
-
-
 def write_wav(path: Path, samples: np.ndarray, rate: int = RATE) -> Path:
     pcm = (np.clip(samples, -1, 1) * 32767).astype(np.int16)
     with wave.open(str(path), "wb") as handle:
@@ -154,19 +108,4 @@ def transcribe(wav: Path) -> tuple[str, str]:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        print(transcribe(Path(sys.argv[1])))
-        raise SystemExit
-    stop = threading.Event()
-
-    def heard(clip):
-        path = write_wav(ROOT / "state" / "room.wav", clip)
-        print(transcribe(path))
-
-    mic = Microphone(heard)
-    mic.start()
-    print("listening to the room, Ctrl+C to stop")
-    try:
-        stop.wait()
-    except KeyboardInterrupt:
-        mic.stop()
+    print(transcribe(Path(sys.argv[1])))

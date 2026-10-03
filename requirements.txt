@@ -1,7 +1,6 @@
 # install.py installs torch/torchaudio CPU wheels first, then this file.
 numpy
 Pillow
-sounddevice
 onnxruntime==1.20.1
 huggingface_hub
 chatterbox-tts

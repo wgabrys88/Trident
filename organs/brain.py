@@ -14,7 +14,7 @@ Two kinds of request leave this file.
             ([{"box_2d": [y0, x0, y1, x1], "label": ...}] on a 1000 x 1000 grid).
             Python does every bit of arithmetic afterwards.
 
-This file knows nothing about Telegram, speakers, mice or memory. Tools are handed in.
+This file knows nothing about Telegram, mice or memory. Tools are handed in.
 Run alone:  python -m organs.brain "What is the capital of France?"
 """
 
@@ -27,7 +27,6 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Callable
 
 from organs import CONFIG, ROOT, log, path_of, state_dir

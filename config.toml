@@ -39,8 +39,6 @@ idle_after = 30
 max_side = 1280
 
 [ears]
-# Substring of the WASAPI capture device name that carries the room (VB-Audio cable).
-device = "CABLE Output"
 vad_threshold = 0.65
 min_silence_ms = 700
 pad_ms = 120
@@ -53,8 +51,6 @@ model = "nemotron-3.5-asr-streaming-0.6b.q8_0.gguf"
 # Chatterbox nano: English only, 110M parameters, runs well on CPU and leaves the GPU to Gemma.
 device = "cpu"
 reference = "reference.wav"
-# Substring of the output device for room speech, or "default".
-speaker = "default"
 
 [telegram]
 # Stream the desktop as the call camera while a call is up.
