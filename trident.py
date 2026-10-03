@@ -10,6 +10,7 @@ Each turn is a Telegram message, his speech on the Telegram call, a written line
 The brain may use tools. Words it finishes with are spoken on the call when the line is up, and sent to the chat when the turn was a message and the line is down.
 """
 
+import json
 import queue
 import sys
 import threading
@@ -134,7 +135,13 @@ class Trident:
 
     def turn(self, kind: str, text: str) -> str:
         situation = f"[{time.strftime('%H:%M')} | line {self.line.state} | heard from: {SOURCE[kind]}]"
-        reply = self.brain.think(SYSTEM + self.memory.facts_block(), self.tools(kind), self.memory.history(), f"{situation}\n{text}")
+        reply = self.brain.think(
+            SYSTEM + self.memory.facts_block(),
+            self.tools(kind),
+            self.memory.history(),
+            f"{situation}\n{text}",
+            on_step=lambda step: self.line.send_text(f"{step.thought}\n{step.tool}\n{json.dumps(step.args, ensure_ascii=False)}"),
+        )
         if reply.text and reply.text.lower().strip(".") != "idle":
             self.memory.add_turn(text, reply.text)
             return reply.text
@@ -158,43 +165,84 @@ class Trident:
 
         asked = kind != "idle"
 
+        def shoot(png, need, wrong):
+            told = f"You may look at the whole desktop and name one area. {need}"
+            if wrong:
+                told += f" The previous box {int(wrong['y0'])} {int(wrong['x0'])} {int(wrong['y1'])} {int(wrong['x1'])} was a different element. Name a different area."
+            told += " Include the whole element and a margin so none of its text is cut off."
+            self.line.send_photo(png, need[:200])
+            named = self.brain.area(png, told)
+            box = [named["y0"], named["x0"], named["y1"], named["x1"]]
+            piece = eyes.crop(png, box)
+            self.line.send_photo(piece, named["name"][:200])
+            return named, box, piece
+
+        def yes(piece, label):
+            return self.brain.see(piece, f'Is this crop the "{label}" element, and not a different element? Answer yes or no.', 16).lower().startswith("yes")
+
+        def widen(png, named, box, label):
+            wide = [max(0, min(box[0], box[2]) - 100), max(0, min(box[1], box[3]) - 100), min(1000, max(box[0], box[2]) + 100), min(1000, max(box[1], box[3]) + 100)]
+            wide_png = eyes.crop(png, wide)
+            self.line.send_photo(wide_png, named["name"][:200])
+            again = self.brain.area(wide_png, f"You may look at this crop and name one area. The element is {label}. Include the whole element and a margin so none of its text is cut off.")
+            boxed = eyes.inside(wide, [again["y0"], again["x0"], again["y1"], again["x1"]])
+            piece = eyes.crop(png, boxed)
+            self.line.send_photo(piece, again["name"][:200])
+            return again, boxed, piece
+
         def look(question: str = "What is on the screen?"):
             png = eyes.screenshot()
             titles = eyes.window_titles()
-            asked = self.brain.area(png, f"Name the area of interest for the next click or the next set of actions. Need: {question}. Include the whole element and a margin so none of its text is cut off.")
-            asked_box = [asked["y0"], asked["x0"], asked["y1"], asked["x1"]]
-            asked_png = eyes.crop(png, asked_box)
-            seen = self.brain.see(asked_png, f"Is the needed area visible, and are the items in it visible? Need: {question}. Answer yes or no, then name the items you see.", 200)
-            named = self.brain.area(png, f"You may look at the whole desktop and name the area. {question} Include the whole element and a margin so none of its text is cut off.")
-            focus = eyes.crop(png, [named["y0"], named["x0"], named["y1"], named["x1"]])
-            work = self.brain.see(focus, f"Answer only from this crop of {named['name']}. {question}", 200)
+            area, visible, work, wrong = "", False, "rejected", None
+            for _ in range(3):
+                named, box, piece = shoot(png, question, wrong)
+                if not yes(piece, named["name"]):
+                    named, box, piece = widen(png, named, box, question)
+                    if not yes(piece, named["name"]):
+                        wrong = named
+                        continue
+                work = self.brain.see(piece, f"Answer only from this crop of {named['name']}. {question} One or two sentences.", 80)
+                self.line.send_photo(piece, work[:200])
+                area, visible = named["name"], True
+                break
             corner = eyes.corner(png)
             clock = self.brain.see(corner, "Copy the date and four-digit year exactly as printed.")
-            for image, caption in ((png, asked["name"]), (asked_png, seen), (png, named["name"]), (focus, work), (corner, clock)):
-                self.line.send_photo(image, caption[:200])
-            return {"screen": seen, "area": asked["name"], "desk": named["name"], "crop": work, "clock": clock, "windows": "; ".join(titles)}
+            self.line.send_photo(corner, clock[:200])
+            return {"area": area or (wrong["name"] if wrong else ""), "visible": visible, "crop": work, "clock": clock, "windows": "; ".join(titles)}
 
         def find(target: str):
             png = eyes.screenshot()
-            named = self.brain.area(png, f"You may look at the whole desktop and name the area. It contains {target}. Include the whole element and a margin so none of its text is cut off.")
-            box = [named["y0"], named["x0"], named["y1"], named["x1"]]
-            piece = eyes.crop(png, box)
-            spot = self.brain.locate(piece, f'Point at the center of the "{target}" element. The message box is the field at the bottom of a chat where the next message is typed.')
-            self.line.send_photo(png, named["name"][:200])
-            self.line.send_photo(piece, target[:200])
-            return eyes.point_px(box, spot["y"], spot["x"])
+            wrong = None
+            for _ in range(3):
+                named, box, piece = shoot(png, f"The element is {target}.", wrong)
+                if not yes(piece, target):
+                    named, box, piece = widen(png, named, box, target)
+                    if not yes(piece, target):
+                        wrong = named
+                        continue
+                self.line.send_photo(piece, target[:200])
+                spot = self.brain.locate(piece, f'Point at the center of the icon for "{target}", not the word under it.')
+                return eyes.point_px(box, spot["y"], spot["x"])
+            return None
 
         def click(target: str, how: str = "left"):
             if not asked:
                 return "nobody asked for this"
             point = find(target)
+            if point is None:
+                return f"rejected {target}"
             hands.click(*point, how)
             return f"{how} click on {target} at {point[0]} {point[1]}"
 
         def drag(source: str, destination: str):
             if not asked:
                 return "nobody asked for this"
-            a, b = find(source), find(destination)
+            a = find(source)
+            if a is None:
+                return f"rejected {source}"
+            b = find(destination)
+            if b is None:
+                return f"rejected {destination}"
             hands.drag(*a, *b)
             return f"dragged {source} to {destination}"
 
@@ -242,7 +290,7 @@ class Trident:
             return "quiet until he speaks"
 
         return {
-            "look": Tool("look", f"Look at the screen. Names an area, says whether that crop is visible, and answers on the crop. Also the clock and the window titles. Each picture is also sent to {OWNER}'s chat.", {"question": {"description": "What to look for, e.g. Is Paint open?", "type": "STRING"}}, look),
+            "look": Tool("look", f"Look at the screen. Names one area on the desktop, then answers only on that crop. A wrong crop is rejected and the area is named again. Also the clock and the window titles. Each picture is also sent to {OWNER}'s chat.", {"question": {"description": "What to look for.", "type": "STRING"}}, look),
             "click": Tool("click", "Click one element on the screen, named by its visible text or look, e.g. the Start button, the OK button, the File menu.", {"target": {"description": "The element to click.", "type": "STRING"}, "how": {"description": "Kind of click.", "type": "STRING", "enum": ["left", "right", "double"]}}, click, optional=("how",)),
             "drag": Tool("drag", "Drag from one screen element to another.", {"source": {"description": "Where the drag starts.", "type": "STRING"}, "destination": {"description": "Where the drag ends.", "type": "STRING"}}, drag),
             "type_text": Tool("type_text", "Type the text argument exactly, every word of it, where the cursor is.", {"text": {"description": "The text to type, every word.", "type": "STRING"}}, type_text),

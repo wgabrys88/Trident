@@ -3,6 +3,7 @@
 Her boxes are [y0, x0, y1, x1] on a 1000 by 1000 grid, origin at the top left, at any image size.
 center_px() is the center of such a box on the real screen.
 point_px() is a 1000-grid point inside a crop, mapped back onto that screen.
+inside() maps a 1000-grid box inside that crop back onto the full grid.
 python -m organs.eyes saves state/screen.png and prints the window titles.
 """
 
@@ -72,6 +73,14 @@ def point_px(box: list, y: float, x: float) -> tuple[int, int]:
     gy = top + (max(y0, y1) - top) * float(y) / 1000
     gx = left + (max(x0, x1) - left) * float(x) / 1000
     return center_px([gy, gx, gy, gx])
+
+
+def inside(outer: list, inner: list) -> list:
+    """A 1000-grid box inside a crop, mapped onto the full 1000-grid. outer is that crop."""
+    top, left = min(float(outer[0]), float(outer[2])), min(float(outer[1]), float(outer[3]))
+    dh, dw = abs(float(outer[2]) - float(outer[0])), abs(float(outer[3]) - float(outer[1]))
+    y0, x0, y1, x1 = (float(v) for v in inner)
+    return [top + dh * min(y0, y1) / 1000, left + dw * min(x0, x1) / 1000, top + dh * max(y0, y1) / 1000, left + dw * max(x0, x1) / 1000]
 
 
 def window_titles(limit: int = 8) -> list[str]:
