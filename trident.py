@@ -178,7 +178,16 @@ class Trident:
             return named, box, piece
 
         def yes(piece, label):
-            return self.brain.see(piece, f'Is this crop the "{label}" element, and not a different element? Answer yes or no.', 16).lower().startswith("yes")
+            low = " ".join(self.brain.see(piece, f'Answer yes only if the crop\'s main object is the "{label}" and not a different control. A picture drawn on the "{label}" is still the "{label}". No written label is still the "{label}". Answer no for a different element. Answer yes or no.', 40).lower().split())
+            if low.startswith("yes"):
+                return True
+            if low.startswith("no"):
+                return False
+            name = label.lower()
+            if name not in low:
+                return False
+            before = low.split(name, 1)[0]
+            return not any(mark in before for mark in ("not ", "no ", "rather than", "different", "isn't", "is not"))
 
         def widen(png, named, box, label):
             wide = [max(0, min(box[0], box[2]) - 100), max(0, min(box[1], box[3]) - 100), min(1000, max(box[0], box[2]) + 100), min(1000, max(box[1], box[3]) + 100)]
