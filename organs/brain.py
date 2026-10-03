@@ -187,7 +187,7 @@ class Brain:
         body = {
             "prompt": {"prompt_string": prompt, "multimodal_data": [base64.b64encode(i).decode("ascii") for i in images]} if images else prompt,
             "n_predict": CFG["max_tokens"],
-            "cache_prompt": True,
+            "cache_prompt": not images,
             "stop": list(stop),
             "temperature": CFG["temperature"],
             "top_k": CFG["top_k"],

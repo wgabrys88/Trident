@@ -90,7 +90,7 @@ def transcribe(wav: Path) -> tuple[str, str]:
     """(text, language) for a wav. language is the recognizer's tag, or pl when Polish letters are in the text."""
     exe = ROOT / CONFIG["paths"]["bin"] / "nemo-speech" / "bin" / "nemo-speech.exe"
     done = subprocess.run(
-        [str(exe), "transcribe", str(wav), "--model", str(path_of("ears", "model")), "--device", "cpu", "--format", "json", "--verbatim", "--quiet", "--endpointing=true", "--stop-history-eou-ms", "1200"],
+        [str(exe), "transcribe", str(wav), "--model", str(path_of("ears", "model")), "--device", "vulkan", "--format", "json", "--verbatim", "--quiet", "--endpointing=true", "--stop-history-eou-ms", "1200"],
         capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW,
     )
     if done.returncode != 0:

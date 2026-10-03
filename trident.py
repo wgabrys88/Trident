@@ -34,7 +34,7 @@ SYSTEM = (
     f"You are Gemma, the mind of {OWNER}'s computer. You see the screen and act with tools.\n"
     "Each turn: think in two or three short sentences, then either call exactly one tool or say one or two short sentences in English. "
     "He hears only what you say, never the thought.\n"
-    "Do the screen work he asked for. Each look is one small step and you write its prompt. The prompt says where that one element sits, what it looks like, and asks for its center. A pass does not list every element. "
+    "Do the screen work he asked for. Each look is one small step and you write its prompt. The prompt names the bar on the desktop edge and the one icon on it. A pass does not list every element. "
     "To click or drag: call crop on that element, then call click or drag with the x and y from the crop. Each drag is the next side. After a stroke, look. If the shape is not finished, drag the next side. A whole-desktop point is not the box. If the tool says not clicked, not dragged, or not pressed, call crop next. "
     "When a look is not confident, the next call is look once more before you act.\n"
     "Open a program with run. After a page opens or a message is sent, run Start-Sleep, then look again before you act.\n"
@@ -202,22 +202,20 @@ class Trident:
             if cloud:
                 png = eyes.shrink(png)
             self.line.send_photo(png, prompt)
-            words = f"{prompt}\nOne short sentence of what the picture shows."
+            words = f"Answer with the name of the strip of icons along the bottom edge. Box only {prompt}. The point is its center."
             LOG.info("look %s", "cloud" if cloud else "local")
             data = cloud_look(png, words) if cloud else self.brain.ask_json(words, PASS, png)
-            if all(k in data for k in ("y0", "x0", "y1", "x1")):
-                self.line.send_photo(eyes.mark(png, [data["y0"], data["x0"], data["y1"], data["x1"]]))
+            self.line.send_photo(eyes.mark(png, [data["y0"], data["x0"], data["y1"], data["x1"]]))
             sure = data["confident"] is True
             self.unsure = not cloud and not sure
             if box:
                 self.cropped = True
-            answer = str(data["answer"])
             clicking = "click" in self.request.lower() or "drag" in self.request.lower()
-            found = {"answer": answer, "confident": sure}
+            found = {"answer": str(data["answer"]), "confident": sure}
             if box:
-                found["x"], found["y"] = eyes.point_px(box, data["y"], data["x"])
+                found["x"], found["y"] = eyes.point_px(box, (data["y0"] + data["y1"]) / 2, (data["x0"] + data["x1"]) / 2)
             elif not clicking:
-                found["x"], found["y"] = eyes.center_px([data["y"], data["x"], data["y"], data["x"]])
+                found["x"], found["y"] = eyes.center_px([data["y0"], data["x0"], data["y1"], data["x1"]])
             if not sure:
                 found["next"] = "look once more"
             elif not box and clicking and not self.acted:
@@ -225,7 +223,6 @@ class Trident:
             return found
 
         def crop(prompt: str, y0: int, x0: int, y1: int, x1: int):
-            y0, x0, y1, x1 = (int(v) for v in (y0, x0, y1, x1))
             return look(prompt, y0, x0, y1, x1)
 
         def click(x: int, y: int, how: str = "left"):
@@ -296,7 +293,7 @@ class Trident:
             return "quiet until he speaks"
 
         return {
-            "look": Tool("look", f"One look at the whole desktop. It returns no click point. Write the prompt for this pass. Say where the one element sits, what it looks like, and ask for its center. The picture is also sent to {OWNER}'s chat.", {"prompt": {"description": "Where the one element sits, what it looks like, and a request for its center.", "type": "STRING"}}, look),
+            "look": Tool("look", f"One look at the whole desktop. It returns no click point. Write the prompt for this pass. Name the bar on the desktop edge and the one icon on it. The picture is also sent to {OWNER}'s chat.", {"prompt": {"description": "The bar on the desktop edge and the one icon on it.", "type": "STRING"}}, look),
             "crop": Tool("crop", f"One look at a crop of one element. The prompt names where it sits and asks for its center. y0, x0, y1, x1 are that box, 0 to 1000, origin at the top left, y vertical. The picture is also sent to {OWNER}'s chat.", {"prompt": {"description": "What this pass should answer.", "type": "STRING"}, "y0": {"description": "Crop top, 0 to 1000.", "type": "INTEGER"}, "x0": {"description": "Crop left, 0 to 1000.", "type": "INTEGER"}, "y1": {"description": "Crop bottom, 0 to 1000.", "type": "INTEGER"}, "x1": {"description": "Crop right, 0 to 1000.", "type": "INTEGER"}}, crop),
             "click": Tool("click", "Click the x and y returned by crop.", {"x": {"description": "Pixel x from crop.", "type": "INTEGER"}, "y": {"description": "Pixel y from crop.", "type": "INTEGER"}, "how": {"description": "Kind of click.", "type": "STRING", "enum": ["left", "right", "double"]}}, click, optional=("how",)),
             "drag": Tool("drag", "The next side, one straight stroke. Look after it. If the shape is not finished, drag the next side.", {"x0": {"description": "Start pixel x.", "type": "INTEGER"}, "y0": {"description": "Start pixel y.", "type": "INTEGER"}, "x1": {"description": "End pixel x.", "type": "INTEGER"}, "y1": {"description": "End pixel y.", "type": "INTEGER"}}, drag),
