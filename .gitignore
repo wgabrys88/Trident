@@ -61,6 +61,9 @@
 !/gemma/scripts/detect_gpu.ps1
 !/gemma/src/brain.cpp
 
+# Trident v2 lives in its own folder with its own .gitignore.
+!/Trident-v2/**
+
 # Runtime files the programs rewrite.
 /mouth.txt
 /mouth.v3.txt

@@ -1,0 +1,285 @@
+"""Trident: the organism. Wires the organs together and runs the one loop.
+
+    python trident.py              run (Ctrl+C stops). Logs to the console and state/trident.log.
+    python trident.py say TEXT     hand the running Trident a written line from Wojciech
+    python trident.py call         make it ring Wojciech
+    python trident.py hang         make it hang up
+    python trident.py stop         make it shut down
+
+Events arrive from four senses and are handled one at a time, in order:
+    chat    a Telegram message from Wojciech
+    call    his voice on the Telegram call
+    room    a voice on the room cable
+    typed   a line from `trident.py say`
+    idle    nothing happened for brain.idle_after seconds (once, until something happens)
+
+Every event becomes one agent turn in the brain. The brain may use tools; the words it ends with go
+back where the event came from: the call if it is up, else the chat, else the room speakers.
+"""
+
+import queue
+import sys
+import threading
+import time
+from pathlib import Path
+
+from organs import CONFIG, log, state_dir
+from organs.brain import Brain, Tool
+from organs.ears import Microphone, transcribe, write_wav
+from organs.memory import Memory
+from organs.mouth import Mouth, pcm48
+from organs.telegram import Line
+
+LOG = log("trident")
+OWNER = CONFIG["owner"]["name"]
+INBOX = state_dir() / "inbox.txt"
+
+SYSTEM = (
+    f"You are Gemma, the mind of {OWNER}'s computer. You hear him, see the screen and act with tools.\n"
+    "Each turn: think in two or three short sentences, then either call exactly one tool or say one or two short sentences in English. "
+    "He hears only what you say, never the thought.\n"
+    "You and he talk over a Telegram voice call. While the line is down he cannot hear you: reach him with call_owner or send_message, or say nothing.\n"
+    "Use look before you touch the screen, and name screen elements by the text written on them. "
+    "Open programs with run. Click, type and press only for work he asked for.\n"
+    "When he says goodbye or asks you to stop, use hang_up and say nothing."
+)
+SOURCE = {"chat": "a Telegram message from him", "call": "his voice on the call", "room": "a voice in the room", "typed": "a line he typed on the computer", "idle": "nobody; an idle moment"}
+
+
+class Trident:
+    def __init__(self):
+        self.brain = Brain()
+        self.mouth = Mouth()
+        self.memory = Memory()
+        self.events: queue.Queue = queue.Queue()
+        self.stopping = threading.Event()
+        self.last_activity = time.monotonic()
+        self.idle_sent = False
+        self.line = Line(on_text=lambda t: self.push("chat", t), on_utterance=lambda c: self.push("call", c), on_line=self.on_line)
+        self.mic = Microphone(on_utterance=lambda c: self.push("room", c))
+
+    # ------------------------------------------------------------ life
+
+    def start(self):
+        self.brain.start()
+        self.mouth.load()
+        self.line.start()
+        self.mic.start()
+        threading.Thread(target=self.worker, name="trident-worker", daemon=True).start()
+        threading.Thread(target=self.inbox_loop, name="trident-inbox", daemon=True).start()
+        threading.Thread(target=self.idle_loop, name="trident-idle", daemon=True).start()
+        LOG.info("trident up")
+
+    def stop(self):
+        self.stopping.set()
+        self.mic.stop()
+        self.line.stop()
+        self.brain.stop()
+        LOG.info("trident down")
+
+    def on_line(self, state: str):
+        self.mic.muted = state != "idle"
+        self.touch()
+
+    def touch(self):
+        self.last_activity = time.monotonic()
+        self.idle_sent = False
+
+    def push(self, kind: str, payload):
+        self.touch()
+        self.events.put((kind, payload))
+
+    # ------------------------------------------------------------ senses
+
+    def inbox_loop(self):
+        while not self.stopping.wait(0.5):
+            if not INBOX.is_file():
+                continue
+            lines = [l.strip() for l in INBOX.read_text(encoding="utf-8").splitlines() if l.strip()]
+            INBOX.unlink()
+            for line in lines:
+                self.push("typed", line)
+
+    def idle_loop(self):
+        while not self.stopping.wait(1.0):
+            quiet_for = time.monotonic() - self.last_activity
+            if quiet_for >= CONFIG["brain"]["idle_after"] and not self.idle_sent and not self.memory.quiet and not self.line.up and self.events.empty():
+                self.idle_sent = True
+                self.events.put(("idle", "Nothing has happened for a while. Look if you are curious, ring him only for a reason, otherwise answer with the single word idle."))
+
+    def worker(self):
+        while not self.stopping.is_set():
+            try:
+                kind, payload = self.events.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            try:
+                self.handle(kind, payload)
+            except Exception as exc:
+                LOG.exception("turn failed: %s", exc)
+
+    # ------------------------------------------------------------ one event
+
+    def handle(self, kind: str, payload):
+        if kind in ("call", "room"):
+            text, language = transcribe(write_wav(state_dir() / f"{kind}.wav", payload))
+            LOG.info("heard (%s, %s): %s", kind, language, text)
+            if not text:
+                return
+        else:
+            text = payload
+        if kind == "typed" and text.startswith("/"):
+            return self.command(text[1:])
+        if kind != "idle":
+            self.memory.set_quiet(False)
+        reply = self.turn(kind, text)
+        self.deliver(kind, reply)
+
+    def command(self, name: str):
+        if name == "call":
+            self.line.dial()
+            self.speak("I am up. Do you want anything?")
+        elif name == "hang":
+            self.line.hang()
+        elif name == "stop":
+            self.stopping.set()
+
+    def turn(self, kind: str, text: str) -> str:
+        situation = f"[{time.strftime('%H:%M')} | line {self.line.state} | heard from: {SOURCE[kind]}]"
+        reply = self.brain.think(SYSTEM + self.memory.facts_block(), self.tools(kind), self.memory.history(), f"{situation}\n{text}")
+        if reply.text and reply.text.lower().strip(".") != "idle":
+            self.memory.add_turn(text, reply.text)
+            return reply.text
+        return ""
+
+    def deliver(self, kind: str, text: str):
+        if not text:
+            return
+        if self.line.up:
+            self.speak(text)
+        elif kind == "chat":
+            self.line.send_text(text)
+        elif kind in ("room", "typed"):
+            self.mic.muted = True
+            try:
+                self.mouth.play(self.mouth.say(text))
+            finally:
+                self.mic.muted = self.line.state != "idle"
+
+    def speak(self, text: str):
+        self.line.speak(pcm48(self.mouth.say(text), self.mouth.sr))
+
+    # ------------------------------------------------------------ what Gemma can do
+
+    def tools(self, kind: str) -> dict[str, Tool]:
+        from organs import eyes, hands
+
+        asked = kind != "idle"
+
+        def look(question: str = "What is on the screen?"):
+            png = eyes.screenshot()
+            titles = eyes.window_titles()
+            seen = self.brain.see(png, f"{question} Open windows: {'; '.join(titles)}. Answer in one sentence and quote short on-screen text you can read.")
+            self.line.send_photo(png, seen[:200])
+            return {"screen": seen, "windows": "; ".join(titles)}
+
+        def find(target: str):
+            boxes = self.brain.locate(eyes.screenshot(), target)
+            return eyes.center_px(boxes[0]["box_2d"]) if boxes else None
+
+        def click(target: str, how: str = "left"):
+            if not asked:
+                return "nobody asked for this"
+            point = find(target)
+            if point is None:
+                return f"{target} is not on the screen"
+            hands.click(*point, how)
+            return f"{how} click on {target}"
+
+        def drag(source: str, destination: str):
+            if not asked:
+                return "nobody asked for this"
+            a, b = find(source), find(destination)
+            if a is None or b is None:
+                return f"{source if a is None else destination} is not on the screen"
+            hands.drag(*a, *b)
+            return f"dragged {source} to {destination}"
+
+        def type_text(text: str):
+            if not asked:
+                return "nobody asked for this"
+            hands.type_text(text)
+            return "typed"
+
+        def press(keys: str):
+            if not asked:
+                return "nobody asked for this"
+            hands.press(keys)
+            return f"pressed {keys}"
+
+        def run(command: str):
+            return hands.run(command) if asked else "nobody asked for this"
+
+        def remember(fact: str):
+            self.memory.remember(fact)
+            return "remembered"
+
+        def call_owner(opening: str = "I am up. Do you want anything?"):
+            if self.line.up:
+                return "the line is already up; just speak"
+            if self.memory.quiet:
+                return "you promised to stay quiet until he speaks"
+            try:
+                self.line.dial()
+            except Exception as exc:
+                return f"he did not answer: {exc}"
+            self.speak(opening)
+            return "he answered and heard the opening; now say what he should hear next, or hang_up"
+
+        def hang_up():
+            self.line.hang()
+            return "hung up"
+
+        def send_message(text: str):
+            self.line.send_text(text)
+            return "sent"
+
+        def stay_quiet(reason: str):
+            self.memory.set_quiet(True)
+            return "quiet until he speaks"
+
+        return {
+            "look": Tool("look", f"Look at the screen. Returns one sentence about what is visible and the open window titles. The picture is also sent to {OWNER}'s chat.", {"question": {"description": "What to look for, e.g. Is Paint open?", "type": "STRING"}}, look),
+            "click": Tool("click", "Click one element on the screen, named by its visible text or look, e.g. the Start button, the OK button, the File menu.", {"target": {"description": "The element to click.", "type": "STRING"}, "how": {"description": "Kind of click.", "type": "STRING", "enum": ["left", "right", "double"]}}, click, optional=("how",)),
+            "drag": Tool("drag", "Drag from one screen element to another.", {"source": {"description": "Where the drag starts.", "type": "STRING"}, "destination": {"description": "Where the drag ends.", "type": "STRING"}}, drag),
+            "type_text": Tool("type_text", "Type text where the cursor is.", {"text": {"description": "The text to type.", "type": "STRING"}}, type_text),
+            "press": Tool("press", "Press a key or shortcut: enter, escape, tab, win-r, ctrl-a, ctrl-s, alt-f4, win-d.", {"keys": {"description": "The key or chord.", "type": "STRING"}}, press),
+            "run": Tool("run", "Run one PowerShell command and get its output. Open a program with Start-Process notepad. Write a file with Set-Content.", {"command": {"description": "The PowerShell command.", "type": "STRING"}}, run),
+            "remember": Tool("remember", "Keep one short fact for later turns.", {"fact": {"description": "The fact.", "type": "STRING"}}, remember),
+            "call_owner": Tool("call_owner", f"Ring {OWNER} on Telegram. When he answers, the opening is spoken to him first.", {"opening": {"description": "The first sentence he hears.", "type": "STRING"}}, call_owner, optional=("opening",)),
+            "hang_up": Tool("hang_up", "End the call. Say nothing after it.", {}, hang_up, final=True),
+            "send_message": Tool("send_message", f"Send {OWNER} a Telegram text message.", {"text": {"description": "The message.", "type": "STRING"}}, send_message),
+            "stay_quiet": Tool("stay_quiet", "Promise not to ring until he speaks to you again.", {"reason": {"description": "Why.", "type": "STRING"}}, stay_quiet),
+        }
+
+
+def main():
+    args = sys.argv[1:]
+    if args and args[0] in ("say", "call", "hang", "stop"):
+        line = " ".join(args[1:]) if args[0] == "say" else "/" + args[0]
+        with INBOX.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+        return
+    trident = Trident()
+    try:
+        trident.start()
+        while not trident.stopping.wait(0.5):
+            pass
+    except KeyboardInterrupt:
+        pass
+    finally:
+        trident.stop()
+
+
+if __name__ == "__main__":
+    main()
