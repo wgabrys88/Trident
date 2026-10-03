@@ -35,7 +35,7 @@ SYSTEM = (
     "A command is run. A key is press. When he says to click an element, call click with that name before you type.\n"
     "When he asks you to type, the type_text text is that sentence copied unchanged. "
     "Example: he says type The note says reply with exactly the word maple. The text is The note says reply with exactly the word maple.\n"
-    "When you report a chat, say each message in full and who wrote it. A home page is a greeting, a menu, and chips, not messages. A sidebar title is not a message. The year is the year on the clock.\n"
+    "When you report the screen, say the area name and whether that area and its items are visible. A sidebar title is not a message. The year is the year on the clock.\n"
     "Ring him or send him a message only when he asks. When he says goodbye or asks you to stop, use hang_up and say nothing."
 )
 SOURCE = {"chat": "a Telegram message from him", "call": "his voice on the call", "typed": "a line he typed on the computer", "idle": "nobody; an idle moment"}
@@ -161,10 +161,15 @@ class Trident:
         def look(question: str = "What is on the screen?"):
             png = eyes.screenshot()
             titles = eyes.window_titles()
-            seen = self.brain.bubbles(png)
-            clock = self.brain.see(eyes.corner(png), "Copy the date and four-digit year exactly as printed.")
-            self.line.send_photo(png, seen[:200])
-            return {"screen": seen, "clock": clock, "windows": "; ".join(titles)}
+            named = self.brain.area(png, question)
+            piece = eyes.crop(png, [named["y0"], named["x0"], named["y1"], named["x1"]])
+            seen = self.brain.visible(piece, question)
+            corner = eyes.corner(png)
+            clock = self.brain.see(corner, "Copy the date and four-digit year exactly as printed.")
+            self.line.send_photo(png, named["name"][:200])
+            self.line.send_photo(piece, seen[:200])
+            self.line.send_photo(corner, clock[:200])
+            return {"screen": seen, "area": named["name"], "clock": clock, "windows": "; ".join(titles)}
 
         def find(target: str):
             boxes = self.brain.locate(eyes.screenshot(), target)
@@ -232,7 +237,7 @@ class Trident:
             return "quiet until he speaks"
 
         return {
-            "look": Tool("look", f"Look at the screen. A chat returns each line and who wrote it. A home page returns the greeting, the menu, and the chips. Also the clock and the window titles. The picture is also sent to {OWNER}'s chat.", {"question": {"description": "What to look for, e.g. Is Paint open?", "type": "STRING"}}, look),
+            "look": Tool("look", f"Look at the screen. Names the area for the next action, then says whether that area and its items are visible. Also the clock and the window titles. Each picture is also sent to {OWNER}'s chat.", {"question": {"description": "What to look for, e.g. Is Paint open?", "type": "STRING"}}, look),
             "click": Tool("click", "Click one element on the screen, named by its visible text or look, e.g. the Start button, the OK button, the File menu.", {"target": {"description": "The element to click.", "type": "STRING"}, "how": {"description": "Kind of click.", "type": "STRING", "enum": ["left", "right", "double"]}}, click, optional=("how",)),
             "drag": Tool("drag", "Drag from one screen element to another.", {"source": {"description": "Where the drag starts.", "type": "STRING"}, "destination": {"description": "Where the drag ends.", "type": "STRING"}}, drag),
             "type_text": Tool("type_text", "Type the text argument exactly, every word of it, where the cursor is.", {"text": {"description": "The text to type, every word.", "type": "STRING"}}, type_text),

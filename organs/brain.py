@@ -4,7 +4,7 @@ think() is the agent turn: system text, tool declarations, and recent turns, wit
 She returns a thought and then either one tool call or the words to say. That tool runs here, and the
 same turn continues with a <|tool_response>, so the thought stays in context. That turn carries no picture.
 
-see(), locate(), and ask_json() are separate requests with thinking off. see() and locate() each take one image. locate() and ask_json() force a JSON schema.
+see(), area(), visible(), locate(), and ask_json() are separate requests with thinking off. see(), area(), visible(), and locate() each take one image. area(), locate(), and ask_json() force a JSON schema.
 locate() answers with a point on a 1000 by 1000 grid. Pixel conversion happens outside this file.
 Tools arrive as arguments. python -m organs.brain prints a structured answer and one short sentence. The question is the command line, or the built-in one when that is empty.
 """
@@ -38,6 +38,18 @@ THOUGHT_RE = re.compile(r"<\|channel>thought\n?(.*?)(?:<channel\|>|$)", re.DOTAL
 CALL_RE = re.compile(r"<\|tool_call>call:(\w+)\{(.*?)\}<tool_call\|>", re.DOTALL)
 ARG_RE = re.compile(r'(\w+):(?:<\|"\|>(.*?)<\|"\|>|([^,}]*))', re.DOTALL)
 CONTROL_RE = re.compile(r"<\|[a-z_\"]+\|?>|<[a-z_]+\|>|<bos>|<eos>")
+
+AREA_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string"},
+        "y0": {"type": "integer", "minimum": 0, "maximum": 1000},
+        "x0": {"type": "integer", "minimum": 0, "maximum": 1000},
+        "y1": {"type": "integer", "minimum": 0, "maximum": 1000},
+        "x1": {"type": "integer", "minimum": 0, "maximum": 1000},
+    },
+    "required": ["name", "y0", "x0", "y1", "x1"],
+}
 
 LOCATE_SCHEMA = {
     "type": "object",
@@ -228,25 +240,18 @@ class Brain:
 
     # ------------------------------------------------------------------ vision and structure
 
-    def see(self, png: bytes, question: str) -> str:
+    def see(self, png: bytes, question: str, max_tokens: int = 80) -> str:
         prompt = BOS + turn("user", f"{self.media()}\n{question}") + f"{TURN_OPEN}model\n"
-        return plain(self.complete(prompt, images=[png], max_tokens=80))
+        return plain(self.complete(prompt, images=[png], max_tokens=max_tokens))
 
-    def bubbles(self, png: bytes) -> str:
-        from organs.eyes import strips
+    def area(self, png: bytes, need: str) -> dict:
+        """Name and [y0, x0, y1, x1] on the 1000-grid for the next click or the next actions."""
+        prompt = BOS + turn("user", f"{self.media()}\nName the area of interest for the next click or the next set of actions. Need: {need}. Include the whole element and a margin so none of its text is cut off. name is that area. y0, x0, y1, x1 are its edges, 0 to 1000, origin at the top left, y vertical.") + f"{TURN_OPEN}model\n"
+        return json.loads(self.complete(prompt, images=[png], schema=AREA_SCHEMA, max_tokens=80))
 
-        lines = []
-        for who, piece in strips(png):
-            text = self.see(piece, "Copy the text exactly, including punctuation.")
-            if text.lower() != "none":
-                lines.append((who, text))
-        if not lines:
-            return ""
-        if not any(who == "user" for who, _ in lines):
-            schema = {"type": "object", "properties": {"labels": {"type": "array", "minItems": len(lines), "maxItems": len(lines), "items": {"type": "string", "enum": ["greeting", "menu", "chips"]}}}, "required": ["labels"]}
-            names = self.ask_json("One label per line, same order. greeting is the large hello. menu is the model control row. chips is a suggestion button.\n" + "\n".join(text for _, text in lines), schema)["labels"]
-            return " | ".join(f"{name}: {text}" for name, (_, text) in zip(names, lines))
-        return " | ".join(f"{who}: {text}" if who else text for who, text in lines)
+    def visible(self, png: bytes, need: str) -> str:
+        """Whether this crop shows the needed area and the items in it."""
+        return self.see(png, f"Is the needed area visible, and are the items in it visible? Need: {need}. Answer yes or no, then name the items you see.", 200)
 
     def locate(self, png: bytes, target: str) -> list[dict]:
         """One point on the 1000-grid as [y, x, y, x], the center of the named element."""

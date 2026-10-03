@@ -60,6 +60,8 @@ Tokens: `BOS` `<bos>`, `TURN_OPEN` `<|turn>`, `TURN_CLOSE` `<turn|>`, `THINK` `<
 
 `parse(output: str) -> tuple[str, str, dict]`. Thought text from `<|channel>thought ... <channel|>`, a tool name from `<|tool_call>call:NAME{...}<tool_call|>`, and that call's args. No call returns `(thought, "", {})`. Quoted arg values stay strings. Bare `true`/`false` become bools. Bare integers and decimals become `int` and `float`.
 
+`AREA_SCHEMA` is a JSON schema: an object with `name` (string) and `y0`, `x0`, `y1`, `x1`, each an integer from 0 through 1000, all required.
+
 `LOCATE_SCHEMA` is a JSON schema: an object with `y` and `x`, both integers from 0 through 1000, both required.
 
 `Brain.__init__()`. `url` from `brain.host` and `brain.port`. `proc` is `None`. `marker` is `None` until `media()`.
@@ -72,9 +74,11 @@ Tokens: `BOS` `<bos>`, `TURN_OPEN` `<|turn>`, `TURN_CLOSE` `<turn|>`, `THINK` `<
 
 `Brain.complete(prompt: str, images: list[bytes] = (), schema: dict | None = None, max_tokens: int | None = None, stop: list[str] = ()) -> str`. POST `{url}/completion`, timeout 600. Body: `prompt` (a string, or `{prompt_string, multimodal_data}` of base64 images when `images` is non-empty), `n_predict` (`max_tokens` or `brain.max_tokens`), `cache_prompt` true, `stop`, and sampling from `temperature`, `top_k`, `top_p`, `min_p`. `schema` sets `json_schema`. Writes the prompt to `state/last_prompt.txt`. Returns `content`. Logs elapsed seconds plus `timings.prompt_n` and `timings.predicted_n`.
 
-`Brain.see(png: bytes, question: str) -> str`. One image, no schema, `max_tokens` 80, thinking off. Prompt is `BOS` + user turn of `media()` plus `question` + an open model turn. Returns `plain` of the completion.
+`Brain.see(png: bytes, question: str, max_tokens: int = 80) -> str`. One image, no schema, thinking off. Prompt is `BOS` + user turn of `media()` plus `question` + an open model turn. Returns `plain` of the completion.
 
-`Brain.bubbles(png: bytes) -> str`. One `see` per `eyes.strips` piece, `max_tokens` 80, question `Copy the text exactly, including punctuation.` A piece whose text is `none` is dropped. When no line has `who` `user`, `ask_json` labels each remaining line `greeting`, `menu`, or `chips`, in order, and the return is `label: text` joined with ` | `. Otherwise a line with `who` is `who: text` and a line with empty `who` is the bare text, joined with ` | `.
+`Brain.area(png: bytes, need: str) -> dict`. One image, `AREA_SCHEMA`, `max_tokens` 80. The user turn starts with `media()`. Asks for the area of interest for the next click or the next set of actions, the whole element plus a margin so none of its text is cut off. Returns `name`, `y0`, `x0`, `y1`, `x1` on the 1000-grid.
+
+`Brain.visible(png: bytes, need: str) -> str`. One `see` of that crop, `max_tokens` 200. Asks whether the needed area and the items in it are visible, then to name the items.
 
 `Brain.locate(png: bytes, target: str) -> list[dict]`. One image, `LOCATE_SCHEMA`, `max_tokens` 40. The user turn starts with `media()`. Asks for the center of `target`. The message box is the field at the bottom of a chat where the next message is typed. Returns one item, `box_2d` `[y, x, y, x]` on a 1000 by 1000 grid plus `label` = `target`. Pixel conversion is outside this file.
 
@@ -104,7 +108,7 @@ Talks to `organs` (`CONFIG`, `ROOT`, `path_of`), `models/silero_vad.onnx` throug
 
 ## organs/eyes.py
 
-Talks to `organs` (`CONFIG`, and `state_dir` in `__main__`), `user32`, and PIL `ImageGrab`. Talked to by `trident.tools` and `brain.bubbles` (`strips`). At import, `SetProcessDpiAwarenessContext(-4)`, `GetForegroundWindow` returns a pointer, and `GetWindowRect` takes that pointer and a `RECT`.
+Talks to `organs` (`CONFIG`, and `state_dir` in `__main__`), `user32`, and PIL `ImageGrab`. Talked to by `trident.tools`. At import, `SetProcessDpiAwarenessContext(-4)`, and `GetForegroundWindow` returns a pointer.
 
 `screen_size() -> tuple[int, int]`. `GetSystemMetrics(0)`, `GetSystemMetrics(1)`.
 
@@ -112,7 +116,7 @@ Talks to `organs` (`CONFIG`, and `state_dir` in `__main__`), `user32`, and PIL `
 
 `corner(png: bytes) -> bytes`. Crops the bottom-right 420 by 90 pixels of that PNG and scales it by 3 with nearest-neighbor. That corner is the clock.
 
-`strips(png: bytes) -> list[tuple[str, bytes]]`. Crops `png` to the foreground window (`GetWindowRect`). A dark column, from one fifth to four fifths of the height, has fewer than 3 pixels whose channels sum above 90. The chat column starts 3 pixels after the longest dark run. Bright rows (`sum` above 180, more than 8 pixels) run from 16% of the height to 8 pixels from the bottom. A horizontal gap above 36 pixels ends a cluster, and the leftmost cluster on a row is kept. Rows within 16 pixels join one line. A gap above 160 pixels ends the list. On a chat that leaves the composer out. On a home page the input row is close enough to stay. A line with `y1 - y0` under 24, width over 120, and fill under 0.18 is dropped. Each remaining line is cropped with a pad of 6 by 4 and scaled by 3 with nearest-neighbor. `who` is `assistant` when `x0` is within 80 of the leftmost kept `x0`, `user` when `x1` is within 40 of the rightmost kept `x1`, and empty when the line sits in the middle.
+`crop(png: bytes, box: list) -> bytes`. `box` is `[y0, x0, y1, x1]` on the 1000-grid. Crops that rectangle out of `png` and resizes it to half the width and half the height (LANCZOS).
 
 `center_px(box_2d: list) -> tuple[int, int]`. `box_2d` is `[y0, x0, y1, x1]` on the 1000-grid. Returns `(x, y)` from `screen_size()`: `round((x0+x1)/2000*(width-1))`, `round((y0+y1)/2000*(height-1))`. A point from `locate` is `[y, x, y, x]`, so this is that point.
 
@@ -270,7 +274,7 @@ Each turn: think in two or three short sentences, then either call exactly one t
 Do the screen work he asked for. Use look before you touch the screen, and name screen elements by the text written on them. Open a program with run. After a page opens or a message is sent, run Start-Sleep, then look again before you act.
 A command is run. A key is press. When he says to click an element, call click with that name before you type.
 When he asks you to type, the type_text text is that sentence copied unchanged. Example: he says type The note says reply with exactly the word maple. The text is The note says reply with exactly the word maple.
-When you report a chat, say each message in full and who wrote it. A home page is a greeting, a menu, and chips, not messages. A sidebar title is not a message. The year is the year on the clock.
+When you report the screen, say the area name and whether that area and its items are visible. A sidebar title is not a message. The year is the year on the clock.
 Ring him or send him a message only when he asks. When he says goodbye or asks you to stop, use hang_up and say nothing.
 ```
 
@@ -302,7 +306,7 @@ Ring him or send him a message only when he asks. When he says goodbye or asks y
 
 `Trident.tools(kind: str) -> dict[str, Tool]`. `asked` is true when `kind` is not `idle`. The dict is:
 
-- `look(question: str = "What is on the screen?")`. Declared as `Look at the screen. A chat returns each line and who wrote it. A home page returns the greeting, the menu, and the chips. Also the clock and the window titles. The picture is also sent to {owner.name}'s chat.` Schema requires `question` (`STRING`, `What to look for, e.g. Is Paint open?`). Calls `eyes.screenshot`, `eyes.window_titles`, `brain.bubbles(png)`, and `brain.see(eyes.corner(png), "Copy the date and four-digit year exactly as printed.")`. `question` is accepted and not otherwise used. `line.send_photo(png, seen[:200])`. Returns `{"screen": seen, "clock": clock, "windows": "; ".join(titles)}`.
+- `look(question: str = "What is on the screen?")`. Declared as `Look at the screen. Names the area for the next action, then says whether that area and its items are visible. Also the clock and the window titles. Each picture is also sent to {owner.name}'s chat.` Schema requires `question` (`STRING`, `What to look for, e.g. Is Paint open?`). Calls `eyes.screenshot`, `eyes.window_titles`, `brain.area(png, question)`, `eyes.crop` on that box, `brain.visible` on the crop, and `brain.see` on `eyes.corner(png)` for the clock. Sends the screenshot, the crop, and the corner with `line.send_photo`. Returns `{"screen": seen, "area": name, "clock": clock, "windows": "; ".join(titles)}`.
 - `find(target: str)` is not a tool. `brain.locate` on a new screenshot. Returns `eyes.center_px` of the first box, or `None`.
 - `click(target: str, how: str = "left")`. Declared as `Click one element on the screen, named by its visible text or look, e.g. the Start button, the OK button, the File menu.` Schema: `target` required (`The element to click.`), `how` optional enum `left`, `right`, `double` (`Kind of click.`). When not `asked`, returns `nobody asked for this`. A missing target returns `{target} is not on the screen`. Otherwise `hands.click` and returns `{how} click on {target} at {x} {y}`.
 - `drag(source: str, destination: str)`. Declared as `Drag from one screen element to another.` Both required (`Where the drag starts.`, `Where the drag ends.`). Same idle refusal. When the source point is missing, returns `{source} is not on the screen`. When only the destination is missing, returns `{destination} is not on the screen`. Otherwise `hands.drag` and returns `dragged {source} to {destination}`.
