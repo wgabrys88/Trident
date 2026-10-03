@@ -1,21 +1,16 @@
-"""Telegram: the phone line and the chat to the owner.
+"""The owner's Telegram messages and the voice call.
 
-Gemma's own Telegram account is taken over from Telegram Desktop's tdata (opentele), so no API
-keys or logins live here. Telegram Desktop is closed while Trident holds the session and
-reopened when Trident stops.
+The account is taken from Telegram Desktop tdata. Desktop stays closed while the session is held and is started again from stop().
 
-  Line.start()            connect, answer calls from the owner, read his messages
-  Line.dial()             place a voice call to the owner
-  Line.speak(pcm48)       play 48 kHz s16 mono into the call
-  Line.send_text / send_photo
-  Line.hang(), Line.stop()
+start() connects, answers his calls, and reads his messages. dial() places the call.
+speak() writes 48 kHz signed-16 mono into the call. send_text and send_photo go to the chat.
+hang() ends the call. stop() drops the session.
 
-Callbacks:
-  on_text(text)           a message from the owner (own thread)
-  on_utterance(samples)   16 kHz float32 speech from the owner during a call, Silero-segmented (rx thread)
-  on_line(state)          "idle" | "ringing" | "up" (asyncio loop thread: return quickly)
+on_text runs on its own thread with his message.
+on_utterance runs on the receive thread with his call audio: float32, 16 kHz, already cut into an utterance.
+on_line runs on the asyncio thread with idle, ringing, or up, and should return at once.
 
-Run alone:  python -m organs.telegram   -> connects, prints incoming messages, answers a call with silence.
+python -m organs.telegram connects, prints what arrives, and picks up a call without sending speech.
 """
 
 import asyncio
@@ -396,7 +391,7 @@ class Line:
         await self.calls.send_external_frame(OWNER, device, data, frame)
 
     def speak(self, pcm48: bytes):
-        """Blocking. Owner audio is ignored while Gemma talks."""
+        """Block until this PCM has been sent into the call. Incoming audio is dropped until that send finishes. The call must already be up."""
         if not self.up:
             raise RuntimeError("line is down")
         self.listening = False

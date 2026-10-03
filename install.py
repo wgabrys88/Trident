@@ -1,13 +1,13 @@
-"""Install Trident v2. Downloads only; nothing is compiled.
+"""Fetch the binaries and weights. This file compiles nothing.
 
     python install.py
 
-Makes .venv, installs the Python packages, and fetches into bin/ and models/:
-    llama.cpp CUDA release  -> bin/llama/llama-server.exe (+ CUDA runtime DLLs)
-    NeMo-Speech.cpp release -> bin/nemo-speech/bin/nemo-speech.exe
-    Gemma 4 E2B-it GGUF + mmproj, Nemotron ASR GGUF, Silero VAD ONNX -> models/
-    Chatterbox nano weights -> the Hugging Face cache
-Everything is skipped when it is already there. Run again after editing [install] in config.toml.
+It makes .venv, installs the packages, and downloads anything still missing:
+    the llama.cpp CUDA build, as bin/llama/llama-server.exe plus the CUDA runtime DLLs
+    the NeMo-Speech.cpp build, as bin/nemo-speech/bin/nemo-speech.exe
+    Gemma 4 E2B-it, its vision projector, the Nemotron ASR model, and Silero VAD, under models/
+    Chatterbox nano, into the Hugging Face cache
+A download already on disk is left alone. Change [install] in config.toml and run this again to fetch something else.
 """
 
 import json

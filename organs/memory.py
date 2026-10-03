@@ -1,8 +1,8 @@
-"""Memory: what Gemma keeps between turns. One JSON file in state/.
+"""state/memory.json, the only memory that lasts across turns.
 
-  facts   short lines she chose to remember (remember tool)
-  turns   the last few (what he said, what she said) pairs, thoughts already stripped
-  quiet   she promised not to ring until he speaks again
+facts are the short lines she asked to keep.
+turns are the latest things he said and she said, thoughts already removed.
+quiet is her promise not to ring until he speaks.
 """
 
 import json

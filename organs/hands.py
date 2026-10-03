@@ -1,9 +1,9 @@
-"""Hands: mouse, keyboard and the shell. Pixels in, Windows input out.
+"""Mouse and keyboard through SendInput, and one PowerShell command.
 
-Run alone:  python -m organs.hands press win-d
-            python -m organs.hands type "hello"
-            python -m organs.hands click 500 300
-            python -m organs.hands run "Get-Date"
+python -m organs.hands press win-d
+python -m organs.hands type "hello"
+python -m organs.hands click 500 300
+python -m organs.hands run "Get-Date"
 """
 
 import ctypes
@@ -72,7 +72,7 @@ def _key(vk: int, scan: int, flags: int) -> INPUT:
 
 
 def click(x: int, y: int, how: str = "left") -> None:
-    """how: left, right, double."""
+    """A click at pixel (x, y). how is left, right, or double."""
     button = "right" if how == "right" else "left"
     down, up = BUTTON[button]
     items = [_mouse(x, y, MOVE), _mouse(x, y, down), _mouse(x, y, up)]
@@ -92,7 +92,7 @@ def drag(x0: int, y0: int, x1: int, y1: int) -> None:
 
 
 def press(keys: str) -> None:
-    """'enter', 'ctrl-a', 'win-r', 'alt-f4'. Several chords separated by spaces are pressed in turn."""
+    """Chords in order, such as enter, ctrl-a, win-r, or alt-f4. A space starts the next chord."""
     for chord in keys.lower().split():
         vks = [VK[part] for part in chord.replace("+", "-").split("-") if part]
         items = [_key(vk, 0, 0x0001 if vk in EXTENDED else 0) for vk in vks]
@@ -113,7 +113,7 @@ def type_text(text: str) -> None:
 
 
 def run(command: str, timeout: int = 25) -> str:
-    """One PowerShell command. Returns stdout+stderr clipped to 600 characters."""
+    """One PowerShell command. stdout and stderr joined, at most 600 characters, or a short status when that is empty."""
     try:
         done = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command], capture_output=True, timeout=timeout, creationflags=subprocess.CREATE_NO_WINDOW)
     except subprocess.TimeoutExpired:

@@ -1,10 +1,8 @@
-"""Eyes: the desktop as a picture, and the geometry between Gemma's grid and the screen.
+"""A PNG of the desktop, and the conversion from Gemma's grid to screen pixels.
 
-Gemma 4 localizes on a 1000 x 1000 grid, [y0, x0, y1, x1], origin top-left, whatever the image size.
-So the screenshot can be any size: a box's center at (x/1000, y/1000) of the real screen is the click.
-The model never converts anything; this file does.
-
-Run alone:  python -m organs.eyes   -> writes state/screen.png and prints the open window titles.
+Her boxes are [y0, x0, y1, x1] on a 1000 by 1000 grid, origin at the top left, at any image size.
+center_px() is the center of such a box on the real screen.
+python -m organs.eyes saves state/screen.png and prints the window titles.
 """
 
 import ctypes
@@ -27,7 +25,7 @@ def screen_size() -> tuple[int, int]:
 
 
 def screenshot() -> bytes:
-    """PNG of the primary screen, longest side <= eyes.max_side."""
+    """PNG of the primary monitor, longest side no greater than eyes.max_side."""
     image = ImageGrab.grab()
     image.thumbnail((CFG["max_side"], CFG["max_side"]), Image.LANCZOS)
     buffer = io.BytesIO()
@@ -36,7 +34,7 @@ def screenshot() -> bytes:
 
 
 def center_px(box_2d: list) -> tuple[int, int]:
-    """[y0, x0, y1, x1] on the 1000-grid -> (x, y) pixels on the real screen."""
+    """(x, y) pixels for the center of a [y0, x0, y1, x1] box on the 1000-grid."""
     width, height = screen_size()
     y0, x0, y1, x1 = (float(v) for v in box_2d)
     return round((x0 + x1) / 2000 * (width - 1)), round((y0 + y1) / 2000 * (height - 1))

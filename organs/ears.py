@@ -1,10 +1,8 @@
-"""Ears: 16 kHz speech in, finished utterances and their text out.
+"""Speech from the Telegram call, cut into utterances and turned into text.
 
-  Segmenter   Silero VAD (ONNX, CPU). Feed float32 16 kHz audio from the phone call.
-              Yields one numpy array per utterance, padded with a little lead-in.
-  transcribe  Nemotron ASR through nemo-speech.exe. Returns (text, language tag).
-
-Run alone:  python -m organs.ears file.wav   -> transcribes one file
+Segmenter is Silero VAD on CPU. push() of float32 at 16 kHz returns one padded utterance long enough to keep, or None.
+transcribe() sends a wav to nemo-speech.exe and returns the text plus a language tag.
+python -m organs.ears file.wav transcribes that file.
 """
 
 import json
@@ -27,7 +25,7 @@ LANG_LEAK = re.compile(r"\s*<[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})?>\s*")
 
 
 class Segmenter:
-    """Stateful Silero gate. push(samples) -> utterance array or None."""
+    """Silero over a 16 kHz stream. push() returns one finished utterance long enough to keep, or None."""
 
     def __init__(self):
         self.session = ort.InferenceSession(str(ROOT / CONFIG["paths"]["models"] / "silero_vad.onnx"), providers=["CPUExecutionProvider"])
@@ -91,7 +89,7 @@ def write_wav(path: Path, samples: np.ndarray, rate: int = RATE) -> Path:
 
 
 def transcribe(wav: Path) -> tuple[str, str]:
-    """-> (text, language). Language is the ASR tag, or 'pl' when Polish letters appear."""
+    """(text, language) for a wav. language is the recognizer's tag, or pl when Polish letters are in the text."""
     exe = ROOT / CONFIG["paths"]["bin"] / "nemo-speech" / "bin" / "nemo-speech.exe"
     done = subprocess.run(
         [str(exe), "transcribe", str(wav), "--model", str(path_of("ears", "model")), "--device", "cpu", "--format", "json", "--verbatim", "--quiet", "--endpointing=true", "--stop-history-eou-ms", "1200"],

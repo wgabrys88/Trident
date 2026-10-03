@@ -1,7 +1,6 @@
-"""Trident organs. Each file is one region: brain, eyes, hands, ears, mouth, telegram, memory.
+"""config.toml, path helpers, and the process log.
 
-Every organ can be imported alone and run alone (python -m organs.<name>).
-Only trident.py knows about all of them.
+brain, eyes, hands, ears, mouth, telegram, and memory are the organs. trident.py is what joins them.
 """
 
 import logging
@@ -13,7 +12,7 @@ CONFIG = tomllib.loads((ROOT / "config.toml").read_text(encoding="utf-8"))
 
 
 def path_of(section: str, key: str) -> Path:
-    """Resolve a file named in config relative to the folder that owns that kind of file."""
+    """Turn a config name into a path. Brain and ears models sit in models/. The mouth reference sits beside config.toml."""
     folder = {"brain": "models", "ears": "models", "mouth": ""}.get(section, "")
     base = ROOT / CONFIG["paths"][folder] if folder else ROOT
     return base / CONFIG[section][key]

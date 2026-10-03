@@ -1,7 +1,7 @@
-"""Mouth: Chatterbox nano. English text in, 24 kHz float audio out.
+"""Chatterbox nano turns English text into samples for the Telegram call.
 
-The model loads once (110M parameters, CPU) and stays. Gemma keeps the GPU.
-Speech is produced with Wojciech's reference voice (reference.wav).
+The model is loaded once, on the CPU from config, and the voice is reference.wav.
+say() returns float32 mono at the model rate. pcm48() is signed 16-bit mono at 48 kHz.
 """
 
 import re
@@ -17,7 +17,7 @@ TAGS = re.compile(r"\[(laugh|chuckle|sigh|gasp|cough|clear throat|sniff|groan)\]
 
 
 def speakable(text: str) -> str:
-    """Nano is English-only: keep ASCII letters, digits, punctuation and its paralinguistic tags."""
+    """Letters, digits, punctuation, and nano's bracketed tags, kept as ASCII. Other characters are removed."""
     kept = TAGS.sub(lambda m: f" <{m.group(1)}> ", text)
     kept = unicodedata.normalize("NFKD", kept).encode("ascii", "ignore").decode("ascii")
     kept = re.sub(r"<([a-z ]+)>", r"[\1]", kept)
@@ -41,14 +41,14 @@ class Mouth:
         LOG.info("mouth ready at %d Hz", self.sr)
 
     def say(self, text: str) -> np.ndarray:
-        """-> float32 mono samples at self.sr."""
+        """Float32 mono of this sentence, at self.sr."""
         self.load()
         wav = self.model.generate(speakable(text))
         return wav.squeeze().cpu().numpy().astype(np.float32)
 
 
 def pcm48(samples: np.ndarray, rate: int) -> bytes:
-    """float mono at any rate -> signed 16-bit mono 48 kHz, what the phone line sends."""
+    """Signed 16-bit mono at 48 kHz, resampled from float samples at the given rate, for the call."""
     if rate != 48000:
         count = int(len(samples) * 48000 / rate)
         samples = np.interp(np.linspace(0, len(samples) - 1, count), np.arange(len(samples)), samples)

@@ -1,21 +1,12 @@
-"""Brain: Gemma 4 E2B behind llama-server, addressed in the exact token format it was trained on.
+"""Gemma 4 E2B through llama-server, in the token format she was trained on.
 
-Two kinds of request leave this file.
+think() is the agent turn: system text, tool declarations, and recent turns, with thinking on.
+She returns a thought and then either one tool call or the words to say. That tool runs here, and the
+same turn continues with a <|tool_response>, so the thought stays in context. That turn carries no picture.
 
-  think()   The agent turn. System text + tool declarations + short history, thinking on.
-            The model answers with a thought, then either ONE tool call or the words to say.
-            Tool calls are executed here and the same model turn continues with a
-            <|tool_response>, so thoughts stay in context between calls, as Gemma's docs require.
-            The agent never sees pixels and never writes coordinates.
-
-  see() / locate() / ask_json()
-            Vision and structured queries. One image, thinking off, output shape forced
-            by a JSON schema that mirrors what Gemma emits natively anyway
-            ([{"box_2d": [y0, x0, y1, x1], "label": ...}] on a 1000 x 1000 grid).
-            Python does every bit of arithmetic afterwards.
-
-This file knows nothing about Telegram, mice or memory. Tools are handed in.
-Run alone:  python -m organs.brain "What is the capital of France?"
+see(), locate(), and ask_json() are separate requests with thinking off. see() and locate() each take one image. locate() and ask_json() force a JSON schema.
+locate() answers with boxes on a 1000 by 1000 grid. Pixel conversion happens outside this file.
+Tools arrive as arguments. python -m organs.brain prints a structured answer and one short sentence. The question is the command line, or the built-in one when that is empty.
 """
 
 import base64
@@ -65,7 +56,7 @@ LOCATE_SCHEMA = {
 
 @dataclass
 class Tool:
-    """One function Gemma may call. params: name -> {"description": str, "type": "STRING"|"INTEGER"|"NUMBER"|"BOOLEAN", "enum": [...]}."""
+    """One action she may take. params maps a name to its description, a type of STRING, INTEGER, NUMBER, or BOOLEAN, and an optional enum. optional names can be left out. final ends the turn with no spoken words."""
 
     name: str
     description: str
@@ -107,7 +98,7 @@ def literal(value: object) -> str:
 
 
 def declare(tool: Tool) -> str:
-    """Render a declaration byte-for-byte like Google's chat template does (sorted keys, the stray spaces included)."""
+    """The tool's declaration in the chat-template spelling: sorted keys, quoted strings, and the template's extra spaces."""
     props = []
     for name, prop in sorted(tool.params.items()):
         parts = [f"description:{quoted(prop['description'])}"]
@@ -132,7 +123,7 @@ def turn(role: str, body: str) -> str:
 
 
 def plain(text: str) -> str:
-    """Spoken text only: thoughts, tool calls and control tokens removed."""
+    """Words left after the thought channel, the tool call, and the control tokens are gone."""
     text = THOUGHT_RE.sub(" ", text)
     text = CALL_RE.sub(" ", text)
     text = CONTROL_RE.sub(" ", text)
@@ -140,7 +131,7 @@ def plain(text: str) -> str:
 
 
 def parse(output: str) -> tuple[str, str, dict]:
-    """-> (thought, tool name or "", args)."""
+    """(thought, tool name, args) from one completion. No call means an empty tool name."""
     thought = " ".join(" ".join(m.group(1).split()) for m in THOUGHT_RE.finditer(output))
     call = CALL_RE.search(output)
     if not call:
@@ -240,7 +231,7 @@ class Brain:
         return plain(self.complete(prompt, images=[png], max_tokens=300))
 
     def locate(self, png: bytes, target: str) -> list[dict]:
-        """Boxes on Gemma's native 1000 x 1000 grid: [{"box_2d": [y0, x0, y1, x1], "label": str}]. Empty when absent."""
+        """Boxes for the named element on the 1000-grid, each [y0, x0, y1, x1] with a label, or an empty list if it is missing."""
         prompt = BOS + turn("user", f"{MEDIA}\nDetect the {target}. Return the bounding box of that element only, or an empty list if it is not visible.") + f"{TURN_OPEN}model\n"
         out = self.complete(prompt, images=[png], schema=LOCATE_SCHEMA, max_tokens=120)
         return json.loads(out)

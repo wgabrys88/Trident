@@ -1,19 +1,13 @@
-"""Trident: the organism. Wires the organs together and runs the one loop.
+"""One process, one queue, one turn at a time.
 
-    python trident.py              run (Ctrl+C stops). Logs to the console and state/trident.log.
-    python trident.py say TEXT     hand the running Trident a written line from Wojciech
-    python trident.py call         make it ring Wojciech
-    python trident.py hang         make it hang up
-    python trident.py stop         make it shut down
+    python trident.py           run until Ctrl+C. Log to the console and state/trident.log.
+    python trident.py say TEXT  give the running process a written line
+    python trident.py call      ring him
+    python trident.py hang      hang up
+    python trident.py stop      shut down
 
-Events arrive and are handled one at a time, in order:
-    chat    a Telegram message from Wojciech
-    call    his voice on the Telegram call
-    typed   a line from `trident.py say`
-    idle    nothing happened for brain.idle_after seconds (once, until something happens)
-
-Every event becomes one agent turn in the brain. The brain may use tools; the words it ends with go
-back on the call if it is up, else into the chat when the event was a message.
+Each turn is a Telegram message, his speech on the Telegram call, a written line, or one idle tick. The idle tick fires after brain.idle_after quiet seconds, and only while the call is down, she has not promised to stay quiet, and the queue is empty.
+The brain may use tools. Words it finishes with are spoken on the call when the line is up, and sent to the chat when the turn was a message and the line is down.
 """
 
 import queue
