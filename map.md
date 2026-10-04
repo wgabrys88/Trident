@@ -16,7 +16,7 @@ Tracked files: `.gitattributes`, `.gitignore`, `LICENSE`, `config.toml`, `instal
 
 `[vision]` `model` = Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf, `mmproj` = mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf, `side` = 1024, `context` = 4096, `slots` = 1, `ubatch` = 1024. Read by `brain` and `trident` (`side`). The two files also by `install`.
 
-`[cloud]` `model` = gpt-5.6-luna-none. Read by `trident`.
+`[cloud]` `model` = grok-4.7-xhigh. Read by `trident`. The id is the slow extra-high Grok 4.7. This CLI rejected a bracket context override.
 
 `[ears]` `vad_threshold` = 0.65, `min_silence_ms` = 700, `pad_ms` = 120, `min_utterance_s` = 1.0, `model` = nemotron-3.5-asr-streaming-0.6b.q8_0.gguf. Read by `ears`. `model` also by `install`.
 
@@ -72,7 +72,7 @@ Tokens: `BOS` `<bos>`, `TURN_OPEN` `<|turn>`, `TURN_CLOSE` `<turn|>`, `THINK` `<
 
 `Brain.ask_json(question, schema, png=None) -> object`. Optional image, given schema, thinking off. An image prefixes the question with `media()`. Returns `json.loads` of the completion. A point in that object is on the 1000-grid of that image. Pixel conversion is outside this file.
 
-`Brain.think(system, tools, history, user, on_step=None) -> Reply`. No image. System turn is `THINK`, `system`, and every `declare(tool)`. History is user/model turn pairs. Then the user turn and an open model turn. Up to `max_tool_steps` completions, stopped on the tool-response open token and `TURN_CLOSE`. A completion with no tool returns `Reply(plain(out))`. When that completion has a thought and `on_step` is set, `on_step` is called with an empty tool name and empty args before the return. An unknown tool name yields `unknown tool {name}` and the loop continues. Any exception from `run` yields `bad arguments: {exc}` and the loop continues. Each tool call builds a `Step` and, when `on_step` is set, calls it. A `final` tool returns `Reply("")` after it runs. Otherwise the completion and `tool_response` are appended and the loop continues. Exhausting the steps returns `Reply("I am still working on it.")`.
+`Brain.think(system, tools, history, user, on_step=None) -> Reply`. No image. System turn is `THINK`, `system`, and every `declare(tool)`. History is user/model turn pairs. Then the user turn and an open model turn. Up to `max_tool_steps` completions, stopped on the tool-response open token and `TURN_CLOSE`. A completion with no tool returns `Reply(plain(out))`. When that completion has a thought and `on_step` is set, `on_step` is called with an empty tool name and empty args before the return. An unknown tool name yields `unknown tool {name}` and the loop continues. Any exception from `run` yields `bad arguments: {exc}` and the loop continues. Each tool call builds a `Step` and, when `on_step` is set, calls it before `run`. A `final` tool returns `Reply("")` after it runs. Otherwise the completion and `tool_response` are appended and the loop continues. Exhausting the steps returns `Reply("I am still working on it.")`.
 
 `main()`. `Brain.start()`, then `ask_json` on the command-line question, or `What is the capital of France and what are its GPS coordinates?` when the command line is empty. Schema requires `capital` (string), `latitude` (number), `longitude` (number). Prints that JSON and `think("You are Gemma. Answer in one short sentence.", {}, [], question).text`. Does not call `stop()`.
 
@@ -126,7 +126,7 @@ Talks to `user32.SendInput` and `powershell.exe`. Imports no organ. Talked to by
 
 ## organs/memory.py
 
-`state/memory.json` holds `facts`, `turns`, and `quiet`. `remember` appends a new stripped fact. `add_turn` appends both sides. `set_quiet` saves only when the value changes. `facts_block` is empty when there are no facts. `history` returns the stored pairs.
+`state/memory.json` holds `facts` and `turns`. `remember` appends a new stripped fact. `add_turn` appends both sides. `facts_block` is empty when there are no facts. Every Gemma request appends that block. A wish not to be bothered is a fact, and she still decides. A file that still has `quiet` true gains that fact. `history` returns the stored pairs.
 
 ## organs/mouth.py
 
@@ -140,27 +140,30 @@ Talks to `user32.SendInput` and `powershell.exe`. Imports no organ. Talked to by
 
 ## trident.py
 
-`OWNER` is `owner.name`. `INBOX` is `state/inbox.txt`. `SOURCE` maps `chat`, `call`, `typed`, and `idle`.
+`OWNER` is `owner.name`. `INBOX` is `state/inbox.txt`. `SOURCE` maps `chat` to a request, `call` to his voice, `typed` to a line on the computer, and `idle` to her still being at the machine. A consult answer is queued as `chat`, so she is not told that it came from the agent.
 
-`SYSTEM` is passed to every `think`, with `{owner.name}` filled in, and it includes: when he asks Gemma to use a program's own controls, call `survey` first.
+`SYSTEM` is passed to every `think`, with `{owner.name}` filled in. It says she is the one mind, the computer microphone and speakers are not hers, Python carries the call and the chat and the pictures, a call can end while she stays, and she decides from meaning. `facts_block` is appended to every request.
 
 `PASS` is the look schema: `answer` (string, at most 200 characters), `confident` (boolean), and `y`, `x`, `y0`, `x0`, `y1`, `x1` (integers 0 through 1000), all required.
 
-`cloud_look(png, question) -> dict`. Writes `state/cloud/look.png`. Runs `max()` of the `%LOCALAPPDATA%\cursor-agent\versions\*` directories that contain `node.exe`. That is path order, not version order. The command is that directory's `node.exe` and `index.js`, print mode, ask mode, `--trust`, `--model` `cloud.model`, text output, workspace that folder. The prompt says to read only `look.png` and reply with one JSON object. Non-zero exit raises `RuntimeError`. Returns `json.loads` of stdout.
+`consult_prompt` puts the job first, the rules in the middle, and the job again. The rules name her, her tools, and that the reply is handed back as the next request. `ask_cursor` runs the latest `%LOCALAPPDATA%\cursor-agent\versions\<date>-<hash>` directory that contains `node.exe`. A name that does not start with a digit, including `dist-package`, is skipped. The command is that directory's `node.exe` and `index.js`, print mode, ask mode, `--trust`, `--model` `cloud.model`, text output, workspace `state/consult`. It is a local process, not a VM. Non-zero exit or an empty reply raises `RuntimeError`.
 
 `Trident.start` calls `brain.start()`, `mouth.load()`, `line.start()`, then the worker, inbox, and idle threads. `stop` sets `stopping`, then `line.stop()` and `brain.stop()`.
 
-`inbox_loop` sends `state/inbox.txt` to Telegram as a file, then queues each non-empty line as `typed`. A line that starts with `/` is `call`, `hang`, or `stop`. `idle_loop` queues one idle prompt `brain.idle_after` seconds after the last `touch`, and only while the line is down, memory is not quiet, and the queue is empty. The idle text tells her she may look, and to answer with the single word `idle` otherwise. That word is not stored and not delivered.
+`inbox_loop` sends `state/inbox.txt` to Telegram as a file, then queues each non-empty line as `typed`. A line that starts with `/` is `call`, `hang`, or `stop`. `idle_loop` queues one idle prompt `brain.idle_after` seconds after the last `touch`, while the line is down, the queue is empty, and no turn is running. The single word `idle` is not stored and not delivered, and it does not wake her again. A finished turn that used a tool, with the line down and nothing queued, wakes her again so the work continues.
 
-`on_step` sends the thought, the tool name, and the arguments as JSON, uncut, with `line.send_text`. A spoken reply is said on an open call, or sent as text when the turn came from chat and the line is down.
+`on_step` runs before the tool. It sends the thought, the tool name, and the arguments as JSON, uncut, with `line.send_text`. A spoken reply is said on an open call, and sent as text when the line is down.
 
-Tools, and `asked` is false on an idle turn:
+Tools:
 
-- `look` screenshots, marks `seen` and the pointer, crops when given a box, shrinks to `cloud_side` only when `unsure` is already set, sends that picture with the prompt, then `ask_json` or `cloud_look`. A local miss sets `unsure`, so the next look is the cloud pass. A cloud pass clears it.
-- `survey` marks, shrinks to `vision.side`, sends that picture, and returns `brain.survey`. It does not run on the look path.
+- `look` screenshots, marks `seen` and the pointer, crops when given a box, sends that picture, then `ask_json` on the same bytes. A crop adds pixel `x` and `y`.
+- `survey` marks, shrinks to `vision.side`, sends that picture, and returns `brain.survey` on the same bytes.
 - `crop` is `look` with a box.
-- `click`, `drag`, `type_text`, `press`, and `run` refuse an idle turn. `click` and `drag` also refuse until a crop has landed. `press` refuses when the request says click and does not say press. `run` refuses a click request that has not yet acted and does not say run.
-- `remember`, `call_owner`, `hang_up`, `send_message`, and `stay_quiet` are unchanged. `hang_up` is `final`.
+- `click`, `drag`, `type_text`, `press`, and `run` act, including while she is alone.
+- `remember` appends one fact.
+- `call_owner` dials. If he does not answer, the text says so. When he answers, the opening is spoken and he can see the screen.
+- `hang_up` is `final`. The process stays up.
+- `consult` is `final`. `why` is spoken when the line is up and says she spawned a cursor agent and why. `image` or a box attaches the screen, whole or cropped. That picture is sent to him and written to `state/consult/screen.png`. The reply, or the failure, is sent as text and queued as the next request.
 
 `main()`. `say TEXT` appends that line to `state/inbox.txt`. `call`, `hang`, and `stop` append `/call`, `/hang`, or `/stop`. No command builds `Trident`, starts it, and waits. `stop()` always runs afterward.
 

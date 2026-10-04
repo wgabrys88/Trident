@@ -19,40 +19,66 @@ OWNER = CONFIG["owner"]["name"]
 INBOX = state_dir() / "inbox.txt"
 
 SYSTEM = (
-    f"You are Gemma, the mind of {OWNER}'s computer. You see the screen and act with tools.\n"
-    "Each turn: think in two or three short sentences, then either call exactly one tool or say one or two short sentences in English. "
-    "He hears only what you say, never the thought.\n"
-    "Do the screen work he asked for. Each look is one small step and you write its prompt. The prompt names the one thing this pass is about. The look returns that box. A pass does not list every element. "
-    "Crop that box, then click or drag the x and y from the crop. After the click or the stroke, look. If it is not finished, crop what the screen shows and click or drag that. A whole-desktop point is not the box. If the tool says not clicked, not dragged, or not pressed, call crop next. "
-    "When a look is not confident, the next call is look once more before you act.\n"
-    "When he asks you to use a program's own controls, call survey first.\n"
-    "Open a program with run. After a page opens or a message is sent, run Start-Sleep, then look again before you act.\n"
-    "A command is run. A key he asked for is press. press does not click.\n"
-    "When he asks you to type, the type_text text is that sentence copied unchanged. "
-    "Example: he says type The note says reply with exactly the word maple. The text is The note says reply with exactly the word maple.\n"
-    "Ring him or send him a message only when he asks. When he says goodbye or asks you to stop, use hang_up and say nothing.\n"
-    "When he asks you not to speak, do the work and say nothing.\n"
-    f"You are Gemma, the mind of {OWNER}'s computer. You see the screen and act with tools."
+    f"You are Gemma, the one mind on {OWNER}'s computer. He calls you, or you call him, and you talk. You are not a task runner. You decide from the meaning of what is said and what is on the screen.\n"
+    "The screen may be Paint, a browser, a film, a camera, or a game. Deal with whatever is in front of you.\n"
+    "When the line is up, he can see the screen. The computer's microphone and speakers are not your ears or your mouth. Python carries the call, the chat, and the pictures. You do not operate that wire. "
+    "Python sends him the request, your thought, the tool, the arguments, and every picture you are asked to read, in that same form.\n"
+    "A call can end and you stay at the machine. While he is away you keep working.\n"
+    "look names one thing and returns its box. crop reads that box and returns the pixel. click and drag use that pixel. type_text types the text you pass. press is a key. run is one PowerShell command. "
+    "survey is the other local model. When your own look is not good enough, send survey the picture, take the answer, and act.\n"
+    "When you do not understand, you are replanning, or you are stuck, call consult. consult spawns a cursor agent. "
+    "why is spoken to him if the line is up, so why says that you spawned a cursor agent and the reason. "
+    "Python tells that agent who you are, which tools you have, the request you are on, and the picture if you attached one. "
+    "The answer comes back as the next request, the same form as his, and you are not told which requests are his. Continue from the meaning.\n"
+    "remember stores one short fact. Those facts are appended to every request. If he asks you not to bother him, remember it. You may still call him. call_owner calls him. hang_up ends the call and you stay.\n"
+    f"You are Gemma, the one mind on {OWNER}'s computer. Decide, then one tool or a short reply."
 )
 PASS = {"type": "object", "properties": {"answer": {"type": "string", "maxLength": 200}, "confident": {"type": "boolean"}, "y": {"type": "integer", "minimum": 0, "maximum": 1000}, "x": {"type": "integer", "minimum": 0, "maximum": 1000}, "y0": {"type": "integer", "minimum": 0, "maximum": 1000}, "x0": {"type": "integer", "minimum": 0, "maximum": 1000}, "y1": {"type": "integer", "minimum": 0, "maximum": 1000}, "x1": {"type": "integer", "minimum": 0, "maximum": 1000}}, "required": ["answer", "confident", "y", "x", "y0", "x0", "y1", "x1"]}
+SOURCE = {"chat": "a request", "call": "his voice on the call", "typed": "a line he typed on the computer", "idle": "you are still at the machine"}
+IDLE = "You are still at the machine. Continue the work, look, consult, or call him. If there is nothing to do, answer with the single word idle."
 
 
-def cloud_look(png: bytes, question: str) -> dict:
-    folder = state_dir() / "cloud"
-    folder.mkdir(exist_ok=True)
-    (folder / "look.png").write_bytes(png)
-    version = max(p for p in (Path(os.environ["LOCALAPPDATA"]) / "cursor-agent" / "versions").iterdir() if (p / "node.exe").is_file())
+def _box(y0, x0, y1, x1):
+    y0, x0, y1, x1 = (int(v) for v in (y0, x0, y1, x1))
+    return [y0, x0, y1, x1] if min(y0, x0, y1, x1) >= 0 else None
+
+
+def consult_prompt(question: str, request: str, memory: str, pictured: bool) -> str:
+    picture = "Read screen.png. It is the picture in front of her. " if pictured else "There is no picture. "
+    rules = (
+        f"You are advising Gemma, the one mind on {OWNER}'s computer. "
+        "He reaches her by voice and by video. When the line is up he can see the screen. "
+        "The computer microphone and speakers are not her ears or her mouth. "
+        "Python carries the call, the chat, and the pictures. She does not operate that wire. "
+        "She decides from the meaning of what she is asked and what is on the screen. "
+        "The screen may be Paint, a browser, a film, a camera, or a game. "
+        "Her tools are look, survey, crop, click, drag, type_text, press, run, remember, call_owner, hang_up, and consult. "
+        "look and crop are her eyes. survey is the other local model. "
+        "click, drag, type_text, press, and run are her hands. "
+        "call_owner calls him. hang_up ends the call and she stays. consult is you. "
+        "Your whole reply is handed to her as the next request, in the same words. "
+        "Write that request. Do not mention that you are a model. "
+        f"The request she is on: {request}\n{memory}\n"
+        "Do not edit files. Search only this workspace."
+    )
+    job = question.strip()
+    return f"JOB\n{job}\n\nRULES\n{picture}{rules}\n\nJOB\n{job}"
+
+
+def ask_cursor(folder: Path, question: str, request: str, memory: str, pictured: bool) -> str:
+    root = Path(os.environ["LOCALAPPDATA"]) / "cursor-agent" / "versions"
+    version = max(p for p in root.iterdir() if p.name[:1].isdigit() and (p / "node.exe").is_file())
     done = subprocess.run(
-        [str(version / "node.exe"), str(version / "index.js"), "-p", "--mode", "ask", "--trust", "--model", CONFIG["cloud"]["model"], "--output-format", "text", "--workspace", str(folder), f"Read only look.png. Do not search or edit. The whole reply is one JSON object with keys answer, confident, y, x, y0, x0, y1, and x1. {question}"],
-        capture_output=True, text=True, encoding="utf-8", stdin=subprocess.DEVNULL, timeout=300, cwd=str(folder), creationflags=subprocess.CREATE_NO_WINDOW,
+        [str(version / "node.exe"), str(version / "index.js"), "-p", "--mode", "ask", "--trust", "--model", CONFIG["cloud"]["model"], "--output-format", "text", "--workspace", str(folder), consult_prompt(question, request, memory, pictured)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL, timeout=900, cwd=str(folder), creationflags=subprocess.CREATE_NO_WINDOW,
     )
     if done.returncode != 0:
-        raise RuntimeError((done.stderr or "").strip() or f"agent exit {done.returncode}")
-    LOG.info("cloud %s", CONFIG["cloud"]["model"])
-    return json.loads(done.stdout.strip())
-
-
-SOURCE = {"chat": "a Telegram message from him", "call": "his voice on the call", "typed": "a line he typed on the computer", "idle": "nobody; an idle moment"}
+        raise RuntimeError((done.stderr or done.stdout or "").strip() or f"agent exit {done.returncode}")
+    text = (done.stdout or "").strip()
+    if not text:
+        raise RuntimeError("empty consult")
+    LOG.info("consult %s", CONFIG["cloud"]["model"])
+    return text
 
 
 class Trident:
@@ -64,10 +90,10 @@ class Trident:
         self.stopping = threading.Event()
         self.last_activity = time.monotonic()
         self.idle_sent = False
+        self.busy = False
         self.request = ""
-        self.unsure = False
-        self.cropped = False
-        self.acted = False
+        self.note = ""
+        self.used_tool = False
         self.seen = []
         self.line = Line(on_text=lambda t: self.push("chat", t), on_utterance=lambda c: self.push("call", c), on_line=lambda _state: self.touch())
 
@@ -99,7 +125,7 @@ class Trident:
             if not INBOX.is_file():
                 continue
             raw = INBOX.read_bytes()
-            lines = [l.strip() for l in raw.decode("utf-8").splitlines() if l.strip()]
+            lines = [line.strip() for line in raw.decode("utf-8").splitlines() if line.strip()]
             INBOX.unlink()
             self.line.send_file(raw, INBOX.name)
             for line in lines:
@@ -108,9 +134,9 @@ class Trident:
     def idle_loop(self):
         while not self.stopping.wait(1.0):
             quiet_for = time.monotonic() - self.last_activity
-            if quiet_for >= CONFIG["brain"]["idle_after"] and not self.idle_sent and not self.memory.quiet and not self.line.up and self.events.empty():
+            if quiet_for >= CONFIG["brain"]["idle_after"] and not self.idle_sent and not self.busy and not self.line.up and self.events.empty():
                 self.idle_sent = True
-                self.events.put(("idle", "Nothing has happened for a while. Look if you are curious, ring him only for a reason, otherwise answer with the single word idle."))
+                self.events.put(("idle", IDLE))
 
     def worker(self):
         while not self.stopping.is_set():
@@ -118,10 +144,13 @@ class Trident:
                 kind, payload = self.events.get(timeout=0.5)
             except queue.Empty:
                 continue
+            self.busy = True
             try:
                 self.handle(kind, payload)
             except Exception as exc:
                 LOG.exception("turn failed: %s", exc)
+            finally:
+                self.busy = False
 
     def handle(self, kind: str, payload):
         if kind == "call":
@@ -135,10 +164,13 @@ class Trident:
             text = payload
         if kind == "typed" and text.startswith("/"):
             return self.command(text[1:])
-        if kind != "idle":
-            self.memory.set_quiet(False)
         reply = self.turn(kind, text)
-        self.deliver(kind, reply)
+        if reply is None:
+            return
+        self.deliver(reply)
+        if not self.line.up and self.used_tool and self.events.empty():
+            self.idle_sent = True
+            self.events.put(("idle", IDLE))
 
     def command(self, name: str):
         if name == "call":
@@ -149,29 +181,32 @@ class Trident:
         elif name == "stop":
             self.stopping.set()
 
-    def turn(self, kind: str, text: str) -> str:
-        self.request = text
-        self.cropped = False
-        self.acted = False
-        situation = f"[{time.strftime('%H:%M')} | line {self.line.state} | heard from: {SOURCE[kind]}]"
-        reply = self.brain.think(
-            SYSTEM + self.memory.facts_block(),
-            self.tools(kind),
-            self.memory.history(),
-            f"{situation}\n{text}",
-            on_step=lambda step: self.line.send_text(f"{step.thought}\n{step.tool}\n{json.dumps(step.args, ensure_ascii=False)}"),
-        )
-        if reply.text and reply.text.lower().strip(".") != "idle":
-            self.memory.add_turn(text, reply.text)
-            return reply.text
-        return ""
+    def on_step(self, step):
+        if step.thought:
+            self.note = step.thought
+        if step.tool:
+            self.used_tool = True
+        self.line.send_text(f"{step.thought}\n{step.tool}\n{json.dumps(step.args, ensure_ascii=False)}")
 
-    def deliver(self, kind: str, text: str):
+    def turn(self, kind: str, text: str):
+        self.request = text
+        self.note = ""
+        self.used_tool = False
+        situation = f"[{time.strftime('%H:%M')} | line {self.line.state} | {SOURCE[kind]}]"
+        reply = self.brain.think(SYSTEM, self.tools(), self.memory.history(), f"{situation}\n{text}{self.memory.facts_block()}", on_step=self.on_step)
+        spoken = reply.text.strip()
+        if spoken.lower().strip(".") == "idle":
+            return None
+        if spoken or (kind != "idle" and self.note):
+            self.memory.add_turn(text, spoken or self.note)
+        return spoken
+
+    def deliver(self, text: str):
         if not text:
             return
         if self.line.up:
             self.speak(text)
-        elif kind == "chat":
+        else:
             self.line.send_text(text)
 
     def speak(self, text: str):
@@ -184,38 +219,22 @@ class Trident:
         if rest:
             self.line.speak(pcm48(rest[0], self.mouth.sr))
 
-    def tools(self, kind: str) -> dict[str, Tool]:
+    def tools(self) -> dict[str, Tool]:
         from organs import eyes, hands
-
-        asked = kind != "idle"
 
         def look(prompt: str, y0: int = -1, x0: int = -1, y1: int = -1, x1: int = -1):
             png = eyes.mark(eyes.screenshot(), self.seen)
-            y0, x0, y1, x1 = (int(v) for v in (y0, x0, y1, x1))
-            box = [y0, x0, y1, x1] if min(y0, x0, y1, x1) >= 0 else None
+            box = _box(y0, x0, y1, x1)
             if box:
                 png = eyes.crop(png, box)
-            cloud = self.unsure
-            if cloud:
-                png = eyes.shrink(png)
             self.line.send_photo(png, prompt)
             words = f"The answer is only the name. Box only {prompt}, tight around it. y and x are its center."
-            LOG.info("look %s", "cloud" if cloud else "local")
-            data = cloud_look(png, words) if cloud else self.brain.ask_json(words, PASS, png)
+            data = self.brain.ask_json(words, PASS, png)
             got = [data["y0"], data["x0"], data["y1"], data["x1"]]
             self.seen.append((str(data["answer"])[:16], eyes.embed(box, got) if box else got))
-            sure = data["confident"] is True
-            self.unsure = not cloud and not sure
-            if box:
-                self.cropped = True
-            clicking = "click" in self.request.lower() or "drag" in self.request.lower()
-            found = {"answer": str(data["answer"]), "confident": sure, "y0": data["y0"], "x0": data["x0"], "y1": data["y1"], "x1": data["x1"]}
+            found = {"answer": str(data["answer"]), "confident": data["confident"] is True, "y0": data["y0"], "x0": data["x0"], "y1": data["y1"], "x1": data["x1"]}
             if box:
                 found["x"], found["y"] = eyes.point_px(box, (data["y0"] + data["y1"]) / 2, (data["x0"] + data["x1"]) / 2)
-            elif not clicking:
-                found["x"], found["y"] = eyes.center_px([data["y0"], data["x0"], data["y1"], data["x1"]])
-            if not sure or (not box and clicking and not self.acted):
-                found["next"] = "look once more" if not sure else "crop"
             return found
 
         def survey(prompt: str):
@@ -224,42 +243,22 @@ class Trident:
             return self.brain.survey(png, prompt)
 
         def click(x: int, y: int, how: str = "left"):
-            if not asked:
-                return "nobody asked for this"
-            if not self.cropped:
-                return "not clicked. crop a small square on the edge the prompt names, then click the x and y from that crop"
             hands.click(int(x), int(y), how)
-            self.acted, self.cropped = True, False
-            return f"{how} click at {int(x)} {int(y)}. look. if it is not finished, crop what the screen shows and click that"
+            return f"{how} click at {int(x)} {int(y)}"
 
         def drag(x0: int, y0: int, x1: int, y1: int):
-            if not asked:
-                return "nobody asked for this"
-            if not self.cropped:
-                return "not dragged. call crop with a tight box around the element, then drag using the x and y from that crop"
             hands.drag(int(x0), int(y0), int(x1), int(y1))
-            self.acted = True
             return f"stroke {int(x0)} {int(y0)} {int(x1)} {int(y1)}"
 
         def type_text(text: str):
-            if not asked:
-                return "nobody asked for this"
             hands.type_text(text)
             return "typed"
 
         def press(keys: str):
-            if not asked:
-                return "nobody asked for this"
-            if "click" in self.request.lower() and "press" not in self.request.lower():
-                return "not pressed. a key does not click. crop the element and click the x and y from that crop"
             hands.press(keys)
             return f"pressed {keys}"
 
         def run(command: str):
-            if not asked:
-                return "nobody asked for this"
-            if not self.acted and "click" in self.request.lower() and "run" not in self.request.lower():
-                return "not run. a command does not click. crop the element and click the x and y from that crop"
             return hands.run(command)
 
         def remember(fact: str):
@@ -269,41 +268,52 @@ class Trident:
         def call_owner(opening: str = "I am up. Do you want anything?"):
             if self.line.up:
                 return "the line is already up; just speak"
-            if self.memory.quiet:
-                return "you promised to stay quiet until he speaks"
             try:
                 self.line.dial()
             except Exception as exc:
                 return f"he did not answer: {exc}"
             self.speak(opening)
-            return "he answered and heard the opening; now say what he should hear next, or hang_up"
+            return "he answered and can see the screen; say what he should hear next, or hang_up"
 
         def hang_up():
             self.line.hang()
             return "hung up"
 
-        def send_message(text: str):
-            self.line.send_text(text)
-            return "sent"
-
-        def stay_quiet(reason: str):
-            self.memory.set_quiet(True)
-            return "quiet until he speaks"
+        def consult(why: str, question: str, image: bool = False, y0: int = -1, x0: int = -1, y1: int = -1, x1: int = -1):
+            if self.line.up and str(why).strip():
+                self.speak(str(why))
+            folder = state_dir() / "consult"
+            folder.mkdir(exist_ok=True)
+            png_path = folder / "screen.png"
+            if png_path.exists():
+                png_path.unlink()
+            box = _box(y0, x0, y1, x1)
+            if image is True or image == "true" or box:
+                png = eyes.mark(eyes.screenshot(), self.seen)
+                if box:
+                    png = eyes.crop(png, box)
+                png_path.write_bytes(png)
+                self.line.send_photo(png, str(why))
+            try:
+                answer = ask_cursor(folder, question, self.request, self.memory.facts_block(), png_path.is_file())
+            except Exception as exc:
+                answer = f"The consult came back empty. Decide the next step from what you can see. {exc}"
+            self.push("chat", answer)
+            self.line.send_text(answer)
 
         return {
-            "look": Tool("look", f"One look at the whole desktop. It returns no click point. Write the prompt for this pass. Name the one thing it is about. The picture is also sent to {OWNER}'s chat.", {"prompt": {"description": "The one thing this pass is about.", "type": "STRING"}}, look),
-            "survey": Tool("survey", f"What is on screen and which controls it has. A desktop, a movie, a camera feed, or a game. The picture is also sent to {OWNER}'s chat. Call this before using a program's own controls.", {"prompt": {"description": "What this pass should understand.", "type": "STRING"}}, survey),
-            "crop": Tool("crop", f"One look at a crop of one element. The prompt names where it sits and asks for its center. y0, x0, y1, x1 are that box, 0 to 1000, origin at the top left, y vertical. The picture is also sent to {OWNER}'s chat.", {"prompt": {"description": "What this pass should answer.", "type": "STRING"}, "y0": {"description": "Crop top, 0 to 1000.", "type": "INTEGER"}, "x0": {"description": "Crop left, 0 to 1000.", "type": "INTEGER"}, "y1": {"description": "Crop bottom, 0 to 1000.", "type": "INTEGER"}, "x1": {"description": "Crop right, 0 to 1000.", "type": "INTEGER"}}, lambda prompt, y0, x0, y1, x1: look(prompt, y0, x0, y1, x1)),
+            "look": Tool("look", "Your eyes on the whole desktop. Name the one thing. Returns its box, not a pixel.", {"prompt": {"description": "The one thing this pass is about.", "type": "STRING"}}, look),
+            "survey": Tool("survey", "The other local model looks. Use it when your own look is not good enough. Take the answer and act.", {"prompt": {"description": "What this pass should understand.", "type": "STRING"}}, survey),
+            "crop": Tool("crop", "Your eyes on one box. y0, x0, y1, x1 are 0 to 1000, origin top left, y vertical. Returns the pixel to click.", {"prompt": {"description": "What this pass should answer.", "type": "STRING"}, "y0": {"description": "Crop top, 0 to 1000.", "type": "INTEGER"}, "x0": {"description": "Crop left, 0 to 1000.", "type": "INTEGER"}, "y1": {"description": "Crop bottom, 0 to 1000.", "type": "INTEGER"}, "x1": {"description": "Crop right, 0 to 1000.", "type": "INTEGER"}}, lambda prompt, y0, x0, y1, x1: look(prompt, y0, x0, y1, x1)),
             "click": Tool("click", "Click the x and y returned by crop.", {"x": {"description": "Pixel x from crop.", "type": "INTEGER"}, "y": {"description": "Pixel y from crop.", "type": "INTEGER"}, "how": {"description": "Kind of click.", "type": "STRING", "enum": ["left", "right", "double"]}}, click, optional=("how",)),
-            "drag": Tool("drag", "The next side, one straight stroke. Look after it. If the shape is not finished, drag the next side.", {"x0": {"description": "Start pixel x.", "type": "INTEGER"}, "y0": {"description": "Start pixel y.", "type": "INTEGER"}, "x1": {"description": "End pixel x.", "type": "INTEGER"}, "y1": {"description": "End pixel y.", "type": "INTEGER"}}, drag),
+            "drag": Tool("drag", "One straight stroke from the pixels crop returned.", {"x0": {"description": "Start pixel x.", "type": "INTEGER"}, "y0": {"description": "Start pixel y.", "type": "INTEGER"}, "x1": {"description": "End pixel x.", "type": "INTEGER"}, "y1": {"description": "End pixel y.", "type": "INTEGER"}}, drag),
             "type_text": Tool("type_text", "Type the text argument exactly, every word of it, where the cursor is.", {"text": {"description": "The text to type, every word.", "type": "STRING"}}, type_text),
-            "press": Tool("press", "Press a key he asked for, for example enter, escape, tab, or ctrl-a. Never a click and never a command.", {"keys": {"description": "The key or chord.", "type": "STRING"}}, press),
+            "press": Tool("press", "Press a key, for example enter, escape, tab, or ctrl-a.", {"keys": {"description": "The key or chord.", "type": "STRING"}}, press),
             "run": Tool("run", "One PowerShell command. A program is Start-Process and its executable name. Start-Sleep -Seconds N waits.", {"command": {"description": "The PowerShell command.", "type": "STRING"}}, run),
-            "remember": Tool("remember", "Keep one short fact for later turns.", {"fact": {"description": "The fact.", "type": "STRING"}}, remember),
-            "call_owner": Tool("call_owner", f"Ring {OWNER} on Telegram. When he answers, the opening is spoken to him first.", {"opening": {"description": "The first sentence he hears.", "type": "STRING"}}, call_owner, optional=("opening",)),
-            "hang_up": Tool("hang_up", "End the call. Say nothing after it.", {}, hang_up, final=True),
-            "send_message": Tool("send_message", f"Send {OWNER} a Telegram text message.", {"text": {"description": "The message.", "type": "STRING"}}, send_message),
-            "stay_quiet": Tool("stay_quiet", "Promise not to ring until he speaks to you again.", {"reason": {"description": "Why.", "type": "STRING"}}, stay_quiet),
+            "remember": Tool("remember", "Store one short fact. It is appended to every later request. Use it when he says how to reach him, including when not to bother him. You still decide.", {"fact": {"description": "The fact.", "type": "STRING"}}, remember),
+            "call_owner": Tool("call_owner", f"Call {OWNER}. When he answers he can see the screen. The opening is the first thing he hears.", {"opening": {"description": "The first sentence he hears.", "type": "STRING"}}, call_owner, optional=("opening",)),
+            "hang_up": Tool("hang_up", "End the call and stay at the machine. Say nothing after it.", {}, hang_up, final=True),
+            "consult": Tool("consult", "Spawn a cursor agent when you do not understand, you are replanning, or you are stuck. why is spoken on the call: say that you spawned a cursor agent and the reason. The answer comes back as the next request. Python sends who you are, your tools, the request you are on, and the picture. image true attaches the screen. A box attaches only that part.", {"why": {"description": "The sentence he hears: you spawned a cursor agent, and why.", "type": "STRING"}, "question": {"description": "What the cursor agent should decide.", "type": "STRING"}, "image": {"description": "Attach the screen.", "type": "BOOLEAN"}, "y0": {"description": "Part top, 0 to 1000. Omit for the whole screen.", "type": "INTEGER"}, "x0": {"description": "Part left, 0 to 1000.", "type": "INTEGER"}, "y1": {"description": "Part bottom, 0 to 1000.", "type": "INTEGER"}, "x1": {"description": "Part right, 0 to 1000.", "type": "INTEGER"}}, consult, optional=("image", "y0", "x0", "y1", "x1"), final=True),
         }
 
 

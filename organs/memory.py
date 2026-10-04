@@ -9,10 +9,13 @@ class Memory:
         data = json.loads(self.path.read_text(encoding="utf-8")) if self.path.is_file() else {}
         self.facts: list[str] = data.get("facts", [])
         self.turns: list[list[str]] = data.get("turns", [])
-        self.quiet: bool = data.get("quiet", False)
+        if data.get("quiet"):
+            if "he asked not to be bothered" not in self.facts:
+                self.facts.append("he asked not to be bothered")
+            self.save()
 
     def save(self):
-        self.path.write_text(json.dumps({"facts": self.facts, "turns": self.turns, "quiet": self.quiet}, ensure_ascii=False, indent=1), encoding="utf-8")
+        self.path.write_text(json.dumps({"facts": self.facts, "turns": self.turns}, ensure_ascii=False, indent=1), encoding="utf-8")
 
     def remember(self, fact: str):
         fact = fact.strip()
@@ -23,11 +26,6 @@ class Memory:
     def add_turn(self, user: str, model: str):
         self.turns.append([user, model])
         self.save()
-
-    def set_quiet(self, value: bool):
-        if self.quiet != value:
-            self.quiet = value
-            self.save()
 
     def facts_block(self) -> str:
         return ("\nRemembered:\n" + "\n".join(f"- {f}" for f in self.facts)) if self.facts else ""

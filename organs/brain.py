@@ -246,6 +246,8 @@ class Brain:
                 if on_step and thought:
                     on_step(Step(thought, "", {}))
                 return Reply(text)
+            if on_step:
+                on_step(Step(thought, name, args))
             if name not in tools:
                 result = f"unknown tool {name}"
             else:
@@ -254,8 +256,6 @@ class Brain:
                 except Exception as exc:
                     result = f"bad arguments: {exc}"
             LOG.info("tool %s %s -> %s", name, json.dumps(args, ensure_ascii=False), result)
-            if on_step:
-                on_step(Step(thought, name, args))
             if name in tools and tools[name].final:
                 return Reply("")
             prompt += out + tool_response(name, result)
