@@ -135,7 +135,7 @@ def type_text(text: str) -> None:
 
 
 def interactive_controls(title: str = "") -> list[tuple[str, int, int, int, int]]:
-    from organs import state_dir
+    from organs import run_dir
     script = (
         "param([string]$Title)\n"
         "Add-Type -AssemblyName UIAutomationClient\n"
@@ -161,7 +161,7 @@ def interactive_controls(title: str = "") -> list[tuple[str, int, int, int, int]
         "  Write-Output (\"{0},{1},{2},{3}|{4}\" -f [int]$r.X, [int]$r.Y, [int]$r.Width, [int]$r.Height, $n)\n"
         "}\n"
     )
-    path = state_dir() / "controls.ps1"
+    path = run_dir() / "controls.ps1"
     path.write_text(script, encoding="utf-8")
     try:
         args = ["powershell.exe", "-NoProfile", "-NonInteractive", "-File", str(path)]

@@ -44,13 +44,15 @@ Talks to `config.toml` and the `state/` directory. Talked to by `brain`, `ears`,
 
 `path_of(section, key) -> Path`. `brain`, `ears`, and `vision` resolve under `paths.models`. Any other section resolves under the repo root. Returns that directory plus `CONFIG[section][key]`.
 
-`state_dir() -> Path`. Creates `paths.state` and returns it.
+`state_dir() -> Path`. Creates `paths.state` and returns it. `memory.json` and `inbox.txt` stay here. They are not a run's pictures or logs.
 
-`log(name) -> logging.Logger`. First call with no root handlers sets INFO, format `%(asctime)s %(name)-8s %(message)s`, time `%H:%M:%S`, stderr plus `state/trident.log` (utf-8). Later calls return the named logger.
+`run_dir() -> Path`. One folder per process, `state/run_YYYY-MM-DD_HHMM`, for example `run_2026-10-04_2030`. The folder is created on first use. If that name already exists, the next free `run_YYYY-MM-DD_HHMM-2` is used, so a later process never writes into an older folder. The path is stored in `TRIDENT_RUN`. A child process, including the mouth, inherits that variable and uses the same folder. Screenshots, overlays, prompts, call audio, the consult workspace, `trident.log`, and `llama-server.log` go here.
+
+`log(name) -> logging.Logger`. First call with no root handlers sets INFO, format `%(asctime)s %(name)-8s %(message)s`, time `%H:%M:%S`, stderr plus the run folder's `trident.log` (utf-8). Later calls return the named logger. That first call creates the run folder.
 
 ## organs/brain.py
 
-Talks to `organs` (`CONFIG`, `ROOT`, `log`, `path_of`, `state_dir`), `bin/llama/llama-server.exe`, and HTTP `http://{host}:{port}`. Talked to by `trident` (`Brain`, `Tool`) and `python -m organs.brain`. Logger name `brain`. Import calls `log("brain")`, which creates `state/` and opens the log.
+Talks to `organs` (`CONFIG`, `ROOT`, `log`, `path_of`, `run_dir`), `bin/llama/llama-server.exe`, and HTTP `http://{host}:{port}`. Talked to by `trident` (`Brain`, `Tool`) and `python -m organs.brain`. Logger name `brain`. Import calls `log("brain")`, which creates the run folder and opens the log.
 
 Tokens: `BOS` `<bos>`, `TURN_OPEN` `<|turn>`, `TURN_CLOSE` `<turn|>`, `THINK` `<|think|>`, `QUOTE` `<|"|>`, `TOOL_RESPONSE_OPEN` `<|tool_response>`, `TOOL_RESPONSE_CLOSE` `<tool_response|>`. The image marker is whatever the running server reports. `Brain.media()` reads `media_marker` from `GET {url}/props` on first use and stores it on `Brain.marker`. `stop()` clears it.
 
@@ -64,13 +66,13 @@ Tokens: `BOS` `<bos>`, `TURN_OPEN` `<|turn>`, `TURN_CLOSE` `<turn|>`, `THINK` `<
 
 `Brain.alive() -> bool`. GET `{url}/health`, timeout 2. True when status is 200. `URLError` or `OSError` returns False.
 
-`Brain.start(section="brain")`. Returns immediately when `alive()`. Otherwise runs `bin/llama/llama-server.exe`. `section="brain"` uses `paths` from `path_of("brain", ...)`, `brain.context`, `brain.slots`, `brain.ubatch`, and `brain.image_tokens`. Any other section uses `path_of(section, ...)`, and `vision.context`, `vision.slots`, `vision.ubatch`, and `vision.image_tokens`. Both sections set `--image-min-tokens` and `--image-max-tokens` to that count. Shared flags: `--host`, `--port`, `--n-gpu-layers`, `--threads`, `--flash-attn off`, `--cache-type-k f16`, `--cache-type-v f16`, `--no-webui`, `--log-file state/llama-server.log`. Working directory is the exe directory. Stdio is discarded. Window is hidden. Missing exe raises `FileNotFoundError`. Polls 0.5 s for up to 300 s. Process exit raises `RuntimeError`. Timeout raises `TimeoutError`. On this binary, `--ctx-size 16384 --parallel 2` comes up as `n_slots = 2`, `n_ctx_slot = 8192`.
+`Brain.start(section="brain")`. Returns immediately when `alive()`. Otherwise runs `bin/llama/llama-server.exe`. `section="brain"` uses `paths` from `path_of("brain", ...)`, `brain.context`, `brain.slots`, `brain.ubatch`, and `brain.image_tokens`. Any other section uses `path_of(section, ...)`, and `vision.context`, `vision.slots`, `vision.ubatch`, and `vision.image_tokens`. Both sections set `--image-min-tokens` and `--image-max-tokens` to that count. Shared flags: `--host`, `--port`, `--n-gpu-layers`, `--threads`, `--flash-attn off`, `--cache-type-k f16`, `--cache-type-v f16`, `--no-webui`, `--log-file` the run folder's `llama-server.log`. Working directory is the exe directory. Stdio is discarded. Window is hidden. Missing exe raises `FileNotFoundError`. Polls 0.5 s for up to 300 s. Process exit raises `RuntimeError`. Timeout raises `TimeoutError`. On this binary, `--ctx-size 16384 --parallel 2` comes up as `n_slots = 2`, `n_ctx_slot = 8192`.
 
 `Brain.stop()`. If `proc` is still running, `terminate()` and `wait(10)`, then `kill` if it is still up. A llama-server that was already listening is ended too, so the next model can load. Waits until the port is down, at most 20 s. Sets `proc` and `marker` to `None`.
 
 `Brain.survey(png, question) -> list`. `stop()`, then `start("vision")`. The slot is erased before each look, when that route exists. Qwen2.5-VL is asked for `bbox_2d` as x1, y1, x2, y2 in pixels and `label` for what is drawn. Python maps those pixels through the llama.cpp canvas onto the 1000 grid, y then x. The first look is the whole picture. Each of up to 32 boxes is padded by 80 on that grid, cropped without the Gemma upscale, and looked at again. The closer box is mapped back with `embed`. A closer box with no area keeps the first box. Absent means an empty list. Sampling uses `temperature`, `top_k`, `top_p`, and `min_p`. The vision reply may run to 1536 tokens. Timeout 600. A schema rejection is asked once more without the schema. Logs `see` per look and `survey` with the names. `finally` calls `stop()` and `start()` so Gemma is the server again.
 
-`Brain.complete(prompt, images=(), schema=None, stop=()) -> str`. POST `{url}/completion`, timeout 600. Body: `prompt` (a string, or `{prompt_string, multimodal_data}` of base64 images when `images` is non-empty), `n_predict` `brain.max_tokens`, `cache_prompt` false when `images` is non-empty, otherwise true, `stop`, and the same sampling fields. `schema` sets `json_schema`. Writes the prompt to `state/last_prompt.txt`. When `images` is non-empty, writes the first of those bytes to `state/last_image.png` before the POST. Returns `content`. Logs elapsed seconds plus `timings.prompt_n` and `timings.predicted_n` under the word `gemma`.
+`Brain.complete(prompt, images=(), schema=None, stop=()) -> str`. POST `{url}/completion`, timeout 600. Body: `prompt` (a string, or `{prompt_string, multimodal_data}` of base64 images when `images` is non-empty), `n_predict` `brain.max_tokens`, `cache_prompt` false when `images` is non-empty, otherwise true, `stop`, and the same sampling fields. `schema` sets `json_schema`. Writes the prompt to the run folder's `last_prompt.txt`. When `images` is non-empty, writes the first of those bytes to that folder's `last_image.png` before the POST. Returns `content`. Logs elapsed seconds plus `timings.prompt_n` and `timings.predicted_n` under the word `gemma`.
 
 `Brain.ask_json(question, schema, png=None) -> object`. Optional image, given schema, thinking off. An image prefixes the question with `media()`. Returns `json.loads` of the completion. A point in that object is on the 1000-grid of that image. Pixel conversion is outside this file.
 
@@ -92,7 +94,7 @@ Talks to `organs` (`CONFIG`, `ROOT`, `path_of`), `models/silero_vad.onnx` throug
 
 ## organs/eyes.py
 
-Talks to `organs` (`CONFIG`, and `state_dir` in `__main__`), `user32`, and PIL `ImageGrab`, `ImageDraw`, and `ImageFont`. Talked to by `trident.tools`. At import, `SetProcessDpiAwarenessContext(-4)`. There is no module docstring.
+Talks to `organs` (`CONFIG`, and `run_dir` in `__main__`), `user32`, and PIL `ImageGrab`, `ImageDraw`, and `ImageFont`. Talked to by `trident.tools`. At import, `SetProcessDpiAwarenessContext(-4)`. There is no module docstring.
 
 `screen_size() -> (width, height)`. `GetSystemMetrics(0)`, `GetSystemMetrics(1)`.
 
@@ -106,11 +108,11 @@ Talks to `organs` (`CONFIG`, and `state_dir` in `__main__`), `user32`, and PIL `
 
 `center_px(box_2d) -> (x, y)` and `point_px(box, y, x) -> (x, y)` convert the 1000-grid through `screen_size()`.
 
-`python -m organs.eyes` writes `state/screen.png` and prints that path and `screen_size()`.
+`python -m organs.eyes` writes `screen.png` in the run folder and prints that path and `screen_size()`.
 
 ## organs/hands.py
 
-Talks to `user32.SendInput`, `powershell.exe`, and `state_dir` when listing controls. Talked to by `trident.tools` and `eyes.overlay`. At import, `SetProcessDpiAwarenessContext(-4)`.
+Talks to `user32.SendInput`, `powershell.exe`, and `run_dir` when listing controls. Talked to by `trident.tools` and `eyes.overlay`. At import, `SetProcessDpiAwarenessContext(-4)`.
 
 `aim(x, y) -> (x, y)`. `SetCursorPos`, then an absolute move, then `GetCursorPos`. `strike(x, y, how)` presses. `click(x, y, how="left")` aims, then strikes, and returns the cursor position from before the press. `right` uses the right button. `double` adds a second left down/up. Any other `how` uses the left button.
 
@@ -120,7 +122,7 @@ Talks to `user32.SendInput`, `powershell.exe`, and `state_dir` when listing cont
 
 `type_text(text)`. A character the foreground layout can type is that virtual key, with shift, ctrl, or alt when the layout asks for them. Anything else is a Unicode key, one UTF-16 unit at a time.
 
-`interactive_controls(title="") -> list`. Named interactive controls on one window: `(name, x, y, width, height)` in screen pixels. An empty title is the foreground window. A title such as `Untitled - Paint` reads that window when it is not in front. A browser, a dialog, or another program is the same call with that window's title. A repeated name keeps the smaller rectangle. The PowerShell is written to `state/controls.ps1`, run, and deleted.
+`interactive_controls(title="") -> list`. Named interactive controls on one window: `(name, x, y, width, height)` in screen pixels. An empty title is the foreground window. A title such as `Untitled - Paint` reads that window when it is not in front. A browser, a dialog, or another program is the same call with that window's title. A repeated name keeps the smaller rectangle. The PowerShell is written to `controls.ps1` in the run folder, run, and deleted.
 
 `run(command, timeout=25) -> str`. Hidden `powershell.exe`, the `start` alias removed. A command that is only a name, when that name is a zero-byte file, is `Start-Process -FilePath` and that name. Timeout returns `timed out`. A command whose stripped lowercase text starts with `start-process` waits 1.5 s. Empty output returns `exit {code}` when the code is non-zero, otherwise `ok`.
 
@@ -148,9 +150,9 @@ Talks to `user32.SendInput`, `powershell.exe`, and `state_dir` when listing cont
 
 `PASS` is the look schema: `answer` and `confident` are required. `y` and `x` are optional. A confident look that names one mark uses that mark's center. Otherwise `y` and `x` are the place.
 
-`consult_prompt` asks GPT for one JSON object and no other text, key `request`. The advisor is on this machine and may use the internet. `request` names the next action, with no pixel and no mention of a model. `ask_cursor` runs the latest `%LOCALAPPDATA%\cursor-agent\versions\<date>-<hash>` directory that contains `node.exe`. A name that does not start with a digit, including `dist-package`, is skipped. The command is that directory's `node.exe` and `index.js`, print mode, `--force`, `--sandbox disabled`, `--trust`, `--model` `cloud.model`, text output, workspace `state/consult`. There is no `--mode ask`. It is a local process, not a VM. The stdout is parsed with `json.loads` and the `request` string is returned. Non-zero exit, invalid JSON, or an empty `request` raises `RuntimeError`.
+`consult_prompt` asks GPT for one JSON object and no other text, key `request`. The advisor is on this machine and may use the internet. `request` names the next action, with no pixel and no mention of a model. `ask_cursor` runs the latest `%LOCALAPPDATA%\cursor-agent\versions\<date>-<hash>` directory that contains `node.exe`. A name that does not start with a digit, including `dist-package`, is skipped. The command is that directory's `node.exe` and `index.js`, print mode, `--force`, `--sandbox disabled`, `--trust`, `--model` `cloud.model`, text output, workspace `consult` in the run folder. There is no `--mode ask`. It is a local process, not a VM. The stdout is parsed with `json.loads` and the `request` string is returned. Non-zero exit, invalid JSON, or an empty `request` raises `RuntimeError`.
 
-`Trident.start` calls `brain.start()`, `line.start()`, then the worker and inbox threads. `stop` sets `stopping`, then `line.stop()` and `brain.stop()`. A call stops Gemma before `transcribe` and starts Gemma again after, because the ear uses the GPU and then exits. `speak` stops Gemma, runs `python -m organs.mouth`, plays the pcm, and starts Gemma again.
+`Trident.start` calls `brain.start()`, `line.start()`, then the worker and inbox threads. `stop` sets `stopping`, then `line.stop()` and `brain.stop()`. A call writes `call.wav` in the run folder, stops Gemma before `transcribe`, and starts Gemma again after, because the ear uses the GPU and then exits. `speak` stops Gemma, runs `python -m organs.mouth`, plays the pcm, and starts Gemma again.
 
 `inbox_loop` sends `state/inbox.txt` to Telegram as a file, then queues each non-empty line as `typed`. A line that starts with `/` is `call`, `hang`, or `stop`. Nothing queues the task again when the line is down. She continues only by calling another tool in the turn she was given. Chat, call, and typed requests become `task` after the turn. A consult does not.
 
@@ -160,12 +162,12 @@ Tools:
 
 - `look` screenshots, overlays the pointer and the list below the screen, sends that picture, then `ask_json` on the same bytes. A confident result whose answer names one stored mark sets the aim to that mark's center. Otherwise a confident result with `y` and `x` sets the aim to that point. Any other result returns no pixel and clears the aim. Each pixel is kept for the rest of the turn.
 - `survey` screenshots the raw picture, asks `brain.survey`, stores those marks, draws them on that picture, sends it, and returns the names. A click or a drag that lands clears the marks. A new turn clears them too.
-- `click` aims and writes `state/aim.png`. A click with no aim, or whose pixel is not the aim, does not press. If the cursor is more than 2 pixels off the point, the picture is sent and the button does not go down. Otherwise the press happens, then the picture is sent. She cannot end the turn on a refusal, and after a press she cannot end it until she looks again.
+- `click` aims and writes `aim.png` in the run folder. A click with no aim, or whose pixel is not the aim, does not press. If the cursor is more than 2 pixels off the point, the picture is sent and the button does not go down. Otherwise the press happens, then the picture is sent. She cannot end the turn on a refusal, and after a press she cannot end it until she looks again.
 - `drag` starts at the latest pixel. Any other start does not stroke. An end she was not given does not stroke. `type_text`, `press`, and `run` act, including while she is alone.
 - `remember` appends one fact.
 - `call_owner` dials. If he does not answer, the text says so. When he answers, the opening is spoken and he can see the screen.
 - `hang_up` is `final`. The process stays up.
-- `consult` is `final`. `why`, `question`, and optional `image`. `image` true attaches the whole screen. That picture is sent to him and written to `state/consult/screen.png`. The reply, or the failure, is sent as text and queued as `consult`. The advisor runs on this machine with the internet, not in ask mode.
+- `consult` is `final`. `why`, `question`, and optional `image`. `image` true attaches the whole screen. That picture is sent to him and written to `consult/screen.png` in the run folder. The reply, or the failure, is sent as text and queued as `consult`. The advisor runs on this machine with the internet, not in ask mode.
 
 `main()`. `say TEXT` appends that line to `state/inbox.txt`. `call`, `hang`, and `stop` append `/call`, `/hang`, or `/stop`. No command builds `Trident`, starts it, and waits. `stop()` always runs afterward.
 

@@ -7,7 +7,7 @@ import threading
 import time
 from pathlib import Path
 
-from organs import CONFIG, log, state_dir
+from organs import CONFIG, log, run_dir, state_dir
 from organs.brain import Brain, Tool
 from organs.ears import transcribe, write_wav
 from organs.memory import Memory
@@ -112,7 +112,7 @@ class Trident:
 
     def handle(self, kind: str, payload):
         if kind == "call":
-            wav = write_wav(state_dir() / "call.wav", payload)
+            wav = write_wav(run_dir() / "call.wav", payload)
             self.line.send_file(wav.read_bytes(), wav.name)
             self.brain.stop()
             try:
@@ -239,7 +239,7 @@ class Trident:
                 return f"the pixel is {self.aim[0]} {self.aim[1]}" if self.aim else "no pixel was given"
             ax, ay = hands.aim(x, y)
             png = eyes.overlay(eyes.screenshot(), None, self.marks)
-            (state_dir() / "aim.png").write_bytes(png)
+            (run_dir() / "aim.png").write_bytes(png)
             if abs(ax - x) > 2 or abs(ay - y) > 2:
                 self.line.send_photo(png, "aim")
                 self.owed = "act"
@@ -297,7 +297,7 @@ class Trident:
         def consult(why: str, question: str, image: bool = False):
             if self.line.up and str(why).strip():
                 self.speak(str(why))
-            folder = state_dir() / "consult"
+            folder = run_dir() / "consult"
             folder.mkdir(exist_ok=True)
             png_path = folder / "screen.png"
             if png_path.exists():

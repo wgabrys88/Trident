@@ -4,7 +4,7 @@ from ctypes import wintypes
 
 from PIL import Image, ImageDraw, ImageFont, ImageGrab
 
-from organs import CONFIG, state_dir
+from organs import CONFIG, run_dir
 
 CFG = CONFIG["eyes"]
 user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -150,6 +150,6 @@ def point_px(box: list, y: float, x: float) -> tuple[int, int]:
 
 
 if __name__ == "__main__":
-    path = state_dir() / "screen.png"
+    path = run_dir() / "screen.png"
     path.write_bytes(screenshot())
     print(path, screen_size())

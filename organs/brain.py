@@ -12,7 +12,7 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Callable
 
-from organs import CONFIG, ROOT, log, path_of, state_dir
+from organs import CONFIG, ROOT, log, path_of, run_dir
 
 LOG = log("brain")
 CFG = CONFIG["brain"]
@@ -235,14 +235,14 @@ class Brain:
             "--flash-attn", "off", "--cache-type-k", "f16", "--cache-type-v", "f16",
             "--ubatch-size", str(ubatch),
             "--image-min-tokens", str(image_tokens), "--image-max-tokens", str(image_tokens),
-            "--no-webui", "--log-file", str(state_dir() / "llama-server.log"),
+            "--no-webui", "--log-file", str(run_dir() / "llama-server.log"),
         ]
         self.proc = subprocess.Popen(args, cwd=str(exe.parent), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
         LOG.info("llama-server starting pid %d", self.proc.pid)
         deadline = time.monotonic() + 300
         while time.monotonic() < deadline:
             if self.proc.poll() is not None:
-                raise RuntimeError(f"llama-server exited {self.proc.returncode}, see state/llama-server.log")
+                raise RuntimeError(f"llama-server exited {self.proc.returncode}, see {run_dir() / 'llama-server.log'}")
             if self.alive():
                 LOG.info("llama-server ready")
                 return
@@ -346,9 +346,9 @@ class Brain:
         }
         if schema is not None:
             body["json_schema"] = schema
-        (state_dir() / "last_prompt.txt").write_text(prompt, encoding="utf-8")
+        (run_dir() / "last_prompt.txt").write_text(prompt, encoding="utf-8")
         if images:
-            (state_dir() / "last_image.png").write_bytes(images[0])
+            (run_dir() / "last_image.png").write_bytes(images[0])
         request = urllib.request.Request(self.url + "/completion", data=json.dumps(body).encode("utf-8"), headers={"Content-Type": "application/json"})
         started = time.monotonic()
         with urllib.request.urlopen(request, timeout=600) as r:
