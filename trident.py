@@ -20,6 +20,8 @@ INBOX = state_dir() / "inbox.txt"
 
 SYSTEM = (
     "Assumptions are not allowed: before you click, drag, type, or press you look or crop, and you copy that result's x and y into the tool with no other numbers.\n"
+    "A name is not proof. After you act, look again, and stop only when that look shows the thing you meant.\n"
+    "The picture shows an arrow, slim red lines through its tip, and that tip's y and x on the 1000 grid. A zoom that does not show the arrow and those coordinates missed.\n"
     f"You are Gemma, the one mind on {OWNER}'s computer. He calls you, or you call him, and you talk. You are not a task runner. You decide from the meaning of what is said and what is on the screen.\n"
     "The screen may be Paint, a browser, a film, a camera, or a game. Deal with whatever is in front of you.\n"
     "When the line is up, he can see the screen. The computer's microphone and speakers are not your ears or your mouth. Python carries the call, the chat, and the pictures. You do not operate that wire. "
@@ -193,10 +195,8 @@ class Trident:
         from organs import eyes, hands
 
         def look(prompt: str, y0: int = -1, x0: int = -1, y1: int = -1, x1: int = -1):
-            png = eyes.mark(eyes.screenshot(), self.seen)
             box = _box(y0, x0, y1, x1)
-            if box:
-                png = eyes.crop(png, box)
+            png = eyes.overlay(eyes.mark(eyes.screenshot(), self.seen), box)
             self.line.send_photo(png, prompt)
             words = f"Box only {prompt}, tight around it. y and x are its center. The answer is the words in it, or the name when there are none."
             data = self.brain.ask_json(words, PASS, png)
@@ -213,7 +213,7 @@ class Trident:
             return found
 
         def survey(prompt: str):
-            png = eyes.shrink(eyes.mark(eyes.screenshot(), self.seen), CONFIG["vision"]["side"])
+            png = eyes.overlay(eyes.shrink(eyes.mark(eyes.screenshot(), self.seen), CONFIG["vision"]["side"]))
             self.line.send_photo(png, prompt)
             return self.brain.survey(png, prompt)
 
@@ -222,7 +222,7 @@ class Trident:
             if self.aim and (x, y) != self.aim:
                 return f"the pixel is {self.aim[0]} {self.aim[1]}"
             ax, ay = hands.aim(x, y)
-            png = eyes.mark(eyes.screenshot(), self.seen)
+            png = eyes.overlay(eyes.mark(eyes.screenshot(), self.seen))
             (state_dir() / "aim.png").write_bytes(png)
             if abs(ax - x) > 2 or abs(ay - y) > 2:
                 self.line.send_photo(png, "aim")
@@ -278,9 +278,7 @@ class Trident:
                 png_path.unlink()
             box = _box(y0, x0, y1, x1)
             if image is True or image == "true" or box:
-                png = eyes.mark(eyes.screenshot(), self.seen)
-                if box:
-                    png = eyes.crop(png, box)
+                png = eyes.overlay(eyes.mark(eyes.screenshot(), self.seen), box)
                 png_path.write_bytes(png)
                 self.line.send_photo(png, str(why))
             try:

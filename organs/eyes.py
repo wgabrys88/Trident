@@ -56,11 +56,56 @@ def mark(png: bytes, areas: list) -> bytes:
         right, bottom = round(max(x0, x1) / 1000 * (width - 1)), round(max(y0, y1) / 1000 * (height - 1))
         draw.rectangle((left, top, max(right, left + 1), max(bottom, top + 1)), outline=(255, 0, 0), width=3)
         draw.text((left + 4, top + 4), str(label), fill=(255, 255, 0), font=ImageFont.load_default(size=16))
-    point = wintypes.POINT()
-    user32.GetCursorPos(ctypes.byref(point))
-    sw, sh = screen_size()
-    px, py = round(point.x * (width - 1) / (sw - 1)), round(point.y * (height - 1) / (sh - 1))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG", compress_level=1)
+    return buffer.getvalue()
+
+
+def _pointer(image: Image.Image, px: int, py: int) -> None:
+    width, height = image.size
+    px = min(max(px, 0), width - 1)
+    py = min(max(py, 0), height - 1)
+    gy = min(1000, max(0, round(py / height * 1000)))
+    gx = min(1000, max(0, round(px / width * 1000)))
+    draw = ImageDraw.Draw(image)
+    draw.line([(0, py), (width - 1, py)], fill=(255, 0, 0), width=1)
+    draw.line([(px, 0), (px, height - 1)], fill=(255, 0, 0), width=1)
     draw.polygon([(px, py), (px, py + 16), (px + 4, py + 13), (px + 7, py + 19), (px + 10, py + 17), (px + 6, py + 12), (px + 12, py + 12)], fill=(255, 255, 255), outline=(0, 0, 0))
+    font = ImageFont.load_default(size=16)
+    text = f"y {gy} x {gx}"
+    tw = int(draw.textlength(text, font=font))
+    tx, ty = px + 16, py + 22
+    if tx + tw >= width:
+        tx = max(1, px - tw - 4)
+    if ty + 18 >= height:
+        ty = max(1, py - 22)
+    draw.rectangle((tx - 2, ty - 1, tx + tw + 2, ty + 17), fill=(0, 0, 0))
+    draw.text((tx, ty), text, fill=(255, 255, 0), font=font)
+
+
+def overlay(png: bytes, box: list | None = None) -> bytes:
+    src = Image.open(io.BytesIO(png)).convert("RGB")
+    src_w, src_h = src.size
+    if box:
+        image = Image.open(io.BytesIO(crop(png, box))).convert("RGB")
+        y0, x0, y1, x1 = (float(v) for v in box)
+        left, top = round(min(x0, x1) / 1000 * src_w), round(min(y0, y1) / 1000 * src_h)
+        right, bottom = round(max(x0, x1) / 1000 * src_w), round(max(y0, y1) / 1000 * src_h)
+        span_w, span_h = max(right, left + 1) - left, max(bottom, top + 1) - top
+        scale = 4 if max(span_w, span_h) < 512 else 1
+    else:
+        image = src
+        left = top = 0
+        span_w, span_h, scale = src_w, src_h, 1
+    point = wintypes.POINT()
+    if user32.GetCursorPos(ctypes.byref(point)):
+        sw, sh = screen_size()
+        if box:
+            cx, cy = point.x * src_w / sw, point.y * src_h / sh
+            if left <= cx < left + span_w and top <= cy < top + span_h:
+                _pointer(image, round((cx - left) * scale), round((cy - top) * scale))
+        else:
+            _pointer(image, round(point.x * (image.width - 1) / (sw - 1)), round(point.y * (image.height - 1) / (sh - 1)))
     buffer = io.BytesIO()
     image.save(buffer, format="PNG", compress_level=1)
     return buffer.getvalue()

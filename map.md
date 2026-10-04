@@ -100,7 +100,9 @@ Talks to `organs` (`CONFIG`, and `state_dir` in `__main__`), `user32`, and PIL `
 
 `crop(png, box) -> bytes`. `box` is `[y0, x0, y1, x1]` on the 1000-grid. A crop whose longest side is under 512 is scaled by 4 with `Image.NEAREST`. RGB PNG, `compress_level` 1.
 
-`mark(png, areas) -> bytes`. Draws each `(label, [y0, x0, y1, x1])` as a red rectangle of width 3 and a yellow default-font label. `GetCursorPos` supplies the cursor. A white arrow with a black outline is drawn with its tip at that point, scaled from `screen_size` onto this picture. The tip vertex is the black outline. The bytes passed in are not changed.
+`mark(png, areas) -> bytes`. Draws each `(label, [y0, x0, y1, x1])` as a red rectangle of width 3 and a yellow default-font label. The bytes passed in are not changed.
+
+`overlay(png, box=None) -> bytes`. Crops when `box` is set, with the same geometry as `crop`. `GetCursorPos` is the point even when Windows is not showing a cursor. On the picture a model is about to see, slim red lines of width 1 cross at that point, a white arrow with a black outline has its tip there, and yellow text on a black plate reads `y` then `x` on that picture's 1000 grid. Gemma 4 names a box `[y, x, y, x]` on a 1000×1000 grid of the image it is given. A crop that does not contain the point is returned without that mark. The bytes passed in are not changed.
 
 `embed(box, inner) -> list`. `inner` is a box on the crop's 1000-grid. Returns that box on the full 1000-grid.
 
@@ -142,7 +144,7 @@ Talks to `user32.SendInput` and `powershell.exe`. Imports no organ. Talked to by
 
 `OWNER` is `owner.name`. `INBOX` is `state/inbox.txt`. `SOURCE` maps `chat` and `consult` to a request, `call` to his voice, and `typed` to a line on the computer. A consult answer is queued as `consult`. The label she reads is still a request. The situation says the line is `up` or `down`.
 
-`SYSTEM` is passed to every `think`, with `{owner.name}` filled in. The first sentence is that assumptions are not allowed: before she clicks, drags, types, or presses she looks or crops, and she copies that result's x and y into the tool with no other numbers. It says she is the one mind, the computer microphone and speakers are not hers, Python carries the call and the chat and the pictures, a call can end while she stays, and she decides from meaning. She keeps working by calling the next tool in the turn. A reply is her deciding to stop. The line being down does not start a turn. `look` boxes one thing, the answer is the words in it or the name when there are none, and the center of that box is the pixel. `facts_block` is appended to every request.
+`SYSTEM` is passed to every `think`, with `{owner.name}` filled in. The first sentence is that assumptions are not allowed: before she clicks, drags, types, or presses she looks or crops, and she copies that result's x and y into the tool with no other numbers. The next sentence is that a name is not proof: after she acts she looks again, and she stops only when that look shows the thing she meant. The picture shows an arrow, slim red lines through its tip, and that tip's y and x on the 1000 grid. A zoom that does not show the arrow and those coordinates missed, and Python does not check. It says she is the one mind, the computer microphone and speakers are not hers, Python carries the call and the chat and the pictures, a call can end while she stays, and she decides from meaning. She keeps working by calling the next tool in the turn. A reply is her deciding to stop. The line being down does not start a turn. `look` boxes one thing, the answer is the words in it or the name when there are none, and the center of that box is the pixel. `facts_block` is appended to every request.
 
 `PASS` is the look schema: `answer` (string, at most 200 characters), `confident` (boolean), and `y`, `x`, `y0`, `x0`, `y1`, `x1` (integers 0 through 1000), all required.
 
@@ -156,15 +158,15 @@ Talks to `user32.SendInput` and `powershell.exe`. Imports no organ. Talked to by
 
 Tools:
 
-- `look` screenshots, marks `seen` and the pointer, crops when given a box, sends that picture, then `ask_json` on the same bytes. The answer is the words in the thing, or the name when there are none. The center of the box is pixel `x`, `y` and the aim. A crop replaces that aim and returns only that pixel.
-- `survey` marks, shrinks to `vision.side`, sends that picture, and returns `brain.survey` on the same bytes.
+- `look` screenshots, marks `seen`, overlays the pointer on that picture, crops when given a box before the overlay, sends that picture, then `ask_json` on the same bytes. The answer is the words in the thing, or the name when there are none. The center of the box is pixel `x`, `y` and the aim. A crop replaces that aim and returns only that pixel. A crop that misses the pointer is not rejected.
+- `survey` marks, shrinks to `vision.side`, overlays the pointer, sends that picture, and returns `brain.survey` on the same bytes.
 - `crop` is `look` with a box.
-- `click` aims and writes `state/aim.png`. Aim and the marks start empty each turn. A click whose pixel is not the aim returns that pixel and does not press. A click with no aim still presses. If the cursor is more than 2 pixels off the point, the picture is sent and the button does not go down. Otherwise the press happens, then the picture is sent.
+- `click` aims and writes `state/aim.png` with the pointer overlay. Aim and the marks start empty each turn. A click whose pixel is not the aim returns that pixel and does not press. A click with no aim still presses. If the cursor is more than 2 pixels off the point, the picture is sent and the button does not go down. Otherwise the press happens, then the picture is sent.
 - `drag` starts at the aim. Any other start returns that pixel and does not stroke. `type_text`, `press`, and `run` act, including while she is alone.
 - `remember` appends one fact.
 - `call_owner` dials. If he does not answer, the text says so. When he answers, the opening is spoken and he can see the screen.
 - `hang_up` is `final`. The process stays up.
-- `consult` is `final`. She calls it before she guesses, including when a fact is not on the screen. `why` is spoken when the line is up and says she spawned a cursor agent and why. `image` or a box attaches the screen, whole or cropped. That picture is sent to him and written to `state/consult/screen.png`. The reply, or the failure, is sent as text and queued as `consult`. The advisor runs on this machine with the internet, not in ask mode.
+- `consult` is `final`. She calls it before she guesses, including when a fact is not on the screen. `why` is spoken when the line is up and says she spawned a cursor agent and why. `image` or a box attaches the screen, whole or cropped, with the pointer overlay on those bytes. That picture is sent to him and written to `state/consult/screen.png`. The reply, or the failure, is sent as text and queued as `consult`. The advisor runs on this machine with the internet, not in ask mode.
 
 `main()`. `say TEXT` appends that line to `state/inbox.txt`. `call`, `hang`, and `stop` append `/call`, `/hang`, or `/stop`. No command builds `Trident`, starts it, and waits. `stop()` always runs afterward.
 
