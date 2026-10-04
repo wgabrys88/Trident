@@ -134,13 +134,13 @@ Talks to `user32.SendInput` and `powershell.exe`. Imports no organ. Talked to by
 
 ## organs/telegram.py
 
-`Line` is the Telegram voice line. `OWNER` is `owner.telegram_id`. Capture is 48000 Hz. Playback is 16000 Hz into `Segmenter`. `desk_video` sends the primary monitor as a 960×540 camera at `desk_fps`. `start` quits Telegram Desktop, opens the first `tdata` account whose `UserId` is not `OWNER`, and reaches `idle`. `stop` hangs up when the line is up, disconnects, and starts Desktop again. `send_text`, `send_photo`, and `send_file` return immediately when `client` is `None`. `speak` requires the line to be `up` and paces 10 ms microphone frames. PC mic and speakers are not opened.
+`Line` is the Telegram voice line. `OWNER` is `owner.telegram_id`. Capture is 48000 Hz. Playback is 16000 Hz into `Segmenter`. `desk_video` sends the primary monitor as a 960×540 camera at `desk_fps`. `start` quits Telegram Desktop, opens the first `tdata` account whose `UserId` is not `OWNER`, and reaches `idle`. `stop` hangs up when the line is up, disconnects, and starts Desktop again. `send_text`, `send_photo`, and `send_file` return immediately when `client` is `None`. `send_text` sends the whole string, in pieces of 4000 characters when the thought is longer than one Telegram message. `speak` requires the line to be `up` and paces 10 ms microphone frames. PC mic and speakers are not opened.
 
 `python -m organs.telegram` connects and answers a call without sending speech.
 
 ## trident.py
 
-`OWNER` is `owner.name`. `INBOX` is `state/inbox.txt`. `SOURCE` maps `chat` and `consult` to a request, `call` to his voice, `typed` to a line on the computer, and `idle` to her still being at the machine. A consult answer is queued as `consult`. The label she reads is still a request.
+`OWNER` is `owner.name`. `INBOX` is `state/inbox.txt`. `SOURCE` maps `chat`, `consult`, and `idle` to a request, `call` to his voice, and `typed` to a line on the computer. A consult answer is queued as `consult`. The label she reads is still a request. The situation says the line is `up` or `down`.
 
 `SYSTEM` is passed to every `think`, with `{owner.name}` filled in. It says she is the one mind, the computer microphone and speakers are not hers, Python carries the call and the chat and the pictures, a call can end while she stays, and she decides from meaning. `facts_block` is appended to every request.
 
@@ -148,9 +148,9 @@ Talks to `user32.SendInput` and `powershell.exe`. Imports no organ. Talked to by
 
 `consult_prompt` asks for one JSON object with the key `request`. That is the GPT shape. It is not the Grok job sandwich. The text names her tools, says the advisor is on this machine and may use the internet, and says `request` is the next thing she should do. `ask_cursor` runs the latest `%LOCALAPPDATA%\cursor-agent\versions\<date>-<hash>` directory that contains `node.exe`. A name that does not start with a digit, including `dist-package`, is skipped. The command is that directory's `node.exe` and `index.js`, print mode, `--force`, `--sandbox disabled`, `--trust`, `--model` `cloud.model`, text output, workspace `state/consult`. There is no `--mode ask`. It is a local process, not a VM. The stdout is parsed with `json.loads` and the `request` string is returned. Non-zero exit, invalid JSON, or an empty `request` raises `RuntimeError`.
 
-`Trident.start` calls `brain.start()`, `mouth.load()`, `line.start()`, then the worker, inbox, and idle threads. `stop` sets `stopping`, then `line.stop()` and `brain.stop()`.
+`Trident.start` calls `brain.start()`, `mouth.load()`, `line.start()`, `touch()`, then the worker, inbox, and idle threads. `stop` sets `stopping`, then `line.stop()` and `brain.stop()`.
 
-`inbox_loop` sends `state/inbox.txt` to Telegram as a file, then queues each non-empty line as `typed`. A line that starts with `/` is `call`, `hang`, or `stop`. `idle_loop` queues one idle prompt `brain.idle_after` seconds after the last `touch`, while the line is down, the queue is empty, and no turn is running. The single word `idle` is not stored and not delivered, and it does not wake her again. A finished turn that used a tool, with the line down and nothing queued, logs `line is down and she is still working` and wakes her again so the work continues. Chat, call, and typed requests become `task` after the turn. A consult does not.
+`inbox_loop` sends `state/inbox.txt` to Telegram as a file, then queues each non-empty line as `typed`. A line that starts with `/` is `call`, `hang`, or `stop`. `carry` is the task, then the latest request when that request is not the task, then the line that she continues from the latest request: look, consult only when something was not already told, act, and the single word `idle` only when that task is done. With no task, `carry` is the single word `idle`. `idle_loop` queues `carry` `brain.idle_after` seconds after the last `touch`, while the line is down, the queue is empty, and no turn is running. The single word `idle` is not stored and not delivered, and it does not wake her again. A finished turn that used a tool, with the line down and nothing queued, logs `line is down and she is still working` and queues `carry` so the task stays the request. Chat, call, and typed requests become `task` after the turn. A consult does not.
 
 `on_step` runs before the tool. It sends the thought, the tool name, and the arguments as JSON, uncut, with `line.send_text`. A spoken reply is said on an open call, and sent as text when the line is down.
 
@@ -164,7 +164,7 @@ Tools:
 - `remember` appends one fact.
 - `call_owner` dials. If he does not answer, the text says so. When he answers, the opening is spoken and he can see the screen.
 - `hang_up` is `final`. The process stays up.
-- `consult` is `final`. `why` is spoken when the line is up and says she spawned a cursor agent and why. `image` or a box attaches the screen, whole or cropped. That picture is sent to him and written to `state/consult/screen.png`. The reply, or the failure, is sent as text and queued as `consult`. The advisor runs on this machine with the internet, not in ask mode.
+- `consult` is `final`. She calls it before she guesses, including when a fact is not on the screen. `why` is spoken when the line is up and says she spawned a cursor agent and why. `image` or a box attaches the screen, whole or cropped. That picture is sent to him and written to `state/consult/screen.png`. The reply, or the failure, is sent as text and queued as `consult`. The advisor runs on this machine with the internet, not in ask mode.
 
 `main()`. `say TEXT` appends that line to `state/inbox.txt`. `call`, `hang`, and `stop` append `/call`, `/hang`, or `/stop`. No command builds `Trident`, starts it, and waits. `stop()` always runs afterward.
 

@@ -23,10 +23,10 @@ SYSTEM = (
     "The screen may be Paint, a browser, a film, a camera, or a game. Deal with whatever is in front of you.\n"
     "When the line is up, he can see the screen. The computer's microphone and speakers are not your ears or your mouth. Python carries the call, the chat, and the pictures. You do not operate that wire. "
     "Python sends him the request, your thought, the tool, the arguments, and every picture you are asked to read, in that same form.\n"
-    "A call can end and you stay at the machine. While he is away you keep working.\n"
+    "A call can end and you stay at the machine. While he is away you keep working. The line being down is not a new task and not a reason to stop.\n"
     "look names one thing and returns its box. crop reads that box and returns the pixel. Aim at that pixel, then click or drag. type_text types the text you pass. press is a key. run is one PowerShell command. "
     "survey is the other local model. When your own look is not good enough, send survey the picture, take the answer, and act.\n"
-    "When you do not understand, you are replanning, or you are stuck, call consult. consult spawns a cursor agent on this machine, and that agent can use this machine and the internet. "
+    "When you do not understand, you are replanning, you are stuck, or you do not know a fact that is not on the screen, call consult before you guess. consult spawns a cursor agent on this machine, and that agent can use this machine and the internet. "
     "why is spoken to him if the line is up, so why says that you spawned a cursor agent and the reason. "
     "Python tells that agent who you are, which tools you have, the request you are on, and the picture if you attached one. "
     "The answer comes back as the next request, the same form as his, and you are not told which requests are his. Continue from the meaning.\n"
@@ -34,8 +34,7 @@ SYSTEM = (
     f"You are Gemma, the one mind on {OWNER}'s computer. Decide, then one tool or a short reply."
 )
 PASS = {"type": "object", "properties": {"answer": {"type": "string", "maxLength": 200}, "confident": {"type": "boolean"}, "y": {"type": "integer", "minimum": 0, "maximum": 1000}, "x": {"type": "integer", "minimum": 0, "maximum": 1000}, "y0": {"type": "integer", "minimum": 0, "maximum": 1000}, "x0": {"type": "integer", "minimum": 0, "maximum": 1000}, "y1": {"type": "integer", "minimum": 0, "maximum": 1000}, "x1": {"type": "integer", "minimum": 0, "maximum": 1000}}, "required": ["answer", "confident", "y", "x", "y0", "x0", "y1", "x1"]}
-SOURCE = {"chat": "a request", "consult": "a request", "call": "his voice on the call", "typed": "a line he typed on the computer", "idle": "you are still at the machine"}
-IDLE = "You are still at the machine. Continue the work, look, consult, or call him. If there is nothing to do, answer with the single word idle."
+SOURCE = {"chat": "a request", "consult": "a request", "call": "his voice on the call", "typed": "a line he typed on the computer", "idle": "a request"}
 
 
 def _box(y0, x0, y1, x1):
@@ -93,6 +92,7 @@ class Trident:
         self.brain.start()
         self.mouth.load()
         self.line.start()
+        self.touch()
         threading.Thread(target=self.worker, name="trident-worker", daemon=True).start()
         threading.Thread(target=self.inbox_loop, name="trident-inbox", daemon=True).start()
         threading.Thread(target=self.idle_loop, name="trident-idle", daemon=True).start()
@@ -128,7 +128,7 @@ class Trident:
             quiet_for = time.monotonic() - self.last_activity
             if quiet_for >= CONFIG["brain"]["idle_after"] and not self.idle_sent and not self.busy and not self.line.up and self.events.empty():
                 self.idle_sent = True
-                self.events.put(("idle", IDLE))
+                self.events.put(("idle", self.carry()))
 
     def worker(self):
         while not self.stopping.is_set():
@@ -163,7 +163,7 @@ class Trident:
         if not self.line.up and self.used_tool and self.events.empty():
             LOG.info("line is down and she is still working")
             self.idle_sent = True
-            self.events.put(("idle", IDLE))
+            self.events.put(("idle", self.carry()))
 
     def command(self, name: str):
         if name == "call":
@@ -185,7 +185,7 @@ class Trident:
         self.request = text
         self.note = ""
         self.used_tool = False
-        situation = f"[{time.strftime('%H:%M')} | line {self.line.state} | {SOURCE[kind]}]"
+        situation = f"[{time.strftime('%H:%M')} | line {'up' if self.line.up else 'down'} | {SOURCE[kind]}]"
         reply = self.brain.think(SYSTEM, self.tools(), self.memory.history(), f"{situation}\n{text}{self.memory.facts_block()}", on_step=self.on_step)
         spoken = reply.text.strip()
         if spoken.lower().strip(".") == "idle":
@@ -195,6 +195,17 @@ class Trident:
         if kind in ("chat", "call", "typed"):
             self.memory.set_task(text)
         return spoken
+
+    def carry(self) -> str:
+        task = self.memory.task.strip()
+        if not task:
+            return "Answer with the single word idle."
+        latest = ""
+        if self.memory.turns:
+            last_user = str(self.memory.turns[-1][0]).strip()
+            if last_user and last_user != task and "The line is down." not in last_user:
+                latest = "\n" + last_user
+        return f"{task}{latest}\nThe line is down. Continue from the latest request. Look. If you are stuck on something you were not already told, consult, then act. When it is done, answer with the single word idle."
 
     def deliver(self, text: str):
         if not text:
@@ -321,7 +332,7 @@ class Trident:
             "remember": Tool("remember", "Store one short fact. It is appended to every later request. Use it when he says how to reach him, including when not to bother him. You still decide.", {"fact": {"description": "The fact.", "type": "STRING"}}, remember),
             "call_owner": Tool("call_owner", f"Call {OWNER}. When he answers he can see the screen. The opening is the first thing he hears.", {"opening": {"description": "The first sentence he hears.", "type": "STRING"}}, call_owner, optional=("opening",)),
             "hang_up": Tool("hang_up", "End the call and stay at the machine. Say nothing after it.", {}, hang_up, final=True),
-            "consult": Tool("consult", "Spawn a cursor agent on this machine when you do not understand, you are replanning, or you are stuck. The agent can use this machine and the internet. why is spoken on the call: say that you spawned a cursor agent and the reason. The answer comes back as the next request. Python sends who you are, your tools, the request you are on, and the picture. image true attaches the screen. A box attaches only that part.", {"why": {"description": "The sentence he hears: you spawned a cursor agent, and why.", "type": "STRING"}, "question": {"description": "What the cursor agent should decide.", "type": "STRING"}, "image": {"description": "Attach the screen.", "type": "BOOLEAN"}, "y0": {"description": "Part top, 0 to 1000. Omit for the whole screen.", "type": "INTEGER"}, "x0": {"description": "Part left, 0 to 1000.", "type": "INTEGER"}, "y1": {"description": "Part bottom, 0 to 1000.", "type": "INTEGER"}, "x1": {"description": "Part right, 0 to 1000.", "type": "INTEGER"}}, consult, optional=("image", "y0", "x0", "y1", "x1"), final=True),
+            "consult": Tool("consult", "Spawn a cursor agent on this machine when you do not understand, you are replanning, you are stuck, or you do not know a fact that is not on the screen. Call it before you guess. The agent can use this machine and the internet. why is spoken on the call: say that you spawned a cursor agent and the reason. The answer comes back as the next request. Python sends who you are, your tools, the request you are on, and the picture. image true attaches the screen. A box attaches only that part.", {"why": {"description": "The sentence he hears: you spawned a cursor agent, and why.", "type": "STRING"}, "question": {"description": "What the cursor agent should decide.", "type": "STRING"}, "image": {"description": "Attach the screen.", "type": "BOOLEAN"}, "y0": {"description": "Part top, 0 to 1000. Omit for the whole screen.", "type": "INTEGER"}, "x0": {"description": "Part left, 0 to 1000.", "type": "INTEGER"}, "y1": {"description": "Part bottom, 0 to 1000.", "type": "INTEGER"}, "x1": {"description": "Part right, 0 to 1000.", "type": "INTEGER"}}, consult, optional=("image", "y0", "x0", "y1", "x1"), final=True),
         }
 
 

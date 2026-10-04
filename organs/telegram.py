@@ -202,7 +202,10 @@ class Line:
     def send_text(self, text: str):
         if self.client is None:
             return
-        self._await(self.client.send_message(self.owner, text), 30)
+        for offset in range(0, max(len(text), 1), 4000):
+            piece = text[offset:offset + 4000]
+            if piece:
+                self._await(self.client.send_message(self.owner, piece), 30)
 
     def send_photo(self, png: bytes, caption: str = ""):
         if self.client is None:
