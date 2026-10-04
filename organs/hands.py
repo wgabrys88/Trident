@@ -134,6 +134,65 @@ def type_text(text: str) -> None:
         time.sleep(0.01)
 
 
+def interactive_controls(title: str = "") -> list[tuple[str, int, int, int, int]]:
+    """Named interactive controls on one window, in screen pixels.
+
+    title "" reads the foreground window. Pass a window title, for example
+    "Untitled - Paint", when that window is not in front. Each item is
+    (name, x, y, width, height), origin top left. Draw these boxes and names
+    on the screenshot before a model reads it. A browser, a dialog, or another
+    program is the same call with that window's title. The PowerShell that
+    reads UI Automation is written under state, run, and deleted.
+    """
+    from organs import state_dir
+    script = (
+        "param([string]$Title)\n"
+        "Add-Type -AssemblyName UIAutomationClient\n"
+        "if ($Title) {\n"
+        "  $root = [System.Windows.Automation.AutomationElement]::RootElement\n"
+        "  $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, $Title)\n"
+        "  $win = $root.FindFirst([System.Windows.Automation.TreeScope]::Children, $cond)\n"
+        "} else {\n"
+        "  Add-Type -MemberDefinition '[DllImport(\"user32.dll\")] public static extern IntPtr GetForegroundWindow();' -Name W -Namespace N\n"
+        "  $win = [System.Windows.Automation.AutomationElement]::FromHandle([N.W]::GetForegroundWindow())\n"
+        "}\n"
+        "if (-not $win) { exit 0 }\n"
+        "$keep = @('ControlType.Button','ControlType.MenuItem','ControlType.ListItem','ControlType.RadioButton','ControlType.CheckBox','ControlType.Edit','ControlType.ComboBox','ControlType.Hyperlink','ControlType.TabItem','ControlType.SplitButton','ControlType.Slider','ControlType.Spinner','ControlType.TreeItem','ControlType.DataItem')\n"
+        "$all = $win.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)\n"
+        "for ($i = 0; $i -lt $all.Count; $i++) {\n"
+        "  $e = $all[$i]\n"
+        "  $n = $e.Current.Name\n"
+        "  if (-not $n) { continue }\n"
+        "  $t = $e.Current.ControlType.ProgrammaticName\n"
+        "  if ($keep -notcontains $t) { continue }\n"
+        "  $r = $e.Current.BoundingRectangle\n"
+        "  if ($r.Width -lt 4 -or $r.Height -lt 4) { continue }\n"
+        "  Write-Output (\"{0},{1},{2},{3}|{4}\" -f [int]$r.X, [int]$r.Y, [int]$r.Width, [int]$r.Height, $n)\n"
+        "}\n"
+    )
+    path = state_dir() / "controls.ps1"
+    path.write_text(script, encoding="utf-8")
+    try:
+        args = ["powershell.exe", "-NoProfile", "-NonInteractive", "-File", str(path)]
+        if title:
+            args += ["-Title", title]
+        done = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, creationflags=subprocess.CREATE_NO_WINDOW)
+    finally:
+        path.unlink(missing_ok=True)
+    found: dict[str, tuple[int, int, int, int]] = {}
+    for line in (done.stdout or "").splitlines():
+        head, _, name = line.partition("|")
+        parts = head.split(",")
+        if len(parts) != 4 or not name.strip():
+            continue
+        x, y, w, h = (int(v) for v in parts)
+        name = name.strip()
+        old = found.get(name)
+        if old is None or w * h < old[2] * old[3]:
+            found[name] = (x, y, w, h)
+    return [(name, *box) for name, box in found.items()]
+
+
 def run(command: str, timeout: int = 25) -> str:
     text = command.strip()
     found = shutil.which(text) if text and not any(c in text for c in " \t;&|$<>") else None

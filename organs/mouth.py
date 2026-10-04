@@ -1,4 +1,5 @@
 import re
+import sys
 import time
 import unicodedata
 
@@ -34,6 +35,17 @@ class Mouth:
         self.sr = int(self.model.sr)
         LOG.info("mouth ready at %d Hz", self.sr)
 
+    def unload(self):
+        model = self.model
+        self.model = None
+        if model is None:
+            return
+        del model
+        import gc
+        import torch
+        gc.collect()
+        torch.cuda.empty_cache()
+
     def _wav(self, text: str) -> np.ndarray:
         self.load()
         return self.model.generate(text).squeeze().cpu().numpy().astype(np.float32)
@@ -61,3 +73,10 @@ def pcm48(samples: np.ndarray, rate: int) -> bytes:
         count = int(len(samples) * 48000 / rate)
         samples = np.interp(np.linspace(0, len(samples) - 1, count), np.arange(len(samples)), samples)
     return (np.clip(samples, -1, 1) * 32767).astype(np.int16).tobytes()
+
+
+if __name__ == "__main__":
+    mouth = Mouth()
+    mouth.load()
+    audio = list(mouth.pieces(sys.stdin.read()))
+    sys.stdout.buffer.write(pcm48(np.concatenate(audio), mouth.sr))

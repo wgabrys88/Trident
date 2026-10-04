@@ -84,6 +84,39 @@ def _pointer(image: Image.Image, px: int, py: int) -> None:
     draw.text((tx, ty), text, fill=(255, 255, 0), font=font)
 
 
+def _controls(image: Image.Image, src_w: int, src_h: int, left: int, top: int, scale: int) -> None:
+    from organs.hands import interactive_controls
+    sw, sh = screen_size()
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.load_default(size=28)
+    placed = []
+    for name, x, y, w, h in sorted(interactive_controls(), key=lambda row: (row[2], row[1])):
+        ix = (x * src_w / sw - left) * scale
+        iy = (y * src_h / sh - top) * scale
+        iw = max(1, w * src_w / sw * scale)
+        ih = max(1, h * src_h / sh * scale)
+        if ix + iw < 0 or iy + ih < 0 or ix >= image.width or iy >= image.height:
+            continue
+        draw.rectangle((ix, iy, ix + iw, iy + ih), outline=(0, 255, 255), width=2)
+        gy = min(1000, max(0, round((iy + ih / 2) / image.height * 1000)))
+        gx = min(1000, max(0, round((ix + iw / 2) / image.width * 1000)))
+        label = f"y {gy} x {gx} {name}"
+        tw = int(draw.textlength(label, font=font))
+        placed.append((ix + iw / 2, iy + ih / 2, label, tw))
+    if not placed:
+        return
+    line_h, col_w = 30, 420
+    per = max(1, image.height // line_h)
+    cols = (len(placed) + per - 1) // per
+    x0 = max(0, image.width - cols * col_w)
+    for i, (cx, cy, label, tw) in enumerate(placed):
+        lx = x0 + (i // per) * col_w
+        ly = (i % per) * line_h
+        draw.line((cx, cy, lx, ly + 11), fill=(0, 255, 255), width=1)
+        draw.rectangle((lx, ly, min(image.width - 1, lx + tw + 2), ly + line_h - 2), fill=(0, 0, 0))
+        draw.text((lx + 1, ly), label, fill=(0, 255, 255), font=font)
+
+
 def overlay(png: bytes, box: list | None = None) -> bytes:
     src = Image.open(io.BytesIO(png)).convert("RGB")
     src_w, src_h = src.size
@@ -98,6 +131,7 @@ def overlay(png: bytes, box: list | None = None) -> bytes:
         image = src
         left = top = 0
         span_w, span_h, scale = src_w, src_h, 1
+    _controls(image, src_w, src_h, left, top, scale)
     point = wintypes.POINT()
     if user32.GetCursorPos(ctypes.byref(point)):
         sw, sh = screen_size()

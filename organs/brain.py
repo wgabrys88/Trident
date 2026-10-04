@@ -170,11 +170,21 @@ class Brain:
         raise TimeoutError("llama-server did not become ready")
 
     def stop(self):
-        if self.proc is not None and self.proc.poll() is None:
-            self.proc.terminate()
-            self.proc.wait(10)
+        proc = self.proc
         self.proc = None
         self.marker = None
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait(5)
+        if self.alive():
+            subprocess.run(["taskkill", "/IM", "llama-server.exe", "/F"], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        deadline = time.monotonic() + 20
+        while self.alive() and time.monotonic() < deadline:
+            time.sleep(0.2)
 
     def survey(self, png: bytes, question: str) -> str:
         self.stop()

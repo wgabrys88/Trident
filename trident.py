@@ -11,7 +11,6 @@ from organs import CONFIG, log, state_dir
 from organs.brain import Brain, Tool
 from organs.ears import transcribe, write_wav
 from organs.memory import Memory
-from organs.mouth import Mouth, pcm48
 from organs.telegram import Line
 
 LOG = log("trident")
@@ -19,25 +18,25 @@ OWNER = CONFIG["owner"]["name"]
 INBOX = state_dir() / "inbox.txt"
 
 SYSTEM = (
-    "Assumptions are not allowed: before you click, drag, type, or press you look or crop, and you copy that result's x and y into the tool with no other numbers.\n"
+    "Assumptions are not allowed. A number you were not just given is not a place. You do not invent a pixel, a click, or a result, and you do not say that one happened. If the tool says the pixel is, the click did not happen, and that named pixel is the one you were given. A stroke starts at the latest pixel a look returned and ends at another pixel a look in this turn returned.\n"
     "A name is not proof. After you act, look again, and stop only when that look shows the thing you meant.\n"
     "The picture shows an arrow, slim red lines through its tip, and that tip's y and x on the 1000 grid. A zoom of that pointer that does not show the arrow and those coordinates missed.\n"
-    "A small icon is read by cropping its row. The whole picture is too coarse for it.\n"
+    "The picture draws a cyan box around each named control in the foreground window. A list on the picture gives each one as y then x on that picture's 1000 grid, and a cyan line joins that line to its box. That box is the control.\n"
     f"You are Gemma, the one mind on {OWNER}'s computer. He calls you, or you call him, and you talk. You are not a task runner. You decide from the meaning of what is said and what is on the screen.\n"
     "The screen may be Paint, a browser, a film, a camera, or a game. Deal with whatever is in front of you.\n"
     "When the line is up, he can see the screen. The computer's microphone and speakers are not your ears or your mouth. Python carries the call, the chat, and the pictures. You do not operate that wire. "
     "Python sends him the request, your thought, the tool, the arguments, and every picture you are asked to read, in that same form.\n"
     "A call can end and you stay at the machine. You keep working by calling the next tool in this turn. A reply means you decided to stop. The line being down does not start a turn.\n"
-    "look boxes one thing. The answer is the words written in it, or what is drawn when there are no words. It returns the box and the center pixel. crop reads that box and returns the pixel. Aim at that pixel, then click or drag. type_text types the text you pass. press is a key. run is one PowerShell command. "
+    "look boxes one thing. The answer is the words written in it, or what is drawn when there are no words. It returns the box and the center pixel. crop reads that box and returns the pixel. Aim at that pixel, then click or drag. controls lists named controls. type_text types the text you pass. press is a key. run is one PowerShell command. "
     "survey is the other local model. When your own look is not good enough, send survey the picture, take the answer, and act.\n"
-    "When you do not understand, you are replanning, you are stuck, or you do not know a fact that is not on the screen, call consult before you guess. consult spawns a cursor agent on this machine, and that agent can use this machine and the internet. "
+    "Consult often, before you trust a look and before you guess. Attach the picture when the question is about the screen. consult spawns a cursor agent on this machine, and that agent can use this machine and the internet. "
     "why is spoken to him if the line is up, so why says that you spawned a cursor agent and the reason. "
     "Python tells that agent who you are, which tools you have, the request you are on, and the picture if you attached one. "
     "The answer comes back as the next request, the same form as his, and you are not told which requests are his. Continue from the meaning.\n"
     "remember stores one short fact. Those facts are appended to every request. If he asks you not to bother him, remember it. You may still call him. call_owner calls him. hang_up ends the call and you stay.\n"
     f"You are Gemma, the one mind on {OWNER}'s computer. Decide, then one tool or a short reply."
 )
-PASS = {"type": "object", "properties": {"answer": {"type": "string", "maxLength": 200}, "confident": {"type": "boolean"}, "y": {"type": "integer", "minimum": 0, "maximum": 1000}, "x": {"type": "integer", "minimum": 0, "maximum": 1000}, "y0": {"type": "integer", "minimum": 0, "maximum": 1000}, "x0": {"type": "integer", "minimum": 0, "maximum": 1000}, "y1": {"type": "integer", "minimum": 0, "maximum": 1000}, "x1": {"type": "integer", "minimum": 0, "maximum": 1000}}, "required": ["answer", "confident", "y", "x", "y0", "x0", "y1", "x1"]}
+PASS = {"type": "object", "properties": {"answer": {"type": "string", "maxLength": 200}, "confident": {"type": "boolean"}, "y": {"type": "integer", "minimum": 0, "maximum": 1000}, "x": {"type": "integer", "minimum": 0, "maximum": 1000}, "y0": {"type": "integer", "minimum": 0, "maximum": 1000}, "x0": {"type": "integer", "minimum": 0, "maximum": 1000}, "y1": {"type": "integer", "minimum": 0, "maximum": 1000}, "x1": {"type": "integer", "minimum": 0, "maximum": 1000}}, "required": ["answer", "confident"]}
 SOURCE = {"chat": "a request", "consult": "a request", "call": "his voice on the call", "typed": "a line he typed on the computer"}
 
 
@@ -52,7 +51,7 @@ def consult_prompt(question: str, request: str, memory: str, pictured: bool) -> 
         f"{picture}The whole reply is one JSON object with the key request. "
         f"You are advising Gemma, the one mind on {OWNER}'s computer. "
         "You are on this machine, not a virtual machine. Run commands here and use the internet. Do not edit files. "
-        "Her tools are look, survey, crop, click, drag, type_text, press, run, remember, call_owner, hang_up, and consult. "
+        "Her tools are look, survey, crop, click, drag, controls, type_text, press, run, remember, call_owner, hang_up, and consult. "
         "look's answer is the words written in the thing, or what is drawn when there are no words. "
         "request is the next thing she should do, with no mention of a model. "
         f"She is on: {request}\n{memory}\n{question.strip()}"
@@ -79,7 +78,6 @@ def ask_cursor(folder: Path, question: str, request: str, memory: str, pictured:
 class Trident:
     def __init__(self):
         self.brain = Brain()
-        self.mouth = Mouth()
         self.memory = Memory()
         self.events: queue.Queue = queue.Queue()
         self.stopping = threading.Event()
@@ -92,7 +90,6 @@ class Trident:
 
     def start(self):
         self.brain.start()
-        self.mouth.load()
         self.line.start()
         threading.Thread(target=self.worker, name="trident-worker", daemon=True).start()
         threading.Thread(target=self.inbox_loop, name="trident-inbox", daemon=True).start()
@@ -133,7 +130,11 @@ class Trident:
         if kind == "call":
             wav = write_wav(state_dir() / "call.wav", payload)
             self.line.send_file(wav.read_bytes(), wav.name)
-            text, language = transcribe(wav)
+            self.brain.stop()
+            try:
+                text, language = transcribe(wav)
+            finally:
+                self.brain.start()
             LOG.info("heard (%s, %s): %s", kind, language, text)
             if not text:
                 return
@@ -183,14 +184,15 @@ class Trident:
             self.line.send_text(text)
 
     def speak(self, text: str):
-        pieces = self.mouth.pieces(text)
-        first = next(pieces)
-        worker = threading.Thread(target=self.line.speak, args=(pcm48(first, self.mouth.sr),))
-        worker.start()
-        rest = list(pieces)
-        worker.join()
-        if rest:
-            self.line.speak(pcm48(rest[0], self.mouth.sr))
+        self.brain.stop()
+        try:
+            done = subprocess.run([sys.executable, "-m", "organs.mouth"], input=text.encode("utf-8"), capture_output=True, timeout=600, creationflags=subprocess.CREATE_NO_WINDOW)
+            if done.returncode == 0 and done.stdout:
+                self.line.speak(done.stdout)
+            else:
+                LOG.error("mouth %s", (done.stderr or b"").decode("utf-8", "replace")[-400:])
+        finally:
+            self.brain.start()
 
     def tools(self) -> dict[str, Tool]:
         from organs import eyes, hands
@@ -199,17 +201,22 @@ class Trident:
             box = _box(y0, x0, y1, x1)
             png = eyes.overlay(eyes.mark(eyes.screenshot(), self.seen), box)
             self.line.send_photo(png, prompt)
-            words = f"Box only {prompt}, tight around it. y and x are its center. The answer is what is drawn. Do not copy the question into the answer."
+            words = f"Do not assume a place. Read the list line for {prompt}. Copy its y and x into y, x, y0, x0, y1, and x1. The answer is that name. If you cannot read that line, confident is false and you omit every number. The pointer text is not a list line."
             data = self.brain.ask_json(words, PASS, png)
-            got = [data["y0"], data["x0"], data["y1"], data["x1"]]
-            self.seen.append((str(data["answer"])[:16], eyes.embed(box, got) if box else got))
-            found = {"answer": str(data["answer"]), "confident": data["confident"] is True, "y0": data["y0"], "x0": data["x0"], "y1": data["y1"], "x1": data["x1"]}
-            if box:
-                found["x"], found["y"] = eyes.point_px(box, (data["y0"] + data["y1"]) / 2, (data["x0"] + data["x1"]) / 2)
+            found = {"answer": str(data["answer"]), "confident": data["confident"] is True}
+            keys = ("y0", "x0", "y1", "x1")
+            if found["confident"] and all(k in data for k in keys):
+                got = [data[k] for k in keys]
+                self.seen.append((found["answer"][:16], eyes.embed(box, got) if box else got))
+                found.update({k: data[k] for k in keys})
+                if box:
+                    found["x"], found["y"] = eyes.point_px(box, (data["y0"] + data["y1"]) / 2, (data["x0"] + data["x1"]) / 2)
+                else:
+                    found["x"], found["y"] = eyes.center_px(got)
+                self.aim = (found["x"], found["y"])
             else:
-                found["x"], found["y"] = eyes.center_px([data["y0"], data["x0"], data["y1"], data["x1"]])
-            self.aim = (found["x"], found["y"])
-            if box:
+                self.aim = None
+            if box and "x" in found:
                 return {"answer": found["answer"], "confident": found["confident"], "x": found["x"], "y": found["y"]}
             return found
 
@@ -250,6 +257,10 @@ class Trident:
 
         def run(command: str):
             return hands.run(command)
+
+        def controls():
+            rows = hands.interactive_controls()
+            return "\n".join(f"{x + w // 2} {y + h // 2} {name}" for name, x, y, w, h in rows) or "none"
 
         def remember(fact: str):
             self.memory.remember(fact)
@@ -297,6 +308,7 @@ class Trident:
             "drag": Tool("drag", "One straight stroke. Start at the x and y look or crop returned.", {"x0": {"description": "Start pixel x.", "type": "INTEGER"}, "y0": {"description": "Start pixel y.", "type": "INTEGER"}, "x1": {"description": "End pixel x.", "type": "INTEGER"}, "y1": {"description": "End pixel y.", "type": "INTEGER"}}, drag),
             "type_text": Tool("type_text", "Type the text argument exactly, every word of it, where the cursor is.", {"text": {"description": "The text to type, every word.", "type": "STRING"}}, type_text),
             "press": Tool("press", "Press a key, for example enter, escape, tab, or ctrl-a.", {"keys": {"description": "The key or chord.", "type": "STRING"}}, press),
+            "controls": Tool("controls", "Named controls in the foreground window. Each line is the center pixel, then the name. A name is not proof.", {}, controls),
             "run": Tool("run", "One PowerShell command. A program is Start-Process and its executable name. Start-Sleep -Seconds N waits.", {"command": {"description": "The PowerShell command.", "type": "STRING"}}, run),
             "remember": Tool("remember", "Store one short fact. It is appended to every later request. Use it when he says how to reach him, including when not to bother him. You still decide.", {"fact": {"description": "The fact.", "type": "STRING"}}, remember),
             "call_owner": Tool("call_owner", f"Call {OWNER}. When he answers he can see the screen. The opening is the first thing he hears.", {"opening": {"description": "The first sentence he hears.", "type": "STRING"}}, call_owner, optional=("opening",)),

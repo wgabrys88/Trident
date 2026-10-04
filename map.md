@@ -10,11 +10,11 @@ Tracked files: `.gitattributes`, `.gitignore`, `LICENSE`, `config.toml`, `instal
 
 `[paths]` `models` = models, `bin` = bin, `state` = state. Read by `organs`, `install`, `brain`.
 
-`[brain]` `model` = gemma-4-E2B-it-Q4_0.gguf, `mmproj` = mmproj-gemma-4-E2B-it-Q8_0.gguf, `host` = 127.0.0.1, `port` = 8080, `context` = 16384, `slots` = 2, `gpu_layers` = 999, `threads` = 4, `image_tokens` = 560, `ubatch` = 1024, `temperature` = 0, `top_k` = 64, `top_p` = 0.95, `min_p` = 0.05, `max_tokens` = 1024, `max_tool_steps` = 20. Read by `brain`. `model` and `mmproj` also by `install`.
+`[brain]` `model` = gemma-4-E2B-it-Q4_0.gguf, `mmproj` = mmproj-gemma-4-E2B-it-Q8_0.gguf, `host` = 127.0.0.1, `port` = 8080, `context` = 16384, `slots` = 2, `gpu_layers` = 999, `threads` = 4, `image_tokens` = 1120, `ubatch` = 2048, `temperature` = 0, `top_k` = 64, `top_p` = 0.95, `min_p` = 0.05, `max_tokens` = 1024, `max_tool_steps` = 60. Read by `brain`. `model` and `mmproj` also by `install`.
 
 `[eyes]` `max_side` = 1920, `cloud_side` = 480. Read by `eyes`.
 
-`[vision]` `model` = Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf, `mmproj` = mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf, `side` = 1024, `context` = 4096, `slots` = 1, `ubatch` = 1024. Read by `brain` and `trident` (`side`). The two files also by `install`.
+`[vision]` `model` = Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf, `mmproj` = mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf, `side` = 1920, `context` = 4096, `slots` = 1, `ubatch` = 1024. Read by `brain` and `trident` (`side`). The two files also by `install`.
 
 `[cloud]` `model` = gpt-5.6-luna-none. Read by `trident`. Luna is the consult model. Grok 4.7 extra-high is not asked on every consult.
 
@@ -28,15 +28,15 @@ Tracked files: `.gitattributes`, `.gitignore`, `LICENSE`, `config.toml`, `instal
 
 ## Vision budget
 
-Gemma 4 image budgets are 70, 140, 280, 560, and 1120. 1120 is the maximum. llama-server's default `--ubatch-size` is 512. Gemma's vision tokens use non-causal attention, so the image batch has to fit in that micro-batch. The usual bypass is `--ubatch-size 1024`. A batch larger than 1024 still aborts the server, and 1120 is larger than 1024.
+Gemma 4 image budgets are 70, 140, 280, 560, and 1120. 1120 is the maximum, about 2.6 million pixels. A 1920×1080 screen is 2.07 million pixels, so 1120 holds the whole picture and 560 does not. The vision tokens use non-causal attention, so the image batch has to fit in one micro-batch. `ubatch` is 2048. llama-server's default `--batch-size` is 2048, so the 1120 batch fits. A 1120-token image can encode as slightly more than 1120 tokens, and 1024 does not hold that.
 
-On this GTX 1060, a 1120-token look loaded to 5976 MiB before the mouth was loaded. The mouth alone sits at 3576 MiB. The 1120 budget does not fit beside the mouth. The brain stays at 560 image tokens with `ubatch` 1024, which holds that batch. With the mouth resident, one look used 565 prompt tokens, returned valid JSON in 5.7s, and the GPU was at 5990 MiB.
+A 20-pixel icon is smaller than one 1120-token cell on a 1920×1080 frame. `interactive_controls` reads that window and `overlay` draws a cyan box and the name on the picture the model reads.
 
-`survey` is the longer look. It unloads Gemma, loads Qwen2.5-VL-3B, describes the picture, unloads Qwen, and loads Gemma again. Qwen's own server uses `vision.context`, `vision.slots`, and `vision.ubatch`. With the mouth resident an earlier pass took 7.6s and returned 685 characters. On this GTX 1060 the dedicated memory was already full beside the mouth, about 6000 MiB of 6144, while Task Manager's shared total sat near 7.8 GB. Loading Qwen without unloading Gemma left that dedicated memory full and the same picture took 69.7s. The unload, load, describe, unload, and load again took 17.1s, and the description inside it was 7.4s and 603 characters. The swap stays. `look` and `crop` stay on the Gemma server that is already up.
+One model is on the GPU at a time. Gemma, Qwen, the mouth, and the ear each load, run, and exit before the next one loads. The reload is the cheap part. Two of them resident at once spill this GTX 1060 into RAM and the looks crawl. `look` and `crop` use the Gemma server. `survey` stops it, loads Qwen, then stops Qwen and loads Gemma again. The picture `survey` sends is the full screenshot, longest side `vision.side` 1920.
 
 ## organs/__init__.py
 
-Talks to `config.toml` and the `state/` directory. Talked to by `brain`, `ears`, `eyes`, `memory`, `mouth`, `telegram`, `trident`. `hands` does not import it.
+Talks to `config.toml` and the `state/` directory. Talked to by `brain`, `ears`, `eyes`, `hands`, `memory`, `mouth`, `telegram`, `trident`.
 
 `ROOT` is the repo root. `CONFIG` is `config.toml` parsed at import.
 
@@ -64,7 +64,7 @@ Tokens: `BOS` `<bos>`, `TURN_OPEN` `<|turn>`, `TURN_CLOSE` `<turn|>`, `THINK` `<
 
 `Brain.start(section="brain")`. Returns immediately when `alive()`. Otherwise runs `bin/llama/llama-server.exe`. `section="brain"` uses `paths` from `path_of("brain", ...)`, `brain.context`, `brain.slots`, `brain.ubatch`, and both `--image-min-tokens` and `--image-max-tokens` set to `brain.image_tokens`. Any other section uses `path_of(section, ...)`, and `vision.context`, `vision.slots`, and `vision.ubatch`, with no image-token flags. Shared flags: `--host`, `--port`, `--n-gpu-layers`, `--threads`, `--flash-attn off`, `--cache-type-k f16`, `--cache-type-v f16`, `--no-webui`, `--log-file state/llama-server.log`. Working directory is the exe directory. Stdio is discarded. Window is hidden. Missing exe raises `FileNotFoundError`. Polls 0.5 s for up to 300 s. Process exit raises `RuntimeError`. Timeout raises `TimeoutError`. On this binary, `--ctx-size 16384 --parallel 2` comes up as `n_slots = 2`, `n_ctx_slot = 8192`.
 
-`Brain.stop()`. If `proc` is still running, `terminate()` and `wait(10)`. Sets `proc` and `marker` to `None`. A server that was already up at `start()` is left running.
+`Brain.stop()`. If `proc` is still running, `terminate()` and `wait(10)`, then `kill` if it is still up. A llama-server that was already listening is ended too, so the next model can load. Waits until the port is down, at most 20 s. Sets `proc` and `marker` to `None`.
 
 `Brain.survey(png, question) -> str`. `stop()`, then `start("vision")`. POST `{url}/v1/chat/completions` with one user message: the PNG as a base64 `image_url`, then `question` plus `List every interactive control and what is happening. The scene may be a desktop, a movie, a camera feed, or a game.` Sampling comes from `temperature`, `top_k`, `top_p`, `min_p`, and `max_tokens`. Timeout 600. Returns the stripped `choices[0].message.content`. Logs `survey` with the elapsed seconds and the character count. `finally` calls `stop()` and `start()` so Gemma is the server again.
 
@@ -102,7 +102,7 @@ Talks to `organs` (`CONFIG`, and `state_dir` in `__main__`), `user32`, and PIL `
 
 `mark(png, areas) -> bytes`. Draws each `(label, [y0, x0, y1, x1])` as a red rectangle of width 3 and a yellow default-font label. The bytes passed in are not changed.
 
-`overlay(png, box=None) -> bytes`. Crops when `box` is set, with the same geometry as `crop`. `GetCursorPos` is the point even when Windows is not showing a cursor. On the picture a model is about to see, slim red lines of width 1 cross at that point, a white arrow with a black outline has its tip there, and yellow text at 32px on a black plate reads `y` then `x` on that picture's 1000 grid. Gemma 4 names a box `[y, x, y, x]` on a 1000×1000 grid of the image it is given. A crop that does not contain the point is returned without that mark. The bytes passed in are not changed.
+`overlay(png, box=None) -> bytes`. Crops when `box` is set, with the same geometry as `crop`. It draws each named interactive control from `interactive_controls` as a cyan box, then a list of `y` then `x` on that picture's 1000 grid with a cyan line to that box, then the pointer. `GetCursorPos` is the point even when Windows is not showing a cursor. On the picture a model is about to see, slim red lines of width 1 cross at that point, a white arrow with a black outline has its tip there, and yellow text at 32px on a black plate reads `y` then `x` on that picture's 1000 grid. Gemma 4 names a box `[y, x, y, x]` on a 1000×1000 grid of the image it is given. A crop that does not contain the point is returned without that mark. A control outside the crop is not drawn. The bytes passed in are not changed.
 
 `embed(box, inner) -> list`. `inner` is a box on the crop's 1000-grid. Returns that box on the full 1000-grid.
 
@@ -112,7 +112,7 @@ Talks to `organs` (`CONFIG`, and `state_dir` in `__main__`), `user32`, and PIL `
 
 ## organs/hands.py
 
-Talks to `user32.SendInput` and `powershell.exe`. Imports no organ. Talked to by `trident.tools`. At import, `SetProcessDpiAwarenessContext(-4)`.
+Talks to `user32.SendInput`, `powershell.exe`, and `state_dir` when listing controls. Talked to by `trident.tools` and `eyes.overlay`. At import, `SetProcessDpiAwarenessContext(-4)`.
 
 `aim(x, y) -> (x, y)`. `SetCursorPos`, then an absolute move, then `GetCursorPos`. `strike(x, y, how)` presses. `click(x, y, how="left")` aims, then strikes, and returns the cursor position from before the press. `right` uses the right button. `double` adds a second left down/up. Any other `how` uses the left button.
 
@@ -121,6 +121,8 @@ Talks to `user32.SendInput` and `powershell.exe`. Imports no organ. Talked to by
 `press(keys)`. Space-separated chords. `+` and `-` split a chord. An unknown name raises `KeyError`.
 
 `type_text(text)`. A character the foreground layout can type is that virtual key, with shift, ctrl, or alt when the layout asks for them. Anything else is a Unicode key, one UTF-16 unit at a time.
+
+`interactive_controls(title="") -> list`. Named interactive controls on one window: `(name, x, y, width, height)` in screen pixels. An empty title is the foreground window. A title such as `Untitled - Paint` reads that window when it is not in front. A browser, a dialog, or another program is the same call with that window's title. A repeated name keeps the smaller rectangle. The PowerShell is written to `state/controls.ps1`, run, and deleted.
 
 `run(command, timeout=25) -> str`. Hidden `powershell.exe`, the `start` alias removed. A command that is only a name, when that name is a zero-byte file, is `Start-Process -FilePath` and that name. Timeout returns `timed out`. A command whose stripped lowercase text starts with `start-process` waits 1.5 s. Empty output returns `exit {code}` when the code is non-zero, otherwise `ok`.
 
@@ -132,7 +134,7 @@ Talks to `user32.SendInput` and `powershell.exe`. Imports no organ. Talked to by
 
 ## organs/mouth.py
 
-`ChatterboxTurboTTS.from_pretrained(mouth.device)`, then `prepare_conditionals` on `path_of("mouth", "reference")`, which is `reference.wav`. `speakable` keeps letters, digits, punctuation, and the tags `laugh`, `chuckle`, `sigh`, `gasp`, `cough`, `clear throat`, `sniff`, `groan`. `pieces` yields 24 kHz float32 audio: the first yield is about ten seconds, and a second yield is the rest when words remain. `pcm48` resamples to 48000 Hz signed 16-bit mono. Nothing is played on the PC speakers.
+`python -m organs.mouth` reads the text on stdin, loads `ChatterboxTurboTTS` on `mouth.device`, calls `prepare_conditionals` on `path_of("mouth", "reference")`, which is `reference.wav`, writes pcm48 on stdout, and exits. That exit is what gives the GPU back. `speakable` keeps letters, digits, punctuation, and the tags `laugh`, `chuckle`, `sigh`, `gasp`, `cough`, `clear throat`, `sniff`, `groan`. `pieces` yields 24 kHz float32 audio: the first yield is about ten seconds, and a second yield is the rest when words remain. `pcm48` resamples to 48000 Hz signed 16-bit mono. Nothing is played on the PC speakers. The trident process does not import torch.
 
 ## organs/telegram.py
 
@@ -144,13 +146,13 @@ Talks to `user32.SendInput` and `powershell.exe`. Imports no organ. Talked to by
 
 `OWNER` is `owner.name`. `INBOX` is `state/inbox.txt`. `SOURCE` maps `chat` and `consult` to a request, `call` to his voice, and `typed` to a line on the computer. A consult answer is queued as `consult`. The label she reads is still a request. The situation says the line is `up` or `down`.
 
-`SYSTEM` is passed to every `think`, with `{owner.name}` filled in. The first sentence is that assumptions are not allowed: before she clicks, drags, types, or presses she looks or crops, and she copies that result's x and y into the tool with no other numbers. The next sentence is that a name is not proof: after she acts she looks again, and she stops only when that look shows the thing she meant. The picture shows an arrow, slim red lines through its tip, and that tip's y and x on the 1000 grid. A zoom of that pointer that does not show the arrow and those coordinates missed, and Python does not check. A small icon is read by cropping its row, because the whole picture is too coarse for it. It says she is the one mind, the computer microphone and speakers are not hers, Python carries the call and the chat and the pictures, a call can end while she stays, and she decides from meaning. She keeps working by calling the next tool in the turn. A reply is her deciding to stop. The line being down does not start a turn. `look` boxes one thing, the answer is what is drawn, not a copy of the question, and the center of that box is the pixel. `facts_block` is appended to every request.
+`SYSTEM` is passed to every `think`, with `{owner.name}` filled in. The first sentence is that assumptions are not allowed. A number she was not just given is not a place. She does not invent a pixel, a click, or a result, and she does not say that one happened. If the tool says the pixel is, the click did not happen, and that named pixel is the one she was given. A stroke starts at the latest pixel a look returned and ends at another pixel a look in that turn returned. The next sentence is that a name is not proof: after she acts she looks again, and she stops only when that look shows the thing she meant. The picture shows an arrow, slim red lines through its tip, and that tip's y and x on the 1000 grid. A zoom of that pointer that does not show the arrow and those coordinates missed, and Python does not check. The picture draws a cyan box around each named control in the foreground window. A list on the picture gives each one as y then x on that picture's 1000 grid, and a cyan line joins that line to its box. That box is the control. It says she is the one mind, the computer microphone and speakers are not hers, Python carries the call and the chat and the pictures, a call can end while she stays, and she decides from meaning. She keeps working by calling the next tool in the turn. A reply is her deciding to stop. The line being down does not start a turn. `look` boxes one thing, the answer is what is drawn, not a copy of the question, and the center of that box is the pixel. She consults often, before she trusts a look and before she guesses, and she attaches the picture when the question is about the screen. `facts_block` is appended to every request.
 
-`PASS` is the look schema: `answer` (string, at most 200 characters), `confident` (boolean), and `y`, `x`, `y0`, `x0`, `y1`, `x1` (integers 0 through 1000), all required.
+`PASS` is the look schema: `answer` (string, at most 200 characters) and `confident` (boolean) are required. `y`, `x`, `y0`, `x0`, `y1`, `x1` (integers 0 through 1000) are optional, so a look that did not read a place does not have to invent one.
 
 `consult_prompt` asks for one JSON object with the key `request`. That is the GPT shape. It is not the Grok job sandwich. The text names her tools, says `look` answers with the words written in the thing or what is drawn when there are no words, says the advisor is on this machine and may use the internet, and says `request` is the next thing she should do. `ask_cursor` runs the latest `%LOCALAPPDATA%\cursor-agent\versions\<date>-<hash>` directory that contains `node.exe`. A name that does not start with a digit, including `dist-package`, is skipped. The command is that directory's `node.exe` and `index.js`, print mode, `--force`, `--sandbox disabled`, `--trust`, `--model` `cloud.model`, text output, workspace `state/consult`. There is no `--mode ask`. It is a local process, not a VM. The stdout is parsed with `json.loads` and the `request` string is returned. Non-zero exit, invalid JSON, or an empty `request` raises `RuntimeError`.
 
-`Trident.start` calls `brain.start()`, `mouth.load()`, `line.start()`, then the worker and inbox threads. `stop` sets `stopping`, then `line.stop()` and `brain.stop()`.
+`Trident.start` calls `brain.start()`, `line.start()`, then the worker and inbox threads. `stop` sets `stopping`, then `line.stop()` and `brain.stop()`. A call stops Gemma before `transcribe` and starts Gemma again after, because the ear uses the GPU and then exits. `speak` stops Gemma, runs `python -m organs.mouth`, plays the pcm, and starts Gemma again.
 
 `inbox_loop` sends `state/inbox.txt` to Telegram as a file, then queues each non-empty line as `typed`. A line that starts with `/` is `call`, `hang`, or `stop`. Nothing queues the task again when the line is down. She continues only by calling another tool in the turn she was given. Chat, call, and typed requests become `task` after the turn. A consult does not.
 
@@ -158,11 +160,11 @@ Talks to `user32.SendInput` and `powershell.exe`. Imports no organ. Talked to by
 
 Tools:
 
-- `look` screenshots, marks `seen`, overlays the pointer on that picture, crops when given a box before the overlay, sends that picture, then `ask_json` on the same bytes. The answer is what is drawn, not a copy of the question. The center of the box is pixel `x`, `y` and the aim. A crop replaces that aim and returns only that pixel. A crop that misses the pointer is not rejected.
+- `look` screenshots, marks `seen`, overlays the pointer and the control list on that picture, crops when given a box before the overlay, sends that picture, then `ask_json` on the same bytes. The words tell her not to assume a place, to copy the list line, and to omit every number if she cannot read it. The pointer text is not a list line. A confident result that includes the box sets the aim to its center. Any other result returns no pixel and clears the aim. A crop replaces that aim and returns only that pixel. A crop that misses the pointer is not rejected.
 - `survey` marks, shrinks to `vision.side`, overlays the pointer, sends that picture, and returns `brain.survey` on the same bytes.
 - `crop` is `look` with a box.
 - `click` aims and writes `state/aim.png` with the pointer overlay. Aim and the marks start empty each turn. A click whose pixel is not the aim returns that pixel and does not press. A click with no aim still presses. If the cursor is more than 2 pixels off the point, the picture is sent and the button does not go down. Otherwise the press happens, then the picture is sent.
-- `drag` starts at the aim. Any other start returns that pixel and does not stroke. `type_text`, `press`, and `run` act, including while she is alone.
+- `drag` starts at the aim. Any other start returns that pixel and does not stroke. `controls` lists the foreground window's named controls. `type_text`, `press`, and `run` act, including while she is alone.
 - `remember` appends one fact.
 - `call_owner` dials. If he does not answer, the text says so. When he answers, the opening is spoken and he can see the screen.
 - `hang_up` is `final`. The process stays up.
