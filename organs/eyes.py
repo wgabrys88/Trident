@@ -49,6 +49,8 @@ def crop(png: bytes, box: list) -> bytes:
     left, top = round(min(x0, x1) / 1000 * width), round(min(y0, y1) / 1000 * height)
     right, bottom = round(max(x0, x1) / 1000 * width), round(max(y0, y1) / 1000 * height)
     piece = image.crop((left, top, max(right, left + 1), max(bottom, top + 1)))
+    if max(piece.size) < 512:
+        piece = piece.resize((piece.width * 4, piece.height * 4), Image.NEAREST)
     buffer = io.BytesIO()
     piece.save(buffer, format="PNG", compress_level=1)
     return buffer.getvalue()
