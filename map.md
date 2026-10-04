@@ -16,7 +16,7 @@ Tracked files: `.gitattributes`, `.gitignore`, `LICENSE`, `config.toml`, `instal
 
 `[vision]` `model` = Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf, `mmproj` = mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf, `side` = 1024, `context` = 4096, `slots` = 1, `ubatch` = 1024. Read by `brain` and `trident` (`side`). The two files also by `install`.
 
-`[cloud]` `model` = grok-4.7-xhigh. Read by `trident`. The id is the slow extra-high Grok 4.7. This CLI rejected a bracket context override.
+`[cloud]` `model` = gpt-5.6-luna-none. Read by `trident`. Luna is the consult model. Grok 4.7 extra-high is not asked on every consult.
 
 `[ears]` `vad_threshold` = 0.65, `min_silence_ms` = 700, `pad_ms` = 120, `min_utterance_s` = 1.0, `model` = nemotron-3.5-asr-streaming-0.6b.q8_0.gguf. Read by `ears`. `model` also by `install`.
 
@@ -112,7 +112,7 @@ Talks to `organs` (`CONFIG`, and `state_dir` in `__main__`), `user32`, and PIL `
 
 Talks to `user32.SendInput` and `powershell.exe`. Imports no organ. Talked to by `trident.tools`. At import, `SetProcessDpiAwarenessContext(-4)`.
 
-`click(x, y, how="left")`. Move, down, up. `right` uses the right button. `double` adds a second left down/up. Any other `how` uses the left button.
+`aim(x, y) -> (x, y)`. `SetCursorPos`, then an absolute move, then `GetCursorPos`. `strike(x, y, how)` presses. `click(x, y, how="left")` aims, then strikes, and returns the cursor position from before the press. `right` uses the right button. `double` adds a second left down/up. Any other `how` uses the left button.
 
 `drag(x0, y0, x1, y1)`. Left down, ten moves 0.02 s apart, left up.
 
@@ -126,7 +126,7 @@ Talks to `user32.SendInput` and `powershell.exe`. Imports no organ. Talked to by
 
 ## organs/memory.py
 
-`state/memory.json` holds `facts` and `turns`. `remember` appends a new stripped fact. `add_turn` appends both sides. `facts_block` is empty when there are no facts. Every Gemma request appends that block. A wish not to be bothered is a fact, and she still decides. A file that still has `quiet` true gains that fact. `history` returns the stored pairs.
+`state/memory.json` holds `facts`, `task`, and `turns`. `remember` appends a new stripped fact. `add_turn` appends both sides. `set_task` stores the latest chat, call, or typed request. A consult reply does not replace the task. `facts_block` is empty when there are no facts. Every Gemma request appends that block. A wish not to be bothered is a fact, and she still decides. A file that still has `quiet` true gains that fact. `history` returns one pair: the task, or the latest user text when there is no task, and her latest reply. The slot is 8192 tokens. The rest of the day stays in the file.
 
 ## organs/mouth.py
 
@@ -140,30 +140,31 @@ Talks to `user32.SendInput` and `powershell.exe`. Imports no organ. Talked to by
 
 ## trident.py
 
-`OWNER` is `owner.name`. `INBOX` is `state/inbox.txt`. `SOURCE` maps `chat` to a request, `call` to his voice, `typed` to a line on the computer, and `idle` to her still being at the machine. A consult answer is queued as `chat`, so she is not told that it came from the agent.
+`OWNER` is `owner.name`. `INBOX` is `state/inbox.txt`. `SOURCE` maps `chat` and `consult` to a request, `call` to his voice, `typed` to a line on the computer, and `idle` to her still being at the machine. A consult answer is queued as `consult`. The label she reads is still a request.
 
 `SYSTEM` is passed to every `think`, with `{owner.name}` filled in. It says she is the one mind, the computer microphone and speakers are not hers, Python carries the call and the chat and the pictures, a call can end while she stays, and she decides from meaning. `facts_block` is appended to every request.
 
 `PASS` is the look schema: `answer` (string, at most 200 characters), `confident` (boolean), and `y`, `x`, `y0`, `x0`, `y1`, `x1` (integers 0 through 1000), all required.
 
-`consult_prompt` puts the job first, the rules in the middle, and the job again. The rules name her, her tools, and that the reply is handed back as the next request. `ask_cursor` runs the latest `%LOCALAPPDATA%\cursor-agent\versions\<date>-<hash>` directory that contains `node.exe`. A name that does not start with a digit, including `dist-package`, is skipped. The command is that directory's `node.exe` and `index.js`, print mode, ask mode, `--trust`, `--model` `cloud.model`, text output, workspace `state/consult`. It is a local process, not a VM. Non-zero exit or an empty reply raises `RuntimeError`.
+`consult_prompt` asks for one JSON object with the key `request`. That is the GPT shape. It is not the Grok job sandwich. The text names her tools, says the advisor is on this machine and may use the internet, and says `request` is the next thing she should do. `ask_cursor` runs the latest `%LOCALAPPDATA%\cursor-agent\versions\<date>-<hash>` directory that contains `node.exe`. A name that does not start with a digit, including `dist-package`, is skipped. The command is that directory's `node.exe` and `index.js`, print mode, `--force`, `--sandbox disabled`, `--trust`, `--model` `cloud.model`, text output, workspace `state/consult`. There is no `--mode ask`. It is a local process, not a VM. The stdout is parsed with `json.loads` and the `request` string is returned. Non-zero exit, invalid JSON, or an empty `request` raises `RuntimeError`.
 
 `Trident.start` calls `brain.start()`, `mouth.load()`, `line.start()`, then the worker, inbox, and idle threads. `stop` sets `stopping`, then `line.stop()` and `brain.stop()`.
 
-`inbox_loop` sends `state/inbox.txt` to Telegram as a file, then queues each non-empty line as `typed`. A line that starts with `/` is `call`, `hang`, or `stop`. `idle_loop` queues one idle prompt `brain.idle_after` seconds after the last `touch`, while the line is down, the queue is empty, and no turn is running. The single word `idle` is not stored and not delivered, and it does not wake her again. A finished turn that used a tool, with the line down and nothing queued, wakes her again so the work continues.
+`inbox_loop` sends `state/inbox.txt` to Telegram as a file, then queues each non-empty line as `typed`. A line that starts with `/` is `call`, `hang`, or `stop`. `idle_loop` queues one idle prompt `brain.idle_after` seconds after the last `touch`, while the line is down, the queue is empty, and no turn is running. The single word `idle` is not stored and not delivered, and it does not wake her again. A finished turn that used a tool, with the line down and nothing queued, logs `line is down and she is still working` and wakes her again so the work continues. Chat, call, and typed requests become `task` after the turn. A consult does not.
 
 `on_step` runs before the tool. It sends the thought, the tool name, and the arguments as JSON, uncut, with `line.send_text`. A spoken reply is said on an open call, and sent as text when the line is down.
 
 Tools:
 
-- `look` screenshots, marks `seen` and the pointer, crops when given a box, sends that picture, then `ask_json` on the same bytes. A crop adds pixel `x` and `y`.
+- `look` screenshots, marks `seen` and the pointer, crops when given a box, sends that picture, then `ask_json` on the same bytes. A crop stores pixel `x` and `y` as the aim and returns only that pixel.
 - `survey` marks, shrinks to `vision.side`, sends that picture, and returns `brain.survey` on the same bytes.
 - `crop` is `look` with a box.
-- `click`, `drag`, `type_text`, `press`, and `run` act, including while she is alone.
+- `click` aims and writes `state/aim.png`. A click whose pixel is not the aim returns that pixel and does not press. A click with no aim still presses. If the cursor is more than 2 pixels off the point, the picture is sent and the button does not go down. Otherwise the press happens, then the picture is sent.
+- `drag`, `type_text`, `press`, and `run` act, including while she is alone.
 - `remember` appends one fact.
 - `call_owner` dials. If he does not answer, the text says so. When he answers, the opening is spoken and he can see the screen.
 - `hang_up` is `final`. The process stays up.
-- `consult` is `final`. `why` is spoken when the line is up and says she spawned a cursor agent and why. `image` or a box attaches the screen, whole or cropped. That picture is sent to him and written to `state/consult/screen.png`. The reply, or the failure, is sent as text and queued as the next request.
+- `consult` is `final`. `why` is spoken when the line is up and says she spawned a cursor agent and why. `image` or a box attaches the screen, whole or cropped. That picture is sent to him and written to `state/consult/screen.png`. The reply, or the failure, is sent as text and queued as `consult`. The advisor runs on this machine with the internet, not in ask mode.
 
 `main()`. `say TEXT` appends that line to `state/inbox.txt`. `call`, `hang`, and `stop` append `/call`, `/hang`, or `/stop`. No command builds `Trident`, starts it, and waits. `stop()` always runs afterward.
 

@@ -64,13 +64,28 @@ def _key(vk: int, scan: int, flags: int) -> INPUT:
     return item
 
 
-def click(x: int, y: int, how: str = "left") -> None:
+def aim(x: int, y: int) -> tuple[int, int]:
+    user32.SetCursorPos(x, y)
+    _send([_mouse(x, y, MOVE)])
+    time.sleep(0.05)
+    point = W.POINT()
+    user32.GetCursorPos(ctypes.byref(point))
+    return point.x, point.y
+
+
+def strike(x: int, y: int, how: str) -> None:
     button = "right" if how == "right" else "left"
     down, up = BUTTON[button]
-    items = [_mouse(x, y, MOVE), _mouse(x, y, down), _mouse(x, y, up)]
+    items = [_mouse(x, y, down), _mouse(x, y, up)]
     if how == "double":
         items += [_mouse(x, y, down), _mouse(x, y, up)]
     _send(items)
+
+
+def click(x: int, y: int, how: str = "left") -> tuple[int, int]:
+    aimed = aim(x, y)
+    strike(x, y, how)
+    return aimed
 
 
 def drag(x0: int, y0: int, x1: int, y1: int) -> None:
