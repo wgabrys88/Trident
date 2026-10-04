@@ -10,11 +10,6 @@ class Memory:
         self.facts: list[str] = data.get("facts", [])
         self.turns: list[list[str]] = data.get("turns", [])
         self.task: str = data.get("task", "")
-        if not self.task:
-            for user, _model in reversed(self.turns):
-                if not str(user).startswith("You are still at the machine"):
-                    self.task = user
-                    break
         if data.get("quiet"):
             if "he asked not to be bothered" not in self.facts:
                 self.facts.append("he asked not to be bothered")
@@ -43,6 +38,6 @@ class Memory:
         return ("\nRemembered:\n" + "\n".join(f"- {f}" for f in self.facts)) if self.facts else ""
 
     def history(self) -> list[tuple[str, str]]:
-        if not self.turns:
+        if not self.task or not self.turns:
             return []
-        return [(self.task or self.turns[-1][0], self.turns[-1][1])]
+        return [(self.task, self.turns[-1][1])]

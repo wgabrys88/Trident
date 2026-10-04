@@ -126,7 +126,7 @@ Talks to `user32.SendInput` and `powershell.exe`. Imports no organ. Talked to by
 
 ## organs/memory.py
 
-`state/memory.json` holds `facts`, `task`, and `turns`. `remember` appends a new stripped fact. `add_turn` appends both sides. `set_task` stores the latest chat, call, or typed request. A consult reply does not replace the task. `facts_block` is empty when there are no facts. Every Gemma request appends that block. A wish not to be bothered is a fact, and she still decides. A file that still has `quiet` true gains that fact. `history` returns one pair: the task, or the latest user text when there is no task, and her latest reply. The slot is 8192 tokens. The rest of the day stays in the file.
+`state/memory.json` holds `facts`, `task`, and `turns`. `remember` appends a new stripped fact. `add_turn` appends both sides. `set_task` stores the latest chat, call, or typed request. A consult reply does not replace the task. `facts_block` is empty when there are no facts. Every Gemma request appends that block. A wish not to be bothered is a fact, and she still decides. A file that still has `quiet` true gains that fact. `history` returns one pair when `task` is set: that task and her latest reply. An empty task leaves the slot empty. The file is not scanned to invent a task. The slot is 8192 tokens. The rest of the day stays in the file.
 
 ## organs/mouth.py
 
@@ -142,11 +142,11 @@ Talks to `user32.SendInput` and `powershell.exe`. Imports no organ. Talked to by
 
 `OWNER` is `owner.name`. `INBOX` is `state/inbox.txt`. `SOURCE` maps `chat` and `consult` to a request, `call` to his voice, and `typed` to a line on the computer. A consult answer is queued as `consult`. The label she reads is still a request. The situation says the line is `up` or `down`.
 
-`SYSTEM` is passed to every `think`, with `{owner.name}` filled in. It says she is the one mind, the computer microphone and speakers are not hers, Python carries the call and the chat and the pictures, a call can end while she stays, and she decides from meaning. `facts_block` is appended to every request.
+`SYSTEM` is passed to every `think`, with `{owner.name}` filled in. It says she is the one mind, the computer microphone and speakers are not hers, Python carries the call and the chat and the pictures, a call can end while she stays, and she decides from meaning. She keeps working by calling the next tool in the turn. A reply is her deciding to stop. The line being down does not start a turn. `look` boxes one thing and the answer is the words in it, or the name when there are none. `facts_block` is appended to every request.
 
 `PASS` is the look schema: `answer` (string, at most 200 characters), `confident` (boolean), and `y`, `x`, `y0`, `x0`, `y1`, `x1` (integers 0 through 1000), all required.
 
-`consult_prompt` asks for one JSON object with the key `request`. That is the GPT shape. It is not the Grok job sandwich. The text names her tools, says the advisor is on this machine and may use the internet, and says `request` is the next thing she should do. `ask_cursor` runs the latest `%LOCALAPPDATA%\cursor-agent\versions\<date>-<hash>` directory that contains `node.exe`. A name that does not start with a digit, including `dist-package`, is skipped. The command is that directory's `node.exe` and `index.js`, print mode, `--force`, `--sandbox disabled`, `--trust`, `--model` `cloud.model`, text output, workspace `state/consult`. There is no `--mode ask`. It is a local process, not a VM. The stdout is parsed with `json.loads` and the `request` string is returned. Non-zero exit, invalid JSON, or an empty `request` raises `RuntimeError`.
+`consult_prompt` asks for one JSON object with the key `request`. That is the GPT shape. It is not the Grok job sandwich. The text names her tools, says `look` answers with the words or the name, says the advisor is on this machine and may use the internet, and says `request` is the next thing she should do. `ask_cursor` runs the latest `%LOCALAPPDATA%\cursor-agent\versions\<date>-<hash>` directory that contains `node.exe`. A name that does not start with a digit, including `dist-package`, is skipped. The command is that directory's `node.exe` and `index.js`, print mode, `--force`, `--sandbox disabled`, `--trust`, `--model` `cloud.model`, text output, workspace `state/consult`. There is no `--mode ask`. It is a local process, not a VM. The stdout is parsed with `json.loads` and the `request` string is returned. Non-zero exit, invalid JSON, or an empty `request` raises `RuntimeError`.
 
 `Trident.start` calls `brain.start()`, `mouth.load()`, `line.start()`, then the worker and inbox threads. `stop` sets `stopping`, then `line.stop()` and `brain.stop()`.
 
@@ -156,7 +156,7 @@ Talks to `user32.SendInput` and `powershell.exe`. Imports no organ. Talked to by
 
 Tools:
 
-- `look` screenshots, marks `seen` and the pointer, crops when given a box, sends that picture, then `ask_json` on the same bytes. A crop stores pixel `x` and `y` as the aim and returns only that pixel.
+- `look` screenshots, marks `seen` and the pointer, crops when given a box, sends that picture, then `ask_json` on the same bytes. The answer is the words in the thing, or the name when there are none. A crop stores pixel `x` and `y` as the aim and returns only that pixel.
 - `survey` marks, shrinks to `vision.side`, sends that picture, and returns `brain.survey` on the same bytes.
 - `crop` is `look` with a box.
 - `click` aims and writes `state/aim.png`. A click whose pixel is not the aim returns that pixel and does not press. A click with no aim still presses. If the cursor is more than 2 pixels off the point, the picture is sent and the button does not go down. Otherwise the press happens, then the picture is sent.
