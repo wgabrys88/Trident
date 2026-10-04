@@ -106,7 +106,7 @@ Talks to `organs` (`CONFIG`, and `run_dir` in `__main__`), `user32`, and PIL `Im
 
 `embed(box, inner) -> list`. `inner` is a box on the crop's 1000-grid. Returns that box on the full 1000-grid.
 
-`center_px(box_2d) -> (x, y)` and `point_px(box, y, x) -> (x, y)` convert the 1000-grid through `screen_size()`.
+`center_px(box_2d) -> (x, y)` and `point_px(box, y, x) -> (x, y)` convert the 1000-grid through `screen_size()`. `place_px(text)` reads one `y` then `x` in the order written on the picture and returns that screen pixel. `pixel_from_look(data)` uses `y` and `x` when a confident look has them, and otherwise `place_px` on the answer.
 
 `python -m organs.eyes` writes `screen.png` in the run folder and prints that path and `screen_size()`.
 
@@ -148,7 +148,7 @@ Talks to `user32.SendInput`, `powershell.exe`, and `run_dir` when listing contro
 
 `SYSTEM` is three sentences. She reads the request in full, then every tool description in full, then calls the one tool that moves one step closer to the goal. Tool descriptions are parallel and short. `max_tokens` 4096 is the room for that thought. `facts_block` is appended to every request.
 
-`PASS` is the look schema: `answer` and `confident` are required. `y` and `x` are optional. A confident look that names one mark uses that mark's center. Otherwise `y` and `x` are the place.
+`PASS` is the look schema: `answer` and `confident` are required. `y` and `x` are optional. A confident look that names one mark uses that mark's center. Otherwise `y` and `x` are the place. A confident answer written `y` then `x`, the order on the picture, is that place when the fields are absent.
 
 `consult_prompt` asks GPT for one JSON object and no other text, key `request`. The advisor is on this machine and may use the internet. `request` names the next action, with no pixel and no mention of a model. `ask_cursor` runs the latest `%LOCALAPPDATA%\cursor-agent\versions\<date>-<hash>` directory that contains `node.exe`. A name that does not start with a digit, including `dist-package`, is skipped. The command is that directory's `node.exe` and `index.js`, print mode, `--force`, `--sandbox disabled`, `--trust`, `--model` `cloud.model`, text output, workspace `consult` in the run folder. There is no `--mode ask`. It is a local process, not a VM. The stdout is parsed with `json.loads` and the `request` string is returned. Non-zero exit, invalid JSON, or an empty `request` raises `RuntimeError`.
 
@@ -160,7 +160,7 @@ Talks to `user32.SendInput`, `powershell.exe`, and `run_dir` when listing contro
 
 Tools:
 
-- `look` screenshots, overlays the pointer and the list below the screen, sends that picture, then `ask_json` on the same bytes. A confident result whose answer names one stored mark sets the aim to that mark's center. Otherwise a confident result with `y` and `x` sets the aim to that point. Any other result returns no pixel and clears the aim. Each pixel is kept for the rest of the turn.
+- `look` screenshots, overlays the pointer and the list below the screen, sends that picture, then `ask_json` on the same bytes. A confident result whose answer names one stored mark sets the aim to that mark's center. Otherwise a confident result with `y` and `x` sets the aim to that point. A confident answer that reads `y` then `x`, the same order as on the picture, sets the aim to that point when the fields are absent. Any other result returns no pixel and clears the aim. Each pixel is kept for the rest of the turn.
 - `survey` screenshots the raw picture, asks `brain.survey`, stores those marks, draws them on that picture, sends it, and returns the names. A click or a drag that lands clears the marks. A new turn clears them too.
 - `click` aims and writes `aim.png` in the run folder. A click with no aim, or whose pixel is not the aim, does not press. If the cursor is more than 2 pixels off the point, the picture is sent and the button does not go down. Otherwise the press happens, then the picture is sent. She cannot end the turn on a refusal, and after a press she cannot end it until she looks again.
 - `drag` starts at the latest pixel. Any other start does not stroke. An end she was not given does not stroke. `type_text`, `press`, and `run` act, including while she is alone.

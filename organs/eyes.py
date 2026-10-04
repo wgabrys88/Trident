@@ -1,5 +1,6 @@
 import ctypes
 import io
+import re
 from ctypes import wintypes
 
 from PIL import Image, ImageDraw, ImageFont, ImageGrab
@@ -139,6 +140,25 @@ def center_px(box_2d: list) -> tuple[int, int]:
     width, height = screen_size()
     y0, x0, y1, x1 = (float(v) for v in box_2d)
     return round((x0 + x1) / 2000 * (width - 1)), round((y0 + y1) / 2000 * (height - 1))
+
+
+_PLACE = re.compile(r"\by\s+(\d+)\s+x\s+(\d+)\b")
+
+
+def place_px(text: str) -> tuple[int, int] | None:
+    match = _PLACE.search(str(text))
+    if not match:
+        return None
+    y, x = int(match.group(1)), int(match.group(2))
+    return center_px([y, x, y, x])
+
+
+def pixel_from_look(data: dict) -> tuple[int, int] | None:
+    if data.get("confident") is not True:
+        return None
+    if "y" in data and "x" in data:
+        return center_px([data["y"], data["x"], data["y"], data["x"]])
+    return place_px(str(data.get("answer", "")))
 
 
 def point_px(box: list, y: float, x: float) -> tuple[int, int]:

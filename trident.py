@@ -220,8 +220,10 @@ class Trident:
             spot = picked(found["answer"], prompt) if found["confident"] else None
             if spot:
                 found["x"], found["y"] = eyes.center_px(spot)
-            elif found["confident"] and "y" in data and "x" in data:
-                found["x"], found["y"] = eyes.center_px([data["y"], data["x"], data["y"], data["x"]])
+            else:
+                pixel = eyes.pixel_from_look(data)
+                if pixel:
+                    found["x"], found["y"] = pixel
             return keep(found)
 
         def survey(prompt: str):
