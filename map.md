@@ -10,7 +10,7 @@ Tracked files: `.gitattributes`, `.gitignore`, `LICENSE`, `config.toml`, `instal
 
 `[paths]` `models` = models, `bin` = bin, `state` = state. Read by `organs`, `install`, `brain`.
 
-`[brain]` `model` = gemma-4-E2B-it-Q4_0.gguf, `mmproj` = mmproj-gemma-4-E2B-it-Q8_0.gguf, `host` = 127.0.0.1, `port` = 8080, `context` = 16384, `slots` = 2, `gpu_layers` = 999, `threads` = 4, `image_tokens` = 560, `ubatch` = 1024, `temperature` = 0, `top_k` = 64, `top_p` = 0.95, `min_p` = 0.05, `max_tokens` = 1024, `max_tool_steps` = 20, `idle_after` = 30. Read by `brain` and, for `idle_after`, `trident`. `model` and `mmproj` also by `install`.
+`[brain]` `model` = gemma-4-E2B-it-Q4_0.gguf, `mmproj` = mmproj-gemma-4-E2B-it-Q8_0.gguf, `host` = 127.0.0.1, `port` = 8080, `context` = 16384, `slots` = 2, `gpu_layers` = 999, `threads` = 4, `image_tokens` = 560, `ubatch` = 1024, `temperature` = 0, `top_k` = 64, `top_p` = 0.95, `min_p` = 0.05, `max_tokens` = 1024, `max_tool_steps` = 20. Read by `brain`. `model` and `mmproj` also by `install`.
 
 `[eyes]` `max_side` = 1920, `cloud_side` = 480. Read by `eyes`.
 
@@ -32,7 +32,7 @@ Gemma 4 image budgets are 70, 140, 280, 560, and 1120. 1120 is the maximum. llam
 
 On this GTX 1060, a 1120-token look loaded to 5976 MiB before the mouth was loaded. The mouth alone sits at 3576 MiB. The 1120 budget does not fit beside the mouth. The brain stays at 560 image tokens with `ubatch` 1024, which holds that batch. With the mouth resident, one look used 565 prompt tokens, returned valid JSON in 5.7s, and the GPU was at 5990 MiB.
 
-`survey` is the longer look. It unloads Gemma, loads Qwen2.5-VL-3B, describes the picture, unloads Qwen, and loads Gemma again. Qwen's own server uses `vision.context`, `vision.slots`, and `vision.ubatch`. With the mouth resident that pass took 7.6s and returned 685 characters naming the open windows and the taskbar. `look` and `crop` stay on the Gemma server that is already up.
+`survey` is the longer look. It unloads Gemma, loads Qwen2.5-VL-3B, describes the picture, unloads Qwen, and loads Gemma again. Qwen's own server uses `vision.context`, `vision.slots`, and `vision.ubatch`. With the mouth resident an earlier pass took 7.6s and returned 685 characters. On this GTX 1060 the dedicated memory was already full beside the mouth, about 6000 MiB of 6144, while Task Manager's shared total sat near 7.8 GB. Loading Qwen without unloading Gemma left that dedicated memory full and the same picture took 69.7s. The unload, load, describe, unload, and load again took 17.1s, and the description inside it was 7.4s and 603 characters. The swap stays. `look` and `crop` stay on the Gemma server that is already up.
 
 ## organs/__init__.py
 
@@ -118,7 +118,7 @@ Talks to `user32.SendInput` and `powershell.exe`. Imports no organ. Talked to by
 
 `press(keys)`. Space-separated chords. `+` and `-` split a chord. An unknown name raises `KeyError`.
 
-`type_text(text)`. Each UTF-16-LE unit is a Unicode key down and key up.
+`type_text(text)`. A character the foreground layout can type is that virtual key, with shift, ctrl, or alt when the layout asks for them. Anything else is a Unicode key, one UTF-16 unit at a time.
 
 `run(command, timeout=25) -> str`. Hidden `powershell.exe`, the `start` alias removed. Timeout returns `timed out`. A command whose stripped lowercase text starts with `start-process` waits 1.5 s. Empty output returns `exit {code}` when the code is non-zero, otherwise `ok`.
 
@@ -140,7 +140,7 @@ Talks to `user32.SendInput` and `powershell.exe`. Imports no organ. Talked to by
 
 ## trident.py
 
-`OWNER` is `owner.name`. `INBOX` is `state/inbox.txt`. `SOURCE` maps `chat`, `consult`, and `idle` to a request, `call` to his voice, and `typed` to a line on the computer. A consult answer is queued as `consult`. The label she reads is still a request. The situation says the line is `up` or `down`.
+`OWNER` is `owner.name`. `INBOX` is `state/inbox.txt`. `SOURCE` maps `chat` and `consult` to a request, `call` to his voice, and `typed` to a line on the computer. A consult answer is queued as `consult`. The label she reads is still a request. The situation says the line is `up` or `down`.
 
 `SYSTEM` is passed to every `think`, with `{owner.name}` filled in. It says she is the one mind, the computer microphone and speakers are not hers, Python carries the call and the chat and the pictures, a call can end while she stays, and she decides from meaning. `facts_block` is appended to every request.
 
@@ -148,9 +148,9 @@ Talks to `user32.SendInput` and `powershell.exe`. Imports no organ. Talked to by
 
 `consult_prompt` asks for one JSON object with the key `request`. That is the GPT shape. It is not the Grok job sandwich. The text names her tools, says the advisor is on this machine and may use the internet, and says `request` is the next thing she should do. `ask_cursor` runs the latest `%LOCALAPPDATA%\cursor-agent\versions\<date>-<hash>` directory that contains `node.exe`. A name that does not start with a digit, including `dist-package`, is skipped. The command is that directory's `node.exe` and `index.js`, print mode, `--force`, `--sandbox disabled`, `--trust`, `--model` `cloud.model`, text output, workspace `state/consult`. There is no `--mode ask`. It is a local process, not a VM. The stdout is parsed with `json.loads` and the `request` string is returned. Non-zero exit, invalid JSON, or an empty `request` raises `RuntimeError`.
 
-`Trident.start` calls `brain.start()`, `mouth.load()`, `line.start()`, `touch()`, then the worker, inbox, and idle threads. `stop` sets `stopping`, then `line.stop()` and `brain.stop()`.
+`Trident.start` calls `brain.start()`, `mouth.load()`, `line.start()`, then the worker and inbox threads. `stop` sets `stopping`, then `line.stop()` and `brain.stop()`.
 
-`inbox_loop` sends `state/inbox.txt` to Telegram as a file, then queues each non-empty line as `typed`. A line that starts with `/` is `call`, `hang`, or `stop`. `carry` is the task, then the latest request when that request is not the task, then the line that she continues from the latest request: look, consult only when something was not already told, act, and the single word `idle` only when that task is done. With no task, `carry` is the single word `idle`. `idle_loop` queues `carry` `brain.idle_after` seconds after the last `touch`, while the line is down, the queue is empty, and no turn is running. The single word `idle` is not stored and not delivered, and it does not wake her again. A finished turn that used a tool, with the line down and nothing queued, logs `line is down and she is still working` and queues `carry` so the task stays the request. Chat, call, and typed requests become `task` after the turn. A consult does not.
+`inbox_loop` sends `state/inbox.txt` to Telegram as a file, then queues each non-empty line as `typed`. A line that starts with `/` is `call`, `hang`, or `stop`. Nothing queues the task again when the line is down. She continues only by calling another tool in the turn she was given. Chat, call, and typed requests become `task` after the turn. A consult does not.
 
 `on_step` runs before the tool. It sends the thought, the tool name, and the arguments as JSON, uncut, with `line.send_text`. A spoken reply is said on an open call, and sent as text when the line is down.
 

@@ -37,6 +37,13 @@ class INPUT(ctypes.Structure):
 
 user32.SendInput.argtypes = [W.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
 user32.SendInput.restype = W.UINT
+user32.GetForegroundWindow.restype = W.HWND
+user32.GetWindowThreadProcessId.argtypes = [W.HWND, ctypes.POINTER(W.DWORD)]
+user32.GetWindowThreadProcessId.restype = W.DWORD
+user32.GetKeyboardLayout.argtypes = [W.DWORD]
+user32.GetKeyboardLayout.restype = ctypes.c_void_p
+user32.VkKeyScanExW.argtypes = [ctypes.c_wchar, ctypes.c_void_p]
+user32.VkKeyScanExW.restype = ctypes.c_short
 
 MOVE, ABSOLUTE, VIRTUAL = 0x0001, 0x8000, 0x4000
 BUTTON = {"left": (0x0002, 0x0004), "right": (0x0008, 0x0010)}
@@ -108,10 +115,20 @@ def press(keys: str) -> None:
 
 
 def type_text(text: str) -> None:
-    encoded = text.encode("utf-16-le")
-    for i in range(0, len(encoded), 2):
-        unit = int.from_bytes(encoded[i : i + 2], "little")
-        _send([_key(0, unit, 0x0004), _key(0, unit, 0x0006)])
+    tid = user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), None)
+    layout = user32.GetKeyboardLayout(tid)
+    for ch in text:
+        scanned = user32.VkKeyScanExW(ch, layout) if ord(ch) <= 0xFFFF else -1
+        if scanned == -1:
+            raw = ch.encode("utf-16-le")
+            for i in range(0, len(raw), 2):
+                unit = int.from_bytes(raw[i : i + 2], "little")
+                _send([_key(0, unit, 0x0004), _key(0, unit, 0x0006)])
+                time.sleep(0.05)
+            continue
+        seq = [vk for bit, vk in ((0x100, 0x10), (0x200, 0x11), (0x400, 0x12)) if scanned & bit]
+        seq.append(scanned & 0xFF)
+        _send([_key(vk, 0, 0) for vk in seq] + [_key(vk, 0, 0x0002) for vk in reversed(seq)])
         time.sleep(0.01)
 
 

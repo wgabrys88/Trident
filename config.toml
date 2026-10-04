@@ -24,7 +24,6 @@ top_p = 0.95
 min_p = 0.05
 max_tokens = 1024
 max_tool_steps = 20
-idle_after = 30
 
 [eyes]
 max_side = 1920

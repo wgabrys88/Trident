@@ -34,7 +34,7 @@ SYSTEM = (
     f"You are Gemma, the one mind on {OWNER}'s computer. Decide, then one tool or a short reply."
 )
 PASS = {"type": "object", "properties": {"answer": {"type": "string", "maxLength": 200}, "confident": {"type": "boolean"}, "y": {"type": "integer", "minimum": 0, "maximum": 1000}, "x": {"type": "integer", "minimum": 0, "maximum": 1000}, "y0": {"type": "integer", "minimum": 0, "maximum": 1000}, "x0": {"type": "integer", "minimum": 0, "maximum": 1000}, "y1": {"type": "integer", "minimum": 0, "maximum": 1000}, "x1": {"type": "integer", "minimum": 0, "maximum": 1000}}, "required": ["answer", "confident", "y", "x", "y0", "x0", "y1", "x1"]}
-SOURCE = {"chat": "a request", "consult": "a request", "call": "his voice on the call", "typed": "a line he typed on the computer", "idle": "a request"}
+SOURCE = {"chat": "a request", "consult": "a request", "call": "his voice on the call", "typed": "a line he typed on the computer"}
 
 
 def _box(y0, x0, y1, x1):
@@ -78,24 +78,19 @@ class Trident:
         self.memory = Memory()
         self.events: queue.Queue = queue.Queue()
         self.stopping = threading.Event()
-        self.last_activity = time.monotonic()
-        self.idle_sent = False
-        self.busy = False
         self.request = ""
         self.note = ""
         self.used_tool = False
         self.aim = None
         self.seen = []
-        self.line = Line(on_text=lambda t: self.push("chat", t), on_utterance=lambda c: self.push("call", c), on_line=lambda _state: self.touch())
+        self.line = Line(on_text=lambda t: self.push("chat", t), on_utterance=lambda c: self.push("call", c), on_line=lambda _state: None)
 
     def start(self):
         self.brain.start()
         self.mouth.load()
         self.line.start()
-        self.touch()
         threading.Thread(target=self.worker, name="trident-worker", daemon=True).start()
         threading.Thread(target=self.inbox_loop, name="trident-inbox", daemon=True).start()
-        threading.Thread(target=self.idle_loop, name="trident-idle", daemon=True).start()
         LOG.info("trident up")
 
     def stop(self):
@@ -104,12 +99,7 @@ class Trident:
         self.brain.stop()
         LOG.info("trident down")
 
-    def touch(self):
-        self.last_activity = time.monotonic()
-        self.idle_sent = False
-
     def push(self, kind: str, payload):
-        self.touch()
         self.events.put((kind, payload))
 
     def inbox_loop(self):
@@ -123,26 +113,16 @@ class Trident:
             for line in lines:
                 self.push("typed", line)
 
-    def idle_loop(self):
-        while not self.stopping.wait(1.0):
-            quiet_for = time.monotonic() - self.last_activity
-            if quiet_for >= CONFIG["brain"]["idle_after"] and not self.idle_sent and not self.busy and not self.line.up and self.events.empty():
-                self.idle_sent = True
-                self.events.put(("idle", self.carry()))
-
     def worker(self):
         while not self.stopping.is_set():
             try:
                 kind, payload = self.events.get(timeout=0.5)
             except queue.Empty:
                 continue
-            self.busy = True
             try:
                 self.handle(kind, payload)
             except Exception as exc:
                 LOG.exception("turn failed: %s", exc)
-            finally:
-                self.busy = False
 
     def handle(self, kind: str, payload):
         if kind == "call":
@@ -156,14 +136,7 @@ class Trident:
             text = payload
         if kind == "typed" and text.startswith("/"):
             return self.command(text[1:])
-        reply = self.turn(kind, text)
-        if reply is None:
-            return
-        self.deliver(reply)
-        if not self.line.up and self.used_tool and self.events.empty():
-            LOG.info("line is down and she is still working")
-            self.idle_sent = True
-            self.events.put(("idle", self.carry()))
+        self.deliver(self.turn(kind, text))
 
     def command(self, name: str):
         if name == "call":
@@ -188,24 +161,11 @@ class Trident:
         situation = f"[{time.strftime('%H:%M')} | line {'up' if self.line.up else 'down'} | {SOURCE[kind]}]"
         reply = self.brain.think(SYSTEM, self.tools(), self.memory.history(), f"{situation}\n{text}{self.memory.facts_block()}", on_step=self.on_step)
         spoken = reply.text.strip()
-        if spoken.lower().strip(".") == "idle":
-            return None
-        if spoken or (kind != "idle" and (self.note or self.used_tool)):
+        if spoken or self.note or self.used_tool:
             self.memory.add_turn(text, spoken or self.note)
         if kind in ("chat", "call", "typed"):
             self.memory.set_task(text)
         return spoken
-
-    def carry(self) -> str:
-        task = self.memory.task.strip()
-        if not task:
-            return "Answer with the single word idle."
-        latest = ""
-        if self.memory.turns:
-            last_user = str(self.memory.turns[-1][0]).strip()
-            if last_user and last_user != task and "The line is down." not in last_user:
-                latest = "\n" + last_user
-        return f"{task}{latest}\nThe line is down. Continue from the latest request. Look. If you are stuck on something you were not already told, consult, then act. When it is done, answer with the single word idle."
 
     def deliver(self, text: str):
         if not text:
