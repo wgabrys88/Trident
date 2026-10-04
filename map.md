@@ -120,7 +120,7 @@ Talks to `user32.SendInput` and `powershell.exe`. Imports no organ. Talked to by
 
 `type_text(text)`. A character the foreground layout can type is that virtual key, with shift, ctrl, or alt when the layout asks for them. Anything else is a Unicode key, one UTF-16 unit at a time.
 
-`run(command, timeout=25) -> str`. Hidden `powershell.exe`, the `start` alias removed. Timeout returns `timed out`. A command whose stripped lowercase text starts with `start-process` waits 1.5 s. Empty output returns `exit {code}` when the code is non-zero, otherwise `ok`.
+`run(command, timeout=25) -> str`. Hidden `powershell.exe`, the `start` alias removed. A command that is only a name, when that name is a zero-byte file, is `Start-Process -FilePath` and that name. Timeout returns `timed out`. A command whose stripped lowercase text starts with `start-process` waits 1.5 s. Empty output returns `exit {code}` when the code is non-zero, otherwise `ok`.
 
 `python -m organs.hands` accepts `press`, `type`, `click`, and `run`. No `drag` verb.
 

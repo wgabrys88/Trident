@@ -1,5 +1,7 @@
 import ctypes
 import ctypes.wintypes as W
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -133,6 +135,10 @@ def type_text(text: str) -> None:
 
 
 def run(command: str, timeout: int = 25) -> str:
+    text = command.strip()
+    found = shutil.which(text) if text and not any(c in text for c in " \t;&|$<>") else None
+    if found and os.path.getsize(found) == 0:
+        command = "Start-Process -FilePath " + text
     out, err = tempfile.TemporaryFile(), tempfile.TemporaryFile()
     proc = subprocess.Popen(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Remove-Item Alias:start -Force; " + command], stdin=subprocess.DEVNULL, stdout=out, stderr=err, creationflags=subprocess.CREATE_NO_WINDOW)
     try:
