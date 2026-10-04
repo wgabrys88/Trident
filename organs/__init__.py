@@ -7,7 +7,7 @@ CONFIG = tomllib.loads((ROOT / "config.toml").read_text(encoding="utf-8"))
 
 
 def path_of(section: str, key: str) -> Path:
-    folder = {"brain": "models", "ears": "models"}.get(section, "")
+    folder = {"brain": "models", "ears": "models", "vision": "models"}.get(section, "")
     base = ROOT / CONFIG["paths"][folder] if folder else ROOT
     return base / CONFIG[section][key]
 

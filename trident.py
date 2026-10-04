@@ -25,6 +25,7 @@ SYSTEM = (
     "Do the screen work he asked for. Each look is one small step and you write its prompt. The prompt names the one thing this pass is about. The look returns that box. A pass does not list every element. "
     "Crop that box, then click or drag the x and y from the crop. After the click or the stroke, look. If it is not finished, crop what the screen shows and click or drag that. A whole-desktop point is not the box. If the tool says not clicked, not dragged, or not pressed, call crop next. "
     "When a look is not confident, the next call is look once more before you act.\n"
+    "When he asks you to use a program's own controls, call survey first.\n"
     "Open a program with run. After a page opens or a message is sent, run Start-Sleep, then look again before you act.\n"
     "A command is run. A key he asked for is press. press does not click.\n"
     "When he asks you to type, the type_text text is that sentence copied unchanged. "
@@ -217,6 +218,11 @@ class Trident:
                 found["next"] = "look once more" if not sure else "crop"
             return found
 
+        def survey(prompt: str):
+            png = eyes.shrink(eyes.mark(eyes.screenshot(), self.seen), CONFIG["vision"]["side"])
+            self.line.send_photo(png, prompt)
+            return self.brain.survey(png, prompt)
+
         def click(x: int, y: int, how: str = "left"):
             if not asked:
                 return "nobody asked for this"
@@ -286,6 +292,7 @@ class Trident:
 
         return {
             "look": Tool("look", f"One look at the whole desktop. It returns no click point. Write the prompt for this pass. Name the one thing it is about. The picture is also sent to {OWNER}'s chat.", {"prompt": {"description": "The one thing this pass is about.", "type": "STRING"}}, look),
+            "survey": Tool("survey", f"What is on screen and which controls it has. A desktop, a movie, a camera feed, or a game. The picture is also sent to {OWNER}'s chat. Call this before using a program's own controls.", {"prompt": {"description": "What this pass should understand.", "type": "STRING"}}, survey),
             "crop": Tool("crop", f"One look at a crop of one element. The prompt names where it sits and asks for its center. y0, x0, y1, x1 are that box, 0 to 1000, origin at the top left, y vertical. The picture is also sent to {OWNER}'s chat.", {"prompt": {"description": "What this pass should answer.", "type": "STRING"}, "y0": {"description": "Crop top, 0 to 1000.", "type": "INTEGER"}, "x0": {"description": "Crop left, 0 to 1000.", "type": "INTEGER"}, "y1": {"description": "Crop bottom, 0 to 1000.", "type": "INTEGER"}, "x1": {"description": "Crop right, 0 to 1000.", "type": "INTEGER"}}, lambda prompt, y0, x0, y1, x1: look(prompt, y0, x0, y1, x1)),
             "click": Tool("click", "Click the x and y returned by crop.", {"x": {"description": "Pixel x from crop.", "type": "INTEGER"}, "y": {"description": "Pixel y from crop.", "type": "INTEGER"}, "how": {"description": "Kind of click.", "type": "STRING", "enum": ["left", "right", "double"]}}, click, optional=("how",)),
             "drag": Tool("drag", "The next side, one straight stroke. Look after it. If the shape is not finished, drag the next side.", {"x0": {"description": "Start pixel x.", "type": "INTEGER"}, "y0": {"description": "Start pixel y.", "type": "INTEGER"}, "x1": {"description": "End pixel x.", "type": "INTEGER"}, "y1": {"description": "End pixel y.", "type": "INTEGER"}}, drag),

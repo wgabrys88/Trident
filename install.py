@@ -103,6 +103,8 @@ def nemo():
 def models():
     download(INSTALL["gemma_url"], MODELS / CONFIG["brain"]["model"])
     download(INSTALL["mmproj_url"], MODELS / CONFIG["brain"]["mmproj"])
+    download(INSTALL["vision_url"], MODELS / CONFIG["vision"]["model"])
+    download(INSTALL["vision_mmproj_url"], MODELS / CONFIG["vision"]["mmproj"])
     download(INSTALL["ear_url"], MODELS / CONFIG["ears"]["model"])
     download(INSTALL["silero_url"], MODELS / "silero_vad.onnx")
 

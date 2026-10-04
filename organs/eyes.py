@@ -23,9 +23,9 @@ def screenshot() -> bytes:
     return buffer.getvalue()
 
 
-def shrink(png: bytes) -> bytes:
+def shrink(png: bytes, side: int = 0) -> bytes:
     image = Image.open(io.BytesIO(png)).convert("RGB")
-    side = CFG["cloud_side"]
+    side = side or CFG["cloud_side"]
     image.thumbnail((side, side), Image.LANCZOS)
     buffer = io.BytesIO()
     image.save(buffer, format="PNG", compress_level=1)

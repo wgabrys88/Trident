@@ -133,23 +133,30 @@ class Brain:
         except (urllib.error.URLError, OSError):
             return False
 
-    def start(self):
+    def start(self, section: str = "brain"):
         if self.alive():
             return
         exe = ROOT / CONFIG["paths"]["bin"] / "llama" / "llama-server.exe"
         if not exe.is_file():
             raise FileNotFoundError(f"{exe} missing: run install.py")
+        if section == "brain":
+            ctx, slots, ubatch = CFG["context"], CFG["slots"], CFG["ubatch"]
+        else:
+            vis = CONFIG["vision"]
+            ctx, slots, ubatch = vis["context"], vis["slots"], vis["ubatch"]
         args = [
             str(exe),
-            "--model", str(path_of("brain", "model")),
-            "--mmproj", str(path_of("brain", "mmproj")),
+            "--model", str(path_of(section, "model")),
+            "--mmproj", str(path_of(section, "mmproj")),
             "--host", CFG["host"], "--port", str(CFG["port"]),
-            "--ctx-size", str(CFG["context"]), "--parallel", str(CFG["slots"]),
+            "--ctx-size", str(ctx), "--parallel", str(slots),
             "--n-gpu-layers", str(CFG["gpu_layers"]), "--threads", str(CFG["threads"]),
             "--flash-attn", "off", "--cache-type-k", "f16", "--cache-type-v", "f16",
-            "--image-min-tokens", str(CFG["image_tokens"]), "--image-max-tokens", str(CFG["image_tokens"]),
+            "--ubatch-size", str(ubatch),
             "--no-webui", "--log-file", str(state_dir() / "llama-server.log"),
         ]
+        if section == "brain":
+            args += ["--image-min-tokens", str(CFG["image_tokens"]), "--image-max-tokens", str(CFG["image_tokens"])]
         self.proc = subprocess.Popen(args, cwd=str(exe.parent), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
         LOG.info("llama-server starting pid %d", self.proc.pid)
         deadline = time.monotonic() + 300
@@ -167,6 +174,33 @@ class Brain:
             self.proc.terminate()
             self.proc.wait(10)
         self.proc = None
+        self.marker = None
+
+    def survey(self, png: bytes, question: str) -> str:
+        self.stop()
+        self.start("vision")
+        try:
+            body = {
+                "messages": [{"role": "user", "content": [
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(png).decode("ascii")}},
+                    {"type": "text", "text": question + "\nList every interactive control and what is happening. The scene may be a desktop, a movie, a camera feed, or a game."},
+                ]}],
+                "temperature": CFG["temperature"],
+                "top_k": CFG["top_k"],
+                "top_p": CFG["top_p"],
+                "min_p": CFG["min_p"],
+                "max_tokens": CFG["max_tokens"],
+            }
+            request = urllib.request.Request(self.url + "/v1/chat/completions", data=json.dumps(body).encode("utf-8"), headers={"Content-Type": "application/json"})
+            started = time.monotonic()
+            with urllib.request.urlopen(request, timeout=600) as response:
+                data = json.load(response)
+            text = data["choices"][0]["message"]["content"].strip()
+            LOG.info("survey %.1fs %d chars", time.monotonic() - started, len(text))
+        finally:
+            self.stop()
+            self.start()
+        return text
 
     def complete(self, prompt: str, images: list[bytes] = (), schema: dict | None = None, stop: list[str] = ()) -> str:
         body = {
