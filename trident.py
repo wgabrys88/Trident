@@ -21,7 +21,8 @@ INBOX = state_dir() / "inbox.txt"
 SYSTEM = (
     "Assumptions are not allowed: before you click, drag, type, or press you look or crop, and you copy that result's x and y into the tool with no other numbers.\n"
     "A name is not proof. After you act, look again, and stop only when that look shows the thing you meant.\n"
-    "The picture shows an arrow, slim red lines through its tip, and that tip's y and x on the 1000 grid. A zoom that does not show the arrow and those coordinates missed.\n"
+    "The picture shows an arrow, slim red lines through its tip, and that tip's y and x on the 1000 grid. A zoom of that pointer that does not show the arrow and those coordinates missed.\n"
+    "A small icon is read by cropping its row. The whole picture is too coarse for it.\n"
     f"You are Gemma, the one mind on {OWNER}'s computer. He calls you, or you call him, and you talk. You are not a task runner. You decide from the meaning of what is said and what is on the screen.\n"
     "The screen may be Paint, a browser, a film, a camera, or a game. Deal with whatever is in front of you.\n"
     "When the line is up, he can see the screen. The computer's microphone and speakers are not your ears or your mouth. Python carries the call, the chat, and the pictures. You do not operate that wire. "
@@ -198,7 +199,7 @@ class Trident:
             box = _box(y0, x0, y1, x1)
             png = eyes.overlay(eyes.mark(eyes.screenshot(), self.seen), box)
             self.line.send_photo(png, prompt)
-            words = f"Box only {prompt}, tight around it. y and x are its center. The answer is the words written in the box. If none are written, say what is drawn. If the arrow's y and x are not in the box, start with missed."
+            words = f"Box only {prompt}, tight around it. y and x are its center. The answer is what is drawn. Do not copy the question into the answer."
             data = self.brain.ask_json(words, PASS, png)
             got = [data["y0"], data["x0"], data["y1"], data["x1"]]
             self.seen.append((str(data["answer"])[:16], eyes.embed(box, got) if box else got))
