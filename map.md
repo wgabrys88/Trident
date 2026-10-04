@@ -172,7 +172,7 @@ Talks to `organs` (`CONFIG`, `log`, `path_of`) and `chatterbox.tts_turbo.Chatter
 
 `Mouth.load()`. Returns when `model` is set. `ChatterboxTurboTTS.from_pretrained(mouth.device)`. The installed class loads `ResembleAI/chatterbox-turbo`. Then `prepare_conditionals` on the reference path. `sr` becomes `int(model.sr)`.
 
-`Mouth.say(text: str) -> np.ndarray`. Calls `load`. Returns float32 mono at `self.sr` from `generate(speakable(text))`.
+`Mouth.pieces(text: str)`. Calls `load`. Yields float32 mono at `self.sr` from `generate` of `speakable` text. The first yield is the audio made until about ten seconds exist, and the log line is `chunk` plus that duration and `time.time`. When words remain, the next yield is the rest of the clip, and the log line `synth` is written after that audio exists. An empty string yields one clip from `generate`.
 
 `pcm48(samples: np.ndarray, rate: int) -> bytes`. Linear resample to 48000 Hz when `rate` is not 48000. Signed 16-bit mono bytes, clipped to [-1, 1].
 
@@ -302,7 +302,7 @@ You are Gemma, the mind of {owner.name}'s computer. You see the screen and act w
 
 `Trident.deliver(kind: str, text: str)`. Empty text returns. When the line is up, `speak`. When the line is down and `kind` is `chat`, `line.send_text`. A `typed` or `idle` reply with the line down is dropped.
 
-`Trident.speak(text: str)`. `line.speak(pcm48(mouth.say(text), mouth.sr))`.
+`Trident.speak(text: str)`. Takes the first piece from `mouth.pieces`. Starts `line.speak` of that piece on another thread while the caller pulls the rest of `pieces`. Then `line.speak` of that rest, when there is one.
 
 `Trident.tools(kind: str) -> dict[str, Tool]`. `asked` is true when `kind` is not `idle`. The dict is:
 

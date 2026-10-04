@@ -1,10 +1,12 @@
 """Chatterbox turbo turns English text into samples for the Telegram call.
 
 The model is loaded once, on the GPU, and the voice is reference.wav.
-say() returns float32 mono at the model rate. pcm48() is signed 16-bit mono at 48 kHz.
+pieces() yields float32 mono at the model rate. The first piece is yielded once about ten seconds exist.
+pcm48() is signed 16-bit mono at 48 kHz.
 """
 
 import re
+import time
 import unicodedata
 
 import numpy as np
@@ -40,11 +42,26 @@ class Mouth:
         self.sr = int(self.model.sr)
         LOG.info("mouth ready at %d Hz", self.sr)
 
-    def say(self, text: str) -> np.ndarray:
-        """Float32 mono of this sentence, at self.sr."""
+    def _wav(self, text: str) -> np.ndarray:
         self.load()
-        wav = self.model.generate(speakable(text))
-        return wav.squeeze().cpu().numpy().astype(np.float32)
+        return self.model.generate(text).squeeze().cpu().numpy().astype(np.float32)
+
+    def pieces(self, text: str):
+        words = speakable(text).split()
+        parts, index, step = [], 0, 37
+        while index < len(words) and sum(map(len, parts)) < 10 * self.sr:
+            step = min(step, len(words) - index)
+            parts.append(self._wav(" ".join(words[index:index + step])))
+            index += step
+            have = sum(map(len, parts))
+            step = max(1, round((10 * self.sr - have) * index / have))
+        chunk = np.concatenate(parts) if parts else self._wav(speakable(text))
+        LOG.info("chunk %.2fs %.3f", len(chunk) / self.sr, time.time())
+        yield chunk
+        if index < len(words):
+            rest = self._wav(" ".join(words[index:]))
+            LOG.info("synth %.2fs %.3f", (len(chunk) + len(rest)) / self.sr, time.time())
+            yield rest
 
 
 def pcm48(samples: np.ndarray, rate: int) -> bytes:

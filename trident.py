@@ -186,7 +186,14 @@ class Trident:
             self.line.send_text(text)
 
     def speak(self, text: str):
-        self.line.speak(pcm48(self.mouth.say(text), self.mouth.sr))
+        pieces = self.mouth.pieces(text)
+        first = next(pieces)
+        worker = threading.Thread(target=self.line.speak, args=(pcm48(first, self.mouth.sr),))
+        worker.start()
+        rest = list(pieces)
+        worker.join()
+        if rest:
+            self.line.speak(pcm48(rest[0], self.mouth.sr))
 
     def tools(self, kind: str) -> dict[str, Tool]:
         from organs import eyes, hands
