@@ -14,9 +14,9 @@ Tracked files: `.gitattributes`, `.gitignore`, `LICENSE`, `config.toml`, `instal
 
 `[eyes]` `max_side` = 1920. Read by `eyes`.
 
-`[vision]` `model` = Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf, `mmproj` = mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf, `side` = 1920, `context` = 4096, `slots` = 1, `ubatch` = 1024, `image_tokens` = 1024. Read by `brain` and `trident` (`side`). The two files also by `install`.
+`[vision]` `model` = Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf, `mmproj` = mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf, `side` = 1920, `context` = 4096, `slots` = 1, `ubatch` = 1024, `image_tokens` = 1024. Read by `brain` when `survey` runs. The live turn does not run it. The two files also by `install`.
 
-`[cloud]` `model` = gpt-5.6-luna-none. Read by `trident`. Luna is the consult model. Grok 4.7 extra-high is not asked on every consult.
+`[cloud]` `model` = gpt-5.6-luna-none. Read by `trident`. Luna is the navigator. She writes the request in her own words and asks what it needs. The advisor answers with the next tool. Grok 4.7 extra-high is not asked.
 
 `[ears]` `vad_threshold` = 0.65, `min_silence_ms` = 700, `pad_ms` = 120, `min_utterance_s` = 1.0, `model` = nemotron-3.5-asr-streaming-0.6b.q8_0.gguf. Read by `ears`. `model` also by `install`.
 
@@ -32,7 +32,7 @@ Gemma 4 image budgets are 70, 140, 280, 560, and 1120. 1120 is the maximum, abou
 
 A 20-pixel icon is smaller than one 1120-token cell on a 1920×1080 frame. `interactive_controls` reads that window. `overlay` draws a cyan box on the screen and the name on the list below it.
 
-One model is on the GPU at a time. Gemma, Qwen, the mouth, and the ear each load, run, and exit before the next one loads. The reload is the cheap part. Two of them resident at once spill this GTX 1060 into RAM and the looks crawl. `look` and `crop` use the Gemma server. `survey` stops it, loads Qwen, then stops Qwen and loads Gemma again. Qwen reads the raw screenshot, longest side `eyes.max_side`, encoded at `vision.image_tokens` 1024. The marks are drawn after that look, below the screen.
+One model is on the GPU at a time. Gemma, Qwen, the mouth, and the ear each load, run, and exit before the next one loads. The reload is the cheap part. Two of them resident at once spill this GTX 1060 into RAM and the looks crawl. `look` and `crop` use the Gemma server. `survey` stops it, loads Qwen, then stops Qwen and loads Gemma again. Qwen reads the raw screenshot, longest side `eyes.max_side`, encoded at `vision.image_tokens` 1024. The marks are drawn after that look, below the screen. The live turn does not call `survey`. `SECOND_VISION` is false. The second vision model stays in the tree and is not loaded.
 
 Qwen2.5-VL answers in absolute pixels, x then y, of the picture llama.cpp actually encodes. `--image-min-tokens` and `--image-max-tokens` are both 1024. On a 1920×1080 frame the float32 smart-resize used by this build (b11371) is 1176×672, 1008 tokens, with the picture letterboxed inside that canvas. Python converts those pixels through that canvas onto Gemma's 1000 grid, y then x. A picture whose encoded size would pass 1024 tokens is scaled down first, so the batch stays inside `vision.ubatch` 1024. The 1024 cap is unchanged: the same frame still uses about 4.7GB dedicated and returns in a few seconds. `stop` drops the device back to the desktop.
 
@@ -130,7 +130,7 @@ Talks to `user32.SendInput`, `powershell.exe`, and `run_dir` when listing contro
 
 ## organs/memory.py
 
-`state/memory.json` holds `facts`, `task`, and `turns`. `remember` appends a new stripped fact. `add_turn` appends both sides. `set_task` stores the latest chat, call, or typed request. A consult reply does not replace the task. `facts_block` is empty when there are no facts. Every Gemma request appends that block. A wish not to be bothered is a fact, and she still decides. A file that still has `quiet` true gains that fact. `history` returns one pair when `task` is set: that task and her latest reply. An empty task leaves the slot empty. The file is not scanned to invent a task. The slot is 8192 tokens. The rest of the day stays in the file.
+`state/memory.json` holds `facts`, `task`, and `turns`. `remember` appends a new stripped fact. `add_turn` appends both sides. `set_task` stores the latest chat, call, or typed request. An advisor move does not replace the task. `facts_block` is empty when there are no facts. The advisor receives that block. A wish not to be bothered is a fact, and the advisor still chooses the next tool. A file that still has `quiet` true gains that fact. `history` returns one pair when `task` is set: that task and her latest reply. The live turn does not hand that pair to Gemma. An empty task leaves the slot empty. The file is not scanned to invent a task. The slot is 8192 tokens. The rest of the day stays in the file.
 
 ## organs/mouth.py
 
@@ -144,30 +144,30 @@ Talks to `user32.SendInput`, `powershell.exe`, and `run_dir` when listing contro
 
 ## trident.py
 
-`OWNER` is `owner.name`. `INBOX` is `state/inbox.txt`. `SOURCE` maps `chat` and `consult` to a request, `call` to his voice, and `typed` to a line on the computer. A consult answer is queued as `consult`. The label she reads is still a request. The situation says the line is `up` or `down`.
+`OWNER` is `owner.name`. `INBOX` is `state/inbox.txt`. `SOURCE` maps `chat` and `consult` to a request, `call` to his voice, and `typed` to a line on the computer. An advisor answer is not queued as another turn. The situation says the line is `up` or `down`.
 
-`SYSTEM` is three sentences. She reads the request in full, then every tool description in full, then calls the one tool that moves one step closer to the goal. Tool descriptions are parallel and short. `max_tokens` 4096 is the room for that thought. `facts_block` is appended to every request.
+`NOTE` asks Gemma for one JSON object, key `note`. She writes his request in her own words and asks the advisor what it needs. She does not choose a tool and she does not name a pixel. `her_note` is `ask_json` with no picture. A failure uses his words, so the advisor still hears the request.
 
 `PASS` is the look schema: `answer` and `confident` are required. `y` and `x` are optional. A confident look that names one mark uses that mark's center. Otherwise `y` and `x` are the place. A confident answer written `y` then `x`, the order on the picture, is that place when the fields are absent.
 
-`consult_prompt` asks GPT for one JSON object and no other text, key `request`. The advisor is on this machine and may use the internet. `request` names the next action, with no pixel and no mention of a model. `ask_cursor` runs the latest `%LOCALAPPDATA%\cursor-agent\versions\<date>-<hash>` directory that contains `node.exe`. A name that does not start with a digit, including `dist-package`, is skipped. The command is that directory's `node.exe` and `index.js`, print mode, `--force`, `--sandbox disabled`, `--trust`, `--model` `cloud.model`, text output, workspace `consult` in the run folder. There is no `--mode ask`. It is a local process, not a VM. The stdout is parsed with `json.loads` and the `request` string is returned. Non-zero exit, invalid JSON, or an empty `request` raises `RuntimeError`.
+`advisor_prompt` is the catalog of tools she actually has. Luna replies with one JSON object, key `tool`. The advisor never talks to Telegram, never sees his account, and never holds the call. A place exists only after a look. `say` ends the turn. `look` names one thing, and that is when she screenshots. `ask_cursor` runs the latest `%LOCALAPPDATA%\cursor-agent\versions\<date>-<hash>` directory that contains `node.exe`. A name that does not start with a digit, including `dist-package`, is skipped. The command is that directory's `node.exe` and `index.js`, print mode, `--mode ask`, `--trust`, `--model` `cloud.model`, text output, workspace `consult` in the run folder. Ask mode is read-only. There is no `--force`, and the sandbox is not disabled. It is a local process, not a VM. The stdout is one JSON object with a tool name. Non-zero exit, invalid JSON, or a missing tool raises `RuntimeError`. Each prompt is written to `advisor.txt` in the run folder. A stale `consult/screen.png` is removed. The advisor is not given the picture.
 
 `Trident.start` calls `brain.start()`, `line.start()`, then the worker and inbox threads. `stop` sets `stopping`, then `line.stop()` and `brain.stop()`. A call writes `call.wav` in the run folder, stops Gemma before `transcribe`, and starts Gemma again after, because the ear uses the GPU and then exits. `speak` stops Gemma, runs `python -m organs.mouth`, plays the pcm, and starts Gemma again.
 
-`inbox_loop` sends `state/inbox.txt` to Telegram as a file, then queues each non-empty line as `typed`. A line that starts with `/` is `call`, `hang`, or `stop`. Nothing queues the task again when the line is down. She continues only by calling another tool in the turn she was given. Chat, call, and typed requests become `task` after the turn. A consult does not.
+`inbox_loop` sends `state/inbox.txt` to Telegram as a file, then queues each non-empty line as `typed`. A line that starts with `/` is `call`, `hang`, or `stop`. Nothing queues the task again when the line is down. The advisor's next tool is inside the turn she was given. Chat, call, and typed requests become `task` after the turn.
 
-`on_step` runs before the tool, and again when she tries to stop. It sends the thought, the tool name, and the arguments as JSON, uncut, with `line.send_text`. If the last click or drag was refused, stopping is not the end of the turn: she is told the click did not happen. If she acted and has not looked since, stopping is not the end either: she is told to look again. A spoken reply that is allowed to end the turn is said on an open call, and sent as text when the line is down.
+`navigate` asks the advisor, sends that JSON, and runs the tool. The result is the next ask. Two empty consults end the turn with that failure. `say` with text is the spoken reply. A click or a drag that does not press is that result, and the next ask still runs. The step cap is `max_tool_steps`. A spoken reply is said on an open call, and sent as text when the line is down.
 
-Tools:
+Tools the advisor can name:
 
-- `look` screenshots, overlays the pointer and the list below the screen, sends that picture, then `ask_json` on the same bytes. A confident result whose answer names one stored mark sets the aim to that mark's center. Otherwise a confident result with `y` and `x` sets the aim to that point. A confident answer that reads `y` then `x`, the same order as on the picture, sets the aim to that point when the fields are absent. Any other result returns no pixel and clears the aim. Each pixel is kept for the rest of the turn.
-- `survey` screenshots the raw picture, asks `brain.survey`, stores those marks, draws them on that picture, sends it, and returns the names. A click or a drag that lands clears the marks. A new turn clears them too.
-- `click` aims and writes `aim.png` in the run folder. A click with no aim, or whose pixel is not the aim, does not press. If the cursor is more than 2 pixels off the point, the picture is sent and the button does not go down. Otherwise the press happens, then the picture is sent. She cannot end the turn on a refusal, and after a press she cannot end it until she looks again.
-- `drag` starts at the latest pixel. Any other start does not stroke. An end she was not given does not stroke. `type_text`, `press`, and `run` act, including while she is alone.
+- `look` screenshots only when `what` is non-empty. It overlays the pointer and the list below the screen, sends that picture, then `ask_json` on the same bytes. The question names the thing the advisor asked for. A confident result whose answer names one stored mark sets the aim to that mark's center. Otherwise a confident result with `y` and `x` sets the aim to that point. A confident answer that reads `y` then `x`, the same order as on the picture, sets the aim to that point when the fields are absent. Any other result returns no pixel and clears the aim. Each pixel is kept for the rest of the turn. She answers with that screen pixel, x then y.
+- `survey` is not connected. The move returns that, and Qwen is not loaded. `survey()` and `Brain.survey` remain. A click or a drag that lands still clears marks. A new turn clears them too.
+- `click` aims and writes `aim.png` in the run folder. A click with no aim does not press. A click whose pixel is not the aim does not press, and the result is that pixel. A click with no numbers presses the aim. If the cursor is more than 2 pixels off the point, the picture is sent and the button does not go down. Otherwise the press happens, then the picture is sent. The refusal does not hold the turn.
+- `drag` with no numbers strokes from the previous reported place to the last look. Numbers stroke only when both ends were reported. `type_text`, `press`, and `run` act, including while she is alone.
 - `remember` appends one fact.
-- `call_owner` dials. If he does not answer, the text says so. When he answers, the opening is spoken and he can see the screen.
-- `hang_up` is `final`. The process stays up.
-- `consult` is `final`. `why`, `question`, and optional `image`. `image` true attaches the whole screen. That picture is sent to him and written to `consult/screen.png` in the run folder. The reply, or the failure, is sent as text and queued as `consult`. The advisor runs on this machine with the internet, not in ask mode.
+- `call_owner` dials. If he does not answer, the text says so. When he answers, the opening is spoken and he can see the screen. The advisor can choose another tool after that.
+- `hang_up` ends the call. The process stays up. The advisor can choose another tool after that.
+- `say` is her voice and the end of the turn. The advisor does not say it.
 
 `main()`. `say TEXT` appends that line to `state/inbox.txt`. `call`, `hang`, and `stop` append `/call`, `/hang`, or `/stop`. No command builds `Trident`, starts it, and waits. `stop()` always runs afterward.
 
