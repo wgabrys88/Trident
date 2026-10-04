@@ -26,6 +26,39 @@ THOUGHT_RE = re.compile(r"<\|channel>thought\n?(.*?)(?:<channel\|>|$)", re.DOTAL
 CALL_RE = re.compile(r"<\|tool_call>call:(\w+)\{(.*?)\}<tool_call\|>", re.DOTALL)
 ARG_RE = re.compile(r'(\w+):(?:<\|"\|>(.*?)<\|"\|>|([^,}]*))', re.DOTALL)
 CONTROL_RE = re.compile(r"<\|[a-z_\"]+\|?>|<[a-z_]+\|>|<bos>|<eos>")
+SEE = "The scene may be a desktop, a web page, a game, or a camera. Mark only what is asked. y0 and x0 are the top left, y1 and x1 the bottom right, integers 0 to 1000 on this picture, origin top left, y vertical. name is what is drawn. If it is absent, items is empty. Do not invent a box.\n"
+MARKS = {"type": "object", "properties": {"items": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "y0": {"type": "integer"}, "x0": {"type": "integer"}, "y1": {"type": "integer"}, "x1": {"type": "integer"}}, "required": ["name", "y0", "x0", "y1", "x1"]}}}, "required": ["items"]}
+
+
+def _clamp(value: object) -> int:
+    return min(1000, max(0, int(round(float(value)))))
+
+
+def _items(text: str) -> list:
+    raw = text.strip()
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        start, end = raw.find("{"), raw.rfind("}")
+        if start < 0 or end <= start:
+            return []
+        try:
+            data = json.loads(raw[start:end + 1])
+        except json.JSONDecodeError:
+            return []
+    rows = data.get("items", []) if isinstance(data, dict) else []
+    found = []
+    for item in rows if isinstance(rows, list) else []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            name = " ".join(str(item["name"]).split())[:40]
+            box = [_clamp(item[key]) for key in ("y0", "x0", "y1", "x1")]
+        except (KeyError, TypeError, ValueError):
+            continue
+        if name and box[2] > box[0] and box[3] > box[1]:
+            found.append({"name": name, "y0": box[0], "x0": box[1], "y1": box[2], "x1": box[3]})
+    return found
 
 @dataclass
 class Tool:
@@ -140,10 +173,10 @@ class Brain:
         if not exe.is_file():
             raise FileNotFoundError(f"{exe} missing: run install.py")
         if section == "brain":
-            ctx, slots, ubatch = CFG["context"], CFG["slots"], CFG["ubatch"]
+            ctx, slots, ubatch, image_tokens = CFG["context"], CFG["slots"], CFG["ubatch"], CFG["image_tokens"]
         else:
             vis = CONFIG["vision"]
-            ctx, slots, ubatch = vis["context"], vis["slots"], vis["ubatch"]
+            ctx, slots, ubatch, image_tokens = vis["context"], vis["slots"], vis["ubatch"], vis["image_tokens"]
         args = [
             str(exe),
             "--model", str(path_of(section, "model")),
@@ -153,10 +186,9 @@ class Brain:
             "--n-gpu-layers", str(CFG["gpu_layers"]), "--threads", str(CFG["threads"]),
             "--flash-attn", "off", "--cache-type-k", "f16", "--cache-type-v", "f16",
             "--ubatch-size", str(ubatch),
+            "--image-min-tokens", str(image_tokens), "--image-max-tokens", str(image_tokens),
             "--no-webui", "--log-file", str(state_dir() / "llama-server.log"),
         ]
-        if section == "brain":
-            args += ["--image-min-tokens", str(CFG["image_tokens"]), "--image-max-tokens", str(CFG["image_tokens"])]
         self.proc = subprocess.Popen(args, cwd=str(exe.parent), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
         LOG.info("llama-server starting pid %d", self.proc.pid)
         deadline = time.monotonic() + 300
@@ -186,31 +218,71 @@ class Brain:
         while self.alive() and time.monotonic() < deadline:
             time.sleep(0.2)
 
-    def survey(self, png: bytes, question: str) -> str:
-        self.stop()
-        self.start("vision")
+    def _erase(self):
+        for slot in (0, 1):
+            try:
+                request = urllib.request.Request(f"{self.url}/slots/{slot}?action=erase", data=b"{}", headers={"Content-Type": "application/json"}, method="POST")
+                urllib.request.urlopen(request, timeout=5).read()
+            except (urllib.error.URLError, OSError):
+                continue
+
+    def _see(self, png: bytes, question: str) -> list:
+        self._erase()
+        body = {
+            "messages": [{"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(png).decode("ascii")}},
+                {"type": "text", "text": SEE + question},
+            ]}],
+            "temperature": CFG["temperature"],
+            "top_k": CFG["top_k"],
+            "top_p": CFG["top_p"],
+            "min_p": CFG["min_p"],
+            "max_tokens": CFG["max_tokens"],
+            "cache_prompt": False,
+            "response_format": {"type": "json_schema", "json_schema": {"name": "marks", "strict": True, "schema": MARKS}},
+        }
+        request = urllib.request.Request(self.url + "/v1/chat/completions", data=json.dumps(body).encode("utf-8"), headers={"Content-Type": "application/json"})
+        started = time.monotonic()
         try:
-            body = {
-                "messages": [{"role": "user", "content": [
-                    {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(png).decode("ascii")}},
-                    {"type": "text", "text": question + "\nList every interactive control and what is happening. The scene may be a desktop, a movie, a camera feed, or a game."},
-                ]}],
-                "temperature": CFG["temperature"],
-                "top_k": CFG["top_k"],
-                "top_p": CFG["top_p"],
-                "min_p": CFG["min_p"],
-                "max_tokens": CFG["max_tokens"],
-            }
-            request = urllib.request.Request(self.url + "/v1/chat/completions", data=json.dumps(body).encode("utf-8"), headers={"Content-Type": "application/json"})
-            started = time.monotonic()
             with urllib.request.urlopen(request, timeout=600) as response:
                 data = json.load(response)
-            text = data["choices"][0]["message"]["content"].strip()
-            LOG.info("survey %.1fs %d chars", time.monotonic() - started, len(text))
+        except urllib.error.HTTPError as exc:
+            if "response_format" not in body:
+                raise RuntimeError(exc.read().decode("utf-8", "replace")[:400]) from exc
+            LOG.info("see schema %s", exc.read().decode("utf-8", "replace")[:200])
+            body.pop("response_format")
+            request = urllib.request.Request(self.url + "/v1/chat/completions", data=json.dumps(body).encode("utf-8"), headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(request, timeout=600) as response:
+                data = json.load(response)
+        content = data["choices"][0]["message"]["content"]
+        if isinstance(content, list):
+            content = "".join(part.get("text", "") if isinstance(part, dict) else str(part) for part in content)
+        text = str(content).strip()
+        LOG.info("see %.1fs %s", time.monotonic() - started, text[:240].replace("\n", " "))
+        return _items(text)
+
+    def survey(self, png: bytes, question: str) -> list:
+        from organs.eyes import crop, embed
+        self.stop()
+        self.start("vision")
+        started = time.monotonic()
+        try:
+            found = []
+            for item in self._see(png, question)[:8]:
+                pad = [max(0, item["y0"] - 80), max(0, item["x0"] - 80), min(1000, item["y1"] + 80), min(1000, item["x1"] + 80)]
+                closer = self._see(crop(png, pad), item["name"])
+                picked = item
+                if closer:
+                    back = embed(pad, [closer[0]["y0"], closer[0]["x0"], closer[0]["y1"], closer[0]["x1"]])
+                    refined = {"name": item["name"], "y0": _clamp(back[0]), "x0": _clamp(back[1]), "y1": _clamp(back[2]), "x1": _clamp(back[3])}
+                    if refined["y1"] > refined["y0"] and refined["x1"] > refined["x0"]:
+                        picked = refined
+                found.append(picked)
+            LOG.info("survey %.1fs %s", time.monotonic() - started, ", ".join(item["name"] for item in found) or "none")
+            return found
         finally:
             self.stop()
             self.start()
-        return text
 
     def complete(self, prompt: str, images: list[bytes] = (), schema: dict | None = None, stop: list[str] = ()) -> str:
         body = {

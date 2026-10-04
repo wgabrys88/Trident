@@ -117,7 +117,35 @@ def _controls(image: Image.Image, src_w: int, src_h: int, left: int, top: int, s
         draw.text((lx + 1, ly), label, fill=(0, 255, 255), font=font)
 
 
-def overlay(png: bytes, box: list | None = None) -> bytes:
+def _notes(image: Image.Image, notes: list, src_w: int, src_h: int, left: int, top: int, scale: int) -> None:
+    if not notes:
+        return
+    draw = ImageDraw.Draw(image)
+    font = ImageFont.load_default(size=96)
+    rows = []
+    for name, box in notes:
+        y0, x0, y1, x1 = (float(v) for v in box)
+        ix0 = round((min(x0, x1) / 1000 * src_w - left) * scale)
+        iy0 = round((min(y0, y1) / 1000 * src_h - top) * scale)
+        ix1 = round((max(x0, x1) / 1000 * src_w - left) * scale)
+        iy1 = round((max(y0, y1) / 1000 * src_h - top) * scale)
+        if ix1 < 0 or iy1 < 0 or ix0 >= image.width or iy0 >= image.height:
+            continue
+        draw.rectangle((ix0, iy0, max(ix1, ix0 + 1), max(iy1, iy0 + 1)), outline=(0, 255, 255), width=4)
+        gy = min(1000, max(0, round((iy0 + iy1) / 2 / image.height * 1000)))
+        gx = min(1000, max(0, round((ix0 + ix1) / 2 / image.width * 1000)))
+        label = f"y {gy} x {gx} {name}"
+        rows.append(((ix0 + ix1) / 2, (iy0 + iy1) / 2, label, int(draw.textlength(label, font=font))))
+    for i, (cx, cy, label, tw) in enumerate(rows):
+        ly = i * 100
+        if ly + 100 > image.height:
+            break
+        draw.line((cx, cy, 4, ly + 48), fill=(0, 255, 255), width=3)
+        draw.rectangle((0, ly, min(image.width - 1, tw + 12), ly + 96), fill=(0, 0, 0))
+        draw.text((4, ly), label, fill=(0, 255, 255), font=font)
+
+
+def overlay(png: bytes, box: list | None = None, notes: list | None = None) -> bytes:
     src = Image.open(io.BytesIO(png)).convert("RGB")
     src_w, src_h = src.size
     if box:
@@ -132,6 +160,7 @@ def overlay(png: bytes, box: list | None = None) -> bytes:
         left = top = 0
         span_w, span_h, scale = src_w, src_h, 1
     _controls(image, src_w, src_h, left, top, scale)
+    _notes(image, notes or [], src_w, src_h, left, top, scale)
     point = wintypes.POINT()
     if user32.GetCursorPos(ctypes.byref(point)):
         sw, sh = screen_size()

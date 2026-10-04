@@ -23,7 +23,7 @@ top_k = 64
 top_p = 0.95
 min_p = 0.05
 max_tokens = 1024
-max_tool_steps = 60
+max_tool_steps = 200
 
 [eyes]
 max_side = 1920
@@ -36,6 +36,7 @@ side = 1920
 context = 4096
 slots = 1
 ubatch = 1024
+image_tokens = 1024
 
 [cloud]
 model = "gpt-5.6-luna-none"

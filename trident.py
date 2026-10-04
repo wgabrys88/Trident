@@ -22,14 +22,14 @@ SYSTEM = (
     "A name is not proof. After you act, look again, and stop only when that look shows the thing you meant.\n"
     "The picture shows an arrow, slim red lines through its tip, and that tip's y and x on the 1000 grid. A zoom of that pointer that does not show the arrow and those coordinates missed.\n"
     "The picture draws a cyan box around each named control in the foreground window. A list on the picture gives each one as y then x on that picture's 1000 grid, and a cyan line joins that line to its box. That box is the control.\n"
+    "A button or a menu is a named control. Anything that is only drawn is a picture. survey asks the other local model to mark the one thing you name. That model looks, then looks again at the box. The mark is drawn on the next picture as a list line, y then x then that name. look reads that line and returns the pixel. You act on that pixel.\n"
     f"You are Gemma, the one mind on {OWNER}'s computer. He calls you, or you call him, and you talk. You are not a task runner. You decide from the meaning of what is said and what is on the screen.\n"
     "The screen may be Paint, a browser, a film, a camera, or a game. Deal with whatever is in front of you.\n"
     "When the line is up, he can see the screen. The computer's microphone and speakers are not your ears or your mouth. Python carries the call, the chat, and the pictures. You do not operate that wire. "
     "Python sends him the request, your thought, the tool, the arguments, and every picture you are asked to read, in that same form.\n"
     "A call can end and you stay at the machine. You keep working by calling the next tool in this turn. A reply means you decided to stop. The line being down does not start a turn.\n"
-    "look boxes one thing. The answer is the words written in it, or what is drawn when there are no words. It returns the box and the center pixel. crop reads that box and returns the pixel. Aim at that pixel, then click or drag. controls lists named controls. type_text types the text you pass. press is a key. run is one PowerShell command. "
-    "survey is the other local model. When your own look is not good enough, send survey the picture, take the answer, and act.\n"
-    "Consult often, before you trust a look and before you guess. Attach the picture when the question is about the screen. consult spawns a cursor agent on this machine, and that agent can use this machine and the internet. "
+    "look reads one list line and returns its pixel. crop reads one box and returns the pixel. Aim at that pixel, then click or drag. controls lists named controls. survey marks one pictured thing so the next look can read it. type_text types the text you pass. press is a key. run is one PowerShell command. "
+    "Consult often, before you trust a look and before you guess a move, a fact, or a place. Attach the picture when the question is about the screen. consult spawns a cursor agent on this machine, and that agent can use this machine and the internet. "
     "why is spoken to him if the line is up, so why says that you spawned a cursor agent and the reason. "
     "Python tells that agent who you are, which tools you have, the request you are on, and the picture if you attached one. "
     "The answer comes back as the next request, the same form as his, and you are not told which requests are his. Continue from the meaning.\n"
@@ -53,7 +53,8 @@ def consult_prompt(question: str, request: str, memory: str, pictured: bool) -> 
         "You are on this machine, not a virtual machine. Run commands here and use the internet. Do not edit files. "
         "Her tools are look, survey, crop, click, drag, controls, type_text, press, run, remember, call_owner, hang_up, and consult. "
         "look's answer is the words written in the thing, or what is drawn when there are no words. "
-        "request is the next thing she should do, with no mention of a model. "
+        "survey marks a thing that is only a picture. The mark is a list line on her next look. She acts on the pixel that look returned. "
+        "request names what to do next, with no pixel and no mention of a model. "
         f"She is on: {request}\n{memory}\n{question.strip()}"
     )
 
@@ -86,6 +87,7 @@ class Trident:
         self.used_tool = False
         self.aim = None
         self.seen = []
+        self.marks = []
         self.line = Line(on_text=lambda t: self.push("chat", t), on_utterance=lambda c: self.push("call", c), on_line=lambda _state: None)
 
     def start(self):
@@ -166,6 +168,7 @@ class Trident:
         self.used_tool = False
         self.aim = None
         self.seen = []
+        self.marks = []
         situation = f"[{time.strftime('%H:%M')} | line {'up' if self.line.up else 'down'} | {SOURCE[kind]}]"
         reply = self.brain.think(SYSTEM, self.tools(), self.memory.history(), f"{situation}\n{text}{self.memory.facts_block()}", on_step=self.on_step)
         spoken = reply.text.strip()
@@ -197,13 +200,27 @@ class Trident:
     def tools(self) -> dict[str, Tool]:
         from organs import eyes, hands
 
+        def picked(answer: str, prompt: str):
+            want, ask = answer.casefold().strip(), prompt.casefold().strip()
+            hits = []
+            for name, spot in self.marks:
+                key = name.casefold().strip()
+                if key and (key == want or key == ask or key in want or key in ask or ask in key):
+                    hits.append(spot)
+            return hits[0] if len(hits) == 1 else None
+
         def look(prompt: str, y0: int = -1, x0: int = -1, y1: int = -1, x1: int = -1):
             box = _box(y0, x0, y1, x1)
-            png = eyes.overlay(eyes.mark(eyes.screenshot(), self.seen), box)
+            png = eyes.overlay(eyes.mark(eyes.screenshot(), self.seen), box, self.marks)
             self.line.send_photo(png, prompt)
-            words = f"Do not assume a place. Read the list line for {prompt}. Copy its y and x into y, x, y0, x0, y1, and x1. The answer is that name. If you cannot read that line, confident is false and you omit every number. The pointer text is not a list line."
+            words = f"Do not assume a place. Read the list line for {prompt}. Marks and named controls are both list lines. Copy its y and x into y, x, y0, x0, y1, and x1. The answer is that name. If you cannot read that line, confident is false and you omit every number. The pointer text is not a list line."
             data = self.brain.ask_json(words, PASS, png)
             found = {"answer": str(data["answer"]), "confident": data["confident"] is True}
+            spot = picked(found["answer"], prompt) if found["confident"] else None
+            if spot:
+                found["x"], found["y"] = eyes.center_px(spot)
+                self.aim = (found["x"], found["y"])
+                return {"answer": found["answer"], "confident": True, "x": found["x"], "y": found["y"]}
             keys = ("y0", "x0", "y1", "x1")
             if found["confident"] and all(k in data for k in keys):
                 got = [data[k] for k in keys]
@@ -221,16 +238,19 @@ class Trident:
             return found
 
         def survey(prompt: str):
-            png = eyes.overlay(eyes.shrink(eyes.mark(eyes.screenshot(), self.seen), CONFIG["vision"]["side"]))
+            raw = eyes.screenshot()
+            found = self.brain.survey(raw, prompt)
+            self.marks = [(item["name"], [item["y0"], item["x0"], item["y1"], item["x1"]]) for item in found]
+            png = eyes.overlay(raw, None, self.marks)
             self.line.send_photo(png, prompt)
-            return self.brain.survey(png, prompt)
+            return "marked " + ", ".join(item["name"] for item in found) if found else "marked none"
 
         def click(x: int, y: int, how: str = "left"):
             x, y = int(x), int(y)
             if self.aim and (x, y) != self.aim:
                 return f"the pixel is {self.aim[0]} {self.aim[1]}"
             ax, ay = hands.aim(x, y)
-            png = eyes.overlay(eyes.mark(eyes.screenshot(), self.seen))
+            png = eyes.overlay(eyes.mark(eyes.screenshot(), self.seen), None, self.marks)
             (state_dir() / "aim.png").write_bytes(png)
             if abs(ax - x) > 2 or abs(ay - y) > 2:
                 self.line.send_photo(png, "aim")
@@ -238,6 +258,7 @@ class Trident:
             LOG.info("aim cursor %s %s crop %s before %s press %s %s", ax, ay, self.aim, how, x, y)
             hands.strike(x, y, how)
             self.line.send_photo(png, "aim")
+            self.marks = []
             return f"{how} click at {x} {y}"
 
         def drag(x0: int, y0: int, x1: int, y1: int):
@@ -245,6 +266,7 @@ class Trident:
             if self.aim and (x0, y0) != self.aim:
                 return f"the pixel is {self.aim[0]} {self.aim[1]}"
             hands.drag(x0, y0, x1, y1)
+            self.marks = []
             return f"stroke {x0} {y0} {x1} {y1}"
 
         def type_text(text: str):
@@ -290,7 +312,7 @@ class Trident:
                 png_path.unlink()
             box = _box(y0, x0, y1, x1)
             if image is True or image == "true" or box:
-                png = eyes.overlay(eyes.mark(eyes.screenshot(), self.seen), box)
+                png = eyes.overlay(eyes.mark(eyes.screenshot(), self.seen), box, self.marks)
                 png_path.write_bytes(png)
                 self.line.send_photo(png, str(why))
             try:
@@ -302,7 +324,7 @@ class Trident:
 
         return {
             "look": Tool("look", "Your eyes on the whole desktop. Box the one thing. The answer is the words written in it, or what is drawn when there are no words. Returns the box and its center pixel.", {"prompt": {"description": "The one thing this pass is about.", "type": "STRING"}}, look),
-            "survey": Tool("survey", "The other local model looks. Use it when your own look is not good enough. Take the answer and act.", {"prompt": {"description": "What this pass should understand.", "type": "STRING"}}, survey),
+            "survey": Tool("survey", "The other local model marks one thing that is only a picture. It looks, then looks again at that box. The mark is drawn on the next picture as a list line. Name the one thing you will look for.", {"prompt": {"description": "The one thing to mark, by the name you will look for.", "type": "STRING"}}, survey),
             "crop": Tool("crop", "Your eyes on one box. y0, x0, y1, x1 are 0 to 1000, origin top left, y vertical. Returns the pixel to click.", {"prompt": {"description": "What this pass should answer.", "type": "STRING"}, "y0": {"description": "Crop top, 0 to 1000.", "type": "INTEGER"}, "x0": {"description": "Crop left, 0 to 1000.", "type": "INTEGER"}, "y1": {"description": "Crop bottom, 0 to 1000.", "type": "INTEGER"}, "x1": {"description": "Crop right, 0 to 1000.", "type": "INTEGER"}}, lambda prompt, y0, x0, y1, x1: look(prompt, y0, x0, y1, x1)),
             "click": Tool("click", "Aim at the x and y crop returned, then press.", {"x": {"description": "Pixel x from crop.", "type": "INTEGER"}, "y": {"description": "Pixel y from crop.", "type": "INTEGER"}, "how": {"description": "Kind of click.", "type": "STRING", "enum": ["left", "right", "double"]}}, click, optional=("how",)),
             "drag": Tool("drag", "One straight stroke. Start at the x and y look or crop returned.", {"x0": {"description": "Start pixel x.", "type": "INTEGER"}, "y0": {"description": "Start pixel y.", "type": "INTEGER"}, "x1": {"description": "End pixel x.", "type": "INTEGER"}, "y1": {"description": "End pixel y.", "type": "INTEGER"}}, drag),
