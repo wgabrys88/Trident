@@ -1,6 +1,9 @@
 import base64
+import io
 import json
+import math
 import re
+import struct
 import subprocess
 import sys
 import time
@@ -26,15 +29,54 @@ THOUGHT_RE = re.compile(r"<\|channel>thought\n?(.*?)(?:<channel\|>|$)", re.DOTAL
 CALL_RE = re.compile(r"<\|tool_call>call:(\w+)\{(.*?)\}<tool_call\|>", re.DOTALL)
 ARG_RE = re.compile(r'(\w+):(?:<\|"\|>(.*?)<\|"\|>|([^,}]*))', re.DOTALL)
 CONTROL_RE = re.compile(r"<\|[a-z_\"]+\|?>|<[a-z_]+\|>|<bos>|<eos>")
-SEE = "The scene may be a desktop, a web page, a game, or a camera. Mark only what is asked. y0 and x0 are the top left, y1 and x1 the bottom right, integers 0 to 1000 on this picture, origin top left, y vertical. name is what is drawn. If it is absent, items is empty. Do not invent a box.\n"
-MARKS = {"type": "object", "properties": {"items": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "y0": {"type": "integer"}, "x0": {"type": "integer"}, "y1": {"type": "integer"}, "x1": {"type": "integer"}}, "required": ["name", "y0", "x0", "y1", "x1"]}}}, "required": ["items"]}
+SEE = "Mark only what is asked. This picture may be a desktop, a web page, a game, or a camera. bbox_2d is x1, y1, x2, y2 in pixels of this picture, origin top left, x to the right and y down. label is what is drawn. If it is absent, items is empty. Do not invent a box.\n"
+MARKS = {"type": "object", "properties": {"items": {"type": "array", "items": {"type": "object", "properties": {"label": {"type": "string"}, "bbox_2d": {"type": "array", "items": {"type": "integer"}}}, "required": ["label", "bbox_2d"]}}}, "required": ["items"]}
 
 
-def _clamp(value: object) -> int:
-    return min(1000, max(0, int(round(float(value)))))
+def _f32(value: float) -> float:
+    return struct.unpack("f", struct.pack("f", float(value)))[0]
 
 
-def _items(text: str) -> list:
+def _canvas(width: int, height: int) -> tuple[int, int, int, int, int]:
+    factor = 28
+    cap = int(CONFIG["vision"]["image_tokens"]) * factor * factor
+
+    def c_round(x: float) -> int:
+        return int(math.floor(_f32(_f32(x) / _f32(factor)) + 0.5)) * factor
+
+    def by(fn, x: float) -> int:
+        return int(fn(_f32(_f32(x) / _f32(factor)))) * factor
+
+    w_bar, h_bar = max(factor, c_round(width)), max(factor, c_round(height))
+    if h_bar * w_bar > cap:
+        beta = _f32(math.sqrt(_f32(_f32(_f32(height) * _f32(width)) / _f32(cap))))
+        h_bar, w_bar = max(factor, by(math.floor, _f32(_f32(height) / beta))), max(factor, by(math.floor, _f32(_f32(width) / beta)))
+    elif h_bar * w_bar < cap:
+        beta = _f32(math.sqrt(_f32(_f32(cap) / _f32(_f32(height) * _f32(width)))))
+        h_bar, w_bar = by(math.ceil, _f32(_f32(height) * beta)), by(math.ceil, _f32(_f32(width) * beta))
+    scale = min(_f32(_f32(w_bar) / _f32(width)), _f32(_f32(h_bar) / _f32(height)))
+    content_w = min(int(math.ceil(_f32(_f32(width) * scale))), w_bar)
+    content_h = min(int(math.ceil(_f32(_f32(height) * scale))), h_bar)
+    return (w_bar // factor) * (h_bar // factor), (w_bar - content_w) // 2, (h_bar - content_h) // 2, content_w, content_h
+
+
+def _fit(png: bytes) -> bytes:
+    width, height = struct.unpack(">II", png[16:24])
+    limit = int(CONFIG["vision"]["image_tokens"])
+    if _canvas(width, height)[0] <= limit:
+        return png
+    scale, nw, nh = 1.0, width, height
+    while scale > 0.25 and _canvas(nw, nh)[0] > limit:
+        scale *= 0.92
+        nw, nh = max(28, int(width * scale)), max(28, int(height * scale))
+    from PIL import Image
+    image = Image.open(io.BytesIO(png)).convert("RGB").resize((nw, nh), Image.BICUBIC)
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def _items(text: str, png: bytes) -> list:
     raw = text.strip()
     try:
         data = json.loads(raw)
@@ -47,17 +89,23 @@ def _items(text: str) -> list:
         except json.JSONDecodeError:
             return []
     rows = data.get("items", []) if isinstance(data, dict) else []
+    width, height = struct.unpack(">II", png[16:24])
+    _, off_x, off_y, content_w, content_h = _canvas(width, height)
     found = []
     for item in rows if isinstance(rows, list) else []:
-        if not isinstance(item, dict):
+        box = item.get("bbox_2d") if isinstance(item, dict) else None
+        if not isinstance(box, list) or len(box) != 4:
             continue
         try:
-            name = " ".join(str(item["name"]).split())[:40]
-            box = [_clamp(item[key]) for key in ("y0", "x0", "y1", "x1")]
-        except (KeyError, TypeError, ValueError):
+            x0, y0, x1, y1 = (float(v) for v in box)
+            name = " ".join(str(item.get("label", "")).split())[:40]
+        except (TypeError, ValueError):
             continue
-        if name and box[2] > box[0] and box[3] > box[1]:
-            found.append({"name": name, "y0": box[0], "x0": box[1], "y1": box[2], "x1": box[3]})
+        def axis(value: float, off: int, span: int) -> int:
+            return min(1000, max(0, int(round((value - off) / span * 1000))))
+        grid = [axis(min(y0, y1), off_y, content_h), axis(min(x0, x1), off_x, content_w), axis(max(y0, y1), off_y, content_h), axis(max(x0, x1), off_x, content_w)]
+        if name and grid[2] > grid[0] and grid[3] > grid[1]:
+            found.append({"name": name, "y0": grid[0], "x0": grid[1], "y1": grid[2], "x1": grid[3]})
     return found
 
 @dataclass
@@ -227,6 +275,7 @@ class Brain:
                 continue
 
     def _see(self, png: bytes, question: str) -> list:
+        png = _fit(png)
         self._erase()
         body = {
             "messages": [{"role": "user", "content": [
@@ -237,7 +286,7 @@ class Brain:
             "top_k": CFG["top_k"],
             "top_p": CFG["top_p"],
             "min_p": CFG["min_p"],
-            "max_tokens": CFG["max_tokens"],
+            "max_tokens": 1536,
             "cache_prompt": False,
             "response_format": {"type": "json_schema", "json_schema": {"name": "marks", "strict": True, "schema": MARKS}},
         }
@@ -259,7 +308,7 @@ class Brain:
             content = "".join(part.get("text", "") if isinstance(part, dict) else str(part) for part in content)
         text = str(content).strip()
         LOG.info("see %.1fs %s", time.monotonic() - started, text[:240].replace("\n", " "))
-        return _items(text)
+        return _items(text, png)
 
     def survey(self, png: bytes, question: str) -> list:
         from organs.eyes import crop, embed
@@ -268,13 +317,13 @@ class Brain:
         started = time.monotonic()
         try:
             found = []
-            for item in self._see(png, question)[:8]:
+            for item in self._see(png, question)[:32]:
                 pad = [max(0, item["y0"] - 80), max(0, item["x0"] - 80), min(1000, item["y1"] + 80), min(1000, item["x1"] + 80)]
-                closer = self._see(crop(png, pad), item["name"])
+                closer = self._see(crop(png, pad, False), item["name"])
                 picked = item
                 if closer:
                     back = embed(pad, [closer[0]["y0"], closer[0]["x0"], closer[0]["y1"], closer[0]["x1"]])
-                    refined = {"name": item["name"], "y0": _clamp(back[0]), "x0": _clamp(back[1]), "y1": _clamp(back[2]), "x1": _clamp(back[3])}
+                    refined = {"name": item["name"], **{key: min(1000, max(0, int(round(back[i])))) for i, key in enumerate(("y0", "x0", "y1", "x1"))}}
                     if refined["y1"] > refined["y0"] and refined["x1"] > refined["x0"]:
                         picked = refined
                 found.append(picked)
@@ -324,9 +373,12 @@ class Brain:
                 LOG.info("thought: %s", thought)
             if not name:
                 text = plain(out)
+                nudge = on_step(Step(thought, "", {})) if on_step else None
+                if nudge:
+                    LOG.info("hold: %s", nudge)
+                    prompt += out + turn("user", nudge) + f"{TURN_OPEN}model\n"
+                    continue
                 LOG.info("say: %s", text)
-                if on_step and thought:
-                    on_step(Step(thought, "", {}))
                 return Reply(text)
             if on_step:
                 on_step(Step(thought, name, args))

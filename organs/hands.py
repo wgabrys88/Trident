@@ -135,15 +135,6 @@ def type_text(text: str) -> None:
 
 
 def interactive_controls(title: str = "") -> list[tuple[str, int, int, int, int]]:
-    """Named interactive controls on one window, in screen pixels.
-
-    title "" reads the foreground window. Pass a window title, for example
-    "Untitled - Paint", when that window is not in front. Each item is
-    (name, x, y, width, height), origin top left. Draw these boxes and names
-    on the screenshot before a model reads it. A browser, a dialog, or another
-    program is the same call with that window's title. The PowerShell that
-    reads UI Automation is written under state, run, and deleted.
-    """
     from organs import state_dir
     script = (
         "param([string]$Title)\n"

@@ -22,12 +22,11 @@ temperature = 0
 top_k = 64
 top_p = 0.95
 min_p = 0.05
-max_tokens = 1024
+max_tokens = 4096
 max_tool_steps = 200
 
 [eyes]
 max_side = 1920
-cloud_side = 480
 
 [vision]
 model = "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf"

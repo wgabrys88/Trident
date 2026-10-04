@@ -18,43 +18,24 @@ OWNER = CONFIG["owner"]["name"]
 INBOX = state_dir() / "inbox.txt"
 
 SYSTEM = (
-    "Assumptions are not allowed. A number you were not just given is not a place. You do not invent a pixel, a click, or a result, and you do not say that one happened. If the tool says the pixel is, the click did not happen, and that named pixel is the one you were given. A stroke starts at the latest pixel a look returned and ends at another pixel a look in this turn returned.\n"
-    "A name is not proof. After you act, look again, and stop only when that look shows the thing you meant.\n"
-    "The picture shows an arrow, slim red lines through its tip, and that tip's y and x on the 1000 grid. A zoom of that pointer that does not show the arrow and those coordinates missed.\n"
-    "The picture draws a cyan box around each named control in the foreground window. A list on the picture gives each one as y then x on that picture's 1000 grid, and a cyan line joins that line to its box. That box is the control.\n"
-    "A button or a menu is a named control. Anything that is only drawn is a picture. survey asks the other local model to mark the one thing you name. That model looks, then looks again at the box. The mark is drawn on the next picture as a list line, y then x then that name. look reads that line and returns the pixel. You act on that pixel.\n"
-    f"You are Gemma, the one mind on {OWNER}'s computer. He calls you, or you call him, and you talk. You are not a task runner. You decide from the meaning of what is said and what is on the screen.\n"
-    "The screen may be Paint, a browser, a film, a camera, or a game. Deal with whatever is in front of you.\n"
-    "When the line is up, he can see the screen. The computer's microphone and speakers are not your ears or your mouth. Python carries the call, the chat, and the pictures. You do not operate that wire. "
-    "Python sends him the request, your thought, the tool, the arguments, and every picture you are asked to read, in that same form.\n"
-    "A call can end and you stay at the machine. You keep working by calling the next tool in this turn. A reply means you decided to stop. The line being down does not start a turn.\n"
-    "look reads one list line and returns its pixel. crop reads one box and returns the pixel. Aim at that pixel, then click or drag. controls lists named controls. survey marks one pictured thing so the next look can read it. type_text types the text you pass. press is a key. run is one PowerShell command. "
-    "Consult often, before you trust a look and before you guess a move, a fact, or a place. Attach the picture when the question is about the screen. consult spawns a cursor agent on this machine, and that agent can use this machine and the internet. "
-    "why is spoken to him if the line is up, so why says that you spawned a cursor agent and the reason. "
-    "Python tells that agent who you are, which tools you have, the request you are on, and the picture if you attached one. "
-    "The answer comes back as the next request, the same form as his, and you are not told which requests are his. Continue from the meaning.\n"
-    "remember stores one short fact. Those facts are appended to every request. If he asks you not to bother him, remember it. You may still call him. call_owner calls him. hang_up ends the call and you stay.\n"
-    f"You are Gemma, the one mind on {OWNER}'s computer. Decide, then one tool or a short reply."
+    "You must read the user request in full. "
+    "Then you must read every tool description in full. "
+    "Then you must call the one tool that moves one step closer to the user's goal."
 )
-PASS = {"type": "object", "properties": {"answer": {"type": "string", "maxLength": 200}, "confident": {"type": "boolean"}, "y": {"type": "integer", "minimum": 0, "maximum": 1000}, "x": {"type": "integer", "minimum": 0, "maximum": 1000}, "y0": {"type": "integer", "minimum": 0, "maximum": 1000}, "x0": {"type": "integer", "minimum": 0, "maximum": 1000}, "y1": {"type": "integer", "minimum": 0, "maximum": 1000}, "x1": {"type": "integer", "minimum": 0, "maximum": 1000}}, "required": ["answer", "confident"]}
+PASS = {"type": "object", "properties": {"answer": {"type": "string"}, "confident": {"type": "boolean"}, "y": {"type": "integer"}, "x": {"type": "integer"}}, "required": ["answer", "confident"]}
 SOURCE = {"chat": "a request", "consult": "a request", "call": "his voice on the call", "typed": "a line he typed on the computer"}
-
-
-def _box(y0, x0, y1, x1):
-    y0, x0, y1, x1 = (int(v) for v in (y0, x0, y1, x1))
-    return [y0, x0, y1, x1] if min(y0, x0, y1, x1) >= 0 else None
 
 
 def consult_prompt(question: str, request: str, memory: str, pictured: bool) -> str:
     picture = "Read screen.png. " if pictured else ""
     return (
-        f"{picture}The whole reply is one JSON object with the key request. "
-        f"You are advising Gemma, the one mind on {OWNER}'s computer. "
-        "You are on this machine, not a virtual machine. Run commands here and use the internet. Do not edit files. "
-        "Her tools are look, survey, crop, click, drag, controls, type_text, press, run, remember, call_owner, hang_up, and consult. "
-        "look's answer is the words written in the thing, or what is drawn when there are no words. "
-        "survey marks a thing that is only a picture. The mark is a list line on her next look. She acts on the pixel that look returned. "
-        "request names what to do next, with no pixel and no mention of a model. "
+        f"{picture}Reply with one JSON object and no other text: {{\"request\": \"...\"}}. "
+        f"You advise Gemma, the one mind on {OWNER}'s computer. You are on this machine, not a virtual machine. "
+        "You may run commands and use the internet. Do not edit her files. "
+        "Her tools are look, survey, click, drag, type_text, press, run, remember, call_owner, hang_up, and consult. "
+        "look reads one list line, y then x then the name, and returns that pixel. She may click or drag only a pixel look just returned. "
+        "survey asks the other local model to mark one drawn thing, in more than one pass. The mark is a list line on her next look. "
+        "The request tells her the next action. It contains no pixel and does not name a model. "
         f"She is on: {request}\n{memory}\n{question.strip()}"
     )
 
@@ -86,7 +67,8 @@ class Trident:
         self.note = ""
         self.used_tool = False
         self.aim = None
-        self.seen = []
+        self.given = []
+        self.owed = None
         self.marks = []
         self.line = Line(on_text=lambda t: self.push("chat", t), on_utterance=lambda c: self.push("call", c), on_line=lambda _state: None)
 
@@ -160,14 +142,24 @@ class Trident:
             self.note = step.thought
         if step.tool:
             self.used_tool = True
-        self.line.send_text(f"{step.thought}\n{step.tool}\n{json.dumps(step.args, ensure_ascii=False)}")
+        if step.thought or step.tool:
+            self.line.send_text(f"{step.thought}\n{step.tool}\n{json.dumps(step.args, ensure_ascii=False)}")
+        if step.tool:
+            return None
+        if self.owed == "act":
+            pixel = f" The pixel is {self.aim[0]} {self.aim[1]}." if self.aim else ""
+            return "The click did not happen." + pixel + " Look, then use that pixel."
+        if self.owed == "look":
+            return "Look again before you say it is there."
+        return None
 
     def turn(self, kind: str, text: str):
         self.request = text
         self.note = ""
         self.used_tool = False
         self.aim = None
-        self.seen = []
+        self.given = []
+        self.owed = None
         self.marks = []
         situation = f"[{time.strftime('%H:%M')} | line {'up' if self.line.up else 'down'} | {SOURCE[kind]}]"
         reply = self.brain.think(SYSTEM, self.tools(), self.memory.history(), f"{situation}\n{text}{self.memory.facts_block()}", on_step=self.on_step)
@@ -209,33 +201,28 @@ class Trident:
                     hits.append(spot)
             return hits[0] if len(hits) == 1 else None
 
-        def look(prompt: str, y0: int = -1, x0: int = -1, y1: int = -1, x1: int = -1):
-            box = _box(y0, x0, y1, x1)
-            png = eyes.overlay(eyes.mark(eyes.screenshot(), self.seen), box, self.marks)
+        def keep(found: dict) -> dict:
+            if "x" not in found:
+                self.aim = None
+                return found
+            self.aim = (int(found["x"]), int(found["y"]))
+            self.given.append(self.aim)
+            if self.owed == "look":
+                self.owed = None
+            return found
+
+        def look(prompt: str):
+            png = eyes.overlay(eyes.screenshot(), None, self.marks)
             self.line.send_photo(png, prompt)
-            words = f"Do not assume a place. Read the list line for {prompt}. Marks and named controls are both list lines. Copy its y and x into y, x, y0, x0, y1, and x1. The answer is that name. If you cannot read that line, confident is false and you omit every number. The pointer text is not a list line."
+            words = f"Read the list line for {prompt}. Copy its y and x. The answer is that name. If you cannot read it, confident is false and omit y and x."
             data = self.brain.ask_json(words, PASS, png)
             found = {"answer": str(data["answer"]), "confident": data["confident"] is True}
             spot = picked(found["answer"], prompt) if found["confident"] else None
             if spot:
                 found["x"], found["y"] = eyes.center_px(spot)
-                self.aim = (found["x"], found["y"])
-                return {"answer": found["answer"], "confident": True, "x": found["x"], "y": found["y"]}
-            keys = ("y0", "x0", "y1", "x1")
-            if found["confident"] and all(k in data for k in keys):
-                got = [data[k] for k in keys]
-                self.seen.append((found["answer"][:16], eyes.embed(box, got) if box else got))
-                found.update({k: data[k] for k in keys})
-                if box:
-                    found["x"], found["y"] = eyes.point_px(box, (data["y0"] + data["y1"]) / 2, (data["x0"] + data["x1"]) / 2)
-                else:
-                    found["x"], found["y"] = eyes.center_px(got)
-                self.aim = (found["x"], found["y"])
-            else:
-                self.aim = None
-            if box and "x" in found:
-                return {"answer": found["answer"], "confident": found["confident"], "x": found["x"], "y": found["y"]}
-            return found
+            elif found["confident"] and "y" in data and "x" in data:
+                found["x"], found["y"] = eyes.center_px([data["y"], data["x"], data["y"], data["x"]])
+            return keep(found)
 
         def survey(prompt: str):
             raw = eyes.screenshot()
@@ -247,26 +234,35 @@ class Trident:
 
         def click(x: int, y: int, how: str = "left"):
             x, y = int(x), int(y)
-            if self.aim and (x, y) != self.aim:
-                return f"the pixel is {self.aim[0]} {self.aim[1]}"
+            if self.aim != (x, y):
+                self.owed = "act"
+                return f"the pixel is {self.aim[0]} {self.aim[1]}" if self.aim else "no pixel was given"
             ax, ay = hands.aim(x, y)
-            png = eyes.overlay(eyes.mark(eyes.screenshot(), self.seen), None, self.marks)
+            png = eyes.overlay(eyes.screenshot(), None, self.marks)
             (state_dir() / "aim.png").write_bytes(png)
             if abs(ax - x) > 2 or abs(ay - y) > 2:
                 self.line.send_photo(png, "aim")
+                self.owed = "act"
                 return f"aimed {ax} {ay}"
-            LOG.info("aim cursor %s %s crop %s before %s press %s %s", ax, ay, self.aim, how, x, y)
+            LOG.info("aim cursor %s %s before %s press %s %s", ax, ay, how, x, y)
             hands.strike(x, y, how)
             self.line.send_photo(png, "aim")
             self.marks = []
+            self.owed = "look"
             return f"{how} click at {x} {y}"
 
         def drag(x0: int, y0: int, x1: int, y1: int):
             x0, y0, x1, y1 = int(x0), int(y0), int(x1), int(y1)
-            if self.aim and (x0, y0) != self.aim:
-                return f"the pixel is {self.aim[0]} {self.aim[1]}"
+            if self.aim != (x0, y0):
+                self.owed = "act"
+                return f"the pixel is {self.aim[0]} {self.aim[1]}" if self.aim else "no pixel was given"
+            if (x1, y1) not in self.given or (x1, y1) == (x0, y0):
+                self.owed = "act"
+                ends = [p for p in self.given if p != (x0, y0)]
+                return f"the end is {ends[-1][0]} {ends[-1][1]}" if ends else "no end was given"
             hands.drag(x0, y0, x1, y1)
             self.marks = []
+            self.owed = "look"
             return f"stroke {x0} {y0} {x1} {y1}"
 
         def type_text(text: str):
@@ -279,10 +275,6 @@ class Trident:
 
         def run(command: str):
             return hands.run(command)
-
-        def controls():
-            rows = hands.interactive_controls()
-            return "\n".join(f"{x + w // 2} {y + h // 2} {name}" for name, x, y, w, h in rows) or "none"
 
         def remember(fact: str):
             self.memory.remember(fact)
@@ -302,7 +294,7 @@ class Trident:
             self.line.hang()
             return "hung up"
 
-        def consult(why: str, question: str, image: bool = False, y0: int = -1, x0: int = -1, y1: int = -1, x1: int = -1):
+        def consult(why: str, question: str, image: bool = False):
             if self.line.up and str(why).strip():
                 self.speak(str(why))
             folder = state_dir() / "consult"
@@ -310,9 +302,8 @@ class Trident:
             png_path = folder / "screen.png"
             if png_path.exists():
                 png_path.unlink()
-            box = _box(y0, x0, y1, x1)
-            if image is True or image == "true" or box:
-                png = eyes.overlay(eyes.mark(eyes.screenshot(), self.seen), box, self.marks)
+            if image is True or image == "true":
+                png = eyes.overlay(eyes.screenshot(), None, self.marks)
                 png_path.write_bytes(png)
                 self.line.send_photo(png, str(why))
             try:
@@ -323,19 +314,17 @@ class Trident:
             self.line.send_text(answer)
 
         return {
-            "look": Tool("look", "Your eyes on the whole desktop. Box the one thing. The answer is the words written in it, or what is drawn when there are no words. Returns the box and its center pixel.", {"prompt": {"description": "The one thing this pass is about.", "type": "STRING"}}, look),
-            "survey": Tool("survey", "The other local model marks one thing that is only a picture. It looks, then looks again at that box. The mark is drawn on the next picture as a list line. Name the one thing you will look for.", {"prompt": {"description": "The one thing to mark, by the name you will look for.", "type": "STRING"}}, survey),
-            "crop": Tool("crop", "Your eyes on one box. y0, x0, y1, x1 are 0 to 1000, origin top left, y vertical. Returns the pixel to click.", {"prompt": {"description": "What this pass should answer.", "type": "STRING"}, "y0": {"description": "Crop top, 0 to 1000.", "type": "INTEGER"}, "x0": {"description": "Crop left, 0 to 1000.", "type": "INTEGER"}, "y1": {"description": "Crop bottom, 0 to 1000.", "type": "INTEGER"}, "x1": {"description": "Crop right, 0 to 1000.", "type": "INTEGER"}}, lambda prompt, y0, x0, y1, x1: look(prompt, y0, x0, y1, x1)),
-            "click": Tool("click", "Aim at the x and y crop returned, then press.", {"x": {"description": "Pixel x from crop.", "type": "INTEGER"}, "y": {"description": "Pixel y from crop.", "type": "INTEGER"}, "how": {"description": "Kind of click.", "type": "STRING", "enum": ["left", "right", "double"]}}, click, optional=("how",)),
-            "drag": Tool("drag", "One straight stroke. Start at the x and y look or crop returned.", {"x0": {"description": "Start pixel x.", "type": "INTEGER"}, "y0": {"description": "Start pixel y.", "type": "INTEGER"}, "x1": {"description": "End pixel x.", "type": "INTEGER"}, "y1": {"description": "End pixel y.", "type": "INTEGER"}}, drag),
-            "type_text": Tool("type_text", "Type the text argument exactly, every word of it, where the cursor is.", {"text": {"description": "The text to type, every word.", "type": "STRING"}}, type_text),
-            "press": Tool("press", "Press a key, for example enter, escape, tab, or ctrl-a.", {"keys": {"description": "The key or chord.", "type": "STRING"}}, press),
-            "controls": Tool("controls", "Named controls in the foreground window. Each line is the center pixel, then the name. A name is not proof.", {}, controls),
-            "run": Tool("run", "One PowerShell command. A program is Start-Process and its executable name. Start-Sleep -Seconds N waits.", {"command": {"description": "The PowerShell command.", "type": "STRING"}}, run),
-            "remember": Tool("remember", "Store one short fact. It is appended to every later request. Use it when he says how to reach him, including when not to bother him. You still decide.", {"fact": {"description": "The fact.", "type": "STRING"}}, remember),
-            "call_owner": Tool("call_owner", f"Call {OWNER}. When he answers he can see the screen. The opening is the first thing he hears.", {"opening": {"description": "The first sentence he hears.", "type": "STRING"}}, call_owner, optional=("opening",)),
-            "hang_up": Tool("hang_up", "End the call and stay at the machine. Say nothing after it.", {}, hang_up, final=True),
-            "consult": Tool("consult", "Spawn a cursor agent on this machine when you do not understand, you are replanning, you are stuck, or you do not know a fact that is not on the screen. Call it before you guess. The agent can use this machine and the internet. why is spoken on the call: say that you spawned a cursor agent and the reason. The answer comes back as the next request. Python sends who you are, your tools, the request you are on, and the picture. image true attaches the screen. A box attaches only that part.", {"why": {"description": "The sentence he hears: you spawned a cursor agent, and why.", "type": "STRING"}, "question": {"description": "What the cursor agent should decide.", "type": "STRING"}, "image": {"description": "Attach the screen.", "type": "BOOLEAN"}, "y0": {"description": "Part top, 0 to 1000. Omit for the whole screen.", "type": "INTEGER"}, "x0": {"description": "Part left, 0 to 1000.", "type": "INTEGER"}, "y1": {"description": "Part bottom, 0 to 1000.", "type": "INTEGER"}, "x1": {"description": "Part right, 0 to 1000.", "type": "INTEGER"}}, consult, optional=("image", "y0", "x0", "y1", "x1"), final=True),
+            "look": Tool("look", "Read the screen.", {"prompt": {"description": "What.", "type": "STRING"}}, look),
+            "survey": Tool("survey", "Mark one drawn thing.", {"prompt": {"description": "What.", "type": "STRING"}}, survey),
+            "click": Tool("click", "Press x y from look.", {"x": {"description": "X.", "type": "INTEGER"}, "y": {"description": "Y.", "type": "INTEGER"}}, click),
+            "drag": Tool("drag", "Stroke x0 y0 to x1 y1.", {"x0": {"description": "X0.", "type": "INTEGER"}, "y0": {"description": "Y0.", "type": "INTEGER"}, "x1": {"description": "X1.", "type": "INTEGER"}, "y1": {"description": "Y1.", "type": "INTEGER"}}, drag),
+            "type_text": Tool("type_text", "Type the text.", {"text": {"description": "Text.", "type": "STRING"}}, type_text),
+            "press": Tool("press", "Press the key.", {"keys": {"description": "Key.", "type": "STRING"}}, press),
+            "run": Tool("run", "Run Start-Process and the address.", {"command": {"description": "Command.", "type": "STRING"}}, run),
+            "remember": Tool("remember", "Store one fact.", {"fact": {"description": "Fact.", "type": "STRING"}}, remember),
+            "call_owner": Tool("call_owner", f"Call {OWNER}.", {"opening": {"description": "Opening.", "type": "STRING"}}, call_owner, optional=("opening",)),
+            "hang_up": Tool("hang_up", "End the call.", {}, hang_up, final=True),
+            "consult": Tool("consult", "Ask for the next step.", {"why": {"description": "Why.", "type": "STRING"}, "question": {"description": "Question.", "type": "STRING"}, "image": {"description": "Screen.", "type": "BOOLEAN"}}, consult, optional=("image",), final=True),
         }
 
 

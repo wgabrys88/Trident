@@ -23,41 +23,17 @@ def screenshot() -> bytes:
     return buffer.getvalue()
 
 
-def shrink(png: bytes, side: int = 0) -> bytes:
-    image = Image.open(io.BytesIO(png)).convert("RGB")
-    side = side or CFG["cloud_side"]
-    image.thumbnail((side, side), Image.LANCZOS)
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG", compress_level=1)
-    return buffer.getvalue()
-
-
-def crop(png: bytes, box: list) -> bytes:
+def crop(png: bytes, box: list, upscale: bool = True) -> bytes:
     image = Image.open(io.BytesIO(png)).convert("RGB")
     width, height = image.size
     y0, x0, y1, x1 = (float(v) for v in box)
     left, top = round(min(x0, x1) / 1000 * width), round(min(y0, y1) / 1000 * height)
     right, bottom = round(max(x0, x1) / 1000 * width), round(max(y0, y1) / 1000 * height)
     piece = image.crop((left, top, max(right, left + 1), max(bottom, top + 1)))
-    if max(piece.size) < 512:
+    if upscale and max(piece.size) < 512:
         piece = piece.resize((piece.width * 4, piece.height * 4), Image.NEAREST)
     buffer = io.BytesIO()
     piece.save(buffer, format="PNG", compress_level=1)
-    return buffer.getvalue()
-
-
-def mark(png: bytes, areas: list) -> bytes:
-    image = Image.open(io.BytesIO(png)).convert("RGB")
-    width, height = image.size
-    draw = ImageDraw.Draw(image)
-    for label, box in areas:
-        y0, x0, y1, x1 = (float(v) for v in box)
-        left, top = round(min(x0, x1) / 1000 * (width - 1)), round(min(y0, y1) / 1000 * (height - 1))
-        right, bottom = round(max(x0, x1) / 1000 * (width - 1)), round(max(y0, y1) / 1000 * (height - 1))
-        draw.rectangle((left, top, max(right, left + 1), max(bottom, top + 1)), outline=(255, 0, 0), width=3)
-        draw.text((left + 4, top + 4), str(label), fill=(255, 255, 0), font=ImageFont.load_default(size=16))
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG", compress_level=1)
     return buffer.getvalue()
 
 
@@ -84,65 +60,17 @@ def _pointer(image: Image.Image, px: int, py: int) -> None:
     draw.text((tx, ty), text, fill=(255, 255, 0), font=font)
 
 
-def _controls(image: Image.Image, src_w: int, src_h: int, left: int, top: int, scale: int) -> None:
-    from organs.hands import interactive_controls
-    sw, sh = screen_size()
-    draw = ImageDraw.Draw(image)
-    font = ImageFont.load_default(size=28)
-    placed = []
-    for name, x, y, w, h in sorted(interactive_controls(), key=lambda row: (row[2], row[1])):
-        ix = (x * src_w / sw - left) * scale
-        iy = (y * src_h / sh - top) * scale
-        iw = max(1, w * src_w / sw * scale)
-        ih = max(1, h * src_h / sh * scale)
-        if ix + iw < 0 or iy + ih < 0 or ix >= image.width or iy >= image.height:
-            continue
-        draw.rectangle((ix, iy, ix + iw, iy + ih), outline=(0, 255, 255), width=2)
-        gy = min(1000, max(0, round((iy + ih / 2) / image.height * 1000)))
-        gx = min(1000, max(0, round((ix + iw / 2) / image.width * 1000)))
-        label = f"y {gy} x {gx} {name}"
-        tw = int(draw.textlength(label, font=font))
-        placed.append((ix + iw / 2, iy + ih / 2, label, tw))
-    if not placed:
-        return
-    line_h, col_w = 30, 420
-    per = max(1, image.height // line_h)
-    cols = (len(placed) + per - 1) // per
-    x0 = max(0, image.width - cols * col_w)
-    for i, (cx, cy, label, tw) in enumerate(placed):
-        lx = x0 + (i // per) * col_w
-        ly = (i % per) * line_h
-        draw.line((cx, cy, lx, ly + 11), fill=(0, 255, 255), width=1)
-        draw.rectangle((lx, ly, min(image.width - 1, lx + tw + 2), ly + line_h - 2), fill=(0, 0, 0))
-        draw.text((lx + 1, ly), label, fill=(0, 255, 255), font=font)
-
-
-def _notes(image: Image.Image, notes: list, src_w: int, src_h: int, left: int, top: int, scale: int) -> None:
-    if not notes:
-        return
-    draw = ImageDraw.Draw(image)
-    font = ImageFont.load_default(size=96)
-    rows = []
-    for name, box in notes:
-        y0, x0, y1, x1 = (float(v) for v in box)
-        ix0 = round((min(x0, x1) / 1000 * src_w - left) * scale)
-        iy0 = round((min(y0, y1) / 1000 * src_h - top) * scale)
-        ix1 = round((max(x0, x1) / 1000 * src_w - left) * scale)
-        iy1 = round((max(y0, y1) / 1000 * src_h - top) * scale)
-        if ix1 < 0 or iy1 < 0 or ix0 >= image.width or iy0 >= image.height:
-            continue
-        draw.rectangle((ix0, iy0, max(ix1, ix0 + 1), max(iy1, iy0 + 1)), outline=(0, 255, 255), width=4)
-        gy = min(1000, max(0, round((iy0 + iy1) / 2 / image.height * 1000)))
-        gx = min(1000, max(0, round((ix0 + ix1) / 2 / image.width * 1000)))
-        label = f"y {gy} x {gx} {name}"
-        rows.append(((ix0 + ix1) / 2, (iy0 + iy1) / 2, label, int(draw.textlength(label, font=font))))
-    for i, (cx, cy, label, tw) in enumerate(rows):
-        ly = i * 100
-        if ly + 100 > image.height:
-            break
-        draw.line((cx, cy, 4, ly + 48), fill=(0, 255, 255), width=3)
-        draw.rectangle((0, ly, min(image.width - 1, tw + 12), ly + 96), fill=(0, 0, 0))
-        draw.text((4, ly), label, fill=(0, 255, 255), font=font)
+def _panel(labels: list[str], width: int) -> Image.Image | None:
+    if not labels:
+        return None
+    font = ImageFont.load_default(size=32)
+    line_h, rows, col_w = 36, 30, 520
+    cols = (len(labels) + rows - 1) // rows
+    panel = Image.new("RGB", (max(width, cols * col_w), rows * line_h), (0, 0, 0))
+    draw = ImageDraw.Draw(panel)
+    for i, label in enumerate(labels):
+        draw.text(((i // rows) * col_w + 4, (i % rows) * line_h), label, fill=(0, 255, 255), font=font)
+    return panel
 
 
 def overlay(png: bytes, box: list | None = None, notes: list | None = None) -> bytes:
@@ -156,20 +84,45 @@ def overlay(png: bytes, box: list | None = None, notes: list | None = None) -> b
         span_w, span_h = max(right, left + 1) - left, max(bottom, top + 1) - top
         scale = 4 if max(span_w, span_h) < 512 else 1
     else:
-        image = src
-        left = top = 0
-        span_w, span_h, scale = src_w, src_h, 1
-    _controls(image, src_w, src_h, left, top, scale)
-    _notes(image, notes or [], src_w, src_h, left, top, scale)
+        image, left, top, span_w, span_h, scale = src, 0, 0, src_w, src_h, 1
+    sw, sh = screen_size()
+    draw = ImageDraw.Draw(image)
+    lines = []
+    from organs.hands import interactive_controls
+    for name, x, y, w, h in interactive_controls():
+        ix = (x * src_w / sw - left) * scale
+        iy = (y * src_h / sh - top) * scale
+        iw = max(1, w * src_w / sw * scale)
+        ih = max(1, h * src_h / sh * scale)
+        if ix + iw < 0 or iy + ih < 0 or ix >= image.width or iy >= image.height:
+            continue
+        draw.rectangle((ix, iy, ix + iw, iy + ih), outline=(0, 255, 255), width=2)
+        lines.append((min(1000, max(0, round((iy + ih / 2) / image.height * 1000))), min(1000, max(0, round((ix + iw / 2) / image.width * 1000))), name))
+    for name, spot in notes or []:
+        y0, x0, y1, x1 = (float(v) for v in spot)
+        ix0 = round((min(x0, x1) / 1000 * src_w - left) * scale)
+        iy0 = round((min(y0, y1) / 1000 * src_h - top) * scale)
+        ix1 = round((max(x0, x1) / 1000 * src_w - left) * scale)
+        iy1 = round((max(y0, y1) / 1000 * src_h - top) * scale)
+        if ix1 < 0 or iy1 < 0 or ix0 >= image.width or iy0 >= image.height:
+            continue
+        draw.rectangle((ix0, iy0, max(ix1, ix0 + 1), max(iy1, iy0 + 1)), outline=(0, 255, 255), width=3)
+        lines.append((min(1000, max(0, round((iy0 + iy1) / 2 / image.height * 1000))), min(1000, max(0, round((ix0 + ix1) / 2 / image.width * 1000))), name))
     point = wintypes.POINT()
     if user32.GetCursorPos(ctypes.byref(point)):
-        sw, sh = screen_size()
         if box:
             cx, cy = point.x * src_w / sw, point.y * src_h / sh
             if left <= cx < left + span_w and top <= cy < top + span_h:
                 _pointer(image, round((cx - left) * scale), round((cy - top) * scale))
         else:
-            _pointer(image, round(point.x * (image.width - 1) / (sw - 1)), round(point.y * (image.height - 1) / (sh - 1)))
+            _pointer(image, round(point.x * (image.width - 1) / max(1, sw - 1)), round(point.y * (image.height - 1) / max(1, sh - 1)))
+    panel = _panel([f"y {gy} x {gx} {name}" for gy, gx, name in sorted(lines)], image.width)
+    if panel is not None:
+        canvas = Image.new("RGB", (max(image.width, panel.width), image.height + panel.height), (0, 0, 0))
+        canvas.paste(image, (0, 0))
+        ImageDraw.Draw(canvas).line((0, image.height, canvas.width - 1, image.height), fill=(0, 255, 255), width=2)
+        canvas.paste(panel, (0, image.height))
+        image = canvas
     buffer = io.BytesIO()
     image.save(buffer, format="PNG", compress_level=1)
     return buffer.getvalue()
