@@ -71,15 +71,16 @@ def _pointer(image: Image.Image, px: int, py: int) -> None:
     draw.line([(0, py), (width - 1, py)], fill=(255, 0, 0), width=1)
     draw.line([(px, 0), (px, height - 1)], fill=(255, 0, 0), width=1)
     draw.polygon([(px, py), (px, py + 16), (px + 4, py + 13), (px + 7, py + 19), (px + 10, py + 17), (px + 6, py + 12), (px + 12, py + 12)], fill=(255, 255, 255), outline=(0, 0, 0))
-    font = ImageFont.load_default(size=16)
+    font = ImageFont.load_default(size=32)
     text = f"y {gy} x {gx}"
     tw = int(draw.textlength(text, font=font))
-    tx, ty = px + 16, py + 22
+    th = 32
+    tx, ty = px + 18, py + 24
     if tx + tw >= width:
-        tx = max(1, px - tw - 4)
-    if ty + 18 >= height:
-        ty = max(1, py - 22)
-    draw.rectangle((tx - 2, ty - 1, tx + tw + 2, ty + 17), fill=(0, 0, 0))
+        tx = max(1, px - tw - 6)
+    if ty + th >= height:
+        ty = max(1, py - th - 6)
+    draw.rectangle((tx - 2, ty - 2, tx + tw + 2, ty + th), fill=(0, 0, 0))
     draw.text((tx, ty), text, fill=(255, 255, 0), font=font)
 
 

@@ -27,7 +27,7 @@ SYSTEM = (
     "When the line is up, he can see the screen. The computer's microphone and speakers are not your ears or your mouth. Python carries the call, the chat, and the pictures. You do not operate that wire. "
     "Python sends him the request, your thought, the tool, the arguments, and every picture you are asked to read, in that same form.\n"
     "A call can end and you stay at the machine. You keep working by calling the next tool in this turn. A reply means you decided to stop. The line being down does not start a turn.\n"
-    "look boxes one thing. The answer is the words in it, or the name when there are none. It returns the box and the center pixel. crop reads that box and returns the pixel. Aim at that pixel, then click or drag. type_text types the text you pass. press is a key. run is one PowerShell command. "
+    "look boxes one thing. The answer is the words written in it, or what is drawn when there are no words. It returns the box and the center pixel. crop reads that box and returns the pixel. Aim at that pixel, then click or drag. type_text types the text you pass. press is a key. run is one PowerShell command. "
     "survey is the other local model. When your own look is not good enough, send survey the picture, take the answer, and act.\n"
     "When you do not understand, you are replanning, you are stuck, or you do not know a fact that is not on the screen, call consult before you guess. consult spawns a cursor agent on this machine, and that agent can use this machine and the internet. "
     "why is spoken to him if the line is up, so why says that you spawned a cursor agent and the reason. "
@@ -52,7 +52,7 @@ def consult_prompt(question: str, request: str, memory: str, pictured: bool) -> 
         f"You are advising Gemma, the one mind on {OWNER}'s computer. "
         "You are on this machine, not a virtual machine. Run commands here and use the internet. Do not edit files. "
         "Her tools are look, survey, crop, click, drag, type_text, press, run, remember, call_owner, hang_up, and consult. "
-        "look's answer is the words in the thing, or its name when there are none. "
+        "look's answer is the words written in the thing, or what is drawn when there are no words. "
         "request is the next thing she should do, with no mention of a model. "
         f"She is on: {request}\n{memory}\n{question.strip()}"
     )
@@ -198,7 +198,7 @@ class Trident:
             box = _box(y0, x0, y1, x1)
             png = eyes.overlay(eyes.mark(eyes.screenshot(), self.seen), box)
             self.line.send_photo(png, prompt)
-            words = f"Box only {prompt}, tight around it. y and x are its center. The answer is the words in it, or the name when there are none."
+            words = f"Box only {prompt}, tight around it. y and x are its center. The answer is the words written in the box. If none are written, say what is drawn. If the arrow's y and x are not in the box, start with missed."
             data = self.brain.ask_json(words, PASS, png)
             got = [data["y0"], data["x0"], data["y1"], data["x1"]]
             self.seen.append((str(data["answer"])[:16], eyes.embed(box, got) if box else got))
@@ -289,7 +289,7 @@ class Trident:
             self.line.send_text(answer)
 
         return {
-            "look": Tool("look", "Your eyes on the whole desktop. Box the one thing. The answer is the words in it, or the name when there are none. Returns the box and its center pixel.", {"prompt": {"description": "The one thing this pass is about.", "type": "STRING"}}, look),
+            "look": Tool("look", "Your eyes on the whole desktop. Box the one thing. The answer is the words written in it, or what is drawn when there are no words. Returns the box and its center pixel.", {"prompt": {"description": "The one thing this pass is about.", "type": "STRING"}}, look),
             "survey": Tool("survey", "The other local model looks. Use it when your own look is not good enough. Take the answer and act.", {"prompt": {"description": "What this pass should understand.", "type": "STRING"}}, survey),
             "crop": Tool("crop", "Your eyes on one box. y0, x0, y1, x1 are 0 to 1000, origin top left, y vertical. Returns the pixel to click.", {"prompt": {"description": "What this pass should answer.", "type": "STRING"}, "y0": {"description": "Crop top, 0 to 1000.", "type": "INTEGER"}, "x0": {"description": "Crop left, 0 to 1000.", "type": "INTEGER"}, "y1": {"description": "Crop bottom, 0 to 1000.", "type": "INTEGER"}, "x1": {"description": "Crop right, 0 to 1000.", "type": "INTEGER"}}, lambda prompt, y0, x0, y1, x1: look(prompt, y0, x0, y1, x1)),
             "click": Tool("click", "Aim at the x and y crop returned, then press.", {"x": {"description": "Pixel x from crop.", "type": "INTEGER"}, "y": {"description": "Pixel y from crop.", "type": "INTEGER"}, "how": {"description": "Kind of click.", "type": "STRING", "enum": ["left", "right", "double"]}}, click, optional=("how",)),
