@@ -197,6 +197,8 @@ class Brain:
         if schema is not None:
             body["json_schema"] = schema
         (state_dir() / "last_prompt.txt").write_text(prompt, encoding="utf-8")
+        if images:
+            (state_dir() / "last_image.png").write_bytes(images[0])
         request = urllib.request.Request(self.url + "/completion", data=json.dumps(body).encode("utf-8"), headers={"Content-Type": "application/json"})
         started = time.monotonic()
         with urllib.request.urlopen(request, timeout=600) as r:

@@ -79,6 +79,7 @@ class Trident:
         self.unsure = False
         self.cropped = False
         self.acted = False
+        self.seen = []
         self.line = Line(on_text=lambda t: self.push("chat", t), on_utterance=lambda c: self.push("call", c), on_line=lambda _state: self.touch())
 
     def start(self):
@@ -193,7 +194,7 @@ class Trident:
         asked = kind != "idle"
 
         def look(prompt: str, y0: int = -1, x0: int = -1, y1: int = -1, x1: int = -1):
-            png = eyes.screenshot()
+            png = eyes.mark(eyes.screenshot(), self.seen)
             y0, x0, y1, x1 = (int(v) for v in (y0, x0, y1, x1))
             box = [y0, x0, y1, x1] if min(y0, x0, y1, x1) >= 0 else None
             if box:
@@ -205,7 +206,8 @@ class Trident:
             words = f"The answer is only the name. Box only {prompt}, tight around it. y and x are its center."
             LOG.info("look %s", "cloud" if cloud else "local")
             data = cloud_look(png, words) if cloud else self.brain.ask_json(words, PASS, png)
-            self.line.send_photo(eyes.mark(png, [data["y0"], data["x0"], data["y1"], data["x1"]]))
+            got = [data["y0"], data["x0"], data["y1"], data["x1"]]
+            self.seen.append((str(data["answer"])[:16], eyes.embed(box, got) if box else got))
             sure = data["confident"] is True
             self.unsure = not cloud and not sure
             if box:
