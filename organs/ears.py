@@ -1,10 +1,3 @@
-"""Speech from the Telegram call, cut into utterances and turned into text.
-
-Segmenter is Silero VAD on CPU. push() of float32 at 16 kHz returns one padded utterance long enough to keep, or None.
-transcribe() sends a wav to nemo-speech.exe and returns the text plus a language tag.
-python -m organs.ears file.wav transcribes that file.
-"""
-
 import json
 import re
 import subprocess
@@ -25,8 +18,6 @@ LANG_LEAK = re.compile(r"\s*<[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})?>\s*")
 
 
 class Segmenter:
-    """Silero over a 16 kHz stream. push() returns one finished utterance long enough to keep, or None."""
-
     def __init__(self):
         self.session = ort.InferenceSession(str(ROOT / CONFIG["paths"]["models"] / "silero_vad.onnx"), providers=["CPUExecutionProvider"])
         self.pad = RATE * CFG["pad_ms"] // 1000
@@ -87,7 +78,6 @@ def write_wav(path: Path, samples: np.ndarray, rate: int = RATE) -> Path:
 
 
 def transcribe(wav: Path) -> tuple[str, str]:
-    """(text, language) for a wav. language is the recognizer's tag, or pl when Polish letters are in the text."""
     exe = ROOT / CONFIG["paths"]["bin"] / "nemo-speech" / "bin" / "nemo-speech.exe"
     done = subprocess.run(
         [str(exe), "transcribe", str(wav), "--model", str(path_of("ears", "model")), "--device", "vulkan", "--format", "json", "--verbatim", "--quiet", "--endpointing=true", "--stop-history-eou-ms", "1200"],

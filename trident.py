@@ -1,15 +1,3 @@
-"""One process, one queue, one turn at a time.
-
-    python trident.py           run until Ctrl+C. Log to the console and state/trident.log.
-    python trident.py say TEXT  give the running process a written line
-    python trident.py call      ring him
-    python trident.py hang      hang up
-    python trident.py stop      shut down
-
-Each turn is a Telegram message, his speech on the Telegram call, a written line, or one idle tick. The idle tick fires after brain.idle_after quiet seconds, and only while the call is down, she has not promised to stay quiet, and the queue is empty.
-The brain may use tools. Words it finishes with are spoken on the call when the line is up, and sent to the chat when the turn was a message and the line is down.
-"""
-
 import json
 import os
 import queue

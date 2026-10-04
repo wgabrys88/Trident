@@ -1,14 +1,3 @@
-"""A PNG of the desktop, and the conversion from Gemma's grid to screen pixels.
-
-Her boxes are [y0, x0, y1, x1] on a 1000 by 1000 grid, origin at the top left, at any image size.
-center_px() is the center of such a box on the real screen.
-point_px() is a 1000-grid point inside a crop, mapped back onto that screen.
-shrink() is the longest side eyes.cloud_side, for a cloud look.
-mark() draws areas, a short label on each, and a pointer at the cursor, on a copy.
-embed() maps a box on a crop back onto the full grid.
-python -m organs.eyes saves state/screen.png and prints the screen size.
-"""
-
 import ctypes
 import io
 from ctypes import wintypes
@@ -27,7 +16,6 @@ def screen_size() -> tuple[int, int]:
 
 
 def screenshot() -> bytes:
-    """PNG of the primary monitor, longest side no greater than eyes.max_side."""
     image = ImageGrab.grab()
     image.thumbnail((CFG["max_side"], CFG["max_side"]), Image.LANCZOS)
     buffer = io.BytesIO()
@@ -45,7 +33,6 @@ def shrink(png: bytes) -> bytes:
 
 
 def crop(png: bytes, box: list) -> bytes:
-    """PNG of a [y0, x0, y1, x1] box on the 1000-grid."""
     image = Image.open(io.BytesIO(png)).convert("RGB")
     width, height = image.size
     y0, x0, y1, x1 = (float(v) for v in box)
@@ -60,7 +47,6 @@ def crop(png: bytes, box: list) -> bytes:
 
 
 def mark(png: bytes, areas: list) -> bytes:
-    """A copy of png with a red box and a short label on each area, and the pointer at the cursor. png is unchanged."""
     image = Image.open(io.BytesIO(png)).convert("RGB")
     width, height = image.size
     draw = ImageDraw.Draw(image)
@@ -81,7 +67,6 @@ def mark(png: bytes, areas: list) -> bytes:
 
 
 def embed(box: list, inner: list) -> list:
-    """inner is a 1000-grid box on a crop. box is that crop on the full 1000-grid. Returns inner on the full grid."""
     y0, x0, y1, x1 = (float(v) for v in box)
     top, left, bottom, right = min(y0, y1), min(x0, x1), max(y0, y1), max(x0, x1)
     iy0, ix0, iy1, ix1 = (float(v) for v in inner)
@@ -89,14 +74,12 @@ def embed(box: list, inner: list) -> list:
 
 
 def center_px(box_2d: list) -> tuple[int, int]:
-    """(x, y) pixels for the center of a [y0, x0, y1, x1] box on the 1000-grid."""
     width, height = screen_size()
     y0, x0, y1, x1 = (float(v) for v in box_2d)
     return round((x0 + x1) / 2000 * (width - 1)), round((y0 + y1) / 2000 * (height - 1))
 
 
 def point_px(box: list, y: float, x: float) -> tuple[int, int]:
-    """Screen pixel for a 1000-grid point inside a crop. box is that crop on the full 1000-grid."""
     y0, x0, y1, x1 = (float(v) for v in box)
     top, left = min(y0, y1), min(x0, x1)
     gy = top + (max(y0, y1) - top) * float(y) / 1000

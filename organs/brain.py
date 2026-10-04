@@ -1,13 +1,3 @@
-"""Gemma 4 E2B through llama-server, in the token format she was trained on.
-
-think() is the agent turn: system text, tool declarations, and recent turns, with thinking on.
-She returns a thought and then either one tool call or the words to say. That tool runs here, and the
-same turn continues with a <|tool_response>, so the thought stays in context. That turn carries no picture.
-
-ask_json() is a separate request with thinking off. It may take one image and it forces a JSON schema. The words of a pass are the prompt written for that moment. A point in that object is on a 1000 by 1000 grid. Pixel conversion happens outside this file.
-Tools arrive as arguments. python -m organs.brain prints a structured answer and one short sentence. The question is the command line, or the built-in one when that is empty.
-"""
-
 import base64
 import json
 import re
@@ -39,8 +29,6 @@ CONTROL_RE = re.compile(r"<\|[a-z_\"]+\|?>|<[a-z_]+\|>|<bos>|<eos>")
 
 @dataclass
 class Tool:
-    """One action she may take. params maps a name to its description, a type of STRING, INTEGER, NUMBER, or BOOLEAN, and an optional enum. optional names can be left out. final ends the turn with no spoken words."""
-
     name: str
     description: str
     params: dict
@@ -76,7 +64,6 @@ def literal(value: object) -> str:
 
 
 def declare(tool: Tool) -> str:
-    """The tool's declaration in the chat-template spelling: sorted keys, quoted strings, and the template's extra spaces."""
     props = []
     for name, prop in sorted(tool.params.items()):
         parts = [f"description:{quoted(prop['description'])}"]
@@ -101,7 +88,6 @@ def turn(role: str, body: str) -> str:
 
 
 def plain(text: str) -> str:
-    """Words left after the thought channel, the tool call, and the control tokens are gone."""
     text = THOUGHT_RE.sub(" ", text)
     text = CALL_RE.sub(" ", text)
     text = CONTROL_RE.sub(" ", text)
@@ -109,7 +95,6 @@ def plain(text: str) -> str:
 
 
 def parse(output: str) -> tuple[str, str, dict]:
-    """(thought, tool name, args) from one completion. No call means an empty tool name."""
     thought = "\n".join(m.group(1).strip("\n") for m in THOUGHT_RE.finditer(output))
     call = CALL_RE.search(output)
     if not call:

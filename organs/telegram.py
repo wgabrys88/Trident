@@ -1,18 +1,3 @@
-"""The owner's Telegram messages and the voice call.
-
-The account is taken from Telegram Desktop tdata. Desktop stays closed while the session is held and is started again from stop().
-
-start() connects, answers his calls, and reads his messages. dial() places the call.
-speak() writes 48 kHz signed-16 mono into the call. send_text and send_photo go to the chat.
-hang() ends the call. stop() drops the session.
-
-on_text runs on its own thread with his message.
-on_utterance runs on the receive thread with his call audio: float32, 16 kHz, already cut into an utterance.
-on_line runs on the asyncio thread with idle, ringing, or up, and should return at once.
-
-python -m organs.telegram connects, prints what arrives, and picks up a call without sending speech.
-"""
-
 import asyncio
 import ctypes
 import io
@@ -390,7 +375,6 @@ class Line:
         await self.calls.send_external_frame(OWNER, device, data, frame)
 
     def speak(self, pcm48: bytes):
-        """Block until this PCM has been sent into the call. Incoming audio is dropped until that send finishes. The call must already be up."""
         if not self.up:
             raise RuntimeError("line is down")
         self.listening = False

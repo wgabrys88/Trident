@@ -1,10 +1,3 @@
-"""Chatterbox turbo turns English text into samples for the Telegram call.
-
-The model is loaded once, on the GPU, and the voice is reference.wav.
-pieces() yields float32 mono at the model rate. The first piece is yielded once about ten seconds exist.
-pcm48() is signed 16-bit mono at 48 kHz.
-"""
-
 import re
 import time
 import unicodedata
@@ -19,7 +12,6 @@ TAGS = re.compile(r"\[(laugh|chuckle|sigh|gasp|cough|clear throat|sniff|groan)\]
 
 
 def speakable(text: str) -> str:
-    """Letters, digits, punctuation, and bracketed tags, kept as ASCII."""
     kept = TAGS.sub(lambda m: f" <{m.group(1)}> ", text)
     kept = unicodedata.normalize("NFKD", kept).encode("ascii", "ignore").decode("ascii")
     kept = re.sub(r"<([a-z ]+)>", r"[\1]", kept)
@@ -65,7 +57,6 @@ class Mouth:
 
 
 def pcm48(samples: np.ndarray, rate: int) -> bytes:
-    """Signed 16-bit mono at 48 kHz, resampled from float samples at the given rate, for the call."""
     if rate != 48000:
         count = int(len(samples) * 48000 / rate)
         samples = np.interp(np.linspace(0, len(samples) - 1, count), np.arange(len(samples)), samples)
