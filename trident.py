@@ -24,7 +24,7 @@ SYSTEM = (
     "When the line is up, he can see the screen. The computer's microphone and speakers are not your ears or your mouth. Python carries the call, the chat, and the pictures. You do not operate that wire. "
     "Python sends him the request, your thought, the tool, the arguments, and every picture you are asked to read, in that same form.\n"
     "A call can end and you stay at the machine. You keep working by calling the next tool in this turn. A reply means you decided to stop. The line being down does not start a turn.\n"
-    "look boxes one thing. The answer is the words in it, or the name when there are none. It returns the box. crop reads that box and returns the pixel. Aim at that pixel, then click or drag. type_text types the text you pass. press is a key. run is one PowerShell command. "
+    "look boxes one thing. The answer is the words in it, or the name when there are none. It returns the box and the center pixel. crop reads that box and returns the pixel. Aim at that pixel, then click or drag. type_text types the text you pass. press is a key. run is one PowerShell command. "
     "survey is the other local model. When your own look is not good enough, send survey the picture, take the answer, and act.\n"
     "When you do not understand, you are replanning, you are stuck, or you do not know a fact that is not on the screen, call consult before you guess. consult spawns a cursor agent on this machine, and that agent can use this machine and the internet. "
     "why is spoken to him if the line is up, so why says that you spawned a cursor agent and the reason. "
@@ -159,6 +159,8 @@ class Trident:
         self.request = text
         self.note = ""
         self.used_tool = False
+        self.aim = None
+        self.seen = []
         situation = f"[{time.strftime('%H:%M')} | line {'up' if self.line.up else 'down'} | {SOURCE[kind]}]"
         reply = self.brain.think(SYSTEM, self.tools(), self.memory.history(), f"{situation}\n{text}{self.memory.facts_block()}", on_step=self.on_step)
         spoken = reply.text.strip()
@@ -202,7 +204,10 @@ class Trident:
             found = {"answer": str(data["answer"]), "confident": data["confident"] is True, "y0": data["y0"], "x0": data["x0"], "y1": data["y1"], "x1": data["x1"]}
             if box:
                 found["x"], found["y"] = eyes.point_px(box, (data["y0"] + data["y1"]) / 2, (data["x0"] + data["x1"]) / 2)
-                self.aim = (found["x"], found["y"])
+            else:
+                found["x"], found["y"] = eyes.center_px([data["y0"], data["x0"], data["y1"], data["x1"]])
+            self.aim = (found["x"], found["y"])
+            if box:
                 return {"answer": found["answer"], "confident": found["confident"], "x": found["x"], "y": found["y"]}
             return found
 
@@ -227,8 +232,11 @@ class Trident:
             return f"{how} click at {x} {y}"
 
         def drag(x0: int, y0: int, x1: int, y1: int):
-            hands.drag(int(x0), int(y0), int(x1), int(y1))
-            return f"stroke {int(x0)} {int(y0)} {int(x1)} {int(y1)}"
+            x0, y0, x1, y1 = int(x0), int(y0), int(x1), int(y1)
+            if self.aim and (x0, y0) != self.aim:
+                return f"the pixel is {self.aim[0]} {self.aim[1]}"
+            hands.drag(x0, y0, x1, y1)
+            return f"stroke {x0} {y0} {x1} {y1}"
 
         def type_text(text: str):
             hands.type_text(text)
@@ -282,11 +290,11 @@ class Trident:
             self.line.send_text(answer)
 
         return {
-            "look": Tool("look", "Your eyes on the whole desktop. Box the one thing. The answer is the words in it, or the name when there are none. Returns the box, not a pixel.", {"prompt": {"description": "The one thing this pass is about.", "type": "STRING"}}, look),
+            "look": Tool("look", "Your eyes on the whole desktop. Box the one thing. The answer is the words in it, or the name when there are none. Returns the box and its center pixel.", {"prompt": {"description": "The one thing this pass is about.", "type": "STRING"}}, look),
             "survey": Tool("survey", "The other local model looks. Use it when your own look is not good enough. Take the answer and act.", {"prompt": {"description": "What this pass should understand.", "type": "STRING"}}, survey),
             "crop": Tool("crop", "Your eyes on one box. y0, x0, y1, x1 are 0 to 1000, origin top left, y vertical. Returns the pixel to click.", {"prompt": {"description": "What this pass should answer.", "type": "STRING"}, "y0": {"description": "Crop top, 0 to 1000.", "type": "INTEGER"}, "x0": {"description": "Crop left, 0 to 1000.", "type": "INTEGER"}, "y1": {"description": "Crop bottom, 0 to 1000.", "type": "INTEGER"}, "x1": {"description": "Crop right, 0 to 1000.", "type": "INTEGER"}}, lambda prompt, y0, x0, y1, x1: look(prompt, y0, x0, y1, x1)),
             "click": Tool("click", "Aim at the x and y crop returned, then press.", {"x": {"description": "Pixel x from crop.", "type": "INTEGER"}, "y": {"description": "Pixel y from crop.", "type": "INTEGER"}, "how": {"description": "Kind of click.", "type": "STRING", "enum": ["left", "right", "double"]}}, click, optional=("how",)),
-            "drag": Tool("drag", "One straight stroke from the pixels crop returned.", {"x0": {"description": "Start pixel x.", "type": "INTEGER"}, "y0": {"description": "Start pixel y.", "type": "INTEGER"}, "x1": {"description": "End pixel x.", "type": "INTEGER"}, "y1": {"description": "End pixel y.", "type": "INTEGER"}}, drag),
+            "drag": Tool("drag", "One straight stroke. Start at the x and y look or crop returned.", {"x0": {"description": "Start pixel x.", "type": "INTEGER"}, "y0": {"description": "Start pixel y.", "type": "INTEGER"}, "x1": {"description": "End pixel x.", "type": "INTEGER"}, "y1": {"description": "End pixel y.", "type": "INTEGER"}}, drag),
             "type_text": Tool("type_text", "Type the text argument exactly, every word of it, where the cursor is.", {"text": {"description": "The text to type, every word.", "type": "STRING"}}, type_text),
             "press": Tool("press", "Press a key, for example enter, escape, tab, or ctrl-a.", {"keys": {"description": "The key or chord.", "type": "STRING"}}, press),
             "run": Tool("run", "One PowerShell command. A program is Start-Process and its executable name. Start-Sleep -Seconds N waits.", {"command": {"description": "The PowerShell command.", "type": "STRING"}}, run),

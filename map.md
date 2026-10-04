@@ -142,7 +142,7 @@ Talks to `user32.SendInput` and `powershell.exe`. Imports no organ. Talked to by
 
 `OWNER` is `owner.name`. `INBOX` is `state/inbox.txt`. `SOURCE` maps `chat` and `consult` to a request, `call` to his voice, and `typed` to a line on the computer. A consult answer is queued as `consult`. The label she reads is still a request. The situation says the line is `up` or `down`.
 
-`SYSTEM` is passed to every `think`, with `{owner.name}` filled in. It says she is the one mind, the computer microphone and speakers are not hers, Python carries the call and the chat and the pictures, a call can end while she stays, and she decides from meaning. She keeps working by calling the next tool in the turn. A reply is her deciding to stop. The line being down does not start a turn. `look` boxes one thing and the answer is the words in it, or the name when there are none. `facts_block` is appended to every request.
+`SYSTEM` is passed to every `think`, with `{owner.name}` filled in. It says she is the one mind, the computer microphone and speakers are not hers, Python carries the call and the chat and the pictures, a call can end while she stays, and she decides from meaning. She keeps working by calling the next tool in the turn. A reply is her deciding to stop. The line being down does not start a turn. `look` boxes one thing, the answer is the words in it or the name when there are none, and the center of that box is the pixel. `facts_block` is appended to every request.
 
 `PASS` is the look schema: `answer` (string, at most 200 characters), `confident` (boolean), and `y`, `x`, `y0`, `x0`, `y1`, `x1` (integers 0 through 1000), all required.
 
@@ -156,11 +156,11 @@ Talks to `user32.SendInput` and `powershell.exe`. Imports no organ. Talked to by
 
 Tools:
 
-- `look` screenshots, marks `seen` and the pointer, crops when given a box, sends that picture, then `ask_json` on the same bytes. The answer is the words in the thing, or the name when there are none. A crop stores pixel `x` and `y` as the aim and returns only that pixel.
+- `look` screenshots, marks `seen` and the pointer, crops when given a box, sends that picture, then `ask_json` on the same bytes. The answer is the words in the thing, or the name when there are none. The center of the box is pixel `x`, `y` and the aim. A crop replaces that aim and returns only that pixel.
 - `survey` marks, shrinks to `vision.side`, sends that picture, and returns `brain.survey` on the same bytes.
 - `crop` is `look` with a box.
-- `click` aims and writes `state/aim.png`. A click whose pixel is not the aim returns that pixel and does not press. A click with no aim still presses. If the cursor is more than 2 pixels off the point, the picture is sent and the button does not go down. Otherwise the press happens, then the picture is sent.
-- `drag`, `type_text`, `press`, and `run` act, including while she is alone.
+- `click` aims and writes `state/aim.png`. Aim and the marks start empty each turn. A click whose pixel is not the aim returns that pixel and does not press. A click with no aim still presses. If the cursor is more than 2 pixels off the point, the picture is sent and the button does not go down. Otherwise the press happens, then the picture is sent.
+- `drag` starts at the aim. Any other start returns that pixel and does not stroke. `type_text`, `press`, and `run` act, including while she is alone.
 - `remember` appends one fact.
 - `call_owner` dials. If he does not answer, the text says so. When he answers, the opening is spoken and he can see the screen.
 - `hang_up` is `final`. The process stays up.
