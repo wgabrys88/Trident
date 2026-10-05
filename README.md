@@ -113,7 +113,7 @@ There is no inbox, no slash command, no say CLI, no tick file, and no side visio
 
 ### The picture in the decision
 
-look takes no arguments. It calls eyes.picture(), which grabs the whole screen, thumbnails to eyes.max_side, and imprint draws only the pointer arrow. Those bytes are appended to Brain.frames. The tool result is the sentence The whole screen with the mouse pointer arrow drawn on it. plus the server media marker. That result contains no y and no x. think then returns a prompt that includes that tool result. The next think is where she decides. It calls complete(prompt, images=self.frames). complete POSTs prompt_string set to that prompt and multimodal_data set to the base64 of those frames. The marker in the prompt and the bytes in multimodal_data are the same request. Telegram is sent those bytes from that same complete. There is no second model call that asks for coordinates.
+look takes no arguments. It calls eyes.picture(), which grabs the whole screen, thumbnails to eyes.max_side, and imprint draws only the pointer arrow. Those bytes are appended to Brain.frames. The tool result is only the server media marker. There is no caption and no coordinates. think returns a prompt that includes that marker. The next think is where she decides. It calls complete(prompt, images=self.frames). complete POSTs prompt_string set to that prompt and multimodal_data set to the base64 of those frames. The marker and the bytes are the same request. Telegram is sent those bytes from that same complete. There is no second model call that asks for coordinates.
 
 GRID is the one frame, the words a 0-1000 grid over the whole screen, y down from the top and x right from the left. SYSTEM, the look, point, click, and stroke descriptions, the point and stroke results, and the consult prompt all use that string. screen_px(y, x) maps it through screen_size() with no clamp and no other check. point moves the pointer there and stores the pixel for drag only. It does not click.
 
@@ -171,8 +171,8 @@ near_slot is prompt_tokens + max_tokens >= context // slots, here prompt_tokens 
 
 Tools:
 
-- look() has no parameters. Result: The whole screen with the mouse pointer arrow drawn on it. and the media marker. No coordinates.
-- point(y, x) converts with screen_px, moves the pointer, stores the pixel, and returns The mouse pointer is now at y {y} x {x} on {GRID}. Nothing else changed.
+- look() has no parameters. The result is only the media marker. No caption and no coordinates.
+- point(y, x) converts with screen_px, moves the pointer, stores the pixel, and returns The mouse pointer is now at y {y} x {x} on {GRID}.
 - click(how) presses at the pointer. how is left, right, or double. Result: The {how} button was clicked at the mouse pointer.
 - drag uses the two latest stored pixels. Fewer than two returns There are not two stored screen places to drag between.
 - stroke takes at most 32 y x pairs separated by ; on GRID, with no new grab. Result: The line was drawn on {GRID}.
@@ -181,7 +181,7 @@ Tools:
 - call_owner returns The call is already up. or The call is answered. A miss raises, and that string is the result. Asking then is her choice. Python does not consult for her.
 - hang_up returns The call is down.
 - done mirrors the summary, clears the task, and stops. Nothing is spoken.
-- consult(why, question) speaks why when the line is up, writes eyes.picture() to consult/screen.png, and asks the advisor with her question, memory.task, GRID, and that file. The return is The advisor says: plus the answer. Python does not read a place out of that answer. The answer is not a new request.
+- consult(why, question) speaks why when the line is up, writes eyes.picture() bytes to consult/screen.png, and the prompt contains her question, memory.task, GRID, and the order to read those bytes and answer with places on that grid. The return is The advisor says: plus the answer. Python does not read a place out of that answer. The answer is not a new request.
 
 gate stops Gemma, runs the subprocess, and starts Gemma. The mouth is python -m organs.mouth. The ear is nemo-speech.exe. main builds Trident with no arguments.
 
@@ -241,7 +241,7 @@ This is the destination for the code, not a description of today. GEMMA marks he
    Never an entry: a request sent as him by a wave, a script, or an orchestrator.
    -> DECIDE
 2. DECIDE (GEMMA, one per step): look | act | speak | call_owner | hang_up | consult | remember | done. A plain reply with no tool is speak. speak with the call up -> gate(mouth); with the call down -> her words go to his Telegram chat as a message.
-3. LOOK (GEMMA calls it with no arguments). Grab one picture of the whole screen, imprint only the pointer arrow (no crosshair, boxes, labels, or UI-automation walk), and put those exact bytes in her own model input on the completion where she next decides. Mirror those bytes. The tool result is that picture plus one fact, that it is the whole screen with the mouse pointer arrow drawn on it. Python gives no coordinates in that result and does not move the pointer.
+3. LOOK (GEMMA calls it with no arguments). Grab one picture of the whole screen, imprint only the pointer arrow (no crosshair, boxes, labels, or UI-automation walk), and put those exact bytes in her own model input on the completion where she next decides. Mirror those bytes. The tool result is only that picture in her input. No caption and no coordinates. Python does not move the pointer.
    Forbidden: remaps by app, region, color, or word; asking for "the center"; naming a crosshair or ribbon; coordinate filters, clamps, or near-zero, border, or centre checks; a side vision call that asks for y, x.
 4. ACT (GEMMA; PYTHON turns places into pixels): point(y, x) moves the mouse pointer to (y, x) on a 0-1000 grid over the whole screen, y down from the top and x right from the left, and moves nothing else | click at the current pointer position | drag between two stored screen places | stroke(points): at most 32 "y x" pairs separated by ";" on that same grid, one polyline, no fresh grab | run | type_text | press. Unknown, missing, or invalid arguments, or any tool that raises -> str(exception) as the tool result, and the turn continues. Never a crash, never a silent default. -> DECIDE
 5. CALL (PYTHON places and carries the call). call_owner -> answered only when the line is up with him (the video is a live 960x540 grab through the same pointer-only imprint) | already up | missed (error string) -> DECIDE. After a miss, consulting is her choice; the tool text says so and Python never forces it. hang_up -> call down; she stays; the task stays open -> idle re-ask. "Call: up" written in text is not an answered call.

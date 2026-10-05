@@ -149,15 +149,14 @@ class Trident:
             ),
         }
     def look(self) -> str:
-        marker = self.brain.media()
         self.brain.frames.append(eyes.picture())
-        return "The whole screen with the mouse pointer arrow drawn on it. " + marker
+        return self.brain.media()
     def point(self, y, x) -> str:
         y, x = int(y), int(x)
         place = eyes.screen_px(y, x)
         hands.aim(*place)
         self.points.append(place)
-        return f"The mouse pointer is now at y {y} x {x} on {GRID}. Nothing else changed."
+        return f"The mouse pointer is now at y {y} x {x} on {GRID}."
     def click(self, how: str) -> str:
         hands.button(str(how))
         return f"The {how} button was clicked at the mouse pointer."
@@ -210,15 +209,16 @@ class Trident:
             self.speak(str(why).strip())
         folder = run_dir() / "consult"
         folder.mkdir(exist_ok=True)
+        shot = folder / "screen.png"
         png = eyes.picture()
-        (folder / "screen.png").write_bytes(png)
+        shot.write_bytes(png)
         prompt = (
-            "You advise Gemma. Give advice only. She decides, and she uses her own tools. "
-            "Do not use the computer.\n"
+            "You advise Gemma. Advice only. Do not edit files.\n"
             f"The screen is {GRID}.\n"
             f"Her open task:\n{self.memory.task}\n"
             f"She asks:\n{question}\n"
-            "The pointer-imprinted screenshot of the whole screen is screen.png in this folder.\n"
+            f"Read {shot}. Those bytes are the whole screen with the mouse pointer arrow drawn on it. "
+            f"Answer with places on {GRID}.\n"
         )
         self.mirror(prompt, [png])
         return "The advisor says: " + cursor_text(folder, prompt).strip()
