@@ -81,14 +81,20 @@ def aim(x: int, y: int) -> tuple[int, int]:
     return point.x, point.y
 
 
-def strike(x: int, y: int, how: str) -> None:
+def button(how: str) -> None:
     if how not in ("left", "right", "double"):
         raise ValueError(how)
-    button = "right" if how == "right" else "left"
-    down, up = BUTTON[button]
-    items = [_mouse(x, y, down), _mouse(x, y, up)]
+    name = "right" if how == "right" else "left"
+    down, up = BUTTON[name]
+
+    def one(flags: int) -> INPUT:
+        item = INPUT(type=0)
+        item.u.mi = MOUSEINPUT(0, 0, 0, flags, 0, 0)
+        return item
+
+    items = [one(down), one(up)]
     if how == "double":
-        items += [_mouse(x, y, down), _mouse(x, y, up)]
+        items += [one(down), one(up)]
     _send(items)
 
 

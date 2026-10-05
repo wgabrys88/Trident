@@ -16,11 +16,13 @@ LOOK = {"type": "object", "properties": {"seen": {"type": "boolean"}, "y": {"typ
 SYSTEM = (
     "You are Gemma. You are the mind at Wojciech's computer. From the phone you are one person. "
     "You hear him and you speak on the call. The computer's microphone and speakers are not yours. "
-    "You decide from the meaning of what he says and what a look returns. You are not a task runner. "
+    "You decide from the meaning of what he says and what you see. You are not a task runner. "
     "The screen may be anything in front of you. Keep using tools until the thing he asked is done or you are blocked. "
     "A plain reply is you speaking, and it ends this request. Python brings the open task again while you are idle, so look and continue from the screen. "
     "You are stateless. Python puts your memory on every request. Memory is how his preferences reach you, including a wish not to be called often. You still choose. "
-    "You call a tool. Python takes the picture, draws the pointer on it, and turns a place into a click. You do not work out a pixel. "
+    "You call a tool. look puts the picture, with the pointer drawn on it, in front of you and does not move the pointer. "
+    "move takes y and x on that picture's 1000 grid, y down from the top and x to the right, and Python moves the pointer there and nothing else. "
+    "Look again before you click, so you can see the pointer. click presses where the pointer is. "
     "After every click, look again. If the screen did not change as you intended, try another way or consult. "
     "The same drawing is on the call, so when the call is up he can see the screen and that pointer. call_owner and hang_up are how a call starts and ends. Python places the call. You stay after he hangs up. "
     f"consult spawns a new Cursor agent on this machine. It is {CONFIG['cloud']['model']}, not a virtual machine. "
@@ -118,9 +120,7 @@ class Trident:
         if kind not in ("idle", "wake"):
             self.memory.set_task(text)
         if kind != "idle" or not self.brain.sent or self.near_slot():
-            self.brain.sent = ""
-            self.brain.rest = ""
-            self.brain.prompt_tokens = 0
+            self.brain.fresh()
             self.aim = None
             self.points = []
             prompt = ""
@@ -131,9 +131,7 @@ class Trident:
         tools = self.tools()
         for _ in range(CONFIG["brain"]["max_tool_steps"]):
             if prompt and self.near_slot():
-                self.brain.sent = ""
-                self.brain.rest = ""
-                self.brain.prompt_tokens = 0
+                self.brain.fresh()
                 self.aim = None
                 self.points = []
                 prompt = ""
@@ -158,9 +156,10 @@ class Trident:
     def tools(self) -> dict[str, Tool]:
         string = "STRING"
         return {
-            "look": Tool("look", "Name one thing in what. Python takes the picture, draws the pointer, asks where that thing is, and keeps the place for click and drag. You do not calculate the place.", {"what": {"description": "The one thing to find", "type": string}}, self.look),
-            "click": Tool("click", "Press the place the last look returned. how is left, right, or double.", {"how": {"description": "left, right, or double", "type": string, "enum": ["left", "right", "double"]}}, self.click),
-            "drag": Tool("drag", "Stroke from the previous look to the last look.", {}, self.drag),
+            "look": Tool("look", "Name one thing in what. Python takes one picture, draws the pointer, and puts that picture in front of you. It does not move the pointer.", {"what": {"description": "The one thing to find", "type": string}}, self.look),
+            "move": Tool("move", "Move the pointer to y x on the 1000 grid of the picture you are looking at. y is down from the top. x is to the right. Python moves the pointer and nothing else.", {"y": {"description": "Down from the top", "type": "INTEGER"}, "x": {"description": "To the right", "type": "INTEGER"}}, self.move),
+            "click": Tool("click", "Press where the pointer is now. how is left, right, or double.", {"how": {"description": "left, right, or double", "type": string, "enum": ["left", "right", "double"]}}, self.click),
+            "drag": Tool("drag", "Stroke from the previous move to the last move.", {}, self.drag),
             "stroke": Tool("stroke", "One line through points on the 1000 grid of the last picture. points is at most 32 pairs, each y x, separated by semicolons. No new picture.", {"points": {"description": "y x;y x", "type": string}}, self.stroke),
             "type_text": Tool("type_text", "Type this text into the focused window.", {"text": {"description": "The text", "type": string}}, self.type_text),
             "press": Tool("press", "Press these keys.", {"keys": {"description": "Space-separated chords", "type": string}}, self.press),
@@ -171,7 +170,7 @@ class Trident:
             "done": Tool("done", "Finish the task. summary is mirrored, the task is cleared, and this request ends. Nothing is spoken. Call him first if you want him on the line.", {"summary": {"description": "What finished", "type": string}}, self.done),
             "consult": Tool(
                 "consult",
-                f"Spawn a new Cursor agent on this machine. It is {CONFIG['cloud']['model']}, and not a virtual machine. It only advises, and its reply is plain text. why is what you say aloud: that you are asking an agent, and why. question is what you need. attach is screen, part, or no. screen sends the whole screen. part sends the area around the last look. The reply comes back as his next request. After a missed call, consulting is your choice.",
+                f"Spawn a new Cursor agent on this machine. It is {CONFIG['cloud']['model']}, and not a virtual machine. It only advises, and its reply is plain text. why is what you say aloud: that you are asking an agent, and why. question is what you need. attach is screen, part, or no. screen sends the whole screen. part sends the area around the last move. The reply comes back as his next request. After a missed call, consulting is your choice.",
                 {
                     "why": {"description": "What you say aloud about spawning the agent", "type": string},
                     "question": {"description": "What you ask the agent", "type": string},
@@ -182,6 +181,16 @@ class Trident:
         }
 
     def look(self, what: str) -> str:
+        what = str(what).strip()
+        if not what:
+            raise ValueError("what")
+        from organs import eyes
+
+        marker = self.brain.media()
+        self.brain.frames.append(eyes.picture())
+        return marker
+
+    def side_look(self, what: str) -> str:
         what = str(what).strip()
         if not what:
             raise ValueError("what")
@@ -199,23 +208,26 @@ class Trident:
         self.aim = None
         return "it is not on screen"
 
+    def move(self, y, x) -> str:
+        from organs import eyes, hands
+
+        point = eyes.screen_px(int(y), int(x))
+        hands.aim(*point)
+        self.aim = point
+        self.points.append(point)
+        return "moved"
+
     def click(self, how: str) -> str:
         from organs import hands
 
-        if self.aim is None:
-            return "look first"
-        x, y = self.aim
-        ax, ay = hands.aim(x, y)
-        if abs(ax - x) > 2 or abs(ay - y) > 2:
-            return f"the cursor is at {ax} {ay}"
-        hands.strike(x, y, how)
+        hands.button(str(how))
         return "clicked"
 
     def drag(self) -> str:
         from organs import hands
 
         if len(self.points) < 2:
-            return "look at both ends first"
+            return "move to both ends first"
         (x0, y0), (x1, y1) = self.points[-2], self.points[-1]
         hands.drag(x0, y0, x1, y1)
         return "stroked"
@@ -289,7 +301,7 @@ class Trident:
 
     def consult(self, why: str, question: str, attach: str) -> str | UserTurn:
         if attach == "part" and self.aim is None:
-            return "look first"
+            return "move first"
         if self.line.up and str(why).strip():
             self.speak(str(why).strip())
         folder = run_dir() / "consult"

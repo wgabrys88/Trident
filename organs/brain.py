@@ -164,7 +164,16 @@ class Brain:
         self.sent = ""
         self.rest = ""
         self.prompt_tokens = 0
+        self.frames: list[bytes] = []
+        self.shown = 0
         self.sink: Callable[[str, list[bytes]], None] | None = None
+
+    def fresh(self) -> None:
+        self.sent = ""
+        self.rest = ""
+        self.prompt_tokens = 0
+        self.frames.clear()
+        self.shown = 0
 
     def emit(self, text: str, images: list[bytes]) -> None:
         if self.sink is not None and (text or images):
@@ -230,12 +239,14 @@ class Brain:
 
     def complete(self, prompt: str, images: list[bytes] = (), schema: dict | None = None, stop: list[str] = (), track: bool = True) -> str:
         charge()
-        fresh = prompt[len(self.sent):] if track and self.sent and prompt.startswith(self.sent) else prompt
-        self.emit(fresh, list(images))
+        frames = list(images)
+        continuing = bool(track and self.sent and prompt.startswith(self.sent))
+        fresh = prompt[len(self.sent):] if continuing else prompt
+        self.emit(fresh, frames[self.shown:] if continuing else frames)
         body = {
-            "prompt": {"prompt_string": prompt, "multimodal_data": [base64.b64encode(i).decode("ascii") for i in images]} if images else prompt,
+            "prompt": {"prompt_string": prompt, "multimodal_data": [base64.b64encode(i).decode("ascii") for i in frames]} if frames else prompt,
             "n_predict": CFG["max_tokens"],
-            "cache_prompt": not images,
+            "cache_prompt": not frames,
             "stop": list(stop),
             "temperature": CFG["temperature"],
             "top_k": CFG["top_k"],
@@ -255,7 +266,8 @@ class Brain:
         self.emit(text, [])
         if track:
             self.sent = prompt + text
-            self.prompt_tokens = int(data.get("tokens_evaluated") or 0)
+            self.shown = len(frames)
+            self.prompt_tokens = int(data.get("tokens_evaluated") or 0) - len(frames) * int(CFG["image_tokens"])
         return text
 
     def ask_json(self, question: str, schema: dict, png: bytes | None = None) -> object:
@@ -270,9 +282,9 @@ class Brain:
 
     def think(self, system: str, tools: dict[str, Tool], user: str, prompt: str = "") -> Reply:
         if not prompt:
-            self.sent = ""
+            self.fresh()
             prompt = BOS + turn("system", f"{THINK}\n{system}" + "".join(declare(t) for t in tools.values())) + turn("user", user) + f"{TURN_OPEN}model\n"
-        out = self.complete(prompt, stop=[TOOL_RESPONSE_OPEN, TURN_CLOSE])
+        out = self.complete(prompt, images=self.frames, stop=[TOOL_RESPONSE_OPEN, TURN_CLOSE])
         _thought, name, args = parse(out)
         if not name:
             return Reply(plain(out))
