@@ -35,7 +35,7 @@ flowchart TD
   ended --> quiet["No open task"]
 ```
 
-A request is his memory, then `Call: up` or `Call: down`, then the text. An empty memory block is left out. On start she receives one wake whose text is `No request is open.` That text means she waits. His incoming call is answered and nothing is sent to her until he speaks. A plain reply is speech when the call is up, and a Telegram message when it is down. `done` writes the summary into the chat, clears the task, and does not speak. A plain reply ends the request. While a task is still open, that task comes back. If she wants him on the line for that, she calls him first.
+A request is his memory, then `Call: up` or `Call: down`, then the text. An empty memory block is left out. On start she receives one wake whose text is `No request is open.` That text means she waits. His incoming call is answered and nothing is sent to her until he speaks. `speak` says words to him: spoken on the call when it is up, a Telegram message when it is down, and the request continues. Words outside a tool call are only in the mirrored log. They are not spoken and they are not sent as her message. A turn with no tool call ends the request. An open task waits for his next message. `done` writes the summary into the chat, clears the task, and does not speak. The request limit is the only limit. If she wants him on the line, she calls him first.
 
 ## The screen, the call, and the gate
 
@@ -97,7 +97,7 @@ There is no inbox, no slash command, no say CLI, no tick file, and no side visio
 
 [paths] models = models, bin = bin, state = state. Read by organs, install, and brain.
 
-[brain] model = gemma-4-E2B-it-Q4_0.gguf, mmproj = mmproj-gemma-4-E2B-it-Q8_0.gguf, host = 127.0.0.1, port = 8080, context = 16384, slots = 2, gpu_layers = 999, threads = 4, image_tokens = 1120, ubatch = 2048, temperature = 0, top_k = 64, top_p = 0.95, min_p = 0.05, max_tokens = 1024, max_tool_steps = 200, request_limit = 100. Read by brain. model and mmproj also by install. max_tokens is the completion budget and the term in near_slot. max_tool_steps caps trident.turn. request_limit is how many model requests this process may start. Each complete and each cursor_text counts once. image_tokens is the llama-server image flag, and prompt_tokens subtracts it once per picture in a tracked completion.
+[brain] model = gemma-4-E2B-it-Q4_0.gguf, mmproj = mmproj-gemma-4-E2B-it-Q8_0.gguf, host = 127.0.0.1, port = 8080, context = 16384, slots = 2, gpu_layers = 999, threads = 4, image_tokens = 1120, ubatch = 2048, temperature = 0, top_k = 64, top_p = 0.95, min_p = 0.05, max_tokens = 1024, request_limit = 100. Read by brain. model and mmproj also by install. max_tokens is the completion budget and the term in near_slot. request_limit is the only limit on how many model requests this process may start. Each complete and each cursor_text counts once. image_tokens is the llama-server image flag, and prompt_tokens subtracts it once per picture in a tracked completion.
 
 [eyes] max_side = 1920. Read by eyes.
 
@@ -135,7 +135,7 @@ Brain.start launches llama-server.exe with context, slots, ubatch, and image_tok
 
 complete is the POST to /completion. When frames is non-empty the JSON prompt is {prompt_string, multimodal_data}. cache_prompt is false when there are pictures. When track is true, sent becomes the prompt plus the response, shown becomes the picture count, and prompt_tokens is tokens_evaluated minus image_tokens times that count. A continuation emits only the new suffix and only pictures past shown.
 
-think calls complete with images=self.frames. No tool returns the plain reply. A tool that raises becomes str(exception) and the turn continues. Stop ends the request. Otherwise the next prompt is the old prompt, the completion, and the tool response. There is no carry and no idle re-ask.
+think calls complete with images=self.frames. A completion with no tool call ends the request and is not spoken or sent again. A tool that raises becomes str(exception) and the turn continues. Stop ends the request. The only run limit is request_limit. There is no max_tool_steps. Otherwise the next prompt is the old prompt, the completion, and the tool response. There is no carry and no idle re-ask.
 
 ### organs/eyes.py
 
@@ -165,9 +165,9 @@ Line is the voice line. OWNER is owner.telegram_id. An incoming call from him wh
 
 A request is block(), then Call: up or Call: down from line.up, then the text. An empty block is omitted. Call: down means the line is down. Call: up means the line is up. Neither is a command. start queues one wake, No request is open., then connects the line, then the worker. The wake does not set the task and is not queued again.
 
-Entries are that wake, his chat message, and his call audio after the ear returns text. An empty queue does not start a request. The open task is not sent again. An empty transcript does not start a request. An incoming call is answered in telegram and nothing is queued until he speaks. Only her plain reply, her opening, and her why go out through the mouth.
+Entries are that wake, his chat message, and his call audio after the ear returns text. An empty queue does not start a request. The open task is not sent again. An empty transcript does not start a request. An incoming call is answered in telegram and nothing is queued until he speaks. Only speak, her opening, and her why go out through the mouth. A completion with no tool call is mirrored as the log and is not sent again as her message.
 
-near_slot is prompt_tokens + max_tokens >= context // slots, here prompt_tokens + 1024 >= 8192. Images are not in that sum. Each request starts with fresh(), which clears the prompt and the pictures. Inside a request, the slot line starts the prompt over. The wake does not store the task. A chat or call does. done mirrors summary, clears the task, and ends with no speech. hang_up returns The call is down. and leaves the task. There is no idle re-ask.
+There is no near_slot and no mid-request fresh(). Each new request calls fresh() once before its first completion. A later completion keeps the prompt, the pictures, and the steps. When the context is full, the error string is sent to the chat and the request ends. The task stays open. The wake does not store the task. A chat or call does. done mirrors summary, clears the task, and ends with no speech. hang_up returns The call is down. and leaves the task. There is no idle re-ask.
 
 Tools:
 
@@ -239,13 +239,13 @@ This is the destination for the code, not a description of today. GEMMA marks he
    f. his inbound call: PYTHON answers it; nothing goes to her until he speaks (then a)
    Never an entry: a request sent as him by a wave, a script, or an orchestrator.
    -> DECIDE
-2. DECIDE (GEMMA, one per step): look | act | speak | call_owner | hang_up | consult | remember | done. A plain reply with no tool is speak. speak with the call up -> gate(mouth); with the call down -> her words go to his Telegram chat as a message.
+2. DECIDE (GEMMA, one per step): look | act | speak | call_owner | hang_up | consult | remember | done. speak is a tool: call up -> gate(mouth); call down -> a Telegram message; the request continues. Words outside a tool call are only mirrored as the log. A turn with no tool call ends the request and leaves any open task.
 3. LOOK (GEMMA calls it with no arguments). Grab one picture of the whole screen, imprint only the pointer arrow (no crosshair, boxes, labels, or UI-automation walk), and put those exact bytes in her own model input on the completion where she next decides. Mirror those bytes. The tool result is only that picture in her input. No caption and no coordinates. Python does not move the pointer.
    Forbidden: remaps by app, region, color, or word; asking for "the center"; naming a crosshair or ribbon; coordinate filters, clamps, or near-zero, border, or centre checks; a side vision call that asks for y, x.
 4. ACT (GEMMA; PYTHON turns places into pixels): point(y, x) moves the mouse pointer to (y, x) and nothing else, y then x, on the one grid stated in the system text | click at the current pointer position | stroke(points): at most 32 "y x" pairs separated by ";", one polyline, no fresh grab | run | type_text | press. Unknown, missing, or invalid arguments, or any tool that raises -> str(exception) as the tool result, and the turn continues. Never a crash, never a silent default. -> DECIDE
 5. CALL (PYTHON places and carries the call). call_owner -> answered only when the line is up with him (the video is a live 960x540 grab through the same pointer-only imprint) | already up | missed (error string) -> DECIDE. After a miss, consulting is her choice; the tool text says so and Python never forces it. hang_up -> call down; she stays; the task stays open. There is no idle re-ask. "Call: up" written in text is not an answered call.
 6. CONSULT (GEMMA asks; PYTHON spawns). If the call is up she says aloud why. PYTHON runs a local read-only advisor (today the cursor-agent CLI in ask mode) with the consult model from the config, giving her question, her open task, the same pointer-imprinted screenshot, and the same 0-1000 grid. The advisor only advises. Python never stores, aims at, or clicks a place from that answer. The reply is the consult tool's own result in her conversation, labelled as the advisor's answer, never a request from him. The decision stays hers. Prompt and reply are mirrored. The advisor never edits files, commits, or launches agents.
-7. DONE. speak ends the request. Python does not send the task again. done(summary) -> mirror the summary, clear the task, end the request, no automatic speech. If she wants him on the line she calls call_owner first. A new request from him replaces the task. Slot refresh when prompt_tokens + max_tokens >= context / slots (max_tokens 1024, slots from the config, images not counted).
+7. DONE. speak is a tool and the request continues. A turn with no tool call ends the request. Words outside a tool call are only mirrored as the log. Python does not send the task again. done(summary) -> mirror the summary, clear the task, end the request, no automatic speech. If she wants him on the line she calls call_owner first. A new request from him replaces the task. The only run limit is request_limit. There is no slot refresh. When the context is full, the error is mirrored and the request ends. The task stays open.
 8. MEMORY. remember(fact) -> PYTHON adds it to every later request. She still chooses.
 
 ## CONTRACTS

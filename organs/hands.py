@@ -28,6 +28,10 @@ class INPUT(ctypes.Structure):
 user32.SendInput.argtypes = [W.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
 user32.SendInput.restype = W.UINT
 user32.GetForegroundWindow.restype = W.HWND
+user32.GetWindowTextLengthW.argtypes = [W.HWND]
+user32.GetWindowTextLengthW.restype = ctypes.c_int
+user32.GetWindowTextW.argtypes = [W.HWND, ctypes.c_wchar_p, ctypes.c_int]
+user32.GetWindowTextW.restype = ctypes.c_int
 user32.GetWindowThreadProcessId.argtypes = [W.HWND, ctypes.POINTER(W.DWORD)]
 user32.GetWindowThreadProcessId.restype = W.DWORD
 user32.GetKeyboardLayout.argtypes = [W.DWORD]
@@ -36,6 +40,12 @@ user32.VkKeyScanExW.argtypes = [ctypes.c_wchar, ctypes.c_void_p]
 user32.VkKeyScanExW.restype = ctypes.c_short
 MOVE, ABSOLUTE, VIRTUAL = 0x0001, 0x8000, 0x4000
 BUTTON = {"left": (0x0002, 0x0004), "right": (0x0008, 0x0010)}
+def foreground_title() -> str:
+    hwnd = user32.GetForegroundWindow()
+    count = user32.GetWindowTextLengthW(hwnd)
+    buf = ctypes.create_unicode_buffer(count + 1)
+    user32.GetWindowTextW(hwnd, buf, count + 1)
+    return buf.value
 def _send(items: list[INPUT]) -> None:
     batch = (INPUT * len(items))(*items)
     sent = user32.SendInput(len(items), batch, ctypes.sizeof(INPUT))

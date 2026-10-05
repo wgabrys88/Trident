@@ -2,28 +2,25 @@ import queue
 import subprocess
 import sys
 import threading
-from organs import CONFIG, eyes, hands, run_dir
+from organs import eyes, hands, run_dir
 from organs.brain import Brain, Stop, Tool, cursor_text
 from organs.ears import ear_cmd, ear_text, write_wav
 from organs.memory import Memory
 from organs.telegram import Line
-GRID = "a 0-1000 grid over the whole screen, y down from the top and x right from the left"
+GRID = "The screen is a grid from 0 to 1000: y goes down from the top, x goes right from the left."
 SYSTEM = (
-    "You are Gemma, the mind at Wojciech's computer. He reaches you only through Telegram. "
-    "The computer's microphone and speakers are not yours. You decide. "
-    "A plain reply is you speaking. When Call: up it is spoken on the call. When Call: down it is a Telegram message. A plain reply ends this request. "
-    "When the text is No request is open, wait. "
-    "Call: down means the line is down. Call: up means the line is up. "
-    "Memory on a request is facts you can use. You still choose. "
-    f"The screen is {GRID}. "
-    "look returns a screenshot of the whole screen with the mouse pointer arrow drawn on it. "
-    "point moves only the mouse pointer to (y, x). "
-    "After point, look where the arrow landed and correct it before you click or type. You may look again after you act. "
-    "call_owner places a call. hang_up ends a call that is up. You stay after the call ends. "
-    f"consult asks {CONFIG['cloud']['model']} on this machine. It only advises. When the call is up, say aloud why. "
-    "Its answer is the consult result, and you decide. "
-    "remember stores a fact for later requests. done finishes the task and nothing is spoken. "
-    "Consult when you are stuck, unsure, or he does not answer."
+    "You are Gemma. You live on this Windows computer. Your owner reaches you only through Telegram messages and calls. "
+    "The computer's microphone and speakers are not yours. You act only by calling tools. "
+    "You do every task yourself on this screen with these tools; no tool is made for any one app, so look and use the screen as a person would. "
+    "Text outside a tool call is only your log; to say something, call speak. "
+    "Each request shows your note, then 'Call: up' (you are on a call with your owner) or 'Call: down' (no call is on), then what is new; the Call label is not your owner speaking. "
+    "'Wake' means you just started: continue from your note, or if nothing needs you, end your turn without calling any tool. "
+    f"{GRID} "
+    "You see the screen only when you call look. "
+    "Call look before you name a place. Then point, look where the arrow landed, point again if it is off, then click. After acting, look again. "
+    "If nothing changed as you intended, try another way or consult. "
+    "A turn with no tool call ends this request, and only your note carries over. "
+    "Before you ask your owner something or end a turn with work left, rewrite your note with the task, what you asked, and what is done."
 )
 class Trident:
     def __init__(self):
@@ -41,7 +38,7 @@ class Trident:
             self.line.send_photo(png)
     def start(self):
         self.brain.start()
-        self.push("wake", "No request is open.")
+        self.push("wake", "Wake")
         self.line.start()
         threading.Thread(target=self.worker, name="trident-worker", daemon=True).start()
     def stop(self):
@@ -67,10 +64,9 @@ class Trident:
                 return
         else:
             text = payload
-        reply = self.turn(kind, text)
-        self.deliver(reply)
+        self.turn(kind, text)
     def request_text(self, text: str) -> str:
-        parts = [self.memory.block(), f"Call: {'up' if self.line.up else 'down'}", text]
+        parts = [self.memory.note, f"Call: {'up' if self.line.up else 'down'}", text]
         return "\n".join(part for part in parts if part)
     def gate(self, args: list[str], data: bytes | None = None) -> bytes:
         self.brain.stop()
@@ -81,55 +77,35 @@ class Trident:
         if done.returncode != 0:
             raise RuntimeError(done.stderr.decode("utf-8", "replace").strip() or f"exit {done.returncode}")
         return done.stdout
-    def near_slot(self) -> bool:
-        brain = CONFIG["brain"]
-        return self.brain.prompt_tokens + brain["max_tokens"] >= brain["context"] // brain["slots"]
-    def turn(self, kind: str, text: str) -> str:
+    def turn(self, kind: str, text: str) -> None:
         self.request = text
-        if kind != "wake":
-            self.memory.set_task(text)
         self.brain.fresh()
         prompt = ""
         user = text
         tools = self.tools()
-        for _ in range(CONFIG["brain"]["max_tool_steps"]):
-            if prompt and self.near_slot():
-                self.brain.fresh()
-                prompt = ""
+        while True:
             reply = self.brain.think(SYSTEM, tools, self.request_text(user), prompt)
             if reply.stop or not reply.prompt:
-                return reply.text
+                return
             prompt = reply.prompt
-        return ""
-    def deliver(self, text: str):
-        if text:
-            self.speak(text) if self.line.up else self.line.send_text(text)
     def speak(self, text: str):
         self.line.speak(self.gate([sys.executable, "-m", "organs.mouth"], text.encode("utf-8")))
     def tools(self) -> dict[str, Tool]:
         text, number = "STRING", "INTEGER"
-        model = CONFIG["cloud"]["model"]
         return {
-            "look": Tool("look", "Return a screenshot of the whole screen with the mouse pointer arrow drawn on it.", {}, self.look),
-            "point": Tool("point", "Move the mouse pointer to (y, x). Move nothing else.", {"y": {"description": "y", "type": number}, "x": {"description": "x", "type": number}}, self.point),
-            "click": Tool("click", "Click at the mouse pointer's current position.", {"how": {"description": "left, right, or double", "type": text, "enum": ["left", "right", "double"]}}, self.click),
-            "stroke": Tool("stroke", "Draw one line through y x pairs separated by semicolons. Take no new screenshot.", {"points": {"description": "Up to 32 pairs of y x, separated by semicolons", "type": text}}, self.stroke),
-            "type_text": Tool("type_text", "Type this text into the focused window.", {"text": {"description": "The text to type", "type": text}}, self.type_text),
-            "press": Tool("press", "Press these keys.", {"keys": {"description": "Space-separated chords", "type": text}}, self.press),
-            "run": Tool("run", "Run this PowerShell command.", {"command": {"description": "The command to run", "type": text}}, self.run),
-            "remember": Tool("remember", "Store this fact so later requests include it.", {"fact": {"description": "The fact to store", "type": text}}, self.remember),
-            "call_owner": Tool("call_owner", "Place a video call to Wojciech. When the call is up, say opening. Asking an advisor after a miss is your choice.", {"opening": {"description": "What to say when the call is up", "type": text}}, self.call_owner, optional=("opening",)),
-            "hang_up": Tool("hang_up", "End the call and stay at the computer. The open task remains.", {}, self.hang_up),
-            "done": Tool("done", "Finish the open task. Show summary in the chat and speak nothing.", {"summary": {"description": "What finished", "type": text}}, self.done),
-            "consult": Tool(
-                "consult",
-                f"Ask {model} on this machine for advice only. It does not change files and it does not use the computer. why is said aloud when the call is up. question is what you ask. The answer is this tool's result, and you decide.",
-                {
-                    "why": {"description": "What to say aloud about asking", "type": text},
-                    "question": {"description": "What you ask", "type": text},
-                },
-                self.consult,
-            ),
+            "speak": Tool("speak", "Say this to your owner: aloud when a call is up, as a Telegram message when it is down.", {"text": {"description": "text", "type": text}}, self.say),
+            "look": Tool("look", "See the whole screen now, with the pointer arrow drawn on it.", {}, self.look),
+            "point": Tool("point", "Move only the pointer.", {"y": {"description": "0 top to 1000 bottom", "type": number}, "x": {"description": "0 left to 1000 right", "type": number}}, self.point),
+            "click": Tool("click", "Click at the pointer.", {"how": {"description": "left | right | double", "type": text, "enum": ["left", "right", "double"]}}, self.click),
+            "stroke": Tool("stroke", "Hold the left button and draw one line through these places.", {"points": {"description": "y x pairs separated by semicolons, up to 32", "type": text}}, self.stroke),
+            "type_text": Tool("type_text", "Type into the focused window.", {"text": {"description": "text", "type": text}}, self.type_text),
+            "press": Tool("press", "Press keys, for example ctrl+s or alt+tab.", {"keys": {"description": "keys", "type": text}}, self.press),
+            "run": Tool("run", "Run a PowerShell command and get its output.", {"command": {"description": "command", "type": text}}, self.run),
+            "note": Tool("note", "Replace your whole note with this text; every later request shows it. Write everything you still need.", {"text": {"description": "text", "type": text}}, self.note),
+            "call_owner": Tool("call_owner", "Call your owner by video. opening is said when he answers.", {"opening": {"description": "opening", "type": text}}, self.call_owner),
+            "hang_up": Tool("hang_up", "End the call. You stay at the computer.", {}, self.hang_up),
+            "consult": Tool("consult", "Ask an advisor who sees the screen as it is now, with the arrow, on the same grid. Its answer comes back here, and you decide.", {"question": {"description": "question", "type": text}}, self.consult),
+            "done": Tool("done", "Say a task is finished. The summary goes to the chat; nothing is spoken.", {"summary": {"description": "summary", "type": text}}, self.done),
         }
     def look(self) -> str:
         self.brain.frames.append(eyes.picture())
@@ -137,39 +113,53 @@ class Trident:
     def point(self, y, x) -> str:
         y, x = int(y), int(x)
         hands.aim(*eyes.screen_px(y, x))
-        return f"The mouse pointer is now at y {y} x {x}."
+        gy, gx = eyes.pointer_grid()
+        return f"Pointer at y {gy} x {gx}."
     def click(self, how: str) -> str:
         hands.button(str(how))
-        return f"The {how} button was clicked at the mouse pointer."
+        gy, gx = eyes.pointer_grid()
+        label = {"left": "Left", "right": "Right", "double": "Double"}[str(how)]
+        return f"{label} click at y {gy} x {gx}."
     def stroke(self, points: str) -> str:
         parts = [part for part in str(points).split(";") if part.strip()]
         if not parts or len(parts) > 32:
             raise ValueError(str(points))
+        places = []
         coords = []
         for part in parts:
-            y, x = part.split()
-            coords.append(eyes.screen_px(int(y), int(x)))
+            y, x = (int(n) for n in part.split())
+            places.append(f"y {y} x {x}")
+            coords.append(eyes.screen_px(y, x))
         hands.stroke(coords)
-        return "The line was drawn."
+        return "Stroke through " + "; ".join(places) + "."
     def type_text(self, text: str) -> str:
+        title = hands.foreground_title()
         hands.type_text(str(text))
-        return "The text was typed into the focused window."
+        return f'Typed "{text}" into window "{title}".'
     def press(self, keys: str) -> str:
+        title = hands.foreground_title()
         hands.press(str(keys))
-        return f"These keys were pressed: {keys}."
+        return f'Pressed "{keys}" into window "{title}".'
     def run(self, command: str) -> str:
         return hands.run(str(command))
-    def remember(self, fact: str) -> str:
-        self.memory.remember(str(fact))
-        return "The fact is stored."
-    def call_owner(self, opening: str = "") -> str:
+    def say(self, text: str) -> str:
+        words = str(text)
+        if self.line.up:
+            self.speak(words)
+            return "The words were spoken on the call."
+        self.line.send_text(words)
+        return "The words were sent as a Telegram message."
+    def note(self, text: str) -> str:
+        self.memory.replace(str(text))
+        return "The note was replaced."
+    def call_owner(self, opening: str) -> str:
         words = str(opening).strip()
         was = self.line.up
         if not was:
             self.line.dial()
         if not self.line.up:
             raise RuntimeError("The call was missed.")
-        if words:
+        if words and not was:
             self.speak(words)
         return "The call is already up." if was else "The call is answered."
     def hang_up(self) -> str:
@@ -177,11 +167,8 @@ class Trident:
         return "The call is down."
     def done(self, summary: str) -> Stop:
         self.mirror(str(summary), [])
-        self.memory.clear_task()
         return Stop()
-    def consult(self, why: str, question: str) -> str:
-        if self.line.up and str(why).strip():
-            self.speak(str(why).strip())
+    def consult(self, question: str) -> str:
         folder = run_dir() / "consult"
         folder.mkdir(exist_ok=True)
         shot = folder / "screen.png"
@@ -189,11 +176,11 @@ class Trident:
         shot.write_bytes(png)
         prompt = (
             "You advise Gemma. Advice only. Do not edit files.\n"
-            f"The screen is {GRID}.\n"
-            f"Her open task:\n{self.memory.task}\n"
+            f"{GRID}\n"
+            f"Her note:\n{self.memory.note}\n"
             f"She asks:\n{question}\n"
-            f"Read {shot}. Those bytes are the whole screen with the mouse pointer arrow drawn on it. "
-            f"Answer with places on {GRID}.\n"
+            f"Read {shot}. Those bytes are the whole screen with the pointer arrow drawn on it. "
+            "Answer with places on that grid.\n"
         )
         self.mirror(prompt, [png])
         return "The advisor says: " + cursor_text(folder, prompt).strip()

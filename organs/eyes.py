@@ -36,3 +36,9 @@ def video_rgb() -> Image.Image:
 def screen_px(y: int, x: int) -> tuple[int, int]:
     sw, sh = screen_size()
     return round(x / 1000 * (sw - 1)), round(y / 1000 * (sh - 1))
+def pointer_grid() -> tuple[int, int]:
+    sw, sh = screen_size()
+    point = wintypes.POINT()
+    if not user32.GetCursorPos(ctypes.byref(point)):
+        raise OSError("GetCursorPos failed")
+    return round(point.y * 1000 / max(1, sh - 1)), round(point.x * 1000 / max(1, sw - 1))

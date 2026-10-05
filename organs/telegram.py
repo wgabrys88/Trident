@@ -275,9 +275,9 @@ class Line:
         self._set("idle")
     def dial(self):
         if self.client is None:
-            raise RuntimeError("The line is down.")
+            raise RuntimeError("The call is down.")
         if self.state != "idle":
-            raise RuntimeError(f"The line is {self.state}.")
+            raise RuntimeError(f"The call is {self.state}.")
         try:
             self._await(self._place(), 150)
         except BaseException:
@@ -313,7 +313,7 @@ class Line:
         await self.calls.send_external_frame(OWNER, device, data, frame)
     def speak(self, pcm48: bytes):
         if not self.up:
-            raise RuntimeError("The line is down.")
+            raise RuntimeError("The call is down.")
         self.listening = False
         try:
             start = time.perf_counter()
