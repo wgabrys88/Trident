@@ -1,4 +1,3 @@
-import os
 import queue
 import subprocess
 import sys
@@ -28,17 +27,8 @@ SYSTEM = (
 
 
 def ask_cursor(folder: Path, prompt: str) -> str:
-    root = Path(os.environ["LOCALAPPDATA"]) / "cursor-agent" / "versions"
-    version = max(p for p in root.iterdir() if p.name[:1].isdigit() and (p / "node.exe").is_file())
-    done = subprocess.run(
-        [str(version / "node.exe"), str(version / "index.js"), "-p", "--mode", "ask", "--trust", "--model", CONFIG["cloud"]["model"], "--output-format", "text", "--workspace", str(folder), prompt],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", stdin=subprocess.DEVNULL, timeout=1800, cwd=str(folder), creationflags=subprocess.CREATE_NO_WINDOW,
-    )
-    if done.returncode != 0:
-        raise RuntimeError(done.stderr + done.stdout)
-    if not done.stdout.strip():
-        raise RuntimeError("empty consult")
-    return done.stdout
+    from organs.brain import cursor_text
+    return cursor_text(folder, prompt)
 
 
 class Trident:

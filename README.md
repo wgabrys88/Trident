@@ -42,21 +42,21 @@ A request is his memory, then `Call: up` or `Call: down`, then the text. An empt
 
 ```mermaid
 flowchart LR
-  gemma["Gemma loaded"] --> stopGemma["Stop Gemma"]
-  stopGemma --> specialist["Ear or mouth, then that process exits"]
-  specialist --> startGemma["Start Gemma"]
+  unloaded["Gemma unloaded"] --> gateStop["Gate stops the brain"]
+  gateStop --> specialist["Ear or mouth, then that process exits"]
+  specialist --> gateStart["start returns without loading Gemma"]
 ```
 
-The GPU holds Gemma and no other model. The ear and the mouth run only through that handoff. While a call is up, a small voice-activity model stays on the CPU so she can keep hearing. The advisor is a local read-only Cursor process. It does not use this GPU, and it does not edit files, commit, or launch agents.
+`SEAT` is true, so Gemma's weights are not loaded. The ear and the mouth still run only through that handoff. While a call is up, a small voice-activity model stays on the CPU so she can keep hearing. Decisions and the advisor are the local read-only Cursor process named by `cloud.model`. It does not use this GPU, and it does not edit files, commit, or launch agents.
 
-A look grabs the screen once, draws only the pointer arrow, and asks Gemma where the named thing is. The question names that thing and the 1000-grid. She answers whether it is there, and where. Python stores the pixel. A click presses that stored place. A drag moves between the last two looks. A stroke is one line of at most 32 points on the grid of the picture she already has, with no new grab. The same pointer is drawn on the call. The call picture is a live 960×540 frame, not a saved still.
+A look grabs the screen once, draws only the pointer arrow, and asks that seated model where the named thing is. The question names that thing and the 1000-grid. She answers whether it is there, and where. Python stores the pixel. A click presses that stored place. A drag moves between the last two looks. A stroke is one line of at most 32 points on the grid of the picture she already has, with no new grab. The same pointer is drawn on the call. The call picture is a live 960×540 frame, not a saved still.
 
 Gemma 4 reads an image as 70, 140, 280, 560, or 1120 tokens. 1120 is the maximum, about 2.6 million pixels. A 1920×1080 screen is about 2.07 million, so 1120 holds it and 560 does not. Those vision tokens use non-causal attention, so the image has to fit in one micro-batch. The launch sets that micro-batch to 2048 and does not set a separate batch size. The conversation is refreshed when the stored prompt count plus 1024 reaches half of the 16384 context, because the server splits that context across two slots. A look's picture is not added into that count.
 
 ```mermaid
 flowchart TB
   mainPy["trident.py"] --> line["Telegram line"]
-  mainPy --> brain["Gemma"]
+  mainPy --> brain["cloud.model seat"]
   mainPy --> memory["Memory and the open task"]
   mainPy --> hands["Mouse, keys, and commands"]
   mainPy --> gate["Gate"]
@@ -82,7 +82,7 @@ What she can call:
 
 From the repo root, `python install.py` creates the virtual environment, installs the libraries, and downloads the binaries and the weights. `python trident.py` is the process. It closes Telegram Desktop and uses the Desktop account that is not his. When that process stops, it hangs up if a call is up and opens Desktop again.
 
-`state/memory.json` is her facts and the open task. `state/run_*` holds call audio and the consult workspace. Those folders are not committed. The models, the binaries, and the virtual environment stay.
+`state/memory.json` is her facts and the open task. `state/run_*` holds call audio, the consult workspace, and the seat workspace. Those folders are not committed. The models, the binaries, and the virtual environment stay.
 
 ## Map
 
@@ -114,7 +114,7 @@ Tracked files: `.gitattributes`, `.gitignore`, `LICENSE`, `README.md`, `config.t
 
 `Brain.start` passes `--image-min-tokens` and `--image-max-tokens` as `image_tokens`, and `--ubatch-size` as `ubatch`. It does not pass `--batch-size`. `--ctx-size` is `context` and `--parallel` is `slots`. With 16384 and 2, this binary comes up as two slots whose `n_ctx` is 8192, which is `context // slots`. `near_slot` is `prompt_tokens + max_tokens >= context // slots`. Images are not in that sum. `ask_json` does not change `prompt_tokens`.
 
-One model is in VRAM at a time. `Trident.gate` stops Gemma, runs the specialist as a subprocess, and starts Gemma again. The mouth is `python -m organs.mouth`. The ear is `nemo-speech.exe`. Each exits before Gemma is started. The ear runs only for his call audio. The mouth runs only from `speak`, when her words go out on an up call: a plain reply, including one from an idle re-ask, her `opening`, or her `why`. A plain reply while the call is down is a chat message and does not call the gate. An idle re-ask that does not speak does not call the gate. Silero VAD stays in the call process on CPU. It is not in VRAM, and it has to keep hearing while Gemma is loaded. A look is Gemma reading the picture `picture()` just made. The other mind is the Cursor agent `consult` starts. It does not use this GPU.
+`SEAT` is true. `Brain.start` calls `stop` and returns, so `llama-server` is not launched and Gemma stays unloaded for the whole run. `Trident.gate` still stops the brain, runs the specialist as a subprocess, and calls `start` again. The mouth is `python -m organs.mouth`. The ear is `nemo-speech.exe`. The ear runs only for his call audio. The mouth runs only from `speak`, when her words go out on an up call: a plain reply, including one from an idle re-ask, her `opening`, or her `why`. A plain reply while the call is down is a chat message and does not call the gate. An idle re-ask that does not speak does not call the gate. Silero VAD stays in the call process on CPU. A look writes `picture()` to `seat/see.png` and `cursor_text` asks `cloud.model`. The same ask-mode process decides each step. It does not use this GPU.
 
 `imprint` is the only overlay, and it draws the pointer arrow only. There is no crosshair, no control box, no label, and no UI-automation walk. `picture` grabs, thumbnails to `eyes.max_side`, imprints, and returns that PNG. The chat photo is those same bytes. `video_rgb` grabs again, resizes to 960×540, and imprints, so the call is a live frame through the same function. There is no stored frame. A look stores `screen_px` of the y and x the model answered on that picture.
 
@@ -132,7 +132,7 @@ Talks to `config.toml` and the `state/` directory. Talked to by `brain`, `ears`,
 
 ### organs/brain.py
 
-Talks to `organs` (`CONFIG`, `ROOT`, `path_of`), `bin/llama/llama-server.exe`, and HTTP `http://{host}:{port}`. Talked to by `trident` (`Brain`, `Stop`, `Tool`, `UserTurn`).
+Talks to `organs` (`CONFIG`, `ROOT`, `path_of`, `run_dir`) and the cursor-agent CLI. The llama-server launch remains in `start` below the `SEAT` return and is not used. Talked to by `trident` (`Brain`, `Stop`, `Tool`, `UserTurn`, `cursor_text`).
 
 Tokens: `BOS` `<bos>`, `TURN_OPEN` `<|turn>`, `TURN_CLOSE` `<turn|>`, `THINK` `<|think|>`, `QUOTE` `<|"|>`, `TOOL_RESPONSE_OPEN` `<|tool_response>`, `TOOL_RESPONSE_CLOSE` `<tool_response|>`. The image marker is whatever the running server reports. `Brain.media()` reads `media_marker` from `GET {url}/props` on first use and stores it on `Brain.marker`. `stop()` clears it.
 
@@ -150,17 +150,19 @@ Tokens: `BOS` `<bos>`, `TURN_OPEN` `<|turn>`, `TURN_CLOSE` `<turn|>`, `THINK` `<
 
 `Brain.alive() -> bool`. GET `{url}/health`, timeout 2. True when status is 200. `URLError` or `OSError` returns False.
 
-`Brain.start()`. Returns immediately when `alive()`. Otherwise runs `bin/llama/llama-server.exe` with `path_of("brain", ...)`, `brain.context`, `brain.slots`, `brain.ubatch`, and `brain.image_tokens`. `--image-min-tokens` and `--image-max-tokens` are both that count. Shared flags: `--host`, `--port`, `--n-gpu-layers`, `--threads`, `--flash-attn off`, `--cache-type-k f16`, `--cache-type-v f16`, `--no-webui`. There is no `--log-file`. Working directory is the exe directory. Stdio is discarded. Window is hidden. Missing exe raises `FileNotFoundError`. Polls 0.5 s for up to 300 s. Process exit raises `RuntimeError` with the exit code. Timeout raises `TimeoutError`.
+`SEAT` is true. `Brain.start()` calls `stop()` and returns. It does not launch `llama-server`. The launch below that return is the Gemma path and does not run: it would return immediately when `alive()`, otherwise run `bin/llama/llama-server.exe` with `path_of("brain", ...)`, `brain.context`, `brain.slots`, `brain.ubatch`, and `brain.image_tokens`. `--image-min-tokens` and `--image-max-tokens` are both that count. Shared flags: `--host`, `--port`, `--n-gpu-layers`, `--threads`, `--flash-attn off`, `--cache-type-k f16`, `--cache-type-v f16`, `--no-webui`. There is no `--log-file`. Working directory is the exe directory. Stdio is discarded. Window is hidden. Missing exe raises `FileNotFoundError`. Polls 0.5 s for up to 300 s. Process exit raises `RuntimeError` with the exit code. Timeout raises `TimeoutError`.
 
 `Brain.stop()`. If `proc` is still running, `terminate()` and `wait(10)`, then `kill` if it is still up. If the port is still open, `taskkill /IM llama-server.exe /F` ends it, including a server this process did not start. Waits until the port is down, at most 20 s. Sets `proc` and `marker` to `None`.
 
 `Brain.complete(prompt, images=(), schema=None, stop=(), track=True) -> str`. Emits the new prompt text and images, then POSTs `{url}/completion`, timeout 600. Body: `prompt` (a string, or `{prompt_string, multimodal_data}` of base64 images when `images` is non-empty), `n_predict` `brain.max_tokens`, `cache_prompt` false when `images` is non-empty, otherwise true, `stop`, and the same sampling fields. `schema` sets `json_schema`. An HTTP error raises `RuntimeError` with the response body. Emits the response text. When `track` is true, `sent` becomes the prompt plus the response, and `prompt_tokens` becomes `int(data.get("tokens_evaluated") or 0)`. Returns `content`.
 
-`Brain.ask_json(question, schema, png=None) -> object`. Optional image, given schema, thinking off. An image prefixes the question with `media()`. Returns `json.loads` of the completion. `look` uses this. `y` and `x` in that object are on the 1000-grid of that image. `screen_px` converts them. The completion is `track` false, so it does not change `prompt_tokens`.
+`Brain.ask_json(question, schema, png=None) -> object`. With `SEAT`, writes `see.png` in `run_dir()/seat` when a picture is passed, appends that the picture is `see.png` in this folder, and returns `json_object` of `cursor_text`. The question text is unchanged. It does not call `media()` or `complete`, and it does not change `sent` or `prompt_tokens`. The Gemma path below that return prefixes an image with `media()`, calls `complete` with the schema and `track` false, and returns `json.loads`. `look` uses this. `y` and `x` in that object are on the 1000-grid of that image. `screen_px` converts them.
 
-`Brain.carry(user) -> str`. Closes the open model turn in `sent` and appends a user turn plus an open model turn. It does not clear `sent` and it does not add the system prompt or the tool list.
+`json_object` takes the outer `{...}` and `json.loads` it. No braces raises `ValueError`. `cursor_text(folder, prompt)` runs the newest digit-named cursor-agent version's `node.exe` and `index.js` with `-p`, `--mode ask`, `--trust`, `--model` `cloud.model`, text output, and that workspace. Timeout 1800 s. Non-zero exit or an empty reply raises `RuntimeError`. `seat_open` is the system text, one JSON reply line, each tool name with its parameter names and description, then the user text.
 
-`Brain.think(system, tools, user, prompt="") -> Reply`. One completion. An empty `prompt` clears `sent` and builds the system turn (`THINK`, `system`, every `declare(tool)`), the user turn, and an open model turn. There is no history argument. Stopped on the tool-response open token and `TURN_CLOSE`. No tool returns `Reply(plain(out))`. `invoke` raises `ValueError` for an unknown tool, an unknown argument, a missing required argument, or a value outside `enum`. A tool that raises, including that `ValueError`, becomes `str(exception)` and the turn continues. Nothing is remapped to a default. A `UserTurn` returns `Reply(follow=text)`. A `Stop` returns `Reply(stop=True)`. Otherwise `Reply.prompt` is the prompt plus the completion plus `tool_response`. The step cap is not here.
+`Brain.carry(user) -> str`. With `SEAT`, returns `sent`, a newline, `user`, and a newline. It does not clear `sent`. The Gemma path closes the open model turn in `sent` and appends a user turn plus an open model turn. It does not add the system prompt or the tool list.
+
+`Brain.seat_think` runs when `SEAT` is true. An empty `prompt` clears `sent` and uses `seat_open`. A prompt that starts with `sent` emits only the suffix. `cursor_text` is called in `run_dir()/seat`. `sent` becomes the prompt plus the reply. `prompt_tokens` becomes `len(sent) // 4`. One JSON object with `say` and no `tool` is speech. A `tool` is invoked with `args` when that value is a dict, otherwise with `{}`. A bad JSON object, or a JSON value that is not an object, is `plain` speech. `invoke` raises `ValueError` for an unknown tool, an unknown argument, a missing required argument, or a value outside `enum`. A tool that raises, including that `ValueError`, becomes `str(exception)` and the turn continues. Nothing is remapped to a default. A `UserTurn` returns `Reply(follow=text)`. A `Stop` returns `Reply(stop=True)`. Otherwise `Reply.prompt` is `sent` plus a `Result:` line. `Brain.think` returns `seat_think` immediately. The Gemma `think` below that return is one llama completion and does not run. The step cap is not here.
 
 ### organs/ears.py
 
@@ -228,9 +230,9 @@ Entries are the wake, a chat message from him, his call audio after the ear retu
 
 `mirror(text, images)` sends that text and those PNG bytes to him. `Brain.sink` is `mirror`. The first completion of a fresh request or a slot refresh sends the whole prompt. An idle carry sends only the new suffix, then the raw response. The picture on a look is that same completion. `consult` uses the same function for the agent prompt, the picture, and the agent reply. A plain reply goes through the mouth when the call is up, including an idle request. When the call is down, that same reply is sent to the chat. A failure outside a tool sends `str(exc)` to the chat and clears `going`. The task is left as it is, so idle re-ask stops until a later request sets `going` again.
 
-`ask_cursor(folder, prompt) -> str`. The greatest name under `%LOCALAPPDATA%\cursor-agent\versions` that starts with a digit and contains `node.exe`. A name that does not start with a digit, including `dist-package`, is skipped. The command is that directory's `node.exe` and `index.js`, print mode, `--mode ask`, `--trust`, `--model` `cloud.model`, text output, workspace `consult` in the run folder. Ask mode is read-only. There is no `--force`, no sandbox change, and no worktree. It is a local process, not a virtual machine. Timeout 1800 s. Non-zero exit or an empty reply raises `RuntimeError`. The stdout is the reply, unchanged apart from the emptiness check, and `consult` returns it as a `UserTurn`.
+`ask_cursor(folder, prompt) -> str` calls `cursor_text`. Consult passes the `consult` workspace in the run folder. Ask mode is read-only. There is no `--force`, no sandbox change, and no worktree. It is a local process, not a virtual machine. The stdout is the reply, and `consult` returns it as a `UserTurn`. The deciding steps call `cursor_text` with the `seat` workspace and the same `cloud.model`.
 
-`Trident.gate(args, data=None) -> bytes` is the only GPU handoff. It stops Gemma, runs that subprocess, and starts Gemma again. A non-zero exit raises `RuntimeError` with the stderr, or `exit {code}` when that stderr is empty. `speak` is `python -m organs.mouth` through the gate, then the pcm goes on the call. A call writes `call.wav` in the run folder and runs `ear_cmd` through the same gate. The wav is not sent. The ear is not run for an idle re-ask. The mouth is run for an idle re-ask only when that turn ends in a plain reply and the call is up.
+`Trident.gate(args, data=None) -> bytes` is the only GPU handoff. It calls `brain.stop()`, runs that subprocess, and calls `brain.start()`. `start` does not load Gemma. A non-zero exit raises `RuntimeError` with the stderr, or `exit {code}` when that stderr is empty. `speak` is `python -m organs.mouth` through the gate, then the pcm goes on the call. A call writes `call.wav` in the run folder and runs `ear_cmd` through the same gate. The wav is not sent. The ear is not run for an idle re-ask. The mouth is run for an idle re-ask only when that turn ends in a plain reply and the call is up.
 
 `Trident.start` calls `brain.start()`, queues the wake, calls `line.start()`, then the worker thread. `stop` sets `stopping`, then `line.stop()` and `brain.stop()`.
 
