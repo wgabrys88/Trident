@@ -146,6 +146,7 @@ class Trident:
                 continue
             if reply.stop or not reply.prompt:
                 return reply.text
+            prompt = reply.prompt
         self.brain.rest = prompt
         return ""
 
