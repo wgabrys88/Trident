@@ -24,7 +24,7 @@ SYSTEM = (
     "move takes y and x on that picture's 1000 grid, y down from the top and x to the right, and Python moves the pointer there and nothing else. "
     "Look again before you click, so you can see the pointer. click presses where the pointer is. "
     "After every click, look again. If the screen did not change as you intended, try another way or consult. "
-    "The same drawing is on the call, so when the call is up he can see the screen and that pointer. call_owner and hang_up are how a call starts and ends. Python places the call. You stay after he hangs up. "
+    "The same drawing is on the call, so when the call is up he can see the screen and that pointer. Call: up and Call: down are the state of the line, not a command. call_owner starts a call. hang_up ends one that is up. Python places the call. You stay after he hangs up. "
     f"consult spawns a new Cursor agent on this machine. It is {CONFIG['cloud']['model']}, not a virtual machine. "
     "Say so aloud in why, and why you are spawning it. Its reply is his next request, plain text. You will not see that it came from the agent. "
     "Consult when you are stuck, unsure, or he does not answer."
