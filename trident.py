@@ -188,7 +188,7 @@ class Trident:
     def tools(self) -> dict[str, Tool]:
         string = "STRING"
         return {
-            "look": Tool("look", "Name one thing in what. Python takes the picture, draws the pointer and the controls, asks where that thing is, and keeps the place for click and drag. You do not calculate the place. A canvas, page, paper, or drawing surface is mapped onto that white page.", {"what": {"description": "The one thing to find", "type": string}}, self.look),
+            "look": Tool("look", "Name one thing in what. Python takes the picture, draws the pointer and the controls, asks where that thing is, and keeps the place for click and drag. You do not calculate the place.", {"what": {"description": "The one thing to find", "type": string}}, self.look),
             "click": Tool("click", "Press the place the last look returned. how is left, right, or double.", {"how": {"description": "left, right, or double", "type": string, "enum": ["left", "right", "double"]}}, self.click),
             "drag": Tool("drag", "Stroke from the previous look to the last look.", {}, self.drag),
             "type_text": Tool("type_text", "Type this text into the focused window.", {"text": {"description": "The text", "type": string}}, self.type_text),
@@ -216,12 +216,12 @@ class Trident:
         from organs import eyes
 
         data = self.brain.ask_json(
-            f"Find {what}. y and x are its center on the 1000 grid of this picture, y down from the top and x to the right. seen is true only if it is there. The red crosshair is the pointer, not the thing, unless the pointer was asked for. The dark ribbon is not the canvas. The canvas is the large empty page.",
+            f"Find {what}. y and x are its center on the 1000 grid of this picture, y down from the top and x to the right. seen is true only if it is there. The red crosshair is the pointer, not the thing, unless the pointer was asked for.",
             LOOK,
             eyes.picture(),
         )
         if data.get("seen") is True and "y" in data and "x" in data:
-            self.aim = eyes.place(what, int(data["y"]), int(data["x"]))
+            self.aim = eyes.screen_px(int(data["y"]), int(data["x"]))
             self.points.append(self.aim)
             return "that place is ready"
         self.aim = None

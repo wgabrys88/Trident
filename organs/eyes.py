@@ -2,14 +2,12 @@ import ctypes
 import io
 from ctypes import wintypes
 
-import numpy as np
 from PIL import Image, ImageDraw, ImageGrab
 
 from organs import CONFIG
 
 CFG = CONFIG["eyes"]
 VIDEO = (960, 540)
-PAGE = ("canvas", "page", "paper", "drawing surface", "white area")
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
 user32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
@@ -69,31 +67,6 @@ def video_rgb() -> Image.Image:
 def screen_px(y: int, x: int) -> tuple[int, int]:
     sw, sh = screen_size()
     return round(x / 1000 * (sw - 1)), round(y / 1000 * (sh - 1))
-
-
-def page() -> tuple[int, int, int, int] | None:
-    white = np.all(np.asarray(ImageGrab.grab().convert("RGB")) > 240, axis=2)
-    ys = np.where(white.mean(axis=1) > 0.55)[0]
-    if ys.size < 40:
-        return None
-    runs = np.split(ys, np.where(np.diff(ys) > 1)[0] + 1)
-    run = max(runs, key=len)
-    if run.size < 40:
-        return None
-    top, bottom = int(run[0]), int(run[-1])
-    xs = np.where(white[top : bottom + 1].mean(axis=0) > 0.75)[0]
-    if xs.size < 40:
-        return None
-    return int(xs[0]), top, int(xs[-1]), bottom
-
-
-def place(what: str, y: int, x: int) -> tuple[int, int]:
-    if any(word in what.lower() for word in PAGE):
-        rect = page()
-        if rect:
-            left, top, right, bottom = rect
-            return round(left + x / 1000 * (right - left)), round(top + y / 1000 * (bottom - top))
-    return screen_px(y, x)
 
 
 def around(blob: bytes, x: int, y: int) -> bytes:

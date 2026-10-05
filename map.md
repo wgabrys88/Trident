@@ -30,7 +30,7 @@ Gemma 4 image budgets are 70, 140, 280, 560, and 1120. 1120 is the maximum, abou
 
 One model is in VRAM at a time. `Trident.gate` stops Gemma, runs the specialist as a subprocess, then starts Gemma again. The mouth is `python -m organs.mouth`. The ear is `nemo-speech.exe`. Each exits and frees the GPU. An idle turn does not call the gate, so it does not load the mouth or the ear. Silero VAD stays in the call process on CPU. It is not in VRAM, and it has to keep hearing while Gemma is loaded. Qwen is not configured and is not downloaded. A look is Gemma reading the picture `picture()` just made. The other mind is the Cursor agent `consult` starts. It does not use this GPU.
 
-`imprint` is the only overlay. `picture` and `video_rgb` both call it. `picture` refreshes the controls, grabs, thumbnails to `eyes.max_side`, imprints, and returns that PNG. The chat photo is those same bytes. `video_rgb` grabs again, resizes to 960×540, and imprints, so the call is live and the pointer is drawn by the same function. There is no stored frame. The drawing is the pointer and the foreground controls. A name is drawn inside a box only when that box is at least 28 by 18 image pixels. `page` is the largest near-white rectangle on the raw screen. `place` maps a canvas, page, paper, drawing surface, or white area onto that rectangle. Any other look uses the full screen. A 20-pixel icon is still smaller than one 1120-token cell on a 1920×1080 frame.
+`imprint` is the only overlay. `picture` and `video_rgb` both call it. `picture` refreshes the controls, grabs, thumbnails to `eyes.max_side`, imprints, and returns that PNG. The chat photo is those same bytes. `video_rgb` grabs again, resizes to 960×540, and imprints, so the call is live and the pointer is drawn by the same function. There is no stored frame. The drawing is the pointer and the foreground controls. A name is drawn inside a box only when that box is at least 28 by 18 image pixels. A look stores `screen_px` of the y and x the model answered on that picture. A 20-pixel icon is still smaller than one 1120-token cell on a 1920×1080 frame.
 
 ## organs/__init__.py
 
@@ -70,7 +70,7 @@ Tokens: `BOS` `<bos>`, `TURN_OPEN` `<|turn>`, `TURN_CLOSE` `<turn|>`, `THINK` `<
 
 `Brain.complete(prompt, images=(), schema=None, stop=(), track=True) -> str`. Emits the new prompt text and images, then POSTs `{url}/completion`, timeout 600. Body: `prompt` (a string, or `{prompt_string, multimodal_data}` of base64 images when `images` is non-empty), `n_predict` `brain.max_tokens`, `cache_prompt` false when `images` is non-empty, otherwise true, `stop`, and the same sampling fields. `schema` sets `json_schema`. An HTTP error raises `RuntimeError` with the response body. Emits the response text. When `track` is true, `sent` becomes the prompt plus the response, and `prompt_tokens` becomes `tokens_evaluated` from that response. Returns `content`.
 
-`Brain.ask_json(question, schema, png=None) -> object`. Optional image, given schema, thinking off. An image prefixes the question with `media()`. Returns `json.loads` of the completion. `look` uses this. `y` and `x` in that object are on the 1000-grid of that image. `place` converts them. The completion is `track` false, so it does not change `prompt_tokens`.
+`Brain.ask_json(question, schema, png=None) -> object`. Optional image, given schema, thinking off. An image prefixes the question with `media()`. Returns `json.loads` of the completion. `look` uses this. `y` and `x` in that object are on the 1000-grid of that image. `screen_px` converts them. The completion is `track` false, so it does not change `prompt_tokens`.
 
 `Brain.carry(user) -> str`. Closes the open model turn in `sent` and appends a user turn plus an open model turn. It does not clear `sent` and it does not add the system prompt or the tool list.
 
@@ -90,7 +90,7 @@ Talks to `organs` (`CONFIG`, `ROOT`, `path_of`), `models/silero_vad.onnx` throug
 
 ## organs/eyes.py
 
-Talks to `organs` (`CONFIG`), `user32`, `hands.interactive_controls`, numpy, and PIL `ImageGrab` and `ImageDraw`. Talked to by `trident` and `telegram`. At import, `SetProcessDpiAwarenessContext(-4)`. `GetCursorPos` has argument types set. There is no module docstring.
+Talks to `organs` (`CONFIG`), `user32`, `hands.interactive_controls`, and PIL `ImageGrab` and `ImageDraw`. Talked to by `trident` and `telegram`. At import, `SetProcessDpiAwarenessContext(-4)`. `GetCursorPos` has argument types set. There is no module docstring.
 
 `VIDEO` is `(960, 540)`.
 
@@ -104,11 +104,7 @@ Talks to `organs` (`CONFIG`), `user32`, `hands.interactive_controls`, numpy, and
 
 `video_rgb() -> Image`. A new grab, resized to `VIDEO` with BILINEAR, then `imprint`. `telegram.desk_i420` sends that frame. It does not reuse the still from `picture`.
 
-`screen_px(y, x) -> (x, y)`. Maps the 1000 grid through `screen_size()` with no clamp.
-
-`page() -> (left, top, right, bottom) | None`. The longest run of rows that are mostly near-white, then the columns of that run that are mostly near-white. On this Paint window that is the white page, not the ribbon.
-
-`place(what, y, x) -> (x, y)`. If `what` contains canvas, page, paper, drawing surface, or white area, and `page()` returned a rectangle, the 1000 grid is mapped onto that rectangle. Otherwise `screen_px`.
+`screen_px(y, x) -> (x, y)`. Maps the 1000 grid through `screen_size()` with no clamp. `look` stores that point. It is the place the model named on the picture it was shown.
 
 `around(blob, x, y) -> bytes`. `x` and `y` are screen pixels. Crops a 480-pixel window of that picture around the matching image pixel and returns the RGB PNG, `compress_level` 1. It does not change the call video.
 
@@ -162,7 +158,7 @@ There is no `python -m organs.hands` entry.
 
 Tools she can call:
 
-- `look` requires `what`. `picture()`, then `ask_json` on those bytes. The schema requires `seen`, `y`, and `x`. A seen result with both numbers stores `place(what, y, x)` as the aim and appends it to the points. The tool result is `that place is ready`. Seen without a place returns `it is there, and the place was not given`. Otherwise `it is not on the screen`. She is not given the pixel.
+- `look` requires `what`. `picture()`, then `ask_json` on those bytes. The schema requires `seen`, `y`, and `x`. A seen result with both numbers stores `screen_px(y, x)` as the aim and appends it to the points. The tool result is `that place is ready`. Seen without a place returns `it is there, and the place was not given`. Otherwise `it is not on the screen`. She is not given the pixel.
 - `click` presses the aim. `how` is required: `left`, `right`, or `double`. No aim returns `look first` and does not press. `aim` moves the cursor. If `GetCursorPos` is more than 2 pixels off, the button does not go down and the result is that cursor. Otherwise `strike`.
 - `drag` strokes from the previous point to the last. Fewer than two points does not stroke.
 - `type_text`, `press`, and `run` act, including while she is alone.
