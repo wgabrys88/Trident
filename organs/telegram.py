@@ -18,7 +18,6 @@ from ntgcalls import (
 from opentele.api import API, UseCurrentSession
 from opentele.td import TDesktop
 from opentele.tl.telethon import TelegramClient
-from PIL import Image, ImageGrab
 from telethon import events
 from telethon.sessions import MemorySession
 from telethon.tl.functions.messages import GetDhConfigRequest
@@ -30,6 +29,7 @@ from telethon.tl.types import (
 
 from organs import CONFIG, log
 from organs.ears import Segmenter
+from organs.eyes import VIDEO, video_rgb
 
 LOG = log("telegram")
 CFG = CONFIG["telegram"]
@@ -37,7 +37,7 @@ OWNER = CONFIG["owner"]["telegram_id"]
 RATE_TX = 48000
 RATE_RX = 16000
 FRAME_TX = RATE_TX // 100 * 2
-DESK_W, DESK_H = 960, 540
+DESK_W, DESK_H = VIDEO
 
 
 def telegram_home() -> Path:
@@ -94,7 +94,7 @@ def start_telegram():
 
 
 def desk_i420() -> bytes:
-    rgb = np.asarray(ImageGrab.grab().convert("RGB").resize((DESK_W, DESK_H), Image.BILINEAR), dtype=np.int32)
+    rgb = np.asarray(video_rgb(), dtype=np.int32)
     r, g, b = rgb[:, :, 0], rgb[:, :, 1], rgb[:, :, 2]
     y = np.clip(((66 * r + 129 * g + 25 * b + 128) >> 8) + 16, 16, 235).astype(np.uint8)
     r2 = (r[0::2, 0::2] + r[1::2, 0::2] + r[0::2, 1::2] + r[1::2, 1::2] + 2) >> 2

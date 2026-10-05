@@ -22,7 +22,6 @@ def state_dir() -> Path:
 
 
 def run_dir() -> Path:
-    """Pictures, logs, and overlays for this process. A later process never opens an older folder."""
     global _RUN
     if _RUN is not None:
         return _RUN
@@ -52,10 +51,5 @@ def run_dir() -> Path:
 def log(name: str) -> logging.Logger:
     logger = logging.getLogger(name)
     if not logging.getLogger().handlers:
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s %(name)-8s %(message)s",
-            datefmt="%H:%M:%S",
-            handlers=[logging.StreamHandler(), logging.FileHandler(run_dir() / "trident.log", encoding="utf-8")],
-        )
+        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)-8s %(message)s", datefmt="%H:%M:%S")
     return logger

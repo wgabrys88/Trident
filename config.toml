@@ -38,7 +38,7 @@ ubatch = 1024
 image_tokens = 1024
 
 [cloud]
-model = "gpt-5.6-luna-none"
+model = "grok-4.7-xhigh"
 
 [ears]
 vad_threshold = 0.65
