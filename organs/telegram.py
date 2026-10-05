@@ -9,7 +9,6 @@ import threading
 import time
 from pathlib import Path
 from typing import Callable
-
 import numpy as np
 from ntgcalls import (
     AudioDescription, ConnectionState, DhConfig, FrameData, MediaDescription, MediaSource, NTgCalls,
@@ -26,19 +25,15 @@ from telethon.tl.types import (
     InputPhoneCall, PhoneCall, PhoneCallAccepted, PhoneCallDiscarded, PhoneCallDiscardReasonHangup, PhoneCallDiscardReasonMissed,
     PhoneCallProtocol, PhoneCallRequested, PhoneConnection, PhoneConnectionWebrtc, UpdatePhoneCall, UpdatePhoneCallSignalingData,
 )
-
 from organs import CONFIG
 from organs.ears import Segmenter
 from organs.eyes import VIDEO, video_rgb
-
 CFG = CONFIG["telegram"]
 OWNER = CONFIG["owner"]["telegram_id"]
 RATE_TX = 48000
 RATE_RX = 16000
 FRAME_TX = RATE_TX // 100 * 2
 DESK_W, DESK_H = VIDEO
-
-
 def telegram_home() -> Path:
     for key in ("APPDATA", "LOCALAPPDATA"):
         home = Path(os.environ[key]) / "Telegram Desktop"
@@ -48,13 +43,9 @@ def telegram_home() -> Path:
     if found and (Path(found).parent / "tdata").is_dir():
         return Path(found).parent
     raise FileNotFoundError("Telegram Desktop with tdata not found")
-
-
 def telegram_pids() -> list[int]:
     out = subprocess.run(["tasklist", "/FI", "IMAGENAME eq Telegram.exe", "/FO", "CSV", "/NH"], capture_output=True, text=True, creationflags=subprocess.CREATE_NO_WINDOW).stdout
     return [int(line.split(",")[1].strip('"')) for line in out.splitlines() if "Telegram.exe" in line]
-
-
 def quit_telegram():
     pids = set(telegram_pids())
     if not pids:
@@ -64,7 +55,6 @@ def quit_telegram():
     user32.GetWindowThreadProcessId.restype = ctypes.c_ulong
     user32.PostThreadMessageW.argtypes = [ctypes.c_ulong, ctypes.c_uint, ctypes.c_size_t, ctypes.c_size_t]
     threads = set()
-
     @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
     def visit(hwnd, _):
         pid = ctypes.c_ulong()
@@ -72,7 +62,6 @@ def quit_telegram():
         if pid.value in pids and thread:
             threads.add(thread)
         return True
-
     user32.EnumWindows(visit, 0)
     for thread in threads:
         user32.PostThreadMessageW(thread, 0x0012, 0, 0)
@@ -81,15 +70,11 @@ def quit_telegram():
         time.sleep(0.2)
     if telegram_pids():
         raise RuntimeError("Telegram Desktop did not quit")
-
-
 def start_telegram():
     if telegram_pids():
         return
     home = telegram_home()
     subprocess.Popen([str(home / "Telegram.exe")], cwd=str(home))
-
-
 def desk_i420() -> bytes:
     rgb = np.asarray(video_rgb(), dtype=np.int32)
     r, g, b = rgb[:, :, 0], rgb[:, :, 1], rgb[:, :, 2]
@@ -100,8 +85,6 @@ def desk_i420() -> bytes:
     u = np.clip(((-38 * r2 - 74 * g2 + 112 * b2 + 128) >> 8) + 128, 16, 240).astype(np.uint8)
     v = np.clip(((112 * r2 - 94 * g2 - 18 * b2 + 128) >> 8) + 128, 16, 240).astype(np.uint8)
     return y.tobytes() + u.tobytes() + v.tobytes()
-
-
 def rtc_servers(connections) -> list[RTCServer]:
     servers = []
     for item in connections:
@@ -110,18 +93,12 @@ def rtc_servers(connections) -> list[RTCServer]:
         elif isinstance(item, PhoneConnection):
             servers.append(RTCServer(item.id, item.ip, item.ipv6 or "", item.port, None, None, False, True, item.tcp, bytes(item.peer_tag)))
     return servers
-
-
 def media(rate: int, camera: bool) -> MediaDescription:
     video = VideoDescription(MediaSource.EXTERNAL, DESK_W, DESK_H, CFG["desk_fps"], "", True) if camera else None
     return MediaDescription(microphone=AudioDescription(MediaSource.EXTERNAL, rate, 1, "", True), speaker=None, camera=video, screen=None)
-
-
 def wire_protocol() -> PhoneCallProtocol:
     protocol = NTgCalls.get_protocol()
     return PhoneCallProtocol(udp_p2p=protocol.udp_p2p, udp_reflector=protocol.udp_reflector, min_layer=65, max_layer=92, library_versions=list(reversed(protocol.library_versions)))
-
-
 class Line:
     def __init__(self, on_text: Callable[[str], None], on_utterance: Callable[[np.ndarray], None]):
         self.on_text, self.on_utterance = on_text, on_utterance
@@ -142,13 +119,11 @@ class Line:
         self.rx_event = threading.Event()
         self.listening = False
         self.segmenter = Segmenter()
-
     def start(self):
         quit_telegram()
         threading.Thread(target=self._run_loop, name="telegram-loop", daemon=True).start()
         threading.Thread(target=self._rx_worker, name="telegram-rx", daemon=True).start()
         self._await(self._connect(), 180)
-
     def stop(self):
         if self.state != "idle":
             self.hang()
@@ -156,25 +131,19 @@ class Line:
             self._await(self._disconnect(), 20)
             start_telegram()
         self.loop.call_soon_threadsafe(self.loop.stop)
-
     def _run_loop(self):
         asyncio.set_event_loop(self.loop)
         self.loop.run_forever()
-
     def _await(self, coro, timeout):
         return asyncio.run_coroutine_threadsafe(coro, self.loop).result(timeout)
-
     async def _disconnect(self):
         await self.client.disconnect()
-
     def _set(self, state: str):
         if state != self.state:
             self.state = state
-
     @property
     def up(self) -> bool:
         return self.state == "up"
-
     async def _connect(self):
         tdesk = TDesktop(str(telegram_home() / "tdata"))
         account = next(a for a in tdesk.accounts if int(a.UserId) != OWNER)
@@ -186,12 +155,10 @@ class Line:
         await self.client.get_dialogs()
         self.owner = await self.client.get_input_entity(OWNER)
         self._set("idle")
-
     async def _on_message(self, event):
         if event.is_private and event.raw_text.strip():
             text = event.raw_text.strip()
             threading.Thread(target=self.on_text, args=(text,), daemon=True).start()
-
     def send_text(self, text: str):
         if self.client is None:
             return
@@ -199,14 +166,12 @@ class Line:
             piece = text[offset:offset + 4000]
             if piece:
                 self._await(self.client.send_message(self.owner, piece), 30)
-
     def send_photo(self, png: bytes):
         if self.client is None:
             return
         buffer = io.BytesIO(png)
         buffer.name = "desk.png"
         self._await(self.client.send_file(self.owner, buffer, force_document=False), 60)
-
     async def _on_raw(self, update):
         if isinstance(update, UpdatePhoneCallSignalingData):
             if self.media_up:
@@ -231,11 +196,9 @@ class Line:
             self.confirmed.set_result(call)
         if isinstance(call, PhoneCallDiscarded):
             await self._teardown()
-
     async def _dh(self) -> DhConfig:
         cfg = await self.client(GetDhConfigRequest(0, 256))
         return DhConfig(cfg.g, bytes(cfg.p), bytes(cfg.random))
-
     async def _begin_media(self):
         self.calls = NTgCalls()
         self.calls.on_frames(self._on_frames)
@@ -248,7 +211,6 @@ class Line:
         await self.calls.create_p2p_call(OWNER)
         await self.calls.set_stream_sources(OWNER, StreamMode.CAPTURE, media(RATE_TX, CFG["desk_video"]))
         await self.calls.set_stream_sources(OWNER, StreamMode.PLAYBACK, media(RATE_RX, False))
-
     async def _link(self, call: PhoneCall):
         self.phone = InputPhoneCall(call.id, call.access_hash)
         custom = call.custom_parameters.data if call.custom_parameters else None
@@ -263,7 +225,6 @@ class Line:
         self._set("up")
         if CFG["desk_video"]:
             threading.Thread(target=self._desk_video, name="telegram-desk", daemon=True).start()
-
     async def _answer(self, requested: PhoneCallRequested):
         self._set("ringing")
         try:
@@ -277,7 +238,6 @@ class Line:
             await self._link(call)
         except Exception:
             await self._teardown()
-
     async def _place(self):
         self._set("ringing")
         await self._begin_media()
@@ -285,17 +245,16 @@ class Line:
         self.accepted = self.loop.create_future()
         invited = await self.client(RequestCallRequest(user_id=self.owner, random_id=random.randint(0, 2**31 - 1), g_a_hash=g_a_hash, protocol=wire_protocol(), video=True))
         if isinstance(invited.phone_call, PhoneCallDiscarded):
-            raise RuntimeError("call discarded")
+            raise RuntimeError("The call was discarded.")
         self.phone = InputPhoneCall(invited.phone_call.id, invited.phone_call.access_hash)
         try:
             accepted = await asyncio.wait_for(self.accepted, 90)
         except asyncio.TimeoutError:
             await self.client(DiscardCallRequest(peer=self.phone, duration=0, reason=PhoneCallDiscardReasonMissed(), connection_id=0, video=True))
-            raise RuntimeError("call missed")
+            raise RuntimeError("The call was missed.")
         auth = await self.calls.exchange_keys(OWNER, bytes(accepted.g_b), 0)
         confirmed = await self.client(ConfirmCallRequest(peer=self.phone, g_a=bytes(auth.g_a_or_b), key_fingerprint=auth.key_fingerprint, protocol=wire_protocol()))
         await self._link(confirmed.phone_call)
-
     async def _teardown(self):
         self.listening = False
         self.media_up = False
@@ -314,28 +273,24 @@ class Line:
         with self.rx_lock:
             self.rx.clear()
         self._set("idle")
-
     def dial(self):
         if self.client is None:
-            raise RuntimeError("line is down")
+            raise RuntimeError("The line is down.")
         if self.state != "idle":
-            raise RuntimeError(f"line is {self.state}")
+            raise RuntimeError(f"The line is {self.state}.")
         try:
             self._await(self._place(), 150)
         except BaseException:
             self._await(self._teardown(), 20)
             raise
-
     def hang(self):
         if self.state != "idle":
             self._await(self._teardown(), 20)
-
     def _on_connection(self, _uid, info):
         if info.state == ConnectionState.CONNECTED and not self.connected.done():
             self.loop.call_soon_threadsafe(self.connected.set_result, True)
         if info.state in (ConnectionState.CLOSED, ConnectionState.FAILED, ConnectionState.TIMEOUT) and self.state == "up":
             asyncio.run_coroutine_threadsafe(self._teardown(), self.loop)
-
     def _on_frames(self, _uid, mode, _device, frames):
         if mode != StreamMode.PLAYBACK or not self.listening:
             return
@@ -343,7 +298,6 @@ class Line:
             for frame in frames:
                 self.rx.extend(frame.data)
         self.rx_event.set()
-
     def _rx_worker(self):
         while True:
             self.rx_event.wait()
@@ -355,13 +309,11 @@ class Line:
             clip = self.segmenter.push(np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0)
             if clip is not None:
                 self.on_utterance(clip)
-
     async def _send_frame(self, device, data, frame):
         await self.calls.send_external_frame(OWNER, device, data, frame)
-
     def speak(self, pcm48: bytes):
         if not self.up:
-            raise RuntimeError("line is down")
+            raise RuntimeError("The line is down.")
         self.listening = False
         try:
             start = time.perf_counter()
@@ -376,7 +328,6 @@ class Line:
                 self.rx.clear()
             self.segmenter.reset()
             self.listening = self.up
-
     def _desk_video(self):
         while self.up and self.calls is not None:
             try:

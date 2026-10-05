@@ -2,40 +2,29 @@ import queue
 import subprocess
 import sys
 import threading
-from pathlib import Path
-
-from organs import CONFIG, run_dir
-from organs.brain import Brain, Stop, Tool, UserTurn
+from organs import CONFIG, eyes, hands, run_dir
+from organs.brain import Brain, Stop, Tool, cursor_text
 from organs.ears import ear_cmd, ear_text, write_wav
 from organs.memory import Memory
 from organs.telegram import Line
-
-LOOK = {"type": "object", "properties": {"seen": {"type": "boolean"}, "y": {"type": "integer"}, "x": {"type": "integer"}}, "required": ["seen", "y", "x"]}
-
-
+GRID = "a 0-1000 grid over the whole screen, y down from the top and x right from the left"
 SYSTEM = (
-    "You are Gemma. You are the mind at Wojciech's computer. From the phone you are one person. "
-    "You hear him and you speak on the call. The computer's microphone and speakers are not yours. "
-    "You decide from the meaning of what he says and what you see. You are not a task runner. "
-    "The screen may be anything in front of you. Keep using tools until the thing he asked is done or you are blocked. "
-    "A plain reply is you speaking, and it ends this request. While a task is open, Python brings it again when you are idle, so look and continue from the screen. When the text is No request is open, wait. "
-    "You are stateless. Python puts your memory on every request. Memory is how his preferences reach you, including a wish not to be called often. You still choose. "
-    "You call a tool. look puts the picture, with the pointer drawn on it, in front of you and does not move the pointer. "
-    "move takes y and x on that picture's 1000 grid, y down from the top and x to the right, and Python moves the pointer there and nothing else. "
-    "Look again before you click, so you can see the pointer. click presses where the pointer is. "
-    "After every click, look again. If the screen did not change as you intended, try another way or consult. "
-    "The same drawing is on the call, so when the call is up he can see the screen and that pointer. Call: up and Call: down are the state of the line, not a command. call_owner starts a call. hang_up ends one that is up. Python places the call. You stay after he hangs up. "
-    f"consult spawns a new Cursor agent on this machine. It is {CONFIG['cloud']['model']}, not a virtual machine. "
-    "Say so aloud in why, and why you are spawning it. Its reply is his next request, plain text. You will not see that it came from the agent. "
+    "You are Gemma, the mind at Wojciech's computer. He reaches you only through Telegram. "
+    "The computer's microphone and speakers are not yours. You decide. "
+    "A plain reply is you speaking. When Call: up it is spoken on the call. When Call: down it is a Telegram message. A plain reply ends this request. "
+    "While a task is open, that task is brought again when you are idle, so continue it. When the text is No request is open, wait. "
+    "Call: down means the line is down. Call: up means the line is up. Neither is a command. "
+    "Memory on a request is facts you can use. You still choose. "
+    f"look returns a screenshot of the whole screen with the mouse pointer arrow drawn on it. The screen is {GRID}. "
+    f"point moves the mouse pointer to (y, x) on {GRID}, and it moves nothing else. "
+    f"click clicks at the pointer's current position. The screen is {GRID}. "
+    "After a click, look at the screen. If it did not change as you intended, try another way or consult. "
+    "call_owner places a call. hang_up ends a call that is up. You stay after the call ends. "
+    f"consult asks {CONFIG['cloud']['model']} on this machine. It only advises. When the call is up, say aloud why. "
+    "Its answer comes back as the consult result, and you decide. "
+    "remember stores a fact for later requests. done finishes the task and nothing is spoken. "
     "Consult when you are stuck, unsure, or he does not answer."
 )
-
-
-def ask_cursor(folder: Path, prompt: str) -> str:
-    from organs.brain import cursor_text
-    return cursor_text(folder, prompt)
-
-
 class Trident:
     def __init__(self):
         self.brain = Brain()
@@ -44,31 +33,25 @@ class Trident:
         self.stopping = threading.Event()
         self.going = False
         self.request = ""
-        self.aim = None
         self.points = []
         self.line = Line(on_text=lambda t: self.push("chat", t), on_utterance=lambda c: self.push("call", c))
         self.brain.sink = self.mirror
-
     def mirror(self, text: str, images: list[bytes]) -> None:
         if text:
             self.line.send_text(text)
         for png in images:
             self.line.send_photo(png)
-
     def start(self):
         self.brain.start()
         self.push("wake", "No request is open.")
         self.line.start()
         threading.Thread(target=self.worker, name="trident-worker", daemon=True).start()
-
     def stop(self):
         self.stopping.set()
         self.line.stop()
         self.brain.stop()
-
     def push(self, kind: str, payload):
         self.events.put((kind, payload))
-
     def worker(self):
         while not self.stopping.is_set():
             try:
@@ -85,7 +68,6 @@ class Trident:
             except Exception as exc:
                 self.going = False
                 self.line.send_text(str(exc))
-
     def handle(self, kind: str, payload):
         if kind == "call":
             text = ear_text(self.gate(ear_cmd(write_wav(run_dir() / "call.wav", payload))))
@@ -96,11 +78,9 @@ class Trident:
         reply = self.turn(kind, text)
         self.deliver(reply)
         self.going = bool(self.memory.task)
-
     def request_text(self, text: str) -> str:
         parts = [self.memory.block(), f"Call: {'up' if self.line.up else 'down'}", text]
         return "\n".join(part for part in parts if part)
-
     def gate(self, args: list[str], data: bytes | None = None) -> bytes:
         self.brain.stop()
         try:
@@ -110,18 +90,15 @@ class Trident:
         if done.returncode != 0:
             raise RuntimeError(done.stderr.decode("utf-8", "replace").strip() or f"exit {done.returncode}")
         return done.stdout
-
     def near_slot(self) -> bool:
         brain = CONFIG["brain"]
         return self.brain.prompt_tokens + brain["max_tokens"] >= brain["context"] // brain["slots"]
-
     def turn(self, kind: str, text: str) -> str:
         self.request = text
         if kind not in ("idle", "wake"):
             self.memory.set_task(text)
         if kind != "idle" or not self.brain.sent or self.near_slot():
             self.brain.fresh()
-            self.aim = None
             self.points = []
             prompt = ""
         else:
@@ -132,109 +109,65 @@ class Trident:
         for _ in range(CONFIG["brain"]["max_tool_steps"]):
             if prompt and self.near_slot():
                 self.brain.fresh()
-                self.aim = None
                 self.points = []
                 prompt = ""
             reply = self.brain.think(SYSTEM, tools, self.request_text(user), prompt)
-            if reply.follow:
-                user = reply.follow
-                prompt = ""
-                continue
             if reply.stop or not reply.prompt:
                 return reply.text
             prompt = reply.prompt
         self.brain.rest = prompt
         return ""
-
     def deliver(self, text: str):
         if text:
             self.speak(text) if self.line.up else self.line.send_text(text)
-
     def speak(self, text: str):
         self.line.speak(self.gate([sys.executable, "-m", "organs.mouth"], text.encode("utf-8")))
-
     def tools(self) -> dict[str, Tool]:
-        string = "STRING"
+        text, number = "STRING", "INTEGER"
+        model = CONFIG["cloud"]["model"]
         return {
-            "look": Tool("look", "Name one thing in what. Python takes one picture, draws the pointer, and puts that picture in front of you. It does not move the pointer.", {"what": {"description": "The one thing to find", "type": string}}, self.look),
-            "move": Tool("move", "Move the pointer to y x on the 1000 grid of the picture you are looking at. y is down from the top. x is to the right. Python moves the pointer and nothing else.", {"y": {"description": "Down from the top", "type": "INTEGER"}, "x": {"description": "To the right", "type": "INTEGER"}}, self.move),
-            "click": Tool("click", "Press where the pointer is now. how is left, right, or double.", {"how": {"description": "left, right, or double", "type": string, "enum": ["left", "right", "double"]}}, self.click),
-            "drag": Tool("drag", "Stroke from the previous move to the last move.", {}, self.drag),
-            "stroke": Tool("stroke", "One line through points on the 1000 grid of the last picture. points is at most 32 pairs, each y x, separated by semicolons. No new picture.", {"points": {"description": "y x;y x", "type": string}}, self.stroke),
-            "type_text": Tool("type_text", "Type this text into the focused window.", {"text": {"description": "The text", "type": string}}, self.type_text),
-            "press": Tool("press", "Press these keys.", {"keys": {"description": "Space-separated chords", "type": string}}, self.press),
-            "run": Tool("run", "Run this PowerShell command. The start alias is not there. Start-Process opens a program.", {"command": {"description": "The command", "type": string}}, self.run),
-            "remember": Tool("remember", "Store a fact. Python puts facts on every later request, including a preference such as him asking you not to call so often.", {"fact": {"description": "The fact", "type": string}}, self.remember),
-            "call_owner": Tool("call_owner", "Place the call. answered means it is up and he can see the screen. already up is a different result. A miss is the error string. Consulting an agent after a miss is your choice. opening is what you say when the call is up.", {"opening": {"description": "What you say when the call is up", "type": string}}, self.call_owner, optional=("opening",)),
-            "hang_up": Tool("hang_up", "End the call and stay. The task stays until done or he replaces it.", {}, self.hang_up),
-            "done": Tool("done", "Finish the task. summary is mirrored, the task is cleared, and this request ends. Nothing is spoken. Call him first if you want him on the line.", {"summary": {"description": "What finished", "type": string}}, self.done),
+            "look": Tool("look", f"Return a screenshot of the whole screen with the mouse pointer arrow drawn on it. The screen is {GRID}.", {}, self.look),
+            "point": Tool("point", f"Move the mouse pointer to (y, x) on {GRID}. Move nothing else.", {"y": {"description": "Down from the top of the screen", "type": number}, "x": {"description": "Right from the left of the screen", "type": number}}, self.point),
+            "click": Tool("click", f"Click at the mouse pointer's current position. The screen is {GRID}.", {"how": {"description": "left, right, or double", "type": text, "enum": ["left", "right", "double"]}}, self.click),
+            "drag": Tool("drag", "Drag the mouse pointer in a straight line between two stored screen places.", {}, self.drag),
+            "stroke": Tool("stroke", f"Draw one line through points on {GRID}. Take no new screenshot.", {"points": {"description": "Up to 32 pairs of y x, separated by semicolons", "type": text}}, self.stroke),
+            "type_text": Tool("type_text", "Type this text into the focused window.", {"text": {"description": "The text to type", "type": text}}, self.type_text),
+            "press": Tool("press", "Press these keys.", {"keys": {"description": "Space-separated chords", "type": text}}, self.press),
+            "run": Tool("run", "Run this PowerShell command.", {"command": {"description": "The command to run", "type": text}}, self.run),
+            "remember": Tool("remember", "Store this fact so later requests include it.", {"fact": {"description": "The fact to store", "type": text}}, self.remember),
+            "call_owner": Tool("call_owner", "Place a video call to Wojciech. When the call is up, say opening. A miss is an error. Asking an advisor after a miss is your choice.", {"opening": {"description": "What to say when the call is up", "type": text}}, self.call_owner, optional=("opening",)),
+            "hang_up": Tool("hang_up", "End the call and stay at the computer. The open task remains.", {}, self.hang_up),
+            "done": Tool("done", "Finish the open task. Show summary in the chat and speak nothing.", {"summary": {"description": "What finished", "type": text}}, self.done),
             "consult": Tool(
                 "consult",
-                f"Spawn a new Cursor agent on this machine. It is {CONFIG['cloud']['model']}, and not a virtual machine. It only advises, and its reply is plain text. why is what you say aloud: that you are asking an agent, and why. question is what you need. attach is screen, part, or no. screen sends the whole screen. part sends the area around the last move. The reply comes back as his next request. After a missed call, consulting is your choice.",
+                f"Ask {model} on this machine for advice only. It does not change files and it does not use the computer. why is said aloud when the call is up. question is what you ask. It sees the pointer-imprinted screenshot and {GRID}. The answer is this tool's result, and you decide. After a missed call, asking is your choice.",
                 {
-                    "why": {"description": "What you say aloud about spawning the agent", "type": string},
-                    "question": {"description": "What you ask the agent", "type": string},
-                    "attach": {"description": "screen, part, or no", "type": string, "enum": ["screen", "part", "no"]},
+                    "why": {"description": "What to say aloud about asking", "type": text},
+                    "question": {"description": "What you ask", "type": text},
                 },
                 self.consult,
             ),
         }
-
-    def look(self, what: str) -> str:
-        what = str(what).strip()
-        if not what:
-            raise ValueError("what")
-        from organs import eyes
-
+    def look(self) -> str:
         marker = self.brain.media()
         self.brain.frames.append(eyes.picture())
-        return marker
-
-    def side_look(self, what: str) -> str:
-        what = str(what).strip()
-        if not what:
-            raise ValueError("what")
-        from organs import eyes
-
-        data = self.brain.ask_json(
-            f"{what}. y and x are where it is on the 1000 grid, y down from the top and x to the right. seen is true only if it is there.",
-            LOOK,
-            eyes.picture(),
-        )
-        if data.get("seen") is True:
-            self.aim = eyes.screen_px(int(data["y"]), int(data["x"]))
-            self.points.append(self.aim)
-            return "the place is ready"
-        self.aim = None
-        return "it is not on screen"
-
-    def move(self, y, x) -> str:
-        from organs import eyes, hands
-
-        point = eyes.screen_px(int(y), int(x))
-        hands.aim(*point)
-        self.aim = point
-        self.points.append(point)
-        return "moved"
-
+        return "The whole screen with the mouse pointer arrow drawn on it. " + marker
+    def point(self, y, x) -> str:
+        y, x = int(y), int(x)
+        place = eyes.screen_px(y, x)
+        hands.aim(*place)
+        self.points.append(place)
+        return f"The mouse pointer is now at y {y} x {x} on {GRID}. Nothing else changed."
     def click(self, how: str) -> str:
-        from organs import hands
-
         hands.button(str(how))
-        return "clicked"
-
+        return f"The {how} button was clicked at the mouse pointer."
     def drag(self) -> str:
-        from organs import hands
-
         if len(self.points) < 2:
-            return "move to both ends first"
+            return "There are not two stored screen places to drag between."
         (x0, y0), (x1, y1) = self.points[-2], self.points[-1]
         hands.drag(x0, y0, x1, y1)
-        return "stroked"
-
+        return "The mouse pointer was dragged between two stored screen places."
     def stroke(self, points: str) -> str:
-        from organs import eyes, hands
-
         parts = [part for part in str(points).split(";") if part.strip()]
         if not parts or len(parts) > 32:
             raise ValueError(str(points))
@@ -243,86 +176,52 @@ class Trident:
             y, x = part.split()
             coords.append(eyes.screen_px(int(y), int(x)))
         hands.stroke(coords)
-        return "stroked"
-
+        return f"The line was drawn on {GRID}."
     def type_text(self, text: str) -> str:
-        from organs import hands
-
         hands.type_text(str(text))
-        return "typed"
-
+        return "The text was typed into the focused window."
     def press(self, keys: str) -> str:
-        from organs import hands
-
         hands.press(str(keys))
-        return f"pressed {keys}"
-
+        return f"These keys were pressed: {keys}."
     def run(self, command: str) -> str:
-        from organs import hands
-
         return hands.run(str(command))
-
     def remember(self, fact: str) -> str:
         self.memory.remember(str(fact))
-        return "remembered"
-
+        return "The fact is stored."
     def call_owner(self, opening: str = "") -> str:
         words = str(opening).strip()
         was = self.line.up
         if not was:
             self.line.dial()
         if not self.line.up:
-            raise RuntimeError("call missed")
+            raise RuntimeError("The call was missed.")
         if words:
             self.speak(words)
-        return "already up" if was else "answered"
-
+        return "The call is already up." if was else "The call is answered."
     def hang_up(self) -> str:
         self.line.hang()
-        return "hung up"
-
+        return "The call is down."
     def done(self, summary: str) -> Stop:
         self.mirror(str(summary), [])
         self.memory.clear_task()
         return Stop()
-
-    def consult_prompt(self, question: str, image: bool) -> str:
-        tools = "\n".join(f"- {name}: {tool.description}" for name, tool in self.tools().items())
-        return (
-            "You are advising Gemma. Reply with the next request she should act on, in the words of a person guiding her. "
-            "She will read your reply as her user and she will not be told it came from you.\n"
-            f"{SYSTEM}\n"
-            f"Her tools:\n{tools}\n"
-            f"Memory:\n{self.memory.block()}\n"
-            f"His request:\n{self.request}\n"
-            f"She asks:\n{question}\n"
-            + ("The screen is screen.png in this folder.\n" if image else "")
-        )
-
-    def consult(self, why: str, question: str, attach: str) -> str | UserTurn:
-        if attach == "part" and self.aim is None:
-            return "move first"
+    def consult(self, why: str, question: str) -> str:
         if self.line.up and str(why).strip():
             self.speak(str(why).strip())
         folder = run_dir() / "consult"
         folder.mkdir(exist_ok=True)
-        shot = folder / "screen.png"
-        if shot.exists():
-            shot.unlink()
-        png = None
-        if attach in ("screen", "part"):
-            from organs import eyes
-
-            full = eyes.picture()
-            png = eyes.around(full, *self.aim) if attach == "part" else full
-            shot.write_bytes(png)
-        prompt = self.consult_prompt(str(question), png is not None)
-        self.mirror(prompt, [png] if png else [])
-        reply = ask_cursor(folder, prompt)
-        self.mirror(reply, [])
-        return UserTurn(reply)
-
-
+        png = eyes.picture()
+        (folder / "screen.png").write_bytes(png)
+        prompt = (
+            "You advise Gemma. Give advice only. She decides, and she uses her own tools. "
+            "Do not use the computer.\n"
+            f"The screen is {GRID}.\n"
+            f"Her open task:\n{self.memory.task}\n"
+            f"She asks:\n{question}\n"
+            "The pointer-imprinted screenshot of the whole screen is screen.png in this folder.\n"
+        )
+        self.mirror(prompt, [png])
+        return "The advisor says: " + cursor_text(folder, prompt).strip()
 def main():
     trident = Trident()
     try:
@@ -333,7 +232,5 @@ def main():
         pass
     finally:
         trident.stop()
-
-
 if __name__ == "__main__":
     main()

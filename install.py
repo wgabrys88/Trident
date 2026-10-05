@@ -7,19 +7,14 @@ import tomllib
 import urllib.request
 import zipfile
 from pathlib import Path
-
 ROOT = Path(__file__).resolve().parent
 CONFIG = tomllib.loads((ROOT / "config.toml").read_text(encoding="utf-8"))
 INSTALL = CONFIG["install"]
 BIN = ROOT / CONFIG["paths"]["bin"]
 MODELS = ROOT / CONFIG["paths"]["models"]
 VENV_PY = ROOT / ".venv" / "Scripts" / "python.exe"
-
-
 def say(text: str):
     print(text, flush=True)
-
-
 def download(url: str, dest: Path):
     if dest.exists():
         say(f"skip {dest.name}")
@@ -31,28 +26,20 @@ def download(url: str, dest: Path):
     with urllib.request.urlopen(request, timeout=60) as response, part.open("wb") as out:
         shutil.copyfileobj(response, out, 1 << 20)
     part.replace(dest)
-
-
 def github_json(url: str) -> dict:
     request = urllib.request.Request(url, headers={"User-Agent": "trident", "Accept": "application/vnd.github+json"})
     with urllib.request.urlopen(request, timeout=30) as response:
         return json.load(response)
-
-
 def venv():
     if not VENV_PY.is_file():
         say("make .venv")
         subprocess.run([sys.executable, "-m", "venv", str(ROOT / ".venv")], check=True)
     if Path(sys.executable).resolve() != VENV_PY.resolve():
         raise SystemExit(subprocess.call([str(VENV_PY), __file__]))
-
-
 def packages():
     pip = [str(VENV_PY), "-m", "pip", "install", "--disable-pip-version-check"]
     subprocess.run(pip + ["torch", "torchaudio", "--index-url", INSTALL["torch_index"]], check=True)
     subprocess.run(pip + ["-r", str(ROOT / "requirements.txt")], check=True)
-
-
 def llama():
     target = BIN / "llama"
     if (target / "llama-server.exe").is_file():
@@ -80,8 +67,6 @@ def llama():
             shutil.copy2(item, target / item.name)
     shutil.rmtree(stage, ignore_errors=True)
     (target / "release.txt").write_text(release["tag_name"] + "\n", encoding="utf-8")
-
-
 def nemo():
     target = BIN / "nemo-speech"
     if (target / "bin" / "nemo-speech.exe").is_file():
@@ -98,15 +83,11 @@ def nemo():
     shutil.rmtree(target, ignore_errors=True)
     shutil.copytree(exe.parent.parent, target)
     shutil.rmtree(stage, ignore_errors=True)
-
-
 def models():
     download(INSTALL["gemma_url"], MODELS / CONFIG["brain"]["model"])
     download(INSTALL["mmproj_url"], MODELS / CONFIG["brain"]["mmproj"])
     download(INSTALL["ear_url"], MODELS / CONFIG["ears"]["model"])
     download(INSTALL["silero_url"], MODELS / "silero_vad.onnx")
-
-
 def main():
     os.chdir(ROOT)
     venv()
@@ -115,7 +96,5 @@ def main():
     nemo()
     models()
     say("done. next: put reference.wav here if it is missing, then  python trident.py")
-
-
 if __name__ == "__main__":
     main()
