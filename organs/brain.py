@@ -101,7 +101,28 @@ def json_object(text: str) -> dict:
     return json.loads(text[start:end + 1])
 
 
+_BRAIN = None
+BILLS = 0
+
+
+def kill_tree() -> None:
+    subprocess.run(["taskkill", "/F", "/T", "/PID", str(os.getpid())], creationflags=subprocess.CREATE_NO_WINDOW)
+    os._exit(1)
+
+
+def charge() -> None:
+    global BILLS
+    if BILLS >= int(CFG["request_limit"]):
+        try:
+            if _BRAIN is not None:
+                _BRAIN.emit(f"request limit {CFG['request_limit']}", [])
+        finally:
+            kill_tree()
+    BILLS += 1
+
+
 def cursor_text(folder: Path, prompt: str) -> str:
+    charge()
     root = Path(os.environ["LOCALAPPDATA"]) / "cursor-agent" / "versions"
     version = max(p for p in root.iterdir() if p.name[:1].isdigit() and (p / "node.exe").is_file())
     done = subprocess.run(
@@ -151,11 +172,12 @@ def parse(output: str) -> tuple[str, str, dict]:
 
 class Brain:
     def __init__(self):
+        global _BRAIN
+        _BRAIN = self
         self.url = f"http://{CFG['host']}:{CFG['port']}"
         self.proc = None
         self.marker = None
         self.sent = ""
-        self.rest = ""
         self.prompt_tokens = 0
         self.sink: Callable[[str, list[bytes]], None] | None = None
 
@@ -270,13 +292,6 @@ class Brain:
         body = f"{self.media()}\n{question}" if png else question
         prompt = BOS + turn("user", body) + f"{TURN_OPEN}model\n"
         return json.loads(self.complete(prompt, images=[png] if png else (), schema=schema, track=False))
-
-    def carry(self, user: str) -> str:
-        if SEAT:
-            return self.sent + "\n" + user + "\n"
-        base = self.sent
-        tail = "" if base.endswith(TURN_CLOSE + "\n") else ("\n" if base.endswith(TURN_CLOSE) else TURN_CLOSE + "\n")
-        return base + tail + turn("user", user) + f"{TURN_OPEN}model\n"
 
     def seat_think(self, system: str, tools: dict[str, Tool], user: str, prompt: str) -> Reply:
         if not prompt:

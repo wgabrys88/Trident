@@ -24,6 +24,7 @@ top_p = 0.95
 min_p = 0.05
 max_tokens = 1024
 max_tool_steps = 200
+request_limit = 100
 
 [eyes]
 max_side = 1920

@@ -16,7 +16,7 @@ SYSTEM = (
     "You hear him and you speak on the call. The computer's microphone and speakers are not yours. "
     "You decide from the meaning of what he says and what a look returns. You are not a task runner. "
     "The screen may be anything in front of you. Keep using tools until the thing he asked is done or you are blocked. "
-    "A plain reply is you speaking, and it ends this request. Python brings the task again while you are idle, so look and continue from the screen. "
+    "A plain reply is you speaking, and it ends this request. Nothing brings that task back until he messages or calls. "
     "You are stateless. Python puts your memory on every request. Memory is how his preferences reach you, including a wish not to be called often. You still choose. "
     "You call a tool. Python takes the picture, draws the pointer on it, and turns a place into a click. You do not work out a pixel. "
     "The same drawing is on the call, so when the call is up he can see the screen and that pointer. call_owner and hang_up are how a call starts and ends. Python places the call. You stay after he hangs up. "
@@ -40,7 +40,6 @@ class Trident:
         self.request = ""
         self.aim = None
         self.points = []
-        self.going = False
         self.line = Line(on_text=lambda t: self.push("chat", t), on_utterance=lambda c: self.push("call", c))
         self.brain.sink = self.mirror
 
@@ -69,13 +68,10 @@ class Trident:
             try:
                 kind, payload = self.events.get(timeout=0.5)
             except queue.Empty:
-                if self.stopping.is_set() or not self.going or not self.memory.task:
-                    continue
-                kind, payload = "idle", self.memory.task
+                continue
             try:
                 self.handle(kind, payload)
             except Exception as exc:
-                self.going = False
                 self.line.send_text(str(exc))
 
     def handle(self, kind: str, payload):
@@ -87,7 +83,6 @@ class Trident:
             text = payload
         reply = self.turn(kind, text)
         self.deliver(reply)
-        self.going = bool(self.memory.task)
 
     def request_text(self, text: str) -> str:
         parts = [self.memory.block(), f"Call: {'up' if self.line.up else 'down'}", text]
@@ -109,18 +104,13 @@ class Trident:
 
     def turn(self, kind: str, text: str) -> str:
         self.request = text
-        if kind not in ("idle", "wake"):
+        if kind != "wake":
             self.memory.set_task(text)
-        if kind != "idle" or not self.brain.sent or self.near_slot():
-            self.brain.sent = ""
-            self.brain.rest = ""
-            self.brain.prompt_tokens = 0
-            self.aim = None
-            self.points = []
-            prompt = ""
-        else:
-            prompt = self.brain.rest or self.brain.carry(self.request_text(text))
-            self.brain.rest = ""
+        self.brain.sent = ""
+        self.brain.prompt_tokens = 0
+        self.aim = None
+        self.points = []
+        prompt = ""
         user = text
         tools = self.tools()
         for _ in range(CONFIG["brain"]["max_tool_steps"]):
@@ -138,7 +128,6 @@ class Trident:
             if reply.stop or not reply.prompt:
                 return reply.text
             prompt = reply.prompt
-        self.brain.rest = prompt
         return ""
 
     def deliver(self, text: str):
@@ -265,7 +254,6 @@ class Trident:
     def done(self, summary: str) -> Stop:
         self.mirror(str(summary), [])
         self.memory.clear_task()
-        self.going = False
         return Stop()
 
     def consult_prompt(self, question: str, image: bool) -> str:
