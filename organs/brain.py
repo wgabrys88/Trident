@@ -119,6 +119,7 @@ class Brain:
         self.marker = None
         self.sent = ""
         self.rest = ""
+        self.prompt_tokens = 0
         self.sink: Callable[[str, list[bytes]], None] | None = None
 
     def emit(self, text: str, images: list[bytes]) -> None:
@@ -199,15 +200,17 @@ class Brain:
         if schema is not None:
             body["json_schema"] = schema
         request = urllib.request.Request(self.url + "/completion", data=json.dumps(body).encode("utf-8"), headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(request, timeout=600) as r:
-            data = json.load(r)
+        try:
+            with urllib.request.urlopen(request, timeout=600) as r:
+                data = json.load(r)
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace").strip()
+            raise RuntimeError(detail or str(exc))
         text = data["content"]
         self.emit(text, [])
         if track:
             self.sent = prompt + text
-        if images:
-            from organs.eyes import live
-            live()
+            self.prompt_tokens = int(data.get("tokens_evaluated") or 0)
         return text
 
     def ask_json(self, question: str, schema: dict, png: bytes | None = None) -> object:

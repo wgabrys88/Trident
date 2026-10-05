@@ -3,6 +3,7 @@ import ctypes.wintypes as W
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -181,15 +182,25 @@ def run(command: str, timeout: int = 25) -> str:
     found = shutil.which(text) if text and not any(c in text for c in " \t;&|$<>") else None
     if found and os.path.getsize(found) == 0:
         command = "Start-Process -FilePath " + text
+    out, err = tempfile.TemporaryFile(), tempfile.TemporaryFile()
+    proc = subprocess.Popen(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Remove-Item Alias:start -Force; " + command], stdin=subprocess.DEVNULL, stdout=out, stderr=err, creationflags=subprocess.CREATE_NO_WINDOW)
     try:
-        done = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", "Remove-Item Alias:start -Force; " + command], capture_output=True, timeout=timeout, creationflags=subprocess.CREATE_NO_WINDOW)
+        proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        out.close()
+        err.close()
         return "timed out"
-    text = (done.stdout + b"\n" + done.stderr).decode("utf-8", "replace").strip()
+    out.seek(0)
+    err.seek(0)
+    text = (out.read() + b"\n" + err.read()).decode("utf-8", "replace").strip()
+    out.close()
+    err.close()
     if command.lower().lstrip().startswith("start-process"):
         time.sleep(1.5)
     if text:
         return text
-    if done.returncode:
-        return f"exit {done.returncode}"
+    if proc.returncode:
+        return f"exit {proc.returncode}"
     return "ok"

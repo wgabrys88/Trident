@@ -20,9 +20,9 @@ SYSTEM = (
     "The screen may be anything in front of you. Keep using tools until the thing he asked is done or you are blocked. "
     "A plain reply is you speaking, and it ends this request. Python brings the task again while you are idle, so look and continue from the screen. "
     "You are stateless. Python puts your memory on every request. Memory is how his preferences reach you, including a wish not to be called often. You still choose. "
-    "You call a tool. Python takes the picture, draws the pointer on it, and turns a place into a click. You do not work out a pixel. "
-    "When the call is up he can see the screen and that pointer. call_owner and hang_up are how a call starts and ends. Python places the call. You stay after he hangs up. "
-    "consult spawns a new Cursor agent on this machine. It is gpt-5.6-luna-none, not a virtual machine. "
+    "You call a tool. Python takes the picture, draws the pointer and the controls on it, and turns a place into a click. You do not work out a pixel. "
+    "The same drawing is on the call, so when the call is up he can see the screen and that pointer. call_owner and hang_up are how a call starts and ends. Python places the call. You stay after he hangs up. "
+    f"consult spawns a new Cursor agent on this machine. It is {CONFIG['cloud']['model']}, not a virtual machine. "
     "Say so aloud in why, and why you are spawning it. Its reply is his next request, plain text. You will not see that it came from the agent. "
     "Consult when you are stuck, unsure, or he does not answer."
 )
@@ -97,8 +97,6 @@ class Trident:
             except Exception as exc:
                 self.going = False
                 self.line.send_text(str(exc))
-                from organs.eyes import live
-                live()
 
     def handle(self, kind: str, payload):
         if kind == "call":
@@ -137,25 +135,36 @@ class Trident:
             raise RuntimeError(done.stderr.decode("utf-8", "replace").strip() or f"exit {done.returncode}")
         return done.stdout
 
+    def near_slot(self) -> bool:
+        brain = CONFIG["brain"]
+        return self.brain.prompt_tokens >= brain["context"] // brain["slots"] - brain["image_tokens"]
+
     def turn(self, kind: str, text: str) -> str:
         self.request = text
-        continuing = kind == "idle" and bool(self.brain.rest)
+        continuing = kind == "idle" and bool(self.brain.rest) and not self.near_slot()
+        saved = self.brain.rest if continuing else ""
+        self.brain.rest = ""
         if not continuing:
             self.aim = None
             self.points = []
         if kind in ("chat", "call", "typed"):
             self.memory.set_task(text)
-            self.brain.rest = ""
-        if continuing:
-            prompt = self.brain.rest
-            self.brain.rest = ""
-        elif kind == "idle" and self.brain.sent:
+            self.brain.sent = ""
+            self.brain.prompt_tokens = 0
+        if saved:
+            prompt = saved
+        elif kind == "idle" and self.brain.sent and not self.near_slot():
             prompt = self.brain.carry(self.request_text(text))
         else:
             prompt = ""
         user = text
         tools = self.tools()
         for _ in range(CONFIG["brain"]["max_tool_steps"]):
+            if prompt and self.near_slot():
+                self.brain.sent = ""
+                self.aim = None
+                self.points = []
+                prompt = ""
             reply = self.brain.think(SYSTEM, tools, self.request_text(user), prompt)
             if reply.follow:
                 user = reply.follow
@@ -179,7 +188,7 @@ class Trident:
     def tools(self) -> dict[str, Tool]:
         string = "STRING"
         return {
-            "look": Tool("look", "Name one thing in what. Python takes the picture, draws the pointer and the controls, asks where that thing is, and keeps the place for click and drag. You do not calculate the place.", {"what": {"description": "The one thing to find", "type": string}}, self.look),
+            "look": Tool("look", "Name one thing in what. Python takes the picture, draws the pointer and the controls, asks where that thing is, and keeps the place for click and drag. You do not calculate the place. A canvas, page, paper, or drawing surface is mapped onto that white page.", {"what": {"description": "The one thing to find", "type": string}}, self.look),
             "click": Tool("click", "Press the place the last look returned. how is left, right, or double.", {"how": {"description": "left, right, or double", "type": string, "enum": ["left", "right", "double"]}}, self.click),
             "drag": Tool("drag", "Stroke from the previous look to the last look.", {}, self.drag),
             "type_text": Tool("type_text", "Type this text into the focused window.", {"text": {"description": "The text", "type": string}}, self.type_text),
@@ -190,7 +199,7 @@ class Trident:
             "hang_up": Tool("hang_up", "End the call and stay. You can keep using tools.", {}, self.hang_up),
             "consult": Tool(
                 "consult",
-                "Spawn a new Cursor agent on this machine. It is gpt-5.6-luna-none, and not a virtual machine. It only advises, and its reply is plain text. why is what you say aloud: that you are spawning it, and why. question is what you need. attach is screen, part, or no. screen sends the whole screen. part sends the area around the last look. The reply comes back as his next request.",
+                f"Spawn a new Cursor agent on this machine. It is {CONFIG['cloud']['model']}, and not a virtual machine. It only advises, and its reply is plain text. why is what you say aloud: that you are spawning it, and why. question is what you need. attach is screen, part, or no. screen sends the whole screen. part sends the area around the last look. The reply comes back as his next request.",
                 {
                     "why": {"description": "What you say aloud about spawning the agent", "type": string},
                     "question": {"description": "What you ask the agent", "type": string},
@@ -207,12 +216,12 @@ class Trident:
         from organs import eyes
 
         data = self.brain.ask_json(
-            f"Find {what}. y and x are its place on the 1000 grid of this picture, y down from the top and x to the right. seen is true only if it is there. The pointer is not the thing unless the pointer was asked for.",
+            f"Find {what}. y and x are its center on the 1000 grid of this picture, y down from the top and x to the right. seen is true only if it is there. The red crosshair is the pointer, not the thing, unless the pointer was asked for. The dark ribbon is not the canvas. The canvas is the large empty page.",
             LOOK,
             eyes.picture(),
         )
         if data.get("seen") is True and "y" in data and "x" in data:
-            self.aim = eyes.screen_px(int(data["y"]), int(data["x"]))
+            self.aim = eyes.place(what, int(data["y"]), int(data["x"]))
             self.points.append(self.aim)
             return "that place is ready"
         self.aim = None
@@ -312,8 +321,6 @@ class Trident:
         self.mirror(prompt, [png] if png else [])
         reply = ask_cursor(folder, prompt)
         self.mirror(reply, [])
-        from organs.eyes import live
-        live()
         return UserTurn(reply)
 
 
