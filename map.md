@@ -10,7 +10,7 @@ Tracked files: `.gitattributes`, `.gitignore`, `LICENSE`, `config.toml`, `instal
 
 `[paths]` `models` = models, `bin` = bin, `state` = state. Read by `organs`, `install`, `brain`.
 
-`[brain]` `model` = gemma-4-E2B-it-Q4_0.gguf, `mmproj` = mmproj-gemma-4-E2B-it-Q8_0.gguf, `host` = 127.0.0.1, `port` = 8080, `context` = 16384, `slots` = 2, `gpu_layers` = 999, `threads` = 4, `image_tokens` = 1120, `ubatch` = 2048, `temperature` = 0, `top_k` = 64, `top_p` = 0.95, `min_p` = 0.05, `max_tokens` = 4096, `max_tool_steps` = 200. Read by `brain`. `model` and `mmproj` also by `install`.
+`[brain]` `model` = gemma-4-E2B-it-Q4_0.gguf, `mmproj` = mmproj-gemma-4-E2B-it-Q8_0.gguf, `host` = 127.0.0.1, `port` = 8080, `context` = 16384, `slots` = 2, `gpu_layers` = 999, `threads` = 4, `image_tokens` = 1120, `ubatch` = 2048, `temperature` = 0, `top_k` = 64, `top_p` = 0.95, `min_p` = 0.05, `max_tokens` = 1024, `max_tool_steps` = 200. Read by `brain`. `model` and `mmproj` also by `install`. `max_tokens` is the completion budget in `near_slot`. `image_tokens` is only the llama-server image flag.
 
 `[eyes]` `max_side` = 1920. Read by `eyes`.
 
@@ -30,7 +30,7 @@ Gemma 4 image budgets are 70, 140, 280, 560, and 1120. 1120 is the maximum, abou
 
 One model is in VRAM at a time. `Trident.gate` stops Gemma, runs the specialist as a subprocess, then starts Gemma again. The mouth is `python -m organs.mouth`. The ear is `nemo-speech.exe`. Each exits and frees the GPU. An idle turn does not call the gate, so it does not load the mouth or the ear. Silero VAD stays in the call process on CPU. It is not in VRAM, and it has to keep hearing while Gemma is loaded. Qwen is not configured and is not downloaded. A look is Gemma reading the picture `picture()` just made. The other mind is the Cursor agent `consult` starts. It does not use this GPU.
 
-`imprint` is the only overlay. `picture` and `video_rgb` both call it. `picture` refreshes the controls, grabs, thumbnails to `eyes.max_side`, imprints, and returns that PNG. The chat photo is those same bytes. `video_rgb` grabs again, resizes to 960×540, and imprints, so the call is live and the pointer is drawn by the same function. There is no stored frame. The drawing is the pointer and the foreground controls. A name is drawn inside a box only when that box is at least 28 by 18 image pixels. A look stores `screen_px` of the y and x the model answered on that picture. A 20-pixel icon is still smaller than one 1120-token cell on a 1920×1080 frame.
+`imprint` is the only overlay, and it draws the pointer arrow only. There is no crosshair, no control box, no label, and no UI-automation walk. `picture` grabs, thumbnails to `eyes.max_side`, imprints, and returns that PNG. The chat photo is those same bytes. `video_rgb` grabs again, resizes to 960×540, and imprints, so the call is a live frame through the same function. There is no stored frame. A look stores `screen_px` of the y and x the model answered on that picture.
 
 ## organs/__init__.py
 
@@ -40,21 +40,21 @@ Talks to `config.toml` and the `state/` directory. Talked to by `brain`, `ears`,
 
 `path_of(section, key) -> Path`. `brain` and `ears` resolve under `paths.models`. Any other section resolves under the repo root. Returns that directory plus `CONFIG[section][key]`.
 
-`state_dir() -> Path`. Creates `paths.state` and returns it. `memory.json` and `inbox.txt` stay here.
+`state_dir() -> Path`. Creates `paths.state` and returns it. `memory.json` stays here.
 
-`run_dir() -> Path`. One folder per process, `state/run_YYYY-MM-DD_HHMM`, for example `run_2026-10-04_2030`. The folder is created on first use. If that name already exists, the next free `run_YYYY-MM-DD_HHMM-2` is used, so a later process never writes into an older folder. The path is stored in `TRIDENT_RUN`. A child process, including the mouth, inherits that variable and uses the same folder. Call audio, the consult workspace, and `controls.ps1` go here. There is no `trident.log`, no `llama-server.log`, no `last_prompt.txt`, and no `last_image.png`. Nothing writes a log to stderr. The chat is the record of what a model was sent and what it returned.
+`run_dir() -> Path`. One folder per process, `state/run_YYYY-MM-DD_HHMM`, for example `run_2026-10-04_2030`. The folder is created on first use. If that name already exists, the next free `run_YYYY-MM-DD_HHMM-2` is used, so a later process never writes into an older folder. The path is stored in `TRIDENT_RUN`. A child process, including the mouth, inherits that variable and uses the same folder. Call audio and the consult workspace go here. There is no `trident.log`, no `llama-server.log`, no `last_prompt.txt`, and no `last_image.png`. Nothing writes a log to stderr. The chat is the record of what a model was sent and what it returned.
 
 ## organs/brain.py
 
-Talks to `organs` (`CONFIG`, `ROOT`, `path_of`), `bin/llama/llama-server.exe`, and HTTP `http://{host}:{port}`. Talked to by `trident` (`Brain`, `Tool`, `UserTurn`).
+Talks to `organs` (`CONFIG`, `ROOT`, `path_of`), `bin/llama/llama-server.exe`, and HTTP `http://{host}:{port}`. Talked to by `trident` (`Brain`, `Stop`, `Tool`, `UserTurn`).
 
 Tokens: `BOS` `<bos>`, `TURN_OPEN` `<|turn>`, `TURN_CLOSE` `<turn|>`, `THINK` `<|think|>`, `QUOTE` `<|"|>`, `TOOL_RESPONSE_OPEN` `<|tool_response>`, `TOOL_RESPONSE_CLOSE` `<tool_response|>`. The image marker is whatever the running server reports. `Brain.media()` reads `media_marker` from `GET {url}/props` on first use and stores it on `Brain.marker`. `stop()` clears it.
 
 `Tool(name, description, params, run, optional=())`. `params` maps a name to `description`, `type` (`STRING`, `INTEGER`, `NUMBER`, or `BOOLEAN`), and optional `enum`. `optional` names may be omitted. `run` is `Callable[..., object]`.
 
-`UserTurn(text)`. A tool that returns this ends the completion loop. `Reply.follow` is that text. `trident` starts a new request with it, so she reads it as the user.
+`UserTurn(text)`. A tool that returns this ends that completion. `Reply.follow` is that text. `trident` reads it as the next user turn in the same request. `Stop` ends the request. `Reply.stop` is that signal. There is no further tool step and no tool response.
 
-`Reply(text, follow="")`.
+`Reply(text, follow="", prompt="", stop=False)`.
 
 `quoted`, `literal`, `declare`, `tool_response`, `turn`, `plain`, and `parse` build and read Gemma's tool text. `declare` sorts keys, quotes descriptions, and emits the `<|tool>declaration:...` block with a space before `},required` and a space before the final `}`. A dict tool result is emitted with sorted keys. `parse` reads one `<|tool_call>call:NAME{...}<tool_call|>`. Quoted values stay strings. Bare `true`/`false` become bools. Bare integers and decimals become `int` and `float`.
 
@@ -74,7 +74,7 @@ Tokens: `BOS` `<bos>`, `TURN_OPEN` `<|turn>`, `TURN_CLOSE` `<turn|>`, `THINK` `<
 
 `Brain.carry(user) -> str`. Closes the open model turn in `sent` and appends a user turn plus an open model turn. It does not clear `sent` and it does not add the system prompt or the tool list.
 
-`Brain.think(system, tools, user, prompt="") -> Reply`. One completion. An empty `prompt` clears `sent` and builds the system turn (`THINK`, `system`, every `declare(tool)`), the user turn, and an open model turn. There is no history argument. Stopped on the tool-response open token and `TURN_CLOSE`. No tool returns `Reply(plain(out))`. An unknown tool name yields `unknown tool {name}`. An argument that is not declared yields `unknown argument {name}`. A missing required argument yields `missing {name}`. The turn continues. A tool that raises ends the turn. A `UserTurn` returns `Reply(follow=text)`. Otherwise `Reply.prompt` is the prompt plus the completion plus `tool_response`. The step cap is not here.
+`Brain.think(system, tools, user, prompt="") -> Reply`. One completion. An empty `prompt` clears `sent` and builds the system turn (`THINK`, `system`, every `declare(tool)`), the user turn, and an open model turn. There is no history argument. Stopped on the tool-response open token and `TURN_CLOSE`. No tool returns `Reply(plain(out))`. `invoke` raises `ValueError` for an unknown tool, an unknown argument, a missing required argument, or a value outside `enum`. A tool that raises, including that `ValueError`, becomes `str(exception)` and the turn continues. Nothing is remapped to a default. A `UserTurn` returns `Reply(follow=text)`. A `Stop` returns `Reply(stop=True)`. Otherwise `Reply.prompt` is the prompt plus the completion plus `tool_response`. The step cap is not here.
 
 ## organs/ears.py
 
@@ -90,17 +90,15 @@ Talks to `organs` (`CONFIG`, `ROOT`, `path_of`), `models/silero_vad.onnx` throug
 
 ## organs/eyes.py
 
-Talks to `organs` (`CONFIG`), `user32`, `hands.interactive_controls`, and PIL `ImageGrab` and `ImageDraw`. Talked to by `trident` and `telegram`. At import, `SetProcessDpiAwarenessContext(-4)`. `GetCursorPos` has argument types set. There is no module docstring.
+Talks to `organs` (`CONFIG`), `user32`, and PIL `ImageGrab` and `ImageDraw`. Talked to by `trident` and `telegram`. At import, `SetProcessDpiAwarenessContext(-4)`. `GetCursorPos` has argument types set. There is no module docstring.
 
 `VIDEO` is `(960, 540)`.
 
 `screen_size() -> (width, height)`. `GetSystemMetrics(0)`, `GetSystemMetrics(1)`.
 
-`refresh()`. Stores `interactive_controls()` on `boxes`. An empty title is the foreground window. `picture` calls this. The video does not.
+`imprint(image) -> Image`. Copies the image and draws only the pointer. `GetCursorPos` supplies the tip, scaled into this image, even when Windows is not showing a cursor. The arrow is white with a black outline. There is no crosshair, no box, and no label. If the cursor cannot be read, the copy is returned unchanged. `picture` and `video_rgb` both call this and no other drawer.
 
-`imprint(image) -> Image`. Copies the image. For each stored control, a cyan box scaled from screen pixels into this image, and the name inside the box when the box is at least 28 by 18 image pixels. Then the pointer, from `GetCursorPos` even when Windows is not showing a cursor. The point is scaled into this image. Red lines of width 2 cross at that point, and a white arrow with a black outline has its tip there. The 1000-grid numbers are not drawn. `picture` and `video_rgb` both call this and no other drawer.
-
-`picture() -> bytes`. `refresh()`, then `ImageGrab.grab()` of the primary monitor. Longest side at most `eyes.max_side` (LANCZOS). `imprint`, then RGB PNG, `compress_level` 1. Those bytes are what a look sends and what the chat receives.
+`picture() -> bytes`. `ImageGrab.grab()` of the primary monitor. Longest side at most `eyes.max_side` (LANCZOS). `imprint`, then RGB PNG, `compress_level` 1. Those bytes are what a look sends and what the chat receives. There is no control walk before the grab.
 
 `video_rgb() -> Image`. A new grab, resized to `VIDEO` with BILINEAR, then `imprint`. `telegram.desk_i420` sends that frame. It does not reuse the still from `picture`.
 
@@ -110,17 +108,15 @@ Talks to `organs` (`CONFIG`), `user32`, `hands.interactive_controls`, and PIL `I
 
 ## organs/hands.py
 
-Talks to `user32.SendInput`, `powershell.exe`, and `run_dir` when listing controls. Talked to by `trident` and `eyes.refresh`. At import, `SetProcessDpiAwarenessContext(-4)`.
+Talks to `user32.SendInput` and `powershell.exe`. Talked to by `trident`. At import, `SetProcessDpiAwarenessContext(-4)`.
 
-`aim(x, y) -> (x, y)`. `SetCursorPos`, then an absolute move, then `GetCursorPos`. `strike(x, y, how)` presses. `right` uses the right button. `double` adds a second left down/up. Any other `how` uses the left button. There is no `click` wrapper.
+`aim(x, y) -> (x, y)`. `SetCursorPos`, then an absolute move, then `GetCursorPos`. `strike(x, y, how)` presses. `right` uses the right button. `double` adds a second left down/up. Any other `how` raises `ValueError`. There is no `click` wrapper.
 
-`drag(x0, y0, x1, y1)`. Left down, ten moves 0.02 s apart, left up.
+`stroke(coords)` is one polyline: left down at the first point, ten moves 0.02 s apart along each following segment, left up at the last point. `drag(x0, y0, x1, y1)` is that stroke for two points.
 
 `press(keys)`. Space-separated chords. `+` and `-` split a chord. An unknown name raises `KeyError`.
 
 `type_text(text)`. A character the foreground layout can type is that virtual key, with shift, ctrl, or alt when the layout asks for them. Anything else is a Unicode key, one UTF-16 unit at a time.
-
-`interactive_controls(title="") -> list`. Named interactive controls on one window: `(name, x, y, width, height)` in screen pixels. An empty title is the foreground window. A title such as `Untitled - Paint` reads that window when it is not in front. A repeated name keeps the smaller rectangle. The PowerShell is written to `controls.ps1` in the run folder, run, and deleted.
 
 `run(command, timeout=25) -> str`. Hidden `powershell.exe`, the `start` alias removed. Stdout and stderr are temporary files, not pipes, so a GUI program that inherits the handles does not stall the worker. A command that is only a name, when that name is a zero-byte file, is `Start-Process -FilePath` and that name. Timeout kills the process and returns `timed out`. A command whose stripped lowercase text starts with `start-process` waits 1.5 s. Empty output returns `exit {code}` when the code is non-zero, otherwise `ok`.
 
@@ -128,7 +124,7 @@ There is no `python -m organs.hands` entry.
 
 ## organs/memory.py
 
-`state/memory.json` holds `facts` and `task`. `remember` appends a new stripped fact. `set_task` stores the latest chat, call, or typed request at the start of that turn. A consult reply does not replace the task. `block` is `Task:` then one `Remembered:` line per fact. That block is put on every Gemma request. The chat is the record of what was said. The file does not keep turns.
+`state/memory.json` holds `facts` and `task`. `remember` appends a new stripped fact. `set_task` stores the latest chat or call request at the start of that turn. A consult reply does not replace the task. `clear_task` empties the task. `block` is `Task:` then one `Remembered:` line per fact. That block is put on every Gemma request. The chat is the record of what was said. The file does not keep turns.
 
 ## organs/mouth.py
 
@@ -136,38 +132,38 @@ There is no `python -m organs.hands` entry.
 
 ## organs/telegram.py
 
-`Line` is the Telegram voice line. `OWNER` is `owner.telegram_id`. Capture is 48000 Hz. Playback is 16000 Hz into `Segmenter`. `desk_video` sends `video_rgb()` as the camera at `desk_fps`. That frame is `VIDEO`, 960×540, and it has been through `imprint`. `start` quits Telegram Desktop, opens the first `tdata` account whose `UserId` is not `OWNER`, and reaches `idle`. `stop` hangs up when the line is up, disconnects, and starts Desktop again. `send_text` and `send_photo` return immediately when `client` is `None`. There is no `send_file`. `send_text` sends the whole string, in pieces of 4000 characters when it is longer than one Telegram message. `speak` requires the line to be `up` and paces 10 ms microphone frames. PC mic and speakers are not opened. There is no `python -m organs.telegram` entry. There is no log file. The messages are the record.
+`Line` is the Telegram voice line. `OWNER` is `owner.telegram_id`. An incoming call from him while the line is idle is answered. Nothing is queued for her until his audio arrives. A call from anyone else is declined. Capture is 48000 Hz. Playback is 16000 Hz into `Segmenter`. `desk_video` sends `video_rgb()` as the camera at `desk_fps`. That frame is `VIDEO`, 960×540, and it has been through `imprint`. `start` quits Telegram Desktop, opens the first `tdata` account whose `UserId` is not `OWNER`, and reaches `idle`. `stop` hangs up when the line is up, disconnects, and starts Desktop again. `send_text` and `send_photo` return immediately when `client` is `None`. There is no `send_file`. `send_text` sends the whole string, in pieces of 4000 characters when it is longer than one Telegram message. `speak` requires the line to be `up` and paces 10 ms microphone frames. PC mic and speakers are not opened. There is no `python -m organs.telegram` entry. There is no log file. The messages are the record.
 
 ## trident.py
 
-`INBOX` is `state/inbox.txt`. `SYSTEM` tells Gemma who she is. She is the mind at his computer. She hears and speaks on the call. The computer's microphone and speakers are not hers. She decides from the meaning of what he says and what a look returns. She is stateless, and the memory block is how a preference reaches her. She calls tools. Python takes the picture, draws the pointer and the controls, and turns a place into a click. The call uses that same drawing. A plain reply ends the request, and Python brings the task again while she is idle so she looks and continues. `consult` spawns a Cursor agent named by `CONFIG["cloud"]["model"]`, and she says aloud why. Its plain-text reply is his next request. She is not told it came from the agent.
+There is no inbox, no slash command, and no say CLI. A request is `block()`, then `Call: up` or `Call: down` from `line.up`, then the text. Words in his message do not count as an answered call. `SYSTEM` tells Gemma who she is. She is the mind at his computer. She hears and speaks on the call. The computer's microphone and speakers are not hers. She decides from the meaning of what he says and what a look returns. She is stateless, and the memory block is how a preference reaches her. She calls tools. Python takes the picture, draws the pointer, and turns a place into a click. The call uses that same drawing. A plain reply ends this request and leaves the task. Python brings the task again while she is idle. `consult` spawns a Cursor agent named by `CONFIG["cloud"]["model"]`. When the call is up she says aloud why she is asking. Its plain-text reply is the next user turn. She is not told it came from the agent.
 
-`request_text` puts `block()`, then `Call: up` or `Call: down`, then the text, on every Gemma request.
+Entries are a chat message from him, his call audio after the ear returns text, an idle re-ask of the open task, and a consult reply. An incoming call from him is answered in `telegram` and nothing is queued until he speaks. Python does not speak a fixed sentence. Only her plain reply, her `opening`, and her `why` go out through the mouth.
 
-`mirror(text, images)` sends that text and those PNG bytes to him. `Brain.sink` is `mirror`. The first completion of a request sends the whole prompt. Each later step sends only the new suffix, then the raw response. The picture on a look is that same completion. `consult` uses the same function for the agent prompt, the picture, and the agent reply. A plain reply is spoken only when the call is up and the turn is not idle. The words are already in the chat as the raw response. A turn that raises sends `str(exc)` and does not retry.
+`mirror(text, images)` sends that text and those PNG bytes to him. `Brain.sink` is `mirror`. The first completion of a fresh request or a slot refresh sends the whole prompt. An idle carry sends only the new suffix, then the raw response. The picture on a look is that same completion. `consult` uses the same function for the agent prompt, the picture, and the agent reply. A plain reply is spoken when the call is up, including an idle request. A failure outside a tool sends `str(exc)` to the chat and clears `going`.
 
 `ask_cursor(folder, prompt) -> str`. The latest `%LOCALAPPDATA%\cursor-agent\versions\<date>-<hash>` directory that contains `node.exe`. A name that does not start with a digit, including `dist-package`, is skipped. The command is that directory's `node.exe` and `index.js`, print mode, `--mode ask`, `--trust`, `--model` `cloud.model` (`gpt-5.6-luna-none`), text output, workspace `consult` in the run folder. Ask mode is read-only. There is no `--force`, no sandbox change, and no worktree. It is a local process, not a virtual machine. Timeout 1800 s. Non-zero exit or an empty reply raises `RuntimeError`. The stdout is the reply, unchanged apart from the emptiness check, and `consult` returns it as a `UserTurn`.
 
 `Trident.gate(args, data=None) -> bytes` is the only GPU handoff. It stops Gemma, runs that subprocess, and starts Gemma again. A non-zero exit raises `RuntimeError` with the stderr. `speak` is `python -m organs.mouth` through the gate, then the pcm goes on the call. A call writes `call.wav` in the run folder and runs `ear_cmd` through the same gate. The wav is not sent. An idle turn does not call the gate.
 
-`Trident.start` calls `brain.start()`, `line.start()`, then the worker and inbox threads. `stop` sets `stopping`, then `line.stop()` and `brain.stop()`.
+`Trident.start` calls `brain.start()`, `line.start()`, then the worker thread. `stop` sets `stopping`, then `line.stop()` and `brain.stop()`.
 
-`inbox_loop` reads `state/inbox.txt`, deletes it, and queues each non-empty line as `typed`. It does not send the file. A line that starts with `/` is `call`, `hang`, or `stop`. Chat, call, and typed requests become `task` before the turn.
-
-`near_slot` is true when `prompt_tokens` has reached `context // slots` minus `image_tokens`. On this config that is 8192 − 1120. `turn` stores the task for chat, call, and typed requests, and calls `think` once per step. A fresh request clears the aim and the points. An idle continuation that still has `rest`, and is not `near_slot`, keeps them and continues that prompt. A chat, call, or typed request clears `rest`, `sent`, and `prompt_tokens`, and starts a new prompt, so the system prompt and the tool list go out once. An idle turn that is `near_slot`, or that has no `sent`, starts fresh: empty prompt, so `think` sends the system prompt, the memory block, and the task. An idle turn under the line uses `carry` and keeps the system prompt in the prefix. Inside the tool loop, a continuation that is `near_slot` is dropped and the next step starts fresh the same way. A `follow` is the next user text and the same loop continues, as a new request. A `prompt` is the next tool step. One `max_tool_steps` covers both. A plain reply returns that text. A consult reply is read as the next request before a queued event is taken. Between other steps, a queued event ends the turn with no speech so the worker can take the call, the hang, or the next thing he said. The step cap stores the prompt in `rest` and says `I am still working on it.` After a turn that leaves a task, an empty queue starts another turn with that task. She keeps going with no new message from him. An idle turn does not speak that reply. An exception clears `going` and sends `str(exc)` to the chat.
+`near_slot` is true when `prompt_tokens + max_tokens >= context // slots`. On this config that is `prompt_tokens + 1024 >= 8192`. Images are not in the sum. `ask_json` does not change `prompt_tokens`. A chat or call stores the task and starts fresh: system, tools, memory, and that text, and the aim and points are cleared. An idle re-ask under the line keeps the aim and the points. It continues `rest` when a step cap saved one, otherwise `carry` appends memory, Call, and the task, and the system prompt is not sent again. An idle re-ask on the slot line, or a continuation that has reached it, drops the carry, clears the aim and the points, and starts fresh. A `follow` is the next user text in the same loop, so a consult reply is not dropped while another event waits in the queue. A plain reply returns that text. `done` returns `Stop`, mirrors the summary, clears the task, sets `going` false, and the request ends with no speech. The step cap stores the prompt in `rest` and returns no sentence. After a turn that leaves a task, an empty queue starts another turn with that task.
 
 Tools she can call:
 
-- `look` requires `what`. `picture()`, then `ask_json` on those bytes. The schema requires `seen`, `y`, and `x`. A seen result with both numbers stores `screen_px(y, x)` as the aim and appends it to the points. The tool result is `that place is ready`. Seen without a place returns `it is there, and the place was not given`. Otherwise `it is not on the screen`. She is not given the pixel.
-- `click` presses the aim. `how` is required: `left`, `right`, or `double`. No aim returns `look first` and does not press. `aim` moves the cursor. If `GetCursorPos` is more than 2 pixels off, the button does not go down and the result is that cursor. Otherwise `strike`.
+- `look` requires `what`. An empty what raises `ValueError`. `picture()`, then `ask_json` on those bytes. The question names that thing and the 1000 grid. It does not ask for a center, a crosshair, or a ribbon. The schema requires `seen`, `y`, and `x`. Seen stores `screen_px(y, x)` as the aim, appends it to the points, and returns `the place is ready`. Otherwise the aim is cleared and the result is `it is not on screen`. She is not given the pixel.
+- `click` presses the aim. `how` is `left`, `right`, or `double`. No aim returns `look first`. `aim` moves the cursor. If `GetCursorPos` is more than 2 pixels off, the button does not go down and the result is that cursor. Otherwise `strike`.
 - `drag` strokes from the previous point to the last. Fewer than two points does not stroke.
+- `stroke` takes `points`, at most 32 `y x` pairs separated by `;`, on the 1000 grid. There is no new grab. Each pair goes through `screen_px`, and `hands.stroke` draws one polyline. A bad or empty string raises.
 - `type_text`, `press`, and `run` act, including while she is alone.
 - `remember` appends one fact.
-- `call_owner` dials when the line is down. A missed or failed dial is the tool result, the text of that error, and the turn continues. When he is on the line, `opening` is spoken and the result says he can see the screen. She can keep using tools.
-- `hang_up` ends the call. The process stays up. She can keep using tools.
-- `consult` is how she spawns the agent. `why` is spoken when the line is up, before the agent runs. `attach` is required: `screen`, `part`, or `no`. `part` with no aim returns `look first` and does not spawn. `screen` writes `picture()` to `consult/screen.png`. `part` writes `around` that picture at the aim. A stale `screen.png` is removed first. The prompt tells the agent who she is, her tools, the memory block, his request, and her question, and it says the reply will be read as his next request. That prompt, the picture, and the reply go through `mirror`. `live` runs after the reply. The return is a `UserTurn`.
+- `call_owner` returns `already up` when the line is up, or dials and returns `answered`. `opening` is spoken only in those two cases. A miss raises from `dial` and the tool result is that error string. The tool text says consulting then is her choice. Python does not consult for her.
+- `hang_up` ends the call. The task stays. She stays.
+- `done` mirrors `summary`, clears the task, and ends the request. Nothing is spoken.
+- `consult` spawns the agent in ask mode. `why` is spoken when the line is up. `attach` is `screen`, `part`, or `no`. `part` with no aim returns `look first`. `screen` writes `picture()` to `consult/screen.png`. `part` writes `around` that picture at the aim. A stale `screen.png` is removed first. The prompt tells the agent who she is, her tools, the memory block, his request, and her question. That prompt, the picture, and the reply go through `mirror`. The return is a `UserTurn`. The tool text says consulting after a missed call is her choice.
 
-`main()`. `say TEXT` appends that line to `state/inbox.txt`. `call`, `hang`, and `stop` append `/call`, `/hang`, or `/stop`. No command builds `Trident`, starts it, and waits. `stop()` always runs afterward.
+`main()` builds `Trident`, starts it, and waits until `stopping`. `stop()` runs afterward.
 
 ## install.py
 

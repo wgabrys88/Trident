@@ -82,6 +82,8 @@ def aim(x: int, y: int) -> tuple[int, int]:
 
 
 def strike(x: int, y: int, how: str) -> None:
+    if how not in ("left", "right", "double"):
+        raise ValueError(how)
     button = "right" if how == "right" else "left"
     down, up = BUTTON[button]
     items = [_mouse(x, y, down), _mouse(x, y, up)]
@@ -90,14 +92,21 @@ def strike(x: int, y: int, how: str) -> None:
     _send(items)
 
 
-def drag(x0: int, y0: int, x1: int, y1: int) -> None:
+def stroke(coords: list[tuple[int, int]]) -> None:
     down, up = BUTTON["left"]
-    _send([_mouse(x0, y0, MOVE), _mouse(x0, y0, down)])
-    for step in range(1, 11):
-        t = step / 10
-        _send([_mouse(round(x0 + (x1 - x0) * t), round(y0 + (y1 - y0) * t), MOVE)])
-        time.sleep(0.02)
-    _send([_mouse(x1, y1, up)])
+    x, y = coords[0]
+    _send([_mouse(x, y, MOVE), _mouse(x, y, down)])
+    for x1, y1 in coords[1:]:
+        for step in range(1, 11):
+            t = step / 10
+            _send([_mouse(round(x + (x1 - x) * t), round(y + (y1 - y) * t), MOVE)])
+            time.sleep(0.02)
+        x, y = x1, y1
+    _send([_mouse(x, y, up)])
+
+
+def drag(x0: int, y0: int, x1: int, y1: int) -> None:
+    stroke([(x0, y0), (x1, y1)])
 
 
 def press(keys: str) -> None:
@@ -125,56 +134,6 @@ def type_text(text: str) -> None:
         seq.append(scanned & 0xFF)
         _send([_key(vk, 0, 0) for vk in seq] + [_key(vk, 0, 0x0002) for vk in reversed(seq)])
         time.sleep(0.01)
-
-
-def interactive_controls(title: str = "") -> list[tuple[str, int, int, int, int]]:
-    from organs import run_dir
-    script = (
-        "param([string]$Title)\n"
-        "Add-Type -AssemblyName UIAutomationClient\n"
-        "if ($Title) {\n"
-        "  $root = [System.Windows.Automation.AutomationElement]::RootElement\n"
-        "  $cond = New-Object System.Windows.Automation.PropertyCondition([System.Windows.Automation.AutomationElement]::NameProperty, $Title)\n"
-        "  $win = $root.FindFirst([System.Windows.Automation.TreeScope]::Children, $cond)\n"
-        "} else {\n"
-        "  Add-Type -MemberDefinition '[DllImport(\"user32.dll\")] public static extern IntPtr GetForegroundWindow();' -Name W -Namespace N\n"
-        "  $win = [System.Windows.Automation.AutomationElement]::FromHandle([N.W]::GetForegroundWindow())\n"
-        "}\n"
-        "if (-not $win) { exit 0 }\n"
-        "$keep = @('ControlType.Button','ControlType.MenuItem','ControlType.ListItem','ControlType.RadioButton','ControlType.CheckBox','ControlType.Edit','ControlType.ComboBox','ControlType.Hyperlink','ControlType.TabItem','ControlType.SplitButton','ControlType.Slider','ControlType.Spinner','ControlType.TreeItem','ControlType.DataItem')\n"
-        "$all = $win.FindAll([System.Windows.Automation.TreeScope]::Descendants, [System.Windows.Automation.Condition]::TrueCondition)\n"
-        "for ($i = 0; $i -lt $all.Count; $i++) {\n"
-        "  $e = $all[$i]\n"
-        "  $n = $e.Current.Name\n"
-        "  if (-not $n) { continue }\n"
-        "  $t = $e.Current.ControlType.ProgrammaticName\n"
-        "  if ($keep -notcontains $t) { continue }\n"
-        "  $r = $e.Current.BoundingRectangle\n"
-        "  if ($r.Width -lt 4 -or $r.Height -lt 4) { continue }\n"
-        "  Write-Output (\"{0},{1},{2},{3}|{4}\" -f [int]$r.X, [int]$r.Y, [int]$r.Width, [int]$r.Height, $n)\n"
-        "}\n"
-    )
-    path = run_dir() / "controls.ps1"
-    path.write_text(script, encoding="utf-8")
-    try:
-        args = ["powershell.exe", "-NoProfile", "-NonInteractive", "-File", str(path)]
-        if title:
-            args += ["-Title", title]
-        done = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, creationflags=subprocess.CREATE_NO_WINDOW)
-    finally:
-        path.unlink(missing_ok=True)
-    found: dict[str, tuple[int, int, int, int]] = {}
-    for line in (done.stdout or "").splitlines():
-        head, _, name = line.partition("|")
-        parts = head.split(",")
-        if len(parts) != 4 or not name.strip():
-            continue
-        x, y, w, h = (int(v) for v in parts)
-        name = name.strip()
-        old = found.get(name)
-        if old is None or w * h < old[2] * old[3]:
-            found[name] = (x, y, w, h)
-    return [(name, *box) for name, box in found.items()]
 
 
 def run(command: str, timeout: int = 25) -> str:

@@ -25,6 +25,12 @@ class Memory:
             self.task = text
             self.save()
 
+    def clear_task(self):
+        if not self.task:
+            return
+        self.task = ""
+        self.save()
+
     def block(self) -> str:
         lines = [f"Remembered: {fact}" for fact in self.facts]
         if self.task:

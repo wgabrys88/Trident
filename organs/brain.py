@@ -40,11 +40,16 @@ class UserTurn:
         self.text = text
 
 
+class Stop:
+    pass
+
+
 @dataclass
 class Reply:
     text: str = ""
     follow: str = ""
     prompt: str = ""
+    stop: bool = False
 
 
 def quoted(text: object) -> str:
@@ -231,18 +236,28 @@ class Brain:
         _thought, name, args = parse(out)
         if not name:
             return Reply(plain(out))
-        if name not in tools:
-            result = f"unknown tool {name}"
-        else:
-            tool = tools[name]
-            bad = next((key for key in args if key not in tool.params), "")
-            missing = next((key for key in tool.params if key not in tool.optional and key not in args), "")
-            if bad:
-                result = f"unknown argument {bad}"
-            elif missing:
-                result = f"missing {missing}"
-            else:
-                result = tool.run(**args)
+        try:
+            if name not in tools:
+                raise ValueError(f"unknown tool {name}")
+            result = invoke(tools[name], args)
+        except Exception as exc:
+            result = str(exc)
         if isinstance(result, UserTurn):
             return Reply(follow=result.text)
+        if isinstance(result, Stop):
+            return Reply(stop=True)
         return Reply(prompt=prompt + out + tool_response(name, result))
+
+
+def invoke(tool: Tool, args: dict) -> object:
+    unknown = next((key for key in args if key not in tool.params), "")
+    if unknown:
+        raise ValueError(f"unknown argument {unknown}")
+    missing = next((key for key in tool.params if key not in tool.optional and key not in args), "")
+    if missing:
+        raise ValueError(f"missing {missing}")
+    for key, value in args.items():
+        allowed = tool.params[key].get("enum")
+        if allowed is not None and value not in allowed:
+            raise ValueError(f"invalid {key}")
+    return tool.run(**args)

@@ -22,7 +22,7 @@ temperature = 0
 top_k = 64
 top_p = 0.95
 min_p = 0.05
-max_tokens = 4096
+max_tokens = 1024
 max_tool_steps = 200
 
 [eyes]

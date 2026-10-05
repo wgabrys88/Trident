@@ -5,13 +5,12 @@ import sys
 import threading
 from pathlib import Path
 
-from organs import CONFIG, run_dir, state_dir
-from organs.brain import Brain, Tool, UserTurn
+from organs import CONFIG, run_dir
+from organs.brain import Brain, Stop, Tool, UserTurn
 from organs.ears import ear_cmd, ear_text, write_wav
 from organs.memory import Memory
 from organs.telegram import Line
 
-INBOX = state_dir() / "inbox.txt"
 LOOK = {"type": "object", "properties": {"seen": {"type": "boolean"}, "y": {"type": "integer"}, "x": {"type": "integer"}}, "required": ["seen", "y", "x"]}
 SYSTEM = (
     "You are Gemma. You are the mind at Wojciech's computer. From the phone you are one person. "
@@ -20,7 +19,7 @@ SYSTEM = (
     "The screen may be anything in front of you. Keep using tools until the thing he asked is done or you are blocked. "
     "A plain reply is you speaking, and it ends this request. Python brings the task again while you are idle, so look and continue from the screen. "
     "You are stateless. Python puts your memory on every request. Memory is how his preferences reach you, including a wish not to be called often. You still choose. "
-    "You call a tool. Python takes the picture, draws the pointer and the controls on it, and turns a place into a click. You do not work out a pixel. "
+    "You call a tool. Python takes the picture, draws the pointer on it, and turns a place into a click. You do not work out a pixel. "
     "The same drawing is on the call, so when the call is up he can see the screen and that pointer. call_owner and hang_up are how a call starts and ends. Python places the call. You stay after he hangs up. "
     f"consult spawns a new Cursor agent on this machine. It is {CONFIG['cloud']['model']}, not a virtual machine. "
     "Say so aloud in why, and why you are spawning it. Its reply is his next request, plain text. You will not see that it came from the agent. "
@@ -65,7 +64,6 @@ class Trident:
         self.brain.start()
         self.line.start()
         threading.Thread(target=self.worker, name="trident-worker", daemon=True).start()
-        threading.Thread(target=self.inbox_loop, name="trident-inbox", daemon=True).start()
 
     def stop(self):
         self.stopping.set()
@@ -74,15 +72,6 @@ class Trident:
 
     def push(self, kind: str, payload):
         self.events.put((kind, payload))
-
-    def inbox_loop(self):
-        while not self.stopping.wait(0.5):
-            if not INBOX.is_file():
-                continue
-            lines = [line.strip() for line in INBOX.read_text(encoding="utf-8").splitlines() if line.strip()]
-            INBOX.unlink()
-            for line in lines:
-                self.push("typed", line)
 
     def worker(self):
         while not self.stopping.is_set():
@@ -105,21 +94,9 @@ class Trident:
                 return
         else:
             text = payload
-        if kind == "typed" and text.startswith("/"):
-            return self.command(text[1:])
         reply = self.turn(kind, text)
-        if kind != "idle":
-            self.deliver(reply)
+        self.deliver(reply)
         self.going = bool(self.memory.task)
-
-    def command(self, name: str):
-        if name == "call":
-            self.line.dial()
-            self.speak("I am up. Do you want anything?")
-        elif name == "hang":
-            self.line.hang()
-        elif name == "stop":
-            self.stopping.set()
 
     def request_text(self, text: str) -> str:
         parts = [self.memory.block(), f"Call: {'up' if self.line.up else 'down'}", text]
@@ -137,31 +114,28 @@ class Trident:
 
     def near_slot(self) -> bool:
         brain = CONFIG["brain"]
-        return self.brain.prompt_tokens >= brain["context"] // brain["slots"] - brain["image_tokens"]
+        return self.brain.prompt_tokens + brain["max_tokens"] >= brain["context"] // brain["slots"]
 
     def turn(self, kind: str, text: str) -> str:
         self.request = text
-        continuing = kind == "idle" and bool(self.brain.rest) and not self.near_slot()
-        saved = self.brain.rest if continuing else ""
-        self.brain.rest = ""
-        if not continuing:
+        if kind != "idle":
+            self.memory.set_task(text)
+        if kind != "idle" or not self.brain.sent or self.near_slot():
+            self.brain.sent = ""
+            self.brain.rest = ""
+            self.brain.prompt_tokens = 0
             self.aim = None
             self.points = []
-        if kind in ("chat", "call", "typed"):
-            self.memory.set_task(text)
-            self.brain.sent = ""
-            self.brain.prompt_tokens = 0
-        if saved:
-            prompt = saved
-        elif kind == "idle" and self.brain.sent and not self.near_slot():
-            prompt = self.brain.carry(self.request_text(text))
-        else:
             prompt = ""
+        else:
+            prompt = self.brain.rest or self.brain.carry(self.request_text(text))
+            self.brain.rest = ""
         user = text
         tools = self.tools()
         for _ in range(CONFIG["brain"]["max_tool_steps"]):
             if prompt and self.near_slot():
                 self.brain.sent = ""
+                self.brain.prompt_tokens = 0
                 self.aim = None
                 self.points = []
                 prompt = ""
@@ -170,13 +144,10 @@ class Trident:
                 user = reply.follow
                 prompt = ""
                 continue
-            if not reply.prompt:
+            if reply.stop or not reply.prompt:
                 return reply.text
-            prompt = reply.prompt
-            if not self.events.empty():
-                return ""
         self.brain.rest = prompt
-        return "I am still working on it."
+        return ""
 
     def deliver(self, text: str):
         if text and self.line.up:
@@ -188,18 +159,20 @@ class Trident:
     def tools(self) -> dict[str, Tool]:
         string = "STRING"
         return {
-            "look": Tool("look", "Name one thing in what. Python takes the picture, draws the pointer and the controls, asks where that thing is, and keeps the place for click and drag. You do not calculate the place.", {"what": {"description": "The one thing to find", "type": string}}, self.look),
+            "look": Tool("look", "Name one thing in what. Python takes the picture, draws the pointer, asks where that thing is, and keeps the place for click and drag. You do not calculate the place.", {"what": {"description": "The one thing to find", "type": string}}, self.look),
             "click": Tool("click", "Press the place the last look returned. how is left, right, or double.", {"how": {"description": "left, right, or double", "type": string, "enum": ["left", "right", "double"]}}, self.click),
             "drag": Tool("drag", "Stroke from the previous look to the last look.", {}, self.drag),
+            "stroke": Tool("stroke", "One line through points on the 1000 grid of the last picture. points is at most 32 pairs, each y x, separated by semicolons. No new picture.", {"points": {"description": "y x;y x", "type": string}}, self.stroke),
             "type_text": Tool("type_text", "Type this text into the focused window.", {"text": {"description": "The text", "type": string}}, self.type_text),
             "press": Tool("press", "Press these keys.", {"keys": {"description": "Space-separated chords", "type": string}}, self.press),
             "run": Tool("run", "Run this PowerShell command. The start alias is not there. Start-Process opens a program.", {"command": {"description": "The command", "type": string}}, self.run),
             "remember": Tool("remember", "Store a fact. Python puts facts on every later request, including a preference such as him asking you not to call so often.", {"fact": {"description": "The fact", "type": string}}, self.remember),
-            "call_owner": Tool("call_owner", "Place the call, or if it is already up, say opening aloud and keep going. He can see the screen.", {"opening": {"description": "What you say when he is on the line", "type": string}}, self.call_owner, optional=("opening",)),
-            "hang_up": Tool("hang_up", "End the call and stay. You can keep using tools.", {}, self.hang_up),
+            "call_owner": Tool("call_owner", "Place the call. answered means it is up and he can see the screen. already up is a different result. A miss is the error string. Consulting an agent after a miss is your choice. opening is what you say when the call is up.", {"opening": {"description": "What you say when the call is up", "type": string}}, self.call_owner, optional=("opening",)),
+            "hang_up": Tool("hang_up", "End the call and stay. The task stays until done or he replaces it.", {}, self.hang_up),
+            "done": Tool("done", "Finish the task. summary is mirrored, the task is cleared, and this request ends. Nothing is spoken. Call him first if you want him on the line.", {"summary": {"description": "What finished", "type": string}}, self.done),
             "consult": Tool(
                 "consult",
-                f"Spawn a new Cursor agent on this machine. It is {CONFIG['cloud']['model']}, and not a virtual machine. It only advises, and its reply is plain text. why is what you say aloud: that you are spawning it, and why. question is what you need. attach is screen, part, or no. screen sends the whole screen. part sends the area around the last look. The reply comes back as his next request.",
+                f"Spawn a new Cursor agent on this machine. It is {CONFIG['cloud']['model']}, and not a virtual machine. It only advises, and its reply is plain text. why is what you say aloud: that you are asking an agent, and why. question is what you need. attach is screen, part, or no. screen sends the whole screen. part sends the area around the last look. The reply comes back as his next request. After a missed call, consulting is your choice.",
                 {
                     "why": {"description": "What you say aloud about spawning the agent", "type": string},
                     "question": {"description": "What you ask the agent", "type": string},
@@ -212,22 +185,20 @@ class Trident:
     def look(self, what: str) -> str:
         what = str(what).strip()
         if not what:
-            return "Name one thing."
+            raise ValueError("what")
         from organs import eyes
 
         data = self.brain.ask_json(
-            f"Find {what}. y and x are its center on the 1000 grid of this picture, y down from the top and x to the right. seen is true only if it is there. The red crosshair is the pointer, not the thing, unless the pointer was asked for.",
+            f"{what}. y and x are where it is on the 1000 grid, y down from the top and x to the right. seen is true only if it is there.",
             LOOK,
             eyes.picture(),
         )
-        if data.get("seen") is True and "y" in data and "x" in data:
+        if data.get("seen") is True:
             self.aim = eyes.screen_px(int(data["y"]), int(data["x"]))
             self.points.append(self.aim)
-            return "that place is ready"
+            return "the place is ready"
         self.aim = None
-        if data.get("seen") is True:
-            return "it is there, and the place was not given"
-        return "it is not on the screen"
+        return "it is not on screen"
 
     def click(self, how: str) -> str:
         from organs import hands
@@ -248,6 +219,19 @@ class Trident:
             return "look at both ends first"
         (x0, y0), (x1, y1) = self.points[-2], self.points[-1]
         hands.drag(x0, y0, x1, y1)
+        return "stroked"
+
+    def stroke(self, points: str) -> str:
+        from organs import eyes, hands
+
+        parts = [part for part in str(points).split(";") if part.strip()]
+        if not parts or len(parts) > 32:
+            raise ValueError(str(points))
+        coords = []
+        for part in parts:
+            y, x = part.split()
+            coords.append(eyes.screen_px(int(y), int(x)))
+        hands.stroke(coords)
         return "stroked"
 
     def type_text(self, text: str) -> str:
@@ -273,18 +257,24 @@ class Trident:
 
     def call_owner(self, opening: str = "") -> str:
         words = str(opening).strip()
-        if not self.line.up:
-            try:
-                self.line.dial()
-            except Exception as exc:
-                return str(exc)
+        if self.line.up:
+            if words:
+                self.speak(words)
+            return "already up"
+        self.line.dial()
         if words:
             self.speak(words)
-        return "he is on the line and can see the screen"
+        return "answered"
 
     def hang_up(self) -> str:
         self.line.hang()
         return "hung up"
+
+    def done(self, summary: str) -> Stop:
+        self.mirror(str(summary), [])
+        self.memory.clear_task()
+        self.going = False
+        return Stop()
 
     def consult_prompt(self, question: str, image: bool) -> str:
         tools = "\n".join(f"- {name}: {tool.description}" for name, tool in self.tools().items())
@@ -300,8 +290,7 @@ class Trident:
         )
 
     def consult(self, why: str, question: str, attach: str) -> str | UserTurn:
-        kind = "screen" if attach is True else str(attach).strip().lower()
-        if kind == "part" and self.aim is None:
+        if attach == "part" and self.aim is None:
             return "look first"
         if self.line.up and str(why).strip():
             self.speak(str(why).strip())
@@ -311,11 +300,11 @@ class Trident:
         if shot.exists():
             shot.unlink()
         png = None
-        if kind in ("screen", "part"):
+        if attach in ("screen", "part"):
             from organs import eyes
 
             full = eyes.picture()
-            png = eyes.around(full, *self.aim) if kind == "part" else full
+            png = eyes.around(full, *self.aim) if attach == "part" else full
             shot.write_bytes(png)
         prompt = self.consult_prompt(str(question), png is not None)
         self.mirror(prompt, [png] if png else [])
@@ -325,12 +314,6 @@ class Trident:
 
 
 def main():
-    args = sys.argv[1:]
-    if args and args[0] in ("say", "call", "hang", "stop"):
-        line = " ".join(args[1:]) if args[0] == "say" else "/" + args[0]
-        with INBOX.open("a", encoding="utf-8") as handle:
-            handle.write(line + "\n")
-        return
     trident = Trident()
     try:
         trident.start()
