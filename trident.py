@@ -11,20 +11,24 @@ from organs.memory import Memory
 from organs.telegram import Line
 
 LOOK = {"type": "object", "properties": {"seen": {"type": "boolean"}, "y": {"type": "integer"}, "x": {"type": "integer"}}, "required": ["seen", "y", "x"]}
-SYSTEM = (
-    "You are Gemma. You are the mind at Wojciech's computer. From the phone you are one person. "
-    "You hear him and you speak on the call. The computer's microphone and speakers are not yours. "
-    "You decide from the meaning of what he says and what a look returns. You are not a task runner. "
-    "The screen may be anything in front of you. Keep using tools until the thing he asked is done or you are blocked. "
-    "A plain reply is you speaking, and it ends this request. Nothing brings that task back until he messages or calls. "
-    "You are stateless. Python puts your memory on every request. Memory is how his preferences reach you, including a wish not to be called often. You still choose. "
-    "You call a tool. Python takes the picture, draws the pointer on it, and turns a place into a click. You do not work out a pixel. "
-    "After every click, look again. If the screen did not change as you intended, try another way or consult. "
-    "The same drawing is on the call, so when the call is up he can see the screen and that pointer. call_owner and hang_up are how a call starts and ends. Python places the call. You stay after he hangs up. "
-    f"consult spawns a new Cursor agent on this machine. It is {CONFIG['cloud']['model']}, not a virtual machine. "
-    "Say so aloud in why, and why you are spawning it. Its reply is his next request, plain text. You will not see that it came from the agent. "
-    "Consult when you are stuck, unsure, or he does not answer."
-)
+
+
+def system_text(ticks: bool) -> str:
+    again = "Nothing brings that task back until he messages or calls." if ticks else "Python brings the open task again while you are idle, so look and continue from the screen."
+    return (
+        "You are Gemma. You are the mind at Wojciech's computer. From the phone you are one person. "
+        "You hear him and you speak on the call. The computer's microphone and speakers are not yours. "
+        "You decide from the meaning of what he says and what a look returns. You are not a task runner. "
+        "The screen may be anything in front of you. Keep using tools until the thing he asked is done or you are blocked. "
+        f"A plain reply is you speaking, and it ends this request. {again} "
+        "You are stateless. Python puts your memory on every request. Memory is how his preferences reach you, including a wish not to be called often. You still choose. "
+        "You call a tool. Python takes the picture, draws the pointer on it, and turns a place into a click. You do not work out a pixel. "
+        "After every click, look again. If the screen did not change as you intended, try another way or consult. "
+        "The same drawing is on the call, so when the call is up he can see the screen and that pointer. call_owner and hang_up are how a call starts and ends. Python places the call. You stay after he hangs up. "
+        f"consult spawns a new Cursor agent on this machine. It is {CONFIG['cloud']['model']}, not a virtual machine. "
+        "Say so aloud in why, and why you are spawning it. Its reply is his next request, plain text. You will not see that it came from the agent. "
+        "Consult when you are stuck, unsure, or he does not answer."
+    )
 
 
 def ask_cursor(folder: Path, prompt: str) -> str:
@@ -33,11 +37,14 @@ def ask_cursor(folder: Path, prompt: str) -> str:
 
 
 class Trident:
-    def __init__(self):
+    def __init__(self, ticks=False):
+        self.ticks = ticks
+        self.system = system_text(ticks)
         self.brain = Brain()
         self.memory = Memory()
         self.events: queue.Queue = queue.Queue()
         self.stopping = threading.Event()
+        self.going = False
         self.request = ""
         self.aim = None
         self.points = []
@@ -87,13 +94,19 @@ class Trident:
             except queue.Empty:
                 if self.stopping.is_set():
                     continue
-                payload = self.take_tick()
-                if not payload:
+                if self.ticks:
+                    payload = self.take_tick()
+                    if not payload:
+                        continue
+                    kind = "tick"
+                elif self.going and self.memory.task:
+                    kind, payload = "idle", self.memory.task
+                else:
                     continue
-                kind = "tick"
             try:
                 self.handle(kind, payload)
             except Exception as exc:
+                self.going = False
                 self.line.send_text(str(exc))
 
     def handle(self, kind: str, payload):
@@ -105,6 +118,8 @@ class Trident:
             text = payload
         reply = self.turn(kind, text)
         self.deliver(reply)
+        if not self.ticks:
+            self.going = bool(self.memory.task)
 
     def request_text(self, text: str) -> str:
         parts = [self.memory.block(), f"Call: {'up' if self.line.up else 'down'}", text]
@@ -126,23 +141,29 @@ class Trident:
 
     def turn(self, kind: str, text: str) -> str:
         self.request = text
-        if kind != "wake":
+        if kind not in ("idle", "wake"):
             self.memory.set_task(text)
-        self.brain.sent = ""
-        self.brain.prompt_tokens = 0
-        self.aim = None
-        self.points = []
-        prompt = ""
+        if kind != "idle" or not self.brain.sent or self.near_slot():
+            self.brain.sent = ""
+            self.brain.rest = ""
+            self.brain.prompt_tokens = 0
+            self.aim = None
+            self.points = []
+            prompt = ""
+        else:
+            prompt = self.brain.rest or self.brain.carry(self.request_text(text))
+            self.brain.rest = ""
         user = text
         tools = self.tools()
         for _ in range(CONFIG["brain"]["max_tool_steps"]):
             if prompt and self.near_slot():
                 self.brain.sent = ""
+                self.brain.rest = ""
                 self.brain.prompt_tokens = 0
                 self.aim = None
                 self.points = []
                 prompt = ""
-            reply = self.brain.think(SYSTEM, tools, self.request_text(user), prompt)
+            reply = self.brain.think(self.system, tools, self.request_text(user), prompt)
             if reply.follow:
                 user = reply.follow
                 prompt = ""
@@ -150,6 +171,7 @@ class Trident:
             if reply.stop or not reply.prompt:
                 return reply.text
             prompt = reply.prompt
+        self.brain.rest = prompt
         return ""
 
     def deliver(self, text: str):
@@ -283,7 +305,7 @@ class Trident:
         return (
             "You are advising Gemma. Reply with the next request she should act on, in the words of a person guiding her. "
             "She will read your reply as her user and she will not be told it came from you.\n"
-            f"{SYSTEM}\n"
+            f"{self.system}\n"
             f"Her tools:\n{tools}\n"
             f"Memory:\n{self.memory.block()}\n"
             f"His request:\n{self.request}\n"
@@ -316,7 +338,7 @@ class Trident:
 
 
 def main():
-    trident = Trident()
+    trident = Trident("--tick" in sys.argv[1:])
     try:
         trident.start()
         while not trident.stopping.wait(0.5):
