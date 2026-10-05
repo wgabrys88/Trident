@@ -185,7 +185,7 @@ class Trident:
         png = self.look()
         shot = folder / "screen.png"
         shot.write_bytes(png)
-        grid = next(line for line in self.system.splitlines() if line.startswith("The screen is a grid")).split(". ", 1)[0] + "."
+        grid = next(line for line in self.system.splitlines() if line.startswith("Use look to see")).split(". ", 2)[1] + "."
         prompt = f"You advise Gemma. Advice only; do not act, edit files or launch agents. Read {shot}; it is the whole current screen with its pointer arrow.\n{grid}\nGive concrete next steps using her point(y,x), click(how), stroke(points), type_text(text), or press(keys) tools as appropriate. Use desktop grid coordinates for places. Describe what she should verify with look; say if you cannot locate a target. You do not execute these steps; she decides.\nNote:\n{self.memory}\nQuestion:\n{question}"
         self.line.send_text(prompt)
         try:
