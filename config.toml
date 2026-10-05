@@ -13,7 +13,7 @@ mmproj = "mmproj-gemma-4-E2B-it-Q8_0.gguf"
 host = "127.0.0.1"
 port = 8080
 context = 16384
-slots = 2
+slots = 1
 gpu_layers = 999
 threads = 4
 image_tokens = 1120
@@ -40,10 +40,11 @@ model = "nemotron-3.5-asr-streaming-0.6b.q8_0.gguf"
 
 [mouth]
 device = "cuda"
+model = "chatterbox-turbo"
 reference = "reference.wav"
 
 [telegram]
-desk_video = true
+tdata = "%APPDATA%/Telegram Desktop/tdata"
 desk_fps = 12
 
 [install]

@@ -42,7 +42,8 @@ def packages():
     subprocess.run(pip + ["-r", str(ROOT / "requirements.txt")], check=True)
 def llama():
     target = BIN / "llama"
-    if (target / "llama-server.exe").is_file():
+    version = target / "release.txt"
+    if (target / "llama-server.exe").is_file() and version.is_file() and version.read_text().strip() == INSTALL["llama_tag"]:
         say("skip llama-server")
         return
     release = github_json("https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/" + INSTALL["llama_tag"])
@@ -84,10 +85,13 @@ def nemo():
     shutil.copytree(exe.parent.parent, target)
     shutil.rmtree(stage, ignore_errors=True)
 def models():
+    from huggingface_hub import snapshot_download
     download(INSTALL["gemma_url"], MODELS / CONFIG["brain"]["model"])
     download(INSTALL["mmproj_url"], MODELS / CONFIG["brain"]["mmproj"])
     download(INSTALL["ear_url"], MODELS / CONFIG["ears"]["model"])
     download(INSTALL["silero_url"], MODELS / "silero_vad.onnx")
+    snapshot_download("ResembleAI/chatterbox-turbo", local_dir=MODELS / CONFIG["mouth"]["model"],
+                      allow_patterns=["*.safetensors", "*.json", "*.txt", "*.pt", "*.model"])
 def main():
     os.chdir(ROOT)
     venv()
