@@ -27,11 +27,10 @@ from telethon.tl.types import (
     PhoneCallProtocol, PhoneCallRequested, PhoneConnection, PhoneConnectionWebrtc, UpdatePhoneCall, UpdatePhoneCallSignalingData,
 )
 
-from organs import CONFIG, log
+from organs import CONFIG
 from organs.ears import Segmenter
 from organs.eyes import VIDEO, video_rgb
 
-LOG = log("telegram")
 CFG = CONFIG["telegram"]
 OWNER = CONFIG["owner"]["telegram_id"]
 RATE_TX = 48000
@@ -82,7 +81,6 @@ def quit_telegram():
         time.sleep(0.2)
     if telegram_pids():
         raise RuntimeError("Telegram Desktop did not quit")
-    LOG.info("telegram desktop closed")
 
 
 def start_telegram():
@@ -90,7 +88,6 @@ def start_telegram():
         return
     home = telegram_home()
     subprocess.Popen([str(home / "Telegram.exe")], cwd=str(home))
-    LOG.info("telegram desktop reopened")
 
 
 def desk_i420() -> bytes:
@@ -173,7 +170,6 @@ class Line:
     def _set(self, state: str):
         if state != self.state:
             self.state = state
-            LOG.info("line %s", state)
             self.on_line(state)
 
     @property
@@ -187,16 +183,14 @@ class Line:
         self.client.add_event_handler(self._on_raw, events.Raw())
         self.client.add_event_handler(self._on_message, events.NewMessage(incoming=True, from_users=[OWNER]))
         await self.client.connect()
-        me = await self.client.get_me()
+        await self.client.get_me()
         await self.client.get_dialogs()
         self.owner = await self.client.get_input_entity(OWNER)
-        LOG.info("connected as %s %s", me.first_name, me.id)
         self._set("idle")
 
     async def _on_message(self, event):
         if event.is_private and event.raw_text.strip():
             text = event.raw_text.strip()
-            LOG.info("owner wrote: %s", text)
             threading.Thread(target=self.on_text, args=(text,), daemon=True).start()
 
     def send_text(self, text: str):
@@ -213,13 +207,6 @@ class Line:
         buffer = io.BytesIO(png)
         buffer.name = "desk.png"
         self._await(self.client.send_file(self.owner, buffer, caption=caption, force_document=False), 60)
-
-    def send_file(self, payload: bytes, name: str):
-        if self.client is None:
-            return
-        buffer = io.BytesIO(payload)
-        buffer.name = name
-        self._await(self.client.send_file(self.owner, buffer, force_document=True), 60)
 
     async def _on_raw(self, update):
         if isinstance(update, UpdatePhoneCallSignalingData):
@@ -244,7 +231,6 @@ class Line:
         if isinstance(call, PhoneCall) and self.confirmed is not None and not self.confirmed.done():
             self.confirmed.set_result(call)
         if isinstance(call, PhoneCallDiscarded):
-            LOG.info("call discarded by peer")
             await self._teardown()
 
     async def _dh(self) -> DhConfig:
@@ -290,8 +276,7 @@ class Line:
             call = answered.phone_call if isinstance(answered.phone_call, PhoneCall) else await asyncio.wait_for(self.confirmed, 30)
             await self.calls.exchange_keys(OWNER, bytes(call.g_a_or_b), call.key_fingerprint)
             await self._link(call)
-        except Exception as exc:
-            LOG.error("answer failed: %s", exc)
+        except Exception:
             await self._teardown()
 
     async def _place(self):
@@ -347,7 +332,6 @@ class Line:
             self._await(self._teardown(), 20)
 
     def _on_connection(self, _uid, info):
-        LOG.info("link %s", str(info.state).rsplit(".", 1)[-1])
         if info.state == ConnectionState.CONNECTED and not self.connected.done():
             self.loop.call_soon_threadsafe(self.connected.set_result, True)
         if info.state in (ConnectionState.CLOSED, ConnectionState.FAILED, ConnectionState.TIMEOUT) and self.state == "up":
@@ -371,7 +355,6 @@ class Line:
                 continue
             clip = self.segmenter.push(np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0)
             if clip is not None:
-                LOG.info("owner spoke %.1fs", clip.size / RATE_RX)
                 self.on_utterance(clip)
 
     async def _send_frame(self, device, data, frame):
@@ -402,13 +385,3 @@ class Line:
             except Exception:
                 return
             time.sleep(1.0 / CFG["desk_fps"])
-
-
-if __name__ == "__main__":
-    line = Line(on_text=lambda t: print("text:", t), on_utterance=lambda c: print("speech", c.size / RATE_RX, "s"), on_line=lambda s: print("line:", s))
-    line.start()
-    print("connected, Ctrl+C to stop")
-    try:
-        threading.Event().wait()
-    except KeyboardInterrupt:
-        line.stop()

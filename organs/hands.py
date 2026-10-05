@@ -3,7 +3,6 @@ import ctypes.wintypes as W
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 import time
 
@@ -89,12 +88,6 @@ def strike(x: int, y: int, how: str) -> None:
     if how == "double":
         items += [_mouse(x, y, down), _mouse(x, y, up)]
     _send(items)
-
-
-def click(x: int, y: int, how: str = "left") -> tuple[int, int]:
-    aimed = aim(x, y)
-    strike(x, y, how)
-    return aimed
 
 
 def drag(x0: int, y0: int, x1: int, y1: int) -> None:
@@ -206,16 +199,8 @@ def run(command: str, timeout: int = 25) -> str:
     err.close()
     if command.lower().lstrip().startswith("start-process"):
         time.sleep(1.5)
-    return text or (f"exit {proc.returncode}" if proc.returncode else "ok")
-
-
-if __name__ == "__main__":
-    verb, rest = sys.argv[1], sys.argv[2:]
-    if verb == "press":
-        press(rest[0])
-    elif verb == "type":
-        type_text(" ".join(rest))
-    elif verb == "click":
-        click(int(rest[0]), int(rest[1]), rest[2] if len(rest) > 2 else "left")
-    elif verb == "run":
-        print(run(" ".join(rest)))
+    if text:
+        return text
+    if proc.returncode:
+        return f"exit {proc.returncode}"
+    return "ok"

@@ -1,13 +1,11 @@
 import re
 import sys
-import time
 import unicodedata
 
 import numpy as np
 
-from organs import CONFIG, log, path_of
+from organs import CONFIG, path_of
 
-LOG = log("mouth")
 CFG = CONFIG["mouth"]
 TAGS = re.compile(r"\[(laugh|chuckle|sigh|gasp|cough|clear throat|sniff|groan)\]")
 
@@ -29,22 +27,9 @@ class Mouth:
             return
         from chatterbox.tts_turbo import ChatterboxTurboTTS
 
-        LOG.info("loading chatterbox turbo on %s", CFG["device"])
         self.model = ChatterboxTurboTTS.from_pretrained(CFG["device"])
         self.model.prepare_conditionals(str(path_of("mouth", "reference")))
         self.sr = int(self.model.sr)
-        LOG.info("mouth ready at %d Hz", self.sr)
-
-    def unload(self):
-        model = self.model
-        self.model = None
-        if model is None:
-            return
-        del model
-        import gc
-        import torch
-        gc.collect()
-        torch.cuda.empty_cache()
 
     def _wav(self, text: str) -> np.ndarray:
         self.load()
@@ -60,12 +45,9 @@ class Mouth:
             have = sum(map(len, parts))
             step = max(1, round((10 * self.sr - have) * index / have))
         chunk = np.concatenate(parts) if parts else self._wav(speakable(text))
-        LOG.info("chunk %.2fs %.3f", len(chunk) / self.sr, time.time())
         yield chunk
         if index < len(words):
-            rest = self._wav(" ".join(words[index:]))
-            LOG.info("synth %.2fs %.3f", (len(chunk) + len(rest)) / self.sr, time.time())
-            yield rest
+            yield self._wav(" ".join(words[index:]))
 
 
 def pcm48(samples: np.ndarray, rate: int) -> bytes:

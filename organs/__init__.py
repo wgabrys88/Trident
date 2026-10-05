@@ -1,4 +1,3 @@
-import logging
 import os
 import time
 import tomllib
@@ -10,7 +9,7 @@ _RUN: Path | None = None
 
 
 def path_of(section: str, key: str) -> Path:
-    folder = {"brain": "models", "ears": "models", "vision": "models"}.get(section, "")
+    folder = {"brain": "models", "ears": "models"}.get(section, "")
     base = ROOT / CONFIG["paths"][folder] if folder else ROOT
     return base / CONFIG[section][key]
 
@@ -46,10 +45,3 @@ def run_dir() -> Path:
     os.environ["TRIDENT_RUN"] = str(folder)
     _RUN = folder
     return folder
-
-
-def log(name: str) -> logging.Logger:
-    logger = logging.getLogger(name)
-    if not logging.getLogger().handlers:
-        logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)-8s %(message)s", datefmt="%H:%M:%S")
-    return logger

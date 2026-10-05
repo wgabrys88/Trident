@@ -1,7 +1,6 @@
 import json
 import re
 import subprocess
-import sys
 import unicodedata
 import wave
 from pathlib import Path
@@ -91,7 +90,3 @@ def transcribe(wav: Path) -> tuple[str, str]:
     if any(ch in "ąćęłńóśźż" for ch in text.lower()):
         language = "pl"
     return text, language
-
-
-if __name__ == "__main__":
-    print(transcribe(Path(sys.argv[1])))
