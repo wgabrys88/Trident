@@ -123,8 +123,8 @@ def wire_protocol() -> PhoneCallProtocol:
 
 
 class Line:
-    def __init__(self, on_text: Callable[[str], None], on_utterance: Callable[[np.ndarray], None], on_line: Callable[[str], None]):
-        self.on_text, self.on_utterance, self.on_line = on_text, on_utterance, on_line
+    def __init__(self, on_text: Callable[[str], None], on_utterance: Callable[[np.ndarray], None]):
+        self.on_text, self.on_utterance = on_text, on_utterance
         self.loop = asyncio.new_event_loop()
         self.client = None
         self.owner = None
@@ -170,7 +170,6 @@ class Line:
     def _set(self, state: str):
         if state != self.state:
             self.state = state
-            self.on_line(state)
 
     @property
     def up(self) -> bool:
@@ -201,12 +200,12 @@ class Line:
             if piece:
                 self._await(self.client.send_message(self.owner, piece), 30)
 
-    def send_photo(self, png: bytes, caption: str = ""):
+    def send_photo(self, png: bytes):
         if self.client is None:
             return
         buffer = io.BytesIO(png)
         buffer.name = "desk.png"
-        self._await(self.client.send_file(self.owner, buffer, caption=caption, force_document=False), 60)
+        self._await(self.client.send_file(self.owner, buffer, force_document=False), 60)
 
     async def _on_raw(self, update):
         if isinstance(update, UpdatePhoneCallSignalingData):

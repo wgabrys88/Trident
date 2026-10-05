@@ -9,9 +9,6 @@ class Memory:
         data = json.loads(self.path.read_text(encoding="utf-8")) if self.path.is_file() else {}
         self.facts: list[str] = list(data.get("facts", []))
         self.task: str = data.get("task", "")
-        if data.get("quiet") and "he asked not to be bothered" not in self.facts:
-            self.facts.append("he asked not to be bothered")
-            self.save()
 
     def save(self):
         self.path.write_text(json.dumps({"facts": self.facts, "task": self.task}, ensure_ascii=False, indent=1), encoding="utf-8")

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from organs import CONFIG, run_dir, state_dir
 from organs.brain import Brain, Tool, UserTurn
-from organs.ears import transcribe, write_wav
+from organs.ears import ear_cmd, ear_text, write_wav
 from organs.memory import Memory
 from organs.telegram import Line
 
@@ -22,8 +22,8 @@ SYSTEM = (
     "You are stateless. Python puts your memory on every request. Memory is how his preferences reach you, including a wish not to be called often. You still choose. "
     "You call a tool. Python takes the picture, draws the pointer on it, and turns a place into a click. You do not work out a pixel. "
     "When the call is up he can see the screen and that pointer. call_owner and hang_up are how a call starts and ends. Python places the call. You stay after he hangs up. "
-    "consult spawns a new Cursor agent on this machine: Grok 4.7, extra-high reasoning, fast mode off, not a virtual machine. "
-    "Say so aloud in why, and why you are spawning it. Its reply is his next request. You will not see that it came from the agent. "
+    "consult spawns a new Cursor agent on this machine. It is gpt-5.6-luna-none, not a virtual machine. "
+    "Say so aloud in why, and why you are spawning it. Its reply is his next request, plain text. You will not see that it came from the agent. "
     "Consult when you are stuck, unsure, or he does not answer."
 )
 
@@ -52,7 +52,7 @@ class Trident:
         self.aim = None
         self.points = []
         self.going = False
-        self.line = Line(on_text=lambda t: self.push("chat", t), on_utterance=lambda c: self.push("call", c), on_line=lambda _state: None)
+        self.line = Line(on_text=lambda t: self.push("chat", t), on_utterance=lambda c: self.push("call", c))
         self.brain.sink = self.mirror
 
     def mirror(self, text: str, images: list[bytes]) -> None:
@@ -102,19 +102,16 @@ class Trident:
 
     def handle(self, kind: str, payload):
         if kind == "call":
-            wav = write_wav(run_dir() / "call.wav", payload)
-            self.brain.stop()
-            try:
-                text = transcribe(wav)[0]
-            finally:
-                self.brain.start()
+            text = ear_text(self.gate(ear_cmd(write_wav(run_dir() / "call.wav", payload))))
             if not text:
                 return
         else:
             text = payload
         if kind == "typed" and text.startswith("/"):
             return self.command(text[1:])
-        self.deliver(self.turn(kind, text))
+        reply = self.turn(kind, text)
+        if kind != "idle":
+            self.deliver(reply)
         self.going = bool(self.memory.task)
 
     def command(self, name: str):
@@ -130,14 +127,33 @@ class Trident:
         parts = [self.memory.block(), f"Call: {'up' if self.line.up else 'down'}", text]
         return "\n".join(part for part in parts if part)
 
+    def gate(self, args: list[str], data: bytes | None = None) -> bytes:
+        self.brain.stop()
+        try:
+            done = subprocess.run(args, input=data, capture_output=True, timeout=600, creationflags=subprocess.CREATE_NO_WINDOW)
+        finally:
+            self.brain.start()
+        if done.returncode != 0:
+            raise RuntimeError(done.stderr.decode("utf-8", "replace").strip() or f"exit {done.returncode}")
+        return done.stdout
+
     def turn(self, kind: str, text: str) -> str:
         self.request = text
-        self.aim = None
-        self.points = []
+        continuing = kind == "idle" and bool(self.brain.rest)
+        if not continuing:
+            self.aim = None
+            self.points = []
         if kind in ("chat", "call", "typed"):
             self.memory.set_task(text)
+            self.brain.rest = ""
+        if continuing:
+            prompt = self.brain.rest
+            self.brain.rest = ""
+        elif kind == "idle" and self.brain.sent:
+            prompt = self.brain.carry(self.request_text(text))
+        else:
+            prompt = ""
         user = text
-        prompt = ""
         tools = self.tools()
         for _ in range(CONFIG["brain"]["max_tool_steps"]):
             reply = self.brain.think(SYSTEM, tools, self.request_text(user), prompt)
@@ -145,12 +161,12 @@ class Trident:
                 user = reply.follow
                 prompt = ""
                 continue
-            if reply.prompt:
-                prompt = reply.prompt
-            else:
+            if not reply.prompt:
                 return reply.text
+            prompt = reply.prompt
             if not self.events.empty():
                 return ""
+        self.brain.rest = prompt
         return "I am still working on it."
 
     def deliver(self, text: str):
@@ -158,14 +174,7 @@ class Trident:
             self.speak(text)
 
     def speak(self, text: str):
-        self.brain.stop()
-        try:
-            done = subprocess.run([sys.executable, "-m", "organs.mouth"], input=text.encode("utf-8"), capture_output=True, timeout=600, creationflags=subprocess.CREATE_NO_WINDOW)
-            if done.returncode != 0:
-                raise RuntimeError(done.stderr.decode("utf-8", "replace"))
-            self.line.speak(done.stdout)
-        finally:
-            self.brain.start()
+        self.line.speak(self.gate([sys.executable, "-m", "organs.mouth"], text.encode("utf-8")))
 
     def tools(self) -> dict[str, Tool]:
         string = "STRING"
@@ -181,7 +190,7 @@ class Trident:
             "hang_up": Tool("hang_up", "End the call and stay. You can keep using tools.", {}, self.hang_up),
             "consult": Tool(
                 "consult",
-                "Spawn a new Cursor agent on this machine. It is Grok 4.7, extra-high reasoning, fast mode off, and not a virtual machine. It only advises. why is what you say aloud: that you are spawning it, and why. question is what you need. attach is screen, part, or no. screen sends the whole screen. part sends the area around the last look. The reply comes back as his next request.",
+                "Spawn a new Cursor agent on this machine. It is gpt-5.6-luna-none, and not a virtual machine. It only advises, and its reply is plain text. why is what you say aloud: that you are spawning it, and why. question is what you need. attach is screen, part, or no. screen sends the whole screen. part sends the area around the last look. The reply comes back as his next request.",
                 {
                     "why": {"description": "What you say aloud about spawning the agent", "type": string},
                     "question": {"description": "What you ask the agent", "type": string},
@@ -256,7 +265,10 @@ class Trident:
     def call_owner(self, opening: str = "") -> str:
         words = str(opening).strip()
         if not self.line.up:
-            self.line.dial()
+            try:
+                self.line.dial()
+            except Exception as exc:
+                return str(exc)
         if words:
             self.speak(words)
         return "he is on the line and can see the screen"

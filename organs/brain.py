@@ -118,6 +118,7 @@ class Brain:
         self.proc = None
         self.marker = None
         self.sent = ""
+        self.rest = ""
         self.sink: Callable[[str, list[bytes]], None] | None = None
 
     def emit(self, text: str, images: list[bytes]) -> None:
@@ -213,6 +214,11 @@ class Brain:
         body = f"{self.media()}\n{question}" if png else question
         prompt = BOS + turn("user", body) + f"{TURN_OPEN}model\n"
         return json.loads(self.complete(prompt, images=[png] if png else (), schema=schema, track=False))
+
+    def carry(self, user: str) -> str:
+        base = self.sent
+        tail = "" if base.endswith(TURN_CLOSE + "\n") else ("\n" if base.endswith(TURN_CLOSE) else TURN_CLOSE + "\n")
+        return base + tail + turn("user", user) + f"{TURN_OPEN}model\n"
 
     def think(self, system: str, tools: dict[str, Tool], user: str, prompt: str = "") -> Reply:
         if not prompt:

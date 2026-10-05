@@ -1,6 +1,5 @@
 import json
 import re
-import subprocess
 import unicodedata
 import wave
 from pathlib import Path
@@ -76,17 +75,11 @@ def write_wav(path: Path, samples: np.ndarray, rate: int = RATE) -> Path:
     return path
 
 
-def transcribe(wav: Path) -> tuple[str, str]:
+def ear_cmd(wav: Path) -> list[str]:
     exe = ROOT / CONFIG["paths"]["bin"] / "nemo-speech" / "bin" / "nemo-speech.exe"
-    done = subprocess.run(
-        [str(exe), "transcribe", str(wav), "--model", str(path_of("ears", "model")), "--device", "vulkan", "--format", "json", "--verbatim", "--quiet", "--endpointing=true", "--stop-history-eou-ms", "1200"],
-        capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW,
-    )
-    if done.returncode != 0:
-        raise RuntimeError(done.stderr.decode("utf-8", errors="replace").strip() or f"nemo-speech exit {done.returncode}")
-    data = json.loads(done.stdout.decode("utf-8", errors="replace"))
-    text = " ".join(unicodedata.normalize("NFC", LANG_LEAK.sub(" ", data["text"])).split())
-    language = str(data.get("language") or "").split("-")[0].lower()
-    if any(ch in "ąćęłńóśźż" for ch in text.lower()):
-        language = "pl"
-    return text, language
+    return [str(exe), "transcribe", str(wav), "--model", str(path_of("ears", "model")), "--device", "vulkan", "--format", "json", "--verbatim", "--quiet", "--endpointing=true", "--stop-history-eou-ms", "1200"]
+
+
+def ear_text(raw: bytes) -> str:
+    data = json.loads(raw.decode("utf-8", errors="replace"))
+    return " ".join(unicodedata.normalize("NFC", LANG_LEAK.sub(" ", data["text"])).split())
