@@ -3,16 +3,15 @@ import json
 import msvcrt
 import os
 import queue
-import socket
 import subprocess
 import sys
 import tempfile
-import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from next import BIN, CONFIG, MODELS, ROOT, STATE, contract
+from next import CONFIG, ROOT, STATE, contract
 from next import desktop
+from next.models import Models
 from next.speech import transcription_command
 from next.telegram import Line
 
@@ -54,8 +53,7 @@ class Trident:
         self.methods = {tool["function"]["name"]: getattr(self, tool["function"]["name"]) for tool in self.tools}
         self.requests = int(os.environ.get("TRIDENT_REQUESTS", "0"))
         self.pending_restart = False
-        self.server = None
-        self.url = f"http://{CONFIG['brain']['host']}:{CONFIG['brain']['port']}"
+        self.models = Models(self.run_dir, self.line.send_text)
 
     def charge(self):
         if self.requests >= CONFIG["brain"]["request_limit"]:
@@ -63,60 +61,19 @@ class Trident:
         self.requests += 1
         os.environ["TRIDENT_REQUESTS"] = str(self.requests)
 
-    def start_model(self):
-        cfg = CONFIG["brain"]
-        with socket.socket() as port:
-            if port.connect_ex((cfg["host"], cfg["port"])) == 0:
-                raise RuntimeError(f"Model port {cfg['port']} is already in use.")
-        args = [str(BIN / "llama" / "llama-server.exe"), "--model", str(MODELS / cfg["model"]),
-                "--mmproj", str(MODELS / cfg["mmproj"]), "--alias", "Gemma", "--jinja",
-                "--no-context-shift", "--no-webui", "--log-disable"]
-        for flag, value in {"host": cfg["host"], "port": cfg["port"], "ctx-size": cfg["context"],
-                            "parallel": cfg["slots"], "n-gpu-layers": cfg["gpu_layers"], "threads": cfg["threads"],
-                            "ubatch-size": cfg["ubatch"], "batch-size": cfg["ubatch"], "flash-attn": "off",
-                            "cache-type-k": "f16", "cache-type-v": "f16",
-                            "image-min-tokens": cfg["image_tokens"], "image-max-tokens": cfg["image_tokens"]}.items():
-            args += ["--" + flag, str(value)]
-        self.server = subprocess.Popen(args, cwd=ROOT, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                       stderr=subprocess.DEVNULL, creationflags=FLAGS)
-        deadline = time.monotonic() + 300
-        while time.monotonic() < deadline:
-            if self.server.poll() is not None:
-                raise RuntimeError(f"llama-server exited {self.server.returncode}")
-            try:
-                with urllib.request.urlopen(self.url + "/health", timeout=2) as response:
-                    if response.status == 200:
-                        return
-            except (urllib.error.URLError, OSError):
-                pass
-            time.sleep(0.25)
-        self.stop_model()
-        raise TimeoutError("llama-server startup timed out")
-
-    def stop_model(self):
-        server, self.server = self.server, None
-        if server and server.poll() is None:
-            server.terminate()
-            server.wait()
-
-    def gate(self, args, data=None):
-        self.stop_model()
-        try:
-            return process(args, data, timeout=600)
-        finally:
-            self.start_model()
-
-    def request_text(self, new):
-        return "\n".join([self.memory, f"Call: {'up' if self.line.up else 'down'}", new])
+    def request_text(self, new, source):
+        return "\n".join(["Note:\n" + self.memory, f"Call: {'up' if self.line.up else 'down'}",
+                          "Wake" if source == "Wake" else source + ":\n" + new])
 
     def completion(self, messages):
         self.charge()
+        self.models.brain()
         cfg = CONFIG["brain"]
         body = {"model": "Gemma", "messages": messages, "tools": self.tools, "tool_choice": "auto",
-                "parallel_tool_calls": False, "chat_template_kwargs": {"enable_thinking": True},
+                "parallel_tool_calls": False, "chat_template_kwargs": {"enable_thinking": cfg["thinking"]},
                 "max_tokens": cfg["max_tokens"], "temperature": cfg["temperature"],
                 "top_k": cfg["top_k"], "top_p": cfg["top_p"], "min_p": cfg["min_p"]}
-        request = urllib.request.Request(self.url + "/v1/chat/completions", json.dumps(body).encode("utf-8"),
+        request = urllib.request.Request(self.models.url + "/v1/chat/completions", json.dumps(body).encode("utf-8"),
                                          {"Content-Type": "application/json"})
         try:
             with urllib.request.urlopen(request, timeout=600) as response:
@@ -126,13 +83,11 @@ class Trident:
         self.line.send_text(raw.decode("utf-8"))
         choice = json.loads(raw)["choices"][0]
         if choice["finish_reason"] == "length":
-            raise RuntimeError("Model response reached max_tokens; request ended.")
+            raise RuntimeError(f"Model response reached max_tokens={cfg['max_tokens']}; usage={json.loads(raw)['usage']}; request ended.")
         return choice["message"]
 
-    def turn(self, text):
-        prompt = self.request_text(text)
-        self.line.send_text(self.system)
-        self.line.send_text(json.dumps(self.tools, ensure_ascii=False))
+    def turn(self, text, source):
+        prompt = self.request_text(text, source)
         self.line.send_text(prompt)
         messages = [{"role": "system", "content": self.system}, {"role": "user", "content": prompt}]
         while True:
@@ -153,17 +108,17 @@ class Trident:
                     return result
                 if isinstance(result, (bytes, tuple)):
                     words, png = ("", result) if isinstance(result, bytes) else result
-                    self.line.send_text(self.request_text(words))
-                    content = [{"type": "text", "text": self.request_text(words)},
+                    content = [{"type": "text", "text": self.request_text(words, "Tool result from " + name)},
                                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(png).decode("ascii")}}]
+                    self.line.send_text(content[0]["text"])
                 else:
-                    content = self.request_text(str(result))
+                    content = self.request_text(str(result), "Tool result from " + name)
                     self.line.send_text(content)
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": content})
 
     def speak(self, text: str):
         if self.line.up:
-            pcm = self.gate([sys.executable, "-m", "next.speech"], text.encode("utf-8"))
+            pcm = self.models.speech("TTS", [sys.executable, "-m", "next.speech"], text.encode("utf-8"))
             self.line.wait(self.line.speak(pcm), len(pcm) / 96000 + 30)
             return "The words were spoken on the call."
         self.line.send_text(text)
@@ -231,7 +186,7 @@ class Trident:
         shot = folder / "screen.png"
         shot.write_bytes(png)
         grid = next(line for line in self.system.splitlines() if line.startswith("The screen is a grid")).split(". ", 1)[0] + "."
-        prompt = f"You advise Gemma. Advice only; do not act, edit files or launch agents. Read {shot}; it is the whole current screen with its pointer arrow.\n{grid}\nNote:\n{self.memory}\nQuestion:\n{question}"
+        prompt = f"You advise Gemma. Advice only; do not act, edit files or launch agents. Read {shot}; it is the whole current screen with its pointer arrow.\n{grid}\nGive concrete next steps using her point(y,x), click(how), stroke(points), type_text(text), or press(keys) tools as appropriate. Use desktop grid coordinates for places. Describe what she should verify with look; say if you cannot locate a target. You do not execute these steps; she decides.\nNote:\n{self.memory}\nQuestion:\n{question}"
         self.line.send_text(prompt)
         try:
             answer = "The advisor says: " + self.cursor(prompt, folder)
@@ -279,10 +234,11 @@ class Trident:
         return End()
 
     def serve(self):
-        self.events.put(("text", "Wake"))
+        self.events.put(("wake", "Wake"))
         self.line.start()
-        self.start_model()
         self.line.send_file(self.system.encode("utf-8"), "Organism.txt")
+        self.line.send_text(self.system)
+        self.line.send_text(json.dumps(self.tools, ensure_ascii=False))
         while True:
             kind, payload = self.events.get()
             try:
@@ -291,11 +247,11 @@ class Trident:
                         return Restart()
                     continue
                 if kind == "audio":
-                    raw = self.gate(transcription_command(self.run_dir / "call.wav", payload))
+                    raw = self.models.speech("ASR", transcription_command(self.run_dir / "call.wav", payload))
                     payload = json.loads(raw)["text"]
                     if not payload:
                         continue
-                result = self.turn(payload)
+                result = self.turn(payload, "Wake" if kind == "wake" else "Owner words")
                 if isinstance(result, Restart):
                     return result
                 if self.requests >= CONFIG["brain"]["request_limit"]:
@@ -308,7 +264,7 @@ class Trident:
 
     def stop(self):
         try:
-            self.stop_model()
+            self.models.stop()
         finally:
             try:
                 self.line.stop()

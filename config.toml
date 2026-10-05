@@ -13,16 +13,17 @@ mmproj = "mmproj-gemma-4-E2B-it-Q8_0.gguf"
 host = "127.0.0.1"
 port = 8080
 context = 16384
-slots = 1
 gpu_layers = 999
 threads = 4
-image_tokens = 1120
+image_tokens = 560
+flash_attention = "auto"
+thinking = false
 ubatch = 2048
 temperature = 0
 top_k = 64
 top_p = 0.95
 min_p = 0.05
-max_tokens = 1024
+max_tokens = 4096
 request_limit = 100
 
 [eyes]
