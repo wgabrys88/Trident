@@ -1,4 +1,3 @@
-import os
 import time
 import tomllib
 from pathlib import Path
@@ -24,12 +23,6 @@ def run_dir() -> Path:
     global _RUN
     if _RUN is not None:
         return _RUN
-    inherited = os.environ.get("TRIDENT_RUN", "").strip()
-    if inherited:
-        folder = Path(inherited)
-        folder.mkdir(parents=True, exist_ok=True)
-        _RUN = folder
-        return folder
     root = state_dir()
     stamp = time.strftime("run_%Y-%m-%d_%H%M")
     folder = root / stamp
@@ -42,6 +35,5 @@ def run_dir() -> Path:
             n += 1
             continue
         break
-    os.environ["TRIDENT_RUN"] = str(folder)
     _RUN = folder
     return folder
