@@ -10,10 +10,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from organs import CONFIG, ROOT, path_of, run_dir
+from organs import CONFIG, ROOT, path_of
 
 CFG = CONFIG["brain"]
-SEAT = True
 
 BOS = "<bos>"
 TURN_OPEN = "<|turn>"
@@ -93,14 +92,6 @@ def turn(role: str, body: str) -> str:
     return f"{TURN_OPEN}{role}\n{body}{TURN_CLOSE}\n"
 
 
-def json_object(text: str) -> dict:
-    start = text.find("{")
-    end = text.rfind("}")
-    if start < 0 or end <= start:
-        raise ValueError(text)
-    return json.loads(text[start:end + 1])
-
-
 _BRAIN = None
 BILLS = 0
 
@@ -134,13 +125,6 @@ def cursor_text(folder: Path, prompt: str) -> str:
     if not done.stdout.strip():
         raise RuntimeError("empty consult")
     return done.stdout
-
-
-def seat_open(system: str, tools: dict, user: str) -> str:
-    lines = [system, 'Reply with one JSON object and nothing else. A tool is {"tool":"name","args":{}}. Speech is {"say":"words"}.']
-    lines.extend(f'{tool.name}({", ".join(tool.params)}): {tool.description}' for tool in tools.values())
-    lines.append(user)
-    return "\n".join(lines)
 
 
 def plain(text: str) -> str:
@@ -199,9 +183,6 @@ class Brain:
             return False
 
     def start(self):
-        if SEAT:
-            self.stop()
-            return
         if self.alive():
             return
         exe = ROOT / CONFIG["paths"]["bin"] / "llama" / "llama-server.exe"
@@ -247,6 +228,7 @@ class Brain:
             time.sleep(0.2)
 
     def complete(self, prompt: str, images: list[bytes] = (), schema: dict | None = None, stop: list[str] = (), track: bool = True) -> str:
+        charge()
         fresh = prompt[len(self.sent):] if track and self.sent and prompt.startswith(self.sent) else prompt
         self.emit(fresh, list(images))
         body = {
@@ -276,62 +258,11 @@ class Brain:
         return text
 
     def ask_json(self, question: str, schema: dict, png: bytes | None = None) -> object:
-        if SEAT:
-            folder = run_dir() / "seat"
-            folder.mkdir(exist_ok=True)
-            prompt = question + "\nReply with one JSON object and nothing else."
-            images = []
-            if png:
-                (folder / "see.png").write_bytes(png)
-                prompt += "\nThe picture is see.png in this folder."
-                images = [png]
-            self.emit(prompt, images)
-            out = cursor_text(folder, prompt)
-            self.emit(out, [])
-            return json_object(out)
         body = f"{self.media()}\n{question}" if png else question
         prompt = BOS + turn("user", body) + f"{TURN_OPEN}model\n"
         return json.loads(self.complete(prompt, images=[png] if png else (), schema=schema, track=False))
 
-    def seat_think(self, system: str, tools: dict[str, Tool], user: str, prompt: str) -> Reply:
-        if not prompt:
-            self.sent = ""
-            prompt = seat_open(system, tools, user)
-        fresh = prompt[len(self.sent):] if self.sent and prompt.startswith(self.sent) else prompt
-        self.emit(fresh, [])
-        folder = run_dir() / "seat"
-        folder.mkdir(exist_ok=True)
-        out = cursor_text(folder, prompt)
-        self.emit(out, [])
-        self.sent = prompt + out
-        self.prompt_tokens = len(self.sent) // 4
-        try:
-            data = json_object(out)
-        except (ValueError, json.JSONDecodeError):
-            return Reply(plain(out))
-        if not isinstance(data, dict):
-            return Reply(plain(out))
-        name = data.get("tool") or ""
-        if data.get("say") and not name:
-            return Reply(str(data["say"]))
-        if not name:
-            return Reply(plain(out))
-        args = data.get("args") if isinstance(data.get("args"), dict) else {}
-        try:
-            if name not in tools:
-                raise ValueError(f"unknown tool {name}")
-            result = invoke(tools[name], args)
-        except Exception as exc:
-            result = str(exc)
-        if isinstance(result, UserTurn):
-            return Reply(follow=result.text)
-        if isinstance(result, Stop):
-            return Reply(stop=True)
-        return Reply(prompt=self.sent + "\nResult: " + str(result) + "\n")
-
     def think(self, system: str, tools: dict[str, Tool], user: str, prompt: str = "") -> Reply:
-        if SEAT:
-            return self.seat_think(system, tools, user, prompt)
         if not prompt:
             self.sent = ""
             prompt = BOS + turn("system", f"{THINK}\n{system}" + "".join(declare(t) for t in tools.values())) + turn("user", user) + f"{TURN_OPEN}model\n"

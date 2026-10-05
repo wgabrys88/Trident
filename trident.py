@@ -4,7 +4,7 @@ import sys
 import threading
 from pathlib import Path
 
-from organs import CONFIG, run_dir
+from organs import CONFIG, run_dir, state_dir
 from organs.brain import Brain, Stop, Tool, UserTurn
 from organs.ears import ear_cmd, ear_text, write_wav
 from organs.memory import Memory
@@ -63,12 +63,33 @@ class Trident:
     def push(self, kind: str, payload):
         self.events.put((kind, payload))
 
+    def take_tick(self) -> str:
+        path = state_dir() / "tick"
+        held = path.with_name("tick.held")
+        if not path.is_file():
+            return ""
+        try:
+            path.replace(held)
+        except OSError:
+            return ""
+        try:
+            return held.read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+        finally:
+            held.unlink(missing_ok=True)
+
     def worker(self):
         while not self.stopping.is_set():
             try:
                 kind, payload = self.events.get(timeout=0.5)
             except queue.Empty:
-                continue
+                if self.stopping.is_set():
+                    continue
+                payload = self.take_tick()
+                if not payload:
+                    continue
+                kind = "tick"
             try:
                 self.handle(kind, payload)
             except Exception as exc:
