@@ -44,13 +44,13 @@ def literal(value: object) -> str:
     return quoted(value)
 def declare(tool: Tool) -> str:
     props = []
-    for name, prop in sorted(tool.params.items()):
+    for name, prop in tool.params.items():
         parts = [f"description:{quoted(prop['description'])}"]
         if "enum" in prop:
             parts.append("enum:[" + ",".join(quoted(v) for v in prop["enum"]) + "]")
         parts.append(f"type:{quoted(prop['type'])}")
         props.append(f"{name}:{{{','.join(parts)}}}")
-    required = [n for n in sorted(tool.params) if n not in tool.optional]
+    required = [n for n in tool.params if n not in tool.optional]
     return (
         f"<|tool>declaration:{tool.name}{{description:{quoted(tool.description)},"
         f"parameters:{{properties:{{{','.join(props)}}} }},required:[{','.join(quoted(n) for n in required)}],type:{quoted('OBJECT')}}} }}<tool|>"
@@ -111,11 +111,11 @@ class Brain:
         _BRAIN = self
         self.url = f"http://{CFG['host']}:{CFG['port']}"
         self.proc = self.marker = self.sink = None
-        self.sent = self.rest = ""
+        self.sent = ""
         self.prompt_tokens = self.shown = 0
         self.frames: list[bytes] = []
     def fresh(self) -> None:
-        self.sent = self.rest = ""
+        self.sent = ""
         self.prompt_tokens = self.shown = 0
         self.frames.clear()
     def emit(self, text: str, images: list[bytes]) -> None:
@@ -193,10 +193,6 @@ class Brain:
             self.sent, self.shown = prompt + text, len(frames)
             self.prompt_tokens = int(data.get("tokens_evaluated") or 0) - len(frames) * int(CFG["image_tokens"])
         return text
-    def carry(self, user: str) -> str:
-        base = self.sent
-        tail = "" if base.endswith(TURN_CLOSE + "\n") else ("\n" if base.endswith(TURN_CLOSE) else TURN_CLOSE + "\n")
-        return base + tail + turn("user", user) + f"{TURN_OPEN}model\n"
     def think(self, system: str, tools: dict[str, Tool], user: str, prompt: str = "") -> Reply:
         if not prompt:
             self.fresh()

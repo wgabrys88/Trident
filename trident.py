@@ -12,16 +12,16 @@ SYSTEM = (
     "You are Gemma, the mind at Wojciech's computer. He reaches you only through Telegram. "
     "The computer's microphone and speakers are not yours. You decide. "
     "A plain reply is you speaking. When Call: up it is spoken on the call. When Call: down it is a Telegram message. A plain reply ends this request. "
-    "While a task is open, that task is brought again when you are idle, so continue it. When the text is No request is open, wait. "
-    "Call: down means the line is down. Call: up means the line is up. Neither is a command. "
+    "When the text is No request is open, wait. "
+    "Call: down means the line is down. Call: up means the line is up. "
     "Memory on a request is facts you can use. You still choose. "
-    f"look returns a screenshot of the whole screen with the mouse pointer arrow drawn on it. The screen is {GRID}. "
-    f"point moves the mouse pointer to (y, x) on {GRID}, and it moves nothing else. "
-    f"click clicks at the pointer's current position. The screen is {GRID}. "
-    "After a click, look at the screen. If it did not change as you intended, try another way or consult. "
+    f"The screen is {GRID}. "
+    "look returns a screenshot of the whole screen with the mouse pointer arrow drawn on it. "
+    "point moves only the mouse pointer to (y, x). "
+    "After point, look where the arrow landed and correct it before you click or type. You may look again after you act. "
     "call_owner places a call. hang_up ends a call that is up. You stay after the call ends. "
     f"consult asks {CONFIG['cloud']['model']} on this machine. It only advises. When the call is up, say aloud why. "
-    "Its answer comes back as the consult result, and you decide. "
+    "Its answer is the consult result, and you decide. "
     "remember stores a fact for later requests. done finishes the task and nothing is spoken. "
     "Consult when you are stuck, unsure, or he does not answer."
 )
@@ -31,9 +31,7 @@ class Trident:
         self.memory = Memory()
         self.events: queue.Queue = queue.Queue()
         self.stopping = threading.Event()
-        self.going = False
         self.request = ""
-        self.points = []
         self.line = Line(on_text=lambda t: self.push("chat", t), on_utterance=lambda c: self.push("call", c))
         self.brain.sink = self.mirror
     def mirror(self, text: str, images: list[bytes]) -> None:
@@ -57,16 +55,10 @@ class Trident:
             try:
                 kind, payload = self.events.get(timeout=0.5)
             except queue.Empty:
-                if self.stopping.is_set():
-                    continue
-                if self.going and self.memory.task:
-                    kind, payload = "idle", self.memory.task
-                else:
-                    continue
+                continue
             try:
                 self.handle(kind, payload)
             except Exception as exc:
-                self.going = False
                 self.line.send_text(str(exc))
     def handle(self, kind: str, payload):
         if kind == "call":
@@ -77,7 +69,6 @@ class Trident:
             text = payload
         reply = self.turn(kind, text)
         self.deliver(reply)
-        self.going = bool(self.memory.task)
     def request_text(self, text: str) -> str:
         parts = [self.memory.block(), f"Call: {'up' if self.line.up else 'down'}", text]
         return "\n".join(part for part in parts if part)
@@ -95,27 +86,20 @@ class Trident:
         return self.brain.prompt_tokens + brain["max_tokens"] >= brain["context"] // brain["slots"]
     def turn(self, kind: str, text: str) -> str:
         self.request = text
-        if kind not in ("idle", "wake"):
+        if kind != "wake":
             self.memory.set_task(text)
-        if kind != "idle" or not self.brain.sent or self.near_slot():
-            self.brain.fresh()
-            self.points = []
-            prompt = ""
-        else:
-            prompt = self.brain.rest or self.brain.carry(self.request_text(text))
-            self.brain.rest = ""
+        self.brain.fresh()
+        prompt = ""
         user = text
         tools = self.tools()
         for _ in range(CONFIG["brain"]["max_tool_steps"]):
             if prompt and self.near_slot():
                 self.brain.fresh()
-                self.points = []
                 prompt = ""
             reply = self.brain.think(SYSTEM, tools, self.request_text(user), prompt)
             if reply.stop or not reply.prompt:
                 return reply.text
             prompt = reply.prompt
-        self.brain.rest = prompt
         return ""
     def deliver(self, text: str):
         if text:
@@ -126,21 +110,20 @@ class Trident:
         text, number = "STRING", "INTEGER"
         model = CONFIG["cloud"]["model"]
         return {
-            "look": Tool("look", f"Return a screenshot of the whole screen with the mouse pointer arrow drawn on it. The screen is {GRID}.", {}, self.look),
-            "point": Tool("point", f"Move the mouse pointer to (y, x) on {GRID}. Move nothing else.", {"y": {"description": "Down from the top of the screen", "type": number}, "x": {"description": "Right from the left of the screen", "type": number}}, self.point),
-            "click": Tool("click", f"Click at the mouse pointer's current position. The screen is {GRID}.", {"how": {"description": "left, right, or double", "type": text, "enum": ["left", "right", "double"]}}, self.click),
-            "drag": Tool("drag", "Drag the mouse pointer in a straight line between two stored screen places.", {}, self.drag),
-            "stroke": Tool("stroke", f"Draw one line through points on {GRID}. Take no new screenshot.", {"points": {"description": "Up to 32 pairs of y x, separated by semicolons", "type": text}}, self.stroke),
+            "look": Tool("look", "Return a screenshot of the whole screen with the mouse pointer arrow drawn on it.", {}, self.look),
+            "point": Tool("point", "Move the mouse pointer to (y, x). Move nothing else.", {"y": {"description": "y", "type": number}, "x": {"description": "x", "type": number}}, self.point),
+            "click": Tool("click", "Click at the mouse pointer's current position.", {"how": {"description": "left, right, or double", "type": text, "enum": ["left", "right", "double"]}}, self.click),
+            "stroke": Tool("stroke", "Draw one line through y x pairs separated by semicolons. Take no new screenshot.", {"points": {"description": "Up to 32 pairs of y x, separated by semicolons", "type": text}}, self.stroke),
             "type_text": Tool("type_text", "Type this text into the focused window.", {"text": {"description": "The text to type", "type": text}}, self.type_text),
             "press": Tool("press", "Press these keys.", {"keys": {"description": "Space-separated chords", "type": text}}, self.press),
             "run": Tool("run", "Run this PowerShell command.", {"command": {"description": "The command to run", "type": text}}, self.run),
             "remember": Tool("remember", "Store this fact so later requests include it.", {"fact": {"description": "The fact to store", "type": text}}, self.remember),
-            "call_owner": Tool("call_owner", "Place a video call to Wojciech. When the call is up, say opening. A miss is an error. Asking an advisor after a miss is your choice.", {"opening": {"description": "What to say when the call is up", "type": text}}, self.call_owner, optional=("opening",)),
+            "call_owner": Tool("call_owner", "Place a video call to Wojciech. When the call is up, say opening. Asking an advisor after a miss is your choice.", {"opening": {"description": "What to say when the call is up", "type": text}}, self.call_owner, optional=("opening",)),
             "hang_up": Tool("hang_up", "End the call and stay at the computer. The open task remains.", {}, self.hang_up),
             "done": Tool("done", "Finish the open task. Show summary in the chat and speak nothing.", {"summary": {"description": "What finished", "type": text}}, self.done),
             "consult": Tool(
                 "consult",
-                f"Ask {model} on this machine for advice only. It does not change files and it does not use the computer. why is said aloud when the call is up. question is what you ask. It sees the pointer-imprinted screenshot and {GRID}. The answer is this tool's result, and you decide. After a missed call, asking is your choice.",
+                f"Ask {model} on this machine for advice only. It does not change files and it does not use the computer. why is said aloud when the call is up. question is what you ask. The answer is this tool's result, and you decide.",
                 {
                     "why": {"description": "What to say aloud about asking", "type": text},
                     "question": {"description": "What you ask", "type": text},
@@ -153,19 +136,11 @@ class Trident:
         return self.brain.media()
     def point(self, y, x) -> str:
         y, x = int(y), int(x)
-        place = eyes.screen_px(y, x)
-        hands.aim(*place)
-        self.points.append(place)
-        return f"The mouse pointer is now at y {y} x {x} on {GRID}."
+        hands.aim(*eyes.screen_px(y, x))
+        return f"The mouse pointer is now at y {y} x {x}."
     def click(self, how: str) -> str:
         hands.button(str(how))
         return f"The {how} button was clicked at the mouse pointer."
-    def drag(self) -> str:
-        if len(self.points) < 2:
-            return "There are not two stored screen places to drag between."
-        (x0, y0), (x1, y1) = self.points[-2], self.points[-1]
-        hands.drag(x0, y0, x1, y1)
-        return "The mouse pointer was dragged between two stored screen places."
     def stroke(self, points: str) -> str:
         parts = [part for part in str(points).split(";") if part.strip()]
         if not parts or len(parts) > 32:
@@ -175,7 +150,7 @@ class Trident:
             y, x = part.split()
             coords.append(eyes.screen_px(int(y), int(x)))
         hands.stroke(coords)
-        return f"The line was drawn on {GRID}."
+        return "The line was drawn."
     def type_text(self, text: str) -> str:
         hands.type_text(str(text))
         return "The text was typed into the focused window."

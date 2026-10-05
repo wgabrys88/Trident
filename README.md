@@ -48,7 +48,7 @@ flowchart LR
 
 The GPU holds Gemma and no other model. The ear and the mouth run only through that handoff. While a call is up, a small voice-activity model stays on the CPU so she can keep hearing. Decisions are Gemma. The advisor is the local read-only Cursor process named by `cloud.model`. It does not use this GPU, and it does not edit files, commit, or launch agents.
 
-A look takes no arguments. It grabs the whole screen once, draws only the pointer arrow, and puts that picture in the next decision she makes. Python does not move the pointer and gives her no coordinates with that picture. `point` moves the mouse pointer to (y, x) on a normalized 0-1000 grid of the whole screen, y down from the top and x right from the left, and moves nothing else. `click` clicks at the pointer. A drag is a straight line between two stored screen places. A stroke is one line of at most 32 points on that same grid, with no new grab. The same pointer is drawn on the call. The call picture is a live 960×540 frame, not a saved still.
+A look takes no arguments. It grabs the whole screen once, draws only the pointer arrow, and puts that picture in the next decision she makes. Python does not move the pointer and gives her no coordinates with that picture. `point` moves the mouse pointer to (y, x) and nothing else. `click` clicks at the pointer. A stroke is one line of at most 32 y x pairs, with no new grab. There is no drag tool and no stored place. The same pointer is drawn on the call. The call picture is a live 960×540 frame, not a saved still.
 
 Gemma 4 reads an image as 70, 140, 280, 560, or 1120 tokens. 1120 is the maximum, about 2.6 million pixels. A 1920×1080 screen is about 2.07 million, so 1120 holds it and 560 does not. Those vision tokens use non-causal attention, so the image has to fit in one micro-batch. The launch sets that micro-batch to 2048 and does not set a separate batch size. The conversation is refreshed when the stored prompt count plus 1024 reaches half of the 16384 context, because the server splits that context across two slots. A look's picture is not added into that count.
 
@@ -71,7 +71,7 @@ Telegram is the only record. Python sends the system prompt once for a fresh req
 What she can call:
 
 - `look` takes no arguments. The pointer-imprinted screenshot is in the next decision she makes.
-- `point` moves only the mouse pointer on one 0-1000 grid of the whole screen. `click` clicks at that pointer. `drag`, `stroke`, `type_text`, `press`, and `run` act.
+- `point` moves only the mouse pointer to (y, x). `click` clicks at that pointer. `stroke`, `type_text`, `press`, and `run` act.
 - `remember` stores a fact on later requests. She still chooses.
 - `call_owner` places the call. `hang_up` ends it and she stays.
 - `consult` asks the advisor. The answer comes back as that tool's result, labelled as the advisor. She decides.
@@ -115,7 +115,7 @@ There is no inbox, no slash command, no say CLI, no tick file, and no side visio
 
 look takes no arguments. It calls eyes.picture(), which grabs the whole screen, thumbnails to eyes.max_side, and imprint draws only the pointer arrow. Those bytes are appended to Brain.frames. The tool result is only the server media marker. There is no caption and no coordinates. think returns a prompt that includes that marker. The next think is where she decides. It calls complete(prompt, images=self.frames). complete POSTs prompt_string set to that prompt and multimodal_data set to the base64 of those frames. The marker and the bytes are the same request. Telegram is sent those bytes from that same complete. There is no second model call that asks for coordinates.
 
-GRID is the one frame, the words a 0-1000 grid over the whole screen, y down from the top and x right from the left. SYSTEM, the look, point, click, and stroke descriptions, the point and stroke results, and the consult prompt all use that string. screen_px(y, x) maps it through screen_size() with no clamp and no other check. point moves the pointer there and stores the pixel for drag only. It does not click.
+GRID is stated once, in SYSTEM: a 0-1000 grid over the whole screen, y down from the top and x right from the left. Tool descriptions do not repeat it. The advisor prompt states it once, because that model does not see SYSTEM. screen_px(y, x) maps y then x through screen_size() with no clamp. point moves the pointer there and does not store the place. It does not click. declare emits point's parameters in insertion order, y then x.
 
 ### organs/__init__.py
 
@@ -135,7 +135,7 @@ Brain.start launches llama-server.exe with context, slots, ubatch, and image_tok
 
 complete is the POST to /completion. When frames is non-empty the JSON prompt is {prompt_string, multimodal_data}. cache_prompt is false when there are pictures. When track is true, sent becomes the prompt plus the response, shown becomes the picture count, and prompt_tokens is tokens_evaluated minus image_tokens times that count. A continuation emits only the new suffix and only pictures past shown.
 
-think calls complete with images=self.frames. No tool returns the plain reply. A tool that raises becomes str(exception) and the turn continues. Stop ends the request. Otherwise the next prompt is the old prompt, the completion, and the tool response. carry appends a user turn when an idle re-ask continues below the slot line.
+think calls complete with images=self.frames. No tool returns the plain reply. A tool that raises becomes str(exception) and the turn continues. Stop ends the request. Otherwise the next prompt is the old prompt, the completion, and the tool response. There is no carry and no idle re-ask.
 
 ### organs/eyes.py
 
@@ -143,11 +143,11 @@ At import, SetProcessDpiAwarenessContext(-4). VIDEO is (960, 540). imprint copie
 
 ### organs/hands.py
 
-At import, SetProcessDpiAwarenessContext(-4). aim(x, y) is SetCursorPos and an absolute move. It does not read the cursor back. button(how) presses where the pointer already is. right uses the right button. double adds a second click. The event has no move flag. Any other how raises ValueError. stroke is one polyline. drag is that stroke for two points. press sends chords. type_text uses the foreground layout or Unicode. run is hidden PowerShell with the start alias removed. Timeout returns The command timed out. Empty output returns The command exited {code}. or The command finished.
+At import, SetProcessDpiAwarenessContext(-4). aim(x, y) is SetCursorPos and an absolute move. It does not read the cursor back. button(how) presses where the pointer already is. right uses the right button. double adds a second click. The event has no move flag. Any other how raises ValueError. stroke is one polyline. press sends chords. type_text uses the foreground layout or Unicode. run is hidden PowerShell with the start alias removed. Timeout returns The command timed out. Empty output returns The command exited {code}. or The command finished.
 
 ### organs/memory.py
 
-state/memory.json holds facts and one task string. remember appends a new stripped fact. set_task stores the latest chat or call. A wake, an idle re-ask, and a consult do not replace the task. clear_task empties it. block is Task: then one Remembered: line per fact. look, point, click, type_text, press, and consult do not write it.
+state/memory.json holds facts and one task string. remember appends a new stripped fact. set_task stores the latest chat or call. A wake and a consult do not replace the task. clear_task empties it. block is Task: then one Remembered: line per fact. look, point, click, type_text, press, and consult do not write it.
 
 ### organs/ears.py
 
@@ -165,17 +165,16 @@ Line is the voice line. OWNER is owner.telegram_id. An incoming call from him wh
 
 A request is block(), then Call: up or Call: down from line.up, then the text. An empty block is omitted. Call: down means the line is down. Call: up means the line is up. Neither is a command. start queues one wake, No request is open., then connects the line, then the worker. The wake does not set the task and is not queued again.
 
-Entries are that wake, his chat message, his call audio after the ear returns text, and nothing else. An empty queue with going set and a task open is an idle re-ask of that task. going is set after a turn that leaves a task, and cleared when a turn raises. A wake does not set going unless a task was already stored. An empty transcript does not start a request. An incoming call is answered in telegram and nothing is queued until he speaks. Only her plain reply, her opening, and her why go out through the mouth.
+Entries are that wake, his chat message, and his call audio after the ear returns text. An empty queue does not start a request. The open task is not sent again. An empty transcript does not start a request. An incoming call is answered in telegram and nothing is queued until he speaks. Only her plain reply, her opening, and her why go out through the mouth.
 
-near_slot is prompt_tokens + max_tokens >= context // slots, here prompt_tokens + 1024 >= 8192. Images are not in that sum. A wake, chat, or call starts fresh: fresh() clears the prompt and the pictures, and the stored screen places are cleared. The wake does not store the task. A chat or call does. An idle re-ask does not. Below the slot line, and when sent is still there, it continues rest or carry and keeps the stored places and the pictures. On the slot line it starts fresh. done mirrors summary, clears the task, and ends with no speech. hang_up returns The call is down. and leaves the task.
+near_slot is prompt_tokens + max_tokens >= context // slots, here prompt_tokens + 1024 >= 8192. Images are not in that sum. Each request starts with fresh(), which clears the prompt and the pictures. Inside a request, the slot line starts the prompt over. The wake does not store the task. A chat or call does. done mirrors summary, clears the task, and ends with no speech. hang_up returns The call is down. and leaves the task. There is no idle re-ask.
 
 Tools:
 
 - look() has no parameters. The result is only the media marker. No caption and no coordinates.
-- point(y, x) converts with screen_px, moves the pointer, stores the pixel, and returns The mouse pointer is now at y {y} x {x} on {GRID}.
+- point(y, x) converts with screen_px, y then x, moves the pointer, and returns The mouse pointer is now at y {y} x {x}.
 - click(how) presses at the pointer. how is left, right, or double. Result: The {how} button was clicked at the mouse pointer.
-- drag uses the two latest stored pixels. Fewer than two returns There are not two stored screen places to drag between.
-- stroke takes at most 32 y x pairs separated by ; on GRID, with no new grab. Result: The line was drawn on {GRID}.
+- stroke takes at most 32 y x pairs separated by ;, with no new grab. Result: The line was drawn.
 - type_text returns The text was typed into the focused window. press returns These keys were pressed: {keys}. run returns the command output, or The command finished., The command timed out., or The command exited {code}.
 - remember returns The fact is stored.
 - call_owner returns The call is already up. or The call is answered. A miss raises, and that string is the result. Asking then is her choice. Python does not consult for her.
@@ -235,7 +234,7 @@ This is the destination for the code, not a description of today. GEMMA marks he
    a. heard: his call audio -> gate(ear) -> transcript -> request
    b. typed: a Telegram message from him -> request
    c. wake: on every start, one request whose text is only "No request is open." No repeats.
-   d. idle re-ask: queue empty and a task still open -> request from memory + Call + the open task. Below the slot line, continue the same prompt carry (no system resend) and keep stored screen places. On a slot refresh, start fresh (system + tools + memory + task), drop the carry, and clear stored screen places.
+   d. No idle re-ask. An empty queue does not send the open task again.
    e. consult reply -> the consult tool's own result, labelled as the advisor's answer, not a request from him
    f. his inbound call: PYTHON answers it; nothing goes to her until he speaks (then a)
    Never an entry: a request sent as him by a wave, a script, or an orchestrator.
@@ -243,10 +242,10 @@ This is the destination for the code, not a description of today. GEMMA marks he
 2. DECIDE (GEMMA, one per step): look | act | speak | call_owner | hang_up | consult | remember | done. A plain reply with no tool is speak. speak with the call up -> gate(mouth); with the call down -> her words go to his Telegram chat as a message.
 3. LOOK (GEMMA calls it with no arguments). Grab one picture of the whole screen, imprint only the pointer arrow (no crosshair, boxes, labels, or UI-automation walk), and put those exact bytes in her own model input on the completion where she next decides. Mirror those bytes. The tool result is only that picture in her input. No caption and no coordinates. Python does not move the pointer.
    Forbidden: remaps by app, region, color, or word; asking for "the center"; naming a crosshair or ribbon; coordinate filters, clamps, or near-zero, border, or centre checks; a side vision call that asks for y, x.
-4. ACT (GEMMA; PYTHON turns places into pixels): point(y, x) moves the mouse pointer to (y, x) on a 0-1000 grid over the whole screen, y down from the top and x right from the left, and moves nothing else | click at the current pointer position | drag between two stored screen places | stroke(points): at most 32 "y x" pairs separated by ";" on that same grid, one polyline, no fresh grab | run | type_text | press. Unknown, missing, or invalid arguments, or any tool that raises -> str(exception) as the tool result, and the turn continues. Never a crash, never a silent default. -> DECIDE
-5. CALL (PYTHON places and carries the call). call_owner -> answered only when the line is up with him (the video is a live 960x540 grab through the same pointer-only imprint) | already up | missed (error string) -> DECIDE. After a miss, consulting is her choice; the tool text says so and Python never forces it. hang_up -> call down; she stays; the task stays open -> idle re-ask. "Call: up" written in text is not an answered call.
+4. ACT (GEMMA; PYTHON turns places into pixels): point(y, x) moves the mouse pointer to (y, x) and nothing else, y then x, on the one grid stated in the system text | click at the current pointer position | stroke(points): at most 32 "y x" pairs separated by ";", one polyline, no fresh grab | run | type_text | press. Unknown, missing, or invalid arguments, or any tool that raises -> str(exception) as the tool result, and the turn continues. Never a crash, never a silent default. -> DECIDE
+5. CALL (PYTHON places and carries the call). call_owner -> answered only when the line is up with him (the video is a live 960x540 grab through the same pointer-only imprint) | already up | missed (error string) -> DECIDE. After a miss, consulting is her choice; the tool text says so and Python never forces it. hang_up -> call down; she stays; the task stays open. There is no idle re-ask. "Call: up" written in text is not an answered call.
 6. CONSULT (GEMMA asks; PYTHON spawns). If the call is up she says aloud why. PYTHON runs a local read-only advisor (today the cursor-agent CLI in ask mode) with the consult model from the config, giving her question, her open task, the same pointer-imprinted screenshot, and the same 0-1000 grid. The advisor only advises. Python never stores, aims at, or clicks a place from that answer. The reply is the consult tool's own result in her conversation, labelled as the advisor's answer, never a request from him. The decision stays hers. Prompt and reply are mirrored. The advisor never edits files, commits, or launches agents.
-7. DONE / IDLE. speak ends the request; an open task -> idle re-ask. done(summary) -> mirror the summary, clear the task, stop idle re-ask, end the request, no automatic speech. If she wants him on the line she calls call_owner first. A new request from him replaces the task. Slot refresh when prompt_tokens + max_tokens >= context / slots (max_tokens 1024, slots from the config, images not counted).
+7. DONE. speak ends the request. Python does not send the task again. done(summary) -> mirror the summary, clear the task, end the request, no automatic speech. If she wants him on the line she calls call_owner first. A new request from him replaces the task. Slot refresh when prompt_tokens + max_tokens >= context / slots (max_tokens 1024, slots from the config, images not counted).
 8. MEMORY. remember(fact) -> PYTHON adds it to every later request. She still chooses.
 
 ## CONTRACTS

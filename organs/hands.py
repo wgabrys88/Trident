@@ -79,8 +79,6 @@ def stroke(coords: list[tuple[int, int]]) -> None:
             time.sleep(0.02)
         x, y = x1, y1
     _send([_mouse(x, y, up)])
-def drag(x0: int, y0: int, x1: int, y1: int) -> None:
-    stroke([(x0, y0), (x1, y1)])
 def press(keys: str) -> None:
     for chord in keys.lower().split():
         vks = [VK[part] for part in chord.replace("+", "-").split("-") if part]
