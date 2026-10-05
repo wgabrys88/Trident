@@ -62,6 +62,7 @@ class Trident:
 
     def start(self):
         self.brain.start()
+        self.push("wake", "No request is open.")
         self.line.start()
         threading.Thread(target=self.worker, name="trident-worker", daemon=True).start()
 
@@ -118,7 +119,7 @@ class Trident:
 
     def turn(self, kind: str, text: str) -> str:
         self.request = text
-        if kind != "idle":
+        if kind not in ("idle", "wake"):
             self.memory.set_task(text)
         if kind != "idle" or not self.brain.sent or self.near_slot():
             self.brain.sent = ""
@@ -151,8 +152,8 @@ class Trident:
         return ""
 
     def deliver(self, text: str):
-        if text and self.line.up:
-            self.speak(text)
+        if text:
+            self.speak(text) if self.line.up else self.line.send_text(text)
 
     def speak(self, text: str):
         self.line.speak(self.gate([sys.executable, "-m", "organs.mouth"], text.encode("utf-8")))
@@ -258,14 +259,14 @@ class Trident:
 
     def call_owner(self, opening: str = "") -> str:
         words = str(opening).strip()
-        if self.line.up:
-            if words:
-                self.speak(words)
-            return "already up"
-        self.line.dial()
+        was = self.line.up
+        if not was:
+            self.line.dial()
+        if not self.line.up:
+            raise RuntimeError("call missed")
         if words:
             self.speak(words)
-        return "answered"
+        return "already up" if was else "answered"
 
     def hang_up(self) -> str:
         self.line.hang()
