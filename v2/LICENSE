@@ -19,18 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
-================================================================================
-Third-party components
-================================================================================
-
-This project bundles, ports, or builds against the following third-party
-software, all under MIT-compatible licenses:
-
-* ggml — MIT License, Copyright (c) 2023-2026 The ggml authors.
-  Source: https://github.com/ggml-org/ggml
-  License: ggml/LICENSE
-
-* Chatterbox / Chatterbox Turbo — MIT License, Copyright (c) 2025 Resemble AI.
-  This project is a C++/ggml port of the Python implementation.
-  Source: https://github.com/resemble-ai/chatterbox

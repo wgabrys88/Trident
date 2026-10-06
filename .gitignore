@@ -1,6 +1,3 @@
-.venv/
-bin/
-models/
-state/
+v2/artifacts/
+v2/runs/
 __pycache__/
-run_*/

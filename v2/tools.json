@@ -1,0 +1,128 @@
+{
+  "screen": {
+    "handler": "tools:screen",
+    "boundary": false,
+    "description": "Capture the real Windows desktop and ask Gemma what is visibly there. Returns saved PNG, desktop origin, full pixel size, pointer, foreground title, and Gemma's report. Luna receives the report, not the image. Request visible text and exact coordinates needed for your next action. A screenshot may require crops via images for small details.",
+    "parameters": {"type": "object", "properties": {"question": {"type": "string", "minLength": 1}}, "required": ["question"], "additionalProperties": false}
+  },
+  "images": {
+    "handler": "tools:images",
+    "boundary": false,
+    "description": "Use Gemma to inspect PNG files, including desktop crops created with python. Specify the crop origin and scale in your question so Gemma can map coordinates to the desktop. Report what is unclear; never substitute imagined pixels.",
+    "parameters": {"type": "object", "properties": {"question": {"type": "string", "minLength": 1}, "paths": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}}, "required": ["question", "paths"], "additionalProperties": false}
+  },
+  "click": {
+    "handler": "tools:click",
+    "boundary": false,
+    "description": "Click at native Windows desktop pixel coordinates. Coordinates include the screenshot origin; they are not normalized or inferred from an app name. Verify the resulting screen using Gemma.",
+    "parameters": {"type": "object", "properties": {"x": {"type": "integer"}, "y": {"type": "integer"}, "button": {"type": "string", "enum": ["left", "right", "middle"]}, "count": {"type": "integer", "minimum": 1, "maximum": 2}}, "required": ["x", "y", "button", "count"], "additionalProperties": false}
+  },
+  "drag": {
+    "handler": "tools:drag",
+    "boundary": false,
+    "description": "Hold the left mouse button and trace a list of desktop pixel [x,y] points over the given duration. Use this for drawing in Paint or dragging a piece on the real chess site. Inspect the actual result with Gemma.",
+    "parameters": {"type": "object", "properties": {"points": {"type": "array", "minItems": 2, "items": {"type": "array", "prefixItems": [{"type": "integer"}, {"type": "integer"}], "minItems": 2, "maxItems": 2}}, "seconds": {"type": "number", "exclusiveMinimum": 0}}, "required": ["points", "seconds"], "additionalProperties": false}
+  },
+  "type_text": {
+    "handler": "tools:type_text",
+    "boundary": false,
+    "description": "Paste Unicode text into the focused Windows control using the clipboard. Establish focus from the observed desktop first.",
+    "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"], "additionalProperties": false}
+  },
+  "keys": {
+    "handler": "tools:keys",
+    "boundary": false,
+    "description": "Press one chord of PyAutoGUI key names, such as [ctrl,l], [enter], or [win,r]. Use multiple calls for successive chords. Inspect focus and result.",
+    "parameters": {"type": "object", "properties": {"chord": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}}, "required": ["chord"], "additionalProperties": false}
+  },
+  "scroll": {
+    "handler": "tools:scroll",
+    "boundary": false,
+    "description": "Scroll the focused desktop application vertically by signed wheel ticks; positive moves up.",
+    "parameters": {"type": "object", "properties": {"amount": {"type": "integer"}}, "required": ["amount"], "additionalProperties": false}
+  },
+  "python": {
+    "handler": "tools:python",
+    "boundary": false,
+    "description": "Execute Luna-authored async Python in this process. Available names: host, ROOT, asyncio; imports work normally. Return a JSON-serializable result. You can batch independent tool calls with asyncio.gather, call host.models.gemma for image analysis, crop PNGs, operate native APIs, and use existing integrations. Open persistent Windows apps using subprocess.Popen and return their PID. For CLI/PowerShell operations use subprocess.run with check=True and capture_output=True, returning actual output. Do not infer the next action in procedural code; Luna decides it. Change source only within an explicit self-healing goal.",
+    "parameters": {"type": "object", "properties": {"code": {"type": "string", "minLength": 1}}, "required": ["code"], "additionalProperties": false}
+  },
+  "chat": {
+    "handler": "tools:chat",
+    "boundary": false,
+    "description": "Send text to Wojciech's private Telegram chat. Chat requires no call. Sent message IDs establish Telegram delivery, not completion of the owner's task.",
+    "parameters": {"type": "object", "properties": {"text": {"type": "string", "minLength": 1}}, "required": ["text"], "additionalProperties": false}
+  },
+  "dial": {
+    "handler": "tools:dial",
+    "boundary": false,
+    "description": "Call Wojciech on Telegram when his live participation is needed for the active task. Wait for the actual connection. Boot never calls. Calling does not speak; use speak afterward.",
+    "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false}
+  },
+  "answer": {
+    "handler": "tools:answer",
+    "boundary": false,
+    "description": "Accept Wojciech's ringing incoming Telegram call and establish its audio line. This does not invent a task; listen to his words.",
+    "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false}
+  },
+  "speak": {
+    "handler": "tools:speak",
+    "boundary": false,
+    "description": "Synthesize the given words using chatterbox-nano-t3-q8_0 and transmit PCM on the connected Telegram call. A closed call is an error. The transcript and generated audio are logged. Do not claim Wojciech heard or agreed without his response.",
+    "parameters": {"type": "object", "properties": {"text": {"type": "string", "minLength": 1}}, "required": ["text"], "additionalProperties": false}
+  },
+  "hang": {
+    "handler": "tools:hang",
+    "boundary": false,
+    "description": "End the current Telegram call or decline the ringing call. Stay available for chat. Close the call before architecture activation or shutdown.",
+    "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false}
+  },
+  "remember": {
+    "handler": "tools:remember",
+    "boundary": false,
+    "description": "Replace the persistent memory in mind.json with verified facts, decisions, and open work.",
+    "parameters": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"], "additionalProperties": false}
+  },
+  "files": {
+    "handler": "tools:files",
+    "boundary": false,
+    "description": "Read every current source/configuration file directly inside v2 in full. Use these exact contents to reason about self-healing changes.",
+    "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false}
+  },
+  "heal": {
+    "handler": "tools:heal",
+    "boundary": true,
+    "description": "Pause the owner's goal and replace the active goal with the explicit self-healing objective. Use immediately when missing, wasteful, or inaccurate tools, prompts, model cooperation, or architecture require change. A subsequent step works on the repair. Keep this call last.",
+    "parameters": {"type": "object", "properties": {"goal": {"type": "string", "minLength": 1}}, "required": ["goal"], "additionalProperties": false}
+  },
+  "rewrite": {
+    "handler": "tools:rewrite",
+    "boundary": true,
+    "description": "During self-healing, delete named v2 files and write complete replacement/new file contents. Tools can be created, deleted, and modified by editing tools.json and their Python handlers together. Prefer deletion when sufficient. All project files, including this runtime and prompts, are editable. The next step reloads the catalog; use activate for changes to already imported core modules. Keep this call last.",
+    "parameters": {"type": "object", "properties": {"files": {"type": "object", "additionalProperties": {"type": "string"}}, "delete": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true}}, "required": ["files", "delete"], "additionalProperties": false}
+  },
+  "activate": {
+    "handler": "tools:activate",
+    "boundary": true,
+    "description": "Explicitly restart Python to activate rewritten architecture. Requires self-healing mode and no active call. Saves the suspended owner goal, trace, and lesson queue; reconnects Telegram without dialing; continues the repair goal. Keep this call last.",
+    "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false}
+  },
+  "resume": {
+    "handler": "tools:resume",
+    "boundary": true,
+    "description": "Finish the self-healing goal and resume the suspended owner goal. State the repair evidence and any remaining uncertainty. This does not mark the owner task complete. Keep this call last.",
+    "parameters": {"type": "object", "properties": {"evidence": {"type": "string", "minLength": 1}}, "required": ["evidence"], "additionalProperties": false}
+  },
+  "wait": {
+    "handler": "tools:wait",
+    "boundary": true,
+    "description": "Pause this goal until owner input and save its facts and open steps. Send any question through chat or speak before waiting. No idle learning occurs for an unfinished task. Keep this call last.",
+    "parameters": {"type": "object", "properties": {"memory": {"type": "string", "minLength": 1}}, "required": ["memory"], "additionalProperties": false}
+  },
+  "finish": {
+    "handler": "tools:finish",
+    "boundary": true,
+    "description": "Close the recorded owner task with observed evidence. It queues an idle lesson for Gemma and Luna. shutdown=true requests process exit after that lesson and requires a closed call. shutdown=false leaves an empty work queue waiting for owner input. Report to the owner separately through chat or speak before finishing. One answering part is not evidence of the whole scene. Keep this call last.",
+    "parameters": {"type": "object", "properties": {"evidence": {"type": "string", "minLength": 1}, "shutdown": {"type": "boolean"}}, "required": ["evidence", "shutdown"], "additionalProperties": false}
+  }
+}

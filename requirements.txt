@@ -1,7 +1,0 @@
-numpy
-Pillow
-onnxruntime==1.20.1
-telethon==1.45.0
-ntgcalls==3.0.0
-opentele-ng==1.4.0
-pywin32==312

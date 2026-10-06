@@ -1,0 +1,39 @@
+[owner]
+telegram_id = 5884279027
+
+[luna]
+model = "gpt-5.6-luna-none"
+command = ["%LOCALAPPDATA%/cursor-agent/versions/2026.10.01-e373342/node.exe", "%LOCALAPPDATA%/cursor-agent/versions/2026.10.01-e373342/index.js"]
+
+[telegram]
+tdata = "%APPDATA%/Telegram Desktop/tdata"
+
+[gemma]
+url = "http://127.0.0.1:8080"
+command = ["artifacts/llama/llama-server.exe", "--model", "artifacts/gemma-4-E2B-it-Q4_0.gguf", "--mmproj", "artifacts/mmproj-gemma-4-E2B-it-Q8_0.gguf", "--chat-template-file", "artifacts/gemma.jinja", "--alias", "gemma", "--host", "127.0.0.1", "--port", "8080", "--jinja", "--ctx-size", "32768", "--device", "CUDA0", "--n-gpu-layers", "999", "--parallel", "1", "--flash-attn", "on", "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "--no-context-shift", "--no-webui", "--fit", "off"]
+
+[ears]
+model = "artifacts/nemotron-3.5-asr-streaming-0.6b.q8_0.gguf"
+command = "artifacts/nemo/bin/nemo-speech.exe"
+rms_threshold = 0.012
+silence_ms = 700
+padding_ms = 120
+utterance_seconds = 30
+
+[voice]
+url = "http://127.0.0.1:8091"
+command = ["artifacts/voice/crispasr.exe", "--server", "--host", "127.0.0.1", "--port", "8091", "--backend", "chatterbox-nano", "-m", "artifacts/chatterbox-nano-t3-q8_0.gguf", "--codec-model", "artifacts/chatterbox-turbo-s3gen-q8_0.gguf", "--gpu-backend", "vulkan", "--tts-steps", "2", "--no-punctuation"]
+
+[install]
+llama_tag = "b11435"
+llama_assets = ["llama-b11435-bin-win-cuda-12.4-x64.zip", "cudart-llama-bin-win-cuda-12.4-x64.zip"]
+nemo_url = "https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v0.1.0/nemo-speech-0.1.0-windows-x86_64-cuda.zip"
+voice_url = "https://github.com/CrispStrobe/CrispASR/releases/download/v0.8.41/crispasr-windows-x86_64-vulkan.zip"
+
+[install.models]
+"gemma-4-E2B-it-Q4_0.gguf" = "https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_0.gguf"
+"mmproj-gemma-4-E2B-it-Q8_0.gguf" = "https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/mmproj-gemma-4-E2B-it-Q8_0.gguf"
+"gemma.jinja" = "https://huggingface.co/google/gemma-4-E2B-it/resolve/3e22461f65e89153144f8adb70e3b8c2cc9845a7/chat_template.jinja"
+"nemotron-3.5-asr-streaming-0.6b.q8_0.gguf" = "https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b/resolve/main/nemotron-3.5-asr-streaming-0.6b.q8_0.gguf"
+"chatterbox-nano-t3-q8_0.gguf" = "https://huggingface.co/cstr/chatterbox-nano-GGUF/resolve/main/chatterbox-nano-t3-q8_0.gguf"
+"chatterbox-turbo-s3gen-q8_0.gguf" = "https://huggingface.co/cstr/chatterbox-turbo-GGUF/resolve/main/chatterbox-turbo-s3gen-q8_0.gguf"
