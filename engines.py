@@ -9,7 +9,7 @@ CFG = CONFIG["brain"]
 class Child:
     """Own the entire worker job before its first instruction can execute."""
     def __init__(self, args, folder, data=b"", env=None):
-        self.job = win32job.CreateJobObject(None, None)
+        self.job = win32job.CreateJobObject(None, "")
         self.process = thread = None
         self.streams = [tempfile.TemporaryFile(dir=folder) for _ in range(3)]
         stdin, self.output, self.errors = self.streams
