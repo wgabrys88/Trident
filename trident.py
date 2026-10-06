@@ -138,7 +138,7 @@ class Trident:
         return "Call: down"
 
     def worker(self, name, args, data=b"", files=(), binary=False, interrupt=True):
-        if name in ("ASR", "TTS"):
+        if name in ("ASR", "TTS") and CONFIG["brain"]["release_gpu"]:
             self.models.stop()
         label = {"ASR": CONFIG["ears"]["model"], "TTS": CONFIG["mouth"]["model"],
                  "Advisor": CONFIG["cloud"]["model"], "Writer": CONFIG["cloud"]["model"]}[name]

@@ -16,7 +16,6 @@ context = 8192
 gpu_layers = 999
 threads = 4
 image_tokens = 1120
-flash_attention = "on"
 thinking = true
 batch = 1152
 ubatch = 1152
@@ -44,7 +43,6 @@ min_utterance_s = 1.0
 model = "nemotron-3.5-asr-streaming-0.6b.q8_0.gguf"
 
 [mouth]
-device = "cuda"
 model = "chatterbox-turbo"
 reference = "reference.wav"
 
@@ -54,12 +52,9 @@ desk_fps = 12
 
 [install]
 llama_tag = "b11435"
-llama_asset = "bin-win-cuda-12.4-x64.zip"
-cudart_asset = "cudart-llama-bin-win-cuda-12.4-x64.zip"
 template_url = "https://huggingface.co/google/gemma-4-E2B-it/resolve/3e22461f65e89153144f8adb70e3b8c2cc9845a7/chat_template.jinja"
 nemo_url = "https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v0.1.0/nemo-speech-0.1.0-windows-x86_64-vulkan.zip"
 gemma_url = "https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_0.gguf"
 mmproj_url = "https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/mmproj-gemma-4-E2B-it-Q8_0.gguf"
 ear_url = "https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b/resolve/main/nemotron-3.5-asr-streaming-0.6b.q8_0.gguf"
 silero_url = "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx"
-torch_index = "https://download.pytorch.org/whl/cu124"

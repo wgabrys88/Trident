@@ -7,7 +7,10 @@ RATE, WINDOW = 16000, 512
 
 class Segmenter:
     def __init__(self):
-        self.session = ort.InferenceSession(str(MODELS / "silero_vad.onnx"), providers=["CPUExecutionProvider"])
+        options = ort.SessionOptions()
+        options.intra_op_num_threads = 1
+        options.inter_op_num_threads = 1
+        self.session = ort.InferenceSession(str(MODELS / "silero_vad.onnx"), options, providers=["CPUExecutionProvider"])
         self.reset()
 
     def reset(self):
