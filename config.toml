@@ -1,4 +1,5 @@
 helper_cap = 100
+compact_at = 24000
 
 [owner]
 telegram_id = 5884279027
@@ -40,7 +41,7 @@ port = 8080
 threads = 4
 # Model-specific flags stay here. Paths are relative to this workspace.
 server_args = [
-    "--ctx-size", "16384", "--n-gpu-layers", "999",
+    "--ctx-size", "32768", "--n-gpu-layers", "999",
     "--batch-size", "1152", "--ubatch-size", "1152", "--image-max-tokens", "1120",
 ]
 [brain.options]
@@ -49,7 +50,7 @@ top_k = 64
 top_p = 0.95
 min_p = 0.0
 max_tokens = -1
-chat_template_kwargs = { enable_thinking = true, preserve_thinking = true }
+chat_template_kwargs = { enable_thinking = true, preserve_thinking = false }
 
 [eyes]
 max_side = 1920

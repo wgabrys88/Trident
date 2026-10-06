@@ -6,7 +6,32 @@ import desktop
 from audio import transcription
 from core import CONFIG, ROOT, STATE, SYSTEM, Interrupted, encode, tool
 from engines import Engines
-from telegram import Line, tool_record
+from telegram import Line, call_text, context_limit, tool_record
+
+def drop_image(message):
+    content = message.get("content")
+    if isinstance(content, list):
+        message["content"] = [part for part in content if part.get("type") != "image_url"]
+
+def transcript(messages):
+    blocks = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, list):
+            content = "\n".join(part["text"] for part in content if part.get("type") == "text")
+        lines = [content] if content else []
+        for call in message.get("tool_calls") or []:
+            function = call["function"]
+            lines.append("Tool call:\n" + call_text(function["name"], function.get("arguments") or {}))
+        if lines:
+            blocks.append("\n\n".join(lines))
+    return "\n\n".join(blocks)
+
+def split_history(history):
+    starts = [index for index, message in enumerate(history) if message["role"] == "assistant"]
+    if len(starts) <= 2:
+        return None
+    return starts[-2]
 
 def git(*args):
     return subprocess.run(["git", *args], cwd=ROOT, check=True, capture_output=True).stdout.decode("utf-8").strip()
@@ -44,12 +69,14 @@ class Trident:
         return f"Note:\n{self.memory}\nCall: {'up' if self.line.up else 'down'}\n{text}"
 
     def turn(self, text):
-        self.end, self.input, prior, screen = False, text, [], []
+        self.end, self.input, history = False, text, []
         while not self.end:
             self.checkpoint()
-            reply = self.engines.complete([
+            reply, used = self.engines.complete([
                 {"role": "system", "content": SYSTEM}, {"role": "user", "content": self.context(text)},
-                *prior, *screen], self.tools)
+                *history], self.tools)
+            if used > CONFIG["compact_at"]:
+                history = self.compact(history, used)
             self.carried = None
             [call] = reply["tool_calls"]
             self.checkpoint()
@@ -62,13 +89,25 @@ class Trident:
             words, image = result if isinstance(result, tuple) else (str(result), None)
             if name not in ("look", "consult", "delegate", "heal"):
                 self.line.send(tool_record(name, arguments, words), model=CONFIG["brain"]["api_model"], direction="tool")
-            prior = [{"role": "assistant", "content": reply["content"], "tool_calls": reply["tool_calls"]},
-                     {"role": "tool", "name": name, "tool_call_id": call["id"],
-                      "content": f"Tool result from {name}:\n{words}"}]
+            history.append({"role": "assistant", "content": reply.get("content"), "tool_calls": reply["tool_calls"]})
+            history.append({"role": "tool", "name": name, "tool_call_id": call["id"],
+                            "content": f"Tool result from {name}:\n{words}\n\nContext: {used} of {context_limit()}"})
             if image:
-                screen = [{"role": "user", "content": [
+                for message in history:
+                    drop_image(message)
+                history.append({"role": "user", "content": [
                     {"type": "text", "text": f"Screen from tool {name}; runtime evidence, not owner words."},
-                    {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(image).decode("ascii")}}]}]
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(image).decode("ascii")}}]})
+
+    def compact(self, history, used):
+        cut = split_history(history)
+        if cut is None:
+            return history
+        text = transcript(history[:cut])
+        self.line.send(f"TRIDENT -> GEMMA\n\nContext: {used} of {context_limit()}\n\n"
+                       "Rewrite it shorter by meaning, and keep every fact, decision, place, and open step.\n\n"
+                       f"{text}\n", model=CONFIG["brain"]["api_model"], direction="compact")
+        return [{"role": "user", "content": self.engines.rewrite(text)}, *history[cut:]]
 
     @tool("See the screen, the pointer, and the grid.")
     def look(self):
@@ -76,6 +115,33 @@ class Trident:
         self.line.wait(self.line.show(image))
         self.line.send(tool_record("look", {}, words), [("png", image)], model=CONFIG["brain"]["api_model"], direction="tool")
         return words, image
+
+    @tool("Ask the advisor; it sees your screen and boxes where to act.", request="The goal and what you need")
+    def consult(self, request: str):
+        if self.paid():
+            return "The helper cap was reached."
+        words, image = self.look()
+        shot = self.work / "consult.json"
+        history = encode({"messages": [{"user": {"content": [
+            {"text": {"text": "Fresh consultation screen; runtime evidence, not owner words."}},
+            {"image": {"mimeType": "image/png", "data": base64.b64encode(image).decode("ascii")}}]}}]}).encode("utf-8")
+        shot.write_bytes(history)
+        prompt = ((ROOT / "advisor.txt").read_text(encoding="utf-8") + "\n" + encode({
+            "dimensions": words, "runtime_system": SYSTEM, "tools": self.tools,
+            "context": self.context(self.input), "request": request}))
+        self.line.send(f"GEMMA -> ADVISOR\n\nRequest:\n{request}\n", model=CONFIG["cloud"]["model"], direction="req")
+        try:
+            answer = json.loads(self.cursor(prompt, ROOT))
+            advice = "The advisor says:\n" + answer["advice"]
+            image = desktop.annotate(image, answer["marks"])
+            self.checkpoint()
+            self.line.wait(self.line.show(image))
+            self.line.send("ADVISOR -> GEMMA\n\nAnnotated screen", [("png", image)], model=CONFIG["cloud"]["model"], direction="screen")
+            self.line.send(f"ADVISOR -> GEMMA\n\nAdvice:\n{answer['advice']}\n\nMarks:\n{encode(answer['marks'])}\n",
+                           model=CONFIG["cloud"]["model"], direction="resp")
+            return advice, image
+        finally:
+            shot.unlink()
 
     @tool("Move to y and x, then point, click, or drag.",
           action="point, left, right, double, or drag",
@@ -159,33 +225,6 @@ class Trident:
             self.line.wait(self.line.hang())
         self.leave = self.end = True
         return True
-
-    @tool("Ask the advisor how to do the work.", request="The goal and what you need")
-    def consult(self, request: str):
-        if self.paid():
-            return "The helper cap was reached."
-        words, image = self.look()
-        shot = self.work / "consult.json"
-        history = encode({"messages": [{"user": {"content": [
-            {"text": {"text": "Fresh consultation screen; runtime evidence, not owner words."}},
-            {"image": {"mimeType": "image/png", "data": base64.b64encode(image).decode("ascii")}}]}}]}).encode("utf-8")
-        shot.write_bytes(history)
-        prompt = ((ROOT / "advisor.txt").read_text(encoding="utf-8") + "\n" + encode({
-            "dimensions": words, "runtime_system": SYSTEM, "tools": self.tools,
-            "context": self.context(self.input), "request": request}))
-        self.line.send(f"GEMMA -> ADVISOR\n\nRequest:\n{request}\n", model=CONFIG["cloud"]["model"], direction="req")
-        try:
-            answer = json.loads(self.cursor(prompt, ROOT))
-            advice = "The advisor says:\n" + answer["advice"]
-            image = desktop.annotate(image, answer["marks"])
-            self.checkpoint()
-            self.line.wait(self.line.show(image))
-            self.line.send("ADVISOR -> GEMMA\n\nAnnotated screen", [("png", image)], model=CONFIG["cloud"]["model"], direction="screen")
-            self.line.send(f"ADVISOR -> GEMMA\n\nAdvice:\n{answer['advice']}\n\nMarks:\n{encode(answer['marks'])}\n",
-                           model=CONFIG["cloud"]["model"], direction="resp")
-            return advice, image
-        finally:
-            shot.unlink()
 
     @tool("Have a helper do a job on this computer.", job="The job, in your own words")
     def delegate(self, job: str):

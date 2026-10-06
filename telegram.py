@@ -64,7 +64,8 @@ def brain_response(raw):
     data = json.loads(raw)
     usage = data["usage"]
     body = assistant_lines(data["choices"][0]["message"])
-    return f"GEMMA -> TRIDENT\n\n{body}\n\nContext size: {context_limit()}\nTokens used: {usage['prompt_tokens']}\n"
+    used = usage["prompt_tokens"] + usage["completion_tokens"]
+    return f"GEMMA -> TRIDENT\n\n{body}\n\nContext: {used} of {context_limit()}\n"
 
 def tool_record(name, arguments, words):
     return f"GEMMA -> TRIDENT\n\nTool call:\n{call_text(name, arguments)}\n\nTool response:\n{words}\n"

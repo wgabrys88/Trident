@@ -147,7 +147,7 @@ class Engines:
                 "--mmproj", MODELS / CFG["mmproj"], "--chat-template-file", ROOT / CFG["template"],
                 "--host", CFG["host"], "--port", str(CFG["port"]), "--threads", str(CFG["threads"]), "--parallel", "2",
                 "--kv-unified", "--alias", CFG["api_model"], "--jinja", "--no-context-shift", "--no-webui", "--fit", "off",
-                "--cache-ram", "0", "--log-verbosity", "0", *CFG["server_args"], *HARDWARE["server_args"]]
+                "--log-verbosity", "0", *CFG["server_args"], *HARDWARE["server_args"]]
         self.child = Child(args, self.folder, env=environment(HARDWARE))
         self.wait_ready(self.child, self.healthy, "llama-server")
 
@@ -205,18 +205,29 @@ class Engines:
                                           {"Content-Type": "application/json"})
         text = self.fetch(request, abort=True).decode("utf-8")
         self.record(brain_response(text), (), CFG["api_model"], "resp")
-        choice = json.loads(text)["choices"][0]
+        data = json.loads(text)
+        choice = data["choices"][0]
         if choice["finish_reason"] == "length":
             raise RuntimeError("Model context or output capacity exhausted; request ended without replay")
-        return choice["message"]
+        usage = data["usage"]
+        return choice["message"], usage["prompt_tokens"] + usage["completion_tokens"]
 
     def complete(self, messages, tools):
         return self.post({**CFG["options"], "model": CFG["api_model"], "messages": messages, "tools": tools,
                           "tool_choice": "required", "parallel_tool_calls": False})
 
+    def rewrite(self, text):
+        message, _ = self.post({**CFG["options"], "model": CFG["api_model"], "messages": [
+            {"role": "system", "content": "Rewrite it shorter by meaning, and keep every fact, decision, place, and open step."},
+            {"role": "user", "content": text}], "chat_template_kwargs": {"enable_thinking": False}})
+        content = (message.get("content") or "").strip()
+        if not content:
+            raise RuntimeError("Compaction returned nothing")
+        return content
+
     def utterances(self, text):
         # The splitter is the same local Gemma with tools off, not a second mind.
-        message = self.post({**CFG["options"], "model": CFG["api_model"], "messages": [
+        message, _ = self.post({**CFG["options"], "model": CFG["api_model"], "messages": [
             {"role": "system", "content": "Split these words into natural spoken utterances of a few sentences each, well under twenty-five seconds, copying every word in order and separating the utterances with a blank line."},
             {"role": "user", "content": text}], "chat_template_kwargs": {"enable_thinking": False}})
         pieces = [part.strip() for part in (message.get("content") or "").split("\n\n") if part.strip()]

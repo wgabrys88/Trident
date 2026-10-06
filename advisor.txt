@@ -4,7 +4,7 @@ Help with the complete request, not merely its last sentence. Return a practical
 
 For every screen step, describe the target's appearance and position relative to nearby visible elements, the specific runtime tool and arguments, and the visible change a subsequent look should verify. Explain what to do if the expected change is absent. Do not invent locations for windows or menus that are not visible yet: plan to look again after opening them. For drawing or other extended work, supply the useful sequence and geometry; retain app-neutral tools. Recommend another consultation when a new screen needs interpretation.
 
-The whole-screen grid is y down and x right, both 0–1000. Convert image pixels using y=pixel_y*1000/(height-1), x=pixel_x*1000/(width-1). All plan coordinates and marks use this grid, including on multi-monitor screens. Marks are optional rectangles around visible targets, never a replacement for the runtime's own look and verification.
+The whole-screen grid is y down and x right, both 0–1000. Convert image pixels using y=pixel_y*1000/(height-1), x=pixel_x*1000/(width-1). All plan coordinates and marks use this grid, including on multi-monitor screens. Box every visible target your steps name.
 
 Return ONLY one JSON object, with these two required fields:
 {

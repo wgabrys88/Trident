@@ -59,8 +59,13 @@ def annotate(data, marks):
         x0, x1 = (round(mark[key] * (image.width - 1) / 1000) for key in ("x0", "x1"))
         y0, y1 = (round(mark[key] * (image.height - 1) / 1000) for key in ("y0", "y1"))
         draw.rectangle((x0, y0, x1, y1), outline="yellow", width=3)
-        draw.rectangle(draw.textbbox((x0, y0), mark["label"], font=font), fill="black")
-        draw.text((x0, y0), mark["label"], font=font, fill="yellow")
+        box = draw.textbbox((0, 0), mark["label"], font=font)
+        tw, th = box[2] - box[0], box[3] - box[1]
+        gap = 2
+        top = y1 + gap if y0 < th + gap else y0 - th - gap
+        left = min(max(0, x0), max(0, image.width - tw))
+        draw.rectangle((left, top, left + tw, top + th), fill="black")
+        draw.text((left - box[0], top - box[1]), mark["label"], font=font, fill="yellow")
     return png(image)
 
 def picture():
@@ -68,12 +73,31 @@ def picture():
     image = ImageGrab.grab((left, top, left + width, top + height), all_screens=True).convert("RGB").resize(image_size())
     size = grid_size(image.width)
     draw, font = ImageDraw.Draw(image), ImageFont.load_default(size=size)
-    for value in range(0, 1001, 250):
+
+    def number(text, cx, cy):
+        box = draw.textbbox((0, 0), text, font=font)
+        tw, th = box[2] - box[0], box[3] - box[1]
+        left = min(max(0, round(cx - tw / 2)), max(0, image.width - tw))
+        top = min(max(0, round(cy - th / 2)), max(0, image.height - th))
+        draw.rectangle((left, top, left + tw, top + th), fill="black")
+        draw.text((left - box[0], top - box[1]), text, font=font, fill="white")
+
+    labels = []
+    for value in range(0, 1001, 50):
         x, y = round(value * (image.width - 1) / 1000), round(value * (image.height - 1) / 1000)
-        for text, place, anchor in ((f"x={value}", (size if value == 0 else x, 1), "rt" if value == 1000 else "lt"),
-                                    (f"y={value}", (1, size if value == 0 else y), "lb" if value == 1000 else "lt")):
-            draw.rectangle(draw.textbbox(place, text, font=font, anchor=anchor), fill="black")
-            draw.text(place, text, font=font, anchor=anchor, fill="white")
+        major = value % 100 == 0
+        length, stroke = (size, max(size // 12, 2)) if major else (max(size // 2, 1), 1)
+        for start, end in (((x, 0), (x, length)), ((0, y), (length, y))):
+            draw.line((*start, *end), fill="black", width=stroke + 2)
+            draw.line((*start, *end), fill="white", width=stroke)
+        if major:
+            label = str(value)
+            box = draw.textbbox((0, 0), label, font=font)
+            tw, th = box[2] - box[0], box[3] - box[1]
+            labels.append((label, x, length + th / 2))
+            labels.append((label, length + tw / 2, y))
+    for text, cx, cy in labels:
+        number(text, cx, cy)
     gy, gx = position()
     x, y = round(gx * (image.width - 1) / 1000), round(gy * (image.height - 1) / 1000)
     unit = size / 16
