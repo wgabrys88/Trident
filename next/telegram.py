@@ -61,6 +61,7 @@ class Line:
         self.linked = False
         self.signals = []
         self.segmenter = Segmenter()
+        self.checkpoint = lambda: None
 
     @property
     def up(self):
@@ -309,6 +310,7 @@ class Line:
             raise RuntimeError("Call: down")
         started = time.monotonic()
         for n, offset in enumerate(range(0, len(pcm), 960), 1):
+            self.checkpoint()
             await self.frame(StreamDevice.MICROPHONE, pcm[offset:offset + 960].ljust(960, b"\0"))
             await asyncio.sleep(max(0, started + n * 0.01 - time.monotonic()))
 

@@ -1,4 +1,5 @@
 import base64
+import io
 import json
 import msvcrt
 import os
@@ -8,10 +9,12 @@ import sys
 import tempfile
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from pathlib import Path
+from PIL import Image
 from next import CONFIG, ROOT, STATE, contract
 from next import desktop
-from next.models import Models
+from next.models import Child, Interrupted, Models
 from next.speech import transcription_command
 from next.telegram import Line
 
@@ -45,7 +48,23 @@ class Trident:
         self.methods = {tool["function"]["name"]: getattr(self, tool["function"]["name"]) for tool in self.tools}
         self.requests = int(os.environ.get("TRIDENT_REQUESTS", "0"))
         self.pending_restart = False
-        self.models = Models(self.run_dir, self.line.send_text)
+        self.models = Models(self.run_dir, self.line.send_text, self.checkpoint)
+        self.line.checkpoint = self.checkpoint
+
+    def owner_pending(self):
+        with self.events.mutex:
+            return any(kind in ("text", "audio") for kind, _ in self.events.queue)
+
+    def checkpoint(self):
+        if self.owner_pending():
+            raise Interrupted("New owner input interrupted the current request.")
+
+    @staticmethod
+    def image_info(png):
+        width, height = Image.open(io.BytesIO(png)).size
+        return (f"Whole-screen image: width {width} pixels, height {height} pixels. "
+                f"Grid x = pixel_x * 1000 / {width - 1}; grid y = pixel_y * 1000 / {height - 1}. "
+                "Use named arguments y (vertical) and x (horizontal).")
 
     def charge(self):
         if self.requests >= CONFIG["brain"]["request_limit"]:
@@ -58,20 +77,38 @@ class Trident:
                           "Wake" if source == "Wake" else source + ":\n" + new])
 
     def completion(self, messages):
+        self.checkpoint()
         self.charge()
         self.models.brain()
         cfg = CONFIG["brain"]
         body = {"model": "Gemma", "messages": messages, "tools": self.tools, "tool_choice": "auto",
-                "parallel_tool_calls": False, "chat_template_kwargs": {"enable_thinking": cfg["thinking"]},
+                "parallel_tool_calls": False, "chat_template_kwargs": {"enable_thinking": cfg["thinking"], "preserve_thinking": True},
                 "max_tokens": cfg["max_tokens"], "temperature": cfg["temperature"],
                 "top_k": cfg["top_k"], "top_p": cfg["top_p"], "min_p": cfg["min_p"]}
         request = urllib.request.Request(self.models.url + "/v1/chat/completions", json.dumps(body).encode("utf-8"),
                                          {"Content-Type": "application/json"})
-        try:
-            with urllib.request.urlopen(request, timeout=600) as response:
-                raw = response.read()
-        except urllib.error.HTTPError as error:
-            raise RuntimeError(error.read().decode("utf-8", "replace")) from error
+        def receive():
+            try:
+                with urllib.request.urlopen(request, timeout=600) as response:
+                    return response.read()
+            except urllib.error.HTTPError as error:
+                raise RuntimeError(error.read().decode("utf-8", "replace")) from error
+        with ThreadPoolExecutor(max_workers=1) as worker:
+            response = worker.submit(receive)
+            try:
+                while True:
+                    self.checkpoint()
+                    try:
+                        raw = response.result(timeout=0.05)
+                        break
+                    except FutureTimeout:
+                        if response.done():
+                            raw = response.result()
+                            break
+            except Interrupted:
+                self.models.stop()
+                raise
+        self.checkpoint()
         self.line.send_text(raw.decode("utf-8"))
         response = json.loads(raw)
         choice = response["choices"][0]
@@ -90,10 +127,11 @@ class Trident:
             if not calls:
                 return
             for call in calls:
+                self.checkpoint()
                 name = call["function"]["name"]
                 try:
                     result = self.methods[name](**json.loads(call["function"]["arguments"]))
-                except EmptyFuel:
+                except (EmptyFuel, Interrupted):
                     raise
                 except Exception as error:
                     result = str(error)
@@ -104,6 +142,8 @@ class Trident:
                 else:
                     words, png = str(result), None
                 content = self.request_text(words, "Tool result from " + name)
+                if png is not None:
+                    content += "\n" + self.image_info(png)
                 self.line.send_text(content)
                 if png is not None:
                     content = [{"type": "text", "text": content},
@@ -112,7 +152,7 @@ class Trident:
 
     def speak(self, text: str):
         if self.line.up:
-            pcm = self.models.speech("TTS", [sys.executable, "-m", "next.speech"], text.encode("utf-8"))
+            pcm = self.models.speech("TTS", [sys.executable, "-m", "next.speech", str(self.run_dir / "voice.pt")], text.encode("utf-8"))
             self.line.wait(self.line.speak(pcm), len(pcm) / 96000 + 30)
             return "The words were spoken on the call."
         self.line.send_text(text)
@@ -157,7 +197,18 @@ class Trident:
         args = [str(version / "node.exe"), str(version / "index.js"), "-p", "--trust",
                 "--model", CONFIG["cloud"]["model"], "--output-format", "text", "--workspace", str(folder)]
         args += ["--force"] if writing else ["--mode", "ask"]
-        answer = process(args + [prompt], cwd=folder).decode("utf-8", "replace")
+        if writing:
+            raw = process(args + [prompt], cwd=folder)
+        else:
+            child = Child(args + [prompt], folder, "advisor", cwd=folder)
+            try:
+                code = child.wait(1800, self.checkpoint)
+                if code:
+                    raise RuntimeError(child.error(code))
+                raw = child.output.read_bytes()
+            finally:
+                child.close()
+        answer = raw.decode("utf-8", "replace")
         if not answer.strip():
             raise RuntimeError("cursor-agent returned nothing.")
         return answer
@@ -168,12 +219,11 @@ class Trident:
         png = self.look()
         shot = folder / "screen.png"
         shot.write_bytes(png)
-        grid = next(line for line in self.system.splitlines() if line.startswith("Use look to see")).split(". ", 2)[1] + "."
-        prompt = f"You advise Gemma. Advice only; do not act, edit files or launch agents. Read {shot}; it is the whole current screen with its pointer arrow.\n{grid}\nGive concrete next steps using her point(y,x), click(how), stroke(points), type_text(text), or press(keys) tools as appropriate. Use desktop grid coordinates for places. Describe what she should verify with look; say if you cannot locate a target. You do not execute these steps; she decides.\nNote:\n{self.memory}\nQuestion:\n{question}"
+        prompt = f"You advise Gemma. Advice only; do not act, edit files or launch agents. Read {shot}; it is the whole current screen with its pointer arrow.\n{self.image_info(png)}\nLocate each target in image pixels, calculate its grid coordinates using the image dimensions, and give named arguments only: point(y=vertical, x=horizontal). Never give ambiguous positional pairs. Check that each computed point falls on the target in this image. Give one next action and what look must verify, using point, click, stroke, type_text or press as appropriate. Do not assume a previous action succeeded: the current image is the evidence. If you cannot see a target, say so. You do not execute anything; Gemma decides.\nNote:\n{self.memory}\nQuestion:\n{question}"
         self.line.send_text(prompt)
         try:
             answer = "The advisor says: " + self.cursor(prompt, folder)
-        except EmptyFuel:
+        except (EmptyFuel, Interrupted):
             raise
         except Exception as error:
             answer = str(error)
@@ -229,12 +279,25 @@ class Trident:
                     if self.pending_restart and self.line.wait(self.line.reserve_restart()):
                         return RESTART
                     continue
-                if kind == "audio":
-                    raw = self.models.speech("ASR", transcription_command(self.run_dir / "call.wav", payload))
-                    payload = json.loads(raw)["text"]
-                    if not payload:
-                        continue
-                result = self.turn(payload, "Wake" if kind == "wake" else "Owner words")
+                wake = kind == "wake"
+                words, deferred = [], []
+                while True:
+                    if kind == "call_down":
+                        deferred.append((kind, payload))
+                    elif kind != "wake":
+                        if kind == "audio":
+                            raw = self.models.speech("ASR", transcription_command(self.run_dir / "call.wav", payload))
+                            payload = json.loads(raw)["text"]
+                        if payload:
+                            words.append(payload)
+                    if not self.owner_pending():
+                        break
+                    kind, payload = self.events.get()
+                for event in deferred:
+                    self.events.put(event)
+                if not words and not wake:
+                    continue
+                result = self.turn("\n\n".join(words), "Owner words" if words else "Wake")
                 if result is RESTART:
                     return result
                 if self.requests >= CONFIG["brain"]["request_limit"]:

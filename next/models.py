@@ -14,6 +14,10 @@ from next import BIN, CONFIG, MODELS, ROOT
 KERNEL = ctypes.WinDLL("kernel32", use_last_error=True)
 
 
+class Interrupted(Exception):
+    pass
+
+
 class Limits(ctypes.Structure):
     _fields_ = [("process_time", ctypes.c_int64), ("job_time", ctypes.c_int64), ("flags", W.DWORD),
                 ("working_min", ctypes.c_size_t), ("working_max", ctypes.c_size_t), ("active_limit", W.DWORD),
@@ -50,7 +54,7 @@ def checked(result):
 
 class Child:
     """Start suspended, join a kill-on-close job, then allow model code to run."""
-    def __init__(self, args, folder, name, data=b""):
+    def __init__(self, args, folder, name, data=b"", cwd=ROOT):
         self.job = checked(KERNEL.CreateJobObjectW(None, None))
         self.process = thread = None
         self.output, self.errors = folder / (name + ".stdout"), folder / (name + ".stderr")
@@ -68,7 +72,7 @@ class Child:
                                                 hStdInput=handles[0], hStdOutput=handles[1], hStdError=handles[2])
                 self.process, thread, self.pid, _ = _winapi.CreateProcess(
                     str(args[0]), subprocess.list2cmdline([str(arg) for arg in args]), None, None,
-                    True, subprocess.CREATE_NO_WINDOW | 0x4, None, str(ROOT), startup)
+                    True, subprocess.CREATE_NO_WINDOW | 0x4, None, str(cwd), startup)
                 checked(KERNEL.AssignProcessToJobObject(self.job, self.process))
                 if KERNEL.ResumeThread(thread) == 0xFFFFFFFF:
                     raise ctypes.WinError(ctypes.get_last_error())
@@ -85,8 +89,9 @@ class Child:
         if _winapi.WaitForSingleObject(self.process, 0) == _winapi.WAIT_OBJECT_0:
             return _winapi.GetExitCodeProcess(self.process)
 
-    def wait_empty(self, deadline):
+    def wait_empty(self, deadline, checkpoint=lambda: None):
         while True:
+            checkpoint()
             accounting = Accounting()
             checked(KERNEL.QueryInformationJobObject(self.job, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None))
             if accounting.active == 0:
@@ -95,8 +100,8 @@ class Child:
                 raise TimeoutError(f"Model job {self.pid} still has {accounting.active} active processes.")
             time.sleep(0.05)
 
-    def wait(self, seconds):
-        self.wait_empty(time.monotonic() + seconds)
+    def wait(self, seconds, checkpoint=lambda: None):
+        self.wait_empty(time.monotonic() + seconds, checkpoint)
         return self.poll()
 
     def close(self):
@@ -115,8 +120,9 @@ class Child:
 
 class Models:
     """One owner for all local GPU model processes; speech never reloads Gemma."""
-    def __init__(self, folder, report):
+    def __init__(self, folder, report, checkpoint=lambda: None):
         self.folder, self.report = folder, report
+        self.checkpoint = checkpoint
         self.lock = threading.RLock()
         self.child = None
         self.name = ""
@@ -151,7 +157,7 @@ class Models:
             self.stop()
             try:
                 self.start(name, args, data)
-                code = self.child.wait(600)
+                code = self.child.wait(600, self.checkpoint if name != "ASR" else lambda: None)
                 output = self.child.output.read_bytes()
                 if code:
                     raise RuntimeError(self.child.error(code))
@@ -185,6 +191,7 @@ class Models:
                 self.start("Gemma", args)
                 deadline = time.monotonic() + 300
                 while time.monotonic() < deadline:
+                    self.checkpoint()
                     code = self.child.poll()
                     if code is not None:
                         raise RuntimeError(self.child.error(code))

@@ -3,7 +3,7 @@ import io
 import subprocess
 import time
 from ctypes import wintypes as W
-from PIL import Image, ImageDraw, ImageGrab
+from PIL import Image, ImageDraw, ImageFont, ImageGrab
 from next import CONFIG
 
 USER = ctypes.WinDLL("user32", use_last_error=True)
@@ -69,6 +69,18 @@ def picture():
     image = ImageGrab.grab(bbox=(left, top, left + width, top + height), all_screens=True).convert("RGB")
     image.thumbnail((CONFIG["eyes"]["max_side"],) * 2, Image.Resampling.LANCZOS)
     image = image.resize((image.width // 2 * 2, image.height // 2 * 2))
+    overlay = Image.new("RGBA", image.size)
+    drawing = ImageDraw.Draw(overlay)
+    font = ImageFont.load_default(size=14)
+    for value in range(0, 1001, 100):
+        gx, gy = round(value * (image.width - 1) / 1000), round(value * (image.height - 1) / 1000)
+        drawing.line((gx, 0, gx, image.height - 1), fill=(255, 255, 255, 45))
+        drawing.line((0, gy, image.width - 1, gy), fill=(255, 255, 255, 45))
+        for text, place, anchor in ((f"x={value}", (32 if value == 0 else gx, 1), "rt" if value == 1000 else "lt"),
+                                    (f"y={value}", (1, gy), "lb" if value == 1000 else "lt")):
+            drawing.rectangle(drawing.textbbox(place, text, font=font, anchor=anchor), fill=(0, 0, 0, 200))
+            drawing.text(place, text, font=font, anchor=anchor, fill="white")
+    image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
     x, y = position()
     px, py = round((x - left) * (image.width - 1) / (width - 1)), round((y - top) * (image.height - 1) / (height - 1))
     ImageDraw.Draw(image).polygon([(px, py), (px, py + 16), (px + 4, py + 13), (px + 7, py + 19),

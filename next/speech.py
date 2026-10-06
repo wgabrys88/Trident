@@ -1,6 +1,8 @@
 import contextlib
 import sys
+import time
 import wave
+from pathlib import Path
 import numpy as np
 import onnxruntime as ort
 from next import BIN, CONFIG, MODELS, ROOT
@@ -61,10 +63,28 @@ if __name__ == "__main__":
     cfg = CONFIG["mouth"]
     words = sys.stdin.buffer.read().decode("utf-8").split()
     with contextlib.redirect_stdout(sys.stderr):
-        from chatterbox.tts_turbo import ChatterboxTurboTTS
-        model = ChatterboxTurboTTS.from_local(MODELS / cfg["model"], cfg["device"])
-        model.prepare_conditionals(str(ROOT / cfg["reference"]))
-        clips = [model.generate(" ".join(words[i:i + 40])).squeeze().cpu().numpy() for i in range(0, len(words), 40)]
+        started = time.monotonic()
+        import torch
+        torch.set_num_threads(CONFIG["brain"]["threads"])
+        from chatterbox.tts_turbo import ChatterboxTurboTTS, Conditionals
+        from transformers.initialization import no_init_weights
+        print(f"TTS imports: {time.monotonic() - started:.2f}s", flush=True)
+        started = time.monotonic()
+        with torch.inference_mode():
+            with no_init_weights():
+                model = ChatterboxTurboTTS.from_local(MODELS / cfg["model"], cfg["device"])
+            print(f"TTS load: {time.monotonic() - started:.2f}s", flush=True)
+            started = time.monotonic()
+            voice = Path(sys.argv[1])
+            if voice.exists():
+                model.conds = Conditionals.load(voice, map_location="cpu").to(cfg["device"])
+            else:
+                model.prepare_conditionals(str(ROOT / cfg["reference"]))
+                model.conds.save(voice)
+            print(f"TTS voice: {time.monotonic() - started:.2f}s", flush=True)
+            started = time.monotonic()
+            clips = [model.generate(" ".join(words[i:i + 40])).squeeze().cpu().numpy() for i in range(0, len(words), 40)]
+            print(f"TTS generation: {time.monotonic() - started:.2f}s", flush=True)
     if clips:
         samples = np.concatenate(clips)
         count = round(samples.size * 48000 / model.sr)

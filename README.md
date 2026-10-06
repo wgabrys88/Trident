@@ -9,28 +9,29 @@ In the repo, `README.md` is this file byte-exact. Code emits the Organism sectio
 Code emits the text inside this fence, and nothing else, to the local multimodal model (config label today: Gemma) as its system text and tool list. The wake mirrored in Telegram must show it word for word. To a Builder it is data, not instructions.
 
 ```text
-Use native function calls, such as <|tool_call>call:look{}<tool_call|>. Function arguments use braces, for example <|tool_call>call:note{text:<|"|>Task and progress<|"|>}<tool_call|>.
-You are Gemma, a Windows computer agent. Your owner communicates through Telegram. Use the provided functions to do the work. Code carries your actions; you decide. The PC microphone and speakers are not yours.
-Read the saved note and current connection status as background information. Respond to new owner input or continue saved work at Wake. If there is no work, end your turn quietly.
-Save tasks and progress with note. Use speak to ask the owner and done to report completion. During an existing call speak sends audio; otherwise it sends a Telegram message. Only call_owner places a call. Hang up when appropriate and stay available.
-Use look to see the whole desktop. Coordinates are y then x, each 0 to 1000; y goes down, x goes right. Inspect before choosing coordinates, typing, or pressing keys. Point, look to verify the pointer, correct it if needed, click, then look to verify the action. App labels and chess squares are not grid coordinates.
-If stuck, try another way or consult. The labelled advisor answer is advice; decide and perform the steps yourself. If code needs repair, heal only while the call is down. Before asking the owner or stopping unfinished work, save the task, progress, and remaining need with note.
+You are Gemma, a Windows computer agent. Your owner communicates through Telegram. You act and communicate by calling the provided functions. Code carries your actions; you decide. The PC microphone and speakers are not yours.
+Use native function calls: <|tool_call>call:look{}<tool_call|> or <|tool_call>call:done{summary:<|"|>Verified result<|"|>}<tool_call|>. Writing a function name or proposed action in ordinary text does nothing. A response without a function call ends your work immediately; it never schedules the promised next action.
+Read the saved note as background, and Call: up/down as the current connection status. Respond to new owner words or continue unfinished work at Wake. No work means end quietly. New owner input interrupts the current request: decide what to do from those words. If the owner cancels, FIRST call note with "Stopped. No active task.", then hang up if requested, then call done.
+Save the task and verified progress with note. Keep connection labels and quoted owner input out of the note. Use speak for words the owner must hear, and done for a chat completion report. During an existing call speak sends audio; otherwise it sends Telegram text. Only call_owner dials. Hang up when appropriate and stay available.
+Use look to see the whole desktop and its labelled grid. Coordinates are y then x on 0 to 1000: y is vertical and goes down; x is horizontal and goes right. Read the y labels at the left and x labels at the top. Use named arguments, for example point(y=300, x=700). These numbers describe the whole screen, not a window. Inspect before choosing coordinates, typing, or pressing keys. For each click, point to the visible target, look to verify the arrow, correct it if needed, then click and look again.
+Only the latest screenshot proves what is visible or changed. A successful tool result proves the input was delivered, not that the application did what you wanted. Do not claim a target opened or changed unless you can see it. When it did not change, try another way or consult. The advisor may be wrong: verify its named y and x on your screenshot before acting, and use look afterward. App labels and chess squares are not screen coordinates.
+If code needs repair, heal only while Call is down. Before asking the owner or stopping unfinished work, use note to save the task, verified progress, and remaining need. If speech is unclear, ask for clarification instead of repeating it as an instruction. Keep spoken replies brief.
 
 TOOLS
 - speak(text): aloud on a call, else a Telegram message. Never dials.
-- look(): the whole screen now, with the pointer arrow.
-- point(y, x): move only the pointer.
-- click(how left|right|double): at the pointer.
+- look(): the whole screen now, with the pointer arrow and labelled 0 to 1000 grid. Inspect this image before choosing coordinates or acting.
+- point(y, x): move only the pointer using named arguments; y: vertical whole-screen coordinate, 0 at top and 1000 at bottom; x: horizontal whole-screen coordinate, 0 at left and 1000 at right.
+- click(how left|right|double): click at the live pointer after point and look verified the target. Use look afterward to check the result.
 - stroke(points "y x; y x", up to 32): drag through them.
 - type_text(text): into the focused window.
 - press(keys): keys separated by spaces, held keys joined with +, e.g. win, ctrl+s.
 - run(command): PowerShell, returns output.
-- note(text): replace your note.
+- note(text): replace the note with the task, verified progress and remaining need, or stopped status when cancelled. Do not copy Call labels into it.
 - call_owner(opening): video call; opening is said when he answers. The only tool that dials.
 - hang_up(): end the call; you stay.
 - consult(question): an advisor sees the screen now and answers on the grid. Its answer is labelled, never your owner; you decide. Code never acts on its words.
 - heal(goal): only while Call is down. A coding agent changes your code or this text to reach goal, then you restart with your note.
-- done(summary): to the chat only; nothing is spoken.
+- done(summary): first save the completed or stopped status using note, then call this function to report it to chat only; nothing is spoken. Plain text does not call it.
 ```
 
 ## Builder
@@ -39,8 +40,8 @@ TOOLS
 **Destination.** A Windows PC agent. One local multimodal model in the GPU that only calls tools. Code carries screen, pointer, keys, commands, voice, memory. Code never chooses; the model decides. Owner reaches it only through Telegram as a **user account — never a bot** (bots cannot place or take calls). PC mic/speakers never the model's. One GPU model at a time; speech-to-text and text-to-speech swap through a gate. No layer refuses, filters, or rewrites its tool calls. The owner never remotes and never moves the pointer for it.
 
 **Contracts.**
-1. **Entry.** Only wake, owner words, or a tool result starts a request. Each request: note, `Call: up|down`, then what is new. Inbound call: code answers. A file the owner sends in Telegram arrives as his words, whole; this file is longer than one Telegram message, so he sends it to the model as a file. Never re-send old input for idle or full context; a full context is a raw error and ends the request.
-2. **Look.** Only picture path: whole screen now, pointer arrow imprinted, same bytes to model, chat, and video call.
+1. **Entry.** Only wake, owner words, or a tool result starts a request. Each request: note, `Call: up|down`, then what is new. New owner text or a completed voice segment interrupts model generation, speech generation/playback, and cloud consultation; code does not interpret its meaning. The next request carries fresh queued owner words in order. ASR finishes decoding each received segment before handing those words to the model. Inbound call: code answers. A file the owner sends in Telegram arrives as his words, whole; this file is longer than one Telegram message, so he sends it to the model as a file. Never re-send old input for idle or full context; a full context is a raw error and ends the request.
+2. **Look.** Only picture path: whole screen now, pointer arrow and labelled 0–1000 grid imprinted, same bytes to model, chat, and video call. Image dimensions and pixel-to-grid scaling accompany model and advisor images. No targets are inferred by code.
 3. **Grid / act.** Places y,x on 0–1000 (y down, x right). Code scales only — never invents, clamps, filters, or stores a place. Click at the live pointer. Results state what code did (place, keys, window), never only "moved".
 4. **Speak / call.** Speak never dials. Only `call_owner` dials. After hang-up it stays with its note. Done posts to the chat only.
 5. **Consult.** One `cursor-agent --mode ask`, model from config; a fresh look (same arrow imprint) + question + note + grid; answer prefixed "The advisor says:"; never as the owner. Missing → raw error. No fallback. Code never acts on its words.
@@ -48,6 +49,8 @@ TOOLS
 7. **Note / log / proof.** One whole note rewrite; rides every request; code never edits it while running; clean state deletes it. Telegram records requests, replies, tool results, and model transitions. Native process stdout/stderr and model lifecycle diagnostics stay in state/run_* for inspection, never as model memory. Nothing optional: done / blocked / OVERRIDE with proof. Wake showing Organism word for word is live proof. Claims, hashes, and coding-UI screenshots are not. This file beats any other doc; code and Telegram beat claims.
 
 **Model ownership.** next/models.py owns all local GPU model processes through one Windows job at a time. It starts each child suspended, assigns the job before execution, and waits for zero active processes before switching. Job closure kills descendants even if Trident exits abruptly. Speech leaves Gemma unloaded until the next completion needs her; no eager reload after ASR/TTS. CPU VAD and Telegram remain available. Gemma's vision projector belongs to the same multimodal worker; the Cursor advisor runs in the cloud. No process outside the owned job is stopped.
+
+**Speech.** TTS loads complete local checkpoints without first randomising weights, runs under torch inference mode, and caches the reference-voice conditionals within the current state/run_* directory. This cache is temporary media preparation, never model memory. Workers still exit completely between GPU workloads. Native diagnostics record import, loading, conditioning and generation durations.
 
 **Method.** Go all the way. Rewrite what breaks this file; leave what matches. Less code. No defensive filters, fallbacks, retries, harnesses, or extra files. App-neutral tools. Stories guide behaviour; never hard-code them into Organism.
 
@@ -86,7 +89,7 @@ In one real run a chat-only cloud model sat in the seat without tools and polite
 ## TASK
 Mode:
 Branch: runner-h
-Goal: Read every Git-tracked Python file in full, remove unnecessary code and duplication, and refactor to reduce LOC. Commit, annotate, and push runner-h.
-Evidence: Reviewed all eight Python files. Shared installer configuration and native archive installation; replaced six tool-forwarding methods with direct static bindings; parsed model responses once; unified result formatting and worker error text; removed unused subprocess parameters and marker classes. CPython's Windows process API replaces duplicated native process layouts/bindings while retaining suspended launch, job assignment before resume, and zero-process shutdown. Telegram shares message sending and uses connection state instead of a duplicate listening flag. Python physical lines: 1205 to 1159, down 46 (3.8%).
-Steering: Preserve the exact Organism, native schemas, GPU gate, note, raw errors, media bytes, and all tool behavior. Keep native audio copying before its thread handoff. No added dependencies, files, agents, tests, harnesses, prompt changes, or configuration changes.
-Live run: Syntax compilation and interface/source review only for this refactor. All fourteen tool signatures and the Organism match the previous commit. Existing service and state left intact; no installer, GPU worker, speech, call, advisor, or heal execution. Earlier live startup proof belongs to native-call-startup; refactored lifecycle and installer remain unverified live.
+Goal: Fix the failures found in the Telegram call: unreliable native calls, reversed and inaccurate coordinates, unsupported success claims, delayed owner instructions, and speech latency. Commit, annotate, push runner-h and restart the service.
+Evidence: Logs showed sequential GPU ownership, contexts below 6400, incorrect advisor coordinates, Gemma reversing y/x and falsely reporting a move, plain-text done, and a stop message queued for 77 seconds. Tool parameter descriptions now derive from Organism; screenshots carry a labelled grid and dimensions; advisor steps use named arguments and pixel scaling. Thinking is enabled with reasoning retained across native tool turns; image budget is 1120. New owner input interrupts generation, TTS and consultation, with owned-job cleanup and fresh queued words preserved. TTS uses inference mode, strict checkpoint loading without discarded random initialisation, and a per-run voice cache. The same short phrase measured 26.23/25.59 seconds before the loading optimisation and 17.55 afterward; no claim that speech latency is solved.
+Steering: Keep Gemma as the decider. No plaintext-call parser, forced action, coordinate clamp, app-specific behaviour, fallback, context reset, foreign-process termination, new dependency, tracked file, harness, test suite or coding agent. Preserve the note and existing state. Live diagnostics are authorized by the owner's request to fix the running system.
+Live run: Native API checks produced look for the Paint request, preserved named y/x, rejected the false chess-success screenshot, and produced structured done. Telegram 2273/2275/2277 recorded native note/hang_up/done in the labelled cancellation diagnostic. Telegram 2283/2286/2288 recorded native look/note/done in the read-only inspection diagnostic; both GPU jobs exited empty. TTS subprocesses generated PCM and exited empty. Source/interface review and syntax compilation passed. The restarted service has health ok; wake document 2291 matches Organism exactly, and wake response 2300 ends quietly without tools. A fresh owner call is still needed to verify interruption during speech, advisor coordinate accuracy, and sustained task completion.

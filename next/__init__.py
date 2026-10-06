@@ -19,6 +19,9 @@ def contract(body):
         method = getattr(body, name)
         properties = {key: {"type": {str: "string", int: "integer"}[param.annotation]}
                       for key, param in inspect.signature(method).parameters.items()}
+        for key, schema in properties.items():
+            schema["description"] = next((part[len(key) + 2:] for part in description.split("; ")
+                                          if part.startswith(key + ": ")), description)
         for parameter in signature.split(","):
             if "|" in parameter:
                 key, choices = parameter.strip().split(" ", 1)
