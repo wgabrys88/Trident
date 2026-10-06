@@ -41,6 +41,24 @@ def position():
     left, top, width, height = bounds()
     return round((y - top) * 1000 / (height - 1)), round((x - left) * 1000 / (width - 1))
 
+def png(image):
+    buffer = io.BytesIO()
+    image.save(buffer, "PNG")
+    return buffer.getvalue()
+
+def annotate(data, marks):
+    if not marks:
+        return data
+    image = Image.open(io.BytesIO(data)).convert("RGB")
+    draw, font = ImageDraw.Draw(image), ImageFont.load_default(size=14)
+    for mark in marks:
+        x0, x1 = (round(mark[key] * (image.width - 1) / 1000) for key in ("x0", "x1"))
+        y0, y1 = (round(mark[key] * (image.height - 1) / 1000) for key in ("y0", "y1"))
+        draw.rectangle((x0, y0, x1, y1), outline="yellow", width=3)
+        draw.rectangle(draw.textbbox((x0, y0), mark["label"], font=font), fill="black")
+        draw.text((x0, y0), mark["label"], font=font, fill="yellow")
+    return png(image)
+
 def picture():
     left, top, width, height = bounds()
     image = ImageGrab.grab((left, top, left + width, top + height), all_screens=True).convert("RGB").resize(image_size())
@@ -55,9 +73,7 @@ def picture():
     x, y = round(gx * (image.width - 1) / 1000), round(gy * (image.height - 1) / 1000)
     draw.polygon([(x, y), (x, y + 16), (x + 4, y + 13), (x + 7, y + 19), (x + 10, y + 17),
                   (x + 6, y + 12), (x + 12, y + 12)], fill="white", outline="black")
-    buffer = io.BytesIO()
-    image.save(buffer, "PNG")
-    return buffer.getvalue()
+    return f"Whole screen: {image.width} x {image.height} pixels; y down, x right, both 0–1000.", png(image)
 
 def send(*inputs):
     if USER.SendInput(len(inputs), (Input * len(inputs))(*inputs), C.sizeof(Input)) != len(inputs):
@@ -83,8 +99,6 @@ def click(how: str):
 
 def stroke(points: str):
     path = [tuple(map(int, pair.split())) for pair in points.split(";")]
-    if not 1 <= len(path) <= 32:
-        raise ValueError("stroke requires 1 to 32 y x pairs")
     point(*path[0])
     send(button(2))
     try:

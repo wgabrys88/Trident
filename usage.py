@@ -1,16 +1,13 @@
 import ctypes as C
 import uuid
-import win32api
+import win32api, win32pdh
 from collections import defaultdict
 from core import encode
 
 PDH, KERNEL = C.WinDLL("pdh"), C.WinDLL("kernel32", use_last_error=True)
 HANDLE = C.c_void_p
-for name, args in (("PdhOpenQueryW", [C.c_wchar_p, C.c_size_t, C.POINTER(HANDLE)]),
-    ("PdhAddEnglishCounterW", [HANDLE, C.c_wchar_p, C.c_size_t, C.POINTER(HANDLE)]),
-    ("PdhCollectQueryData", [HANDLE]), ("PdhCloseQuery", [HANDLE]),
-    ("PdhGetFormattedCounterArrayW", [HANDLE, C.c_uint32, C.POINTER(C.c_uint32), C.POINTER(C.c_uint32), C.c_void_p])):
-    getattr(PDH, name).argtypes, getattr(PDH, name).restype = args, C.c_uint32
+PDH.PdhGetFormattedCounterArrayW.argtypes = [HANDLE, C.c_uint32, C.POINTER(C.c_uint32), C.POINTER(C.c_uint32), C.c_void_p]
+PDH.PdhGetFormattedCounterArrayW.restype = C.c_uint32
 KERNEL.GetSystemTimes.argtypes = [C.c_void_p] * 3
 
 
@@ -64,14 +61,11 @@ def adapters():
 
 class Usage:
     def __init__(self, folder):
-        self.path, self.adapters, self.query, self.counters = folder / "usage.txt", adapters(), HANDLE(), {}
-        checked(PDH.PdhOpenQueryW(None, 0, C.byref(self.query)))
-        for key, path in {"engines": r"\GPU Engine(*)\Utilization Percentage",
-                "dedicated": r"\GPU Adapter Memory(*)\Dedicated Usage", "shared": r"\GPU Adapter Memory(*)\Shared Usage"}.items():
-            counter = HANDLE()
-            checked(PDH.PdhAddEnglishCounterW(self.query, path, 0, C.byref(counter)))
-            self.counters[key] = counter
-        checked(PDH.PdhCollectQueryData(self.query))
+        self.path, self.adapters, self.query = folder / "usage.txt", adapters(), win32pdh.OpenQuery()
+        self.counters = {key: win32pdh.AddEnglishCounter(self.query, path) for key, path in {
+            "engines": r"\GPU Engine(*)\Utilization Percentage", "dedicated": r"\GPU Adapter Memory(*)\Dedicated Usage",
+            "shared": r"\GPU Adapter Memory(*)\Shared Usage"}.items()}
+        win32pdh.CollectQueryData(self.query)
         self.previous = self.times()
 
     def times(self):
@@ -93,7 +87,7 @@ class Usage:
                 if item.value.status in (0, 1)}
 
     def record(self, stamp, model, direction):
-        checked(PDH.PdhCollectQueryData(self.query))
+        win32pdh.CollectQueryData(self.query)
         counters = {key: self.values(counter) for key, counter in self.counters.items()}
         current = self.times()
         idle, kernel, user = (now - before for now, before in zip(current, self.previous))
@@ -118,4 +112,4 @@ class Usage:
                 "ram_used_bytes": memory["TotalPhys"] - memory["AvailPhys"], "ram_total_bytes": memory["TotalPhys"], "gpus": gpus}) + "\n")
 
     def close(self):
-        checked(PDH.PdhCloseQuery(self.query))
+        win32pdh.CloseQuery(self.query)

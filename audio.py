@@ -34,8 +34,7 @@ class Segmenter:
                 if self.silence >= RATE * cfg["min_silence_ms"] // 1000:
                     clip = np.concatenate(self.speech)
                     self.speech, self.silence = [], 0
-                    if clip.size >= RATE * cfg["min_utterance_s"]:
-                        yield clip
+                    yield clip
 
     def finish(self):
         clip = np.concatenate(self.speech + [self.pending]) if self.speech else None

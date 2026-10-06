@@ -1,4 +1,4 @@
-import asyncio, io, os, random, threading, time
+import asyncio, io, os, random, re, threading, time
 import numpy as np
 from PIL import Image
 from ntgcalls import (AudioDescription, ConnectionState, DhConfig, FrameData, MediaDescription, MediaSource,
@@ -66,7 +66,8 @@ class Line:
 
     async def emit(self, text, files=(), model="Trident", direction="event"):
         stamp = timestamp()
-        stem = f"{stamp}_{model}_{direction}"
+        filename_model = re.sub(r'[<>:\"/\\|?*\x00-\x1f]', '_', model)
+        stem = f"{stamp}_{filename_model}_{direction}"
         self.usage.record(stamp, model, direction)
         path = self.folder / (stem + ".txt")
         path.write_bytes(text.encode("utf-8"))

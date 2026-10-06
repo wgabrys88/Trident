@@ -1,11 +1,13 @@
-import _winapi, msvcrt, os, socket, subprocess, tempfile, time, urllib.error, urllib.request
+import _winapi, base64, json, msvcrt, os, socket, subprocess, tempfile, time, urllib.error, urllib.request
 import win32job, win32process
 from concurrent.futures import ThreadPoolExecutor
-from core import BIN, CONFIG, MODELS, ROOT
+from core import BIN, CONFIG, MODELS, ROOT, encode
+
+CFG = CONFIG["brain"]
 
 class Child:
-    """Own a suspended process and its descendants before allowing execution."""
-    def __init__(self, args, folder, data=b"", cwd=ROOT):
+    """Own the entire worker job before its first instruction can execute."""
+    def __init__(self, args, folder, data=b""):
         self.job = win32job.CreateJobObject(None, None)
         self.process = thread = None
         self.streams = [tempfile.TemporaryFile(dir=folder) for _ in range(3)]
@@ -20,10 +22,10 @@ class Child:
             for stream in self.streams:
                 os.set_inheritable(stream.fileno(), True)
             startup = subprocess.STARTUPINFO(dwFlags=_winapi.STARTF_USESTDHANDLES, hStdInput=handles[0],
-                        hStdOutput=handles[1], hStdError=handles[2], lpAttributeList={"handle_list": handles})
+                hStdOutput=handles[1], hStdError=handles[2], lpAttributeList={"handle_list": handles})
             self.process, thread, self.pid, _ = _winapi.CreateProcess(str(args[0]),
                 subprocess.list2cmdline([str(arg) for arg in args]), None, None, True,
-                subprocess.CREATE_NO_WINDOW | 4, None, str(cwd), startup)
+                subprocess.CREATE_NO_WINDOW | 4, None, str(ROOT), startup)
             win32job.AssignProcessToJobObject(self.job, self.process)
             win32process.ResumeThread(thread)
         except BaseException:
@@ -77,19 +79,19 @@ class Child:
         for stream in self.streams:
             stream.close()
 
-class Models:
-    def __init__(self, folder, checkpoint):
-        self.folder, self.checkpoint, self.child = folder, checkpoint, None
-        cfg = CONFIG["brain"]
-        self.url = f"http://{cfg['host']}:{cfg['port']}"
+class Engines:
+    """Own GPU workers and deliver native chat payloads, independently of task behavior."""
+    def __init__(self, folder, checkpoint, record):
+        self.folder, self.checkpoint, self.record, self.child = folder, checkpoint, record, None
+        self.url = f"http://{CFG['host']}:{CFG['port']}"
 
     def stop(self):
         if self.child:
             self.child.close()
             self.child = None
 
-    def command(self, args, data=b"", interrupt=True, cwd=ROOT):
-        child = Child(args, self.folder, data, cwd)
+    def command(self, args, data=b"", interrupt=True):
+        child = Child(args, self.folder, data)
         try:
             return child.result(self.checkpoint if interrupt else lambda: None)
         finally:
@@ -100,22 +102,14 @@ class Models:
             if self.child.poll() is not None:
                 raise RuntimeError(self.child.error())
             return
-        cfg = CONFIG["brain"]
-        if (BIN / "llama" / "release.txt").read_text().strip() != CONFIG["install"]["llama_tag"]:
-            raise RuntimeError("Run install.py to install the configured llama.cpp release and chat template")
         with socket.socket() as port:
-            if port.connect_ex((cfg["host"], cfg["port"])) == 0:
-                raise RuntimeError(f"Port {cfg['port']} is already in use")
-        args = [BIN / "llama" / "llama-server.exe", "--model", MODELS / cfg["model"], "--mmproj", MODELS / cfg["mmproj"],
-                "--chat-template-file", BIN / "llama" / "gemma.jinja", "--alias", "Gemma", "--jinja",
-                "--no-context-shift", "--no-webui", "--fit", "off", "--cache-ram", "0", "--log-verbosity", "0"]
-        for flag, value in {"host": cfg["host"], "port": cfg["port"], "ctx-size": cfg["context"], "parallel": 1,
-                "n-gpu-layers": cfg["gpu_layers"], "threads": cfg["threads"], "batch-size": cfg["batch"],
-                "ubatch-size": cfg["ubatch"], "flash-attn": cfg["flash_attention"], "cache-type-k": cfg["cache_k"],
-                "cache-type-v": cfg["cache_v"], "image-max-tokens": cfg["image_tokens"]}.items():
-            args += ["--" + flag, str(value)]
-        if not cfg["projector_gpu"]:
-            args.append("--no-mmproj-offload")
+            if port.connect_ex((CFG["host"], CFG["port"])) == 0:
+                raise RuntimeError(f"Port {CFG['port']} is already in use")
+        args = [BIN / "llama" / "llama-server.exe", "--model", MODELS / CFG["model"],
+                "--mmproj", MODELS / CFG["mmproj"], "--chat-template-file", ROOT / CFG["template"],
+                "--host", CFG["host"], "--port", str(CFG["port"]), "--threads", str(CFG["threads"]), "--parallel", "1",
+                "--alias", CFG["api_model"], "--jinja", "--no-context-shift", "--no-webui", "--fit", "off",
+                "--cache-ram", "0", "--log-verbosity", "0", *CFG["server_args"]]
         self.child = Child(args, self.folder)
         deadline = time.monotonic() + 300
         while time.monotonic() < deadline:
@@ -128,21 +122,32 @@ class Models:
                         return
             except urllib.error.HTTPError as error:
                 if error.code != 503:
-                    raise RuntimeError(error.read().decode("utf-8", "replace")) from error
+                    raise RuntimeError(error.read().decode("utf-8")) from error
             except urllib.error.URLError:
-                pass  # The owned server has not bound its socket yet.
+                pass  # Readiness only: the owned server has not bound its socket yet.
             time.sleep(0.25)
         raise TimeoutError("llama-server startup timed out")
 
-    def completion(self, raw):
-        self.brain()
-        request = urllib.request.Request(self.url + "/v1/chat/completions", raw, {"Content-Type": "application/json"})
+    def complete(self, messages, tools):
+        {"llama": self.brain, "http": self.stop}[CFG["backend"]]()
+        body = {**CFG["options"], "model": CFG["api_model"], "messages": messages, "tools": tools,
+                "tool_choice": "required", "parallel_tool_calls": False}
+        text = encode(body)
+        images = [("png", base64.b64decode(part["image_url"]["url"].split(",", 1)[1]))
+            for message in messages if isinstance(message.get("content"), list)
+            for part in message["content"] if part["type"] == "image_url"]
+        self.record(text, images, CFG["api_model"], "req")
+        headers = {"Content-Type": "application/json"}
+        if CFG["api_key_env"]:
+            headers["Authorization"] = "Bearer " + os.environ[CFG["api_key_env"]]
+        endpoint = {"llama": self.url + "/v1/chat/completions", "http": CFG["endpoint"]}[CFG["backend"]]
+        request = urllib.request.Request(endpoint, text.encode("utf-8"), headers)
         def receive():
             try:
                 with urllib.request.urlopen(request, timeout=600) as response:
-                    return response.read()
+                    return response.read().decode("utf-8")
             except urllib.error.HTTPError as error:
-                raise RuntimeError(error.read().decode("utf-8", "replace")) from error
+                raise RuntimeError(error.read().decode("utf-8")) from error
         with ThreadPoolExecutor(max_workers=1) as worker:
             future = worker.submit(receive)
             try:
@@ -150,7 +155,12 @@ class Models:
                     self.checkpoint()
                     time.sleep(0.05)
                 self.checkpoint()
-                return future.result()
+                text = future.result()
             except BaseException:
                 self.stop()
                 raise
+        self.record(text, (), CFG["api_model"], "resp")
+        choice = json.loads(text)["choices"][0]
+        if choice["finish_reason"] == "length":
+            raise RuntimeError("Model context or output capacity exhausted; request ended without replay")
+        return choice["message"]
