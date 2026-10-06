@@ -1,3 +1,4 @@
+import _winapi
 import ctypes
 import msvcrt
 import os
@@ -11,17 +12,6 @@ from ctypes import wintypes as W
 from next import BIN, CONFIG, MODELS, ROOT
 
 KERNEL = ctypes.WinDLL("kernel32", use_last_error=True)
-
-
-class Startup(ctypes.Structure):
-    _fields_ = [("cb", W.DWORD), ("reserved", W.LPWSTR), ("desktop", W.LPWSTR), ("title", W.LPWSTR),
-                *[(name, W.DWORD) for name in ("x", "y", "width", "height", "columns", "rows", "fill", "flags")],
-                ("show", W.WORD), ("reserved_size", W.WORD), ("reserved_data", ctypes.c_void_p),
-                ("stdin", W.HANDLE), ("stdout", W.HANDLE), ("stderr", W.HANDLE)]
-
-
-class ProcessInfo(ctypes.Structure):
-    _fields_ = [("process", W.HANDLE), ("thread", W.HANDLE), ("pid", W.DWORD), ("tid", W.DWORD)]
 
 
 class Limits(ctypes.Structure):
@@ -46,13 +36,7 @@ for name, arguments, result in (
     ("QueryInformationJobObject", [W.HANDLE, ctypes.c_int, ctypes.c_void_p, W.DWORD, ctypes.c_void_p], W.BOOL),
     ("AssignProcessToJobObject", [W.HANDLE, W.HANDLE], W.BOOL),
     ("TerminateJobObject", [W.HANDLE, W.UINT], W.BOOL),
-    ("CreateProcessW", [W.LPCWSTR, W.LPWSTR, ctypes.c_void_p, ctypes.c_void_p, W.BOOL, W.DWORD,
-                        ctypes.c_void_p, W.LPCWSTR, ctypes.POINTER(Startup), ctypes.POINTER(ProcessInfo)], W.BOOL),
     ("ResumeThread", [W.HANDLE], W.DWORD),
-    ("TerminateProcess", [W.HANDLE, W.UINT], W.BOOL),
-    ("WaitForSingleObject", [W.HANDLE, W.DWORD], W.DWORD),
-    ("GetExitCodeProcess", [W.HANDLE, ctypes.POINTER(W.DWORD)], W.BOOL),
-    ("CloseHandle", [W.HANDLE], W.BOOL),
 ):
     function = getattr(KERNEL, name)
     function.argtypes, function.restype = arguments, result
@@ -68,7 +52,7 @@ class Child:
     """Start suspended, join a kill-on-close job, then allow model code to run."""
     def __init__(self, args, folder, name, data=b""):
         self.job = checked(KERNEL.CreateJobObjectW(None, None))
-        self.info = ProcessInfo()
+        self.process = thread = None
         self.output, self.errors = folder / (name + ".stdout"), folder / (name + ".stderr")
         source = folder / (name + ".stdin")
         try:
@@ -80,31 +64,26 @@ class Child:
                 handles = [msvcrt.get_osfhandle(stream.fileno()) for stream in (stdin, stdout, stderr)]
                 for stream in (stdin, stdout, stderr):
                     os.set_inheritable(stream.fileno(), True)
-                startup = Startup(cb=ctypes.sizeof(Startup), flags=0x100, stdin=handles[0], stdout=handles[1], stderr=handles[2])
-                command = ctypes.create_unicode_buffer(subprocess.list2cmdline([str(arg) for arg in args]))
-                checked(KERNEL.CreateProcessW(str(args[0]), command, None, None, True,
-                                             0x08000004, None, str(ROOT), ctypes.byref(startup), ctypes.byref(self.info)))
-                checked(KERNEL.AssignProcessToJobObject(self.job, self.info.process))
-                if KERNEL.ResumeThread(self.info.thread) == 0xFFFFFFFF:
+                startup = subprocess.STARTUPINFO(dwFlags=_winapi.STARTF_USESTDHANDLES,
+                                                hStdInput=handles[0], hStdOutput=handles[1], hStdError=handles[2])
+                self.process, thread, self.pid, _ = _winapi.CreateProcess(
+                    str(args[0]), subprocess.list2cmdline([str(arg) for arg in args]), None, None,
+                    True, subprocess.CREATE_NO_WINDOW | 0x4, None, str(ROOT), startup)
+                checked(KERNEL.AssignProcessToJobObject(self.job, self.process))
+                if KERNEL.ResumeThread(thread) == 0xFFFFFFFF:
                     raise ctypes.WinError(ctypes.get_last_error())
         except BaseException:
-            if self.info.process:
-                checked(KERNEL.TerminateProcess(self.info.process, 1))
+            if self.process:
+                _winapi.TerminateProcess(self.process, 1)
             self.close()
             raise
         finally:
-            if self.info.thread:
-                KERNEL.CloseHandle(self.info.thread)
+            if thread:
+                _winapi.CloseHandle(thread)
 
     def poll(self):
-        status = KERNEL.WaitForSingleObject(self.info.process, 0)
-        if status == 258:  # WAIT_TIMEOUT
-            return None
-        if status != 0:
-            raise ctypes.WinError(ctypes.get_last_error())
-        code = W.DWORD()
-        checked(KERNEL.GetExitCodeProcess(self.info.process, ctypes.byref(code)))
-        return code.value
+        if _winapi.WaitForSingleObject(self.process, 0) == _winapi.WAIT_OBJECT_0:
+            return _winapi.GetExitCodeProcess(self.process)
 
     def wait_empty(self, deadline):
         while True:
@@ -113,7 +92,7 @@ class Child:
             if accounting.active == 0:
                 return
             if time.monotonic() >= deadline:
-                raise TimeoutError(f"Model job {self.info.pid} still has {accounting.active} active processes.")
+                raise TimeoutError(f"Model job {self.pid} still has {accounting.active} active processes.")
             time.sleep(0.05)
 
     def wait(self, seconds):
@@ -124,11 +103,14 @@ class Child:
         if self.job:
             checked(KERNEL.TerminateJobObject(self.job, 1))
             self.wait_empty(time.monotonic() + 30)
-            KERNEL.CloseHandle(self.job)
+            _winapi.CloseHandle(self.job)
             self.job = None
-        if self.info.process:
-            KERNEL.CloseHandle(self.info.process)
-            self.info.process = None
+        if self.process:
+            _winapi.CloseHandle(self.process)
+            self.process = None
+
+    def error(self, code):
+        return self.errors.read_text(encoding="utf-8", errors="replace") or f"Model worker {self.pid} exited {code}"
 
 
 class Models:
@@ -153,12 +135,12 @@ class Models:
         self.serial += 1
         self.child = Child(args, self.folder, f"{self.serial:03d}-{name}", data)
         self.name = name
-        self.event(f"GPU: {name} started; PID {self.child.info.pid}; command {subprocess.list2cmdline([str(arg) for arg in args])}")
+        self.event(f"GPU: {name} started; PID {self.child.pid}; command {subprocess.list2cmdline([str(arg) for arg in args])}")
 
     def stop(self):
         with self.lock:
             if self.child is not None:
-                pid = self.child.info.pid
+                pid = self.child.pid
                 self.child.close()
                 self.child = None
                 self.event(f"GPU: {self.name} exited; PID {pid}; job has zero active processes.")
@@ -172,7 +154,7 @@ class Models:
                 code = self.child.wait(600)
                 output = self.child.output.read_bytes()
                 if code:
-                    raise RuntimeError(self.child.errors.read_text(encoding="utf-8", errors="replace") or f"{name} exited {code}")
+                    raise RuntimeError(self.child.error(code))
                 return output
             finally:
                 self.stop()
@@ -184,7 +166,7 @@ class Models:
                     raise RuntimeError(f"GPU is owned by {self.name}.")
                 code = self.child.poll()
                 if code is not None:
-                    error = self.child.errors.read_text(encoding="utf-8", errors="replace") or f"llama-server exited {code}"
+                    error = self.child.error(code)
                     self.stop()
                     raise RuntimeError(error)
                 return
@@ -205,7 +187,7 @@ class Models:
                 while time.monotonic() < deadline:
                     code = self.child.poll()
                     if code is not None:
-                        raise RuntimeError(self.child.errors.read_text(encoding="utf-8", errors="replace") or f"llama-server exited {code}")
+                        raise RuntimeError(self.child.error(code))
                     try:
                         with urllib.request.urlopen(self.url + "/health", timeout=2) as response:
                             if response.status == 200:

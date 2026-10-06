@@ -58,7 +58,7 @@ class Line:
         self.client = self.owner = self.calls = self.phone = None
         self.connected = self.accepted = self.confirmed = None
         self.state, self.began = "down", 0
-        self.listening = self.linked = False
+        self.linked = False
         self.signals = []
         self.segmenter = Segmenter()
 
@@ -103,11 +103,14 @@ class Line:
             if text:
                 self.events.put(("text", text))
         except Exception as error:
-            await self.client.send_message(self.owner, str(error), parse_mode=None)
+            await self.text(str(error))
+
+    async def text(self, text):
+        await self.client.send_message(self.owner, text, parse_mode=None)
 
     def send_text(self, text):
         for offset in range(0, len(text), 2000):
-            self.wait(self.client.send_message(self.owner, text[offset:offset + 2000], parse_mode=None))
+            self.wait(self.text(text[offset:offset + 2000]))
 
     def send_file(self, data, name):
         stream = io.BytesIO(data)
@@ -143,7 +146,7 @@ class Line:
                 elif isinstance(call, PhoneCallDiscarded):
                     await self.close()
         except Exception as error:
-            await self.client.send_message(self.owner, str(error), parse_mode=None)
+            await self.text(str(error))
 
     async def dh(self):
         cfg = await self.client(GetDhConfigRequest(0, 256))
@@ -181,7 +184,7 @@ class Line:
             asyncio.create_task(self.failed(engine, state))
 
     async def failed(self, engine, state):
-        await self.client.send_message(self.owner, f"Call: {state}", parse_mode=None)
+        await self.text(f"Call: {state}")
         if self.calls is engine:
             await self.close()
 
@@ -200,7 +203,7 @@ class Line:
             await self.calls.send_signaling_data(OWNER, data)
         self.signals = []
         await asyncio.wait_for(self.connected, 30)
-        self.state, self.began, self.listening = "up", time.monotonic(), True
+        self.state, self.began = "up", time.monotonic()
         asyncio.create_task(self.video(self.calls))
 
     async def answer(self, requested):
@@ -214,7 +217,7 @@ class Line:
             await self.calls.exchange_keys(OWNER, bytes(call.g_a_or_b), call.key_fingerprint)
             await self.link(call)
         except Exception as error:
-            await self.client.send_message(self.owner, str(error), parse_mode=None)
+            await self.text(str(error))
             await self.close()
 
     async def place(self):
@@ -250,7 +253,7 @@ class Line:
                 await self.close()
 
     async def close(self):
-        self.listening = self.linked = False
+        self.linked = False
         self.state = "down"
         calls, self.calls, self.phone, self.began = self.calls, None, None, 0
         clip = self.segmenter.finish()
@@ -274,12 +277,12 @@ class Line:
             self.loop.call_soon_threadsafe(self.audio, engine, b"".join(bytes(frame.data) for frame in frames))
 
     def audio(self, engine, pcm):
-        if self.calls is engine and self.listening:
+        if self.calls is engine and self.up:
             try:
                 for clip in self.segmenter.push(pcm):
                     self.events.put(("audio", clip))
             except Exception as error:
-                asyncio.create_task(self.client.send_message(self.owner, str(error), parse_mode=None))
+                asyncio.create_task(self.text(str(error)))
 
     async def frame(self, device, data, size=(0, 0)):
         if not self.up:
@@ -299,7 +302,7 @@ class Line:
                 await self.show(await asyncio.to_thread(picture))
                 await asyncio.sleep(1 / CFG["desk_fps"])
         except Exception as error:
-            await self.client.send_message(self.owner, str(error), parse_mode=None)
+            await self.text(str(error))
 
     async def speak(self, pcm):
         if not self.up:

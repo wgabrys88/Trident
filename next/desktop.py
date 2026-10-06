@@ -93,13 +93,13 @@ def button(flags):
     return Input(0, Payload(mouse=Mouse(0, 0, 0, flags, 0, 0)))
 
 
-def move(y, x):
+def move(y: int, x: int):
     if not USER.SetCursorPos(*pixels(y, x)):
         raise ctypes.WinError(ctypes.get_last_error())
     return "Pointer at " + grid() + "."
 
 
-def click(how):
+def click(how: str):
     down, up = {"left": (2, 4), "right": (8, 16), "double": (2, 4)}[how]
     place = grid()
     send(button(down), button(up))
@@ -108,7 +108,7 @@ def click(how):
     return f"{how} click at {place}."
 
 
-def stroke(points):
+def stroke(points: str):
     places = [tuple(map(int, part.split())) for part in points.split(";")]
     if not 1 <= len(places) <= 32 or any(len(p) != 2 for p in places):
         raise ValueError(points)
@@ -133,7 +133,7 @@ def title():
     return buffer.value
 
 
-def type_text(text):
+def type_text(text: str):
     window = title()
     for char in text.replace("\r\n", "\n"):
         if char in "\r\n\t":
@@ -147,7 +147,7 @@ def type_text(text):
     return f'Typed {text!r} into window "{window}".'
 
 
-def press(keys):
+def press(keys: str):
     window = title()
     for chord in keys.lower().split():
         codes = [VK[part] for part in chord.split("+")]
@@ -158,7 +158,7 @@ def press(keys):
     return f'Pressed {keys!r} into window "{window}".'
 
 
-def run(command):
+def run(command: str):
     result = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
                             capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
     return f"Exit {result.returncode}\n" + (result.stdout + result.stderr).decode("utf-8", "replace")

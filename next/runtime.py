@@ -15,23 +15,15 @@ from next.models import Models
 from next.speech import transcription_command
 from next.telegram import Line
 
-FLAGS = subprocess.CREATE_NO_WINDOW
-
-
 class EmptyFuel(Exception):
     pass
 
 
-class End:
-    pass
+END, RESTART = object(), object()
 
 
-class Restart:
-    pass
-
-
-def process(args, data=None, cwd=ROOT, timeout=1800):
-    result = subprocess.run(args, input=data, cwd=cwd, capture_output=True, creationflags=FLAGS, timeout=timeout)
+def process(args, cwd=ROOT):
+    result = subprocess.run(args, cwd=cwd, capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=1800)
     if result.returncode:
         raise RuntimeError((result.stderr + result.stdout).decode("utf-8", "replace") or f"Exit {result.returncode}")
     return result.stdout
@@ -81,9 +73,10 @@ class Trident:
         except urllib.error.HTTPError as error:
             raise RuntimeError(error.read().decode("utf-8", "replace")) from error
         self.line.send_text(raw.decode("utf-8"))
-        choice = json.loads(raw)["choices"][0]
+        response = json.loads(raw)
+        choice = response["choices"][0]
         if choice["finish_reason"] == "length":
-            raise RuntimeError(f"Model response reached max_tokens={cfg['max_tokens']}; usage={json.loads(raw)['usage']}; request ended.")
+            raise RuntimeError(f"Model response reached max_tokens={cfg['max_tokens']}; usage={response['usage']}; request ended.")
         return choice["message"]
 
     def turn(self, text, source):
@@ -104,16 +97,17 @@ class Trident:
                     raise
                 except Exception as error:
                     result = str(error)
-                if isinstance(result, (End, Restart)):
+                if result is END or result is RESTART:
                     return result
                 if isinstance(result, (bytes, tuple)):
                     words, png = ("", result) if isinstance(result, bytes) else result
-                    content = [{"type": "text", "text": self.request_text(words, "Tool result from " + name)},
-                               {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(png).decode("ascii")}}]
-                    self.line.send_text(content[0]["text"])
                 else:
-                    content = self.request_text(str(result), "Tool result from " + name)
-                    self.line.send_text(content)
+                    words, png = str(result), None
+                content = self.request_text(words, "Tool result from " + name)
+                self.line.send_text(content)
+                if png is not None:
+                    content = [{"type": "text", "text": content},
+                               {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(png).decode("ascii")}}]
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": content})
 
     def speak(self, text: str):
@@ -130,23 +124,12 @@ class Trident:
         self.line.wait(self.line.show(png))
         return png
 
-    def point(self, y: int, x: int):
-        return desktop.move(y, x)
-
-    def click(self, how: str):
-        return desktop.click(how)
-
-    def stroke(self, points: str):
-        return desktop.stroke(points)
-
-    def type_text(self, text: str):
-        return desktop.type_text(text)
-
-    def press(self, keys: str):
-        return desktop.press(keys)
-
-    def run(self, command: str):
-        return desktop.run(command)
+    point = staticmethod(desktop.move)
+    click = staticmethod(desktop.click)
+    stroke = staticmethod(desktop.stroke)
+    type_text = staticmethod(desktop.type_text)
+    press = staticmethod(desktop.press)
+    run = staticmethod(desktop.run)
 
     def note(self, text: str):
         path = self.note_path.with_suffix(".tmp")
@@ -225,13 +208,13 @@ class Trident:
                 raise RuntimeError("Heal did not leave an annotated tag; restart blocked.")
             if self.line.wait(self.line.reserve_restart()):
                 self.line.send_text("Heal committed and tagged. Restarting with the note.")
-                return Restart()
+                return RESTART
             self.pending_restart = True
             return "Heal committed and tagged. Restart waits until Call: down."
 
     def done(self, summary: str):
         self.line.send_text(summary)
-        return End()
+        return END
 
     def serve(self):
         self.events.put(("wake", "Wake"))
@@ -244,7 +227,7 @@ class Trident:
             try:
                 if kind == "call_down":
                     if self.pending_restart and self.line.wait(self.line.reserve_restart()):
-                        return Restart()
+                        return RESTART
                     continue
                 if kind == "audio":
                     raw = self.models.speech("ASR", transcription_command(self.run_dir / "call.wav", payload))
@@ -252,7 +235,7 @@ class Trident:
                     if not payload:
                         continue
                 result = self.turn(payload, "Wake" if kind == "wake" else "Owner words")
-                if isinstance(result, Restart):
+                if result is RESTART:
                     return result
                 if self.requests >= CONFIG["brain"]["request_limit"]:
                     raise EmptyFuel(f"request limit {CONFIG['brain']['request_limit']}")
@@ -285,5 +268,5 @@ def main():
         raise
     finally:
         trident.stop()
-    if isinstance(result, Restart):
+    if result is RESTART:
         os.execv(sys.executable, [sys.executable, str(ROOT / "trident.py")])
