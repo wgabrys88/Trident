@@ -44,13 +44,13 @@ class Trident:
         return f"Note:\n{self.memory}\nCall: {'up' if self.line.up else 'down'}\n{text}"
 
     def turn(self, text):
-        self.end, self.input = False, text
-        messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": self.context(text)}]
+        self.end, self.input, prior, screen = False, text, [], []
         while not self.end:
             self.checkpoint()
-            reply = self.engines.complete(messages, self.tools)
+            reply = self.engines.complete([
+                {"role": "system", "content": SYSTEM}, {"role": "user", "content": self.context(text)},
+                *prior, *screen], self.tools)
             self.carried = None
-            messages.append(reply)
             [call] = reply["tool_calls"]
             self.checkpoint()
             name = call["function"]["name"]
@@ -59,14 +59,13 @@ class Trident:
             words, image = result if isinstance(result, tuple) else (str(result), None)
             if name not in ("look", "consult", "delegate", "heal"):
                 self.line.send(tool_record(name, arguments, words), model=CONFIG["brain"]["api_model"], direction="tool")
-            messages[1]["content"] = self.context(text)
-            messages.append({"role": "tool", "name": name, "tool_call_id": call["id"],
-                             "content": f"Tool result from {name}:\n{words}"})
+            prior = [{"role": "assistant", "content": reply["content"], "tool_calls": reply["tool_calls"]},
+                     {"role": "tool", "name": name, "tool_call_id": call["id"],
+                      "content": f"Tool result from {name}:\n{words}"}]
             if image:
-                messages = [item for item in messages if not isinstance(item.get("content"), list)]
-                messages.append({"role": "user", "content": [
+                screen = [{"role": "user", "content": [
                     {"type": "text", "text": f"Screen from tool {name}; runtime evidence, not owner words."},
-                    {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(image).decode("ascii")}}]})
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(image).decode("ascii")}}]}]
 
     @tool("See the screen, the pointer, and the grid.")
     def look(self):
@@ -75,17 +74,17 @@ class Trident:
         self.line.send(tool_record("look", {}, words), [("png", image)], model=CONFIG["brain"]["api_model"], direction="tool")
         return words, image
 
-    @tool("Move, click, or drag the pointer.",
+    @tool("Move to the coordinates, then point, click, or drag.",
           action="point, left, right, double, or drag",
           y="Vertical place, 0 to 1000",
           x="Horizontal place, 0 to 1000",
           points="Drag path as y x pairs")
     def mouse(self, action: Literal["point", "left", "right", "double", "drag"], y: int=None, x: int=None, points: str=""):
-        if action == "point":
-            return desktop.point(y, x)
         if action == "drag":
             return desktop.stroke(points)
-        return desktop.click(action)
+        if action == "point":
+            return desktop.point(y, x)
+        return desktop.click(action, y, x)
 
     @tool("Type, press keys, or run PowerShell.",
           action="type, press, or run", text="Text, keys, or the command")

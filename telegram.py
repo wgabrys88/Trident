@@ -17,7 +17,6 @@ from telethon.tl.types import (InputPhoneCall, PhoneCall, PhoneCallAccepted, Pho
 from audio import Segmenter
 from core import CONFIG, timestamp
 from desktop import image_size
-from usage import Usage
 
 OWNER, CFG = CONFIG["owner"]["telegram_id"], CONFIG["telegram"]
 
@@ -46,17 +45,6 @@ def call_text(name, arguments):
         return f"{name}()"
     return name + "(" + ", ".join(f"{key}={value!r}" for key, value in arguments.items()) + ")"
 
-def plain(content):
-    if isinstance(content, str):
-        return content
-    lines = []
-    for part in content:
-        if part.get("type") == "text" and part.get("text"):
-            lines.append(part["text"])
-        elif part.get("type") == "image_url":
-            lines.append("[screenshot]")
-    return "\n".join(lines)
-
 def assistant_lines(message):
     parts = []
     if message.get("reasoning_content"):
@@ -72,23 +60,6 @@ def context_limit():
     args = CONFIG["brain"]["server_args"]
     return args[args.index("--ctx-size") + 1]
 
-def brain_request(messages):
-    blocks = ["TRIDENT -> GEMMA", ""]
-    for message in messages:
-        role = message.get("role")
-        if role == "system":
-            continue
-        if role == "assistant":
-            blocks.append(assistant_lines(message))
-        elif role == "tool":
-            blocks.append("Tool response:\n" + str(message.get("content") or ""))
-        else:
-            text = plain(message.get("content"))
-            if text:
-                blocks.append("User:\n" + text)
-        blocks.append("")
-    return "\n".join(blocks).strip() + "\n"
-
 def brain_response(raw):
     data = json.loads(raw)
     usage = data["usage"]
@@ -100,7 +71,7 @@ def tool_record(name, arguments, words):
 
 class Line:
     def __init__(self, events_queue, folder):
-        self.events, self.folder, self.usage = events_queue, folder, Usage(folder)
+        self.events, self.folder = events_queue, folder
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
         self.client = self.owner = self.calls = self.phone = self.image = None
@@ -127,7 +98,6 @@ class Line:
         stamp = timestamp()
         filename_model = re.sub(r'[<>:\"/\\|?*\x00-\x1f]', '_', model)
         stem = f"{stamp}_{filename_model}_{direction}"
-        self.usage.record(stamp, model, direction)
         path = self.folder / (stem + ".txt")
         path.write_bytes(text.encode("utf-8"))
         if files:
@@ -359,4 +329,3 @@ class Line:
         finally:
             self.loop.call_soon_threadsafe(self.loop.stop)
             self.thread.join(5)
-            self.usage.close()

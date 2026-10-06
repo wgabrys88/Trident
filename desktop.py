@@ -96,12 +96,12 @@ def point(y: int, x: int):
     win32api.SetCursorPos((left + round(x * (width - 1) / 1000), top + round(y * (height - 1) / 1000)))
     return "Pointer at y {} x {}.".format(*position())
 
-def click(how: str):
+def click(how: str, y: int, x: int):
+    point(y, x)
     down, up = {"left": (2, 4), "right": (8, 16), "double": (2, 4)}[how]
-    y, x = position()
     for _ in range(2 if how == "double" else 1):
         send(button(down), button(up))
-    return f"{how} click at y {y} x {x}."
+    return "{} click at y {} x {}.".format(how, *position())
 
 def stroke(points: str):
     path = [tuple(map(int, pair.split())) for pair in points.split(";")]

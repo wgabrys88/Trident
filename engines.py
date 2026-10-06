@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from audio import call_pcm
 from core import BIN, CONFIG, HARDWARE, MODELS, ROOT, encode
 from hardware import environment
-from telegram import brain_request, brain_response
+from telegram import brain_response
 
 CFG = CONFIG["brain"]
 
@@ -200,14 +200,9 @@ class Engines:
             pool.shutdown(wait=False, cancel_futures=True)
 
     def post(self, body):
-        {"llama": self.brain, "http": self.stop}[CFG["backend"]]()
-        text = encode(body)
-        self.record(brain_request(body["messages"]), (), CFG["api_model"], "req")
-        headers = {"Content-Type": "application/json"}
-        if CFG["api_key_env"]:
-            headers["Authorization"] = "Bearer " + os.environ[CFG["api_key_env"]]
-        endpoint = {"llama": self.url + "/v1/chat/completions", "http": CFG["endpoint"]}[CFG["backend"]]
-        request = urllib.request.Request(endpoint, text.encode("utf-8"), headers)
+        self.brain()
+        request = urllib.request.Request(self.url + "/v1/chat/completions", encode(body).encode("utf-8"),
+                                          {"Content-Type": "application/json"})
         text = self.fetch(request, abort=True).decode("utf-8")
         self.record(brain_response(text), (), CFG["api_model"], "resp")
         choice = json.loads(text)["choices"][0]
@@ -221,7 +216,7 @@ class Engines:
 
     def utterances(self, text):
         # The splitter is the same local Gemma with tools off, not a second mind.
-        message = self.post({"model": CFG["api_model"], "temperature": 0, "max_tokens": -1, "messages": [
+        message = self.post({**CFG["options"], "model": CFG["api_model"], "messages": [
             {"role": "system", "content": "Split these words into natural spoken utterances of a few sentences each, well under twenty-five seconds, copying every word in order and separating the utterances with a blank line."},
             {"role": "user", "content": text}], "chat_template_kwargs": {"enable_thinking": False}})
         pieces = [part.strip() for part in (message.get("content") or "").split("\n\n") if part.strip()]

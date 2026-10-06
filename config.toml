@@ -31,10 +31,7 @@ llama_assets = ["llama-{tag}-bin-win-vulkan-x64.zip"]
 server_args = ["--flash-attn", "auto", "--cache-type-k", "q8_0", "--cache-type-v", "f16"]
 
 [brain]
-backend = "llama"
 api_model = "Gemma"
-endpoint = ""
-api_key_env = ""
 model = "gemma-4-E2B-it-Q4_0.gguf"
 mmproj = "mmproj-gemma-4-E2B-it-Q8_0.gguf"
 template = "bin/llama/gemma.jinja"
@@ -46,13 +43,11 @@ server_args = [
     "--ctx-size", "16384", "--n-gpu-layers", "999",
     "--batch-size", "1152", "--ubatch-size", "1152", "--image-max-tokens", "1120",
 ]
-# For another native vision/tool chat API, choose backend="http", set endpoint,
-# api_model and api_key_env, and replace options with that provider's parameters.
 [brain.options]
-temperature = 0
+temperature = 1.0
 top_k = 64
 top_p = 0.95
-min_p = 0.05
+min_p = 0.0
 max_tokens = -1
 chat_template_kwargs = { enable_thinking = true, preserve_thinking = true }
 
