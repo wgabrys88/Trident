@@ -199,12 +199,12 @@ class Engines:
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
 
-    def post(self, body):
+    def post(self, body, direction="resp"):
         self.brain()
         request = urllib.request.Request(self.url + "/v1/chat/completions", encode(body).encode("utf-8"),
                                           {"Content-Type": "application/json"})
         text = self.fetch(request, abort=True).decode("utf-8")
-        self.record(brain_response(text), (), CFG["api_model"], "resp")
+        self.record(brain_response(text), (), CFG["api_model"], direction)
         data = json.loads(text)
         choice = data["choices"][0]
         if choice["finish_reason"] == "length":
@@ -219,7 +219,7 @@ class Engines:
     def rewrite(self, text):
         message, _ = self.post({**CFG["options"], "model": CFG["api_model"], "messages": [
             {"role": "system", "content": "Rewrite it shorter by meaning, and keep every fact, decision, place, and open step."},
-            {"role": "user", "content": text}], "chat_template_kwargs": {"enable_thinking": False}})
+            {"role": "user", "content": text}], "chat_template_kwargs": {"enable_thinking": False}}, "rewrite")
         content = (message.get("content") or "").strip()
         if not content:
             raise RuntimeError("Compaction returned nothing")

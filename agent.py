@@ -104,16 +104,16 @@ class Trident:
         if cut is None:
             return history
         text = transcript(history[:cut])
-        self.line.send(f"TRIDENT -> GEMMA\n\nContext: {used} of {context_limit()}\n\n"
+        self.line.send(f"TRIDENT -> GEMMA\n\nContext before: {used} of {context_limit()}\n\n"
                        "Rewrite it shorter by meaning, and keep every fact, decision, place, and open step.\n\n"
                        f"{text}\n", model=CONFIG["brain"]["api_model"], direction="compact")
-        return [{"role": "user", "content": self.engines.rewrite(text)}, *history[cut:]]
+        return [{"role": "user", "content": "Earlier steps, rewritten shorter; not owner words.\n" + self.engines.rewrite(text)}, *history[cut:]]
 
     @tool("See the screen, the pointer, and the grid.")
     def look(self):
         words, image = desktop.picture()
         self.line.wait(self.line.show(image))
-        self.line.send(tool_record("look", {}, words), [("png", image)], model=CONFIG["brain"]["api_model"], direction="tool")
+        self.line.send(tool_record("look", {}, words) + "PNG attached.\n", [("png", image)], model=CONFIG["brain"]["api_model"], direction="tool")
         return words, image
 
     @tool("Ask the advisor; it sees your screen and boxes where to act.", request="The goal and what you need")
