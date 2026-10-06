@@ -11,9 +11,9 @@ from telethon.sessions import MemorySession
 from telethon.tl.functions.messages import GetDhConfigRequest
 from telethon.tl.functions.phone import (AcceptCallRequest, ConfirmCallRequest, DiscardCallRequest,
                                        RequestCallRequest, SendSignalingDataRequest)
-from telethon.tl.types import (InputPhoneCall, PhoneCall, PhoneCallAccepted, PhoneCallDiscarded,
-    PhoneCallDiscardReasonHangup, PhoneCallDiscardReasonMissed, PhoneCallProtocol, PhoneCallRequested,
-    PhoneConnection, PhoneConnectionWebrtc, UpdatePhoneCall, UpdatePhoneCallSignalingData)
+from telethon.tl.types import (DocumentAttributeAudio, InputPhoneCall, PhoneCall, PhoneCallAccepted,
+    PhoneCallDiscarded, PhoneCallDiscardReasonHangup, PhoneCallDiscardReasonMissed, PhoneCallProtocol,
+    PhoneCallRequested, PhoneConnection, PhoneConnectionWebrtc, UpdatePhoneCall, UpdatePhoneCallSignalingData)
 from audio import Segmenter
 from core import CONFIG, timestamp
 from desktop import image_size
@@ -61,22 +61,27 @@ class Line:
             future.cancel()
             raise
 
-    def send(self, text, files=(), model="Trident", direction="event"):
-        self.wait(self.emit(text, files, model, direction), 600)
+    def send(self, text, files=(), model="Trident", direction="event", voice=0):
+        self.wait(self.emit(text, files, model, direction, voice), 600)
 
-    async def emit(self, text, files=(), model="Trident", direction="event"):
+    async def emit(self, text, files=(), model="Trident", direction="event", voice=0):
         stamp = timestamp()
         stem = f"{stamp}_{model}_{direction}"
         self.usage.record(stamp, model, direction)
         path = self.folder / (stem + ".txt")
         path.write_bytes(text.encode("utf-8"))
-        await self.client.send_file(self.owner, str(path), force_document=True)
-        if 0 < len(text) <= 2000:
-            await self.client.send_message(self.owner, text, parse_mode=None)
+        if not voice:
+            await self.client.send_file(self.owner, str(path), force_document=True)
+            if 0 < len(text) <= 2000:
+                await self.client.send_message(self.owner, text, parse_mode=None)
         for index, (suffix, data) in enumerate(files):
             path = self.folder / f"{stem}_{index:03d}.{suffix}"
             path.write_bytes(data)
-            await self.client.send_file(self.owner, str(path), force_document=True)
+            if voice:
+                await self.client.send_file(self.owner, str(path), voice_note=True,
+                                            attributes=[DocumentAttributeAudio(int(voice), voice=True)])
+            else:
+                await self.client.send_file(self.owner, str(path), force_document=True)
 
     def start(self):
         self.thread.start()

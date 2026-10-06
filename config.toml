@@ -43,7 +43,7 @@ min_utterance_s = 1.0
 model = "nemotron-3.5-asr-streaming-0.6b.q8_0.gguf"
 
 [mouth]
-model = "chatterbox-turbo"
+model = "chatterbox-nano"
 reference = "reference.wav"
 
 [telegram]

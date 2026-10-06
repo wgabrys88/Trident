@@ -49,7 +49,10 @@ if __name__ == "__main__":
     print(ACCELERATOR, flush=True)
     pip = [str(PYTHON), "-m", "pip", "install", "--disable-pip-version-check"]
     subprocess.run(pip + ["torch", "torchaudio", "--index-url", CFG["torch_index"]], check=True)
-    subprocess.run(pip + ["-r", str(ROOT / "requirements.txt")], check=True)
+    requirement = ROOT / "requirements.txt"
+    subprocess.run(pip + ["-r", str(requirement)], check=True)
+    mouth = next(line for line in requirement.read_text(encoding="utf-8").splitlines() if line.startswith("chatterbox-tts"))
+    subprocess.run(pip + ["--force-reinstall", "--no-deps", mouth], check=True)
     with urllib.request.urlopen(urllib.request.Request(
             "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/" + CFG["llama_tag"],
             headers={"User-Agent": "Trident"}), timeout=30) as response:
@@ -64,5 +67,5 @@ if __name__ == "__main__":
                       ("ear_url", MODELS / CONFIG["ears"]["model"]), ("silero_url", MODELS / "silero_vad.onnx")):
         download(CFG[key], path)
     from huggingface_hub import snapshot_download
-    snapshot_download("ResembleAI/chatterbox-turbo", local_dir=MODELS / CONFIG["mouth"]["model"],
+    snapshot_download("ResembleAI/chatterbox-nano", local_dir=MODELS / CONFIG["mouth"]["model"],
                       allow_patterns=["*.safetensors", "*.json", "*.txt", "*.pt", "*.model"])

@@ -5,6 +5,7 @@ A turn with no tool call ends the request; only your note carries over. Before y
 
 TOOLS
 - speak(text): aloud on a call, else a Telegram message. Never dials.
+- voice(text): Telegram voice messages the owner can play without a call. Write at most three short sentences. Longer text is split into groups of three, and each message is at most 30 seconds. Never dials.
 - look(): the whole screen now, with the pointer arrow.
 - point(y, x): move only the pointer.
 - click(how left|right|double): at the pointer.

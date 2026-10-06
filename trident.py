@@ -3,9 +3,9 @@ from contextlib import ExitStack
 from pathlib import Path
 from PIL import Image
 import desktop
-from audio import transcription
+from audio import chunks, ogg, transcription
 from core import CONFIG, ROOT, STATE, SYSTEM, Interrupted, encode, timestamp, tool
-from models import Models
+from models import Models, Mouth
 from telegram import Line
 
 def git(*args):
@@ -26,6 +26,8 @@ class Trident:
         self.line.checkpoint = self.checkpoint
         self.models = Models(self.work, self.checkpoint)
         resources.callback(self.models.stop)
+        self.mouth = Mouth(self.work)
+        resources.callback(self.mouth.close)
         self.methods = {name: getattr(self, name) for name in vars(Trident) if hasattr(getattr(self, name), "schema")}
         self.tools = [method.schema for method in self.methods.values()]
         self.fuel = int(os.environ.get("TRIDENT_REQUESTS", "0"))
@@ -92,15 +94,36 @@ class Trident:
                 if self.end:
                     return
 
+    def say(self, text):
+        parts = chunks(text)
+        if not parts:
+            raise RuntimeError("speak needs text")
+        label = CONFIG["mouth"]["model"]
+        for part in parts:
+            self.line.send(part, model=label, direction="req")
+            pcm = self.mouth.pcm(part, self.checkpoint)
+            self.line.send("PCM signed 16-bit, 48000 Hz, mono", [("pcm", pcm)], label, "resp")
+            self.line.wait(self.line.speak(pcm), len(pcm) / 96000 + 30)
+        return "Spoken on the call"
+
     @tool("Speak on the current call, otherwise send Telegram text. Never dial.", text="Words to say to the owner")
     def speak(self, text: str):
         if self.line.up:
-            args = [sys.executable, str(ROOT / "audio.py"), str(self.work / "voice.pt")]
-            pcm = self.worker("TTS", args, text.encode("utf-8"), binary=True)
-            self.line.wait(self.line.speak(pcm), len(pcm) / 96000 + 30)
-            return "Spoken on the call"
+            return self.say(text)
         self.line.send(text)
         return "Sent to Telegram"
+
+    @tool("Send these English words as Telegram voice messages the owner can play without a call. Write at most three short sentences. Longer text is split into groups of three, and each message is at most 30 seconds. Never dials.",
+          text="English words the owner will hear")
+    def voice(self, text: str):
+        parts = chunks(text)
+        if not parts:
+            raise RuntimeError("voice needs text")
+        label = CONFIG["mouth"]["model"]
+        for part in parts:
+            pcm = self.mouth.pcm(part, self.checkpoint)
+            self.line.send(part, [("ogg", ogg(pcm))], label, "voice", max(1, round(len(pcm) / 96000)))
+        return f"Sent {len(parts)} voice message" + ("s" if len(parts) != 1 else "")
 
     @tool("See the whole screen now, with the pointer arrow and grid labels")
     def look(self):
@@ -137,15 +160,14 @@ class Trident:
         self.line.wait(self.line.hang())
         return "Call: down"
 
-    def worker(self, name, args, data=b"", files=(), binary=False, interrupt=True):
-        if name in ("ASR", "TTS") and CONFIG["brain"]["release_gpu"]:
+    def worker(self, name, args, data=b"", files=(), interrupt=True):
+        if name == "ASR" and CONFIG["brain"]["release_gpu"]:
             self.models.stop()
-        label = {"ASR": CONFIG["ears"]["model"], "TTS": CONFIG["mouth"]["model"],
-                 "Advisor": CONFIG["cloud"]["model"], "Writer": CONFIG["cloud"]["model"]}[name]
+        label = {"ASR": CONFIG["ears"]["model"], "Advisor": CONFIG["cloud"]["model"],
+                 "Writer": CONFIG["cloud"]["model"]}[name]
         self.line.send(encode({"command": [str(arg) for arg in args], "stdin": data.decode("utf-8")}), files, label, "req")
         raw = self.models.command(args, data, interrupt)
-        self.line.send("PCM signed 16-bit, 48000 Hz, mono" if binary else raw.decode("utf-8"),
-                       [("pcm", raw)] if binary else (), label, "resp")
+        self.line.send(raw.decode("utf-8"), model=label, direction="resp")
         return raw
 
     def cursor(self, prompt, files=(), writing=False):
@@ -189,7 +211,7 @@ class Trident:
             self.models.stop()
             before = git("rev-parse", "HEAD")
             prompt = ("You are the sole Trident Writer on runner-h. Read every tracked Python file, then repair the goal. "
-                "Keep Gemma as decider, native tools, one GPU worker, Telegram user calls, exact request/image mirroring, "
+                "Keep Gemma as decider, native tools, the resident Nano mouth beside Gemma, Telegram user calls, exact request/image mirroring, "
                 "and the saved note. organism.txt is the sole system text. No tests, live steps, agents, fallbacks or "
                 "host changes. If already satisfied, change nothing and say so. Otherwise commit, create an annotated "
                 "tag for the commit, and push runner-h and that tag without force. Never delete the note, runs, models "
@@ -215,7 +237,9 @@ class Trident:
         return "Done posted to Telegram"
 
     def serve(self):
+        self.mouth.start()
         self.line.start()
+        self.mouth.ready()
         self.line.send(SYSTEM, model="Gemma", direction="wake")
         self.events.put(("wake", "Wake"))
         while not self.restart and self.fuel < CONFIG["brain"]["request_limit"]:

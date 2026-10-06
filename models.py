@@ -1,4 +1,4 @@
-import _winapi, msvcrt, os, socket, subprocess, tempfile, time, urllib.error, urllib.request
+import _winapi, msvcrt, os, socket, subprocess, sys, tempfile, time, urllib.error, urllib.request
 import win32job, win32process
 from concurrent.futures import ThreadPoolExecutor
 from core import BIN, CONFIG, MODELS, ROOT
@@ -6,7 +6,7 @@ from core import BIN, CONFIG, MODELS, ROOT
 class Child:
     """Own a suspended process and its descendants before allowing execution."""
     def __init__(self, args, folder, data=b"", cwd=ROOT):
-        self.job = win32job.CreateJobObject(None, None)
+        self.job = win32job.CreateJobObject(None, "")
         self.process = thread = None
         self.streams = [tempfile.TemporaryFile(dir=folder) for _ in range(3)]
         stdin, self.output, self.errors = self.streams
@@ -76,6 +76,90 @@ class Child:
             self.process = None
         for stream in self.streams:
             stream.close()
+
+class Mouth:
+    """Resident Chatterbox Nano. Models.stop does not close it."""
+    def __init__(self, folder):
+        self.folder, self.proc, self.job, self.err, self.live = folder, None, None, None, False
+
+    def start(self):
+        self.job = win32job.CreateJobObject(None, "")
+        limits = win32job.QueryInformationJobObject(self.job, win32job.JobObjectExtendedLimitInformation)
+        limits["BasicLimitInformation"]["LimitFlags"] = win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        win32job.SetInformationJobObject(self.job, win32job.JobObjectExtendedLimitInformation, limits)
+        self.err = (self.folder / "mouth.err").open("wb", buffering=0)
+        self.proc = subprocess.Popen([sys.executable, "-u", str(ROOT / "audio.py"), str(self.folder / "voice.pt")],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.err, bufsize=0, cwd=ROOT,
+            creationflags=subprocess.CREATE_NO_WINDOW)
+        win32job.AssignProcessToJobObject(self.job, self.proc._handle)
+
+    def failure(self):
+        code = self.proc.poll() if self.proc else None
+        text = (self.folder / "mouth.err").read_text(encoding="utf-8", errors="replace").strip()
+        return text[-4000:] or f"Mouth exited {code}"
+
+    def _exact(self, count):
+        data = b""
+        while len(data) < count:
+            piece = self.proc.stdout.read(count - len(data))
+            if not piece:
+                raise RuntimeError(self.failure())
+            data += piece
+        return data
+
+    def ready(self):
+        if self.live:
+            return
+        mark = self._exact(4)
+        if mark != b"\0\0\0\0":
+            raise RuntimeError(f"Mouth handshake {mark!r}: {self.failure()}")
+        self.live = True
+
+    def pcm(self, text, checkpoint=lambda: None):
+        self.ready()
+        raw = text.encode("utf-8")
+        self.proc.stdin.write(len(raw).to_bytes(4, "little") + raw)
+        self.proc.stdin.flush()
+        def receive():
+            size = int.from_bytes(self._exact(4), "little")
+            if not size:
+                raise RuntimeError(self.failure() if self.proc.poll() is not None else "Mouth returned no audio")
+            return self._exact(size)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(receive)
+            caught = None
+            while not future.done():
+                try:
+                    checkpoint()
+                except BaseException as error:
+                    caught = error
+                    break
+                time.sleep(0.05)
+            audio = future.result()
+            if caught:
+                raise caught
+            return audio
+
+    def close(self):
+        if self.proc and self.proc.poll() is None and self.proc.stdin:
+            try:
+                self.proc.stdin.write((0).to_bytes(4, "little"))
+                self.proc.stdin.flush()
+            except OSError:
+                pass
+        if self.job:
+            win32job.TerminateJobObject(self.job, 1)
+            self.job.Close()
+            self.job = None
+        if self.proc:
+            try:
+                self.proc.wait(5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+            self.proc = None
+        if self.err and not self.err.closed:
+            self.err.close()
+        self.err, self.live = None, False
 
 class Models:
     def __init__(self, folder, checkpoint):
