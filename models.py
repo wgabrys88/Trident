@@ -55,7 +55,7 @@ class Models:
             for part in parts[1:]:
                 if part.startswith("artifacts/"):
                     (ROOT / part).stat()
-        for part in (CONFIG["ears"]["command"], CONFIG["ears"]["model"]):
+        for part in (CONFIG["ears"]["library"], CONFIG["ears"]["model"]):
             (ROOT / part).stat()
         for part in command(CONFIG["luna"]["command"]):
             Path(part).stat()
@@ -108,6 +108,7 @@ class Models:
             output.close()
         if self.http is not None:
             await self.http.close()
+        self.record.append("models_closed", {})
 
     async def luna(self, instruction, context):
         request = (

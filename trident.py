@@ -18,6 +18,7 @@ async def main():
         state = {
             "goal": None, "suspended": [], "history": [], "lessons": [], "finished": None,
             "waiting": False, "shutdown": False, "restart": False, "start": 0,
+            "attention": False, "recording": False, "open_work": read(ROOT / "mind.json")["open_work"], "assessment": None,
         }
     else:
         state = read(folder / "session.json")
@@ -28,16 +29,22 @@ async def main():
     models = Models(record, line.inbox)
     try:
         await models.open()
+        await line.hearing.open()
         await line.open()
         await Agent(models, line, record, state).serve()
     except Exception as error:
         record.append("error", {"type": type(error).__name__, "message": str(error)})
         raise
     finally:
+        record.append("cleanup_started", {})
         try:
             await line.close()
         finally:
-            await models.close()
+            try:
+                await line.hearing.close()
+            finally:
+                await models.close()
+        record.append("cleanup_finished", {})
     record.append("restart" if state["restart"] else "shutdown", {})
     return folder if state["restart"] else None
 

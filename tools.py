@@ -8,7 +8,7 @@ from jsonschema import Draft202012Validator
 
 import desktop
 from audio import call_pcm
-from store import ROOT, read, write
+from store import ROOT, encode, read, write
 
 
 class Catalog:
@@ -34,18 +34,26 @@ class Catalog:
         return await handler(host, **arguments)
 
 
-async def screen(host, question):
+async def screen(host, question, region, magnify):
     path = host.record.folder / ("screen-" + uuid.uuid4().hex + ".png")
-    metadata = desktop.capture(path)
+    metadata = await asyncio.to_thread(desktop.capture, path, region, magnify)
     detail = await host.models.gemma(
-        question + "\nScreenshot metadata: " + str(metadata) +
-        "\nGive exact visible evidence and native Windows pixel coordinates. Do not infer hidden content.", [path],
+        question + "\nSupplied image mapping: " + encode(metadata) +
+        "\nReport only the requested visible facts concisely. Use image pixels, then the supplied mapping for desktop coordinates. "
+        "Separate observed, inferred, and unknown. Do not assume hidden content or conventional positions.", [path],
     )
     return {**metadata, "gemma": detail}
 
 
-async def images(host, question, paths):
-    return {"gemma": await host.models.gemma(question, [Path(path) for path in paths])}
+async def images(host, question, views):
+    metadata = []
+    for view in views:
+        path = host.record.folder / ("view-" + uuid.uuid4().hex + ".png")
+        metadata.append(await asyncio.to_thread(desktop.image_view, view, path))
+    detail = await host.models.gemma(question + "\nActual supplied images and coordinate mappings:\n" + encode(metadata) +
+                                    "\nSeparate visible evidence, inference, and unknown. Answer only the requested detail concisely.",
+                                    [Path(item["image"]) for item in metadata])
+    return {"views": metadata, "gemma": detail}
 
 
 async def click(host, x, y, button, count):
@@ -91,12 +99,34 @@ async def hang(host):
     return await host.line.hang()
 
 
-async def speak(host, text):
-    payload = await host.models.voice(text)
-    path = host.record.folder / ("voice-" + uuid.uuid4().hex + ".wav")
-    path.write_bytes(payload)
-    result = await host.line.speak(call_pcm(payload))
-    return {**result, "audio": str(path), "words": text}
+async def speak(host, parts):
+    if host.line.state != "up":
+        raise RuntimeError("Speech requires a connected Telegram call")
+    payload = await host.models.voice(parts[0])
+    pending = None
+    receipts = []
+    try:
+        for index, text in enumerate(parts):
+            path = host.record.folder / ("voice-" + uuid.uuid4().hex + ".wav")
+            path.write_bytes(payload)
+            host.record.append("voice_ready", {"audio": str(path), "words": text})
+            if index + 1 < len(parts):
+                pending = asyncio.create_task(host.models.voice(parts[index + 1]))
+            result = await host.line.speak(call_pcm(payload))
+            receipt = {**result, "audio": str(path), "words": text}
+            receipts.append(receipt)
+            host.record.append("speech_transmitted", receipt)
+            if pending is not None:
+                payload = await pending
+                pending = None
+        return {"parts": receipts}
+    finally:
+        if pending is not None:
+            pending.cancel()
+            try:
+                await pending
+            except asyncio.CancelledError:
+                pass
 
 
 async def remember(host, text):
@@ -104,6 +134,21 @@ async def remember(host, text):
     mind["memory"] = text
     write(ROOT / "mind.json", mind)
     return {"memory": text}
+
+
+async def goal(host, text, retain_previous):
+    if host.state["suspended"]:
+        raise RuntimeError("Resume self-healing before selecting an owner goal")
+    previous = host.state["goal"]
+    if retain_previous and previous is not None and previous != text:
+        host.state["open_work"].append({"goal": previous, "evidence": "Retained by Luna while selecting another goal"})
+    host.state["open_work"] = [item for item in host.state["open_work"] if item["goal"] != text]
+    host.state["goal"] = text
+    host.state["attention"] = False
+    host.state["waiting"] = False
+    if previous != text:
+        host.state["assessment"] = None
+    return {"goal": text, "open_work": host.state["open_work"]}
 
 
 async def files(host):
@@ -148,15 +193,22 @@ async def activate(host):
 async def wait(host, memory):
     await remember(host, memory)
     host.state["waiting"] = True
+    host.state["attention"] = False
     return {"waiting": "Owner input", "goal": host.state["goal"]}
 
 
-async def finish(host, evidence, shutdown):
+async def finish(host, evidence, outcome, shutdown):
     if host.state["suspended"]:
         raise RuntimeError("Resume the owner's goal before finishing it")
     if shutdown and host.line.state != "down":
         raise RuntimeError("Hang up before requesting shutdown")
-    host.state["finished"] = {"goal": host.state["goal"], "evidence": evidence}
+    if host.line.hearing.busy or not host.line.hearing.queue.empty():
+        raise RuntimeError("Receive pending owner audio before closing the recorded task")
+    if outcome == "paused" and host.state["goal"] is not None:
+        host.state["open_work"].append({"goal": host.state["goal"], "evidence": evidence})
+    host.state["finished"] = {"goal": host.state["goal"], "evidence": evidence, "outcome": outcome}
     host.state["goal"] = None
+    host.state["attention"] = False
+    host.state["recording"] = False
     host.state["shutdown"] = shutdown
     return host.state["finished"]

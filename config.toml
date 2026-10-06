@@ -14,7 +14,7 @@ command = ["artifacts/llama/llama-server.exe", "--model", "artifacts/gemma-4-E2B
 
 [ears]
 model = "artifacts/nemotron-3.5-asr-streaming-0.6b.q8_0.gguf"
-command = "artifacts/nemo-cpu/bin/nemo-speech.exe"
+library = "artifacts/nemo-cpu/bin/nemo_speech_asr_c.dll"
 rms_threshold = 0.012
 silence_ms = 700
 padding_ms = 120

@@ -1,10 +1,7 @@
 import asyncio
 import json
-import uuid
 
-from audio import wav
-from models import execute
-from store import CONFIG, ROOT, encode, read, write
+from store import ROOT, encode, read, write
 from tools import Catalog
 
 
@@ -14,6 +11,14 @@ class Agent:
 
     def save(self):
         write(self.record.folder / "session.json", self.state)
+        mind = read(ROOT / "mind.json")
+        owner_goal = self.state["suspended"][0] if self.state["suspended"] else self.state["goal"]
+        retained = list(self.state["open_work"])
+        if owner_goal is not None:
+            retained.append({"goal": owner_goal, "evidence": "Unfinished owner work", "session": str(self.record.folder / "session.json")})
+        if mind["open_work"] != retained:
+            mind["open_work"] = retained
+            write(ROOT / "mind.json", mind)
 
     async def receive(self, event):
         kind, value = event
@@ -25,47 +30,67 @@ class Agent:
                 self.state["history"].append({"line": value})
                 self.save()
             return
-        if self.state["goal"] is None:
-            self.state["start"] = self.record.offset()
-        if kind == "audio":
-            path = self.record.folder / ("heard-" + uuid.uuid4().hex + ".wav")
-            path.write_bytes(wav(value, 16000))
-            self.record.append("owner_audio", {"path": str(path)})
-            output = await execute([
-                CONFIG["ears"]["command"], "transcribe", str(path), "--model", CONFIG["ears"]["model"],
-                "--device", "cpu", "--stream", "--format", "json", "--quiet",
-            ])
-            recognition = json.loads(output)
-            observation = {"path": str(path), "recognition": recognition}
-            self.record.append("asr_result", observation)
-            value = recognition["text"]
-            if not value.strip():
-                if self.state["goal"] is not None:
-                    self.state["history"].append({"audio_observation": observation})
-                    self.state["waiting"] = False
-                    self.save()
-                return
-        if self.state["goal"] is None:
-            self.state["goal"] = value
+        if not self.state["recording"] and kind != "audio":
+            self.state["start"] = value["start"] if kind == "audio_pending" else self.record.offset()
             self.state["history"] = []
-            self.state["shutdown"] = False
+            self.state["recording"] = True
+        if kind == "audio_pending":
+            self.state["history"].append({"audio_observation": {**value, "status": "transcribing"}})
+            self.save()
+            return
+        if kind == "audio":
+            entry = next(entry for entry in self.state["history"]
+                         if entry.get("audio_observation", {}).get("id") == value["id"])
+            entry["audio_observation"] = {**value, "status": "complete"}
+            text = value["recognition"]["text"]
+            if not text.strip():
+                self.save()
+                return
+            entry["audio"] = text
+            value = text
+        else:
+            self.state["history"].append({kind: value})
+        self.state["attention"] = True
+        self.state["shutdown"] = False
         self.state["waiting"] = False
-        self.state["history"].append({kind: value})
         self.record.append("owner_input", {"text": value, "source": kind})
         self.save()
 
     async def step(self):
         catalog = Catalog()
         mind = read(ROOT / "mind.json")
-        batch = json.loads(await self.models.luna(mind["actor"], {
-            "memory": mind["memory"],
+        generation = self.line.generation
+        batch = json.loads(await self.models.luna(mind["actor"] +
+            '\nReturn {"assessment":{"approach":"current method","failures":["observed failed attempt and evidence"],'
+            '"change":"chosen material change, or why no change is needed"},'
+            '"calls":[{"tool":"name","arguments":{}}]}. '
+            'Assess the evidence before selecting actions. Python stores your assessment; you choose the response to failures.', {
+            "persistent_notes": {"authority": "Historical notes only; never current transport state", "text": mind["memory"]},
+            "transport": {"authority": "Current transport state", "call": self.line.state,
+                          "id": self.line.peer.id if self.line.peer is not None else None},
             "goal": self.state["goal"], "suspended": self.state["suspended"],
-            "call": self.line.state, "tools": catalog.specs, "history": self.state["history"],
+            "open_work": self.state["open_work"], "assessment": self.state["assessment"],
+            "hearing": {"busy": self.line.hearing.busy, "queued": self.line.hearing.queue.qsize()},
+            "tools": catalog.specs, "history": self.state["history"],
         }))
+        if generation != self.line.generation:
+            self.record.append("batch_superseded", {"reason": "Input changed while Luna was deciding", "batch": batch})
+            return
+        assessment = batch["assessment"]
+        if (not isinstance(assessment["approach"], str) or not assessment["approach"].strip()
+                or not isinstance(assessment["failures"], list)
+                or any(not isinstance(item, str) for item in assessment["failures"])
+                or not isinstance(assessment["change"], str) or not assessment["change"].strip()):
+            raise ValueError("Luna must provide an approach, failure evidence, and chosen change")
+        self.state["assessment"] = assessment
+        self.record.append("assessment", assessment)
         calls = batch["calls"]
         if not isinstance(calls, list) or not calls:
             raise ValueError("Luna must return a nonempty calls array")
         for index, call in enumerate(calls):
+            if generation != self.line.generation:
+                self.record.append("batch_superseded", {"reason": "Input changed during execution", "remaining": calls[index:]})
+                break
             name, arguments = call["tool"], call["arguments"]
             if catalog.specs[name]["boundary"] and index != len(calls) - 1:
                 raise ValueError(f"{name} must be last in its batch")
@@ -90,14 +115,16 @@ class Agent:
         catalog = Catalog()
         study = ""
         trace = lesson["trace"]
-        for offset in range(0, len(trace), 12000):
+        for events in self.portions(trace):
             study = await self.models.gemma(
-                "Idle learning mode. Study the next contiguous portion of this recorded task. "
+                "Idle learning mode. Study these complete JSON trace events. Each event is intact; "
+                "a portion boundary is not a runtime failure. A lone request at a portion boundary may finish in the next portion. "
                 "Keep concise cumulative lessons from all portions: failures, repairs, observations, Luna's batches, "
                 "and improvements to your visual reports and cooperation. Separate evidence from speculation. "
                 "File paths identify retained evidence; they are not images you have seen. "
-                "Return at most 1000 words.\nGoal: " + lesson["goal"] + "\nPrevious study:\n" + study +
-                "\nNext trace portion:\n" + trace[offset:offset + 12000], [],
+                "Return at most 1000 words.\nRecorded outcome: " + encode({key: value for key, value in lesson.items() if key != "trace"}) +
+                "\nPrevious study:\n" + study +
+                "\nNext complete events:\n" + events, [],
             )
         raw = await self.models.luna(
             "Idle learning mode. Teach Gemma from this recorded task and its study. "
@@ -133,6 +160,18 @@ class Agent:
         self.save()
 
     @staticmethod
+    def portions(trace):
+        portion = ""
+        for line in trace.splitlines():
+            json.loads(line)
+            if portion and len(portion) + len(line) + 1 > 12000:
+                yield portion
+                portion = ""
+            portion += line + "\n"
+        if portion:
+            yield portion
+
+    @staticmethod
     def remove_descriptions(schema):
         if isinstance(schema, dict):
             schema.pop("description", None)
@@ -144,14 +183,16 @@ class Agent:
 
     async def serve(self):
         while not self.state["restart"]:
-            if self.state["shutdown"] and not self.state["lessons"]:
-                return
             if not self.line.inbox.empty():
                 await self.receive(await self.line.inbox.get())
                 continue
-            if self.state["goal"] is not None and not self.state["waiting"]:
+            hearing_idle = not self.line.hearing.busy and self.line.hearing.queue.empty()
+            if self.state["shutdown"] and not self.state["lessons"] and hearing_idle:
+                return
+            if (self.state["goal"] is not None or self.state["attention"]) and not self.state["waiting"]:
                 await self.work(self.step(), learning=False)
-            elif self.state["goal"] is None and self.state["lessons"] and self.line.state == "down":
+            elif (self.state["goal"] is None and not self.state["attention"] and self.state["lessons"]
+                  and self.line.state == "down" and hearing_idle):
                 await self.work(self.learn(), learning=True)
             else:
                 await self.receive(await self.line.inbox.get())
@@ -159,22 +200,19 @@ class Agent:
     async def work(self, coroutine, learning):
         task = asyncio.create_task(coroutine)
         incoming = asyncio.create_task(self.line.inbox.get())
-        pending = []
         try:
             while True:
                 done, _ = await asyncio.wait((task, incoming), return_when=asyncio.FIRST_COMPLETED)
                 if task in done and not (learning and incoming in done):
                     await task
                     if incoming.done():
-                        pending.append(incoming.result())
+                        await self.receive(incoming.result())
                     else:
                         incoming.cancel()
                         try:
                             await incoming
                         except asyncio.CancelledError:
                             pass
-                    for event in pending:
-                        await self.receive(event)
                     return
                 event = incoming.result()
                 if learning or event[0] == "error":
@@ -185,7 +223,7 @@ class Agent:
                         self.record.append("learning_interrupted" if learning else "work_interrupted", {})
                     await self.receive(event)
                     return
-                pending.append(event)
+                await self.receive(event)
                 incoming = asyncio.create_task(self.line.inbox.get())
         finally:
             incoming.cancel()
