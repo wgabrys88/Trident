@@ -55,7 +55,10 @@ class Trident:
             self.checkpoint()
             name = call["function"]["name"]
             arguments = json.loads(call["function"]["arguments"])
-            result = self.methods[name](**arguments)
+            try:
+                result = self.methods[name](**arguments)
+            except TypeError as error:
+                result = f"{type(error).__name__}: {error}"
             words, image = result if isinstance(result, tuple) else (str(result), None)
             if name not in ("look", "consult", "delegate", "heal"):
                 self.line.send(tool_record(name, arguments, words), model=CONFIG["brain"]["api_model"], direction="tool")
