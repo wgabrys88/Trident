@@ -45,28 +45,6 @@ def call_text(name, arguments):
         return f"{name}()"
     return name + "(" + ", ".join(f"{key}={value!r}" for key, value in arguments.items()) + ")"
 
-def assistant_lines(message):
-    parts = []
-    if message.get("reasoning_content"):
-        parts.append("Thinking:\n" + message["reasoning_content"])
-    if message.get("content"):
-        parts.append("Message:\n" + message["content"])
-    for call in message.get("tool_calls") or []:
-        function = call["function"]
-        parts.append("Tool call:\n" + call_text(function["name"], function.get("arguments") or {}))
-    return "\n\n".join(parts)
-
-def context_limit():
-    args = CONFIG["brain"]["server_args"]
-    return args[args.index("--ctx-size") + 1]
-
-def brain_response(raw):
-    data = json.loads(raw)
-    usage = data["usage"]
-    body = assistant_lines(data["choices"][0]["message"])
-    used = usage["prompt_tokens"] + usage["completion_tokens"]
-    return f"GEMMA -> TRIDENT\n\n{body}\n\nContext: {used} of {context_limit()}\n"
-
 def tool_record(name, arguments, words):
     return f"GEMMA -> TRIDENT\n\nTool call:\n{call_text(name, arguments)}\n\nTool response:\n{words}\n"
 

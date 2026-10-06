@@ -1,0 +1,65 @@
+{
+  "look": {
+    "description": "See the screen, the pointer, and the grid.",
+    "parameters": {}
+  },
+  "mouse": {
+    "description": "Click or drag at y and x on the screen grid.",
+    "parameters": {
+      "action": {
+        "type": "string",
+        "enum": ["left", "right", "double", "drag"],
+        "description": "left, right, double, or drag"
+      },
+      "y": {
+        "type": "integer",
+        "description": "Vertical place, 0 to 1000"
+      },
+      "x": {
+        "type": "integer",
+        "description": "Horizontal place, 0 to 1000"
+      },
+      "points": {
+        "type": "string",
+        "description": "Drag path as 'y x' pairs separated by semicolons. Empty when not dragging."
+      }
+    }
+  },
+  "keyboard": {
+    "description": "Type, press keys, or run PowerShell.",
+    "parameters": {
+      "action": {
+        "type": "string",
+        "enum": ["type", "press", "run"],
+        "description": "type, press, or run"
+      },
+      "text": {
+        "type": "string",
+        "description": "Text, keys, or the command"
+      }
+    }
+  },
+  "tell": {
+    "description": "Speak, call, hang up, finish, wait, or stop. speak talks on the open call, or sends a chat message if the call is down. call dials. hang ends the call and you stay. done writes the result in the chat and stops. wait stops with no message. stop hangs up if a call is up and shuts down. Before you ask him something, or stop with work left, remember the task, what you asked, and what is done. Before stop, rewrite the note with what is still open.",
+    "parameters": {
+      "mode": {
+        "type": "string",
+        "enum": ["speak", "call", "hang", "done", "wait", "stop"],
+        "description": "speak, call, hang, done, wait, or stop"
+      },
+      "text": {
+        "type": "string",
+        "description": "Words to say or the report. Empty when the mode needs no words."
+      }
+    }
+  },
+  "remember": {
+    "description": "Replace the saved note.",
+    "parameters": {
+      "text": {
+        "type": "string",
+        "description": "The task, what you asked, and what is done"
+      }
+    }
+  }
+}

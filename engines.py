@@ -4,7 +4,6 @@ from concurrent.futures import ThreadPoolExecutor
 from audio import call_pcm
 from core import BIN, CONFIG, HARDWARE, MODELS, ROOT, encode
 from hardware import environment
-from telegram import brain_response
 
 CFG = CONFIG["brain"]
 
@@ -84,8 +83,8 @@ class Child:
 
 class Engines:
     """Own GPU workers and deliver native chat payloads, independently of task behavior."""
-    def __init__(self, folder, checkpoint, record):
-        self.folder, self.checkpoint, self.record = folder, checkpoint, record
+    def __init__(self, folder, checkpoint):
+        self.folder, self.checkpoint = folder, checkpoint
         self.child = self.mouth = None
         self.url = f"http://{CFG['host']}:{CFG['port']}"
 
@@ -175,9 +174,9 @@ class Engines:
         body = json.dumps({"input": text, "response_format": "wav"}).encode()
         request = urllib.request.Request(f"http://{cfg['host']}:{cfg['port']}/v1/audio/speech", body,
                                           {"Content-Type": "application/json"}, method="POST")
-        return call_pcm(self.fetch(request, abort=False))
+        return call_pcm(self.fetch(request))
 
-    def fetch(self, request, abort):
+    def fetch(self, request):
         def receive():
             try:
                 with urllib.request.urlopen(request, timeout=600) as response:
@@ -192,45 +191,23 @@ class Engines:
                 time.sleep(0.05)
             self.checkpoint()
             return future.result()
-        except BaseException:
-            if abort:
-                self.stop()
-            raise
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
 
-    def post(self, body, direction="resp"):
-        self.brain()
-        request = urllib.request.Request(self.url + "/v1/chat/completions", encode(body).encode("utf-8"),
-                                          {"Content-Type": "application/json"})
-        text = self.fetch(request, abort=True).decode("utf-8")
-        self.record(brain_response(text), (), CFG["api_model"], direction)
-        data = json.loads(text)
-        choice = data["choices"][0]
-        if choice["finish_reason"] == "length":
-            raise RuntimeError("Model context or output capacity exhausted; request ended without replay")
-        usage = data["usage"]
-        return choice["message"], usage["prompt_tokens"] + usage["completion_tokens"]
-
-    def complete(self, messages, tools):
-        return self.post({**CFG["options"], "model": CFG["api_model"], "messages": messages, "tools": tools,
-                          "tool_choice": "required", "parallel_tool_calls": False})
-
-    def rewrite(self, text):
-        message, _ = self.post({**CFG["options"], "model": CFG["api_model"], "messages": [
-            {"role": "system", "content": "Rewrite it shorter by meaning, and keep every fact, decision, place, and open step."},
-            {"role": "user", "content": text}], "chat_template_kwargs": {"enable_thinking": False}}, "rewrite")
-        content = (message.get("content") or "").strip()
-        if not content:
-            raise RuntimeError("Compaction returned nothing")
-        return content
-
-    def utterances(self, text):
-        # The splitter is the same local Gemma with tools off, not a second mind.
-        message, _ = self.post({**CFG["options"], "model": CFG["api_model"], "messages": [
-            {"role": "system", "content": "Split these words into natural spoken utterances of a few sentences each, well under twenty-five seconds, copying every word in order and separating the utterances with a blank line."},
-            {"role": "user", "content": text}], "chat_template_kwargs": {"enable_thinking": False}})
-        pieces = [part.strip() for part in (message.get("content") or "").split("\n\n") if part.strip()]
-        if [word for part in pieces for word in part.split()] != text.split():
-            raise RuntimeError("Speech split changed the words")
-        return pieces
+def ask(messages):
+    body = {**CFG["options"], "model": CFG["api_model"], "messages": messages,
+            "chat_template_kwargs": {"enable_thinking": False}}
+    request = urllib.request.Request(f"http://{CFG['host']}:{CFG['port']}/v1/chat/completions",
+                                      encode(body).encode("utf-8"), {"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=600) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(error.read().decode("utf-8")) from error
+    choice = data["choices"][0]
+    if choice["finish_reason"] == "length":
+        raise RuntimeError("Model context or output capacity exhausted")
+    content = (choice["message"].get("content") or "").strip()
+    if not content:
+        raise RuntimeError("Gemma returned nothing")
+    return content

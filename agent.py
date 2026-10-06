@@ -1,37 +1,20 @@
-import base64, json, msvcrt, os, queue, tempfile
-from concurrent.futures import ThreadPoolExecutor
+import json, msvcrt, os, queue, subprocess, sys, tempfile, time
 from pathlib import Path
 from typing import Literal
 import desktop
+from acts import NAMES
 from audio import transcription
-from core import CONFIG, ROOT, STATE, SYSTEM, Interrupted, encode, tool
+from core import CONFIG, ROOT, STATE, Interrupted, encode
 from engines import Engines
-from telegram import Line, call_text, context_limit, tool_record
+from telegram import Line, tool_record
 
-def drop_image(message):
-    content = message.get("content")
-    if isinstance(content, list):
-        message["content"] = [part for part in content if part.get("type") != "image_url"]
-
-def transcript(messages):
-    blocks = []
-    for message in messages:
-        content = message.get("content")
-        if isinstance(content, list):
-            content = "\n".join(part["text"] for part in content if part.get("type") == "text")
-        lines = [content] if content else []
-        for call in message.get("tool_calls") or []:
-            function = call["function"]
-            lines.append("Tool call:\n" + call_text(function["name"], function.get("arguments") or {}))
-        if lines:
-            blocks.append("\n\n".join(lines))
-    return "\n\n".join(blocks)
-
-def split_history(history):
-    starts = [index for index, message in enumerate(history) if message["role"] == "assistant"]
-    if len(starts) <= 2:
-        return None
-    return starts[-2]
+TEACH = (
+    "The actor finished work on the owner's computer. Teach the local model that will next use the same system prompt and the same tool descriptions. "
+    "Return only one JSON object with keys prompt, tools, and teaching. "
+    "prompt is the full system prompt. tools is the full tool definition object with the same tool names and the same parameter names. "
+    "Change descriptions and the prompt so the small model would have done this work the way you did. "
+    "teaching is what changed and why. Keep every fact, decision, place, and open step the next task needs."
+)
 
 class Trident:
     def __init__(self, folder, resources):
@@ -46,12 +29,16 @@ class Trident:
         self.line = Line(self.events, folder)
         resources.callback(self.line.stop)
         self.line.checkpoint = self.checkpoint
-        self.engines = Engines(self.work, self.checkpoint, self.line.send)
+        self.engines = Engines(self.work, self.checkpoint)
         resources.callback(self.engines.close)
-        self.methods = {name: getattr(self, name) for name in vars(Trident) if hasattr(getattr(self, name), "schema")}
-        self.tools = [method.schema for method in self.methods.values()]
+        self.learner = self.learn_err = None
+        self.lessons = 0
+        resources.callback(self.close_learner)
+        self.methods = {"look": self.look, "mouse": self.mouse, "keyboard": self.keyboard,
+                        "tell": self.tell, "remember": self.remember}
+        if set(self.methods) != set(NAMES):
+            raise RuntimeError("Tool names do not match the mechanism")
         self.end = self.leave = False
-        self.helpers = 0
 
     def checkpoint(self):
         with self.events.mutex:
@@ -61,108 +48,137 @@ class Trident:
                 if kind in ("text", "audio"):
                     raise Interrupted("New owner input interrupted the current request")
 
-    def context(self, text):
-        return f"Note:\n{self.memory}\nCall: {'up' if self.line.up else 'down'}\n{text}"
+    def close_learner(self):
+        if self.learner and self.learner.poll() is None:
+            self.learner.terminate()
+            try:
+                self.learner.wait(5)
+            except subprocess.TimeoutExpired:
+                self.learner.kill()
+                self.learner.wait(5)
+        if self.learn_err and not self.learn_err.closed:
+            self.learn_err.close()
 
-    def turn(self, text):
-        self.end, self.input, history = False, text, []
+    def learner_ok(self):
+        code = self.learner.poll()
+        if code is None:
+            return
+        self.learn_err.flush()
+        raise RuntimeError(f"Learner exited {code}\n{(self.line.folder / 'learn.err').read_text(encoding='utf-8')}")
+
+    def gpt(self, prompt, image):
+        args = [*(os.path.expandvars(part) for part in CONFIG["cloud"]["command"]), "-p", "--trust", "--model", CONFIG["cloud"]["model"],
+                "--output-format", "text", "--workspace", str(ROOT), "--mode", "ask"]
+        if image:
+            args += ["--image", str(image)]
+        raw = self.engines.command(args, prompt.encode("utf-8")).decode("utf-8").strip()
+        if not raw:
+            raise RuntimeError("cursor-agent returned nothing")
+        return raw
+
+    def exchange(self, step, request, response, result):
+        folder = self.line.folder / "gpt"
+        folder.mkdir(exist_ok=True)
+        path = folder / f"{step:05}.json"
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(encode({"request": request, "response": response, "result": result}), encoding="utf-8")
+        temporary.replace(path)
+
+    def wait_file(self, path):
+        while not path.exists():
+            self.learner_ok()
+            self.checkpoint()
+            time.sleep(0.05)
+
+    def teach(self):
+        folder = self.line.folder
+        files = sorted((folder / "gpt").glob("*.json"))
+        if not files:
+            return
+        mark = folder / "studied"
+        while True:
+            self.learner_ok()
+            self.checkpoint()
+            try:
+                current = mark.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                current = ""
+            if current == files[-1].name:
+                break
+            time.sleep(0.05)
+        self.lessons += 1
+        name = f"{self.lessons:05}"
+        teach = folder / "teach"
+        teach.mkdir(exist_ok=True)
+        notes = (STATE / "learn.txt").read_text(encoding="utf-8") if (STATE / "learn.txt").exists() else ""
+        trace = "\n\n".join(path.read_text(encoding="utf-8") for path in files)
+        request = (f"{TEACH}\n\nCurrent prompt:\n{(ROOT / 'organism.txt').read_text(encoding='utf-8')}\n"
+                   f"Current tools:\n{(ROOT / 'tools.json').read_text(encoding='utf-8')}\nNotes:\n{notes}\nTrace:\n{trace}")
+        (teach / f"{name}.request.txt").write_text(request, encoding="utf-8")
+        raw = self.gpt(request, None)
+        temporary = teach / f"{name}.tmp"
+        temporary.write_text(raw, encoding="utf-8")
+        temporary.replace(teach / f"{name}.json")
+        self.wait_file(teach / f"{name}.applied")
+
+    def task(self, words):
+        self.end = False
+        prompt = (ROOT / "organism.txt").read_text(encoding="utf-8")
+        tools = (ROOT / "tools.json").read_text(encoding="utf-8")
+        transcript = "\n\n".join(f"Owner words:\n{part}" for part in words)
+        image, step = None, 0
         while not self.end:
             self.checkpoint()
-            reply, used = self.engines.complete([
-                {"role": "system", "content": SYSTEM}, {"role": "user", "content": self.context(text)},
-                *history], self.tools)
-            if used > CONFIG["compact_at"]:
-                history = self.compact(history, used)
-            [call] = reply["tool_calls"]
-            self.checkpoint()
-            name = call["function"]["name"]
-            arguments = json.loads(call["function"]["arguments"])
+            self.learner_ok()
+            request = (f"{prompt}\n\nTools:\n{tools}\n\nNote:\n{self.memory}\n"
+                       f"Call: {'up' if self.line.up else 'down'}\n\n{transcript}")
+            response = self.gpt(request, image)
+            image = None
+            call = json.loads(response)
+            name, arguments = call["name"], call["arguments"]
             result = self.methods[name](**arguments)
-            words, image = result if isinstance(result, tuple) else (str(result), None)
-            if name not in ("look", "consult"):
-                self.line.send(tool_record(name, arguments, words), model=CONFIG["brain"]["api_model"], direction="tool")
-            history.append({"role": "assistant", "content": reply.get("content"), "tool_calls": reply["tool_calls"]})
-            history.append({"role": "tool", "name": name, "tool_call_id": call["id"],
-                            "content": f"Tool result from {name}:\n{words}\n\nContext: {used} of {context_limit()}"})
-            if image:
-                for message in history:
-                    drop_image(message)
-                history.append({"role": "user", "content": [
-                    {"type": "text", "text": f"Screen from tool {name}; runtime evidence, not owner words."},
-                    {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(image).decode("ascii")}}]})
+            text, shot = result if isinstance(result, tuple) else (str(result), None)
+            if name != "look":
+                self.line.send(tool_record(name, arguments, text), model=CONFIG["cloud"]["model"], direction="tool")
+            step += 1
+            self.exchange(step, request, response, text)
+            if shot:
+                image = self.work / "screen.png"
+                image.write_bytes(shot)
+            transcript += f"\n\nTool {name} returned:\n{text}"
 
-    def compact(self, history, used):
-        cut = split_history(history)
-        if cut is None:
-            return history
-        text = transcript(history[:cut])
-        self.line.send(f"TRIDENT -> GEMMA\n\nContext before: {used} of {context_limit()}\n\n"
-                       "Rewrite it shorter by meaning, and keep every fact, decision, place, and open step.\n\n"
-                       f"{text}\n", model=CONFIG["brain"]["api_model"], direction="compact")
-        return [{"role": "user", "content": "Earlier steps, rewritten shorter; not owner words.\n" + self.engines.rewrite(text)}, *history[cut:]]
+    def hear(self, payload):
+        path = self.work / "call.wav"
+        try:
+            heard = json.loads(self.engines.command(transcription(path, payload), interrupt=False))["text"]
+            self.line.send(f"EARS -> TRIDENT\n\n{heard}\n", model=CONFIG["ears"]["model"], direction="resp")
+            return heard
+        finally:
+            path.unlink()
 
-    @tool("See the screen, the pointer, and the grid.")
     def look(self):
-        words, image = desktop.picture()
-        self.line.wait(self.line.show(image))
-        self.line.send(tool_record("look", {}, words) + "PNG attached.\n", [("png", image)], model=CONFIG["brain"]["api_model"], direction="tool")
+        image = desktop.picture()[1]
+        y, x = desktop.position()
+        words = f"Screen captured. Pointer y {y} x {x}."
+        self.line.send(tool_record("look", {}, words), [("png", image)], model=CONFIG["cloud"]["model"], direction="tool")
         return words, image
 
-    @tool("Ask the advisor. It sees the screen and runs its clicks once.", request="The goal and what you need")
-    def consult(self, request: str):
-        if self.paid():
-            return "The helper cap was reached."
-        _, image = self.look()
-        shot = self.work / "consult.png"
-        shot.write_bytes(image)
-        prompt = (ROOT / "advisor.txt").read_text(encoding="utf-8") + "\n" + encode({
-            "runtime_system": SYSTEM, "tools": self.tools,
-            "context": self.context(self.input), "request": request})
-        self.line.send(f"GEMMA -> ADVISOR\n\nRequest:\n{request}\n", model=CONFIG["cloud"]["model"], direction="req")
-        try:
-            answer = json.loads(self.cursor(prompt))
-            ran = "\n".join(desktop.click(item["how"], item["y"], item["x"]) for item in answer["clicks"])
-            self.line.send(f"ADVISOR -> GEMMA\n\nAdvice:\n{answer['advice']}\n\nClicks:\n{encode(answer['clicks'])}\n\nRan:\n{ran}\n",
-                           model=CONFIG["cloud"]["model"], direction="resp")
-            return "The advisor says:\n" + answer["advice"] + "\n\nRan:\n" + ran
-        finally:
-            shot.unlink()
-
-    @tool("Click or drag at y and x.",
-          action="left, right, double, or drag",
-          y="Vertical place, 0 to 1000",
-          x="Horizontal place, 0 to 1000",
-          points="Drag path as y x pairs")
-    def mouse(self, action: Literal["left", "right", "double", "drag"], y: int, x: int, points: str=""):
+    def mouse(self, action: Literal["left", "right", "double", "drag"], y: int, x: int, points: str = ""):
         if action == "drag":
             return desktop.stroke(points)
         return desktop.click(action, y, x)
 
-    @tool("Type, press keys, or run PowerShell.",
-          action="type, press, or run", text="Text, keys, or the command")
     def keyboard(self, action: Literal["type", "press", "run"], text: str):
         return {"type": desktop.type_text, "press": desktop.press, "run": desktop.run}[action](text)
 
-    @tool("Speak, call, hang up, finish, wait, or stop. Keep each message to a few short sentences. Before stop, rewrite the note with what is still open.",
-          mode="speak, call, hang, done, wait, or stop",
-          text="Words to say or the report")
-    def tell(self, mode: Literal["speak", "call", "hang", "done", "wait", "stop"], text: str=""):
+    def tell(self, mode: Literal["speak", "call", "hang", "done", "wait", "stop"], text: str = ""):
         if mode == "call":
             self.line.wait(self.line.place(), 150)
         if mode in ("call", "speak"):
             if self.line.up:
-                pieces = self.engines.utterances(text)
-                pool = ThreadPoolExecutor(max_workers=1)
-                pending = pool.submit(self.engines.say, pieces[0])
-                try:
-                    for index, piece in enumerate(pieces):
-                        pcm = pending.result()
-                        if index + 1 < len(pieces):
-                            pending = pool.submit(self.engines.say, pieces[index + 1])
-                        self.line.wait(self.line.speak(pcm), len(pcm) / 96000 + 30)
-                        self.line.send(f"GEMMA -> OWNER\n\n{piece}\n", model=CONFIG["mouth"]["model"], direction="speak")
-                finally:
-                    pool.shutdown(wait=False, cancel_futures=True)
+                pcm = self.engines.say(text)
+                self.line.wait(self.line.speak(pcm), len(pcm) / 96000 + 30)
+                self.line.send(f"GEMMA -> OWNER\n\n{text}\n", model=CONFIG["mouth"]["model"], direction="speak")
                 return "Spoken on the call"
             self.line.send(f"GEMMA -> OWNER\n\n{text}")
         elif mode == "hang":
@@ -179,7 +195,6 @@ class Trident:
             raise ValueError(mode)
         return f"tell({mode}) delivered; Call: {'up' if self.line.up else 'down'}"
 
-    @tool("Replace the saved note.", text="The task, what you asked, and what is done")
     def remember(self, text: str):
         path = self.note_path.with_suffix(".tmp")
         path.write_text(encode({"note": text}), encoding="utf-8")
@@ -187,32 +202,15 @@ class Trident:
         self.memory = text
         return "Note replaced"
 
-    def worker(self, args, data=b"", interrupt=True):
-        return self.engines.command(args, data, interrupt)
-
-    def cursor(self, prompt):
-        args = [*(os.path.expandvars(part) for part in CONFIG["cloud"]["command"]), "-p", "--trust", "--model", CONFIG["cloud"]["model"],
-                "--output-format", "text", "--workspace", str(ROOT), "--mode", "ask", "--image", str(self.work / "consult.png")]
-        raw = self.worker(args, prompt.encode("utf-8"))
-        if not raw.strip():
-            raise RuntimeError("cursor-agent returned nothing")
-        return raw.decode("utf-8")
-
-    def paid(self):
-        self.helpers += 1
-        if self.helpers < CONFIG["helper_cap"]:
-            return False
-        self.line.send("TRIDENT -> OWNER\n\nThe helper cap was reached.")
-        if self.line.up:
-            self.line.wait(self.line.hang())
-        self.leave = self.end = True
-        return True
-
     def serve(self):
         self.line.start()
         self.engines.mouth_up()
-        self.line.send(f"TRIDENT -> GEMMA\n\n{SYSTEM}", model=CONFIG["brain"]["api_model"], direction="wake")
-        self.events.put(("wake", "Wake"))
+        self.engines.brain()
+        self.learn_err = (self.line.folder / "learn.err").open("w", encoding="utf-8")
+        self.learner = subprocess.Popen([sys.executable, "-u", str(ROOT / "learn.py"), str(self.line.folder), str(os.getpid())],
+                                        cwd=ROOT, stdin=subprocess.DEVNULL, stdout=self.learn_err, stderr=subprocess.STDOUT,
+                                        creationflags=subprocess.CREATE_NO_WINDOW)
+        self.wait_file(self.line.folder / "learner.ready")
         while not self.leave:
             kind, payload = self.events.get()
             words = []
@@ -220,28 +218,17 @@ class Trident:
                 if kind == "fatal":
                     raise payload
                 if kind == "audio":
-                    path = self.work / "call.wav"
-                    args = transcription(path, payload)
-                    try:
-                        raw = self.worker(args, interrupt=False)
-                        heard = json.loads(raw)["text"]
-                        self.line.send(f"EARS -> TRIDENT\n\n{heard}\n", model=CONFIG["ears"]["model"], direction="resp")
-                        kind, payload = "text", heard
-                    finally:
-                        path.unlink()
+                    kind, payload = "text", self.hear(payload)
                 if kind == "text":
-                    words.append("Owner words:\n" + payload)
-                elif kind == "wake":
-                    words.append("Wake")
+                    words.append(payload)
                 try:
                     kind, payload = self.events.get_nowait()
                 except queue.Empty:
                     break
-            if words:
-                with (self.line.folder / "turns.txt").open("a", encoding="utf-8") as turn_log:
-                    turn_log.write("\n\n".join(words) + "\n---\n")
-                try:
-                    self.turn("\n\n".join(words))
-                except Interrupted as error:
-                    self.engines.stop()
-                    self.line.send(f"TRIDENT -> OWNER\n\n{error}", direction="interrupted")
+            if not words:
+                continue
+            try:
+                self.task(words)
+                self.teach()
+            except Interrupted as error:
+                self.line.send(f"TRIDENT -> OWNER\n\n{error}", direction="interrupted")

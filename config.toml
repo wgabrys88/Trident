@@ -1,6 +1,3 @@
-helper_cap = 100
-compact_at = 24000
-
 [owner]
 telegram_id = 5884279027
 name = "Wojciech"
