@@ -57,12 +57,11 @@ class Agent:
     async def step(self):
         catalog = Catalog()
         mind = read(ROOT / "mind.json")
-        request = encode({
-            "prompt": mind["actor"], "memory": mind["memory"],
+        batch = json.loads(await self.models.luna(mind["actor"], {
+            "memory": mind["memory"],
             "goal": self.state["goal"], "suspended": self.state["suspended"],
             "call": self.line.state, "tools": catalog.specs, "history": self.state["history"],
-        })
-        batch = json.loads(await self.models.luna(request))
+        }))
         calls = batch["calls"]
         if not isinstance(calls, list) or not calls:
             raise ValueError("Luna must return a nonempty calls array")
@@ -100,14 +99,14 @@ class Agent:
                 "Return at most 1000 words.\nGoal: " + lesson["goal"] + "\nPrevious study:\n" + study +
                 "\nNext trace portion:\n" + trace[offset:offset + 12000], [],
             )
-        raw = await self.models.luna(encode({
-            "instruction": "Idle learning mode. Teach Gemma from this recorded task and its study. "
+        raw = await self.models.luna(
+            "Idle learning mode. Teach Gemma from this recorded task and its study. "
             "Return only JSON with actor, student, tools, lesson. actor and student are complete replacement prompts; "
             "tools is the complete current catalog with improved descriptions only. Preserve handlers, boundaries, "
             "parameter types, and required arguments. Preserve the owner's behavior requirements. "
             "lesson states concrete corrections and their trace evidence. No live action or invented success.",
-            "mind": mind, "tools": catalog.specs, "recorded_task": lesson, "gemma_study": study,
-        }))
+            {"mind": mind, "tools": catalog.specs, "recorded_task": lesson, "gemma_study": study},
+        )
         teaching = json.loads(raw)
         for name, spec in catalog.specs.items():
             updated = teaching["tools"][name]

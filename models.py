@@ -11,7 +11,7 @@ import win32api
 import win32con
 import win32job
 
-from store import CONFIG, ROOT, command, read
+from store import CONFIG, ROOT, command, encode, read
 
 
 async def execute(parts, data=b""):
@@ -109,7 +109,12 @@ class Models:
         if self.http is not None:
             await self.http.close()
 
-    async def luna(self, request):
+    async def luna(self, instruction, context):
+        request = (
+            instruction + "\n\nTrident context:\n" + encode(context) +
+            "\n\nReturn exactly one JSON object in the requested format. "
+            "The entire response is parsed as JSON. No Markdown fences, explanation, or proposed actions outside JSON."
+        )
         path = self.record.folder / ("luna-" + uuid.uuid4().hex + ".request.txt")
         path.write_text(request, encoding="utf-8")
         self.record.append("luna_request", {"path": str(path)})
