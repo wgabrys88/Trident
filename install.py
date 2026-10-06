@@ -48,7 +48,6 @@ if __name__ == "__main__":
         raise SystemExit(subprocess.call([str(PYTHON), __file__]))
     print(ACCELERATOR, flush=True)
     pip = [str(PYTHON), "-m", "pip", "install", "--disable-pip-version-check"]
-    subprocess.run(pip + ["--force-reinstall", *CFG["torch_packages"], "--index-url", HARDWARE["torch_index"]], check=True)
     if "sdk" in HARDWARE:
         subprocess.run(pip + HARDWARE["sdk"], check=True)
     subprocess.run(pip + ["-r", str(ROOT / "requirements.txt")], check=True)
@@ -60,9 +59,8 @@ if __name__ == "__main__":
         [assets[name.format(tag=CFG["llama_tag"])] for name in HARDWARE["llama_assets"]], CFG["llama_tag"] + "-" + ACCELERATOR)
     download(CFG["template_url"], BIN / "llama" / "gemma.jinja")
     binary("nemo-speech", Path("bin/nemo-speech.exe"), [CFG["nemo_url"]], "v0.1.0")
+    binary("mouth", Path("crispasr.exe"), [CFG["mouth_url"]], CFG["mouth_version"])
     for key, path in (("gemma_url", MODELS / CONFIG["brain"]["model"]), ("mmproj_url", MODELS / CONFIG["brain"]["mmproj"]),
-                      ("ear_url", MODELS / CONFIG["ears"]["model"]), ("silero_url", MODELS / "silero_vad.onnx")):
+                      ("ear_url", MODELS / CONFIG["ears"]["model"]), ("silero_url", MODELS / "silero_vad.onnx"),
+                      ("t3_url", MODELS / CONFIG["mouth"]["model"]), ("s3_url", MODELS / CONFIG["mouth"]["codec"])):
         download(CFG[key], path)
-    from huggingface_hub import snapshot_download
-    snapshot_download("ResembleAI/chatterbox-turbo", local_dir=MODELS / CONFIG["mouth"]["model"],
-                      allow_patterns=["*.safetensors", "*.json", "*.txt", "*.pt", "*.model"])

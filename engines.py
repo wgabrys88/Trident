@@ -1,6 +1,7 @@
-import _winapi, json, msvcrt, os, socket, subprocess, sys, tempfile, time, urllib.error, urllib.request
+import _winapi, json, msvcrt, os, socket, subprocess, tempfile, time, urllib.error, urllib.request
 import win32job, win32process
 from concurrent.futures import ThreadPoolExecutor
+from audio import call_pcm
 from core import BIN, CONFIG, HARDWARE, MODELS, ROOT, encode
 from hardware import environment
 from telegram import brain_request, brain_response
@@ -144,23 +145,37 @@ class Engines:
         self.free(CFG["host"], CFG["port"])
         args = [BIN / "llama" / "llama-server.exe", "--model", MODELS / CFG["model"],
                 "--mmproj", MODELS / CFG["mmproj"], "--chat-template-file", ROOT / CFG["template"],
-                "--host", CFG["host"], "--port", str(CFG["port"]), "--threads", str(CFG["threads"]), "--parallel", "1",
-                "--alias", CFG["api_model"], "--jinja", "--no-context-shift", "--no-webui", "--fit", "off",
+                "--host", CFG["host"], "--port", str(CFG["port"]), "--threads", str(CFG["threads"]), "--parallel", "2",
+                "--kv-unified", "--alias", CFG["api_model"], "--jinja", "--no-context-shift", "--no-webui", "--fit", "off",
                 "--cache-ram", "0", "--log-verbosity", "0", *CFG["server_args"], *HARDWARE["server_args"]]
         self.child = Child(args, self.folder, env=environment(HARDWARE))
         self.wait_ready(self.child, self.healthy, "llama-server")
 
+    def mouth_ready(self):
+        cfg = CONFIG["mouth"]
+        try:
+            with urllib.request.urlopen(f"http://{cfg['host']}:{cfg['port']}/health", timeout=2) as response:
+                return response.status == 200
+        except urllib.error.URLError:
+            return False
+
     def mouth_up(self):
         cfg = CONFIG["mouth"]
         self.free(cfg["host"], cfg["port"])
-        args = [sys.executable, str(ROOT / "audio.py"), str(self.folder / "voice.pt")]
+        args = [BIN / "mouth" / "crispasr.exe", "--server", "--host", cfg["host"], "--port", str(cfg["port"]),
+                "--backend", "chatterbox-nano", "-m", MODELS / cfg["model"], "--codec-model", MODELS / cfg["codec"],
+                "--gpu-backend", "vulkan", "--tts-steps", "2", "--voice", ROOT / cfg["reference"], "--i-have-rights",
+                "--no-spoken-disclaimer", "--no-punctuation"]
         self.mouth = Child(args, self.folder, env=environment(HARDWARE))
-        self.wait_ready(self.mouth, lambda: self.listening(cfg["host"], cfg["port"]), "mouth")
+        self.wait_ready(self.mouth, self.mouth_ready, "mouth")
+        self.say("Ready.")
 
     def say(self, text):
         cfg = CONFIG["mouth"]
-        request = urllib.request.Request(f"http://{cfg['host']}:{cfg['port']}/", text.encode(), method="POST")
-        return self.fetch(request, abort=False)
+        body = json.dumps({"input": text, "response_format": "wav"}).encode()
+        request = urllib.request.Request(f"http://{cfg['host']}:{cfg['port']}/v1/audio/speech", body,
+                                          {"Content-Type": "application/json"}, method="POST")
+        return call_pcm(self.fetch(request, abort=False))
 
     def fetch(self, request, abort):
         def receive():
@@ -184,12 +199,10 @@ class Engines:
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
 
-    def complete(self, messages, tools):
+    def post(self, body):
         {"llama": self.brain, "http": self.stop}[CFG["backend"]]()
-        body = {**CFG["options"], "model": CFG["api_model"], "messages": messages, "tools": tools,
-                "tool_choice": "required", "parallel_tool_calls": False}
         text = encode(body)
-        self.record(brain_request(messages), (), CFG["api_model"], "req")
+        self.record(brain_request(body["messages"]), (), CFG["api_model"], "req")
         headers = {"Content-Type": "application/json"}
         if CFG["api_key_env"]:
             headers["Authorization"] = "Bearer " + os.environ[CFG["api_key_env"]]
@@ -201,3 +214,17 @@ class Engines:
         if choice["finish_reason"] == "length":
             raise RuntimeError("Model context or output capacity exhausted; request ended without replay")
         return choice["message"]
+
+    def complete(self, messages, tools):
+        return self.post({**CFG["options"], "model": CFG["api_model"], "messages": messages, "tools": tools,
+                          "tool_choice": "required", "parallel_tool_calls": False})
+
+    def utterances(self, text):
+        # The splitter is the same local Gemma with tools off, not a second mind.
+        message = self.post({"model": CFG["api_model"], "temperature": 0, "max_tokens": -1, "messages": [
+            {"role": "system", "content": "Split these words into natural spoken utterances of a few sentences each, well under twenty-five seconds, copying every word in order and separating the utterances with a blank line."},
+            {"role": "user", "content": text}], "chat_template_kwargs": {"enable_thinking": False}})
+        pieces = [part.strip() for part in (message.get("content") or "").split("\n\n") if part.strip()]
+        if [word for part in pieces for word in part.split()] != text.split():
+            raise RuntimeError("Speech split changed the words")
+        return pieces

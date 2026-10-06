@@ -1,7 +1,7 @@
-import contextlib, sys, wave
+import io, wave
 import numpy as np
 import onnxruntime as ort
-from core import BIN, CONFIG, HARDWARE, MODELS, ROOT
+from core import BIN, CONFIG, MODELS
 
 RATE, WINDOW = 16000, 512
 
@@ -43,53 +43,19 @@ class Segmenter:
         self.reset()
         return clip
 
+def call_pcm(payload):
+    with wave.open(io.BytesIO(payload)) as src:
+        rate, channels = src.getframerate(), src.getnchannels()
+        samples = np.frombuffer(src.readframes(src.getnframes()), np.int16).astype(np.float32)
+    if channels > 1:
+        samples = samples.reshape(-1, channels).mean(axis=1)
+    count = round(samples.size * 48000 / rate)
+    samples = np.interp(np.arange(count) * rate / 48000, np.arange(samples.size), samples / 32768)
+    return (np.clip(samples, -1, 1) * 32767).astype(np.int16).tobytes()
+
 def transcription(path, samples):
     with wave.open(str(path), "wb") as output:
         output.setparams((1, 2, RATE, 0, "NONE", "not compressed"))
         output.writeframes((np.clip(samples, -1, 1) * 32767).astype(np.int16).tobytes())
     return [BIN / "nemo-speech" / "bin" / "nemo-speech.exe", "transcribe", path, "--model",
             MODELS / CONFIG["ears"]["model"], "--device", "vulkan", "--format", "json", "--verbatim", "--quiet"]
-
-if __name__ == "__main__":
-    cfg, device = CONFIG["mouth"], HARDWARE["mouth_device"]
-    with contextlib.redirect_stdout(sys.stderr):
-        import torch
-        from chatterbox.tts_turbo import ChatterboxTurboTTS, Conditionals
-        from transformers.initialization import no_init_weights
-        torch.set_num_threads(CONFIG["brain"]["threads"])
-        with torch.inference_mode(), no_init_weights():
-            model = ChatterboxTurboTTS.from_local(MODELS / cfg["model"], device)
-        voice = ROOT / sys.argv[1]
-        with torch.inference_mode():
-            if voice.exists():
-                model.conds = Conditionals.load(voice, map_location="cpu").to(device)
-            else:
-                model.prepare_conditionals(str(ROOT / cfg["reference"]))
-                model.conds.save(voice)
-
-        def speak(words):
-            with torch.inference_mode():
-                samples = model.generate(words).squeeze().cpu().numpy()
-            count = round(samples.size * 48000 / model.sr)
-            samples = np.interp(np.arange(count) * model.sr / 48000, np.arange(samples.size), samples)
-            return (np.clip(samples, -1, 1) * 32767).astype(np.int16).tobytes()
-
-    from http.server import BaseHTTPRequestHandler, HTTPServer
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_POST(self):
-            pcm = speak(self.rfile.read(int(self.headers["Content-Length"])).decode())
-            self.send_response(200)
-            self.send_header("Content-Length", str(len(pcm)))
-            self.end_headers()
-            self.wfile.write(pcm)
-
-        def handle_error(self):
-            import traceback
-            body = traceback.format_exc().encode()
-            self.send_response(500)
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
-    HTTPServer((cfg["host"], cfg["port"]), Handler).serve_forever()

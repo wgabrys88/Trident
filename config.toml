@@ -1,3 +1,5 @@
+helper_cap = 100
+
 [owner]
 telegram_id = 5884279027
 name = "Wojciech"
@@ -14,23 +16,17 @@ profile = "auto"
 [hardware.profiles.cuda]
 adapter_names = ["nvidia"]
 llama_assets = ["llama-{tag}-bin-win-cuda-12.4-x64.zip", "cudart-llama-bin-win-cuda-12.4-x64.zip"]
-torch_index = "https://download.pytorch.org/whl/cu124"
-mouth_device = "cpu"
 server_args = ["--flash-attn", "on", "--cache-type-k", "q8_0", "--cache-type-v", "q8_0"]
 
 [hardware.profiles.rocm]
 adapter_names = ["amd", "radeon", "advanced micro devices"]
 llama_assets = ["llama-{tag}-bin-win-rocm-10.0-x64.zip"]
-torch_index = "https://download.pytorch.org/whl/cpu"
-mouth_device = "cpu"
 server_args = ["--flash-attn", "on", "--cache-type-k", "q8_0", "--cache-type-v", "q8_0"]
 sdk = ["--index-url", "https://stable.repo.amd.com/rocm/whl-next/", "rocm[libraries]==10.0.0"]
 
 [hardware.profiles.vulkan]
 adapter_names = ["intel"]
 llama_assets = ["llama-{tag}-bin-win-vulkan-x64.zip"]
-torch_index = "https://download.pytorch.org/whl/cpu"
-mouth_device = "cpu"
 # Quantized V requires flash attention, unavailable on some Intel integrated GPUs.
 server_args = ["--flash-attn", "auto", "--cache-type-k", "q8_0", "--cache-type-v", "f16"]
 
@@ -77,7 +73,8 @@ pad_ms = 120
 model = "nemotron-3.5-asr-streaming-0.6b.q8_0.gguf"
 
 [mouth]
-model = "chatterbox-turbo"
+model = "chatterbox-nano-t3-q8_0.gguf"
+codec = "chatterbox-turbo-s3gen-q8_0.gguf"
 reference = "reference.wav"
 host = "127.0.0.1"
 port = 8091
@@ -88,7 +85,10 @@ desk_fps = 12
 
 [install]
 llama_tag = "b11435"
-torch_packages = ["torch==2.6.0", "torchaudio==2.6.0"]
+mouth_url = "https://github.com/CrispStrobe/CrispASR/releases/download/v0.8.41/crispasr-windows-x86_64-vulkan.zip"
+mouth_version = "v0.8.41"
+t3_url = "https://huggingface.co/cstr/chatterbox-nano-GGUF/resolve/main/chatterbox-nano-t3-q8_0.gguf"
+s3_url = "https://huggingface.co/cstr/chatterbox-turbo-GGUF/resolve/main/chatterbox-turbo-s3gen-q8_0.gguf"
 template_url = "https://huggingface.co/google/gemma-4-E2B-it/resolve/3e22461f65e89153144f8adb70e3b8c2cc9845a7/chat_template.jinja"
 nemo_url = "https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v0.1.0/nemo-speech-0.1.0-windows-x86_64-vulkan.zip"
 gemma_url = "https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_0.gguf"

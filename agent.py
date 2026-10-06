@@ -1,4 +1,5 @@
 import base64, json, msvcrt, os, queue, subprocess, tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Literal
 import desktop
@@ -29,6 +30,7 @@ class Trident:
         self.tools = [method.schema for method in self.methods.values()]
         self.restart = self.end = self.leave = False
         self.carried = None
+        self.helpers = 0
 
     def checkpoint(self):
         with self.events.mutex:
@@ -90,7 +92,7 @@ class Trident:
     def keyboard(self, action: Literal["type", "press", "run"], text: str):
         return {"type": desktop.type_text, "press": desktop.press, "run": desktop.run}[action](text)
 
-    @tool("Speak, call, hang up, finish, wait, or stop. Before stop, rewrite the note with what is still open.",
+    @tool("Speak, call, hang up, finish, wait, or stop. Keep each message to a few short sentences. Before stop, rewrite the note with what is still open.",
           mode="speak, call, hang, done, wait, or stop",
           text="Words to say or the report")
     def tell(self, mode: Literal["speak", "call", "hang", "done", "wait", "stop"], text: str=""):
@@ -98,9 +100,18 @@ class Trident:
             self.line.wait(self.line.place(), 150)
         if mode in ("call", "speak"):
             if self.line.up:
-                pcm = self.engines.say(text)
-                self.line.wait(self.line.speak(pcm), len(pcm) / 96000 + 30)
-                self.line.send(f"GEMMA -> OWNER\n\n{text}\n", model=CONFIG["mouth"]["model"], direction="speak")
+                pieces = self.engines.utterances(text)
+                pool = ThreadPoolExecutor(max_workers=1)
+                pending = pool.submit(self.engines.say, pieces[0])
+                try:
+                    for index, piece in enumerate(pieces):
+                        pcm = pending.result()
+                        if index + 1 < len(pieces):
+                            pending = pool.submit(self.engines.say, pieces[index + 1])
+                        self.line.wait(self.line.speak(pcm), len(pcm) / 96000 + 30)
+                        self.line.send(f"GEMMA -> OWNER\n\n{piece}\n", model=CONFIG["mouth"]["model"], direction="speak")
+                finally:
+                    pool.shutdown(wait=False, cancel_futures=True)
                 return "Spoken on the call"
             self.line.send(f"GEMMA -> OWNER\n\n{text}")
         elif mode == "hang":
@@ -137,8 +148,20 @@ class Trident:
             raise RuntimeError("cursor-agent returned nothing")
         return raw.decode("utf-8")
 
+    def paid(self):
+        self.helpers += 1
+        if self.helpers < CONFIG["helper_cap"]:
+            return False
+        self.line.send("TRIDENT -> OWNER\n\nThe helper cap was reached.")
+        if self.line.up:
+            self.line.wait(self.line.hang())
+        self.leave = self.end = True
+        return True
+
     @tool("Ask the advisor how to do the work.", request="The goal and what you need")
     def consult(self, request: str):
+        if self.paid():
+            return "The helper cap was reached."
         words, image = self.look()
         shot = self.work / "consult.json"
         history = encode({"messages": [{"user": {"content": [
@@ -164,6 +187,8 @@ class Trident:
 
     @tool("Have a helper do a job on this computer.", job="The job, in your own words")
     def delegate(self, job: str):
+        if self.paid():
+            return "The helper cap was reached."
         folder = Path(tempfile.mkdtemp(prefix="delegate_", dir=self.work))
         head, tree = git("rev-parse", "HEAD"), git("status", "--porcelain")
         self.line.send(f"GEMMA -> HELPER\n\n{job}\n", model=CONFIG["cloud"]["model"], direction="req")
@@ -178,6 +203,8 @@ class Trident:
 
     @tool("Fix your own code. Only while the call is down.", goal="What to repair")
     def heal(self, goal: str):
+        if self.paid():
+            return "The helper cap was reached."
         with (STATE / "writer.lock").open("a+b") as lock:
             lock.write(b"\0")
             lock.seek(0)
@@ -217,7 +244,10 @@ class Trident:
         self.line.send(f"TRIDENT -> GEMMA\n\n{SYSTEM}", model=CONFIG["brain"]["api_model"], direction="wake")
         self.events.put(("wake", "Wake"))
         while not self.restart and not self.leave:
-            kind, payload = self.events.get()
+            try:
+                kind, payload = self.events.get(timeout=120)
+            except queue.Empty:
+                kind, payload = "wake", "Wake"
             words = []
             while True:
                 if kind == "fatal":
