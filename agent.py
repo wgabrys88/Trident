@@ -74,12 +74,12 @@ class Trident:
         self.line.send(tool_record("look", {}, words), [("png", image)], model=CONFIG["brain"]["api_model"], direction="tool")
         return words, image
 
-    @tool("Move to the coordinates, then point, click, or drag.",
+    @tool("Move to y and x, then point, click, or drag.",
           action="point, left, right, double, or drag",
           y="Vertical place, 0 to 1000",
           x="Horizontal place, 0 to 1000",
           points="Drag path as y x pairs")
-    def mouse(self, action: Literal["point", "left", "right", "double", "drag"], y: int=None, x: int=None, points: str=""):
+    def mouse(self, action: Literal["point", "left", "right", "double", "drag"], y: int, x: int, points: str=""):
         if action == "drag":
             return desktop.stroke(points)
         if action == "point":
