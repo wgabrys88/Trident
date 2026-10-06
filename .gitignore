@@ -3,3 +3,4 @@ bin/
 models/
 state/
 __pycache__/
+run_*/

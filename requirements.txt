@@ -6,3 +6,4 @@ chatterbox-tts
 telethon==1.45.0
 ntgcalls==3.0.0
 opentele-ng==1.4.0
+pywin32==312
