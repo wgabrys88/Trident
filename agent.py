@@ -214,10 +214,7 @@ class Trident:
         self.line.send(f"TRIDENT -> GEMMA\n\n{SYSTEM}", model=CONFIG["brain"]["api_model"], direction="wake")
         self.events.put(("wake", "Wake"))
         while not self.leave:
-            try:
-                kind, payload = self.events.get(timeout=120)
-            except queue.Empty:
-                kind, payload = "wake", "Wake"
+            kind, payload = self.events.get()
             words = []
             while True:
                 if kind == "fatal":
@@ -241,6 +238,8 @@ class Trident:
                 except queue.Empty:
                     break
             if words:
+                with (self.line.folder / "turns.txt").open("a", encoding="utf-8") as turn_log:
+                    turn_log.write("\n\n".join(words) + "\n---\n")
                 try:
                     self.turn("\n\n".join(words))
                 except Interrupted as error:
