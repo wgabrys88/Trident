@@ -123,7 +123,7 @@ async def rewrite(host, files, delete):
         raise RuntimeError("Rewriting requires an explicit self-healing goal")
     for name in [*files, *delete]:
         if Path(name).name != name:
-            raise ValueError("Source files must be directly inside v2")
+            raise ValueError("Source files must be directly inside the Trident workspace root")
     for name in delete:
         (ROOT / name).unlink()
     for name, content in files.items():

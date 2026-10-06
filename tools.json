@@ -86,7 +86,7 @@
   "files": {
     "handler": "tools:files",
     "boundary": false,
-    "description": "Read every current source/configuration file directly inside v2 in full. Use these exact contents to reason about self-healing changes.",
+    "description": "Read every current source/configuration file directly inside the Trident workspace root in full. Use these exact contents to reason about self-healing changes.",
     "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false}
   },
   "heal": {
@@ -98,7 +98,7 @@
   "rewrite": {
     "handler": "tools:rewrite",
     "boundary": true,
-    "description": "During self-healing, delete named v2 files and write complete replacement/new file contents. Tools can be created, deleted, and modified by editing tools.json and their Python handlers together. Prefer deletion when sufficient. All project files, including this runtime and prompts, are editable. The next step reloads the catalog; use activate for changes to already imported core modules. Keep this call last.",
+    "description": "During self-healing, delete named files in the Trident workspace root and write complete replacement/new file contents. Tools can be created, deleted, and modified by editing tools.json and their Python handlers together. Prefer deletion when sufficient. All project files, including this runtime and prompts, are editable. The next step reloads the catalog; use activate for changes to already imported core modules. Keep this call last.",
     "parameters": {"type": "object", "properties": {"files": {"type": "object", "additionalProperties": {"type": "string"}}, "delete": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true}}, "required": ["files", "delete"], "additionalProperties": false}
   },
   "activate": {
