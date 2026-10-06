@@ -1,4 +1,4 @@
-import ctypes, subprocess, sys
+import ctypes
 from contextlib import ExitStack
 from agent import Trident
 from core import ROOT, STATE, timestamp
@@ -17,8 +17,6 @@ if __name__ == "__main__":
             if not trident.line.owner:
                 raise
             trident.line.send(f"TRIDENT -> OWNER\n\n{type(error).__name__}: {error}", direction="blocked")
-    if not code and trident.restart:
-        subprocess.Popen([sys.executable, str(ROOT / "trident.py")])
     kernel = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel.GetCurrentProcess.restype = ctypes.c_void_p
     kernel.TerminateProcess.argtypes = [ctypes.c_void_p, ctypes.c_uint]

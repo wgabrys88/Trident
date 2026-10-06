@@ -275,12 +275,6 @@ class Line:
             del calls
             gc.collect()
 
-    async def reserve_restart(self):
-        if self.state != "down":
-            return False
-        self.state = "restarting"
-        return True
-
     def frames(self, engine, mode, device, frames):
         if self.calls is engine and mode == StreamMode.PLAYBACK and device == StreamDevice.MICROPHONE:
             self.loop.call_soon_threadsafe(self.audio, engine, b"".join(bytes(frame.data) for frame in frames))

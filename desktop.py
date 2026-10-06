@@ -2,7 +2,7 @@ import io, subprocess, time
 import ctypes as C
 import win32api, win32gui
 from ctypes import wintypes as W
-from PIL import Image, ImageDraw, ImageFont, ImageGrab
+from PIL import ImageDraw, ImageFont, ImageGrab
 from core import CONFIG
 
 USER = C.WinDLL("user32", use_last_error=True)
@@ -49,25 +49,6 @@ def png(image):
 def grid_size(width):
     return max(width // 40, 1)
 
-def annotate(data, marks):
-    if not marks:
-        return data
-    image = Image.open(io.BytesIO(data)).convert("RGB")
-    size = grid_size(image.width)
-    draw, font = ImageDraw.Draw(image), ImageFont.load_default(size=size)
-    for mark in marks:
-        x0, x1 = (round(mark[key] * (image.width - 1) / 1000) for key in ("x0", "x1"))
-        y0, y1 = (round(mark[key] * (image.height - 1) / 1000) for key in ("y0", "y1"))
-        draw.rectangle((x0, y0, x1, y1), outline="yellow", width=3)
-        box = draw.textbbox((0, 0), mark["label"], font=font)
-        tw, th = box[2] - box[0], box[3] - box[1]
-        gap = 2
-        top = y1 + gap if y0 < th + gap else y0 - th - gap
-        left = min(max(0, x0), max(0, image.width - tw))
-        draw.rectangle((left, top, left + tw, top + th), fill="black")
-        draw.text((left - box[0], top - box[1]), mark["label"], font=font, fill="yellow")
-    return png(image)
-
 def picture():
     left, top, width, height = bounds()
     image = ImageGrab.grab((left, top, left + width, top + height), all_screens=True).convert("RGB").resize(image_size())
@@ -103,7 +84,7 @@ def picture():
     unit = size / 16
     draw.polygon([(x + dx * unit, y + dy * unit) for dx, dy in (
         (0, 0), (0, 16), (4, 13), (7, 19), (10, 17), (6, 12), (12, 12))], fill="white", outline="black")
-    return "Whole screen; y down, x right, both 0–1000.", png(image)
+    return "", png(image)
 
 def send(*inputs):
     if USER.SendInput(len(inputs), (Input * len(inputs))(*inputs), C.sizeof(Input)) != len(inputs):
