@@ -121,11 +121,8 @@ class Trident:
         if self.paid():
             return "The helper cap was reached."
         words, image = self.look()
-        shot = self.work / "consult.json"
-        history = encode({"messages": [{"user": {"content": [
-            {"text": {"text": "Fresh consultation screen; runtime evidence, not owner words."}},
-            {"image": {"mimeType": "image/png", "data": base64.b64encode(image).decode("ascii")}}]}}]}).encode("utf-8")
-        shot.write_bytes(history)
+        shot = self.work / "consult.png"
+        shot.write_bytes(image)
         prompt = ((ROOT / "advisor.txt").read_text(encoding="utf-8") + "\n" + encode({
             "dimensions": words, "runtime_system": SYSTEM, "tools": self.tools,
             "context": self.context(self.input), "request": request}))
@@ -210,7 +207,7 @@ class Trident:
     def cursor(self, prompt, workspace, writing=False, interrupt=True):
         args = [*(os.path.expandvars(part) for part in CONFIG["cloud"]["command"]), "-p", "--trust", "--model", CONFIG["cloud"]["model"],
                 "--output-format", "text", "--workspace", str(workspace), *(["--force"] if writing else
-                ["--mode", "ask", "--conversation-history-file", self.work / "consult.json"])]
+                ["--mode", "ask", "--image", str(self.work / "consult.png")])]
         raw = self.worker(args, prompt.encode("utf-8"), interrupt=interrupt)
         if not raw.strip():
             raise RuntimeError("cursor-agent returned nothing")

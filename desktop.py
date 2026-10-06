@@ -103,7 +103,7 @@ def picture():
     unit = size / 16
     draw.polygon([(x + dx * unit, y + dy * unit) for dx, dy in (
         (0, 0), (0, 16), (4, 13), (7, 19), (10, 17), (6, 12), (12, 12))], fill="white", outline="black")
-    return f"Whole screen: {image.width} x {image.height} pixels; y down, x right, both 0–1000.", png(image)
+    return "Whole screen; y down, x right, both 0–1000.", png(image)
 
 def send(*inputs):
     if USER.SendInput(len(inputs), (Input * len(inputs))(*inputs), C.sizeof(Input)) != len(inputs):
