@@ -2,9 +2,11 @@ import inspect, json, tomllib
 from datetime import datetime
 from pathlib import Path
 from typing import Literal, get_args, get_origin
+from hardware import select
 
 ROOT = Path(__file__).resolve().parent
 CONFIG = tomllib.loads((ROOT / "config.toml").read_text(encoding="utf-8"))
+ACCELERATOR, HARDWARE = select(CONFIG["hardware"])
 STATE, MODELS, BIN = (ROOT / CONFIG["paths"][key] for key in ("state", "models", "bin"))
 SYSTEM = (ROOT / "organism.txt").read_bytes().decode("utf-8")
 

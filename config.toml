@@ -7,6 +7,33 @@ models = "models"
 bin = "bin"
 state = "state"
 
+[hardware]
+# Auto priority is profile order: NVIDIA, AMD, Intel. An explicit name overrides detection.
+profile = "auto"
+
+[hardware.profiles.cuda]
+adapter_names = ["nvidia"]
+llama_assets = ["llama-{tag}-bin-win-cuda-12.4-x64.zip", "cudart-llama-bin-win-cuda-12.4-x64.zip"]
+torch_index = "https://download.pytorch.org/whl/cu124"
+mouth_device = "cuda"
+server_args = ["--flash-attn", "on", "--cache-type-k", "q8_0", "--cache-type-v", "q8_0"]
+
+[hardware.profiles.rocm]
+adapter_names = ["amd", "radeon", "advanced micro devices"]
+llama_assets = ["llama-{tag}-bin-win-rocm-10.0-x64.zip"]
+torch_index = "https://download.pytorch.org/whl/cpu"
+mouth_device = "cpu"
+server_args = ["--flash-attn", "on", "--cache-type-k", "q8_0", "--cache-type-v", "q8_0"]
+sdk = ["--index-url", "https://stable.repo.amd.com/rocm/whl-next/", "rocm[libraries]==10.0.0"]
+
+[hardware.profiles.vulkan]
+adapter_names = ["intel"]
+llama_assets = ["llama-{tag}-bin-win-vulkan-x64.zip"]
+torch_index = "https://download.pytorch.org/whl/cpu"
+mouth_device = "cpu"
+# Quantized V requires flash attention, unavailable on some Intel integrated GPUs.
+server_args = ["--flash-attn", "auto", "--cache-type-k", "q8_0", "--cache-type-v", "f16"]
+
 [brain]
 backend = "llama"
 api_model = "Gemma"
@@ -21,8 +48,7 @@ threads = 4
 # Model-specific flags stay here. Paths are relative to this workspace.
 server_args = [
     "--ctx-size", "8192", "--n-gpu-layers", "999",
-    "--batch-size", "1152", "--ubatch-size", "1152", "--flash-attn", "on",
-    "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "--image-max-tokens", "1120",
+    "--batch-size", "1152", "--ubatch-size", "1152", "--image-max-tokens", "1120",
 ]
 # For another native vision/tool chat API, choose backend="http", set endpoint,
 # api_model and api_key_env, and replace options with that provider's parameters.
@@ -51,7 +77,6 @@ pad_ms = 120
 model = "nemotron-3.5-asr-streaming-0.6b.q8_0.gguf"
 
 [mouth]
-device = "cuda"
 model = "chatterbox-turbo"
 reference = "reference.wav"
 
@@ -61,12 +86,10 @@ desk_fps = 12
 
 [install]
 llama_tag = "b11435"
-llama_asset = "bin-win-cuda-12.4-x64.zip"
-cudart_asset = "cudart-llama-bin-win-cuda-12.4-x64.zip"
+torch_packages = ["torch==2.6.0", "torchaudio==2.6.0"]
 template_url = "https://huggingface.co/google/gemma-4-E2B-it/resolve/3e22461f65e89153144f8adb70e3b8c2cc9845a7/chat_template.jinja"
 nemo_url = "https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v0.1.0/nemo-speech-0.1.0-windows-x86_64-vulkan.zip"
 gemma_url = "https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_0.gguf"
 mmproj_url = "https://huggingface.co/ggml-org/gemma-4-E2B-it-GGUF/resolve/main/mmproj-gemma-4-E2B-it-Q8_0.gguf"
 ear_url = "https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b/resolve/main/nemotron-3.5-asr-streaming-0.6b.q8_0.gguf"
 silero_url = "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx"
-torch_index = "https://download.pytorch.org/whl/cu124"

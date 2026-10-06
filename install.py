@@ -1,6 +1,6 @@
 import json, os, shutil, subprocess, sys, urllib.request, zipfile
 from pathlib import Path
-from core import BIN, CONFIG, MODELS, ROOT
+from core import ACCELERATOR, BIN, CONFIG, HARDWARE, MODELS, ROOT
 
 CFG = CONFIG["install"]
 PYTHON = ROOT / ".venv" / "Scripts" / "python.exe"
@@ -46,15 +46,18 @@ if __name__ == "__main__":
         subprocess.run([sys.executable, "-m", "venv", str(ROOT / ".venv")], check=True)
     if Path(sys.executable).resolve() != PYTHON.resolve():
         raise SystemExit(subprocess.call([str(PYTHON), __file__]))
+    print(ACCELERATOR, flush=True)
     pip = [str(PYTHON), "-m", "pip", "install", "--disable-pip-version-check"]
-    subprocess.run(pip + ["torch", "torchaudio", "--index-url", CFG["torch_index"]], check=True)
+    subprocess.run(pip + ["--force-reinstall", *CFG["torch_packages"], "--index-url", HARDWARE["torch_index"]], check=True)
+    if "sdk" in HARDWARE:
+        subprocess.run(pip + HARDWARE["sdk"], check=True)
     subprocess.run(pip + ["-r", str(ROOT / "requirements.txt")], check=True)
     with urllib.request.urlopen(urllib.request.Request(
             "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/" + CFG["llama_tag"],
             headers={"User-Agent": "Trident"}), timeout=30) as response:
         assets = {item["name"]: item["browser_download_url"] for item in json.load(response)["assets"]}
     binary("llama", Path("llama-server.exe"),
-        [assets[f"llama-{CFG['llama_tag']}-{CFG['llama_asset']}"], assets[CFG["cudart_asset"]]], CFG["llama_tag"])
+        [assets[name.format(tag=CFG["llama_tag"])] for name in HARDWARE["llama_assets"]], CFG["llama_tag"] + "-" + ACCELERATOR)
     download(CFG["template_url"], BIN / "llama" / "gemma.jinja")
     binary("nemo-speech", Path("bin/nemo-speech.exe"), [CFG["nemo_url"]], "v0.1.0")
     for key, path in (("gemma_url", MODELS / CONFIG["brain"]["model"]), ("mmproj_url", MODELS / CONFIG["brain"]["mmproj"]),

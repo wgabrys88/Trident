@@ -1,13 +1,14 @@
 import _winapi, base64, json, msvcrt, os, socket, subprocess, tempfile, time, urllib.error, urllib.request
 import win32job, win32process
 from concurrent.futures import ThreadPoolExecutor
-from core import BIN, CONFIG, MODELS, ROOT, encode
+from core import BIN, CONFIG, HARDWARE, MODELS, ROOT, encode
+from hardware import environment
 
 CFG = CONFIG["brain"]
 
 class Child:
     """Own the entire worker job before its first instruction can execute."""
-    def __init__(self, args, folder, data=b""):
+    def __init__(self, args, folder, data=b"", env=None):
         self.job = win32job.CreateJobObject(None, None)
         self.process = thread = None
         self.streams = [tempfile.TemporaryFile(dir=folder) for _ in range(3)]
@@ -25,7 +26,7 @@ class Child:
                 hStdOutput=handles[1], hStdError=handles[2], lpAttributeList={"handle_list": handles})
             self.process, thread, self.pid, _ = _winapi.CreateProcess(str(args[0]),
                 subprocess.list2cmdline([str(arg) for arg in args]), None, None, True,
-                subprocess.CREATE_NO_WINDOW | 4, None, str(ROOT), startup)
+                subprocess.CREATE_NO_WINDOW | 4, env, str(ROOT), startup)
             win32job.AssignProcessToJobObject(self.job, self.process)
             win32process.ResumeThread(thread)
         except BaseException:
@@ -109,8 +110,8 @@ class Engines:
                 "--mmproj", MODELS / CFG["mmproj"], "--chat-template-file", ROOT / CFG["template"],
                 "--host", CFG["host"], "--port", str(CFG["port"]), "--threads", str(CFG["threads"]), "--parallel", "1",
                 "--alias", CFG["api_model"], "--jinja", "--no-context-shift", "--no-webui", "--fit", "off",
-                "--cache-ram", "0", "--log-verbosity", "0", *CFG["server_args"]]
-        self.child = Child(args, self.folder)
+                "--cache-ram", "0", "--log-verbosity", "0", *CFG["server_args"], *HARDWARE["server_args"]]
+        self.child = Child(args, self.folder, env=environment(HARDWARE))
         deadline = time.monotonic() + 300
         while time.monotonic() < deadline:
             self.checkpoint()

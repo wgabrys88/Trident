@@ -1,13 +1,15 @@
 import contextlib, sys, wave
 import numpy as np
 import onnxruntime as ort
-from core import BIN, CONFIG, MODELS, ROOT
+from core import BIN, CONFIG, HARDWARE, MODELS, ROOT
 
 RATE, WINDOW = 16000, 512
 
 class Segmenter:
     def __init__(self):
-        self.session = ort.InferenceSession(str(MODELS / "silero_vad.onnx"), providers=["CPUExecutionProvider"])
+        options = ort.SessionOptions()
+        options.intra_op_num_threads = options.inter_op_num_threads = 1
+        self.session = ort.InferenceSession(str(MODELS / "silero_vad.onnx"), options, providers=["CPUExecutionProvider"])
         self.reset()
 
     def reset(self):
@@ -49,18 +51,18 @@ def transcription(path, samples):
             MODELS / CONFIG["ears"]["model"], "--device", "vulkan", "--format", "json", "--verbatim", "--quiet"]
 
 if __name__ == "__main__":
-    words, cfg = sys.stdin.buffer.read().decode("utf-8"), CONFIG["mouth"]
+    words, cfg, device = sys.stdin.buffer.read().decode("utf-8"), CONFIG["mouth"], HARDWARE["mouth_device"]
     with contextlib.redirect_stdout(sys.stderr):
         import torch
         from chatterbox.tts_turbo import ChatterboxTurboTTS, Conditionals
         from transformers.initialization import no_init_weights
         torch.set_num_threads(CONFIG["brain"]["threads"])
         with torch.inference_mode(), no_init_weights():
-            model = ChatterboxTurboTTS.from_local(MODELS / cfg["model"], cfg["device"])
+            model = ChatterboxTurboTTS.from_local(MODELS / cfg["model"], device)
         with torch.inference_mode():
             voice = ROOT / sys.argv[1]
             if voice.exists():
-                model.conds = Conditionals.load(voice, map_location="cpu").to(cfg["device"])
+                model.conds = Conditionals.load(voice, map_location="cpu").to(device)
             else:
                 model.prepare_conditionals(str(ROOT / cfg["reference"]))
                 model.conds.save(voice)
