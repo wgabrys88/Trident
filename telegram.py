@@ -1,4 +1,4 @@
-import asyncio, io, os, random, re, threading, time
+import asyncio, io, json, os, random, re, threading, time
 import numpy as np
 from PIL import Image
 from ntgcalls import (AudioDescription, ConnectionState, DhConfig, FrameData, MediaDescription, MediaSource,
@@ -39,6 +39,65 @@ def i420(png):
     v = np.clip(((112 * r - 94 * g - 18 * b + 128) >> 8) + 128, 16, 240).astype(np.uint8)
     return y.tobytes() + u.tobytes() + v.tobytes(), (rgb.shape[1], rgb.shape[0])
 
+def call_text(name, arguments):
+    if isinstance(arguments, str):
+        arguments = json.loads(arguments) if arguments else {}
+    if not arguments:
+        return f"{name}()"
+    return name + "(" + ", ".join(f"{key}={value!r}" for key, value in arguments.items()) + ")"
+
+def plain(content):
+    if isinstance(content, str):
+        return content
+    lines = []
+    for part in content:
+        if part.get("type") == "text" and part.get("text"):
+            lines.append(part["text"])
+        elif part.get("type") == "image_url":
+            lines.append("[screenshot]")
+    return "\n".join(lines)
+
+def assistant_lines(message):
+    parts = []
+    if message.get("reasoning_content"):
+        parts.append("Thinking:\n" + message["reasoning_content"])
+    if message.get("content"):
+        parts.append("Message:\n" + message["content"])
+    for call in message.get("tool_calls") or []:
+        function = call["function"]
+        parts.append("Tool call:\n" + call_text(function["name"], function.get("arguments") or {}))
+    return "\n\n".join(parts)
+
+def context_limit():
+    args = CONFIG["brain"]["server_args"]
+    return args[args.index("--ctx-size") + 1]
+
+def brain_request(messages):
+    blocks = ["TRIDENT -> GEMMA", ""]
+    for message in messages:
+        role = message.get("role")
+        if role == "system":
+            continue
+        if role == "assistant":
+            blocks.append(assistant_lines(message))
+        elif role == "tool":
+            blocks.append("Tool response:\n" + str(message.get("content") or ""))
+        else:
+            text = plain(message.get("content"))
+            if text:
+                blocks.append("User:\n" + text)
+        blocks.append("")
+    return "\n".join(blocks).strip() + "\n"
+
+def brain_response(raw):
+    data = json.loads(raw)
+    usage = data["usage"]
+    body = assistant_lines(data["choices"][0]["message"])
+    return f"GEMMA -> TRIDENT\n\n{body}\n\nContext size: {context_limit()}\nTokens used: {usage['prompt_tokens']}\n"
+
+def tool_record(name, arguments, words):
+    return f"GEMMA -> TRIDENT\n\nTool call:\n{call_text(name, arguments)}\n\nTool response:\n{words}\n"
+
 class Line:
     def __init__(self, events_queue, folder):
         self.events, self.folder, self.usage = events_queue, folder, Usage(folder)
@@ -71,12 +130,16 @@ class Line:
         self.usage.record(stamp, model, direction)
         path = self.folder / (stem + ".txt")
         path.write_bytes(text.encode("utf-8"))
-        await self.client.send_file(self.owner, str(path), force_document=True)
-        if 0 < len(text) <= 2000:
+        if files:
+            suffix, data = files[0]
+            image_path = self.folder / f"{stem}.{suffix}"
+            image_path.write_bytes(data)
+            if len(text) > 1024:
+                raise RuntimeError("Record with an image exceeds the Telegram caption limit")
+            await self.client.send_file(self.owner, str(image_path), caption=text, force_document=True)
+        elif len(text) <= 4096:
             await self.client.send_message(self.owner, text, parse_mode=None)
-        for index, (suffix, data) in enumerate(files):
-            path = self.folder / f"{stem}_{index:03d}.{suffix}"
-            path.write_bytes(data)
+        else:
             await self.client.send_file(self.owner, str(path), force_document=True)
 
     def start(self):
@@ -230,6 +293,9 @@ class Line:
             if pending and not pending.done():
                 pending.cancel()
         if calls:
+            calls.on_frames(lambda uid, mode, device, frames: None)
+            calls.on_connection_change(lambda uid, info: None)
+            calls.on_signaling_data(lambda uid, data: None)
             await calls.stop(OWNER)
 
     async def reserve_restart(self):

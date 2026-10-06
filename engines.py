@@ -1,8 +1,9 @@
-import _winapi, base64, json, msvcrt, os, socket, subprocess, tempfile, time, urllib.error, urllib.request
+import _winapi, json, msvcrt, os, socket, subprocess, tempfile, time, urllib.error, urllib.request
 import win32job, win32process
 from concurrent.futures import ThreadPoolExecutor
 from core import BIN, CONFIG, HARDWARE, MODELS, ROOT, encode
 from hardware import environment
+from telegram import brain_request, brain_response
 
 CFG = CONFIG["brain"]
 
@@ -134,10 +135,7 @@ class Engines:
         body = {**CFG["options"], "model": CFG["api_model"], "messages": messages, "tools": tools,
                 "tool_choice": "required", "parallel_tool_calls": False}
         text = encode(body)
-        images = [("png", base64.b64decode(part["image_url"]["url"].split(",", 1)[1]))
-            for message in messages if isinstance(message.get("content"), list)
-            for part in message["content"] if part["type"] == "image_url"]
-        self.record(text, images, CFG["api_model"], "req")
+        self.record(brain_request(messages), (), CFG["api_model"], "req")
         headers = {"Content-Type": "application/json"}
         if CFG["api_key_env"]:
             headers["Authorization"] = "Bearer " + os.environ[CFG["api_key_env"]]
@@ -160,7 +158,7 @@ class Engines:
             except BaseException:
                 self.stop()
                 raise
-        self.record(text, (), CFG["api_model"], "resp")
+        self.record(brain_response(text), (), CFG["api_model"], "resp")
         choice = json.loads(text)["choices"][0]
         if choice["finish_reason"] == "length":
             raise RuntimeError("Model context or output capacity exhausted; request ended without replay")

@@ -47,7 +47,7 @@ port = 8080
 threads = 4
 # Model-specific flags stay here. Paths are relative to this workspace.
 server_args = [
-    "--ctx-size", "8192", "--n-gpu-layers", "999",
+    "--ctx-size", "16384", "--n-gpu-layers", "999",
     "--batch-size", "1152", "--ubatch-size", "1152", "--image-max-tokens", "1120",
 ]
 # For another native vision/tool chat API, choose backend="http", set endpoint,

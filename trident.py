@@ -13,7 +13,7 @@ if __name__ == "__main__":
             trident.serve()
         except Exception as error:
             if trident.line.owner:
-                trident.line.send(f"{type(error).__name__}: {error}", direction="blocked")
+                trident.line.send(f"TRIDENT -> OWNER\n\n{type(error).__name__}: {error}", direction="blocked")
             raise
     if trident.restart:
         os.execv(sys.executable, [sys.executable, str(ROOT / "trident.py")])
