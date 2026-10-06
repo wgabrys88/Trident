@@ -51,7 +51,7 @@ def transcription(path, samples):
             MODELS / CONFIG["ears"]["model"], "--device", "vulkan", "--format", "json", "--verbatim", "--quiet"]
 
 if __name__ == "__main__":
-    words, cfg, device = sys.stdin.buffer.read().decode("utf-8"), CONFIG["mouth"], HARDWARE["mouth_device"]
+    cfg, device = CONFIG["mouth"], HARDWARE["mouth_device"]
     with contextlib.redirect_stdout(sys.stderr):
         import torch
         from chatterbox.tts_turbo import ChatterboxTurboTTS, Conditionals
@@ -59,14 +59,37 @@ if __name__ == "__main__":
         torch.set_num_threads(CONFIG["brain"]["threads"])
         with torch.inference_mode(), no_init_weights():
             model = ChatterboxTurboTTS.from_local(MODELS / cfg["model"], device)
+        voice = ROOT / sys.argv[1]
         with torch.inference_mode():
-            voice = ROOT / sys.argv[1]
             if voice.exists():
                 model.conds = Conditionals.load(voice, map_location="cpu").to(device)
             else:
                 model.prepare_conditionals(str(ROOT / cfg["reference"]))
                 model.conds.save(voice)
-            samples = model.generate(words).squeeze().cpu().numpy()
-    count = round(samples.size * 48000 / model.sr)
-    samples = np.interp(np.arange(count) * model.sr / 48000, np.arange(samples.size), samples)
-    sys.stdout.buffer.write((np.clip(samples, -1, 1) * 32767).astype(np.int16).tobytes())
+
+        def speak(words):
+            with torch.inference_mode():
+                samples = model.generate(words).squeeze().cpu().numpy()
+            count = round(samples.size * 48000 / model.sr)
+            samples = np.interp(np.arange(count) * model.sr / 48000, np.arange(samples.size), samples)
+            return (np.clip(samples, -1, 1) * 32767).astype(np.int16).tobytes()
+
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            pcm = speak(self.rfile.read(int(self.headers["Content-Length"])).decode())
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(pcm)))
+            self.end_headers()
+            self.wfile.write(pcm)
+
+        def handle_error(self):
+            import traceback
+            body = traceback.format_exc().encode()
+            self.send_response(500)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    HTTPServer((cfg["host"], cfg["port"]), Handler).serve_forever()

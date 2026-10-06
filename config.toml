@@ -15,7 +15,7 @@ profile = "auto"
 adapter_names = ["nvidia"]
 llama_assets = ["llama-{tag}-bin-win-cuda-12.4-x64.zip", "cudart-llama-bin-win-cuda-12.4-x64.zip"]
 torch_index = "https://download.pytorch.org/whl/cu124"
-mouth_device = "cuda"
+mouth_device = "cpu"
 server_args = ["--flash-attn", "on", "--cache-type-k", "q8_0", "--cache-type-v", "q8_0"]
 
 [hardware.profiles.rocm]
@@ -79,6 +79,8 @@ model = "nemotron-3.5-asr-streaming-0.6b.q8_0.gguf"
 [mouth]
 model = "chatterbox-turbo"
 reference = "reference.wav"
+host = "127.0.0.1"
+port = 8091
 
 [telegram]
 tdata = "%APPDATA%/Telegram Desktop/tdata"

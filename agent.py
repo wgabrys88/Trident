@@ -1,4 +1,4 @@
-import base64, json, msvcrt, os, queue, subprocess, sys, tempfile
+import base64, json, msvcrt, os, queue, subprocess, tempfile
 from pathlib import Path
 from typing import Literal
 import desktop
@@ -24,10 +24,10 @@ class Trident:
         resources.callback(self.line.stop)
         self.line.checkpoint = self.checkpoint
         self.engines = Engines(self.work, self.checkpoint, self.line.send)
-        resources.callback(self.engines.stop)
+        resources.callback(self.engines.close)
         self.methods = {name: getattr(self, name) for name in vars(Trident) if hasattr(getattr(self, name), "schema")}
         self.tools = [method.schema for method in self.methods.values()]
-        self.restart = self.end = False
+        self.restart = self.end = self.leave = False
         self.carried = None
 
     def checkpoint(self):
@@ -90,22 +90,25 @@ class Trident:
     def keyboard(self, action: Literal["type", "press", "run"], text: str):
         return {"type": desktop.type_text, "press": desktop.press, "run": desktop.run}[action](text)
 
-    @tool("Speak, call, hang up, finish, or wait.",
-          mode="speak, call, hang, done, or wait",
+    @tool("Speak, call, hang up, finish, wait, or stop. Before stop, rewrite the note with what is still open.",
+          mode="speak, call, hang, done, wait, or stop",
           text="Words to say or the report")
-    def tell(self, mode: Literal["speak", "call", "hang", "done", "wait"], text: str=""):
+    def tell(self, mode: Literal["speak", "call", "hang", "done", "wait", "stop"], text: str=""):
         if mode == "call":
             self.line.wait(self.line.place(), 150)
         if mode in ("call", "speak"):
             if self.line.up:
-                args = [sys.executable, str(ROOT / "audio.py"), str(self.work / "voice.pt")]
-                pcm = self.worker("mouth", args, text.encode("utf-8"))
+                pcm = self.engines.say(text)
                 self.line.wait(self.line.speak(pcm), len(pcm) / 96000 + 30)
                 self.line.send(f"GEMMA -> OWNER\n\n{text}\n", model=CONFIG["mouth"]["model"], direction="speak")
                 return "Spoken on the call"
             self.line.send(f"GEMMA -> OWNER\n\n{text}")
         elif mode == "hang":
             self.line.wait(self.line.hang())
+        elif mode == "stop":
+            if self.line.up:
+                self.line.wait(self.line.hang())
+            self.leave = self.end = True
         elif mode in ("done", "wait"):
             if mode == "done":
                 self.line.send(f"GEMMA -> OWNER\n\n{text}")
@@ -122,16 +125,14 @@ class Trident:
         self.memory = text
         return "Note replaced"
 
-    def worker(self, section, args, data=b"", interrupt=True):
-        if section in ("ears", "mouth"):
-            self.engines.stop()
+    def worker(self, args, data=b"", interrupt=True):
         return self.engines.command(args, data, interrupt)
 
     def cursor(self, prompt, workspace, writing=False, interrupt=True):
         args = [*(os.path.expandvars(part) for part in CONFIG["cloud"]["command"]), "-p", "--trust", "--model", CONFIG["cloud"]["model"],
                 "--output-format", "text", "--workspace", str(workspace), *(["--force"] if writing else
                 ["--mode", "ask", "--conversation-history-file", self.work / "consult.json"])]
-        raw = self.worker("cloud", args, prompt.encode("utf-8"), interrupt=interrupt)
+        raw = self.worker(args, prompt.encode("utf-8"), interrupt=interrupt)
         if not raw.strip():
             raise RuntimeError("cursor-agent returned nothing")
         return raw.decode("utf-8")
@@ -212,9 +213,10 @@ class Trident:
 
     def serve(self):
         self.line.start()
+        self.engines.mouth_up()
         self.line.send(f"TRIDENT -> GEMMA\n\n{SYSTEM}", model=CONFIG["brain"]["api_model"], direction="wake")
         self.events.put(("wake", "Wake"))
-        while not self.restart:
+        while not self.restart and not self.leave:
             kind, payload = self.events.get()
             words = []
             while True:
@@ -224,7 +226,7 @@ class Trident:
                     path = self.work / "call.wav"
                     args = transcription(path, payload)
                     try:
-                        raw = self.worker("ears", args, interrupt=False)
+                        raw = self.worker(args, interrupt=False)
                         heard = json.loads(raw)["text"]
                         self.line.send(f"EARS -> TRIDENT\n\n{heard}\n", model=CONFIG["ears"]["model"], direction="resp")
                         kind, payload = "text", heard

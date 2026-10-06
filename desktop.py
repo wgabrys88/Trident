@@ -46,11 +46,15 @@ def png(image):
     image.save(buffer, "PNG")
     return buffer.getvalue()
 
+def grid_size(width):
+    return max(width // 40, 1)
+
 def annotate(data, marks):
     if not marks:
         return data
     image = Image.open(io.BytesIO(data)).convert("RGB")
-    draw, font = ImageDraw.Draw(image), ImageFont.load_default(size=14)
+    size = grid_size(image.width)
+    draw, font = ImageDraw.Draw(image), ImageFont.load_default(size=size)
     for mark in marks:
         x0, x1 = (round(mark[key] * (image.width - 1) / 1000) for key in ("x0", "x1"))
         y0, y1 = (round(mark[key] * (image.height - 1) / 1000) for key in ("y0", "y1"))
@@ -62,17 +66,19 @@ def annotate(data, marks):
 def picture():
     left, top, width, height = bounds()
     image = ImageGrab.grab((left, top, left + width, top + height), all_screens=True).convert("RGB").resize(image_size())
-    draw, font = ImageDraw.Draw(image), ImageFont.load_default(size=14)
-    for value in range(0, 1001, 100):
+    size = grid_size(image.width)
+    draw, font = ImageDraw.Draw(image), ImageFont.load_default(size=size)
+    for value in range(0, 1001, 250):
         x, y = round(value * (image.width - 1) / 1000), round(value * (image.height - 1) / 1000)
-        for text, place, anchor in ((f"x={value}", (32 if value == 0 else x, 1), "rt" if value == 1000 else "lt"),
-                                    (f"y={value}", (1, y), "lb" if value == 1000 else "lt")):
+        for text, place, anchor in ((f"x={value}", (size if value == 0 else x, 1), "rt" if value == 1000 else "lt"),
+                                    (f"y={value}", (1, size if value == 0 else y), "lb" if value == 1000 else "lt")):
             draw.rectangle(draw.textbbox(place, text, font=font, anchor=anchor), fill="black")
             draw.text(place, text, font=font, anchor=anchor, fill="white")
     gy, gx = position()
     x, y = round(gx * (image.width - 1) / 1000), round(gy * (image.height - 1) / 1000)
-    draw.polygon([(x, y), (x, y + 16), (x + 4, y + 13), (x + 7, y + 19), (x + 10, y + 17),
-                  (x + 6, y + 12), (x + 12, y + 12)], fill="white", outline="black")
+    unit = size / 16
+    draw.polygon([(x + dx * unit, y + dy * unit) for dx, dy in (
+        (0, 0), (0, 16), (4, 13), (7, 19), (10, 17), (6, 12), (12, 12))], fill="white", outline="black")
     return f"Whole screen: {image.width} x {image.height} pixels; y down, x right, both 0–1000.", png(image)
 
 def send(*inputs):

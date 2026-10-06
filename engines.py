@@ -1,4 +1,4 @@
-import _winapi, json, msvcrt, os, socket, subprocess, tempfile, time, urllib.error, urllib.request
+import _winapi, json, msvcrt, os, socket, subprocess, sys, tempfile, time, urllib.error, urllib.request
 import win32job, win32process
 from concurrent.futures import ThreadPoolExecutor
 from core import BIN, CONFIG, HARDWARE, MODELS, ROOT, encode
@@ -84,13 +84,39 @@ class Child:
 class Engines:
     """Own GPU workers and deliver native chat payloads, independently of task behavior."""
     def __init__(self, folder, checkpoint, record):
-        self.folder, self.checkpoint, self.record, self.child = folder, checkpoint, record, None
+        self.folder, self.checkpoint, self.record = folder, checkpoint, record
+        self.child = self.mouth = None
         self.url = f"http://{CFG['host']}:{CFG['port']}"
 
     def stop(self):
         if self.child:
             self.child.close()
             self.child = None
+
+    def close(self):
+        self.stop()
+        if self.mouth:
+            self.mouth.close()
+            self.mouth = None
+
+    def listening(self, host, port):
+        with socket.socket() as probe:
+            return probe.connect_ex((host, port)) == 0
+
+    def free(self, host, port):
+        if self.listening(host, port):
+            raise RuntimeError(f"Port {port} is already in use")
+
+    def wait_ready(self, child, probe, label):
+        deadline = time.monotonic() + 300
+        while time.monotonic() < deadline:
+            self.checkpoint()
+            if child.poll() is not None:
+                raise RuntimeError(child.error())
+            if probe():
+                return
+            time.sleep(0.25)
+        raise TimeoutError(f"{label} startup timed out")
 
     def command(self, args, data=b"", interrupt=True):
         child = Child(args, self.folder, data)
@@ -99,36 +125,64 @@ class Engines:
         finally:
             child.close()
 
+    def healthy(self):
+        try:
+            with urllib.request.urlopen(self.url + "/health", timeout=2) as response:
+                return response.status == 200
+        except urllib.error.HTTPError as error:
+            if error.code == 503:
+                return False
+            raise RuntimeError(error.read().decode("utf-8")) from error
+        except urllib.error.URLError:
+            return False
+
     def brain(self):
         if self.child:
             if self.child.poll() is not None:
                 raise RuntimeError(self.child.error())
             return
-        with socket.socket() as port:
-            if port.connect_ex((CFG["host"], CFG["port"])) == 0:
-                raise RuntimeError(f"Port {CFG['port']} is already in use")
+        self.free(CFG["host"], CFG["port"])
         args = [BIN / "llama" / "llama-server.exe", "--model", MODELS / CFG["model"],
                 "--mmproj", MODELS / CFG["mmproj"], "--chat-template-file", ROOT / CFG["template"],
                 "--host", CFG["host"], "--port", str(CFG["port"]), "--threads", str(CFG["threads"]), "--parallel", "1",
                 "--alias", CFG["api_model"], "--jinja", "--no-context-shift", "--no-webui", "--fit", "off",
                 "--cache-ram", "0", "--log-verbosity", "0", *CFG["server_args"], *HARDWARE["server_args"]]
         self.child = Child(args, self.folder, env=environment(HARDWARE))
-        deadline = time.monotonic() + 300
-        while time.monotonic() < deadline:
-            self.checkpoint()
-            if self.child.poll() is not None:
-                raise RuntimeError(self.child.error())
+        self.wait_ready(self.child, self.healthy, "llama-server")
+
+    def mouth_up(self):
+        cfg = CONFIG["mouth"]
+        self.free(cfg["host"], cfg["port"])
+        args = [sys.executable, str(ROOT / "audio.py"), str(self.folder / "voice.pt")]
+        self.mouth = Child(args, self.folder, env=environment(HARDWARE))
+        self.wait_ready(self.mouth, lambda: self.listening(cfg["host"], cfg["port"]), "mouth")
+
+    def say(self, text):
+        cfg = CONFIG["mouth"]
+        request = urllib.request.Request(f"http://{cfg['host']}:{cfg['port']}/", text.encode(), method="POST")
+        return self.fetch(request, abort=False)
+
+    def fetch(self, request, abort):
+        def receive():
             try:
-                with urllib.request.urlopen(self.url + "/health", timeout=2) as response:
-                    if response.status == 200:
-                        return
+                with urllib.request.urlopen(request, timeout=600) as response:
+                    return response.read()
             except urllib.error.HTTPError as error:
-                if error.code != 503:
-                    raise RuntimeError(error.read().decode("utf-8")) from error
-            except urllib.error.URLError:
-                pass  # Readiness only: the owned server has not bound its socket yet.
-            time.sleep(0.25)
-        raise TimeoutError("llama-server startup timed out")
+                raise RuntimeError(error.read().decode("utf-8")) from error
+        pool = ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(receive)
+        try:
+            while not future.done():
+                self.checkpoint()
+                time.sleep(0.05)
+            self.checkpoint()
+            return future.result()
+        except BaseException:
+            if abort:
+                self.stop()
+            raise
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
 
     def complete(self, messages, tools):
         {"llama": self.brain, "http": self.stop}[CFG["backend"]]()
@@ -141,23 +195,7 @@ class Engines:
             headers["Authorization"] = "Bearer " + os.environ[CFG["api_key_env"]]
         endpoint = {"llama": self.url + "/v1/chat/completions", "http": CFG["endpoint"]}[CFG["backend"]]
         request = urllib.request.Request(endpoint, text.encode("utf-8"), headers)
-        def receive():
-            try:
-                with urllib.request.urlopen(request, timeout=600) as response:
-                    return response.read().decode("utf-8")
-            except urllib.error.HTTPError as error:
-                raise RuntimeError(error.read().decode("utf-8")) from error
-        with ThreadPoolExecutor(max_workers=1) as worker:
-            future = worker.submit(receive)
-            try:
-                while not future.done():
-                    self.checkpoint()
-                    time.sleep(0.05)
-                self.checkpoint()
-                text = future.result()
-            except BaseException:
-                self.stop()
-                raise
+        text = self.fetch(request, abort=True).decode("utf-8")
         self.record(brain_response(text), (), CFG["api_model"], "resp")
         choice = json.loads(text)["choices"][0]
         if choice["finish_reason"] == "length":

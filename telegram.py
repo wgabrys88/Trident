@@ -1,4 +1,4 @@
-import asyncio, io, json, os, random, re, threading, time
+import asyncio, gc, io, json, os, random, re, threading, time
 import numpy as np
 from PIL import Image
 from ntgcalls import (AudioDescription, ConnectionState, DhConfig, FrameData, MediaDescription, MediaSource,
@@ -106,7 +106,7 @@ class Line:
         self.client = self.owner = self.calls = self.phone = self.image = None
         self.connected = self.accepted = self.confirmed = None
         self.state, self.began, self.linked, self.signals = "down", 0, False, []
-        self.segmenter, self.checkpoint = Segmenter(), lambda: None
+        self.segmenter, self.checkpoint, self.video_task = Segmenter(), lambda: None, None
 
     @property
     def up(self):
@@ -243,7 +243,7 @@ class Line:
         self.signals = []
         await asyncio.wait_for(self.connected, 30)
         self.state, self.began = "up", time.monotonic()
-        asyncio.create_task(self.guard(self.video(self.calls)))
+        self.video_task = asyncio.create_task(self.guard(self.video(self.calls)))
 
     async def place(self, requested=None):
         if requested is None and self.state != "down":
@@ -284,7 +284,11 @@ class Line:
             await self.close()
 
     async def close(self):
-        self.state, self.linked = "down", False
+        self.state = "down"
+        task, self.video_task = self.video_task, None
+        if task:
+            await task
+        self.linked = False
         calls, self.calls, self.phone, self.began = self.calls, None, None, 0
         clip = self.segmenter.finish()
         if clip is not None:
@@ -297,6 +301,8 @@ class Line:
             calls.on_connection_change(lambda uid, info: None)
             calls.on_signaling_data(lambda uid, data: None)
             await calls.stop(OWNER)
+            del calls
+            gc.collect()
 
     async def reserve_restart(self):
         if self.state != "down":
