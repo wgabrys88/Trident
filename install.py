@@ -59,7 +59,7 @@ def install():
         packed.unlink()
     for name, url in config["models"].items():
         download(url, artifacts / name)
-    archive(config["nemo_url"], "nemo", Path("bin/nemo-speech.exe"))
+    archive(config["nemo_url"], "nemo-cpu", Path("bin/nemo-speech.exe"))
     archive(config["voice_url"], "voice", Path("crispasr.exe"))
     print(f"Installed. Start with: {interpreter} {ROOT / 'trident.py'}")
 

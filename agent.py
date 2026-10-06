@@ -33,7 +33,7 @@ class Agent:
             self.record.append("owner_audio", {"path": str(path)})
             output = await execute([
                 CONFIG["ears"]["command"], "transcribe", str(path), "--model", CONFIG["ears"]["model"],
-                "--device", "cuda:0", "--stream", "--format", "json", "--quiet",
+                "--device", "cpu", "--stream", "--format", "json", "--quiet",
             ])
             value = json.loads(output)["text"]
             if not value.strip():
