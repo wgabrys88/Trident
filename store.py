@@ -1,6 +1,9 @@
+import asyncio
+import hashlib
 import json
 import os
 import tomllib
+from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
 
@@ -9,7 +12,7 @@ CONFIG = tomllib.loads((ROOT / "config.toml").read_text(encoding="utf-8"))
 
 
 def encode(value):
-    return json.dumps(value, ensure_ascii=False, indent=2)
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
 def read(path):
@@ -28,14 +31,74 @@ def command(parts):
     return [os.path.expandvars(str(part)) for part in parts]
 
 
+async def cancel(*tasks):
+    for task in tasks:
+        task.cancel()
+    for task in tasks:
+        with suppress(asyncio.CancelledError):
+            await task
+
+
+def human(value, key=None):
+    if key in ("tools", "catalog", "arguments"):
+        return encode(value)
+    if key == "trace":
+        value = [json.loads(line) for line in value.splitlines()]
+    if isinstance(value, dict):
+        return "\n\n".join(key.upper() + "\n" + human(item, key)
+                         for key, item in value.items() if key not in
+                         {"time", "id", "path", "session", "start", "captured_at", "audio_processed", "audio_seconds",
+                          "confidence", "transmitted_seconds", "telegram_messages", "duration_ms", "duration_api_ms", "usage",
+                          "temperature", "max_tokens", "enable_thinking", "index", "logprobs", "model", "object", "created",
+                          "timings", "system_fingerprint", "audio", "parameters"})
+    if isinstance(value, list):
+        return "\n\n".join(human(item) for item in value) or "[]"
+    return value if isinstance(value, str) else encode(value)
+
+
 class Record:
     def __init__(self, folder):
         self.folder = Path(folder)
         self.folder.mkdir(parents=True, exist_ok=True)
+        self.pending = asyncio.Queue()
+        self.task = None
 
-    def append(self, kind, value):
-        with (self.folder / "trace.jsonl").open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps({"time": stamp(), "kind": kind, "value": value}, ensure_ascii=False) + "\n")
+    def artifact(self, data, extension):
+        path = self.folder / (hashlib.sha256(data).hexdigest() + "." + extension)
+        path.write_bytes(data)
+        return path
+
+    def append(self, kind, value, source="TRIDENT", target="OWNER", images=()):
+        event = {"time": stamp(), "kind": kind, "source": source, "target": target,
+                 "value": value, "images": [str(path) for path in images]}
+        data = (encode(event) + "\n").encode("utf-8")
+        with (self.folder / "trace.jsonl").open("ab") as stream:
+            offset = stream.tell()
+            stream.write(data)
+        delivered = asyncio.get_running_loop().create_future()
+        self.pending.put_nowait((offset, len(data), delivered))
+        return delivered
+
+    async def send(self, line):
+        while (location := await self.pending.get()) is not None:
+            with (self.folder / "trace.jsonl").open("rb") as stream:
+                stream.seek(location[0])
+                event = json.loads(stream.read(location[1]))
+            header = event["source"] + " => " + event["target"] + " | " + event["kind"].upper()
+            body = human(event["value"])
+            messages = []
+            for offset in range(0, max(1, len(body)), 1800):
+                message = await line.client.send_message(line.owner, header + "\n\n" + body[offset:offset + 1800], parse_mode=None)
+                messages.append(message.id)
+            for path in event["images"]:
+                await line.client.send_file(line.owner, path, caption=header, force_document=True, parse_mode=None)
+            if not location[2].cancelled():
+                location[2].set_result({"telegram_messages": messages})
+
+    async def close(self):
+        if self.task is not None:
+            self.pending.put_nowait(None)
+            await self.task
 
     def trace(self, start):
         return (self.folder / "trace.jsonl").read_text(encoding="utf-8")[start:]

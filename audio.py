@@ -104,10 +104,9 @@ class Hearing:
 
     def submit(self, pcm):
         identifier = uuid.uuid4().hex
-        path = self.record.folder / ("heard-" + identifier + ".wav")
-        path.write_bytes(wav(pcm, 16000))
+        path = self.record.artifact(wav(pcm, 16000), "wav")
         observation = {"id": identifier, "path": str(path), "start": self.record.offset()}
-        self.record.append("owner_audio", observation)
+        self.record.append("owner_audio", observation, "OWNER", "NEMOTRON")
         self.queue.put_nowait((pcm, observation))
         self.emit("audio_pending", observation)
 
@@ -123,7 +122,7 @@ class Hearing:
                 recognition = await asyncio.get_running_loop().run_in_executor(self.executor, self.recognize, pcm)
                 self.busy = False
                 observation = {**observation, "recognition": recognition}
-                self.record.append("asr_result", observation)
+                self.record.append("asr_result", observation, "NEMOTRON", "LUNA")
                 self.emit("audio", observation)
         except Exception as error:
             self.emit("error", error)

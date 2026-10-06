@@ -1,79 +1,63 @@
 import asyncio
-import inspect
 import types
-import uuid
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
 import desktop
 from audio import call_pcm
-from store import ROOT, encode, read, write
+from store import ROOT, cancel, read, write
 
 
 class Catalog:
     def __init__(self):
-        self.specs = read(ROOT / "tools.json")
-        self.handlers = {}
-        modules = {}
+        self.document = read(ROOT / "tools.json")
+        self.specs = self.document["tools"]
+        self.modules = {"desktop": desktop}
         for name, spec in self.specs.items():
-            Draft202012Validator.check_schema(spec["parameters"])
-            module_name, function_name = spec["handler"].split(":")
-            if module_name not in modules:
+            module_name, _ = spec["handler"].split(":")
+            if module_name != "line" and module_name not in self.modules:
                 path = ROOT / (module_name + ".py")
                 module = types.ModuleType(module_name)
                 module.__file__ = str(path)
                 exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"), module.__dict__)
-                modules[module_name] = module
-            self.handlers[name] = getattr(modules[module_name], function_name)
+                self.modules[module_name] = module
 
-    async def call(self, host, name, arguments):
-        Draft202012Validator(self.specs[name]["parameters"]).validate(arguments)
-        handler = self.handlers[name]
-        inspect.signature(handler).bind(host, **arguments)
-        return await handler(host, **arguments)
+    def validate(self, schema, value):
+        Draft202012Validator({"$defs": self.document["$defs"], **schema}).validate(value)
+
+    async def call(self, host, tool, arguments, observation=None):
+        spec = self.specs[tool]
+        self.validate(spec["parameters"], arguments)
+        if spec["observe"]:
+            self.validate({"$ref": "#/$defs/observation"}, observation)
+        elif observation is not None:
+            raise ValueError("Observation tools already return visual evidence; do not add a second inspection")
+        module, function = spec["handler"].split(":")
+        handler = getattr(host.line if module == "line" else self.modules[module], function)
+        if module == "desktop":
+            result = await asyncio.to_thread(handler, **arguments)
+        else:
+            result = await handler(**arguments) if module == "line" else await handler(host, **arguments)
+        if spec["observe"]:
+            question = "Expected result to check, not a fact: " + observation["expected"] + "\nNext-plan question: " + observation["question"]
+            result = {"execution": result, "observation": await screen(host, question, observation["region"], observation["max_edge"])}
+        return result
 
 
-async def screen(host, question, region, magnify):
-    path = host.record.folder / ("screen-" + uuid.uuid4().hex + ".png")
-    metadata = await asyncio.to_thread(desktop.capture, path, region, magnify)
-    detail = await host.models.gemma(
-        question + "\nSupplied image mapping: " + encode(metadata) +
-        "\nReport only the requested visible facts concisely. Use image pixels, then the supplied mapping for desktop coordinates. "
-        "Separate observed, inferred, and unknown. Do not assume hidden content or conventional positions.", [path],
-    )
-    return {**metadata, "gemma": detail}
+async def screen(host, question, region, max_edge):
+    return await visual(host, question, [await asyncio.to_thread(desktop.capture, region, max_edge)])
 
 
 async def images(host, question, views):
-    metadata = []
-    for view in views:
-        path = host.record.folder / ("view-" + uuid.uuid4().hex + ".png")
-        metadata.append(await asyncio.to_thread(desktop.image_view, view, path))
-    detail = await host.models.gemma(question + "\nActual supplied images and coordinate mappings:\n" + encode(metadata) +
-                                    "\nSeparate visible evidence, inference, and unknown. Answer only the requested detail concisely.",
-                                    [Path(item["image"]) for item in metadata])
-    return {"views": metadata, "gemma": detail}
+    return await visual(host, question, [await asyncio.to_thread(desktop.image_view, view) for view in views])
 
 
-async def click(host, x, y, button, count):
-    return desktop.click(x, y, button, count)
-
-
-async def drag(host, points, seconds):
-    return await asyncio.to_thread(desktop.stroke, points, seconds)
-
-
-async def type_text(host, text):
-    return desktop.type_text(text)
-
-
-async def keys(host, chord):
-    return desktop.keys(chord)
-
-
-async def scroll(host, amount):
-    return desktop.scroll(amount)
+async def visual(host, question, prepared):
+    result = await host.models.gemma({"question": question, "views": [metadata for _, metadata in prepared]},
+                                    [payload for payload, _ in prepared])
+    return {"views": [{**metadata, "image": path} for (_, metadata), path in zip(prepared, result["images"])],
+            "report": result["report"]}
 
 
 async def python(host, code):
@@ -83,50 +67,27 @@ async def python(host, code):
     return await namespace["action"]()
 
 
-async def chat(host, text):
-    return await host.line.chat(text)
-
-
-async def dial(host):
-    return await host.line.dial()
-
-
-async def answer(host):
-    return await host.line.answer()
-
-
-async def hang(host):
-    return await host.line.hang()
-
-
 async def speak(host, parts):
     if host.line.state != "up":
         raise RuntimeError("Speech requires a connected Telegram call")
-    payload = await host.models.voice(parts[0])
+    path = await host.models.voice(parts[0])
     pending = None
     receipts = []
     try:
         for index, text in enumerate(parts):
-            path = host.record.folder / ("voice-" + uuid.uuid4().hex + ".wav")
-            path.write_bytes(payload)
-            host.record.append("voice_ready", {"audio": str(path), "words": text})
             if index + 1 < len(parts):
                 pending = asyncio.create_task(host.models.voice(parts[index + 1]))
-            result = await host.line.speak(call_pcm(payload))
+            result = await host.line.speak(call_pcm(path.read_bytes()))
             receipt = {**result, "audio": str(path), "words": text}
             receipts.append(receipt)
             host.record.append("speech_transmitted", receipt)
             if pending is not None:
-                payload = await pending
+                path = await pending
                 pending = None
         return {"parts": receipts}
     finally:
         if pending is not None:
-            pending.cancel()
-            try:
-                await pending
-            except asyncio.CancelledError:
-                pass
+            await cancel(pending)
 
 
 async def remember(host, text):
@@ -209,6 +170,5 @@ async def finish(host, evidence, outcome, shutdown):
     host.state["finished"] = {"goal": host.state["goal"], "evidence": evidence, "outcome": outcome}
     host.state["goal"] = None
     host.state["attention"] = False
-    host.state["recording"] = False
     host.state["shutdown"] = shutdown
     return host.state["finished"]

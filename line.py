@@ -24,7 +24,7 @@ from telethon.tl.types import (
 )
 
 from audio import Hearing, Utterances
-from store import CONFIG
+from store import CONFIG, cancel
 
 
 def protocol():
@@ -78,6 +78,7 @@ class Line:
         [account] = accounts
         self.client = await TelegramClient.FromTDesktop(
             account, session=MemorySession(), flag=UseCurrentSession, api=API.TelegramDesktop,
+            request_retries=0, connection_retries=0, auto_reconnect=False, flood_sleep_threshold=0, raise_last_call_error=True,
         )
         self.client.add_event_handler(self.message, events.NewMessage(incoming=True, from_users=[self.owner_id]))
         self.client.add_event_handler(self.update, events.Raw())
@@ -87,6 +88,7 @@ class Line:
             raise RuntimeError("Telegram needs an authorized user session distinct from Wojciech")
         await self.client.get_dialogs()
         self.owner = await self.client.get_input_entity(self.owner_id)
+        self.record.task = self.dispatch(self.record.send(self))
 
     def emit(self, kind, value):
         self.generation += 1
@@ -135,6 +137,7 @@ class Line:
         task = asyncio.create_task(coroutine)
         self.jobs.add(task)
         task.add_done_callback(self.job_finished)
+        return task
 
     def job_finished(self, task):
         self.jobs.remove(task)
@@ -263,11 +266,7 @@ class Line:
         return {"transmitted_seconds": len(pcm) / 96000}
 
     async def chat(self, text):
-        messages = []
-        for offset in range(0, len(text), 4000):
-            message = await self.client.send_message(self.owner, text[offset:offset + 4000], parse_mode=None)
-            messages.append(message.id)
-        return {"telegram_messages": messages}
+        return await self.record.append("chat", text, "LUNA", "OWNER")
 
     async def hang(self):
         if self.peer is None:
@@ -298,13 +297,5 @@ class Line:
             await self.hang()
         elif self.engine is not None:
             await self.release()
-        for task in list(self.jobs):
-            task.cancel()
-        for task in list(self.jobs):
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-        if self.client is not None:
-            await self.client.disconnect()
-        self.record.append("telegram_closed", {})
+        await cancel(*(task for task in self.jobs if task != self.record.task))
+        self.record.append("call_callbacks_closed", {})

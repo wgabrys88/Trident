@@ -10,7 +10,7 @@ tdata = "%APPDATA%/Telegram Desktop/tdata"
 
 [gemma]
 url = "http://127.0.0.1:8080"
-command = ["artifacts/llama/llama-server.exe", "--model", "artifacts/gemma-4-E2B-it-Q4_0.gguf", "--mmproj", "artifacts/mmproj-gemma-4-E2B-it-Q8_0.gguf", "--chat-template-file", "artifacts/gemma.jinja", "--alias", "gemma", "--host", "127.0.0.1", "--port", "8080", "--jinja", "--ctx-size", "32768", "--device", "CUDA0", "--n-gpu-layers", "999", "--parallel", "1", "--flash-attn", "on", "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "--no-context-shift", "--no-webui", "--fit", "off"]
+command = ["artifacts/llama/llama-server.exe", "--model", "artifacts/gemma-4-E2B-it-Q4_0.gguf", "--mmproj", "artifacts/mmproj-gemma-4-E2B-it-Q8_0.gguf", "--mmproj-offload", "--mmproj-device", "CUDA0", "--image-max-tokens", "1120", "--reasoning-format", "deepseek", "--chat-template-file", "artifacts/gemma.jinja", "--alias", "gemma", "--host", "127.0.0.1", "--port", "8080", "--jinja", "--ctx-size", "32768", "--device", "CUDA0", "--n-gpu-layers", "999", "--parallel", "1", "--flash-attn", "on", "--cache-type-k", "q8_0", "--cache-type-v", "q8_0", "--no-context-shift", "--no-webui", "--fit", "off"]
 
 [ears]
 model = "artifacts/nemotron-3.5-asr-streaming-0.6b.q8_0.gguf"

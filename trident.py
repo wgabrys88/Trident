@@ -2,6 +2,7 @@ import asyncio
 import os
 import sys
 import uuid
+from contextlib import AsyncExitStack
 from pathlib import Path
 
 from agent import Agent
@@ -38,14 +39,18 @@ async def main():
     finally:
         record.append("cleanup_started", {})
         try:
-            await line.close()
+            async with AsyncExitStack() as cleanup:
+                for resource in (models, line.hearing, line):
+                    cleanup.push_async_callback(resource.close)
+            record.append("cleanup_finished", {})
+            if sys.exception() is None:
+                record.append("restart" if state["restart"] else "shutdown", {})
         finally:
             try:
-                await line.hearing.close()
+                await record.close()
             finally:
-                await models.close()
-        record.append("cleanup_finished", {})
-    record.append("restart" if state["restart"] else "shutdown", {})
+                if line.client is not None:
+                    await line.client.disconnect()
     return folder if state["restart"] else None
 
 

@@ -1,7 +1,7 @@
 import asyncio
 import json
 
-from store import ROOT, encode, read, write
+from store import ROOT, cancel, read, write
 from tools import Catalog
 
 
@@ -60,51 +60,42 @@ class Agent:
         catalog = Catalog()
         mind = read(ROOT / "mind.json")
         generation = self.line.generation
-        batch = json.loads(await self.models.luna(mind["actor"] +
-            '\nReturn {"assessment":{"approach":"current method","failures":["observed failed attempt and evidence"],'
-            '"change":"chosen material change, or why no change is needed"},'
-            '"calls":[{"tool":"name","arguments":{}}]}. '
-            'Assess the evidence before selecting actions. Python stores your assessment; you choose the response to failures.', {
+        batch = json.loads(await self.models.luna(mind["actor"], {
             "persistent_notes": {"authority": "Historical notes only; never current transport state", "text": mind["memory"]},
             "transport": {"authority": "Current transport state", "call": self.line.state,
                           "id": self.line.peer.id if self.line.peer is not None else None},
             "goal": self.state["goal"], "suspended": self.state["suspended"],
             "open_work": self.state["open_work"], "assessment": self.state["assessment"],
             "hearing": {"busy": self.line.hearing.busy, "queued": self.line.hearing.queue.qsize()},
-            "tools": catalog.specs, "history": self.state["history"],
+            "tools": catalog.document, "history": self.state["history"],
         }))
+        catalog.validate({"$ref": "#/$defs/batch"}, batch)
         if generation != self.line.generation:
             self.record.append("batch_superseded", {"reason": "Input changed while Luna was deciding", "batch": batch})
             return
         assessment = batch["assessment"]
-        if (not isinstance(assessment["approach"], str) or not assessment["approach"].strip()
-                or not isinstance(assessment["failures"], list)
-                or any(not isinstance(item, str) for item in assessment["failures"])
-                or not isinstance(assessment["change"], str) or not assessment["change"].strip()):
-            raise ValueError("Luna must provide an approach, failure evidence, and chosen change")
         self.state["assessment"] = assessment
         self.record.append("assessment", assessment)
         calls = batch["calls"]
-        if not isinstance(calls, list) or not calls:
-            raise ValueError("Luna must return a nonempty calls array")
         for index, call in enumerate(calls):
             if generation != self.line.generation:
                 self.record.append("batch_superseded", {"reason": "Input changed during execution", "remaining": calls[index:]})
                 break
-            name, arguments = call["tool"], call["arguments"]
+            name = call["tool"]
             if catalog.specs[name]["boundary"] and index != len(calls) - 1:
                 raise ValueError(f"{name} must be last in its batch")
-            self.record.append("tool_start", call)
-            result = await catalog.call(self, name, arguments)
+            self.record.append("tool_start", call, "LUNA", "TOOL (" + name + ")")
+            result = await catalog.call(self, **call)
             entry = {"call": call, "result": result}
             self.state["history"].append(entry)
-            self.record.append("tool_result", entry)
+            self.record.append("tool_result", entry, "TOOL (" + name + ")", "LUNA")
             self.save()
         if self.state["finished"] is not None:
             self.state["lessons"].append({
                 **self.state["finished"], "trace": self.record.trace(self.state["start"]),
             })
             self.state["finished"] = None
+            self.state["recording"] = self.state["attention"]
             self.save()
 
     async def learn(self):
@@ -116,42 +107,38 @@ class Agent:
         study = ""
         trace = lesson["trace"]
         for events in self.portions(trace):
-            study = await self.models.gemma(
-                "Idle learning mode. Study these complete JSON trace events. Each event is intact; "
+            study = (await self.models.gemma(
+                {"instruction": "Idle learning mode. Study these complete JSON trace events. Each event is intact; "
                 "a portion boundary is not a runtime failure. A lone request at a portion boundary may finish in the next portion. "
                 "Keep concise cumulative lessons from all portions: failures, repairs, observations, Luna's batches, "
                 "and improvements to your visual reports and cooperation. Separate evidence from speculation. "
                 "File paths identify retained evidence; they are not images you have seen. "
-                "Return at most 1000 words.\nRecorded outcome: " + encode({key: value for key, value in lesson.items() if key != "trace"}) +
-                "\nPrevious study:\n" + study +
-                "\nNext complete events:\n" + events, [],
-            )
+                "Return at most 1000 words.",
+                 "outcome": {key: value for key, value in lesson.items() if key != "trace"},
+                 "previous_study": study, "events": [json.loads(line) for line in events.splitlines()]}, [],
+            ))["report"]
         raw = await self.models.luna(
             "Idle learning mode. Teach Gemma from this recorded task and its study. "
             "Return only JSON with actor, student, tools, lesson. actor and student are complete replacement prompts; "
-            "tools is the complete current catalog with improved descriptions only. Preserve handlers, boundaries, "
+            "tools is the complete current catalog with improved tool descriptions only. Preserve shared definitions, handlers, observation flags, boundaries, "
             "parameter types, and required arguments. Preserve the owner's behavior requirements. "
             "lesson states concrete corrections and their trace evidence. No live action or invented success.",
-            {"mind": mind, "tools": catalog.specs, "recorded_task": lesson, "gemma_study": study},
+            {"mind": mind, "tools": catalog.document, "recorded_task": lesson, "gemma_study": study},
         )
         teaching = json.loads(raw)
+        updated = teaching["tools"]
+        if updated.keys() != catalog.document.keys() or updated["$defs"] != catalog.document["$defs"] or updated["tools"].keys() != catalog.specs.keys():
+            raise ValueError("An idle lesson must preserve the catalog structure")
         for name, spec in catalog.specs.items():
-            updated = teaching["tools"][name]
-            if updated["handler"] != spec["handler"] or updated["boundary"] != spec["boundary"]:
-                raise ValueError("An idle lesson cannot change a tool implementation")
-            before = json.loads(encode(spec["parameters"]))
-            after = json.loads(encode(updated["parameters"]))
-            self.remove_descriptions(before)
-            self.remove_descriptions(after)
-            if before != after:
-                raise ValueError("An idle lesson cannot change tool arguments")
-        if set(teaching["tools"]) != set(catalog.specs):
-            raise ValueError("An idle lesson cannot add or delete tools")
+            catalog.validate({"$ref": "#/$defs/text"}, updated["tools"][name]["description"])
+            if {k: v for k, v in spec.items() if k != "description"} != {k: v for k, v in updated["tools"][name].items() if k != "description"}:
+                raise ValueError("An idle lesson changes descriptions, not execution or arguments")
         for key in ("actor", "student", "lesson"):
             if not isinstance(teaching[key], str) or not teaching[key].strip():
                 raise ValueError(f"Empty lesson field: {key}")
         if generation != self.line.generation:
-            raise asyncio.CancelledError
+            self.record.append("learning_interrupted", {"reason": "Input changed before lesson application"})
+            return
         mind["actor"], mind["student"] = teaching["actor"], teaching["student"]
         write(ROOT / "mind.json", mind)
         write(ROOT / "tools.json", teaching["tools"])
@@ -170,16 +157,6 @@ class Agent:
             portion += line + "\n"
         if portion:
             yield portion
-
-    @staticmethod
-    def remove_descriptions(schema):
-        if isinstance(schema, dict):
-            schema.pop("description", None)
-            for value in schema.values():
-                Agent.remove_descriptions(value)
-        elif isinstance(schema, list):
-            for value in schema:
-                Agent.remove_descriptions(value)
 
     async def serve(self):
         while not self.state["restart"]:
@@ -203,37 +180,17 @@ class Agent:
         try:
             while True:
                 done, _ = await asyncio.wait((task, incoming), return_when=asyncio.FIRST_COMPLETED)
-                if task in done and not (learning and incoming in done):
-                    await task
-                    if incoming.done():
-                        await self.receive(incoming.result())
-                    else:
-                        incoming.cancel()
-                        try:
-                            await incoming
-                        except asyncio.CancelledError:
-                            pass
-                    return
-                event = incoming.result()
-                if learning or event[0] == "error":
-                    task.cancel()
-                    try:
-                        await task
-                    except asyncio.CancelledError:
+                if incoming in done:
+                    event = incoming.result()
+                    if learning or event[0] == "error":
+                        await cancel(task)
                         self.record.append("learning_interrupted" if learning else "work_interrupted", {})
                     await self.receive(event)
-                    return
-                await self.receive(event)
-                incoming = asyncio.create_task(self.line.inbox.get())
-        finally:
-            incoming.cancel()
-            try:
-                await incoming
-            except asyncio.CancelledError:
-                pass
-            if not task.done():
-                task.cancel()
-                try:
+                    if learning:
+                        return
+                    incoming = asyncio.create_task(self.line.inbox.get())
+                if task in done:
                     await task
-                except asyncio.CancelledError:
-                    pass
+                    return
+        finally:
+            await cancel(incoming, task)
