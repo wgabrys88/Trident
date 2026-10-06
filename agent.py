@@ -35,9 +35,16 @@ class Agent:
                 CONFIG["ears"]["command"], "transcribe", str(path), "--model", CONFIG["ears"]["model"],
                 "--device", "cpu", "--stream", "--format", "json", "--quiet",
             ])
-            value = json.loads(output)["text"]
+            recognition = json.loads(output)
+            observation = {"path": str(path), "recognition": recognition}
+            self.record.append("asr_result", observation)
+            value = recognition["text"]
             if not value.strip():
-                raise RuntimeError("Nemotron returned an empty transcript")
+                if self.state["goal"] is not None:
+                    self.state["history"].append({"audio_observation": observation})
+                    self.state["waiting"] = False
+                    self.save()
+                return
         if self.state["goal"] is None:
             self.state["goal"] = value
             self.state["history"] = []
