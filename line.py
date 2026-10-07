@@ -12,16 +12,15 @@ from opentele.api import API, UseCurrentSession
 from opentele.td import TDesktop
 from opentele.tl.telethon import TelegramClient
 from telethon import events
-from telethon.errors import FloodWaitError
-from telethon.tl.functions.messages import GetDhConfigRequest, SendMessageRequest, SendMediaRequest
+from telethon.tl.functions.messages import GetDhConfigRequest
 from telethon.tl.functions.phone import (
     AcceptCallRequest, ConfirmCallRequest, DiscardCallRequest,
     RequestCallRequest, SendSignalingDataRequest,
 )
 from telethon.tl.types import (
-    DocumentAttributeAudio, InputPhoneCall, PhoneCall, PhoneCallAccepted, PhoneCallDiscarded,
+    DocumentAttributeAudio, InputPhoneCall, PhoneCall, PhoneCallAccepted,     PhoneCallDiscarded,
     PhoneCallDiscardReasonHangup, PhoneCallProtocol, PhoneCallRequested,
-    PhoneConnection, PhoneConnectionWebrtc, UpdatePhoneCall, UpdatePhoneCallSignalingData, UpdateShortSentMessage,
+    PhoneConnection, PhoneConnectionWebrtc, UpdatePhoneCall, UpdatePhoneCallSignalingData,
 )
 
 from audio import Hearing, Utterances
@@ -53,9 +52,9 @@ async def native(engine, method, *arguments):
 
 
 class Line:
-    def __init__(self, inbox, record, life, calls=True):
+    def __init__(self, inbox, record, life):
         self.inbox, self.record = inbox, record
-        self.life, self.calls = life, calls
+        self.life = life
         self.owner_id = CONFIG["owner"]["telegram_id"]
         self.client = None
         self.owner = None
@@ -70,7 +69,7 @@ class Line:
         self.jobs = set()
         self.generation = 0
         self.native_serial = 0
-        self.hearing = Hearing(record, self.emit) if calls else None
+        self.hearing = Hearing(record, self.emit)
 
     async def open(self):
         self.loop = asyncio.get_running_loop()
@@ -86,8 +85,7 @@ class Line:
                 raise_last_call_error=True, catch_up=True,
             )
             self.client.add_event_handler(self.message, events.NewMessage(incoming=True, from_users=[self.owner_id]))
-            if self.calls:
-                self.client.add_event_handler(self.update, events.Raw())
+            self.client.add_event_handler(self.update, events.Raw())
         await self.client.connect()
         identity = await self.client.get_me()
         if identity is None or identity.bot or identity.id == self.owner_id or identity.id != int(account.UserId):
@@ -103,9 +101,7 @@ class Line:
         async for message in self.client.iter_messages(self.owner, min_id=self.life["owner_cursor"], reverse=True):
             if not message.out and message.sender_id == self.owner_id:
                 self.owner_message(message.id, message.raw_text)
-        if self.record.task is None or self.record.task.done():
-            self.record.task = self.dispatch(self.record.send(self))
-        self.record.append("telegram_connected", {"identity": identity.id, "calls": self.calls})
+        self.record.append("telegram_connected", {"identity": identity.id})
 
     def owner_message(self, identifier, text):
         cursor = self.life["owner_cursor"]
@@ -113,10 +109,7 @@ class Line:
             self.emit("owner", {"id": identifier, "text": text})
 
     def emit(self, kind, value):
-        if not self.calls and kind not in ("owner", "audio", "audio_pending"):
-            observation = {"type": type(value).__name__, "error": str(value)} if isinstance(value, BaseException) else value
-            receipt = self.record.append(kind, observation)
-            self.life["history"].append({"observation": observation, "receipt": receipt})
+        wake = kind in ("ring", "line")
         if kind == "audio_pending":
             self.life["audio_pending"][value["id"]] = value
         if kind in ("owner", "audio"):
@@ -124,6 +117,7 @@ class Line:
                 self.life["audio_pending"].pop(value["id"], None)
             text = value["text"] if kind == "owner" else value["recognition"]["text"]
             if text.strip():
+                wake = True
                 sequence = value.get("source_receipt", self.record.offset())
                 if sequence < self.life.get("owner_sequence", -1):
                     value = {**value, "superseded": True}
@@ -138,7 +132,8 @@ class Line:
             save(self.record.folder, self.life)
             if kind == "owner":
                 write(ROOT / "runs" / "owner.json", {"cursor": self.life["owner_cursor"]})
-        self.generation += 1
+        if wake:
+            self.generation += 1
         self.inbox.put_nowait((kind, value))
 
     async def message(self, event):
@@ -345,42 +340,6 @@ class Line:
         )
         return {"sent": text, "message": message.id}
 
-    async def deliver_text(self, text, random_id):
-        request = SendMessageRequest(self.owner, text, random_id=random_id, no_webpage=True)
-        try:
-            result = await self.client(request)
-        except FloodWaitError:
-            raise
-        except Exception:
-            return await self.delivery_lookup(text, random_id)
-        if isinstance(result, UpdateShortSentMessage):
-            return {"message": result.id, "random_id": random_id}
-        message = self.client._get_response_message(request, result, self.owner)
-        if message is None:
-            return await self.delivery_lookup(text, random_id)
-        return {"message": message.id, "random_id": random_id}
-
-    async def deliver_file(self, file, caption, random_id):
-        _, uploaded, _ = await self.client._file_to_media(file, force_document=True)
-        request = SendMediaRequest(self.owner, uploaded, caption, random_id=random_id)
-        try:
-            result = await self.client(request)
-        except FloodWaitError:
-            raise
-        except Exception:
-            return await self.delivery_lookup(caption, random_id)
-        message = self.client._get_response_message(request, result, self.owner)
-        if message is None:
-            return await self.delivery_lookup(caption, random_id)
-        return {"message": message.id, "random_id": random_id}
-
-    async def delivery_lookup(self, text, random_id):
-        marker = next(part for part in text.splitlines() if part.startswith("#trident_"))
-        async for message in self.client.iter_messages(self.owner, search=marker, limit=10):
-            if message.out and message.raw_text == text:
-                return {"message": message.id, "random_id": random_id, "recovered_from_history": True}
-        raise RuntimeError("Telegram returned no recoverable delivery receipt; piece remains pending")
-
     async def hang(self):
         if self.peer is None:
             raise RuntimeError("There is no Telegram call to hang up")
@@ -406,11 +365,12 @@ class Line:
         self.record.append("call_closed", {})
 
     async def stop_calls(self):
-        if self.client is not None and self.calls:
-            # Keep owner text live until disconnect, but admit no new call
-            # callbacks while hearing and voice are being dismantled.
-            self.client.remove_event_handler(self.update)
         failures = []
+        if self.client is not None:
+            try:
+                self.client.remove_event_handler(self.update)
+            except Exception as error:
+                failures.append(str(error))
         if self.peer is not None:
             try:
                 await self.hang()
@@ -421,15 +381,14 @@ class Line:
                 await self.release()
             except Exception as error:
                 failures.append(str(error))
-        await cancel(*(task for task in self.jobs if task != self.record.task))
+        await cancel(*tuple(self.jobs))
         self.record.append("call_callbacks_closed", {"failures": failures})
         if failures:
             raise RuntimeError("; ".join(failures))
 
     async def close(self):
         failures = []
-        for operation in (self.stop_calls, self.record.close,
-                          self.client.disconnect if self.client is not None else None):
+        for operation in (self.stop_calls, self.client.disconnect if self.client is not None else None):
             if operation is None:
                 continue
             try:

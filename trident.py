@@ -47,16 +47,19 @@ async def main(folder):
     models = Models(record, line.emit)
     agent = Agent(models, line, record, state)
     cleanup_failed = False
+
     async def start(name, operation):
         try:
             await operation()
             line.emit("dependency_ready", {"resource": name})
         except Exception as error:
             line.emit("error", error)
+
     startup = [asyncio.create_task(start(name, operation)) for name, operation in (
         ("telegram", line.open), ("hearing", lambda: line.hearing.open(state["audio_pending"].values())),
         ("voice", models.open))]
     try:
+        await asyncio.gather(*startup)
         await agent.serve()
     finally:
         record.append("cleanup_started", {"life": state["life"]})
@@ -78,13 +81,11 @@ async def main(folder):
             state["body_stopped"] = False
             record.append("cleanup_failure", {"resource": "telegram", "error": str(error)})
         agent.save()
-    if cleanup_failed:
-        return 1
     if state["repair"]:
         record.append("repair_handoff", {"life": state["life"], "task": state["task"]})
         return 75
-    record.append("shutdown" if state["shutdown"] else "resume_pending_input", {"life": state["life"]})
-    return 0 if state["shutdown"] else 76
+    record.append("shutdown", {"life": state["life"], "requested": bool(state["shutdown"])})
+    return 0 if state["shutdown"] else 1
 
 
 if __name__ == "__main__":

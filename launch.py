@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import time
+import tomllib
 import uuid
 from pathlib import Path
 
@@ -13,23 +14,108 @@ import win32job
 
 ROOT = Path(os.environ.get("TRIDENT_ROOT", Path(__file__).resolve().parent.parent
             if Path(__file__).name == "resume.py" else Path(__file__).resolve().parent)).resolve()
+os.environ["TRIDENT_ROOT"] = str(ROOT)
+sys.path.insert(0, str(ROOT))
+
+from models import decision
+from store import ROOT as STORE_ROOT, Record, read, save, write
 
 
-def read(path, default=None):
-    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else default
+def snapshot():
+    output = subprocess.check_output(["git", "ls-files", "-z", "-c", "-o", "--exclude-standard"], cwd=ROOT)
+    blobs = {}
+    for name in output.split(b"\0"):
+        if not name:
+            continue
+        relative = name.decode("utf-8")
+        path = ROOT / relative
+        blobs[relative] = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+    return blobs
 
 
-def write(path, value):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
-    with temporary.open("w", encoding="utf-8") as stream:
-        json.dump(value, stream)
-        stream.flush()
-        os.fsync(stream.fileno())
-    temporary.replace(path)
+def restore(before):
+    current = snapshot()
+    for name in sorted(set(before) | set(current), key=lambda item: len(Path(item).parts), reverse=True):
+        if before.get(name) == current.get(name):
+            continue
+        path = ROOT / name
+        if name not in before or before[name] is None:
+            if path.is_file():
+                path.unlink()
+            continue
+        subprocess.check_call(["git", "checkout", "HEAD", "--", name], cwd=ROOT)
+        if hashlib.sha256(path.read_bytes()).hexdigest() != before[name]:
+            raise RuntimeError(f"Could not restore {name}")
+
+
+def validate():
+    for name in snapshot():
+        path = ROOT / name
+        if not path.is_file():
+            continue
+        if path.suffix == ".py":
+            compile(path.read_text(encoding="utf-8"), str(path), "exec")
+        elif path.suffix == ".json":
+            json.loads(path.read_text(encoding="utf-8"))
+        elif path.suffix == ".toml":
+            tomllib.loads(path.read_text(encoding="utf-8"))
+    config = tomllib.loads((ROOT / "config.toml").read_text(encoding="utf-8"))
+    if config["luna"]["model"] != "gpt-5.6-luna-none" or "screen" in config:
+        raise ValueError("Luna must stay gpt-5.6-luna-none, with no screen watcher")
+
+
+def repair(folder):
+    import asyncio
+    state = read(folder / "session.json")
+    record = Record(folder)
+    request = state["repair"]
+    before = snapshot()
+    record.append("repair_before", {"request": request, "files": len(before)})
+    instruction = (ROOT / "instructions.txt").read_text(encoding="utf-8") + (
+        "\nThis is the repair visit. The live body is stopped. Edit general mechanisms in the source tree. "
+        "Do not run Trident, do not commit, and do not push. Preserve the saved life and task. "
+        "Use agent mode and report what you changed."
+    )
+    failure = None
+    result = None
+    try:
+        result = asyncio.run(decision(record, instruction, {
+            "repair": request, "current_task": state["task"], "source": str(ROOT), "life": state["life"],
+        }, ROOT))
+    except Exception as error:
+        failure = f"{type(error).__name__}: {error}"
+    after = snapshot()
+    changed = sorted(name for name in set(before) | set(after) if before.get(name) != after.get(name))
+    record.append("repair_after", {"changed": changed, "report": result, "error": failure})
+    if not failure and changed:
+        try:
+            validate()
+            record.append("repair_validated", {"changed": changed})
+        except Exception as error:
+            failure = str(error)
+    elif not failure:
+        failure = "Repair made no tree change"
+    restored = False
+    if failure and changed:
+        restore(before)
+        validate()
+        restored = True
+    if failure:
+        record.append("repair_failed", {"error": failure, "restored": restored})
+    state = read(folder / "session.json")
+    state["repair"] = None
+    state["attention"] = True
+    state["waiting"] = False
+    report = result[:2000] if isinstance(result, str) else None
+    state.setdefault("history", []).append(
+        {"repair": {"changed": changed, "error": failure, "restored": restored, "report": report}})
+    state["history"] = state["history"][-40:]
+    save(folder, state)
 
 
 def main():
+    if STORE_ROOT != ROOT:
+        raise RuntimeError("Supervisor root does not match the source tree")
     name = hashlib.sha256(str(ROOT).casefold().encode()).hexdigest()[:24]
     mutex = win32event.CreateMutex(None, False, "Local\\Trident-" + name)
     acquired = False
@@ -53,13 +139,12 @@ def main():
             raise ValueError("Life must be a direct child of runs")
         folder.mkdir(parents=True, exist_ok=True)
         write(current, {"folder": str(folder)})
-        # A stable entry point survives a consultant deleting/changing launch.py.
         resume = ROOT / "runs" / "resume.py"
         state = read(folder / "session.json", {})
         if not state.get("repair") and Path(__file__).resolve() != resume:
             shutil.copyfile(Path(__file__), resume)
 
-        def run(script, config=None):
+        def run(script):
             job = win32job.CreateJobObject(None, "")
             process = None
             try:
@@ -69,8 +154,6 @@ def main():
                 environment = {**os.environ, "TRIDENT_ROOT": str(ROOT), "TRIDENT_LAUNCH": str(folder),
                                "PYTHONDONTWRITEBYTECODE": "1"}
                 environment.pop("TRIDENT_CONFIG", None)
-                if config is not None:
-                    environment["TRIDENT_CONFIG"] = str(config)
                 process = subprocess.Popen([sys.executable, "-B", str(script), str(folder)], cwd=ROOT,
                     env=environment, stdin=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
                 win32job.AssignProcessToJobObject(job, process._handle)
@@ -81,49 +164,20 @@ def main():
                 if process is not None and process.poll() is None:
                     process.kill()
                     process.wait()
-                try:
-                    win32job.TerminateJobObject(job, 1)
-                    deadline = time.monotonic() + 10
-                    while win32job.QueryInformationJobObject(job, win32job.JobObjectBasicAccountingInformation)["ActiveProcesses"]:
-                        if time.monotonic() >= deadline:
-                            raise RuntimeError("Child resources did not stop; repair refused")
-                        time.sleep(0.05)
-                finally:
-                    job.Close()
+                win32job.TerminateJobObject(job, 1)
+                deadline = time.monotonic() + 10
+                while win32job.QueryInformationJobObject(job, win32job.JobObjectBasicAccountingInformation)["ActiveProcesses"]:
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError("Child resources did not stop")
+                    time.sleep(0.05)
+                job.Close()
 
         while True:
             state = read(folder / "session.json", {})
             if state.get("repair"):
-                if not state.get("body_stopped"):
-                    raise RuntimeError("Unconfirmed body cleanup; repair refused")
-                request = state["repair"]
-                coordinator = folder / request.setdefault("coordinator", "coordinator-" + uuid.uuid4().hex)
-                if coordinator.parent != folder:
-                    raise ValueError("Invalid coordinator path")
-                if not coordinator.exists():
-                    if request.get("phase") in ("editing", "auditing", "restoring"):
-                        raise RuntimeError("Saved repair coordinator missing; refuse damaged source")
-                    stage = coordinator.with_name(coordinator.name + ".preparing-" + uuid.uuid4().hex)
-                    stage.mkdir()
-                    for directory, directories, files in os.walk(ROOT):
-                        directories[:] = [entry for entry in directories if entry not in (".git", "__pycache__")
-                                          and (Path(directory) != ROOT or entry not in ("runs", "artifacts"))]
-                        for entry in directories:
-                            if (Path(directory) / entry).lstat().st_file_attributes & 1024:
-                                raise RuntimeError("Coordinator directory alias refused")
-                        for entry in files:
-                            source = Path(directory) / entry
-                            if source.lstat().st_file_attributes & 1024 or source.stat().st_nlink != 1:
-                                raise RuntimeError("Coordinator source alias refused")
-                            target = stage / source.relative_to(ROOT)
-                            target.parent.mkdir(parents=True, exist_ok=True)
-                            shutil.copyfile(source, target)
-                    stage.replace(coordinator)
-                write(folder / "session.json", state)
-                if run(coordinator / "repair.py", coordinator / "config.toml"):
-                    raise RuntimeError("Repair stopped safely. Resume with runs/resume.py; audit remains in the saved life")
+                repair(folder)
             code = run(ROOT / "trident.py")
-            if code not in (75, 76):
+            if code != 75:
                 return code
     finally:
         if acquired:

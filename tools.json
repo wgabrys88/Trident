@@ -132,7 +132,7 @@
     "python": {
       "handler": "tools:python",
       "boundary": false,
-      "description": "Run general async Python computation in a restricted worker. asyncio, ROOT and Path are available; no host. Source/record writes are denied. Return actual output; it does not prove external effects.",
+      "description": "Run the body of an async function in a scratch process. asyncio, ROOT and Path are available; there is no host object. Return a JSON-able value. Output is computation, not proof of an outside effect. Do not write the source tree; use consult.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -228,7 +228,7 @@
     "consult": {
       "handler": "tools:consult",
       "boundary": true,
-      "description": "Request a general source repair. Saves this life/task; the supervisor stops the live body before Luna edits, audits and validates the tree, then resumes this life. Last call.",
+      "description": "Request a source repair. Saves this life and task; the supervisor stops the live body, Luna edits the tree, and the same life resumes. No tree change or code that does not compile is a failed repair and tracked files return to HEAD. Last call.",
       "parameters": {
         "type": "object",
         "properties": {
