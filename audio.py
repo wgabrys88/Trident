@@ -2,7 +2,6 @@ import asyncio
 import ctypes as c
 import io
 import os
-import uuid
 import wave
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
@@ -28,8 +27,8 @@ class RecognizerConfig(c.Structure):
 
 
 class Hearing:
-    def __init__(self, record, emit):
-        self.record, self.emit = record, emit
+    def __init__(self, emit):
+        self.emit = emit
         self.queue = asyncio.Queue()
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nemotron-cpu")
         self.recognizer = c.c_void_p()
@@ -125,27 +124,17 @@ class Hearing:
         finally:
             self.close_stream(stream)
 
-    async def open(self, pending=()):
-        saved_pending = list(pending)
-        for observation in saved_pending:
-            with wave.open(observation["path"], "rb") as source:
-                self.queue.put_nowait((source.readframes(source.getnframes()), observation))
+    async def open(self):
         loading = asyncio.get_running_loop().run_in_executor(self.executor, self.load)
         try:
             await asyncio.shield(loading)
         except asyncio.CancelledError:
             await loading
             raise
-        self.record.append("hearing_ready", {"model": CONFIG["ears"]["model"], "device": "cpu"})
         self.task = asyncio.create_task(self.listen())
 
-    def submit(self, pcm):
-        identifier = uuid.uuid4().hex
-        path = self.record.artifact(wav(pcm, 16000), "wav")
-        observation = {"id": identifier, "path": str(path)}
-        observation["source_receipt"] = self.record.append("owner_audio", observation, "OWNER", "NEMOTRON")
+    def submit(self, pcm, observation):
         self.queue.put_nowait((pcm, observation))
-        self.emit("audio_pending", observation)
 
     async def listen(self):
         try:
@@ -155,12 +144,9 @@ class Hearing:
                     return
                 pcm, observation = item
                 self.busy = True
-                self.record.append("asr_started", observation)
                 recognition = await asyncio.get_running_loop().run_in_executor(self.executor, self.recognize, pcm)
                 self.busy = False
-                observation = {**observation, "recognition": recognition}
-                self.record.append("asr_result", observation, "NEMOTRON", "LUNA")
-                self.emit("audio", observation)
+                self.emit("audio", {**observation, "recognition": recognition})
         except Exception as error:
             self.emit("error", error)
         finally:
@@ -181,19 +167,8 @@ class Hearing:
             self.executor.shutdown(wait=True)
             if self.dll_directory is not None:
                 self.dll_directory.close()
-        self.record.append("hearing_closed", {"failures": failures})
         if failures:
             raise RuntimeError("; ".join(failures))
-
-
-def wav(pcm, rate):
-    stream = io.BytesIO()
-    with wave.open(stream, "wb") as output:
-        output.setnchannels(1)
-        output.setsampwidth(2)
-        output.setframerate(rate)
-        output.writeframes(pcm)
-    return stream.getvalue()
 
 
 def call_pcm(payload):

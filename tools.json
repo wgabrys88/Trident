@@ -146,7 +146,7 @@
     "chat": {
       "handler": "line:chat",
       "boundary": false,
-      "description": "Send text to Wojciech's private Telegram chat and return its delivery receipt. It does not do desktop work.",
+      "description": "Send text to Wojciech's private Telegram chat and return the Telegram message id. It does not do desktop work.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -266,9 +266,9 @@
           "receipts": {
             "type": "array",
             "uniqueItems": true,
-            "items": {"type": "integer", "minimum": 0}
+            "items": {"type": "string", "minLength": 1}
           },
-          "owner_receipt": {"type": ["integer", "null"], "minimum": 0}
+          "owner_receipt": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]}
         },
         "required": ["evidence", "receipts", "outcome", "shutdown", "owner_receipt"],
         "additionalProperties": false
@@ -310,7 +310,7 @@
       "handler": "line:open",
       "boundary": false,
       "observe": false,
-      "description": "Connect or reconnect the same Telegram identity and replay unseen owner messages. An actual connection event is recorded; errors remain failures.",
+      "description": "Connect or reconnect the same Telegram identity and replay unseen owner messages.",
       "parameters": {
         "type": "object",
         "properties": {},

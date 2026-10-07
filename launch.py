@@ -1,5 +1,6 @@
 import hashlib
 import json
+import mmap
 import os
 import shutil
 import subprocess
@@ -17,8 +18,8 @@ ROOT = Path(os.environ.get("TRIDENT_ROOT", Path(__file__).resolve().parent.paren
 os.environ["TRIDENT_ROOT"] = str(ROOT)
 sys.path.insert(0, str(ROOT))
 
-from models import decision, require_cursor
-from store import ROOT as STORE_ROOT, Record, read, save, write
+from models import bind_calls, decision, require_cursor, stop_if_capped
+from store import ROOT as STORE_ROOT, read, save, write
 
 
 def snapshot():
@@ -60,17 +61,16 @@ def validate():
         elif path.suffix == ".toml":
             tomllib.loads(path.read_text(encoding="utf-8"))
     config = tomllib.loads((ROOT / "config.toml").read_text(encoding="utf-8"))
-    if config["luna"]["model"] != "gpt-5.6-luna-none" or "screen" in config:
-        raise ValueError("Luna must stay gpt-5.6-luna-none, with no screen watcher")
+    luna = config["luna"]
+    if luna["model"] != "gpt-5.6-luna" or luna["reasoning"] != "none" or "screen" in config:
+        raise ValueError("Luna must stay gpt-5.6-luna with reasoning none, and no screen watcher")
 
 
 def repair(folder):
     import asyncio
     state = read(folder / "session.json")
-    record = Record(folder)
     request = state["repair"]
     before = snapshot()
-    record.append("repair_before", {"request": request, "files": len(before)})
     instruction = (ROOT / "instructions.txt").read_text(encoding="utf-8") + (
         "\nThis is the repair visit. The live body is stopped. Edit general mechanisms in the source tree. "
         "Do not run Trident, do not commit, do not push, and do not switch branches. Preserve the saved life and task. "
@@ -79,18 +79,16 @@ def repair(folder):
     failure = None
     result = None
     try:
-        result = asyncio.run(decision(record, instruction, {
+        result = asyncio.run(decision(instruction, {
             "repair": request, "current_task": state["task"], "source": str(ROOT), "life": state["life"],
         }, ROOT))
     except Exception as error:
         failure = f"{type(error).__name__}: {error}"
     after = snapshot()
     changed = sorted(name for name in set(before) | set(after) if before.get(name) != after.get(name))
-    record.append("repair_after", {"changed": changed, "report": result, "error": failure})
     if not failure and changed:
         try:
             validate()
-            record.append("repair_validated", {"changed": changed})
         except Exception as error:
             failure = str(error)
     elif not failure:
@@ -101,7 +99,7 @@ def repair(folder):
         validate()
         restored = True
     if failure:
-        record.append("repair_failed", {"error": failure, "restored": restored})
+        print(f"Repair failed: {failure}", file=sys.stderr, flush=True)
     state = read(folder / "session.json")
     state["repair"] = None
     state["attention"] = True
@@ -111,12 +109,15 @@ def repair(folder):
         {"repair": {"changed": changed, "error": failure, "restored": restored, "report": report}})
     state["history"] = state["history"][-40:]
     save(folder, state)
+    stop_if_capped()
 
 
 def main():
     if STORE_ROOT != ROOT:
         raise RuntimeError("Supervisor root does not match the source tree")
     require_cursor()
+    os.environ["TRIDENT_CALLS"] = f"Local\\TridentCalls{os.getpid()}"
+    bind_calls(mmap.mmap(-1, 4, tagname=os.environ["TRIDENT_CALLS"], access=mmap.ACCESS_WRITE))
     name = hashlib.sha256(str(ROOT).casefold().encode()).hexdigest()[:24]
     mutex = win32event.CreateMutex(None, False, "Local\\Trident-" + name)
     acquired = False
@@ -156,7 +157,7 @@ def main():
                                "PYTHONDONTWRITEBYTECODE": "1"}
                 environment.pop("TRIDENT_CONFIG", None)
                 process = subprocess.Popen([sys.executable, "-B", str(script), str(folder)], cwd=ROOT,
-                    env=environment, stdin=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
+                    env=environment, stdin=subprocess.PIPE)
                 win32job.AssignProcessToJobObject(job, process._handle)
                 process.stdin.write(b"start")
                 process.stdin.close()

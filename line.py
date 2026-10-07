@@ -1,8 +1,12 @@
 import asyncio
+import io
 import os
 import secrets
 import time
+import uuid
 import wave
+
+from log import image as log_image
 
 from ntgcalls import (
     AudioDescription, ConnectionState, DhConfig, FrameData, MediaDescription,
@@ -52,8 +56,9 @@ async def native(engine, method, *arguments):
 
 
 class Line:
-    def __init__(self, inbox, record, life):
-        self.inbox, self.record = inbox, record
+    def __init__(self, inbox, folder, life):
+        self.inbox = inbox
+        self.folder = folder
         self.life = life
         self.owner_id = CONFIG["owner"]["telegram_id"]
         self.client = None
@@ -69,7 +74,7 @@ class Line:
         self.jobs = set()
         self.generation = 0
         self.native_serial = 0
-        self.hearing = Hearing(record, self.emit)
+        self.hearing = Hearing(self.emit)
 
     async def open(self):
         self.loop = asyncio.get_running_loop()
@@ -80,7 +85,7 @@ class Line:
         [account] = accounts
         if self.client is None:
             self.client = await TelegramClient.FromTDesktop(
-                account, session=str(self.record.folder / "telegram"), flag=UseCurrentSession, api=API.TelegramDesktop,
+                account, session=str(self.folder / "telegram"), flag=UseCurrentSession, api=API.TelegramDesktop,
                 request_retries=0, connection_retries=0, auto_reconnect=True, flood_sleep_threshold=0,
                 raise_last_call_error=True, catch_up=True,
             )
@@ -94,19 +99,32 @@ class Line:
         self.owner = await self.client.get_input_entity(self.owner_id)
         if self.life["owner_cursor"] is None:
             latest = await self.client.get_messages(self.owner, limit=1)
-            # A live callback may already have installed a newer owner input.
             self.life["owner_cursor"] = max(self.life["owner_cursor"] or 0, latest[0].id if latest else 0)
-            save(self.record.folder, self.life)
+            save(self.folder, self.life)
             write(ROOT / "runs" / "owner.json", {"cursor": self.life["owner_cursor"]})
         async for message in self.client.iter_messages(self.owner, min_id=self.life["owner_cursor"], reverse=True):
             if not message.out and message.sender_id == self.owner_id:
                 self.owner_message(message.id, message.raw_text)
-        self.record.append("telegram_connected", {"identity": identity.id})
 
     def owner_message(self, identifier, text):
         cursor = self.life["owner_cursor"]
         if text and text.strip() and (cursor is None or identifier > cursor):
-            self.emit("owner", {"id": identifier, "text": text})
+            self.life["arrived"] = self.life.get("arrived", 0) + 1
+            self.emit("owner", {"id": identifier, "text": text, "sequence": self.life["arrived"]})
+
+    def hear(self, pcm):
+        self.life["arrived"] = self.life.get("arrived", 0) + 1
+        observation = {"id": uuid.uuid4().hex, "sequence": self.life["arrived"]}
+        self.hearing.submit(pcm, observation)
+        self.emit("audio_pending", observation)
+
+    async def send_photo(self, path):
+        if self.client is None or self.owner is None:
+            raise RuntimeError("Telegram is not connected")
+        await self.client.send_file(self.owner, str(path), force_document=False)
+
+    async def image(self, data):
+        return await log_image(data, self.send_photo, self.folder / "images")
 
     def emit(self, kind, value):
         wake = kind in ("ring", "line")
@@ -118,18 +136,16 @@ class Line:
             text = value["text"] if kind == "owner" else value["recognition"]["text"]
             if text.strip():
                 wake = True
-                sequence = value.get("source_receipt", self.record.offset())
+                sequence = value["sequence"]
                 if sequence < self.life.get("owner_sequence", -1):
                     value = {**value, "superseded": True}
-                value = {**value, "receipt": self.record.append("owner_input", value, "OWNER", "LUNA")}
+                value = {**value, "receipt": str(value["id"])}
                 if not value.get("superseded"):
                     activate(self.life, text, kind, value["receipt"], sequence)
-                else:
-                    self.life["owner_applied"] = value["receipt"]
             if kind == "owner":
                 self.life["owner_cursor"] = max(self.life["owner_cursor"] or 0, value["id"])
         if kind in ("owner", "audio", "audio_pending"):
-            save(self.record.folder, self.life)
+            save(self.folder, self.life)
             if kind == "owner":
                 write(ROOT / "runs" / "owner.json", {"cursor": self.life["owner_cursor"]})
         if wake:
@@ -190,7 +206,6 @@ class Line:
 
     async def signal(self, serial, data):
         if serial != self.native_serial:
-            self.record.append("expired_signal", {"serial": serial})
             return
         await self.client(SendSignalingDataRequest(peer=self.peer, data=data))
 
@@ -215,7 +230,7 @@ class Line:
         if serial == self.native_serial and self.state == "up":
             try:
                 for utterance in self.utterances.feed(pcm):
-                    self.hearing.submit(utterance)
+                    self.hear(utterance)
             except Exception as error:
                 self.emit("error", error)
 
@@ -247,14 +262,12 @@ class Line:
         ))
         if isinstance(response.phone_call, PhoneCallDiscarded):
             await self.release()
-            self.record.append("call_not_answered", {"reason": "discarded"})
             return {"call": self.state, "answered": False}
         self.peer = InputPhoneCall(response.phone_call.id, response.phone_call.access_hash)
         try:
             accepted = await asyncio.wait_for(self.accepted, 90)
         except asyncio.TimeoutError:
             await self.hang()
-            self.record.append("call_not_answered", {"reason": "timeout"})
             return {"call": self.state, "answered": False}
         keys = await native(self.engine, "exchange_keys", self.owner_id, bytes(accepted.g_b), 0)
         response = await self.client(ConfirmCallRequest(
@@ -304,7 +317,6 @@ class Line:
         await asyncio.wait_for(self.connected, 30)
         self.state = "up"
         self.since = time.monotonic()
-        self.record.append("call_connected", {"id": self.peer.id})
 
     async def speak(self, pcm):
         if self.state != "up":
@@ -318,26 +330,23 @@ class Line:
             await asyncio.sleep(max(0, started + (offset + 960) / 96000 - self.loop.time()))
         return {"transmitted_seconds": len(pcm) / 96000}
 
-    async def send_audio(self, path, words):
-        with wave.open(str(path), "rb") as source:
+    async def send_audio(self, payload, words):
+        stream = io.BytesIO(payload)
+        stream.name = "voice.wav"
+        with wave.open(io.BytesIO(payload), "rb") as source:
             duration = round(source.getnframes() / source.getframerate())
         if duration < 1:
             raise RuntimeError("Voice file is empty")
         message = await self.client.send_file(
-            self.owner, str(path), caption=words, voice_note=False, force_document=False,
+            self.owner, stream, caption=words, voice_note=False, force_document=False,
             attributes=[DocumentAttributeAudio(duration=duration, voice=False)],
         )
-        return {"channel": "telegram", "message": message.id, "audio": str(path), "words": words}
+        return {"channel": "telegram", "message": message.id, "words": words}
 
     async def chat(self, text):
         if self.client is None or self.owner is None:
             raise RuntimeError("Telegram client is not connected")
-        message = await self.client.send_message(
-            self.owner, text, parse_mode=None,
-        )
-        self.record.append(
-            "chat", {"text": text, "message": message.id}, "LUNA", "OWNER",
-        )
+        message = await self.client.send_message(self.owner, text, parse_mode=None)
         return {"sent": text, "message": message.id}
 
     async def hang(self):
@@ -358,11 +367,10 @@ class Line:
         self.signals.clear()
         tail = self.utterances.finish()
         if tail:
-            self.hearing.submit(tail)
+            self.hear(tail)
         if engine is not None:
             await native(engine, "stop", self.owner_id)
             del engine
-        self.record.append("call_closed", {})
 
     async def stop_calls(self):
         failures = []
@@ -382,7 +390,6 @@ class Line:
             except Exception as error:
                 failures.append(str(error))
         await cancel(*tuple(self.jobs))
-        self.record.append("call_callbacks_closed", {"failures": failures})
         if failures:
             raise RuntimeError("; ".join(failures))
 
@@ -395,6 +402,5 @@ class Line:
                 await operation()
             except Exception as error:
                 failures.append(str(error))
-        self.record.append("telegram_closed", {"failures": failures})
         if failures:
             raise RuntimeError("; ".join(failures))

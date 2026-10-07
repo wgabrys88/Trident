@@ -44,7 +44,6 @@ class Catalog:
                     observation["seen"] = await shot(host, None)
                 except Exception as capture_error:
                     observation["observation_error"] = str(capture_error)
-                host.record.append("failed_action_observation", observation)
                 host.remember(observation)
             raise
         if spec["observe"]:
@@ -53,13 +52,12 @@ class Catalog:
                 result = {"execution": result, "seen": await shot(host, None)}
             except Exception as error:
                 result = {"execution": result, "observation_error": str(error)}
-                host.record.append("observation_failure", result)
         return result
 
 
 async def shot(host, region):
     payload, metadata = await asyncio.to_thread(desktop.capture, region)
-    path = host.record.artifact(payload, "png")
+    path = await host.line.image(payload)
     return {"image": str(path), "file": path.name, **metadata}
 
 
@@ -71,14 +69,13 @@ async def images(host, views):
     shots = []
     for view in views:
         payload, metadata = await asyncio.to_thread(desktop.image_view, view)
-        path = host.record.artifact(payload, "png")
+        path = await host.line.image(payload)
         shots.append({"image": str(path), "file": path.name, **metadata})
     return {"views": shots}
 
 
 async def consult(host, task):
-    host.state["repair"] = {"request": task, "task": host.state["task"],
-                            "record_position": host.record.offset()}
+    host.state["repair"] = {"request": task, "task": host.state["task"]}
     host.state["attention"] = True
     host.save()
     return {"repair": "queued; the supervisor edits after this body exits", "request": task}
@@ -95,7 +92,7 @@ async def python(host, code):
         "print(json.dumps({'result': asyncio.run(action())}, ensure_ascii=False))\n",
         encoding="utf-8")
     try:
-        output = await run_process(host.record, [sys.executable, "-B", str(script)], b"", scratch)
+        output = await run_process([sys.executable, "-B", str(script)], b"", scratch)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
     return {"stdout": output, "exit": 0}
@@ -122,27 +119,25 @@ async def file(host, operation, path, text):
 
 
 async def dial(host, text):
-    path = await host.models.voice(text)
-    pcm = call_pcm(path.read_bytes())
+    payload = await host.models.voice(text)
+    pcm = call_pcm(payload)
     if len(pcm) < 96000:
         raise RuntimeError("Voice file is empty")
     outcome = await host.line.dial()
     if not outcome["answered"]:
-        return {**outcome, "words": text, "audio": str(path)}
-    return {**outcome, "channel": "call", **await host.line.speak(pcm), "audio": str(path), "words": text}
+        return {**outcome, "words": text}
+    return {**outcome, "channel": "call", **await host.line.speak(pcm), "words": text}
 
 
 async def speak(host, parts):
     receipts = []
     for text in parts:
-        path = await host.models.voice(text)
+        payload = await host.models.voice(text)
         if host.line.state == "up":
-            receipt = {"channel": "call", **await host.line.speak(call_pcm(path.read_bytes())),
-                       "audio": str(path), "words": text}
+            receipt = {"channel": "call", **await host.line.speak(call_pcm(payload)), "words": text}
         else:
-            receipt = await host.line.send_audio(path, text)
+            receipt = await host.line.send_audio(payload, text)
         receipts.append(receipt)
-        host.record.append("speech_sent", receipt)
     return {"parts": receipts}
 
 
@@ -157,7 +152,7 @@ async def goal(host, text, resume_id):
         task["id"] = retained["id"]
         task["selected_by"] = task["owner"]
         host.state["open_work"] = [item for item in host.state["open_work"] if item["id"] != resume_id]
-        host.state.update(assessment=None, history=[], receipts=[])
+        host.state.update(assessment=None, history=[], receipts=[], results={})
     task["text"] = text
     return task
 
@@ -187,23 +182,22 @@ async def finish(host, evidence, receipts, outcome, shutdown, owner_receipt):
     if outcome == "completed":
         if not receipts:
             raise ValueError("Completion requires current-task observation or action receipts")
-        for offset in receipts:
-            event = host.record.event(offset)
-            value = event["value"]
-            if offset not in host.state["receipts"] or event["kind"] != "tool_result":
-                raise ValueError("Evidence must reference recorded current-task tool results")
+        for receipt in receipts:
+            value = host.state["results"].get(receipt)
+            if receipt not in host.state["receipts"] or value is None:
+                raise ValueError("Evidence must reference current-task tool results")
             if value["task_id"] != task["id"] or value["call"]["tool"] in ("goal", "wait", "consult", "finish"):
                 raise ValueError("Task-management acknowledgements do not prove completion")
             if isinstance(value["result"], dict) and "observation_error" in value["result"]:
                 raise ValueError("Verify the failed observation before completing")
     elif outcome == "cancelled":
-        if owner_receipt != task["owner"]["receipt"] or host.record.event(owner_receipt)["kind"] != "owner_input":
-            raise ValueError("Cancellation must reference the current owner's recorded instruction")
+        if owner_receipt != task["owner"]["receipt"]:
+            raise ValueError("Cancellation must reference the current owner's instruction")
     elif owner_receipt is not None:
         raise ValueError("owner_receipt is only for cancellation")
     retained = {item["id"]: item for item in host.state["open_work"] if item["id"] != task["id"]}
     if outcome == "paused":
         retained[task["id"]] = {**task, "evidence": evidence}
-    host.state.update(task=None, assessment=None, history=[], receipts=[], open_work=list(retained.values()),
-                      attention=not shutdown, waiting=False, shutdown=shutdown)
+    host.state.update(task=None, assessment=None, history=[], receipts=[], results={},
+                      open_work=list(retained.values()), attention=not shutdown, waiting=False, shutdown=shutdown)
     return {"task": task, "evidence": evidence, "receipts": receipts, "outcome": outcome}

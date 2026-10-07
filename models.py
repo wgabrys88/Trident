@@ -1,9 +1,11 @@
 import asyncio
 import base64
 import json
+import mmap
 import os
 import socket
 import subprocess
+import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -16,6 +18,45 @@ import win32job
 
 from store import CONFIG, ROOT, cancel, command, encode
 
+IMAGE_CAP = 5
+IMAGE_BYTES = 15 * 1024 * 1024
+_calls = None
+
+
+def bind_calls(page):
+    global _calls
+    _calls = page
+
+
+def calls_page():
+    if _calls is None:
+        name = os.environ.get("TRIDENT_CALLS", "")
+        if not name:
+            raise RuntimeError("TRIDENT_CALLS is not set")
+        bind_calls(mmap.mmap(-1, 4, tagname=name, access=mmap.ACCESS_WRITE))
+    return _calls
+
+
+def call_count():
+    page = calls_page()
+    page.seek(0)
+    return int.from_bytes(page.read(4), "little")
+
+
+def stop_if_capped():
+    if call_count() >= 100:
+        print("Trident shut down: 100 model calls since start.", file=sys.stderr, flush=True)
+        raise SystemExit(100)
+
+
+def charge():
+    stop_if_capped()
+    page = calls_page()
+    count = call_count() + 1
+    page.seek(0)
+    page.write(count.to_bytes(4, "little"))
+    return count
+
 
 def begin_job():
     job = win32job.CreateJobObject(None, "")
@@ -25,67 +66,29 @@ def begin_job():
     return job
 
 
-async def run_process(record, parts, data, cwd, stream=False):
+async def run_process(parts, data, cwd):
     parts = command(parts)
     job = begin_job()
     process = None
-    stdout, stderr = [], []
-
-    async def pump(pipe, bucket, channel):
-        pending = b""
-
-        def take(raw):
-            text = raw.decode("utf-8", "replace").rstrip("\r")
-            bucket.append(text)
-            if stream and channel == "stdout":
-                try:
-                    value = json.loads(text)
-                except json.JSONDecodeError:
-                    value = text
-                record.append("model_event", {"channel": channel, "data": value})
-
-        while chunk := await pipe.read(65536):
-            pending += chunk
-            while b"\n" in pending:
-                raw, pending = pending.split(b"\n", 1)
-                take(raw)
-        if pending:
-            take(pending)
-
     try:
         process = await asyncio.create_subprocess_exec(
             *parts, cwd=cwd, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
+        handle = win32api.OpenProcess(win32con.PROCESS_SET_QUOTA | win32con.PROCESS_TERMINATE, False, process.pid)
         try:
-            handle = win32api.OpenProcess(win32con.PROCESS_SET_QUOTA | win32con.PROCESS_TERMINATE, False, process.pid)
-            try:
-                win32job.AssignProcessToJobObject(job, handle)
-            finally:
-                handle.Close()
-        except Exception as error:
-            record.append("process_output", {"channel": "job", "data": str(error)})
-        try:
-            process.stdin.write(data)
-            await process.stdin.drain()
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-        process.stdin.close()
-        await asyncio.gather(pump(process.stdout, stdout, "stdout"), pump(process.stderr, stderr, "stderr"))
-        code = await process.wait()
-        if stderr:
-            record.append("process_output", {"channel": "stderr", "data": "\n".join(stderr)[-8000:]})
-        record.append("process_exit", {"exit": code})
-        if code:
-            raise RuntimeError(f"Process exited {code}: " + "\n".join(stderr)[-1500:])
-        return "\n".join(stdout)
+            win32job.AssignProcessToJobObject(job, handle)
+        finally:
+            handle.Close()
+        stdout, stderr = await process.communicate(data)
+        if process.returncode:
+            detail = stderr.decode("utf-8", "replace")[-1500:]
+            raise RuntimeError(f"Process exited {process.returncode}: {detail}")
+        return stdout.decode("utf-8", "replace")
     finally:
         if process is not None and process.returncode is None:
             process.kill()
             await process.wait()
-        try:
-            job.Close()
-        except Exception:
-            pass
+        job.Close()
 
 
 def cursor_key():
@@ -132,16 +135,18 @@ def require_cursor():
         ) from None
 
 
-def png_inputs(folder):
+def request_images(folder):
+    folder = Path(folder)
+    if not folder.is_dir():
+        return []
+    paths = sorted((path for path in folder.glob("*.png") if path.is_file()),
+                   key=lambda path: path.stat().st_mtime, reverse=True)[:IMAGE_CAP]
     shots = []
-    paths = [path for path in Path(folder).glob("*.png") if path.is_file()]
-    paths.sort(key=lambda path: path.stat().st_mtime, reverse=True)
     for path in paths:
-        if path.stat().st_size > 15 * 1024 * 1024:
-            continue
-        shots.append({"mimeType": "image/png", "data": base64.b64encode(path.read_bytes()).decode("ascii")})
-        if len(shots) == 5:
-            break
+        data = path.read_bytes()
+        if len(data) > IMAGE_BYTES:
+            raise RuntimeError(f"Model image exceeds the 15 MB Cloud Agents API limit: {path.name}")
+        shots.append({"mimeType": "image/png", "data": base64.b64encode(data).decode("ascii")})
     return shots
 
 
@@ -156,83 +161,40 @@ async def cursor_json(session, key, method, path, payload=None):
         return json.loads(raw) if raw else {}
 
 
-async def watch_run(session, key, agent_id, run_id, record):
+async def watch_run(session, key, agent_id, run_id):
     terminal = {"FINISHED", "ERROR", "CANCELLED", "EXPIRED"}
-    last = None
     while True:
-        try:
-            status, reply, last, done = await read_stream(session, key, agent_id, run_id, record, last)
-        except aiohttp.ClientError:
-            done = False
-        if done:
-            return status, reply
-        try:
-            body = await cursor_json(session, key, "GET", f"/v1/agents/{agent_id}/runs/{run_id}")
-        except aiohttp.ClientError:
-            await asyncio.sleep(1)
-            continue
-        if body.get("status") in terminal:
-            return body.get("status"), body.get("result")
+        body = await cursor_json(session, key, "GET", f"/v1/agents/{agent_id}/runs/{run_id}")
+        status = body.get("status")
+        if status in terminal:
+            return status, body.get("result")
+        if status not in {"CREATING", "RUNNING"}:
+            raise RuntimeError(f"Luna run status is {status}")
         await asyncio.sleep(1)
 
 
-async def read_stream(session, key, agent_id, run_id, record, last):
-    headers = {"Accept": "text/event-stream"}
-    if last:
-        headers["Last-Event-ID"] = last
-    url = f"https://api.cursor.com/v1/agents/{agent_id}/runs/{run_id}/stream"
-    async with session.get(url, headers=headers, auth=aiohttp.BasicAuth(key, "")) as response:
-        if response.status == 410:
-            return None, None, last, False
-        if response.status >= 400:
-            detail = await response.text()
-            raise RuntimeError(f"Cursor Cloud Agents API stream failed ({response.status}): {detail[:1500]}")
-        event, data, current = "message", [], last
-        while True:
-            raw = await response.content.readline()
-            if not raw:
-                return None, None, current, False
-            line = raw.decode("utf-8", "replace").rstrip("\r\n")
-            if line.startswith("id:"):
-                current = line[3:].strip()
-            elif line.startswith("event:"):
-                event = line[6:].strip()
-            elif line.startswith("data:"):
-                data.append(line[5:].lstrip())
-            elif line == "" and data:
-                payload = json.loads("\n".join(data))
-                kind, event, data = event, "message", []
-                if kind == "heartbeat":
-                    continue
-                record.append("model_event", {"channel": kind, "data": payload})
-                if kind == "result":
-                    return payload.get("status"), payload.get("text"), current, True
-                if kind == "error":
-                    return None, None, current, False
-
-
-async def stop_run(key, agent_id, run_id, record):
+async def stop_run(key, agent_id, run_id):
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
             await cursor_json(session, key, "POST", f"/v1/agents/{agent_id}/runs/{run_id}/cancel")
-    except Exception as error:
-        record.append("model_event", {"channel": "agent", "data": {
-            "id": agent_id, "run": run_id, "cancel_error": str(error),
-        }})
+    except RuntimeError as error:
+        if "(409)" not in str(error):
+            raise
 
 
-async def decision(record, instruction, context, workspace):
+async def decision(instruction, context, workspace):
+    charge()
     key = cursor_key()
     machine, repo, branch = cursor_place()
     repair = Path(workspace).resolve() == ROOT
-    record.append("request", {"system": instruction, "context": context, "machine": machine}, "TRIDENT", "LUNA")
     prompt = {"text": instruction + "\n\nTrident context:\n" + encode(context)}
     if not repair:
-        shots = png_inputs(workspace)
+        shots = request_images(Path(workspace) / "images")
         if shots:
             prompt["images"] = shots
     payload = {
-        "prompt": prompt, "model": {"id": CONFIG["luna"]["model"]},
+        "prompt": prompt,
+        "model": {"id": CONFIG["luna"]["model"], "params": [{"id": "reasoning", "value": CONFIG["luna"]["reasoning"]}]},
         "name": "Trident repair" if repair else "Trident decision",
         "env": {"type": "machine", "name": machine},
         "repos": [{"url": repo, "startingRef": branch}],
@@ -245,29 +207,27 @@ async def decision(record, instruction, context, workspace):
             created = await cursor_json(session, key, "POST", "/v1/agents", payload)
             agent, run = created["agent"], created["run"]
             agent_id, run_id = agent["id"], run["id"]
-            url = agent.get("url") or f"https://cursor.com/agents/{agent_id}"
-            record.append("model_event", {"channel": "agent", "data": {
-                "id": agent_id, "run": run_id, "url": url, "machine": machine,
-            }})
-            status, reply = await watch_run(session, key, agent_id, run_id, record)
+            status, reply = await watch_run(session, key, agent_id, run_id)
             finished = True
     except asyncio.CancelledError:
         if agent_id and not finished:
-            await asyncio.shield(stop_run(key, agent_id, run_id, record))
+            await asyncio.shield(stop_run(key, agent_id, run_id))
         raise
-    except Exception:
+    except Exception as error:
         if agent_id and not finished:
-            await stop_run(key, agent_id, run_id, record)
+            try:
+                await stop_run(key, agent_id, run_id)
+            except Exception as cancel_error:
+                raise RuntimeError(f"{error}; cancel failed: {cancel_error}") from None
         raise
     if status != "FINISHED" or not isinstance(reply, str) or not reply.strip():
-        raise RuntimeError(f"Luna returned no successful executable response ({status}): {str(reply)[:1500]}")
-    record.append("response", {"result": reply, "agent": agent_id, "url": url, "run": run_id}, "LUNA", "TRIDENT")
+        raise RuntimeError(f"Luna returned no successful response ({status}): {str(reply)[:500]}")
     return reply
 
 
 class Models:
-    def __init__(self, record, emit):
-        self.record = record
+    def __init__(self, folder, emit):
+        self.folder = Path(folder)
         self.emit = emit
         self.workers = []
         self.watchers = []
@@ -286,18 +246,13 @@ class Models:
         endpoint = urlsplit(CONFIG["voice"]["url"])
         with socket.socket() as port:
             port.bind((endpoint.hostname, endpoint.port))
-        output = (self.record.folder / "voice.log").open("ab")
         env = os.environ.copy()
         env["CRISPASR_CHATTERBOX_FORCE_GPU"] = "1"
-        try:
-            process = await asyncio.create_subprocess_exec(
-                *command(CONFIG["voice"]["command"]), cwd=ROOT, env=env,
-                stdout=output, stderr=output, creationflags=subprocess.CREATE_NO_WINDOW)
-        except BaseException:
-            output.close()
-            raise
-        self.workers.append((process, output))
-        self.record.append("worker_started", {"worker": "voice", "pid": process.pid, "log": output.name})
+        process = await asyncio.create_subprocess_exec(
+            *command(CONFIG["voice"]["command"]), cwd=ROOT, env=env,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW)
+        self.workers.append(process)
         async with asyncio.timeout(300):
             while True:
                 if process.returncode is not None:
@@ -318,23 +273,16 @@ class Models:
         self.emit("error", self.failure(name, code))
 
     def failure(self, name, code):
-        detail = (self.record.folder / f"{name}.log").read_text(encoding="utf-8", errors="replace")[-2000:]
-        return RuntimeError(f"{name} worker exited {code}\n{detail}")
+        return RuntimeError(f"{name} worker exited {code}")
 
     async def close(self):
         await cancel(*self.watchers)
         failures = []
-        for process, output in reversed(self.workers):
+        for process in reversed(self.workers):
             try:
                 if process.returncode is None:
                     process.kill()
                     await process.wait()
-            except Exception as error:
-                failures.append(str(error))
-            try:
-                output.close()
-                log = self.record.artifact(Path(output.name).read_bytes(), "log")
-                self.record.append("worker_closed", {"exit": process.returncode, "log": str(log)})
             except Exception as error:
                 failures.append(str(error))
         if self.http is not None:
@@ -342,26 +290,19 @@ class Models:
                 await self.http.close()
             except Exception as error:
                 failures.append(str(error))
-        self.record.append("models_closed", {"failures": failures})
         if failures:
             raise RuntimeError("; ".join(failures))
 
     async def luna(self, context):
         instruction = (ROOT / "instructions.txt").read_text(encoding="utf-8")
-        return await decision(self.record, instruction, context, self.record.folder)
+        return await decision(instruction, context, self.folder)
 
     async def voice(self, text):
-        request = {"input": text, "response_format": "wav"}
-        self.record.append("request", request, "LUNA", "CHATTERBOX")
-        path = self.record.artifact(await self.post("/v1/audio/speech", request), "wav")
-        self.record.append("voice_ready", {"audio": str(path), "words": text}, "CHATTERBOX", "LUNA")
-        return path
+        return await self.post("/v1/audio/speech", {"input": text, "response_format": "wav"})
 
     async def post(self, endpoint, request):
         async with self.http.post(CONFIG["voice"]["url"] + endpoint, json=request) as response:
             payload = await response.read()
             if response.status != 200:
-                text = payload.decode("utf-8", "replace")
-                self.record.append("response", text, "CHATTERBOX", "LUNA")
-                raise RuntimeError(text)
+                raise RuntimeError(payload.decode("utf-8", "replace"))
             return payload

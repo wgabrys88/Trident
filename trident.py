@@ -8,83 +8,52 @@ async def main(folder):
     from agent import Agent
     from line import Line
     from models import Models
-    from store import ROOT, Record, activate, cancel, read, save
+    from store import ROOT, cancel, read, save
 
-    record = Record(folder)
-    state = read(record.folder / "session.json", {
-        "life": record.folder.name, "task": None, "history": [], "receipts": [],
+    folder = Path(folder)
+    state = read(folder / "session.json", {
+        "life": folder.name, "task": None, "history": [], "receipts": [], "results": {},
         "waiting": False, "shutdown": False, "repair": None, "attention": True,
-        "assessment": None, "owner_applied": -1,
-        "owner_cursor": read(ROOT / "runs" / "owner.json", {}).get("cursor"), "audio_pending": {},
-        "open_work": read(ROOT / "runs" / "memory.json", []),
+        "assessment": None, "owner_cursor": read(ROOT / "runs" / "owner.json", {}).get("cursor"),
+        "audio_pending": {}, "open_work": read(ROOT / "runs" / "memory.json", []),
+        "arrived": 0, "owner_sequence": 0,
     })
-    pending = {}
-    for offset, event in record.events():
-        value = event["value"]
-        if event["kind"] == "owner_audio":
-            pending[value["id"]] = {**value, "source_receipt": offset}
-        elif event["kind"] == "asr_result" and not value["recognition"]["text"].strip():
-            pending.pop(value["id"], None)
-        elif event["kind"] == "owner_input":
-            if "recognition" in value:
-                pending.pop(value["id"], None)
-            if offset > state.get("owner_applied", -1):
-                if value.get("superseded"):
-                    state["owner_applied"] = offset
-                    continue
-                source = "audio" if "recognition" in value else "owner"
-                text = value["recognition"]["text"] if source == "audio" else value["text"]
-                activate(state, text, source, offset, value.get("source_receipt", offset))
-                if source == "owner":
-                    state["owner_cursor"] = max(state["owner_cursor"] or 0, value["id"])
-    state["audio_pending"] = pending
+    if "arrived" not in state:
+        state["arrived"] = 0
+        state["owner_sequence"] = 0
+    if "results" not in state:
+        state["results"] = {}
+        state["receipts"] = []
+    state["audio_pending"] = {}
     state["attention"] = True
     state["waiting"] = False
-    state["body_stopped"] = False
-    record.append("boot", {"life": state["life"], "task": state["task"]})
-    save(record.folder, state)
-    line = Line(asyncio.Queue(), record, state)
-    models = Models(record, line.emit)
-    agent = Agent(models, line, record, state)
-    cleanup_failed = False
-
-    async def start(name, operation):
-        try:
-            await operation()
-            line.emit("dependency_ready", {"resource": name})
-        except Exception as error:
-            line.emit("error", error)
-
-    startup = [asyncio.create_task(start(name, operation)) for name, operation in (
-        ("telegram", line.open), ("hearing", lambda: line.hearing.open(state["audio_pending"].values())),
-        ("voice", models.open))]
+    save(folder, state)
+    line = Line(asyncio.Queue(), folder, state)
+    models = Models(folder, line.emit)
+    agent = Agent(models, line, folder, state)
+    startup = [asyncio.create_task(line.open()), asyncio.create_task(line.hearing.open()),
+               asyncio.create_task(models.open())]
     try:
         await asyncio.gather(*startup)
         await agent.serve()
     finally:
-        record.append("cleanup_started", {"life": state["life"]})
         await cancel(*startup)
-        for operation in (line.stop_calls, line.hearing.close, models.close):
+        errors = []
+        for operation in (line.hearing.close, models.close, line.close):
             try:
                 await operation()
             except Exception as error:
-                cleanup_failed = True
-                record.append("cleanup_failure", {"resource": operation.__qualname__, "error": str(error)})
+                errors.append(error)
         while not line.inbox.empty():
-            await agent.receive(line.inbox.get_nowait())
-        state["body_stopped"] = not cleanup_failed
-        record.append("cleanup_finished", {"failed": cleanup_failed})
-        try:
-            await line.close()
-        except Exception as error:
-            cleanup_failed = True
-            state["body_stopped"] = False
-            record.append("cleanup_failure", {"resource": "telegram", "error": str(error)})
+            try:
+                await agent.receive(line.inbox.get_nowait())
+            except Exception as error:
+                errors.append(error)
         agent.save()
+        if errors and sys.exc_info()[0] is None:
+            raise errors[0]
     if state["repair"]:
-        record.append("repair_handoff", {"life": state["life"], "task": state["task"]})
         return 75
-    record.append("shutdown", {"life": state["life"], "requested": bool(state["shutdown"])})
     return 0 if state["shutdown"] else 1
 
 

@@ -2,7 +2,8 @@
 telegram_id = 5884279027
 
 [luna]
-model = "gpt-5.6-luna-none"
+model = "gpt-5.6-luna"
+reasoning = "none"
 machine = "trident-nvidia"
 
 [telegram]
