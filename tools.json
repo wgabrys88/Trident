@@ -147,7 +147,7 @@
     "dial": {
       "handler": "line:dial",
       "boundary": false,
-      "description": "Call Wojciech when you decide live speech is needed. Requires transport.call down. Boot never dials. This does not speak.",
+      "description": "Call Wojciech when you decide live speech is needed. Requires transport.call down. A fresh process already calls him once the line is up, before any goal, so he can speak the task. That call is not the goal. This tool does not speak.",
       "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
       "observe": true
     },

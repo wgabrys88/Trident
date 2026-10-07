@@ -34,6 +34,8 @@ async def main():
         await models.open()
         await line.hearing.open()
         await line.open()
+        if len(sys.argv) == 1:
+            await line.dial()
         await Agent(models, line, record, state).serve()
     except Exception as error:
         record.append("error", {"type": type(error).__name__, "message": str(error)})
