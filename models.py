@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import hashlib
 import json
 import mmap
 import os
@@ -16,7 +17,8 @@ import win32api
 import win32con
 import win32job
 
-from store import CONFIG, ROOT, cancel, command, encode
+from log import publish
+from store import CONFIG, ROOT, cancel, command, encode, save
 
 IMAGE_CAP = 5
 IMAGE_BYTES = 15 * 1024 * 1024
@@ -135,19 +137,26 @@ def require_cursor():
         ) from None
 
 
-def request_images(folder):
+def attached(folder):
     folder = Path(folder)
     if not folder.is_dir():
-        return []
+        return [], []
     paths = sorted((path for path in folder.glob("*.png") if path.is_file()),
                    key=lambda path: path.stat().st_mtime, reverse=True)[:IMAGE_CAP]
-    shots = []
+    images, pairs = [], []
     for path in paths:
         data = path.read_bytes()
         if len(data) > IMAGE_BYTES:
             raise RuntimeError(f"Model image exceeds the 15 MB Cloud Agents API limit: {path.name}")
-        shots.append({"mimeType": "image/png", "data": base64.b64encode(data).decode("ascii")})
-    return shots
+        images.append({"mimeType": "image/png", "data": base64.b64encode(data).decode("ascii")})
+        pairs.append((path, hashlib.sha256(data).hexdigest()))
+    return images, pairs
+
+
+def visit_name(state, repair):
+    state["agent_seq"] = int(state.get("agent_seq", 0)) + 1
+    kind = "repair" if repair else "decision"
+    return f"Trident {kind} {state['life'][:4]} #{state['agent_seq']}"
 
 
 async def cursor_json(session, key, method, path, payload=None):
@@ -182,20 +191,22 @@ async def stop_run(key, agent_id, run_id):
             raise
 
 
-async def decision(instruction, context, workspace):
+async def decision(instruction, context, workspace, life, state, send):
     charge()
     key = cursor_key()
     machine, repo, branch = cursor_place()
     repair = Path(workspace).resolve() == ROOT
     prompt = {"text": instruction + "\n\nTrident context:\n" + encode(context)}
-    if not repair:
-        shots = request_images(Path(workspace) / "images")
-        if shots:
-            prompt["images"] = shots
+    images, pairs = attached(Path(life) / "images")
+    if images:
+        prompt["images"] = images
+        await publish(pairs, state.setdefault("sent_images", []), send, lambda: save(life, state))
+    name = visit_name(state, repair)
+    save(life, state)
     payload = {
         "prompt": prompt,
         "model": {"id": CONFIG["luna"]["model"], "params": [{"id": "reasoning", "value": CONFIG["luna"]["reasoning"]}]},
-        "name": "Trident repair" if repair else "Trident decision",
+        "name": name,
         "env": {"type": "machine", "name": machine},
         "repos": [{"url": repo, "startingRef": branch}],
         "autoCreatePR": False, "workOnCurrentBranch": False, "mode": "agent",
@@ -229,17 +240,16 @@ class Models:
     def __init__(self, folder, emit):
         self.folder = Path(folder)
         self.emit = emit
-        self.workers = []
-        self.watchers = []
+        self.voice = None
+        self.watcher = None
         self.http = None
 
     async def open(self):
-        for name in ("voice",):
-            parts = CONFIG[name]["command"]
-            (ROOT / parts[0]).stat()
-            for part in parts[1:]:
-                if str(part).startswith("artifacts/"):
-                    (ROOT / part).stat()
+        parts = CONFIG["voice"]["command"]
+        (ROOT / parts[0]).stat()
+        for part in parts[1:]:
+            if str(part).startswith("artifacts/"):
+                (ROOT / part).stat()
         for part in (CONFIG["ears"]["library"], CONFIG["ears"]["model"]):
             (ROOT / part).stat()
         self.http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600))
@@ -248,15 +258,14 @@ class Models:
             port.bind((endpoint.hostname, endpoint.port))
         env = os.environ.copy()
         env["CRISPASR_CHATTERBOX_FORCE_GPU"] = "1"
-        process = await asyncio.create_subprocess_exec(
-            *command(CONFIG["voice"]["command"]), cwd=ROOT, env=env,
+        self.voice = await asyncio.create_subprocess_exec(
+            *command(parts), cwd=ROOT, env=env,
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NO_WINDOW)
-        self.workers.append(process)
         async with asyncio.timeout(300):
             while True:
-                if process.returncode is not None:
-                    raise self.failure("voice", process.returncode)
+                if self.voice.returncode is not None:
+                    raise RuntimeError(f"voice worker exited {self.voice.returncode}")
                 try:
                     async with self.http.get(CONFIG["voice"]["url"] + "/health") as response:
                         if response.status == 200:
@@ -266,23 +275,20 @@ class Models:
                 except aiohttp.ClientConnectorError:
                     pass
                 await asyncio.sleep(0.1)
-        self.watchers.append(asyncio.create_task(self.watch("voice", process)))
+        self.watcher = asyncio.create_task(self.exited())
 
-    async def watch(self, name, process):
-        code = await process.wait()
-        self.emit("error", self.failure(name, code))
-
-    def failure(self, name, code):
-        return RuntimeError(f"{name} worker exited {code}")
+    async def exited(self):
+        code = await self.voice.wait()
+        self.emit("error", RuntimeError(f"voice worker exited {code}"))
 
     async def close(self):
-        await cancel(*self.watchers)
+        if self.watcher is not None:
+            await cancel(self.watcher)
         failures = []
-        for process in reversed(self.workers):
+        if self.voice is not None and self.voice.returncode is None:
             try:
-                if process.returncode is None:
-                    process.kill()
-                    await process.wait()
+                self.voice.kill()
+                await self.voice.wait()
             except Exception as error:
                 failures.append(str(error))
         if self.http is not None:
@@ -293,9 +299,9 @@ class Models:
         if failures:
             raise RuntimeError("; ".join(failures))
 
-    async def luna(self, context):
+    async def luna(self, context, state, send):
         instruction = (ROOT / "instructions.txt").read_text(encoding="utf-8")
-        return await decision(instruction, context, self.folder)
+        return await decision(instruction, context, self.folder, self.folder, state, send)
 
     async def voice(self, text):
         return await self.post("/v1/audio/speech", {"input": text, "response_format": "wav"})

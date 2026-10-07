@@ -6,7 +6,7 @@ import time
 import uuid
 import wave
 
-from log import image as log_image
+from log import send_photo
 
 from ntgcalls import (
     AudioDescription, ConnectionState, DhConfig, FrameData, MediaDescription,
@@ -55,6 +55,35 @@ async def native(engine, method, *arguments):
         raise
 
 
+def account():
+    desktop = TDesktop(os.path.expandvars(CONFIG["telegram"]["tdata"]))
+    owner_id = CONFIG["owner"]["telegram_id"]
+    accounts = [item for item in desktop.accounts if int(item.UserId) != owner_id]
+    if len(accounts) != 1:
+        raise RuntimeError(f"Telegram tdata needs exactly one Trident user session distinct from Wojciech; found {len(accounts)}")
+    return accounts[0]
+
+
+async def start_client(session):
+    user = account()
+    client = await TelegramClient.FromTDesktop(
+        user, session=str(session), flag=UseCurrentSession, api=API.TelegramDesktop,
+        request_retries=0, connection_retries=0, auto_reconnect=True, flood_sleep_threshold=0,
+        raise_last_call_error=True, catch_up=True,
+    )
+    return client, user
+
+
+async def adopt(client, user):
+    await client.connect()
+    identity = await client.get_me()
+    owner_id = CONFIG["owner"]["telegram_id"]
+    if identity is None or identity.bot or identity.id == owner_id or identity.id != int(user.UserId):
+        raise RuntimeError("Telegram needs an authorized user session distinct from Wojciech")
+    await client.get_dialogs()
+    return await client.get_input_entity(owner_id)
+
+
 class Line:
     def __init__(self, inbox, folder, life):
         self.inbox = inbox
@@ -75,28 +104,15 @@ class Line:
         self.generation = 0
         self.native_serial = 0
         self.hearing = Hearing(self.emit)
+        self.user = None
 
     async def open(self):
         self.loop = asyncio.get_running_loop()
-        desktop = TDesktop(os.path.expandvars(CONFIG["telegram"]["tdata"]))
-        accounts = [a for a in desktop.accounts if int(a.UserId) != self.owner_id]
-        if len(accounts) != 1:
-            raise RuntimeError(f"Telegram tdata needs exactly one Trident user session distinct from Wojciech; found {len(accounts)}")
-        [account] = accounts
         if self.client is None:
-            self.client = await TelegramClient.FromTDesktop(
-                account, session=str(self.folder / "telegram"), flag=UseCurrentSession, api=API.TelegramDesktop,
-                request_retries=0, connection_retries=0, auto_reconnect=True, flood_sleep_threshold=0,
-                raise_last_call_error=True, catch_up=True,
-            )
+            self.client, self.user = await start_client(self.folder / "telegram")
             self.client.add_event_handler(self.message, events.NewMessage(incoming=True, from_users=[self.owner_id]))
             self.client.add_event_handler(self.update, events.Raw())
-        await self.client.connect()
-        identity = await self.client.get_me()
-        if identity is None or identity.bot or identity.id == self.owner_id or identity.id != int(account.UserId):
-            raise RuntimeError("Telegram needs an authorized user session distinct from Wojciech")
-        await self.client.get_dialogs()
-        self.owner = await self.client.get_input_entity(self.owner_id)
+        self.owner = await adopt(self.client, self.user)
         if self.life["owner_cursor"] is None:
             latest = await self.client.get_messages(self.owner, limit=1)
             self.life["owner_cursor"] = max(self.life["owner_cursor"] or 0, latest[0].id if latest else 0)
@@ -118,13 +134,10 @@ class Line:
         self.hearing.submit(pcm, observation)
         self.emit("audio_pending", observation)
 
-    async def send_photo(self, path):
+    async def photo(self, path):
         if self.client is None or self.owner is None:
             raise RuntimeError("Telegram is not connected")
-        await self.client.send_file(self.owner, str(path), force_document=False)
-
-    async def image(self, data):
-        return await log_image(data, self.send_photo, self.folder / "images")
+        await send_photo(self.client, self.owner, path)
 
     def emit(self, kind, value):
         wake = kind in ("ring", "line")
@@ -372,35 +385,26 @@ class Line:
             await native(engine, "stop", self.owner_id)
             del engine
 
-    async def stop_calls(self):
-        failures = []
+    async def close(self):
+        errors = []
+
+        async def attempt(action):
+            try:
+                await action()
+            except Exception as error:
+                errors.append(str(error))
+
         if self.client is not None:
             try:
                 self.client.remove_event_handler(self.update)
             except Exception as error:
-                failures.append(str(error))
+                errors.append(str(error))
         if self.peer is not None:
-            try:
-                await self.hang()
-            except Exception as error:
-                failures.append(str(error))
+            await attempt(self.hang)
         if self.engine is not None:
-            try:
-                await self.release()
-            except Exception as error:
-                failures.append(str(error))
-        await cancel(*tuple(self.jobs))
-        if failures:
-            raise RuntimeError("; ".join(failures))
-
-    async def close(self):
-        failures = []
-        for operation in (self.stop_calls, self.client.disconnect if self.client is not None else None):
-            if operation is None:
-                continue
-            try:
-                await operation()
-            except Exception as error:
-                failures.append(str(error))
-        if failures:
-            raise RuntimeError("; ".join(failures))
+            await attempt(self.release)
+        await cancel(*self.jobs)
+        if self.client is not None:
+            await attempt(self.client.disconnect)
+        if errors:
+            raise RuntimeError("; ".join(errors))

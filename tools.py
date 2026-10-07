@@ -10,8 +10,9 @@ from jsonschema import Draft202012Validator
 
 import desktop
 from audio import call_pcm
+from log import write as write_png
 from models import run_process
-from store import ROOT, read, source_paths
+from store import ROOT, read
 
 
 class Catalog:
@@ -57,7 +58,7 @@ class Catalog:
 
 async def shot(host, region):
     payload, metadata = await asyncio.to_thread(desktop.capture, region)
-    path = await host.line.image(payload)
+    path = write_png(payload, host.folder / "images")
     return {"image": str(path), "file": path.name, **metadata}
 
 
@@ -69,7 +70,7 @@ async def images(host, views):
     shots = []
     for view in views:
         payload, metadata = await asyncio.to_thread(desktop.image_view, view)
-        path = await host.line.image(payload)
+        path = write_png(payload, host.folder / "images")
         shots.append({"image": str(path), "file": path.name, **metadata})
     return {"views": shots}
 
@@ -155,10 +156,6 @@ async def goal(host, text, resume_id):
         host.state.update(assessment=None, history=[], receipts=[], results={})
     task["text"] = text
     return task
-
-
-async def files(host):
-    return {str(path.relative_to(ROOT)): path.read_text(encoding="utf-8") for path in source_paths()}
 
 
 async def wait(host, memory):

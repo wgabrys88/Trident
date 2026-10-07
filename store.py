@@ -3,12 +3,10 @@ import json
 import os
 import tomllib
 import uuid
-from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(os.environ.get("TRIDENT_ROOT", Path(__file__).resolve().parent)).resolve()
-CONFIG = tomllib.loads(Path(os.environ.get("TRIDENT_CONFIG", ROOT / "config.toml")).read_text(encoding="utf-8"))
-RUNTIME = {"runs", "artifacts", "__pycache__", ".git"}
+CONFIG = tomllib.loads((ROOT / "config.toml").read_text(encoding="utf-8"))
 
 
 def encode(value):
@@ -31,10 +29,6 @@ def write(path, value):
     temporary.replace(path)
 
 
-def stamp():
-    return datetime.now().astimezone().isoformat(timespec="microseconds")
-
-
 def command(parts):
     return [os.path.expandvars(str(part)) for part in parts]
 
@@ -43,16 +37,6 @@ async def cancel(*tasks):
     for task in tasks:
         task.cancel()
     return await asyncio.gather(*tasks, return_exceptions=True)
-
-
-def source_paths():
-    for folder, directories, files in os.walk(ROOT):
-        directories[:] = [name for name in directories
-                          if name != "__pycache__" and not (Path(folder) == ROOT and name in RUNTIME)]
-        for name in files:
-            path = Path(folder) / name
-            if path.is_file():
-                yield path
 
 
 def activate(state, text, source, receipt, sequence=None):

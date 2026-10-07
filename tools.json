@@ -213,18 +213,6 @@
       },
       "observe": false
     },
-    "files": {
-      "handler": "tools:files",
-      "boundary": false,
-      "description": "Read current source files recursively, excluding runtime and Git data.",
-      "parameters": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "additionalProperties": false
-      },
-      "observe": false
-    },
     "consult": {
       "handler": "tools:consult",
       "boundary": true,

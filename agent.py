@@ -78,7 +78,7 @@ class Agent:
                 "hearing": {"busy": self.line.hearing.busy, "queued": self.line.hearing.queue.qsize(),
                             "pending": self.state["audio_pending"]},
                 "tools": self.catalog.document, "history": self.state["history"][-40:],
-            })
+            }, self.state, self.line.photo)
             batch = self.parse_batch(text)
             self.catalog.validate({"$ref": "#/$defs/batch"}, batch)
             calls = batch["calls"]
@@ -120,20 +120,7 @@ class Agent:
         candidate = text.strip()
         if candidate.startswith(chr(96) * 3):
             candidate = "\n".join(candidate.splitlines()[1:-1]).strip()
-        try:
-            return json.loads(candidate)
-        except json.JSONDecodeError:
-            decoder = json.JSONDecoder()
-            for index, character in enumerate(candidate):
-                if character != "{":
-                    continue
-                try:
-                    value, _ = decoder.raw_decode(candidate[index:])
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(value, dict) and "assessment" in value and "calls" in value:
-                    return value
-            raise
+        return json.loads(candidate)
 
     async def serve(self):
         while not self.state.get("repair"):

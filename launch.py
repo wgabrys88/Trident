@@ -2,7 +2,6 @@ import hashlib
 import json
 import mmap
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -13,12 +12,11 @@ from pathlib import Path
 import win32event
 import win32job
 
-ROOT = Path(os.environ.get("TRIDENT_ROOT", Path(__file__).resolve().parent.parent
-            if Path(__file__).name == "resume.py" else Path(__file__).resolve().parent)).resolve()
+ROOT = Path(os.environ.get("TRIDENT_ROOT", Path(__file__).resolve().parent)).resolve()
 os.environ["TRIDENT_ROOT"] = str(ROOT)
 sys.path.insert(0, str(ROOT))
 
-from models import bind_calls, decision, require_cursor, stop_if_capped
+from models import begin_job, bind_calls, decision, require_cursor, stop_if_capped
 from store import ROOT as STORE_ROOT, read, save, write
 
 
@@ -78,10 +76,30 @@ def repair(folder):
     )
     failure = None
     result = None
+
+    async def visit():
+        from line import adopt, start_client
+        from log import send_photo
+        link = {}
+
+        async def send(path):
+            if "client" not in link:
+                client, user = await start_client(folder / "telegram")
+                link["client"] = client
+                link["owner"] = await adopt(client, user)
+            await send_photo(link["client"], link["owner"], path)
+
+        try:
+            return await decision(instruction, {
+                "repair": request, "current_task": state["task"], "source": str(ROOT), "life": state["life"],
+            }, ROOT, folder, state, send)
+        finally:
+            client = link.get("client")
+            if client is not None:
+                await client.disconnect()
+
     try:
-        result = asyncio.run(decision(instruction, {
-            "repair": request, "current_task": state["task"], "source": str(ROOT), "life": state["life"],
-        }, ROOT))
+        result = asyncio.run(visit())
     except Exception as error:
         failure = f"{type(error).__name__}: {error}"
     after = snapshot()
@@ -141,21 +159,13 @@ def main():
             raise ValueError("Life must be a direct child of runs")
         folder.mkdir(parents=True, exist_ok=True)
         write(current, {"folder": str(folder)})
-        resume = ROOT / "runs" / "resume.py"
-        state = read(folder / "session.json", {})
-        if not state.get("repair") and Path(__file__).resolve() != resume:
-            shutil.copyfile(Path(__file__), resume)
 
         def run(script):
-            job = win32job.CreateJobObject(None, "")
+            job = begin_job()
             process = None
             try:
-                limits = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
-                limits["BasicLimitInformation"]["LimitFlags"] = win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-                win32job.SetInformationJobObject(job, win32job.JobObjectExtendedLimitInformation, limits)
                 environment = {**os.environ, "TRIDENT_ROOT": str(ROOT), "TRIDENT_LAUNCH": str(folder),
                                "PYTHONDONTWRITEBYTECODE": "1"}
-                environment.pop("TRIDENT_CONFIG", None)
                 process = subprocess.Popen([sys.executable, "-B", str(script), str(folder)], cwd=ROOT,
                     env=environment, stdin=subprocess.PIPE)
                 win32job.AssignProcessToJobObject(job, process._handle)

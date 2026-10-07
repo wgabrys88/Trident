@@ -1,6 +1,7 @@
 import ctypes
 import io
 import time
+from datetime import datetime
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 if not user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
@@ -12,8 +13,6 @@ import win32clipboard
 import win32con
 import win32gui
 from PIL import Image, ImageGrab
-
-from store import stamp
 
 pyautogui.FAILSAFE = False
 pyautogui.PAUSE = 0
@@ -44,7 +43,7 @@ def prepare_image(image, origin, scale, region):
 
 def capture(region):
     left, top, width, height = [win32api.GetSystemMetrics(n) for n in (76, 77, 78, 79)]
-    captured = stamp()
+    captured = datetime.now().astimezone().isoformat(timespec="microseconds")
     image = ImageGrab.grab(bbox=(left, top, left + width, top + height), all_screens=True)
     payload, metadata = prepare_image(image, [left, top], [1, 1], region)
     return payload, {**metadata, "captured_at": captured, "desktop_bounds": [left, top, width, height],

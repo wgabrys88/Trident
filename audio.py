@@ -61,9 +61,7 @@ class Hearing:
         self.close_stream = self.bind("stream_close", None, pointer)
         self.destroy_result = self.bind("result_destroy", None, pointer)
         self.transcript = self.bind("result_transcript", c.c_char_p, pointer, c.c_size_t)
-        self.confidence = self.bind("result_confidence", c.c_float, pointer, c.c_size_t)
         self.final = self.bind("result_is_final", c.c_bool, pointer)
-        self.processed = self.bind("result_audio_processed", c.c_float, pointer)
         self.alternatives = self.bind("result_alternative_count", c.c_size_t, pointer)
         create = self.bind("create", c.c_int, c.POINTER(RecognizerConfig), c.POINTER(pointer))
         backend = Backend(c.sizeof(Backend), -1)
@@ -74,16 +72,8 @@ class Hearing:
         self.check(create(c.byref(config), c.byref(self.recognizer)))
 
     def read_result(self, result):
-        alternatives = []
-        for index in range(self.alternatives(result)):
-            raw = self.transcript(result, index)
-            alternatives.append({
-                "text": "" if not raw else raw.decode("utf-8"),
-                "confidence": self.confidence(result, index),
-            })
-        text = alternatives[0]["text"] if alternatives else ""
-        return {"text": text, "alternatives": alternatives, "final": bool(self.final(result)),
-                "audio_processed": self.processed(result)}
+        raw = self.transcript(result, 0) if self.alternatives(result) else None
+        return {"text": "" if not raw else raw.decode("utf-8"), "final": bool(self.final(result))}
 
     def pull(self, stream):
         final = None
@@ -119,7 +109,7 @@ class Hearing:
             if found is not None:
                 final = found
             if final is None:
-                final = {"text": "", "alternatives": [], "final": True, "audio_processed": 0.0}
+                final = {"text": "", "final": True}
             return {**final, "audio_seconds": seconds}
         finally:
             self.close_stream(stream)
