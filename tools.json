@@ -196,14 +196,14 @@
     "wait": {
       "handler": "tools:wait",
       "boundary": true,
-      "description": "Pause until he speaks or the desktop changes. Last call in the batch.",
+      "description": "Pause until he speaks or the desktop changes. This tool does not take observation. Last call in the batch.",
       "parameters": {
         "type": "object",
         "properties": {"memory": {"type": "string", "minLength": 1}},
         "required": ["memory"],
         "additionalProperties": false
       },
-      "observe": true
+      "observe": false
     },
     "finish": {
       "handler": "tools:finish",
