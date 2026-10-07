@@ -9,6 +9,9 @@ from agent import Agent
 from line import Line
 from models import Models
 from store import ROOT, Record, read, write
+from tools import announce
+
+OPENING = "This is Trident. Startup is finished. I can hear you. Tell me the task."
 
 
 async def main():
@@ -35,7 +38,7 @@ async def main():
         await line.hearing.open()
         await line.open()
         if len(sys.argv) == 1:
-            await line.dial()
+            await announce(models, line, OPENING)
         await Agent(models, line, record, state).serve()
     except Exception as error:
         record.append("error", {"type": type(error).__name__, "message": str(error)})

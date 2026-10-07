@@ -130,6 +130,24 @@ async def python(host, code):
     return await namespace["action"]()
 
 
+async def announce(models, line, text):
+    path = await models.voice(text)
+    pcm = call_pcm(path.read_bytes())
+    if len(pcm) < 96000:
+        raise RuntimeError("Voice file is empty")
+    outcome = await line.dial()
+    if not outcome["answered"]:
+        return {**outcome, "words": text, "audio": str(path)}
+    sent = await line.speak(pcm)
+    receipt = {"channel": "call", **sent, "audio": str(path), "words": text}
+    line.record.append("speech_sent", receipt, "TRIDENT", "OWNER")
+    return {**outcome, **receipt}
+
+
+async def dial(host, text):
+    return await announce(host.models, host.line, text)
+
+
 async def speak(host, parts):
     path = await host.models.voice(parts[0])
     pending = None

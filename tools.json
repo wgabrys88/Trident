@@ -145,10 +145,15 @@
       "observe": true
     },
     "dial": {
-      "handler": "line:dial",
+      "handler": "tools:dial",
       "boundary": false,
-      "description": "Call Wojciech when you are unsure, when the desktop changed apart from Trident, or when you need him and he may not be at the computer. Requires transport.call down. If the call is already up, speak instead. An unanswered call returns call down and leaves the process up. A fresh process also calls once the line is up. The call is not the goal. This tool does not speak.",
-      "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
+      "description": "Call Wojciech and say text. The wav is synthesized before the phone rings, then played the moment he answers, so the call does not open in silence. Requires transport.call down. If the call is already up, speak instead. An unanswered call returns call down and leaves the process up. The call is not the goal.",
+      "parameters": {
+        "type": "object",
+        "properties": {"text": {"type": "string", "minLength": 1}},
+        "required": ["text"],
+        "additionalProperties": false
+      },
       "observe": true
     },
     "answer": {
