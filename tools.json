@@ -182,75 +182,17 @@
       "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
       "observe": true
     },
-    "remember": {
-      "handler": "tools:remember",
-      "boundary": false,
-      "description": "Replace historical notes with verified facts. Live call state, the rolling scene, and pending audio stay in the session, not in these notes.",
-      "parameters": {
-        "type": "object",
-        "properties": {"text": {"type": "string"}},
-        "required": ["text"],
-        "additionalProperties": false
-      },
-      "observe": true
-    },
     "files": {
       "handler": "tools:files",
       "boundary": false,
-      "description": "Read every file directly in the Trident root. Use those contents before rewriting. This tool does not take observation. An observation fails the process.",
+      "description": "Read the files in the Trident root. This tool does not take observation. An observation fails the process.",
       "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
       "observe": false
-    },
-    "heal": {
-      "handler": "tools:heal",
-      "boundary": true,
-      "description": "Pause the owner goal and select a self-healing goal when tools, prompts, or architecture are wrong. Last call in the batch.",
-      "parameters": {
-        "type": "object",
-        "properties": {"goal": {"type": "string", "minLength": 1}},
-        "required": ["goal"],
-        "additionalProperties": false
-      },
-      "observe": true
-    },
-    "rewrite": {
-      "handler": "tools:rewrite",
-      "boundary": true,
-      "description": "During self-healing, write complete root files and delete named root files. Change tools.json together with the handlers it names. Last call in the batch.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "files": {"type": "object", "additionalProperties": {"type": "string"}},
-          "delete": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true}
-        },
-        "required": ["files", "delete"],
-        "additionalProperties": false
-      },
-      "observe": true
-    },
-    "activate": {
-      "handler": "tools:activate",
-      "boundary": true,
-      "description": "Restart so rewritten imported modules load. Requires a self-healing goal and transport.call down. Preserves the suspended goal. Does not dial. Last call in the batch.",
-      "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
-      "observe": true
-    },
-    "resume": {
-      "handler": "tools:resume",
-      "boundary": true,
-      "description": "End self-healing and return to the suspended owner goal, with the repair evidence. This does not finish the owner goal. Last call in the batch.",
-      "parameters": {
-        "type": "object",
-        "properties": {"evidence": {"type": "string", "minLength": 1}},
-        "required": ["evidence"],
-        "additionalProperties": false
-      },
-      "observe": true
     },
     "wait": {
       "handler": "tools:wait",
       "boundary": true,
-      "description": "Wait only when the newest owner words name no task. memory holds verified notes, not a claim that a call is up. Requires observation. Last call in the batch.",
+      "description": "Pause until he speaks or the desktop changes. Last call in the batch.",
       "parameters": {
         "type": "object",
         "properties": {"memory": {"type": "string", "minLength": 1}},
@@ -262,7 +204,7 @@
     "finish": {
       "handler": "tools:finish",
       "boundary": true,
-      "description": "Close the recorded goal. completed requires observed completion. cancelled requires owner cancellation. paused keeps the unfinished goal and allows idle learning. Status or hangup alone does not finish the goal. Hearing must be idle. shutdown true also requires the call down. Last call in the batch.",
+      "description": "Close the task. completed when you have seen it done. cancelled when he cancelled it. paused keeps it unfinished. shutdown true ends the process and requires the call to be down. Last call in the batch.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -278,7 +220,7 @@
     "goal": {
       "handler": "tools:goal",
       "boundary": false,
-      "description": "Select the goal from the newest owner words before waiting. retain_previous true keeps a different unfinished goal. false replaces it only when his words justify that. Boot does not select open_work. A ring does not select a goal. Requires observation.",
+      "description": "Name the task you are doing. retain_previous true keeps a different unfinished task. Requires observation.",
       "parameters": {
         "type": "object",
         "properties": {

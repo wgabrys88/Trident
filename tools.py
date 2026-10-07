@@ -1,12 +1,11 @@
 import asyncio
 import json
-from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
 import desktop
 from audio import call_pcm
-from store import CONFIG, ROOT, cancel, read, write
+from store import CONFIG, ROOT, cancel, read
 
 
 class Catalog:
@@ -172,16 +171,7 @@ async def speak(host, parts):
             await cancel(pending)
 
 
-async def remember(host, text):
-    mind = read(ROOT / "mind.json")
-    mind["memory"] = text
-    write(ROOT / "mind.json", mind)
-    return {"memory": text}
-
-
 async def goal(host, text, retain_previous):
-    if host.state["suspended"]:
-        raise RuntimeError("Resume self-healing before selecting an owner goal")
     previous = host.state["goal"]
     if retain_previous and previous is not None and previous != text:
         host.state["open_work"].append({"goal": previous, "evidence": "Retained by Luna while selecting another goal"})
@@ -198,59 +188,21 @@ async def files(host):
     return {path.name: path.read_text(encoding="utf-8") for path in ROOT.iterdir() if path.is_file()}
 
 
-async def heal(host, goal):
-    if host.state["suspended"]:
-        raise RuntimeError("A self-healing goal is already active")
-    host.state["suspended"] = [host.state["goal"]]
-    host.state["goal"] = "Self-heal Trident: " + goal
-    return {"goal": host.state["goal"], "suspended": host.state["suspended"]}
-
-
-async def rewrite(host, files, delete):
-    if not host.state["suspended"]:
-        raise RuntimeError("Rewriting requires an explicit self-healing goal")
-    for name in [*files, *delete]:
-        if Path(name).name != name:
-            raise ValueError("Source files must be directly inside the Trident workspace root")
-    for name in delete:
-        (ROOT / name).unlink()
-    for name, content in files.items():
-        (ROOT / name).write_text(content, encoding="utf-8")
-    return {"written": list(files), "deleted": delete}
-
-
-async def resume(host, evidence):
-    [goal] = host.state["suspended"]
-    host.state["goal"] = goal
-    host.state["suspended"] = []
-    return {"goal": goal, "repair_evidence": evidence}
-
-
-async def activate(host):
-    if not host.state["suspended"] or host.line.state != "down":
-        raise RuntimeError("Activation requires a self-healing goal and a closed Telegram call")
-    host.state["restart"] = True
-    return {"activation": "Process restart requested; suspended goal is preserved"}
-
-
 async def wait(host, memory):
-    await remember(host, memory)
     host.state["waiting"] = True
     host.state["attention"] = False
-    return {"waiting": "Owner input", "goal": host.state["goal"]}
+    return {"waiting": "Owner input", "goal": host.state["goal"], "memory": memory}
 
 
 async def finish(host, evidence, outcome, shutdown):
-    if host.state["suspended"]:
-        raise RuntimeError("Resume the owner's goal before finishing it")
     if shutdown and host.line.state != "down":
         raise RuntimeError("Hang up before requesting shutdown")
     if host.line.hearing.busy or not host.line.hearing.queue.empty():
         raise RuntimeError("Receive pending owner audio before closing the recorded task")
     if outcome == "paused" and host.state["goal"] is not None:
         host.state["open_work"].append({"goal": host.state["goal"], "evidence": evidence})
-    host.state["finished"] = {"goal": host.state["goal"], "evidence": evidence, "outcome": outcome}
+    record = {"goal": host.state["goal"], "evidence": evidence, "outcome": outcome}
     host.state["goal"] = None
     host.state["attention"] = False
     host.state["shutdown"] = shutdown
-    return host.state["finished"]
+    return record

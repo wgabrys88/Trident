@@ -15,7 +15,7 @@ class Agent:
     def save(self):
         write(self.record.folder / "session.json", self.state)
         mind = read(ROOT / "mind.json")
-        owner_goal = self.state["suspended"][0] if self.state["suspended"] else self.state["goal"]
+        owner_goal = self.state["goal"]
         retained = list(self.state["open_work"])
         if owner_goal is not None:
             retained.append({"goal": owner_goal, "evidence": "Unfinished owner work", "session": str(self.record.folder / "session.json")})
@@ -66,10 +66,8 @@ class Agent:
         mind = read(ROOT / "mind.json")
         generation = self.line.generation
         text = await self.models.luna(mind["actor"], {
-            "persistent_notes": {"authority": "Historical notes only; never current transport state", "text": mind["memory"]},
-            "transport": {"authority": "Current transport state", "call": self.line.state,
-                          "id": self.line.peer.id if self.line.peer is not None else None},
-            "goal": self.state["goal"], "suspended": self.state["suspended"], "scene": self.state["scene"],
+            "transport": {"call": self.line.state, "id": self.line.peer.id if self.line.peer is not None else None},
+            "goal": self.state["goal"], "scene": self.state["scene"],
             "open_work": self.state["open_work"], "assessment": self.state["assessment"],
             "hearing": {"busy": self.line.hearing.busy, "queued": self.line.hearing.queue.qsize()},
             "tools": catalog.document, "history": self.state["history"],
@@ -105,87 +103,6 @@ class Agent:
             self.state["history"].append(entry)
             self.record.append("tool_result", entry, "TOOL (" + name + ")", "LUNA")
             self.save()
-        if self.state["finished"] is not None:
-            pending = generation != self.line.generation or self.line.hearing.busy or not self.line.hearing.queue.empty()
-            if pending:
-                proposal = self.state["finished"]
-                self.state["goal"] = proposal["goal"]
-                self.state["shutdown"] = False
-                self.state["attention"] = True
-                if proposal["outcome"] == "paused" and self.state["open_work"] and self.state["open_work"][-1].get("goal") == proposal["goal"] and self.state["open_work"][-1].get("evidence") == proposal["evidence"]:
-                    self.state["open_work"].pop()
-                self.state["finished"] = None
-                blocked = {"reason": "Owner audio still pending", "proposal": proposal}
-                self.state["history"].append({"finish_blocked": blocked})
-                self.record.append("finish_blocked", blocked)
-                self.save()
-            else:
-                self.state["lessons"].append({
-                    **self.state["finished"], "trace": self.record.trace(self.state["start"]),
-                })
-                self.state["finished"] = None
-                self.state["recording"] = self.state["attention"]
-                self.save()
-
-    async def learn(self):
-        generation = self.line.generation
-        lesson = self.state["lessons"][0]
-        self.record.append("learning_started", {"goal": lesson["goal"]})
-        mind = read(ROOT / "mind.json")
-        catalog = Catalog()
-        study = ""
-        trace = lesson["trace"]
-        for events in self.portions(trace):
-            study = (await self.models.look(
-                "Idle learning. Study these complete JSON trace events. Each event is intact. "
-                "A portion boundary is not a runtime failure. A lone request at a portion boundary may finish in the next portion. "
-                "Keep concise cumulative lessons from all portions: failures, changes, observations, Luna's batches, "
-                "and improvements to visual reports. Separate evidence from speculation. "
-                "File paths identify retained evidence. They are not images you have seen. "
-                "Do not shorten evidence.",
-                {"outcome": {key: value for key, value in lesson.items() if key != "trace"},
-                 "previous_study": study, "events": [json.loads(line) for line in events.splitlines()]}, [],
-            ))["text"]
-        raw = await self.models.luna(
-            "Idle learning. Teach from this recorded task and the LFM study. "
-            "Return only JSON with actor, student, tools, lesson. actor and student are complete replacement prompts. "
-            "tools is the complete current catalog with improved tool descriptions only. Preserve shared definitions, handlers, observation flags, boundaries, "
-            "parameter types, and required arguments. Preserve the owner's behavior requirements. "
-            "lesson states concrete corrections and their trace evidence. No live action or invented success.",
-            {"mind": mind, "tools": catalog.document, "recorded_task": lesson, "study": study},
-        )
-        teaching = json.loads(raw)
-        updated = teaching["tools"]
-        if updated.keys() != catalog.document.keys() or updated["$defs"] != catalog.document["$defs"] or updated["tools"].keys() != catalog.specs.keys():
-            raise ValueError("An idle lesson must preserve the catalog structure")
-        for name, spec in catalog.specs.items():
-            catalog.validate({"$ref": "#/$defs/text"}, updated["tools"][name]["description"])
-            if {k: v for k, v in spec.items() if k != "description"} != {k: v for k, v in updated["tools"][name].items() if k != "description"}:
-                raise ValueError("An idle lesson changes descriptions, not execution or arguments")
-        for key in ("actor", "student", "lesson"):
-            if not isinstance(teaching[key], str) or not teaching[key].strip():
-                raise ValueError(f"Empty lesson field: {key}")
-        if generation != self.line.generation:
-            self.record.append("learning_interrupted", {"reason": "Input changed before lesson application"})
-            return
-        mind["actor"], mind["student"] = teaching["actor"], teaching["student"]
-        write(ROOT / "mind.json", mind)
-        write(ROOT / "tools.json", teaching["tools"])
-        self.record.append("lesson_applied", {"study": study, **teaching})
-        self.state["lessons"].pop(0)
-        self.save()
-
-    @staticmethod
-    def portions(trace):
-        portion = ""
-        for line in trace.splitlines():
-            json.loads(line)
-            if portion and len(portion) + len(line) + 1 > 12000:
-                yield portion
-                portion = ""
-            portion += line + "\n"
-        if portion:
-            yield portion
 
     async def watch_screen(self):
         limit = CONFIG["screen"]["difference"]
@@ -218,22 +135,18 @@ class Agent:
             await cancel(watch)
 
     async def live(self):
-        while not self.state["restart"]:
+        while True:
             if not self.line.inbox.empty():
                 await self.receive(await self.line.inbox.get())
                 continue
-            hearing_idle = not self.line.hearing.busy and self.line.hearing.queue.empty()
-            if self.state["shutdown"] and not self.state["lessons"] and hearing_idle:
+            if self.state["shutdown"] and not self.line.hearing.busy and self.line.hearing.queue.empty():
                 return
             if (self.state["goal"] is not None or self.state["attention"]) and not self.state["waiting"]:
-                await self.work(self.step(), learning=False)
-            elif (self.state["goal"] is None and not self.state["attention"] and self.state["lessons"]
-                  and self.line.state == "down" and hearing_idle):
-                await self.work(self.learn(), learning=True)
+                await self.work(self.step())
             else:
                 await self.receive(await self.line.inbox.get())
 
-    async def work(self, coroutine, learning):
+    async def work(self, coroutine):
         task = asyncio.create_task(coroutine)
         incoming = asyncio.create_task(self.line.inbox.get())
         try:
@@ -241,12 +154,10 @@ class Agent:
                 done, _ = await asyncio.wait((task, incoming), return_when=asyncio.FIRST_COMPLETED)
                 if incoming in done:
                     event = incoming.result()
-                    if learning or event[0] == "error":
+                    if event[0] == "error":
                         await cancel(task)
-                        self.record.append("learning_interrupted" if learning else "work_interrupted", {})
+                        self.record.append("work_interrupted", {})
                     await self.receive(event)
-                    if learning:
-                        return
                     incoming = asyncio.create_task(self.line.inbox.get())
                 if task in done:
                     await task
