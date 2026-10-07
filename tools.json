@@ -3,7 +3,7 @@
     "screen": {
       "handler": "tools:screen",
       "boundary": false,
-      "description": "Look at a fresh desktop. region null is the whole desktop, otherwise native [x, y, width, height]. Python crops real pixels and asks LFM. Returns the stored PNG, the mapping, the report, the rewritten scene, and marks. Each mark has label, image_id, bbox_2d in [0, 1000], desktop.box, and desktop.center. One image is image_id 0. Wording does not crop. Unknown is not empty.",
+      "description": "Look at a fresh desktop. region null is the whole desktop, otherwise native [x, y, width, height]. Python crops real pixels and asks LFM. Returns the stored PNG, the mapping, the report, the rewritten scene, and marks. Each mark has label, image_id, bbox_2d in [0, 1000], desktop.box, and desktop.center. One image is image_id 0. Wording does not crop. Unknown is not empty. This tool does not take observation. An observation fails the process.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -20,7 +20,7 @@
     "images": {
       "handler": "tools:images",
       "boundary": false,
-      "description": "Look again at stored PNGs. Each view copies path, origin, and scale from a receipt, plus a native region or null. Python prepares the pixels. A path is not an image you have seen.",
+      "description": "Look again at stored PNGs. Each view copies path, origin, and scale from a receipt, plus a native region or null. Python prepares the pixels. A path is not an image you have seen. This tool does not take observation. An observation fails the process.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -192,7 +192,7 @@
     "files": {
       "handler": "tools:files",
       "boundary": false,
-      "description": "Read every file directly in the Trident root. Use those contents before rewriting.",
+      "description": "Read every file directly in the Trident root. Use those contents before rewriting. This tool does not take observation. An observation fails the process.",
       "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
       "observe": false
     },

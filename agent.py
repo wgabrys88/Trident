@@ -78,15 +78,22 @@ class Agent:
         self.state["assessment"] = assessment
         self.record.append("assessment", assessment)
         calls = batch["calls"]
+        for call in calls:
+            name = call["tool"]
+            if name not in catalog.specs:
+                raise KeyError(name)
+            if catalog.specs[name]["observe"]:
+                if "observation" not in call:
+                    raise RuntimeError(name + " requires observation")
+            elif "observation" in call:
+                raise ValueError("This tool does not take an observation")
+            if catalog.specs[name]["boundary"] and call is not calls[-1]:
+                raise ValueError(f"{name} must be last in its batch")
         for index, call in enumerate(calls):
             if generation != self.line.generation:
                 self.record.append("batch_superseded", {"reason": "Input changed during execution", "remaining": calls[index:]})
                 break
             name = call["tool"]
-            if name not in catalog.specs:
-                raise KeyError(name)
-            if catalog.specs[name]["boundary"] and index != len(calls) - 1:
-                raise ValueError(f"{name} must be last in its batch")
             self.record.append("tool_start", call, "LUNA", "TOOL (" + name + ")")
             result = await catalog.call(self, **call)
             entry = {"call": call, "result": result}
