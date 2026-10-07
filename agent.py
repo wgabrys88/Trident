@@ -58,11 +58,10 @@ class Agent:
         self.state["attention"] = True
         self.state["shutdown"] = False
         self.state["waiting"] = False
-        self.record.append("owner_input", {"text": value, "source": kind})
-        # The owner's words are the present task. Retained work remains context
-        # until the model explicitly selects it, so it cannot mask new input.
-        self.state["goal"] = value
-        self.state["assessment"] = None
+        if kind in ("owner", "audio"):
+            self.record.append("owner_input", {"text": value, "source": kind})
+            self.state["goal"] = value
+            self.state["assessment"] = None
         self.save()
 
     async def step(self):
@@ -93,17 +92,9 @@ class Agent:
                     raise KeyError(name)
                 if catalog.specs[name]["boundary"] and call is not calls[-1]:
                     raise ValueError(f"{name} must be last in its batch")
-                if catalog.specs[name]["observe"] and "observation" not in call:
-                    raise ValueError(f"{name} requires an observation")
         except Exception as error:
             self.state["history"].append({"rejected": str(error)})
             self.record.append("rejected", {"error": str(error), "text": text})
-            self.state["attention"] = True
-            self.save()
-            return
-        if not calls:
-            self.state["history"].append({"rejected": "Luna returned an empty call batch"})
-            self.record.append("rejected", {"error": "Luna returned an empty call batch", "text": text})
             self.state["attention"] = True
             self.save()
             return
