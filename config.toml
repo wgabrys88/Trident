@@ -3,7 +3,7 @@ telegram_id = 5884279027
 
 [luna]
 model = "gpt-5.6-luna-none"
-command = ["%LOCALAPPDATA%/cursor-agent/versions/2026.10.01-e373342/node.exe", "%LOCALAPPDATA%/cursor-agent/versions/2026.10.01-e373342/index.js"]
+machine = "trident-nvidia"
 
 [telegram]
 tdata = "%APPDATA%/Telegram Desktop/tdata"

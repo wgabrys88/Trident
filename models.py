@@ -1,10 +1,11 @@
 import asyncio
+import base64
 import json
 import os
-import shutil
 import socket
 import subprocess
-import tempfile
+import urllib.error
+import urllib.request
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -87,25 +88,181 @@ async def run_process(record, parts, data, cwd, stream=False):
             pass
 
 
-async def decision(record, instruction, context, workspace):
-    record.append("request", {"system": instruction, "context": context}, "TRIDENT", "LUNA")
-    raw = await run_process(record, [
-        *CONFIG["luna"]["command"], "-p", "--trust", "--force", "--model", CONFIG["luna"]["model"],
-        "--output-format", "stream-json", "--workspace", str(workspace),
-    ], (instruction + "\n\nTrident context:\n" + encode(context)).encode("utf-8"), workspace, stream=True)
-    events = []
-    for line in raw.splitlines():
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
+def cursor_key():
+    key = os.environ.get("CURSOR_API_KEY", "").strip()
+    if not key:
+        raise RuntimeError(
+            "CURSOR_API_KEY is not set. Create a user API key at https://cursor.com/dashboard "
+            "(Dashboard → API Keys) and set CURSOR_API_KEY in the same PowerShell session before "
+            "starting Trident. The saved agent login on this PC is not that key, and a team Admin "
+            "API key cannot place a visit on My Machines."
+        )
+    return key
+
+
+def cursor_place():
+    machine = str(CONFIG["luna"].get("machine", "")).strip()
+    if not machine:
+        raise RuntimeError("config.toml [luna] machine is empty. Set it to the My Machines worker name, trident-nvidia.")
+    flags = subprocess.CREATE_NO_WINDOW
+    repo = subprocess.check_output(["git", "remote", "get-url", "origin"], cwd=ROOT, text=True, creationflags=flags).strip()
+    branch = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=ROOT, text=True, creationflags=flags).strip()
+    if not repo or branch == "HEAD":
+        raise RuntimeError("A visit on this machine needs origin and a named branch")
+    return machine, repo, branch
+
+
+def require_cursor():
+    key = cursor_key()
+    cursor_place()
+    token = base64.b64encode(f"{key}:".encode()).decode()
+    request = urllib.request.Request(
+        "https://api.cursor.com/v1/agents?limit=1",
+        headers={"Authorization": f"Basic {token}", "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            response.read(64)
+    except urllib.error.HTTPError as error:
+        detail = error.read(500).decode("utf-8", "replace")
+        raise RuntimeError(
+            f"CURSOR_API_KEY was rejected by https://api.cursor.com ({error.code}): {detail}. "
+            "Create a user API key at https://cursor.com/dashboard (Dashboard → API Keys) and set "
+            "CURSOR_API_KEY in this PowerShell session."
+        ) from None
+
+
+def png_inputs(folder):
+    shots = []
+    paths = [path for path in Path(folder).glob("*.png") if path.is_file()]
+    paths.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    for path in paths:
+        if path.stat().st_size > 15 * 1024 * 1024:
             continue
-        if isinstance(event, dict):
-            events.append(event)
-    result = next((event for event in reversed(events) if event.get("type") == "result"), None)
-    if not result or result.get("is_error") or not isinstance(result.get("result"), str) or not result["result"].strip():
-        raise RuntimeError("Luna returned no successful executable response")
-    record.append("response", result, "LUNA", "TRIDENT")
-    return result["result"]
+        shots.append({"mimeType": "image/png", "data": base64.b64encode(path.read_bytes()).decode("ascii")})
+        if len(shots) == 5:
+            break
+    return shots
+
+
+async def cursor_json(session, key, method, path, payload=None):
+    options = {"auth": aiohttp.BasicAuth(key, ""), "headers": {"Accept": "application/json"}}
+    if payload is not None:
+        options["json"] = payload
+    async with session.request(method, "https://api.cursor.com" + path, **options) as response:
+        raw = await response.text()
+        if response.status >= 400:
+            raise RuntimeError(f"Cursor Cloud Agents API {method} {path} failed ({response.status}): {raw[:1500]}")
+        return json.loads(raw) if raw else {}
+
+
+async def watch_run(session, key, agent_id, run_id, record):
+    terminal = {"FINISHED", "ERROR", "CANCELLED", "EXPIRED"}
+    last = None
+    while True:
+        try:
+            status, reply, last, done = await read_stream(session, key, agent_id, run_id, record, last)
+        except aiohttp.ClientError:
+            done = False
+        if done:
+            return status, reply
+        try:
+            body = await cursor_json(session, key, "GET", f"/v1/agents/{agent_id}/runs/{run_id}")
+        except aiohttp.ClientError:
+            await asyncio.sleep(1)
+            continue
+        if body.get("status") in terminal:
+            return body.get("status"), body.get("result")
+        await asyncio.sleep(1)
+
+
+async def read_stream(session, key, agent_id, run_id, record, last):
+    headers = {"Accept": "text/event-stream"}
+    if last:
+        headers["Last-Event-ID"] = last
+    url = f"https://api.cursor.com/v1/agents/{agent_id}/runs/{run_id}/stream"
+    async with session.get(url, headers=headers, auth=aiohttp.BasicAuth(key, "")) as response:
+        if response.status == 410:
+            return None, None, last, False
+        if response.status >= 400:
+            detail = await response.text()
+            raise RuntimeError(f"Cursor Cloud Agents API stream failed ({response.status}): {detail[:1500]}")
+        event, data, current = "message", [], last
+        while True:
+            raw = await response.content.readline()
+            if not raw:
+                return None, None, current, False
+            line = raw.decode("utf-8", "replace").rstrip("\r\n")
+            if line.startswith("id:"):
+                current = line[3:].strip()
+            elif line.startswith("event:"):
+                event = line[6:].strip()
+            elif line.startswith("data:"):
+                data.append(line[5:].lstrip())
+            elif line == "" and data:
+                payload = json.loads("\n".join(data))
+                kind, event, data = event, "message", []
+                if kind == "heartbeat":
+                    continue
+                record.append("model_event", {"channel": kind, "data": payload})
+                if kind == "result":
+                    return payload.get("status"), payload.get("text"), current, True
+                if kind == "error":
+                    return None, None, current, False
+
+
+async def stop_run(key, agent_id, run_id, record):
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
+            await cursor_json(session, key, "POST", f"/v1/agents/{agent_id}/runs/{run_id}/cancel")
+    except Exception as error:
+        record.append("model_event", {"channel": "agent", "data": {
+            "id": agent_id, "run": run_id, "cancel_error": str(error),
+        }})
+
+
+async def decision(record, instruction, context, workspace):
+    key = cursor_key()
+    machine, repo, branch = cursor_place()
+    repair = Path(workspace).resolve() == ROOT
+    record.append("request", {"system": instruction, "context": context, "machine": machine}, "TRIDENT", "LUNA")
+    prompt = {"text": instruction + "\n\nTrident context:\n" + encode(context)}
+    if not repair:
+        shots = png_inputs(workspace)
+        if shots:
+            prompt["images"] = shots
+    payload = {
+        "prompt": prompt, "model": {"id": CONFIG["luna"]["model"]},
+        "name": "Trident repair" if repair else "Trident decision",
+        "env": {"type": "machine", "name": machine},
+        "repos": [{"url": repo, "startingRef": branch}],
+        "autoCreatePR": False, "workOnCurrentBranch": False, "mode": "agent",
+    }
+    agent_id = run_id = None
+    finished = False
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, sock_connect=30)) as session:
+            created = await cursor_json(session, key, "POST", "/v1/agents", payload)
+            agent, run = created["agent"], created["run"]
+            agent_id, run_id = agent["id"], run["id"]
+            url = agent.get("url") or f"https://cursor.com/agents/{agent_id}"
+            record.append("model_event", {"channel": "agent", "data": {
+                "id": agent_id, "run": run_id, "url": url, "machine": machine,
+            }})
+            status, reply = await watch_run(session, key, agent_id, run_id, record)
+            finished = True
+    except asyncio.CancelledError:
+        if agent_id and not finished:
+            await asyncio.shield(stop_run(key, agent_id, run_id, record))
+        raise
+    except Exception:
+        if agent_id and not finished:
+            await stop_run(key, agent_id, run_id, record)
+        raise
+    if status != "FINISHED" or not isinstance(reply, str) or not reply.strip():
+        raise RuntimeError(f"Luna returned no successful executable response ({status}): {str(reply)[:1500]}")
+    record.append("response", {"result": reply, "agent": agent_id, "url": url, "run": run_id}, "LUNA", "TRIDENT")
+    return reply
 
 
 class Models:
@@ -125,8 +282,6 @@ class Models:
                     (ROOT / part).stat()
         for part in (CONFIG["ears"]["library"], CONFIG["ears"]["model"]):
             (ROOT / part).stat()
-        for part in command(CONFIG["luna"]["command"]):
-            Path(part).stat()
         self.http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600))
         endpoint = urlsplit(CONFIG["voice"]["url"])
         with socket.socket() as port:
@@ -193,13 +348,7 @@ class Models:
 
     async def luna(self, context):
         instruction = (ROOT / "instructions.txt").read_text(encoding="utf-8")
-        scratch = Path(tempfile.mkdtemp(prefix="trident-"))
-        try:
-            for path in self.record.folder.glob("*.png"):
-                shutil.copyfile(path, scratch / path.name)
-            return await decision(self.record, instruction, context, scratch)
-        finally:
-            shutil.rmtree(scratch, ignore_errors=True)
+        return await decision(self.record, instruction, context, self.record.folder)
 
     async def voice(self, text):
         request = {"input": text, "response_format": "wav"}

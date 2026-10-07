@@ -17,7 +17,7 @@ ROOT = Path(os.environ.get("TRIDENT_ROOT", Path(__file__).resolve().parent.paren
 os.environ["TRIDENT_ROOT"] = str(ROOT)
 sys.path.insert(0, str(ROOT))
 
-from models import decision
+from models import decision, require_cursor
 from store import ROOT as STORE_ROOT, Record, read, save, write
 
 
@@ -73,7 +73,7 @@ def repair(folder):
     record.append("repair_before", {"request": request, "files": len(before)})
     instruction = (ROOT / "instructions.txt").read_text(encoding="utf-8") + (
         "\nThis is the repair visit. The live body is stopped. Edit general mechanisms in the source tree. "
-        "Do not run Trident, do not commit, and do not push. Preserve the saved life and task. "
+        "Do not run Trident, do not commit, do not push, and do not switch branches. Preserve the saved life and task. "
         "Use agent mode and report what you changed."
     )
     failure = None
@@ -116,6 +116,7 @@ def repair(folder):
 def main():
     if STORE_ROOT != ROOT:
         raise RuntimeError("Supervisor root does not match the source tree")
+    require_cursor()
     name = hashlib.sha256(str(ROOT).casefold().encode()).hexdigest()[:24]
     mutex = win32event.CreateMutex(None, False, "Local\\Trident-" + name)
     acquired = False
