@@ -1,13 +1,8 @@
 import asyncio
-import copy
 import json
-
-from jsonschema import ValidationError
 
 from store import ROOT, cancel, read, write
 from tools import Catalog
-
-GATES = ("waiting", "attention", "shutdown", "restart", "goal", "finished", "open_work", "suspended")
 
 
 class Agent:
@@ -61,12 +56,6 @@ class Agent:
         self.record.append("owner_input", {"text": value, "source": kind})
         self.save()
 
-    def failed(self, call, error):
-        entry = {"call": call, "error": {"type": type(error).__name__, "message": getattr(error, "message", str(error))}}
-        self.state["history"].append(entry)
-        self.record.append("decision_failed", entry)
-        self.save()
-
     async def step(self):
         catalog = Catalog()
         mind = read(ROOT / "mind.json")
@@ -80,12 +69,8 @@ class Agent:
             "hearing": {"busy": self.line.hearing.busy, "queued": self.line.hearing.queue.qsize()},
             "tools": catalog.document, "history": self.state["history"],
         })
-        try:
-            batch = json.loads(text)
-            catalog.validate({"$ref": "#/$defs/batch"}, batch)
-        except (json.JSONDecodeError, ValidationError) as error:
-            self.failed({"raw": text[:240]}, error)
-            return
+        batch = json.loads(text)
+        catalog.validate({"$ref": "#/$defs/batch"}, batch)
         if generation != self.line.generation:
             self.record.append("batch_superseded", {"reason": "Input changed while Luna was deciding", "batch": batch})
             return
@@ -97,19 +82,13 @@ class Agent:
             if generation != self.line.generation:
                 self.record.append("batch_superseded", {"reason": "Input changed during execution", "remaining": calls[index:]})
                 break
-            saved = {key: copy.deepcopy(self.state[key]) for key in GATES}
-            try:
-                name = call["tool"]
-                if name not in catalog.specs:
-                    raise KeyError(name)
-                if catalog.specs[name]["boundary"] and index != len(calls) - 1:
-                    raise ValueError(f"{name} must be last in its batch")
-                self.record.append("tool_start", call, "LUNA", "TOOL (" + name + ")")
-                result = await catalog.call(self, **call)
-            except Exception as error:
-                self.state.update(saved)
-                self.failed(call, error)
-                return
+            name = call["tool"]
+            if name not in catalog.specs:
+                raise KeyError(name)
+            if catalog.specs[name]["boundary"] and index != len(calls) - 1:
+                raise ValueError(f"{name} must be last in its batch")
+            self.record.append("tool_start", call, "LUNA", "TOOL (" + name + ")")
+            result = await catalog.call(self, **call)
             entry = {"call": call, "result": result}
             self.state["history"].append(entry)
             self.record.append("tool_result", entry, "TOOL (" + name + ")", "LUNA")
@@ -151,7 +130,7 @@ class Agent:
                 "Keep concise cumulative lessons from all portions: failures, changes, observations, Luna's batches, "
                 "and improvements to visual reports. Separate evidence from speculation. "
                 "File paths identify retained evidence. They are not images you have seen. "
-                "Return at most 400 words.",
+                "Do not shorten evidence.",
                 {"outcome": {key: value for key, value in lesson.items() if key != "trace"},
                  "previous_study": study, "events": [json.loads(line) for line in events.splitlines()]}, [],
             ))["text"]

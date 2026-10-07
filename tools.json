@@ -123,7 +123,7 @@
     "python": {
       "handler": "tools:python",
       "boundary": false,
-      "description": "Run the async Python you wrote, with host, ROOT, and asyncio. Return JSON data. The code does not choose the next action and does not interpret pixels. Source changes use heal. The shared observation looks after the code returns.",
+      "description": "Run the async Python you wrote, with host, ROOT, and asyncio. The shared observation looks after the code returns.",
       "parameters": {
         "type": "object",
         "properties": {"code": {"type": "string", "minLength": 1}},
