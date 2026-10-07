@@ -24,6 +24,8 @@ async def main():
     else:
         state = read(folder / "session.json")
         state["restart"] = False
+        if "scene" not in state:
+            state["scene"] = ""
     record.append("boot", {"resumed": len(sys.argv) != 1})
     write(folder / "session.json", state)
     line = Line(asyncio.Queue(), record)
