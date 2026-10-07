@@ -79,7 +79,7 @@ class Agent:
             "open_work": self.state["open_work"], "assessment": self.state["assessment"],
             "hearing": {"busy": self.line.hearing.busy, "queued": self.line.hearing.queue.qsize()},
             "tools": catalog.document, "history": self.state["history"],
-        }))
+        })
         try:
             batch = json.loads(text)
             catalog.validate({"$ref": "#/$defs/batch"}, batch)
