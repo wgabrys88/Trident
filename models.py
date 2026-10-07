@@ -109,7 +109,12 @@ class Models:
 
     async def luna(self, instruction, context, reply="json"):
         if reply == "json":
-            instruction += "\nYou are in agent mode. Ask mode is not in effect. Read every PNG path yourself. Then return exactly one JSON object in the requested format, without Markdown or prose outside JSON."
+            instruction += (
+                "\nYou are in agent mode. Ask mode is not in effect. Read every PNG path yourself. "
+                "Return exactly one JSON object with assessment and calls, and no other text. "
+                "Python executes those calls now. screen, click, drag, dial, speak, and consult are real. "
+                "Do not finish because you think the catalog is missing."
+            )
         self.record.append("request", {"system": instruction, "context": context}, "TRIDENT", "LUNA")
         raw = await execute([
             *CONFIG["luna"]["command"], "-p", "--trust", "--model", CONFIG["luna"]["model"],
