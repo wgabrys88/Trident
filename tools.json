@@ -3,16 +3,11 @@
     "screen": {
       "handler": "tools:screen",
       "boundary": false,
-      "description": "Look at a fresh desktop. region null is the whole desktop, otherwise native [x, y, width, height]. Python crops real pixels and asks LFM. Returns the stored PNG, the mapping, the report, the rewritten scene, and marks. Each mark has label, image_id, bbox_2d in [0, 1000], desktop.box, and desktop.center. One image is image_id 0. Wording does not crop. Unknown is not empty. This tool does not take observation. An observation fails the process.",
+      "description": "Capture the desktop and store a PNG. region null is the whole desktop, otherwise native [x, y, width, height]. Read that PNG yourself. A point on the image is not a desktop point: desktop_x = origin_x + image_x / scale_x, and the same for y. This tool does not take observation.",
       "parameters": {
         "type": "object",
-        "properties": {
-          "expected": {"$ref": "#/$defs/text"},
-          "question": {"$ref": "#/$defs/text"},
-          "region": {"$ref": "#/$defs/region"},
-          "relation": {"$ref": "#/$defs/text"}
-        },
-        "required": ["expected", "question", "region", "relation"],
+        "properties": {"region": {"$ref": "#/$defs/region"}},
+        "required": ["region"],
         "additionalProperties": false
       },
       "observe": false
@@ -20,13 +15,10 @@
     "images": {
       "handler": "tools:images",
       "boundary": false,
-      "description": "Look again at stored PNGs. Each view copies path, origin, and scale from a receipt, plus a native region or null. Python prepares the pixels. A path is not an image you have seen. This tool does not take observation. An observation fails the process.",
+      "description": "Crop stored PNGs and store the new PNG. Read it yourself. Copy path, origin, and scale from a receipt. This tool does not take observation.",
       "parameters": {
         "type": "object",
         "properties": {
-          "expected": {"$ref": "#/$defs/text"},
-          "question": {"$ref": "#/$defs/text"},
-          "relation": {"$ref": "#/$defs/text"},
           "views": {
             "type": "array",
             "minItems": 1,
@@ -43,7 +35,7 @@
             }
           }
         },
-        "required": ["expected", "question", "relation", "views"],
+        "required": ["views"],
         "additionalProperties": false
       },
       "observe": false
@@ -51,7 +43,7 @@
     "click": {
       "handler": "desktop:click",
       "boundary": false,
-      "description": "Click desktop.center from a mark receipt. Never click bbox_2d. The shared observation then looks at the fresh screen.",
+      "description": "Click desktop pixels. The following shot is a PNG you read yourself.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -68,7 +60,7 @@
     "drag": {
       "handler": "desktop:stroke",
       "boundary": false,
-      "description": "Hold the left button and move through desktop.center points from mark receipts, for the given seconds. Never use bbox_2d as a pixel. The shared observation looks after the stroke.",
+      "description": "Hold the left button and move through desktop pixel points. The following shot is a PNG you read yourself.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -189,6 +181,18 @@
       "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
       "observe": false
     },
+    "consult": {
+      "handler": "tools:consult",
+      "boundary": true,
+      "description": "Spawn another Luna in agent mode to correct the code when the current tools cannot do the task. Ask mode is not used. She edits the tree. The process then restarts and the call ends. Last call in the batch. This tool does not take observation.",
+      "parameters": {
+        "type": "object",
+        "properties": {"task": {"type": "string", "minLength": 1}},
+        "required": ["task"],
+        "additionalProperties": false
+      },
+      "observe": false
+    },
     "wait": {
       "handler": "tools:wait",
       "boundary": true,
@@ -241,7 +245,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["expected", "question", "region", "relation"],
-      "description": "Required on every observe=true call. expected is the hoped-for change, not a fact. question is a separate next-plan question. region is a native crop or null. relation ties this look to earlier looks. Python crops, asks LFM, and maps each bbox_2d to desktop.center. Pixel size is not sent to LFM.",
+      "description": "Required on every observe=true call. expected is what you hope changed. question is what you will decide next. region is the native crop or null. relation ties this shot to earlier ones. The shot is a PNG you read yourself.",
       "properties": {
         "expected": {"$ref": "#/$defs/text"},
         "question": {"$ref": "#/$defs/text"},

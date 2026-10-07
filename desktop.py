@@ -29,7 +29,7 @@ def prepare_image(image, origin, scale, region):
         image = image.crop((left, top, right, bottom))
         origin = [origin[0] + left / scale[0], origin[1] + top / scale[1]]
     crop = list(image.size)
-    ratio = min(1, CONFIG["lfm"]["long_edge"] / max(crop))
+    ratio = min(1, 1024 / max(crop))
     prepared = [max(1, round(side * ratio)) for side in crop]
     if prepared != crop:
         image = image.resize(prepared, Image.Resampling.LANCZOS)
@@ -38,7 +38,7 @@ def prepare_image(image, origin, scale, region):
     return output.getvalue(), {
         "origin": origin, "crop": crop, "prepared": prepared,
         "scale": [scale[i] * prepared[i] / crop[i] for i in range(2)],
-        "frame": "lfm2.5-vl [0,1000] on this PNG",
+        "frame": "prepared PNG",
     }
 
 

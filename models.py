@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import json
 import os
 import socket
@@ -50,7 +49,7 @@ class Models:
         self.http = None
 
     async def open(self):
-        for name in ("lfm", "voice"):
+        for name in ("voice",):
             parts = CONFIG[name]["command"]
             (ROOT / parts[0]).stat()
             for part in parts[1:]:
@@ -61,7 +60,7 @@ class Models:
         for part in command(CONFIG["luna"]["command"]):
             Path(part).stat()
         self.http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600))
-        for name in ("lfm", "voice"):
+        for name in ("voice",):
             endpoint = urlsplit(CONFIG[name]["url"])
             with socket.socket() as port:
                 port.bind((endpoint.hostname, endpoint.port))
@@ -108,8 +107,9 @@ class Models:
             await self.http.close()
         self.record.append("models_closed", {})
 
-    async def luna(self, instruction, context):
-        instruction += "\nReturn exactly one JSON object in the requested format, without Markdown or prose outside JSON."
+    async def luna(self, instruction, context, reply="json"):
+        if reply == "json":
+            instruction += "\nYou are in agent mode. Ask mode is not in effect. Read every PNG path yourself. Then return exactly one JSON object in the requested format, without Markdown or prose outside JSON."
         self.record.append("request", {"system": instruction, "context": context}, "TRIDENT", "LUNA")
         raw = await execute([
             *CONFIG["luna"]["command"], "-p", "--trust", "--model", CONFIG["luna"]["model"],
@@ -122,39 +122,6 @@ class Models:
         if not text:
             raise RuntimeError("Luna returned an empty response")
         return text
-
-    async def look(self, system, user, images, schema=None):
-        paths = [self.record.artifact(payload, "png") for payload in images]
-        body = encode(user)
-        if paths:
-            content = [{"type": "text", "text": body}]
-            for path in paths:
-                encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-                content.append({"type": "image_url", "image_url": {"url": "data:image/png;base64," + encoded}})
-        else:
-            content = body
-        settings = CONFIG["lfm"]
-        request = {
-            "model": "lfm", "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": content},
-            ], "temperature": settings["temperature"], "top_k": settings["top_k"],
-            "repeat_penalty": settings["repeat_penalty"], "max_tokens": settings["max_tokens"],
-        }
-        if schema is not None:
-            request["response_format"] = {"type": "json_schema", "json_schema": {"name": "look", "schema": schema}}
-        self.record.append("request", {"system": system, "user": user,
-                                      "parameters": {key: value for key, value in request.items() if key != "messages"}},
-                           "LUNA", "LFM", paths)
-        result = json.loads(await self.post("lfm", "/v1/chat/completions", request, "LFM"))
-        choice = result["choices"][0]
-        text = (choice["message"]["content"] or "").strip()
-        self.record.append("response", {"finish_reason": choice["finish_reason"], "text": text}, "LFM", "LUNA")
-        if choice["finish_reason"] != "stop":
-            raise RuntimeError(f"LFM stopped with {choice['finish_reason']}")
-        if not text:
-            raise RuntimeError("LFM returned an empty response")
-        return {"text": text, "images": [str(path) for path in paths]}
 
     async def voice(self, text):
         request = {"input": text, "response_format": "wav"}

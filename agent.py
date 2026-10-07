@@ -135,7 +135,7 @@ class Agent:
             await cancel(watch)
 
     async def live(self):
-        while True:
+        while not self.state.get("restart"):
             if not self.line.inbox.empty():
                 await self.receive(await self.line.inbox.get())
                 continue

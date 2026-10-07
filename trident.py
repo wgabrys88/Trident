@@ -18,11 +18,13 @@ async def main():
     if len(sys.argv) == 1:
         state = {
             "goal": None, "scene": "", "history": [],
-            "waiting": False, "shutdown": False, "start": 0,
+            "waiting": False, "shutdown": False, "restart": False, "start": 0,
             "attention": True, "recording": False, "open_work": read(ROOT / "mind.json")["open_work"], "assessment": None,
         }
     else:
         state = read(folder / "session.json")
+        state["restart"] = False
+        state["attention"] = True
         if "scene" not in state:
             state["scene"] = ""
     record.append("boot", {"resumed": len(sys.argv) != 1})
@@ -45,18 +47,21 @@ async def main():
                     cleanup.push_async_callback(resource.close)
             record.append("cleanup_finished", {})
             if sys.exception() is None:
-                record.append("shutdown", {})
+                record.append("restart" if state.get("restart") else "shutdown", {})
         finally:
             try:
                 await record.close()
             finally:
                 if line.client is not None:
                     await line.client.disconnect()
+    return folder if state.get("restart") else None
 
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        restart = asyncio.run(main())
+        if restart is not None:
+            os.execv(sys.executable, [sys.executable, str(ROOT / "trident.py"), str(restart)])
     except Exception as error:
         print(f"{type(error).__name__}: {error}", file=sys.stderr)
         sys.exit(1)

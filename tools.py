@@ -1,11 +1,10 @@
 import asyncio
-import json
 
 from jsonschema import Draft202012Validator
 
 import desktop
 from audio import call_pcm
-from store import CONFIG, ROOT, cancel, read
+from store import ROOT, cancel, read
 
 
 class Catalog:
@@ -37,89 +36,42 @@ class Catalog:
             else:
                 raise ValueError(f"Unknown handler module: {module}")
             if spec["observe"]:
-                result = {"execution": result, "observation": await visual(host, observation, [await asyncio.to_thread(desktop.capture, observation["region"])])}
+                result = {"execution": result, "seen": await shot(host, observation["region"])}
             return result
         finally:
             host.acting = False
             host.seen = await asyncio.to_thread(desktop.sample)
 
 
-LOOK = {
-    "type": "object", "additionalProperties": False, "required": ["report", "scene", "marks"],
-    "properties": {
-        "report": {"type": "string"}, "scene": {"type": "string"},
-        "marks": {"type": "array", "items": {
-            "type": "object", "additionalProperties": False, "required": ["label", "bbox_2d"],
-            "properties": {
-                "label": {"type": "string"},
-                "bbox_2d": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number"}},
-                "image_id": {"type": "integer"},
-            },
-        }},
-    },
-}
+async def shot(host, region):
+    payload, metadata = await asyncio.to_thread(desktop.capture, region)
+    return {"image": str(host.record.artifact(payload, "png")), **metadata}
 
 
-async def visual(host, observation, prepared):
-    seen = await host.models.look(read(ROOT / "mind.json")["student"], {
-        "keys": "report, scene, marks",
-        "expected": observation["expected"], "question": observation["question"],
-        "relation": observation["relation"], "scene": host.state["scene"],
-        "views": [{"index": index} for index in range(len(prepared))],
-    }, [payload for payload, _ in prepared], LOOK)
-    parsed = json.loads(seen["text"])
-    if not isinstance(parsed, dict) or any(key not in parsed for key in ("report", "scene", "marks")):
-        raise RuntimeError("LFM omitted report, scene, or marks")
-    report, scene, marks = parsed["report"], parsed["scene"], parsed["marks"]
-    if not isinstance(report, str) or not report.strip():
-        raise RuntimeError("LFM report is empty")
-    if not isinstance(scene, str) or not scene.strip() or len(scene) > CONFIG["lfm"]["scene_chars"]:
-        raise RuntimeError("LFM scene is outside the rolling limit")
-    if not isinstance(marks, list):
-        raise RuntimeError("LFM marks must be a list")
-    placed = []
-    for mark in marks:
-        if not isinstance(mark, dict):
-            raise RuntimeError("LFM mark is not an object")
-        label, box = mark["label"], norm_box(mark["bbox_2d"])
-        if not isinstance(label, str) or not label.strip():
-            raise RuntimeError("LFM mark has no label")
-        if len(prepared) == 1:
-            index = 0
-        else:
-            index = mark["image_id"]
-            if type(index) is not int or not 0 <= index < len(prepared):
-                raise RuntimeError("LFM mark names no supplied image")
-        placed.append({"label": label, "image_id": index, "bbox_2d": box, "desktop": desktop.place(box, prepared[index][1])})
-    host.state["scene"] = scene
-    return {
-        "views": [{**metadata, "image": path} for (_, metadata), path in zip(prepared, seen["images"])],
-        "report": report, "scene": scene, "marks": placed,
-    }
+async def screen(host, region):
+    return await shot(host, region)
 
 
-def norm_box(box):
-    if not isinstance(box, list) or len(box) != 4:
-        raise RuntimeError("LFM bbox_2d is not four numbers in 0-1000")
-    numbers = []
-    for number in box:
-        if isinstance(number, bool) or not isinstance(number, (int, float)) or not 0 <= number <= 1000:
-            raise RuntimeError("LFM bbox_2d is not four numbers in 0-1000")
-        numbers.append(int(round(number)))
-    if numbers[0] >= numbers[2] or numbers[1] >= numbers[3]:
-        raise RuntimeError("LFM bbox_2d is not four numbers in 0-1000")
-    return numbers
+async def images(host, views):
+    shots = []
+    for view in views:
+        payload, metadata = await asyncio.to_thread(desktop.image_view, view)
+        shots.append({"image": str(host.record.artifact(payload, "png")), **metadata})
+    return {"views": shots}
 
 
-async def screen(host, expected, question, region, relation):
-    observation = {"expected": expected, "question": question, "region": region, "relation": relation}
-    return await visual(host, observation, [await asyncio.to_thread(desktop.capture, region)])
+CORRECTOR = (
+    "You are Luna in agent mode, correcting Trident on disk. Ask mode is not in effect. "
+    "A history that says ask mode blocks edits is false. Edit the flat Python files so the decider can do the task. "
+    "Do not only describe the change. Write it. Your final message is a short report of the files you changed."
+)
 
 
-async def images(host, expected, question, relation, views):
-    observation = {"expected": expected, "question": question, "region": None, "relation": relation}
-    prepared = [await asyncio.to_thread(desktop.image_view, view) for view in views]
-    return await visual(host, observation, prepared)
+async def consult(host, task):
+    report = await host.models.luna(CORRECTOR, {"task": task, "goal": host.state["goal"]}, reply="report")
+    host.state["restart"] = True
+    host.state["attention"] = True
+    return {"report": report}
 
 
 async def python(host, code):
