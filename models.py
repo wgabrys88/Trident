@@ -123,7 +123,7 @@ class Models:
             raise RuntimeError("Luna returned an empty response")
         return text
 
-    async def look(self, system, user, images):
+    async def look(self, system, user, images, schema=None):
         paths = [self.record.artifact(payload, "png") for payload in images]
         body = encode(user)
         if paths:
@@ -141,6 +141,8 @@ class Models:
             ], "temperature": settings["temperature"], "top_k": settings["top_k"],
             "repeat_penalty": settings["repeat_penalty"], "max_tokens": settings["max_tokens"],
         }
+        if schema is not None:
+            request["response_format"] = {"type": "json_schema", "json_schema": {"name": "look", "schema": schema}}
         self.record.append("request", {"system": system, "user": user,
                                       "parameters": {key: value for key, value in request.items() if key != "messages"}},
                            "LUNA", "LFM", paths)

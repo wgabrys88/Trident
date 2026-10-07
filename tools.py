@@ -40,13 +40,29 @@ class Catalog:
         return result
 
 
+LOOK = {
+    "type": "object", "additionalProperties": False, "required": ["report", "scene", "marks"],
+    "properties": {
+        "report": {"type": "string"}, "scene": {"type": "string"},
+        "marks": {"type": "array", "items": {
+            "type": "object", "additionalProperties": False, "required": ["label", "bbox_2d"],
+            "properties": {
+                "label": {"type": "string"},
+                "bbox_2d": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number"}},
+                "image_id": {"type": "integer"},
+            },
+        }},
+    },
+}
+
+
 async def visual(host, observation, prepared):
     seen = await host.models.look(read(ROOT / "mind.json")["student"], {
         "keys": "report, scene, marks",
         "expected": observation["expected"], "question": observation["question"],
         "relation": observation["relation"], "scene": host.state["scene"],
         "views": [{"index": index} for index in range(len(prepared))],
-    }, [payload for payload, _ in prepared])
+    }, [payload for payload, _ in prepared], LOOK)
     parsed = json.loads(seen["text"])
     if not isinstance(parsed, dict) or any(key not in parsed for key in ("report", "scene", "marks")):
         raise RuntimeError("LFM omitted report, scene, or marks")
