@@ -115,26 +115,26 @@
     "python": {
       "handler": "tools:python",
       "boundary": false,
-      "description": "Run the async Python you wrote, with host, ROOT, and asyncio. The shared observation looks after the code returns.",
+      "description": "Run the async Python you wrote, with host, ROOT, and asyncio.",
       "parameters": {
         "type": "object",
         "properties": {"code": {"type": "string", "minLength": 1}},
         "required": ["code"],
         "additionalProperties": false
       },
-      "observe": true
+      "observe": false
     },
     "chat": {
       "handler": "line:chat",
       "boundary": false,
-      "description": "Send text to Wojciech's private Telegram chat. Delivery is only delivery. It does not do the desktop work and it does not change mode. The shared observation does not prove he read it.",
+      "description": "Send text to Wojciech's private Telegram chat and return its delivery receipt. It does not do desktop work.",
       "parameters": {
         "type": "object",
         "properties": {"text": {"type": "string", "minLength": 1}},
         "required": ["text"],
         "additionalProperties": false
       },
-      "observe": true
+      "observe": false
     },
     "dial": {
       "handler": "tools:dial",
@@ -146,14 +146,14 @@
         "required": ["text"],
         "additionalProperties": false
       },
-      "observe": true
+      "observe": false
     },
     "answer": {
       "handler": "line:answer",
       "boundary": false,
       "description": "Accept the ringing call and open audio. Requires transport.call ringing. Ringing is not the owner goal.",
       "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
-      "observe": true
+      "observe": false
     },
     "speak": {
       "handler": "tools:speak",
@@ -165,14 +165,14 @@
         "required": ["parts"],
         "additionalProperties": false
       },
-      "observe": true
+      "observe": false
     },
     "hang": {
       "handler": "line:hang",
       "boundary": false,
       "description": "End the live Telegram call. Requires a current call id. A down call has nothing to hang and this fails. Hanging up keeps the owner goal and open work.",
       "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
-      "observe": true
+      "observe": false
     },
     "files": {
       "handler": "tools:files",
@@ -219,12 +219,12 @@
         "required": ["evidence", "outcome", "shutdown"],
         "additionalProperties": false
       },
-      "observe": true
+      "observe": false
     },
     "goal": {
       "handler": "tools:goal",
       "boundary": false,
-      "description": "Name the task his words asked for. Do not name a task from retained open_work unless he just asked for that work. retain_previous true keeps a different unfinished task. The following shot is a PNG you read yourself.",
+      "description": "Name the task his words asked for. Do not name a task from retained open_work unless he just asked for that work. retain_previous true keeps a different unfinished task.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -234,25 +234,13 @@
         "required": ["text", "retain_previous"],
         "additionalProperties": false
       },
-      "observe": true
+      "observe": false
     }
   },
   "$defs": {
     "scale": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number", "exclusiveMinimum": 0}},
     "region": {"type": ["array", "null"], "minItems": 4, "maxItems": 4, "prefixItems": [{"type": "integer"}, {"type": "integer"}, {"type": "integer", "minimum": 1}, {"type": "integer", "minimum": 1}]},
     "text": {"type": "string", "minLength": 1, "pattern": "\\S"},
-    "observation": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["expected", "question", "region", "relation"],
-      "description": "Required on every observe=true call. expected is what you hope changed. question is what you will decide next. region is the native crop or null. relation ties this shot to earlier ones. The shot is a PNG you read yourself.",
-      "properties": {
-        "expected": {"$ref": "#/$defs/text"},
-        "question": {"$ref": "#/$defs/text"},
-        "region": {"$ref": "#/$defs/region"},
-        "relation": {"$ref": "#/$defs/text"}
-      }
-    },
     "batch": {
       "type": "object",
       "additionalProperties": false,
@@ -277,8 +265,7 @@
             "required": ["tool", "arguments"],
             "properties": {
               "tool": {"$ref": "#/$defs/text"},
-              "arguments": {"type": "object"},
-              "observation": {"$ref": "#/$defs/observation"}
+              "arguments": {"type": "object"}
             }
           }
         }
