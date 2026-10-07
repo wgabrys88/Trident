@@ -21,6 +21,8 @@ class Catalog:
         spec = self.specs[tool]
         self.validate(spec["parameters"], arguments)
         if spec["observe"]:
+            if not isinstance(observation, dict):
+                raise RuntimeError(tool + " requires observation")
             self.validate({"$ref": "#/$defs/observation"}, observation)
         elif observation is not None:
             raise ValueError("This tool does not take an observation")

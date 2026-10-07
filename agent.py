@@ -57,6 +57,15 @@ class Agent:
         self.save()
 
     async def step(self):
+        try:
+            await self.decide()
+        except Exception as error:
+            failure = {"type": type(error).__name__, "message": str(error)}
+            self.state["history"].append({"error": failure})
+            self.record.append("decision_failed", failure)
+            self.save()
+
+    async def decide(self):
         catalog = Catalog()
         mind = read(ROOT / "mind.json")
         generation = self.line.generation

@@ -245,7 +245,7 @@
     "wait": {
       "handler": "tools:wait",
       "boundary": true,
-      "description": "Keep the current goal and wait for the owner. memory holds verified notes, not a claim that a call is up. Last call in the batch.",
+      "description": "Wait only when the newest owner words name no task. memory holds verified notes, not a claim that a call is up. Requires observation. Last call in the batch.",
       "parameters": {
         "type": "object",
         "properties": {"memory": {"type": "string", "minLength": 1}},
@@ -273,7 +273,7 @@
     "goal": {
       "handler": "tools:goal",
       "boundary": false,
-      "description": "Select the owner goal from his words. retain_previous true keeps a different unfinished goal. false replaces it only when his words justify that. Boot does not select retained work. A ring does not select a goal.",
+      "description": "Select the goal from the newest owner words before waiting. retain_previous true keeps a different unfinished goal. false replaces it only when his words justify that. Boot does not select open_work. A ring does not select a goal. Requires observation.",
       "parameters": {
         "type": "object",
         "properties": {
