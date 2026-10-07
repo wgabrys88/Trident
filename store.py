@@ -1,4 +1,5 @@
 import asyncio
+import io
 import json
 import os
 import tomllib
@@ -107,24 +108,31 @@ class Record:
             try:
                 with (self.folder / "trace.jsonl").open("rb") as stream:
                     stream.seek(location[0])
-                    event = json.loads(stream.read(location[1]))
+                    data = stream.read(location[1])
+                event = json.loads(data)
                 header = event["source"] + " => " + event["target"] + " | " + event["kind"].upper()
                 body = human(event["value"])
-                messages = []
-                for offset in range(0, max(1, len(body)), 1800):
-                    chunk = body[offset:offset + 1800]
-                    message = await self.deliver(lambda chunk=chunk: line.client.send_message(
-                        line.owner, header + "\n\n" + chunk, parse_mode=None))
-                    messages.append(message.id)
+                if len(header) + len(body) + 2 <= 3900:
+                    message = await self.deliver(lambda: line.client.send_message(
+                        line.owner, header + "\n\n" + body, parse_mode=None))
+                else:
+                    def document():
+                        payload = io.BytesIO(data)
+                        payload.name = event["kind"] + ".jsonl"
+                        return payload
+                    message = await self.deliver(lambda: line.client.send_file(
+                        line.owner, document(), caption=header + "\n\nFull event attached.",
+                        force_document=True, parse_mode=None))
+                messages = [message.id]
                 for path in event["images"]:
-                    await self.deliver(lambda path=path: line.client.send_file(
+                    message = await self.deliver(lambda path=path: line.client.send_file(
                         line.owner, path, caption=header, force_document=True, parse_mode=None))
+                    messages.append(message.id)
                 if not location[2].cancelled():
                     location[2].set_result({"telegram_messages": messages})
             except Exception as error:
                 if not location[2].cancelled():
                     location[2].set_result({"error": type(error).__name__ + ": " + str(error)})
-                line.emit("error", {"type": type(error).__name__, "message": str(error)})
                 continue
 
     async def deliver(self, send):
