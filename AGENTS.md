@@ -29,3 +29,5 @@ Telegram receives the run log. Every PNG and WAV named in a log line is attached
 ## Body
 
 Python hears, speaks, calls, captures the screen, and moves the pointer. It does not choose the task or the sentence.
+
+The tools in the context are already running. `screen`, `click`, `drag`, `type_text`, `dial`, `speak`, and `consult` execute. Do not claim they are missing. If one cannot do the task, `consult` writes the missing tool.
