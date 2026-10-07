@@ -142,8 +142,10 @@ class Line:
 
     def job_finished(self, task):
         self.jobs.remove(task)
-        if not task.cancelled() and task.exception() is not None:
-            self.emit("error", task.exception())
+        if not task.cancelled():
+            error = task.exception()
+            if error is not None:
+                self.emit("error", error)
 
     async def signal(self, serial, data):
         if serial != self.native_serial:
@@ -223,6 +225,8 @@ class Line:
     async def answer(self):
         if self.state != "ringing":
             raise RuntimeError(f"Cannot answer: call is {self.state}")
+        if self.requested is None or self.peer is None:
+            raise RuntimeError("Cannot answer: ringing call metadata is unavailable")
         dh = await self.prepare()
         exchange = bytes(await native(self.engine, "init_exchange", self.owner_id, dh, bytes(self.requested.g_a_hash)))
         response = await self.client(AcceptCallRequest(peer=self.peer, g_b=exchange, protocol=protocol()))
@@ -285,8 +289,15 @@ class Line:
         return {"channel": "telegram", "message": message.id, "audio": str(path), "words": words}
 
     async def chat(self, text):
-        self.record.append("chat", text, "LUNA", "OWNER")
-        return {"sent": text}
+        if self.client is None or self.owner is None:
+            raise RuntimeError("Telegram client is not connected")
+        message = await self.client.send_message(
+            self.owner, text, parse_mode=None,
+        )
+        self.record.append(
+            "chat", {"text": text, "message": message.id}, "LUNA", "OWNER",
+        )
+        return {"sent": text, "message": message.id}
 
     async def hang(self):
         if self.peer is None:

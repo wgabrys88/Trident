@@ -9,14 +9,23 @@ from store import ROOT, cancel, read
 
 class Catalog:
     def __init__(self):
-        self.document = read(ROOT / "tools.json")
+        path = ROOT / "tools.json"
+        if not path.is_file():
+            raise FileNotFoundError(f"Tool catalog is missing: {path}")
+        self.document = read(path)
         self.specs = self.document["tools"]
 
     def validate(self, schema, value):
         Draft202012Validator({"$defs": self.document["$defs"], **schema}).validate(value)
 
     async def call(self, host, tool, arguments, observation=None):
-        spec = self.specs[tool]
+        # Resolve the catalog entry here, at the execution boundary.  Keeping
+        # this lookup explicit makes malformed model output fail with a useful
+        # catalog error instead of an opaque handler/unavailable message.
+        try:
+            spec = self.specs[tool]
+        except KeyError as error:
+            raise KeyError(f"Unknown tool in catalog: {tool}") from error
         self.validate(spec["parameters"], arguments)
         region = None
         if spec["observe"] and isinstance(observation, dict):
@@ -24,13 +33,22 @@ class Catalog:
             region = observation["region"]
         host.acting = True
         try:
-            module, function = spec["handler"].split(":")
+            module, function = spec["handler"].split(":", 1)
             if module == "tools":
-                result = await globals()[function](host, **arguments)
+                handler = globals().get(function)
+                if handler is None or not callable(handler):
+                    raise RuntimeError(f"Catalog handler is unavailable: tools:{function}")
+                result = await handler(host, **arguments)
             elif module == "desktop":
-                result = await asyncio.to_thread(getattr(desktop, function), **arguments)
+                handler = getattr(desktop, function, None)
+                if handler is None or not callable(handler):
+                    raise RuntimeError(f"Catalog handler is unavailable: desktop:{function}")
+                result = await asyncio.to_thread(handler, **arguments)
             elif module == "line":
-                result = await getattr(host.line, function)(**arguments)
+                handler = getattr(host.line, function, None)
+                if handler is None or not callable(handler):
+                    raise RuntimeError(f"Catalog handler is unavailable: line:{function}")
+                result = await handler(**arguments)
             else:
                 raise ValueError(f"Unknown handler module: {module}")
             if spec["observe"]:
@@ -72,6 +90,12 @@ async def consult(host, task):
     host.state["restart"] = True
     host.state["attention"] = True
     return {"report": report}
+
+
+async def answer(host):
+    if host.line.state != "ringing":
+        raise RuntimeError(f"Cannot answer: call is {host.line.state}")
+    return await host.line.answer()
 
 
 async def python(host, code):

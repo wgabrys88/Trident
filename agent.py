@@ -17,7 +17,7 @@ class Agent:
         mind = read(ROOT / "mind.json")
         owner_goal = self.state["goal"]
         retained = list(self.state["open_work"])
-        if owner_goal is not None:
+        if owner_goal is not None and not any(item.get("goal") == owner_goal for item in retained):
             retained.append({"goal": owner_goal, "evidence": "Unfinished owner work", "session": str(self.record.folder / "session.json")})
         stored = {"open_work": retained}
         if mind != stored:
@@ -59,10 +59,21 @@ class Agent:
         self.state["shutdown"] = False
         self.state["waiting"] = False
         self.record.append("owner_input", {"text": value, "source": kind})
+        # The owner's words are the present task. Retained work remains context
+        # until the model explicitly selects it, so it cannot mask new input.
+        self.state["goal"] = value
+        self.state["assessment"] = None
         self.save()
 
     async def step(self):
-        catalog = Catalog()
+        try:
+            catalog = Catalog()
+        except Exception as error:
+            self.state["history"].append({"rejected": f"Tool catalog unavailable: {error}"})
+            self.record.append("rejected", {"error": f"Tool catalog unavailable: {error}"})
+            self.state["attention"] = True
+            self.save()
+            return
         generation = self.line.generation
         text = None
         try:
@@ -73,7 +84,7 @@ class Agent:
                 "hearing": {"busy": self.line.hearing.busy, "queued": self.line.hearing.queue.qsize()},
                 "tools": catalog.document, "history": self.state["history"],
             })
-            batch = json.loads(text)
+            batch = self.parse_batch(text)
             catalog.validate({"$ref": "#/$defs/batch"}, batch)
             calls = batch["calls"]
             for call in calls:
@@ -82,9 +93,17 @@ class Agent:
                     raise KeyError(name)
                 if catalog.specs[name]["boundary"] and call is not calls[-1]:
                     raise ValueError(f"{name} must be last in its batch")
+                if catalog.specs[name]["observe"] and "observation" not in call:
+                    raise ValueError(f"{name} requires an observation")
         except Exception as error:
             self.state["history"].append({"rejected": str(error)})
             self.record.append("rejected", {"error": str(error), "text": text})
+            self.state["attention"] = True
+            self.save()
+            return
+        if not calls:
+            self.state["history"].append({"rejected": "Luna returned an empty call batch"})
+            self.record.append("rejected", {"error": "Luna returned an empty call batch", "text": text})
             self.state["attention"] = True
             self.save()
             return
@@ -112,6 +131,29 @@ class Agent:
             self.state["history"].append(entry)
             self.record.append("tool_result", entry, "TOOL (" + name + ")", "LUNA")
             self.save()
+
+    @staticmethod
+    def parse_batch(text):
+        """Accept the CLI's occasional fenced/diagnostic wrapper, but only
+        execute a single validated JSON object."""
+        candidate = text.strip()
+        if candidate.startswith("```"):
+            lines = candidate.splitlines()
+            if lines and lines[0].lstrip().startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip().startswith("```"):
+                lines = lines[:-1]
+            candidate = "\n".join(lines).strip()
+        try:
+            value = json.loads(candidate)
+        except json.JSONDecodeError:
+            start, end = candidate.find("{"), candidate.rfind("}")
+            if start < 0 or end <= start:
+                raise
+            value = json.loads(candidate[start:end + 1])
+        if not isinstance(value, dict):
+            raise ValueError("Luna batch must be a JSON object")
+        return value
 
     async def watch_screen(self):
         limit = CONFIG["screen"]["difference"]
