@@ -115,12 +115,26 @@ class Agent:
             self.record.append("tool_result", entry, "TOOL (" + name + ")", "LUNA")
             self.save()
         if self.state["finished"] is not None:
-            self.state["lessons"].append({
-                **self.state["finished"], "trace": self.record.trace(self.state["start"]),
-            })
-            self.state["finished"] = None
-            self.state["recording"] = self.state["attention"]
-            self.save()
+            pending = generation != self.line.generation or self.line.hearing.busy or not self.line.hearing.queue.empty()
+            if pending:
+                proposal = self.state["finished"]
+                self.state["goal"] = proposal["goal"]
+                self.state["shutdown"] = False
+                self.state["attention"] = True
+                if proposal["outcome"] == "paused" and self.state["open_work"] and self.state["open_work"][-1].get("goal") == proposal["goal"] and self.state["open_work"][-1].get("evidence") == proposal["evidence"]:
+                    self.state["open_work"].pop()
+                self.state["finished"] = None
+                blocked = {"reason": "Owner audio still pending", "proposal": proposal}
+                self.state["history"].append({"finish_blocked": blocked})
+                self.record.append("finish_blocked", blocked)
+                self.save()
+            else:
+                self.state["lessons"].append({
+                    **self.state["finished"], "trace": self.record.trace(self.state["start"]),
+                })
+                self.state["finished"] = None
+                self.state["recording"] = self.state["attention"]
+                self.save()
 
     async def learn(self):
         generation = self.line.generation
@@ -137,7 +151,7 @@ class Agent:
                 "Keep concise cumulative lessons from all portions: failures, changes, observations, Luna's batches, "
                 "and improvements to visual reports. Separate evidence from speculation. "
                 "File paths identify retained evidence. They are not images you have seen. "
-                "Return at most 1000 words.",
+                "Return at most 400 words.",
                 {"outcome": {key: value for key, value in lesson.items() if key != "trace"},
                  "previous_study": study, "events": [json.loads(line) for line in events.splitlines()]}, [],
             ))["text"]

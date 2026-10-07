@@ -3,7 +3,7 @@
     "screen": {
       "handler": "tools:screen",
       "boundary": false,
-      "description": "Look at a fresh desktop. region null is the whole desktop, otherwise native [x, y, width, height]. Python crops real pixels and asks LFM. Returns the stored PNG, the mapping, the report, the rewritten scene, and marks. Each mark has label, image_id, bbox_2d in [0, 1000], desktop.box, and desktop.center. Wording does not crop. Unknown is not empty.",
+      "description": "Look at a fresh desktop. region null is the whole desktop, otherwise native [x, y, width, height]. Python crops real pixels and asks LFM. Returns the stored PNG, the mapping, the report, the rewritten scene, and marks. Each mark has label, image_id, bbox_2d in [0, 1000], desktop.box, and desktop.center. One image is image_id 0. Wording does not crop. Unknown is not empty.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -294,7 +294,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["expected", "question", "region", "relation"],
-      "description": "Required on every observe=true call. expected is the hoped-for change, not a fact. question is a separate next-plan question. region is a native crop or null. relation ties this look to earlier looks. Python crops, asks LFM, and maps each bbox_2d to desktop.center.",
+      "description": "Required on every observe=true call. expected is the hoped-for change, not a fact. question is a separate next-plan question. region is a native crop or null. relation ties this look to earlier looks. Python crops, asks LFM, and maps each bbox_2d to desktop.center. Pixel size is not sent to LFM.",
       "properties": {
         "expected": {"$ref": "#/$defs/text"},
         "question": {"$ref": "#/$defs/text"},

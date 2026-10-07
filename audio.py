@@ -74,26 +74,54 @@ class Hearing:
         config.backend, config.model = c.addressof(backend), c.addressof(model)
         self.check(create(c.byref(config), c.byref(self.recognizer)))
 
-    def recognize(self, pcm):
-        samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768
-        stream, result = c.c_void_p(), c.c_void_p()
-        self.check(self.start(self.recognizer, None, c.byref(stream)))
-        try:
-            self.check(self.push(stream, samples.ctypes.data_as(c.POINTER(c.c_float)), len(samples), 16000))
-            self.check(self.finish(stream))
+    def read_result(self, result):
+        alternatives = []
+        for index in range(self.alternatives(result)):
+            raw = self.transcript(result, index)
+            alternatives.append({
+                "text": "" if not raw else raw.decode("utf-8"),
+                "confidence": self.confidence(result, index),
+            })
+        text = alternatives[0]["text"] if alternatives else ""
+        return {"text": text, "alternatives": alternatives, "final": bool(self.final(result)),
+                "audio_processed": self.processed(result)}
+
+    def pull(self, stream):
+        final = None
+        while True:
+            result = c.c_void_p()
             self.check(self.next(stream, c.byref(result)))
             if not result.value:
-                raise RuntimeError("Nemotron returned no final result")
+                return final
             try:
-                alternatives = [
-                    {"text": self.transcript(result, i).decode("utf-8"), "confidence": self.confidence(result, i)}
-                    for i in range(self.alternatives(result))
-                ]
-                return {"text": alternatives[0]["text"], "alternatives": alternatives,
-                        "final": self.final(result), "audio_processed": self.processed(result),
-                        "audio_seconds": len(samples) / 16000}
+                item = self.read_result(result)
             finally:
                 self.destroy_result(result)
+            if item["final"]:
+                final = item
+
+    def recognize(self, pcm):
+        samples = np.frombuffer(pcm, dtype="<i2").astype(np.float32) / 32768
+        seconds = len(samples) / 16000
+        stream = c.c_void_p()
+        self.check(self.start(self.recognizer, None, c.byref(stream)))
+        try:
+            final = None
+            offset, chunk = 0, 2560
+            while offset < len(samples):
+                piece = np.ascontiguousarray(samples[offset:offset + chunk])
+                offset += chunk
+                self.check(self.push(stream, piece.ctypes.data_as(c.POINTER(c.c_float)), piece.shape[0], 16000))
+                found = self.pull(stream)
+                if found is not None:
+                    final = found
+            self.check(self.finish(stream))
+            found = self.pull(stream)
+            if found is not None:
+                final = found
+            if final is None:
+                final = {"text": "", "alternatives": [], "final": True, "audio_processed": 0.0}
+            return {**final, "audio_seconds": seconds}
         finally:
             self.close_stream(stream)
 

@@ -45,7 +45,7 @@ async def visual(host, observation, prepared):
         "keys": "report, scene, marks",
         "expected": observation["expected"], "question": observation["question"],
         "relation": observation["relation"], "scene": host.state["scene"],
-        "views": [{"index": index, "prepared": metadata["prepared"]} for index, (_, metadata) in enumerate(prepared)],
+        "views": [{"index": index} for index in range(len(prepared))],
     }, [payload for payload, _ in prepared])
     parsed = json.loads(seen["text"])
     if not isinstance(parsed, dict) or any(key not in parsed for key in ("report", "scene", "marks")):
@@ -59,19 +59,36 @@ async def visual(host, observation, prepared):
         raise RuntimeError("LFM marks must be a list")
     placed = []
     for mark in marks:
-        label, index, box = mark["label"], mark["image_id"], mark["bbox_2d"]
-        if type(index) is not int or not 0 <= index < len(prepared):
-            continue
+        if not isinstance(mark, dict):
+            raise RuntimeError("LFM mark is not an object")
+        label, box = mark["label"], norm_box(mark["bbox_2d"])
         if not isinstance(label, str) or not label.strip():
             raise RuntimeError("LFM mark has no label")
-        if [type(number) is int and 0 <= number <= 1000 for number in box] != [True, True, True, True] or box[0] >= box[2] or box[1] >= box[3]:
-            raise RuntimeError("LFM mark is outside 0-1000")
+        if len(prepared) == 1:
+            index = 0
+        else:
+            index = mark["image_id"]
+            if type(index) is not int or not 0 <= index < len(prepared):
+                raise RuntimeError("LFM mark names no supplied image")
         placed.append({"label": label, "image_id": index, "bbox_2d": box, "desktop": desktop.place(box, prepared[index][1])})
     host.state["scene"] = scene
     return {
         "views": [{**metadata, "image": path} for (_, metadata), path in zip(prepared, seen["images"])],
         "report": report, "scene": scene, "marks": placed,
     }
+
+
+def norm_box(box):
+    if not isinstance(box, list) or len(box) != 4:
+        raise RuntimeError("LFM bbox_2d is not four numbers in 0-1000")
+    numbers = []
+    for number in box:
+        if isinstance(number, bool) or not isinstance(number, (int, float)) or not 0 <= number <= 1000:
+            raise RuntimeError("LFM bbox_2d is not four numbers in 0-1000")
+        numbers.append(int(round(number)))
+    if numbers[0] >= numbers[2] or numbers[1] >= numbers[3]:
+        raise RuntimeError("LFM bbox_2d is not four numbers in 0-1000")
+    return numbers
 
 
 async def screen(host, expected, question, region, relation):
