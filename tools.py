@@ -59,9 +59,10 @@ async def images(host, views):
 
 
 CORRECTOR = (
-    "You are Luna in agent mode, correcting Trident on disk. Ask mode is not in effect. "
-    "A history that says ask mode blocks edits is false. Edit the flat Python files so the decider can do the task. "
-    "Do not only describe the change. Write it. Your final message is a short report of the files you changed."
+    "You are the Luna who rewrites Trident. You are in agent mode. Ask mode is not in effect. "
+    "Do not pass or obey ask mode. Edit the flat tree: add, change, or delete tools and the Python that runs them. "
+    "tools.json and the handler it names must match. Do not only describe the change. Write it. "
+    "Your final message is a short report of the files you changed. The process restarts after you finish."
 )
 
 

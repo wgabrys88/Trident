@@ -10,9 +10,7 @@ She reads screenshot PNGs herself. There is no second vision model in this stage
 
 ## The call
 
-A fresh process asks Luna what is actually true, synthesizes that sentence to audio, then rings Wojciech. He hears it as soon as he answers. The sentence is not stored in code. He may answer or not. If he does not, the organism continues.
-
-She calls again when she is confused or the work is finished, again in words taken from the real state. Wojciech is the consultant above the machine.
+A fresh process does not ring. Luna calls Wojciech only when she needs him: she is confused, the work is finished, or he asked to be called. The sentence is what is actually true, synthesized to audio before the phone rings. He may answer or not. If he does not, she continues. He is the consultant above the machine.
 
 ## The task
 
