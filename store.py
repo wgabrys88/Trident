@@ -2,8 +2,6 @@ import asyncio
 import json
 import os
 import tomllib
-
-from telethon.errors import FloodWaitError
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
@@ -96,6 +94,7 @@ class Record:
                 location[2].set_result({"telegram_messages": messages})
 
     async def deliver(self, send):
+        from telethon.errors import FloodWaitError
         while True:
             try:
                 return await send()
