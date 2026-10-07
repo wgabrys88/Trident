@@ -2,6 +2,8 @@ import asyncio
 import copy
 import json
 
+from jsonschema import ValidationError
+
 from store import ROOT, cancel, read, write
 from tools import Catalog
 
@@ -69,7 +71,7 @@ class Agent:
         catalog = Catalog()
         mind = read(ROOT / "mind.json")
         generation = self.line.generation
-        batch = json.loads(await self.models.luna(mind["actor"], {
+        text = await self.models.luna(mind["actor"], {
             "persistent_notes": {"authority": "Historical notes only; never current transport state", "text": mind["memory"]},
             "transport": {"authority": "Current transport state", "call": self.line.state,
                           "id": self.line.peer.id if self.line.peer is not None else None},
@@ -78,7 +80,12 @@ class Agent:
             "hearing": {"busy": self.line.hearing.busy, "queued": self.line.hearing.queue.qsize()},
             "tools": catalog.document, "history": self.state["history"],
         }))
-        catalog.validate({"$ref": "#/$defs/batch"}, batch)
+        try:
+            batch = json.loads(text)
+            catalog.validate({"$ref": "#/$defs/batch"}, batch)
+        except (json.JSONDecodeError, ValidationError) as error:
+            self.failed({"raw": text[:240]}, error)
+            return
         if generation != self.line.generation:
             self.record.append("batch_superseded", {"reason": "Input changed while Luna was deciding", "batch": batch})
             return
