@@ -2,6 +2,8 @@ import asyncio
 import json
 import os
 import tomllib
+
+from telethon.errors import FloodWaitError
 from contextlib import suppress
 from datetime import datetime
 from pathlib import Path
@@ -81,14 +83,23 @@ class Record:
                 event = json.loads(stream.read(location[1]))
             header = event["source"] + " => " + event["target"] + " | " + event["kind"].upper()
             body = human(event["value"])
-            messages = []
-            for offset in range(0, max(1, len(body)), 1800):
-                message = await line.client.send_message(line.owner, header + "\n\n" + body[offset:offset + 1800], parse_mode=None)
-                messages.append(message.id)
+            if len(body) > 1800:
+                body = body[:1800] + "\n\ntrace holds the rest"
+            message = await self.deliver(lambda: line.client.send_message(line.owner, header + "\n\n" + body, parse_mode=None))
+            messages = [message.id]
             for path in event["images"]:
-                await line.client.send_file(line.owner, path, caption=header, force_document=True, parse_mode=None)
+                await self.deliver(lambda path=path: line.client.send_file(
+                    line.owner, path, caption=header, force_document=True, parse_mode=None))
             if not location[2].cancelled():
                 location[2].set_result({"telegram_messages": messages})
+
+    async def deliver(self, send):
+        while True:
+            try:
+                return await send()
+            except FloodWaitError as error:
+                self.append("flood_wait", {"seconds": error.seconds})
+                await asyncio.sleep(error.seconds)
 
     async def close(self):
         if self.task is not None:

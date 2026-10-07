@@ -1,8 +1,11 @@
 import asyncio
+import copy
 import json
 
 from store import ROOT, cancel, read, write
 from tools import Catalog
+
+GATES = ("waiting", "attention", "shutdown", "restart", "goal", "finished", "open_work", "suspended")
 
 
 class Agent:
@@ -56,16 +59,13 @@ class Agent:
         self.record.append("owner_input", {"text": value, "source": kind})
         self.save()
 
-    async def step(self):
-        try:
-            await self.decide()
-        except Exception as error:
-            failure = {"type": type(error).__name__, "message": str(error)}
-            self.state["history"].append({"error": failure})
-            self.record.append("decision_failed", failure)
-            self.save()
+    def failed(self, call, error):
+        entry = {"call": call, "error": {"type": type(error).__name__, "message": getattr(error, "message", str(error))}}
+        self.state["history"].append(entry)
+        self.record.append("decision_failed", entry)
+        self.save()
 
-    async def decide(self):
+    async def step(self):
         catalog = Catalog()
         mind = read(ROOT / "mind.json")
         generation = self.line.generation
@@ -90,11 +90,19 @@ class Agent:
             if generation != self.line.generation:
                 self.record.append("batch_superseded", {"reason": "Input changed during execution", "remaining": calls[index:]})
                 break
-            name = call["tool"]
-            if catalog.specs[name]["boundary"] and index != len(calls) - 1:
-                raise ValueError(f"{name} must be last in its batch")
-            self.record.append("tool_start", call, "LUNA", "TOOL (" + name + ")")
-            result = await catalog.call(self, **call)
+            saved = {key: copy.deepcopy(self.state[key]) for key in GATES}
+            try:
+                name = call["tool"]
+                if name not in catalog.specs:
+                    raise KeyError(name)
+                if catalog.specs[name]["boundary"] and index != len(calls) - 1:
+                    raise ValueError(f"{name} must be last in its batch")
+                self.record.append("tool_start", call, "LUNA", "TOOL (" + name + ")")
+                result = await catalog.call(self, **call)
+            except Exception as error:
+                self.state.update(saved)
+                self.failed(call, error)
+                return
             entry = {"call": call, "result": result}
             self.state["history"].append(entry)
             self.record.append("tool_result", entry, "TOOL (" + name + ")", "LUNA")
