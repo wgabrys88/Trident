@@ -1,13 +1,16 @@
 import asyncio
 import json
 
-from store import ROOT, cancel, read, write
+import desktop
+from store import CONFIG, ROOT, cancel, read, write
 from tools import Catalog
 
 
 class Agent:
     def __init__(self, models, line, record, state):
         self.models, self.line, self.record, self.state = models, line, record, state
+        self.acting = False
+        self.seen = None
 
     def save(self):
         write(self.record.folder / "session.json", self.state)
@@ -26,9 +29,11 @@ class Agent:
             raise value
         if kind == "line":
             self.record.append("line_status", value)
-            if self.state["goal"] is not None:
-                self.state["history"].append({"line": value})
-                self.save()
+            self.state["history"].append({"line": value})
+            self.state["attention"] = True
+            self.state["waiting"] = False
+            self.state["shutdown"] = False
+            self.save()
             return
         if not self.state["recording"] and kind != "audio":
             self.state["start"] = value["start"] if kind == "audio_pending" else self.record.offset()
@@ -182,7 +187,39 @@ class Agent:
         if portion:
             yield portion
 
+    async def watch_screen(self):
+        limit = CONFIG["screen"]["difference"]
+        pending = None
+        motion = 0
+        self.seen = await asyncio.to_thread(desktop.sample)
+        while True:
+            await asyncio.sleep(CONFIG["screen"]["interval"])
+            if self.acting:
+                pending = None
+                motion = 0
+                continue
+            current = await asyncio.to_thread(desktop.sample)
+            if desktop.difference(self.seen, current) <= limit:
+                pending = None
+                motion = 0
+                continue
+            motion += 1
+            if pending is not None and (desktop.difference(pending, current) <= limit or motion >= CONFIG["screen"]["settle"]):
+                self.seen = current
+                pending = None
+                motion = 0
+                self.line.emit("screen", "The desktop changed apart from Trident.")
+            else:
+                pending = current
+
     async def serve(self):
+        watch = asyncio.create_task(self.watch_screen())
+        try:
+            await self.live()
+        finally:
+            await cancel(watch)
+
+    async def live(self):
         while not self.state["restart"]:
             if not self.line.inbox.empty():
                 await self.receive(await self.line.inbox.get())

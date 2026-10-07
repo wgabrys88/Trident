@@ -26,6 +26,11 @@ silence_ms = 700
 padding_ms = 120
 utterance_seconds = 30
 
+[screen]
+interval = 1
+difference = 0.4
+settle = 3
+
 [voice]
 url = "http://127.0.0.1:8091"
 command = ["artifacts/voice/crispasr.exe", "--server", "--host", "127.0.0.1", "--port", "8091", "--backend", "chatterbox-nano", "-m", "artifacts/chatterbox-nano-t3-q4_k.gguf", "--codec-model", "artifacts/chatterbox-turbo-s3gen-q4_k.gguf", "--gpu-backend", "vulkan", "--tts-steps", "2", "--no-punctuation"]

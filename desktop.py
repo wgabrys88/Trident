@@ -123,3 +123,15 @@ def keys(chord):
 def scroll(amount):
     pyautogui.scroll(amount)
     return {"scroll": amount}
+
+
+def sample():
+    left, top, width, height = [win32api.GetSystemMetrics(n) for n in (76, 77, 78, 79)]
+    image = ImageGrab.grab(bbox=(left, top, left + width, top + height), all_screens=True)
+    return image.resize((64, 36), Image.Resampling.BOX).tobytes()
+
+
+def difference(before, after):
+    if before is None or len(before) != len(after):
+        return CONFIG["screen"]["difference"] + 1
+    return sum(abs(a - b) for a, b in zip(before, after)) / len(before)

@@ -26,18 +26,23 @@ class Catalog:
             self.validate({"$ref": "#/$defs/observation"}, observation)
         elif observation is not None:
             raise ValueError("This tool does not take an observation")
-        module, function = spec["handler"].split(":")
-        if module == "tools":
-            result = await globals()[function](host, **arguments)
-        elif module == "desktop":
-            result = await asyncio.to_thread(getattr(desktop, function), **arguments)
-        elif module == "line":
-            result = await getattr(host.line, function)(**arguments)
-        else:
-            raise ValueError(f"Unknown handler module: {module}")
-        if spec["observe"]:
-            result = {"execution": result, "observation": await visual(host, observation, [await asyncio.to_thread(desktop.capture, observation["region"])])}
-        return result
+        host.acting = True
+        try:
+            module, function = spec["handler"].split(":")
+            if module == "tools":
+                result = await globals()[function](host, **arguments)
+            elif module == "desktop":
+                result = await asyncio.to_thread(getattr(desktop, function), **arguments)
+            elif module == "line":
+                result = await getattr(host.line, function)(**arguments)
+            else:
+                raise ValueError(f"Unknown handler module: {module}")
+            if spec["observe"]:
+                result = {"execution": result, "observation": await visual(host, observation, [await asyncio.to_thread(desktop.capture, observation["region"])])}
+            return result
+        finally:
+            host.acting = False
+            host.seen = await asyncio.to_thread(desktop.sample)
 
 
 LOOK = {

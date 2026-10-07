@@ -203,15 +203,22 @@ class Line:
             protocol=protocol(), video=False,
         ))
         if isinstance(response.phone_call, PhoneCallDiscarded):
-            raise RuntimeError("Outgoing Telegram call was discarded")
+            await self.release()
+            self.record.append("call_not_answered", {"reason": "discarded"})
+            return {"call": self.state, "answered": False}
         self.peer = InputPhoneCall(response.phone_call.id, response.phone_call.access_hash)
-        accepted = await asyncio.wait_for(self.accepted, 90)
+        try:
+            accepted = await asyncio.wait_for(self.accepted, 90)
+        except asyncio.TimeoutError:
+            await self.hang()
+            self.record.append("call_not_answered", {"reason": "timeout"})
+            return {"call": self.state, "answered": False}
         keys = await native(self.engine, "exchange_keys", self.owner_id, bytes(accepted.g_b), 0)
         response = await self.client(ConfirmCallRequest(
             peer=self.peer, g_a=bytes(keys.g_a_or_b), key_fingerprint=keys.key_fingerprint, protocol=protocol(),
         ))
         await self.connect(response.phone_call)
-        return {"call": self.state, "direction": "outgoing"}
+        return {"call": self.state, "direction": "outgoing", "answered": True}
 
     async def answer(self):
         if self.state != "ringing":
