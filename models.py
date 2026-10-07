@@ -1,8 +1,9 @@
 import asyncio
 import base64
 import json
-import subprocess
+import os
 import socket
+import subprocess
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -11,7 +12,7 @@ import win32api
 import win32con
 import win32job
 
-from store import CONFIG, ROOT, cancel, command, encode, read
+from store import CONFIG, ROOT, cancel, command, encode
 
 
 async def execute(parts, data=b""):
@@ -49,7 +50,7 @@ class Models:
         self.http = None
 
     async def open(self):
-        for name in ("gemma", "voice"):
+        for name in ("lfm", "voice"):
             parts = CONFIG[name]["command"]
             (ROOT / parts[0]).stat()
             for part in parts[1:]:
@@ -60,13 +61,16 @@ class Models:
         for part in command(CONFIG["luna"]["command"]):
             Path(part).stat()
         self.http = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=600))
-        for name in ("gemma", "voice"):
+        for name in ("lfm", "voice"):
             endpoint = urlsplit(CONFIG[name]["url"])
             with socket.socket() as port:
                 port.bind((endpoint.hostname, endpoint.port))
             output = (self.record.folder / f"{name}.log").open("ab")
+            env = os.environ.copy()
+            if name == "voice":
+                env["CRISPASR_CHATTERBOX_FORCE_GPU"] = "1"
             process = await asyncio.create_subprocess_exec(
-                *command(CONFIG[name]["command"]), cwd=ROOT,
+                *command(CONFIG[name]["command"]), cwd=ROOT, env=env,
                 stdout=output, stderr=output, creationflags=subprocess.CREATE_NO_WINDOW,
             )
             self.workers.append((process, output))
@@ -119,32 +123,36 @@ class Models:
             raise RuntimeError("Luna returned an empty response")
         return text
 
-    async def gemma(self, question, images):
-        mind = read(ROOT / "mind.json")
-        images = [self.record.artifact(payload, "png") for payload in images]
-        content = [{"type": "text", "text": encode(question)}]
-        for path in images:
-            payload = base64.b64encode(path.read_bytes()).decode("ascii")
-            content.append({"type": "image_url", "image_url": {"url": "data:image/png;base64," + payload}})
+    async def look(self, system, user, images):
+        paths = [self.record.artifact(payload, "png") for payload in images]
+        body = encode(user)
+        if paths:
+            content = [{"type": "text", "text": body}]
+            for path in paths:
+                encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+                content.append({"type": "image_url", "image_url": {"url": "data:image/png;base64," + encoded}})
+        else:
+            content = body
+        settings = CONFIG["lfm"]
         request = {
-            "model": "gemma", "messages": [
-                {"role": "system", "content": mind["student"]},
+            "model": "lfm", "messages": [
+                {"role": "system", "content": system},
                 {"role": "user", "content": content},
-            ], "temperature": 0.2, "max_tokens": 4096,
-            "chat_template_kwargs": {"enable_thinking": True},
+            ], "temperature": settings["temperature"], "top_k": settings["top_k"],
+            "repeat_penalty": settings["repeat_penalty"], "max_tokens": settings["max_tokens"],
         }
-        self.record.append("request", {"system": mind["student"], "question": question,
+        self.record.append("request", {"system": system, "user": user,
                                       "parameters": {key: value for key, value in request.items() if key != "messages"}},
-                           "LUNA", "GEMMA", images)
-        result = json.loads(await self.post("gemma", "/v1/chat/completions", request, "GEMMA"))
-        self.record.append("response", result, "GEMMA", "LUNA")
+                           "LUNA", "LFM", paths)
+        result = json.loads(await self.post("lfm", "/v1/chat/completions", request, "LFM"))
         choice = result["choices"][0]
+        text = (choice["message"]["content"] or "").strip()
+        self.record.append("response", {"finish_reason": choice["finish_reason"], "text": text}, "LFM", "LUNA")
         if choice["finish_reason"] != "stop":
-            raise RuntimeError(f"Gemma stopped with {choice['finish_reason']}")
-        text = choice["message"]["content"].strip()
+            raise RuntimeError(f"LFM stopped with {choice['finish_reason']}")
         if not text:
-            raise RuntimeError("Gemma returned an empty response")
-        return {"report": text, "images": [str(path) for path in images]}
+            raise RuntimeError("LFM returned an empty response")
+        return {"text": text, "images": [str(path) for path in paths]}
 
     async def voice(self, text):
         request = {"input": text, "response_format": "wav"}

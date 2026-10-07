@@ -17,7 +17,7 @@ async def main():
     record = Record(folder)
     if len(sys.argv) == 1:
         state = {
-            "goal": None, "suspended": [], "history": [], "lessons": [], "finished": None,
+            "goal": None, "suspended": [], "scene": "", "history": [], "lessons": [], "finished": None,
             "waiting": False, "shutdown": False, "restart": False, "start": 0,
             "attention": False, "recording": False, "open_work": read(ROOT / "mind.json")["open_work"], "assessment": None,
         }

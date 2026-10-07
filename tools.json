@@ -1,1 +1,337 @@
-{"tools":{"screen":{"handler":"tools:screen","boundary":false,"description":"Inspect a fresh actual desktop crop with Gemma. region=null supplies the desktop, otherwise [native x,y,width,height]. max_edge bounds resized pixels in 48-pixel units. Return the exact retained PNG, origin, X/Y scale, mapping, capture metadata, and visual report. Ask concise visible questions. Unknown is not empty; wording never crops.","parameters":{"type":"object","properties":{"question":{"type":"string","minLength":1},"region":{"$ref":"#/$defs/region"},"max_edge":{"$ref":"#/$defs/max_edge"}},"required":["question","region","max_edge"],"additionalProperties":false},"observe":false},"images":{"handler":"tools:images","boundary":false,"description":"Inspect actual retained PNG crops with Gemma. Each view specifies path, source origin and X/Y scale copied from the receipt, native region or null, and max_edge. Return prepared pixels and exact mappings. Resolve contradictions with focused evidence; paths alone are not images seen.","parameters":{"type":"object","properties":{"question":{"type":"string","minLength":1},"views":{"type":"array","items":{"required":["path","origin","scale","region","max_edge"],"type":"object","properties":{"path":{"type":"string","minLength":1},"origin":{"type":"array","maxItems":2,"items":{"type":"number"},"minItems":2},"region":{"$ref":"#/$defs/region"},"scale":{"$ref":"#/$defs/scale"},"max_edge":{"$ref":"#/$defs/max_edge"}},"additionalProperties":false},"minItems":1}},"required":["question","views"],"additionalProperties":false},"observe":false},"click":{"handler":"desktop:click","boundary":false,"description":"Click current visually established native desktop coordinates with the specified button/count. The common mandatory observation checks the result and the separate next-plan question.","parameters":{"type":"object","properties":{"x":{"type":"integer"},"y":{"type":"integer"},"button":{"type":"string","enum":["left","right","middle"]},"count":{"type":"integer","minimum":1,"maximum":2}},"required":["x","y","button","count"],"additionalProperties":false},"observe":true},"drag":{"handler":"desktop:stroke","boundary":false,"description":"Hold left mouse and trace visually established native pixel points for seconds. The common mandatory observation checks the resulting drawing or move.","parameters":{"type":"object","properties":{"points":{"type":"array","minItems":2,"items":{"type":"array","prefixItems":[{"type":"integer"},{"type":"integer"}],"minItems":2,"maxItems":2}},"seconds":{"type":"number","exclusiveMinimum":0}},"required":["points","seconds"],"additionalProperties":false},"observe":true},"type_text":{"handler":"desktop:type_text","boundary":false,"description":"Paste Unicode text into the focused Windows control. Establish focus first; the common observation checks the result.","parameters":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"],"additionalProperties":false},"observe":true},"keys":{"handler":"desktop:keys","boundary":false,"description":"Press one chord of PyAutoGUI key names. Select separate calls for successive chords; verify the resulting focus/UI through the common observation.","parameters":{"type":"object","properties":{"chord":{"type":"array","minItems":1,"items":{"type":"string","minLength":1}}},"required":["chord"],"additionalProperties":false},"observe":true},"scroll":{"handler":"desktop:scroll","boundary":false,"description":"Scroll the focused application by signed wheel ticks, positive up. Verify the resulting viewport through the common observation.","parameters":{"type":"object","properties":{"amount":{"type":"integer"}},"required":["amount"],"additionalProperties":false},"observe":true},"python":{"handler":"tools:python","boundary":false,"description":"Execute Luna-authored async Python with host, ROOT, asyncio. Return JSON data. Select explicit operations or independent concurrent operations; code must not choose subsequent task actions or inspect image meaning. Use Gemma for vision and the common post-action observation for verification. Source changes require heal. The supplied code must finish before its fresh-screen verification.","parameters":{"type":"object","properties":{"code":{"type":"string","minLength":1}},"required":["code"],"additionalProperties":false},"observe":true},"chat":{"handler":"line:chat","boundary":false,"description":"Send text to Wojciech's private Telegram chat. Delivery establishes message delivery only, not task completion.","parameters":{"type":"object","properties":{"text":{"type":"string","minLength":1}},"required":["text"],"additionalProperties":false},"observe":true},"dial":{"handler":"line:dial","boundary":false,"description":"Requires current transport.call=down. Call Wojciech when Luna decides live participation is needed and wait for actual connection. It does not speak. Boot never dials.","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"observe":true},"answer":{"handler":"line:answer","boundary":false,"description":"Requires current transport.call=ringing. Accept the real incoming call and establish audio. Ringing is an input event, not the owner task; use goal after recognized owner instructions and wait while listening.","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"observe":true},"speak":{"handler":"tools:speak","boundary":false,"description":"Requires call=up. Generate ordered short Chatterbox phrases, preparing the next during transmission of the current phrase. Retain each WAV and record transmission duration. CPU ASR continues. A transmission receipt or screenshot does not prove owner hearing.","parameters":{"type":"object","properties":{"parts":{"type":"array","items":{"type":"string","minLength":1},"minItems":1}},"required":["parts"],"additionalProperties":false},"observe":true},"hang":{"handler":"line:hang","boundary":false,"description":"Requires a current Telegram call: transport.call must be ringing, dialing, or up with a current id. End or decline that call. When transport.call=down this operation is invalid and fails; do not call it because the owner said hang up or historical notes mention a call. Select the requested goal or learning transition instead. Hanging up preserves the owner goal and open work.","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"observe":true},"remember":{"handler":"tools:remember","boundary":false,"description":"Replace historical notes with verified facts, evidence dates, decisions, and open work. Current call state and pending audio belong to the live context, not persistent memory. Remove stale claims; do not store connected/awaiting speech as timeless transport facts.","parameters":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"],"additionalProperties":false},"observe":true},"files":{"handler":"tools:files","boundary":false,"description":"Read every current source/configuration file directly inside the Trident workspace root in full. Use the exact contents when reasoning about self-healing changes.","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"observe":false},"heal":{"handler":"tools:heal","boundary":true,"description":"Pause the owner's goal and replace it with an explicit self-healing objective when tools, prompts, model cooperation, or architecture are missing, wasteful, or inaccurate. This must be the last call in its batch.","parameters":{"type":"object","properties":{"goal":{"type":"string","minLength":1}},"required":["goal"],"additionalProperties":false},"observe":true},"rewrite":{"handler":"tools:rewrite","boundary":true,"description":"During self-healing, delete named workspace-root files and write complete replacement or new contents. Update tools.json and callable handlers together when changing tools. Prefer deletion when sufficient. The next step reloads the catalog; use activate for already imported core modules. This must be the last call in its batch.","parameters":{"type":"object","properties":{"files":{"type":"object","additionalProperties":{"type":"string"}},"delete":{"type":"array","items":{"type":"string","minLength":1},"uniqueItems":true}},"required":["files","delete"],"additionalProperties":false},"observe":true},"activate":{"handler":"tools:activate","boundary":true,"description":"Last call in batch. Requires self-healing and transport.call=down. Hang only if a call actually exists. Restart explicitly to activate rewritten imported modules; preserve suspended goal, open_work, complete trace, and lessons. Reconnect without dialing; continue the repair goal.","parameters":{"type":"object","properties":{},"required":[],"additionalProperties":false},"observe":true},"resume":{"handler":"tools:resume","boundary":true,"description":"Finish the self-healing goal and resume the suspended owner goal. Include repair evidence and remaining uncertainty. This does not mark the owner task complete. This must be the last call in its batch.","parameters":{"type":"object","properties":{"evidence":{"type":"string","minLength":1}},"required":["evidence"],"additionalProperties":false},"observe":true},"wait":{"handler":"tools:wait","boundary":true,"description":"Last call in batch. Preserve the current goal and wait for owner input. memory contains historical verified notes and open steps, not a persistent call-state claim. Clear the current attention request without discarding the active task. No learning while this goal remains active. For owner-requested learning use finish(outcome=paused) after preserving and reporting the actual unfinished work.","parameters":{"type":"object","properties":{"memory":{"type":"string","minLength":1}},"required":["memory"],"additionalProperties":false},"observe":true},"finish":{"handler":"tools:finish","boundary":true,"description":"Last call in batch. Record the real outcome and queue idle trace study. completed requires observed completion; cancelled requires owner cancellation/replacement; paused retains the unfinished goal in open_work and allows explicitly requested idle learning. A status/hang-up request alone does not end the task: preserve it and continue or wait. Requires no pending CPU hearing; let recognition finish before closing its episode. shutdown=true also requires a down call and exits after the recorded lesson. Report truth separately. No scene is established by a receipt.","parameters":{"type":"object","properties":{"evidence":{"type":"string","minLength":1},"shutdown":{"type":"boolean"},"outcome":{"type":"string","enum":["completed","cancelled","paused"]}},"required":["evidence","outcome","shutdown"],"additionalProperties":false},"observe":true},"goal":{"handler":"tools:goal","boundary":false,"description":"Luna explicitly selects, corrects, or resumes the actual owner goal from observed instructions. text is the exact goal to pursue. retain_previous=true keeps a different unfinished goal in open_work; false replaces the active goal only when owner instructions justify it or refines the same goal. A matching retained goal is selected from open_work. Conversation remains in history. Code does not interpret speech or choose the goal. Transport events never change the selected goal. Unfinished owner work persists in mind.json across boots, but boot does not select it; Luna selects it only from owner instructions.","parameters":{"required":["text","retain_previous"],"type":"object","properties":{"text":{"type":"string","minLength":1},"retain_previous":{"type":"boolean"}},"additionalProperties":false},"observe":true}},"$defs":{"max_edge":{"multipleOf":48,"description":"Maximum prepared image edge in pixels, rounded to Gemma 48-pixel patch/pooling units. Choose a small crop and edge for speed; raise for unreadable detail. No unnecessary upscaling.","minimum":48,"type":"integer","maximum":1920},"scale":{"items":{"type":"number","exclusiveMinimum":0},"maxItems":2,"type":"array","minItems":2},"observation":{"properties":{"max_edge":{"$ref":"#/$defs/max_edge"},"question":{"$ref":"#/$defs/text"},"expected":{"$ref":"#/$defs/text"},"region":{"$ref":"#/$defs/region"}},"additionalProperties":false,"required":["expected","question","region","max_edge"],"type":"object","description":"Mandatory for every tool with observe=true. expected states what should change and what should not be visible, not an established fact. question is a separate next-plan question. The selected native region and image size are used for a fresh post-action screen. Gemma reports evidence; Luna decides whether it establishes the expected outcome. A screen cannot prove delivery, hearing, process activation, or hidden state."},"region":{"prefixItems":[{"type":"integer"},{"type":"integer"},{"type":"integer","minimum":1},{"type":"integer","minimum":1}],"type":["array","null"],"maxItems":4,"minItems":4},"batch":{"properties":{"calls":{"items":{"properties":{"observation":{"$ref":"#/$defs/observation"},"arguments":{"type":"object"},"tool":{"$ref":"#/$defs/text"}},"additionalProperties":false,"required":["tool","arguments"],"type":"object"},"type":"array","minItems":1},"assessment":{"properties":{"change":{"$ref":"#/$defs/text"},"approach":{"$ref":"#/$defs/text"},"failures":{"type":"array","items":{"type":"string"}}},"additionalProperties":false,"required":["approach","failures","change"],"type":"object"}},"additionalProperties":false,"required":["assessment","calls"],"type":"object"},"text":{"minLength":1,"type":"string","pattern":"\\S"}}}
+{
+  "tools": {
+    "screen": {
+      "handler": "tools:screen",
+      "boundary": false,
+      "description": "Look at a fresh desktop. region null is the whole desktop, otherwise native [x, y, width, height]. Python crops real pixels and asks LFM. Returns the stored PNG, the mapping, the report, the rewritten scene, and desktop marks. Wording does not crop. Unknown is not empty.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "expected": {"$ref": "#/$defs/text"},
+          "question": {"$ref": "#/$defs/text"},
+          "region": {"$ref": "#/$defs/region"},
+          "relation": {"$ref": "#/$defs/text"}
+        },
+        "required": ["expected", "question", "region", "relation"],
+        "additionalProperties": false
+      },
+      "observe": false
+    },
+    "images": {
+      "handler": "tools:images",
+      "boundary": false,
+      "description": "Look again at stored PNGs. Each view copies path, origin, and scale from a receipt, plus a native region or null. Python prepares the pixels. A path is not an image you have seen.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "expected": {"$ref": "#/$defs/text"},
+          "question": {"$ref": "#/$defs/text"},
+          "relation": {"$ref": "#/$defs/text"},
+          "views": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "properties": {
+                "path": {"type": "string", "minLength": 1},
+                "origin": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number"}},
+                "scale": {"$ref": "#/$defs/scale"},
+                "region": {"$ref": "#/$defs/region"}
+              },
+              "required": ["path", "origin", "scale", "region"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["expected", "question", "relation", "views"],
+        "additionalProperties": false
+      },
+      "observe": false
+    },
+    "click": {
+      "handler": "desktop:click",
+      "boundary": false,
+      "description": "Click a desktop point taken from a receipt. The shared observation then looks at the fresh screen.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "x": {"type": "integer"},
+          "y": {"type": "integer"},
+          "button": {"type": "string", "enum": ["left", "right", "middle"]},
+          "count": {"type": "integer", "minimum": 1, "maximum": 2}
+        },
+        "required": ["x", "y", "button", "count"],
+        "additionalProperties": false
+      },
+      "observe": true
+    },
+    "drag": {
+      "handler": "desktop:stroke",
+      "boundary": false,
+      "description": "Hold the left button and move through desktop points taken from receipts, for the given seconds. The shared observation looks after the stroke.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "points": {
+            "type": "array",
+            "minItems": 2,
+            "items": {"type": "array", "prefixItems": [{"type": "integer"}, {"type": "integer"}], "minItems": 2, "maxItems": 2}
+          },
+          "seconds": {"type": "number", "exclusiveMinimum": 0}
+        },
+        "required": ["points", "seconds"],
+        "additionalProperties": false
+      },
+      "observe": true
+    },
+    "type_text": {
+      "handler": "desktop:type_text",
+      "boundary": false,
+      "description": "Paste Unicode into the focused control. Establish focus first. The shared observation checks the result.",
+      "parameters": {
+        "type": "object",
+        "properties": {"text": {"type": "string"}},
+        "required": ["text"],
+        "additionalProperties": false
+      },
+      "observe": true
+    },
+    "keys": {
+      "handler": "desktop:keys",
+      "boundary": false,
+      "description": "Press one chord of PyAutoGUI key names. Use another call for the next chord. The shared observation checks the result.",
+      "parameters": {
+        "type": "object",
+        "properties": {"chord": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}},
+        "required": ["chord"],
+        "additionalProperties": false
+      },
+      "observe": true
+    },
+    "scroll": {
+      "handler": "desktop:scroll",
+      "boundary": false,
+      "description": "Scroll the focused window by signed wheel ticks, positive upward. The shared observation checks the viewport.",
+      "parameters": {
+        "type": "object",
+        "properties": {"amount": {"type": "integer"}},
+        "required": ["amount"],
+        "additionalProperties": false
+      },
+      "observe": true
+    },
+    "python": {
+      "handler": "tools:python",
+      "boundary": false,
+      "description": "Run the async Python you wrote, with host, ROOT, and asyncio. Return JSON data. The code does not choose the next action and does not interpret pixels. Source changes use heal. The shared observation looks after the code returns.",
+      "parameters": {
+        "type": "object",
+        "properties": {"code": {"type": "string", "minLength": 1}},
+        "required": ["code"],
+        "additionalProperties": false
+      },
+      "observe": true
+    },
+    "chat": {
+      "handler": "line:chat",
+      "boundary": false,
+      "description": "Send text to Wojciech's private Telegram chat. Delivery is only delivery. The shared observation does not prove he read it.",
+      "parameters": {
+        "type": "object",
+        "properties": {"text": {"type": "string", "minLength": 1}},
+        "required": ["text"],
+        "additionalProperties": false
+      },
+      "observe": true
+    },
+    "dial": {
+      "handler": "line:dial",
+      "boundary": false,
+      "description": "Call Wojciech when you decide live speech is needed. Requires transport.call down. Boot never dials. This does not speak.",
+      "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
+      "observe": true
+    },
+    "answer": {
+      "handler": "line:answer",
+      "boundary": false,
+      "description": "Accept the ringing call and open audio. Requires transport.call ringing. Ringing is not the owner goal.",
+      "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
+      "observe": true
+    },
+    "speak": {
+      "handler": "tools:speak",
+      "boundary": false,
+      "description": "Speak ordered short phrases. While call is up, play them on the call. While call is not up, send each wav as a Telegram audio file he can play. A receipt does not prove he heard it. Hearing keeps transcribing.",
+      "parameters": {
+        "type": "object",
+        "properties": {"parts": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}},
+        "required": ["parts"],
+        "additionalProperties": false
+      },
+      "observe": true
+    },
+    "hang": {
+      "handler": "line:hang",
+      "boundary": false,
+      "description": "End the live Telegram call. Requires a current call id. A down call has nothing to hang and this fails. Hanging up keeps the owner goal and open work.",
+      "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
+      "observe": true
+    },
+    "remember": {
+      "handler": "tools:remember",
+      "boundary": false,
+      "description": "Replace historical notes with verified facts. Live call state, the rolling scene, and pending audio stay in the session, not in these notes.",
+      "parameters": {
+        "type": "object",
+        "properties": {"text": {"type": "string"}},
+        "required": ["text"],
+        "additionalProperties": false
+      },
+      "observe": true
+    },
+    "files": {
+      "handler": "tools:files",
+      "boundary": false,
+      "description": "Read every file directly in the Trident root. Use those contents before rewriting.",
+      "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
+      "observe": false
+    },
+    "heal": {
+      "handler": "tools:heal",
+      "boundary": true,
+      "description": "Pause the owner goal and select a self-healing goal when tools, prompts, or architecture are wrong. Last call in the batch.",
+      "parameters": {
+        "type": "object",
+        "properties": {"goal": {"type": "string", "minLength": 1}},
+        "required": ["goal"],
+        "additionalProperties": false
+      },
+      "observe": true
+    },
+    "rewrite": {
+      "handler": "tools:rewrite",
+      "boundary": true,
+      "description": "During self-healing, write complete root files and delete named root files. Change tools.json together with the handlers it names. Last call in the batch.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "files": {"type": "object", "additionalProperties": {"type": "string"}},
+          "delete": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true}
+        },
+        "required": ["files", "delete"],
+        "additionalProperties": false
+      },
+      "observe": true
+    },
+    "activate": {
+      "handler": "tools:activate",
+      "boundary": true,
+      "description": "Restart so rewritten imported modules load. Requires a self-healing goal and transport.call down. Preserves the suspended goal. Does not dial. Last call in the batch.",
+      "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
+      "observe": true
+    },
+    "resume": {
+      "handler": "tools:resume",
+      "boundary": true,
+      "description": "End self-healing and return to the suspended owner goal, with the repair evidence. This does not finish the owner goal. Last call in the batch.",
+      "parameters": {
+        "type": "object",
+        "properties": {"evidence": {"type": "string", "minLength": 1}},
+        "required": ["evidence"],
+        "additionalProperties": false
+      },
+      "observe": true
+    },
+    "wait": {
+      "handler": "tools:wait",
+      "boundary": true,
+      "description": "Keep the current goal and wait for the owner. memory holds verified notes, not a claim that a call is up. Last call in the batch.",
+      "parameters": {
+        "type": "object",
+        "properties": {"memory": {"type": "string", "minLength": 1}},
+        "required": ["memory"],
+        "additionalProperties": false
+      },
+      "observe": true
+    },
+    "finish": {
+      "handler": "tools:finish",
+      "boundary": true,
+      "description": "Close the recorded goal. completed requires observed completion. cancelled requires owner cancellation. paused keeps the unfinished goal and allows idle learning. Status or hangup alone does not finish the goal. Hearing must be idle. shutdown true also requires the call down. Last call in the batch.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "evidence": {"type": "string", "minLength": 1},
+          "outcome": {"type": "string", "enum": ["completed", "cancelled", "paused"]},
+          "shutdown": {"type": "boolean"}
+        },
+        "required": ["evidence", "outcome", "shutdown"],
+        "additionalProperties": false
+      },
+      "observe": true
+    },
+    "goal": {
+      "handler": "tools:goal",
+      "boundary": false,
+      "description": "Select the owner goal from his words. retain_previous true keeps a different unfinished goal. false replaces it only when his words justify that. Boot does not select retained work. A ring does not select a goal.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "text": {"type": "string", "minLength": 1},
+          "retain_previous": {"type": "boolean"}
+        },
+        "required": ["text", "retain_previous"],
+        "additionalProperties": false
+      },
+      "observe": true
+    }
+  },
+  "$defs": {
+    "scale": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number", "exclusiveMinimum": 0}},
+    "region": {"type": ["array", "null"], "minItems": 4, "maxItems": 4, "prefixItems": [{"type": "integer"}, {"type": "integer"}, {"type": "integer", "minimum": 1}, {"type": "integer", "minimum": 1}]},
+    "text": {"type": "string", "minLength": 1, "pattern": "\\S"},
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["expected", "question", "region", "relation"],
+      "description": "Required on every observe=true call. expected is the hoped-for change, not a fact. question is a separate next-plan question. region is a native crop or null. relation ties this look to earlier looks. Python crops, asks LFM, and maps 0-1000 marks to desktop points.",
+      "properties": {
+        "expected": {"$ref": "#/$defs/text"},
+        "question": {"$ref": "#/$defs/text"},
+        "region": {"$ref": "#/$defs/region"},
+        "relation": {"$ref": "#/$defs/text"}
+      }
+    },
+    "batch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["assessment", "calls"],
+      "properties": {
+        "assessment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["approach", "failures", "change"],
+          "properties": {
+            "approach": {"$ref": "#/$defs/text"},
+            "failures": {"type": "array", "items": {"type": "string"}},
+            "change": {"$ref": "#/$defs/text"}
+          }
+        },
+        "calls": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["tool", "arguments"],
+            "properties": {
+              "tool": {"$ref": "#/$defs/text"},
+              "arguments": {"type": "object"},
+              "observation": {"$ref": "#/$defs/observation"}
+            }
+          }
+        }
+      }
+    }
+  }
+}

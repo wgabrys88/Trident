@@ -64,7 +64,7 @@ class Agent:
             "persistent_notes": {"authority": "Historical notes only; never current transport state", "text": mind["memory"]},
             "transport": {"authority": "Current transport state", "call": self.line.state,
                           "id": self.line.peer.id if self.line.peer is not None else None},
-            "goal": self.state["goal"], "suspended": self.state["suspended"],
+            "goal": self.state["goal"], "suspended": self.state["suspended"], "scene": self.state["scene"],
             "open_work": self.state["open_work"], "assessment": self.state["assessment"],
             "hearing": {"busy": self.line.hearing.busy, "queued": self.line.hearing.queue.qsize()},
             "tools": catalog.document, "history": self.state["history"],
@@ -107,23 +107,23 @@ class Agent:
         study = ""
         trace = lesson["trace"]
         for events in self.portions(trace):
-            study = (await self.models.gemma(
-                {"instruction": "Idle learning mode. Study these complete JSON trace events. Each event is intact; "
-                "a portion boundary is not a runtime failure. A lone request at a portion boundary may finish in the next portion. "
-                "Keep concise cumulative lessons from all portions: failures, repairs, observations, Luna's batches, "
-                "and improvements to your visual reports and cooperation. Separate evidence from speculation. "
-                "File paths identify retained evidence; they are not images you have seen. "
+            study = (await self.models.look(
+                "Idle learning. Study these complete JSON trace events. Each event is intact. "
+                "A portion boundary is not a runtime failure. A lone request at a portion boundary may finish in the next portion. "
+                "Keep concise cumulative lessons from all portions: failures, changes, observations, Luna's batches, "
+                "and improvements to visual reports. Separate evidence from speculation. "
+                "File paths identify retained evidence. They are not images you have seen. "
                 "Return at most 1000 words.",
-                 "outcome": {key: value for key, value in lesson.items() if key != "trace"},
+                {"outcome": {key: value for key, value in lesson.items() if key != "trace"},
                  "previous_study": study, "events": [json.loads(line) for line in events.splitlines()]}, [],
-            ))["report"]
+            ))["text"]
         raw = await self.models.luna(
-            "Idle learning mode. Teach Gemma from this recorded task and its study. "
-            "Return only JSON with actor, student, tools, lesson. actor and student are complete replacement prompts; "
+            "Idle learning. Teach from this recorded task and the LFM study. "
+            "Return only JSON with actor, student, tools, lesson. actor and student are complete replacement prompts. "
             "tools is the complete current catalog with improved tool descriptions only. Preserve shared definitions, handlers, observation flags, boundaries, "
             "parameter types, and required arguments. Preserve the owner's behavior requirements. "
             "lesson states concrete corrections and their trace evidence. No live action or invented success.",
-            {"mind": mind, "tools": catalog.document, "recorded_task": lesson, "gemma_study": study},
+            {"mind": mind, "tools": catalog.document, "recorded_task": lesson, "study": study},
         )
         teaching = json.loads(raw)
         updated = teaching["tools"]
@@ -142,7 +142,7 @@ class Agent:
         mind["actor"], mind["student"] = teaching["actor"], teaching["student"]
         write(ROOT / "mind.json", mind)
         write(ROOT / "tools.json", teaching["tools"])
-        self.record.append("lesson_applied", {"gemma_study": study, **teaching})
+        self.record.append("lesson_applied", {"study": study, **teaching})
         self.state["lessons"].pop(0)
         self.save()
 

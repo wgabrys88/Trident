@@ -1,5 +1,4 @@
 import asyncio
-import hashlib
 import json
 import os
 import tomllib
@@ -39,18 +38,9 @@ async def cancel(*tasks):
             await task
 
 
-def human(value, key=None):
-    if key in ("tools", "catalog", "arguments"):
-        return encode(value)
-    if key == "trace":
-        value = [json.loads(line) for line in value.splitlines()]
+def human(value):
     if isinstance(value, dict):
-        return "\n\n".join(key.upper() + "\n" + human(item, key)
-                         for key, item in value.items() if key not in
-                         {"time", "id", "path", "session", "start", "captured_at", "audio_processed", "audio_seconds",
-                          "confidence", "transmitted_seconds", "telegram_messages", "duration_ms", "duration_api_ms", "usage",
-                          "temperature", "max_tokens", "enable_thinking", "index", "logprobs", "model", "object", "created",
-                          "timings", "system_fingerprint", "audio", "parameters"})
+        return "\n\n".join(key.upper() + "\n" + human(item) for key, item in value.items())
     if isinstance(value, list):
         return "\n\n".join(human(item) for item in value) or "[]"
     return value if isinstance(value, str) else encode(value)
@@ -60,11 +50,16 @@ class Record:
     def __init__(self, folder):
         self.folder = Path(folder)
         self.folder.mkdir(parents=True, exist_ok=True)
+        numbered = []
+        for path in (*self.folder.glob("*.png"), *self.folder.glob("*.wav")):
+            numbered.append(int(path.stem))
+        self.serial = max(numbered, default=0)
         self.pending = asyncio.Queue()
         self.task = None
 
     def artifact(self, data, extension):
-        path = self.folder / (hashlib.sha256(data).hexdigest() + "." + extension)
+        self.serial += 1
+        path = self.folder / f"{self.serial:04d}.{extension}"
         path.write_bytes(data)
         return path
 

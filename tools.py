@@ -1,27 +1,18 @@
 import asyncio
-import types
+import json
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
 import desktop
 from audio import call_pcm
-from store import ROOT, cancel, read, write
+from store import CONFIG, ROOT, cancel, read, write
 
 
 class Catalog:
     def __init__(self):
         self.document = read(ROOT / "tools.json")
         self.specs = self.document["tools"]
-        self.modules = {"desktop": desktop}
-        for name, spec in self.specs.items():
-            module_name, _ = spec["handler"].split(":")
-            if module_name != "line" and module_name not in self.modules:
-                path = ROOT / (module_name + ".py")
-                module = types.ModuleType(module_name)
-                module.__file__ = str(path)
-                exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"), module.__dict__)
-                self.modules[module_name] = module
 
     def validate(self, schema, value):
         Draft202012Validator({"$defs": self.document["$defs"], **schema}).validate(value)
@@ -32,32 +23,61 @@ class Catalog:
         if spec["observe"]:
             self.validate({"$ref": "#/$defs/observation"}, observation)
         elif observation is not None:
-            raise ValueError("Observation tools already return visual evidence; do not add a second inspection")
+            raise ValueError("This tool does not take an observation")
         module, function = spec["handler"].split(":")
-        handler = getattr(host.line if module == "line" else self.modules[module], function)
-        if module == "desktop":
-            result = await asyncio.to_thread(handler, **arguments)
+        if module == "tools":
+            result = await globals()[function](host, **arguments)
+        elif module == "desktop":
+            result = await asyncio.to_thread(getattr(desktop, function), **arguments)
+        elif module == "line":
+            result = await getattr(host.line, function)(**arguments)
         else:
-            result = await handler(**arguments) if module == "line" else await handler(host, **arguments)
+            raise ValueError(f"Unknown handler module: {module}")
         if spec["observe"]:
-            question = "Expected result to check, not a fact: " + observation["expected"] + "\nNext-plan question: " + observation["question"]
-            result = {"execution": result, "observation": await screen(host, question, observation["region"], observation["max_edge"])}
+            result = {"execution": result, "observation": await visual(host, observation, [await asyncio.to_thread(desktop.capture, observation["region"])])}
         return result
 
 
-async def screen(host, question, region, max_edge):
-    return await visual(host, question, [await asyncio.to_thread(desktop.capture, region, max_edge)])
+async def visual(host, observation, prepared):
+    seen = await host.models.look(read(ROOT / "mind.json")["student"], {
+        "expected": observation["expected"], "question": observation["question"],
+        "relation": observation["relation"], "scene": host.state["scene"],
+        "views": [{"index": index, "prepared": metadata["prepared"]} for index, (_, metadata) in enumerate(prepared)],
+    }, [payload for payload, _ in prepared])
+    parsed = json.loads(seen["text"])
+    report, scene, marks = parsed["report"], parsed["scene"], parsed["marks"]
+    if not isinstance(report, str) or not report.strip():
+        raise RuntimeError("LFM report is empty")
+    if not isinstance(scene, str) or not scene.strip() or len(scene) > CONFIG["lfm"]["scene_chars"]:
+        raise RuntimeError("LFM scene is outside the rolling limit")
+    if not isinstance(marks, list):
+        raise RuntimeError("LFM marks must be a list")
+    placed = []
+    for mark in marks:
+        box, index = mark["box"], mark["image"]
+        if not isinstance(mark["name"], str) or not mark["name"].strip():
+            raise RuntimeError("LFM mark has no name")
+        if type(index) is not int or not 0 <= index < len(prepared):
+            raise RuntimeError("LFM mark names no supplied image")
+        if [type(number) is int and 0 <= number <= 1000 for number in box] != [True, True, True, True]:
+            raise RuntimeError("LFM mark is outside 0-1000")
+        placed.append({"name": mark["name"], "image": index, "box": box, "desktop": desktop.place(box, prepared[index][1])})
+    host.state["scene"] = scene
+    return {
+        "views": [{**metadata, "image": path} for (_, metadata), path in zip(prepared, seen["images"])],
+        "report": report, "scene": scene, "marks": placed,
+    }
 
 
-async def images(host, question, views):
-    return await visual(host, question, [await asyncio.to_thread(desktop.image_view, view) for view in views])
+async def screen(host, expected, question, region, relation):
+    observation = {"expected": expected, "question": question, "region": region, "relation": relation}
+    return await visual(host, observation, [await asyncio.to_thread(desktop.capture, region)])
 
 
-async def visual(host, question, prepared):
-    result = await host.models.gemma({"question": question, "views": [metadata for _, metadata in prepared]},
-                                    [payload for payload, _ in prepared])
-    return {"views": [{**metadata, "image": path} for (_, metadata), path in zip(prepared, result["images"])],
-            "report": result["report"]}
+async def images(host, expected, question, relation, views):
+    observation = {"expected": expected, "question": question, "region": None, "relation": relation}
+    prepared = [await asyncio.to_thread(desktop.image_view, view) for view in views]
+    return await visual(host, observation, prepared)
 
 
 async def python(host, code):
@@ -68,8 +88,6 @@ async def python(host, code):
 
 
 async def speak(host, parts):
-    if host.line.state != "up":
-        raise RuntimeError("Speech requires a connected Telegram call")
     path = await host.models.voice(parts[0])
     pending = None
     receipts = []
@@ -77,10 +95,13 @@ async def speak(host, parts):
         for index, text in enumerate(parts):
             if index + 1 < len(parts):
                 pending = asyncio.create_task(host.models.voice(parts[index + 1]))
-            result = await host.line.speak(call_pcm(path.read_bytes()))
-            receipt = {**result, "audio": str(path), "words": text}
+            if host.line.state == "up":
+                result = await host.line.speak(call_pcm(path.read_bytes()))
+                receipt = {"channel": "call", **result, "audio": str(path), "words": text}
+            else:
+                receipt = await host.line.send_audio(path, text)
             receipts.append(receipt)
-            host.record.append("speech_transmitted", receipt)
+            host.record.append("speech_sent", receipt)
             if pending is not None:
                 path = await pending
                 pending = None

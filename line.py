@@ -2,6 +2,7 @@ import asyncio
 import os
 import secrets
 import time
+import wave
 
 from ntgcalls import (
     AudioDescription, ConnectionState, DhConfig, FrameData, MediaDescription,
@@ -18,7 +19,7 @@ from telethon.tl.functions.phone import (
     RequestCallRequest, SendSignalingDataRequest,
 )
 from telethon.tl.types import (
-    InputPhoneCall, PhoneCall, PhoneCallAccepted, PhoneCallDiscarded,
+    DocumentAttributeAudio, InputPhoneCall, PhoneCall, PhoneCallAccepted, PhoneCallDiscarded,
     PhoneCallDiscardReasonHangup, PhoneCallProtocol, PhoneCallRequested,
     PhoneConnection, PhoneConnectionWebrtc, UpdatePhoneCall, UpdatePhoneCallSignalingData,
 )
@@ -264,6 +265,17 @@ class Line:
             )
             await asyncio.sleep(max(0, started + (offset + 960) / 96000 - self.loop.time()))
         return {"transmitted_seconds": len(pcm) / 96000}
+
+    async def send_audio(self, path, words):
+        with wave.open(str(path), "rb") as source:
+            duration = round(source.getnframes() / source.getframerate())
+        if duration < 1:
+            raise RuntimeError("Voice file is empty")
+        message = await self.client.send_file(
+            self.owner, str(path), caption=words, voice_note=False, force_document=False,
+            attributes=[DocumentAttributeAudio(duration=duration, voice=False)],
+        )
+        return {"channel": "telegram", "message": message.id, "audio": str(path), "words": words}
 
     async def chat(self, text):
         return await self.record.append("chat", text, "LUNA", "OWNER")
