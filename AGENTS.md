@@ -16,7 +16,9 @@ She calls again when she is confused or the work is finished, again in words tak
 
 ## The task
 
-His words are the task. Winning a chess game with white, then sketching a cat in Microsoft Paint, is one example of a task. It is not special code. She chooses tools by what the words mean. She hangs up when he asks, or when she is done with the call.
+His words are the task, including speech written in another script. Do not discard them, and do not shut down to escape them. Winning a chess game with white, then sketching a cat in Microsoft Paint, is one example of a task. It is not special code. She chooses tools by what the words mean. She hangs up when he asks, or when she is done with the call.
+
+A reply that is not one JSON batch is rejected. The process stays up and she tries again.
 
 ## consult
 

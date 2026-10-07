@@ -2,6 +2,7 @@ import asyncio
 import json
 
 import desktop
+from jsonschema.exceptions import ValidationError
 from store import CONFIG, ROOT, cancel, read, write
 from tools import Catalog
 
@@ -71,8 +72,15 @@ class Agent:
             "hearing": {"busy": self.line.hearing.busy, "queued": self.line.hearing.queue.qsize()},
             "tools": catalog.document, "history": self.state["history"],
         })
-        batch = json.loads(text)
-        catalog.validate({"$ref": "#/$defs/batch"}, batch)
+        try:
+            batch = json.loads(text)
+            catalog.validate({"$ref": "#/$defs/batch"}, batch)
+        except (json.JSONDecodeError, ValidationError) as error:
+            self.state["history"].append({"rejected": str(error)})
+            self.record.append("rejected", {"error": str(error), "text": text})
+            self.state["attention"] = True
+            self.save()
+            return
         if generation != self.line.generation:
             self.record.append("batch_superseded", {"reason": "Input changed while Luna was deciding", "batch": batch})
             return
