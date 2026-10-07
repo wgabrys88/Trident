@@ -42,11 +42,14 @@ class Catalog:
 
 async def visual(host, observation, prepared):
     seen = await host.models.look(read(ROOT / "mind.json")["student"], {
+        "keys": "report, scene, marks",
         "expected": observation["expected"], "question": observation["question"],
         "relation": observation["relation"], "scene": host.state["scene"],
         "views": [{"index": index, "prepared": metadata["prepared"]} for index, (_, metadata) in enumerate(prepared)],
     }, [payload for payload, _ in prepared])
     parsed = json.loads(seen["text"])
+    if not isinstance(parsed, dict) or any(key not in parsed for key in ("report", "scene", "marks")):
+        raise RuntimeError("LFM omitted report, scene, or marks")
     report, scene, marks = parsed["report"], parsed["scene"], parsed["marks"]
     if not isinstance(report, str) or not report.strip():
         raise RuntimeError("LFM report is empty")

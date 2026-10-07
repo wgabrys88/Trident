@@ -278,7 +278,8 @@ class Line:
         return {"channel": "telegram", "message": message.id, "audio": str(path), "words": words}
 
     async def chat(self, text):
-        return await self.record.append("chat", text, "LUNA", "OWNER")
+        self.record.append("chat", text, "LUNA", "OWNER")
+        return {"sent": text}
 
     async def hang(self):
         if self.peer is None:

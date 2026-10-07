@@ -135,7 +135,7 @@
     "chat": {
       "handler": "line:chat",
       "boundary": false,
-      "description": "Send text to Wojciech's private Telegram chat. Delivery is only delivery. The shared observation does not prove he read it.",
+      "description": "Send text to Wojciech's private Telegram chat. Delivery is only delivery. It does not do the desktop work and it does not change mode. The shared observation does not prove he read it.",
       "parameters": {
         "type": "object",
         "properties": {"text": {"type": "string", "minLength": 1}},
