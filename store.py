@@ -46,6 +46,27 @@ def human(value):
     return value if isinstance(value, str) else encode(value)
 
 
+def media(value):
+    found = []
+    seen = set()
+
+    def walk(item):
+        if isinstance(item, str) and item.endswith((".png", ".wav")):
+            path = Path(item)
+            if str(path) not in seen and path.is_file():
+                seen.add(str(path))
+                found.append(path)
+        elif isinstance(item, dict):
+            for child in item.values():
+                walk(child)
+        elif isinstance(item, list):
+            for child in item:
+                walk(child)
+
+    walk(value)
+    return found
+
+
 class Record:
     def __init__(self, folder):
         self.folder = Path(folder)
@@ -64,8 +85,15 @@ class Record:
         return path
 
     def append(self, kind, value, source="TRIDENT", target="OWNER", images=()):
+        files = []
+        seen = set()
+        for path in (*images, *media(value)):
+            key = str(path)
+            if key not in seen and Path(key).is_file():
+                seen.add(key)
+                files.append(key)
         event = {"time": stamp(), "kind": kind, "source": source, "target": target,
-                 "value": value, "images": [str(path) for path in images]}
+                 "value": value, "images": files}
         data = (encode(event) + "\n").encode("utf-8")
         with (self.folder / "trace.jsonl").open("ab") as stream:
             offset = stream.tell()

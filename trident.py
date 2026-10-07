@@ -9,6 +9,7 @@ from agent import Agent
 from line import Line
 from models import Models
 from store import ROOT, Record, read, write
+from tools import announce
 
 
 async def main():
@@ -35,6 +36,16 @@ async def main():
         await models.open()
         await line.hearing.open()
         await line.open()
+        if len(sys.argv) == 1:
+            status = await models.luna(
+                "You are Luna. The process just became ready and you are about to call Wojciech. "
+                "Say what is actually true in one or two spoken sentences: who you are, that you are calling, "
+                "and the real state below. Do not invent a task. No JSON.",
+                {"goal": state["goal"], "scene": state["scene"], "call": line.state,
+                 "unfinished": [item.get("goal") for item in state["open_work"]]},
+                reply="report",
+            )
+            await announce(models, line, status.strip())
         await Agent(models, line, record, state).serve()
     except Exception as error:
         record.append("error", {"type": type(error).__name__, "message": str(error)})
