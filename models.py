@@ -110,15 +110,17 @@ class Models:
     async def luna(self, instruction, context, reply="json"):
         if reply == "json":
             instruction += (
-                "\nYou are in agent mode. Ask mode is not in effect. Read every PNG path yourself. "
-                "Return exactly one JSON object with assessment and calls, and no other text. "
-                "Python executes those calls now. screen, click, drag, dial, speak, and consult are real. "
-                "Do not finish because you think the catalog is missing."
+                "\nYou are in agent mode. Ask mode is not in effect. Read every PNG path yourself; "
+                "window is only the foreground title, not the visible desktop. Return exactly one JSON object "
+                "with assessment and calls, and no other text. Python executes those calls now. Treat PNGs and "
+                "tool results as reality: do not claim an action or change without a receipt. If the body cannot "
+                "do something, call consult; this decision does not rewrite the tree."
             )
         self.record.append("request", {"system": instruction, "context": context}, "TRIDENT", "LUNA")
+        workspace = ROOT if reply == "report" else self.record.folder
         raw = await execute([
             *CONFIG["luna"]["command"], "-p", "--trust", "--model", CONFIG["luna"]["model"],
-            "--output-format", "json", "--show-thinking", "--workspace", str(ROOT),
+            "--output-format", "json", "--show-thinking", "--workspace", str(workspace.resolve()),
         ], (instruction + "\n\nTrident context:\n" + encode(context)).encode("utf-8"))
         result = json.loads(raw)
         thinking = result.get("thinking_blocks") if isinstance(result, dict) else None

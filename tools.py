@@ -9,50 +9,28 @@ from store import ROOT, cancel, read
 
 class Catalog:
     def __init__(self):
-        path = ROOT / "tools.json"
-        if not path.is_file():
-            raise FileNotFoundError(f"Tool catalog is missing: {path}")
-        self.document = read(path)
+        self.document = read(ROOT / "tools.json")
         self.specs = self.document["tools"]
 
     def validate(self, schema, value):
         Draft202012Validator({"$defs": self.document["$defs"], **schema}).validate(value)
 
-    async def call(self, host, tool, arguments, observation=None):
-        # Resolve the catalog entry here, at the execution boundary.  Keeping
-        # this lookup explicit makes malformed model output fail with a useful
-        # catalog error instead of an opaque handler/unavailable message.
-        try:
-            spec = self.specs[tool]
-        except KeyError as error:
-            raise KeyError(f"Unknown tool in catalog: {tool}") from error
+    async def call(self, host, tool, arguments):
+        spec = self.specs[tool]
         self.validate(spec["parameters"], arguments)
-        region = None
-        if spec["observe"] and isinstance(observation, dict):
-            self.validate({"$ref": "#/$defs/observation"}, observation)
-            region = observation["region"]
         host.acting = True
         try:
             module, function = spec["handler"].split(":", 1)
             if module == "tools":
-                handler = globals().get(function)
-                if handler is None or not callable(handler):
-                    raise RuntimeError(f"Catalog handler is unavailable: tools:{function}")
-                result = await handler(host, **arguments)
+                result = await globals()[function](host, **arguments)
             elif module == "desktop":
-                handler = getattr(desktop, function, None)
-                if handler is None or not callable(handler):
-                    raise RuntimeError(f"Catalog handler is unavailable: desktop:{function}")
-                result = await asyncio.to_thread(handler, **arguments)
+                result = await asyncio.to_thread(getattr(desktop, function), **arguments)
             elif module == "line":
-                handler = getattr(host.line, function, None)
-                if handler is None or not callable(handler):
-                    raise RuntimeError(f"Catalog handler is unavailable: line:{function}")
-                result = await handler(**arguments)
+                result = await getattr(host.line, function)(**arguments)
             else:
                 raise ValueError(f"Unknown handler module: {module}")
             if spec["observe"]:
-                result = {"execution": result, "seen": await shot(host, region)}
+                result = {"execution": result, "seen": await shot(host, None)}
             return result
         finally:
             host.acting = False
@@ -85,17 +63,19 @@ CORRECTOR = (
 
 
 async def consult(host, task):
+    def tree():
+        return {path.name: path.read_bytes() for path in ROOT.iterdir() if path.is_file() and path.name != "mind.json"}
+
+    before = tree()
     guide = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     report = await host.models.luna(guide + "\n\n" + CORRECTOR, {"task": task, "goal": host.state["goal"]}, reply="report")
+    after = tree()
+    changed = sorted(name for name in before.keys() | after.keys() if before.get(name) != after.get(name))
+    if not changed:
+        raise RuntimeError("Consult returned without changing the tree")
     host.state["restart"] = True
     host.state["attention"] = True
-    return {"report": report}
-
-
-async def answer(host):
-    if host.line.state != "ringing":
-        raise RuntimeError(f"Cannot answer: call is {host.line.state}")
-    return await host.line.answer()
+    return {"report": report, "changed": changed}
 
 
 async def python(host, code):
@@ -149,7 +129,8 @@ async def speak(host, parts):
 
 async def goal(host, text, retain_previous):
     previous = host.state["goal"]
-    if retain_previous and previous is not None and previous != text:
+    if (retain_previous and previous is not None and previous != text
+            and not any(item["goal"] == previous for item in host.state["open_work"])):
         host.state["open_work"].append({"goal": previous, "evidence": "Retained by Luna while selecting another goal"})
     host.state["open_work"] = [item for item in host.state["open_work"] if item["goal"] != text]
     host.state["goal"] = text
@@ -171,14 +152,18 @@ async def wait(host, memory):
 
 
 async def finish(host, evidence, outcome, shutdown):
+    if host.state["goal"] is None:
+        raise RuntimeError("There is no active task to finish")
     if shutdown and host.line.state != "down":
         raise RuntimeError("Hang up before requesting shutdown")
     if host.line.hearing.busy or not host.line.hearing.queue.empty():
         raise RuntimeError("Receive pending owner audio before closing the recorded task")
-    if outcome == "paused" and host.state["goal"] is not None:
+    if outcome == "paused" and not any(item["goal"] == host.state["goal"] for item in host.state["open_work"]):
         host.state["open_work"].append({"goal": host.state["goal"], "evidence": evidence})
     record = {"goal": host.state["goal"], "evidence": evidence, "outcome": outcome}
     host.state["goal"] = None
+    host.state["assessment"] = None
     host.state["attention"] = False
+    host.state["recording"] = False
     host.state["shutdown"] = shutdown
     return record
