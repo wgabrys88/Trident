@@ -54,14 +54,14 @@ async def visual(host, observation, prepared):
         raise RuntimeError("LFM marks must be a list")
     placed = []
     for mark in marks:
-        box, index = mark["box"], mark["image"]
-        if not isinstance(mark["name"], str) or not mark["name"].strip():
-            raise RuntimeError("LFM mark has no name")
+        label, index, box = mark["label"], mark["image_id"], mark["bbox_2d"]
+        if not isinstance(label, str) or not label.strip():
+            raise RuntimeError("LFM mark has no label")
         if type(index) is not int or not 0 <= index < len(prepared):
             raise RuntimeError("LFM mark names no supplied image")
-        if [type(number) is int and 0 <= number <= 1000 for number in box] != [True, True, True, True]:
+        if [type(number) is int and 0 <= number <= 1000 for number in box] != [True, True, True, True] or box[0] >= box[2] or box[1] >= box[3]:
             raise RuntimeError("LFM mark is outside 0-1000")
-        placed.append({"name": mark["name"], "image": index, "box": box, "desktop": desktop.place(box, prepared[index][1])})
+        placed.append({"label": label, "image_id": index, "bbox_2d": box, "desktop": desktop.place(box, prepared[index][1])})
     host.state["scene"] = scene
     return {
         "views": [{**metadata, "image": path} for (_, metadata), path in zip(prepared, seen["images"])],

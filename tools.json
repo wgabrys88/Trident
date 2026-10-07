@@ -3,7 +3,7 @@
     "screen": {
       "handler": "tools:screen",
       "boundary": false,
-      "description": "Look at a fresh desktop. region null is the whole desktop, otherwise native [x, y, width, height]. Python crops real pixels and asks LFM. Returns the stored PNG, the mapping, the report, the rewritten scene, and desktop marks. Wording does not crop. Unknown is not empty.",
+      "description": "Look at a fresh desktop. region null is the whole desktop, otherwise native [x, y, width, height]. Python crops real pixels and asks LFM. Returns the stored PNG, the mapping, the report, the rewritten scene, and marks. Each mark has label, image_id, bbox_2d in [0, 1000], desktop.box, and desktop.center. Wording does not crop. Unknown is not empty.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -51,7 +51,7 @@
     "click": {
       "handler": "desktop:click",
       "boundary": false,
-      "description": "Click a desktop point taken from a receipt. The shared observation then looks at the fresh screen.",
+      "description": "Click desktop.center from a mark receipt. Never click bbox_2d. The shared observation then looks at the fresh screen.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -68,7 +68,7 @@
     "drag": {
       "handler": "desktop:stroke",
       "boundary": false,
-      "description": "Hold the left button and move through desktop points taken from receipts, for the given seconds. The shared observation looks after the stroke.",
+      "description": "Hold the left button and move through desktop.center points from mark receipts, for the given seconds. Never use bbox_2d as a pixel. The shared observation looks after the stroke.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -294,7 +294,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["expected", "question", "region", "relation"],
-      "description": "Required on every observe=true call. expected is the hoped-for change, not a fact. question is a separate next-plan question. region is a native crop or null. relation ties this look to earlier looks. Python crops, asks LFM, and maps 0-1000 marks to desktop points.",
+      "description": "Required on every observe=true call. expected is the hoped-for change, not a fact. question is a separate next-plan question. region is a native crop or null. relation ties this look to earlier looks. Python crops, asks LFM, and maps each bbox_2d to desktop.center.",
       "properties": {
         "expected": {"$ref": "#/$defs/text"},
         "question": {"$ref": "#/$defs/text"},
