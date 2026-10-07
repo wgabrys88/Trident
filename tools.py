@@ -18,12 +18,10 @@ class Catalog:
     async def call(self, host, tool, arguments, observation=None):
         spec = self.specs[tool]
         self.validate(spec["parameters"], arguments)
-        if spec["observe"]:
-            if not isinstance(observation, dict):
-                raise RuntimeError(tool + " requires observation")
+        region = None
+        if spec["observe"] and isinstance(observation, dict):
             self.validate({"$ref": "#/$defs/observation"}, observation)
-        elif observation is not None:
-            raise ValueError("This tool does not take an observation")
+            region = observation["region"]
         host.acting = True
         try:
             module, function = spec["handler"].split(":")
@@ -36,7 +34,7 @@ class Catalog:
             else:
                 raise ValueError(f"Unknown handler module: {module}")
             if spec["observe"]:
-                result = {"execution": result, "seen": await shot(host, observation["region"])}
+                result = {"execution": result, "seen": await shot(host, region)}
             return result
         finally:
             host.acting = False
@@ -68,7 +66,8 @@ CORRECTOR = (
 
 
 async def consult(host, task):
-    report = await host.models.luna(CORRECTOR, {"task": task, "goal": host.state["goal"]}, reply="report")
+    guide = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    report = await host.models.luna(guide + "\n\n" + CORRECTOR, {"task": task, "goal": host.state["goal"]}, reply="report")
     host.state["restart"] = True
     host.state["attention"] = True
     return {"report": report}

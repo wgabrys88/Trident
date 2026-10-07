@@ -63,9 +63,8 @@ class Agent:
 
     async def step(self):
         catalog = Catalog()
-        mind = read(ROOT / "mind.json")
         generation = self.line.generation
-        text = await self.models.luna(mind["actor"], {
+        text = await self.models.luna((ROOT / "AGENTS.md").read_text(encoding="utf-8"), {
             "transport": {"call": self.line.state, "id": self.line.peer.id if self.line.peer is not None else None},
             "goal": self.state["goal"], "scene": self.state["scene"],
             "open_work": self.state["open_work"], "assessment": self.state["assessment"],
@@ -85,11 +84,6 @@ class Agent:
             name = call["tool"]
             if name not in catalog.specs:
                 raise KeyError(name)
-            if catalog.specs[name]["observe"]:
-                if "observation" not in call:
-                    raise RuntimeError(name + " requires observation")
-            elif "observation" in call:
-                raise ValueError("This tool does not take an observation")
             if catalog.specs[name]["boundary"] and call is not calls[-1]:
                 raise ValueError(f"{name} must be last in its batch")
         for index, call in enumerate(calls):
