@@ -177,7 +177,7 @@
     "files": {
       "handler": "tools:files",
       "boundary": false,
-      "description": "Read the files in the Trident root. This tool does not take observation. An observation fails the process.",
+      "description": "Read the files in the Trident root. This tool does not take observation.",
       "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": false},
       "observe": false
     },
@@ -224,7 +224,7 @@
     "goal": {
       "handler": "tools:goal",
       "boundary": false,
-      "description": "Name the task you are doing. retain_previous true keeps a different unfinished task. Requires observation.",
+      "description": "Name the task his words asked for. Do not name a task from retained open_work unless he just asked for that work. retain_previous true keeps a different unfinished task. The following shot is a PNG you read yourself.",
       "parameters": {
         "type": "object",
         "properties": {

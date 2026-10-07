@@ -17,7 +17,7 @@ async def main():
     record = Record(folder)
     if len(sys.argv) == 1:
         state = {
-            "goal": None, "scene": "", "history": [],
+            "goal": None, "history": [],
             "waiting": False, "shutdown": False, "restart": False, "start": 0,
             "attention": True, "recording": False, "open_work": read(ROOT / "mind.json")["open_work"], "assessment": None,
         }
@@ -25,8 +25,6 @@ async def main():
         state = read(folder / "session.json")
         state["restart"] = False
         state["attention"] = True
-        if "scene" not in state:
-            state["scene"] = ""
     record.append("boot", {"resumed": len(sys.argv) != 1})
     write(folder / "session.json", state)
     line = Line(asyncio.Queue(), record)

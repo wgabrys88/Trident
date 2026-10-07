@@ -2,7 +2,6 @@ import asyncio
 import json
 
 import desktop
-from jsonschema.exceptions import ValidationError
 from store import CONFIG, ROOT, cancel, read, write
 from tools import Catalog
 
@@ -20,9 +19,9 @@ class Agent:
         retained = list(self.state["open_work"])
         if owner_goal is not None:
             retained.append({"goal": owner_goal, "evidence": "Unfinished owner work", "session": str(self.record.folder / "session.json")})
-        if mind["open_work"] != retained:
-            mind["open_work"] = retained
-            write(ROOT / "mind.json", mind)
+        stored = {"open_work": retained}
+        if mind != stored:
+            write(ROOT / "mind.json", stored)
 
     async def receive(self, event):
         kind, value = event
@@ -65,17 +64,25 @@ class Agent:
     async def step(self):
         catalog = Catalog()
         generation = self.line.generation
-        text = await self.models.luna((ROOT / "AGENTS.md").read_text(encoding="utf-8"), {
-            "transport": {"call": self.line.state, "id": self.line.peer.id if self.line.peer is not None else None},
-            "goal": self.state["goal"], "scene": self.state["scene"],
-            "open_work": self.state["open_work"], "assessment": self.state["assessment"],
-            "hearing": {"busy": self.line.hearing.busy, "queued": self.line.hearing.queue.qsize()},
-            "tools": catalog.document, "history": self.state["history"],
-        })
+        text = None
         try:
+            text = await self.models.luna((ROOT / "AGENTS.md").read_text(encoding="utf-8"), {
+                "transport": {"call": self.line.state, "id": self.line.peer.id if self.line.peer is not None else None},
+                "goal": self.state["goal"],
+                "open_work": self.state["open_work"], "assessment": self.state["assessment"],
+                "hearing": {"busy": self.line.hearing.busy, "queued": self.line.hearing.queue.qsize()},
+                "tools": catalog.document, "history": self.state["history"],
+            })
             batch = json.loads(text)
             catalog.validate({"$ref": "#/$defs/batch"}, batch)
-        except (json.JSONDecodeError, ValidationError) as error:
+            calls = batch["calls"]
+            for call in calls:
+                name = call["tool"]
+                if name not in catalog.specs:
+                    raise KeyError(name)
+                if catalog.specs[name]["boundary"] and call is not calls[-1]:
+                    raise ValueError(f"{name} must be last in its batch")
+        except Exception as error:
             self.state["history"].append({"rejected": str(error)})
             self.record.append("rejected", {"error": str(error), "text": text})
             self.state["attention"] = True
@@ -87,20 +94,20 @@ class Agent:
         assessment = batch["assessment"]
         self.state["assessment"] = assessment
         self.record.append("assessment", assessment)
-        calls = batch["calls"]
-        for call in calls:
-            name = call["tool"]
-            if name not in catalog.specs:
-                raise KeyError(name)
-            if catalog.specs[name]["boundary"] and call is not calls[-1]:
-                raise ValueError(f"{name} must be last in its batch")
         for index, call in enumerate(calls):
             if generation != self.line.generation:
                 self.record.append("batch_superseded", {"reason": "Input changed during execution", "remaining": calls[index:]})
                 break
             name = call["tool"]
             self.record.append("tool_start", call, "LUNA", "TOOL (" + name + ")")
-            result = await catalog.call(self, **call)
+            try:
+                result = await catalog.call(self, **call)
+            except Exception as error:
+                self.state["history"].append({"rejected": str(error), "call": call})
+                self.record.append("rejected", {"error": str(error), "call": call})
+                self.state["attention"] = True
+                self.save()
+                return
             entry = {"call": call, "result": result}
             self.state["history"].append(entry)
             self.record.append("tool_result", entry, "TOOL (" + name + ")", "LUNA")

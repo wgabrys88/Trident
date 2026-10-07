@@ -42,20 +42,6 @@ def prepare_image(image, origin, scale, region):
     }
 
 
-def place(box, receipt):
-    width, height = receipt["prepared"]
-    origin_x, origin_y = receipt["origin"]
-    scale_x, scale_y = receipt["scale"]
-    xmin, ymin, xmax, ymax = box
-    desktop = [
-        round(origin_x + (xmin / 1000) * width / scale_x),
-        round(origin_y + (ymin / 1000) * height / scale_y),
-        round(origin_x + (xmax / 1000) * width / scale_x),
-        round(origin_y + (ymax / 1000) * height / scale_y),
-    ]
-    return {"box": desktop, "center": [round((desktop[0] + desktop[2]) / 2), round((desktop[1] + desktop[3]) / 2)]}
-
-
 def capture(region):
     left, top, width, height = [win32api.GetSystemMetrics(n) for n in (76, 77, 78, 79)]
     captured = stamp()

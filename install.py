@@ -11,19 +11,26 @@ from store import CONFIG, ROOT
 
 def download(url, path):
     request = urllib.request.Request(url, headers={"User-Agent": "Trident"})
-    with urllib.request.urlopen(request, timeout=600) as source, path.open("wb") as target:
+    temporary = path.with_name(path.name + ".part")
+    with urllib.request.urlopen(request, timeout=600) as source, temporary.open("wb") as target:
         shutil.copyfileobj(source, target)
+    temporary.replace(path)
 
 
 def archive(url, name, executable):
     artifacts = ROOT / "artifacts"
     path = artifacts / (name + ".zip")
     stage = artifacts / (name + "-download")
+    if stage.exists():
+        shutil.rmtree(stage)
     download(url, path)
     with zipfile.ZipFile(path) as source:
         source.extractall(stage)
     [binary] = stage.rglob(executable.name)
-    shutil.copytree(binary.parents[len(executable.parts) - 1], artifacts / name)
+    target = artifacts / name
+    if target.exists():
+        shutil.rmtree(target)
+    shutil.copytree(binary.parents[len(executable.parts) - 1], target)
     shutil.rmtree(stage)
     path.unlink()
 
@@ -45,9 +52,13 @@ def install():
     with urllib.request.urlopen(request, timeout=60) as response:
         assets = {asset["name"]: asset["browser_download_url"] for asset in json.load(response)["assets"]}
     destination = artifacts / "llama"
-    destination.mkdir(exist_ok=True)
+    if destination.exists():
+        shutil.rmtree(destination)
+    destination.mkdir()
     for index, name in enumerate(config["llama_assets"]):
         stage = f"llama-download-{index}"
+        if (artifacts / stage).exists():
+            shutil.rmtree(artifacts / stage)
         packed = artifacts / (stage + ".zip")
         download(assets[name], packed)
         with zipfile.ZipFile(packed) as source:

@@ -121,8 +121,10 @@ class Models:
             "--output-format", "json", "--show-thinking", "--workspace", str(ROOT),
         ], (instruction + "\n\nTrident context:\n" + encode(context)).encode("utf-8"))
         result = json.loads(raw)
-        self.record.append("thinking", result["thinking_blocks"], "LUNA", "TRIDENT")
-        text = result["result"].strip()
+        thinking = result.get("thinking_blocks") if isinstance(result, dict) else None
+        if thinking is not None:
+            self.record.append("thinking", thinking, "LUNA", "TRIDENT")
+        text = str(result.get("result") or "").strip() if isinstance(result, dict) else ""
         self.record.append("response", text, "LUNA", "TRIDENT")
         if not text:
             raise RuntimeError("Luna returned an empty response")
