@@ -1,5 +1,4 @@
 import asyncio
-import base64
 import hashlib
 import json
 import mmap
@@ -7,8 +6,6 @@ import os
 import socket
 import subprocess
 import sys
-import urllib.error
-import urllib.request
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -20,8 +17,6 @@ import win32job
 from log import publish
 from store import CONFIG, ROOT, cancel, command, encode, save
 
-IMAGE_CAP = 5
-IMAGE_BYTES = 15 * 1024 * 1024
 _calls = None
 
 
@@ -93,154 +88,81 @@ async def run_process(parts, data, cwd):
         job.Close()
 
 
-def cursor_key():
-    key = os.environ.get("CURSOR_API_KEY", "").strip()
-    if not key:
-        raise RuntimeError(
-            "CURSOR_API_KEY is not set. Create a user API key at https://cursor.com/dashboard "
-            "(Dashboard → API Keys) and set CURSOR_API_KEY in the same PowerShell session before "
-            "starting Trident. The saved agent login on this PC is not that key, and a team Admin "
-            "API key cannot place a visit on My Machines."
-        )
-    return key
-
-
-def cursor_place():
-    machine = str(CONFIG["luna"].get("machine", "")).strip()
-    if not machine:
-        raise RuntimeError("config.toml [luna] machine is empty. Set it to the My Machines worker name, trident-nvidia.")
-    flags = subprocess.CREATE_NO_WINDOW
-    repo = subprocess.check_output(["git", "remote", "get-url", "origin"], cwd=ROOT, text=True, creationflags=flags).strip()
-    branch = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=ROOT, text=True, creationflags=flags).strip()
-    if not repo or branch == "HEAD":
-        raise RuntimeError("A visit on this machine needs origin and a named branch")
-    return machine, repo, branch
-
-
-def require_cursor():
-    key = cursor_key()
-    cursor_place()
-    token = base64.b64encode(f"{key}:".encode()).decode()
-    request = urllib.request.Request(
-        "https://api.cursor.com/v1/agents?limit=1",
-        headers={"Authorization": f"Basic {token}", "Accept": "application/json"},
-    )
+def require_luna():
+    parts = command(CONFIG["luna"]["command"])
+    for part in parts:
+        if not Path(part).is_file():
+            raise RuntimeError(f"Cursor CLI is missing: {part}")
+    model = CONFIG["luna"]["model"]
+    if model != "gpt-5.6-luna-none":
+        raise RuntimeError("Luna must be gpt-5.6-luna-none")
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            response.read(64)
-    except urllib.error.HTTPError as error:
-        detail = error.read(500).decode("utf-8", "replace")
-        raise RuntimeError(
-            f"CURSOR_API_KEY was rejected by https://api.cursor.com ({error.code}): {detail}. "
-            "Create a user API key at https://cursor.com/dashboard (Dashboard → API Keys) and set "
-            "CURSOR_API_KEY in this PowerShell session."
-        ) from None
+        output = subprocess.check_output(
+            [*parts, "--list-models"], cwd=ROOT, text=True, stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW)
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError(f"Cursor CLI model list exited {error.returncode}") from None
+    offered = {line.split(" - ", 1)[0].strip() for line in output.splitlines() if " - " in line}
+    if model not in offered:
+        raise RuntimeError(f"Cursor CLI does not offer {model}")
 
 
-def attached(folder):
-    folder = Path(folder)
+def pictures(life):
+    folder = Path(life) / "images"
     if not folder.is_dir():
-        return [], []
-    paths = sorted((path for path in folder.glob("*.png") if path.is_file()),
-                   key=lambda path: path.stat().st_mtime, reverse=True)[:IMAGE_CAP]
-    images, pairs = [], []
-    for path in paths:
-        data = path.read_bytes()
-        if len(data) > IMAGE_BYTES:
-            raise RuntimeError(f"Model image exceeds the 15 MB Cloud Agents API limit: {path.name}")
-        images.append({"mimeType": "image/png", "data": base64.b64encode(data).decode("ascii")})
-        pairs.append((path, hashlib.sha256(data).hexdigest()))
-    return images, pairs
+        return []
+    paths = sorted((path for path in folder.glob("*.png") if path.is_file()), key=lambda path: path.stat().st_mtime)
+    return [(path, hashlib.sha256(path.read_bytes()).hexdigest()) for path in paths]
 
 
-def visit_name(state, repair):
-    state["agent_seq"] = int(state.get("agent_seq", 0)) + 1
-    kind = "repair" if repair else "decision"
-    return f"Trident {kind} {state['life'][:4]} #{state['agent_seq']}"
+def cli_workspace(workspace):
+    root = Path(workspace).resolve()
+    if root == ROOT:
+        return root
+    folder = root / "workspace"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
 
 
-async def cursor_json(session, key, method, path, payload=None):
-    options = {"auth": aiohttp.BasicAuth(key, ""), "headers": {"Accept": "application/json"}}
-    if payload is not None:
-        options["json"] = payload
-    async with session.request(method, "https://api.cursor.com" + path, **options) as response:
-        raw = await response.text()
-        if response.status >= 400:
-            raise RuntimeError(f"Cursor Cloud Agents API {method} {path} failed ({response.status}): {raw[:1500]}")
-        return json.loads(raw) if raw else {}
-
-
-async def watch_run(session, key, agent_id, run_id):
-    terminal = {"FINISHED", "ERROR", "CANCELLED", "EXPIRED"}
-    while True:
-        body = await cursor_json(session, key, "GET", f"/v1/agents/{agent_id}/runs/{run_id}")
-        status = body.get("status")
-        if status in terminal:
-            return status, body.get("result")
-        if status not in {"CREATING", "RUNNING"}:
-            raise RuntimeError(f"Luna run status is {status}")
-        await asyncio.sleep(1)
-
-
-async def stop_run(key, agent_id, run_id):
-    try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20)) as session:
-            await cursor_json(session, key, "POST", f"/v1/agents/{agent_id}/runs/{run_id}/cancel")
-    except RuntimeError as error:
-        if "(409)" not in str(error):
-            raise
+def reply(raw):
+    result = None
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        event = json.loads(line)
+        if isinstance(event, dict) and event.get("type") == "result":
+            result = event
+    text = result.get("result") if isinstance(result, dict) and not result.get("is_error") else None
+    if not isinstance(text, str) or not text.strip():
+        raise RuntimeError("Luna returned no successful response")
+    return text
 
 
 async def decision(instruction, context, workspace, life, state, send):
     charge()
-    key = cursor_key()
-    machine, repo, branch = cursor_place()
-    repair = Path(workspace).resolve() == ROOT
-    prompt = {"text": instruction + "\n\nTrident context:\n" + encode(context)}
-    images, pairs = attached(Path(life) / "images")
-    if images:
-        prompt["images"] = images
+    folder = cli_workspace(workspace)
+    pairs = pictures(life)
+    if pairs:
         await publish(pairs, state.setdefault("sent_images", []), send, lambda: save(life, state))
-    name = visit_name(state, repair)
-    save(life, state)
-    payload = {
-        "prompt": prompt,
-        "model": {"id": CONFIG["luna"]["model"], "params": [{"id": "reasoning", "value": CONFIG["luna"]["reasoning"]}]},
-        "name": name,
-        "env": {"type": "machine", "name": machine},
-        "repos": [{"url": repo, "startingRef": branch}],
-        "autoCreatePR": False, "workOnCurrentBranch": False, "mode": "agent",
-    }
-    agent_id = run_id = None
-    finished = False
-    try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, sock_connect=30)) as session:
-            created = await cursor_json(session, key, "POST", "/v1/agents", payload)
-            agent, run = created["agent"], created["run"]
-            agent_id, run_id = agent["id"], run["id"]
-            status, reply = await watch_run(session, key, agent_id, run_id)
-            finished = True
-    except asyncio.CancelledError:
-        if agent_id and not finished:
-            await asyncio.shield(stop_run(key, agent_id, run_id))
-        raise
-    except Exception as error:
-        if agent_id and not finished:
-            try:
-                await stop_run(key, agent_id, run_id)
-            except Exception as cancel_error:
-                raise RuntimeError(f"{error}; cancel failed: {cancel_error}") from None
-        raise
-    if status != "FINISHED" or not isinstance(reply, str) or not reply.strip():
-        raise RuntimeError(f"Luna returned no successful response ({status}): {str(reply)[:500]}")
-    return reply
+    parts = [
+        *CONFIG["luna"]["command"], "-p", "--trust", "--force", "--sandbox", "disabled",
+        "--model", CONFIG["luna"]["model"], "--output-format", "stream-json",
+        "--workspace", str(folder),
+    ]
+    for path, _digest in pairs:
+        parts.extend(["--image", str(path)])
+    prompt = (
+        instruction + "\n\nTrident context:\n" + encode(context)
+        + "\n\nThe reply is one JSON object and no other text. The first character is { and the last character is }.\n"
+    )
+    return reply(await run_process(parts, prompt.encode("utf-8"), folder))
 
 
 class Models:
     def __init__(self, folder, emit):
         self.folder = Path(folder)
         self.emit = emit
-        self.voice = None
+        self.worker = None
         self.watcher = None
         self.http = None
 
@@ -258,14 +180,14 @@ class Models:
             port.bind((endpoint.hostname, endpoint.port))
         env = os.environ.copy()
         env["CRISPASR_CHATTERBOX_FORCE_GPU"] = "1"
-        self.voice = await asyncio.create_subprocess_exec(
+        self.worker = await asyncio.create_subprocess_exec(
             *command(parts), cwd=ROOT, env=env,
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
             creationflags=subprocess.CREATE_NO_WINDOW)
         async with asyncio.timeout(300):
             while True:
-                if self.voice.returncode is not None:
-                    raise RuntimeError(f"voice worker exited {self.voice.returncode}")
+                if self.worker.returncode is not None:
+                    raise RuntimeError(f"voice worker exited {self.worker.returncode}")
                 try:
                     async with self.http.get(CONFIG["voice"]["url"] + "/health") as response:
                         if response.status == 200:
@@ -278,17 +200,17 @@ class Models:
         self.watcher = asyncio.create_task(self.exited())
 
     async def exited(self):
-        code = await self.voice.wait()
+        code = await self.worker.wait()
         self.emit("error", RuntimeError(f"voice worker exited {code}"))
 
     async def close(self):
         if self.watcher is not None:
             await cancel(self.watcher)
         failures = []
-        if self.voice is not None and self.voice.returncode is None:
+        if self.worker is not None and self.worker.returncode is None:
             try:
-                self.voice.kill()
-                await self.voice.wait()
+                self.worker.kill()
+                await self.worker.wait()
             except Exception as error:
                 failures.append(str(error))
         if self.http is not None:

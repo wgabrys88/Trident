@@ -16,7 +16,7 @@ ROOT = Path(os.environ.get("TRIDENT_ROOT", Path(__file__).resolve().parent)).res
 os.environ["TRIDENT_ROOT"] = str(ROOT)
 sys.path.insert(0, str(ROOT))
 
-from models import begin_job, bind_calls, decision, require_cursor, stop_if_capped
+from models import begin_job, bind_calls, decision, require_luna, stop_if_capped
 from store import ROOT as STORE_ROOT, read, save, write
 
 
@@ -60,8 +60,8 @@ def validate():
             tomllib.loads(path.read_text(encoding="utf-8"))
     config = tomllib.loads((ROOT / "config.toml").read_text(encoding="utf-8"))
     luna = config["luna"]
-    if luna["model"] != "gpt-5.6-luna" or luna["reasoning"] != "none" or "screen" in config:
-        raise ValueError("Luna must stay gpt-5.6-luna with reasoning none, and no screen watcher")
+    if set(luna) != {"model", "command"} or luna["model"] != "gpt-5.6-luna-none" or "screen" in config:
+        raise ValueError("Luna must stay gpt-5.6-luna-none, and no screen watcher")
 
 
 def repair(folder):
@@ -70,9 +70,9 @@ def repair(folder):
     request = state["repair"]
     before = snapshot()
     instruction = (ROOT / "instructions.txt").read_text(encoding="utf-8") + (
-        "\nThis is the repair visit. The live body is stopped. Edit general mechanisms in the source tree. "
-        "Do not run Trident, do not commit, do not push, and do not switch branches. Preserve the saved life and task. "
-        "Use agent mode and report what you changed."
+        "\nThis is the repair visit. The live body is stopped. The workspace is the source tree. "
+        "Edit general mechanisms there with tools. Do not run Trident, do not commit, do not push, and do not switch branches. "
+        "Preserve the saved life and task."
     )
     failure = None
     result = None
@@ -133,7 +133,7 @@ def repair(folder):
 def main():
     if STORE_ROOT != ROOT:
         raise RuntimeError("Supervisor root does not match the source tree")
-    require_cursor()
+    require_luna()
     os.environ["TRIDENT_CALLS"] = f"Local\\TridentCalls{os.getpid()}"
     bind_calls(mmap.mmap(-1, 4, tagname=os.environ["TRIDENT_CALLS"], access=mmap.ACCESS_WRITE))
     name = hashlib.sha256(str(ROOT).casefold().encode()).hexdigest()[:24]
