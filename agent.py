@@ -194,9 +194,7 @@ class Agent:
         self.seen = await asyncio.to_thread(desktop.sample)
         while True:
             await asyncio.sleep(CONFIG["screen"]["interval"])
-            if self.acting:
-                pending = None
-                motion = 0
+            if self.acting or self.state["attention"] or not self.line.inbox.empty() or self.line.hearing.busy:
                 continue
             current = await asyncio.to_thread(desktop.sample)
             if desktop.difference(self.seen, current) <= limit:

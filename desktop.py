@@ -128,7 +128,7 @@ def scroll(amount):
 def sample():
     left, top, width, height = [win32api.GetSystemMetrics(n) for n in (76, 77, 78, 79)]
     image = ImageGrab.grab(bbox=(left, top, left + width, top + height), all_screens=True)
-    return image.resize((64, 36), Image.Resampling.BOX).tobytes()
+    return image.convert("RGB").resize((64, 36), Image.Resampling.BOX).tobytes()
 
 
 def difference(before, after):
