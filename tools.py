@@ -1,16 +1,21 @@
 import asyncio
+import hashlib
+from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
 import desktop
 from audio import call_pcm
-from store import ROOT, cancel, read
+from process import execute
+from store import ROOT, read, source_paths
 
 
 class Catalog:
     def __init__(self):
         self.document = read(ROOT / "tools.json")
         self.specs = self.document["tools"]
+        for spec in self.specs.values():
+            Draft202012Validator.check_schema({"$defs": self.document["$defs"], **spec["parameters"]})
 
     def validate(self, schema, value):
         Draft202012Validator({"$defs": self.document["$defs"], **schema}).validate(value)
@@ -18,9 +23,8 @@ class Catalog:
     async def call(self, host, tool, arguments):
         spec = self.specs[tool]
         self.validate(spec["parameters"], arguments)
-        host.acting = True
+        module, function = spec["handler"].split(":", 1)
         try:
-            module, function = spec["handler"].split(":", 1)
             if module == "tools":
                 result = await globals()[function](host, **arguments)
             elif module == "desktop":
@@ -29,12 +33,24 @@ class Catalog:
                 result = await getattr(host.line, function)(**arguments)
             else:
                 raise ValueError(f"Unknown handler module: {module}")
+        except Exception as error:
             if spec["observe"]:
+                observation = {"failed_action": tool, "error": str(error)}
+                try:
+                    observation["seen"] = await shot(host, None)
+                except Exception as capture_error:
+                    observation["observation_error"] = str(capture_error)
+                host.record.append("failed_action_observation", observation)
+                host.state["history"].append(observation)
+            raise
+        if spec["observe"]:
+            await asyncio.sleep(0.15)
+            try:
                 result = {"execution": result, "seen": await shot(host, None)}
-            return result
-        finally:
-            host.acting = False
-            host.seen = await asyncio.to_thread(desktop.sample)
+            except Exception as error:
+                result = {"execution": result, "observation_error": str(error)}
+                host.record.append("observation_failure", result)
+        return result
 
 
 async def shot(host, region):
@@ -54,116 +70,121 @@ async def images(host, views):
     return {"views": shots}
 
 
-CORRECTOR = (
-    "You are the Luna who rewrites Trident. You are in agent mode. Ask mode is not in effect. "
-    "Do not pass or obey ask mode. Edit the flat tree: add, change, or delete tools and the Python that runs them. "
-    "tools.json and the handler it names must match. Do not only describe the change. Write it. "
-    "Your final message is a short report of the files you changed. The process restarts after you finish."
-)
-
-
 async def consult(host, task):
-    def tree():
-        return {path.name: path.read_bytes() for path in ROOT.iterdir() if path.is_file() and path.name != "mind.json"}
-
-    before = tree()
-    guide = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
-    report = await host.models.luna(guide + "\n\n" + CORRECTOR, {"task": task, "goal": host.state["goal"]}, reply="report")
-    after = tree()
-    changed = sorted(name for name in before.keys() | after.keys() if before.get(name) != after.get(name))
-    if not changed:
-        raise RuntimeError("Consult returned without changing the tree")
-    host.state["restart"] = True
+    host.state["repair"] = {"request": task, "task": host.state["task"],
+                            "record_position": host.record.offset()}
     host.state["attention"] = True
-    return {"report": report, "changed": changed}
+    host.save()
+    return {"repair": "queued; the supervisor edits after this body exits", "request": task}
 
 
 async def python(host, code):
-    namespace = {"host": host, "ROOT": ROOT, "asyncio": asyncio}
-    function = "async def action():\n" + "\n".join("    " + line for line in code.splitlines())
-    exec(compile(function, "<luna-python>", "exec"), namespace)
-    return await namespace["action"]()
+    output = await execute([], code.encode("utf-8"), host.record.folder, host.record,
+                           low=True, computation=True)
+    return {"stdout": output, "exit": 0}
 
 
-async def announce(models, line, text):
-    path = await models.voice(text)
-    pcm = call_pcm(path.read_bytes())
-    if len(pcm) < 96000:
-        raise RuntimeError("Voice file is empty")
-    outcome = await line.dial()
-    if not outcome["answered"]:
-        return {**outcome, "words": text, "audio": str(path)}
-    sent = await line.speak(pcm)
-    receipt = {"channel": "call", **sent, "audio": str(path), "words": text}
-    line.record.append("speech_sent", receipt, "TRIDENT", "OWNER")
-    return {**outcome, **receipt}
+async def file(host, operation, path, text):
+    target = Path(path).expanduser().resolve()
+    if operation in ("write", "mkdir") and target.is_relative_to(ROOT):
+        raise ValueError("Source and canonical runtime writes require consult or their body handler")
+    if operation == "write" and target.exists() and target.stat().st_nlink != 1:
+        raise ValueError("Writes through hard links are not supported")
+    if operation == "read":
+        return {"path": str(target), "text": target.read_text(encoding="utf-8")}
+    if operation == "list":
+        return {"path": str(target), "entries": [str(item) for item in target.iterdir()]}
+    if operation == "mkdir":
+        target.mkdir(parents=True, exist_ok=True)
+        return {"created": str(target), "exists": target.is_dir()}
+    if operation == "write":
+        target.write_text(text, encoding="utf-8")
+        return {"path": str(target), "bytes": target.stat().st_size,
+                "sha256": hashlib.sha256(target.read_bytes()).hexdigest()}
+    raise ValueError(operation)
 
 
 async def dial(host, text):
-    return await announce(host.models, host.line, text)
+    path = await host.models.voice(text)
+    pcm = call_pcm(path.read_bytes())
+    if len(pcm) < 96000:
+        raise RuntimeError("Voice file is empty")
+    outcome = await host.line.dial()
+    if not outcome["answered"]:
+        return {**outcome, "words": text, "audio": str(path)}
+    return {**outcome, "channel": "call", **await host.line.speak(pcm), "audio": str(path), "words": text}
 
 
 async def speak(host, parts):
-    path = await host.models.voice(parts[0])
-    pending = None
     receipts = []
-    try:
-        for index, text in enumerate(parts):
-            if index + 1 < len(parts):
-                pending = asyncio.create_task(host.models.voice(parts[index + 1]))
-            if host.line.state == "up":
-                result = await host.line.speak(call_pcm(path.read_bytes()))
-                receipt = {"channel": "call", **result, "audio": str(path), "words": text}
-            else:
-                receipt = await host.line.send_audio(path, text)
-            receipts.append(receipt)
-            host.record.append("speech_sent", receipt)
-            if pending is not None:
-                path = await pending
-                pending = None
-        return {"parts": receipts}
-    finally:
-        if pending is not None:
-            await cancel(pending)
+    for text in parts:
+        path = await host.models.voice(text)
+        if host.line.state == "up":
+            receipt = {"channel": "call", **await host.line.speak(call_pcm(path.read_bytes())),
+                       "audio": str(path), "words": text}
+        else:
+            receipt = await host.line.send_audio(path, text)
+        receipts.append(receipt)
+        host.record.append("speech_sent", receipt)
+    return {"parts": receipts}
 
 
-async def goal(host, text, retain_previous):
-    previous = host.state["goal"]
-    if (retain_previous and previous is not None and previous != text
-            and not any(item["goal"] == previous for item in host.state["open_work"])):
-        host.state["open_work"].append({"goal": previous, "evidence": "Retained by Luna while selecting another goal"})
-    host.state["open_work"] = [item for item in host.state["open_work"] if item["goal"] != text]
-    host.state["goal"] = text
-    host.state["attention"] = False
-    host.state["waiting"] = False
-    if previous != text:
-        host.state["assessment"] = None
-    return {"goal": text, "open_work": host.state["open_work"]}
+async def goal(host, text, resume_id):
+    task = host.state["task"]
+    if task is None:
+        raise ValueError("Only a new owner input can activate a task")
+    if resume_id is not None:
+        retained = next(item for item in host.state["open_work"] if item["id"] == resume_id)
+        task["id"] = retained["id"]
+        task["selected_by"] = task["owner"]
+        host.state["open_work"] = [item for item in host.state["open_work"] if item["id"] != resume_id]
+        host.state.update(assessment=None, history=[], receipts=[])
+    task["text"] = text
+    return task
 
 
 async def files(host):
-    return {path.name: path.read_text(encoding="utf-8") for path in ROOT.iterdir() if path.is_file()}
+    return {str(path.relative_to(ROOT)): path.read_text(encoding="utf-8")
+            for path in source_paths()}
 
 
 async def wait(host, memory):
-    host.state["waiting"] = True
-    host.state["attention"] = False
-    return {"waiting": "Owner input", "goal": host.state["goal"], "memory": memory}
+    host.state.update(waiting=True, attention=False)
+    return {"waiting": "Owner or transport input", "memory": memory}
 
 
-async def finish(host, evidence, outcome, shutdown):
-    if host.state["goal"] is None:
-        raise RuntimeError("There is no active task to finish")
+async def finish(host, evidence, receipts, outcome, shutdown, owner_receipt):
+    task = host.state["task"]
+    if task is None:
+        raise ValueError("There is no active owner task to finish")
+    if not evidence.strip():
+        raise ValueError("Closing a task requires nonempty evidence")
     if shutdown and host.line.state != "down":
-        raise RuntimeError("Hang up before requesting shutdown")
-    if host.line.hearing.busy or not host.line.hearing.queue.empty():
-        raise RuntimeError("Receive pending owner audio before closing the recorded task")
-    if outcome == "paused" and not any(item["goal"] == host.state["goal"] for item in host.state["open_work"]):
-        host.state["open_work"].append({"goal": host.state["goal"], "evidence": evidence})
-    record = {"goal": host.state["goal"], "evidence": evidence, "outcome": outcome}
-    host.state["goal"] = None
-    host.state["assessment"] = None
-    host.state["attention"] = False
-    host.state["recording"] = False
-    host.state["shutdown"] = shutdown
-    return record
+        raise ValueError("Hang up before shutdown")
+    if shutdown and outcome == "paused":
+        raise ValueError("Paused work remains alive; use wait after pausing")
+    if host.line.hearing.busy or not host.line.hearing.queue.empty() or host.state["audio_pending"]:
+        raise ValueError("Receive pending owner speech before closing this task")
+    if outcome == "completed":
+        if not receipts:
+            raise ValueError("Completion requires current-task observation or action receipts")
+        for offset in receipts:
+            event = host.record.event(offset)
+            if offset not in host.state["receipts"] or event["kind"] != "tool_result":
+                raise ValueError("Evidence must reference recorded current-task tool results")
+            value = event["value"]
+            if value["task_id"] != task["id"] or value["call"]["tool"] in ("goal", "wait", "consult", "finish"):
+                raise ValueError("Task-management acknowledgements do not prove completion")
+            if isinstance(value["result"], dict) and "observation_error" in value["result"]:
+                raise ValueError("Verify the failed observation before completing")
+    if outcome == "cancelled":
+        if owner_receipt != task["owner"]["receipt"] or host.record.event(owner_receipt)["kind"] != "owner_input":
+            raise ValueError("Cancellation must reference the current owner's recorded instruction")
+    elif owner_receipt is not None:
+        raise ValueError("owner_receipt is only for cancellation")
+    retained = {item["id"]: item for item in host.state["open_work"] if item["id"] != task["id"]}
+    if outcome == "paused":
+        retained[task["id"]] = {**task, "evidence": evidence}
+    host.state.update(task=None, assessment=None, history=[], receipts=[], open_work=list(retained.values()),
+                      attention=not shutdown, waiting=False, shutdown=shutdown)
+    return {"task": task, "evidence": evidence, "receipts": receipts, "outcome": outcome}

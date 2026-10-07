@@ -7,43 +7,36 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 import aiohttp
-import win32api
-import win32con
-import win32job
-
+from process import execute
 from store import CONFIG, ROOT, cancel, command, encode
 
 
-async def execute(parts, data=b""):
-    job = win32job.CreateJobObject(None, "")
-    limits = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
-    limits["BasicLimitInformation"]["LimitFlags"] = win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-    win32job.SetInformationJobObject(job, win32job.JobObjectExtendedLimitInformation, limits)
-    process = await asyncio.create_subprocess_exec(
-        *command(parts), cwd=ROOT, stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        creationflags=subprocess.CREATE_NO_WINDOW,
-    )
-    try:
-        handle = win32api.OpenProcess(win32con.PROCESS_SET_QUOTA | win32con.PROCESS_TERMINATE, False, process.pid)
+async def decision(record, instruction, context, workspace, low=False):
+    record.append("request", {"system": instruction, "context": context}, "TRIDENT", "LUNA")
+    raw = await execute([
+        *CONFIG["luna"]["command"], "-p", "--trust", "--force", "--model", CONFIG["luna"]["model"],
+        "--output-format", "stream-json", "--workspace", str(workspace),
+    ], (instruction + "\n\nTrident context:\n" + encode(context)).encode("utf-8"),
+        record.folder, record, low=low, stream=True)
+    events = []
+    for line in raw.splitlines():
         try:
-            win32job.AssignProcessToJobObject(job, handle)
-        finally:
-            handle.Close()
-        output, errors = await process.communicate(data)
-        if process.returncode:
-            raise RuntimeError(f"{parts[0]} exited {process.returncode}: " + (output + errors).decode("utf-8").strip())
-        return output
-    finally:
-        job.Close()
-        if process.returncode is None:
-            await process.wait()
+            event = json.loads(line)
+            if isinstance(event, dict):
+                events.append(event)
+        except json.JSONDecodeError:
+            pass  # The complete diagnostic line is already in the canonical stream.
+    result = next((event for event in reversed(events) if event.get("type") == "result"), None)
+    if not result or result.get("is_error") or not isinstance(result.get("result"), str) or not result["result"].strip():
+        raise RuntimeError("Luna returned no successful executable response; see the stream record")
+    record.append("response", result, "LUNA", "TRIDENT")
+    return result["result"]
 
 
 class Models:
-    def __init__(self, record, inbox):
+    def __init__(self, record, emit):
         self.record = record
-        self.inbox = inbox
+        self.emit = emit
         self.workers = []
         self.watchers = []
         self.http = None
@@ -68,11 +61,16 @@ class Models:
             env = os.environ.copy()
             if name == "voice":
                 env["CRISPASR_CHATTERBOX_FORCE_GPU"] = "1"
-            process = await asyncio.create_subprocess_exec(
-                *command(CONFIG[name]["command"]), cwd=ROOT, env=env,
-                stdout=output, stderr=output, creationflags=subprocess.CREATE_NO_WINDOW,
-            )
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    *command(CONFIG[name]["command"]), cwd=ROOT, env=env,
+                    stdout=output, stderr=output, creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+            except BaseException:
+                output.close()
+                raise
             self.workers.append((process, output))
+            self.record.append("worker_started", {"worker": name, "pid": process.pid, "log": output.name})
             async with asyncio.timeout(300):
                 while True:
                     if process.returncode is not None:
@@ -90,7 +88,7 @@ class Models:
 
     async def watch(self, name, process):
         code = await process.wait()
-        self.inbox.put_nowait(("error", self.failure(name, code)))
+        self.emit("error", self.failure(name, code))
 
     def failure(self, name, code):
         detail = (self.record.folder / f"{name}.log").read_text(encoding="utf-8")
@@ -98,39 +96,32 @@ class Models:
 
     async def close(self):
         await cancel(*self.watchers)
+        failures = []
         for process, output in reversed(self.workers):
-            if process.returncode is None:
-                process.kill()
-                await process.wait()
-            output.close()
+            try:
+                if process.returncode is None:
+                    process.kill()
+                    await process.wait()
+            except Exception as error:
+                failures.append(str(error))
+            try:
+                output.close()
+                log = self.record.artifact(Path(output.name).read_bytes(), "log")
+                self.record.append("worker_closed", {"exit": process.returncode}, images=[str(log)])
+            except Exception as error:
+                failures.append(str(error))
         if self.http is not None:
-            await self.http.close()
-        self.record.append("models_closed", {})
+            try:
+                await self.http.close()
+            except Exception as error:
+                failures.append(str(error))
+        self.record.append("models_closed", {"failures": failures})
+        if failures:
+            raise RuntimeError("; ".join(failures))
 
-    async def luna(self, instruction, context, reply="json"):
-        if reply == "json":
-            instruction += (
-                "\nYou are in agent mode. Ask mode is not in effect. Read every PNG path yourself; "
-                "window is only the foreground title, not the visible desktop. Return exactly one JSON object "
-                "with assessment and calls, and no other text. Python executes those calls now. Treat PNGs and "
-                "tool results as reality: do not claim an action or change without a receipt. If the body cannot "
-                "do something, call consult; this decision does not rewrite the tree."
-            )
-        self.record.append("request", {"system": instruction, "context": context}, "TRIDENT", "LUNA")
-        workspace = ROOT if reply == "report" else self.record.folder
-        raw = await execute([
-            *CONFIG["luna"]["command"], "-p", "--trust", "--model", CONFIG["luna"]["model"],
-            "--output-format", "json", "--show-thinking", "--workspace", str(workspace.resolve()),
-        ], (instruction + "\n\nTrident context:\n" + encode(context)).encode("utf-8"))
-        result = json.loads(raw)
-        thinking = result.get("thinking_blocks") if isinstance(result, dict) else None
-        if thinking is not None:
-            self.record.append("thinking", thinking, "LUNA", "TRIDENT")
-        text = str(result.get("result") or "").strip() if isinstance(result, dict) else ""
-        self.record.append("response", text, "LUNA", "TRIDENT")
-        if not text:
-            raise RuntimeError("Luna returned an empty response")
-        return text
+    async def luna(self, context):
+        instruction = (ROOT / "instructions.txt").read_text(encoding="utf-8")
+        return await decision(self.record, instruction, context, self.record.folder, low=True)
 
     async def voice(self, text):
         request = {"input": text, "response_format": "wav"}

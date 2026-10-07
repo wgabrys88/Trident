@@ -1,65 +1,99 @@
 import asyncio
 import os
 import sys
-import uuid
-from contextlib import AsyncExitStack
 from pathlib import Path
 
-from agent import Agent
-from line import Line
-from models import Models
-from store import ROOT, Record, read, write
 
+async def main(folder):
+    from agent import Agent
+    from line import Line
+    from models import Models
+    from store import ROOT, Record, activate, cancel, read, save
 
-async def main():
-    os.chdir(ROOT)
-    folder = ROOT / "runs" / uuid.uuid4().hex if len(sys.argv) == 1 else Path(sys.argv[1])
     record = Record(folder)
-    if len(sys.argv) == 1:
-        state = {
-            "goal": None, "history": [],
-            "waiting": False, "shutdown": False, "restart": False, "start": 0,
-            "attention": True, "recording": False, "open_work": read(ROOT / "mind.json")["open_work"], "assessment": None,
-        }
-    else:
-        state = read(folder / "session.json")
-        state["restart"] = False
-        state["attention"] = True
-    record.append("boot", {"resumed": len(sys.argv) != 1})
-    write(folder / "session.json", state)
-    line = Line(asyncio.Queue(), record)
-    models = Models(record, line.inbox)
-    try:
-        await models.open()
-        await line.hearing.open()
-        await line.open()
-        await Agent(models, line, record, state).serve()
-    except Exception as error:
-        record.append("error", {"type": type(error).__name__, "message": str(error)})
-        raise
-    finally:
-        record.append("cleanup_started", {})
+    state = read(record.folder / "session.json", {
+        "life": record.folder.name, "task": None, "history": [], "receipts": [],
+        "waiting": False, "shutdown": False, "repair": None, "attention": True,
+        "assessment": None, "owner_applied": -1,
+        "owner_cursor": read(ROOT / "runs" / "owner.json", {}).get("cursor"), "audio_pending": {},
+        "open_work": read(ROOT / "runs" / "memory.json", []),
+    })
+    pending = {}
+    for offset, event in record.events():
+        value = event["value"]
+        if event["kind"] == "owner_audio":
+            pending[value["id"]] = {**value, "source_receipt": offset}
+        elif event["kind"] == "asr_result" and not value["recognition"]["text"].strip():
+            pending.pop(value["id"], None)
+        elif event["kind"] == "owner_input":
+            if "recognition" in value:
+                pending.pop(value["id"], None)
+            if offset > state.get("owner_applied", -1):
+                if value.get("superseded"):
+                    state["owner_applied"] = offset
+                    continue
+                source = "audio" if "recognition" in value else "owner"
+                text = value["recognition"]["text"] if source == "audio" else value["text"]
+                activate(state, text, source, offset, value.get("source_receipt", offset))
+                if source == "owner":
+                    state["owner_cursor"] = max(state["owner_cursor"] or 0, value["id"])
+    state["audio_pending"] = pending
+    state["attention"] = True
+    state["waiting"] = False
+    state["body_stopped"] = False
+    record.append("boot", {"life": state["life"], "task": state["task"]})
+    save(record.folder, state)
+    line = Line(asyncio.Queue(), record, state)
+    models = Models(record, line.emit)
+    agent = Agent(models, line, record, state)
+    cleanup_failed = False
+    async def start(name, operation):
         try:
-            async with AsyncExitStack() as cleanup:
-                for resource in (models, line.hearing, line):
-                    cleanup.push_async_callback(resource.close)
-            record.append("cleanup_finished", {})
-            if sys.exception() is None:
-                record.append("restart" if state.get("restart") else "shutdown", {})
-        finally:
+            await operation()
+            line.emit("dependency_ready", {"resource": name})
+        except Exception as error:
+            line.emit("error", error)
+    startup = [asyncio.create_task(start(name, operation)) for name, operation in (
+        ("telegram", line.open), ("hearing", lambda: line.hearing.open(state["audio_pending"].values())),
+        ("voice", models.open))]
+    try:
+        await agent.serve()
+    finally:
+        record.append("cleanup_started", {"life": state["life"]})
+        await cancel(*startup)
+        for operation in (line.stop_calls, line.hearing.close, models.close):
             try:
-                await record.close()
-            finally:
-                if line.client is not None:
-                    await line.client.disconnect()
-    return folder if state.get("restart") else None
+                await operation()
+            except Exception as error:
+                cleanup_failed = True
+                record.append("cleanup_failure", {"resource": operation.__qualname__, "error": str(error)})
+        while not line.inbox.empty():
+            await agent.receive(line.inbox.get_nowait())
+        state["body_stopped"] = not cleanup_failed
+        record.append("cleanup_finished", {"failed": cleanup_failed})
+        try:
+            await line.close()
+        except Exception as error:
+            cleanup_failed = True
+            state["body_stopped"] = False
+            record.append("cleanup_failure", {"resource": "telegram", "error": str(error)})
+        agent.save()
+    if cleanup_failed:
+        return 1
+    if state["repair"]:
+        record.append("repair_handoff", {"life": state["life"], "task": state["task"]})
+        return 75
+    record.append("shutdown" if state["shutdown"] else "resume_pending_input", {"life": state["life"]})
+    return 0 if state["shutdown"] else 76
 
 
 if __name__ == "__main__":
+    if len(sys.argv) != 2 or os.environ.get("TRIDENT_LAUNCH") != str(Path(sys.argv[1]).resolve()):
+        raise RuntimeError("Start Trident through launch.py")
+    if sys.stdin.buffer.read() != b"start":
+        raise RuntimeError("Supervisor startup handshake missing")
     try:
-        restart = asyncio.run(main())
-        if restart is not None:
-            os.execv(sys.executable, [sys.executable, str(ROOT / "trident.py"), str(restart)])
+        sys.exit(asyncio.run(main(sys.argv[1])))
     except Exception as error:
         print(f"{type(error).__name__}: {error}", file=sys.stderr)
         sys.exit(1)

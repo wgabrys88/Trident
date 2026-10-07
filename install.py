@@ -1,4 +1,3 @@
-import json
 import shutil
 import subprocess
 import sys
@@ -45,34 +44,11 @@ def install():
     interpreter = environment / "Scripts" / "python.exe"
     subprocess.run([str(interpreter), "-m", "pip", "install", "-r", str(ROOT / "requirements.txt")], check=True)
     config = CONFIG["install"]
-    request = urllib.request.Request(
-        "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/" + config["llama_tag"],
-        headers={"User-Agent": "Trident"},
-    )
-    with urllib.request.urlopen(request, timeout=60) as response:
-        assets = {asset["name"]: asset["browser_download_url"] for asset in json.load(response)["assets"]}
-    destination = artifacts / "llama"
-    if destination.exists():
-        shutil.rmtree(destination)
-    destination.mkdir()
-    for index, name in enumerate(config["llama_assets"]):
-        stage = f"llama-download-{index}"
-        if (artifacts / stage).exists():
-            shutil.rmtree(artifacts / stage)
-        packed = artifacts / (stage + ".zip")
-        download(assets[name], packed)
-        with zipfile.ZipFile(packed) as source:
-            source.extractall(artifacts / stage)
-        for item in (artifacts / stage).rglob("*"):
-            if item.is_file():
-                shutil.move(str(item), destination / item.name)
-        shutil.rmtree(artifacts / stage)
-        packed.unlink()
     for name, url in config["models"].items():
         download(url, artifacts / name)
     archive(config["nemo_url"], "nemo-cpu", Path("bin/nemo-speech.exe"))
     archive(config["voice_url"], "voice", Path("crispasr.exe"))
-    print(f"Installed. Start with: {interpreter} {ROOT / 'trident.py'}")
+    print(f"Installed. Start with: {interpreter} {ROOT / 'launch.py'}")
 
 
 if __name__ == "__main__":

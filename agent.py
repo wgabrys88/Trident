@@ -1,189 +1,134 @@
 import asyncio
 import json
 
-import desktop
-from store import CONFIG, ROOT, cancel, read, write
+from store import cancel, save
 from tools import Catalog
 
 
 class Agent:
     def __init__(self, models, line, record, state):
         self.models, self.line, self.record, self.state = models, line, record, state
-        self.acting = False
-        self.seen = None
+        self.catalog = Catalog()
+        self.deciding = False
 
     def save(self):
-        write(self.record.folder / "session.json", self.state)
-        mind = read(ROOT / "mind.json")
-        owner_goal = self.state["goal"]
-        retained = list(self.state["open_work"])
-        if owner_goal is not None and not any(item.get("goal") == owner_goal for item in retained):
-            retained.append({"goal": owner_goal, "evidence": "Unfinished owner work", "session": str(self.record.folder / "session.json")})
-        stored = {"open_work": retained}
-        if mind != stored:
-            write(ROOT / "mind.json", stored)
+        save(self.record.folder, self.state)
 
     async def receive(self, event):
         kind, value = event
-        if kind == "error":
-            raise value
-        if kind == "line":
-            self.record.append("line_status", value)
-            self.state["history"].append({"line": value})
-            self.state["attention"] = True
-            self.state["waiting"] = False
-            self.state["shutdown"] = False
-            self.save()
-            return
-        if not self.state["recording"] and kind != "audio":
-            self.state["start"] = value["start"] if kind == "audio_pending" else self.record.offset()
-            self.state["history"] = []
-            self.state["recording"] = True
         if kind == "audio_pending":
-            self.state["history"].append({"audio_observation": {**value, "status": "transcribing"}})
-            self.save()
             return
         if kind == "audio":
-            entry = next(entry for entry in self.state["history"]
-                         if entry.get("audio_observation", {}).get("id") == value["id"])
-            entry["audio_observation"] = {**value, "status": "complete"}
             text = value["recognition"]["text"]
             if not text.strip():
                 self.save()
                 return
-            entry["audio"] = text
-            value = text
-        else:
-            self.state["history"].append({kind: value})
-        self.state["attention"] = True
-        self.state["shutdown"] = False
-        self.state["waiting"] = False
+            value = {"text": text, "audio": value["path"], "id": value["id"], "receipt": value["receipt"],
+                     "superseded": value.get("superseded", False)}
         if kind in ("owner", "audio"):
-            self.record.append("owner_input", {"text": value, "source": kind})
-            self.state["goal"] = value
-            self.state["assessment"] = None
+            text = value["text"]
+            if not text.strip():
+                return
+            if self.state["task"] and self.state["task"]["owner"]["receipt"] == value["receipt"]:
+                self.state["history"].append({"owner_input": value, "receipt": value["receipt"]})
+            elif value.get("superseded"):
+                self.state["history"].append({"superseded_owner_input": value, "receipt": value["receipt"]})
+        else:
+            if kind == "error":
+                value = {"type": type(value).__name__, "error": str(value)}
+            receipt = self.record.append(kind, value)
+            self.state["history"].append({"observation": value, "receipt": receipt})
+            self.state.update(attention=True, waiting=False, shutdown=False)
         self.save()
 
     async def step(self):
-        try:
-            catalog = Catalog()
-        except Exception as error:
-            self.state["history"].append({"rejected": f"Tool catalog unavailable: {error}"})
-            self.record.append("rejected", {"error": f"Tool catalog unavailable: {error}"})
-            self.state["attention"] = True
-            self.save()
-            return
         generation = self.line.generation
         text = None
         try:
-            text = await self.models.luna((ROOT / "AGENTS.md").read_text(encoding="utf-8"), {
-                "transport": {"call": self.line.state, "id": self.line.peer.id if self.line.peer is not None else None},
-                "goal": self.state["goal"],
-                "open_work": self.state["open_work"], "assessment": self.state["assessment"],
-                "hearing": {"busy": self.line.hearing.busy, "queued": self.line.hearing.queue.qsize()},
-                "tools": catalog.document, "history": self.state["history"],
+            self.deciding = True
+            text = await self.models.luna({
+                "transport": {"call": self.line.state, "id": self.line.peer.id if self.line.peer else None,
+                              "connected": bool(self.line.client and self.line.client.is_connected())},
+                "task": self.state["task"], "open_work": self.state["open_work"],
+                "assessment": self.state["assessment"], "receipts": self.state["receipts"],
+                "hearing": {"busy": self.line.hearing.busy, "queued": self.line.hearing.queue.qsize(),
+                            "pending": self.state["audio_pending"]},
+                "tools": self.catalog.document, "history": self.state["history"],
             })
+            self.deciding = False
             batch = self.parse_batch(text)
-            catalog.validate({"$ref": "#/$defs/batch"}, batch)
+            self.catalog.validate({"$ref": "#/$defs/batch"}, batch)
             calls = batch["calls"]
-            for call in calls:
-                name = call["tool"]
-                if name not in catalog.specs:
-                    raise KeyError(name)
-                if catalog.specs[name]["boundary"] and call is not calls[-1]:
-                    raise ValueError(f"{name} must be last in its batch")
+            for index, call in enumerate(calls):
+                spec = self.catalog.specs[call["tool"]]
+                self.catalog.validate(spec["parameters"], call["arguments"])
+                if spec["boundary"] and index != len(calls) - 1:
+                    raise ValueError(f"{call['tool']} must end its batch")
         except Exception as error:
-            self.state["history"].append({"rejected": str(error)})
             self.record.append("rejected", {"error": str(error), "text": text})
+            self.state["history"].append({"rejected": str(error)})
             self.state["attention"] = True
             self.save()
+            await asyncio.sleep(1)
             return
+        finally:
+            self.deciding = False
         if generation != self.line.generation:
-            self.record.append("batch_superseded", {"reason": "Input changed while Luna was deciding", "batch": batch})
+            self.record.append("batch_superseded", {"batch": batch})
             return
-        assessment = batch["assessment"]
-        self.state["assessment"] = assessment
-        self.record.append("assessment", assessment)
+        self.state["assessment"] = batch["assessment"]
+        self.record.append("assessment", batch["assessment"])
         for index, call in enumerate(calls):
             if generation != self.line.generation:
-                self.record.append("batch_superseded", {"reason": "Input changed during execution", "remaining": calls[index:]})
+                self.record.append("batch_superseded", {"remaining": calls[index:]})
                 break
-            name = call["tool"]
-            self.record.append("tool_start", call, "LUNA", "TOOL (" + name + ")")
+            task_id = self.state["task"]["id"] if self.state["task"] else None
+            self.record.append("tool_start", {"task_id": task_id, **call}, "LUNA", "TOOL")
             try:
-                result = await catalog.call(self, **call)
+                result = await self.catalog.call(self, **call)
             except Exception as error:
-                self.state["history"].append({"rejected": str(error), "call": call})
-                self.record.append("rejected", {"error": str(error), "call": call})
+                self.record.append("tool_failure", {"call": call, "task_id": task_id, "error": str(error)})
+                self.state["history"].append({"call": call, "error": str(error)})
                 self.state["attention"] = True
                 self.save()
                 return
-            entry = {"call": call, "result": result}
-            self.state["history"].append(entry)
-            self.record.append("tool_result", entry, "TOOL (" + name + ")", "LUNA")
+            entry = {"task_id": task_id, "call": call, "result": result}
+            receipt = self.record.append("tool_result", entry, "TOOL", "LUNA")
+            if self.state["task"] and self.state["task"]["id"] == task_id:
+                self.state["receipts"].append(receipt)
+            if call["tool"] != "finish":
+                self.state["history"].append({**entry, "receipt": receipt})
             self.save()
 
     @staticmethod
     def parse_batch(text):
-        """Accept the CLI's occasional fenced/diagnostic wrapper, but only
-        execute a single validated JSON object."""
         candidate = text.strip()
-        if candidate.startswith("```"):
-            lines = candidate.splitlines()
-            if lines and lines[0].lstrip().startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].strip().startswith("```"):
-                lines = lines[:-1]
-            candidate = "\n".join(lines).strip()
+        if candidate.startswith(chr(96) * 3):
+            candidate = "\n".join(candidate.splitlines()[1:-1]).strip()
         try:
-            value = json.loads(candidate)
+            return json.loads(candidate)
         except json.JSONDecodeError:
-            start, end = candidate.find("{"), candidate.rfind("}")
-            if start < 0 or end <= start:
+            batches = []
+            decoder = json.JSONDecoder()
+            for index, character in enumerate(candidate):
+                if character == "{":
+                    try:
+                        value, _ = decoder.raw_decode(candidate[index:])
+                        if isinstance(value, dict) and "assessment" in value and "calls" in value:
+                            batches.append(value)
+                    except json.JSONDecodeError:
+                        pass
+            if not batches:
                 raise
-            value = json.loads(candidate[start:end + 1])
-        if not isinstance(value, dict):
-            raise ValueError("Luna batch must be a JSON object")
-        return value
-
-    async def watch_screen(self):
-        limit = CONFIG["screen"]["difference"]
-        pending = None
-        motion = 0
-        self.seen = await asyncio.to_thread(desktop.sample)
-        while True:
-            await asyncio.sleep(CONFIG["screen"]["interval"])
-            if self.acting or self.state["attention"] or not self.line.inbox.empty() or self.line.hearing.busy:
-                continue
-            current = await asyncio.to_thread(desktop.sample)
-            if desktop.difference(self.seen, current) <= limit:
-                pending = None
-                motion = 0
-                continue
-            motion += 1
-            if pending is not None and (desktop.difference(pending, current) <= limit or motion >= CONFIG["screen"]["settle"]):
-                self.seen = current
-                pending = None
-                motion = 0
-                self.line.emit("screen", "The desktop changed apart from Trident.")
-            else:
-                pending = current
+            return batches[-1]
 
     async def serve(self):
-        watch = asyncio.create_task(self.watch_screen())
-        try:
-            await self.live()
-        finally:
-            await cancel(watch)
-
-    async def live(self):
-        while not self.state.get("restart"):
+        while not self.state.get("repair"):
             if not self.line.inbox.empty():
                 await self.receive(await self.line.inbox.get())
-                continue
-            if self.state["shutdown"] and not self.line.hearing.busy and self.line.hearing.queue.empty():
+            elif self.state["shutdown"] and not self.line.hearing.busy and self.line.hearing.queue.empty():
                 return
-            if (self.state["goal"] is not None or self.state["attention"]) and not self.state["waiting"]:
+            elif (self.state["task"] or self.state["attention"]) and not self.state["waiting"]:
                 await self.work(self.step())
             else:
                 await self.receive(await self.line.inbox.get())
@@ -195,11 +140,11 @@ class Agent:
             while True:
                 done, _ = await asyncio.wait((task, incoming), return_when=asyncio.FIRST_COMPLETED)
                 if incoming in done:
-                    event = incoming.result()
-                    if event[0] == "error":
+                    await self.receive(incoming.result())
+                    if self.deciding:
+                        self.record.append("decision_superseded", {"generation": self.line.generation})
                         await cancel(task)
-                        self.record.append("work_interrupted", {})
-                    await self.receive(event)
+                        return
                     incoming = asyncio.create_task(self.line.inbox.get())
                 if task in done:
                     await task

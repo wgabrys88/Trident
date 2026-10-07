@@ -125,16 +125,25 @@ class Hearing:
         finally:
             self.close_stream(stream)
 
-    async def open(self):
-        await asyncio.get_running_loop().run_in_executor(self.executor, self.load)
+    async def open(self, pending=()):
+        saved_pending = list(pending)
+        for observation in saved_pending:
+            with wave.open(observation["path"], "rb") as source:
+                self.queue.put_nowait((source.readframes(source.getnframes()), observation))
+        loading = asyncio.get_running_loop().run_in_executor(self.executor, self.load)
+        try:
+            await asyncio.shield(loading)
+        except asyncio.CancelledError:
+            await loading
+            raise
         self.record.append("hearing_ready", {"model": CONFIG["ears"]["model"], "device": "cpu"})
         self.task = asyncio.create_task(self.listen())
 
     def submit(self, pcm):
         identifier = uuid.uuid4().hex
         path = self.record.artifact(wav(pcm, 16000), "wav")
-        observation = {"id": identifier, "path": str(path), "start": self.record.offset()}
-        self.record.append("owner_audio", observation, "OWNER", "NEMOTRON")
+        observation = {"id": identifier, "path": str(path)}
+        observation["source_receipt"] = self.record.append("owner_audio", observation, "OWNER", "NEMOTRON")
         self.queue.put_nowait((pcm, observation))
         self.emit("audio_pending", observation)
 
@@ -158,16 +167,23 @@ class Hearing:
             self.busy = False
 
     async def close(self):
-        if self.task is not None:
-            self.queue.put_nowait(None)
-            await self.task
-        if self.recognizer.value:
-            await asyncio.get_running_loop().run_in_executor(self.executor, self.destroy, self.recognizer)
-            self.recognizer = c.c_void_p()
-        self.executor.shutdown(wait=True)
-        if self.dll_directory is not None:
-            self.dll_directory.close()
-        self.record.append("hearing_closed", {})
+        failures = []
+        try:
+            if self.task is not None:
+                self.queue.put_nowait(None)
+                await self.task
+            if self.recognizer.value:
+                await asyncio.get_running_loop().run_in_executor(self.executor, self.destroy, self.recognizer)
+                self.recognizer = c.c_void_p()
+        except Exception as error:
+            failures.append(str(error))
+        finally:
+            self.executor.shutdown(wait=True)
+            if self.dll_directory is not None:
+                self.dll_directory.close()
+        self.record.append("hearing_closed", {"failures": failures})
+        if failures:
+            raise RuntimeError("; ".join(failures))
 
 
 def wav(pcm, rate):

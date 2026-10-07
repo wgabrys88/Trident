@@ -12,8 +12,8 @@ from opentele.api import API, UseCurrentSession
 from opentele.td import TDesktop
 from opentele.tl.telethon import TelegramClient
 from telethon import events
-from telethon.sessions import MemorySession
-from telethon.tl.functions.messages import GetDhConfigRequest
+from telethon.errors import FloodWaitError
+from telethon.tl.functions.messages import GetDhConfigRequest, SendMessageRequest, SendMediaRequest
 from telethon.tl.functions.phone import (
     AcceptCallRequest, ConfirmCallRequest, DiscardCallRequest,
     RequestCallRequest, SendSignalingDataRequest,
@@ -21,11 +21,11 @@ from telethon.tl.functions.phone import (
 from telethon.tl.types import (
     DocumentAttributeAudio, InputPhoneCall, PhoneCall, PhoneCallAccepted, PhoneCallDiscarded,
     PhoneCallDiscardReasonHangup, PhoneCallProtocol, PhoneCallRequested,
-    PhoneConnection, PhoneConnectionWebrtc, UpdatePhoneCall, UpdatePhoneCallSignalingData,
+    PhoneConnection, PhoneConnectionWebrtc, UpdatePhoneCall, UpdatePhoneCallSignalingData, UpdateShortSentMessage,
 )
 
 from audio import Hearing, Utterances
-from store import CONFIG, cancel
+from store import CONFIG, ROOT, activate, cancel, save, write
 
 
 def protocol():
@@ -53,10 +53,12 @@ async def native(engine, method, *arguments):
 
 
 class Line:
-    def __init__(self, inbox, record):
+    def __init__(self, inbox, record, life, calls=True):
         self.inbox, self.record = inbox, record
+        self.life, self.calls = life, calls
         self.owner_id = CONFIG["owner"]["telegram_id"]
         self.client = None
+        self.owner = None
         self.engine = None
         self.peer = None
         self.requested = None
@@ -68,7 +70,7 @@ class Line:
         self.jobs = set()
         self.generation = 0
         self.native_serial = 0
-        self.hearing = Hearing(record, self.emit)
+        self.hearing = Hearing(record, self.emit) if calls else None
 
     async def open(self):
         self.loop = asyncio.get_running_loop()
@@ -77,30 +79,74 @@ class Line:
         if len(accounts) != 1:
             raise RuntimeError(f"Telegram tdata needs exactly one Trident user session distinct from Wojciech; found {len(accounts)}")
         [account] = accounts
-        self.client = await TelegramClient.FromTDesktop(
-            account, session=MemorySession(), flag=UseCurrentSession, api=API.TelegramDesktop,
-            request_retries=0, connection_retries=0, auto_reconnect=False, flood_sleep_threshold=0, raise_last_call_error=True,
-        )
-        self.client.add_event_handler(self.message, events.NewMessage(incoming=True, from_users=[self.owner_id]))
-        self.client.add_event_handler(self.update, events.Raw())
+        if self.client is None:
+            self.client = await TelegramClient.FromTDesktop(
+                account, session=str(self.record.folder / "telegram"), flag=UseCurrentSession, api=API.TelegramDesktop,
+                request_retries=0, connection_retries=0, auto_reconnect=True, flood_sleep_threshold=0,
+                raise_last_call_error=True, catch_up=True,
+            )
+            self.client.add_event_handler(self.message, events.NewMessage(incoming=True, from_users=[self.owner_id]))
+            if self.calls:
+                self.client.add_event_handler(self.update, events.Raw())
         await self.client.connect()
         identity = await self.client.get_me()
-        if identity is None or identity.bot:
+        if identity is None or identity.bot or identity.id == self.owner_id or identity.id != int(account.UserId):
             raise RuntimeError("Telegram needs an authorized user session distinct from Wojciech")
         await self.client.get_dialogs()
         self.owner = await self.client.get_input_entity(self.owner_id)
-        self.record.task = self.dispatch(self.record.send(self))
+        if self.life["owner_cursor"] is None:
+            latest = await self.client.get_messages(self.owner, limit=1)
+            # A live callback may already have installed a newer owner input.
+            self.life["owner_cursor"] = max(self.life["owner_cursor"] or 0, latest[0].id if latest else 0)
+            save(self.record.folder, self.life)
+            write(ROOT / "runs" / "owner.json", {"cursor": self.life["owner_cursor"]})
+        async for message in self.client.iter_messages(self.owner, min_id=self.life["owner_cursor"], reverse=True):
+            if not message.out and message.sender_id == self.owner_id:
+                self.owner_message(message.id, message.raw_text)
+        if self.record.task is None or self.record.task.done():
+            self.record.task = self.dispatch(self.record.send(self))
+        self.record.append("telegram_connected", {"identity": identity.id, "calls": self.calls})
+
+    def owner_message(self, identifier, text):
+        cursor = self.life["owner_cursor"]
+        if text and text.strip() and (cursor is None or identifier > cursor):
+            self.emit("owner", {"id": identifier, "text": text})
 
     def emit(self, kind, value):
+        if not self.calls and kind not in ("owner", "audio", "audio_pending"):
+            observation = {"type": type(value).__name__, "error": str(value)} if isinstance(value, BaseException) else value
+            receipt = self.record.append(kind, observation)
+            self.life["history"].append({"observation": observation, "receipt": receipt})
+        if kind == "audio_pending":
+            self.life["audio_pending"][value["id"]] = value
+        if kind in ("owner", "audio"):
+            if kind == "audio":
+                self.life["audio_pending"].pop(value["id"], None)
+            text = value["text"] if kind == "owner" else value["recognition"]["text"]
+            if text.strip():
+                sequence = value.get("source_receipt", self.record.offset())
+                if sequence < self.life.get("owner_sequence", -1):
+                    value = {**value, "superseded": True}
+                value = {**value, "receipt": self.record.append("owner_input", value, "OWNER", "LUNA")}
+                if not value.get("superseded"):
+                    activate(self.life, text, kind, value["receipt"], sequence)
+                else:
+                    self.life["owner_applied"] = value["receipt"]
+            if kind == "owner":
+                self.life["owner_cursor"] = max(self.life["owner_cursor"] or 0, value["id"])
+        if kind in ("owner", "audio", "audio_pending"):
+            save(self.record.folder, self.life)
+            if kind == "owner":
+                write(ROOT / "runs" / "owner.json", {"cursor": self.life["owner_cursor"]})
         self.generation += 1
         self.inbox.put_nowait((kind, value))
 
     async def message(self, event):
         try:
             if event.is_private:
-                if event.media:
-                    raise ValueError("Telegram input must be text or a live call")
-                self.emit("owner", event.raw_text)
+                self.owner_message(event.id, event.raw_text)
+                if event.media and not event.raw_text:
+                    self.emit("observation", {"message": event.id, "media": "Owner sent media; text or live-call speech is available"})
         except Exception as error:
             self.emit("error", error)
 
@@ -299,6 +345,42 @@ class Line:
         )
         return {"sent": text, "message": message.id}
 
+    async def deliver_text(self, text, random_id):
+        request = SendMessageRequest(self.owner, text, random_id=random_id, no_webpage=True)
+        try:
+            result = await self.client(request)
+        except FloodWaitError:
+            raise
+        except Exception:
+            return await self.delivery_lookup(text, random_id)
+        if isinstance(result, UpdateShortSentMessage):
+            return {"message": result.id, "random_id": random_id}
+        message = self.client._get_response_message(request, result, self.owner)
+        if message is None:
+            return await self.delivery_lookup(text, random_id)
+        return {"message": message.id, "random_id": random_id}
+
+    async def deliver_file(self, file, caption, random_id):
+        _, uploaded, _ = await self.client._file_to_media(file, force_document=True)
+        request = SendMediaRequest(self.owner, uploaded, caption, random_id=random_id)
+        try:
+            result = await self.client(request)
+        except FloodWaitError:
+            raise
+        except Exception:
+            return await self.delivery_lookup(caption, random_id)
+        message = self.client._get_response_message(request, result, self.owner)
+        if message is None:
+            return await self.delivery_lookup(caption, random_id)
+        return {"message": message.id, "random_id": random_id}
+
+    async def delivery_lookup(self, text, random_id):
+        marker = next(part for part in text.splitlines() if part.startswith("#trident_"))
+        async for message in self.client.iter_messages(self.owner, search=marker, limit=10):
+            if message.out and message.raw_text == text:
+                return {"message": message.id, "random_id": random_id, "recovered_from_history": True}
+        raise RuntimeError("Telegram returned no recoverable delivery receipt; piece remains pending")
+
     async def hang(self):
         if self.peer is None:
             raise RuntimeError("There is no Telegram call to hang up")
@@ -323,10 +405,37 @@ class Line:
             del engine
         self.record.append("call_closed", {})
 
-    async def close(self):
+    async def stop_calls(self):
+        if self.client is not None and self.calls:
+            # Keep owner text live until disconnect, but admit no new call
+            # callbacks while hearing and voice are being dismantled.
+            self.client.remove_event_handler(self.update)
+        failures = []
         if self.peer is not None:
-            await self.hang()
-        elif self.engine is not None:
-            await self.release()
+            try:
+                await self.hang()
+            except Exception as error:
+                failures.append(str(error))
+        if self.engine is not None:
+            try:
+                await self.release()
+            except Exception as error:
+                failures.append(str(error))
         await cancel(*(task for task in self.jobs if task != self.record.task))
-        self.record.append("call_callbacks_closed", {})
+        self.record.append("call_callbacks_closed", {"failures": failures})
+        if failures:
+            raise RuntimeError("; ".join(failures))
+
+    async def close(self):
+        failures = []
+        for operation in (self.stop_calls, self.record.close,
+                          self.client.disconnect if self.client is not None else None):
+            if operation is None:
+                continue
+            try:
+                await operation()
+            except Exception as error:
+                failures.append(str(error))
+        self.record.append("telegram_closed", {"failures": failures})
+        if failures:
+            raise RuntimeError("; ".join(failures))
