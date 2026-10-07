@@ -113,7 +113,7 @@ class Models:
         self.record.append("request", {"system": instruction, "context": context}, "TRIDENT", "LUNA")
         raw = await execute([
             *CONFIG["luna"]["command"], "-p", "--trust", "--model", CONFIG["luna"]["model"],
-            "--output-format", "json", "--show-thinking", "--workspace", str(ROOT), "--mode", "ask",
+            "--output-format", "json", "--show-thinking", "--workspace", str(ROOT),
         ], (instruction + "\n\nTrident context:\n" + encode(context)).encode("utf-8"))
         result = json.loads(raw)
         self.record.append("thinking", result["thinking_blocks"], "LUNA", "TRIDENT")
