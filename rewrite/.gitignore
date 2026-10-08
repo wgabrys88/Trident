@@ -1,0 +1,6 @@
+life/
+session/
+RUN_*/
+__pycache__/
+*.session
+*.session-journal
