@@ -1,183 +1,157 @@
-"""Start from the checkout root: artifacts\python\Scripts\python.exe run.py [mind]"""
-
-import asyncio
-import importlib
+import shutil
+import subprocess
 import sys
-import tomllib
+import time
 from datetime import datetime
 from pathlib import Path
 
-import tools
-from channel import Channel
-from ear import Ear
-from mouth import Mouth, pcm48
+import i2c
 
-MARKERS = {"quiet", "write", "call", "hang", "again"}
+NAMES = ["memory", "telegram", "ears", "voice", "tools", "luna", "timer"]
 
 
-def load():
-    here = Path(__file__).resolve().parent
-    return here, tomllib.loads((here / "config.toml").read_text(encoding="utf-8"))
+class Supply:
+    def __init__(self, root, cfg, run, commands=None):
+        self.root = Path(root)
+        self.cfg = cfg
+        self.folder = Path(run)
+        self.commands = commands or {}
+        self.procs = {}
+        self.when = {}
+        self.restart = {}
+        self.fails = {}
+        self.backoff = {}
+        self.wire = self.root / "wire"
+        self.cap = int(cfg["bus"]["luna_start_cap"])
+        self.stable = float(cfg["bus"]["stable_seconds"])
+        self.step = float(cfg["bus"]["backoff"])
 
+    def command(self, name):
+        return self.commands.get(name) or [sys.executable, str(self.root / f"{name}.py"), str(self.folder)]
 
-def open_mind():
-    if len(sys.argv) > 2:
-        raise RuntimeError("Usage: run.py [mind]")
-    return importlib.import_module("mind_" + (sys.argv[1] if len(sys.argv) > 1 else "luna"))
+    def spawn(self, name):
+        self.procs[name] = subprocess.Popen(self.command(name))
+        self.when[name] = time.monotonic()
+        self.fails.setdefault(name, 0)
+        self.backoff.setdefault(name, self.step)
 
+    def clear_lines(self, name):
+        address = f"{i2c.addr(self.cfg, name):02x}"
+        i2c.remove(self.wire / "scl" / address)
+        i2c.remove(self.wire / address / "alive")
 
-def disposition(answer):
-    lines = (answer or "").splitlines()
-    flags = []
-    while lines and lines[-1].strip() in MARKERS:
-        flags.append(lines.pop().strip())
-    return "\n".join(lines).strip(), flags
+    def hung(self):
+        folder = self.wire / "scl"
+        if not folder.is_dir():
+            return
+        now = time.time()
+        for path in list(folder.iterdir()):
+            if not path.is_file():
+                continue
+            started = float(path.read_text(encoding="utf-8").split()[1])
+            address = int(path.name, 16)
+            name = next(key for key, value in self.cfg["address"].items() if int(value, 16) == address)
+            proc = self.procs.get(name)
+            if proc is not None and proc.poll() is not None:
+                i2c.remove(path)
+                continue
+            if proc is not None and proc.poll() is None and now - started > float(self.cfg["busy"][name]):
+                proc.terminate()
+                i2c.remove(path)
 
-
-def pictures(life, count):
-    found = []
-    folder = Path(life)
-    if int(count) <= 0 or not folder.is_dir():
-        return found
-    for path in folder.rglob("*"):
-        if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
-            found.append(path)
-    found.sort(key=lambda item: item.stat().st_mtime)
-    return found[-int(count):]
-
-
-def picture(up, items):
-    lines = ["Call is up." if up else "Call is down."]
-    for kind, text in items:
-        if kind == "wrote":
-            lines.append("Wojciech wrote:\n" + text)
-        elif kind == "said":
-            lines.append("Wojciech said:\n" + text)
-        else:
-            lines.append(text)
-    return "\n".join(lines)
-
-
-async def take(channel, ear, timeout):
-    loop = asyncio.get_running_loop()
-    deadline = None if timeout is None else loop.time() + timeout
-    found = []
-    while True:
-        if channel.trouble:
-            raise channel.trouble.pop(0)
-        while channel.inbox:
-            found.append(channel.inbox.pop(0))
-        while channel.mic:
-            piece = channel.mic.pop(0)
-            audio = ear.flush() if piece is None else None
-            pieces = ear.cut(piece) if piece is not None else ([audio] if audio else [])
-            for utterance in pieces:
-                if not utterance:
-                    continue
-                text = (await ear.transcribe(utterance)).strip()
-                if text:
-                    found.append(("said", text))
-        while channel.inbox:
-            found.append(channel.inbox.pop(0))
-        if found:
-            return found
-        if deadline is not None and loop.time() >= deadline:
-            return None
-        channel.arrived.clear()
-        if channel.inbox or channel.mic or channel.trouble:
-            continue
-        if deadline is None:
-            await channel.arrived.wait()
-            continue
-        try:
-            await asyncio.wait_for(channel.arrived.wait(), max(0, deadline - loop.time()))
-        except TimeoutError:
-            pass
-
-
-async def live():
-    root, cfg = load()
-    here = Path(__file__).resolve().parent
-    stamp = datetime.now().strftime("%Y%m%dT%H%M%S%f")
-    life = here / "life" / stamp
-    run_dir = here / f"RUN_{stamp}"
-    life.mkdir(parents=True)
-    run_dir.mkdir(parents=True)
-    channel = Channel(
-        {"telegram_id": cfg["owner"]["telegram_id"], "tdata": cfg["telegram"]["tdata"]},
-        here / "session" / stamp / "telegram",
-    )
-    ear = Ear(root, cfg["ears"])
-    mouth = Mouth(root, cfg["voice"])
-    mind = open_mind()
-    idle = cfg["life"]["idle_seconds"]
-    image_count = cfg["life"]["recent_images"]
-    transcript = []
-    again = False
-    try:
-        await channel.start()
-        await ear.start()
-        await mouth.start()
-        mind.check()
+    def run(self):
+        if self.wire.exists():
+            shutil.rmtree(self.wire)
+        self.wire.mkdir()
+        self.folder.mkdir(parents=True, exist_ok=True)
+        names = list(self.commands) or list(NAMES)
+        for name in names:
+            self.spawn(name)
         while True:
-            if channel.trouble:
-                raise channel.trouble.pop(0)
-            if again:
-                items = await take(channel, ear, 0)
-                again = False
-                idle_line = "The work is unfinished."
-            else:
-                items = await take(channel, ear, idle)
-                idle_line = "Nothing has arrived."
-            up = channel.state == "up"
-            if items:
-                task = picture(up, items)
-            else:
-                task = ("Call is up.\n" if up else "Call is down.\n") + idle_line
-            answer, seen = await mind.turn(
-                task, "\n\n".join(transcript), channel.send, tools.act, tools.card(),
-                life, run_dir, pictures(life, image_count),
-            )
-            transcript.append("Task:\n" + task)
-            if seen:
-                transcript.append("Tools:\n" + "\n".join(seen))
-            transcript.append("Answer:\n" + answer)
-            body, flags = disposition(answer)
-            deliver = bool(body) and "quiet" not in flags
-            wav = await mouth.wav(body) if deliver else None
-            spoken = False
-            if deliver and channel.state == "up":
-                spoken = await channel.play(pcm48(wav))
-            if "hang" in flags and channel.state == "up":
-                await channel.hang()
-            if "call" in flags and channel.state != "up":
-                answered = await channel.dial()
-                transcript.append("He answered." if answered else "He did not answer.")
-            if deliver and channel.state == "up" and not spoken:
-                spoken = await channel.play(pcm48(wav))
-            if deliver and not spoken:
-                await channel.send_wav(wav)
-            if deliver:
-                await channel.send(body)
-            again = "again" in flags
-    finally:
-        stop_error = None
-        stops = [mouth.stop, ear.stop, channel.stop]
-        extra = getattr(mind, "stop", None)
-        if extra:
-            stops.append(extra)
-        for stop in stops:
-            try:
-                await stop()
-            except Exception as error:
-                stop_error = stop_error or error
-        if stop_error is not None and sys.exc_info()[1] is None:
-            raise stop_error
+            self.hung()
+            for name in names:
+                if name in self.restart:
+                    if time.monotonic() >= self.restart[name]:
+                        self.restart.pop(name)
+                        self.spawn(name)
+                    continue
+                proc = self.procs[name]
+                if proc.poll() is None:
+                    if time.monotonic() - self.when[name] > self.stable:
+                        self.fails[name] = 0
+                        self.backoff[name] = self.step
+                    continue
+                self.clear_lines(name)
+                if time.monotonic() - self.when[name] < self.stable:
+                    self.fails[name] += 1
+                else:
+                    self.fails[name] = 0
+                    self.backoff[name] = self.step
+                if name == "luna" and self.fails[name] >= self.cap:
+                    print("Luna cannot start", file=sys.stderr)
+                    home = self.wire / "16"
+                    home.mkdir(parents=True, exist_ok=True)
+                    (home / "down").write_text("Luna cannot start\n", encoding="utf-8")
+                    self.stop()
+                    return 1
+                self.restart[name] = time.monotonic() + self.backoff[name]
+                self.backoff[name] = min(self.backoff[name] * 2, 30.0)
+            time.sleep(0.05)
+
+    def stop(self):
+        for proc in self.procs.values():
+            if proc.poll() is None:
+                proc.terminate()
+
+
+def main():
+    root, cfg = i2c.load()
+    stamp = datetime.now().strftime("%Y%m%dT%H%M%S%f")
+    run = root / f"RUN_{stamp}"
+    (root / "session" / stamp).mkdir(parents=True)
+    code = Supply(root, cfg, run).run()
+    raise SystemExit(code)
+
+
+def test():
+    import tempfile
+
+    root = Path(tempfile.mkdtemp())
+    cfg = i2c.test_cfg()
+    cfg["bus"]["backoff"] = 0.05
+    cfg["bus"]["luna_start_cap"] = 2
+    cfg["busy"]["tools"] = 1
+    supply = Supply(root, cfg, root / "RUN_test")
+    supply.wire.mkdir(parents=True)
+    sleeper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    supply.procs["tools"] = sleeper
+    scl = supply.wire / "scl"
+    scl.mkdir()
+    (scl / "14").write_text(f"{sleeper.pid} {time.time() - 30}\n", encoding="utf-8")
+    supply.hung()
+    sleeper.wait(timeout=5)
+    assert sleeper.poll() is not None
+    dead = subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(0)"])
+    dead.wait(timeout=5)
+    supply.procs["ears"] = dead
+    (scl / "12").write_text(f"{dead.pid} {time.time()}\n", encoding="utf-8")
+    supply.hung()
+    assert not (scl / "12").exists()
+    import io
+    import contextlib
+    fail = Supply(
+        root, cfg, root / "RUN_fail",
+        {"luna": [sys.executable, "-c", "import sys; sys.exit(1)"]},
+    )
+    buf = io.StringIO()
+    with contextlib.redirect_stderr(buf):
+        code = fail.run()
+    assert code == 1
+    assert buf.getvalue().strip() == "Luna cannot start"
+    assert (fail.wire / "16" / "down").is_file()
+    import shutil
+    shutil.rmtree(root, ignore_errors=True)
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(live())
-    except Exception as error:
-        print(f"{type(error).__name__}: {error}", file=sys.stderr)
-        sys.exit(1)
+    test() if "--test" in sys.argv else main()

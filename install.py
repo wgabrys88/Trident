@@ -1,4 +1,3 @@
-import importlib
 import shutil
 import subprocess
 import sys
@@ -34,21 +33,10 @@ def unpack(url, target):
                 if item.is_dir():
                     shutil.copytree(item, dest, dirs_exist_ok=True)
                 else:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(item, dest)
         else:
             shutil.copytree(source, target)
-
-
-def cards():
-    for path in sorted(ROOT.glob("mind_*.py")):
-        mod = importlib.import_module(path.stem)
-        for name, url in getattr(mod, "FETCH", {}).items():
-            save(url, ROOT / "artifacts" / name)
-        for folder, url in getattr(mod, "ARCHIVES", ()):
-            unpack(url, ROOT / "artifacts" / folder)
-        for rel in getattr(mod, "NEED", ()):
-            if not (ROOT / rel).is_file():
-                raise RuntimeError(f"Install did not produce {Path(rel).name}")
 
 
 def main():
@@ -60,22 +48,18 @@ def main():
     subprocess.run([sys.executable, "-m", "venv", str(artifacts / "python")], check=True)
     python = artifacts / "python" / "Scripts" / "python.exe"
     subprocess.run([str(python), "-m", "pip", "install", "-r", str(ROOT / "requirements.txt")], check=True)
-    models = [cfg["ears"]["model"]]
-    models += [part for part in cfg["voice"]["command"] if str(part).endswith(".gguf")]
-    for rel in models:
-        save(cfg["fetch"]["models"][Path(rel).name], ROOT / rel)
-    library = Path(cfg["ears"]["library"])
-    unpack(cfg["fetch"]["archives"]["ear"], ROOT / library.parents[1])
-    exe = next(part for part in cfg["voice"]["command"] if str(part).endswith(".exe"))
-    unpack(cfg["fetch"]["archives"]["voice"], ROOT / Path(exe).parent)
+    for name, url in cfg["fetch"]["models"].items():
+        save(url, artifacts / name)
+    for key, url in cfg["fetch"]["archives"].items():
+        unpack(url, ROOT / cfg["fetch"]["unpack"][key])
     needed = [python, ROOT / cfg["ears"]["model"], ROOT / cfg["ears"]["library"]]
     needed += [ROOT / part for part in cfg["voice"]["command"] if str(part).startswith("artifacts/")]
+    needed += [ROOT / part for part in cfg["vision"]["command"] if str(part).startswith("artifacts/")]
+    needed.append(ROOT / "artifacts" / "llama" / "cudart64_12.dll")
     for path in needed:
         if not path.is_file():
             raise RuntimeError(f"Install did not produce {path.name}")
-    cards()
     print(r"Installed. Start with: artifacts\python\Scripts\python.exe run.py")
-    print(r"Or: artifacts\python\Scripts\python.exe run.py lfm")
 
 
 if __name__ == "__main__":

@@ -1,8 +1,10 @@
 /artifacts/
-/runs/
+/wire/
 /life/
 /session/
 /RUN_*/
+/runs/
+*.sqlite
 __pycache__/
 *.session
 *.session-journal
