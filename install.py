@@ -1,3 +1,4 @@
+import importlib
 import shutil
 import subprocess
 import sys
@@ -27,7 +28,27 @@ def unpack(url, target):
             packed.extractall(stage)
         children = list(stage.iterdir())
         source = children[0] if len(children) == 1 and children[0].is_dir() else stage
-        shutil.copytree(source, target)
+        if target.exists():
+            for item in source.iterdir():
+                dest = target / item.name
+                if item.is_dir():
+                    shutil.copytree(item, dest, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(item, dest)
+        else:
+            shutil.copytree(source, target)
+
+
+def cards():
+    for path in sorted(ROOT.glob("mind_*.py")):
+        mod = importlib.import_module(path.stem)
+        for name, url in getattr(mod, "FETCH", {}).items():
+            save(url, ROOT / "artifacts" / name)
+        for folder, url in getattr(mod, "ARCHIVES", ()):
+            unpack(url, ROOT / "artifacts" / folder)
+        for rel in getattr(mod, "NEED", ()):
+            if not (ROOT / rel).is_file():
+                raise RuntimeError(f"Install did not produce {Path(rel).name}")
 
 
 def main():
@@ -52,7 +73,9 @@ def main():
     for path in needed:
         if not path.is_file():
             raise RuntimeError(f"Install did not produce {path.name}")
+    cards()
     print(r"Installed. Start with: artifacts\python\Scripts\python.exe run.py")
+    print(r"Or: artifacts\python\Scripts\python.exe run.py lfm")
 
 
 if __name__ == "__main__":

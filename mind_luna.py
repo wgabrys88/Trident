@@ -3,10 +3,10 @@ import base64
 import binascii
 import json
 import os
+import tomllib
 from pathlib import Path
 
 
-MARKERS = {"quiet", "write", "call", "hang", "again"}
 PNG = b"\x89PNG\r\n\x1a\n"
 JPEG = b"\xff\xd8\xff"
 
@@ -33,14 +33,6 @@ def image_bytes(text):
     if raw.startswith(PNG) or raw.startswith(JPEG):
         return raw
     return None
-
-
-def disposition(answer):
-    lines = (answer or "").splitlines()
-    flags = []
-    while lines and lines[-1].strip() in MARKERS:
-        flags.append(lines.pop().strip())
-    return "\n".join(lines).strip(), flags
 
 
 class Mind:
@@ -83,19 +75,8 @@ class Mind:
                 return self.store_image(raw)
         return value
 
-    def recent(self, count):
-        found = []
-        if count <= 0 or not self.life.is_dir():
-            return found
-        for path in self.life.rglob("*"):
-            if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
-                found.append(path)
-        found.sort(key=lambda item: item.stat().st_mtime)
-        return found[-count:]
-
-    async def turn(self, task, transcript, send, recent_images):
+    async def turn(self, task, transcript, send, images):
         parts = self.check()
-        images = self.recent(int(recent_images))
         argv = [
             *parts, "-p", "--trust", "--force", "--sandbox", "disabled",
             "--model", self.cfg["model"], "--output-format", "stream-json",
@@ -103,7 +84,10 @@ class Mind:
         ]
         for path in images:
             argv.extend(["--image", str(path)])
-        stdin = self.brief + "\n\nTask:\n" + task + "\n\nTranscript:\n" + (transcript or "(empty)") + "\n"
+        stdin = (
+            "Cursor's tools do the computer work.\n"
+            + self.brief + "\n\nTask:\n" + task + "\n\nTranscript:\n" + (transcript or "(empty)") + "\n"
+        )
         self.saved = [str(path) for path in images]
         stream = []
         tools = []
@@ -203,3 +187,21 @@ class Mind:
             path = self.run_dir / str(self.count)
             self.count += 1
             path.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def settings():
+    return tomllib.loads((Path(__file__).resolve().parent / "config.toml").read_text(encoding="utf-8"))["luna"]
+
+
+_host = None
+
+
+def check():
+    Mind(settings(), Path("."), Path(".")).check()
+
+
+async def turn(task, transcript, send, act, card, life, run_dir, images):
+    global _host
+    if _host is None:
+        _host = Mind(settings(), life, run_dir)
+    return await _host.turn(task, transcript, send, images)

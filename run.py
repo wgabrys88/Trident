@@ -1,20 +1,49 @@
-"""Start from the checkout root: artifacts\python\Scripts\python.exe run.py"""
+"""Start from the checkout root: artifacts\python\Scripts\python.exe run.py [mind]"""
 
 import asyncio
+import importlib
 import sys
 import tomllib
 from datetime import datetime
 from pathlib import Path
 
+import tools
 from channel import Channel
 from ear import Ear
-from mind import Mind, disposition
 from mouth import Mouth, pcm48
+
+MARKERS = {"quiet", "write", "call", "hang", "again"}
 
 
 def load():
     here = Path(__file__).resolve().parent
     return here, tomllib.loads((here / "config.toml").read_text(encoding="utf-8"))
+
+
+def open_mind():
+    if len(sys.argv) > 2:
+        raise RuntimeError("Usage: run.py [mind]")
+    return importlib.import_module("mind_" + (sys.argv[1] if len(sys.argv) > 1 else "luna"))
+
+
+def disposition(answer):
+    lines = (answer or "").splitlines()
+    flags = []
+    while lines and lines[-1].strip() in MARKERS:
+        flags.append(lines.pop().strip())
+    return "\n".join(lines).strip(), flags
+
+
+def pictures(life, count):
+    found = []
+    folder = Path(life)
+    if int(count) <= 0 or not folder.is_dir():
+        return found
+    for path in folder.rglob("*"):
+        if path.is_file() and path.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"}:
+            found.append(path)
+    found.sort(key=lambda item: item.stat().st_mtime)
+    return found[-int(count):]
 
 
 def picture(up, items):
@@ -80,9 +109,9 @@ async def live():
     )
     ear = Ear(root, cfg["ears"])
     mouth = Mouth(root, cfg["voice"])
-    mind = Mind(cfg["luna"], life, run_dir)
+    mind = open_mind()
     idle = cfg["life"]["idle_seconds"]
-    images = cfg["life"]["recent_images"]
+    image_count = cfg["life"]["recent_images"]
     transcript = []
     again = False
     try:
@@ -105,10 +134,13 @@ async def live():
                 task = picture(up, items)
             else:
                 task = ("Call is up.\n" if up else "Call is down.\n") + idle_line
-            answer, tools = await mind.turn(task, "\n\n".join(transcript), channel.send, images)
+            answer, seen = await mind.turn(
+                task, "\n\n".join(transcript), channel.send, tools.act, tools.card(),
+                life, run_dir, pictures(life, image_count),
+            )
             transcript.append("Task:\n" + task)
-            if tools:
-                transcript.append("Tools:\n" + "\n".join(tools))
+            if seen:
+                transcript.append("Tools:\n" + "\n".join(seen))
             transcript.append("Answer:\n" + answer)
             body, flags = disposition(answer)
             deliver = bool(body) and "quiet" not in flags
@@ -130,7 +162,11 @@ async def live():
             again = "again" in flags
     finally:
         stop_error = None
-        for stop in (mouth.stop, ear.stop, channel.stop):
+        stops = [mouth.stop, ear.stop, channel.stop]
+        extra = getattr(mind, "stop", None)
+        if extra:
+            stops.append(extra)
+        for stop in stops:
             try:
                 await stop()
             except Exception as error:
