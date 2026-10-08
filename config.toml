@@ -20,7 +20,7 @@ memory = "peripherals.py"
 frame_timeout = 2
 poll = 0.05
 data_retries = 1
-self_turn_cap = 4
+self_turn_cap = 64
 
 [holds]
 tools = 7200
@@ -31,12 +31,12 @@ backoff_multiplier = 2
 backoff_cap = 30
 restart_cap = 3
 stable_seconds = 30
-stop_seconds = 10
+stop_seconds = 30
 
 [limits]
 grid = 1000
 http_timeout = 7200
-health_timeout = 2
+health_timeout = 10
 health_poll = 0.2
 install_timeout = 3600
 
@@ -74,7 +74,7 @@ start_seconds = 30
 [voice]
 url = "http://127.0.0.1:8091"
 start_seconds = 60
-command = ["artifacts/voice/crispasr-windows-x86_64-vulkan/crispasr.exe", "--server", "--host", "127.0.0.1", "--port", "8091", "--backend", "chatterbox-nano", "-m", "artifacts/chatterbox-nano-t3-q4_k.gguf", "--codec-model", "artifacts/chatterbox-turbo-s3gen-q4_k.gguf", "--gpu-backend", "vulkan"]
+command = ["artifacts/voice/crispasr-windows-x86_64-vulkan/crispasr.exe", "--server", "--host", "127.0.0.1", "--port", "8091", "--backend", "chatterbox-nano", "-m", "artifacts/chatterbox-nano-t3-q4_k.gguf", "--codec-model", "artifacts/chatterbox-turbo-s3gen-q4_k.gguf", "--gpu-backend", "vulkan", "--no-punctuation"]
 
 [mind.luna]
 identity = ["cursor", "gpt-5.6-luna-none", "cli", "text"]
@@ -131,7 +131,7 @@ url = "http://127.0.0.1:8080"
 port = 8080
 start_seconds = 90
 max_tokens = 32768
-prompt = "Describe every visible region and readable text. Locate actionable controls using a 0 to {grid} grid, y down and x right. Report only what the pixels show."
+prompt = "Describe this screenshot in plain English. Name visible applications, toolbar labels, drawings and dialogs. Give the main work surface bounds as [left, top, right, bottom] on a 0 to {grid} grid."
 
 [tools]
 command_seconds = 7200
@@ -158,7 +158,7 @@ path = "life/memory.sqlite"
 "01" = "read: screenshot destination relative to this run; returns absolute path"
 "02" = "read: command line; returns exit code, stdout and stderr"
 "03" = "read: absolute image path; returns vision description"
-"04" = "read: click y x, type text, key name; returns post-input screenshot path"
+"04" = "read: click y x, draw y x y x ... continuous stroke, type text, key name; returns post-input screenshot path"
 [registers.mind]
 "00" = "read: 00 free, 01 busy"
 "01" = "write: message or next turn"

@@ -92,9 +92,8 @@ class Supply:
                     elif now >= device.restart_at:
                         device.spawn()
                 time.sleep(self.cfg["bus"]["poll"])
-
-
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         raise ValueError("Run requires one configured mind part: run.py luna or run.py lfm")
+    signal.signal(signal.SIGBREAK, signal.default_int_handler)
     Supply(sys.argv[1]).supervise()

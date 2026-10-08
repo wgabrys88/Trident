@@ -7,16 +7,13 @@ from jsonschema import Draft202012Validator, ValidationError
 
 from i2c import QueuedDevice, Frame, Nack, Refusal, Server
 
-
 class CommandPart:
     def __init__(self, device, settings):
         self.device, self.settings = device, settings
-        folder = max(self.device.cfg.path(self.settings["versions"]).iterdir(), key=lambda path: path.name)
+        folder = max((path for path in self.device.cfg.path(self.settings["versions"]).iterdir() if path.is_dir()), key=lambda path: path.name)
         settings = self.settings | {"entry": str(folder / self.settings["entry"]), "run": self.device.run}
         self.command = [str(folder / settings["executable"])]
         self.command += [part.format(**settings) for part in settings["arguments"]]
-        (folder / settings["executable"]).stat()
-        (folder / self.settings["entry"]).stat()
 
     async def reply(self, prompt, schema):
         process = await asyncio.create_subprocess_exec(*self.command, stdin=asyncio.subprocess.PIPE,
@@ -28,7 +25,6 @@ class CommandPart:
             raise RuntimeError(error.decode())
         return json.loads(output)["result"]
 
-
 class ServerPart:
     def __init__(self, device, settings):
         self.device = device
@@ -37,7 +33,6 @@ class ServerPart:
     async def reply(self, prompt, schema):
         return await self.device.server.chat([{"role": "user", "content": prompt}],
                                              response_format={"type": "json_object", "schema": schema})
-
 
 class Mind(QueuedDevice):
     def __init__(self):
@@ -127,7 +122,6 @@ class Mind(QueuedDevice):
                 result = await self.bus.transfer(target)
                 if target.reading:
                     await self.send("mind", f"Read {target.address}/{action['register']}:\n{result.decode()}", "01")
-
 
 if __name__ == "__main__":
     Mind().launch()

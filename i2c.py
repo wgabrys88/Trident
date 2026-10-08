@@ -290,6 +290,7 @@ class Device:
         return await self.bus.transfer(Frame(self.cfg["address"][name], data, reading))
 
     async def run_device(self):
+        signal.signal(signal.SIGBREAK, signal.getsignal(signal.SIGINT))
         async with AsyncExitStack() as cleanup, asyncio.TaskGroup() as self.tasks:
             if self.server is not None:
                 cleanup.push_async_callback(self.server.close)
@@ -312,7 +313,6 @@ class Device:
         await asyncio.Future()
 
     def launch(self):
-        signal.signal(signal.SIGBREAK, signal.default_int_handler)
         asyncio.run(self.run_device())
 
 

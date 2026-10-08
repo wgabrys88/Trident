@@ -14,8 +14,7 @@ from i2c import Device, Nack, Refusal, Server
 if not ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
     raise RuntimeError("Windows refused per-monitor DPI awareness")
 import pyautogui
-
-
+MOUSE_MOVE_ABSOLUTE = 0x8001
 class Tools(Device):
     def __init__(self):
         super().__init__("tools")
@@ -53,16 +52,25 @@ class Tools(Device):
         if not separator:
             raise Nack(Refusal.UNKNOWN_DATA)
         match operation:
-            case "click":
+            case "click" | "draw":
                 try:
-                    y, x = map(int, argument.split())
+                    coordinates = tuple(map(int, argument.split()))
+                    points = tuple(zip(coordinates[::2], coordinates[1::2], strict=True))
                 except ValueError:
                     raise Nack(Refusal.UNKNOWN_DATA) from None
                 grid = self.cfg["limits"]["grid"]
-                if not (0 <= x <= grid and 0 <= y <= grid):
+                if not points or (operation == "click" and len(points) != 1) or not all(0 <= value <= grid for value in coordinates):
                     raise Nack(Refusal.UNKNOWN_DATA)
                 left, top, width, height = self.bounds
-                pyautogui.click(left + round(x * (width - 1) / grid), top + round(y * (height - 1) / grid))
+                pixels = [(left + round(x * (width - 1) / grid), top + round(y * (height - 1) / grid)) for y, x in points]
+                pyautogui.moveTo(*pixels[0])
+                pyautogui.mouseDown()
+                try:
+                    for x, y in pixels[1:]:
+                        ctypes.windll.user32.mouse_event(MOUSE_MOVE_ABSOLUTE, round(x * 65535 / (width - 1)), round(y * 65535 / (height - 1)), 0, 0)
+                        time.sleep(self.cfg["tools"]["input_pause"])
+                finally:
+                    pyautogui.mouseUp()
             case "type":
                 pyperclip.copy(argument)
                 pyautogui.hotkey("ctrl", "v")
@@ -72,7 +80,6 @@ class Tools(Device):
                 pyautogui.press(argument)
             case _:
                 raise Nack(Refusal.UNKNOWN_DATA)
-
 
 if __name__ == "__main__":
     Tools().launch()
