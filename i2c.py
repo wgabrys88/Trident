@@ -5,9 +5,6 @@ import time
 import tomllib
 from pathlib import Path
 
-ADDRS = {"10", "11", "12", "13", "14", "16", "50"}
-
-
 class Nack(Exception):
     pass
 
@@ -31,12 +28,14 @@ def entry(fn):
 
 
 def io(fn):
-    delay = 0.05
-    for attempt in range(5):
+    bus = load()[1]["bus"]
+    delay = float(bus["share_delay"])
+    retries = int(bus["share_retries"])
+    for attempt in range(retries):
         try:
             return fn()
         except OSError as error:
-            if getattr(error, "winerror", None) not in (5, 32) or attempt == 4:
+            if getattr(error, "winerror", None) not in (5, 32) or attempt == retries - 1:
                 raise
             time.sleep(delay)
             delay *= 2
@@ -152,10 +151,11 @@ def with_payload(line, payload):
     return " ".join(parts)
 
 
-def legal(line):
+def legal(line, cfg=None):
     tok = line.split()
     if len(tok) < 5 or tok[0] != "S" or tok[-1] != "P":
         return False
+    addrs = {value.lower() for value in (cfg or load()[1])["address"].values()}
 
     def eat(index, marker):
         if index >= len(tok) or tok[index] != marker or index + 3 >= len(tok):
@@ -163,7 +163,7 @@ def legal(line):
         aa = tok[index + 1].lower()
         rw = tok[index + 2]
         ack = tok[index + 3]
-        if aa not in ADDRS or rw not in ("W", "R") or ack not in ("A", "NA"):
+        if aa not in addrs or rw not in ("W", "R") or ack not in ("A", "NA"):
             return None
         cursor = index + 4
         if ack == "NA":
@@ -382,21 +382,13 @@ class _Stretch:
 
 
 def test_cfg():
-    return {
-        "address": {
-            "timer": "10", "telegram": "11", "ears": "12", "voice": "13",
-            "tools": "14", "luna": "16", "memory": "50",
-        },
-        "bus": {
-            "frame_timeout": 0.4, "poll": 0.01, "bus_off": 32,
-            "retry_seconds": 120, "redial_cap": 3, "self_turn_cap": 4,
-            "luna_start_cap": 3, "stable_seconds": 30, "backoff": 1,
-        },
-        "busy": {
-            "timer": 2, "telegram": 2, "ears": 2, "voice": 2,
-            "tools": 2, "luna": 2, "memory": 2,
-        },
-    }
+    cfg = load()[1]
+    stand = cfg["selftest"]
+    cfg["bus"]["frame_timeout"] = stand["frame_timeout"]
+    cfg["bus"]["poll"] = stand["poll"]
+    for name in cfg["busy"]:
+        cfg["busy"][name] = stand["busy"]
+    return cfg
 
 
 async def _peer(bus, handler, stop):
@@ -415,8 +407,10 @@ async def _test():
     assert legal("S 16 W NA P")
     assert legal("S 50 W A 01 A 68 A 69 A Sr 50 R A 68 A 69 NA P")
     assert legal("S 50 R A P")
+    assert legal("S 48 W A 01 A P")
     assert not legal("S 11 W A 01 A")
     assert not legal("S 99 W A 01 A P")
+    assert not legal("S 08 W A 01 A P")
     assert not legal("S 50 W A Sr 11 R A P")
     cfg = test_cfg()
     root = Path(tempfile.mkdtemp())

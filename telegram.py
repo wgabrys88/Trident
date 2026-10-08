@@ -21,11 +21,11 @@ def rms(frame):
     return (total / count) ** 0.5 / 32768
 
 
-def pcm48(payload):
+def pcm_play(payload, rate):
     with wave.open(io.BytesIO(payload), "rb") as source:
         if source.getsampwidth() != 2:
             raise RuntimeError("Voice output must be PCM16 WAV")
-        rate, channels = source.getframerate(), source.getnchannels()
+        source_rate, channels = source.getframerate(), source.getnchannels()
         frames = source.readframes(source.getnframes())
     samples = array.array("h")
     samples.frombytes(frames[: len(frames) // 2 * 2])
@@ -36,12 +36,12 @@ def pcm48(payload):
         for index in range(0, len(samples), channels):
             mixed.append(int(sum(samples[index:index + channels]) / channels))
         samples = mixed
-    if rate != 48000 and samples:
-        count = int(round(len(samples) * 48000 / rate))
+    if source_rate != rate and samples:
+        count = int(round(len(samples) * rate / source_rate))
         last = len(samples) - 1
         output = array.array("h")
         for index in range(count):
-            position = index * rate / 48000
+            position = index * source_rate / rate
             left = int(position)
             if left >= last:
                 output.append(samples[last])
@@ -153,10 +153,18 @@ class Telegram:
         self.pcm_n = 0
         self.pending_play = []
         ears = cfg["ears"]
+        limits = cfg["limits"]
         self.rms_limit = float(ears["rms_threshold"])
         self.silence = int(ears["silence_ms"])
-        self.lead_limit = max(1, int(ears["padding_ms"]) // 20)
+        self.frame_ms = int(limits["frame_ms"])
+        self.frame_bytes = int(limits["pcm_rate"]) * 2 * self.frame_ms // 1000
+        self.lead_limit = max(1, int(ears["padding_ms"]) // self.frame_ms)
         self.utterance = float(ears["utterance_seconds"])
+        self.ring = float(limits["ring_seconds"])
+        self.connect = float(limits["connect_seconds"])
+        self.chat_slice = int(limits["chat_slice"])
+        self.play_frame = int(limits["play_frame"])
+        self.play_rate = int(limits["play_rate"])
         self.loop = None
         self.accepted = None
         self.confirmed = None
@@ -181,8 +189,8 @@ class Telegram:
     def cut(self, pcm):
         ready = []
         self.pending += pcm
-        while len(self.pending) >= 640:
-            frame, self.pending = self.pending[:640], self.pending[640:]
+        while len(self.pending) >= self.frame_bytes:
+            frame, self.pending = self.pending[:self.frame_bytes], self.pending[self.frame_bytes:]
             loud = rms(frame) >= self.rms_limit
             if not self.parts:
                 self.lead.append(frame)
@@ -194,8 +202,8 @@ class Telegram:
                     self.quiet = 0
             else:
                 self.parts.append(frame)
-                self.quiet = 0 if loud else self.quiet + 20
-                long = len(self.parts) * 0.02 >= self.utterance
+                self.quiet = 0 if loud else self.quiet + self.frame_ms
+                long = len(self.parts) * (self.frame_ms / 1000) >= self.utterance
                 if self.quiet >= self.silence or long:
                     ready.append(b"".join(self.parts))
                     self.parts = []
@@ -240,8 +248,8 @@ class Telegram:
         if not text:
             return
         async with self.lock:
-            for offset in range(0, len(text), 4000):
-                await self.client.send_message(self.entity, text[offset:offset + 4000], parse_mode=None)
+            for offset in range(0, len(text), self.chat_slice):
+                await self.client.send_message(self.entity, text[offset:offset + self.chat_slice], parse_mode=None)
 
     def miss(self):
         self.state = "down"
@@ -272,7 +280,7 @@ class Telegram:
         while self.mic:
             self.heard(self.mic.pop(0))
         if self.pending_play and self.state == "up" and self.engine is not None:
-            await self.play(pcm48(Path(self.pending_play.pop(0)).read_bytes()))
+            await self.play(pcm_play(Path(self.pending_play.pop(0)).read_bytes(), self.play_rate))
         await self.flush_out()
         self.fail()
 
@@ -352,7 +360,7 @@ class Telegram:
         for signal in self.signals:
             await self.call(self.engine, "send_signaling_data", self.owner, signal)
         self.signals = []
-        await asyncio.wait_for(self.connected, 30)
+        await asyncio.wait_for(self.connected, self.connect)
         self.state = "up"
         self.since = time.monotonic()
 
@@ -395,7 +403,7 @@ class Telegram:
         ringing = response.phone_call
         self.peer = InputPhoneCall(ringing.id, ringing.access_hash)
         try:
-            accepted = await asyncio.wait_for(self.accepted, 90)
+            accepted = await asyncio.wait_for(self.accepted, self.ring)
         except TimeoutError:
             await self.hang()
             self.miss()
@@ -415,7 +423,7 @@ class Telegram:
         response = await self.client(AcceptCallRequest(peer=self.peer, g_b=exchange, protocol=self.protocol()))
         call = response.phone_call
         if not isinstance(call, PhoneCall):
-            call = await asyncio.wait_for(self.confirmed, 30)
+            call = await asyncio.wait_for(self.confirmed, self.connect)
         await self.call(self.engine, "exchange_keys", self.owner, bytes(call.g_a_or_b), call.key_fingerprint)
         await self.connect(call)
 
@@ -432,15 +440,17 @@ class Telegram:
         if self.state != "up" or self.engine is None:
             return
         engine, serial, started = self.engine, self.serial, self.loop.time()
-        for offset in range(0, len(pcm), 960):
+        step = self.play_frame
+        pace = self.play_rate * 2
+        for offset in range(0, len(pcm), step):
             if serial != self.serial or self.state != "up":
                 return
-            chunk = pcm[offset:offset + 960].ljust(960, b"\0")
+            chunk = pcm[offset:offset + step].ljust(step, b"\0")
             await self.call(
                 engine, "send_external_frame", self.owner, StreamDevice.MICROPHONE, chunk,
                 FrameData(int(time.time() * 1000), VIDEO_ROTATION_0, 0, 0),
             )
-            await asyncio.sleep(max(0, started + (offset + 960) / 96000 - self.loop.time()))
+            await asyncio.sleep(max(0, started + (offset + step) / pace - self.loop.time()))
 
     async def update(self, event):
         if isinstance(event, UpdatePhoneCallSignalingData):
@@ -551,7 +561,8 @@ def test():
         cfg = i2c.test_cfg()
         cfg["owner"] = {"telegram_id": 1}
         cfg["telegram"] = {"tdata": "tdata"}
-        cfg["ears"] = {"rms_threshold": 0.012, "silence_ms": 40, "padding_ms": 20, "utterance_seconds": 30}
+        cfg["ears"]["silence_ms"] = 40
+        cfg["ears"]["padding_ms"] = int(cfg["limits"]["frame_ms"])
         run_dir = root / "RUN_test"
         run_dir.mkdir()
         got = []
@@ -610,7 +621,8 @@ def test():
                 break
             await asyncio.sleep(0.02)
         assert any(item[0] == 0x10 and item[1] == b"\x02" for item in got)
-        loud = (b"\xff\x0f" * 320) * 3 + (b"\x00\x00" * 320) * 4
+        samples = phone.frame_bytes // 2
+        loud = (b"\xff\x0f" * samples) * 3 + (b"\x00\x00" * samples) * 4
         phone.heard(loud)
         for _ in range(40):
             if any(item[0] == 0x12 and item[1][:1] == b"\x01" for item in got):

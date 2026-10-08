@@ -20,9 +20,9 @@ def command(parts, root):
     return argv
 
 
-def healthy(url):
+def healthy(url, timeout):
     try:
-        with urllib.request.urlopen(url + "/health", timeout=2) as response:
+        with urllib.request.urlopen(url + "/health", timeout=timeout) as response:
             return response.status == 200
     except urllib.error.HTTPError as error:
         if error.code == 503:
@@ -32,12 +32,12 @@ def healthy(url):
         return False
 
 
-def synthesize(url, text):
+def synthesize(url, text, timeout):
     body = json.dumps({"input": text, "response_format": "wav"}).encode()
     request = urllib.request.Request(
         url + "/v1/audio/speech", data=body, headers={"Content-Type": "application/json"},
     )
-    with urllib.request.urlopen(request, timeout=600) as response:
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         payload = response.read()
     if not payload:
         raise RuntimeError("Voice output is empty")
@@ -64,9 +64,10 @@ def resample(samples, source_rate, target_rate):
 
 
 class Voice:
-    def __init__(self, root, cfg, run):
+    def __init__(self, root, cfg, run, limits):
         self.root = Path(root)
         self.cfg = cfg
+        self.limits = limits
         self.run = Path(run)
         self.proc = None
         self.err = bytearray()
@@ -76,11 +77,11 @@ class Voice:
 
     async def drain(self):
         while True:
-            block = await self.proc.stderr.read(4096)
+            block = await self.proc.stderr.read(int(self.limits["stderr_keep"]))
             if not block:
                 return
             self.err += block
-            del self.err[:-4000]
+            del self.err[:-int(self.limits["stderr_keep"])]
 
     async def start(self, limit):
         parts = command(self.cfg["command"], self.root)
@@ -96,13 +97,13 @@ class Voice:
         self.reader = asyncio.create_task(self.drain())
         started = asyncio.get_running_loop().time()
         while self.proc.returncode is None:
-            if await asyncio.to_thread(healthy, self.cfg["url"]):
+            if await asyncio.to_thread(healthy, self.cfg["url"], float(self.limits["health_timeout"])):
                 return
             if asyncio.get_running_loop().time() - started > limit:
                 self.proc.kill()
                 await self.proc.wait()
                 raise RuntimeError("Chatterbox did not start")
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(float(self.limits["health_poll"]))
         detail = self.err.decode("utf-8", "replace").strip().splitlines()
         tail = detail[-1] if detail else "no stderr"
         raise RuntimeError(f"Chatterbox exited {self.proc.returncode}: {tail}")
@@ -115,7 +116,9 @@ class Voice:
             await self.reader
 
     async def wav(self, text):
-        payload = await asyncio.to_thread(synthesize, self.cfg["url"], text)
+        payload = await asyncio.to_thread(
+            synthesize, self.cfg["url"], text, float(self.limits["http_timeout"]),
+        )
         self.count += 1
         path = self.run / "wav" / f"{self.count}.wav"
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -128,7 +131,7 @@ def main():
     run = Path(sys.argv[1])
     bus = i2c.Bus(root, i2c.addr(cfg, "voice"), run, cfg)
     phone = i2c.addr(cfg, "telegram")
-    voice = Voice(root, cfg["voice"], run)
+    voice = Voice(root, cfg["voice"], run, cfg["limits"])
 
     async def on_frame(_src, line):
         data = i2c.write_payload(line)
@@ -154,11 +157,14 @@ def main():
 
 
 def test():
+    limits = i2c.load()[1]["limits"]
+    source = int(limits["pcm_rate"])
+    target = int(limits["play_rate"])
     samples = array.array("h", [0, 1000, -1000, 2000])
-    same = resample(samples, 16000, 16000)
+    same = resample(samples, source, source)
     assert list(same) == list(samples)
-    up = resample(samples, 16000, 48000)
-    assert len(up) == 12
+    up = resample(samples, source, target)
+    assert len(up) == int(round(len(samples) * target / source))
     frame = i2c.pack_write(0x11, bytes([0x20]) + b"C:/a.wav")
     assert i2c.write_payload(frame)[:1] == b"\x20"
 

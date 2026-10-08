@@ -7,7 +7,7 @@ from pathlib import Path
 
 import i2c
 
-NAMES = ["memory", "telegram", "ears", "voice", "tools", "luna", "timer"]
+NAMES = ["timer", "telegram", "ears", "voice", "tools", "luna", "memory"]
 
 
 class Supply:
@@ -89,14 +89,14 @@ class Supply:
                     self.backoff[name] = self.step
                 if name == "luna" and self.fails[name] >= self.cap:
                     print("Luna cannot start", file=sys.stderr)
-                    home = self.wire / "16"
+                    home = self.wire / f"{i2c.addr(self.cfg, 'luna'):02x}"
                     home.mkdir(parents=True, exist_ok=True)
                     (home / "down").write_text("Luna cannot start\n", encoding="utf-8")
                     self.stop()
                     return 1
                 self.restart[name] = time.monotonic() + self.backoff[name]
-                self.backoff[name] = min(self.backoff[name] * 2, 30.0)
-            time.sleep(0.05)
+                self.backoff[name] = min(self.backoff[name] * 2, float(self.cfg["bus"]["backoff_cap"]))
+            time.sleep(float(self.cfg["bus"]["poll"]))
 
     def stop(self):
         for proc in self.procs.values():
@@ -149,6 +149,8 @@ def test():
     assert code == 1
     assert buf.getvalue().strip() == "Luna cannot start"
     assert (fail.wire / "16" / "down").is_file()
+    assert "injector" not in NAMES
+    assert "observer" not in NAMES
     import shutil
     shutil.rmtree(root, ignore_errors=True)
 

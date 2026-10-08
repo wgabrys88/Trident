@@ -37,6 +37,7 @@ class Luna:
         self.root = Path(root)
         self.command = command
         self.tg = i2c.addr(cfg, "telegram")
+        self.owners = {i2c.addr(cfg, "telegram"), i2c.addr(cfg, "ears")}
         self.cap = int(cfg["bus"]["self_turn_cap"])
         self.limit = float(cfg["busy"]["luna"])
         self.busy = False
@@ -54,8 +55,6 @@ class Luna:
         versions = [path for path in folder.iterdir() if (path / "node.exe").is_file() and (path / "index.js").is_file()]
         if not versions:
             raise RuntimeError("Cursor CLI is missing")
-        if self.cfg["luna"]["model"] != "gpt-5.6-luna-none":
-            raise RuntimeError("Luna must be gpt-5.6-luna-none")
         latest = max(versions, key=lambda path: path.name)
         return [
             str(latest / "node.exe"), str(latest / "index.js"), "-p",
@@ -63,10 +62,10 @@ class Luna:
             "--trust", "--workspace", str(self.run), "--exclude-tools", TOOLS,
         ]
 
-    def stdin_text(self, incoming):
+    def stdin_text(self, src, incoming):
         prompt = (self.root / "prompt.txt").read_text(encoding="utf-8")
         listing = "\n".join(f"{int(value, 16):02x} {name}" for name, value in self.cfg["address"].items())
-        return prompt + "\n" + listing + "\n" + self.transcript + "\n" + incoming
+        return prompt + "\n" + listing + "\n" + self.transcript + "\n" + f"{src:02x}\n" + incoming
 
     async def on_frame(self, src, line):
         if line.split()[2] == "R" and not i2c.write_payload(line):
@@ -77,16 +76,16 @@ class Luna:
             self.self_turns += 1
             if self.self_turns > self.cap:
                 return i2c.pack_write(self.bus.addr, i2c.write_payload(line))
-        else:
+        elif src in self.owners:
             self.self_turns = 0
         self.busy = True
         data = i2c.write_payload(line)
-        asyncio.create_task(self.turn(data))
+        asyncio.create_task(self.turn(src, data))
         return i2c.pack_write(self.bus.addr, data)
 
-    async def cli(self, incoming):
+    async def cli(self, src, incoming):
         text = incoming.decode()
-        stdin = self.stdin_text(text)
+        stdin = self.stdin_text(src, text)
         proc = await asyncio.create_subprocess_exec(
             *self.argv(), stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=str(self.run),
@@ -130,7 +129,11 @@ class Luna:
                 if target == self.bus.addr and stripped.split()[2] == "W":
                     self.queued.append(stripped)
                     continue
-                reply = await self.bus.request(target, stripped)
+                try:
+                    reply = await self.bus.request(target, stripped)
+                except Exception as error:
+                    self.queued.append(i2c.pack_write(self.bus.addr, str(error).encode()))
+                    continue
                 if " Sr " in stripped:
                     payload = i2c.read_payload(reply)
                     if payload:
@@ -139,10 +142,10 @@ class Luna:
                 prose.append(line)
         await flush()
 
-    async def turn(self, data):
+    async def turn(self, src, data):
         try:
             try:
-                out = await self.cli(data)
+                out = await self.cli(src, data)
             except TimeoutError:
                 self.bus.bump(8)
                 await self.say("Luna timed out.")
@@ -188,6 +191,8 @@ if kind == "slow":
     sys.stdout.write("hello\n")
 elif kind == "self":
     sys.stdout.write("ping\nS 16 W A 68 A 69 A P\n")
+elif kind == "bad":
+    sys.stdout.write("S 10 W A 03 A P\nkept\n" if n == 1 else "done\n")
 else:
     time.sleep(2)
     sys.stdout.write("late\n")
@@ -229,6 +234,7 @@ else:
         bus, mind, task = await boot(slow, cfg)
         master = i2c.Bus(root, 0x11, run_dir, cfg)
         master.seq = 400
+        assert mind.owners == {0x11, 0x12}
         await master.request(0x16, i2c.pack_write(0x16, b"ping"))
         for _ in range(50):
             if log.exists() and "BEGIN" in log.read_text(encoding="utf-8"):
@@ -243,6 +249,7 @@ else:
                 break
             await asyncio.sleep(0.02)
         assert any(item.startswith(b"\x10hello") for item in seen)
+        assert "\n11\nping\n" in (run_dir / "turn-1.txt").read_text(encoding="utf-8")
         assert "10 timer" in (run_dir / "turn-1.txt").read_text(encoding="utf-8")
         assert " ack " in (run_dir / "bus.log").read_text(encoding="utf-8")
         task.cancel()
@@ -263,6 +270,30 @@ else:
         await asyncio.sleep(0.3)
         assert log.read_text(encoding="utf-8").count("BEGIN") == 3
         assert sum(1 for item in seen if item.startswith(b"\x10ping")) == 3
+        other = i2c.Bus(root, 0x13, run_dir, cfg)
+        other.seq = 900
+        await other.request(0x16, i2c.pack_write(0x16, b"side"))
+        await asyncio.sleep(0.3)
+        assert log.read_text(encoding="utf-8").count("BEGIN") == 4
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        cfg["bus"]["self_turn_cap"] = 4
+        seen.clear()
+        log.write_text("", encoding="utf-8")
+        bad = [sys.executable, str(script), str(log), str(wire), "bad"]
+        bus, mind, task = await boot(bad, cfg)
+        master = i2c.Bus(root, 0x11, run_dir, cfg)
+        master.seq = 1000
+        await master.request(0x16, i2c.pack_write(0x16, b"go"))
+        for _ in range(80):
+            if any(item.startswith(b"\x10done") for item in seen):
+                break
+            await asyncio.sleep(0.02)
+        assert any(item.startswith(b"\x10kept") for item in seen)
+        assert any(item.startswith(b"\x10done") for item in seen)
+        assert not any(item.startswith(b"\x10Luna failed") for item in seen)
+        assert "NACK 10" in (run_dir / "turn-2.txt").read_text(encoding="utf-8")
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
