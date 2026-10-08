@@ -9,46 +9,58 @@ import i2c
 
 IDENT = 0xF0
 CHAT = 0x10
-REJECT = "bus line rejected. Write <aa> W <rr> <text> or end that line with R. Do not write S, A, or P."
+STATUS = 0x00
 
 
-def compile_line(line, addrs):
-    stripped = line.strip()
-    if not stripped:
-        return None
-    if stripped.startswith("S "):
-        return "bad", REJECT
-    tok = stripped.split()
-    if len(tok) < 2 or tok[1] not in ("W", "R") or len(tok[0]) != 2:
-        return "prose", stripped
-    try:
-        target = int(tok[0], 16)
-    except ValueError:
-        return "prose", stripped
-    if f"{target:02x}" not in addrs:
-        return "bad", "that address is not on the bus."
-    if tok[1] == "R":
-        if len(tok) != 2:
-            return "bad", "a read is <aa> R with nothing after it."
-        return "frame", f"S {target:02x} R A P"
-    body = stripped.split(None, 2)[2] if len(tok) > 2 else ""
-    read = body.endswith(" R")
-    if read:
-        body = body[:-2]
-    if len(body) < 2:
-        return "bad", "a write needs a two-digit register."
-    try:
-        register = int(body[:2], 16)
-    except ValueError:
-        return "bad", "a write needs a two-digit register."
-    if len(body) == 2:
-        data = bytes([register])
-    elif body[2] == " ":
-        data = bytes([register]) + body[3:].encode()
-    else:
-        return "bad", "a write needs a two-digit register, then the text."
-    frame = i2c.pack_call(target, data) if read else i2c.pack_write(target, data)
-    return "frame", frame
+def fits(value, schema):
+    if "anyOf" in schema:
+        return any(fits(value, item) for item in schema["anyOf"])
+    if "const" in schema:
+        return value == schema["const"]
+    if "enum" in schema and schema.get("type") != "string":
+        return value in schema["enum"]
+    kind = schema.get("type")
+    if kind == "object":
+        if not isinstance(value, dict):
+            return False
+        props = schema["properties"]
+        if schema.get("additionalProperties") is False and any(key not in props for key in value):
+            return False
+        if any(key not in value for key in schema.get("required", ())):
+            return False
+        return all(fits(value[key], props[key]) for key in value if key in props)
+    if kind == "string":
+        if not isinstance(value, str):
+            return False
+        if "enum" in schema and value not in schema["enum"]:
+            return False
+        if "minLength" in schema and len(value) < schema["minLength"]:
+            return False
+        if "maxLength" in schema and len(value) > schema["maxLength"]:
+            return False
+        return True
+    return False
+
+
+def bind_schema(raw, cfg):
+    text_max = int(cfg["limits"]["text_max"])
+    bound = []
+    for branch in raw["anyOf"]:
+        action = branch["properties"]["action"]["const"]
+        if action in ("write", "read"):
+            for name, regs in cfg["map"].items():
+                item = json.loads(json.dumps(branch))
+                item["properties"]["address"] = {"const": f"{int(cfg['address'][name], 16):02x}"}
+                item["properties"]["register"] = {"enum": list(regs)}
+                item["properties"]["text"]["maxLength"] = text_max
+                bound.append(item)
+            continue
+        item = json.loads(json.dumps(branch))
+        text = item["properties"].get("text")
+        if text is not None:
+            text["maxLength"] = text_max
+        bound.append(item)
+    return {"anyOf": bound}
 
 
 def part_table(cfg):
@@ -66,14 +78,13 @@ class Mind:
         self.run = Path(run)
         self.root = Path(root)
         self.table = part_table(cfg)
+        self.schema = bind_schema(json.loads((self.root / "action.json").read_text(encoding="utf-8")), cfg)
         self.part = self.table["part"]
-        self.transport = self.table["transport"]
         self.identity = ";".join((
             self.table["manufacturer"], self.table["part"], self.table["revision"], self.table["capabilities"],
         ))
         self.tg = i2c.addr(cfg, "telegram")
         self.owners = {i2c.addr(cfg, "telegram"), i2c.addr(cfg, "ears")}
-        self.addrs = {value.lower() for value in cfg["address"].values()}
         self.cap = int(cfg["bus"]["self_turn_cap"])
         self.limit = float(self.table["turn"])
         self.context = int(self.table["context_chars"])
@@ -97,11 +108,17 @@ class Mind:
         latest = max(versions, key=lambda path: path.name)
         return [str(latest / raw[1]), str(latest / raw[2]), *raw[3:]]
 
+    def listing(self):
+        lines = []
+        for name, value in self.cfg["address"].items():
+            regs = ", ".join(f"{reg} {meaning}" for reg, meaning in self.cfg["map"][name].items())
+            lines.append(f"{int(value, 16):02x} {name}. {regs}")
+        return "\n".join(lines)
+
     def stdin_text(self, src, incoming):
         brief = (self.root / "prompt.txt").read_text(encoding="utf-8")
         brief = brief.replace("{grid}", str(self.cfg["limits"]["grid"]))
-        listing = "\n".join(f"{int(value, 16):02x} {name}" for name, value in self.cfg["address"].items())
-        return brief + "\n" + listing + "\n" + self.transcript + "\n" + f"{src:02x}\n" + incoming
+        return brief + "\n" + self.listing() + "\n" + self.transcript + "\n" + f"{src:02x}\n" + incoming
 
     def keep(self, text, decoded):
         self.transcript += f"In:\n{text}\nOut:\n{decoded}\n"
@@ -112,39 +129,59 @@ class Mind:
                 return
             self.transcript = self.transcript[cut + 1:]
 
-    def record(self, text, stdin, decoded):
-        self.count += 1
-        (self.run / f"turn-{self.count}.txt").write_text(stdin + "\n---\n" + decoded, encoding="utf-8")
-        self.keep(text, decoded)
+    def parse(self, raw):
+        try:
+            obj = json.loads(raw.strip())
+        except json.JSONDecodeError:
+            raise RuntimeError("reply was not one action") from None
+        if not fits(obj, self.schema):
+            raise RuntimeError("reply was not one action")
+        return obj
+
+    def say(self, text):
+        return i2c.pack_write(self.tg, bytes([CHAT]) + text.encode())
+
+    def frame_for(self, obj):
+        action = obj["action"]
+        if action == "nothing":
+            return None
+        if action == "say":
+            return self.say(obj["text"])
+        target = int(obj["address"], 16)
+        data = bytes([int(obj["register"], 16)]) + obj["text"].encode()
+        if action == "read":
+            return i2c.pack_call(target, data)
+        return i2c.pack_write(target, data)
 
     async def on_frame(self, src, line):
         data = i2c.write_payload(line)
-        if data == bytes([IDENT]) and " Sr " in line:
-            return i2c.with_payload(line, self.identity.encode())
-        if line.split()[2] == "R" and not data:
-            return i2c.reply(line, b"", bytes([1 if self.busy else 0]))
+        reading = line.split()[2] == "R" or " Sr " in line
+        if data == bytes([IDENT]):
+            if " Sr " in line:
+                return i2c.with_payload(line, self.identity.encode())
+            raise i2c.Nack()
+        if reading and (not data or data[0] == STATUS):
+            return i2c.reply(line, data, f"{1 if self.busy else 0:02d}".encode())
         if self.busy:
             return i2c.nack(self.bus.addr)
         if src == self.bus.addr:
             self.self_turns += 1
             if self.self_turns > self.cap:
-                return i2c.pack_write(self.bus.addr, data)
+                return i2c.nack_data(line)
         elif src in self.owners:
             self.self_turns = 0
         self.busy = True
         asyncio.create_task(self.turn(src, data))
         return i2c.pack_write(self.bus.addr, data)
 
-    async def cli(self, src, incoming):
-        text = incoming.decode()
-        stdin = self.stdin_text(src, text)
+    async def exec(self, prompt):
         proc = await asyncio.create_subprocess_exec(
             *self.argv(), stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, cwd=str(self.run),
         )
         self.proc = proc
         try:
-            out, err = await asyncio.wait_for(proc.communicate(stdin.encode()), self.limit)
+            out, err = await asyncio.wait_for(proc.communicate(prompt.encode()), self.limit)
         except TimeoutError:
             proc.kill()
             await proc.wait()
@@ -154,55 +191,52 @@ class Mind:
         if proc.returncode:
             tail = err.decode("utf-8", "replace").strip().splitlines()
             raise RuntimeError(tail[-1] if tail else f"exit {proc.returncode}")
-        decoded = out.decode()
-        self.record(text, stdin, decoded)
-        return decoded
+        return out.decode()
 
-    def http(self, src, incoming):
-        text = incoming.decode()
-        stdin = self.stdin_text(src, text)
-        body = json.dumps({
+    def _post(self, prompt):
+        body = {
             "model": self.table["model"],
-            "messages": [{"role": "user", "content": stdin}],
-        }).encode()
+            "messages": [{"role": "user", "content": prompt}],
+            "response_format": {"type": self.cfg["llama"]["response_type"], "schema": self.schema},
+        }
+        body.update(i2c.llama_sample(self.cfg, self.table["max_tokens"]))
         request = urllib.request.Request(
-            self.table["url"].rstrip("/") + "/v1/chat/completions",
-            data=body, headers={"Content-Type": "application/json"},
+            i2c.llama_url(self.cfg, self.table) + "/v1/chat/completions",
+            data=json.dumps(body).encode(), headers={"Content-Type": "application/json"},
         )
         with urllib.request.urlopen(request, timeout=self.limit) as response:
             payload = json.loads(response.read().decode())
-        decoded = payload["choices"][0]["message"]["content"] or ""
-        self.record(text, stdin, decoded)
-        return decoded
+        content = payload["choices"][0]["message"]["content"]
+        if not isinstance(content, str):
+            raise RuntimeError("reply was not one action")
+        return content
 
-    def plan(self, out):
-        planned = []
-        prose = []
+    async def post(self, prompt):
+        return await asyncio.to_thread(self._post, prompt)
 
-        def flush():
-            body = "\n".join(prose).strip()
-            prose.clear()
-            if body:
-                planned.append(i2c.pack_write(self.tg, bytes([CHAT]) + body.encode()))
+    async def exchange(self, prompt):
+        return await getattr(self, self.table["call"])(prompt)
 
-        for line in out.splitlines():
-            item = compile_line(line, self.addrs)
-            if item is None:
-                continue
-            kind, payload = item
-            if kind == "prose":
-                prose.append(payload)
-                continue
-            flush()
-            if kind == "bad":
-                planned.append(i2c.pack_write(self.bus.addr, payload.encode()))
-                continue
-            planned.append(payload)
-        flush()
-        return planned
+    async def boot_exec(self):
+        self.argv()
+        return None
+
+    async def boot_serve(self):
+        return await i2c.serve_until(
+            self.root, i2c.llama_argv(self.cfg, self.table), i2c.llama_url(self.cfg, self.table),
+            self.cfg["limits"], float(self.cfg["start"]["mind"]), "mind server is missing",
+        )
+
+    async def start(self):
+        return await getattr(self, self.table["boot"])()
+
+    async def stop(self, started):
+        if started is None:
+            return
+        await i2c.serve_stop(*started)
 
     async def pump(self):
-        if self.busy or self.bus.dead or not self.outbox:
+        if self.busy or not self.outbox:
             return
         frame = self.outbox[0]
         target = int(frame.split()[1], 16)
@@ -212,7 +246,8 @@ class Mind:
             raise
         except Exception as error:
             self.outbox.pop(0)
-            self.outbox.append(i2c.pack_write(self.bus.addr, str(error).encode()))
+            if not (target == self.bus.addr and self.self_turns > self.cap):
+                self.outbox.append(i2c.pack_write(self.bus.addr, str(error).encode()))
             return
         self.outbox.pop(0)
         if " Sr " in frame or frame.split()[2] == "R":
@@ -221,30 +256,40 @@ class Mind:
                 self.outbox.append(i2c.pack_write(self.bus.addr, payload))
 
     async def turn(self, src, data):
+        fault = None
+        frame = None
+        text = ""
         try:
             try:
-                if self.transport == "http":
-                    out = await asyncio.to_thread(self.http, src, data)
-                else:
-                    out = await self.cli(src, data)
+                text = data.decode()
+                stdin = self.stdin_text(src, text)
+                raw = await self.exchange(stdin)
+                self.count += 1
+                (self.run / f"turn-{self.count}.txt").write_text(stdin + "\n---\n" + raw, encoding="utf-8")
+                frame = self.frame_for(self.parse(raw))
+                self.keep(text, raw.strip())
             except TimeoutError:
-                out = f"{self.part} timed out."
+                fault = f"{self.part} timed out."
             except Exception as error:
-                out = f"{self.part} stopped: {error}"
-            self.outbox.extend(self.plan(out))
+                fault = f"{self.part} stopped: {error}"
+            if fault:
+                self.keep(text, fault)
+                frame = self.say(fault)
+            if frame:
+                self.outbox.append(frame)
         finally:
             self.busy = False
 
 
 def build(bus, cfg, root, run):
     mind = Mind(bus, cfg, run, root)
-    if mind.transport == "stdio":
-        mind.argv()
 
     async def around(serve):
-        if mind.transport == "http":
-            await i2c.wait_healthy(mind.table["url"], cfg["limits"], float(cfg["start"]["tools"]), "mind server is missing")
-        await serve
+        started = await mind.start()
+        try:
+            await serve
+        finally:
+            await mind.stop(started)
 
     return mind.on_frame, mind.pump, around
 

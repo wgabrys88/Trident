@@ -55,7 +55,8 @@ def main():
         unpack(url, ROOT / cfg["fetch"]["unpack"][key], timeout)
     needed = [python, ROOT / cfg["ears"]["model"], ROOT / cfg["ears"]["library"]]
     needed += [ROOT / part for part in cfg["voice"]["command"] if str(part).startswith("artifacts/")]
-    needed += [ROOT / part for part in cfg["vision"]["command"] if str(part).startswith("artifacts/")]
+    llama = cfg["llama"]
+    needed += [ROOT / llama["bin"], ROOT / llama["weights"], ROOT / llama["mmproj"]]
     needed.append(ROOT / "artifacts" / "llama" / "cudart64_12.dll")
     for path in needed:
         if not path.is_file():

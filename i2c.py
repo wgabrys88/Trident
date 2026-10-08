@@ -284,6 +284,7 @@ class Bus:
         self.home.mkdir(parents=True, exist_ok=True)
         (self.home / "tec").write_text(f"{self.tec}\n", encoding="utf-8")
         (self.home / "rec").write_text(f"{self.rec}\n", encoding="utf-8")
+        (self.home / "seq").write_text(f"{self.seq}\n", encoding="utf-8")
 
     def _count(self, name):
         path = self.home / name
@@ -302,6 +303,7 @@ class Bus:
         else:
             self.tec = self._count("tec")
             self.rec = self._count("rec")
+        self.seq = self._count("seq")
         self.dead = False
         self.store()
 
@@ -439,9 +441,9 @@ class Bus:
             raise RuntimeError(f"NACK {target:02x}")
         self.seq += 1
         seq = self.seq
+        self.store()
         self.inbox.mkdir(parents=True, exist_ok=True)
         reply_path = self.inbox / f"r-{seq}"
-        remove(reply_path)
         place(self.root / f"{target:02x}" / "inbox", f"q-{self.addr:02x}-{seq}", line)
         started = time.monotonic()
         limit = self.frame_timeout
@@ -454,7 +456,7 @@ class Bus:
                 self.journal(self.addr, target, line, "timeout", int((time.monotonic() - started) * 1000))
                 raise TimeoutError(f"timeout {target:02x}")
             await asyncio.sleep(self.poll)
-        return read_file(reply_path)
+        return seq, read_file(reply_path)
 
     async def request(self, target, line):
         data_tries = 0
@@ -463,8 +465,8 @@ class Bus:
                 raise BusOff()
             if self.off(target) or not self.present(target):
                 raise RuntimeError(f"NACK {target:02x}")
-            reply_line = await self.transfer(target, line)
-            remove(self.inbox / f"r-{self.seq}")
+            seq, reply_line = await self.transfer(target, line)
+            remove(self.inbox / f"r-{seq}")
             if reply_line.split()[3] == "NA":
                 if self.present(target) and not self.off(target):
                     deadline = time.monotonic() + self.frame_timeout
@@ -580,13 +582,36 @@ async def serve_stop(proc, reader):
         await reader
 
 
-async def wait_healthy(url, limits, limit, missing):
-    started = asyncio.get_running_loop().time()
-    while asyncio.get_running_loop().time() - started <= limit:
-        if await asyncio.to_thread(healthy, url, float(limits['health_timeout'])):
-            return
-        await asyncio.sleep(float(limits['health_poll']))
-    raise RuntimeError(missing)
+def llama_url(cfg, part):
+    return f"http://{cfg['llama']['host']}:{int(part['port'])}"
+
+
+def llama_argv(cfg, part):
+    spec = cfg["llama"]
+    return [
+        spec["bin"], "--model", spec["weights"], "--mmproj", spec["mmproj"],
+        "--mmproj-offload", "--mmproj-device", spec["device"],
+        "--image-max-tokens", str(int(spec["image_max_tokens"])),
+        "--alias", spec["alias"], "--host", spec["host"], "--port", str(int(part["port"])),
+        "--jinja", "--ctx-size", str(int(spec["ctx_size"])), "--device", spec["device"],
+        "--n-gpu-layers", str(int(spec["gpu_layers"])), "--parallel", str(int(spec["parallel"])),
+        "--flash-attn", spec["flash_attn"],
+        "--cache-type-k", spec["cache_k"], "--cache-type-v", spec["cache_v"],
+        "--no-context-shift", "--no-webui", "--fit", spec["fit"],
+    ]
+
+
+def llama_sample(cfg, max_tokens):
+    spec = cfg["llama"]
+    return {
+        "temperature": spec["temperature"],
+        "top_k": int(spec["top_k"]),
+        "top_p": spec["top_p"],
+        "min_p": spec["min_p"],
+        "repeat_penalty": spec["repeat_penalty"],
+        "max_tokens": int(max_tokens),
+        "reasoning_effort": spec["reasoning_effort"],
+    }
 
 
 if __name__ == '__main__':

@@ -1,4 +1,3 @@
-import sys
 import time
 
 import i2c
@@ -7,6 +6,7 @@ MISSED = 2
 CLEAR = 3
 DIAL = 1
 IDENT = 0xF0
+STATUS = 0x00
 
 
 class Timer:
@@ -24,9 +24,10 @@ class Timer:
         return self.bus.ready(self.mind)
 
     async def on_frame(self, _src, line):
-        if line.split()[2] == "R":
-            return i2c.reply(line, i2c.write_payload(line), bytes([1 if self.deadline else 0]))
         data = i2c.write_payload(line)
+        reading = line.split()[2] == "R" or " Sr " in line
+        if reading and (not data or data[0] == STATUS):
+            return i2c.reply(line, data, f"{1 if self.deadline else 0:02d}".encode())
         if not data:
             raise i2c.Nack()
         if data[0] == MISSED:
@@ -36,6 +37,8 @@ class Timer:
         if data[0] == CLEAR:
             self.deadline = None
             self.redials = 0
+            if reading:
+                return i2c.reply(line, data, b"00")
             return i2c.pack_write(self.bus.addr, data)
         raise i2c.Nack()
 

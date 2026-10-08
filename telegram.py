@@ -13,6 +13,7 @@ DIAL = 1
 HANG = 2
 CHAT = 0x10
 PLAY = 0x20
+STATUS = 0x00
 EAR = 1
 VOICE = 1
 TIMER_MISSED = 2
@@ -234,8 +235,9 @@ class Telegram:
 
     async def on_frame(self, _src, line):
         data = i2c.write_payload(line)
-        if line.split()[2] == "R" and not data:
-            return i2c.reply(line, b"", bytes([self.status()]))
+        reading = line.split()[2] == "R" or " Sr " in line
+        if reading and (not data or data[0] == STATUS):
+            return i2c.reply(line, data, f"{self.status():02d}".encode())
         action, body = plan(self.state, data)
         if action == "dial":
             self.state = "dialing"
@@ -246,7 +248,9 @@ class Telegram:
             self.spawn(self.chat(body.decode()))
         else:
             self.pending_play.append(body.decode())
-        return i2c.pack_write(self.bus.addr, i2c.write_payload(line))
+        if reading:
+            return i2c.reply(line, data, f"{self.status():02d}".encode())
+        return i2c.pack_write(self.bus.addr, data)
 
     async def chat(self, text):
         await self.send(text)

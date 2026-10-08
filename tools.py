@@ -118,7 +118,7 @@ def shot(path):
     return str(path)
 
 
-def describe(url, path, temperature, tokens, timeout):
+def describe(url, model, sample, path, timeout):
     raw = Path(path).read_bytes()
     kind = "png" if str(path).lower().endswith(".png") else "jpeg"
     content = [
@@ -126,8 +126,9 @@ def describe(url, path, temperature, tokens, timeout):
         {"type": "image_url", "image_url": {"url": f"data:image/{kind};base64,{base64.b64encode(raw).decode()}"}},
     ]
     body = json.dumps({
-        "model": "lfm", "temperature": temperature, "max_tokens": tokens,
+        "model": model,
         "messages": [{"role": "user", "content": content}],
+        **sample,
     }).encode()
     request = urllib.request.Request(
         url + "/v1/chat/completions", data=body, headers={"Content-Type": "application/json"},
@@ -265,7 +266,8 @@ class Toolbox:
 
     async def start(self, limit):
         self.proc, self.reader = await i2c.serve_until(
-            self.root, self.cfg["command"], self.cfg["url"], self.limits, limit, "Vision server is missing",
+            self.root, i2c.llama_argv(self.cfg, self.cfg["vision"]), i2c.llama_url(self.cfg, self.cfg["vision"]),
+            self.limits, limit, "Vision server is missing",
         )
 
     async def stop(self):
@@ -279,8 +281,9 @@ class Toolbox:
             return run_cmd(body.decode()).encode()
         if reg == SEE:
             return describe(
-                self.cfg["url"], body.decode(), float(self.cfg["temperature"]),
-                int(self.cfg["max_tokens"]), float(self.limits["http_timeout"]),
+                i2c.llama_url(self.cfg, self.cfg["vision"]), self.cfg["llama"]["alias"],
+                i2c.llama_sample(self.cfg, self.cfg["vision"]["max_tokens"]),
+                body.decode(), float(self.limits["http_timeout"]),
             ).encode()
         if reg == ACT:
             action = parse_input(body.decode(), self.limits["grid"])
@@ -289,16 +292,17 @@ class Toolbox:
 
 
 def build(bus, cfg, root, _run):
-    box = Toolbox(root, cfg["vision"], cfg["limits"])
+    box = Toolbox(root, cfg, cfg["limits"])
 
     async def on_frame(_src, line):
         data = i2c.write_payload(line)
         if not data:
             raise i2c.Nack()
-        with bus.stretch():
-            result = await asyncio.to_thread(box.work, data)
         if " Sr " in line or line.split()[2] == "R":
+            with bus.stretch():
+                result = await asyncio.to_thread(box.work, data)
             return i2c.reply(line, data, result)
+        await asyncio.to_thread(box.work, data)
         return i2c.reply(line, data)
 
     async def around(serve):
