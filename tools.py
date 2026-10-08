@@ -1,323 +1,78 @@
 import asyncio
 import base64
 import ctypes
-import json
-import struct
+import mimetypes
 import subprocess
-import sys
-import urllib.request
-import zlib
+import time
 from pathlib import Path
 
-import i2c
+import pyperclip
+from PIL import ImageGrab
 
-SHOT = 1
-SHELL = 2
-SEE = 3
-ACT = 4
+from i2c import Device, Nack, Refusal, Server
 
-
-def run_cmd(text):
-    done = subprocess.run(text, shell=True, capture_output=True, text=True)
-    body = (done.stdout or "") + (done.stderr or "")
-    if done.returncode:
-        return body + f"\nexit {done.returncode}"
-    return body
+if not ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+    raise RuntimeError("Windows refused per-monitor DPI awareness")
+import pyautogui
 
 
-def dpi_aware():
-    if getattr(dpi_aware, "done", False):
-        return
-    user = ctypes.windll.user32
-    user.SetProcessDpiAwarenessContext.restype = ctypes.c_bool
-    user.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
-    if not user.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
-        raise RuntimeError("DPI awareness was not set")
-    dpi_aware.done = True
+class Tools(Device):
+    def __init__(self):
+        super().__init__("tools")
+        self.server = Server(self, self.cfg["llama"] | self.cfg["vision"])
+        self.bounds = tuple(ctypes.windll.user32.GetSystemMetrics(index) for index in (76, 77, 78, 79))
+        pyautogui.FAILSAFE = False
+        pyautogui.PAUSE = self.cfg["tools"]["input_pause"]
 
+    async def receive(self, source, frame):
+        register, text = frame.data[0], frame.data[1:].decode()
+        match register:
+            case 1 | 4:
+                path = self.run / text if register == 1 else self.file(f"after-input-{time.time_ns()}.png")
+                if register == 4:
+                    await asyncio.to_thread(self.act, text)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                image = await asyncio.to_thread(ImageGrab.grab, all_screens=True)
+                await asyncio.to_thread(image.save, path)
+                return str(path).encode()
+            case 2:
+                result = await asyncio.to_thread(subprocess.run, text, shell=True, cwd=self.run,
+                                                capture_output=True, text=True,
+                                                timeout=self.cfg["tools"]["command_seconds"],
+                                                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+                return f"exit {result.returncode}\n{result.stdout}{result.stderr}".encode()
+            case 3:
+                path = Path(text)
+                image = base64.b64encode(path.read_bytes()).decode()
+                content = [{"type": "text", "text": self.cfg["vision"]["prompt"].format(grid=self.cfg["limits"]["grid"])},
+                           {"type": "image_url", "image_url": {"url": f"data:{mimetypes.guess_type(path)[0]};base64,{image}"}}]
+                return (await self.server.chat([{"role": "user", "content": content}])).encode()
 
-class _BitmapInfo(ctypes.Structure):
-    _fields_ = [
-        ("biSize", ctypes.c_uint32), ("biWidth", ctypes.c_int32), ("biHeight", ctypes.c_int32),
-        ("biPlanes", ctypes.c_uint16), ("biBitCount", ctypes.c_uint16), ("biCompression", ctypes.c_uint32),
-        ("biSizeImage", ctypes.c_uint32), ("biXPelsPerMeter", ctypes.c_int32), ("biYPelsPerMeter", ctypes.c_int32),
-        ("biClrUsed", ctypes.c_uint32), ("biClrImportant", ctypes.c_uint32),
-    ]
-
-
-def png(width, height, rows):
-    def chunk(tag, data):
-        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
-
-    raw = b"".join(b"\x00" + row for row in rows)
-    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
-    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw, 1)) + chunk(b"IEND", b"")
-
-
-def shot(path):
-    dpi_aware()
-    left, top, width, height = screen_bounds()
-    if width < 1 or height < 1:
-        raise RuntimeError("virtual screen is empty")
-    user = ctypes.windll.user32
-    gdi = ctypes.windll.gdi32
-    user.GetDC.restype = ctypes.c_void_p
-    user.ReleaseDC.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-    gdi.CreateCompatibleDC.restype = ctypes.c_void_p
-    gdi.CreateCompatibleDC.argtypes = [ctypes.c_void_p]
-    gdi.CreateCompatibleBitmap.restype = ctypes.c_void_p
-    gdi.CreateCompatibleBitmap.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
-    gdi.SelectObject.restype = ctypes.c_void_p
-    gdi.SelectObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
-    gdi.BitBlt.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_uint32]
-    gdi.GetDIBits.argtypes = [
-        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint,
-        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint,
-    ]
-    gdi.GetDIBits.restype = ctypes.c_int
-    gdi.DeleteObject.argtypes = [ctypes.c_void_p]
-    gdi.DeleteDC.argtypes = [ctypes.c_void_p]
-    src = user.GetDC(0)
-    mem = gdi.CreateCompatibleDC(src) if src else None
-    bmp = gdi.CreateCompatibleBitmap(src, width, height) if mem else None
-    old = gdi.SelectObject(mem, bmp) if bmp else None
-    try:
-        if not src or not mem or not bmp or not gdi.BitBlt(mem, 0, 0, width, height, src, left, top, 0x00CC0020):
-            raise RuntimeError("shot failed")
-        header = _BitmapInfo()
-        header.biSize = ctypes.sizeof(_BitmapInfo)
-        header.biWidth = width
-        header.biHeight = height
-        header.biPlanes = 1
-        header.biBitCount = 32
-        buf = ctypes.create_string_buffer(width * height * 4)
-        lines = gdi.GetDIBits(mem, bmp, 0, height, ctypes.cast(buf, ctypes.c_void_p), ctypes.byref(header), 0)
-        if lines != height:
-            raise RuntimeError("shot failed")
-    finally:
-        if mem and bmp:
-            gdi.SelectObject(mem, old)
-            gdi.DeleteObject(bmp)
-        if mem:
-            gdi.DeleteDC(mem)
-        if src:
-            user.ReleaseDC(0, src)
-    raw = buf.raw
-    rows = []
-    stride = width * 4
-    for y in range(height - 1, -1, -1):
-        base = y * stride
-        row = bytearray()
-        for x in range(width):
-            i = base + x * 4
-            row += bytes((raw[i + 2], raw[i + 1], raw[i]))
-        rows.append(bytes(row))
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(png(width, height, rows))
-    return str(path)
-
-
-def describe(url, model, sample, path, timeout):
-    raw = Path(path).read_bytes()
-    kind = "png" if str(path).lower().endswith(".png") else "jpeg"
-    content = [
-        {"type": "text", "text": "Describe this image completely, including every region and the text you can read."},
-        {"type": "image_url", "image_url": {"url": f"data:image/{kind};base64,{base64.b64encode(raw).decode()}"}},
-    ]
-    body = json.dumps({
-        "model": model,
-        "messages": [{"role": "user", "content": content}],
-        **sample,
-    }).encode()
-    request = urllib.request.Request(
-        url + "/v1/chat/completions", data=body, headers={"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        data = json.loads(response.read().decode())
-    text = data["choices"][0]["message"]["content"]
-    if not isinstance(text, str) or not text.strip():
-        raise RuntimeError("Vision returned no answer")
-    return text
-
-
-_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_ulong
-
-
-class _Mouse(ctypes.Structure):
-    _fields_ = [
-        ("dx", ctypes.c_long), ("dy", ctypes.c_long), ("mouseData", ctypes.c_ulong),
-        ("dwFlags", ctypes.c_ulong), ("time", ctypes.c_ulong), ("dwExtraInfo", _PTR),
-    ]
-
-
-class _Key(ctypes.Structure):
-    _fields_ = [
-        ("wVk", ctypes.c_ushort), ("wScan", ctypes.c_ushort), ("dwFlags", ctypes.c_ulong),
-        ("time", ctypes.c_ulong), ("dwExtraInfo", _PTR),
-    ]
-
-
-class _InputUnion(ctypes.Union):
-    _fields_ = [("mi", _Mouse), ("ki", _Key)]
-
-
-class _Input(ctypes.Structure):
-    _fields_ = [("type", ctypes.c_ulong), ("u", _InputUnion)]
-
-
-_KEYS = {
-    "enter": 0x0D, "tab": 0x09, "esc": 0x1B, "space": 0x20, "backspace": 0x08,
-    "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27, "delete": 0x2E,
-    "home": 0x24, "end": 0x23,
-}
-
-
-def parse_input(text, grid):
-    grid = int(grid)
-    try:
-        if text.startswith("click "):
-            parts = text.split()
-            if len(parts) != 3:
-                raise i2c.Nack()
-            y, x = int(parts[1]), int(parts[2])
-            if min(y, x) < 0 or max(y, x) > grid:
-                raise i2c.Nack()
-            return ("click", y, x)
-        if text.startswith("type "):
-            body = text[5:]
-            if not body:
-                raise i2c.Nack()
-            return ("type", body)
-        if text.startswith("key "):
-            parts = text.split()
-            if len(parts) != 2:
-                raise i2c.Nack()
-            return ("key", parts[1])
-    except ValueError:
-        raise i2c.Nack() from None
-    raise i2c.Nack()
-
-
-def grid_point(y, x, bounds, grid):
-    left, top, width, height = bounds
-    return (
-        left + int(round(x * (width - 1) / grid)),
-        top + int(round(y * (height - 1) / grid)),
-    )
-
-
-def screen_bounds():
-    user = ctypes.windll.user32
-    return (
-        user.GetSystemMetrics(76), user.GetSystemMetrics(77),
-        user.GetSystemMetrics(78), user.GetSystemMetrics(79),
-    )
-
-
-def _send(items):
-    user = ctypes.windll.user32
-    user.SendInput.argtypes = (ctypes.c_uint, ctypes.POINTER(_Input), ctypes.c_int)
-    user.SendInput.restype = ctypes.c_uint
-    sent = user.SendInput(len(items), (_Input * len(items))(*items), ctypes.sizeof(_Input))
-    if sent != len(items):
-        raise RuntimeError("input was not sent")
-
-
-def perform(action, bounds, grid):
-    dpi_aware()
-    if action[0] == "click":
-        px, py = grid_point(action[1], action[2], bounds, grid)
-        left, top, width, height = bounds
-        nx = int(round((px - left) * 65535 / (width - 1)))
-        ny = int(round((py - top) * 65535 / (height - 1)))
-        flags = 0x8001 | 0x4000
-        move = _Input(0, _InputUnion(mi=_Mouse(nx, ny, 0, flags, 0, 0)))
-        down = _Input(0, _InputUnion(mi=_Mouse(nx, ny, 0, flags | 0x0002, 0, 0)))
-        up = _Input(0, _InputUnion(mi=_Mouse(nx, ny, 0, flags | 0x0004, 0, 0)))
-        _send((move, down, up))
-        return f"{px} {py}".encode()
-    if action[0] == "type":
-        items = []
-        for char in action[1]:
-            items.append(_Input(1, _InputUnion(ki=_Key(0, ord(char), 0x0004, 0, 0))))
-            items.append(_Input(1, _InputUnion(ki=_Key(0, ord(char), 0x0006, 0, 0))))
-        _send(items)
-        return action[1].encode()
-    vk = _KEYS.get(action[1])
-    if vk is None and len(action[1]) == 1 and action[1].isascii() and action[1].isalnum():
-        vk = ord(action[1].upper())
-    if vk is None:
-        raise i2c.Nack()
-    _send((
-        _Input(1, _InputUnion(ki=_Key(vk, 0, 0, 0, 0))),
-        _Input(1, _InputUnion(ki=_Key(vk, 0, 0x0002, 0, 0))),
-    ))
-    return action[1].encode()
-
-
-class Toolbox:
-    def __init__(self, root, cfg, limits):
-        self.root = Path(root)
-        self.cfg = cfg
-        self.limits = limits
-        self.proc = None
-        self.reader = None
-
-    async def start(self, limit):
-        self.proc, self.reader = await i2c.serve_until(
-            self.root, i2c.llama_argv(self.cfg, self.cfg["vision"]), i2c.llama_url(self.cfg, self.cfg["vision"]),
-            self.limits, limit, "Vision server is missing",
-        )
-
-    async def stop(self):
-        await i2c.serve_stop(self.proc, self.reader)
-
-    def work(self, data):
-        reg, body = data[0], data[1:]
-        if reg == SHOT:
-            return shot(body.decode()).encode()
-        if reg == SHELL:
-            return run_cmd(body.decode()).encode()
-        if reg == SEE:
-            return describe(
-                i2c.llama_url(self.cfg, self.cfg["vision"]), self.cfg["llama"]["alias"],
-                i2c.llama_sample(self.cfg, self.cfg["vision"]["max_tokens"]),
-                body.decode(), float(self.limits["http_timeout"]),
-            ).encode()
-        if reg == ACT:
-            action = parse_input(body.decode(), self.limits["grid"])
-            return perform(action, screen_bounds(), int(self.limits["grid"]))
-        raise i2c.Nack()
-
-
-def build(bus, cfg, root, _run):
-    box = Toolbox(root, cfg, cfg["limits"])
-
-    async def on_frame(_src, line):
-        data = i2c.write_payload(line)
-        if not data:
-            raise i2c.Nack()
-        if " Sr " in line or line.split()[2] == "R":
-            with bus.stretch():
-                result = await asyncio.to_thread(box.work, data)
-            return i2c.reply(line, data, result)
-        await asyncio.to_thread(box.work, data)
-        return i2c.reply(line, data)
-
-    async def around(serve):
-        await box.start(float(cfg["start"]["tools"]))
-        try:
-            await serve
-        finally:
-            await box.stop()
-
-    return on_frame, None, around
-
-
-def main():
-    i2c.main_for("tools", build)
+    def act(self, text):
+        operation, separator, argument = text.partition(" ")
+        if not separator:
+            raise Nack(Refusal.UNKNOWN_DATA)
+        match operation:
+            case "click":
+                try:
+                    y, x = map(int, argument.split())
+                except ValueError:
+                    raise Nack(Refusal.UNKNOWN_DATA) from None
+                grid = self.cfg["limits"]["grid"]
+                if not (0 <= x <= grid and 0 <= y <= grid):
+                    raise Nack(Refusal.UNKNOWN_DATA)
+                left, top, width, height = self.bounds
+                pyautogui.click(left + round(x * (width - 1) / grid), top + round(y * (height - 1) / grid))
+            case "type":
+                pyperclip.copy(argument)
+                pyautogui.hotkey("ctrl", "v")
+            case "key":
+                if argument not in pyautogui.KEYBOARD_KEYS:
+                    raise Nack(Refusal.UNKNOWN_DATA)
+                pyautogui.press(argument)
+            case _:
+                raise Nack(Refusal.UNKNOWN_DATA)
 
 
 if __name__ == "__main__":
-    main()
+    Tools().launch()

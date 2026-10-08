@@ -1,6 +1,3 @@
-[owner]
-telegram_id = 5884279027
-
 [address]
 timer = "10"
 telegram = "11"
@@ -10,172 +7,180 @@ tools = "14"
 mind = "16"
 memory = "50"
 
+[modules]
+timer = "peripherals.py"
+telegram = "telegram.py"
+ears = "audio.py"
+voice = "audio.py"
+tools = "tools.py"
+mind = "mind.py"
+memory = "peripherals.py"
+
 [bus]
 frame_timeout = 2
 poll = 0.05
-backoff = 1
-backoff_cap = 30
-retry_seconds = 120
-redial_cap = 3
+data_retries = 1
 self_turn_cap = 4
-restart_cap = 3
-stable_seconds = 30
-share_retries = 5
-share_delay = 0.05
-nack_retries = 1
 
-[busy]
+[holds]
 tools = 7200
 
-[start]
-ears = 30
-voice = 60
-tools = 90
-mind = 90
+[supply]
+backoff = 1
+backoff_multiplier = 2
+backoff_cap = 30
+restart_cap = 3
+stable_seconds = 30
+stop_seconds = 10
 
 [limits]
-ring_seconds = 90
-connect_seconds = 30
-chat_slice = 4096
-play_frame = 960
-pcm_rate = 16000
-play_rate = 48000
-frame_ms = 20
-health_timeout = 2
-http_timeout = 7200
-health_poll = 0.2
-stderr_keep = 4000
-install_timeout = 3600
 grid = 1000
+http_timeout = 7200
+health_timeout = 2
+health_poll = 0.2
+install_timeout = 3600
 
-[mind.luna]
-manufacturer = "cursor"
-part = "gpt-5.6-luna-none"
-revision = "cli"
-capabilities = "text"
-model = "gpt-5.6-luna-none"
-call = "exec"
-boot = "boot_exec"
-turn = 7200
-context_chars = 400000
-tools = "shell_tool_call,delete_tool_call,glob_tool_call,grep_tool_call,read_tool_call,update_todos_tool_call,read_todos_tool_call,edit_tool_call,ls_tool_call,read_lints_tool_call,mcp_tool_call,sem_search_tool_call,create_plan_tool_call,web_search_tool_call,task_tool_call,list_mcp_resources_tool_call,read_mcp_resource_tool_call,apply_agent_diff_tool_call,ask_question_tool_call,fetch_tool_call,switch_mode_tool_call,generate_image_tool_call,record_screen_tool_call,computer_use_tool_call,write_shell_stdin_tool_call,reflect_tool_call,setup_vm_environment_tool_call,truncated_tool_call,start_grind_execution_tool_call,start_grind_planning_tool_call,web_fetch_tool_call,report_bugfix_results_tool_call,ai_attribution_tool_call,pr_management_tool_call,mcp_auth_tool_call,await_tool_call,blame_by_file_path_tool_call,get_mcp_tools_tool_call,report_bug_tool_call,set_active_branch_tool_call,communicate_update_tool_call,send_final_summary_tool_call,update_pr_code_tour_tool_call,replace_env_tool_call,edit_pr_labels_tool_call,record_ci_investigation_findings_tool_call,send_message_tool_call,fetch_cloud_agent_data_tool_call,send_to_user_tool_call,pi_read_tool_call,pi_bash_tool_call,pi_edit_tool_call,pi_write_tool_call,pi_grep_tool_call,pi_find_tool_call,pi_ls_tool_call,connect_scm_tool_call,search_conversations_tool_call,create_goal_tool_call,update_goal_tool_call,adopt_tool_call,get_agent_status_tool_call,send_to_agent_tool_call,read_agent_transcript_tool_call,create_agent_tool_call,stop_agent_tool_call,get_pr_code_tour_tool_call,write_canvas_tool_call,read_canvas_tool_call"
-command = ["%LOCALAPPDATA%/cursor-agent/versions", "node.exe", "index.js", "-p", "--model", "{model}", "--output-format", "text", "--trust", "--workspace", "{run}", "--exclude-tools", "{tools}"]
-
-[mind.lfm]
-manufacturer = "local"
-part = "LFM2.5-VL-3B"
-revision = "Q4_K_M"
-capabilities = "text"
-model = "lfm"
-call = "post"
-boot = "boot_serve"
-turn = 7200
-context_chars = 131072
-port = 8081
-max_tokens = 32768
+[timer]
+redial_seconds = 120
+redial_cap = 3
 
 [telegram]
+owner = 5884279027
 tdata = "%APPDATA%/Telegram Desktop/tdata"
 min_layer = 65
 dh_bytes = 256
-request_retries = 0
-connection_retries = 0
-flood_sleep_threshold = 0
+random_id_max = 2147483648
+ring_seconds = 90
+connect_seconds = 30
+chat_chars = 4096
 
-[ears]
-model = "artifacts/nemotron-3.5-asr-streaming-0.6b.q8_0.gguf"
-library = "artifacts/nemo-cpu/bin/nemo_speech_asr_c.dll"
+[audio]
+receive_rate = 16000
+send_rate = 48000
+sample_bytes = 2
+send_frame_bytes = 960
+frame_ms = 20
 rms_threshold = 0.012
 silence_ms = 700
 padding_ms = 120
 utterance_seconds = 30
 
+[ears]
+model = "artifacts/nemotron-3.5-asr-streaming-0.6b.q8_0.gguf"
+library = "artifacts/ears/bin/nemo_speech_asr_c.dll"
+gpu = -1
+start_seconds = 30
+
 [voice]
 url = "http://127.0.0.1:8091"
-command = ["artifacts/voice/crispasr.exe", "--server", "--host", "127.0.0.1", "--port", "8091", "--backend", "chatterbox-nano", "-m", "artifacts/chatterbox-nano-t3-q4_k.gguf", "--codec-model", "artifacts/chatterbox-turbo-s3gen-q4_k.gguf", "--gpu-backend", "vulkan", "--tts-steps", "2", "--no-punctuation"]
+start_seconds = 60
+command = ["artifacts/voice/crispasr-windows-x86_64-vulkan/crispasr.exe", "--server", "--host", "127.0.0.1", "--port", "8091", "--backend", "chatterbox-nano", "-m", "artifacts/chatterbox-nano-t3-q4_k.gguf", "--codec-model", "artifacts/chatterbox-turbo-s3gen-q4_k.gguf", "--gpu-backend", "vulkan"]
+
+[mind.luna]
+identity = ["cursor", "gpt-5.6-luna-none", "cli", "text"]
+transport = "exec"
+model = "gpt-5.6-luna-none"
+turn_seconds = 7200
+context_chars = 400000
+versions = "%LOCALAPPDATA%/cursor-agent/versions"
+executable = "node.exe"
+entry = "index.js"
+arguments = ["-e", "process.argv.push(require('node:fs').readFileSync(0,'utf8'));require(process.argv[1]);", "{entry}", "-p", "--model", "{model}", "--output-format", "json", "--trust", "--workspace", "{run}", "--exclude-tools", "{excluded_tools}"]
+excluded_tools = "side_question_tool_call,shell_tool_call,delete_tool_call,glob_tool_call,grep_tool_call,read_tool_call,update_todos_tool_call,read_todos_tool_call,edit_tool_call,ls_tool_call,read_lints_tool_call,mcp_tool_call,sem_search_tool_call,create_plan_tool_call,web_search_tool_call,task_tool_call,list_mcp_resources_tool_call,read_mcp_resource_tool_call,apply_agent_diff_tool_call,ask_question_tool_call,fetch_tool_call,switch_mode_tool_call,generate_image_tool_call,record_screen_tool_call,computer_use_tool_call,write_shell_stdin_tool_call,reflect_tool_call,setup_vm_environment_tool_call,truncated_tool_call,start_grind_execution_tool_call,start_grind_planning_tool_call,web_fetch_tool_call,report_bugfix_results_tool_call,ai_attribution_tool_call,pr_management_tool_call,mcp_auth_tool_call,await_tool_call,blame_by_file_path_tool_call,get_mcp_tools_tool_call,report_bug_tool_call,set_active_branch_tool_call,communicate_update_tool_call,send_final_summary_tool_call,update_pr_code_tour_tool_call,replace_env_tool_call,edit_pr_labels_tool_call,record_ci_investigation_findings_tool_call,send_message_tool_call,fetch_cloud_agent_data_tool_call,send_to_user_tool_call,pi_read_tool_call,pi_bash_tool_call,pi_edit_tool_call,pi_write_tool_call,pi_grep_tool_call,pi_find_tool_call,pi_ls_tool_call,connect_scm_tool_call,search_conversations_tool_call,create_goal_tool_call,update_goal_tool_call,adopt_tool_call,get_agent_status_tool_call,read_agent_transcript_tool_call,create_agent_tool_call,stop_agent_tool_call,get_pr_code_tour_tool_call,write_canvas_tool_call,read_canvas_tool_call"
+
+[mind.lfm]
+identity = ["LiquidAI", "LFM2.5-VL-3B", "Q4_K_M", "text"]
+transport = "post"
+url = "http://127.0.0.1:8081"
+port = 8081
+turn_seconds = 7200
+context_chars = 131072
+start_seconds = 90
+max_tokens = 32768
 
 [llama]
-bin = "artifacts/llama/llama-server.exe"
-weights = "artifacts/LFM2.5-VL-3B-Q4_K_M.gguf"
-mmproj = "artifacts/mmproj-LFM2.5-VL-3B-Q8_0.gguf"
-alias = "lfm"
+model = "lfm"
 host = "127.0.0.1"
 device = "CUDA0"
 gpu_layers = 999
-ctx_size = 32768
+context_tokens = 32768
 parallel = 1
-batch_size = 2048
-ubatch_size = 512
+batch_tokens = 2048
+microbatch_tokens = 512
 image_min_tokens = 64
 image_max_tokens = 256
-flash_attn = "on"
+flash_attention = "on"
 cache_k = "f16"
 cache_v = "f16"
 fit = "off"
+reasoning = "on"
+reasoning_format = "deepseek"
+reasoning_budget = -1
+command = ["artifacts/llama/llama-server.exe", "--model", "artifacts/LFM2.5-VL-3B-Q4_K_M.gguf", "--mmproj", "artifacts/mmproj-LFM2.5-VL-3B-Q8_0.gguf", "--mmproj-offload", "--mmproj-device", "{device}", "--image-min-tokens", "{image_min_tokens}", "--image-max-tokens", "{image_max_tokens}", "--alias", "{model}", "--host", "{host}", "--port", "{port}", "--jinja", "--ctx-size", "{context_tokens}", "--device", "{device}", "--n-gpu-layers", "{gpu_layers}", "--parallel", "{parallel}", "--batch-size", "{batch_tokens}", "--ubatch-size", "{microbatch_tokens}", "--flash-attn", "{flash_attention}", "--cache-type-k", "{cache_k}", "--cache-type-v", "{cache_v}", "--reasoning", "{reasoning}", "--reasoning-format", "{reasoning_format}", "--reasoning-budget", "{reasoning_budget}", "--no-context-shift", "--no-webui", "--fit", "{fit}"]
+
+[sampling]
 temperature = 0.2
 top_k = 50
 top_p = 1.0
 min_p = 0.0
 repeat_penalty = 1.0
-response_type = "json_object"
-reasoning = "on"
 reasoning_format = "deepseek"
-reasoning_budget = -1
 
 [vision]
+url = "http://127.0.0.1:8080"
 port = 8080
+start_seconds = 90
 max_tokens = 32768
+prompt = "Describe every visible region and readable text. Locate actionable controls using a 0 to {grid} grid, y down and x right. Report only what the pixels show."
+
+[tools]
+command_seconds = 7200
+input_pause = 0.1
 
 [memory]
 path = "life/memory.sqlite"
 
-[map.timer]
-"00" = "read 00 idle or 01 waiting"
-"03" = "cancel a redial"
+[registers.timer]
+"00" = "read: 00 idle, 01 waiting"
+"02" = "write: missed dial"
+"03" = "write: cancel redial"
+[registers.telegram]
+"00" = "read: 00 down, 01 dialing, 02 up"
+"01" = "write: dial owner"
+"02" = "write: hang up"
+"10" = "write: speak during a call, otherwise chat"
+"20" = "write: PCM16 WAV path played into the call"
+[registers.ears]
+"01" = "write: mono PCM16 path, owner speech goes to mind"
+[registers.voice]
+"01" = "write: words to synthesize for the call"
+[registers.tools]
+"01" = "read: screenshot destination relative to this run; returns absolute path"
+"02" = "read: command line; returns exit code, stdout and stderr"
+"03" = "read: absolute image path; returns vision description"
+"04" = "read: click y x, type text, key name; returns post-input screenshot path"
+[registers.mind]
+"00" = "read: 00 free, 01 busy"
+"01" = "write: message or next turn"
+"f0" = "read: manufacturer, part, revision, capabilities"
+[registers.memory]
+"01" = "write/read: append text, return decimal record id"
+"02" = "read: decimal record id, return text"
+"03" = "read: latest text; empty when no records exist"
 
-[map.telegram]
-"00" = "read 00 down, 01 dialing, 02 up"
-"01" = "dial"
-"02" = "hang up"
-"10" = "chat text"
-"20" = "wav path played into the call"
-
-[map.ears]
-"01" = "PCM path"
-
-[map.voice]
-"01" = "words to speak"
-
-[map.tools]
-"01" = "screenshot path under life/"
-"02" = "command line"
-"03" = "image path, the vision model describes it"
-"04" = "click y x, type text, or key name"
-
-[map.mind]
-"00" = "read 00 free or 01 busy"
-"f0" = "read manufacturer, part, revision, capabilities"
-
-[map.memory]
-"01" = "text to append"
-"02" = "decimal id"
-"03" = "latest record"
-
-[fetch.models]
+[downloads.models]
 "nemotron-3.5-asr-streaming-0.6b.q8_0.gguf" = "https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b/resolve/main/nemotron-3.5-asr-streaming-0.6b.q8_0.gguf"
 "chatterbox-nano-t3-q4_k.gguf" = "https://huggingface.co/cstr/chatterbox-nano-GGUF/resolve/main/chatterbox-nano-t3-q4_k.gguf"
 "chatterbox-turbo-s3gen-q4_k.gguf" = "https://huggingface.co/cstr/chatterbox-turbo-GGUF/resolve/main/chatterbox-turbo-s3gen-q4_k.gguf"
 "LFM2.5-VL-3B-Q4_K_M.gguf" = "https://huggingface.co/LiquidAI/LFM2.5-VL-3B-GGUF/resolve/main/LFM2.5-VL-3B-Q4_K_M.gguf"
 "mmproj-LFM2.5-VL-3B-Q8_0.gguf" = "https://huggingface.co/LiquidAI/LFM2.5-VL-3B-GGUF/resolve/main/mmproj-LFM2.5-VL-3B-Q8_0.gguf"
-
-[fetch.archives]
-ear = "https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v0.1.0/nemo-speech-0.1.0-windows-x86_64-cpu.zip"
+[downloads.archives]
+ears = "https://github.com/NVIDIA/NeMo-Speech.cpp/releases/download/v0.1.0/nemo-speech-0.1.0-windows-x86_64-cpu.zip"
 voice = "https://github.com/CrispStrobe/CrispASR/releases/download/v0.8.41/crispasr-windows-x86_64-vulkan.zip"
 llama = "https://github.com/ggml-org/llama.cpp/releases/download/b11435/llama-b11435-bin-win-cuda-12.4-x64.zip"
 cudart = "https://github.com/ggml-org/llama.cpp/releases/download/b11435/cudart-llama-bin-win-cuda-12.4-x64.zip"
-
-[fetch.unpack]
-ear = "artifacts/nemo-cpu"
+[downloads.destinations]
+ears = "artifacts/ears"
 voice = "artifacts/voice"
 llama = "artifacts/llama"
 cudart = "artifacts/llama"

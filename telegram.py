@@ -1,559 +1,331 @@
 import asyncio
-import array
-import io
-import os
-import sys
+import secrets
 import time
 import wave
-from pathlib import Path
+from collections import deque
+from math import gcd
 
-import i2c
+import numpy as np
+from ntgcalls import (AudioDescription, ConnectionState, DhConfig, FrameData, MediaDescription,
+                     MediaSource, NTgCalls, RTCServer, StreamDevice, StreamMode, VIDEO_ROTATION_0)
+from opentele.api import API, UseCurrentSession
+from opentele.td import TDesktop
+from opentele.tl.telethon import TelegramClient
+from scipy.signal import resample_poly
+from telethon import events
+from telethon.tl.functions.messages import GetDhConfigRequest
+from telethon.tl.functions.phone import (AcceptCallRequest, ConfirmCallRequest, DiscardCallRequest,
+                                       RequestCallRequest, SendSignalingDataRequest)
+from telethon.tl.types import (InputPhoneCall, PhoneCall, PhoneCallAccepted, PhoneCallDiscarded,
+                              PhoneCallDiscardReasonHangup, PhoneCallProtocol, PhoneCallRequested,
+                              PhoneConnection, PhoneConnectionWebrtc, UpdatePhoneCall,
+                              UpdatePhoneCallSignalingData)
 
-DIAL = 1
-HANG = 2
-CHAT = 0x10
-PLAY = 0x20
-STATUS = 0x00
-EAR = 1
-VOICE = 1
-TIMER_MISSED = 2
+from i2c import QueuedDevice, Nack, Refusal
 
-
-def rms(frame):
-    count = len(frame) // 2
-    if not count:
-        return 0.0
-    total = 0
-    for index in range(0, count * 2, 2):
-        sample = int.from_bytes(frame[index:index + 2], "little", signed=True)
-        total += sample * sample
-    return (total / count) ** 0.5 / 32768
-
-
-def pcm_play(payload, rate):
-    with wave.open(io.BytesIO(payload), "rb") as source:
-        if source.getsampwidth() != 2:
-            raise RuntimeError("Voice output must be PCM16 WAV")
-        source_rate, channels = source.getframerate(), source.getnchannels()
-        frames = source.readframes(source.getnframes())
-    samples = array.array("h")
-    samples.frombytes(frames[: len(frames) // 2 * 2])
-    if sys.byteorder != "little":
-        samples.byteswap()
-    if channels > 1:
-        mixed = array.array("h")
-        for index in range(0, len(samples), channels):
-            mixed.append(int(sum(samples[index:index + channels]) / channels))
-        samples = mixed
-    if source_rate != rate and samples:
-        count = int(round(len(samples) * rate / source_rate))
-        last = len(samples) - 1
-        output = array.array("h")
-        for index in range(count):
-            position = index * source_rate / rate
-            left = int(position)
-            if left >= last:
-                output.append(samples[last])
-                continue
-            mix = samples[left] + (samples[left + 1] - samples[left]) * (position - left)
-            output.append(max(-32768, min(32767, int(round(mix)))))
-        samples = output
-    if not samples:
-        raise RuntimeError("Voice output is empty")
-    if sys.byteorder != "little":
-        samples.byteswap()
-    return samples.tobytes()
+CALL_DOWN, CALL_DIALING, CALL_UP = range(3)
 
 
-def plan(state, data):
-    if not data:
-        raise i2c.Nack()
-    reg, body = data[0], data[1:]
-    if reg == DIAL:
-        if state != "down":
-            raise i2c.Nack()
-        return "dial", body
-    if reg == HANG:
-        return "hang", body
-    if reg == CHAT:
-        return "chat", body
-    if reg == PLAY:
-        return "play", body
-    raise i2c.Nack()
+class SpeechBuffer:
+    def __init__(self, settings):
+        self.settings = settings
+        self.frame_bytes = settings["receive_rate"] * settings["frame_ms"] * settings["sample_bytes"] // 1000
+        self.lead = deque(maxlen=settings["padding_ms"] // settings["frame_ms"])
+        self.pending, self.speech, self.quiet = b"", [], 0
 
-
-def bind():
-    global AudioDescription, ConnectionState, DhConfig, FrameData, MediaDescription, MediaSource
-    global NTgCalls, RTCServer, StreamDevice, StreamMode, VIDEO_ROTATION_0
-    global API, UseCurrentSession, TDesktop, TelegramClient, events
-    global GetDhConfigRequest, AcceptCallRequest, ConfirmCallRequest, DiscardCallRequest
-    global RequestCallRequest, SendSignalingDataRequest
-    global InputPhoneCall, PhoneCall, PhoneCallAccepted, PhoneCallDiscarded
-    global PhoneCallDiscardReasonHangup, PhoneCallProtocol, PhoneCallRequested
-    global PhoneConnection, PhoneConnectionWebrtc, UpdatePhoneCall, UpdatePhoneCallSignalingData
-    import logging
-    from ntgcalls import (
-        AudioDescription, ConnectionState, DhConfig, FrameData, MediaDescription,
-        MediaSource, NTgCalls, RTCServer, StreamDevice, StreamMode, VIDEO_ROTATION_0,
-    )
-    from opentele.api import API, UseCurrentSession
-    from opentele.td import TDesktop
-    from opentele.tl.telethon import TelegramClient
-    from telethon import events
-    from telethon.tl.functions.messages import GetDhConfigRequest
-    from telethon.tl.functions.phone import (
-        AcceptCallRequest, ConfirmCallRequest, DiscardCallRequest,
-        RequestCallRequest, SendSignalingDataRequest,
-    )
-    from telethon.tl.types import (
-        InputPhoneCall, PhoneCall, PhoneCallAccepted, PhoneCallDiscarded,
-        PhoneCallDiscardReasonHangup, PhoneCallProtocol, PhoneCallRequested,
-        PhoneConnection, PhoneConnectionWebrtc, UpdatePhoneCall, UpdatePhoneCallSignalingData,
-    )
-    logging.getLogger("telethon").setLevel(logging.CRITICAL)
-
-
-def endpoints(call):
-    found = []
-    for item in call.connections:
-        if isinstance(item, PhoneConnectionWebrtc):
-            found.append(RTCServer(
-                item.id, item.ip, item.ipv6, item.port,
-                item.username, item.password, item.turn, item.stun, False, None,
-            ))
-        elif isinstance(item, PhoneConnection):
-            found.append(RTCServer(
-                item.id, item.ip, item.ipv6, item.port,
-                None, None, False, True, item.tcp, bytes(item.peer_tag),
-            ))
-        else:
-            raise RuntimeError(f"Unsupported Telegram connection: {type(item).__name__}")
-    return found
-
-
-class Telegram:
-    def __init__(self, bus, cfg, run, root):
-        self.bus = bus
-        self.cfg = cfg
-        self.run = Path(run)
-        self.root = Path(root)
-        self.owner = int(cfg["owner"]["telegram_id"])
-        self.ears = i2c.addr(cfg, "ears")
-        self.voice = i2c.addr(cfg, "voice")
-        self.mind = i2c.addr(cfg, "mind")
-        self.timer = i2c.addr(cfg, "timer")
-        self.state = "down"
-        self.client = None
-        self.entity = None
-        self.engine = None
-        self.peer = None
-        self.serial = 0
-        self.since = 0
-        self.signals = []
-        self.linked = False
-        self.jobs = set()
-        self.out = []
-        self.mic = []
-        self.pending = b""
-        self.lead = []
-        self.parts = []
-        self.quiet = 0
-        self.pcm_n = 0
-        self.pending_play = []
-        ears = cfg["ears"]
-        limits = cfg["limits"]
-        self.rms_limit = float(ears["rms_threshold"])
-        self.silence = int(ears["silence_ms"])
-        self.frame_ms = int(limits["frame_ms"])
-        self.frame_bytes = int(limits["pcm_rate"]) * 2 * self.frame_ms // 1000
-        self.lead_limit = max(1, int(ears["padding_ms"]) // self.frame_ms)
-        self.utterance = float(ears["utterance_seconds"])
-        self.ring = float(limits["ring_seconds"])
-        self.connect_seconds = float(limits["connect_seconds"])
-        self.chat_slice = int(limits["chat_slice"])
-        self.play_frame = int(limits["play_frame"])
-        self.play_rate = int(limits["play_rate"])
-        self.loop = None
-        self.accepted = None
-        self.confirmed = None
-        self.connected = None
-        self.dh = None
-        self.requested = None
-        self.releasing = False
-
-    def spawn(self, coro):
-        task = asyncio.create_task(coro)
-        self.jobs.add(task)
-        return task
-
-    def fail(self):
-        for task in list(self.jobs):
-            if not task.done():
-                continue
-            self.jobs.discard(task)
-            if not task.cancelled() and task.exception():
-                raise task.exception()
-
-    def cut(self, pcm):
-        ready = []
-        self.pending += pcm
+    def push(self, audio):
+        self.pending += audio
         while len(self.pending) >= self.frame_bytes:
             frame, self.pending = self.pending[:self.frame_bytes], self.pending[self.frame_bytes:]
-            loud = rms(frame) >= self.rms_limit
-            if not self.parts:
+            samples = np.frombuffer(frame, dtype="<i2").astype(np.float32) / (np.iinfo(np.int16).max + 1)
+            loud = np.sqrt(np.mean(samples * samples)) >= self.settings["rms_threshold"]
+            if not self.speech:
                 self.lead.append(frame)
-                if len(self.lead) > self.lead_limit:
-                    self.lead = self.lead[-self.lead_limit:]
                 if loud:
-                    self.parts = self.lead
-                    self.lead = []
-                    self.quiet = 0
+                    self.speech, self.quiet = list(self.lead), 0
+                    self.lead.clear()
             else:
-                self.parts.append(frame)
-                self.quiet = 0 if loud else self.quiet + self.frame_ms
-                long = len(self.parts) * (self.frame_ms / 1000) >= self.utterance
-                if self.quiet >= self.silence or long:
-                    ready.append(b"".join(self.parts))
-                    self.parts = []
-                    self.quiet = 0
-        return ready
+                self.speech.append(frame)
+                self.quiet = 0 if loud else self.quiet + self.settings["frame_ms"]
+                if (self.quiet >= self.settings["silence_ms"] or
+                    len(self.speech) * self.settings["frame_ms"] >= self.settings["utterance_seconds"] * 1000):
+                    yield b"".join(self.speech)
+                    self.speech, self.quiet = [], 0
 
-    def flush_audio(self):
-        audio = b"".join(self.parts) + self.pending if self.parts else b""
-        self.pending = b""
-        self.lead = []
-        self.parts = []
-        self.quiet = 0
-        return audio
+    def finish(self):
+        result = b"".join(self.speech) + self.pending if self.speech else b""
+        self.pending, self.speech, self.quiet = b"", [], 0
+        self.lead.clear()
+        return result
 
-    def queue_pcm(self, pcm):
-        self.mic.append(pcm)
 
-    def status(self):
-        return {"down": 0, "dialing": 1, "up": 2}[self.state]
+class Telegram(QueuedDevice):
+    def __init__(self):
+        super().__init__("telegram")
+        self.owner = self.cfg["telegram"]["owner"]
+        self.state, self.peer, self.engine, self.serial = CALL_DOWN, None, None, 0
+        self.signals, self.linked, self.since, self.audio_sequence = [], False, 0, 0
+        self.audio = SpeechBuffer(self.cfg["audio"])
+        self.call_lock = asyncio.Lock()
+        self.native_lock = asyncio.Lock()
+        self.call_task, self.outgoing = None, False
 
-    async def on_frame(self, _src, line):
-        data = i2c.write_payload(line)
-        reading = line.split()[2] == "R" or " Sr " in line
-        if reading and (not data or data[0] == STATUS):
-            return i2c.reply(line, data, f"{self.status():02d}".encode())
-        action, body = plan(self.state, data)
-        if action == "dial":
-            self.state = "dialing"
-            self.spawn(self.dial())
-        elif action == "hang":
-            self.spawn(self.hang())
-        elif action == "chat":
-            self.spawn(self.chat(body.decode()))
-        else:
-            self.pending_play.append(body.decode())
-        if reading:
-            return i2c.reply(line, data, f"{self.status():02d}".encode())
-        return i2c.pack_write(self.bus.addr, data)
+    async def start(self):
+        self.loop = asyncio.get_running_loop()
+        desktop = TDesktop(str(self.cfg.path(self.cfg["telegram"]["tdata"])))
+        accounts = [account for account in desktop.accounts if account.UserId != self.owner]
+        if len(accounts) != 1:
+            raise RuntimeError("Telegram requires exactly one user session distinct from the owner")
+        self.client = await TelegramClient.FromTDesktop(accounts[0], session=str(self.file("session")),
+            flag=UseCurrentSession, api=API.TelegramDesktop, request_retries=0, connection_retries=0,
+            auto_reconnect=False, flood_sleep_threshold=0, raise_last_call_error=True, catch_up=False)
+        await self.client.connect()
+        identity = await self.client.get_me()
+        if identity is None or identity.bot or identity.id == self.owner:
+            raise RuntimeError("An authorized Telegram user session is required")
+        await self.client.get_dialogs()
+        self.owner_entity = await self.client.get_input_entity(self.owner)
+        self.client.add_event_handler(self.enqueue_message, events.NewMessage(incoming=True, from_users=[self.owner]))
+        self.client.add_event_handler(self.enqueue_update, events.Raw())
 
-    async def chat(self, text):
-        await self.send(text)
-        if self.state == "up":
-            self.out.append((self.voice, bytes([VOICE]) + text.encode()))
+    async def enqueue_message(self, event):
+        if event.is_private and event.raw_text.strip():
+            self.tasks.create_task(self.send("mind", event.raw_text, "01"))
 
-    async def send(self, text):
-        if not text:
-            return
-        async with self.lock:
-            for offset in range(0, len(text), self.chat_slice):
-                await self.client.send_message(self.entity, text[offset:offset + self.chat_slice], parse_mode=None)
+    async def enqueue_update(self, event):
+        self.tasks.create_task(self.update(event))
 
-    def miss(self):
-        self.state = "down"
-        self.out.append((self.timer, bytes([TIMER_MISSED])))
+    async def tick(self):
+        self.tasks.create_task(super().tick())
+        try:
+            await self.client.disconnected
+            raise ConnectionError("Telegram disconnected")
+        finally:
+            self.client.remove_event_handler(self.enqueue_message)
+            self.client.remove_event_handler(self.enqueue_update)
+            self.serial += 1
+            self.audio.finish()
 
-    def heard(self, pcm):
-        pieces = self.cut(b"" if pcm is None else pcm)
-        if pcm is None:
-            audio = self.flush_audio()
-            if audio:
-                pieces.append(audio)
-        for piece in pieces:
-            if not piece:
-                continue
-            self.pcm_n += 1
-            path = self.run / "pcm" / f"{self.pcm_n}.pcm"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(piece)
-            self.out.append((self.ears, bytes([EAR]) + str(path).encode()))
+    async def receive(self, source, frame):
+        if frame.data[0] == 0 and frame.reading:
+            return f"{self.state:02d}".encode()
+        if frame.data[0] == 2:
+            self.tasks.create_task(self.hang(missed=False, serial=self.serial))
+            return b""
+        if frame.data[0] == 1:
+            if self.state:
+                raise Nack(Refusal.NOT_READY)
+            self.state, self.outgoing = CALL_DIALING, True
+            self.call_task = self.tasks.create_task(self.dial())
+            return b""
+        return await super().receive(source, frame)
 
-    async def flush_out(self):
-        while self.out:
-            target, payload = self.out.pop(0)
-            await self.bus.request(target, i2c.pack_write(target, payload))
-
-    async def pump(self):
-        self.fail()
-        while self.mic:
-            self.heard(self.mic.pop(0))
-        if self.pending_play and self.state == "up" and self.engine is not None:
-            await self.play(pcm_play(Path(self.pending_play.pop(0)).read_bytes(), self.play_rate))
-        await self.flush_out()
-        self.fail()
+    async def work(self, source, frame):
+        match frame.data[0]:
+            case 16:
+                text = frame.data[1:].decode()
+                if self.state == CALL_UP:
+                    await self.send("voice", text, "01")
+                else:
+                    size = self.cfg["telegram"]["chat_chars"]
+                    for offset in range(0, len(text), size):
+                        await self.client.send_message(self.owner_entity, text[offset:offset + size], parse_mode=None)
+            case 32:
+                await self.play(frame.data[1:].decode())
 
     def protocol(self):
         native = NTgCalls.get_protocol()
-        return PhoneCallProtocol(
-            udp_p2p=native.udp_p2p, udp_reflector=native.udp_reflector,
-            min_layer=int(self.cfg["telegram"]["min_layer"]), max_layer=native.max_layer,
-            library_versions=list(reversed(native.library_versions)),
-        )
-
-    def media(self, rate):
-        return MediaDescription(AudioDescription(MediaSource.EXTERNAL, rate, 1, "", True), None, None, None)
-
-    async def call(self, engine, method, *arguments):
-        pending = getattr(engine, method)(*arguments)
-        try:
-            return await asyncio.shield(pending)
-        except asyncio.CancelledError:
-            await pending
-            raise
-
-    def frames(self, serial, mode, device, frames):
-        if serial != self.serial or mode != StreamMode.PLAYBACK or device != StreamDevice.MICROPHONE:
-            return
-        pcm = b"".join(bytes(frame.data) for frame in frames)
-        if pcm:
-            self.loop.call_soon_threadsafe(self.queue_pcm, pcm)
-
-    def connection(self, serial, status):
-        if serial != self.serial:
-            return
-        if status == ConnectionState.CONNECTED and self.connected is not None and not self.connected.done():
-            self.connected.set_result(True)
-        elif status in (ConnectionState.FAILED, ConnectionState.TIMEOUT):
-            self.spawn(self._boom(RuntimeError(f"Telegram transport: {status}")))
-        elif status == ConnectionState.CLOSED:
-            self.spawn(self.release())
-
-    async def _boom(self, error):
-        raise error
-
-    def outgoing(self, serial, data):
-        if serial == self.serial:
-            self.spawn(self.signal(serial, data))
-
-    async def signal(self, serial, data):
-        if serial == self.serial and self.peer is not None:
-            await self.client(SendSignalingDataRequest(peer=self.peer, data=data))
+        return PhoneCallProtocol(udp_p2p=native.udp_p2p, udp_reflector=native.udp_reflector,
+            min_layer=self.cfg["telegram"]["min_layer"], max_layer=native.max_layer,
+            library_versions=list(reversed(native.library_versions)))
 
     async def prepare(self):
         self.serial += 1
         serial = self.serial
-        self.accepted = self.loop.create_future()
-        self.confirmed = self.loop.create_future()
-        self.connected = self.loop.create_future()
-        self.linked = False
-        self.engine = NTgCalls()
-        self.engine.on_frames(lambda uid, mode, device, frames: self.frames(serial, mode, device, frames))
-        self.engine.on_connection_change(
-            lambda uid, info: self.loop.call_soon_threadsafe(self.connection, serial, info.state))
-        self.engine.on_signaling_data(
-            lambda uid, data: self.loop.call_soon_threadsafe(self.outgoing, serial, bytes(data)))
-        await self.call(self.engine, "create_p2p_call", self.owner)
-        await self.call(self.engine, "set_stream_sources", self.owner, StreamMode.CAPTURE, self.media(48000))
-        await self.call(self.engine, "set_stream_sources", self.owner, StreamMode.PLAYBACK, self.media(16000))
-        dh = await self.client(GetDhConfigRequest(0, int(self.cfg["telegram"]["dh_bytes"])))
-        self.dh = DhConfig(dh.g, bytes(dh.p), bytes(dh.random))
+        self.accepted, self.confirmed, self.connected = (self.loop.create_future() for _ in range(3))
+        self.engine, self.linked = NTgCalls(), False
+        self.engine.on_frames(lambda uid, mode, device, frames: self.loop.call_soon_threadsafe(
+            self.frames, serial, mode, device, frames))
+        self.engine.on_connection_change(lambda uid, info: self.loop.call_soon_threadsafe(
+            self.connection, serial, info.state))
+        self.engine.on_signaling_data(lambda uid, data: self.loop.call_soon_threadsafe(
+            self.signaling, serial, bytes(data)))
+        await self.native("create_p2p_call", self.owner)
+        for mode, rate in ((StreamMode.CAPTURE, self.cfg["audio"]["send_rate"]),
+                           (StreamMode.PLAYBACK, self.cfg["audio"]["receive_rate"])):
+            media = MediaDescription(AudioDescription(MediaSource.EXTERNAL, rate, 1, "", True), None, None, None)
+            await self.native("set_stream_sources", self.owner, mode, media)
+        config = await self.client(GetDhConfigRequest(0, self.cfg["telegram"]["dh_bytes"]))
+        self.dh = DhConfig(config.g, bytes(config.p), bytes(config.random))
+
+    async def native(self, method, *arguments):
+        async with self.native_lock:
+            pending = getattr(self.engine, method)(*arguments)
+            try:
+                return await asyncio.shield(pending)
+            except asyncio.CancelledError:
+                await pending
+                raise
+
+    def frames(self, serial, mode, device, frames):
+        if serial == self.serial and mode == StreamMode.PLAYBACK and device == StreamDevice.MICROPHONE:
+            for audio in self.audio.push(b"".join(bytes(frame.data) for frame in frames)):
+                self.heard(audio)
+
+    def heard(self, audio):
+        self.audio_sequence += 1
+        path = self.file(f"{self.audio_sequence}.pcm")
+        path.write_bytes(audio)
+        self.tasks.create_task(self.send("ears", str(path), "01"))
+
+    def connection(self, serial, state):
+        if serial != self.serial:
+            return
+        if state == ConnectionState.CONNECTED:
+            if not self.connected.done():
+                self.connected.set_result(None)
+        elif state == ConnectionState.CLOSED:
+            self.tasks.create_task(self.hang(missed=self.outgoing and self.state == CALL_DIALING, serial=serial, discard=False))
+        elif state in (ConnectionState.FAILED, ConnectionState.TIMEOUT):
+            self.tasks.create_task(self.transport_fault(state))
+
+    async def transport_fault(self, state):
+        raise RuntimeError(f"Telegram transport {state}")
+
+    def signaling(self, serial, data):
+        if serial == self.serial:
+            self.tasks.create_task(self.client(SendSignalingDataRequest(peer=self.peer, data=data)))
 
     async def connect(self, call):
+        endpoints = []
+        for endpoint in call.connections:
+            if isinstance(endpoint, PhoneConnectionWebrtc):
+                endpoints.append(RTCServer(endpoint.id, endpoint.ip, endpoint.ipv6, endpoint.port,
+                    endpoint.username, endpoint.password, endpoint.turn, endpoint.stun, False, None))
+            elif isinstance(endpoint, PhoneConnection):
+                endpoints.append(RTCServer(endpoint.id, endpoint.ip, endpoint.ipv6, endpoint.port,
+                    None, None, False, True, endpoint.tcp, bytes(endpoint.peer_tag)))
+            else:
+                raise RuntimeError("Unsupported Telegram connection")
         custom = call.custom_parameters.data if call.custom_parameters is not None else None
-        await self.call(
-            self.engine, "connect_p2p", self.owner, endpoints(call),
-            list(call.protocol.library_versions), call.p2p_allowed, custom,
-        )
+        await self.native("connect_p2p", self.owner, endpoints, list(call.protocol.library_versions), call.p2p_allowed, custom)
         self.linked = True
-        for signal in self.signals:
-            await self.call(self.engine, "send_signaling_data", self.owner, signal)
-        self.signals = []
-        await asyncio.wait_for(self.connected, self.connect_seconds)
-        self.state = "up"
-        self.since = time.monotonic()
-
-    async def release(self):
-        if self.releasing or (self.state == "down" and self.engine is None):
-            return
-        self.releasing = True
-        try:
-            was_up = self.state == "up"
-            engine, self.engine = self.engine, None
-            self.serial += 1
-            self.peer = None
-            self.requested = None
-            self.state = "down"
-            self.linked = False
-            self.since = 0
-            self.signals = []
-            for item in (self.accepted, self.confirmed, self.connected):
-                if item is not None and not item.done():
-                    item.cancel()
-            if was_up:
-                self.mic.append(None)
-            if engine is not None:
-                await self.call(engine, "stop", self.owner)
-        finally:
-            self.releasing = False
+        for data in self.signals:
+            await self.native("send_signaling_data", self.owner, data)
+        self.signals.clear()
+        await asyncio.wait_for(self.connected, self.cfg["telegram"]["connect_seconds"])
+        self.state, self.since = CALL_UP, time.monotonic()
+        await self.send("timer", "", "03")
 
     async def dial(self):
-        import secrets
         await self.prepare()
-        exchange = bytes(await self.call(self.engine, "init_exchange", self.owner, self.dh, None))
-        response = await self.client(RequestCallRequest(
-            user_id=self.entity, random_id=secrets.randbelow(2**31), g_a_hash=exchange,
-            protocol=self.protocol(), video=False,
-        ))
+        exchange = bytes(await self.native("init_exchange", self.owner, self.dh, None))
+        response = await self.client(RequestCallRequest(user_id=self.owner_entity,
+            random_id=secrets.randbelow(self.cfg["telegram"]["random_id_max"]), g_a_hash=exchange,
+            protocol=self.protocol(), video=False))
         if isinstance(response.phone_call, PhoneCallDiscarded):
-            await self.release()
-            self.miss()
+            await self.hang(missed=True, serial=self.serial, discard=False)
             return
-        ringing = response.phone_call
-        self.peer = InputPhoneCall(ringing.id, ringing.access_hash)
+        self.peer = InputPhoneCall(response.phone_call.id, response.phone_call.access_hash)
         try:
-            accepted = await asyncio.wait_for(self.accepted, self.ring)
+            accepted = await asyncio.wait_for(self.accepted, self.cfg["telegram"]["ring_seconds"])
         except TimeoutError:
-            await self.hang()
-            self.miss()
+            await self.hang(missed=True, serial=self.serial)
             return
-        keys = await self.call(self.engine, "exchange_keys", self.owner, bytes(accepted.g_b), 0)
-        response = await self.client(ConfirmCallRequest(
-            peer=self.peer, g_a=bytes(keys.g_a_or_b),
-            key_fingerprint=keys.key_fingerprint, protocol=self.protocol(),
-        ))
+        if accepted.id != self.peer.id:
+            raise RuntimeError("Telegram accepted a different call")
+        keys = await self.native("exchange_keys", self.owner, bytes(accepted.g_b), 0)
+        response = await self.client(ConfirmCallRequest(peer=self.peer, g_a=bytes(keys.g_a_or_b),
+            key_fingerprint=keys.key_fingerprint, protocol=self.protocol()))
         await self.connect(response.phone_call)
 
-    async def answer(self):
+    async def answer(self, request):
         await self.prepare()
-        exchange = bytes(await self.call(
-            self.engine, "init_exchange", self.owner, self.dh, bytes(self.requested.g_a_hash),
-        ))
+        exchange = bytes(await self.native("init_exchange", self.owner, self.dh, bytes(request.g_a_hash)))
         response = await self.client(AcceptCallRequest(peer=self.peer, g_b=exchange, protocol=self.protocol()))
         call = response.phone_call
         if not isinstance(call, PhoneCall):
-            call = await asyncio.wait_for(self.confirmed, self.connect_seconds)
-        await self.call(self.engine, "exchange_keys", self.owner, bytes(call.g_a_or_b), call.key_fingerprint)
+            call = await asyncio.wait_for(self.confirmed, self.cfg["telegram"]["connect_seconds"])
+        await self.native("exchange_keys", self.owner, bytes(call.g_a_or_b), call.key_fingerprint)
         await self.connect(call)
-
-    async def hang(self):
-        peer = self.peer
-        if peer is not None and self.state != "down":
-            await self.client(DiscardCallRequest(
-                peer=peer, duration=int(time.monotonic() - self.since) if self.since else 0,
-                reason=PhoneCallDiscardReasonHangup(), connection_id=0, video=False,
-            ))
-        await self.release()
-
-    async def play(self, pcm):
-        if self.state != "up" or self.engine is None:
-            return
-        engine, serial, started = self.engine, self.serial, self.loop.time()
-        step = self.play_frame
-        pace = self.play_rate * 2
-        for offset in range(0, len(pcm), step):
-            if serial != self.serial or self.state != "up":
-                return
-            chunk = pcm[offset:offset + step].ljust(step, b"\0")
-            await self.call(
-                engine, "send_external_frame", self.owner, StreamDevice.MICROPHONE, chunk,
-                FrameData(int(time.time() * 1000), VIDEO_ROTATION_0, 0, 0),
-            )
-            await asyncio.sleep(max(0, started + (offset + step) / pace - self.loop.time()))
 
     async def update(self, event):
         if isinstance(event, UpdatePhoneCallSignalingData):
             if self.peer is not None and event.phone_call_id == self.peer.id:
                 if self.linked:
-                    await self.call(self.engine, "send_signaling_data", self.owner, bytes(event.data))
+                    await self.native("send_signaling_data", self.owner, bytes(event.data))
                 else:
                     self.signals.append(bytes(event.data))
-            return
-        if not isinstance(event, UpdatePhoneCall):
-            return
-        call = event.phone_call
-        if isinstance(call, PhoneCallRequested):
-            if call.admin_id != self.owner or self.state != "down":
-                raise RuntimeError("Unexpected Telegram caller or overlapping call")
-            self.requested = call
-            self.peer = InputPhoneCall(call.id, call.access_hash)
-            self.state = "dialing"
-            self.spawn(self.answer())
-        elif isinstance(call, PhoneCallAccepted) and call.participant_id == self.owner and self.state == "dialing":
-            self.peer = InputPhoneCall(call.id, call.access_hash)
-            if self.accepted is not None and not self.accepted.done():
+        elif isinstance(event, UpdatePhoneCall):
+            call = event.phone_call
+            if isinstance(call, PhoneCallRequested) and call.admin_id == self.owner:
+                if self.state:
+                    raise RuntimeError("Overlapping Telegram call")
+                self.state, self.peer = CALL_DIALING, InputPhoneCall(call.id, call.access_hash)
+                self.outgoing = False
+                self.call_task = self.tasks.create_task(self.answer(call))
+                await self.send("timer", "", "03")
+            elif (isinstance(call, PhoneCallAccepted) and self.outgoing and self.state == CALL_DIALING
+                  and self.engine is not None and (self.peer is None or call.id == self.peer.id)
+                  and call.participant_id == self.owner and not self.accepted.done()):
                 self.accepted.set_result(call)
-        elif self.peer is not None and call.id == self.peer.id:
-            if isinstance(call, PhoneCall) and self.confirmed is not None and not self.confirmed.done():
-                self.confirmed.set_result(call)
-            elif isinstance(call, PhoneCallDiscarded):
-                self.spawn(self.release())
+            elif self.peer is not None and call.id == self.peer.id:
+                if isinstance(call, PhoneCall) and not self.confirmed.done():
+                    self.confirmed.set_result(call)
+                elif isinstance(call, PhoneCallDiscarded):
+                    await self.hang(missed=self.outgoing and self.state == CALL_DIALING, serial=self.serial, discard=False)
 
-    async def message(self, event):
-        if not event.is_private:
-            return
-        text = (event.raw_text or "").strip()
-        if text:
-            self.out.append((self.mind, text.encode()))
+    async def release(self):
+        audio = self.audio.finish()
+        if audio:
+            self.heard(audio)
+        if self.engine is not None:
+            await self.native("stop", self.owner)
+        self.engine, self.peer, self.state, self.linked, self.since = None, None, CALL_DOWN, False, 0
+        self.signals.clear()
 
-    async def start(self):
-        bind()
-        self.loop = asyncio.get_running_loop()
-        self.lock = asyncio.Lock()
-        desktop = TDesktop(os.path.expandvars(self.cfg["telegram"]["tdata"]))
-        accounts = [item for item in desktop.accounts if int(item.UserId) != self.owner]
-        if len(accounts) != 1:
-            raise RuntimeError(f"Telegram tdata needs one user session besides the owner; found {len(accounts)}")
-        user = accounts[0]
-        stamp = self.run.name.removeprefix("RUN_")
-        session = self.root / "session" / stamp / "telegram"
-        session.parent.mkdir(parents=True, exist_ok=True)
-        self.client = await TelegramClient.FromTDesktop(
-            user, session=str(session), flag=UseCurrentSession, api=API.TelegramDesktop,
-            request_retries=int(self.cfg["telegram"]["request_retries"]),
-            connection_retries=int(self.cfg["telegram"]["connection_retries"]),
-            auto_reconnect=False, flood_sleep_threshold=int(self.cfg["telegram"]["flood_sleep_threshold"]),
-            raise_last_call_error=True, catch_up=False,
-        )
-        self.client.add_event_handler(self.message, events.NewMessage(incoming=True, from_users=[self.owner]))
-        self.client.add_event_handler(self.update, events.Raw())
-        await self.client.connect()
-        identity = await self.client.get_me()
-        if identity is None or identity.bot or identity.id == self.owner or identity.id != int(user.UserId):
-            raise RuntimeError("Telegram needs an authorized user session distinct from the owner")
-        await self.client.get_dialogs()
-        self.entity = await self.client.get_input_entity(self.owner)
-
-    async def stop(self):
-        if self.state != "down" or self.engine is not None:
+    async def hang(self, missed, serial, discard=True):
+        async with self.call_lock:
+            if serial != self.serial:
+                return
+            self.serial += 1
+            if self.call_task is not None and self.call_task != asyncio.current_task() and not self.call_task.done():
+                self.call_task.cancel()
+                try:
+                    await self.call_task
+                except asyncio.CancelledError:
+                    pass
+            if discard and self.peer is not None:
+                await self.client(DiscardCallRequest(peer=self.peer,
+                    duration=int(time.monotonic() - self.since) if self.since else 0,
+                    reason=PhoneCallDiscardReasonHangup(), connection_id=0, video=False))
             await self.release()
-        for task in list(self.jobs):
-            task.cancel()
-        if self.jobs:
-            await asyncio.gather(*self.jobs, return_exceptions=True)
-        if self.client is not None:
-            await self.client.disconnect()
+            await self.send("timer", "", "02" if missed else "03")
 
+    async def play(self, path):
+        if self.state != CALL_UP:
+            raise RuntimeError("No active Telegram call for voice playback")
+        with wave.open(path, "rb") as audio:
+            if audio.getsampwidth() != self.cfg["audio"]["sample_bytes"]:
+                raise ValueError("Voice must produce PCM16 WAV")
+            rate, channels = audio.getframerate(), audio.getnchannels()
+            samples = np.frombuffer(audio.readframes(audio.getnframes()), dtype="<i2").reshape(-1, channels).mean(axis=1)
+        target = self.cfg["audio"]["send_rate"]
+        divisor = gcd(rate, target)
+        samples = resample_poly(samples, target // divisor, rate // divisor)
+        pcm = np.clip(np.rint(samples), np.iinfo(np.int16).min, np.iinfo(np.int16).max).astype("<i2").tobytes()
+        size, serial, started = self.cfg["audio"]["send_frame_bytes"], self.serial, self.loop.time()
+        for offset in range(0, len(pcm), size):
+            if serial != self.serial:
+                return
+            await self.native("send_external_frame", self.owner, StreamDevice.MICROPHONE,
+                pcm[offset:offset + size].ljust(size, b"\0"), FrameData(int(time.time() * 1000), VIDEO_ROTATION_0, 0, 0))
+            await asyncio.sleep(max(0, started + (offset + size) / (target * self.cfg["audio"]["sample_bytes"]) - self.loop.time()))
 
-def build(bus, cfg, root, run):
-    phone = Telegram(bus, cfg, run, root)
-
-    async def around(serve):
-        await phone.start()
-        try:
-            await serve
-        finally:
-            await phone.stop()
-
-    return phone.on_frame, phone.pump, around
-
-
-def main():
-    i2c.main_for("telegram", build)
+    async def close(self):
+        await self.release()
+        await self.client.disconnect()
 
 
 if __name__ == "__main__":
-    main()
+    Telegram().launch()

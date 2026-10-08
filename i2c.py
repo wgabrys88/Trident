@@ -1,623 +1,330 @@
-import asyncio
 import os
+import signal
 import sys
-import time
 import tomllib
 import urllib.error
 import urllib.request
+import asyncio
+import json
+import re
+import time
+from dataclasses import dataclass
+from contextlib import AsyncExitStack
+from enum import IntEnum
 from pathlib import Path
 
-TEC_STEP = 8
-REC_STEP = 1
+TRANSMIT_ERROR_STEP = 8
+RECEIVE_ERROR_STEP = 1
 ERROR_PASSIVE = 128
-BUS_OFF_AT = 256
-REC_RECOVER = 119
-ERROR_ACTIVE = 127
+ERROR_ACTIVE_MAX = 127
+RECEIVE_RECOVERY = 119
+BUS_OFF = 256
+
+
+class Refusal(IntEnum):
+    NO_RECEIVER = 1
+    NOT_READY = 2
+    UNKNOWN_DATA = 3
+    FULL = 4
+    END_OF_READ = 5
 
 
 class Nack(Exception):
-    pass
+    def __init__(self, cause: Refusal):
+        self.cause = cause
+        super().__init__(cause.name)
 
 
-class BusOff(BaseException):
-    pass
+@dataclass(frozen=True, slots=True)
+class Frame:
+    address: str
+    data: bytes
+    reading: bool = False
 
+    def encode(self, result: bytes = b"", refusal: Refusal | None = None) -> str:
+        if refusal in (Refusal.NO_RECEIVER, Refusal.NOT_READY):
+            return f"S {self.address} W NA P"
+        if refusal in (Refusal.UNKNOWN_DATA, Refusal.FULL):
+            return f"S {self.address} W A {self.data[0]:02x} NA P"
+        line = f"S {self.address} W A"
+        line += "".join(f" {byte:02x} A" for byte in self.data)
+        if self.reading:
+            line += f" Sr {self.address} R A"
+            line += "".join(f" {byte:02x} {'NA' if index == len(result) - 1 else 'A'}"
+                            for index, byte in enumerate(result))
+        return line + " P"
 
-def load():
-    root = Path(__file__).resolve().parent
-    cfg = tomllib.loads((root / "config.toml").read_text(encoding="utf-8"))
-    return root, cfg
+    @classmethod
+    def decode(cls, line: str):
+        pattern = r"S ([0-7][0-9a-f]) W A((?: [0-9a-f]{2} A)+)( Sr \1 R A)? P"
+        match = re.fullmatch(pattern, line)
+        if match is None:
+            raise ValueError("Invalid I2C transaction")
+        return cls(match[1], bytes.fromhex(match[2].replace(" A", "")), bool(match[3]))
 
-
-def addr(cfg, name):
-    return int(cfg["address"][name], 16)
-
-
-def home_of(wire, address):
-    return Path(wire) / f"{address:02x}"
-
-
-def scl_of(wire, address):
-    return Path(wire) / "scl" / f"{address:02x}"
-
-
-def entry(fn):
-    try:
-        asyncio.run(fn())
-    except BusOff:
-        raise SystemExit(1)
-    except Exception as error:
-        print(f"{type(error).__name__}: {error}", file=sys.stderr)
-        raise SystemExit(1)
-
-
-def main_for(name, build):
-    root, cfg = load()
-    run = Path(sys.argv[1])
-    bus = Bus(root, addr(cfg, name), run, cfg)
-    handler, pump, around = build(bus, cfg, root, run)
-    if around:
-        entry(lambda: around(bus.run(handler, pump)))
-    else:
-        entry(lambda: bus.run(handler, pump))
-
-
-def io(fn):
-    bus = load()[1]["bus"]
-    delay = float(bus["share_delay"])
-    retries = int(bus["share_retries"])
-    for attempt in range(retries):
-        try:
-            return fn()
-        except OSError as error:
-            if getattr(error, "winerror", None) not in (5, 32) or attempt == retries - 1:
-                raise
-            time.sleep(delay)
-            delay *= 2
-
-
-def read_file(path):
-    return io(lambda: Path(path).read_text(encoding="utf-8"))
-
-
-def remove(path):
-    path = Path(path)
-    if path.exists():
-        io(path.unlink)
-
-
-def place(folder, name, text):
-    folder = Path(folder)
-    folder.mkdir(parents=True, exist_ok=True)
-    tmp_dir = folder.parent.parent / "tmp"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    tmp = tmp_dir / f"{name}.{os.getpid()}.tmp"
-    with tmp.open("w", encoding="utf-8", newline="\n") as handle:
-        handle.write(text)
-        handle.flush()
-        os.fsync(handle.fileno())
-    io(lambda: os.replace(tmp, folder / name))
-
-
-def pack_write(target, data):
-    parts = ["S", f"{target:02x}", "W", "A"]
-    for byte in data:
-        parts += [f"{byte:02x}", "A"]
-    parts.append("P")
-    return " ".join(parts)
-
-
-def pack_call(target, data):
-    return pack_write(target, data)[:-2] + f" Sr {target:02x} R A P"
-
-
-def write_payload(line):
-    tok = line.split()
-    if len(tok) < 4 or tok[2] != "W":
-        return b""
-    out = bytearray()
-    index = 4
-    while index < len(tok) and tok[index] not in ("Sr", "P"):
-        out.append(int(tok[index], 16))
-        index += 2
-    return bytes(out)
-
-
-def read_payload(line):
-    tok = line.split()
-    start = None
-    for index, token in enumerate(tok):
-        if token in ("S", "Sr") and index + 2 < len(tok) and tok[index + 2] == "R":
-            start = index
-    if start is None:
-        return b""
-    out = bytearray()
-    index = start + 4
-    while index < len(tok) and tok[index] != "P":
-        if tok[index] not in ("A", "NA"):
-            out.append(int(tok[index], 16))
-        index += 1
-    return bytes(out)
-
-
-def data_nacked(line):
-    tok = line.split()
-    if len(tok) < 4 or tok[3] == "NA" or tok[2] != "W":
-        return False
-    index = 4
-    while index < len(tok) and tok[index] not in ("Sr", "P"):
-        if tok[index + 1] == "NA":
-            return True
-        index += 2
-    return False
-
-
-def nack(target):
-    return f"S {target:02x} W NA P"
-
-
-def nack_addr(line, address):
-    tok = line.split()
-    if len(tok) >= 3 and tok[0] == "S" and tok[2] in ("W", "R"):
-        return f"S {tok[1]} {tok[2]} NA P"
-    return f"S {address:02x} W NA P"
-
-
-def nack_data(line):
-    data = write_payload(line)
-    target = line.split()[1]
-    if not data:
-        return nack_addr(line, int(target, 16))
-    return f"S {target} W A {data[0]:02x} NA P"
-
-
-def reply(line, data, payload=None):
-    if payload is not None and (line.split()[2] == "R" or " Sr " in line):
-        return with_payload(line, payload)
-    return pack_write(int(line.split()[1], 16), data)
-
-
-def accept(line, register):
-    data = write_payload(line)
-    if not data or data[0] != register:
-        raise Nack()
-    return data
-
-
-def with_payload(line, payload):
-    tok = line.split()
-    if tok[2] == "R":
-        head = tok[:4]
-    else:
-        head = []
-        for token in tok:
-            if token in ("Sr", "P"):
-                break
-            head.append(token)
-        head += ["Sr", tok[1], "R", "A"]
-    parts = head
-    for index, byte in enumerate(payload):
-        parts += [f"{byte:02x}", "NA" if index == len(payload) - 1 else "A"]
-    parts.append("P")
-    return " ".join(parts)
-
-
-def legal(line, cfg=None):
-    tok = line.split()
-    if len(tok) < 5 or tok[0] != "S" or tok[-1] != "P":
-        return False
-    addrs = {value.lower() for value in (cfg or load()[1])["address"].values()}
-
-    def eat(index, marker):
-        if index >= len(tok) or tok[index] != marker or index + 3 >= len(tok):
-            return None
-        aa = tok[index + 1].lower()
-        rw = tok[index + 2]
-        ack = tok[index + 3]
-        if aa not in addrs or rw not in ("W", "R") or ack not in ("A", "NA"):
-            return None
-        cursor = index + 4
-        if ack == "NA":
-            return cursor if cursor < len(tok) and tok[cursor] == "P" else None
-        count = 0
-        last_na = False
-        while cursor < len(tok) and tok[cursor] not in ("Sr", "P"):
-            if cursor + 1 >= len(tok):
-                return None
-            hh, ak = tok[cursor], tok[cursor + 1]
-            if len(hh) != 2 or ak not in ("A", "NA"):
-                return None
-            try:
-                int(hh, 16)
-            except ValueError:
-                return None
-            count += 1
-            last_na = ak == "NA"
-            cursor += 2
-            if ak == "NA":
-                break
-        if rw == "R" and count and not last_na:
-            return None
-        if last_na and cursor < len(tok) and tok[cursor] not in ("P",):
-            return None
-        return cursor
-
-    end = eat(0, "S")
-    if end is None:
-        return False
-    if end < len(tok) and tok[end] == "Sr":
-        if tok[end + 1].lower() != tok[1].lower():
-            return False
-        end = eat(end, "Sr")
-        if end is None:
-            return False
-    return end == len(tok) - 1
+    def result(self, line: str) -> bytes:
+        write = self.encode().removesuffix(" P")
+        if not self.reading:
+            if line != self.encode():
+                raise ValueError("Invalid write acknowledgement")
+            return b""
+        match = re.fullmatch(re.escape(write) + r"((?: [0-9a-f]{2} A)* [0-9a-f]{2} NA)? P", line)
+        if match is None:
+            raise ValueError("Invalid read acknowledgement")
+        return bytes.fromhex((match[1] or "").replace(" NA", "").replace(" A", ""))
 
 
 class Bus:
-    def __init__(self, root, address, run, cfg):
-        self.root = Path(root) / "wire"
-        self.addr = address
-        self.logs = Path(run) if run else None
-        self.cfg = cfg
-        self.home = home_of(self.root, address)
-        self.inbox = self.home / "inbox"
-        self.seq = 0
-        self.tec = 0
-        self.rec = 0
-        self.dead = False
-        self.handler = None
-        self._serving = False
-        self.poll = float(cfg["bus"]["poll"])
-        self.frame_timeout = float(cfg["bus"]["frame_timeout"])
-        self.nack_retries = int(cfg["bus"]["nack_retries"])
-        self._busy = {
-            int(value, 16): float(cfg["busy"][name])
-            for name, value in cfg["address"].items()
-            if name in cfg["busy"]
-        }
+    def __init__(self, root: Path, run: Path, address: str, settings: dict, holds: dict):
+        self.wire, self.run, self.address = root / "wire", run, address
+        self.settings, self.holds = settings, holds
+        self.home = self.wire / address
+        self.state = json.loads((self.home / "state.json").read_text())
+        self.lock = asyncio.Lock()
+        self.incoming = set()
 
-    def error_passive(self):
-        return self.tec >= ERROR_PASSIVE or self.rec >= ERROR_PASSIVE
+    def save(self):
+        self.place(self.home / "state.json", json.dumps(self.state))
 
-    def store(self):
-        self.home.mkdir(parents=True, exist_ok=True)
-        (self.home / "tec").write_text(f"{self.tec}\n", encoding="utf-8")
-        (self.home / "rec").write_text(f"{self.rec}\n", encoding="utf-8")
-        (self.home / "seq").write_text(f"{self.seq}\n", encoding="utf-8")
+    @staticmethod
+    def place(path: Path, text: str):
+        staging = path.with_suffix(".pending")
+        staging.write_text(text, encoding="utf-8")
+        staging.replace(path)
 
-    def _count(self, name):
-        path = self.home / name
-        if not path.is_file():
-            return 0
-        return int(path.read_text(encoding="utf-8").strip())
+    def present(self, address: str) -> bool:
+        return (self.wire / address / "alive").is_file()
 
-    def up(self):
-        self.home.mkdir(parents=True, exist_ok=True)
-        self.inbox.mkdir(parents=True, exist_ok=True)
-        (self.home / "alive").write_text(f"{os.getpid()} {time.time()}\n", encoding="utf-8")
-        if (self.home / "busoff").is_file():
-            self.tec = 0
-            self.rec = 0
-            remove(self.home / "busoff")
-        else:
-            self.tec = self._count("tec")
-            self.rec = self._count("rec")
-        self.seq = self._count("seq")
-        self.dead = False
-        self.store()
+    @property
+    def passive(self) -> bool:
+        return max(self.state["tx"], self.state["rx"]) >= ERROR_PASSIVE
 
-    def down(self):
-        remove(self.home / "alive")
-        remove(scl_of(self.root, self.addr))
+    def transmit_fault(self, acknowledgement: bool):
+        if not (acknowledgement and self.passive):
+            self.state["tx"] += TRANSMIT_ERROR_STEP
+        self.save()
+        if self.state["tx"] >= BUS_OFF:
+            (self.home / "busoff").touch()
+            raise RuntimeError("Bus off")
 
-    def present(self, target):
-        return (home_of(self.root, target) / "alive").is_file()
+    def journal(self, source: str, target: str, line: str, outcome: str):
+        with (self.run / "bus.log").open("a", encoding="utf-8") as journal:
+            journal.write(f"{time.time():.6f} {source} {target} {outcome} {line}\n")
 
-    def off(self, target):
-        return (home_of(self.root, target) / "busoff").is_file()
-
-    def down_flag(self, target):
-        return (home_of(self.root, target) / "down").is_file()
-
-    def ready(self, target):
-        return self.present(target) and not self.off(target) and not self.down_flag(target)
-
-    def tx_success(self):
-        if self.tec:
-            self.tec -= 1
-            self.store()
-
-    def tx_ack_error(self):
-        if self.error_passive():
-            return
-        self.tec += TEC_STEP
-        self.store()
-        self._bus_off()
-
-    def rx_fault(self):
-        self.rec += REC_STEP
-        self.store()
-
-    def rx_success(self):
-        if not self.rec:
-            return
-        self.rec = REC_RECOVER if self.rec > ERROR_ACTIVE else self.rec - 1
-        self.store()
-
-    def _bus_off(self):
-        if self.tec >= BUS_OFF_AT:
-            self.dead = True
-            (self.home / "busoff").write_text("1\n", encoding="utf-8")
-            raise BusOff()
-
-    def journal(self, src, dst, frame, note, ms):
-        if self.logs is None:
-            return
-        self.logs.mkdir(parents=True, exist_ok=True)
-        line = f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {src:02x} {dst:02x} {note} {ms} {frame}\n"
-        with (self.logs / "bus.log").open("a", encoding="utf-8") as handle:
-            handle.write(line)
-
-    def stretch(self):
-        return _Stretch(self)
-
-    def scl_held(self, target):
-        path = scl_of(self.root, target)
-        if not path.is_file():
-            return None
-        return time.time() - float(read_file(path).split()[1])
-
-    async def serve(self, handler=None):
-        handler = handler or self.handler
-        if handler is None or self._serving:
-            return
-        self._serving = True
-        try:
-            await self._take(handler)
-        finally:
-            self._serving = False
-
-    async def _take(self, handler):
-        if not self.inbox.is_dir() or self.dead:
-            return
-        pending = sorted(path for path in self.inbox.iterdir() if path.is_file() and path.name.startswith("q-"))
-        if not pending:
-            return
-        path = pending[0]
-        line = read_file(path)
-        src = int(path.name.split("-")[1], 16)
-        started = time.monotonic()
-        try:
-            if not legal(line, self.cfg):
-                self.rx_fault()
-                reply_line = self._form_reply(line)
-                note = "form"
-            else:
-                reply_line = await handler(src, line)
-                note = "nack" if reply_line.split()[3] == "NA" or data_nacked(reply_line) else "ack"
-                if note == "ack":
-                    self.rx_success()
-        except Nack:
-            reply_line = nack_data(line)
-            note = "nack"
-        except BusOff:
-            raise
-        except Exception:
-            self.rx_fault()
-            reply_line = nack_data(line)
-            note = "fault"
-        place(self.root / f"{src:02x}" / "inbox", f"r-{path.name.split('-')[2]}", reply_line)
-        remove(path)
-        self.journal(src, self.addr, reply_line, note, int((time.monotonic() - started) * 1000))
-
-    def _form_reply(self, line):
-        tok = line.split()
-        if len(tok) >= 6 and tok[0] == "S" and tok[2] == "W" and tok[3] == "A" and len(tok[4]) == 2:
-            try:
-                byte = int(tok[4], 16)
-            except ValueError:
-                return nack_addr(line, self.addr)
-            return f"S {tok[1]} W A {byte:02x} NA P"
-        return nack_addr(line, self.addr)
-
-    async def _suspend(self):
-        if not self.error_passive():
-            return
-        deadline = time.monotonic() + self.frame_timeout
-        while time.monotonic() < deadline:
-            if self.dead:
-                raise BusOff()
-            await self.serve()
-            await asyncio.sleep(self.poll)
-
-    async def transfer(self, target, line):
-        await self._suspend()
-        if self.dead:
-            raise BusOff()
-        if self.off(target):
-            raise RuntimeError(f"bus-off {target:02x}")
-        if not self.present(target):
-            raise RuntimeError(f"NACK {target:02x}")
-        self.seq += 1
-        seq = self.seq
-        self.store()
-        self.inbox.mkdir(parents=True, exist_ok=True)
-        reply_path = self.inbox / f"r-{seq}"
-        place(self.root / f"{target:02x}" / "inbox", f"q-{self.addr:02x}-{seq}", line)
-        started = time.monotonic()
-        limit = self.frame_timeout
-        while not reply_path.exists():
-            await self.serve()
-            if self.scl_held(target) is not None and target in self._busy:
-                limit = max(limit, self._busy[target])
-            if time.monotonic() - started > limit:
-                self.tx_ack_error()
-                self.journal(self.addr, target, line, "timeout", int((time.monotonic() - started) * 1000))
-                raise TimeoutError(f"timeout {target:02x}")
-            await asyncio.sleep(self.poll)
-        return seq, read_file(reply_path)
-
-    async def request(self, target, line):
-        data_tries = 0
+    async def serve(self, device):
         while True:
-            if self.dead:
-                raise BusOff()
-            if self.off(target) or not self.present(target):
-                raise RuntimeError(f"NACK {target:02x}")
-            seq, reply_line = await self.transfer(target, line)
-            remove(self.inbox / f"r-{seq}")
-            if reply_line.split()[3] == "NA":
-                if self.present(target) and not self.off(target):
-                    deadline = time.monotonic() + self.frame_timeout
-                    while time.monotonic() < deadline:
-                        await self.serve()
-                        await asyncio.sleep(self.poll)
-                    continue
-                raise RuntimeError(f"NACK {target:02x}")
-            if data_nacked(reply_line):
-                data_tries += 1
-                if data_tries <= self.nack_retries:
-                    continue
-                raise RuntimeError(f"NACK {target:02x}")
-            self.tx_success()
-            return reply_line
+            for path in sorted(self.home.glob("q-*.frame")):
+                if path not in self.incoming:
+                    self.incoming.add(path)
+                    device.tasks.create_task(self.receive(device, path))
+            await asyncio.sleep(self.settings["poll"])
 
-    async def run(self, handler, pump=None):
-        self.handler = handler
-        self.up()
+    async def receive(self, device, path):
+        source, sequence = path.stem.split("-")[1:]
+        line = path.read_text(encoding="utf-8")
         try:
-            while True:
-                if self.dead:
-                    raise BusOff()
-                await self.serve(handler)
-                if self.dead:
-                    raise BusOff()
-                if pump:
-                    await pump()
-                if self.dead:
-                    raise BusOff()
-                await asyncio.sleep(self.poll)
+            frame = Frame.decode(line)
+            if frame.address != self.address:
+                raise ValueError("Transaction delivered to the wrong address")
+        except ValueError:
+            self.state["rx"] += RECEIVE_ERROR_STEP
+            self.save()
+            self.journal(source, self.address, line, "malformed")
+            raise
+        hold, held = self.home / "hold", False
+        try:
+            try:
+                if hold.exists():
+                    raise Nack(Refusal.NOT_READY)
+                registers = device.cfg["registers"][device.name]
+                register = f"{frame.data[0]:02x}"
+                direction = "read" if frame.reading else "write"
+                if register not in registers or direction not in registers[register].split(":")[0].split("/"):
+                    raise Nack(Refusal.UNKNOWN_DATA)
+                if self.address in self.holds and frame.reading:
+                    self.place(hold, f"{source}-{sequence} {time.time()}")
+                    held = True
+                result = await device.receive(source, frame)
+                reply = frame.encode(result)
+                self.state["rx"] = (RECEIVE_RECOVERY if self.state["rx"] > ERROR_ACTIVE_MAX
+                                    else max(0, self.state["rx"] - RECEIVE_ERROR_STEP))
+                self.save()
+                outcome = Refusal.END_OF_READ.name if frame.reading and result else "ack"
+            except Nack as error:
+                reply, outcome = frame.encode(refusal=error.cause), error.cause.name
+            self.place(self.wire / source / f"r-{sequence}.frame", reply)
+            path.unlink()
+            self.incoming.remove(path)
+            self.journal(source, self.address, reply, outcome)
         finally:
-            self.down()
+            if held:
+                hold.unlink()
+
+    async def transfer(self, frame: Frame) -> bytes:
+        async with self.lock:
+            retries = 0
+            while True:
+                if self.passive:
+                    await asyncio.sleep(self.settings["frame_timeout"])
+                if not self.present(frame.address):
+                    self.journal(self.address, frame.address, frame.encode(refusal=Refusal.NO_RECEIVER), "NO_RECEIVER")
+                    raise Nack(Refusal.NO_RECEIVER)
+                self.state["sequence"] += 1
+                sequence = self.state["sequence"]
+                self.save()
+                self.place(self.wire / frame.address / f"q-{self.address}-{sequence}.frame", frame.encode())
+                reply_path = self.home / f"r-{sequence}.frame"
+                deadline = time.time() + self.settings["frame_timeout"]
+                hold = self.wire / frame.address / "hold"
+                while not reply_path.is_file():
+                    if hold.is_file():
+                        hold_sequence, held_at = hold.read_text().split()
+                        if hold_sequence == f"{self.address}-{sequence}":
+                            deadline = float(held_at) + self.holds[frame.address]
+                    if time.time() > deadline:
+                        self.journal(self.address, frame.address, frame.encode(), "timeout")
+                        self.transmit_fault(acknowledgement=True)
+                        raise TimeoutError(f"No acknowledgement from {frame.address}")
+                    await asyncio.sleep(self.settings["poll"])
+                reply = reply_path.read_text(encoding="utf-8")
+                reply_path.unlink()
+                if reply == frame.encode(refusal=Refusal.NOT_READY):
+                    if not self.present(frame.address):
+                        raise Nack(Refusal.NO_RECEIVER)
+                    await asyncio.sleep(self.settings["frame_timeout"])
+                    continue
+                if reply == frame.encode(refusal=Refusal.UNKNOWN_DATA):
+                    if retries == self.settings["data_retries"]:
+                        raise Nack(Refusal.UNKNOWN_DATA)
+                    retries += 1
+                    continue
+                try:
+                    result = frame.result(reply)
+                except ValueError:
+                    self.journal(self.address, frame.address, reply, "malformed_reply")
+                    self.transmit_fault(acknowledgement=False)
+                    raise
+                self.state["tx"] = max(0, self.state["tx"] - 1)
+                self.save()
+                return result
 
 
-class _Stretch:
-    def __init__(self, bus):
-        self.path = scl_of(bus.root, bus.addr)
+class Configuration(dict):
+    def __init__(self):
+        self.root = Path(__file__).resolve().parent
+        super().__init__(tomllib.loads((self.root / "config.toml").read_text(encoding="utf-8")))
 
-    def __enter__(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(f"{os.getpid()} {time.time()}\n", encoding="utf-8")
-        return self
+    def path(self, value: str) -> Path:
+        return self.root / os.path.expandvars(value)
 
-    def __exit__(self, *_):
-        remove(self.path)
-
-
-def program_argv(parts, root):
-    argv = []
-    for part in parts:
-        text = os.path.expandvars(str(part))
-        if text.startswith('artifacts/'):
-            text = str(Path(root) / text)
-        argv.append(text)
-    return argv
+    def mind(self, name: str) -> dict:
+        if name not in self["mind"]:
+            raise ValueError("A configured mind part is required")
+        return self["mind"][name]
 
 
-def healthy(url, timeout):
-    try:
-        with urllib.request.urlopen(url + '/health', timeout=timeout) as response:
-            return response.status == 200
-    except urllib.error.HTTPError as error:
-        if error.code == 503:
-            return False
-        raise
-    except urllib.error.URLError:
+class Server:
+    def __init__(self, device, settings: dict):
+        self.device, self.settings, self.process, self.url = device, settings, None, settings["url"]
+
+    def request(self, endpoint: str, body: dict) -> bytes:
+        request = urllib.request.Request(self.url + endpoint, json.dumps(body).encode(),
+                                         {"Content-Type": "application/json"})
+        with urllib.request.urlopen(request, timeout=self.device.cfg["limits"]["http_timeout"]) as response:
+            return response.read()
+
+    async def chat(self, messages: list, **options) -> str:
+        body = {"model": self.settings["model"], "messages": messages,
+                **self.device.cfg["sampling"], "max_tokens": self.settings["max_tokens"], **options}
+        response = json.loads(await asyncio.to_thread(self.request, "/v1/chat/completions", body))
+        return response["choices"][0]["message"]["content"]
+
+    def health(self):
+        try:
+            with urllib.request.urlopen(self.url + "/health",
+                                        timeout=self.device.cfg["limits"]["health_timeout"]):
+                return True
+        except urllib.error.HTTPError as error:
+            if error.code != 503:
+                raise
+        except urllib.error.URLError as error:
+            if not isinstance(error.reason, ConnectionRefusedError):
+                raise
         return False
 
+    async def start(self):
+        cfg = self.device.cfg
+        parts = [os.path.expandvars(str(part)).format(**self.settings) for part in self.settings["command"]]
+        arguments = [str(cfg.path(part)) if part.startswith("artifacts/") else part for part in parts]
+        with self.device.file("server.log").open("ab") as log:
+            self.process = await asyncio.create_subprocess_exec(*arguments, cwd=cfg.root, stdout=log, stderr=log)
+        self.device.tasks.create_task(self.watch())
+        deadline = time.monotonic() + self.settings["start_seconds"]
+        while not await asyncio.to_thread(self.health):
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Server startup expired")
+            await asyncio.sleep(cfg["limits"]["health_poll"])
 
-async def serve_until(root, parts, url, limits, limit, missing):
-    argv = program_argv(parts, root)
-    if not Path(argv[0]).is_file():
-        raise RuntimeError(missing)
-    for part in argv[1:]:
-        if part.endswith('.gguf') and not Path(part).is_file():
-            raise RuntimeError(missing)
-    proc = await asyncio.create_subprocess_exec(
-        *argv, cwd=str(root),
-        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
-    )
-    err = bytearray()
-    keep = int(limits['stderr_keep'])
+    async def watch(self):
+        raise RuntimeError(f"Server exited {await self.process.wait()}; see {self.device.name}-server.log")
 
-    async def drain():
+    async def close(self):
+        if self.process is not None and self.process.returncode is None:
+            self.process.terminate()
+            await self.process.wait()
+
+
+class Device:
+    def __init__(self, name: str):
+        self.name, self.cfg, self.run = name, Configuration(), Path(sys.argv[1])
+        self.address = self.cfg["address"][name]
+        holds = {self.cfg["address"][role]: seconds for role, seconds in self.cfg["holds"].items()}
+        self.bus = Bus(self.cfg.root, self.run, self.address, self.cfg["bus"], holds)
+        self.server = None
+
+    def file(self, name: str) -> Path:
+        return self.run / f"{self.name}-{name}"
+
+    async def send(self, name: str, text: str, register: str, reading: bool = False):
+        data = bytes.fromhex(register) + text.encode()
+        return await self.bus.transfer(Frame(self.cfg["address"][name], data, reading))
+
+    async def run_device(self):
+        async with AsyncExitStack() as cleanup, asyncio.TaskGroup() as self.tasks:
+            if self.server is not None:
+                cleanup.push_async_callback(self.server.close)
+                await self.server.start()
+            await self.start()
+            cleanup.push_async_callback(self.close)
+            alive = self.bus.home / "alive"
+            alive.write_text(str(os.getpid()))
+            cleanup.callback(alive.unlink)
+            self.tasks.create_task(self.bus.serve(self))
+            self.tasks.create_task(self.tick())
+
+    async def start(self):
+        return None
+
+    async def close(self):
+        return None
+
+    async def tick(self):
+        await asyncio.Future()
+
+    def launch(self):
+        signal.signal(signal.SIGBREAK, signal.default_int_handler)
+        asyncio.run(self.run_device())
+
+
+class QueuedDevice(Device):
+    def __init__(self, name):
+        super().__init__(name)
+        self.queue = asyncio.Queue()
+
+    async def receive(self, source, frame):
+        self.queue.put_nowait((source, frame))
+        return b""
+
+    async def tick(self):
         while True:
-            block = await proc.stderr.read(keep)
-            if not block:
-                return
-            err.extend(block)
-            del err[:-keep]
-
-    reader = asyncio.create_task(drain())
-    started = asyncio.get_running_loop().time()
-    while proc.returncode is None:
-        if await asyncio.to_thread(healthy, url, float(limits['health_timeout'])):
-            return proc, reader
-        if asyncio.get_running_loop().time() - started > limit:
-            proc.kill()
-            await proc.wait()
-            raise RuntimeError(missing)
-        await asyncio.sleep(float(limits['health_poll']))
-    detail = err.decode('utf-8', 'replace').strip().splitlines()
-    tail = detail[-1] if detail else 'no stderr'
-    raise RuntimeError(f'{missing} {proc.returncode} {tail}')
-
-
-async def serve_stop(proc, reader):
-    if proc is not None and proc.returncode is None:
-        proc.kill()
-        await proc.wait()
-    if reader is not None:
-        await reader
-
-
-def llama_url(cfg, part):
-    return f"http://{cfg['llama']['host']}:{int(part['port'])}"
-
-
-def llama_argv(cfg, part):
-    spec = cfg["llama"]
-    return [
-        spec["bin"], "--model", spec["weights"], "--mmproj", spec["mmproj"],
-        "--mmproj-offload", "--mmproj-device", spec["device"],
-        "--image-min-tokens", str(int(spec["image_min_tokens"])),
-        "--image-max-tokens", str(int(spec["image_max_tokens"])),
-        "--alias", spec["alias"], "--host", spec["host"], "--port", str(int(part["port"])),
-        "--jinja", "--ctx-size", str(int(spec["ctx_size"])), "--device", spec["device"],
-        "--n-gpu-layers", str(int(spec["gpu_layers"])), "--parallel", str(int(spec["parallel"])),
-        "--batch-size", str(int(spec["batch_size"])), "--ubatch-size", str(int(spec["ubatch_size"])),
-        "--flash-attn", spec["flash_attn"],
-        "--cache-type-k", spec["cache_k"], "--cache-type-v", spec["cache_v"],
-        "--reasoning", spec["reasoning"],
-        "--reasoning-format", spec["reasoning_format"],
-        "--reasoning-budget", str(int(spec["reasoning_budget"])),
-        "--no-context-shift", "--no-webui", "--fit", spec["fit"],
-    ]
-
-
-def llama_sample(cfg, max_tokens):
-    spec = cfg["llama"]
-    return {
-        "temperature": spec["temperature"],
-        "top_k": int(spec["top_k"]),
-        "top_p": spec["top_p"],
-        "min_p": spec["min_p"],
-        "repeat_penalty": spec["repeat_penalty"],
-        "max_tokens": int(max_tokens),
-        "reasoning_format": spec["reasoning_format"],
-    }
-
-
-if __name__ == '__main__':
-    raise SystemExit('i2c.py is the wire')
+            await self.work(*await self.queue.get())

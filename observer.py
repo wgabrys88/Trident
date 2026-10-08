@@ -2,26 +2,22 @@ import sys
 import time
 from pathlib import Path
 
-import i2c
+from i2c import Configuration
 
 
-def tail(run):
-    log = Path(run) / "bus.log"
-    return i2c.read_file(log).splitlines() if log.is_file() else []
-
-
-def main():
-    _root, cfg = i2c.load()
-    run = Path(sys.argv[1])
-    poll = float(cfg["bus"]["poll"])
-    seen = 0
-    while True:
-        lines = tail(run)
-        for line in lines[seen:]:
-            print(line, flush=True)
-        seen = len(lines)
-        time.sleep(poll)
+class Observer:
+    def follow(self, run):
+        poll = Configuration()["bus"]["poll"]
+        with (Path(run) / "bus.log").open(encoding="utf-8") as journal:
+            while True:
+                position = journal.tell()
+                line = journal.readline()
+                if line.endswith("\n"):
+                    print(line, end="", flush=True)
+                else:
+                    journal.seek(position)
+                    time.sleep(poll)
 
 
 if __name__ == "__main__":
-    main()
+    Observer().follow(sys.argv[1])

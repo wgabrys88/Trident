@@ -1,5 +1,5 @@
 {
-  "anyOf": [
+  "oneOf": [
     {
       "type": "object",
       "additionalProperties": false,
@@ -13,9 +13,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["action"],
-      "properties": {
-        "action": {"const": "nothing"}
-      }
+      "properties": {"action": {"const": "nothing"}}
     },
     {
       "type": "object",

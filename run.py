@@ -1,130 +1,100 @@
+import json
 import shutil
+import signal
 import subprocess
 import sys
 import time
+from contextlib import ExitStack
+from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 
-import i2c
+from i2c import Configuration
 
-NAMES = ["timer", "telegram", "ears", "voice", "tools", "mind", "memory"]
+
+@dataclass(slots=True)
+class DeviceProcess:
+    command: list
+    log: object
+    process: subprocess.Popen | None = None
+    started: float = 0
+    failures: int = 0
+    restart_at: float = 0
+
+    def spawn(self):
+        self.process = subprocess.Popen(self.command, stdout=self.log, stderr=self.log,
+                                        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+        self.started, self.restart_at = time.monotonic(), 0
+
+    def stop(self, seconds):
+        if self.process.poll() is None:
+            self.process.send_signal(signal.CTRL_BREAK_EVENT)
+            self.process.wait(timeout=seconds)
 
 
 class Supply:
-    def __init__(self, root, cfg, run, part):
-        self.root = Path(root)
-        self.cfg = cfg
-        self.folder = Path(run)
-        self.part = part
-        self.procs = {}
-        self.when = {}
-        self.restart = {}
-        self.fails = {}
-        self.backoff = {}
-        self.wire = self.root / "wire"
-        self.cap = int(cfg["bus"]["restart_cap"])
-        self.stable = float(cfg["bus"]["stable_seconds"])
-        self.step = float(cfg["bus"]["backoff"])
+    def __init__(self, part):
+        self.cfg = Configuration()
+        self.cfg.mind(part)
+        self.part, self.processes = part, {}
+        self.run = self.cfg.root / "runs" / datetime.now().strftime("%Y%m%dT%H%M%S%f")
 
-    def command(self, name):
-        argv = [sys.executable, str(self.root / f"{name}.py"), str(self.folder)]
-        if name == "mind":
-            argv.append(self.part)
-        return argv
+    def start(self, cleanup):
+        wire = self.cfg.root / "wire"
+        if wire.exists():
+            shutil.rmtree(wire)
+        self.run.mkdir(parents=True)
+        (self.run / "bus.log").touch()
+        for name, address in self.cfg["address"].items():
+            home = wire / address
+            home.mkdir(parents=True)
+            (home / "state.json").write_text(json.dumps({"sequence": 0, "tx": 0, "rx": 0}))
+            command = [sys.executable, str(self.cfg.root / self.cfg["modules"][name]), str(self.run)]
+            command.append(self.part if name == "mind" else name)
+            log = cleanup.enter_context((self.run / f"{name}.log").open("ab"))
+            process = DeviceProcess(command, log)
+            process.spawn()
+            self.processes[name] = process
+            cleanup.callback(process.stop, self.cfg["supply"]["stop_seconds"])
 
-    def spawn(self, name):
-        self.procs[name] = subprocess.Popen(self.command(name))
-        self.when[name] = time.monotonic()
-        self.fails.setdefault(name, 0)
-        self.backoff.setdefault(name, self.step)
-
-    def clear_lines(self, name):
-        address = i2c.addr(self.cfg, name)
-        i2c.remove(i2c.scl_of(self.wire, address))
-        i2c.remove(i2c.home_of(self.wire, address) / "alive")
-
-    def hung(self):
-        folder = self.wire / "scl"
-        if not folder.is_dir():
-            return
-        now = time.time()
-        for path in list(folder.iterdir()):
-            if not path.is_file():
-                continue
-            started = float(path.read_text(encoding="utf-8").split()[1])
-            address = int(path.name, 16)
-            name = next(key for key, value in self.cfg["address"].items() if int(value, 16) == address)
-            proc = self.procs.get(name)
-            if proc is None:
-                continue
-            if proc.poll() is not None:
-                i2c.remove(path)
-                continue
-            if name in self.cfg["busy"] and now - started > float(self.cfg["busy"][name]):
-                proc.terminate()
-                i2c.remove(path)
-
-    def run(self):
-        if self.wire.exists():
-            shutil.rmtree(self.wire)
-        self.wire.mkdir()
-        self.folder.mkdir(parents=True, exist_ok=True)
-        names = list(NAMES)
-        for name in names:
-            self.spawn(name)
-        while True:
-            self.hung()
-            for name in names:
-                if name in self.restart:
-                    if time.monotonic() >= self.restart[name]:
-                        self.restart.pop(name)
-                        self.spawn(name)
-                    continue
-                proc = self.procs[name]
-                lasted = time.monotonic() - self.when[name] > self.stable
-                if proc.poll() is None:
-                    if lasted:
-                        self.fails[name] = 0
-                        self.backoff[name] = self.step
-                    continue
-                self.clear_lines(name)
-                address = i2c.addr(self.cfg, name)
-                aa = f"{address:02x}"
-                if (i2c.home_of(self.wire, address) / "busoff").is_file():
-                    print(f"{aa} bus-off", file=sys.stderr)
-                if lasted:
-                    self.fails[name] = 0
-                    self.backoff[name] = self.step
-                else:
-                    self.fails[name] += 1
-                if self.fails[name] >= self.cap:
-                    print(f"{aa} cannot start", file=sys.stderr)
-                    home = i2c.home_of(self.wire, address)
-                    home.mkdir(parents=True, exist_ok=True)
-                    (home / "down").write_text(f"{aa} cannot start\n", encoding="utf-8")
-                    self.stop()
-                    return 1
-                self.restart[name] = time.monotonic() + self.backoff[name]
-                self.backoff[name] = min(self.backoff[name] * 2, float(self.cfg["bus"]["backoff_cap"]))
-            time.sleep(float(self.cfg["bus"]["poll"]))
-
-    def stop(self):
-        for proc in self.procs.values():
-            if proc.poll() is None:
-                proc.terminate()
-
-
-def main():
-    root, cfg = i2c.load()
-    if len(sys.argv) < 2 or not isinstance(cfg["mind"].get(sys.argv[1]), dict):
-        raise RuntimeError("mind part is missing")
-    part = sys.argv[1]
-    stamp = datetime.now().strftime("%Y%m%dT%H%M%S%f")
-    run = root / f"RUN_{stamp}"
-    (root / "session" / stamp).mkdir(parents=True)
-    code = Supply(root, cfg, run, part).run()
-    raise SystemExit(code)
+    def supervise(self):
+        with ExitStack() as cleanup:
+            self.start(cleanup)
+            while True:
+                for name, device in self.processes.items():
+                    home = self.cfg.root / "wire" / self.cfg["address"][name]
+                    hold = home / "hold"
+                    if device.process.poll() is None and hold.is_file():
+                        held_at = float(hold.read_text().split()[1])
+                        if time.time() - held_at > self.cfg["holds"][name]:
+                            device.stop(self.cfg["supply"]["stop_seconds"])
+                    now = time.monotonic()
+                    stable = now - device.started >= self.cfg["supply"]["stable_seconds"]
+                    if device.process.poll() is None:
+                        if stable:
+                            device.failures = 0
+                        continue
+                    if not device.restart_at:
+                        for marker in ("alive", "hold"):
+                            path = home / marker
+                            if path.exists():
+                                path.unlink()
+                        if (home / "busoff").is_file():
+                            state = json.loads((home / "state.json").read_text())
+                            state["tx"], state["rx"] = 0, 0
+                            (home / "state.json").write_text(json.dumps(state))
+                            (home / "busoff").unlink()
+                        device.failures = 0 if stable else device.failures + 1
+                        if device.failures >= self.cfg["supply"]["restart_cap"]:
+                            raise RuntimeError(f"{name} exceeded its restart cap; see {name}.log")
+                        delay = min(self.cfg["supply"]["backoff"] * self.cfg["supply"]["backoff_multiplier"] ** max(0, device.failures - 1),
+                                    self.cfg["supply"]["backoff_cap"])
+                        device.restart_at = now + delay
+                    elif now >= device.restart_at:
+                        device.spawn()
+                time.sleep(self.cfg["bus"]["poll"])
 
 
 if __name__ == "__main__":
-    main()
+    if len(sys.argv) != 2:
+        raise ValueError("Run requires one configured mind part: run.py luna or run.py lfm")
+    Supply(sys.argv[1]).supervise()
