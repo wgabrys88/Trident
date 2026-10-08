@@ -1,9 +1,3 @@
-aiohttp==3.12.15
-numpy==2.2.6
-Pillow==11.3.0
-PyAutoGUI==0.9.54
-jsonschema==4.25.1
 telethon==1.45.0
 ntgcalls==3.0.0
 opentele-ng==1.4.0
-pywin32==312

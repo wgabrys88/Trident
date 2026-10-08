@@ -1,4 +1,4 @@
-"""Start from the checkout root: artifacts\python\Scripts\python.exe rewrite\run.py"""
+"""Start from the checkout root: artifacts\python\Scripts\python.exe run.py"""
 
 import asyncio
 import sys
@@ -14,7 +14,7 @@ from mouth import Mouth, pcm48
 
 def load():
     here = Path(__file__).resolve().parent
-    return here.parent, tomllib.loads((here / "config.toml").read_text(encoding="utf-8"))
+    return here, tomllib.loads((here / "config.toml").read_text(encoding="utf-8"))
 
 
 def picture(up, items):
