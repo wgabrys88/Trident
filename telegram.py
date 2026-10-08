@@ -169,7 +169,7 @@ class Telegram:
         self.lead_limit = max(1, int(ears["padding_ms"]) // self.frame_ms)
         self.utterance = float(ears["utterance_seconds"])
         self.ring = float(limits["ring_seconds"])
-        self.connect = float(limits["connect_seconds"])
+        self.connect_seconds = float(limits["connect_seconds"])
         self.chat_slice = int(limits["chat_slice"])
         self.play_frame = int(limits["play_frame"])
         self.play_rate = int(limits["play_rate"])
@@ -369,7 +369,7 @@ class Telegram:
         for signal in self.signals:
             await self.call(self.engine, "send_signaling_data", self.owner, signal)
         self.signals = []
-        await asyncio.wait_for(self.connected, self.connect)
+        await asyncio.wait_for(self.connected, self.connect_seconds)
         self.state = "up"
         self.since = time.monotonic()
 
@@ -432,7 +432,7 @@ class Telegram:
         response = await self.client(AcceptCallRequest(peer=self.peer, g_b=exchange, protocol=self.protocol()))
         call = response.phone_call
         if not isinstance(call, PhoneCall):
-            call = await asyncio.wait_for(self.confirmed, self.connect)
+            call = await asyncio.wait_for(self.confirmed, self.connect_seconds)
         await self.call(self.engine, "exchange_keys", self.owner, bytes(call.g_a_or_b), call.key_fingerprint)
         await self.connect(call)
 

@@ -8,7 +8,6 @@ ears = "12"
 voice = "13"
 tools = "14"
 mind = "16"
-injector = "48"
 memory = "50"
 
 [bus]

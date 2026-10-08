@@ -56,7 +56,7 @@ Every organism limit is a named key in the tree's configuration. Numbers fixed b
 
 Retries, restarts, and timeouts exist only where the code already has them. Any other retry or recovery is forbidden.
 
-The injector is a device that only masters frames. Its frames are known by their source address. They are not the owner's words and they are not live proof. The observer has no address. It reads the journal and does not write.
+Testing is done by writing request files straight into a device's inbox folder. Such frames are never live proof. The observer has no address. It reads the journal and does not write.
 
 HOW YOU WORK
 
@@ -82,7 +82,7 @@ The chat. With no call up, he can still write, and the mind can still answer in 
 
 Hangup. The call ends. The mind stays. The devices stay loaded. Either side may place the next call without restarting the organism.
 
-Proof. On an empty machine, with no chat history and no leftover process, clone the tree, install what the installer installs, start, and live one phone scene that starts from the owner's own words: a real Telegram user call, no bot in the call, and the journal of that run. If you did not live it, say which part you did not run. Do not report a start, an install, or a send unless the output shows it. If this checkout cannot place or take a real Telegram user call on the owner's Windows machine, do not run the live phone scene. Say that live proof is blocked and what you could not reach. A frame placed by the injector is never proof.
+Proof. On an empty machine, with no chat history and no leftover process, clone the tree, install what the installer installs, start, and live one phone scene that starts from the owner's own words: a real Telegram user call, no bot in the call, and the journal of that run. If you did not live it, say which part you did not run. Do not report a start, an install, or a send unless the output shows it. If this checkout cannot place or take a real Telegram user call on the owner's Windows machine, do not run the live phone scene. Say that live proof is blocked and what you could not reach. A frame written into a device's inbox is never live proof.
 
 Judge the whole organism, not one part. Prove a change by living a real task scene from start to end, such as a game played on a real website, and judge what the owner sees and hears. One part may look wrong while the next part corrects it. That is the scene working.
 
