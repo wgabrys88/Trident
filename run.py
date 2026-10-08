@@ -116,9 +116,9 @@ class Supply:
 
 def main():
     root, cfg = i2c.load()
-    part = sys.argv[1] if len(sys.argv) > 1 else cfg["mind"]["default"]
-    if not isinstance(cfg["mind"].get(part), dict):
+    if len(sys.argv) < 2 or not isinstance(cfg["mind"].get(sys.argv[1]), dict):
         raise RuntimeError("mind part is missing")
+    part = sys.argv[1]
     stamp = datetime.now().strftime("%Y%m%dT%H%M%S%f")
     run = root / f"RUN_{stamp}"
     (root / "session" / stamp).mkdir(parents=True)

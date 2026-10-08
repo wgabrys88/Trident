@@ -48,9 +48,6 @@ stderr_keep = 4000
 install_timeout = 3600
 grid = 1000
 
-[mind]
-default = "luna"
-
 [mind.luna]
 manufacturer = "cursor"
 part = "gpt-5.6-luna-none"

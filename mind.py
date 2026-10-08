@@ -56,11 +56,9 @@ def bind_schema(raw, cfg):
 
 
 def part_table(cfg):
-    name = sys.argv[2] if len(sys.argv) > 2 else cfg["mind"]["default"]
-    table = cfg["mind"].get(name)
-    if not isinstance(table, dict):
+    if len(sys.argv) < 3 or not isinstance(cfg["mind"].get(sys.argv[2]), dict):
         raise RuntimeError("mind part is missing")
-    return table
+    return cfg["mind"][sys.argv[2]]
 
 
 class Mind:
