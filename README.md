@@ -28,7 +28,7 @@ Only the devices the code treats as the owner's line carry his words. Any other 
 
 One mind part is fitted at a time. The configuration names the default. The run command may name the other part for that start. The process that is running does not switch part. A missing part raises once and exits.
 
-Chat that arrived before this telegram process took its latest message id is not delivered. Whether those messages should be caught up after a restart is an open owner decision.
+Telegram has no history. Messages sent while it is off do not exist for it. It handles only messages and calls that arrive after it starts.
 
 Large data rides as a path. The bytes of the audio or the image do not ride the bus.
 

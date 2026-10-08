@@ -148,7 +148,6 @@ class Telegram:
         self.engine = None
         self.peer = None
         self.serial = 0
-        self.cursor = 0
         self.since = 0
         self.signals = []
         self.linked = False
@@ -494,9 +493,8 @@ class Telegram:
                 self.spawn(self.release())
 
     async def message(self, event):
-        if not event.is_private or event.id <= self.cursor:
+        if not event.is_private:
             return
-        self.cursor = event.id
         text = (event.raw_text or "").strip()
         if text:
             self.out.append((self.mind, text.encode()))
@@ -518,7 +516,7 @@ class Telegram:
             request_retries=int(self.cfg["telegram"]["request_retries"]),
             connection_retries=int(self.cfg["telegram"]["connection_retries"]),
             auto_reconnect=False, flood_sleep_threshold=int(self.cfg["telegram"]["flood_sleep_threshold"]),
-            raise_last_call_error=True, catch_up=True,
+            raise_last_call_error=True, catch_up=False,
         )
         self.client.add_event_handler(self.message, events.NewMessage(incoming=True, from_users=[self.owner]))
         self.client.add_event_handler(self.update, events.Raw())
@@ -528,8 +526,6 @@ class Telegram:
             raise RuntimeError("Telegram needs an authorized user session distinct from the owner")
         await self.client.get_dialogs()
         self.entity = await self.client.get_input_entity(self.owner)
-        latest = await self.client.get_messages(self.entity, limit=1)
-        self.cursor = latest[0].id if latest else 0
 
     async def stop(self):
         if self.state != "down" or self.engine is not None:
