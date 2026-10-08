@@ -12,7 +12,15 @@ JPEG = b"\xff\xd8\xff"
 
 
 def command(parts):
-    return [os.path.expandvars(str(part)) for part in parts]
+    expanded = [os.path.expandvars(str(part)) for part in parts]
+    if len(expanded) == 1 and Path(expanded[0]).is_dir():
+        root = Path(expanded[0])
+        versions = [item for item in root.iterdir() if (item / "node.exe").is_file() and (item / "index.js").is_file()]
+        if not versions:
+            raise RuntimeError("Cursor CLI is missing")
+        latest = max(versions, key=lambda item: item.name)
+        return [str(latest / "node.exe"), str(latest / "index.js")]
+    return expanded
 
 
 def image_bytes(text):
