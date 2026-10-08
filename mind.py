@@ -9,6 +9,46 @@ import i2c
 
 IDENT = 0xF0
 CHAT = 0x10
+REJECT = "bus line rejected. Write <aa> W <rr> <text> or end that line with R. Do not write S, A, or P."
+
+
+def compile_line(line, addrs):
+    stripped = line.strip()
+    if not stripped:
+        return None
+    if stripped.startswith("S "):
+        return "bad", REJECT
+    tok = stripped.split()
+    if len(tok) < 2 or tok[1] not in ("W", "R") or len(tok[0]) != 2:
+        return "prose", stripped
+    try:
+        target = int(tok[0], 16)
+    except ValueError:
+        return "prose", stripped
+    if f"{target:02x}" not in addrs:
+        return "bad", "that address is not on the bus."
+    if tok[1] == "R":
+        if len(tok) != 2:
+            return "bad", "a read is <aa> R with nothing after it."
+        return "frame", f"S {target:02x} R A P"
+    body = stripped.split(None, 2)[2] if len(tok) > 2 else ""
+    read = body.endswith(" R")
+    if read:
+        body = body[:-2]
+    if len(body) < 2:
+        return "bad", "a write needs a two-digit register."
+    try:
+        register = int(body[:2], 16)
+    except ValueError:
+        return "bad", "a write needs a two-digit register."
+    if len(body) == 2:
+        data = bytes([register])
+    elif body[2] == " ":
+        data = bytes([register]) + body[3:].encode()
+    else:
+        return "bad", "a write needs a two-digit register, then the text."
+    frame = i2c.pack_call(target, data) if read else i2c.pack_write(target, data)
+    return "frame", frame
 
 
 def part_table(cfg):
@@ -33,13 +73,14 @@ class Mind:
         ))
         self.tg = i2c.addr(cfg, "telegram")
         self.owners = {i2c.addr(cfg, "telegram"), i2c.addr(cfg, "ears")}
+        self.addrs = {value.lower() for value in cfg["address"].values()}
         self.cap = int(cfg["bus"]["self_turn_cap"])
         self.limit = float(self.table["turn"])
         self.context = int(self.table["context_chars"])
         self.busy = False
         self.self_turns = 0
         self.transcript = ""
-        self.queued = []
+        self.outbox = []
         self.count = 0
         self.proc = None
 
@@ -134,47 +175,50 @@ class Mind:
         self.record(text, stdin, decoded)
         return decoded
 
-    async def act(self, out):
+    def plan(self, out):
+        planned = []
         prose = []
 
-        async def flush():
+        def flush():
             body = "\n".join(prose).strip()
             prose.clear()
-            if not body:
-                return
-            frame = i2c.pack_write(self.tg, bytes([CHAT]) + body.encode())
-            try:
-                await self.bus.request(self.tg, frame)
-            except i2c.BusOff:
-                raise
-            except Exception as error:
-                self.queued.append(i2c.pack_write(self.bus.addr, str(error).encode()))
+            if body:
+                planned.append(i2c.pack_write(self.tg, bytes([CHAT]) + body.encode()))
 
         for line in out.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("S "):
-                await flush()
-                if not i2c.legal(stripped):
-                    self.queued.append(i2c.pack_write(self.bus.addr, f"illegal frame: {stripped}".encode()))
-                    continue
-                target = int(stripped.split()[1], 16)
-                if target == self.bus.addr and stripped.split()[2] == "W":
-                    self.queued.append(stripped)
-                    continue
-                try:
-                    answered = await self.bus.request(target, stripped)
-                except i2c.BusOff:
-                    raise
-                except Exception as error:
-                    self.queued.append(i2c.pack_write(self.bus.addr, str(error).encode()))
-                    continue
-                if " Sr " in stripped:
-                    payload = i2c.read_payload(answered)
-                    if payload:
-                        self.queued.append(i2c.pack_write(self.bus.addr, payload))
-            else:
-                prose.append(line)
-        await flush()
+            item = compile_line(line, self.addrs)
+            if item is None:
+                continue
+            kind, payload = item
+            if kind == "prose":
+                prose.append(payload)
+                continue
+            flush()
+            if kind == "bad":
+                planned.append(i2c.pack_write(self.bus.addr, payload.encode()))
+                continue
+            planned.append(payload)
+        flush()
+        return planned
+
+    async def pump(self):
+        if self.busy or self.bus.dead or not self.outbox:
+            return
+        frame = self.outbox[0]
+        target = int(frame.split()[1], 16)
+        try:
+            answered = await self.bus.request(target, frame)
+        except i2c.BusOff:
+            raise
+        except Exception as error:
+            self.outbox.pop(0)
+            self.outbox.append(i2c.pack_write(self.bus.addr, str(error).encode()))
+            return
+        self.outbox.pop(0)
+        if " Sr " in frame or frame.split()[2] == "R":
+            payload = i2c.read_payload(answered)
+            if payload:
+                self.outbox.append(i2c.pack_write(self.bus.addr, payload))
 
     async def turn(self, src, data):
         try:
@@ -187,16 +231,9 @@ class Mind:
                 out = f"{self.part} timed out."
             except Exception as error:
                 out = f"{self.part} stopped: {error}"
-            await self.act(out)
-        except i2c.BusOff:
-            return
+            self.outbox.extend(self.plan(out))
         finally:
-            queued = self.queued
-            self.queued = []
             self.busy = False
-            if not self.bus.dead:
-                for line in queued:
-                    self.bus.post(line)
 
 
 def build(bus, cfg, root, run):
@@ -209,7 +246,7 @@ def build(bus, cfg, root, run):
             await i2c.wait_healthy(mind.table["url"], cfg["limits"], float(cfg["start"]["tools"]), "mind server is missing")
         await serve
 
-    return mind.on_frame, None, around
+    return mind.on_frame, mind.pump, around
 
 
 def main():

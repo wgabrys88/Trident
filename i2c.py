@@ -349,10 +349,6 @@ class Bus:
             (self.home / "busoff").write_text("1\n", encoding="utf-8")
             raise BusOff()
 
-    def post(self, line):
-        self.seq += 1
-        place(self.inbox, f"q-{self.addr:02x}-{self.seq}", line)
-
     def journal(self, src, dst, frame, note, ms):
         if self.logs is None:
             return
@@ -444,8 +440,9 @@ class Bus:
         self.seq += 1
         seq = self.seq
         self.inbox.mkdir(parents=True, exist_ok=True)
-        place(self.root / f"{target:02x}" / "inbox", f"q-{self.addr:02x}-{seq}", line)
         reply_path = self.inbox / f"r-{seq}"
+        remove(reply_path)
+        place(self.root / f"{target:02x}" / "inbox", f"q-{self.addr:02x}-{seq}", line)
         started = time.monotonic()
         limit = self.frame_timeout
         while not reply_path.exists():
