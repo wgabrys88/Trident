@@ -122,7 +122,7 @@ def describe(url, model, sample, path, timeout):
     raw = Path(path).read_bytes()
     kind = "png" if str(path).lower().endswith(".png") else "jpeg"
     content = [
-        {"type": "text", "text": "Describe this image."},
+        {"type": "text", "text": "Describe this image completely, including every region and the text you can read."},
         {"type": "image_url", "image_url": {"url": f"data:image/{kind};base64,{base64.b64encode(raw).decode()}"}},
     ]
     body = json.dumps({

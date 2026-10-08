@@ -591,12 +591,17 @@ def llama_argv(cfg, part):
     return [
         spec["bin"], "--model", spec["weights"], "--mmproj", spec["mmproj"],
         "--mmproj-offload", "--mmproj-device", spec["device"],
+        "--image-min-tokens", str(int(spec["image_min_tokens"])),
         "--image-max-tokens", str(int(spec["image_max_tokens"])),
         "--alias", spec["alias"], "--host", spec["host"], "--port", str(int(part["port"])),
         "--jinja", "--ctx-size", str(int(spec["ctx_size"])), "--device", spec["device"],
         "--n-gpu-layers", str(int(spec["gpu_layers"])), "--parallel", str(int(spec["parallel"])),
+        "--batch-size", str(int(spec["batch_size"])), "--ubatch-size", str(int(spec["ubatch_size"])),
         "--flash-attn", spec["flash_attn"],
         "--cache-type-k", spec["cache_k"], "--cache-type-v", spec["cache_v"],
+        "--reasoning", spec["reasoning"],
+        "--reasoning-format", spec["reasoning_format"],
+        "--reasoning-budget", str(int(spec["reasoning_budget"])),
         "--no-context-shift", "--no-webui", "--fit", spec["fit"],
     ]
 
@@ -610,7 +615,7 @@ def llama_sample(cfg, max_tokens):
         "min_p": spec["min_p"],
         "repeat_penalty": spec["repeat_penalty"],
         "max_tokens": int(max_tokens),
-        "reasoning_effort": spec["reasoning_effort"],
+        "reasoning_format": spec["reasoning_format"],
     }
 
 

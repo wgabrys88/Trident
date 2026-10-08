@@ -36,14 +36,11 @@ def fits(value, schema):
             return False
         if "minLength" in schema and len(value) < schema["minLength"]:
             return False
-        if "maxLength" in schema and len(value) > schema["maxLength"]:
-            return False
         return True
     return False
 
 
 def bind_schema(raw, cfg):
-    text_max = int(cfg["limits"]["text_max"])
     bound = []
     for branch in raw["anyOf"]:
         action = branch["properties"]["action"]["const"]
@@ -52,14 +49,9 @@ def bind_schema(raw, cfg):
                 item = json.loads(json.dumps(branch))
                 item["properties"]["address"] = {"const": f"{int(cfg['address'][name], 16):02x}"}
                 item["properties"]["register"] = {"enum": list(regs)}
-                item["properties"]["text"]["maxLength"] = text_max
                 bound.append(item)
             continue
-        item = json.loads(json.dumps(branch))
-        text = item["properties"].get("text")
-        if text is not None:
-            text["maxLength"] = text_max
-        bound.append(item)
+        bound.append(json.loads(json.dumps(branch)))
     return {"anyOf": bound}
 
 
