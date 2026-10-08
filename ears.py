@@ -26,75 +26,12 @@ class Recognizer(ctypes.Structure):
     ]
 
 
-def rms(frame):
-    count = len(frame) // 2
-    if not count:
-        return 0.0
-    total = 0
-    for index in range(0, count * 2, 2):
-        sample = int.from_bytes(frame[index:index + 2], "little", signed=True)
-        total += sample * sample
-    return (total / count) ** 0.5 / 32768
-
-
 def floats(pcm):
     samples = array.array("h")
     samples.frombytes(pcm[: len(pcm) // 2 * 2])
     if sys.byteorder != "little":
         samples.byteswap()
     return array.array("f", (sample / 32768 for sample in samples))
-
-
-class Vad:
-    def __init__(self, cfg):
-        self.rms_limit = float(cfg["rms_threshold"])
-        self.silence = int(cfg["silence_ms"])
-        self.frame_ms = int(cfg["frame_ms"])
-        self.frame_bytes = int(cfg["pcm_rate"]) * 2 * self.frame_ms // 1000
-        self.lead_limit = max(1, int(cfg["padding_ms"]) // self.frame_ms)
-        self.utterance = float(cfg["utterance_seconds"])
-        self.pending = b""
-        self.lead = []
-        self.parts = []
-        self.quiet = 0
-
-    def cut(self, pcm):
-        ready = []
-        self.pending += pcm
-        while len(self.pending) >= self.frame_bytes:
-            frame, self.pending = self.pending[:self.frame_bytes], self.pending[self.frame_bytes:]
-            loud = rms(frame) >= self.rms_limit
-            if not self.parts:
-                self.lead.append(frame)
-                if len(self.lead) > self.lead_limit:
-                    self.lead = self.lead[-self.lead_limit:]
-                if loud:
-                    self.parts = self.lead
-                    self.lead = []
-                    self.quiet = 0
-            else:
-                self.parts.append(frame)
-                self.quiet = 0 if loud else self.quiet + self.frame_ms
-                if self.quiet >= self.silence or len(self.parts) * (self.frame_ms / 1000) >= self.utterance:
-                    ready.append(b"".join(self.parts))
-                    self.parts = []
-                    self.quiet = 0
-        return ready
-
-    def flush(self):
-        audio = b"".join(self.parts) + self.pending if self.parts else b""
-        self.pending = b""
-        self.lead = []
-        self.parts = []
-        self.quiet = 0
-        return audio
-
-    def take(self, pcm):
-        ready = self.cut(pcm)
-        tail = self.flush()
-        if tail:
-            ready.append(tail)
-        return ready
 
 
 class Ear:
@@ -172,29 +109,27 @@ class Ear:
             self.directory = None
 
 
+HEAR = 1
+
+
 def build(bus, cfg, root, _run):
     mind = i2c.addr(cfg, "mind")
     ear = Ear(root, cfg["ears"])
-    heard = dict(cfg["ears"])
-    heard["frame_ms"] = cfg["limits"]["frame_ms"]
-    heard["pcm_rate"] = cfg["limits"]["pcm_rate"]
-    vad = Vad(heard)
     rate = int(cfg["limits"]["pcm_rate"])
     queue = []
 
     async def on_frame(_src, line):
-        data = i2c.accept(line, 1)
+        data = i2c.accept(line, HEAR)
         queue.append(data[1:].decode())
         return i2c.pack_write(bus.addr, data)
 
     async def pump():
         if not queue:
             return
-        path = queue.pop(0)
-        for piece in vad.take(Path(path).read_bytes()):
-            text = (await asyncio.to_thread(ear.decode, piece, rate)).strip()
-            if text:
-                await bus.request(mind, i2c.pack_write(mind, text.encode()))
+        pcm = Path(queue.pop(0)).read_bytes()
+        text = (await asyncio.to_thread(ear.decode, pcm, rate)).strip()
+        if text:
+            await bus.request(mind, i2c.pack_write(mind, text.encode()))
 
     async def around(serve):
         try:
@@ -210,22 +145,5 @@ def main():
     i2c.main_for("ears", build)
 
 
-def test():
-    full = i2c.load()[1]
-    cfg = dict(full["ears"])
-    cfg["frame_ms"] = full["limits"]["frame_ms"]
-    cfg["pcm_rate"] = full["limits"]["pcm_rate"]
-    cfg["silence_ms"] = 40
-    cfg["padding_ms"] = int(cfg["frame_ms"])
-    vad = Vad(cfg)
-    samples = vad.frame_bytes // 2
-    loud = (b"\xff\x0f" * samples) * 3 + (b"\x00\x00" * samples) * 4
-    pieces = vad.take(loud)
-    assert pieces and len(pieces[0]) >= vad.frame_bytes
-    frame = i2c.pack_write(0x16, b"hello")
-    assert frame.startswith("S 16 W A")
-    assert i2c.write_payload(i2c.pack_write(0x12, bytes([1]) + b"C:/a.pcm"))[:1] == b"\x01"
-
-
 if __name__ == "__main__":
-    test() if "--test" in sys.argv else main()
+    main()

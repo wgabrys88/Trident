@@ -10,7 +10,7 @@ aa is the address in hex. hh is one data byte. A means that byte arrived. A read
 11 telegram. Write 01 to dial, 02 to hang up, 10 then UTF-8 for his chat, 20 then a wav path to play into the call. Read 00 down, 01 dialing, 02 up. On a call, chat text is spoken for you.
 12 ears. Write 01 then a PCM path.
 13 voice. Write 01 then UTF-8.
-14 tools. Write, then Sr and read the result. 01 then a png path takes a screenshot of the virtual screen into that file. 02 then a command line runs it. 03 then an image path asks the local vision model, which only describes the image. 04 then `click y x`, `type text`, or `key name` acts on that same screen. y and x are 0 to 1000, y down and x right.
+14 tools. Write, then Sr and read the result. 01 then a png path takes a screenshot of the virtual screen into that file. 02 then a command line runs it. 03 then an image path asks the local vision model, which only describes the image. 04 then `click y x`, `type text`, or `key name` acts on that same screen. y and x are 0 to {grid}, y down and x right.
 16 mind. A write here is your next turn. It is not a new message from Wojciech. Write F0 and Sr to read manufacturer;part;revision;capabilities.
 50 memory. SQLite records. Write 01 then UTF-8 to append, and Sr reads that record back. Write 02 then the decimal id, and Sr reads that record. A bare read returns the latest record.
 

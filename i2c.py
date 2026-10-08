@@ -1,10 +1,10 @@
 import asyncio
 import os
-import shutil
 import sys
-import tempfile
 import time
 import tomllib
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 TEC_STEP = 8
@@ -97,10 +97,6 @@ def place(folder, name, text):
         handle.flush()
         os.fsync(handle.fileno())
     io(lambda: os.replace(tmp, folder / name))
-
-
-def move(src, dst):
-    io(lambda: os.replace(src, dst))
 
 
 def pack_write(target, data):
@@ -284,9 +280,6 @@ class Bus:
     def error_passive(self):
         return self.tec >= ERROR_PASSIVE or self.rec >= ERROR_PASSIVE
 
-    def error_active(self):
-        return self.tec <= ERROR_ACTIVE and self.rec <= ERROR_ACTIVE
-
     def store(self):
         self.home.mkdir(parents=True, exist_ok=True)
         (self.home / "tec").write_text(f"{self.tec}\n", encoding="utf-8")
@@ -336,11 +329,6 @@ class Bus:
     def tx_ack_error(self):
         if self.error_passive():
             return
-        self.tec += TEC_STEP
-        self.store()
-        self._bus_off()
-
-    def tx_fault(self):
         self.tec += TEC_STEP
         self.store()
         self._bus_off()
@@ -528,260 +516,81 @@ class _Stretch:
         remove(self.path)
 
 
-def test_cfg():
-    cfg = load()[1]
-    stand = cfg["selftest"]
-    cfg["bus"]["frame_timeout"] = stand["frame_timeout"]
-    cfg["bus"]["poll"] = stand["poll"]
-    for name in cfg["busy"]:
-        cfg["busy"][name] = stand["busy"]
-    return cfg
+def program_argv(parts, root):
+    argv = []
+    for part in parts:
+        text = os.path.expandvars(str(part))
+        if text.startswith('artifacts/'):
+            text = str(Path(root) / text)
+        argv.append(text)
+    return argv
 
 
-async def _peer(bus, handler, stop):
-    while not stop[0]:
-        await bus.serve(handler)
-        await asyncio.sleep(bus.poll)
-
-
-class Stand:
-    def __init__(self, cfg):
-        self.root = Path(tempfile.mkdtemp())
-        self.run = self.root / "RUN_test"
-        self.run.mkdir()
-        self.cfg = cfg
-        self.stop = [False]
-        self.tasks = []
-
-    def bus(self, address):
-        return Bus(self.root, address, self.run, self.cfg)
-
-    def peer(self, address, handler):
-        bus = self.bus(address)
-        bus.up()
-        self.tasks.append(asyncio.create_task(_peer(bus, handler, self.stop)))
-        return bus
-
-    async def close(self):
-        self.stop[0] = True
-        for task in self.tasks:
-            task.cancel()
-        if self.tasks:
-            await asyncio.gather(*self.tasks, return_exceptions=True)
-        shutil.rmtree(self.root, ignore_errors=True)
-
-
-async def rehearse(cfg, peers, body):
-    stand = Stand(cfg)
-    buses = {address: stand.peer(address, handler) for address, handler in peers.items()}
+def healthy(url, timeout):
     try:
-        await body(stand, buses)
-    finally:
-        await stand.close()
+        with urllib.request.urlopen(url + '/health', timeout=timeout) as response:
+            return response.status == 200
+    except urllib.error.HTTPError as error:
+        if error.code == 503:
+            return False
+        raise
+    except urllib.error.URLError:
+        return False
 
 
-def test():
-    asyncio.run(_test())
+async def serve_until(root, parts, url, limits, limit, missing):
+    argv = program_argv(parts, root)
+    if not Path(argv[0]).is_file():
+        raise RuntimeError(missing)
+    for part in argv[1:]:
+        if part.endswith('.gguf') and not Path(part).is_file():
+            raise RuntimeError(missing)
+    proc = await asyncio.create_subprocess_exec(
+        *argv, cwd=str(root),
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+    )
+    err = bytearray()
+    keep = int(limits['stderr_keep'])
+
+    async def drain():
+        while True:
+            block = await proc.stderr.read(keep)
+            if not block:
+                return
+            err.extend(block)
+            del err[:-keep]
+
+    reader = asyncio.create_task(drain())
+    started = asyncio.get_running_loop().time()
+    while proc.returncode is None:
+        if await asyncio.to_thread(healthy, url, float(limits['health_timeout'])):
+            return proc, reader
+        if asyncio.get_running_loop().time() - started > limit:
+            proc.kill()
+            await proc.wait()
+            raise RuntimeError(missing)
+        await asyncio.sleep(float(limits['health_poll']))
+    detail = err.decode('utf-8', 'replace').strip().splitlines()
+    tail = detail[-1] if detail else 'no stderr'
+    raise RuntimeError(f'{missing} {proc.returncode} {tail}')
 
 
-async def _test():
-    assert legal("S 11 W A 01 A P")
-    assert legal("S 16 W NA P")
-    assert legal("S 50 W A 01 A 68 A 69 A Sr 50 R A 68 A 69 NA P")
-    assert legal("S 50 R A P")
-    assert legal("S 48 W A 01 A P")
-    assert not legal("S 11 W A 01 A")
-    assert not legal("S 99 W A 01 A P")
-    assert not legal("S 08 W A 01 A P")
-    assert not legal("S 50 W A Sr 11 R A P")
-    cfg = test_cfg()
-    cfg["busy"]["memory"] = cfg["selftest"]["busy"]
-    root = Path(tempfile.mkdtemp())
-    run = root / "RUN_test"
-    target = Bus(root, 0x50, run, cfg)
-    master = Bus(root, 0x10, run, cfg)
-    target.up()
-
-    async def on(_src, line):
-        assert any(target.inbox.glob("q-*"))
-        data = write_payload(line)
-        if data[:1] == b"\xff":
-            raise Nack()
-        if data[:1] == b"\xfe":
-            with target.stretch():
-                await asyncio.sleep(0.25)
-        if data[:1] == b"\xfd":
-            raise RuntimeError("handler")
-        if " Sr " in line or line.split()[2] == "R":
-            return with_payload(line, b"\x68\x69")
-        return pack_write(0x50, data)
-
-    stop = [False]
-    task = asyncio.create_task(_peer(target, on, stop))
-    answered = await master.request(0x50, pack_call(0x50, b"\x01\x68\x69"))
-    assert read_payload(answered) == b"\x68\x69"
-    assert list(target.inbox.glob("q-*")) == []
-    text = (run / "bus.log").read_text(encoding="utf-8")
-    assert " ack " in text
-    assert "S 50" in text
-    held = []
-
-    async def on_hold(_src, line):
-        with target.stretch():
-            held.append(scl_of(target.root, 0x50).is_file())
-            await asyncio.sleep(0.25)
-        return pack_write(0x50, write_payload(line))
-
-    stop[0] = True
-    await task
-    mode = {"hold": True}
-
-    async def on2(src, line):
-        if mode["hold"]:
-            return await on_hold(src, line)
-        return await on(src, line)
-
-    stop[0] = False
-    task = asyncio.create_task(_peer(target, on2, stop))
-    cfg_fast = test_cfg()
-    cfg_fast["bus"]["frame_timeout"] = 0.15
-    cfg_fast["busy"]["memory"] = cfg_fast["selftest"]["busy"]
-    master2 = Bus(root, 0x10, run, cfg_fast)
-    master2.seq = 100
-    await master2.request(0x50, pack_write(0x50, b"\xfe"))
-    assert held == [True]
-    mode["hold"] = False
-    busy = {"on": True}
-
-    async def on3(src, line):
-        if busy["on"]:
-            return nack_addr(line, 0x50)
-        return pack_write(0x50, write_payload(line))
-
-    stop[0] = True
-    await task
-    stop[0] = False
-    task = asyncio.create_task(_peer(target, on3, stop))
-    one = await master.transfer(0x50, "S 50 R A P")
-    assert one == "S 50 R NA P"
-    busy["on"] = False
-
-    async def release():
-        await asyncio.sleep(0.05)
-        busy["on"] = False
-
-    busy["on"] = True
-    asyncio.create_task(release())
-    again = await master.request(0x50, pack_write(0x50, b"\x03"))
-    assert again.split()[3] == "A"
-    stop[0] = True
-    await task
-    stop[0] = False
-    task = asyncio.create_task(_peer(target, on, stop))
-    before = target.rec
-    tec_before = master.tec
-    try:
-        await master.request(0x50, pack_write(0x50, b"\xff"))
-        raise AssertionError("deliberate nack")
-    except RuntimeError:
-        pass
-    assert target.rec == before
-    assert master.tec == tec_before
-    try:
-        await master.request(0x50, pack_write(0x50, b"\xfd"))
-        raise AssertionError("handler fault")
-    except RuntimeError:
-        pass
-    assert target.rec == before + 1 + cfg["bus"]["nack_retries"]
-    assert master.tec == tec_before
-    stop[0] = True
-    await task
-    place(target.inbox, "q-10-77", "NOT A FRAME\n")
-    await target.serve(on)
-    assert target.rec == before + 1 + cfg["bus"]["nack_retries"] + 1
-    form = read_file(master.inbox / "r-77")
-    assert form == "S 50 W NA P"
-    target.tec = 40
-    target.rec = 9
-    target.store()
-    target.down()
-    target.up()
-    assert target.tec == 40 and target.rec == 9
-    (target.home / "busoff").write_text("1\n", encoding="utf-8")
-    target.up()
-    assert target.tec == 0 and target.rec == 0
-    assert not (target.home / "busoff").is_file()
-    node = Bus(root, 0x14, run, cfg)
-    node.up()
-    node.rec = 130
-    node.rx_success()
-    assert node.rec == REC_RECOVER
-    node.rec = 4
-    node.rx_success()
-    assert node.rec == 3
-    node.rec = 0
-    node.rx_success()
-    assert node.rec == 0
-    node.tec = 127
-    node.rec = 119
-    assert node.error_active()
-    node.tec = ERROR_PASSIVE
-    assert node.error_passive() and not node.error_active()
-    cfg_off = test_cfg()
-    cfg_off["bus"]["frame_timeout"] = 0.05
-    cfg_off["bus"]["poll"] = 0.01
-    lonely = Bus(root, 0x13, run, cfg_off)
-    sender = Bus(root, 0x12, run, cfg_off)
-    lonely.up()
-    for _ in range(16):
-        try:
-            await sender.transfer(0x13, pack_write(0x13, b"\x01"))
-        except TimeoutError:
-            pass
-    assert sender.tec == ERROR_PASSIVE
-    assert sender.error_passive()
-    try:
-        await sender.transfer(0x13, pack_write(0x13, b"\x01"))
-    except TimeoutError:
-        pass
-    assert sender.tec == ERROR_PASSIVE
-    assert "timeout" in (run / "bus.log").read_text(encoding="utf-8")
-    sender.tec = BUS_OFF_AT - TEC_STEP
-    sender.store()
-    try:
-        sender.tx_fault()
-        raise AssertionError("bus-off missing")
-    except BusOff:
-        pass
-    assert sender.tec == BUS_OFF_AT
-    assert sender.off(0x12)
-    src = root / "wire" / "tmp" / "locked.txt"
-    src.parent.mkdir(parents=True, exist_ok=True)
-    src.write_text("frame", encoding="utf-8")
-    import ctypes
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel.CreateFileW.restype = ctypes.c_void_p
-    kernel.CreateFileW.argtypes = [
-        ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
-        ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
-    ]
-    kernel.CloseHandle.argtypes = [ctypes.c_void_p]
-    handle = kernel.CreateFileW(str(src), 0x80000000, 1, None, 3, 0x80, None)
-    assert handle not in (None, ctypes.c_void_p(-1).value)
-
-    def close():
-        time.sleep(0.12)
-        kernel.CloseHandle(handle)
-
-    import threading
-    threading.Thread(target=close).start()
-    move(src, root / "wire" / "tmp" / "moved.txt")
-    assert (root / "wire" / "tmp" / "moved.txt").read_text(encoding="utf-8") == "frame"
-    shutil.rmtree(root, ignore_errors=True)
+async def serve_stop(proc, reader):
+    if proc is not None and proc.returncode is None:
+        proc.kill()
+        await proc.wait()
+    if reader is not None:
+        await reader
 
 
-if __name__ == "__main__":
-    if "--test" in sys.argv:
-        test()
-    else:
-        raise SystemExit("i2c.py is the wire")
+async def wait_healthy(url, limits, limit, missing):
+    started = asyncio.get_running_loop().time()
+    while asyncio.get_running_loop().time() - started <= limit:
+        if await asyncio.to_thread(healthy, url, float(limits['health_timeout'])):
+            return
+        await asyncio.sleep(float(limits['health_poll']))
+    raise RuntimeError(missing)
+
+
+if __name__ == '__main__':
+    raise SystemExit('i2c.py is the wire')

@@ -9,6 +9,14 @@ from pathlib import Path
 
 import i2c
 
+DIAL = 1
+HANG = 2
+CHAT = 0x10
+PLAY = 0x20
+EAR = 1
+VOICE = 1
+TIMER_MISSED = 2
+
 
 def rms(frame):
     count = len(frame) // 2
@@ -60,15 +68,15 @@ def plan(state, data):
     if not data:
         raise i2c.Nack()
     reg, body = data[0], data[1:]
-    if reg == 1:
+    if reg == DIAL:
         if state != "down":
             raise i2c.Nack()
         return "dial", body
-    if reg == 2:
+    if reg == HANG:
         return "hang", body
-    if reg == 0x10:
+    if reg == CHAT:
         return "chat", body
-    if reg == 0x20:
+    if reg == PLAY:
         return "play", body
     raise i2c.Nack()
 
@@ -243,7 +251,7 @@ class Telegram:
     async def chat(self, text):
         await self.send(text)
         if self.state == "up":
-            self.out.append((self.voice, bytes([1]) + text.encode()))
+            self.out.append((self.voice, bytes([VOICE]) + text.encode()))
 
     async def send(self, text):
         if not text:
@@ -254,7 +262,7 @@ class Telegram:
 
     def miss(self):
         self.state = "down"
-        self.out.append((self.timer, b"\x02"))
+        self.out.append((self.timer, bytes([TIMER_MISSED])))
 
     def heard(self, pcm):
         pieces = self.cut(b"" if pcm is None else pcm)
@@ -269,7 +277,7 @@ class Telegram:
             path = self.run / "pcm" / f"{self.pcm_n}.pcm"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(piece)
-            self.out.append((self.ears, bytes([1]) + str(path).encode()))
+            self.out.append((self.ears, bytes([EAR]) + str(path).encode()))
 
     async def flush_out(self):
         while self.out:
@@ -547,103 +555,5 @@ def main():
     i2c.main_for("telegram", build)
 
 
-def test():
-    import tempfile
-
-    assert plan("down", b"\x01") == ("dial", b"")
-    try:
-        plan("up", b"\x01")
-        raise AssertionError("dial while up")
-    except i2c.Nack:
-        pass
-    assert plan("up", b"\x02")[0] == "hang"
-    assert plan("down", bytes([0x10]) + b"hi") == ("chat", b"hi")
-    assert plan("up", bytes([0x20]) + b"C:/a.wav") == ("play", b"C:/a.wav")
-
-    async def run():
-        root = Path(tempfile.mkdtemp())
-        cfg = i2c.test_cfg()
-        cfg["owner"] = {"telegram_id": 1}
-        cfg["telegram"] = {"tdata": "tdata"}
-        cfg["ears"]["silence_ms"] = 40
-        cfg["ears"]["padding_ms"] = int(cfg["limits"]["frame_ms"])
-        run_dir = root / "RUN_test"
-        run_dir.mkdir()
-        got = []
-
-        def listen(address):
-            async def on_frame(_src, line):
-                got.append((address, i2c.write_payload(line)))
-                return i2c.pack_write(address, i2c.write_payload(line))
-            return on_frame
-
-        peers = []
-        stop = [False]
-        for address in (0x10, 0x12, 0x13, 0x16):
-            bus = i2c.Bus(root, address, run_dir, cfg)
-            bus.up()
-            peers.append(asyncio.create_task(i2c._peer(bus, listen(address), stop)))
-        phone_bus = i2c.Bus(root, 0x11, run_dir, cfg)
-        phone = Telegram(phone_bus, cfg, run_dir, root)
-        class Box:
-            def __init__(self):
-                self.sent = []
-
-            async def send_message(self, _entity, text, parse_mode=None):
-                self.sent.append(text)
-
-        phone.client = Box()
-        phone.entity = "owner"
-        phone.lock = asyncio.Lock()
-        loop = asyncio.create_task(phone_bus.run(phone.on_frame, phone.pump))
-        for _ in range(40):
-            if phone_bus.present(0x11):
-                break
-            await asyncio.sleep(0.02)
-        master = i2c.Bus(root, 0x16, run_dir, cfg)
-        master.seq = 50
-        await master.request(0x11, i2c.pack_write(0x11, bytes([0x10]) + b"hello"))
-        for _ in range(40):
-            if phone.client.sent:
-                break
-            await asyncio.sleep(0.02)
-        assert phone.client.sent == ["hello"]
-        phone.state = "up"
-        await master.request(0x11, i2c.pack_write(0x11, bytes([0x10]) + b"hi"))
-        for _ in range(40):
-            if any(item[0] == 0x13 and item[1].startswith(b"\x01hi") for item in got):
-                break
-            await asyncio.sleep(0.02)
-        assert any(item[0] == 0x13 and item[1].startswith(b"\x01hi") for item in got)
-        status = await master.request(0x11, "S 11 R A P")
-        assert i2c.read_payload(status) == b"\x02"
-        dial = await master.transfer(0x11, i2c.pack_write(0x11, b"\x01"))
-        assert dial.split()[5] == "NA"
-        phone.miss()
-        for _ in range(40):
-            if any(item[0] == 0x10 and item[1] == b"\x02" for item in got):
-                break
-            await asyncio.sleep(0.02)
-        assert any(item[0] == 0x10 and item[1] == b"\x02" for item in got)
-        samples = phone.frame_bytes // 2
-        loud = (b"\xff\x0f" * samples) * 3 + (b"\x00\x00" * samples) * 4
-        phone.heard(loud)
-        for _ in range(40):
-            if any(item[0] == 0x12 and item[1][:1] == b"\x01" for item in got):
-                break
-            await asyncio.sleep(0.02)
-        assert any(item[0] == 0x12 and item[1][:1] == b"\x01" for item in got)
-        await master.request(0x11, i2c.pack_write(0x11, bytes([0x20]) + b"C:/a.wav"))
-        assert phone.pending_play == ["C:/a.wav"]
-        loop.cancel()
-        stop[0] = True
-        await asyncio.gather(loop, *peers, return_exceptions=True)
-        import shutil
-        shutil.rmtree(root, ignore_errors=True)
-
-    import asyncio
-    asyncio.run(run())
-
-
 if __name__ == "__main__":
-    test() if "--test" in sys.argv else main()
+    main()

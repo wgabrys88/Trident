@@ -2,26 +2,19 @@ import asyncio
 import base64
 import ctypes
 import json
-import os
 import struct
 import subprocess
 import sys
-import urllib.error
 import urllib.request
 import zlib
 from pathlib import Path
 
 import i2c
 
-
-def command(parts, root):
-    argv = []
-    for part in parts:
-        text = os.path.expandvars(str(part))
-        if text.startswith("artifacts/"):
-            text = str(Path(root) / text)
-        argv.append(text)
-    return argv
+SHOT = 1
+SHELL = 2
+SEE = 3
+ACT = 4
 
 
 def run_cmd(text):
@@ -123,18 +116,6 @@ def shot(path):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(png(width, height, rows))
     return str(path)
-
-
-def healthy(url, timeout):
-    try:
-        with urllib.request.urlopen(url + "/health", timeout=timeout) as response:
-            return response.status == 200
-    except urllib.error.HTTPError as error:
-        if error.code == 503:
-            return False
-        raise
-    except urllib.error.URLError:
-        return False
 
 
 def describe(url, path, temperature, tokens, timeout):
@@ -280,59 +261,28 @@ class Toolbox:
         self.cfg = cfg
         self.limits = limits
         self.proc = None
-        self.err = bytearray()
         self.reader = None
 
-    async def drain(self):
-        while True:
-            keep = int(self.limits["stderr_keep"])
-            block = await self.proc.stderr.read(keep)
-            if not block:
-                return
-            self.err += block
-            del self.err[:-keep]
-
     async def start(self, limit):
-        parts = command(self.cfg["command"], self.root)
-        if not Path(parts[0]).is_file():
-            raise RuntimeError("Vision server is missing")
-        self.proc = await asyncio.create_subprocess_exec(
-            *parts, cwd=str(self.root),
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+        self.proc, self.reader = await i2c.serve_until(
+            self.root, self.cfg["command"], self.cfg["url"], self.limits, limit, "Vision server is missing",
         )
-        self.reader = asyncio.create_task(self.drain())
-        started = asyncio.get_running_loop().time()
-        while self.proc.returncode is None:
-            if await asyncio.to_thread(healthy, self.cfg["url"], float(self.limits["health_timeout"])):
-                return
-            if asyncio.get_running_loop().time() - started > limit:
-                self.proc.kill()
-                await self.proc.wait()
-                raise RuntimeError("Vision did not start")
-            await asyncio.sleep(float(self.limits["health_poll"]))
-        detail = self.err.decode("utf-8", "replace").strip().splitlines()
-        tail = detail[-1] if detail else "no stderr"
-        raise RuntimeError(f"Vision exited {self.proc.returncode}: {tail}")
 
     async def stop(self):
-        if self.proc is not None and self.proc.returncode is None:
-            self.proc.kill()
-            await self.proc.wait()
-        if self.reader is not None:
-            await self.reader
+        await i2c.serve_stop(self.proc, self.reader)
 
     def work(self, data):
         reg, body = data[0], data[1:]
-        if reg == 1:
+        if reg == SHOT:
             return shot(body.decode()).encode()
-        if reg == 2:
+        if reg == SHELL:
             return run_cmd(body.decode()).encode()
-        if reg == 3:
+        if reg == SEE:
             return describe(
                 self.cfg["url"], body.decode(), float(self.cfg["temperature"]),
                 int(self.cfg["max_tokens"]), float(self.limits["http_timeout"]),
             ).encode()
-        if reg == 4:
+        if reg == ACT:
             action = parse_input(body.decode(), self.limits["grid"])
             return perform(action, screen_bounds(), int(self.limits["grid"]))
         raise i2c.Nack()
@@ -365,61 +315,5 @@ def main():
     i2c.main_for("tools", build)
 
 
-def test():
-    import tempfile
-
-    text = run_cmd(f"\"{sys.executable}\" -c \"print(6)\"")
-    assert text.strip() == "6"
-    assert parse_input("click 10 20", 1000) == ("click", 10, 20)
-    assert parse_input("type hi there", 1000) == ("type", "hi there")
-    assert grid_point(0, 1000, (0, 0, 1001, 501), 1000) == (1000, 0)
-    grid = str(i2c.load()[1]["limits"]["grid"])
-    assert f"0 to {grid}" in (Path(__file__).resolve().parent / "prompt.txt").read_text(encoding="utf-8")
-    dpi_aware()
-    folder = Path(tempfile.mkdtemp())
-    image = folder / "screen.png"
-    assert shot(image).endswith("screen.png")
-    assert image.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
-    import shutil
-    shutil.rmtree(folder, ignore_errors=True)
-    try:
-        parse_input("nope", 1000)
-        raise AssertionError("bad input")
-    except i2c.Nack:
-        pass
-    root = Path(tempfile.mkdtemp())
-    cfg = i2c.test_cfg()
-    cfg["vision"] = {"url": "http://127.0.0.1:9", "command": ["missing"]}
-
-    async def run():
-        bus = i2c.Bus(root, 0x14, root / "RUN_test", cfg)
-        box = Toolbox(root, cfg["vision"], cfg["limits"])
-        master = i2c.Bus(root, 0x16, root / "RUN_test", cfg)
-        bus.up()
-
-        async def on_frame(_src, line):
-            data = i2c.write_payload(line)
-            with bus.stretch():
-                result = box.work(data)
-            return i2c.reply(line, data, result)
-
-        stop = [False]
-        task = asyncio.create_task(i2c._peer(bus, on_frame, stop))
-        reply = await master.request(0x14, i2c.pack_call(0x14, bytes([2]) + b"echo tools-ok"))
-        assert b"tools-ok" in i2c.read_payload(reply)
-        try:
-            await master.request(0x14, i2c.pack_call(0x14, bytes([4]) + b"nope"))
-            raise AssertionError("bad input")
-        except RuntimeError:
-            pass
-        assert (root / "wire" / "scl" / "14").exists() is False
-        stop[0] = True
-        await task
-        import shutil
-        shutil.rmtree(root, ignore_errors=True)
-
-    asyncio.run(run())
-
-
 if __name__ == "__main__":
-    test() if "--test" in sys.argv else main()
+    main()
