@@ -172,11 +172,8 @@ class Ear:
             self.directory = None
 
 
-def main():
-    root, cfg = i2c.load()
-    run = Path(sys.argv[1])
-    bus = i2c.Bus(root, i2c.addr(cfg, "ears"), run, cfg)
-    luna = i2c.addr(cfg, "luna")
+def build(bus, cfg, root, _run):
+    mind = i2c.addr(cfg, "mind")
     ear = Ear(root, cfg["ears"])
     heard = dict(cfg["ears"])
     heard["frame_ms"] = cfg["limits"]["frame_ms"]
@@ -186,9 +183,7 @@ def main():
     queue = []
 
     async def on_frame(_src, line):
-        data = i2c.write_payload(line)
-        if not data or data[0] != 1:
-            raise i2c.Nack()
+        data = i2c.accept(line, 1)
         queue.append(data[1:].decode())
         return i2c.pack_write(bus.addr, data)
 
@@ -199,16 +194,20 @@ def main():
         for piece in vad.take(Path(path).read_bytes()):
             text = (await asyncio.to_thread(ear.decode, piece, rate)).strip()
             if text:
-                await bus.request(luna, i2c.pack_write(luna, text.encode()))
+                await bus.request(mind, i2c.pack_write(mind, text.encode()))
 
-    async def live():
+    async def around(serve):
         try:
-            await asyncio.wait_for(asyncio.to_thread(ear.load), float(cfg["busy"]["ears"]))
-            await bus.run(on_frame, pump)
+            await asyncio.wait_for(asyncio.to_thread(ear.load), float(cfg["start"]["ears"]))
+            await serve
         finally:
             ear.close()
 
-    i2c.entry(live)
+    return on_frame, pump, around
+
+
+def main():
+    i2c.main_for("ears", build)
 
 
 def test():

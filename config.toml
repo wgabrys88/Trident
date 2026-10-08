@@ -7,33 +7,31 @@ telegram = "11"
 ears = "12"
 voice = "13"
 tools = "14"
-luna = "16"
+mind = "16"
 injector = "48"
 memory = "50"
 
 [bus]
 frame_timeout = 2
 poll = 0.05
-bus_off = 32
 backoff = 1
 backoff_cap = 30
 retry_seconds = 120
 redial_cap = 3
 self_turn_cap = 4
-luna_start_cap = 3
+restart_cap = 3
 stable_seconds = 30
 share_retries = 5
 share_delay = 0.05
+nack_retries = 1
 
 [busy]
-timer = 2
-telegram = 8
+tools = 90
+
+[start]
 ears = 30
 voice = 60
 tools = 90
-luna = 150
-injector = 90
-memory = 2
 
 [selftest]
 frame_timeout = 0.4
@@ -55,12 +53,24 @@ stderr_keep = 4000
 install_timeout = 3600
 grid = 1000
 
-[luna]
+[mind]
+manufacturer = "cursor"
+part = "gpt-5.6-luna-none"
+revision = "cli"
+capabilities = "text"
 model = "gpt-5.6-luna-none"
-command = ["%LOCALAPPDATA%/cursor-agent/versions"]
+turn = 150
+context_chars = 400000
+tools = "shell_tool_call,delete_tool_call,glob_tool_call,grep_tool_call,read_tool_call,update_todos_tool_call,read_todos_tool_call,edit_tool_call,ls_tool_call,read_lints_tool_call,mcp_tool_call,sem_search_tool_call,create_plan_tool_call,web_search_tool_call,task_tool_call,list_mcp_resources_tool_call,read_mcp_resource_tool_call,apply_agent_diff_tool_call,ask_question_tool_call,fetch_tool_call,switch_mode_tool_call,generate_image_tool_call,record_screen_tool_call,computer_use_tool_call,write_shell_stdin_tool_call,reflect_tool_call,setup_vm_environment_tool_call,truncated_tool_call,start_grind_execution_tool_call,start_grind_planning_tool_call,web_fetch_tool_call,report_bugfix_results_tool_call,ai_attribution_tool_call,pr_management_tool_call,mcp_auth_tool_call,await_tool_call,blame_by_file_path_tool_call,get_mcp_tools_tool_call,report_bug_tool_call,set_active_branch_tool_call,communicate_update_tool_call,send_final_summary_tool_call,update_pr_code_tour_tool_call,replace_env_tool_call,edit_pr_labels_tool_call,record_ci_investigation_findings_tool_call,send_message_tool_call,fetch_cloud_agent_data_tool_call,send_to_user_tool_call,pi_read_tool_call,pi_bash_tool_call,pi_edit_tool_call,pi_write_tool_call,pi_grep_tool_call,pi_find_tool_call,pi_ls_tool_call,connect_scm_tool_call,search_conversations_tool_call,create_goal_tool_call,update_goal_tool_call,adopt_tool_call,get_agent_status_tool_call,send_to_agent_tool_call,read_agent_transcript_tool_call,create_agent_tool_call,stop_agent_tool_call,get_pr_code_tour_tool_call,write_canvas_tool_call,read_canvas_tool_call"
+command = ["%LOCALAPPDATA%/cursor-agent/versions", "node.exe", "index.js", "-p", "--model", "{model}", "--output-format", "text", "--trust", "--workspace", "{run}", "--exclude-tools", "{tools}"]
 
 [telegram]
 tdata = "%APPDATA%/Telegram Desktop/tdata"
+min_layer = 65
+dh_bytes = 256
+request_retries = 0
+connection_retries = 0
+flood_sleep_threshold = 0
 
 [ears]
 model = "artifacts/nemotron-3.5-asr-streaming-0.6b.q8_0.gguf"

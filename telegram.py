@@ -131,7 +131,7 @@ class Telegram:
         self.owner = int(cfg["owner"]["telegram_id"])
         self.ears = i2c.addr(cfg, "ears")
         self.voice = i2c.addr(cfg, "voice")
-        self.luna = i2c.addr(cfg, "luna")
+        self.mind = i2c.addr(cfg, "mind")
         self.timer = i2c.addr(cfg, "timer")
         self.state = "down"
         self.client = None
@@ -225,9 +225,10 @@ class Telegram:
         return {"down": 0, "dialing": 1, "up": 2}[self.state]
 
     async def on_frame(self, _src, line):
-        if line.split()[2] == "R" and not i2c.write_payload(line):
-            return i2c.with_payload(line, bytes([self.status()]))
-        action, body = plan(self.state, i2c.write_payload(line))
+        data = i2c.write_payload(line)
+        if line.split()[2] == "R" and not data:
+            return i2c.reply(line, b"", bytes([self.status()]))
+        action, body = plan(self.state, data)
         if action == "dial":
             self.state = "dialing"
             self.spawn(self.dial())
@@ -288,7 +289,7 @@ class Telegram:
         native = NTgCalls.get_protocol()
         return PhoneCallProtocol(
             udp_p2p=native.udp_p2p, udp_reflector=native.udp_reflector,
-            min_layer=65, max_layer=native.max_layer,
+            min_layer=int(self.cfg["telegram"]["min_layer"]), max_layer=native.max_layer,
             library_versions=list(reversed(native.library_versions)),
         )
 
@@ -347,7 +348,7 @@ class Telegram:
         await self.call(self.engine, "create_p2p_call", self.owner)
         await self.call(self.engine, "set_stream_sources", self.owner, StreamMode.CAPTURE, self.media(48000))
         await self.call(self.engine, "set_stream_sources", self.owner, StreamMode.PLAYBACK, self.media(16000))
-        dh = await self.client(GetDhConfigRequest(0, 256))
+        dh = await self.client(GetDhConfigRequest(0, int(self.cfg["telegram"]["dh_bytes"])))
         self.dh = DhConfig(dh.g, bytes(dh.p), bytes(dh.random))
 
     async def connect(self, call):
@@ -486,7 +487,7 @@ class Telegram:
         self.cursor = event.id
         text = (event.raw_text or "").strip()
         if text:
-            self.out.append((self.luna, text.encode()))
+            self.out.append((self.mind, text.encode()))
 
     async def start(self):
         bind()
@@ -502,7 +503,9 @@ class Telegram:
         session.parent.mkdir(parents=True, exist_ok=True)
         self.client = await TelegramClient.FromTDesktop(
             user, session=str(session), flag=UseCurrentSession, api=API.TelegramDesktop,
-            request_retries=0, connection_retries=0, auto_reconnect=True, flood_sleep_threshold=0,
+            request_retries=int(self.cfg["telegram"]["request_retries"]),
+            connection_retries=int(self.cfg["telegram"]["connection_retries"]),
+            auto_reconnect=False, flood_sleep_threshold=int(self.cfg["telegram"]["flood_sleep_threshold"]),
             raise_last_call_error=True, catch_up=True,
         )
         self.client.add_event_handler(self.message, events.NewMessage(incoming=True, from_users=[self.owner]))
@@ -527,20 +530,21 @@ class Telegram:
             await self.client.disconnect()
 
 
-def main():
-    root, cfg = i2c.load()
-    run = Path(sys.argv[1])
-    bus = i2c.Bus(root, i2c.addr(cfg, "telegram"), run, cfg)
+def build(bus, cfg, root, run):
     phone = Telegram(bus, cfg, run, root)
 
-    async def live():
+    async def around(serve):
         await phone.start()
         try:
-            await bus.run(phone.on_frame, phone.pump)
+            await serve
         finally:
             await phone.stop()
 
-    i2c.entry(live)
+    return phone.on_frame, phone.pump, around
+
+
+def main():
+    i2c.main_for("telegram", build)
 
 
 def test():

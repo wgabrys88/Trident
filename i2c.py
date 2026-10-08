@@ -1,11 +1,25 @@
 import asyncio
 import os
+import shutil
 import sys
+import tempfile
 import time
 import tomllib
 from pathlib import Path
 
+TEC_STEP = 8
+REC_STEP = 1
+ERROR_PASSIVE = 128
+BUS_OFF_AT = 256
+REC_RECOVER = 119
+ERROR_ACTIVE = 127
+
+
 class Nack(Exception):
+    pass
+
+
+class BusOff(BaseException):
     pass
 
 
@@ -19,12 +33,33 @@ def addr(cfg, name):
     return int(cfg["address"][name], 16)
 
 
+def home_of(wire, address):
+    return Path(wire) / f"{address:02x}"
+
+
+def scl_of(wire, address):
+    return Path(wire) / "scl" / f"{address:02x}"
+
+
 def entry(fn):
     try:
         asyncio.run(fn())
+    except BusOff:
+        raise SystemExit(1)
     except Exception as error:
         print(f"{type(error).__name__}: {error}", file=sys.stderr)
         raise SystemExit(1)
+
+
+def main_for(name, build):
+    root, cfg = load()
+    run = Path(sys.argv[1])
+    bus = Bus(root, addr(cfg, name), run, cfg)
+    handler, pump, around = build(bus, cfg, root, run)
+    if around:
+        entry(lambda: around(bus.run(handler, pump)))
+    else:
+        entry(lambda: bus.run(handler, pump))
 
 
 def io(fn):
@@ -125,12 +160,32 @@ def nack(target):
     return f"S {target:02x} W NA P"
 
 
+def nack_addr(line, address):
+    tok = line.split()
+    if len(tok) >= 3 and tok[0] == "S" and tok[2] in ("W", "R"):
+        return f"S {tok[1]} {tok[2]} NA P"
+    return f"S {address:02x} W NA P"
+
+
 def nack_data(line):
     data = write_payload(line)
     target = line.split()[1]
     if not data:
-        return nack(int(target, 16))
+        return nack_addr(line, int(target, 16))
     return f"S {target} W A {data[0]:02x} NA P"
+
+
+def reply(line, data, payload=None):
+    if payload is not None and (line.split()[2] == "R" or " Sr " in line):
+        return with_payload(line, payload)
+    return pack_write(int(line.split()[1], 16), data)
+
+
+def accept(line, register):
+    data = write_payload(line)
+    if not data or data[0] != register:
+        raise Nack()
+    return data
 
 
 def with_payload(line, payload):
@@ -209,49 +264,106 @@ class Bus:
         self.addr = address
         self.logs = Path(run) if run else None
         self.cfg = cfg
-        self.home = self.root / f"{address:02x}"
+        self.home = home_of(self.root, address)
         self.inbox = self.home / "inbox"
         self.seq = 0
-        self.err = 0
+        self.tec = 0
+        self.rec = 0
+        self.dead = False
         self.handler = None
         self._serving = False
         self.poll = float(cfg["bus"]["poll"])
         self.frame_timeout = float(cfg["bus"]["frame_timeout"])
-        self.bus_off_at = int(cfg["bus"]["bus_off"])
-        self._busy = {int(value, 16): float(cfg["busy"][name]) for name, value in cfg["address"].items()}
+        self.nack_retries = int(cfg["bus"]["nack_retries"])
+        self._busy = {
+            int(value, 16): float(cfg["busy"][name])
+            for name, value in cfg["address"].items()
+            if name in cfg["busy"]
+        }
+
+    def error_passive(self):
+        return self.tec >= ERROR_PASSIVE or self.rec >= ERROR_PASSIVE
+
+    def error_active(self):
+        return self.tec <= ERROR_ACTIVE and self.rec <= ERROR_ACTIVE
+
+    def store(self):
+        self.home.mkdir(parents=True, exist_ok=True)
+        (self.home / "tec").write_text(f"{self.tec}\n", encoding="utf-8")
+        (self.home / "rec").write_text(f"{self.rec}\n", encoding="utf-8")
+
+    def _count(self, name):
+        path = self.home / name
+        if not path.is_file():
+            return 0
+        return int(path.read_text(encoding="utf-8").strip())
 
     def up(self):
         self.home.mkdir(parents=True, exist_ok=True)
         self.inbox.mkdir(parents=True, exist_ok=True)
         (self.home / "alive").write_text(f"{os.getpid()} {time.time()}\n", encoding="utf-8")
-        self.err = 0
-        (self.home / "err").write_text("0", encoding="utf-8")
-        remove(self.home / "busoff")
+        if (self.home / "busoff").is_file():
+            self.tec = 0
+            self.rec = 0
+            remove(self.home / "busoff")
+        else:
+            self.tec = self._count("tec")
+            self.rec = self._count("rec")
+        self.dead = False
+        self.store()
 
     def down(self):
         remove(self.home / "alive")
-        remove(self.root / "scl" / f"{self.addr:02x}")
+        remove(scl_of(self.root, self.addr))
 
     def present(self, target):
-        return (self.root / f"{target:02x}" / "alive").is_file()
+        return (home_of(self.root, target) / "alive").is_file()
 
     def off(self, target):
-        return (self.root / f"{target:02x}" / "busoff").is_file()
+        return (home_of(self.root, target) / "busoff").is_file()
 
     def down_flag(self, target):
-        return (self.root / f"{target:02x}" / "down").is_file()
+        return (home_of(self.root, target) / "down").is_file()
 
     def ready(self, target):
         return self.present(target) and not self.off(target) and not self.down_flag(target)
 
-    def bump(self, delta):
-        was = self.err
-        self.err = max(0, self.err + delta)
-        self.home.mkdir(parents=True, exist_ok=True)
-        (self.home / "err").write_text(str(self.err), encoding="utf-8")
-        if was < self.bus_off_at <= self.err:
+    def tx_success(self):
+        if self.tec:
+            self.tec -= 1
+            self.store()
+
+    def tx_ack_error(self):
+        if self.error_passive():
+            return
+        self.tec += TEC_STEP
+        self.store()
+        self._bus_off()
+
+    def tx_fault(self):
+        self.tec += TEC_STEP
+        self.store()
+        self._bus_off()
+
+    def rx_fault(self):
+        self.rec += REC_STEP
+        self.store()
+
+    def rx_success(self):
+        if not self.rec:
+            return
+        self.rec = REC_RECOVER if self.rec > ERROR_ACTIVE else self.rec - 1
+        self.store()
+
+    def _bus_off(self):
+        if self.tec >= BUS_OFF_AT:
+            self.dead = True
             (self.home / "busoff").write_text("1\n", encoding="utf-8")
-            print(f"{self.addr:02x} bus-off", file=sys.stderr)
+            raise BusOff()
+
+    def post(self, line):
+        self.seq += 1
+        place(self.inbox, f"q-{self.addr:02x}-{self.seq}", line)
 
     def journal(self, src, dst, frame, note, ms):
         if self.logs is None:
@@ -265,7 +377,7 @@ class Bus:
         return _Stretch(self)
 
     def scl_held(self, target):
-        path = self.root / "scl" / f"{target:02x}"
+        path = scl_of(self.root, target)
         if not path.is_file():
             return None
         return time.time() - float(read_file(path).split()[1])
@@ -281,7 +393,7 @@ class Bus:
             self._serving = False
 
     async def _take(self, handler):
-        if not self.inbox.is_dir():
+        if not self.inbox.is_dir() or self.dead:
             return
         pending = sorted(path for path in self.inbox.iterdir() if path.is_file() and path.name.startswith("q-"))
         if not pending:
@@ -289,29 +401,54 @@ class Bus:
         path = pending[0]
         line = read_file(path)
         src = int(path.name.split("-")[1], 16)
-        remove(path)
         started = time.monotonic()
         try:
-            if self.off(self.addr):
-                reply = nack(self.addr)
-                note = "bus-off"
+            if not legal(line, self.cfg):
+                self.rx_fault()
+                reply_line = self._form_reply(line)
+                note = "form"
             else:
-                reply = await handler(src, line)
-                note = "nack" if reply.split()[3] == "NA" or data_nacked(reply) else "ack"
+                reply_line = await handler(src, line)
+                note = "nack" if reply_line.split()[3] == "NA" or data_nacked(reply_line) else "ack"
                 if note == "ack":
-                    self.bump(-1)
+                    self.rx_success()
         except Nack:
-            reply = nack_data(line)
+            reply_line = nack_data(line)
             note = "nack"
-        except Exception as error:
-            self.bump(8)
-            reply = nack(self.addr)
-            note = type(error).__name__
-        seq = path.name.split("-")[2]
-        place(self.root / f"{src:02x}" / "inbox", f"r-{seq}", reply)
-        self.journal(src, self.addr, reply, note, int((time.monotonic() - started) * 1000))
+        except BusOff:
+            raise
+        except Exception:
+            self.rx_fault()
+            reply_line = nack_data(line)
+            note = "fault"
+        place(self.root / f"{src:02x}" / "inbox", f"r-{path.name.split('-')[2]}", reply_line)
+        remove(path)
+        self.journal(src, self.addr, reply_line, note, int((time.monotonic() - started) * 1000))
+
+    def _form_reply(self, line):
+        tok = line.split()
+        if len(tok) >= 6 and tok[0] == "S" and tok[2] == "W" and tok[3] == "A" and len(tok[4]) == 2:
+            try:
+                byte = int(tok[4], 16)
+            except ValueError:
+                return nack_addr(line, self.addr)
+            return f"S {tok[1]} W A {byte:02x} NA P"
+        return nack_addr(line, self.addr)
+
+    async def _suspend(self):
+        if not self.error_passive():
+            return
+        deadline = time.monotonic() + self.frame_timeout
+        while time.monotonic() < deadline:
+            if self.dead:
+                raise BusOff()
+            await self.serve()
+            await asyncio.sleep(self.poll)
 
     async def transfer(self, target, line):
+        await self._suspend()
+        if self.dead:
+            raise BusOff()
         if self.off(target):
             raise RuntimeError(f"bus-off {target:02x}")
         if not self.present(target):
@@ -325,22 +462,25 @@ class Bus:
         limit = self.frame_timeout
         while not reply_path.exists():
             await self.serve()
-            if self.scl_held(target) is not None:
+            if self.scl_held(target) is not None and target in self._busy:
                 limit = max(limit, self._busy[target])
             if time.monotonic() - started > limit:
-                self.bump(8)
+                self.tx_ack_error()
                 self.journal(self.addr, target, line, "timeout", int((time.monotonic() - started) * 1000))
                 raise TimeoutError(f"timeout {target:02x}")
             await asyncio.sleep(self.poll)
         return read_file(reply_path)
 
     async def request(self, target, line):
+        data_tries = 0
         while True:
+            if self.dead:
+                raise BusOff()
             if self.off(target) or not self.present(target):
                 raise RuntimeError(f"NACK {target:02x}")
-            reply = await self.transfer(target, line)
+            reply_line = await self.transfer(target, line)
             remove(self.inbox / f"r-{self.seq}")
-            if reply.split()[3] == "NA":
+            if reply_line.split()[3] == "NA":
                 if self.present(target) and not self.off(target):
                     deadline = time.monotonic() + self.frame_timeout
                     while time.monotonic() < deadline:
@@ -348,20 +488,28 @@ class Bus:
                         await asyncio.sleep(self.poll)
                     continue
                 raise RuntimeError(f"NACK {target:02x}")
-            if data_nacked(reply):
-                self.bump(8)
+            if data_nacked(reply_line):
+                data_tries += 1
+                if data_tries <= self.nack_retries:
+                    continue
                 raise RuntimeError(f"NACK {target:02x}")
-            self.bump(-1)
-            return reply
+            self.tx_success()
+            return reply_line
 
     async def run(self, handler, pump=None):
         self.handler = handler
         self.up()
         try:
             while True:
+                if self.dead:
+                    raise BusOff()
                 await self.serve(handler)
+                if self.dead:
+                    raise BusOff()
                 if pump:
                     await pump()
+                if self.dead:
+                    raise BusOff()
                 await asyncio.sleep(self.poll)
         finally:
             self.down()
@@ -369,8 +517,7 @@ class Bus:
 
 class _Stretch:
     def __init__(self, bus):
-        self.bus = bus
-        self.path = bus.root / "scl" / f"{bus.addr:02x}"
+        self.path = scl_of(bus.root, bus.addr)
 
     def __enter__(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -397,12 +544,47 @@ async def _peer(bus, handler, stop):
         await asyncio.sleep(bus.poll)
 
 
+class Stand:
+    def __init__(self, cfg):
+        self.root = Path(tempfile.mkdtemp())
+        self.run = self.root / "RUN_test"
+        self.run.mkdir()
+        self.cfg = cfg
+        self.stop = [False]
+        self.tasks = []
+
+    def bus(self, address):
+        return Bus(self.root, address, self.run, self.cfg)
+
+    def peer(self, address, handler):
+        bus = self.bus(address)
+        bus.up()
+        self.tasks.append(asyncio.create_task(_peer(bus, handler, self.stop)))
+        return bus
+
+    async def close(self):
+        self.stop[0] = True
+        for task in self.tasks:
+            task.cancel()
+        if self.tasks:
+            await asyncio.gather(*self.tasks, return_exceptions=True)
+        shutil.rmtree(self.root, ignore_errors=True)
+
+
+async def rehearse(cfg, peers, body):
+    stand = Stand(cfg)
+    buses = {address: stand.peer(address, handler) for address, handler in peers.items()}
+    try:
+        await body(stand, buses)
+    finally:
+        await stand.close()
+
+
 def test():
     asyncio.run(_test())
 
 
 async def _test():
-    import tempfile
     assert legal("S 11 W A 01 A P")
     assert legal("S 16 W NA P")
     assert legal("S 50 W A 01 A 68 A 69 A Sr 50 R A 68 A 69 NA P")
@@ -413,30 +595,32 @@ async def _test():
     assert not legal("S 08 W A 01 A P")
     assert not legal("S 50 W A Sr 11 R A P")
     cfg = test_cfg()
+    cfg["busy"]["memory"] = cfg["selftest"]["busy"]
     root = Path(tempfile.mkdtemp())
     run = root / "RUN_test"
     target = Bus(root, 0x50, run, cfg)
     master = Bus(root, 0x10, run, cfg)
     target.up()
-    seen = []
 
     async def on(_src, line):
-        seen.append(line)
+        assert any(target.inbox.glob("q-*"))
         data = write_payload(line)
         if data[:1] == b"\xff":
             raise Nack()
         if data[:1] == b"\xfe":
             with target.stretch():
                 await asyncio.sleep(0.25)
+        if data[:1] == b"\xfd":
+            raise RuntimeError("handler")
         if " Sr " in line or line.split()[2] == "R":
             return with_payload(line, b"\x68\x69")
         return pack_write(0x50, data)
 
     stop = [False]
     task = asyncio.create_task(_peer(target, on, stop))
-    reply = await master.request(0x50, pack_call(0x50, b"\x01\x68\x69"))
-    assert read_payload(reply) == b"\x68\x69"
-    assert (target.inbox.parent.parent / "50" / "inbox").is_dir()
+    answered = await master.request(0x50, pack_call(0x50, b"\x01\x68\x69"))
+    assert read_payload(answered) == b"\x68\x69"
+    assert list(target.inbox.glob("q-*")) == []
     text = (run / "bus.log").read_text(encoding="utf-8")
     assert " ack " in text
     assert "S 50" in text
@@ -444,7 +628,7 @@ async def _test():
 
     async def on_hold(_src, line):
         with target.stretch():
-            held.append((target.root / "scl" / "50").is_file())
+            held.append(scl_of(target.root, 0x50).is_file())
             await asyncio.sleep(0.25)
         return pack_write(0x50, write_payload(line))
 
@@ -461,6 +645,7 @@ async def _test():
     task = asyncio.create_task(_peer(target, on2, stop))
     cfg_fast = test_cfg()
     cfg_fast["bus"]["frame_timeout"] = 0.15
+    cfg_fast["busy"]["memory"] = cfg_fast["selftest"]["busy"]
     master2 = Bus(root, 0x10, run, cfg_fast)
     master2.seq = 100
     await master2.request(0x50, pack_write(0x50, b"\xfe"))
@@ -470,15 +655,15 @@ async def _test():
 
     async def on3(src, line):
         if busy["on"]:
-            return nack(0x50)
+            return nack_addr(line, 0x50)
         return pack_write(0x50, write_payload(line))
 
     stop[0] = True
     await task
     stop[0] = False
     task = asyncio.create_task(_peer(target, on3, stop))
-    one = await master.transfer(0x50, pack_write(0x50, b"\x02"))
-    assert one.split()[3] == "NA"
+    one = await master.transfer(0x50, "S 50 R A P")
+    assert one == "S 50 R NA P"
     busy["on"] = False
 
     async def release():
@@ -487,23 +672,89 @@ async def _test():
 
     busy["on"] = True
     asyncio.create_task(release())
-    reply = await master.request(0x50, pack_write(0x50, b"\x03"))
-    assert reply.split()[3] == "A"
+    again = await master.request(0x50, pack_write(0x50, b"\x03"))
+    assert again.split()[3] == "A"
     stop[0] = True
     await task
+    stop[0] = False
+    task = asyncio.create_task(_peer(target, on, stop))
+    before = target.rec
+    tec_before = master.tec
+    try:
+        await master.request(0x50, pack_write(0x50, b"\xff"))
+        raise AssertionError("deliberate nack")
+    except RuntimeError:
+        pass
+    assert target.rec == before
+    assert master.tec == tec_before
+    try:
+        await master.request(0x50, pack_write(0x50, b"\xfd"))
+        raise AssertionError("handler fault")
+    except RuntimeError:
+        pass
+    assert target.rec == before + 1 + cfg["bus"]["nack_retries"]
+    assert master.tec == tec_before
+    stop[0] = True
+    await task
+    place(target.inbox, "q-10-77", "NOT A FRAME\n")
+    await target.serve(on)
+    assert target.rec == before + 1 + cfg["bus"]["nack_retries"] + 1
+    form = read_file(master.inbox / "r-77")
+    assert form == "S 50 W NA P"
+    target.tec = 40
+    target.rec = 9
+    target.store()
+    target.down()
+    target.up()
+    assert target.tec == 40 and target.rec == 9
+    (target.home / "busoff").write_text("1\n", encoding="utf-8")
+    target.up()
+    assert target.tec == 0 and target.rec == 0
+    assert not (target.home / "busoff").is_file()
+    node = Bus(root, 0x14, run, cfg)
+    node.up()
+    node.rec = 130
+    node.rx_success()
+    assert node.rec == REC_RECOVER
+    node.rec = 4
+    node.rx_success()
+    assert node.rec == 3
+    node.rec = 0
+    node.rx_success()
+    assert node.rec == 0
+    node.tec = 127
+    node.rec = 119
+    assert node.error_active()
+    node.tec = ERROR_PASSIVE
+    assert node.error_passive() and not node.error_active()
     cfg_off = test_cfg()
-    cfg_off["bus"]["frame_timeout"] = 0.2
-    cfg_off["bus"]["bus_off"] = 8
-    lonely = Bus(root, 0x14, run, cfg_off)
+    cfg_off["bus"]["frame_timeout"] = 0.05
+    cfg_off["bus"]["poll"] = 0.01
+    lonely = Bus(root, 0x13, run, cfg_off)
     sender = Bus(root, 0x12, run, cfg_off)
     lonely.up()
+    for _ in range(16):
+        try:
+            await sender.transfer(0x13, pack_write(0x13, b"\x01"))
+        except TimeoutError:
+            pass
+    assert sender.tec == ERROR_PASSIVE
+    assert sender.error_passive()
     try:
-        await sender.transfer(0x14, pack_write(0x14, b"\x01"))
-        raise AssertionError("timeout missing")
+        await sender.transfer(0x13, pack_write(0x13, b"\x01"))
     except TimeoutError:
         pass
-    assert sender.off(0x12)
+    assert sender.tec == ERROR_PASSIVE
     assert "timeout" in (run / "bus.log").read_text(encoding="utf-8")
+    sender.tec = BUS_OFF_AT - TEC_STEP
+    sender.store()
+    try:
+        sender.tx_fault()
+        raise AssertionError("bus-off missing")
+    except BusOff:
+        pass
+    assert sender.tec == BUS_OFF_AT
+    assert sender.off(0x12)
     src = root / "wire" / "tmp" / "locked.txt"
     src.parent.mkdir(parents=True, exist_ok=True)
     src.write_text("frame", encoding="utf-8")
@@ -526,7 +777,6 @@ async def _test():
     threading.Thread(target=close).start()
     move(src, root / "wire" / "tmp" / "moved.txt")
     assert (root / "wire" / "tmp" / "moved.txt").read_text(encoding="utf-8") == "frame"
-    import shutil
     shutil.rmtree(root, ignore_errors=True)
 
 

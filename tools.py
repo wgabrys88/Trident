@@ -3,10 +3,12 @@ import base64
 import ctypes
 import json
 import os
+import struct
 import subprocess
 import sys
 import urllib.error
 import urllib.request
+import zlib
 from pathlib import Path
 
 import i2c
@@ -30,21 +32,96 @@ def run_cmd(text):
     return body
 
 
+def dpi_aware():
+    if getattr(dpi_aware, "done", False):
+        return
+    user = ctypes.windll.user32
+    user.SetProcessDpiAwarenessContext.restype = ctypes.c_bool
+    user.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+    if not user.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+        raise RuntimeError("DPI awareness was not set")
+    dpi_aware.done = True
+
+
+class _BitmapInfo(ctypes.Structure):
+    _fields_ = [
+        ("biSize", ctypes.c_uint32), ("biWidth", ctypes.c_int32), ("biHeight", ctypes.c_int32),
+        ("biPlanes", ctypes.c_uint16), ("biBitCount", ctypes.c_uint16), ("biCompression", ctypes.c_uint32),
+        ("biSizeImage", ctypes.c_uint32), ("biXPelsPerMeter", ctypes.c_int32), ("biYPelsPerMeter", ctypes.c_int32),
+        ("biClrUsed", ctypes.c_uint32), ("biClrImportant", ctypes.c_uint32),
+    ]
+
+
+def png(width, height, rows):
+    def chunk(tag, data):
+        return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF)
+
+    raw = b"".join(b"\x00" + row for row in rows)
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw, 1)) + chunk(b"IEND", b"")
+
+
 def shot(path):
+    dpi_aware()
+    left, top, width, height = screen_bounds()
+    if width < 1 or height < 1:
+        raise RuntimeError("virtual screen is empty")
+    user = ctypes.windll.user32
+    gdi = ctypes.windll.gdi32
+    user.GetDC.restype = ctypes.c_void_p
+    user.ReleaseDC.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    gdi.CreateCompatibleDC.restype = ctypes.c_void_p
+    gdi.CreateCompatibleDC.argtypes = [ctypes.c_void_p]
+    gdi.CreateCompatibleBitmap.restype = ctypes.c_void_p
+    gdi.CreateCompatibleBitmap.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+    gdi.SelectObject.restype = ctypes.c_void_p
+    gdi.SelectObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    gdi.BitBlt.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_uint32]
+    gdi.GetDIBits.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint, ctypes.c_uint,
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint,
+    ]
+    gdi.GetDIBits.restype = ctypes.c_int
+    gdi.DeleteObject.argtypes = [ctypes.c_void_p]
+    gdi.DeleteDC.argtypes = [ctypes.c_void_p]
+    src = user.GetDC(0)
+    mem = gdi.CreateCompatibleDC(src) if src else None
+    bmp = gdi.CreateCompatibleBitmap(src, width, height) if mem else None
+    old = gdi.SelectObject(mem, bmp) if bmp else None
+    try:
+        if not src or not mem or not bmp or not gdi.BitBlt(mem, 0, 0, width, height, src, left, top, 0x00CC0020):
+            raise RuntimeError("shot failed")
+        header = _BitmapInfo()
+        header.biSize = ctypes.sizeof(_BitmapInfo)
+        header.biWidth = width
+        header.biHeight = height
+        header.biPlanes = 1
+        header.biBitCount = 32
+        buf = ctypes.create_string_buffer(width * height * 4)
+        lines = gdi.GetDIBits(mem, bmp, 0, height, ctypes.cast(buf, ctypes.c_void_p), ctypes.byref(header), 0)
+        if lines != height:
+            raise RuntimeError("shot failed")
+    finally:
+        if mem and bmp:
+            gdi.SelectObject(mem, old)
+            gdi.DeleteObject(bmp)
+        if mem:
+            gdi.DeleteDC(mem)
+        if src:
+            user.ReleaseDC(0, src)
+    raw = buf.raw
+    rows = []
+    stride = width * 4
+    for y in range(height - 1, -1, -1):
+        base = y * stride
+        row = bytearray()
+        for x in range(width):
+            i = base + x * 4
+            row += bytes((raw[i + 2], raw[i + 1], raw[i]))
+        rows.append(bytes(row))
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    script = (
-        "Add-Type -AssemblyName System.Windows.Forms; "
-        "Add-Type -AssemblyName System.Drawing; "
-        "$b=[System.Windows.Forms.SystemInformation]::VirtualScreen; "
-        "$bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height; "
-        "$g=[System.Drawing.Graphics]::FromImage($bmp); "
-        "$g.CopyFromScreen($b.X,$b.Y,0,0,$bmp.Size); "
-        f"$bmp.Save('{path}',[System.Drawing.Imaging.ImageFormat]::Png)"
-    )
-    done = subprocess.run(["powershell", "-NoProfile", "-Command", script], capture_output=True, text=True)
-    if done.returncode or not path.is_file():
-        raise RuntimeError((done.stderr or "shot failed").strip())
+    path.write_bytes(png(width, height, rows))
     return str(path)
 
 
@@ -166,6 +243,7 @@ def _send(items):
 
 
 def perform(action, bounds, grid):
+    dpi_aware()
     if action[0] == "click":
         px, py = grid_point(action[1], action[2], bounds, grid)
         left, top, width, height = bounds
@@ -260,10 +338,7 @@ class Toolbox:
         raise i2c.Nack()
 
 
-def main():
-    root, cfg = i2c.load()
-    run = Path(sys.argv[1])
-    bus = i2c.Bus(root, i2c.addr(cfg, "tools"), run, cfg)
+def build(bus, cfg, root, _run):
     box = Toolbox(root, cfg["vision"], cfg["limits"])
 
     async def on_frame(_src, line):
@@ -273,17 +348,21 @@ def main():
         with bus.stretch():
             result = await asyncio.to_thread(box.work, data)
         if " Sr " in line or line.split()[2] == "R":
-            return i2c.with_payload(line, result)
-        return i2c.pack_write(bus.addr, data)
+            return i2c.reply(line, data, result)
+        return i2c.reply(line, data)
 
-    async def live():
-        await box.start(float(cfg["busy"]["tools"]))
+    async def around(serve):
+        await box.start(float(cfg["start"]["tools"]))
         try:
-            await bus.run(on_frame)
+            await serve
         finally:
             await box.stop()
 
-    i2c.entry(live)
+    return on_frame, None, around
+
+
+def main():
+    i2c.main_for("tools", build)
 
 
 def test():
@@ -294,6 +373,15 @@ def test():
     assert parse_input("click 10 20", 1000) == ("click", 10, 20)
     assert parse_input("type hi there", 1000) == ("type", "hi there")
     assert grid_point(0, 1000, (0, 0, 1001, 501), 1000) == (1000, 0)
+    grid = str(i2c.load()[1]["limits"]["grid"])
+    assert f"0 to {grid}" in (Path(__file__).resolve().parent / "prompt.txt").read_text(encoding="utf-8")
+    dpi_aware()
+    folder = Path(tempfile.mkdtemp())
+    image = folder / "screen.png"
+    assert shot(image).endswith("screen.png")
+    assert image.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+    import shutil
+    shutil.rmtree(folder, ignore_errors=True)
     try:
         parse_input("nope", 1000)
         raise AssertionError("bad input")
@@ -313,7 +401,7 @@ def test():
             data = i2c.write_payload(line)
             with bus.stretch():
                 result = box.work(data)
-            return i2c.with_payload(line, result)
+            return i2c.reply(line, data, result)
 
         stop = [False]
         task = asyncio.create_task(i2c._peer(bus, on_frame, stop))

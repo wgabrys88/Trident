@@ -34,55 +34,50 @@ class Store:
         raise i2c.Nack()
 
 
-def reply(address, line, payload, reading):
-    if reading:
-        return i2c.with_payload(line, payload)
-    return i2c.pack_write(address, i2c.write_payload(line))
-
-
-def main():
-    root, cfg = i2c.load()
-    run = Path(sys.argv[1])
-    bus = i2c.Bus(root, i2c.addr(cfg, "memory"), run, cfg)
+def build(bus, cfg, root, _run):
     store = Store(root / cfg["memory"]["path"])
 
     async def on_frame(_src, line):
         reading = line.split()[2] == "R" or " Sr " in line
-        return reply(bus.addr, line, store.op(i2c.write_payload(line)), reading)
+        payload = store.op(i2c.write_payload(line))
+        if reading:
+            return i2c.reply(line, i2c.write_payload(line), payload)
+        return i2c.reply(line, i2c.write_payload(line))
 
-    i2c.entry(lambda: bus.run(on_frame))
+    return on_frame, None, None
+
+
+def main():
+    i2c.main_for("memory", build)
 
 
 def test():
     import asyncio
-    import tempfile
 
     async def run():
-        root = Path(tempfile.mkdtemp())
         cfg = i2c.test_cfg()
-        life = root / "life" / "memory.sqlite"
-        store = Store(life)
-        bus = i2c.Bus(root, 0x50, root / "RUN_test", cfg)
-        master = i2c.Bus(root, 0x10, root / "RUN_test", cfg)
-        bus.up()
+        holder = {}
 
         async def on_frame(_src, line):
             reading = line.split()[2] == "R" or " Sr " in line
-            return reply(0x50, line, store.op(i2c.write_payload(line)), reading)
+            payload = holder["store"].op(i2c.write_payload(line))
+            if reading:
+                return i2c.reply(line, i2c.write_payload(line), payload)
+            return i2c.reply(line, i2c.write_payload(line))
 
-        stop = [False]
-        task = asyncio.create_task(i2c._peer(bus, on_frame, stop))
-        call = i2c.pack_call(0x50, bytes([1, 0x68, 0x69]))
-        reply_line = await master.request(0x50, call)
-        assert i2c.read_payload(reply_line) == b"\x68\x69"
-        again = await master.request(0x50, "S 50 R A P")
-        assert i2c.read_payload(again) == b"\x68\x69"
-        assert life.is_file()
-        assert store.db.execute("select count(*) from rec").fetchone()[0] == 1
-        stop[0] = True
-        await task
-        import shutil
-        shutil.rmtree(root, ignore_errors=True)
+        async def body(stand, buses):
+            life = stand.root / "life" / "memory.sqlite"
+            holder["store"] = Store(life)
+            master = stand.bus(0x10)
+            call = i2c.pack_call(0x50, bytes([1, 0x68, 0x69]))
+            reply_line = await master.request(0x50, call)
+            assert i2c.read_payload(reply_line) == b"\x68\x69"
+            again = await master.request(0x50, "S 50 R A P")
+            assert i2c.read_payload(again) == b"\x68\x69"
+            assert life.is_file()
+            assert holder["store"].db.execute("select count(*) from rec").fetchone()[0] == 1
+
+        await i2c.rehearse(cfg, {0x50: on_frame}, body)
 
     asyncio.run(run())
 

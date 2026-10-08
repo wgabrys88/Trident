@@ -126,17 +126,12 @@ class Voice:
         return path
 
 
-def main():
-    root, cfg = i2c.load()
-    run = Path(sys.argv[1])
-    bus = i2c.Bus(root, i2c.addr(cfg, "voice"), run, cfg)
+def build(bus, cfg, root, run):
     phone = i2c.addr(cfg, "telegram")
     voice = Voice(root, cfg["voice"], run, cfg["limits"])
 
     async def on_frame(_src, line):
-        data = i2c.write_payload(line)
-        if not data or data[0] != 1:
-            raise i2c.Nack()
+        data = i2c.accept(line, 1)
         voice.queue.append(data[1:].decode())
         return i2c.pack_write(bus.addr, data)
 
@@ -146,14 +141,18 @@ def main():
         path = await voice.wav(voice.queue.pop(0))
         await bus.request(phone, i2c.pack_write(phone, bytes([0x20]) + str(path).encode()))
 
-    async def live():
-        await voice.start(float(cfg["busy"]["voice"]))
+    async def around(serve):
+        await voice.start(float(cfg["start"]["voice"]))
         try:
-            await bus.run(on_frame, pump)
+            await serve
         finally:
             await voice.stop()
 
-    i2c.entry(live)
+    return on_frame, pump, around
+
+
+def main():
+    i2c.main_for("voice", build)
 
 
 def test():

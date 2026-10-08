@@ -1,6 +1,41 @@
 # Trident
 
-One Windows process per device. They share a folder bus. `run.py` is the supply. It is not on the bus and it carries no frames. Luna is the only model that decides. Her model string is `config.toml` key `luna.model`, `gpt-5.6-luna-none`. The same string is in `prompt.txt`. It is not in the master prompt.
+Data sheet status: **Preliminary**. Rev. 21, 2026-10-08. Tag `v21-protocol`.
+
+Preliminary means the tree is built and the self-tests pass. It is not live-proven. Product status waits on a real Telegram user call, journaled, as section 13 describes.
+
+## 1. General description
+
+Trident is one organism on the owner's Windows computer. Each device is its own process at its own 7-bit address. The devices share a folder that stands in for the wire. `run.py` is the supply. It is not on the bus and it carries no frames.
+
+The mind is the device at `0x16`. The part fitted in that slot today is named in section 6.4.7. Swapping that part is a change to this datasheet and to `config.toml`. It is not a second device.
+
+`i2c.py` is the bus library. Every device links it and imports no other device. Started without `--test` it prints `i2c.py is the wire` and exits 1.
+
+## 2. Features
+
+- One process per device. A new capability is a new device or a new register, written here first.
+- Frames follow NXP UM10204. The folder layout is a recorded choice where a file cannot be SDA or SCL.
+- Fault confinement is Bosch CAN 2.0 Part A §7, two counters, with the wire limits in section 6.3.
+- The supply restarts a device that exits, and stops the whole organism when any device reaches the restart cap.
+- Large payloads stay in files. A frame carries a path.
+- One self-test flag, `--test`. One injector. One observer with no address.
+
+## 3. Ordering information
+
+| Item | Value |
+| --- | --- |
+| Host | 64-bit Windows, Python 3.11 |
+| Python packages | `requirements.txt` |
+| Start | `artifacts\python\Scripts\python.exe run.py` |
+| Install | `py -3.11 install.py` |
+| Mind slot | `0x16`, process `mind.py` |
+| Fitted part | section 6.4.7, keys under `[mind]` |
+| Ear, voice, vision | `[ears]`, `[voice]`, `[vision]`, fetched by `[fetch]` |
+
+No key or credential is stored in the tree. The Telegram session is the owner's Desktop `tdata`, path key `telegram.tdata`.
+
+## 4. Block diagram
 
 ```mermaid
 flowchart LR
@@ -10,7 +45,7 @@ flowchart LR
   t12[0x12 ears]
   t13[0x13 voice]
   t14[0x14 tools]
-  t16[0x16 luna]
+  t16[0x16 mind]
   t50[0x50 memory]
   t48[0x48 injector]
   obs[observer]
@@ -32,32 +67,73 @@ flowchart LR
   obs -.-> bus
 ```
 
-The supply does not start `0x48` or the observer. The injector is drawn on the bus because it is a device. The observer is dotted because it has no address.
+The supply does not start `0x48` or the observer. The injector is on the bus because it is a device. The observer is dotted because it has no address.
 
-## Provenance
+## 5. Pinning information
 
-Each mechanism is one of these: NXP UM10204 Rev. 7.0 (1 October 2021), SMBus 3.3.1 (20 October 2024), ISO 11898-1:2015 clause 12.1, or a recorded choice. A recorded choice is where the standard is silent, or where a folder on this computer cannot be a wire. A recorded choice is protocol.
+### 5.1 Address map
+
+| Address | Process | Role |
+| --- | --- | --- |
+| 0x10 | timer.py | Boot identity read, boot dial, redial |
+| 0x11 | telegram.py | Owner's Telegram user, chat and call. Owner's line. |
+| 0x12 | ears.py | Nemotron on a PCM file. Owner's line. |
+| 0x13 | voice.py | Chatterbox nano, turbo s3gen codec |
+| 0x14 | tools.py | Screenshot, shell, vision, pointer and keys |
+| 0x16 | mind.py | Mind slot. One turn off the bus. |
+| 0x48 | injector.py | Controller-only test device. Not started by the supply. |
+| 0x50 | memory.py | SQLite records |
+
+`run.py` starts timer, telegram, ears, voice, tools, mind, memory, in that order, each with the `RUN_<stamp>` path.
+
+### 5.2 Address description
+
+Addresses are 7-bit. 10-bit addressing (UM10204 §3.1.11) is not used. Reserved addresses `0000 XXX` and `1111 XXX` (UM10204 §3.1.12) are not used.
+
+`0x48` is `1001 000b`. SMBus 3.3.1 §6.2.2.3, quoted from the SMBus 3.3 text of that section:
+
+> The Prototype addresses (1001 0XXb) are reserved for device prototyping and experimenting in applications that utilize purpose-assigned addresses. They are not intended for production parts and should never be assigned to any device.
+
+Recorded choice: `0x48` is assigned anyway, and only to the injector, because the injector is not a production part and the supply does not start it.
+
+Not used, and not implemented: SMBus PEC, ARP, Alert, Host Notify (SMBus §6.5.9), Hs-mode, general call, the SMBus Host role, and UM10204 §3.1.17 Device ID. Device ID needs reserved address `0x7C` and a repeated START to a different address. Both are excluded here.
+
+SMBus §5.2 says a device must acknowledge its own address even when busy. That rule is not borrowed. A busy address NACK is UM10204 §3.1.6 condition 2.
+
+## 6. Functional description
+
+### 6.1 Provenance and precedence
+
+Each mechanism is one of these: NXP UM10204 Rev. 7.0 (1 October 2021), SMBus 3.3.1 (20 October 2024), Bosch CAN 2.0 Part A §7 (the fetched text of the fault-confinement rules; ISO 11898-1:2015 clause 12.1 is the same rule set), or a recorded choice. A recorded choice is where the standard is silent, or where a folder on this computer cannot be a wire. A recorded choice is protocol.
+
+The documentation order of this file follows the NXP and TI product-datasheet convention. That convention ranks under the bus protocols. Format follows the convention. Content follows the protocols.
 
 | Mechanism | Source |
 | --- | --- |
-| Frame line `S`, address, `W` or `R`, `A` or `NA`, data bytes, one `Sr`, `P` | I2C UM10204 §3.1.4, §3.1.5, §3.1.6, §3.1.10. 7-bit addresses only. 10-bit addressing (§3.1.11) is not used. |
-| ACK means the byte arrived. The result of a command is a later read. | I2C UM10204 §3.1.6. Recorded choice for the result: the standards do not define a second channel, so the result is the repeated-start read or a later read. |
-| Five NACK causes | I2C UM10204 §3.1.6, listed in the Bus section. |
-| A target acts only when a controller addresses it | I2C UM10204 §3.1.10. Luna is woken only by a frame addressed to `0x16`. No device sends her a frame on a timer. |
-| Reserved addresses `0000 XXX` and `1111 XXX` are not used | I2C UM10204 §3.1.12. |
-| Injector address `0x48` (`1001 000b`) | SMBus 3.3.1 §6.2.2.3. Prototype addresses are `1001 0XXb`. They are not for a production part. The injector is not in the supply's start list. |
-| Clock stretch budget | SMBus 3.3.1 §4.2.2 `tTIMEOUT` is 25 ms to 35 ms. Recorded choice: the budget is the `busy` limit for that device, because the work is a model, a shell, or a screenshot, not an SMBus command. The supply ends a live hold older than `busy`. |
-| No Host Notify, no cancel of an open Luna turn | SMBus 3.3.1 §6.5.9 is the standard way for a target to become a controller and notify the host. It is not implemented. UM10204 has no abort from a second controller. A write to Luna during an open turn is NACK cause 2. The controller retries. The turn is not cancelled. |
-| Error counter steps +8 and −1, and bus-off | CAN ISO 11898-1:2015 clause 12.1. The node that detects a transmit error adds 8. A success subtracts 1. Bus-off in the standard is a transmit counter of at least 256. Recorded choices are in the Bus section: one counter, the threshold is the limit `bus_off`, and there is no recessive-bit recovery. |
-| Folders and files instead of SDA and SCL | Recorded choice. This computer has no I2C wires. `wire/<aa>/inbox/` is the target. The file `q-<controller>-<seq>` is the frame. The reply is `r-<seq>` in the controller's inbox. |
-| The frame has no sender field. The filename carries the controller address. | Recorded choice. UM10204 §3.1.10 sends the target address, not the controller's. The journal column `src` is that same controller address. Luna's turn input ends with that address and then the message, so the device and the journal name the same controller. |
-| No global lock. Two targets can be addressed at once. Two frames for one target are taken in filename order. | Recorded choice. UM10204 §3.1.7 and §3.1.8 arbitrate with a wired-AND on SDA. A file has no wired-AND. |
-| Sharing errors 5 and 32 retry `share_retries` times from `share_delay`, doubling | Recorded choice. Windows file sharing is not an I2C event. The retry is the whole rule. There is no second recovery. |
-| SCL is the file `wire/scl/<aa>` containing the pid and the time. Tools holds it while a job runs. The injector holds it while it masters the requested frame. Luna does not hold it. | Recorded choice for the file. The hold itself is UM10204 §3.1.9. Luna's CLI is off the bus after she ACKs: stretch is optional, and her budget is `busy.luna`, not a clock hold. |
-| Only telegram `0x11` and ears `0x12` carry the owner's words | Recorded choice. The standards have no owner. Any controller may address Luna (UM10204 §3.1.10). A frame from any other address is still accepted, and it is not his words. |
-| No cap on the conversation in Luna, no delete on memory, no paid-turn cap, no input register in the standards | Recorded choices in the device sections. The standards say nothing about storage, cost, or pointer meaning. UM10204 leaves the data bytes to the device. |
+| Frame line `S`, address, `W` or `R`, `A` or `NA`, data bytes, one `Sr`, `P` | I2C UM10204 §3.1.4, §3.1.5, §3.1.6, §3.1.10. |
+| ACK means the byte arrived. The result is a later read. | I2C UM10204 §3.1.6. Recorded choice: the standards do not define a second channel, so the result is the repeated-START read or a later read. |
+| Five NACK causes | I2C UM10204 §3.1.6, used as section 6.2 states. |
+| A target acts only when addressed | I2C UM10204 §3.1.10. The mind wakes only on a frame to `0x16`. No device sends it a frame on a timer. |
+| At most one `Sr`, and only to the same address | UM10204 §3.1.10 says a controller can repeat-START another target. It does not require it. Two files would be STOP then START and would lose the §3.1.4 busy guarantee, because this carrier has no global busy state. Not used. `legal()` rejects a frame whose `Sr` names another address. |
+| `0x48` | SMBus 3.3.1 §6.2.2.3, section 5.2. |
+| Clock stretch | UM10204 §3.1.9. Only tools holds SCL, and only while a register `01`–`04` job still owes its result bytes. |
+| Held-clock detection | SMBus 3.3.1 §4.2.2. Recorded choice: the budget is `busy.tools`, not the 25 ms to 35 ms `tTIMEOUT`, because the job is a screenshot, a shell, a vision request, or a pointer action. |
+| Killing a live holder the supply started | UM10204 §3.1.16 power-cycle analogue. The supply terminates that process. It does not terminate a process it did not start. Deleting a dead process's SCL file is the line released. |
+| Fault confinement | Bosch CAN 2.0 Part A §7, section 6.3. |
+| Bus-off restart | CAN rule 12, plus the wire limit that a folder has no recessive bits. Not SMBus §4.2.2 and not UM10204 §3.1.16. |
+| Folders and files instead of SDA and SCL | Recorded choice. `wire/<aa>/inbox/` is the target. `q-<controller>-<seq>` is the frame. The reply is `r-<seq>` in the controller's inbox. |
+| No sender field. The filename carries the controller address. | Recorded choice. UM10204 §3.1.10 sends the target address, not the controller's. The journal column `src` is that filename address. The mind's stdin ends with that address and then the message. |
+| No global lock. Two targets can be addressed at once. Two frames for one target are taken in filename order. | Recorded choice. UM10204 §3.1.7 and §3.1.8 arbitrate with a wired-AND. A file has no wired-AND, so there is no arbitration. A waiting controller still serves its inbox, which is the §3.1.8 duty to be a target while it waits. |
+| Sharing errors 5 and 32 retry `share_retries` times from `share_delay`, doubling | Recorded choice. Windows file sharing is not an I2C event. |
+| Only telegram `0x11` and ears `0x12` carry the owner's words | Recorded choice. The standards have no owner. Any other controller may still address the mind. |
+| Cause-2 retry has no cap | Recorded choice. UM10204 does not define a retry count for a busy address NACK. |
+| Data-NACK retry count is `nack_retries` | SMBus 3.3.1 §5.2 says the controller must STOP and retry, and it gives no count. |
+| `q-` deleted after the reply is placed | Recorded choice, owner decision D3. Delivery is at-least-once. A crash can repeat one message or one dial. |
+| Counters zero on `wire/` deletion and on the bus-off restart, and survive a crash restart | Recorded choice. CAN rule 12 zeros the counters on recovery. The fetched text gives no power-on value. Deleting `wire/` is power-on of the bus. |
+| No hourly cap on paid turns | Recorded choice, owner decision D1. CAN counts faults, not successful turns. |
+| Chat during a telegram restart keeps only ids newer than the last one seen at start | Today's behaviour. Owner decision D4 is open: drop, as today, or catch up. Not decided. |
 
-## Bus
+### 6.2 Bus
 
 A frame is one ASCII line:
 
@@ -67,25 +143,23 @@ S <aa> <W|R> <A|NA> (<hh> <A|NA>)* [Sr <aa> <W|R> <A|NA> (<hh> <A|NA>)*] P
 
 `aa` is the 7-bit address in hex. `hh` is one data byte. `A` means that byte arrived. `NA` is NACK. At most one `Sr`, and it names the same address as `S`. A read with data ends with `NA` on the last data byte. An empty read has no data byte. A legal frame names an address in `config.toml` `[address]`.
 
-`i2c.py` is the bus library. Every device links it and imports no other device. Started without `--test` it prints `i2c.py is the wire` and exits 1.
+The controller writes the frame to a temp file, fsyncs it, and renames it to `q-<controller>-<seq>`. The target scans its inbox, takes the first `q-` name in filename order, handles it, writes `r-<seq>` into the controller inbox, and then deletes the `q-` file. ACK is only delivery.
 
-The controller writes the frame to a temp file, fsyncs it, and renames it to `q-<controller>-<seq>`. The target scans its inbox (no directory watcher), takes the first `q-` name in filename order, and writes the reply to the controller inbox as `r-<seq>`.
-
-ACK is only delivery.
+Owner decision D3: deleting `q-` after the reply is placed is at-least-once. A crash after the handler has started and before that delete can run the handler again. A dial or a chat send can therefore happen twice. That is recorded, not hidden.
 
 NACK, the five causes in UM10204 §3.1.6, as this bus uses them:
 
 | Cause | What the code does |
 | --- | --- |
-| 1 no receiver | No `alive` file. `request` raises `NACK <aa>` and does not place the frame. The counter does not move. Recorded choice: absence is not a CAN error frame, because the carrier sees the missing file before a frame is written. There is no node to charge. |
-| 2 not ready | Address `NA` while `alive` exists and the device is not bus-off. Luna does this while a turn is open. A handler exception also replies with address `NA`. The controller keeps the frame and retries after `frame_timeout` for as long as the target is alive and not bus-off. No retry cap. Not a counter event. Recorded choice: UM10204 does not define a retry count. |
-| 3 command rejected | The target raises `Nack`. The reply is `NA` on the first data byte. The controller adds 8 and raises. The target does not add. Recorded choice: a data NACK is a legal I2C reply, not a CAN error frame. The controller is the node that sees it. |
+| 1 no receiver | No `alive` file, or the target's `busoff` file is present. `request` does not place the frame. The counters do not move. Absence is not a CAN error frame. There is no node to charge. A bus-off unit has no influence on the bus (CAN §7), so it is not addressed. |
+| 2 not ready | Address `NA` while `alive` exists and the device is not bus-off. The mind does this while a turn is open. The reply keeps the request's `W` or `R` (UM10204 §3.1.10: the R/W bit is part of the address byte). The controller keeps the frame and retries after `frame_timeout` for as long as the target is alive and not bus-off. No retry cap. Not a counter event. |
+| 3 command rejected | A deliberate `Nack`, or a handler exception. The reply is `NA` on the first data byte, or an address `NA` when the write has no data byte. A deliberate `Nack` charges nobody. A handler exception adds 1 to the target's REC (CAN rule 1) and uses the same wire shape, because the wire has no third NACK. The controller sends STOP and retries `nack_retries` times (SMBus §5.2). It does not add to TEC. When the retries are exhausted it raises. |
 | 4 no more room | Not a separate path. A bad register uses cause 3. |
-| 5 end of read | The last read data byte is `NA`. Not a fault. The `NA` that ends a read is not cause 3. |
+| 5 end of read | The last read data byte is `NA`. Not a fault. |
 
-Each device has one counter in `wire/<aa>/err`, not a separate transmit counter and receive counter. Recorded choice: each process is one node, and this carrier has no bit-level error frames. The steps are the CAN steps and they are not limits: a detected fault adds 8, a success subtracts 1, floored at 0. The target subtracts 1 when it ACKs. The controller subtracts 1 when it accepts the reply. A handler exception adds 8 on the target. A controller timeout adds 8 on the controller and writes a journal line `timeout`. The silent target is not charged. Recorded choice, against charging the device that stayed silent: ISO 11898-1 charges the node that detects the error, and one node does not write another node's counter. At `bus_off` the device writes `busoff`, prints `<aa> bus-off`, and a later inbox frame gets address `NA`. The controller's `request` does not place a frame to a bus-off target; it raises `NACK <aa>` and does not add. The threshold is the limit `bus_off`, not 256. Recorded choice: there is no bit time to integrate. There is no recovery of 128 times 11 recessive bits. Recorded choice: a folder has no bit times. The supply starts the process again, and `up` zeros the counter. CAN allows the host to rejoin a bus-off node. The supply is that host.
+An illegal line in an inbox is a form error. The target adds 1 to REC and replies. If the first data byte is hex, the reply is a data NACK of that byte. Otherwise the reply is an address NACK with the request's R/W bit, or `W` when the line has no direction. The controller then follows cause 2 or cause 3 from that shape.
 
-`frame_timeout` is how long a controller waits for `r-<seq>` when SCL is free. If `wire/scl/<aa>` exists, the wait extends to that device's `busy` time. The file contains the pid and the time. `run.py` deletes the file when that process is dead. If the process is alive and the hold is older than `busy`, `run.py` terminates it.
+`frame_timeout` is how long a controller waits for `r-<seq>` when SCL is free. If `wire/scl/<aa>` exists and that address has a `[busy]` key, the wait extends to that key. The file contains the pid and the time. Only tools writes it. `run.py` deletes it when that process is dead. If the process is alive, the supply started it, and the hold is older than `busy.tools`, `run.py` terminates it.
 
 One journal line per handled frame, and one from the controller on timeout, in `RUN_<stamp>/bus.log`:
 
@@ -93,133 +167,186 @@ One journal line per handled frame, and one from the controller on timeout, in `
 <time> <src> <dst> <note> <ms> <frame>
 ```
 
-The handled line's frame is the reply. The timeout line's frame is the request. `src` is the controller address. `dst` is the target.
+`src` is the controller address. `dst` is the target. The handled line's frame is the reply. The timeout line's frame is the request. `note` is `ack`, `nack`, `fault`, `form`, `timeout`.
 
-Large data does not ride the bus. A frame carries a path. The run folder holds `bus.log`, `turn-<n>.txt`, `pcm/<n>.pcm`, and `wav/<n>.wav`. A `turn-<n>.txt` file is written only when the CLI returns zero. A timeout or a non-zero exit does not write one.
+Large data does not ride the bus. A frame carries a path. The run folder holds `bus.log`, `turn-<n>.txt`, `pcm/<n>.pcm`, and `wav/<n>.wav`. A `turn-<n>.txt` file is written only when the mind process returns zero.
 
-## Address map
+### 6.3 Fault confinement
 
-| Address | Process | Role |
+Bosch CAN 2.0 Part A §7, borrowed with the wire limits below. Each device keeps `wire/<aa>/tec` and `wire/<aa>/rec`.
+
+| State | Rule | Condition |
 | --- | --- | --- |
-| 0x10 | timer.py | Boot dial and redial |
-| 0x11 | telegram.py | Owner's Telegram user, chat and call. Owner's line. |
-| 0x12 | ears.py | Nemotron on a PCM file. Owner's line. |
-| 0x13 | voice.py | Chatterbox nano, turbo s3gen codec |
-| 0x14 | tools.py | Screenshot, shell, vision, pointer and keys |
-| 0x16 | luna.py | One Cursor CLI turn |
-| 0x48 | injector.py | Controller-only test device. Not started by the supply. |
-| 0x50 | memory.py | SQLite records |
+| error-active | rule 11 | TEC ≤ 127 and REC ≤ 127 |
+| error-passive | rule 9 | TEC ≥ 128 or REC ≥ 128 |
+| bus-off | rule 10 | TEC ≥ 256 |
 
-`run.py` starts timer, telegram, ears, voice, tools, luna, memory, in that order, passing the `RUN_<stamp>` path. It deletes `wire/` at start. It does not delete `life/` or `life/memory.sqlite`. It creates `session/<stamp>/` and `RUN_<stamp>/`.
+The numbers 8, 1, 128, 256, 119 and 127 are protocol constants in `i2c.py`. They are not keys in `config.toml`.
 
-## Registers
+As controller, a timeout is an acknowledgement error. While the controller is error-active it adds 8 to TEC (rule 3). While it is error-passive it adds nothing (rule 3, exception 1), so a silent target cannot put its controller bus-off. A reply the controller accepts subtracts 1 from TEC, and TEC stays 0 when it is already 0 (rule 7).
 
-Bytes after the address. A bare read is `S <aa> R`. A command result is the same write plus `Sr <aa> R`.
+As target, a frame it cannot parse, or an exception while handling one, adds 1 to REC (rule 1). A frame it acknowledges applies rule 8: REC subtracts 1 when it was from 1 to 127, stays 0 when it was 0, and is set to 119 when it was greater than 127. 119 is the value chosen inside the rule's range 119 to 127.
 
-### 0x10 timer
+On this carrier the only transmit fault a frame can produce is that acknowledgement error. Exception 1 therefore stops TEC at the error-passive threshold. The self-test drives rule 3's +8 step, which a folder cannot produce as a bit error, to prove the bus-off threshold at 256.
+
+Wire limits, recorded because a file has no dominant bit, no bit stuffing, and no error flag: rule 2, rule 3 exception 2, rule 4, rule 5, rule 6, and the sentence of rule 9 that an error-passive transition sends an active error flag. Those events do not occur.
+
+An error-passive controller waits before it masters again (CAN suspend transmission: eight recessive bits after intermission). Recorded choice: a folder has no bit time, so the wait is one `frame_timeout`. During that wait the controller serves its inbox.
+
+At TEC ≥ 256 the device writes `busoff` and exits. It does not print. A bus-off unit may have no influence on the bus (CAN §7). The supply prints `<aa> bus-off` and restarts the process after the backoff, unless that exit reaches `restart_cap`. On that start, `up` sees `busoff`, sets TEC and REC to 0, and deletes the file. That restart stands in for CAN rule 12, which needs 128 occurrences of 11 consecutive recessive bits. Recorded choice: a folder has no recessive bits.
+
+Counters start at 0 when the supply deletes `wire/` (power-on). A crash restart keeps both files. Only the bus-off restart zeros them.
+
+Any device whose fast exits reach `restart_cap` stops the whole organism. A fast exit is one that did not stay up for `stable_seconds`. The supply prints one line, `<aa> cannot start`, writes `wire/<aa>/down`, terminates the processes it started, and exits 1. It does not start that device again. Owner decision D2. If the device is telegram, the owner's line is down because the organism has stopped. An uncaught Telegram flood is one of those exits.
+
+A run longer than `stable_seconds` zeros that device's crash count and its backoff.
+
+### 6.4 Registers
+
+Bytes after the address. A bare read is `S <aa> R`. A command result is the same write plus `Sr <aa> R`. The shared helpers `reply`, `accept`, `post`, `main_for`, and `rehearse` frame those bytes. They do not choose a register.
+
+#### 6.4.1 0x10 timer
 
 | Bytes | Dir | Meaning |
 | --- | --- | --- |
-| `02` | W | He did not answer. ACK. If no wait is already set, redials are under `redial_cap`, and Luna is up, arm one wait of `retry_seconds`. A second `02` does not move that deadline. |
+| `02` | W | He did not answer. ACK. If no wait is already set, redials are under `redial_cap`, and the mind is up, arm one wait of `retry_seconds`. A second `02` does not move that deadline. |
 | `03` | W | Cancel the wait and zero the redial count. |
 | other | W | Data NACK. |
 | read | R | `00` idle, `01` a wait is armed. |
 
-The wait does not hold SCL.
+The wait does not hold SCL. Before the boot dial, and only when telegram is alive and the mind is up, the timer masters `F0` with `Sr` to `0x16` and then masters telegram `01`. The identity bytes are the journal line of that read.
 
-### 0x11 telegram
+#### 6.4.2 0x11 telegram
 
-The session is the owner's Telegram Desktop `tdata`. The account must be one user who is not the owner and not a bot. Incoming calls from the owner are answered. Chat is his private messages only, and only ids newer than the last one seen at start. This device is on the owner's line: the frames it masters to Luna are his words.
+The session is the owner's Telegram Desktop `tdata`. The account must be one user who is not the owner and not a bot. Incoming calls from the owner are answered. Chat is his private messages only.
+
+Owner decision D4 is open. Today's behaviour, which stays until he decides, takes only message ids newer than the last one seen at start. A chat he sends while this process is down is not delivered after the restart.
+
+This device is on the owner's line. The frames it masters to the mind are his words.
 
 | Bytes | Dir | Meaning |
 | --- | --- | --- |
 | `01` | W | Dial. ACK and start the call only when state is down. Otherwise data NACK. The ring wait is `ring_seconds`. |
 | `02` | W | Hang up. |
-| `10` then UTF-8 | W | Send that chat text, in slices of `chat_slice`. If the call engine is up, also master voice `01` plus the same text. |
-| `20` then a path | W | Queue that wav. `pump` plays it only while the call engine is up, as `play_rate` Hz PCM in frames of `play_frame` bytes. |
+| `10` then UTF-8 | W | Send that chat text, in slices of `chat_slice`. If the call is up, also master voice `01` plus the same text. |
+| `20` then a path | W | Queue that wav. `pump` plays it only while the call is up. |
 | other | W | Data NACK. |
 | read | R | `00` down, `01` dialing, `02` up. |
 
-Microphone audio is `pcm_rate` Hz PCM inside the process, in frames of `frame_ms` ms. VAD uses `rms_threshold`, `silence_ms`, `padding_ms`, and `utterance_seconds`. Each finished utterance is `RUN_<stamp>/pcm/<n>.pcm`, then ears register `01` plus that path. No answer (discarded call or the ring wait) hangs up and masters timer `02`. The connect wait after accept, and the wait for the confirmed call, are `connect_seconds`.
+Microphone audio is 16-bit mono PCM at `pcm_rate`, in frames of `frame_ms` ms. VAD uses `rms_threshold`, `silence_ms`, `padding_ms`, and `utterance_seconds`. Each finished utterance is `RUN_<stamp>/pcm/<n>.pcm`, then ears register `01` plus that path. No answer hangs up and masters timer `02`. The connect wait after accept, and the wait for the confirmed call, are `connect_seconds`.
 
-### 0x12 ears
+Playback is 16-bit signed little-endian mono. A stereo WAV is mixed down. The sample rate is converted to `play_rate`. Bytes per second are `play_rate` times 2. Frames are `play_frame` bytes.
 
-This device is on the owner's line: a non-empty transcript it masters to Luna is his words.
+The client is built with `request_retries`, `connection_retries`, and `flood_sleep_threshold` from `[telegram]`, with `auto_reconnect` false, with `raise_last_call_error` true, and with `catch_up` true. There is no key for reconnect or for those two flags. `catch_up` can deliver older updates. The id filter above is what drops them. `FloodWait` is not caught. The call protocol uses `min_layer` and a DH size of `dh_bytes`. Recorded choice: those are the values this Telegram stack requires. The `facd00f` photo-send and digest guards are not in this tree and are not restored.
+
+A partial install is not this device's problem. Section 15 says how a failed install is cleared.
+
+#### 6.4.3 0x12 ears
+
+This device is on the owner's line. A non-empty transcript it masters to the mind is his words.
 
 | Bytes | Dir | Meaning |
 | --- | --- | --- |
-| `01` then a PCM path | W | ACK, then off the bus run VAD on the file and Nemotron at `pcm_rate`. Non-empty text is mastered to Luna as raw UTF-8, with no register byte. |
+| `01` then a PCM path | W | ACK, then off the bus run VAD on the file and Nemotron at `pcm_rate`. Non-empty text is mastered to the mind as raw UTF-8, with no register byte. |
 | other | W | Data NACK. |
 
-Load of the DLL must finish within `busy.ears` or the process exits. The VAD frame is `frame_ms` at `pcm_rate`, 16-bit mono.
+Load of the DLL must finish within `start.ears` or the process exits. That wait is not a clock stretch. The VAD frame is `frame_ms` at `pcm_rate`, 16-bit mono.
 
-### 0x13 voice
+#### 6.4.4 0x13 voice
 
 | Bytes | Dir | Meaning |
 | --- | --- | --- |
 | `01` then UTF-8 | W | ACK, then synthesize off the bus. The wav is `RUN_<stamp>/wav/<n>.wav`. Then master telegram `20` plus that path. |
 | other | W | Data NACK. |
 
-The server must answer `/health` within `busy.voice`. The health request uses `health_timeout`. Speech is `POST` to `<url>/v1/audio/speech` with `http_timeout`. Stderr kept for the exit line is `stderr_keep` bytes. The poll between health checks is `health_poll`.
+The server must answer `/health` within `start.voice`. That wait is not a clock stretch. The health request uses `health_timeout`. Speech is `POST` to `<url>/v1/audio/speech` with `http_timeout`. Stderr kept for the exit line is `stderr_keep` bytes. The poll between health checks is `health_poll`.
 
-### 0x14 tools
+#### 6.4.5 0x14 tools
 
-Holds SCL until the job returns. A following `Sr` read is the result bytes.
+Holds SCL until the job returns. A following `Sr` read is the result bytes. The same process takes the screenshot and moves the pointer. Before either call it sets per-monitor DPI awareness with `SetProcessDpiAwarenessContext(-4)`.
 
 | Bytes | Dir | Meaning |
 | --- | --- | --- |
 | `01` then a png path | W | Screenshot of the virtual screen into that path. Result is the path text. |
 | `02` then a command | W | `cmd` shell. Result is stdout plus stderr, and `exit <code>` when the code is not 0. |
 | `03` then an image path | W | Local vision model. The only prompt is "Describe this image." Temperature is `vision.temperature`. The token cap is `vision.max_tokens`. Result is that text. Not a mind. |
-| `04` then UTF-8 | W | Pointer or keys on the same virtual screen. `click y x`, `type text`, or `key name`. `y` and `x` are integers from 0 through `grid`, y down and x right. The result of a click is the screen pixels `<px> <py>`, horizontal then vertical. The result of type or key is the text that was sent. A bad verb, a coordinate outside the grid, or an unknown key is data NACK. |
+| `04` then UTF-8 | W | `click y x`, `type text`, or `key name`. `y` and `x` are integers from 0 through `grid`, y down and x right. A bad verb, a coordinate outside the grid, or an unknown key is data NACK. |
 | other | W | Data NACK. |
 
-The vision server must answer `/health` within `busy.tools`. The health request uses `health_timeout`. The request is `POST` to `<url>/v1/chat/completions` with `http_timeout`. Stderr kept for the exit line is `stderr_keep` bytes. The poll between health checks is `health_poll`.
+The virtual screen is `GetSystemMetrics` 76, 77, 78, 79: left, top, width, height. The origin can be negative. Grid `(0, 0)` is the top-left pixel. Grid `grid` is the last pixel.
 
-The virtual screen is the Windows rectangle `SM_XVIRTUALSCREEN`, `SM_YVIRTUALSCREEN`, `SM_CXVIRTUALSCREEN`, `SM_CYVIRTUALSCREEN`. The click call uses `MOUSEEVENTF_ABSOLUTE` and `MOUSEEVENTF_VIRTUALDESK`, whose absolute range is 0 to 65535. That range is the Win32 call, not a limit. Named keys are enter, tab, esc, space, backspace, up, down, left, right, delete, home, and end. One ASCII letter or digit is that key.
+```text
+px = left + round(x * (width - 1) / grid)
+py = top + round(y * (height - 1) / grid)
+nx = round((px - left) * 65535 / (width - 1))
+ny = round((py - top) * 65535 / (height - 1))
+```
 
-`prompt.txt` tells Luna the same grid, 0 to 1000, which is `limits.grid`.
+The click is `SendInput` with `MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK`. The range 0 to 65535 is the Win32 call, not a limit. The screenshot is a GDI `BitBlt` of that same rectangle into a PNG. The result of a click is the screen pixels `<px> <py>`, horizontal then vertical. The result of type or key is the text that was sent.
 
-### 0x16 luna
+Named keys are enter, tab, esc, space, backspace, up, down, left, right, delete, home, and end. One ASCII letter or digit is that key.
+
+`prompt.txt` says the grid as `0 to 1000`. That string is `limits.grid`. The mind self-test and the tools self-test both read the key and require the file to contain it.
+
+The vision server must answer `/health` within `start.tools`. The health request uses `health_timeout`. The request is `POST` to `<url>/v1/chat/completions` with `http_timeout`. Stderr kept for the exit line is `stderr_keep` bytes. The poll between health checks is `health_poll`. SCL while a job runs is `busy.tools`, a separate key.
+
+#### 6.4.6 0x16 mind
+
+This section is the slot. Any fitted part has to keep it. The part that is fitted today is section 6.4.7.
 
 | Bytes | Dir | Meaning |
 | --- | --- | --- |
-| UTF-8, no register | W | The incoming message. ACK at once, then one CLI run off the bus. A write while that turn is open is address NACK, cause 2. The read below still works. |
+| `F0` and `Sr` to this address | W then R | Read the identity. The payload is UTF-8 `manufacturer;part;revision;capabilities`. This is not a turn. It answers while a turn is open. |
+| UTF-8, no register | W | The incoming message, including a message whose first byte is `F0` when the frame is not exactly `F0` plus `Sr`. ACK at once, then one turn off the bus. A write while that turn is open is address NACK, cause 2. The status read still works. |
 | read, no write data | R | `00` idle, `01` the turn is open. |
 
-Nothing addresses her unless a device masters that frame. No device sends her a periodic frame.
+Nothing addresses the mind unless a device masters that frame.
 
-Stdin is `prompt.txt`, then the address list, then the conversation kept in this process, then one line with the controller address, then the message. The address is the `q-` filename's controller, because the frame has no sender field. Words from `0x11` and `0x12` are the owner's. Words from any other address are not. A write from `0x11` or `0x12` zeros the self-turn counter. A write from her own address increments it. A write from any other address does not zero it and still starts a turn.
+Stdin is `prompt.txt`, then one line per `[address]` entry as `aa name` in config order, then the conversation kept in this process, then one line with the controller address, then the message. Words from `0x11` and `0x12` are the owner's. A write from either zeros the self-turn counter. A write from `0x16` increments it. A write from any other address does not zero it and still starts a turn.
 
-The CLI is the newest `%LOCALAPPDATA%\cursor-agent\versions\*` folder that contains `node.exe` and `index.js`, run as `-p --model <luna.model> --output-format text --trust --workspace <RUN dir> --exclude-tools <tool list>`. No `--force`, no stream-json, no API key. The real CLI was not run; the tool list was copied from that install's protocol names.
+The turn runs off the bus. This device does not hold SCL.
 
-Stdout: a legal frame is mastered, one at a time. Any other text is one telegram `10` write. Empty text sends nothing. A read's payload, and a write she addresses to `16`, are placed in her inbox after the turn and count as self-turns. Past `self_turn_cap` the frame is ACKed and no CLI starts.
+Stdout, one line at a time: a legal frame is mastered. A line that starts with `S ` and is not a legal frame is queued as the next turn, the text `illegal frame: ` plus that line, and is not sent to the owner. Any other text is one telegram `10` write. Empty text sends nothing. A read's payload, and a write it addresses to `16`, are placed in its inbox after the turn and count as self-turns. Past `self_turn_cap` the frame is ACKed and no process starts.
 
-If a frame she masters is NACKed or times out, that turn does not end as `Luna failed`. The exception text is queued as her next turn, and the later lines of that output are still mastered or said. UM10204 §3.1.6: the controller sees the NACK and decides. This conflicts with keeping one telegram line for every failed turn. That rule stays for a failed CLI, where she produced no frames. It does not stay for a bus NACK.
+If a frame it masters is NACKed or times out, the exception text is queued as its next turn, and the later lines of that output are still mastered or said. A failed turn process is not that path. The turn process has its own sentences, below, and those sentences go out through the same send path. If that send fails, the transmit rules in section 6.3 apply, once, and the error text is the next turn.
 
-If the CLI runs longer than `busy.luna`, it is killed and telegram is sent one `10` write, the text `Luna timed out.` A non-zero CLI exit sends one `10` write, `Luna failed: <tail>`. Both add 8. The turn record for a zero exit is `RUN_<stamp>/turn-<n>.txt`.
+The conversation is kept in this process until `mind.context_chars`. Older `In`/`Out` blocks are dropped first. A single block that is still over the cap keeps its tail. The conversation dies when the process exits. What must survive is written to `0x50`.
 
-The conversation in this process has no cap and no compaction. It dies when the process exits. A new owner-line frame can start another 1 + `self_turn_cap` CLI runs, each at most `busy.luna`. There is no per-run paid-turn cap. CAN bus-off counts faults, not successful turns. Recorded choice: the standards do not bound a successful transaction.
+A CLI timeout or a non-zero exit charges neither counter. No frame was transmitted, and no bad frame was received. The sentence is `<part> timed out.` or `<part> stopped: <error>`. `<part>` is the identity part field.
 
-### 0x48 injector
+Owner decision D1: there is no hourly cap. Each owner-line frame can start 1 + `self_turn_cap` runs, each at most `mind.turn`. A frame from `0x48` to `0x16` is a paid turn of the fitted part and is not counted by `self_turn_cap`.
 
-Controller only. Not in the supply's start list. Start it by hand against a run folder:
+#### 6.4.7 Fitted part
+
+Today the slot is fitted with Luna through the owner's Cursor CLI login. The launch command is `[mind] command`. The device substitutes `{model}`, `{tools}`, and `{run}`, takes the greatest directory name under the first token that contains the second token and the third token as files, and runs those two files plus the remaining arguments. The model string, the tool list, and the flags live in that command. The device does not name them.
+
+There is no `--force` in the command. No API key is passed. One real run of this argv, with `--exclude-tools` and without `--force`, exited 0. The flag was not rejected and the process did not ask for a login. The reply text is not recorded here.
+
+`prompt.txt` is the text this part is fed. It is not the master prompt in section 19.
+
+Recommended for this part: `mind.turn` is 150 s and `mind.context_chars` is 400000. Those are configuration of this part. The existence of a turn budget and a context budget is the slot contract.
+
+A later wave may fit another part in this slot. This wave does not.
+
+#### 6.4.8 0x48 injector
+
+Controller only. Not in the supply's start list. Start it by hand:
 
 ```text
 artifacts\python\Scripts\python.exe injector.py RUN_<stamp>
 ```
 
-Its frames are `q-48-<seq>`. The journal `src` is `48`. They are not the owner's words and they are not live proof.
+Its frames are `q-48-<seq>`. The journal `src` is `48`. They are not the owner's words and they are not live proof. A frame it masters to `0x16` is a paid, uncapped mind turn (D1).
 
 | Bytes | Dir | Meaning |
 | --- | --- | --- |
-| `01` then a legal frame as UTF-8 | W | ACK, hold SCL, master that frame, store the reply. An `Sr` read returns the reply text. |
+| `01` then a legal frame as UTF-8 | W | ACK, then master that frame after the ACK. The reply is stored. This device does not hold SCL. |
 | other | W | Data NACK. |
 | read | R | The last reply text, or no data bytes when none has been mastered. |
 
-An illegal frame is data NACK. `busy.injector` equals `busy.tools` because tools is the device that holds SCL for a job, and the injector's caller waits on the injector's SCL for that whole inner transfer.
+An `Sr` on the write is not the inner reply. The inner reply is a later read. An illegal frame is data NACK.
 
-### 0x50 memory
+#### 6.4.9 0x50 memory
 
 SQLite file `life/memory.sqlite`, table `rec(id, body)`. No delete. No size limit. The file survives a start, because the supply deletes `wire/` only. Recorded choice: the standards say nothing about storage.
 
@@ -231,23 +358,16 @@ SQLite file `life/memory.sqlite`, table `rec(id, body)`. No delete. No size limi
 | other | W | Data NACK. |
 | read | R | Latest row, or no data bytes when the table is empty. |
 
-## Observer
+### 6.5 Sequences
 
-`observer.py` has no address, no `alive` file, and no inbox. It is not a device and the supply does not start it. It reads `RUN_<stamp>/bus.log` and the files under `wire/`. It prints a journal line once, and it prints the wire files when their text changes. It never writes, never renames, and never acknowledges. A sharing collision uses the bus read retry and nothing else.
-
-```text
-artifacts\python\Scripts\python.exe observer.py RUN_<stamp>
-```
-
-## Sequences
-
-Boot dial. This is the timer's frame, not Luna's decision. The timer waits until telegram has `alive` and Luna is up (`alive`, no `busoff`, no `down`). Then once:
+Boot. The timer waits until telegram has `alive` and the mind is up (`alive`, no `busoff`, no `down`). Then once:
 
 ```text
+S 16 W A f0 A Sr 16 R A <identity> NA P
 S 11 W A 01 A P
 ```
 
-Nothing else is mastered because she woke. No device masters a frame to `0x16` on a timer.
+Nothing else is mastered because the mind woke. No device masters a frame to `0x16` on a timer.
 
 No answer. Telegram:
 
@@ -255,7 +375,7 @@ No answer. Telegram:
 S 10 W A 02 A P
 ```
 
-Timer ACKs and waits `retry_seconds` without SCL. It then masters `01` again. That can happen `redial_cap` times. A `02` during the wait does not stack. After the cap, `02` is ACKed and ignored. `03` clears the wait and the count. If Luna is down, the timer does not dial and does not arm a wait.
+Timer ACKs and waits `retry_seconds` without SCL. It then masters `01` again. That can happen `redial_cap` times. A `02` during the wait does not stack. After the cap, `02` is ACKed and ignored. `03` clears the wait and the count. If the mind is down, the timer does not dial and does not arm a wait.
 
 Answered call. After the call reaches up, each utterance is:
 
@@ -264,7 +384,7 @@ S 12 W A 01 A <pcm path> A P
 S 16 W A <utf-8 text> A P
 ```
 
-Luna's words, if any:
+The mind's words, if any:
 
 ```text
 S 11 W A 10 A <utf-8> A P
@@ -278,40 +398,62 @@ Chat from him, call or not, mastered by telegram:
 S 16 W A <utf-8> A P
 ```
 
-Luna's own next turn, after the turn that queued it, and only while under `self_turn_cap`:
+The mind's own next turn, after the turn that queued it, and only while under `self_turn_cap`:
 
 ```text
 S 16 W A <bytes> A P
 ```
 
-A tools result she asked for with `Sr` is queued the same way, as a write to `16`. A NACK or a timeout of a frame she mastered is queued the same way, as the exception text.
+A tools result it asked for with `Sr` is queued the same way. A NACK or a timeout of a frame it mastered is queued the same way. An illegal frame-like line is queued the same way.
 
-## Limits
+### 6.6 Device functional modes
 
-Every one of these is a key in `config.toml`. The CAN steps +8 and −1 are not limits. The Win32 absolute range 0 to 65535 is not a limit.
+| Mode | Meaning |
+| --- | --- |
+| idle | The mind's status read is `00`. No turn is open. |
+| turn open | Status read is `01`. A new write is address NACK. The status read and the `F0` identity read still answer. |
+| error-passive | Section 6.3. The controller waits `frame_timeout` before the next frame. |
+| bus-off | The process has exited. `busoff` is present until the next `up`. |
+| down | `restart_cap` was reached. `down` is present. The supply has exited. |
+| stretching | Tools only, while a job owes bytes. |
+
+### 6.7 Observer
+
+`observer.py` has no address, no `alive` file, and no inbox. It is not a device and the supply does not start it. It reads `RUN_<stamp>/bus.log` only. It prints each new journal line once. It never opens `wire/`, because a shared open can make a rename or a delete fail with Windows error 32. It never writes, never renames, and never acknowledges.
+
+```text
+artifacts\python\Scripts\python.exe observer.py RUN_<stamp>
+```
+
+## 7. Limiting values
+
+Exceeding one of these ends a process, stops the organism, or drops text. The CAN thresholds are protocol constants, not rows here.
 
 | Key | Value | Effect |
 | --- | --- | --- |
-| bus.frame_timeout | 2 s | Wait for a reply when SCL is free. Also the cause-2 retry wait. |
+| bus.restart_cap | 3 | Fast exits before `<aa> cannot start` and the organism stops |
+| bus.backoff_cap | 30 s | Cap on the restart delay |
+| bus.stable_seconds | 30 | A run this long clears that device's crash count |
+| busy.tools | 90 s | SCL budget. The supply kills a live tools hold older than this |
+| start.ears | 30 s | Model load. The process exits if the load exceeds it |
+| start.voice | 60 s | Server start. The process exits if health never answers |
+| start.tools | 90 s | Vision server start. The process exits if health never answers |
+| mind.turn | 150 s | Turn budget, off the bus. The child is killed |
+| mind.context_chars | 400000 | Conversation cap. Older blocks are dropped |
+
+## 8. Recommended operating conditions
+
+| Key | Value | Effect |
+| --- | --- | --- |
+| bus.frame_timeout | 2 s | Wait for a reply when SCL is free. Also the cause-2 retry wait and the error-passive suspend |
 | bus.poll | 0.05 s | Inbox scan, and the supply's scan |
-| bus.bus_off | 32 | Counter value that takes a device off |
-| bus.backoff | 1 s | First restart delay, then double |
-| bus.backoff_cap | 30 s | Cap on that delay |
+| bus.backoff | 1 s | First restart delay, then double, until `backoff_cap` |
 | bus.retry_seconds | 120 | Redial wait |
 | bus.redial_cap | 3 | Redials after the boot dial |
-| bus.self_turn_cap | 4 | Self-addressed Luna turns in a row |
-| bus.luna_start_cap | 3 | Fast Luna exits before "Luna cannot start" |
-| bus.stable_seconds | 30 | A run this long clears the crash count |
+| bus.self_turn_cap | 4 | Self-addressed mind turns in a row |
 | bus.share_retries | 5 | Sharing-error attempts, errors 5 and 32 |
 | bus.share_delay | 0.05 s | First sharing delay, then double |
-| busy.timer | 2 s | SCL budget |
-| busy.telegram | 8 s | SCL budget |
-| busy.ears | 30 s | Model load budget |
-| busy.voice | 60 s | Server start budget |
-| busy.tools | 90 s | Server start budget and SCL while a job runs |
-| busy.luna | 150 s | CLI budget, off the bus |
-| busy.injector | 90 s | SCL budget while the injector masters one frame |
-| busy.memory | 2 s | SCL budget |
+| bus.nack_retries | 1 | Data-NACK retries after the first NACK |
 | limits.ring_seconds | 90 | Outgoing ring wait |
 | limits.connect_seconds | 30 | Call connect wait |
 | limits.chat_slice | 4000 | Characters per Telegram message |
@@ -331,25 +473,83 @@ Every one of these is a key in `config.toml`. The CAN steps +8 and −1 are not 
 | ears.utterance_seconds | 30 | Forced endpoint |
 | vision.temperature | 0.2 | Vision request |
 | vision.max_tokens | 400 | Vision reply cap |
+| telegram.min_layer | 65 | Call protocol |
+| telegram.dh_bytes | 256 | DH size |
+| telegram.request_retries | 0 | Telethon |
+| telegram.connection_retries | 0 | Telethon |
+| telegram.flood_sleep_threshold | 0 | Telethon does not sleep on a flood |
 | selftest.frame_timeout | 0.4 s | Self-test stand-in |
 | selftest.poll | 0.01 s | Self-test stand-in |
-| selftest.busy | 2 s | Self-test stand-in for every device |
+| selftest.busy | 2 s | Self-test stand-in for `busy.tools` |
 
-## Errors
+`config.toml` has no key that the tree does not read.
 
-A device that raises prints `Type: message` and exits 1. `run.py` restarts it after the backoff. A run longer than `stable_seconds` zeros that device's crash count and backoff. If Luna exits `luna_start_cap` times without lasting that long, `run.py` prints `Luna cannot start`, writes `wire/16/down`, terminates the others, and exits 1. It does not start her again.
+## 9. Static characteristics
 
-A handler exception NACKs the address, adds 8 on that device, and leaves the process up. While that device is not bus-off, the controller retries the address NACK as cause 2. Cause 3 adds 8 on the controller and raises. A timeout adds 8 on the controller. Cause 1 and cause 2 and cause 5 do not add.
+### 9.1 Protocol constants
 
-## Self-tests
+These live in `i2c.py`. They are not configuration.
 
-`--test` is the only flag. There is no other test hook, mock, or flag. The tests do not start Telegram, the Cursor CLI, Chatterbox, Nemotron, the vision server, or a browser. They do not move the pointer. `i2c.test_cfg` reads `config.toml` and replaces `frame_timeout`, `poll`, and every `busy` value with the `selftest` keys.
+| Name | Value | Rule |
+| --- | --- | --- |
+| TEC_STEP | 8 | Bosch rule 3. Not added for an acknowledgement error while error-passive (exception 1). |
+| REC_STEP | 1 | Bosch rule 1 |
+| ERROR_PASSIVE | 128 | Bosch rule 9 |
+| BUS_OFF_AT | 256 | Bosch rule 10 |
+| REC_RECOVER | 119 | Bosch rule 8. Chosen inside 119–127. |
+| ERROR_ACTIVE | 127 | Bosch rule 11 |
+
+Rule 7's subtract-1 is the success step. It is not a separate threshold.
+
+### 9.2 Journal
+
+| Column | Meaning |
+| --- | --- |
+| time | Local `YYYY-MM-DDTHH:MM:SS` |
+| src | Controller address, two hex digits |
+| dst | Target address, two hex digits |
+| note | `ack`, `nack`, `fault`, `form`, or `timeout` |
+| ms | Handler time, or wait time on timeout |
+| frame | Reply, or the request on timeout |
+
+## 10. Dynamic characteristics
+
+One configured value, not a range, except the SMBus reference. Typ is the key in section 7 or 8. Min and max equal typ where this tree stores one number.
+
+| Parameter | Min | Typ | Max | Unit | Note |
+| --- | --- | --- | --- | --- | --- |
+| frame_timeout | 2 | 2 | 2 | s | Free SCL, cause 2, error-passive suspend |
+| poll | 0.05 | 0.05 | 0.05 | s | Inbox and supply |
+| busy.tools | 90 | 90 | 90 | s | SCL hold |
+| start.ears | 30 | 30 | 30 | s | Load, not SCL |
+| start.voice | 60 | 60 | 60 | s | Server start, not SCL |
+| start.tools | 90 | 90 | 90 | s | Server start, not SCL |
+| mind.turn | 150 | 150 | 150 | s | Off the bus |
+| share_delay | 0.05 | 0.05 | 0.05 | s | First delay, then doubles |
+| backoff | 1 | 1 | 30 | s | Doubles until `backoff_cap` |
+| SMBus tTIMEOUT | 25 | | 35 | ms | SMBus 3.3.1 §4.2.2. Not the budget used here |
+
+## 11. Errors
+
+A device that raises prints `Type: message` and exits 1. `run.py` restarts it after the backoff, unless the exit was bus-off (section 6.3) or the restart cap stops the organism.
+
+A handler exception replies with a data NACK, adds 1 to REC, and leaves the process up. A deliberate data NACK leaves the process up and moves no counter. Cause 1 and cause 2 and cause 5 do not add. A timeout adds 8 to the controller's TEC only while that controller is error-active.
+
+## 12. Application information
+
+He calls, or the boot sequence dials. He speaks. Telegram writes a PCM file and ears returns text. That text is a mind turn. The mind looks with tools `01` and `03` before it names a place, then `04` if it acts, and reads the result back. Voice renders words it wants spoken, and telegram plays the wav into the call. With no call up, telegram `10` is chat. The mind does not dial to deliver one sentence. Hangup leaves the devices loaded. The next call does not need a new start.
+
+A file dropped somewhere else on the drive is not a task.
+
+## 13. Test information
+
+`--test` is the only flag. The tests do not start Telegram, the Cursor CLI, Chatterbox, Nemotron, the vision server, or a browser. They do not move the pointer. `i2c.test_cfg` reads `config.toml` and replaces `frame_timeout`, `poll`, and `busy.tools` with the `selftest` keys.
 
 ```text
 py -3.11 i2c.py --test
 py -3.11 memory.py --test
 py -3.11 timer.py --test
-py -3.11 luna.py --test
+py -3.11 mind.py --test
 py -3.11 run.py --test
 py -3.11 ears.py --test
 py -3.11 voice.py --test
@@ -359,75 +559,142 @@ py -3.11 injector.py --test
 py -3.11 observer.py --test
 ```
 
-`i2c.py` checks the frame grammar, accepts `0x48`, rejects `0x08` and `0x99`, checks a repeated-start read, SCL during a short hold, cause 2, a timeout that charges the controller (`12 bus-off`), and a sharing-violation rename. `memory.py` writes bytes `68 69` and reads them back. `timer.py` checks one boot dial, a `02` that does not stack, the redial cap, `03`, and no SCL during the wait. `luna.py` uses a stand-in process: no SCL while it runs, cause 2 on a second write, prose to telegram `10`, the controller address `11` in the turn file, the owner line `{0x11, 0x12}`, the self-turn cap, a write from `0x13` that does not reset that cap, a NACK that still delivers the later prose and comes back as the next turn, and the timeout sentence. `run.py` terminates a live SCL hold, clears a dead one's SCL, checks `Luna cannot start`, and checks that the injector and the observer are not in the start list. `ears.py` checks a VAD cut. `voice.py` checks resample between `pcm_rate` and `play_rate`. `tools.py` checks a shell register, the grid map, and a data NACK for a bad `04` body. `telegram.py` checks dial, chat, no-answer, and play frames. `injector.py` checks that the frame it masters arrives with source `0x48`. `observer.py` checks that a read of the journal and a `q-` file changes no byte and creates no `alive` file.
+`i2c.py` checks the frame grammar, accepts `0x48`, rejects `0x08` and `0x99`, rejects an `Sr` to another address, checks a repeated-START read, checks that `q-` is still present during the handler and gone after the reply, checks SCL during a short hold, checks an address NACK that keeps `R`, checks cause 2, checks that a deliberate data NACK moves neither counter, checks that a handler exception adds 1 to REC per attempt and does not add to TEC, checks that an illegal line is a form error, checks that counters survive `down`/`up` and zero when `busoff` is present, checks rule 8 at 130, 4, and 0, checks error-active at TEC 127 and REC 119, checks error-passive at TEC 128, checks that 16 timeouts reach TEC 128 and the next timeout adds 0, checks that rule 3's +8 step from 248 writes `busoff` and raises at 256, and checks a sharing-violation rename.
 
-## Install and run
+`memory.py` writes bytes `68 69` and reads them back. `timer.py` checks one boot dial after the identity read, a `02` that does not stack, the redial cap, `03`, and no SCL during the wait. `mind.py` uses a stand-in process: no SCL while it runs, the identity read, cause 2 on a second write, prose to telegram `10`, the controller address `11` in the turn file, the grid string from config, the owner line `{0x11, 0x12}`, the self-turn cap, a write from `0x13` that does not reset that cap, a NACK that still delivers the later prose and comes back as the next turn, an illegal frame that comes back and is not sent to telegram, a timeout sentence that uses the part name and moves neither counter, and the context tail. `run.py` terminates a live SCL hold, clears a dead one's SCL, checks `50 cannot start`, checks `14 bus-off` then `14 cannot start`, and checks that the injector and the observer are not in the start list. `ears.py` checks a VAD cut. `voice.py` checks resample between `pcm_rate` and `play_rate`. `tools.py` checks a shell register, the grid map, a PNG screenshot header, the prompt grid, and a data NACK for a bad `04` body. `telegram.py` checks dial, chat, no-answer, and play frames. `injector.py` checks that the frame it masters arrives with source `0x48`, that the reply is a later read, and that it does not hold SCL. `observer.py` checks that a read of the journal changes no `q-` byte and creates no `alive` file.
 
-64-bit Python 3.11 on Windows, a Cursor CLI login, and Telegram Desktop tdata.
+### 13.1 Live proof
+
+Not run on this tree: Trident itself, a Telegram call or chat, Chatterbox, Nemotron, the vision model, and a browser. The shipped mind argv was run once, as section 6.4.7 says. Live proof was not run. Until it is, this datasheet stays Preliminary.
+
+## 14. Package outline
+
+```text
+wire/
+  tmp/
+  scl/<aa>          pid and time, tools only
+  <aa>/alive
+  <aa>/tec
+  <aa>/rec
+  <aa>/busoff       present only while bus-off, until the next up
+  <aa>/down         present after the restart cap
+  <aa>/inbox/q-<controller>-<seq>
+  <aa>/inbox/r-<seq>
+life/memory.sqlite
+session/<stamp>/
+RUN_<stamp>/bus.log
+RUN_<stamp>/turn-<n>.txt
+RUN_<stamp>/pcm/<n>.pcm
+RUN_<stamp>/wav/<n>.wav
+```
+
+The supply deletes `wire/` at start. It does not delete `life/` or `life/memory.sqlite`. It creates `session/<stamp>/` and `RUN_<stamp>/`.
+
+## 15. Installation and supply
 
 ```text
 py -3.11 install.py
 artifacts\python\Scripts\python.exe run.py
 ```
 
-`install.py` makes `artifacts\python`, installs `requirements.txt`, and downloads the ear, voice, and vision files named in `config.toml`. A download uses `install_timeout`. A full install was run once in a throwaway folder and then deleted. It was not run again for this tree.
+`install.py` makes `artifacts\python`, installs `requirements.txt`, and downloads the ear, voice, and vision files named in `config.toml`. A download uses `install_timeout`. `artifacts/` is created before the downloads. If the install stops after that, the next run raises because the directory exists. Recorded choice: a partial install is not resumed. Delete `artifacts/` by hand and run the installer again.
 
-## Unproven live
+The supply is `run.py`. It is not on the bus. Section 6.3 is how it restarts and when it stops.
 
-Not run on this tree: Trident itself, a real Cursor CLI turn, a Telegram call or chat, Chatterbox, Nemotron, the vision model, and a browser. The `--exclude-tools` argument was not executed. The self-tests above were run. Live proof was not run.
+## 16. Abbreviations
 
-## Master prompt
+| Term | Meaning |
+| --- | --- |
+| ACK | The byte arrived. Not the result of the command. |
+| NACK | The byte was refused. `NA` on the wire. |
+| SCL | The file `wire/scl/<aa>`. Held only while tools owes bytes. |
+| TEC | Transmit error count. |
+| REC | Receive error count. |
+| bus-off | TEC ≥ 256. The process exits. |
+| error-passive | TEC ≥ 128 or REC ≥ 128. |
+| Sr | Repeated START, same address only. |
+| fitted part | The process launched from `[mind] command`. |
+| owner's line | Telegram and ears. |
+| supply | `run.py`. Not an address. |
 
-This is the master prompt for Trident. Every AI agent working on Trident gets it pasted in verbatim, with only the TASK fields filled. Those agents have no memory of any earlier chat, so this text and the tree are all they know. It holds the owner's timeless rules for what Trident is and how it may be changed. The datasheet above it holds today's facts: the devices, the addresses, the registers, the sequences, the model, and the limits. The prompt lives in this README so it is not lost, even if every other copy disappears.
+## 17. Revision history
 
-Version 20. Date 2026-10-08.
+| Tag | Date | Status | Supersedes | Modifications |
+| --- | --- | --- | --- | --- |
+| i2c-bus | 2026-10-08 | Preliminary | | Per-device inbox. |
+| datasheet | 2026-10-08 | Preliminary | | Bus tree at the root and a datasheet. |
+| v20-protocol | 2026-10-08 | Preliminary | | Standards labeled. Injector and observer added. Master prompt v20. |
+| v21-protocol | 2026-10-08 | Preliminary | v20-protocol | Two CAN counters, bus-off exit, mind slot, datasheet order, master prompt v21. |
 
-Changes from v19:
+## 18. Status definitions and precedence
 
-1. The PROTOCOL section is new, and it is the first section of the prompt. NXP UM10204, the SMBus mechanisms this datasheet borrows, and the CAN mechanisms this datasheet borrows outrank the prompt, any earlier owner preference, any habit of the tree, the owner, and a datasheet line that contradicts them. v19 did not say this. A no-memory agent could follow a conflicting sentence in the prompt. Where the standards are silent, the choice is recorded in this datasheet, and that record is protocol. Nobody may customize the protocol.
-2. The fault sentence in THE BUS is rewritten. v19 said every fault is charged to exactly one device. ISO 11898-1:2015 clause 12.1 charges the node that detects the fault. UM10204 §3.1.6 condition 1 is an address with no receiver, which is not a node and is not charged. The old sentence conflicted with those standards.
-3. The sentence that a famous protocol means a fault belongs to one device is rewritten. It now says an agent can read the bus without memory of Trident, and it points the charging rule at the datasheet. The old wording contradicted the CAN rule in change 2.
+| Document status | Meaning here |
+| --- | --- |
+| Objective | Designed, not built. |
+| Preliminary | Built. Self-tests pass. Not live-proven. |
+| Product | Live-proven on the owner's PC by the scene in section 13. |
+
+The published bus protocols outrank this datasheet. A line here that contradicts them is corrected, and the standard's section is recorded. Where the standards are silent, the recorded choice is protocol. The NXP/TI section order governs how this file is written. It does not govern what the bus does.
+
+This datasheet is the only document. A second copy of the master prompt is not kept in the tree.
+
+## 19. Master prompt
+
+Every AI agent working on Trident is given the text below, pasted verbatim, with only the TASK fields filled. Those agents have no memory of any earlier chat, so this text and the tree are all they know. The prompt holds the rules for what Trident is and how it may be changed. The datasheet above it holds today's facts: the devices, the addresses, the registers, the sequences, the fitted part, and the limits. The prompt lives in this README so it is not lost.
+
+Version 21. Date 2026-10-08.
+
+Changes from v20, and why:
+
+1. The mind is the device at the datasheet's slot. v20 said "Luna is the only brain" and tied every turn to one Cursor login and one route. An agent could not tell the slot from the part, so a later swap would have required a prompt rewrite. The fitted part stays named in the datasheet. Paid calls still use only the owner's Cursor subscription. No API key is added.
+2. Fault confinement is named as the datasheet section. v20 restated the charging rule in the prompt and could drift from the counters. The prompt no longer paraphrases CAN.
+3. The mind does not hold the bus while it thinks. A device holds the clock only while it still owes bytes, which is what UM10204 §3.1.9 allows and what tools does. v20's bus section did not say this, and a blanket "no device holds the bus" would have forbidden that stretch.
+4. Protocol constants and self-test vectors are not organism limits. v20 said every number in code was a defect, which would have pushed 8, 128, and 256 into configuration.
+5. No second copy of this prompt is added to the tree. Frontmatter belongs only on the publisher's SKILL.md, which is not tracked. v20 did not say where that copy lives.
+6. Repeated sentences were cut. A rule that only restated the datasheet was replaced by a pointer, or deleted.
 
 ```text
-You are an agent with no memory of any earlier chat. This text is the master prompt for Trident. It is the same text in the past and in the future. It does not name today's devices, addresses, registers, sequences, models, or limits, because those live in the datasheet and change there. It names what the project is, how it behaves, and the rules for changing it. Read it from the top to the bottom. Then read README.md, the datasheet, in full. Then read the tracked tree. Then do only the TASK at the end.
+You are an agent with no memory of any earlier chat. This text is the master prompt for Trident. It is the same text every time. It does not name today's devices, addresses, registers, sequences, models, or limits. Those live in the datasheet and change there. Read this prompt from the top to the bottom. Then read README.md, the datasheet, in full. Then read the tracked tree. Then do only the TASK at the end.
 
 PROTOCOL
 
-The published protocols this bus is built on outrank every other rule. Those protocols are NXP UM10204 I2C, the SMBus mechanisms the datasheet borrows, and the CAN mechanisms the datasheet borrows. They outrank this prompt, any earlier owner preference, any habit of the tree, and the owner. They outrank a datasheet line that contradicts them: correct that line and record the standard's section. When any rule conflicts with those protocols, follow the protocol, record the conflict and the standard's section in the datasheet, and drop or rewrite the conflicting rule. Nobody may customize the protocol. Where the standards are silent, record the choice and its reason in the datasheet. A recorded choice is protocol.
+The published protocols this bus is built on outrank every other rule. Those protocols are NXP UM10204 I2C, the SMBus mechanisms the datasheet borrows, and the CAN mechanisms the datasheet borrows. They outrank this prompt, any earlier preference, any habit of the tree, the owner, and a datasheet line that contradicts them. When a rule conflicts with them, follow the protocol, record the conflict and the standard's section in the datasheet, and drop or rewrite the conflicting rule. Nobody may customize the protocol. Where a standard is silent, or where a folder on this computer has to stand in for a wire, record the choice and its reason in the datasheet. A recorded choice is protocol.
 
 WHAT THIS IS
 
-Trident is one local organism on the owner's Windows computer. She is built the way electronics are built: independent devices on one bus. README.md is the bus datasheet. The frame grammar, acknowledgements, timeouts, error counting, how frames travel on the wire, the address map, every register, every sequence, and every limit are defined there and nowhere else.
+Trident is one local organism on the owner's Windows computer. Each device is its own process. README.md is the only datasheet and the only law for the frame grammar, acknowledgements, timeouts, fault confinement, how frames travel, the address map, every register, every sequence, and every limit.
 
-The protocol is sacred. It follows real published standards: NXP UM10204 I2C for frames and addressing, with pieces borrowed from SMBus and CAN. The datasheet labels each mechanism with the standard it comes from. Where the standards are silent, or where the wire on this computer has to differ (for example, folders and files standing in for wires), the datasheet records that choice and its reason. A recorded choice is protocol, not a deviation to fix. Nothing else may be invented: no private envelope and no field the frame grammar does not define. A famous, documented protocol means any agent can read the bus without memory of Trident. Which node is charged for a fault is the datasheet's CAN rule.
+Do not invent a frame field, a private envelope, or a second document. The datasheet labels each mechanism I2C, SMBus, CAN, or recorded choice, and it cites the section. An agent with no memory of Trident can read the bus from that datasheet.
 
-Luna is the only brain. She is reached through the owner's own Cursor login on this computer, the same way he uses Cursor himself, using the model the datasheet names. Every model call she makes draws only from his Cursor subscription: no API key, no bring-your-own key, no other paid pool. Running her turns as Cursor Cloud Agents through a key is one possible future route. Only the owner opens it. The tree carries one route at a time, never both, and never a switch between them.
+The mind is the device at the address the datasheet gives the mind slot. The fitted part is the note in that datasheet, including how its process is launched. A different fitted part is a change to the datasheet and to the tree's configuration. It is not a second device beside the slot, and it is not a rewrite of this prompt. The tree carries one fitted part at a time. Only the owner changes it. No API key, no bring-your-own key, and no paid pool other than the owner's Cursor subscription ever enters the tree or a device.
 
-She is text in and text out. Each turn starts from a frame addressed to her. Her output is either frames for the bus or her words to the owner, as the datasheet defines. Nothing wakes her unless a device addresses her. Local models on devices, such as the ear, the voice, and vision, are tools, not minds. No code branch makes a decision she should make from meaning, and no other model takes her place.
+The mind is text in and text out. A turn starts only when a device masters a frame to the mind's address. Its output is frames for the bus, or words to the owner, as the datasheet defines. Nothing wakes it on a timer. Local models on other devices are tools. No code branch decides from meaning in the mind's place, and no other model answers at that address while a part is fitted.
 
-The owner reaches her only through his Telegram user account. She is never a bot, and no second bot stands beside her. The computer microphone and the computer speakers are not hers. She hears and speaks on the Telegram line. One ear and one voice, both local, with no switch between variants. Only the devices the datasheet names as the owner's line carry his words.
+The owner reaches the organism only through his Telegram user account. The mind is never a bot, and no second bot stands beside it. The computer microphone and the computer speakers are not the organism's. It hears and speaks on the Telegram line. One ear and one voice, both local, with no switch between variants. Only the devices the datasheet names as the owner's line carry his words.
 
-She works on the computer the way a person would, through general device registers, never a register made for one application. She looks at real pixels before she acts on a place, then reads the result back through the bus before she claims it. She does not guess a place. The owner does not remote in and does not move the pointer for her.
+The mind works through the general registers the datasheet defines, never a register made for one application. It looks at real pixels before it acts on a place, then reads the result back through the bus before it claims the act. It does not guess a place. The owner does not remote in and does not move the pointer for it.
 
-Every start is a fresh life. Nothing from an earlier run returns as a task unless she reads it from the memory device and decides on it.
+Every start is a fresh life. Nothing from an earlier run returns as a task unless the mind reads it from the memory device and decides on it.
 
 THE BUS
 
-Each device is its own process at its own address. It links only the bus library and never imports another device. A new capability is a new device or a new register, written into the datasheet first.
+Each device links only the bus library and never imports another device. A new capability is a new device or a new register, written into the datasheet first.
 
 The supply starts the devices, restarts them by the datasheet's rules, and clears a stuck clock. It is not on the bus and carries no frames.
 
-ACK means delivery only. A result is a later read. How long a device may hold the clock is defined in the datasheet.
+ACK means delivery only. A result is a later read.
 
-Error counting and bus-off follow the datasheet. The CAN fault-confinement rule the datasheet borrows charges the node that detects the fault. An address with no device is not a node and is not charged.
+A device holds the clock only while it still owes bytes inside a transaction, as the datasheet allows. The mind does not hold the bus while it thinks.
+
+Fault confinement is the datasheet's fault-confinement section. Follow that section. Do not restate it here. An address with no device is not a node and is not charged.
 
 Large data, such as audio and images, never rides the bus. A frame carries a path to it.
 
 The bus journal is the record of every transaction and every timeout. A claim about behaviour cites journal lines or a self-test. A live claim cites the journal of a real run.
 
-Every limit is a number in the tree's configuration and a row in the datasheet's Limits table. A timeout, wait, cap, or size written as a constant in code is a defect. This prompt names none of them.
+Every organism limit is a number in the tree's configuration and a row in the datasheet's Limits table. Numbers fixed by a borrowed standard are protocol constants. They live in the bus library and in the datasheet's Protocol constants table, never in configuration. Self-test values are test vectors. A timeout, wait, cap, or size that is none of those, written as a constant in code, is a defect. This prompt names none of them.
 
-Retries, restarts, and timeouts exist only where the datasheet defines them. Those are protocol. Any other retry or recovery is forbidden defensive code.
+Retries, restarts, and timeouts exist only where the datasheet defines them. Any other retry or recovery is forbidden.
 
 TESTS, INJECTION, AND OBSERVATION
 
@@ -435,11 +702,11 @@ A device is tested through frames: frames placed in its inbox, replies read back
 
 Whole-system scenes are rehearsed by a test device that only masters frames, the way any controller does. It is a device like any other, so its address and rules live in the datasheet. Its frames are known by their source address, never count as the owner's words, and never count as live proof. Device code has no other test hooks, mocks, or flags. If a behaviour cannot be triggered by a frame, the datasheet is missing a register.
 
-Observing the bus means reading the journal and the wire. An observer has no address, never writes, and never acknowledges, the way a logic analyzer watches a real bus.
+Observing the bus means reading the journal. An observer has no address, never writes, and never acknowledges.
 
 HOW YOU WORK
 
-If you are run by the Luna device, you are Luna. Answer as the prompt text the tree loads tells you. Never build or commit. If you can launch a coding agent on this repository but should not write its code, launch one writer and stop. That writer's task carries everything known at once: every open ask from the owner and every gap the last handoff left. Nothing is held back for a later wave. If you can read and change the checkout, you are the writer, or the reviewer only when the TASK says review. Do not ask which seat you are.
+If you are run by the mind device, you are that mind. Answer as the prompt text the tree loads tells you. Never build or commit. If you can launch a coding agent on this repository but should not write its code, launch one writer and stop. That writer's task carries everything known at once: every open ask from the owner and every gap the last handoff left. Nothing is held back for a later wave. If you can read and change the checkout, you are the writer, or the reviewer only when the TASK says review. Do not ask which seat you are.
 
 Read the datasheet, the tracked source the TASK touches, and the text the organism actually loads. The filenames are whatever the tree uses now. Do not rebuild an old layout from memory of another session.
 
@@ -453,13 +720,13 @@ Change only what the TASK asks. Leave the rest of the tree as you found it.
 
 SCENES
 
-Start. One command, the command the datasheet documents, brings every device up. What happens at boot, including any call placed, is exactly what the datasheet's sequences say and nothing more. A failure is one error in the window that started her. A new task arrives only as the owner's private Telegram message or his speech on a call. A file dropped somewhere else on the drive is not a task.
+Start. One command, the command the datasheet documents, brings every device up. What happens at boot, including any call placed, is exactly what the datasheet's sequences say and nothing more. A failure is one error in the window that started the organism. A new task arrives only as the owner's private Telegram message or his speech on a call. A file dropped somewhere else on the drive is not a task.
 
-The call. He calls her, or a call is placed as the datasheet allows. He speaks in ordinary words, and she hears those words as his. She looks before she acts on a place, then looks again. If the screen did not change as she meant, she tries another way. She does not reuse another application's numbers as this screen's grid.
+The call. He calls, or a call is placed as the datasheet allows. He speaks in ordinary words, and the mind hears those words as his. It looks before it acts on a place, then looks again. If the screen did not change as it meant, it tries another way. It does not reuse another application's numbers as this screen's grid.
 
-The chat. With no call up, he can still write, and she can still answer in the chat. She does not dial merely to deliver one sentence.
+The chat. With no call up, he can still write, and the mind can still answer in the chat. It does not dial merely to deliver one sentence.
 
-Hangup. The call ends. She stays. The devices stay loaded. Either side may place the next call without restarting the organism.
+Hangup. The call ends. The mind stays. The devices stay loaded. Either side may place the next call without restarting the organism.
 
 Proof. On an empty machine, with no chat history and no leftover process, clone the tree, install what the tree's installer installs, start, and live one phone scene that starts from the owner's own words: a real Telegram user call, no bot in the call, and the journal of that run. If you did not live it, say which part you did not run. Do not report a start, an install, or a send unless the output shows it. If this checkout cannot place or take a real Telegram user call on the owner's Windows machine, do not run the live phone scene. Say that live proof is blocked and what you could not reach. A rehearsed scene is never proof.
 
@@ -469,9 +736,9 @@ RULES OF THE CODE
 
 The datasheet is the law. Change the README section first, then the code to match, in the same commit. Code that does something the datasheet does not say is a defect, and so is a datasheet line the code does not do.
 
-The protocol is the only size rule. The code that joins a device to the bus matches the datasheet exactly, line for line. Everything else in a device is as little code as its datasheet section needs. When a datasheet line is removed, its code goes in the same commit. When one way of doing a thing replaces another, the old code is deleted, not kept beside the new one. The owner has approved any change of architecture that makes Trident leaner: delete, merge, split, or rename files. Every commit message carries a table of line counts per file.
+The code that joins a device to the bus matches the datasheet. Everything else in a device is as little code as its datasheet section needs. When a datasheet line is removed, its code goes in the same commit. When one way of doing a thing replaces another, the old code is deleted, not kept beside the new one. The owner has approved any change of architecture that makes Trident leaner: delete, merge, split, or rename files. Every commit message carries a table of line counts per file.
 
-No defensive coding. No fallback, no second path, no silent recovery, no sandbox, no optional wording that hides a missing piece, no duplicate, no dead code, and no comment that only restates the line. Do not add a document the TASK did not ask for; the datasheet is the one document. A device with a missing model, login, session, or required argument raises one error and exits; the supply's datasheet rules decide what follows.
+No defensive coding. No fallback, no second path, no silent recovery, no sandbox, no optional wording that hides a missing piece, no duplicate, no dead code, and no comment that only restates the line. Do not add a document the TASK did not ask for. The datasheet is the one document. Do not add a second copy of this prompt to the tree. Frontmatter belongs only on the publisher's SKILL.md, which is not a tracked file. A device with a missing model, login, session, or required argument raises one error and exits. The supply's datasheet rules decide what follows.
 
 Read configuration from the tree. Do not create a second configuration channel, and do not read product settings from the environment. No key or credential ever enters the tree.
 

@@ -5,41 +5,22 @@ from pathlib import Path
 
 import i2c
 
-TOOLS = ",".join((
-    "shell_tool_call", "delete_tool_call", "glob_tool_call", "grep_tool_call",
-    "read_tool_call", "update_todos_tool_call", "read_todos_tool_call", "edit_tool_call",
-    "ls_tool_call", "read_lints_tool_call", "mcp_tool_call", "sem_search_tool_call",
-    "create_plan_tool_call", "web_search_tool_call", "task_tool_call",
-    "list_mcp_resources_tool_call", "read_mcp_resource_tool_call", "apply_agent_diff_tool_call",
-    "ask_question_tool_call", "fetch_tool_call", "switch_mode_tool_call", "generate_image_tool_call",
-    "record_screen_tool_call", "computer_use_tool_call", "write_shell_stdin_tool_call",
-    "reflect_tool_call", "setup_vm_environment_tool_call", "truncated_tool_call",
-    "start_grind_execution_tool_call", "start_grind_planning_tool_call", "web_fetch_tool_call",
-    "report_bugfix_results_tool_call", "ai_attribution_tool_call", "pr_management_tool_call",
-    "mcp_auth_tool_call", "await_tool_call", "blame_by_file_path_tool_call", "get_mcp_tools_tool_call",
-    "report_bug_tool_call", "set_active_branch_tool_call", "communicate_update_tool_call",
-    "send_final_summary_tool_call", "update_pr_code_tour_tool_call", "replace_env_tool_call",
-    "edit_pr_labels_tool_call", "record_ci_investigation_findings_tool_call", "send_message_tool_call",
-    "fetch_cloud_agent_data_tool_call", "send_to_user_tool_call", "pi_read_tool_call", "pi_bash_tool_call",
-    "pi_edit_tool_call", "pi_write_tool_call", "pi_grep_tool_call", "pi_find_tool_call", "pi_ls_tool_call",
-    "connect_scm_tool_call", "search_conversations_tool_call", "create_goal_tool_call",
-    "update_goal_tool_call", "adopt_tool_call", "get_agent_status_tool_call", "send_to_agent_tool_call",
-    "read_agent_transcript_tool_call", "create_agent_tool_call", "stop_agent_tool_call",
-    "get_pr_code_tour_tool_call", "write_canvas_tool_call", "read_canvas_tool_call",
-))
 
-
-class Luna:
+class Mind:
     def __init__(self, bus, cfg, run, root, command=None):
         self.bus = bus
         self.cfg = cfg
         self.run = Path(run)
         self.root = Path(root)
         self.command = command
+        mind = cfg["mind"]
+        self.part = mind["part"]
+        self.identity = ";".join((mind["manufacturer"], mind["part"], mind["revision"], mind["capabilities"]))
         self.tg = i2c.addr(cfg, "telegram")
         self.owners = {i2c.addr(cfg, "telegram"), i2c.addr(cfg, "ears")}
         self.cap = int(cfg["bus"]["self_turn_cap"])
-        self.limit = float(cfg["busy"]["luna"])
+        self.limit = float(mind["turn"])
+        self.context = int(mind["context_chars"])
         self.busy = False
         self.self_turns = 0
         self.transcript = ""
@@ -48,38 +29,50 @@ class Luna:
         self.proc = None
 
     def argv(self):
-        if self.command:
+        if self.command is not None:
             return list(self.command)
-        raw = self.cfg["luna"]["command"]
-        folder = Path(os.path.expandvars(str(raw[0])))
-        versions = [path for path in folder.iterdir() if (path / "node.exe").is_file() and (path / "index.js").is_file()]
+        mind = self.cfg["mind"]
+        raw = []
+        for part in mind["command"]:
+            text = os.path.expandvars(str(part))
+            text = text.replace("{model}", mind["model"]).replace("{tools}", mind["tools"]).replace("{run}", str(self.run))
+            raw.append(text)
+        folder = Path(raw[0])
+        versions = [path for path in folder.iterdir() if (path / raw[1]).is_file() and (path / raw[2]).is_file()]
         if not versions:
-            raise RuntimeError("Cursor CLI is missing")
+            raise RuntimeError("mind command is missing")
         latest = max(versions, key=lambda path: path.name)
-        return [
-            str(latest / "node.exe"), str(latest / "index.js"), "-p",
-            "--model", self.cfg["luna"]["model"], "--output-format", "text",
-            "--trust", "--workspace", str(self.run), "--exclude-tools", TOOLS,
-        ]
+        return [str(latest / raw[1]), str(latest / raw[2]), *raw[3:]]
 
     def stdin_text(self, src, incoming):
         prompt = (self.root / "prompt.txt").read_text(encoding="utf-8")
         listing = "\n".join(f"{int(value, 16):02x} {name}" for name, value in self.cfg["address"].items())
         return prompt + "\n" + listing + "\n" + self.transcript + "\n" + f"{src:02x}\n" + incoming
 
+    def keep(self, text, decoded):
+        self.transcript += f"In:\n{text}\nOut:\n{decoded}\n"
+        while len(self.transcript) > self.context:
+            cut = self.transcript.find("\nIn:\n", 1)
+            if cut < 0:
+                self.transcript = self.transcript[-self.context:]
+                return
+            self.transcript = self.transcript[cut + 1:]
+
     async def on_frame(self, src, line):
-        if line.split()[2] == "R" and not i2c.write_payload(line):
-            return i2c.with_payload(line, bytes([1 if self.busy else 0]))
+        data = i2c.write_payload(line)
+        if data == b"\xf0" and " Sr " in line:
+            return i2c.with_payload(line, self.identity.encode())
+        if line.split()[2] == "R" and not data:
+            return i2c.reply(line, b"", bytes([1 if self.busy else 0]))
         if self.busy:
             return i2c.nack(self.bus.addr)
         if src == self.bus.addr:
             self.self_turns += 1
             if self.self_turns > self.cap:
-                return i2c.pack_write(self.bus.addr, i2c.write_payload(line))
+                return i2c.pack_write(self.bus.addr, data)
         elif src in self.owners:
             self.self_turns = 0
         self.busy = True
-        data = i2c.write_payload(line)
         asyncio.create_task(self.turn(src, data))
         return i2c.pack_write(self.bus.addr, data)
 
@@ -105,12 +98,8 @@ class Luna:
         decoded = out.decode()
         self.count += 1
         (self.run / f"turn-{self.count}.txt").write_text(stdin + "\n---\n" + decoded, encoding="utf-8")
-        self.transcript += f"In:\n{text}\nOut:\n{decoded}\n"
+        self.keep(text, decoded)
         return decoded
-
-    async def say(self, text):
-        if text.strip():
-            await self.bus.request(self.tg, i2c.pack_write(self.tg, bytes([0x10]) + text.encode()))
 
     async def act(self, out):
         prose = []
@@ -118,24 +107,36 @@ class Luna:
         async def flush():
             body = "\n".join(prose).strip()
             prose.clear()
-            if body:
-                await self.say(body)
+            if not body:
+                return
+            frame = i2c.pack_write(self.tg, bytes([0x10]) + body.encode())
+            try:
+                await self.bus.request(self.tg, frame)
+            except i2c.BusOff:
+                raise
+            except Exception as error:
+                self.queued.append(i2c.pack_write(self.bus.addr, str(error).encode()))
 
         for line in out.splitlines():
             stripped = line.strip()
-            if i2c.legal(stripped):
+            if stripped.startswith("S "):
                 await flush()
+                if not i2c.legal(stripped):
+                    self.queued.append(i2c.pack_write(self.bus.addr, f"illegal frame: {stripped}".encode()))
+                    continue
                 target = int(stripped.split()[1], 16)
                 if target == self.bus.addr and stripped.split()[2] == "W":
                     self.queued.append(stripped)
                     continue
                 try:
-                    reply = await self.bus.request(target, stripped)
+                    answered = await self.bus.request(target, stripped)
+                except i2c.BusOff:
+                    raise
                 except Exception as error:
                     self.queued.append(i2c.pack_write(self.bus.addr, str(error).encode()))
                     continue
                 if " Sr " in stripped:
-                    payload = i2c.read_payload(reply)
+                    payload = i2c.read_payload(answered)
                     if payload:
                         self.queued.append(i2c.pack_write(self.bus.addr, payload))
             else:
@@ -147,29 +148,29 @@ class Luna:
             try:
                 out = await self.cli(src, data)
             except TimeoutError:
-                self.bus.bump(8)
-                await self.say("Luna timed out.")
-                return
+                out = f"{self.part} timed out."
+            except Exception as error:
+                out = f"{self.part} stopped: {error}"
             await self.act(out)
-        except Exception as error:
-            self.bus.bump(8)
-            await self.say(f"Luna failed: {error}")
+        except i2c.BusOff:
+            return
         finally:
             queued = self.queued
             self.queued = []
             self.busy = False
-            for line in queued:
-                self.bus.seq += 1
-                i2c.place(self.bus.inbox, f"q-{self.bus.addr:02x}-{self.bus.seq}", line)
+            if not self.bus.dead:
+                for line in queued:
+                    self.bus.post(line)
+
+
+def build(bus, cfg, root, run):
+    mind = Mind(bus, cfg, run, root)
+    mind.argv()
+    return mind.on_frame, None, None
 
 
 def main():
-    root, cfg = i2c.load()
-    run = Path(sys.argv[1])
-    bus = i2c.Bus(root, i2c.addr(cfg, "luna"), run, cfg)
-    luna = Luna(bus, cfg, run, root)
-    luna.argv()
-    i2c.entry(lambda: bus.run(luna.on_frame))
+    i2c.main_for("mind", build)
 
 
 def test():
@@ -193,10 +194,19 @@ elif kind == "self":
     sys.stdout.write("ping\nS 16 W A 68 A 69 A P\n")
 elif kind == "bad":
     sys.stdout.write("S 10 W A 03 A P\nkept\n" if n == 1 else "done\n")
+elif kind == "ill":
+    sys.stdout.write("S 11 W A 01\nkept\n" if n == 1 else "done\n")
 else:
     time.sleep(2)
     sys.stdout.write("late\n")
 """
+    cfg = i2c.load()[1]
+    grid = str(cfg["limits"]["grid"])
+    assert f"0 to {grid}" in (Path(__file__).resolve().parent / "prompt.txt").read_text(encoding="utf-8")
+    probe = Mind(None, cfg, Path("."), Path("."), ["stand-in"])
+    probe.context = 30
+    probe.keep("one", "abcdefghij" * 8)
+    assert len(probe.transcript) <= 30
 
     seen = []
 
@@ -213,16 +223,16 @@ else:
         log = root / "log.txt"
         wire = root / "wire"
         cfg = i2c.test_cfg()
-        cfg["luna"] = {"model": "gpt-5.6-luna-none", "command": ["."]}
         phone_bus = i2c.Bus(root, 0x11, run_dir, cfg)
         phone_bus.up()
         stop = [False]
         phones = asyncio.create_task(i2c._peer(phone_bus, phone, stop))
         here = Path(__file__).resolve().parent
+        part = cfg["mind"]["part"].encode()
 
         async def boot(command, this_cfg):
             bus = i2c.Bus(root, 0x16, run_dir, this_cfg)
-            mind = Luna(bus, this_cfg, run_dir, here, command)
+            mind = Mind(bus, this_cfg, run_dir, here, command)
             task = asyncio.create_task(bus.run(mind.on_frame))
             for _ in range(50):
                 if bus.present(0x16):
@@ -235,6 +245,8 @@ else:
         master = i2c.Bus(root, 0x11, run_dir, cfg)
         master.seq = 400
         assert mind.owners == {0x11, 0x12}
+        ident = await master.request(0x16, i2c.pack_call(0x16, b"\xf0"))
+        assert i2c.read_payload(ident).decode() == mind.identity
         await master.request(0x16, i2c.pack_write(0x16, b"ping"))
         for _ in range(50):
             if log.exists() and "BEGIN" in log.read_text(encoding="utf-8"):
@@ -249,8 +261,10 @@ else:
                 break
             await asyncio.sleep(0.02)
         assert any(item.startswith(b"\x10hello") for item in seen)
-        assert "\n11\nping\n" in (run_dir / "turn-1.txt").read_text(encoding="utf-8")
-        assert "10 timer" in (run_dir / "turn-1.txt").read_text(encoding="utf-8")
+        turn = (run_dir / "turn-1.txt").read_text(encoding="utf-8")
+        assert "\n11\nping\n" in turn
+        assert "10 timer" in turn
+        assert f"0 to {grid}" in turn
         assert " ack " in (run_dir / "bus.log").read_text(encoding="utf-8")
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
@@ -292,23 +306,42 @@ else:
             await asyncio.sleep(0.02)
         assert any(item.startswith(b"\x10kept") for item in seen)
         assert any(item.startswith(b"\x10done") for item in seen)
-        assert not any(item.startswith(b"\x10Luna failed") for item in seen)
+        assert not any(item.startswith(b"\x10" + part + b" stopped") for item in seen)
         assert "NACK 10" in (run_dir / "turn-2.txt").read_text(encoding="utf-8")
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
-        cfg["busy"]["luna"] = 0.3
+        seen.clear()
+        log.write_text("", encoding="utf-8")
+        ill = [sys.executable, str(script), str(log), str(wire), "ill"]
+        bus, mind, task = await boot(ill, cfg)
+        master = i2c.Bus(root, 0x11, run_dir, cfg)
+        master.seq = 1100
+        await master.request(0x16, i2c.pack_write(0x16, b"go"))
+        for _ in range(80):
+            if any(item.startswith(b"\x10done") for item in seen):
+                break
+            await asyncio.sleep(0.02)
+        assert any(item.startswith(b"\x10kept") for item in seen)
+        assert not any(b"S 11 W A 01" in item for item in seen)
+        assert "illegal frame:" in log.read_text(encoding="utf-8")
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        cfg["mind"]["turn"] = 0.3
         seen.clear()
         hung = [sys.executable, str(script), str(log), str(wire), "hang"]
         bus, mind, task = await boot(hung, cfg)
         master = i2c.Bus(root, 0x11, run_dir, cfg)
         master.seq = 1200
         await master.request(0x16, i2c.pack_write(0x16, b"wait"))
+        expect = b"\x10" + part + b" timed out."
         for _ in range(80):
-            if any(item.startswith(b"\x10Luna timed out.") for item in seen):
+            if any(item.startswith(expect) for item in seen):
                 break
             await asyncio.sleep(0.05)
-        assert any(item.startswith(b"\x10Luna timed out.") for item in seen)
+        assert any(item.startswith(expect) for item in seen)
+        assert bus.tec == 0 and bus.rec == 0
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         stop[0] = True

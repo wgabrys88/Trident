@@ -7,7 +7,7 @@ from pathlib import Path
 
 import i2c
 
-NAMES = ["timer", "telegram", "ears", "voice", "tools", "luna", "memory"]
+NAMES = ["timer", "telegram", "ears", "voice", "tools", "mind", "memory"]
 
 
 class Supply:
@@ -22,7 +22,7 @@ class Supply:
         self.fails = {}
         self.backoff = {}
         self.wire = self.root / "wire"
-        self.cap = int(cfg["bus"]["luna_start_cap"])
+        self.cap = int(cfg["bus"]["restart_cap"])
         self.stable = float(cfg["bus"]["stable_seconds"])
         self.step = float(cfg["bus"]["backoff"])
 
@@ -36,9 +36,9 @@ class Supply:
         self.backoff.setdefault(name, self.step)
 
     def clear_lines(self, name):
-        address = f"{i2c.addr(self.cfg, name):02x}"
-        i2c.remove(self.wire / "scl" / address)
-        i2c.remove(self.wire / address / "alive")
+        address = i2c.addr(self.cfg, name)
+        i2c.remove(i2c.scl_of(self.wire, address))
+        i2c.remove(i2c.home_of(self.wire, address) / "alive")
 
     def hung(self):
         folder = self.wire / "scl"
@@ -52,10 +52,12 @@ class Supply:
             address = int(path.name, 16)
             name = next(key for key, value in self.cfg["address"].items() if int(value, 16) == address)
             proc = self.procs.get(name)
-            if proc is not None and proc.poll() is not None:
+            if proc is None:
+                continue
+            if proc.poll() is not None:
                 i2c.remove(path)
                 continue
-            if proc is not None and proc.poll() is None and now - started > float(self.cfg["busy"][name]):
+            if name in self.cfg["busy"] and now - started > float(self.cfg["busy"][name]):
                 proc.terminate()
                 i2c.remove(path)
 
@@ -82,16 +84,20 @@ class Supply:
                         self.backoff[name] = self.step
                     continue
                 self.clear_lines(name)
+                address = i2c.addr(self.cfg, name)
+                aa = f"{address:02x}"
+                if (i2c.home_of(self.wire, address) / "busoff").is_file():
+                    print(f"{aa} bus-off", file=sys.stderr)
                 if time.monotonic() - self.when[name] < self.stable:
                     self.fails[name] += 1
                 else:
                     self.fails[name] = 0
                     self.backoff[name] = self.step
-                if name == "luna" and self.fails[name] >= self.cap:
-                    print("Luna cannot start", file=sys.stderr)
-                    home = self.wire / f"{i2c.addr(self.cfg, 'luna'):02x}"
+                if self.fails[name] >= self.cap:
+                    print(f"{aa} cannot start", file=sys.stderr)
+                    home = i2c.home_of(self.wire, address)
                     home.mkdir(parents=True, exist_ok=True)
-                    (home / "down").write_text("Luna cannot start\n", encoding="utf-8")
+                    (home / "down").write_text(f"{aa} cannot start\n", encoding="utf-8")
                     self.stop()
                     return 1
                 self.restart[name] = time.monotonic() + self.backoff[name]
@@ -119,7 +125,7 @@ def test():
     root = Path(tempfile.mkdtemp())
     cfg = i2c.test_cfg()
     cfg["bus"]["backoff"] = 0.05
-    cfg["bus"]["luna_start_cap"] = 2
+    cfg["bus"]["restart_cap"] = 2
     cfg["busy"]["tools"] = 1
     supply = Supply(root, cfg, root / "RUN_test")
     supply.wire.mkdir(parents=True)
@@ -141,16 +147,28 @@ def test():
     import contextlib
     fail = Supply(
         root, cfg, root / "RUN_fail",
-        {"luna": [sys.executable, "-c", "import sys; sys.exit(1)"]},
+        {"memory": [sys.executable, "-c", "import sys; sys.exit(1)"]},
     )
     buf = io.StringIO()
     with contextlib.redirect_stderr(buf):
         code = fail.run()
     assert code == 1
-    assert buf.getvalue().strip() == "Luna cannot start"
-    assert (fail.wire / "16" / "down").is_file()
+    assert buf.getvalue().strip() == "50 cannot start"
+    assert (fail.wire / "50" / "down").is_file()
+    cfg["bus"]["restart_cap"] = 1
+    home = fail.wire / "14"
+    off = Supply(
+        root, cfg, root / "RUN_off",
+        {"tools": [sys.executable, "-c", "import sys; from pathlib import Path; p=Path(sys.argv[1]); p.mkdir(parents=True, exist_ok=True); (p/'busoff').write_text('1\\n', encoding='utf-8')", str(home)]},
+    )
+    buf = io.StringIO()
+    with contextlib.redirect_stderr(buf):
+        code = off.run()
+    assert code == 1
+    assert buf.getvalue().splitlines() == ["14 bus-off", "14 cannot start"]
     assert "injector" not in NAMES
     assert "observer" not in NAMES
+    assert "mind" in NAMES
     import shutil
     shutil.rmtree(root, ignore_errors=True)
 
