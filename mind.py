@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import json
 import subprocess
 import sys
@@ -89,7 +90,8 @@ class Mind(QueuedDevice):
             self.validator.validate(action)
         except (ValueError, ValidationError) as error:
             reason = "it matched no action" if isinstance(error, ValidationError) else error.args[0].split(":")[0]
-            await self.send("telegram", f"Mind fault: my reply was not one action object ({reason}), so I did nothing.", "10")
+            with contextlib.suppress(Nack, TimeoutError):
+                await self.send("telegram", f"Mind fault: my reply was not one action object ({reason}), so I did nothing.", "10")
             fault = f"your reply was not one action object ({reason}), so nothing was done"
         self.history.append(f"Controller {source}: {incoming}\nAction: {raw if fault else json.dumps(action)}")
         while sum(map(len, self.history)) > self.part["context_chars"]:
@@ -99,7 +101,8 @@ class Mind(QueuedDevice):
             try:
                 return await self.dispatch(action := {"action": "write", "address": self.address, "register": "01", "text": f"Mind fault: {fault}. Continue with one JSON action."} if fault else action)
             except (Nack, TimeoutError, ValueError) as error:
-                await self.send("telegram", f"My {action['action']} action was not carried out: {error}.", "10")
+                with contextlib.suppress(Nack, TimeoutError):
+                    await self.send("telegram", f"My {action['action']} action was not carried out: {error}.", "10")
                 if action.get("address") == self.address:
                     return
                 fault = f"that {action['action']} failed ({error})"

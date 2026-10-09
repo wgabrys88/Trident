@@ -10,14 +10,11 @@ import soundfile
 
 from i2c import QueuedDevice, Server
 
-
 class Backend(ctypes.Structure):
     _fields_ = [("size", ctypes.c_size_t), ("gpu", ctypes.c_int32)]
 
-
 class Model(ctypes.Structure):
     _fields_ = [("size", ctypes.c_size_t), ("path", ctypes.c_char_p), ("name", ctypes.c_char_p)]
-
 
 class Recognizer(ctypes.Structure):
     _fields_ = [("size", ctypes.c_size_t)] + [(name, ctypes.c_void_p) for name in
