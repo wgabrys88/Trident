@@ -32,7 +32,7 @@ class Refusal(IntEnum):
 class Nack(Exception):
     def __init__(self, cause: Refusal):
         self.cause = cause
-        super().__init__(cause.name)
+        super().__init__(cause.name.replace("_", " ").lower())
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,7 +130,7 @@ class Bus:
             self.state["rx"] += RECEIVE_ERROR_STEP
             self.save()
             self.journal(source, self.address, line, "malformed")
-            raise
+            return path.unlink()
         hold, held = self.home / "hold", False
         try:
             try:
@@ -152,6 +152,9 @@ class Bus:
                 outcome = Refusal.END_OF_READ.name if frame.reading and result else "ack"
             except Nack as error:
                 reply, outcome = frame.encode(refusal=error.cause), error.cause.name
+            except Exception:
+                sys.excepthook(*sys.exc_info())
+                reply, outcome = frame.encode(refusal=Refusal.UNKNOWN_DATA), Refusal.UNKNOWN_DATA.name
             self.place(self.wire / source / f"r-{sequence}.frame", reply)
             path.unlink()
             self.incoming.remove(path)

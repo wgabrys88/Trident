@@ -43,8 +43,8 @@ class Tools(Device):
             case 3:
                 path = Path(text)
                 image = base64.b64encode(path.read_bytes()).decode()
-                content = [{"type": "text", "text": self.cfg["vision"]["prompt"].format(grid=self.cfg["limits"]["grid"])},
-                           {"type": "image_url", "image_url": {"url": f"data:{mimetypes.guess_type(path)[0]};base64,{image}"}}]
+                content = [{"type": "image_url", "image_url": {"url": f"data:{mimetypes.guess_type(path)[0]};base64,{image}"}},
+                           {"type": "text", "text": self.cfg["vision"]["prompt"].format(grid=self.cfg["limits"]["grid"])}]
                 return (await self.server.chat([{"role": "user", "content": content}])).encode()
 
     def act(self, text):
@@ -53,11 +53,8 @@ class Tools(Device):
             raise Nack(Refusal.UNKNOWN_DATA)
         match operation:
             case "click" | "draw":
-                try:
-                    coordinates = tuple(map(int, argument.split()))
-                    points = tuple(zip(coordinates[::2], coordinates[1::2], strict=True))
-                except ValueError:
-                    raise Nack(Refusal.UNKNOWN_DATA) from None
+                coordinates = tuple(map(int, argument.split()))
+                points = tuple(zip(coordinates[::2], coordinates[1::2], strict=True))
                 grid = self.cfg["limits"]["grid"]
                 if (len(points) != 1 if operation == "click" else len(points) < 2) or not all(0 <= value <= grid for value in coordinates):
                     raise Nack(Refusal.UNKNOWN_DATA)

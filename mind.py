@@ -102,8 +102,8 @@ class Mind(QueuedDevice):
         self.busy = False
         try:
             await self.dispatch(action)
-        except Nack as error:
-            await self.send("telegram", f"Device {action['address']} refused {action['action']} {action['register']}, so it was not done.", "10")
+        except (Nack, TimeoutError, ValueError) as error:
+            await self.send("telegram", f"My {action['action']} action was not carried out: {error}.", "10")
 
     @staticmethod
     def unique_object(pairs):
