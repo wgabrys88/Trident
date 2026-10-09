@@ -138,8 +138,8 @@ class Telegram(QueuedDevice):
                     for offset in range(0, len(text), size):
                         await self.client.send_message(self.owner_entity, text[offset:offset + size], parse_mode=None)
             case 17:
-                path, _, text = frame.data[1:].decode().partition("\n")
-                await (self.client.send_file(self.owner_entity, path, caption=text[:self.cfg["telegram"]["caption_chars"]], parse_mode=None, force_document=True) if path else self.client.send_message(self.owner_entity, text[:self.cfg["telegram"]["chat_chars"]], parse_mode=None))
+                items = [item.partition("\n")[::2] for item in frame.data[1:].decode().split("\x1e")[:10]]
+                await (self.client.send_file(self.owner_entity, [path for path, _ in items], caption=[text[:self.cfg["telegram"]["caption_chars"]] for _, text in items], parse_mode=None, force_document=True) if items[0][0] else self.client.send_message(self.owner_entity, items[0][1][:self.cfg["telegram"]["chat_chars"]], parse_mode=None))
             case 32:
                 await self.play(frame.data[1:].decode())
             case 33:

@@ -1,13 +1,4 @@
-import os
-import signal
-import sys
-import tomllib
-import urllib.error
-import urllib.request
-import asyncio
-import json
-import re
-import time
+import os, signal, sys, tomllib, urllib.error, urllib.request, asyncio, json, re, time
 from dataclasses import dataclass
 from contextlib import AsyncExitStack, suppress
 from enum import IntEnum

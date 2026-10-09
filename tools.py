@@ -1,9 +1,4 @@
-import asyncio
-import base64
-import ctypes
-import re
-import subprocess
-import time
+import asyncio, base64, ctypes, re, subprocess, time
 
 import pyperclip
 from PIL import Image, ImageGrab, ImageOps, PngImagePlugin
@@ -52,11 +47,24 @@ class Tools(Device):
             case 3:
                 path, _, question = text.partition("\n")
                 x0, y0, x1, y1 = map(int, (image := Image.open(path)).info.get("crop", f"0 0 {grid} {grid}").split())
-                ImageOps.contain(image, (min(side := self.cfg["vision"]["image_side"], image.width), min(side, image.height)), Image.LANCZOS).save(sent := f"{path}-vision-{time.time_ns()}.png", "PNG")
-                self.mirror(f"{sent}\n{source} -> {self.name} vision: {(question := question or self.cfg['vision']['prompt'].format(grid=grid))}")
-                reply = await self.server.chat([{"role": "system", "content": self.cfg["vision"]["system"]}, {"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64.b64encode(open(sent, 'rb').read()).decode()}"}}, {"type": "text", "text": question}]}], temperature=self.cfg["vision"]["temperature"])
-                self.mirror(f"\nvision {self.name} -> {source}: {reply}")
-                return BOX.sub(lambda box: self.unzoom(box, x0, y0, x1, y1, grid), reply).encode()
+                sent, reply = await self.look(image, path, question or (vision := self.cfg["vision"])["areas"], question and source)
+                if question:
+                    return BOX.sub(lambda box: self.unzoom(box, x0, y0, x1, y1, grid), reply).encode()
+                areas = [(re.sub(r'image_index=\d+ |"bbox_2d"\s*:\s*', "", box[1]).strip() or (re.findall(r'"label"\s*:\s*"([^"]*)"', reply[reply.rfind("{", 0, box.start()) + 1:box.end() + (reply[box.end():] + "}").find("}")]) or ["area"])[0], [int(value) for value in box.groups()[1:]], [int(value) for value in re.findall(r"\d+", self.unzoom(box, x0, y0, x1, y1, grid)[len(box[1]):])]) for box in BOX.finditer(reply) if int(box[2]) < int(box[4]) and int(box[3]) < int(box[5])][:vision["max_areas"]]
+                rendered = []
+                for label, (a, b, c, d), (e, f, g, h, cy, cx) in areas:
+                    crop, raw = await self.look(image.crop((round(a * (image.width - 1) / grid), round(b * (image.height - 1) / grid), round(c * (image.width - 1) / grid) + 1, round(d * (image.height - 1) / grid) + 1)), path, vision["read"], None)
+                    covers = next((f", covers {other}" for other, _, (p, q, r, s, *_) in areas if (r - p) * (s - q) > (g - e) * (h - f) and max(0, min(g, r) - max(e, p)) * max(0, min(h, s) - max(f, q)) >= 0.8 * (g - e) * (h - f)), "")
+                    rendered.append((f"{label}, {('top', 'middle', 'bottom')[min(2, cy * 3 // grid)]} {('left', 'centre', 'right')[min(2, cx * 3 // grid)]}{covers}, shows: {' '.join(raw.split())[:80].rstrip()} bbox_2d [{e}, {f}, {g}, {h}] centre_y_x [{cy}, {cx}]", f"{crop}\n{vision['read']} / {raw}"))
+                self.mirror("\x1e".join(([f"{sent}\n{(text := chr(10).join(line for line, _ in rendered) or 'no areas found')}"] + [item for _, item in rendered])[:10]))
+                return text.encode()
+
+    async def look(self, image, path, question, source):
+        ImageOps.contain(image, (min(side := self.cfg["vision"]["image_side"], image.width), min(side, image.height)), Image.LANCZOS).save(sent := f"{path}-vision-{time.time_ns()}.png", "PNG")
+        source and self.mirror(f"{sent}\n{source} -> {self.name} vision: {question}")
+        reply = await self.server.chat([{"role": "system", "content": self.cfg["vision"]["system"]}, {"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64.b64encode(open(sent, 'rb').read()).decode()}"}}, {"type": "text", "text": question}]}], temperature=self.cfg["vision"]["temperature"])
+        source and self.mirror(f"\nvision {self.name} -> {source}: {reply}")
+        return sent, reply
 
     def mirror(self, text):
         asyncio.create_task(self.send("telegram", text, "11")).add_done_callback(lambda task: task.cancelled() or task.exception() is None or print(time.strftime("%X"), "Vision mirror failed:", repr(task.exception()), flush=True))
