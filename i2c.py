@@ -126,7 +126,7 @@ class Bus:
             self.save()
             self.journal(source, self.address, line, "malformed")
             self.incoming.remove(path)
-            return path.unlink()
+            return path.unlink(missing_ok=True)
         held = None
         try:
             try:
@@ -150,12 +150,12 @@ class Bus:
                 sys.excepthook(*sys.exc_info())
                 reply, outcome = frame.encode(refusal=Refusal.UNKNOWN_DATA), Refusal.UNKNOWN_DATA.name
             self.place(self.wire / source / f"r-{sequence}.frame", reply)
-            path.unlink()
+            path.unlink(missing_ok=True)
             self.incoming.remove(path)
             self.journal(source, self.address, reply, outcome)
         finally:
             if held:
-                held.unlink()
+                held.unlink(missing_ok=True)
 
     async def transfer(self, frame: Frame, once: bool = False) -> bytes:
         async with self.lock:
@@ -181,7 +181,7 @@ class Bus:
                         raise TimeoutError(f"No acknowledgement from {frame.address}")
                     await asyncio.sleep(self.settings["poll"])
                 reply = reply_path.read_text(encoding="utf-8")
-                reply_path.unlink()
+                reply_path.unlink(missing_ok=True)
                 if reply == frame.encode(refusal=Refusal.NOT_READY):
                     if once:
                         return b""
@@ -221,15 +221,15 @@ class Server:
     def __init__(self, device, settings: dict):
         self.device, self.settings, self.process, self.url = device, settings, None, settings["url"]
 
-    def request(self, endpoint: str, body: dict) -> bytes:
+    def request(self, endpoint: str, body: dict, timeout: float) -> bytes:
         request = urllib.request.Request(self.url + endpoint, json.dumps(body).encode(), {"Content-Type": "application/json"})
-        with urllib.request.urlopen(request, timeout=self.device.cfg["limits"]["http_timeout"]) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.read()
 
     async def chat(self, messages: list, **options) -> str:
         body = {"model": self.settings["model"], "messages": messages,
                 **self.device.cfg["sampling"], "max_tokens": self.settings["max_tokens"], **options}
-        return json.loads(await asyncio.to_thread(self.request, "/v1/chat/completions", body))["choices"][0]["message"]["content"]
+        return json.loads(await asyncio.to_thread(self.request, "/v1/chat/completions", body, self.device.cfg["limits"]["http_timeout"]))["choices"][0]["message"]["content"]
 
     def health(self):
         try:

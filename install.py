@@ -16,7 +16,7 @@ class Installer:
             (part := path.with_name(path.name + ".part")).parent.mkdir(parents=True, exist_ok=True)
             with urllib.request.urlopen(url, timeout=self.cfg["limits"]["install_timeout"]) as source, part.open("wb") as output:
                 shutil.copyfileobj(source, output)
-                if output.tell() != int(source.headers["Content-Length"]):
+                if (length := int(source.headers.get("Content-Length", -1))) != -1 and output.tell() != length:
                     raise RuntimeError(f"Download of {url} stopped at {output.tell()} of {source.headers['Content-Length']} bytes; rerun install.py")
             part.replace(path)
 

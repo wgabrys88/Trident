@@ -65,8 +65,7 @@ class Supply:
                     now = time.monotonic()
                     stable = now - device.started >= self.cfg["supply"]["stable_seconds"]
                     if device.process.poll() is None:
-                        if stable:
-                            device.failures = 0
+                        device.started = device.started if (home / "alive").is_file() else now
                         continue
                     if not device.restart_at:
                         for marker in ("alive", *home.glob("hold-*")):

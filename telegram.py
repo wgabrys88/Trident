@@ -60,7 +60,6 @@ class SpeechBuffer:
         self.lead.clear()
         return result
 
-
 class Telegram(QueuedDevice):
     def __init__(self):
         super().__init__("telegram")
@@ -116,6 +115,8 @@ class Telegram(QueuedDevice):
             raise Nack(Refusal.UNKNOWN_DATA)
         if frame.data[0] == 16 and source == self.cfg["telegram"]["bridge"]:
             self.file("bridge").touch()
+        if frame.data[0] == 16 and self.state == CALL_UP and self.loop.time() - self.talked < self.cfg["audio"]["barge_hold_seconds"] and source != self.cfg["telegram"]["bridge"]:
+            raise Nack(Refusal.FULL)
         if frame.data[0] == 1:
             if self.state or source != self.cfg["telegram"]["bridge"] and (marker := self.file("bridge")).is_file() and time.time() - marker.stat().st_mtime < self.cfg["telegram"]["bridge_seconds"]:
                 raise Nack(Refusal.NOT_READY)
@@ -339,7 +340,6 @@ class Telegram(QueuedDevice):
                 connection_id=0, video=False))
         await self.release()
         await self.client.disconnect()
-
 
 if __name__ == "__main__":
     Telegram().launch()

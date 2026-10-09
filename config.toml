@@ -15,7 +15,7 @@ tools = "tools.py"
 mind = "mind.py"
 memory = "peripherals.py"
 [bus]
-frame_timeout = 2
+frame_timeout = 5
 poll = 0.05
 data_retries = 1
 self_turn_cap = 64
@@ -33,7 +33,7 @@ stop_seconds = 30
 
 [limits]
 grid = 1000
-http_timeout = 7200
+http_timeout = 7100
 health_timeout = 10
 health_poll = 0.2
 install_timeout = 3600
@@ -78,11 +78,12 @@ utterance_seconds = 30
 model = "artifacts/nemotron-speech-streaming-en-0.6b.q8_0.gguf"
 library = "artifacts/ears/bin/nemo_speech_asr_c.dll"
 gpu = 0
-start_seconds = 60
+start_seconds = 300
 
 [voice]
 url = "http://127.0.0.1:8091"
-start_seconds = 120
+start_seconds = 300
+http_seconds = 300
 command = ["artifacts/voice/crispasr-windows-x86_64-cuda126/crispasr.exe", "--server", "--host", "127.0.0.1", "--port", "8091", "--backend", "chatterbox-nano", "-m", "artifacts/chatterbox-nano-t3-q4_k.gguf", "--codec-model", "artifacts/chatterbox-turbo-s3gen-q4_k.gguf", "--gpu-backend", "cuda", "--no-punctuation"]
 
 [mind.luna]
@@ -103,8 +104,8 @@ transport = "post"
 url = "http://127.0.0.1:8081"
 port = 8081
 turn_seconds = 7200
-context_chars = 131072
-start_seconds = 90
+context_chars = 100000
+start_seconds = 300
 max_tokens = 32768
 
 [llama]
@@ -140,12 +141,12 @@ url = "http://127.0.0.1:8080"
 port = 8080
 context_tokens = 4096
 reasoning = "off"
-start_seconds = 90
+start_seconds = 300
 max_tokens = 1024
-prompt = "One plain sentence: the app in front and its state. Then a JSON array of up to 8 areas of interest (windows, dialogs, buttons, text fields, boards, canvas); each item is {{\"label\": short name, \"bbox_2d\": [xmin, ymin, xmax, ymax], \"note\": what is inside in at most 8 words}} with integers in [0, {grid}]. Label a paint app's white drawable area \"canvas\"."
-
+prompt = "List the visible windows, dialogs, panels and main controls (up to 8) as a JSON array, one item each: {{\"label\":\"<short name>\",\"bbox_2d\":[xmin,ymin,xmax,ymax],\"note\":\"<what is inside>\"}}. Label an item dialog only if a popup box really covers part of a window. Coordinates 0-{grid}."
+image_side = 1024
 [tools]
-command_seconds = 7190
+command_seconds = 7180
 input_pause = 0.1
 settle_ms = 5000
 start_settle_ms = 5000
@@ -159,10 +160,10 @@ path = "life/memory.sqlite"
 "03" = "write: cancel redial"
 [registers.telegram]
 "00" = "read: 00 down, 01 dialing, 02 up"
-"01" = "write: dial owner"
-"02" = "write: hang up"
-"10" = "write: plain sentences for the owner; spoken during a call, otherwise chat or a voice note"
-"11" = "write: vision mirror from tools only, never the mind"
+"01" = "write: dial the owner for a live call, only when he is needed live"
+"02" = "write: hang up the call"
+"10" = "write: plain sentences for the owner; spoken during a call, otherwise sent to him as a message"
+"11" = "write: copy of vision traffic, from tools only, never the mind"
 "20" = "write: PCM16 WAV path played into the call, from voice only"
 "21" = "write: OGG Opus path sent as a voice note, from voice only"
 [registers.ears]
@@ -171,18 +172,18 @@ path = "life/memory.sqlite"
 "01" = "write: words to synthesize for the call"
 "02" = "write: words to synthesize as a Telegram voice note"
 [registers.tools]
-"01" = "read: screenshot file name relative to this run, optionally followed by xmin ymin xmax ymax copied from a full-screen bbox_2d to zoom in; returns absolute path"
-"02" = "read: command line; returns exit code, stdout and stderr"
-"03" = "read: absolute image path, optionally a newline then a question for the vision model; returns its answer with each bbox_2d on the full-screen 0 to 1000 grid followed by centre_y_x [y, x]. For places ask for bbox_2d [xmin, ymin, xmax, ymax] JSON; end yes/no questions with Answer yes or no."
-"04" = "read: click y x, draw y x y x ... continuous stroke, type text, key name; y first on the grid; returns post-input screenshot path"
+"01" = "read: new picture file name without spaces, optionally followed by xmin ymin xmax ymax copied from a map box to zoom in; returns its absolute path; you see nothing until 03"
+"02" = "read: executable Windows command line; returns exit code, stdout and stderr; exit 0 only means it started"
+"03" = "read: absolute picture path alone for a map (scene line, labelled areas with notes), or path, newline, one question ending 'Reply with one bbox_2d JSON.' or 'Answer yes or no.'; every bbox_2d [xmin, ymin, xmax, ymax] is on the full-screen 0 to 1000 grid, followed by centre_y_x [y, x]"
+"04" = "read: one input, y first on the grid: click y x, draw y x y x ... (one continuous stroke), type text, key name; returns the path of a picture taken after it"
 [registers.mind]
 "00" = "read: 00 free, 01 busy"
-"01" = "write: message or next turn"
+"01" = "write: your own next turn within its cap; holds your short numbered plan or a note to yourself"
 "f0" = "read: manufacturer, part, revision, capabilities"
 [registers.memory]
-"01" = "write/read: append text, return decimal record id"
-"02" = "read: decimal record id, return text"
-"03" = "read: latest text; empty when no records exist"
+"01" = "write/read: append one record, such as a parked or finished task; read returns its decimal id"
+"02" = "read: decimal record id; returns that record"
+"03" = "read: the latest record, the top of your task stack; empty when there are none"
 
 [downloads.models]
 "nemotron-speech-streaming-en-0.6b.q8_0.gguf" = "https://huggingface.co/nvidia/nemotron-speech-streaming-en-0.6b/resolve/ebe59e5a817142986528bbbee5dba8db7b38ed50/nemotron-speech-streaming-en-0.6b.q8_0.gguf"

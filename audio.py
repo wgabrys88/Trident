@@ -74,7 +74,7 @@ class Ears(QueuedDevice):
             if released := fresh and self.cfg["telegram"]["bridge_release"].lower() in text.lower():
                 spoke.unlink()
             if released or not fresh:
-                await self.send("mind", "(Owner talked with Hannibal; you did not hear it.) " * released + text, "01", guarded=True)
+                await self.send("mind", "(Owner talked with another assistant; you did not hear it.) " * released + text, "01", guarded=True)
 
 class Voice(QueuedDevice):
     def __init__(self, name):
@@ -84,7 +84,7 @@ class Voice(QueuedDevice):
 
     async def work(self, source, frame):
         body = {"input": frame.data[1:].decode(), "response_format": "wav"}
-        audio = await asyncio.to_thread(self.server.request, "/v1/audio/speech", body)
+        audio = await asyncio.to_thread(self.server.request, "/v1/audio/speech", body, self.cfg["voice"]["http_seconds"])
         self.sequence += 1
         path = self.file(f"{self.sequence}.wav")
         path.write_bytes(audio)

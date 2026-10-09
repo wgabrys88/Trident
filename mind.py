@@ -48,20 +48,22 @@ class Mind(QueuedDevice):
                 branches.append(branch)
         self.schema["oneOf"] = branches
         self.validator = Draft202012Validator(self.schema)
-        self.history, self.self_turns, self.turn_number, self.busy = [], 0, 0, False
+        self.history, self.self_turns, self.turn_number, self.busy, self.owner_due = [], 0, 0, False, 0.0
 
     async def receive(self, source, frame):
-        register = frame.data[0]
         if frame.reading:
-            return (f"{int(self.busy):02d}" if register == 0 else ";".join(self.part["identity"])).encode()
+            return (f"{int(self.busy):02d}" if frame.data[0] == 0 else ";".join(self.part["identity"])).encode()
         if self.busy or (source != self.address and not self.queue.empty()):
+            self.owner_due = asyncio.get_running_loop().time() + 2 * self.cfg["bus"]["frame_timeout"] if source in (self.cfg["address"]["telegram"], self.cfg["address"]["ears"]) else self.owner_due
             raise Nack(Refusal.NOT_READY)
         if source == self.address:
+            if asyncio.get_running_loop().time() < self.owner_due:
+                return self.history.append(f"Controller {source}: {frame.data[1:].decode()}\nAction: none yet; a waiting owner message went first") or b""
             if self.self_turns == self.cfg["bus"]["self_turn_cap"]:
                 raise Nack(Refusal.FULL)
             self.self_turns += 1
         elif source in (self.cfg["address"]["telegram"], self.cfg["address"]["ears"], self.cfg["address"]["timer"]):
-            self.self_turns = 0
+            self.self_turns, self.owner_due = 0, 0.0
         self.queue.put_nowait((source, frame))
         return b""
 
@@ -72,8 +74,7 @@ class Mind(QueuedDevice):
 
     async def work(self, source, frame):
         self.busy = True
-        incoming = frame.data[1:].decode()
-        prompt = self.prompt(source, incoming)
+        prompt = self.prompt(source, incoming := frame.data[1:].decode())
         raw = await asyncio.wait_for(self.transport.reply(prompt, self.schema), self.part["turn_seconds"])
         self.turn_number += 1
         self.file(f"turn-{self.turn_number}.txt").write_text(prompt + "\nReply:\n" + json.dumps(raw), encoding="utf-8")
@@ -91,18 +92,17 @@ class Mind(QueuedDevice):
                 await self.send("telegram", f"Mind fault: my reply was not one action object ({reason}), so I did nothing.", "10")
             fault = f"your reply was not one action object ({reason}), so nothing was done"
         self.history.append(f"Controller {source}: {incoming}\nAction: {raw if fault else json.dumps(action)}")
-        while sum(map(len, self.history)) > self.part["context_chars"]:
-            self.history.pop(0)
+        while sum(map(len, self.history)) > self.part["context_chars"]: self.history.pop(0)
         self.busy = False
         while True:
             try:
                 return await self.dispatch(action := {"action": "write", "address": self.address, "register": "01", "text": f"Mind fault: {fault}. Continue with one JSON action."} if fault else action)
             except (Nack, TimeoutError, ValueError) as error:
-                with contextlib.suppress(Nack, TimeoutError):
-                    await self.send("telegram", f"My {action['action']} action was not carried out: {error}.", "10")
+                failure = f"{dict(zip(self.cfg['address'].values(), self.cfg['address']))[action.get('address', self.cfg['address']['telegram'])]} {'refused' if isinstance(error, Nack) else 'failed'} {action.get('register', '10')}: {error}"
+                await self.send("telegram", f"My {action['action']} action was not carried out: {failure}.", "10", guarded=True)
                 if action.get("address") == self.address:
                     return
-                fault = f"that {action['action']} failed ({error})"
+                fault = f"that {action['action']} failed ({failure})"
 
     @staticmethod
     def unique_object(pairs):

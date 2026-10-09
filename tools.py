@@ -47,12 +47,12 @@ class Tools(Device):
                     reply = f"exit {result.returncode}\n{result.stdout}{result.stderr}"
                 except Exception as error:
                     reply = f"failed to run: {error}\n{getattr(error, 'stdout', None) or ''}{getattr(error, 'stderr', None) or ''}"
-                await asyncio.sleep(self.cfg["tools"]["start_settle_ms"] / 1000)
+                await asyncio.sleep(self.cfg["tools"]["start_settle_ms"] / 1000 * reply.startswith("exit 0\n"))
                 return reply.encode()
             case 3:
                 path, _, question = text.partition("\n")
                 x0, y0, x1, y1 = map(int, (image := Image.open(path)).info.get("crop", f"0 0 {grid} {grid}").split())
-                ImageOps.contain(image, (min(1024, image.width), min(1024, image.height)), Image.LANCZOS).save(sent := f"{path}-vision-{time.time_ns()}.png", "PNG")
+                ImageOps.contain(image, (min(side := self.cfg["vision"]["image_side"], image.width), min(side, image.height)), Image.LANCZOS).save(sent := f"{path}-vision-{time.time_ns()}.png", "PNG")
                 self.mirror(f"{sent}\n{source} -> {self.name} vision: {(question := question or self.cfg['vision']['prompt'].format(grid=grid))}")
                 reply = await self.server.chat([{"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64.b64encode(open(sent, 'rb').read()).decode()}"}}, {"type": "text", "text": question}]}])
                 self.mirror(f"\nvision {self.name} -> {source}: {reply}")
