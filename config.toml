@@ -157,9 +157,9 @@ path = "life/memory.sqlite"
 [registers.voice]
 "01" = "write: words to synthesize for the call"
 [registers.tools]
-"01" = "read: screenshot destination relative to this run; returns absolute path"
+"01" = "read: screenshot file name relative to this run, optionally followed by xmin ymin xmax ymax copied from a full-screen bbox_2d to zoom in; returns absolute path"
 "02" = "read: command line; returns exit code, stdout and stderr"
-"03" = "read: absolute image path, optionally a newline then a question for the vision model; returns its raw answer. Ask for bbox_2d [xmin, ymin, xmax, ymax] JSON on a 0 to 1000 grid. Without a question it returns a scene line and bbox_2d boxes for visible controls"
+"03" = "read: absolute image path, optionally a newline then a question for the vision model; returns its answer with each bbox_2d on the full-screen 0 to 1000 grid followed by centre_y_x [y, x]. Ask for bbox_2d [xmin, ymin, xmax, ymax] JSON"
 "04" = "read: click y x, draw y x y x ... continuous stroke, type text, key name; y first on the grid; returns post-input screenshot path"
 [registers.mind]
 "00" = "read: 00 free, 01 busy"

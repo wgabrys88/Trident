@@ -12,14 +12,11 @@ class CommandPart:
         self.device, self.settings = device, settings
         folder = max((path for path in self.device.cfg.path(self.settings["versions"]).iterdir() if path.is_dir()), key=lambda path: path.name)
         settings = self.settings | {"entry": str(folder / self.settings["entry"]), "run": self.device.run}
-        self.command = [str(folder / settings["executable"])]
-        self.command += [part.format(**settings) for part in settings["arguments"]]
+        self.command = [str(folder / settings["executable"])] + [part.format(**settings) for part in settings["arguments"]]
 
     async def reply(self, prompt, schema):
-        process = await asyncio.create_subprocess_exec(*self.command, stdin=asyncio.subprocess.PIPE,
-                                                     stdout=asyncio.subprocess.PIPE,
-                                                     stderr=asyncio.subprocess.PIPE, cwd=self.device.run,
-                                                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+        process = await asyncio.create_subprocess_exec(*self.command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+                                                     stderr=asyncio.subprocess.PIPE, cwd=self.device.run, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
         output, error = await process.communicate(prompt.encode())
         if process.returncode:
             raise RuntimeError(error.decode())
@@ -45,11 +42,9 @@ class Mind(QueuedDevice):
             if (action := branch["properties"]["action"]["const"]) in ("read", "write"):
                 for name, registers in self.cfg["registers"].items():
                     allowed = [key for key, value in registers.items() if action in value.split(":")[0].split("/")]
-                    if not allowed:
-                        continue
-                    bound = branch | {"properties": branch["properties"] | {
-                        "address": {"const": self.cfg["address"][name]}, "register": {"enum": allowed}}}
-                    branches.append(bound)
+                    if allowed:
+                        branches.append(branch | {"properties": branch["properties"] | {
+                            "address": {"const": self.cfg["address"][name]}, "register": {"enum": allowed}}})
             else:
                 branches.append(branch)
         self.schema["oneOf"] = branches

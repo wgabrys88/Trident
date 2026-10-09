@@ -147,8 +147,7 @@ class Bus:
                     held = True
                 result = await device.receive(source, frame)
                 reply = frame.encode(result)
-                self.state["rx"] = (RECEIVE_RECOVERY if self.state["rx"] > ERROR_ACTIVE_MAX
-                                    else max(0, self.state["rx"] - RECEIVE_ERROR_STEP))
+                self.state["rx"] = RECEIVE_RECOVERY if self.state["rx"] > ERROR_ACTIVE_MAX else max(0, self.state["rx"] - RECEIVE_ERROR_STEP)
                 self.save()
                 outcome = Refusal.END_OF_READ.name if frame.reading and result else "ack"
             except Nack as error:
@@ -230,8 +229,7 @@ class Server:
         self.device, self.settings, self.process, self.url = device, settings, None, settings["url"]
 
     def request(self, endpoint: str, body: dict) -> bytes:
-        request = urllib.request.Request(self.url + endpoint, json.dumps(body).encode(),
-                                         {"Content-Type": "application/json"})
+        request = urllib.request.Request(self.url + endpoint, json.dumps(body).encode(), {"Content-Type": "application/json"})
         with urllib.request.urlopen(request, timeout=self.device.cfg["limits"]["http_timeout"]) as response:
             return response.read()
 
@@ -243,8 +241,7 @@ class Server:
 
     def health(self):
         try:
-            with urllib.request.urlopen(self.url + "/health",
-                                        timeout=self.device.cfg["limits"]["health_timeout"]):
+            with urllib.request.urlopen(self.url + "/health", timeout=self.device.cfg["limits"]["health_timeout"]):
                 return True
         except urllib.error.HTTPError as error:
             if error.code != 503:
@@ -288,8 +285,7 @@ class Device:
         return self.run / f"{self.name}-{name}"
 
     async def send(self, name: str, text: str, register: str, reading: bool = False):
-        data = bytes.fromhex(register) + text.encode()
-        return await self.bus.transfer(Frame(self.cfg["address"][name], data, reading))
+        return await self.bus.transfer(Frame(self.cfg["address"][name], bytes.fromhex(register) + text.encode(), reading))
 
     async def run_device(self):
         task = asyncio.current_task()

@@ -2,49 +2,60 @@ import asyncio
 import base64
 import ctypes
 import io
+import re
 import subprocess
 import time
 
 import pyperclip
-from PIL import Image, ImageGrab, ImageOps
+from PIL import Image, ImageGrab, ImageOps, PngImagePlugin
 
 from i2c import Device, Nack, Refusal, Server
 
 if not ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
     raise RuntimeError("Windows refused per-monitor DPI awareness")
 import pyautogui
-MOUSE_MOVE_ABSOLUTE_VIRTUAL_DESK = 0xC001
+MOUSE_MOVE_ABSOLUTE_VIRTUAL_DESK, MOUSE_LEFT_DOWN, MOUSE_LEFT_UP = 0xC001, 0x0002, 0x0004
+BOX = re.compile(r'"bbox_2d"\s*:\s*\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]')
 class Tools(Device):
     def __init__(self):
         super().__init__("tools")
         self.server = Server(self, self.cfg["llama"] | self.cfg["vision"])
-        self.bounds = tuple(ctypes.windll.user32.GetSystemMetrics(index) for index in (76, 77, 78, 79))
         pyautogui.FAILSAFE = False
         pyautogui.PAUSE = self.cfg["tools"]["input_pause"]
 
     async def receive(self, source, frame):
-        register, text = frame.data[0], frame.data[1:].decode()
+        register, text, grid = frame.data[0], frame.data[1:].decode(), self.cfg["limits"]["grid"]
         match register:
             case 1 | 4:
-                path = self.run / text if register == 1 else self.file(f"after-input-{time.time_ns()}.png")
+                name, *region = text.split() if register == 1 else (f"{self.name}-after-input-{time.time_ns()}.png",)
                 if register == 4:
                     await asyncio.to_thread(self.act, text)
-                path.parent.mkdir(parents=True, exist_ok=True)
+                x0, y0, x1, y1 = map(int, region or (0, 0, grid, grid))
+                if not 0 <= x0 < x1 <= grid >= y1 > y0 >= 0:
+                    raise Nack(Refusal.UNKNOWN_DATA)
+                (path := self.run / name).parent.mkdir(parents=True, exist_ok=True)
                 image = await asyncio.to_thread(ImageGrab.grab, all_screens=True)
-                await asyncio.to_thread(image.save, path)
+                (info := PngImagePlugin.PngInfo()).add_text("crop", f"{x0} {y0} {x1} {y1}")
+                left, top, right, bottom = (round(value * (size - 1) / grid) for value, size in zip((x0, y0, x1, y1), image.size * 2))
+                await asyncio.to_thread(image.crop((left, top, right + 1, bottom + 1)).save, path, pnginfo=info)
                 return str(path).encode()
             case 2:
-                result = await asyncio.to_thread(subprocess.run, text, shell=True, cwd=self.run,
-                                                capture_output=True, text=True,
-                                                timeout=self.cfg["tools"]["command_seconds"],
-                                                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+                result = await asyncio.to_thread(subprocess.run, text, shell=True, cwd=self.run, capture_output=True, text=True,
+                                                timeout=self.cfg["tools"]["command_seconds"], creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
                 return f"exit {result.returncode}\n{result.stdout}{result.stderr}".encode()
             case 3:
                 path, _, question = text.partition("\n")
-                ImageOps.contain(Image.open(path), (1024, 1024), Image.LANCZOS).save(buffer := io.BytesIO(), "PNG")
+                x0, y0, x1, y1 = map(int, (image := Image.open(path)).info.get("crop", f"0 0 {grid} {grid}").split())
+                ImageOps.contain(image, (1024, 1024), Image.LANCZOS).save(buffer := io.BytesIO(), "PNG")
                 content = [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64.b64encode(buffer.getvalue()).decode()}"}},
-                           {"type": "text", "text": question or self.cfg["vision"]["prompt"].format(grid=self.cfg["limits"]["grid"])}]
-                return (await self.server.chat([{"role": "user", "content": content}])).encode()
+                           {"type": "text", "text": question or self.cfg["vision"]["prompt"].format(grid=grid)}]
+                reply = await self.server.chat([{"role": "user", "content": content}])
+                return BOX.sub(lambda box: self.unzoom(box, x0, y0, x1, y1, grid), reply).encode()
+
+    @staticmethod
+    def unzoom(box, x0, y0, x1, y1, grid):
+        a, b, c, d = (round(low + int(value) * (high - low) / grid) for value, low, high in zip(box.groups(), (x0, y0) * 2, (x1, y1) * 2))
+        return f'"bbox_2d": [{a}, {b}, {c}, {d}], "centre_y_x": [{round((b + d) / 2)}, {round((a + c) / 2)}]'
 
     def act(self, text):
         operation, separator, argument = text.partition(" ")
@@ -57,16 +68,14 @@ class Tools(Device):
                 grid = self.cfg["limits"]["grid"]
                 if (len(points) != 1 if operation == "click" else len(points) < 2) or not all(0 <= value <= grid for value in coordinates):
                     raise Nack(Refusal.UNKNOWN_DATA)
-                left, top, width, height = self.bounds
-                pixels = [(left + round(x * (width - 1) / grid), top + round(y * (height - 1) / grid)) for y, x in points]
-                pyautogui.moveTo(*pixels[0])
-                pyautogui.mouseDown()
+                events = [(MOUSE_MOVE_ABSOLUTE_VIRTUAL_DESK, round(x * 65535 / grid), round(y * 65535 / grid)) for y, x in points]
+                events.insert(1, (MOUSE_LEFT_DOWN, 0, 0))
                 try:
-                    for x, y in pixels[1:]:
-                        ctypes.windll.user32.mouse_event(MOUSE_MOVE_ABSOLUTE_VIRTUAL_DESK, round((x - left) * 65535 / (width - 1)), round((y - top) * 65535 / (height - 1)), 0, 0)
+                    for flags, x, y in events:
+                        ctypes.windll.user32.mouse_event(flags, x, y, 0, 0)
                         time.sleep(self.cfg["tools"]["input_pause"])
                 finally:
-                    pyautogui.mouseUp()
+                    ctypes.windll.user32.mouse_event(MOUSE_LEFT_UP, 0, 0, 0, 0)
             case "type":
                 pyperclip.copy(argument)
                 pyautogui.hotkey("ctrl", "v")
