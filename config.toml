@@ -133,7 +133,7 @@ port = 8080
 reasoning = "off"
 start_seconds = 90
 max_tokens = 1024
-prompt = "Name the app in front and what is drawn, in one plain sentence. Then give a JSON array of the visible controls and areas with their real on-screen names, for example [{{\"label\": \"Maximize button\", \"bbox_2d\": [880, 0, 905, 40]}}, {{\"label\": \"canvas\", \"bbox_2d\": [12, 205, 968, 915]}}]. When a paint app is visible, always include its white drawable area as \"canvas\". Coordinates are integers from 0 to {grid}."
+prompt = "Name the app in front and what is drawn, in one plain sentence. Then return a JSON array of at most 8 important controls and areas; each item is {{\"label\": name, \"bbox_2d\": [xmin, ymin, xmax, ymax]}} with normalized integer coordinates in [0, {grid}]. If a paint app is visible, include its white drawable area labelled \"canvas\"."
 
 [tools]
 command_seconds = 7200

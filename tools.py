@@ -1,13 +1,12 @@
 import asyncio
 import base64
 import ctypes
-import mimetypes
+import io
 import subprocess
 import time
-from pathlib import Path
 
 import pyperclip
-from PIL import ImageGrab
+from PIL import Image, ImageGrab, ImageOps
 
 from i2c import Device, Nack, Refusal, Server
 
@@ -42,8 +41,8 @@ class Tools(Device):
                 return f"exit {result.returncode}\n{result.stdout}{result.stderr}".encode()
             case 3:
                 path, _, question = text.partition("\n")
-                image = base64.b64encode(Path(path).read_bytes()).decode()
-                content = [{"type": "image_url", "image_url": {"url": f"data:{mimetypes.guess_type(path)[0]};base64,{image}"}},
+                ImageOps.contain(Image.open(path), (1024, 1024), Image.LANCZOS).save(buffer := io.BytesIO(), "PNG")
+                content = [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64.b64encode(buffer.getvalue()).decode()}"}},
                            {"type": "text", "text": question or self.cfg["vision"]["prompt"].format(grid=self.cfg["limits"]["grid"])}]
                 return (await self.server.chat([{"role": "user", "content": content}])).encode()
 
