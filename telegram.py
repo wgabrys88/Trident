@@ -118,7 +118,7 @@ class Telegram(QueuedDevice):
         if frame.data[0] == 16 and source == self.cfg["telegram"]["bridge"]:
             self.file("bridge").touch()
         if frame.data[0] == 1:
-            if self.state:
+            if self.state or source != self.cfg["telegram"]["bridge"] and (marker := self.file("bridge")).is_file() and time.time() - marker.stat().st_mtime < self.cfg["telegram"]["bridge_seconds"]:
                 raise Nack(Refusal.NOT_READY)
             self.state, self.outgoing = CALL_DIALING, True
             self.call_task = self.tasks.create_task(self.dial())
