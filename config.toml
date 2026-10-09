@@ -144,7 +144,7 @@ context_tokens = 4096
 reasoning = "off"
 start_seconds = 300
 max_tokens = 1024
-prompt = "List the visible windows, dialogs, panels and main controls (up to 8) as a JSON array, one item each: {{\"label\":\"<short name>\",\"bbox_2d\":[xmin,ymin,xmax,ymax],\"note\":\"<what is inside>\"}}. Label an item dialog only if a popup box really covers part of a window. Coordinates 0-{grid}."
+prompt = "List the visible windows, dialogs, panels and main controls as a JSON array of items with label and bbox_2d [xmin, ymin, xmax, ymax] on 0-{grid}. Keep labels short, using the visible text where there is some. Label an item dialog only if a popup box really covers part of a window."
 image_side = 1024
 [tools]
 command_seconds = 7180
