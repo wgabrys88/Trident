@@ -66,12 +66,9 @@ class Mind(QueuedDevice):
         return b""
 
     def prompt(self, source, text):
-        brief = (self.cfg.root / "prompt.txt").read_text(encoding="utf-8").format(
-            grid=self.cfg["limits"]["grid"], telegram=self.cfg["address"]["telegram"], ears=self.cfg["address"]["ears"])
-        registers = {self.cfg["address"][name]: {"role": name, "registers": values}
-                     for name, values in self.cfg["registers"].items()}
-        return "\n".join((json.dumps(registers), json.dumps(self.schema),
-                          *self.history, f"Controller {source}:\n{text}", brief))
+        brief = (self.cfg.root / "prompt.txt").read_text(encoding="utf-8").format(grid=self.cfg["limits"]["grid"], telegram=self.cfg["address"]["telegram"], ears=self.cfg["address"]["ears"])
+        registers = {self.cfg["address"][name]: {"role": name, "registers": values} for name, values in self.cfg["registers"].items()}
+        return "\n".join((json.dumps(registers), json.dumps(self.schema), *self.history, f"Controller {source}:\n{text}", brief))
 
     async def work(self, source, frame):
         self.busy = True

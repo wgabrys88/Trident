@@ -10,7 +10,6 @@ from datetime import datetime
 
 from i2c import Configuration
 
-
 @dataclass(slots=True)
 class DeviceProcess:
     command: list
@@ -32,7 +31,6 @@ class DeviceProcess:
             except subprocess.TimeoutExpired:
                 self.process.kill()
                 self.process.wait()
-
 
 class Supply:
     def __init__(self, part):

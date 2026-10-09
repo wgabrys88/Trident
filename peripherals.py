@@ -5,7 +5,6 @@ import time
 
 from i2c import Device, Nack, Refusal
 
-
 class Memory(Device):
     def __init__(self):
         super().__init__("memory")
@@ -61,7 +60,6 @@ class Timer(Device):
             if time.time() - (self.run / "bus.log").stat().st_mtime >= self.cfg["timer"]["idle_seconds"] and await self.send("telegram", "", "00", reading=True, guarded=True) == b"00":
                 await self.send("mind", self.cfg["timer"]["idle_text"], "01", once=True, guarded=True)
             await asyncio.sleep(self.cfg["bus"]["poll"])
-
 
 if __name__ == "__main__":
     {"timer": Timer, "memory": Memory}[sys.argv[2]]().launch()

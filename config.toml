@@ -142,11 +142,13 @@ context_tokens = 4096
 reasoning = "off"
 start_seconds = 90
 max_tokens = 1024
-prompt = "Name the app in front and what is drawn, in one plain sentence. Then return a JSON array of at most 8 important controls and areas; each item is {{\"label\": name, \"bbox_2d\": [xmin, ymin, xmax, ymax]}} with normalized integer coordinates in [0, {grid}]. If a paint app is visible, include its white drawable area labelled \"canvas\"."
+prompt = "One plain sentence: the app in front and its state. Then a JSON array of up to 8 areas of interest (windows, dialogs, buttons, text fields, boards, canvas); each item is {{\"label\": short name, \"bbox_2d\": [xmin, ymin, xmax, ymax], \"note\": what is inside in at most 8 words}} with integers in [0, {grid}]. Label a paint app's white drawable area \"canvas\"."
 
 [tools]
-command_seconds = 7200
+command_seconds = 7190
 input_pause = 0.1
+settle_ms = 5000
+start_settle_ms = 5000
 
 [memory]
 path = "life/memory.sqlite"

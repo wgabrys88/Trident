@@ -4,7 +4,6 @@ from pathlib import Path
 
 from i2c import Configuration
 
-
 class Observer:
     def follow(self, run):
         poll = Configuration()["bus"]["poll"]
@@ -16,7 +15,6 @@ class Observer:
                 else:
                     journal.seek(position)
                     time.sleep(poll)
-
 
 if __name__ == "__main__":
     Observer().follow(sys.argv[1])

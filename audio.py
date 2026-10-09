@@ -20,7 +20,6 @@ class Recognizer(ctypes.Structure):
     _fields_ = [("size", ctypes.c_size_t)] + [(name, ctypes.c_void_p) for name in
         ("backend", "model", "streaming", "decoder", "vad", "endpointing", "postproc", "diar", "batching")]
 
-
 class Ears(QueuedDevice):
     def bind(self, name, result, *arguments):
         function = getattr(self.library, "nemo_speech_asr_" + name)

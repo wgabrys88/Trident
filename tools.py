@@ -29,6 +29,7 @@ class Tools(Device):
                 perform = self.act(text, grid) if register == 4 else lambda: None
                 try:
                     await asyncio.to_thread(perform)
+                    await asyncio.sleep(self.cfg["tools"]["settle_ms"] / 1000 * (register == 4))
                     x0, y0, x1, y1 = map(int, region or (0, 0, grid, grid))
                     if not 0 <= x0 < x1 <= grid >= y1 > y0 >= 0:
                         raise Nack(Refusal.UNKNOWN_DATA)
@@ -41,8 +42,13 @@ class Tools(Device):
                 except (Exception if register == 4 else ()) as error:
                     return f"Input was sent but then failed ({error!r}); look at the screen before repeating it.".encode()
             case 2:
-                result = await asyncio.to_thread(subprocess.run, text, shell=True, cwd=self.run, capture_output=True, text=True, timeout=self.cfg["tools"]["command_seconds"], creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
-                return f"exit {result.returncode}\n{result.stdout}{result.stderr}".encode()
+                try:
+                    result = await asyncio.to_thread(subprocess.run, text, shell=True, cwd=self.run, capture_output=True, text=True, timeout=self.cfg["tools"]["command_seconds"], creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+                    reply = f"exit {result.returncode}\n{result.stdout}{result.stderr}"
+                except Exception as error:
+                    reply = f"failed to run: {error}\n{getattr(error, 'stdout', None) or ''}{getattr(error, 'stderr', None) or ''}"
+                await asyncio.sleep(self.cfg["tools"]["start_settle_ms"] / 1000)
+                return reply.encode()
             case 3:
                 path, _, question = text.partition("\n")
                 x0, y0, x1, y1 = map(int, (image := Image.open(path)).info.get("crop", f"0 0 {grid} {grid}").split())

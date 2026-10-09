@@ -26,7 +26,6 @@ from i2c import QueuedDevice, Nack, Refusal
 
 CALL_DOWN, CALL_DIALING, CALL_UP = range(3)
 
-
 class SpeechBuffer:
     def __init__(self, settings):
         self.settings = settings

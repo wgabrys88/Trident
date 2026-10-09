@@ -12,9 +12,13 @@ class Installer:
         self.cfg = Configuration()
 
     def download(self, url, path):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with urllib.request.urlopen(url, timeout=self.cfg["limits"]["install_timeout"]) as source, path.open("wb") as output:
-            shutil.copyfileobj(source, output)
+        if not path.exists():
+            (part := path.with_name(path.name + ".part")).parent.mkdir(parents=True, exist_ok=True)
+            with urllib.request.urlopen(url, timeout=self.cfg["limits"]["install_timeout"]) as source, part.open("wb") as output:
+                shutil.copyfileobj(source, output)
+                if output.tell() != int(source.headers["Content-Length"]):
+                    raise RuntimeError(f"Download of {url} stopped at {output.tell()} of {source.headers['Content-Length']} bytes; rerun install.py")
+            part.replace(path)
 
     def install(self):
         if sys.platform != "win32" or sys.version_info[:2] != (3, 11) or sys.maxsize <= 2**32:
@@ -23,12 +27,11 @@ class Installer:
         for filename, url in self.cfg["downloads"]["models"].items():
             self.download(url, self.cfg.root / "artifacts" / filename)
         with tempfile.TemporaryDirectory() as temporary:
-            archive = self.cfg.path(temporary) / "archive.zip"
             for name, url in self.cfg["downloads"]["archives"].items():
-                self.download(url, archive)
+                self.download(url, archive := self.cfg.path(temporary) / f"{name}.zip")
                 with zipfile.ZipFile(archive) as files:
                     files.extractall(self.cfg.path(self.cfg["downloads"]["destinations"][name]))
-
+        subprocess.run([self.cfg.path(self.cfg["llama"]["command"][0]), "--version"], check=True)
 
 if __name__ == "__main__":
     Installer().install()
