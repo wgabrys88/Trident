@@ -70,6 +70,7 @@ rms_threshold = 0.012
 silence_ms = 1600
 min_speech_ms = 200
 barge_in_ms = 300
+barge_hold_seconds = 2
 padding_ms = 120
 utterance_seconds = 30
 
@@ -77,11 +78,11 @@ utterance_seconds = 30
 model = "artifacts/nemotron-speech-streaming-en-0.6b.q8_0.gguf"
 library = "artifacts/ears/bin/nemo_speech_asr_c.dll"
 gpu = 0
-start_seconds = 30
+start_seconds = 60
 
 [voice]
 url = "http://127.0.0.1:8091"
-start_seconds = 60
+start_seconds = 120
 command = ["artifacts/voice/crispasr-windows-x86_64-cuda126/crispasr.exe", "--server", "--host", "127.0.0.1", "--port", "8091", "--backend", "chatterbox-nano", "-m", "artifacts/chatterbox-nano-t3-q4_k.gguf", "--codec-model", "artifacts/chatterbox-turbo-s3gen-q4_k.gguf", "--gpu-backend", "cuda", "--no-punctuation"]
 
 [mind.luna]

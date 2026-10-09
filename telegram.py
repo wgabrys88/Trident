@@ -67,7 +67,7 @@ class Telegram(QueuedDevice):
         super().__init__("telegram")
         self.owner = self.cfg["telegram"]["owner"]
         self.state, self.peer, self.engine, self.serial = CALL_DOWN, None, None, 0
-        self.signals, self.linked, self.since, self.audio_sequence = [], False, 0, 0
+        self.signals, self.linked, self.since, self.audio_sequence, self.talked = [], False, 0, 0, 0
         self.audio = SpeechBuffer(self.cfg["audio"])
         self.call_lock = asyncio.Lock()
         self.native_lock = asyncio.Lock()
@@ -129,7 +129,9 @@ class Telegram(QueuedDevice):
         match frame.data[0]:
             case 16:
                 text = frame.data[1:].decode()
-                if self.state == CALL_UP or self.cfg["telegram"]["voice_notes"]:
+                if self.state == CALL_UP and self.loop.time() - self.talked < self.cfg["audio"]["barge_hold_seconds"]:
+                    print(time.strftime("%X"), "Telegram barge-in dropped speech", flush=True)
+                elif self.state == CALL_UP or self.cfg["telegram"]["voice_notes"]:
                     await self.send("voice", text, "01" if self.state == CALL_UP else "02")
                 else:
                     size = self.cfg["telegram"]["chat_chars"]
@@ -181,6 +183,8 @@ class Telegram(QueuedDevice):
         if serial == self.serial and mode == StreamMode.PLAYBACK and device == StreamDevice.MICROPHONE:
             for audio in self.audio.push(b"".join(bytes(frame.data) for frame in frames)):
                 self.heard(audio)
+            if self.audio.voiced >= self.cfg["audio"]["barge_in_ms"]:
+                self.talked = self.loop.time()
 
     def heard(self, audio):
         self.audio_sequence += 1
@@ -324,7 +328,7 @@ class Telegram(QueuedDevice):
             async with self.call_lock:
                 if serial != self.serial:
                     return
-                if self.audio.voiced >= self.cfg["audio"]["barge_in_ms"]:
+                if self.loop.time() - self.talked < self.cfg["audio"]["barge_hold_seconds"]:
                     return print(time.strftime("%X"), "Telegram barge-in", flush=True)
                 await self.native("send_external_frame", self.owner, StreamDevice.MICROPHONE,
                     pcm[offset:offset + size].ljust(size, b"\0"), FrameData(int(time.time() * 1000), VIDEO_ROTATION_0, 0, 0))

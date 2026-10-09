@@ -264,7 +264,6 @@ class Server:
             self.process.terminate()
             await self.process.wait()
 
-
 class Device:
     def __init__(self, name: str):
         self.name, self.cfg, self.run = name, Configuration(), Path(sys.argv[1])
@@ -305,7 +304,6 @@ class Device:
 
     def launch(self):
         asyncio.run(self.run_device())
-
 
 class QueuedDevice(Device):
     def __init__(self, name):

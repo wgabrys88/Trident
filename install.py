@@ -7,7 +7,6 @@ import zipfile
 
 from i2c import Configuration
 
-
 class Installer:
     def __init__(self):
         self.cfg = Configuration()

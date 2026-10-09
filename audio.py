@@ -77,7 +77,6 @@ class Ears(QueuedDevice):
             if released or not fresh:
                 await self.send("mind", "(Owner talked with Hannibal; you did not hear it.) " * released + text, "01")
 
-
 class Voice(QueuedDevice):
     def __init__(self, name):
         super().__init__(name)
@@ -93,7 +92,6 @@ class Voice(QueuedDevice):
         if frame.data[0] == 2:
             soundfile.write(path.with_suffix(".ogg"), *soundfile.read(path), format="OGG", subtype="OPUS")
         await self.send("telegram", str(path.with_suffix(".wav" if frame.data[0] == 1 else ".ogg")), "20" if frame.data[0] == 1 else "21")
-
 
 if __name__ == "__main__":
     {"ears": Ears, "voice": Voice}[sys.argv[2]](sys.argv[2]).launch()
