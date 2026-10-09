@@ -23,7 +23,7 @@ class CommandPart:
         output, error = await process.communicate(prompt.encode())
         if process.returncode:
             raise RuntimeError(error.decode())
-        return json.loads(output)["result"]
+        return output.decode()
 
 class ServerPart:
     def __init__(self, device, settings):
@@ -42,9 +42,8 @@ class Mind(QueuedDevice):
         self.schema = json.loads((self.cfg.root / "action.json").read_text())
         branches = []
         for branch in self.schema["oneOf"]:
-            if branch["properties"]["action"]["const"] in ("read", "write"):
+            if (action := branch["properties"]["action"]["const"]) in ("read", "write"):
                 for name, registers in self.cfg["registers"].items():
-                    action = branch["properties"]["action"]["const"]
                     allowed = [key for key, value in registers.items() if action in value.split(":")[0].split("/")]
                     if not allowed:
                         continue
@@ -77,8 +76,8 @@ class Mind(QueuedDevice):
             grid=self.cfg["limits"]["grid"], telegram=self.cfg["address"]["telegram"], ears=self.cfg["address"]["ears"])
         registers = {self.cfg["address"][name]: {"role": name, "registers": values}
                      for name, values in self.cfg["registers"].items()}
-        return "\n".join((brief, json.dumps(registers), json.dumps(self.schema),
-                          *self.history, f"Controller {source}:\n{text}"))
+        return "\n".join((json.dumps(registers), json.dumps(self.schema),
+                          *self.history, f"Controller {source}:\n{text}", brief))
 
     async def work(self, source, frame):
         self.busy = True
@@ -94,7 +93,8 @@ class Mind(QueuedDevice):
             self.validator.validate(action)
         except (ValueError, ValidationError) as error:
             self.busy = False
-            await self.send("telegram", f"Mind fault: {error.args[0]}", "10")
+            reason = "it matched no action" if isinstance(error, ValidationError) else error.args[0].split(":")[0]
+            await self.send("telegram", f"Mind fault: my reply was not one action object ({reason}), so I did nothing.", "10")
             return
         self.history.append(f"Controller {source}: {incoming}\nAction: {raw}")
         while sum(map(len, self.history)) > self.part["context_chars"]:
@@ -103,7 +103,7 @@ class Mind(QueuedDevice):
         try:
             await self.dispatch(action)
         except Nack as error:
-            await self.send("telegram", f"Transaction refused: {error}", "10")
+            await self.send("telegram", f"Device {action['address']} refused {action['action']} {action['register']}, so it was not done.", "10")
 
     @staticmethod
     def unique_object(pairs):

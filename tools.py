@@ -14,7 +14,7 @@ from i2c import Device, Nack, Refusal, Server
 if not ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
     raise RuntimeError("Windows refused per-monitor DPI awareness")
 import pyautogui
-MOUSE_MOVE_ABSOLUTE = 0x8001
+MOUSE_MOVE_ABSOLUTE_VIRTUAL_DESK = 0xC001
 class Tools(Device):
     def __init__(self):
         super().__init__("tools")
@@ -59,7 +59,7 @@ class Tools(Device):
                 except ValueError:
                     raise Nack(Refusal.UNKNOWN_DATA) from None
                 grid = self.cfg["limits"]["grid"]
-                if not points or (operation == "click" and len(points) != 1) or not all(0 <= value <= grid for value in coordinates):
+                if (len(points) != 1 if operation == "click" else len(points) < 2) or not all(0 <= value <= grid for value in coordinates):
                     raise Nack(Refusal.UNKNOWN_DATA)
                 left, top, width, height = self.bounds
                 pixels = [(left + round(x * (width - 1) / grid), top + round(y * (height - 1) / grid)) for y, x in points]
@@ -67,7 +67,7 @@ class Tools(Device):
                 pyautogui.mouseDown()
                 try:
                     for x, y in pixels[1:]:
-                        ctypes.windll.user32.mouse_event(MOUSE_MOVE_ABSOLUTE, round(x * 65535 / (width - 1)), round(y * 65535 / (height - 1)), 0, 0)
+                        ctypes.windll.user32.mouse_event(MOUSE_MOVE_ABSOLUTE_VIRTUAL_DESK, round((x - left) * 65535 / (width - 1)), round((y - top) * 65535 / (height - 1)), 0, 0)
                         time.sleep(self.cfg["tools"]["input_pause"])
                 finally:
                     pyautogui.mouseUp()
