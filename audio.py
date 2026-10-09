@@ -39,7 +39,6 @@ class Ears(QueuedDevice):
         self.library = ctypes.CDLL(str(library))
         pointer = ctypes.c_void_p
         self.last_error = self.bind("last_error", ctypes.c_char_p)
-        self.destroy = self.bind("destroy", None, pointer)
         self.recognize = self.bind("recognize_f32", ctypes.c_int, pointer, pointer,
                                    ctypes.POINTER(ctypes.c_float), ctypes.c_size_t, ctypes.c_int32,
                                    ctypes.POINTER(pointer))
@@ -72,10 +71,6 @@ class Ears(QueuedDevice):
         text = await asyncio.to_thread(self.decode, frame.data[1:].decode())
         if text:
             await self.send("mind", text, "01")
-
-    async def close(self):
-        self.destroy(self.recognizer)
-        self.directory.close()
 
 
 class Voice(QueuedDevice):

@@ -288,7 +288,8 @@ class Device:
         return await self.bus.transfer(Frame(self.cfg["address"][name], data, reading))
 
     async def run_device(self):
-        signal.signal(signal.SIGBREAK, signal.getsignal(signal.SIGINT))
+        task = asyncio.current_task()
+        signal.signal(signal.SIGBREAK, lambda number, frame: (signal.signal(number, signal.SIG_IGN), task.cancel()))
         async with AsyncExitStack() as cleanup, asyncio.TaskGroup() as self.tasks:
             if self.server is not None:
                 cleanup.push_async_callback(self.server.close)

@@ -17,7 +17,7 @@ from telethon.tl.functions.messages import GetDhConfigRequest
 from telethon.tl.functions.phone import (AcceptCallRequest, ConfirmCallRequest, DiscardCallRequest,
                                        RequestCallRequest, SendSignalingDataRequest)
 from telethon.tl.types import (InputPhoneCall, PhoneCall, PhoneCallAccepted, PhoneCallDiscarded,
-                              PhoneCallDiscardReasonHangup, PhoneCallProtocol, PhoneCallRequested,
+                              PhoneCallDiscardReasonHangup, PhoneCallDiscardReasonMissed, PhoneCallProtocol, PhoneCallRequested,
                               PhoneConnection, PhoneConnectionWebrtc, UpdatePhoneCall,
                               UpdatePhoneCallSignalingData)
 
@@ -260,7 +260,7 @@ class Telegram(QueuedDevice):
             call = event.phone_call
             if isinstance(call, PhoneCallRequested) and call.admin_id == self.owner:
                 if self.state:
-                    raise RuntimeError("Overlapping Telegram call")
+                    await self.hang(missed=False, serial=self.serial)
                 self.state, self.peer = CALL_DIALING, InputPhoneCall(call.id, call.access_hash)
                 self.outgoing = False
                 self.call_task = self.tasks.create_task(self.answer(call))
@@ -273,7 +273,7 @@ class Telegram(QueuedDevice):
                 if isinstance(call, PhoneCall) and not self.confirmed.done():
                     self.confirmed.set_result(call)
                 elif isinstance(call, PhoneCallDiscarded):
-                    await self.hang(missed=self.outgoing and self.state == CALL_DIALING, serial=self.serial, discard=False)
+                    await self.hang(missed=isinstance(call.reason, PhoneCallDiscardReasonMissed), serial=self.serial, discard=False)
 
     async def release(self):
         audio = self.audio.finish()
@@ -291,10 +291,7 @@ class Telegram(QueuedDevice):
             self.serial += 1
             if self.call_task is not None and self.call_task != asyncio.current_task() and not self.call_task.done():
                 self.call_task.cancel()
-                try:
-                    await self.call_task
-                except asyncio.CancelledError:
-                    pass
+                await asyncio.wait([self.call_task])
             if discard and self.peer is not None:
                 await self.client(DiscardCallRequest(peer=self.peer,
                     duration=int(time.monotonic() - self.since) if self.since else 0,
@@ -304,7 +301,7 @@ class Telegram(QueuedDevice):
 
     async def play(self, path):
         if self.state != CALL_UP:
-            raise RuntimeError("No active Telegram call for voice playback")
+            return
         with wave.open(path, "rb") as audio:
             if audio.getsampwidth() != self.cfg["audio"]["sample_bytes"]:
                 raise ValueError("Voice must produce PCM16 WAV")
@@ -316,13 +313,17 @@ class Telegram(QueuedDevice):
         pcm = np.clip(np.rint(samples), np.iinfo(np.int16).min, np.iinfo(np.int16).max).astype("<i2").tobytes()
         size, serial, started = self.cfg["audio"]["send_frame_bytes"], self.serial, self.loop.time()
         for offset in range(0, len(pcm), size):
-            if serial != self.serial:
-                return
-            await self.native("send_external_frame", self.owner, StreamDevice.MICROPHONE,
-                pcm[offset:offset + size].ljust(size, b"\0"), FrameData(int(time.time() * 1000), VIDEO_ROTATION_0, 0, 0))
+            async with self.call_lock:
+                if serial != self.serial:
+                    return
+                await self.native("send_external_frame", self.owner, StreamDevice.MICROPHONE,
+                    pcm[offset:offset + size].ljust(size, b"\0"), FrameData(int(time.time() * 1000), VIDEO_ROTATION_0, 0, 0))
             await asyncio.sleep(max(0, started + (offset + size) / (target * self.cfg["audio"]["sample_bytes"]) - self.loop.time()))
 
     async def close(self):
+        if self.peer is not None:
+            await self.client(DiscardCallRequest(peer=self.peer, duration=0, reason=PhoneCallDiscardReasonHangup(),
+                connection_id=0, video=False))
         await self.release()
         await self.client.disconnect()
 

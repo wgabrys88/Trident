@@ -1,5 +1,5 @@
 telethon==1.45.0
-ntgcalls==3.0.0
+ntgcalls==3.0.2
 opentele-ng==1.4.0
 jsonschema==4.25.1
 numpy==2.2.6
