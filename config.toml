@@ -151,6 +151,7 @@ path = "life/memory.sqlite"
 "01" = "write: dial owner"
 "02" = "write: hang up"
 "10" = "write: plain sentences for the owner; spoken during a call, otherwise chat"
+"11" = "write: vision mirror from tools only, never the mind"
 "20" = "write: PCM16 WAV path played into the call"
 [registers.ears]
 "01" = "write: mono PCM16 path, owner speech goes to mind"

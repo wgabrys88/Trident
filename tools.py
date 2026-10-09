@@ -1,7 +1,6 @@
 import asyncio
 import base64
 import ctypes
-import io
 import re
 import subprocess
 import time
@@ -46,10 +45,12 @@ class Tools(Device):
             case 3:
                 path, _, question = text.partition("\n")
                 x0, y0, x1, y1 = map(int, (image := Image.open(path)).info.get("crop", f"0 0 {grid} {grid}").split())
-                ImageOps.contain(image, (1024, 1024), Image.LANCZOS).save(buffer := io.BytesIO(), "PNG")
-                content = [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64.b64encode(buffer.getvalue()).decode()}"}},
-                           {"type": "text", "text": question or self.cfg["vision"]["prompt"].format(grid=grid)}]
+                ImageOps.contain(image, (1024, 1024), Image.LANCZOS).save(sent := f"{path}-vision.png", "PNG")
+                await self.send("telegram", f"{sent}\n{source} -> {self.name} vision: {(question := question or self.cfg['vision']['prompt'].format(grid=grid))}", "11")
+                content = [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64.b64encode(open(sent, 'rb').read()).decode()}"}},
+                           {"type": "text", "text": question}]
                 reply = await self.server.chat([{"role": "user", "content": content}])
+                await self.send("telegram", f"\nvision {self.name} -> {source}: {reply}", "11")
                 return BOX.sub(lambda box: self.unzoom(box, x0, y0, x1, y1, grid), reply).encode()
 
     @staticmethod
