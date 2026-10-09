@@ -9,7 +9,7 @@ import json
 import re
 import time
 from dataclasses import dataclass
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, suppress
 from enum import IntEnum
 from pathlib import Path
 
@@ -275,8 +275,9 @@ class Device:
     def file(self, name: str) -> Path:
         return self.run / f"{self.name}-{name}"
 
-    async def send(self, name: str, text: str, register: str, reading: bool = False, once: bool = False):
-        return await self.bus.transfer(Frame(self.cfg["address"][name], bytes.fromhex(register) + text.encode(), reading), once)
+    async def send(self, name: str, text: str, register: str, reading: bool = False, once: bool = False, guarded: bool = False):
+        with suppress(*(Nack, TimeoutError) * guarded):
+            return await self.bus.transfer(Frame(self.cfg["address"][name], bytes.fromhex(register) + text.encode(), reading), once)
 
     async def run_device(self):
         task = asyncio.current_task()

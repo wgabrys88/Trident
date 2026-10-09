@@ -91,7 +91,7 @@ class Telegram(QueuedDevice):
 
     async def enqueue_message(self, event):
         if event.is_private and event.raw_text.strip():
-            self.tasks.create_task(self.send("mind", event.raw_text, "01"))
+            self.tasks.create_task(self.send("mind", event.raw_text, "01", guarded=True))
 
     async def enqueue_update(self, event):
         self.tasks.create_task(self.update(event))
@@ -129,10 +129,10 @@ class Telegram(QueuedDevice):
         match frame.data[0]:
             case 16:
                 text = frame.data[1:].decode()
-                if self.state == CALL_UP and self.loop.time() - self.talked < self.cfg["audio"]["barge_hold_seconds"]:
+                if self.state == CALL_UP and self.loop.time() - self.talked < self.cfg["audio"]["barge_hold_seconds"] and source != self.cfg["telegram"]["bridge"]:
                     print(time.strftime("%X"), "Telegram barge-in dropped speech", flush=True)
                 elif self.state == CALL_UP or self.cfg["telegram"]["voice_notes"]:
-                    await self.send("voice", text, "01" if self.state == CALL_UP else "02")
+                    await self.send("voice", text, "01" if self.state == CALL_UP else "02", guarded=True)
                 else:
                     size = self.cfg["telegram"]["chat_chars"]
                     for offset in range(0, len(text), size):
@@ -190,7 +190,7 @@ class Telegram(QueuedDevice):
         self.audio_sequence += 1
         path = self.file(f"{self.audio_sequence}.pcm")
         path.write_bytes(audio)
-        self.tasks.create_task(self.send("ears", str(path), "01"))
+        self.tasks.create_task(self.send("ears", str(path), "01", guarded=True))
 
     def connection(self, serial, state):
         if serial != self.serial:
@@ -229,7 +229,7 @@ class Telegram(QueuedDevice):
         self.signals.clear()
         await asyncio.wait_for(self.connected, self.cfg["telegram"]["connect_seconds"])
         self.state, self.since = CALL_UP, time.monotonic()
-        await self.send("timer", "", "03")
+        await self.send("timer", "", "03", guarded=True)
 
     async def dial(self):
         await self.prepare()
@@ -238,7 +238,7 @@ class Telegram(QueuedDevice):
             random_id=secrets.randbelow(self.cfg["telegram"]["random_id_max"]), g_a_hash=exchange,
             protocol=self.protocol(), video=False))
         if isinstance(response.phone_call, PhoneCallDiscarded):
-            await self.hang(missed=True, serial=self.serial, discard=False)
+            await self.hang(missed=response.phone_call.reason is None or isinstance(response.phone_call.reason, PhoneCallDiscardReasonMissed), serial=self.serial, discard=False)
             return
         self.peer = InputPhoneCall(response.phone_call.id, response.phone_call.access_hash)
         try:
@@ -277,7 +277,7 @@ class Telegram(QueuedDevice):
                 self.state, self.peer = CALL_DIALING, InputPhoneCall(call.id, call.access_hash)
                 self.outgoing = False
                 self.call_task = self.tasks.create_task(self.answer(call))
-                await self.send("timer", "", "03")
+                await self.send("timer", "", "03", guarded=True)
             elif (isinstance(call, PhoneCallAccepted) and self.outgoing and self.state == CALL_DIALING
                   and self.engine is not None and (self.peer is None or call.id == self.peer.id)
                   and call.participant_id == self.owner and not self.accepted.done()):
@@ -286,7 +286,7 @@ class Telegram(QueuedDevice):
                 if isinstance(call, PhoneCall) and not self.confirmed.done():
                     self.confirmed.set_result(call)
                 elif isinstance(call, PhoneCallDiscarded):
-                    await self.hang(missed=isinstance(call.reason, PhoneCallDiscardReasonMissed), serial=self.serial, discard=False)
+                    await self.hang(missed=isinstance(call.reason, PhoneCallDiscardReasonMissed) or call.reason is None and self.outgoing and self.state == CALL_DIALING, serial=self.serial, discard=False)
 
     async def release(self):
         if audio := self.audio.finish():
@@ -309,7 +309,7 @@ class Telegram(QueuedDevice):
                     duration=int(time.monotonic() - self.since) if self.since else 0,
                     reason=PhoneCallDiscardReasonHangup(), connection_id=0, video=False))
             await self.release()
-            await self.send("timer", "", "02" if missed else "03")
+            await self.send("timer", "", "02" if missed else "03", guarded=True)
 
     async def play(self, path):
         if self.state != CALL_UP:
@@ -328,7 +328,7 @@ class Telegram(QueuedDevice):
             async with self.call_lock:
                 if serial != self.serial:
                     return
-                if self.loop.time() - self.talked < self.cfg["audio"]["barge_hold_seconds"]:
+                if self.talked > started:
                     return print(time.strftime("%X"), "Telegram barge-in", flush=True)
                 await self.native("send_external_frame", self.owner, StreamDevice.MICROPHONE,
                     pcm[offset:offset + size].ljust(size, b"\0"), FrameData(int(time.time() * 1000), VIDEO_ROTATION_0, 0, 0))

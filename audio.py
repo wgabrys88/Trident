@@ -75,7 +75,7 @@ class Ears(QueuedDevice):
             if released := fresh and self.cfg["telegram"]["bridge_release"].lower() in text.lower():
                 spoke.unlink()
             if released or not fresh:
-                await self.send("mind", "(Owner talked with Hannibal; you did not hear it.) " * released + text, "01")
+                await self.send("mind", "(Owner talked with Hannibal; you did not hear it.) " * released + text, "01", guarded=True)
 
 class Voice(QueuedDevice):
     def __init__(self, name):
@@ -91,7 +91,7 @@ class Voice(QueuedDevice):
         path.write_bytes(audio)
         if frame.data[0] == 2:
             soundfile.write(path.with_suffix(".ogg"), *soundfile.read(path), format="OGG", subtype="OPUS")
-        await self.send("telegram", str(path.with_suffix(".wav" if frame.data[0] == 1 else ".ogg")), "20" if frame.data[0] == 1 else "21")
+        await self.send("telegram", str(path.with_suffix(".wav" if frame.data[0] == 1 else ".ogg")), "20" if frame.data[0] == 1 else "21", guarded=True)
 
 if __name__ == "__main__":
     {"ears": Ears, "voice": Voice}[sys.argv[2]](sys.argv[2]).launch()

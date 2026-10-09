@@ -19,28 +19,29 @@ class Tools(Device):
     def __init__(self):
         super().__init__("tools")
         self.server = Server(self, self.cfg["llama"] | self.cfg["vision"])
-        pyautogui.FAILSAFE = False
-        pyautogui.PAUSE = self.cfg["tools"]["input_pause"]
+        pyautogui.FAILSAFE, pyautogui.PAUSE = False, self.cfg["tools"]["input_pause"]
 
     async def receive(self, source, frame):
         register, text, grid = frame.data[0], frame.data[1:].decode(), self.cfg["limits"]["grid"]
         match register:
             case 1 | 4:
                 name, *region = text.split() if register == 1 else (f"{self.name}-after-input-{time.time_ns()}.png",)
-                if register == 4:
-                    await asyncio.to_thread(self.act, text)
-                x0, y0, x1, y1 = map(int, region or (0, 0, grid, grid))
-                if not 0 <= x0 < x1 <= grid >= y1 > y0 >= 0:
-                    raise Nack(Refusal.UNKNOWN_DATA)
-                (path := self.run / name).parent.mkdir(parents=True, exist_ok=True)
-                image = await asyncio.to_thread(ImageGrab.grab, all_screens=True)
-                (info := PngImagePlugin.PngInfo()).add_text("crop", f"{x0} {y0} {x1} {y1}")
-                left, top, right, bottom = (round(value * (size - 1) / grid) for value, size in zip((x0, y0, x1, y1), image.size * 2))
-                await asyncio.to_thread(image.crop((left, top, right + 1, bottom + 1)).save, path, pnginfo=info)
-                return str(path).encode()
+                perform = self.act(text, grid) if register == 4 else lambda: None
+                try:
+                    await asyncio.to_thread(perform)
+                    x0, y0, x1, y1 = map(int, region or (0, 0, grid, grid))
+                    if not 0 <= x0 < x1 <= grid >= y1 > y0 >= 0:
+                        raise Nack(Refusal.UNKNOWN_DATA)
+                    (path := self.run / name).parent.mkdir(parents=True, exist_ok=True)
+                    image = await asyncio.to_thread(ImageGrab.grab, all_screens=True)
+                    (info := PngImagePlugin.PngInfo()).add_text("crop", f"{x0} {y0} {x1} {y1}")
+                    left, top, right, bottom = (round(value * (size - 1) / grid) for value, size in zip((x0, y0, x1, y1), image.size * 2))
+                    await asyncio.to_thread(image.crop((left, top, right + 1, bottom + 1)).save, path, pnginfo=info)
+                    return str(path).encode()
+                except (Exception if register == 4 else ()) as error:
+                    return f"Input was sent but then failed ({error!r}); look at the screen before repeating it.".encode()
             case 2:
-                result = await asyncio.to_thread(subprocess.run, text, shell=True, cwd=self.run, capture_output=True, text=True,
-                                                timeout=self.cfg["tools"]["command_seconds"], creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+                result = await asyncio.to_thread(subprocess.run, text, shell=True, cwd=self.run, capture_output=True, text=True, timeout=self.cfg["tools"]["command_seconds"], creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
                 return f"exit {result.returncode}\n{result.stdout}{result.stderr}".encode()
             case 3:
                 path, _, question = text.partition("\n")
@@ -59,34 +60,33 @@ class Tools(Device):
         a, b, c, d = (round(low + int(value) * (high - low) / grid) for value, low, high in zip(box.groups(), (x0, y0) * 2, (x1, y1) * 2))
         return f'"bbox_2d": [{a}, {b}, {c}, {d}], "centre_y_x": [{round((b + d) / 2)}, {round((a + c) / 2)}]'
 
-    def act(self, text):
+    def act(self, text, grid):
         operation, separator, argument = text.partition(" ")
-        if not separator:
-            raise Nack(Refusal.UNKNOWN_DATA)
-        match operation:
+        match operation if separator else None:
             case "click" | "draw":
                 coordinates = tuple(map(int, argument.split()))
                 points = tuple(zip(coordinates[::2], coordinates[1::2], strict=True))
-                grid = self.cfg["limits"]["grid"]
                 if (len(points) != 1 if operation == "click" else len(points) < 2) or not all(0 <= value <= grid for value in coordinates):
                     raise Nack(Refusal.UNKNOWN_DATA)
                 events = [(MOUSE_MOVE_ABSOLUTE_VIRTUAL_DESK, round(x * 65535 / grid), round(y * 65535 / grid)) for y, x in points]
                 events.insert(1, (MOUSE_LEFT_DOWN, 0, 0))
-                try:
-                    for flags, x, y in events:
-                        ctypes.windll.user32.mouse_event(flags, x, y, 0, 0)
-                        time.sleep(self.cfg["tools"]["input_pause"])
-                finally:
-                    ctypes.windll.user32.mouse_event(MOUSE_LEFT_UP, 0, 0, 0, 0)
+                return lambda: self.stroke(events)
             case "type":
-                pyperclip.copy(argument)
-                pyautogui.hotkey("ctrl", "v")
+                return lambda: (pyperclip.copy(argument), pyautogui.hotkey("ctrl", "v"))
             case "key":
                 if argument not in pyautogui.KEYBOARD_KEYS:
                     raise Nack(Refusal.UNKNOWN_DATA)
-                pyautogui.press(argument)
+                return lambda: pyautogui.press(argument)
             case _:
                 raise Nack(Refusal.UNKNOWN_DATA)
+
+    def stroke(self, events):
+        try:
+            for flags, x, y in events:
+                ctypes.windll.user32.mouse_event(flags, x, y, 0, 0)
+                time.sleep(self.cfg["tools"]["input_pause"])
+        finally:
+            ctypes.windll.user32.mouse_event(MOUSE_LEFT_UP, 0, 0, 0, 0)
 
 if __name__ == "__main__":
     Tools().launch()

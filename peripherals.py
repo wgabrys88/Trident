@@ -31,7 +31,6 @@ class Memory(Device):
     async def close(self):
         self.database.close()
 
-
 class Timer(Device):
     def __init__(self):
         super().__init__("timer")
@@ -53,14 +52,14 @@ class Timer(Device):
     async def tick(self):
         while not all(self.bus.present(self.cfg["address"][name]) for name in ("telegram", "mind")):
             await asyncio.sleep(self.cfg["bus"]["poll"])
-        await self.send("mind", "", "f0", reading=True)
+        await self.send("mind", "", "f0", reading=True, guarded=True)
         while True:
             if self.deadline is not None and time.monotonic() >= self.deadline:
                 self.deadline = None
                 self.redials += 1
-                self.dial_task = self.tasks.create_task(self.send("telegram", "", "01"))
-            if time.time() - (self.run / "bus.log").stat().st_mtime >= self.cfg["timer"]["idle_seconds"] and await self.send("telegram", "", "00", reading=True) == b"00":
-                await self.send("mind", self.cfg["timer"]["idle_text"], "01", once=True)
+                self.dial_task = self.tasks.create_task(self.send("telegram", "", "01", guarded=True))
+            if time.time() - (self.run / "bus.log").stat().st_mtime >= self.cfg["timer"]["idle_seconds"] and await self.send("telegram", "", "00", reading=True, guarded=True) == b"00":
+                await self.send("mind", self.cfg["timer"]["idle_text"], "01", once=True, guarded=True)
             await asyncio.sleep(self.cfg["bus"]["poll"])
 
 
