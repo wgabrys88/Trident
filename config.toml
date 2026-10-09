@@ -144,8 +144,10 @@ context_tokens = 4096
 reasoning = "off"
 start_seconds = 300
 max_tokens = 1024
-prompt = "List the visible windows, dialogs, panels and main controls as a JSON array of items with label and bbox_2d [xmin, ymin, xmax, ymax] on 0-{grid}. Keep labels short, using the visible text where there is some. Label an item dialog only if a popup box really covers part of a window."
-image_side = 1024
+prompt = "Provide the bounding box of the frontmost dialog or window."
+system = "When asked for bounding boxes for objects, return a valid JSON array.\nEach array item must be an object with:\n- image_id: the 0-based index of the image\n- bbox_2d: [xmin, ymin, xmax, ymax] normalized integer coordinates in [0, 1000]\n- label: a concise label you choose for the predicted object or region\n\nReturn one item per visible matching object or region. Return [] if none are visible."
+temperature = 0
+image_side = 768
 [tools]
 command_seconds = 7180
 input_pause = 0.1
@@ -175,7 +177,7 @@ path = "life/memory.sqlite"
 [registers.tools]
 "01" = "read: new picture file name without spaces, optionally followed by xmin ymin xmax ymax copied from a map box to zoom in; returns its absolute path; you see nothing until 03"
 "02" = "read: executable Windows command line; returns exit code, stdout and stderr; exit 0 only means it started"
-"03" = "read: absolute picture path alone for a map of labelled areas, or path, newline, one question ending 'Reply with one bbox_2d JSON.' or 'Answer yes or no.', or 'Transcribe the visible text.' on a zoom; every bbox_2d [xmin, ymin, xmax, ymax] is on the full-screen 0 to 1000 grid, followed by centre_y_x [y, x]"
+"03" = "read: absolute picture path, newline, one question: 'Provide the bounding box of the <target>.', a yes/no question ending 'Answer yes or no.', or on a zoom 'Transcribe all visible text and button labels in reading order.'; every bbox_2d [xmin, ymin, xmax, ymax] is on the full-screen 0 to 1000 grid, followed by centre_y_x [y, x]"
 "04" = "read: one input, y first on the grid: click y x, draw y x y x ... (one continuous stroke), type text, key name; returns the path of a picture taken after it"
 [registers.mind]
 "00" = "read: 00 free, 01 busy"

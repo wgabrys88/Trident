@@ -14,7 +14,7 @@ if not ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
     raise RuntimeError("Windows refused per-monitor DPI awareness")
 import pyautogui
 MOUSE_MOVE_ABSOLUTE_VIRTUAL_DESK, MOUSE_LEFT_DOWN, MOUSE_LEFT_UP = 0xC001, 0x0002, 0x0004
-BOX = re.compile(r'"bbox_2d"\s*:\s*\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]')
+BOX = re.compile(r'("bbox_2d"\s*:\s*|image_index=\d+ [^\[\n]*)\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]')
 class Tools(Device):
     def __init__(self):
         super().__init__("tools")
@@ -54,7 +54,7 @@ class Tools(Device):
                 x0, y0, x1, y1 = map(int, (image := Image.open(path)).info.get("crop", f"0 0 {grid} {grid}").split())
                 ImageOps.contain(image, (min(side := self.cfg["vision"]["image_side"], image.width), min(side, image.height)), Image.LANCZOS).save(sent := f"{path}-vision-{time.time_ns()}.png", "PNG")
                 self.mirror(f"{sent}\n{source} -> {self.name} vision: {(question := question or self.cfg['vision']['prompt'].format(grid=grid))}")
-                reply = await self.server.chat([{"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64.b64encode(open(sent, 'rb').read()).decode()}"}}, {"type": "text", "text": question}]}])
+                reply = await self.server.chat([{"role": "system", "content": self.cfg["vision"]["system"]}, {"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64.b64encode(open(sent, 'rb').read()).decode()}"}}, {"type": "text", "text": question}]}], temperature=self.cfg["vision"]["temperature"])
                 self.mirror(f"\nvision {self.name} -> {source}: {reply}")
                 return BOX.sub(lambda box: self.unzoom(box, x0, y0, x1, y1, grid), reply).encode()
 
@@ -63,8 +63,8 @@ class Tools(Device):
 
     @staticmethod
     def unzoom(box, x0, y0, x1, y1, grid):
-        a, b, c, d = (round(low + int(value) * (high - low) / grid) for value, low, high in zip(box.groups(), (x0, y0) * 2, (x1, y1) * 2))
-        return f'"bbox_2d": [{a}, {b}, {c}, {d}], "centre_y_x": [{round((b + d) / 2)}, {round((a + c) / 2)}]'
+        a, b, c, d = (round(low + int(value) * (high - low) / grid) for value, low, high in zip(box.groups()[1:], (x0, y0) * 2, (x1, y1) * 2))
+        return f'{box[1]}[{a}, {b}, {c}, {d}], "centre_y_x": [{round((b + d) / 2)}, {round((a + c) / 2)}]'
 
     def act(self, text, grid):
         operation, separator, argument = text.partition(" ")
