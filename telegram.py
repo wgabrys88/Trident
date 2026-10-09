@@ -114,6 +114,8 @@ class Telegram(QueuedDevice):
         if frame.data[0] == 2:
             self.tasks.create_task(self.hang(missed=False, serial=self.serial))
             return b""
+        if frame.data[0] == 17 and source != self.cfg["address"]["tools"]:
+            raise Nack(Refusal.UNKNOWN_DATA)
         if frame.data[0] == 1:
             if self.state:
                 raise Nack(Refusal.NOT_READY)
@@ -134,7 +136,7 @@ class Telegram(QueuedDevice):
                         await self.client.send_message(self.owner_entity, text[offset:offset + size], parse_mode=None)
             case 17:
                 path, _, text = frame.data[1:].decode().partition("\n")
-                await (self.client.send_file(self.owner_entity, path, caption=text[:1024]) if path else self.client.send_message(self.owner_entity, text[:4096], parse_mode=None))
+                await (self.client.send_file(self.owner_entity, path, caption=text[:self.cfg["telegram"]["caption_chars"]], parse_mode=None, force_document=True) if path else self.client.send_message(self.owner_entity, text[:self.cfg["telegram"]["chat_chars"]], parse_mode=None))
             case 32:
                 await self.play(frame.data[1:].decode())
 
@@ -281,8 +283,7 @@ class Telegram(QueuedDevice):
                     await self.hang(missed=isinstance(call.reason, PhoneCallDiscardReasonMissed), serial=self.serial, discard=False)
 
     async def release(self):
-        audio = self.audio.finish()
-        if audio:
+        if audio := self.audio.finish():
             self.heard(audio)
         if self.engine is not None:
             await self.native("stop", self.owner)

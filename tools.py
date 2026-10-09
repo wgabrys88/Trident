@@ -45,13 +45,14 @@ class Tools(Device):
             case 3:
                 path, _, question = text.partition("\n")
                 x0, y0, x1, y1 = map(int, (image := Image.open(path)).info.get("crop", f"0 0 {grid} {grid}").split())
-                ImageOps.contain(image, (1024, 1024), Image.LANCZOS).save(sent := f"{path}-vision.png", "PNG")
-                await self.send("telegram", f"{sent}\n{source} -> {self.name} vision: {(question := question or self.cfg['vision']['prompt'].format(grid=grid))}", "11")
-                content = [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64.b64encode(open(sent, 'rb').read()).decode()}"}},
-                           {"type": "text", "text": question}]
-                reply = await self.server.chat([{"role": "user", "content": content}])
-                await self.send("telegram", f"\nvision {self.name} -> {source}: {reply}", "11")
+                ImageOps.contain(image, (min(1024, image.width), min(1024, image.height)), Image.LANCZOS).save(sent := f"{path}-vision-{time.time_ns()}.png", "PNG")
+                self.mirror(f"{sent}\n{source} -> {self.name} vision: {(question := question or self.cfg['vision']['prompt'].format(grid=grid))}")
+                reply = await self.server.chat([{"role": "user", "content": [{"type": "image_url", "image_url": {"url": f"data:image/png;base64,{base64.b64encode(open(sent, 'rb').read()).decode()}"}}, {"type": "text", "text": question}]}])
+                self.mirror(f"\nvision {self.name} -> {source}: {reply}")
                 return BOX.sub(lambda box: self.unzoom(box, x0, y0, x1, y1, grid), reply).encode()
+
+    def mirror(self, text):
+        asyncio.create_task(self.send("telegram", text, "11")).add_done_callback(lambda task: task.cancelled() or task.exception() is None or print(time.strftime("%X"), "Vision mirror failed:", repr(task.exception()), flush=True))
 
     @staticmethod
     def unzoom(box, x0, y0, x1, y1, grid):

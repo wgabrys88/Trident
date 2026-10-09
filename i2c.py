@@ -44,8 +44,10 @@ class Frame:
     def encode(self, result: bytes = b"", refusal: Refusal | None = None) -> str:
         if refusal in (Refusal.NO_RECEIVER, Refusal.NOT_READY):
             return f"S {self.address} W NA P"
-        if refusal in (Refusal.UNKNOWN_DATA, Refusal.FULL):
+        if refusal == Refusal.UNKNOWN_DATA:
             return f"S {self.address} W A {self.data[0]:02x} NA P"
+        if refusal == Refusal.FULL:
+            return Frame(self.address, self.data).encode().removesuffix(" A P") + " NA P"
         line = f"S {self.address} W A"
         line += "".join(f" {byte:02x} A" for byte in self.data)
         if self.reading:
@@ -57,8 +59,7 @@ class Frame:
     @classmethod
     def decode(cls, line: str):
         pattern = r"S ([0-7][0-9a-f]) W A((?: [0-9a-f]{2} A)+)( Sr \1 R A)? P"
-        match = re.fullmatch(pattern, line)
-        if match is None:
+        if (match := re.fullmatch(pattern, line)) is None:
             raise ValueError("Invalid I2C transaction")
         return cls(match[1], bytes.fromhex(match[2].replace(" A", "")), bool(match[3]))
 
@@ -68,8 +69,7 @@ class Frame:
             if line != self.encode():
                 raise ValueError("Invalid write acknowledgement")
             return b""
-        match = re.fullmatch(re.escape(write) + r"((?: [0-9a-f]{2} A)* [0-9a-f]{2} NA)? P", line)
-        if match is None:
+        if (match := re.fullmatch(re.escape(write) + r"((?: [0-9a-f]{2} A)* [0-9a-f]{2} NA)? P", line)) is None:
             raise ValueError("Invalid read acknowledgement")
         return bytes.fromhex((match[1] or "").replace(" NA", "").replace(" A", ""))
 
@@ -194,6 +194,8 @@ class Bus:
                 if reply == frame.encode(refusal=Refusal.NOT_READY):
                     await asyncio.sleep(self.settings["frame_timeout"])
                     continue
+                if reply == frame.encode(refusal=Refusal.FULL) != frame.encode(refusal=Refusal.UNKNOWN_DATA):
+                    raise Nack(Refusal.FULL)
                 if reply == frame.encode(refusal=Refusal.UNKNOWN_DATA):
                     if retries == self.settings["data_retries"]:
                         raise Nack(Refusal.UNKNOWN_DATA)

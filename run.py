@@ -21,8 +21,7 @@ class DeviceProcess:
     restart_at: float = 0
 
     def spawn(self):
-        self.process = subprocess.Popen(self.command, stdout=self.log, stderr=self.log,
-                                        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+        self.process = subprocess.Popen(self.command, stdout=self.log, stderr=self.log, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
         self.started, self.restart_at = time.monotonic(), 0
 
     def stop(self, seconds):
@@ -52,12 +51,9 @@ class Supply:
             home = wire / address
             home.mkdir(parents=True)
             (home / "state.json").write_text(json.dumps({"sequence": 0, "tx": 0, "rx": 0}))
-            command = [sys.executable, str(self.cfg.root / self.cfg["modules"][name]), str(self.run)]
-            command.append(self.part if name == "mind" else name)
-            log = cleanup.enter_context((self.run / f"{name}.log").open("ab"))
-            process = DeviceProcess(command, log)
+            command = [sys.executable, str(self.cfg.root / self.cfg["modules"][name]), str(self.run), self.part if name == "mind" else name]
+            self.processes[name] = process = DeviceProcess(command, cleanup.enter_context((self.run / f"{name}.log").open("ab")))
             process.spawn()
-            self.processes[name] = process
             cleanup.callback(process.stop, self.cfg["supply"]["stop_seconds"])
 
     def supervise(self):
@@ -81,16 +77,12 @@ class Supply:
                         for marker in ("alive", "hold"):
                             (home / marker).unlink(missing_ok=True)
                         if (home / "busoff").is_file():
-                            state = json.loads((home / "state.json").read_text())
-                            state["tx"], state["rx"] = 0, 0
-                            (home / "state.json").write_text(json.dumps(state))
+                            (home / "state.json").write_text(json.dumps(json.loads((home / "state.json").read_text()) | {"tx": 0, "rx": 0}))
                             (home / "busoff").unlink()
                         device.failures = 0 if stable else device.failures + 1
                         if device.failures >= self.cfg["supply"]["restart_cap"]:
                             raise RuntimeError(f"{name} exceeded its restart cap; see {name}.log")
-                        delay = min(self.cfg["supply"]["backoff"] * self.cfg["supply"]["backoff_multiplier"] ** max(0, device.failures - 1),
-                                    self.cfg["supply"]["backoff_cap"])
-                        device.restart_at = now + delay
+                        device.restart_at = now + min(self.cfg["supply"]["backoff"] * self.cfg["supply"]["backoff_multiplier"] ** max(0, device.failures - 1), self.cfg["supply"]["backoff_cap"])
                     elif now >= device.restart_at:
                         device.spawn()
                 time.sleep(self.cfg["bus"]["poll"])

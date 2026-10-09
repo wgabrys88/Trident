@@ -26,8 +26,7 @@ class Memory(Device):
                 raise Nack(Refusal.UNKNOWN_DATA)
             result = row[0]
         elif register == 3:
-            row = self.database.execute("SELECT text FROM records ORDER BY id DESC LIMIT 1").fetchone()
-            result = "" if row is None else row[0]
+            result = (self.database.execute("SELECT text FROM records ORDER BY id DESC LIMIT 1").fetchone() or ("",))[0]
         return result.encode() if frame.reading else b""
 
     async def close(self):
@@ -37,8 +36,7 @@ class Memory(Device):
 class Timer(Device):
     def __init__(self):
         super().__init__("timer")
-        self.deadline, self.redials = None, 0
-        self.dial_task = None
+        self.deadline, self.redials, self.dial_task = None, 0, None
 
     async def receive(self, source, frame):
         match frame.data[0]:
@@ -62,6 +60,8 @@ class Timer(Device):
                 self.deadline = None
                 self.redials += 1
                 self.dial_task = self.tasks.create_task(self.send("telegram", "", "01"))
+            if time.time() - (self.run / "bus.log").stat().st_mtime >= self.cfg["timer"]["idle_seconds"] and await self.send("telegram", "", "00", reading=True) == b"00":
+                await self.send("mind", self.cfg["timer"]["idle_text"], "01")
             await asyncio.sleep(self.cfg["bus"]["poll"])
 
 

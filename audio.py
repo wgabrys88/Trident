@@ -68,8 +68,7 @@ class Ears(QueuedDevice):
             self.free(result)
 
     async def work(self, source, frame):
-        text = await asyncio.to_thread(self.decode, frame.data[1:].decode())
-        if text:
+        if text := await asyncio.to_thread(self.decode, frame.data[1:].decode()):
             await self.send("mind", text, "01")
 
 

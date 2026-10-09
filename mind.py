@@ -41,8 +41,7 @@ class Mind(QueuedDevice):
         for branch in self.schema["oneOf"]:
             if (action := branch["properties"]["action"]["const"]) in ("read", "write"):
                 for name, registers in self.cfg["registers"].items():
-                    allowed = [key for key, value in registers.items() if action in value.split(":")[0].split("/")]
-                    if allowed:
+                    if allowed := [key for key, value in registers.items() if action in value.split(":")[0].split("/")]:
                         branches.append(branch | {"properties": branch["properties"] | {
                             "address": {"const": self.cfg["address"][name]}, "register": {"enum": allowed}}})
             else:
@@ -61,7 +60,7 @@ class Mind(QueuedDevice):
             if self.self_turns == self.cfg["bus"]["self_turn_cap"]:
                 raise Nack(Refusal.FULL)
             self.self_turns += 1
-        elif source in (self.cfg["address"]["telegram"], self.cfg["address"]["ears"]):
+        elif source in (self.cfg["address"]["telegram"], self.cfg["address"]["ears"], self.cfg["address"]["timer"]):
             self.self_turns = 0
         self.queue.put_nowait((source, frame))
         return b""

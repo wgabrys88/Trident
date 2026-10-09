@@ -43,6 +43,8 @@ install_timeout = 3600
 [timer]
 redial_seconds = 120
 redial_cap = 3
+idle_seconds = 900
+idle_text = "Idle check from the timer, not the owner's words: take one full-screen screenshot and ask 03 once what is on screen."
 
 [telegram]
 owner = 5884279027
@@ -53,6 +55,7 @@ random_id_max = 2147483648
 ring_seconds = 90
 connect_seconds = 30
 chat_chars = 4096
+caption_chars = 1024
 
 [audio]
 receive_rate = 16000
@@ -160,7 +163,7 @@ path = "life/memory.sqlite"
 [registers.tools]
 "01" = "read: screenshot file name relative to this run, optionally followed by xmin ymin xmax ymax copied from a full-screen bbox_2d to zoom in; returns absolute path"
 "02" = "read: command line; returns exit code, stdout and stderr"
-"03" = "read: absolute image path, optionally a newline then a question for the vision model; returns its answer with each bbox_2d on the full-screen 0 to 1000 grid followed by centre_y_x [y, x]. Ask for bbox_2d [xmin, ymin, xmax, ymax] JSON"
+"03" = "read: absolute image path, optionally a newline then a question for the vision model; returns its answer with each bbox_2d on the full-screen 0 to 1000 grid followed by centre_y_x [y, x]. For places ask for bbox_2d [xmin, ymin, xmax, ymax] JSON; end yes/no questions with Answer yes or no."
 "04" = "read: click y x, draw y x y x ... continuous stroke, type text, key name; y first on the grid; returns post-input screenshot path"
 [registers.mind]
 "00" = "read: 00 free, 01 busy"
