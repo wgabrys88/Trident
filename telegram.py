@@ -31,7 +31,7 @@ class SpeechBuffer:
         self.settings = settings
         self.frame_bytes = settings["receive_rate"] * settings["frame_ms"] * settings["sample_bytes"] // 1000
         self.lead = deque(maxlen=settings["padding_ms"] // settings["frame_ms"])
-        self.pending, self.speech, self.quiet = b"", [], 0
+        self.pending, self.speech, self.quiet, self.voiced = b"", [], 0, 0
 
     def push(self, audio):
         self.pending += audio
@@ -39,6 +39,7 @@ class SpeechBuffer:
             frame, self.pending = self.pending[:self.frame_bytes], self.pending[self.frame_bytes:]
             samples = np.frombuffer(frame, dtype="<i2").astype(np.float32) / (np.iinfo(np.int16).max + 1)
             loud = np.sqrt(np.mean(samples * samples)) >= self.settings["rms_threshold"]
+            self.voiced += self.settings["frame_ms"] * int(loud)
             if not self.speech:
                 self.lead.append(frame)
                 if loud:
@@ -49,12 +50,13 @@ class SpeechBuffer:
                 self.quiet = 0 if loud else self.quiet + self.settings["frame_ms"]
                 if (self.quiet >= self.settings["silence_ms"] or
                     len(self.speech) * self.settings["frame_ms"] >= self.settings["utterance_seconds"] * 1000):
-                    yield b"".join(self.speech)
-                    self.speech, self.quiet = [], 0
+                    if self.voiced >= self.settings["min_speech_ms"]:
+                        yield b"".join(self.speech)
+                    self.speech, self.quiet, self.voiced = [], 0, 0
 
     def finish(self):
-        result = b"".join(self.speech) + self.pending if self.speech else b""
-        self.pending, self.speech, self.quiet = b"", [], 0
+        result = b"".join(self.speech) + self.pending if self.voiced >= self.settings["min_speech_ms"] else b""
+        self.pending, self.speech, self.quiet, self.voiced = b"", [], 0, 0
         self.lead.clear()
         return result
 

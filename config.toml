@@ -62,6 +62,7 @@ send_frame_bytes = 960
 frame_ms = 20
 rms_threshold = 0.012
 silence_ms = 700
+min_speech_ms = 200
 padding_ms = 120
 utterance_seconds = 30
 
@@ -129,6 +130,7 @@ reasoning_format = "deepseek"
 [vision]
 url = "http://127.0.0.1:8080"
 port = 8080
+reasoning = "off"
 start_seconds = 90
 max_tokens = 1024
 prompt = "Name the app in front and what is drawn, in one plain sentence. Then give a JSON array of the visible controls and areas with their real on-screen names, for example [{{\"label\": \"Maximize button\", \"bbox_2d\": [880, 0, 905, 40]}}, {{\"label\": \"canvas\", \"bbox_2d\": [12, 205, 968, 915]}}]. When a paint app is visible, always include its white drawable area as \"canvas\". Coordinates are integers from 0 to {grid}."

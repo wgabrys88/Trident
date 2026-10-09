@@ -130,6 +130,7 @@ class Bus:
             self.state["rx"] += RECEIVE_ERROR_STEP
             self.save()
             self.journal(source, self.address, line, "malformed")
+            self.incoming.remove(path)
             return path.unlink()
         hold, held = self.home / "hold", False
         try:
@@ -185,8 +186,8 @@ class Bus:
                         if hold_sequence == f"{self.address}-{sequence}":
                             deadline = float(held_at) + self.holds[frame.address]
                     if time.time() > deadline:
-                        self.journal(self.address, frame.address, frame.encode(), "timeout")
                         self.transmit_fault(acknowledgement=True)
+                        self.journal(self.address, frame.address, frame.encode(), "timeout")
                         raise TimeoutError(f"No acknowledgement from {frame.address}")
                     await asyncio.sleep(self.settings["poll"])
                 reply = reply_path.read_text(encoding="utf-8")
