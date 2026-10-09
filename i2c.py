@@ -109,7 +109,7 @@ class Bus:
 
     def journal(self, source: str, target: str, line: str, outcome: str):
         with (self.run / "bus.log").open("a", encoding="utf-8") as journal:
-            journal.write(f"{time.time():.6f} {source} {target} {outcome} {line}\n")
+            journal.write(f"{time.time():.6f} {source} {target} {outcome} {line} tx={self.state['tx']} rx={self.state['rx']}\n")
 
     async def serve(self, device):
         while True:
@@ -189,8 +189,6 @@ class Bus:
                 reply = reply_path.read_text(encoding="utf-8")
                 reply_path.unlink()
                 if reply == frame.encode(refusal=Refusal.NOT_READY):
-                    if not self.present(frame.address):
-                        raise Nack(Refusal.NO_RECEIVER)
                     await asyncio.sleep(self.settings["frame_timeout"])
                     continue
                 if reply == frame.encode(refusal=Refusal.UNKNOWN_DATA):

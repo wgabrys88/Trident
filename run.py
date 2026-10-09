@@ -28,7 +28,11 @@ class DeviceProcess:
     def stop(self, seconds):
         if self.process.poll() is None:
             self.process.send_signal(signal.CTRL_BREAK_EVENT)
-            self.process.wait(timeout=seconds)
+            try:
+                self.process.wait(timeout=seconds)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait()
 
 
 class Supply:
@@ -75,9 +79,7 @@ class Supply:
                         continue
                     if not device.restart_at:
                         for marker in ("alive", "hold"):
-                            path = home / marker
-                            if path.exists():
-                                path.unlink()
+                            (home / marker).unlink(missing_ok=True)
                         if (home / "busoff").is_file():
                             state = json.loads((home / "state.json").read_text())
                             state["tx"], state["rx"] = 0, 0
