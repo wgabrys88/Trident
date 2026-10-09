@@ -19,6 +19,7 @@ frame_timeout = 5
 poll = 0.05
 data_retries = 1
 self_turn_cap = 64
+fault_turns = 3
 
 [holds]
 tools = 7200
@@ -95,7 +96,7 @@ context_chars = 400000
 versions = "%LOCALAPPDATA%/cursor-agent/versions"
 executable = "node.exe"
 entry = "index.js"
-arguments = ["-e", "process.argv.push(require('node:fs').readFileSync(0,'utf8'));require(process.argv[1]);", "{entry}", "-p", "--model", "{model}", "--output-format", "text", "--trust", "--workspace", "{run}", "--exclude-tools", "{excluded_tools}"]
+arguments = ["-e", "process.argv.push(require('node:fs').readFileSync(0,'utf8'));require(process.argv[1]);", "{entry}", "-p", "--model", "{model}", "--output-format", "stream-json", "--trust", "--workspace", "{run}", "--exclude-tools", "{excluded_tools}"]
 excluded_tools = "side_question_tool_call,shell_tool_call,delete_tool_call,glob_tool_call,grep_tool_call,read_tool_call,update_todos_tool_call,read_todos_tool_call,edit_tool_call,ls_tool_call,read_lints_tool_call,mcp_tool_call,sem_search_tool_call,create_plan_tool_call,web_search_tool_call,task_tool_call,list_mcp_resources_tool_call,read_mcp_resource_tool_call,apply_agent_diff_tool_call,ask_question_tool_call,fetch_tool_call,switch_mode_tool_call,generate_image_tool_call,record_screen_tool_call,computer_use_tool_call,write_shell_stdin_tool_call,reflect_tool_call,setup_vm_environment_tool_call,truncated_tool_call,start_grind_execution_tool_call,start_grind_planning_tool_call,web_fetch_tool_call,report_bugfix_results_tool_call,ai_attribution_tool_call,pr_management_tool_call,mcp_auth_tool_call,await_tool_call,blame_by_file_path_tool_call,get_mcp_tools_tool_call,report_bug_tool_call,set_active_branch_tool_call,communicate_update_tool_call,send_final_summary_tool_call,update_pr_code_tour_tool_call,replace_env_tool_call,edit_pr_labels_tool_call,record_ci_investigation_findings_tool_call,send_message_tool_call,fetch_cloud_agent_data_tool_call,send_to_user_tool_call,pi_read_tool_call,pi_bash_tool_call,pi_edit_tool_call,pi_write_tool_call,pi_grep_tool_call,pi_find_tool_call,pi_ls_tool_call,connect_scm_tool_call,search_conversations_tool_call,create_goal_tool_call,update_goal_tool_call,adopt_tool_call,get_agent_status_tool_call,read_agent_transcript_tool_call,create_agent_tool_call,stop_agent_tool_call,get_pr_code_tour_tool_call,write_canvas_tool_call,read_canvas_tool_call"
 
 [mind.lfm]
@@ -174,7 +175,7 @@ path = "life/memory.sqlite"
 [registers.tools]
 "01" = "read: new picture file name without spaces, optionally followed by xmin ymin xmax ymax copied from a map box to zoom in; returns its absolute path; you see nothing until 03"
 "02" = "read: executable Windows command line; returns exit code, stdout and stderr; exit 0 only means it started"
-"03" = "read: absolute picture path alone for a map (scene line, labelled areas with notes), or path, newline, one question ending 'Reply with one bbox_2d JSON.' or 'Answer yes or no.'; every bbox_2d [xmin, ymin, xmax, ymax] is on the full-screen 0 to 1000 grid, followed by centre_y_x [y, x]"
+"03" = "read: absolute picture path alone for a map of labelled areas, or path, newline, one question ending 'Reply with one bbox_2d JSON.' or 'Answer yes or no.', or 'Transcribe the visible text.' on a zoom; every bbox_2d [xmin, ymin, xmax, ymax] is on the full-screen 0 to 1000 grid, followed by centre_y_x [y, x]"
 "04" = "read: one input, y first on the grid: click y x, draw y x y x ... (one continuous stroke), type text, key name; returns the path of a picture taken after it"
 [registers.mind]
 "00" = "read: 00 free, 01 busy"

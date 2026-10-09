@@ -1,5 +1,4 @@
 import asyncio
-import contextlib
 import json
 import subprocess
 import sys
@@ -19,9 +18,12 @@ class CommandPart:
         process = await asyncio.create_subprocess_exec(*self.command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
                                                      stderr=asyncio.subprocess.PIPE, cwd=self.device.run, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
         output, error = await process.communicate(prompt.encode())
-        if process.returncode:
-            raise RuntimeError(error.decode())
-        return output.decode()
+        self.device.file(f"turn-{self.device.turn_number + 1}.events.jsonl").write_bytes(output)
+        if process.returncode: raise RuntimeError(error.decode())
+        try:
+            events = [event for line in reversed(output.splitlines()) if line.strip() and isinstance(event := json.loads(line), dict)]
+            return next(("".join(part["text"] for part in event["message"]["content"] if part.get("type") == "text") for event in events[:next((index for index, event in enumerate(events) if event.get("type") == "tool_call"), None)] if event.get("type") == "assistant"), None)
+        except (ValueError, LookupError, TypeError, AttributeError): return None
 
 class ServerPart:
     def __init__(self, device, settings):
@@ -44,8 +46,7 @@ class Mind(QueuedDevice):
                     if allowed := [key for key, value in registers.items() if action in value.split(":")[0].split("/")]:
                         branches.append(branch | {"properties": branch["properties"] | {
                             "address": {"const": self.cfg["address"][name]}, "register": {"enum": allowed}}})
-            else:
-                branches.append(branch)
+            else: branches.append(branch)
         self.schema["oneOf"] = branches
         self.validator = Draft202012Validator(self.schema)
         self.history, self.self_turns, self.turn_number, self.busy, self.owner_due = [], 0, 0, False, 0.0
@@ -59,9 +60,9 @@ class Mind(QueuedDevice):
         if source == self.address:
             if asyncio.get_running_loop().time() < self.owner_due:
                 return self.history.append(f"Controller {source}: {frame.data[1:].decode()}\nAction: none yet; a waiting owner message went first") or b""
-            if self.self_turns == self.cfg["bus"]["self_turn_cap"]:
+            if self.self_turns + (cost := -(-self.cfg["bus"]["self_turn_cap"] // self.cfg["bus"]["fault_turns"]) if frame.data[1:].startswith(b"Mind fault:") else 1) > self.cfg["bus"]["self_turn_cap"]:
                 raise Nack(Refusal.FULL)
-            self.self_turns += 1
+            self.self_turns += cost
         elif source in (self.cfg["address"]["telegram"], self.cfg["address"]["ears"], self.cfg["address"]["timer"]):
             self.self_turns, self.owner_due = 0, 0.0
         self.queue.put_nowait((source, frame))
@@ -80,16 +81,13 @@ class Mind(QueuedDevice):
         self.file(f"turn-{self.turn_number}.txt").write_text(prompt + "\nReply:\n" + json.dumps(raw), encoding="utf-8")
         fault = None
         try:
-            if not isinstance(raw, str):
-                raise ValueError("Reply must be one JSON action object")
+            if not isinstance(raw, str): raise ValueError("Reply must be one JSON action object")
             action, end = json.JSONDecoder(object_pairs_hook=self.unique_object).raw_decode(raw, start := max(raw.find("{"), 0))
             if raw[:start].strip() or raw[end:].strip():
                 print(f"Turn {self.turn_number}: kept the first JSON object {raw[start:end]!r} of {raw!r}", file=sys.stderr)
             self.validator.validate(action)
         except (ValueError, ValidationError) as error:
             reason = "it matched no action" if isinstance(error, ValidationError) else error.args[0].split(":")[0]
-            with contextlib.suppress(Nack, TimeoutError):
-                await self.send("telegram", f"Mind fault: my reply was not one action object ({reason}), so I did nothing.", "10")
             fault = f"your reply was not one action object ({reason}), so nothing was done"
         self.history.append(f"Controller {source}: {incoming}\nAction: {raw if fault else json.dumps(action)}")
         while sum(map(len, self.history)) > self.part["context_chars"]: self.history.pop(0)
@@ -99,15 +97,15 @@ class Mind(QueuedDevice):
                 return await self.dispatch(action := {"action": "write", "address": self.address, "register": "01", "text": f"Mind fault: {fault}. Continue with one JSON action."} if fault else action)
             except (Nack, TimeoutError, ValueError) as error:
                 failure = f"{dict(zip(self.cfg['address'].values(), self.cfg['address']))[action.get('address', self.cfg['address']['telegram'])]} {'refused' if isinstance(error, Nack) else 'failed'} {action.get('register', '10')}: {error}"
-                await self.send("telegram", f"My {action['action']} action was not carried out: {failure}.", "10", guarded=True)
+                stopped = fault and action.get("address") == self.address and getattr(error, "cause", None) == Refusal.FULL
+                await self.send("telegram", "I stopped: I could not form a valid action." if stopped else f"My {action['action']} action was not carried out: {failure}.", "10", guarded=True)
                 if action.get("address") == self.address:
                     return
                 fault = f"that {action['action']} failed ({failure})"
 
     @staticmethod
     def unique_object(pairs):
-        if len(result := dict(pairs)) != len(pairs):
-            raise ValueError("Duplicate JSON property")
+        if len(result := dict(pairs)) != len(pairs): raise ValueError("Duplicate JSON property")
         return result
 
     async def dispatch(self, action):
