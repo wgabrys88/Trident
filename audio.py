@@ -2,9 +2,11 @@ import asyncio
 import ctypes
 import os
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
+import soundfile
 
 from i2c import QueuedDevice, Server
 
@@ -69,6 +71,9 @@ class Ears(QueuedDevice):
 
     async def work(self, source, frame):
         if text := await asyncio.to_thread(self.decode, frame.data[1:].decode()):
+            if self.cfg["telegram"]["bridge_always"] or (spoke := self.run / "telegram-bridge").is_file() and time.time() - spoke.stat().st_mtime < self.cfg["telegram"]["bridge_seconds"]:
+                with self.file("heard.txt").open("a", encoding="utf-8") as heard:
+                    heard.write(f"{time.time():.6f} {text}\n")
             await self.send("mind", text, "01")
 
 
@@ -84,7 +89,9 @@ class Voice(QueuedDevice):
         self.sequence += 1
         path = self.file(f"{self.sequence}.wav")
         path.write_bytes(audio)
-        await self.send("telegram", str(path), "20")
+        if frame.data[0] == 2:
+            soundfile.write(path.with_suffix(".ogg"), *soundfile.read(path), format="OGG", subtype="OPUS")
+        await self.send("telegram", str(path.with_suffix(".wav" if frame.data[0] == 1 else ".ogg")), "20" if frame.data[0] == 1 else "21")
 
 
 if __name__ == "__main__":

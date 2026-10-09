@@ -28,8 +28,7 @@ class ServerPart:
         device.server = Server(device, device.cfg["llama"] | settings)
 
     async def reply(self, prompt, schema):
-        return await self.device.server.chat([{"role": "user", "content": prompt}],
-                                             response_format={"type": "json_object", "schema": schema})
+        return await self.device.server.chat([{"role": "user", "content": prompt}], response_format={"type": "json_object", "schema": schema})
 
 class Mind(QueuedDevice):
     def __init__(self):
@@ -83,13 +82,14 @@ class Mind(QueuedDevice):
         try:
             if not isinstance(raw, str):
                 raise ValueError("Reply must be one JSON action object")
-            action = json.loads(raw, object_pairs_hook=self.unique_object)
+            action, end = json.JSONDecoder(object_pairs_hook=self.unique_object).raw_decode(raw, start := max(raw.find("{"), 0))
+            if raw[:start].strip() or raw[end:].strip():
+                print(f"Turn {self.turn_number}: kept the first JSON object {raw[start:end]!r} of {raw!r}", file=sys.stderr)
             self.validator.validate(action)
         except (ValueError, ValidationError) as error:
-            self.busy = False
             reason = "it matched no action" if isinstance(error, ValidationError) else error.args[0].split(":")[0]
             await self.send("telegram", f"Mind fault: my reply was not one action object ({reason}), so I did nothing.", "10")
-            return
+            action = {"action": "write", "address": self.address, "register": "01", "text": f"Mind fault: your reply was not one action object ({reason}), so nothing was done. Continue the task with exactly one JSON action object."}
         self.history.append(f"Controller {source}: {incoming}\nAction: {raw}")
         while sum(map(len, self.history)) > self.part["context_chars"]:
             self.history.pop(0)
@@ -101,8 +101,7 @@ class Mind(QueuedDevice):
 
     @staticmethod
     def unique_object(pairs):
-        result = dict(pairs)
-        if len(result) != len(pairs):
+        if len(result := dict(pairs)) != len(pairs):
             raise ValueError("Duplicate JSON property")
         return result
 
@@ -111,8 +110,7 @@ class Mind(QueuedDevice):
             case "say":
                 await self.send("telegram", action["text"], "10")
             case "write" | "read":
-                target = Frame(action["address"], bytes.fromhex(action["register"]) + action["text"].encode(),
-                               action["action"] == "read")
+                target = Frame(action["address"], bytes.fromhex(action["register"]) + action["text"].encode(), action["action"] == "read")
                 result = await self.bus.transfer(target)
                 if target.reading:
                     await self.send("mind", f"Read {target.address}/{action['register']}:\n{result.decode()}", "01")

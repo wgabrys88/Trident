@@ -6,6 +6,7 @@ from collections import deque
 from math import gcd
 
 import numpy as np
+import soundfile
 from ntgcalls import (AudioDescription, ConnectionState, DhConfig, FrameData, MediaDescription,
                      MediaSource, NTgCalls, RTCServer, StreamDevice, StreamMode, VIDEO_ROTATION_0)
 from opentele.api import API, UseCurrentSession
@@ -16,7 +17,7 @@ from telethon import events
 from telethon.tl.functions.messages import GetDhConfigRequest
 from telethon.tl.functions.phone import (AcceptCallRequest, ConfirmCallRequest, DiscardCallRequest,
                                        RequestCallRequest, SendSignalingDataRequest)
-from telethon.tl.types import (InputPhoneCall, PhoneCall, PhoneCallAccepted, PhoneCallDiscarded,
+from telethon.tl.types import (DocumentAttributeAudio, InputPhoneCall, PhoneCall, PhoneCallAccepted, PhoneCallDiscarded,
                               PhoneCallDiscardReasonHangup, PhoneCallDiscardReasonMissed, PhoneCallProtocol, PhoneCallRequested,
                               PhoneConnection, PhoneConnectionWebrtc, UpdatePhoneCall,
                               UpdatePhoneCallSignalingData)
@@ -75,8 +76,7 @@ class Telegram(QueuedDevice):
     async def start(self):
         self.loop = asyncio.get_running_loop()
         desktop = TDesktop(str(self.cfg.path(self.cfg["telegram"]["tdata"])))
-        accounts = [account for account in desktop.accounts if account.UserId != self.owner]
-        if len(accounts) != 1:
+        if len(accounts := [account for account in desktop.accounts if account.UserId != self.owner]) != 1:
             raise RuntimeError("Telegram requires exactly one user session distinct from the owner")
         self.client = await TelegramClient.FromTDesktop(accounts[0], session=str(self.file("session")),
             flag=UseCurrentSession, api=API.TelegramDesktop, request_retries=0, connection_retries=0,
@@ -114,8 +114,10 @@ class Telegram(QueuedDevice):
         if frame.data[0] == 2:
             self.tasks.create_task(self.hang(missed=False, serial=self.serial))
             return b""
-        if frame.data[0] == 17 and source != self.cfg["address"]["tools"]:
+        if (writer := {17: "tools", 32: "voice", 33: "voice"}.get(frame.data[0])) and source != self.cfg["address"][writer]:
             raise Nack(Refusal.UNKNOWN_DATA)
+        if frame.data[0] == 16 and source == self.cfg["telegram"]["bridge"]:
+            self.file("bridge").touch()
         if frame.data[0] == 1:
             if self.state:
                 raise Nack(Refusal.NOT_READY)
@@ -128,8 +130,8 @@ class Telegram(QueuedDevice):
         match frame.data[0]:
             case 16:
                 text = frame.data[1:].decode()
-                if self.state == CALL_UP:
-                    await self.send("voice", text, "01")
+                if self.state == CALL_UP or self.cfg["telegram"]["voice_notes"]:
+                    await self.send("voice", text, "01" if self.state == CALL_UP else "02")
                 else:
                     size = self.cfg["telegram"]["chat_chars"]
                     for offset in range(0, len(text), size):
@@ -139,6 +141,8 @@ class Telegram(QueuedDevice):
                 await (self.client.send_file(self.owner_entity, path, caption=text[:self.cfg["telegram"]["caption_chars"]], parse_mode=None, force_document=True) if path else self.client.send_message(self.owner_entity, text[:self.cfg["telegram"]["chat_chars"]], parse_mode=None))
             case 32:
                 await self.play(frame.data[1:].decode())
+            case 33:
+                await self.client.send_file(self.owner_entity, path := frame.data[1:].decode(), attributes=[DocumentAttributeAudio(round(soundfile.info(path).duration), voice=True)])
 
     def protocol(self):
         native = NTgCalls.get_protocol()
@@ -250,8 +254,7 @@ class Telegram(QueuedDevice):
         await self.prepare()
         exchange = bytes(await self.native("init_exchange", self.owner, self.dh, bytes(request.g_a_hash)))
         response = await self.client(AcceptCallRequest(peer=self.peer, g_b=exchange, protocol=self.protocol()))
-        call = response.phone_call
-        if not isinstance(call, PhoneCall):
+        if not isinstance(call := response.phone_call, PhoneCall):
             call = await asyncio.wait_for(self.confirmed, self.cfg["telegram"]["connect_seconds"])
         await self.native("exchange_keys", self.owner, bytes(call.g_a_or_b), call.key_fingerprint)
         await self.connect(call)

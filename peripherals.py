@@ -21,8 +21,7 @@ class Memory(Device):
             self.database.commit()
             result = str(cursor.lastrowid)
         elif register == 2:
-            row = self.database.execute("SELECT text FROM records WHERE id = ?", (text,)).fetchone() if text.isdecimal() else None
-            if row is None:
+            if (row := self.database.execute("SELECT text FROM records WHERE id = ?", (text,)).fetchone() if text.isdecimal() else None) is None:
                 raise Nack(Refusal.UNKNOWN_DATA)
             result = row[0]
         elif register == 3:

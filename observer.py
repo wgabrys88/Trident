@@ -11,8 +11,7 @@ class Observer:
         with (Path(run) / "bus.log").open(encoding="utf-8") as journal:
             while True:
                 position = journal.tell()
-                line = journal.readline()
-                if line.endswith("\n"):
+                if (line := journal.readline()).endswith("\n"):
                     print(line, end="", flush=True)
                 else:
                     journal.seek(position)
