@@ -127,10 +127,10 @@ class Bus:
             self.journal(source, self.address, line, "malformed")
             self.incoming.remove(path)
             return path.unlink()
-        hold, held = self.home / "hold", False
+        held = None
         try:
             try:
-                if hold.exists():
+                if any(self.home.glob("hold-*")):
                     raise Nack(Refusal.NOT_READY)
                 registers = device.cfg["registers"][device.name]
                 register = f"{frame.data[0]:02x}"
@@ -138,8 +138,7 @@ class Bus:
                 if register not in registers or direction not in registers[register].split(":")[0].split("/"):
                     raise Nack(Refusal.UNKNOWN_DATA)
                 if self.address in self.holds and frame.reading:
-                    self.place(hold, f"{source}-{sequence} {time.time()}")
-                    held = True
+                    (held := self.home / f"hold-{source}-{sequence}-{time.time()}").touch()
                 result = await device.receive(source, frame)
                 reply = frame.encode(result)
                 self.state["rx"] = RECEIVE_RECOVERY if self.state["rx"] > ERROR_ACTIVE_MAX else max(0, self.state["rx"] - RECEIVE_ERROR_STEP)
@@ -156,7 +155,7 @@ class Bus:
             self.journal(source, self.address, reply, outcome)
         finally:
             if held:
-                hold.unlink()
+                held.unlink()
 
     async def transfer(self, frame: Frame, once: bool = False) -> bytes:
         async with self.lock:
@@ -173,12 +172,9 @@ class Bus:
                 self.place(self.wire / frame.address / f"q-{self.address}-{sequence}.frame", frame.encode())
                 reply_path = self.home / f"r-{sequence}.frame"
                 deadline = time.time() + self.settings["frame_timeout"]
-                hold = self.wire / frame.address / "hold"
                 while not reply_path.is_file():
-                    if hold.is_file():
-                        hold_sequence, held_at = hold.read_text().split()
-                        if hold_sequence == f"{self.address}-{sequence}":
-                            deadline = float(held_at) + self.holds[frame.address]
+                    for hold in (self.wire / frame.address).glob(f"hold-{self.address}-{sequence}-*"):
+                        deadline = float(hold.name.rsplit("-", 1)[1]) + self.holds[frame.address]
                     if time.time() > deadline:
                         self.transmit_fault(acknowledgement=True)
                         self.journal(self.address, frame.address, frame.encode(), "timeout")

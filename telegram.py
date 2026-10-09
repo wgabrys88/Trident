@@ -324,6 +324,8 @@ class Telegram(QueuedDevice):
             async with self.call_lock:
                 if serial != self.serial:
                     return
+                if self.audio.voiced >= self.cfg["audio"]["barge_in_ms"]:
+                    return print(time.strftime("%X"), "Telegram barge-in", flush=True)
                 await self.native("send_external_frame", self.owner, StreamDevice.MICROPHONE,
                     pcm[offset:offset + size].ljust(size, b"\0"), FrameData(int(time.time() * 1000), VIDEO_ROTATION_0, 0, 0))
             await asyncio.sleep(max(0, started + (offset + size) / (target * self.cfg["audio"]["sample_bytes"]) - self.loop.time()))

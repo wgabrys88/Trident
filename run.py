@@ -61,9 +61,8 @@ class Supply:
             while True:
                 for name, device in self.processes.items():
                     home = self.cfg.root / "wire" / self.cfg["address"][name]
-                    hold = home / "hold"
-                    if device.process.poll() is None and hold.is_file():
-                        if time.time() - float(hold.read_text().split()[1]) > self.cfg["holds"][name]:
+                    for hold in home.glob("hold-*"):
+                        if device.process.poll() is None and time.time() - float(hold.name.rsplit("-", 1)[1]) > self.cfg["holds"][name]:
                             device.stop(self.cfg["supply"]["stop_seconds"])
                     now = time.monotonic()
                     stable = now - device.started >= self.cfg["supply"]["stable_seconds"]
@@ -72,7 +71,7 @@ class Supply:
                             device.failures = 0
                         continue
                     if not device.restart_at:
-                        for marker in ("alive", "hold"):
+                        for marker in ("alive", *home.glob("hold-*")):
                             (home / marker).unlink(missing_ok=True)
                         if (home / "busoff").is_file():
                             (home / "state.json").write_text(json.dumps(json.loads((home / "state.json").read_text()) | {"tx": 0, "rx": 0}))

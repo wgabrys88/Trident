@@ -79,6 +79,7 @@ class Mind(QueuedDevice):
         raw = await asyncio.wait_for(self.transport.reply(prompt, self.schema), self.part["turn_seconds"])
         self.turn_number += 1
         self.file(f"turn-{self.turn_number}.txt").write_text(prompt + "\nReply:\n" + json.dumps(raw), encoding="utf-8")
+        fault = None
         try:
             if not isinstance(raw, str):
                 raise ValueError("Reply must be one JSON action object")
@@ -89,15 +90,19 @@ class Mind(QueuedDevice):
         except (ValueError, ValidationError) as error:
             reason = "it matched no action" if isinstance(error, ValidationError) else error.args[0].split(":")[0]
             await self.send("telegram", f"Mind fault: my reply was not one action object ({reason}), so I did nothing.", "10")
-            action = {"action": "write", "address": self.address, "register": "01", "text": f"Mind fault: your reply was not one action object ({reason}), so nothing was done. Continue the task with exactly one JSON action object."}
-        self.history.append(f"Controller {source}: {incoming}\nAction: {raw}")
+            fault = f"your reply was not one action object ({reason}), so nothing was done"
+        self.history.append(f"Controller {source}: {incoming}\nAction: {raw if fault else json.dumps(action)}")
         while sum(map(len, self.history)) > self.part["context_chars"]:
             self.history.pop(0)
         self.busy = False
-        try:
-            await self.dispatch(action)
-        except (Nack, TimeoutError, ValueError) as error:
-            await self.send("telegram", f"My {action['action']} action was not carried out: {error}.", "10")
+        while True:
+            try:
+                return await self.dispatch(action := {"action": "write", "address": self.address, "register": "01", "text": f"Mind fault: {fault}. Continue with one JSON action."} if fault else action)
+            except (Nack, TimeoutError, ValueError) as error:
+                await self.send("telegram", f"My {action['action']} action was not carried out: {error}.", "10")
+                if action.get("address") == self.address:
+                    return
+                fault = f"that {action['action']} failed ({error})"
 
     @staticmethod
     def unique_object(pairs):
