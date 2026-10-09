@@ -71,10 +71,14 @@ class Ears(QueuedDevice):
 
     async def work(self, source, frame):
         if text := await asyncio.to_thread(self.decode, frame.data[1:].decode()):
-            if self.cfg["telegram"]["bridge_always"] or (spoke := self.run / "telegram-bridge").is_file() and time.time() - spoke.stat().st_mtime < self.cfg["telegram"]["bridge_seconds"]:
+            fresh = (spoke := self.run / "telegram-bridge").is_file() and time.time() - spoke.stat().st_mtime < self.cfg["telegram"]["bridge_seconds"]
+            if fresh or self.cfg["telegram"]["bridge_always"]:
                 with self.file("heard.txt").open("a", encoding="utf-8") as heard:
                     heard.write(f"{time.time():.6f} {text}\n")
-            await self.send("mind", text, "01")
+            if released := fresh and self.cfg["telegram"]["bridge_release"].lower() in text.lower():
+                spoke.unlink()
+            if released or not fresh:
+                await self.send("mind", "(Owner talked with Hannibal; you did not hear it.) " * released + text, "01")
 
 
 class Voice(QueuedDevice):

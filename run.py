@@ -42,8 +42,7 @@ class Supply:
         self.run = self.cfg.root / "runs" / datetime.now().strftime("%Y%m%dT%H%M%S%f")
 
     def start(self, cleanup):
-        wire = self.cfg.root / "wire"
-        if wire.exists():
+        if (wire := self.cfg.root / "wire").exists():
             shutil.rmtree(wire)
         self.run.mkdir(parents=True)
         (self.run / "bus.log").touch()
@@ -64,8 +63,7 @@ class Supply:
                     home = self.cfg.root / "wire" / self.cfg["address"][name]
                     hold = home / "hold"
                     if device.process.poll() is None and hold.is_file():
-                        held_at = float(hold.read_text().split()[1])
-                        if time.time() - held_at > self.cfg["holds"][name]:
+                        if time.time() - float(hold.read_text().split()[1]) > self.cfg["holds"][name]:
                             device.stop(self.cfg["supply"]["stop_seconds"])
                     now = time.monotonic()
                     stable = now - device.started >= self.cfg["supply"]["stable_seconds"]

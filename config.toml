@@ -60,6 +60,7 @@ caption_chars = 1024
 bridge = "20"
 bridge_seconds = 300
 bridge_always = false
+bridge_release = "back to Luna"
 
 [audio]
 receive_rate = 16000

@@ -20,7 +20,6 @@ ERROR_ACTIVE_MAX = 127
 RECEIVE_RECOVERY = 119
 BUS_OFF = 256
 
-
 class Refusal(IntEnum):
     NO_RECEIVER = 1
     NOT_READY = 2
@@ -28,12 +27,10 @@ class Refusal(IntEnum):
     FULL = 4
     END_OF_READ = 5
 
-
 class Nack(Exception):
     def __init__(self, cause: Refusal):
         self.cause = cause
         super().__init__(cause.name.replace("_", " ").lower())
-
 
 @dataclass(frozen=True, slots=True)
 class Frame:
@@ -58,8 +55,7 @@ class Frame:
 
     @classmethod
     def decode(cls, line: str):
-        pattern = r"S ([0-7][0-9a-f]) W A((?: [0-9a-f]{2} A)+)( Sr \1 R A)? P"
-        if (match := re.fullmatch(pattern, line)) is None:
+        if (match := re.fullmatch(r"S ([0-7][0-9a-f]) W A((?: [0-9a-f]{2} A)+)( Sr \1 R A)? P", line)) is None:
             raise ValueError("Invalid I2C transaction")
         return cls(match[1], bytes.fromhex(match[2].replace(" A", "")), bool(match[3]))
 
@@ -72,7 +68,6 @@ class Frame:
         if (match := re.fullmatch(re.escape(write) + r"((?: [0-9a-f]{2} A)* [0-9a-f]{2} NA)? P", line)) is None:
             raise ValueError("Invalid read acknowledgement")
         return bytes.fromhex((match[1] or "").replace(" NA", "").replace(" A", ""))
-
 
 class Bus:
     def __init__(self, root: Path, run: Path, address: str, settings: dict, holds: dict):
@@ -124,8 +119,8 @@ class Bus:
         line = path.read_text(encoding="utf-8")
         try:
             frame = Frame.decode(line)
-            if frame.address != self.address:
-                raise ValueError("Transaction delivered to the wrong address")
+            if frame.address != self.address or not (self.wire / source).is_dir():
+                raise ValueError("Transaction delivered to the wrong address or from an absent controller")
         except ValueError:
             self.state["rx"] += RECEIVE_ERROR_STEP
             self.save()
@@ -163,7 +158,7 @@ class Bus:
             if held:
                 hold.unlink()
 
-    async def transfer(self, frame: Frame) -> bytes:
+    async def transfer(self, frame: Frame, once: bool = False) -> bytes:
         async with self.lock:
             retries = 0
             while True:
@@ -192,6 +187,8 @@ class Bus:
                 reply = reply_path.read_text(encoding="utf-8")
                 reply_path.unlink()
                 if reply == frame.encode(refusal=Refusal.NOT_READY):
+                    if once:
+                        return b""
                     await asyncio.sleep(self.settings["frame_timeout"])
                     continue
                 if reply == frame.encode(refusal=Refusal.FULL) != frame.encode(refusal=Refusal.UNKNOWN_DATA):
@@ -211,7 +208,6 @@ class Bus:
                 self.save()
                 return result
 
-
 class Configuration(dict):
     def __init__(self):
         self.root = Path(__file__).resolve().parent
@@ -225,7 +221,6 @@ class Configuration(dict):
             raise ValueError("A configured mind part is required")
         return self["mind"][name]
 
-
 class Server:
     def __init__(self, device, settings: dict):
         self.device, self.settings, self.process, self.url = device, settings, None, settings["url"]
@@ -238,8 +233,7 @@ class Server:
     async def chat(self, messages: list, **options) -> str:
         body = {"model": self.settings["model"], "messages": messages,
                 **self.device.cfg["sampling"], "max_tokens": self.settings["max_tokens"], **options}
-        response = json.loads(await asyncio.to_thread(self.request, "/v1/chat/completions", body))
-        return response["choices"][0]["message"]["content"]
+        return json.loads(await asyncio.to_thread(self.request, "/v1/chat/completions", body))["choices"][0]["message"]["content"]
 
     def health(self):
         try:
@@ -286,8 +280,8 @@ class Device:
     def file(self, name: str) -> Path:
         return self.run / f"{self.name}-{name}"
 
-    async def send(self, name: str, text: str, register: str, reading: bool = False):
-        return await self.bus.transfer(Frame(self.cfg["address"][name], bytes.fromhex(register) + text.encode(), reading))
+    async def send(self, name: str, text: str, register: str, reading: bool = False, once: bool = False):
+        return await self.bus.transfer(Frame(self.cfg["address"][name], bytes.fromhex(register) + text.encode(), reading), once)
 
     async def run_device(self):
         task = asyncio.current_task()

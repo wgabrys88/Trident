@@ -60,7 +60,7 @@ class Timer(Device):
                 self.redials += 1
                 self.dial_task = self.tasks.create_task(self.send("telegram", "", "01"))
             if time.time() - (self.run / "bus.log").stat().st_mtime >= self.cfg["timer"]["idle_seconds"] and await self.send("telegram", "", "00", reading=True) == b"00":
-                await self.send("mind", self.cfg["timer"]["idle_text"], "01")
+                await self.send("mind", self.cfg["timer"]["idle_text"], "01", once=True)
             await asyncio.sleep(self.cfg["bus"]["poll"])
 
 

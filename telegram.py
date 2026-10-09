@@ -82,8 +82,7 @@ class Telegram(QueuedDevice):
             flag=UseCurrentSession, api=API.TelegramDesktop, request_retries=0, connection_retries=0,
             auto_reconnect=False, flood_sleep_threshold=0, raise_last_call_error=True, catch_up=False)
         await self.client.connect()
-        identity = await self.client.get_me()
-        if identity is None or identity.bot or identity.id == self.owner:
+        if (identity := await self.client.get_me()) is None or identity.bot or identity.id == self.owner:
             raise RuntimeError("An authorized Telegram user session is required")
         await self.client.get_dialogs()
         self.owner_entity = await self.client.get_input_entity(self.owner)
