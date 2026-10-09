@@ -1,87 +1,63 @@
-import json
-import shutil
-import signal
-import subprocess
-import sys
-import time
+import json, shutil, signal, subprocess, sys, time
 from contextlib import ExitStack
-from dataclasses import dataclass
 from datetime import datetime
+from bus import Config
 
-from i2c import Configuration
-
-@dataclass(slots=True)
-class DeviceProcess:
-    command: list
-    log: object
-    process: subprocess.Popen | None = None
-    started: float = 0
-    failures: int = 0
-    restart_at: float = 0
-
+class Process:
+    def __init__(self, cfg, role, run, engine, log):
+        self.cfg, self.role, self.home, self.log = cfg, role, cfg.root / 'wire' / cfg['address'][role], log
+        self.command = [sys.executable, str(cfg.root / f'{role}.py'), str(run), engine]
+        self.failures, self.ready, self.retry = 0, None, 0
+        self.spawn()
     def spawn(self):
-        self.process = subprocess.Popen(self.command, stdout=self.log, stderr=self.log, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
-        self.started, self.restart_at = time.monotonic(), 0
-
-    def stop(self, seconds):
+        self.process = subprocess.Popen(self.command, cwd=self.cfg.root, stdout=self.log, stderr=self.log, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+        self.ready, self.retry = None, 0
+    def stop(self):
         if self.process.poll() is None:
             self.process.send_signal(signal.CTRL_BREAK_EVENT)
-            try:
-                self.process.wait(timeout=seconds)
+            try: self.process.wait(self.cfg['supply']['stop_seconds'])
             except subprocess.TimeoutExpired:
                 self.process.kill()
                 self.process.wait()
+    def inspect(self):
+        now = time.monotonic()
+        if self.process.poll() is None:
+            if (self.home / 'alive').exists() and self.ready is None: self.ready = now
+            for marker in self.home.glob('hold-*'):
+                if time.time() - float(marker.name.rsplit('-', 1)[1]) >= self.cfg['holds'][self.role]: self.stop()
+            return
+        if self.retry == 0:
+            self.failures = 1 if self.ready is not None and now - self.ready >= self.cfg['supply']['stable_seconds'] else self.failures + 1
+            for marker in [self.home / 'alive', self.home / 'busoff', *self.home.glob('hold-*')]: marker.unlink(missing_ok=True)
+            state = json.loads((self.home / 'state.json').read_text()) | {'tx': 0, 'rx': 0}
+            self.cfg.publish(self.home / 'state.json', json.dumps(state))
+            self.retry = now + self.cfg['supply']['backoff'] * self.failures
+            if self.failures >= self.cfg['supply']['restart_cap']:
+                self.retry = float('inf')
+                print(f'{self.role} failed permanently; see its device log', flush=True)
+        if now >= self.retry: self.spawn()
 
 class Supply:
-    def __init__(self, part):
-        self.cfg = Configuration()
-        self.cfg.mind(part)
-        self.part, self.processes = part, {}
-        self.run = self.cfg.root / "runs" / datetime.now().strftime("%Y%m%dT%H%M%S%f")
-
-    def start(self, cleanup):
-        if (wire := self.cfg.root / "wire").exists():
-            shutil.rmtree(wire)
-        self.run.mkdir(parents=True)
-        (self.run / "bus.log").touch()
-        for name, address in self.cfg["address"].items():
-            home = wire / address
-            home.mkdir(parents=True)
-            (home / "state.json").write_text(json.dumps({"sequence": 0, "tx": 0, "rx": 0}))
-            command = [sys.executable, str(self.cfg.root / self.cfg["modules"][name]), str(self.run), self.part if name == "mind" else name]
-            self.processes[name] = process = DeviceProcess(command, cleanup.enter_context((self.run / f"{name}.log").open("ab")))
-            process.spawn()
-            cleanup.callback(process.stop, self.cfg["supply"]["stop_seconds"])
-
-    def supervise(self):
+    def start(self, engine):
+        cfg = Config()
+        cfg['mind'][engine]
+        wire = cfg.root / 'wire'
+        if wire.exists(): shutil.rmtree(wire)
+        run = cfg.root / 'runs' / datetime.now().strftime('%Y%m%dT%H%M%S%f')
+        run.mkdir(parents=True)
+        (run / 'bus.log').touch()
         with ExitStack() as cleanup:
-            self.start(cleanup)
+            processes = []
+            for role, address in cfg['address'].items():
+                (home := wire / address).mkdir(parents=True)
+                cfg.publish(home / 'state.json', json.dumps(dict(sequence=0, tx=0, rx=0)))
+                process = Process(cfg, role, run, engine, cleanup.enter_context((run / f'{role}.log').open('ab')))
+                cleanup.callback(process.stop)
+                processes.append(process)
+            print(run, flush=True)
             while True:
-                for name, device in self.processes.items():
-                    home = self.cfg.root / "wire" / self.cfg["address"][name]
-                    for hold in home.glob("hold-*"):
-                        if device.process.poll() is None and time.time() - float(hold.name.rsplit("-", 1)[1]) > self.cfg["holds"][name]:
-                            device.stop(self.cfg["supply"]["stop_seconds"])
-                    now = time.monotonic()
-                    stable = now - device.started >= self.cfg["supply"]["stable_seconds"]
-                    if device.process.poll() is None:
-                        device.started = device.started if (home / "alive").is_file() else now
-                        continue
-                    if not device.restart_at:
-                        for marker in ("alive", *home.glob("hold-*")):
-                            (home / marker).unlink(missing_ok=True)
-                        if (home / "busoff").is_file():
-                            (home / "state.json").write_text(json.dumps(json.loads((home / "state.json").read_text()) | {"tx": 0, "rx": 0}))
-                            (home / "busoff").unlink()
-                        device.failures = 0 if stable else device.failures + 1
-                        if device.failures >= self.cfg["supply"]["restart_cap"]:
-                            raise RuntimeError(f"{name} exceeded its restart cap; see {name}.log")
-                        device.restart_at = now + min(self.cfg["supply"]["backoff"] * self.cfg["supply"]["backoff_multiplier"] ** max(0, device.failures - 1), self.cfg["supply"]["backoff_cap"])
-                    elif now >= device.restart_at:
-                        device.spawn()
-                time.sleep(self.cfg["bus"]["poll"])
-if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        raise ValueError("Run requires one configured mind part: run.py luna or run.py lfm")
-    signal.signal(signal.SIGBREAK, signal.default_int_handler)
-    Supply(sys.argv[1]).supervise()
+                for process in processes: process.inspect()
+                time.sleep(cfg['bus']['poll'])
+
+signal.signal(signal.SIGBREAK, signal.default_int_handler)
+Supply().start(sys.argv[1])

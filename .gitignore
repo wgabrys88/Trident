@@ -1,7 +1,6 @@
 /artifacts/
+/runs/
 /wire/
 /life/
-/runs/
 __pycache__/
-*.session
-*.session-journal
+*.session*
