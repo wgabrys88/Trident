@@ -57,7 +57,6 @@ class Timer(Device):
         while not all(self.bus.present(self.cfg["address"][name]) for name in ("telegram", "mind")):
             await asyncio.sleep(self.cfg["bus"]["poll"])
         await self.send("mind", "", "f0", reading=True)
-        self.dial_task = self.tasks.create_task(self.send("telegram", "", "01"))
         while True:
             if self.deadline is not None and time.monotonic() >= self.deadline:
                 self.deadline = None
