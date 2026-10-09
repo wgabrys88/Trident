@@ -41,10 +41,10 @@ class Tools(Device):
                                                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
                 return f"exit {result.returncode}\n{result.stdout}{result.stderr}".encode()
             case 3:
-                path = Path(text)
-                image = base64.b64encode(path.read_bytes()).decode()
+                path, _, question = text.partition("\n")
+                image = base64.b64encode(Path(path).read_bytes()).decode()
                 content = [{"type": "image_url", "image_url": {"url": f"data:{mimetypes.guess_type(path)[0]};base64,{image}"}},
-                           {"type": "text", "text": self.cfg["vision"]["prompt"].format(grid=self.cfg["limits"]["grid"])}]
+                           {"type": "text", "text": question or self.cfg["vision"]["prompt"].format(grid=self.cfg["limits"]["grid"])}]
                 return (await self.server.chat([{"role": "user", "content": content}])).encode()
 
     def act(self, text):
