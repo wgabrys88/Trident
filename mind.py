@@ -8,15 +8,18 @@ class Cli:
         self.device, self.settings = device, device.settings
         self.folder = max((path for path in device.cfg.path(self.settings['versions']).iterdir() if path.is_dir()), key=lambda path: path.name)
     async def reply(self, prompt, schema):
-        names = [item for item in self.settings['excluded'].split(',') if item]
         workspace = os.path.join(os.environ['TEMP'], 'trident-mind')
         os.makedirs(workspace, exist_ok=True)
-        command = [str(self.folder / 'node.exe'), '-e', "process.argv.push(require('fs').readFileSync(0,'utf8'));require(process.argv[1]);", str(self.folder / 'index.js'), '-p', '--mode', self.settings['mode'], '--model', self.settings['model'], '--output-format', 'stream-json', '--workspace', workspace, '--trust']
-        command += [part for name in names for part in ('--exclude-tools', name)]
+        command = [str(self.folder / 'node.exe'), '-e', "process.argv.push(require('fs').readFileSync(0,'utf8'));require(process.argv[1]);", str(self.folder / 'index.js'), '-p', '--model', self.settings['model'], '--output-format', 'stream-json', '--workspace', workspace, '--trust', '--allowed-tools', '']
+        home = os.path.join(os.environ['TEMP'], 'trident-cli-home')
+        os.makedirs(home, exist_ok=True)
+        drive, home_path = os.path.splitdrive(home)
+        env = os.environ.copy()
+        env.update(USERPROFILE=home, HOME=home, HOMEDRIVE=drive, HOMEPATH=home_path or '\\')
         # #region agent log
         try:
             from pathlib import Path
-            payload = {"sessionId": "f678ae", "hypothesisId": "E", "runId": "post-fix", "location": "mind.py:Cli.reply", "message": "exclude flags", "data": {"flags": len(names), "read_separate": "read_tool_call" in names, "proposals_in_prompt": "proposals" in prompt}, "timestamp": int(time.time() * 1000)}
+            payload = {"sessionId": "f678ae", "hypothesisId": "E", "runId": "post-fix", "location": "mind.py:Cli.reply", "message": "allowed tools", "data": {"allowed_tools": "", "mode_flag": False, "home": home, "proposals_in_prompt": "proposals" in prompt}, "timestamp": int(time.time() * 1000)}
             with Path(__file__).with_name("debug-f678ae.log").open("a", encoding="utf-8") as stream: stream.write(json.dumps(payload) + "\n")
         except Exception: pass
         # #endregion
@@ -26,7 +29,7 @@ class Cli:
             with Path(__file__).with_name("debug-f678ae.log").open("a", encoding="utf-8") as stream: stream.write(json.dumps(payload) + "\n")
         except Exception: pass
         # #endregion
-        process = await asyncio.create_subprocess_exec(*command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=self.device.stderr, cwd=workspace, limit=self.settings['event_bytes'])
+        process = await asyncio.create_subprocess_exec(*command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=self.device.stderr, cwd=workspace, env=env, limit=self.settings['event_bytes'])
         texts = []
         try:
             process.stdin.write(prompt.encode())
@@ -69,13 +72,13 @@ class Http:
         return await self.device.server.chat([dict(role='user', content=prompt)], response_format=dict(type='json_object', schema=schema))
 
 def same_refusal(previous, action):
-    signature = (action.get('action'), action.get('address'), action.get('register'), action.get('text'))
+    signature = (action.get('do'), action.get('with'))
     blocked = previous is not None and previous == signature
     # #region agent log
     try:
         import json, time
         from pathlib import Path
-        payload = {"sessionId": "f678ae", "hypothesisId": "C", "runId": "post-fix", "location": "mind.py:same_refusal", "message": "repeated refusal check", "data": {"blocked": blocked, "address": action.get("address"), "register": action.get("register"), "text_chars": len(action.get("text") or "")}, "timestamp": int(time.time() * 1000)}
+        payload = {"sessionId": "f678ae", "hypothesisId": "C", "runId": "post-fix", "location": "mind.py:same_refusal", "message": "repeated refusal check", "data": {"blocked": blocked, "do": action.get("do"), "with_chars": len(action.get("with") or "")}, "timestamp": int(time.time() * 1000)}
         with Path(__file__).with_name("debug-f678ae.log").open("a", encoding="utf-8") as stream: stream.write(json.dumps(payload) + "\n")
     except Exception: pass
     # #endregion
@@ -90,12 +93,22 @@ class Mind(Device):
         self.cleanup.callback(self.stderr.close)
         self.engine = {'cli': Cli, 'http': Http}[self.settings['transport']](self)
         if self.server is not None: await self.server.start()
-        choices = [dict(type='object', additionalProperties=False, required=['action'], properties=dict(action=dict(const='nothing'))), dict(type='object', additionalProperties=False, required=['action', 'text'], properties=dict(action=dict(const='say'), text=dict(type='string', minLength=1)))]
-        for name, registers in self.cfg['registers'].items():
-            for direction in ('read', 'write'):
-                allowed = [key for key, value in registers.items() if direction in value.partition(':')[0].split('/')]
-                if allowed: choices.append(dict(type='object', additionalProperties=False, required=['action', 'address', 'register', 'text'], properties=dict(action=dict(const=direction), address=dict(const=self.cfg['address'][name]), register=dict(enum=allowed), text=dict(type='string'))))
-        self.schema, self.validator = {'oneOf': choices}, Draft202012Validator({'oneOf': choices})
+        self.by_name, lines = {}, []
+        for role, registers in self.cfg['registers'].items():
+            for register, value in registers.items():
+                direction, _, rest = value.partition(':')
+                action, example, returns = [part.strip() for part in rest.split('|')]
+                if action == '-': continue
+                if action in self.by_name: raise RuntimeError(f'Duplicate action {action}')
+                self.by_name[action] = (self.cfg['address'][role], register, 'read' in direction.split('/'))
+                lines.append(json.dumps({'do': action, 'with': example}) + ' -> ' + returns)
+        for action, spec in self.cfg['actions'].items():
+            example, _, returns = spec.partition('|')
+            lines.append(json.dumps({'do': action, 'with': example.strip()}) + ' -> ' + returns.strip())
+        self.template = '\n'.join(lines)
+        names = [*self.by_name, *self.cfg['actions']]
+        self.schema = dict(type='object', additionalProperties=False, required=['do', 'with'], properties=dict(do=dict(enum=names), **{'with': dict(type='string')}))
+        self.validator = Draft202012Validator(self.schema)
         journal(self.run, 'model_contract', identity=self.settings['identity'],
                 registers=evidence(self.run, 'registers', json.dumps(self.cfg['registers'])),
                 schema=evidence(self.run, 'schema', json.dumps(self.schema)))
@@ -120,21 +133,22 @@ class Mind(Device):
     async def work(self, source, frame):
         self.number, self.busy = self.number + 1, True
         generation = self.generation
-        context = dict(registers={self.cfg['address'][name]: dict(role=name, registers=registers) for name, registers in self.cfg['registers'].items()}, schema=self.schema)
         brief = (self.cfg.root / 'prompt.txt').read_text('utf-8')
         if brief != getattr(self, 'brief', None):
             self.brief = brief
             journal(self.run, 'instructions', turn=self.number,
                     text=evidence(self.run, f'instructions-{self.number}', brief))
-        prompt = '\n'.join((json.dumps(context), *self.history, f'Controller {source}: {frame.text}', brief))
+        owners = (self.cfg['address']['telegram'], self.cfg['address']['ears'], self.cfg['address']['timer'])
+        current = f'Owner: {frame.text}' if source in owners else frame.text
+        prompt = '\n'.join((brief.rstrip(), self.template, *self.history, current))
         journal(self.run, 'turn_input', n=self.number, src=source, generation=generation, history=len(self.history), text=evidence(self.run, f'input-{self.number}', frame.text))
         try: raw = await asyncio.wait_for(self.engine.reply(prompt, self.schema), self.settings['turn_seconds'])
         except (RuntimeError, TimeoutError) as error:
             journal(self.run, 'turn_fault', n=self.number, error=str(error))
             self.busy = False
             if generation != self.generation: return
-            self.history.append(f'Controller {source}: {frame.text}\nFault: {error}')
-            await self.follow(f'Fault: {error}. Decide one valid next action; do not repeat unknown effects.')
+            self.history.append(current + f'\nFault: {error}')
+            await self.follow(f'Fault: {error}. Decide one valid next action. Do not choose nothing unless a look already showed the requested effect.')
             return
         journal(self.run, 'turn_output', n=self.number, reply=evidence(self.run, f'output-{self.number}', raw))
         if generation != self.generation:
@@ -142,30 +156,43 @@ class Mind(Device):
             journal(self.run, 'turn_superseded', n=self.number)
             return
         try:
-            action = json.loads(raw, object_pairs_hook=self.object)
+            action = self.action_json(raw)
             self.validator.validate(action)
-            self.history.append(f'Controller {source}: {frame.text}\nSelected: {json.dumps(action)}')
+            if action['do'] in ('say', 'done') and not action['with']: raise ValueError('Empty owner message')
+            self.history.append(current + '\nDid: ' + json.dumps({'do': action['do'], 'with': action['with']}))
             while sum(map(len, self.history)) > self.settings['context_chars']: self.history.pop(0)
-            if action['action'] == 'say': await self.bus.transfer(Frame(self.cfg['address']['telegram'], '10', action['text']))
-            if action['action'] in ('read', 'write'):
-                if same_refusal(self.refused, action):
-                    journal(self.run, 'repeated_refusal', n=self.number, address=action['address'], register=action['register'])
-                    self.history.append(f'Controller {source}: {frame.text}\nFault: repeated UNKNOWN_DATA')
-                    await self.send('telegram', 'That request was refused, so I will not repeat it.', '10', once=True)
-                    return
-                result = await self.bus.transfer(Frame(action['address'], action['register'], action['text'], action['action'] == 'read'))
-                if generation != self.generation:
-                    journal(self.run, 'turn_superseded', n=self.number, after_transfer=True)
-                    return
+            if action['do'] == 'say':
+                await self.bus.transfer(Frame(self.cfg['address']['telegram'], '10', action['with']))
                 self.busy = False
-                if action['action'] == 'read': await self.follow(f'Read {action["address"]}/{action["register"]}: {result.decode()}')
-                else: await self.follow(f'Write {action["address"]}/{action["register"]}: ACK accepted the request; effect not verified. Observe the result before proceeding.')
+                await self.follow('say returned. Continue the goal unless the requested effect has been checked.')
+                return
+            if action['do'] == 'done':
+                await self.bus.transfer(Frame(self.cfg['address']['telegram'], '10', action['with']))
+                return
+            if action['do'] == 'nothing':
+                if frame.text != self.cfg['timer']['idle_text']:
+                    self.busy = False
+                    await self.follow('Fault: nothing sends no report. Continue acting, or done with exactly what the latest look said.')
+                return
+            if same_refusal(self.refused, action):
+                journal(self.run, 'repeated_refusal', n=self.number, do=action['do'])
+                self.history.append(current + '\nFault: repeated UNKNOWN_DATA')
+                await self.send('telegram', 'That request was refused, so I will not repeat it.', '10', once=True)
+                return
+            address, register, read = self.by_name[action['do']]
+            result = await self.bus.transfer(Frame(address, register, action['with'], read))
+            if generation != self.generation:
+                journal(self.run, 'turn_superseded', n=self.number, after_transfer=True)
+                return
+            self.busy = False
+            if read: await self.follow(f'{action["do"]} returned {result.decode()}')
+            else: await self.follow(f'{action["do"]} accepted; effect not verified. Observe before repeating.')
         except (ValueError, ValidationError, Refused, TimeoutError) as error:
             self.busy = False
             description = ('Action not allowed by the register schema' if isinstance(error, ValidationError) else
                            'Model returned text instead of a JSON action' if isinstance(error, json.JSONDecodeError) else str(error))
             journal(self.run, 'turn_fault', n=self.number, error=description)
-            self.history.append(f'Controller {source}: {frame.text}\nFault: {description}')
+            self.history.append(current + f'\nFault: {description}')
             # #region agent log
             try:
                 import time
@@ -175,16 +202,15 @@ class Mind(Device):
             except Exception: pass
             # #endregion
             if isinstance(error, Refused) and description == 'NO_RECEIVER':
-                target = action.get('address', self.cfg['address']['telegram'])
+                target = self.by_name.get(action.get('do'), (self.cfg['address']['telegram'],))[0]
                 role = self.cfg['roles'].get(target, target)
                 journal(self.run, 'capability_unavailable', n=self.number, role=role)
                 if target != self.cfg['address']['telegram']:
                     await self.send('telegram', f'{role} is unavailable. I cannot complete that operation until it recovers.', '10', once=True)
                 return
             if isinstance(error, Refused) and description == 'UNKNOWN_DATA':
-                self.refused = (action['action'], action.get('address'), action.get('register'), action.get('text'))
-                meaning = self.cfg['registers'].get(self.cfg['roles'].get(action.get('address'), ''), {}).get(action.get('register'), '')
-                await self.follow(f'Fault: UNKNOWN_DATA. Register meaning: {meaning}. Those bytes were refused. Choose a different argument; do not resend them.')
+                self.refused = (action.get('do'), action.get('with'))
+                await self.follow(f'Fault: {action.get("do")} was refused. Do not resend those bytes. Replace the placeholders in that action published shape with a path or coordinates a result already returned.')
                 return
             if isinstance(error, json.JSONDecodeError):
                 await self.follow('Fault: Model returned text instead of a JSON action. Return one schema object only.')
@@ -192,7 +218,7 @@ class Mind(Device):
             if isinstance(error, TimeoutError):
                 await self.follow(f'Fault: {description}. Observe before any repetition; do not repeat the effect.')
                 return
-            await self.follow(f'Fault: {description}. Decide one valid next action; do not repeat unknown effects.')
+            await self.follow(f'Fault: {description}. Decide one valid next action. Do not choose nothing unless a look already showed the requested effect.')
         finally: self.busy = False
     async def follow(self, text):
         try: await self.bus.transfer(Frame(self.address, '01', text))
@@ -207,4 +233,19 @@ class Mind(Device):
         result = dict(pairs)
         if len(result) != len(pairs): raise ValueError('Duplicate action property')
         return result
+    @classmethod
+    def action_json(cls, raw):
+        try: return json.loads(raw, object_pairs_hook=cls.object)
+        except json.JSONDecodeError:
+            start, end = raw.rfind('{'), raw.rfind('}')
+            if start < 0 or end < start: raise
+            # #region agent log
+            try:
+                import time
+                from pathlib import Path
+                payload = {"sessionId": "f678ae", "hypothesisId": "J", "runId": "post-fix", "location": "mind.py:action_json", "message": "trailing object", "data": {"prefix": start, "chars": len(raw)}, "timestamp": int(time.time() * 1000)}
+                with Path(__file__).with_name("debug-f678ae.log").open("a", encoding="utf-8") as stream: stream.write(json.dumps(payload) + "\n")
+            except Exception: pass
+            # #endregion
+            return json.loads(raw[start:end + 1], object_pairs_hook=cls.object)
 if __name__ == '__main__': Mind('mind').launch()

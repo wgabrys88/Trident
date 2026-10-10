@@ -108,45 +108,49 @@ reasoning = "off"
 max_tokens = 1024
 image_side = 768
 temperature = 0
-overview = "Describe the visible desktop state, the active window and its actionable controls. Identify uncertainty; do not infer hidden effects."
+overview = "Describe the visible desktop state, the active window and its actionable controls. Identify uncertainty; do not infer hidden effects. State only what is visible, and do not invent a clock reading or a measurement."
 boxes_system = "When asked for bounding boxes for objects, return a valid JSON array. Each item has image_id, bbox_2d: [xmin, ymin, xmax, ymax] normalized to integers from 0 to 1000, and label. Return one item per visible matching object or region. Return [] if none are visible."
-text_system = "Answer the request about the supplied image."
+text_system = "Answer the request about the supplied image. State only what is visible. If it is not visible, say so."
 [tools]
 command_seconds = 7180
 input_pause = 0.1
 settle_seconds = 5
 launch_seconds = 5
+[actions]
+say = "a short interim note | the owner hears it and you are asked for the next step"
+done = "the final report | ends the task after the effect was performed and checked"
+nothing = "| no step remains"
 [registers.timer]
-"00" = "read: redial waiting state, 00 idle or 01 waiting"
-"02" = "write: schedule a missed call redial"
-"03" = "write: cancel redial"
+"00" = "read: redial_state | 00 | 00 idle or 01 waiting"
+"02" = "write: schedule_redial | | accepted; the effect is not verified yet"
+"03" = "write: cancel_redial | | accepted; the effect is not verified yet"
 [registers.telegram]
-"00" = "read: call state, 00 down, 01 dialing, 02 connected"
-"01" = "write: dial Wojciech for a live call"
-"02" = "write: end the call"
-"10" = "write: short spoken English; call speech, off-call voice note or chat"
-"11" = "write: tools-only untouched image album, path newline caption, items separated by U+001E"
-"20" = "write: voice-only PCM16 WAV path for the call"
-"21" = "write: voice-only OGG Opus path for a voice note"
+"00" = "read: call_state | 00 | 00 down, 01 dialing, 02 connected"
+"01" = "write: dial | | places a call only when the device already has owner permission"
+"02" = "write: hangup | | ends the call"
+"10" = "write: - | | owner speech is say or done"
+"11" = "write: album | C:\\pictures\\name-1.png\\ncaption | submits an image album; not confirmed delivery"
+"20" = "write: call_audio | C:\\voice\\note.wav | plays that pcm wav on the call"
+"21" = "write: note_audio | C:\\voice\\note.ogg | plays that ogg as a voice note"
 [registers.ears]
-"01" = "write: owner mono PCM16 path to transcribe"
+"01" = "write: transcribe | C:\\audio\\utterance.pcm | transcript text"
 [registers.voice]
-"01" = "write: synthesize call speech"
-"02" = "write: synthesize an off-call voice note"
+"01" = "write: speak_call | hello | synthesizes call speech"
+"02" = "write: speak_note | hello | synthesizes an off-call voice note"
 [registers.tools]
-"01" = "read: name.png optionally xmin ymin xmax ymax; new screenshot path, unseen until 03"
-"02" = "read: Windows shell command; exit, stdout, stderr; exit zero is launch only"
-"03" = "read: newest picture path for one semantic desktop overview; or path newline target question, bounding box request, crop transcription, or question ending Answer yes or no. Bboxes use global 0-1000 coordinates."
-"04" = "read: click y x; draw y x y x ... for one continuous stroke, spaces only; type text; key name. Returns after-shot path."
-"05" = "read: newest screenshot path to share one requested screenshot with owner; read response means submission, not confirmed delivery"
+"01" = "read: screenshot | name.png | a new picture path; the picture is unseen until look"
+"02" = "read: command | echo hello | exit code and output; exit zero means launch only"
+"03" = "read: look | PATH | an answer about that picture. PATH is a picture path a result already returned. Send PATH alone for the overview. A newline then a question asks something specific. A question containing bounding box, bbox, or bounds returns a JSON array of bbox_2d [xmin, ymin, xmax, ymax] and centre_y_x [Y, X], integers 0-1000."
+"04" = "read: stroke | draw Y X Y X | an after-shot path, unseen until look. Shapes: click Y X; draw Y X Y X Y X; type TEXT; key NAME. Y then X, integers 0-1000, the same order as centre_y_x. Y is vertical and stays within ymin and ymax; X is horizontal and stays within xmin and xmax. Replace every capital placeholder."
+"05" = "read: share | the path screenshot returned | submission, not confirmed delivery"
 [registers.mind]
-"00" = "read: 00 available, 01 processing"
-"01" = "write: next step, plan, or device result"
-"f0" = "read: engine identity"
+"00" = "read: - | | internal"
+"01" = "write: - | | internal"
+"f0" = "read: - | | internal"
 [registers.memory]
-"01" = "write/read: append task record; read returns decimal id"
-"02" = "read: record selected by decimal id"
-"03" = "read: latest task record"
+"01" = "write/read: remember | a short task note | a decimal id"
+"02" = "read: recall | 1 | the note for that id"
+"03" = "read: latest | | the latest note"
 [models]
 path = "%LOCALAPPDATA%/Trident/models"
 [downloads]

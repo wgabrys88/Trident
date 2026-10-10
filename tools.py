@@ -4,8 +4,9 @@ from PIL import Image, ImageGrab, ImageOps, PngImagePlugin
 from bus import Device, Refused, Server
 
 def boxes_requested(question):
+    folded = question.casefold()
     legacy = question.startswith('Provide the bounding box')
-    selected = 'bounding box' in question.casefold()
+    selected = any(phrase in folded for phrase in ('bounding box', 'bbox', 'bounds'))
     # #region agent log
     try:
         import json, time
