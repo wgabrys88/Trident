@@ -3,6 +3,47 @@ import pyperclip
 from PIL import Image, ImageGrab, ImageOps, PngImagePlugin
 from bus import Device, Refused, Server
 
+def boxes_requested(question):
+    legacy = question.startswith('Provide the bounding box')
+    selected = 'bounding box' in question.casefold()
+    # #region agent log
+    try:
+        import json, time
+        from pathlib import Path
+        payload = {"sessionId": "f678ae", "hypothesisId": "A", "runId": "post-fix", "location": "tools.py:boxes_requested", "message": "bbox classifier", "data": {"legacy_prefix": legacy, "selected": selected, "yes_no_ending": question.casefold().rstrip().endswith("answer yes or no")}, "timestamp": int(time.time() * 1000)}
+        with Path(__file__).with_name("debug-f678ae.log").open("a", encoding="utf-8") as stream: stream.write(json.dumps(payload) + "\n")
+    except Exception: pass
+    # #endregion
+    return selected
+
+def box_question(question):
+    text = re.sub(r'\s*answer yes or no\s*$', '', question, flags=re.IGNORECASE)
+    return re.sub(r',?\s*or answer no\b.*$', '', text, flags=re.IGNORECASE).strip()
+
+def parse_boxes(raw):
+    text = raw.strip()
+    fenced = re.fullmatch(r'```(?:json)?\s*(.*?)\s*```', text, re.DOTALL | re.IGNORECASE)
+    if fenced: text = fenced.group(1).strip()
+    try: value = json.loads(text)
+    except json.JSONDecodeError:
+        start, end = text.find('['), text.rfind(']')
+        if start < 0 or end <= start: raise
+        value = json.loads(text[start:end + 1])
+    if not isinstance(value, list) or any(not isinstance(item, dict) or not isinstance(item.get('bbox_2d'), list) or len(item['bbox_2d']) != 4 for item in value):
+        raise ValueError('Bounding box array required')
+    return value
+
+def newest_argument(filename, latest):
+    # #region agent log
+    try:
+        import json, time
+        from pathlib import Path
+        payload = {"sessionId": "f678ae", "hypothesisId": "B", "runId": "post-fix", "location": "tools.py:newest_argument", "message": "vision path check", "data": {"matches_latest": filename == latest, "looks_like_png": filename.lower().endswith(".png")}, "timestamp": int(time.time() * 1000)}
+        with Path(__file__).with_name("debug-f678ae.log").open("a", encoding="utf-8") as stream: stream.write(json.dumps(payload) + "\n")
+    except Exception: pass
+    # #endregion
+    return filename == latest
+
 class Tools(Device):
     async def start(self):
         if not ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)): raise RuntimeError('DPI initialization failed')
@@ -82,12 +123,13 @@ class Tools(Device):
         return b'Image submitted for delivery; external receipt unverified'
     async def vision(self, text):
         filename, _, question = text.partition('\n')
-        if filename != self.latest: raise Refused('UNKNOWN_DATA')
+        if not newest_argument(filename, self.latest): raise Refused('UNKNOWN_DATA')
         with Image.open(filename) as image:
             crop = list(map(int, image.info['crop'].split()))
-            boxes = question.startswith('Provide the bounding box')
-            _, raw = await self.look(image, question or self.cfg['vision']['overview'], boxes)
-            if boxes: return json.dumps([self.remap(item, crop) for item in json.loads(raw)]).encode()
-            return raw.encode()
+            boxes = boxes_requested(question)
+            _, raw = await self.look(image, (box_question(question) if boxes else question) or self.cfg['vision']['overview'], boxes)
+            if not boxes: return raw.encode()
+            try: return json.dumps([self.remap(item, crop) for item in parse_boxes(raw)]).encode()
+            except (json.JSONDecodeError, ValueError, TypeError, KeyError): raise Refused('UNKNOWN_DATA') from None
 
-Tools('tools').launch()
+if __name__ == '__main__': Tools('tools').launch()

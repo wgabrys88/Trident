@@ -1,4 +1,5 @@
-import asyncio, json, sys, time
+import asyncio, json, os, sys, time
+from pathlib import Path
 from jsonschema import Draft202012Validator, ValidationError
 from bus import Device, Frame, Refused, Server, journal, evidence
 
@@ -7,8 +8,25 @@ class Cli:
         self.device, self.settings = device, device.settings
         self.folder = max((path for path in device.cfg.path(self.settings['versions']).iterdir() if path.is_dir()), key=lambda path: path.name)
     async def reply(self, prompt, schema):
-        command = [str(self.folder / 'node.exe'), '-e', "process.argv.push(require('fs').readFileSync(0,'utf8'));require(process.argv[1]);", str(self.folder / 'index.js'), '-p', '--mode', self.settings['mode'], '--model', self.settings['model'], '--output-format', 'stream-json', '--workspace', str(self.device.run), '--trust', '--exclude-tools', self.settings['excluded']]
-        process = await asyncio.create_subprocess_exec(*command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=self.device.stderr, cwd=self.device.run, limit=self.settings['event_bytes'])
+        names = [item for item in self.settings['excluded'].split(',') if item]
+        workspace = os.path.join(os.environ['TEMP'], 'trident-mind')
+        os.makedirs(workspace, exist_ok=True)
+        command = [str(self.folder / 'node.exe'), '-e', "process.argv.push(require('fs').readFileSync(0,'utf8'));require(process.argv[1]);", str(self.folder / 'index.js'), '-p', '--mode', self.settings['mode'], '--model', self.settings['model'], '--output-format', 'stream-json', '--workspace', workspace, '--trust']
+        command += [part for name in names for part in ('--exclude-tools', name)]
+        # #region agent log
+        try:
+            from pathlib import Path
+            payload = {"sessionId": "f678ae", "hypothesisId": "E", "runId": "post-fix", "location": "mind.py:Cli.reply", "message": "exclude flags", "data": {"flags": len(names), "read_separate": "read_tool_call" in names, "proposals_in_prompt": "proposals" in prompt}, "timestamp": int(time.time() * 1000)}
+            with Path(__file__).with_name("debug-f678ae.log").open("a", encoding="utf-8") as stream: stream.write(json.dumps(payload) + "\n")
+        except Exception: pass
+        # #endregion
+        # #region agent log
+        try:
+            payload = {"sessionId": "f678ae", "hypothesisId": "F", "runId": "post-fix", "location": "mind.py:Cli.reply", "message": "workspace", "data": {"workspace": workspace, "repo_parent": any((parent / '.git').exists() for parent in (Path(workspace), *Path(workspace).parents))}, "timestamp": int(time.time() * 1000)}
+            with Path(__file__).with_name("debug-f678ae.log").open("a", encoding="utf-8") as stream: stream.write(json.dumps(payload) + "\n")
+        except Exception: pass
+        # #endregion
+        process = await asyncio.create_subprocess_exec(*command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=self.device.stderr, cwd=workspace, limit=self.settings['event_bytes'])
         texts = []
         try:
             process.stdin.write(prompt.encode())
@@ -42,10 +60,23 @@ class Http:
     async def reply(self, prompt, schema):
         return await self.device.server.chat([dict(role='user', content=prompt)], response_format=dict(type='json_object', schema=schema))
 
+def same_refusal(previous, action):
+    signature = (action.get('action'), action.get('address'), action.get('register'), action.get('text'))
+    blocked = previous is not None and previous == signature
+    # #region agent log
+    try:
+        import json, time
+        from pathlib import Path
+        payload = {"sessionId": "f678ae", "hypothesisId": "C", "runId": "post-fix", "location": "mind.py:same_refusal", "message": "repeated refusal check", "data": {"blocked": blocked, "address": action.get("address"), "register": action.get("register"), "text_chars": len(action.get("text") or "")}, "timestamp": int(time.time() * 1000)}
+        with Path(__file__).with_name("debug-f678ae.log").open("a", encoding="utf-8") as stream: stream.write(json.dumps(payload) + "\n")
+    except Exception: pass
+    # #endregion
+    return blocked
+
 class Mind(Device):
     async def start(self):
         self.settings = self.cfg['mind'][sys.argv[2]]
-        self.server, self.number, self.used, self.busy, self.generation, self.stopped = None, 0, 0, False, 0, False
+        self.server, self.number, self.used, self.busy, self.generation, self.stopped, self.refused = None, 0, 0, False, 0, False, None
         self.history, self.queue = [], asyncio.PriorityQueue()
         self.stderr = (self.run / 'diagnostics.log').open('ab')
         self.cleanup.callback(self.stderr.close)
@@ -65,7 +96,7 @@ class Mind(Device):
         owner = source in (self.cfg['address']['telegram'], self.cfg['address']['ears'], self.cfg['address']['timer'])
         if source == self.cfg['address']['timer'] and (self.busy or not self.queue.empty()): raise Refused('NOT_READY')
         if not owner and self.busy: raise Refused('NOT_READY')
-        if owner: self.used, self.stopped, self.generation = 0, False, self.generation + 1
+        if owner: self.used, self.stopped, self.generation, self.refused = 0, False, self.generation + 1, None
         if source in (self.cfg['address']['telegram'], self.cfg['address']['ears']): (self.run / 'mind-activity').touch()
         if not owner:
             cost = (1, -(-self.cfg['bus']['self_turn_cap'] // self.cfg['bus']['fault_turns']))[frame.text.startswith('Fault:')]
@@ -81,7 +112,7 @@ class Mind(Device):
     async def work(self, source, frame):
         self.number, self.busy = self.number + 1, True
         generation = self.generation
-        context = dict(registers={self.cfg['address'][name]: dict(role=name, registers=registers) for name, registers in self.cfg['registers'].items()}, schema=self.schema, proposals=str(self.run / 'proposals'))
+        context = dict(registers={self.cfg['address'][name]: dict(role=name, registers=registers) for name, registers in self.cfg['registers'].items()}, schema=self.schema)
         brief = (self.cfg.root / 'prompt.txt').read_text('utf-8')
         if brief != getattr(self, 'brief', None):
             self.brief = brief
@@ -109,6 +140,11 @@ class Mind(Device):
             while sum(map(len, self.history)) > self.settings['context_chars']: self.history.pop(0)
             if action['action'] == 'say': await self.bus.transfer(Frame(self.cfg['address']['telegram'], '10', action['text']))
             if action['action'] in ('read', 'write'):
+                if same_refusal(self.refused, action):
+                    journal(self.run, 'repeated_refusal', n=self.number, address=action['address'], register=action['register'])
+                    self.history.append(f'Controller {source}: {frame.text}\nFault: repeated UNKNOWN_DATA')
+                    await self.send('telegram', 'That request was refused, so I will not repeat it.', '10', once=True)
+                    return
                 result = await self.bus.transfer(Frame(action['address'], action['register'], action['text'], action['action'] == 'read'))
                 if generation != self.generation:
                     journal(self.run, 'turn_superseded', n=self.number, after_transfer=True)
@@ -122,12 +158,31 @@ class Mind(Device):
                            'Model returned text instead of a JSON action' if isinstance(error, json.JSONDecodeError) else str(error))
             journal(self.run, 'turn_fault', n=self.number, error=description)
             self.history.append(f'Controller {source}: {frame.text}\nFault: {description}')
+            # #region agent log
+            try:
+                import time
+                from pathlib import Path
+                payload = {"sessionId": "f678ae", "hypothesisId": "C" if description == "UNKNOWN_DATA" else "D", "runId": "post-fix", "location": "mind.py:work", "message": "fault continuation", "data": {"description": description, "will_follow": not (isinstance(error, Refused) and description == "NO_RECEIVER"), "schema_enforced_on_cli": False}, "timestamp": int(time.time() * 1000)}
+                with Path(__file__).with_name("debug-f678ae.log").open("a", encoding="utf-8") as stream: stream.write(json.dumps(payload) + "\n")
+            except Exception: pass
+            # #endregion
             if isinstance(error, Refused) and description == 'NO_RECEIVER':
                 target = action.get('address', self.cfg['address']['telegram'])
                 role = self.cfg['roles'].get(target, target)
                 journal(self.run, 'capability_unavailable', n=self.number, role=role)
                 if target != self.cfg['address']['telegram']:
                     await self.send('telegram', f'{role} is unavailable. I cannot complete that operation until it recovers.', '10', once=True)
+                return
+            if isinstance(error, Refused) and description == 'UNKNOWN_DATA':
+                self.refused = (action['action'], action.get('address'), action.get('register'), action.get('text'))
+                meaning = self.cfg['registers'].get(self.cfg['roles'].get(action.get('address'), ''), {}).get(action.get('register'), '')
+                await self.follow(f'Fault: UNKNOWN_DATA. Register meaning: {meaning}. Those bytes were refused. Choose a different argument; do not resend them.')
+                return
+            if isinstance(error, json.JSONDecodeError):
+                await self.follow('Fault: Model returned text instead of a JSON action. Return one schema object only.')
+                return
+            if isinstance(error, TimeoutError):
+                await self.follow(f'Fault: {description}. Observe before any repetition; do not repeat the effect.')
                 return
             await self.follow(f'Fault: {description}. Decide one valid next action; do not repeat unknown effects.')
         finally: self.busy = False
@@ -144,4 +199,4 @@ class Mind(Device):
         result = dict(pairs)
         if len(result) != len(pairs): raise ValueError('Duplicate action property')
         return result
-Mind('mind').launch()
+if __name__ == '__main__': Mind('mind').launch()
