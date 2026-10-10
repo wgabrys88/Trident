@@ -24,6 +24,7 @@ grid = 1000
 http_seconds = 7100
 health_seconds = 10
 health_poll = 0.2
+server_tail_bytes = 16384
 install_seconds = 3600
 [timer]
 redial_seconds = 120

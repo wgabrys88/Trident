@@ -42,7 +42,8 @@ class Process:
             self.retry = now + self.cfg['supply']['backoff'] * self.failures
             if self.failures >= self.cfg['supply']['restart_cap']:
                 self.retry = float('inf')
-                print(f'{self.role} failed permanently; see diagnostics.log', flush=True)
+                journal(self.command[3], 'device_unavailable', role=self.role, failures=self.failures, code=self.process.returncode)
+                print(f'{self.role} failed permanently; see server_exit in events.jsonl or diagnostics.log', flush=True)
         if now >= self.retry: self.spawn()
 
 class Supply:

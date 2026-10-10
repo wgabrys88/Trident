@@ -234,22 +234,43 @@ class Server:
         with urllib.request.urlopen(request, timeout=seconds) as response: return response.read()
     async def start(self):
         command = [os.path.expandvars(str(value)).format(**self.settings, models=str(self.device.cfg.path(self.device.cfg['models']['path']))) for value in self.settings['command']]
-        with (self.device.run / 'diagnostics.log').open('ab') as log:
-            self.process = await asyncio.create_subprocess_exec(*command, cwd=self.device.cfg.root, stdout=log, stderr=log)
+        try:
+            self.process = await asyncio.create_subprocess_exec(*command, cwd=self.device.cfg.root,
+                                                               stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        except OSError as error:
+            journal(self.device.run, 'server_spawn_failed', role=self.device.name, executable=command[0], error=str(error))
+            raise
+        self.command, self.output = command, bytearray()
+        journal(self.device.run, 'server_start', role=self.device.name, pid=self.process.pid, executable=command[0])
         self.device.cleanup.push_async_callback(self.close)
+        self.reader = self.device.tasks.create_task(self.capture())
         self.device.tasks.create_task(self.watch())
-        async with asyncio.timeout(self.settings['start_seconds']):
-            while True:
-                try:
-                    await asyncio.to_thread(self.request, '/health')
-                    return
-                except urllib.error.HTTPError as error:
-                    if error.code != 503: raise
-                except urllib.error.URLError as error:
-                    if not isinstance(error.reason, ConnectionRefusedError): raise
-                await asyncio.sleep(self.device.cfg['limits']['health_poll'])
+        try:
+            async with asyncio.timeout(self.settings['start_seconds']):
+                while True:
+                    try:
+                        await asyncio.to_thread(self.request, '/health')
+                        return
+                    except urllib.error.HTTPError as error:
+                        if error.code != 503: raise
+                    except urllib.error.URLError as error:
+                        if not isinstance(error.reason, ConnectionRefusedError): raise
+                    await asyncio.sleep(self.device.cfg['limits']['health_poll'])
+        except Exception as error:
+            journal(self.device.run, 'server_health_failed', role=self.device.name, error=f'{type(error).__name__}: {error}',
+                    output=evidence(self.device.run, f'{self.device.name}-health', self.output.decode(errors='replace')))
+            raise
+    async def capture(self):
+        limit = self.device.cfg['limits']['server_tail_bytes']
+        while chunk := await self.process.stdout.read(4096):
+            self.output.extend(chunk)
+            if len(self.output) > limit: del self.output[:-limit]
     async def watch(self):
-        raise RuntimeError(f'Server exited: {await self.process.wait()}')
+        code = await self.process.wait()
+        await self.reader
+        journal(self.device.run, 'server_exit', role=self.device.name, code=code, command=self.command,
+                output=evidence(self.device.run, f'{self.device.name}-server-exit', self.output.decode(errors='replace')))
+        raise RuntimeError(f'{self.device.name} server exited {code}; see server_exit in events.jsonl')
     async def close(self):
         if self.process is not None and self.process.returncode is None:
             self.process.kill()

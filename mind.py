@@ -118,9 +118,17 @@ class Mind(Device):
                 else: await self.follow(f'Write {action["address"]}/{action["register"]}: ACK accepted the request; effect not verified. Observe the result before proceeding.')
         except (ValueError, ValidationError, Refused, TimeoutError) as error:
             self.busy = False
-            description = 'Action not allowed by the register schema' if isinstance(error, ValidationError) else str(error)
+            description = ('Action not allowed by the register schema' if isinstance(error, ValidationError) else
+                           'Model returned text instead of a JSON action' if isinstance(error, json.JSONDecodeError) else str(error))
             journal(self.run, 'turn_fault', n=self.number, error=description)
             self.history.append(f'Controller {source}: {frame.text}\nFault: {description}')
+            if isinstance(error, Refused) and description == 'NO_RECEIVER':
+                target = action.get('address', self.cfg['address']['telegram'])
+                role = self.cfg['roles'].get(target, target)
+                journal(self.run, 'capability_unavailable', n=self.number, role=role)
+                if target != self.cfg['address']['telegram']:
+                    await self.send('telegram', f'{role} is unavailable. I cannot complete that operation until it recovers.', '10', once=True)
+                return
             await self.follow(f'Fault: {description}. Decide one valid next action; do not repeat unknown effects.')
         finally: self.busy = False
     async def follow(self, text):
