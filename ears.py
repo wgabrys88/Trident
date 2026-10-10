@@ -35,30 +35,12 @@ class Ears(Device):
     def decode(self, filename):
         raw = self.cfg.path(filename).read_bytes()
         samples = np.frombuffer(raw, dtype='<i2').astype(np.float32) / 32768
-        # #region agent log
-        try:
-            import json, time
-            from pathlib import Path
-            peak = float(np.max(np.abs(samples))) if len(samples) else 0.0
-            rms = float(np.sqrt(np.mean(samples * samples))) if len(samples) else 0.0
-            payload = {"sessionId": "f678ae", "hypothesisId": "V", "runId": "voice", "location": "ears.py:decode", "message": "asr input", "data": {"bytes": len(raw), "samples": int(len(samples)), "rms": round(rms, 5), "peak": round(peak, 5)}, "timestamp": int(time.time() * 1000)}
-            with Path(__file__).with_name("debug-f678ae.log").open("a", encoding="utf-8") as stream: stream.write(json.dumps(payload) + "\n")
-        except Exception: pass
-        # #endregion
         result = ctypes.c_void_p()
         self.check(self.recognize(self.handle, None, samples.ctypes.data_as(ctypes.POINTER(ctypes.c_float)), len(samples), self.cfg['audio']['receive_rate'], ctypes.byref(result)))
         try: return self.transcript(result, 0).decode().strip()
         finally: self.free(result)
     async def work(self, source, frame):
         text = await asyncio.to_thread(self.decode, frame.text)
-        # #region agent log
-        try:
-            import json, time
-            from pathlib import Path
-            payload = {"sessionId": "f678ae", "hypothesisId": "V", "runId": "voice", "location": "ears.py:work", "message": "asr text", "data": {"chars": len(text), "head": text[:180]}, "timestamp": int(time.time() * 1000)}
-            with Path(__file__).with_name("debug-f678ae.log").open("a", encoding="utf-8") as stream: stream.write(json.dumps(payload) + "\n")
-        except Exception: pass
-        # #endregion
         marker = self.run / 'telegram-bridge'
         bridged = marker.exists() and time.time() - marker.stat().st_mtime < self.cfg['telegram']['bridge_seconds']
         journal(self.run, 'transcript', text=text, bridged=bridged)

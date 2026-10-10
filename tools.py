@@ -5,17 +5,7 @@ from bus import Device, Refused, Server
 
 def boxes_requested(question):
     folded = question.casefold()
-    legacy = question.startswith('Provide the bounding box')
-    selected = any(phrase in folded for phrase in ('bounding box', 'bbox', 'bounds'))
-    # #region agent log
-    try:
-        import json, time
-        from pathlib import Path
-        payload = {"sessionId": "f678ae", "hypothesisId": "A", "runId": "post-fix", "location": "tools.py:boxes_requested", "message": "bbox classifier", "data": {"legacy_prefix": legacy, "selected": selected, "yes_no_ending": question.casefold().rstrip().endswith("answer yes or no")}, "timestamp": int(time.time() * 1000)}
-        with Path(__file__).with_name("debug-f678ae.log").open("a", encoding="utf-8") as stream: stream.write(json.dumps(payload) + "\n")
-    except Exception: pass
-    # #endregion
-    return selected
+    return any(phrase in folded for phrase in ('bounding box', 'bbox', 'bounds'))
 
 def box_question(question):
     text = re.sub(r'\s*answer yes or no\s*$', '', question, flags=re.IGNORECASE)
@@ -35,14 +25,6 @@ def parse_boxes(raw):
     return value
 
 def newest_argument(filename, latest):
-    # #region agent log
-    try:
-        import json, time
-        from pathlib import Path
-        payload = {"sessionId": "f678ae", "hypothesisId": "B", "runId": "post-fix", "location": "tools.py:newest_argument", "message": "vision path check", "data": {"matches_latest": filename == latest, "looks_like_png": filename.lower().endswith(".png")}, "timestamp": int(time.time() * 1000)}
-        with Path(__file__).with_name("debug-f678ae.log").open("a", encoding="utf-8") as stream: stream.write(json.dumps(payload) + "\n")
-    except Exception: pass
-    # #endregion
     return filename == latest
 
 class Tools(Device):
@@ -74,24 +56,11 @@ class Tools(Device):
     async def command(self, text):
         handle = self.file(f'command-{time.time_ns()}.log').open('w+b')
         process = await asyncio.create_subprocess_shell(text, cwd=self.run, stdin=asyncio.subprocess.DEVNULL, stdout=handle, stderr=asyncio.subprocess.STDOUT)
-        # #region agent log
-        started = time.time()
-        def _dbg(message, data):
-            try:
-                from pathlib import Path
-                payload = {"sessionId": "f678ae", "hypothesisId": "H1", "runId": "post-fix", "location": "tools.py:command", "message": message, "data": data, "timestamp": int(time.time() * 1000)}
-                with Path(__file__).with_name("debug-f678ae.log").open("a", encoding="utf-8") as stream: stream.write(json.dumps(payload) + "\n")
-            except Exception: pass
-        _dbg('command start', {'pid': process.pid, 'chars': len(text), 'head': text[:80]})
-        # #endregion
         try:
             await asyncio.wait_for(process.wait(), self.cfg['tools']['command_seconds'])
             if process.returncode == 0: await asyncio.sleep(self.cfg['tools']['launch_seconds'])
             handle.seek(0)
             output = handle.read()
-            # #region agent log
-            _dbg('command returned', {'pid': process.pid, 'code': process.returncode, 'elapsed': round(time.time() - started, 1), 'out': len(output)})
-            # #endregion
             return f'exit {process.returncode}\n'.encode() + output
         except Exception as error: return f'Command started; outcome uncertain: {error!r}. Observe before repeating.'.encode()
         finally:
