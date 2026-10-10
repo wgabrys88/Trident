@@ -27,7 +27,7 @@ class Ears(Device):
         self.transcript, self.free = self.bind('result_transcript', ctypes.c_char_p, [pointer, ctypes.c_size_t]), self.bind('result_destroy', None, [pointer])
         self.destroy = self.bind('destroy', None, [pointer])
         self.backend = Backend(ctypes.sizeof(Backend), self.cfg['ears']['gpu'])
-        self.model = Model(ctypes.sizeof(Model), str(self.cfg.path(self.cfg['ears']['model'])).encode(), None)
+        self.model = Model(ctypes.sizeof(Model), str(self.cfg.path(self.cfg['models']['path']) / self.cfg['ears']['model']).encode(), None)
         config, self.handle = Asr(), pointer()
         config.size, config.backend, config.model = ctypes.sizeof(Asr), ctypes.addressof(self.backend), ctypes.addressof(self.model)
         create = self.bind('create', ctypes.c_int, [ctypes.POINTER(Asr), ctypes.POINTER(pointer)])
