@@ -66,6 +66,7 @@ class Mind(Device):
         if source == self.cfg['address']['timer'] and (self.busy or not self.queue.empty()): raise Refused('NOT_READY')
         if not owner and self.busy: raise Refused('NOT_READY')
         if owner: self.used, self.stopped, self.generation = 0, False, self.generation + 1
+        if source in (self.cfg['address']['telegram'], self.cfg['address']['ears']): (self.run / 'mind-activity').touch()
         if not owner:
             cost = (1, -(-self.cfg['bus']['self_turn_cap'] // self.cfg['bus']['fault_turns']))[frame.text.startswith('Fault:')]
             if self.used + cost > self.cfg['bus']['self_turn_cap']: raise Refused('FULL')
@@ -75,7 +76,8 @@ class Mind(Device):
     async def worker(self):
         while True:
             _, _, generation, source, frame = await self.queue.get()
-            if source != self.address or generation == self.generation: await self.work(source, frame)
+            if generation == self.generation: await self.work(source, frame)
+            else: journal(self.run, 'turn_skipped', src=source, generation=generation)
     async def work(self, source, frame):
         self.number, self.busy = self.number + 1, True
         generation = self.generation
@@ -96,23 +98,31 @@ class Mind(Device):
             await self.follow(f'Fault: {error}. Decide one valid next action; do not repeat unknown effects.')
             return
         journal(self.run, 'turn_output', n=self.number, reply=evidence(self.run, f'output-{self.number}', raw))
-        self.busy = False
         if generation != self.generation:
+            self.busy = False
             journal(self.run, 'turn_superseded', n=self.number)
             return
         try:
             action = json.loads(raw, object_pairs_hook=self.object)
             self.validator.validate(action)
-            self.history.append(f'Controller {source}: {frame.text}\nDispatched: {json.dumps(action)}')
+            self.history.append(f'Controller {source}: {frame.text}\nSelected: {json.dumps(action)}')
             while sum(map(len, self.history)) > self.settings['context_chars']: self.history.pop(0)
             if action['action'] == 'say': await self.bus.transfer(Frame(self.cfg['address']['telegram'], '10', action['text']))
             if action['action'] in ('read', 'write'):
                 result = await self.bus.transfer(Frame(action['address'], action['register'], action['text'], action['action'] == 'read'))
+                if generation != self.generation:
+                    journal(self.run, 'turn_superseded', n=self.number, after_transfer=True)
+                    return
+                self.busy = False
                 if action['action'] == 'read': await self.follow(f'Read {action["address"]}/{action["register"]}: {result.decode()}')
+                else: await self.follow(f'Write {action["address"]}/{action["register"]}: ACK accepted the request; effect not verified. Observe the result before proceeding.')
         except (ValueError, ValidationError, Refused, TimeoutError) as error:
-            journal(self.run, 'turn_fault', n=self.number, error=str(error))
-            self.history.append(f'Controller {source}: {frame.text}\nFault: {error}')
-            await self.follow(f'Fault: {error}. Decide one valid next action; do not repeat unknown effects.')
+            self.busy = False
+            description = 'Action not allowed by the register schema' if isinstance(error, ValidationError) else str(error)
+            journal(self.run, 'turn_fault', n=self.number, error=description)
+            self.history.append(f'Controller {source}: {frame.text}\nFault: {description}')
+            await self.follow(f'Fault: {description}. Decide one valid next action; do not repeat unknown effects.')
+        finally: self.busy = False
     async def follow(self, text):
         try: await self.bus.transfer(Frame(self.address, '01', text))
         except Refused as error:

@@ -151,9 +151,21 @@ class Bus:
                         self.fault()
                         raise TimeoutError(f'{frame.address}: execution outcome unknown; do not repeat')
                     await asyncio.sleep(self.cfg['bus']['poll'])
-                reply = json.loads(response.read_text('utf-8'))
+                raw = response.read_text('utf-8')
                 response.unlink()
-                status = reply['status']
+                try:
+                    reply = json.loads(raw)
+                    status, trace = reply['status'], reply['trace']
+                    if not isinstance(status, str) or not isinstance(trace, str): raise TypeError('Invalid reply fields')
+                    expected = ('ACK', 'END_OF_READ')[frame.read]
+                    if status in ('ACK', 'END_OF_READ'):
+                        if status != expected: raise ValueError('Wrong reply status')
+                    elif status not in ('NOT_READY', 'UNKNOWN_DATA', 'FULL') or trace != frame.trace(status=status):
+                        raise ValueError('Wrong refusal trace')
+                except (ValueError, KeyError, TypeError):
+                    self.record(self.device.address, frame.address, 'malformed_reply', raw, sequence, frame)
+                    self.fault()
+                    raise ValueError('Malformed reply') from None
                 if status == 'NOT_READY' and not once:
                     await asyncio.sleep(self.cfg['bus']['frame_timeout'])
                     continue

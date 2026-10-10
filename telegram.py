@@ -43,6 +43,7 @@ class Telegram(Device):
         self.owner, self.state, self.serial, self.peer, self.engine, self.call = self.settings['owner'], 0, 0, None, None, None
         self.talked, self.since, self.linked, self.outgoing, self.signals = 0, 0, False, False, []
         self.speech, self.native_lock, self.call_lock = Speech(self.cfg['audio']), asyncio.Lock(), asyncio.Lock()
+        self.call_grant = 0
         accounts = [account for account in TDesktop(str(self.cfg.path(self.settings['tdata']))).accounts if account.UserId != self.owner]
         if len(accounts) != 1: raise RuntimeError('Exactly one non-owner Telegram account is required')
         self.client = await TelegramClient.FromTDesktop(accounts[0], session=str(self.file('session')), flag=UseCurrentSession, api=API.TelegramDesktop, request_retries=0, connection_retries=0, auto_reconnect=False, flood_sleep_threshold=0, raise_last_call_error=True, catch_up=False)
@@ -59,7 +60,18 @@ class Telegram(Device):
         await self.client.disconnected
         raise ConnectionError('Telegram disconnected')
     async def message(self, event):
-        if event.is_private and event.raw_text.strip(): self.tasks.create_task(self.send('mind', event.raw_text, '01'))
+        if not event.is_private: return
+        text = event.raw_text.strip()
+        if text == '/revoke-call':
+            self.call_grant = 0
+            journal(self.run, 'call_permission', state='revoked')
+            return
+        if text.startswith('/permit-call '):
+            if self.state: return
+            self.call_grant = self.loop.time() + self.settings['call_grant_seconds']
+            journal(self.run, 'call_permission', state='granted_once')
+            text = text[len('/permit-call '):].strip()
+        if text: self.tasks.create_task(self.send('mind', text, '01'))
     async def raw(self, event):
         self.tasks.create_task(self.update(event))
     def bridged(self):
@@ -75,6 +87,10 @@ class Telegram(Device):
         if frame.register == '10' and self.barred(source): raise Refused('FULL')
         if frame.register == '01':
             if self.state or (source != self.settings['bridge'] and self.bridged()): raise Refused('NOT_READY')
+            if self.loop.time() >= self.call_grant:
+                journal(self.run, 'call_denied', src=source, reason='owner_permission_required')
+                raise Refused('FULL')
+            self.call_grant = 0
             self.state, self.outgoing = 1, True
             self.call = self.tasks.create_task(self.dial())
             return b''
@@ -171,6 +187,7 @@ class Telegram(Device):
         if not isinstance(event, t.UpdatePhoneCall): return
         call = event.phone_call
         if isinstance(call, t.PhoneCallRequested) and call.admin_id == self.owner:
+            self.call_grant = 0
             if self.state: await self.hang(self.serial, False)
             self.state, self.peer, self.outgoing = 1, t.InputPhoneCall(call.id, call.access_hash), False
             journal(self.run, 'call_incoming')
@@ -187,6 +204,7 @@ class Telegram(Device):
             if self.call is not None and self.call != asyncio.current_task() and not self.call.done(): self.call.cancel(); await asyncio.wait([self.call])
             if discard and self.peer is not None: await self.client(phone.DiscardCallRequest(peer=self.peer, duration=int(self.loop.time() - self.since) * int(bool(self.since)), reason=t.PhoneCallDiscardReasonHangup(), connection_id=0, video=False))
             self.heard(self.speech.finish())
+            self.speech.pending = b''
             if self.engine is not None: await self.native('stop', self.owner)
             self.peer, self.engine, self.state, self.linked, self.since = None, None, 0, False, 0
             self.signals.clear()

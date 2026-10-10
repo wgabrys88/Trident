@@ -1,4 +1,4 @@
-import asyncio, base64, ctypes, json, time
+import asyncio, base64, ctypes, json, re, time
 import pyperclip
 from PIL import Image, ImageGrab, ImageOps, PngImagePlugin
 from bus import Device, Refused, Server
@@ -12,9 +12,10 @@ class Tools(Device):
         self.server = Server(self, self.cfg['llama'] | self.cfg['vision'])
         await self.server.start()
     async def receive(self, source, frame):
-        return await {'01': self.shot, '02': self.command, '03': self.vision, '04': self.act}[frame.register](frame.text)
+        return await {'01': self.shot, '02': self.command, '03': self.vision, '04': self.act, '05': self.share}[frame.register](frame.text)
     async def shot(self, text):
         name, *values = text.split()
+        if re.fullmatch(r'[A-Za-z0-9_-]+\.png', name) is None: raise Refused('UNKNOWN_DATA')
         grid = self.cfg['limits']['grid']
         box = list(map(int, values)) if values else [0, 0, grid, grid]
         a, b, c, d = box
@@ -23,7 +24,7 @@ class Tools(Device):
         bounds = tuple(round(value * (size - 1) / grid) for value, size in zip(box, image.size * 2))
         info = PngImagePlugin.PngInfo()
         info.add_text('crop', ' '.join(map(str, box)))
-        path = self.run / name
+        path = self.run / f'{name[:-4]}-{time.time_ns()}.png'
         path.parent.mkdir(parents=True, exist_ok=True)
         await asyncio.to_thread(image.crop((bounds[0], bounds[1], bounds[2] + 1, bounds[3] + 1)).save, path, pnginfo=info)
         self.latest = str(path)
@@ -75,27 +76,18 @@ class Tools(Device):
         content = [dict(type='image_url', image_url=dict(url='data:image/png;base64,' + base64.b64encode(path.read_bytes()).decode())), dict(type='text', text=question)]
         reply = await self.server.chat([dict(role='system', content=vision[('text_system', 'boxes_system')[boxes]]), dict(role='user', content=content)], temperature=vision['temperature'])
         return path, reply
+    async def share(self, text):
+        if text != self.latest: raise Refused('UNKNOWN_DATA')
+        await self.send('telegram', f'{text}\nRequested screenshot', '11', once=True)
+        return b'Image submitted for delivery; external receipt unverified'
     async def vision(self, text):
         filename, _, question = text.partition('\n')
         if filename != self.latest: raise Refused('UNKNOWN_DATA')
         with Image.open(filename) as image:
             crop = list(map(int, image.info['crop'].split()))
-            boxes = not question or question.startswith('Provide the bounding box')
-            path, raw = await self.look(image, question or self.cfg['vision']['areas'], boxes)
-            items = [self.remap(item, crop) for item in json.loads(raw)] if boxes else []
-            album, lines = [f'{path}\n{question or self.cfg["vision"]["areas"]}\n{raw}'], []
-            if question: result = json.dumps(items) if boxes else raw
-            else:
-                for original, mapped in zip(json.loads(raw)[:self.cfg['vision']['max_areas']], items):
-                    shot, words = await self.look(image.crop(self.bounds(image, original['bbox_2d'])), self.cfg['vision']['transcribe'], False)
-                    y, x = mapped['centre_y_x']
-                    where = f'{("top", "middle", "bottom")[min(2, y * 3 // self.cfg["limits"]["grid"])]} {("left", "centre", "right")[min(2, x * 3 // self.cfg["limits"]["grid"])]}'
-                    a, b, c, d = mapped['bbox_2d']
-                    covered = [other['label'] for other in items if (other['bbox_2d'][2] - other['bbox_2d'][0]) * (other['bbox_2d'][3] - other['bbox_2d'][1]) > (c-a)*(d-b) and max(0, min(c, other['bbox_2d'][2])-max(a, other['bbox_2d'][0])) * max(0, min(d, other['bbox_2d'][3])-max(b, other['bbox_2d'][1])) >= self.cfg['vision']['overlap_fraction'] * (c-a)*(d-b)]
-                    lines.append(f'{mapped["label"]}, {where}, covers {covered}, shows: {" ".join(words.split())[:self.cfg["vision"]["summary_chars"]]} bbox_2d {mapped["bbox_2d"]} centre_y_x {mapped["centre_y_x"]}')
-                    album.append(f'{shot}\n{words}')
-                result = '\n'.join(lines)
-            await self.send('telegram', '\x1e'.join(album[:self.cfg['telegram']['album_files']]), '11', once=True)
-            return result.encode()
+            boxes = question.startswith('Provide the bounding box')
+            _, raw = await self.look(image, question or self.cfg['vision']['overview'], boxes)
+            if boxes: return json.dumps([self.remap(item, crop) for item in json.loads(raw)]).encode()
+            return raw.encode()
 
 Tools('tools').launch()

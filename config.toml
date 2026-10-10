@@ -35,6 +35,7 @@ owner = 5884279027
 tdata = "%APPDATA%/Telegram Desktop/tdata"
 bridge = "20"
 bridge_seconds = 300
+call_grant_seconds = 120
 bridge_release = "back to Luna"
 ring_seconds = 90
 connect_seconds = 30
@@ -106,11 +107,7 @@ reasoning = "off"
 max_tokens = 1024
 image_side = 768
 temperature = 0
-max_areas = 6
-summary_chars = 240
-overlap_fraction = 0.8
-areas = "Provide the bounding boxes of the windows, dialogs and panels."
-transcribe = "Transcribe all visible text and button labels in reading order."
+overview = "Describe the visible desktop state, the active window and its actionable controls. Identify uncertainty; do not infer hidden effects."
 boxes_system = "When asked for bounding boxes for objects, return a valid JSON array. Each item has image_id, bbox_2d: [xmin, ymin, xmax, ymax] normalized to integers from 0 to 1000, and label. Return one item per visible matching object or region. Return [] if none are visible."
 text_system = "Answer the request about the supplied image."
 [tools]
@@ -138,8 +135,9 @@ launch_seconds = 5
 [registers.tools]
 "01" = "read: name.png optionally xmin ymin xmax ymax; new screenshot path, unseen until 03"
 "02" = "read: Windows shell command; exit, stdout, stderr; exit zero is launch only"
-"03" = "read: newest picture path for areas; or path newline target bounding box, crop transcription, or semantic question ending Answer yes or no. Full-screen bbox_2d and centre_y_x."
+"03" = "read: newest picture path for one semantic desktop overview; or path newline target question, bounding box request, crop transcription, or question ending Answer yes or no. Bboxes use global 0-1000 coordinates."
 "04" = "read: click y x; draw y x y x ... for one continuous stroke, spaces only; type text; key name. Returns after-shot path."
+"05" = "read: newest screenshot path to share one requested screenshot with owner; read response means submission, not confirmed delivery"
 [registers.mind]
 "00" = "read: 00 available, 01 processing"
 "01" = "write: next step, plan, or device result"
