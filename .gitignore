@@ -1,5 +1,6 @@
 /artifacts/
 /runs/
+/run_*/
 /wire/
 /life/
 __pycache__/

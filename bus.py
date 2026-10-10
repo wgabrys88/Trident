@@ -156,7 +156,7 @@ class Device:
         self.queue.put_nowait((source, frame))
         return b''
     async def worker(self):
-        while True: await self.work(*await self.queue.get())
+        while True: item = await self.queue.get(); await self.work(*item)
     async def close(self):
         pass
     async def execute(self):
@@ -181,7 +181,7 @@ class Server:
         seconds = self.device.cfg['limits'][('http_seconds', 'health_seconds')[endpoint == '/health']]
         with urllib.request.urlopen(request, timeout=seconds) as response: return response.read()
     async def start(self):
-        command = [os.path.expandvars(str(value)).format(**self.settings) for value in self.settings['command']]
+        command = [os.path.expandvars(str(value)).format(**self.settings, models=str(self.device.cfg.path(self.device.cfg['models']['path']))) for value in self.settings['command']]
         with self.device.file('server.log').open('ab') as log:
             self.process = await asyncio.create_subprocess_exec(*command, cwd=self.device.cfg.root, stdout=log, stderr=log)
         self.device.cleanup.push_async_callback(self.close)

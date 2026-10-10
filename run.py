@@ -43,7 +43,7 @@ class Supply:
         cfg['mind'][engine]
         wire = cfg.root / 'wire'
         if wire.exists(): shutil.rmtree(wire)
-        run = cfg.root / 'runs' / datetime.now().strftime('%Y%m%dT%H%M%S%f')
+        run = cfg.root / f'run_{datetime.now().strftime("%Y%m%dT%H%M%S%f")}'
         run.mkdir(parents=True)
         (run / 'bus.log').touch()
         with ExitStack() as cleanup:

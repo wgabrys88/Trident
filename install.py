@@ -4,8 +4,8 @@ from bus import Config
 class Installer:
     def __init__(self):
         self.cfg, self.destination = Config(), Config().root / 'artifacts'
+        self.models = self.cfg.path(self.cfg['models']['path'])
     def fetch(self, url, path):
-        if path.exists(): return
         path.parent.mkdir(parents=True, exist_ok=True)
         pending = path.with_suffix(path.suffix + '.part')
         with urllib.request.urlopen(url, timeout=self.cfg['limits']['install_seconds']) as response, pending.open('wb') as output:
@@ -15,7 +15,9 @@ class Installer:
     def run(self):
         if sys.platform != 'win32' or sys.version_info[:2] != (3, 11) or sys.maxsize <= 2**32: raise RuntimeError('Windows x64 Python 3.11 required')
         subprocess.run([sys.executable, '-m', 'pip', 'install', '-r', str(self.cfg.root / 'requirements.txt')], check=True)
-        for name, url in self.cfg['downloads']['models'].items(): self.fetch(url, self.destination / name)
+        for name, url in self.cfg['downloads']['models'].items():
+            path = self.models / name
+            if not path.exists(): self.fetch(url, path)
         with tempfile.TemporaryDirectory() as directory:
             for name, url in self.cfg['downloads']['archives'].items():
                 path = self.cfg.path(directory) / f'{name}.zip'

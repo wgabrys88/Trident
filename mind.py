@@ -7,7 +7,7 @@ class Cli:
         self.device, self.settings = device, device.settings
         self.folder = max((path for path in device.cfg.path(self.settings['versions']).iterdir() if path.is_dir()), key=lambda path: path.name)
     async def reply(self, prompt, schema):
-        command = [str(self.folder / 'node.exe'), '-e', "process.argv.push(require('fs').readFileSync(0,'utf8'));require(process.argv[1]);", str(self.folder / 'index.js'), '-p', '--model', self.settings['model'], '--output-format', 'stream-json', '--workspace', str(self.device.run), '--trust', '--exclude-tools', self.settings['excluded']]
+        command = [str(self.folder / 'node.exe'), '-e', "process.argv.push(require('fs').readFileSync(0,'utf8'));require(process.argv[1]);", str(self.folder / 'index.js'), '-p', '--mode', self.settings['mode'], '--model', self.settings['model'], '--output-format', 'stream-json', '--workspace', str(self.device.run), '--trust', '--exclude-tools', self.settings['excluded']]
         process = await asyncio.create_subprocess_exec(*command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=self.device.stderr, cwd=self.device.run, limit=self.settings['event_bytes'])
         events, texts = self.device.file(f'turn-{self.device.number}.events.jsonl'), []
         try:
@@ -71,7 +71,13 @@ class Mind(Device):
         generation = self.generation
         context = dict(registers={self.cfg['address'][name]: dict(role=name, registers=registers) for name, registers in self.cfg['registers'].items()}, schema=self.schema, proposals=str(self.cfg.root / 'life' / 'proposals'))
         prompt = '\n'.join((json.dumps(context), *self.history, f'Controller {source}: {frame.text}', (self.cfg.root / 'prompt.txt').read_text('utf-8')))
-        raw = await asyncio.wait_for(self.engine.reply(prompt, self.schema), self.settings['turn_seconds'])
+        try: raw = await asyncio.wait_for(self.engine.reply(prompt, self.schema), self.settings['turn_seconds'])
+        except RuntimeError as error:
+            self.busy = False
+            if generation != self.generation: return
+            self.history.append(f'Controller {source}: {frame.text}\nFault: {error}')
+            await self.follow(f'Fault: {error}. Decide one valid next action; do not repeat unknown effects.')
+            return
         self.file(f'turn-{self.number}.txt').write_text(prompt + '\nReply:\n' + raw, encoding='utf-8')
         self.busy = False
         if generation != self.generation: return
