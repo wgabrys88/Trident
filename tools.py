@@ -71,37 +71,31 @@ class Tools(Device):
         self.latest = str(path)
         return self.latest.encode()
     async def command(self, text):
-        process = await asyncio.create_subprocess_shell(text, cwd=self.run, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        handle = self.file(f'command-{time.time_ns()}.log').open('w+b')
+        process = await asyncio.create_subprocess_shell(text, cwd=self.run, stdin=asyncio.subprocess.DEVNULL, stdout=handle, stderr=asyncio.subprocess.STDOUT)
         # #region agent log
         started = time.time()
         def _dbg(message, data):
             try:
                 from pathlib import Path
-                payload = {"sessionId": "f678ae", "hypothesisId": "H1", "runId": "pre-fix", "location": "tools.py:command", "message": message, "data": data, "timestamp": int(time.time() * 1000)}
+                payload = {"sessionId": "f678ae", "hypothesisId": "H1", "runId": "post-fix", "location": "tools.py:command", "message": message, "data": data, "timestamp": int(time.time() * 1000)}
                 with Path(__file__).with_name("debug-f678ae.log").open("a", encoding="utf-8") as stream: stream.write(json.dumps(payload) + "\n")
             except Exception: pass
         _dbg('command start', {'pid': process.pid, 'chars': len(text), 'head': text[:80]})
-        async def _watch():
-            await asyncio.sleep(8)
-            if process.returncode is None: _dbg('command still running', {'pid': process.pid, 'elapsed': round(time.time() - started, 1)})
-            while process.returncode is None: await asyncio.sleep(5)
-            await asyncio.sleep(2)
-            _dbg('shell exited while stdout open', {'pid': process.pid, 'code': process.returncode, 'elapsed': round(time.time() - started, 1)})
-        watch = asyncio.create_task(_watch())
         # #endregion
         try:
-            output, _ = await asyncio.wait_for(process.communicate(), self.cfg['tools']['command_seconds'])
+            await asyncio.wait_for(process.wait(), self.cfg['tools']['command_seconds'])
+            if process.returncode == 0: await asyncio.sleep(self.cfg['tools']['launch_seconds'])
+            handle.seek(0)
+            output = handle.read()
             # #region agent log
             _dbg('command returned', {'pid': process.pid, 'code': process.returncode, 'elapsed': round(time.time() - started, 1), 'out': len(output)})
             # #endregion
-            if process.returncode == 0: await asyncio.sleep(self.cfg['tools']['launch_seconds'])
             return f'exit {process.returncode}\n'.encode() + output
         except Exception as error: return f'Command started; outcome uncertain: {error!r}. Observe before repeating.'.encode()
         finally:
-            # #region agent log
-            watch.cancel()
-            # #endregion
             if process.returncode is None: process.kill(); await process.wait()
+            handle.close()
     async def act(self, text):
         operation, _, argument = text.partition(' ')
         try:

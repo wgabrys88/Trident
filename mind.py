@@ -39,6 +39,14 @@ class Cli:
                             payload=evidence(self.device.run, f'error-{self.device.number}', line.decode(errors='replace')))
                     raise RuntimeError('Malformed CLI event') from None
                 if event['type'] == 'tool_call':
+                    call = event.get('tool_call') if isinstance(event.get('tool_call'), dict) else {}
+                    failed = any(isinstance(item, dict) and isinstance(item.get('result'), dict) and 'error' in item['result'] for item in call.values())
+                    # #region agent log
+                    try:
+                        payload = {"sessionId": "f678ae", "hypothesisId": "H3", "runId": "post-fix", "location": "mind.py:Cli.reply", "message": "host tool", "data": {"failed": failed, "subtype": event.get("subtype"), "texts": len(texts)}, "timestamp": int(time.time() * 1000)}
+                        with Path(__file__).with_name("debug-f678ae.log").open("a", encoding="utf-8") as stream: stream.write(json.dumps(payload) + "\n")
+                    except Exception: pass
+                    # #endregion
                     journal(self.device.run, 'native_tool_violation', turn=self.device.number,
                             payload=evidence(self.device.run, f'native-{self.device.number}', line.decode()))
                     raise RuntimeError('Native CLI tool call violates register-only transport')
