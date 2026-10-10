@@ -11,7 +11,7 @@ from scipy.signal import resample_poly
 from telethon import events
 from telethon.tl import types as t
 from telethon.tl.functions import messages, phone
-from bus import Device, Refused
+from bus import Device, Refused, journal
 
 class Speech:
     def __init__(self, cfg):
@@ -143,8 +143,10 @@ class Telegram(Device):
         self.signals.clear()
         await asyncio.wait_for(self.connected, self.settings['connect_seconds'])
         self.state, self.since = 2, self.loop.time()
+        journal(self.run, 'call_connected', outgoing=self.outgoing)
         await self.send('timer', '', '03')
     async def dial(self):
+        journal(self.run, 'call_dial')
         await self.prepare()
         exchange = bytes(await self.native('init_exchange', self.owner, self.dh, None))
         call = (await self.client(phone.RequestCallRequest(user_id=self.contact, random_id=secrets.randbelow(self.settings['random_id_max']), g_a_hash=exchange, protocol=self.protocol(), video=False))).phone_call
@@ -171,6 +173,7 @@ class Telegram(Device):
         if isinstance(call, t.PhoneCallRequested) and call.admin_id == self.owner:
             if self.state: await self.hang(self.serial, False)
             self.state, self.peer, self.outgoing = 1, t.InputPhoneCall(call.id, call.access_hash), False
+            journal(self.run, 'call_incoming')
             self.call = self.tasks.create_task(self.answer(call))
             await self.send('timer', '', '03')
         elif isinstance(call, t.PhoneCallAccepted) and self.outgoing and self.state == 1 and self.engine is not None and call.participant_id == self.owner and (self.peer is None or call.id == self.peer.id) and not self.accepted.done(): self.accepted.set_result(call)
@@ -187,6 +190,7 @@ class Telegram(Device):
             if self.engine is not None: await self.native('stop', self.owner)
             self.peer, self.engine, self.state, self.linked, self.since = None, None, 0, False, 0
             self.signals.clear()
+            journal(self.run, 'call_end', missed=missed)
             await self.send('timer', '', ('03', '02')[missed])
     async def play(self, filename):
         samples, rate = soundfile.read(filename, dtype='int16', always_2d=True)
@@ -196,9 +200,12 @@ class Telegram(Device):
         serial, started = self.serial, self.loop.time()
         for offset in range(0, len(data), width):
             async with self.call_lock:
-                if self.state != 2 or serial != self.serial or self.talked > started: return
+                if self.state != 2 or serial != self.serial or self.talked > started:
+                    journal(self.run, 'speech_interrupted', media=filename.rsplit('\\', 1)[-1].rsplit('/', 1)[-1])
+                    return
                 await self.native('send_external_frame', self.owner, n.StreamDevice.MICROPHONE, data[offset:offset + width].ljust(width, b'\0'), n.FrameData(int(time.time() * 1000), n.VIDEO_ROTATION_0, 0, 0))
             await asyncio.sleep(max(0, started + (offset + width) / (target * self.cfg['audio']['sample_bytes']) - self.loop.time()))
+        journal(self.run, 'speech_frames_submitted', media=filename.rsplit('\\', 1)[-1].rsplit('/', 1)[-1])
     async def close(self):
         self.client.remove_event_handler(self.message)
         self.client.remove_event_handler(self.raw)

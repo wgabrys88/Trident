@@ -15,7 +15,7 @@ class Timer(Device):
             if time.monotonic() >= self.deadline:
                 self.deadline, self.attempts = float('inf'), self.attempts + 1
                 self.tasks.create_task(self.send('telegram', '', '01', once=True))
-            if time.time() - (self.run / 'bus.log').stat().st_mtime >= self.cfg['timer']['idle_seconds']:
+            if time.time() - (self.run / 'events.jsonl').stat().st_mtime >= self.cfg['timer']['idle_seconds']:
                 if await self.send('telegram', '', '00', True, True) == b'00':
                     await self.send('mind', self.cfg['timer']['idle_text'], '01', once=True)
             await asyncio.sleep(self.cfg['bus']['poll'])

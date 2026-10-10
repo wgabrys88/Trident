@@ -1,7 +1,17 @@
-/artifacts/
-/runs/
-/run_*/
-/wire/
-/life/
-__pycache__/
-*.session*
+# Only the explicitly named root-level source files may be added by default.
+/*
+!/.gitignore
+!/LICENSE
+!/bus.py
+!/config.toml
+!/ears.py
+!/install.py
+!/memory.py
+!/mind.py
+!/prompt.txt
+!/requirements.txt
+!/run.py
+!/telegram.py
+!/timer.py
+!/tools.py
+!/voice.py

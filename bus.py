@@ -1,7 +1,32 @@
 import asyncio, json, os, re, signal, sys, time, tomllib, urllib.error, urllib.request
+from datetime import datetime, timezone
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from pathlib import Path
+def journal(run, kind, *, filename='events.jsonl', **fields):
+    record = (json.dumps(dict(at=datetime.now(timezone.utc).isoformat(timespec='milliseconds'),
+                              event=kind, **fields), ensure_ascii=False, separators=(',', ':')) + '\n').encode()
+    with (Path(run) / filename).open('ab', buffering=0) as stream:
+        descriptor = stream.fileno()
+        if os.name == 'nt':
+            import msvcrt
+            stream.seek(0)
+            msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        try: os.write(descriptor, record)
+        finally:
+            if os.name == 'nt':
+                stream.seek(0)
+                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+            else: fcntl.flock(descriptor, fcntl.LOCK_UN)
+
+def evidence(run, reference, text):
+    if len(text) <= 1000: return text
+    journal(run, 'detail', filename='details.jsonl', ref=reference, text=text)
+    return dict(preview=text[:160], characters=len(text), detail=reference)
+
 class Refused(Exception):
     pass
 class Config(dict):
@@ -52,9 +77,12 @@ class Bus:
         self.lock = asyncio.Lock()
     def save(self):
         self.cfg.publish(self.home / 'state.json', json.dumps(self.state))
-    def record(self, source, target, status, trace):
-        with (self.device.run / 'bus.log').open('a', encoding='utf-8') as log:
-            log.write(f'{time.time():.6f} {source} {target} {status} {trace} tx={self.state["tx"]} rx={self.state["rx"]}\n')
+    def record(self, source, target, status, trace, sequence=None, frame=None, data=b''):
+        fields = dict(src=source, dst=target, seq=sequence, status=status)
+        if frame is not None: fields.update(reg=frame.register, op=('W', 'R')[frame.read])
+        if data: fields['read_bytes'] = len(data)
+        if status in ('malformed', 'malformed_reply'): fields['trace'] = evidence(self.device.run, f'bus-{source}-{sequence}', trace)
+        journal(self.device.run, 'bus', **fields)
     def present(self, address):
         return (self.home.parent / address / 'alive').exists()
     def fault(self):
@@ -79,7 +107,7 @@ class Bus:
         except ValueError:
             self.state['rx'] += 1
             self.save()
-            self.record(source, self.device.address, 'malformed', trace)
+            self.record(source, self.device.address, 'malformed', trace, sequence)
             return path.rename(path.with_suffix('.rejected'))
         try:
             try:
@@ -96,8 +124,8 @@ class Bus:
             except Refused as error:
                 status, data = str(error), b''
             reply = frame.trace(data, status)
+            self.record(source, self.device.address, status, reply, sequence, frame, data)
             self.cfg.publish(self.home.parent / source / f'r-{sequence}.frame', json.dumps({'status': status, 'trace': reply}))
-            self.record(source, self.device.address, status, reply)
             path.unlink()
         finally:
             if held is not None: held.unlink(missing_ok=True)
@@ -107,7 +135,7 @@ class Bus:
             while True:
                 if max(self.state['tx'], self.state['rx']) >= 128: await asyncio.sleep(self.cfg['bus']['frame_timeout'])
                 if not self.present(frame.address):
-                    self.record(self.device.address, frame.address, 'NO_RECEIVER', f'S {frame.address} W NA P')
+                    self.record(self.device.address, frame.address, 'NO_RECEIVER', '', frame=frame)
                     raise Refused('NO_RECEIVER')
                 self.state['sequence'] += 1
                 self.save()
@@ -119,7 +147,7 @@ class Bus:
                         role = self.cfg['roles'][frame.address]
                         deadline = float(hold.name.rsplit('-', 1)[1]) + self.cfg['holds'][role]
                     if time.time() >= deadline:
-                        self.record(self.device.address, frame.address, 'timeout', frame.trace())
+                        self.record(self.device.address, frame.address, 'timeout', '', sequence, frame)
                         self.fault()
                         raise TimeoutError(f'{frame.address}: execution outcome unknown; do not repeat')
                     await asyncio.sleep(self.cfg['bus']['poll'])
@@ -135,7 +163,7 @@ class Bus:
                 if status not in ('ACK', 'END_OF_READ'): raise Refused(status)
                 try: result = frame.result(reply['trace'])
                 except ValueError:
-                    self.record(self.device.address, frame.address, 'malformed_reply', reply['trace'])
+                    self.record(self.device.address, frame.address, 'malformed_reply', reply['trace'], sequence, frame)
                     self.fault()
                     raise
                 self.state['tx'] = max(0, self.state['tx'] - 1)
@@ -156,12 +184,18 @@ class Device:
         self.queue.put_nowait((source, frame))
         return b''
     async def worker(self):
-        while True: item = await self.queue.get(); await self.work(*item)
+        while True:
+            source, frame = await self.queue.get()
+            await self.work(source, frame)
+            journal(self.run, 'work_done', role=self.name, src=source, reg=frame.register)
     async def close(self):
         pass
     async def execute(self):
         task = asyncio.current_task()
-        signal.signal(signal.SIGBREAK, lambda *_: task.cancel())
+        def request_stop(*_):
+            self._requested_stop = True
+            task.cancel()
+        signal.signal(signal.SIGBREAK, request_stop)
         async with AsyncExitStack() as cleanup, asyncio.TaskGroup() as self.tasks:
             self.cleanup = cleanup
             await self.start()
@@ -172,7 +206,12 @@ class Device:
             self.tasks.create_task(self.bus.listen())
             self.tasks.create_task(self.worker())
     def launch(self):
-        asyncio.run(self.execute())
+        try:
+            asyncio.run(self.execute())
+        except asyncio.CancelledError:
+            if not getattr(self, '_requested_stop', False):
+                raise
+            print('Stopped by CTRL_BREAK_EVENT', flush=True)
 class Server:
     def __init__(self, device, settings):
         self.device, self.settings, self.process = device, settings, None
@@ -182,7 +221,7 @@ class Server:
         with urllib.request.urlopen(request, timeout=seconds) as response: return response.read()
     async def start(self):
         command = [os.path.expandvars(str(value)).format(**self.settings, models=str(self.device.cfg.path(self.device.cfg['models']['path']))) for value in self.settings['command']]
-        with self.device.file('server.log').open('ab') as log:
+        with (self.device.run / 'diagnostics.log').open('ab') as log:
             self.process = await asyncio.create_subprocess_exec(*command, cwd=self.device.cfg.root, stdout=log, stderr=log)
         self.device.cleanup.push_async_callback(self.close)
         self.device.tasks.create_task(self.watch())

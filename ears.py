@@ -1,6 +1,6 @@
 import asyncio, ctypes, os, time
 import numpy as np
-from bus import Device
+from bus import Device, journal
 
 class Backend(ctypes.Structure):
     _fields_ = [('size', ctypes.c_size_t), ('gpu', ctypes.c_int32)]
@@ -42,7 +42,7 @@ class Ears(Device):
         text = await asyncio.to_thread(self.decode, frame.text)
         marker = self.run / 'telegram-bridge'
         bridged = marker.exists() and time.time() - marker.stat().st_mtime < self.cfg['telegram']['bridge_seconds']
-        with self.file('heard.txt').open('a', encoding='utf-8') as log: log.write(f'{time.time():.6f} {text}\n')
+        journal(self.run, 'transcript', text=text, bridged=bridged)
         if bridged and self.cfg['telegram']['bridge_release'].lower() in text.lower(): marker.unlink(); bridged = False
         if text and not bridged: await self.send('mind', text, '01')
     async def close(self):

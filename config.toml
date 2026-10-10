@@ -118,8 +118,6 @@ command_seconds = 7180
 input_pause = 0.1
 settle_seconds = 5
 launch_seconds = 5
-[memory]
-path = "life/memory.sqlite"
 [registers.timer]
 "00" = "read: redial waiting state, 00 idle or 01 waiting"
 "02" = "write: schedule a missed call redial"
