@@ -69,6 +69,7 @@ start_seconds = 300
 command = ["artifacts/voice/crispasr-windows-x86_64-cuda126/crispasr.exe", "--server", "--host", "127.0.0.1", "--port", "8091", "--backend", "chatterbox-nano", "-m", "{models}/chatterbox-nano-t3-q4_k.gguf", "--codec-model", "{models}/chatterbox-turbo-s3gen-q4_k.gguf", "--gpu-backend", "cuda", "--no-punctuation"]
 [mind.luna]
 transport = "cli"
+mode = "ask"
 identity = "Cursor; gpt-5.6-luna-none; text"
 model = "gpt-5.6-luna-none"
 versions = "%LOCALAPPDATA%/cursor-agent/versions"
