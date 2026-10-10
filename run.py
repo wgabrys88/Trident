@@ -14,13 +14,18 @@ class Process:
         self.process = subprocess.Popen(self.command, cwd=self.cfg.root, stdout=self.log, stderr=self.log, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
         journal(self.command[3], 'device_start', role=self.role, pid=self.process.pid)
         self.ready, self.retry = None, 0
-    def stop(self):
+    def signal(self):
         if self.process.poll() is None:
             self.process.send_signal(signal.CTRL_BREAK_EVENT)
-            try: self.process.wait(self.cfg['supply']['stop_seconds'])
-            except subprocess.TimeoutExpired:
-                self.process.kill()
-                self.process.wait()
+    def finish(self, deadline):
+        while self.process.poll() is None and time.monotonic() < deadline:
+            time.sleep(self.cfg['bus']['poll'])
+        if self.process.poll() is None:
+            self.process.kill()
+            self.process.wait()
+    def stop(self):
+        self.signal()
+        self.finish(time.monotonic() + self.cfg['supply']['stop_seconds'])
     def inspect(self):
         now = time.monotonic()
         if self.process.poll() is None:
@@ -57,12 +62,19 @@ class Supply:
                 (home := wire / address).mkdir(parents=True)
                 cfg.publish(home / 'state.json', json.dumps(dict(sequence=0, tx=0, rx=0)))
                 process = Process(cfg, role, run, engine, cleanup.enter_context((run / 'diagnostics.log').open('ab')))
-                cleanup.callback(process.stop)
                 processes.append(process)
+            cleanup.callback(Supply.halt, processes)
             print(run, flush=True)
             while True:
                 for process in processes: process.inspect()
                 time.sleep(cfg['bus']['poll'])
+
+    @staticmethod
+    def halt(processes):
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        for process in processes: process.signal()
+        deadline = time.monotonic() + processes[0].cfg['supply']['stop_seconds']
+        for process in processes: process.finish(deadline)
 
 signal.signal(signal.SIGBREAK, signal.default_int_handler)
 try: Supply().start(sys.argv[1])

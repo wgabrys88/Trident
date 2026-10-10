@@ -191,10 +191,11 @@ class Device:
     async def close(self):
         pass
     async def execute(self):
-        task = asyncio.current_task()
+        task, loop = asyncio.current_task(), asyncio.get_running_loop()
         def request_stop(*_):
             self._requested_stop = True
             task.cancel()
+            loop.call_soon_threadsafe(lambda: None)
         signal.signal(signal.SIGBREAK, request_stop)
         async with AsyncExitStack() as cleanup, asyncio.TaskGroup() as self.tasks:
             self.cleanup = cleanup
