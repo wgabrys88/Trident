@@ -156,7 +156,7 @@ class Device:
         self.queue.put_nowait((source, frame))
         return b''
     async def worker(self):
-        while True: await self.work(*await self.queue.get())
+        while True: item = await self.queue.get(); await self.work(*item)
     async def close(self):
         pass
     async def execute(self):
