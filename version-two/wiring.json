@@ -1,30 +1,27 @@
 {
-  "note": "The story is the memory. This file is the map. The mind may replace any top-level section through the rewire beat. Python does not choose the next step. The only secret is OPENROUTER_API_KEY in version-two/.env, which is not committed. No xAI account and no TypeSafe account. Switch models by editing the model string. Prices below were read from OpenRouter on 2026-10-11.",
+  "note": "The story is the memory. This file is the map. The mind may replace any top-level section. Python does not choose the next step and does not write Jev questions. The only secret is OPENROUTER_API_KEY in version-two/.env. One normal OpenRouter key pays for the mind and for Jev. No xAI account. No TypeSafe account. Switch the mind by editing mind.model: openai/gpt-6-sol if the JSON or the commands are bad, openai/gpt-5.6-luna if gpt-6-luna is down. Prices read 2026-10-11: Luna $0.10 and $0.50 per million, Sol about twenty times that, previous Luna $0.20 and $1.20, Jev about $0.042 per million input and output free.",
   "start": "look",
   "story": "story.md",
   "seconds": 180,
   "returns": {
     "look": "seen",
     "act": "done",
-    "score": "judged",
     "say": "called",
     "rewire": "wired"
   },
   "edges": {
     "look": {"seen": "tell"},
     "tell": {
+      "again": "tell",
       "look": "look",
       "act": "act",
-      "score": "score",
       "say": "say",
       "rewire": "rewire",
       "rest": "rest"
     },
     "act": {"done": "look"},
-    "score": {"judged": "tell"},
     "say": {"called": "tell"},
-    "rewire": {"wired": "tell"},
-    "rest": {"stopped": "rest"}
+    "rewire": {"wired": "tell"}
   },
   "look": {
     "source": "screen",
@@ -59,20 +56,14 @@
     "model": "openai/gpt-6-luna",
     "temperature": 0,
     "max_tokens": 1024,
-    "seconds": 180,
-    "note": "Chosen mind. GPT-6 Luna, OpenRouter id openai/gpt-6-luna, snapshot openai/gpt-6-luna-20260922. Text chat. Standard OpenAI route $0.10 per million input tokens and $0.50 per million output tokens, context 1,050,000. The key is OPENROUTER_API_KEY in version-two/.env, not in this file. The wheel never sends the image."
-  },
-  "mind_alternatives": {
-    "openai/gpt-6-sol": "Same chat URL. Switch to this if Luna writes bad JSON or bad commands. Standard OpenAI route $2 per million input and $10 per million output, context 1,050,000. Twenty times the Luna input price.",
-    "openai/gpt-5.6-luna": "Same chat URL. The previous Luna, still listed on OpenRouter at $0.20 per million input and $1.20 per million output. Use it only if gpt-6-luna is down."
+    "seconds": 180
   },
   "jev": {
     "url": "https://openrouter.ai/api/v1/systemone",
     "model": "typesafe/jev-1.13",
-    "seconds": 30,
-    "note": "Uses the same OPENROUTER_API_KEY as the mind. Not a chat model, so it does not use the chat URL. $0.042 per million input tokens, output free. Endpoint context 64,000, max prompt 32,000. No TypeSafe account."
+    "seconds": 30
   },
   "prompts": {
-    "mind": "You are the mind of a desktop organism. You read only the story. You never see pixels. A local OCR model writes each Happening line from the screen or the camera. A hosted scorer, Jev, writes each Judged line as a probability from 0 to 1, and only from text already in the story. You write the next beat. What you expect is the next sentence, said as though it is already happening. The next Happening line is what the world then showed. Continue the story from both. Reply with one JSON object and no other text. Keys are signal, expect, question, command, say, wiring. signal is look, act, score, say, rewire, or rest. question is one yes-or-no the scorer can answer from the story alone, or an empty string. command is one Windows command when signal is act, or an empty string. say is the sentence for the owner when signal is say, or an empty string. wiring is an object whose keys are top-level sections of wiring.json to replace, or an empty object. One beat. After act, the wheel looks by itself and then returns to you."
+    "mind": "You are the mind. You read only the story. You never see pixels. Reply with one JSON object and no other text. Keys are signal, expect, command, say, wiring, questions. signal is look, act, say, rewire, or rest. expect is the next change, written as if it is already happening. It is not the end of the task. command is one Windows command when signal is act, otherwise empty. say is one sentence for the owner when signal is say, otherwise empty. wiring is an object of top-level sections to replace, or an empty object. questions is an object you invent, or empty. You choose every id, every question, and every possible answer. A yes or no has type noul. A pick from answers you name has type choice, and criteria is a map from the answer to what it means. A place on a scale you name has type score, and criteria is that scale in order. Ask as many as the moment needs, in that one object. A beat that contains questions does not act. The answers come back as Judged lines and you are called again. The next beat has empty questions, and that signal is what happens. rest only when a Happening line already shows the task is done. After act, the wheel looks by itself and returns to you."
   }
 }

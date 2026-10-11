@@ -1,5 +1,3 @@
-"""One wheel. The story is the only memory. The wiring chooses the next node."""
-
 import base64
 import json
 import os
@@ -93,17 +91,21 @@ def ask_mind(world):
             {'role': 'user', 'content': read_story(world)},
         ],
     }, {'Authorization': 'Bearer ' + world['env']['OPENROUTER_API_KEY']}, mind['seconds'])
-    world['beat'] = json.loads(body['choices'][0]['message']['content'])
+    text = body['choices'][0]['message']['content'].strip()
+    if text.startswith('```'):
+        text = text.split('\n', 1)[-1].rsplit('```', 1)[0]
+    world['beat'] = json.loads(text.strip())
 
 
-def ask_jev(world):
+def judge(world, questions):
     jev = world['wiring']['jev']
     body = post(jev['url'], {
         'state': read_story(world),
         'model': jev['model'],
-        'questions': {'beat': {'type': 'noul', 'instructions': world['beat']['question']}},
+        'questions': questions,
     }, {'Authorization': 'Bearer ' + world['env']['OPENROUTER_API_KEY']}, jev['seconds'])
-    return body['answers']['beat']['noul']
+    for name, answer in body['answers'].items():
+        append(world, 'Judged: ' + name + ' ' + json.dumps(answer, ensure_ascii=False))
 
 
 def look(world):
@@ -115,7 +117,11 @@ def look(world):
 
 def tell(world):
     ask_mind(world)
-    append(world, 'Expected: ' + world['beat']['expect'])
+    append(world, 'Expected: ' + world['beat'].get('expect', ''))
+    questions = world['beat'].get('questions') or {}
+    if questions:
+        judge(world, questions)
+        return 'again'
     return world['beat']['signal']
 
 
@@ -130,12 +136,6 @@ def act(world):
     append(world, 'Did: ' + world['beat']['command'])
     append(world, 'Out: ' + done.stdout + done.stderr)
     return world['wiring']['returns']['act']
-
-
-def score(world):
-    mark = ask_jev(world)
-    append(world, 'Judged: ' + str(mark) + ' on ' + world['beat']['question'])
-    return world['wiring']['returns']['score']
 
 
 def say(world):
@@ -155,14 +155,13 @@ def rewire(world):
 
 
 def rest(world):
-    raise SystemExit(world['beat']['expect'])
+    raise SystemExit(world['beat'].get('expect', ''))
 
 
 NODES = {
     'look': look,
     'tell': tell,
     'act': act,
-    'score': score,
     'say': say,
     'rewire': rewire,
     'rest': rest,
