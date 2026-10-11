@@ -121,7 +121,10 @@ class SettingsTests(unittest.TestCase):
         self.assertNotIn('--image-min-tokens', argv)
         self.assertIn('--check-tensors',argv)
         self.assertIn('--fit',argv)
-        self.assertEqual(argv[argv.index('--fit')+1], 'on')
+        self.assertEqual(argv[argv.index('--fit')+1], 'off')
+        self.assertEqual(argv[argv.index('--n-gpu-layers')+1], '999')
+        self.assertEqual(argv[argv.index('--split-mode')+1], 'none')
+        self.assertEqual(argv[argv.index('--device')+1], 'CUDA0')
         self.assertIn('BF16',data['llama']['model_file'])
         self.assertIn('BF16',data['llama']['projector_file'])
         for name in (data['llama']['model_file'], data['llama']['projector_file']):

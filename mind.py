@@ -49,13 +49,29 @@ def decode_action(raw, validator):
     return action, normalized
 
 
+def cursor_command(folder, settings, root):
+    """Build a fresh Cursor Agent CLI request, not a read-only Ask request.
+
+    Agent is the CLI's default mode. --force authorizes unattended native
+    commands; it does not alter Trident's bus action contract or owner scope.
+    """
+    command = [str(folder / 'node.exe'), '-e',
+               "process.argv.push(require('fs').readFileSync(0,'utf8'));require(process.argv[1]);",
+               str(folder / 'index.js'), '-p', '--model', settings['model'],
+               '--output-format', 'stream-json', '--workspace', str(root)]
+    if settings.get('unattended_native_tools', False):
+        command.append('--force')
+    return command
+
 class Cli:
     def __init__(self, device):
         self.device, self.settings = device, device.settings
         self.folder = runnable_folder(device.cfg.path(self.settings['versions']))
     async def reply(self, prompt, schema):
-        command = [str(self.folder / 'node.exe'), '-e', "process.argv.push(require('fs').readFileSync(0,'utf8'));require(process.argv[1]);", str(self.folder / 'index.js'), '-p', '--model', self.settings['model'], '--output-format', 'stream-json', '--workspace', str(self.device.cfg.root)]
-        journal(self.device.run, 'model_argv', n=self.device.number, command=command)
+        command = cursor_command(self.folder, self.settings, self.device.cfg.root)
+        journal(self.device.run, 'model_argv', n=self.device.number, command=command,
+                mode='agent_default', fresh_cli_session=True, prompt_chars=len(prompt),
+                unattended_native_tools=self.settings.get('unattended_native_tools', False))
         try: process = await asyncio.create_subprocess_exec(*command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=self.device.stderr, cwd=self.device.cfg.root, limit=self.settings['event_bytes'])
         except OSError as error:
             journal(self.device.run, 'model_spawn_failed', n=self.device.number, executable=command[0], error=f'OSError: {error}', command=command)
