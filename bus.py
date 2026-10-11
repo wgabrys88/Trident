@@ -241,6 +241,32 @@ class Device:
             if not getattr(self, '_requested_stop', False):
                 raise
             print('Stopped by CTRL_BREAK_EVENT', flush=True)
+def validate_server_identity(health, models, expected, *, require_image=False):
+    """Validate the pinned llama.cpp server's health and advertised model.
+
+    HTTP 200 alone can be returned by an unrelated process already on the port.
+    A tools server must also advertise an image-capable model, not text-only.
+    """
+    try:
+        healthy = json.loads(health)
+        listing = json.loads(models)
+        entries = listing['data']
+    except (ValueError, TypeError, KeyError) as exc:
+        raise RuntimeError('Invalid llama server health/model metadata') from exc
+    if not isinstance(healthy, dict) or healthy.get('status') != 'ok':
+        raise RuntimeError('Unexpected llama server health response')
+    if not isinstance(entries, list):
+        raise RuntimeError('Invalid llama server model list')
+    match = next((item for item in entries if isinstance(item, dict) and item.get('id') == expected), None)
+    if match is None:
+        raise RuntimeError(f'Expected model {expected!r} is not exposed by this llama server')
+    if require_image:
+        architecture = match.get('architecture') or {}
+        modalities = architecture.get('input_modalities') if isinstance(architecture, dict) else None
+        if not isinstance(modalities, list) or 'image' not in modalities:
+            raise RuntimeError(f'Model {expected!r} does not advertise image input support')
+    return match
+
 class Server:
     def __init__(self, device, settings):
         self.device, self.settings, self.process = device, settings, None
@@ -272,8 +298,15 @@ class Server:
                 while True:
                     if self.process is None or self.process.returncode is not None: raise RuntimeError('server exited before ready')
                     try:
-                        await asyncio.to_thread(self.request, '/health')
+                        health = await asyncio.to_thread(self.request, '/health')
+                        models = await asyncio.to_thread(self.request, '/v1/models')
+                        model = validate_server_identity(health, models, self.settings['model'],
+                                                         require_image=self.device.name == 'tools')
+                        if self.process.returncode is not None:
+                            raise RuntimeError('server exited before model verification completed')
                         self.ready = True
+                        journal(self.device.run, 'server_verified', role=self.device.name,
+                                model=model['id'], image_capable=self.device.name == 'tools')
                         return
                     except urllib.error.HTTPError as error:
                         if error.code != 503: raise
@@ -303,4 +336,18 @@ class Server:
             await self.process.wait()
     async def chat(self, messages, **options):
         body = dict(model=self.settings['model'], messages=messages, max_tokens=self.settings['max_tokens'], **self.device.cfg['sampling']) | options
-        return json.loads(await asyncio.to_thread(self.request, '/v1/chat/completions', body))['choices'][0]['message']['content']
+        response = json.loads(await asyncio.to_thread(self.request, '/v1/chat/completions', body))
+        choice = response['choices'][0]
+        reason = choice.get('finish_reason')
+        content = choice['message'].get('content')
+        usage = response.get('usage') or {}
+        journal(self.device.run, 'model_http_response', role=self.device.name,
+                finish_reason=reason, prompt_tokens=usage.get('prompt_tokens'),
+                completion_tokens=usage.get('completion_tokens'),
+                total_tokens=usage.get('total_tokens'),
+                content_chars=len(content) if isinstance(content, str) else None)
+        if reason == 'length':
+            raise RuntimeError('Model reply truncated at maximum tokens; result must not be treated as complete')
+        if not isinstance(content, str) or not content.strip():
+            raise RuntimeError('Model reply has no text content (check response type/reasoning format)')
+        return content

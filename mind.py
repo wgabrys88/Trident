@@ -1,4 +1,4 @@
-import asyncio, hashlib, json, subprocess, sys, time
+import asyncio, hashlib, json, re, subprocess, sys, time
 from pathlib import Path
 from jsonschema import Draft202012Validator, ValidationError
 from bus import Device, Frame, Refused, Server, journal, evidence
@@ -14,6 +14,40 @@ def runnable_folder(root):
         if completed.returncode == 0: found.append(path)
     if not found: raise RuntimeError(f'No runnable node.exe under {root}')
     return max(found, key=lambda path: path.name)
+
+class ModelOutputFault(ValueError):
+    """The model did not supply exactly one safe action object."""
+
+
+def decode_action(raw, validator):
+    if not isinstance(raw, str) or len(raw) > 1_000_000:
+        raise ModelOutputFault('invalid_or_oversized_output')
+    try:
+        action = json.loads(raw)
+        normalized = False
+    except json.JSONDecodeError:
+        # Cursor's CLI can append explanatory prose before a final JSON action.
+        # Recover only one unambiguous object; never execute text outside it.
+        decoder, candidates = json.JSONDecoder(), []
+        for match in re.finditer(r'{', raw):
+            try:
+                value, end = decoder.raw_decode(raw, match.start())
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                candidates.append((value, match.start(), end))
+        if len(candidates) != 1:
+            raise ModelOutputFault('missing_or_ambiguous_object') from None
+        action, start, end = candidates[0]
+        if any(char in raw[:start] + raw[end:] for char in '{}'):
+            raise ModelOutputFault('ambiguous_surrounding_text')
+        normalized = True
+    try:
+        validator.validate(action)
+    except ValidationError as error:
+        raise ModelOutputFault(f'schema_{error.validator}') from None
+    return action, normalized
+
 
 class Cli:
     def __init__(self, device):
@@ -55,7 +89,7 @@ class Mind(Device):
     async def start(self):
         self.settings = self.cfg['mind'][sys.argv[2]]
         self.number, self.used, self.busy, self.generation = 0, 0, False, 0
-        self.goal, self.ledger, self.server = '', [], None
+        self.goal, self.ledger, self.handover, self.server = '', [], None, None
         self.queue = asyncio.PriorityQueue()
         self.stderr = (self.run / 'mind.log').open('ab')
         self.cleanup.callback(self.stderr.close)
@@ -96,16 +130,39 @@ class Mind(Device):
             _, _, generation, source, frame = await self.queue.get()
             if generation == self.generation: await self.work(source, frame)
             else: journal(self.run, 'turn_skipped', src=source, generation=generation)
+    def adopt_goal(self, text):
+        """Isolate a new owner's task while retaining a bounded previous-task handover.
+
+        Full prior turns remain in the append-only run evidence; the prior goal
+        cannot silently become a new current instruction. A short handover still
+        permits owner messages such as 'continue' to have task context.
+        """
+        if self.goal == text and self.goal:
+            return
+        if self.ledger:
+            previous = self.goal or next((item['goal'] for item in reversed(self.ledger)
+                                          if item.get('goal')), '')
+            self.handover = dict(goal=previous, last_actions=self.ledger[-3:])
+            journal(self.run, 'goal_transition', n=self.number, prior_records=len(self.ledger),
+                    previous_goal=previous, next_goal=text)
+            self.ledger = []
+        else:
+            self.handover = None
+            journal(self.run, 'goal_transition', n=self.number, prior_records=0,
+                    previous_goal=self.goal, next_goal=text)
+        self.goal = text
+
     def compose(self, policy, message=''):
         while len(self.ledger) > 1 and len(json.dumps(self.ledger)) > self.settings['context_chars']: self.ledger.pop(0)
         body = dict(capabilities=json.loads(self.template), action_schema=self.schema, record=self.ledger, goal=self.goal)
+        if self.handover: body['previous_goal_handover'] = self.handover
         if message: body['message'] = message
         return policy + '\n\n' + json.dumps(body, ensure_ascii=False)
     async def work(self, source, frame):
         self.number, self.busy = self.number + 1, True
         generation = self.generation
         owner = source in (self.cfg['address']['telegram'], self.cfg['address']['ears'])
-        if owner: self.goal = frame.text
+        if owner: self.adopt_goal(frame.text)
         goal = self.goal
         policy = (self.cfg.root / 'prompt.txt').read_text('utf-8')
         prompt = self.compose(policy, '' if owner else frame.text)
@@ -115,8 +172,9 @@ class Mind(Device):
             raw = await asyncio.wait_for(self.engine.reply(prompt, self.schema), self.settings['turn_seconds'])
             journal(self.run, 'turn_output', n=self.number, reply=evidence(self.run, f'output-{self.number}', raw))
             if generation != self.generation: return
-            action = json.loads(raw)
-            self.validator.validate(action)
+            action, normalized = decode_action(raw, self.validator)
+            if normalized:
+                journal(self.run, 'model_output_normalized', n=self.number, method='single_object')
             if action['do'] == 'nothing': follow = False
             elif action['do'] in ('say', 'done'):
                 if not action['with']: raise ValueError('Empty owner message')
@@ -130,7 +188,15 @@ class Mind(Device):
                 if address == self.address and register == '01': follow = False
                 if action['check']:
                     target = self.cfg['address']['tools']
-                    shot = result.decode() if action['do'] == 'stroke' else (await self.bus.transfer(Frame(target, '01', f'check-{time.time_ns()}.png', True))).decode()
+                    # A stroke returns a PNG path on success, but can return a JSON
+                    # outcome-unknown/error object after an attempted input. That
+                    # object is not a screenshot filename; capture a new image.
+                    result_text = result.decode()
+                    if action['do'] == 'stroke' and result_text.endswith('.png') and '\n' not in result_text:
+                        shot = result_text
+                    else:
+                        if action['do'] == 'stroke': journal(self.run, 'action_check_fallback', n=self.number, reason='stroke_result_not_image')
+                        shot = (await self.bus.transfer(Frame(target, '01', f'check-{time.time_ns()}.png', True))).decode()
                     answer = (await self.bus.transfer(Frame(target, '03', shot + '\ntext\n' + action['check'], True))).decode()
                     journal(self.run, 'action_check', n=self.number, expect=action['expect'], question=action['check'], answer=evidence(self.run, 'answer', answer), shot=shot)
         except (RuntimeError, ValueError, ValidationError, Refused, TimeoutError, KeyError, TypeError) as error:

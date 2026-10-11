@@ -1,7 +1,41 @@
 import asyncio, base64, ctypes, json, re, time
 import pyperclip
-from PIL import Image, ImageGrab, ImageOps, PngImagePlugin
-from bus import Device, Refused, Server
+from PIL import Image, ImageGrab, PngImagePlugin
+from bus import Device, Refused, Server, journal
+
+def parse_keys(text, valid):
+    keys = text.lower().split('+')
+    modifiers = {'ctrl', 'shift', 'alt', 'win'}
+    if not keys or not all(key and key in valid for key in keys):
+        raise ValueError('Unknown keyboard key')
+    if len(keys) > 1 and (len(keys) != len(set(keys)) or
+                          any(key not in modifiers for key in keys[:-1]) or
+                          keys[-1] in modifiers):
+        raise ValueError('Invalid key combination')
+    return keys
+
+
+def parse_visual_boxes(raw):
+    """Allow only a complete JSON array, optionally enclosed in a JSON fence.
+
+    Avoid mining a plausible-looking array out of unsupported model prose.
+    The caller still validates every bbox and its coordinate system.
+    """
+    text = raw.strip()
+    match = re.fullmatch(r'```(?:json)?\s*\n(.*?)\n```', text, re.DOTALL | re.IGNORECASE)
+    if match:
+        text = match.group(1).strip()
+    boxes = json.loads(text)
+    if not isinstance(boxes, list):
+        raise ValueError('Expected a JSON array of boxes')
+    return boxes
+
+
+def write_full_resolution(image, path):
+    """Write pixels unchanged: never fit/thumbnail/downsample desktop evidence."""
+    image.save(path, format='PNG')
+    return image.size
+
 
 class Tools(Device):
     async def start(self):
@@ -52,7 +86,9 @@ class Tools(Device):
                 if (operation == 'click' and len(points) != 1) or (operation == 'draw' and len(points) < 2) or not all(0 <= value <= self.cfg['limits']['grid'] for value in coordinates): raise ValueError('Invalid stroke')
                 perform = lambda: self.stroke(points)
             elif operation == 'type': perform = lambda: (pyperclip.copy(argument), self.input.hotkey('ctrl', 'v'))
-            elif operation == 'key' and argument in self.input.KEYBOARD_KEYS: perform = lambda: self.input.press(argument)
+            elif operation == 'key':
+                keys = parse_keys(argument, self.input.KEYBOARD_KEYS)
+                perform = lambda: (self.input.press(keys[0]) if len(keys) == 1 else self.input.hotkey(*keys))
             else: raise ValueError('Unknown input')
         except ValueError: raise Refused('UNKNOWN_DATA') from None
         try:
@@ -76,8 +112,13 @@ class Tools(Device):
     async def look(self, image, question, boxes):
         vision = self.cfg['vision']
         path = self.file(f'vision-{time.time_ns()}.png')
-        ImageOps.contain(image, (vision['image_side'], vision['image_side']), Image.Resampling.LANCZOS).save(path)
-        content = [dict(type='image_url', image_url=dict(url='data:image/png;base64,' + base64.b64encode(path.read_bytes()).decode())), dict(type='text', text=question)]
+        size = await asyncio.to_thread(write_full_resolution, image, path)
+        pixels = path.read_bytes()
+        journal(self.run, 'vision_input', mode=('boxes' if boxes else 'text'),
+                source_size=list(image.size), submitted_size=list(size),
+                submitted_bytes=len(pixels), image=str(path))
+        content = [dict(type='text', text=question),
+                   dict(type='image_url', image_url=dict(url='data:image/png;base64,' + base64.b64encode(pixels).decode()))]
         reply = await self.server.chat([dict(role='system', content=vision[('text_system', 'boxes_system')[boxes]]), dict(role='user', content=content)], temperature=vision['temperature'])
         return path, reply
     async def share(self, text):
@@ -94,8 +135,7 @@ class Tools(Device):
             _, raw = await self.look(image, question, mode == 'boxes')
             if mode == 'text': return raw.encode()
             try:
-                boxes = json.loads(raw)
-                if not isinstance(boxes, list): raise ValueError('Box array required')
+                boxes = parse_visual_boxes(raw)
                 return json.dumps([self.remap(item, crop) for item in boxes]).encode()
             except (ValueError, TypeError, KeyError): raise Refused('UNKNOWN_DATA') from None
 
