@@ -1,4 +1,4 @@
-import asyncio, hashlib, json, os, sys, time
+import asyncio, hashlib, json, sys, time
 from jsonschema import Draft202012Validator, ValidationError
 from bus import Device, Frame, Refused, Server, journal, evidence
 
@@ -7,15 +7,9 @@ class Cli:
         self.device, self.settings = device, device.settings
         self.folder = max((path for path in device.cfg.path(self.settings['versions']).iterdir() if path.is_dir()), key=lambda path: path.name)
     async def reply(self, prompt, schema):
-        workspace = os.path.join(os.environ['TEMP'], 'trident-mind')
-        os.makedirs(workspace, exist_ok=True)
-        command = [str(self.folder / 'node.exe'), '-e', "process.argv.push(require('fs').readFileSync(0,'utf8'));require(process.argv[1]);", str(self.folder / 'index.js'), '-p', '--model', self.settings['model'], '--output-format', 'stream-json', '--workspace', workspace, '--trust', '--allowed-tools', '']
-        home = os.path.join(os.environ['TEMP'], 'trident-cli-home')
-        os.makedirs(home, exist_ok=True)
-        drive, home_path = os.path.splitdrive(home)
-        env = os.environ.copy()
-        env.update(USERPROFILE=home, HOME=home, HOMEDRIVE=drive, HOMEPATH=home_path or '\\')
-        process = await asyncio.create_subprocess_exec(*command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=self.device.stderr, cwd=workspace, env=env, limit=self.settings['event_bytes'])
+        command = [str(self.folder / 'node.exe'), '-e', "process.argv.push(require('fs').readFileSync(0,'utf8'));require(process.argv[1]);", str(self.folder / 'index.js'), '-p', '--model', self.settings['model'], '--output-format', 'stream-json', '--workspace', str(self.device.cfg.root)]
+        process = await asyncio.create_subprocess_exec(*command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=self.device.stderr, cwd=self.device.cfg.root, limit=self.settings['event_bytes'])
+        journal(self.device.run, 'model_launch', n=self.device.number, pid=process.pid, mode='agent', command=command)
         texts = []
         try:
             process.stdin.write(prompt.encode())
@@ -28,9 +22,8 @@ class Cli:
                             payload=evidence(self.device.run, f'error-{self.device.number}', line.decode(errors='replace')))
                     raise RuntimeError('Malformed CLI event') from None
                 if event['type'] == 'tool_call':
-                    journal(self.device.run, 'native_tool_violation', turn=self.device.number,
-                            payload=evidence(self.device.run, f'native-{self.device.number}', line.decode()))
-                    raise RuntimeError('Native CLI tool call violates register-only transport')
+                    journal(self.device.run, 'agent_tool', turn=self.device.number,
+                            payload=evidence(self.device.run, f'native-{self.device.number}-{time.time_ns()}', line.decode()))
                 if event['type'] == 'result' and event.get('is_error'):
                     journal(self.device.run, 'model_transport_error', n=self.device.number, payload=evidence(self.device.run, f'error-{self.device.number}', line.decode()))
                 if event['type'] == 'assistant': texts.append(''.join(part['text'] for part in event['message']['content'] if part['type'] == 'text'))
@@ -57,7 +50,6 @@ class Mind(Device):
         self.settings = self.cfg['mind'][sys.argv[2]]
         self.server, self.number, self.used, self.busy, self.generation, self.stopped, self.refused = None, 0, 0, False, 0, False, None
         self.goal, self.ledger = '', []
-        self.unchecked, self.effect, self.need_check, self.stale = '', False, True, False
         self.queue = asyncio.PriorityQueue()
         self.stderr = (self.run / 'diagnostics.log').open('ab')
         self.cleanup.callback(self.stderr.close)
@@ -100,11 +92,8 @@ class Mind(Device):
             _, _, generation, source, frame = await self.queue.get()
             if generation == self.generation: await self.work(source, frame)
             else: journal(self.run, 'turn_skipped', src=source, generation=generation)
-    def clip(self, actual):
-        return actual if len(actual) <= 4000 else actual[:4000] + '\n(truncated)'
     def record(self, action, actual):
-        shown = self.clip(actual)
-        self.ledger.append({'do': action.get('do', ''), 'with': action.get('with', ''), 'expect': action.get('expect', ''), 'actual': shown})
+        self.ledger.append({'do': action.get('do', ''), 'with': action.get('with', ''), 'expect': action.get('expect', ''), 'actual': actual})
         journal(self.run, 'comparison', n=self.number, do=action.get('do', ''), expect=action.get('expect', ''),
                 actual=evidence(self.run, f'actual-{self.number}-{len(self.ledger)}', actual))
     def compose(self, cue):
@@ -116,25 +105,6 @@ class Mind(Device):
         if cue and cue != self.goal: parts.append('Cue:\n' + cue)
         parts.append('Record:\n' + ('\n\n'.join(blocks) if blocks else '(none)'))
         return '\n\n'.join(parts)
-    def apply(self, action, actual):
-        png = '\n' not in actual and actual.lower().endswith('.png')
-        if action['do'] == 'look':
-            path, _, question = action['with'].partition('\n')
-            try: boxes = isinstance(json.loads(actual), list)
-            except json.JSONDecodeError: boxes = False
-            if question.strip() and not boxes and self.effect and not self.stale and self.unchecked and path == self.unchecked:
-                self.unchecked, self.need_check = '', False
-            return
-        if actual.startswith('exit ') or (png and action['do'] != 'screenshot'):
-            self.effect, self.need_check = True, True
-            self.stale, self.unchecked = not png, actual.strip() if png else ''
-            return
-        if action['do'] == 'screenshot' and png:
-            self.unchecked, self.stale = actual.strip(), False
-    def unmet(self):
-        if not self.effect: return 'Fault: no effect has been accepted yet. Choose the action that moves the goal, and put its predicted outcome in expect.'
-        if self.stale or not self.unchecked: return 'Fault: the effect is not on a checked picture. screenshot, then look at that new path and ask whether the change you expected is visible.'
-        return f'Fault: the picture is unchecked. look at {self.unchecked} and ask whether the change you expected is visible. done repeats that answer and nothing else.'
     async def wake(self, generation, action, actual):
         if generation != self.generation:
             self.busy = False
@@ -151,8 +121,7 @@ class Mind(Device):
             journal(self.run, 'instructions', turn=self.number, policy=hashlib.sha256(brief.encode()).hexdigest()[:16],
                     text=evidence(self.run, f'instructions-{self.number}', brief))
         if source in (self.cfg['address']['telegram'], self.cfg['address']['ears']):
-            self.goal, self.ledger = frame.text, []
-            self.unchecked, self.effect, self.need_check, self.stale = '', False, True, False
+            self.goal = frame.text
         prompt = self.compose(frame.text)
         journal(self.run, 'turn_input', n=self.number, src=source, generation=generation, record=len(self.ledger), text=evidence(self.run, f'input-{self.number}', prompt))
         try: raw = await asyncio.wait_for(self.engine.reply(prompt, self.schema), self.settings['turn_seconds'])
@@ -175,15 +144,13 @@ class Mind(Device):
                 await self.wake(generation, action, 'accepted; the owner may hear it; the effect is not verified')
                 return
             if action['do'] == 'done':
-                if not self.effect or self.need_check or self.stale or self.unchecked:
-                    await self.wake(generation, action, self.unmet())
-                    return
                 await self.bus.transfer(Frame(self.cfg['address']['telegram'], '10', action['with']))
                 self.record(action, 'report accepted for delivery; delivery is not confirmed')
+                self.goal = ''
                 return
             if action['do'] == 'nothing':
                 if frame.text == self.cfg['timer']['idle_text'] and not self.goal: return
-                await self.wake(generation, action, 'Fault: nothing sends no report. Continue from the Record, or done with exactly the latest check.')
+                await self.wake(generation, action, 'Fault: nothing sends no report. Answer the owner with done, or continue working.')
                 return
             if same_refusal(self.refused, action):
                 journal(self.run, 'repeated_refusal', n=self.number, do=action['do'])
@@ -196,7 +163,8 @@ class Mind(Device):
                 journal(self.run, 'turn_superseded', n=self.number, after_transfer=True)
                 return
             actual = result.decode() if read else 'accepted; the effect is not verified'
-            self.apply(action, actual)
+            if not read:
+                journal(self.run, 'effect_unverified', n=self.number, action=action['do'])
             await self.wake(generation, action, actual)
         except (ValueError, ValidationError, Refused, TimeoutError) as error:
             self.busy = False
