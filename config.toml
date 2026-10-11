@@ -71,14 +71,12 @@ start_seconds = 300
 command = ["artifacts/voice/crispasr-windows-x86_64-cuda126/crispasr.exe", "--server", "--host", "127.0.0.1", "--port", "8091", "--backend", "chatterbox-nano", "-m", "{models}/chatterbox-nano-t3-q4_k.gguf", "--codec-model", "{models}/chatterbox-turbo-s3gen-q4_k.gguf", "--gpu-backend", "cuda", "--no-punctuation"]
 [mind.luna]
 transport = "cli"
-mode = "ask"
 identity = "Cursor; gpt-5.6-luna-none; text"
 model = "gpt-5.6-luna-none"
 versions = "%LOCALAPPDATA%/cursor-agent/versions"
 turn_seconds = 7200
 context_chars = 400000
 event_bytes = 2000000
-excluded = "shell_tool_call,delete_tool_call,glob_tool_call,grep_tool_call,read_tool_call,update_todos_tool_call,read_todos_tool_call,edit_tool_call,ls_tool_call,read_lints_tool_call,mcp_tool_call,sem_search_tool_call,create_plan_tool_call,web_search_tool_call,task_tool_call,list_mcp_resources_tool_call,read_mcp_resource_tool_call,apply_agent_diff_tool_call,ask_question_tool_call,fetch_tool_call,switch_mode_tool_call,generate_image_tool_call,record_screen_tool_call,computer_use_tool_call,write_shell_stdin_tool_call,reflect_tool_call,setup_vm_environment_tool_call,truncated_tool_call,start_grind_execution_tool_call,start_grind_planning_tool_call,web_fetch_tool_call,report_bugfix_results_tool_call,ai_attribution_tool_call,pr_management_tool_call,mcp_auth_tool_call,await_tool_call,blame_by_file_path_tool_call,get_mcp_tools_tool_call,report_bug_tool_call,set_active_branch_tool_call,communicate_update_tool_call,send_final_summary_tool_call,update_pr_code_tour_tool_call,replace_env_tool_call,edit_pr_labels_tool_call,record_ci_investigation_findings_tool_call,send_message_tool_call,fetch_cloud_agent_data_tool_call,send_to_user_tool_call,send_to_agent_tool_call,pi_read_tool_call,pi_bash_tool_call,pi_edit_tool_call,pi_write_tool_call,pi_grep_tool_call,pi_find_tool_call,pi_ls_tool_call,connect_scm_tool_call,search_conversations_tool_call,create_goal_tool_call,update_goal_tool_call,adopt_tool_call,get_agent_status_tool_call,read_agent_transcript_tool_call,create_agent_tool_call,stop_agent_tool_call,get_pr_code_tour_tool_call,write_canvas_tool_call,read_canvas_tool_call"
 [mind.lfm]
 transport = "http"
 identity = "LiquidAI; LFM2.5-VL-3B; Q4_K_M; text"
@@ -139,7 +137,7 @@ nothing = "| no step remains"
 "02" = "write: speak_note | TEXT | synthesizes an off-call voice note"
 [registers.tools]
 "01" = "read: screenshot | NAME.png | a new picture path; the picture is unseen until look"
-"02" = "read: command | COMMAND | exit code and output; exit zero means launch only"
+"02" = "read: command | COMMAND | waits for the shell process to exit; use a detached shell launch when an application must stay open. Returns exit code and output; exit zero is acceptance, not a visible effect"
 "03" = "read: look | PATH | an answer about that picture. PATH is a picture path a result already returned. Send PATH alone for the overview. A newline then a question asks something specific. A question containing bounding box, bbox, or bounds returns a JSON array of bbox_2d [xmin, ymin, xmax, ymax] and centre_y_x [Y, X], integers 0-1000."
 "04" = "read: stroke | draw Y X Y X | an after-shot path, unseen until look. Shapes: click Y X; draw Y X Y X Y X; type TEXT; key NAME. Y then X, integers 0-1000, the same order as centre_y_x. Y is vertical and stays within ymin and ymax; X is horizontal and stays within xmin and xmax. Replace every capital placeholder."
 "05" = "read: share | PATH | submission, not confirmed delivery"
