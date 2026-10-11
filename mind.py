@@ -88,7 +88,7 @@ class Mind(Device):
         policy = (self.cfg.root / 'prompt.txt').read_text('utf-8')
         prompt = self.compose(policy)
         journal(self.run, 'turn_input', n=self.number, src=source, generation=generation, goal=self.goal, policy=hashlib.sha256(policy.encode()).hexdigest()[:16], text=evidence(self.run, f'input-{self.number}', prompt))
-        action, actual, answer, follow = {}, '', '', True
+        action, actual, answer, shot, follow = {}, '', '', '', True
         try:
             raw = await asyncio.wait_for(self.engine.reply(prompt, self.schema), self.settings['turn_seconds'])
             journal(self.run, 'turn_output', n=self.number, reply=evidence(self.run, f'output-{self.number}', raw))
@@ -117,7 +117,7 @@ class Mind(Device):
         if generation != self.generation:
             journal(self.run, 'turn_superseded', n=self.number)
             return
-        entry = dict(goal=goal, decision=action, actual=actual, check_answer=answer)
+        entry = dict(goal=goal, decision=action, actual=actual, check_image=shot, check_answer=answer)
         self.ledger.append(entry)
         journal(self.run, 'comparison', n=self.number, record=evidence(self.run, 'comparison', json.dumps(entry, ensure_ascii=False)))
         if follow:

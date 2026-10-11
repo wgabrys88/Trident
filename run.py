@@ -18,7 +18,9 @@ class Process:
         if self.process.poll() is None: self.process.send_signal(signal.CTRL_BREAK_EVENT)
     def finish(self, deadline):
         while self.process.poll() is None and time.monotonic() < deadline: time.sleep(self.cfg['bus']['poll'])
-        if self.process.poll() is None: self.process.kill(); self.process.wait()
+        if self.process.poll() is None:
+            journal(self.run, 'device_kill', role=self.role, pid=self.process.pid)
+            self.process.kill(); self.process.wait()
     def inspect(self):
         now = time.monotonic()
         if self.process.poll() is None:
