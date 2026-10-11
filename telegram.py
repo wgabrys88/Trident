@@ -81,6 +81,11 @@ class Telegram(Device):
         return source != self.settings['bridge'] and self.state == 2 and self.loop.time() - self.talked < self.cfg['audio']['barge_hold_seconds']
     async def receive(self, source, frame):
         if frame.register == '00': return f'{self.state:02d}'.encode()
+        if frame.register == '03':
+            if source != self.cfg['address']['mind']: raise Refused('UNKNOWN_DATA')
+            self.call_grant = self.loop.time() + self.settings['call_grant_seconds']
+            journal(self.run, 'call_permission', state='granted_once', src=source)
+            return b''
         writer = {'11': 'tools', '20': 'voice', '21': 'voice'}.get(frame.register)
         if writer is not None and source != self.cfg['address'][writer]: raise Refused('UNKNOWN_DATA')
         if frame.register == '10' and source == self.settings['bridge']: self.file('bridge').touch()

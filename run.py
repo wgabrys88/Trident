@@ -1,4 +1,4 @@
-import json, shutil, signal, subprocess, sys, time
+import hashlib, json, shutil, signal, subprocess, sys, time
 from contextlib import ExitStack
 from datetime import datetime
 sys.dont_write_bytecode = True
@@ -12,7 +12,7 @@ class Process:
         self.spawn()
     def spawn(self):
         self.process = subprocess.Popen(self.command, cwd=self.cfg.root, stdout=self.log, stderr=self.log, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
-        journal(self.run, 'device_start', role=self.role, pid=self.process.pid)
+        journal(self.run, 'device_start', role=self.role, pid=self.process.pid, source={name: hashlib.sha256((self.cfg.root / name).read_bytes()).hexdigest() for name in (f'{self.role}.py', 'bus.py', 'config.toml')})
         self.ready, self.retry = None, 0
     def signal(self):
         if self.process.poll() is None: self.process.send_signal(signal.CTRL_BREAK_EVENT)
@@ -47,9 +47,12 @@ def halt(processes):
 def start(engine):
     cfg = Config()
     cfg['mind'][engine]
-    with cfg.lock(cfg.root / '.supply.lock'), ExitStack() as cleanup:
+    with cfg.lock(cfg.root / '.supply.lock'), ExitStack() as cleanup, ExitStack() as owners:
         wire = cfg.root / 'wire'
         wire.mkdir(exist_ok=True)
+        for address in cfg['address'].values():
+            (home := wire / address).mkdir(exist_ok=True)
+            owners.enter_context(cfg.lock(home / 'owner.lock'))
         cleanup.callback(shutil.rmtree, wire, ignore_errors=True)
         run = cfg.root / f'run_{datetime.now().strftime("%Y%m%dT%H%M%S%f")}'
         run.mkdir()
@@ -58,8 +61,12 @@ def start(engine):
         processes = []
         cleanup.callback(halt, processes)
         for role, address in cfg['address'].items():
-            (home := wire / address).mkdir(parents=True)
+            home = wire / address
+            for path in home.iterdir():
+                if path.name != 'owner.lock': path.unlink()
             cfg.publish(home / 'state.json', json.dumps(dict(sequence=0, tx=0, rx=0)))
+        owners.close()
+        for role in cfg['address']:
             processes.append(Process(cfg, role, run, engine, cleanup.enter_context((run / f'{role}.log').open('ab'))))
         print(run, flush=True)
         while True:

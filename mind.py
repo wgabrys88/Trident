@@ -79,7 +79,7 @@ class Mind(Device):
             else: journal(self.run, 'turn_skipped', src=source, generation=generation)
     def compose(self, policy):
         while len(self.ledger) > 1 and len(json.dumps(self.ledger)) > self.settings['context_chars']: self.ledger.pop(0)
-        return policy + '\n\n' + json.dumps(dict(capabilities=json.loads(self.template), action_schema=self.schema, goal=self.goal, record=self.ledger), ensure_ascii=False)
+        return policy + '\n\n' + json.dumps(dict(capabilities=json.loads(self.template), action_schema=self.schema, record=self.ledger, goal=self.goal), ensure_ascii=False)
     async def work(self, source, frame):
         self.number, self.busy = self.number + 1, True
         generation = self.generation

@@ -15,3 +15,5 @@
 !/tools.py
 !/voice.py
 !/wave_beeper.py
+!/restart-once.ps1
+!/REPORT.md
