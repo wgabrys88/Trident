@@ -15,3 +15,8 @@
 !/tools.py
 !/voice.py
 !/restart-once.ps1
+!/version-two/
+!/version-two/**
+/version-two/frames/
+/version-two/__pycache__/
+/version-two/call.txt

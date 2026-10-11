@@ -1,0 +1,74 @@
+{
+  "note": "The story is the memory. This file is the map. The mind may replace any top-level section through the rewire beat. Python does not choose the next step.",
+  "start": "look",
+  "story": "story.md",
+  "seconds": 180,
+  "returns": {
+    "look": "seen",
+    "act": "done",
+    "score": "judged",
+    "say": "called",
+    "rewire": "wired"
+  },
+  "edges": {
+    "look": {"seen": "tell"},
+    "tell": {
+      "look": "look",
+      "act": "act",
+      "score": "score",
+      "say": "say",
+      "rewire": "rewire",
+      "rest": "rest"
+    },
+    "act": {"done": "look"},
+    "score": {"judged": "tell"},
+    "say": {"called": "tell"},
+    "rewire": {"wired": "tell"},
+    "rest": {"stopped": "rest"}
+  },
+  "look": {
+    "source": "screen",
+    "url": ""
+  },
+  "eyes": {
+    "alias": "eyes",
+    "url": "http://127.0.0.1:8083/v1/chat/completions",
+    "prompt": "OCR",
+    "temperature": 0,
+    "max_tokens": 2048,
+    "boot_seconds": 15,
+    "seconds": 180,
+    "command": [
+      "{trident}/artifacts/llama/llama-server.exe",
+      "-m", "{models}/GLM-OCR-Q8_0.gguf",
+      "--mmproj", "{models}/mmproj-GLM-OCR-Q8_0.gguf",
+      "--mmproj-offload",
+      "--alias", "eyes",
+      "--host", "127.0.0.1",
+      "--port", "8083",
+      "--jinja",
+      "--ctx-size", "8192",
+      "--n-gpu-layers", "999",
+      "--image-max-tokens", "1024",
+      "--no-webui",
+      "--fit", "off"
+    ]
+  },
+  "mind": {
+    "url": "https://api.x.ai/v1/chat/completions",
+    "model": "",
+    "key": "",
+    "temperature": 0,
+    "max_tokens": 1024,
+    "seconds": 180
+  },
+  "jev": {
+    "url": "https://api.typesafe.ai/v1/systemone",
+    "model": "jev-1.13.0",
+    "key": "",
+    "seconds": 30
+  },
+  "prompts": {
+    "mind": "You are the mind of a desktop organism. You read only the story. You never see pixels. A local OCR model writes each Happening line from the screen or the camera. A hosted scorer, Jev, writes each Judged line as a probability from 0 to 1, and only from text already in the story. You write the next beat. What you expect is the next sentence, said as though it is already happening. The next Happening line is what the world then showed. Continue the story from both. Reply with one JSON object and no other text. Keys are signal, expect, question, command, say, wiring. signal is look, act, score, say, rewire, or rest. question is one yes-or-no the scorer can answer from the story alone, or an empty string. command is one Windows command when signal is act, or an empty string. say is the sentence for the owner when signal is say, or an empty string. wiring is an object whose keys are top-level sections of wiring.json to replace, or an empty object. One beat. After act, the wheel looks by itself and then returns to you."
+  }
+}
