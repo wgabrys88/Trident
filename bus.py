@@ -1,11 +1,11 @@
 import asyncio, json, os, re, signal, sys, time, tomllib, urllib.error, urllib.request
 from datetime import datetime, timezone
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 def journal(run, kind, *, filename='events.jsonl', **fields):
     record = (json.dumps(dict(at=datetime.now(timezone.utc).isoformat(timespec='milliseconds'),
-                              event=kind, **fields), ensure_ascii=False, separators=(',', ':')) + '\n').encode()
+                              event=kind, process_pid=os.getpid(), **fields), ensure_ascii=False, separators=(',', ':')) + '\n').encode()
     with (Path(run) / filename).open('ab', buffering=0) as stream:
         descriptor = stream.fileno()
         if os.name == 'nt':
@@ -24,6 +24,7 @@ def journal(run, kind, *, filename='events.jsonl', **fields):
 
 def evidence(run, reference, text):
     if len(text) <= 1000: return text
+    reference = f'{reference}-{time.time_ns()}'
     journal(run, 'detail', filename='details.jsonl', ref=reference, text=text)
     return dict(preview=text[:160], characters=len(text), detail=reference)
 
@@ -37,9 +38,23 @@ class Config(dict):
         return self.root / os.path.expandvars(str(value))
     @staticmethod
     def publish(path, content):
-        temporary = path.with_suffix('.pending')
-        temporary.write_text(content, encoding='utf-8')
-        temporary.replace(path)
+        temporary = path.with_name(f'{path.name}-{os.getpid()}-{time.time_ns()}.pending')
+        try:
+            temporary.write_text(content, encoding='utf-8')
+            temporary.replace(path)
+        finally: temporary.unlink(missing_ok=True)
+    @staticmethod
+    @contextmanager
+    def lock(path):
+        import msvcrt
+        with path.open('a+b') as handle:
+            if handle.tell() == 0: handle.write(b'\0'); handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            try: yield
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
 @dataclass(frozen=True)
 class Frame:
     address: str
@@ -211,6 +226,7 @@ class Device:
         signal.signal(signal.SIGBREAK, request_stop)
         async with AsyncExitStack() as cleanup, asyncio.TaskGroup() as self.tasks:
             self.cleanup = cleanup
+            cleanup.enter_context(self.cfg.lock(self.bus.home / 'owner.lock'))
             await self.start()
             cleanup.push_async_callback(self.close)
             alive = self.bus.home / 'alive'

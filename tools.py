@@ -3,30 +3,6 @@ import pyperclip
 from PIL import Image, ImageGrab, ImageOps, PngImagePlugin
 from bus import Device, Refused, Server
 
-def boxes_requested(question):
-    folded = question.casefold()
-    return any(phrase in folded for phrase in ('bounding box', 'bbox', 'bounds'))
-
-def box_question(question):
-    text = re.sub(r'\s*answer yes or no\s*$', '', question, flags=re.IGNORECASE)
-    return re.sub(r',?\s*or answer no\b.*$', '', text, flags=re.IGNORECASE).strip()
-
-def parse_boxes(raw):
-    text = raw.strip()
-    fenced = re.fullmatch(r'```(?:json)?\s*(.*?)\s*```', text, re.DOTALL | re.IGNORECASE)
-    if fenced: text = fenced.group(1).strip()
-    try: value = json.loads(text)
-    except json.JSONDecodeError:
-        start, end = text.find('['), text.rfind(']')
-        if start < 0 or end <= start: raise
-        value = json.loads(text[start:end + 1])
-    if not isinstance(value, list) or any(not isinstance(item, dict) or not isinstance(item.get('bbox_2d'), list) or len(item['bbox_2d']) != 4 for item in value):
-        raise ValueError('Bounding box array required')
-    return value
-
-def newest_argument(filename, latest):
-    return filename == latest
-
 class Tools(Device):
     async def start(self):
         if not ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)): raise RuntimeError('DPI initialization failed')
@@ -61,8 +37,8 @@ class Tools(Device):
             if process.returncode == 0: await asyncio.sleep(self.cfg['tools']['launch_seconds'])
             handle.seek(0)
             output = handle.read()
-            return f'exit {process.returncode}\n'.encode() + output
-        except Exception as error: return f'Command started; outcome uncertain: {error!r}. Observe before repeating.'.encode()
+            return json.dumps(dict(exit=process.returncode, output=output.decode(errors='replace'))).encode()
+        except Exception as error: return json.dumps(dict(started=True, error=type(error).__name__, detail=str(error))).encode()
         finally:
             if process.returncode is None: process.kill(); await process.wait()
             handle.close()
@@ -82,7 +58,7 @@ class Tools(Device):
             await asyncio.to_thread(perform)
             await asyncio.sleep(self.cfg['tools']['settle_seconds'])
             return await self.shot(f'after-{time.time_ns()}.png')
-        except Exception as error: return f'Input started; outcome uncertain: {error!r}. Take a new screenshot before repeating.'.encode()
+        except Exception as error: return json.dumps(dict(started=True, error=type(error).__name__, detail=str(error))).encode()
     def stroke(self, points):
         grid, mouse = self.cfg['limits']['grid'], ctypes.windll.user32.mouse_event
         try:
@@ -91,9 +67,6 @@ class Tools(Device):
                 if index == 0: mouse(2, 0, 0, 0, 0)
                 time.sleep(self.cfg['tools']['input_pause'])
         finally: mouse(4, 0, 0, 0, 0)
-    def bounds(self, image, box):
-        values = [round(value * (size - 1) / self.cfg['limits']['grid']) for value, size in zip(box, image.size * 2)]
-        return values[0], values[1], values[2] + 1, values[3] + 1
     def remap(self, item, crop):
         a, b, c, d = [round(low + value * (high - low) / self.cfg['limits']['grid']) for value, low, high in zip(item['bbox_2d'], crop[:2] * 2, crop[2:] * 2)]
         return item | dict(bbox_2d=[a, b, c, d], centre_y_x=[round((b + d) / 2), round((a + c) / 2)])
@@ -107,16 +80,20 @@ class Tools(Device):
     async def share(self, text):
         if text != self.latest: raise Refused('UNKNOWN_DATA')
         await self.send('telegram', f'{text}\nRequested screenshot', '11', once=True)
-        return b'Image submitted for delivery; external receipt unverified'
+        return json.dumps(dict(submitted=True, delivery_verified=False)).encode()
     async def vision(self, text):
-        filename, _, question = text.partition('\n')
-        if not newest_argument(filename, self.latest): raise Refused('UNKNOWN_DATA')
+        parts = text.split('\n', 2)
+        if len(parts) != 3: raise Refused('UNKNOWN_DATA')
+        filename, mode, question = parts
+        if filename != self.latest or mode not in ('text', 'boxes'): raise Refused('UNKNOWN_DATA')
         with Image.open(filename) as image:
             crop = list(map(int, image.info['crop'].split()))
-            boxes = boxes_requested(question)
-            _, raw = await self.look(image, (box_question(question) if boxes else question) or self.cfg['vision']['overview'], boxes)
-            if not boxes: return raw.encode()
-            try: return json.dumps([self.remap(item, crop) for item in parse_boxes(raw)]).encode()
-            except (json.JSONDecodeError, ValueError, TypeError, KeyError): raise Refused('UNKNOWN_DATA') from None
+            _, raw = await self.look(image, question, mode == 'boxes')
+            if mode == 'text': return raw.encode()
+            try:
+                boxes = json.loads(raw)
+                if not isinstance(boxes, list): raise ValueError('Box array required')
+                return json.dumps([self.remap(item, crop) for item in boxes]).encode()
+            except (ValueError, TypeError, KeyError): raise Refused('UNKNOWN_DATA') from None
 
 if __name__ == '__main__': Tools('tools').launch()

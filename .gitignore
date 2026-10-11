@@ -1,4 +1,3 @@
-# Only the explicitly named root-level source files may be added by default.
 /*
 !/.gitignore
 !/LICENSE
@@ -15,3 +14,4 @@
 !/timer.py
 !/tools.py
 !/voice.py
+!/wave_beeper.py

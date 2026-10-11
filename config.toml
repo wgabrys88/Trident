@@ -11,7 +11,6 @@ poll = 0.05
 frame_timeout = 5
 data_retries = 1
 self_turn_cap = 64
-fault_turns = 3
 [holds]
 tools = 7200
 [supply]
@@ -115,9 +114,9 @@ input_pause = 0.1
 settle_seconds = 5
 launch_seconds = 5
 [actions]
-say = "TEXT | the owner hears it and you are asked for the next step"
+say = "TEXT | report accepted for delivery; receipt and hearing unverified; continues current goal"
 done = "TEXT | sends the final answer or report and ends the current goal"
-nothing = "| no step remains"
+nothing = "| rests without reporting or continuation"
 [registers.timer]
 "00" = "read: redial_state | | 00 idle or 01 waiting"
 "02" = "write: schedule_redial | | accepted; the effect is not verified yet"
@@ -138,8 +137,8 @@ nothing = "| no step remains"
 [registers.tools]
 "01" = "read: screenshot | NAME.png | a new picture path; the picture is unseen until look"
 "02" = "read: command | COMMAND | runs in cmd.exe in the current run directory; waits for the shell process to exit; use a detached shell launch when an application must stay open. Returns exit code and output; exit zero is acceptance, not a visible effect"
-"03" = "read: look | PATH | an answer about that picture. PATH is a picture path a result already returned. Send PATH alone for the overview. A newline then a question asks something specific. A question containing bounding box, bbox, or bounds returns a JSON array of bbox_2d [xmin, ymin, xmax, ymax] and centre_y_x [Y, X], integers 0-1000."
-"04" = "read: stroke | draw Y X Y X | an after-shot path, unseen until look. Shapes: click Y X; draw Y X Y X Y X; type TEXT; key NAME. Y then X, integers 0-1000, the same order as centre_y_x. Y is vertical and stays within ymin and ymax; X is horizontal and stays within xmin and xmax. Replace every capital placeholder."
+"03" = "read: look | PATH\nMODE\nQUESTION | PATH is the newest picture path returned. MODE is text or boxes. QUESTION is the exact visual request. text returns the answer; boxes returns bbox_2d [xmin, ymin, xmax, ymax] and centre_y_x [Y, X], normalized integers 0-1000. Mode never depends on keywords."
+"04" = "read: stroke | OPERATION ARGUMENTS | an after-shot path, unseen until look. Shapes: click Y X; draw Y X Y X Y X; type TEXT; key NAME. Y then X, integers 0-1000, the same order as centre_y_x. Y is vertical and stays within ymin and ymax; X is horizontal and stays within xmin and xmax. Replace every capital placeholder."
 "05" = "read: share | PATH | submission, not confirmed delivery"
 [registers.mind]
 "00" = "read: - | | internal"
