@@ -67,7 +67,7 @@ start_seconds = 300
 [voice]
 url = "http://127.0.0.1:8091"
 start_seconds = 300
-command = ["artifacts/voice/crispasr-windows-x86_64-cuda126/crispasr.exe", "--server", "--host", "127.0.0.1", "--port", "8091", "--backend", "chatterbox-nano", "-m", "{models}/chatterbox-nano-t3-q4_k.gguf", "--codec-model", "{models}/chatterbox-turbo-s3gen-q4_k.gguf", "--gpu-backend", "cuda", "--no-punctuation"]
+command = ["artifacts/voice/crispasr.exe", "--server", "--host", "127.0.0.1", "--port", "8091", "--backend", "chatterbox-nano", "-m", "{models}/chatterbox-nano-t3-q4_k.gguf", "--codec-model", "{models}/chatterbox-turbo-s3gen-q4_k.gguf", "--no-punctuation"]
 [mind.luna]
 transport = "cli"
 identity = "Cursor; gpt-5.6-luna-none; agent"
@@ -94,14 +94,16 @@ max_tokens = 32768
 [llama]
 model = "lfm"
 # Full-precision upstream GGUF model and projector (requires substantially more RAM/VRAM).
-# Require all supported weights on CUDA0, without automatic CPU-layer fitting.
+# The installed binary's own GPU is the only device. Do not name CUDA or Vulkan here.
+# image-max-tokens 1024 keeps a 1920x1080 desktop in one view, about 1344x768 and 1000 tokens.
+# The model default of 256 tokens splits that frame into eight 512 patches plus a thumbnail, about 2300 tokens.
 # If VRAM is insufficient, startup may fail; Windows driver RAM fallback is separate.
 # For low-memory machines, revert BOTH filenames to Q4_K_M / Q8_0.
 model_file = "LFM2.5-VL-3B-BF16.gguf"
 projector_file = "mmproj-LFM2.5-VL-3B-BF16.gguf"
 start_seconds = 300
 context = 32768
-command = ["artifacts/llama/llama-server.exe", "-m", "{models}/{model_file}", "--mmproj", "{models}/{projector_file}", "--mmproj-offload", "--mmproj-device", "CUDA0", "--alias", "{model}", "--host", "127.0.0.1", "--port", "{port}", "--jinja", "--ctx-size", "{context}", "--device", "CUDA0", "--split-mode", "none", "--n-gpu-layers", "999", "--parallel", "1", "--batch-size", "2048", "--ubatch-size", "512", "--flash-attn", "on", "--cache-type-k", "f16", "--cache-type-v", "f16", "--reasoning", "{reasoning}", "--no-context-shift", "--check-tensors", "--no-webui", "--fit", "off"]
+command = ["artifacts/llama/llama-server.exe", "-m", "{models}/{model_file}", "--mmproj", "{models}/{projector_file}", "--mmproj-offload", "--alias", "{model}", "--host", "127.0.0.1", "--port", "{port}", "--jinja", "--ctx-size", "{context}", "--split-mode", "none", "--n-gpu-layers", "999", "--parallel", "1", "--batch-size", "2048", "--ubatch-size", "512", "--flash-attn", "on", "--cache-type-k", "f16", "--cache-type-v", "f16", "--reasoning", "{reasoning}", "--image-max-tokens", "1024", "--no-context-shift", "--check-tensors", "--no-webui", "--fit", "off"]
 reasoning = "off"
 [sampling]
 temperature = 0.2
