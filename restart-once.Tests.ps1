@@ -24,4 +24,14 @@ Describe 'restart-once.ps1' {
         $script = Get-Content -LiteralPath $scriptPath -Raw
         $script | Should Match '-DeleteExpiredTaskAfter \(New-TimeSpan -Hours 1\)'
     }
+
+    It 'sets an EndBoundary on the one-shot trigger' {
+        $script = Get-Content -LiteralPath $scriptPath -Raw
+        $script | Should Match '\.EndBoundary\s*='
+    }
+
+    It 'propagates scheduled-task registration failure' {
+        $script = Get-Content -LiteralPath $scriptPath -Raw
+        $script | Should Match 'if \(-not \$\?\) \{ exit 1 \}'
+    }
 }

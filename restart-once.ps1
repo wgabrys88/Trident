@@ -36,6 +36,7 @@ if ($null -eq $python) {
 if ($Install) {
     $start = (Get-Date).AddSeconds($DelaySeconds)
     $trigger = New-ScheduledTaskTrigger -Once -At $start
+    $trigger.EndBoundary = $start.AddSeconds(1).ToString('o')
     $action = New-ScheduledTaskAction -Execute $python.Source `
         -Argument "-B `"$runScript`" `"$Engine`""
     $settings = New-ScheduledTaskSettingsSet -DeleteExpiredTaskAfter (New-TimeSpan -Hours 1) `
@@ -43,6 +44,7 @@ if ($Install) {
     Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
         -Settings $settings -Description 'One-shot controlled Trident restart.' `
         -Force | Out-Null
+    if (-not $?) { exit 1 }
     Get-ScheduledTask -TaskName $taskName | Select-Object TaskName, State
     exit 0
 }
