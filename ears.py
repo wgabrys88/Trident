@@ -1,6 +1,6 @@
 import asyncio, ctypes, os, time
 import numpy as np
-from bus import Device, journal
+from bus import Device, Exclusive, journal
 
 class Backend(ctypes.Structure):
     _fields_ = [('size', ctypes.c_size_t), ('gpu', ctypes.c_int32)]
@@ -26,12 +26,19 @@ class Ears(Device):
         self.recognize = self.bind('recognize_f32', ctypes.c_int, [pointer, pointer, ctypes.POINTER(ctypes.c_float), ctypes.c_size_t, ctypes.c_int32, ctypes.POINTER(pointer)])
         self.transcript, self.free = self.bind('result_transcript', ctypes.c_char_p, [pointer, ctypes.c_size_t]), self.bind('result_destroy', None, [pointer])
         self.destroy = self.bind('destroy', None, [pointer])
+        self.create = self.bind('create', ctypes.c_int, [ctypes.POINTER(Asr), ctypes.POINTER(pointer)])
         self.backend = Backend(ctypes.sizeof(Backend), self.cfg['ears']['gpu'])
         self.model = Model(ctypes.sizeof(Model), str(self.cfg.path(self.cfg['models']['path']) / self.cfg['ears']['model']).encode(), None)
-        config, self.handle = Asr(), pointer()
+        self.handle, self.loaded = pointer(), False
+    def open_model(self):
+        config = Asr()
         config.size, config.backend, config.model = ctypes.sizeof(Asr), ctypes.addressof(self.backend), ctypes.addressof(self.model)
-        create = self.bind('create', ctypes.c_int, [ctypes.POINTER(Asr), ctypes.POINTER(pointer)])
-        self.check(await asyncio.wait_for(asyncio.to_thread(create, ctypes.byref(config), ctypes.byref(self.handle)), self.cfg['ears']['start_seconds']))
+        self.check(self.create(ctypes.byref(config), ctypes.byref(self.handle)))
+        self.loaded = True
+    def shut_model(self):
+        if self.loaded:
+            self.destroy(self.handle)
+            self.loaded = False
     def decode(self, filename):
         raw = self.cfg.path(filename).read_bytes()
         samples = np.frombuffer(raw, dtype='<i2').astype(np.float32) / 32768
@@ -40,13 +47,18 @@ class Ears(Device):
         try: return self.transcript(result, 0).decode().strip()
         finally: self.free(result)
     async def work(self, source, frame):
-        text = await asyncio.to_thread(self.decode, frame.text)
+        async with Exclusive(self.cfg.root / '.gpu.lock'):
+            await asyncio.wait_for(asyncio.to_thread(self.open_model), self.cfg['ears']['start_seconds'])
+            try:
+                text = await asyncio.to_thread(self.decode, frame.text)
+            finally:
+                await asyncio.to_thread(self.shut_model)
         marker = self.run / 'telegram-bridge'
         bridged = marker.exists() and time.time() - marker.stat().st_mtime < self.cfg['telegram']['bridge_seconds']
         journal(self.run, 'transcript', text=text, bridged=bridged)
         if bridged and self.cfg['telegram']['bridge_release'].lower() in text.lower(): marker.unlink(); bridged = False
         if text and not bridged: await self.send('mind', text, '01')
     async def close(self):
-        self.destroy(self.handle)
+        await asyncio.to_thread(self.shut_model)
 
 Ears('ears').launch()

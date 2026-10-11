@@ -67,7 +67,8 @@ start_seconds = 300
 [voice]
 url = "http://127.0.0.1:8091"
 start_seconds = 300
-command = ["artifacts/voice/crispasr.exe", "--server", "--host", "127.0.0.1", "--port", "8091", "--backend", "chatterbox-nano", "-m", "{models}/chatterbox-nano-t3-q4_k.gguf", "--codec-model", "{models}/chatterbox-turbo-s3gen-q4_k.gguf", "--no-punctuation"]
+model = "{models}/chatterbox-nano-t3-q4_k.gguf"
+command = ["artifacts/voice/crispasr.exe", "--server", "--host", "127.0.0.1", "--port", "8091", "--backend", "chatterbox-nano", "-m", "{model}", "--codec-model", "{models}/chatterbox-turbo-s3gen-q4_k.gguf", "--no-punctuation"]
 [mind.luna]
 transport = "cli"
 identity = "Cursor; gpt-5.6-luna-none; agent"
@@ -119,7 +120,7 @@ reasoning = "off"
 max_tokens = 8192
 temperature = 0
 boxes_system = "Locate only the objects or regions requested by the question in the supplied screenshot. Return ONLY a JSON array with one object per visible match: {\"image_id\":0,\"bbox_2d\":[xmin,ymin,xmax,ymax],\"label\":\"short description\"}. Coordinates are normalized 0..1000 within THIS supplied image, with x horizontal and y vertical; use tight boxes. If the target cannot be reliably distinguished, return []. Never invent a box."
-text_system = "You are inspecting a full-resolution desktop screenshot or an exact screenshot crop. Answer the user question using only visible evidence. Transcribe small text exactly when legible. Distinguish observation from inference, and explicitly state uncertainty when details are unreadable; never guess a successful click, saved file or posted message from an acknowledgement. If the question needs a tighter view, say which region should be cropped for another look."
+text_system = "You are inspecting one desktop screenshot or an exact crop. Report every visible window, icon, control, and readable string, including the taskbar and desktop. Do not stop after the single most prominent object. Use the question to focus that account, not to drop the rest of the frame. Transcribe small text exactly when legible. Separate observation from inference, and say when a detail is unreadable. Never guess a successful click, saved file, or posted message. If a region is too small to read, name that region for a tighter crop."
 [tools]
 command_seconds = 7180
 input_pause = 0.1

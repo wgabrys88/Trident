@@ -55,6 +55,28 @@ class Config(dict):
             finally:
                 handle.seek(0)
                 msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+
+class Exclusive:
+    """One cross-process GPU turn. The caller loads a model after enter and unloads it before exit."""
+    def __init__(self, path):
+        self.path = path
+    async def __aenter__(self):
+        import msvcrt
+        self.handle = self.path.open('a+b')
+        def take():
+            if self.handle.tell() == 0: self.handle.write(b'\0'); self.handle.flush()
+            self.handle.seek(0)
+            msvcrt.locking(self.handle.fileno(), msvcrt.LK_LOCK, 1)
+        await asyncio.to_thread(take)
+        return self
+    async def __aexit__(self, *_):
+        import msvcrt
+        def give():
+            self.handle.seek(0)
+            msvcrt.locking(self.handle.fileno(), msvcrt.LK_UNLCK, 1)
+            self.handle.close()
+        await asyncio.to_thread(give)
+
 @dataclass(frozen=True)
 class Frame:
     address: str
@@ -257,7 +279,7 @@ def validate_server_identity(health, models, expected, *, require_image=False):
         raise RuntimeError('Unexpected llama server health response')
     if not isinstance(entries, list):
         raise RuntimeError('Invalid llama server model list')
-    match = next((item for item in entries if isinstance(item, dict) and item.get('id') == expected), None)
+    match = next((item for item in entries if isinstance(item, dict) and os.path.normcase(os.path.normpath(str(item.get('id')))) == os.path.normcase(os.path.normpath(expected))), None)
     if match is None:
         raise RuntimeError(f'Expected model {expected!r} is not exposed by this llama server')
     if require_image:
@@ -270,14 +292,18 @@ def validate_server_identity(health, models, expected, *, require_image=False):
 class Server:
     def __init__(self, device, settings):
         self.device, self.settings, self.process = device, settings, None
-        self.required, self.ready = True, False
+        self.required, self.ready, self.intent, self.watched, self.hooked = True, False, False, None, False
     def request(self, endpoint, body=None):
         request = urllib.request.Request(self.settings['url'] + endpoint, None if body is None else json.dumps(body).encode(), {'Content-Type': 'application/json'})
         seconds = self.device.cfg['limits'][('http_seconds', 'health_seconds')[endpoint == '/health']]
         with urllib.request.urlopen(request, timeout=seconds) as response: return response.read()
     async def start(self, *, required=True):
-        self.required, self.ready = required, False
-        command = [os.path.expandvars(str(value)).format(**self.settings, models=str(self.device.cfg.path(self.device.cfg['models']['path']))) for value in self.settings['command']]
+        if self.process is not None and self.process.returncode is None: await self.close()
+        self.required, self.ready, self.intent = required, False, False
+        models = str(self.device.cfg.path(self.device.cfg['models']['path']))
+        self.settings = dict(self.settings)
+        self.settings['model'] = os.path.normpath(os.path.expandvars(str(self.settings['model'])).format(**self.settings, models=models))
+        command = [os.path.expandvars(str(value)).format(**self.settings, models=models) for value in self.settings['command']]
         try:
             self.process = await asyncio.create_subprocess_exec(*command, cwd=self.device.cfg.root,
                                                                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
@@ -287,9 +313,11 @@ class Server:
             return
         self.command, self.output = command, bytearray()
         journal(self.device.run, 'server_start', role=self.device.name, pid=self.process.pid, executable=command[0])
-        self.device.cleanup.push_async_callback(self.close)
-        self.reader = self.device.tasks.create_task(self.capture())
-        self.device.tasks.create_task(self.watch())
+        if not self.hooked:
+            self.device.cleanup.push_async_callback(self.close)
+            self.hooked = True
+        self.reader = self.device.tasks.create_task(self.capture(self.process))
+        self.watched = self.device.tasks.create_task(self.watch(self.process, self.reader))
         if required: await self.healthy()
         else: self.device.tasks.create_task(self.healthy())
     async def healthy(self):
@@ -318,22 +346,27 @@ class Server:
             journal(self.device.run, 'server_health_failed', role=self.device.name, error=f'{type(error).__name__}: {error}',
                     output=evidence(self.device.run, f'{self.device.name}-health', self.output.decode(errors='replace')))
             if self.required: raise
-    async def capture(self):
-        limit = self.device.cfg['limits']['server_tail_bytes']
-        while chunk := await self.process.stdout.read(4096):
+    async def capture(self, process):
+        limit, stream = self.device.cfg['limits']['server_tail_bytes'], process.stdout
+        while chunk := await stream.read(4096):
             self.output.extend(chunk)
             if len(self.output) > limit: del self.output[:-limit]
-    async def watch(self):
-        code = await self.process.wait()
-        await self.reader
+    async def watch(self, process, reader):
+        code = await process.wait()
+        await reader
+        if process is not self.process: return
         self.ready = False
         journal(self.device.run, 'server_exit', role=self.device.name, code=code, command=self.command,
                 output=evidence(self.device.run, f'{self.device.name}-server-exit', self.output.decode(errors='replace')))
-        if self.required: raise RuntimeError(f'{self.device.name} server exited {code}; see server_exit in events.jsonl')
+        if self.required and not self.intent: raise RuntimeError(f'{self.device.name} server exited {code}; see server_exit in events.jsonl')
     async def close(self):
-        if self.process is not None and self.process.returncode is None:
-            self.process.kill()
-            await self.process.wait()
+        self.intent = True
+        process, watched = self.process, self.watched
+        if process is not None and process.returncode is None:
+            process.kill()
+            await process.wait()
+        if watched is not None: await watched
+        self.ready, self.intent = False, False
     async def chat(self, messages, **options):
         body = dict(model=self.settings['model'], messages=messages, max_tokens=self.settings['max_tokens'], **self.device.cfg['sampling']) | options
         response = json.loads(await asyncio.to_thread(self.request, '/v1/chat/completions', body))

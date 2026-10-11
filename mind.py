@@ -1,7 +1,7 @@
 import asyncio, hashlib, json, re, subprocess, sys, time
 from pathlib import Path
 from jsonschema import Draft202012Validator, ValidationError
-from bus import Device, Frame, Refused, Server, journal, evidence
+from bus import Device, Exclusive, Frame, Refused, Server, journal, evidence
 
 def runnable_folder(root):
     flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
@@ -99,7 +99,12 @@ class Http:
         self.device = device
         device.server = Server(device, device.cfg['llama'] | device.settings)
     async def reply(self, prompt, schema):
-        return await self.device.server.chat([dict(role='user', content=prompt)], response_format=dict(type='json_object', schema=schema))
+        async with Exclusive(self.device.cfg.root / '.gpu.lock'):
+            await self.device.server.start()
+            try:
+                return await self.device.server.chat([dict(role='user', content=prompt)], response_format=dict(type='json_object', schema=schema))
+            finally:
+                await self.device.server.close()
 
 class Mind(Device):
     async def start(self):
@@ -110,7 +115,6 @@ class Mind(Device):
         self.stderr = (self.run / 'mind.log').open('ab')
         self.cleanup.callback(self.stderr.close)
         self.engine = {'cli': Cli, 'http': Http}[self.settings['transport']](self)
-        if self.server is not None: await self.server.start()
         self.by_name, shapes = {}, {}
         for role, registers in self.cfg['registers'].items():
             for register, value in registers.items():
