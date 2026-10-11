@@ -105,7 +105,6 @@ reasoning = "off"
 max_tokens = 1024
 image_side = 768
 temperature = 0
-overview = "Describe the visible desktop state, the active window and its actionable controls. Identify uncertainty; do not infer hidden effects. State only what is visible, and do not invent a clock reading or a measurement."
 boxes_system = "When asked for bounding boxes for objects, return a valid JSON array. Each item has image_id, bbox_2d: [xmin, ymin, xmax, ymax] normalized to integers from 0 to 1000, and label. Return one item per visible matching object or region. Return [] if none are visible."
 text_system = "Answer the request about the supplied image. State only what is visible. If it is not visible, say so."
 [tools]
@@ -136,7 +135,7 @@ nothing = "| rests without reporting or continuation"
 "01" = "write: speak_call | TEXT | synthesizes call speech"
 "02" = "write: speak_note | TEXT | synthesizes an off-call voice note"
 [registers.tools]
-"01" = "read: screenshot | NAME.png | a new picture path; the picture is unseen until look"
+"01" = "read: screenshot | NAME.png [XMIN YMIN XMAX YMAX] | optional crop is four integers 0-1000 with increasing X and Y; a new picture path, unseen until look"
 "02" = "read: command | COMMAND | runs in cmd.exe in the current run directory; waits for the shell process to exit; use a detached shell launch when an application must stay open. Returns exit code and output; exit zero is acceptance, not a visible effect"
 "03" = "read: look | PATH\nMODE\nQUESTION | PATH is the newest picture path returned. MODE is text or boxes. QUESTION is the exact visual request. text returns the answer; boxes returns bbox_2d [xmin, ymin, xmax, ymax] and centre_y_x [Y, X], normalized integers 0-1000. Mode never depends on keywords."
 "04" = "read: stroke | OPERATION ARGUMENTS | an after-shot path, unseen until look. Shapes: click Y X; draw Y X Y X Y X; type TEXT; key NAME. Y then X, integers 0-1000, the same order as centre_y_x. Y is vertical and stays within ymin and ymax; X is horizontal and stays within xmin and xmax. Replace every capital placeholder."

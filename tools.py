@@ -14,12 +14,13 @@ class Tools(Device):
     async def receive(self, source, frame):
         return await {'01': self.shot, '02': self.command, '03': self.vision, '04': self.act, '05': self.share}[frame.register](frame.text)
     async def shot(self, text):
-        name, *values = text.split()
-        if re.fullmatch(r'[A-Za-z0-9_-]+\.png', name) is None: raise Refused('UNKNOWN_DATA')
         grid = self.cfg['limits']['grid']
-        box = list(map(int, values)) if values else [0, 0, grid, grid]
-        a, b, c, d = box
-        if not 0 <= a < c <= grid or not 0 <= b < d <= grid: raise Refused('UNKNOWN_DATA')
+        try:
+            name, *values = text.split()
+            box = list(map(int, values)) if values else [0, 0, grid, grid]
+            a, b, c, d = box
+            if re.fullmatch(r'[A-Za-z0-9_-]+\.png', name) is None or not 0 <= a < c <= grid or not 0 <= b < d <= grid: raise ValueError('Invalid screenshot arguments')
+        except ValueError: raise Refused('UNKNOWN_DATA') from None
         image = await asyncio.to_thread(ImageGrab.grab, all_screens=True)
         bounds = tuple(round(value * (size - 1) / grid) for value, size in zip(box, image.size * 2))
         info = PngImagePlugin.PngInfo()
@@ -68,6 +69,8 @@ class Tools(Device):
                 time.sleep(self.cfg['tools']['input_pause'])
         finally: mouse(4, 0, 0, 0, 0)
     def remap(self, item, crop):
+        box = item['bbox_2d']
+        if not isinstance(box, list) or len(box) != 4 or not all(type(value) is int and 0 <= value <= self.cfg['limits']['grid'] for value in box) or box[0] > box[2] or box[1] > box[3]: raise ValueError('Invalid box')
         a, b, c, d = [round(low + value * (high - low) / self.cfg['limits']['grid']) for value, low, high in zip(item['bbox_2d'], crop[:2] * 2, crop[2:] * 2)]
         return item | dict(bbox_2d=[a, b, c, d], centre_y_x=[round((b + d) / 2), round((a + c) / 2)])
     async def look(self, image, question, boxes):
