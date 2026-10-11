@@ -38,7 +38,7 @@ if ($Install) {
     $trigger = New-ScheduledTaskTrigger -Once -At $start
     $action = New-ScheduledTaskAction -Execute $python.Source `
         -Argument "-B `"$runScript`" `"$Engine`""
-    $settings = New-ScheduledTaskSettingsSet -DeleteExpiredTaskAfter 'PT1H' `
+    $settings = New-ScheduledTaskSettingsSet -DeleteExpiredTaskAfter (New-TimeSpan -Hours 1) `
         -ExecutionTimeLimit (New-TimeSpan -Hours 12)
     Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
         -Settings $settings -Description 'One-shot controlled Trident restart.' `

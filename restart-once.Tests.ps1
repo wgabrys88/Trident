@@ -19,4 +19,9 @@ Describe 'restart-once.ps1' {
         try { & $scriptPath -TridentRoot $PSScriptRoot -Engine luna -DelaySeconds -1 } catch { $errorText = $_.Exception.Message }
         $errorText | Should Match 'non-negative'
     }
+
+    It 'passes a TimeSpan when configuring expired-task cleanup' {
+        $script = Get-Content -LiteralPath $scriptPath -Raw
+        $script | Should Match '-DeleteExpiredTaskAfter \(New-TimeSpan -Hours 1\)'
+    }
 }
