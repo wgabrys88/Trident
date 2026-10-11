@@ -244,28 +244,36 @@ class Device:
 class Server:
     def __init__(self, device, settings):
         self.device, self.settings, self.process = device, settings, None
+        self.required, self.ready = True, False
     def request(self, endpoint, body=None):
         request = urllib.request.Request(self.settings['url'] + endpoint, None if body is None else json.dumps(body).encode(), {'Content-Type': 'application/json'})
         seconds = self.device.cfg['limits'][('http_seconds', 'health_seconds')[endpoint == '/health']]
         with urllib.request.urlopen(request, timeout=seconds) as response: return response.read()
-    async def start(self):
+    async def start(self, *, required=True):
+        self.required, self.ready = required, False
         command = [os.path.expandvars(str(value)).format(**self.settings, models=str(self.device.cfg.path(self.device.cfg['models']['path']))) for value in self.settings['command']]
         try:
             self.process = await asyncio.create_subprocess_exec(*command, cwd=self.device.cfg.root,
                                                                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
         except OSError as error:
             journal(self.device.run, 'server_spawn_failed', role=self.device.name, executable=command[0], error=str(error))
-            raise
+            if required: raise
+            return
         self.command, self.output = command, bytearray()
         journal(self.device.run, 'server_start', role=self.device.name, pid=self.process.pid, executable=command[0])
         self.device.cleanup.push_async_callback(self.close)
         self.reader = self.device.tasks.create_task(self.capture())
         self.device.tasks.create_task(self.watch())
+        if required: await self.healthy()
+        else: self.device.tasks.create_task(self.healthy())
+    async def healthy(self):
         try:
             async with asyncio.timeout(self.settings['start_seconds']):
                 while True:
+                    if self.process is None or self.process.returncode is not None: raise RuntimeError('server exited before ready')
                     try:
                         await asyncio.to_thread(self.request, '/health')
+                        self.ready = True
                         return
                     except urllib.error.HTTPError as error:
                         if error.code != 503: raise
@@ -273,9 +281,10 @@ class Server:
                         if not isinstance(error.reason, ConnectionRefusedError): raise
                     await asyncio.sleep(self.device.cfg['limits']['health_poll'])
         except Exception as error:
+            self.ready = False
             journal(self.device.run, 'server_health_failed', role=self.device.name, error=f'{type(error).__name__}: {error}',
                     output=evidence(self.device.run, f'{self.device.name}-health', self.output.decode(errors='replace')))
-            raise
+            if self.required: raise
     async def capture(self):
         limit = self.device.cfg['limits']['server_tail_bytes']
         while chunk := await self.process.stdout.read(4096):
@@ -284,9 +293,10 @@ class Server:
     async def watch(self):
         code = await self.process.wait()
         await self.reader
+        self.ready = False
         journal(self.device.run, 'server_exit', role=self.device.name, code=code, command=self.command,
                 output=evidence(self.device.run, f'{self.device.name}-server-exit', self.output.decode(errors='replace')))
-        raise RuntimeError(f'{self.device.name} server exited {code}; see server_exit in events.jsonl')
+        if self.required: raise RuntimeError(f'{self.device.name} server exited {code}; see server_exit in events.jsonl')
     async def close(self):
         if self.process is not None and self.process.returncode is None:
             self.process.kill()

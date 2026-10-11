@@ -10,7 +10,7 @@ class Tools(Device):
         self.input, self.latest = pyautogui, None
         self.input.FAILSAFE, self.input.PAUSE = False, self.cfg['tools']['input_pause']
         self.server = Server(self, self.cfg['llama'] | self.cfg['vision'])
-        await self.server.start()
+        await self.server.start(required=False)
     async def receive(self, source, frame):
         return await {'01': self.shot, '02': self.command, '03': self.vision, '04': self.act, '05': self.share}[frame.register](frame.text)
     async def shot(self, text):
@@ -88,7 +88,7 @@ class Tools(Device):
         parts = text.split('\n', 2)
         if len(parts) != 3: raise Refused('UNKNOWN_DATA')
         filename, mode, question = parts
-        if filename != self.latest or mode not in ('text', 'boxes'): raise Refused('UNKNOWN_DATA')
+        if not self.server.ready or filename != self.latest or mode not in ('text', 'boxes'): raise Refused('UNKNOWN_DATA')
         with Image.open(filename) as image:
             crop = list(map(int, image.info['crop'].split()))
             _, raw = await self.look(image, question, mode == 'boxes')

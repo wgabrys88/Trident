@@ -1,14 +1,31 @@
-import asyncio, hashlib, json, sys, time
+import asyncio, hashlib, json, subprocess, sys, time
+from pathlib import Path
 from jsonschema import Draft202012Validator, ValidationError
 from bus import Device, Frame, Refused, Server, journal, evidence
+
+def runnable_folder(root):
+    flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+    found = []
+    for path in Path(root).iterdir():
+        node, index = path / 'node.exe', path / 'index.js'
+        if not (path.is_dir() and node.is_file() and index.is_file()): continue
+        try: completed = subprocess.run([str(node), '-e', 'process.exit(0)'], cwd=path, timeout=20, capture_output=True, creationflags=flags)
+        except (OSError, subprocess.TimeoutExpired): continue
+        if completed.returncode == 0: found.append(path)
+    if not found: raise RuntimeError(f'No runnable node.exe under {root}')
+    return max(found, key=lambda path: path.name)
 
 class Cli:
     def __init__(self, device):
         self.device, self.settings = device, device.settings
-        self.folder = max((path for path in device.cfg.path(self.settings['versions']).iterdir() if path.is_dir()), key=lambda path: path.name)
+        self.folder = runnable_folder(device.cfg.path(self.settings['versions']))
     async def reply(self, prompt, schema):
         command = [str(self.folder / 'node.exe'), '-e', "process.argv.push(require('fs').readFileSync(0,'utf8'));require(process.argv[1]);", str(self.folder / 'index.js'), '-p', '--model', self.settings['model'], '--output-format', 'stream-json', '--workspace', str(self.device.cfg.root)]
-        process = await asyncio.create_subprocess_exec(*command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=self.device.stderr, cwd=self.device.cfg.root, limit=self.settings['event_bytes'])
+        journal(self.device.run, 'model_argv', n=self.device.number, command=command)
+        try: process = await asyncio.create_subprocess_exec(*command, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=self.device.stderr, cwd=self.device.cfg.root, limit=self.settings['event_bytes'])
+        except OSError as error:
+            journal(self.device.run, 'model_spawn_failed', n=self.device.number, executable=command[0], error=f'OSError: {error}', command=command)
+            raise
         journal(self.device.run, 'model_launch', n=self.device.number, pid=process.pid, mode='agent', command=command)
         texts = []
         try:
@@ -59,7 +76,9 @@ class Mind(Device):
         self.template = json.dumps(shapes, ensure_ascii=False)
         self.schema = dict(type='object', additionalProperties=False, required=['do', 'with', 'expect', 'check'], properties=dict(do=dict(enum=list(shapes)), **{'with': dict(type='string'), 'expect': dict(type='string', minLength=1), 'check': dict(type='string')}))
         self.validator = Draft202012Validator(self.schema)
-        journal(self.run, 'model_contract', identity=self.settings['identity'], capabilities=evidence(self.run, 'capabilities', self.template), schema=evidence(self.run, 'schema', json.dumps(self.schema)))
+        contract = dict(identity=self.settings['identity'], capabilities=evidence(self.run, 'capabilities', self.template), schema=evidence(self.run, 'schema', json.dumps(self.schema)))
+        if hasattr(self.engine, 'folder'): contract['executable'] = str(self.engine.folder / 'node.exe')
+        journal(self.run, 'model_contract', **contract)
     async def receive(self, source, frame):
         if frame.read: return (f'{int(self.busy):02d}' if frame.register == '00' else self.settings['identity']).encode()
         owner = source in (self.cfg['address']['telegram'], self.cfg['address']['ears'])
@@ -77,16 +96,19 @@ class Mind(Device):
             _, _, generation, source, frame = await self.queue.get()
             if generation == self.generation: await self.work(source, frame)
             else: journal(self.run, 'turn_skipped', src=source, generation=generation)
-    def compose(self, policy):
+    def compose(self, policy, message=''):
         while len(self.ledger) > 1 and len(json.dumps(self.ledger)) > self.settings['context_chars']: self.ledger.pop(0)
-        return policy + '\n\n' + json.dumps(dict(capabilities=json.loads(self.template), action_schema=self.schema, record=self.ledger, goal=self.goal), ensure_ascii=False)
+        body = dict(capabilities=json.loads(self.template), action_schema=self.schema, record=self.ledger, goal=self.goal)
+        if message: body['message'] = message
+        return policy + '\n\n' + json.dumps(body, ensure_ascii=False)
     async def work(self, source, frame):
         self.number, self.busy = self.number + 1, True
         generation = self.generation
-        if source in (self.cfg['address']['telegram'], self.cfg['address']['ears']): self.goal = frame.text
+        owner = source in (self.cfg['address']['telegram'], self.cfg['address']['ears'])
+        if owner: self.goal = frame.text
         goal = self.goal
         policy = (self.cfg.root / 'prompt.txt').read_text('utf-8')
-        prompt = self.compose(policy)
+        prompt = self.compose(policy, '' if owner else frame.text)
         journal(self.run, 'turn_input', n=self.number, src=source, generation=generation, goal=self.goal, policy=hashlib.sha256(policy.encode()).hexdigest()[:16], text=evidence(self.run, f'input-{self.number}', prompt))
         action, actual, answer, shot, follow = {}, '', '', '', True
         try:
@@ -105,9 +127,10 @@ class Mind(Device):
                 address, register, read = self.by_name[action['do']]
                 result = await self.bus.transfer(Frame(address, register, action['with'], read))
                 actual = result.decode() if read else json.dumps(dict(accepted=True, effect_verified=False))
+                if address == self.address and register == '01': follow = False
                 if action['check']:
                     target = self.cfg['address']['tools']
-                    shot = (await self.bus.transfer(Frame(target, '01', f'check-{time.time_ns()}.png', True))).decode()
+                    shot = result.decode() if action['do'] == 'stroke' else (await self.bus.transfer(Frame(target, '01', f'check-{time.time_ns()}.png', True))).decode()
                     answer = (await self.bus.transfer(Frame(target, '03', shot + '\ntext\n' + action['check'], True))).decode()
                     journal(self.run, 'action_check', n=self.number, expect=action['expect'], question=action['check'], answer=evidence(self.run, 'answer', answer), shot=shot)
         except (RuntimeError, ValueError, ValidationError, Refused, TimeoutError, KeyError, TypeError) as error:

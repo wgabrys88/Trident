@@ -142,7 +142,7 @@ nothing = "| rests without reporting or continuation"
 "05" = "read: share | PATH | submission, not confirmed delivery"
 [registers.mind]
 "00" = "read: - | | internal"
-"01" = "write: - | | internal"
+"01" = "write: plan | TEXT | short numbered plan on this channel only; not delivered to the owner and not a completed goal"
 "f0" = "read: - | | internal"
 [registers.memory]
 "01" = "write/read: remember | TEXT | a decimal id"
