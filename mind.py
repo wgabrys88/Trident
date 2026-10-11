@@ -1,6 +1,7 @@
 import asyncio, hashlib, json, re, subprocess, sys, time
 from pathlib import Path
 from jsonschema import Draft202012Validator, ValidationError
+from narrative import NarrativeMemory
 from bus import Device, Frame, Refused, Server, journal, evidence
 
 def runnable_folder(root):
@@ -173,6 +174,13 @@ class Mind(Device):
         body = dict(capabilities=json.loads(self.template), action_schema=self.schema, record=self.ledger, goal=self.goal)
         if self.handover: body['previous_goal_handover'] = self.handover
         if message: body['message'] = message
+        try:
+            mem = NarrativeMemory(self.cfg.root)
+            mem.consolidate_idle()
+            rel = mem.relevant(self.goal or message or 'current')
+            body['narrative'] = rel
+        except Exception:
+            body['narrative'] = []
         return policy + '\n\n' + json.dumps(body, ensure_ascii=False)
     async def work(self, source, frame):
         self.number, self.busy = self.number + 1, True
@@ -196,6 +204,10 @@ class Mind(Device):
                 if not action['with']: raise ValueError('Empty owner message')
                 await self.bus.transfer(Frame(self.cfg['address']['telegram'], '10', action['with']))
                 actual = json.dumps(dict(accepted=True, delivery_verified=False))
+                try:
+                    NarrativeMemory(self.cfg.root).add_event(action.get('with','') or action.get('expect',''), characters=[self.goal or 'owner'])
+                except Exception:
+                    pass
                 if action['do'] == 'done': self.goal, follow = '', False
             else:
                 address, register, read = self.by_name[action['do']]
