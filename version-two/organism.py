@@ -92,7 +92,7 @@ def ask_mind(world):
             {'role': 'system', 'content': world['wiring']['prompts']['mind']},
             {'role': 'user', 'content': read_story(world)},
         ],
-    }, {'Authorization': 'Bearer ' + mind['key']}, mind['seconds'])
+    }, {'Authorization': 'Bearer ' + world['env']['OPENROUTER_API_KEY']}, mind['seconds'])
     world['beat'] = json.loads(body['choices'][0]['message']['content'])
 
 
@@ -102,7 +102,7 @@ def ask_jev(world):
         'state': read_story(world),
         'model': jev['model'],
         'questions': {'beat': {'type': 'noul', 'instructions': world['beat']['question']}},
-    }, {'Authorization': 'Bearer ' + jev['key']}, jev['seconds'])
+    }, {'Authorization': 'Bearer ' + world['env']['OPENROUTER_API_KEY']}, jev['seconds'])
     return body['answers']['beat']['noul']
 
 
@@ -180,8 +180,21 @@ def wheel(world):
         name = world['wiring']['edges'][name][signal]
 
 
+def read_env():
+    env = {}
+    for line in (HERE / '.env').read_text(encoding='utf-8').splitlines():
+        line = line.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        name, value = line.split('=', 1)
+        env[name.strip()] = value.strip().strip('"').strip("'")
+    return env
+
+
 def main():
-    world = {'n': 0, 'beat': {}}
+    world = {'n': 0, 'beat': {}, 'env': read_env()}
+    if not world['env'].get('OPENROUTER_API_KEY'):
+        raise SystemExit('Put your OpenRouter key on the OPENROUTER_API_KEY line in version-two/.env')
     load(world)
     boot(world)
     time.sleep(world['wiring']['eyes']['boot_seconds'])

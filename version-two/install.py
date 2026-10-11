@@ -24,6 +24,11 @@ def fetch(url, dest):
 
 
 def main():
+    here = Path(__file__).resolve().parent
+    env = here / '.env'
+    if not env.exists():
+        env.write_text((here / '.env.example').read_text(encoding='utf-8'), encoding='utf-8')
+    print(env)
     MODELS.mkdir(parents=True, exist_ok=True)
     subprocess.run([sys.executable, '-m', 'pip', 'install', 'pillow'], check=True)
     for name, url in FILES.items():

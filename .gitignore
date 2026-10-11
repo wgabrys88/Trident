@@ -18,5 +18,8 @@
 !/version-two/
 !/version-two/**
 /version-two/frames/
-/version-two/__pycache__/
+/version-two/**/__pycache__/
+/version-two/**/*.pyc
+/version-two/*.pyc
 /version-two/call.txt
+/version-two/.env
