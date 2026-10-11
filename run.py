@@ -49,7 +49,7 @@ def start(engine):
     cfg['mind'][engine]
     with cfg.lock(cfg.root / '.supply.lock'), ExitStack() as cleanup:
         wire = cfg.root / 'wire'
-        if wire.exists(): shutil.rmtree(wire)
+        wire.mkdir(exist_ok=True)
         cleanup.callback(shutil.rmtree, wire, ignore_errors=True)
         run = cfg.root / f'run_{datetime.now().strftime("%Y%m%dT%H%M%S%f")}'
         run.mkdir()
