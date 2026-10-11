@@ -227,6 +227,14 @@ class Mind(Device):
                         shot = (await self.bus.transfer(Frame(target, '01', f'check-{time.time_ns()}.png', True))).decode()
                     answer = (await self.bus.transfer(Frame(target, '03', shot + '\ntext\n' + action['check'], True))).decode()
                     journal(self.run, 'action_check', n=self.number, expect=action['expect'], question=action['check'], answer=evidence(self.run, 'answer', answer), shot=shot)
+                    try:
+                        NarrativeMemory(self.cfg.root).record_judgment(
+                            self.goal or '',
+                            action.get('check', ''),
+                            answer,
+                            'see narrative for selected')
+                    except Exception:
+                        pass
         except (RuntimeError, ValueError, ValidationError, Refused, TimeoutError, KeyError, TypeError) as error:
             actual = json.dumps(dict(error=type(error).__name__, detail=str(error), result=actual), ensure_ascii=False)
             journal(self.run, 'turn_fault', n=self.number, error=evidence(self.run, 'fault', actual))

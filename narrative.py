@@ -57,3 +57,7 @@ class NarrativeMemory:
     def add_fact(self, subject, predicate, object_):
         self.data['facts'].append({'s': subject, 'p': predicate, 'o': object_})
         self.save()
+    def record_judgment(self, goal, alternatives, vision_result, selected):
+        """Store a multi-hypothesis visual judgment so the next turn sees the scored choice."""
+        text = f"Judgment: goal={goal}; alternatives={alternatives}; vision={vision_result}; selected={selected}"
+        self.add_event(text, characters=['judgment'])
