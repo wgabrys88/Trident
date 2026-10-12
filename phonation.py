@@ -21,10 +21,13 @@ async def handle(op, args):
     if not result.get('delivered'):
         warning = 'My voice note delivery failed or is unconfirmed. '+args['text']
         local = "Add-Type -AssemblyName System.Speech; $v=New-Object System.Speech.Synthesis.SpeechSynthesizer; $v.Speak($env:TRIDENT_TEXT); $v.Dispose()"
-        await asyncio.to_thread(execute, ['powershell.exe', '-NoProfile', '-Command', local], 15,
-                                env=os.environ | {'TRIDENT_TEXT':warning})
-        result['local_spoken'] = True
-    log('speech', text=args['text'], note=str(note), result=result)
+        try:
+            await asyncio.to_thread(execute, ['powershell.exe', '-NoProfile', '-Command', local], 15,
+                                    env=os.environ | {'TRIDENT_TEXT':warning})
+            result['local_spoken'] = True
+        except Exception as error:
+            result['local_error'] = type(error).__name__
+    log('speech', narration_id=args['narration_id'], text=args['text'], note=str(note), result=result)
     return dict(text=args['text'], note=str(note), **result)
 
 if __name__ == '__main__':

@@ -1,71 +1,114 @@
-import asyncio, ctypes, os, time, winreg
-from fabric import RUN, execute, serve
+import asyncio, ctypes, os, subprocess, time, winreg
+from ctypes import wintypes as W
+from fabric import CFG, RUN, NotAttempted, execute, keys_in, log, serve, token
 
-ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+u = ctypes.WinDLL('user32', use_last_error=True)
+u.SetProcessDpiAwarenessContext.argtypes = [W.HANDLE]
+u.GetThreadDpiAwarenessContext.restype = W.HANDLE
+u.AreDpiAwarenessContextsEqual.argtypes = [W.HANDLE, W.HANDLE]
+if not u.SetProcessDpiAwarenessContext(W.HANDLE(-4)) and not u.AreDpiAwarenessContextsEqual(u.GetThreadDpiAwarenessContext(), W.HANDLE(-4)):
+    raise OSError('Physical per-monitor DPI initialization failed')
+u.GetForegroundWindow.restype = W.HWND
+u.GetWindowTextW.argtypes = [W.HWND, W.LPWSTR, ctypes.c_int]
+u.GetWindowRect.argtypes = [W.HWND, ctypes.POINTER(W.RECT)]
+u.IsWindow.argtypes = [W.HWND]
 import pyautogui as gui
 import pyperclip
 from PIL import ImageGrab
-
 gui.PAUSE = .1
 
+def desktop():
+    return [u.GetSystemMetrics(i) for i in (76, 77, 78, 79)]
+
+def foreground():
+    handle, title, rect = u.GetForegroundWindow(), ctypes.create_unicode_buffer(1024), W.RECT()
+    u.GetWindowTextW(handle, title, len(title))
+    u.GetWindowRect(handle, ctypes.byref(rect))
+    return dict(id=str(handle), title=title.value, rect=[rect.left, rect.top, rect.right, rect.bottom])
+
+def require_window(ident):
+    current = foreground()
+    if current['id'] != ident or not u.IsWindow(W.HWND(int(ident))):
+        raise NotAttempted('Intended window is not foreground; focus and locate again')
+    return current
+
 def shot():
-    from fabric import token
-    path = RUN / (token() + '.png')
-    ImageGrab.grab().save(path)
-    return str(path)
+    rectangle = desktop()
+    pixels = ImageGrab.grab(all_screens=True)
+    if list(pixels.size) != rectangle[2:]:
+        raise OSError('Capture dimensions do not match physical desktop')
+    path = RUN / (token()+'.png')
+    pixels.save(path)
+    window = foreground()
+    ox, oy, width, height = rectangle
+    left, top, right, bottom = window['rect']
+    window['normalized_box'] = [max(0, (left-ox)*1000/width), max(0, (top-oy)*1000/height),
+                                min(1000, (right-ox)*1000/width), min(1000, (bottom-oy)*1000/height)]
+    return dict(image=str(path), desktop=rectangle, window=window, at=time.time())
 
 def perform(op, args):
+    events = []
     if op == 'launch':
-        execute(['powershell.exe', '-NoProfile', '-Command',
-                 'Start-Process -FilePath $env:TRIDENT_APP'], 5,
-                env=os.environ | {'TRIDENT_APP': args['app']})
+        subprocess.Popen([args['app']], creationflags=subprocess.CREATE_NO_WINDOW)
     elif op == 'browse':
         with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe') as key:
             browser = winreg.QueryValue(key, None)
-        execute(['powershell.exe', '-NoProfile', '-Command',
-                 'Start-Process -FilePath $env:TRIDENT_BROWSER -ArgumentList $env:TRIDENT_URL'], 5,
-                env=os.environ | {'TRIDENT_BROWSER': browser, 'TRIDENT_URL': args['url']})
+        subprocess.Popen([browser, args['url']], creationflags=subprocess.CREATE_NO_WINDOW)
     elif op == 'focus':
         execute(['powershell.exe', '-NoProfile', '-Command',
                  "$s=New-Object -ComObject WScript.Shell; if (-not $s.AppActivate($env:TRIDENT_TITLE)) { throw 'Window not found' }"],
                 5, env=os.environ | {'TRIDENT_TITLE': args['title']})
-    elif op == 'key':
-        keys = args['keys']
-        if isinstance(keys, str):
-            keys = keys.lower().split('+')
-        if not keys or any(k not in gui.KEYBOARD_KEYS for k in keys):
-            raise ValueError('Unknown real key')
-        gui.hotkey(*keys)
-    elif op == 'type':
-        pyperclip.copy(args['text'])
-        gui.hotkey('ctrl', 'v')
+        if args['title'].casefold() not in foreground()['title'].casefold():
+            raise OSError('Requested window did not become foreground')
+    elif op in ('key', 'type'):
+        require_window(args['window'])
+        if op == 'key':
+            keys = keys_in(args['keys'])
+            if any(k not in gui.KEYBOARD_KEYS for k in keys):
+                raise NotAttempted('Key is unavailable to native input')
+            gui.press(keys[0]) if len(keys) == 1 else gui.hotkey(*keys)
+            events.append(dict(keys=keys))
+        else:
+            pyperclip.copy(args['text'])
+            require_window(args['window'])
+            gui.hotkey('ctrl', 'v')
+            events.append(dict(pasted_characters=len(args['text'])))
     elif op in ('click', 'draw'):
-        from fabric import CFG
         target = args['target']
-        if time.time() - target['at'] > CFG['target_seconds']:
-            raise ValueError('Target expired: locate it again')
+        current = require_window(target['window']['id'])
+        if (time.time()-target['at'] > CFG['target_seconds'] or desktop() != target['desktop']
+                or current['rect'] != target['window']['rect']):
+            raise NotAttempted('Located geometry changed or expired; locate again')
+        ox, oy, width, height = target['desktop']
         x0, y0, x1, y1 = target['box']
-        width, height = gui.size()
         strokes = args.get('strokes', [args.get('points', [[.5, .5]])])
+        # Map the same captured physical rectangle into the virtual desktop mouse range.
+        def move(x, y):
+            u.mouse_event(0xC001, round((x-ox)*65535/(width-1)), round((y-oy)*65535/(height-1)), 0, 0)
+            point = W.POINT(); u.GetCursorPos(ctypes.byref(point))
+            events.append(dict(requested=[x, y], actual=[point.x, point.y]))
+            log('mouse_position', action_id=args.get('action_id'), requested=[x, y], actual=[point.x, point.y])
         for points in strokes:
-            if not points or not all(0 <= v <= 1 for point in points for v in point):
-                raise ValueError('Points must be relative X,Y in 0..1')
-            pixels = [(round((x0 + x * (x1-x0)) * (width-1) / 1000),
-                       round((y0 + y * (y1-y0)) * (height-1) / 1000)) for x, y in points]
-            gui.moveTo(*pixels[0])
-            if op == 'click':
-                gui.click()
-            else:
-                gui.mouseDown()
-                try:
-                    for point in pixels[1:]:
-                        gui.moveTo(*point, duration=.12)
-                finally:
-                    gui.mouseUp()
+            require_window(target['window']['id'])
+            pixels = [(ox+round((x0+x*(x1-x0))*(width-1)/1000),
+                       oy+round((y0+y*(y1-y0))*(height-1)/1000)) for x, y in points]
+            left, top, right, bottom = current['rect']
+            if any(not left <= x < right or not top <= y < bottom for x, y in pixels):
+                raise NotAttempted('Located points are outside the intended window')
+            move(*pixels[0]); time.sleep(.08)
+            try:
+                u.mouse_event(2, 0, 0, 0, 0)
+                for point in pixels[1:]:
+                    require_window(target['window']['id'])
+                    move(*point); time.sleep(.12)
+            finally:
+                u.mouse_event(4, 0, 0, 0, 0)
+                log('mouse_released', action_id=args.get('action_id'))
     elif op != 'capture':
-        raise ValueError(op)
+        raise ValueError('Unknown native action')
+    log('native_events', action_id=args.get('action_id'), op=op, events=events)
     time.sleep(.3)
-    return dict(accepted=True, verified=False, image=shot(), at=time.time())
+    return dict(accepted=True, verified=False, events=events, **shot())
 
 async def handle(op, args):
     return await asyncio.to_thread(perform, op, args)
