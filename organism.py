@@ -39,7 +39,7 @@ class Body:
         try:
             result = await request(role, op, args, seconds)
         except (OSError, ValueError, TimeoutError) as error:
-            result = dict(error=f'{role} receipt unavailable: {type(error).__name__}', verified=False, outcome='unknown')
+            result = dict(error=f'{role} receipt unavailable: {type(error).__name__}: {error}', verified=False, outcome='unknown')
         if result.get('outcome') == 'unknown' or result.get('error') and 'deadline' in result['error']:
             self.stop(role)
             if role == 'retina':
@@ -61,7 +61,7 @@ def infer(prompt, image=None):
     prompt_file = RUN/(token()+'.prompt')
     prompt_file.write_text(prompt, encoding='utf-8')
     bootstrap = "process.argv.push(require('node:fs').readFileSync(process.argv.pop(),'utf8'));require(process.argv[1]);"
-    raw = execute([str(folder/'node.exe'), '-e', bootstrap, str(folder/'index.js'), '--mode', 'ask', '--trust',
+    raw = execute([str(folder/'node.exe'), '-e', bootstrap, str(folder/'index.js'), '--trust',
                    '-p', '--model', CFG['mind_model'], '--workspace', str(ROOT), '--output-format', 'stream-json',
                    str(prompt_file)], CFG['mind_seconds'], cwd=ROOT).decode('utf-8', errors='replace')
     transcript = prompt_file.with_suffix('.stream.jsonl'); transcript.write_text(raw, encoding='utf-8')
@@ -103,13 +103,13 @@ def save(state):
 def remember(state, entry):
     entry['artifact'] = str(ROOT/'private'/'outcomes'/(entry['id']+'.json'))
     result = entry['result']
-    unresolved = bool(result.get('error') or result.get('refused') or result.get('unconfirmed') or result.get('outcome') == 'unknown')
+    unresolved = bool(result.get('error') or result.get('processing_error') or result.get('refused') or result.get('unconfirmed') or result.get('outcome') == 'unknown')
     state['unresolved_total'] += int(unresolved)-int(entry.get('unresolved', False))
     entry['unresolved'] = unresolved
     write(Path(entry['artifact']), entry)
     log('outcome', **entry)
     if unresolved:
-        state['unresolved'][entry['id']] = dict(reason=result.get('reason') or result.get('error') or 'Unconfirmed effect', artifact=entry['artifact'])
+        state['unresolved'][entry['id']] = dict(reason=result.get('reason') or result.get('error') or result.get('processing_error') or 'Unconfirmed effect', artifact=entry['artifact'])
     else:
         state['unresolved'].pop(entry['id'], None)
     state['last'] = compact(entry)
@@ -322,7 +322,8 @@ async def main():
                     goal=state['goal'],prediction=decision['expect'],result={k:v for k,v in result.items() if k!='events'},
                     previous_comparison=decision['compare'])),CFG['decision_seconds'])
             except Exception as error:
-                result=result|dict(error=f'{type(error).__name__}: {error}', outcome='unknown' if attempted else 'not_attempted')
+                result['processing_error' if 'outcome' in result else 'error']=f'{type(error).__name__}: {error}'
+                result.setdefault('outcome','unknown' if attempted else 'not_attempted')
                 log('turn_failed',id=ident,error=str(error),decision=decision)
                 if not decision:
                     wake=time.time()+60

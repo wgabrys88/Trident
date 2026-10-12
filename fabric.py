@@ -84,8 +84,12 @@ async def request(device, op, args, seconds):
     log('request', id=ident, device=device, op=op, args=args)
     try:
         async with asyncio.timeout(seconds):
-            while not reply.exists():
-                await asyncio.sleep(.05)
+            while True:
+                try:
+                    value = json.loads(reply.read_text('utf-8'))
+                    break
+                except (FileNotFoundError, PermissionError):
+                    await asyncio.sleep(.05)
     except TimeoutError:
         try:
             path.rename(path.with_suffix('.cancelled'))
@@ -94,8 +98,6 @@ async def request(device, op, args, seconds):
             outcome = 'unknown'
         log('deadline', id=ident, device=device, op=op, outcome=outcome)
         return dict(error=f'{device} deadline exceeded', outcome=outcome, verified=False, request_id=ident)
-    value = json.loads(reply.read_text('utf-8'))
-    reply.unlink()
     log('receipt', id=ident, device=device, result=value)
     return value
 
