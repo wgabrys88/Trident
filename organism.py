@@ -136,7 +136,7 @@ def compare(state, decision, image):
             state['unresolved_total'] -= 1
     elif action['do'] == 'look' and action['args'].get('mode') == 'locate':
         box = judgment['box']
-        result['located'] = bool(supported and box)
+        result['located'] = bool(box)
         if result['located']:
             state['targets'][entry['id']] = dict(box=box, at=result['at'], desktop=result['desktop'], window=result['window'])
     remember(state, entry)
