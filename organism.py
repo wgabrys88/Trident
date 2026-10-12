@@ -57,7 +57,7 @@ def infer(prompt, image=None):
         image = Path(image).resolve()
         if not image.is_relative_to(ROOT) or image.read_bytes()[:8] != b'\x89PNG\r\n\x1a\n':
             raise ValueError('Pixel inspection requires a captured PNG inside the workspace')
-        prompt += '\nRequired pixel inspection: use the native Read tool on '+str(image)+'. Read this image before answering; do not use shell or other tools. Actual pixels override any supplied visual description.'
+        prompt = 'FIRST call native Read on '+str(image)+'. A text-only answer will be rejected.\n'+prompt
     prompt_file = RUN/(token()+'.prompt')
     prompt_file.write_text(prompt, encoding='utf-8')
     bootstrap = "process.argv.push(require('node:fs').readFileSync(process.argv.pop(),'utf8'));require(process.argv[1]);"
@@ -263,10 +263,10 @@ async def main():
                     reference = args['outcome']
                     record = state['owner'] if reference==state['owner']['id'] else json.loads((private/'outcomes'/(reference+'.json')).read_text('utf-8'))
                     audit=await body.call('discern','decide',dict(state=dict(sentence=args['text'],reference=record),questions=dict(
-                        speech=dict(type='choice',instructions='Classify this proposed sentence against the actual attributed record.',criteria=dict(
-                            effect='Claims a completed GUI effect, needing its exact fresh pixel proof.',
-                            status='Conversation or honest status, failure, call outcome, or delivery report supported by the attributed record.',
-                            unsupported='Unsupported fact, incorrect speaker attribution, or insufficient evidence.')))),CFG['decision_seconds'])
+                        speech=dict(type='choice',instructions='What does this sentence claim? Use only the attributed record; distinguish an intention from its outcome.',criteria=dict(
+                            effect='A completed desktop effect supported by this action record; needs pixel proof.',
+                            status='Conversation or a supported status, failure, call or delivery outcome.',
+                            unsupported='A fact or speaker attribution unsupported or contradicted by this record.')))),CFG['decision_seconds'])
                     speech=audit.get('answers',{}).get('speech',{}).get('choice')
                     if speech not in ('effect','status'):
                         raise ValueError('The proposed spoken claim lacks support in the actual record')
@@ -298,9 +298,9 @@ async def main():
                 else:
                     if op=='authorize':
                         permission=await body.call('discern','decide',dict(state=state['owner'],questions=dict(
-                            intent=dict(type='choice',instructions='Does this current owner message explicitly request an outgoing call now?',criteria=dict(
-                                explicit='A current explicit request to call now.',absent='No request, a historical request or quoted scenario.',
-                                ambiguous='Calling intent is unclear.')))),CFG['decision_seconds'])
+                            intent=dict(type='choice',instructions='Does the owner directly request an outgoing call in this message? Quoted or historical intent is insufficient.',criteria=dict(
+                                explicit='An explicit request to call now.',absent='No current direct call request.',
+                                ambiguous='Unclear whether a call is requested now.')))),CFG['decision_seconds'])
                         if permission.get('answers',{}).get('intent',{}).get('choice')!='explicit':
                             raise ValueError('Explicit current calling intent is absent')
                         args=args|dict(intent_confirmed=True)
