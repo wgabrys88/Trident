@@ -238,7 +238,7 @@ async def main():
                 image = state['last'].get('result',{}).get('image')
                 if image and Path(image).parent != RUN:
                     image = None  # Archived screenshots do not describe this process's live desktop.
-                decision = validate(await asyncio.to_thread(infer, policy+'\n'+json.dumps(context,ensure_ascii=False), image),state['last'])
+                decision = validate(await asyncio.to_thread(infer, policy+'\n'+json.dumps(context,ensure_ascii=False), image))
                 compare(state, decision, image)
                 if (RUN/'stop').exists():
                     break
@@ -278,7 +278,7 @@ async def main():
                             raise ValueError('That completed effect has no fresh specific pixel proof')
                     if (RUN/'stop').exists() or any((private/'inbox').glob('*.json')):
                         state.pop('pending',None); continue
-                    attempted=True; state['pending']['phase']='attempted'; save(state)
+                    state['pending']['phase']='attempted'; save(state); attempted=True
                     result=await speak(body,args['text'],state['owner']['id']+'-'+reference)
                     if op=='done':
                         state['goal']=''
@@ -306,9 +306,11 @@ async def main():
                         args=args|dict(intent_confirmed=True)
                         if (RUN/'stop').exists() or any((private/'inbox').glob('*.json')):
                             state.pop('pending',None); continue
-                    attempted=True; state['pending']['phase']='attempted'; save(state)
+                    state['pending']['phase']='attempted'; save(state); attempted=True
                     result=await body.call('relay' if op in ('authorize','dial') else 'manipulator',
                         'capture' if op=='look' else op, args|dict(owner_id=state['owner']['id'],action_id=ident),15)
+                    if op in GUI:
+                        state['targets'].clear()
                     if result.get('image'):
                         region=args.get('region') if op=='look' else None if op in ('launch','browse') else result['window']['normalized_box']
                         look_args=dict(image=result['image'],question=args['question'] if op=='look' else decision['check'],

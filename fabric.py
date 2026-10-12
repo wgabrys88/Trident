@@ -13,7 +13,15 @@ def write(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     pending = path.with_name(token() + '.pending')
     pending.write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8')
-    pending.replace(path)
+    deadline = time.monotonic()+2
+    while True:
+        try:
+            pending.replace(path)
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(.05)
 
 def log(event, **data):
     RUN.mkdir(parents=True, exist_ok=True)
@@ -67,13 +75,12 @@ class Job:
 def execute(argv, seconds, **options):
     job = Job(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **options)
     try:
-        try:
-            output, errors = job.process.communicate(timeout=seconds)
-        except subprocess.TimeoutExpired:
-            raise TimeoutError('Process deadline exceeded; outcome unknown') from None
+        output, errors = job.process.communicate(timeout=seconds)
         if job.process.returncode:
             raise RuntimeError(errors.decode(errors='replace'))
         return output
+    except subprocess.TimeoutExpired:
+        raise TimeoutError('Process deadline exceeded; outcome unknown') from None
     finally:
         job.close()
 
@@ -189,7 +196,7 @@ def keys_in(value):
         raise ValueError('Use one real key or modifiers followed by one real key')
     return keys
 
-def validate(decision, previous):
+def validate(decision):
     fields = {'do', 'args', 'expect', 'check', 'compare', 'story', 'questions'}
     if (not isinstance(decision, dict) or not fields <= decision.keys() or decision.keys() - fields - {'corrects'} or
             any(not isinstance(decision[k], str) for k in {'do', 'expect', 'check', 'story'}) or
