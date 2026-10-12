@@ -1,8 +1,8 @@
 import asyncio, ctypes, json, msvcrt, os, sys, threading, time
 from pathlib import Path
 from urllib.parse import urlparse
-from fabric import (ARGUMENTS, CFG, ROOT, RUN, Job, log, persona_of, publish_owner, questions_of, request, token,
-                    validate, write)
+from fabric import (ARGUMENTS, CFG, ROOT, RUN, Job, log, openrouter_key, persona_of, publish_owner, questions_of,
+                    request, token, validate, write)
 
 DEVICES = ['manipulator', 'retina', 'phonation', 'relay', 'cochlea', 'discern']
 GUI = {'launch', 'browse', 'focus', 'key', 'type', 'click', 'draw'}
@@ -56,20 +56,6 @@ class Body:
                 log('cleanup_failed', role=role, error=str(error))
         for stream in self.logs:
             stream.close()
-
-def load_env():
-    path = ROOT/'.env'
-    if path.exists():
-        for line in path.read_text('utf-8-sig').splitlines():
-            line = line.strip()
-            if not line or line.startswith('#') or '=' not in line:
-                continue
-            key, value = line.split('=', 1)
-            key, value = key.strip(), value.strip().strip('"').strip("'")
-            if key and key not in os.environ:
-                os.environ[key] = value
-    if not os.environ.get('OPENROUTER_API_KEY'):
-        raise SystemExit('OPENROUTER_API_KEY is required in the environment or .env')
 
 def prose(look):
     if not look:
@@ -144,7 +130,7 @@ async def act(body, state, decision, ident):
     return await body.call(role, op, args | dict(owner_id=state['owner']['id'], action_id=ident))
 
 async def main():
-    load_env()
+    openrouter_key()
     private = ROOT/'private'
     private.mkdir(exist_ok=True)
     lock = (private/'living.lock').open('a+b')

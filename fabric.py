@@ -6,6 +6,17 @@ ROOT = Path(__file__).resolve().parent
 CFG = tomllib.loads((ROOT / 'organism.toml').read_text('utf-8'))
 RUN = Path(os.environ.get('TRIDENT_RUN', ROOT / 'private'))
 
+def openrouter_key():
+    """The file beside this checkout contains only the key."""
+    path = ROOT.parent / '.env'
+    try:
+        key = path.read_text('utf-8-sig').strip()
+    except OSError:
+        key = ''
+    if not key:
+        raise SystemExit('The .env file beside Trident must contain only the OpenRouter key')
+    return key
+
 def token():
     return uuid.uuid4().hex
 
