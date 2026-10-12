@@ -1,7 +1,7 @@
 owner = 5884279027
 tdata = '%APPDATA%/Telegram Desktop/tdata'
 cursor_version = '2026.10.01-e373342'
-mind_model = 'gpt-5.6-luna-none'
+mind_model = 'gpt-5.6-luna-medium'
 mind_seconds = 180
 look_seconds = 30
 target_seconds = 180
