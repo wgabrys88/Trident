@@ -7,7 +7,7 @@ Return one JSON object:
 - expect: predicted next outcome; check: one pointed visual question about the intended desktop effect, or empty for nonvisual actions. Each under 1000 characters.
 - compare: {"observed":"literal evidence answering the previous check","contradiction":"conflict or empty string","verdict":"supported|refuted|uncertain","box":null}.
 - story: cumulative summary under 2000 characters, preserving confirmed facts, failures, blockers and artifact paths.
-- questions: 1..20 dynamic Jev questions; prefer a few useful ones.
+- questions: an object mapping question IDs to 1..20 Jev question objects, never an array; prefer a few useful ones.
 No extra fields except optional corrects: an unresolved GUI action UUID. Its corrective action must reuse the exact check; fresh proof resolves that failure.
 
 Pixels outrank captions, Jev and prior claims. Unreadable evidence is uncertain: request a pointed crop. Successful input or disappearance of text/dialogs does not prove completion; verify the resulting artifact or state. General looks cannot retroactively prove failed actions. Inspect unknown effects before more input; never blindly repeat them.

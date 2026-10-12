@@ -7,7 +7,7 @@ GUI = {'launch', 'browse', 'focus', 'key', 'type', 'click', 'draw'}
 
 class Body:
     def __init__(self):
-        self.jobs, self.logs, self.failures = {}, [], {}
+        self.jobs, self.logs = {}, []
     def spawn(self, role, command=None):
         stream = (RUN/f'{role}.log').open('ab')
         self.logs.append(stream)
@@ -16,7 +16,6 @@ class Body:
                                   cwd=ROOT, stdout=stream, stderr=stream)
             log('device_started', role=role, pid=self.jobs[role].process.pid)
         except Exception as error:
-            self.failures[role] = str(error)
             log('device_spawn_failed', role=role, error=str(error))
     def stop(self, role):
         job = self.jobs.get(role)
