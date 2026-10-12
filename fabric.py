@@ -196,6 +196,13 @@ def keys_in(value):
         raise ValueError('Use one real key or modifiers followed by one real key')
     return keys
 
+ARGUMENTS = {'look': ({'question'}, {'mode', 'region'}), 'launch': ({'app'}, set()),
+             'browse': ({'url'}, set()), 'focus': ({'title'}, set()), 'key': ({'keys', 'window'}, set()),
+             'type': ({'text', 'window'}, set()), 'click': ({'target'}, {'points'}),
+             'draw': ({'target'}, {'points', 'strokes'}), 'authorize': ({'quote'}, set()),
+             'dial': (set(), set()), 'say': ({'text', 'outcome'}, {'evidence'}),
+             'done': ({'text', 'outcome'}, {'evidence'}), 'recall': ({'query'}, set()), 'rest': (set(), set())}
+
 def validate(decision):
     fields = {'do', 'args', 'expect', 'check', 'compare', 'story', 'questions'}
     if (not isinstance(decision, dict) or not fields <= decision.keys() or decision.keys() - fields - {'corrects'} or
@@ -227,16 +234,10 @@ def validate(decision):
                                   not decision['corrects'].isalnum() or len(decision['corrects'])!=32 or
                                   decision['do'] not in {'launch', 'browse', 'focus', 'key', 'type', 'click', 'draw'}):
         raise ValueError('Only a corrective desktop action can resolve a prior failure')
-    schemas = {'look': ({'question'}, {'mode', 'region'}), 'launch': ({'app'}, set()),
-               'browse': ({'url'}, set()), 'focus': ({'title'}, set()), 'key': ({'keys', 'window'}, set()),
-               'type': ({'text', 'window'}, set()), 'click': ({'target'}, {'points'}),
-               'draw': ({'target'}, {'points', 'strokes'}), 'authorize': ({'quote'}, set()),
-               'dial': (set(), set()), 'say': ({'text', 'outcome'}, {'evidence'}),
-               'done': ({'text', 'outcome'}, {'evidence'}), 'recall': ({'query'}, set()), 'rest': (set(), set())}
     op, args = decision['do'], decision['args']
-    required, optional = schemas[op]
+    required, optional = ARGUMENTS[op]
     if not required <= args.keys() or args.keys() - required - optional:
-        raise ValueError('Wrong arguments for '+op)
+        raise ValueError(f'{op}.args needs {sorted(required)}; optional {sorted(optional)}; received {sorted(args)}')
     for key, value in args.items():
         if key not in {'keys', 'points', 'strokes', 'region'} and (not isinstance(value, str) or not value.strip()):
             raise ValueError('Argument '+key+' must be nonempty text')

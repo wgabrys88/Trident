@@ -1,6 +1,6 @@
 import asyncio, ctypes, json, msvcrt, os, sys, threading, time
 from pathlib import Path
-from fabric import CFG, ROOT, RUN, Job, execute, log, publish_owner, request, token, validate, write, object_in
+from fabric import CFG, ROOT, RUN, ARGUMENTS, Job, execute, log, publish_owner, request, token, validate, write, object_in
 
 DEVICES = ['manipulator', 'retina', 'phonation', 'relay', 'cochlea', 'discern']
 GUI = {'launch', 'browse', 'focus', 'key', 'type', 'click', 'draw'}
@@ -225,9 +225,11 @@ async def main():
                 await asyncio.sleep(.1); continue
             state['targets'] = {k:v for k,v in state['targets'].items() if time.time()-v['at']<CFG['target_seconds']}
             context = dict(goal=state['goal'], owner=state['owner'], story_summary=state['story'],
-                           record=list(state['record']), previous=state['last'], targets=state['targets'],
+                           record=[r for r in state['record'] if r.get('id') is None or r['id'] != state['last'].get('id')], previous=state['last'], targets=state['targets'],
                            unresolved=list(state['unresolved'].items()), unresolved_total=state['unresolved_total'],
-                           outcome_archive=str(private/'outcomes'), capabilities=CFG['capabilities'], output_directory=str(outputs))
+                           outcome_archive=str(private/'outcomes'), output_directory=str(outputs), capabilities={
+                               op:dict(required_args=sorted(ARGUMENTS[op][0]), optional_args=sorted(ARGUMENTS[op][1]), description=description)
+                               for op,description in CFG['capabilities'].items()})
             while context['record'] and len(json.dumps(context, ensure_ascii=False))>CFG['context_chars']:
                 context['record'].pop(0)
             decision, result, ident, attempted = {}, {}, token(), False
