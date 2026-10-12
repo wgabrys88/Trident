@@ -267,6 +267,8 @@ async def main():
                                                    last.get('result', {}).get('look', {}).get('submitted'))
                 decision = validate(candidate, last)
                 op, args = decision['do'], decision['args']
+                if (RUN/'stop').exists():
+                    break
                 if owner_waiting(private):
                     log('superseded', id=ident, decision=decision); continue
                 signature = json.dumps(dict(do=op, args=args), sort_keys=True)
@@ -318,6 +320,8 @@ async def main():
                                 reason='Independent pixel judgment did not support the completed claim',
                                 artifact=str(private/'outcomes'/(proof_id+'.json')), image=proof['image'])
                             raise ValueError('Fresh pixels do not establish the proposed completed effect')
+                    if (RUN/'stop').exists():
+                        state.pop('pending', None); break
                     if owner_waiting(private):
                         log('superseded', id=ident, decision=decision)
                         state.pop('pending', None); save(state, state_path); continue
@@ -352,6 +356,8 @@ async def main():
                         args = args | dict(intent_confirmed=True)
                     if op in ('click', 'draw'):
                         args = args | dict(target=state['targets'][args['target']])
+                    if (RUN/'stop').exists():
+                        state.pop('pending', None); break
                     if owner_waiting(private):
                         log('superseded', id=ident, decision=decision)
                         state.pop('pending', None); save(state, state_path); continue

@@ -14,7 +14,7 @@ story_chars = 2000
 [capabilities]
 look = 'args: question, mode locate|inspect (default inspect), optional region [xmin,ymin,xmax,ymax] normalized 0..1000. Only supported locate creates target IDs; general looks never prove completion. Inspect uses native pixels.'
 launch = 'args: app executable or document path. Launch only, then focus by title after checking.'
-browse = 'args: url. Opens Microsoft Edge using its registered executable; then focus the observed browser title.'
+browse = 'args: url. Opens the Windows registered browser; then focus the observed browser title.'
 focus = 'args: title (observed window title). Brings it to front.'
 key = 'args: keys as Enter or ctrl+shift+s or [ctrl,shift,s], window exact ID from fresh capture. Real key events; foreground required.'
 type = 'args: text, window exact ID from fresh capture. Clipboard paste; never a keyboard command. Foreground required.'

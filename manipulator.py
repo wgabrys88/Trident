@@ -1,4 +1,4 @@
-import asyncio, ctypes, subprocess, time, winreg
+import asyncio, ctypes, os, time
 from ctypes import wintypes as W
 from fabric import CFG, RUN, NotAttempted, keys_in, log, serve, token
 
@@ -61,12 +61,11 @@ def shot():
 def perform(op, args):
     events = []
     before = foreground()['id']
-    if op == 'launch':
-        subprocess.Popen([args['app']], creationflags=subprocess.CREATE_NO_WINDOW)
-    elif op == 'browse':
-        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe') as key:
-            browser = winreg.QueryValue(key, None)
-        subprocess.Popen([browser, args['url']], creationflags=subprocess.CREATE_NO_WINDOW)
+    if op in ('launch', 'browse'):
+        try:
+            os.startfile(args['app' if op == 'launch' else 'url'])
+        except OSError as error:
+            raise NotAttempted(str(error)) from error
     elif op == 'focus':
         matches = [window for window in shot()['windows'] if args['title'].casefold() in window['title'].casefold()]
         if not matches:
