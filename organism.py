@@ -66,7 +66,7 @@ def compact(entry):
     decision, result = entry.get('decision', {}), entry.get('result', {})
     brief = {k:v for k,v in result.items() if k in
              {'outcome', 'error', 'reason', 'refused', 'connected', 'authorized', 'image', 'target', 'desktop',
-              'window', 'verified', 'delivered', 'hearing_verified', 'message_id', 'note', 'local_spoken', 'resolved'}}
+              'window', 'windows', 'verified', 'delivered', 'hearing_verified', 'message_id', 'note', 'local_spoken', 'resolved', 'history', 'incomplete'}}
     if result.get('look'):
         brief['look'] = {k:v for k,v in result['look'].items() if k in
                         {'verdict', 'observed', 'contradiction', 'image', 'submitted', 'question', 'mode',
@@ -134,9 +134,6 @@ def supported(look):
             look.get('verdict') == 'supported' and not look.get('contradiction') and
             len(look.get('observed', '').strip()) > 12 and not look.get('error'))
 
-def window_region(capture):
-    return capture['window']['normalized_box']
-
 def owner_waiting(private):
     for path in (private/'inbox').glob('*.json'):
         if json.loads(path.read_text('utf-8')).get('source') in ('local-owner', 'telegram-owner'):
@@ -162,13 +159,7 @@ async def main():
     state = json.loads(state_path.read_text('utf-8')) if state_path.exists() else dict(story='', record=[], goal='')
     state.setdefault('unresolved', {})
     state.setdefault('unresolved_total', len(state['unresolved']))
-    for entry in list(state['record']):
-        if entry.get('decision') and not entry.get('id'):
-            remember(state, dict(id=token(), decision=entry['decision'], result=entry.get('result', {}), imported=True))
-    state['record'] = [entry for entry in state['record'] if not entry.get('decision') or entry.get('id')]
-    if state.get('last') and not state['last'].get('id'):
-        state['last'] = state['record'][-1] if state['record'] else {}
-    state['targets'] = {}
+    state.update(targets={}, story='')
     owner, last = state.get('owner', {}), state.get('last', {})
     active, reported = state.get('active', False), state.get('reported', False)
     if state.get('pending'):
@@ -199,7 +190,7 @@ async def main():
         if len(sys.argv) > 1:
             publish_owner(' '.join(sys.argv[1:]), 'local-owner')
         policy = (ROOT/'instinct.txt').read_text('utf-8')
-        arrival = await speak(body, state, 'Trident is here. I have preserved the continuing record.', 'arrival-'+run.name)
+        arrival = await speak(body, state, 'Trident is here.', 'arrival-'+run.name)
         state['record'].append(dict(arrival=arrival)); save(state, state_path)
         announced = set()
         while not (RUN/'stop').exists():
@@ -311,7 +302,6 @@ async def main():
                                     return dict(history=history, incomplete=True, outcome='completed')
                         return dict(history=history, incomplete=False, outcome='completed')
                     result = await asyncio.to_thread(recall)
-                    state['record'].append(dict(recall=result))
                 else:
                     if op == 'authorize':
                         permission = await asyncio.to_thread(infer,
@@ -334,7 +324,8 @@ async def main():
                             state['targets'] = {}
                         result = await body.call('manipulator', 'capture' if op == 'look' else op, args | dict(action_id=ident), 10)
                         if result.get('image'):
-                            region = args.get('region') if op == 'look' else (args['target']['box'] if op in ('click', 'draw') else window_region(result))
+                            region = (args.get('region') if op == 'look' else args['target']['box'] if op in ('click', 'draw')
+                                      else None if op in ('launch', 'browse') else result['window']['normalized_box'])
                             look_args = dict(image=result['image'], question=args['question'] if op == 'look' else decision['check'],
                                              action_id=ident, mode=args.get('mode', 'inspect') if op == 'look' else 'inspect')
                             if region:

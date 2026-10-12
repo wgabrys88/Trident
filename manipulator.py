@@ -1,6 +1,6 @@
-import asyncio, ctypes, os, subprocess, time, winreg
+import asyncio, ctypes, subprocess, time, winreg
 from ctypes import wintypes as W
-from fabric import CFG, RUN, NotAttempted, execute, keys_in, log, serve, token
+from fabric import CFG, RUN, NotAttempted, keys_in, log, serve, token
 
 u = ctypes.WinDLL('user32', use_last_error=True)
 u.SetProcessDpiAwarenessContext.argtypes = [W.HANDLE]
@@ -12,6 +12,9 @@ u.GetForegroundWindow.restype = W.HWND
 u.GetWindowTextW.argtypes = [W.HWND, W.LPWSTR, ctypes.c_int]
 u.GetWindowRect.argtypes = [W.HWND, ctypes.POINTER(W.RECT)]
 u.IsWindow.argtypes = [W.HWND]
+u.IsWindowVisible.argtypes = [W.HWND]
+u.ShowWindow.argtypes = [W.HWND, ctypes.c_int]
+u.SetForegroundWindow.argtypes = [W.HWND]
 import pyautogui as gui
 import pyperclip
 from PIL import ImageGrab
@@ -20,8 +23,8 @@ gui.PAUSE = .1
 def desktop():
     return [u.GetSystemMetrics(i) for i in (76, 77, 78, 79)]
 
-def foreground():
-    handle, title, rect = u.GetForegroundWindow(), ctypes.create_unicode_buffer(1024), W.RECT()
+def foreground(handle=None):
+    handle, title, rect = handle or u.GetForegroundWindow(), ctypes.create_unicode_buffer(1024), W.RECT()
     u.GetWindowTextW(handle, title, len(title))
     u.GetWindowRect(handle, ctypes.byref(rect))
     return dict(id=str(handle), title=title.value, rect=[rect.left, rect.top, rect.right, rect.bottom])
@@ -44,10 +47,20 @@ def shot():
     left, top, right, bottom = window['rect']
     window['normalized_box'] = [max(0, (left-ox)*1000/width), max(0, (top-oy)*1000/height),
                                 min(1000, (right-ox)*1000/width), min(1000, (bottom-oy)*1000/height)]
-    return dict(image=str(path), desktop=rectangle, window=window, at=time.time())
+    windows = []
+    @ctypes.WINFUNCTYPE(W.BOOL, W.HWND, W.LPARAM)
+    def collect(handle, _):
+        if u.IsWindowVisible(handle):
+            item = foreground(handle)
+            if item['title'] and len(windows) < 20:
+                windows.append(item)
+        return True
+    u.EnumWindows(collect, 0)
+    return dict(image=str(path), desktop=rectangle, window=window, windows=windows, at=time.time())
 
 def perform(op, args):
     events = []
+    before = foreground()['id']
     if op == 'launch':
         subprocess.Popen([args['app']], creationflags=subprocess.CREATE_NO_WINDOW)
     elif op == 'browse':
@@ -55,11 +68,19 @@ def perform(op, args):
             browser = winreg.QueryValue(key, None)
         subprocess.Popen([browser, args['url']], creationflags=subprocess.CREATE_NO_WINDOW)
     elif op == 'focus':
-        execute(['powershell.exe', '-NoProfile', '-Command',
-                 "$s=New-Object -ComObject WScript.Shell; if (-not $s.AppActivate($env:TRIDENT_TITLE)) { throw 'Window not found' }"],
-                5, env=os.environ | {'TRIDENT_TITLE': args['title']})
-        if args['title'].casefold() not in foreground()['title'].casefold():
-            raise OSError('Requested window did not become foreground')
+        matches = [window for window in shot()['windows'] if args['title'].casefold() in window['title'].casefold()]
+        if not matches:
+            raise NotAttempted('Requested window was not found')
+        handle = W.HWND(int(matches[0]['id']))
+        u.ShowWindow(handle, 9)
+        gui.press('alt')
+        accepted = bool(u.SetForegroundWindow(handle))
+        deadline = time.monotonic()+2
+        while foreground()['id'] != matches[0]['id'] and time.monotonic() < deadline:
+            time.sleep(.05)
+        events.append(dict(focused=matches[0]['id'], foreground=foreground()['id'], accepted=accepted, keys=['alt']))
+        if foreground()['id'] != matches[0]['id']:
+            return dict(error='Windows did not focus the requested window', outcome='failed', verified=False, events=events, **shot())
     elif op in ('key', 'type'):
         require_window(args['window'])
         if op == 'key':
@@ -106,6 +127,10 @@ def perform(op, args):
                 log('mouse_released', action_id=args.get('action_id'))
     elif op != 'capture':
         raise ValueError('Unknown native action')
+    if op in ('launch', 'browse'):
+        deadline = time.monotonic()+4
+        while foreground()['id'] == before and time.monotonic() < deadline:
+            time.sleep(.1)
     log('native_events', action_id=args.get('action_id'), op=op, events=events)
     time.sleep(.3)
     return dict(accepted=True, verified=False, events=events, **shot())

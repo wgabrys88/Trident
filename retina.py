@@ -47,12 +47,19 @@ def inspect(args):
               '"verdict":"supported|refuted|uncertain", "box":[xmin,ymin,xmax,ymax] or null}. '
               'Do not infer hidden results, saved contents, submission, or delivery. '
               'Unreadable details require uncertain. Missing requested effects require refuted. '
+              'When no contradictory evidence is visible, contradiction must be the empty string "". '
               + ('Locate the requested target with a normalized X,Y 0..1000 box; Y increases downward.'
                  if mode == 'locate' else 'Inspect the exact expected change. Return box=null.'))
     data = submitted.read_bytes()
     content = [dict(type='text', text=args['question']), dict(type='image_url',
                image_url=dict(url='data:image/png;base64,'+base64.b64encode(data).decode()))]
+    fields = {'observed':dict(type='string'), 'contradiction':dict(type='string'),
+              'verdict':dict(type='string', enum=['supported', 'refuted', 'uncertain']),
+              'box':dict(type=['array', 'null'], minItems=4, maxItems=4,
+                         items=dict(type='number', minimum=0, maximum=1000)) if mode == 'locate' else dict(type='null')}
+    schema = dict(type='object', properties=fields, required=list(fields), additionalProperties=False)
     body = dict(model='retina', temperature=0, max_tokens=350,
+                response_format=dict(type='json_object', schema=schema),
                 messages=[dict(role='system', content=system), dict(role='user', content=content)])
     log('pixels_submitted', action_id=args.get('action_id'), image=str(source), submitted=str(submitted),
         question=args['question'], mode=mode, source_size=[width, height], crop=rectangle,
@@ -67,10 +74,11 @@ def inspect(args):
     if choice['finish_reason'] != 'stop':
         raise ValueError('Incomplete visual answer; no proof')
     answer = object_in(raw)
-    if (set(answer) != {'observed', 'contradiction', 'verdict', 'box'} or
+    if (not fields.keys() <= answer.keys() or
             not isinstance(answer['observed'], str) or answer['contradiction'] is not None and not isinstance(answer['contradiction'], str) or
             answer['verdict'] not in ('supported', 'refuted', 'uncertain')):
         raise ValueError('Malformed visual judgment')
+    answer = {key:answer[key] for key in fields}
     answer['contradiction'] = answer['contradiction'] or ''
     box = answer['box']
     if mode == 'inspect' and box is not None or box is not None and not box_valid(box):
