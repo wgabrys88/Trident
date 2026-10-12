@@ -60,7 +60,6 @@ def shot():
 
 def perform(op, args):
     events = []
-    before = foreground()['id']
     if op in ('launch', 'browse'):
         try:
             os.startfile(args['app' if op == 'launch' else 'url'])
@@ -132,12 +131,9 @@ def perform(op, args):
                 log('mouse_released', action_id=args.get('action_id'))
     elif op != 'capture':
         raise ValueError('Unknown native action')
-    if op in ('launch', 'browse'):
-        deadline = time.monotonic()+4
-        while foreground()['id'] == before and time.monotonic() < deadline:
-            time.sleep(.1)
     log('native_events', action_id=args.get('action_id'), op=op, events=events)
-    time.sleep(.3)
+    if op != 'capture':
+        time.sleep(5)
     return dict(accepted=True, verified=False, events=events, **shot())
 
 async def handle(op, args):

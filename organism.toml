@@ -1,10 +1,12 @@
 owner = 5884279027
 tdata = '%APPDATA%/Telegram Desktop/tdata'
 cursor_version = '2026.10.01-e373342'
-mind_model = 'gpt-5.6-luna-medium'
-mind_seconds = 60
-look_seconds = 8
-target_seconds = 75
+mind_model = 'gpt-5.6-luna-xhigh-fast'
+mind_seconds = 180
+look_seconds = 30
+target_seconds = 180
+decision_model = 'typesafe/jev-1.13'
+decision_seconds = 15
 image_side = 768
 vision_url = 'http://127.0.0.1:8188'
 asr_model = 'tiny.en'
@@ -12,7 +14,7 @@ context_chars = 24000
 story_chars = 2000
 
 [capabilities]
-look = 'args: question, mode locate|inspect (default inspect), optional region [xmin,ymin,xmax,ymax] normalized 0..1000. located=true supplies a usable target ID, not completion proof; look has no verified flag. Inspect uses native pixels.'
+look = 'args: question, mode locate|inspect (default inspect), optional region [xmin,ymin,xmax,ymax] normalized 0..1000. Returns detailed description and a proposed target ID; confirm its actual box in the following pixel comparison before input. Inspection preserves native pixels.'
 launch = 'args: app executable or document path. Launch only, then focus by title after checking.'
 browse = 'args: url. Opens the Windows registered browser; then focus the observed browser title.'
 focus = 'args: title (observed window title). Brings it to front.'
@@ -23,6 +25,6 @@ draw = 'args: target id; strokes [[[x,y],...],...] for separate polylines, or po
 authorize = 'args: quote exact words of current owner explicit call request. One permission, expires in 120 seconds.'
 dial = 'args: {}. Consumes permission, attempts configured call provider, returns actual refusal or connection state.'
 say = 'args: text, outcome current owner UUID or actual action UUID; evidence action UUID required for GUI completion claims. One narration per owner/outcome; delivers a voice note and continues.'
-done = 'args: text, outcome current owner UUID or actual action UUID; evidence action UUID for GUI completion claims. Delivers a voice note and waits. Unknown delivery is never blindly repeated.'
+done = 'args: text, outcome conversation UUID or actual action UUID; evidence action UUID for GUI completion claims. Delivers a voice note, clears the completed goal, and remains alive. Unknown delivery is never blindly repeated.'
 recall = 'args: query. Read matching historical events in bulk only if bounded story lacks an important detail.'
-rest = 'args: {}. Wait for owner; no message.'
+rest = 'args: {}. Pause thought for sixty seconds; an owner message wakes you. No automatic message.'

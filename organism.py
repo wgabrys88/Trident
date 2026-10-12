@@ -1,8 +1,8 @@
 import asyncio, ctypes, json, msvcrt, os, sys, threading, time
 from pathlib import Path
-from fabric import CFG, ROOT, RUN, Job, execute, log, publish_owner, request, token, validate, write, object_in, box_valid
+from fabric import CFG, ROOT, RUN, Job, execute, log, publish_owner, request, token, validate, write, object_in
 
-DEVICES = ['manipulator', 'retina', 'phonation', 'relay', 'cochlea']
+DEVICES = ['manipulator', 'retina', 'phonation', 'relay', 'cochlea', 'discern']
 GUI = {'launch', 'browse', 'focus', 'key', 'type', 'click', 'draw'}
 
 class Body:
@@ -85,106 +85,83 @@ def infer(prompt, image=None):
     log('inference', prompt=str(prompt_file), transcript=str(transcript), raw=texts[-1], pixels_inspected=inspected)
     return object_in(texts[-1])
 
-def judge(look, question, locate=False):
-    contract = ('Return {"observed":"literal target", "box":[xmin,ymin,xmax,ymax] or null}. '
-                'Locate only the requested target, excluding surrounding controls. Coordinates are X,Y, '
-                'normalized 0..1000 to the FULL supplied desktop image; Y increases downward. '
-                'An unavailable target requires box=null.' if locate else
-                'Return {"observed":"literal visible evidence", "contradiction":"visible conflict or empty string", '
-                '"verdict":"supported|refuted|uncertain"}. Unreadable evidence is uncertain. Do not infer hidden effects.')
-    answer = infer(question+'\n'+contract, look['image'] if locate else look['submitted'])
-    if locate:
-        if (set(answer) != {'observed', 'box'} or not isinstance(answer['observed'], str) or
-                answer['box'] is not None and not box_valid(answer['box'])):
-            raise ValueError('Invalid pixel location')
-        answer.update(verdict='supported' if answer['box'] else 'uncertain', contradiction='')
-    elif (set(answer) != {'observed', 'contradiction', 'verdict'} or
-          not all(isinstance(answer[k], str) for k in answer) or answer['verdict'] not in ('supported', 'refuted', 'uncertain')):
-        raise ValueError('Invalid pixel judgment')
-    return look | answer | dict(local_observation={k:look.get(k) for k in answer}, pixels_inspected=True)
 
 def compact(entry):
-    decision, result = entry.get('decision', {}), entry.get('result', {})
-    brief = {k:v for k,v in result.items() if k in
-             {'outcome', 'error', 'reason', 'refused', 'connected', 'authorized', 'image', 'target', 'located', 'desktop',
-              'window', 'windows', 'verified', 'delivered', 'hearing_verified', 'message_id', 'note', 'local_spoken', 'resolved', 'history', 'incomplete'}}
-    if result.get('look'):
-        brief['look'] = {k:v for k,v in result['look'].items() if k in
-                        {'verdict', 'observed', 'contradiction', 'image', 'submitted', 'question', 'mode',
-                         'at', 'seconds', 'pixels_delivered', 'pixels_inspected', 'action_id', 'verified',
-                         'region', 'box', 'source_size', 'submitted_size'}}
-    if result.get('observation'):
-        brief['observation'] = result['observation']
-    if result.get('delivery'):
-        brief['delivery'] = {k:v for k,v in result['delivery'].items() if k in
-                             {'delivered', 'message_id', 'hearing_verified', 'note', 'local_spoken', 'outcome'}}
-    args = {k:v for k,v in decision.get('args', {}).items()
-            if k not in {'strokes', 'points'}}
-    return dict(id=entry['id'], decision={k:v for k,v in decision.items() if k != 'story'} | dict(args=args),
-                result=brief, artifact=entry.get('artifact'))
+    result = {k:v for k,v in entry['result'].items() if k not in {'events', 'look'}}
+    if 'look' in entry['result']:
+        result['look'] = {k:v for k,v in entry['result']['look'].items() if k not in {'raw', 'local_observation'}}
+    return dict(id=entry['id'], decision={k:v for k,v in entry['decision'].items() if k != 'story'},
+                result=result, artifact=entry['artifact'])
 
-def save(state, path):
+def save(state):
     while state['record'] and len(json.dumps(state['record'], ensure_ascii=False)) > 8000:
         state['record'].pop(0)
     while len(state['unresolved']) > 16:
         state['unresolved'].pop(next(iter(state['unresolved'])))
-    write(path, state)
+    write(ROOT/'private'/'continuity.json', state)
 
 def remember(state, entry):
-    path = ROOT/'private'/'outcomes'/(entry['id']+'.json')
-    entry['artifact'] = str(path)
+    entry['artifact'] = str(ROOT/'private'/'outcomes'/(entry['id']+'.json'))
     result = entry['result']
-    entry['unresolved'] = bool(result.get('error') or result.get('refused') or result.get('unconfirmed') or result.get('outcome') == 'unknown')
-    write(path, entry)
+    unresolved = bool(result.get('error') or result.get('refused') or result.get('unconfirmed') or result.get('outcome') == 'unknown')
+    state['unresolved_total'] += int(unresolved)-int(entry.get('unresolved', False))
+    entry['unresolved'] = unresolved
+    write(Path(entry['artifact']), entry)
     log('outcome', **entry)
-    brief = compact(entry)
-    state['record'].append(brief)
-    state['last'] = brief
-    if entry['unresolved']:
-        state['unresolved_total'] += 1
-        state['unresolved'][entry['id']] = dict(op=entry['decision'].get('do'), reason=result.get('error') or result.get('reason') or 'Outcome unknown',
-                                               artifact=str(path), image=result.get('image'))
-        while len(state['unresolved']) > 16:
-            state['unresolved'].pop(next(iter(state['unresolved'])))
-    return brief
+    if unresolved:
+        state['unresolved'][entry['id']] = dict(reason=result.get('reason') or result.get('error') or 'Unconfirmed effect', artifact=entry['artifact'])
+    else:
+        state['unresolved'].pop(entry['id'], None)
+    state['last'] = compact(entry)
+    state['record'] = [r for r in state['record'] if r.get('id') != entry['id']]+[state['last']]
+    save(state)
 
-async def speak(body, state, text, ident):
-    receipts = ROOT/'private'/'voice'
-    path = receipts/(ident+'.json')
+def compare(state, decision, image):
+    if not image:
+        return
+    entry = json.loads(Path(state['last']['artifact']).read_text('utf-8'))
+    result, action, judgment = entry['result'], entry['decision'], decision['compare']
+    supported = judgment['verdict'] == 'supported' and not judgment['contradiction'] and len(judgment['observed'].strip()) > 12
+    result['judgment'] = judgment | dict(image=image, pixels_inspected=True, action_id=entry['id'], question=action.get('check'))
+    if action['do'] in GUI:
+        result.update(verified=supported and not result.get('error'), unconfirmed=not supported)
+        if not supported:
+            result['reason'] = judgment['contradiction'] or judgment['observed']
+        correction = action.get('corrects')
+        if correction and result['verified']:
+            prior = json.loads((ROOT/'private'/'outcomes'/(correction+'.json')).read_text('utf-8'))
+            prior.update(unresolved=False, resolved_by=entry['id'])
+            write(Path(prior['artifact']), prior)
+            state['unresolved'].pop(correction, None)
+            state['unresolved_total'] -= 1
+    elif action['do'] == 'look' and action['args'].get('mode') == 'locate':
+        box = judgment['box']
+        result['located'] = bool(supported and box)
+        if result['located']:
+            state['targets'][entry['id']] = dict(box=box, at=result['at'], desktop=result['desktop'], window=result['window'])
+    remember(state, entry)
+    log('comparison', id=entry['id'], judgment=result['judgment'])
+
+async def speak(body, text, ident):
+    path = ROOT/'private'/'voice'/(ident+'.json')
     if path.exists():
         return json.loads(path.read_text('utf-8'))
-    # Durable pre-upload checkpoint: an interrupted delivery must not be resent.
-    result = dict(text=text, outcome='unknown', delivered=False, hearing_verified=False)
-    write(path, result)
+    write(path, dict(text=text, outcome='unknown', delivered=False, hearing_verified=False))
     result = await body.call('phonation', 'speak', dict(text=text, narration_id=ident), 55)
     if not result.get('delivered') and not result.get('local_spoken'):
-        print('VOICE FAILURE:', text, result, flush=True)
         script = "Add-Type -AssemblyName System.Speech; $v=New-Object System.Speech.Synthesis.SpeechSynthesizer; $v.Speak($env:TRIDENT_TEXT); $v.Dispose()"
         try:
             await asyncio.to_thread(execute, ['powershell.exe', '-NoProfile', '-Command', script], 15,
                                     env=os.environ | {'TRIDENT_TEXT':'Voice delivery is unavailable. '+text})
             result['local_spoken'] = True
         except Exception as error:
-            result['local_error'] = type(error).__name__
+            result['local_error'] = str(error)
     result = dict(text=text, hearing_verified=False) | result
-    write(path, result)
-    log('narration', id=ident, result=result)
+    write(path, result); log('narration', id=ident, result=result)
     return result
 
-def supported(look):
-    return (look.get('pixels_delivered') is True and look.get('pixels_inspected') is True and look.get('mode') == 'inspect' and
-            look.get('verdict') == 'supported' and not look.get('contradiction') and
-            len(look.get('observed', '').strip()) > 12 and not look.get('error'))
-
-def owner_waiting(private):
-    for path in (private/'inbox').glob('*.json'):
-        if json.loads(path.read_text('utf-8')).get('source') in ('local-owner', 'telegram-owner'):
-            return True
-    return False
-
 async def main():
-    private = ROOT/'private'
-    private.mkdir(exist_ok=True)
+    private = ROOT/'private'; private.mkdir(exist_ok=True)
     lock = (private/'living.lock').open('a+b')
     if lock.tell() == 0:
         lock.write(b'0'); lock.flush()
@@ -198,22 +175,17 @@ async def main():
         (RUN/role).mkdir()
     outputs = ROOT/'runtime'/'output'; outputs.mkdir(parents=True, exist_ok=True)
     state_path = private/'continuity.json'
-    state = json.loads(state_path.read_text('utf-8')) if state_path.exists() else dict(story='', record=[], goal='')
-    state.setdefault('unresolved', {})
-    state.setdefault('unresolved_total', len(state['unresolved']))
-    state.setdefault('blocked', {})
-    state.update(targets={}, story='')
-    owner, last = state.get('owner', {}), state.get('last', {})
-    active, reported = state.get('active', False), state.get('reported', False)
+    state = dict(story='', record=[], goal='', unresolved={}, unresolved_total=0, last={},
+                 owner=dict(id=token(), text='', source='no-owner-goal', at=time.time()))
+    if state_path.exists():
+        state.update(json.loads(state_path.read_text('utf-8')))
+    state.pop('blocked', None)
+    state.update(targets={}, active=True, process_state='running', run=str(run))
     if state.get('pending'):
         pending = state.pop('pending')
-        decision = pending.get('decision', pending)
-        result = dict(error='Process stopped during action; inspect before repeating',
-                      outcome='unknown' if pending.get('phase', 'attempted') == 'attempted' else 'not_attempted', verified=False)
-        last = remember(state, dict(id=pending.get('id', token()), decision=decision, result=result))
-        active, reported = True, False
-    state.update(last=last, active=active, owner=owner, reported=reported, process_state='running', run=str(run))
-    save(state, state_path)
+        remember(state, dict(id=pending['id'], decision=pending['decision'], result=dict(
+            error='Process stopped during action; inspect before repeating', outcome='unknown' if pending['phase']=='attempted' else 'not_attempted')))
+    save(state)
     body = Body()
     def console():
         for text in sys.stdin:
@@ -230,238 +202,134 @@ async def main():
         for role in DEVICES:
             body.spawn(role)
         print(f'Trident alive. Run: {RUN}\nType or send owner Telegram text/voice. Ctrl+C stops.', flush=True)
-        if len(sys.argv) > 1:
+        if len(sys.argv)>1:
             publish_owner(' '.join(sys.argv[1:]), 'local-owner')
+        state['record'].append(dict(arrival=await speak(body, 'Trident is here.', 'arrival-'+run.name)))
         policy = (ROOT/'instinct.txt').read_text('utf-8')
-        arrival = await speak(body, state, 'Trident is here.', 'arrival-'+run.name)
-        state['record'].append(dict(arrival=arrival)); save(state, state_path)
-        announced = set()
+        announced, wake = set(), 0
         while not (RUN/'stop').exists():
-            failures = body.failures | {role:f'exited with {job.process.returncode}' for role,job in body.jobs.items() if job.process.poll() is not None}
-            for role, detail in failures.items():
-                if role not in announced:
+            for role, job in body.jobs.items():
+                if job.process.poll() is not None and role not in announced:
                     announced.add(role); body.stop(role)
                     ident = token()
-                    failure = dict(error=f'{role}: {detail}', outcome='failed', verified=False)
-                    failure['delivery'] = await speak(body, state, f'My {role} device stopped. I remain here. {detail}.', 'failure-'+ident)
-                    remember(state, dict(id=ident, decision=dict(do='device_failure'), result=failure))
-                    save(state, state_path)
-            messages = sorted((private/'inbox').glob('*.json'))
-            if messages:
-                path = messages[0]; message = json.loads(path.read_text('utf-8'))
-                if message.get('source') in ('local-owner', 'telegram-owner'):
-                    owner = message; write(private/'owner.json', owner)
-                    state['goal'], active, reported = owner['text'], True, False
-                    state['record'].append(dict(owner=owner))
-                else:
-                    result = dict(observation=message, outcome='failed', error=message['text'])
-                    result['delivery'] = await speak(body, state, message['text'], 'observation-'+message['id'])
-                    remember(state, dict(id=message['id'], decision=dict(do='observation'), result=result))
-                path.unlink()
-                state.update(owner=owner, active=active, reported=reported); save(state, state_path)
-            if not active:
+                    remember(state, dict(id=ident, decision=dict(do='device_failure'), result=dict(
+                        error=f'{role} exited with {job.process.returncode}', outcome='failed',
+                        delivery=await speak(body, f'My {role} device stopped. I remain here, but need to recover it before using it.', 'failure-'+ident))))
+            for path in sorted((private/'inbox').glob('*.json')):
+                message = json.loads(path.read_text('utf-8')); path.unlink()
+                state['record'].append(dict(message=message))
+                if message['source'] in ('local-owner','telegram-owner'):
+                    state.update(owner=message, goal=message['text'])
+                    write(private/'owner.json', message)
+                wake = 0
+            if time.time()<wake:
                 await asyncio.sleep(.1); continue
-            failures_view = list(state['unresolved'].items())[-8:]
-            context = dict(goal=state['goal'], story_summary=state['story'], record=list(state['record']), previous=last,
-                           unresolved=failures_view, unresolved_total=state['unresolved_total'],
-                           outcome_archive=str(private/'outcomes'), capabilities=CFG['capabilities'],
-                           targets=state['targets'], output_directory=str(outputs), reported=reported, owner=owner)
-            while len(json.dumps(context, ensure_ascii=False)) > CFG['context_chars'] and context['record']:
+            state['targets'] = {k:v for k,v in state['targets'].items() if time.time()-v['at']<CFG['target_seconds']}
+            context = dict(goal=state['goal'], owner=state['owner'], story_summary=state['story'],
+                           record=list(state['record']), previous=state['last'], targets=state['targets'],
+                           unresolved=list(state['unresolved'].items()), unresolved_total=state['unresolved_total'],
+                           outcome_archive=str(private/'outcomes'), capabilities=CFG['capabilities'], output_directory=str(outputs))
+            while context['record'] and len(json.dumps(context, ensure_ascii=False))>CFG['context_chars']:
                 context['record'].pop(0)
-            decision, result, ident, attempted, signature = {}, {}, token(), False, ''
+            decision, result, ident, attempted = {}, {}, token(), False
             try:
-                if len(json.dumps(context, ensure_ascii=False)) > CFG['context_chars']:
-                    raise ValueError('Bounded context is full; consult archived outcomes')
-                candidate = await asyncio.to_thread(infer, policy+'\n'+json.dumps(context, ensure_ascii=False),
-                                                   last.get('result', {}).get('image'))
-                decision = validate(candidate, last)
-                op, args = decision['do'], decision['args']
+                if len(json.dumps(context, ensure_ascii=False))>CFG['context_chars']:
+                    raise ValueError('Working context is full; consult the archived outcomes')
+                image = state['last'].get('result',{}).get('image')
+                if image and Path(image).parent != RUN:
+                    image = None  # Archived screenshots do not describe this process's live desktop.
+                decision = validate(await asyncio.to_thread(infer, policy+'\n'+json.dumps(context,ensure_ascii=False), image),state['last'])
+                compare(state, decision, image)
                 if (RUN/'stop').exists():
                     break
-                if owner_waiting(private):
+                if any(json.loads(p.read_text('utf-8'))['source'] in ('local-owner','telegram-owner') for p in (private/'inbox').glob('*.json')):
                     log('superseded', id=ident, decision=decision); continue
-                signature = json.dumps(dict(do=op, args=args), sort_keys=True)
-                blocked = state['blocked'].get(signature)
-                if blocked and blocked['owner'] == owner.get('id'):
-                    log('repeat_prevented', id=ident, previous=blocked['id'], decision=decision)
-                    state.update(active=False, reported=True); save(state, state_path)
-                    active = False
-                    continue  # The exact failure was already delivered; do not retry or narrate it again.
-                state['story'] = decision['story']  # Summary only; canonical outcomes remain outside it.
+                op, args = decision['do'], decision['args']
+                if state['last'].get('result',{}).get('outcome')=='unknown' and op in GUI:
+                    raise ValueError('Inspect the unknown outcome before any further desktop input')
+                if decision.get('corrects'):
+                    prior = json.loads((private/'outcomes'/(decision['corrects']+'.json')).read_text('utf-8'))
+                    if not prior.get('unresolved') or prior['decision']['do'] not in GUI or prior['decision']['check']!=decision['check']:
+                        raise ValueError('Correction must reuse the unresolved action\'s exact pointed question')
+                state['story'] = decision['story']
                 log('prediction', id=ident, decision=decision)
-                state['pending'] = dict(id=ident, decision=decision, phase='prepared'); save(state, state_path)
-                if op in ('say', 'done'):
+                state['pending'] = dict(id=ident,decision=decision,phase='prepared'); save(state)
+                if op in ('click','draw'):
+                    target = state['targets'].get(args['target'])
+                    if not target:
+                        raise ValueError('That target is unavailable; locate it again')
+                    args = args | dict(target=target)
+                if op in ('say','done'):
                     reference = args['outcome']
-                    if not reference.isalnum() or len(reference) != 32:
-                        raise ValueError('Outcome must be a current owner or action UUID')
-                    if reference != owner.get('id') and not (private/'outcomes'/(reference+'.json')).exists():
-                        raise ValueError('Narration must reference the current owner or a recorded outcome')
-                    reference_record = owner if reference == owner.get('id') else compact(json.loads((private/'outcomes'/(reference+'.json')).read_text('utf-8')))
-                    audit = await asyncio.to_thread(infer,
-                        'Audit the proposed sentence against actual outcomes. Check speaker attribution. A call refusal, '
-                        'connection result, owner receipt or voice delivery is nonvisual. For a completed desktop effect, '
-                        'require its exact action ID, supporting screenshot and pointed postcondition. A later general look '
-                        'cannot overrule a refuted action. Return {"allowed":boolean,"gui_claim":boolean,"reason":"concise text"}.\n'
-                        +json.dumps(dict(sentence=args['text'], reference=reference_record, evidence=args.get('evidence'),
-                                        unresolved=failures_view, last=last, record=state['record']), ensure_ascii=False))
-                    if audit.get('allowed') is not True or type(audit.get('gui_claim')) is not bool:
-                        raise ValueError('Spoken claim lacks support in the actual outcome record')
-                    if audit['gui_claim']:
-                        proof_id = args.get('evidence', '')
-                        if not proof_id.isalnum() or len(proof_id) != 32:
-                            raise ValueError('A desktop claim needs an exact action evidence ID')
-                        proof_entry = json.loads((private/'outcomes'/(proof_id+'.json')).read_text('utf-8'))
-                        proof = proof_entry['result'].get('look', {})
-                        if (proof_entry['decision']['do'] not in GUI or not proof.get('verified') or
-                                proof.get('action_id') != proof_id or proof_entry.get('unresolved') or
-                                time.time()-proof.get('at', 0) > 120):
-                            raise ValueError('No fresh specific action proof supports this claim')
-                        judgment = await asyncio.to_thread(judge, proof, 'Do these pixels support this exact completed effect: '+args['text']+'?')
-                        log('claim_judgment', narration_id=ident, evidence_id=proof_id, result=judgment)
-                        if not supported(judgment):
-                            proof_entry['result']['look']['verified'] = False
-                            proof_entry['result']['claim_judgment'] = judgment
-                            if not proof_entry.get('unresolved'):
-                                state['unresolved_total'] += 1
-                            proof_entry['unresolved'] = True
-                            write(private/'outcomes'/(proof_id+'.json'), proof_entry)
-                            state['unresolved'][proof_id] = dict(op=proof_entry['decision']['do'],
-                                reason='Independent pixel judgment did not support the completed claim',
-                                artifact=str(private/'outcomes'/(proof_id+'.json')), image=proof['image'])
-                            raise ValueError('Fresh pixels do not establish the proposed completed effect')
-                    if (RUN/'stop').exists():
-                        state.pop('pending', None); break
-                    if owner_waiting(private):
-                        log('superseded', id=ident, decision=decision)
-                        state.pop('pending', None); save(state, state_path); continue
-                    attempted = True; state['pending']['phase'] = 'attempted'; save(state, state_path)
-                    result = await speak(body, state, args['text'], owner['id']+'-'+reference)
-                    reported = bool(result.get('delivered') or result.get('local_spoken'))
-                    if op == 'done' or not result.get('delivered'):
-                        active = False
-                elif op == 'rest':
-                    if not reported and last.get('decision', {}).get('do') not in ('say', 'done', 'rest', None):
-                        raise ValueError('Narrate the actual outcome before resting')
-                    result, active = dict(resting=True, outcome='completed'), False
-                elif op == 'recall':
-                    query = args['query'].casefold()
-                    def recall():
-                        history, deadline = '', time.monotonic()+5
-                        for path in private.glob('*/*.jsonl'):
-                            for line in path.read_text('utf-8').splitlines():
-                                if query in line.casefold():
-                                    history = (history+line+'\n')[-8000:]
-                                if time.monotonic() >= deadline:
-                                    return dict(history=history, incomplete=True, outcome='completed')
-                        return dict(history=history, incomplete=False, outcome='completed')
-                    result = await asyncio.to_thread(recall)
+                    record = state['owner'] if reference==state['owner']['id'] else json.loads((private/'outcomes'/(reference+'.json')).read_text('utf-8'))
+                    audit=await body.call('discern','decide',dict(state=dict(sentence=args['text'],reference=record),questions=dict(
+                        speech=dict(type='choice',instructions='Classify this proposed sentence against the actual attributed record.',criteria=dict(
+                            effect='Claims a completed GUI effect, needing its exact fresh pixel proof.',
+                            status='Conversation or honest status, failure, call outcome, or delivery report supported by the attributed record.',
+                            unsupported='Unsupported fact, incorrect speaker attribution, or insufficient evidence.')))),CFG['decision_seconds'])
+                    speech=audit.get('answers',{}).get('speech',{}).get('choice')
+                    if speech not in ('effect','status'):
+                        raise ValueError('The proposed spoken claim lacks support in the actual record')
+                    if speech=='effect' or args.get('evidence'):
+                        if not args.get('evidence'):
+                            raise ValueError('A completed GUI claim requires its exact action evidence')
+                        proof = json.loads((private/'outcomes'/(args['evidence']+'.json')).read_text('utf-8'))
+                        if proof['decision']['do'] not in GUI or not proof['result'].get('verified') or time.time()-proof['result'].get('at',0)>120:
+                            raise ValueError('That completed effect has no fresh specific pixel proof')
+                    if (RUN/'stop').exists() or any((private/'inbox').glob('*.json')):
+                        state.pop('pending',None); continue
+                    attempted=True; state['pending']['phase']='attempted'; save(state)
+                    result=await speak(body,args['text'],state['owner']['id']+'-'+reference)
+                    if op=='done':
+                        state['goal']=''
+                elif op=='rest':
+                    result=dict(outcome='completed',resting=True); wake=time.time()+60
+                elif op=='recall':
+                    matches=[]; history=[]; deadline=time.monotonic()+5
+                    for path in sorted((private/'outcomes').glob('*.json')):
+                        if args['query'].casefold() in path.read_text('utf-8').casefold():
+                            matches.append(str(path))
+                            brief=compact(json.loads(path.read_text('utf-8')))
+                            if len(json.dumps(history+[brief],ensure_ascii=False))<=8000:
+                                history.append(brief)
+                        if len(matches)==16 or time.monotonic()>deadline:
+                            break
+                    result=dict(outcome='completed',history=history,artifacts=matches,archive=str(private/'outcomes'),incomplete=True)
                 else:
-                    if op == 'authorize':
-                        permission = await asyncio.to_thread(infer,
-                            'Does this CURRENT owner message explicitly request a call now? Quotes, scenarios and '
-                            'historical permissions do not authorize. Return {"authorized":boolean}. '+json.dumps(owner))
-                        if permission.get('authorized') is not True:
-                            raise ValueError('Current explicit calling intent is absent')
-                        args = args | dict(intent_confirmed=True)
-                    if op in ('click', 'draw'):
-                        target = state['targets'].get(args['target'])
-                        if not target:
-                            raise ValueError('That located target is no longer available; locate it again')
-                        args = args | dict(target=target)
-                    if (RUN/'stop').exists():
-                        state.pop('pending', None); break
-                    if owner_waiting(private):
-                        log('superseded', id=ident, decision=decision)
-                        state.pop('pending', None); save(state, state_path); continue
-                    attempted, reported = True, False
-                    state['pending']['phase'] = 'attempted'; save(state, state_path)
-                    if op in ('authorize', 'dial'):
-                        result = await body.call('relay', op, args | dict(owner_id=owner['id']), 15)
-                    else:
-                        result = await body.call('manipulator', 'capture' if op == 'look' else op, args | dict(action_id=ident), 10)
-                        if result.get('image'):
-                            region = args.get('region') if op == 'look' else None if op in ('launch', 'browse') else result['window']['normalized_box']
-                            look_args = dict(image=result['image'], question=args['question'] if op == 'look' else decision['check'],
-                                             action_id=ident, mode=args.get('mode', 'inspect') if op == 'look' else 'inspect')
-                            if region:
-                                look_args['region'] = region
-                            look = await body.call('retina', 'inspect', look_args, CFG['look_seconds'])
-                            locating = op == 'look' and args.get('mode') == 'locate'
-                            if (op in GUI or locating) and look.get('submitted') and not look.get('error'):
-                                look = await asyncio.to_thread(judge, look, args['question'] if locating else decision['check'], locating)
-                            result.update(look=look, proof_region=region)
-                            if op in GUI:
-                                look['verified'] = result['verified'] = supported(look) and not result.get('error')
-                            else:
-                                result.pop('verified', None); look.pop('verified', None)
-                            if op in GUI and not result['verified'] or look.get('error'):
-                                result.update(unconfirmed=True, reason='The pointed visual check is '+look.get('verdict', 'unavailable')+'. '+look.get('observed', look.get('error', 'No readable visual evidence')))
-                            if (op == 'look' and args.get('mode') == 'locate' and look.get('verdict') == 'supported'
-                                    and not look.get('contradiction') and look.get('box') and look.get('pixels_delivered')):
-                                target_id = token()
-                                state['targets'][target_id] = dict(box=look['box'], at=look['at'], desktop=result['desktop'], window=result['window'])
-                                result.update(target=target_id, located=True)
-                            state['targets'] = {k:v for k,v in state['targets'].items() if time.time()-v['at'] < CFG['target_seconds']}
-                        if decision.get('corrects') and result.get('verified'):
-                            old_id = decision['corrects']
-                            if not old_id.isalnum() or len(old_id) != 32:
-                                raise ValueError('Correction needs an action UUID')
-                            old_path = private/'outcomes'/(old_id+'.json')
-                            old = json.loads(old_path.read_text('utf-8'))
-                            if not old.get('unresolved') or old['decision'].get('do') not in GUI:
-                                raise ValueError('Correction does not reference an unresolved desktop action')
-                            correction = await asyncio.to_thread(judge, look, old['decision']['check'])
-                            result['correction_judgment'] = correction
-                            if supported(correction):
-                                old.update(unresolved=False, resolved_by=ident)
-                                write(old_path, old)
-                                state['unresolved'].pop(old_id, None)
-                                state['unresolved_total'] -= 1
-                                result['resolved'] = old_id
+                    if op=='authorize':
+                        permission=await body.call('discern','decide',dict(state=state['owner'],questions=dict(
+                            intent=dict(type='choice',instructions='Does this current owner message explicitly request an outgoing call now?',criteria=dict(
+                                explicit='A current explicit request to call now.',absent='No request, a historical request or quoted scenario.',
+                                ambiguous='Calling intent is unclear.')))),CFG['decision_seconds'])
+                        if permission.get('answers',{}).get('intent',{}).get('choice')!='explicit':
+                            raise ValueError('Explicit current calling intent is absent')
+                        args=args|dict(intent_confirmed=True)
+                        if (RUN/'stop').exists() or any((private/'inbox').glob('*.json')):
+                            state.pop('pending',None); continue
+                    attempted=True; state['pending']['phase']='attempted'; save(state)
+                    result=await body.call('relay' if op in ('authorize','dial') else 'manipulator',
+                        'capture' if op=='look' else op, args|dict(owner_id=state['owner']['id'],action_id=ident),15)
+                    if result.get('image'):
+                        region=args.get('region') if op=='look' else None if op in ('launch','browse') else result['window']['normalized_box']
+                        look_args=dict(image=result['image'],question=args['question'] if op=='look' else decision['check'],
+                                       action_id=ident,mode=args.get('mode','inspect') if op=='look' else 'inspect')
+                        if region:
+                            look_args['region']=region
+                        result['look']=await body.call('retina','inspect',look_args,CFG['look_seconds'])
+                        if op=='look' and args.get('mode')=='locate':
+                            result['target']=ident; result['located']='awaiting mind pixel comparison'
+                result['decisions']=await body.call('discern','decide',dict(questions=decision['questions'],state=dict(
+                    goal=state['goal'],prediction=decision['expect'],result={k:v for k,v in result.items() if k!='events'},
+                    previous_comparison=decision['compare'])),CFG['decision_seconds'])
             except Exception as error:
-                log('turn_failed', id=ident, error=str(error), decision=decision, previous=result)
-                result = result | dict(error=f'{type(error).__name__}: {error}', verified=False,
-                                       outcome='unknown' if attempted else 'not_attempted',
-                                       reason=str(error) if isinstance(error, ValueError) else 'An internal error prevented completion; its details are recorded')
+                result=result|dict(error=f'{type(error).__name__}: {error}', outcome='unknown' if attempted else 'not_attempted')
+                log('turn_failed',id=ident,error=str(error),decision=decision)
                 if not decision:
-                    active = False  # One blocker and wait; no automatic malformed-output loop.
-            problem = result.get('error') or (result.get('reason') if result.get('refused') or result.get('unconfirmed') else None)
-            if problem:
-                if not decision:
-                    detail = result.get('reason') or str(problem)
-                    if detail.lstrip().startswith(('{', '[')):
-                        detail = 'The reply was malformed; its full text is preserved.'
-                    sentence = 'I could not obtain a valid next decision. '+detail+'. No desktop action was attempted. I remain here.'
-                elif result.get('refused'):
-                    sentence = 'The call could not be placed. '+result.get('reason', 'The provider refused the attempt')+'. I remain here.'
-                elif result.get('unconfirmed'):
-                    sentence = 'The '+decision['do']+' action has no confirmed visual proof. '+result['reason']
-                else:
-                    detail = result.get('reason') or str(problem)
-                    if detail.lstrip().startswith(('{', '[')):
-                        detail = 'The device response was unreadable; its full answer is preserved.'
-                    status = {'not_attempted':'was not attempted.', 'failed':'failed.', 'unknown':'has an unknown outcome.'}.get(result.get('outcome'), 'could not be confirmed.')
-                    sentence = 'The '+decision.get('do', 'thinking')+' action '+status+' '+detail+' I remain here.'
-                result['delivery'] = await speak(body, state, sentence, owner.get('id', 'system')+'-'+ident)
-                reported = bool(result['delivery'].get('delivered') or result['delivery'].get('local_spoken'))
-                if signature and reported:
-                    state['blocked'][signature] = dict(id=ident, owner=owner.get('id'))
-                    while len(state['blocked']) > 16:
-                        state['blocked'].pop(next(iter(state['blocked'])))
-                if result.get('outcome') == 'unknown':
-                    active = False
-            entry = dict(id=ident, decision=decision, result=result)
-            if result.get('verified'):
-                state['blocked'].clear()  # A confirmed desktop change supplies a new prerequisite.
-            last = remember(state, entry)
-            state.pop('pending', None)
-            state.update(last=last, active=active, owner=owner, reported=reported)
-            save(state, state_path)
+                    wake=time.time()+60
+            remember(state,dict(id=ident,decision=decision,result=result))
+            state.pop('pending',None); save(state)
     finally:
-        body.close()
-        state.update(active=False, process_state='stopped')
-        save(state, state_path)
-        lock.close()
+        body.close(); state.update(active=False,process_state='stopped'); save(state); lock.close()
 
 if __name__ == '__main__':
     try:
