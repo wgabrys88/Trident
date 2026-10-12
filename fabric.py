@@ -205,7 +205,7 @@ def validate(decision, previous):
     if (not isinstance(questions, dict) or not 1 <= len(questions) <= 20 or
             any(not isinstance(q, dict) or q.get('type') not in ('choice', 'noul', 'score') or
                 not isinstance(q.get('instructions'), str) or not q['instructions'].strip() for q in questions.values())):
-        raise ValueError('Supply 1..20 typed Jev questions with explicit instructions')
+        raise ValueError('Each of 1..20 Jev questions needs type and instructions (plural), not instruction or options; choices use criteria')
     for q in questions.values():
         criteria = q.get('criteria')
         if (q['type']=='choice' and (not isinstance(criteria,dict) or not 1 <= len(criteria) <= 255) or
