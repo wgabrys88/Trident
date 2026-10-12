@@ -121,6 +121,7 @@ async def serve(handler, role):
                     result.setdefault('outcome', 'completed' if not result.get('error') else 'failed')
                 except Exception as error:
                     result = dict(error=f'{type(error).__name__}: {error}', verified=False,
+                                  reason=str(error) if isinstance(error, ValueError) else 'The device stopped without a confirmed outcome; its details are recorded',
                                   outcome='not_attempted' if isinstance(error, NotAttempted) else
                                           'failed' if isinstance(error, ValueError) else 'unknown')
             result['request_id'] = job['id']
@@ -228,8 +229,7 @@ def validate(decision, previous):
         if (not isinstance(strokes, list) or not strokes or len(strokes) > 100 or
                 any(not isinstance(s, list) or not s or len(s) > 200 or
                     any(not isinstance(p, list) or len(p) != 2 or
-                        any(not number(v) or not 0 <= v <= 1 for v in p) for p in s) for s in strokes) or
-                op == 'click' and (len(strokes) != 1 or len(strokes[0]) != 1)):
+                        any(not number(v) or not 0 <= v <= 1 for v in p) for p in s) for s in strokes)):
             raise ValueError('Invalid relative X,Y points')
     return decision
 

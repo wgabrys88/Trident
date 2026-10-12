@@ -106,6 +106,8 @@ def perform(op, args):
         ox, oy, width, height = target['desktop']
         x0, y0, x1, y1 = target['box']
         strokes = args.get('strokes', [args.get('points', [[.5, .5]])])
+        if op == 'click':
+            strokes = [[point] for point in strokes[0]]
         # Map the same captured physical rectangle into the virtual desktop mouse range.
         def move(x, y):
             u.mouse_event(0xC001, round((x-ox)*65535/(width-1)), round((y-oy)*65535/(height-1)), 0, 0)

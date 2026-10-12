@@ -364,7 +364,10 @@ async def main():
                             raise ValueError('Current explicit calling intent is absent')
                         args = args | dict(intent_confirmed=True)
                     if op in ('click', 'draw'):
-                        args = args | dict(target=state['targets'][args['target']])
+                        target = state['targets'].get(args['target'])
+                        if not target:
+                            raise ValueError('That located target is no longer available; locate it again')
+                        args = args | dict(target=target)
                     if (RUN/'stop').exists():
                         state.pop('pending', None); break
                     if owner_waiting(private):
@@ -375,8 +378,6 @@ async def main():
                     if op in ('authorize', 'dial'):
                         result = await body.call('relay', op, args | dict(owner_id=owner['id']), 15)
                     else:
-                        if op in GUI:
-                            state['targets'] = {}
                         result = await body.call('manipulator', 'capture' if op == 'look' else op, args | dict(action_id=ident), 10)
                         if result.get('image'):
                             region = args.get('region') if op == 'look' else None if op in ('launch', 'browse') else result['window']['normalized_box']
@@ -420,13 +421,14 @@ async def main():
             except Exception as error:
                 log('turn_failed', id=ident, error=str(error), decision=decision, previous=result)
                 result = result | dict(error=f'{type(error).__name__}: {error}', verified=False,
-                                       outcome='unknown' if attempted else 'not_attempted')
+                                       outcome='unknown' if attempted else 'not_attempted',
+                                       reason=str(error) if isinstance(error, ValueError) else 'An internal error prevented completion; its details are recorded')
                 if not decision:
                     active = False  # One blocker and wait; no automatic malformed-output loop.
             problem = result.get('error') or (result.get('reason') if result.get('refused') or result.get('unconfirmed') else None)
             if problem:
                 if not decision:
-                    detail = str(problem)
+                    detail = result.get('reason') or str(problem)
                     if detail.lstrip().startswith(('{', '[')):
                         detail = 'The reply was malformed; its full text is preserved.'
                     sentence = 'I could not obtain a valid next decision. '+detail+'. No desktop action was attempted. I remain here.'
@@ -435,7 +437,7 @@ async def main():
                 elif result.get('unconfirmed'):
                     sentence = 'The '+decision['do']+' action has no confirmed visual proof. '+result['reason']
                 else:
-                    detail = str(problem)
+                    detail = result.get('reason') or str(problem)
                     if detail.lstrip().startswith(('{', '[')):
                         detail = 'The device response was unreadable; its full answer is preserved.'
                     status = {'not_attempted':'was not attempted.', 'failed':'failed.', 'unknown':'has an unknown outcome.'}.get(result.get('outcome'), 'could not be confirmed.')
