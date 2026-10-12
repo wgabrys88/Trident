@@ -1,6 +1,7 @@
-import asyncio, base64, io, json, subprocess, time, urllib.request
+import asyncio, base64, json, time, urllib.request
+from pathlib import Path
 from PIL import Image
-from fabric import CFG, ROOT, RUN, log, object_in, serve, token, write
+from fabric import CFG, RUN, log, object_in, serve, token
 
 def inspect(args):
     started = time.monotonic()
@@ -8,6 +9,8 @@ def inspect(args):
     with Image.open(source) as pixels:
         region = args.get('region', [0, 0, 1000, 1000])
         x0, y0, x1, y1 = region
+        if not 0 <= x0 < x1 <= 1000 or not 0 <= y0 < y1 <= 1000:
+            raise ValueError('Crop must be a nonempty normalized X,Y region')
         width, height = pixels.size
         crop = pixels.crop((round(x0*width/1000), round(y0*height/1000),
                            round(x1*width/1000), round(y1*height/1000)))
@@ -23,11 +26,13 @@ def inspect(args):
               'If unreadable or absent say uncertain or refuted. An empty dialog proves no attachment.')
     content = [dict(type='text', text=args['question']), dict(type='image_url',
                image_url=dict(url='data:image/png;base64,' + base64.b64encode(submitted.read_bytes()).decode()))]
-    body = dict(model='retina', temperature=0, max_tokens=192,
+    body = dict(model='retina', temperature=0, max_tokens=160,
                 messages=[dict(role='system', content=system), dict(role='user', content=content)])
     req = urllib.request.Request(CFG['vision_url'] + '/v1/chat/completions', json.dumps(body).encode(), {'Content-Type':'application/json'})
     with urllib.request.urlopen(req, timeout=CFG['look_seconds']) as response:
         choice = json.load(response)['choices'][0]
+    log('pixels_delivered', image=str(source), submitted=str(submitted), question=args['question'])
+    log('vision_answer', image=str(source), question=args['question'], raw=choice['message']['content'], finish=choice['finish_reason'])
     if choice['finish_reason'] != 'stop':
         raise ValueError('Incomplete look')
     answer = object_in(choice['message']['content'])
@@ -47,5 +52,4 @@ async def handle(op, args):
     return await asyncio.to_thread(inspect, args)
 
 if __name__ == '__main__':
-    from pathlib import Path
     asyncio.run(serve(handle, 'retina'))

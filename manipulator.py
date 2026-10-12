@@ -46,21 +46,22 @@ def perform(op, args):
             raise ValueError('Target expired: locate it again')
         x0, y0, x1, y1 = target['box']
         width, height = gui.size()
-        points = args.get('points', [[.5, .5]])
-        if not all(0 <= v <= 1 for point in points for v in point):
-            raise ValueError('Points must be relative X,Y in 0..1')
-        pixels = [(round((x0 + x * (x1-x0)) * (width-1) / 1000),
-                   round((y0 + y * (y1-y0)) * (height-1) / 1000)) for x, y in points]
-        gui.moveTo(*pixels[0])
-        if op == 'click':
-            gui.click()
-        else:
-            gui.mouseDown()
-            try:
-                for point in pixels[1:]:
-                    gui.moveTo(*point, duration=.12)
-            finally:
-                gui.mouseUp()
+        strokes = args.get('strokes', [args.get('points', [[.5, .5]])])
+        for points in strokes:
+            if not points or not all(0 <= v <= 1 for point in points for v in point):
+                raise ValueError('Points must be relative X,Y in 0..1')
+            pixels = [(round((x0 + x * (x1-x0)) * (width-1) / 1000),
+                       round((y0 + y * (y1-y0)) * (height-1) / 1000)) for x, y in points]
+            gui.moveTo(*pixels[0])
+            if op == 'click':
+                gui.click()
+            else:
+                gui.mouseDown()
+                try:
+                    for point in pixels[1:]:
+                        gui.moveTo(*point, duration=.12)
+                finally:
+                    gui.mouseUp()
     elif op != 'capture':
         raise ValueError(op)
     time.sleep(.3)

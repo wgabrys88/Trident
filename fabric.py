@@ -9,14 +9,15 @@ def token():
     return uuid.uuid4().hex
 
 def write(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
     pending = path.with_name(token() + '.pending')
     pending.write_text(json.dumps(value, ensure_ascii=False), encoding='utf-8')
-    pending.rename(path)
+    pending.replace(path)
 
 def log(event, **data):
     RUN.mkdir(parents=True, exist_ok=True)
     with (RUN / f'{os.getpid()}.jsonl').open('a', encoding='utf-8') as stream:
-        stream.write(json.dumps(dict(at=time.time(), event=event, **data), ensure_ascii=False) + '\n')
+        stream.write(json.dumps(dict(at=time.time(), event=event) | data, ensure_ascii=False) + '\n')
 
 async def request(device, op, args, seconds):
     ident = token()
@@ -24,9 +25,14 @@ async def request(device, op, args, seconds):
     reply = folder / f'{ident}.reply'
     write(folder / f'{ident}.request', dict(op=op, args=args, expires=time.time() + seconds))
     log('request', id=ident, device=device, op=op, args=args)
-    async with asyncio.timeout(seconds):
-        while not reply.exists():
-            await asyncio.sleep(.05)
+    try:
+        async with asyncio.timeout(seconds):
+            while not reply.exists():
+                await asyncio.sleep(.05)
+    except TimeoutError:
+        (folder / f'{ident}.request').unlink(missing_ok=True)
+        log('deadline', id=ident, device=device, op=op, outcome='unknown')
+        raise
     value = json.loads(reply.read_text('utf-8'))
     reply.unlink()
     log('receipt', id=ident, device=device, result=value)
@@ -41,10 +47,14 @@ async def serve(handler, role):
             try:
                 if time.time() >= job['expires']:
                     raise TimeoutError('Expired before execution; not attempted')
-                result = await handler(job['op'], job['args'])
+                async with asyncio.timeout(job['expires'] - time.time()):
+                    result = await handler(job['op'], job['args'])
             except Exception as error:
-                result = dict(error=f'{type(error).__name__}: {error}', verified=False)
+                result = dict(error=f'{type(error).__name__}: {error}', verified=False,
+                              outcome='unknown' if isinstance(error, TimeoutError) else 'failed')
             write(path.with_suffix('.reply'), result)
+            if result.get('outcome') == 'unknown':
+                os._exit(1)  # A timed-out thread must never perform later side effects.
         await asyncio.sleep(.05)
 
 def execute(argv, seconds, **options):
@@ -67,7 +77,8 @@ def object_in(text):
             break
         try:
             value, index = decoder.raw_decode(text, start)
-            values.append(value)
+            if isinstance(value, dict):
+                values.append(value)
         except ValueError:
             index = start + 1
     if len(values) != 1:
@@ -76,5 +87,6 @@ def object_in(text):
 
 def publish_owner(text, source):
     ident = token()
-    write(RUN / 'inbox' / f'{time.time_ns()}-{ident}.json', dict(id=ident, text=text[:4000], source=source))
+    write(ROOT / 'private' / 'inbox' / f'{time.time_ns()}-{ident}.json',
+          dict(id=ident, text=text[:4000], source=source, at=time.time()))
     log('owner', id=ident, text=text, source=source)
