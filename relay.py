@@ -57,9 +57,9 @@ async def main():
             current = json.loads((ROOT / 'private' / 'owner.json').read_text('utf-8'))
             if (args['owner_id'] != current['id'] or args['quote'] != current['text'] or
                     current['source'] not in ('telegram-owner', 'local-owner') or
-                    time.time()-current['at'] >= 120):
+                    time.time()-current['at'] >= CFG['seconds']):
                 raise NotAttempted('Permission must cite the current owner message')
-            grant = (current['id'], time.time()+120)
+            grant = (current['id'], time.time()+CFG['seconds'])
             log('permission', owner_id=current['id'])
             return dict(authorized=True, once=True)
         if op == 'dial':

@@ -203,23 +203,43 @@ ARGUMENTS = {'look': ({'question'}, {'region'}), 'launch': ({'app'}, set()),
              'dial': (set(), set()), 'say': ({'text'}, set()),
              'done': ({'text'}, set()), 'recall': ({'query'}, set()), 'rest': (set(), set())}
 
+def questions_of(reply):
+    questions = reply.get('questions') if isinstance(reply, dict) else None
+    if not isinstance(questions, dict) or set(questions) != {'A', 'B', 'C'}:
+        raise ValueError('Ask Jev with the keys A, B, and C')
+    for question in questions.values():
+        if (not isinstance(question, dict) or question.get('type') not in ('choice', 'noul', 'score') or
+                not isinstance(question.get('instructions'), str) or not question['instructions'].strip()):
+            raise ValueError('Each Jev question needs a type and a long instruction')
+    return questions
+
+def persona_of(reply):
+    """D is the next mind. It is not a Jev question."""
+    if not isinstance(reply, dict) or reply.get('D') is None:
+        return None
+    coming = reply['D']
+    if not isinstance(coming, dict):
+        raise ValueError('D names the next mind and carries its prompt')
+    tools = coming.get('tools')
+    if (not isinstance(coming.get('name'), str) or not coming['name'].strip()
+            or not isinstance(coming.get('prompt'), str) or not coming['prompt'].strip()
+            or tools is not None and (not isinstance(tools, str) or not tools.strip())):
+        raise ValueError('D names the next mind and carries its prompt')
+    return dict(name=coming['name'].strip(), prompt=coming['prompt'], tools=None if tools is None else tools.strip())
+
 def validate(decision):
     if (not isinstance(decision, dict) or decision.get('do') not in ARGUMENTS or
             not isinstance(decision.get('args'), dict) or
-            not isinstance(decision.get('expect'), str) or not decision['expect'].strip() or
-            not isinstance(decision.get('questions'), dict) or not decision['questions']):
-        raise ValueError('Luna must return do, args, a long expect, and Jev questions')
-    op, args, questions = decision['do'], decision['args'], decision['questions']
+            not isinstance(decision.get('expect'), str) or not decision['expect'].strip()):
+        raise ValueError('The acting mind must return do, args, and a long expect')
+    op, args = decision['do'], decision['args']
+    questions_of(decision)
     required, optional = ARGUMENTS[op]
     if not required <= args.keys() or args.keys() - required - optional:
         raise ValueError(f'{op} args must include {sorted(required)}')
     for key, value in args.items():
         if key not in {'keys', 'points', 'strokes', 'region'} and (not isinstance(value, str) or not value.strip()):
             raise ValueError('Argument '+key+' must be text')
-    for question in questions.values():
-        if (not isinstance(question, dict) or question.get('type') not in ('choice', 'noul', 'score') or
-                not isinstance(question.get('instructions'), str) or not question['instructions'].strip()):
-            raise ValueError('Each Jev question needs a type and a long instruction')
     if op == 'key':
         keys_in(args['keys'])
     if op == 'look' and 'region' in args and not box_valid(args['region']):

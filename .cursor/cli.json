@@ -1,6 +1,0 @@
-{
-  "permissions": {
-    "allow": [],
-    "deny": ["Shell(*)", "Write(**)", "WebFetch(*)", "Mcp(*)", "Read(**)"]
-  }
-}
