@@ -1,6 +1,6 @@
 {
   "permissions": {
-    "allow": ["Read(private/**/*.png)"],
-    "deny": ["Shell(*)", "Write(**)", "WebFetch(*)", "Mcp(*)"]
+    "allow": [],
+    "deny": ["Shell(*)", "Write(**)", "WebFetch(*)", "Mcp(*)", "Read(**)"]
   }
 }

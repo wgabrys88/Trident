@@ -13,9 +13,9 @@ async def main():
     client = await TelegramClient.FromTDesktop(accounts[0], session=str(ROOT / 'private' / 'telegram'),
                     flag=UseCurrentSession, api=API.TelegramDesktop, request_retries=0,
                     connection_retries=0, flood_sleep_threshold=0, catch_up=True)
-    await asyncio.wait_for(client.connect(), 15)
-    await asyncio.wait_for(client.get_dialogs(), 15)
-    peer = await asyncio.wait_for(client.get_input_entity(owner), 15)
+    await asyncio.wait_for(client.connect(), CFG['seconds'])
+    await asyncio.wait_for(client.get_dialogs(), CFG['seconds'])
+    peer = await asyncio.wait_for(client.get_input_entity(owner), CFG['seconds'])
     grant = None
     cursor_path = ROOT/'private'/'incoming.json'
     latest = json.loads(cursor_path.read_text('utf-8'))['id'] if cursor_path.exists() else 0
@@ -30,8 +30,8 @@ async def main():
         grant = None
         if event.voice:
             try:
-                path = await asyncio.wait_for(event.download_media(file=str(RUN)), 15)
-                result = await request('cochlea', 'transcribe', dict(path=path), 30)
+                path = await asyncio.wait_for(event.download_media(file=str(RUN)), CFG['seconds'])
+                result = await request('cochlea', 'transcribe', dict(path=path), CFG['seconds'])
             except Exception as error:
                 result = dict(error=f'{type(error).__name__}: {error}')
             if 'text' not in result:
@@ -51,13 +51,13 @@ async def main():
     async def handle(op, args):
         nonlocal grant
         if op == 'deliver':
-            message = await asyncio.wait_for(client.send_file(peer, args['path'], voice_note=True), 15)
+            message = await asyncio.wait_for(client.send_file(peer, args['path'], voice_note=True), CFG['seconds'])
             return dict(delivered=True, message_id=message.id, hearing_verified=False, outcome='completed')
         if op == 'authorize':
             current = json.loads((ROOT / 'private' / 'owner.json').read_text('utf-8'))
             if (args['owner_id'] != current['id'] or args['quote'] != current['text'] or
                     current['source'] not in ('telegram-owner', 'local-owner') or
-                    time.time()-current['at'] >= 120 or args.get('intent_confirmed') is not True):
+                    time.time()-current['at'] >= 120):
                 raise NotAttempted('Permission must cite the current owner message')
             grant = (current['id'], time.time()+120)
             log('permission', owner_id=current['id'])
@@ -73,7 +73,7 @@ async def main():
                 return dict(refused=True, reason='No outgoing call provider configured; no network call was placed', connected=False, outcome='failed')
             req = urllib.request.Request(endpoint, json.dumps(dict(owner=owner)).encode(), {'Content-Type':'application/json'})
             def dial():
-                with urllib.request.urlopen(req, timeout=10) as response:
+                with urllib.request.urlopen(req, timeout=CFG['seconds']) as response:
                     return json.load(response)
             result = await asyncio.to_thread(dial)
             if not isinstance(result, dict) or not isinstance(result.get('connected'), bool):

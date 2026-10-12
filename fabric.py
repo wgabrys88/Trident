@@ -196,71 +196,44 @@ def keys_in(value):
         raise ValueError('Use one real key or modifiers followed by one real key')
     return keys
 
-ARGUMENTS = {'look': ({'question'}, {'mode', 'region'}), 'launch': ({'app'}, set()),
+ARGUMENTS = {'look': ({'question'}, {'region'}), 'launch': ({'app'}, set()),
              'browse': ({'url'}, set()), 'focus': ({'title'}, set()), 'key': ({'keys', 'window'}, set()),
              'type': ({'text', 'window'}, set()), 'click': ({'target'}, {'points'}),
              'draw': ({'target'}, {'points', 'strokes'}), 'authorize': ({'quote'}, set()),
-             'dial': (set(), set()), 'say': ({'text', 'outcome'}, {'evidence'}),
-             'done': ({'text', 'outcome'}, {'evidence'}), 'recall': ({'query'}, set()), 'rest': (set(), set())}
+             'dial': (set(), set()), 'say': ({'text'}, set()),
+             'done': ({'text'}, set()), 'recall': ({'query'}, set()), 'rest': (set(), set())}
 
 def validate(decision):
-    fields = {'do', 'args', 'expect', 'check', 'compare', 'story', 'questions'}
-    if (not isinstance(decision, dict) or not fields <= decision.keys() or decision.keys() - fields - {'corrects'} or
-            any(not isinstance(decision[k], str) for k in {'do', 'expect', 'check', 'story'}) or
-            decision['do'] not in CFG['capabilities'] or not isinstance(decision['args'], dict) or
-            not decision['expect'].strip() or
-            len(decision['story']) > CFG['story_chars']):
-        raise ValueError('Invalid action fields, prediction, comparison or story')
-    comparison = decision['compare']
-    if (not isinstance(comparison, dict) or set(comparison) != {'observed', 'contradiction', 'verdict', 'box'} or
-            any(not isinstance(comparison[k], str) for k in ('observed', 'contradiction', 'verdict')) or
-            comparison['verdict'] not in ('supported', 'refuted', 'uncertain') or
-            comparison['box'] is not None and not box_valid(comparison['box'])):
-        raise ValueError('Comparison requires observed pixels, verdict, contradiction and a located box or null')
-    questions = decision['questions']
-    if (not isinstance(questions, dict) or not 1 <= len(questions) <= 20 or
-            any(not isinstance(q, dict) or q.get('type') not in ('choice', 'noul', 'score') or
-                not isinstance(q.get('instructions'), str) or not q['instructions'].strip() for q in questions.values())):
-        raise ValueError('questions needs 1..20 named objects; type is choice/noul/score, instructions is a nonempty STRING, not a list; choice uses criteria')
-    for q in questions.values():
-        criteria = q.get('criteria')
-        if (q['type']=='choice' and (not isinstance(criteria,dict) or not 1 <= len(criteria) <= 255) or
-                q['type']=='score' and (not isinstance(criteria,list) or not 2 <= len(criteria) <= 10) or
-                q['type']=='noul' and criteria is not None and not isinstance(criteria,dict)):
-            raise ValueError('Jev choice requires options; score requires ordered levels; noul criteria are optional')
-    if any(len(decision[k]) > 1000 for k in ('expect', 'check')):
-        raise ValueError('Prediction and visual question must each fit 1000 characters')
-    if 'corrects' in decision and (not isinstance(decision['corrects'], str) or
-                                  not decision['corrects'].isalnum() or len(decision['corrects'])!=32 or
-                                  decision['do'] not in {'launch', 'browse', 'focus', 'key', 'type', 'click', 'draw'}):
-        raise ValueError('Only a corrective desktop action can resolve a prior failure')
-    op, args = decision['do'], decision['args']
+    if (not isinstance(decision, dict) or decision.get('do') not in ARGUMENTS or
+            not isinstance(decision.get('args'), dict) or
+            not isinstance(decision.get('expect'), str) or not decision['expect'].strip() or
+            not isinstance(decision.get('questions'), dict) or not decision['questions']):
+        raise ValueError('Luna must return do, args, a long expect, and Jev questions')
+    op, args, questions = decision['do'], decision['args'], decision['questions']
     required, optional = ARGUMENTS[op]
     if not required <= args.keys() or args.keys() - required - optional:
-        raise ValueError(f'{op}.args needs {sorted(required)}; optional {sorted(optional)}; received {sorted(args)}')
+        raise ValueError(f'{op} args must include {sorted(required)}')
     for key, value in args.items():
         if key not in {'keys', 'points', 'strokes', 'region'} and (not isinstance(value, str) or not value.strip()):
-            raise ValueError('Argument '+key+' must be nonempty text')
-        if isinstance(value, str) and len(value) > 4000:
-            raise ValueError('Argument '+key+' exceeds the bounded input size')
-    if op in ('say', 'done') and any(not args[k].isalnum() or len(args[k])!=32 for k in ('outcome', 'evidence') if k in args):
-        raise ValueError('Narration references must be recorded UUIDs')
+            raise ValueError('Argument '+key+' must be text')
+    for question in questions.values():
+        if (not isinstance(question, dict) or question.get('type') not in ('choice', 'noul', 'score') or
+                not isinstance(question.get('instructions'), str) or not question['instructions'].strip()):
+            raise ValueError('Each Jev question needs a type and a long instruction')
     if op == 'key':
         keys_in(args['keys'])
-    if op == 'look' and (args.get('mode', 'inspect') not in ('locate', 'inspect') or
-                         'region' in args and not box_valid(args['region'])):
-        raise ValueError('Invalid visual mode or crop')
-    if op in {'launch', 'browse', 'focus', 'key', 'type', 'click', 'draw'} and not decision['check'].strip():
-        raise ValueError('A desktop action needs one pointed visual check')
+    if op == 'look' and 'region' in args and not box_valid(args['region']):
+        raise ValueError('Look region is not a box')
     if op in {'click', 'draw'}:
         if 'points' in args and 'strokes' in args or op == 'draw' and not {'points', 'strokes'} & args.keys():
-            raise ValueError('Specify exactly one set of drawing strokes')
+            raise ValueError('Draw needs points or strokes')
         strokes = args.get('strokes', [args.get('points', [[.5, .5]])])
-        if (not isinstance(strokes, list) or not strokes or len(strokes) > 100 or
-                any(not isinstance(s, list) or not s or len(s) > 200 or
-                    any(not isinstance(p, list) or len(p) != 2 or
-                        any(not number(v) or not 0 <= v <= 1 for v in p) for p in s) for s in strokes)):
-            raise ValueError('Invalid relative X,Y points')
+        if (not isinstance(strokes, list) or not strokes or
+                any(not isinstance(stroke, list) or not stroke or
+                    any(not isinstance(point, list) or len(point) != 2 or
+                        any(not number(value) or not 0 <= value <= 1 for value in point) for point in stroke)
+                    for stroke in strokes)):
+            raise ValueError('Points are relative X,Y pairs from 0 to 1')
     return decision
 
 def publish_owner(text, source, at=None, ident=None):

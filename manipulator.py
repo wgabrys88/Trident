@@ -1,6 +1,6 @@
 import asyncio, ctypes, os, time
 from ctypes import wintypes as W
-from fabric import CFG, RUN, NotAttempted, keys_in, log, serve, token
+from fabric import RUN, NotAttempted, keys_in, log, serve, token
 
 u = ctypes.WinDLL('user32', use_last_error=True)
 u.SetProcessDpiAwarenessContext.argtypes = [W.HANDLE]
@@ -99,9 +99,8 @@ def perform(op, args):
     elif op in ('click', 'draw'):
         target = args['target']
         current = require_window(target['window']['id'])
-        if (time.time()-target['at'] > CFG['target_seconds'] or desktop() != target['desktop']
-                or current['rect'] != target['window']['rect']):
-            raise NotAttempted('Located geometry changed or expired; locate again')
+        if desktop() != target['desktop'] or current['rect'] != target['window']['rect']:
+            raise NotAttempted('Located geometry changed; the eye must look again')
         ox, oy, width, height = target['desktop']
         x0, y0, x1, y1 = target['box']
         strokes = args.get('strokes', [args.get('points', [[.5, .5]])])
