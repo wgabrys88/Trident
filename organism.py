@@ -1,6 +1,6 @@
 import asyncio, ctypes, json, msvcrt, os, sys, threading, time
 from pathlib import Path
-from fabric import CFG, ROOT, RUN, Job, execute, log, publish_owner, request, token, validate, write, object_in
+from fabric import CFG, ROOT, RUN, Job, execute, log, publish_owner, request, token, validate, write, object_in, box_valid
 
 DEVICES = ['manipulator', 'retina', 'phonation', 'relay', 'cochlea']
 GUI = {'launch', 'browse', 'focus', 'key', 'type', 'click', 'draw'}
@@ -85,19 +85,28 @@ def infer(prompt, image=None):
     log('inference', prompt=str(prompt_file), transcript=str(transcript), raw=texts[-1], pixels_inspected=inspected)
     return object_in(texts[-1])
 
-def judge(look, question):
-    answer = infer('Judge only this exact postcondition from the actual image: '+question+
-                   '\nReturn {"observed":"literal visible evidence", "contradiction":"visible conflict or empty string", '
-                   '"verdict":"supported|refuted|uncertain"}. Unreadable evidence is uncertain. Do not infer hidden effects.', look['submitted'])
-    if (set(answer) != {'observed', 'contradiction', 'verdict'} or
-            not all(isinstance(answer[k], str) for k in answer) or answer['verdict'] not in ('supported', 'refuted', 'uncertain')):
+def judge(look, question, locate=False):
+    contract = ('Return {"observed":"literal target", "box":[xmin,ymin,xmax,ymax] or null}. '
+                'Locate only the requested target, excluding surrounding controls. Coordinates are X,Y, '
+                'normalized 0..1000 to the FULL supplied desktop image; Y increases downward. '
+                'An unavailable target requires box=null.' if locate else
+                'Return {"observed":"literal visible evidence", "contradiction":"visible conflict or empty string", '
+                '"verdict":"supported|refuted|uncertain"}. Unreadable evidence is uncertain. Do not infer hidden effects.')
+    answer = infer(question+'\n'+contract, look['image'] if locate else look['submitted'])
+    if locate:
+        if (set(answer) != {'observed', 'box'} or not isinstance(answer['observed'], str) or
+                answer['box'] is not None and not box_valid(answer['box'])):
+            raise ValueError('Invalid pixel location')
+        answer.update(verdict='supported' if answer['box'] else 'uncertain', contradiction='')
+    elif (set(answer) != {'observed', 'contradiction', 'verdict'} or
+          not all(isinstance(answer[k], str) for k in answer) or answer['verdict'] not in ('supported', 'refuted', 'uncertain')):
         raise ValueError('Invalid pixel judgment')
     return look | answer | dict(local_observation={k:look.get(k) for k in answer}, pixels_inspected=True)
 
 def compact(entry):
     decision, result = entry.get('decision', {}), entry.get('result', {})
     brief = {k:v for k,v in result.items() if k in
-             {'outcome', 'error', 'reason', 'refused', 'connected', 'authorized', 'image', 'target', 'desktop',
+             {'outcome', 'error', 'reason', 'refused', 'connected', 'authorized', 'image', 'target', 'located', 'desktop',
               'window', 'windows', 'verified', 'delivered', 'hearing_verified', 'message_id', 'note', 'local_spoken', 'resolved', 'history', 'incomplete'}}
     if result.get('look'):
         brief['look'] = {k:v for k,v in result['look'].items() if k in
@@ -109,7 +118,7 @@ def compact(entry):
     if result.get('delivery'):
         brief['delivery'] = {k:v for k,v in result['delivery'].items() if k in
                              {'delivered', 'message_id', 'hearing_verified', 'note', 'local_spoken', 'outcome'}}
-    args = {k:(v[:600] if isinstance(v, str) else v) for k,v in decision.get('args', {}).items()
+    args = {k:v for k,v in decision.get('args', {}).items()
             if k not in {'strokes', 'points'}}
     return dict(id=entry['id'], decision={k:v for k,v in decision.items() if k != 'story'} | dict(args=args),
                 result=brief, artifact=entry.get('artifact'))
@@ -133,7 +142,7 @@ def remember(state, entry):
     state['last'] = brief
     if entry['unresolved']:
         state['unresolved_total'] += 1
-        state['unresolved'][entry['id']] = dict(op=entry['decision'].get('do'), reason=(result.get('error') or result.get('reason') or 'Outcome unknown')[:600],
+        state['unresolved'][entry['id']] = dict(op=entry['decision'].get('do'), reason=result.get('error') or result.get('reason') or 'Outcome unknown',
                                                artifact=str(path), image=result.get('image'))
         while len(state['unresolved']) > 16:
             state['unresolved'].pop(next(iter(state['unresolved'])))
@@ -264,7 +273,7 @@ async def main():
                 if len(json.dumps(context, ensure_ascii=False)) > CFG['context_chars']:
                     raise ValueError('Bounded context is full; consult archived outcomes')
                 candidate = await asyncio.to_thread(infer, policy+'\n'+json.dumps(context, ensure_ascii=False),
-                                                   last.get('result', {}).get('look', {}).get('submitted'))
+                                                   last.get('result', {}).get('image'))
                 decision = validate(candidate, last)
                 op, args = decision['do'], decision['args']
                 if (RUN/'stop').exists():
@@ -370,24 +379,27 @@ async def main():
                             state['targets'] = {}
                         result = await body.call('manipulator', 'capture' if op == 'look' else op, args | dict(action_id=ident), 10)
                         if result.get('image'):
-                            region = (args.get('region') if op == 'look' else args['target']['box'] if op in ('click', 'draw')
-                                      else None if op in ('launch', 'browse') else result['window']['normalized_box'])
+                            region = args.get('region') if op == 'look' else None if op in ('launch', 'browse') else result['window']['normalized_box']
                             look_args = dict(image=result['image'], question=args['question'] if op == 'look' else decision['check'],
                                              action_id=ident, mode=args.get('mode', 'inspect') if op == 'look' else 'inspect')
                             if region:
                                 look_args['region'] = region
                             look = await body.call('retina', 'inspect', look_args, CFG['look_seconds'])
-                            if op in GUI and look.get('submitted') and not look.get('error'):
-                                look = await asyncio.to_thread(judge, look, decision['check'])
-                            look['verified'] = op in GUI and supported(look) and not result.get('error')
-                            result.update(look=look, verified=look['verified'], proof_region=region)
-                            if op in GUI and not look['verified'] or look.get('error'):
+                            locating = op == 'look' and args.get('mode') == 'locate'
+                            if (op in GUI or locating) and look.get('submitted') and not look.get('error'):
+                                look = await asyncio.to_thread(judge, look, args['question'] if locating else decision['check'], locating)
+                            result.update(look=look, proof_region=region)
+                            if op in GUI:
+                                look['verified'] = result['verified'] = supported(look) and not result.get('error')
+                            else:
+                                result.pop('verified', None); look.pop('verified', None)
+                            if op in GUI and not result['verified'] or look.get('error'):
                                 result.update(unconfirmed=True, reason='The pointed visual check is '+look.get('verdict', 'unavailable')+'. '+look.get('observed', look.get('error', 'No readable visual evidence')))
                             if (op == 'look' and args.get('mode') == 'locate' and look.get('verdict') == 'supported'
                                     and not look.get('contradiction') and look.get('box') and look.get('pixels_delivered')):
                                 target_id = token()
                                 state['targets'][target_id] = dict(box=look['box'], at=look['at'], desktop=result['desktop'], window=result['window'])
-                                result['target'] = target_id
+                                result.update(target=target_id, located=True)
                             state['targets'] = {k:v for k,v in state['targets'].items() if time.time()-v['at'] < CFG['target_seconds']}
                         if decision.get('corrects') and result.get('verified'):
                             old_id = decision['corrects']
@@ -407,7 +419,7 @@ async def main():
                                 result['resolved'] = old_id
             except Exception as error:
                 log('turn_failed', id=ident, error=str(error), decision=decision, previous=result)
-                result = result | dict(error=f'{type(error).__name__}: {str(error)[:600]}', verified=False,
+                result = result | dict(error=f'{type(error).__name__}: {error}', verified=False,
                                        outcome='unknown' if attempted else 'not_attempted')
                 if not decision:
                     active = False  # One blocker and wait; no automatic malformed-output loop.
@@ -415,19 +427,19 @@ async def main():
             if problem:
                 if not decision:
                     detail = str(problem)
-                    if '{' in detail or '[' in detail:
+                    if detail.lstrip().startswith(('{', '[')):
                         detail = 'The reply was malformed; its full text is preserved.'
-                    sentence = 'I could not obtain a valid next decision. '+detail[:300]+'. No desktop action was attempted. I remain here.'
+                    sentence = 'I could not obtain a valid next decision. '+detail+'. No desktop action was attempted. I remain here.'
                 elif result.get('refused'):
                     sentence = 'The call could not be placed. '+result.get('reason', 'The provider refused the attempt')+'. I remain here.'
                 elif result.get('unconfirmed'):
-                    sentence = 'The '+decision['do']+' action has no confirmed visual proof. '+result['reason'][:350]
+                    sentence = 'The '+decision['do']+' action has no confirmed visual proof. '+result['reason']
                 else:
                     detail = str(problem)
-                    if '{' in detail or '[' in detail:
+                    if detail.lstrip().startswith(('{', '[')):
                         detail = 'The device response was unreadable; its full answer is preserved.'
                     status = {'not_attempted':'was not attempted.', 'failed':'failed.', 'unknown':'has an unknown outcome.'}.get(result.get('outcome'), 'could not be confirmed.')
-                    sentence = 'The '+decision.get('do', 'thinking')+' action '+status+' '+detail[:300]+' I remain here.'
+                    sentence = 'The '+decision.get('do', 'thinking')+' action '+status+' '+detail+' I remain here.'
                 result['delivery'] = await speak(body, state, sentence, owner.get('id', 'system')+'-'+ident)
                 reported = bool(result['delivery'].get('delivered') or result['delivery'].get('local_spoken'))
                 if signature and reported:

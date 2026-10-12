@@ -72,7 +72,7 @@ def execute(argv, seconds, **options):
         except subprocess.TimeoutExpired:
             raise TimeoutError('Process deadline exceeded; outcome unknown') from None
         if job.process.returncode:
-            raise RuntimeError(errors.decode(errors='replace')[-1500:])
+            raise RuntimeError(errors.decode(errors='replace'))
         return output
     finally:
         job.close()
@@ -237,5 +237,5 @@ def publish_owner(text, source, at=None, ident=None):
     ident = ident or token()
     owner = source in ('local-owner', 'telegram-owner')
     write(ROOT / 'private' / 'inbox' / f'{time.time_ns()}-{ident}.json',
-          dict(id=ident, text=text[:4000], source=source, at=time.time() if at is None else at, kind='owner' if owner else 'observation'))
+          dict(id=ident, text=text, source=source, at=time.time() if at is None else at, kind='owner' if owner else 'observation'))
     log('owner' if owner else 'input_observation', id=ident, text=text, source=source)
