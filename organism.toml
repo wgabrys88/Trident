@@ -1,0 +1,28 @@
+owner = 5884279027
+tdata = '%APPDATA%/Telegram Desktop/tdata'
+cursor_version = '2026.10.01-e373342'
+mind_model = 'gpt-5.6-luna-none'
+mind_seconds = 60
+look_seconds = 8
+target_seconds = 45
+image_side = 768
+vision_url = 'http://127.0.0.1:8188'
+asr_model = 'tiny.en'
+context_chars = 8000
+story_chars = 2000
+
+[capabilities]
+look = 'args: question, optional region [xmin,ymin,xmax,ymax] normalized 0..1000. Fresh observation; orientation never proves effects.'
+launch = 'args: app executable or document path. Launch only, then focus by title after checking.'
+browse = 'args: url. Opens Microsoft Edge using its registered executable; then focus the observed browser title.'
+focus = 'args: title (observed window title). Brings it to front.'
+key = 'args: keys as Enter or ctrl+shift+s or [ctrl,shift,s]. Real key events.'
+type = 'args: text. Clipboard paste; never a keyboard command.'
+click = 'args: target id returned by look; optional points [[x,y]] relative to located region, 0..1.'
+draw = 'args: target id; points [[x,y],...] relative to located region, 0..1. X horizontal, Y increases downward.'
+authorize = 'args: quote exact words of current owner explicit call request. One permission, expires in 120 seconds.'
+dial = 'args: {}. Consumes permission, attempts configured call provider, returns actual refusal or connection state.'
+say = 'args: text. Synthesizes and delivers a spoken voice note; continues.'
+done = 'args: text. Synthesizes and delivers a spoken voice note; rests only after delivery succeeds.'
+recall = 'args: query. Read matching historical events in bulk only if bounded story lacks an important detail.'
+rest = 'args: {}. Wait for owner; no message.'
