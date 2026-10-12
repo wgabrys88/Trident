@@ -1,5 +1,4 @@
 {
-  "sandbox": {"readBoundary": "workspace"},
   "permissions": {
     "allow": ["Read(private/**/*.png)"],
     "deny": ["Shell(*)", "Write(**)", "WebFetch(*)", "Mcp(*)"]
