@@ -36,27 +36,28 @@ def inspect(args):
         if not crop.width or not crop.height:
             raise ValueError('Crop contains no readable pixels')
         # Only orientation/locating may use a thumbnail. Judgments receive native pixels.
-        if mode == 'locate' and region == [0, 0, 1000, 1000]:
+        if mode == 'locate':
             crop.thumbnail((CFG['image_side'], CFG['image_side']))
         submitted = RUN / (token()+'-look.png')
         crop.save(submitted)
         dimensions = list(crop.size)
-    system = ('Read actual pixels literally. Answer the single question with JSON only: '
-              '{"observed":"specific visible shapes or exact text, never just Yes", '
-              '"contradiction":"visible conflicting evidence, or empty", '
-              '"verdict":"supported|refuted|uncertain", "box":[xmin,ymin,xmax,ymax] or null}. '
-              'Do not infer hidden results, saved contents, submission, or delivery. '
-              'Unreadable details require uncertain. Missing requested effects require refuted. '
-              'When no contradictory evidence is visible, contradiction must be the empty string "". '
-              + ('Locate the requested target with a normalized X,Y 0..1000 box; Y increases downward.'
-                 if mode == 'locate' else 'Inspect the exact expected change. Return box=null.'))
+    system = ('Read actual pixels literally. Answer only the single question, with JSON only. '
+              'observed describes the specific visible shape or exact text, never just Yes. '
+              + ('Return {"observed":"target description", "box":[xmin,ymin,xmax,ymax] or null}. '
+                 'Locate only the unobstructed requested target, excluding surrounding or overlaid controls, windows and desktop. '
+                 'Coordinates are X,Y normalized to this image, 0..1000; Y increases downward. '
+                 'If the target cannot be located, return box=null.' if mode == 'locate' else
+                 'Return {"observed":"literal evidence", "contradiction":"visible conflict or empty string", '
+                 '"verdict":"supported|refuted|uncertain"}. '
+                 'Do not infer hidden results, saved contents, submission, or delivery. '
+                 'Unreadable details require uncertain. Missing expected effects require refuted.'))
     data = submitted.read_bytes()
     content = [dict(type='text', text=args['question']), dict(type='image_url',
                image_url=dict(url='data:image/png;base64,'+base64.b64encode(data).decode()))]
-    fields = {'observed':dict(type='string'), 'contradiction':dict(type='string'),
-              'verdict':dict(type='string', enum=['supported', 'refuted', 'uncertain']),
-              'box':dict(type=['array', 'null'], minItems=4, maxItems=4,
-                         items=dict(type='number', minimum=0, maximum=1000)) if mode == 'locate' else dict(type='null')}
+    fields = {'observed':dict(type='string')}
+    fields.update({'box':dict(type=['array', 'null'], minItems=4, maxItems=4,
+                             items=dict(type='number', minimum=0, maximum=1000))} if mode == 'locate' else
+                  {'contradiction':dict(type='string'), 'verdict':dict(type='string', enum=['supported', 'refuted', 'uncertain'])})
     schema = dict(type='object', properties=fields, required=list(fields), additionalProperties=False)
     body = dict(model='retina', temperature=0, max_tokens=350,
                 response_format=dict(type='json_object', schema=schema),
@@ -74,21 +75,23 @@ def inspect(args):
     if choice['finish_reason'] != 'stop':
         raise ValueError('Incomplete visual answer; no proof')
     answer = object_in(raw)
-    if (not fields.keys() <= answer.keys() or
-            not isinstance(answer['observed'], str) or answer['contradiction'] is not None and not isinstance(answer['contradiction'], str) or
-            answer['verdict'] not in ('supported', 'refuted', 'uncertain')):
+    if (not fields.keys() <= answer.keys() or not isinstance(answer['observed'], str) or
+            mode == 'inspect' and (not isinstance(answer['contradiction'], str) or
+                                  answer['verdict'] not in ('supported', 'refuted', 'uncertain'))):
         raise ValueError('Malformed visual judgment')
     answer = {key:answer[key] for key in fields}
-    answer['contradiction'] = answer['contradiction'] or ''
-    box = answer['box']
-    if mode == 'inspect' and box is not None or box is not None and not box_valid(box):
+    box = answer.get('box')
+    if box is not None and not box_valid(box):
         raise ValueError('Invalid located box')
+    if mode == 'locate':
+        answer.update(verdict='supported' if box else 'uncertain', contradiction='')
     if box is not None:
         a, b, c, d = box
         answer['box'] = [x0+a*(x1-x0)/1000, y0+b*(y1-y0)/1000, x0+c*(x1-x0)/1000, y0+d*(y1-y0)/1000]
     answer.update(image=str(source), submitted=str(submitted), question=args['question'], raw=raw,
                   mode=mode, action_id=args.get('action_id'), pixels_delivered=True, at=time.time(),
-                  seconds=round(time.monotonic()-started, 3), verified=False)
+                  seconds=round(time.monotonic()-started, 3), verified=False, region=region,
+                  source_size=[width, height], submitted_size=dimensions)
     log('look', **answer)
     return answer
 

@@ -51,16 +51,48 @@ class Body:
         for stream in self.logs:
             stream.close()
 
-def infer(prompt):
+def infer(prompt, image=None):
     folder = Path(os.environ['LOCALAPPDATA'])/'cursor-agent'/'versions'/CFG['cursor_version']
+    if image:
+        image = Path(image).resolve()
+        if not image.is_relative_to(ROOT) or image.read_bytes()[:8] != b'\x89PNG\r\n\x1a\n':
+            raise ValueError('Pixel inspection requires a captured PNG inside the workspace')
+        prompt += '\nRequired pixel inspection: use the native Read tool on '+str(image)+'. Read this image before answering; do not use shell or other tools. Actual pixels override any supplied visual description.'
     prompt_file = RUN/(token()+'.prompt')
     prompt_file.write_text(prompt, encoding='utf-8')
     bootstrap = "process.argv.push(require('node:fs').readFileSync(process.argv.pop(),'utf8'));require(process.argv[1]);"
     raw = execute([str(folder/'node.exe'), '-e', bootstrap, str(folder/'index.js'), '--mode', 'ask', '--trust',
-                   '-p', '--model', CFG['mind_model'], '--workspace', str(ROOT), '--output-format', 'text',
+                   '-p', '--model', CFG['mind_model'], '--workspace', str(ROOT), '--output-format', 'stream-json',
                    str(prompt_file)], CFG['mind_seconds'], cwd=ROOT).decode('utf-8', errors='replace')
-    log('inference', prompt=str(prompt_file), raw=raw)
-    return object_in(raw)
+    transcript = prompt_file.with_suffix('.stream.jsonl'); transcript.write_text(raw, encoding='utf-8')
+    texts, inspected = [], False
+    for line in raw.splitlines():
+        event = json.loads(line)
+        if event.get('type') == 'assistant':
+            texts.append(''.join(part['text'] for part in event['message']['content'] if part.get('type') == 'text'))
+        if image and event.get('type') == 'tool_call' and event.get('subtype') == 'completed':
+            read = event.get('tool_call', {}).get('readToolCall', {})
+            path = Path(read.get('args', {}).get('path', ''))
+            if not path.is_absolute():
+                path = ROOT/path
+            receipt = read.get('result', {}).get('success', {})
+            if (path.resolve() == image and receipt.get('dataBlobId') and
+                    receipt.get('fileSize') == image.stat().st_size and not receipt.get('exceededLimit')):
+                inspected = True
+                log('native_image_read', image=str(image), receipt=event, transcript=str(transcript))
+    if not texts or image and not inspected:
+        raise ValueError('No final answer or no successful native image Read receipt')
+    log('inference', prompt=str(prompt_file), transcript=str(transcript), raw=texts[-1], pixels_inspected=inspected)
+    return object_in(texts[-1])
+
+def judge(look, question):
+    answer = infer('Judge only this exact postcondition from the actual image: '+question+
+                   '\nReturn {"observed":"literal visible evidence", "contradiction":"visible conflict or empty string", '
+                   '"verdict":"supported|refuted|uncertain"}. Unreadable evidence is uncertain. Do not infer hidden effects.', look['submitted'])
+    if (set(answer) != {'observed', 'contradiction', 'verdict'} or
+            not all(isinstance(answer[k], str) for k in answer) or answer['verdict'] not in ('supported', 'refuted', 'uncertain')):
+        raise ValueError('Invalid pixel judgment')
+    return look | answer | dict(local_observation={k:look.get(k) for k in answer}, pixels_inspected=True)
 
 def compact(entry):
     decision, result = entry.get('decision', {}), entry.get('result', {})
@@ -70,7 +102,8 @@ def compact(entry):
     if result.get('look'):
         brief['look'] = {k:v for k,v in result['look'].items() if k in
                         {'verdict', 'observed', 'contradiction', 'image', 'submitted', 'question', 'mode',
-                         'at', 'seconds', 'pixels_delivered', 'action_id', 'verified'}}
+                         'at', 'seconds', 'pixels_delivered', 'pixels_inspected', 'action_id', 'verified',
+                         'region', 'box', 'source_size', 'submitted_size'}}
     if result.get('observation'):
         brief['observation'] = result['observation']
     if result.get('delivery'):
@@ -130,7 +163,7 @@ async def speak(body, state, text, ident):
     return result
 
 def supported(look):
-    return (look.get('pixels_delivered') is True and look.get('mode') == 'inspect' and
+    return (look.get('pixels_delivered') is True and look.get('pixels_inspected') is True and look.get('mode') == 'inspect' and
             look.get('verdict') == 'supported' and not look.get('contradiction') and
             len(look.get('observed', '').strip()) > 12 and not look.get('error'))
 
@@ -159,6 +192,7 @@ async def main():
     state = json.loads(state_path.read_text('utf-8')) if state_path.exists() else dict(story='', record=[], goal='')
     state.setdefault('unresolved', {})
     state.setdefault('unresolved_total', len(state['unresolved']))
+    state.setdefault('blocked', {})
     state.update(targets={}, story='')
     owner, last = state.get('owner', {}), state.get('last', {})
     active, reported = state.get('active', False), state.get('reported', False)
@@ -169,7 +203,7 @@ async def main():
                       outcome='unknown' if pending.get('phase', 'attempted') == 'attempted' else 'not_attempted', verified=False)
         last = remember(state, dict(id=pending.get('id', token()), decision=decision, result=result))
         active, reported = True, False
-    state.update(last=last, active=active, owner=owner, reported=reported)
+    state.update(last=last, active=active, owner=owner, reported=reported, process_state='running', run=str(run))
     save(state, state_path)
     body = Body()
     def console():
@@ -225,15 +259,23 @@ async def main():
                            targets=state['targets'], output_directory=str(outputs), reported=reported, owner=owner)
             while len(json.dumps(context, ensure_ascii=False)) > CFG['context_chars'] and context['record']:
                 context['record'].pop(0)
-            decision, result, ident, attempted = {}, {}, token(), False
+            decision, result, ident, attempted, signature = {}, {}, token(), False, ''
             try:
                 if len(json.dumps(context, ensure_ascii=False)) > CFG['context_chars']:
                     raise ValueError('Bounded context is full; consult archived outcomes')
-                candidate = await asyncio.to_thread(infer, policy+'\n'+json.dumps(context, ensure_ascii=False))
+                candidate = await asyncio.to_thread(infer, policy+'\n'+json.dumps(context, ensure_ascii=False),
+                                                   last.get('result', {}).get('look', {}).get('submitted'))
                 decision = validate(candidate, last)
                 op, args = decision['do'], decision['args']
                 if owner_waiting(private):
                     log('superseded', id=ident, decision=decision); continue
+                signature = json.dumps(dict(do=op, args=args), sort_keys=True)
+                blocked = state['blocked'].get(signature)
+                if blocked and blocked['owner'] == owner.get('id'):
+                    log('repeat_prevented', id=ident, previous=blocked['id'], decision=decision)
+                    state.update(active=False, reported=True); save(state, state_path)
+                    active = False
+                    continue  # The exact failure was already delivered; do not retry or narrate it again.
                 state['story'] = decision['story']  # Summary only; canonical outcomes remain outside it.
                 log('prediction', id=ident, decision=decision)
                 state['pending'] = dict(id=ident, decision=decision, phase='prepared'); save(state, state_path)
@@ -263,9 +305,7 @@ async def main():
                                 proof.get('action_id') != proof_id or proof_entry.get('unresolved') or
                                 time.time()-proof.get('at', 0) > 120):
                             raise ValueError('No fresh specific action proof supports this claim')
-                        judgment = await body.call('retina', 'inspect', dict(image=proof['image'], mode='inspect',
-                            region=proof_entry['result']['proof_region'], action_id=proof_id,
-                            question='Do these pixels support this exact completed effect: '+args['text']+'? Cite visible evidence and contradictions.'), CFG['look_seconds'])
+                        judgment = await asyncio.to_thread(judge, proof, 'Do these pixels support this exact completed effect: '+args['text']+'?')
                         log('claim_judgment', narration_id=ident, evidence_id=proof_id, result=judgment)
                         if not supported(judgment):
                             proof_entry['result']['look']['verified'] = False
@@ -331,6 +371,8 @@ async def main():
                             if region:
                                 look_args['region'] = region
                             look = await body.call('retina', 'inspect', look_args, CFG['look_seconds'])
+                            if op in GUI and look.get('submitted') and not look.get('error'):
+                                look = await asyncio.to_thread(judge, look, decision['check'])
                             look['verified'] = op in GUI and supported(look) and not result.get('error')
                             result.update(look=look, verified=look['verified'], proof_region=region)
                             if op in GUI and not look['verified'] or look.get('error'):
@@ -349,8 +391,7 @@ async def main():
                             old = json.loads(old_path.read_text('utf-8'))
                             if not old.get('unresolved') or old['decision'].get('do') not in GUI:
                                 raise ValueError('Correction does not reference an unresolved desktop action')
-                            correction = await body.call('retina', 'inspect', dict(image=result['image'], mode='inspect',
-                                action_id=ident, region=result['proof_region'], question=old['decision']['check']), CFG['look_seconds'])
+                            correction = await asyncio.to_thread(judge, look, old['decision']['check'])
                             result['correction_judgment'] = correction
                             if supported(correction):
                                 old.update(unresolved=False, resolved_by=ident)
@@ -367,7 +408,10 @@ async def main():
             problem = result.get('error') or (result.get('reason') if result.get('refused') or result.get('unconfirmed') else None)
             if problem:
                 if not decision:
-                    sentence = 'My action reply was invalid. No desktop action was attempted. I remain here and await your next instruction.'
+                    detail = str(problem)
+                    if '{' in detail or '[' in detail:
+                        detail = 'The reply was malformed; its full text is preserved.'
+                    sentence = 'I could not obtain a valid next decision. '+detail[:300]+'. No desktop action was attempted. I remain here.'
                 elif result.get('refused'):
                     sentence = 'The call could not be placed. '+result.get('reason', 'The provider refused the attempt')+'. I remain here.'
                 elif result.get('unconfirmed'):
@@ -380,9 +424,15 @@ async def main():
                     sentence = 'The '+decision.get('do', 'thinking')+' action '+status+' '+detail[:300]+' I remain here.'
                 result['delivery'] = await speak(body, state, sentence, owner.get('id', 'system')+'-'+ident)
                 reported = bool(result['delivery'].get('delivered') or result['delivery'].get('local_spoken'))
+                if signature and reported:
+                    state['blocked'][signature] = dict(id=ident, owner=owner.get('id'))
+                    while len(state['blocked']) > 16:
+                        state['blocked'].pop(next(iter(state['blocked'])))
                 if result.get('outcome') == 'unknown':
                     active = False
             entry = dict(id=ident, decision=decision, result=result)
+            if result.get('verified'):
+                state['blocked'].clear()  # A confirmed desktop change supplies a new prerequisite.
             last = remember(state, entry)
             state.pop('pending', None)
             state.update(last=last, active=active, owner=owner, reported=reported)

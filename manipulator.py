@@ -13,7 +13,7 @@ u.GetWindowTextW.argtypes = [W.HWND, W.LPWSTR, ctypes.c_int]
 u.GetWindowRect.argtypes = [W.HWND, ctypes.POINTER(W.RECT)]
 u.IsWindow.argtypes = [W.HWND]
 u.IsWindowVisible.argtypes = [W.HWND]
-u.ShowWindow.argtypes = [W.HWND, ctypes.c_int]
+u.ShowWindowAsync.argtypes = [W.HWND, ctypes.c_int]
 u.SetForegroundWindow.argtypes = [W.HWND]
 import pyautogui as gui
 import pyperclip
@@ -29,10 +29,10 @@ def foreground(handle=None):
     u.GetWindowRect(handle, ctypes.byref(rect))
     return dict(id=str(handle), title=title.value, rect=[rect.left, rect.top, rect.right, rect.bottom])
 
-def require_window(ident):
+def require_window(ident, attempted=False):
     current = foreground()
     if current['id'] != ident or not u.IsWindow(W.HWND(int(ident))):
-        raise NotAttempted('Intended window is not foreground; focus and locate again')
+        raise (OSError if attempted else NotAttempted)('Intended window is not foreground; focus and locate again')
     return current
 
 def shot():
@@ -72,13 +72,17 @@ def perform(op, args):
         if not matches:
             raise NotAttempted('Requested window was not found')
         handle = W.HWND(int(matches[0]['id']))
-        u.ShowWindow(handle, 9)
-        gui.press('alt')
+        restored = bool(u.ShowWindowAsync(handle, 9))
+        # Release the previous foreground through the window manager, without injecting keys into it.
+        previous = u.GetForegroundWindow()
+        minimized = bool(previous != handle.value and u.ShowWindowAsync(previous, 6))
+        time.sleep(.2)
         accepted = bool(u.SetForegroundWindow(handle))
         deadline = time.monotonic()+2
         while foreground()['id'] != matches[0]['id'] and time.monotonic() < deadline:
             time.sleep(.05)
-        events.append(dict(focused=matches[0]['id'], foreground=foreground()['id'], accepted=accepted, keys=['alt']))
+        events.append(dict(focused=matches[0]['id'], foreground=foreground()['id'], accepted=accepted,
+                           restored=restored, previous=str(previous), minimized=minimized))
         if foreground()['id'] != matches[0]['id']:
             return dict(error='Windows did not focus the requested window', outcome='failed', verified=False, events=events, **shot())
     elif op in ('key', 'type'):
@@ -110,17 +114,17 @@ def perform(op, args):
             events.append(dict(requested=[x, y], actual=[point.x, point.y]))
             log('mouse_position', action_id=args.get('action_id'), requested=[x, y], actual=[point.x, point.y])
         for points in strokes:
-            require_window(target['window']['id'])
+            require_window(target['window']['id'], bool(events))
             pixels = [(ox+round((x0+x*(x1-x0))*(width-1)/1000),
                        oy+round((y0+y*(y1-y0))*(height-1)/1000)) for x, y in points]
             left, top, right, bottom = current['rect']
             if any(not left <= x < right or not top <= y < bottom for x, y in pixels):
-                raise NotAttempted('Located points are outside the intended window')
+                raise (OSError if events else NotAttempted)('Located points are outside the intended window')
             move(*pixels[0]); time.sleep(.08)
             try:
                 u.mouse_event(2, 0, 0, 0, 0)
                 for point in pixels[1:]:
-                    require_window(target['window']['id'])
+                    require_window(target['window']['id'], True)
                     move(*point); time.sleep(.12)
             finally:
                 u.mouse_event(4, 0, 0, 0, 0)
