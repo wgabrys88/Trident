@@ -3,3 +3,6 @@ runtime/
 __pycache__/
 *.pyc
 .env
+
+.cursor/chats/
+.cursor/statsig-cache*

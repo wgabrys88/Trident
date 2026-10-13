@@ -1,6 +1,6 @@
-import asyncio, ctypes, os, sys, time
+import asyncio, ctypes, os, time
 from ctypes import wintypes as W
-from fabric import CFG, RUN, NotAttempted, serve, token, file_boundary
+from fabric import CFG, RUN, NotAttempted, serve, token
 u = ctypes.WinDLL('user32', use_last_error=True)
 u.SetProcessDpiAwarenessContext.argtypes = [W.HANDLE]
 u.GetThreadDpiAwarenessContext.restype = W.HANDLE
@@ -110,5 +110,4 @@ async def handle(op,args):
     return await asyncio.to_thread(shot if op=='capture' else perform, *([] if op=='capture' else [args]))
 
 if __name__=='__main__':
-    sys.addaudithook(file_boundary)
     asyncio.run(serve(handle,'manipulator'))

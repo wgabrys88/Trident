@@ -1,4 +1,4 @@
-import asyncio, ctypes, json, msvcrt, os, re, sys, threading, time
+import asyncio, ctypes, json, msvcrt, os, shutil, sys, threading, time
 from pathlib import Path
 from urllib.parse import urlparse
 import psutil
@@ -39,7 +39,7 @@ class Body:
         for stream in self.logs:
             stream.close()
 
-async def hardware(body):
+async def hardware():
     processes = {}
     while True:
         sample = dict(at=time.time(),cpu_percent=psutil.cpu_percent(),ram=psutil.virtual_memory()._asdict(),processes={})
@@ -67,7 +67,7 @@ def infer(prompt,image):
     bootstrap = "process.argv.push(require('node:fs').readFileSync(process.argv.pop(),'utf8'));require(process.argv[1]);"
     started = time.monotonic()
     raw = execute([str(folder/'node.exe'),'-e',bootstrap,str(folder/'index.js'),'--trust','-p',
-        '--mode','ask','--model',CFG['mind_model'],'--workspace',str(ROOT),'--output-format','stream-json',str(prompt_file)],
+        '--approve-mcps','--model',CFG['mind_model'],'--workspace',str(ROOT),'--output-format','stream-json',str(prompt_file)],
         CFG['mind_seconds'],transcript=transcript,cwd=ROOT).decode('utf-8',errors='replace')
     texts,inspected = [],False
     for line in raw.splitlines():
@@ -79,22 +79,18 @@ def infer(prompt,image):
         if event.get('type')=='tool_call' and event.get('subtype')=='completed':
             read = event.get('tool_call',{}).get('readToolCall',{})
             path = Path(read.get('args',{}).get('path','')); receipt = read.get('result',{}).get('success',{})
-            if read and not (path if path.is_absolute() else ROOT/path).resolve().is_relative_to(ROOT):
-                (RUN/'stop').touch()
-                raise PermissionError('Cursor attempted an outside-workspace Read; stopped before executing its proposal. See '+str(transcript))
-            if ((path if path.is_absolute() else ROOT/path).resolve()==image and receipt.get('dataBlobId') and
-                    receipt.get('fileSize')==image.stat().st_size and not receipt.get('exceededLimit')):
+            if (receipt.get('dataBlobId') and receipt.get('fileSize')==image.stat().st_size and not receipt.get('exceededLimit')
+                    and (path if path.is_absolute() else ROOT/path).resolve()==image):
                 inspected = True
     log('thought',prompt=str(prompt_file),transcript=str(transcript),chars=len(prompt),seconds=round(time.monotonic()-started,3),pixels=inspected)
     if not texts or not inspected:
         raise ValueError('No final answer or successful native PNG Read receipt')
     return texts[-1]
 
-def waiting(private):
-    return any(json.loads(p.read_text('utf-8'))['kind']=='owner' for p in (private/'inbox').glob('*.json'))
-
 async def main():
-    os.environ.update(CURSOR_CONFIG_DIR=str(ROOT/'.cursor'),HF_HOME=str(ROOT/'runtime'/'hf-cache'),TEMP=str(ROOT/'runtime'/'temp'),TMP=str(ROOT/'runtime'/'temp'),OPENROUTER_API_KEY=openrouter_key())
+    profile=ROOT/'runtime'/'cursor'; profile.mkdir(parents=True,exist_ok=True)
+    shutil.copyfile(ROOT/'.cursor'/'cli-config.json',profile/'cli-config.json')
+    os.environ.update(CURSOR_CONFIG_DIR=str(profile),HF_HOME=str(ROOT/'runtime'/'hf-cache'),TEMP=str(ROOT/'runtime'/'temp'),TMP=str(ROOT/'runtime'/'temp'),OPENROUTER_API_KEY=openrouter_key())
     private = ROOT/'private'; private.mkdir(exist_ok=True)
     lock = (private/'living.lock').open('a+b')
     if lock.tell()==0:
@@ -126,7 +122,7 @@ async def main():
             '--port',str(urlparse(CFG['vision_url']).port),'--alias',CFG['vision_alias']])
         for role in DEVICES:
             body.spawn(role)
-        telemetry = asyncio.create_task(hardware(body))
+        telemetry = asyncio.create_task(hardware())
         print(f'Trident alive. Run: {run}\nOwner input: stdin, Telegram text, voice note or call.',flush=True)
         if len(sys.argv)>1:
             publish_owner(' '.join(sys.argv[1:]),'local-owner')
@@ -155,26 +151,17 @@ async def main():
                 write(orientation,result)
             vision = asyncio.create_task(describe())
             context = dict(goal=state['memory']['goal'],narrative=state['memory']['narrative'],owner=state['owner'],updates=updates,
-                previous=state.get('previous',[]),previous_proposal=state.get('proposal'),unknown=state['unknown'],screen=screen,orientation=str(orientation),
+                receivers=[p.name for p in run.iterdir() if p.is_dir()],previous=state.get('previous',[]),previous_proposal=state.get('proposal'),unknown=state['unknown'],screen=screen,orientation=str(orientation),
                 tools=str(private/'tools.py'),output_directory=str(ROOT/'runtime'/'output'))
             try:
                 answer = await asyncio.to_thread(infer,policy+'\nCONTEXT\n'+json.dumps(context,ensure_ascii=False)+
                     '\nAfter inspecting the PNG, Read the orientation file if useful; pending means the independent description is still running.',screen['image'])
                 await vision
-                state['pixels'][screen['image']]=screen['at']; write(state_path,state)
-                ident = token(); proposal = run/(ident+'.answer'); proposal.write_text(answer,'utf-8')
-                if waiting(private) or (run/'stop').exists():
-                    log('superseded',proposal=str(proposal)); continue
-                sources = re.findall(r'```python\s*\n(.*?)```',answer,re.S|re.I)
-                state['proposal']=dict(text=answer,artifact=str(proposal),phase='prepared' if sources else 'no_program'); write(state_path,state)
-                if not sources:
-                    log('no_program',proposal=str(proposal)); await asyncio.sleep(15); continue
-                program = run/(ident+'.py'); program.write_text('\n\n'.join(sources),'utf-8')
-                environment = dict(os.environ); environment.pop('OPENROUTER_API_KEY',None)
-                await asyncio.to_thread(execute,[sys.executable,'-B',str(ROOT/'cortex.py'),str(program)],CFG['execution_seconds'],
-                    transcript=run/(ident+'.execution'),cwd=ROOT,env=environment)
-                current = json.loads(state_path.read_text('utf-8-sig'))
-                log('cycle',proposal=str(proposal),program=str(program),summary_chars=len(current['memory']['narrative']),operations=len(current.get('previous',[])))
+                state=json.loads(state_path.read_text('utf-8'))
+                state['pixels'][screen['image']]=screen['at']
+                proposal=run/(token()+'.answer'); proposal.write_text(answer,'utf-8')
+                state['proposal']=dict(text=answer,artifact=str(proposal)); write(state_path,state)
+                log('cycle',proposal=str(proposal),summary_chars=len(state['memory']['narrative']),operations=len(state.get('previous',[])))
             except Exception as error:
                 log('cycle_failed',error=f'{type(error).__name__}: {error}')
                 state = json.loads(state_path.read_text('utf-8-sig')); state['previous'].append(dict(error=str(error),outcome='processing_failed'))

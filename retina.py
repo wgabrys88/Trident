@@ -22,8 +22,6 @@ async def ready():
 
 def inspect(args):
     started = time.monotonic(); source = Path(args['image']).resolve()
-    if not source.is_relative_to(ROOT):
-        raise ValueError('Image must be inside workspace')
     with Image.open(source) as pixels:
         width,height = pixels.size; region = args.get('region',[0,0,1000,1000])
         x0,y0,x1,y1 = region

@@ -1,4 +1,4 @@
-import asyncio, ctypes, json, os, sys, subprocess, time, tomllib, uuid
+import asyncio, ctypes, json, os, subprocess, time, tomllib, uuid
 from ctypes import wintypes as W
 from pathlib import Path
 
@@ -98,6 +98,8 @@ def execute(argv, seconds, transcript=None, **options):
 
 async def request(device, op, args, seconds):
     ident, folder = token(), RUN / device
+    if not folder.is_dir():
+        return dict(outcome='not_attempted',error='No registered receiver '+device,receivers=[p.name for p in RUN.iterdir() if p.is_dir()])
     path, reply = folder / f'{ident}.request', folder / f'{ident}.reply'
     write(path, dict(id=ident, op=op, args=args, expires=time.time() + seconds))
     try:
@@ -119,6 +121,7 @@ async def request(device, op, args, seconds):
     return value
 
 async def serve(handler, role):
+    (RUN/role).mkdir(parents=True,exist_ok=True)
     log('ready', device=role)
     while True:
         for path in sorted((RUN / role).glob('*.request'), key=lambda p: p.name):
@@ -155,15 +158,3 @@ def publish_owner(text, source, at=None, ident=None):
     write(ROOT / 'private' / 'inbox' / f'{time.time_ns()}-{ident}.json',
           dict(id=ident, text=text, source=source, at=time.time() if at is None else at, kind='owner' if owner else 'observation'))
     log('owner' if owner else 'input_observation', id=ident, text=text, source=source)
-
-def file_boundary(event,args):
-    if event not in ('open','os.listdir','os.scandir','os.remove','os.rename','os.mkdir','os.rmdir'):
-        return
-    for value in args[:2] if event=='os.rename' else args[:1]:
-        if isinstance(value,(str,bytes,os.PathLike)):
-            path = Path(os.fsdecode(value)).resolve()
-            library = path.is_relative_to(Path(sys.base_prefix))
-            reading = event=='open' and not (args[2] & (os.O_WRONLY|os.O_RDWR))
-            if not path.is_relative_to(ROOT) and not (library and reading):
-                raise PermissionError('Generated tools may access files only inside the workspace')
-

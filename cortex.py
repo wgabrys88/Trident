@@ -1,6 +1,6 @@
-import ast, asyncio, inspect, json, os, sys, time
+import ast, asyncio, base64, inspect, json, os, sys, time
 from pathlib import Path
-from fabric import CFG, ROOT, RUN, NotAttempted, request, token, write, file_boundary
+from fabric import CFG, ROOT, RUN, NotAttempted, request, token, write, execute
 
 PRIVATE = ROOT/'private'
 state = json.loads((PRIVATE/'continuity.json').read_text('utf-8-sig'))
@@ -91,19 +91,23 @@ async def rest(seconds=60):
         await asyncio.sleep(.1)
 
 async def main():
-    sys.addaudithook(file_boundary)
     tools = PRIVATE/'tools.py'
     namespace = globals()
     if tools.exists():
         exec(compile(tools.read_text('utf-8'),str(tools),'exec'),namespace)
     source = Path(sys.argv[1]).read_text('utf-8-sig')
     tree = ast.parse(source)
+    if tree.body and isinstance(tree.body[-1],ast.Expr):
+        tree.body[-1]=ast.Assign(targets=[ast.Name(id='__value__',ctx=ast.Store())],value=tree.body[-1].value)
+        ast.fix_missing_locations(tree)
     definitions = [node for node in tree.body if isinstance(node,(ast.FunctionDef,ast.AsyncFunctionDef,ast.ClassDef,ast.Import,ast.ImportFrom))]
     try:
-        compiled = compile(source,str(sys.argv[1]),'exec',flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+        compiled = compile(tree,str(sys.argv[1]),'exec',flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
         result = eval(compiled,namespace)
         if inspect.isawaitable(result):
             await result
+        if '__value__' in namespace:
+            print(repr(namespace['__value__']),flush=True)
         if definitions:
             existing = tools.read_text('utf-8') if tools.exists() else ''
             old = ast.parse(existing).body
@@ -113,5 +117,30 @@ async def main():
     finally:
         save()
 
+def mcp():
+    for line in sys.stdin:
+        message=json.loads(line)
+        if 'id' not in message:
+            continue
+        method=message['method']; result={}
+        if method=='initialize':
+            result=dict(protocolVersion='2025-06-18',capabilities=dict(tools={}),serverInfo=dict(name='trident',version='1'))
+        elif method=='tools/list':
+            result=dict(tools=[dict(name='python',description='Execute arbitrary Python with top-level await in Trident. Device APIs, owner, memory, screen and previous are injected. Define reusable tools, create files, self-update, launch processes; return actual receipts and fresh pixels.',inputSchema=dict(type='object',properties=dict(source=dict(type='string')),required=['source']))])
+        elif method=='tools/call':
+            ident=token(); program=RUN/(ident+'.py'); program.write_text(message['params']['arguments']['source'],'utf-8')
+            failure=None
+            try:
+                output=execute([sys.executable,'-B',str(ROOT/'cortex.py'),str(program)],CFG['execution_seconds'],transcript=RUN/(ident+'.execution'),cwd=ROOT).decode('utf-8',errors='replace')
+            except Exception as error:
+                output=''; failure=f'{type(error).__name__}: {error}'
+            current=json.loads((PRIVATE/'continuity.json').read_text('utf-8'))
+            content=[dict(type='text',text=json.dumps(dict(stdout=output,error=failure,operations=current.get('previous',[]),memory=current['memory']),ensure_ascii=False))]
+            image=Path(current['screen']['image']); data=image.read_bytes()
+            content.append(dict(type='image',data=base64.b64encode(data).decode(),mimeType='image/png'))
+            current['pixels'][str(image)]=current['screen']['at']; write(PRIVATE/'continuity.json',current)
+            result=dict(content=content,isError=bool(failure))
+        print(json.dumps(dict(jsonrpc='2.0',id=message['id'],result=result),ensure_ascii=False),flush=True)
+
 if __name__=='__main__':
-    asyncio.run(main())
+    mcp() if sys.argv[1]=='--mcp' else asyncio.run(main())

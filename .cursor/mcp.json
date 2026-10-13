@@ -1,0 +1,1 @@
+{"mcpServers": {"trident": {"type": "stdio", "command": "${workspaceFolder}/runtime/python/Scripts/python.exe", "args": ["-B", "${workspaceFolder}/cortex.py", "--mcp"], "env": {"TRIDENT_RUN": "${env:TRIDENT_RUN}", "OPENROUTER_API_KEY": "${env:OPENROUTER_API_KEY}", "HF_HOME": "${env:HF_HOME}", "TEMP": "${env:TEMP}", "TMP": "${env:TMP}"}}}}
