@@ -2,7 +2,6 @@ owner = 5884279027
 tdata = '%APPDATA%/Telegram Desktop/tdata'
 cursor_version = '2026.10.01-e373342'
 mind_model = 'gpt-5.6-luna-medium'
-mind_seconds = 180
 look_seconds = 30
 decision_model = 'typesafe/jev-1.13'
 decision_seconds = 15
@@ -12,6 +11,4 @@ vision_model = 'LFM2.5-VL-3B-Q4_K_M.gguf'
 vision_projector = 'mmproj-LFM2.5-VL-3B-Q8_0.gguf'
 vision_context = 4096
 asr_model = 'tiny.en'
-
 execution_seconds = 150
-

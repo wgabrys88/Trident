@@ -1,6 +1,6 @@
-private/
 runtime/
 run_*/
+private/
 __pycache__/
 *.pyc
 .env
