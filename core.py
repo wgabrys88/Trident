@@ -124,18 +124,22 @@ class Session:
                        kind='owner' if source in ('local-owner', 'telegram-owner', 'telegram-call') else 'observation')
         write(self.name('inbox', 'json'), message)
 
+    @property
+    def vendor(self):
+        vendor = self.path('vendor')
+        return dict(HOME=str(vendor / 'home'), USERPROFILE=str(vendor / 'home'), CURSOR_CONFIG_DIR=str(vendor / 'home' / '.cursor'),
+            CURSOR_DATA_DIR=str(vendor / 'cursor-data'), CURSOR_AGENT_DISABLE_DEBUG_LOG='1', XDG_CACHE_HOME=str(vendor / 'cache'),
+            XDG_CONFIG_HOME=str(vendor / 'config'), TEMP=str(vendor / 'temp'), TMP=str(vendor / 'temp'))
+
     def prepare(self):
         vendor = self.path('vendor')
-        profile, temporary = vendor / 'home' / '.cursor', vendor / 'temp'
+        profile = Path(self.vendor['CURSOR_CONFIG_DIR'])
         profile.mkdir(parents=True)
-        temporary.mkdir()
+        Path(self.vendor['TEMP']).mkdir()
         os.environ.update(TRIDENT_RUN=str(self.directory), HF_HOME=str(vendor / 'hf'),
             PSModuleAnalysisCachePath=str(vendor / 'PowerShellModuleAnalysisCache'),
             PYTHONDONTWRITEBYTECODE='1', PYTHONUTF8='1', PYTHONIOENCODING='utf-8', PYTHONUNBUFFERED='1')
         real = {key: os.environ[key] for key in ('USERPROFILE', 'HOME', 'TEMP', 'TMP') if key in os.environ}
-        self.vendor = dict(HOME=str(profile.parent), USERPROFILE=str(profile.parent), CURSOR_CONFIG_DIR=str(profile),
-            CURSOR_DATA_DIR=str(vendor / 'cursor-data'), CURSOR_AGENT_DISABLE_DEBUG_LOG='1', XDG_CACHE_HOME=str(vendor / 'cache'),
-            XDG_CONFIG_HOME=str(vendor / 'config'), TEMP=str(temporary), TMP=str(temporary))
         write(profile / 'cli-config.json', dict(version=1, editor=dict(vimMode=False),
             permissions=dict(allow=['Read(**)', 'Write(**)', 'Shell(*)', 'WebFetch(*)', 'Mcp(*:*)'],
                 deny=['Read(runtime/**)', 'Read(run_*/**)'] + [f'Read(**/*.{ext})' for ext in ('png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp')]),

@@ -198,6 +198,12 @@ async def mcp(session):
         sys.stdout.buffer.write(reply.encode('utf-8'))
         sys.stdout.buffer.flush()
 
+def cursor(prompt, *options):
+    folder = Path(os.environ['LOCALAPPDATA']) / 'cursor-agent' / 'versions' / CFG['cursor_version']
+    bootstrap = "process.argv.push(require('node:fs').readFileSync(process.argv.pop(),'utf8'));require(process.argv[1]);"
+    return [str(folder / 'node.exe'), '-e', bootstrap, str(folder / 'index.js'), '--trust', '-p', *options, '--model', CFG['mind_model'],
+            '--workspace', str(ROOT), '--output-format', 'stream-json', '--stream-partial-output', str(prompt)]
+
 class Organism:
     def __init__(self, session):
         self.session, self.bus, self.jobs = session, Bus(session, 'organism'), {}
@@ -281,11 +287,7 @@ class Organism:
         exchange = Exchange(session, 'luna', 'cursor')
         prompt = exchange.dump('request', (ROOT / 'instinct.txt').read_text('utf-8-sig') +
                                '\nCURRENT RUN\n' + json.dumps(context, ensure_ascii=False), 'txt')
-        folder = Path(os.environ['LOCALAPPDATA']) / 'cursor-agent' / 'versions' / CFG['cursor_version']
-        bootstrap = "process.argv.push(require('node:fs').readFileSync(process.argv.pop(),'utf8'));require(process.argv[1]);"
-        result = await execute([str(folder / 'node.exe'), '-e', bootstrap, str(folder / 'index.js'), '--trust', '-p',
-            '--approve-mcps', '--model', CFG['mind_model'], '--workspace', str(ROOT), '--output-format', 'stream-json',
-            '--stream-partial-output', str(prompt)], exchange, extension='jsonl', cwd=ROOT, env=os.environ | session.vendor)
+        result = await execute(cursor(prompt, '--approve-mcps'), exchange, extension='jsonl', cwd=ROOT, env=os.environ | session.vendor)
         session.edit(lambda state: state['executions'][result['id']].update(model_completion='incomplete'))
         if result['outcome'] != 'completed':
             raise RuntimeError(f"Cursor process {result['outcome']} (returncode {result['returncode']}, {result['error']}); "
