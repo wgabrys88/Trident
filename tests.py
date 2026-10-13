@@ -82,11 +82,13 @@ class Trial:
             verdict = json.JSONDecoder().raw_decode(text[text.index('{'):])[0]
         except ValueError:
             verdict = dict(reason='Evaluator gave no verdict: ' + text)
-        line = dict(index=len(self.report) + 1, scenario=name, passed=verdict.get('pass'), reason=verdict.get('reason'),
-                    evaluator=result['id'], seconds=round(time.time() - since))
+        self.record(name, verdict.get('pass'), verdict.get('reason'), result['id'])
+
+    def record(self, name, passed, reason, evaluator=None):
+        line = dict(index=len(self.report) + 1, scenario=name, passed=passed, reason=reason, evaluator=evaluator)
         self.report.append(line)
         self.path.write_text(json.dumps(self.report, ensure_ascii=False, indent=1), 'utf-8')
-        print(f"{line['index']:>2}. {'PASS' if line['passed'] else 'FAIL'}  {name}: {line['reason']}", flush=True)
+        print(f"{line['index']:>2}. {'PASS' if passed else 'FAIL'}  {name}: {reason}", flush=True)
 
 async def main():
     trial = Trial()
@@ -156,15 +158,24 @@ async def main():
     await trial.judge('continuity across invocations', 'The answer matches the earlier scenarios in this run (narrative, last_words, '
                       'operations) without inventing events.', t, ['summarise the run'], [], dict(whole_run=trial.evidence(0)['operations']))
 
+    # Shutdown is the last scenario and is judged deterministically, not by the evaluator:
+    # request_stop marks the session stopped, which cancels any new Cursor call, so an evaluator
+    # here would cancel itself. Finishing cleanly IS the pass: launcher exits, process_state is
+    # stopped, and no receiver markers or device processes remain.
     t = time.time()
     processes = [read(marker)['pid'] for marker in trial.session.directory.glob('*.receiver')]
     trial.session.request_stop()
     code = trial.launcher.wait(60)
-    inventory = {pid: subprocess.run(['tasklist', '/FI', f'PID eq {pid}'], capture_output=True, text=True).stdout for pid in processes}
-    await trial.judge('shutdown as Ctrl+C requests it', 'The organism stops within about five seconds, records process_state stopped, '
-                      'leaves no receiver markers and no device processes.', t, [], ['wrote the stop request the Ctrl+C handler writes'],
-                      dict(launcher_exit=code, seconds=round(time.time() - t, 2), device_processes=inventory,
-                           markers=[path.name for path in trial.session.directory.glob('*.receiver')]))
+    time.sleep(1)
+    alive = [pid for pid in processes
+             if f' {pid} ' in subprocess.run(['tasklist', '/FI', f'PID eq {pid}'], capture_output=True, text=True).stdout]
+    markers = [path.name for path in trial.session.directory.glob('*.receiver')]
+    state = trial.session.load()['process_state']
+    seconds = round(time.time() - t, 2)
+    passed = code is not None and state == 'stopped' and not alive and not markers
+    trial.record('shutdown as Ctrl+C requests it', passed,
+                 f'launcher exit={code}, process_state={state}, leftover device processes={alive}, '
+                 f'receiver markers={markers}, shutdown seconds={seconds}')
 
     print(f"{sum(1 for line in trial.report if line['passed'])}/{len(trial.report)} passed. Report: {trial.path}", flush=True)
 
