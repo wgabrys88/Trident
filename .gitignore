@@ -1,8 +1,6 @@
 private/
 runtime/
+run_*/
 __pycache__/
 *.pyc
 .env
-
-.cursor/chats/
-.cursor/statsig-cache*
