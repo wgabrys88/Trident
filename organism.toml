@@ -14,18 +14,5 @@ vision_projector = 'mmproj-LFM2.5-VL-3B-Q8_0.gguf'
 vision_context = 4096
 asr_model = 'tiny.en'
 
-[capabilities]
-look = 'question; optional mode inspect|locate and region [xmin,ymin,xmax,ymax] on the FULL image, normalized 0..1000. Both preserve native pixels. A located box needs acceptance from pixels before its target ID can be used.'
-launch = 'app: executable or document path. Opens it; focus separately.'
-browse = 'url: opens the registered browser; focus separately.'
-focus = 'title: an observed window title.'
-key = 'keys: Enter, ctrl+shift+s or [ctrl,shift,s]; window: captured foreground window ID. Real key events.'
-type = 'text; window: captured foreground window ID. Clipboard paste only.'
-click = 'target: confirmed look ID; optional points [[x,y],...] relative to target, 0..1; default center. Separate press/release per point.'
-draw = 'target: confirmed look ID; points [[x,y],...] or strokes [[[x,y],...],...], relative to target, 0..1. Separate polylines; X right, Y down.'
-authorize = 'quote: entire exact current owner call request. Permission lasts 120 seconds, one attempt.'
-dial = '{}. Consumes permission; returns actual provider outcome.'
-say = 'text; outcome: owner or action UUID; evidence: action UUID required for GUI completion. One delivered voice note per owner/outcome.'
-done = 'Same arguments as say. Clears the completed goal, remains alive.'
-recall = 'query: reads archived outcomes in bulk when needed.'
-rest = '{}. Waits sixty seconds or until an owner message.'
+execution_seconds = 150
+

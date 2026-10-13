@@ -12,7 +12,6 @@ def decide(args):
     if set(result.get('answers',{})) != set(args['questions']):
         raise ValueError('Jev did not answer the requested questions')
     result['seconds'] = round(time.monotonic()-started,3)
-    log('decisions', questions=args['questions'], state=args['state'], result=result)
     return result
 
 async def handle(op,args):

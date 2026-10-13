@@ -1,9 +1,9 @@
-import asyncio, ctypes, json, math, os, subprocess, time, tomllib, uuid
+import asyncio, ctypes, json, os, sys, subprocess, time, tomllib, uuid
 from ctypes import wintypes as W
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-CFG = tomllib.loads((ROOT / 'organism.toml').read_text('utf-8'))
+CFG = tomllib.loads((ROOT / 'organism.toml').read_text('utf-8-sig'))
 RUN = Path(os.environ.get('TRIDENT_RUN', ROOT / 'private'))
 
 def openrouter_key():
@@ -100,7 +100,6 @@ async def request(device, op, args, seconds):
     ident, folder = token(), RUN / device
     path, reply = folder / f'{ident}.request', folder / f'{ident}.reply'
     write(path, dict(id=ident, op=op, args=args, expires=time.time() + seconds))
-    log('request', id=ident, device=device, op=op, args=args)
     try:
         async with asyncio.timeout(seconds):
             while True:
@@ -117,7 +116,6 @@ async def request(device, op, args, seconds):
             outcome = 'unknown'
         log('deadline', id=ident, device=device, op=op, outcome=outcome)
         return dict(error=f'{device} deadline exceeded', outcome=outcome, verified=False, request_id=ident)
-    log('receipt', id=ident, device=device, result=value)
     return value
 
 async def serve(handler, role):
@@ -135,7 +133,6 @@ async def serve(handler, role):
             if time.time() >= job['expires']:
                 result = dict(error='Deadline expired in queue; operation not attempted', outcome='not_attempted', verified=False)
             else:
-                log('attempt', id=job['id'], device=role, op=job['op'])
                 try:
                     async with asyncio.timeout(job['expires'] - time.time()):
                         result = await handler(job['op'], job['args'])
@@ -147,132 +144,26 @@ async def serve(handler, role):
                                           'failed' if isinstance(error, ValueError) else 'unknown')
             result['request_id'] = job['id']
             write(path.with_suffix('.reply'), result)
+            log('operation', id=job['id'], device=role, op=job['op'], outcome=result['outcome'], receipt=str(path.with_suffix('.reply')))
             if result.get('outcome') == 'unknown':
                 os._exit(1)
         await asyncio.sleep(.05)
 
-def object_in(text):
-    """Never recover a nested object from a malformed outer candidate."""
-    def unique(pairs):
-        value = {}
-        for key, item in pairs:
-            if key in value:
-                raise ValueError('Duplicate JSON field')
-            value[key] = item
-        return value
-    values, start, depth, quoted, escaped = [], None, 0, False, False
-    for index, char in enumerate(text):
-        if start is None:
-            if char == '{':
-                if text[:index].rstrip().endswith('['):
-                    raise ValueError('An action cannot be wrapped in an array')
-                start, depth = index, 1
-            continue
-        if quoted:
-            if escaped:
-                escaped = False
-            elif char == '\\':
-                escaped = True
-            elif char == '"':
-                quoted = False
-        elif char == '"':
-            quoted = True
-        elif char == '{':
-            depth += 1
-        elif char == '}':
-            depth -= 1
-            if depth == 0:
-                values.append(json.loads(text[start:index+1], object_pairs_hook=unique))
-                start = None
-    if start is not None or len(values) != 1 or not isinstance(values[0], dict):
-        raise ValueError('Exactly one complete JSON object is required')
-    return values[0]
-
-def number(value):
-    return type(value) in (int, float) and math.isfinite(value)
-
-def box_valid(box):
-    return (isinstance(box, list) and len(box) == 4 and all(number(v) for v in box)
-            and 0 <= box[0] < box[2] <= 1000 and 0 <= box[1] < box[3] <= 1000)
-
-def keys_in(value):
-    keys = value.lower().split('+') if isinstance(value, str) else value
-    modifiers = {'ctrl', 'alt', 'shift', 'win'}
-    named = {'enter', 'esc', 'escape', 'tab', 'space', 'backspace', 'delete', 'insert',
-             'home', 'end', 'pageup', 'pagedown', 'up', 'down', 'left', 'right', 'capslock', 'printscreen'}
-    if (not isinstance(keys, list) or not keys or any(not isinstance(k, str) for k in keys)
-            or len(set(keys)) != len(keys) or any(k not in modifiers for k in keys[:-1])
-            or keys[-1] in modifiers or not (keys[-1] in named or
-                 keys[-1] in {f'f{i}' for i in range(1, 25)} or
-                 len(keys[-1]) == 1 and keys[-1] in 'abcdefghijklmnopqrstuvwxyz0123456789,./;\'[]\\-=')):
-        raise ValueError('Use one real key or modifiers followed by one real key')
-    return keys
-
-ARGUMENTS = {'look': ({'question'}, {'mode', 'region'}), 'launch': ({'app'}, set()),
-             'browse': ({'url'}, set()), 'focus': ({'title'}, set()), 'key': ({'keys', 'window'}, set()),
-             'type': ({'text', 'window'}, set()), 'click': ({'target'}, {'points'}),
-             'draw': ({'target'}, {'points', 'strokes'}), 'authorize': ({'quote'}, set()),
-             'dial': (set(), set()), 'say': ({'text', 'outcome'}, {'evidence'}),
-             'done': ({'text', 'outcome'}, {'evidence'}), 'recall': ({'query'}, set()), 'rest': (set(), set())}
-
-def validate(decision):
-    fields = {'do', 'args', 'expect', 'check', 'compare', 'story', 'questions'}
-    if (not isinstance(decision, dict) or not fields <= decision.keys() or decision.keys() - fields - {'corrects'} or
-            any(not isinstance(decision[k], str) for k in {'do', 'expect', 'check', 'story'}) or
-            decision['do'] not in CFG['capabilities'] or not isinstance(decision['args'], dict) or
-            not decision['expect'].strip()):
-        raise ValueError('Invalid action fields, prediction, comparison or story')
-    comparison = decision['compare']
-    if (not isinstance(comparison, dict) or set(comparison) != {'observed', 'contradiction', 'verdict', 'box'} or
-            any(not isinstance(comparison[k], str) for k in ('observed', 'contradiction', 'verdict')) or
-            comparison['verdict'] not in ('supported', 'refuted', 'uncertain') or
-            comparison['box'] is not None and not box_valid(comparison['box'])):
-        raise ValueError('Comparison requires observed pixels, verdict, contradiction and a located box or null')
-    questions = decision['questions']
-    if (not isinstance(questions, dict) or not 1 <= len(questions) <= 20 or
-            any(not isinstance(q, dict) or q.get('type') not in ('choice', 'noul', 'score') or
-                not isinstance(q.get('instructions'), str) or not q['instructions'].strip() for q in questions.values())):
-        raise ValueError('questions needs 1..20 named objects; type is choice/noul/score, instructions is a nonempty STRING, not a list; choice uses criteria')
-    for q in questions.values():
-        criteria = q.get('criteria')
-        if (q['type']=='choice' and (not isinstance(criteria,dict) or not 1 <= len(criteria) <= 255) or
-                q['type']=='score' and (not isinstance(criteria,list) or not 2 <= len(criteria) <= 10) or
-                q['type']=='noul' and criteria is not None and not isinstance(criteria,dict)):
-            raise ValueError('Jev choice requires options; score requires ordered levels; noul criteria are optional')
-    if 'corrects' in decision and (not isinstance(decision['corrects'], str) or
-                                  not decision['corrects'].isalnum() or len(decision['corrects'])!=32 or
-                                  decision['do'] not in {'look', 'launch', 'browse', 'focus', 'key', 'type', 'click', 'draw'}):
-        raise ValueError('A correction requires specific inspection or a corrective desktop action')
-    op, args = decision['do'], decision['args']
-    required, optional = ARGUMENTS[op]
-    if not required <= args.keys() or args.keys() - required - optional:
-        raise ValueError(f'{op}.args needs {sorted(required)}; optional {sorted(optional)}; received {sorted(args)}')
-    for key, value in args.items():
-        if key not in {'keys', 'points', 'strokes', 'region'} and (not isinstance(value, str) or not value.strip()):
-            raise ValueError('Argument '+key+' must be nonempty text')
-    if op in ('say', 'done') and any(not args[k].isalnum() or len(args[k])!=32 for k in ('outcome', 'evidence') if k in args):
-        raise ValueError('Narration references must be recorded UUIDs')
-    if op == 'key':
-        keys_in(args['keys'])
-    if op == 'look' and (args.get('mode', 'inspect') not in ('locate', 'inspect') or
-                         'region' in args and not box_valid(args['region'])):
-        raise ValueError('Invalid visual mode or crop')
-    if op in {'launch', 'browse', 'focus', 'key', 'type', 'click', 'draw'} and not decision['check'].strip():
-        raise ValueError('A desktop action needs one pointed visual check')
-    if op in {'click', 'draw'}:
-        if 'points' in args and 'strokes' in args or op == 'draw' and not {'points', 'strokes'} & args.keys():
-            raise ValueError('Specify exactly one set of drawing strokes')
-        strokes = args.get('strokes', [args.get('points', [[.5, .5]])])
-        if (not isinstance(strokes, list) or not strokes or len(strokes) > 100 or
-                any(not isinstance(s, list) or not s or len(s) > 200 or
-                    any(not isinstance(p, list) or len(p) != 2 or
-                        any(not number(v) or not 0 <= v <= 1 for v in p) for p in s) for s in strokes)):
-            raise ValueError('Invalid relative X,Y points')
-    return decision
-
 def publish_owner(text, source, at=None, ident=None):
     ident = ident or token()
-    owner = source in ('local-owner', 'telegram-owner')
+    owner = source in ('local-owner', 'telegram-owner', 'telegram-call')
     write(ROOT / 'private' / 'inbox' / f'{time.time_ns()}-{ident}.json',
           dict(id=ident, text=text, source=source, at=time.time() if at is None else at, kind='owner' if owner else 'observation'))
     log('owner' if owner else 'input_observation', id=ident, text=text, source=source)
+
+def file_boundary(event,args):
+    if event not in ('open','os.listdir','os.scandir','os.remove','os.rename','os.mkdir','os.rmdir'):
+        return
+    for value in args[:2] if event=='os.rename' else args[:1]:
+        if isinstance(value,(str,bytes,os.PathLike)):
+            path = Path(os.fsdecode(value)).resolve()
+            library = path.is_relative_to(Path(sys.base_prefix))
+            reading = event=='open' and not (args[2] & (os.O_WRONLY|os.O_RDWR))
+            if not path.is_relative_to(ROOT) and not (library and reading):
+                raise PermissionError('Generated tools may access files only inside the workspace')
+

@@ -1,6 +1,1 @@
-{
-  "permissions": {
-    "allow": ["Read(private/**/*.png)"],
-    "deny": ["Shell(*)", "Write(**)", "WebFetch(*)", "Mcp(*)"]
-  }
-}
+{"permissions":{"allow":["Read(private/**)"],"deny":["Shell(*)","Write(**)","WebFetch(*)","Mcp(*)"]}}
