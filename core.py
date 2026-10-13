@@ -76,13 +76,12 @@ class Session:
         directory = ROOT / ('run_' + timestamp())
         directory.mkdir()
         paths = {name: str(directory / (timestamp() + '_' + name))
-                 for name in ('state.json', 'tools.py', 'orientation.json', 'stop', 'vendor')}
+                 for name in ('state.json', 'tools.py', 'stop', 'vendor')}
         Path(paths['tools.py']).write_text('', 'utf-8')
         Path(paths['stop']).write_bytes(b'')
-        write(Path(paths['orientation.json']), dict(status='pending'))
         write(Path(paths['state.json']), dict(paths=paths, active=True, process_state='starting',
             memory=dict(goal='', narrative=''), owner=dict(id=identity(), text='', at=time.time(), source='no-owner-goal'),
-            operations={}, executions={}, artifacts={}, unknown={}, observations={}, screen={}, inputs=[]))
+            operations={}, executions={}, artifacts={}, unknown={}, screen={}, inputs=[]))
         return cls(directory)
 
     @classmethod
@@ -129,18 +128,20 @@ class Session:
         profile, temporary = vendor / 'home' / '.cursor', vendor / 'temp'
         profile.mkdir(parents=True)
         temporary.mkdir()
-        os.environ.update(TRIDENT_RUN=str(self.directory), HOME=str(profile.parent), USERPROFILE=str(profile.parent),
-            CURSOR_CONFIG_DIR=str(profile), CURSOR_DATA_DIR=str(vendor / 'cursor-data'), CURSOR_AGENT_DISABLE_DEBUG_LOG='1',
-            HF_HOME=str(vendor / 'hf'), XDG_CACHE_HOME=str(vendor / 'cache'), XDG_CONFIG_HOME=str(vendor / 'config'),
-            TEMP=str(temporary), TMP=str(temporary), PSModuleAnalysisCachePath=str(vendor / 'PowerShellModuleAnalysisCache'),
+        os.environ.update(TRIDENT_RUN=str(self.directory), HF_HOME=str(vendor / 'hf'),
+            PSModuleAnalysisCachePath=str(vendor / 'PowerShellModuleAnalysisCache'),
             PYTHONDONTWRITEBYTECODE='1', PYTHONUTF8='1', PYTHONIOENCODING='utf-8', PYTHONUNBUFFERED='1')
+        real = {key: os.environ[key] for key in ('USERPROFILE', 'HOME', 'TEMP', 'TMP') if key in os.environ}
+        self.vendor = dict(HOME=str(profile.parent), USERPROFILE=str(profile.parent), CURSOR_CONFIG_DIR=str(profile),
+            CURSOR_DATA_DIR=str(vendor / 'cursor-data'), CURSOR_AGENT_DISABLE_DEBUG_LOG='1', XDG_CACHE_HOME=str(vendor / 'cache'),
+            XDG_CONFIG_HOME=str(vendor / 'config'), TEMP=str(temporary), TMP=str(temporary))
         write(profile / 'cli-config.json', dict(version=1, editor=dict(vimMode=False),
             permissions=dict(allow=['Read(**)', 'Write(**)', 'Shell(*)', 'WebFetch(*)', 'Mcp(*:*)'],
-                deny=[f'Read(**/*.{ext})' for ext in ('png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp')]),
+                deny=['Read(runtime/**)', 'Read(run_*/**)'] + [f'Read(**/*.{ext})' for ext in ('png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp')]),
             sandbox=dict(mode='disabled', readBoundary='system'), approvalMode='unrestricted'))
         write(profile / 'mcp.json', dict(mcpServers=dict(trident=dict(type='stdio', command=sys.executable,
-            args=['-u', '-B', str(ROOT / 'run.py'), '--mcp'], env={key: os.environ[key] for key in
-                ('TRIDENT_RUN', 'PYTHONUTF8', 'PYTHONIOENCODING', 'PYTHONUNBUFFERED', 'TEMP', 'TMP')}))))
+            args=['-u', '-B', str(ROOT / 'run.py'), '--mcp'], env=real | {key: os.environ[key] for key in
+                ('TRIDENT_RUN', 'PYTHONUTF8', 'PYTHONIOENCODING', 'PYTHONUNBUFFERED')}))))
         os.environ['OPENROUTER_API_KEY'] = os.environ.get('OPENROUTER_API_KEY') or (ROOT.parent / '.env').read_text('utf-8-sig').strip()
 
 class Exchange:
@@ -157,9 +158,10 @@ class Exchange:
         atomic(path, data if isinstance(data, bytes) else data.encode('utf-8'))
         return path
 
-    def http(self, url, payload, seconds, headers=None):
+    def http(self, url, payload, seconds, headers=None, record=None):
         body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
-        self.dump('request', body)
+        self.dump('request', json.dumps(record, ensure_ascii=False) if record else body)
+        self.response = self.path('response', 'json')
         request = urllib.request.Request(url, body, headers or {'Content-Type': 'application/json'})
         received = bytearray()
         try:
@@ -167,7 +169,7 @@ class Exchange:
                 response = urllib.request.urlopen(request, timeout=seconds)
             except urllib.error.HTTPError as error:
                 response = error
-            with response, self.path('response', 'json').open('wb') as output:
+            with response, self.response.open('wb') as output:
                 while chunk := response.read1(65536):
                     output.write(chunk)
                     output.flush()
@@ -252,7 +254,8 @@ async def execute(command, exchange, seconds=None, extension='txt', **options):
         exchange.session.edit(lambda state: state['executions'][exchange.id].update(
             outcome=outcome, returncode=code, error=error))
     return dict(id=exchange.id, outcome=outcome, stdout=output.read_text('utf-8', errors='replace'),
-                stderr=stderr.read_text('utf-8', errors='replace'), returncode=code, error=error)
+                stderr=stderr.read_text('utf-8', errors='replace'), returncode=code, error=error,
+                stdout_path=str(output), stdout_bytes=output.stat().st_size, stderr_path=str(stderr), stderr_bytes=stderr.stat().st_size)
 
 class NotAttempted(ValueError):
     pass
@@ -366,8 +369,8 @@ class Bus:
                             result = await handler(job['op'], job['args'])
                         result.setdefault('outcome', 'completed')
                     except Exception as error:
-                        result = dict(error=f'{type(error).__name__}: {error}', outcome=
-                            'not_attempted' if isinstance(error, NotAttempted) else 'failed' if isinstance(error, ValueError) else 'unknown')
+                        result = dict(error=f'{type(error).__name__}: {error}', outcome='not_attempted' if isinstance(error, NotAttempted)
+                            else 'unknown' if role in ('manipulator', 'relay') and not isinstance(error, ValueError) else 'failed')
                     result['operation_id'] = job['id']
                     reply = Exchange(self.session, job['sender'], role, job['id']).dump('response', json.dumps(result, ensure_ascii=False))
                     if job['id'] in self.session.load()['operations']:

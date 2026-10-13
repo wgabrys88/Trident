@@ -33,8 +33,6 @@ class Cortex:
     async def decide(self, state, questions):
         return await self.device('discern', 'decide', dict(state=state, questions=questions), CFG['decision_seconds'])
 
-    ask = decide
-
     def point(self, observation, x, y):
         geometry = observation['geometry']
         left, top, right, bottom = geometry['crop']
@@ -72,8 +70,6 @@ class Cortex:
         return await self.recall(ident)
 
     async def speak(self, text, identity=None):
-        if identity and identity in self.session.load()['operations']:
-            return (await self.recall(identity))['result'] or dict(operation_id=identity, outcome='unknown')
         return await self.device('phonation', 'speak', dict(text=text), 55, identity)
 
     def remember(self, **changes):
@@ -102,7 +98,7 @@ class Cortex:
         namespace = dict(__name__='__trident__', __file__=str(path), memory=memory, owner=state['owner'],
             screen=state['screen'], previous=state['operations'], ROOT=ROOT, RUN=self.session.directory,
             asyncio=asyncio, artifact=self.session.artifact)
-        for name in ('device', 'native', 'observe', 'decide', 'ask', 'point', 'accept', 'recall', 'resolve', 'speak', 'rest', 'remember'):
+        for name in ('device', 'native', 'observe', 'decide', 'point', 'accept', 'recall', 'resolve', 'speak', 'rest', 'remember'):
             namespace[name] = getattr(self, name)
         tools = self.session.path('tools.py')
         exec(compile(tools.read_text('utf-8'), str(tools), 'exec'), namespace)
@@ -145,31 +141,31 @@ class Cortex:
             required=['type', 'instructions'] + (['criteria'] if kind != 'noul' else [])) for kind, criteria in (
                 ('choice', dict(type='object', additionalProperties=text)), ('score', dict(type='array', items=text)),
                 ('noul', dict(type='object', properties={'true': text, 'false': text})))]
-        return [dict(name='observe', description='Local vision alone sees the current screenshot. Ask about presence, '
-            'other possibilities, objects, changes or more precise positions. Receive its full answer and geometry. '
-            'All boxes are normalized 0..1000 in the submitted image, including crops; point/accept map to desktop pixels. '
-            'The text decision model can help evaluate interpretations, targets and what to observe next.',
+        return [dict(name='observe', description='Local vision alone sees the current screenshot. It is a small model '
+            'that can be wrong: crop to the region that matters, ask one pointed question about the change you expect, '
+            'ask the inverse question too, and bring conflicting looks to decide. Returns its answer text, finish reasons, '
+            'usage, raw response path and geometry. All boxes are normalized 0..1000 in the submitted image, including '
+            'crops; point/accept map to desktop pixels.',
             inputSchema=dict(type='object', properties=dict(question=text,
                 region=dict(type='array', items=dict(type='number'), minItems=4, maxItems=4)), required=['question'])),
             dict(name='decide', description='Fast probabilistic TEXT judgments over your evidence, not pixel viewing or '
                 'device control. Supply goal, local descriptions/boxes, geometry, artifact identities and receipts as state. '
                 'questions is a named OBJECT of typed OBJECTS, never question strings: choice needs type, instructions '
                 'and named criteria descriptions; score uses an ordered criteria array; noul judges a proposition. '
-                'Returns complete answers, distributions and usage. Use extensively for interpretations, target choices, '
-                'uncertainty and correction. Always ask whether a genuinely different approach is better; invent '
-                'alternative perspectives and refine questions as evidence develops. Confidence is not proof or permission.',
+                'Returns complete answers, distributions and usage. Consult it when a prediction and an outcome disagree, '
+                'when looks conflict, or when choosing between approaches. Confidence is not proof or permission.',
                 inputSchema=dict(type='object', properties=dict(state={}, questions=dict(type='object',
                     additionalProperties=dict(oneOf=variants))), required=['state', 'questions'])),
             dict(name='python', description='Execute arbitrary Python with top-level await and injected memory, owner, '
                 'artifact, native, observe, decide, point, accept, remember, recall, resolve, speak, device and rest. '
                 'No trident import. native receives Python source and prediction; gui is the complete PyAutoGUI module '
-                'INSIDE native source. Create/reuse tools, update yourself, converse or rest. Results and generated '
-                'artifact identities persist in this run even if a later execution fails. Never read or return image bytes.',
+                'INSIDE native source. Create/reuse tools, update yourself, converse or rest. Returns full stdout/stderr with '
+                'their byte sizes and file paths; everything printed enters your paid context. Never read or return image bytes.',
                 inputSchema=dict(type='object', properties=dict(source=text), required=['source']))]
 
 async def mcp(session):
     cortex = Cortex(session)
-    delivered = 0
+    delivered, known = 0, {}
     for raw in sys.stdin.buffer:
         exchange = Exchange(session, 'cursor', 'mcp')
         exchange.dump('request', raw, 'jsonl')
@@ -190,7 +186,9 @@ async def mcp(session):
             state = session.load()
             inputs = [json.loads(Path(entry['path']).read_text('utf-8')) for entry in state['inputs'][delivered:]]
             delivered = len(state['inputs'])
-            payload = dict(result=value, owner=state['owner'], inputs=inputs, memory=state['memory'], receivers=cortex.bus.receivers())
+            current = dict(owner=state['owner'], memory=state['memory'], receivers=sorted(cortex.bus.receivers()))
+            payload = dict(result=value, inputs=inputs) | {key: item for key, item in current.items() if known.get(key) != item}
+            known = current
             result = dict(content=[dict(type='text', text=json.dumps(payload, ensure_ascii=False))],
                 isError=value.get('outcome') in ('failed', 'unknown', 'not_attempted'))
         else:
@@ -255,28 +253,11 @@ class Organism:
                     self.session.publish(f'{role} process exited {job.process.returncode}', 'device-observation')
             await asyncio.sleep(.1)
 
-    async def sense(self):
-        observed = None
-        while not self.session.stopped():
-            screen = self.session.load()['screen']
-            if screen and screen['image'] != observed:
-                observed = screen['image']
-                write(self.session.path('orientation.json'), dict(status='pending', image=observed))
-                result = await self.bus.request('retina', 'inspect', dict(image=observed,
-                    desktop=screen['desktop'], window=screen['window'], question='Describe the visible desktop, '
-                    'applications, controls, objects and spatial relations without assuming a task. '
-                    'Give normalized-1000 boxes in the submitted image and describe uncertainty.'), CFG['look_seconds'])
-                entry = self.session.load()['operations'][result['operation_id']]
-                write(self.session.path('orientation.json'), dict(status=result['outcome'], image=observed,
-                    id=result['operation_id'], response=entry.get('response') or entry.get('error')))
-                self.session.edit(lambda state: state['observations'].update({observed: result['operation_id']}))
-            await asyncio.sleep(.1)
-
     async def infer(self):
         session = self.session
         state = session.load()
         context = dict(owner=state['owner'], memory=state['memory'], artifacts=state['artifacts'],
-            unknown=state['unknown'], receivers=self.bus.receivers(), orientation=str(session.path('orientation.json')),
+            unknown=state['unknown'], receivers=self.bus.receivers(),
             screen={key: state['screen'][key] for key in ('desktop', 'window', 'windows', 'at') if key in state['screen']},
             capture={key: self.capture[key] for key in ('outcome', 'operation_id', 'error') if key in self.capture},
             state=str(session.state_path), tools=str(session.path('tools.py')), output_directory=str(session.directory))
@@ -287,7 +268,7 @@ class Organism:
         bootstrap = "process.argv.push(require('node:fs').readFileSync(process.argv.pop(),'utf8'));require(process.argv[1]);"
         result = await execute([str(folder / 'node.exe'), '-e', bootstrap, str(folder / 'index.js'), '--trust', '-p',
             '--approve-mcps', '--model', CFG['mind_model'], '--workspace', str(ROOT), '--output-format', 'stream-json',
-            '--stream-partial-output', str(prompt)], exchange, extension='jsonl', cwd=ROOT)
+            '--stream-partial-output', str(prompt)], exchange, extension='jsonl', cwd=ROOT, env=os.environ | session.vendor)
         session.edit(lambda state: state['executions'][result['id']].update(model_completion='incomplete'))
         if result['outcome'] != 'completed':
             raise RuntimeError(result['stderr'] or result['error'] or 'Cursor process failed; raw output is retained')
@@ -303,8 +284,14 @@ class Organism:
         if completion != 'completed':
             raise RuntimeError('Cursor ' + completion + '; inspect its retained JSONL response')
         answer = final.get('result', '')
+        session.edit(lambda state: state['memory'].update(last_words=answer))
         if answer:
             print(answer, flush=True)
+
+    async def rest(self, seconds):
+        inputs, deadline = len(self.session.load()['inputs']), time.monotonic() + seconds
+        while not self.session.stopped() and time.monotonic() < deadline and len(self.session.load()['inputs']) == inputs:
+            await asyncio.sleep(.1)
 
     async def live(self):
         try:
@@ -321,14 +308,21 @@ class Organism:
                 self.consume_inputs()
                 self.session.edit(lambda state: state.update(process_state='running'))
                 print(f'Trident alive. Run: {self.session.directory}\nOwner input: stdin, Telegram text, voice note or call.', flush=True)
-                tasks.create_task(self.sense())
                 while not self.session.stopped():
                     self.capture = await self.bus.request('manipulator', 'capture', {}, 10)
                     if not self.capture.get('image'):
                         print(self.capture, file=sys.stderr, flush=True)
-                    await self.infer()
+                    try:
+                        await self.infer()
+                    except Exception as error:
+                        self.session.publish(f'Mind invocation failed: {type(error).__name__}: {error}', 'device-observation')
+                        self.consume_inputs()
+                        await self.rest(30)
         finally:
             self.session.request_stop()
+            deadline = time.monotonic() + 4
+            while time.monotonic() < deadline and any(job.process.poll() is None for role, job in self.jobs.items() if role in ROLES):
+                time.sleep(.05)
             for role in list(self.jobs):
                 self.stop(role)
 

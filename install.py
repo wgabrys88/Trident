@@ -27,15 +27,19 @@ def install():
         scratch = Path(temporary)
         environment = os.environ | dict(TEMP=str(scratch), TMP=str(scratch), HF_HOME=str(scratch / 'hf'),
             PYTHONUTF8='1', PYTHONIOENCODING='utf-8', PYTHONDONTWRITEBYTECODE='1')
-        subprocess.run([str(python), '-B', '-m', 'pip', 'install', '--no-cache-dir', '-r', str(ROOT / 'packages.txt')],
+        subprocess.run([str(python), '-B', '-m', 'pip', 'install', '--no-cache-dir', '--no-compile', '-r', str(ROOT / 'packages.txt')],
                        env=environment, check=True, timeout=600)
         native = runtime / 'llama'
         native.mkdir(exist_ok=True)
         for filename in ('llama-b11435-bin-win-cuda-12.4-x64.zip', 'cudart-llama-bin-win-cuda-12.4-x64.zip'):
+            extracted = native / (filename + '.extracted')
+            if extracted.is_file():
+                continue
             archive = scratch / filename
             download('https://github.com/ggml-org/llama.cpp/releases/download/b11435/' + filename, archive)
             with zipfile.ZipFile(archive) as bundle:
                 bundle.extractall(native)
+            extracted.write_bytes(b'')
         models = runtime / 'models'
         models.mkdir(exist_ok=True)
         for filename in (CFG['vision_model'], CFG['vision_projector']):
