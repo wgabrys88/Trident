@@ -1,20 +1,14 @@
-import asyncio, json, time, urllib.request
-from fabric import CFG, log, openrouter_key, serve
-
-def fuse():
-    time.sleep(3)
+import asyncio, json, os, time, urllib.request
+from fabric import CFG, log, serve
 
 def decide(args):
-    key = openrouter_key()
+    key = os.environ['OPENROUTER_API_KEY']
     started = time.monotonic()
     payload = dict(model=CFG['decision_model'], state=args['state'], questions=args['questions'])
     req = urllib.request.Request('https://openrouter.ai/api/alpha/decisions', json.dumps(payload).encode(),
                                  {'Authorization':'Bearer '+key, 'Content-Type':'application/json'})
-    try:
-        with urllib.request.urlopen(req, timeout=CFG['seconds']) as response:
-            result = json.load(response)
-    finally:
-        fuse()
+    with urllib.request.urlopen(req, timeout=10) as response:
+        result = json.load(response)
     if set(result.get('answers',{})) != set(args['questions']):
         raise ValueError('Jev did not answer the requested questions')
     result['seconds'] = round(time.monotonic()-started,3)

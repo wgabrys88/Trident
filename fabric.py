@@ -7,14 +7,9 @@ CFG = tomllib.loads((ROOT / 'organism.toml').read_text('utf-8'))
 RUN = Path(os.environ.get('TRIDENT_RUN', ROOT / 'private'))
 
 def openrouter_key():
-    """The file beside this checkout contains only the key."""
-    path = ROOT.parent / '.env'
-    try:
-        key = path.read_text('utf-8-sig').strip()
-    except OSError:
-        key = ''
+    key = (ROOT.parent / '.env').read_text('utf-8-sig').strip()
     if not key:
-        raise SystemExit('The .env file beside Trident must contain only the OpenRouter key')
+        raise ValueError('The parent .env must contain the OpenRouter key')
     return key
 
 def token():
@@ -83,14 +78,20 @@ class Job:
             else:
                 self.handle = None
 
-def execute(argv, seconds, **options):
+def execute(argv, seconds, transcript=None, **options):
     job = Job(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **options)
     try:
         output, errors = job.process.communicate(timeout=seconds)
+        if transcript:
+            transcript.write_bytes(output)
+            transcript.with_suffix('.stderr').write_bytes(errors)
         if job.process.returncode:
             raise RuntimeError(errors.decode(errors='replace'))
         return output
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as error:
+        if transcript:
+            transcript.write_bytes(error.output or b'')
+            transcript.with_suffix('.stderr').write_bytes(error.stderr or b'')
         raise TimeoutError('Process deadline exceeded; outcome unknown') from None
     finally:
         job.close()
@@ -207,64 +208,66 @@ def keys_in(value):
         raise ValueError('Use one real key or modifiers followed by one real key')
     return keys
 
-ARGUMENTS = {'look': ({'question'}, {'region'}), 'launch': ({'app'}, set()),
+ARGUMENTS = {'look': ({'question'}, {'mode', 'region'}), 'launch': ({'app'}, set()),
              'browse': ({'url'}, set()), 'focus': ({'title'}, set()), 'key': ({'keys', 'window'}, set()),
              'type': ({'text', 'window'}, set()), 'click': ({'target'}, {'points'}),
              'draw': ({'target'}, {'points', 'strokes'}), 'authorize': ({'quote'}, set()),
-             'dial': (set(), set()), 'say': ({'text'}, set()),
-             'done': ({'text'}, set()), 'recall': ({'query'}, set()), 'rest': (set(), set())}
-
-def questions_of(reply):
-    questions = reply.get('questions') if isinstance(reply, dict) else None
-    if not isinstance(questions, dict) or set(questions) != {'A', 'B', 'C'}:
-        raise ValueError('Ask Jev with the keys A, B, and C')
-    for question in questions.values():
-        if (not isinstance(question, dict) or question.get('type') not in ('choice', 'noul', 'score') or
-                not isinstance(question.get('instructions'), str) or not question['instructions'].strip()):
-            raise ValueError('Each Jev question needs a type and a long instruction')
-    return questions
-
-def persona_of(reply):
-    """D is the next mind. It is not a Jev question."""
-    if not isinstance(reply, dict) or reply.get('D') is None:
-        return None
-    coming = reply['D']
-    if not isinstance(coming, dict):
-        raise ValueError('D names the next mind and carries its prompt')
-    tools = coming.get('tools')
-    if (not isinstance(coming.get('name'), str) or not coming['name'].strip()
-            or not isinstance(coming.get('prompt'), str) or not coming['prompt'].strip()
-            or tools is not None and (not isinstance(tools, str) or not tools.strip())):
-        raise ValueError('D names the next mind and carries its prompt')
-    return dict(name=coming['name'].strip(), prompt=coming['prompt'], tools=None if tools is None else tools.strip())
+             'dial': (set(), set()), 'say': ({'text', 'outcome'}, {'evidence'}),
+             'done': ({'text', 'outcome'}, {'evidence'}), 'recall': ({'query'}, set()), 'rest': (set(), set())}
 
 def validate(decision):
-    if (not isinstance(decision, dict) or decision.get('do') not in ARGUMENTS or
-            not isinstance(decision.get('args'), dict) or
-            not isinstance(decision.get('expect'), str) or not decision['expect'].strip()):
-        raise ValueError('The acting mind must return do, args, and a long expect')
+    fields = {'do', 'args', 'expect', 'check', 'compare', 'story', 'questions'}
+    if (not isinstance(decision, dict) or not fields <= decision.keys() or decision.keys() - fields - {'corrects'} or
+            any(not isinstance(decision[k], str) for k in {'do', 'expect', 'check', 'story'}) or
+            decision['do'] not in CFG['capabilities'] or not isinstance(decision['args'], dict) or
+            not decision['expect'].strip()):
+        raise ValueError('Invalid action fields, prediction, comparison or story')
+    comparison = decision['compare']
+    if (not isinstance(comparison, dict) or set(comparison) != {'observed', 'contradiction', 'verdict', 'box'} or
+            any(not isinstance(comparison[k], str) for k in ('observed', 'contradiction', 'verdict')) or
+            comparison['verdict'] not in ('supported', 'refuted', 'uncertain') or
+            comparison['box'] is not None and not box_valid(comparison['box'])):
+        raise ValueError('Comparison requires observed pixels, verdict, contradiction and a located box or null')
+    questions = decision['questions']
+    if (not isinstance(questions, dict) or not 1 <= len(questions) <= 20 or
+            any(not isinstance(q, dict) or q.get('type') not in ('choice', 'noul', 'score') or
+                not isinstance(q.get('instructions'), str) or not q['instructions'].strip() for q in questions.values())):
+        raise ValueError('questions needs 1..20 named objects; type is choice/noul/score, instructions is a nonempty STRING, not a list; choice uses criteria')
+    for q in questions.values():
+        criteria = q.get('criteria')
+        if (q['type']=='choice' and (not isinstance(criteria,dict) or not 1 <= len(criteria) <= 255) or
+                q['type']=='score' and (not isinstance(criteria,list) or not 2 <= len(criteria) <= 10) or
+                q['type']=='noul' and criteria is not None and not isinstance(criteria,dict)):
+            raise ValueError('Jev choice requires options; score requires ordered levels; noul criteria are optional')
+    if 'corrects' in decision and (not isinstance(decision['corrects'], str) or
+                                  not decision['corrects'].isalnum() or len(decision['corrects'])!=32 or
+                                  decision['do'] not in {'look', 'launch', 'browse', 'focus', 'key', 'type', 'click', 'draw'}):
+        raise ValueError('A correction requires specific inspection or a corrective desktop action')
     op, args = decision['do'], decision['args']
-    questions_of(decision)
     required, optional = ARGUMENTS[op]
     if not required <= args.keys() or args.keys() - required - optional:
-        raise ValueError(f'{op} args must include {sorted(required)}')
+        raise ValueError(f'{op}.args needs {sorted(required)}; optional {sorted(optional)}; received {sorted(args)}')
     for key, value in args.items():
         if key not in {'keys', 'points', 'strokes', 'region'} and (not isinstance(value, str) or not value.strip()):
-            raise ValueError('Argument '+key+' must be text')
+            raise ValueError('Argument '+key+' must be nonempty text')
+    if op in ('say', 'done') and any(not args[k].isalnum() or len(args[k])!=32 for k in ('outcome', 'evidence') if k in args):
+        raise ValueError('Narration references must be recorded UUIDs')
     if op == 'key':
         keys_in(args['keys'])
-    if op == 'look' and 'region' in args and not box_valid(args['region']):
-        raise ValueError('Look region is not a box')
+    if op == 'look' and (args.get('mode', 'inspect') not in ('locate', 'inspect') or
+                         'region' in args and not box_valid(args['region'])):
+        raise ValueError('Invalid visual mode or crop')
+    if op in {'launch', 'browse', 'focus', 'key', 'type', 'click', 'draw'} and not decision['check'].strip():
+        raise ValueError('A desktop action needs one pointed visual check')
     if op in {'click', 'draw'}:
         if 'points' in args and 'strokes' in args or op == 'draw' and not {'points', 'strokes'} & args.keys():
-            raise ValueError('Draw needs points or strokes')
+            raise ValueError('Specify exactly one set of drawing strokes')
         strokes = args.get('strokes', [args.get('points', [[.5, .5]])])
-        if (not isinstance(strokes, list) or not strokes or
-                any(not isinstance(stroke, list) or not stroke or
-                    any(not isinstance(point, list) or len(point) != 2 or
-                        any(not number(value) or not 0 <= value <= 1 for value in point) for point in stroke)
-                    for stroke in strokes)):
-            raise ValueError('Points are relative X,Y pairs from 0 to 1')
+        if (not isinstance(strokes, list) or not strokes or len(strokes) > 100 or
+                any(not isinstance(s, list) or not s or len(s) > 200 or
+                    any(not isinstance(p, list) or len(p) != 2 or
+                        any(not number(v) or not 0 <= v <= 1 for v in p) for p in s) for s in strokes)):
+            raise ValueError('Invalid relative X,Y points')
     return decision
 
 def publish_owner(text, source, at=None, ident=None):

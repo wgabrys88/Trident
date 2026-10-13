@@ -1,6 +1,6 @@
 import asyncio, ctypes, os, time
 from ctypes import wintypes as W
-from fabric import RUN, NotAttempted, keys_in, log, serve, token
+from fabric import CFG, RUN, NotAttempted, keys_in, log, serve, token
 
 u = ctypes.WinDLL('user32', use_last_error=True)
 u.SetProcessDpiAwarenessContext.argtypes = [W.HANDLE]
@@ -52,7 +52,7 @@ def shot():
     def collect(handle, _):
         if u.IsWindowVisible(handle):
             item = foreground(handle)
-            if item['title'] and len(windows) < 20:
+            if item['title']:
                 windows.append(item)
         return True
     u.EnumWindows(collect, 0)
@@ -71,16 +71,14 @@ def perform(op, args):
             raise NotAttempted('Requested window was not found')
         handle = W.HWND(int(matches[0]['id']))
         restored = bool(u.ShowWindowAsync(handle, 9))
-        # Release the previous foreground through the window manager, without injecting keys into it.
         previous = u.GetForegroundWindow()
-        minimized = bool(previous != handle.value and u.ShowWindowAsync(previous, 6))
-        time.sleep(.2)
+        gui.press('alt')
         accepted = bool(u.SetForegroundWindow(handle))
         deadline = time.monotonic()+2
         while foreground()['id'] != matches[0]['id'] and time.monotonic() < deadline:
             time.sleep(.05)
         events.append(dict(focused=matches[0]['id'], foreground=foreground()['id'], accepted=accepted,
-                           restored=restored, previous=str(previous), minimized=minimized))
+                           restored=restored, previous=str(previous), activation_keys=['alt']))
         if foreground()['id'] != matches[0]['id']:
             return dict(error='Windows did not focus the requested window', outcome='failed', verified=False, events=events, **shot())
     elif op in ('key', 'type'):
@@ -99,8 +97,9 @@ def perform(op, args):
     elif op in ('click', 'draw'):
         target = args['target']
         current = require_window(target['window']['id'])
-        if desktop() != target['desktop'] or current['rect'] != target['window']['rect']:
-            raise NotAttempted('Located geometry changed; the eye must look again')
+        if (time.time()-target['at'] > CFG['target_seconds'] or desktop() != target['desktop']
+                or current['rect'] != target['window']['rect']):
+            raise NotAttempted('Located geometry changed or expired; locate again')
         ox, oy, width, height = target['desktop']
         x0, y0, x1, y1 = target['box']
         strokes = args.get('strokes', [args.get('points', [[.5, .5]])])
