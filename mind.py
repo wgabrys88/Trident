@@ -1,23 +1,23 @@
-import ast, asyncio, base64, inspect, json, os, sys, time
+import ast, asyncio, inspect, json, os, sys, time
 from pathlib import Path
-from core import CFG, ROOT, Bus, NotAttempted, Session, execute, token
+from core import CFG, ROOT, Bus, Exchange, NotAttempted, Session, run_process, token
 
 class Cortex:
     def __init__(self, session):
-        self.session, self.bus = session, Bus(session)
+        self.session, self.bus = session, Bus(session, 'cortex')
         self.state = session.load()
         self.memory, self.owner, self.screen = (self.state[key] for key in ('memory', 'owner', 'screen'))
-        self.previous, self.records, self.targets = self.state['previous'], [], {}
+        self.previous, self.records = self.state['previous'], []
         self.namespace = {}
 
     def save(self):
         self.state.update(memory=self.memory, screen=self.screen, previous=self.records)
         self.session.save(self.state)
 
-    async def device(self, role, operation, arguments, seconds=30):
+    async def device(self, role, operation, arguments, seconds=30, identity=None):
         if self.session.interrupted():
             raise InterruptedError('New owner input or stop; previous effects are retained')
-        ident = token()
+        ident = identity or token()
         entry = dict(id=ident, at=time.time(), role=role, operation=operation,
                      arguments=arguments, owner_id=self.owner['id'], outcome='unknown', phase='attempted')
         if role=='manipulator' and operation!='capture' or role=='relay' and operation=='dial':
@@ -32,15 +32,13 @@ class Cortex:
         self.records.append(entry); self.save()
         return result|dict(id=ident, artifact=str(self.session.state_path))
 
-    async def native(self, source, prediction, window=None, targets=None):
-        if not prediction.strip():
-            raise ValueError('Predict the effect before native input')
+    async def native(self, source, prediction, targets=None):
         result = await self.device('manipulator', 'execute', dict(source=source,
-            prediction=prediction, window=window, targets=targets or {}), 30)
+            prediction=prediction, targets=targets or {}), 30)
         if result.get('image'):
             self.screen = result
             self.namespace['screen'] = self.screen
-        self.targets.clear(); self.save()
+        self.save()
         return result
 
     async def observe(self, question, region=None, mode='inspect'):
@@ -49,32 +47,23 @@ class Cortex:
         return result|{key:self.screen[key] for key in ('desktop', 'window', 'at')}
 
     def accept(self, observation, box):
-        if (observation['image'] not in self.state['pixels'] or
-            not (len(box)==4 and 0<=box[0]<box[2]<=1000 and 0<=box[1]<box[3]<=1000) or
-            time.time()-observation['at']>CFG['target_seconds']):
-            raise NotAttempted('Target requires an exact box and current native pixel Read')
-        target = {key:observation[key] for key in ('at', 'desktop', 'window', 'image')}|dict(box=box)
-        self.targets[observation['id']] = target
-        return target
+        return {key:observation[key] for key in ('at', 'desktop', 'window', 'image')}|dict(box=box)
 
     async def ask(self, state, questions):
         return await self.device('discern', 'decide', dict(state=state, questions=questions), CFG['decision_seconds'])
 
     async def speak(self, text, identity=None):
         identity = identity or token()
-        if identity in self.state['voice']:
-            return self.state['voice'][identity]
-        self.state['voice'][identity] = dict(text=text, outcome='unknown', delivered=False, hearing_verified=False)
-        self.save()
-        result = await self.device('phonation', 'speak', dict(text=text, narration_id=identity), 55)
-        self.state['voice'][identity] = result; self.save()
-        return result
+        if identity in self.state['outcomes']:
+            return self.state['outcomes'][identity].get('result', dict(outcome='unknown', delivered=False, hearing_verified=False))
+        return await self.device('phonation', 'speak', dict(text=text, narration_id=identity), 55, identity)
 
     async def resolve(self, ident, evidence, interpretation):
         entry = self.state['outcomes'][ident]
         if ident in self.state['unknown'] and entry['role']=='manipulator':
-            if evidence not in self.state['pixels'] or self.state['pixels'][evidence]<entry['at']:
-                raise NotAttempted('Resolve unknown input with freshly delivered pixels')
+            receipt = self.state['outcomes'][evidence]
+            if receipt['role']!='retina' or receipt['result']['outcome']!='completed' or receipt['result']['image_at']<entry['at']:
+                raise NotAttempted('Unknown input needs a local-vision receipt from a fresh screenshot')
         if ident in self.state['unknown'] and entry['role']=='relay':
             receipt = self.state['outcomes'][evidence]
             if receipt['at']<entry['at'] or receipt['operation']!='status' or receipt['result']['outcome']!='completed':
@@ -83,8 +72,7 @@ class Cortex:
         self.state['unknown'].pop(ident, None); self.save()
         return entry
 
-    async def recall(self, ident):
-        return self.state['outcomes'][ident]
+    async def recall(self, ident): return self.state['outcomes'][ident]
 
     async def rest(self, seconds=60):
         deadline = time.monotonic()+seconds
@@ -99,8 +87,7 @@ class Cortex:
         self.namespace = namespace
         for name in ('native', 'observe', 'accept', 'ask', 'speak', 'device', 'resolve', 'recall', 'rest'):
             namespace[name] = getattr(self, name)
-        if tools.exists():
-            exec(compile(tools.read_text('utf-8'), str(tools), 'exec'), namespace)
+        exec(compile(tools.read_text('utf-8'), str(tools), 'exec'), namespace)
         tree = ast.parse(program.read_text('utf-8-sig'))
         if tree.body and isinstance(tree.body[-1], ast.Expr):
             tree.body[-1] = ast.Assign(targets=[ast.Name(id='__value__', ctx=ast.Store())], value=tree.body[-1].value)
@@ -114,7 +101,7 @@ class Cortex:
             if '__value__' in namespace:
                 print(repr(namespace['__value__']), flush=True)
             if definitions:
-                old = ast.parse(tools.read_text('utf-8') if tools.exists() else '').body
+                old = ast.parse(tools.read_text('utf-8')).body
                 replaced = {node.name for node in definitions if hasattr(node, 'name')}
                 merged = [node for node in old if getattr(node, 'name', None) not in replaced]+definitions
                 tools.write_text(ast.unparse(ast.Module(body=merged, type_ignores=[]))+'\n', 'utf-8')
@@ -127,68 +114,52 @@ class Mind:
         self.folder = Path(os.environ['LOCALAPPDATA'])/'cursor-agent'/'versions'/CFG['cursor_version']
         self.policy = (ROOT/'instinct.txt').read_text('utf-8-sig')
 
-    def infer(self, context):
-        image = Path(context['screen']['image']).resolve()
-        prompt = self.session.file('prompt.txt')
-        prompt.write_text('FIRST native Read '+str(image)+'. Inspect actual pixels.\n'+self.policy+
-            '\nCONTEXT\n'+json.dumps(context, ensure_ascii=False)+
-            '\nRead the orientation file if useful; pending means its independent description is still running.', 'utf-8')
+    async def infer(self, context):
+        exchange = Exchange(self.session, 'luna', 'cursor')
+        prompt = exchange.dump('request', self.policy+'\nCONTEXT\n'+json.dumps(context, ensure_ascii=False), 'txt')
         bootstrap = "process.argv.push(require('node:fs').readFileSync(process.argv.pop(),'utf8'));require(process.argv[1]);"
-        raw = execute([str(self.folder/'node.exe'), '-e', bootstrap, str(self.folder/'index.js'), '--trust', '-p',
+        raw = (await run_process([str(self.folder/'node.exe'), '-e', bootstrap, str(self.folder/'index.js'), '--trust', '-p',
             '--approve-mcps', '--model', CFG['mind_model'], '--workspace', str(ROOT),
-            '--output-format', 'stream-json', str(prompt)], CFG['mind_seconds'], cwd=ROOT).decode('utf-8', errors='replace')
-        texts, inspected = [], False
-        state = self.session.load()
+            '--output-format', 'stream-json', '--stream-partial-output', str(prompt)], CFG['mind_seconds'], exchange,
+            extension='jsonl', cwd=ROOT)).decode('utf-8', errors='replace')
+        texts = []
         for line in raw.splitlines():
-            if not line.strip():
-                continue
+            if not line.strip(): continue
             event = json.loads(line)
             if event.get('type')=='assistant':
                 texts.append(''.join(part['text'] for part in event['message']['content'] if part.get('type')=='text'))
-            if event.get('type')=='tool_call' and event.get('subtype')=='completed':
-                read = event.get('tool_call', {}).get('readToolCall', {})
-                path = Path(read.get('args', {}).get('path', ''))
-                path = (path if path.is_absolute() else ROOT/path).resolve()
-                receipt = read.get('result', {}).get('success', {})
-                if (receipt.get('dataBlobId') and path.is_file() and receipt.get('fileSize')==path.stat().st_size
-                        and not receipt.get('exceededLimit') and path.suffix.lower()=='.png'):
-                    state['pixels'][str(path)] = path.stat().st_mtime
-                    if path==image:
-                        inspected = True
-        self.session.save(state)
-        if not texts or not inspected:
-            raise ValueError('No final answer or successful native PNG Read receipt')
+        if not texts: raise ValueError('No final answer from Cursor')
         return texts[-1]
 
-def mcp(session):
-    for line in sys.stdin:
+async def mcp(session):
+    for line in sys.stdin.buffer:
         message = json.loads(line)
-        if 'id' not in message:
-            continue
+        exchange = Exchange(session, 'cursor', 'mcp')
+        exchange.dump('request', line, 'jsonl')
+        if 'id' not in message: continue
         method = message['method']; result = {}
         if method=='initialize':
             result = dict(protocolVersion='2025-06-18', capabilities=dict(tools={}), serverInfo=dict(name='trident', version='1'))
         elif method=='tools/list':
-            result = dict(tools=[dict(name='python', description='Execute arbitrary Python with top-level await, memory and running devices. Create reusable tools and return actual receipts and fresh pixels.',
+            result = dict(tools=[dict(name='python', description='Execute arbitrary Python with injected native(Python_source, prediction), observe(question, region=None), ask(state, questions), memory and devices. LFM alone sees images; Jev answers your text decision questions. No trident import is needed. gui exists inside native source. Return text receipts, never images.',
                 inputSchema=dict(type='object', properties=dict(source=dict(type='string')), required=['source']))])
         elif method=='tools/call':
-            program = session.artifact('program', 'py')
-            program.write_text(message['params']['arguments']['source'], 'utf-8')
+            execution = Exchange(session, 'mcp', 'cortex')
+            program = execution.dump('request', message['params']['arguments']['source'], 'py')
             failure = None
             try:
-                output = execute([sys.executable, '-B', str(ROOT/'mind.py'), str(program)],
-                                 CFG['execution_seconds'], cwd=ROOT).decode('utf-8', errors='replace')
+                output = (await run_process([sys.executable, '-u', '-B', str(ROOT/'mind.py'), str(program)],
+                                 CFG['execution_seconds'], execution, cwd=ROOT)).decode('utf-8', errors='replace')
             except Exception as error:
                 output = ''; failure = f'{type(error).__name__}: {error}'
             state = session.load()
             content = [dict(type='text', text=json.dumps(dict(stdout=output, error=failure,
                 operations=state['previous'], memory=state['memory']), ensure_ascii=False))]
-            image = Path(state['screen']['image'])
-            content.append(dict(type='image', data=base64.b64encode(image.read_bytes()).decode(), mimeType='image/png'))
-            state['pixels'][str(image)] = state['screen']['at']; session.save(state)
             result = dict(content=content, isError=bool(failure))
-        print(json.dumps(dict(jsonrpc='2.0', id=message['id'], result=result), ensure_ascii=False), flush=True)
+        response = json.dumps(dict(jsonrpc='2.0', id=message['id'], result=result), ensure_ascii=False)
+        exchange.dump('response', response+'\n', 'jsonl')
+        sys.stdout.buffer.write((response+'\n').encode('utf-8')); sys.stdout.buffer.flush()
 
 if __name__=='__main__':
     session = Session.attach()
-    mcp(session) if sys.argv[1]=='--mcp' else asyncio.run(Cortex(session).execute(Path(sys.argv[1])))
+    asyncio.run(mcp(session) if sys.argv[1]=='--mcp' else Cortex(session).execute(Path(sys.argv[1])))

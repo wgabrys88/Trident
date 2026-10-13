@@ -4,7 +4,6 @@ cursor_version = '2026.10.01-e373342'
 mind_model = 'gpt-5.6-luna-medium'
 mind_seconds = 180
 look_seconds = 30
-target_seconds = 180
 decision_model = 'typesafe/jev-1.13'
 decision_seconds = 15
 vision_url = 'http://127.0.0.1:8188'
