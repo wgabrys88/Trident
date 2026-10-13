@@ -49,6 +49,7 @@ def install():
         if metadata.exists():
             metadata.resolve().relative_to(runtime.resolve())
             shutil.rmtree(metadata)
+    for cache in sorted(ROOT.rglob('__pycache__'), reverse=True): cache.resolve().relative_to(ROOT); shutil.rmtree(cache)
     print('Installed. Start with: python run.py')
 
 if __name__ == '__main__':

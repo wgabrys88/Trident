@@ -3,7 +3,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 sys.dont_write_bytecode = True
-from core import Bus, CFG, Exchange, Job, Mutex, NotAttempted, ROOT, Session, atomic, execute, write
+from core import Bus, CFG, Exchange, Job, Mutex, NotAttempted, ROOT, ROLES, Session, atomic, execute, write
 
 class Cortex:
     def __init__(self, session):
