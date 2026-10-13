@@ -271,7 +271,8 @@ class Organism:
             '--stream-partial-output', str(prompt)], exchange, extension='jsonl', cwd=ROOT, env=os.environ | session.vendor)
         session.edit(lambda state: state['executions'][result['id']].update(model_completion='incomplete'))
         if result['outcome'] != 'completed':
-            raise RuntimeError(result['stderr'] or result['error'] or 'Cursor process failed; raw output is retained')
+            raise RuntimeError(f"Cursor process {result['outcome']} (returncode {result['returncode']}, {result['error']}); "
+                f"stderr {result['stderr_path']} ({result['stderr_bytes']} bytes), output {result['stdout_path']} ({result['stdout_bytes']} bytes)")
         final = None
         for line in result['stdout'].splitlines():
             if not line.strip():
