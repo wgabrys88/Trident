@@ -240,7 +240,7 @@ async def execute(command, exchange, seconds=None, extension='txt', **options):
     job, error, code = None, None, None
     try:
         with output.open('wb') as out, stderr.open('wb') as err:
-            job = Job(command, stdout=out, stderr=err, **options)
+            job = Job(command, stdin=subprocess.DEVNULL, stdout=out, stderr=err, **options)
             async with asyncio.timeout(seconds):
                 while job.process.poll() is None:
                     if exchange.session.stopped():

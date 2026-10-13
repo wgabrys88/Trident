@@ -25,6 +25,7 @@ class Trial:
         while not (runs := set(ROOT.glob('run_*')) - before) or not list(next(iter(runs)).glob('*_state.json')):
             time.sleep(.2)
         self.session = Session(next(iter(runs)))
+        self.path = self.session.name('tests_report', 'json')
         while self.session.load()['process_state'] != 'running':
             time.sleep(.5)
 
@@ -84,6 +85,7 @@ class Trial:
         line = dict(index=len(self.report) + 1, scenario=name, passed=verdict.get('pass'), reason=verdict.get('reason'),
                     evaluator=result['id'], seconds=round(time.time() - since))
         self.report.append(line)
+        self.path.write_text(json.dumps(self.report, ensure_ascii=False, indent=1), 'utf-8')
         print(f"{line['index']:>2}. {'PASS' if line['passed'] else 'FAIL'}  {name}: {line['reason']}", flush=True)
 
 async def main():
@@ -164,9 +166,7 @@ async def main():
                       dict(launcher_exit=code, seconds=round(time.time() - t, 2), device_processes=inventory,
                            markers=[path.name for path in trial.session.directory.glob('*.receiver')]))
 
-    report = trial.session.name('tests_report', 'json')
-    report.write_text(json.dumps(trial.report, ensure_ascii=False, indent=1), 'utf-8')
-    print(f"{sum(1 for line in trial.report if line['passed'])}/{len(trial.report)} passed. Report: {report}", flush=True)
+    print(f"{sum(1 for line in trial.report if line['passed'])}/{len(trial.report)} passed. Report: {trial.path}", flush=True)
 
 if __name__ == '__main__':
     asyncio.run(main())
