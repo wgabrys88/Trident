@@ -41,7 +41,7 @@ async def main():
         if result.get('text','').strip():
             publish_owner(result['text'],'telegram-call')
     def receive(serial,mode,device,frames):
-        if serial!=line['serial'] or mode!=n.StreamMode.PLAYBACK or device!=n.StreamDevice.SPEAKER:
+        if serial!=line['serial'] or mode!=n.StreamMode.PLAYBACK or device!=n.StreamDevice.MICROPHONE:
             return
         for data in frames:
             line['recording'].write(np.frombuffer(data,dtype='<i2'))
@@ -80,6 +80,7 @@ async def main():
             await asyncio.wait_for(client(phone.DiscardCallRequest(peer=current,duration=0,reason=t.PhoneCallDiscardReasonHangup(),connection_id=0,video=False)),10)
         if engine:
             await engine.stop(owner)
+        publish_owner('The Telegram call ended. Check the received conversation and actual media receipts before any further call.','call-observation')
         log('call_ended',media={k:line.get(k) for k in ('rx_bytes','tx_frames','peak_rms','audio_path')})
     def connection(serial,state):
         if serial==line['serial'] and state in (n.ConnectionState.CONNECTED,n.ConnectionState.FAILED,n.ConnectionState.TIMEOUT,n.ConnectionState.CLOSED):
@@ -106,9 +107,7 @@ async def main():
         engine.on_signaling_data(lambda uid,data:loop.call_soon_threadsafe(lambda:loop.create_task(signal(serial,bytes(data)))))
         engine.on_frames(lambda uid,mode,device,frames:loop.call_soon_threadsafe(receive,serial,mode,device,[bytes(f.data) for f in frames]))
         await api('create_p2p_call',owner)
-        for mode,rate in ((n.StreamMode.CAPTURE,48000),(n.StreamMode.PLAYBACK,16000)):
-            audio=n.AudioDescription(n.MediaSource.EXTERNAL,rate,1,'',True)
-            await api('set_stream_sources',owner,mode,n.MediaDescription(audio if mode==n.StreamMode.CAPTURE else None,audio if mode==n.StreamMode.PLAYBACK else None,None,None))
+        await api('set_stream_sources',owner,n.StreamMode.CAPTURE,n.MediaDescription(n.AudioDescription(n.MediaSource.EXTERNAL,48000,1,'',True),None,None,None))
         loop.create_task(transmit(serial))
         dh=await client(messages.GetDhConfigRequest(0,256))
         line['dh']=n.DhConfig(dh.g,bytes(dh.p),bytes(dh.random))
@@ -120,10 +119,13 @@ async def main():
             else:
                 endpoints.append(n.RTCServer(item.id,item.ip,item.ipv6,item.port,None,None,False,True,item.tcp,bytes(item.peer_tag)))
         await api('connect_p2p',owner,endpoints,list(call.protocol.library_versions),call.p2p_allowed,None if call.custom_parameters is None else call.custom_parameters.data)
+        await api('set_stream_sources',owner,n.StreamMode.PLAYBACK,n.MediaDescription(n.AudioDescription(n.MediaSource.EXTERNAL,16000,1,'',True),None,None,None))
+        await api('unmute',owner); await api('resume',owner)
         line['linked']=True
         for data in line['signals']:
             await api('send_signaling_data',owner,data)
         line['signals'].clear(); await asyncio.wait_for(line['connection'],30)
+        publish_owner('The Telegram call is connected; conversation can begin. Connection alone does not establish heard speech.','call-observation')
         log('call_connected',outgoing=line['outgoing'])
         return dict(connected=True,media_error=line['media_error'],hearing_verified=False,outcome='completed')
     async def dial():

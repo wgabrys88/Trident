@@ -1,0 +1,1 @@
+{"version":1,"editor":{"vimMode":false},"permissions":{"allow":["Read(private/**)"],"deny":["Shell(*)","Write(**)","WebFetch(*)","Mcp(*)"]},"sandbox":{"mode":"enabled","readBoundary":"workspace"},"approvalMode":"allowlist"}

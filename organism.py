@@ -67,7 +67,7 @@ def infer(prompt,image):
     bootstrap = "process.argv.push(require('node:fs').readFileSync(process.argv.pop(),'utf8'));require(process.argv[1]);"
     started = time.monotonic()
     raw = execute([str(folder/'node.exe'),'-e',bootstrap,str(folder/'index.js'),'--trust','-p',
-        '--model',CFG['mind_model'],'--workspace',str(ROOT),'--output-format','stream-json',str(prompt_file)],
+        '--mode','ask','--model',CFG['mind_model'],'--workspace',str(ROOT),'--output-format','stream-json',str(prompt_file)],
         CFG['mind_seconds'],transcript=transcript,cwd=ROOT).decode('utf-8',errors='replace')
     texts,inspected = [],False
     for line in raw.splitlines():
@@ -79,6 +79,9 @@ def infer(prompt,image):
         if event.get('type')=='tool_call' and event.get('subtype')=='completed':
             read = event.get('tool_call',{}).get('readToolCall',{})
             path = Path(read.get('args',{}).get('path','')); receipt = read.get('result',{}).get('success',{})
+            if read and not (path if path.is_absolute() else ROOT/path).resolve().is_relative_to(ROOT):
+                (RUN/'stop').touch()
+                raise PermissionError('Cursor attempted an outside-workspace Read; stopped before executing its proposal. See '+str(transcript))
             if ((path if path.is_absolute() else ROOT/path).resolve()==image and receipt.get('dataBlobId') and
                     receipt.get('fileSize')==image.stat().st_size and not receipt.get('exceededLimit')):
                 inspected = True
@@ -91,7 +94,7 @@ def waiting(private):
     return any(json.loads(p.read_text('utf-8'))['kind']=='owner' for p in (private/'inbox').glob('*.json'))
 
 async def main():
-    os.environ.update(HF_HOME=str(ROOT/'runtime'/'hf-cache'),TEMP=str(ROOT/'runtime'/'temp'),TMP=str(ROOT/'runtime'/'temp'),OPENROUTER_API_KEY=openrouter_key())
+    os.environ.update(CURSOR_CONFIG_DIR=str(ROOT/'.cursor'),HF_HOME=str(ROOT/'runtime'/'hf-cache'),TEMP=str(ROOT/'runtime'/'temp'),TMP=str(ROOT/'runtime'/'temp'),OPENROUTER_API_KEY=openrouter_key())
     private = ROOT/'private'; private.mkdir(exist_ok=True)
     lock = (private/'living.lock').open('a+b')
     if lock.tell()==0:

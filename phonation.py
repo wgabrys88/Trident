@@ -1,6 +1,6 @@
 import asyncio, os
 import soundfile as sf
-from fabric import RUN, execute, log, request, serve, token
+from fabric import RUN, execute, request, serve, token
 
 async def handle(op, args):
     path = RUN / (token() + '.wav')

@@ -1,1 +1,0 @@
-{"permissions":{"allow":["Read(private/**)"],"deny":["Shell(*)","Write(**)","WebFetch(*)","Mcp(*)"]}}

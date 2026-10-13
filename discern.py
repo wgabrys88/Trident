@@ -1,5 +1,5 @@
 import asyncio, json, os, time, urllib.request
-from fabric import CFG, log, serve
+from fabric import CFG, serve
 
 def decide(args):
     key = os.environ['OPENROUTER_API_KEY']
