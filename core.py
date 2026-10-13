@@ -76,12 +76,13 @@ class Session:
         directory = ROOT / ('run_' + timestamp())
         directory.mkdir()
         paths = {name: str(directory / (timestamp() + '_' + name))
-                 for name in ('state.json', 'tools.py', 'stop', 'vendor')}
+                 for name in ('state.json', 'tools.py', 'orientation.json', 'stop', 'vendor')}
         Path(paths['tools.py']).write_text('', 'utf-8')
         Path(paths['stop']).write_bytes(b'')
+        write(Path(paths['orientation.json']), dict(status='pending'))
         write(Path(paths['state.json']), dict(paths=paths, active=True, process_state='starting',
             memory=dict(goal='', narrative=''), owner=dict(id=identity(), text='', at=time.time(), source='no-owner-goal'),
-            operations={}, executions={}, artifacts={}, unknown={}, screen={}, inputs=[]))
+            operations={}, executions={}, artifacts={}, unknown={}, observations={}, screen={}, inputs=[]))
         return cls(directory)
 
     @classmethod

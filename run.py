@@ -253,11 +253,28 @@ class Organism:
                     self.session.publish(f'{role} process exited {job.process.returncode}', 'device-observation')
             await asyncio.sleep(.1)
 
+    async def sense(self):
+        observed = None
+        while not self.session.stopped():
+            screen = self.session.load()['screen']
+            if screen and screen['image'] != observed:
+                observed = screen['image']
+                write(self.session.path('orientation.json'), dict(status='pending', image=observed))
+                result = await self.bus.request('retina', 'inspect', dict(image=observed,
+                    desktop=screen['desktop'], window=screen['window'], question='Describe the visible desktop, '
+                    'applications, controls, objects and spatial relations without assuming a task. '
+                    'Give normalized-1000 boxes in the submitted image and describe uncertainty.'), CFG['look_seconds'])
+                entry = self.session.load()['operations'][result['operation_id']]
+                write(self.session.path('orientation.json'), dict(status=result['outcome'], image=observed,
+                    id=result['operation_id'], response=entry.get('response') or entry.get('error')))
+                self.session.edit(lambda state: state['observations'].update({observed: result['operation_id']}))
+            await asyncio.sleep(.1)
+
     async def infer(self):
         session = self.session
         state = session.load()
         context = dict(owner=state['owner'], memory=state['memory'], artifacts=state['artifacts'],
-            unknown=state['unknown'], receivers=self.bus.receivers(),
+            unknown=state['unknown'], receivers=self.bus.receivers(), orientation=str(session.path('orientation.json')),
             screen={key: state['screen'][key] for key in ('desktop', 'window', 'windows', 'at') if key in state['screen']},
             capture={key: self.capture[key] for key in ('outcome', 'operation_id', 'error') if key in self.capture},
             state=str(session.state_path), tools=str(session.path('tools.py')), output_directory=str(session.directory))
@@ -309,6 +326,7 @@ class Organism:
                 self.consume_inputs()
                 self.session.edit(lambda state: state.update(process_state='running'))
                 print(f'Trident alive. Run: {self.session.directory}\nOwner input: stdin, Telegram text, voice note or call.', flush=True)
+                tasks.create_task(self.sense())
                 while not self.session.stopped():
                     self.capture = await self.bus.request('manipulator', 'capture', {}, 10)
                     if not self.capture.get('image'):
