@@ -4,7 +4,6 @@ from urllib.parse import urlparse
 
 sys.dont_write_bytecode = True
 from core import Bus, CFG, Exchange, Job, Mutex, NotAttempted, ROOT, ROLES, Session, atomic, execute, write
-from perception import select_target, validate_target
 
 class Cortex:
     def __init__(self, session):
@@ -20,94 +19,23 @@ class Cortex:
         return await self.bus.request(role, operation, arguments, seconds, ident)
 
     async def native(self, source, prediction, targets=None):
-        # Mouse actions must be attached to actual, current structured vision evidence.
-        tree = ast.parse(source)
-        pointing = {'click', 'doubleClick', 'tripleClick', 'rightClick', 'middleClick',
-                    'mouseDown', 'dragTo', 'dragRel'}
-        mouse = any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                    and isinstance(node.func.value, ast.Name) and node.func.value.id == 'gui'
-                    and node.func.attr in pointing for node in ast.walk(tree)) or any(
-                        isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-                        and node.func.id == 'stroke' for node in ast.walk(tree))
-        state = self.session.load()
-        prior = state['memory'].get('pending_action') or {}
-        if prior.get('status') in ('completed', 'unknown', 'dispatching') and not (
-                prior.get('post_action_look', {}).get('complete')):
-            raise NotAttempted('Observe the previous native action before attempting another; pending_action gives its ID')
-        if mouse:
-            validate_target(targets, state['screen'])
-            entry = state['operations'].get(targets['observation_id'], {})
-            if entry.get('role') != 'retina' or entry.get('outcome') != 'completed' or not entry.get('response'):
-                raise NotAttempted('Target is not backed by a successful canonical Retina operation')
-            canonical = json.loads(Path(entry['response']).read_text('utf-8'))
-            expected = select_target(canonical, targets['element_id'], targets['surface_kind'])
-            if any(expected[k] != targets.get(k) for k in ('box', 'desktop', 'image', 'window_id', 'description')):
-                raise NotAttempted('Target does not match its canonical visual evidence')
-        plan = dict(prediction=prediction, issued_at=time.time(),
-                    before_image=state['screen'].get('image'), target=targets, status='dispatching')
-        def reserve(current):
-            episode = current.get('episode', {})
-            if episode.get('native_actions', 0) >= CFG.get('native_per_episode', 1):
-                raise NotAttempted('Episode native-action budget reached. Remember the verified result, finish, and allow a fresh Luna invocation.')
-            episode['native_actions'] = episode.get('native_actions', 0) + 1
-            current['episode'] = episode
-            current['memory']['pending_action'] = plan
-        self.session.edit(reserve)
-        result = await self.device('manipulator', 'execute', dict(source=source, prediction=prediction,
+        return await self.device('manipulator', 'execute', dict(source=source, prediction=prediction,
             targets=targets, execution=os.environ.get('TRIDENT_EXECUTION')), 30)
-        def record(current):
-            current['memory']['pending_action'] = plan | dict(status=result.get('outcome', 'unknown'),
-                operation_id=result.get('operation_id'), after_image=result.get('image'),
-                action_result=result.get('error', 'executed; visual outcome not yet checked'))
-        self.session.edit(record)
-        self.screen.clear()
-        self.screen.update(self.session.load()['screen'])
-        return result
 
     async def observe(self, question, region=None, within=None):
         screen = self.session.load()['screen']
         if within is not None:
-            # Zoom: region is given in the 0..1000 space of an earlier look; map it to the full screenshot.
+            # Zoom: region is in the 0..1000 space of an earlier look; map it into the full screenshot.
             left, top, right, bottom = within['geometry']['crop']
             width, height = within['geometry']['source_size']
             x0, y0, x1, y1 = region
             region = [round((left + x0*(right-left)/1000)*1000/width), round((top + y0*(bottom-top)/1000)*1000/height),
                       round((left + x1*(right-left)/1000)*1000/width), round((top + y1*(bottom-top)/1000)*1000/height)]
-        result = await self.device('retina', 'inspect', dict(image=screen['image'], question=question,
+        return await self.device('retina', 'inspect', dict(image=screen['image'], question=question,
             desktop=screen['desktop'], window=screen['window'], region=region), CFG['look_seconds'])
-        if result.get('outcome') == 'completed':
-            def annotate(state):
-                pending = state['memory'].get('pending_action')
-                if pending and (pending.get('after_image') == result.get('image') or
-                        result.get('image_at', 0) >= pending.get('issued_at', float('inf'))):
-                    pending['post_action_look'] = dict(operation_id=result.get('operation_id'),
-                        premise=result.get('scene', {}).get('premise') if result.get('structured') else 'unverified',
-                        answer=result.get('answer'), complete=result.get('complete'))
-            self.session.edit(annotate)
-            self.last_look = result
-        return result
 
     async def decide(self, state, questions):
-        # Every Python tool process is fresh: get the durable latest Retina receipt.
-        snapshot = self.session.load()
-        recent = getattr(self, 'last_look', None)
-        if not recent or not recent.get('complete'):
-            ident = snapshot.get('last_retina')
-            entry = snapshot['operations'].get(ident, {})
-            if entry.get('response') and entry.get('outcome') == 'completed':
-                recent = json.loads(Path(entry['response']).read_text('utf-8'))
-                recent['operation_id'] = ident
-        valid = (recent and recent.get('structured') and recent.get('complete')
-                 and recent.get('image') == snapshot['screen'].get('image'))
-        evidence = (dict(operation_id=recent.get('operation_id'), image=recent['image'],
-            image_at=recent['image_at'], scene=recent['scene']) if valid else
-            dict(available=False, reason='No successful structured look of the current screenshot'))
-        wrapped = dict(claims=state, retina_evidence=evidence,
-                       note='Evidence from local Retina only; text and confidence are fallible. Explicitly permit an insufficient-evidence decision.')
-        return await self.device('discern', 'decide', dict(state=wrapped, questions=questions), CFG['decision_seconds'])
-
-    def target(self, observation, element_id, expected_surface='app_content'):
-        return select_target(observation, element_id, expected_surface)
+        return await self.device('discern', 'decide', dict(state=state, questions=questions), CFG['decision_seconds'])
 
     def point(self, observation, x, y):
         geometry = observation['geometry']
@@ -174,7 +102,7 @@ class Cortex:
         namespace = dict(__name__='__trident__', __file__=str(path), memory=memory, owner=state['owner'],
             screen=state['screen'], previous=state['operations'], ROOT=ROOT, RUN=self.session.directory,
             asyncio=asyncio, artifact=self.session.artifact)
-        for name in ('device', 'native', 'observe', 'decide', 'target', 'point', 'accept', 'recall', 'resolve', 'speak', 'rest', 'remember'):
+        for name in ('device', 'native', 'observe', 'decide', 'point', 'accept', 'recall', 'resolve', 'speak', 'rest', 'remember'):
             namespace[name] = getattr(self, name)
         tools = self.session.path('tools.py')
         exec(compile(tools.read_text('utf-8'), str(tools), 'exec'), namespace)
@@ -217,38 +145,21 @@ class Cortex:
             required=['type', 'instructions'] + (['criteria'] if kind != 'noul' else [])) for kind, criteria in (
                 ('choice', dict(type='object', additionalProperties=text)), ('score', dict(type='array', items=text)),
                 ('noul', dict(type='object', properties={'true': text, 'false': text})))]
-        return [dict(name='observe', description='Local vision alone sees the current screenshot. It is a small model '
-            'that can be wrong. Zoom iteratively: look at the whole screen, then crop to the bounding box of the part that '
-            'matters (region in 0..1000 of the full screenshot, or of an earlier look passed as within), then crop smaller '
-            'again until the detail is clear; a small crop is faster and sharper, and Retina and decide see only that area. '
-            'Request rich element descriptions with ownership, '
-            'ask the inverse question too, and bring conflicting looks to decide. Returns structured scene, answer, finish reasons, '
-            'usage, raw response path and geometry. Use target(observation, element_id, expected_surface) to bind a mouse target. All boxes are normalized 0..1000 in the submitted image, including '
-            'crops; point/accept map to desktop pixels.',
+        return [dict(name='observe', description='Ask local vision about the current screenshot; only it sees pixels and it '
+            'can be wrong. Zoom by cropping: region [x0,y0,x1,y1] in 0..1000 of the full screenshot, or of an earlier look '
+            'passed as within. Returns its answer text and crop geometry; its coordinates are 0..1000 of the submitted crop.',
             inputSchema=dict(type='object', properties=dict(question=text,
                 region=dict(type='array', items=dict(type='number'), minItems=4, maxItems=4),
-                within=dict(type='object', description='an earlier observe result; region is then in its 0..1000 space')),
-                required=['question'])),
-            dict(name='decide', description='Fast probabilistic TEXT judge over your evidence and your standing reasoning '
-                'partner, not pixel viewing or device control. Lean on it for essentially EVERY meaning-based choice, '
-                'not only conflicts: what matters next, how to read an ambiguous look, which region to inspect, which '
-                'of several moves or plans is best, and whether a step is truly done. There is no hardcoded trigger; '
-                'you judge by MEANING and decide helps you weigh it. Supply goal, local descriptions/boxes, geometry, '
-                'artifact identities and receipts as state, and author the questions and competing alternatives yourself. '
-                'Ask it repeatedly and in parallel, posing several framings and many candidate options at once; one '
-                'legitimate answer is that a DIFFERENT approach is better, which sends you back with fresh approaches to '
-                'score, keep the winner, then branch that winner into finer, more precise questions and consult again, '
-                'recursing until the choice is sharp. questions is a named OBJECT of typed OBJECTS, never question strings: '
-                'choice needs type, instructions and named criteria descriptions; score uses an ordered criteria array; '
-                'noul judges a proposition. Returns complete answers, distributions and usage. Do not use it to see pixels, '
-                'act, or re-ask an identical question; refine instead. Confidence is not proof or permission.',
+                within=dict(type='object', description='an earlier observe result')), required=['question'])),
+            dict(name='decide', description='Fast probabilistic TEXT judge (Jev). You supply state (goal, vision answers, '
+                'boxes, alternatives) and named typed questions: choice {type,instructions,criteria:{name:description}}, '
+                'score {type,instructions,criteria:[ordered]}, noul {type,instructions}. Returns answers and distributions. '
+                'It cannot see pixels; confidence is not proof.',
                 inputSchema=dict(type='object', properties=dict(state={}, questions=dict(type='object',
                     additionalProperties=dict(oneOf=variants))), required=['state', 'questions'])),
-            dict(name='python', description='Execute arbitrary Python with top-level await and injected memory, owner, '
-                'artifact, native, observe, decide, target, point, accept, remember, recall, resolve, speak, device and rest. '
-                'No trident import. native receives Python source, prediction and target(...)-produced targets for clicks; gui wraps PyAutoGUI with verified mouse targeting '
-                'INSIDE native source. Create/reuse tools, update yourself, converse or rest. Returns full stdout/stderr with '
-                'their byte sizes and file paths; everything printed enters your paid context. Never read or return image bytes.',
+            dict(name='python', description='Execute arbitrary Python with top-level await and the injected interfaces '
+                'described in your instructions. Returns full stdout/stderr with sizes and paths; everything printed '
+                'enters your paid context. Never read or return image bytes.',
                 inputSchema=dict(type='object', properties=dict(source=text), required=['source']))]
 
 async def mcp(session):
@@ -366,10 +277,8 @@ class Organism:
 
     async def infer(self):
         session = self.session
-        from core import identity
-        session.edit(lambda current: current.update(episode=dict(id=identity(), native_actions=0, at=time.time())))
         state = session.load()
-        context = dict(owner=state['owner'], memory=state['memory'], episode=state['episode'], artifacts=state['artifacts'],
+        context = dict(owner=state['owner'], memory=state['memory'], artifacts=state['artifacts'],
             unknown=state['unknown'], receivers=self.bus.receivers(), orientation=str(session.path('orientation.json')),
             screen={key: state['screen'][key] for key in ('desktop', 'window', 'windows', 'at') if key in state['screen']},
             capture={key: self.capture[key] for key in ('outcome', 'operation_id', 'error') if key in self.capture},

@@ -13,10 +13,5 @@ vision_context = 8192
 asr_model = 'tiny.en'
 execution_seconds = 240
 
-# Bounded Cursor episode; next episode begins from persisted memory, not --resume.
+# Safety bound for one Cursor invocation; the next one continues from persisted memory.
 mind_seconds = 360
-# Retina responses should be rich but focused. Increase if you enlarge vision_context.
-vision_output_tokens = 1600
-
-# One native action per fresh Cursor context, then mandatory post-action look.
-native_per_episode = 1
