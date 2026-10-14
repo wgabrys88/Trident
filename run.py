@@ -148,12 +148,19 @@ class Cortex:
             'crops; point/accept map to desktop pixels.',
             inputSchema=dict(type='object', properties=dict(question=text,
                 region=dict(type='array', items=dict(type='number'), minItems=4, maxItems=4)), required=['question'])),
-            dict(name='decide', description='Fast probabilistic TEXT judgments over your evidence, not pixel viewing or '
-                'device control. Supply goal, local descriptions/boxes, geometry, artifact identities and receipts as state. '
-                'questions is a named OBJECT of typed OBJECTS, never question strings: choice needs type, instructions '
-                'and named criteria descriptions; score uses an ordered criteria array; noul judges a proposition. '
-                'Returns complete answers, distributions and usage. Consult it when a prediction and an outcome disagree, '
-                'when looks conflict, or when choosing between approaches. Confidence is not proof or permission.',
+            dict(name='decide', description='Fast probabilistic TEXT judge over your evidence and your standing reasoning '
+                'partner, not pixel viewing or device control. Lean on it for essentially EVERY meaning-based choice, '
+                'not only conflicts: what matters next, how to read an ambiguous look, which region to inspect, which '
+                'of several moves or plans is best, and whether a step is truly done. There is no hardcoded trigger; '
+                'you judge by MEANING and decide helps you weigh it. Supply goal, local descriptions/boxes, geometry, '
+                'artifact identities and receipts as state, and author the questions and competing alternatives yourself. '
+                'Ask it repeatedly and in parallel, posing several framings and many candidate options at once; one '
+                'legitimate answer is that a DIFFERENT approach is better, which sends you back with fresh approaches to '
+                'score, keep the winner, then branch that winner into finer, more precise questions and consult again, '
+                'recursing until the choice is sharp. questions is a named OBJECT of typed OBJECTS, never question strings: '
+                'choice needs type, instructions and named criteria descriptions; score uses an ordered criteria array; '
+                'noul judges a proposition. Returns complete answers, distributions and usage. Do not use it to see pixels, '
+                'act, or re-ask an identical question; refine instead. Confidence is not proof or permission.',
                 inputSchema=dict(type='object', properties=dict(state={}, questions=dict(type='object',
                     additionalProperties=dict(oneOf=variants))), required=['state', 'questions'])),
             dict(name='python', description='Execute arbitrary Python with top-level await and injected memory, owner, '

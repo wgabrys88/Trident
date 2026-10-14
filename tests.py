@@ -34,6 +34,17 @@ SETTLE = 6  # grace after the first completed answer before stopping a hold=Fals
 # operation, predict/act/compare, keep narrative so a later invocation continues.
 # Chess runs before the drawing; the drawing is last. (task, budget_seconds, hold)
 TASKS = [
+    ("Play and win a full game of chess against the computer on chess.com using Chrome. "
+     "Bring up Chrome, go to chess.com, and start a new game against the chess.com bot "
+     "(Play then Computer): choose a bot and begin, then make the first move so the game "
+     "actually starts. Play the whole game to a result: read the board with local vision "
+     "before every move, predict each move's effect and verify it with a fresh look, and "
+     "consult decide whenever the position or a plan is unclear, weighing several candidate "
+     "moves by meaning. The bot replies quickly, so after each of your moves take a fresh "
+     "look to see its reply before moving again. Keep a running narrative of the position, "
+     "your plan and the bot's threats so a later you can continue the same game. Play "
+     "soundly, aim to win, and tell me the final result.",
+     900, True),
     ("Look at the screen and tell me which application windows are open.",
      180, False),
     ("Open Notepad and type a four line poem about rain, then tell me what you did.",
@@ -44,15 +55,6 @@ TASKS = [
      240, False),
     ("Send me a short voice note saying that the test is running.",
      180, False),
-    ("Play and win a full game of chess against a human opponent on chess.com using Chrome. "
-     "Bring up Chrome, go to chess.com, start a new game that pairs you with a human, and make the first "
-     "move so the game actually begins. Then play the whole game to a result: read the board with local "
-     "vision before every move, predict each move's effect and verify it with a fresh look, and consult "
-     "decide when the position or a plan is unclear. Keep a running narrative of the position, your plan "
-     "and the opponent's threats so a later you can continue the same game. You have roughly three minutes "
-     "to reply each time the opponent moves; use rest to wait for their move rather than acting blindly. "
-     "Play soundly, aim to win, and tell me the final result.",
-     900, True),
     ("Draw an advanced, detailed picture of a house with a cat in Microsoft Paint. Open Paint, then build "
      "the drawing in phases, each more detailed than the last: rough shapes first, then clean outlines, then "
      "features (door, windows, roof, the cat's face and body), then shading and color, using different "
