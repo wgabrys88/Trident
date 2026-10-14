@@ -88,7 +88,7 @@ class Session:
         write(Path(paths['orientation.json']), dict(status='pending'))
         write(Path(paths['state.json']), dict(paths=paths, active=True, process_state='starting',
             memory=dict(goal='', narrative='', previous_life=previous), owner=dict(id=identity(), text='', at=time.time(), source='no-owner-goal'),
-            operations={}, executions={}, artifacts={}, unknown={}, observations={}, screen={}, inputs=[]))
+            operations={}, executions={}, artifacts={}, observations={}, screen={}, inputs=[]))
         return cls(directory)
 
     @classmethod
@@ -280,20 +280,10 @@ class Bus:
 
     def begin(self, job, path, role):
         def change(state):
-            if job['id'] in state['operations']:
-                state['operations'][job['id']]['request'] = str(path)
-                return
-            effect = role == 'manipulator' and job['op'] != 'capture' or role == 'relay' and job['op'] == 'dial'
-            state['operations'][job['id']] = dict(role=role, operation=job['op'], sender=job['sender'],
-                at=time.time(), request=str(path), outcome='unknown', owner_id=state['owner']['id'],
-                execution=job.get('execution'))
-            if effect and role in state['unknown'].values():
-                return 'Resolve the prior uncertain effect before repeating this device'
-            if effect:
-                state['unknown'][job['id']] = role
-        reason = self.session.edit(change)
-        if reason:
-            raise NotAttempted(reason)
+            entry = state['operations'].setdefault(job['id'], dict(role=role, operation=job['op'], sender=job['sender'],
+                at=time.time(), outcome='pending', execution=job.get('execution')))
+            entry['request'] = str(path)
+        self.session.edit(change)
 
     def finish(self, ident, result, path):
         def change(state):
@@ -304,8 +294,6 @@ class Bus:
                 entry['outcome'] = result['outcome']
             if state['operations'][ident]['role'] == 'manipulator' and result.get('image'):
                 state['screen'] = {key: result[key] for key in ('image', 'desktop', 'window', 'windows', 'at')}
-            if entry['outcome'] != 'unknown':
-                state['unknown'].pop(ident, None)
         self.session.edit(change)
 
     async def request(self, role, operation, arguments, seconds=30, ident=None):
@@ -374,21 +362,14 @@ class Bus:
                     job = json.loads(active.read_text('utf-8'))
                     try:
                         self.begin(job, active, role)
-                        if time.time() >= job['expires']:
-                            raise NotAttempted('Request expired before execution')
-                        async with asyncio.timeout(job['expires'] - time.time()):
-                            result = await handler(job['op'], job['args'])
+                        result = await handler(job['op'], job['args'])
                         result.setdefault('outcome', 'completed')
                     except Exception as error:
-                        result = dict(error=f'{type(error).__name__}: {error}', outcome='not_attempted' if isinstance(error, NotAttempted)
-                            else 'unknown' if role in ('manipulator', 'relay') and not isinstance(error, ValueError) else 'failed')
+                        result = dict(error=f'{type(error).__name__}: {error}', outcome='not_attempted' if isinstance(error, NotAttempted) else 'failed')
                     result['operation_id'] = job['id']
                     reply = Exchange(self.session, job['sender'], role, job['id']).dump('response', json.dumps(result, ensure_ascii=False))
                     if job['id'] in self.session.load()['operations']:
                         self.finish(job['id'], result, reply)
-                    if result['outcome'] == 'unknown':
-                        marker.unlink(missing_ok=True)
-                        os._exit(1)
                 await asyncio.sleep(.05)
         finally:
             marker.unlink(missing_ok=True)

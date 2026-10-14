@@ -3,7 +3,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 sys.dont_write_bytecode = True
-from core import Bus, CFG, Exchange, Job, Mutex, NotAttempted, ROOT, ROLES, Session, atomic, execute, write
+from core import Bus, CFG, Exchange, Job, Mutex, ROOT, ROLES, Session, atomic, execute, write
 
 class Cortex:
     def __init__(self, session):
@@ -12,10 +12,6 @@ class Cortex:
         self.owner_id, self.memory, self.screen = state['owner']['id'], state['memory'], state['screen']
 
     async def device(self, role, operation, arguments, seconds=30, ident=None):
-        current = self.session.load()['owner']['id']
-        if current != self.owner_id:
-            self.owner_id = current
-            raise NotAttempted('New owner input arrived; reconsider it before further dispatch')
         return await self.bus.request(role, operation, arguments, seconds, ident)
 
     async def native(self, source, prediction, targets=None):
@@ -57,29 +53,11 @@ class Cortex:
         return entry | dict(request=json.loads(Path(entry['request']).read_text('utf-8')),
             result=json.loads(Path(receipt).read_text('utf-8')) if receipt else None)
 
-    async def resolve(self, ident, evidence, interpretation):
-        original, receipt = await self.recall(ident), await self.recall(evidence)
-        if ident in self.session.load()['unknown']:
-            if original['role'] == 'manipulator' and (receipt['role'] != 'retina' or
-                    receipt['outcome'] != 'completed' or not receipt['result']['complete']
-                    or receipt['result']['image_at'] < original['at']):
-                raise NotAttempted('Input correction needs a successful local observation of a fresh screenshot')
-            if original['role'] == 'relay' and (receipt['role'] != 'relay' or receipt['operation'] != 'status'
-                    or receipt['outcome'] != 'completed' or receipt['at'] < original['at']):
-                raise NotAttempted('Call correction needs a subsequent real relay status')
-        def change(state):
-            state['operations'][ident]['correction'] = dict(evidence=evidence, interpretation=interpretation, at=time.time())
-            state['unknown'].pop(ident, None)
-        self.session.edit(change)
-        return await self.recall(ident)
-
     async def speak(self, text, identity=None):
         return await self.device('phonation', 'speak', dict(text=text), 55, identity)
 
     def remember(self, **changes):
         def update(state):
-            if 'goal' in changes and state['owner']['id'] != self.owner_id:
-                raise NotAttempted('New owner intent arrived before this goal update')
             state['memory'].update(changes)
         self.session.edit(update)
         self.memory.update(changes)
@@ -102,7 +80,7 @@ class Cortex:
         namespace = dict(__name__='__trident__', __file__=str(path), memory=memory, owner=state['owner'],
             screen=state['screen'], previous=state['operations'], ROOT=ROOT, RUN=self.session.directory,
             asyncio=asyncio, artifact=self.session.artifact)
-        for name in ('device', 'native', 'observe', 'decide', 'point', 'accept', 'recall', 'resolve', 'speak', 'rest', 'remember'):
+        for name in ('device', 'native', 'observe', 'decide', 'point', 'accept', 'recall', 'speak', 'rest', 'remember'):
             namespace[name] = getattr(self, name)
         tools = self.session.path('tools.py')
         exec(compile(tools.read_text('utf-8'), str(tools), 'exec'), namespace)
@@ -125,8 +103,6 @@ class Cortex:
         finally:
             def merge(current):
                 for key in baseline.keys() | memory.keys():
-                    if key == 'goal' and current['owner']['id'] != state['owner']['id']:
-                        continue
                     if key not in memory:
                         current['memory'].pop(key, None)
                     elif key not in baseline or memory[key] != baseline[key]:
@@ -279,7 +255,7 @@ class Organism:
         session = self.session
         state = session.load()
         context = dict(owner=state['owner'], memory=state['memory'], artifacts=state['artifacts'],
-            unknown=state['unknown'], receivers=self.bus.receivers(), orientation=str(session.path('orientation.json')),
+            receivers=self.bus.receivers(), orientation=str(session.path('orientation.json')),
             screen={key: state['screen'][key] for key in ('desktop', 'window', 'windows', 'at') if key in state['screen']},
             capture={key: self.capture[key] for key in ('outcome', 'operation_id', 'error') if key in self.capture},
             state=str(session.state_path), tools=str(session.path('tools.py')), output_directory=str(session.directory))
