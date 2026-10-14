@@ -89,11 +89,11 @@ class Manipulator:
         namespace = dict(gui=self.gui, os=os, paste=paste, stroke=self.stroke, desktop=self.desktop,
             foreground=self.foreground, windows=self.windows, targets=targets or {},
             artifact=lambda kind, ext: self.session.artifact(kind, ext, execution))
+        result = {}
         try:
             exec(program, namespace)
-            result = dict(prediction=prediction, outcome='completed', value=namespace.get('result'))
         except Exception as error:
-            result = dict(prediction=prediction, outcome='unknown', error=f'{type(error).__name__}: {error}')
+            result = dict(error=f'{type(error).__name__}: {error}')
         finally:
             release_input()
         time.sleep(5)

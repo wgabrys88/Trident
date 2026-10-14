@@ -15,8 +15,9 @@ class Cortex:
         return await self.bus.request(role, operation, arguments, seconds, ident)
 
     async def native(self, source, prediction, targets=None):
-        return await self.device('manipulator', 'execute', dict(source=source, prediction=prediction,
+        result = await self.device('manipulator', 'execute', dict(source=source, prediction=prediction,
             targets=targets, execution=os.environ.get('TRIDENT_EXECUTION')), 30)
+        return {key: result[key] for key in ('error', 'image', 'window', 'at') if key in result}
 
     async def observe(self, question, region=None, within=None):
         screen = self.session.load()['screen']
@@ -165,7 +166,7 @@ async def mcp(session):
             payload = dict(result=value, inputs=inputs) | {key: item for key, item in current.items() if known.get(key) != item}
             known = current
             result = dict(content=[dict(type='text', text=json.dumps(payload, ensure_ascii=False))],
-                isError=value.get('outcome') in ('failed', 'unknown', 'not_attempted'))
+                isError=False)
         else:
             result = {}
         reply = json.dumps(dict(jsonrpc='2.0', id=message['id'], result=result), ensure_ascii=False) + '\n'
