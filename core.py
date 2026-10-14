@@ -298,6 +298,8 @@ class Bus:
                 entry['outcome'] = result['outcome']
             if state['operations'][ident]['role'] == 'manipulator' and result.get('image'):
                 state['screen'] = {key: result[key] for key in ('image', 'desktop', 'window', 'windows', 'at')}
+            if entry['role'] == 'retina' and result.get('complete') and result.get('structured'):
+                state['last_retina'] = ident
             if entry['outcome'] != 'unknown':
                 state['unknown'].pop(ident, None)
         self.session.edit(change)
