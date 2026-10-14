@@ -2,13 +2,21 @@ owner = 5884279027
 tdata = '%APPDATA%/Telegram Desktop/tdata'
 cursor_version = '2026.10.01-e373342'
 mind_model = 'gpt-5.6-luna-medium'
-look_seconds = 30
+look_seconds = 60
 decision_model = 'typesafe/jev-1.13'
 decision_seconds = 15
 vision_url = 'http://127.0.0.1:8188'
 vision_alias = 'retina'
 vision_model = 'LFM2.5-VL-3B-Q4_K_M.gguf'
 vision_projector = 'mmproj-LFM2.5-VL-3B-Q8_0.gguf'
-vision_context = 4096
+vision_context = 8192
 asr_model = 'tiny.en'
-execution_seconds = 150
+execution_seconds = 240
+
+# Bounded Cursor episode; next episode begins from persisted memory, not --resume.
+mind_seconds = 360
+# Retina responses should be rich but focused. Increase if you enlarge vision_context.
+vision_output_tokens = 1600
+
+# One native action per fresh Cursor context, then mandatory post-action look.
+native_per_episode = 1
