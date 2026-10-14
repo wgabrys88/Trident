@@ -73,6 +73,12 @@ class Session:
 
     @classmethod
     def create(cls):
+        prior = max(ROOT.glob('run_*/*_state.json'), key=lambda path: path.stat().st_mtime, default=None)
+        previous = {}
+        if prior:
+            memory = json.loads(prior.read_text('utf-8'))['memory']
+            previous = dict(run=prior.parent.name, goal=memory.get('goal', ''), narrative=memory.get('narrative', ''),
+                            last_words=memory.get('last_words', ''))
         directory = ROOT / ('run_' + timestamp())
         directory.mkdir()
         paths = {name: str(directory / (timestamp() + '_' + name))
@@ -81,7 +87,7 @@ class Session:
         Path(paths['stop']).write_bytes(b'')
         write(Path(paths['orientation.json']), dict(status='pending'))
         write(Path(paths['state.json']), dict(paths=paths, active=True, process_state='starting',
-            memory=dict(goal='', narrative=''), owner=dict(id=identity(), text='', at=time.time(), source='no-owner-goal'),
+            memory=dict(goal='', narrative='', previous_life=previous), owner=dict(id=identity(), text='', at=time.time(), source='no-owner-goal'),
             operations={}, executions={}, artifacts={}, unknown={}, observations={}, screen={}, inputs=[]))
         return cls(directory)
 
