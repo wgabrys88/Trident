@@ -440,9 +440,10 @@ def launch():
         if session:
             session.request_stop()
     previous = signal.signal(signal.SIGINT, stop)
+    fresh = '--fresh' in sys.argv[1:]
     try:
-        session = Session.create()
-        job = Job([str(python), '-u', '-B', str(ROOT / 'run.py'), *sys.argv[1:]], cwd=ROOT,
+        session = Session.create(fresh)
+        job = Job([str(python), '-u', '-B', str(ROOT / 'run.py'), *[arg for arg in sys.argv[1:] if arg != '--fresh']], cwd=ROOT,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP, env=os.environ | {'TRIDENT_BOOT_RUN': str(session.directory),
             'TRIDENT_RUN': str(session.directory), 'PYTHONUTF8': '1', 'PYTHONIOENCODING': 'utf-8'})
         while job.process.poll() is None:

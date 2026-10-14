@@ -72,8 +72,8 @@ class Session:
         self.paths = {name: Path(path) for name, path in self.load()['paths'].items()}
 
     @classmethod
-    def create(cls):
-        prior = max(ROOT.glob('run_*/*_state.json'), key=lambda path: path.stat().st_mtime, default=None)
+    def create(cls, fresh=False):
+        prior = None if fresh else max(ROOT.glob('run_*/*_state.json'), key=lambda path: path.stat().st_mtime, default=None)
         previous = {}
         if prior:
             memory = json.loads(prior.read_text('utf-8'))['memory']

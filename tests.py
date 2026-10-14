@@ -5,8 +5,9 @@ Run:  python tests.py            (from the repo folder, after python install.py)
 Each chapter launches the real organism (run.py) with an owner message, lets it live,
 stops it cleanly, then a SEPARATE fresh Luna invocation (no tools, no desktop) judges the
 run folder's evidence and returns {"pass","reason"}. Chapters run in order as one story:
-every new run wakes with the previous run's goal, narrative and last words in
-memory.previous_life. Verdicts go to tests_report.json and to each run folder.
+chapter 1 starts with --fresh (no previous_life, so old run folders never leak in);
+every later chapter wakes with the previous chapter's goal, narrative and last words
+in memory.previous_life. Verdicts go to tests_report.json and to each run folder.
 
 Chapter = (owner message, budget_seconds, hold). hold=False ends SETTLE seconds after the
 first finished mind invocation; hold=True keeps the organism alive for the whole budget.
@@ -98,7 +99,8 @@ async def judge(session, message):
 def live(index, message, budget, hold):
     print(f'\n===== chapter {index}/{len(CHAPTERS)} (budget {budget}s, hold={hold}) {message[:70]}...', flush=True)
     before = set(ROOT.glob('run_*'))
-    process = subprocess.Popen([str(PYTHON), '-u', '-B', str(ROOT / 'run.py'), message], cwd=ROOT, stdin=subprocess.DEVNULL)
+    fresh = ['--fresh'] if index == 1 else []
+    process = subprocess.Popen([str(PYTHON), '-u', '-B', str(ROOT / 'run.py'), *fresh, message], cwd=ROOT, stdin=subprocess.DEVNULL)
     session, deadline = None, time.time() + 60
     while session is None and time.time() < deadline:
         fresh = [d for d in set(ROOT.glob('run_*')) - before if list(d.glob('*_state.json'))]
