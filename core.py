@@ -1,5 +1,5 @@
 import asyncio, ctypes, hashlib, json, os, subprocess, sys, time, tomllib, uuid
-import urllib.error, urllib.request
+import urllib.request
 from contextlib import contextmanager
 from ctypes import wintypes as W
 from datetime import datetime, timezone
@@ -81,14 +81,11 @@ class Session:
                             last_words=memory.get('last_words', ''))
         directory = ROOT / ('run_' + timestamp())
         directory.mkdir()
-        paths = {name: str(directory / (timestamp() + '_' + name))
-                 for name in ('state.json', 'tools.py', 'orientation.json', 'stop', 'vendor')}
-        Path(paths['tools.py']).write_text('', 'utf-8')
+        paths = {name: str(directory / (timestamp() + '_' + name)) for name in ('state.json', 'stop', 'vendor')}
         Path(paths['stop']).write_bytes(b'')
-        write(Path(paths['orientation.json']), dict(status='pending'))
         write(Path(paths['state.json']), dict(paths=paths, active=True, process_state='starting',
             memory=dict(goal='', narrative='', previous_life=previous), owner=dict(id=identity(), text='', at=time.time(), source='no-owner-goal'),
-            operations={}, executions={}, artifacts={}, observations={}, screen={}, inputs=[]))
+            wake_id=identity(), wake_at=0, screen={}, inputs=[]))
         return cls(directory)
 
     @classmethod
@@ -112,11 +109,8 @@ class Session:
     def name(self, label, extension):
         return self.directory / f'{timestamp()}_{label}_{identity()}.{extension}'
 
-    def artifact(self, kind, extension, producer=None):
-        path = self.name(kind, extension)
-        self.edit(lambda state: state['artifacts'].update({str(path): dict(kind=kind,
-            producer=producer or os.environ.get('TRIDENT_EXECUTION', 'python'), allocated=time.time())}))
-        return path
+    def artifact(self, kind, extension):
+        return self.name(kind, extension)
 
     def stopped(self):
         return self.path('stop').stat().st_size > 0
@@ -128,7 +122,15 @@ class Session:
     def publish(self, text, source, at=None, ident=None):
         message = dict(id=ident or identity(), text=text, source=source, at=at or time.time(),
                        kind='owner' if source in ('local-owner', 'telegram-owner', 'telegram-call') else 'observation')
-        write(self.name('inbox', 'json'), message)
+        def receive(state):
+            state['inputs'].append(message)
+            if message['kind'] == 'owner':
+                state['owner'] = message
+                state['memory']['goal'] = text
+            if message['kind'] == 'owner' or source == 'telegram-ring':
+                state['wake_id'] = message['id']
+        self.edit(receive)
+        Exchange(self, source, 'luna', message['id']).record('input', message)
 
     @property
     def vendor(self):
@@ -161,35 +163,25 @@ class Exchange:
         self.id = ident or identity()
 
     def path(self, direction, extension):
-        parties = (self.sender, self.receiver) if direction == 'request' else (self.receiver, self.sender)
-        return self.session.directory / f'{timestamp()}_{parties[0]}_to_{parties[1]}_{self.id}_{direction}.{extension}'
+        sender, receiver = (self.sender, self.receiver) if direction == 'request' else (self.receiver, self.sender)
+        return self.session.directory / f'{timestamp()}_{sender}_to_{receiver}_{self.id}_{direction}.{extension}'
 
-    def dump(self, direction, data, extension='json'):
-        path = self.path(direction, extension)
-        atomic(path, data if isinstance(data, bytes) else data.encode('utf-8'))
-        return path
+    def record(self, event, data):
+        entry = dict(at=timestamp(), id=self.id, sender=self.sender, receiver=self.receiver, event=event, data=data)
+        with self.session.mutex.held(), (self.session.directory / 'exchange.log').open('a', encoding='utf-8') as log:
+            log.write(json.dumps(entry, ensure_ascii=False) + '\n')
 
     def http(self, url, payload, seconds, headers=None, record=None):
         body = json.dumps(payload, ensure_ascii=False).encode('utf-8')
-        self.dump('request', json.dumps(record, ensure_ascii=False) if record else body)
-        self.response = self.path('response', 'json')
+        self.record('request', record if record is not None else payload)
         request = urllib.request.Request(url, body, headers or {'Content-Type': 'application/json'})
-        received = bytearray()
         try:
-            try:
-                response = urllib.request.urlopen(request, timeout=seconds)
-            except urllib.error.HTTPError as error:
-                response = error
-            with response, self.response.open('wb') as output:
-                while chunk := response.read1(65536):
-                    output.write(chunk)
-                    output.flush()
-                    received.extend(chunk)
-                if response.status >= 400:
-                    raise ValueError(f'HTTP {response.status}: ' + received.decode('utf-8', errors='replace'))
-            return json.loads(received)
+            with urllib.request.urlopen(request, timeout=seconds) as response:
+                result = json.load(response)
+            self.record('response', result)
+            return result
         except Exception as error:
-            self.dump('error', f'{type(error).__name__}: {error}', 'txt')
+            self.record('error', f'{type(error).__name__}: {error}')
             raise
 
 class Job:
@@ -236,37 +228,46 @@ class Job:
                 raise TimeoutError('Owned process tree did not finish shutdown within five seconds')
             time.sleep(.01)
 
-async def execute(command, exchange, seconds=None, extension='txt', **options):
-    output, stderr = exchange.path('response', extension), exchange.path('stderr', 'txt')
-    requests = list(exchange.session.directory.glob(f'*_{exchange.sender}_to_{exchange.receiver}_{exchange.id}_request.*'))
-    entry = dict(request=str(requests[0]), output=str(output), errors=str(stderr), outcome='running',
-                 sender=exchange.sender, receiver=exchange.receiver, at=time.time(),
-                 owner_id=exchange.session.load()['owner']['id'])
-    exchange.session.edit(lambda state: state['executions'].update({exchange.id: entry}))
-    job, error, code = None, None, None
+async def execute(command, exchange, seconds=None, stream=False, **options):
+    job = Job(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **options)
+    def receive(pipe, live=False):
+        chunks = []
+        with pipe:
+            for line in iter(pipe.readline, b''):
+                chunks.append(line)
+                if live:
+                    output.write(line)
+                    output.flush()
+                    exchange.record('stream', line.decode('utf-8', errors='replace').rstrip('\r\n'))
+        return b''.join(chunks).decode('utf-8', errors='replace')
+    output = exchange.path('response', 'jsonl').open('wb') if stream else None
+    stdout = asyncio.create_task(asyncio.to_thread(receive, job.process.stdout, stream))
+    stderr = asyncio.create_task(asyncio.to_thread(receive, job.process.stderr))
+    error, code = None, None
     try:
-        with output.open('wb') as out, stderr.open('wb') as err:
-            job = Job(command, stdin=subprocess.DEVNULL, stdout=out, stderr=err, **options)
-            async with asyncio.timeout(seconds):
-                while job.process.poll() is None:
-                    if exchange.session.stopped():
-                        raise asyncio.CancelledError()
-                    await asyncio.sleep(.05)
-            code = job.process.returncode
-    except BaseException as failure:
+        async with asyncio.timeout(seconds):
+            while job.process.poll() is None:
+                if exchange.session.stopped():
+                    raise asyncio.CancelledError()
+                await asyncio.sleep(.05)
+        code = job.process.returncode
+    except (Exception, asyncio.CancelledError) as failure:
         error = f'{type(failure).__name__}: {failure}'
-        exchange.dump('error', error + '; execution completion not established', 'txt')
         if isinstance(failure, asyncio.CancelledError):
             raise
     finally:
-        if job:
+        try:
+            job.drain(time.monotonic() + 5)
+        finally:
             job.close()
-        outcome = 'unknown' if error else 'completed' if code == 0 else 'failed'
-        exchange.session.edit(lambda state: state['executions'][exchange.id].update(
-            outcome=outcome, returncode=code, error=error))
-    return dict(id=exchange.id, outcome=outcome, stdout=output.read_text('utf-8', errors='replace'),
-                stderr=stderr.read_text('utf-8', errors='replace'), returncode=code, error=error,
-                stdout_path=str(output), stdout_bytes=output.stat().st_size, stderr_path=str(stderr), stderr_bytes=stderr.stat().st_size)
+            try:
+                result = dict(id=exchange.id, outcome='failed' if error or code != 0 else 'completed',
+                    stdout=await stdout, stderr=await stderr, returncode=code, error=error)
+                exchange.record('response', {key: value for key, value in result.items() if not stream or key != 'stdout'})
+            finally:
+                if output:
+                    output.close()
+    return result
 
 class NotAttempted(ValueError):
     pass
@@ -278,98 +279,58 @@ class Bus:
     def receivers(self):
         return [path.name.split('_', 3)[3].removesuffix('.receiver') for path in self.session.directory.glob('*.receiver')]
 
-    def begin(self, job, path, role):
-        def change(state):
-            entry = state['operations'].setdefault(job['id'], dict(role=role, operation=job['op'], sender=job['sender'],
-                at=time.time(), outcome='pending', execution=job.get('execution')))
-            entry['request'] = str(path)
-        self.session.edit(change)
-
-    def finish(self, ident, result, path):
-        def change(state):
-            field = 'error' if '_error.' in path.name else 'response'
-            entry = state['operations'][ident]
-            entry[field] = str(path)
-            if field == 'response' or 'response' not in entry:
-                entry['outcome'] = result['outcome']
-            if state['operations'][ident]['role'] == 'manipulator' and result.get('image'):
-                state['screen'] = {key: result[key] for key in ('image', 'desktop', 'window', 'windows', 'at')}
-        self.session.edit(change)
-
-    async def request(self, role, operation, arguments, seconds=30, ident=None):
-        if ident and ident in self.session.load()['operations']:
-            entry = self.session.load()['operations'][ident]
-            return json.loads(Path(entry['response']).read_text('utf-8')) if 'response' in entry else dict(operation_id=ident, outcome='unknown')
-        exchange = Exchange(self.session, self.sender, role, ident)
-        job = dict(id=exchange.id, sender=self.sender, op=operation, args=arguments, expires=time.time() + seconds,
-                   execution=os.environ.get('TRIDENT_EXECUTION'))
-        raw = exchange.dump('request', json.dumps(job, ensure_ascii=False), 'prepared.json')
-        try:
-            self.begin(job, raw, role)
-            if self.session.stopped() or role not in self.receivers():
-                raise NotAttempted('No available receiver ' + role)
-        except NotAttempted as error:
-            cancelled = raw.with_name(raw.name.replace('.prepared.json', '.cancelled.json'))
-            raw.rename(cancelled)
-            self.begin(job, cancelled, role)
-            result = dict(operation_id=job['id'], outcome='not_attempted', error=str(error))
-            reply = exchange.dump('response', json.dumps(result, ensure_ascii=False))
-            if job['id'] in self.session.load()['operations']:
-                self.finish(job['id'], result, reply)
-            return result
-        queued = raw.with_name(raw.name.replace('.prepared.json', '.json'))
-        def publish(state):
-            raw.rename(queued)
-            state['operations'][job['id']]['request'] = str(queued)
-        self.session.edit(publish)
-        raw = queued
+    async def request(self, role, operation, arguments, seconds=30):
+        exchange = Exchange(self.session, self.sender, role)
+        raw = self.session.directory / f'{exchange.id}_to_{role}_request.json'
+        reply = self.session.directory / f'{exchange.id}_reply.json'
+        job = dict(id=exchange.id, sender=self.sender, op=operation, args=arguments, expires=time.time() + seconds)
+        exchange.record('request', job)
+        with self.session.mutex.held():
+            write(reply, None)
+            write(raw, job)
         try:
             async with asyncio.timeout(seconds):
                 while True:
                     if self.session.stopped():
                         raise asyncio.CancelledError()
-                    replies = list(self.session.directory.glob(f'*_{role}_to_{self.sender}_{job["id"]}_response.json'))
-                    if replies:
-                        result = json.loads(replies[0].read_text('utf-8'))
-                        self.finish(job['id'], result, replies[0])
+                    with self.session.mutex.held():
+                        result = json.loads(reply.read_text('utf-8'))
+                    if result is not None:
                         return result
                     await asyncio.sleep(.05)
-        except (TimeoutError, asyncio.CancelledError) as error:
-            try:
-                cancelled = raw.with_name(raw.stem + '.cancelled.json')
-                raw.rename(cancelled)
-                result = dict(operation_id=job['id'], outcome='not_attempted', error='Request cancelled before claiming')
-                self.begin(job, cancelled, role)
-            except FileNotFoundError:
-                result = dict(operation_id=job['id'], outcome='unknown', error='Claimed request interrupted; effect uncertain')
-            receipt = exchange.dump('error', json.dumps(result, ensure_ascii=False))
-            self.finish(job['id'], result, receipt)
-            if isinstance(error, asyncio.CancelledError):
-                raise
+        except TimeoutError:
+            result = dict(operation_id=exchange.id, error='Device request timed out; its effect is unknown')
+            exchange.record('error', result)
             return result
+        finally:
+            with self.session.mutex.held():
+                raw.unlink(missing_ok=True)
+                reply.unlink(missing_ok=True)
 
     async def serve(self, role, handler):
         marker = self.session.directory / f'{timestamp()}_{role}.receiver'
         write(marker, dict(pid=os.getpid()))
         try:
             while not self.session.stopped():
-                for raw in sorted(self.session.directory.glob(f'*_to_{role}_*_request.json')):
-                    active = raw.with_name(raw.stem + '.active.json')
+                for raw in sorted(self.session.directory.glob(f'*_to_{role}_request.json')):
                     try:
-                        raw.rename(active)
+                        with self.session.mutex.held():
+                            job = json.loads(raw.read_text('utf-8'))
+                            raw.unlink()
                     except FileNotFoundError:
                         continue
-                    job = json.loads(active.read_text('utf-8'))
+                    if time.time() >= job['expires']:
+                        continue
                     try:
-                        self.begin(job, active, role)
                         result = await handler(job['op'], job['args'])
-                        result.setdefault('outcome', 'completed')
                     except Exception as error:
-                        result = dict(error=f'{type(error).__name__}: {error}', outcome='not_attempted' if isinstance(error, NotAttempted) else 'failed')
+                        result = dict(error=f'{type(error).__name__}: {error}')
                     result['operation_id'] = job['id']
-                    reply = Exchange(self.session, job['sender'], role, job['id']).dump('response', json.dumps(result, ensure_ascii=False))
-                    if job['id'] in self.session.load()['operations']:
-                        self.finish(job['id'], result, reply)
+                    Exchange(self.session, job['sender'], role, job['id']).record('response', result)
+                    reply = self.session.directory / f'{job["id"]}_reply.json'
+                    with self.session.mutex.held():
+                        if reply.exists():
+                            write(reply, result)
                 await asyncio.sleep(.05)
         finally:
             marker.unlink(missing_ok=True)

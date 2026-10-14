@@ -1,6 +1,6 @@
 # Trident knowledge base: golden run of 2026-10-14
 
-This file holds only proven facts. Each one is backed by the run folder `run_20261014_103307_233581Z` on PE-DMLW, by this repository, or by the public X API. Times are Warsaw local time (UTC+2).
+The golden-run facts below are backed by the run folder `run_20261014_103307_233581Z` on PE-DMLW, by this repository, or by the public X API. The architecture in that section describes the baseline. Times are Warsaw local time (UTC+2).
 
 ## What Trident is
 Trident is a generic Windows desktop organism that pursues one goal given as a single sentence.
@@ -86,3 +86,16 @@ You maintain Trident (github.com/wgabrys88/Trident, branch `runner-h`). Read thi
 - Chess only against chess.com bots.
 - Never force-push.
 - Answer the owner briefly and plainly.
+
+## Subsequent code changes: 2026-10-14
+
+These are implementation changes, reviewed from source only. The owner explicitly requested no installer, application, tests or harness runs; the earlier live-comparison workflow was not performed. No improved desktop outcome is claimed.
+
+- `await rest()` now schedules an indefinite pause after the current invocation; `await rest(seconds=N)` schedules a future wake. Owner text, transcribed voice and incoming calls wake the organism; device diagnostics do not. `request_stop()` uses the existing shutdown marker.
+- Instinct explicitly requires awaiting async interfaces and assigns completion and meaning judgments to Jev, with Retina describing pixels. These are instructions to Luna, not code-level completion gates.
+- Native input releases before settling. Sampling starts after at least one second, uses 0.25-second intervals and three unchanged comparisons, and has a five-second total waiting cap. Exact RGB differences are compared; an animated desktop can reach the cap. Settling does not establish success.
+- Python has one live namespace per mind invocation. `remember` persists story and memory; helpers and variables no longer replay across invocations. Cooperative Python timeouts cannot interrupt synchronous blocking code; the 360-second mind deadline still owns and terminates the Cursor/MCP process tree.
+- File-based Bus requests are consumed before dispatch and never replayed automatically. Temporary requests and reply slots replace the operation ledger and prepared/active/cancelled filenames. Exchanges and inputs are recorded in one UTF-8 `exchange.log`; `recall(id)` reads matching records.
+- Monitor-facing paths remain `run_<timestamp>/`, `*_state.json`, `*_cursor_to_luna_<id>_response.jsonl`, and `*_screen_<id>.png`. Cursor retains stream-json and partial output; lines also enter `exchange.log` as they arrive. Timeout and shutdown leave the emitted stream intact.
+- State retains paths, active/process_state, memory, owner, screen and inputs, and adds wake_id/wake_at. Inputs contain their messages directly instead of paths to input files. The operations, executions, artifacts and observations inventories are removed. There are no orientation.json or tools.py files; the wake's desktop description is supplied in the prompt. Cursor prompt files exist only during the invocation; standalone exchange dumps and subprocess stderr files are replaced by the log.
+- Windows Job/Mutex control, input release, story carry-over, --fresh, zoom, Telegram voice and calls remain. Exited devices are respawned. The unproven drawing, SVG and submission causes remain unresolved, and mind_seconds remains 360.
