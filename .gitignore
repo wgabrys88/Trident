@@ -5,5 +5,4 @@ __pycache__/
 *.pyc
 .env
 
-scenarios_report.json
-tests_report.json
+*.session*

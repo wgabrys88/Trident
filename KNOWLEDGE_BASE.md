@@ -1,4 +1,28 @@
-# Trident knowledge base: golden run of 2026-10-14
+# Trident knowledge base
+
+## Current implementation: one file, fail hard
+
+The owner approved a complete replacement on 2026-10-14. The earlier incremental cut ratio, automatic recovery and voice/call requirements are superseded by that instruction. Historical evidence below remains unchanged; it does not establish the behavior of this rewrite.
+
+The four Python files contained 1,201 physical lines. Their replacement is 660 lines including the embedded instinct, settings and dependency pins: 541 fewer Python lines (45.0%). The repository now retains four files in total.
+
+- `main.py` contains all executable code, installation, pinned dependencies, model/account settings, tool descriptions and instinct. The repository has one Python file, plus this history, the license and ignore rules.
+- Use Python 3.11 on Windows. The owner installs with `python main.py --install`, then authorizes execution. The installer selects `py -3.11` explicitly to create the environment. Launch with `python main.py "goal"`, or add `--fresh` to omit previous-life memory. Runtime execution always uses `runtime/python/Scripts/python.exe`. Installation reinstalls the pinned packages and downloads the pinned vision assets; there is no cached-download branch.
+- One body owns state and the exchange log. A separately interruptible hands process and fresh Cursor/MCP processes run the same source file. Retina and Jev use direct requests. The file transport retains its request/reply naming but has no device framework, shared-state mutex, retry loop, discovery or automatic restart.
+- Telegram carries private owner text and Luna's `tell(text)` replies. Voice notes, calls, transcription, synthesis and call authorization are removed. Six direct dependencies remain: Pillow, PyAutoGUI, pyperclip, opentele-ng, telethon and pywin32. The Windows extension replaces handwritten Job API bindings.
+- Exceptions, failed service requests and unexpected service exits end the run. A failed hands program does not return a reassuring screenshot. Standard task groups propagate failures; context managers cancel tasks, terminate owned Windows process trees, wait for them to empty and release input. Failed runs are marked failed; only completed cleanup permits stopped state. There are no custom exception handlers or recovery paths.
+- Rest schedules sleep without terminating Cursor. The final streamed answer is persisted before indefinite or timed sleep. `rest_for(seconds)` replaces `rest(seconds=...)`; a later rest cancels an earlier timer. Finishing without rest schedules another wake. Owner text stops the old wake and hands, clears only their transport files, persists the message and starts fresh work. No keyword rules interpret the message.
+- `observe`, `decide` and `python` remain the MCP tools. Python preserves top-level await and a namespace for one wake, and requires explicit print for output. Communication and persistence helpers are awaited. `native` requires named code and prediction; `stroke` draws a continuous stroke through target-relative points. Milestone narratives, nested zoom, actual artifact-format inspection and Jev before completion remain in the instinct.
+- The state retains previous-life continuity, notes, last words and a 20-attempt trail. Native records its prediction before dispatch and screenshot after completion. Interrupted or failed attempts retain a null image. Older run files are read for continuity, never rewritten.
+- Preserve `run_<timestamp>/`, timestamped state/screenshot/crop paths, `*_cursor_to_luna_<id>_response.jsonl`, stream-json with partial messages, and the exchange-log envelope `at/id/sender/receiver/event/data`. Cursor writes its raw stream directly to an unbuffered file handle; the body copies complete lines live into the exchange log and drains remaining output after owned processes end. Output and tracebacks stay in run files.
+- Preserve the minimum one-second settle, quarter-second sampling, three unchanged comparisons and five-second cap. Vision startup waits for the pinned server's model-loaded notification; it does not retry failed health requests. Model versions are unchanged.
+- Restore agent file-read denials for image formats and credential files. The installed Cursor version's source checks explicit denials before unrestricted-mode read-boundary handling. Its permission matcher supports literal characters and `*`, so image extensions enumerate letter casing rather than using unsupported bracket patterns. Runtime verification of this boundary remains outstanding. The application reads the existing parent `.env` only for Jev requests; it does not copy that key into the mind's environment.
+
+Verification for the rewrite is source-only: full source review, Python 3.11 grammar parsing, in-memory compilation, inspection for prohibited syntax and Git whitespace review. No installer, organism, live scenario, test suite or harness was run. No `.env`, credentials or golden-run files were read or changed during implementation. No milestone tag or runtime improvement is claimed.
+
+After installation and owner authorization, the live acceptance work is: default/fresh continuity; nested vision and image-read denial; action/settle/Jev behavior; rest and final-word persistence; owner interruption of a long action; text in both directions; fail-hard shutdown with all owned processes gone; and compatibility with the existing dashboard.
+
+## Golden run of 2026-10-14
 
 The golden-run facts below are backed by the run folder `run_20261014_103307_233581Z` on PE-DMLW, by this repository, or by the public X API. The architecture in that section describes the baseline. Times are Warsaw local time (UTC+2).
 

@@ -1,8 +1,0 @@
-Pillow==11.3.0
-PyAutoGUI==0.9.54
-pyperclip==1.9.0
-soundfile==0.14.0
-opentele-ng==1.4.0
-telethon==1.45.0
-faster-whisper==1.2.1
-ntgcalls==3.0.2
