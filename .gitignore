@@ -4,3 +4,5 @@ private/
 __pycache__/
 *.pyc
 .env
+
+scenarios_report.json
