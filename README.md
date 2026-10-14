@@ -70,3 +70,17 @@ Before deploying:
 - Cursor CLI documentation: https://docs.cursor.com/en/cli/reference/output-format — per-session `init` and terminal `result`; `--resume` needed to intentionally resume a previous conversation.
 
 The ordered notebook files and imported papers mentioned earlier were not in the supplied archives. This revision is based on the provided source/run captures and the independently cited documentation, not invented notebook citations.
+
+## Scenario self-evaluation (`scenarios.py`)
+
+Nine safety scenarios (ad misclick, overlay occlusion, goal-mode drift, crash-consistent
+pending action, bounded episodes, fresh Jev evidence, resolve-before-recovery, synchronous
+remember, grounded click) run through the real `Cortex` code with mocked devices.
+
+    py -3.11 -B scenarios.py                      # deterministic judge, any OS
+    set TRIDENT_REAL=1 && py -3.11 -B scenarios.py   # cmd: a fresh Luna/Cursor judge also rules on each scenario
+
+PowerShell: `$env:TRIDENT_REAL='1'; py -3.11 -B scenarios.py`. In real mode a scenario
+passes only when Luna and the invariant agree. Results go to `scenarios_report.json`, judge
+prompts and replies to `scenario_judge_<timestamp>/`. The judge uses the same Cursor
+credentials your shell already gives Trident.
