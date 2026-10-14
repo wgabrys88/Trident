@@ -64,8 +64,6 @@ class Manipulator(Device):
 
     def capture(self):
         pixels, desktop = self.grab(all_screens=True), self.desktop()
-        if list(pixels.size) != desktop[2:]:
-            raise OSError('Screenshot dimensions disagree with the physical desktop')
         path = self.session.name('screen', 'png')
         pixels.save(path)
         screen = dict(image=str(path), desktop=desktop, window=self.foreground(), windows=self.windows(), at=time.time())
@@ -118,19 +116,14 @@ class Retina(Device):
     async def ready(self):
         def health():
             with urllib.request.urlopen(CFG['vision_url'] + '/health', timeout=1) as response:
-                healthy = json.load(response)['status'] == 'ok'
-            with urllib.request.urlopen(CFG['vision_url'] + '/v1/models', timeout=1) as response:
-                models = json.load(response)['data']
-            return healthy and any(model['id'] == CFG['vision_alias'] and
-                'image' in model.get('architecture', {}).get('input_modalities', []) for model in models)
-        async with asyncio.timeout(30):
-            while True:
-                try:
-                    if await asyncio.to_thread(health):
-                        return
-                except (urllib.error.URLError, TimeoutError):
-                    pass
-                await asyncio.sleep(.2)
+                return json.load(response)['status'] == 'ok'
+        while not self.session.stopped():
+            try:
+                if await asyncio.to_thread(health):
+                    return
+            except (urllib.error.URLError, TimeoutError):
+                pass
+            await asyncio.sleep(.2)
 
     def inspect(self, image, question, desktop, window, region=None):
         from PIL import Image
@@ -139,8 +132,6 @@ class Retina(Device):
             width, height = pixels.size
             region = region or [0, 0, 1000, 1000]
             x0, y0, x1, y1 = region
-            if not 0 <= x0 < x1 <= 1000 or not 0 <= y0 < y1 <= 1000:
-                raise ValueError('Crop coordinates must describe a region inside the full image')
             crop = [round(x0*width/1000), round(y0*height/1000), round(x1*width/1000), round(y1*height/1000)]
             submitted = self.session.name('crop', 'png')
             pixels.crop(crop).save(submitted)
@@ -188,14 +179,14 @@ class Phonation:
             '$voice.Speak($env:TRIDENT_TEXT); $voice.Dispose()')
         exchange = Exchange(self.session, 'phonation', 'sapi')
         exchange.record('request', arguments['text'])
-        result = await execute(['powershell.exe', '-NoProfile', '-Command', command], exchange, 60,
+        result = await execute(['powershell.exe', '-NoProfile', '-Command', command], exchange,
             env=os.environ | {'TRIDENT_WAV': str(wave), 'TRIDENT_TEXT': arguments['text']})
         if result['outcome'] != 'completed':
             return result
         audio, rate = sf.read(wave)
         note = self.session.name('speech', 'ogg')
         sf.write(note, audio, rate, format='OGG', subtype='OPUS')
-        delivery = await self.bus.request('relay', 'deliver', dict(path=str(note), wav=str(wave)), len(audio)/rate + 20)
+        delivery = await self.bus.request('relay', 'deliver', dict(path=str(note), wav=str(wave)))
         return delivery | dict(text=arguments['text'], note=str(note), wav=str(wave))
 
 class Relay:
@@ -220,7 +211,7 @@ class Relay:
     async def transcription(self, audio):
         path = self.session.name('received_call', 'wav')
         self.sf.write(path, self.np.frombuffer(audio, dtype='<i2'), 16000, subtype='PCM_16')
-        result = await self.bus.request('cochlea', 'transcribe', dict(path=str(path)), 30)
+        result = await self.bus.request('cochlea', 'transcribe', dict(path=str(path)))
         if result.get('text'):
             self.session.publish(result['text'], 'telegram-call')
 
@@ -375,7 +366,7 @@ class Relay:
             raise NotAttempted('Call authorization needs the exact current owner request')
         judgment = await self.bus.request('discern', 'decide', dict(state=current, questions=dict(intent=dict(
             type='choice', instructions='Does the owner directly request an outgoing call now?',
-            criteria=dict(explicit='Direct current calling request.', absent='No current calling request.', ambiguous='Unclear.')))), 15)
+            criteria=dict(explicit='Direct current calling request.', absent='No current calling request.', ambiguous='Unclear.')))))
         if judgment.get('answers', {}).get('intent', {}).get('choice') != 'explicit':
             raise NotAttempted('Explicit current calling intent was not established')
         self.grant = (owner_id, time.time()+120)
@@ -429,7 +420,7 @@ class Relay:
         self.latest, self.grant = event.id, None
         if event.voice:
             path = await asyncio.wait_for(event.download_media(file=str(self.session.name('received_note', 'ogg'))), 15)
-            result = await self.bus.request('cochlea', 'transcribe', dict(path=path), 30)
+            result = await self.bus.request('cochlea', 'transcribe', dict(path=path))
             text = result.get('text', '')
             if not text:
                 self.session.publish('Incoming voice note could not be transcribed; intent is unknown.', 'input-failure')
@@ -459,7 +450,7 @@ class Relay:
         accounts = [account for account in TDesktop(os.path.expandvars(CFG['tdata'])).accounts if account.UserId != self.owner]
         if len(accounts) != 1:
             raise RuntimeError('Exactly one assistant Telegram account is required')
-        self.client = await TelegramClient.FromTDesktop(accounts[0], session=str(self.session.path('vendor') / 'telegram.session'),
+        self.client = await TelegramClient.FromTDesktop(accounts[0], session=str(self.session.paths['vendor'] / 'telegram.session'),
             flag=UseCurrentSession, api=API.TelegramDesktop, request_retries=0, connection_retries=0,
             flood_sleep_threshold=0, catch_up=True)
         try:

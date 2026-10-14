@@ -87,7 +87,7 @@ You maintain Trident (github.com/wgabrys88/Trident, branch `runner-h`). Read thi
 - Never force-push.
 - Answer the owner briefly and plainly.
 
-## Subsequent code changes: 2026-10-14
+## Subsequent code changes: 2026-10-14 (`09e2c73`)
 
 These are implementation changes, reviewed from source only. The owner explicitly requested no installer, application, tests or harness runs; the earlier live-comparison workflow was not performed. No improved desktop outcome is claimed.
 
@@ -99,3 +99,27 @@ These are implementation changes, reviewed from source only. The owner explicitl
 - Monitor-facing paths remain `run_<timestamp>/`, `*_state.json`, `*_cursor_to_luna_<id>_response.jsonl`, and `*_screen_<id>.png`. Cursor retains stream-json and partial output; lines also enter `exchange.log` as they arrive. Timeout and shutdown leave the emitted stream intact.
 - State retains paths, active/process_state, memory, owner, screen and inputs, and adds wake_id/wake_at. Inputs contain their messages directly instead of paths to input files. The operations, executions, artifacts and observations inventories are removed. There are no orientation.json or tools.py files; the wake's desktop description is supplied in the prompt. Cursor prompt files exist only during the invocation; standalone exchange dumps and subprocess stderr files are replaced by the log.
 - Windows Job/Mutex control, input release, story carry-over, --fresh, zoom, Telegram voice and calls remain. Exited devices are respawned. The unproven drawing, SVG and submission causes remain unresolved, and mind_seconds remains 360.
+
+## First live run of `09e2c73`: owner-reported findings
+
+The owner supplied these proven findings from `run_20261014_143550_363708Z`, citing `exchange.log`, two Luna streams, screenshots and `trident_errors.txt`. This change did not inspect that run data. The goal was a detailed house comic in Paint, posted on X; times below are Warsaw local time.
+
+- The run reached drawing, saving, attachment and caption entry in about ten minutes. Session one produced scattered stamps and lines. Session two produced four panels with a foundation, walls/windows/door, a house/roof/tree/path, and a fence/chimney/smoke. Adaptive settling and in-process Python worked: all 18 Python and 14 observe calls returned.
+- At 16:46, maintenance's unconditional state rewrite hit `PermissionError [WinError 5]` during atomic replacement. The exception escaped the TaskGroup, cancelled Luna mid-step and killed the organism, leaving a pending file. The exact process holding the target was not identified.
+- At 16:42, the 360-second mind limit interrupted session one mid-post without last_words. Two long drawing programs also outlasted native's 30-second Bus deadline while strokes continued. Python retained an additional 240-second limit.
+- Narrative stayed empty: Luna never called remember to save it. Session two restarted the drawing from zero. There were zero decide calls. Retina supplied malformed or inconsistent coordinates and false scene/attachment claims.
+- A file named `house_comic.png` was HEIF (`ftyp mif1`); an earlier save was `house_comic.gif`. Both were in the repository folder. Upload used session one's GIF instead of the finished comic.
+- Native's code/prediction arguments were reversed once, and a Python tool call omitted its arguments. Crops were full-screen or nearly full-screen rather than useful zoom.
+
+## Follow-up implementation: source review only
+
+- Maintenance edits state only for a nonempty restart request. Atomic replacement retries PermissionError up to 20 attempts, 50 ms apart, and removes its pending file in finally. Exhausted retries and other failures still propagate.
+- Remove mind/Python/Bus/synthesis duration limits, Bus expiry fields, startup/readiness deadlines and the 30-second failure delay. Preserve actual HTTP/Telegram service limits, installer download limits, shutdown bounds and settle timing.
+- The wake state ends a mind invocation on owner input or requested rest. Supersession drains Cursor/MCP, stops Manipulator and its owned processes, releases input, removes that role's transport files and respawns it. Rest and supersession are expected interruptions. Existing stream files and the exchange.log JSON envelope stay intact.
+- memory.trail retains the last 20 native attempts: goal, prediction, result image and error. It is saved before dispatch and after receipt, and carries into previous_life. A null image means no result was received; the trail is not a milestone verdict or action replay.
+- Native requires named code and prediction arguments. The Python description shows the source-string request and native call; device no longer accepts seconds. Temporary replies are now `<id>_to_<role>_reply.json`, so the same short cleanup loop removes queued requests, reply slots and their pending files.
+- Instinct saves milestone narratives immediately. Decide is mandatory only for real choices, mismatched predictions, irreversible steps and final completion. It supplies goal, narrative, latest Retina answer and candidate actions, then follows the top choice. Milestone notes do not wait for Jev.
+- Instinct calls for focused and nested crops, re-observation of inconsistent boxes, artifacts under RUN, actual-format/header checks and attachment of the exact verified file. Format metadata may be inspected without interpreting pixels. No file-format validator or coordinate-repair code was added.
+- Cut forwarding wrappers, redundant vision model-list readiness verification, screenshot-size/crop validation branches and Cursor read-denial rules. Windows DPI setup, zoom mapping, all-screen capture, streaming, Telegram call authorization and installation remain.
+
+No installer, application, tests, harnesses or compilation checks were run for this follow-up. No run data, .env or credentials were inspected. The untracked house_comic files were left untouched. These changes are not runtime-verified improvements.

@@ -5,21 +5,25 @@ from urllib.parse import urlparse
 
 sys.dont_write_bytecode = True
 from core import Bus, CFG, Exchange, Job, Mutex, ROOT, ROLES, Session, execute
+from devices import release_input
 
 class Cortex:
     def __init__(self, session):
         self.session, self.bus = session, Bus(session, 'cortex')
+        self.device = self.bus.request
         self.namespace = dict(__name__='__trident__', ROOT=ROOT, RUN=session.directory, asyncio=asyncio,
                               artifact=session.artifact, request_stop=session.request_stop)
         for name in ('device', 'native', 'observe', 'decide', 'point', 'accept', 'recall', 'speak', 'rest', 'remember'):
             self.namespace[name] = getattr(self, name)
 
-    async def device(self, role, operation, arguments, seconds=30):
-        return await self.bus.request(role, operation, arguments, seconds)
-
-    async def native(self, source, prediction, targets=None):
-        result = await self.device('manipulator', 'execute', dict(source=source, prediction=prediction,
-            targets=targets), 30)
+    async def native(self, *, code, prediction, targets=None):
+        trail = self.namespace['memory']['trail']
+        trail.append(dict(goal=self.namespace['memory']['goal'], prediction=prediction, image=None))
+        del trail[:-20]
+        self.remember(trail=trail)
+        result = await self.device('manipulator', 'execute', dict(source=code, prediction=prediction, targets=targets))
+        trail[-1].update(image=result.get('image'), error=result.get('error'))
+        self.remember(trail=trail)
         return {key: result[key] for key in ('error', 'image', 'window', 'at') if key in result}
 
     async def observe(self, question, region=None, within=None):
@@ -32,11 +36,11 @@ class Cortex:
             region = [round((left + x0*(right-left)/1000)*1000/width), round((top + y0*(bottom-top)/1000)*1000/height),
                       round((left + x1*(right-left)/1000)*1000/width), round((top + y1*(bottom-top)/1000)*1000/height)]
         result = await self.device('retina', 'inspect', dict(image=screen['image'], question=question,
-            desktop=screen['desktop'], window=screen['window'], region=region), CFG['look_seconds'])
+            desktop=screen['desktop'], window=screen['window'], region=region))
         return {key: result[key] for key in ('answer', 'geometry', 'error') if key in result}
 
     async def decide(self, state, questions):
-        return await self.device('discern', 'decide', dict(state=state, questions=questions), CFG['decision_seconds'])
+        return await self.device('discern', 'decide', dict(state=state, questions=questions))
 
     def point(self, observation, x, y):
         geometry = observation['geometry']
@@ -54,7 +58,7 @@ class Cortex:
         return [entry for line in entries if (entry := json.loads(line))['id'] == ident]
 
     async def speak(self, text):
-        return await self.device('phonation', 'speak', dict(text=text), 60)
+        return await self.device('phonation', 'speak', dict(text=text))
 
     def remember(self, **changes):
         def update(state):
@@ -76,10 +80,9 @@ class Cortex:
                 if tree.body and isinstance(tree.body[-1], ast.Expr):
                     tree.body[-1] = ast.Assign(targets=[ast.Name(id='__result__', ctx=ast.Store())], value=tree.body[-1].value)
                     ast.fix_missing_locations(tree)
-                async with asyncio.timeout(CFG['execution_seconds']):
-                    value = eval(compile(tree, '<python>', 'exec', flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT), self.namespace)
-                    if inspect.isawaitable(value):
-                        await value
+                value = eval(compile(tree, '<python>', 'exec', flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT), self.namespace)
+                if inspect.isawaitable(value):
+                    await value
                 if self.namespace['__result__'] is not None:
                     print(repr(self.namespace['__result__']))
             except Exception as failure:
@@ -93,12 +96,14 @@ class Cortex:
             inputSchema=dict(type='object', properties=dict(question=text,
                 region=dict(type='array', items=dict(type='number'), minItems=4, maxItems=4),
                 within=dict(type='object')), required=['question'])),
-            dict(name='decide', description='Jev judges completion and meaning from supplied state and named questions. '
+            dict(name='decide', description='Use Jev for real choices, mismatched predictions, irreversible steps and final completion. '
+                'Supply goal, narrative, latest Retina answer and candidate actions as one choice question; act on the top choice. '
                 'choice criteria maps names to descriptions; score criteria is an ordered list; noul is a proposition. '
                 'Returns probabilities; confidence is not proof.',
                 inputSchema=dict(type='object', properties=dict(state={}, questions=dict(type='object')), required=['state', 'questions'])),
-            dict(name='python', description='Python with top-level await and a live namespace for this invocation. '
-                'Returns stdout/stderr and the last expression. Never read image bytes.',
+            dict(name='python', description='Send {"source":"Python code"}; top-level await and a live namespace for this invocation. '
+                'Native uses required named arguments: await native(code="...", prediction="...", targets=...). '
+                'Returns stdout/stderr and the last expression. Only Retina interprets pixels; file headers may be checked.',
                 inputSchema=dict(type='object', properties=dict(source=text), required=['source']))]
 
 async def mcp(session):
@@ -165,6 +170,9 @@ class Organism:
             job.close()
         for path in self.session.directory.glob('*_' + role + '.receiver'):
             path.unlink(missing_ok=True)
+        with self.session.mutex.held():
+            for path in self.session.directory.glob(f'*_to_{role}_*.json*'):
+                path.unlink(missing_ok=True)
 
     def console(self):
         for line in sys.stdin:
@@ -173,7 +181,7 @@ class Organism:
 
     async def maintain(self):
         while not self.session.stopped():
-            restarts = self.session.edit(lambda state: state['memory'].pop('restart_devices', []))
+            restarts = self.session.edit(lambda state: state['memory'].pop('restart_devices')) if self.session.load()['memory'].get('restart_devices') else []
             for role, job in list(self.jobs.items()):
                 if job.process.poll() is not None or role in restarts:
                     self.stop(role)
@@ -183,12 +191,12 @@ class Organism:
 
     async def infer(self):
         session = self.session
-        screen = await self.bus.request('manipulator', 'capture', {}, 10)
+        screen = await self.bus.request('manipulator', 'capture', {})
         if not screen.get('image'):
             raise RuntimeError(str(screen))
         look = await self.bus.request('retina', 'inspect', dict(image=screen['image'], desktop=screen['desktop'],
             window=screen['window'], question='Describe the visible desktop, objects, controls and readable labels. '
-            'Give normalized-1000 boxes and describe uncertainty without assuming a task.'), CFG['look_seconds'])
+            'Give normalized-1000 boxes and describe uncertainty without assuming a task.'))
         state = session.load()
         context = dict(owner=state['owner'], memory=state['memory'], look=look,
             receivers=self.bus.receivers(), output_directory=str(session.directory))
@@ -198,12 +206,19 @@ class Organism:
         prompt = exchange.path('request', 'txt')
         prompt.write_text(text, 'utf-8')
         try:
-            result = await execute(cursor(prompt, '--approve-mcps'), exchange, CFG['mind_seconds'], stream=True,
+            result = await execute(cursor(prompt, '--approve-mcps'), exchange, stream=True, wake_id=state['wake_id'],
                 cwd=ROOT, env=os.environ | session.vendor)
         finally:
             prompt.unlink(missing_ok=True)
+        if session.load()['wake_id'] != state['wake_id']:
+            self.stop('manipulator')
+            release_input()
+            self.spawn('manipulator')
+            return state['wake_id']
+        if result['outcome'] == 'interrupted':
+            return state['wake_id']
         if result['outcome'] != 'completed':
-            raise RuntimeError(f"Cursor exited {result['returncode']}: {result['error']} {result['stderr']}")
+            raise RuntimeError(f"Cursor exited {result['returncode']}: {result['stderr']}")
         final = next((event for line in reversed(result['stdout'].splitlines()) if line.strip()
             and (event := json.loads(line)).get('type') == 'result'), None)
         if final is None or final.get('is_error'):
@@ -212,6 +227,7 @@ class Organism:
         session.edit(lambda state: state['memory'].update(last_words=answer))
         if answer:
             print(answer, flush=True)
+        return state['wake_id']
 
     async def pause(self, wake_id):
         while not self.session.stopped():
@@ -226,27 +242,22 @@ class Organism:
                 self.spawn(role)
             async with asyncio.TaskGroup() as tasks:
                 tasks.create_task(self.maintain())
-                async with asyncio.timeout(30):
-                    while not {'manipulator', 'retina'}.issubset(self.bus.receivers()):
-                        await asyncio.sleep(.05)
+                while not {'manipulator', 'retina'}.issubset(self.bus.receivers()):
+                    if self.session.stopped():
+                        return
+                    await asyncio.sleep(.05)
                 threading.Thread(target=self.console, daemon=True).start()
                 if len(sys.argv) > 1:
                     self.session.publish(' '.join(sys.argv[1:]), 'local-owner')
                 self.session.edit(lambda state: state.update(process_state='running'))
                 print(f'Trident alive. Run: {self.session.directory}\nOwner input: stdin, Telegram text, voice note or call.', flush=True)
                 while not self.session.stopped():
-                    def begin(state):
-                        state['wake_at'] = 0
-                        return state['wake_id']
-                    wake_id = self.session.edit(begin)
+                    self.session.edit(lambda state: state.update(wake_at=0))
+                    wake_id = self.session.load()['wake_id']
                     try:
-                        await self.infer()
+                        wake_id = await self.infer()
                     except Exception as error:
                         self.session.publish(f'Mind invocation failed: {type(error).__name__}: {error}', 'device-observation')
-                        def retry(state):
-                            if state['wake_at'] == 0:
-                                state['wake_at'] = time.time() + 30
-                        self.session.edit(retry)
                     await self.pause(wake_id)
         finally:
             self.session.request_stop()
@@ -286,7 +297,6 @@ def launch():
         if job:
             job.close()
         if session:
-            from devices import release_input
             release_input()
             for marker in session.directory.glob('*.receiver'):
                 marker.unlink(missing_ok=True)

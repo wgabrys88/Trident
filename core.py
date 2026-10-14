@@ -17,8 +17,18 @@ def timestamp():
 
 def atomic(path, data):
     pending = path.with_name(path.name + '.' + identity() + '.pending')
-    pending.write_bytes(data)
-    pending.replace(path)
+    try:
+        pending.write_bytes(data)
+        for attempt in range(20):
+            try:
+                pending.replace(path)
+                return
+            except PermissionError:
+                if attempt == 19:
+                    raise
+                time.sleep(.05)
+    finally:
+        pending.unlink(missing_ok=True)
 
 def write(path, value):
     atomic(path, json.dumps(value, ensure_ascii=False).encode('utf-8'))
@@ -78,13 +88,13 @@ class Session:
         if prior:
             memory = json.loads(prior.read_text('utf-8'))['memory']
             previous = dict(run=prior.parent.name, goal=memory.get('goal', ''), narrative=memory.get('narrative', ''),
-                            last_words=memory.get('last_words', ''))
+                            last_words=memory.get('last_words', ''), trail=memory.get('trail', []))
         directory = ROOT / ('run_' + timestamp())
         directory.mkdir()
         paths = {name: str(directory / (timestamp() + '_' + name)) for name in ('state.json', 'stop', 'vendor')}
         Path(paths['stop']).write_bytes(b'')
         write(Path(paths['state.json']), dict(paths=paths, active=True, process_state='starting',
-            memory=dict(goal='', narrative='', previous_life=previous), owner=dict(id=identity(), text='', at=time.time(), source='no-owner-goal'),
+            memory=dict(goal='', narrative='', trail=[], previous_life=previous), owner=dict(id=identity(), text='', at=time.time(), source='no-owner-goal'),
             wake_id=identity(), wake_at=0, screen={}, inputs=[]))
         return cls(directory)
 
@@ -103,20 +113,16 @@ class Session:
             write(self.state_path, state)
             return result
 
-    def path(self, name):
-        return self.paths[name]
+    def name(self, kind, extension):
+        return self.directory / f'{timestamp()}_{kind}_{identity()}.{extension}'
 
-    def name(self, label, extension):
-        return self.directory / f'{timestamp()}_{label}_{identity()}.{extension}'
-
-    def artifact(self, kind, extension):
-        return self.name(kind, extension)
+    artifact = name
 
     def stopped(self):
-        return self.path('stop').stat().st_size > 0
+        return self.paths['stop'].stat().st_size > 0
 
     def request_stop(self):
-        with self.path('stop').open('ab') as marker:
+        with self.paths['stop'].open('ab') as marker:
             marker.write(b'1')
 
     def publish(self, text, source, at=None, ident=None):
@@ -134,13 +140,13 @@ class Session:
 
     @property
     def vendor(self):
-        vendor = self.path('vendor')
+        vendor = self.paths['vendor']
         return dict(HOME=str(vendor / 'home'), USERPROFILE=str(vendor / 'home'), CURSOR_CONFIG_DIR=str(vendor / 'home' / '.cursor'),
             CURSOR_DATA_DIR=str(vendor / 'cursor-data'), CURSOR_AGENT_DISABLE_DEBUG_LOG='1', XDG_CACHE_HOME=str(vendor / 'cache'),
             XDG_CONFIG_HOME=str(vendor / 'config'), TEMP=str(vendor / 'temp'), TMP=str(vendor / 'temp'))
 
     def prepare(self):
-        vendor = self.path('vendor')
+        vendor = self.paths['vendor']
         profile = Path(self.vendor['CURSOR_CONFIG_DIR'])
         profile.mkdir(parents=True)
         Path(self.vendor['TEMP']).mkdir()
@@ -148,9 +154,9 @@ class Session:
             PSModuleAnalysisCachePath=str(vendor / 'PowerShellModuleAnalysisCache'),
             PYTHONDONTWRITEBYTECODE='1', PYTHONUTF8='1', PYTHONIOENCODING='utf-8', PYTHONUNBUFFERED='1')
         real = {key: os.environ[key] for key in ('USERPROFILE', 'HOME', 'TEMP', 'TMP') if key in os.environ}
-        write(profile / 'cli-config.json', dict(version=1, editor=dict(vimMode=False),
+        write(profile / 'cli-config.json', dict(version=1,
             permissions=dict(allow=['Read(**)', 'Write(**)', 'Shell(*)', 'WebFetch(*)', 'Mcp(*:*)'],
-                deny=['Read(runtime/**)', 'Read(run_*/**)'] + [f'Read(**/*.{ext})' for ext in ('png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp')]),
+                deny=[]),
             sandbox=dict(mode='disabled', readBoundary='system'), approvalMode='unrestricted'))
         write(profile / 'mcp.json', dict(mcpServers=dict(trident=dict(type='stdio', command=sys.executable,
             args=['-u', '-B', str(ROOT / 'run.py'), '--mcp'], env=real | {key: os.environ[key] for key in
@@ -228,7 +234,7 @@ class Job:
                 raise TimeoutError('Owned process tree did not finish shutdown within five seconds')
             time.sleep(.01)
 
-async def execute(command, exchange, seconds=None, stream=False, **options):
+async def execute(command, exchange, stream=False, wake_id=None, **options):
     job = Job(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **options)
     def receive(pipe, live=False):
         chunks = []
@@ -243,26 +249,24 @@ async def execute(command, exchange, seconds=None, stream=False, **options):
     output = exchange.path('response', 'jsonl').open('wb') if stream else None
     stdout = asyncio.create_task(asyncio.to_thread(receive, job.process.stdout, stream))
     stderr = asyncio.create_task(asyncio.to_thread(receive, job.process.stderr))
-    error, code = None, None
+    code = None
     try:
-        async with asyncio.timeout(seconds):
-            while job.process.poll() is None:
-                if exchange.session.stopped():
-                    raise asyncio.CancelledError()
-                await asyncio.sleep(.05)
-        code = job.process.returncode
-    except (Exception, asyncio.CancelledError) as failure:
-        error = f'{type(failure).__name__}: {failure}'
-        if isinstance(failure, asyncio.CancelledError):
-            raise
+        while job.process.poll() is None:
+            if exchange.session.stopped():
+                raise asyncio.CancelledError()
+            state = exchange.session.load() if wake_id is not None else None
+            if state is not None and (state['wake_id'] != wake_id or state['wake_at'] != 0):
+                break
+            await asyncio.sleep(.05)
+        code = job.process.poll()
     finally:
         try:
             job.drain(time.monotonic() + 5)
         finally:
             job.close()
             try:
-                result = dict(id=exchange.id, outcome='failed' if error or code != 0 else 'completed',
-                    stdout=await stdout, stderr=await stderr, returncode=code, error=error)
+                result = dict(id=exchange.id, outcome='interrupted' if code is None else 'completed' if code == 0 else 'failed',
+                    stdout=await stdout, stderr=await stderr, returncode=code)
                 exchange.record('response', {key: value for key, value in result.items() if not stream or key != 'stdout'})
             finally:
                 if output:
@@ -279,29 +283,24 @@ class Bus:
     def receivers(self):
         return [path.name.split('_', 3)[3].removesuffix('.receiver') for path in self.session.directory.glob('*.receiver')]
 
-    async def request(self, role, operation, arguments, seconds=30):
+    async def request(self, role, operation, arguments):
         exchange = Exchange(self.session, self.sender, role)
         raw = self.session.directory / f'{exchange.id}_to_{role}_request.json'
-        reply = self.session.directory / f'{exchange.id}_reply.json'
-        job = dict(id=exchange.id, sender=self.sender, op=operation, args=arguments, expires=time.time() + seconds)
+        reply = self.session.directory / f'{exchange.id}_to_{role}_reply.json'
+        job = dict(id=exchange.id, sender=self.sender, op=operation, args=arguments)
         exchange.record('request', job)
         with self.session.mutex.held():
             write(reply, None)
             write(raw, job)
         try:
-            async with asyncio.timeout(seconds):
-                while True:
-                    if self.session.stopped():
-                        raise asyncio.CancelledError()
-                    with self.session.mutex.held():
-                        result = json.loads(reply.read_text('utf-8'))
-                    if result is not None:
-                        return result
-                    await asyncio.sleep(.05)
-        except TimeoutError:
-            result = dict(operation_id=exchange.id, error='Device request timed out; its effect is unknown')
-            exchange.record('error', result)
-            return result
+            while True:
+                if self.session.stopped():
+                    raise asyncio.CancelledError()
+                with self.session.mutex.held():
+                    result = json.loads(reply.read_text('utf-8'))
+                if result is not None:
+                    return result
+                await asyncio.sleep(.05)
         finally:
             with self.session.mutex.held():
                 raw.unlink(missing_ok=True)
@@ -319,15 +318,13 @@ class Bus:
                             raw.unlink()
                     except FileNotFoundError:
                         continue
-                    if time.time() >= job['expires']:
-                        continue
                     try:
                         result = await handler(job['op'], job['args'])
                     except Exception as error:
                         result = dict(error=f'{type(error).__name__}: {error}')
                     result['operation_id'] = job['id']
                     Exchange(self.session, job['sender'], role, job['id']).record('response', result)
-                    reply = self.session.directory / f'{job["id"]}_reply.json'
+                    reply = self.session.directory / f'{job["id"]}_to_{role}_reply.json'
                     with self.session.mutex.held():
                         if reply.exists():
                             write(reply, result)
