@@ -64,8 +64,15 @@ class Cortex:
         self.screen.update(self.session.load()['screen'])
         return result
 
-    async def observe(self, question, region=None):
+    async def observe(self, question, region=None, within=None):
         screen = self.session.load()['screen']
+        if within is not None:
+            # Zoom: region is given in the 0..1000 space of an earlier look; map it to the full screenshot.
+            left, top, right, bottom = within['geometry']['crop']
+            width, height = within['geometry']['source_size']
+            x0, y0, x1, y1 = region
+            region = [round((left + x0*(right-left)/1000)*1000/width), round((top + y0*(bottom-top)/1000)*1000/height),
+                      round((left + x1*(right-left)/1000)*1000/width), round((top + y1*(bottom-top)/1000)*1000/height)]
         result = await self.device('retina', 'inspect', dict(image=screen['image'], question=question,
             desktop=screen['desktop'], window=screen['window'], region=region), CFG['look_seconds'])
         if result.get('outcome') == 'completed':
@@ -211,12 +218,17 @@ class Cortex:
                 ('choice', dict(type='object', additionalProperties=text)), ('score', dict(type='array', items=text)),
                 ('noul', dict(type='object', properties={'true': text, 'false': text})))]
         return [dict(name='observe', description='Local vision alone sees the current screenshot. It is a small model '
-            'that can be wrong: crop to the region that matters, request rich element descriptions with ownership, '
+            'that can be wrong. Zoom iteratively: look at the whole screen, then crop to the bounding box of the part that '
+            'matters (region in 0..1000 of the full screenshot, or of an earlier look passed as within), then crop smaller '
+            'again until the detail is clear; a small crop is faster and sharper, and Retina and decide see only that area. '
+            'Request rich element descriptions with ownership, '
             'ask the inverse question too, and bring conflicting looks to decide. Returns structured scene, answer, finish reasons, '
             'usage, raw response path and geometry. Use target(observation, element_id, expected_surface) to bind a mouse target. All boxes are normalized 0..1000 in the submitted image, including '
             'crops; point/accept map to desktop pixels.',
             inputSchema=dict(type='object', properties=dict(question=text,
-                region=dict(type='array', items=dict(type='number'), minItems=4, maxItems=4)), required=['question'])),
+                region=dict(type='array', items=dict(type='number'), minItems=4, maxItems=4),
+                within=dict(type='object', description='an earlier observe result; region is then in its 0..1000 space')),
+                required=['question'])),
             dict(name='decide', description='Fast probabilistic TEXT judge over your evidence and your standing reasoning '
                 'partner, not pixel viewing or device control. Lean on it for essentially EVERY meaning-based choice, '
                 'not only conflicts: what matters next, how to read an ambiguous look, which region to inspect, which '
