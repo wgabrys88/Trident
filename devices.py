@@ -2,7 +2,7 @@ import asyncio, base64, ctypes, json, os, secrets, sys, time, urllib.error, urll
 from ctypes import wintypes as W
 from pathlib import Path
 from core import Bus, CFG, Exchange, NotAttempted, ROOT, Session, execute
-from perception import INSTRUCTION, InvalidPerception, parse_scene, validate_target
+from perception import INSTRUCTION, SCHEMA, InvalidPerception, parse_scene, validate_target
 
 def release_input():
     user = ctypes.windll.user32
@@ -178,7 +178,7 @@ class Retina:
             pixels.crop(crop).save(submitted)
         def payload(url):
             return dict(model=CFG['vision_alias'], temperature=0, max_tokens=CFG.get('vision_output_tokens', 1800),
-                response_format=dict(type='json_object'),
+                response_format=dict(type='json_schema', json_schema=dict(name='scene', strict=True, schema=SCHEMA)),
                 messages=[dict(role='system', content=INSTRUCTION),
                   dict(role='user', content=[dict(type='image_url', image_url=dict(url=url)),
                     dict(type='text', text='Question: ' + question + '\nReturn grounded visual evidence as specified.')])])
