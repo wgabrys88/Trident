@@ -1,27 +1,78 @@
-"""Live Trident runner.
+"""Sequential Trident task runner.
 
-Usage:
-    py -3.11 -B tests.py "the task Luna should carry out"
+Run it with no arguments:
+    py -3.11 -B tests.py
 
-This starts the REAL Trident system (the run.py launcher) and hands the first
-command-line argument in as the owner task, so Luna actually performs it on the
-desktop. With no argument a harmless default look-at-the-screen task is used.
-run.py already publishes argv[1:] as a local-owner message, so no injection,
-mocks or fault scenarios are involved here: it is the real system doing real work.
+It steps through a hardcoded list of task strings (TASKS). For each one it
+launches the REAL Trident system (run.py) with that task as the owner goal, lets
+Luna carry it out on the desktop, then requests a clean stop and moves on to the
+next task. No mocks and no fault injection: each entry is a real task the system
+actually performs. Edit TASKS to change what gets exercised.
 
-The full end-to-end scenario and fault-injection suite below is kept for
-reference but is commented out and does not run.
+The original scenario + fault-injection suite is preserved, commented out, below.
 """
-import subprocess, sys
+import subprocess, sys, time
 from pathlib import Path
+
+sys.dont_write_bytecode = True
+from core import Session
 
 ROOT = Path(__file__).resolve().parent
 PYTHON = ROOT / "runtime" / "python" / "Scripts" / "python.exe"
-DEFAULT_TASK = "Look at the screen and tell me which application windows are open."
+
+# Hardcoded task strings, run in order. Add or edit freely.
+TASKS = [
+    "Look at the screen and tell me which application windows are open.",
+    "Open Notepad and type a four line poem about rain, then tell me what you did.",
+    "Open the Windows calculator, then check and tell me whether it is open.",
+    "Use your decision engine to choose between a haiku or a limerick about autumn, then tell me which and why.",
+    "Send me a short voice note saying that the test is running.",
+]
+
+TASK_BUDGET = 240  # hard cap in seconds per task
+SETTLE = 6         # grace after the first completed mind answer before stopping
+
+
+def run_task(index, total, task):
+    print(f"\n===== [{index}/{total}] {task} =====", flush=True)
+    before = set(ROOT.glob("run_*"))
+    proc = subprocess.Popen([str(PYTHON), "-u", "-B", str(ROOT / "run.py"), task],
+                            cwd=ROOT, stdin=subprocess.DEVNULL)
+    session = None
+    deadline = time.time() + 60
+    while session is None and time.time() < deadline:
+        fresh = [d for d in set(ROOT.glob("run_*")) - before if list(d.glob("*_state.json"))]
+        if fresh:
+            session = Session(fresh[0])
+        else:
+            time.sleep(0.3)
+    if session is None:
+        proc.terminate()
+        print(f"[{index}] FAILED to start a run.", flush=True)
+        return
+    started, done = time.time(), None
+    while time.time() - started < TASK_BUDGET and proc.poll() is None:
+        answered = any(e["sender"] == "luna" and e["at"] >= started and e["outcome"] in ("completed", "failed", "unknown")
+                       for e in session.load()["executions"].values())
+        if answered:
+            done = done or time.time()
+            if time.time() - done >= SETTLE:
+                break
+        time.sleep(1)
+    session.request_stop()
+    try:
+        proc.wait(30)
+    except subprocess.TimeoutExpired:
+        proc.terminate()
+    final = session.load()
+    minds = [e for e in final["executions"].values() if e["sender"] == "luna"]
+    print(f"[{index}] run={session.directory.name} process_state={final['process_state']} mind_invocations={len(minds)}", flush=True)
+
 
 if __name__ == "__main__":
-    task = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_TASK
-    raise SystemExit(subprocess.run([str(PYTHON), "-u", "-B", str(ROOT / "run.py"), task], cwd=ROOT).returncode)
+    for i, task in enumerate(TASKS, 1):
+        run_task(i, len(TASKS), task)
+    print("\nAll tasks finished.", flush=True)
 
 
 # ===================================================================
