@@ -28,8 +28,9 @@ class Cortex:
             x0, y0, x1, y1 = region
             region = [round((left + x0*(right-left)/1000)*1000/width), round((top + y0*(bottom-top)/1000)*1000/height),
                       round((left + x1*(right-left)/1000)*1000/width), round((top + y1*(bottom-top)/1000)*1000/height)]
-        return await self.device('retina', 'inspect', dict(image=screen['image'], question=question,
+        result = await self.device('retina', 'inspect', dict(image=screen['image'], question=question,
             desktop=screen['desktop'], window=screen['window'], region=region), CFG['look_seconds'])
+        return {key: result[key] for key in ('answer', 'geometry', 'error') if key in result}
 
     async def decide(self, state, questions):
         return await self.device('discern', 'decide', dict(state=state, questions=questions), CFG['decision_seconds'])

@@ -146,12 +146,8 @@ class Retina:
         exchange = Exchange(self.session, 'retina', 'local-vision')
         response = exchange.http(CFG['vision_url'] + '/v1/chat/completions', payload('data:image/png;base64,' +
             base64.b64encode(submitted.read_bytes()).decode()), CFG['look_seconds'], record=payload(submitted.as_uri()))
-        finish = [choice['finish_reason'] for choice in response['choices']]
         return dict(answer='\n'.join(choice['message'].get('content') or '' for choice in response['choices']),
-            finish_reasons=finish, complete=bool(finish) and all(reason == 'stop' for reason in finish),
-            usage=response.get('usage'), response=str(exchange.response), image=image, submitted=str(submitted),
-            image_at=source.stat().st_mtime, geometry=dict(space='submitted-image-normalized-1000', source_size=[width, height],
-                submitted_size=[crop[2]-crop[0], crop[3]-crop[1]], crop=crop, desktop=desktop, window=window))
+            geometry=dict(source_size=[width, height], crop=crop, desktop=desktop, window=window))
 
     async def handle(self, operation, arguments):
         return await asyncio.to_thread(self.inspect, **arguments)
