@@ -129,7 +129,6 @@ def luna(goal='Wake.'):
  if last and last[0].lstrip().startswith(b'{'):remember(MEMORY.read_text('utf-8')+'\nLAST WORDS\n'+str(json.loads(last[0]).get('result','')))
 def follow(was_luna):
  if not NEXT.exists():
-  if was_luna:return
   write(NEXT,['--luna'])
  cmd=read(NEXT);NEXT.unlink();sys.stdout.flush()
  if cmd and isinstance(cmd[0],(int,float)):any((WORK/'stop').exists() or time.sleep(1) for _ in range(int(min(cmd.pop(0),3600))))
