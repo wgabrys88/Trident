@@ -60,7 +60,7 @@ def close_job(job):
         time.sleep(.01)
     job.Close()
 def spawn(scope, command, output, errors, environment):
-    job = win32job.CreateJobObject(None, None)
+    job = win32job.CreateJobObject(None, '')
     scope.callback(close_job, job)
     limits = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
     limits['BasicLimitInformation']['LimitFlags'] = win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
