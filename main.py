@@ -78,17 +78,18 @@ def retina(q,*a,decide=''):
  crop=[round(l+x0*(r-l)/1000),round(t+y0*(b-t)/1000),round(l+x1*(r-l)/1000),round(t+y1*(b-t)/1000)]
  with Image.open(look['image']) as im:im.crop(crop).save(WORK/'crop.png')
  resp=http(VISION_URL+'/v1/chat/completions',dict(model='retina',temperature=.1,min_p=.15,repeat_penalty=1.05,max_tokens=600,messages=[dict(role='system',content=RETINA_SYSTEM),dict(role='user',content=[dict(type='image_url',image_url=dict(url='data:image/png;base64,'+base64.b64encode((WORK/'crop.png').read_bytes()).decode())),dict(type='text',text=q)])]),{},300)
- v=look|dict(answer='\n'.join(c['message']['content'] for c in resp['choices']),geometry=look['geometry']|dict(crop=crop));write('look.json',v)
+ v=look|dict(answer='\n'.join(c['message']['content'] for c in resp['choices']),geometry=look['geometry']|dict(crop=crop));write('look.json',v);Path('jev.ok').unlink(missing_ok=True)
  try:v['jev_gut']=http('https://openrouter.ai/api/alpha/decisions',dict(model=DECISION_MODEL,state={'question':q,'retina':v['answer'],'app':look['geometry']['window']['title']},questions={'gut':{'type':'noul','instructions':'Does what Retina saw match what the question was looking for?'}}),{'Authorization':'Bearer '+key()},3).get('answers',{}).get('gut')
  except (Exception,SystemExit):v['jev_gut']=None
  if decide:
   o={x:x for x in decide.split('|')};o['rethink']="None of these fit. My questions don't make sense here; change approach completely."
   a=http('https://openrouter.ai/api/alpha/decisions',dict(model=DECISION_MODEL,state={'retina':v['answer'],'app':look['geometry']['window']['title']},questions={'pick':{'type':'choice','instructions':q,'criteria':o}}),{'Authorization':'Bearer '+key()},60).get('answers',{}).get('pick',{})
-  v['jev']=a
+  v['jev']=a;text('jev.ok','1')
  return emit(v)
-def jev(st,qs):return emit(http('https://openrouter.ai/api/alpha/decisions',dict(model=DECISION_MODEL,state=read(st),questions=read(qs)),{'Authorization':'Bearer '+key()},60))
+def jev(st,qs):text('jev.ok','1');return emit(http('https://openrouter.ai/api/alpha/decisions',dict(model=DECISION_MODEL,state=read(st),questions=read(qs)),{'Authorization':'Bearer '+key()},60))
 def hands(src):
- windows()
+ if not Path('jev.ok').exists():return emit(dict(refused='HARD RULE: no Jev since your last look. Ask --jev or --retina with A|B|C first.'))
+ Path('jev.ok').unlink();windows()
  with ExitStack() as c:c.callback(release_input);exec(compile(src,'<hands>','exec'),globals()|dict(gui=GUI,clipboard=CLIPBOARD))
  dl=time.monotonic()+5;time.sleep(1);fr=deque([GRAB(all_screens=True).convert('RGB').tobytes()],maxlen=4)
  while time.monotonic()<dl and (len(fr)<4 or len(set(fr))>1):time.sleep(min(.25,max(0,dl-time.monotonic())));fr.append(GRAB(all_screens=True).convert('RGB').tobytes())
