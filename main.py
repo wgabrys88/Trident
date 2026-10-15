@@ -94,7 +94,9 @@ def hands(src):
  dl=time.monotonic()+5;time.sleep(1);fr=deque([GRAB(all_screens=True).convert('RGB').tobytes()],maxlen=4)
  while time.monotonic()<dl and (len(fr)<4 or len(set(fr))>1):time.sleep(min(.25,max(0,dl-time.monotonic())));fr.append(GRAB(all_screens=True).convert('RGB').tobytes())
  return capture()
-def python_exec(src):exec(compile(src,'<python>','exec'),globals())
+def python_exec(src):
+ if not Path('jev.ok').exists():return emit(dict(refused='HARD RULE: no Jev since your last look. Ask --jev or --retina with A|B|C first.'))
+ Path('jev.ok').unlink();exec(compile(src,'<python>','exec'),globals())
 def luna(goal='Continue your remembered goal.'):
  NEXT.unlink(missing_ok=True);MEMORY.touch(exist_ok=True);RESULT.touch(exist_ok=True);c=config()
  prompt=INSTINCT+'\nPATHS\n'+json.dumps(dict(script=str(SCRIPT),python=str(PYTHON),work=str(WORK),continuation=str(NEXT)))+'\nGOAL\n'+goal+'\nMEMORY\n'+MEMORY.read_text('utf-8')+'\nLAST\n'+RESULT.read_text('utf-8')
