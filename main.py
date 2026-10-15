@@ -84,7 +84,7 @@ def retina(q,*a,decide=''):
  with Image.open(look['image']) as im:im.crop(crop).save(WORK/'crop.png')
  resp=http(VISION_URL+'/v1/chat/completions',dict(model='retina',temperature=.1,min_p=.15,repeat_penalty=1.05,max_tokens=600,messages=[dict(role='system',content=RETINA_SYSTEM),dict(role='user',content=[dict(type='image_url',image_url=dict(url='data:image/png;base64,'+base64.b64encode((WORK/'crop.png').read_bytes()).decode())),dict(type='text',text=q)])]),{},300)
  v=look|dict(answer='\n'.join(c['message']['content'] for c in resp['choices']),geometry=look['geometry']|dict(crop=crop));write('look.json',v)
- if decide:
+ if decide and re.search('[A-Za-z]',v['answer']):
   o={x:x for x in decide.split('|')};o['change_approach']=CHANGE
   a=http('https://openrouter.ai/api/alpha/decisions',dict(model=DECISION_MODEL,state={'retina':v['answer'],'app':look['geometry']['window']['title']},questions={'pick':{'type':'choice','instructions':q,'criteria':o}}),{'Authorization':'Bearer '+key()},60).get('answers',{}).get('pick',{})
   v['jev']=a
