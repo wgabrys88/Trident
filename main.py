@@ -118,7 +118,7 @@ def luna(goal='Wake.'):
  folder=max(p for p in (Path(os.environ.get('LOCALAPPDATA',''))/'cursor-agent/versions').iterdir() if p.name[:1].isdigit() and (p/'index.js').exists())
  boot="process.argv.push(require('node:fs').readFileSync(process.argv.pop(),'utf8'));require(process.argv[1]);"
  with ExitStack() as x:
-  x.callback(release_input);p=spawn(x,[str(folder/'node.exe'),'-e',boot,str(folder/'index.js'),'--trust','-p','--model',c['model'],'--workspace',str(WORK),'--output-format','stream-json','--stream-partial-output',str(pr)],env)
+  x.callback(release_input);p=spawn(x,[str(folder/'node.exe'),'-e',boot,str(folder/'index.js'),'--trust','-p','--model',c['model'],'--workspace',str(ROOT),'--output-format','stream-json','--stream-partial-output',str(pr)],env)
   last=deque(((iolog('luna',ln.decode('utf-8','replace').rstrip()),sys.stdout.buffer.write(ln)) and ln for ln in p.stdout),maxlen=1);p.wait()
  if last and last[0].lstrip().startswith(b'{'):remember(MEMORY.read_text('utf-8')+'\nLAST WORDS\n'+str(json.loads(last[0]).get('result','')))
 def follow(was_luna):
