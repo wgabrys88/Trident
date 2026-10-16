@@ -5,7 +5,7 @@ from contextlib import ExitStack
 from itertools import product
 from pathlib import Path
 sys.dont_write_bytecode=True
-SCRIPT=Path(__file__).resolve();ROOT=SCRIPT.parent;WIN=os.name=='nt';PYTHON=ROOT/('runtime/python/Scripts/python.exe' if WIN else 'runtime/python/bin/python')
+SCRIPT=Path(__file__).resolve();ROOT=SCRIPT.parent;WIN=os.name=='nt';PYTHON=ROOT.parent/('runtime/python/Scripts/python.exe' if WIN else 'runtime/python/bin/python')
 RUN=ROOT/('run_'+os.environ.setdefault('TRIDENT_RUN',time.strftime('%Y%m%d_%H%M%S'))+'.md')
 DECISION_MODEL='typesafe/jev-1.13';CHANGE='Is any of my question even making sense? Maybe changing approach is the right option.';VISION_URL='http://127.0.0.1:8188'
 VISION_MODEL='LFM2.5-VL-3B-Q4_K_M.gguf';VISION_PROJECTOR='mmproj-LFM2.5-VL-3B-Q8_0.gguf';VISION_REVISION='6f730e9a2c454e8af9adc29db58e638e01e5957f'
@@ -73,7 +73,7 @@ def capture():
 def vision():
  try:urllib.request.urlopen(VISION_URL+'/health',timeout=2);return
  except OSError:pass
- rt=ROOT/'runtime';exe=next((rt/'llama').rglob('llama-server'+('.exe' if WIN else '')))
+ rt=ROOT.parent/'runtime';exe=next((rt/'llama').rglob('llama-server'+('.exe' if WIN else '')))
  iolog('retina-start',subprocess.Popen([str(exe),'-m',str(rt/'models'/VISION_MODEL),'--mmproj',str(rt/'models'/VISION_PROJECTOR),'--port','8188','-ngl','99','-c','8192','--cache-ram','1024','--alias','retina','--jinja'],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0)|getattr(subprocess,'DETACHED_PROCESS',0)).pid)
  for _ in range(240):
   try:urllib.request.urlopen(VISION_URL+'/health',timeout=2);return
@@ -133,11 +133,11 @@ def follow(was_luna):
 def stop():
  (WORK/'stop').touch();sys.exit(0)
 def archive(fn):
- p=ROOT/'runtime'/fn;urllib.request.urlretrieve('https://github.com/ggml-org/llama.cpp/releases/download/b11435/'+fn,p)
- with zipfile.ZipFile(p) as z:z.extractall(ROOT/'runtime/llama')
+ p=ROOT.parent/'runtime'/fn;urllib.request.urlretrieve('https://github.com/ggml-org/llama.cpp/releases/download/b11435/'+fn,p)
+ with zipfile.ZipFile(p) as z:z.extractall(ROOT.parent/'runtime/llama')
  p.unlink()
 def install():
- rt=ROOT/'runtime';(rt/'llama').mkdir(parents=True,exist_ok=True);(rt/'models').mkdir(exist_ok=True)
+ rt=ROOT.parent/'runtime';(rt/'llama').mkdir(parents=True,exist_ok=True);(rt/'models').mkdir(exist_ok=True)
  if not PYTHON.exists():subprocess.run(['py','-3.11','-m','venv',str(rt/'python')],check=True)
  subprocess.run([str(PYTHON),'-B','-m','pip','install','--no-cache-dir','--no-compile',*PACKAGES],check=True)
  for z,g in (('llama-b11435-bin-win-cuda-12.4-x64.zip','llama-server*'),('cudart-llama-bin-win-cuda-12.4-x64.zip','cudart64*')):
