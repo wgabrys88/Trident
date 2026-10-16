@@ -6,6 +6,7 @@ from itertools import product
 from pathlib import Path
 sys.dont_write_bytecode=True
 SCRIPT=Path(__file__).resolve();ROOT=SCRIPT.parent;WIN=os.name=='nt';PYTHON=ROOT/('runtime/python/Scripts/python.exe' if WIN else 'runtime/python/bin/python')
+RUN=ROOT/('run_'+os.environ.setdefault('TRIDENT_RUN',time.strftime('%Y%m%d_%H%M%S'))+'.md')
 DECISION_MODEL='typesafe/jev-1.13';CHANGE='Is any of my question even making sense? Maybe changing approach is the right option.';VISION_URL='http://127.0.0.1:8188'
 VISION_MODEL='LFM2.5-VL-3B-Q4_K_M.gguf';VISION_PROJECTOR='mmproj-LFM2.5-VL-3B-Q8_0.gguf';VISION_REVISION='6f730e9a2c454e8af9adc29db58e638e01e5957f'
 PACKAGES=('Pillow==11.3.0','PyAutoGUI==0.9.54','pyperclip==1.9.0','pywin32==311')
@@ -26,7 +27,7 @@ def read(p):return json.loads(Path(p).read_text('utf-8'))
 def write(p,v):text(p,json.dumps(v,ensure_ascii=False))
 def emit(v):write(RESULT,v);print(json.dumps(v,ensure_ascii=False),flush=True);return v
 def remember(n):text(MEMORY,n)
-def iolog(k,u,v):open(WORK/'io.log','a',encoding='utf-8').write(json.dumps(dict(t=time.strftime('%H:%M:%S'),k=k,u=u,v=v),ensure_ascii=False,default=str)+'\n')
+def iolog(k,*v):open(RUN,'a',encoding='utf-8').write(f"- {time.strftime('%H:%M:%S')} {os.getpid()} {k} "+' '.join(x if isinstance(x,str) else json.dumps(x,ensure_ascii=False,default=str) for x in v)+'\n')
 def http(u,p,h,s=60):
  iolog('req',u,re.sub(r'data:image/png;base64,[A-Za-z0-9+/=]+',lambda m:'<png %d>'%len(m.group()),json.dumps(p,ensure_ascii=False)))
  try:
@@ -73,7 +74,7 @@ def vision():
  try:urllib.request.urlopen(VISION_URL+'/health',timeout=2);return
  except OSError:pass
  rt=ROOT/'runtime';exe=next((rt/'llama').rglob('llama-server'+('.exe' if WIN else '')))
- subprocess.Popen([str(exe),'-m',str(rt/'models'/VISION_MODEL),'--mmproj',str(rt/'models'/VISION_PROJECTOR),'--port','8188','-ngl','99','-c','8192','--cache-ram','1024','--alias','retina','--jinja'],stdin=subprocess.DEVNULL,stdout=open(rt/'vision.log','ab'),stderr=subprocess.STDOUT,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0)|getattr(subprocess,'DETACHED_PROCESS',0))
+ iolog('retina-start',subprocess.Popen([str(exe),'-m',str(rt/'models'/VISION_MODEL),'--mmproj',str(rt/'models'/VISION_PROJECTOR),'--port','8188','-ngl','99','-c','8192','--cache-ram','1024','--alias','retina','--jinja'],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0)|getattr(subprocess,'DETACHED_PROCESS',0)).pid)
  for _ in range(240):
   try:urllib.request.urlopen(VISION_URL+'/health',timeout=2);return
   except OSError:time.sleep(.5)
@@ -120,14 +121,13 @@ def luna(goal='Wake.'):
  boot="process.argv.push(require('node:fs').readFileSync(process.argv.pop(),'utf8'));require(process.argv[1]);"
  with ExitStack() as x:
   x.callback(release_input);p=spawn(x,[str(folder/'node.exe'),'-e',boot,str(folder/'index.js'),'--trust','-p','--model',c['model'],'--workspace',str(WORK),'--output-format','stream-json','--stream-partial-output',str(pr)],env)
-  lg=open(WORK/'luna.log','ab',0)  # TEMP-LOG
   import threading;hb=[time.time()]
   def _hang():
    while p.poll() is None:
     time.sleep(5)
     if time.time()-hb[0]>600:write(NEXT,['--luna']);p.kill();break
   threading.Thread(target=_hang,daemon=True).start()
-  last=deque(((lg.write(f'{time.time():.1f} '.encode()+ln),sys.stdout.buffer.write(ln),hb.__setitem__(0,time.time())) and ln for ln in p.stdout),maxlen=1);p.wait()
+  last=deque(((iolog('luna',ln.decode('utf-8','replace').rstrip()),sys.stdout.buffer.write(ln),hb.__setitem__(0,time.time())) and ln for ln in p.stdout),maxlen=1);p.wait()
  if last and last[0].lstrip().startswith(b'{'):remember(MEMORY.read_text('utf-8')+'\nLAST WORDS\n'+str(json.loads(last[0]).get('result','')))
 def follow(was_luna):
  if not NEXT.exists():
@@ -160,11 +160,9 @@ def main():
  if a.entry is not install and PYTHON.exists() and Path(sys.executable).resolve()!=PYTHON.resolve():sys.exit(subprocess.run([str(PYTHON),'-u','-B','-X','utf8',str(SCRIPT),*sys.argv[1:]]).returncode)
  global WORK,NEXT,RESULT,MEMORY
  WORK=Path(a.work).resolve();WORK.mkdir(parents=True,exist_ok=True);os.chdir(WORK);NEXT=WORK/a.then;RESULT=WORK/'result.json';MEMORY=WORK/'memory.txt'
- __import__('atexit').register(lambda t=time.time():open(WORK/'trace.log','a',encoding='utf-8').write(f'{time.strftime(chr(37)+chr(72)+chr(58)+chr(37)+chr(77)+chr(58)+chr(37)+chr(83))} {os.getpid()} {sys.argv[1:]} {time.time()-t:.1f}s\n'))  # TEMP-LOG
+ __import__('atexit').register(lambda t=time.time():iolog('exit',sys.argv[1:],f'{time.time()-t:.1f}s'))
  if a.fresh:
   for x in (MEMORY,RESULT,NEXT):x.unlink(missing_ok=True)
-  (WORK/'io.log').replace(WORK/'io.log.prev') if (WORK/'io.log').exists() else None
-  for x in ('trace.log','luna.log'):(WORK/x).replace(WORK/(x+'.prev')) if (WORK/x).exists() else None
  if (WORK/'stop').exists() and a.entry is not stop:(WORK/'stop').unlink() if a.fresh else sys.exit('stopped')
  if a.entry:a.entry(*a.args)
  if a.chain or a.entry is luna:follow(a.entry is luna)
