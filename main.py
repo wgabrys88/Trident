@@ -114,6 +114,7 @@ def luna(goal='Wake.'):
  den=sum((['Read(*.'+''.join(ls)+')' for ls in product(*zip(e,e.upper()))] for e in ('png','jpg','jpeg','gif','webp','bmp')),[])
  write(prof/'cli-config.json',dict(version=1,permissions=dict(allow=['Read(**)','Write(**)','Shell(*)'],deny=den+['Read(**/.env*)','Read(**/env)','Read(**/*credentials*)']),sandbox=dict(mode='disabled'),approvalMode='unrestricted'))
  pr=WORK/'prompt.txt';text(pr,prompt)
+ vision()
  folder=max(p for p in (Path(os.environ.get('LOCALAPPDATA',''))/'cursor-agent/versions').iterdir() if p.name[:1].isdigit() and (p/'index.js').exists())
  boot="process.argv.push(require('node:fs').readFileSync(process.argv.pop(),'utf8'));require(process.argv[1]);"
  with ExitStack() as x:
