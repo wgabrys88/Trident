@@ -2,7 +2,6 @@
 import argparse,re,base64,ctypes,json,os,subprocess,sys,time,urllib.request,uuid,zipfile
 from collections import deque
 from contextlib import ExitStack
-from itertools import product
 from pathlib import Path
 sys.dont_write_bytecode=True
 SCRIPT=Path(__file__).resolve();ROOT=SCRIPT.parent;WIN=os.name=='nt';PYTHON=ROOT.parent/('runtime/python/Scripts/python.exe' if WIN else 'runtime/python/bin/python')
@@ -113,8 +112,7 @@ def luna(goal='Wake.'):
   remember(d.get('remember') or MEMORY.read_text('utf-8'));return write(NEXT,d['next'])
  vendor=WORK/'agent';prof=vendor/'home/.cursor';prof.mkdir(parents=True,exist_ok=True);(ROOT.parent/'temp').mkdir(exist_ok=True)
  env=os.environ|dict(HOME=str(vendor/'home'),USERPROFILE=str(vendor/'home'),CURSOR_CONFIG_DIR=str(prof),CURSOR_DATA_DIR=str(vendor/'data'),TEMP=str(ROOT.parent/'temp'),TMP=str(ROOT.parent/'temp'),PYTHONDONTWRITEBYTECODE='1',PYTHONUTF8='1');env.pop('OPENROUTER_API_KEY',None)
- den=sum((['Read(*.'+''.join(ls)+')' for ls in product(*zip(e,e.upper()))] for e in ('png','jpg','jpeg','gif','webp','bmp')),[])
- write(prof/'cli-config.json',dict(version=1,permissions=dict(allow=['Read(**)','Write(**)','Shell(*)'],deny=den+['Read(**/.env*)','Read(**/env)','Read(**/*credentials*)']),sandbox=dict(mode='disabled'),approvalMode='unrestricted'))
+ write(prof/'cli-config.json',dict(version=1,permissions=dict(allow=['Read(**)','Write(**)','Shell(*)'],deny=[]),sandbox=dict(mode='disabled'),approvalMode='unrestricted'))
  pr=WORK/'prompt.txt';text(pr,prompt)
  vision()
  folder=max(p for p in (Path(os.environ.get('LOCALAPPDATA',''))/'cursor-agent/versions').iterdir() if p.name[:1].isdigit() and (p/'index.js').exists())
