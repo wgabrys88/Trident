@@ -121,17 +121,10 @@ def luna(goal='Wake.'):
  boot="process.argv.push(require('node:fs').readFileSync(process.argv.pop(),'utf8'));require(process.argv[1]);"
  with ExitStack() as x:
   x.callback(release_input);p=spawn(x,[str(folder/'node.exe'),'-e',boot,str(folder/'index.js'),'--trust','-p','--model',c['model'],'--workspace',str(WORK),'--output-format','stream-json','--stream-partial-output',str(pr)],env)
-  import threading;hb=[time.time()]
-  def _hang():
-   while p.poll() is None:
-    time.sleep(5)
-    if time.time()-hb[0]>600:write(NEXT,['--luna']);p.kill();break
-  threading.Thread(target=_hang,daemon=True).start()
-  last=deque(((iolog('luna',ln.decode('utf-8','replace').rstrip()),sys.stdout.buffer.write(ln),hb.__setitem__(0,time.time())) and ln for ln in p.stdout),maxlen=1);p.wait()
+  last=deque(((iolog('luna',ln.decode('utf-8','replace').rstrip()),sys.stdout.buffer.write(ln)) and ln for ln in p.stdout),maxlen=1);p.wait()
  if last and last[0].lstrip().startswith(b'{'):remember(MEMORY.read_text('utf-8')+'\nLAST WORDS\n'+str(json.loads(last[0]).get('result','')))
 def follow(was_luna):
- if not NEXT.exists():
-  write(NEXT,['--luna'])
+ if not NEXT.exists():return
  cmd=read(NEXT);NEXT.unlink();sys.stdout.flush()
  if cmd and isinstance(cmd[0],(int,float)):any((WORK/'stop').exists() or time.sleep(1) for _ in range(int(min(cmd.pop(0),3600))))
  r=subprocess.run([str(PYTHON),'-u','-B','-X','utf8',str(SCRIPT),'--work',str(WORK),'--chain',*cmd]).returncode
