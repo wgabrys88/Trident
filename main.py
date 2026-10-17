@@ -74,7 +74,7 @@ def windows():
  global GUI,CLIPBOARD,win32api,win32gui
  if 'GUI' in globals():return
  ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
- import pyautogui as GUI,pyperclip as CLIPBOARD,win32api,win32gui;GUI.PAUSE=.05;GUI.FAILSAFE=True
+ import pyautogui as GUI,pyperclip as CLIPBOARD,win32api,win32gui;GUI.PAUSE=.05;GUI.FAILSAFE=False
 def release_input():
  if 'GUI' not in globals():return
  GUI.mouseUp(button='left',_pause=False)
@@ -186,7 +186,7 @@ def spawn(c,cmd,env):
  win32job.SetInformationJobObject(j,win32job.JobObjectExtendedLimitInformation,l);win32job.AssignProcessToJobObject(j,int(p._handle));c.callback(j.Close)
  return p
 def composer(*goal):
- 'explicit comparison baseline, not the normal path: Cursor composer-2.5 gets the same goal, story and last result, drives the same CLI tools itself, and may not read images'
+ 'the mind for now: Cursor composer-2.5 gets the goal, story and last result, drives the same CLI tools itself, and may not read images'
  goal=' '.join(goal) or ((WORK/'goal.txt').read_text('utf-8') if (WORK/'goal.txt').exists() else 'Wake.')
  prompt=INSTINCT+'\nYOU RUN THE TOOLS YOURSELF: PYTHON SCRIPT --work WORK FLAG ARGS... (one tool per call; each prints JSON and saves result.json; --hands takes the gesture text "click X Y; drag X0 Y0 X1 Y1; type TEXT; key ctrl+z; wait S" or Python). Do not read image files; Retina is your eye. Before you finish: --remember the whole story (GOAL, SCENE, DID, WRONG, UNSURE, NEXT lines) and write next.json as a JSON argv array, e.g. ["--composer"] or [60,"--composer"], only if you want to wake again.\nPATHS\n'+json.dumps(dict(script=str(SCRIPT),python=str(PYTHON),work=str(WORK),continuation=str(NEXT)))+'\nOWNER SAID\n'+goal+'\nMEMORY\n'+(MEMORY.read_text('utf-8') if MEMORY.exists() else '')+'\nLAST\n'+(RESULT.read_text('utf-8')[:1500] if RESULT.exists() else '')
  vendor=WORK/'agent';prof=vendor/'home/.cursor';prof.mkdir(parents=True,exist_ok=True);(ROOT.parent/'temp').mkdir(exist_ok=True)
@@ -215,7 +215,7 @@ def follow():
 def stop(*_):
  (WORK/'stop').touch();release_input();sys.exit(0)
 
-TOOLS={'--luna':luna,'--composer':composer,'--retina':retina,'--jev':jev,'--capture':capture,'--hands':hands,'--python':python_exec,'--remember':remember,'--rest':lambda *a:dict(rest=a),'--stop':stop}
+TOOLS={'--luna':composer,'--composer':composer,'--retina':retina,'--jev':jev,'--capture':capture,'--hands':hands,'--python':python_exec,'--remember':remember,'--rest':lambda *a:dict(rest=a),'--stop':stop}
 def main():
  p=argparse.ArgumentParser(add_help=False);m=p.add_mutually_exclusive_group()
  for n,f in TOOLS.items():m.add_argument(n,dest='entry',action='store_const',const=f)
