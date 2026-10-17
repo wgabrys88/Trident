@@ -378,10 +378,22 @@ def iolog(k,*v):
  elif k=='err':append_md('err',{'url':v[0],'error':v[1]})
  elif k=='badjson':append_md('badjson',{'text':v[0]})
  elif k=='exit':append_md('exit',{'argv':v[0],'duration':v[1]})
+# All dispatched tools and outgoing HTTP requests share this optional debug pause.
+def send_request(name,fn,*args,**kw):
+ if E('TRIDENT_DEBUG')=='1':
+  kernel=ctypes.windll.kernel32
+  if not kernel.GetConsoleCP() and not kernel.AttachConsole(int(E('TRIDENT_CONSOLE_PID',str(os.getpid())))):raise RuntimeError('Debug mode requires the original PowerShell console.')
+  import msvcrt
+  with open('CONOUT$','w',encoding='utf-8') as console:
+   while msvcrt.kbhit():msvcrt.getwch()
+   print(f'\nPaused before {name}. Press Enter to continue in 3 seconds.',file=console,flush=True)
+   while msvcrt.getwch()!='\r':pass
+   print('Continuing in 3 seconds...',file=console,flush=True);time.sleep(3)
+ return fn(*args,**kw)
 def http(u,p,h,s=60):
  iolog('req',u,p)
  try:
-  with urllib.request.urlopen(urllib.request.Request(u,json.dumps(p).encode(),{'Content-Type':'application/json'}|h),timeout=s) as r:v=json.load(r)
+  with send_request(u,urllib.request.urlopen,urllib.request.Request(u,json.dumps(p).encode(),{'Content-Type':'application/json'}|h),timeout=s) as r:v=json.load(r)
  except Exception as e:iolog('err',u,repr(e));raise
  iolog('resp',u,v);return v
 def key():return (ROOT.parent/'.env').read_text('utf-8-sig').strip().strip('"\'')
@@ -552,14 +564,16 @@ TOOLS={'--luna':composer,'--composer':composer,'--retina':retina,'--jev':jev,'--
 def main():
  p=argparse.ArgumentParser(add_help=False);m=p.add_mutually_exclusive_group()
  for name,fn in TOOLS.items():m.add_argument(name,dest='entry',action='store_const',const=fn)
- p.add_argument('--work',default=str(ROOT));p.add_argument('--chain',action='store_true');p.add_argument('--fresh',action='store_true');p.add_argument('args',nargs='*');a=p.parse_args()
+ p.add_argument('--work',default=str(ROOT));p.add_argument('--chain',action='store_true');p.add_argument('--fresh',action='store_true');p.add_argument('--debug',action='store_true');p.add_argument('args',nargs='*');a=p.parse_args()
  if not a.entry and not a.chain:p.error('need a tool flag or --chain')
+ if a.debug:os.environ['TRIDENT_DEBUG']='1'
+ if E('TRIDENT_DEBUG')=='1':os.environ.setdefault('TRIDENT_CONSOLE_PID',str(os.getpid()))
  global WORK,NEXT,RESULT,MEMORY,SHOTS;WORK=Path(a.work).resolve();WORK.mkdir(parents=True,exist_ok=True);os.chdir(WORK);NEXT=WORK/'next.json';RESULT=WORK/'result.json';MEMORY=WORK/'memory.txt';SHOTS=WORK/'shots';__import__('atexit').register(lambda t=time.time():iolog('exit',sys.argv[1:],f'{time.time()-t:.1f}s'))
  if a.fresh:
   for f in (MEMORY,RESULT,NEXT,WORK/'goal.txt',WORK/'stop'):f.unlink(missing_ok=True)
  if (WORK/'stop').exists() and a.entry is not stop:sys.exit('stopped; --fresh or delete the stop file to live again')
  if a.entry:
-  result=a.entry(*a.args)
+  result=send_request(a.entry.__name__,a.entry,*a.args)
   if isinstance(result,dict):emit(result)
  if not a.entry or (a.entry is composer and not a.chain):follow()
 if __name__=='__main__':main()
