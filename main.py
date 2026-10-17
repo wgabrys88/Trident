@@ -4,7 +4,6 @@ from contextlib import ExitStack
 from pathlib import Path
 sys.dont_write_bytecode=True
 SCRIPT=Path(__file__).resolve();ROOT=SCRIPT.parent;PYTHON=Path(sys.executable)
-RT=ROOT.parent/'runtime'
 RUN=ROOT/('run_'+os.environ.setdefault('TRIDENT_RUN',time.strftime('%Y%m%d_%H%M%S'))+'.md')
 DECISION_MODEL='typesafe/jev-1.13';CHANGE='Is any of my question even making sense? Maybe changing approach is the right option.';VISION_URL='http://127.0.0.1:8188'
 VISION_MODEL='LFM2.5-VL-3B-Q4_K_M.gguf';VISION_PROJECTOR='mmproj-LFM2.5-VL-3B-Q8_0.gguf'
@@ -82,14 +81,7 @@ def up():
  except OSError:return False
 def vision():
  if up():return
- exe=next(RT.joinpath('llama').rglob('llama-server.exe'),None)
- files=[exe or RT/'llama'/'llama-server.exe',RT/'models'/VISION_MODEL,RT/'models'/VISION_PROJECTOR]
- miss=[str(p) for p in files if not Path(p).is_file()]
- if miss:raise SystemExit('missing '+'; '.join(miss))
- iolog('retina-start',subprocess.Popen([str(files[0]),'-m',str(files[1]),'--mmproj',str(files[2]),'--port','8188','-ngl','99','-c','8192','--cache-ram','1024','--alias','retina','--jinja','--fit','off'],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=subprocess.CREATE_NO_WINDOW|subprocess.DETACHED_PROCESS).pid)
- for _ in range(240):
-  if up():return
-  time.sleep(.5)
+ iolog('retina-start',subprocess.Popen(['llama-server.exe','-m',VISION_MODEL,'--mmproj',VISION_PROJECTOR,'--port','8188','-ngl','99','-c','8192','--cache-ram','1024','--alias','retina','--jinja','--fit','off'],cwd=next(p for p in os.environ['PATH'].split(';') if (Path(p)/VISION_MODEL).is_file()),stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=subprocess.CREATE_NO_WINDOW|subprocess.DETACHED_PROCESS).pid)
 def retina(q,*a):
  d=[z for z in a if '|' in str(z)];decide=d[0] if d else '';src,x0,y0,x1,y1=([z for z in a if '|' not in str(z)]+['screen.json','0','0','1000','1000'])[:5]
  from PIL import Image
