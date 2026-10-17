@@ -32,18 +32,7 @@ def http(u,p,h,s=60):
   with urllib.request.urlopen(urllib.request.Request(u,json.dumps(p).encode(),{'Content-Type':'application/json'}|h),timeout=s) as r:v=json.load(r)
  except Exception as e:iolog('err',u,repr(e));raise
  iolog('resp',u,v);return v
-def key():
- v=os.environ.get('OPENROUTER_API_KEY','').strip()
- if not v and (f:=ROOT.parent/'.env').is_file():
-  t=f.read_text('utf-8-sig').strip();k,_,x=t.partition('=')
-  v=(x if k.strip() in ('OPENROUTER_API_KEY','JEV_KEY') else t).strip().strip('"\'')
- if not v:raise SystemExit('no OpenRouter key: set OPENROUTER_API_KEY or put it in .env')
- return v
-def config():
- f=ROOT/'luna.json';c=dict(backend='cursor',model='grok-4.7-high')|(read(f) if f.exists() else {})
- c['backend']=os.environ.get('TRIDENT_BACKEND',c['backend']);c['model']=os.environ.get('TRIDENT_MODEL',c['model'])
- if c['backend']=='cursor' and c['model'].endswith('-fast'):raise SystemExit('fast models are not allowed: '+c['model'])
- return c
+def key():return (ROOT.parent/'.env').read_text('utf-8-sig').strip().strip('"\'')
 
 def spawn(c,cmd,env):
  p=subprocess.Popen(cmd,cwd=WORK,env=env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,creationflags=subprocess.CREATE_NO_WINDOW);c.callback(p.wait);c.callback(p.kill)
@@ -94,12 +83,8 @@ def jev(st,qs):
  return emit(http('https://openrouter.ai/api/alpha/decisions',dict(model=DECISION_MODEL,state=read(st),questions=qs),{'Authorization':'Bearer '+key()},60))
 
 def luna(goal='Wake.'):
- NEXT.unlink(missing_ok=True);MEMORY.touch(exist_ok=True);RESULT.touch(exist_ok=True);c=config()
+ NEXT.unlink(missing_ok=True);MEMORY.touch(exist_ok=True);RESULT.touch(exist_ok=True)
  prompt=INSTINCT+'\nPATHS\n'+json.dumps(dict(script=str(SCRIPT),python=str(PYTHON),work=str(WORK),continuation=str(NEXT)))+'\nOWNER SAID\n'+goal+'\nMEMORY\n'+MEMORY.read_text('utf-8')+'\nLAST\n'+RESULT.read_text('utf-8')
- if c['backend']=='openrouter':
-  r=http('https://openrouter.ai/api/v1/chat/completions',dict(model=c['model'],response_format=dict(type='json_object'),messages=[dict(role='system',content=prompt+'\n'+STEP),dict(role='user',content=goal)]),{'Authorization':'Bearer '+key()},300)
-  s=r['choices'][0]['message']['content'];d=json.loads(s[s.find('{'):s.rfind('}')+1]);print(s,flush=True)
-  remember(d.get('remember') or MEMORY.read_text('utf-8'));return write(NEXT,d['next'])
  vendor=WORK/'agent';prof=vendor/'home/.cursor';prof.mkdir(parents=True,exist_ok=True);(ROOT.parent/'temp').mkdir(exist_ok=True)
  env=os.environ|dict(HOME=str(vendor/'home'),USERPROFILE=str(vendor/'home'),CURSOR_CONFIG_DIR=str(prof),CURSOR_DATA_DIR=str(vendor/'data'),TEMP=str(ROOT.parent/'temp'),TMP=str(ROOT.parent/'temp'),PYTHONDONTWRITEBYTECODE='1',PYTHONUTF8='1');env.pop('OPENROUTER_API_KEY',None)
  write(prof/'cli-config.json',dict(version=1,permissions=dict(allow=['Read(**)','Write(**)','Shell(*)'],deny=[]),sandbox=dict(mode='disabled'),approvalMode='unrestricted'))
@@ -107,7 +92,7 @@ def luna(goal='Wake.'):
  folder=max(p for p in (Path(os.environ.get('LOCALAPPDATA',''))/'cursor-agent/versions').iterdir() if p.name[:1].isdigit() and (p/'index.js').exists())
  boot="process.argv.push(require('node:fs').readFileSync(process.argv.pop(),'utf8'));require(process.argv[1]);"
  with ExitStack() as x:
-  x.callback(release_input);p=spawn(x,[str(folder/'node.exe'),'-e',boot,str(folder/'index.js'),'--trust','-p','--model',c['model'],'--workspace',str(ROOT),'--output-format','stream-json','--stream-partial-output',str(pr)],env)
+  x.callback(release_input);p=spawn(x,[str(folder/'node.exe'),'-e',boot,str(folder/'index.js'),'--trust','-p','--model','composer-2.5','--workspace',str(ROOT),'--output-format','stream-json','--stream-partial-output',str(pr)],env)
   last=deque(((iolog('luna',ln.decode('utf-8','replace').rstrip()),sys.stdout.buffer.write(ln)) and ln for ln in p.stdout),maxlen=1);p.wait()
  if last and last[0].lstrip().startswith(b'{'):remember(MEMORY.read_text('utf-8')+'\nLAST WORDS\n'+str(json.loads(last[0]).get('result','')))
 def follow():
