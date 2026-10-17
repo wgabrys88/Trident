@@ -40,7 +40,7 @@ def http(u,p,h,s=60):
 def key():return (ROOT.parent/'.env').read_text('utf-8-sig').strip().strip('"\'')
 
 def spawn(c,cmd,env):
- p=subprocess.Popen(cmd,cwd=WORK,env=env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,creationflags=subprocess.CREATE_NO_WINDOW);c.callback(p.wait);c.callback(p.kill)
+ p=subprocess.Popen(cmd,cwd=ROOT,env=env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,creationflags=subprocess.CREATE_NO_WINDOW);c.callback(p.wait);c.callback(p.kill)
  import win32job;j=win32job.CreateJobObject(None,'');l=win32job.QueryInformationJobObject(j,win32job.JobObjectExtendedLimitInformation);l['BasicLimitInformation']['LimitFlags']=win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
  win32job.SetInformationJobObject(j,win32job.JobObjectExtendedLimitInformation,l);win32job.AssignProcessToJobObject(j,int(p._handle));c.callback(j.Close)
  return p
@@ -136,7 +136,7 @@ def stop():
 def main():
  p=argparse.ArgumentParser(add_help=False);m=p.add_mutually_exclusive_group()
  for n,f in (('--luna',luna),('--retina',retina),('--jev',jev),('--capture',capture),('--hands',hands),('--python',python_exec),('--remember',remember),('--rest',lambda:sys.exit(0)),('--stop',stop)):m.add_argument(n,dest='entry',action='store_const',const=f)
- p.add_argument('--work',default=str(ROOT/'work'));p.add_argument('--chain',action='store_true');p.add_argument('--then',default='next.json');p.add_argument('--fresh',action='store_true');p.add_argument('args',nargs='*')
+ p.add_argument('--work',default=str(ROOT));p.add_argument('--chain',action='store_true');p.add_argument('--then',default='next.json');p.add_argument('--fresh',action='store_true');p.add_argument('args',nargs='*')
  a=p.parse_args()
  if not a.entry and not a.chain:p.error('need a tool flag or --chain')
  global WORK,NEXT,RESULT,MEMORY
