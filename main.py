@@ -102,148 +102,98 @@ def windows():
   if duration and duration<0.12:duration=0.12
   return _orig_move(x,y,duration=duration,*a,**kw)
  def _safe_drag(x,y=None,duration=0.15,*a,**kw):
-  return _orig_drag(x,y,duration=max(0.12,duration
-  ),*a,**kw)
+  return _orig_drag(x,y,duration=max(0.12,duration or 0.15),*a,**kw)
  GUI.moveTo=_safe_move;GUI.dragTo=_safe_drag
-
 def release_input():
  if 'GUI' not in globals():return
  GUI.mouseUp(button='left',_pause=False)
  for k in ('shift','ctrl','alt'):GUI.keyUp(k,_pause=False)
-
 def point(look,x,y):
- 'Map coordinates normalized to the provided capture/crop into physical virtual-desktop pixels.'
  l,t,r,b=look['geometry']['crop'];ox,oy=look['geometry']['desktop'][:2]
- return [ox+round(l+float(x)*(r-l-1)/1000),oy+round(t+float(y)*(b-t-1)/1000)]
-def sp(x,y):return point(read('screen.json'),x,y)
-def px(x,y):return sp(x,y)
-
+ return [ox+round(l+x*(r-l-1)/1000),oy+round(t+y*(b-t-1)/1000)]
+def sp(x,y):return point(read('screen.json'),float(x),float(y))
 def capture(*_):
- 'Full-resolution desktop screenshot and active-window box in normalized whole-screen coordinates.'
- windows();im=ImageGrab.grab(all_screens=True);SHOTS.mkdir(exist_ok=True)
- sid=time.strftime('%H%M%S')+f'{time.time_ns()//1000%1000:03d}';path=SHOTS/f'{sid}.png';im.save(path)
- for old in sorted(SHOTS.glob('*.png'),key=os.path.getmtime)[:-8]:old.unlink()
- desktop=[win32api.GetSystemMetrics(i) for i in (76,77,78,79)]
- h=win32gui.GetForegroundWindow();rect=list(win32gui.GetWindowRect(h))
- dx,dy,dw,dh=desktop
- def norm_x(v):return max(0,min(1000,round((v-dx)*1000/max(1,dw))))
- def norm_y(v):return max(0,min(1000,round((v-dy)*1000/max(1,dh))))
- box=[norm_x(rect[0]),norm_y(rect[1]),norm_x(rect[2]),norm_y(rect[3])]
- v=dict(id=sid,image=str(path),geometry=dict(source_size=list(im.size),crop=[0,0,*im.size],desktop=desktop,window=dict(title=win32gui.GetWindowText(h),rect=rect,box=box)),at=time.time())
+ 'immutable screenshot: shots/<id>.png (last 8 kept) plus screen.json describing it; every look and gesture is grounded in one such id'
+ windows();px=ImageGrab.grab(all_screens=True);SHOTS.mkdir(exist_ok=True);sid=time.strftime('%H%M%S')+f'{time.time_ns()//1000%1000:03d}';path=SHOTS/f'{sid}.png';px.save(path)
+ for f in sorted(SHOTS.glob('*.png'),key=os.path.getmtime)[:-8]:f.unlink()
+ h=win32gui.GetForegroundWindow();W,H=px.size;d=[win32api.GetSystemMetrics(i) for i in (76,77,78,79)];ox,oy=d[:2];wr=list(win32gui.GetWindowRect(h))
+ wb=[max(0,min(1000,round((wr[0]-ox)*1000/W))),max(0,min(1000,round((wr[1]-oy)*1000/H))),max(0,min(1000,round((wr[2]-ox)*1000/W))),max(0,min(1000,round((wr[3]-oy)*1000/H)))]
+ v=dict(id=sid,image=str(path),geometry=dict(source_size=[W,H],crop=[0,0,W,H],desktop=d,window=dict(title=win32gui.GetWindowText(h),rect=wr,box=wb)),at=time.time())
  write('screen.json',v);return v
-
 def changed(a,b):
- 'Bound of changed pixels in 0-1000 whole-screen coordinates, without implying a successful gesture.'
+ 'box (screen 0-1000) and fraction of pixels that differ between two captures; None when nothing changed'
  with Image.open(a) as x,Image.open(b) as y:
   if x.size!=y.size:return dict(note='screen size changed')
-  d=ImageChops.difference(x.convert('RGB'),y.convert('RGB')).split()
-  d=ImageChops.lighter(ImageChops.lighter(d[0],d[1]),d[2]).point(lambda v:255*(v>24))
+  d=ImageChops.difference(x.convert('RGB'),y.convert('RGB')).split();d=ImageChops.lighter(ImageChops.lighter(d[0],d[1]),d[2]).point(lambda v:255*(v>24))
  bb=d.getbbox();w,h=d.size
  return bb and dict(box=[round(bb[0]*1000/w),round(bb[1]*1000/h),round(bb[2]*1000/w),round(bb[3]*1000/h)],fraction=round(d.histogram()[255]/(w*h),4))
-
 def gestures(src):
- 'The built-in drag accepts any number of whole-screen coordinate pairs, minimum two.'
  for ln in filter(None,map(str.strip,re.split(r'[;\n]',src))):
-  v,_,rest=ln.partition(' ')
-  if v=='type':CLIPBOARD.copy(rest);GUI.hotkey('ctrl','v');continue
-  if v=='key':GUI.hotkey(*rest.strip().split('+'));continue
-  vals=rest.split()
-  if v=='wait':time.sleep(min(10,max(0,float(vals[0]) if vals else 1)));continue
-  if v not in ('click','rclick','dclick','move','drag'):raise ValueError('unknown gesture '+v)
-  if len(vals)%2 or (len(vals)<4 if v=='drag' else len(vals)!=2):raise ValueError('expected screen-coordinate pairs for '+v)
-  nums=list(map(float,vals))
-  if any(not(0<=n<=1000) for n in nums):raise ValueError('gestures require WHOLE SCREEN 0-1000 coordinates')
-  pts=[sp(nums[i],nums[i+1]) for i in range(0,len(nums),2)]
-  if v in('click','rclick','dclick','move'):
-   getattr(GUI,dict(click='click',rclick='rightClick',dclick='doubleClick',move='moveTo')[v])(*pts[0])
-  else:
+  v,_,rest=ln.partition(' ');nums=[float(x) for x in rest.split() if re.fullmatch(r'-?\d+\.?\d*',x)];pts=[sp(*nums[i:i+2]) for i in range(0,len(nums)-1,2)]
+  if v in('click','rclick','dclick','move'):getattr(GUI,dict(click='click',rclick='rightClick',dclick='doubleClick',move='moveTo')[v])(*pts[0])
+  elif v=='drag':
    GUI.moveTo(*pts[0]);GUI.mouseDown()
-   try:
-    for (x0,y0),(x1,y1) in zip(pts,pts[1:]):
-     for k in range(1,5):GUI.moveTo(x0+(x1-x0)*k/4,y0+(y1-y0)*k/4,duration=.2)
-   finally:GUI.mouseUp()
-
+   for (x0,y0),(x1,y1) in zip(pts,pts[1:]):
+    for k in range(1,5):GUI.moveTo(x0+(x1-x0)*k/4,y0+(y1-y0)*k/4,duration=.2)
+   GUI.mouseUp()
+  elif v=='type':CLIPBOARD.copy(rest);GUI.hotkey('ctrl','v')
+  elif v=='key':GUI.hotkey(*rest.strip().split('+'))
+  elif v=='wait':time.sleep(min(10,nums[0] if nums else 1))
+  else:raise ValueError('unknown gesture '+v)
 def hands(src):
- 'Gestures or Python with all advertised aliases; captures and measures the resulting visual difference.'
+ 'gestures or free Python, then settle, capture and measure changes; the mind chooses where to look next'
  windows();before=(WORK/'screen.json').exists() and read('screen.json')['image']
- look=read('look.json') if (WORK/'look.json').exists() else (read('screen.json') if (WORK/'screen.json').exists() else None)
  with ExitStack() as c:
   c.callback(release_input)
   if GESTURE.match(src.strip()):gestures(src)
   else:
-   ns=globals()|dict(gui=GUI,PyAutoGUI=GUI,pyautogui=GUI,clipboard=CLIPBOARD,look=look,sp=sp,px=px,point=point,time=time,read=read)
-   exec(compile(src,'<hands>','exec'),ns)
- # Wait for a small run of consistent frames; cap the wait if there is perpetual animation.
- deadline=time.monotonic()+5;time.sleep(1)
- frames=deque([ImageGrab.grab(all_screens=True).tobytes()],maxlen=4)
- while time.monotonic()<deadline and (len(frames)<4 or len(set(frames))>1):
-  time.sleep(.25);frames.append(ImageGrab.grab(all_screens=True).tobytes())
- v=capture();v['changed']=changed(before,v['image']) if before and Path(before).exists() else None
+   lk=read('look.json') if (WORK/'look.json').exists() else (read('screen.json') if (WORK/'screen.json').exists() else {})
+   exec(compile(src,'<hands>','exec'),globals()|dict(gui=GUI,PyAutoGUI=GUI,pyautogui=GUI,clipboard=CLIPBOARD,look=lk,px=sp))
+ dl=time.monotonic()+5;time.sleep(1);fr=deque([ImageGrab.grab(all_screens=True).tobytes()],maxlen=4)
+ while time.monotonic()<dl and (len(fr)<4 or len(set(fr))>1):time.sleep(.25);fr.append(ImageGrab.grab(all_screens=True).tobytes())
+ v=capture();ch=changed(before,v['image']) if before and Path(before).exists() else None;v['changed']=ch
  return v
-
 def python_exec(src):
  with redirect_stdout(io.StringIO()) as out:exec(compile(src,'<python>','exec'),globals())
  return dict(stdout=out.getvalue()[-2000:])
 
 def retina(q,*a):
- 'A single-target visual question; normalizes crop, limits pixel budget, and reports invalid target boxes.'
+ 'one neutral question to the local vision model about a crop of a still-existing capture; returns words, measured colors, and a validated box in screen coordinates'
  nums,files=[],[]
  for z in map(str,a):(nums if re.fullmatch(r'-?\d+\.?\d*',z) else files).append(z)
- look=read(files[0] if files else 'screen.json')
+ look=read(files[0] if files else 'screen.json');x0,y0,x1,y1=(list(map(float,nums))+[0,0,1000,1000])[:4]
  if not Path(look['image']).exists():raise FileNotFoundError('that capture is gone; --capture again')
- W,H=look['geometry']['source_size'];l,t,r,b=look['geometry']['crop']
- raw=(list(map(float,nums))+[0,0,1000,1000])[:4]
- corrected=[]
- # Values > 1000 cannot be normalized coordinates; treat them as physical screenshot pixels.
- for i,value in enumerate(raw):
-  if value>1000:
-   raw[i]=value*1000/(W if i%2==0 else H)
-   corrected.append(i)
- if not 0<=raw[0]<raw[2]<=1000 or not 0<=raw[1]<raw[3]<=1000:
-  raise ValueError('invalid Retina crop coordinates; use whole-screen normalized 0-1000')
- crop_rect=[l+raw[0]*(r-l)/1000,t+raw[1]*(b-t)/1000,l+raw[2]*(r-l)/1000,t+raw[3]*(b-t)/1000]
- def padded(a,b,min_size,total):
-  desired=min(total,max(min_size,b-a));center=(a+b)/2
-  lo=max(0,min(total-desired,center-desired/2));return round(lo),round(lo+desired)
- crop_rect[0],crop_rect[2]=padded(crop_rect[0],crop_rect[2],240,W)
- crop_rect[1],crop_rect[3]=padded(crop_rect[1],crop_rect[3],160,H)
- with Image.open(look['image']) as im:original=im.crop(tuple(crop_rect)).convert('RGB')
- pixels=original.width*original.height
- color_groups=sorted(original.point(lambda v:v//64*64+32).getcolors(pixels),reverse=True)[:3]
- colors=[[round(n/pixels,4),min(NAMES,key=lambda k:sum((p-s)**2 for p,s in zip(NAMES[k],rgb))),list(rgb)] for n,rgb in color_groups]
- sample=original
- if max(sample.size)>768:
-  scale=768/max(sample.size)
-  sample=sample.resize((max(1,round(sample.width*scale)),max(1,round(sample.height*scale))),Image.Resampling.LANCZOS)
- evidence='; '.join(f'{name}: {fraction:.1%} of crop (quantized RGB {rgb[0]}/{rgb[1]}/{rgb[2]})' for fraction,name,rgb in colors)
- prompt=q+'\nMeasured pixel color fractions; these are NOT positions, not coordinates, and not object bounding boxes: '+evidence
- o=llm(RETINA_SYSTEM,prompt,RETINA_SCHEMA,b64(sample),temperature=.1,min_p=.15,repeat_penalty=1.05,max_tokens=350)
- bx=o.get('box');box=None;warning=None
- if bx is not None:
-  if not(isinstance(bx,list) and len(bx)==4 and all(isinstance(k,int) and not isinstance(k,bool) for k in bx)):
-   warning='Retina supplied a non-integer or malformed box; no target was located.'
-  elif not(0<=bx[0]<bx[2]<=1000 and 0<=bx[1]<bx[3]<=1000):
-   warning='Retina supplied an out-of-range/inverted crop-relative box; target location is unverified.'
-  elif (bx[2]-bx[0])*(bx[3]-bx[1])>=900000:
-   warning='Retina supplied a near-full-crop box; rejected as an unlocalized target. Inspect exactly one object in a smaller crop.'
-  else:
-   box=[round((crop_rect[0]+bx[0]*(crop_rect[2]-crop_rect[0])/1000)*1000/W),round((crop_rect[1]+bx[1]*(crop_rect[3]-crop_rect[1])/1000)*1000/H),round((crop_rect[0]+bx[2]*(crop_rect[2]-crop_rect[0])/1000)*1000/W),round((crop_rect[1]+bx[3]*(crop_rect[3]-crop_rect[1])/1000)*1000/H)]
- if corrected:warning=(warning+' ' if warning else '')+'Some Retina crop inputs >1000 were interpreted as physical pixels; recheck the corrected region.'
- v=look|dict(question=q,answer=str(o.get('answer','')),colors=colors,region=[round(crop_rect[0]*1000/W),round(crop_rect[1]*1000/H),round(crop_rect[2]*1000/W),round(crop_rect[3]*1000/H)],box=box,center=box and [(box[0]+box[2])//2,(box[1]+box[3])//2],box_warning=warning,geometry=look['geometry']|dict(crop=crop_rect),inference_size=list(sample.size))
+ W,H=look['geometry']['source_size'];warn=None
+ if max(x0,x1)>1000 or max(y0,y1)>1000:
+  x0,y0,x1,y1=x0*1000/W,y0*1000/H,x1*1000/W,y1*1000/H
+  warn='Coordinates exceeded 1000 and were auto-converted from physical pixels to 0-1000 scale; always pass 0-1000 coordinates.'
+ c=[x0*W/1000,y0*H/1000,x1*W/1000,y1*H/1000]
+ for i,m,n in ((0,240,W),(1,160,H)):
+  span=c[i+2]-c[i]
+  if span<m:
+   pad=(m-span)/2;lo=max(0,c[i]-pad);hi=min(n,c[i+2]+pad)
+   if hi-lo<m:lo,hi=(max(0,n-m),n) if hi==n else (0,min(n,m))
+   c[i],c[i+2]=round(lo),round(hi)
+  else:c[i],c[i+2]=round(max(0,c[i])),round(min(n,c[i+2]))
+ with Image.open(look['image']) as im:crop=im.crop(c).convert('RGB')
+ pixels=crop.width*crop.height;cs=sorted(crop.point(lambda v:v//64*64+32).getcolors(pixels),reverse=True)[:3]
+ colors=[[round(n/pixels,4),min(NAMES,key=lambda k:sum((p-s)**2 for p,s in zip(NAMES[k],rgb))),list(rgb)] for n,rgb in cs]
+ view=crop.copy()
+ if max(view.size)>768:view.thumbnail((768,768),Image.Resampling.LANCZOS)
+ o=llm(RETINA_SYSTEM,q+'\nQuantized pixel color breakdown (fraction, color name, RGB triplet — NOT coordinates): '+json.dumps(colors),RETINA_SCHEMA,b64(view),temperature=.1,min_p=.15,repeat_penalty=1.05,max_tokens=350);ans=str(o.get('answer',''));bx=o.get('box');box=None;bwarn=warn
+ if bx and 0<=bx[0]<bx[2]<=1000 and 0<=bx[1]<bx[3]<=1000:
+  if (bx[2]-bx[0])*(bx[3]-bx[1])<900000:box=[round((c[0]+bx[0]*(c[2]-c[0])/1000)*1000/W),round((c[1]+bx[1]*(c[3]-c[1])/1000)*1000/H),round((c[0]+bx[2]*(c[2]-c[0])/1000)*1000/W),round((c[1]+bx[3]*(c[3]-c[1])/1000)*1000/H)]
+  else:bwarn=(bwarn+' ' if bwarn else '')+'Retina returned a full-crop box [0,0,1000,1000] (rejected as null) because multiple targets or a whole region was requested. Any numbers in answer prose are crop-relative, NOT whole-screen coordinates; ask for ONE specific target to get its box.'
+ v=look|dict(question=q,answer=ans,colors=colors,region=[round(c[0]*1000/W),round(c[1]*1000/H),round(c[2]*1000/W),round(c[3]*1000/H)],box=box,center=box and [(box[0]+box[2])//2,(box[1]+box[3])//2],geometry=look['geometry']|dict(crop=c))|({'box_warning':bwarn} if bwarn else {})
  write('look.json',v);return v
 
 def spawn(c,cmd,env):
- p=subprocess.Popen(cmd,cwd=ROOT,env=env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,creationflags=subprocess.CREATE_NO_WINDOW)
- c.callback(p.wait);c.callback(p.kill)
- import win32job
- j=win32job.CreateJobObject(None,'');limit=win32job.QueryInformationJobObject(j,win32job.JobObjectExtendedLimitInformation)
- limit['BasicLimitInformation']['LimitFlags']=win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
- win32job.SetInformationJobObject(j,win32job.JobObjectExtendedLimitInformation,limit)
- win32job.AssignProcessToJobObject(j,int(p._handle));c.callback(j.Close)
+ p=subprocess.Popen(cmd,cwd=ROOT,env=env,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,creationflags=subprocess.CREATE_NO_WINDOW);c.callback(p.wait);c.callback(p.kill)
+ import win32job;j=win32job.CreateJobObject(None,'');l=win32job.QueryInformationJobObject(j,win32job.JobObjectExtendedLimitInformation);l['BasicLimitInformation']['LimitFlags']=win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+ win32job.SetInformationJobObject(j,win32job.JobObjectExtendedLimitInformation,l);win32job.AssignProcessToJobObject(j,int(p._handle));c.callback(j.Close)
  return p
-
 def composer(*goal):
- 'Composer is the mind; Retina sees, Jev judges, and the same CLI tools act.'
+ 'Composer is the mind; Retina sees, Jev judges, and the same CLI tools act'
  goal=' '.join(goal);gp=WORK/'goal.txt'
  if goal:text(gp,goal)
  goal=gp.read_text('utf-8') if gp.exists() else 'Wake.'
@@ -252,16 +202,12 @@ def composer(*goal):
  vendor=WORK/'agent';prof=vendor/'home/.cursor';prof.mkdir(parents=True,exist_ok=True);(ROOT.parent/'temp').mkdir(exist_ok=True)
  env=os.environ|dict(HOME=str(vendor/'home'),USERPROFILE=str(vendor/'home'),CURSOR_CONFIG_DIR=str(prof),CURSOR_DATA_DIR=str(vendor/'data'),TEMP=str(ROOT.parent/'temp'),TMP=str(ROOT.parent/'temp'),PYTHONDONTWRITEBYTECODE='1',PYTHONUTF8='1');env.pop('OPENROUTER_API_KEY',None)
  write(prof/'cli-config.json',dict(version=1,permissions=dict(allow=['Read(**)','Write(**)','Shell(*)'],deny=['Read(**/*.png)','Read(**/*.jpg)']),sandbox=dict(mode='disabled'),approvalMode='unrestricted'))
- pr=WORK/'prompt.txt';text(pr,prompt)
- folder=max(p for p in (Path(E('LOCALAPPDATA',''))/'cursor-agent/versions').iterdir() if p.name[:1].isdigit() and (p/'index.js').exists())
+ pr=WORK/'prompt.txt';text(pr,prompt);folder=max(p for p in (Path(E('LOCALAPPDATA',''))/'cursor-agent/versions').iterdir() if p.name[:1].isdigit() and (p/'index.js').exists())
  boot="process.argv.push(require('node:fs').readFileSync(process.argv.pop(),'utf8'));require(process.argv[1]);"
- with ExitStack() as stack:
-  stack.callback(release_input)
-  p=spawn(stack,[str(folder/'node.exe'),'-e',boot,str(folder/'index.js'),'--trust','-p','--model','composer-2.5','--workspace',str(ROOT),'--output-format','stream-json','--stream-partial-output',str(pr)],env)
+ with ExitStack() as x:
+  x.callback(release_input);p=spawn(x,[str(folder/'node.exe'),'-e',boot,str(folder/'index.js'),'--trust','-p','--model','composer-2.5','--workspace',str(ROOT),'--output-format','stream-json','--stream-partial-output',str(pr)],env)
   for raw in p.stdout:
-   raw=raw.decode('utf-8','replace').rstrip();iolog('composer',raw)
-   try:d=json.loads(raw) if raw[:1]=='{' else {}
-   except ValueError:d={}
+   raw=raw.decode('utf-8','replace').rstrip();iolog('composer',raw);d=json.loads(raw) if raw[:1]=='{' else {}
    if d.get('type')=='tool_call':
     for name,call in d.get('tool_call',{}).items():
      if not isinstance(call,dict):continue
@@ -275,46 +221,36 @@ def composer(*goal):
        if out.get('exitCode'):print('exit',out['exitCode'],flush=True)
    elif d.get('type')=='thinking' and d.get('subtype')=='delta':print(d.get('text',''),end='',flush=True)
    elif d.get('type')=='thinking' and d.get('subtype')=='completed':print(flush=True)
-   elif d.get('type')=='assistant' and d.get('model_call_id'):
-    print(''.join(c.get('text','') for c in (d.get('message') or {}).get('content') or [] if isinstance(c,dict)),flush=True)
-
+   elif d.get('type')=='assistant' and d.get('model_call_id'):print(''.join(c.get('text','') for c in (d.get('message') or {}).get('content') or [] if isinstance(c,dict)),flush=True)
 def follow():
- 'Only the root process schedules another wake; keep the last source that completed.'
+ 'the root process is the only scheduler: each wake is a fresh interpreter, so edited source takes effect here; a wake that dies on edited source is rolled back to the last source that completed'
  good=SCRIPT.read_bytes()
  for _ in range(WAKES):
   if (WORK/'stop').exists() or not NEXT.exists():break
   cmd=read(NEXT);NEXT.unlink()
-  if cmd and isinstance(cmd[0],(int,float)):
-   seconds=max(0,min(cmd.pop(0),3600));end=time.monotonic()+seconds
-   while time.monotonic()<end and not (WORK/'stop').exists():time.sleep(min(1,end-time.monotonic()))
+  if cmd and isinstance(cmd[0],(int,float)):any((WORK/'stop').exists() or time.sleep(1) for _ in range(int(min(cmd.pop(0),3600))))
   if (WORK/'stop').exists():break
-  src=SCRIPT.read_bytes();sys.stdout.flush()
-  rc=subprocess.run([str(PYTHON),'-u','-B','-X','utf8',str(SCRIPT),'--work',str(WORK),'--chain',*map(str,cmd)]).returncode
-  if rc==0:good=src
-  elif src!=good:
-   text(WORK/'main.bad.py',src);text(SCRIPT,good);write(NEXT,['--luna'])
-   open(MEMORY,'a',encoding='utf-8').write(f'\nSYSTEM: edited main.py died rc={rc}; original recovered from last completed source.')
-  else:
-   open(MEMORY,'a',encoding='utf-8').write(f'\nSYSTEM: wake died rc={rc}');break
-
+  src=SCRIPT.read_bytes();sys.stdout.flush();r=subprocess.run([str(PYTHON),'-u','-B','-X','utf8',str(SCRIPT),'--work',str(WORK),'--chain',*map(str,cmd)]).returncode
+  if r==0:good=src
+  elif src!=good:text(WORK/'main.bad.py',src);text(SCRIPT,good);write(NEXT,['--luna']);open(MEMORY,'a',encoding='utf-8').write(f'\nSYSTEM: the edited main.py died rc={r}; it is kept as main.bad.py and the last good source was restored.')
+  else:open(MEMORY,'a',encoding='utf-8').write(f'\nSYSTEM: wake died rc={r}');break
 def stop(*_):
  (WORK/'stop').touch();release_input();sys.exit(0)
 
 TOOLS={'--luna':composer,'--composer':composer,'--retina':retina,'--jev':jev,'--capture':capture,'--hands':hands,'--python':python_exec,'--remember':remember,'--rest':lambda *a:dict(rest=a),'--stop':stop}
 def main():
  p=argparse.ArgumentParser(add_help=False);m=p.add_mutually_exclusive_group()
- for name,fn in TOOLS.items():m.add_argument(name,dest='entry',action='store_const',const=fn)
+ for n,f in TOOLS.items():m.add_argument(n,dest='entry',action='store_const',const=f)
  p.add_argument('--work',default=str(ROOT));p.add_argument('--chain',action='store_true');p.add_argument('--fresh',action='store_true');p.add_argument('args',nargs='*');a=p.parse_args()
  if not a.entry and not a.chain:p.error('need a tool flag or --chain')
  global WORK,NEXT,RESULT,MEMORY,SHOTS
- WORK=Path(a.work).resolve();WORK.mkdir(parents=True,exist_ok=True);os.chdir(WORK)
- NEXT=WORK/'next.json';RESULT=WORK/'result.json';MEMORY=WORK/'memory.txt';SHOTS=WORK/'shots'
+ WORK=Path(a.work).resolve();WORK.mkdir(parents=True,exist_ok=True);os.chdir(WORK);NEXT=WORK/'next.json';RESULT=WORK/'result.json';MEMORY=WORK/'memory.txt';SHOTS=WORK/'shots'
  __import__('atexit').register(lambda t=time.time():iolog('exit',sys.argv[1:],f'{time.time()-t:.1f}s'))
  if a.fresh:
-  for f in (MEMORY,RESULT,NEXT,WORK/'goal.txt',WORK/'stop'):f.unlink(missing_ok=True)
+  for x in (MEMORY,RESULT,NEXT,WORK/'goal.txt',WORK/'stop'):x.unlink(missing_ok=True)
  if (WORK/'stop').exists() and a.entry is not stop:sys.exit('stopped; --fresh or delete the stop file to live again')
  if a.entry:
-  result=a.entry(*a.args)
-  if isinstance(result,dict):emit(result)
+  v=a.entry(*a.args)
+  if isinstance(v,dict):emit(v)
  if not a.entry or (a.entry is composer and not a.chain):follow()
 if __name__=='__main__':main()
