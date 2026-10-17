@@ -32,14 +32,14 @@ def remember(n):text(MEMORY,n);return dict(remembered=len(n))
 def keep_image(m):
  d=ROOT.parent/'history';d.mkdir(exist_ok=True);f=d/f"{time.strftime('%Y%m%d_%H%M%S')}_{time.time_ns()%1000000000:09d}.{m.group(1)}";f.write_bytes(base64.b64decode(m.group(2)));return Path(os.path.relpath(f,RUN.parent)).as_posix()
 # Log skeleton. Comment a field line to hide that field. Leave the comma on the line above it.
-# 1 keeps that value whole. A nested dict keeps only the fields written under it. Nothing is shortened.
+# 1 keeps prose whole. A nested dict selects its prose fields; commented fields hide metadata.
 # '*' is for names that change every call (a Jev question id, or a tool this file has not seen yet).
-# A listed field wins over '*'. Token fragments stay in the .jsonl; the .md is written when that thought, reply, tool, or request finishes.
+# A listed field wins over '*'. Finished entries share one prose formatter for Markdown and PowerShell.
 SHELL={
  'args':{
-  'command':1,
-  'workingDirectory':1,
-  'timeout':1,
+  # 'command':1,
+  # 'workingDirectory':1,
+  # 'timeout':1,
   'description':1,
   # 'toolCallId':1,
   # 'simpleCommands':1,
@@ -68,51 +68,51 @@ SHELL={
   # 'conversationId':1,
   # 'adminCommandDenylist':1,
   # 'requestId':1,
-  'path':1,
-  'streamContent':1,
+  # 'path':1,
+  # 'streamContent':1,
  },
  'description':1,
  'result':{
   'success':{
    # 'command':1,
    # 'workingDirectory':1,
-   'exitCode':1,
-   'signal':1,
+   # 'exitCode':1,
+   # 'signal':1,
    'stdout':1,
    'stderr':1,
-   'executionTime':1,
+   # 'executionTime':1,
    # 'interleavedOutput':1,
    # 'localExecutionTimeMs':1,
    # 'backgroundReason':1,
    # 'msToWait':1,
    # 'pid':1,
    # 'shellId':1,
-   'content':1,
-   'exceededLimit':1,
-   'fileSize':1,
-   'isEmpty':1,
-   'path':1,
-   'readRange':{
-    'startLine':1,
-    'endLine':1,
-   },
+   # 'content':1,
+   # 'exceededLimit':1,
+   # 'fileSize':1,
+   # 'isEmpty':1,
+   # 'path':1,
+   # 'readRange':{
+   #  'startLine':1,
+   #  'endLine':1,
+   # },
    # 'relatedCursorRulePaths':1,
    # 'relatedCursorRules':1,
-   'totalLines':1,
+   # 'totalLines':1,
    # 'afterFullFileContent':1,
-   'diffString':1,
-   'linesAdded':1,
-   'linesRemoved':1,
+   # 'diffString':1,
+   # 'linesAdded':1,
+   # 'linesRemoved':1,
    'message':1,
   },
   'failure':{
-   'aborted':1,
+   # 'aborted':1,
    # 'command':1,
-   'executionTime':1,
-   'exitCode':1,
+   # 'executionTime':1,
+   # 'exitCode':1,
    # 'interleavedOutput':1,
    # 'localExecutionTimeMs':1,
-   'signal':1,
+   # 'signal':1,
    'stderr':1,
    'stdout':1,
    # 'workingDirectory':1,
@@ -122,56 +122,56 @@ SHELL={
 }
 LOG_SCHEMA={
  'system':{
-  'type':1,
-  'subtype':1,
+  # 'type':1,
+  # 'subtype':1,
   # 'apiKeySource':1,
-  'cwd':1,
-  'session_id':1,
-  'model':1,
+  # 'cwd':1,
+  # 'session_id':1,
+  # 'model':1,
   # 'permissionMode':1,
  },
  'user':{
-  'type':1,
+  # 'type':1,
   'message':{
-   'role':1,
+   # 'role':1,
    'content':{
-    'type':1,
+    # 'type':1,
     'text':1,
    },
   },
-  'session_id':1,
+  # 'session_id':1,
  },
  'thinking':{
-  'type':1,
-  'subtype':1,
+  # 'type':1,
+  # 'subtype':1,
   'text':1,
-  'session_id':1,
-  'timestamp_ms':1,
+  # 'session_id':1,
+  # 'timestamp_ms':1,
  },
  'assistant':{
-  'type':1,
+  # 'type':1,
   'message':{
-   'role':1,
+   # 'role':1,
    'content':{
-    'type':1,
+    # 'type':1,
     'text':1,
    },
   },
   # 'model_call_id':1,
-  'session_id':1,
-  'timestamp_ms':1,
+  # 'session_id':1,
+  # 'timestamp_ms':1,
  },
  'tool_call':{
-  'type':1,
-  'subtype':1,
-  'call_id':1,
+  # 'type':1,
+  # 'subtype':1,
+  # 'call_id':1,
   # 'model_call_id':1,
-  'session_id':1,
-  'timestamp_ms':1,
+  # 'session_id':1,
+  # 'timestamp_ms':1,
   'tool_call':{
    # 'toolCallId':1,
-   'startedAtMs':1,
-   'completedAtMs':1,
+   # 'startedAtMs':1,
+   # 'completedAtMs':1,
    # 'hookAdditionalContexts':1,
    'shellToolCall':SHELL,
    'readToolCall':SHELL,
@@ -180,28 +180,28 @@ LOG_SCHEMA={
   },
  },
  'task_notification':{
-  'type':1,
-  'subtype':1,
-  'task_id':1,
-  'status':1,
+  # 'type':1,
+  # 'subtype':1,
+  # 'task_id':1,
+  # 'status':1,
   'title':1,
-  'session_id':1,
-  'timestamp_ms':1,
+  # 'session_id':1,
+  # 'timestamp_ms':1,
  },
  'req':{
-  'url':1,
+  # 'url':1,
   'body':{
-   'model':1,
+   # 'model':1,
    # 'temperature':1,
    # 'max_tokens':1,
    'messages':{
-    'role':1,
+    # 'role':1,
     'content':{
-     'type':1,
+     # 'type':1,
      'text':1,
-     'image_url':{
-      'url':1,
-     },
+     # 'image_url':{
+     #  'url':1,
+     # },
     },
    },
    # 'response_format':1,
@@ -211,24 +211,24 @@ LOG_SCHEMA={
     'owner_goal':1,
     'mind_narrative':1,
     'memory':1,
-    'active_window_facts':{
-     'window_title':1,
-     'window_box_0_1000':1,
-     'changed_After_last_hands':1,
-    },
+    # 'active_window_facts':{
+    #  'window_title':1,
+    #  'window_box_0_1000':1,
+    #  'changed_After_last_hands':1,
+    # },
     'latest_retina_evidence':{
-     'crop_region_0_1000':1,
+     # 'crop_region_0_1000':1,
      'question':1,
      'answer':1,
-     'validated_target_box_0_1000':1,
-     'validated_target_center_0_1000':1,
-     'quantized_colors':1,
+     # 'validated_target_box_0_1000':1,
+     # 'validated_target_center_0_1000':1,
+     # 'quantized_colors':1,
      'box_warning':1,
     },
    },
    'questions':{
     '*':{
-     'type':1,
+     # 'type':1,
      'instructions':1,
      'criteria':1,
     },
@@ -236,33 +236,33 @@ LOG_SCHEMA={
   },
  },
  'resp':{
-  'url':1,
+  # 'url':1,
   'body':{
-   'model':1,
+   # 'model':1,
    # 'id':1,
    # 'provider':1,
    # 'object':1,
    # 'created':1,
    # 'system_fingerprint':1,
    'choices':{
-    'finish_reason':1,
+    # 'finish_reason':1,
     # 'index':1,
     'message':{
-     'role':1,
-     'content':1,
+     # 'role':1,
+     'content':{'text':1},
     },
    },
-   'usage':{
-    'input_tokens':1,
-    'output_tokens':1,
-    'cost':1,
-    'completion_tokens':1,
-    'prompt_tokens':1,
-   'total_tokens':1,
-   # 'prompt_tokens_details':{
-   #  'cached_tokens':1,
+   # 'usage':{
+   #  'input_tokens':1,
+   #  'output_tokens':1,
+   #  'cost':1,
+   #  'completion_tokens':1,
+   #  'prompt_tokens':1,
+   #  'total_tokens':1,
+   #  'prompt_tokens_details':{
+   #   'cached_tokens':1,
+   #  },
    # },
-   },
    # 'timings':{
    #  'cache_n':1,
    #  'predicted_ms':1,
@@ -276,19 +276,19 @@ LOG_SCHEMA={
    # },
    'answers':{
     '*':{
-     'type':1,
-     'choice':1,
-     'noul':1,
-     'score':1,
-     'confidence':1,
-     'probabilities':1,
+     # 'type':1,
+     # 'choice':1,
+     # 'noul':1,
+     # 'score':1,
+     # 'confidence':1,
+     # 'probabilities':1,
      'legend':1,
     },
    },
   },
  },
  'err':{
-  'url':1,
+  # 'url':1,
   'error':1,
  },
  'badjson':{
@@ -296,10 +296,18 @@ LOG_SCHEMA={
  },
  'exit':{
   # 'argv':1,
-  'duration':1,
+  # 'duration':1,
  },
 }
-LIVE={'thinking':None,'assistant':None};TIME_MS={'timestamp_ms','startedAtMs','completedAtMs'}
+# Embedded JSON in stdout or model content uses the same prose-only selection.
+LOG_SCHEMA['prose']={
+ 'text':1,'question':1,'answer':1,'description':1,'instructions':1,'criteria':1,
+ 'owner_goal':1,'mind_narrative':1,'memory':1,'stdout':1,'stderr':1,
+ 'jev_notice':1,'remember_notice':1,'box_warning':1,
+ 'message':{'text':1,'content':{'text':1}},'content':{'text':1},
+ 'error':{'message':1,'text':1},'answers':LOG_SCHEMA['resp']['body']['answers'],
+}
+LIVE={'thinking':None,'assistant':None}
 def project(obj,schema):
  if schema==1:return obj
  if isinstance(obj,list):return [project(x,schema) for x in obj]
@@ -314,14 +322,21 @@ def project(obj,schema):
 def clock(v):
  n=int(v);return time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(n/1000))+f'.{n%1000:03d}'
 def readable(o):
- if isinstance(o,dict):return {k:(clock(v) if k in TIME_MS and str(v).isdigit() and int(v)>10**12 else readable(v)) for k,v in o.items()}
- if isinstance(o,list):return [readable(x) for x in o]
+ if isinstance(o,(dict,list)):return '\n\n'.join(filter(None,(readable(v) for v in (o.values() if isinstance(o,dict) else o))))
+ if not isinstance(o,str) or not o.strip():return ''
+ if o.lstrip().startswith(('{','[')):
+  try:decoded=json.loads(o)
+  except ValueError:pass
+  else:return readable(project(decoded,LOG_SCHEMA['prose']))
  return o
 def append_md(kind,event):
- shown=readable(project(event,LOG_SCHEMA.get(kind,1)));when=event.get('timestamp_ms') if isinstance(event,dict) else None
+ shown=readable(project(event,LOG_SCHEMA.get(kind,LOG_SCHEMA['prose'])))
+ if not shown:return
+ when=event.get('timestamp_ms') if isinstance(event,dict) else None
  head=clock(when) if when else time.strftime('%Y-%m-%d %H:%M:%S');sub=event.get('subtype') if isinstance(event,dict) else None;label=kind if not sub or sub==kind else kind+' '+sub
- body=json.dumps(shown,ensure_ascii=False,indent=2);fence='````' if '```' in body else '```'
- with open(RUN,'a',encoding='utf-8') as f:f.write(f'\n## {head} {label}\n\n{fence}json\n{body}\n{fence}\n')
+ entry=f'\n## {head} {label}\n\n{shown}\n'
+ with open(RUN,'a',encoding='utf-8') as f:f.write(entry)
+ print(entry,file=sys.stderr,flush=True) # PowerShell displays stderr; tool stdout stays JSON.
 def flush_thinking():
  d=LIVE['thinking'];LIVE['thinking']=None
  if d:append_md('thinking',dict(d['meta'],text=d['text']))
