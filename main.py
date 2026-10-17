@@ -24,10 +24,15 @@ def read(p):return json.loads(Path(p).read_text('utf-8-sig'))
 def write(p,v):text(p,json.dumps(v,ensure_ascii=False))
 def emit(v):write(RESULT,v);print(json.dumps(v,ensure_ascii=False),flush=True);return v
 def remember(n):text(MEMORY,n)
-def iolog(k,*v):open(RUN,'a',encoding='utf-8').write(f"- {time.strftime('%H:%M:%S')} {os.getpid()} {k} "+' '.join(x if isinstance(x,str) else json.dumps(x,ensure_ascii=False,default=str) for x in v)+'\n')
+def keep_image(m):
+ d=ROOT.parent/'history';d.mkdir(exist_ok=True);f=d/f"{time.strftime('%Y%m%d_%H%M%S')}_{time.time_ns()%1000000000:09d}.{m.group(1)}"
+ f.write_bytes(base64.b64decode(m.group(2)));return Path(os.path.relpath(f,RUN.parent)).as_posix()
+def iolog(k,*v):
+ s=re.sub(r'data:image/(png|jpe?g);base64,([A-Za-z0-9+/=]+)',keep_image,' '.join(x if isinstance(x,str) else json.dumps(x,ensure_ascii=False,default=str) for x in v))
+ open(RUN,'a',encoding='utf-8').write(f"- {time.strftime('%H:%M:%S')} {os.getpid()} {k} {s}\n")
 
 def http(u,p,h,s=60):
- iolog('req',u,re.sub(r'data:image/png;base64,[A-Za-z0-9+/=]+',lambda m:'<png %d>'%len(m.group()),json.dumps(p,ensure_ascii=False)))
+ iolog('req',u,p)
  try:
   with urllib.request.urlopen(urllib.request.Request(u,json.dumps(p).encode(),{'Content-Type':'application/json'}|h),timeout=s) as r:v=json.load(r)
  except Exception as e:iolog('err',u,repr(e));raise
@@ -82,6 +87,29 @@ def jev(st,qs):
   if isinstance(x,dict) and x.get('type')=='choice' and isinstance(x.get('criteria'),dict):x['criteria']['change_approach']=CHANGE
  return emit(http('https://openrouter.ai/api/alpha/decisions',dict(model=DECISION_MODEL,state=read(st),questions=qs),{'Authorization':'Bearer '+key()},60))
 
+def shown(tc):
+ name,body=next(iter(tc.items()));args=body.get('args') or {};got=body.get('result') or {};got=got.get('success') or got.get('failure') or {}
+ ask=args.get('command') or args.get('path') or args.get('query') or args.get('pattern') or args.get('description') or ''
+ out=got.get('stdout') or got.get('stderr') or got.get('content') or '';err=got.get('exitCode')
+ return '\n'.join(x for x in (str(name).removesuffix('ToolCall'),str(ask).strip(),'' if not err else 'exit '+str(err),out.strip() if isinstance(out,str) else '') if x)
+def talk(lines):
+ think=[];part=[];last=''
+ def say(s):
+  s=(s or '').strip()
+  if s:print(s,flush=True)
+ for raw in lines:
+  raw=raw.decode('utf-8','replace').rstrip()
+  if not raw:continue
+  iolog('luna',raw);last=raw;d=json.loads(raw);k,sub=d.get('type'),d.get('subtype')
+  if k=='thinking' and sub=='delta':think.append(d.get('text') or '')
+  elif k=='thinking':say(''.join(think));think.clear()
+  elif k=='assistant':
+   t=''.join(c.get('text','') for c in (d.get('message') or {}).get('content') or [] if isinstance(c,dict))
+   if d.get('model_call_id'):say(t);part.clear()
+   else:part.append(t)
+  elif k=='tool_call' and sub=='completed' and d.get('tool_call'):say(shown(d['tool_call']))
+  elif k=='result':say(''.join(think));say(''.join(part));think.clear();part.clear()
+ return last
 def luna(goal='Wake.'):
  NEXT.unlink(missing_ok=True);MEMORY.touch(exist_ok=True);RESULT.touch(exist_ok=True)
  prompt=INSTINCT+'\nPATHS\n'+json.dumps(dict(script=str(SCRIPT),python=str(PYTHON),work=str(WORK),continuation=str(NEXT)))+'\nOWNER SAID\n'+goal+'\nMEMORY\n'+MEMORY.read_text('utf-8')+'\nLAST\n'+RESULT.read_text('utf-8')
@@ -93,8 +121,8 @@ def luna(goal='Wake.'):
  boot="process.argv.push(require('node:fs').readFileSync(process.argv.pop(),'utf8'));require(process.argv[1]);"
  with ExitStack() as x:
   x.callback(release_input);p=spawn(x,[str(folder/'node.exe'),'-e',boot,str(folder/'index.js'),'--trust','-p','--model','composer-2.5','--workspace',str(ROOT),'--output-format','stream-json','--stream-partial-output',str(pr)],env)
-  last=deque(((iolog('luna',ln.decode('utf-8','replace').rstrip()),sys.stdout.buffer.write(ln)) and ln for ln in p.stdout),maxlen=1);p.wait()
- if last and last[0].lstrip().startswith(b'{'):remember(MEMORY.read_text('utf-8')+'\nLAST WORDS\n'+str(json.loads(last[0]).get('result','')))
+  last=talk(p.stdout);p.wait()
+ if last.startswith('{'):remember(MEMORY.read_text('utf-8')+'\nLAST WORDS\n'+str(json.loads(last).get('result','')))
 def follow():
  if not NEXT.exists():return
  cmd=read(NEXT);NEXT.unlink();sys.stdout.flush()
