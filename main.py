@@ -96,15 +96,77 @@ def windows():
  global GUI,CLIPBOARD,win32api,win32gui
  if 'GUI' in globals():return
  ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
- import pyautogui as GUI,pyperclip as CLIPBOARD,win32api,win32gui;GUI.PAUSE=.05;GUI.FAILSAFE=False
- _orig_move=GUI.moveTo;_orig_drag=GUI.dragTo
- def _safe_move(x,y=None,duration=0.0,*a,**kw):
-  if duration and duration<0.12:duration=0.12
-  return _orig_move(x,y,duration=duration,*a,**kw)
- def _safe_drag(x,y=None,duration=0.15,*a,**kw):
-  return _orig_drag(x,y,duration=max(0.12,duration
-  ),*a,**kw)
- GUI.moveTo=_safe_move;GUI.dragTo=_safe_drag
+ import pyautogui as GUI,pyperclip as CLIPBOARD,win32api,win32gui
+ import math as _mouse_math
+ GUI.PAUSE=.05;GUI.FAILSAFE=False
+ # Save the genuine PyAutoGUI operations before replacing their public wrappers.
+ _move=GUI.moveTo;_down=GUI.mouseDown;_up=GUI.mouseUp
+ _pressed=set()
+
+ def _button(args,kw):
+  return str(kw.get('button',args[2] if len(args)>2 else 'left')).lower()
+
+ def _safe_down(*args,**kw):
+  result=_down(*args,**kw)
+  _pressed.add(_button(args,kw))
+  # Give the receiving window time to enter its pressed/drawing state.
+  time.sleep(.035)
+  return result
+
+ def _safe_up(*args,**kw):
+  try:return _up(*args,**kw)
+  finally:_pressed.discard(_button(args,kw))
+
+ def _safe_move(x=None,y=None,duration=0.0,tween=None,logScreenshot=None,_pause=True):
+  # A normal unpressed move keeps PyAutoGUI's original mouse semantics.
+  if not _pressed:
+   kw=dict(duration=duration,_pause=_pause)
+   if tween is not None:kw['tween']=tween
+   if logScreenshot is not None:kw['logScreenshot']=logScreenshot
+   return _move(x,y,**kw)
+
+  # While ANY mouse button is held, avoid PyAutoGUI's extremely dense
+  # duration-based interpolation. Send deliberate, separated mouse events
+  # without releasing the button between points (unlike dragTo per point).
+  current=GUI.position();sx,sy=int(current[0]),int(current[1])
+  if y is None and isinstance(x,(tuple,list)) and len(x)==2:x,y=x
+  tx=sx if x is None else int(round(float(x)))
+  ty=sy if y is None else int(round(float(y)))
+  distance=_mouse_math.hypot(tx-sx,ty-sy)
+  seconds=max(0.0,float(duration or 0))
+  steps=max(1,_mouse_math.ceil(distance/5),_mouse_math.ceil(seconds/.016))
+  interval=max(.012,seconds/steps)
+  easing=tween if callable(tween) else None
+  for i in range(1,steps+1):
+   fraction=i/steps
+   if easing is not None:fraction=max(0.0,min(1.0,float(easing(fraction))))
+   nx=round(sx+(tx-sx)*fraction);ny=round(sy+(ty-sy)*fraction)
+   # Send a single actual Win32-backed PyAutoGUI move per point.
+   # _pause=False avoids extra global sleeps and makes the event rate explicit.
+   _move(nx,ny,duration=0,_pause=False)
+   time.sleep(interval)
+  if _pause:time.sleep(GUI.PAUSE)
+
+ def _safe_move_rel(xOffset=0,yOffset=0,duration=0.0,tween=None,logScreenshot=None,_pause=True):
+  sx,sy=GUI.position()
+  return _safe_move(sx+(xOffset or 0),sy+(yOffset or 0),duration,tween,logScreenshot,_pause)
+
+ def _safe_drag(x=None,y=None,duration=0.0,tween=None,button='left',logScreenshot=None,_pause=True,mouseDownUp=True):
+  # One continuous physical hold, including for multi-point/circular paths.
+  # The same mechanism also preserves ordinary drag-and-drop interactions.
+  if mouseDownUp:_safe_down(button=button,_pause=False)
+  try:return _safe_move(x,y,duration,tween,logScreenshot,_pause=False)
+  finally:
+   if mouseDownUp:_safe_up(button=button,_pause=False)
+   if _pause:time.sleep(GUI.PAUSE)
+
+ def _safe_drag_rel(xOffset=0,yOffset=0,duration=0.0,tween=None,button='left',logScreenshot=None,_pause=True,mouseDownUp=True):
+  sx,sy=GUI.position()
+  return _safe_drag(sx+(xOffset or 0),sy+(yOffset or 0),duration,tween,button,logScreenshot,_pause,mouseDownUp)
+
+ GUI.mouseDown=_safe_down;GUI.mouseUp=_safe_up
+ GUI.moveTo=_safe_move;GUI.moveRel=_safe_move_rel;GUI.move=_safe_move_rel
+ GUI.dragTo=_safe_drag;GUI.dragRel=_safe_drag_rel;GUI.drag=_safe_drag_rel
 
 def release_input():
  if 'GUI' not in globals():return
