@@ -31,8 +31,338 @@ def emit(v):
 def remember(n):text(MEMORY,n);return dict(remembered=len(n))
 def keep_image(m):
  d=ROOT.parent/'history';d.mkdir(exist_ok=True);f=d/f"{time.strftime('%Y%m%d_%H%M%S')}_{time.time_ns()%1000000000:09d}.{m.group(1)}";f.write_bytes(base64.b64decode(m.group(2)));return Path(os.path.relpath(f,RUN.parent)).as_posix()
+# Log skeleton. Comment a field line to hide that field. Leave the comma on the line above it.
+# 1 keeps that value whole. A nested dict keeps only the fields written under it. Nothing is shortened.
+# '*' is for names that change every call (a Jev question id, or a tool this file has not seen yet).
+# A listed field wins over '*'. Token fragments stay in the .jsonl; the .md is written when that thought, reply, tool, or request finishes.
+SHELL={
+ 'args':{
+  'command':1,
+  'workingDirectory':1,
+  'timeout':1,
+  'description':1,
+  'toolCallId':1,
+  'simpleCommands':1,
+  'hasInputRedirect':1,
+  'hasOutputRedirect':1,
+  'parsingResult':{
+   'parsingFailed':1,
+   'executableCommands':{
+    'name':1,
+    'args':{
+     'type':1,
+     'value':1,
+    },
+    'fullText':1,
+   },
+   'hasRedirects':1,
+   'hasCommandSubstitution':1,
+   'redirects':1,
+  },
+  'fileOutputThresholdBytes':1,
+  'isBackground':1,
+  'skipApproval':1,
+  'timeoutBehavior':1,
+  'hardTimeout':1,
+  'closeStdin':1,
+  'conversationId':1,
+  'adminCommandDenylist':1,
+  'requestId':1,
+  'path':1,
+  'streamContent':1,
+ },
+ 'description':1,
+ 'result':{
+  'success':{
+   'command':1,
+   'workingDirectory':1,
+   'exitCode':1,
+   'signal':1,
+   'stdout':1,
+   'stderr':1,
+   'executionTime':1,
+   'interleavedOutput':1,
+   'localExecutionTimeMs':1,
+   'backgroundReason':1,
+   'msToWait':1,
+   'pid':1,
+   'shellId':1,
+   'content':1,
+   'exceededLimit':1,
+   'fileSize':1,
+   'isEmpty':1,
+   'path':1,
+   'readRange':{
+    'startLine':1,
+    'endLine':1,
+   },
+   'relatedCursorRulePaths':1,
+   'relatedCursorRules':1,
+   'totalLines':1,
+   'afterFullFileContent':1,
+   'diffString':1,
+   'linesAdded':1,
+   'linesRemoved':1,
+   'message':1,
+  },
+  'failure':{
+   'aborted':1,
+   'command':1,
+   'executionTime':1,
+   'exitCode':1,
+   'interleavedOutput':1,
+   'localExecutionTimeMs':1,
+   'signal':1,
+   'stderr':1,
+   'stdout':1,
+   'workingDirectory':1,
+  },
+  'isBackground':1,
+ },
+}
+LOG_SCHEMA={
+ 'system':{
+  'type':1,
+  'subtype':1,
+  'apiKeySource':1,
+  'cwd':1,
+  'session_id':1,
+  'model':1,
+  'permissionMode':1,
+ },
+ 'user':{
+  'type':1,
+  'message':{
+   'role':1,
+   'content':{
+    'type':1,
+    'text':1,
+   },
+  },
+  'session_id':1,
+ },
+ 'thinking':{
+  'type':1,
+  'subtype':1,
+  'text':1,
+  'session_id':1,
+  'timestamp_ms':1,
+ },
+ 'assistant':{
+  'type':1,
+  'message':{
+   'role':1,
+   'content':{
+    'type':1,
+    'text':1,
+   },
+  },
+  'model_call_id':1,
+  'session_id':1,
+  'timestamp_ms':1,
+ },
+ 'tool_call':{
+  'type':1,
+  'subtype':1,
+  'call_id':1,
+  'model_call_id':1,
+  'session_id':1,
+  'timestamp_ms':1,
+  'tool_call':{
+   'toolCallId':1,
+   'startedAtMs':1,
+   'completedAtMs':1,
+   'hookAdditionalContexts':1,
+   'shellToolCall':SHELL,
+   'readToolCall':SHELL,
+   'editToolCall':SHELL,
+   '*':1,
+  },
+ },
+ 'task_notification':{
+  'type':1,
+  'subtype':1,
+  'task_id':1,
+  'status':1,
+  'title':1,
+  'session_id':1,
+  'timestamp_ms':1,
+ },
+ 'req':{
+  'url':1,
+  'body':{
+   'model':1,
+   'temperature':1,
+   'max_tokens':1,
+   'messages':{
+    'role':1,
+    'content':{
+     'type':1,
+     'text':1,
+     'image_url':{
+      'url':1,
+     },
+    },
+   },
+   'response_format':1,
+   'min_p':1,
+   'repeat_penalty':1,
+   'state':{
+    'owner_goal':1,
+    'mind_narrative':1,
+    'memory':1,
+    'active_window_facts':{
+     'window_title':1,
+     'window_box_0_1000':1,
+     'changed_After_last_hands':1,
+    },
+    'latest_retina_evidence':{
+     'crop_region_0_1000':1,
+     'question':1,
+     'answer':1,
+     'validated_target_box_0_1000':1,
+     'validated_target_center_0_1000':1,
+     'quantized_colors':1,
+     'box_warning':1,
+    },
+   },
+   'questions':{
+    '*':{
+     'type':1,
+     'instructions':1,
+     'criteria':1,
+    },
+   },
+  },
+ },
+ 'resp':{
+  'url':1,
+  'body':{
+   'model':1,
+   'id':1,
+   'provider':1,
+   'object':1,
+   'created':1,
+   'system_fingerprint':1,
+   'choices':{
+    'finish_reason':1,
+    'index':1,
+    'message':{
+     'role':1,
+     'content':1,
+    },
+   },
+   'usage':{
+    'input_tokens':1,
+    'output_tokens':1,
+    'cost':1,
+    'completion_tokens':1,
+    'prompt_tokens':1,
+    'total_tokens':1,
+    'prompt_tokens_details':{
+    'cached_tokens':1,
+   },
+   },
+   'timings':{
+    'cache_n':1,
+    'predicted_ms':1,
+    'predicted_n':1,
+    'predicted_per_second':1,
+    'predicted_per_token_ms':1,
+    'prompt_ms':1,
+    'prompt_n':1,
+    'prompt_per_second':1,
+    'prompt_per_token_ms':1,
+   },
+   'answers':{
+    '*':{
+     'type':1,
+     'choice':1,
+     'noul':1,
+     'score':1,
+     'confidence':1,
+     'probabilities':1,
+     'legend':1,
+    },
+   },
+  },
+ },
+ 'err':{
+  'url':1,
+  'error':1,
+ },
+ 'badjson':{
+  'text':1,
+ },
+ 'exit':{
+  'argv':1,
+  'duration':1,
+ },
+}
+LIVE={'thinking':None,'assistant':None};TIME_MS={'timestamp_ms','startedAtMs','completedAtMs'}
+def project(obj,schema):
+ if schema==1:return obj
+ if isinstance(obj,list):return [project(x,schema) for x in obj]
+ if isinstance(obj,dict) and isinstance(schema,dict):
+  star=schema.get('*',0);out={}
+  for k,v in obj.items():
+   rule=schema[k] if k in schema else star
+   if rule in (0,None):continue
+   out[k]=project(v,rule)
+  return out
+ return obj
+def clock(v):
+ n=int(v);return time.strftime('%Y-%m-%d %H:%M:%S',time.localtime(n/1000))+f'.{n%1000:03d}'
+def readable(o):
+ if isinstance(o,dict):return {k:(clock(v) if k in TIME_MS and str(v).isdigit() and int(v)>10**12 else readable(v)) for k,v in o.items()}
+ if isinstance(o,list):return [readable(x) for x in o]
+ return o
+def append_md(kind,event):
+ shown=readable(project(event,LOG_SCHEMA.get(kind,1)));when=event.get('timestamp_ms') if isinstance(event,dict) else None
+ head=clock(when) if when else time.strftime('%Y-%m-%d %H:%M:%S');sub=event.get('subtype') if isinstance(event,dict) else None;label=kind if not sub or sub==kind else kind+' '+sub
+ body=json.dumps(shown,ensure_ascii=False,indent=2);fence='````' if '```' in body else '```'
+ with open(RUN,'a',encoding='utf-8') as f:f.write(f'\n## {head} {label}\n\n{fence}json\n{body}\n{fence}\n')
+def flush_thinking():
+ d=LIVE['thinking'];LIVE['thinking']=None
+ if d:append_md('thinking',dict(d['meta'],text=d['text']))
+def flush_assistant():
+ d=LIVE['assistant'];LIVE['assistant']=None
+ if not d:return
+ meta=d['meta'];msg=meta.get('message') or {}
+ append_md('assistant',dict(meta,type='assistant',message=dict(role=msg.get('role','assistant'),content=[dict(type='text',text=d['text'])])))
+def flush_open():
+ if LIVE['thinking']:flush_thinking()
+ if LIVE['assistant']:flush_assistant()
+def absorb(raw):
+ try:d=json.loads(raw)
+ except ValueError:flush_open();append_md('composer',{'text':raw});return
+ t,st=d.get('type'),d.get('subtype');final=t=='assistant' and bool(d.get('model_call_id'));delta=t=='assistant' and not final
+ if LIVE['thinking'] and not(t=='thinking' and st in ('delta','completed')):flush_thinking()
+ if LIVE['assistant'] and not delta and not final:flush_assistant()
+ if t=='thinking' and st=='delta':
+  slot=LIVE['thinking'] or {'text':'','meta':d};slot['text']+=d.get('text','');slot['meta']=d;LIVE['thinking']=slot;return
+ if t=='thinking' and st=='completed':
+  text=(LIVE['thinking'] or {}).get('text','') or d.get('text','');LIVE['thinking']=None;append_md('thinking',dict(d,text=text));return
+ if delta:
+  piece=''.join(c.get('text','') for c in (d.get('message') or {}).get('content') or [] if isinstance(c,dict))
+  slot=LIVE['assistant'] or {'text':'','meta':d};slot['text']+=piece;slot['meta']=d;LIVE['assistant']=slot;return
+ if final:
+  LIVE['assistant']=None;append_md('assistant',d);return
+ append_md('task_notification' if t=='system' and st=='task_notification' else ('tool_call' if t=='tool_call' else (t or 'composer')),d)
+def strip_images(o):
+ if isinstance(o,str):return re.sub(r'data:image/(png|jpe?g);base64,([A-Za-z0-9+/=]+)',keep_image,o)
+ if isinstance(o,dict):return {k:strip_images(v) for k,v in o.items()}
+ if isinstance(o,list):return [strip_images(v) for v in o]
+ return o
 def iolog(k,*v):
- s=re.sub(r'data:image/(png|jpe?g);base64,([A-Za-z0-9+/=]+)',keep_image,' '.join(x if isinstance(x,str) else json.dumps(x,ensure_ascii=False,default=str) for x in v));open(RUN,'a',encoding='utf-8').write(f"- {time.strftime('%H:%M:%S')} {os.getpid()} {k} {s}\n")
+ v=tuple(strip_images(x) for x in v);s=' '.join(x if isinstance(x,str) else json.dumps(x,ensure_ascii=False,default=str) for x in v)
+ with open(RUN.with_suffix('.jsonl'),'a',encoding='utf-8') as f:f.write(f"- {time.strftime('%H:%M:%S')} {os.getpid()} {k} {s}\n")
+ if k=='composer':absorb(v[0] if v else '')
+ elif k=='req':append_md('req',{'url':v[0],'body':v[1]})
+ elif k=='resp':append_md('resp',{'url':v[0],'body':v[1]})
+ elif k=='err':append_md('err',{'url':v[0],'error':v[1]})
+ elif k=='badjson':append_md('badjson',{'text':v[0]})
+ elif k=='exit':append_md('exit',{'argv':v[0],'duration':v[1]})
 def http(u,p,h,s=60):
  iolog('req',u,p)
  try:
@@ -183,25 +513,10 @@ def composer(*goal):
  if goal:text(gp,goal)
  goal=gp.read_text('utf-8') if gp.exists() else 'Wake.';command=f"& '{PYTHON}' '{SCRIPT}' --work '{WORK}'";prompt=INSTINCT.replace('CALL',command)+'\nPATHS\n'+json.dumps(dict(script=str(SCRIPT),python=str(PYTHON),work=str(WORK),continuation=str(NEXT)))+'\nOWNER SAID\n'+goal+'\nMEMORY\n'+(MEMORY.read_text('utf-8') if MEMORY.exists() else '')+'\nLAST\n'+(RESULT.read_text('utf-8') if RESULT.exists() else '');vendor=WORK/'agent';prof=vendor/'home/.cursor';prof.mkdir(parents=True,exist_ok=True);(ROOT.parent/'temp').mkdir(exist_ok=True);env=os.environ|dict(HOME=str(vendor/'home'),USERPROFILE=str(vendor/'home'),CURSOR_CONFIG_DIR=str(prof),CURSOR_DATA_DIR=str(vendor/'data'),TEMP=str(ROOT.parent/'temp'),TMP=str(ROOT.parent/'temp'),PYTHONDONTWRITEBYTECODE='1',PYTHONUTF8='1');env.pop('OPENROUTER_API_KEY',None);write(prof/'cli-config.json',dict(version=1,permissions=dict(allow=['Read(**)','Write(**)','Shell(*)'],deny=['Read(**/*.png)','Read(**/*.jpg)']),sandbox=dict(mode='disabled'),approvalMode='unrestricted'));pr=WORK/'prompt.txt';text(pr,prompt);folder=max(p for p in (Path(E('LOCALAPPDATA',''))/'cursor-agent/versions').iterdir() if p.name[:1].isdigit() and (p/'index.js').exists());boot="process.argv.push(require('node:fs').readFileSync(process.argv.pop(),'utf8'));require(process.argv[1]);"
  with ExitStack() as stack:
-  stack.callback(release_input);p=spawn(stack,[str(folder/'node.exe'),'-e',boot,str(folder/'index.js'),'--trust','-p','--model','composer-2.5','--workspace',str(ROOT),'--output-format','stream-json','--stream-partial-output',str(pr)],env)
+  stack.callback(release_input);stack.callback(flush_open);p=spawn(stack,[str(folder/'node.exe'),'-e',boot,str(folder/'index.js'),'--trust','-p','--model','composer-2.5','--workspace',str(ROOT),'--output-format','stream-json','--stream-partial-output',str(pr)],env)
   for raw in p.stdout:
-   raw=raw.decode('utf-8','replace').rstrip();iolog('composer',raw)
-   try:d=json.loads(raw) if raw[:1]=='{' else {}
-   except ValueError:d={}
-   if d.get('type')=='tool_call':
-    for name,call in d.get('tool_call',{}).items():
-     if not isinstance(call,dict):continue
-     args=call.get('args') or {}
-     if d.get('subtype')=='started':print('>',call.get('description') or args.get('description') or args.get('command') or args.get('path') or name,flush=True)
-     elif d.get('subtype')=='completed':
-      result=call.get('result') or {};out=result.get('success') or result.get('failure') or {}
-      if isinstance(out,dict):
-       for field in ('stdout','stderr','content','error'):
-        if out.get(field):print(out[field],flush=True)
-       if out.get('exitCode'):print('exit',out['exitCode'],flush=True)
-   elif d.get('type')=='thinking' and d.get('subtype')=='delta':print(d.get('text',''),end='',flush=True)
-   elif d.get('type')=='thinking' and d.get('subtype')=='completed':print(flush=True)
-   elif d.get('type')=='assistant' and d.get('model_call_id'):print(''.join(c.get('text','') for c in (d.get('message') or {}).get('content') or [] if isinstance(c,dict)),flush=True)
+   raw=raw.decode('utf-8','replace').rstrip()
+   if raw:iolog('composer',raw)
 def follow():
  good=SCRIPT.read_bytes()
  for _ in range(WAKES):
