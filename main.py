@@ -1,5 +1,5 @@
 import argparse, atexit, base64, ctypes, io, json, math, os, re, subprocess, sys, threading, time, urllib.error, urllib.request, uuid, win32job
-from contextlib import ExitStack, redirect_stdout; from ctypes import wintypes; from dataclasses import InitVar, dataclass, field; from functools import cached_property; from pathlib import Path; from PIL import Image, ImageChops, ImageGrab
+from contextlib import ExitStack, redirect_stdout; from ctypes import wintypes; from dataclasses import InitVar, dataclass, field; from functools import cached_property; from pathlib import Path; from PIL import Image, ImageGrab
 sys.dont_write_bytecode = True; SCRIPT = Path(__file__).resolve(); ROOT = SCRIPT.parent; PYTHON = Path(sys.executable); E = os.environ.get
 RUN = ROOT / ('run_' + os.environ.setdefault('TRIDENT_RUN', time.strftime('%Y%m%d_%H%M%S')) + '.jsonl'); WAKES = int(E('TRIDENT_WAKES', '24'))
 VISION_URL = E('TRIDENT_VISION', 'http://127.0.0.1:8188'); DECISION_MODEL = E('TRIDENT_JEV_MODEL', 'typesafe/jev-1.14'); AGENT_MODEL = E('TRIDENT_MODEL', 'grok-4.7-low')
@@ -11,7 +11,7 @@ OBSERVE
 CONSULT
 Jev costs a fraction of a cent, answers in seconds and returns calibrated probabilities instead of prose; it reads GOAL, MEMORY, your narrative, the latest capture image and the latest Retina report, so it cannot be talked into your assumptions. Python adds change_approach to every choice and three audits: a premise probability, a tunnel-vision choice and a readiness score. Consult in rounds: state what you believe and intend, ask the question whose answer changes your next action, read the probabilities, then narrow the options or ask the next question until confidence is high enough to act or an audit tells you to change approach. When you do not know what to ask, make the candidate questions the options. Before --remember, offer Jev candidate memory items and a do-not-save option. Consult before every --hands that changes state, after any failed or surprising result, and when jev_notice appears. Quote probabilities and scores verbatim. A premise probability under 0.5 or a change_approach answer means revise the assumption and observe again before acting; a high premise probability with top readiness means act now, because more observation without a question is waste.
 ACT AND VERIFY
-Every mouse or keyboard action goes through --hands, which releases held input and captures afterwards; compare that capture with your intention through Retina or Jev before claiming progress. A delivered click or key is not a completed step. Prefer keyboard shortcuts where they are reliable, and confirm which window has focus before typing. If a tool returns a traceback, read its last line, fix the argument once, and consult Jev if it fails again.
+Every mouse or keyboard action goes through --hands, which releases held input and captures afterwards; compare that capture with your intention through Retina or Jev before claiming progress. Hands does not measure pixel change: ads and animation move pixels on their own, so a diff would not show whether the action worked. A delivered click or key is not a completed step. Prefer keyboard shortcuts where they are reliable, and confirm which window has focus before typing. If a tool returns a traceback, read its last line, fix the argument once, and consult Jev if it fails again.
 REMEMBER AND END
 --remember replaces memory.txt; write the current story: goal, what was verified and how, open assumptions, attempts, corrections, the next action, and coordinates with the capture id they came from. Update it when remember_notice appears and always before ending. To end a wake: --remember, then --stop. Only if GOAL explicitly allows continuation, write ["--composer"] or [SECONDS,"--composer"] to the next_json path in RUNTIME instead of calling --stop, then end your reply; delays are capped at 3600 seconds and one launch runs at most the wakes shown in RUNTIME.
 EVOLVE
@@ -46,14 +46,24 @@ def write(p, v): text(p, json.dumps(v, ensure_ascii=False))
 def b64(im): buf = io.BytesIO(); im.save(buf, 'PNG'); return 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode()
 def log(kind, data):
     with open(RUN, 'a', encoding='utf-8') as f: f.write(json.dumps(dict(t=time.strftime('%H:%M:%S'), pid=os.getpid(), kind=kind, data=data), ensure_ascii=False, default=str) + '\n')
+BEHAVIOR = ROOT / 'behavior.jsonl'; T0 = float(os.environ.setdefault('TRIDENT_T0', str(time.time())))
+def _scrub(v):
+    if isinstance(v, dict): return {k: _scrub(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)): return [_scrub(x) for x in v]
+    if isinstance(v, str) and (v.startswith('data:image') or v.startswith('Bearer ') or 'sk-or-' in v): return '[omitted]'
+    return v
+def behavior(kind, data, dur=None):
+    rec = dict(t=time.strftime('%H:%M:%S'), ms=round((time.time() - T0) * 1000), pid=os.getpid(), run=os.environ.get('TRIDENT_RUN'), kind=kind, data=_scrub(data))
+    if dur is not None: rec['dur'] = round(float(dur), 3)
+    with open(BEHAVIOR, 'a', encoding='utf-8') as f: f.write(json.dumps(rec, ensure_ascii=False, default=str) + '\n')
+def thought(line):
+    try: ev = json.loads(line)
+    except Exception: return
+    if ev.get('type') not in ('thinking', 'assistant'): return
+    text = ev.get('text') or ''
+    if isinstance(text, str) and text.strip(): behavior('thought', dict(text=text[:2000]))
 def fit(im, cap): s = min(1, cap / max(im.size)); return im.resize((round(im.width * s), round(im.height * s)), Image.Resampling.LANCZOS) if s < 1 else im
 def padded(a, b, size, total): desired = min(total, max(size, b - a)); lo = max(0, min(total - desired, (a + b) / 2 - desired / 2)); return round(lo), round(lo + desired)
-def changed(a, b):
-    with Image.open(a) as x, Image.open(b) as y:
-        if x.size != y.size: return dict(note='screen size changed')
-        r, g, bl = ImageChops.difference(x.convert('RGB'), y.convert('RGB')).split()
-    d = ImageChops.lighter(ImageChops.lighter(r, g), bl).point(lambda v: 255 * (v > 24)); bb = d.getbbox(); w, h = d.size
-    return bb and dict(box=[round(bb[0] * 1000 / w), round(bb[1] * 1000 / h), round(bb[2] * 1000 / w), round(bb[3] * 1000 / h)], fraction=round(d.histogram()[255] / (w * h), 4))
 
 @dataclass(frozen=True)
 class Oracle:
@@ -147,24 +157,29 @@ class Engine:
         self.memory.touch(); self.goal.touch(); self.result.exists() or write(self.result, dict(since_jev=0, since_remember=0)); Path('look.json').exists() or write('look.json', None)
     desktop = cached_property(lambda self: Desktop())
     def capture(self, *_):
-        '''$CALL --capture : screenshot of the whole virtual desktop; writes and returns screen.json with id, image (file path), size (pixels), desktop (left, top, width, height in pixels), at, and changed (null until hands fills it).'''
+        '''$CALL --capture : screenshot of the whole virtual desktop; writes and returns screen.json with id, image (file path), size (pixels), desktop (left, top, width, height in pixels), and at.'''
         bounds = self.desktop.bounds; image = ImageGrab.grab(all_screens=True); shots = self.work / 'shots'; shots.mkdir(exist_ok=True); sid = time.strftime('%H%M%S') + f'{time.time_ns() // 1000 % 1000:03d}'; path = shots / f'{sid}.png'; image.save(path)
         for old in sorted(shots.glob('*.png'), key=os.path.getmtime)[:-8]: old.unlink()
-        v = dict(id=sid, image=str(path), size=list(image.size), desktop=list(bounds), at=round(time.time(), 3), changed=None); write('screen.json', v); return v
+        v = dict(id=sid, image=str(path), size=list(image.size), desktop=list(bounds), at=round(time.time(), 3)); write('screen.json', v); return v
     def retina(self, question, *nums):
         '''$CALL --retina "QUESTION" [X0 Y0 X1 Y1] : asks Retina about the latest capture, zoomed to the whole-desktop 0-1000 region X0 Y0 X1 Y1 (small regions are padded to stay readable) or the whole desktop when omitted; writes and returns look.json with capture id, region, question, answer, box and center (whole-desktop 0-1000 or null) and box_warning.'''
-        screen = self.screen; W, H = screen['size']; n = list(map(float, nums))
+        screen = self.screen; W, H = screen['size']; n = list(map(float, nums)); t0 = time.monotonic()
         if n and not (len(n) == 4 and 0 <= n[0] < n[2] <= 1000 and 0 <= n[1] < n[3] <= 1000): raise ValueError('region needs four whole-desktop 0-1000 numbers X0 Y0 X1 Y1 with X0<X1 and Y0<Y1, or none')
+        behavior('request', dict(tool='retina', question=question, capture=screen['id'], region=[round(x) for x in (n or [0, 0, 1000, 1000])]))
         r = n or [0, 0, 1000, 1000]; area = [r[0] * W / 1000, r[1] * H / 1000, r[2] * W / 1000, r[3] * H / 1000]
         area[0], area[2] = padded(area[0], area[2], 480, W); area[1], area[3] = padded(area[1], area[3], 320, H)
-        with Image.open(screen['image']) as im: crop = im.crop(tuple(area)).convert('RGB')
-        o = self.vision.ask(question, fit(crop, 1536), screen['image']); bx = o['box']; box = warning = None
+        try:
+            with Image.open(screen['image']) as im: crop = im.crop(tuple(area)).convert('RGB')
+            o = self.vision.ask(question, fit(crop, 1536), screen['image'])
+        except Exception as e:
+            behavior('response', dict(tool='retina', capture=screen['id'], error=repr(e)), dur=time.monotonic() - t0); raise
+        bx = o['box']; box = warning = None
         if bx is not None:
             if not (0 <= bx[0] < bx[2] <= 1000 and 0 <= bx[1] < bx[3] <= 1000): warning = 'Retina returned an out-of-range or inverted box; no target located.'
             elif (bx[2] - bx[0]) * (bx[3] - bx[1]) >= 900000: warning = 'Retina boxed almost the whole region; no target located; zoom closer or name the object more precisely.'
             else: box = [round((area[i % 2] + bx[i] * (area[i % 2 + 2] - area[i % 2]) / 1000) * 1000 / (W, H)[i % 2]) for i in range(4)]
         v = dict(capture=screen['id'], region=[round(area[i] * 1000 / (W, H)[i % 2]) for i in range(4)], question=question, answer=str(o['answer']), box=box, center=box and [(box[0] + box[2]) // 2, (box[1] + box[3]) // 2], box_warning=warning)
-        write('look.json', v); return v
+        write('look.json', v); behavior('response', dict(tool='retina', capture=v['capture'], answer=v['answer'], box=v['box'], center=v['center'], box_warning=v['box_warning']), dur=time.monotonic() - t0); return v
     def jev(self, narrative, *blocks):
         '''$CALL --jev "NARRATIVE" "BLOCK" ... : one question per BLOCK: "id?Question|a=Option|b=Option" chooses between your options plus change_approach, "id?Question" gives a yes probability, "id#Question|low|mid|high" scores on your ordered levels, "id@description of a target" boxes the target in whole-desktop 0-1000 and adds id_visible, the probability that the target is on screen; returns every answer with probabilities and confidence, the three audits and a summary.'''
         if not narrative.strip() or not blocks: raise ValueError(JEV_USAGE)
@@ -178,15 +193,20 @@ class Engine:
             elif kind == '#': q[qid] = dict(type='score', instructions=ask, criteria=opts)
             elif opts: q[qid] = dict(type='choice', instructions=ask, criteria=dict([o.split('=', 1) if '=' in o else (f'opt{j + 1}', o) for j, o in enumerate(opts)]) | dict(change_approach=ESCAPE))
             else: q[qid] = dict(type='noul', instructions=ask)
-        q |= AUDITS; screen = self.screen
-        state = ['GOAL: ' + self.goal.read_text('utf-8'), 'MEMORY: ' + self.memory.read_text('utf-8'), 'NARRATIVE: ' + narrative, 'SCREEN (changed = pixel diff since the last hands, box in whole-desktop 0-1000): ' + json.dumps({k: screen[k] for k in ('id', 'size', 'changed')}), 'RETINA REPORT: ' + json.dumps(self.look, ensure_ascii=False), 'SCREENSHOT:']
-        with Image.open(screen['image']) as im: r = self.decision.ask(state, fit(im.convert('RGB'), 1568), q)
+        q |= AUDITS; screen, look, t0 = self.screen, self.look, time.monotonic(); look_id = look.get('capture') if isinstance(look, dict) else None
+        behavior('request', dict(tool='jev', capture=screen['id'], look_capture=look_id, narrative=narrative[:1500], questions=list(q)))
+        state = ['GOAL: ' + self.goal.read_text('utf-8'), 'MEMORY: ' + self.memory.read_text('utf-8'), 'NARRATIVE: ' + narrative, 'SCREEN: ' + json.dumps({k: screen[k] for k in ('id', 'size', 'at')}), 'RETINA REPORT: ' + json.dumps(look, ensure_ascii=False), 'SCREENSHOT:']
+        try:
+            with Image.open(screen['image']) as im: r = self.decision.ask(state, fit(im.convert('RGB'), 1568), q)
+        except Exception as e:
+            behavior('response', dict(tool='jev', capture=screen['id'], look_capture=look_id, error=repr(e)), dur=time.monotonic() - t0); raise
         told = []
         for name, a in r['answers'].items():
             if a['type'] == 'box': b = a['box']; a['box'] = [round(b['left'] * 1000), round(b['top'] * 1000), round(b['right'] * 1000), round(b['bottom'] * 1000)]; a['center'] = [(a['box'][0] + a['box'][2]) // 2, (a['box'][1] + a['box'][3]) // 2]; told.append(f"{name}: box {a['box']} center {a['center']} confidence {a['confidence']:.2f}")
             elif a['type'] == 'choice': told.append(f"{name}: {a['choice']} ({', '.join(f'{k} {v:.2f}' for k, v in a['probabilities'].items())}; confidence {a['confidence']:.2f}): {q[name]['criteria'][a['choice']]}")
             elif a['type'] == 'noul': told.append(f"{name}: probability {a['noul']:.2f}")
             else: told.append(f"{name}: score {a['score']:.2f} of 0-{len(a['legend']) - 1} ({a['legend'][str(round(a['score']))]}); confidence {a['confidence']:.2f}")
+        behavior('response', dict(tool='jev', capture=screen['id'], look_capture=look_id, summary=told), dur=time.monotonic() - t0)
         return r | dict(by='jev', summary='\n'.join(told))
     def _gestures(self, src):
         d = self.desktop
@@ -204,13 +224,18 @@ class Engine:
                     pts = list(zip(nums[::2], nums[1::2])); d.drag(pts) if verb == 'drag' else getattr(d, dict(click='click', rclick='rightClick', dclick='doubleClick', move='moveTo')[verb])(*pts[0])
                 else: raise ValueError(f'unknown gesture {verb}; type and paste take the rest of their own line')
     def hands(self, src):
-        '''$CALL --hands "GESTURES" : gestures are click X Y, rclick X Y, dclick X Y, move X Y, drag X0 Y0 X1 Y1 ..., scroll N [X Y] (positive is up), key ctrl+s, wait SECONDS (at most 10), separated by ; or newlines, plus type TEXT (Unicode keystrokes) and paste TEXT (clipboard then Ctrl+V), which take the rest of their own line; a source whose first word is not a gesture runs as Python with desktop (click, rightClick, doubleClick, moveTo, moveRel, drag(points), scroll, key, type_text, paste, clipboard, keyDown, keyUp, mouseDown, mouseUp, position; all whole-desktop 0-1000), read, time and json, and only printed values come back; afterwards releases input, captures and returns the new screen.json with stdout and changed (diff box and fraction, or null).'''
-        before, d = self.screen, self.desktop
-        with ExitStack() as stack, redirect_stdout(io.StringIO()) as out:
-            stack.callback(d.release)
-            if src.split(None, 1)[0] in GESTURES: self._gestures(src)
-            else: exec(compile(src, '<hands>', 'exec'), dict(desktop=d, read=read, time=time, json=json))
-        time.sleep(.3); v = self.capture() | dict(stdout=out.getvalue()); v['changed'] = changed(before['image'], v['image']); write('screen.json', v); return v
+        '''$CALL --hands "GESTURES" : gestures are click X Y, rclick X Y, dclick X Y, move X Y, drag X0 Y0 X1 Y1 ..., scroll N [X Y] (positive is up), key ctrl+s, wait SECONDS (at most 10), separated by ; or newlines, plus type TEXT (Unicode keystrokes) and paste TEXT (clipboard then Ctrl+V), which take the rest of their own line; a source whose first word is not a gesture runs as Python with desktop (click, rightClick, doubleClick, moveTo, moveRel, drag(points), scroll, key, type_text, paste, clipboard, keyDown, keyUp, mouseDown, mouseUp, position; all whole-desktop 0-1000), read, time and json, and only printed values come back; afterwards releases input, captures and returns the new screen.json with stdout.'''
+        d, screen, t0 = self.desktop, self.screen, time.monotonic()
+        behavior('request', dict(tool='hands', capture=screen.get('id'), source=str(src)[:1500]))
+        try:
+            with ExitStack() as stack, redirect_stdout(io.StringIO()) as out:
+                stack.callback(d.release)
+                if str(src).split(None, 1)[0] in GESTURES: self._gestures(src)
+                else: exec(compile(src, '<hands>', 'exec'), dict(desktop=d, read=read, time=time, json=json))
+            time.sleep(.3); v = self.capture() | dict(stdout=out.getvalue()); write('screen.json', v)
+        except Exception as e:
+            behavior('response', dict(tool='hands', capture=screen.get('id'), error=repr(e)), dur=time.monotonic() - t0); raise
+        behavior('response', dict(tool='hands', before=screen.get('id'), capture=v['id'], stdout=v['stdout'][:1500]), dur=time.monotonic() - t0); return v
     def remember(self, narrative):
         '''$CALL --remember "TEXT" : replaces memory.txt with TEXT.'''
         text(self.memory, narrative); return dict(remembered=len(narrative))
@@ -224,7 +249,7 @@ class Engine:
         write(self.result, v); print(json.dumps(v, ensure_ascii=False), flush=True)
     def composer(self, *goal):
         if goal: text(self.goal, ' '.join(goal))
-        call = f"& '{PYTHON}' '{SCRIPT}' --work '{self.work}'"; runtime = dict(script=str(SCRIPT), python=str(PYTHON), work=str(self.work), next_json=str(self.continuation), memory=str(self.memory), goal=str(self.goal), agent_model=AGENT_MODEL, decision_model=DECISION_MODEL, vision_url=VISION_URL, retina_timeout_seconds=self.vision.timeout, jev_timeout_seconds=self.decision.timeout, wakes_per_launch=WAKES, keys=sorted(KEY_MAP))
+        call = f"& '{PYTHON}' '{SCRIPT}' --work '{self.work}'"; runtime = dict(script=str(SCRIPT), python=str(PYTHON), work=str(self.work), behavior=str(BEHAVIOR), next_json=str(self.continuation), memory=str(self.memory), goal=str(self.goal), agent_model=AGENT_MODEL, decision_model=DECISION_MODEL, vision_url=VISION_URL, retina_timeout_seconds=self.vision.timeout, jev_timeout_seconds=self.decision.timeout, wakes_per_launch=WAKES, keys=sorted(KEY_MAP))
         prompt = '\n'.join((INSTINCT, 'TOOLS', *(f.__doc__.replace('$CALL', call) for f in TOOLS.values()), 'RUNTIME', json.dumps(runtime), 'GOAL', self.goal.read_text('utf-8'), 'MEMORY', self.memory.read_text('utf-8'), 'LAST RESULT (output of the previous tool call; its counters drive jev_notice and remember_notice)', self.result.read_text('utf-8')))
         vendor = self.work / 'agent'; profile = vendor / 'home/.cursor'; profile.mkdir(parents=True, exist_ok=True); temp = ROOT.parent / 'temp'; temp.mkdir(exist_ok=True); prompt_file = self.work / 'prompt.txt'; text(prompt_file, prompt)
         env = os.environ | dict(HOME=str(vendor / 'home'), USERPROFILE=str(vendor / 'home'), CURSOR_CONFIG_DIR=str(profile), CURSOR_DATA_DIR=str(vendor / 'data'), TEMP=str(temp), TMP=str(temp), PYTHONDONTWRITEBYTECODE='1', PYTHONUTF8='1'); env.pop('OPENROUTER_API_KEY', None)
@@ -239,7 +264,10 @@ class Engine:
                 while p.poll() is None and not self.sentinel.exists(): time.sleep(.1)
                 p.kill()
             threading.Thread(target=watch, daemon=True).start()
-            for raw in p.stdout: log('agent', raw.decode('utf-8', 'replace').rstrip())
+            t0 = time.monotonic(); behavior('request', dict(tool='composer', model=AGENT_MODEL, goal=self.goal.read_text('utf-8')[:2000]))
+            for raw in p.stdout:
+                line = raw.decode('utf-8', 'replace').rstrip(); log('agent', line); thought(line)
+            behavior('response', dict(tool='composer', code=p.poll()), dur=time.monotonic() - t0)
     def _follow(self):
         for _ in range(WAKES):
             if self.sentinel.exists() or not self.continuation.exists(): break
