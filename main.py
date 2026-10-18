@@ -50,7 +50,7 @@ def text(p, v): p = Path(p); t = p.with_name(p.name + '.' + uuid.uuid4().hex + '
 def read(p): return json.loads(Path(p).read_text('utf-8-sig'))
 def write(p, v): text(p, json.dumps(v, ensure_ascii=False))
 def b64(im): buf = io.BytesIO(); im.save(buf, 'PNG'); return 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode()
-META = frozenset('''session_id timestamp_ms model_call_id call_id toolCallId startedAtMs completedAtMs hookAdditionalContexts apiKeySource permissionMode cwd adminCommandDenylist closeStdin conversationId fileOutputThresholdBytes hardTimeout hasInputRedirect hasOutputRedirect isBackground parsingResult requestId simpleCommands skipApproval timeout timeoutBehavior relatedCursorRulePaths relatedCursorRules isEmpty exceededLimit totalLines fileSize clientTruncated ripgrepTruncated contentTruncated isContextLine executionTime signal interleavedOutput localExecutionTime system_fingerprint usage prompt_tokens completion_tokens total_tokens finish_reason index object created id pid shellId msToWait backgroundReason workingDirectory readRange outputFilePath localExecutionTimeMs outputLength regexRequested runtimeMs totalFiles'''.split())
+META = frozenset('''session_id timestamp_ms model_call_id call_id toolCallId startedAtMs completedAtMs hookAdditionalContexts apiKeySource permissionMode cwd adminCommandDenylist closeStdin conversationId fileOutputThresholdBytes hardTimeout hasInputRedirect hasOutputRedirect isBackground parsingResult requestId simpleCommands skipApproval timeout timeoutBehavior relatedCursorRulePaths relatedCursorRules isEmpty exceededLimit totalLines fileSize clientTruncated ripgrepTruncated contentTruncated isContextLine executionTime signal interleavedOutput localExecutionTime system_fingerprint usage prompt_tokens completion_tokens total_tokens finish_reason index object created id pid shellId msToWait backgroundReason workingDirectory readRange outputFilePath localExecutionTimeMs outputLength regexRequested runtimeMs totalFiles beforeFullFileContent afterFullFileContent'''.split())
 THOUGHT = []
 def clip(value):
     if isinstance(value, dict): return {k: clip(v) for k, v in value.items() if k not in META and not (k == 'exitCode' and type(v) is int and v == 0)}
@@ -72,10 +72,8 @@ def result_fields(result, name):
         fields = dict(text=done.pop('content'), **done) if isinstance(done.get('content'), str) else dict(done)
     elif isinstance(result, dict) and 'failure' in result: fields = dict(failure=result['failure'])
     else: fields = result if isinstance(result, dict) else dict(text='' if result is None else str(result))
-    if name == 'shell' and 'stdout' in fields:
-        del fields['command']
-        out = fields['stdout']
-        if isinstance(out, str) and out.lstrip()[:1] in '{[': fields['stdout'] = json.loads(out)
+    if name == 'shell' and 'stdout' in fields: del fields['command']
+    if isinstance(fields.get('failure'), dict): fields['failure'].pop('command', None)
     return fields
 def resp_fields(body):
     if not isinstance(body, dict): return dict(text='' if body is None else str(body))
@@ -117,17 +115,45 @@ def narrate(kind, data):
 def present_user(text):
     head, runtime = text.split('\nRUNTIME\n', 1); runtime, goal = runtime.split('\nGOAL\n', 1); goal, memory = goal.split('\nMEMORY\n', 1); memory, last = memory.split('\n' + LAST + '\n', 1)
     pre, tools = head.split('\nTOOLS\n', 1); launcher = re.search(r"& '[^']*' '[^']*' --work '[^']*'", tools).group(0)
-    body = json.dumps(json.loads(runtime), ensure_ascii=False, indent=2)
-    return pre + '\nTOOLS\n\n' + launcher + '\n\n' + tools.replace(launcher + ' ', '') + '\nRUNTIME\n\n```json\n' + body + '\n```\n\nGOAL\n\n' + goal + '\n\nMEMORY\n\n' + memory + '\n\n' + LAST + '\n\n' + last
+    return pre + '\nTOOLS\n\n' + launcher + '\n\n' + tools.replace(launcher + ' ', '') + '\nRUNTIME\n\n' + plain(json.loads(runtime)) + '\n\nGOAL\n\n' + goal + '\n\nMEMORY\n\n' + memory + '\n\n' + LAST + '\n\n' + last
+def unfold(v):
+    if not isinstance(v, str): return v
+    v = v.replace('\r\n', '\n').replace('\r', '\n'); lines = v.splitlines() or ['']
+    if len(lines) > 1 and all(not s.strip() or s.lstrip()[:1] in '{[' for s in lines):
+        got = []
+        for s in lines:
+            if not s.strip(): continue
+            try: got.append(json.loads(s.strip()))
+            except json.JSONDecodeError: return v
+        return got
+    t = v.strip()
+    if t[:1] not in '{[': return v
+    try: return json.loads(t)
+    except json.JSONDecodeError: return v
+def plain(v, n=0):
+    pad = '  ' * n
+    if v is None: return pad + 'null'
+    if isinstance(v, str): return pad + v.replace('\r\n', '\n').replace('\r', '\n')
+    if isinstance(v, dict): return '\n'.join(f'{pad}{k}: {plain(x)}' if not isinstance(x, (dict, list)) else f'{pad}{k}:\n{plain(x, n + 1)}' for k, x in v.items() if x != '')
+    if isinstance(v, list):
+        if not v: return pad + '(none)'
+        return '\n'.join(f'{pad}-\n{plain(x, n + 1)}' if isinstance(x, (dict, list)) else f'{pad}- {x}' for x in v)
+    return pad + str(v)
 def show(k, v):
+    v = unfold(v)
     if k == 'text' and isinstance(v, str): return v
     if isinstance(v, str): return f'{k}:\n{v}' if '\n' in v else f'{k}: {v}'
-    shown = json.dumps(v, ensure_ascii=False, indent=2, default=str); return f'{k}: {shown}' if '\n' not in shown else f'{k}:\n```json\n{shown}\n```'
+    if isinstance(v, (dict, list)):
+        shown = plain(v, 1); return shown if k == 'text' else f'{k}:\n{shown}'
+    return f'{k}: {v}'
+LABEL = dict(call='request', result='response', req='request', resp='response')
 def render(item):
-    title = f"## {item['t']} {item['kind']}" + (f" {item['name']}" if item.get('name') else '')
-    keys = [k for k in item if k not in ('t', 'kind', 'name')]
-    body = item['text'] if keys == ['text'] and isinstance(item['text'], str) else '\n\n'.join(show(k, item[k]) for k in keys)
-    return (title + '\n\n' + body + '\n\n').encode('utf-8')
+    kind = LABEL.get(item['kind'], item['kind'])
+    title = f"## {item['t']} {kind}" + (f" {item['name']}" if item.get('name') else '')
+    keys = [k for k in item if k not in ('t', 'kind', 'name') and item[k] not in ('', None, [], {})]
+    body = show('text', item['text']) if keys == ['text'] else '\n\n'.join(show(k, item[k]) for k in keys)
+    rule = '=' * 72 if kind == 'request' else '-' * 72 if kind == 'response' else ''
+    return ((rule + '\n\n' if rule else '') + title + '\n\n' + body + '\n\n').encode('utf-8')
 def _xfer(fn, h, buf):
     n, off = wintypes.DWORD(), 0
     while off < len(buf):
@@ -153,10 +179,11 @@ def append(blob):
         K32.CloseHandle(h)
 def mirror(blob):
     if sys.stdout.isatty(): sys.stdout.buffer.write(blob); sys.stdout.buffer.flush(); return
-    if not K32.AttachConsole(int(os.environ['TRIDENT_CONSOLE'])): raise ctypes.WinError()
+    K32.FreeConsole()
+    if 'TRIDENT_CONSOLE' not in os.environ or not K32.AttachConsole(int(os.environ['TRIDENT_CONSOLE'])): return
     try:
         h = K32.CreateFileW('CONOUT$', 0x40000000, 3, None, 3, 0, None)
-        if h == wintypes.HANDLE(-1).value: raise ctypes.WinError()
+        if h == wintypes.HANDLE(-1).value: return
         try: _xfer(K32.WriteFile, h, blob)
         finally: K32.CloseHandle(h)
     finally: K32.FreeConsole()
@@ -353,7 +380,11 @@ class Engine:
                 while p.poll() is None and not self.sentinel.exists(): time.sleep(.1)
                 p.kill()
             threading.Thread(target=watch, daemon=True).start()
-            for raw in p.stdout: log('agent', raw.decode('utf-8', 'replace').rstrip())
+            for raw in p.stdout:
+                line = raw.decode('utf-8', 'replace').rstrip(); log('agent', line)
+                try: finished = json.loads(line).get('type') == 'result'
+                except json.JSONDecodeError: finished = False
+                if finished: p.kill(); break
     def _follow(self):
         while True:
             if self.sentinel.exists() or not self.continuation.exists(): break
