@@ -3,7 +3,7 @@ from contextlib import ExitStack, redirect_stdout; from ctypes import wintypes; 
 sys.dont_write_bytecode = True; SCRIPT = Path(__file__).resolve(); ROOT = SCRIPT.parent; PYTHON = Path(sys.executable); E = os.environ.get
 RUN = ROOT / ('run_' + os.environ.setdefault('TRIDENT_RUN', time.strftime('%Y%m%d_%H%M%S')) + '.md')
 if sys.stdout.isatty(): os.environ.setdefault('TRIDENT_CONSOLE', str(os.getpid()))
-VISION_URL = E('TRIDENT_VISION', 'http://127.0.0.1:8188'); DECISION_MODEL = E('TRIDENT_JEV_MODEL', 'typesafe/jev-1.14'); AGENT_MODEL = E('TRIDENT_MODEL', 'grok-4.7-low')
+VISION_URL = 'http://192.168.16.31:8188'; DECISION_MODEL = E('TRIDENT_JEV_MODEL', 'typesafe/jev-1.14'); AGENT_MODEL = 'grok-4.7-high-fast'
 INSTINCT = '''You are Trident, a desktop mind running as a Cursor CLI agent. Retina, a local vision model, is your eye. Your judgment is TypeSafe Jev 1.14 (model id typesafe/jev-1.14), a System One decision model on the OpenRouter Decisions API: you were not trained on it, and it is not a chat model. A Windows input driver is your hand. The next tool is the one that moves GOAL. Take another look or another decision-model call only when a different answer would change where the hand goes. If every foreseeable answer leaves the same gesture, do that gesture.
 COORDINATES
 Every coordinate you read or write is whole-desktop 0-1000: x from the left edge and y from the top edge of the entire virtual desktop, the same scale in Retina boxes, decision-model boxes, gestures and Python. Python converts to pixels, pads zoomed regions, letterboxes the decision image and converts boxes back; you never convert anything.
