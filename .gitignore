@@ -1,4 +1,3 @@
 *
-!main.py
-!gui.py
-!.gitignore
+!/main.py
+!/.gitignore
