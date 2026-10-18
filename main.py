@@ -44,8 +44,70 @@ def text(p, v): p = Path(p); t = p.with_name(p.name + '.' + uuid.uuid4().hex + '
 def read(p): return json.loads(Path(p).read_text('utf-8-sig'))
 def write(p, v): text(p, json.dumps(v, ensure_ascii=False))
 def b64(im): buf = io.BytesIO(); im.save(buf, 'PNG'); return 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode()
+META = frozenset('''session_id timestamp_ms model_call_id call_id toolCallId startedAtMs completedAtMs hookAdditionalContexts apiKeySource permissionMode cwd adminCommandDenylist closeStdin conversationId fileOutputThresholdBytes hardTimeout hasInputRedirect hasOutputRedirect isBackground parsingResult requestId simpleCommands skipApproval timeout timeoutBehavior relatedCursorRulePaths relatedCursorRules isEmpty exceededLimit totalLines fileSize clientTruncated ripgrepTruncated contentTruncated isContextLine executionTime signal interleavedOutput localExecutionTime system_fingerprint usage prompt_tokens completion_tokens total_tokens finish_reason index object created id pid'''.split())
+THOUGHT = []
+def clip(value):
+    if isinstance(value, dict): return {k: clip(v) for k, v in value.items() if k not in META}
+    if isinstance(value, list): return [clip(v) for v in value]
+    return value
+def words(message):
+    content = (message or {}).get('content') if isinstance(message, dict) else message
+    if isinstance(content, str): return content
+    if isinstance(content, list): return ''.join(part.get('text', '') if isinstance(part, dict) else str(part) for part in content)
+    return '' if content is None else json.dumps(content, ensure_ascii=False)
+def row(kind, **fields): return dict(t=time.strftime('%H:%M:%S'), kind=kind, **fields)
+def take_thought():
+    if not THOUGHT: return None
+    text = ''.join(THOUGHT); THOUGHT.clear(); return row('think', text=text) if text else None
+def result_fields(result):
+    result = clip(result)
+    if isinstance(result, dict) and isinstance(result.get('success'), dict):
+        done = result['success']
+        return dict(text=done.pop('content'), **done) if isinstance(done.get('content'), str) else done
+    if isinstance(result, dict) and 'failure' in result: return dict(failure=result['failure'])
+    return result if isinstance(result, dict) else dict(text='' if result is None else str(result))
+def resp_fields(body):
+    if not isinstance(body, dict): return dict(text='' if body is None else str(body))
+    choices = body.get('choices')
+    if isinstance(choices, list) and choices:
+        return dict(text=words((choices[0] or {}).get('message')))
+    if 'answers' in body: return dict(answers=clip(body['answers']))
+    return clip(body)
+def narrate(kind, data):
+    rows = []
+    if kind == 'agent':
+        try: event = json.loads(data)
+        except json.JSONDecodeError: return [row('agent', text=data)]
+        typ, sub = event.get('type'), event.get('subtype')
+        if typ == 'thinking' and sub == 'delta':
+            THOUGHT.append(event.get('text') or ''); return []
+        thought = take_thought()
+        if thought: rows.append(thought)
+        if typ == 'thinking': return rows
+        if typ == 'system' and sub == 'init': rows.append(row('start', text=event.get('model') or ''))
+        elif typ == 'user': rows.append(row('user', text=words(event.get('message'))))
+        elif typ == 'assistant':
+            text = words(event.get('message'))
+            if text: rows.append(row('say', text=text))
+        elif typ == 'tool_call':
+            call = event.get('tool_call') or {}
+            name = next((key[:-8] for key in call if key.endswith('ToolCall')), 'tool')
+            body = call.get(name + 'ToolCall') or {}
+            if sub == 'started': rows.append(row('call', name=name, **clip(body.get('args') or {})))
+            else: rows.append(row('result', name=name, **result_fields(body.get('result'))))
+        else: rows.append(row(typ or 'agent', **clip({k: v for k, v in event.items() if k not in ('type', 'subtype')})))
+        return rows
+    thought = take_thought()
+    if thought: rows.append(thought)
+    if kind == 'resp': rows.append(row('resp', url=data.get('url'), **resp_fields(data.get('body'))))
+    elif isinstance(data, dict): rows.append(row(kind, **clip(data)))
+    else: rows.append(row(kind, text='' if data is None else str(data)))
+    return rows
 def log(kind, data):
-    with open(RUN, 'a', encoding='utf-8') as f: f.write(json.dumps(dict(t=time.strftime('%H:%M:%S'), pid=os.getpid(), kind=kind, data=data), ensure_ascii=False, default=str) + '\n')
+    for item in narrate(kind, data):
+        line = json.dumps(item, ensure_ascii=False, default=str)
+        with open(RUN, 'a', encoding='utf-8') as f: f.write(line + '\n')
+        if sys.stdout.isatty(): print(line, flush=True)
 def fit(im, cap): s = min(1, cap / max(im.size)); return im.resize((round(im.width * s), round(im.height * s)), Image.Resampling.LANCZOS) if s < 1 else im
 def padded(a, b, size, total): desired = min(total, max(size, b - a)); lo = max(0, min(total - desired, (a + b) / 2 - desired / 2)); return round(lo), round(lo + desired)
 def changed(a, b):
