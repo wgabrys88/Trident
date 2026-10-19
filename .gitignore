@@ -1,3 +1,8 @@
 *
 !/main.py
 !/.gitignore
+!/chess_live.py
+!/chess_eye.py
+!/chess_player.py
+!/chess_ui.py
+!/chess_atlas.json
