@@ -229,7 +229,7 @@ def questions(blocks):
     return q
 GRIDS = ((3, 3), (3, 2), (2, 3), (5, 2), (2, 5), (4, 2), (2, 4))
 def magnify(im):
-    w, h = im.size; cols, rows = min(GRIDS, key=lambda g: abs(g[0] / g[1] - w / h)); return im.resize((cols * 512, rows * 512), Image.Resampling.LANCZOS)
+    return fit(im, 960)
 def padded(a, b, size, total): desired = min(total, max(size, b - a)); lo = max(0, min(total - desired, (a + b) / 2 - desired / 2)); return round(lo), round(lo + desired)
 
 @dataclass(frozen=True)
