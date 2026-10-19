@@ -3,8 +3,11 @@
 The computer-play board is a green square. The vertical scan covers the full
 frame, so a board that is not in the old 150–1200 x window can still be found.
 On shot 194013461, after 1. e4 c5 2. Nf3, empty squares were distance <= 18
-and occupied squares >= 43. Threshold 30 and luminance split 115 fit that
-green theme, not every theme.
+and occupied squares >= 43. Threshold 30 fit that saved frame. On the live
+starting board of 2026-10-19 the same green theme measured empty squares at 0
+and white pieces on light squares at about 20, so 30 read the back rank as
+w.w.w.w. and the position would not start. Threshold 18 separates that gap.
+Luminance split 115 still separates the piece colors.
 
 Piece types come from chess_atlas.json when it exists: the inner 40% of a
 square, 24x24 luma, normalized correlation against same-color templates.
@@ -44,10 +47,12 @@ def locate(pix, width, height):
 
     # Green controls beside the board, and a green strip above it, are
     # separate runs once the threshold clears the dimmer pixels. The board
-    # is the largest pair of runs whose sides match.
+    # is the largest pair of runs whose sides match. A last-move highlight
+    # can drop one column to about 50, which splits the board at 80; 40
+    # keeps that column inside the same run without joining the strip above.
     best = None
-    for tx in (80, 120, 160):
-        for ty in (80, 120, 160, 200):
+    for tx in (40, 80, 120, 160):
+        for ty in (40, 80, 120, 160, 200):
             for x0, x1 in runs(xs, tx):
                 for y0, y1 in runs(ys, ty):
                     side_x, side_y = x1 - x0, y1 - y0
@@ -103,11 +108,12 @@ def grab(path=None):
     return image
 
 
-def kinds(pix, box, occ_thresh=30, lum_split=115):
+def kinds(pix, box, occ_thresh=18, lum_split=115):
     """Occupied squares as 'w' or 'b', empty as '.'.
 
     Occupancy is the corner-versus-center distance from distances().
-    On shot 194013461 the gap was empty <= 18 and occupied >= 43.
+    On the live 2026-10-19 start, empty squares were 0 and the faintest
+    white piece on a light square was just under 20, so 18 is occupied.
     Piece color is the median luminance of center pixels that differ from
     the corner. On that shot black pieces were about 78-99 and white pieces
     about 129-197, so 115 sits in the gap. Piece type is not identified.
@@ -284,7 +290,7 @@ def classify(pix, box, colors, templates, trust=0.80):
     return rows, scores, trusted
 
 
-def read_colors(path=None, occ_thresh=30, lum_split=115):
+def read_colors(path=None, occ_thresh=18, lum_split=115):
     image = grab(path)
     pix = image.load()
     box = locate(pix, image.size[0], image.size[1])

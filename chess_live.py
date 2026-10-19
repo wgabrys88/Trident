@@ -4,8 +4,20 @@ A move is local. Find the green board, match square colors to the tracked
 game in chess_live.json, ask Stockfish, click the two squares. That click was
 about 0.31 seconds, including a queen-side castle made by clicking the king
 onto its castling square. Stockfish movetime is 0.08 seconds. The whole move
-has to stay under 5 seconds. An animation frame does not match a legal color grid;
-the loop waits and does not click.
+has to stay under 5 seconds. An animation frame can match a different legal square. After a click,
+the loop keeps the pre-click position until that move appears, or 1.5
+seconds pass. It does not click during the wait.
+
+Stockfish is a subprocess of play. play itself is meant to be a subprocess of
+the wake, so the wake can do something else at the same time. Retina is not
+in this process. `watch` is a separate process: it asks only whether a board
+is visible and writes chess_watch.json. Its screenshots go to sense/ so they
+do not replace the wake's screen.json. The watch is not on the click path.
+
+The mouse is shared through hand.lock, one locked byte. play holds it only
+across the two clicks. Another program holds it across one stroke and then
+lets go. A delivered click is not proof the move landed. If the board stays
+unreadable, play stops. A result dialog covers the center. Do not click it.
 
 Piece types are not in the color grid. chess_atlas.json stores inner-square
 luma templates. They are trusted only when every occupied square clears the
@@ -24,10 +36,10 @@ Port 9222 does not open. chess_player.boot() refuses it. The mouse and
 Stockfish live in chess_player.py. The binary is
 engines\\stockfish\\stockfish-windows-x86-64-universal.exe (Stockfish 19).
 Buttons come from chess_ui.py. The left-rail Play control is a hyperlink, not
-a game button. Click a ButtonControl below y=400. Continue resumes the tracked
-game. New Game is only for when Continue is absent. Do not accept a human
-challenge and do not open a human game: an engine clicking against a person
-cheats that person. The computer game is the speed test.
+a game button. Click a ButtonControl below y=400. fresh clicks New Game, then
+Play, and does not click Continue. Continue resumes a tracked game. Do not
+accept a human challenge and do not open a human game: an engine clicking
+against a person cheats that person. The computer game is the speed test.
 
 The board rectangle is recomputed every read. On a 1920x1080 maximized
 window it was physical [284, 192, 1023, 931]. A resize moves it. Hands in
@@ -36,15 +48,17 @@ GetWindowRect matches physical pixels only after DPI awareness context -4.
 The first read after navigation often finds no board because the page is
 still painting. Retry. Saved coordinates are not a board.
 
-  .venv\\Scripts\\python.exe chess_live.py wake 90
+  .venv\\Scripts\\python.exe chess_live.py fresh
   .venv\\Scripts\\python.exe chess_live.py see
   .venv\\Scripts\\python.exe chess_live.py play 60
+  .venv\\Scripts\\python.exe chess_live.py watch
 """
 import ctypes
 import json
+import msvcrt
+import os
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
 
@@ -58,6 +72,9 @@ from chess_player import click_px, start_engine
 
 ROOT = Path(__file__).resolve().parent
 STATE = ROOT / 'chess_live.json'
+LOCK = ROOT / 'hand.lock'
+SENSE = ROOT / 'sense'
+WATCH_STOP = ROOT / 'chess_watch.stop'
 CHROME = Path(r'C:\Program Files\Google\Chrome\Application\chrome.exe')
 PROFILE = ROOT / 'chrome-profile'
 URL = 'https://www.chess.com/play/computer'
@@ -113,6 +130,40 @@ def sig(board, white_bottom):
             row, col = rank, 7 - file
         rows[row][col] = 'w' if piece.color == chess.WHITE else 'b'
     return [''.join(row) for row in rows]
+
+
+def acquire_hand(timeout=12):
+    """Lock one byte of hand.lock. The holder must release it."""
+    if not LOCK.exists() or LOCK.stat().st_size < 1:
+        LOCK.write_bytes(b'\0')
+    handle = open(LOCK, 'r+b')
+    deadline = time.time() + timeout
+    while True:
+        try:
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            return handle
+        except OSError:
+            if time.time() >= deadline:
+                handle.close()
+                raise TimeoutError('hand busy')
+            time.sleep(0.05)
+
+
+def release_hand(handle):
+    try:
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+    finally:
+        handle.close()
+
+
+def hand_click(px, py):
+    handle = acquire_hand()
+    try:
+        return click_px(px, py)
+    finally:
+        release_hand(handle)
 
 
 def square_px(box, square, white_bottom):
@@ -268,7 +319,7 @@ def interesting():
     rows = []
     for row in walk():
         name = row['name'].lower()
-        if any(word in name for word in ('start', 'play', 'accept', 'reject', 'resign', 'hint', 'restore', 'continue', 'new game')):
+        if any(word in name for word in ('start', 'play', 'accept', 'reject', 'resign', 'hint', 'restore', 'continue', 'new game', 'new bot', 'rematch', 'nelson', 'choose')):
             rows.append(row)
     return rows
 
@@ -297,7 +348,7 @@ def open_game(depth=0):
 
     def click_named(label):
         row = names[label]
-        click_px(row['left'] + row['width'] / 2, row['top'] + row['height'] / 2)
+        hand_click(row['left'] + row['width'] / 2, row['top'] + row['height'] / 2)
         print('clicked', label)
 
     def button(label):
@@ -311,7 +362,7 @@ def open_game(depth=0):
         return
     cont = button('continue')
     if cont:
-        click_px(cont['left'] + cont['width'] / 2, cont['top'] + cont['height'] / 2)
+        hand_click(cont['left'] + cont['width'] / 2, cont['top'] + cont['height'] / 2)
         print('clicked Continue')
         time.sleep(1.2)
         return open_game(depth + 1)
@@ -324,43 +375,92 @@ def open_game(depth=0):
         return
     start = button('start')
     if start:
-        click_px(start['left'] + start['width'] / 2, start['top'] + start['height'] / 2)
+        hand_click(start['left'] + start['width'] / 2, start['top'] + start['height'] / 2)
         print('clicked Start')
         time.sleep(1.2)
         return open_game(depth + 1)
     play = button('play')
     if play:
-        click_px(play['left'] + play['width'] / 2, play['top'] + play['height'] / 2)
+        hand_click(play['left'] + play['width'] / 2, play['top'] + play['height'] / 2)
         print('clicked Play', play['left'], play['top'])
         time.sleep(1.5)
         return
     fresh = button('new game')
     if fresh:
-        click_px(fresh['left'] + fresh['width'] / 2, fresh['top'] + fresh['height'] / 2)
+        hand_click(fresh['left'] + fresh['width'] / 2, fresh['top'] + fresh['height'] / 2)
         print('clicked New Game')
         time.sleep(1.2)
         return open_game(depth + 1)
     print('no board button; not clicking the nav')
 
 
-def watch_loop(stop):
-    """Retina presence check. Slow, off the click path, whole screen."""
+def fresh():
+    """Open a new computer game. Continue is a resume. Accept is a person."""
+    launch()
+    for _ in range(25):
+        try:
+            rows = interesting()
+        except RuntimeError:
+            time.sleep(0.4)
+            continue
+
+        def buttons(label):
+            hits = [r for r in rows if r['name'].strip().lower() == label and r['type'] == 'ButtonControl' and r['top'] > 400]
+            return max(hits, key=lambda r: r['width'] * r['height']) if hits else None
+
+        if buttons('resign') or buttons('show hint'):
+            print('game already open')
+            return
+        new = buttons('new game')
+        if new:
+            hand_click(new['left'] + new['width'] / 2, new['top'] + new['height'] / 2)
+            print('clicked New Game')
+            time.sleep(1.2)
+            continue
+        play_button = buttons('play')
+        if play_button:
+            hand_click(play_button['left'] + play_button['width'] / 2, play_button['top'] + play_button['height'] / 2)
+            print('clicked Play')
+            time.sleep(1.6)
+            continue
+        if buttons('accept'):
+            print('human challenge ignored')
+            return
+        time.sleep(0.4)
+    raise SystemExit('fresh did not open a computer game')
+
+
+def watch():
+    """Separate process. Asks Retina whether a board is visible. Does not click."""
     python = BODY if BODY.exists() else Path(sys.executable)
     script = ROOT / 'main.py'
-    while not stop.is_set():
+    SENSE.mkdir(exist_ok=True)
+    WATCH_STOP.unlink(missing_ok=True)
+    while not WATCH_STOP.exists():
         try:
-            quiet = dict(cwd=ROOT, timeout=40, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            subprocess.run([str(python), str(script), '--work', str(ROOT), '--capture'], **quiet)
-            quiet['timeout'] = 100
-            subprocess.run([str(python), str(script), '--work', str(ROOT), '--retina', WATCH], **quiet)
-            look_path = ROOT / 'look.json'
+            quiet = dict(cwd=SENSE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run([str(python), str(script), '--work', str(SENSE), '--capture'], timeout=40, **quiet)
+            subprocess.run([str(python), str(script), '--work', str(SENSE), '--retina', WATCH], timeout=100, **quiet)
+            look_path = SENSE / 'look.json'
             data = json.loads(look_path.read_text(encoding='utf-8')) if look_path.exists() else {}
             (ROOT / 'chess_watch.json').write_text(json.dumps(dict(
                 at=time.strftime('%H:%M:%S'), question=WATCH, elements=data.get('elements')), indent=2), encoding='utf-8')
         except Exception as exc:
             (ROOT / 'chess_watch.json').write_text(json.dumps(dict(at=time.strftime('%H:%M:%S'), error=str(exc))), encoding='utf-8')
-        if stop.wait(20):
-            break
+        for _ in range(20):
+            if WATCH_STOP.exists():
+                return
+            time.sleep(1)
+
+
+def start_watch():
+    WATCH_STOP.unlink(missing_ok=True)
+    log_path = ROOT / 'chess_watch_log.txt'
+    handle = open(log_path, 'a', encoding='utf-8')
+    return subprocess.Popen(
+        [str(BODY if BODY.exists() else Path(sys.executable)), '-u', str(ROOT / 'chess_live.py'), 'watch'],
+        cwd=str(ROOT), stdout=handle, stderr=subprocess.STDOUT,
+        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
 
 
 def play(seconds):
@@ -368,21 +468,39 @@ def play(seconds):
     state = load()
     deadline = time.time() + float(seconds)
     pending = 0
-    stop = threading.Event()
-    threading.Thread(target=watch_loop, args=(stop,), daemon=True).start()
+    armed = None
+    missed = 0
+    watcher = start_watch()
     try:
         while time.time() < deadline:
             seen = look()
             if not seen.get('found'):
-                print('no board', seen.get('size'), seen.get('side'))
+                missed += 1
+                print('no board', seen.get('size'), seen.get('side'), flush=True)
+                if missed > 25:
+                    print('board stayed unreadable', flush=True)
+                    break
                 time.sleep(0.3)
                 continue
             board, bottom, status = interpret(seen['colors'], state, seen.get('pieces'), seen.get('pieces_trusted'))
             if board is None:
-                print(status, seen.get('colors'), seen.get('pieces'))
+                missed += 1
+                print(status, seen.get('colors'), seen.get('pieces'), flush=True)
+                if missed > 25:
+                    print('position stayed unreadable', flush=True)
+                    break
                 time.sleep(0.4)
                 continue
+            missed = 0
             if status != 'same':
+                # A sliding piece can match a different legal square for a frame.
+                # Keep the pre-click position until the clicked move shows up.
+                landed = armed is not None and (status == armed or status.startswith(armed + ' '))
+                if armed is not None and not landed and time.time() - pending < 1.5:
+                    print('hold', armed, status)
+                    time.sleep(0.12)
+                    continue
+                armed = None
                 state = save(board, bottom, status)
                 pending = 0
                 print(status, board.fen())
@@ -392,13 +510,24 @@ def play(seconds):
                 continue
             started = time.time()
             move = engine.play(board, chess.engine.Limit(time=0.08)).move
-            click_px(*square_px(seen['box'], move.from_square, bottom))
-            time.sleep(0.04)
-            click_px(*square_px(seen['box'], move.to_square, bottom))
+            try:
+                lease = acquire_hand()
+            except TimeoutError:
+                print('hand busy')
+                time.sleep(0.2)
+                continue
+            try:
+                click_px(*square_px(seen['box'], move.from_square, bottom))
+                time.sleep(0.04)
+                click_px(*square_px(seen['box'], move.to_square, bottom))
+            finally:
+                release_hand(lease)
             pending = time.time()
-            print('click', move.uci(), 'seconds', round(time.time() - started, 3))
+            armed = move.uci()
+            print('click', move.uci(), 'seconds', round(time.time() - started, 3), flush=True)
     finally:
-        stop.set()
+        WATCH_STOP.write_text('stop', encoding='utf-8')
+        watcher.terminate()
         engine.quit()
 
 
@@ -484,8 +613,12 @@ def main():
         score(sys.argv[2], sys.argv[3], sys.argv[4] != 'black' if len(sys.argv) > 4 else True)
     elif mode == 'wake':
         wake(sys.argv[2] if len(sys.argv) > 2 else '90')
+    elif mode == 'watch':
+        watch()
+    elif mode == 'fresh':
+        fresh()
     else:
-        raise SystemExit('usage: chess_live.py check|see|open|play [seconds]|learn [image]|score image fen [black]|wake [seconds]')
+        raise SystemExit('usage: chess_live.py check|see|open|fresh|play [seconds]|learn [image]|score image fen [black]|wake [seconds]|watch')
 
 
 if __name__ == '__main__':
