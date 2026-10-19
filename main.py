@@ -176,7 +176,31 @@ def mirror(blob):
         try: _xfer(K32.WriteFile, h, blob)
         finally: K32.CloseHandle(h)
     finally: K32.FreeConsole()
+def serve():
+    if getattr(serve, 'on', False): return
+    serve.on = True
+    try:
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        page = b'<!DOCTYPE html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><pre id=t style=white-space:pre-wrap></pre><script>async function g(){try{const r=await fetch("/md",{cache:"no-store"});document.getElementById("t").textContent=await r.text();scrollTo(0,1e9)}catch(e){}}setInterval(g,500);g()</script>'
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *_): pass
+            def do_GET(self):
+                path = self.path.split('?', 1)[0]
+                if path == '/md':
+                    try: body = RUN.read_bytes()
+                    except OSError: body = b''
+                    self.send_response(200); self.send_header('Content-Type', 'text/plain; charset=utf-8'); self.send_header('Cache-Control', 'no-store'); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body); return
+                if path in ('/', '/index.html'):
+                    self.send_response(200); self.send_header('Content-Type', 'text/html; charset=utf-8'); self.send_header('Cache-Control', 'no-store'); self.send_header('Content-Length', str(len(page))); self.end_headers(); self.wfile.write(page); return
+                self.send_error(404)
+        def run():
+            try: ThreadingHTTPServer(('0.0.0.0', 8765), H).serve_forever()
+            except OSError: pass
+        threading.Thread(target=run, daemon=True).start()
+    except Exception:
+        return
 def log(kind, data):
+    serve()
     for item in narrate(kind, data): mirror(append(render(item)))
 def fit(im, cap): s = min(1, cap / max(im.size)); return im.resize((round(im.width * s), round(im.height * s)), Image.Resampling.LANCZOS) if s < 1 else im
 def letterbox(im):
@@ -451,6 +475,7 @@ def main():
     for flag in ('--chain', '--fresh'): parser.add_argument(flag, action='store_true')
     parser.add_argument('--work', default=str(ROOT)); parser.add_argument('args', nargs='*'); a = parser.parse_args()
     if not a.entry and not a.chain: parser.error('need a tool flag or --chain')
+    serve()
     started, engine = time.time(), None
     atexit.register(lambda: log('exit', dict(argv=sys.argv[1:], seconds=round(time.time() - started, 1), reason=HALT.get('reason') or 'ended')))
     try:
