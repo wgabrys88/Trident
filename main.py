@@ -417,9 +417,9 @@ class Engine:
         self.sentinel.touch(); self.desktop.release(); sys.exit(0)
     def _emit(self, name, v):
         write(self.result, v); print(json.dumps(v, ensure_ascii=False), flush=True)
-    def composer(self, *goal):
-        if goal: text(self.goal, ' '.join(goal))
-        call = f"& '{PYTHON}' '{SCRIPT}' --work '{self.work}'"; runtime = dict(script=str(SCRIPT), python=str(PYTHON), work=str(self.work), journal=str(RUN), journal_directory=str(ROOT), journal_pattern='run_*.md', next_json=str(self.continuation), memory=str(self.memory), goal=str(self.goal), agent_model=AGENT_MODEL, decision_model=DECISION_MODEL, vision_url=VISION_URL, keys=sorted(KEY_MAP))
+    def composer(self, goal='', model=AGENT_MODEL):
+        if goal: text(self.goal, goal)
+        call = f"& '{PYTHON}' '{SCRIPT}' --work '{self.work}'"; runtime = dict(script=str(SCRIPT), python=str(PYTHON), work=str(self.work), journal=str(RUN), journal_directory=str(ROOT), journal_pattern='run_*.md', next_json=str(self.continuation), memory=str(self.memory), goal=str(self.goal), agent_model=model, decision_model=DECISION_MODEL, vision_url=VISION_URL, keys=sorted(KEY_MAP))
         prompt = '\n'.join((INSTINCT, 'TOOLS', *(f.__doc__.replace('$CALL', call) for f in TOOLS.values()), 'RUNTIME', json.dumps(runtime), 'GOAL', self.goal.read_text('utf-8'), 'MEMORY', self.memory.read_text('utf-8'), LAST, self.result.read_text('utf-8')))
         vendor = self.work / 'agent'; profile = vendor / 'home/.cursor'; profile.mkdir(parents=True, exist_ok=True); temp = ROOT.parent / 'temp'; temp.mkdir(exist_ok=True); prompt_file = self.work / 'prompt.txt'; text(prompt_file, prompt)
         env = os.environ | dict(HOME=str(vendor / 'home'), USERPROFILE=str(vendor / 'home'), CURSOR_CONFIG_DIR=str(profile), CURSOR_DATA_DIR=str(vendor / 'data'), TEMP=str(temp), TMP=str(temp), PYTHONDONTWRITEBYTECODE='1', PYTHONUTF8='1'); env.pop('OPENROUTER_API_KEY', None)
@@ -427,7 +427,7 @@ class Engine:
         folder = max(p for p in (Path(os.environ['LOCALAPPDATA']) / 'cursor-agent/versions').iterdir() if p.name[:1].isdigit() and (p / 'index.js').exists()); boot = "process.argv.push(require('node:fs').readFileSync(process.argv.pop(),'utf8'));require(process.argv[1]);"
         with ExitStack() as stack:
             stack.callback(self.desktop.release)
-            p = subprocess.Popen([str(folder / 'node.exe'), '-e', boot, str(folder / 'index.js'), '--trust', '-p', '--model', AGENT_MODEL, '--workspace', str(ROOT), '--output-format', 'stream-json', str(prompt_file)], cwd=ROOT, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
+            p = subprocess.Popen([str(folder / 'node.exe'), '-e', boot, str(folder / 'index.js'), '--trust', '-p', '--model', model, '--workspace', str(ROOT), '--output-format', 'stream-json', str(prompt_file)], cwd=ROOT, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
             LIVE['agent'] = p
             stack.callback(p.wait); stack.callback(p.kill); job = win32job.CreateJobObject(None, ''); limits = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
             limits['BasicLimitInformation']['LimitFlags'] = win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE; win32job.SetInformationJobObject(job, win32job.JobObjectExtendedLimitInformation, limits); win32job.AssignProcessToJobObject(job, int(p._handle)); stack.callback(job.Close)
