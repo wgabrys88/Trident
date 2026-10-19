@@ -251,6 +251,14 @@ def interpret(colors, state, pieces=None, trusted=False):
         board.push(two[0][0])
         board.push(two[0][1])
         return accept(board, bottom, two[0][0].uci() + ' ' + two[0][1].uci())
+    # A color grid can already contain the opponent's reply while the stored
+    # turn is still ours. Accept that single ply when only one move fits.
+    behind = board.copy(stack=False)
+    behind.turn = not board.turn
+    late = pick(fitting(behind, colors, bottom))
+    if late is not None:
+        behind.push(late)
+        return accept(behind, bottom, late.uci() + ' behind')
     return None, bottom, 'lost'
 
 
