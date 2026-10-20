@@ -31,7 +31,7 @@ DECISION_MODEL = E('TRIDENT_JEV_MODEL', 'typesafe/jev-1.14')
 DECISION_URL = 'https://openrouter.ai/api/alpha/decisions'
 
 # Retina: local vision
-VISION_URL = E('TRIDENT_VISION_URL', 'http://192.168.16.31:8188')
+VISION_URL = E('TRIDENT_VISION_URL', 'http://192.168.16.31:1234')
 
 RUN = ROOT / ('run_' + os.environ.setdefault('TRIDENT_RUN', time.strftime('%Y%m%d_%H%M%S')) + '.md')
 if sys.stdout.isatty():
@@ -47,7 +47,7 @@ SCORE_MIN_LEVELS = 2
 DOUBLE_CLICKS = 2
 SCROLL_UP = 1
 DRAG_DURATION = 0.2
-RETINA_LONG_SIDE = 512
+RETINA_LONG_SIDE = 1280
 RETINA_TEMPERATURE = 0.2
 RETINA_TOP_K = 50
 RETINA_REPEAT_PENALTY = 1.0
@@ -400,7 +400,7 @@ class Vision(Oracle):
     headers = {}
     def ask(self, question, image, origin):
         messages = [dict(role='system', content=RETINA_SYSTEM), dict(role='user', content=[dict(type='image_url', image_url=dict(url=b64(image))), dict(type='text', text=question)])]
-        payload = dict(model='retina', temperature=RETINA_TEMPERATURE, top_k=RETINA_TOP_K, repeat_penalty=RETINA_REPEAT_PENALTY, messages=messages, response_format=dict(type='json_schema', json_schema=dict(name='r', schema=RETINA_SCHEMA)))
+        payload = dict(model='retina', chat_template_kwargs=dict(enable_thinking=False), temperature=RETINA_TEMPERATURE, top_k=RETINA_TOP_K, repeat_penalty=RETINA_REPEAT_PENALTY, messages=messages, response_format=dict(type='json_schema', json_schema=dict(name='r', schema=RETINA_SCHEMA)))
         raw = re.sub(r'^```(?:json)?\s*|\s*```$', '', self.post(payload, dict(question=question, image=origin, sent_size=list(image.size)))['choices'][0]['message']['content'].strip())
         data = json.loads(raw)
         if isinstance(data, dict): data = next((data[k] for k in ('elements','objects') if isinstance(data.get(k), list)), [])
