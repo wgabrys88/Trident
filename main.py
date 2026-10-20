@@ -35,7 +35,7 @@ for _fn, _args in dict(GetFileSizeEx=[wintypes.HANDLE, ctypes.POINTER(ctypes.c_l
 mouse_event = lambda flags, x=0, y=0, data=0: INPUT(type=0, u=INPUTUNION(mi=MOUSEINPUT(dx=x, dy=y, mouseData=data, dwFlags=flags)))
 key_event = lambda vk, scan, flags: INPUT(type=1, u=INPUTUNION(ki=KEYBDINPUT(wVk=vk, wScan=scan, dwFlags=flags)))
 
-def text(p, v): p = Path(p); t = p.with_name(p.name + '.' + uuid.uuid4().hex + '.pending'); t.write_bytes(v.encode('utf-8')); t.replace(p)
+def text(p, v): p = Path(p); t = p.with_name(p.name + '.' + uuid.uuid4().hex + '.pending'); t.write_bytes(v.encode('utf-8')); t.replace(p); log('file', dict(path=str(p), text=v))
 def read(p): return json.loads(Path(p).read_text('utf-8-sig'))
 def write(p, v): text(p, json.dumps(v, ensure_ascii=False))
 def b64(im): buf = io.BytesIO(); im.save(buf, 'PNG'); return 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode()
@@ -422,7 +422,7 @@ class Engine:
         text(self.memory, narrative); return dict(remembered=len(narrative))
     def stop(self, *_):
         '''$CALL --stop : records that this wake ended, releases input and stops. Your memory remains exactly as you last wrote it.'''
-        self.sentinel.touch(); self.desktop.release(); sys.exit(0)
+        self.sentinel.touch(); log('file', dict(path=str(self.sentinel), text='')); self.desktop.release(); sys.exit(0)
     def _emit(self, name, v):
         write(self.result, v)
         if sys.stdout.isatty(): log(name, v)
@@ -453,7 +453,7 @@ class Engine:
     def _follow(self):
         while True:
             if self.sentinel.exists() or not self.continuation.exists(): break
-            cmd = read(self.continuation); self.continuation.unlink()
+            log('file', dict(path=str(self.continuation), text=self.continuation.read_text('utf-8-sig'))); cmd = read(self.continuation); self.continuation.unlink()
             if isinstance(cmd[0], (int, float)):
                 end = time.monotonic() + max(0, cmd.pop(0))
                 while time.monotonic() < end and not self.sentinel.exists(): time.sleep(min(1, end - time.monotonic()))
