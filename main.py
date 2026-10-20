@@ -40,7 +40,7 @@ def read(p): return json.loads(Path(p).read_text('utf-8-sig'))
 def write(p, v): text(p, json.dumps(v, ensure_ascii=False))
 def b64(im): buf = io.BytesIO(); im.save(buf, 'PNG'); return 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode()
 META = frozenset('''session_id       hookAdditionalContexts apiKeySource permissionMode cwd adminCommandDenylist closeStdin conversationId fileOutputThresholdBytes hardTimeout hasInputRedirect hasOutputRedirect isBackground parsingResult requestId simpleCommands skipApproval timeout timeoutBehavior relatedCursorRulePaths relatedCursorRules isEmpty exceededLimit totalLines fileSize clientTruncated ripgrepTruncated contentTruncated isContextLine executionTime signal interleavedOutput localExecutionTime system_fingerprint usage prompt_tokens completion_tokens total_tokens finish_reason index object created id pid shellId msToWait backgroundReason workingDirectory readRange outputFilePath localExecutionTimeMs outputLength regexRequested runtimeMs totalFiles '''.split())
-THOUGHT = []
+THOUGHT, SESSION = [], ''
 def clip(value):
     if isinstance(value, dict): return {k: clip(v) for k, v in value.items() if k not in META and not (k == 'exitCode' and type(v) is int and v == 0)}
     if isinstance(value, list): return [clip(v) for v in value]
@@ -71,11 +71,16 @@ def resp_fields(body):
         return dict(text=words((choices[0] or {}).get('message')))
     if 'answers' in body: return dict(answers=clip(body['answers']))
     return clip(body)
+def seen_session(event):
+    global SESSION
+    sid = event.get('session_id') if isinstance(event, dict) else None
+    if sid: SESSION = str(sid)
 def narrate(kind, data):
     rows = []
     if kind == 'agent':
         try: event = json.loads(data)
         except json.JSONDecodeError: return [row('agent', text=data)]
+        seen_session(event)
         typ, sub = event.get('type'), event.get('subtype')
         if typ == 'thinking' and sub == 'delta':
             THOUGHT.append(event.get('text') or ''); return []
@@ -142,11 +147,11 @@ def peer(item):
     if url.startswith('https://openrouter.ai/'): return 'Jeff'
     return item.get('name') or ''
 def render(item):
-    kind = LABEL.get(item['kind'], item['kind']); who = peer(item)
-    if who and kind == 'request': title = f"## {item['t']} request Trident -> {who}"
-    elif who and kind == 'response': title = f"## {item['t']} response {who} -> Trident"
-    elif who and item['kind'] == 'err': title = f"## {item['t']} err {who} -> Trident"
-    else: title = f"## {item['t']} {kind}" + (f" {item['name']}" if item.get('name') else '')
+    kind = LABEL.get(item['kind'], item['kind']); who = peer(item); sid = f' {SESSION}' if SESSION else ''
+    if who and kind == 'request': title = f"## {item['t']} request Trident -> {who}{sid}"
+    elif who and kind == 'response': title = f"## {item['t']} response {who} -> Trident{sid}"
+    elif who and item['kind'] == 'err': title = f"## {item['t']} err {who} -> Trident{sid}"
+    else: title = f"## {item['t']} {kind}" + (f" {item['name']}" if item.get('name') else '') + sid
     keys = [k for k in item if k not in ('t', 'kind', 'name') and item[k] not in ('', None, [], {})]
     body = show('text', item['text']) if keys == ['text'] else '\n\n'.join(show(k, item[k]) for k in keys)
     rule = '=' * 72 if kind == 'request' else '-' * 72 if kind == 'response' else ''
@@ -437,7 +442,8 @@ class Engine:
         folder = max(p for p in (Path(os.environ['LOCALAPPDATA']) / 'cursor-agent/versions').iterdir() if p.name[:1].isdigit() and (p / 'index.js').exists()); boot = "process.argv.push(require('node:fs').readFileSync(process.argv.pop(),'utf8'));require(process.argv[1]);"
         with ExitStack() as stack:
             stack.callback(self.desktop.release)
-            p = subprocess.Popen([str(folder / 'node.exe'), '-e', boot, str(folder / 'index.js'), '--trust', '-p', '--model', AGENT_MODEL, '--workspace', str(ROOT), '--output-format', 'stream-json', str(prompt_file)], cwd=ROOT, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
+            p = subprocess.Popen([str(folder / 'node.exe'), '-e', boot, str(folder / 'index.js'), '--trust', '-p', '--model', AGENT_MODEL, '--workspace', str(ROOT), '--output-format', 'stream-json', str(prompt_file)], cwd=ROOT, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
+            threading.Thread(target=lambda: [log('err', line) for raw in p.stderr if (line := raw.decode('utf-8', 'replace').rstrip('\r\n'))], daemon=True).start()
             LIVE['agent'] = p
             stack.callback(p.wait); stack.callback(p.kill); job = win32job.CreateJobObject(None, ''); limits = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
             limits['BasicLimitInformation']['LimitFlags'] = win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE; win32job.SetInformationJobObject(job, win32job.JobObjectExtendedLimitInformation, limits); win32job.AssignProcessToJobObject(job, int(p._handle)); stack.callback(job.Close)
