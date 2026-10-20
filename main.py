@@ -136,9 +136,17 @@ def show(k, v):
         shown = plain(v, 1); return shown if k == 'text' else f'{k}:\n{shown}'
     return f'{k}: {v}'
 LABEL = dict(call='request', result='response', req='request', resp='response')
+def peer(item):
+    url = str(item.get('url') or '')
+    if url.startswith(VISION_URL): return 'Retina'
+    if url.startswith('https://openrouter.ai/'): return 'Jeff'
+    return item.get('name') or ''
 def render(item):
-    kind = LABEL.get(item['kind'], item['kind'])
-    title = f"## {item['t']} {kind}" + (f" {item['name']}" if item.get('name') else '')
+    kind = LABEL.get(item['kind'], item['kind']); who = peer(item)
+    if who and kind == 'request': title = f"## {item['t']} request Trident -> {who}"
+    elif who and kind == 'response': title = f"## {item['t']} response {who} -> Trident"
+    elif who and item['kind'] == 'err': title = f"## {item['t']} err {who} -> Trident"
+    else: title = f"## {item['t']} {kind}" + (f" {item['name']}" if item.get('name') else '')
     keys = [k for k in item if k not in ('t', 'kind', 'name') and item[k] not in ('', None, [], {})]
     body = show('text', item['text']) if keys == ['text'] else '\n\n'.join(show(k, item[k]) for k in keys)
     rule = '=' * 72 if kind == 'request' else '-' * 72 if kind == 'response' else ''
@@ -181,7 +189,7 @@ def serve():
     serve.on = True
     try:
         from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-        page = b'<!DOCTYPE html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><body style="background:#000;color:#fff;margin:0"><pre id=t style="white-space:pre-wrap;margin:0;font-family:monospace"></pre><script>async function g(){try{const r=await fetch("/md",{cache:"no-store"});document.getElementById("t").textContent=await r.text();scrollTo(0,1e9)}catch(e){}}setInterval(g,3000);g()</script>'
+        page = b'<!DOCTYPE html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><body style="background:#000;color:#fff;margin:0"><label style="position:sticky;top:0;display:block;background:#000"><input id=a type=checkbox checked>auto</label><pre id=t style="white-space:pre-wrap;margin:0;font-family:monospace"></pre><script>async function g(){if(!document.getElementById("a").checked)return;try{const r=await fetch("/md",{cache:"no-store"});document.getElementById("t").textContent=await r.text();scrollTo(0,1e9)}catch(e){}}setInterval(g,3000);g()</script>'
         class H(BaseHTTPRequestHandler):
             def log_message(self, *_): pass
             def do_GET(self):
@@ -416,7 +424,9 @@ class Engine:
         '''$CALL --stop : records that this wake ended, releases input and stops. Your memory remains exactly as you last wrote it.'''
         self.sentinel.touch(); self.desktop.release(); sys.exit(0)
     def _emit(self, name, v):
-        write(self.result, v); print(json.dumps(v, ensure_ascii=False), flush=True)
+        write(self.result, v)
+        if sys.stdout.isatty(): log(name, v)
+        else: print(json.dumps(v, ensure_ascii=False), flush=True)
     def composer(self, *goal):
         if goal: text(self.goal, ' '.join(goal))
         call = f"& '{PYTHON}' '{SCRIPT}' --work '{self.work}'"; runtime = dict(script=str(SCRIPT), python=str(PYTHON), work=str(self.work), journal=str(RUN), journal_directory=str(ROOT), journal_pattern='run_*.md', next_json=str(self.continuation), memory=str(self.memory), goal=str(self.goal), agent_model=AGENT_MODEL, decision_model=DECISION_MODEL, vision_url=VISION_URL, keys=sorted(KEY_MAP))
@@ -480,7 +490,7 @@ def main():
     atexit.register(lambda: log('exit', dict(argv=sys.argv[1:], seconds=round(time.time() - started, 1), reason=HALT.get('reason') or 'ended')))
     try:
         engine = Engine(Path(a.work).resolve(), a.fresh)
-        if engine.sentinel.exists() and a.entry != 'stop': sys.exit('stopped: delete the stop file to continue with the saved memory, or add --fresh to wipe memory, goal and results and start over')
+        if engine.sentinel.exists() and a.entry != 'stop': log('stopped', dict(text='stopped: delete the stop file to continue with the saved memory, or add --fresh to wipe memory, goal and results and start over')); sys.exit(1)
         if a.entry:
             result = getattr(engine, a.entry)(*a.args)
             if result is not None: engine._emit(a.entry, result)
