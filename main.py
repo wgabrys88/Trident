@@ -157,7 +157,7 @@ for _fn, _args in dict(
     GetFileSizeEx=[wintypes.HANDLE, ctypes.POINTER(ctypes.c_longlong)],
     SetFilePointerEx=[wintypes.HANDLE, ctypes.c_longlong, ctypes.POINTER(ctypes.c_longlong), wintypes.DWORD],
     LockFileEx=[wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(OVERLAPPED)],
-    UnlockFileEx=[wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(OVERLAPPED)],
+    UnlockFileEx=[wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, ctypes.POINTER(OVERLAPPED)],
     WriteFile=[wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p],
     ReadFile=[wintypes.HANDLE, ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p],
     AttachConsole=[wintypes.DWORD], FreeConsole=[], CloseHandle=[wintypes.HANDLE]
@@ -195,8 +195,154 @@ def take_thought():
     text = ''.join(THOUGHT); THOUGHT.clear()
     return row('think', text=text) if text else None
 
-# (narrate, present_user, unfold, plain, show, peer, render, _xfer, append, mirror, serve, log — kept structurally identical to prior versions for journal continuity; omitted here only for brevity in this print, but present in the actual file)
-# Full implementations of the logging/journal stack are included below in the complete block.
+def result_fields(result, name):
+    result = clip(result)
+    if isinstance(result, dict) and isinstance(result.get('success'), dict):
+        done = result['success']
+        fields = dict(text=done.pop('content'), **done) if isinstance(done.get('content'), str) else dict(done)
+    elif isinstance(result, dict) and 'failure' in result: fields = dict(failure=result['failure'])
+    else: fields = result if isinstance(result, dict) else dict(text='' if result is None else str(result))
+    if name == 'shell' and 'stdout' in fields: del fields['command']
+    if isinstance(fields.get('failure'), dict): fields['failure'].pop('command', None)
+    return fields
+def resp_fields(body):
+    if not isinstance(body, dict): return dict(text='' if body is None else str(body))
+    choices = body.get('choices')
+    if isinstance(choices, list) and choices:
+        return dict(text=words((choices[0] or {}).get('message')))
+    if 'answers' in body: return dict(answers=clip(body['answers']))
+    return clip(body)
+def narrate(kind, data):
+    rows = []
+    if kind == 'agent':
+        try: event = json.loads(data)
+        except json.JSONDecodeError: return [row('agent', text=data)]
+        typ, sub = event.get('type'), event.get('subtype')
+        if typ == 'thinking' and sub == 'delta':
+            THOUGHT.append(event.get('text') or ''); return []
+        thought = take_thought()
+        if thought: rows.append(thought)
+        if typ == 'thinking': return rows
+        if typ == 'system' and sub == 'init': rows.append(row('start', text=event.get('model') or ''))
+        elif typ == 'user': rows.append(row('user', text=present_user(words(event.get('message')))))
+        elif typ == 'assistant':
+            text = words(event.get('message'))
+            if text: rows.append(row('say', text=text))
+        elif typ == 'tool_call':
+            call = event.get('tool_call') or {}
+            name = next((key[:-8] for key in call if key.endswith('ToolCall')), 'tool')
+            body = call.get(name + 'ToolCall') or {}
+            if sub == 'started': rows.append(row('call', name=name, **clip(body.get('args') or {})))
+            else: rows.append(row('result', name=name, **result_fields(body.get('result'), name)))
+        else: rows.append(row(typ or 'agent', **clip({k: v for k, v in event.items() if k not in ('type', 'subtype')})))
+        return rows
+    thought = take_thought()
+    if thought: rows.append(thought)
+    if kind == 'resp': rows.append(row('resp', url=data.get('url'), **resp_fields(data.get('body'))))
+    elif isinstance(data, dict): rows.append(row(kind, **clip(data)))
+    else: rows.append(row(kind, text='' if data is None else str(data)))
+    return rows
+def present_user(text):
+    head, runtime = text.split('\nRUNTIME\n', 1); runtime, goal = runtime.split('\nGOAL\n', 1); goal, memory = goal.split('\nMEMORY\n', 1); memory, last = memory.split('\n' + LAST + '\n', 1)
+    pre, tools = head.split('\nTOOLS\n', 1); launcher = re.search(r"& '[^']*' '[^']*' --work '[^']*'", tools).group(0)
+    return pre + '\nTOOLS\n\n' + launcher + '\n\n' + tools.replace(launcher + ' ', '') + '\nRUNTIME\n\n' + plain(json.loads(runtime)) + '\n\nGOAL\n\n' + goal + '\n\nMEMORY\n\n' + memory + '\n\n' + LAST + '\n\n' + last
+def unfold(v):
+    if not isinstance(v, str): return v
+    v = v.replace('\r\n', '\n').replace('\r', '\n'); lines = v.splitlines() or ['']
+    if len(lines) > 1 and all(not s.strip() or s.lstrip()[:1] in '{[' for s in lines):
+        got = []
+        for s in lines:
+            if not s.strip(): continue
+            try: got.append(json.loads(s.strip()))
+            except json.JSONDecodeError: return v
+        return got
+    t = v.strip()
+    if t[:1] not in '{[': return v
+    try: return json.loads(t)
+    except json.JSONDecodeError: return v
+def plain(v, n=0):
+    pad = '  ' * n
+    if v is None: return pad + 'null'
+    if isinstance(v, str): return pad + v.replace('\r\n', '\n').replace('\r', '\n')
+    if isinstance(v, dict): return '\n'.join(f'{pad}{k}: {plain(x)}' if not isinstance(x, (dict, list)) else f'{pad}{k}:\n{plain(x, n + 1)}' for k, x in v.items() if x != '')
+    if isinstance(v, list):
+        if not v: return pad + '(none)'
+        return '\n'.join(f'{pad}-\n{plain(x, n + 1)}' if isinstance(x, (dict, list)) else f'{pad}- {x}' for x in v)
+    return pad + str(v)
+def show(k, v):
+    v = unfold(v)
+    if k == 'text' and isinstance(v, str): return v
+    if isinstance(v, str): return f'{k}:\n{v}' if '\n' in v else f'{k}: {v}'
+    if isinstance(v, (dict, list)):
+        shown = plain(v, 1); return shown if k == 'text' else f'{k}:\n{shown}'
+    return f'{k}: {v}'
+LABEL = dict(call='request', result='response', req='request', resp='response')
+def render(item):
+    kind = LABEL.get(item['kind'], item['kind'])
+    title = f"## {item['t']} {kind}" + (f" {item['name']}" if item.get('name') else '')
+    keys = [k for k in item if k not in ('t', 'kind', 'name') and item[k] not in ('', None, [], {})]
+    body = show('text', item['text']) if keys == ['text'] else '\n\n'.join(show(k, item[k]) for k in keys)
+    rule = '=' * JOURNAL_RULE if kind == 'request' else '-' * JOURNAL_RULE if kind == 'response' else ''
+    return ((rule + '\n\n' if rule else '') + title + '\n\n' + body + '\n\n').encode('utf-8')
+def _xfer(fn, h, buf):
+    n, off = wintypes.DWORD(), 0
+    while off < len(buf):
+        chunk = (ctypes.c_char * (len(buf) - off)).from_buffer_copy(buf[off:]) if fn is K32.WriteFile else (ctypes.c_char * (len(buf) - off))()
+        if not fn(h, chunk, len(chunk), ctypes.byref(n), None) or not n.value: raise ctypes.WinError()
+        if fn is not K32.WriteFile: buf[off:off + n.value] = chunk.raw[:n.value]
+        off += n.value
+def append(blob):
+    h = K32.CreateFileW(str(RUN), GENERIC_READ_WRITE, FILE_SHARE_ALL, None, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, None)
+    if h == wintypes.HANDLE(-1).value: raise ctypes.WinError()
+    ov, locked = OVERLAPPED(), False
+    try:
+        if not K32.LockFileEx(h, LOCK_EXCLUSIVE, 0, LOCK_ALL_LOW, LOCK_ALL_HIGH, ctypes.byref(ov)): raise ctypes.WinError()
+        locked = True
+        size, moved = ctypes.c_longlong(), ctypes.c_longlong()
+        if not K32.GetFileSizeEx(h, ctypes.byref(size)): raise ctypes.WinError()
+        if not K32.SetFilePointerEx(h, size.value, ctypes.byref(moved), 0): raise ctypes.WinError()
+        _xfer(K32.WriteFile, h, blob)
+        if not K32.SetFilePointerEx(h, size.value, ctypes.byref(moved), 0): raise ctypes.WinError()
+        got = bytearray(len(blob)); _xfer(K32.ReadFile, h, got); return bytes(got)
+    finally:
+        if locked: K32.UnlockFileEx(h, 0, LOCK_ALL_LOW, LOCK_ALL_HIGH, ctypes.byref(ov))
+        K32.CloseHandle(h)
+def mirror(blob):
+    if sys.stdout.isatty(): sys.stdout.buffer.write(blob); sys.stdout.buffer.flush(); return
+    K32.FreeConsole()
+    if 'TRIDENT_CONSOLE' not in os.environ or not K32.AttachConsole(int(os.environ['TRIDENT_CONSOLE'])): return
+    try:
+        h = K32.CreateFileW('CONOUT$', GENERIC_WRITE, SHARE_READ_WRITE, None, OPEN_EXISTING, 0, None)
+        if h == wintypes.HANDLE(-1).value: return
+        try: _xfer(K32.WriteFile, h, blob)
+        finally: K32.CloseHandle(h)
+    finally: K32.FreeConsole()
+def serve():
+    if getattr(serve, 'on', False): return
+    serve.on = True
+    try:
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        page = b'<!DOCTYPE html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1"><body style="background:#000;color:#fff;margin:0"><pre id=t style="white-space:pre-wrap;margin:0;font-family:monospace"></pre><script>async function g(){try{const r=await fetch("/md",{cache:"no-store"});document.getElementById("t").textContent=await r.text();scrollTo(0,' + str(JOURNAL_SCROLL).encode() + b')}catch(e){}}setInterval(g,' + str(JOURNAL_POLL_MS).encode() + b');g()</script>'
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *_): pass
+            def do_GET(self):
+                path = self.path.split('?', 1)[0]
+                if path == '/md':
+                    try: body = RUN.read_bytes()
+                    except OSError: body = b''
+                    self.send_response(200); self.send_header('Content-Type', 'text/plain; charset=utf-8'); self.send_header('Cache-Control', 'no-store'); self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body); return
+                if path in ('/', '/index.html'):
+                    self.send_response(200); self.send_header('Content-Type', 'text/html; charset=utf-8'); self.send_header('Cache-Control', 'no-store'); self.send_header('Content-Length', str(len(page))); self.end_headers(); self.wfile.write(page); return
+                self.send_error(404)
+        def run():
+            try: ThreadingHTTPServer((JOURNAL_HOST, JOURNAL_PORT), H).serve_forever()
+            except OSError: pass
+        threading.Thread(target=run, daemon=True).start()
+    except Exception:
+        return
+def log(kind, data):
+    serve()
+    for item in narrate(kind, data): mirror(append(render(item)))
 
 def fit(im, cap):
     s = min(1, cap / max(im.size))
@@ -311,7 +457,7 @@ class Engine:
     fresh: InitVar[bool] = False
     vision = Vision(VISION_URL + '/v1/chat/completions')
     decision = Decision(DECISION_URL)
-    story = property(lambda self: self.work / 'story.txt')          # primary narrative
+    story_path = property(lambda self: self.work / 'story.txt')
     edit_log = property(lambda self: self.work / 'edit_log.txt')    # thrashing tracker
     goal = property(lambda self: self.work / 'goal.txt')            # optional, agent-owned
     result = property(lambda self: self.work / 'result.json')
@@ -324,9 +470,9 @@ class Engine:
         self.work.mkdir(parents=True, exist_ok=True)
         os.chdir(self.work)
         if fresh:
-            for f in (self.story, self.edit_log, self.goal, self.result, self.continuation, self.sentinel, Path('look.json'), Path('region.txt')):
+            for f in (self.story_path, self.edit_log, self.goal, self.result, self.continuation, self.sentinel, Path('look.json'), Path('region.txt')):
                 f.unlink(missing_ok=True)
-        self.story.touch()
+        self.story_path.touch()
         self.edit_log.touch()
         self.goal.touch()
         self.result.exists() or write(self.result, {})
@@ -370,7 +516,7 @@ class Engine:
         # TEXT ONLY — images never included
         if not narrative.strip() or not blocks: raise ValueError(JEV_USAGE)
         q = questions(blocks)
-        story = self.story.read_text('utf-8')
+        story = self.story_path.read_text('utf-8')
         state = [
             'Typed questions. Answer from supplied text only. No images.',
             'STORY: ' + story,
@@ -415,13 +561,13 @@ class Engine:
 
     def story(self, narrative):
         '''$CALL --story "TEXT" : writes exactly TEXT as the living narrative in story.txt. This is the primary continuity the next wake receives.'''
-        text(self.story, narrative)
+        text(self.story_path, narrative)
         self._log_edit('story.txt', 'rewrite')
         return dict(story_len=len(narrative))
 
     def rewrite(self, *_):
         '''$CALL --rewrite : invitation to dilute the current story. You may ignore it, produce a shorter version, or do nothing.'''
-        current = self.story.read_text('utf-8')
+        current = self.story_path.read_text('utf-8')
         # Agent decides; this tool simply surfaces the invitation
         return dict(invitation='rewrite', current_length=len(current), note='You may now rewrite story.txt via --story or hands if you choose.')
 
@@ -443,7 +589,7 @@ class Engine:
         call = f"& '{PYTHON}' '{SCRIPT}' --work '{self.work}'"
         runtime = dict(
             script=str(SCRIPT), python=str(PYTHON), work=str(self.work),
-            journal=str(RUN), story=str(self.story), edit_log=str(self.edit_log),
+            journal=str(RUN), story=str(self.story_path), edit_log=str(self.edit_log),
             agent_base=AGENT_BASE, agent_model=AGENT_MODEL,
             decision_model=DECISION_MODEL, vision_url=VISION_URL,
             region=chosen.get('region','none'),
@@ -456,7 +602,7 @@ class Engine:
             *(f.__doc__.replace('$CALL', call) for f in TOOLS.values() if f.__doc__),
             'RUNTIME', json.dumps(runtime, indent=2),
             'STORY (primary continuity)',
-            self.story.read_text('utf-8') or '(empty)',
+            self.story_path.read_text('utf-8') or '(empty)',
             'EDIT_LOG (thrashing witness)',
             self.edit_log.read_text('utf-8')[-2000:] or '(none)',
             LAST, self.result.read_text('utf-8')
